@@ -1,10 +1,10 @@
-# ESP32 IoT BBS: command reference
+# µnleashed BBS: command reference
 
-Version 0.2.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
+Version 0.3.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
 
 ## Calling in
 
-- Port 6400, telnet or raw TCP. `esp32bbs.local` resolves on the LAN through mDNS.
+- Port 6400, telnet or raw TCP. `unleashed.local` resolves on the LAN through mDNS.
 - 6 caller nodes. When all six are busy, the next caller gets the busy line (see below), and anyone beyond that gets `BUSY` and an immediate hangup.
 - The terminal type is detected on connect:
   - Telnet clients (PuTTY, SyncTERM) are switched to character mode and detected straight away.

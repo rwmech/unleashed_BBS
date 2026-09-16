@@ -14,7 +14,7 @@ namespace fx {
 namespace {
 
 const char kNoise[]  = "!@#$%^&*()+=[];:,.<>/?~{}|ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-const char kScramb[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#$%&*+=?";
+const char kScramb[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#$%&*+=?";   // ASCII only: effects step per byte
 
 // PETSCII quadrant blocks, rotating clockwise (verified on a C64)
 const uint8_t kPetQuad[4] = { 0xBE, 0xBC, 0xAC, 0xBB };

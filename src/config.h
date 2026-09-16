@@ -1,6 +1,6 @@
 /*
  * File:        src/config.h
- * Description: Compile-time configuration for the ESP32 IoT BBS core.
+ * Description: Compile-time configuration for the µnleashed BBS core.
  *              Every sizing decision for the WROOM-32E reference target
  *              lives here so plugins and ports can override in one place.
  *              Run-time settings (timezone, NTP, sysop password, time
@@ -13,9 +13,11 @@
 // ---------------------------------------------------------------------------
 // Identity
 // ---------------------------------------------------------------------------
-#define BBS_NAME            "ESP32 IOT BBS"
-#define BBS_VERSION         "0.2.0"
-#define BBS_HOSTNAME        "esp32bbs"   // DHCP and mDNS (esp32bbs.local)
+// The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
+// PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
+#define BBS_NAME            "\xC2\xB5nleashed BBS"
+#define BBS_VERSION         "0.3.0"
+#define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // ---------------------------------------------------------------------------
 // Network: one dial-in port, 6 caller nodes, a busy line, a hidden sysop node

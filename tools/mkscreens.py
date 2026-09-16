@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
 File:        tools/mkscreens.py
-Description: Generates the stock display files in data/screens/:
-             welcome.seq (PETSCII 40), welcome.ans (ANSI CP437),
-             welcome.asc (ASCII), help.asc, goodbye.asc, goodbye.ans,
-             busy.asc, busy.ans, busy.seq. No bulletin ships: add
+Description: Generates the stock µnleashed BBS display files in data/screens/:
+             welcome.seq/.ans/.asc, help.asc, busy.seq/.ans/.asc,
+             goodbye.seq/.ans/.asc. No bulletin ships: add
              bulletin.asc/.ans/.seq to show one after login.
              Hand-drawn art from PETSCII/ANSI editors can replace any of
              these; the BBS only cares about the file name and extension.
+
+             Layout rules: PETSCII and ASCII lines stay under 40 columns
+             (a 40th character auto-wraps on a C64). ANSI art is 80 columns.
+             @BBS@ prints the name with a real µ on ANSI and "u" elsewhere.
 Listing:     COMPLETE FILE
 Libraries:   Python 3 standard library only
 Usage:       python3 tools/mkscreens.py
@@ -16,27 +19,31 @@ from pathlib import Path
 
 OUT = Path(__file__).resolve().parent.parent / "data" / "screens"
 
+TAGLINE = "No web. No cloud. No browser."
+MOTTO = "E L E C T R O N I C   F R E E D O M"
+
 # --------------------------------------------------------------------------
-# 3x5 block font
+# 3x5 block font for the logo: µ n L E A S H E D (the µ has a descender)
 # --------------------------------------------------------------------------
 FONT = {
-    "B": ["##.", "#.#", "##.", "#.#", "##."],
-    "S": ["###", "#..", "###", "..#", "###"],
+    "µ": ["#.#", "#.#", "#.#", "###", "#.."],
+    "n": ["...", "##.", "#.#", "#.#", "#.#"],
+    "L": ["#..", "#..", "#..", "#..", "###"],
     "E": ["###", "#..", "##.", "#..", "###"],
-    "P": ["##.", "#.#", "##.", "#..", "#.."],
-    "3": ["###", "..#", ".##", "..#", "###"],
-    "2": ["###", "..#", "###", "#..", "###"],
-    " ": ["..", "..", "..", "..", ".."],
+    "A": [".#.", "#.#", "###", "#.#", "#.#"],
+    "S": ["###", "#..", "###", "..#", "###"],
+    "H": ["#.#", "#.#", "###", "#.#", "#.#"],
+    "D": ["##.", "#.#", "#.#", "#.#", "##."],
 }
+LOGO = "µnLEASHED"
 
 
 def logo_rows(word):
-    """Return 5 rows of '#'/'.' cells with a 1-cell gap between letters."""
+    """5 rows of '#'/'.' cells, one blank cell between letters."""
     rows = [""] * 5
     for i, ch in enumerate(word):
-        glyph = FONT[ch]
         for r in range(5):
-            rows[r] += glyph[r] + ("." if i < len(word) - 1 else "")
+            rows[r] += FONT[ch][r] + ("." if i < len(word) - 1 else "")
     return rows
 
 
@@ -79,7 +86,12 @@ def pet(*parts):
     return bytes(out)
 
 
+def pet_rule(color, width=38):
+    return bytes([PET[color]]) + bytes([PET["hline"]]) * width + bytes([PET["cr"]])
+
+
 def pet_logo_row(row, indent):
+    """One logo row: reverse spaces for set cells, one character per cell."""
     out = bytearray(b" " * indent)
     rvs = False
     for cell in row:
@@ -87,99 +99,127 @@ def pet_logo_row(row, indent):
         if want != rvs:
             out.append(PET["rvs"] if want else PET["off"])
             rvs = want
-        out += b"  "
+        out += b" "
     if rvs:
         out.append(PET["off"])
     out.append(PET["cr"])
     return bytes(out)
 
 
-def make_welcome_seq():
-    w = 38
-    rows = logo_rows("BBS")
-    width = len(rows[0]) * 2
-    indent = (w - width) // 2
-    colors = ["lblue", "cyan", "lgreen", "yellow", "orange"]
-    s = bytearray()
-    s += pet("clr", "lower", "lock")
-    s += bytes([PET["cyan"]]) + bytes([PET["hline"]]) * w + bytes([PET["cr"]])
-    s += bytes([PET["cr"]])
-    for row, col in zip(rows, colors):
-        s += bytes([PET[col]]) + pet_logo_row(row, indent) + pet("@DELAY:120@")
-    s += bytes([PET["cr"]])
-    s += pet("white", "   E S P 3 2    I O T    B B S\n")
-    s += pet("grey", "  Terminal server for the maker crowd\n")
-    s += bytes([PET["cyan"]]) + bytes([PET["hline"]]) * w + bytes([PET["cr"]])
-    s += pet("lgreen", " Node ", "yellow", "@NODE@", "lgreen", " of ", "yellow", "@NODES@",
-             "lgreen", "   Term ", "yellow", "@TERM@\n")
-    s += pet("lgreen", " Version ", "yellow", "@VER@\n")
-    s += bytes([PET["cyan"]]) + bytes([PET["hline"]]) * w + bytes([PET["cr"]])
-    s += pet("grey", " Connecting you @SPIN:900@", "lgreen", "done\n")
-    return bytes(s)
-
-
 # --------------------------------------------------------------------------
 # ANSI helpers (CP437)
 # --------------------------------------------------------------------------
 ESC = "\x1b"
+BLOCK, SHADE_LIGHT, BULLET = 0xDB, 0xB0, 0xF9
+H_LINE, H_DOUBLE = 0xC4, 0xCD
 
 
 def sgr(code):
     return f"{ESC}[{code}m".encode("ascii")
 
 
-def make_welcome_ans():
-    w = 72
-    rows = logo_rows("ESP32 BBS")
-    width = len(rows[0]) * 2
-    indent = (80 - width) // 2
-    box_in = (80 - (w + 2)) // 2
-    grad = ["1;34", "1;36", "0;36", "1;32", "0;32"]
-    b = bytearray()
-    b += f"{ESC}[0m{ESC}[2J{ESC}[H".encode()
-    b += sgr("0;34") + b" " * box_in + bytes([0xC9]) + bytes([0xCD]) * w + bytes([0xBB]) + b"\r\n\r\n"
-    for row, col in zip(rows, grad):
+def ansi_logo(indent, gradient, shadow="1;30"):
+    """Double-width block logo with a drop shadow one cell down and right."""
+    rows = logo_rows(LOGO)
+    height, width = len(rows), len(rows[0])
+
+    def on(r, c):
+        return 0 <= r < height and 0 <= c < width and rows[r][c] == "#"
+
+    out = bytearray()
+    for r in range(height + 1):
         line = bytearray(b" " * indent)
-        for cell in row:
-            line += bytes([0xDB, 0xDB]) if cell == "#" else b"  "
-        b += sgr(col) + bytes(line.rstrip()) + b"\r\n" + b"@DELAY:100@"
+        cur = None
+        for c in range(width + 1):
+            if on(r, c):
+                want, cell = gradient[min(r, height - 1)], bytes([BLOCK, BLOCK])
+            elif on(r - 1, c - 1):
+                want, cell = shadow, bytes([SHADE_LIGHT, SHADE_LIGHT])
+            else:
+                want, cell = None, b"  "
+            if want and want != cur:
+                line += sgr(want)
+                cur = want
+            line += cell
+        out += bytes(line.rstrip()) + b"\r\n@DELAY:90@"
+    return bytes(out)
+
+
+def centered(text, width=80):
+    return b" " * ((width - len(text)) // 2) + text.encode()
+
+
+# ==========================================================================
+# welcome
+# ==========================================================================
+def make_welcome_ans():
+    b = bytearray()
+    b += f"{ESC}[0m{ESC}[2J{ESC}[H\r\n".encode()
+    logo_w = (len(logo_rows(LOGO)[0]) + 1) * 2
+    b += ansi_logo((80 - logo_w) // 2, ["1;37", "1;36", "0;36", "1;34", "0;34"])
     b += b"\r\n"
-    title = "E S P 3 2    I O T    T E R M I N A L    S E R V E R"
-    b += sgr("1;37") + b" " * ((80 - len(title)) // 2) + title.encode() + b"\r\n"
-    b += b"\r\n"
-    b += sgr("0;34") + b" " * box_in + bytes([0xC7]) + bytes([0xC4]) * w + bytes([0xB6]) + b"\r\n"
-    pad = b" " * (box_in + 3)
-    b += pad + sgr("0;32") + b"Node " + sgr("1;33") + b"@NODE@" + sgr("0;32") + b" of " \
-        + sgr("1;33") + b"@NODES@" + sgr("0;32") + b"      Terminal " + sgr("1;33") + b"@TERM@\r\n"
-    b += pad + sgr("0;32") + b"Version " + sgr("1;33") + b"@VER@" + sgr("0;32") \
-        + b"       Built for makers, " + bytes([0xF9]) + b" old-school style\r\n"
-    b += sgr("0;34") + b" " * box_in + bytes([0xC8]) + bytes([0xCD]) * w + bytes([0xBC]) + b"\r\n"
-    b += sgr("0;37") + pad + b"Connecting you @SPIN:900@" + sgr("1;32") + b"done" + sgr("0") + b"\r\n"
+    b += sgr("1;37") + centered(MOTTO) + b"\r\n"
+    tag = "no web  \xf9  no cloud  \xf9  no browser  \xf9  real hardware"
+    b += sgr("0;36") + b" " * ((80 - len(tag)) // 2) + tag.encode("latin-1") + b"\r\n\r\n"
+    b += sgr("0;34") + b"  " + bytes([H_DOUBLE]) * 76 + b"\r\n"
+    b += (b"    " + sgr("1;36") + bytes([BULLET]) + sgr("0;32") + b" Node " + sgr("1;33") + b"@NODE@"
+          + sgr("0;32") + b" of " + sgr("1;33") + b"@NODES@"
+          + b"      " + sgr("1;36") + bytes([BULLET]) + sgr("0;32") + b" Terminal " + sgr("1;33") + b"@TERM@"
+          + b"      " + sgr("1;36") + bytes([BULLET]) + sgr("0;32") + b" " + sgr("1;33") + b"@DATE@ @TIME@\r\n")
+    b += (b"    " + sgr("1;36") + bytes([BULLET]) + b" " + sgr("1;37") + b"@BBS@" + sgr("0;37")
+          + b" v@VER@  " + sgr("0;36") + b"a BBS that lives on a microcontroller\r\n")
+    b += sgr("0;34") + b"  " + bytes([H_DOUBLE]) * 76 + b"\r\n"
+    b += sgr("0;37") + b"    Connecting you @SPIN:900@" + sgr("1;32") + b"unleashed" + sgr("0") + b"\r\n"
     return bytes(b)
 
 
+def make_welcome_seq():
+    rows = logo_rows(LOGO)
+    indent = (40 - len(rows[0])) // 2
+    ramp = ["white", "cyan", "lblue", "purple", "lred"]
+    s = bytearray()
+    s += pet("clr", "lower", "lock", "cr")
+    for row, col in zip(rows, ramp):
+        s += bytes([PET[col]]) + pet_logo_row(row, indent) + pet("@DELAY:90@")
+    s += pet("cr")
+    s += pet_rule("cyan")
+    s += pet("white", " " + MOTTO + "\n")
+    s += pet("grey", "    " + TAGLINE + "\n")
+    s += pet_rule("cyan")
+    s += pet("lgreen", " Node ", "yellow", "@NODE@", "lgreen", " of ", "yellow", "@NODES@",
+             "lgreen", "   ", "yellow", "@TERM@\n")
+    s += pet("lgreen", " ", "yellow", "@DATE@ @TIME@\n")
+    s += pet("white", " @BBS@", "grey", " v@VER@\n")
+    s += pet_rule("cyan")
+    s += pet("grey", " Connecting you @SPIN:900@", "lgreen", "unleashed\n")
+    return bytes(s)
+
+
 def make_welcome_asc():
-    rows = logo_rows("BBS")
-    width = len(rows[0]) * 2
-    indent = (38 - width) // 2
+    rows = logo_rows(LOGO)
+    indent = (40 - len(rows[0])) // 2
     out = ["-" * 38, ""]
     for row in rows:
-        out.append(" " * indent + "".join("##" if c == "#" else "  " for c in row).rstrip() + "@DELAY:120@")
+        out.append(" " * indent + "".join("#" if c == "#" else " " for c in row).rstrip() + "@DELAY:90@")
     out += [
         "",
-        "   E S P 3 2    I O T    B B S",
-        "  Terminal server for the maker crowd",
+        " " + MOTTO,
+        "    " + TAGLINE,
         "-" * 38,
         " Node @NODE@ of @NODES@   Term @TERM@",
-        " Version @VER@",
+        " @DATE@ @TIME@",
+        " @BBS@ v@VER@",
         "-" * 38,
-        " Connecting you @SPIN:900@done",
+        " Connecting you @SPIN:900@unleashed",
         "",
     ]
     return "\n".join(out).encode("ascii")
 
 
-HELP = """Commands
+# ==========================================================================
+# help
+# ==========================================================================
+HELP = """@BBS@ commands
 --------------------------------------
 [H]ELP    this screen, also ?
 [W]HO     who is online
@@ -200,57 +240,83 @@ Any key fast-forwards animations.
 Space, Ctrl-C or RUN/STOP stops output.
 """
 
-BUSY_ASC = """@CLS@@BBS@
+
+# ==========================================================================
+# busy (tests look for "lines are busy")
+# ==========================================================================
+BUSY_ASC = """@CLS@--------------------------------------
+ @BBS@
 --------------------------------------
-Sorry, all @NODES@ lines are busy.
-Please try your call later.
+ Sorry, all @NODES@ lines are busy.
+ Every node is unleashed right now.
+ Please try your call again soon.
 --------------------------------------
 """
 
 
 def make_busy_ans():
-    w = 44
+    w = 50
+    name_len = len("µnleashed BBS")          # display width of @BBS@
+    left = b" " * ((80 - (w + 2)) // 2)
+
+    def boxed(color, text, shown_len):
+        return (sgr("0;31") + left + bytes([0xBA]) + sgr(color) + b"   " + text
+                + b" " * (w - 3 - shown_len) + sgr("0;31") + bytes([0xBA]) + b"\r\n")
+
     b = bytearray()
-    b += f"{ESC}[0m{ESC}[2J{ESC}[H\r\n".encode()
-    b += sgr("0;31") + b"  " + bytes([0xC9]) + bytes([0xCD]) * w + bytes([0xBB]) + b"\r\n"
-    title = "@BBS@"
-    b += sgr("0;31") + b"  " + bytes([0xBA]) + sgr("1;37") + b"  " + title.encode() \
-        + b" " * (w - 2 - len("ESP32 IOT BBS")) + sgr("0;31") + bytes([0xBA]) + b"\r\n"
-    b += sgr("0;31") + b"  " + bytes([0xC7]) + bytes([0xC4]) * w + bytes([0xB6]) + b"\r\n"
+    b += f"{ESC}[0m{ESC}[2J{ESC}[H\r\n\r\n".encode()
+    b += sgr("0;31") + left + bytes([0xC9]) + bytes([0xCD]) * w + bytes([0xBB]) + b"\r\n"
+    b += boxed("1;37", b"@BBS@", name_len)
+    b += sgr("0;31") + left + bytes([0xC7]) + bytes([0xC4]) * w + bytes([0xB6]) + b"\r\n"
     msg1 = "Sorry, all @NODES@ lines are busy."
-    msg2 = "Please try your call later."
-    b += sgr("0;31") + b"  " + bytes([0xBA]) + sgr("1;33") + b"  " + msg1.encode() \
-        + b" " * (w - 2 - len("Sorry, all 6 lines are busy.")) + sgr("0;31") + bytes([0xBA]) + b"\r\n"
-    b += sgr("0;31") + b"  " + bytes([0xBA]) + sgr("0;37") + b"  " + msg2.encode() \
-        + b" " * (w - 2 - len(msg2)) + sgr("0;31") + bytes([0xBA]) + b"\r\n"
-    b += sgr("0;31") + b"  " + bytes([0xC8]) + bytes([0xCD]) * w + bytes([0xBC]) + sgr("0") + b"\r\n"
+    b += boxed("1;33", msg1.encode(), len("Sorry, all 6 lines are busy."))
+    msg2 = "Every node is unleashed right now."
+    b += boxed("0;36", msg2.encode(), len(msg2))
+    msg3 = "Please try your call again soon."
+    b += boxed("0;37", msg3.encode(), len(msg3))
+    b += sgr("0;31") + left + bytes([0xC8]) + bytes([0xCD]) * w + bytes([0xBC]) + sgr("0") + b"\r\n"
     return bytes(b)
 
 
 def make_busy_seq():
-    w = 38
     s = bytearray()
-    s += pet("clr", "lower", "lock")
-    s += bytes([PET["red"]]) + bytes([PET["hline"]]) * w + bytes([PET["cr"]])
+    s += pet("clr", "lower", "lock", "cr")
+    s += pet_rule("red")
     s += pet("white", " @BBS@\n")
-    s += bytes([PET["red"]]) + bytes([PET["hline"]]) * w + bytes([PET["cr"]])
+    s += pet_rule("red")
     s += pet("yellow", " Sorry, all @NODES@ lines are busy.\n")
-    s += pet("grey", " Please try your call later.\n")
-    s += bytes([PET["red"]]) + bytes([PET["hline"]]) * w + bytes([PET["cr"]])
+    s += pet("cyan", " Every node is unleashed right now.\n")
+    s += pet("grey", " Please try your call again soon.\n")
+    s += pet_rule("red")
     return bytes(s)
 
-GOODBYE_ASC = """Thanks for calling, @USER@!
+
+# ==========================================================================
+# goodbye
+# ==========================================================================
+GOODBYE_ASC = """--------------------------------------
+Stay unleashed, @USER@.
 @BBS@ node @NODE@ is free again.
-Call back soon.@DELAY:400@
+@DATE@ @TIME@@DELAY:400@
 """
 
 
 def make_goodbye_ans():
     b = bytearray()
-    b += sgr("1;32") + b"Thanks for calling, " + sgr("1;33") + b"@USER@" + sgr("1;32") + b"!\r\n"
-    b += sgr("0;36") + b"@BBS@ node @NODE@ is free again.\r\n"
-    b += sgr("0;37") + b"Call back soon.@DELAY:400@" + sgr("0") + b"\r\n"
+    b += sgr("0;34") + bytes([H_DOUBLE]) * 60 + b"\r\n"
+    b += sgr("1;36") + b"Stay unleashed, " + sgr("1;33") + b"@USER@" + sgr("1;36") + b".\r\n"
+    b += sgr("1;37") + b"@BBS@" + sgr("0;36") + b" node @NODE@ is free again.\r\n"
+    b += sgr("0;37") + b"@DATE@ @TIME@@DELAY:400@" + sgr("0") + b"\r\n"
     return bytes(b)
+
+
+def make_goodbye_seq():
+    s = bytearray()
+    s += pet_rule("cyan")
+    s += pet("cyan", "Stay unleashed, ", "yellow", "@USER@", "cyan", ".\n")
+    s += pet("white", "@BBS@", "grey", " node @NODE@ is free again.\n")
+    s += pet("grey", "@DATE@ @TIME@@DELAY:400@\n")
+    return bytes(s)
 
 
 def main():
@@ -260,11 +326,12 @@ def main():
         "welcome.ans": make_welcome_ans(),
         "welcome.asc": make_welcome_asc(),
         "help.asc": HELP.encode("ascii"),
-        "goodbye.asc": GOODBYE_ASC.encode("ascii"),
-        "goodbye.ans": make_goodbye_ans(),
-        "busy.asc": BUSY_ASC.encode("ascii"),
-        "busy.ans": make_busy_ans(),
         "busy.seq": make_busy_seq(),
+        "busy.ans": make_busy_ans(),
+        "busy.asc": BUSY_ASC.encode("ascii"),
+        "goodbye.seq": make_goodbye_seq(),
+        "goodbye.ans": make_goodbye_ans(),
+        "goodbye.asc": GOODBYE_ASC.encode("ascii"),
     }
     for name, data in files.items():
         (OUT / name).write_bytes(data)

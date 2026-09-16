@@ -539,7 +539,7 @@ void Bbs::fxNext(Session& s) {
                  t.text(tl, "clean"); t.nl(tl); break;
         case 13: label(t, tl, "Blink"); t.color(tl, Color::LightRed);
                  fx::blink(t, tl, "ALERT", 4, 250); t.color(tl, Color::Grey); t.nl(tl); break;
-        case 14: label(t, tl, "Marquee"); fx::marquee(t, tl, "** ESP32 IOT BBS **", 16, 80, 1);
+        case 14: label(t, tl, "Marquee"); fx::marquee(t, tl, "** UNLEASHED BBS **", 16, 80, 1);
                  t.text(tl, "done"); t.nl(tl); break;
         case 15: label(t, tl, "Cursor"); fx::cursorBlink(t, tl, 5, 250);
                  t.text(tl, "ready"); t.nl(tl); break;

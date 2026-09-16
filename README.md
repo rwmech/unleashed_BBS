@@ -1,21 +1,26 @@
-# ESP32 IoT BBS
+# µnleashed BBS
 
-A telnet BBS on a bare ESP32-WROOM-32E that grows into an IoT terminal server through plugins. The C64 connects through TeensyROM.
+Electronic freedom on a microcontroller. No web, no cloud, no browser.
+
+µnleashed is a telnet BBS that runs on a bare ESP32-WROOM-32E and grows into an IoT terminal server through plugins: real hardware you reach from a C64, a PC terminal, or anything that speaks telnet. The C64 connects through TeensyROM.
+
+The name is spelled with a micro sign. Where µ can't be shown (PETSCII, hostnames, file names) it's written `unleashed`.
 
 The core has one dial-in port, 6 caller nodes, a busy line and a hidden sysop node. It also has connect-time terminal detection, screens, a line editor with history, paged output, a message bus between nodes, the TTY effects library and a shell.
 
 Every command and key is documented in [COMMANDS.md](COMMANDS.md).
 
-## Status (0.2.0)
+## Status (0.3.0)
 
-- Host build (Linux): 90/90 scripted checks pass with `tools/testclient.py --slow`, and `--ban` passes too.
+- Host build (Linux): the full scripted suite passes (`tools/testclient.py`, plus `--slow` and `--ban`).
 - ESP32 build: ESP-IDF 5.3.1 through PlatformIO (`espressif32@6.9.0`), with no warnings in app code.
-  - Image: 851 KB, 54% of the 1.5 MB OTA slot.
-  - Static RAM: 66 KB (.bss 50 KB, which includes the 8-session pool at 3,568 bytes each).
-  - Heap: 243 KB free at boot, before Wi-Fi.
+  - Image: about 853 KB, 54% of the 1.5 MB OTA slot.
+  - Static RAM: 66 KB, including the 8-session pool at 3,556 bytes each.
+  - Heap: 243 KB free at boot before Wi-Fi, 186 KB with the BBS listening.
 - On hardware:
-  - 0.1.0 ran with two PuTTY callers.
-  - 0.2.0 boots and loads `system.cfg`, but has not been tested over the network yet.
+  - PuTTY and a C64 through TeensyROM have both called in.
+  - Every PETSCII glyph (spinner, lines, shade, underscore) is verified on the C64.
+  - NTP and mDNS come up on boot.
 
 ## Build and flash (PlatformIO)
 
@@ -29,7 +34,7 @@ pio device monitor
 - `pio run -t upload` flashes only the firmware and leaves LittleFS alone.
 - `flashall` and `uploadfs` rewrite the whole filesystem, which erases `calls.log`.
 - The console prints `online <ip>  dial in: telnet <ip> 6400`.
-- On the LAN the board answers as `esp32bbs.local` and advertises `_telnet._tcp`.
+- On the LAN the board answers as `unleashed.local` (also its DHCP hostname) and advertises `_telnet._tcp`.
 
 LittleFS and mDNS come from the ESP-IDF Component Manager (`src/idf_component.yml`). If the LittleFS fetch fails, vendor it instead:
 

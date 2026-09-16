@@ -1,10 +1,10 @@
-# ESP32 IoT BBS: project context
+# µnleashed BBS: project context
 
 Read README.md for layout, build and screen formats. This file is the design history and current state.
 
 ## What this is
 
-A telnet BBS framework hosted on an ESP32 that grows into an "IoT terminal server". A C64 dials in through TeensyROM (Swiftlink/Ethernet emulation at $DE00). PC callers use SyncTERM or telnet. The core is minimal; everything else bolts on as plugins.
+µnleashed BBS (ASCII: `unleashed`; repo github.com/rwmech/unleashed_BBS, private) is a telnet BBS framework hosted on an ESP32 that grows into an "IoT terminal server". The name is about electronic freedom: real hardware reachable without a web browser. Don't brand it to the ESP32, and remember that UCBBS/µCBBS clashes with the 1990 C64 program Ultra-Com BBS. A C64 dials in through TeensyROM (Swiftlink/Ethernet emulation at $DE00). PC callers use SyncTERM or telnet. The core is minimal; everything else bolts on as plugins.
 
 Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up client-side (Zimodem, Meatloaf). No native Home Assistant client exists for the C64 (HomeTo64 needs an Ultimate 64 REST API). This is open ground.
 

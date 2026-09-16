@@ -165,6 +165,7 @@ def test_ansi():
     ok &= check("telnet negotiation sent", c.wait_for(b"\xff\xfb\x01", 2))
     ok &= check("welcome art streamed (UTF-8 block)", c.wait_for("█".encode(), 8))
     ok &= check("@NODE@ expanded", c.wait_for(b"Node \x1b[1;33m", 2))
+    ok &= check("@BBS@ shows a real micro sign", c.wait_for("µnleashed BBS".encode(), 3))
     ok &= check("handle prompt", c.wait_for(b"Enter your handle", 8))
     c.buf.clear()
     c.send(b"[3;20R\r")
@@ -228,7 +229,7 @@ def test_petscii():
     c.send(b"4")
     ok &= check("PETSCII-40 banner (mixed case)", c.wait_for(pet("PETSCII-40 DETECTED"), 5))
     ok &= check("no telnet IAC sent to C64", b"\xff\xfb" not in c.buf)
-    ok &= check("welcome.seq streamed", c.wait_for(pet("Terminal server for the maker crowd"), 8))
+    ok &= check("welcome.seq streamed", c.wait_for(pet("No web. No cloud. No browser."), 8) and c.wait_for(pet("unleashed BBS"), 3))
     ok &= check("handle prompt", c.wait_for(pet("Enter your handle"), 8))
     c.send(pet("KE9CXN") + b"\r")
     ok &= check("shell prompt", c.wait_for(pet("Main"), 3))
@@ -260,7 +261,7 @@ def test_ascii():
     c.wait_for(b"HIT DEL OR BACKSPACE", 5)
     c.send(b"\x08")
     ok = check("ASCII detected", c.wait_for(b"ASCII DETECTED", 5))
-    ok &= check("welcome.asc streamed", c.wait_for(b"Terminal server for the maker crowd", 8))
+    ok &= check("welcome.asc streamed", c.wait_for(b"No web. No cloud. No browser.", 8) and c.wait_for(b"unleashed BBS", 3))
     c.close()
     return ok
 

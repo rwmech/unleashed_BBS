@@ -33,7 +33,7 @@ enum class Color : uint8_t {
 };
 
 // Drawing glyphs with a per-terminal best match
-enum class Glyph : uint8_t { Block, Shade, HLine, VLine, Bullet };
+enum class Glyph : uint8_t { Block, Shade, HLine, VLine, Bullet, Micro };
 
 // Canonical key codes returned by Term::feed (printables are plain ASCII)
 enum Key : int {
@@ -71,7 +71,7 @@ public:
 
     // -- output ----------------------------------------------------------
     void ch(ByteSink& o, char c);                  // one ASCII char, translated
-    void text(ByteSink& o, const char* s);         // ASCII string, '\n' = newline
+    void text(ByteSink& o, const char* s);         // ASCII string, '\n' = newline, UTF-8 µ allowed
     void textN(ByteSink& o, const char* s, size_t n);
     void nl(ByteSink& o);
     void cls(ByteSink& o);

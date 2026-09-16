@@ -178,12 +178,28 @@ void Term::ch(ByteSink& o, char c) {
 // ---------------------------------------------------------------------------
 // text / textN: ASCII strings
 // ---------------------------------------------------------------------------
+// The only non-ASCII character allowed above this layer is UTF-8 µ
+// (C2 B5), used by the BBS name; it becomes Glyph::Micro per terminal.
 void Term::text(ByteSink& o, const char* s) {
-    while (*s) ch(o, *s++);
+    while (*s) {
+        if (static_cast<uint8_t>(s[0]) == 0xC2 && static_cast<uint8_t>(s[1]) == 0xB5) {
+            glyph(o, Glyph::Micro);
+            s += 2;
+            continue;
+        }
+        ch(o, *s++);
+    }
 }
 
 void Term::textN(ByteSink& o, const char* s, size_t n) {
-    for (size_t i = 0; i < n && s[i]; ++i) ch(o, s[i]);
+    for (size_t i = 0; i < n && s[i]; ++i) {
+        if (i + 1 < n && static_cast<uint8_t>(s[i]) == 0xC2 && static_cast<uint8_t>(s[i + 1]) == 0xB5) {
+            glyph(o, Glyph::Micro);
+            ++i;
+            continue;
+        }
+        ch(o, s[i]);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -345,6 +361,7 @@ void Term::glyph(ByteSink& o, Glyph g) {
             case Glyph::HLine:  o.putc(0xC0); break; // horizontal line
             case Glyph::VLine:  o.putc(0xDD); break; // vertical line
             case Glyph::Bullet: o.putc('*');  break;
+            case Glyph::Micro:  o.putc(0x55); break; // no micro sign: lowercase u
         }
         return;
     }
@@ -356,6 +373,7 @@ void Term::glyph(ByteSink& o, Glyph g) {
             case Glyph::HLine:  b = 0xC4; break;
             case Glyph::VLine:  b = 0xB3; break;
             case Glyph::Bullet: b = 0xF9; break;
+            case Glyph::Micro:  b = 0xE6; break;     // CP437 micro sign
         }
         cp437(o, b);
         return;
@@ -366,6 +384,7 @@ void Term::glyph(ByteSink& o, Glyph g) {
         case Glyph::HLine:  o.putc('-'); break;
         case Glyph::VLine:  o.putc('|'); break;
         case Glyph::Bullet: o.putc('*'); break;
+        case Glyph::Micro:  o.putc('u'); break;
     }
 }
 
