@@ -1,0 +1,14 @@
+.pio/
+.vscode/
+build/
+managed_components/
+dependencies.lock
+sdkconfig
+sdkconfig.*
+!sdkconfig.defaults
+include/secrets.h
+data/system.cfg
+data/calls.log
+CLAUDE.local.md
+host/bbs_host
+__pycache__/

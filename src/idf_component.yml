@@ -1,0 +1,6 @@
+# File:        src/idf_component.yml
+# Description: ESP-IDF Component Manager dependencies (fetched at build).
+dependencies:
+  idf: ">=5.1"
+  joltwallet/littlefs: "^1.14"
+  espressif/mdns: "^1.4.0"

@@ -1,0 +1,1173 @@
+/*
+ * File:        src/core/bbs.cpp
+ * Description: BBS core loop: listener, 6 caller nodes, the busy line,
+ *              the hidden sysop node, connect-time detection, welcome and
+ *              bulletin screens, handle prompt, idle and time-limit timers,
+ *              message delivery, and paged output. Commands live in
+ *              bbs_shell.cpp and bbs_sysop.cpp.
+ * Listing:     COMPLETE FILE
+ * Libraries:   BSD sockets (lwIP on ESP32, libc on host)
+ */
+#include "bbs.h"
+#include "bbs_util.h"
+#include "fx.h"
+#include "clock.h"
+#include "sysconfig.h"
+#include "calllog.h"
+#include "../platform/platform.h"
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/select.h>
+#include <sys/time.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+#include <climits>
+#include <cstring>
+#include <cstdio>
+#include <cstdlib>
+#include <cctype>
+
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+
+using namespace bbsu;
+
+namespace {
+
+constexpr uint32_t kEscIdleMs = 150;     // lone ESC resolves after this
+const char kBusyMsg[] = "\r\nBUSY\r\n";  // overflow beyond the busy line
+
+// ---------------------------------------------------------------------------
+// DirectSink: immediate best-effort send for telnet negotiation replies
+// ---------------------------------------------------------------------------
+class DirectSink : public ByteSink {
+public:
+    explicit DirectSink(int fd) : fd_(fd) {}
+    bool put(const uint8_t* d, size_t n) override {
+        return send(fd_, d, n, MSG_DONTWAIT | MSG_NOSIGNAL) == static_cast<ssize_t>(n);
+    }
+private:
+    int fd_;
+};
+
+// ---------------------------------------------------------------------------
+// sessSend: Timeline send callback, mirrors to a snooping sysop
+// ---------------------------------------------------------------------------
+int sessSend(void* ctx, const uint8_t* d, size_t n) {
+    Session* s = static_cast<Session*>(ctx);
+    ssize_t r = send(s->fd, d, n, MSG_DONTWAIT | MSG_NOSIGNAL);
+    if (r < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) { s->wantWrite = true; return 0; }
+        return -1;
+    }
+    Session* w = s->snooper;
+    if (r > 0 && w && w->fd >= 0 && w->st == SState::Snoop) {
+        send(w->fd, d, static_cast<size_t>(r), MSG_DONTWAIT | MSG_NOSIGNAL);   // best effort
+    }
+    if (static_cast<size_t>(r) < n) s->wantWrite = true;
+    return static_cast<int>(r);
+}
+
+// ---------------------------------------------------------------------------
+// keyTramp: Term::feed callback into Bbs::onKey
+// ---------------------------------------------------------------------------
+struct KeyCtx { Bbs* bbs; Session* s; uint32_t now; };
+
+void keyTramp(void* c, int k) {
+    KeyCtx* kc = static_cast<KeyCtx*>(c);
+    kc->bbs->onKey(*kc->s, k, kc->now);
+}
+
+void setNonBlocking(int fd) {
+    int fl = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+}
+
+// ---------------------------------------------------------------------------
+// validHandle: letters, digits, space - _ . ; must start alphanumeric.
+// Rejects terminal junk such as a leaked "[3;20R" cursor report.
+// ---------------------------------------------------------------------------
+bool validHandle(const char* p, size_t n) {
+    if (!n || !isalnum(static_cast<unsigned char>(p[0]))) return false;
+    for (size_t i = 0; i < n; ++i) {
+        unsigned char c = static_cast<unsigned char>(p[i]);
+        if (!isalnum(c) && c != ' ' && c != '-' && c != '_' && c != '.') return false;
+    }
+    return true;
+}
+
+} // namespace
+
+// ===========================================================================
+// Lifecycle
+// ===========================================================================
+
+Bbs& Bbs::instance() {
+    static Bbs bbs;   // static storage, never on a task stack
+    return bbs;
+}
+
+// ---------------------------------------------------------------------------
+// begin: wire the session table, bind the single dial-in port
+// ---------------------------------------------------------------------------
+bool Bbs::begin(uint16_t port) {
+    for (uint8_t i = 0; i < BBS_MAX_NODES; ++i) {
+        nodes_[i].id   = static_cast<uint8_t>(i + 1);
+        nodes_[i].role = Role::Caller;
+        all_[i] = &nodes_[i];
+    }
+    busy_.id    = BBS_MAX_NODES + 1;
+    busy_.role  = Role::Busy;
+    sysop_.id   = 0;
+    sysop_.role = Role::Sysop;
+    all_[BBS_MAX_NODES]     = &busy_;
+    all_[BBS_MAX_NODES + 1] = &sysop_;
+
+    lfd_ = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (lfd_ < 0) { plat::log("bbs: socket() failed errno %d", errno); return false; }
+
+    int one = 1;
+    setsockopt(lfd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+
+    sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family      = AF_INET;
+    addr.sin_port        = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    if (bind(lfd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0 ||
+        listen(lfd_, BBS_LISTEN_BACKLOG) < 0) {
+        plat::log("bbs: bind/listen on %u failed errno %d", port, errno);
+        close(lfd_);
+        lfd_ = -1;
+        return false;
+    }
+    setNonBlocking(lfd_);
+
+    plat::HeapStats h = plat::heap();
+    heapBaseline_ = h.freeBytes;
+    plat::log("bbs: %s %s listening on %u, %u nodes", BBS_NAME, BBS_VERSION, port, BBS_MAX_NODES);
+    plat::log("bbs: session %u bytes, pool %u bytes (static), heap free %u",
+              static_cast<unsigned>(sizeof(Session)),
+              static_cast<unsigned>(sizeof(Session) * kSessions),
+              static_cast<unsigned>(h.freeBytes));
+    return true;
+}
+
+uint8_t Bbs::activeNodes() const {
+    uint8_t n = 0;
+    for (const auto& s : nodes_) if (s.st != SState::Free) ++n;
+    return n;
+}
+
+// ---------------------------------------------------------------------------
+// tick: one pass of the cooperative scheduler
+// ---------------------------------------------------------------------------
+void Bbs::tick() {
+    if (lfd_ < 0) return;
+
+    fd_set rfds, wfds;
+    FD_ZERO(&rfds);
+    FD_ZERO(&wfds);
+    int maxfd = lfd_;
+    FD_SET(lfd_, &rfds);
+    for (Session* s : all_) {
+        if (s->fd < 0) continue;
+        FD_SET(s->fd, &rfds);
+        if (s->wantWrite) FD_SET(s->fd, &wfds);
+        if (s->fd > maxfd) maxfd = s->fd;
+    }
+
+    timeval tv;
+    tv.tv_sec  = 0;
+    tv.tv_usec = BBS_SELECT_MS * 1000;
+    int r = select(maxfd + 1, &rfds, &wfds, nullptr, &tv);
+    uint32_t now = plat::millis();
+
+    if (r > 0 && FD_ISSET(lfd_, &rfds)) acceptAll(now);
+
+    for (Session* s : all_) {
+        if (s->fd >= 0 && r > 0 && FD_ISSET(s->fd, &rfds)) readSession(*s, now);
+        if (s->st != SState::Free) serviceSession(*s, now);
+    }
+}
+
+// ===========================================================================
+// Connections
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// acceptAll: banned IPs dropped, free node, else the busy line, else BUSY
+// ---------------------------------------------------------------------------
+void Bbs::acceptAll(uint32_t now) {
+    for (;;) {
+        sockaddr_in a;
+        socklen_t   al = sizeof(a);
+        int fd = accept(lfd_, reinterpret_cast<sockaddr*>(&a), &al);
+        if (fd < 0) break;
+
+        uint32_t ipAddr = a.sin_addr.s_addr;
+        char ip[16];
+        ipToText(ipAddr, ip, sizeof(ip));
+
+        if (bans_.banned(ipAddr, now)) {
+            close(fd);
+            plat::log("bbs: BANNED %s dropped", ip);
+            continue;
+        }
+
+        setNonBlocking(fd);
+        int one = 1;
+        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+        setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
+
+        Session* slot = nullptr;
+        for (auto& s : nodes_) {
+            if (s.st == SState::Free) { slot = &s; break; }
+        }
+        if (slot) {
+            openSession(*slot, fd, ip, ipAddr, Role::Caller, now);
+            continue;
+        }
+        if (busy_.st == SState::Free) {
+            openSession(busy_, fd, ip, ipAddr, Role::Busy, now);
+            continue;
+        }
+        send(fd, kBusyMsg, sizeof(kBusyMsg) - 1, MSG_DONTWAIT | MSG_NOSIGNAL);
+        close(fd);
+        plat::log("bbs: BUSY  %s (overflow, dropped)", ip);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// openSession: reset every per-call field and start detection
+// ---------------------------------------------------------------------------
+void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role role, uint32_t now) {
+    s.fd            = fd;
+    s.st            = SState::Detect;
+    s.role          = role;
+    s.wantWrite     = false;
+    s.negotiated    = false;
+    strncpy(s.ip, ip, sizeof(s.ip) - 1);
+    s.ip[sizeof(s.ip) - 1] = '\0';
+    s.ipAddr        = ipAddr;
+    s.connectedAt   = now;
+    s.lastInput     = now;
+    s.lastRx        = now;
+    s.closeAt       = 0;
+    s.fxStep        = 0;
+    s.savedCps      = 0;
+    s.pendingPrompt = false;
+    s.pendingTail   = false;
+    s.user[0]       = '\0';
+
+    s.loggedIn      = false;
+    s.loginAt       = 0;
+    s.loginEpoch    = 0;
+    s.dayUsedMin    = 0;
+    s.timeAdjMin    = 0;
+    s.timeWarned    = 0;
+    s.idleWarned    = false;
+    s.guestUntil    = 0;
+
+    s.list          = ListKind::None;
+    s.listIdx       = 0;
+    s.pageLines     = 0;
+    s.nonstop       = false;
+    s.moreFrom      = MoreFrom::List;
+    s.countdown     = 0;
+    s.nextTick      = 0;
+
+    s.level         = Access::None;
+    s.perms         = 0;
+    s.dnd           = false;
+    s.visible       = true;
+    s.lurk          = false;
+    s.histPos       = -1;
+    s.snooper       = nullptr;
+
+    s.tl.clear();
+    s.tl.setCps(0);
+    s.tn.reset();
+    s.scr.close();
+    s.term.setType(TermType::Unknown, Charset::Ascii, 80, 24);
+    s.term.setIacEscape(false);
+    s.ed   = LineEditor();
+    s.hist = LineHistory();
+    s.mb.clear();
+    s.det.start(now);
+
+    plat::HeapStats h = plat::heap();
+    s.heapAtOpen = h.freeBytes;
+    if (role == Role::Busy) {
+        plat::log("bbs: busy line CONNECT %s (all nodes in use)", s.ip);
+    } else {
+        plat::log("bbs: node %u CONNECT %s  nodes %u/%u  heap free %u",
+                  s.id, s.ip, activeNodes(), BBS_MAX_NODES, static_cast<unsigned>(h.freeBytes));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// closeSession: log the call, bank the minutes, tell the others, release
+// ---------------------------------------------------------------------------
+void Bbs::closeSession(Session& s, const char* why, uint32_t now) {
+    // snoop links in both directions
+    for (Session* o : all_) if (o->snooper == &s) o->snooper = nullptr;
+    if (s.snooper) {
+        Session* w = s.snooper;
+        s.snooper = nullptr;
+        if (w->st == SState::Snoop) stopSnoop(*w, "Node hung up.");
+    }
+
+    if (s.loggedIn) {
+        uint32_t secs = (now - s.loginAt) / 1000u;
+        CallRec r;
+        strncpy(r.user, s.user, BBS_USER_MAX);
+        strncpy(r.ip, s.ip, sizeof(r.ip) - 1);
+        r.node    = s.id;
+        r.term    = static_cast<uint8_t>(s.term.type());
+        r.charset = static_cast<uint8_t>(s.term.charset());
+        r.flags   = s.role == Role::Sysop ? CallRec::F_SYSOP : 0;
+        r.start   = s.loginEpoch;
+        r.secs    = secs;
+        calllog::append(r);
+
+        if (s.role == Role::Caller) {
+            bank_.add(s.user, s.ipAddr, clk::dayKey(now), static_cast<uint16_t>((secs + 59u) / 60u));
+            if (s.visible && !s.lurk) {             // hidden co-sysops leave quietly
+                char msg[BBS_USER_MAX + 32];
+                snprintf(msg, sizeof(msg), "*** %s left node %u", s.user, s.id);
+                noticeAll(s, msg);
+            }
+        }
+        s.loggedIn = false;
+    }
+
+    if (s.fd >= 0) close(s.fd);
+    s.fd = -1;
+    s.scr.close();
+    s.tl.clear();
+    s.mb.clear();
+    s.list = ListKind::None;
+    s.st   = SState::Free;
+
+    plat::HeapStats h = plat::heap();
+    plat::log("bbs: node %c HANGUP (%s)  nodes %u/%u  heap free %u",
+              nodeChar(s), why, activeNodes(), BBS_MAX_NODES, static_cast<unsigned>(h.freeBytes));
+}
+
+// ---------------------------------------------------------------------------
+// moveSession: carry a live caller to another slot (sysop elevation, DROP).
+// Member-wise copy keeps socket, terminal state and pending output; the
+// source slot is released without closing anything.
+// ---------------------------------------------------------------------------
+void Bbs::moveSession(Session& from, Session& to, uint8_t newId, Role role) {
+    to      = from;
+    to.id   = newId;
+    to.role = role;
+
+    from.fd       = -1;
+    from.st       = SState::Free;
+    from.loggedIn = false;
+    from.snooper  = nullptr;
+    from.list     = ListKind::None;
+    from.scr.detach();
+    from.tl.clear();
+    from.mb.clear();
+}
+
+// ---------------------------------------------------------------------------
+// readSession: socket -> telnet filter -> detector or key events
+// ---------------------------------------------------------------------------
+void Bbs::readSession(Session& s, uint32_t now) {
+    uint8_t raw[BBS_RX_CHUNK];
+    uint8_t data[BBS_RX_CHUNK];
+
+    ssize_t n = recv(s.fd, raw, sizeof(raw), MSG_DONTWAIT);
+    if (n == 0) { closeSession(s, "remote", now); return; }
+    if (n < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return;
+        closeSession(s, errno == ECONNRESET ? "remote" : "read error", now);
+        return;
+    }
+
+    DirectSink ds(s.fd);
+    size_t m = s.tn.filter(raw, static_cast<size_t>(n), data, ds);
+    s.lastRx = now;
+
+    // a telnet client spoke first: character mode now, then probe at once
+    if (s.st == SState::Detect && s.tn.clientSpoke() && !s.negotiated) {
+        s.tn.negotiate(ds);
+        s.negotiated = true;
+        s.det.probeNow(now, s.tl);
+    }
+
+    if (s.term.isAnsi() && s.tn.hasSize()) s.term.setGeometry(s.tn.cols(), s.tn.rows());
+
+    KeyCtx kc{ this, &s, now };
+    for (size_t i = 0; i < m; ++i) {
+        if (s.st == SState::Free) return;
+        if (s.st == SState::Detect) {
+            if (s.det.feed(data[i], now, s.tl) == Detector::Result::Done) onDetected(s, now);
+            continue;
+        }
+        s.term.feed(data[i], keyTramp, &kc);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// flush: drain the Timeline to the socket
+// ---------------------------------------------------------------------------
+void Bbs::flush(Session& s, uint32_t now) {
+    if (s.fd < 0 || s.tl.empty()) return;
+    s.wantWrite = false;
+    if (s.tl.pump(now, sessSend, &s) < 0) closeSession(s, "write error", now);
+}
+
+// ---------------------------------------------------------------------------
+// serviceSession: timers, screens, lists, effects, mail, output
+// ---------------------------------------------------------------------------
+void Bbs::serviceSession(Session& s, uint32_t now) {
+    ScreenPlayer::Vars vars{ s.user, s.id, BBS_MAX_NODES };
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+
+    switch (s.st) {
+        case SState::Detect: {
+            Detector::Result r = s.det.tick(now, tl);
+            if (r == Detector::Result::Done)    onDetected(s, now);
+            if (r == Detector::Result::Timeout) hangup(s, "NO RESPONSE", now);
+            break;
+        }
+        case SState::Intro:
+            if (s.scr.active()) s.scr.pump(t, tl, vars);
+            if (!s.scr.active()) askName(s);
+            break;
+        case SState::Shell:
+            if (s.scr.active()) {
+                bool more = s.scr.pump(t, tl, vars);
+                if (s.scr.paused()) {
+                    showMore(s, MoreFrom::Screen);
+                } else if (!more && s.pendingPrompt) {
+                    s.pendingPrompt = false;
+                    prompt(s);
+                }
+            }
+            break;
+        case SState::List:
+            serviceList(s);
+            break;
+        case SState::Fx:
+            if (tl.empty()) fxNext(s);
+            break;
+        case SState::BusyWait:
+            if (s.scr.active()) {
+                s.scr.pump(t, tl, vars);
+                break;
+            }
+            if (s.countdown == 0xFF) {                     // screen done: start counting
+                t.reset(tl);
+                t.nl(tl);
+                t.color(tl, Color::Grey);
+                t.text(tl, "Disconnecting in ");
+                t.color(tl, Color::White);
+                s.countdown = BBS_BUSY_COUNTDOWN;
+                char num[4];
+                snprintf(num, sizeof(num), "%u", s.countdown);
+                t.text(tl, num);
+                s.nextTick = now + 1000;
+            } else if (static_cast<int32_t>(now - s.nextTick) >= 0) {
+                char num[4];
+                snprintf(num, sizeof(num), "%u", s.countdown);
+                t.eraseBack(tl, static_cast<uint8_t>(strlen(num)));
+                --s.countdown;
+                snprintf(num, sizeof(num), "%u", s.countdown);
+                t.text(tl, num);
+                s.nextTick += 1000;
+                if (s.countdown == 0) {
+                    fx::hangup(t, tl);
+                    s.st      = SState::Closing;
+                    s.closeAt = now + 3000;
+                }
+            }
+            break;
+        case SState::Closing:
+            if (s.scr.active()) {
+                if (!s.scr.pump(t, tl, vars) && s.pendingTail) {
+                    s.pendingTail = false;
+                    fx::lineNoise(t, tl, 12, 300);
+                    fx::hangup(t, tl);
+                }
+            }
+            flush(s, now);
+            if (s.st == SState::Closing &&
+                ((tl.empty() && !s.scr.active()) || static_cast<int32_t>(now - s.closeAt) >= 0)) {
+                closeSession(s, "hangup", now);
+            }
+            return;
+        default:
+            break;
+    }
+
+    if (s.st == SState::Free) return;
+
+    if (static_cast<int32_t>(now - s.lastRx) >= static_cast<int32_t>(kEscIdleMs)) {
+        KeyCtx kc{ this, &s, now };
+        t.idle(keyTramp, &kc);
+    }
+
+    checkTimers(s, now);
+    deliverMail(s);
+    flush(s, now);
+}
+
+// ===========================================================================
+// Flow
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// onDetected: lock the terminal, set telnet mode, start intro or busy
+// ---------------------------------------------------------------------------
+void Bbs::onDetected(Session& s, uint32_t now) {
+    s.term.setType(s.det.type(), s.det.charset(), s.det.cols(), s.det.rows());
+
+    bool telnet = false;
+    if (s.term.isPet()) {
+        telnet = s.tn.clientSpoke();          // raw C64 clients never see IAC
+        s.tn.setEnabled(telnet);
+    } else if (s.term.isAnsi() || s.tn.clientSpoke()) {
+        if (!s.negotiated) {
+            DirectSink ds(s.fd);
+            s.tn.negotiate(ds);
+            s.negotiated = true;
+        }
+        telnet = true;
+    }
+    s.term.setIacEscape(telnet);
+    if (s.term.isAnsi() && s.tn.hasSize()) s.term.setGeometry(s.tn.cols(), s.tn.rows());
+
+    plat::log("bbs: node %c %s (telnet %s)", nodeChar(s), s.term.name(), telnet ? "on" : "off");
+    if (s.role == Role::Busy) startBusy(s, now);
+    else                      startIntro(s);
+}
+
+// ---------------------------------------------------------------------------
+// startIntro: detected banner, then the welcome screen
+// ---------------------------------------------------------------------------
+void Bbs::startIntro(Session& s) {
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    char line[48];
+
+    t.init(tl);
+    t.color(tl, Color::LightGreen);
+    snprintf(line, sizeof(line), "%s DETECTED", t.name());
+    fx::typewriter(t, tl, line, 25);
+    t.nl(tl);
+    t.color(tl, Color::Grey);
+    snprintf(line, sizeof(line), "Opening node %u ", s.id);
+    fx::working(t, tl, line, 700, "OK");
+    t.reset(tl);
+    fx::pause(tl, 300);
+
+    s.st = SState::Intro;
+    if (!s.scr.open("welcome", t)) {
+        t.cls(tl);
+        t.color(tl, Color::White);
+        t.text(tl, BBS_NAME);
+        t.nl(tl);
+        t.color(tl, Color::Cyan);
+        fx::rule(t, tl, static_cast<uint8_t>(t.cols() > 40 ? 40 : t.cols() - 2));
+        t.nl(tl);
+        t.color(tl, Color::Grey);
+        t.text(tl, "No welcome screen found.\nUpload data/ with: pio run -t uploadfs\n");
+        t.reset(tl);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// startBusy: busy screen, then a countdown (BusyWait state). A key during
+// the countdown opens a login that only a sysop password gets past.
+// ---------------------------------------------------------------------------
+void Bbs::startBusy(Session& s, uint32_t now) {
+    (void)now;
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+
+    t.init(tl);
+    s.st        = SState::BusyWait;
+    s.countdown = 0xFF;                       // not started until the screen ends
+    if (!s.scr.open("busy", t)) {
+        t.color(tl, Color::White);
+        t.text(tl, BBS_NAME);
+        t.nl(tl);
+        t.color(tl, Color::LightRed);
+        t.text(tl, "Sorry, all lines are busy.");
+        t.nl(tl);
+        t.color(tl, Color::Grey);
+        t.text(tl, "Please try your call later.");
+        t.nl(tl);
+    }
+}
+
+void Bbs::drawNamePrompt(Session& s) {
+    Term& t = s.term;
+    t.reset(s.tl);
+    t.nl(s.tl);
+    t.color(s.tl, Color::Cyan);
+    t.text(s.tl, "Enter your handle: ");
+    t.color(s.tl, Color::White);
+}
+
+void Bbs::askName(Session& s) {
+    drawNamePrompt(s);
+    s.ed.begin(BBS_USER_MAX);
+    s.st         = SState::AskName;
+    s.lastInput  = plat::millis();            // the 30/60 s clock starts at the prompt
+    s.idleWarned = false;
+}
+
+// ---------------------------------------------------------------------------
+// onHandle: validate, apply the daily limit, greet, bulletin, prompt
+// ---------------------------------------------------------------------------
+void Bbs::onHandle(Session& s, uint32_t now) {
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+
+    const char* p = s.ed.text();
+    while (*p == ' ') ++p;
+    size_t n = strlen(p);
+    while (n && p[n - 1] == ' ') --n;
+    if (!n) { askName(s); return; }
+    if (n > BBS_USER_MAX) n = BBS_USER_MAX;
+
+    char name[BBS_USER_MAX + 1];
+    memcpy(name, p, n);
+    name[n] = '\0';
+
+    if (!validHandle(name, n)) {
+        t.color(tl, Color::LightRed);
+        t.text(tl, "Use letters, digits, space - _ .");
+        askName(s);
+        return;
+    }
+    if (ieq(name, "SYSOP")) {
+        t.color(tl, Color::LightRed);
+        t.text(tl, "That handle is reserved.");
+        askName(s);
+        return;
+    }
+    memcpy(s.user, name, n + 1);
+
+    if (s.role == Role::Busy) {                  // busy line: no node, no services
+        t.color(tl, Color::Grey);
+        t.text(tl, "All nodes are in use.");
+        t.nl(tl);
+        prompt(s);
+        return;
+    }
+
+    const SysConfig& cfg = syscfg::get();
+    s.dayUsedMin = bank_.used(s.user, s.ipAddr, clk::dayKey(now));
+    if (cfg.dayMinutes && s.dayUsedMin >= cfg.dayMinutes) {
+        plat::log("bbs: node %u '%s' over daily limit", s.id, s.user);
+        hangup(s, "Daily time limit reached. Call back tomorrow.", now);
+        return;
+    }
+
+    s.loggedIn   = true;
+    s.loginAt    = now;
+    s.loginEpoch = clk::epoch();
+    s.timeWarned = 0;
+
+    char buf[64];
+    t.color(tl, Color::LightGreen);
+    t.text(tl, "Welcome, ");
+    t.color(tl, Color::Yellow);
+    t.text(tl, s.user);
+    t.color(tl, Color::LightGreen);
+    t.text(tl, "!");
+    t.nl(tl);
+
+    t.color(tl, Color::Grey);
+    snprintf(buf, sizeof(buf), "Node %u of %u", s.id, BBS_MAX_NODES);
+    t.text(tl, buf);
+    if (clk::valid()) {
+        clk::fmt(buf, sizeof(buf), "   %a %d %b %H:%M");
+        t.text(tl, buf);
+    }
+    t.nl(tl);
+
+    int32_t left = secondsLeft(s, now);
+    if (left == INT32_MAX) snprintf(buf, sizeof(buf), "No time limit today.");
+    else                   snprintf(buf, sizeof(buf), "Time left: %ld min.", static_cast<long>((left + 59) / 60));
+    t.text(tl, buf);
+    t.nl(tl);
+    t.text(tl, "[H]ELP for commands.");
+    t.nl(tl);
+
+    plat::log("bbs: node %u handle '%s'", s.id, s.user);
+
+    snprintf(buf, sizeof(buf), "*** %s is on node %u", s.user, s.id);
+    noticeAll(s, buf);
+
+    if (!playScreen(s, "bulletin")) prompt(s);
+}
+
+// ---------------------------------------------------------------------------
+// playScreen: stream a screen inside the shell (paged), prompt after
+// ---------------------------------------------------------------------------
+bool Bbs::playScreen(Session& s, const char* name) {
+    if (!s.scr.open(name, s.term)) return false;
+    s.ed = LineEditor();                          // editor idle while it plays
+    s.scr.setPaging(pageRows(s));
+    s.pendingPrompt = true;
+    s.pageLines     = 0;
+    s.st            = SState::Shell;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// drawPrompt / prompt: "[n] Main: " ("[S] Sysop: " on the sysop node)
+// ---------------------------------------------------------------------------
+void Bbs::drawPrompt(Session& s) {
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    char buf[8];
+
+    t.reset(tl);
+    t.nl(tl);
+    t.color(tl, Color::LightBlue);
+    snprintf(buf, sizeof(buf), "[%c] ", nodeChar(s));
+    t.text(tl, buf);
+    t.color(tl, Color::Yellow);
+    t.text(tl, s.role == Role::Sysop ? "Sysop" : "Main");
+    t.color(tl, Color::Grey);
+    t.text(tl, ": ");
+    t.color(tl, Color::White);
+}
+
+void Bbs::prompt(Session& s) {
+    drawPrompt(s);
+    uint8_t cols = s.term.cols();
+    uint8_t room = static_cast<uint8_t>(cols > 14 ? cols - 12 : 8);
+    s.ed.begin(room < BBS_LINE_MAX ? room : BBS_LINE_MAX, LineEditor::F_BYEMASK);
+    s.st        = SState::Shell;
+    s.histPos   = -1;
+    s.pageLines = 0;
+    s.nonstop   = false;
+    s.list      = ListKind::None;
+}
+
+void Bbs::hangup(Session& s, const char* msg, uint32_t now) {
+    plat::log("bbs: node %c hangup: %s", nodeChar(s), msg);
+    s.scr.close();
+    s.pendingTail = false;
+    s.list = ListKind::None;
+    s.term.nl(s.tl);
+    s.term.color(s.tl, Color::LightRed);
+    s.term.text(s.tl, msg);
+    fx::hangup(s.term, s.tl);
+    s.st      = SState::Closing;
+    s.closeAt = now + 5000;
+}
+
+// ---------------------------------------------------------------------------
+// goodbye: logoff screen, line noise, NO CARRIER
+// ---------------------------------------------------------------------------
+void Bbs::goodbye(Session& s, uint32_t now) {
+    plat::log("bbs: node %c logoff", nodeChar(s));
+    Term& t = s.term;
+    t.reset(s.tl);
+    t.nl(s.tl);
+    s.st      = SState::Closing;
+    s.closeAt = now + 20000;
+    if (s.scr.open("goodbye", t)) {
+        s.pendingTail = true;
+        return;
+    }
+    t.color(s.tl, Color::LightGreen);
+    t.text(s.tl, "Thanks for calling, ");
+    t.text(s.tl, s.user[0] ? s.user : "caller");
+    t.text(s.tl, "!");
+    t.nl(s.tl);
+    fx::lineNoise(t, s.tl, 12, 300);
+    fx::hangup(t, s.tl);
+}
+
+// ===========================================================================
+// Timers and notices
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// secondsLeft: the tighter of the per-call and per-day limits
+// ---------------------------------------------------------------------------
+int32_t Bbs::secondsLeft(const Session& s, uint32_t now) const {
+    const SysConfig& c = syscfg::get();
+    int32_t on   = static_cast<int32_t>((now - s.loginAt) / 1000u);
+    int32_t adj  = static_cast<int32_t>(s.timeAdjMin) * 60;
+    int32_t left = INT32_MAX;
+    if (c.callMinutes) {
+        int32_t v = static_cast<int32_t>(c.callMinutes) * 60 + adj - on;
+        if (v < left) left = v;
+    }
+    if (c.dayMinutes) {
+        int32_t v = (static_cast<int32_t>(c.dayMinutes) - s.dayUsedMin) * 60 + adj - on;
+        if (v < left) left = v;
+    }
+    return left;
+}
+
+// ---------------------------------------------------------------------------
+// checkTimers: idle warn/hangup, busy-line login window, time limits
+// ---------------------------------------------------------------------------
+void Bbs::checkTimers(Session& s, uint32_t now) {
+    if (s.st == SState::Detect || s.st == SState::Closing || s.st == SState::Free) return;
+    char msg[64];
+
+    if (s.role == Role::Busy) {
+        if (s.guestUntil && static_cast<int32_t>(now - s.guestUntil) >= 0) {
+            hangup(s, "All nodes are in use. Try your call later.", now);
+        }
+        if (s.st == SState::BusyWait || s.guestUntil) return;   // countdown or login window rules
+    }
+
+    bool     login   = s.st == SState::AskName;
+    uint32_t idleMin = syscfg::get().idleMinutes;           // 0 = shell never idles out
+    if (!can(s, PERM_NOLIMITS) && (login || idleMin)) {
+        uint32_t limit = login ? BBS_NAME_TIMEOUT_MS : idleMin * 60000u;
+        uint32_t warn  = login ? BBS_NAME_WARN_MS
+                       : (limit > 2u * BBS_IDLE_WARN_BEFORE_MS ? limit - BBS_IDLE_WARN_BEFORE_MS : limit / 2u);
+        // lastInput can be stamped a few ms after this tick's "now"
+        int32_t  since = static_cast<int32_t>(now - s.lastInput);
+        uint32_t idle  = since > 0 ? static_cast<uint32_t>(since) : 0;
+        if (idle >= limit) {
+            hangup(s, "IDLE TIMEOUT", now);
+            return;
+        }
+        if (idle >= warn && !s.idleWarned && canNotify(s)) {
+            s.idleWarned = true;
+            unsigned left = static_cast<unsigned>((limit - idle + 999u) / 1000u);
+            if (login) snprintf(msg, sizeof(msg), "Still there? Disconnecting in %u seconds.", left);
+            else       snprintf(msg, sizeof(msg), "Idle: disconnecting in %u seconds.", left);
+            notify(s, Color::Yellow, msg);
+        }
+    }
+
+    if (s.loggedIn && s.role == Role::Caller && !can(s, PERM_NOLIMITS)) {
+        int32_t left = secondsLeft(s, now);
+        if (left <= 0) {
+            hangup(s, "TIME LIMIT REACHED", now);
+            return;
+        }
+        uint8_t level = left <= BBS_TIME_WARN2_S ? 2 : (left <= BBS_TIME_WARN1_S ? 1 : 0);
+        if (level > s.timeWarned && canNotify(s)) {
+            s.timeWarned = level;
+            long mins = (left + 59) / 60;
+            snprintf(msg, sizeof(msg), "%ld minute%s left.", mins, mins == 1 ? "" : "s");
+            notify(s, Color::Yellow, msg);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// canNotify: the session is sitting at a prompt with room to print
+// ---------------------------------------------------------------------------
+bool Bbs::canNotify(const Session& s) const {
+    bool atPrompt = s.st == SState::AskName || s.st == SState::More || s.st == SState::Confirm ||
+                    (s.st == SState::Shell && s.ed.active() && !s.scr.active());
+    return atPrompt && s.tl.freeBytes() > 512 && s.tl.freeFrames() > 16;
+}
+
+// ---------------------------------------------------------------------------
+// notify: print a line above the current input and redraw that input
+// ---------------------------------------------------------------------------
+void Bbs::notify(Session& s, Color c, const char* msg) {
+    Term& t = s.term;
+    t.reset(s.tl);
+    t.nl(s.tl);
+    t.color(s.tl, c);
+    t.text(s.tl, msg);
+    t.reset(s.tl);
+    redrawInput(s);
+}
+
+void Bbs::redrawInput(Session& s) {
+    Term& t = s.term;
+    switch (s.st) {
+        case SState::AskName:
+            drawNamePrompt(s);
+            s.ed.redraw(t, s.tl);
+            break;
+        case SState::Shell:
+            drawPrompt(s);
+            s.ed.redraw(t, s.tl);
+            break;
+        case SState::More:
+            t.nl(s.tl);
+            t.color(s.tl, Color::LightBlue);
+            t.text(s.tl, kMoreText);
+            t.color(s.tl, Color::White);
+            break;
+        case SState::Confirm:
+            t.nl(s.tl);
+            t.color(s.tl, Color::Yellow);
+            t.text(s.tl, kConfirmText);
+            t.color(s.tl, Color::White);
+            break;
+        default:
+            t.nl(s.tl);
+            break;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// post: queue a bus message for one session
+// ---------------------------------------------------------------------------
+void Bbs::post(Session& to, BusKind kind, const Session* from, const char* text) {
+    BusMsg m;
+    m.kind     = kind;
+    m.fromNode = (from && from->role == Role::Caller) ? from->id : 0;
+    if (from) strncpy(m.from, from->user, BBS_USER_MAX);
+    strncpy(m.text, text, BBS_LINE_MAX);
+    if (!to.mb.push(m)) plat::log("bbs: node %c mailbox full, oldest dropped", nodeChar(to));
+}
+
+// ---------------------------------------------------------------------------
+// noticeAll: arrival/departure line to every other logged-in session
+// ---------------------------------------------------------------------------
+void Bbs::noticeAll(const Session& about, const char* text) {
+    for (Session* o : all_) {
+        if (o == &about || !o->loggedIn || o->role == Role::Busy) continue;
+        post(*o, BusKind::Notice, &about, text);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// deliverMail: print queued messages once the session is idle at its prompt
+// ---------------------------------------------------------------------------
+void Bbs::deliverMail(Session& s) {
+    if (s.mb.empty() || s.role == Role::Busy) return;
+    if (!(s.st == SState::Shell && s.ed.active() && !s.scr.active() && s.tl.empty())) return;
+
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    BusMsg m;
+    char line[BBS_USER_MAX + BBS_LINE_MAX + 32];
+    bool any = false;
+
+    while (tl.freeBytes() > 512 && s.mb.pop(m)) {
+        Color c = Color::Cyan;
+        switch (m.kind) {
+            case BusKind::Page:
+                if (m.fromNode) snprintf(line, sizeof(line), "Page from %s (%u): %s", m.from, m.fromNode, m.text);
+                else            snprintf(line, sizeof(line), "Page from Sysop: %s", m.text);
+                c = Color::LightGreen;
+                break;
+            case BusKind::Broadcast:
+                snprintf(line, sizeof(line), "*** Sysop: %s", m.text);
+                c = Color::Yellow;
+                break;
+            case BusKind::Notice:
+            default:
+                snprintf(line, sizeof(line), "%s", m.text);
+                break;
+        }
+        t.reset(tl);
+        t.nl(tl);
+        if (m.kind == BusKind::Page) t.bell(tl);
+        t.color(tl, c);
+        t.text(tl, line);
+        any = true;
+    }
+    if (any) {
+        drawPrompt(s);
+        s.ed.redraw(t, tl);
+    }
+}
+
+// ===========================================================================
+// Paged output
+// ===========================================================================
+
+uint8_t Bbs::pageRows(const Session& s) const {
+    uint8_t rows = s.term.rows();
+    return static_cast<uint8_t>(rows > 8 ? rows - 2 : 6);
+}
+
+void Bbs::startList(Session& s, ListKind kind) {
+    s.list      = kind;
+    s.listIdx   = 0;
+    s.pageLines = 0;
+    s.nonstop   = false;
+    s.ed        = LineEditor();
+    s.st        = SState::List;
+}
+
+// ---------------------------------------------------------------------------
+// serviceList: one row at a time while the Timeline has room
+// ---------------------------------------------------------------------------
+void Bbs::serviceList(Session& s) {
+    while (s.st == SState::List && s.tl.freeBytes() > 512 && s.tl.freeFrames() > 16) {
+        if (!s.nonstop && s.pageLines >= pageRows(s)) {
+            showMore(s, MoreFrom::List);
+            return;
+        }
+        if (!listRow(s)) {
+            s.list = ListKind::None;
+            prompt(s);
+            return;
+        }
+        ++s.pageLines;
+    }
+}
+
+void Bbs::showMore(Session& s, MoreFrom from) {
+    s.moreFrom = from;
+    s.st       = SState::More;
+    s.term.color(s.tl, Color::LightBlue);
+    s.term.text(s.tl, kMoreText);
+    s.term.color(s.tl, Color::White);
+}
+
+// ---------------------------------------------------------------------------
+// abortOutput: drop pending output and the source, back to the prompt
+// ---------------------------------------------------------------------------
+void Bbs::abortOutput(Session& s) {
+    s.scr.close();
+    s.tl.clear();
+    s.list          = ListKind::None;
+    s.pendingPrompt = false;
+    s.term.reset(s.tl);
+    s.term.cursor(s.tl, true);
+    s.term.nl(s.tl);
+    s.term.color(s.tl, Color::Grey);
+    s.term.text(s.tl, "Stopped.");
+    prompt(s);
+}
+
+// ===========================================================================
+// Input
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// onKey: route one key event by session state
+// ---------------------------------------------------------------------------
+void Bbs::onKey(Session& s, int k, uint32_t now) {
+    s.lastInput  = now;
+    s.idleWarned = false;
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+
+    switch (s.st) {
+        case SState::Intro:
+            tl.skipDelays();                 // any key fast-forwards
+            return;
+
+        case SState::AskName: {
+            if (!tl.empty()) tl.skipDelays();
+            LineEditor::Res r = s.ed.key(k, t, tl);
+            if (r == LineEditor::Res::Abort) { askName(s); return; }
+            if (r == LineEditor::Res::Done)  onHandle(s, now);
+            return;
+        }
+
+        case SState::Shell: {
+            if (s.scr.active()) {            // a screen is playing
+                if (isAbortKey(k)) abortOutput(s);
+                else               tl.skipDelays();
+                return;
+            }
+            if (!tl.empty()) tl.skipDelays();
+            if (!s.ed.active()) return;
+
+            if (k == KEY_UP) {
+                if (s.histPos + 1 < s.hist.count()) {
+                    ++s.histPos;
+                    s.ed.replace(s.hist.get(static_cast<uint8_t>(s.histPos)), t, tl);
+                }
+                return;
+            }
+            if (k == KEY_DOWN) {
+                if (s.histPos > 0) {
+                    --s.histPos;
+                    s.ed.replace(s.hist.get(static_cast<uint8_t>(s.histPos)), t, tl);
+                } else if (s.histPos == 0) {
+                    s.histPos = -1;
+                    s.ed.replace("", t, tl);
+                }
+                return;
+            }
+
+            LineEditor::Res r = s.ed.key(k, t, tl);
+            if (r == LineEditor::Res::Abort) { t.nl(tl); prompt(s); return; }
+            if (r == LineEditor::Res::Done) {
+                char line[BBS_LINE_MAX + 1];
+                strncpy(line, s.ed.text(), BBS_LINE_MAX);
+                line[BBS_LINE_MAX] = '\0';
+                s.hist.add(line);
+                runCommand(s, line, now);
+            }
+            return;
+        }
+
+        case SState::List:
+            if (isAbortKey(k)) abortOutput(s);
+            else               tl.skipDelays();
+            return;
+
+        case SState::More: {
+            bool cont = k == 'y' || k == 'Y' || k == ' ' || k == KEY_ENTER;
+            bool non  = k == 'c' || k == 'C';
+            bool stop = k == 'n' || k == 'N' || k == 'q' || k == 'Q' || k == KEY_ESC || k == KEY_BREAK;
+            if (!cont && !non && !stop) return;
+            t.eraseBack(tl, kMoreLen);
+            if (stop) { abortOutput(s); return; }
+            if (s.moreFrom == MoreFrom::List) {
+                if (non) s.nonstop = true;
+                s.pageLines = 0;
+                s.st = SState::List;
+            } else {
+                if (non) s.scr.setPaging(0);
+                s.scr.resume();
+                s.st = SState::Shell;
+            }
+            return;
+        }
+
+        case SState::Confirm:
+            if (k == 'y' || k == 'Y') {
+                t.ch(tl, 'Y');
+                t.nl(tl);
+                goodbye(s, now);
+            } else if (k == 'n' || k == 'N' || k == KEY_ENTER || k == KEY_ESC || k == KEY_BREAK) {
+                t.ch(tl, 'N');
+                prompt(s);
+            }
+            return;
+
+        case SState::Fx:
+            if (isAbortKey(k)) s.fxStep = 0xFF;
+            tl.skipDelays();
+            return;
+
+        case SState::BusyWait:
+            if (s.scr.active()) { tl.skipDelays(); return; }
+            t.nl(tl);
+            s.guestUntil = now + BBS_BUSY_LOGIN_MS;
+            askName(s);
+            return;
+
+        case SState::Snoop:
+            if (k == 'q' || k == 'Q' || k == KEY_ESC || k == KEY_BREAK) stopSnoop(s, nullptr);
+            return;
+
+        default:
+            return;
+    }
+}

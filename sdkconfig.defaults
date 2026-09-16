@@ -1,0 +1,24 @@
+# File: sdkconfig.defaults
+# Core sizing for the bare ESP32-WROOM-32E (520 KB SRAM, 4 MB flash, no PSRAM)
+
+# Bluetooth off: the single biggest RAM saving on this module
+CONFIG_BT_ENABLED=n
+
+# Flash layout
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+
+# Sockets: 1 listener + 6 nodes + 1 busy line + spares (lwIP ceiling is 16)
+CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_LWIP_SO_REUSE=y
+
+# 1 ms tick so effect timing is smooth
+CONFIG_FREERTOS_HZ=1000
+
+# app_main only does setup
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
+
+# Smaller image leaves OTA headroom
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y

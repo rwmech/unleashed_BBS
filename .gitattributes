@@ -1,0 +1,10 @@
+# Text files are stored with LF
+* text=auto eol=lf
+
+# Screens are byte-exact terminal data: never convert line endings
+# (later lines win, so these must stay below the catch-all)
+*.seq binary
+*.ans binary
+*.p40 binary
+*.p80 binary
+*.asc -text

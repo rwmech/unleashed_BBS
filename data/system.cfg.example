@@ -1,0 +1,63 @@
+# File:        data/system.cfg.example
+# Description: Run-time settings for the BBS. Copy to data/system.cfg
+#              (git-ignored), edit, then: pio run -t flashall
+#              key = value, '#' starts a comment. Read once at boot.
+
+# Timezone as a POSIX TZ string: STDoffsetDST,start,end
+#   offset is hours WEST of UTC (so US zones are positive)
+#   M3.2.0 = March, 2nd week, Sunday; M11.1.0 = November, 1st week, Sunday
+# Examples:
+#   UTC0                        UTC, no daylight saving
+#   EST5EDT,M3.2.0,M11.1.0      US Eastern
+#   CST6CDT,M3.2.0,M11.1.0      US Central
+#   MST7MDT,M3.2.0,M11.1.0      US Mountain
+#   MST7                        Arizona (no daylight saving)
+#   PST8PDT,M3.2.0,M11.1.0      US Pacific
+#   GMT0BST,M3.5.0/1,M10.5.0    UK
+#   CET-1CEST,M3.5.0,M10.5.0/3  Central Europe
+tz = UTC0
+
+ntp_server = pool.ntp.org
+
+# Staff passwords, entered at any prompt as: BYE <password>
+# A wrong password is a normal logoff; 3 wrong from one IP in 15 min = 15 min ban.
+# Empty disables that level. Max 32 characters, case-sensitive.
+#   sysop     moves to the hidden sysop node, has every permission
+#   cosysop1  stays on its node, CO1 column below
+#   cosysop2  stays on its node, CO2 column below
+sysop_password =
+cosysop1_password =
+cosysop2_password =
+
+# Idle hangup at the command prompt, warning 1 minute before. 0 = never.
+# (The handle prompt always warns at 30 s and hangs up at 60 s.)
+idle_minutes = 20
+
+# Time limits in minutes, 0 = unlimited
+call_minutes = 60
+day_minutes = 480
+
+# Staff access matrix. X = allowed, - = denied.
+# SYSOP always has everything; its column is there for reference.
+# Keep this section last: every line after [access] is a matrix row.
+#
+#   NODES      NODES list with IPs, IPs in LAST
+#   KICK       KICK n (only callers and lower staff levels)
+#   BROADCAST  BROADCAST message
+#   SNOOP      SNOOP n (only callers and lower staff levels)
+#   TIME       TIME n +/-minutes
+#   BANS       BANS list
+#   UNBAN      UNBAN ip
+#   HIDE       SHOW, HIDE, LURK
+#   NOLIMITS   no idle timeout, no call or daily limit
+[access]
+# permission   SYSOP  CO1  CO2
+NODES          X      X    X
+KICK           X      X    -
+BROADCAST      X      X    X
+SNOOP          X      X    -
+TIME           X      X    X
+BANS           X      X    X
+UNBAN          X      -    -
+HIDE           X      X    -
+NOLIMITS       X      X    X

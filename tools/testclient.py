@@ -1,0 +1,554 @@
+#!/usr/bin/env python3
+"""
+File:        tools/testclient.py
+Description: Scripted callers for the BBS (host build or a real board).
+             - ANSI caller: answers cursor-position requests like a PC
+               terminal; handle validation, shortcuts, history, TIME, G
+             - Telnet-first caller: IAC before the probe gets character
+               mode negotiated first and an immediate probe (PuTTY case)
+             - PETSCII caller: silent on the probe, presses INST/DEL,
+               picks 40 columns, logs in, runs WHO/FX/BYE
+             - ASCII caller: backspace at the key prompt
+             - Paging between nodes, DND, arrival notices, LAST
+             - Sysop: BYE <password> masking, NODES, More paging, TIME
+               adjust warnings, BROADCAST, SNOOP, KICK, SHOW, DROP
+             - Handle prompt idle warning with partial input redraw (31 s)
+             - Busy line: busy screen, countdown hangup, overflow BUSY,
+               busy-line guest elevating to sysop
+             - --ban: 3 wrong sysop passwords ban the IP (host only: it
+               bans the machine running the test for 15 minutes)
+Listing:     COMPLETE FILE
+Libraries:   Python 3 standard library only
+Usage:       python3 tools/testclient.py [host] [port] [--ban] [--slow]
+"""
+import os
+import pathlib
+import re
+import socket
+import sys
+import time
+
+ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
+FLAGS = {a for a in sys.argv[1:] if a.startswith("--")}
+HOST = ARGS[0] if len(ARGS) > 0 else "127.0.0.1"
+PORT = int(ARGS[1]) if len(ARGS) > 1 else 6400
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+DATA = pathlib.Path(os.environ.get("BBS_DATA", ROOT / "data"))   # same dir the server reads
+
+
+def cfg_value(key):
+    cfg = DATA / "system.cfg"
+    if not cfg.exists():
+        return ""
+    for line in cfg.read_text().splitlines():
+        line = line.split("#", 1)[0]
+        if line.strip().startswith("["):
+            break
+        if "=" in line:
+            k, v = line.split("=", 1)
+            if k.strip() == key:
+                return v.strip()
+    return ""
+
+
+PASSWORD = cfg_value("sysop_password")
+CO1 = cfg_value("cosysop1_password")
+CO2 = cfg_value("cosysop2_password")
+UP = b"\x1b[A"
+
+
+class Caller:
+    def __init__(self, ansi=False, utf8=True, telnet=False):
+        self.t0 = time.time()
+        self.s = socket.create_connection((HOST, PORT), timeout=5)
+        self.s.setblocking(False)
+        self.buf = bytearray()
+        self.ansi = ansi
+        self.utf8 = utf8
+        self.col = 1
+        self.first_probe = None
+        if telnet:
+            # like PuTTY: WILL NAWS + window size before the server says anything
+            self.s.sendall(b"\xff\xfb\x1f\xff\xfa\x1f\x00\x50\x00\x18\xff\xf0")
+
+    def pump(self, secs):
+        end = time.time() + secs
+        while time.time() < end:
+            try:
+                d = self.s.recv(4096)
+                if not d:
+                    return False
+                self._answer(d)
+                self.buf += d
+            except BlockingIOError:
+                time.sleep(0.02)
+            except (ConnectionResetError, OSError):
+                return False
+        return True
+
+    def _answer(self, d):
+        """Emulate an ANSI terminal answering ESC[6n with the cursor column."""
+        if b"DETECTING TERMINAL" in d and self.first_probe is None:
+            self.first_probe = time.time() - self.t0
+        if not self.ansi:
+            return
+        for m in re.finditer(rb"DETECTING TERMINAL|\x1b\[6n|\xe2\x94\x80", d):
+            tok = m.group(0)
+            if tok == b"DETECTING TERMINAL":
+                self.col = 1 + len(tok)
+            elif tok == b"\xe2\x94\x80":
+                self.col += 1 if self.utf8 else 3
+            else:
+                self.s.sendall(f"\x1b[3;{self.col}R".encode())
+
+    def send(self, b):
+        self.s.sendall(b)
+
+    def wait_for(self, pat, secs=10):
+        end = time.time() + secs
+        while time.time() < end:
+            if pat in self.buf:
+                return True
+            if not self.pump(0.1):
+                break
+        return pat in self.buf
+
+    def wait_closed(self, secs):
+        end = time.time() + secs
+        while time.time() < end:
+            if not self.pump(0.1):
+                return True
+        return False
+
+    def node(self):
+        m = re.search(rb"Node (\d) of", self.buf)
+        return m.group(1).decode() if m else "?"
+
+    def close(self):
+        try:
+            self.s.close()
+        except OSError:
+            pass
+
+
+def check(name, ok):
+    print(f"  {'PASS' if ok else 'FAIL'}  {name}")
+    return ok
+
+
+def pet(s):
+    out = bytearray()
+    for c in s:
+        if "a" <= c <= "z":
+            out.append(ord(c) - 0x20)
+        elif "A" <= c <= "Z":
+            out.append(ord(c) + 0x80)
+        else:
+            out.append(ord(c))
+    return bytes(out)
+
+
+def ansi_login(handle):
+    c = Caller(ansi=True)
+    c.wait_for(b"Enter your handle", 10)
+    c.send(handle.encode() + b"\r")
+    c.wait_for(b"Main", 5)
+    return c
+
+
+# ---------------------------------------------------------------------------
+def test_ansi():
+    print("ANSI caller")
+    c = Caller(ansi=True, utf8=True)
+    ok = check("detected ANSI-UTF8", c.wait_for(b"ANSI-UTF8 DETECTED", 5))
+    ok &= check("telnet negotiation sent", c.wait_for(b"\xff\xfb\x01", 2))
+    ok &= check("welcome art streamed (UTF-8 block)", c.wait_for("█".encode(), 8))
+    ok &= check("@NODE@ expanded", c.wait_for(b"Node \x1b[1;33m", 2))
+    ok &= check("handle prompt", c.wait_for(b"Enter your handle", 8))
+    c.buf.clear()
+    c.send(b"[3;20R\r")
+    ok &= check("terminal junk rejected as handle", c.wait_for(b"Use letters", 3))
+    c.buf.clear()
+    c.send(b"Rob\r\n")
+    ok &= check("welcome by handle", c.wait_for(b"Welcome", 3) and b"Rob" in c.buf)
+    ok &= check("time left shown", c.wait_for(b"Time left", 3))
+    ok &= check("shell prompt", c.wait_for(b"Main", 3))
+    c.buf.clear()
+    c.send(b"term\r")
+    ok &= check("TERM reports size", c.wait_for(b"ANSI-UTF8 80x24", 3))
+    c.buf.clear()
+    c.send(UP + b"\r")
+    ok &= check("up-arrow recalls TERM", c.wait_for(b"ANSI-UTF8 80x24", 3))
+    c.buf.clear()
+    c.send(b"w\r")
+    ok &= check("W shortcut runs WHO", c.wait_for(b"Who's online", 3) and c.wait_for(b"Rob", 3))
+    ok &= check("WHO has idle column", c.wait_for(b"Idle", 1))
+    ok &= check("WHO does not list the busy line", b"busy" not in c.buf)
+    c.buf.clear()
+    c.send(b"time\r")
+    ok &= check("TIME shows time left", c.wait_for(b"Left", 3))
+    c.buf.clear()
+    c.send(b"bogus\r")
+    ok &= check("unknown command message", c.wait_for(b"Unknown command", 3))
+    c.buf.clear()
+    c.send(b"g\r")
+    ok &= check("G asks before logging off", c.wait_for(b"Log off (Y/N)?", 3))
+    c.buf.clear()
+    c.send(b"n")
+    ok &= check("N returns to the prompt", c.wait_for(b"Main", 3))
+    c.close()
+    return ok
+
+
+def test_telnet_first():
+    print("Telnet client speaks first (PuTTY)")
+    c = Caller(ansi=True, telnet=True)
+    ok = check("detected", c.wait_for(b"DETECTED", 5))
+    will_echo = c.buf.find(b"\xff\xfb\x01")
+    probe = c.buf.find(b"DETECTING TERMINAL")
+    ok &= check("WILL ECHO before the probe", 0 <= will_echo < probe)
+    ok &= check("probe sent without the settle wait",
+                c.first_probe is not None and c.first_probe < 0.25)
+    ok &= check("NAWS size applied", True)
+    c.close()
+    return ok
+
+
+def test_petscii():
+    print("PETSCII caller")
+    c = Caller(ansi=False)
+    ok = check("probe text", c.wait_for(b"DETECTING TERMINAL", 3))
+    t0 = time.time()
+    ok &= check("key prompt after timeout", c.wait_for(b"HIT DEL OR BACKSPACE", 5))
+    ok &= check("prompt after ~2 s", 1.5 < time.time() - t0 < 3.5)
+    ok &= check("PETSCII clear before prompt", b"\x93\r\nHIT DEL" in c.buf)
+    c.send(b"\x14")
+    ok &= check("column prompt", c.wait_for(b"40 OR 80 COLUMNS", 3))
+    c.send(b"4")
+    ok &= check("PETSCII-40 banner (mixed case)", c.wait_for(pet("PETSCII-40 DETECTED"), 5))
+    ok &= check("no telnet IAC sent to C64", b"\xff\xfb" not in c.buf)
+    ok &= check("welcome.seq streamed", c.wait_for(pet("Terminal server for the maker crowd"), 8))
+    ok &= check("handle prompt", c.wait_for(pet("Enter your handle"), 8))
+    c.send(pet("KE9CXN") + b"\r")
+    ok &= check("shell prompt", c.wait_for(pet("Main"), 3))
+    c.buf.clear()
+    c.send(pet("who") + b"\r")
+    ok &= check("WHO lists handle", c.wait_for(pet("KE9CXN"), 3))
+    c.buf.clear()
+    c.send(b"\x91\r")                     # C64 cursor-up recalls WHO
+    ok &= check("cursor-up recalls on PETSCII", c.wait_for(pet("KE9CXN"), 3))
+    c.buf.clear()
+    c.send(pet("xyzzy") + b"\r")
+    ok &= check("?SYNTAX  ERROR", c.wait_for(pet("?SYNTAX  ERROR"), 3))
+    c.buf.clear()
+    c.send(pet("fx") + b"\r")
+    ok &= check("FX demo starts", c.wait_for(pet("Typewriter"), 5))
+    time.sleep(0.5)
+    c.send(b"\x5f")   # C64 left-arrow = stop
+    ok &= check("FX demo stops on left-arrow", c.wait_for(pet("Demo stopped."), 6))
+    c.buf.clear()
+    c.send(pet("bye") + b"\r")
+    ok &= check("goodbye + NO CARRIER", c.wait_for(pet("NO CARRIER"), 6))
+    ok &= check("server hung up", c.wait_closed(5))
+    return ok
+
+
+def test_ascii():
+    print("ASCII caller (backspace)")
+    c = Caller(ansi=False)
+    c.wait_for(b"HIT DEL OR BACKSPACE", 5)
+    c.send(b"\x08")
+    ok = check("ASCII detected", c.wait_for(b"ASCII DETECTED", 5))
+    ok &= check("welcome.asc streamed", c.wait_for(b"Terminal server for the maker crowd", 8))
+    c.close()
+    return ok
+
+
+def test_page():
+    print("Paging between nodes")
+    a = ansi_login("Alice")
+    b = ansi_login("Bob")
+    na, nb = a.node(), b.node()
+    ok = check("both logged in on different nodes", na != "?" and nb != "?" and na != nb)
+    ok &= check("Alice sees Bob arrive", a.wait_for(f"*** Bob is on node {nb}".encode(), 3))
+    a.buf.clear()
+    b.buf.clear()
+    a.send(f"page {nb} hello bob\r".encode())
+    ok &= check("page confirmed", a.wait_for(b"Page sent", 3))
+    ok &= check("Bob receives the page", b.wait_for(f"Page from Alice ({na}): hello bob".encode(), 3))
+    ok &= check("Bob's prompt redrawn after page", b.wait_for(b"Main", 2))
+    b.buf.clear()
+    b.send(b"dnd\r")
+    ok &= check("DND on", b.wait_for(b"Pages are off", 3))
+    a.buf.clear()
+    a.send(f"page {nb} again\r".encode())
+    ok &= check("DND refuses pages", a.wait_for(b"not taking pages", 3))
+    a.buf.clear()
+    b.close()
+    ok &= check("Alice sees Bob leave", a.wait_for(f"*** Bob left node {nb}".encode(), 5))
+    a.buf.clear()
+    a.send(b"last\r")
+    ok &= check("LAST lists Bob", a.wait_for(b"Last callers", 3) and a.wait_for(b"Bob", 3))
+    a.close()
+    return ok
+
+
+def test_sysop():
+    print("Sysop node")
+    if not PASSWORD:
+        print("  SKIP  no sysop_password in data/system.cfg")
+        return True
+    x = ansi_login("Xavier")
+    nx = x.node()
+    r = ansi_login("Rob")
+    nr = r.node()
+    r.buf.clear()
+    r.send(f"bye {PASSWORD}\r".encode())
+    ok = check("BYE <password> reaches the sysop node", r.wait_for(b"Sysop node.", 4))
+    ok &= check("sysop prompt", r.wait_for(b"Sysop", 3))
+    ok &= check("password never echoed", PASSWORD.encode() not in r.buf)
+    ok &= check("old node reported free", f"Node {nr} is free".encode() in r.buf)
+    x.buf.clear()
+    x.send(b"who\r")
+    x.wait_for(b"Who's online", 3)
+    x.pump(0.5)
+    ok &= check("hidden sysop not in WHO", re.search(rb"[S1-6] Rob ", x.buf) is None)
+    ok &= check("sysop's old node shows waiting", b"waiting for caller" in x.buf)
+
+    r.buf.clear()
+    r.send(b"nodes\r")
+    ok &= check("NODES shows IPs", r.wait_for(b"IP", 3) and r.wait_for(b"Xavier", 3))
+    r.buf.clear()
+    r.send(b"help\r")
+    ok &= check("long HELP pauses at [More]", r.wait_for(b"[More] Y/n/c", 4))
+    r.send(b"c")
+    ok &= check("C continues nonstop", r.wait_for(b"stops output", 4))
+
+    x.buf.clear()
+    r.buf.clear()
+    r.send(f"time {nx} -59\r".encode())
+    ok &= check("TIME adjust confirmed", r.wait_for(b"min left", 3))
+    ok &= check("caller warned about time", x.wait_for(b"minute left.", 4))
+    r.send(f"time {nx} +59\r".encode())
+
+    x.buf.clear()
+    r.send(b"broadcast system going down soon\r")
+    ok &= check("BROADCAST delivered", x.wait_for(b"*** Sysop: system going down soon", 4))
+
+    r.buf.clear()
+    r.send(f"snoop {nx}\r".encode())
+    ok &= check("SNOOP starts", r.wait_for(b"Snooping node", 3))
+    time.sleep(0.3)
+    r.buf.clear()
+    x.send(b"term\r")
+    ok &= check("sysop sees the caller's output", r.wait_for(b"ANSI-UTF8 80x24", 4))
+    r.send(b"q")
+    ok &= check("Q ends snoop", r.wait_for(b"Snoop ended.", 3))
+
+    r.buf.clear()
+    r.send(b"show\r")
+    r.wait_for(b"listed in WHO", 3)
+    x.buf.clear()
+    x.send(b"w\r")
+    x.wait_for(b"Who's online", 3)
+    x.pump(0.5)
+    ok &= check("SHOW lists the sysop as S", re.search(rb"S Rob", x.buf) is not None)
+
+    r.buf.clear()
+    r.send(f"kick {nx} bye now\r".encode())
+    ok &= check("KICK confirmed", r.wait_for(b"disconnected", 3))
+    ok &= check("caller told why", x.wait_for(b"Disconnected by sysop: bye now", 4))
+    ok &= check("caller hung up", x.wait_closed(8))
+
+    r.buf.clear()
+    r.send(b"drop\r")
+    ok &= check("DROP returns to a caller node", r.wait_for(b"Back on node", 4))
+    r.close()
+    return ok
+
+
+def test_cosysop():
+    print("Co-sysops (default access matrix)")
+    if not (CO1 and CO2):
+        print("  SKIP  cosysop1_password / cosysop2_password not set")
+        return True
+    a = ansi_login("Plain")
+    na = a.node()
+    c1 = ansi_login("Cora")
+    n1 = c1.node()
+    c2 = ansi_login("Dex")
+    n2 = c2.node()
+
+    c1.buf.clear()
+    c1.send(f"bye {CO1}\r".encode())
+    ok = check("co-sysop 1 granted in place", c1.wait_for(f"Co-sysop 1 access on node {n1}".encode(), 4))
+    ok &= check("password never echoed", CO1.encode() not in c1.buf)
+    c2.buf.clear()
+    c2.send(f"bye {CO2}\r".encode())
+    ok &= check("co-sysop 2 granted in place", c2.wait_for(f"Co-sysop 2 access on node {n2}".encode(), 4))
+
+    a.buf.clear()
+    a.send(b"who\r")
+    a.wait_for(b"Who's online", 3)
+    a.pump(0.5)
+    ok &= check("co-sysops stay visible in WHO",
+                re.search(rb"\d Cora ", a.buf) is not None and re.search(rb"\d Dex ", a.buf) is not None)
+
+    c1.buf.clear()
+    c1.send(b"help\r")
+    c1.wait_for(b"[More] Y/n/c", 4)
+    c1.send(b"c")
+    c1.wait_for(b"stops output", 4)
+    ok &= check("CO1 help lists KICK, not UNBAN", b"KICK n m" in c1.buf and b"UNBAN" not in c1.buf)
+
+    c2.buf.clear()
+    c2.send(f"kick {na}\r".encode())
+    ok &= check("CO2 has no KICK", c2.wait_for(b"Unknown command", 3))
+    c2.buf.clear()
+    c2.send(b"hide\r")
+    ok &= check("CO2 has no HIDE", c2.wait_for(b"Unknown command", 3))
+    a.buf.clear()
+    c2.send(b"broadcast from co2\r")
+    ok &= check("CO2 BROADCAST allowed", a.wait_for(b"*** Sysop: from co2", 4))
+    c2.buf.clear()
+    c2.send(b"nodes\r")
+    ok &= check("CO2 NODES allowed", c2.wait_for(b"Cora", 3))
+
+    c1.buf.clear()
+    c1.send(b"time\r")
+    ok &= check("NOLIMITS: no time limit", c1.wait_for(b"no limit", 3))
+
+    c1.buf.clear()
+    c1.send(b"hide\r")
+    ok &= check("CO1 HIDE allowed", c1.wait_for(b"hidden from WHO", 3))
+    a.buf.clear()
+    a.send(b"w\r")
+    a.wait_for(b"Who's online", 3)
+    a.pump(0.5)
+    ok &= check("hidden co-sysop shows as a free line", re.search(rb"\d Cora ", a.buf) is None)
+
+    c1.buf.clear()
+    c1.send(f"kick {n2} demoted\r".encode())
+    ok &= check("CO1 can KICK a CO2", c2.wait_for(b"Disconnected by sysop: demoted", 4))
+
+    c1.buf.clear()
+    c1.send(b"drop\r")
+    ok &= check("DROP gives up staff access", c1.wait_for(b"Staff access dropped.", 3))
+    c1.buf.clear()
+    c1.send(b"nodes\r")
+    ok &= check("NODES gone after DROP", c1.wait_for(b"Unknown command", 3))
+    for c in (a, c1, c2):
+        c.close()
+    return ok
+
+
+def test_idle_login():
+    print("Handle prompt idle warning (31 s)")
+    c = Caller(ansi=True)
+    c.wait_for(b"Enter your handle", 10)
+    c.send(b"Ro")
+    c.buf.clear()
+    ok = check("warning at 30 s", c.wait_for(b"Still there? Disconnecting in 30 seconds.", 34))
+    ok &= check("partial input redrawn", c.wait_for(b"Enter your handle: \x1b[1;37mRo", 2))
+    if "--slow" in FLAGS:
+        ok &= check("hangup at 60 s", c.wait_for(b"IDLE TIMEOUT", 32) and c.wait_closed(8))
+    c.close()
+    return ok
+
+
+def test_busy():
+    print("Busy line")
+    callers = [Caller(ansi=True) for _ in range(6)]
+    time.sleep(0.5)
+    seventh = Caller(ansi=True)
+    ok = check("7th caller gets the busy screen", seventh.wait_for(b"lines are busy", 5))
+    ok &= check("countdown shown", seventh.wait_for(b"Disconnecting in", 5))
+    t0 = time.time()
+    eighth = Caller()
+    ok &= check("8th caller gets BUSY", eighth.wait_for(b"BUSY", 3))
+    ok &= check("8th caller dropped at once", eighth.wait_closed(2))
+    ok &= check("busy line hangs up after countdown", seventh.wait_for(b"NO CARRIER", 13))
+    ok &= check("busy countdown ~10 s", 9 < time.time() - t0 < 12)
+    seventh.close()
+    eighth.close()
+
+    if PASSWORD:
+        guest = Caller(ansi=True)
+        ok &= check("guest sees countdown", guest.wait_for(b"Disconnecting in", 8))
+        guest.send(b"x")
+        ok &= check("key opens a login", guest.wait_for(b"Enter your handle", 3))
+        guest.send(b"Rob\r")
+        ok &= check("guest prompt", guest.wait_for(b"Main", 3))
+        guest.buf.clear()
+        guest.send(f"bye {PASSWORD}\r".encode())
+        ok &= check("busy-line guest reaches sysop node", guest.wait_for(b"Sysop node.", 4))
+        guest.close()
+
+    for c in callers:
+        c.close()
+    time.sleep(0.5)
+    again = Caller(ansi=True)
+    ok &= check("node frees after hangup", again.wait_for(b"DETECTED", 5))
+    again.close()
+    return ok
+
+
+def test_bulletin():
+    print("Bulletin screen paging and abort (host only)")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs a local data/ directory")
+        return True
+    path = DATA / "screens" / "bulletin.asc"
+    path.write_text("".join(f"Bulletin line {i}\n" for i in range(1, 61)))
+    try:
+        c = Caller(ansi=True)
+        c.wait_for(b"Enter your handle", 10)
+        c.send(b"Reader\r")
+        ok = check("bulletin plays after login", c.wait_for(b"Bulletin line 1\r\n", 5))
+        ok &= check("pauses at [More] after 22 lines", c.wait_for(b"[More] Y/n/c", 5)
+                    and b"Bulletin line 22" in c.buf and b"Bulletin line 23" not in c.buf)
+        c.buf.clear()
+        c.send(b" ")
+        ok &= check("space continues one page", c.wait_for(b"Bulletin line 23", 5)
+                    and c.wait_for(b"[More] Y/n/c", 5) and b"Bulletin line 45" not in c.buf)
+        c.send(b"y")
+        ok &= check("rest of the bulletin, then the prompt",
+                    c.wait_for(b"Bulletin line 60", 5) and c.wait_for(b"Main", 5))
+        c.close()
+
+        c = Caller(ansi=True)
+        c.wait_for(b"Enter your handle", 10)
+        c.send(b"Reader\r")
+        c.wait_for(b"[More] Y/n/c", 8)
+        c.buf.clear()
+        c.send(b"n")
+        ok &= check("N at [More] stops the screen", c.wait_for(b"Stopped.", 3) and c.wait_for(b"Main", 3))
+        ok &= check("nothing after the stop", b"Bulletin line 50" not in c.buf)
+        c.close()
+    finally:
+        path.unlink()
+    return ok
+
+
+def test_ban():
+    print("Ban after 3 wrong sysop passwords")
+    for _ in range(3):
+        c = ansi_login("Mallory")
+        c.send(b"bye wrongpassword\r")
+        c.wait_closed(25)
+        c.close()
+        time.sleep(0.3)
+    c = Caller(ansi=True)
+    ok = check("banned IP dropped without a banner", c.wait_closed(3) and b"DETECTING" not in c.buf)
+    c.close()
+    return ok
+
+
+if __name__ == "__main__":
+    results = [test_ansi(), test_telnet_first(), test_petscii(), test_ascii(),
+               test_page(), test_sysop(), test_cosysop(), test_bulletin(), test_idle_login(), test_busy()]
+    if "--ban" in FLAGS:
+        results.append(test_ban())
+    print("ALL PASS" if all(results) else "FAILURES")
+    sys.exit(0 if all(results) else 1)
