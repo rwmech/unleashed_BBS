@@ -248,7 +248,8 @@ const Command kCommands[] = {
 } // namespace
 
 extern const Plugin kChatPlugin = {
-    { kName, "Chat room", "1.0", 0, 0, PF_CORE },
+    // on unless switched off, and everyone may talk unless system.cfg says otherwise
+    { kName, "Chat room", "1.0", 0, 0, PF_CORE | PF_ON, PlugLevel::All, PlugLevel::All, PlugLevel::Sysop },
     start,
     nullptr,                 // stop
     nullptr,                 // tick

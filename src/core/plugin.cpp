@@ -242,6 +242,10 @@ void begin(Bbs& bbs) {
         const Plugin* p = kPlugins[i];
         State& st = g_state[i];
         st = State();
+        st.enabled  = (p->info.flags & PF_ON) != 0;           // on unless told otherwise
+        st.level[0] = p->info.read;                           // the plugin's own defaults
+        st.level[1] = p->info.write;
+        st.level[2] = p->info.admin;
         scan(i, nullptr, nullptr, true);                      // enabled + levels
 
         if (!st.enabled) { st.why = "off in system.cfg"; continue; }

@@ -344,7 +344,7 @@ const Command kCommands[] = {
 } // namespace
 
 extern const Plugin kSerialPlugin = {
-    { kName, "Serial bridge", "1.0", 0, 0, PF_CORE },
+    { kName, "Serial bridge", "1.0", 0, 0, PF_CORE, PlugLevel::All, PlugLevel::Staff, PlugLevel::Sysop },
     start,
     stop,
     tick,

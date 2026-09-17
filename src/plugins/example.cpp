@@ -156,7 +156,7 @@ const Command kCommands[] = {
 } // namespace
 
 extern const Plugin kExamplePlugin = {
-    { kName, "Example plugin", "1.0", 0, 512, PF_CORE },
+    { kName, "Example plugin", "1.0", 0, 512, PF_CORE, PlugLevel::All, PlugLevel::Staff, PlugLevel::Sysop },
     start,
     stop,
     tick,

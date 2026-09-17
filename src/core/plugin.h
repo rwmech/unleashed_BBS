@@ -16,7 +16,7 @@
  *               the same surface to Lua without changing the core.
  *
  *                 [plugin:name]
- *                 enabled = yes
+ *                 enabled = yes      (PF_ON plugins are on without this)
  *                 read    = all        who may look
  *                 write   = staff      who may change things
  *                 admin   = sysop      who may configure the plugin
@@ -81,6 +81,7 @@ enum PluginFlag : uint8_t {
     PF_NONE  = 0,
     PF_CORE  = 1,    // shipped in this repo: may use the onboard filesystem
     PF_SD    = 2,    // needs the SD card for its files
+    PF_ON    = 4,    // on unless system.cfg says enabled = no
 };
 
 struct PluginInfo {
@@ -90,6 +91,9 @@ struct PluginInfo {
     uint32_t    heapBytes;     // heap it needs while running (0 = none)
     uint32_t    storageBytes;  // space it wants for its files (0 = none)
     uint8_t     flags;         // PluginFlag
+    PlugLevel   read;          // levels used when system.cfg does not say
+    PlugLevel   write;
+    PlugLevel   admin;
 };
 
 // Hooks. Every one is optional; leave it null and the core skips it.

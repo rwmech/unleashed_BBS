@@ -84,6 +84,7 @@ admin = sysop
 greeting = hello
 
 # One chat room, DDial style. write = all lets guests talk too.
+# Chat is on even without this section; enabled = no turns it off.
 [plugin:chat]
 enabled = yes
 read  = all

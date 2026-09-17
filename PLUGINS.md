@@ -35,6 +35,7 @@ greeting = howdy     ; the plugin's own keys
 - The access ladder is `all`, `users`, `staff`, `co2`, `co1`, `sysop`, and `none`. `all` includes guests, `users` means an account, `staff` is any staff level, and `co1` means co-sysop 1 and up.
 - Defaults when a line is missing: `read = all`, `write = staff`, `admin = sysop`.
 - A plugin that isn't `enabled` never starts, and its commands don't exist.
+- A plugin marked `PF_ON` in its descriptor is on without a section at all, and `enabled = no` turns it off. Chat ships that way; everything else waits to be switched on.
 
 Staff can see the state of every plugin with `PLUGINS`:
 

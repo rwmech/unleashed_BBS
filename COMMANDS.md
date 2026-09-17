@@ -262,7 +262,7 @@ Two plugins ship with the firmware:
 | `chat` | one chat room, DDial style, with a few lines of history for whoever joins | `read = all`, `write = all` |
 | `serial` | shares a serial device: one operator types, any number watch | `read = all`, `write = staff` |
 
-Turn either off and it costs nothing: no commands, no hooks, no memory. The `example` plugin is the template for writing your own ([PLUGINS.md](PLUGINS.md)).
+Chat is on by default, even with no section in `system.cfg`; `enabled = no` turns it off. The serial bridge waits to be switched on, since it needs wiring. Turning either off costs nothing: no commands, no hooks, no memory. The `example` plugin is the template for writing your own ([PLUGINS.md](PLUGINS.md)).
 
 Each plugin reads its own section:
 
