@@ -127,6 +127,8 @@ struct Session {
     bool         idleWarned  = false;
     uint32_t     busyLoginUntil = 0;   // busy-line login deadline
     bool         guest       = false;  // logged in as GUEST: no account, nothing saved
+    uint8_t      rank        = 0;      // staff rank of the account (Access value), for
+                                       // the WHO/NODES/DASH marker; raised on elevation
     char         doing[BBS_DOING_MAX + 1] = {};   // last command verb (staff WHO/DASH)
 
     // paging and generated lists
@@ -159,6 +161,7 @@ struct Session {
     char         pwB[BBS_PASS_MAX + 1] = {};
     char         pwC[BBS_PASS_MAX + 1] = {};
     char         yesno[2]    = "N";
+    char         levelBuf[8] = "User";   // staff form: the Level field
     UserRec      edit;                 // account being logged in or edited
     FormField    fields[Form::kMaxFields];
     Form         form;
@@ -266,7 +269,8 @@ private:
     uint16_t dayMinutesUsed(const char* handle, uint32_t now);
 
     // -- accounts and forms (bbs_users.cpp) -----------------------------------
-    void addField(Session& s, uint8_t& n, const char* label, char* buf, uint8_t cap, uint8_t flags);
+    void addField(Session& s, uint8_t& n, const char* label, char* buf, uint8_t cap, uint8_t flags,
+                  const char* choices = nullptr);
     uint8_t addUserFields(Session& s, uint8_t n);
     void startForm(Session& s, FormKind kind, uint32_t now);
     void formSave(Session& s, uint32_t now);
@@ -280,6 +284,7 @@ private:
     void cmdUser(Session& s, const char* arg, uint32_t now);
     bool rowUsers(Session& s);
     void ulOpen(Session& s);
+    void ulStatus(Session& s, Color c, const char* msg);
     void ulDrawRow(Session& s, uint8_t index);
     void ulKey(Session& s, int k, uint32_t now);
     uint8_t ulRows(const Session& s) const;
@@ -296,6 +301,7 @@ private:
     int32_t idleSecondsLeft(const Session& s, uint32_t now) const;
     bool canNotify(const Session& s) const;
     void notify(Session& s, Color c, const char* msg);
+    void warnNow(Session& s, const char* msg);
     void redrawInput(Session& s);
     void deliverMail(Session& s);
     void post(Session& to, BusKind kind, const Session* from, const char* text);
@@ -341,6 +347,7 @@ private:
     void fxNext(Session& s);
 
     // -- sysop (bbs_sysop.cpp) -----------------------------------------------
+    void markAccount(Session& s, Access level);
     void elevate(Session& s, uint32_t now);
     void coElevate(Session& s, Access level, uint32_t now);
     bool rowNodes(Session& s);

@@ -51,7 +51,7 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "0.7.0"
+#define BBS_VERSION         "0.8.0"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // ---------------------------------------------------------------------------
@@ -85,7 +85,8 @@
 // Session sizing (fixed, preallocated at boot, no heap after boot)
 // ---------------------------------------------------------------------------
 #define BBS_TL_BYTES        3072     // per-session timed output buffer (a PETSCII form redraw is ~1.2 KB)
-#define BBS_RX_ROOM         1024     // a key is handled only with this much output room free
+#define BBS_RX_ROOM         1700     // a key is handled only with this much output room free
+                                     // (a full form or user-list redraw is ~1.4 KB)
 #define BBS_TL_FRAMES       96       // per-session timed output frames
 #define BBS_RX_CHUNK        64       // bytes read per select pass
 #define BBS_LINE_MAX        72       // line editor capacity
@@ -101,6 +102,8 @@
 // ---------------------------------------------------------------------------
 #define BBS_NAME_WARN_MS    30000    // handle prompt: warn
 #define BBS_NAME_TIMEOUT_MS 60000    // handle prompt: hang up
+#define BBS_FORM_WARN_MS    120000   // sign-up form before login: warn
+#define BBS_FORM_TIMEOUT_MS 180000   // sign-up form before login: hang up
 #define BBS_IDLE_WARN_BEFORE_MS 60000 // shell: warn this long before the idle hangup
 #define BBS_TIME_WARN1_S    300      // time limit warnings (seconds left)
 #define BBS_TIME_WARN2_S    60
@@ -183,5 +186,6 @@
 #define BBS_ZIP_MAX_BYTES       400000   // the uploaded .zip itself
 #define BBS_ZIP_MAX_FILES       64       // accepted files per upload
 #define BBS_ZIP_FILE_MAX        65536    // one unpacked file
+#define BBS_ZIP_USERS_MAX       163840   // users.txt: 100 full accounts with escaping
 #define BBS_ZIP_TOTAL_MAX       360000   // all unpacked files together
 #define BBS_SCREEN_NAME_MAX     8        // screen base name, a-z 0-9 _ -

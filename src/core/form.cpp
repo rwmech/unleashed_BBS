@@ -248,10 +248,17 @@ Form::Res Form::keyPositional(int k, Term& t, Timeline& tl) {
         default:
             break;
     }
-    if (focus_ >= n_) return Res::Editing;
+    if (focus_ >= n_ || !editable(f_[focus_])) return Res::Editing;
 
     FormField& f = f_[focus_];
     size_t len = strlen(f.buf);
+
+    if (f.flags & FF_CYCLE) {
+        if (!cycle(f, k)) return Res::Editing;
+        drawField(focus_, t, tl);
+        placeCursor(t, tl);
+        return Res::Editing;
+    }
 
     if (f.flags & FF_YESNO) {
         if (k == 'y' || k == 'Y')      strcpy(f.buf, "Y");
@@ -303,6 +310,40 @@ Form::Res Form::keyPositional(int k, Term& t, Timeline& tl) {
 }
 
 // ---------------------------------------------------------------------------
+// cycle: space steps through the choices, a letter or digit picks the first
+// choice that starts with it ("u", "2", "1", "s"). False if the key is not ours.
+// ---------------------------------------------------------------------------
+bool Form::cycle(FormField& f, int k) {
+    if (!f.choices) return false;
+    char want = static_cast<char>(k >= 'A' && k <= 'Z' ? k + 32 : k);
+    const char* p = f.choices;
+    const char* first = p;
+    const char* current = nullptr;
+    while (p) {
+        const char* bar = strchr(p, '|');
+        size_t len = bar ? static_cast<size_t>(bar - p) : strlen(p);
+        if (!strncmp(f.buf, p, len) && strlen(f.buf) == len) current = p;
+        if (want != ' ' && len && (p[0] | 0x20) == want) {        // direct pick
+            strncpy(f.buf, p, len);
+            f.buf[len] = 0;
+            return true;
+        }
+        p = bar ? bar + 1 : nullptr;
+    }
+    if (want != ' ') return false;
+    const char* next = first;
+    if (current) {
+        const char* bar = strchr(current, '|');
+        next = bar ? bar + 1 : first;
+    }
+    const char* bar = strchr(next, '|');
+    size_t len = bar ? static_cast<size_t>(bar - next) : strlen(next);
+    strncpy(f.buf, next, len);
+    f.buf[len] = 0;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // fail: point at the problem
 // ---------------------------------------------------------------------------
 void Form::fail(uint8_t field, const char* msg, Term& t, Timeline& tl) {
@@ -312,8 +353,8 @@ void Form::fail(uint8_t field, const char* msg, Term& t, Timeline& tl) {
         t.color(tl, Color::LightRed);
         t.text(tl, msg);
         confirming_ = false;
-        inLen_      = 0;
-        focus_      = field < n_ ? field : 0;
+        wipe();
+        focus_      = (field < n_ && editable(f_[field])) ? field : 0;
         linePrompt(t, tl);
         return;
     }
@@ -324,7 +365,7 @@ void Form::fail(uint8_t field, const char* msg, Term& t, Timeline& tl) {
     t.gotoXY(tl, kLabelCol, statusRow_);
     fx::blink(t, tl, msg, 3, 110);
     uint8_t prev = focus_;
-    focus_ = field < n_ ? field : prev;
+    focus_ = (field < n_ && editable(f_[field])) ? field : prev;
     if (prev != focus_) {
         if (prev < n_) drawField(prev, t, tl);
         else           drawButtons(t, tl);
@@ -338,7 +379,14 @@ void Form::fail(uint8_t field, const char* msg, Term& t, Timeline& tl) {
 void Form::after(Term& t, Timeline& tl) {
     t.reset(tl);
     t.cursor(tl, true);
+    wipe();
     if (positional(t)) t.gotoXY(tl, 1, static_cast<uint8_t>(statusRow_ + 1));
+}
+
+// wipe: clear the line-mode input buffer (it can hold a typed password)
+void Form::wipe() {
+    memset(in_, 0, sizeof(in_));
+    inLen_ = 0;
 }
 
 // ===========================================================================
@@ -391,6 +439,7 @@ Form::Res Form::keyLine(int k, Term& t, Timeline& tl) {
             in_[inLen_] = '\0';
             if (f.flags & FF_YESNO) strcpy(f.buf, (in_[0] == 'y' || in_[0] == 'Y') ? "Y" : "N");
             else { strncpy(f.buf, in_, f.cap); f.buf[f.cap] = '\0'; }
+            wipe();
         }
         ++focus_;
         linePrompt(t, tl);
@@ -398,6 +447,11 @@ Form::Res Form::keyLine(int k, Term& t, Timeline& tl) {
     }
     if (k == KEY_BACKSPACE) {
         if (inLen_) { --inLen_; t.eraseBack(tl, 1); }
+        return Res::Editing;
+    }
+    if ((f.flags & FF_CYCLE) && inLen_ == 0 && cycle(f, k)) {      // line mode: one letter picks
+        t.text(tl, f.buf);
+        in_[inLen_++] = ' ';                                       // Enter keeps what was picked
         return Res::Editing;
     }
     if (k < 0x20 || k > 0x7E || inLen_ >= f.cap || inLen_ >= BBS_PROFILE_MAX) return Res::Editing;

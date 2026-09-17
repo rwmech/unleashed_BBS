@@ -110,6 +110,25 @@ N Handle       Terminal   Min  Idle
 - The call is still listed in `LAST`, like every call.
 - To keep what they do, a guest signs up next time with a handle of their own.
 
+### Staff rank on an account
+
+Typing a staff password (`BYE <password>`) also marks that caller's account with the rank. The mark is what the lists show:
+
+| Marker | Meaning |
+|---|---|
+| (space) | ordinary caller |
+| `*` | guest, no account |
+| `>` | co-sysop 1 or 2 |
+| `]` | sysop |
+
+Every list (WHO, NODES, LAST, DASH, the user manager) prints the marker between the node number and the handle and repeats the key underneath.
+
+Staff may only manage accounts at their own rank or below:
+
+- A co-sysop 1 can edit, lock, rename or delete callers and co-sysops, never the sysop's account.
+- The `Level` field in the add and edit forms only offers their own rank and below, so nobody can promote themselves.
+- To demote someone, set `Level` back to `User` in `USER EDIT`.
+
 ### Your account
 
 | Command | What it does |
@@ -160,7 +179,7 @@ These work on every terminal.
 
 | Command | What it does |
 |---|---|
-| `USER ADD` | Add-account form: handle, password, the account fields, Locked. |
+| `USER ADD` | Add-account form: handle, password, the account fields, Level, Locked. |
 | `USER EDIT handle` | Edit-account form. Leave `New pass` empty to keep the password. |
 | `USER DEL handle` | Delete after `Delete handle (y/N)?`. `N`, Enter or ESC keeps it. |
 
@@ -168,6 +187,7 @@ These work on every terminal.
 - Setting `Locked` to `Y` refuses the next login. It does not drop a caller who is already on (use `KICK`).
 - You can't delete the account you're logged in with.
 - Staff never see passwords. To help a caller who forgot theirs, set a new one with `USER EDIT` and tell them.
+- A handle in use by an online guest cannot be added, renamed to, or signed up for until that guest leaves.
 
 ## Settings
 
@@ -194,6 +214,7 @@ address =
 phone =
 profile = Plays chess on a C64
 pass = 3f9a0c1d2e4b5a69$5d1e...(64 hex)
+level = user
 created = 1789000000
 last_call = 1789100000
 calls = 12
@@ -203,9 +224,12 @@ locked = no
 ```
 
 - One `[handle]` block per account. The handle rules above apply, and duplicates are refused.
+- `level` is `user`, `co2`, `co1` or `sysop`, and drives the list markers and who may manage the account.
+- Values keep their spaces. Only the single space after `=` belongs to the format.
 - `pass` is a random 8-byte salt and a SHA-256 hash (repeated 1000 times), both in hex. You can't type a password into the file; set passwords on the BBS. An empty `pass` means nobody can log in to that account until staff set one.
 - `locked = yes` locks the account.
-- Keys the BBS doesn't know are dropped the next time the file is written.
+- Keys the BBS doesn't know are accepted with a warning that names the line ("line 12: unknown key 'nickname'"), and dropped the next time the file is written.
+- Numbers that aren't numbers, values longer than the field, and a `pass` that isn't a salt and hash are refused, each naming its line.
 - `created` and `last_call` are Unix times; `day` and `day_minutes` track the daily limit.
 - Uploading a zip without `users.txt` leaves the accounts on the board as they are.
 - More accounts than `max_users` is refused.

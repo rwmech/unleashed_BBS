@@ -202,10 +202,12 @@ size_t ZipExport::readData(Entry& e, uint8_t* buf, size_t cap) {
         case Src::Config:
             return cfgRead(buf, cap);
         case Src::File:
+        case Src::Snapshot:
         default:
             if (!f_) {
                 char path[96];
-                livePath(path, sizeof(path), e.name);
+                if (e.src == Src::Snapshot) livePath(path, sizeof(path), BBS_USERS_FILE ".export");
+                else                        livePath(path, sizeof(path), e.name);
                 f_ = fopen(path, "rb");
                 if (!f_) return 0;
             }
@@ -270,7 +272,7 @@ bool ZipExport::scan(const char* hostname, char* err, size_t errLen) {
     struct stat st;
     if (stat(path, &st) == 0) addEntry(BBS_CONFIG_FILE, Src::Config);
     livePath(path, sizeof(path), BBS_USERS_FILE);
-    if (stat(path, &st) == 0) addEntry(BBS_USERS_FILE, Src::File);
+    if (stat(path, &st) == 0 && snapshotUsers()) addEntry(BBS_USERS_FILE, Src::Snapshot);
 
     uint8_t firstScreen = count_;
     livePath(path, sizeof(path), BBS_SCREEN_DIR);
@@ -427,6 +429,37 @@ void ZipExport::abort() {
     lineLen_ = linePos_ = 0;
 }
 
+// ---------------------------------------------------------------------------
+// snapshotUsers: copy users.txt aside for the download. Accounts keep
+// changing while a client downloads (a logoff writes call stats), and the
+// zip promises the size and CRC measured up front.
+// ---------------------------------------------------------------------------
+bool ZipExport::snapshotUsers() {
+    char src[96], dst[96];
+    livePath(src, sizeof(src), BBS_USERS_FILE);
+    livePath(dst, sizeof(dst), BBS_USERS_FILE ".export");
+    FILE* in = fopen(src, "rb");
+    if (!in) return false;
+    FILE* out = fopen(dst, "wb");
+    if (!out) { fclose(in); return false; }
+    uint8_t buf[256];
+    size_t n;
+    bool ok = true;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) ok = fwrite(buf, 1, n, out) == n && ok;
+    ok = !ferror(in) && ok;
+    fclose(in);
+    ok = (fclose(out) == 0) && ok;
+    if (!ok) remove(dst);
+    return ok;
+}
+
+// dropSnapshot: remove the download copy once the transfer ends
+void ZipExport::dropSnapshot() {
+    char dst[96];
+    livePath(dst, sizeof(dst), BBS_USERS_FILE ".export");
+    remove(dst);
+}
+
 // ===========================================================================
 // ZipImport
 // ===========================================================================
@@ -529,7 +562,8 @@ bool ZipImport::open(const char* zipPath, char* err, size_t errLen) {
         bool isScreen = !strncmp(name, BBS_SCREEN_DIR "/", sizeof(BBS_SCREEN_DIR)) &&
                         validScreenName(name + sizeof(BBS_SCREEN_DIR));
         if (!isCfg && !isScreen)                      { reject(name, "not allowed (see SCREENS.md)"); continue; }
-        if (usize > BBS_ZIP_FILE_MAX)                 { reject(name, "file over 64 KB"); continue; }
+        uint32_t cap = !strcmp(name, BBS_USERS_FILE) ? BBS_ZIP_USERS_MAX : BBS_ZIP_FILE_MAX;
+        if (usize > cap)                              { reject(name, "file too big"); continue; }
         if (method == 0 && csize != usize)            { reject(name, "corrupt entry"); continue; }
         if (static_cast<uint64_t>(loff) + 30u + csize > cdOffset_) { reject(name, "corrupt entry"); continue; }
 
@@ -549,6 +583,14 @@ bool ZipImport::open(const char* zipPath, char* err, size_t errLen) {
         it.localOff = loff;
         it.ok       = false;
         rep_.bytes += usize;
+    }
+
+    for (uint8_t i = 1; i < itemCount_; ++i) {         // system.cfg first: users.txt
+        if (strcmp(items_[i].name, BBS_CONFIG_FILE)) continue;   // is checked against it
+        Item tmp = items_[0];
+        items_[0] = items_[i];
+        items_[i] = tmp;
+        break;
     }
 
     char dir[96];
@@ -633,7 +675,27 @@ bool ZipImport::extract(Item& it) {
     }
     if (!why && !strcmp(it.name, BBS_USERS_FILE)) {
         static char usersErr[96];
-        if (users::validateFile(path, usersErr, sizeof(usersErr))) why = usersErr;
+        static char usersWarn[64];
+        users::Issues iss;
+        iss.err = usersErr;   iss.errLen = sizeof(usersErr);
+        iss.warn = usersWarn; iss.warnLen = sizeof(usersWarn);
+        static SysConfig cfgProbe;                   // limits from the uploaded config
+        char cfgPath[96];
+        stagePath(cfgPath, sizeof(cfgPath), BBS_CONFIG_FILE);
+        cfgProbe = SysConfig();
+        struct stat cst;
+        char ignore[8];
+        if (stat(cfgPath, &cst) == 0 && !syscfg::parseFile(cfgPath, cfgProbe, ignore, 0)) {
+            iss.maxUsers = cfgProbe.maxUsers;
+        }
+        if (users::validateFile(path, iss)) {
+            why = usersErr;
+        } else if (iss.warnings) {                   // accepted, but say what is dropped
+            snprintf(rep_.note, sizeof(rep_.note), "users.txt %.40s%s", usersWarn,
+                     iss.warnings > 1 ? " (and more)" : "");
+            plat::log("backup: users.txt %s (%d warning%s)", usersWarn, iss.warnings,
+                      iss.warnings == 1 ? "" : "s");
+        }
     }
     if (why) {
         remove(path);

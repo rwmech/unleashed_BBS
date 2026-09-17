@@ -42,6 +42,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cctype>
+#include <cerrno>
 
 const UserField kUserFields[] = {
     { "name",    "Name",    offsetof(UserRec, name),    sizeof(UserRec::name),    UF_REQUIRED },
@@ -127,6 +128,28 @@ void writeEscaped(FILE* f, const char* v) {
     }
 }
 
+// unescapedLen: characters copyUnescaped would produce, without the cap
+size_t unescapedLen(const char* src) {
+    size_t n = 0;
+    for (; *src; ++src) {
+        if (*src == '\\' && src[1]) ++src;
+        ++n;
+    }
+    return n;
+}
+
+// validHash: 16 hex, '$', 64 hex
+bool validHash(const char* p) {
+    if (strlen(p) != 81 || p[16] != '$') return false;
+    for (size_t i = 0; i < 81; ++i) {
+        if (i == 16) continue;
+        char c = p[i];
+        bool hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        if (!hex) return false;
+    }
+    return true;
+}
+
 void copyUnescaped(char* dst, size_t cap, const char* src) {
     size_t n = 0;
     for (; *src && n + 1 < cap; ++src) {
@@ -147,61 +170,117 @@ class Reader {
 public:
     explicit Reader(FILE* f) : f_(f) {}
 
-    // next: parse the next block into u. problem() text for validation.
-    bool next(UserRec& u, int* problems = nullptr, char* err = nullptr, size_t errLen = 0) {
+    // next: parse the next block into u. Pass Issues to collect problems
+    // (reject the file) and warnings (accept, but say what was dropped).
+    // Values keep their spaces: only the one space after "= " is eaten.
+    bool next(UserRec& u, users::Issues* iss = nullptr) {
         u = UserRec();
         bool inBlock = false;
         while (true) {
             if (!pending_) {
-                if (!fgets(line_, sizeof(line_), f_)) return inBlock;
+                if (!fgets(line_, sizeof(line_), f_)) {
+                    if (iss && ferror(f_)) problem(iss, "read error");
+                    return inBlock;
+                }
                 ++lineNo_;
             }
             pending_ = false;
-            char* l = trim(line_);
+            size_t n = strlen(line_);
+            while (n && (line_[n - 1] == '\n' || line_[n - 1] == '\r')) line_[--n] = '\0';
+            char* l = line_;
+            while (*l == ' ' || *l == '\t') ++l;
             if (!*l || *l == '#') continue;
             if (*l == '[') {
                 if (inBlock) { pending_ = true; return true; }      // next block starts
                 char* end = strchr(l, ']');
-                if (!end) { note(problems, err, errLen, "bad [handle] line"); continue; }
+                if (!end) { problem(iss, "bad [handle] line"); continue; }
                 *end = '\0';
-                strncpy(u.handle, trim(l + 1), BBS_USER_MAX);
+                char* h = trim(l + 1);
+                if (iss && strlen(h) > BBS_USER_MAX) problem(iss, "handle over 20 characters");
+                strncpy(u.handle, h, BBS_USER_MAX);
                 inBlock = true;
                 continue;
             }
-            if (!inBlock) { note(problems, err, errLen, "key outside a [handle] block"); continue; }
+            if (!inBlock) { problem(iss, "key outside a [handle] block"); continue; }
             char* eq = strchr(l, '=');
-            if (!eq) { note(problems, err, errLen, "expected key = value"); continue; }
+            if (!eq) { problem(iss, "expected key = value"); continue; }
             *eq = '\0';
             char* key = trim(l);
-            char* val = trim(eq + 1);
-            assign(u, key, val, problems, err, errLen);
+            char* val = eq + 1;
+            if (*val == ' ') ++val;                                 // the writer's "key = value"
+            assign(u, key, val, iss);
         }
     }
 
     int lineNo() const { return lineNo_; }
 
 private:
-    void note(int* problems, char* err, size_t errLen, const char* what) {
-        if (!problems) return;
-        if (!*problems && err && errLen) snprintf(err, errLen, "users.txt line %d: %s", lineNo_, what);
-        ++*problems;
+    void problem(users::Issues* iss, const char* what) {
+        if (!iss) return;
+        if (!iss->problems && iss->err && iss->errLen) {
+            snprintf(iss->err, iss->errLen, "users.txt line %d: %s", lineNo_, what);
+        }
+        ++iss->problems;
     }
 
-    void assign(UserRec& u, const char* key, const char* val, int* problems, char* err, size_t errLen) {
+    void warn(users::Issues* iss, const char* what, const char* detail) {
+        if (!iss) return;
+        if (!iss->warnings && iss->warn && iss->warnLen) {
+            snprintf(iss->warn, iss->warnLen, "line %d: %s '%.20s'", lineNo_, what, detail);
+        }
+        ++iss->warnings;
+    }
+
+    // number: digits only, within range
+    bool number(users::Issues* iss, const char* key, const char* val, uint32_t max, uint32_t& out) {
+        char* end = nullptr;
+        unsigned long v = strtoul(val, &end, 10);
+        if (end == val || (end && *end) || v > max) {
+            char what[40];
+            snprintf(what, sizeof(what), "%.16s is not a number", key);
+            problem(iss, what);
+            return false;
+        }
+        out = static_cast<uint32_t>(v);
+        return true;
+    }
+
+    void assign(UserRec& u, const char* key, const char* val, users::Issues* iss) {
+        uint32_t n = 0;
         for (uint8_t i = 0; i < kUserFieldCount; ++i) {
             if (!strcmp(key, kUserFields[i].key)) {
-                copyUnescaped(users::fieldPtr(u, kUserFields[i]), kUserFields[i].size, val);
+                char* dst = users::fieldPtr(u, kUserFields[i]);
+                copyUnescaped(dst, kUserFields[i].size, val);
+                if (iss && unescapedLen(val) >= kUserFields[i].size) {
+                    char what[48];
+                    snprintf(what, sizeof(what), "%.16s is longer than %u characters",
+                             key, static_cast<unsigned>(kUserFields[i].size - 1));
+                    problem(iss, what);
+                }
                 return;
             }
         }
-        if (!strcmp(key, "pass"))             { strncpy(u.pass, val, sizeof(u.pass) - 1); }
-        else if (!strcmp(key, "created"))     { u.created    = static_cast<uint32_t>(strtoul(val, nullptr, 10)); }
-        else if (!strcmp(key, "last_call"))   { u.lastCall   = static_cast<uint32_t>(strtoul(val, nullptr, 10)); }
-        else if (!strcmp(key, "calls"))       { u.calls      = static_cast<uint16_t>(strtoul(val, nullptr, 10)); }
-        else if (!strcmp(key, "day"))         { u.dayKey     = static_cast<uint32_t>(strtoul(val, nullptr, 10)); }
-        else if (!strcmp(key, "day_minutes")) { u.dayMinutes = static_cast<uint16_t>(strtoul(val, nullptr, 10)); }
-        else if (!strcmp(key, "locked"))      { u.locked     = ieq(val, "yes") || !strcmp(val, "1"); }
-        else note(problems, err, errLen, "unknown key");
+        if (!strcmp(key, "pass")) {
+            if (strlen(val) >= sizeof(u.pass)) problem(iss, "pass is too long");
+            strncpy(u.pass, val, sizeof(u.pass) - 1);
+            if (iss && u.pass[0] && !validHash(u.pass)) {
+                problem(iss, "pass is not a salt$hash (set passwords on the BBS)");
+            }
+        }
+        else if (!strcmp(key, "created"))     { if (number(iss, key, val, 0xFFFFFFFFu, n)) u.created = n; }
+        else if (!strcmp(key, "last_call"))   { if (number(iss, key, val, 0xFFFFFFFFu, n)) u.lastCall = n; }
+        else if (!strcmp(key, "calls"))       { if (number(iss, key, val, 0xFFFFu, n)) u.calls = static_cast<uint16_t>(n); }
+        else if (!strcmp(key, "day"))         { if (number(iss, key, val, 0xFFFFFFFFu, n)) u.dayKey = n; }
+        else if (!strcmp(key, "day_minutes")) { if (number(iss, key, val, 0xFFFFu, n)) u.dayMinutes = static_cast<uint16_t>(n); }
+        else if (!strcmp(key, "locked"))      { u.locked = ieq(val, "yes") || !strcmp(val, "1"); }
+        else if (!strcmp(key, "level")) {
+            if      (ieq(val, "sysop")) u.level = static_cast<uint8_t>(Access::Sysop);
+            else if (ieq(val, "co1"))   u.level = static_cast<uint8_t>(Access::CoSysop1);
+            else if (ieq(val, "co2"))   u.level = static_cast<uint8_t>(Access::CoSysop2);
+            else if (ieq(val, "user") || !*val) u.level = 0;
+            else problem(iss, "level must be user, co2, co1 or sysop");
+        }
+        else warn(iss, "unknown key", key);          // dropped when the file is next written
     }
 
     FILE* f_;
@@ -217,8 +296,11 @@ void writeRecord(FILE* f, const UserRec& u) {
         writeEscaped(f, users::fieldPtr(u, kUserFields[i]));
         fputc('\n', f);
     }
-    fprintf(f, "pass = %s\ncreated = %u\nlast_call = %u\ncalls = %u\nday = %u\nday_minutes = %u\nlocked = %s\n\n",
-            u.pass, static_cast<unsigned>(u.created), static_cast<unsigned>(u.lastCall),
+    static const char* kLevels[] = { "user", "co2", "co1", "sysop" };
+    fprintf(f, "pass = %s\nlevel = %s\ncreated = %u\nlast_call = %u\ncalls = %u\nday = %u\n"
+               "day_minutes = %u\nlocked = %s\n\n",
+            u.pass, kLevels[u.level < 4 ? u.level : 0],
+            static_cast<unsigned>(u.created), static_cast<unsigned>(u.lastCall),
             static_cast<unsigned>(u.calls), static_cast<unsigned>(u.dayKey),
             static_cast<unsigned>(u.dayMinutes), u.locked ? "yes" : "no");
 }
@@ -237,6 +319,11 @@ users::Result rewrite(const char* replaceHandle, const UserRec* replacement, con
 
     bool found = false;
     FILE* in = fopen(live, "r");
+    if (!in && errno != ENOENT) {                    // readable but not openable: never overwrite
+        fclose(out);
+        remove(tmp);
+        return users::Result::IoError;
+    }
     if (in) {
         static UserRec u;
         Reader r(in);
@@ -248,15 +335,22 @@ users::Result rewrite(const char* replaceHandle, const UserRec* replacement, con
             }
             writeRecord(out, u);
         }
+        bool readFailed = ferror(in) != 0;
         fclose(in);
+        if (readFailed) {                            // a half-read file would lose accounts
+            fclose(out);
+            remove(tmp);
+            return users::Result::IoError;
+        }
     }
     if (append) writeRecord(out, *append);
     bool ok = !ferror(out);
     ok = (fclose(out) == 0) && ok;
+    if (!ok) { remove(tmp); return users::Result::IoError; }   // keep the live file as it was
     if (replaceHandle && !found) { remove(tmp); return users::Result::NotFound; }
-    if (!ok || rename(tmp, live) != 0) {
+    if (rename(tmp, live) != 0) {
         remove(live);                                // some filesystems will not rename over a file
-        if (!ok || rename(tmp, live) != 0) { remove(tmp); return users::Result::IoError; }
+        if (rename(tmp, live) != 0) return users::Result::IoError;   // tmp kept for recovery
     }
     return users::Result::Ok;
 }
@@ -290,18 +384,24 @@ const char* fieldPtr(const UserRec& u, const UserField& f) {
     return reinterpret_cast<const char*>(&u) + f.offset;
 }
 
-bool find(const char* handle, UserRec& out) {
+Lookup lookup(const char* handle, UserRec& out) {
     char p[96];
     path(p, sizeof(p), "");
     FILE* f = fopen(p, "r");
-    if (!f) return false;
+    if (!f) return errno == ENOENT ? Lookup::Missing : Lookup::Error;
     Reader r(f);
     bool found = false;
     while (r.next(out)) {
         if (ieq(out.handle, handle)) { found = true; break; }
     }
+    bool bad = ferror(f) != 0;
     fclose(f);
-    return found;
+    if (found) return Lookup::Found;
+    return bad ? Lookup::Error : Lookup::Missing;
+}
+
+bool find(const char* handle, UserRec& out) {
+    return lookup(handle, out) == Lookup::Found;
 }
 
 uint8_t count() {
@@ -391,28 +491,35 @@ bool checkPassword(const UserRec& u, const char* password) {
     return diff == 0;
 }
 
-int validateFile(const char* p, char* err, size_t errLen) {
-    if (err && errLen) err[0] = '\0';
+int validateFile(const char* p, Issues& iss) {
+    if (iss.err && iss.errLen) iss.err[0] = '\0';
+    if (iss.warn && iss.warnLen) iss.warn[0] = '\0';
     FILE* f = fopen(p, "r");
-    if (!f) { if (err) snprintf(err, errLen, "cannot read users.txt"); return 1; }
-    int problems = 0;
+    if (!f) {
+        if (iss.err && iss.errLen) snprintf(iss.err, iss.errLen, "cannot read users.txt");
+        return ++iss.problems;
+    }
     static UserRec u;
     static char seen[BBS_MAX_USERS][BBS_USER_MAX + 1];
     uint16_t n = 0;
     Reader r(f);
-    while (r.next(u, &problems, err, errLen)) {
+    while (r.next(u, &iss)) {
+        int line = r.lineNo();
         auto fail = [&](const char* what) {
-            if (!problems && err && errLen) snprintf(err, errLen, "users.txt [%.20s]: %s", u.handle, what);
-            ++problems;
+            if (!iss.problems && iss.err && iss.errLen) {
+                snprintf(iss.err, iss.errLen, "users.txt line %d [%.20s]: %s", line, u.handle, what);
+            }
+            ++iss.problems;
         };
         if (!validHandle(u.handle))                     fail("invalid handle");
-        if (u.pass[0] && (strlen(u.pass) != 81 || u.pass[16] != '$')) fail("pass is not a hash (set passwords on the BBS)");
+        if (u.pass[0] && !validHash(u.pass))            fail("pass is not a salt$hash (set passwords on the BBS)");
         for (uint16_t k = 0; k < n && k < BBS_MAX_USERS; ++k) if (ieq(seen[k], u.handle)) fail("duplicate handle");
         if (n < BBS_MAX_USERS) strncpy(seen[n], u.handle, BBS_USER_MAX);
-        if (++n > syscfg::get().maxUsers) fail("more accounts than max_users");
+        uint8_t maxUsers = iss.maxUsers ? iss.maxUsers : syscfg::get().maxUsers;
+        if (++n > maxUsers) fail("more accounts than max_users");
     }
     fclose(f);
-    return problems;
+    return iss.problems;
 }
 
 } // namespace users

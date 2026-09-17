@@ -53,7 +53,10 @@ struct CallRec {
     uint32_t start   = 0;      // epoch of login, 0 if the clock was not set
     uint32_t secs    = 0;      // call length
 
-    enum : uint8_t { F_SYSOP = 1, F_GUEST = 2 };
+    enum : uint8_t { F_SYSOP = 1,        // call was on the sysop node
+                     F_GUEST = 2,        // guest call, no account
+                     F_RANK_CO = 4,      // account holds a co-sysop rank
+                     F_RANK_SYSOP = 8 }; // account holds the sysop rank
 };
 
 namespace calllog {

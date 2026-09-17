@@ -39,6 +39,7 @@
 #include <cstdint>
 #include <cstdio>
 #include "bbs.h"
+#include "calllog.h"
 
 namespace bbsu {
 
@@ -81,14 +82,30 @@ inline bool isAbortKey(int k) {
     return k == ' ' || k == KEY_ESC || k == KEY_BREAK;
 }
 
-// listHandle: a handle cut to a list column; guests get a trailing '*'
-// (explained by the kGuestNote footnote under the list)
-inline void listHandle(char* out, size_t n, const char* user, bool guest, int width) {
-    if (guest) snprintf(out, n, "%.*s*", width - 1, user);
-    else       snprintf(out, n, "%.*s", width, user);
+// markFor: the DDial-style marker printed between the node number and the
+// handle. Guests are '*', co-sysops '>', the sysop ']', callers a space.
+// It follows the account's staff rank, so it shows before they elevate too.
+inline char markFor(const Session& s) {
+    if (s.guest) return '*';
+    uint8_t r = s.rank > static_cast<uint8_t>(s.level) ? s.rank : static_cast<uint8_t>(s.level);
+    if (r >= static_cast<uint8_t>(Access::Sysop)) return ']';
+    return r ? '>' : ' ';
 }
 
-constexpr const char kGuestNote[]   = "* guest";
+// markForFlags: the same marker for a caller-log record
+inline char markForFlags(uint8_t flags) {
+    if (flags & CallRec::F_GUEST)      return '*';
+    if (flags & CallRec::F_RANK_SYSOP) return ']';
+    if (flags & CallRec::F_RANK_CO)    return '>';
+    return ' ';
+}
+
+// listHandle: a handle cut to a list column
+inline void listHandle(char* out, size_t n, const char* user, int width) {
+    snprintf(out, n, "%.*s", width, user);
+}
+
+constexpr const char kMarkKey[]     = "*GUEST  >CO-SYSOP  ]SYSOP";
 constexpr const char kMoreText[]    = "[More] Y/n/c ";
 constexpr uint8_t    kMoreLen       = sizeof(kMoreText) - 1;
 constexpr const char kConfirmText[] = "Log off (Y/N)? ";

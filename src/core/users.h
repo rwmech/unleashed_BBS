@@ -76,6 +76,11 @@ struct UserRec {
     uint32_t dayKey     = 0;           // clk::dayKey of dayMinutes
     uint16_t dayMinutes = 0;           // minutes used that day
     bool     locked     = false;       // sysop lock
+    uint8_t  level      = 0;           // staff rank, an Access value: 0 user,
+                                       // 1 co-sysop 2, 2 co-sysop 1, 3 sysop.
+                                       // Set when that password is entered;
+                                       // staff may only change their own level
+                                       // and below.
 };
 
 enum UserFieldFlag : uint8_t {
@@ -113,6 +118,11 @@ const char* fieldPtr(const UserRec& u, const UserField& f);
 // find: case-insensitive handle lookup
 bool find(const char* handle, UserRec& out);
 
+// lookup: like find, but says whether users.txt could be read at all, so a
+// caller never treats a filesystem problem as "no such account"
+enum class Lookup : uint8_t { Found, Missing, Error };
+Lookup lookup(const char* handle, UserRec& out);
+
 // count: accounts in the file
 uint8_t count();
 
@@ -138,8 +148,21 @@ Result remove(const char* handle);
 void setPassword(UserRec& u, const char* password);
 bool checkPassword(const UserRec& u, const char* password);
 
+// Issues: what a parse found. problems reject the file, warnings do not
+// (an unknown key is dropped the next time the file is written). Both
+// messages name the line number.
+struct Issues {
+    uint8_t maxUsers = 0;              // 0 = the live max_users
+    int    problems = 0;
+    char*  err      = nullptr;
+    size_t errLen   = 0;
+    int    warnings = 0;
+    char*  warn     = nullptr;
+    size_t warnLen  = 0;
+};
+
 // validateFile: a users.txt from an upload parses cleanly (handles valid
 // and unique, passwords well formed). Problems count, first one in err.
-int validateFile(const char* path, char* err, size_t errLen);
+int validateFile(const char* path, Issues& issues);
 
 } // namespace users

@@ -276,7 +276,7 @@ def test_ansi():
     time.sleep(2.6)
     c.pump(0.2)
     ok &= check("WHO 1 redraws every second", bytes(c.buf).count(b"Refresh 1s") >= 2)
-    ok &= check("refresh footer shows the idle clock", b"Idle still counts" in c.buf)
+    ok &= check("refresh footer shows the idle clock", b"Idle counts:" in c.buf)
     ok &= check("refresh redraws from home, no scroll", b"\x1b[H" in c.buf)
     c.buf.clear()
     c.send(b"x")
@@ -428,7 +428,7 @@ def test_sysop():
     x.send(b"who\r")
     x.wait_for(b"Who's online", 3)
     x.pump(0.5)
-    ok &= check("hidden sysop not in WHO", re.search(rb"[S1-6] Rob ", x.buf) is None)
+    ok &= check("hidden sysop not in WHO", re.search(rb"[S1-6][ *>\]]Rob", x.buf) is None)
     ok &= check("caller WHO shows terminals, not what others do", b"Terminal" in x.buf and b"Doing" not in x.buf)
     ok &= check("sysop's old node shows waiting", b"waiting for caller" in x.buf)
 
@@ -487,13 +487,18 @@ def test_sysop():
     x.send(b"w\r")
     x.wait_for(b"Who's online", 3)
     x.pump(0.5)
-    ok &= check("SHOW lists the sysop as S", re.search(rb"S Rob", x.buf) is not None)
+    ok &= check("SHOW lists the sysop, marked ] for sysop", re.search(rb"S\]Rob", x.buf) is not None)
+    ok &= check("WHO explains the markers", b"*GUEST" in x.buf and b"]SYSOP" in x.buf)
     r.buf.clear()
     r.send(b"who\r")
     r.wait_for(b"Who's online", 3)
     r.pump(0.5)
     ok &= check("staff WHO shows each caller's last command", b"Doing" in r.buf and
                 re.search(rb"\d Xavier +WHO ", r.buf) is not None)
+    if HOST in ("127.0.0.1", "localhost"):
+        users = (DATA / "users.txt").read_text()
+        ok &= check("the sysop password marks the account", "[Rob]" in users and
+                    users.split("[Rob]")[1].split("[")[0].count("level = sysop") == 1)
 
     r.buf.clear()
     r.send(f"kick {nx} bye now\r".encode())
@@ -532,8 +537,8 @@ def test_cosysop():
     a.send(b"who\r")
     a.wait_for(b"Who's online", 3)
     a.pump(0.5)
-    ok &= check("co-sysops stay visible in WHO",
-                re.search(rb"\d Cora ", a.buf) is not None and re.search(rb"\d Dex ", a.buf) is not None)
+    ok &= check("co-sysops stay visible in WHO, marked >",
+                re.search(rb"\d>Cora ", a.buf) is not None and re.search(rb"\d>Dex ", a.buf) is not None)
 
     c1.buf.clear()
     c1.send(b"help\r")
@@ -566,7 +571,22 @@ def test_cosysop():
     a.send(b"w\r")
     a.wait_for(b"Who's online", 3)
     a.pump(0.5)
-    ok &= check("hidden co-sysop shows as a free line", re.search(rb"\d Cora ", a.buf) is None)
+    ok &= check("hidden co-sysop shows as a free line", re.search(rb"Cora", a.buf) is None)
+    c2.buf.clear()
+    c2.send(b"who\r")
+    c2.wait_for(b"Who's online", 3)
+    c2.pump(0.5)
+    ok &= check("staff see a hidden co-sysop, marked hidden",
+                re.search(rb"\d>Cora +hidden", c2.buf) is not None)
+    c1.buf.clear()
+    c1.send(b"user edit Rob\r")
+    ok &= check("a co-sysop cannot edit the sysop's account",
+                c1.wait_for(b"above your level", 4))
+    c1.buf.clear()
+    c1.send(b"user edit Alice\r")
+    ok &= check("a co-sysop can still edit a caller's account", c1.wait_for(b"EDIT ACCOUNT", 4))
+    c1.send(b"\x1b")
+    c1.wait_for(b"Cancelled", 3)
 
     c1.buf.clear()
     c1.send(f"kick {n2} demoted\r".encode())
@@ -753,8 +773,11 @@ def test_user_admin():
     s.buf.clear()
     s.send(b"user edit newbie\r")
     ok &= check("USER EDIT opens the form", s.wait_for(b"EDIT ACCOUNT", 5) and s.wait_for(b"new@example.com", 3))
-    s.send(DOWN * 7 + b"y" + F1)
-    ok &= check("lock saved", s.wait_for(b"Account Newbie saved.", 5))
+    s.send(DOWN * 7 + b"c" + DOWN + b"y" + F1)      # Level -> Co2, Locked -> Y
+    ok &= check("lock and level saved", s.wait_for(b"Account Newbie saved.", 5))
+    if HOST in ("127.0.0.1", "localhost"):
+        users = (DATA / "users.txt").read_text()
+        ok &= check("level written to users.txt", "level = co2" in users)
     c, which = handle_then("Newbie", [b"This account is locked."])
     ok &= check("locked account refused", which == 0 and c.wait_closed(8))
     c.close()
@@ -762,7 +785,7 @@ def test_user_admin():
     s.buf.clear()
     s.send(b"user edit Newbie\r")
     s.wait_for(b"EDIT ACCOUNT", 5)
-    s.send(DOWN * 7 + b"n" + F1)
+    s.send(DOWN * 8 + b"n" + F1)
     s.wait_for(b"Account Newbie saved.", 5)
     c, which = handle_then("Newbie", [b"Password:"])
     c.send(b"pw5678\r")
@@ -832,10 +855,10 @@ def test_guest():
     a = ansi_login("Alice")
     a.buf.clear()
     a.send(b"who\r")
-    a.wait_for(b"* guest", 4)
-    ok &= check("WHO marks the guest with * and a footnote",
-                re.search(rb"\d Visitor\* ", a.buf) is not None and re.search(rb"\d Alice ", a.buf) is not None
-                and b"* guest" in a.buf)
+    a.wait_for(b"*GUEST", 4)
+    ok &= check("WHO marks the guest with * and shows the key",
+                re.search(rb"\d\*Visitor ", a.buf) is not None and re.search(rb"\d Alice ", a.buf) is not None
+                and b"*GUEST" in a.buf)
     if PASSWORD:
         c.buf.clear()
         c.send(f"bye {PASSWORD}\r".encode())
@@ -848,8 +871,8 @@ def test_guest():
     time.sleep(0.3)
     a.buf.clear()
     a.send(b"last\r")
-    a.wait_for(b"* guest", 4)
-    ok &= check("LAST marks guest calls with *", re.search(rb"Visitor\* ", a.buf) is not None)
+    a.wait_for(b"*GUEST", 4)
+    ok &= check("LAST marks guest calls with *", re.search(rb"\*Visitor ", a.buf) is not None)
     a.close()
     if HOST in ("127.0.0.1", "localhost"):
         users = (DATA / "users.txt").read_text()
@@ -1049,6 +1072,16 @@ def test_backup():
     c.send(TEST_PW.encode() + b"\r")
     ok &= check("callers see the uploaded bulletin", c.wait_for(b"Custom line from upload test", 8))
     c.close()
+
+    # --- an unknown key in users.txt is accepted with a warning naming the line
+    if users:
+        edited = users.replace("\ncalls = ", "\nnickname = Bobby\ncalls = ", 1)
+        status, body, seen = upload_with_answer(s, make_zip({"users.txt": edited.encode()}), b"y")
+        ok &= check("unknown users.txt key warns with a line number and applies",
+                    seen and status == 200 and b"unknown key" in bytes(s.buf) and b"line " in bytes(s.buf))
+        c, which = handle_then("Alice", [b"Password:", b"[R]egister"])
+        ok &= check("accounts survived the edited upload", which == 0)
+        c.close()
 
     # --- self_register = no and guest = no: only accounts get in, then back on
     def with_access(value):

@@ -13,7 +13,7 @@ source. See the LICENSE file for terms.
 
 # µnleashed BBS: command reference
 
-Version 0.7.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
+Version 0.8.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
 
 ## Calling in
 
@@ -86,7 +86,7 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | Command | Shortcut | What it does |
 |---|---|---|
 | `HELP` | `H`, `?` | Command list, generated from the command table: only the commands you can use, 40 columns wide on every terminal, descriptions aligned in one column. |
-| `WHO` | `W` | Who is on each node: handle, terminal, minutes on, idle time (mm:ss). A hidden sysop and the busy line are never listed. Staff with `NODES` see a Doing column (the last command each caller ran, verb only, never arguments) instead of the terminal. |
+| `WHO` | `W` | Who is on each node: a marker, handle, terminal, minutes on, idle time (mm:ss). The busy line is never listed, and a hidden sysop or co-sysop looks like a free line to callers. Staff see hidden and lurking sessions, marked `hidden` or `lurking`, and with `NODES` get a Doing column (the last command each caller ran, verb only, never arguments) instead of the terminal. |
 | `WHO n` | `W n` | The same list redrawn in place every n seconds (`who_refresh_min`..`who_refresh_max`, default 1..30) until you press a key. The footer shows the idle clock: refreshing is not input, so the idle hangup still counts down. |
 | `MEM` | `M` | Heap statistics and session sizing. |
 | `TERM` | `T` | Terminal type, size, telnet mode, emulated line speed. |
@@ -103,6 +103,19 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | `G` | | Log off after a `Log off (Y/N)?` confirm. |
 | `BYE` | | Log off now. `OFF`, `LOGOFF` and `QUIT` do the same. |
 
+A marker sits between the node number and the handle in WHO, NODES, LAST, DASH and the user manager, with a key line under the list:
+
+```
+1 NormalUser
+2*GuestUser
+3>CoSysop
+4]Sysop
+---------------------------------------
+*GUEST  >CO-SYSOP  ]SYSOP
+```
+
+The marker follows the account, so staff are marked even before they type `BYE <password>` on this call. Guests are always `*`.
+
 Other nodes see `*** handle is on node n` and `*** handle left node n` when callers come and go.
 
 ## Timeouts and limits
@@ -110,6 +123,7 @@ Other nodes see `*** handle is on node n` and `*** handle left node n` when call
 | Limit | Default | Behavior |
 |---|---|---|
 | Handle prompt idle | 30 s / 60 s | warning, then hangup |
+| Sign-up form idle | 2 min / 3 min | warning on the form's status line, then hangup |
 | Shell idle | 20 min (`idle_minutes`) | warning 1 minute before, then hangup |
 | Per call | 60 min (`call_minutes`) | warnings at 5 and 1 minute left, then hangup |
 | Per day | 480 min (`day_minutes`) | counted per account, saved at each logoff; checked at login |
@@ -136,6 +150,8 @@ When all 6 nodes are in use:
 | Co-sysop 2 | `cosysop2_password` | stays on its caller node | `CO2` column of `[access]` |
 
 There is one sysop node. A second sysop login while it is in use is a plain logoff. Any number of callers can hold co-sysop levels at once.
+
+Entering a staff password also marks that caller's account with the rank, which is what the `>` and `]` markers in the lists come from. The mark stays until staff change it in `USER EDIT`. Guests and the busy line have no account, so nothing is marked.
 
 ### Getting in
 
@@ -168,9 +184,11 @@ All caller commands still work. Node arguments are `1`-`6`, `S` (sysop node) or 
 | `BANS` | `BANS` | Active IP bans and minutes remaining. |
 | `UNBAN a.b.c.d` | `UNBAN` | Lift a ban. |
 | `USERS` | `USERS` | User manager: cursor list of accounts with edit, add and delete (ANSI, PETSCII). A paged list on plain ASCII. |
-| `USER ADD` | `USERS` | Add-account form: handle, password, fields, Locked. |
+| `USER ADD` | `USERS` | Add-account form: handle, password, fields, Level, Locked. |
 | `USER EDIT handle` | `USERS` | Edit-account form. Empty `New pass` keeps the password. Renames follow callers who are online. |
 | `USER DEL handle` | `USERS` | Delete after `Delete handle (y/N)?`. Not your own account. |
+
+Staff may only add, edit, lock, rename or delete accounts at their own rank or below, and the `Level` field only offers their own rank and below. So a co-sysop cannot touch the sysop's account, and nobody can promote themselves. `Space` steps the `Level` field through the choices, or press the first letter (`u`, `2`, `1`, `s`).
 | `DROP` | any staff | Co-sysop: give up staff access. Sysop: leave the sysop node for a free caller node. Time limits apply again from now. |
 
 Rank rules:

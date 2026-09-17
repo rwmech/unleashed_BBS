@@ -167,6 +167,10 @@ void BackupService::service(const fd_set& r, const fd_set& w, uint32_t now) {
             if (rep.rejected) snprintf(detail_, sizeof(detail_), "%u rejected (%.60s), %u screens removed",
                                        rep.rejected, rep.firstReject, rep.removed);
             else              snprintf(detail_, sizeof(detail_), "nothing rejected, %u screens removed", rep.removed);
+            if (rep.note[0]) {
+                size_t at = strlen(detail_);
+                snprintf(detail_ + at, sizeof(detail_) - at, "; %.70s", rep.note);
+            }
             st_        = St::Approve;
             approveBy_ = now + BBS_BACKUP_APPROVE_MS;
             plat::log("backup: %s; %s; waiting for sysop", summary_, detail_);
@@ -433,6 +437,7 @@ void BackupService::dropClient(const char* why) {
     if (upload_) { fclose(upload_); upload_ = nullptr; }
     if (st_ == St::Body || st_ == St::Extract || st_ == St::Approve) imp_.discard();
     exp_.abort();
+    exp_.dropSnapshot();                             // the users.txt copy taken for a download
     plat::log("backup: client %s done (%s)", clientIp_, why);
     st_ = St::Idle;
     outLen_ = outPos_ = 0;

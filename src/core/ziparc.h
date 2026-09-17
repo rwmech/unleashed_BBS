@@ -83,7 +83,7 @@ public:
     void abort();
 
 private:
-    enum class Src   : uint8_t { File, Config, Manifest };
+    enum class Src   : uint8_t { File, Config, Manifest, Snapshot };
     enum class Phase : uint8_t { Local, Data, Central, End, Done };
 
     struct Entry {
@@ -95,6 +95,11 @@ private:
     };
 
     bool   addEntry(const char* name, Src src);
+    bool   snapshotUsers();
+public:
+    // dropSnapshot: delete the users.txt copy taken for this download
+    void   dropSnapshot();
+private:
     bool   measure(Entry& e);
     size_t readData(Entry& e, uint8_t* buf, size_t cap);
     size_t cfgRead(uint8_t* buf, size_t cap);
@@ -138,6 +143,7 @@ struct ImportReport {
     bool     hasUsers   = false;
     bool     hasScreens = false;
     char     firstReject[96] = {};
+    char     note[72]        = {};   // accepted with a warning (unknown keys)
 };
 
 class ZipImport {

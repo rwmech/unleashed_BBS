@@ -89,6 +89,22 @@ void Bbs::cmdLurk(Session& s) {
 }
 
 // ---------------------------------------------------------------------------
+// markAccount: remember the rank on the account that just used a staff
+// password. Guests and the busy line have no account to mark.
+// ---------------------------------------------------------------------------
+void Bbs::markAccount(Session& s, Access level) {
+    s.rank = static_cast<uint8_t>(level) > s.rank ? static_cast<uint8_t>(level) : s.rank;
+    if (s.guest || !s.user[0]) return;
+    static UserRec u;
+    if (!users::find(s.user, u)) return;
+    if (u.level >= static_cast<uint8_t>(level)) return;
+    u.level = static_cast<uint8_t>(level);
+    if (users::update(u.handle, u) == users::Result::Ok) {
+        plat::log("bbs: account '%s' marked %s", u.handle, syscfg::levelName(level));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // elevate: move a caller (or busy-line guest) onto the sysop node
 // ---------------------------------------------------------------------------
 void Bbs::elevate(Session& s, uint32_t now) {
@@ -110,6 +126,7 @@ void Bbs::elevate(Session& s, uint32_t now) {
     d.dnd        = false;
     d.busyLoginUntil = 0;
     d.timeWarned = 0;
+    markAccount(d, Access::Sysop);
     if (!d.loggedIn) {                        // busy-line guest was never logged in
         d.loggedIn   = true;
         d.loginAt    = now;
@@ -144,6 +161,7 @@ void Bbs::coElevate(Session& s, Access level, uint32_t now) {
     s.level      = level;
     s.perms      = syscfg::permsFor(level);
     s.timeWarned = 0;
+    markAccount(s, level);
 
     Term& t = s.term;
     Timeline& tl = s.tl;
@@ -195,7 +213,7 @@ bool Bbs::rowNodes(Session& s) {
     Term& t = s.term;
     Timeline& tl = s.tl;
     bool wide = t.cols() >= 60;
-    const char* fmt = wide ? "%c %-20.20s %-15.15s %-10.10s %4s %5s" : "%c %-10.10s %-15.15s %4s %5s";
+    const char* fmt = wide ? "%c%c%-20.20s %-15.15s %-10.10s %4s %5s" : "%c%c%-10.10s %-15.15s %4s %5s";
     char buf[96];
     char left[12];
     char idle[8];
@@ -210,8 +228,8 @@ bool Bbs::rowNodes(Session& s) {
             return true;
         }
         if (i == 1) {
-            if (wide) snprintf(buf, sizeof(buf), fmt, 'N', "Handle", "IP", "Terminal", "Left", "Idle");
-            else      snprintf(buf, sizeof(buf), fmt, 'N', "Handle", "IP", "Left", "Idle");
+            if (wide) snprintf(buf, sizeof(buf), fmt, 'N', ' ', "Handle", "IP", "Terminal", "Left", "Idle");
+            else      snprintf(buf, sizeof(buf), fmt, 'N', ' ', "Handle", "IP", "Left", "Idle");
             t.color(tl, Color::LightBlue);
             t.text(tl, buf);
             t.nl(tl);
@@ -220,21 +238,13 @@ bool Bbs::rowNodes(Session& s) {
         uint8_t k = static_cast<uint8_t>(i - 2);
         if (k == kSessions) { rowRule(s); return true; }
         if (k == kSessions + 1) {
-            say(t, tl, Color::DarkGrey, kGuestNote);
+            say(t, tl, Color::DarkGrey, kMarkKey);
             t.nl(tl);
             return true;
         }
         if (k > kSessions + 1) return false;
         const Session* o = all_[k];
         if (o->role != Role::Caller && o->st == SState::Free) continue;
-        if (o != &s && outranks(*o, s) && (!o->visible || o->lurk)) {
-            if (o->role != Role::Caller) continue;   // hidden sysop node: no row
-            snprintf(buf, sizeof(buf), "%c -", nodeChar(*o));   // hidden senior co-sysop
-            t.color(tl, Color::DarkGrey);
-            t.text(tl, buf);
-            t.nl(tl);
-            return true;
-        }
 
         if (o->st == SState::Free) {
             snprintf(buf, sizeof(buf), "%c -", nodeChar(*o));
@@ -245,7 +255,8 @@ bool Bbs::rowNodes(Session& s) {
         }
 
         char h[24] = "(no handle)";
-        if (o->user[0]) listHandle(h, sizeof(h), o->user, o->guest, wide ? 20 : 10);
+        if (o->user[0]) listHandle(h, sizeof(h), o->user, wide ? 20 : 10);
+        bool hidden = o != &s && (!o->visible || o->lurk);
         if (o->role == Role::Caller && o->loggedIn && !can(*o, PERM_NOLIMITS)) {
             int32_t sec = secondsLeft(*o, now);
             if (sec == INT32_MAX) snprintf(left, sizeof(left), "--");
@@ -254,9 +265,9 @@ bool Bbs::rowNodes(Session& s) {
             snprintf(left, sizeof(left), "--");
         }
         fmtIdle(idle, sizeof(idle), now - o->lastInput);
-        if (wide) snprintf(buf, sizeof(buf), fmt, nodeChar(*o), h, o->ip, o->term.name(), left, idle);
-        else      snprintf(buf, sizeof(buf), fmt, nodeChar(*o), h, o->ip, left, idle);
-        t.color(tl, o == &s ? Color::White : Color::Grey);
+        if (wide) snprintf(buf, sizeof(buf), fmt, nodeChar(*o), markFor(*o), h, o->ip, o->term.name(), left, idle);
+        else      snprintf(buf, sizeof(buf), fmt, nodeChar(*o), markFor(*o), h, o->ip, left, idle);
+        t.color(tl, o == &s ? Color::White : (hidden ? Color::DarkGrey : Color::Grey));
         t.text(tl, buf);
         t.nl(tl);
         return true;

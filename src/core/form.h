@@ -61,6 +61,7 @@ enum FormFlag : uint8_t {
     FF_READONLY = 4,    // shown, never focused
     FF_TEXTAREA = 8,    // four 37-column rows under the label
     FF_YESNO    = 16,   // one letter, Y or N, space toggles
+    FF_CYCLE    = 32,   // one of choices, space steps to the next
 };
 
 struct FormField {
@@ -68,6 +69,7 @@ struct FormField {
     char*       buf     = nullptr;   // value, edited in place
     uint8_t     cap     = 0;         // max characters, excluding the terminator
     uint8_t     flags   = FF_NONE;
+    const char* choices = nullptr;   // FF_CYCLE: "User|Co2|Co1|Sysop"
 };
 
 class Form {
@@ -90,6 +92,9 @@ public:
     // after: cursor below the form, ready for normal output
     void after(Term& t, Timeline& tl);
 
+    // wipe: forget the line-mode input buffer (it can hold a password)
+    void wipe();
+
 private:
     static constexpr uint8_t kLabelCol = 2;
     static constexpr uint8_t kBoxCol   = 12;
@@ -105,6 +110,7 @@ private:
     void placeCursor(Term& t, Timeline& tl);
     void setFocus(uint8_t next, Term& t, Timeline& tl);
     uint8_t nextFocus(int dir) const;
+    static bool cycle(FormField& f, int k);
     Res  keyPositional(int k, Term& t, Timeline& tl);
 
     // line mode

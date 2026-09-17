@@ -67,7 +67,7 @@ What is inside:
 | Path | What it is |
 |---|---|
 | `system.cfg` | all settings, the staff passwords show as `***` |
-| `users.txt` | user accounts, passwords as salted hashes, see [USERS.md](USERS.md#userstxt) |
+| `users.txt` | user accounts, passwords as salted hashes, see [USERS.md](USERS.md#userstxt). The download is taken from a snapshot, so accounts may change while it streams without spoiling the zip. |
 | `screens/*.asc .ans .seq .p40 .p80` | display files, see [SCREENS.md](SCREENS.md) |
 | `MANIFEST.txt` | version, date, file list (ignored on upload) |
 

@@ -483,10 +483,11 @@ bool Bbs::rowWho(Session& s) {
     char buf[80];
     char on[8];
     char idle[8];
-    const char* fmt = "%c %-12.12s %-10.10s %3s %5s";
+    const char* fmt = "%c%c%-12.12s %-10.10s %3s %5s";
     uint32_t now = plat::millis();
     bool refresh = s.watch != ListKind::None;
     bool staff   = can(s, PERM_NODES);
+    bool seeAll  = s.perms != 0;                     // staff also see hidden and lurking
 
     for (;;) {
         uint8_t i = s.listIdx++;
@@ -497,7 +498,7 @@ bool Bbs::rowWho(Session& s) {
             return true;
         }
         if (i == 1) {
-            snprintf(buf, sizeof(buf), fmt, 'N', "Handle", staff ? "Doing" : "Terminal", "Min", "Idle");
+            snprintf(buf, sizeof(buf), fmt, 'N', ' ', "Handle", staff ? "Doing" : "Terminal", "Min", "Idle");
             rowText(s, Color::LightBlue, buf);
             return true;
         }
@@ -506,7 +507,7 @@ bool Bbs::rowWho(Session& s) {
         if (k < BBS_MAX_NODES) {
             n = &nodes_[k];
         } else if (k == BBS_MAX_NODES) {
-            if (sysop_.st == SState::Free || !sysop_.visible || sysop_.lurk) {
+            if (sysop_.st == SState::Free || (!seeAll && (!sysop_.visible || sysop_.lurk))) {
                 if (refresh) { rowText(s, Color::Grey, ""); return true; }   // keep the frame height
                 continue;
             }
@@ -515,25 +516,26 @@ bool Bbs::rowWho(Session& s) {
             rowRule(s);
             return true;
         } else if (k == BBS_MAX_NODES + 2) {
-            rowText(s, Color::DarkGrey, kGuestNote);
+            rowText(s, Color::DarkGrey, kMarkKey);
             return true;
         } else {
             return false;
         }
 
         bool hidden = n != &s && (!n->visible || n->lurk);   // hidden co-sysop looks like a free line
-        if (n->st == SState::Free || hidden) {
+        if (n->st == SState::Free || (hidden && !seeAll)) {
             snprintf(buf, sizeof(buf), "%c -- waiting for caller --", nodeChar(*n));
             rowText(s, Color::DarkGrey, buf);
             return true;
         }
         char h[16];
-        if (n->user[0]) listHandle(h, sizeof(h), n->user, n->guest, 12);
+        if (n->user[0]) listHandle(h, sizeof(h), n->user, 12);
         else snprintf(h, sizeof(h), "%s", n->st == SState::Detect || n->st == SState::Intro ? "(connecting)" : "(logging in)");
+        const char* what = staff ? (hidden ? (n->lurk ? "lurking" : "hidden") : doingText(*n)) : n->term.name();
         snprintf(on, sizeof(on), "%u", static_cast<unsigned>((now - n->connectedAt) / 60000u));
         fmtIdle(idle, sizeof(idle), now - n->lastInput);
-        snprintf(buf, sizeof(buf), fmt, nodeChar(*n), h, staff ? doingText(*n) : n->term.name(), on, idle);
-        rowText(s, n == &s ? Color::White : Color::Grey, buf);
+        snprintf(buf, sizeof(buf), fmt, nodeChar(*n), markFor(*n), h, what, on, idle);
+        rowText(s, n == &s ? Color::White : (hidden ? Color::DarkGrey : Color::Grey), buf);
         return true;
     }
 }
@@ -552,10 +554,11 @@ bool Bbs::rowWatchFooter(Session& s) {
     }
     if (s.listSub == 2) {
         int32_t left = idleSecondsLeft(s, plat::millis());
-        const char* page = s.mb.empty() ? "" : "  page waiting";
+        const char* page = s.mb.empty() ? "" : "  page!";
         if (left < 0) snprintf(buf, sizeof(buf), "No idle limit%s", page);
-        else          snprintf(buf, sizeof(buf), "Idle still counts: %ld:%02ld left%s",
+        else          snprintf(buf, sizeof(buf), "Idle counts: %ld:%02ld left%s",
                                static_cast<long>(left / 60), static_cast<long>(left % 60), page);
+        buf[rowWidth(s)] = '\0';                      // never wrap a refresh frame
         rowText(s, left >= 0 && left < 60 ? Color::LightRed : Color::DarkGrey, buf, false);
         s.listSub = 3;
         return true;
@@ -629,7 +632,7 @@ bool Bbs::rowDash(Session& s) {
             rowRule(s);
             return true;
         case 4:
-            snprintf(buf, sizeof(buf), "%c %-12.12s %-10.10s %5s %4s", 'N', "Handle", "Doing", "Idle", "Left");
+            snprintf(buf, sizeof(buf), "%c%c%-12.12s %-10.10s %5s %4s", 'N', ' ', "Handle", "Doing", "Idle", "Left");
             rowText(s, Color::LightBlue, buf);
             return true;
         case 13: {
@@ -662,7 +665,7 @@ bool Bbs::rowDash(Session& s) {
             return true;
         }
         case 15:
-            snprintf(buf, sizeof(buf), "%-32s%s", "Last calls", kGuestNote);
+            snprintf(buf, sizeof(buf), "%-14s%s", "Last calls", kMarkKey);
             rowText(s, Color::Yellow, buf);
             return true;
         default:
@@ -684,8 +687,10 @@ bool Bbs::rowDash(Session& s) {
             if (sec != INT32_MAX) snprintf(left, sizeof(left), "%ld", static_cast<long>(sec > 0 ? (sec + 59) / 60 : 0));
         }
         char h[16] = "(logging in)";
-        if (n.user[0]) listHandle(h, sizeof(h), n.user, n.guest, 12);
-        snprintf(buf, sizeof(buf), "%c %-12.12s %-10.10s %5s %4s", nodeChar(n), h, doingText(n), idle, left);
+        if (n.user[0]) listHandle(h, sizeof(h), n.user, 12);
+        bool hidden = &n != &s && (!n.visible || n.lurk);
+        snprintf(buf, sizeof(buf), "%c%c%-12.12s %-10.10s %5s %4s", nodeChar(n), markFor(n), h,
+                 hidden ? (n.lurk ? "lurking" : "hidden") : doingText(n), idle, left);
         rowText(s, &n == &s ? Color::White : Color::Grey, buf);
         return true;
     }
@@ -697,8 +702,8 @@ bool Bbs::rowDash(Session& s) {
             clk::fmtEpoch(when, sizeof(when), "%m/%d %H:%M", r.start);
             char node = (r.flags & CallRec::F_SYSOP) ? 'S' : static_cast<char>('0' + (r.node % 10));
             char h[16];
-            listHandle(h, sizeof(h), r.user, r.flags & CallRec::F_GUEST, 12);
-            snprintf(buf, sizeof(buf), "%-12.12s %c %-11s %4u min", h, node, when,
+            listHandle(h, sizeof(h), r.user, 12);
+            snprintf(buf, sizeof(buf), "%c%-11.11s %c %-11s %4u min", markForFlags(r.flags), h, node, when,
                      static_cast<unsigned>((r.secs + 59u) / 60u));
             rowText(s, Color::Grey, buf);
         } else {
@@ -722,18 +727,18 @@ bool Bbs::rowLast(Session& s) {
     bool sysop = can(s, PERM_NODES);       // sees IPs
     char buf[96];
 
-    if (s.listSub == 1) {                            // after the closing rule: the footnote
+    if (s.listSub == 1) {                            // after the closing rule: the key
         s.listSub = 2;
-        rowText(s, Color::DarkGrey, kGuestNote);
+        rowText(s, Color::DarkGrey, kMarkKey);
         return true;
     }
     if (s.listSub) return false;
     uint8_t i = s.listIdx++;
     if (i == 0) { rowTitle(s, "Last callers"); return true; }
     if (i == 1) {
-        if (wide && sysop) snprintf(buf, sizeof(buf), "%-20s N %-10s %-11s %4s %s", "Handle", "Terminal", "When", "Min", "IP");
-        else if (wide)     snprintf(buf, sizeof(buf), "%-20s N %-10s %-11s %4s", "Handle", "Terminal", "When", "Min");
-        else               snprintf(buf, sizeof(buf), "%-12s N %-11s %4s", "Handle", "When", "Min");
+        if (wide && sysop) snprintf(buf, sizeof(buf), " %-20s N %-10s %-11s %4s %s", "Handle", "Terminal", "When", "Min", "IP");
+        else if (wide)     snprintf(buf, sizeof(buf), " %-20s N %-10s %-11s %4s", "Handle", "Terminal", "When", "Min");
+        else               snprintf(buf, sizeof(buf), " %-11s N %-11s %4s", "Handle", "When", "Min");
         rowText(s, Color::LightBlue, buf);
         return true;
     }
@@ -761,10 +766,11 @@ bool Bbs::rowLast(Session& s) {
         unsigned mins = static_cast<unsigned>((r.secs + 59u) / 60u);
         const char* term = Term::nameOf(static_cast<TermType>(r.term), static_cast<Charset>(r.charset));
         char h[24];
-        listHandle(h, sizeof(h), r.user, r.flags & CallRec::F_GUEST, wide ? 20 : 12);
-        if (wide && sysop) snprintf(buf, sizeof(buf), "%-20.20s %c %-10.10s %-11s %4u %s", h, node, term, when, mins, r.ip);
-        else if (wide)     snprintf(buf, sizeof(buf), "%-20.20s %c %-10.10s %-11s %4u", h, node, term, when, mins);
-        else               snprintf(buf, sizeof(buf), "%-12.12s %c %-11s %4u", h, node, when, mins);
+        char mk = markForFlags(r.flags);
+        listHandle(h, sizeof(h), r.user, wide ? 20 : 11);
+        if (wide && sysop) snprintf(buf, sizeof(buf), "%c%-20.20s %c %-10.10s %-11s %4u %s", mk, h, node, term, when, mins, r.ip);
+        else if (wide)     snprintf(buf, sizeof(buf), "%c%-20.20s %c %-10.10s %-11s %4u", mk, h, node, term, when, mins);
+        else               snprintf(buf, sizeof(buf), "%c%-11.11s %c %-11s %4u", mk, h, node, when, mins);
         rowText(s, Color::Grey, buf);
         return true;
     }

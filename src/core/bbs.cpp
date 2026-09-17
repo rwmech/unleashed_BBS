@@ -397,6 +397,7 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
     s.idleWarned    = false;
     s.busyLoginUntil = 0;
     s.guest         = false;
+    s.rank          = 0;
     s.doing[0]      = '\0';
 
     s.list          = ListKind::None;
@@ -416,7 +417,10 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
     s.confirm       = ConfirmKind::Logoff;
     s.backToUsers   = false;
     s.ulSel = s.ulTop = s.ulCount = 0;
-    s.origHandle[0] = s.pwA[0] = s.pwB[0] = s.pwC[0] = '\0';
+    memset(s.pwA, 0, sizeof(s.pwA));
+    memset(s.pwB, 0, sizeof(s.pwB));
+    memset(s.pwC, 0, sizeof(s.pwC));
+    s.origHandle[0] = '\0';
     s.edit          = UserRec();
     s.level         = Access::None;
     s.perms         = 0;
@@ -467,8 +471,12 @@ void Bbs::closeSession(Session& s, const char* why, uint32_t now) {
         r.node    = s.id;
         r.term    = static_cast<uint8_t>(s.term.type());
         r.charset = static_cast<uint8_t>(s.term.charset());
+        uint8_t rank = s.rank > static_cast<uint8_t>(s.level) ? s.rank : static_cast<uint8_t>(s.level);
         r.flags   = static_cast<uint8_t>((s.role == Role::Sysop ? CallRec::F_SYSOP : 0) |
-                                         (s.guest ? CallRec::F_GUEST : 0));
+                                         (s.guest ? CallRec::F_GUEST : 0) |
+                                         (!s.guest && rank >= static_cast<uint8_t>(Access::Sysop)
+                                              ? CallRec::F_RANK_SYSOP
+                                              : (!s.guest && rank ? CallRec::F_RANK_CO : 0)));
         r.start   = s.loginEpoch;
         r.secs    = secs;
         calllog::append(r);
@@ -484,6 +492,10 @@ void Bbs::closeSession(Session& s, const char* why, uint32_t now) {
         s.loggedIn = false;
     }
 
+    memset(s.pwA, 0, sizeof(s.pwA));                 // typed passwords never outlive the call
+    memset(s.pwB, 0, sizeof(s.pwB));
+    memset(s.pwC, 0, sizeof(s.pwC));
+    s.form.wipe();
     if (s.fd >= 0) close(s.fd);
     s.fd = -1;
     s.scr.close();
@@ -562,6 +574,7 @@ void Bbs::processInput(Session& s, uint32_t now) {
         if (s.st == SState::Free) { s.rxLen = s.rxPos = 0; return; }
         if (s.st != SState::Detect && s.tl.freeBytes() < BBS_RX_ROOM) return;
         uint8_t b = s.rxBuf[s.rxPos++];
+        s.lastRx = now;                              // keeps ESC [ B from splitting into ESC
         if (s.st == SState::Detect) {
             if (s.det.feed(b, now, s.tl) == Detector::Result::Done) onDetected(s, now);
             continue;
@@ -878,7 +891,15 @@ void Bbs::onHandle(Session& s, uint32_t now) {
     }
 
     memcpy(s.user, name, n + 1);
-    if (users::find(name, s.edit)) {
+    users::Lookup found = users::lookup(name, s.edit);
+    if (found == users::Lookup::Error) {                // accounts unreadable: refuse, never
+        s.user[0] = '\0';                               // offer the handle as new
+        plat::log("bbs: node %u users.txt unreadable at login", s.id);
+        inputError(s, kPromptLen, "Accounts are unavailable. Try again shortly.", "Try again shortly");
+        armName(s);
+        return;
+    }
+    if (found == users::Lookup::Found) {
         strncpy(s.user, s.edit.handle, BBS_USER_MAX);   // the account's own spelling
         if (s.edit.locked) {
             plat::log("bbs: node %u locked account '%s'", s.id, s.user);
@@ -889,7 +910,6 @@ void Bbs::onHandle(Session& s, uint32_t now) {
             hangup(s, "Too many wrong passwords. Try again later.", now);
             return;
         }
-        s.passTries = 0;
         askPassword(s);
         return;
     }
@@ -963,7 +983,10 @@ void Bbs::onNewHandle(Session& s, int k, uint32_t now) {
 // handleOnline: another logged-in session uses this handle
 bool Bbs::handleOnline(const Session& s, const char* handle) const {
     for (const Session* o : all_) {
-        if (o != &s && o->loggedIn && ieq(o->user, handle)) return true;
+        if (o == &s || !o->user[0] || !ieq(o->user, handle)) continue;
+        if (o->loggedIn) return true;
+        if (o->st == SState::AskRegister) return true;            // choosing R or G
+        if (o->st == SState::Form && o->formKind == FormKind::Signup) return true;
     }
     return false;
 }
@@ -1016,9 +1039,27 @@ void Bbs::onPassword(Session& s, uint32_t now) {
     uint8_t stars = s.ed.shown();
     t.color(tl, Color::Grey);
     fx::spinner(t, tl, fx::Spin::Line, 650, 90);
-    bool ok = users::checkPassword(s.edit, s.ed.text());
+    static UserRec fresh;                            // static: off the task stack
+    users::Lookup found = users::lookup(s.user, fresh);
+    bool ok = found == users::Lookup::Found && users::checkPassword(fresh, s.ed.text());
     s.ed = LineEditor();                             // wipe the typed password
     fx::rubout(t, tl, stars, 20);
+
+    if (found == users::Lookup::Found && (fresh.locked || logins_.locked(s.user, now))) {
+        s.edit = fresh;
+        hangup(s, fresh.locked ? "This account is locked. Ask the sysop."
+                               : "Too many wrong passwords. Try again later.", now);
+        return;
+    }
+    if (found == users::Lookup::Missing) {           // deleted while typing
+        hangup(s, "That account is gone.", now);
+        return;
+    }
+    if (found == users::Lookup::Error) {
+        hangup(s, "Accounts are unavailable. Try again shortly.", now);
+        return;
+    }
+    s.edit = fresh;
 
     if (ok) {
         logins_.clear(s.user);
@@ -1065,6 +1106,7 @@ void Bbs::completeLogin(Session& s, uint32_t now) {
     }
 
     s.loggedIn   = true;
+    s.rank       = s.guest ? 0 : s.edit.level;
     s.loginAt    = now;
     s.loginEpoch = clk::epoch();
     s.timeWarned = 0;
@@ -1268,11 +1310,16 @@ void Bbs::checkTimers(Session& s, uint32_t now) {
         if (s.st == SState::BusyWait || s.busyLoginUntil) return;   // countdown or login window rules
     }
 
-    bool     login   = s.st == SState::AskName || s.st == SState::AskPass || s.st == SState::AskRegister;
+    bool inForm      = s.st == SState::Form || s.st == SState::UserList;
+    bool signingUp   = inForm && !s.loggedIn;               // sign-up form: still a login
+    bool login       = s.st == SState::AskName || s.st == SState::AskPass ||
+                       s.st == SState::AskRegister || signingUp;
     uint32_t idleMin = syscfg::get().idleMinutes;           // 0 = shell never idles out
     if (!can(s, PERM_NOLIMITS) && (login || idleMin)) {
-        uint32_t limit = login ? BBS_NAME_TIMEOUT_MS : idleMin * 60000u;
-        uint32_t warn  = login ? BBS_NAME_WARN_MS
+        uint32_t limit = signingUp ? BBS_FORM_TIMEOUT_MS
+                       : login     ? BBS_NAME_TIMEOUT_MS : idleMin * 60000u;
+        uint32_t warn  = signingUp ? BBS_FORM_WARN_MS
+                       : login     ? BBS_NAME_WARN_MS
                        : (limit > 2u * BBS_IDLE_WARN_BEFORE_MS ? limit - BBS_IDLE_WARN_BEFORE_MS : limit / 2u);
         // lastInput can be stamped a few ms after this tick's "now"
         int32_t  since = static_cast<int32_t>(now - s.lastInput);
@@ -1286,7 +1333,7 @@ void Bbs::checkTimers(Session& s, uint32_t now) {
             unsigned left = static_cast<unsigned>((limit - idle + 999u) / 1000u);
             if (login) snprintf(msg, sizeof(msg), "Still there? Disconnecting in %u seconds.", left);
             else       snprintf(msg, sizeof(msg), "Idle: disconnecting in %u seconds.", left);
-            notify(s, Color::Yellow, msg);
+            warnNow(s, msg);
         }
     }
 
@@ -1301,7 +1348,7 @@ void Bbs::checkTimers(Session& s, uint32_t now) {
             s.timeWarned = level;
             long mins = (left + 59) / 60;
             snprintf(msg, sizeof(msg), "%ld minute%s left.", mins, mins == 1 ? "" : "s");
-            notify(s, Color::Yellow, msg);
+            warnNow(s, msg);
         }
     }
 }
@@ -1311,8 +1358,20 @@ void Bbs::checkTimers(Session& s, uint32_t now) {
 // ---------------------------------------------------------------------------
 bool Bbs::canNotify(const Session& s) const {
     bool atPrompt = s.st == SState::AskName || s.st == SState::AskPass || s.st == SState::More ||
-                    s.st == SState::Confirm || (s.st == SState::Shell && s.ed.active() && !s.scr.active());
+                    s.st == SState::Confirm || s.st == SState::Form || s.st == SState::UserList ||
+                    (s.st == SState::Shell && s.ed.active() && !s.scr.active());
     return atPrompt && s.tl.freeBytes() > 512 && s.tl.freeFrames() > 16;
+}
+
+// ---------------------------------------------------------------------------
+// warnNow: a timer warning where the caller is looking. A form has its own
+// status line and the user manager its message row; anywhere else the
+// warning goes above the prompt.
+// ---------------------------------------------------------------------------
+void Bbs::warnNow(Session& s, const char* msg) {
+    if (s.st == SState::Form)     { s.form.status(msg, Color::Yellow, s.term, s.tl); return; }
+    if (s.st == SState::UserList) { ulStatus(s, Color::Yellow, msg); return; }
+    notify(s, Color::Yellow, msg);
 }
 
 // ---------------------------------------------------------------------------

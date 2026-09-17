@@ -127,15 +127,21 @@ bool LoginGuard::locked(const char* handle, uint32_t now) {
 // fail: count inside the window; reuse an empty or the oldest slot
 // ---------------------------------------------------------------------------
 bool LoginGuard::fail(const char* handle, uint32_t now) {
-    Entry* slot   = nullptr;
-    Entry* spare  = nullptr;
+    Entry* slot  = nullptr;
+    Entry* empty = nullptr;
+    Entry* stale = nullptr;                          // window or lock has run out
     for (auto& e : slots_) {
         if (e.handle[0] && sameUser(e.handle, handle)) { slot = &e; break; }
-        if (!e.handle[0]) { if (!spare) spare = &e; continue; }
-        if (!e.until && (!spare || (spare->handle[0] && e.firstFail < spare->firstFail))) spare = &e;
+        if (!e.handle[0]) { if (!empty) empty = &e; continue; }
+        bool done = e.until ? static_cast<int32_t>(now - e.until) >= 0
+                            : now - e.firstFail > BBS_LOCK_WINDOW_MS;
+        if (done && (!stale || e.firstFail < stale->firstFail)) stale = &e;
     }
     if (!slot) {
-        slot = spare ? spare : &slots_[0];
+        slot = empty ? empty : stale;
+        // every slot holds a live counter or lock: never evict one, since
+        // that is how an attacker would clear a victim's failures
+        if (!slot) return true;                      // treat as locked: hang this call up
         *slot = Entry();
         strncpy(slot->handle, handle, BBS_USER_MAX);
     }
