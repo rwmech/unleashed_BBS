@@ -52,6 +52,14 @@ inline bool isAbortKey(int k) {
     return k == ' ' || k == KEY_ESC || k == KEY_BREAK;
 }
 
+// listHandle: a handle cut to a list column; guests get a trailing '*'
+// (explained by the kGuestNote footnote under the list)
+inline void listHandle(char* out, size_t n, const char* user, bool guest, int width) {
+    if (guest) snprintf(out, n, "%.*s*", width - 1, user);
+    else       snprintf(out, n, "%.*s", width, user);
+}
+
+constexpr const char kGuestNote[]   = "* guest";
 constexpr const char kMoreText[]    = "[More] Y/n/c ";
 constexpr uint8_t    kMoreLen       = sizeof(kMoreText) - 1;
 constexpr const char kConfirmText[] = "Log off (Y/N)? ";

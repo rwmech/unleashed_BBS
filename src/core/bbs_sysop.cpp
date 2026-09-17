@@ -190,7 +190,12 @@ bool Bbs::rowNodes(Session& s) {
         }
         uint8_t k = static_cast<uint8_t>(i - 2);
         if (k == kSessions) { rowRule(s); return true; }
-        if (k > kSessions) return false;
+        if (k == kSessions + 1) {
+            say(t, tl, Color::DarkGrey, kGuestNote);
+            t.nl(tl);
+            return true;
+        }
+        if (k > kSessions + 1) return false;
         const Session* o = all_[k];
         if (o->role != Role::Caller && o->st == SState::Free) continue;
         if (o != &s && outranks(*o, s) && (!o->visible || o->lurk)) {
@@ -210,7 +215,8 @@ bool Bbs::rowNodes(Session& s) {
             return true;
         }
 
-        const char* h = o->user[0] ? o->user : "(no handle)";
+        char h[24] = "(no handle)";
+        if (o->user[0]) listHandle(h, sizeof(h), o->user, o->guest, wide ? 20 : 10);
         if (o->role == Role::Caller && o->loggedIn && !can(*o, PERM_NOLIMITS)) {
             int32_t sec = secondsLeft(*o, now);
             if (sec == INT32_MAX) snprintf(left, sizeof(left), "--");

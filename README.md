@@ -24,7 +24,7 @@ Docs:
   - Image: about 920 KB, 59% of the 1.5 MB OTA slot.
   - Static RAM: 104 KB, including the 8-session pool (5.7 KB per session) and the backup buffers.
 - User accounts (0.6.0): self-registration through a form, salted SHA-256 passwords, per-handle lockout, PROFILE / PASSWORD / INFO, and a staff user manager. Up to 100 accounts on the board; more will need the SD card plugin.
-- 0.7.0 (not yet on hardware): `GUEST` logins (15 minutes, nothing saved), input effects in place (errors and passwords resolve on the same line), page and broadcast alerts, title bars on lists, a staff Doing column in WHO and DASH, Wi-Fi signal on DASH.
+- 0.7.0 (not yet on hardware): guest logins under any unused handle (marked `*`, 15 minutes, nothing saved), input effects in place (errors and passwords resolve on the same line), page and broadcast alerts, title bars on lists, a staff Doing column in WHO and DASH, Wi-Fi signal on DASH.
 - Commands come from a registry (`Command` tables); HELP, dispatch and permissions are generated from it, and plugins will register into it.
 - On hardware:
   - PuTTY and a C64 through TeensyROM have both called in.

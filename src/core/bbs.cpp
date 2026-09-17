@@ -438,7 +438,8 @@ void Bbs::closeSession(Session& s, const char* why, uint32_t now) {
         r.node    = s.id;
         r.term    = static_cast<uint8_t>(s.term.type());
         r.charset = static_cast<uint8_t>(s.term.charset());
-        r.flags   = s.role == Role::Sysop ? CallRec::F_SYSOP : 0;
+        r.flags   = static_cast<uint8_t>((s.role == Role::Sysop ? CallRec::F_SYSOP : 0) |
+                                         (s.guest ? CallRec::F_GUEST : 0));
         r.start   = s.loginEpoch;
         r.secs    = secs;
         calllog::append(r);
@@ -772,8 +773,8 @@ void Bbs::armName(Session& s) {
 void Bbs::loginHint(Session& s) {
     const SysConfig& cfg = syscfg::get();
     const char* hint = nullptr;
-    if (cfg.guestEnabled && cfg.selfRegister) hint = "New? Type a handle to join, or GUEST.";
-    else if (cfg.guestEnabled)                hint = "No account? Log in as GUEST.";
+    if (cfg.guestEnabled && cfg.selfRegister) hint = "New? Type a handle to join or visit.";
+    else if (cfg.guestEnabled)                hint = "New? Type a handle to visit as a guest.";
     else if (cfg.selfRegister)                hint = "New? Type a handle to join.";
     if (!hint) return;
     s.term.reset(s.tl);
@@ -801,10 +802,10 @@ void Bbs::inputError(Session& s, uint8_t used, const char* longMsg, const char* 
 }
 
 // ---------------------------------------------------------------------------
-// onHandle: validate, then GUEST, password (existing account), register
-// (new handle, when self-registration is on), or refuse. The editor leaves
-// the cursor on the handle line: errors rub out in place, every other path
-// starts its own line.
+// onHandle: one prompt for everyone. A known handle asks for its password;
+// an unknown one offers [R]egister and/or [G]uest (per system.cfg) or a
+// new handle. The editor leaves the cursor on the handle line: errors rub
+// out in place, every other path starts its own line.
 // ---------------------------------------------------------------------------
 void Bbs::onHandle(Session& s, uint32_t now) {
     Term& t = s.term;
@@ -825,14 +826,13 @@ void Bbs::onHandle(Session& s, uint32_t now) {
     char name[BBS_USER_MAX + 1];
     memcpy(name, p, n);
     name[n] = '\0';
-    bool guest = ieq(name, "GUEST");
 
-    if (ieq(name, "SYSOP") || (!guest && users::isGuestName(name))) {
+    if (ieq(name, "SYSOP")) {
         inputError(s, kPromptLen, "That handle is reserved.", "Reserved handle");
         armName(s);
         return;
     }
-    if (!guest && !users::validHandle(name)) {       // also stops terminal junk like "[3;20R"
+    if (!users::validHandle(name)) {                 // also stops terminal junk like "[3;20R"
         inputError(s, kPromptLen, "Use letters, digits, space - _ .", "A-Z 0-9 space - _ .");
         armName(s);
         return;
@@ -845,17 +845,6 @@ void Bbs::onHandle(Session& s, uint32_t now) {
         t.text(tl, "All nodes are in use.");
         t.nl(tl);
         prompt(s);
-        return;
-    }
-
-    const SysConfig& cfg = syscfg::get();
-    if (guest) {
-        if (!cfg.guestEnabled) {
-            inputError(s, kPromptLen, "Guest access is off here.", "No guests");
-            armName(s);
-            return;
-        }
-        loginGuest(s, now);
         return;
     }
 
@@ -876,41 +865,88 @@ void Bbs::onHandle(Session& s, uint32_t now) {
         return;
     }
 
-    if (!cfg.selfRegister) {
+    // unknown handle
+    const SysConfig& cfg = syscfg::get();
+    if (handleOnline(s, name)) {                     // a guest is already using it
         s.user[0] = '\0';
-        if (cfg.guestEnabled) inputError(s, kPromptLen, "No account by that name. Try GUEST.", "Unknown. Try GUEST");
-        else                  inputError(s, kPromptLen, "No account. The sysop creates accounts here.", "No such account");
+        inputError(s, kPromptLen, "That handle is online right now.", "Handle in use");
         armName(s);
         return;
     }
-    if (users::count() >= cfg.maxUsers) {
+    bool canRegister = cfg.selfRegister && users::count() < cfg.maxUsers;
+    if (!canRegister && !cfg.guestEnabled) {
         s.user[0] = '\0';
-        inputError(s, kPromptLen, "Sign-ups are closed: the BBS is full.", "BBS is full");
+        if (cfg.selfRegister) inputError(s, kPromptLen, "Sign-ups are closed: the BBS is full.", "BBS is full");
+        else                  inputError(s, kPromptLen, "No account. The sysop creates accounts here.", "No such account");
         armName(s);
         return;
     }
 
     t.reset(tl);
     t.nl(tl);
-    t.color(tl, Color::Yellow);
-    fx::typewriter(t, tl, "New handle. Register ", 12);
     t.color(tl, Color::White);
     t.text(tl, s.user);
     t.color(tl, Color::Yellow);
-    t.text(tl, " (Y/n)? ");
+    fx::typewriter(t, tl, " is new here.", 12);
+    t.nl(tl);
+    t.color(tl, Color::Yellow);
+    if (canRegister && cfg.guestEnabled) t.text(tl, "[R]egister, [G]uest or [N]ew handle? ");
+    else if (canRegister)                t.text(tl, "[R]egister or [N]ew handle? ");
+    else                                 t.text(tl, "[G]uest or [N]ew handle? ");
+    t.color(tl, Color::White);
     s.st        = SState::AskRegister;
     s.lastInput = plat::millis();
 }
 
 // ---------------------------------------------------------------------------
-// loginGuest: no account, no password, nothing saved. Named after the node
-// (Guest3), limited to guest_minutes per call, no daily limit.
+// onNewHandle: the answer to [R]egister / [G]uest / [N]ew handle
+// ---------------------------------------------------------------------------
+void Bbs::onNewHandle(Session& s, int k, uint32_t now) {
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    const SysConfig& cfg = syscfg::get();
+    bool canRegister = cfg.selfRegister && users::count() < cfg.maxUsers;
+    bool reg   = (k == 'r' || k == 'R') && canRegister;
+    bool guest = (k == 'g' || k == 'G') && cfg.guestEnabled;
+
+    if ((reg || guest) && handleOnline(s, s.user)) {  // taken while this caller chose
+        t.ch(tl, reg ? 'R' : 'G');
+        t.nl(tl);
+        t.color(tl, Color::LightRed);
+        t.text(tl, "That handle just came online.");
+        s.user[0] = '\0';
+        askName(s);
+        return;
+    }
+    if (reg) {
+        t.ch(tl, 'R');
+        startForm(s, FormKind::Signup, now);
+    } else if (guest) {
+        t.ch(tl, 'G');
+        loginGuest(s, now);
+    } else if (k == 'n' || k == 'N' || k == KEY_ESC || k == KEY_BREAK) {
+        t.ch(tl, 'N');
+        s.user[0] = '\0';
+        askName(s);
+    }
+}
+
+// handleOnline: another logged-in session uses this handle
+bool Bbs::handleOnline(const Session& s, const char* handle) const {
+    for (const Session* o : all_) {
+        if (o != &s && o->loggedIn && ieq(o->user, handle)) return true;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// loginGuest: the typed handle, no account, no password, nothing saved.
+// guest_minutes per call, no daily limit. Lists mark guests with '*'.
 // ---------------------------------------------------------------------------
 void Bbs::loginGuest(Session& s, uint32_t now) {
     Term& t = s.term;
     Timeline& tl = s.tl;
 
-    snprintf(s.user, sizeof(s.user), "Guest%u", s.id);
     s.guest = true;
     s.edit  = UserRec();
     plat::log("bbs: node %u guest login '%s'", s.id, s.user);
@@ -1541,13 +1577,7 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
 
         case SState::AskRegister:
             if (!tl.empty()) tl.skipDelays();
-            if (k == 'y' || k == 'Y' || k == KEY_ENTER) {
-                t.ch(tl, 'Y');
-                startForm(s, FormKind::Signup, now);
-            } else if (k == 'n' || k == 'N' || k == KEY_ESC || k == KEY_BREAK) {
-                t.ch(tl, 'N');
-                askName(s);
-            }
+            onNewHandle(s, k, now);
             return;
 
         case SState::Form: {

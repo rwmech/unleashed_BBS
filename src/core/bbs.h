@@ -224,6 +224,8 @@ private:
     void loginHint(Session& s);
     void drawNamePrompt(Session& s);
     void onHandle(Session& s, uint32_t now);
+    void onNewHandle(Session& s, int k, uint32_t now);
+    bool handleOnline(const Session& s, const char* handle) const;
     void loginGuest(Session& s, uint32_t now);
     void inputError(Session& s, uint8_t used, const char* longMsg, const char* shortMsg);
     void askPassword(Session& s);

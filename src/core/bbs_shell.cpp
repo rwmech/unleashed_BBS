@@ -485,6 +485,9 @@ bool Bbs::rowWho(Session& s) {
         } else if (k == BBS_MAX_NODES + 1) {
             rowRule(s);
             return true;
+        } else if (k == BBS_MAX_NODES + 2) {
+            rowText(s, Color::DarkGrey, kGuestNote);
+            return true;
         } else {
             return false;
         }
@@ -495,8 +498,9 @@ bool Bbs::rowWho(Session& s) {
             rowText(s, Color::DarkGrey, buf);
             return true;
         }
-        const char* h = n->user[0] ? n->user
-                      : (n->st == SState::Detect || n->st == SState::Intro ? "(connecting)" : "(logging in)");
+        char h[16];
+        if (n->user[0]) listHandle(h, sizeof(h), n->user, n->guest, 12);
+        else snprintf(h, sizeof(h), "%s", n->st == SState::Detect || n->st == SState::Intro ? "(connecting)" : "(logging in)");
         snprintf(on, sizeof(on), "%u", static_cast<unsigned>((now - n->connectedAt) / 60000u));
         fmtIdle(idle, sizeof(idle), now - n->lastInput);
         snprintf(buf, sizeof(buf), fmt, nodeChar(*n), h, staff ? doingText(*n) : n->term.name(), on, idle);
@@ -629,7 +633,8 @@ bool Bbs::rowDash(Session& s) {
             return true;
         }
         case 15:
-            rowText(s, Color::Yellow, "Last calls");
+            snprintf(buf, sizeof(buf), "%-32s%s", "Last calls", kGuestNote);
+            rowText(s, Color::Yellow, buf);
             return true;
         default:
             break;
@@ -649,7 +654,8 @@ bool Bbs::rowDash(Session& s) {
             int32_t sec = secondsLeft(n, now);
             if (sec != INT32_MAX) snprintf(left, sizeof(left), "%ld", static_cast<long>(sec > 0 ? (sec + 59) / 60 : 0));
         }
-        const char* h = n.user[0] ? n.user : "(logging in)";
+        char h[16] = "(logging in)";
+        if (n.user[0]) listHandle(h, sizeof(h), n.user, n.guest, 12);
         snprintf(buf, sizeof(buf), "%c %-12.12s %-10.10s %5s %4s", nodeChar(n), h, doingText(n), idle, left);
         rowText(s, &n == &s ? Color::White : Color::Grey, buf);
         return true;
@@ -661,7 +667,9 @@ bool Bbs::rowDash(Session& s) {
             char when[16];
             clk::fmtEpoch(when, sizeof(when), "%m/%d %H:%M", r.start);
             char node = (r.flags & CallRec::F_SYSOP) ? 'S' : static_cast<char>('0' + (r.node % 10));
-            snprintf(buf, sizeof(buf), "%-12.12s %c %-11s %4u min", r.user, node, when,
+            char h[16];
+            listHandle(h, sizeof(h), r.user, r.flags & CallRec::F_GUEST, 12);
+            snprintf(buf, sizeof(buf), "%-12.12s %c %-11s %4u min", h, node, when,
                      static_cast<unsigned>((r.secs + 59u) / 60u));
             rowText(s, Color::Grey, buf);
         } else {
@@ -685,7 +693,12 @@ bool Bbs::rowLast(Session& s) {
     bool sysop = can(s, PERM_NODES);       // sees IPs
     char buf[96];
 
-    if (s.listSub) return false;                     // closing rule already drawn
+    if (s.listSub == 1) {                            // after the closing rule: the footnote
+        s.listSub = 2;
+        rowText(s, Color::DarkGrey, kGuestNote);
+        return true;
+    }
+    if (s.listSub) return false;
     uint8_t i = s.listIdx++;
     if (i == 0) { rowTitle(s, "Last callers"); return true; }
     if (i == 1) {
@@ -718,9 +731,11 @@ bool Bbs::rowLast(Session& s) {
         char node = (r.flags & CallRec::F_SYSOP) ? 'S' : static_cast<char>('0' + (r.node % 10));
         unsigned mins = static_cast<unsigned>((r.secs + 59u) / 60u);
         const char* term = Term::nameOf(static_cast<TermType>(r.term), static_cast<Charset>(r.charset));
-        if (wide && sysop) snprintf(buf, sizeof(buf), "%-20.20s %c %-10.10s %-11s %4u %s", r.user, node, term, when, mins, r.ip);
-        else if (wide)     snprintf(buf, sizeof(buf), "%-20.20s %c %-10.10s %-11s %4u", r.user, node, term, when, mins);
-        else               snprintf(buf, sizeof(buf), "%-12.12s %c %-11s %4u", r.user, node, when, mins);
+        char h[24];
+        listHandle(h, sizeof(h), r.user, r.flags & CallRec::F_GUEST, wide ? 20 : 12);
+        if (wide && sysop) snprintf(buf, sizeof(buf), "%-20.20s %c %-10.10s %-11s %4u %s", h, node, term, when, mins, r.ip);
+        else if (wide)     snprintf(buf, sizeof(buf), "%-20.20s %c %-10.10s %-11s %4u", h, node, term, when, mins);
+        else               snprintf(buf, sizeof(buf), "%-12.12s %c %-11s %4u", h, node, when, mins);
         rowText(s, Color::Grey, buf);
         return true;
     }
@@ -891,10 +906,13 @@ void Bbs::cmdDnd(Session& s) {
 //   sysop password     -> hidden sysop node, every permission
 //   co-sysop password  -> stays on this node with that level's permissions
 // Only a raise counts (same or lower level is a plain logoff). A wrong
-// password is an ordinary logoff that counts toward an IP ban.
+// password is an ordinary logoff that counts toward an IP ban. Guests never
+// rise to staff: for them the argument is not even checked.
 // ---------------------------------------------------------------------------
 void Bbs::cmdBye(Session& s, const char* arg, uint32_t now) {
-    if (*arg && s.role != Role::Sysop && syscfg::anyPassword()) {
+    if (*arg && s.guest) {
+        plat::log("bbs: node %c guest BYE with an argument: plain logoff", nodeChar(s));
+    } else if (*arg && s.role != Role::Sysop && syscfg::anyPassword()) {
         Access lv = syscfg::passwordLevel(arg);
         if (lv != Access::None) {
             bans_.clear(s.ipAddr);

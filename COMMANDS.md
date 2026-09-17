@@ -17,24 +17,30 @@ Version 0.7.0. This file tracks every command and key the BBS understands, and i
 
 Full guide to accounts: [USERS.md](USERS.md).
 
-- A hint above the first prompt says how to get in: `New? Type a handle to join, or GUEST.` (it follows the `self_register` and `guest` settings).
-- `Enter your handle:` accepts letters, digits, space, `-`, `_` and `.`, up to 20 characters. A handle must start with a letter or digit. `SYSOP`, `GUEST` and `Guest<n>` are reserved. Case doesn't matter.
+- A hint above the first prompt says how to get in: `New? Type a handle to join or visit.` (it follows the `self_register` and `guest` settings).
+- `Enter your handle:` is the same for everyone. It accepts letters, digits, space, `-`, `_` and `.`, up to 20 characters. A handle must start with a letter or digit, and `SYSOP` is reserved. Case doesn't matter.
 - A handle that isn't accepted rubs out in place, the reason flashes on the same line and rubs out too, and you type again on that line. 40-column screens get a short reason (`Reserved handle`), wider ones the full sentence.
-- `GUEST` logs in without a password (see Guests below).
 - A known handle asks `Password:`. After Enter the stars spin, rub out and turn into `ACCESS GRANTED` on the same line. A wrong password flashes `ACCESS DENIED` there and clears for another try. 3 wrong passwords hang up the call; 5 for one handle within 15 minutes lock that handle for 15 minutes. ESC goes back to the handle prompt.
-- An unknown handle asks `New handle. Register <handle> (Y/n)?` and opens the sign-up form: password twice, name, email, and optional address, phone and profile. With `self_register = no` the handle is refused in place (`No account by that name. Try GUEST.`, or `The sysop creates accounts here.` when guests are off too).
+- An unknown handle shows `<handle> is new here.` and asks `[R]egister, [G]uest or [N]ew handle?`, offering only what `self_register` and `guest` allow (no `[R]egister` once `max_users` is reached).
+  - `R` opens the sign-up form: password twice, name, email, and optional address, phone and profile.
+  - `G` logs in as a guest under that handle (see Guests below).
+  - `N`, ESC or Ctrl-C go back to the handle prompt. Other keys are ignored.
+- A handle a guest is using right now is refused in place (`That handle is online right now.`).
+- With sign-ups and guests both off, an unknown handle is refused in place (`No account. The sysop creates accounts here.`).
 - A locked account is refused before the password.
 - If nothing is typed at the handle prompt, a warning appears at 30 s, followed by your partial input redrawn. The line hangs up at 60 s.
 - After login you see your node, the date and time, your call count and your remaining time. If `screens/bulletin.*` exists, it plays next.
 
 ### Guests
 
-- Type `GUEST` at the handle prompt. On by default; `guest = no` turns it off.
-- The session is named after its node (`Guest3`) and shows in WHO like any caller.
-- Nothing is saved: no account, no profile, no call count. The call still appears in `LAST`, like every call.
+- Type any handle that has no account, then `G`. On by default; `guest = no` turns it off.
+- Guests keep the handle they typed. WHO, LAST, NODES and DASH mark them with `*` (`Visitor*`) and explain it with a `* guest` footnote under the list.
+- Nothing is saved: no account, no profile, no call count. The call still appears in `LAST`, like every call, marked `*`.
+- Nobody else can take a guest's handle while the guest is on. Once they leave, the handle is free again (and anyone may register it).
 - 15 minutes per call (`guest_minutes`), with the usual warnings at 5 and 1 minute. No daily limit.
 - `PROFILE` and `PASSWORD` don't exist for guests (not in HELP, answered as unknown). `INFO` without a handle says `Guests have no account.`
-- Everything else works, including `PAGE` and `BYE <password>`.
+- Everything else works, including `PAGE`.
+- Guests can't become staff. `BYE <anything>` from a guest is a plain logoff; the password isn't checked and doesn't count toward a ban.
 
 ## Keys
 
@@ -127,6 +133,7 @@ Log in with your account as usual, then type `BYE <password>` at the command pro
 - A co-sysop password grants that level in place. The busy line has no node to keep, so a co-sysop password there is a plain logoff.
 - Only a raise in level counts. Entering the same or a lower level's password is a plain logoff.
 - A wrong password is an ordinary logoff. 3 wrong passwords from one IP within 15 minutes ban that IP for 15 minutes; banned connections are dropped silently.
+- Guests can't elevate: from a guest, `BYE <password>` is a plain logoff whatever the password. Staff log in with their account first.
 - An empty password in `system.cfg` disables that level.
 
 ### Staff commands
@@ -205,7 +212,7 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `activity_led_gpio` | `2` | LED that blinks on network traffic (the blue LED on DOIT-style boards), -1 = none |
 | `self_register` | `yes` | `no`: unknown handles can't sign up, staff add accounts |
 | `max_users` | `100` | account limit, 1..100 (more needs the SD card plugin) |
-| `guest` | `yes` | `no`: `GUEST` is refused at the handle prompt |
+| `guest` | `yes` | `no`: unknown handles are not offered `[G]uest` |
 | `guest_minutes` | `15` | per guest call, 0 = unlimited; guests have no daily limit |
 
 A value out of range is logged and the default is kept. An upload with a bad value is rejected, so it never replaces a working config.

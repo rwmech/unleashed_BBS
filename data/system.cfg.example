@@ -63,7 +63,8 @@ activity_led_gpio = 2
 self_register = yes
 max_users = 100
 
-# Guests: GUEST at the handle prompt, no account, nothing saved.
+# Guests: an unknown handle is offered [G]uest; no account, nothing saved,
+# marked with * in lists.
 # guest_minutes per call (0 = unlimited); guests have no daily limit.
 guest = yes
 guest_minutes = 15

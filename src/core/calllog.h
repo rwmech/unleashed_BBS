@@ -20,11 +20,11 @@ struct CallRec {
     uint8_t  node    = 0;      // 0 = sysop node, BBS_MAX_NODES + 1 = busy line
     uint8_t  term    = 0;      // TermType
     uint8_t  charset = 0;      // Charset
-    uint8_t  flags   = 0;      // F_SYSOP
+    uint8_t  flags   = 0;      // F_SYSOP, F_GUEST
     uint32_t start   = 0;      // epoch of login, 0 if the clock was not set
     uint32_t secs    = 0;      // call length
 
-    enum : uint8_t { F_SYSOP = 1 };
+    enum : uint8_t { F_SYSOP = 1, F_GUEST = 2 };
 };
 
 namespace calllog {

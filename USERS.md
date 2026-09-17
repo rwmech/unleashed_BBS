@@ -12,18 +12,21 @@ How callers get accounts, and how staff create, change, lock and delete them. Co
 
 ### Signing up
 
-With `self_register = yes` (the default), a handle the BBS doesn't know offers an account:
+Everyone starts at the same handle prompt. A handle the BBS doesn't know asks what to do:
 
 ```
 Enter your handle: Rob
-New handle. Register Rob (Y/n)?
+Rob is new here.
+[R]egister, [G]uest or [N]ew handle?
 ```
 
-`Y` or Enter opens the sign-up form. `N` or ESC goes back to the handle prompt.
+- `R` opens the sign-up form (only offered with `self_register = yes`, the default, and while `max_users` isn't reached).
+- `G` logs in as a guest under that handle (only offered with `guest = yes`, the default). See Guests below.
+- `N`, ESC or Ctrl-C go back to the handle prompt.
 
 | Field | Rules | Who sees it |
 |---|---|---|
-| Handle | from the prompt: letters, digits, space `-` `_` `.`, up to 20, starts with a letter or digit, not `SYSOP`, `GUEST` or `Guest<n>` | everyone |
+| Handle | from the prompt: letters, digits, space `-` `_` `.`, up to 20, starts with a letter or digit, not `SYSOP` | everyone |
 | Password, Again | 4 to 32 characters, typed twice, shown as `*` | nobody |
 | Name | required, up to 32 | everyone |
 | Email | required, must look like `a@b.c`, up to 64 | you and staff with `USERS` |
@@ -33,7 +36,7 @@ New handle. Register Rob (Y/n)?
 
 Handles match without regard to case, so `rob` and `ROB` are the same account. The BBS always shows the spelling it was created with.
 
-With `self_register = no`, an unknown handle is refused in place (`No account by that name. Try GUEST.`, or `No account. The sysop creates accounts here.` when guests are off too) and a staff member has to add the account.
+With `self_register = no`, only `[G]uest` is offered, and staff add accounts. With guests off too, an unknown handle is refused in place: `No account. The sysop creates accounts here.`
 
 When `max_users` is reached, sign-ups are refused with `Sign-ups are closed: the BBS is full.`
 
@@ -74,10 +77,22 @@ The daily time limit (`day_minutes`) is counted per account and survives logoffs
 
 ### Guests
 
-`GUEST` at the handle prompt gets in without an account (`guest = yes`, the default).
+A handle with no account, then `G`, gets in without an account (`guest = yes`, the default).
 
-- The session is called `Guest<node>`, for example `Guest3`.
+- The guest keeps the handle they typed. Lists mark guests with `*` and a `* guest` footnote:
+
+```
+ Who's online              Thu 17 Sep 16:22:37
+N Handle       Terminal   Min  Idle
+1 Alice        ANSI-UTF8    0 00:10
+2 Wanderer*    PETSCII-40   0 00:00
+---------------------------------------
+* guest
+```
+
+- Nobody else can use that handle while the guest is on. Afterwards it is free, and anyone can register it.
 - Nothing is saved. There is no account to edit, so `PROFILE` and `PASSWORD` don't exist for guests.
+- Guests can't become staff: `BYE <password>` from a guest just logs off.
 - A guest call lasts `guest_minutes` (15 by default) with warnings at 5 and 1 minute left. There is no daily limit.
 - The call is still listed in `LAST`, like every call.
 - To keep what they do, a guest signs up next time with a handle of their own.
@@ -93,7 +108,7 @@ The daily time limit (`day_minutes`) is counted per account and survives logoffs
 
 ## Staff
 
-Staff access still comes from `BYE <password>` ([COMMANDS.md](COMMANDS.md#staff-sysop-and-co-sysops)), not from an account. The sysop and co-sysops sign up and log in like any caller first, then elevate. Keeping the two apart means a guessed account password never grants staff rights.
+Staff access still comes from `BYE <password>` ([COMMANDS.md](COMMANDS.md#staff-sysop-and-co-sysops)), not from an account. The sysop and co-sysops sign up and log in like any caller first, then elevate. A guest session can't elevate. Keeping the two apart means a guessed account password never grants staff rights.
 
 The `USERS` permission (sysop always, co-sysop 1 by default, not co-sysop 2) grants everything below.
 
@@ -149,7 +164,7 @@ In `system.cfg`:
 |---|---|---|
 | `self_register` | `yes` | `no`: only staff can add accounts |
 | `max_users` | `100` | account limit, 1..100 |
-| `guest` | `yes` | `no`: `GUEST` is refused |
+| `guest` | `yes` | `no`: unknown handles are not offered `[G]uest` |
 | `guest_minutes` | `15` | per guest call, 0 = unlimited, no daily limit |
 
 ## users.txt

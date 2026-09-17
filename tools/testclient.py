@@ -181,10 +181,10 @@ def login(c, handle, pw=TEST_PW, as_pet=False, wait_main=True):
     The signup keys work for the cursor form and the ASCII line form alike."""
     enc = pet if as_pet else (lambda s: s.encode())
     c.send(enc(handle) + b"\r")
-    which = wait_any(c, [enc("Register"), enc("Password:")], 8)
+    which = wait_any(c, [enc("[R]egister"), enc("Password:")], 8)
     if which == 0:
         email = "".join(ch for ch in handle.lower() if ch.isalnum()) + "@example.com"
-        c.send(b"y")
+        c.send(b"r")
         c.wait_for(enc("NEW ACCOUNT"), 6)
         c.send(enc(pw) + b"\r" + enc(pw) + b"\r" + enc(handle) + b"\r" + enc(email) + b"\r\r\r\r\r")
         if not c.wait_for(enc("WELCOME ABOARD"), 10):
@@ -563,9 +563,16 @@ def handle_then(handle, pats, secs=8):
 
 def test_accounts():
     print("Accounts: sign-up checks, lockout, PROFILE, PASSWORD, INFO")
-    c, which = handle_then("Zed", [b"Register"])
-    ok = check("new handle offers registration", which == 0)
-    c.send(b"y")
+    c, which = handle_then("Zed", [b"[R]egister, [G]uest or [N]ew handle?"])
+    ok = check("new handle offers register, guest or a new handle", which == 0)
+    c.send(b"x")
+    c.pump(0.3)
+    ok &= check("other keys are ignored at that question", b"NEW ACCOUNT" not in c.buf and b"GUEST ACCESS" not in c.buf)
+    c.send(b"n")
+    ok &= check("N goes back to the handle prompt", c.wait_for(b"Enter your handle", 3))
+    c.send(b"Zed\r")
+    c.wait_for(b"[R]egister", 5)
+    c.send(b"r")
     ok &= check("sign-up form opens", c.wait_for(b"NEW ACCOUNT", 5))
     c.buf.clear()
     c.send(b"abc\rabc\r\r\r\r\r\r\r")
@@ -574,8 +581,8 @@ def test_accounts():
     ok &= check("ESC cancels the sign-up", c.wait_for(b"Sign-up cancelled.", 3) and c.wait_for(b"Enter your handle", 3))
     c.buf.clear()
     c.send(b"Zed\r")
-    c.wait_for(b"Register", 5)
-    c.send(b"y")
+    c.wait_for(b"[R]egister", 5)
+    c.send(b"r")
     c.wait_for(b"NEW ACCOUNT", 5)
     c.buf.clear()
     c.send(b"abcd\rabce\rZed\rzed@example.com\r\r\r\r\r")
@@ -583,8 +590,8 @@ def test_accounts():
     c.send(b"\x1b")
     c.wait_for(b"Enter your handle", 3)
     c.send(b"Zed\r")
-    c.wait_for(b"Register", 5)
-    c.send(b"y")
+    c.wait_for(b"[R]egister", 5)
+    c.send(b"r")
     c.wait_for(b"NEW ACCOUNT", 5)
     c.buf.clear()
     c.send(b"abcd\rabcd\rZed\rnot-an-email\r\r\r\r\r")
@@ -739,7 +746,7 @@ def test_user_admin():
     ok &= check("USER DEL asks (y/N)", s.wait_for(b"(y/N)?", 3))
     s.send(b"y")
     ok &= check("account deleted", s.wait_for(b"Account deleted.", 5))
-    c, which = handle_then("Newbie", [b"Register", b"Password:"])
+    c, which = handle_then("Newbie", [b"[R]egister", b"Password:"])
     ok &= check("deleted handle is new again", which == 0)
     c.close()
 
@@ -753,17 +760,19 @@ def test_user_admin():
 def test_guest():
     print("Guest access")
     c = Caller(ansi=True)
-    ok = check("login hint mentions GUEST", c.wait_for(b"or GUEST.", 10))
+    ok = check("login hint: join or visit", c.wait_for(b"New? Type a handle to join or visit.", 10))
     c.wait_for(b"Enter your handle", 5)
     c.buf.clear()
-    c.send(b"Guest7\r")
-    ok &= check("Guest<n> handles are reserved", c.wait_for(b"That handle is reserved.", 4))
+    c.send(b"sysop\r")
+    ok &= check("SYSOP is reserved", c.wait_for(b"That handle is reserved.", 4))
     ok &= check("errors rub out in place (no new prompt)", b"Enter your handle" not in c.buf)
     c.buf.clear()
-    c.send(b"guest\r")
-    ok &= check("GUEST gets in without a password", c.wait_for(b"GUEST ACCESS", 6) and c.wait_for(b"Main", 6))
-    name = re.search(rb"Welcome, (?:\x1b\[[0-9;]*m)*(Guest\d)", c.buf)
-    ok &= check("guest named after the node", name is not None and name.group(1) == f"Guest{c.node()}".encode())
+    c.send(b"Visitor\r")
+    ok &= check("unknown handle: register or guest", c.wait_for(b"Visitor", 4) and c.wait_for(b"[G]uest", 4))
+    c.send(b"g")
+    ok &= check("G gets in without a password", c.wait_for(b"GUEST ACCESS", 6) and c.wait_for(b"Main", 6))
+    ok &= check("guest keeps the handle they typed",
+                re.search(rb"Welcome, (?:\x1b\[[0-9;]*m)*Visitor", c.buf) is not None)
     ok &= check("guest told nothing is saved", b"nothing is saved" in c.buf)
     ok &= check("guest time limit 15 minutes", b"Time left: 15 min." in c.buf)
     c.buf.clear()
@@ -784,12 +793,36 @@ def test_guest():
         c.pump(0.2)
     ok &= check("HELP hides PROFILE and PASSWORD from guests",
                 b"LAST" in c.buf and b"PROFILE" not in c.buf and b"PASSWORD" not in c.buf)
-    c.send(b"bye\r")
-    c.wait_closed(8)
+
+    d, which = handle_then("visitor", [b"That handle is online right now.", b"ew handle?"])
+    ok &= check("a guest's handle can't be taken while they are on", which == 0)
+    d.close()
+
+    a = ansi_login("Alice")
+    a.buf.clear()
+    a.send(b"who\r")
+    a.wait_for(b"* guest", 4)
+    ok &= check("WHO marks the guest with * and a footnote",
+                re.search(rb"\d Visitor\* ", a.buf) is not None and re.search(rb"\d Alice ", a.buf) is not None
+                and b"* guest" in a.buf)
+    if PASSWORD:
+        c.buf.clear()
+        c.send(f"bye {PASSWORD}\r".encode())
+        ok &= check("guest BYE <sysop password> is a plain logoff",
+                    c.wait_closed(12) and b"Sysop node." not in c.buf and PASSWORD.encode() not in c.buf)
+    else:
+        c.send(b"bye\r")
+        c.wait_closed(8)
     c.close()
+    time.sleep(0.3)
+    a.buf.clear()
+    a.send(b"last\r")
+    a.wait_for(b"* guest", 4)
+    ok &= check("LAST marks guest calls with *", re.search(rb"Visitor\* ", a.buf) is not None)
+    a.close()
     if HOST in ("127.0.0.1", "localhost"):
         users = (DATA / "users.txt").read_text()
-        ok &= check("nothing saved for the guest", "[Guest" not in users)
+        ok &= check("nothing saved for the guest", "[Visitor]" not in users)
     return ok
 
 
@@ -980,7 +1013,7 @@ def test_backup():
     ok &= check("edited value live", "idle_minutes = 21" in cfg2)
     ok &= check("new screen added", "screens/extra.asc" in names2)
     ok &= check("screen missing from the upload removed", "screens/busy.seq" not in names2)
-    c, which = handle_then("Alice", [b"Password:", b"Register"])
+    c, which = handle_then("Alice", [b"Password:", b"[R]egister"])
     ok &= check("accounts restored from the upload", which == 0)
     c.send(TEST_PW.encode() + b"\r")
     ok &= check("callers see the uploaded bulletin", c.wait_for(b"Custom line from upload test", 8))
@@ -994,15 +1027,12 @@ def test_backup():
 
     status, body, seen = upload_with_answer(s, with_access("no"), b"y")
     ok &= check("self_register = no, guest = no applied", seen and status == 200)
-    c, which = handle_then("Stranger", [b"The sysop creates accounts here.", b"Register"])
-    ok &= check("no self-registration: new handle refused", which == 0)
-    c.buf.clear()
-    c.send(b"guest\r")
-    ok &= check("guest = no: GUEST refused", c.wait_for(b"Guest access is off here.", 5))
+    c, which = handle_then("Stranger", [b"The sysop creates accounts here.", b"ew handle?"])
+    ok &= check("no sign-up, no guests: new handle refused in place", which == 0)
     c.close()
     status, body, seen = upload_with_answer(s, with_access("yes"), b"y")
-    c, which = handle_then("Stranger", [b"The sysop creates accounts here.", b"Register"])
-    ok &= check("self_register = yes offers sign-up again", status == 200 and which == 1)
+    c, which = handle_then("Stranger", [b"The sysop creates accounts here.", b"[R]egister, [G]uest"])
+    ok &= check("self_register and guest back on: both offered", status == 200 and which == 1)
     c.close()
 
     # --- junk plus one real change, sysop says no

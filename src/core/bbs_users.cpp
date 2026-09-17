@@ -232,7 +232,7 @@ void Bbs::formSave(Session& s, uint32_t now) {
         case FormKind::UserAdd:
         case FormKind::UserEdit: {
             bool adding = s.formKind == FormKind::UserAdd;
-            if (!users::validHandle(s.edit.handle)) { s.form.fail(0, "Handle: A-Z 0-9 - _ . not reserved", t, tl); return; }
+            if (!users::validHandle(s.edit.handle)) { s.form.fail(0, "Handle: letters, digits, space - _ .", t, tl); return; }
             if (adding && strlen(s.pwA) < BBS_PASS_MIN) { s.form.fail(1, "Password needs 4 or more characters", t, tl); return; }
             if (!adding && *s.pwA && strlen(s.pwA) < BBS_PASS_MIN) { s.form.fail(1, "Password needs 4 or more characters", t, tl); return; }
             if (!checkUserFields(s, 2)) return;

@@ -65,11 +65,7 @@ extern const uint8_t   kUserFieldCount;
 namespace users {
 
 // validHandle: letters, digits, space - _ . ; starts alphanumeric; not SYSOP
-// and not a guest name
 bool validHandle(const char* h);
-
-// isGuestName: GUEST, Guest3, Guest-3 ... (reserved for guest sessions)
-bool isGuestName(const char* h);
 
 // validEmail: something@something.something, no spaces
 bool validEmail(const char* e);
