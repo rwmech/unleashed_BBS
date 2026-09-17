@@ -1,0 +1,12 @@
+[0;34mออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออ
+[1;37m@BBS@[0;37m v@VER@[0;36m  a telnet BBS on a bare ESP32
+[0;34mออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออ
+[0;37m Node @NODE@ of @NODES@, you are [1;33m@USER@[0;37m
+
+[1;37m (C) 2026 Robert Mech
+[0;37m Free software: GNU General Public License v2 or later.
+[0;37m Source and license: see the repository.
+
+[0;36m Built on ESP-IDF, FreeRTOS, lwIP and littlefs; their notices
+[0;36m travel with the firmware.
+[0;34mออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออ[0m

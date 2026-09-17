@@ -90,6 +90,13 @@ def cfg_value(key):
     return ""
 
 
+def bbs_version():
+    src = (ROOT / "src" / "config.h").read_text()
+    m = re.search(r'BBS_VERSION\s+"([^"]+)"', src)
+    return m.group(1) if m else "?"
+
+
+BBS_VERSION = bbs_version()
 PASSWORD = cfg_value("sysop_password")
 CO1 = cfg_value("cosysop1_password")
 CO2 = cfg_value("cosysop2_password")
@@ -205,6 +212,21 @@ def wait_any(c, pats, secs=10):
         if p in c.buf:
             return i
     return -1
+
+
+def read_list(c, secs=8):
+    """Pump a paged list to its end, answering each [More] once. On ANSI a
+    color code follows the prompt, so match it near the tail, not at the
+    very end of the buffer."""
+    end = time.time() + secs
+    answered = 0
+    while time.time() < end and b"stops output" not in c.buf:
+        seen = bytes(c.buf).count(b"[More] Y/n/c")
+        if seen > answered:
+            c.send(b"c")
+            answered = seen
+        c.pump(0.2)
+    return b"stops output" in c.buf
 
 
 def login(c, handle, pw=TEST_PW, as_pet=False, wait_main=True):
@@ -359,11 +381,7 @@ def test_ascii():
     ok &= check("ASCII form used plain prompts", b"Save (Y/n)?" in c.buf)
     c.buf.clear()
     c.send(b"help\r")
-    end = time.time() + 8
-    while time.time() < end and b"stops output" not in c.buf:
-        if c.buf.endswith(b"[More] Y/n/c "):
-            c.send(b"c")
-        c.pump(0.2)
+    read_list(c)
     text = bytes(c.buf).replace(b"[More] Y/n/c ", b"").replace(b"\x08 \x08", b"").decode("ascii", "replace")
     lines = [l for l in text.split("\r\n") if l]
     body = [l for l in lines if l != "help" and "---" not in l and "stops output" not in l and "Main" not in l]
@@ -840,11 +858,7 @@ def test_guest():
     ok &= check("INFO: guests have no account", c.wait_for(b"Guests have no account.", 3))
     c.buf.clear()
     c.send(b"help\r")
-    end = time.time() + 8
-    while time.time() < end and b"stops output" not in c.buf:
-        if c.buf.endswith(b"[More] Y/n/c "):
-            c.send(b"c")
-        c.pump(0.2)
+    read_list(c)
     ok &= check("HELP hides PROFILE and PASSWORD from guests",
                 b"LAST" in c.buf and b"PROFILE" not in c.buf and b"PASSWORD" not in c.buf)
 
@@ -877,6 +891,79 @@ def test_guest():
     if HOST in ("127.0.0.1", "localhost"):
         users = (DATA / "users.txt").read_text()
         ok &= check("nothing saved for the guest", "[Visitor]" not in users)
+    return ok
+
+
+def test_plugins():
+    print("Plugins: example plugin, levels, session ownership")
+    c = ansi_login("Plug")
+    c.buf.clear()
+    c.send(b"ping\r")
+    ok = check("a plugin command runs for everyone (read)", c.wait_for(b"howdy, Plug", 4))
+    ok &= check("its config key was read", b"howdy" in c.buf)
+    c.buf.clear()
+    c.send(b"poke\r")
+    ok &= check("write commands are refused without the level", c.wait_for(b"Unknown command", 4))
+    c.buf.clear()
+    c.send(b"example\r")
+    ok &= check("admin commands are refused too", c.wait_for(b"Unknown command", 4))
+    c.buf.clear()
+    c.send(b"help\r")
+    read_list(c)
+    ok &= check("HELP lists the plugin's read command only",
+                b"PING" in c.buf and b"POKE" not in c.buf and b"EXAMPLE" not in c.buf)
+
+    # the plugin owns the session until the caller quits
+    c.buf.clear()
+    c.send(b"echo\r")
+    ok &= check("a plugin can own the session", c.wait_for(b"Echo on. Q quits.", 4))
+    c.buf.clear()
+    c.send(b"hi")
+    ok &= check("keys go to the plugin", c.wait_for(b"hi", 3) and b"Main" not in c.buf)
+    c.send(b"q")
+    ok &= check("Q hands the session back", c.wait_for(b"Echo off.", 3) and c.wait_for(b"Main", 3))
+    c.close()
+
+    if not PASSWORD:
+        return ok
+    s = ansi_login("Rob")
+    s.buf.clear()
+    s.send(f"bye {PASSWORD}\r".encode())
+    s.wait_for(b"Sysop node.", 5)
+    s.buf.clear()
+    s.send(b"poke\r")
+    ok &= check("staff may run the write command", s.wait_for(b"Poked. Count is", 4))
+    s.buf.clear()
+    s.send(b"ping\r")
+    s.wait_for(b"ticks", 4)
+    ok &= check("the periodic hook is running", re.search(rb"[1-9]\d* ticks", s.buf) is not None)
+    s.buf.clear()
+    s.send(b"example\r")
+    ok &= check("the sysop may run the admin command", s.wait_for(b"greeting=howdy", 4))
+    ok &= check("the plugin got its own folder", b"/p/example/count" in s.buf)
+    s.buf.clear()
+    s.send(b"plugins\r")
+    ok &= check("PLUGINS lists it as running",
+                s.wait_for(b"Plugins", 4) and s.wait_for(b"example", 3) and s.wait_for(b"running", 3))
+    ok &= check("PLUGINS shows the disk reserve", b"Disk free" in s.buf)
+    s.buf.clear()
+    s.send(b"mem\r")
+    ok &= check("MEM reports free disk space", s.wait_for(b"Disk free", 4))
+    s.close()
+    if HOST in ("127.0.0.1", "localhost"):
+        count = DATA / "p" / "example" / "count"
+        ok &= check("the plugin wrote its file under p/example/", count.exists())
+    return ok
+
+
+def test_about():
+    print("ABOUT screen")
+    c = ansi_login("Curious")
+    c.buf.clear()
+    c.send(b"about\r")
+    ok = check("ABOUT plays the screen", c.wait_for(b"GNU General Public License v2 or later", 6))
+    ok &= check("with the version and handle", b"Curious" in c.buf and BBS_VERSION.encode() in c.buf)
+    c.close()
     return ok
 
 
@@ -1086,8 +1173,9 @@ def test_backup():
     # --- self_register = no and guest = no: only accounts get in, then back on
     def with_access(value):
         lines = [l for l in cfg2.splitlines() if not l.strip().startswith(("self_register", "guest"))]
-        extra = f"\nself_register = {value}\nguest = {value}\n"
-        return make_zip({"system.cfg": ("\n".join(lines) + extra).encode()})
+        cut = next((i for i, l in enumerate(lines) if l.strip().startswith("[")), len(lines))
+        lines[cut:cut] = [f"self_register = {value}", f"guest = {value}"]   # keys live above sections
+        return make_zip({"system.cfg": ("\n".join(lines) + "\n").encode()})
 
     status, body, seen = upload_with_answer(s, with_access("no"), b"y")
     ok &= check("self_register = no, guest = no applied", seen and status == 200)
@@ -1167,7 +1255,7 @@ def test_ban():
 if __name__ == "__main__":
     results = [test_ansi(), test_telnet_first(), test_petscii(), test_ascii(),
                test_page(), test_sysop(), test_cosysop(), test_accounts(), test_user_admin(), test_guest(),
-               test_bulletin(), test_idle_login(), test_busy()]
+               test_plugins(), test_about(), test_bulletin(), test_idle_login(), test_busy()]
     if "--backup" in FLAGS:
         results.append(test_backup())
     if "--ban" in FLAGS:

@@ -44,6 +44,7 @@
 #include "clock.h"
 #include "sysconfig.h"
 #include "calllog.h"
+#include "plugin.h"
 #include "../platform/platform.h"
 
 #include <climits>
@@ -144,6 +145,8 @@ const Command* Bbs::coreCommands(uint8_t& count) {
               s.term.text(s.tl, kConfirmText);
               s.term.color(s.tl, Color::White);
           } },
+        { "ABOUT", "", 0, CF_NONE, "ABOUT", "this BBS, version, license",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdAbout(s); } },
         { "BYE", "", 0, CF_NONE, "BYE", "log off now",
           [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdBye(s, a, n); } },
         { "OFF", "", 0, CF_HIDDEN, "", "",
@@ -181,6 +184,8 @@ const Command* Bbs::coreCommands(uint8_t& count) {
           [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Bans); } },
         { "UNBAN", "", PERM_UNBAN, CF_NONE, "UNBAN ip", "lift a ban",
           [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdUnban(s, a); b.prompt(s); } },
+        { "PLUGINS", "", 0, CF_STAFF, "PLUGINS", "plugins and their state",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Plugins); } },
         { "DROP", "", 0, CF_STAFF, "DROP", "give up staff access",
           [](Bbs& b, Session& s, const char*, uint32_t n) { b.cmdDrop(s, n); } },
     };
@@ -200,6 +205,30 @@ const Command* Bbs::commandAt(uint8_t index) const {
     return nullptr;
 }
 
+// pluginOf: which plugin owns the command at this index (0xFF = core)
+uint8_t Bbs::pluginOf(uint8_t index) const {
+    for (uint8_t t = 0; t < tableCount_; ++t) {
+        if (index < tables_[t].count) return tables_[t].plugin;
+        index = static_cast<uint8_t>(index - tables_[t].count);
+    }
+    return 0xFF;
+}
+
+// ---------------------------------------------------------------------------
+// allowed: may this session run this command? Core commands go by the
+// permission bits; a plugin's commands go by its read / write / admin
+// levels, with anything untagged treated as write.
+// ---------------------------------------------------------------------------
+bool Bbs::allowed(const Session& s, const Command& c, uint8_t plugin) const {
+    if (c.perm && !can(s, c.perm)) return false;
+    if ((c.flags & CF_STAFF) && !s.perms) return false;
+    if ((c.flags & CF_ACCOUNT) && s.guest) return false;
+    if (plugin == 0xFF) return true;
+    if (!plugins::running(plugin)) return false;
+    uint8_t which = (c.flags & CF_READ) ? 0 : ((c.flags & CF_ADMIN) ? 2 : 1);
+    return plugins::mayUse(s, plugins::levelFor(plugin, which));
+}
+
 // ---------------------------------------------------------------------------
 // findCommand: verb or one-letter key the session is allowed to run
 // ---------------------------------------------------------------------------
@@ -211,9 +240,7 @@ const Command* Bbs::findCommand(const char* verb, const Session& s) const {
         if (!c->fn || (c->flags & CF_HELPONLY)) continue;
         bool match = ieq(verb, c->verb) || (key && strchr(c->keys, key));
         if (!match) continue;
-        if (c->perm && !can(s, c->perm)) continue;             // not granted: stays unknown
-        if ((c->flags & CF_STAFF) && !s.perms) continue;
-        if ((c->flags & CF_ACCOUNT) && s.guest) continue;
+        if (!allowed(s, *c, pluginOf(i))) continue;            // not granted: stays unknown
         return c;
     }
 }
@@ -286,6 +313,7 @@ bool Bbs::listRow(Session& s) {
         case ListKind::Bans:  return rowBans(s);
         case ListKind::Dash:  return rowDash(s);
         case ListKind::Users: return rowUsers(s);
+        case ListKind::Plugins: return rowPlugins(s);
         default:              return false;
     }
 }
@@ -418,10 +446,11 @@ bool Bbs::rowHelp(Session& s) {
         if (i > 2u * total + 3u) return false;
 
         bool staffPass = i > total + 1u;
-        const Command* c = commandAt(static_cast<uint8_t>(staffPass ? i - total - 2u : i - 1u));
+        uint8_t at = static_cast<uint8_t>(staffPass ? i - total - 2u : i - 1u);
+        const Command* c = commandAt(at);
+        uint8_t plugin = pluginOf(at);
         bool isStaff = c->perm || (c->flags & CF_STAFF);
-        bool granted = (!c->perm || can(s, c->perm)) && (!(c->flags & CF_STAFF) || s.perms) &&
-                       !((c->flags & CF_ACCOUNT) && s.guest);
+        bool granted = allowed(s, *c, plugin);
         if ((c->flags & CF_HIDDEN) || isStaff != staffPass || !granted) {
             ++s.listIdx;
             s.listSub = 0;
@@ -616,12 +645,12 @@ bool Bbs::rowDash(Session& s) {
         }
         case 2: {
             plat::HeapStats h = plat::heap();
+            unsigned fs = static_cast<unsigned>(plugins::freeBytes() / 1024u);
             if (h.valid) {
-                snprintf(buf, sizeof(buf), "NTP %s  heap %uK min %uK big %uK", clk::valid() ? "ok" : "--",
-                         static_cast<unsigned>(h.freeBytes / 1024u), static_cast<unsigned>(h.minFree / 1024u),
-                         static_cast<unsigned>(h.largestBlock / 1024u));
+                snprintf(buf, sizeof(buf), "NTP %s heap %uK min %uK  disk %uK", clk::valid() ? "ok" : "--",
+                         static_cast<unsigned>(h.freeBytes / 1024u), static_cast<unsigned>(h.minFree / 1024u), fs);
             } else {
-                snprintf(buf, sizeof(buf), "NTP %s  heap n/a on host", clk::valid() ? "ok" : "--");
+                snprintf(buf, sizeof(buf), "NTP %s  heap n/a on host  disk %uK", clk::valid() ? "ok" : "--", fs);
             }
             rowText(s, Color::Grey, buf);
             return true;
@@ -810,6 +839,67 @@ void Bbs::cmdMem(Session& s) {
     t.nl(tl);
     snprintf(buf, sizeof(buf), "Nodes active  %7u", activeNodes());
     t.text(tl, buf);
+    t.nl(tl);
+    snprintf(buf, sizeof(buf), "Disk free     %7u", static_cast<unsigned>(plugins::freeBytes()));
+    t.text(tl, buf);
+}
+
+// ---------------------------------------------------------------------------
+// cmdAbout: screens/about.* if it is there, a built-in card if it is not
+// ---------------------------------------------------------------------------
+void Bbs::cmdAbout(Session& s) {
+    if (playScreen(s, "about")) return;
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    char buf[64];
+    rowTitle(s, "About", BBS_VERSION);
+    t.color(tl, Color::White);
+    t.text(tl, BBS_NAME);
+    t.nl(tl);
+    t.color(tl, Color::Grey);
+    t.text(tl, "A telnet BBS on a bare ESP32.");
+    t.nl(tl);
+    snprintf(buf, sizeof(buf), "Copyright 2026 - Robert Mech");
+    t.text(tl, buf);
+    t.nl(tl);
+    t.text(tl, "Free software, GPL v2 or later.");
+    t.nl(tl);
+    rowRule(s);
+    prompt(s);
+}
+
+// ---------------------------------------------------------------------------
+// rowPlugins: what is compiled in, what is running, and why not
+// ---------------------------------------------------------------------------
+bool Bbs::rowPlugins(Session& s) {
+    char buf[80];
+    uint8_t i = s.listIdx++;
+    if (i == 0) {
+        snprintf(buf, sizeof(buf), "%u of %u", plugins::count(), BBS_MAX_PLUGINS);
+        rowTitle(s, "Plugins", buf);
+        return true;
+    }
+    if (i == 1) {
+        rowText(s, Color::LightBlue, " Name      Ver   State");
+        return true;
+    }
+    uint8_t k = static_cast<uint8_t>(i - 2);
+    if (k < plugins::count()) {
+        const Plugin* p = plugins::at(k);
+        snprintf(buf, sizeof(buf), " %-9.9s %-5.5s %-21.21s", p->info.name, p->info.version,
+                 plugins::running(k) ? "running" : plugins::whyNot(k));
+        rowText(s, plugins::running(k) ? Color::Grey : Color::DarkGrey, buf);
+        return true;
+    }
+    if (k == plugins::count()) {
+        snprintf(buf, sizeof(buf), "Disk free %uK, reserve %uK",
+                 static_cast<unsigned>(plugins::freeBytes() / 1024u),
+                 static_cast<unsigned>(plugins::reserveBytes() / 1024u));
+        rowText(s, Color::Grey, buf);
+        return true;
+    }
+    if (k == plugins::count() + 1) { rowRule(s); return true; }
+    return false;
 }
 
 void Bbs::cmdTerm(Session& s) {

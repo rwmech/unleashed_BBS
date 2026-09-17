@@ -27,16 +27,18 @@ Docs:
 |---|---|
 | [COMMANDS.md](COMMANDS.md) | every command, key, limit and `system.cfg` setting |
 | [USERS.md](USERS.md) | signing up, logging in, guests, managing accounts |
+| [PLUGINS.md](PLUGINS.md) | writing and running plugins |
 | [BACKUP.md](BACKUP.md) | downloading and uploading config, accounts and screens as a `.zip` |
 | [SCREENS.md](SCREENS.md) | screen formats, naming rules and upload limits |
 
-## Status (0.8.0)
+## Status (0.9.0)
 
 - Host build (Linux): the full scripted suite passes, also under AddressSanitizer and UBSan (`tools/testclient.py --backup`, plus `--slow` and `--ban`).
 - ESP32 build: ESP-IDF 5.3.1 through PlatformIO (`espressif32@6.9.0`), with no warnings in app code.
   - Image: about 928 KB, 59% of the 1.5 MB OTA slot.
   - Static RAM: 107 KB, including the 8-session pool and the backup buffers.
 - User accounts (0.6.0): self-registration through a form, salted SHA-256 passwords, per-handle lockout, PROFILE / PASSWORD / INFO, and a staff user manager. Up to 100 accounts on the board; more will need the SD card plugin.
+- 0.9.0: the plugin API. Plugins are compiled in, switched on per board in `system.cfg`, with their own config section, storage folder, periodic hook, caller hooks, commands and read / write / admin levels. A plugin can own a caller's session (for a serial bridge or a door). Ships with an example plugin, an `ABOUT` screen, a `PLUGINS` status command and free-space reporting.
 - 0.8.0: staff rank marked on the account (`>` co-sysop, `]` sysop, `*` guest) shown in every list, staff manage only their own rank and below, staff see hidden callers, plus the fixes from the first full code review of the account system.
 - 0.7.0 (on hardware: registration, guests and the DASH Wi-Fi reading verified): guest logins under any unused handle (marked `*`, 15 minutes, nothing saved), input effects in place (errors and passwords resolve on the same line), page and broadcast alerts, title bars on lists, a staff Doing column in WHO and DASH, Wi-Fi signal on DASH.
 - Commands come from a registry (`Command` tables); HELP, dispatch and permissions are generated from it, and plugins will register into it.
@@ -114,6 +116,8 @@ src/core/bbs.*            listener, sessions, flow, timers, paging
 src/core/bbs_shell.cpp    caller commands
 src/core/bbs_sysop.cpp    sysop node and commands
 src/core/bbs_users.cpp    sign-up, PROFILE, PASSWORD, INFO, USERS manager, USER ADD/EDIT/DEL
+src/core/plugin.*         plugin API: registry, config sections, levels, storage
+src/plugins/              the plugins compiled into this firmware
 data/screens/             stock welcome, busy, goodbye (.seq/.ans/.asc) for a fresh board
 data/system.cfg.example   run-time settings template
 tools/mkscreens.py        regenerates the stock screens

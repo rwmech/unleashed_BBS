@@ -11,7 +11,7 @@ Module:       Tools / stock screen generator
 
 Purpose:      Generates the stock µnleashed BBS display files in data/screens/:
                  welcome.seq/.ans/.asc, busy.seq/.ans/.asc,
-                 goodbye.seq/.ans/.asc. No bulletin ships: add
+                 goodbye.seq/.ans/.asc, about.seq/.ans/.asc. No bulletin ships: add
                  bulletin.asc/.ans/.seq to show one after login.
                  Hand-drawn art from PETSCII/ANSI editors can replace any of
                  these; the BBS only cares about the file name and extension.
@@ -334,6 +334,55 @@ def make_goodbye_seq():
     return bytes(s)
 
 
+# ==========================================================================
+# about (the ABOUT command; plain text so a sysop can rewrite it freely)
+# ==========================================================================
+ABOUT_ASC = """--------------------------------------
+ @BBS@ v@VER@
+--------------------------------------
+ A telnet BBS on a bare ESP32.
+ Node @NODE@ of @NODES@, you are @USER@.
+
+ (C) 2026 Robert Mech
+ Free software: GNU GPL v2 or later.
+ Source and license: see the repo.
+
+ Built on ESP-IDF, FreeRTOS, lwIP and
+ littlefs. Their notices ship with it.
+--------------------------------------
+"""
+
+
+def make_about_seq():
+    s = bytearray()
+    s += pet_rule("cyan")
+    s += pet("white", " @BBS@", "grey", " v@VER@\n")
+    s += pet_rule("cyan")
+    s += pet("lgreen", " A telnet BBS on a bare ESP32.\n")
+    s += pet("grey", " Node @NODE@ of @NODES@, you are @USER@.\n")
+    s += pet("white", " (C) 2026 Robert Mech\n")
+    s += pet("grey", " Free software: GNU GPL v2 or later.\n")
+    s += pet("grey", " Source and license: see the repo.\n")
+    s += pet("cyan", " ESP-IDF, FreeRTOS, lwIP, littlefs.\n")
+    s += pet_rule("cyan")
+    return bytes(s)
+
+
+def make_about_ans():
+    b = bytearray()
+    b += sgr("0;34") + bytes([H_DOUBLE]) * 60 + b"\r\n"
+    b += sgr("1;37") + b"@BBS@" + sgr("0;37") + b" v@VER@" + sgr("0;36") + b"  a telnet BBS on a bare ESP32\r\n"
+    b += sgr("0;34") + bytes([H_DOUBLE]) * 60 + b"\r\n"
+    b += sgr("0;37") + b" Node @NODE@ of @NODES@, you are " + sgr("1;33") + b"@USER@" + sgr("0;37") + b"\r\n\r\n"
+    b += sgr("1;37") + b" (C) 2026 Robert Mech\r\n"
+    b += sgr("0;37") + b" Free software: GNU General Public License v2 or later.\r\n"
+    b += sgr("0;37") + b" Source and license: see the repository.\r\n\r\n"
+    b += sgr("0;36") + b" Built on ESP-IDF, FreeRTOS, lwIP and littlefs; their notices\r\n"
+    b += sgr("0;36") + b" travel with the firmware.\r\n"
+    b += sgr("0;34") + bytes([H_DOUBLE]) * 60 + sgr("0") + b"\r\n"
+    return bytes(b)
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     files = {
@@ -346,6 +395,9 @@ def main():
         "goodbye.seq": make_goodbye_seq(),
         "goodbye.ans": make_goodbye_ans(),
         "goodbye.asc": GOODBYE_ASC.encode("ascii"),
+        "about.seq": make_about_seq(),
+        "about.ans": make_about_ans(),
+        "about.asc": ABOUT_ASC.encode("ascii"),
     }
     for name, data in files.items():
         (OUT / name).write_bytes(data)

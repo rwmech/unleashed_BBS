@@ -77,6 +77,7 @@ enum class SState : uint8_t {
     Confirm,   // "Log off (Y/N)?"
     Fx,        // effects demo running
     Watch,     // WHO n / DASH n refreshing until a key
+    Plugin,    // a plugin owns the session (serial bridge, chat, a door)
     BusyWait,  // busy line countdown
     Snoop,     // sysop watching another node
     Approve,   // sysop answering Y/N on a staged backup upload
@@ -89,7 +90,7 @@ enum class Role : uint8_t {
     Sysop,     // hidden sysop node, entered with BYE <password>
 };
 
-enum class ListKind : uint8_t { None, Help, Who, Last, Nodes, Bans, Dash, Users };
+enum class ListKind : uint8_t { None, Help, Who, Last, Nodes, Bans, Dash, Users, Plugins };
 enum class MoreFrom : uint8_t { List, Screen };
 enum class FormKind : uint8_t { None, Signup, Profile, Password, UserAdd, UserEdit };
 enum class ConfirmKind : uint8_t { Logoff, DeleteUser };
@@ -130,6 +131,7 @@ struct Session {
     uint8_t      rank        = 0;      // staff rank of the account (Access value), for
                                        // the WHO/NODES/DASH marker; raised on elevation
     char         doing[BBS_DOING_MAX + 1] = {};   // last command verb (staff WHO/DASH)
+    uint8_t      owner       = 0xFF;   // plugin holding this session, 0xFF none
 
     // paging and generated lists
     ListKind     list        = ListKind::None;
@@ -201,6 +203,9 @@ enum CmdFlag : uint8_t {
     CF_STAFF    = 2,   // needs any staff level (perm 0 staff commands)
     CF_HELPONLY = 4,   // HELP row only, never dispatched (a staff form of a verb)
     CF_ACCOUNT  = 8,   // needs an account: hidden from guests
+    CF_READ     = 16,  // plugin command: needs the plugin's read level
+    CF_WRITE    = 32,  // plugin command: needs its write level (the default)
+    CF_ADMIN    = 64,  // plugin command: needs its admin level
 };
 
 struct Command {
@@ -229,9 +234,30 @@ public:
     // key dispatch target (public for the Term callback trampoline)
     void onKey(Session& s, int k, uint32_t now);
 
-    // registerCommands: add a plugin command table (kept by pointer, must be
-    // static). False when the registry is full.
-    bool registerCommands(const Command* list, uint8_t count);
+    // registerCommands: add a command table (kept by pointer, must be
+    // static). plugin is the plugin's index, 0xFF for the core table.
+    // False when the registry is full.
+    bool registerCommands(const Command* list, uint8_t count, uint8_t plugin = 0xFF);
+
+    // -- for plugins ---------------------------------------------------------
+    // own: the plugin takes this session: keys go to its onKey hook and the
+    // idle clock pauses. release() hands it back to the command prompt.
+    bool own(Session& s, uint8_t plugin);
+    void release(Session& s);
+    bool owns(const Session& s, uint8_t plugin) const;
+
+    // sayTo: one line on a caller's screen, redrawing whatever they were at
+    void sayTo(Session& s, Color c, const char* text);
+
+    // eachSession: every session, free ones included
+    using EachFn = void (*)(void* ctx, Session& s);
+    void eachSession(EachFn fn, void* ctx);
+
+    // doing: what a plugin wants shown in the staff WHO/DASH column
+    void setDoing(Session& s, const char* what);
+
+    // prompt: draw the command prompt and take a line (plugins end here)
+    void prompt(Session& s);
 
 private:
     Bbs() = default;
@@ -288,7 +314,6 @@ private:
     void ulDrawRow(Session& s, uint8_t index);
     void ulKey(Session& s, int k, uint32_t now);
     uint8_t ulRows(const Session& s) const;
-    void prompt(Session& s);
     void armPrompt(Session& s);
     void drawPrompt(Session& s);
     void hangup(Session& s, const char* msg, uint32_t now);
@@ -333,11 +358,13 @@ private:
     bool rowWho(Session& s);
     bool rowLast(Session& s);
     bool rowDash(Session& s);
+    bool rowPlugins(Session& s);
     bool rowWatchFooter(Session& s);
     void cmdHelp(Session& s);
     void cmdWho(Session& s, const char* arg);
     void cmdDash(Session& s, const char* arg);
     void cmdMem(Session& s);
+    void cmdAbout(Session& s);
     void cmdTerm(Session& s);
     void cmdTime(Session& s, const char* arg, uint32_t now);
     void cmdBaud(Session& s, const char* arg);
@@ -379,7 +406,12 @@ private:
     BanList   bans_;
     LoginGuard logins_;
 
-    struct CommandTable { const Command* list; uint8_t count; };
+    // allowed: this session may run this command (permissions, account,
+    // plugin levels)
+    bool allowed(const Session& s, const Command& c, uint8_t plugin) const;
+    uint8_t pluginOf(uint8_t index) const;
+
+    struct CommandTable { const Command* list; uint8_t count; uint8_t plugin; };
     CommandTable tables_[kCommandTables] = {};
     uint8_t      tableCount_ = 0;
 };

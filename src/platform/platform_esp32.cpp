@@ -41,6 +41,7 @@
 #include "esp_heap_caps.h"
 #include "driver/gpio.h"
 #include "esp_wifi.h"
+#include "esp_littlefs.h"
 extern "C" {
 #include "miniz.h"
 }
@@ -73,6 +74,14 @@ HeapStats heap() {
     h.largestBlock = static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     h.valid        = true;
     return h;
+}
+
+bool fsInfo(uint32_t& total, uint32_t& used) {
+    size_t t = 0, u = 0;
+    if (esp_littlefs_info(BBS_FS_LABEL, &t, &u) != ESP_OK) return false;
+    total = static_cast<uint32_t>(t);
+    used  = static_cast<uint32_t>(u);
+    return true;
 }
 
 int8_t wifiRssi() {

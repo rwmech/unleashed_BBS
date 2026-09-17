@@ -13,7 +13,7 @@ source. See the LICENSE file for terms.
 
 # µnleashed BBS: command reference
 
-Version 0.8.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
+Version 0.9.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
 
 ## Calling in
 
@@ -94,6 +94,7 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | `FX` | `F` | TTY effects demo. |
 | `TIME` | | Date and time, minutes online, minutes left. |
 | `LAST` | | The last 50 calls, newest first. |
+| `ABOUT` | | What this BBS is, its version and its license. Plays `screens/about.*`, so a sysop can rewrite it. |
 | `INFO [handle]` | `I` | An account: name, member since, last call, calls, profile. Email, address and phone only on your own account (or with `USERS`). |
 | `PROFILE` | | Form to change your name, email, address, phone and profile. Not for guests. |
 | `PASSWORD` | | Form: current password, then the new one twice. Not for guests. |
@@ -182,6 +183,7 @@ All caller commands still work. Node arguments are `1`-`6`, `S` (sysop node) or 
 | `HIDE` | `HIDE` | Remove yourself from WHO. The sysop starts hidden; co-sysops start visible. |
 | `LURK` | `HIDE` | Toggle lurking: hidden from WHO and pages refused. |
 | `BANS` | `BANS` | Active IP bans and minutes remaining. |
+| `PLUGINS` | any staff | Every plugin compiled in: version, whether it is running, and why not. Also free disk space and the reserve. |
 | `UNBAN a.b.c.d` | `UNBAN` | Lift a ban. |
 | `USERS` | `USERS` | User manager: cursor list of accounts with edit, add and delete (ANSI, PETSCII). A paged list on plain ASCII. |
 | `USER ADD` | `USERS` | Add-account form: handle, password, fields, Level, Locked. |
@@ -214,6 +216,7 @@ Files in `screens/`, chosen by terminal type. Names, formats and upload limits: 
 | Name | When |
 |---|---|
 | `welcome` | after detection |
+| `about` | the `ABOUT` command |
 | `bulletin` | after login (optional, none ships) |
 | `busy` | busy line |
 | `goodbye` | logoff |
@@ -245,6 +248,26 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `max_users` | `100` | account limit, 1..100 (more needs the SD card plugin) |
 | `guest` | `yes` | `no`: unknown handles are not offered `[G]uest` |
 | `guest_minutes` | `15` | per guest call, 0 = unlimited; guests have no daily limit |
+
+Keys must appear above the first `[section]` line. Sections are `[access]` for the staff matrix and `[plugin:name]` for each plugin (see [PLUGINS.md](PLUGINS.md)).
+
+### Plugins
+
+Each plugin reads its own section:
+
+```
+[plugin:example]
+enabled = yes
+read    = all        ; all | users | staff | co2 | co1 | sysop
+write   = staff
+admin   = sysop
+greeting = howdy     ; the plugin's own keys
+```
+
+- `read` covers looking, `write` changing something, `admin` configuring the plugin itself.
+- Commands you may not run are hidden from HELP and answer as unknown.
+- A plugin that is off contributes nothing: no commands, no hooks, no memory.
+- `PLUGINS` shows what is compiled in and what is running.
 
 A value out of range is logged and the default is kept. An upload with a bad value is rejected, so it never replaces a working config.
 

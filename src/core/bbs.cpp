@@ -43,6 +43,7 @@
 #include "clock.h"
 #include "sysconfig.h"
 #include "calllog.h"
+#include "plugin.h"
 #include "../platform/platform.h"
 
 #include <sys/types.h>
@@ -167,7 +168,7 @@ bool Bbs::begin(uint16_t port) {
 
     uint8_t coreCount = 0;
     const Command* core = coreCommands(coreCount);
-    tables_[0]  = CommandTable{ core, coreCount };
+    tables_[0]  = CommandTable{ core, coreCount, 0xFF };
     tableCount_ = 1;
 
     plat::HeapStats h = plat::heap();
@@ -182,10 +183,62 @@ bool Bbs::begin(uint16_t port) {
     return true;
 }
 
-bool Bbs::registerCommands(const Command* list, uint8_t count) {
+bool Bbs::registerCommands(const Command* list, uint8_t count, uint8_t plugin) {
     if (!list || !count || tableCount_ >= kCommandTables) return false;
-    tables_[tableCount_++] = CommandTable{ list, count };
+    tables_[tableCount_++] = CommandTable{ list, count, plugin };
     return true;
+}
+
+// ===========================================================================
+// Plugin-facing helpers
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// own: hand the session's keys to a plugin until it releases them. The
+// caller keeps their node and their call time; only the idle clock pauses.
+// ---------------------------------------------------------------------------
+bool Bbs::own(Session& s, uint8_t plugin) {
+    if (s.st == SState::Free || s.role == Role::Busy || !s.loggedIn) return false;
+    s.owner = plugin;
+    s.ed    = LineEditor();
+    s.st    = SState::Plugin;
+    return true;
+}
+
+void Bbs::release(Session& s) {
+    if (s.owner == 0xFF) return;
+    s.owner = 0xFF;
+    if (s.st == SState::Plugin) {
+        s.term.reset(s.tl);
+        s.term.cursor(s.tl, true);
+        prompt(s);
+    }
+}
+
+bool Bbs::owns(const Session& s, uint8_t plugin) const {
+    return s.owner == plugin && s.st == SState::Plugin;
+}
+
+// sayTo: a line on a caller's screen, then put back whatever they were at
+void Bbs::sayTo(Session& s, Color c, const char* text) {
+    if (s.st == SState::Free || s.fd < 0) return;
+    Term& t = s.term;
+    t.reset(s.tl);
+    t.nl(s.tl);
+    t.color(s.tl, c);
+    t.text(s.tl, text);
+    t.reset(s.tl);
+    if (s.st != SState::Plugin) redrawInput(s);
+}
+
+void Bbs::eachSession(EachFn fn, void* ctx) {
+    if (!fn) return;
+    for (Session* s : all_) fn(ctx, *s);
+}
+
+void Bbs::setDoing(Session& s, const char* what) {
+    strncpy(s.doing, what ? what : "", BBS_DOING_MAX);
+    s.doing[BBS_DOING_MAX] = '\0';
 }
 
 uint8_t Bbs::activeNodes() const {
@@ -233,6 +286,7 @@ void Bbs::tick() {
 
     backup_.service(rfds, wfds, now);
     serviceBackup(now);
+    plugins::tick(now);
     plat::activityTick(now);
 }
 
@@ -441,6 +495,7 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
     s.mb.clear();
     s.det.start(now);
 
+    s.owner         = 0xFF;
     plat::HeapStats h = plat::heap();
     s.heapAtOpen = h.freeBytes;
     if (role == Role::Busy) {
@@ -464,6 +519,11 @@ void Bbs::closeSession(Session& s, const char* why, uint32_t now) {
     }
 
     if (s.loggedIn) {
+        for (uint8_t i = 0; i < plugins::count(); ++i) {          // tell the plugins first
+            const Plugin* p = plugins::at(i);
+            if (plugins::running(i) && p->onLogoff) p->onLogoff(s);
+        }
+        s.owner = 0xFF;
         uint32_t secs = (now - s.loginAt) / 1000u;
         CallRec r;
         strncpy(r.user, s.user, BBS_USER_MAX);
@@ -724,6 +784,10 @@ void Bbs::onDetected(Session& s, uint32_t now) {
     if (s.term.isAnsi() && s.tn.hasSize()) s.term.setGeometry(s.tn.cols(), s.tn.rows());
 
     plat::log("bbs: node %c %s (telnet %s)", nodeChar(s), s.term.name(), telnet ? "on" : "off");
+    for (uint8_t i = 0; i < plugins::count(); ++i) {
+        const Plugin* p = plugins::at(i);
+        if (plugins::running(i) && p->onConnect) p->onConnect(s);
+    }
     if (s.role == Role::Busy) startBusy(s, now);
     else                      startIntro(s);
 }
@@ -1152,6 +1216,10 @@ void Bbs::completeLogin(Session& s, uint32_t now) {
     t.nl(tl);
 
     plat::log("bbs: node %u login '%s'", s.id, s.user);
+    for (uint8_t i = 0; i < plugins::count(); ++i) {
+        const Plugin* p = plugins::at(i);
+        if (plugins::running(i) && p->onLogin) p->onLogin(s);
+    }
 
     snprintf(buf, sizeof(buf), "*** %s is on node %u", s.user, s.id);
     noticeAll(s, buf);
@@ -1310,6 +1378,9 @@ void Bbs::checkTimers(Session& s, uint32_t now) {
         if (s.st == SState::BusyWait || s.busyLoginUntil) return;   // countdown or login window rules
     }
 
+    if (s.st == SState::Plugin) {                          // a plugin owns the screen:
+        s.lastInput = now;                                 // watching is not idling
+    }
     bool inForm      = s.st == SState::Form || s.st == SState::UserList;
     bool signingUp   = inForm && !s.loggedIn;               // sign-up form: still a login
     bool login       = s.st == SState::AskName || s.st == SState::AskPass ||
@@ -1782,6 +1853,15 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
         case SState::Watch:
             stopWatch(s);                            // any key ends a refresh screen
             return;
+
+        case SState::Plugin: {
+            const Plugin* p = plugins::at(s.owner);
+            if (!p || !plugins::running(s.owner)) { release(s); return; }
+            if (!tl.empty()) tl.skipDelays();
+            if (p->onKey) p->onKey(s, k, now);
+            else          release(s);
+            return;
+        }
 
         case SState::BusyWait:
             if (s.scr.active()) { tl.skipDelays(); return; }

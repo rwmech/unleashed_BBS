@@ -44,6 +44,7 @@
 #include <ctime>
 #include <string>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <zlib.h>
 
 namespace {
@@ -84,6 +85,36 @@ HeapStats heap() {
 
 int8_t wifiRssi() {
     return 0;
+}
+
+// ---------------------------------------------------------------------------
+// fsInfo: the host has a whole disk, so pretend it is the board's storage
+// partition and add up what the data directory holds. That keeps the free
+// space rules testable off the board.
+// ---------------------------------------------------------------------------
+namespace {
+uint32_t dirBytes(const std::string& dir) {
+    DIR* d = opendir(dir.c_str());
+    if (!d) return 0;
+    uint32_t total = 0;
+    struct dirent* e;
+    while ((e = readdir(d)) != nullptr) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        std::string path = dir + "/" + e->d_name;
+        struct stat st;
+        if (stat(path.c_str(), &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) total += dirBytes(path);
+        else                     total += static_cast<uint32_t>(st.st_size);
+    }
+    closedir(d);
+    return total;
+}
+}   // namespace
+
+bool fsInfo(uint32_t& total, uint32_t& used) {
+    total = 768u * 1024u;                            // the board's storage partition
+    used  = dirBytes(g_fsBase);
+    return true;
 }
 
 void log(const char* fmt, ...) {

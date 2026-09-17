@@ -83,6 +83,12 @@ HeapStats heap();
 int8_t wifiRssi();
 
 // ---------------------------------------------------------------------------
+// fsInfo: size and used bytes of the data filesystem. False when the
+// platform cannot tell.
+// ---------------------------------------------------------------------------
+bool fsInfo(uint32_t& total, uint32_t& used);
+
+// ---------------------------------------------------------------------------
 // log: printf-style line to the console (UART on ESP32, stdout on host)
 // ---------------------------------------------------------------------------
 void log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));

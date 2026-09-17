@@ -43,6 +43,7 @@
 #include "config.h"
 #include "core/bbs.h"
 #include "core/sysconfig.h"
+#include "core/plugin.h"
 #include "platform/platform.h"
 
 #if __has_include("secrets.h")
@@ -195,6 +196,7 @@ static void bbsTask(void*) {
     netServicesStart();
     Bbs& bbs = Bbs::instance();
     while (!bbs.begin(BBS_PORT)) vTaskDelay(pdMS_TO_TICKS(1000));
+    plugins::begin(bbs);
     for (;;) {
         bbs.tick();
         vTaskDelay(1);   // let lower-priority tasks on this core breathe

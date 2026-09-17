@@ -28,6 +28,7 @@ The names the BBS looks for:
 | Name | Shown |
 |---|---|
 | `welcome` | after terminal detection |
+| `about` | the `ABOUT` command |
 | `bulletin` | after login (optional) |
 | `busy` | when every node is in use |
 | `goodbye` | at logoff |

@@ -280,6 +280,7 @@ int parseFile(const char* path, SysConfig& out, char* err, size_t errLen) {
 
     char line[160];
     bool inAccess = false;
+    bool inPlugin = false;
     while (fgets(line, sizeof(line), f)) {
         ++c.lineNo;
         if (!strchr(line, '\n') && !feof(f)) {      // overlong line: skip the rest of it
@@ -295,9 +296,11 @@ int parseFile(const char* path, SysConfig& out, char* err, size_t errLen) {
 
         if (*l == '[') {
             inAccess = ieq(l, "[access]");
-            if (!inAccess) problem(c, "unknown section", l);
+            inPlugin = !inAccess && !strncmp(l, "[plugin:", 8);   // read by plugin.cpp
+            if (!inAccess && !inPlugin) problem(c, "unknown section", l);
             continue;
         }
+        if (inPlugin) continue;                     // a plugin's own keys
         if (inAccess) { accessRow(c, l); continue; }
 
         char* eq = strchr(l, '=');

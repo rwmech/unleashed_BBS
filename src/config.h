@@ -51,7 +51,7 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "0.8.0"
+#define BBS_VERSION         "0.9.0"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // ---------------------------------------------------------------------------
@@ -149,6 +149,26 @@
 #define BBS_LOCK_WINDOW_MS  900000   // 15 minutes
 #define BBS_LOCK_MS         900000   // 15 minutes locked
 #define BBS_USERLIST_ROWS   24       // user manager rows buffered at once
+
+// ---------------------------------------------------------------------------
+// Plugins (PLUGINS.md)
+// ---------------------------------------------------------------------------
+#define BBS_MAX_PLUGINS     8        // compiled-in plugin table
+#define BBS_PLUGIN_TICK_MS  250      // periodic hook cadence
+#define BBS_PLUGIN_DIR      "p"      // <fs>/p/<name>/ holds a plugin's files
+#define BBS_PLUGIN_QUOTA    65536    // per plugin, onboard
+#define BBS_FS_RESERVE      32768    // free space the core keeps for accounts
+#define BBS_HEAP_RESERVE    40960    // heap kept free for callers and backups
+
+// ---------------------------------------------------------------------------
+// Plugins (PLUGINS.md)
+// ---------------------------------------------------------------------------
+#define BBS_MAX_PLUGINS     8        // compiled-in plugin table
+#define BBS_PLUGIN_TICK_MS  250      // periodic hook cadence
+#define BBS_PLUGIN_DIR      "p"      // <fs>/p/<name>/ holds a plugin's files
+#define BBS_PLUGIN_QUOTA    65536    // per plugin, onboard
+#define BBS_FS_RESERVE      32768    // free space the core keeps for accounts
+#define BBS_HEAP_RESERVE    40960    // heap kept free for callers and backups
 
 // ---------------------------------------------------------------------------
 // Scheduler / task

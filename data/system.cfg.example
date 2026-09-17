@@ -69,6 +69,20 @@ max_users = 100
 guest = yes
 guest_minutes = 15
 
+# Plugins (PLUGINS.md). Every plugin reads its own section. A plugin that
+# is not enabled costs nothing: no commands, no hooks, no memory.
+#   read/write/admin take: all, users, staff, co2, co1, sysop, none
+#   read   who may look
+#   write  who may change something
+#   admin  who may configure the plugin itself
+# Keys that are not in a section must stay above this line.
+[plugin:example]
+enabled = no
+read  = all
+write = staff
+admin = sysop
+greeting = hello
+
 # Staff access matrix. X = allowed, - = denied.
 # SYSOP always has everything; its column is there for reference.
 # Keep this section last: every line after [access] is a matrix row.

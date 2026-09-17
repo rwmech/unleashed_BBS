@@ -41,9 +41,9 @@ ifeq ($(SAN),1)
 CXXFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer
 LDFLAGS  += -fsanitize=address,undefined
 endif
-SRCS      = $(wildcard ../src/core/*.cpp) platform_host.cpp main_host.cpp
+SRCS      = $(wildcard ../src/core/*.cpp) $(wildcard ../src/plugins/*.cpp) platform_host.cpp main_host.cpp
 
-bbs_host: $(SRCS) $(wildcard ../src/core/*.h) ../src/config.h ../src/platform/platform.h
+bbs_host: $(SRCS) $(wildcard ../src/core/*.h) $(wildcard ../src/plugins/*.h) ../src/config.h ../src/platform/platform.h
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) $(LDLIBS)
 
 clean:

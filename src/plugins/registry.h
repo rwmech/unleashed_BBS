@@ -4,18 +4,16 @@
  *  Electronic freedom on a microcontroller.
  * ===========================================================================
  *
- * File:         host/main_host.cpp
- * Module:       Host test build entry point
+ * File:         src/plugins/registry.h
+ * Module:       Plugins / registry
  *
- * Purpose:      Linux host entry point. Runs the same BBS core as the
- *                  ESP32 so screens, detection and effects can be tried with
- *                  SyncTERM, a terminal emulator, or VICE + a TCP modem bridge.
+ * Purpose:      The list of plugins compiled into this firmware. Adding a
+ *               plugin means one entry here and one source folder; a board
+ *               then switches it on in system.cfg.
  *
- * Usage:        ./bbs_host [data_dir] [port]
- *
- * Libraries:    libc
- * Targets:      Linux host test build
- * See also:     README.md
+ * Libraries:    none
+ * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
+ * See also:     PLUGINS.md
  *
  * Copyright 2026 - Robert Mech
  * License:      GNU General Public License v2 or later
@@ -36,26 +34,9 @@
  * text is in the LICENSE file at the top of this repository.
  * ===========================================================================
  */
+#pragma once
+#include <cstdint>
+#include "../core/plugin.h"
 
-#include "core/bbs.h"
-#include "core/sysconfig.h"
-#include "core/plugin.h"
-#include "platform/platform.h"
-#include <csignal>
-#include <cstdlib>
-#include <ctime>
-
-void hostSetFsBase(const char* path);
-
-int main(int argc, char** argv) {
-    signal(SIGPIPE, SIG_IGN);
-    srand(static_cast<unsigned>(time(nullptr)));
-    hostSetFsBase(argc > 1 ? argv[1] : "../data");
-    uint16_t port = static_cast<uint16_t>(argc > 2 ? atoi(argv[2]) : BBS_PORT);
-    syscfg::load();          // the host clock is already set, no NTP here
-
-    Bbs& bbs = Bbs::instance();
-    if (!bbs.begin(port)) return 1;
-    plugins::begin(bbs);
-    for (;;) bbs.tick();
-}
+extern const Plugin* const kPlugins[];
+extern const uint8_t       kPluginCount;
