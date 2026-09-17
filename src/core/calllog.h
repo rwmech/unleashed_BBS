@@ -38,4 +38,7 @@ uint8_t count();
 // get: back = 0 is the newest record
 bool get(uint8_t back, CallRec& out);
 
+// countSince: records whose login time is at or after epoch (one file pass)
+uint8_t countSince(uint32_t epoch);
+
 } // namespace calllog

@@ -1,6 +1,6 @@
 # µnleashed BBS: command reference
 
-Version 0.4.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
+Version 0.5.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
 
 ## Calling in
 
@@ -11,6 +11,7 @@ Version 0.4.0. This file tracks every command and key the BBS understands, and i
   - Other ANSI terminals are detected automatically within about 2 s.
   - If there is no answer, the BBS shows `HIT DEL OR BACKSPACE`. INST/DEL on a C64 selects PETSCII, and Backspace on a PC selects ASCII.
   - PETSCII callers then answer `40 OR 80 COLUMNS (4/8)?`.
+- A line whose far end disappears without hanging up (a C64 switched off, a pulled cable) is dropped within about 90 seconds, staff lines included.
 
 ## Logging in
 
@@ -29,6 +30,7 @@ Version 0.4.0. This file tracks every command and key the BBS understands, and i
 | Y, Enter or Space | `[More] Y/n/c` | next page |
 | N, Q, ESC or Ctrl-C | `[More] Y/n/c` | stop |
 | C | `[More] Y/n/c` | continue without pausing |
+| any key | `WHO n`, `DASH n` refresh | stop refreshing, back to the prompt |
 | ESC or Ctrl-C | command prompt | clear the line |
 
 Paging pauses at the screen height minus 2 (23 lines on a C64, 22 on an 80x24 terminal). Art screens (`.ans`, `.seq`) are never paged.
@@ -39,8 +41,9 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 
 | Command | Shortcut | What it does |
 |---|---|---|
-| `HELP` | `H`, `?` | Command list. Plays `screens/help.*` if present. |
+| `HELP` | `H`, `?` | Command list, generated from the command table: only the commands you can use, 40 columns wide on every terminal, descriptions aligned in one column. |
 | `WHO` | `W` | Who is on each node: handle, terminal, minutes on, idle time (mm:ss). A hidden sysop and the busy line are never listed. |
+| `WHO n` | `W n` | The same list redrawn in place every n seconds (`who_refresh_min`..`who_refresh_max`, default 1..30) until you press a key. The footer shows the idle clock: refreshing is not input, so the idle hangup still counts down. |
 | `MEM` | `M` | Heap statistics and session sizing. |
 | `TERM` | `T` | Terminal type, size, telnet mode, emulated line speed. |
 | `CLS` | `C` | Clear the screen. |
@@ -103,6 +106,8 @@ All caller commands still work. Node arguments are `1`-`6`, `S` (sysop node) or 
 
 | Command | Permission | What it does |
 |---|---|---|
+| `DASH` | `DASH` | Dashboard on one 40-column screen: date and time, version, uptime, NTP state, heap (free, lowest, largest block), every node with terminal, idle and minutes left, calls today, active bans, busy line, backup window state, the last 5 calls. |
+| `DASH n` | `DASH` | The dashboard redrawn every n seconds (same limits as `WHO n`) until a key. |
 | `NODES` | `NODES` | Every session: handle, IP, minutes left, idle (plus terminal type on wide screens). |
 | `KICK n [message]` | `KICK` | Disconnect node n. The caller sees `Disconnected by sysop: message`. |
 | `BROADCAST message` | `BROADCAST` | Send `*** Sysop: message` to every logged-in node. |
@@ -139,7 +144,6 @@ Files in `screens/`, chosen by terminal type. Names, formats and upload limits: 
 |---|---|
 | `welcome` | after detection |
 | `bulletin` | after login (optional, none ships) |
-| `help` | `HELP` for callers |
 | `busy` | busy line |
 | `goodbye` | logoff |
 
@@ -163,6 +167,9 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `backup_port` | `8080` | HTTP port while the backup window is open (not 6400) |
 | `backup_window_minutes` | `5` | how long one button press keeps the window open (1..60) |
 | `backup_button_gpio` | `0` | button pin, active low (BOOT on dev boards), -1 = no window |
+| `who_refresh_min` | `1` | lowest `WHO n` / `DASH n` refresh, seconds |
+| `who_refresh_max` | `30` | highest `WHO n` / `DASH n` refresh, seconds |
+| `activity_led_gpio` | `2` | LED that blinks on network traffic (the blue LED on DOIT-style boards), -1 = none |
 
 A value out of range is logged and the default is kept. An upload with a bad value is rejected, so it never replaces a working config.
 
@@ -182,6 +189,7 @@ BANS           X      X    X
 UNBAN          X      -    -
 HIDE           X      X    -
 NOLIMITS       X      X    X
+DASH           X      X    X
 ```
 
 | Permission | Grants |
@@ -195,6 +203,7 @@ NOLIMITS       X      X    X
 | `UNBAN` | `UNBAN` |
 | `HIDE` | `SHOW`, `HIDE`, `LURK` |
 | `NOLIMITS` | no idle hangup, no per-call or per-day limit |
+| `DASH` | `DASH`, `DASH n` |
 
 The boot log prints each level's permission bits (`cfg: sysop on co1 off perms 0x1bf ...`) so you can confirm what loaded. Bad rows are logged and skipped.
 

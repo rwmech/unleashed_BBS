@@ -37,45 +37,26 @@ void say(Term& t, Timeline& tl, Color c, const char* s) {
 } // namespace
 
 // ---------------------------------------------------------------------------
-// runSysop: staff verbs gated by the session's permissions; false falls
-// through to the caller shell (and "Unknown command" for ungranted verbs)
+// cmdShow / cmdLurk: presence for staff (dispatch and permission checks
+// come from the command table in bbs_shell.cpp)
 // ---------------------------------------------------------------------------
-bool Bbs::runSysop(Session& s, const char* verb, const char* arg, uint32_t now) {
-    Term& t = s.term;
-    Timeline& tl = s.tl;
-
-    if (ieq(verb, "DROP"))  { cmdDrop(s, now); return true; }
-    if (ieq(verb, "NODES")     && can(s, PERM_NODES))     { startList(s, ListKind::Nodes); return true; }
-    if (ieq(verb, "BANS")      && can(s, PERM_BANS))      { startList(s, ListKind::Bans); return true; }
-    if (ieq(verb, "KICK")      && can(s, PERM_KICK))      { cmdKick(s, arg, now); prompt(s); return true; }
-    if (ieq(verb, "BROADCAST") && can(s, PERM_BROADCAST)) { cmdBroadcast(s, arg); prompt(s); return true; }
-    if (ieq(verb, "SNOOP")     && can(s, PERM_SNOOP))     { cmdSnoop(s, arg); return true; }
-    if (ieq(verb, "UNBAN")     && can(s, PERM_UNBAN))     { cmdUnban(s, arg); prompt(s); return true; }
-    if (ieq(verb, "TIME") && *arg && can(s, PERM_TIME))   { cmdTimeAdjust(s, arg); prompt(s); return true; }
-    if (!can(s, PERM_HIDE)) return false;
-    if (ieq(verb, "SHOW")) {
+void Bbs::cmdShow(Session& s, bool show) {
+    if (show) {
         s.visible = true;
         s.lurk    = false;
         s.dnd     = false;
-        say(t, tl, Color::Cyan, "You are listed in WHO.");
-        prompt(s);
-        return true;
-    }
-    if (ieq(verb, "HIDE")) {
+        say(s.term, s.tl, Color::Cyan, "You are listed in WHO.");
+    } else {
         s.visible = false;
-        say(t, tl, Color::Cyan, "You are hidden from WHO.");
-        prompt(s);
-        return true;
+        say(s.term, s.tl, Color::Cyan, "You are hidden from WHO.");
     }
-    if (ieq(verb, "LURK")) {
-        s.lurk = !s.lurk;
-        if (s.lurk) { s.visible = false; s.dnd = true; }
-        else        { s.dnd = false; }
-        say(t, tl, Color::Cyan, s.lurk ? "Lurking: hidden, pages off." : "Lurk off: still hidden, pages on.");
-        prompt(s);
-        return true;
-    }
-    return false;
+}
+
+void Bbs::cmdLurk(Session& s) {
+    s.lurk = !s.lurk;
+    if (s.lurk) { s.visible = false; s.dnd = true; }
+    else        { s.dnd = false; }
+    say(s.term, s.tl, Color::Cyan, s.lurk ? "Lurking: hidden, pages off." : "Lurk off: still hidden, pages on.");
 }
 
 // ---------------------------------------------------------------------------

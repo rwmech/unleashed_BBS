@@ -1,8 +1,10 @@
 /*
  * File:        src/core/bbs_shell.cpp
- * Description: Caller shell: command dispatch, shortcuts, paged lists
- *              (HELP WHO LAST), PAGE / DND, TIME, MEM, TERM, BAUD, the FX
- *              demo, and BYE (which doubles as the sysop elevation path).
+ * Description: Caller shell: the core command table (C3 registry), dispatch
+ *              and permission checks, HELP generated from the tables, the
+ *              paged lists (HELP WHO LAST DASH), the WHO n / DASH n refresh
+ *              rows, PAGE / DND, TIME, MEM, TERM, BAUD, the FX demo, and BYE
+ *              (which doubles as the staff elevation path).
  *              Command reference: COMMANDS.md.
  * Listing:     COMPLETE FILE
  * Libraries:   none (libc)
@@ -24,6 +26,8 @@ using namespace bbsu;
 
 namespace {
 
+constexpr uint8_t kUsageCol = 13;       // HELP: usage column width incl. the gap
+
 // label: fixed-width demo label
 void label(Term& t, Timeline& tl, const char* name) {
     char buf[16];
@@ -33,53 +37,144 @@ void label(Term& t, Timeline& tl, const char* name) {
     t.color(tl, Color::Grey);
 }
 
-// Rows stay under 40 characters so a C64 never auto-wraps them.
-const char* const kHelp[] = {
-    "[H]ELP    this list, also ?",
-    "[W]HO     who is online",
-    "[M]EM     memory stats",
-    "[T]ERM    terminal info",
-    "[C]LS     clear screen",
-    "[F]X      effects demo",
-    "TIME      clock and time left",
-    "LAST      recent callers",
-    "PAGE n m  send message m to node n",
-    "DND       pages off/on",
-    "BAUD n    emulate n bps, BAUD OFF",
-    "[G]       log off, asks first",
-    "BYE       log off now",
-};
+// ---------------------------------------------------------------------------
+// wrapTake: how many characters of text fit in width, breaking at a space
+// ---------------------------------------------------------------------------
+size_t wrapTake(const char* text, size_t width) {
+    size_t len = strlen(text);
+    if (len <= width) return len;
+    for (size_t i = width; i > 0; --i) {
+        if (text[i] == ' ') return i;
+    }
+    return width;                                    // one long word: hard break
+}
 
-// Staff rows are shown only when the session holds the permission
-struct StaffRow { const char* text; uint16_t perm; };   // perm 0 = any staff
-const StaffRow kStaffHelp[] = {
-    { "NODES     all sessions with IP",   PERM_NODES },
-    { "KICK n m  disconnect node n",      PERM_KICK },
-    { "BROADCAST m  message every node",  PERM_BROADCAST },
-    { "SNOOP n   watch node n, Q stops",  PERM_SNOOP },
-    { "TIME n +m add or remove minutes",  PERM_TIME },
-    { "SHOW      list me in WHO",         PERM_HIDE },
-    { "HIDE      hide me from WHO",       PERM_HIDE },
-    { "LURK      hidden, pages off",      PERM_HIDE },
-    { "BANS      banned IPs",             PERM_BANS },
-    { "UNBAN ip  lift a ban",             PERM_UNBAN },
-    { "DROP      give up staff access",   0 },
-};
+// visibleLen: display columns of an ASCII string that may hold UTF-8 µ
+size_t visibleLen(const char* s) {
+    size_t n = 0;
+    for (; *s; ++s) if ((static_cast<uint8_t>(*s) & 0xC0) != 0x80) ++n;
+    return n;
+}
 
-constexpr int kHelpN  = sizeof(kHelp) / sizeof(kHelp[0]);
-constexpr int kStaffN = sizeof(kStaffHelp) / sizeof(kStaffHelp[0]);
-
-void line(Term& t, Timeline& tl, Color c, const char* s) {
-    t.color(tl, c);
-    t.text(tl, s);
-    t.nl(tl);
+// parseSeconds: "5" within [lo, hi], false otherwise
+bool parseSeconds(const char* arg, uint8_t lo, uint8_t hi, uint8_t& out) {
+    char* end = nullptr;
+    long v = strtol(arg, &end, 10);
+    if (end == arg || (end && *end) || v < lo || v > hi) return false;
+    out = static_cast<uint8_t>(v);
+    return true;
 }
 
 } // namespace
 
 // ===========================================================================
+// Command table (C3 registry, core entries)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// coreCommands: the built-in commands in HELP order. Usage stays within 12
+// characters; descriptions wrap onto indented lines.
+// ---------------------------------------------------------------------------
+const Command* Bbs::coreCommands(uint8_t& count) {
+    static const Command k[] = {
+        // -- everyone -------------------------------------------------------
+        { "HELP", "H?", 0, CF_NONE, "[H]ELP", "this list, also ?",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdHelp(s); } },
+        { "WHO", "W", 0, CF_NONE, "[W]HO [n]", "who is on; n refreshes",
+          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdWho(s, a); } },
+        { "LAST", "", 0, CF_NONE, "LAST", "the most recent calls",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Last); } },
+        { "PAGE", "", 0, CF_NONE, "PAGE n msg", "message node n",
+          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdPage(s, a); b.prompt(s); } },
+        { "DND", "", 0, CF_NONE, "DND", "pages off / on",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdDnd(s); b.prompt(s); } },
+        { "TIME", "", 0, CF_NONE, "TIME", "clock and time left",
+          [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdTime(s, a, n); } },
+        { "MEM", "M", 0, CF_NONE, "[M]EM", "memory use",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdMem(s); b.prompt(s); } },
+        { "TERM", "T", 0, CF_NONE, "[T]ERM", "terminal type and size",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdTerm(s); b.prompt(s); } },
+        { "BAUD", "", 0, CF_NONE, "BAUD n|OFF", "emulate 300-19200 bps",
+          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdBaud(s, a); b.prompt(s); } },
+        { "CLS", "C", 0, CF_NONE, "[C]LS", "clear the screen",
+          [](Bbs& b, Session& s, const char*, uint32_t) { s.term.cls(s.tl); b.prompt(s); } },
+        { "FX", "F", 0, CF_NONE, "[F]X", "effects demo",
+          [](Bbs&, Session& s, const char*, uint32_t) {
+              s.st = SState::Fx; s.fxStep = 0; s.savedCps = s.tl.cps();
+          } },
+        { "G", "", 0, CF_NONE, "[G]", "log off, asks first",
+          [](Bbs&, Session& s, const char*, uint32_t) {
+              s.st = SState::Confirm;
+              s.term.color(s.tl, Color::Yellow);
+              s.term.text(s.tl, kConfirmText);
+              s.term.color(s.tl, Color::White);
+          } },
+        { "BYE", "", 0, CF_NONE, "BYE", "log off now",
+          [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdBye(s, a, n); } },
+        { "OFF", "", 0, CF_HIDDEN, "", "",
+          [](Bbs& b, Session& s, const char*, uint32_t n) { b.goodbye(s, n); } },
+        { "LOGOFF", "", 0, CF_HIDDEN, "", "",
+          [](Bbs& b, Session& s, const char*, uint32_t n) { b.goodbye(s, n); } },
+        { "QUIT", "", 0, CF_HIDDEN, "", "",
+          [](Bbs& b, Session& s, const char*, uint32_t n) { b.goodbye(s, n); } },
+
+        // -- staff (shown and dispatched only with the permission) ------------
+        { "DASH", "", PERM_DASH, CF_NONE, "DASH [n]", "dashboard; n refreshes",
+          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdDash(s, a); } },
+        { "NODES", "", PERM_NODES, CF_NONE, "NODES", "every session with its IP",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Nodes); } },
+        { "KICK", "", PERM_KICK, CF_NONE, "KICK n [msg]", "disconnect node n",
+          [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdKick(s, a, n); b.prompt(s); } },
+        { "BROADCAST", "", PERM_BROADCAST, CF_NONE, "BROADCAST m", "message every node",
+          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdBroadcast(s, a); b.prompt(s); } },
+        { "SNOOP", "", PERM_SNOOP, CF_NONE, "SNOOP n", "watch node n, Q stops",
+          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdSnoop(s, a); } },
+        { "TIME", "", PERM_TIME, CF_HELPONLY, "TIME n +/-m", "add/remove node minutes", nullptr },
+        { "SHOW", "", PERM_HIDE, CF_NONE, "SHOW", "list me in WHO",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdShow(s, true); b.prompt(s); } },
+        { "HIDE", "", PERM_HIDE, CF_NONE, "HIDE", "hide me from WHO",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdShow(s, false); b.prompt(s); } },
+        { "LURK", "", PERM_HIDE, CF_NONE, "LURK", "hide and refuse pages",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdLurk(s); b.prompt(s); } },
+        { "BANS", "", PERM_BANS, CF_NONE, "BANS", "banned IP addresses",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Bans); } },
+        { "UNBAN", "", PERM_UNBAN, CF_NONE, "UNBAN ip", "lift a ban",
+          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdUnban(s, a); b.prompt(s); } },
+        { "DROP", "", 0, CF_STAFF, "DROP", "give up staff access",
+          [](Bbs& b, Session& s, const char*, uint32_t n) { b.cmdDrop(s, n); } },
+    };
+    count = static_cast<uint8_t>(sizeof(k) / sizeof(k[0]));
+    return k;
+}
+
+// ===========================================================================
 // Dispatch
 // ===========================================================================
+
+const Command* Bbs::commandAt(uint8_t index) const {
+    for (uint8_t t = 0; t < tableCount_; ++t) {
+        if (index < tables_[t].count) return &tables_[t].list[index];
+        index = static_cast<uint8_t>(index - tables_[t].count);
+    }
+    return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// findCommand: verb or one-letter key the session is allowed to run
+// ---------------------------------------------------------------------------
+const Command* Bbs::findCommand(const char* verb, const Session& s) const {
+    char key = verb[1] == '\0' ? static_cast<char>(toupper(static_cast<unsigned char>(verb[0]))) : 0;
+    for (uint8_t i = 0;; ++i) {
+        const Command* c = commandAt(i);
+        if (!c) return nullptr;
+        if (!c->fn || (c->flags & CF_HELPONLY)) continue;
+        bool match = ieq(verb, c->verb) || (key && strchr(c->keys, key));
+        if (!match) continue;
+        if (c->perm && !can(s, c->perm)) continue;             // not granted: stays unknown
+        if ((c->flags & CF_STAFF) && !s.perms) continue;
+        return c;
+    }
+}
 
 // ---------------------------------------------------------------------------
 // runCommand: first word is the verb, the rest is the argument
@@ -118,34 +213,9 @@ void Bbs::runCommand(Session& s, const char* text, uint32_t now) {
         return;
     }
 
-    if (s.perms && runSysop(s, verb, arg, now)) return;
-
-    if (ieq(verb, "HELP") || ieq(verb, "H") || ieq(verb, "?")) { cmdHelp(s); return; }
-    if (ieq(verb, "WHO")  || ieq(verb, "W")) { startList(s, ListKind::Who); return; }
-    if (ieq(verb, "LAST"))                   { startList(s, ListKind::Last); return; }
-    if (ieq(verb, "MEM")  || ieq(verb, "M")) { cmdMem(s); prompt(s); return; }
-    if (ieq(verb, "TERM") || ieq(verb, "T")) { cmdTerm(s); prompt(s); return; }
-    if (ieq(verb, "CLS")  || ieq(verb, "C")) { t.cls(tl); prompt(s); return; }
-    if (ieq(verb, "TIME"))                   { cmdTime(s, now); prompt(s); return; }
-    if (ieq(verb, "PAGE"))                   { cmdPage(s, arg); prompt(s); return; }
-    if (ieq(verb, "DND"))                    { cmdDnd(s); prompt(s); return; }
-    if (ieq(verb, "BAUD"))                   { cmdBaud(s, arg); prompt(s); return; }
-    if (ieq(verb, "FX")   || ieq(verb, "F")) {
-        s.st       = SState::Fx;
-        s.fxStep   = 0;
-        s.savedCps = tl.cps();
-        return;
-    }
-    if (ieq(verb, "G")) {
-        s.st = SState::Confirm;
-        t.color(tl, Color::Yellow);
-        t.text(tl, kConfirmText);
-        t.color(tl, Color::White);
-        return;
-    }
-    if (ieq(verb, "BYE")) { cmdBye(s, arg, now); return; }
-    if (ieq(verb, "OFF") || ieq(verb, "LOGOFF") || ieq(verb, "QUIT")) {
-        goodbye(s, now);
+    const Command* c = findCommand(verb, s);
+    if (c) {
+        c->fn(*this, s, arg, now);
         return;
     }
 
@@ -164,84 +234,164 @@ bool Bbs::listRow(Session& s) {
         case ListKind::Last:  return rowLast(s);
         case ListKind::Nodes: return rowNodes(s);
         case ListKind::Bans:  return rowBans(s);
+        case ListKind::Dash:  return rowDash(s);
         default:              return false;
     }
 }
 
 // ===========================================================================
-// Lists
+// Row output
 // ===========================================================================
 
+// rowWidth: lists and menus are laid out for 40 columns everywhere
+uint8_t Bbs::rowWidth(const Session& s) const {
+    uint8_t cols = s.term.cols();
+    return static_cast<uint8_t>((cols < 40 ? cols : 40) - 1);
+}
+
 // ---------------------------------------------------------------------------
-// cmdHelp: help screen file for callers, built-in list otherwise.
-// Staff always get the built-in list with the commands they hold.
+// rowText: one line. On a refresh screen the line is padded to the full
+// width so a redraw from the home position leaves no old characters.
 // ---------------------------------------------------------------------------
+void Bbs::rowText(Session& s, Color c, const char* text, bool newline) {
+    Term& t = s.term;
+    t.color(s.tl, c);
+    t.text(s.tl, text);
+    if (s.watch != ListKind::None) {
+        size_t used = visibleLen(text);
+        for (size_t i = used; i < rowWidth(s); ++i) t.ch(s.tl, ' ');
+    }
+    if (newline) t.nl(s.tl);
+}
+
+void Bbs::rowRule(Session& s) {
+    s.term.color(s.tl, Color::Cyan);
+    fx::rule(s.term, s.tl, rowWidth(s));
+    s.term.nl(s.tl);
+}
+
+// ===========================================================================
+// HELP
+// ===========================================================================
+
 void Bbs::cmdHelp(Session& s) {
-    if (!s.perms && playScreen(s, "help")) return;
     startList(s, ListKind::Help);
 }
 
+// ---------------------------------------------------------------------------
+// rowHelp: generated from the command tables. Sections: everyone, then the
+// staff commands this session holds. Usage in a 13-column field, the
+// description wraps under itself within 40 columns.
+//   listIdx: 0 header | 1..n everyone | n+1 staff header | n+2..2n+1 staff | 2n+2 footer
+//   listSub: offset into the current description (continuation lines)
+// ---------------------------------------------------------------------------
 bool Bbs::rowHelp(Session& s) {
     Term& t = s.term;
     Timeline& tl = s.tl;
 
+    uint8_t total = 0;
+    while (commandAt(total)) ++total;
+
     for (;;) {
-        int i = s.listIdx++;
-        if (i == 0) { line(t, tl, Color::Yellow, "Commands"); return true; }
-        i -= 1;
-        if (i < kHelpN) { line(t, tl, Color::Cyan, kHelp[i]); return true; }
-        i -= kHelpN;
-        if (s.perms) {
-            if (i == 0) { line(t, tl, Color::Yellow, syscfg::levelName(s.level)); return true; }
-            i -= 1;
-            if (i < kStaffN) {
-                const StaffRow& r = kStaffHelp[i];
-                if (r.perm && !can(s, r.perm)) continue;     // not granted: skip the row
-                line(t, tl, Color::Cyan, r.text);
-                return true;
-            }
-            i -= kStaffN;
-        }
+        uint16_t i = s.listIdx;
         if (i == 0) {
-            line(t, tl, Color::Grey, t.isPet() ? "SPACE or RUN/STOP stops output"
-                                               : "Space or Ctrl-C stops output");
+            ++s.listIdx;
+            rowText(s, Color::Yellow, "Commands");
             return true;
         }
-        return false;
+        if (i == total + 1u) {
+            ++s.listIdx;
+            if (!s.perms) continue;
+            rowText(s, Color::Yellow, syscfg::levelName(s.level));
+            return true;
+        }
+        if (i == 2u * total + 2u) {
+            ++s.listIdx;
+            rowText(s, Color::DarkGrey, t.isPet() ? "SPACE or RUN/STOP stops output"
+                                                  : "Space or Ctrl-C stops output");
+            return true;
+        }
+        if (i > 2u * total + 2u) return false;
+
+        bool staffPass = i > total + 1u;
+        const Command* c = commandAt(static_cast<uint8_t>(staffPass ? i - total - 2u : i - 1u));
+        bool isStaff = c->perm || (c->flags & CF_STAFF);
+        bool granted = (!c->perm || can(s, c->perm)) && (!(c->flags & CF_STAFF) || s.perms);
+        if ((c->flags & CF_HIDDEN) || isStaff != staffPass || !granted) {
+            ++s.listIdx;
+            s.listSub = 0;
+            continue;
+        }
+
+        // one visual line of this command
+        uint8_t descW = static_cast<uint8_t>(rowWidth(s) - kUsageCol);
+        const char* d = c->help + s.listSub;
+        while (*d == ' ') ++d;
+        size_t take = wrapTake(d, descW);
+
+        char usage[16];
+        snprintf(usage, sizeof(usage), "%-*.*s", kUsageCol, kUsageCol - 1, s.listSub ? "" : c->usage);
+        t.color(tl, Color::LightBlue);
+        t.text(tl, usage);
+        t.color(tl, Color::Grey);
+        t.textN(tl, d, take);
+        t.nl(tl);
+
+        const char* rest = d + take;
+        while (*rest == ' ') ++rest;
+        if (*rest) {
+            s.listSub = static_cast<uint8_t>(rest - c->help);
+        } else {
+            s.listSub = 0;
+            ++s.listIdx;
+        }
+        return true;
     }
+}
+
+// ===========================================================================
+// WHO
+// ===========================================================================
+
+void Bbs::cmdWho(Session& s, const char* arg) {
+    if (!*arg) { startList(s, ListKind::Who); return; }
+    const SysConfig& cfg = syscfg::get();
+    uint8_t secs = 0;
+    if (!parseSeconds(arg, cfg.whoMin, cfg.whoMax, secs)) {
+        char buf[48];
+        snprintf(buf, sizeof(buf), "WHO n: n is %u to %u seconds.", cfg.whoMin, cfg.whoMax);
+        s.term.color(s.tl, Color::LightRed);
+        s.term.text(s.tl, buf);
+        prompt(s);
+        return;
+    }
+    startWatch(s, ListKind::Who, secs);
 }
 
 // ---------------------------------------------------------------------------
 // rowWho: clock line, header, the 6 caller nodes, then the sysop if shown.
-// The busy line is never listed.
+// The busy line is never listed. A refresh screen keeps a fixed height.
 // ---------------------------------------------------------------------------
 bool Bbs::rowWho(Session& s) {
-    Term& t = s.term;
-    Timeline& tl = s.tl;
-    bool wide = t.cols() >= 60;
-    const char* fmt = wide ? "%c %-20.20s %-10.10s %4s %5s" : "%c %-12.12s %-10.10s %3s %5s";
     char buf[80];
     char on[8];
     char idle[8];
+    const char* fmt = "%c %-12.12s %-10.10s %3s %5s";
     uint32_t now = plat::millis();
+    bool refresh = s.watch != ListKind::None;
 
     for (;;) {
         uint8_t i = s.listIdx++;
         if (i == 0) {
-            char when[32];
-            t.color(tl, Color::Yellow);
-            t.text(tl, "Who's online");
-            if (clk::valid()) {
-                clk::fmt(when, sizeof(when), "   %a %d %b %H:%M");
-                t.color(tl, Color::Grey);
-                t.text(tl, when);
-            }
-            t.nl(tl);
+            char when[24] = "";
+            if (clk::valid()) clk::fmt(when, sizeof(when), "%a %d %b %H:%M:%S");
+            snprintf(buf, sizeof(buf), "%-19s%20s", "Who's online", when);
+            rowText(s, Color::Yellow, buf);
             return true;
         }
         if (i == 1) {
             snprintf(buf, sizeof(buf), fmt, 'N', "Handle", "Terminal", "Min", "Idle");
-            line(t, tl, Color::LightBlue, buf);
+            rowText(s, Color::LightBlue, buf);
             return true;
         }
         uint8_t k = static_cast<uint8_t>(i - 2);
@@ -249,7 +399,10 @@ bool Bbs::rowWho(Session& s) {
         if (k < BBS_MAX_NODES) {
             n = &nodes_[k];
         } else if (k == BBS_MAX_NODES) {
-            if (sysop_.st == SState::Free || !sysop_.visible || sysop_.lurk) continue;
+            if (sysop_.st == SState::Free || !sysop_.visible || sysop_.lurk) {
+                if (refresh) { rowText(s, Color::Grey, ""); return true; }   // keep the frame height
+                continue;
+            }
             n = &sysop_;
         } else {
             return false;
@@ -258,7 +411,7 @@ bool Bbs::rowWho(Session& s) {
         bool hidden = n != &s && (!n->visible || n->lurk);   // hidden co-sysop looks like a free line
         if (n->st == SState::Free || hidden) {
             snprintf(buf, sizeof(buf), "%c -- waiting for caller --", nodeChar(*n));
-            line(t, tl, Color::DarkGrey, buf);
+            rowText(s, Color::DarkGrey, buf);
             return true;
         }
         const char* h = n->user[0] ? n->user
@@ -266,34 +419,200 @@ bool Bbs::rowWho(Session& s) {
         snprintf(on, sizeof(on), "%u", static_cast<unsigned>((now - n->connectedAt) / 60000u));
         fmtIdle(idle, sizeof(idle), now - n->lastInput);
         snprintf(buf, sizeof(buf), fmt, nodeChar(*n), h, n->term.name(), on, idle);
-        line(t, tl, n == &s ? Color::White : Color::Grey, buf);
+        rowText(s, n == &s ? Color::White : Color::Grey, buf);
         return true;
     }
 }
 
 // ---------------------------------------------------------------------------
-// rowLast: newest calls first; sysop calls only shown to the sysop
+// rowWatchFooter: two lines under a refresh screen, the last without a
+// newline so a 24-row terminal never scrolls. listSub counts 1, 2, done.
+// ---------------------------------------------------------------------------
+bool Bbs::rowWatchFooter(Session& s) {
+    char buf[64];
+    if (s.listSub == 1) {
+        snprintf(buf, sizeof(buf), "Refresh %us, any key stops", s.watchSecs);
+        rowText(s, Color::Cyan, buf);
+        s.listSub = 2;
+        return true;
+    }
+    if (s.listSub == 2) {
+        int32_t left = idleSecondsLeft(s, plat::millis());
+        const char* page = s.mb.empty() ? "" : "  page waiting";
+        if (left < 0) snprintf(buf, sizeof(buf), "No idle limit%s", page);
+        else          snprintf(buf, sizeof(buf), "Idle still counts: %ld:%02ld left%s",
+                               static_cast<long>(left / 60), static_cast<long>(left % 60), page);
+        rowText(s, left >= 0 && left < 60 ? Color::LightRed : Color::DarkGrey, buf, false);
+        s.listSub = 3;
+        return true;
+    }
+    return false;
+}
+
+// ===========================================================================
+// DASH
+// ===========================================================================
+
+void Bbs::cmdDash(Session& s, const char* arg) {
+    if (!*arg) {                                     // one screen: no [More]
+        startList(s, ListKind::Dash);
+        s.nonstop = true;
+        return;
+    }
+    const SysConfig& cfg = syscfg::get();
+    uint8_t secs = 0;
+    if (!parseSeconds(arg, cfg.whoMin, cfg.whoMax, secs)) {
+        char buf[48];
+        snprintf(buf, sizeof(buf), "DASH n: n is %u to %u seconds.", cfg.whoMin, cfg.whoMax);
+        s.term.color(s.tl, Color::LightRed);
+        s.term.text(s.tl, buf);
+        prompt(s);
+        return;
+    }
+    startWatch(s, ListKind::Dash, secs);
+}
+
+// ---------------------------------------------------------------------------
+// rowDash: 22 rows, 40 columns. Clock, uptime, NTP, memory, every node,
+// the day's calls, bans, busy line, backup window, the last 5 calls.
+// ---------------------------------------------------------------------------
+bool Bbs::rowDash(Session& s) {
+    char buf[80];
+    uint32_t now = plat::millis();
+    uint8_t i = s.listIdx++;
+
+    switch (i) {
+        case 0: {
+            char when[24] = "clock not set";
+            if (clk::valid()) clk::fmt(when, sizeof(when), "%a %d %b %H:%M:%S");
+            snprintf(buf, sizeof(buf), "%-19s%20s", "SYSOP DASHBOARD", when);
+            rowText(s, Color::Yellow, buf);
+            return true;
+        }
+        case 1: {
+            uint32_t up = now / 1000u;
+            snprintf(buf, sizeof(buf), "%s %s  up %ud %02u:%02u", BBS_NAME, BBS_VERSION,
+                     static_cast<unsigned>(up / 86400u), static_cast<unsigned>(up / 3600u % 24u),
+                     static_cast<unsigned>(up / 60u % 60u));
+            rowText(s, Color::White, buf);
+            return true;
+        }
+        case 2: {
+            plat::HeapStats h = plat::heap();
+            if (h.valid) {
+                snprintf(buf, sizeof(buf), "NTP %s  heap %uK min %uK big %uK", clk::valid() ? "ok" : "--",
+                         static_cast<unsigned>(h.freeBytes / 1024u), static_cast<unsigned>(h.minFree / 1024u),
+                         static_cast<unsigned>(h.largestBlock / 1024u));
+            } else {
+                snprintf(buf, sizeof(buf), "NTP %s  heap n/a on host", clk::valid() ? "ok" : "--");
+            }
+            rowText(s, Color::Grey, buf);
+            return true;
+        }
+        case 3:
+        case 12:
+        case 21:
+            rowRule(s);
+            return true;
+        case 4:
+            snprintf(buf, sizeof(buf), "%c %-12.12s %-10.10s %5s %4s", 'N', "Handle", "Terminal", "Idle", "Left");
+            rowText(s, Color::LightBlue, buf);
+            return true;
+        case 13: {
+            uint8_t bans = 0;
+            BanList::Entry e;
+            for (uint8_t k = 0; k < BBS_BAN_SLOTS; ++k) if (bans_.at(k, now, e)) ++bans;
+            char today[8] = "--";
+            uint32_t start = clk::todayStart();
+            if (start) snprintf(today, sizeof(today), "%u", calllog::countSince(start));
+            snprintf(buf, sizeof(buf), "Calls %s today  bans %u  busy %s", today, bans,
+                     busy_.st == SState::Free ? "free" : "in use");
+            rowText(s, Color::Grey, buf);
+            return true;
+        }
+        case 14: {
+            if (backup_.awaitingApproval()) {
+                snprintf(buf, sizeof(buf), "Backup: upload waiting for Y/N");
+            } else if (backup_.isOpen()) {
+                int32_t left = static_cast<int32_t>(backup_.closesAt() - now) / 1000;
+                if (left < 0) left = 0;
+                snprintf(buf, sizeof(buf), "Backup window open, %ld:%02ld left",
+                         static_cast<long>(left / 60), static_cast<long>(left % 60));
+            } else {
+                snprintf(buf, sizeof(buf), "Backup window closed");
+            }
+            rowText(s, backup_.isOpen() ? Color::LightGreen : Color::Grey, buf);
+            return true;
+        }
+        case 15:
+            rowText(s, Color::Yellow, "Last calls");
+            return true;
+        default:
+            break;
+    }
+
+    if (i >= 5 && i <= 11) {                                    // nodes 1..6, then S
+        const Session& n = i <= 10 ? nodes_[i - 5] : sysop_;
+        if (n.st == SState::Free) {
+            snprintf(buf, sizeof(buf), "%c -", nodeChar(n));
+            rowText(s, Color::DarkGrey, buf);
+            return true;
+        }
+        char idle[8];
+        char left[12] = "--";
+        fmtIdle(idle, sizeof(idle), now - n.lastInput);
+        if (n.role == Role::Caller && n.loggedIn && !can(n, PERM_NOLIMITS)) {
+            int32_t sec = secondsLeft(n, now);
+            if (sec != INT32_MAX) snprintf(left, sizeof(left), "%ld", static_cast<long>(sec > 0 ? (sec + 59) / 60 : 0));
+        }
+        const char* h = n.user[0] ? n.user : "(logging in)";
+        snprintf(buf, sizeof(buf), "%c %-12.12s %-10.10s %5s %4s", nodeChar(n), h, n.term.name(), idle, left);
+        rowText(s, &n == &s ? Color::White : Color::Grey, buf);
+        return true;
+    }
+
+    if (i >= 16 && i <= 20) {                                   // last 5 calls
+        CallRec r;
+        if (calllog::get(static_cast<uint8_t>(i - 16), r)) {
+            char when[16];
+            clk::fmtEpoch(when, sizeof(when), "%m/%d %H:%M", r.start);
+            char node = (r.flags & CallRec::F_SYSOP) ? 'S' : static_cast<char>('0' + (r.node % 10));
+            snprintf(buf, sizeof(buf), "%-12.12s %c %-11s %4u min", r.user, node, when,
+                     static_cast<unsigned>((r.secs + 59u) / 60u));
+            rowText(s, Color::Grey, buf);
+        } else {
+            rowText(s, Color::Grey, "");
+        }
+        return true;
+    }
+    return false;
+}
+
+// ===========================================================================
+// LAST
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// rowLast: newest calls first; sysop calls only shown to staff
 // ---------------------------------------------------------------------------
 bool Bbs::rowLast(Session& s) {
-    Term& t = s.term;
-    Timeline& tl = s.tl;
-    bool wide  = t.cols() >= 60;
+    bool wide  = s.term.cols() >= 60;
     bool staff = s.perms != 0;             // sees sysop-node calls
-    bool sysop = can(s, PERM_NODES);          // sees IPs
+    bool sysop = can(s, PERM_NODES);       // sees IPs
     char buf[96];
 
     uint8_t i = s.listIdx++;
-    if (i == 0) { line(t, tl, Color::Yellow, "Last callers"); return true; }
+    if (i == 0) { rowText(s, Color::Yellow, "Last callers"); return true; }
     if (i == 1) {
         if (wide && sysop) snprintf(buf, sizeof(buf), "%-20s N %-10s %-11s %4s %s", "Handle", "Terminal", "When", "Min", "IP");
         else if (wide)     snprintf(buf, sizeof(buf), "%-20s N %-10s %-11s %4s", "Handle", "Terminal", "When", "Min");
         else               snprintf(buf, sizeof(buf), "%-12s N %-11s %4s", "Handle", "When", "Min");
-        line(t, tl, Color::LightBlue, buf);
+        rowText(s, Color::LightBlue, buf);
         return true;
     }
 
     uint8_t total = calllog::count();
-    if (i == 2 && total == 0) { line(t, tl, Color::Grey, "No calls logged yet."); return true; }
+    if (i == 2 && total == 0) { rowText(s, Color::Grey, "No calls logged yet."); return true; }
 
     // row index i >= 2 maps to record back = i - 2; skipped sysop records
     // advance listIdx past themselves so each call still emits one line
@@ -313,7 +632,7 @@ bool Bbs::rowLast(Session& s) {
         if (wide && sysop) snprintf(buf, sizeof(buf), "%-20.20s %c %-10.10s %-11s %4u %s", r.user, node, term, when, mins, r.ip);
         else if (wide)     snprintf(buf, sizeof(buf), "%-20.20s %c %-10.10s %-11s %4u", r.user, node, term, when, mins);
         else               snprintf(buf, sizeof(buf), "%-12.12s %c %-11s %4u", r.user, node, when, mins);
-        line(t, tl, Color::Grey, buf);
+        rowText(s, Color::Grey, buf);
         return true;
     }
     return false;
@@ -368,9 +687,14 @@ void Bbs::cmdTerm(Session& s) {
 }
 
 // ---------------------------------------------------------------------------
-// cmdTime: wall clock, time on, time left
+// cmdTime: wall clock, time on, time left. Staff with TIME: TIME n +/-m.
 // ---------------------------------------------------------------------------
-void Bbs::cmdTime(Session& s, uint32_t now) {
+void Bbs::cmdTime(Session& s, const char* arg, uint32_t now) {
+    if (*arg && can(s, PERM_TIME)) {
+        cmdTimeAdjust(s, arg);
+        prompt(s);
+        return;
+    }
     Term& t = s.term;
     Timeline& tl = s.tl;
     char buf[64];
@@ -395,6 +719,7 @@ void Bbs::cmdTime(Session& s, uint32_t now) {
     if (left == INT32_MAX) snprintf(buf, sizeof(buf), "Left     no limit");
     else                   snprintf(buf, sizeof(buf), "Left     %ld min", static_cast<long>((left + 59) / 60));
     t.text(tl, buf);
+    prompt(s);
 }
 
 // ---------------------------------------------------------------------------

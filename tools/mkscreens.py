@@ -2,11 +2,12 @@
 """
 File:        tools/mkscreens.py
 Description: Generates the stock µnleashed BBS display files in data/screens/:
-             welcome.seq/.ans/.asc, help.asc, busy.seq/.ans/.asc,
+             welcome.seq/.ans/.asc, busy.seq/.ans/.asc,
              goodbye.seq/.ans/.asc. No bulletin ships: add
              bulletin.asc/.ans/.seq to show one after login.
              Hand-drawn art from PETSCII/ANSI editors can replace any of
              these; the BBS only cares about the file name and extension.
+             HELP is generated from the command table, so no help screen ships.
 
              Layout rules: PETSCII and ASCII lines stay under 40 columns
              (a 40th character auto-wraps on a C64). ANSI art is 80 columns.
@@ -217,31 +218,6 @@ def make_welcome_asc():
 
 
 # ==========================================================================
-# help
-# ==========================================================================
-HELP = """@BBS@ commands
---------------------------------------
-[H]ELP    this screen, also ?
-[W]HO     who is online
-[M]EM     memory stats
-[T]ERM    terminal type and size
-[C]LS     clear screen
-[F]X      old-school effects demo
-TIME      clock and time left
-LAST      recent callers
-PAGE n m  send message m to node n
-DND       pages off/on
-BAUD n    emulate n bps, BAUD OFF
-[G]       log off, asks first
-BYE       log off now
-
-Up-arrow recalls earlier commands.
-Any key fast-forwards animations.
-Space, Ctrl-C or RUN/STOP stops output.
-"""
-
-
-# ==========================================================================
 # busy (tests look for "lines are busy")
 # ==========================================================================
 BUSY_ASC = """@CLS@--------------------------------------
@@ -325,7 +301,6 @@ def main():
         "welcome.seq": make_welcome_seq(),
         "welcome.ans": make_welcome_ans(),
         "welcome.asc": make_welcome_asc(),
-        "help.asc": HELP.encode("ascii"),
         "busy.seq": make_busy_seq(),
         "busy.ans": make_busy_ans(),
         "busy.asc": BUSY_ASC.encode("ascii"),

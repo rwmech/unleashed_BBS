@@ -5,8 +5,12 @@
  *              a single cooperative loop. Sessions are preallocated in
  *              static storage; the loop never allocates.
  *
- *   Sources: bbs.cpp (connections, flow, input, paging),
- *            bbs_shell.cpp (caller commands),
+ *   Commands live in a registry (Command tables): the core table is in
+ *   bbs_shell.cpp, plugins add theirs with registerCommands(). Dispatch,
+ *   permission checks and HELP all come from the tables.
+ *
+ *   Sources: bbs.cpp (connections, flow, input, paging, refresh screens),
+ *            bbs_shell.cpp (command table, caller commands, HELP/WHO/DASH),
  *            bbs_sysop.cpp (sysop node, co-sysops, staff commands).
  * Listing:     COMPLETE FILE
  * Libraries:   BSD sockets (lwIP on ESP32)
@@ -35,6 +39,7 @@ enum class SState : uint8_t {
     More,      // "[More]" prompt waiting for a key
     Confirm,   // "Log off (Y/N)?"
     Fx,        // effects demo running
+    Watch,     // WHO n / DASH n refreshing until a key
     BusyWait,  // busy line countdown
     Snoop,     // sysop watching another node
     Approve,   // sysop answering Y/N on a staged backup upload
@@ -47,7 +52,7 @@ enum class Role : uint8_t {
     Sysop,     // hidden sysop node, entered with BYE <password>
 };
 
-enum class ListKind : uint8_t { None, Help, Who, Last, Nodes, Bans };
+enum class ListKind : uint8_t { None, Help, Who, Last, Nodes, Bans, Dash };
 enum class MoreFrom : uint8_t { List, Screen };
 
 struct Session {
@@ -80,12 +85,18 @@ struct Session {
     bool         idleWarned  = false;
     uint32_t     guestUntil  = 0;      // busy-line login deadline
 
-    // paging
+    // paging and generated lists
     ListKind     list        = ListKind::None;
     uint8_t      listIdx     = 0;
+    uint8_t      listSub     = 0;      // wrap offset inside the current row
     uint8_t      pageLines   = 0;
     bool         nonstop     = false;
     MoreFrom     moreFrom    = MoreFrom::List;
+
+    // WHO n / DASH n refresh
+    ListKind     watch       = ListKind::None;
+    uint8_t      watchSecs   = 0;
+    uint32_t     watchNext   = 0;      // next redraw; 0 = drawing now
 
     // busy line countdown
     uint8_t      countdown   = 0;
@@ -112,6 +123,31 @@ struct Session {
     Timeline     tl;
 };
 
+class Bbs;
+
+// ---------------------------------------------------------------------------
+// Command registry entry. A handler owns its output and ends with a prompt
+// (or hands the session to a list, form or screen that prompts later).
+// ---------------------------------------------------------------------------
+using CmdFn = void (*)(Bbs& bbs, Session& s, const char* arg, uint32_t now);
+
+enum CmdFlag : uint8_t {
+    CF_NONE     = 0,
+    CF_HIDDEN   = 1,   // works, never listed in HELP (aliases)
+    CF_STAFF    = 2,   // needs any staff level (perm 0 staff commands)
+    CF_HELPONLY = 4,   // HELP row only, never dispatched (a staff form of a verb)
+};
+
+struct Command {
+    const char* verb;    // "WHO"
+    const char* keys;    // one-letter shortcuts, "" = none, e.g. "H?"
+    uint16_t    perm;    // PERM_* bit needed, 0 = everyone
+    uint8_t     flags;   // CmdFlag
+    const char* usage;   // HELP column, 12 characters max, e.g. "[W]HO [n]"
+    const char* help;    // description, wrapped to the HELP width
+    CmdFn       fn;
+};
+
 class Bbs {
 public:
     static Bbs& instance();
@@ -128,10 +164,15 @@ public:
     // key dispatch target (public for the Term callback trampoline)
     void onKey(Session& s, int k, uint32_t now);
 
+    // registerCommands: add a plugin command table (kept by pointer, must be
+    // static). False when the registry is full.
+    bool registerCommands(const Command* list, uint8_t count);
+
 private:
     Bbs() = default;
 
-    static constexpr uint8_t kSessions = BBS_MAX_NODES + 2;   // + busy + sysop
+    static constexpr uint8_t kSessions      = BBS_MAX_NODES + 2;   // + busy + sysop
+    static constexpr uint8_t kCommandTables = 8;                   // core + plugins
 
     // -- connections (bbs.cpp) ---------------------------------------------
     void acceptAll(uint32_t now);
@@ -155,9 +196,10 @@ private:
     void goodbye(Session& s, uint32_t now);
     bool playScreen(Session& s, const char* name);
 
-    // -- timers, notices, paging (bbs.cpp) -----------------------------------
+    // -- timers, notices, paging, refresh (bbs.cpp) --------------------------
     void checkTimers(Session& s, uint32_t now);
     int32_t secondsLeft(const Session& s, uint32_t now) const;
+    int32_t idleSecondsLeft(const Session& s, uint32_t now) const;
     bool canNotify(const Session& s) const;
     void notify(Session& s, Color c, const char* msg);
     void redrawInput(Session& s);
@@ -169,18 +211,33 @@ private:
     void showMore(Session& s, MoreFrom from);
     void abortOutput(Session& s);
     uint8_t pageRows(const Session& s) const;
+    void startWatch(Session& s, ListKind kind, uint8_t secs);
+    void serviceWatch(Session& s, uint32_t now);
+    void stopWatch(Session& s);
+
+    // -- output helpers (bbs_shell.cpp) --------------------------------------
+    void rowText(Session& s, Color c, const char* text, bool newline = true);   // padded when refreshing
+    void rowRule(Session& s);
+    uint8_t rowWidth(const Session& s) const;
 
     // -- shell (bbs_shell.cpp) -----------------------------------------------
     void runCommand(Session& s, const char* line, uint32_t now);
+    const Command* findCommand(const char* verb, const Session& s) const;
+    const Command* commandAt(uint8_t index) const;
+    static const Command* coreCommands(uint8_t& count);
     // list rows: each call emits exactly one line, false when finished
     bool listRow(Session& s);
     bool rowHelp(Session& s);
     bool rowWho(Session& s);
     bool rowLast(Session& s);
+    bool rowDash(Session& s);
+    bool rowWatchFooter(Session& s);
     void cmdHelp(Session& s);
+    void cmdWho(Session& s, const char* arg);
+    void cmdDash(Session& s, const char* arg);
     void cmdMem(Session& s);
     void cmdTerm(Session& s);
-    void cmdTime(Session& s, uint32_t now);
+    void cmdTime(Session& s, const char* arg, uint32_t now);
     void cmdBaud(Session& s, const char* arg);
     void cmdPage(Session& s, const char* arg);
     void cmdDnd(Session& s);
@@ -188,7 +245,6 @@ private:
     void fxNext(Session& s);
 
     // -- sysop (bbs_sysop.cpp) -----------------------------------------------
-    bool runSysop(Session& s, const char* verb, const char* arg, uint32_t now);
     void elevate(Session& s, uint32_t now);
     void coElevate(Session& s, Access level, uint32_t now);
     bool rowNodes(Session& s);
@@ -200,6 +256,8 @@ private:
     void cmdTimeAdjust(Session& s, const char* arg);
     void cmdUnban(Session& s, const char* arg);
     void cmdDrop(Session& s, uint32_t now);
+    void cmdShow(Session& s, bool show);
+    void cmdLurk(Session& s);
     Session* nodeByArg(const char* arg, const char** rest);
 
     // -- backup window (bbs.cpp) ---------------------------------------------
@@ -217,4 +275,8 @@ private:
     Session*  all_[kSessions] = {};
     BanList   bans_;
     TimeBank  bank_;
+
+    struct CommandTable { const Command* list; uint8_t count; };
+    CommandTable tables_[kCommandTables] = {};
+    uint8_t      tableCount_ = 0;
 };

@@ -38,6 +38,18 @@ size_t fmt(char* buf, size_t n, const char* strftimeFmt) {
     return fmtEpoch(buf, n, strftimeFmt, epoch());
 }
 
+uint32_t todayStart() {
+    uint32_t e = epoch();
+    if (!e) return 0;
+    time_t t = static_cast<time_t>(e);
+    struct tm lt;
+    localtime_r(&t, &lt);
+    lt.tm_hour = lt.tm_min = lt.tm_sec = 0;
+    lt.tm_isdst = -1;
+    time_t mid = mktime(&lt);
+    return mid > 0 ? static_cast<uint32_t>(mid) : 0;
+}
+
 uint32_t dayKey(uint32_t millisNow) {
     uint32_t e = epoch();
     if (!e) return millisNow / 86400000u + 1u;

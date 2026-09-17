@@ -21,6 +21,8 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
 - Backup window: BOOT button (GPIO0) while the sysop is logged in opens HTTP on `backup_port` for `backup_window_minutes`. Download needs no confirmation and redacts passwords as `***`; upload is staged, validated, and applied only after the sysop's Y. HTTP runs inside the BBS select loop (no httpd task, saves 27 KB flash, host-testable).
 - Commands: C3 is a command registry (verbs, shortcuts, permission, help, handler) that plugins register into. The navigation tree is deferred; if it returns it is a device namespace (`ls /gpio`), not a BBS menu tree.
 - Plugin order after core: GPIO, chat (DDial/Gtalk style), serial bridge (sysop/LAN only, raw stream handoff), HA. Then mail, message bases, XMODEM, MQTT, Lua doors, federation.
+- SD card plugin (planned): replaces the onboard filesystem for all data, takes over file management, and lets logging be redirected to the card. Onboard storage caps user accounts at about 100; more than that requires the SD card plugin. Core file access must stay behind `plat::fsBase()` / `plat::logsBase()` so the plugin can swap the mounts.
+- User accounts (0.6.0 plan): form and list screens (cursor-driven, ANSI and PETSCII, line prompts on plain ASCII) instead of typed commands; self-registration on by default; password typed twice; salted SHA-256 x1000 (simple, not PBKDF2); staff elevation stays on `BYE <password>`, separate from accounts; flashy fx on login, signup and forms. USERS.md documents creating and managing accounts.
 - Workflow: commit and push after every flashed build. COMMANDS.md, README.md and this file are updated in the same change. Code review at phase checkpoints; a robustness/pen test of the live board before any internet exposure (tabled for now).
 
 ## Phase plan
@@ -29,27 +31,28 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
 |---|---|---|
 | C1 | listener, nodes, detection, screens, editor, effects, shell | done, verified on C64 and PuTTY |
 | C2 | user accounts, PBKDF2 auth, lockout, self-registration | partial: staff passwords, co-sysop matrix, IP bans. Accounts next |
-| C3 | command registry (tree deferred) | not started |
+| C3 | command registry (tree deferred) | done: `Command` tables, generated HELP, `registerCommands()` for plugins |
 | C4 | message bus, WHO, PAGE, notices, BROADCAST, DND | done |
 | C5 | plugin API, requirements check, diagnostics | not started |
 | C6 | network zones, bans, maintenance mode, OTA | partial: bans |
 
 Also done: busy line, paging (`[More]`), abort keys, command history, time limits (per call, per day), caller log (`LAST`), NTP + TZ, mDNS, backup window, config reload without reboot.
 
-## Current state (0.4.0, on the board and on GitHub)
+## Current state (0.5.0)
 
-- Host build: 135/135 scripted checks under ASan/UBSan (`tools/testclient.py --backup`), plus `--slow` and `--ban`.
-- ESP32: image ~894 KB (57% of the 1.5 MB slot), static RAM ~81 KB, heap ~186 KB free with the BBS listening (0.3.0 figure).
+- Host build: 149/149 scripted checks (`tools/testclient.py --backup`), also under ASan/UBSan. The old GCC 9 ASan in WSL sometimes dies at startup with `AddressSanitizer:DEADLYSIGNAL` (ASLR vs new kernel); rerun or use the plain build, it is not a BBS bug.
+- ESP32: image ~900 KB (57% of the 1.5 MB slot), static RAM ~81 KB, heap ~186 KB free with the BBS listening (0.3.0 figure).
+- 0.5.0 adds: TCP keepalive on caller sockets (60 s idle, 3 x 10 s; lwIP `LWIP_TCP_KEEPALIVE` is on), activity LED (`activity_led_gpio`, default 2), the C3 command registry with generated 40-column HELP, `WHO n` and `DASH [n]` refresh screens (home + padded rows, last row without newline so 24-row terminals never scroll, footer shows the idle clock). The stock help screen is gone.
+- Not yet verified on hardware: the keepalive drop after a C64 power-off, the LED pin.
 - Flash layout: 2 x 1.5 MB OTA app, `logs` 128 KB, `storage` 768 KB.
 - Hardware verified: PuTTY, C64 via TeensyROM, every PETSCII glyph (spinner 0xBE/0xBC/0xAC/0xBB, 0xC0, 0xDD, 0xA6, 0xA4), backup window download and upload.
 
-## Next build (agreed items, plan pending approval)
+## Next builds (approved)
 
-1. Dead connections: a C64 powered off with the sysop line open stayed connected (pages still "sent"). The sysop is exempt from idle hangup, and lwIP's default keepalive is 2 hours. Fix with per-socket TCP keepalive (idle/interval/count), still exempt from idle timeout.
-2. Activity LED: flash the board's blue LED on network I/O (pin configurable, `-1` off).
-3. `WHO n`: refresh the list every n seconds until a key is pressed, for everyone. `who_refresh_min = 1`, `who_refresh_max = 30` in `system.cfg`.
-4. HELP layout: 40-column width everywhere; verb/option column aligned, descriptions wrap onto indented continuation lines.
-5. User accounts (C2): self-registration (config switch, or sysop-created accounts only), sysop user CRUD, streamlined prompts with defaults. Fields: handle, name, email, optional address, optional phone, fixed-length profile; field schema table so fields can be added easily.
+0.5.0: done (see current state). Bench checks for Rob: power off the C64 mid-call and confirm the node frees within ~90 s; confirm the LED blinks on GPIO2.
+
+0.6.0 (next): user accounts with forms (see settled decisions), USERS.md.
+
 - Tabled: robustness/pen test script (`tools/robustness.py`, untracked stub).
 - Tagline: current screens are fine for now.
 

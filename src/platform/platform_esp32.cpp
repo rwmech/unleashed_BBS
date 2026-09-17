@@ -101,6 +101,44 @@ bool backupButtonPressed(uint32_t now) {
 }
 
 // ===========================================================================
+// Activity LED: active high, driven only after boot (GPIO2 is a strap pin)
+// ===========================================================================
+
+namespace {
+int      g_ledGpio  = -1;
+bool     g_ledOn    = false;
+uint32_t g_ledSince = 0;
+}
+
+void activityLedBegin(int gpio) {
+    if (gpio < 0 || gpio >= GPIO_NUM_MAX) { log("led: activity LED off"); return; }
+    gpio_config_t c = {};
+    c.pin_bit_mask = 1ULL << gpio;
+    c.mode         = GPIO_MODE_OUTPUT;
+    c.intr_type    = GPIO_INTR_DISABLE;
+    if (gpio_config(&c) != ESP_OK) { log("led: gpio %d config failed", gpio); return; }
+    g_ledGpio = gpio;
+    gpio_set_level(static_cast<gpio_num_t>(gpio), 0);
+    log("led: activity LED on gpio %d", gpio);
+}
+
+void activityPulse(uint32_t now) {
+    if (g_ledGpio < 0) return;
+    g_ledSince = now;
+    if (!g_ledOn) {
+        g_ledOn = true;
+        gpio_set_level(static_cast<gpio_num_t>(g_ledGpio), 1);
+    }
+}
+
+void activityTick(uint32_t now) {
+    if (g_ledOn && now - g_ledSince >= BBS_LED_PULSE_MS) {
+        g_ledOn = false;
+        gpio_set_level(static_cast<gpio_num_t>(g_ledGpio), 0);
+    }
+}
+
+// ===========================================================================
 // inflateRaw: ROM tinfl with a 32 KB circular dictionary
 // ===========================================================================
 

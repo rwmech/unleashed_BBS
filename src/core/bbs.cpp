@@ -149,14 +149,26 @@ bool Bbs::begin(uint16_t port) {
     }
     setNonBlocking(lfd_);
 
+    uint8_t coreCount = 0;
+    const Command* core = coreCommands(coreCount);
+    tables_[0]  = CommandTable{ core, coreCount };
+    tableCount_ = 1;
+
     plat::HeapStats h = plat::heap();
     heapBaseline_ = h.freeBytes;
     plat::backupButtonBegin(syscfg::get().backupGpio);
+    plat::activityLedBegin(syscfg::get().ledGpio);
     plat::log("bbs: %s %s listening on %u, %u nodes", BBS_NAME, BBS_VERSION, port, BBS_MAX_NODES);
     plat::log("bbs: session %u bytes, pool %u bytes (static), heap free %u",
               static_cast<unsigned>(sizeof(Session)),
               static_cast<unsigned>(sizeof(Session) * kSessions),
               static_cast<unsigned>(h.freeBytes));
+    return true;
+}
+
+bool Bbs::registerCommands(const Command* list, uint8_t count) {
+    if (!list || !count || tableCount_ >= kCommandTables) return false;
+    tables_[tableCount_++] = CommandTable{ list, count };
     return true;
 }
 
@@ -201,6 +213,7 @@ void Bbs::tick() {
 
     backup_.service(rfds, wfds, now);
     serviceBackup(now);
+    plat::activityTick(now);
 }
 
 // ===========================================================================
@@ -301,6 +314,17 @@ void Bbs::acceptAll(uint32_t now) {
         int one = 1;
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
         setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
+        // a caller that vanishes without closing (C64 switched off) is
+        // detected in about idle + interval * count seconds
+        int ka[3] = { BBS_KEEPALIVE_IDLE_S, BBS_KEEPALIVE_INTVL_S, BBS_KEEPALIVE_CNT };
+#if defined(TCP_KEEPIDLE) && defined(TCP_KEEPINTVL) && defined(TCP_KEEPCNT)
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,  &ka[0], sizeof(int));
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &ka[1], sizeof(int));
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,   &ka[2], sizeof(int));
+#else
+        (void)ka;
+#endif
+        plat::activityPulse(now);
 
         Session* slot = nullptr;
         for (auto& s : nodes_) {
@@ -353,9 +377,13 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
 
     s.list          = ListKind::None;
     s.listIdx       = 0;
+    s.listSub       = 0;
     s.pageLines     = 0;
     s.nonstop       = false;
     s.moreFrom      = MoreFrom::List;
+    s.watch         = ListKind::None;
+    s.watchSecs     = 0;
+    s.watchNext     = 0;
     s.countdown     = 0;
     s.nextTick      = 0;
 
@@ -472,6 +500,7 @@ void Bbs::readSession(Session& s, uint32_t now) {
         return;
     }
 
+    plat::activityPulse(now);
     DirectSink ds(s.fd);
     size_t m = s.tn.filter(raw, static_cast<size_t>(n), data, ds);
     s.lastRx = now;
@@ -502,7 +531,9 @@ void Bbs::readSession(Session& s, uint32_t now) {
 void Bbs::flush(Session& s, uint32_t now) {
     if (s.fd < 0 || s.tl.empty()) return;
     s.wantWrite = false;
-    if (s.tl.pump(now, sessSend, &s) < 0) closeSession(s, "write error", now);
+    int sent = s.tl.pump(now, sessSend, &s);
+    if (sent < 0) closeSession(s, "write error", now);
+    else if (sent > 0) plat::activityPulse(now);
 }
 
 // ---------------------------------------------------------------------------
@@ -537,6 +568,9 @@ void Bbs::serviceSession(Session& s, uint32_t now) {
             break;
         case SState::List:
             serviceList(s);
+            break;
+        case SState::Watch:
+            serviceWatch(s, now);
             break;
         case SState::Fx:
             if (tl.empty()) fxNext(s);
@@ -1079,6 +1113,7 @@ uint8_t Bbs::pageRows(const Session& s) const {
 void Bbs::startList(Session& s, ListKind kind) {
     s.list      = kind;
     s.listIdx   = 0;
+    s.listSub   = 0;
     s.pageLines = 0;
     s.nonstop   = false;
     s.ed        = LineEditor();
@@ -1124,6 +1159,77 @@ void Bbs::abortOutput(Session& s) {
     s.term.nl(s.tl);
     s.term.color(s.tl, Color::Grey);
     s.term.text(s.tl, "Stopped.");
+    prompt(s);
+}
+
+// ===========================================================================
+// Refresh screens (WHO n, DASH n)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// idleSecondsLeft: seconds before the idle hangup, -1 when none applies
+// ---------------------------------------------------------------------------
+int32_t Bbs::idleSecondsLeft(const Session& s, uint32_t now) const {
+    uint32_t mins = syscfg::get().idleMinutes;
+    if (!mins || can(s, PERM_NOLIMITS) || s.role == Role::Busy) return -1;
+    int32_t since = static_cast<int32_t>(now - s.lastInput);
+    if (since < 0) since = 0;
+    int32_t left = static_cast<int32_t>(mins * 60u) - since / 1000;
+    return left < 0 ? 0 : left;
+}
+
+void Bbs::startWatch(Session& s, ListKind kind, uint8_t secs) {
+    s.watch     = kind;
+    s.watchSecs = secs;
+    s.watchNext = 0;                                 // draw the first frame now
+    s.list      = kind;
+    s.listIdx   = 0;
+    s.listSub   = 0;
+    s.ed        = LineEditor();
+    s.st        = SState::Watch;
+    s.term.cursor(s.tl, false);
+    s.term.cls(s.tl);
+}
+
+// ---------------------------------------------------------------------------
+// serviceWatch: draw a frame row by row as the Timeline has room, then wait
+// watchSecs and redraw from the home position (no scrolling, no flicker)
+// ---------------------------------------------------------------------------
+void Bbs::serviceWatch(Session& s, uint32_t now) {
+    Timeline& tl = s.tl;
+    if (s.watchNext == 0) {
+        while (s.st == SState::Watch && tl.freeBytes() > 512 && tl.freeFrames() > 16) {
+            if (s.listSub == 0) {                    // content rows
+                bool more = s.watch == ListKind::Dash ? rowDash(s) : rowWho(s);
+                if (more) continue;
+                s.listSub = 1;
+            }
+            if (!rowWatchFooter(s)) {                // frame complete
+                s.watchNext = now + static_cast<uint32_t>(s.watchSecs) * 1000u;
+                if (!s.watchNext) s.watchNext = 1;
+                break;
+            }
+        }
+        return;
+    }
+    if (static_cast<int32_t>(now - s.watchNext) >= 0 && tl.empty()) {
+        s.term.home(tl);
+        if (!s.term.isAnsi() && !s.term.isPet()) s.term.nl(tl);   // ASCII cannot home: new frame below
+        s.listIdx   = 0;
+        s.listSub   = 0;
+        s.watchNext = 0;
+    }
+}
+
+void Bbs::stopWatch(Session& s) {
+    s.tl.clear();
+    s.term.reset(s.tl);
+    s.term.cursor(s.tl, true);
+    s.watch = ListKind::None;
+    s.list  = ListKind::None;
+    if (s.term.isAnsi() || s.term.isPet()) {          // park below the frame before the prompt
+        s.term.gotoXY(s.tl, 1, static_cast<uint8_t>(s.term.rows() > 2 ? s.term.rows() - 2 : 1));
+    }
     prompt(s);
 }
 
@@ -1230,6 +1336,10 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
         case SState::Fx:
             if (isAbortKey(k)) s.fxStep = 0xFF;
             tl.skipDelays();
+            return;
+
+        case SState::Watch:
+            stopWatch(s);                            // any key ends a refresh screen
             return;
 
         case SState::BusyWait:

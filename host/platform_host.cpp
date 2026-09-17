@@ -76,6 +76,10 @@ bool backupButtonPressed(uint32_t) {
     return v && *v == '1';
 }
 
+void activityLedBegin(int) {}
+void activityPulse(uint32_t) {}
+void activityTick(uint32_t) {}
+
 // ---------------------------------------------------------------------------
 // inflateRaw: zlib in raw mode (windowBits -15)
 // ---------------------------------------------------------------------------

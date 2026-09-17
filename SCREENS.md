@@ -16,9 +16,10 @@ The names the BBS looks for:
 |---|---|
 | `welcome` | after terminal detection |
 | `bulletin` | after login (optional) |
-| `help` | `HELP` for callers |
 | `busy` | when every node is in use |
 | `goodbye` | at logoff |
+
+There is no help screen: `HELP` is generated from the command table so it always matches the commands a caller can use.
 
 ## Formats
 

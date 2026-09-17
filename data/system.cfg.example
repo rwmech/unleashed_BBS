@@ -49,6 +49,14 @@ backup_port = 8080
 backup_window_minutes = 5
 backup_button_gpio = 0
 
+# WHO n and DASH n: allowed refresh interval, seconds
+who_refresh_min = 1
+who_refresh_max = 30
+
+# LED blinked on network traffic. 2 is the blue LED on DOIT-style
+# ESP32 dev boards; set -1 if your board has none there.
+activity_led_gpio = 2
+
 # Staff access matrix. X = allowed, - = denied.
 # SYSOP always has everything; its column is there for reference.
 # Keep this section last: every line after [access] is a matrix row.
@@ -62,6 +70,7 @@ backup_button_gpio = 0
 #   UNBAN      UNBAN ip
 #   HIDE       SHOW, HIDE, LURK
 #   NOLIMITS   no idle timeout, no call or daily limit
+#   DASH       DASH dashboard
 [access]
 # permission   SYSOP  CO1  CO2
 NODES          X      X    X
@@ -73,3 +82,4 @@ BANS           X      X    X
 UNBAN          X      -    -
 HIDE           X      X    -
 NOLIMITS       X      X    X
+DASH           X      X    X

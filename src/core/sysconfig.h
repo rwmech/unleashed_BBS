@@ -16,6 +16,9 @@
  *   backup_port            HTTP port while the backup window is open
  *   backup_window_minutes  how long a button press keeps the window open
  *   backup_button_gpio     button pin (active low), -1 = no button
+ *   who_refresh_min        WHO n / DASH n lowest refresh, seconds
+ *   who_refresh_max        WHO n / DASH n highest refresh, seconds
+ *   activity_led_gpio      LED blinked on network traffic, -1 = none
  *
  *   [access] section: one row per permission, columns SYSOP CO1 CO2,
  *   X = allowed, - = denied. The SYSOP column is informational; the
@@ -42,7 +45,8 @@ enum Perm : uint16_t {
     PERM_UNBAN     = 1 << 6,   // UNBAN
     PERM_HIDE      = 1 << 7,   // SHOW / HIDE / LURK
     PERM_NOLIMITS  = 1 << 8,   // no idle timeout, no call or daily limit
-    PERM_ALL       = (1 << 9) - 1,
+    PERM_DASH      = 1 << 9,   // DASH dashboard
+    PERM_ALL       = (1 << 10) - 1,
 };
 
 struct PermName { const char* name; uint16_t bit; };
@@ -56,8 +60,12 @@ struct SysConfig {
     char     sysopPass[33] = "";
     char     coPass[2][33] = { "", "" };          // [0] level 1, [1] level 2
     uint16_t coPerms[2]    = { static_cast<uint16_t>(PERM_ALL & ~PERM_UNBAN),
-                               static_cast<uint16_t>(PERM_NODES | PERM_BROADCAST | PERM_TIME | PERM_BANS | PERM_NOLIMITS) };
+                               static_cast<uint16_t>(PERM_NODES | PERM_BROADCAST | PERM_TIME | PERM_BANS |
+                                                     PERM_NOLIMITS | PERM_DASH) };
     uint16_t idleMinutes   = BBS_IDLE_MINUTES;
+    uint8_t  whoMin        = BBS_WHO_REFRESH_MIN;
+    uint8_t  whoMax        = BBS_WHO_REFRESH_MAX;
+    int8_t   ledGpio       = BBS_LED_GPIO;
     uint16_t callMinutes   = BBS_CALL_MINUTES;
     uint16_t dayMinutes    = BBS_DAY_MINUTES;
     uint16_t backupPort    = BBS_BACKUP_PORT;

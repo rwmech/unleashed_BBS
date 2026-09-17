@@ -16,12 +16,13 @@ Docs:
 | [BACKUP.md](BACKUP.md) | downloading and uploading config and screens as a `.zip` |
 | [SCREENS.md](SCREENS.md) | screen formats, naming rules and upload limits |
 
-## Status (0.4.0)
+## Status (0.5.0)
 
-- Host build (Linux): the full scripted suite passes under AddressSanitizer and UBSan (`tools/testclient.py --backup`, plus `--slow` and `--ban`).
+- Host build (Linux): the full scripted suite passes, also under AddressSanitizer and UBSan (`tools/testclient.py --backup`, plus `--slow` and `--ban`).
 - ESP32 build: ESP-IDF 5.3.1 through PlatformIO (`espressif32@6.9.0`), with no warnings in app code.
-  - Image: about 894 KB, 57% of the 1.5 MB OTA slot.
+  - Image: about 900 KB, 57% of the 1.5 MB OTA slot.
   - Static RAM: 81 KB, including the 8-session pool and the backup buffers.
+- Commands come from a registry (`Command` tables); HELP, dispatch and permissions are generated from it, and plugins will register into it.
 - On hardware:
   - PuTTY and a C64 through TeensyROM have both called in.
   - Every PETSCII glyph (spinner, lines, shade, underscore) is verified on the C64.
@@ -92,7 +93,7 @@ src/core/crc32.h          CRC-32 for the zip
 src/core/bbs.*            listener, sessions, flow, timers, paging
 src/core/bbs_shell.cpp    caller commands
 src/core/bbs_sysop.cpp    sysop node and commands
-data/screens/             stock welcome, help, busy, goodbye (.seq/.ans/.asc) for a fresh board
+data/screens/             stock welcome, busy, goodbye (.seq/.ans/.asc) for a fresh board
 data/system.cfg.example   run-time settings template
 tools/mkscreens.py        regenerates the stock screens
 tools/pio_flashall.py     adds the flashall target

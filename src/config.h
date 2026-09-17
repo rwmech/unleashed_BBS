@@ -16,7 +16,7 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "0.4.0"
+#define BBS_VERSION         "0.5.0"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // ---------------------------------------------------------------------------
@@ -25,6 +25,16 @@
 #define BBS_PORT            6400
 #define BBS_MAX_NODES       6        // caller nodes (DDial-style 6 lines)
 #define BBS_LISTEN_BACKLOG  4
+
+// TCP keepalive on every caller socket: a line whose far end vanished
+// (C64 switched off, cable pulled) is dropped in about idle + intvl * cnt
+#define BBS_KEEPALIVE_IDLE_S   60
+#define BBS_KEEPALIVE_INTVL_S  10
+#define BBS_KEEPALIVE_CNT      3
+
+// Activity LED (system.cfg activity_led_gpio overrides the pin)
+#define BBS_LED_GPIO        2        // blue LED on DOIT-style dev boards, -1 = none
+#define BBS_LED_PULSE_MS    40
 
 // ---------------------------------------------------------------------------
 // Terminal detection
@@ -67,6 +77,8 @@
 // Defaults for system.cfg keys
 // ---------------------------------------------------------------------------
 #define BBS_IDLE_MINUTES    20       // shell idle hangup, 0 = never
+#define BBS_WHO_REFRESH_MIN 1        // WHO n / DASH n refresh bounds, seconds
+#define BBS_WHO_REFRESH_MAX 30
 #define BBS_CALL_MINUTES    60       // per call, 0 = unlimited
 #define BBS_DAY_MINUTES     480      // per day, 0 = unlimited
 #define BBS_DEFAULT_TZ      "UTC0"

@@ -86,6 +86,24 @@ uint8_t count() {
     return static_cast<uint8_t>(g_hdr.count);
 }
 
+uint8_t countSince(uint32_t epoch) {
+    loadHeader();
+    if (!g_hdr.count) return 0;
+    char p[96];
+    path(p, sizeof(p));
+    FILE* f = fopen(p, "rb");
+    if (!f) return 0;
+    uint8_t n = 0;
+    CallRec r;
+    fseek(f, slotOffset(0), SEEK_SET);
+    for (uint16_t i = 0; i < g_hdr.count; ++i) {
+        if (fread(&r, sizeof(r), 1, f) != 1) break;
+        if (r.start && r.start >= epoch) ++n;
+    }
+    fclose(f);
+    return n;
+}
+
 bool get(uint8_t back, CallRec& out) {
     loadHeader();
     if (back >= g_hdr.count) return false;

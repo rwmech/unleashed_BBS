@@ -58,6 +58,15 @@ void backupButtonBegin(int gpio);
 bool backupButtonPressed(uint32_t now);
 
 // ---------------------------------------------------------------------------
+// activityLedBegin / activityPulse / activityTick: blink an LED on network
+// traffic. Pulse turns it on, tick turns it off BBS_LED_PULSE_MS later.
+// gpio -1 disables it.
+// ---------------------------------------------------------------------------
+void activityLedBegin(int gpio);
+void activityPulse(uint32_t now);
+void activityTick(uint32_t now);
+
+// ---------------------------------------------------------------------------
 // inflateRaw: decode a raw DEFLATE stream (ZIP method 8). in() fills a
 // buffer and returns the byte count (0 = end of input); out() takes
 // decoded bytes and returns false to abort (size cap). True on a clean end.

@@ -195,6 +195,19 @@ def test_ansi():
     c.send(b"time\r")
     ok &= check("TIME shows time left", c.wait_for(b"Left", 3))
     c.buf.clear()
+    c.send(b"who 99\r")
+    ok &= check("WHO n out of range explained", c.wait_for(b"WHO n: n is 1 to 30 seconds", 3))
+    c.buf.clear()
+    c.send(b"who 1\r")
+    time.sleep(2.6)
+    c.pump(0.2)
+    ok &= check("WHO 1 redraws every second", bytes(c.buf).count(b"Refresh 1s") >= 2)
+    ok &= check("refresh footer shows the idle clock", b"Idle still counts" in c.buf)
+    ok &= check("refresh redraws from home, no scroll", b"\x1b[H" in c.buf)
+    c.buf.clear()
+    c.send(b"x")
+    ok &= check("any key stops the refresh", c.wait_for(b"Main", 3))
+    c.buf.clear()
     c.send(b"bogus\r")
     ok &= check("unknown command message", c.wait_for(b"Unknown command", 3))
     c.buf.clear()
@@ -267,6 +280,25 @@ def test_ascii():
     c.send(b"\x08")
     ok = check("ASCII detected", c.wait_for(b"ASCII DETECTED", 5))
     ok &= check("welcome.asc streamed", c.wait_for(b"No web. No cloud. No browser.", 8) and c.wait_for(b"unleashed BBS", 3))
+    c.wait_for(b"Enter your handle", 8)
+    c.send(b"Plain\r")
+    c.wait_for(b"Main", 5)
+    c.buf.clear()
+    c.send(b"help\r")
+    end = time.time() + 8
+    while time.time() < end and b"stops output" not in c.buf:
+        if c.buf.endswith(b"[More] Y/n/c "):
+            c.send(b"c")
+        c.pump(0.2)
+    text = bytes(c.buf).replace(b"[More] Y/n/c ", b"").replace(b"\x08 \x08", b"").decode("ascii", "replace")
+    lines = [l for l in text.split("\r\n") if l]
+    body = [l for l in lines if l not in ("help", "Commands") and "stops output" not in l and "Main" not in l]
+    ok &= check("HELP generated with rows", len(body) >= 10)
+    ok &= check("every HELP line fits 39 columns", all(len(l) <= 39 for l in lines))
+    ok &= check("descriptions start at column 14",
+                all(len(l) > 13 and l[12] == " " and l[13] != " " for l in body))
+    ok &= check("wrapped lines (if any) sit under the description column",
+                all(l[:13] == " " * 13 for l in body if l.startswith(" ")))
     c.close()
     return ok
 
@@ -325,6 +357,23 @@ def test_sysop():
     r.buf.clear()
     r.send(b"nodes\r")
     ok &= check("NODES shows IPs", r.wait_for(b"IP", 3) and r.wait_for(b"Xavier", 3))
+    r.wait_for(b"Sysop", 3)
+    r.buf.clear()
+    r.send(b"dash\r")
+    ok &= check("DASH shows the dashboard", r.wait_for(b"SYSOP DASHBOARD", 4) and r.wait_for(b"Calls", 4))
+    if r.wait_for(b"[More] Y/n/c", 2):
+        r.send(b"c")
+    ok &= check("DASH lists callers and last calls", r.wait_for(b"Last calls", 4) and b"Xavier" in r.buf)
+    r.wait_for(b"Sysop", 4)
+    r.buf.clear()
+    r.send(b"dash 1\r")
+    time.sleep(2.6)
+    r.pump(0.2)
+    ok &= check("DASH 1 refreshes", bytes(r.buf).count(b"SYSOP DASHBOARD") >= 2)
+    ok &= check("sysop footer: no idle limit", b"No idle limit" in r.buf)
+    r.buf.clear()
+    r.send(b"q")
+    ok &= check("key ends the dashboard", r.wait_for(b"Sysop", 3))
     r.buf.clear()
     r.send(b"help\r")
     ok &= check("long HELP pauses at [More]", r.wait_for(b"[More] Y/n/c", 4))
@@ -406,7 +455,7 @@ def test_cosysop():
     c1.wait_for(b"[More] Y/n/c", 4)
     c1.send(b"c")
     c1.wait_for(b"stops output", 4)
-    ok &= check("CO1 help lists KICK, not UNBAN", b"KICK n m" in c1.buf and b"UNBAN" not in c1.buf)
+    ok &= check("CO1 help lists KICK, not UNBAN", b"KICK n [msg]" in c1.buf and b"UNBAN" not in c1.buf)
 
     c2.buf.clear()
     c2.send(f"kick {na}\r".encode())
@@ -614,7 +663,7 @@ def test_backup():
 
     # --- edit and upload inside a folder, deflated (what re-zipping an unpacked folder gives)
     files = {f"unleashed-backup/{n}": z.read(n) for n in names if n != "screens/busy.seq"}
-    files["unleashed-backup/screens/help.asc"] = z.read("screens/help.asc") + b"Custom line from upload test\n"
+    files["unleashed-backup/screens/bulletin.asc"] = b"Custom line from upload test\n"
     files["unleashed-backup/screens/extra.asc"] = b"extra screen\n"
     files["unleashed-backup/system.cfg"] = (cfg + "\nidle_minutes = 21\n").encode()
     status, body, seen = upload_with_answer(s, make_zip(files), b"y")
@@ -633,10 +682,10 @@ def test_backup():
     ok &= check("edited value live", "idle_minutes = 21" in cfg2)
     ok &= check("new screen added", "screens/extra.asc" in names2)
     ok &= check("screen missing from the upload removed", "screens/busy.seq" not in names2)
-    c = ansi_login("Reader")
-    c.buf.clear()
-    c.send(b"help\r")
-    ok &= check("callers see the uploaded help screen", c.wait_for(b"Custom line from upload test", 5))
+    c = Caller(ansi=True)
+    c.wait_for(b"Enter your handle", 10)
+    c.send(b"Reader\r")
+    ok &= check("callers see the uploaded bulletin", c.wait_for(b"Custom line from upload test", 8))
     c.close()
 
     # --- junk plus one real change, sysop says no
