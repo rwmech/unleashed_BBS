@@ -1,6 +1,6 @@
 # µnleashed BBS: command reference
 
-Version 0.5.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
+Version 0.6.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
 
 ## Calling in
 
@@ -15,10 +15,14 @@ Version 0.5.0. This file tracks every command and key the BBS understands, and i
 
 ## Logging in
 
-- `Enter your handle:` accepts letters, digits, space, `-`, `_` and `.`. A handle must start with a letter or digit, and `SYSOP` is reserved.
-- There is no password until C2 adds user accounts.
-- If nothing is typed, a warning appears at 30 s, followed by your partial input redrawn. The line hangs up at 60 s.
-- After login you see your node, the date and time, and your remaining time. If `screens/bulletin.*` exists, it plays next.
+Full guide to accounts: [USERS.md](USERS.md).
+
+- `Enter your handle:` accepts letters, digits, space, `-`, `_` and `.`, up to 20 characters. A handle must start with a letter or digit, and `SYSOP` is reserved. Case doesn't matter.
+- A known handle asks `Password:`. 3 wrong passwords hang up the call; 5 for one handle within 15 minutes lock that handle for 15 minutes. ESC goes back to the handle prompt.
+- An unknown handle asks `New handle. Register <handle> (Y/n)?` and opens the sign-up form: password twice, name, email, and optional address, phone and profile. With `self_register = no` the BBS answers `The sysop creates accounts here.` instead.
+- A locked account is refused before the password.
+- If nothing is typed at the handle prompt, a warning appears at 30 s, followed by your partial input redrawn. The line hangs up at 60 s.
+- After login you see your node, the date and time, your call count and your remaining time. If `screens/bulletin.*` exists, it plays next.
 
 ## Keys
 
@@ -32,6 +36,14 @@ Version 0.5.0. This file tracks every command and key the BBS understands, and i
 | C | `[More] Y/n/c` | continue without pausing |
 | any key | `WHO n`, `DASH n` refresh | stop refreshing, back to the prompt |
 | ESC or Ctrl-C | command prompt | clear the line |
+| Up / Down (C64: CRSR) | forms | previous / next field |
+| Enter (C64: RETURN) | forms | next field; on `Save` / `Cancel` do that |
+| Left / Right | forms | move between `Save` and `Cancel` |
+| F1 | forms | save from any field |
+| ESC or Ctrl-C (C64: left-arrow, RUN/STOP) | forms | cancel without saving |
+| Up / Down, Enter, A, D, Q | `USERS` manager | move, edit, add, delete, quit |
+
+Plain ASCII terminals get forms as one question per line, ending in `Save (Y/n)?`.
 
 Paging pauses at the screen height minus 2 (23 lines on a C64, 22 on an 80x24 terminal). Art screens (`.ans`, `.seq`) are never paged.
 
@@ -50,6 +62,9 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | `FX` | `F` | TTY effects demo. |
 | `TIME` | | Date and time, minutes online, minutes left. |
 | `LAST` | | The last 50 calls, newest first. |
+| `INFO [handle]` | `I` | An account: name, member since, last call, calls, profile. Email, address and phone only on your own account (or with `USERS`). |
+| `PROFILE` | | Form to change your name, email, address, phone and profile. |
+| `PASSWORD` | | Form: current password, then the new one twice. |
 | `PAGE n message` | | Send a one-line message to node n. It arrives, with a bell, when that caller is back at the prompt. |
 | `DND` | | Toggle do-not-disturb: pages to you are refused. |
 | `BAUD n` | | Emulate 300, 1200, 2400, 9600 or 19200 bps. `BAUD OFF` for full speed. |
@@ -65,7 +80,7 @@ Other nodes see `*** handle is on node n` and `*** handle left node n` when call
 | Handle prompt idle | 30 s / 60 s | warning, then hangup |
 | Shell idle | 20 min (`idle_minutes`) | warning 1 minute before, then hangup |
 | Per call | 60 min (`call_minutes`) | warnings at 5 and 1 minute left, then hangup |
-| Per day | 480 min (`day_minutes`) | counted per handle + IP until C2; checked at login |
+| Per day | 480 min (`day_minutes`) | counted per account, saved at each logoff; checked at login |
 
 Staff holding `NOLIMITS` (the sysop always does) are exempt from idle and time limits.
 
@@ -75,7 +90,7 @@ When all 6 nodes are in use:
 
 1. The caller is detected like anyone else and shown `screens/busy.*`.
 2. `Disconnecting in 10` counts down, then the line hangs up.
-3. Pressing a key during the countdown opens a handle prompt. The only command that works from there is `BYE <sysop password>`, which must come within 60 s. Anything else, co-sysop passwords included, logs off.
+3. Pressing a key during the countdown opens a handle prompt (no account password, no sign-up). The only command that works from there is `BYE <sysop password>`, which must come within 60 s. Anything else, co-sysop passwords included, logs off.
 
 ## Staff: sysop and co-sysops
 
@@ -91,7 +106,7 @@ There is one sysop node. A second sysop login while it is in use is a plain logo
 
 ### Getting in
 
-From any prompt, type `BYE <password>`.
+Log in with your account as usual, then type `BYE <password>` at the command prompt. Staff access is separate from accounts on purpose: guessing an account password never grants staff rights.
 
 - Everything after `BYE ` is echoed as `*`, and the line is never stored in history or logs.
 - The sysop password moves you to the sysop node. This also works from the busy line, so the sysop can get in when every node is full.
@@ -118,6 +133,10 @@ All caller commands still work. Node arguments are `1`-`6`, `S` (sysop node) or 
 | `LURK` | `HIDE` | Toggle lurking: hidden from WHO and pages refused. |
 | `BANS` | `BANS` | Active IP bans and minutes remaining. |
 | `UNBAN a.b.c.d` | `UNBAN` | Lift a ban. |
+| `USERS` | `USERS` | User manager: cursor list of accounts with edit, add and delete (ANSI, PETSCII). A paged list on plain ASCII. |
+| `USER ADD` | `USERS` | Add-account form: handle, password, fields, Locked. |
+| `USER EDIT handle` | `USERS` | Edit-account form. Empty `New pass` keeps the password. Renames follow callers who are online. |
+| `USER DEL handle` | `USERS` | Delete after `Delete handle (y/N)?`. Not your own account. |
 | `DROP` | any staff | Co-sysop: give up staff access. Sysop: leave the sysop node for a free caller node. Time limits apply again from now. |
 
 Rank rules:
@@ -127,10 +146,10 @@ Rank rules:
 
 ## Backup window (sysop)
 
-The sysop can download and upload everything that matters (`system.cfg` and the screens) as one `.zip`, without reflashing. Full steps: [BACKUP.md](BACKUP.md).
+The sysop can download and upload everything that matters (`system.cfg`, `users.txt` and the screens) as one `.zip`, without reflashing. Full steps: [BACKUP.md](BACKUP.md).
 
 - Log in as sysop, then press BOOT on the board. The console shows `*** Backup open 5 min: http://<ip>:8080/backup.zip`.
-- Download: `curl.exe -o backup.zip http://<ip>:8080/backup.zip`. No confirmation; passwords come out as `***`.
+- Download: `curl.exe -o backup.zip http://<ip>:8080/backup.zip`. No confirmation; staff passwords come out as `***`, account passwords only as salted hashes.
 - Upload: `curl.exe -T backup.zip http://<ip>:8080/restore`. The sysop console shows what arrived and asks `Accept upload (Y/N)?`.
   - `Y` applies it at once, `N` discards it. No answer in 2 minutes counts as `N`.
   - While the question is on screen, only `Y`, `N`, ESC or Ctrl-C are accepted.
@@ -170,6 +189,8 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `who_refresh_min` | `1` | lowest `WHO n` / `DASH n` refresh, seconds |
 | `who_refresh_max` | `30` | highest `WHO n` / `DASH n` refresh, seconds |
 | `activity_led_gpio` | `2` | LED that blinks on network traffic (the blue LED on DOIT-style boards), -1 = none |
+| `self_register` | `yes` | `no`: unknown handles can't sign up, staff add accounts |
+| `max_users` | `100` | account limit, 1..100 (more needs the SD card plugin) |
 
 A value out of range is logged and the default is kept. An upload with a bad value is rejected, so it never replaces a working config.
 
@@ -190,6 +211,7 @@ UNBAN          X      -    -
 HIDE           X      X    -
 NOLIMITS       X      X    X
 DASH           X      X    X
+USERS          X      X    -
 ```
 
 | Permission | Grants |
@@ -204,7 +226,8 @@ DASH           X      X    X
 | `HIDE` | `SHOW`, `HIDE`, `LURK` |
 | `NOLIMITS` | no idle hangup, no per-call or per-day limit |
 | `DASH` | `DASH`, `DASH n` |
+| `USERS` | `USERS`, `USER ADD/EDIT/DEL`, private fields in `INFO` |
 
 The boot log prints each level's permission bits (`cfg: sysop on co1 off perms 0x1bf ...`) so you can confirm what loaded. Bad rows are logged and skipped.
 
-`flashall` and `uploadfs` rewrite the storage partition (config and screens). The caller log is on its own `logs` partition and survives them.
+`flashall` and `uploadfs` rewrite the storage partition (config, accounts and screens), so download a backup first. The caller log is on its own `logs` partition and survives them.

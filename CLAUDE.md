@@ -1,6 +1,6 @@
 # µnleashed BBS: project context
 
-Read README.md for layout and build, COMMANDS.md for every command and setting, BACKUP.md for the backup window, SCREENS.md for screen rules. This file is the design history and current state. Keep it current with every build and decision.
+Read README.md for layout and build, COMMANDS.md for every command and setting, USERS.md for accounts, BACKUP.md for the backup window, SCREENS.md for screen rules. This file is the design history and current state. Keep it current with every build and decision.
 
 ## What this is
 
@@ -17,12 +17,13 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
 - One dial-in port, 6400. Connect-time terminal detection: settle 300 ms (a telnet client that speaks IAC first gets character mode negotiated and an immediate probe; this fixed PuTTY's line-mode "[3;20R" leak), CPR probe with UTF-8 test glyph, else PETSCII/ASCII key prompt, then 40/80 columns for PETSCII.
 - Security posture: plaintext telnet accepted (the C64 side cannot encrypt). Staff passwords in `system.cfg`. `BYE <password>` elevates; a wrong one is a plain logoff and counts toward an IP ban (3 in 15 min = 15 min). No TOTP, no email codes.
 - Staff: one sysop (hidden node, all permissions), co-sysop 1 and 2 (stay on their node, permissions from the `[access]` matrix in `system.cfg`, `NOLIMITS` is a matrix row). Rank: KICK/SNOOP only on lower levels.
-- Everything that matters is in the storage partition and moves as one backup zip: `system.cfg` and screens (users next). Logs live on a separate `logs` partition, fixed-size rings only, never in the zip.
+- Everything that matters is in the storage partition and moves as one backup zip: `system.cfg`, `users.txt` and screens. Logs live on a separate `logs` partition, fixed-size rings only, never in the zip.
 - Backup window: BOOT button (GPIO0) while the sysop is logged in opens HTTP on `backup_port` for `backup_window_minutes`. Download needs no confirmation and redacts passwords as `***`; upload is staged, validated, and applied only after the sysop's Y. HTTP runs inside the BBS select loop (no httpd task, saves 27 KB flash, host-testable).
 - Commands: C3 is a command registry (verbs, shortcuts, permission, help, handler) that plugins register into. The navigation tree is deferred; if it returns it is a device namespace (`ls /gpio`), not a BBS menu tree.
 - Plugin order after core: GPIO, chat (DDial/Gtalk style), serial bridge (sysop/LAN only, raw stream handoff), HA. Then mail, message bases, XMODEM, MQTT, Lua doors, federation.
 - SD card plugin (planned): replaces the onboard filesystem for all data, takes over file management, and lets logging be redirected to the card. Onboard storage caps user accounts at about 100; more than that requires the SD card plugin. Core file access must stay behind `plat::fsBase()` / `plat::logsBase()` so the plugin can swap the mounts.
-- User accounts (0.6.0 plan): form and list screens (cursor-driven, ANSI and PETSCII, line prompts on plain ASCII) instead of typed commands; self-registration on by default; password typed twice; salted SHA-256 x1000 (simple, not PBKDF2); staff elevation stays on `BYE <password>`, separate from accounts; flashy fx on login, signup and forms. USERS.md documents creating and managing accounts.
+- User accounts (0.6.0): form and list screens (cursor-driven on ANSI and PETSCII, line prompts on plain ASCII) instead of typed commands, except `USER DEL`; self-registration on by default (`self_register`); password typed twice; salted SHA-256 x1000 (simple on purpose, not PBKDF2: the file has to be stolen first); 3 wrong per call hang up, 5 per handle in 15 min lock it (RAM); staff elevation stays on `BYE <password>`, separate from accounts, so a guessed account password never grants staff; flashy fx on login, sign-up and forms. `users.txt` is a `[handle]` block file, rewritten via temp file + rename; adding a field is one `UserRec` member plus one `kUserFields` row. USERS.md documents it.
+- Input backpressure: a session's socket is only read, and held keys only fed, while its timeline has `BBS_RX_ROOM` (1 KB) free. Form redraws (~1.2 KB on PETSCII) overflowed the old 2 KB timeline when keys were typed ahead; `BBS_TL_BYTES` is now 3 KB.
 - Workflow: commit and push after every flashed build. COMMANDS.md, README.md and this file are updated in the same change. Code review at phase checkpoints; a robustness/pen test of the live board before any internet exposure (tabled for now).
 
 ## Phase plan
@@ -30,7 +31,7 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
 | Phase | Scope | State |
 |---|---|---|
 | C1 | listener, nodes, detection, screens, editor, effects, shell | done, verified on C64 and PuTTY |
-| C2 | user accounts, PBKDF2 auth, lockout, self-registration | partial: staff passwords, co-sysop matrix, IP bans. Accounts next |
+| C2 | user accounts, auth, lockout, self-registration | done in 0.6.0 (host-tested, not yet on hardware): accounts, salted SHA-256, lockout, forms, user manager; plus staff passwords, co-sysop matrix, IP bans |
 | C3 | command registry (tree deferred) | done: `Command` tables, generated HELP, `registerCommands()` for plugins |
 | C4 | message bus, WHO, PAGE, notices, BROADCAST, DND | done |
 | C5 | plugin API, requirements check, diagnostics | not started |
@@ -38,20 +39,35 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
 
 Also done: busy line, paging (`[More]`), abort keys, command history, time limits (per call, per day), caller log (`LAST`), NTP + TZ, mDNS, backup window, config reload without reboot.
 
-## Current state (0.5.0)
+## Current state (0.6.0, built, not flashed)
 
-- Host build: 149/149 scripted checks (`tools/testclient.py --backup`), also under ASan/UBSan. The old GCC 9 ASan in WSL sometimes dies at startup with `AddressSanitizer:DEADLYSIGNAL` (ASLR vs new kernel); rerun or use the plain build, it is not a BBS bug.
+- Host build: 202/202 scripted checks (`tools/testclient.py --backup`), also under ASan/UBSan. Every test login goes through an account (`login()` registers a new handle through the form).
+- ESP32 0.6.0: image 919 KB (58.4% of the slot), static RAM 104 KB; session 5,672 bytes, pool 45 KB. No app warnings. Not flashed: Rob is still bench-testing 0.5.0 and flashes when ready.
+- 0.6.0 adds: accounts (`users.txt`, in the backup zip, validated on upload), sign-up form, `Password:` with fx, `LoginGuard` per-handle lockout (replaced the per-IP time bank; daily minutes now live in the account), `INFO`/`PROFILE`/`PASSWORD`, `USERS` manager and `USER ADD|EDIT|DEL` under the new `USERS` permission (CO1 yes, CO2 no by default), `self_register` and `max_users` keys, input backpressure.
+- Hardware checks for 0.6.0 once flashed: sign-up form and user manager on the C64 (PETSCII cursor moves, reverse-video boxes, F1 save, left-arrow cancel), password hashing time on the ESP32 (1000 SHA-256 rounds should be well under 100 ms), heap with 6 callers.
+
+## Previous state (0.5.0)
+
+- Host build: 149/149 scripted checks. The old GCC 9 ASan in WSL sometimes dies at startup with `AddressSanitizer:DEADLYSIGNAL` (ASLR vs new kernel); rerun or use the plain build, it is not a BBS bug.
 - ESP32: image ~900 KB (57% of the 1.5 MB slot), static RAM ~81 KB, heap ~186 KB free with the BBS listening (0.3.0 figure).
 - 0.5.0 adds: TCP keepalive on caller sockets (60 s idle, 3 x 10 s; lwIP `LWIP_TCP_KEEPALIVE` is on), activity LED (`activity_led_gpio`, default 2), the C3 command registry with generated 40-column HELP, `WHO n` and `DASH [n]` refresh screens (home + padded rows, last row without newline so 24-row terminals never scroll, footer shows the idle clock). The stock help screen is gone.
-- Not yet verified on hardware: the keepalive drop after a C64 power-off, the LED pin.
+- Verified on hardware: the keepalive drops the sysop line when the C64 is switched off; the blue LED on GPIO2 blinks with traffic.
 - Flash layout: 2 x 1.5 MB OTA app, `logs` 128 KB, `storage` 768 KB.
 - Hardware verified: PuTTY, C64 via TeensyROM, every PETSCII glyph (spinner 0xBE/0xBC/0xAC/0xBB, 0xC0, 0xDD, 0xA6, 0xA4), backup window download and upload.
 
 ## Next builds (approved)
 
-0.5.0: done (see current state). Bench checks for Rob: power off the C64 mid-call and confirm the node frees within ~90 s; confirm the LED blinks on GPIO2.
+0.5.0: done and bench-checked (keepalive, LED).
 
-0.6.0 (next): user accounts with forms (see settled decisions), USERS.md.
+0.6.0: done on host, compiled for ESP32, waiting for Rob to flash.
+
+Queued for the next build (Rob's notes, not started):
+
+- Input fx everywhere: handle prompt, command line and other input get backspace/rubout style effects. The password field turns into `ACCESS GRANTED` in place (rubout the stars, then the text).
+- Page delivery: an alert (bell), rubout, then the message.
+- Graphics on HELP, WHO and other lists: headers, horizontal rules, framing.
+- Staff WHO / WHO n / DASH: a column with each caller's last command, or the door/function they're in (not snooping, just the verb).
+- DASH: Wi-Fi signal strength (RSSI of the joined AP).
 
 - Tabled: robustness/pen test script (`tools/robustness.py`, untracked stub).
 - Tagline: current screens are fine for now.

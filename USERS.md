@@ -1,0 +1,173 @@
+# µnleashed BBS: user accounts
+
+How callers get accounts, and how staff create, change, lock and delete them. Commands and keys are also listed in [COMMANDS.md](COMMANDS.md).
+
+## Limits
+
+- Up to 100 accounts on the board's own flash (`max_users`, 1..100).
+- More than 100 accounts needs the SD card plugin (planned).
+- Accounts live in `users.txt` on the storage partition and travel in the backup zip ([BACKUP.md](BACKUP.md)).
+
+## Callers
+
+### Signing up
+
+With `self_register = yes` (the default), a handle the BBS doesn't know offers an account:
+
+```
+Enter your handle: Rob
+New handle. Register Rob (Y/n)?
+```
+
+`Y` or Enter opens the sign-up form. `N` or ESC goes back to the handle prompt.
+
+| Field | Rules | Who sees it |
+|---|---|---|
+| Handle | from the prompt: letters, digits, space `-` `_` `.`, up to 20, starts with a letter or digit, not `SYSOP` | everyone |
+| Password, Again | 4 to 32 characters, typed twice, shown as `*` | nobody |
+| Name | required, up to 32 | everyone |
+| Email | required, must look like `a@b.c`, up to 64 | you and staff with `USERS` |
+| Address | optional, up to 64 | you and staff with `USERS` |
+| Phone | optional, up to 20 | you and staff with `USERS` |
+| Profile | optional, 4 rows of 37 (148 characters) | everyone |
+
+Handles match without regard to case, so `rob` and `ROB` are the same account. The BBS always shows the spelling it was created with.
+
+With `self_register = no`, an unknown handle gets `No account by that name. The sysop creates accounts here.` and a staff member has to add the account.
+
+When `max_users` is reached, sign-ups are refused with `Sign-ups are closed: the BBS is full.`
+
+### Form keys
+
+On ANSI and PETSCII terminals the form is a full screen with boxes:
+
+| Key | Effect |
+|---|---|
+| Up / Down (C64: CRSR) | previous / next field |
+| Enter (C64: RETURN) | next field; on `Save` or `Cancel`, do that |
+| Left / Right | move between `Save` and `Cancel` |
+| F1 | save from any field |
+| Backspace (C64: INST/DEL) | delete the last character |
+| ESC or Ctrl-C (C64: left-arrow, RUN/STOP) | cancel, nothing is saved |
+| Y / N / Space | set a yes/no field (Locked) |
+
+Plain ASCII terminals get one line per field instead. Enter on an empty line keeps the value shown in brackets, and the last question is `Save (Y/n)?`.
+
+If a value is wrong, the form beeps, names the problem and puts you back on that field.
+
+### Logging in
+
+```
+Enter your handle: Rob
+Password: ******
+Verifying...
+ACCESS GRANTED
+Welcome back, Rob!
+```
+
+- 3 wrong passwords on one call hang up the line.
+- 5 wrong passwords for one handle within 15 minutes lock that handle for 15 minutes, whichever line they come from. The lock is in RAM and clears on reboot.
+- ESC at `Password:` goes back to the handle prompt.
+- A handle the sysop locked is refused before the password: `This account is locked. Ask the sysop.`
+
+The daily time limit (`day_minutes`) is counted per account and survives logoffs. Each logoff adds the call to the account's call count and minutes for the day.
+
+### Your account
+
+| Command | What it does |
+|---|---|
+| `PROFILE` | Form with your name, email, address, phone and profile. The handle can't be changed here. |
+| `PASSWORD` | Form: current password, new password twice. A wrong current password counts toward the handle lock. |
+| `INFO` or `I` | Your account: all fields, member since, last call, number of calls, profile. |
+| `INFO handle` | Another caller's account. Email, address and phone are hidden unless you hold `USERS`. |
+
+## Staff
+
+Staff access still comes from `BYE <password>` ([COMMANDS.md](COMMANDS.md#staff-sysop-and-co-sysops)), not from an account. The sysop and co-sysops sign up and log in like any caller first, then elevate. Keeping the two apart means a guessed account password never grants staff rights.
+
+The `USERS` permission (sysop always, co-sysop 1 by default, not co-sysop 2) grants everything below.
+
+### User manager
+
+`USERS` opens a full-screen list on ANSI and PETSCII terminals:
+
+```
+USER MANAGER                   3 of 100
+───────────────────────────────────────
+ Handle        Name             Calls
+ Rob           Rob Mech           12
+ Alice         Alice Liddell       3
+ Mallory       M                   1 L
+───────────────────────────────────────
+Enter edit  A add  D delete  Q quit
+```
+
+`L` marks a locked account.
+
+| Key | Effect |
+|---|---|
+| Up / Down | move the highlight (the list scrolls) |
+| Enter or E | edit the highlighted account |
+| A | add an account |
+| D | delete the highlighted account, after `Delete handle (y/N)?` |
+| Q, ESC or Ctrl-C | back to the prompt |
+
+After a save or delete, the list redraws with the result under it.
+
+Plain ASCII terminals get a paged list and use the typed commands below.
+
+### Typed commands
+
+These work on every terminal.
+
+| Command | What it does |
+|---|---|
+| `USER ADD` | Add-account form: handle, password, the account fields, Locked. |
+| `USER EDIT handle` | Edit-account form. Leave `New pass` empty to keep the password. |
+| `USER DEL handle` | Delete after `Delete handle (y/N)?`. `N`, Enter or ESC keeps it. |
+
+- Staff can rename an account in the edit form. A caller who is online under the old handle keeps the session under the new one.
+- Setting `Locked` to `Y` refuses the next login. It does not drop a caller who is already on (use `KICK`).
+- You can't delete the account you're logged in with.
+- Staff never see passwords. To help a caller who forgot theirs, set a new one with `USER EDIT` and tell them.
+
+## Settings
+
+In `system.cfg`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `self_register` | `yes` | `no`: only staff can add accounts |
+| `max_users` | `100` | account limit, 1..100 |
+
+## users.txt
+
+Normally you never touch this file. It comes down in the backup zip, and you can edit it there and upload it back. The upload is checked before the sysop is asked: a `users.txt` with any problem is listed as rejected with the reason, and the accounts on the board stay as they are. The rest of the upload can still be applied.
+
+```
+# µnleashed BBS users. Edit through the backup zip, see USERS.md.
+
+[Rob]
+name = Rob Mech
+email = rob@example.com
+address =
+phone =
+profile = Plays chess on a C64
+pass = 3f9a0c1d2e4b5a69$5d1e...(64 hex)
+created = 1789000000
+last_call = 1789100000
+calls = 12
+day = 2026260
+day_minutes = 45
+locked = no
+```
+
+- One `[handle]` block per account. The handle rules above apply, and duplicates are refused.
+- `pass` is a random 8-byte salt and a SHA-256 hash (repeated 1000 times), both in hex. You can't type a password into the file; set passwords on the BBS. An empty `pass` means nobody can log in to that account until staff set one.
+- `locked = yes` locks the account.
+- Keys the BBS doesn't know are dropped the next time the file is written.
+- `created` and `last_call` are Unix times; `day` and `day_minutes` track the daily limit.
+- Uploading a zip without `users.txt` leaves the accounts on the board as they are.
+- More accounts than `max_users` is refused.
+
+The hash is there so a copy of the backup zip doesn't hand out passwords. It is not strong protection against someone who has the file and time to guess, so keep backups private, and tell callers not to reuse a password from elsewhere. Telnet sends passwords in the clear anyway.

@@ -84,6 +84,12 @@ const Command* Bbs::coreCommands(uint8_t& count) {
           [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdWho(s, a); } },
         { "LAST", "", 0, CF_NONE, "LAST", "the most recent calls",
           [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Last); } },
+        { "INFO", "I", 0, CF_NONE, "[I]NFO [h]", "a caller's profile",
+          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdInfo(s, a); } },
+        { "PROFILE", "", 0, CF_NONE, "PROFILE", "edit your profile",
+          [](Bbs& b, Session& s, const char*, uint32_t n) { b.cmdProfile(s, n); } },
+        { "PASSWORD", "", 0, CF_NONE, "PASSWORD", "change your password",
+          [](Bbs& b, Session& s, const char*, uint32_t n) { b.cmdPassword(s, n); } },
         { "PAGE", "", 0, CF_NONE, "PAGE n msg", "message node n",
           [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdPage(s, a); b.prompt(s); } },
         { "DND", "", 0, CF_NONE, "DND", "pages off / on",
@@ -121,6 +127,12 @@ const Command* Bbs::coreCommands(uint8_t& count) {
         // -- staff (shown and dispatched only with the permission) ------------
         { "DASH", "", PERM_DASH, CF_NONE, "DASH [n]", "dashboard; n refreshes",
           [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdDash(s, a); } },
+        { "USERS", "", PERM_USERS, CF_NONE, "USERS", "manage accounts",
+          [](Bbs& b, Session& s, const char*, uint32_t n) { b.cmdUsers(s, n); } },
+        { "USER", "", PERM_USERS, CF_NONE, "USER ADD", "add an account",
+          [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdUser(s, a, n); } },
+        { "USER", "", PERM_USERS, CF_HELPONLY, "USER EDIT h", "edit account h", nullptr },
+        { "USER", "", PERM_USERS, CF_HELPONLY, "USER DEL h", "delete account h", nullptr },
         { "NODES", "", PERM_NODES, CF_NONE, "NODES", "every session with its IP",
           [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Nodes); } },
         { "KICK", "", PERM_KICK, CF_NONE, "KICK n [msg]", "disconnect node n",
@@ -235,6 +247,7 @@ bool Bbs::listRow(Session& s) {
         case ListKind::Nodes: return rowNodes(s);
         case ListKind::Bans:  return rowBans(s);
         case ListKind::Dash:  return rowDash(s);
+        case ListKind::Users: return rowUsers(s);
         default:              return false;
     }
 }

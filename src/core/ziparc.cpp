@@ -9,6 +9,7 @@
 #include "ziparc.h"
 #include "crc32.h"
 #include "sysconfig.h"
+#include "users.h"
 #include "clock.h"
 #include "../platform/platform.h"
 
@@ -239,6 +240,8 @@ bool ZipExport::scan(const char* hostname, char* err, size_t errLen) {
     livePath(path, sizeof(path), BBS_CONFIG_FILE);
     struct stat st;
     if (stat(path, &st) == 0) addEntry(BBS_CONFIG_FILE, Src::Config);
+    livePath(path, sizeof(path), BBS_USERS_FILE);
+    if (stat(path, &st) == 0) addEntry(BBS_USERS_FILE, Src::File);
 
     uint8_t firstScreen = count_;
     livePath(path, sizeof(path), BBS_SCREEN_DIR);
@@ -493,7 +496,7 @@ bool ZipImport::open(const char* zipPath, char* err, size_t errLen) {
         if (method != 0 && method != 8)               { reject(name, "unsupported compression"); continue; }
         if (csize == 0xFFFFFFFFu || usize == 0xFFFFFFFFu) { reject(name, "zip64 not supported"); continue; }
 
-        bool isCfg = !strcmp(name, BBS_CONFIG_FILE);
+        bool isCfg = !strcmp(name, BBS_CONFIG_FILE) || !strcmp(name, BBS_USERS_FILE);
         bool isScreen = !strncmp(name, BBS_SCREEN_DIR "/", sizeof(BBS_SCREEN_DIR)) &&
                         validScreenName(name + sizeof(BBS_SCREEN_DIR));
         if (!isCfg && !isScreen)                      { reject(name, "not allowed (see SCREENS.md)"); continue; }
@@ -599,6 +602,10 @@ bool ZipImport::extract(Item& it) {
         probe = SysConfig();
         if (syscfg::parseFile(path, probe, cfgErr, sizeof(cfgErr))) why = cfgErr;
     }
+    if (!why && !strcmp(it.name, BBS_USERS_FILE)) {
+        static char usersErr[96];
+        if (users::validateFile(path, usersErr, sizeof(usersErr))) why = usersErr;
+    }
     if (why) {
         remove(path);
         reject(it.name, why);
@@ -620,8 +627,9 @@ bool ZipImport::step() {
     it.ok = extract(it);
     if (it.ok) {
         ++rep_.accepted;
-        if (!strcmp(it.name, BBS_CONFIG_FILE)) rep_.hasCfg = true;
-        else                                   rep_.hasScreens = true;
+        if (!strcmp(it.name, BBS_CONFIG_FILE))     rep_.hasCfg = true;
+        else if (!strcmp(it.name, BBS_USERS_FILE)) rep_.hasUsers = true;
+        else                                       rep_.hasScreens = true;
     } else {
         rep_.bytes -= it.usize;
     }
@@ -682,11 +690,13 @@ bool ZipImport::apply(char* msg, size_t msgLen) {
             else { remove(tmp); ++failures; }
             continue;
         }
-        if (rename(src, dst) == 0) ++screens;
-        else {
+        bool moved = rename(src, dst) == 0;
+        if (!moved) {
             remove(dst);                             // some filesystems will not rename over a file
-            if (rename(src, dst) == 0) ++screens; else ++failures;
+            moved = rename(src, dst) == 0;
         }
+        if (!moved)                                   ++failures;
+        else if (strcmp(it.name, BBS_USERS_FILE) != 0) ++screens;
     }
 
     uint8_t removed = 0;
@@ -726,7 +736,8 @@ bool ZipImport::apply(char* msg, size_t msgLen) {
     }
     discard();
 
-    snprintf(msg, msgLen, "Applied: %s%u screen%s, %u removed%s", cfgMsg,
+    snprintf(msg, msgLen, "Applied: %s%s%u screen%s, %u removed%s", cfgMsg,
+             rep_.hasUsers ? "users.txt, " : "",
              screens, screens == 1 ? "" : "s", removed, failures ? ", with errors" : "");
     plat::log("backup: %s", msg);
     return failures == 0;

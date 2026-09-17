@@ -429,7 +429,7 @@ void Bbs::cmdDrop(Session& s, uint32_t now) {
         s.dnd        = false;
         s.loginAt    = now;
         s.loginEpoch = clk::epoch();
-        s.dayUsedMin = bank_.used(s.user, s.ipAddr, clk::dayKey(now));
+        s.dayUsedMin = dayMinutesUsed(s.user, now);
         s.timeAdjMin = 0;
         s.timeWarned = 0;
         s.lastInput  = now;
@@ -458,7 +458,7 @@ void Bbs::cmdDrop(Session& s, uint32_t now) {
     d.dnd        = false;
     d.loginAt    = now;
     d.loginEpoch = clk::epoch();
-    d.dayUsedMin = bank_.used(d.user, d.ipAddr, clk::dayKey(now));
+    d.dayUsedMin = dayMinutesUsed(d.user, now);
     d.timeAdjMin = 0;
     d.timeWarned = 0;
     d.lastInput  = now;

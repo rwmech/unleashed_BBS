@@ -6,22 +6,24 @@ Electronic freedom on a microcontroller. No web, no cloud, no browser.
 
 The name is spelled with a micro sign. Where µ can't be shown (PETSCII, hostnames, file names) it's written `unleashed`.
 
-The core has one dial-in port, 6 caller nodes, a busy line and a hidden sysop node. It also has connect-time terminal detection, screens, a line editor with history, paged output, a message bus between nodes, the TTY effects library and a shell.
+The core has one dial-in port, 6 caller nodes, a busy line and a hidden sysop node. It also has connect-time terminal detection, user accounts with fill-in forms, screens, a line editor with history, paged output, a message bus between nodes, the TTY effects library and a shell.
 
 Docs:
 
 | File | For |
 |---|---|
 | [COMMANDS.md](COMMANDS.md) | every command, key, limit and `system.cfg` setting |
-| [BACKUP.md](BACKUP.md) | downloading and uploading config and screens as a `.zip` |
+| [USERS.md](USERS.md) | signing up, logging in, managing accounts |
+| [BACKUP.md](BACKUP.md) | downloading and uploading config, accounts and screens as a `.zip` |
 | [SCREENS.md](SCREENS.md) | screen formats, naming rules and upload limits |
 
-## Status (0.5.0)
+## Status (0.6.0)
 
 - Host build (Linux): the full scripted suite passes, also under AddressSanitizer and UBSan (`tools/testclient.py --backup`, plus `--slow` and `--ban`).
 - ESP32 build: ESP-IDF 5.3.1 through PlatformIO (`espressif32@6.9.0`), with no warnings in app code.
-  - Image: about 900 KB, 57% of the 1.5 MB OTA slot.
-  - Static RAM: 81 KB, including the 8-session pool and the backup buffers.
+  - Image: about 920 KB, 58% of the 1.5 MB OTA slot.
+  - Static RAM: 104 KB, including the 8-session pool (5.7 KB per session) and the backup buffers.
+- User accounts (0.6.0, not yet on hardware): self-registration through a form, salted SHA-256 passwords, per-handle lockout, PROFILE / PASSWORD / INFO, and a staff user manager. Up to 100 accounts on the board; more will need the SD card plugin.
 - Commands come from a registry (`Command` tables); HELP, dispatch and permissions are generated from it, and plugins will register into it.
 - On hardware:
   - PuTTY and a C64 through TeensyROM have both called in.
@@ -43,9 +45,9 @@ After that:
 
 - `pio run -t upload` for new firmware. Config, screens and logs stay as they are.
 - Config and screens change through the backup window ([BACKUP.md](BACKUP.md)), not by reflashing.
-- `flashall` / `uploadfs` rewrite the `storage` partition with `data/` (fresh board, or a deliberate reset).
+- `flashall` / `uploadfs` rewrite the `storage` partition with `data/` (fresh board, or a deliberate reset). That wipes the accounts too: download a backup first.
 
-Flash layout (4 MB): two 1.5 MB OTA app slots, `logs` (128 KB, caller log), `storage` (768 KB, `system.cfg` and screens). Changing `partitions.csv` wipes the filesystems, so back up first.
+Flash layout (4 MB): two 1.5 MB OTA app slots, `logs` (128 KB, caller log), `storage` (768 KB, `system.cfg`, `users.txt` and screens). Changing `partitions.csv` wipes the filesystems, so back up first.
 
 The console prints `online <ip>  dial in: telnet <ip> 6400`. On the LAN the board answers as `<hostname>.local` (default `unleashed.local`, also its DHCP name) and advertises `_telnet._tcp`.
 
@@ -83,7 +85,10 @@ src/core/detect.*         connect-time terminal detection (settle, probe, key pr
 src/core/editor.*         line editor, BYE password mask, command history
 src/core/screens.*        streaming screen player with @-codes and paging
 src/core/bus.*            per-session message ring (PAGE, notices, broadcast)
-src/core/guard.*          IP ban list, daily time bank
+src/core/guard.*          IP ban list, per-handle login lockout
+src/core/users.*          accounts in users.txt: field table, lookup, rewrite, password hashing
+src/core/sha256.*         SHA-256 for password hashes
+src/core/form.*           fill-in form widget (positional on ANSI/PETSCII, line prompts on ASCII)
 src/core/calllog.*        caller log ring file on the logs partition (LAST)
 src/core/clock.*          wall clock formatting (NTP)
 src/core/sysconfig.*      system.cfg loader, validator, password redaction, access matrix
@@ -93,6 +98,7 @@ src/core/crc32.h          CRC-32 for the zip
 src/core/bbs.*            listener, sessions, flow, timers, paging
 src/core/bbs_shell.cpp    caller commands
 src/core/bbs_sysop.cpp    sysop node and commands
+src/core/bbs_users.cpp    sign-up, PROFILE, PASSWORD, INFO, USERS manager, USER ADD/EDIT/DEL
 data/screens/             stock welcome, busy, goodbye (.seq/.ans/.asc) for a fresh board
 data/system.cfg.example   run-time settings template
 tools/mkscreens.py        regenerates the stock screens
@@ -144,5 +150,5 @@ These are codes in the mixed-case charset, confirmed on a C64 through TeensyROM:
 
 ## Next
 
-- C2: users, PBKDF2-SHA256 auth with lockout, sysop bootstrap.
-- C5: plugin API. The first plugins will be chat and GPIO.
+- C5: plugin API. The first plugins will be GPIO and chat.
+- SD card plugin: more than 100 accounts, logs on the card.

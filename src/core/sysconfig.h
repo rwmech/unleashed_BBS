@@ -16,6 +16,8 @@
  *   backup_port            HTTP port while the backup window is open
  *   backup_window_minutes  how long a button press keeps the window open
  *   backup_button_gpio     button pin (active low), -1 = no button
+ *   self_register          yes: new handles can sign up; no: sysop creates accounts
+ *   max_users              account limit (1..100 on onboard storage)
  *   who_refresh_min        WHO n / DASH n lowest refresh, seconds
  *   who_refresh_max        WHO n / DASH n highest refresh, seconds
  *   activity_led_gpio      LED blinked on network traffic, -1 = none
@@ -46,7 +48,8 @@ enum Perm : uint16_t {
     PERM_HIDE      = 1 << 7,   // SHOW / HIDE / LURK
     PERM_NOLIMITS  = 1 << 8,   // no idle timeout, no call or daily limit
     PERM_DASH      = 1 << 9,   // DASH dashboard
-    PERM_ALL       = (1 << 10) - 1,
+    PERM_USERS     = 1 << 10,  // USERS manager, USER ADD/EDIT/DEL, private fields in INFO
+    PERM_ALL       = (1 << 11) - 1,
 };
 
 struct PermName { const char* name; uint16_t bit; };
@@ -63,6 +66,8 @@ struct SysConfig {
                                static_cast<uint16_t>(PERM_NODES | PERM_BROADCAST | PERM_TIME | PERM_BANS |
                                                      PERM_NOLIMITS | PERM_DASH) };
     uint16_t idleMinutes   = BBS_IDLE_MINUTES;
+    bool     selfRegister  = true;
+    uint8_t  maxUsers      = BBS_MAX_USERS;
     uint8_t  whoMin        = BBS_WHO_REFRESH_MIN;
     uint8_t  whoMax        = BBS_WHO_REFRESH_MAX;
     int8_t   ledGpio       = BBS_LED_GPIO;

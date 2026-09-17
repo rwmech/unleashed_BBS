@@ -5,8 +5,9 @@
  *   BanList   wrong sysop passwords per IP. BBS_BAN_TRIES failures inside
  *             BBS_BAN_WINDOW_MS ban that IP for BBS_BAN_MS. RAM only, a
  *             reboot clears it.
- *   TimeBank  minutes used per day, keyed by handle + IP until C2 adds
- *             real user records.
+ *   LoginGuard wrong account passwords per handle. BBS_LOCK_FAILS inside
+ *             BBS_LOCK_WINDOW_MS lock that handle for BBS_LOCK_MS. RAM
+ *             only: failures never write to flash.
  *
  *   IPs are the raw 4-byte s_addr value, same byte order as the socket.
  * Listing:     COMPLETE FILE
@@ -42,22 +43,25 @@ private:
     Entry slots_[BBS_BAN_SLOTS];
 };
 
-class TimeBank {
+class LoginGuard {
 public:
-    // used: minutes already used today by this handle + IP
-    uint16_t used(const char* user, uint32_t ip, uint32_t day) const;
+    // locked: true while the handle is locked out
+    bool locked(const char* handle, uint32_t now);
 
-    // add: record minutes at the end of a call
-    void add(const char* user, uint32_t ip, uint32_t day, uint16_t minutes);
+    // fail: count a wrong password. True if this failure locked the handle.
+    bool fail(const char* handle, uint32_t now);
+
+    // clear: a correct password forgets earlier failures
+    void clear(const char* handle);
 
 private:
     struct Entry {
-        char     user[BBS_USER_MAX + 1] = {};
-        uint32_t ip      = 0;
-        uint32_t day     = 0;
-        uint16_t minutes = 0;
+        char     handle[BBS_USER_MAX + 1] = {};
+        uint8_t  fails     = 0;
+        uint32_t firstFail = 0;
+        uint32_t until     = 0;     // 0 = not locked
     };
-    Entry slots_[BBS_TIMEBANK_SLOTS];
+    Entry slots_[BBS_LOCK_SLOTS];
 };
 
 // ip helpers shared by the shell (dotted quad <-> raw s_addr bytes)

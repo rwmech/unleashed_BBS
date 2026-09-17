@@ -1,6 +1,6 @@
 # Backup and restore
 
-Everything that matters on the board travels as one `.zip`: `system.cfg` and every screen. You download it, change what you want, and upload it back. Logs are not in the zip and are never touched by a restore.
+Everything that matters on the board travels as one `.zip`: `system.cfg`, the user accounts and every screen. You download it, change what you want, and upload it back. Logs are not in the zip and are never touched by a restore.
 
 No USB cable, no web browser, no reflashing. Just the BOOT button and `curl`.
 
@@ -54,12 +54,15 @@ What is inside:
 | Path | What it is |
 |---|---|
 | `system.cfg` | all settings, the staff passwords show as `***` |
+| `users.txt` | user accounts, passwords as salted hashes, see [USERS.md](USERS.md#userstxt) |
 | `screens/*.asc .ans .seq .p40 .p80` | display files, see [SCREENS.md](SCREENS.md) |
 | `MANIFEST.txt` | version, date, file list (ignored on upload) |
 
 Passwords: leave `***` as it is to keep the current password. Type a real password in its place to change it. An empty value disables that staff level.
 
 Screens: add, change or delete files in `screens/`. When your upload contains any screens, the board's screens become exactly that set, so a screen you delete from the folder is deleted on the board. An upload with no screens at all leaves the screens alone.
+
+Accounts: an upload with `users.txt` replaces every account with the file's contents; an upload without it leaves the accounts alone. Account passwords can't be typed into the file, only kept or cleared (see [USERS.md](USERS.md#userstxt)).
 
 ## 4. Re-zip
 
@@ -96,7 +99,7 @@ curl -T backup.zip http://unleashed.local:8080/restore
 The board unpacks the zip into a staging area and checks every file. Nothing is live yet. The sysop console then asks:
 
 ```
-Upload from 192.168.0.20: 14 files, 58 KB, system.cfg, screens
+Upload from 192.168.0.20: 15 files, 60 KB, system.cfg, users, screens
 nothing rejected, 0 screens removed
 Accept upload (Y/N)?
 ```
@@ -139,6 +142,6 @@ backup_button_gpio = 0
 ## Security notes
 
 - The window only opens with a physical button press while the sysop is logged in, and closes by itself.
-- Downloads are not confirmed. The zip never contains real passwords, only `***`.
+- Downloads are not confirmed. The zip never contains staff passwords, only `***`. Account passwords are in it as salted hashes, so keep backups private.
 - Uploads always need the sysop's Y.
 - Plain HTTP, like the BBS itself is plain telnet. Use it on your own network.

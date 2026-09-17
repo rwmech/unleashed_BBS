@@ -12,6 +12,9 @@ Description: Scripted callers for the BBS (host build or a real board).
              - Paging between nodes, DND, arrival notices, LAST
              - Sysop: BYE <password> masking, NODES, More paging, TIME
                adjust warnings, BROADCAST, SNOOP, KICK, SHOW, DROP
+             - Accounts: sign-up form checks (ANSI, PETSCII, ASCII), wrong
+               passwords and per-handle lockout, PROFILE, PASSWORD, INFO
+               privacy, USERS manager, USER ADD/EDIT/DEL, locked accounts
              - Handle prompt idle warning with partial input redraw (31 s)
              - Busy line: busy screen, countdown hangup, overflow BUSY,
                busy-line guest elevating to sysop
@@ -19,7 +22,7 @@ Description: Scripted callers for the BBS (host build or a real board).
                bans the machine running the test for 15 minutes)
 Listing:     COMPLETE FILE
 Libraries:   Python 3 standard library only
-Usage:       python3 tools/testclient.py [host] [port] [--ban] [--slow]
+Usage:       python3 tools/testclient.py [host] [port] [--backup] [--ban] [--slow]
 """
 import http.client
 import io
@@ -154,11 +157,51 @@ def pet(s):
     return bytes(out)
 
 
-def ansi_login(handle):
+TEST_PW = "pw1234"
+DOWN = b"\x1b[B"
+F1 = b"\x1bOP"
+
+
+def wait_any(c, pats, secs=10):
+    end = time.time() + secs
+    while time.time() < end:
+        for i, p in enumerate(pats):
+            if p in c.buf:
+                return i
+        if not c.pump(0.1):
+            break
+    for i, p in enumerate(pats):
+        if p in c.buf:
+            return i
+    return -1
+
+
+def login(c, handle, pw=TEST_PW, as_pet=False, wait_main=True):
+    """At the handle prompt: log in, or register when the handle is new.
+    The signup keys work for the cursor form and the ASCII line form alike."""
+    enc = pet if as_pet else (lambda s: s.encode())
+    c.send(enc(handle) + b"\r")
+    which = wait_any(c, [enc("Register"), enc("Password:")], 8)
+    if which == 0:
+        email = "".join(ch for ch in handle.lower() if ch.isalnum()) + "@example.com"
+        c.send(b"y")
+        c.wait_for(enc("NEW ACCOUNT"), 6)
+        c.send(enc(pw) + b"\r" + enc(pw) + b"\r" + enc(handle) + b"\r" + enc(email) + b"\r\r\r\r\r")
+        if not c.wait_for(enc("WELCOME ABOARD"), 10):
+            return False
+    elif which == 1:
+        c.send(enc(pw) + b"\r")
+        if not c.wait_for(enc("ACCESS GRANTED"), 6):
+            return False
+    else:
+        return False
+    return c.wait_for(enc("Main"), 8) if wait_main else True
+
+
+def ansi_login(handle, pw=TEST_PW):
     c = Caller(ansi=True)
     c.wait_for(b"Enter your handle", 10)
-    c.send(handle.encode() + b"\r")
-    c.wait_for(b"Main", 5)
+    login(c, handle, pw)
     return c
 
 
@@ -176,10 +219,10 @@ def test_ansi():
     c.send(b"[3;20R\r")
     ok &= check("terminal junk rejected as handle", c.wait_for(b"Use letters", 3))
     c.buf.clear()
-    c.send(b"Rob\r\n")
-    ok &= check("welcome by handle", c.wait_for(b"Welcome", 3) and b"Rob" in c.buf)
-    ok &= check("time left shown", c.wait_for(b"Time left", 3))
-    ok &= check("shell prompt", c.wait_for(b"Main", 3))
+    ok &= check("new handle registers through the form", login(c, "Rob"))
+    ok &= check("welcome by handle", b"Welcome" in c.buf and b"Rob" in c.buf)
+    ok &= check("time left shown", b"Time left" in c.buf)
+    ok &= check("shell prompt", b"Main" in c.buf)
     c.buf.clear()
     c.send(b"term\r")
     ok &= check("TERM reports size", c.wait_for(b"ANSI-UTF8 80x24", 3))
@@ -249,8 +292,8 @@ def test_petscii():
     ok &= check("no telnet IAC sent to C64", b"\xff\xfb" not in c.buf)
     ok &= check("welcome.seq streamed", c.wait_for(pet("No web. No cloud. No browser."), 8) and c.wait_for(pet("unleashed BBS"), 3))
     ok &= check("handle prompt", c.wait_for(pet("Enter your handle"), 8))
-    c.send(pet("KE9CXN") + b"\r")
-    ok &= check("shell prompt", c.wait_for(pet("Main"), 3))
+    ok &= check("PETSCII signup form and login", login(c, "KE9CXN", as_pet=True))
+    ok &= check("form drew with cursor moves", b"\x13" in c.buf)
     c.buf.clear()
     c.send(pet("who") + b"\r")
     ok &= check("WHO lists handle", c.wait_for(pet("KE9CXN"), 3))
@@ -281,8 +324,8 @@ def test_ascii():
     ok = check("ASCII detected", c.wait_for(b"ASCII DETECTED", 5))
     ok &= check("welcome.asc streamed", c.wait_for(b"No web. No cloud. No browser.", 8) and c.wait_for(b"unleashed BBS", 3))
     c.wait_for(b"Enter your handle", 8)
-    c.send(b"Plain\r")
-    c.wait_for(b"Main", 5)
+    ok &= check("ASCII line-by-line signup", login(c, "Plain"))
+    ok &= check("ASCII form used plain prompts", b"Save (Y/n)?" in c.buf)
     c.buf.clear()
     c.send(b"help\r")
     end = time.time() + 8
@@ -498,6 +541,205 @@ def test_cosysop():
     return ok
 
 
+def handle_then(handle, pats, secs=8):
+    """Fresh ANSI caller types a handle; returns (caller, index of the pattern seen)."""
+    c = Caller(ansi=True)
+    c.wait_for(b"Enter your handle", 10)
+    c.buf.clear()
+    c.send(handle.encode() + b"\r")
+    return c, wait_any(c, pats, secs)
+
+
+def test_accounts():
+    print("Accounts: sign-up checks, lockout, PROFILE, PASSWORD, INFO")
+    c, which = handle_then("Zed", [b"Register"])
+    ok = check("new handle offers registration", which == 0)
+    c.send(b"y")
+    ok &= check("sign-up form opens", c.wait_for(b"NEW ACCOUNT", 5))
+    c.buf.clear()
+    c.send(b"abc\rabc\r\r\r\r\r\r\r")
+    ok &= check("short password refused", c.wait_for(b"Password needs 4 or more characters", 5))
+    c.send(b"\x1b")
+    ok &= check("ESC cancels the sign-up", c.wait_for(b"Sign-up cancelled.", 3) and c.wait_for(b"Enter your handle", 3))
+    c.buf.clear()
+    c.send(b"Zed\r")
+    c.wait_for(b"Register", 5)
+    c.send(b"y")
+    c.wait_for(b"NEW ACCOUNT", 5)
+    c.buf.clear()
+    c.send(b"abcd\rabce\rZed\rzed@example.com\r\r\r\r\r")
+    ok &= check("password mismatch refused", c.wait_for(b"The passwords do not match", 5))
+    c.send(b"\x1b")
+    c.wait_for(b"Enter your handle", 3)
+    c.send(b"Zed\r")
+    c.wait_for(b"Register", 5)
+    c.send(b"y")
+    c.wait_for(b"NEW ACCOUNT", 5)
+    c.buf.clear()
+    c.send(b"abcd\rabcd\rZed\rnot-an-email\r\r\r\r\r")
+    ok &= check("bad email refused", c.wait_for(b"That email does not look right", 5))
+    c.close()
+
+    # --- register, log off, come back: call stats saved
+    c = ansi_login("Acct")
+    ok &= check("first call greets as new", b"Welcome, " in c.buf)
+    c.send(b"bye\r")
+    c.wait_closed(8)
+    c.close()
+    c, which = handle_then("acct", [b"Password:"])
+    ok &= check("handle match ignores case", which == 0)
+    c.send(TEST_PW.encode() + b"\r")
+    ok &= check("right password: ACCESS GRANTED", c.wait_for(b"ACCESS GRANTED", 6))
+    ok &= check("second call: welcome back, call 2", c.wait_for(b"Welcome back, ", 5) and c.wait_for(b"Call 2.", 3))
+    ok &= check("account's own spelling used", c.wait_for(b"Acct", 2))
+    c.wait_for(b"Main", 5)
+
+    # --- PROFILE: Name is focused first; Down x4 reaches Profile, F1 saves
+    c.buf.clear()
+    c.send(b"profile\r")
+    ok &= check("PROFILE opens the form", c.wait_for(b"YOUR PROFILE", 5))
+    c.send(DOWN * 4 + b"Plays chess on a C64" + F1)
+    ok &= check("PROFILE saved", c.wait_for(b"Profile saved.", 5))
+    c.buf.clear()
+    c.send(b"info\r")
+    ok &= check("own INFO shows email and profile",
+                c.wait_for(b"acct@example.com", 5) and c.wait_for(b"Plays chess on a C64", 3))
+
+    # --- PASSWORD: wrong current, mismatch, then a real change
+    c.buf.clear()
+    c.send(b"password\r")
+    ok &= check("PASSWORD opens the form", c.wait_for(b"CHANGE PASSWORD", 5))
+    c.send(b"nope\rnewpw99\rnewpw99\r\r")
+    ok &= check("wrong current password refused", c.wait_for(b"The current password is wrong", 5))
+    c.send(b"\x1b")
+    ok &= check("ESC: nothing changed", c.wait_for(b"Cancelled, nothing changed.", 3))
+    c.wait_for(b"Main", 3)
+    c.buf.clear()
+    c.send(b"password\r")
+    c.wait_for(b"CHANGE PASSWORD", 5)
+    c.send(TEST_PW.encode() + b"\rnewpw99\rnewpw98\r\r")
+    ok &= check("new password mismatch refused", c.wait_for(b"The passwords do not match", 5))
+    c.send(b"\x1b")
+    c.wait_for(b"Main", 3)
+    c.buf.clear()
+    c.send(b"password\r")
+    c.wait_for(b"CHANGE PASSWORD", 5)
+    c.send(TEST_PW.encode() + b"\rnewpw99\rnewpw99\r\r")
+    ok &= check("password changed", c.wait_for(b"Password changed.", 5))
+
+    # --- INFO on someone else hides private fields
+    p = ansi_login("Peeker")
+    p.buf.clear()
+    p.send(b"info acct\r")
+    ok &= check("INFO on another caller shows the handle", p.wait_for(b"Acct", 5) and p.wait_for(b"Plays chess", 3))
+    p.wait_for(b"Main", 3)
+    ok &= check("INFO hides their email", b"acct@example.com" not in p.buf)
+    p.buf.clear()
+    p.send(b"users\r")
+    ok &= check("USERS needs staff access", p.wait_for(b"Unknown command", 3))
+    p.close()
+    c.close()
+
+    c, which = handle_then("Acct", [b"Password:"])
+    c.send(TEST_PW.encode() + b"\r")
+    ok &= check("old password no longer works", c.wait_for(b"ACCESS DENIED", 6))
+    c.wait_for(b"Password:", 5)
+    c.send(b"newpw99\r")
+    ok &= check("new password works", c.wait_for(b"ACCESS GRANTED", 6))
+    c.close()
+
+    if HOST in ("127.0.0.1", "localhost"):
+        users = (DATA / "users.txt").read_text()
+        ok &= check("users.txt has no plaintext password", "newpw99" not in users and TEST_PW not in users)
+        ok &= check("users.txt stores salt$hash", re.search(r"\b[0-9a-f]{16}\$[0-9a-f]{64}\b", users) is not None)
+
+    # --- lockout: 3 misses hang up the call, 5 per handle lock it
+    c = ansi_login("Locky")
+    c.close()
+    c, _ = handle_then("Locky", [b"Password:"])
+    for _ in range(3):
+        c.wait_for(b"Password:", 5)
+        c.buf.clear()
+        c.send(b"wrong1\r")
+        c.wait_for(b"ACCESS DENIED", 6)
+    ok &= check("3 wrong passwords hang up the call", c.wait_for(b"Too many wrong passwords.", 5) and c.wait_closed(8))
+    c.close()
+    c, _ = handle_then("Locky", [b"Password:"])
+    for _ in range(2):
+        c.wait_for(b"Password:", 5)
+        c.buf.clear()
+        c.send(b"wrong2\r")
+        c.wait_for(b"ACCESS DENIED", 6)
+    ok &= check("5th miss for the handle hangs up early", c.wait_for(b"Too many wrong passwords.", 5) and c.wait_closed(8))
+    c.close()
+    c, which = handle_then("Locky", [b"Try again later.", b"Password:"])
+    ok &= check("locked handle refused before the password", which == 0 and c.wait_closed(8))
+    c.close()
+    return ok
+
+
+def test_user_admin():
+    print("Accounts: USERS manager, USER ADD/EDIT/DEL")
+    if not PASSWORD:
+        print("  SKIP  no sysop_password")
+        return True
+    s = ansi_login("Rob")
+    s.buf.clear()
+    s.send(f"bye {PASSWORD}\r".encode())
+    ok = check("sysop node", s.wait_for(b"Sysop node.", 5))
+    s.wait_for(b"Sysop", 3)
+    s.buf.clear()
+    s.send(b"users\r")
+    ok &= check("USERS opens the manager", s.wait_for(b"USER MANAGER", 5) and s.wait_for(b"Rob", 3))
+    ok &= check("manager shows the key help", s.wait_for(b"Enter edit  A add  D delete  Q quit", 3))
+    s.buf.clear()
+    s.send(b"a")
+    ok &= check("A opens ADD ACCOUNT", s.wait_for(b"ADD ACCOUNT", 5))
+    s.send(b"Newbie\rpw5678\rNew Person\rnew@example.com" + F1)
+    ok &= check("account added, back in the manager",
+                s.wait_for(b"Account Newbie added.", 5) and b"USER MANAGER" in s.buf)
+    s.buf.clear()
+    s.send(b"q")
+    ok &= check("Q leaves the manager", s.wait_for(b"Sysop", 3))
+
+    s.buf.clear()
+    s.send(b"user edit newbie\r")
+    ok &= check("USER EDIT opens the form", s.wait_for(b"EDIT ACCOUNT", 5) and s.wait_for(b"new@example.com", 3))
+    s.send(DOWN * 7 + b"y" + F1)
+    ok &= check("lock saved", s.wait_for(b"Account Newbie saved.", 5))
+    c, which = handle_then("Newbie", [b"This account is locked."])
+    ok &= check("locked account refused", which == 0 and c.wait_closed(8))
+    c.close()
+
+    s.buf.clear()
+    s.send(b"user edit Newbie\r")
+    s.wait_for(b"EDIT ACCOUNT", 5)
+    s.send(DOWN * 7 + b"n" + F1)
+    s.wait_for(b"Account Newbie saved.", 5)
+    c, which = handle_then("Newbie", [b"Password:"])
+    c.send(b"pw5678\r")
+    ok &= check("unlocked account logs in with the staff-set password", c.wait_for(b"ACCESS GRANTED", 6))
+    c.close()
+
+    s.buf.clear()
+    s.send(b"user del Rob\r")
+    ok &= check("cannot delete your own account", s.wait_for(b"You cannot delete your own account.", 3))
+    s.buf.clear()
+    s.send(b"user del Newbie\r")
+    ok &= check("USER DEL asks (y/N)", s.wait_for(b"(y/N)?", 3))
+    s.send(b"y")
+    ok &= check("account deleted", s.wait_for(b"Account deleted.", 5))
+    c, which = handle_then("Newbie", [b"Register", b"Password:"])
+    ok &= check("deleted handle is new again", which == 0)
+    c.close()
+
+    s.buf.clear()
+    s.send(b"info acct\r")
+    ok &= check("staff INFO shows private fields", s.wait_for(b"acct@example.com", 5))
+    s.close()
+    return ok
+
+
 def test_idle_login():
     print("Handle prompt idle warning (31 s)")
     c = Caller(ansi=True)
@@ -559,7 +801,7 @@ def test_bulletin():
     try:
         c = Caller(ansi=True)
         c.wait_for(b"Enter your handle", 10)
-        c.send(b"Reader\r")
+        login(c, "Reader", wait_main=False)
         ok = check("bulletin plays after login", c.wait_for(b"Bulletin line 1\r\n", 5))
         ok &= check("pauses at [More] after 22 lines", c.wait_for(b"[More] Y/n/c", 5)
                     and b"Bulletin line 22" in c.buf and b"Bulletin line 23" not in c.buf)
@@ -574,7 +816,7 @@ def test_bulletin():
 
         c = Caller(ansi=True)
         c.wait_for(b"Enter your handle", 10)
-        c.send(b"Reader\r")
+        login(c, "Reader", wait_main=False)
         c.wait_for(b"[More] Y/n/c", 8)
         c.buf.clear()
         c.send(b"n")
@@ -659,6 +901,8 @@ def test_backup():
                 "system.cfg" in names and "MANIFEST.txt" in names and "screens/welcome.ans" in names)
     cfg = z.read("system.cfg").decode() if z else ""
     ok &= check("passwords redacted as ***", "sysop_password = ***" in cfg and PASSWORD not in cfg)
+    users = z.read("users.txt").decode() if z and "users.txt" in names else ""
+    ok &= check("zip carries users.txt, hashes only", "Alice" in users and TEST_PW not in users)
     ok &= check("download notice on the sysop console", s.wait_for(b"*** Backup downloaded by", 5))
 
     # --- edit and upload inside a folder, deflated (what re-zipping an unpacked folder gives)
@@ -668,7 +912,8 @@ def test_backup():
     files["unleashed-backup/system.cfg"] = (cfg + "\nidle_minutes = 21\n").encode()
     status, body, seen = upload_with_answer(s, make_zip(files), b"y")
     ok &= check("sysop asked Y/N for the upload", seen)
-    ok &= check("summary names the files", b"system.cfg, screens" in bytes(s.buf))
+    summary = bytes(s.buf)
+    ok &= check("summary names the files", b"system.cfg" in summary and b"screens" in summary and b"users" in summary)
     ok &= check("upload applied (200)", status == 200 and b"Applied" in body)
     local = HOST in ("127.0.0.1", "localhost")
     if local:
@@ -682,10 +927,25 @@ def test_backup():
     ok &= check("edited value live", "idle_minutes = 21" in cfg2)
     ok &= check("new screen added", "screens/extra.asc" in names2)
     ok &= check("screen missing from the upload removed", "screens/busy.seq" not in names2)
-    c = Caller(ansi=True)
-    c.wait_for(b"Enter your handle", 10)
-    c.send(b"Reader\r")
+    c, which = handle_then("Alice", [b"Password:", b"Register"])
+    ok &= check("accounts restored from the upload", which == 0)
+    c.send(TEST_PW.encode() + b"\r")
     ok &= check("callers see the uploaded bulletin", c.wait_for(b"Custom line from upload test", 8))
+    c.close()
+
+    # --- self_register = no: unknown handles are refused, then back on
+    def with_register(value):
+        lines = [l for l in cfg2.splitlines() if not l.strip().startswith("self_register")]
+        return make_zip({"system.cfg": ("\n".join(lines) + f"\nself_register = {value}\n").encode()})
+
+    status, body, seen = upload_with_answer(s, with_register("no"), b"y")
+    ok &= check("self_register = no applied", seen and status == 200)
+    c, which = handle_then("Stranger", [b"The sysop creates accounts here.", b"Register"])
+    ok &= check("no self-registration: new handle refused", which == 0)
+    c.close()
+    status, body, seen = upload_with_answer(s, with_register("yes"), b"y")
+    c, which = handle_then("Stranger", [b"The sysop creates accounts here.", b"Register"])
+    ok &= check("self_register = yes offers sign-up again", status == 200 and which == 1)
     c.close()
 
     # --- junk plus one real change, sysop says no
@@ -755,7 +1015,8 @@ def test_ban():
 
 if __name__ == "__main__":
     results = [test_ansi(), test_telnet_first(), test_petscii(), test_ascii(),
-               test_page(), test_sysop(), test_cosysop(), test_bulletin(), test_idle_login(), test_busy()]
+               test_page(), test_sysop(), test_cosysop(), test_accounts(), test_user_admin(),
+               test_bulletin(), test_idle_login(), test_busy()]
     if "--backup" in FLAGS:
         results.append(test_backup())
     if "--ban" in FLAGS:

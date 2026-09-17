@@ -3,6 +3,7 @@
  * Description: The backup archive. Everything that matters lives in the
  *              storage filesystem and travels as one .zip:
  *                system.cfg          passwords written as *** on download
+ *                users.txt           accounts (password hashes, not passwords)
  *                screens/<name>.<ext>
  *                MANIFEST.txt        informational, ignored on upload
  *              Logs live on their own partition and never enter the zip.
@@ -105,6 +106,7 @@ struct ImportReport {
     uint8_t  removed  = 0;         // live screens the upload deletes
     uint32_t bytes    = 0;         // unpacked bytes accepted
     bool     hasCfg     = false;
+    bool     hasUsers   = false;
     bool     hasScreens = false;
     char     firstReject[96] = {};
 };

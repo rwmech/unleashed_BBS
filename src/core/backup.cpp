@@ -130,10 +130,11 @@ void BackupService::service(const fd_set& r, const fd_set& w, uint32_t now) {
             imp_.discard();
             reply(422, "Unprocessable Entity", body);
         } else {
-            snprintf(summary_, sizeof(summary_), "Upload from %s: %u file%s, %u KB%s%s",
+            snprintf(summary_, sizeof(summary_), "Upload from %s: %u file%s, %u KB%s%s%s",
                      clientIp_, rep.accepted, rep.accepted == 1 ? "" : "s",
                      static_cast<unsigned>((rep.bytes + 1023) / 1024),
-                     rep.hasCfg ? ", system.cfg" : "", rep.hasScreens ? ", screens" : "");
+                     rep.hasCfg ? ", system.cfg" : "", rep.hasUsers ? ", users" : "",
+                     rep.hasScreens ? ", screens" : "");
             if (rep.rejected) snprintf(detail_, sizeof(detail_), "%u rejected (%.60s), %u screens removed",
                                        rep.rejected, rep.firstReject, rep.removed);
             else              snprintf(detail_, sizeof(detail_), "nothing rejected, %u screens removed", rep.removed);

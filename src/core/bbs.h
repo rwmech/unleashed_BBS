@@ -28,12 +28,18 @@
 #include "guard.h"
 #include "sysconfig.h"
 #include "backup.h"
+#include "users.h"
+#include "form.h"
 
 enum class SState : uint8_t {
     Free,      // slot unused
     Detect,    // terminal detection
     Intro,     // welcome screens playing
-    AskName,   // handle prompt (auth arrives in C2)
+    AskName,   // handle prompt
+    AskPass,   // password for an existing account
+    AskRegister, // unknown handle: register (Y/n)?
+    Form,      // a fill-in form (signup, profile, password, user add/edit)
+    UserList,  // staff user manager screen
     Shell,     // command prompt, or a screen playing inside the shell
     List,      // a paged list (WHO, LAST, NODES...) is being generated
     More,      // "[More]" prompt waiting for a key
@@ -52,8 +58,10 @@ enum class Role : uint8_t {
     Sysop,     // hidden sysop node, entered with BYE <password>
 };
 
-enum class ListKind : uint8_t { None, Help, Who, Last, Nodes, Bans, Dash };
+enum class ListKind : uint8_t { None, Help, Who, Last, Nodes, Bans, Dash, Users };
 enum class MoreFrom : uint8_t { List, Screen };
+enum class FormKind : uint8_t { None, Signup, Profile, Password, UserAdd, UserEdit };
+enum class ConfirmKind : uint8_t { Logoff, DeleteUser };
 
 struct Session {
     int          fd          = -1;
@@ -62,6 +70,9 @@ struct Session {
     Role         role        = Role::Caller;
     bool         wantWrite   = false;  // last send would block
     bool         negotiated  = false;  // telnet options sent
+    uint8_t      rxBuf[BBS_RX_CHUNK] = {};   // filtered input not yet handled
+    uint8_t      rxLen       = 0;            // (held while the output buffer is full)
+    uint8_t      rxPos       = 0;
     char         ip[16]      = {};
     uint32_t     ipAddr      = 0;      // raw s_addr
     uint32_t     connectedAt = 0;
@@ -101,6 +112,23 @@ struct Session {
     // busy line countdown
     uint8_t      countdown   = 0;
     uint32_t     nextTick    = 0;
+
+    // accounts, forms, user manager
+    uint8_t      passTries   = 0;
+    FormKind     formKind    = FormKind::None;
+    ConfirmKind  confirm     = ConfirmKind::Logoff;
+    bool         backToUsers = false;  // a staff form returns to the user manager
+    uint8_t      ulSel       = 0;      // user manager: selected index
+    uint8_t      ulTop       = 0;      //               first index on screen
+    uint8_t      ulCount     = 0;
+    char         origHandle[BBS_USER_MAX + 1] = {};
+    char         pwA[BBS_PASS_MAX + 1] = {};
+    char         pwB[BBS_PASS_MAX + 1] = {};
+    char         pwC[BBS_PASS_MAX + 1] = {};
+    char         yesno[2]    = "N";
+    UserRec      edit;                 // account being logged in or edited
+    FormField    fields[Form::kMaxFields];
+    Form         form;
 
     // staff access (BYE <password>)
     Access       level       = Access::None;
@@ -179,6 +207,7 @@ private:
     void openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role role, uint32_t now);
     void closeSession(Session& s, const char* why, uint32_t now);
     void readSession(Session& s, uint32_t now);
+    void processInput(Session& s, uint32_t now);
     void serviceSession(Session& s, uint32_t now);
     void flush(Session& s, uint32_t now);
     void moveSession(Session& from, Session& to, uint8_t newId, Role role);
@@ -190,6 +219,30 @@ private:
     void askName(Session& s);
     void drawNamePrompt(Session& s);
     void onHandle(Session& s, uint32_t now);
+    void askPassword(Session& s);
+    void onPassword(Session& s, uint32_t now);
+    void completeLogin(Session& s, uint32_t now);
+    void saveCallStats(Session& s, uint32_t now);
+    uint16_t dayMinutesUsed(const char* handle, uint32_t now);
+
+    // -- accounts and forms (bbs_users.cpp) -----------------------------------
+    void addField(Session& s, uint8_t& n, const char* label, char* buf, uint8_t cap, uint8_t flags);
+    uint8_t addUserFields(Session& s, uint8_t n);
+    void startForm(Session& s, FormKind kind, uint32_t now);
+    void formSave(Session& s, uint32_t now);
+    void formCancel(Session& s, uint32_t now);
+    bool checkUserFields(Session& s, uint8_t firstField);
+    void formDone(Session& s, Color c, const char* msg);
+    void cmdProfile(Session& s, uint32_t now);
+    void cmdPassword(Session& s, uint32_t now);
+    void cmdInfo(Session& s, const char* arg);
+    void cmdUsers(Session& s, uint32_t now);
+    void cmdUser(Session& s, const char* arg, uint32_t now);
+    bool rowUsers(Session& s);
+    void ulOpen(Session& s);
+    void ulDrawRow(Session& s, uint8_t index);
+    void ulKey(Session& s, int k, uint32_t now);
+    uint8_t ulRows(const Session& s) const;
     void prompt(Session& s);
     void drawPrompt(Session& s);
     void hangup(Session& s, const char* msg, uint32_t now);
@@ -274,7 +327,7 @@ private:
     Session   sysop_;
     Session*  all_[kSessions] = {};
     BanList   bans_;
-    TimeBank  bank_;
+    LoginGuard logins_;
 
     struct CommandTable { const Command* list; uint8_t count; };
     CommandTable tables_[kCommandTables] = {};

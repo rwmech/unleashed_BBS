@@ -82,35 +82,51 @@ bool BanList::at(uint8_t i, uint32_t now, Entry& out) const {
 }
 
 // ===========================================================================
-// TimeBank
+// LoginGuard
 // ===========================================================================
 
-uint16_t TimeBank::used(const char* user, uint32_t ip, uint32_t day) const {
-    for (const auto& e : slots_) {
-        if (e.day == day && e.ip == ip && sameUser(e.user, user)) return e.minutes;
+bool LoginGuard::locked(const char* handle, uint32_t now) {
+    for (auto& e : slots_) {
+        if (!e.until || !sameUser(e.handle, handle)) continue;
+        if (static_cast<int32_t>(now - e.until) < 0) return true;
+        e = Entry();                              // lock expired
     }
-    return 0;
+    return false;
 }
 
 // ---------------------------------------------------------------------------
-// add: same key accumulates; otherwise take an empty or stale-day slot
+// fail: count inside the window; reuse an empty or the oldest slot
 // ---------------------------------------------------------------------------
-void TimeBank::add(const char* user, uint32_t ip, uint32_t day, uint16_t minutes) {
-    Entry* free = nullptr;
+bool LoginGuard::fail(const char* handle, uint32_t now) {
+    Entry* slot   = nullptr;
+    Entry* spare  = nullptr;
     for (auto& e : slots_) {
-        if (e.day == day && e.ip == ip && sameUser(e.user, user)) {
-            uint32_t m = e.minutes + minutes;
-            e.minutes = static_cast<uint16_t>(m > 0xFFFF ? 0xFFFF : m);
-            return;
-        }
-        if (!free && e.day != day) free = &e;
+        if (e.handle[0] && sameUser(e.handle, handle)) { slot = &e; break; }
+        if (!e.handle[0]) { if (!spare) spare = &e; continue; }
+        if (!e.until && (!spare || (spare->handle[0] && e.firstFail < spare->firstFail))) spare = &e;
     }
-    if (!free) free = &slots_[0];                 // table full today: evict
-    *free = Entry();
-    strncpy(free->user, user, BBS_USER_MAX);
-    free->ip      = ip;
-    free->day     = day;
-    free->minutes = minutes;
+    if (!slot) {
+        slot = spare ? spare : &slots_[0];
+        *slot = Entry();
+        strncpy(slot->handle, handle, BBS_USER_MAX);
+    }
+    if (slot->until) return false;
+    if (!slot->fails || now - slot->firstFail > BBS_LOCK_WINDOW_MS) {
+        slot->fails     = 0;
+        slot->firstFail = now;
+    }
+    if (++slot->fails >= BBS_LOCK_FAILS) {
+        slot->until = now + BBS_LOCK_MS;
+        if (!slot->until) slot->until = 1;
+        return true;
+    }
+    return false;
+}
+
+void LoginGuard::clear(const char* handle) {
+    for (auto& e : slots_) {
+        if (e.handle[0] && sameUser(e.handle, handle)) e = Entry();
+    }
 }
 
 // ===========================================================================

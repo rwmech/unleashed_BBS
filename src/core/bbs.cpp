@@ -88,19 +88,6 @@ void setNonBlocking(int fd) {
     fcntl(fd, F_SETFL, fl | O_NONBLOCK);
 }
 
-// ---------------------------------------------------------------------------
-// validHandle: letters, digits, space - _ . ; must start alphanumeric.
-// Rejects terminal junk such as a leaked "[3;20R" cursor report.
-// ---------------------------------------------------------------------------
-bool validHandle(const char* p, size_t n) {
-    if (!n || !isalnum(static_cast<unsigned char>(p[0]))) return false;
-    for (size_t i = 0; i < n; ++i) {
-        unsigned char c = static_cast<unsigned char>(p[i]);
-        if (!isalnum(c) && c != ' ' && c != '-' && c != '_' && c != '.') return false;
-    }
-    return true;
-}
-
 } // namespace
 
 // ===========================================================================
@@ -191,7 +178,10 @@ void Bbs::tick() {
     FD_SET(lfd_, &rfds);
     for (Session* s : all_) {
         if (s->fd < 0) continue;
-        FD_SET(s->fd, &rfds);
+        // backpressure: leave input in the socket while earlier input waits
+        // or the output buffer is nearly full (a pasted burst must not
+        // overflow the Timeline and lose output)
+        if (!s->rxLen && s->tl.freeBytes() >= BBS_RX_ROOM) FD_SET(s->fd, &rfds);
         if (s->wantWrite) FD_SET(s->fd, &wfds);
         if (s->fd > maxfd) maxfd = s->fd;
     }
@@ -207,7 +197,8 @@ void Bbs::tick() {
     if (FD_ISSET(lfd_, &rfds)) acceptAll(now);
 
     for (Session* s : all_) {
-        if (s->fd >= 0 && FD_ISSET(s->fd, &rfds)) readSession(*s, now);
+        if (s->fd >= 0 && s->rxLen)                    processInput(*s, now);   // held from before
+        else if (s->fd >= 0 && FD_ISSET(s->fd, &rfds)) readSession(*s, now);
         if (s->st != SState::Free) serviceSession(*s, now);
     }
 
@@ -353,6 +344,8 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
     s.role          = role;
     s.wantWrite     = false;
     s.negotiated    = false;
+    s.rxLen         = 0;
+    s.rxPos         = 0;
     strncpy(s.ip, ip, sizeof(s.ip) - 1);
     s.ip[sizeof(s.ip) - 1] = '\0';
     s.ipAddr        = ipAddr;
@@ -387,6 +380,13 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
     s.countdown     = 0;
     s.nextTick      = 0;
 
+    s.passTries     = 0;
+    s.formKind      = FormKind::None;
+    s.confirm       = ConfirmKind::Logoff;
+    s.backToUsers   = false;
+    s.ulSel = s.ulTop = s.ulCount = 0;
+    s.origHandle[0] = s.pwA[0] = s.pwB[0] = s.pwC[0] = '\0';
+    s.edit          = UserRec();
     s.level         = Access::None;
     s.perms         = 0;
     s.dnd           = false;
@@ -441,8 +441,8 @@ void Bbs::closeSession(Session& s, const char* why, uint32_t now) {
         r.secs    = secs;
         calllog::append(r);
 
+        saveCallStats(s, now);
         if (s.role == Role::Caller) {
-            bank_.add(s.user, s.ipAddr, clk::dayKey(now), static_cast<uint16_t>((secs + 59u) / 60u));
             if (s.visible && !s.lurk) {             // hidden co-sysops leave quietly
                 char msg[BBS_USER_MAX + 32];
                 snprintf(msg, sizeof(msg), "*** %s left node %u", s.user, s.id);
@@ -514,15 +514,29 @@ void Bbs::readSession(Session& s, uint32_t now) {
 
     if (s.term.isAnsi() && s.tn.hasSize()) s.term.setGeometry(s.tn.cols(), s.tn.rows());
 
+    memcpy(s.rxBuf, data, m);
+    s.rxLen = static_cast<uint8_t>(m);
+    s.rxPos = 0;
+    processInput(s, now);
+}
+
+// ---------------------------------------------------------------------------
+// processInput: handle held input bytes while the Timeline has room; the
+// rest waits for the next pass (the socket is not read meanwhile)
+// ---------------------------------------------------------------------------
+void Bbs::processInput(Session& s, uint32_t now) {
     KeyCtx kc{ this, &s, now };
-    for (size_t i = 0; i < m; ++i) {
-        if (s.st == SState::Free) return;
+    while (s.rxPos < s.rxLen) {
+        if (s.st == SState::Free) { s.rxLen = s.rxPos = 0; return; }
+        if (s.st != SState::Detect && s.tl.freeBytes() < BBS_RX_ROOM) return;
+        uint8_t b = s.rxBuf[s.rxPos++];
         if (s.st == SState::Detect) {
-            if (s.det.feed(data[i], now, s.tl) == Detector::Result::Done) onDetected(s, now);
+            if (s.det.feed(b, now, s.tl) == Detector::Result::Done) onDetected(s, now);
             continue;
         }
-        s.term.feed(data[i], keyTramp, &kc);
+        s.term.feed(b, keyTramp, &kc);
     }
+    s.rxLen = s.rxPos = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -743,7 +757,8 @@ void Bbs::askName(Session& s) {
 }
 
 // ---------------------------------------------------------------------------
-// onHandle: validate, apply the daily limit, greet, bulletin, prompt
+// onHandle: validate, then password (existing account), register (new
+// handle, when self-registration is on), or refuse
 // ---------------------------------------------------------------------------
 void Bbs::onHandle(Session& s, uint32_t now) {
     Term& t = s.term;
@@ -760,21 +775,21 @@ void Bbs::onHandle(Session& s, uint32_t now) {
     memcpy(name, p, n);
     name[n] = '\0';
 
-    if (!validHandle(name, n)) {
-        t.color(tl, Color::LightRed);
-        t.text(tl, "Use letters, digits, space - _ .");
-        askName(s);
-        return;
-    }
     if (ieq(name, "SYSOP")) {
         t.color(tl, Color::LightRed);
         t.text(tl, "That handle is reserved.");
         askName(s);
         return;
     }
+    if (!users::validHandle(name)) {                 // also stops terminal junk like "[3;20R"
+        t.color(tl, Color::LightRed);
+        t.text(tl, "Use letters, digits, space - _ .");
+        askName(s);
+        return;
+    }
     memcpy(s.user, name, n + 1);
 
-    if (s.role == Role::Busy) {                  // busy line: no node, no services
+    if (s.role == Role::Busy) {                      // busy line: no node, no account
         t.color(tl, Color::Grey);
         t.text(tl, "All nodes are in use.");
         t.nl(tl);
@@ -783,7 +798,108 @@ void Bbs::onHandle(Session& s, uint32_t now) {
     }
 
     const SysConfig& cfg = syscfg::get();
-    s.dayUsedMin = bank_.used(s.user, s.ipAddr, clk::dayKey(now));
+    if (users::find(name, s.edit)) {
+        strncpy(s.user, s.edit.handle, BBS_USER_MAX);   // the account's own spelling
+        if (s.edit.locked) {
+            plat::log("bbs: node %u locked account '%s'", s.id, s.user);
+            hangup(s, "This account is locked. Ask the sysop.", now);
+            return;
+        }
+        if (logins_.locked(s.user, now)) {
+            hangup(s, "Too many wrong passwords. Try again later.", now);
+            return;
+        }
+        s.passTries = 0;
+        askPassword(s);
+        return;
+    }
+
+    if (!cfg.selfRegister) {
+        t.color(tl, Color::LightRed);
+        t.text(tl, "No account by that name.");
+        t.nl(tl);
+        t.color(tl, Color::Grey);
+        t.text(tl, "The sysop creates accounts here.");
+        askName(s);
+        return;
+    }
+    if (users::count() >= cfg.maxUsers) {
+        t.color(tl, Color::LightRed);
+        t.text(tl, "Sign-ups are closed: the BBS is full.");
+        askName(s);
+        return;
+    }
+
+    t.reset(tl);
+    t.nl(tl);
+    t.color(tl, Color::Yellow);
+    fx::typewriter(t, tl, "New handle. Register ", 12);
+    t.color(tl, Color::White);
+    t.text(tl, s.user);
+    t.color(tl, Color::Yellow);
+    t.text(tl, " (Y/n)? ");
+    s.st        = SState::AskRegister;
+    s.lastInput = plat::millis();
+}
+
+void Bbs::askPassword(Session& s) {
+    Term& t = s.term;
+    t.reset(s.tl);
+    t.nl(s.tl);
+    t.color(s.tl, Color::Cyan);
+    fx::typewriter(t, s.tl, "Password: ", 15);
+    t.color(s.tl, Color::White);
+    s.ed.begin(BBS_PASS_MAX, LineEditor::F_MASK);
+    s.st        = SState::AskPass;
+    s.lastInput = plat::millis();
+}
+
+// ---------------------------------------------------------------------------
+// onPassword: verify with a little theatre; three misses per call hang up,
+// five per handle in 15 minutes lock it (RAM only)
+// ---------------------------------------------------------------------------
+void Bbs::onPassword(Session& s, uint32_t now) {
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+
+    t.color(tl, Color::Grey);
+    fx::working(t, tl, "Verifying ", 650, "");
+    bool ok = users::checkPassword(s.edit, s.ed.text());
+    s.ed = LineEditor();                             // wipe the typed password
+
+    if (ok) {
+        logins_.clear(s.user);
+        t.color(tl, Color::LightGreen);
+        fx::scramble(t, tl, "ACCESS GRANTED", 10, 55);
+        t.nl(tl);
+        completeLogin(s, now);
+        return;
+    }
+
+    ++s.passTries;
+    bool lockedNow = logins_.fail(s.user, now);
+    plat::log("bbs: node %u wrong password for '%s' (%u)", s.id, s.user, s.passTries);
+    fx::lineNoise(t, tl, 14, 350);
+    t.color(tl, Color::LightRed);
+    fx::blink(t, tl, "ACCESS DENIED", 3, 140);
+    t.nl(tl);
+    if (lockedNow || s.passTries >= BBS_LOGIN_TRIES) {
+        hangup(s, "Too many wrong passwords.", now);
+        return;
+    }
+    askPassword(s);
+}
+
+// ---------------------------------------------------------------------------
+// completeLogin: daily limit, greeting, arrival notice, bulletin, prompt.
+// s.edit holds the account.
+// ---------------------------------------------------------------------------
+void Bbs::completeLogin(Session& s, uint32_t now) {
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+
+    const SysConfig& cfg = syscfg::get();
+    s.dayUsedMin = s.edit.dayKey == clk::dayKey(now) ? s.edit.dayMinutes : 0;
     if (cfg.dayMinutes && s.dayUsedMin >= cfg.dayMinutes) {
         plat::log("bbs: node %u '%s' over daily limit", s.id, s.user);
         hangup(s, "Daily time limit reached. Call back tomorrow.", now);
@@ -796,8 +912,9 @@ void Bbs::onHandle(Session& s, uint32_t now) {
     s.timeWarned = 0;
 
     char buf[64];
+    t.reset(tl);
     t.color(tl, Color::LightGreen);
-    t.text(tl, "Welcome, ");
+    fx::typewriter(t, tl, s.edit.calls ? "Welcome back, " : "Welcome, ", 18);
     t.color(tl, Color::Yellow);
     t.text(tl, s.user);
     t.color(tl, Color::LightGreen);
@@ -812,6 +929,13 @@ void Bbs::onHandle(Session& s, uint32_t now) {
         t.text(tl, buf);
     }
     t.nl(tl);
+    if (s.edit.calls) {
+        char when[20];
+        clk::fmtEpoch(when, sizeof(when), "%m/%d %H:%M", s.edit.lastCall);
+        snprintf(buf, sizeof(buf), "Call %u. Last call %s.", s.edit.calls + 1u, when);
+        t.text(tl, buf);
+        t.nl(tl);
+    }
 
     int32_t left = secondsLeft(s, now);
     if (left == INT32_MAX) snprintf(buf, sizeof(buf), "No time limit today.");
@@ -821,12 +945,36 @@ void Bbs::onHandle(Session& s, uint32_t now) {
     t.text(tl, "[H]ELP for commands.");
     t.nl(tl);
 
-    plat::log("bbs: node %u handle '%s'", s.id, s.user);
+    plat::log("bbs: node %u login '%s'", s.id, s.user);
 
     snprintf(buf, sizeof(buf), "*** %s is on node %u", s.user, s.id);
     noticeAll(s, buf);
 
     if (!playScreen(s, "bulletin")) prompt(s);
+}
+
+// ---------------------------------------------------------------------------
+// saveCallStats: at logoff, count the call and the day's minutes
+// ---------------------------------------------------------------------------
+void Bbs::saveCallStats(Session& s, uint32_t now) {
+    static UserRec u;                                // static: keeps it off the task stack
+    if (s.role == Role::Busy || !users::find(s.user, u)) return;
+    uint32_t mins = ((now - s.loginAt) / 1000u + 59u) / 60u;
+    uint32_t day  = clk::dayKey(now);
+    if (u.dayKey != day) { u.dayKey = day; u.dayMinutes = 0; }
+    if (s.role == Role::Caller && !can(s, PERM_NOLIMITS)) {
+        uint32_t total = u.dayMinutes + mins;
+        u.dayMinutes = static_cast<uint16_t>(total > 0xFFFF ? 0xFFFF : total);
+    }
+    if (u.calls < 0xFFFF) ++u.calls;
+    if (s.loginEpoch) u.lastCall = s.loginEpoch;
+    users::update(u.handle, u);
+}
+
+uint16_t Bbs::dayMinutesUsed(const char* handle, uint32_t now) {
+    static UserRec u;
+    if (!users::find(handle, u)) return 0;
+    return u.dayKey == clk::dayKey(now) ? u.dayMinutes : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -947,7 +1095,7 @@ void Bbs::checkTimers(Session& s, uint32_t now) {
         if (s.st == SState::BusyWait || s.guestUntil) return;   // countdown or login window rules
     }
 
-    bool     login   = s.st == SState::AskName;
+    bool     login   = s.st == SState::AskName || s.st == SState::AskPass || s.st == SState::AskRegister;
     uint32_t idleMin = syscfg::get().idleMinutes;           // 0 = shell never idles out
     if (!can(s, PERM_NOLIMITS) && (login || idleMin)) {
         uint32_t limit = login ? BBS_NAME_TIMEOUT_MS : idleMin * 60000u;
@@ -989,8 +1137,8 @@ void Bbs::checkTimers(Session& s, uint32_t now) {
 // canNotify: the session is sitting at a prompt with room to print
 // ---------------------------------------------------------------------------
 bool Bbs::canNotify(const Session& s) const {
-    bool atPrompt = s.st == SState::AskName || s.st == SState::More || s.st == SState::Confirm ||
-                    (s.st == SState::Shell && s.ed.active() && !s.scr.active());
+    bool atPrompt = s.st == SState::AskName || s.st == SState::AskPass || s.st == SState::More ||
+                    s.st == SState::Confirm || (s.st == SState::Shell && s.ed.active() && !s.scr.active());
     return atPrompt && s.tl.freeBytes() > 512 && s.tl.freeFrames() > 16;
 }
 
@@ -1014,6 +1162,13 @@ void Bbs::redrawInput(Session& s) {
             drawNamePrompt(s);
             s.ed.redraw(t, s.tl);
             break;
+        case SState::AskPass:
+            t.nl(s.tl);
+            t.color(s.tl, Color::Cyan);
+            t.text(s.tl, "Password: ");
+            t.color(s.tl, Color::White);
+            s.ed.redraw(t, s.tl);
+            break;
         case SState::Shell:
             drawPrompt(s);
             s.ed.redraw(t, s.tl);
@@ -1027,7 +1182,7 @@ void Bbs::redrawInput(Session& s) {
         case SState::Confirm:
             t.nl(s.tl);
             t.color(s.tl, Color::Yellow);
-            t.text(s.tl, kConfirmText);
+            t.text(s.tl, s.confirm == ConfirmKind::DeleteUser ? "Delete that account (y/N)? " : kConfirmText);
             t.color(s.tl, Color::White);
             break;
         default:
@@ -1259,6 +1414,38 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
             return;
         }
 
+        case SState::AskPass: {
+            if (!tl.empty()) tl.skipDelays();
+            LineEditor::Res r = s.ed.key(k, t, tl);
+            if (r == LineEditor::Res::Abort) { askName(s); return; }   // ESC: another handle
+            if (r == LineEditor::Res::Done)  onPassword(s, now);
+            return;
+        }
+
+        case SState::AskRegister:
+            if (!tl.empty()) tl.skipDelays();
+            if (k == 'y' || k == 'Y' || k == KEY_ENTER) {
+                t.ch(tl, 'Y');
+                startForm(s, FormKind::Signup, now);
+            } else if (k == 'n' || k == 'N' || k == KEY_ESC || k == KEY_BREAK) {
+                t.ch(tl, 'N');
+                askName(s);
+            }
+            return;
+
+        case SState::Form: {
+            if (!tl.empty()) tl.skipDelays();
+            Form::Res r = s.form.key(k, t, tl);
+            if (r == Form::Res::Save)   formSave(s, now);
+            if (r == Form::Res::Cancel) formCancel(s, now);
+            return;
+        }
+
+        case SState::UserList:
+            if (!tl.empty()) tl.skipDelays();
+            ulKey(s, k, now);
+            return;
+
         case SState::Shell: {
             if (s.scr.active()) {            // a screen is playing
                 if (isAbortKey(k)) abortOutput(s);
@@ -1323,6 +1510,25 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
         }
 
         case SState::Confirm:
+            if (s.confirm == ConfirmKind::DeleteUser) {      // default is No
+                bool yes = k == 'y' || k == 'Y';
+                if (!yes && k != 'n' && k != 'N' && k != KEY_ENTER && k != KEY_ESC && k != KEY_BREAK) return;
+                t.ch(tl, yes ? 'Y' : 'N');
+                t.nl(tl);
+                s.confirm = ConfirmKind::Logoff;
+                if (yes) {
+                    users::Result r = users::remove(s.origHandle);
+                    t.color(tl, r == users::Result::Ok ? Color::LightGreen : Color::LightRed);
+                    t.text(tl, r == users::Result::Ok ? "Account deleted." : "Could not delete that account.");
+                    if (r == users::Result::Ok) plat::log("bbs: %s deleted account '%s'", s.user, s.origHandle);
+                } else {
+                    t.color(tl, Color::Grey);
+                    t.text(tl, "Kept.");
+                }
+                if (s.backToUsers) { s.backToUsers = false; ulOpen(s); }
+                else               prompt(s);
+                return;
+            }
             if (k == 'y' || k == 'Y') {
                 t.ch(tl, 'Y');
                 t.nl(tl);

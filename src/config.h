@@ -16,7 +16,7 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "0.5.0"
+#define BBS_VERSION         "0.6.0"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // ---------------------------------------------------------------------------
@@ -49,7 +49,8 @@
 // ---------------------------------------------------------------------------
 // Session sizing (fixed, preallocated at boot, no heap after boot)
 // ---------------------------------------------------------------------------
-#define BBS_TL_BYTES        2048     // per-session timed output buffer
+#define BBS_TL_BYTES        3072     // per-session timed output buffer (a PETSCII form redraw is ~1.2 KB)
+#define BBS_RX_ROOM         1024     // a key is handled only with this much output room free
 #define BBS_TL_FRAMES       96       // per-session timed output frames
 #define BBS_RX_CHUNK        64       // bytes read per select pass
 #define BBS_LINE_MAX        72       // line editor capacity
@@ -91,7 +92,22 @@
 #define BBS_BAN_TRIES       3        // wrong sysop passwords per window
 #define BBS_BAN_WINDOW_MS   900000   // 15 minutes
 #define BBS_BAN_MS          900000   // 15 minutes
-#define BBS_TIMEBANK_SLOTS  16       // daily minutes, keyed by handle + IP until C2
+
+// ---------------------------------------------------------------------------
+// User accounts (users.txt on the storage partition, in the backup zip)
+// ---------------------------------------------------------------------------
+#define BBS_USERS_FILE      "users.txt"
+#define BBS_MAX_USERS       100      // system.cfg max_users; more needs the SD card plugin
+#define BBS_PROFILE_MAX     148      // 4 rows of 37 columns on a C64
+#define BBS_PASS_MIN        4
+#define BBS_PASS_MAX        32
+#define BBS_PASS_ROUNDS     1000     // salted SHA-256 repeated
+#define BBS_LOGIN_TRIES     3        // wrong passwords per call, then hang up
+#define BBS_LOCK_SLOTS      8        // handles tracked for lockout (RAM)
+#define BBS_LOCK_FAILS      5        // wrong passwords per handle in the window
+#define BBS_LOCK_WINDOW_MS  900000   // 15 minutes
+#define BBS_LOCK_MS         900000   // 15 minutes locked
+#define BBS_USERLIST_ROWS   24       // user manager rows buffered at once
 
 // ---------------------------------------------------------------------------
 // Scheduler / task

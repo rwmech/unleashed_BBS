@@ -57,6 +57,12 @@ who_refresh_max = 30
 # ESP32 dev boards; set -1 if your board has none there.
 activity_led_gpio = 2
 
+# User accounts (USERS.md). self_register = no: unknown handles are refused
+# and staff add accounts with USERS / USER ADD. max_users is 1..100; more
+# than 100 accounts needs the SD card plugin.
+self_register = yes
+max_users = 100
+
 # Staff access matrix. X = allowed, - = denied.
 # SYSOP always has everything; its column is there for reference.
 # Keep this section last: every line after [access] is a matrix row.
@@ -71,6 +77,7 @@ activity_led_gpio = 2
 #   HIDE       SHOW, HIDE, LURK
 #   NOLIMITS   no idle timeout, no call or daily limit
 #   DASH       DASH dashboard
+#   USERS      USERS manager, USER ADD/EDIT/DEL, private fields in INFO
 [access]
 # permission   SYSOP  CO1  CO2
 NODES          X      X    X
@@ -83,3 +90,4 @@ UNBAN          X      -    -
 HIDE           X      X    -
 NOLIMITS       X      X    X
 DASH           X      X    X
+USERS          X      X    -
