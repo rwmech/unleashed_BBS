@@ -37,7 +37,7 @@
 FILE(GLOB_RECURSE app_sources ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/*.c)
 
 set(app_requires esp_wifi esp_netif esp_event nvs_flash esp_timer esp_hw_support heap lwip
-                 esp_driver_gpio esp_rom)
+                 esp_driver_gpio esp_driver_uart esp_rom)
 if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../components/esp_littlefs")
     list(APPEND app_requires esp_littlefs)     # vendored fallback
 endif()

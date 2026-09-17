@@ -45,6 +45,14 @@ Staff can see the state of every plugin with `PLUGINS`:
 Disk free 612K, reserve 32K
 ```
 
+## What ships
+
+| Plugin | Purpose |
+|---|---|
+| `chat` | one chat room: everyone who joins sees every line, with a short history for late arrivals |
+| `serial` | shares a serial device: one operator with `write`, any number of watchers with `read` |
+| `example` | the template, and what the tests drive |
+
 ## Writing one
 
 A plugin is one static descriptor. Copy `src/plugins/example.cpp`, which exercises every part of the API, and add it to `src/plugins/registry.cpp`.

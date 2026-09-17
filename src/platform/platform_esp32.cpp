@@ -42,6 +42,7 @@
 #include "driver/gpio.h"
 #include "esp_wifi.h"
 #include "esp_littlefs.h"
+#include "driver/uart.h"
 extern "C" {
 #include "miniz.h"
 }
@@ -83,6 +84,87 @@ bool fsInfo(uint32_t& total, uint32_t& used) {
     used  = static_cast<uint32_t>(u);
     return true;
 }
+
+// ---------------------------------------------------------------------------
+// Device serial port on UART2 (UART0 stays the console and flashing port).
+// The ESP32 routes UART signals through the GPIO matrix, so any free pin
+// works, not just the default 16 and 17.
+// ---------------------------------------------------------------------------
+namespace {
+constexpr uart_port_t kDevUart = UART_NUM_2;
+bool     g_serialOpen = false;
+uint32_t g_framing    = 0;
+
+uart_word_length_t wordLen(uint8_t bits) {
+    switch (bits) {
+        case 5:  return UART_DATA_5_BITS;
+        case 6:  return UART_DATA_6_BITS;
+        case 7:  return UART_DATA_7_BITS;
+        default: return UART_DATA_8_BITS;
+    }
+}
+
+uart_parity_t parityOf(char p) {
+    if (p == 'E' || p == 'e') return UART_PARITY_EVEN;
+    if (p == 'O' || p == 'o') return UART_PARITY_ODD;
+    return UART_PARITY_DISABLE;
+}
+}   // namespace
+
+bool serialOpen(int rxPin, int txPin, uint32_t baud, uint8_t bits, char parity, uint8_t stop) {
+    if (g_serialOpen) serialClose();
+    uart_config_t cfg = {};
+    cfg.baud_rate = static_cast<int>(baud);
+    cfg.data_bits = wordLen(bits);
+    cfg.parity    = parityOf(parity);
+    cfg.stop_bits = stop == 2 ? UART_STOP_BITS_2 : UART_STOP_BITS_1;
+    cfg.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
+    cfg.source_clk = UART_SCLK_DEFAULT;
+    if (uart_driver_install(kDevUart, 2048, 512, 0, nullptr, 0) != ESP_OK) return false;
+    if (uart_param_config(kDevUart, &cfg) != ESP_OK ||
+        uart_set_pin(kDevUart, txPin, rxPin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE) != ESP_OK) {
+        uart_driver_delete(kDevUart);
+        return false;
+    }
+    g_serialOpen = true;
+    g_framing    = 0;
+    return true;
+}
+
+void serialClose() {
+    if (!g_serialOpen) return;
+    uart_driver_delete(kDevUart);
+    g_serialOpen = false;
+}
+
+bool serialIsOpen() { return g_serialOpen; }
+
+bool serialSetLine(uint32_t baud, uint8_t bits, char parity, uint8_t stop) {
+    if (!g_serialOpen) return false;
+    bool ok = uart_set_baudrate(kDevUart, baud) == ESP_OK;
+    ok = uart_set_word_length(kDevUart, wordLen(bits)) == ESP_OK && ok;
+    ok = uart_set_parity(kDevUart, parityOf(parity)) == ESP_OK && ok;
+    ok = uart_set_stop_bits(kDevUart, stop == 2 ? UART_STOP_BITS_2 : UART_STOP_BITS_1) == ESP_OK && ok;
+    g_framing = 0;
+    return ok;
+}
+
+size_t serialRead(uint8_t* buf, size_t cap) {
+    if (!g_serialOpen) return 0;
+    size_t waiting = 0;
+    if (uart_get_buffered_data_len(kDevUart, &waiting) != ESP_OK || !waiting) return 0;
+    if (waiting > cap) waiting = cap;
+    int n = uart_read_bytes(kDevUart, buf, waiting, 0);
+    return n > 0 ? static_cast<size_t>(n) : 0;
+}
+
+size_t serialWrite(const uint8_t* data, size_t n) {
+    if (!g_serialOpen) return 0;
+    int w = uart_write_bytes(kDevUart, reinterpret_cast<const char*>(data), n);
+    return w > 0 ? static_cast<size_t>(w) : 0;
+}
+
+uint32_t serialFramingErrors() { return g_framing; }
 
 int8_t wifiRssi() {
     wifi_ap_record_t ap;

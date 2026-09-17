@@ -56,7 +56,7 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
 
 Also done: busy line, paging (`[More]`), abort keys, command history, time limits (per call, per day), caller log (`LAST`), NTP + TZ, mDNS, backup window, config reload without reboot.
 
-## Current state (0.9.0, built, not flashed)
+## Current state (0.10.0, built, not flashed)
 
 - Host build: 226/226 scripted checks (`tools/testclient.py --backup`), also under ASan/UBSan. Layouts checked through a C64 screen model (in-place errors and passwords stay on one 40-column line, title bars 39 wide).
 - ESP32 0.7.0: image 923 KB (58.7% of the slot), static RAM 104 KB; session 5,688 bytes. No app warnings. Flashed by Rob.
@@ -65,7 +65,9 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
 - ESP32 0.8.0: image 928 KB (59.0% of the slot), static RAM 107 KB. No app warnings.
 - Measured on the board (0.8.0, C64 via TeensyROM, 1 node active): heap free 143,344, heap min since boot 118,268, largest block 110,592, session 5,596 bytes x 8. Sessions are static, so extra callers barely touch the heap; the gap between free and min is transient (screens, backup staging, Wi-Fi). This is the budget plugins are sized against.
 - Verified on the board: the [R]egister / [G]uest / [N]ew handle prompt, N returning to the handle prompt, in-place ACCESS GRANTED, and the MEM title bar.
-- Host build: 252/252 scripted checks, also under ASan/UBSan.
+- Host build: 272/272 scripted checks, also under ASan/UBSan.
+- ESP32 0.10.0: image 966 KB (61.4% of the slot), static RAM 109 KB. No app warnings.
+- 0.10.0 ships the first two plugins. chat: one room, DDial style, the plugin owns each joined session and drives the ordinary line editor, so backspace and the terminal drivers behave as usual; incoming lines print above the caller's half-typed line, which is then redrawn; a short history (8 lines) replays to whoever joins; /w lists, /q or ESC leaves. serial: the device sits on UART2 (never the console, so flashing and the monitor keep working), pins/baud/format come from its config section and can be changed live with SERIAL SET; one operator holds the keyboard (write level, T takes a free seat) while any number of watchers with read see the same stream; a watcher whose output buffer is full is told how many bytes it skipped rather than stalling the device; 1 KB of scrollback replays on join. `plat::serial*` is the new platform call; the host build loops back (or opens BBS_SERIAL_DEV) so both are testable off the board.
 - 0.9.0 is the plugin API (C5). A plugin is a static descriptor (name, version, needs, hooks, commands) in `src/plugins/`, listed in `registry.cpp`, switched on in its own `[plugin:name]` section. Levels are read/write/admin against the ladder all|users|staff|co2|co1|sysop, with commands tagged `CF_READ`/`CF_WRITE`/`CF_ADMIN` (untagged counts as write, fail shut). Hooks: start, stop, tick (250 ms), onConnect, onLogin, onLogoff, onKey. A plugin can own a session (`Bbs::own`/`release`, `SState::Plugin`), which pauses the idle clock but not the call limit; that is what the serial bridge and doors will use. Each plugin gets `<fs>/p/<name>/` (PF_CORE only; PF_SD plugins are refused until the SD card lands) and the core keeps `BBS_FS_RESERVE` free. `plat::fsInfo` reports free space, shown in MEM, DASH and PLUGINS. Config keys must sit above the first section.
 - 0.8.0 is the code-review build: staff rank flags plus every fix from the three-part review of the 0.6.0/0.7.0 accounts work. Fixed: a failed users.txt write no longer deletes accounts; an unreadable users.txt is never treated as empty (`users::lookup`); the per-handle lockout no longer evicts a live counter and the per-call try count is not reset by ESC; PROFILE and USER EDIT write onto a freshly read record; the password prompt re-reads the account (lock, reset or delete while typing now counts); read-only form fields cannot be typed into and sign-up re-checks the handle; a handle held by a caller mid sign-up counts as taken; held input no longer turns a cursor key into ESC; `BBS_RX_ROOM` is 1700 so a redraw is never cut; sign-up forms get their own 2/3 minute timeout and warnings on the status line; typed passwords are wiped at hangup; the refresh footer is clamped to the row width; users.txt values keep their spaces, over-long values and bad hashes are refused with a line number, unknown keys warn instead of rejecting; the backup download streams a snapshot of users.txt; users.txt may be up to 160 KB in the zip and is checked against the uploaded max_users.
 - Verified on hardware at 0.7.0 (Rob): registration works, guest login works, DASH shows Wi-Fi RSSI and it follows the signal.
@@ -98,11 +100,13 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
 
 0.8.0: code-review fixes and staff rank markers. Flashed and verified on the board.
 
-0.9.0: plugin API, example plugin, ABOUT screen, PLUGINS command, free-space reporting. Built, waiting for Rob to flash.
+0.9.0: plugin API, example plugin, ABOUT screen, PLUGINS command, free-space reporting. Flashed by Rob.
 
-Next, in order (Rob's plan): 0.10.0 serial bridge (one operator holding write, any number of watchers holding read, scrollback, live baud changes, autoprobe as a stretch, hardware UART2 on configurable pins, default 16/17 at 115200), 0.11.0 XMODEM/YMODEM plus the SD file plugin, 0.12.0 GPIO with a named point table and a dashboard. Chat is a plugin too, shipped enabled, so a log-viewer board can leave it out. HA is parked (its TLS was the only real RAM risk). Lua stays the drop-in path for doors.
+0.10.0: chat and serial bridge plugins. Built, waiting for Rob to flash.
 
-Needed from Rob before the serial build: the UART pins and what is wired to them (3.3V TTL or RS-232 through a level shifter), default speed and format, whether flow control is used, and whether the operator seat is staff-only or first come.
+Next, in order (Rob's plan): 0.11.0 XMODEM/YMODEM plus the SD file plugin, 0.12.0 GPIO with a named point table and a dashboard. Then the deployment work: zones, maintenance mode, OTA, watchdog. HA is parked (its TLS was the only real RAM risk). Lua stays the drop-in path for doors, one door at a time.
+
+Still open on serial: autoprobe (listen at each common speed and score framing errors, a stretch goal), capture to file for later download, and hardware flow control (rts/cts keys exist in the config but the driver is set to no flow control). Rob has not yet said what is wired to the port.
 
 Queued for the next build: nothing yet.
 

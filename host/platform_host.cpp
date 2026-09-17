@@ -45,6 +45,8 @@
 #include <string>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <zlib.h>
 
 namespace {
@@ -110,6 +112,73 @@ uint32_t dirBytes(const std::string& dir) {
     return total;
 }
 }   // namespace
+
+// ---------------------------------------------------------------------------
+// Device serial port on the host. BBS_SERIAL_DEV points at a real port or
+// a pty for live testing; without it the port is a loopback, so what the
+// operator types comes back as if a device echoed it. That is enough to
+// drive the bridge, its watchers and the tests.
+// ---------------------------------------------------------------------------
+namespace {
+bool     g_serOpen = false;
+int      g_serFd   = -1;
+uint8_t  g_loop[512];
+size_t   g_loopLen = 0;
+}   // namespace
+
+bool serialOpen(int rxPin, int txPin, uint32_t baud, uint8_t bits, char parity, uint8_t stop) {
+    (void)rxPin; (void)txPin; (void)baud; (void)bits; (void)parity; (void)stop;
+    if (g_serOpen) serialClose();
+    const char* dev = getenv("BBS_SERIAL_DEV");
+    if (dev && *dev) {
+        g_serFd = open(dev, O_RDWR | O_NOCTTY | O_NONBLOCK);
+        if (g_serFd < 0) return false;
+    }
+    g_loopLen = 0;
+    g_serOpen = true;
+    return true;
+}
+
+void serialClose() {
+    if (g_serFd >= 0) { close(g_serFd); g_serFd = -1; }
+    g_serOpen = false;
+    g_loopLen = 0;
+}
+
+bool serialIsOpen() { return g_serOpen; }
+
+bool serialSetLine(uint32_t baud, uint8_t bits, char parity, uint8_t stop) {
+    (void)baud; (void)bits; (void)parity; (void)stop;
+    return g_serOpen;
+}
+
+size_t serialRead(uint8_t* buf, size_t cap) {
+    if (!g_serOpen) return 0;
+    if (g_serFd >= 0) {
+        ssize_t n = read(g_serFd, buf, cap);
+        return n > 0 ? static_cast<size_t>(n) : 0;
+    }
+    size_t n = g_loopLen < cap ? g_loopLen : cap;
+    memcpy(buf, g_loop, n);
+    memmove(g_loop, g_loop + n, g_loopLen - n);
+    g_loopLen -= n;
+    return n;
+}
+
+size_t serialWrite(const uint8_t* data, size_t n) {
+    if (!g_serOpen) return 0;
+    if (g_serFd >= 0) {
+        ssize_t w = write(g_serFd, data, n);
+        return w > 0 ? static_cast<size_t>(w) : 0;
+    }
+    size_t room = sizeof(g_loop) - g_loopLen;                // loopback: it comes back
+    if (n > room) n = room;
+    memcpy(g_loop + g_loopLen, data, n);
+    g_loopLen += n;
+    return n;
+}
+
+uint32_t serialFramingErrors() { return 0; }
 
 bool fsInfo(uint32_t& total, uint32_t& used) {
     total = 768u * 1024u;                            // the board's storage partition

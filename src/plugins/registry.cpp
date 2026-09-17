@@ -37,9 +37,13 @@
 #include "registry.h"
 
 extern const Plugin kExamplePlugin;
+extern const Plugin kChatPlugin;
+extern const Plugin kSerialPlugin;
 
 const Plugin* const kPlugins[] = {
     &kExamplePlugin,
+    &kChatPlugin,
+    &kSerialPlugin,
 };
 
 const uint8_t kPluginCount = sizeof(kPlugins) / sizeof(kPlugins[0]);

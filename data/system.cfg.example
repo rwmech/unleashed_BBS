@@ -83,6 +83,27 @@ write = staff
 admin = sysop
 greeting = hello
 
+# One chat room, DDial style. write = all lets guests talk too.
+[plugin:chat]
+enabled = yes
+read  = all
+write = all
+admin = sysop
+room = Main
+
+# Share a serial device: one operator types, everyone else watches.
+# Uses the second UART, never the console, so flashing still works.
+# Pins 6-11 (flash) and 1/3 (console) are refused; tx cannot be 34-39.
+[plugin:serial]
+enabled = no
+read  = all
+write = staff
+admin = sysop
+rx = 16
+tx = 17
+baud = 115200
+format = 8N1
+
 # Staff access matrix. X = allowed, - = denied.
 # SYSOP always has everything; its column is there for reference.
 # Keep this section last: every line after [access] is a matrix row.

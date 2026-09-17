@@ -13,7 +13,7 @@ source. See the LICENSE file for terms.
 
 # µnleashed BBS: command reference
 
-Version 0.9.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
+Version 0.10.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
 
 ## Calling in
 
@@ -95,6 +95,8 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | `TIME` | | Date and time, minutes online, minutes left. |
 | `LAST` | | The last 50 calls, newest first. |
 | `ABOUT` | | What this BBS is, its version and its license. Plays `screens/about.*`, so a sysop can rewrite it. |
+| `CHAT` | | Join the chat room (the `chat` plugin). Everything you type goes to everyone in the room. `/w` lists who is there, `/q` or ESC leaves. |
+| `SERIAL` | | Watch the serial device (the `serial` plugin). `T` takes the keyboard if you are allowed and it is free, ESC leaves. `SERIAL STATUS` prints the port, `SERIAL SET 9600 8N1` changes the line. |
 | `INFO [handle]` | `I` | An account: name, member since, last call, calls, profile. Email, address and phone only on your own account (or with `USERS`). |
 | `PROFILE` | | Form to change your name, email, address, phone and profile. Not for guests. |
 | `PASSWORD` | | Form: current password, then the new one twice. Not for guests. |
@@ -253,6 +255,15 @@ Keys must appear above the first `[section]` line. Sections are `[access]` for t
 
 ### Plugins
 
+Two plugins ship with the firmware:
+
+| Plugin | What it does | Defaults |
+|---|---|---|
+| `chat` | one chat room, DDial style, with a few lines of history for whoever joins | `read = all`, `write = all` |
+| `serial` | shares a serial device: one operator types, any number watch | `read = all`, `write = staff` |
+
+Turn either off and it costs nothing: no commands, no hooks, no memory. The `example` plugin is the template for writing your own ([PLUGINS.md](PLUGINS.md)).
+
 Each plugin reads its own section:
 
 ```
@@ -268,6 +279,25 @@ greeting = howdy     ; the plugin's own keys
 - Commands you may not run are hidden from HELP and answer as unknown.
 - A plugin that is off contributes nothing: no commands, no hooks, no memory.
 - `PLUGINS` shows what is compiled in and what is running.
+
+The serial bridge adds its own keys:
+
+```
+[plugin:serial]
+enabled = yes
+read  = all         ; who may watch
+write = staff       ; who may hold the keyboard and change the line
+admin = sysop
+rx = 16             ; UART2 defaults on a WROOM-32E; any free pin works
+tx = 17
+baud = 115200
+format = 8N1
+```
+
+- It uses the second UART, never the console, so flashing and `pio device monitor` keep working.
+- Pins 6 to 11 (flash), 1 and 3 (console) are refused, and a transmit pin must not be 34 to 39, which are input only.
+- One operator at a time. Watchers see the same stream, and a terminal that cannot keep up is told how much it skipped instead of holding up the device.
+- While you are in the serial session or the chat room, the idle timeout pauses; your call time limit still counts.
 
 A value out of range is logged and the default is kept. An upload with a bad value is rejected, so it never replaces a working config.
 

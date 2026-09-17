@@ -967,6 +967,89 @@ def test_about():
     return ok
 
 
+def test_chat():
+    print("Chat room")
+    a = ansi_login("Chatty")
+    b = ansi_login("Listener")
+    a.buf.clear()
+    b.buf.clear()
+    a.send(b"chat\r")
+    ok = check("CHAT joins the room", a.wait_for(b"Main: 1 here", 4))
+    b.send(b"chat\r")
+    ok &= check("a second caller joins", b.wait_for(b"Main: 2 here", 4))
+    ok &= check("the room is told who arrived", a.wait_for(b"*** Listener joined", 4))
+    a.buf.clear()
+    b.buf.clear()
+    a.send(b"hello room\r")
+    ok &= check("what one types, the others see", b.wait_for(b"Chatty: hello room", 4))
+    ok &= check("and the typist keeps their line", b.wait_for(b"> ", 3))
+    b.buf.clear()
+    b.send(b"/w\r")
+    ok &= check("/w lists the room", b.wait_for(b"Chatty", 4) and b.wait_for(b"(you)", 3)
+                and b.wait_for(b"2 in Main", 3))
+    b.buf.clear()
+    a.send(b"/q\r")
+    ok &= check("/q leaves the room", a.wait_for(b"Main", 4))
+    ok &= check("the room hears the exit", b.wait_for(b"*** Chatty left the room", 4))
+
+    c = ansi_login("Latecomer")
+    c.buf.clear()
+    c.send(b"chat\r")
+    ok &= check("a joiner sees the recent lines", c.wait_for(b"Chatty: hello room", 4))
+    c.send(b"\x1b")
+    ok &= check("ESC leaves too", c.wait_for(b"Main", 4))
+    for x in (a, b, c):
+        x.close()
+    return ok
+
+
+def test_serial():
+    print("Serial bridge: one operator, many watchers")
+    w = ansi_login("Watcher")
+    w.buf.clear()
+    w.send(b"serial\r")
+    ok = check("a caller with read joins as a watcher", w.wait_for(b"Port open 115200 8N1", 5))
+    ok &= check("and is told the keyboard is not theirs", w.wait_for(b"Watching. T takes the keyboard", 3))
+    w.buf.clear()
+    w.send(b"T")
+    ok &= check("a watcher cannot take the keyboard", w.wait_for(b"You may watch, not drive.", 3))
+
+    if not PASSWORD:
+        w.close()
+        return ok
+    s = ansi_login("Rob")
+    s.buf.clear()
+    s.send(f"bye {PASSWORD}\r".encode())
+    s.wait_for(b"Sysop node.", 5)
+    s.buf.clear()
+    s.send(b"serial\r")
+    ok &= check("staff join and take the keyboard", s.wait_for(b"You have the keyboard", 5))
+    w.buf.clear()
+    s.buf.clear()
+    s.send(b"AT\r")                                   # the host port loops back
+    ok &= check("the operator's typing reaches the device and comes back",
+                s.wait_for(b"AT", 4))
+    ok &= check("watchers see the same stream", w.wait_for(b"AT", 4))
+    s.buf.clear()
+    s.send(b"\x1b")
+    ok &= check("ESC leaves the session", s.wait_for(b"Left the serial session.", 4))
+    s.buf.clear()
+    s.send(b"serial set 9600 8N1\r")
+    ok &= check("staff change the line speed", s.wait_for(b"Port open 9600 8N1", 4))
+    w.buf.clear()
+    w.send(b"\x1b")
+    w.wait_for(b"Main", 4)
+    w.buf.clear()
+    w.send(b"serial set 2400\r")
+    ok &= check("a watcher cannot change the speed", w.wait_for(b"You may watch, not drive.", 4))
+    s.buf.clear()
+    s.send(b"serial status\r")
+    ok &= check("SERIAL STATUS reports the port", s.wait_for(b"Port open 9600", 4) and b"rx " in s.buf)
+    s.close()
+    w.close()
+    return ok
+
+
 def test_idle_login():
     print("Handle prompt idle warning (31 s)")
     c = Caller(ansi=True)
@@ -1255,7 +1338,8 @@ def test_ban():
 if __name__ == "__main__":
     results = [test_ansi(), test_telnet_first(), test_petscii(), test_ascii(),
                test_page(), test_sysop(), test_cosysop(), test_accounts(), test_user_admin(), test_guest(),
-               test_plugins(), test_about(), test_bulletin(), test_idle_login(), test_busy()]
+               test_plugins(), test_about(), test_chat(), test_serial(),
+               test_bulletin(), test_idle_login(), test_busy()]
     if "--backup" in FLAGS:
         results.append(test_backup())
     if "--ban" in FLAGS:

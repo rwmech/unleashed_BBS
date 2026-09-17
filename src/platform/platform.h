@@ -89,6 +89,24 @@ int8_t wifiRssi();
 bool fsInfo(uint32_t& total, uint32_t& used);
 
 // ---------------------------------------------------------------------------
+// Device serial port (the serial bridge plugin). This is the second UART,
+// never the console: flashing and the monitor keep working while a caller
+// is driving the device. On the host build it is a loopback (or a real
+// device when BBS_SERIAL_DEV names one), so the bridge can be tested off
+// the board.
+//
+// serialOpen returns false when the pins are unusable or the port is busy.
+// serialRead never blocks and returns the bytes it had.
+// ---------------------------------------------------------------------------
+bool   serialOpen(int rxPin, int txPin, uint32_t baud, uint8_t bits, char parity, uint8_t stop);
+void   serialClose();
+bool   serialIsOpen();
+bool   serialSetLine(uint32_t baud, uint8_t bits, char parity, uint8_t stop);
+size_t serialRead(uint8_t* buf, size_t cap);
+size_t serialWrite(const uint8_t* data, size_t n);
+uint32_t serialFramingErrors();      // wrong speed shows up here (autoprobe)
+
+// ---------------------------------------------------------------------------
 // log: printf-style line to the console (UART on ESP32, stdout on host)
 // ---------------------------------------------------------------------------
 void log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
