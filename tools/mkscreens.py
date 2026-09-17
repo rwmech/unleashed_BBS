@@ -1,26 +1,59 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """
-File:        tools/mkscreens.py
-Description: Generates the stock µnleashed BBS display files in data/screens/:
-             welcome.seq/.ans/.asc, busy.seq/.ans/.asc,
-             goodbye.seq/.ans/.asc. No bulletin ships: add
-             bulletin.asc/.ans/.seq to show one after login.
-             Hand-drawn art from PETSCII/ANSI editors can replace any of
-             these; the BBS only cares about the file name and extension.
-             HELP is generated from the command table, so no help screen ships.
+===========================================================================
+ µnleashed BBS
+ Electronic freedom on a microcontroller.
+===========================================================================
 
-             Layout rules: PETSCII and ASCII lines stay under 40 columns
-             (a 40th character auto-wraps on a C64). ANSI art is 80 columns.
-             @BBS@ prints the name with a real µ on ANSI and "u" elsewhere.
-Listing:     COMPLETE FILE
-Libraries:   Python 3 standard library only
-Usage:       python3 tools/mkscreens.py
+File:         tools/mkscreens.py
+Module:       Tools / stock screen generator
+
+Purpose:      Generates the stock µnleashed BBS display files in data/screens/:
+                 welcome.seq/.ans/.asc, busy.seq/.ans/.asc,
+                 goodbye.seq/.ans/.asc. No bulletin ships: add
+                 bulletin.asc/.ans/.seq to show one after login.
+                 Hand-drawn art from PETSCII/ANSI editors can replace any of
+                 these; the BBS only cares about the file name and extension.
+                 HELP is generated from the command table, so no help screen ships.
+
+                 Layout rules: PETSCII and ASCII lines stay under 40 columns
+                 (a 40th character auto-wraps on a C64). ANSI art is 80 columns.
+                 @BBS@ prints the name with a real µ on ANSI and "u" elsewhere.
+
+Usage:        python3 tools/mkscreens.py
+
+Libraries:    Python 3 standard library only
+Targets:      developer PC, Python 3
+See also:     SCREENS.md
+
+Copyright 2026 - Robert Mech
+License:      GNU General Public License v2 or later
+SPDX-License-Identifier: GPL-2.0-or-later
+
+This program is free software; you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the
+Free Software Foundation; either version 2 of the License, or (at your
+option) any later version.
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, see <https://www.gnu.org/licenses/>. The full
+text is in the LICENSE file at the top of this repository.
+===========================================================================
 """
+
 from pathlib import Path
 
 OUT = Path(__file__).resolve().parent.parent / "data" / "screens"
 
 TAGLINE = "No web. No cloud. No browser."
+COPY40 = "(C) 2026 Robert Mech  GPLv2+"          # fits a 40-column C64 line
+COPY80 = "(C) 2026 Robert Mech. Free software under the GPL, v2 or later."
 MOTTO = "E L E C T R O N I C   F R E E D O M"
 
 # --------------------------------------------------------------------------
@@ -170,6 +203,7 @@ def make_welcome_ans():
     b += (b"    " + sgr("1;36") + bytes([BULLET]) + b" " + sgr("1;37") + b"@BBS@" + sgr("0;37")
           + b" v@VER@  " + sgr("0;36") + b"a BBS that lives on a microcontroller\r\n")
     b += sgr("0;34") + b"  " + bytes([H_DOUBLE]) * 76 + b"\r\n"
+    b += sgr("1;30") + b" " * ((80 - len(COPY80)) // 2) + COPY80.encode() + b"\r\n"
     b += sgr("0;37") + b"    Connecting you @SPIN:900@" + sgr("1;32") + b"unleashed" + sgr("0") + b"\r\n"
     return bytes(b)
 
@@ -191,6 +225,7 @@ def make_welcome_seq():
              "lgreen", "   ", "yellow", "@TERM@\n")
     s += pet("lgreen", " ", "yellow", "@DATE@ @TIME@\n")
     s += pet("white", " @BBS@", "grey", " v@VER@\n")
+    s += pet("grey", " " + COPY40 + "\n")
     s += pet_rule("cyan")
     s += pet("grey", " Connecting you @SPIN:900@", "lgreen", "unleashed\n")
     return bytes(s)
@@ -210,6 +245,7 @@ def make_welcome_asc():
         " Node @NODE@ of @NODES@   Term @TERM@",
         " @DATE@ @TIME@",
         " @BBS@ v@VER@",
+        " " + COPY40,
         "-" * 38,
         " Connecting you @SPIN:900@unleashed",
         "",
@@ -274,6 +310,7 @@ GOODBYE_ASC = """--------------------------------------
 Stay unleashed, @USER@.
 @BBS@ node @NODE@ is free again.
 @DATE@ @TIME@@DELAY:400@
+(C) 2026 Robert Mech  GPLv2+
 """
 
 
@@ -282,7 +319,8 @@ def make_goodbye_ans():
     b += sgr("0;34") + bytes([H_DOUBLE]) * 60 + b"\r\n"
     b += sgr("1;36") + b"Stay unleashed, " + sgr("1;33") + b"@USER@" + sgr("1;36") + b".\r\n"
     b += sgr("1;37") + b"@BBS@" + sgr("0;36") + b" node @NODE@ is free again.\r\n"
-    b += sgr("0;37") + b"@DATE@ @TIME@@DELAY:400@" + sgr("0") + b"\r\n"
+    b += sgr("0;37") + b"@DATE@ @TIME@@DELAY:400@\r\n"
+    b += sgr("1;30") + COPY80.encode() + sgr("0") + b"\r\n"
     return bytes(b)
 
 
@@ -292,6 +330,7 @@ def make_goodbye_seq():
     s += pet("cyan", "Stay unleashed, ", "yellow", "@USER@", "cyan", ".\n")
     s += pet("white", "@BBS@", "grey", " node @NODE@ is free again.\n")
     s += pet("grey", "@DATE@ @TIME@@DELAY:400@\n")
+    s += pet("grey", COPY40 + "\n")
     return bytes(s)
 
 

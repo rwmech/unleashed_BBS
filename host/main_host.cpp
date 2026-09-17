@@ -1,12 +1,42 @@
 /*
- * File:        host/main_host.cpp
- * Description: Linux host entry point. Runs the same BBS core as the
- *              ESP32 so screens, detection and effects can be tried with
- *              SyncTERM, a terminal emulator, or VICE + a TCP modem bridge.
- *              Usage: ./bbs_host [data_dir] [port]
- * Listing:     COMPLETE FILE
- * Libraries:   libc
+ * ===========================================================================
+ *  µnleashed BBS
+ *  Electronic freedom on a microcontroller.
+ * ===========================================================================
+ *
+ * File:         host/main_host.cpp
+ * Module:       Host test build entry point
+ *
+ * Purpose:      Linux host entry point. Runs the same BBS core as the
+ *                  ESP32 so screens, detection and effects can be tried with
+ *                  SyncTERM, a terminal emulator, or VICE + a TCP modem bridge.
+ *
+ * Usage:        ./bbs_host [data_dir] [port]
+ *
+ * Libraries:    libc
+ * Targets:      Linux host test build
+ * See also:     README.md
+ *
+ * Copyright 2026 - Robert Mech
+ * License:      GNU General Public License v2 or later
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * text is in the LICENSE file at the top of this repository.
+ * ===========================================================================
  */
+
 #include "core/bbs.h"
 #include "core/sysconfig.h"
 #include "platform/platform.h"

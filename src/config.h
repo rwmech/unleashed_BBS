@@ -1,13 +1,48 @@
 /*
- * File:        src/config.h
- * Description: Compile-time configuration for the µnleashed BBS core.
- *              Every sizing decision for the WROOM-32E reference target
- *              lives here so plugins and ports can override in one place.
- *              Run-time settings (timezone, NTP, sysop password, time
- *              limits) live in data/system.cfg, see sysconfig.h.
- * Listing:     COMPLETE FILE
- * Libraries:   none
+ * ===========================================================================
+ *  µnleashed BBS
+ *  Electronic freedom on a microcontroller.
+ * ===========================================================================
+ *
+ * File:         src/config.h
+ * Module:       Core / build-time configuration
+ *
+ * Purpose:      Compile-time configuration for the µnleashed BBS core.
+ *                  Every sizing decision for the WROOM-32E reference target
+ *                  lives here so plugins and ports can override in one place.
+ *                  Run-time settings (timezone, NTP, sysop password, time
+ *                  limits) live in data/system.cfg, see sysconfig.h.
+ *
+ * Design:       One place for every sizing and timing decision, so a port or a plugin can
+ *               see the cost of the core at a glance.
+ *
+ * Notes:        Run-time settings live in data/system.cfg (see sysconfig.h); changing a
+ *               value here needs a rebuild.
+ *
+ * Libraries:    none
+ * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
+ * See also:     README.md
+ *
+ * Copyright 2026 - Robert Mech
+ * License:      GNU General Public License v2 or later
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * text is in the LICENSE file at the top of this repository.
+ * ===========================================================================
  */
+
 #pragma once
 
 // ---------------------------------------------------------------------------

@@ -1,22 +1,51 @@
 /*
- * File:        src/core/backup.h
- * Description: The backup window. A button press (while the sysop is on
- *              the sysop node) opens a plain HTTP listener for
- *              backup_window_minutes. It runs inside the BBS select loop:
- *              no extra task, one client at a time, no heap except the
- *              temporary inflate buffers during an upload.
+ * ===========================================================================
+ *  µnleashed BBS
+ *  Electronic freedom on a microcontroller.
+ * ===========================================================================
  *
- *   GET  /              short text help
- *   GET  /backup.zip    the archive (see ziparc.h), no confirmation
- *   PUT  /restore       upload a zip (POST works too). It is staged and
- *                       checked, the sysop answers Y/N on the console, and
- *                       the reply tells curl what happened.
+ * File:         src/core/backup.h
+ * Module:       Core / backup window
  *
- *   Everything the sysop should see is queued as a Note; the BBS delivers
- *   notes and runs the Y/N prompt.
- * Listing:     COMPLETE FILE
- * Libraries:   BSD sockets (lwIP on ESP32)
+ * Purpose:      The backup window. A button press (while the sysop is on
+ *                  the sysop node) opens a plain HTTP listener for
+ *                  backup_window_minutes. It runs inside the BBS select loop:
+ *                  no extra task, one client at a time, no heap except the
+ *                  temporary inflate buffers during an upload.
+ *
+ *                  GET  /              short text help
+ *                  GET  /backup.zip    the archive (see ziparc.h), no confirmation
+ *                  PUT  /restore       upload a zip (POST works too). It is staged and
+ *                           checked, the sysop answers Y/N on the console, and
+ *                           the reply tells curl what happened.
+ *
+ *                  Everything the sysop should see is queued as a Note; the BBS delivers
+ *                  notes and runs the Y/N prompt.
+ *
+ * Libraries:    BSD sockets (lwIP on ESP32)
+ * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
+ * See also:     BACKUP.md
+ *
+ * Copyright 2026 - Robert Mech
+ * License:      GNU General Public License v2 or later
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * text is in the LICENSE file at the top of this repository.
+ * ===========================================================================
  */
+
 #pragma once
 #include <cstdint>
 #include <cstddef>

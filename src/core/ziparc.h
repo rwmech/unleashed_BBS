@@ -1,29 +1,58 @@
 /*
- * File:        src/core/ziparc.h
- * Description: The backup archive. Everything that matters lives in the
- *              storage filesystem and travels as one .zip:
- *                system.cfg          passwords written as *** on download
- *                users.txt           accounts (password hashes, not passwords)
- *                screens/<name>.<ext>
- *                MANIFEST.txt        informational, ignored on upload
- *              Logs live on their own partition and never enter the zip.
+ * ===========================================================================
+ *  µnleashed BBS
+ *  Electronic freedom on a microcontroller.
+ * ===========================================================================
  *
- *   ZipExport  streams a stored (uncompressed) zip without buffering it:
- *              scan() sizes every entry and computes CRCs, produce() is
- *              called until it returns 0.
- *   ZipImport  takes an uploaded zip (stored or deflated), validates it
- *              against the allow-list and limits, extracts accepted files
- *              into <fs>/.staging one per step(), then apply() swaps them
- *              in (or discard() throws them away).
+ * File:         src/core/ziparc.h
+ * Module:       Core / backup archive
  *
- *   Upload rules (see SCREENS.md): system.cfg and screens/<a-z0-9_-, 1..8>
- *   .asc .ans .seq .p40 .p80 only; one file <= BBS_ZIP_FILE_MAX; at most
- *   BBS_ZIP_MAX_FILES files and BBS_ZIP_TOTAL_MAX bytes unpacked. A single
- *   top-level folder (from re-zipping an unpacked folder) is stripped.
- *   When the upload carries screens, the live screens directory mirrors it.
- * Listing:     COMPLETE FILE
- * Libraries:   none (libc stdio, dirent)
+ * Purpose:      The backup archive. Everything that matters lives in the
+ *                  storage filesystem and travels as one .zip:
+ *                    system.cfg          passwords written as *** on download
+ *                    users.txt           accounts (password hashes, not passwords)
+ *                    screens/<name>.<ext>
+ *                    MANIFEST.txt        informational, ignored on upload
+ *                  Logs live on their own partition and never enter the zip.
+ *
+ *                  ZipExport  streams a stored (uncompressed) zip without buffering it:
+ *                  scan() sizes every entry and computes CRCs, produce() is
+ *                  called until it returns 0.
+ *                  ZipImport  takes an uploaded zip (stored or deflated), validates it
+ *                  against the allow-list and limits, extracts accepted files
+ *                  into <fs>/.staging one per step(), then apply() swaps them
+ *                  in (or discard() throws them away).
+ *
+ *                  Upload rules (see SCREENS.md): system.cfg and screens/<a-z0-9_-, 1..8>
+ *                  .asc .ans .seq .p40 .p80 only; one file <= BBS_ZIP_FILE_MAX; at most
+ *                  BBS_ZIP_MAX_FILES files and BBS_ZIP_TOTAL_MAX bytes unpacked. A single
+ *                  top-level folder (from re-zipping an unpacked folder) is stripped.
+ *                  When the upload carries screens, the live screens directory mirrors it.
+ *
+ * Libraries:    none (libc stdio, dirent)
+ * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
+ * See also:     BACKUP.md
+ *
+ * Copyright 2026 - Robert Mech
+ * License:      GNU General Public License v2 or later
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * text is in the LICENSE file at the top of this repository.
+ * ===========================================================================
  */
+
 #pragma once
 #include <cstdint>
 #include <cstddef>

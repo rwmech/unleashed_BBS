@@ -1,12 +1,45 @@
 /*
- * File:        src/main.cpp
- * Description: ESP32 entry point. NVS, LittleFS at /fs, system.cfg, Wi-Fi
- *              station, then NTP + mDNS once online, then the BBS loop
- *              pinned to core 1 (Wi-Fi runs on core 0).
- * Listing:     COMPLETE FILE
- * Libraries:   ESP-IDF (esp_wifi, esp_netif, esp_event, nvs_flash, lwip
- *              esp_sntp), joltwallet/littlefs, espressif/mdns
+ * ===========================================================================
+ *  µnleashed BBS
+ *  Electronic freedom on a microcontroller.
+ * ===========================================================================
+ *
+ * File:         src/main.cpp
+ * Module:       Firmware entry point (ESP32)
+ *
+ * Purpose:      ESP32 entry point. NVS, LittleFS at /fs, system.cfg, Wi-Fi
+ *                  station, then NTP + mDNS once online, then the BBS loop
+ *                  pinned to core 1 (Wi-Fi runs on core 0).
+ *
+ * Interfaces:   app_main()
+ *
+ * Depends on:   core/bbs, core/sysconfig, platform, include/secrets.h
+ *
+ * Libraries:    ESP-IDF (esp_wifi, esp_netif, esp_event, nvs_flash, lwip
+ *                  esp_sntp), joltwallet/littlefs, espressif/mdns
+ * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
+ * See also:     README.md
+ *
+ * Copyright 2026 - Robert Mech
+ * License:      GNU General Public License v2 or later
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * text is in the LICENSE file at the top of this repository.
+ * ===========================================================================
  */
+
 #include "config.h"
 #include "core/bbs.h"
 #include "core/sysconfig.h"

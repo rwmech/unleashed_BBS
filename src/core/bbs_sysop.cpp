@@ -1,18 +1,47 @@
 /*
- * File:        src/core/bbs_sysop.cpp
- * Description: Staff access.
- *              Sysop: BYE <sysop_password> from any node or the busy line
- *              moves the session to the hidden sysop node and frees its
- *              caller node. Every permission, always.
- *              Co-sysop 1/2: BYE <cosysopN_password> keeps the session on
- *              its caller node and grants that level's column of the
- *              [access] matrix in system.cfg.
- *              Commands: NODES KICK BROADCAST SNOOP TIME n +/-m SHOW HIDE
- *              LURK BANS UNBAN DROP (see COMMANDS.md). A command the
- *              session does not hold answers as an unknown command.
- * Listing:     COMPLETE FILE
- * Libraries:   none (libc)
+ * ===========================================================================
+ *  µnleashed BBS
+ *  Electronic freedom on a microcontroller.
+ * ===========================================================================
+ *
+ * File:         src/core/bbs_sysop.cpp
+ * Module:       Core / staff access
+ *
+ * Purpose:      Staff access.
+ *                  Sysop: BYE <sysop_password> from any node or the busy line
+ *                  moves the session to the hidden sysop node and frees its
+ *                  caller node. Every permission, always.
+ *                  Co-sysop 1/2: BYE <cosysopN_password> keeps the session on
+ *                  its caller node and grants that level's column of the
+ *                  [access] matrix in system.cfg.
+ *                  Commands: NODES KICK BROADCAST SNOOP TIME n +/-m SHOW HIDE
+ *                  LURK BANS UNBAN DROP (see COMMANDS.md). A command the
+ *                  session does not hold answers as an unknown command.
+ *
+ * Libraries:    none (libc)
+ * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
+ * See also:     COMMANDS.md
+ *
+ * Copyright 2026 - Robert Mech
+ * License:      GNU General Public License v2 or later
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * text is in the LICENSE file at the top of this repository.
+ * ===========================================================================
  */
+
 #include "bbs.h"
 #include "bbs_util.h"
 #include "clock.h"

@@ -1,33 +1,62 @@
 /*
- * File:        src/core/sysconfig.h
- * Description: Run-time system configuration from <fs>/system.cfg.
- *              key = value lines, '#' starts a comment. Unknown keys are
- *              logged and ignored; a missing file means defaults.
+ * ===========================================================================
+ *  µnleashed BBS
+ *  Electronic freedom on a microcontroller.
+ * ===========================================================================
  *
- *   hostname               DHCP and mDNS name (a-z 0-9 -), applies at boot
- *   tz                     POSIX TZ string, e.g. CST6CDT,M3.2.0,M11.1.0
- *   ntp_server             NTP host name
- *   sysop_password         BYE <pw>: hidden sysop node, every permission
- *   cosysop1_password      BYE <pw>: co-sysop level 1, stays on its node
- *   cosysop2_password      BYE <pw>: co-sysop level 2, stays on its node
- *   idle_minutes           shell idle hangup (warning 1 min before), 0 = never
- *   call_minutes           per-call time limit, 0 = unlimited
- *   day_minutes            per-day time limit, 0 = unlimited
- *   backup_port            HTTP port while the backup window is open
- *   backup_window_minutes  how long a button press keeps the window open
- *   backup_button_gpio     button pin (active low), -1 = no button
- *   self_register          yes: new handles can sign up; no: sysop creates accounts
- *   max_users              account limit (1..100 on onboard storage)
- *   who_refresh_min        WHO n / DASH n lowest refresh, seconds
- *   who_refresh_max        WHO n / DASH n highest refresh, seconds
- *   activity_led_gpio      LED blinked on network traffic, -1 = none
+ * File:         src/core/sysconfig.h
+ * Module:       Core / run-time configuration
  *
- *   [access] section: one row per permission, columns SYSOP CO1 CO2,
- *   X = allowed, - = denied. The SYSOP column is informational; the
- *   sysop always has everything. Rows left out keep their defaults.
- * Listing:     COMPLETE FILE
- * Libraries:   none (libc stdio)
+ * Purpose:      Run-time system configuration from <fs>/system.cfg.
+ *                  key = value lines, '#' starts a comment. Unknown keys are
+ *                  logged and ignored; a missing file means defaults.
+ *
+ *                  hostname               DHCP and mDNS name (a-z 0-9 -), applies at boot
+ *                  tz                     POSIX TZ string, e.g. CST6CDT,M3.2.0,M11.1.0
+ *                  ntp_server             NTP host name
+ *                  sysop_password         BYE <pw>: hidden sysop node, every permission
+ *                  cosysop1_password      BYE <pw>: co-sysop level 1, stays on its node
+ *                  cosysop2_password      BYE <pw>: co-sysop level 2, stays on its node
+ *                  idle_minutes           shell idle hangup (warning 1 min before), 0 = never
+ *                  call_minutes           per-call time limit, 0 = unlimited
+ *                  day_minutes            per-day time limit, 0 = unlimited
+ *                  backup_port            HTTP port while the backup window is open
+ *                  backup_window_minutes  how long a button press keeps the window open
+ *                  backup_button_gpio     button pin (active low), -1 = no button
+ *                  self_register          yes: new handles can sign up; no: sysop creates accounts
+ *                  max_users              account limit (1..100 on onboard storage)
+ *                  who_refresh_min        WHO n / DASH n lowest refresh, seconds
+ *                  who_refresh_max        WHO n / DASH n highest refresh, seconds
+ *                  activity_led_gpio      LED blinked on network traffic, -1 = none
+ *
+ *                  [access] section: one row per permission, columns SYSOP CO1 CO2,
+ *                  X = allowed, - = denied. The SYSOP column is informational; the
+ *                  sysop always has everything. Rows left out keep their defaults.
+ *
+ * Libraries:    none (libc stdio)
+ * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
+ * See also:     COMMANDS.md
+ *
+ * Copyright 2026 - Robert Mech
+ * License:      GNU General Public License v2 or later
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * text is in the LICENSE file at the top of this repository.
+ * ===========================================================================
  */
+
 #pragma once
 #include <cstdint>
 #include <cstddef>

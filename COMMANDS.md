@@ -1,3 +1,16 @@
+<!--
+µnleashed BBS: COMMANDS.md
+
+Every command, key, limit and system.cfg setting the BBS understands.
+
+Copyright 2026 - Robert Mech
+License: GNU General Public License v2 or later
+SPDX-License-Identifier: GPL-2.0-or-later
+
+Documentation for µnleashed BBS, part of the same distribution as the
+source. See the LICENSE file for terms.
+-->
+
 # µnleashed BBS: command reference
 
 Version 0.7.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.

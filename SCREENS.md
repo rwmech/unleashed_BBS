@@ -1,3 +1,16 @@
+<!--
+µnleashed BBS: SCREENS.md
+
+Screen file formats, naming rules, @-codes and upload limits.
+
+Copyright 2026 - Robert Mech
+License: GNU General Public License v2 or later
+SPDX-License-Identifier: GPL-2.0-or-later
+
+Documentation for µnleashed BBS, part of the same distribution as the
+source. See the LICENSE file for terms.
+-->
+
 # Screens: formats, rules and limits
 
 Screens are the files in the backup zip under `screens/`. Edit them, upload them with the backup window ([BACKUP.md](BACKUP.md)), and the BBS uses them immediately.

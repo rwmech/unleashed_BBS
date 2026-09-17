@@ -1,13 +1,47 @@
 /*
- * File:        src/core/term.h
- * Description: Terminal layer. One interface, four drivers: PETSCII-40,
- *              PETSCII-80, ANSI (CP437 or UTF-8) and plain ASCII.
- *              Everything above this layer writes ASCII strings plus
- *              abstract operations (color, cursor, glyph). Plugins must
- *              never emit raw control codes.
- * Listing:     COMPLETE FILE
- * Libraries:   none
+ * ===========================================================================
+ *  µnleashed BBS
+ *  Electronic freedom on a microcontroller.
+ * ===========================================================================
+ *
+ * File:         src/core/term.h
+ * Module:       Core / terminal layer
+ *
+ * Purpose:      Terminal layer. One interface, four drivers: PETSCII-40,
+ *                  PETSCII-80, ANSI (CP437 or UTF-8) and plain ASCII.
+ *                  Everything above this layer writes ASCII strings plus
+ *                  abstract operations (color, cursor, glyph). Plugins must
+ *                  never emit raw control codes.
+ *
+ * Design:       Nothing above this layer emits raw control codes: callers use text,
+ *               color, glyph and cursor operations, and each driver renders them.
+ *
+ * Interfaces:   Term (setType, text, color, glyph, cursor, feed, idle), Glyph, Color, Key
+ *
+ * Libraries:    none
+ * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
+ * See also:     README.md
+ *
+ * Copyright 2026 - Robert Mech
+ * License:      GNU General Public License v2 or later
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * text is in the LICENSE file at the top of this repository.
+ * ===========================================================================
  */
+
 #pragma once
 #include <cstdint>
 #include <cstddef>

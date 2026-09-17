@@ -1,3 +1,16 @@
+<!--
+µnleashed BBS: BACKUP.md
+
+Downloading and uploading config, accounts and screens as one zip.
+
+Copyright 2026 - Robert Mech
+License: GNU General Public License v2 or later
+SPDX-License-Identifier: GPL-2.0-or-later
+
+Documentation for µnleashed BBS, part of the same distribution as the
+source. See the LICENSE file for terms.
+-->
+
 # Backup and restore
 
 Everything that matters on the board travels as one `.zip`: `system.cfg`, the user accounts and every screen. You download it, change what you want, and upload it back. Logs are not in the zip and are never touched by a restore.

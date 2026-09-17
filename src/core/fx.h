@@ -1,20 +1,52 @@
 /*
- * File:        src/core/fx.h
- * Description: Old-school TTY effects, each a reusable routine that
- *              queues timed frames into a session Timeline. Nothing here
- *              blocks; the scheduler plays the frames back. Every effect
- *              is written against Term primitives, so it renders on
- *              PETSCII, ANSI and ASCII without per-effect special cases.
+ * ===========================================================================
+ *  µnleashed BBS
+ *  Electronic freedom on a microcontroller.
+ * ===========================================================================
  *
- *              Rules for effect authors:
- *              - Stay on one line. PETSCII has no bare carriage return,
- *                so rewinds use cursor-left or DEL, never '\r'.
- *              - Size steps with fitSteps() so an effect never overflows
- *                the Timeline. If space is short the effect degrades to
- *                fewer steps, never to garbage.
- * Listing:     COMPLETE FILE
- * Libraries:   none
+ * File:         src/core/fx.h
+ * Module:       Core / TTY effects
+ *
+ * Purpose:      Old-school TTY effects, each a reusable routine that
+ *                  queues timed frames into a session Timeline. Nothing here
+ *                  blocks; the scheduler plays the frames back. Every effect
+ *                  is written against Term primitives, so it renders on
+ *                  PETSCII, ANSI and ASCII without per-effect special cases.
+ *
+ *                  Rules for effect authors:
+ *                  - Stay on one line. PETSCII has no bare carriage return,
+ *                    so rewinds use cursor-left or DEL, never '\r'.
+ *                  - Size steps with fitSteps() so an effect never overflows
+ *                    the Timeline. If space is short the effect degrades to
+ *                    fewer steps, never to garbage.
+ *
+ * Interfaces:   fx::typewriter, scramble, blink, marquee, rubout, rewrite, spinner,
+ *               working, progressBar, countdown, lineNoise, bell, rule, fitSteps
+ *
+ * Libraries:    none
+ * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
+ * See also:     README.md
+ *
+ * Copyright 2026 - Robert Mech
+ * License:      GNU General Public License v2 or later
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * text is in the LICENSE file at the top of this repository.
+ * ===========================================================================
  */
+
 #pragma once
 #include <cstdint>
 #include "term.h"

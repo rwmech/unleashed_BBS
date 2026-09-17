@@ -1,8 +1,39 @@
-# File: partitions.csv
-# 4 MB: two OTA app slots (1.5 MB each), 128 KB logs, 768 KB storage.
-# "storage" must stay the LAST filesystem partition: PlatformIO's uploadfs
-# writes to the last data partition of type spiffs/fat/littlefs.
-# Name,    Type, SubType, Offset,   Size
+# ===========================================================================
+#  unleashed BBS
+#  Electronic freedom on a microcontroller.
+# ===========================================================================
+#
+# File:         partitions.csv
+# Module:       Build / flash partition table
+#
+# Purpose:      4 MB flash layout: two 1.5 MB OTA application slots, a 128 KB logs
+#               partition for the caller log, and a 768 KB storage partition holding
+#               system.cfg, users.txt and the screens.
+#               "storage" must stay the LAST filesystem partition: PlatformIO uploadfs
+#               writes to the last data partition of type spiffs/fat/littlefs.
+#
+# Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
+# See also:     README.md
+#
+# Copyright 2026 - Robert Mech
+# License:      GNU General Public License v2 or later
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 2 of the License, or (at your
+# option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, see <https://www.gnu.org/licenses/>. The full
+# text is in the LICENSE file at the top of this repository.
+# ===========================================================================
+
 nvs,       data, nvs,     0x9000,   0x6000
 otadata,   data, ota,     0xf000,   0x2000
 phy_init,  data, phy,     0x11000,  0x1000

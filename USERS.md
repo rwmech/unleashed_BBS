@@ -1,3 +1,16 @@
+<!--
+µnleashed BBS: USERS.md
+
+Signing up, logging in, guests, and managing user accounts.
+
+Copyright 2026 - Robert Mech
+License: GNU General Public License v2 or later
+SPDX-License-Identifier: GPL-2.0-or-later
+
+Documentation for µnleashed BBS, part of the same distribution as the
+source. See the LICENSE file for terms.
+-->
+
 # µnleashed BBS: user accounts
 
 How callers get accounts, and how staff create, change, lock and delete them. Commands and keys are also listed in [COMMANDS.md](COMMANDS.md).

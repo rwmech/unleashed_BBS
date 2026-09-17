@@ -1,20 +1,51 @@
 /*
- * File:        src/core/bbs.h
- * Description: BBS core: one listener on the dial-in port, a fixed pool of
- *              caller nodes, a busy line session, a hidden sysop node, and
- *              a single cooperative loop. Sessions are preallocated in
- *              static storage; the loop never allocates.
+ * ===========================================================================
+ *  µnleashed BBS
+ *  Electronic freedom on a microcontroller.
+ * ===========================================================================
  *
- *   Commands live in a registry (Command tables): the core table is in
- *   bbs_shell.cpp, plugins add theirs with registerCommands(). Dispatch,
- *   permission checks and HELP all come from the tables.
+ * File:         src/core/bbs.h
+ * Module:       Core / sessions and scheduler
  *
- *   Sources: bbs.cpp (connections, flow, input, paging, refresh screens),
- *            bbs_shell.cpp (command table, caller commands, HELP/WHO/DASH),
- *            bbs_sysop.cpp (sysop node, co-sysops, staff commands).
- * Listing:     COMPLETE FILE
- * Libraries:   BSD sockets (lwIP on ESP32)
+ * Purpose:      BBS core: one listener on the dial-in port, a fixed pool of
+ *                  caller nodes, a busy line session, a hidden sysop node, and
+ *                  a single cooperative loop. Sessions are preallocated in
+ *                  static storage; the loop never allocates.
+ *
+ *                  Commands live in a registry (Command tables): the core table is in
+ *                  bbs_shell.cpp, plugins add theirs with registerCommands(). Dispatch,
+ *                  permission checks and HELP all come from the tables.
+ *
+ *                  Sources: bbs.cpp (connections, flow, input, paging, refresh screens),
+ *                  bbs_shell.cpp (command table, caller commands, HELP/WHO/DASH),
+ *                  bbs_sysop.cpp (sysop node, co-sysops, staff commands).
+ *
+ * Interfaces:   Bbs (begin, tick, onKey, registerCommands), Session, Command, CmdFlag
+ *
+ * Libraries:    BSD sockets (lwIP on ESP32)
+ * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
+ * See also:     COMMANDS.md
+ *
+ * Copyright 2026 - Robert Mech
+ * License:      GNU General Public License v2 or later
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * text is in the LICENSE file at the top of this repository.
+ * ===========================================================================
  */
+
 #pragma once
 #include <cstdint>
 #include "../config.h"

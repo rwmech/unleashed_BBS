@@ -1,3 +1,16 @@
+<!--
+µnleashed BBS: CLAUDE.md
+
+Design history and current state of the project, kept for contributors and AI assistants.
+
+Copyright 2026 - Robert Mech
+License: GNU General Public License v2 or later
+SPDX-License-Identifier: GPL-2.0-or-later
+
+Documentation for µnleashed BBS, part of the same distribution as the
+source. See the LICENSE file for terms.
+-->
+
 # µnleashed BBS: project context
 
 Read README.md for layout and build, COMMANDS.md for every command and setting, USERS.md for accounts, BACKUP.md for the backup window, SCREENS.md for screen rules. This file is the design history and current state. Keep it current with every build and decision.

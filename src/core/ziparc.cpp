@@ -1,11 +1,40 @@
 /*
- * File:        src/core/ziparc.cpp
- * Description: Backup archive export and import (see ziparc.h).
- *              ZIP format: APPNOTE 6.3 subset. Stored entries out, stored
- *              or deflated entries in, no ZIP64, no encryption.
- * Listing:     COMPLETE FILE
- * Libraries:   none (libc stdio, dirent, sys/stat)
+ * ===========================================================================
+ *  µnleashed BBS
+ *  Electronic freedom on a microcontroller.
+ * ===========================================================================
+ *
+ * File:         src/core/ziparc.cpp
+ * Module:       Core / backup archive
+ *
+ * Purpose:      Backup archive export and import (see ziparc.h).
+ *                  ZIP format: APPNOTE 6.3 subset. Stored entries out, stored
+ *                  or deflated entries in, no ZIP64, no encryption.
+ *
+ * Libraries:    none (libc stdio, dirent, sys/stat)
+ * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
+ * See also:     BACKUP.md
+ *
+ * Copyright 2026 - Robert Mech
+ * License:      GNU General Public License v2 or later
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * text is in the LICENSE file at the top of this repository.
+ * ===========================================================================
  */
+
 #include "ziparc.h"
 #include "crc32.h"
 #include "sysconfig.h"

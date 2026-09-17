@@ -1,13 +1,45 @@
 /*
- * File:        src/platform/platform.h
- * Description: Thin platform layer. The core only touches the hardware
- *              through these calls, so the same core compiles for the
- *              ESP32 (platform_esp32.cpp) and for a Linux host test build
- *              (host/platform_host.cpp). Sockets use the BSD API, which
- *              lwIP provides on the ESP32.
- * Listing:     COMPLETE FILE
- * Libraries:   none
+ * ===========================================================================
+ *  µnleashed BBS
+ *  Electronic freedom on a microcontroller.
+ * ===========================================================================
+ *
+ * File:         src/platform/platform.h
+ * Module:       Platform layer
+ *
+ * Purpose:      Thin platform layer. The core only touches the hardware
+ *                  through these calls, so the same core compiles for the
+ *                  ESP32 (platform_esp32.cpp) and for a Linux host test build
+ *                  (host/platform_host.cpp). Sockets use the BSD API, which
+ *                  lwIP provides on the ESP32.
+ *
+ * Interfaces:   millis, random32, fsBase, logsBase, heap, wifiRssi, log,
+ *               backupButton*, activityLed*, inflateRaw
+ *
+ * Libraries:    none
+ * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
+ * See also:     README.md
+ *
+ * Copyright 2026 - Robert Mech
+ * License:      GNU General Public License v2 or later
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * text is in the LICENSE file at the top of this repository.
+ * ===========================================================================
  */
+
 #pragma once
 #include <cstdint>
 #include <cstddef>

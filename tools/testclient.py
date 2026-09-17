@@ -1,29 +1,60 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """
-File:        tools/testclient.py
-Description: Scripted callers for the BBS (host build or a real board).
-             - ANSI caller: answers cursor-position requests like a PC
-               terminal; handle validation, shortcuts, history, TIME, G
-             - Telnet-first caller: IAC before the probe gets character
-               mode negotiated first and an immediate probe (PuTTY case)
-             - PETSCII caller: silent on the probe, presses INST/DEL,
-               picks 40 columns, logs in, runs WHO/FX/BYE
-             - ASCII caller: backspace at the key prompt
-             - Paging between nodes, DND, arrival notices, LAST
-             - Sysop: BYE <password> masking, NODES, More paging, TIME
-               adjust warnings, BROADCAST, SNOOP, KICK, SHOW, DROP
-             - Accounts: sign-up form checks (ANSI, PETSCII, ASCII), wrong
-               passwords and per-handle lockout, PROFILE, PASSWORD, INFO
-               privacy, USERS manager, USER ADD/EDIT/DEL, locked accounts
-             - Handle prompt idle warning with partial input redraw (31 s)
-             - Busy line: busy screen, countdown hangup, overflow BUSY,
-               busy-line guest elevating to sysop
-             - --ban: 3 wrong sysop passwords ban the IP (host only: it
-               bans the machine running the test for 15 minutes)
-Listing:     COMPLETE FILE
-Libraries:   Python 3 standard library only
-Usage:       python3 tools/testclient.py [host] [port] [--backup] [--ban] [--slow]
+===========================================================================
+ µnleashed BBS
+ Electronic freedom on a microcontroller.
+===========================================================================
+
+File:         tools/testclient.py
+Module:       Tools / scripted test callers
+
+Purpose:      Scripted callers for the BBS (host build or a real board).
+                 - ANSI caller: answers cursor-position requests like a PC
+                   terminal; handle validation, shortcuts, history, TIME, G
+                 - Telnet-first caller: IAC before the probe gets character
+                   mode negotiated first and an immediate probe (PuTTY case)
+                 - PETSCII caller: silent on the probe, presses INST/DEL,
+                   picks 40 columns, logs in, runs WHO/FX/BYE
+                 - ASCII caller: backspace at the key prompt
+                 - Paging between nodes, DND, arrival notices, LAST
+                 - Sysop: BYE <password> masking, NODES, More paging, TIME
+                   adjust warnings, BROADCAST, SNOOP, KICK, SHOW, DROP
+                 - Accounts: sign-up form checks (ANSI, PETSCII, ASCII), wrong
+                   passwords and per-handle lockout, PROFILE, PASSWORD, INFO
+                   privacy, USERS manager, USER ADD/EDIT/DEL, locked accounts
+                 - Handle prompt idle warning with partial input redraw (31 s)
+                 - Busy line: busy screen, countdown hangup, overflow BUSY,
+                   busy-line guest elevating to sysop
+                 - --ban: 3 wrong sysop passwords ban the IP (host only: it
+                   bans the machine running the test for 15 minutes)
+
+Usage:        python3 tools/testclient.py [host] [port] [--backup] [--ban] [--slow]
+
+Libraries:    Python 3 standard library only
+Targets:      developer PC, Python 3
+See also:     README.md
+
+Copyright 2026 - Robert Mech
+License:      GNU General Public License v2 or later
+SPDX-License-Identifier: GPL-2.0-or-later
+
+This program is free software; you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the
+Free Software Foundation; either version 2 of the License, or (at your
+option) any later version.
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, see <https://www.gnu.org/licenses/>. The full
+text is in the LICENSE file at the top of this repository.
+===========================================================================
 """
+
 import http.client
 import io
 import os

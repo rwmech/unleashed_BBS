@@ -1,28 +1,57 @@
 /*
- * File:        src/core/screens.h
- * Description: Streams display files from the filesystem into a session
- *              Timeline in small chunks (never loads a whole file).
+ * ===========================================================================
+ *  µnleashed BBS
+ *  Electronic freedom on a microcontroller.
+ * ===========================================================================
  *
- *   Lookup by terminal, first match wins:
- *     PETSCII-40: name.p40, name.seq, name.asc
- *     PETSCII-80: name.p80, name.seq, name.asc
- *     ANSI:       name.ans, name.asc
- *     ASCII:      name.asc
+ * File:         src/core/screens.h
+ * Module:       Core / screen player
  *
- *   .seq/.p40/.p80 are raw PETSCII, .ans is raw ANSI in CP437 (re-encoded
- *   for UTF-8 callers, SAUCE records skipped), .asc is plain ASCII and is
- *   translated for every terminal.
+ * Purpose:      Streams display files from the filesystem into a session
+ *                  Timeline in small chunks (never loads a whole file).
  *
- *   Paging: .asc files pause every N lines when setPaging(N) is on; the
- *   caller shows a More prompt and calls resume(). Art formats (.ans,
- *   .seq) are drawn with cursor movement and are never paged.
+ *                  Lookup by terminal, first match wins:
+ *                  PETSCII-40: name.p40, name.seq, name.asc
+ *                  PETSCII-80: name.p80, name.seq, name.asc
+ *                  ANSI:       name.ans, name.asc
+ *                  ASCII:      name.asc
  *
- *   @-codes, case-insensitive, work in all formats:
- *     @BBS@ @VER@ @NODE@ @NODES@ @USER@ @TERM@ @COLS@ @DATE@ @TIME@
- *     @CLS@ @BELL@ @DELAY:ms@ @SPIN:ms@
- * Listing:     COMPLETE FILE
- * Libraries:   none (libc stdio)
+ *                  .seq/.p40/.p80 are raw PETSCII, .ans is raw ANSI in CP437 (re-encoded
+ *                  for UTF-8 callers, SAUCE records skipped), .asc is plain ASCII and is
+ *                  translated for every terminal.
+ *
+ *                  Paging: .asc files pause every N lines when setPaging(N) is on; the
+ *                  caller shows a More prompt and calls resume(). Art formats (.ans,
+ *                  .seq) are drawn with cursor movement and are never paged.
+ *
+ *                  @-codes, case-insensitive, work in all formats:
+ *                  @BBS@ @VER@ @NODE@ @NODES@ @USER@ @TERM@ @COLS@ @DATE@ @TIME@
+ *                  @CLS@ @BELL@ @DELAY:ms@ @SPIN:ms@
+ *
+ * Libraries:    none (libc stdio)
+ * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
+ * See also:     SCREENS.md
+ *
+ * Copyright 2026 - Robert Mech
+ * License:      GNU General Public License v2 or later
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * text is in the LICENSE file at the top of this repository.
+ * ===========================================================================
  */
+
 #pragma once
 #include <cstdint>
 #include <cstdio>

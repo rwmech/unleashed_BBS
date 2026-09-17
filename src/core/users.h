@@ -1,24 +1,60 @@
 /*
- * File:        src/core/users.h
- * Description: User accounts in <fs>/users.txt (storage partition, travels
- *              in the backup zip). One block per user:
+ * ===========================================================================
+ *  µnleashed BBS
+ *  Electronic freedom on a microcontroller.
+ * ===========================================================================
  *
- *                [Handle]
- *                name = Rob
- *                email = rob@example.com
- *                ...
+ * File:         src/core/users.h
+ * Module:       Core / user accounts
  *
- *   Text fields are described by kUserFields: adding a field is one member
- *   in UserRec plus one row in the table (users.cpp); forms, INFO and the
- *   file format pick it up. System fields (password hash, counters, lock)
- *   are handled explicitly.
+ * Purpose:      User accounts in <fs>/users.txt (storage partition, travels
+ *                  in the backup zip). One block per user:
  *
- *   Every change rewrites the file through a temp file and a rename, so a
- *   power cut leaves either the old or the new file. Unknown keys are not
- *   kept. Onboard storage allows about 100 accounts (max_users).
- * Listing:     COMPLETE FILE
- * Libraries:   none (libc stdio)
+ *                    [Handle]
+ *                    name = Rob
+ *                    email = rob@example.com
+ *                    ...
+ *
+ *                  Text fields are described by kUserFields: adding a field is one member
+ *                  in UserRec plus one row in the table (users.cpp); forms, INFO and the
+ *                  file format pick it up. System fields (password hash, counters, lock)
+ *                  are handled explicitly.
+ *
+ *                  Every change rewrites the file through a temp file and a rename, so a
+ *                  power cut leaves either the old or the new file. Unknown keys are not
+ *                  kept. Onboard storage allows about 100 accounts (max_users).
+ *
+ * Design:       One record is read at a time, so memory use does not grow with the
+ *               number of accounts. Every change rewrites the file through a temp file
+ *               and a rename, so a power cut leaves the old file or the new one.
+ *
+ * Interfaces:   users::find, count, at, range, add, update, remove, setPassword,
+ *               checkPassword, validateFile, validHandle, validEmail
+ *
+ * Libraries:    none (libc stdio)
+ * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
+ * See also:     USERS.md
+ *
+ * Copyright 2026 - Robert Mech
+ * License:      GNU General Public License v2 or later
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * text is in the LICENSE file at the top of this repository.
+ * ===========================================================================
  */
+
 #pragma once
 #include <cstdint>
 #include <cstddef>

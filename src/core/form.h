@@ -1,22 +1,53 @@
 /*
- * File:        src/core/form.h
- * Description: Fill-in forms for ANSI and PETSCII terminals (curses style):
- *              labels on the left, input boxes on the right, [ Save ] and
- *              [ Cancel ] underneath, a status line for hints and errors.
- *              Cursor keys (C64: CRSR) or Enter move between fields, the
- *              focused box is in reverse video, F1 saves from anywhere,
- *              ESC (C64: left-arrow) cancels. Long values scroll inside
- *              their box; a textarea field gets four 37-column rows.
+ * ===========================================================================
+ *  µnleashed BBS
+ *  Electronic freedom on a microcontroller.
+ * ===========================================================================
  *
- *              Plain ASCII terminals cannot move the cursor, so they get
- *              the same fields as one prompt per line, then Save (Y/n).
+ * File:         src/core/form.h
+ * Module:       Core / fill-in forms
  *
- *   The form edits the caller's buffers in place. It only reports Save or
- *   Cancel; the owner validates and calls fail() to point at a field.
- *   Laid out for 40 x 24: fits a C64 and every PC terminal.
- * Listing:     COMPLETE FILE
- * Libraries:   none
+ * Purpose:      Fill-in forms for ANSI and PETSCII terminals (curses style):
+ *                  labels on the left, input boxes on the right, [ Save ] and
+ *                  [ Cancel ] underneath, a status line for hints and errors.
+ *                  Cursor keys (C64: CRSR) or Enter move between fields, the
+ *                  focused box is in reverse video, F1 saves from anywhere,
+ *                  ESC (C64: left-arrow) cancels. Long values scroll inside
+ *                  their box; a textarea field gets four 37-column rows.
+ *
+ *                  Plain ASCII terminals cannot move the cursor, so they get
+ *                  the same fields as one prompt per line, then Save (Y/n).
+ *
+ *                  The form edits the caller's buffers in place. It only reports Save or
+ *                  Cancel; the owner validates and calls fail() to point at a field.
+ *                  Laid out for 40 x 24: fits a C64 and every PC terminal.
+ *
+ * Interfaces:   Form (begin, key, fail, status, after), FormField, FormFlag
+ *
+ * Libraries:    none
+ * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
+ * See also:     USERS.md
+ *
+ * Copyright 2026 - Robert Mech
+ * License:      GNU General Public License v2 or later
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * text is in the LICENSE file at the top of this repository.
+ * ===========================================================================
  */
+
 #pragma once
 #include <cstdint>
 #include "../config.h"

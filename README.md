@@ -1,3 +1,16 @@
+<!--
+µnleashed BBS: README.md
+
+What the project is, how to build, flash and test it, and where the rest of the documentation lives.
+
+Copyright 2026 - Robert Mech
+License: GNU General Public License v2 or later
+SPDX-License-Identifier: GPL-2.0-or-later
+
+Documentation for µnleashed BBS, part of the same distribution as the
+source. See the LICENSE file for terms.
+-->
+
 # µnleashed BBS
 
 Electronic freedom on a microcontroller. No web, no cloud, no browser.
@@ -148,6 +161,19 @@ These are codes in the mixed-case charset, confirmed on a C64 through TeensyROM:
 - `0xDD`: vertical line.
 - `0xA6`: checker/shade.
 - `0xA4`: underscore substitute.
+
+## License
+
+µnleashed BBS is free software under the GNU General Public License, version 2
+or later. The full text is in [LICENSE](LICENSE), and every source file carries
+the notice.
+
+Copyright 2026 - Robert Mech
+
+The firmware also contains Apache-2.0, MIT and BSD-licensed software from
+Espressif and others. Anyone handing out a compiled binary has to pass those
+notices along: they are collected in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Next
 
