@@ -34,7 +34,7 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
 | Phase | Scope | State |
 |---|---|---|
 | C1 | listener, nodes, detection, screens, editor, effects, shell | done, verified on C64 and PuTTY |
-| C2 | user accounts, auth, lockout, self-registration | done in 0.6.0 (host-tested, not yet on hardware): accounts, salted SHA-256, lockout, forms, user manager; plus staff passwords, co-sysop matrix, IP bans |
+| C2 | user accounts, auth, lockout, self-registration | done (0.6.0/0.7.0, registration and guests verified on hardware): accounts, salted SHA-256, lockout, forms, user manager, guests; plus staff passwords, co-sysop matrix, IP bans |
 | C3 | command registry (tree deferred) | done: `Command` tables, generated HELP, `registerCommands()` for plugins |
 | C4 | message bus, WHO, PAGE, notices, BROADCAST, DND | done |
 | C5 | plugin API, requirements check, diagnostics | not started |
@@ -42,12 +42,14 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
 
 Also done: busy line, paging (`[More]`), abort keys, command history, time limits (per call, per day), caller log (`LAST`), NTP + TZ, mDNS, backup window, config reload without reboot.
 
-## Current state (0.7.0, built, not flashed)
+## Current state (0.7.0, flashed)
 
 - Host build: 226/226 scripted checks (`tools/testclient.py --backup`), also under ASan/UBSan. Layouts checked through a C64 screen model (in-place errors and passwords stay on one 40-column line, title bars 39 wide).
-- ESP32 0.7.0: image 923 KB (58.7% of the slot), static RAM 104 KB; session 5,688 bytes. No app warnings. Rob flashes it.
+- ESP32 0.7.0: image 923 KB (58.7% of the slot), static RAM 104 KB; session 5,688 bytes. No app warnings. Flashed by Rob.
 - 0.7.0 adds: guests, input effects in place, page/broadcast alerts, title bars and closing rules on lists, staff Doing column (WHO, DASH), Wi-Fi RSSI on DASH (`plat::wifiRssi`), `guest` and `guest_minutes` keys.
-- Hardware checks for 0.7.0: everything listed for 0.6.0 below, plus on the C64: reverse title bars, rubout of errors and ACCESS GRANTED in place, the PAGE alert, and a real RSSI value on DASH.
+- Verified on hardware (Rob): registration works, guest login works, DASH shows Wi-Fi RSSI and it follows the signal.
+- Not yet reported on hardware: the user manager and forms on the C64 (cursor moves, reverse boxes, F1, left-arrow), title bars and in-place rubouts on the C64, the PAGE alert, password hashing time, heap with 6 callers.
+- Code review of the 0.6.0/0.7.0 changes: in progress (pen test skipped for this checkpoint by Rob).
 
 ## State at 0.6.0 (host-tested, shipped inside 0.7.0)
 
@@ -71,7 +73,7 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
 
 0.6.0: accounts, host-tested, never flashed on its own.
 
-0.7.0: guests plus the queued notes (input fx, password in place, page alerts, list graphics, staff Doing column, DASH RSSI). Built, waiting for Rob to flash.
+0.7.0: guests plus the queued notes (input fx, password in place, page alerts, list graphics, staff Doing column, DASH RSSI). Flashed; registration, guests and RSSI verified.
 
 Queued for the next build: nothing yet.
 
