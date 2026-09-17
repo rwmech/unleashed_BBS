@@ -1,7 +1,8 @@
 /*
  * File:        src/core/editor.h
  * Description: Single-line input editor with echo, destructive backspace
- *              per terminal type, optional password masking, uppercase
+ *              per terminal type, optional password masking (capped at
+ *              BBS_MASK_SHOW stars), stay-on-line Enter, uppercase
  *              and digits-only filters, plus a small command history for
  *              up/down-arrow recall.
  * Listing:     COMPLETE FILE
@@ -20,6 +21,7 @@ public:
         F_UPPER   = 2,   // force uppercase
         F_DIGITS  = 4,   // digits only
         F_BYEMASK = 8,   // echo '*' for everything after "BYE "
+        F_STAY    = 16,  // Enter does not move to a new line (caller rubs out or moves on)
     };
     enum class Res : uint8_t { Editing, Done, Abort };
 
@@ -35,6 +37,10 @@ public:
     bool        active() const { return active_; }
     const char* text()   const { return buf_; }
     uint8_t     len()    const { return len_; }
+
+    // shown: characters on screen for this line (a masked line shows at
+    // most BBS_MASK_SHOW stars so it never wraps)
+    uint8_t     shown()  const;
 
 private:
     char echoFor(uint8_t pos) const;

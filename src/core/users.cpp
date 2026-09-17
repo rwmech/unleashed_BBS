@@ -243,7 +243,22 @@ bool validHandle(const char* h) {
         unsigned char c = static_cast<unsigned char>(h[i]);
         if (!isalnum(c) && c != ' ' && c != '-' && c != '_' && c != '.') return false;
     }
-    return !ieq(h, "SYSOP");
+    return !ieq(h, "SYSOP") && !isGuestName(h);
+}
+
+// isGuestName: GUEST, or GUEST followed by digits (optionally after one
+// of space - _ .), which is how guest sessions are named
+bool isGuestName(const char* h) {
+    static const char kGuest[] = "GUEST";
+    for (size_t i = 0; i < 5; ++i) {
+        if (toupper(static_cast<unsigned char>(h[i])) != kGuest[i]) return false;
+    }
+    const char* p = h + 5;
+    if (!*p) return true;
+    if (*p == ' ' || *p == '-' || *p == '_' || *p == '.') ++p;
+    if (!*p) return false;
+    for (; *p; ++p) if (!isdigit(static_cast<unsigned char>(*p))) return false;
+    return true;
 }
 
 bool validEmail(const char* e) {

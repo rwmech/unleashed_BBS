@@ -23,7 +23,7 @@ New handle. Register Rob (Y/n)?
 
 | Field | Rules | Who sees it |
 |---|---|---|
-| Handle | from the prompt: letters, digits, space `-` `_` `.`, up to 20, starts with a letter or digit, not `SYSOP` | everyone |
+| Handle | from the prompt: letters, digits, space `-` `_` `.`, up to 20, starts with a letter or digit, not `SYSOP`, `GUEST` or `Guest<n>` | everyone |
 | Password, Again | 4 to 32 characters, typed twice, shown as `*` | nobody |
 | Name | required, up to 32 | everyone |
 | Email | required, must look like `a@b.c`, up to 64 | you and staff with `USERS` |
@@ -33,7 +33,7 @@ New handle. Register Rob (Y/n)?
 
 Handles match without regard to case, so `rob` and `ROB` are the same account. The BBS always shows the spelling it was created with.
 
-With `self_register = no`, an unknown handle gets `No account by that name. The sysop creates accounts here.` and a staff member has to add the account.
+With `self_register = no`, an unknown handle is refused in place (`No account by that name. Try GUEST.`, or `No account. The sysop creates accounts here.` when guests are off too) and a staff member has to add the account.
 
 When `max_users` is reached, sign-ups are refused with `Sign-ups are closed: the BBS is full.`
 
@@ -59,11 +59,11 @@ If a value is wrong, the form beeps, names the problem and puts you back on that
 
 ```
 Enter your handle: Rob
-Password: ******
-Verifying...
-ACCESS GRANTED
+Password: ACCESS GRANTED
 Welcome back, Rob!
 ```
+
+The stars you type spin, rub out and turn into `ACCESS GRANTED` on the same line. A wrong password flashes `ACCESS DENIED` there, clears, and you type again on that line.
 
 - 3 wrong passwords on one call hang up the line.
 - 5 wrong passwords for one handle within 15 minutes lock that handle for 15 minutes, whichever line they come from. The lock is in RAM and clears on reboot.
@@ -71,6 +71,16 @@ Welcome back, Rob!
 - A handle the sysop locked is refused before the password: `This account is locked. Ask the sysop.`
 
 The daily time limit (`day_minutes`) is counted per account and survives logoffs. Each logoff adds the call to the account's call count and minutes for the day.
+
+### Guests
+
+`GUEST` at the handle prompt gets in without an account (`guest = yes`, the default).
+
+- The session is called `Guest<node>`, for example `Guest3`.
+- Nothing is saved. There is no account to edit, so `PROFILE` and `PASSWORD` don't exist for guests.
+- A guest call lasts `guest_minutes` (15 by default) with warnings at 5 and 1 minute left. There is no daily limit.
+- The call is still listed in `LAST`, like every call.
+- To keep what they do, a guest signs up next time with a handle of their own.
 
 ### Your account
 
@@ -139,6 +149,8 @@ In `system.cfg`:
 |---|---|---|
 | `self_register` | `yes` | `no`: only staff can add accounts |
 | `max_users` | `100` | account limit, 1..100 |
+| `guest` | `yes` | `no`: `GUEST` is refused |
+| `guest_minutes` | `15` | per guest call, 0 = unlimited, no daily limit |
 
 ## users.txt
 

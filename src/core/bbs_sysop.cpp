@@ -79,7 +79,7 @@ void Bbs::elevate(Session& s, uint32_t now) {
     d.visible    = false;
     d.lurk       = false;
     d.dnd        = false;
-    d.guestUntil = 0;
+    d.busyLoginUntil = 0;
     d.timeWarned = 0;
     if (!d.loggedIn) {                        // busy-line guest was never logged in
         d.loggedIn   = true;
@@ -175,6 +175,12 @@ bool Bbs::rowNodes(Session& s) {
     for (;;) {
         uint8_t i = s.listIdx++;
         if (i == 0) {
+            char count[16];
+            snprintf(count, sizeof(count), "%u of %u", activeNodes(), BBS_MAX_NODES);
+            rowTitle(s, "Nodes", count);
+            return true;
+        }
+        if (i == 1) {
             if (wide) snprintf(buf, sizeof(buf), fmt, 'N', "Handle", "IP", "Terminal", "Left", "Idle");
             else      snprintf(buf, sizeof(buf), fmt, 'N', "Handle", "IP", "Left", "Idle");
             t.color(tl, Color::LightBlue);
@@ -182,8 +188,9 @@ bool Bbs::rowNodes(Session& s) {
             t.nl(tl);
             return true;
         }
-        uint8_t k = static_cast<uint8_t>(i - 1);
-        if (k >= kSessions) return false;
+        uint8_t k = static_cast<uint8_t>(i - 2);
+        if (k == kSessions) { rowRule(s); return true; }
+        if (k > kSessions) return false;
         const Session* o = all_[k];
         if (o->role != Role::Caller && o->st == SState::Free) continue;
         if (o != &s && outranks(*o, s) && (!o->visible || o->lurk)) {
@@ -232,13 +239,19 @@ bool Bbs::rowBans(Session& s) {
     char ip[16];
     BanList::Entry e;
 
+    // rows: 0 title | 1 header | 2.. one per active ban (slot k at k + 2) |
+    // BBS_BAN_SLOTS + 2 closing rule
     uint8_t i = s.listIdx++;
     if (i == 0) {
+        rowTitle(s, "Bans");
+        return true;
+    }
+    if (i == 1) {
         say(t, tl, Color::LightBlue, "Banned IP        Min left");
         t.nl(tl);
         return true;
     }
-    if (i == 1) {
+    if (i == 2) {
         bool any = false;
         for (uint8_t k = 0; k < BBS_BAN_SLOTS && !any; ++k) any = bans_.at(k, now, e);
         if (!any) {
@@ -248,16 +261,23 @@ bool Bbs::rowBans(Session& s) {
             return true;
         }
     }
-    for (uint8_t k = static_cast<uint8_t>(i - 1); k < BBS_BAN_SLOTS; ++k) {
+    if (i >= BBS_BAN_SLOTS + 2) {
+        if (i > BBS_BAN_SLOTS + 2) return false;
+        rowRule(s);
+        return true;
+    }
+    for (uint8_t k = static_cast<uint8_t>(i - 2); k < BBS_BAN_SLOTS; ++k) {
         if (!bans_.at(k, now, e)) continue;
-        s.listIdx = static_cast<uint8_t>(k + 2);
+        s.listIdx = static_cast<uint8_t>(k + 3);
         ipToText(e.ip, ip, sizeof(ip));
         snprintf(buf, sizeof(buf), "%-16s %u", ip, static_cast<unsigned>((e.until - now + 59999u) / 60000u));
         say(t, tl, Color::Grey, buf);
         t.nl(tl);
         return true;
     }
-    return false;
+    s.listIdx = static_cast<uint8_t>(BBS_BAN_SLOTS + 3);
+    rowRule(s);
+    return true;
 }
 
 // ===========================================================================

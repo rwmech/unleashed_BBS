@@ -3,7 +3,7 @@
  * Description: ESP32 (ESP-IDF) implementation of the platform layer.
  * Listing:     COMPLETE FILE
  * Libraries:   ESP-IDF: esp_timer, esp_hw_support (esp_random), heap,
- *              esp_driver_gpio, esp_rom (ROM miniz tinfl)
+ *              esp_driver_gpio, esp_rom (ROM miniz tinfl), esp_wifi
  */
 #include "platform.h"
 #include "../config.h"
@@ -11,6 +11,7 @@
 #include "esp_random.h"
 #include "esp_heap_caps.h"
 #include "driver/gpio.h"
+#include "esp_wifi.h"
 extern "C" {
 #include "miniz.h"
 }
@@ -43,6 +44,12 @@ HeapStats heap() {
     h.largestBlock = static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     h.valid        = true;
     return h;
+}
+
+int8_t wifiRssi() {
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) return 0;
+    return ap.rssi;
 }
 
 void log(const char* fmt, ...) {

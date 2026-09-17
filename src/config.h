@@ -16,7 +16,7 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "0.6.0"
+#define BBS_VERSION         "0.7.0"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // ---------------------------------------------------------------------------
@@ -57,6 +57,8 @@
 #define BBS_USER_MAX        20       // handle length
 #define BBS_SCREEN_CHUNK    96       // screen file read chunk
 #define BBS_HISTORY         4        // command lines kept for up-arrow recall
+#define BBS_MASK_SHOW       24       // most '*' a masked input shows (keeps it on one line)
+#define BBS_DOING_MAX       10       // staff WHO/DASH: last command verb shown
 #define BBS_BUS_DEPTH       4        // queued messages per session
 
 // ---------------------------------------------------------------------------
@@ -82,6 +84,7 @@
 #define BBS_WHO_REFRESH_MAX 30
 #define BBS_CALL_MINUTES    60       // per call, 0 = unlimited
 #define BBS_DAY_MINUTES     480      // per day, 0 = unlimited
+#define BBS_GUEST_MINUTES   15       // per guest call, 0 = unlimited; guests have no daily limit
 #define BBS_DEFAULT_TZ      "UTC0"
 #define BBS_DEFAULT_NTP     "pool.ntp.org"
 

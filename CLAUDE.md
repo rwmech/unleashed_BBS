@@ -23,6 +23,9 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
 - Plugin order after core: GPIO, chat (DDial/Gtalk style), serial bridge (sysop/LAN only, raw stream handoff), HA. Then mail, message bases, XMODEM, MQTT, Lua doors, federation.
 - SD card plugin (planned): replaces the onboard filesystem for all data, takes over file management, and lets logging be redirected to the card. Onboard storage caps user accounts at about 100; more than that requires the SD card plugin. Core file access must stay behind `plat::fsBase()` / `plat::logsBase()` so the plugin can swap the mounts.
 - User accounts (0.6.0): form and list screens (cursor-driven on ANSI and PETSCII, line prompts on plain ASCII) instead of typed commands, except `USER DEL`; self-registration on by default (`self_register`); password typed twice; salted SHA-256 x1000 (simple on purpose, not PBKDF2: the file has to be stolen first); 3 wrong per call hang up, 5 per handle in 15 min lock it (RAM); staff elevation stays on `BYE <password>`, separate from accounts, so a guessed account password never grants staff; flashy fx on login, sign-up and forms. `users.txt` is a `[handle]` block file, rewritten via temp file + rename; adding a field is one `UserRec` member plus one `kUserFields` row. USERS.md documents it.
+- Guests (0.7.0): `GUEST` at the handle prompt, on by default (`guest`). Named `Guest<node>`, no account, nothing saved (`saveCallStats` skips them), `guest_minutes` (15) per call and no daily limit. The call still goes to the caller log (sysop's security record). `GUEST` and `Guest<digits>` are reserved handles. `CF_ACCOUNT` commands (PROFILE, PASSWORD) are hidden and unknown for guests. Guests may still `BYE <password>` (same exposure as self-registration; IP bans apply).
+- Input effects (0.7.0): the handle, password and command editors use `F_STAY` (Enter does not move to a new line). A rejected handle or unknown command rubs out, flashes the reason in place (`inputError`, short text on 40 columns) and re-arms on the same line; known commands print their own newline first. Passwords: spinner, rub out the stars, `ACCESS GRANTED` in place; denied flashes and clears for a retry on the line. Masked input shows at most 24 stars so it never wraps on a C64. Pages and broadcasts: bell, flashing tag, rub out, message. Lists and MEM/TERM/TIME open with `rowTitle` (reverse bar on ANSI/PETSCII, dashed on ASCII) and lists close with a rule.
+- Staff Doing column (0.7.0): `Session::doing` holds the verb of the last dispatched command (never arguments, never BYE, never unknown input, so a mistyped password can't show). WHO shows it instead of Terminal for staff with `NODES`; DASH always. Plugins can set it later for doors.
 - Input backpressure: a session's socket is only read, and held keys only fed, while its timeline has `BBS_RX_ROOM` (1 KB) free. Form redraws (~1.2 KB on PETSCII) overflowed the old 2 KB timeline when keys were typed ahead; `BBS_TL_BYTES` is now 3 KB.
 - Workflow: commit and push after every flashed build. COMMANDS.md, README.md and this file are updated in the same change. Code review at phase checkpoints; a robustness/pen test of the live board before any internet exposure (tabled for now).
 
@@ -39,10 +42,17 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
 
 Also done: busy line, paging (`[More]`), abort keys, command history, time limits (per call, per day), caller log (`LAST`), NTP + TZ, mDNS, backup window, config reload without reboot.
 
-## Current state (0.6.0, built, not flashed)
+## Current state (0.7.0, built, not flashed)
 
-- Host build: 202/202 scripted checks (`tools/testclient.py --backup`), also under ASan/UBSan. Every test login goes through an account (`login()` registers a new handle through the form).
-- ESP32 0.6.0: image 919 KB (58.4% of the slot), static RAM 104 KB; session 5,672 bytes, pool 45 KB. No app warnings. Not flashed: Rob is still bench-testing 0.5.0 and flashes when ready.
+- Host build: 220/220 scripted checks (`tools/testclient.py --backup`), also under ASan/UBSan. Layouts checked through a C64 screen model (in-place errors and passwords stay on one 40-column line, title bars 39 wide).
+- ESP32 0.7.0: image 922 KB (58.6% of the slot), static RAM 104 KB; session 5,688 bytes. No app warnings. Rob flashes it.
+- 0.7.0 adds: guests, input effects in place, page/broadcast alerts, title bars and closing rules on lists, staff Doing column (WHO, DASH), Wi-Fi RSSI on DASH (`plat::wifiRssi`), `guest` and `guest_minutes` keys.
+- Hardware checks for 0.7.0: everything listed for 0.6.0 below, plus on the C64: reverse title bars, rubout of errors and ACCESS GRANTED in place, the PAGE alert, and a real RSSI value on DASH.
+
+## State at 0.6.0 (host-tested, shipped inside 0.7.0)
+
+- Host build: 202/202 scripted checks. Every test login goes through an account (`login()` registers a new handle through the form).
+- ESP32 0.6.0: image 919 KB (58.4% of the slot), static RAM 104 KB; session 5,672 bytes, pool 45 KB.
 - 0.6.0 adds: accounts (`users.txt`, in the backup zip, validated on upload), sign-up form, `Password:` with fx, `LoginGuard` per-handle lockout (replaced the per-IP time bank; daily minutes now live in the account), `INFO`/`PROFILE`/`PASSWORD`, `USERS` manager and `USER ADD|EDIT|DEL` under the new `USERS` permission (CO1 yes, CO2 no by default), `self_register` and `max_users` keys, input backpressure.
 - Hardware checks for 0.6.0 once flashed: sign-up form and user manager on the C64 (PETSCII cursor moves, reverse-video boxes, F1 save, left-arrow cancel), password hashing time on the ESP32 (1000 SHA-256 rounds should be well under 100 ms), heap with 6 callers.
 
@@ -59,15 +69,11 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
 
 0.5.0: done and bench-checked (keepalive, LED).
 
-0.6.0: done on host, compiled for ESP32, waiting for Rob to flash.
+0.6.0: accounts, host-tested, never flashed on its own.
 
-Queued for the next build (Rob's notes, not started):
+0.7.0: guests plus the queued notes (input fx, password in place, page alerts, list graphics, staff Doing column, DASH RSSI). Built, waiting for Rob to flash.
 
-- Input fx everywhere: handle prompt, command line and other input get backspace/rubout style effects. The password field turns into `ACCESS GRANTED` in place (rubout the stars, then the text).
-- Page delivery: an alert (bell), rubout, then the message.
-- Graphics on HELP, WHO and other lists: headers, horizontal rules, framing.
-- Staff WHO / WHO n / DASH: a column with each caller's last command, or the door/function they're in (not snooping, just the verb).
-- DASH: Wi-Fi signal strength (RSSI of the joined AP).
+Queued for the next build: nothing yet.
 
 - Tabled: robustness/pen test script (`tools/robustness.py`, untracked stub).
 - Tagline: current screens are fine for now.

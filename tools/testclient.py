@@ -335,7 +335,7 @@ def test_ascii():
         c.pump(0.2)
     text = bytes(c.buf).replace(b"[More] Y/n/c ", b"").replace(b"\x08 \x08", b"").decode("ascii", "replace")
     lines = [l for l in text.split("\r\n") if l]
-    body = [l for l in lines if l not in ("help", "Commands") and "stops output" not in l and "Main" not in l]
+    body = [l for l in lines if l != "help" and "---" not in l and "stops output" not in l and "Main" not in l]
     ok &= check("HELP generated with rows", len(body) >= 10)
     ok &= check("every HELP line fits 39 columns", all(len(l) <= 39 for l in lines))
     ok &= check("descriptions start at column 14",
@@ -358,6 +358,9 @@ def test_page():
     a.send(f"page {nb} hello bob\r".encode())
     ok &= check("page confirmed", a.wait_for(b"Page sent", 3))
     ok &= check("Bob receives the page", b.wait_for(f"Page from Alice ({na}): hello bob".encode(), 3))
+    msg_at = b.buf.find(b"Page from Alice")
+    ok &= check("page arrives with bell and a flashing PAGE tag first",
+                0 <= b.buf.find(b"\x07") < b.buf.find(b" PAGE ") < msg_at)
     ok &= check("Bob's prompt redrawn after page", b.wait_for(b"Main", 2))
     b.buf.clear()
     b.send(b"dnd\r")
@@ -395,6 +398,7 @@ def test_sysop():
     x.wait_for(b"Who's online", 3)
     x.pump(0.5)
     ok &= check("hidden sysop not in WHO", re.search(rb"[S1-6] Rob ", x.buf) is None)
+    ok &= check("caller WHO shows terminals, not what others do", b"Terminal" in x.buf and b"Doing" not in x.buf)
     ok &= check("sysop's old node shows waiting", b"waiting for caller" in x.buf)
 
     r.buf.clear()
@@ -404,6 +408,7 @@ def test_sysop():
     r.buf.clear()
     r.send(b"dash\r")
     ok &= check("DASH shows the dashboard", r.wait_for(b"SYSOP DASHBOARD", 4) and r.wait_for(b"Calls", 4))
+    ok &= check("DASH shows Wi-Fi and a Doing column", r.wait_for(b"WiFi", 4) and b"Doing" in r.buf)
     if r.wait_for(b"[More] Y/n/c", 2):
         r.send(b"c")
     ok &= check("DASH lists callers and last calls", r.wait_for(b"Last calls", 4) and b"Xavier" in r.buf)
@@ -452,6 +457,12 @@ def test_sysop():
     x.wait_for(b"Who's online", 3)
     x.pump(0.5)
     ok &= check("SHOW lists the sysop as S", re.search(rb"S Rob", x.buf) is not None)
+    r.buf.clear()
+    r.send(b"who\r")
+    r.wait_for(b"Who's online", 3)
+    r.pump(0.5)
+    ok &= check("staff WHO shows each caller's last command", b"Doing" in r.buf and
+                re.search(rb"\d Xavier +WHO ", r.buf) is not None)
 
     r.buf.clear()
     r.send(f"kick {nx} bye now\r".encode())
@@ -590,6 +601,8 @@ def test_accounts():
     ok &= check("handle match ignores case", which == 0)
     c.send(TEST_PW.encode() + b"\r")
     ok &= check("right password: ACCESS GRANTED", c.wait_for(b"ACCESS GRANTED", 6))
+    ok &= check("stars turn into ACCESS GRANTED on the same line",
+                re.search(rb"Password: [^\n]*\*[^\n]*ACCESS GRANTED", c.buf) is not None)
     ok &= check("second call: welcome back, call 2", c.wait_for(b"Welcome back, ", 5) and c.wait_for(b"Call 2.", 3))
     ok &= check("account's own spelling used", c.wait_for(b"Acct", 2))
     c.wait_for(b"Main", 5)
@@ -643,7 +656,6 @@ def test_accounts():
     c, which = handle_then("Acct", [b"Password:"])
     c.send(TEST_PW.encode() + b"\r")
     ok &= check("old password no longer works", c.wait_for(b"ACCESS DENIED", 6))
-    c.wait_for(b"Password:", 5)
     c.send(b"newpw99\r")
     ok &= check("new password works", c.wait_for(b"ACCESS GRANTED", 6))
     c.close()
@@ -657,8 +669,7 @@ def test_accounts():
     c = ansi_login("Locky")
     c.close()
     c, _ = handle_then("Locky", [b"Password:"])
-    for _ in range(3):
-        c.wait_for(b"Password:", 5)
+    for _ in range(3):                                 # retries stay on the same line
         c.buf.clear()
         c.send(b"wrong1\r")
         c.wait_for(b"ACCESS DENIED", 6)
@@ -666,7 +677,6 @@ def test_accounts():
     c.close()
     c, _ = handle_then("Locky", [b"Password:"])
     for _ in range(2):
-        c.wait_for(b"Password:", 5)
         c.buf.clear()
         c.send(b"wrong2\r")
         c.wait_for(b"ACCESS DENIED", 6)
@@ -737,6 +747,49 @@ def test_user_admin():
     s.send(b"info acct\r")
     ok &= check("staff INFO shows private fields", s.wait_for(b"acct@example.com", 5))
     s.close()
+    return ok
+
+
+def test_guest():
+    print("Guest access")
+    c = Caller(ansi=True)
+    ok = check("login hint mentions GUEST", c.wait_for(b"or GUEST.", 10))
+    c.wait_for(b"Enter your handle", 5)
+    c.buf.clear()
+    c.send(b"Guest7\r")
+    ok &= check("Guest<n> handles are reserved", c.wait_for(b"That handle is reserved.", 4))
+    ok &= check("errors rub out in place (no new prompt)", b"Enter your handle" not in c.buf)
+    c.buf.clear()
+    c.send(b"guest\r")
+    ok &= check("GUEST gets in without a password", c.wait_for(b"GUEST ACCESS", 6) and c.wait_for(b"Main", 6))
+    name = re.search(rb"Welcome, (?:\x1b\[[0-9;]*m)*(Guest\d)", c.buf)
+    ok &= check("guest named after the node", name is not None and name.group(1) == f"Guest{c.node()}".encode())
+    ok &= check("guest told nothing is saved", b"nothing is saved" in c.buf)
+    ok &= check("guest time limit 15 minutes", b"Time left: 15 min." in c.buf)
+    c.buf.clear()
+    c.send(b"time\r")
+    ok &= check("TIME: 15 min left, no daily limit", c.wait_for(b"Left     15 min", 3))
+    c.buf.clear()
+    c.send(b"profile\r")
+    ok &= check("PROFILE is not for guests", c.wait_for(b"Unknown command", 3))
+    c.buf.clear()
+    c.send(b"info\r")
+    ok &= check("INFO: guests have no account", c.wait_for(b"Guests have no account.", 3))
+    c.buf.clear()
+    c.send(b"help\r")
+    end = time.time() + 8
+    while time.time() < end and b"stops output" not in c.buf:
+        if c.buf.endswith(b"[More] Y/n/c "):
+            c.send(b"c")
+        c.pump(0.2)
+    ok &= check("HELP hides PROFILE and PASSWORD from guests",
+                b"LAST" in c.buf and b"PROFILE" not in c.buf and b"PASSWORD" not in c.buf)
+    c.send(b"bye\r")
+    c.wait_closed(8)
+    c.close()
+    if HOST in ("127.0.0.1", "localhost"):
+        users = (DATA / "users.txt").read_text()
+        ok &= check("nothing saved for the guest", "[Guest" not in users)
     return ok
 
 
@@ -933,17 +986,21 @@ def test_backup():
     ok &= check("callers see the uploaded bulletin", c.wait_for(b"Custom line from upload test", 8))
     c.close()
 
-    # --- self_register = no: unknown handles are refused, then back on
-    def with_register(value):
-        lines = [l for l in cfg2.splitlines() if not l.strip().startswith("self_register")]
-        return make_zip({"system.cfg": ("\n".join(lines) + f"\nself_register = {value}\n").encode()})
+    # --- self_register = no and guest = no: only accounts get in, then back on
+    def with_access(value):
+        lines = [l for l in cfg2.splitlines() if not l.strip().startswith(("self_register", "guest"))]
+        extra = f"\nself_register = {value}\nguest = {value}\n"
+        return make_zip({"system.cfg": ("\n".join(lines) + extra).encode()})
 
-    status, body, seen = upload_with_answer(s, with_register("no"), b"y")
-    ok &= check("self_register = no applied", seen and status == 200)
+    status, body, seen = upload_with_answer(s, with_access("no"), b"y")
+    ok &= check("self_register = no, guest = no applied", seen and status == 200)
     c, which = handle_then("Stranger", [b"The sysop creates accounts here.", b"Register"])
     ok &= check("no self-registration: new handle refused", which == 0)
+    c.buf.clear()
+    c.send(b"guest\r")
+    ok &= check("guest = no: GUEST refused", c.wait_for(b"Guest access is off here.", 5))
     c.close()
-    status, body, seen = upload_with_answer(s, with_register("yes"), b"y")
+    status, body, seen = upload_with_answer(s, with_access("yes"), b"y")
     c, which = handle_then("Stranger", [b"The sysop creates accounts here.", b"Register"])
     ok &= check("self_register = yes offers sign-up again", status == 200 and which == 1)
     c.close()
@@ -1015,7 +1072,7 @@ def test_ban():
 
 if __name__ == "__main__":
     results = [test_ansi(), test_telnet_first(), test_petscii(), test_ascii(),
-               test_page(), test_sysop(), test_cosysop(), test_accounts(), test_user_admin(),
+               test_page(), test_sysop(), test_cosysop(), test_accounts(), test_user_admin(), test_guest(),
                test_bulletin(), test_idle_login(), test_busy()]
     if "--backup" in FLAGS:
         results.append(test_backup())

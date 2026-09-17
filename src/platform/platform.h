@@ -45,6 +45,12 @@ const char* logsBase();
 HeapStats heap();
 
 // ---------------------------------------------------------------------------
+// wifiRssi: signal strength of the joined access point in dBm, 0 when not
+// connected or not available (host)
+// ---------------------------------------------------------------------------
+int8_t wifiRssi();
+
+// ---------------------------------------------------------------------------
 // log: printf-style line to the console (UART on ESP32, stdout on host)
 // ---------------------------------------------------------------------------
 void log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));

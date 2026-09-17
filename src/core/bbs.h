@@ -94,7 +94,9 @@ struct Session {
     int16_t      timeAdjMin  = 0;      // sysop TIME adjustments
     uint8_t      timeWarned  = 0;      // 0 none, 1 five-minute, 2 one-minute
     bool         idleWarned  = false;
-    uint32_t     guestUntil  = 0;      // busy-line login deadline
+    uint32_t     busyLoginUntil = 0;   // busy-line login deadline
+    bool         guest       = false;  // logged in as GUEST: no account, nothing saved
+    char         doing[BBS_DOING_MAX + 1] = {};   // last command verb (staff WHO/DASH)
 
     // paging and generated lists
     ListKind     list        = ListKind::None;
@@ -164,6 +166,7 @@ enum CmdFlag : uint8_t {
     CF_HIDDEN   = 1,   // works, never listed in HELP (aliases)
     CF_STAFF    = 2,   // needs any staff level (perm 0 staff commands)
     CF_HELPONLY = 4,   // HELP row only, never dispatched (a staff form of a verb)
+    CF_ACCOUNT  = 8,   // needs an account: hidden from guests
 };
 
 struct Command {
@@ -217,8 +220,12 @@ private:
     void startIntro(Session& s);
     void startBusy(Session& s, uint32_t now);
     void askName(Session& s);
+    void armName(Session& s);
+    void loginHint(Session& s);
     void drawNamePrompt(Session& s);
     void onHandle(Session& s, uint32_t now);
+    void loginGuest(Session& s, uint32_t now);
+    void inputError(Session& s, uint8_t used, const char* longMsg, const char* shortMsg);
     void askPassword(Session& s);
     void onPassword(Session& s, uint32_t now);
     void completeLogin(Session& s, uint32_t now);
@@ -244,6 +251,7 @@ private:
     void ulKey(Session& s, int k, uint32_t now);
     uint8_t ulRows(const Session& s) const;
     void prompt(Session& s);
+    void armPrompt(Session& s);
     void drawPrompt(Session& s);
     void hangup(Session& s, const char* msg, uint32_t now);
     void goodbye(Session& s, uint32_t now);
@@ -271,7 +279,9 @@ private:
     // -- output helpers (bbs_shell.cpp) --------------------------------------
     void rowText(Session& s, Color c, const char* text, bool newline = true);   // padded when refreshing
     void rowRule(Session& s);
+    void rowTitle(Session& s, const char* title, const char* right = nullptr);
     uint8_t rowWidth(const Session& s) const;
+    static const char* doingText(const Session& s);
 
     // -- shell (bbs_shell.cpp) -----------------------------------------------
     void runCommand(Session& s, const char* line, uint32_t now);

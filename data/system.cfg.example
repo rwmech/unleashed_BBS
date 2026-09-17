@@ -63,6 +63,11 @@ activity_led_gpio = 2
 self_register = yes
 max_users = 100
 
+# Guests: GUEST at the handle prompt, no account, nothing saved.
+# guest_minutes per call (0 = unlimited); guests have no daily limit.
+guest = yes
+guest_minutes = 15
+
 # Staff access matrix. X = allowed, - = denied.
 # SYSOP always has everything; its column is there for reference.
 # Keep this section last: every line after [access] is a matrix row.

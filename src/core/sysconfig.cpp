@@ -130,6 +130,17 @@ bool validHostname(char* v) {
     return true;
 }
 
+// yesNo: yes/no/on/off/1/0
+void yesNo(Ctx& c, const char* key, const char* val, bool& out) {
+    if (ieq(val, "yes") || ieq(val, "on") || !strcmp(val, "1"))      out = true;
+    else if (ieq(val, "no") || ieq(val, "off") || !strcmp(val, "0")) out = false;
+    else {
+        char what[48];
+        snprintf(what, sizeof(what), "%.24s must be yes or no:", key);
+        problem(c, what, val);
+    }
+}
+
 // keyValue: one "key = value" line
 void keyValue(Ctx& c, char* key, char* val) {
     SysConfig& g = *c.cfg;
@@ -150,11 +161,9 @@ void keyValue(Ctx& c, char* key, char* val) {
     else if (!strcmp(key, "backup_button_gpio"))    { if (number(c, key, val, -1, 39, n)) g.backupGpio = static_cast<int8_t>(n); }
     else if (!strcmp(key, "activity_led_gpio"))     { if (number(c, key, val, -1, 39, n)) g.ledGpio = static_cast<int8_t>(n); }
     else if (!strcmp(key, "max_users"))             { if (number(c, key, val, 1, BBS_MAX_USERS, n)) g.maxUsers = static_cast<uint8_t>(n); }
-    else if (!strcmp(key, "self_register")) {
-        if (ieq(val, "yes") || ieq(val, "on") || !strcmp(val, "1"))      g.selfRegister = true;
-        else if (ieq(val, "no") || ieq(val, "off") || !strcmp(val, "0")) g.selfRegister = false;
-        else problem(c, "self_register must be yes or no:", val);
-    }
+    else if (!strcmp(key, "self_register"))         yesNo(c, key, val, g.selfRegister);
+    else if (!strcmp(key, "guest"))                 yesNo(c, key, val, g.guestEnabled);
+    else if (!strcmp(key, "guest_minutes"))         { if (number(c, key, val, 0, 1440, n)) g.guestMinutes = static_cast<uint16_t>(n); }
     else if (!strcmp(key, "who_refresh_min"))       { if (number(c, key, val, 1, 60, n)) g.whoMin = static_cast<uint8_t>(n); }
     else if (!strcmp(key, "who_refresh_max"))       { if (number(c, key, val, 1, 60, n)) g.whoMax = static_cast<uint8_t>(n); }
     else if (!strcmp(key, "backup_port")) {
@@ -218,8 +227,9 @@ void logSummary() {
     plat::log("cfg: idle %u  limits %u/call %u/day  backup port %u, %u min, gpio %d",
               g_cfg.idleMinutes, g_cfg.callMinutes, g_cfg.dayMinutes,
               g_cfg.backupPort, g_cfg.backupMinutes, g_cfg.backupGpio);
-    plat::log("cfg: who refresh %u..%u s  activity led gpio %d  self_register %s  max_users %u",
-              g_cfg.whoMin, g_cfg.whoMax, g_cfg.ledGpio, g_cfg.selfRegister ? "yes" : "no", g_cfg.maxUsers);
+    plat::log("cfg: who refresh %u..%u s  activity led gpio %d  self_register %s  max_users %u  guest %s %u min",
+              g_cfg.whoMin, g_cfg.whoMax, g_cfg.ledGpio, g_cfg.selfRegister ? "yes" : "no", g_cfg.maxUsers,
+              g_cfg.guestEnabled ? "yes" : "no", g_cfg.guestMinutes);
     plat::log("cfg: sysop %s  co1 %s perms 0x%03x  co2 %s perms 0x%03x",     // never the passwords
               g_cfg.sysopPass[0] ? "on" : "off",
               g_cfg.coPass[0][0] ? "on" : "off", g_cfg.coPerms[0],

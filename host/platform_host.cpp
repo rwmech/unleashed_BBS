@@ -53,6 +53,10 @@ HeapStats heap() {
     return HeapStats{ 0, 0, 0, false };
 }
 
+int8_t wifiRssi() {
+    return 0;
+}
+
 void log(const char* fmt, ...) {
     timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);

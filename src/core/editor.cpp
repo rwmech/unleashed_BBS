@@ -59,19 +59,20 @@ LineEditor::Res LineEditor::key(int k, Term& t, ByteSink& o) {
     if (k == KEY_ENTER) {
         buf_[len_] = '\0';
         active_ = false;
-        t.nl(o);
+        if (!(flags_ & F_STAY)) t.nl(o);
         return Res::Done;
     }
     if (k == KEY_BACKSPACE) {
         if (len_) {
+            bool visible = !(flags_ & F_MASK) || len_ <= BBS_MASK_SHOW;
             --len_;
             buf_[len_] = '\0';
-            t.eraseBack(o, 1);
+            if (visible) t.eraseBack(o, 1);
         }
         return Res::Editing;
     }
     if (k == KEY_ESC || k == KEY_BREAK) {
-        t.eraseBack(o, len_);
+        t.eraseBack(o, shown());
         len_    = 0;
         buf_[0] = '\0';
         active_ = false;
@@ -86,15 +87,19 @@ LineEditor::Res LineEditor::key(int k, Term& t, ByteSink& o) {
 
     buf_[len_++] = c;
     buf_[len_]   = '\0';
-    t.ch(o, echoFor(static_cast<uint8_t>(len_ - 1)));
+    if (len_ <= shown()) t.ch(o, echoFor(static_cast<uint8_t>(len_ - 1)));
     return Res::Editing;
+}
+
+uint8_t LineEditor::shown() const {
+    return ((flags_ & F_MASK) && len_ > BBS_MASK_SHOW) ? BBS_MASK_SHOW : len_;
 }
 
 // ---------------------------------------------------------------------------
 // redraw: re-echo the whole buffer with masking applied
 // ---------------------------------------------------------------------------
 void LineEditor::redraw(Term& t, ByteSink& o) const {
-    for (uint8_t i = 0; i < len_; ++i) t.ch(o, echoFor(i));
+    for (uint8_t i = 0; i < shown(); ++i) t.ch(o, echoFor(i));
 }
 
 // ---------------------------------------------------------------------------
@@ -102,7 +107,7 @@ void LineEditor::redraw(Term& t, ByteSink& o) const {
 // ---------------------------------------------------------------------------
 void LineEditor::replace(const char* s, Term& t, ByteSink& o) {
     if (!active_) return;
-    t.eraseBack(o, len_);
+    t.eraseBack(o, shown());
     size_t n = s ? strlen(s) : 0;
     if (n > max_) n = max_;
     if (n) memcpy(buf_, s, n);

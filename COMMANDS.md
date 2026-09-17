@@ -1,6 +1,6 @@
 # µnleashed BBS: command reference
 
-Version 0.6.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
+Version 0.7.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
 
 ## Calling in
 
@@ -17,12 +17,24 @@ Version 0.6.0. This file tracks every command and key the BBS understands, and i
 
 Full guide to accounts: [USERS.md](USERS.md).
 
-- `Enter your handle:` accepts letters, digits, space, `-`, `_` and `.`, up to 20 characters. A handle must start with a letter or digit, and `SYSOP` is reserved. Case doesn't matter.
-- A known handle asks `Password:`. 3 wrong passwords hang up the call; 5 for one handle within 15 minutes lock that handle for 15 minutes. ESC goes back to the handle prompt.
-- An unknown handle asks `New handle. Register <handle> (Y/n)?` and opens the sign-up form: password twice, name, email, and optional address, phone and profile. With `self_register = no` the BBS answers `The sysop creates accounts here.` instead.
+- A hint above the first prompt says how to get in: `New? Type a handle to join, or GUEST.` (it follows the `self_register` and `guest` settings).
+- `Enter your handle:` accepts letters, digits, space, `-`, `_` and `.`, up to 20 characters. A handle must start with a letter or digit. `SYSOP`, `GUEST` and `Guest<n>` are reserved. Case doesn't matter.
+- A handle that isn't accepted rubs out in place, the reason flashes on the same line and rubs out too, and you type again on that line. 40-column screens get a short reason (`Reserved handle`), wider ones the full sentence.
+- `GUEST` logs in without a password (see Guests below).
+- A known handle asks `Password:`. After Enter the stars spin, rub out and turn into `ACCESS GRANTED` on the same line. A wrong password flashes `ACCESS DENIED` there and clears for another try. 3 wrong passwords hang up the call; 5 for one handle within 15 minutes lock that handle for 15 minutes. ESC goes back to the handle prompt.
+- An unknown handle asks `New handle. Register <handle> (Y/n)?` and opens the sign-up form: password twice, name, email, and optional address, phone and profile. With `self_register = no` the handle is refused in place (`No account by that name. Try GUEST.`, or `The sysop creates accounts here.` when guests are off too).
 - A locked account is refused before the password.
 - If nothing is typed at the handle prompt, a warning appears at 30 s, followed by your partial input redrawn. The line hangs up at 60 s.
 - After login you see your node, the date and time, your call count and your remaining time. If `screens/bulletin.*` exists, it plays next.
+
+### Guests
+
+- Type `GUEST` at the handle prompt. On by default; `guest = no` turns it off.
+- The session is named after its node (`Guest3`) and shows in WHO like any caller.
+- Nothing is saved: no account, no profile, no call count. The call still appears in `LAST`, like every call.
+- 15 minutes per call (`guest_minutes`), with the usual warnings at 5 and 1 minute. No daily limit.
+- `PROFILE` and `PASSWORD` don't exist for guests (not in HELP, answered as unknown). `INFO` without a handle says `Guests have no account.`
+- Everything else works, including `PAGE` and `BYE <password>`.
 
 ## Keys
 
@@ -36,6 +48,7 @@ Full guide to accounts: [USERS.md](USERS.md).
 | C | `[More] Y/n/c` | continue without pausing |
 | any key | `WHO n`, `DASH n` refresh | stop refreshing, back to the prompt |
 | ESC or Ctrl-C | command prompt | clear the line |
+| Enter on an unknown command | command prompt | the line rubs out, `Unknown command. Type HELP.` (C64: `?SYNTAX  ERROR`) flashes in its place, then you type again on the same line |
 | Up / Down (C64: CRSR) | forms | previous / next field |
 | Enter (C64: RETURN) | forms | next field; on `Save` / `Cancel` do that |
 | Left / Right | forms | move between `Save` and `Cancel` |
@@ -49,12 +62,12 @@ Paging pauses at the screen height minus 2 (23 lines on a C64, 22 on an 80x24 te
 
 ## Caller commands
 
-Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the same as `WHO`.
+Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the same as `WHO`. Lists (HELP, WHO, LAST, NODES, BANS, DASH) and MEM, TERM and TIME open with a title bar (reverse video on ANSI and PETSCII, a dashed rule on plain ASCII); lists close with a rule.
 
 | Command | Shortcut | What it does |
 |---|---|---|
 | `HELP` | `H`, `?` | Command list, generated from the command table: only the commands you can use, 40 columns wide on every terminal, descriptions aligned in one column. |
-| `WHO` | `W` | Who is on each node: handle, terminal, minutes on, idle time (mm:ss). A hidden sysop and the busy line are never listed. |
+| `WHO` | `W` | Who is on each node: handle, terminal, minutes on, idle time (mm:ss). A hidden sysop and the busy line are never listed. Staff with `NODES` see a Doing column (the last command each caller ran, verb only, never arguments) instead of the terminal. |
 | `WHO n` | `W n` | The same list redrawn in place every n seconds (`who_refresh_min`..`who_refresh_max`, default 1..30) until you press a key. The footer shows the idle clock: refreshing is not input, so the idle hangup still counts down. |
 | `MEM` | `M` | Heap statistics and session sizing. |
 | `TERM` | `T` | Terminal type, size, telnet mode, emulated line speed. |
@@ -63,9 +76,9 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | `TIME` | | Date and time, minutes online, minutes left. |
 | `LAST` | | The last 50 calls, newest first. |
 | `INFO [handle]` | `I` | An account: name, member since, last call, calls, profile. Email, address and phone only on your own account (or with `USERS`). |
-| `PROFILE` | | Form to change your name, email, address, phone and profile. |
-| `PASSWORD` | | Form: current password, then the new one twice. |
-| `PAGE n message` | | Send a one-line message to node n. It arrives, with a bell, when that caller is back at the prompt. |
+| `PROFILE` | | Form to change your name, email, address, phone and profile. Not for guests. |
+| `PASSWORD` | | Form: current password, then the new one twice. Not for guests. |
+| `PAGE n message` | | Send a one-line message to node n. It arrives when that caller is back at the prompt: a bell, a flashing ` PAGE ` tag that rubs out, then the message. |
 | `DND` | | Toggle do-not-disturb: pages to you are refused. |
 | `BAUD n` | | Emulate 300, 1200, 2400, 9600 or 19200 bps. `BAUD OFF` for full speed. |
 | `G` | | Log off after a `Log off (Y/N)?` confirm. |
@@ -81,6 +94,7 @@ Other nodes see `*** handle is on node n` and `*** handle left node n` when call
 | Shell idle | 20 min (`idle_minutes`) | warning 1 minute before, then hangup |
 | Per call | 60 min (`call_minutes`) | warnings at 5 and 1 minute left, then hangup |
 | Per day | 480 min (`day_minutes`) | counted per account, saved at each logoff; checked at login |
+| Guest call | 15 min (`guest_minutes`) | warnings at 5 and 1 minute left, then hangup; no daily limit |
 
 Staff holding `NOLIMITS` (the sysop always does) are exempt from idle and time limits.
 
@@ -121,11 +135,11 @@ All caller commands still work. Node arguments are `1`-`6`, `S` (sysop node) or 
 
 | Command | Permission | What it does |
 |---|---|---|
-| `DASH` | `DASH` | Dashboard on one 40-column screen: date and time, version, uptime, NTP state, heap (free, lowest, largest block), every node with terminal, idle and minutes left, calls today, active bans, busy line, backup window state, the last 5 calls. |
+| `DASH` | `DASH` | Dashboard on one 40-column screen: date and time, version, uptime, NTP state, heap (free, lowest, largest block), every node with what it is doing (last command, or connect / login / sign-up), idle and minutes left, calls today, active bans, busy line, Wi-Fi signal (dBm of the joined access point), backup window state, the last 5 calls. |
 | `DASH n` | `DASH` | The dashboard redrawn every n seconds (same limits as `WHO n`) until a key. |
 | `NODES` | `NODES` | Every session: handle, IP, minutes left, idle (plus terminal type on wide screens). |
 | `KICK n [message]` | `KICK` | Disconnect node n. The caller sees `Disconnected by sysop: message`. |
-| `BROADCAST message` | `BROADCAST` | Send `*** Sysop: message` to every logged-in node. |
+| `BROADCAST message` | `BROADCAST` | Send `*** Sysop: message` to every logged-in node, announced like a page with a bell and a flashing ` SYSOP ` tag. |
 | `SNOOP n` | `SNOOP` | Mirror node n's output to your screen. `Q`, ESC or Ctrl-C stops. Both terminals must be the same type, and only one watcher per node. |
 | `TIME n +m` / `TIME n -m` | `TIME` | Add or remove minutes for node n. The caller's time warnings re-arm. |
 | `SHOW` | `HIDE` | List yourself in WHO (pages on). |
@@ -191,6 +205,8 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `activity_led_gpio` | `2` | LED that blinks on network traffic (the blue LED on DOIT-style boards), -1 = none |
 | `self_register` | `yes` | `no`: unknown handles can't sign up, staff add accounts |
 | `max_users` | `100` | account limit, 1..100 (more needs the SD card plugin) |
+| `guest` | `yes` | `no`: `GUEST` is refused at the handle prompt |
+| `guest_minutes` | `15` | per guest call, 0 = unlimited; guests have no daily limit |
 
 A value out of range is logged and the default is kept. An upload with a bad value is rejected, so it never replaces a working config.
 

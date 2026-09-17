@@ -67,6 +67,8 @@ struct SysConfig {
                                                      PERM_NOLIMITS | PERM_DASH) };
     uint16_t idleMinutes   = BBS_IDLE_MINUTES;
     bool     selfRegister  = true;
+    bool     guestEnabled  = true;
+    uint16_t guestMinutes  = BBS_GUEST_MINUTES;
     uint8_t  maxUsers      = BBS_MAX_USERS;
     uint8_t  whoMin        = BBS_WHO_REFRESH_MIN;
     uint8_t  whoMax        = BBS_WHO_REFRESH_MAX;

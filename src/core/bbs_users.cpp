@@ -232,7 +232,7 @@ void Bbs::formSave(Session& s, uint32_t now) {
         case FormKind::UserAdd:
         case FormKind::UserEdit: {
             bool adding = s.formKind == FormKind::UserAdd;
-            if (!users::validHandle(s.edit.handle)) { s.form.fail(0, "Handle: letters, digits, space - _ .", t, tl); return; }
+            if (!users::validHandle(s.edit.handle)) { s.form.fail(0, "Handle: A-Z 0-9 - _ . not reserved", t, tl); return; }
             if (adding && strlen(s.pwA) < BBS_PASS_MIN) { s.form.fail(1, "Password needs 4 or more characters", t, tl); return; }
             if (!adding && *s.pwA && strlen(s.pwA) < BBS_PASS_MIN) { s.form.fail(1, "Password needs 4 or more characters", t, tl); return; }
             if (!checkUserFields(s, 2)) return;
@@ -314,6 +314,11 @@ void Bbs::cmdInfo(Session& s, const char* arg) {
     Timeline& tl = s.tl;
     static UserRec u;
     const char* who = *arg ? arg : s.user;
+    if (!*arg && s.guest) {
+        say(t, tl, Color::Yellow, "Guests have no account.");
+        prompt(s);
+        return;
+    }
     if (!users::find(who, u)) {
         say(t, tl, Color::LightRed, "No account by that name.");
         prompt(s);
@@ -576,8 +581,8 @@ bool Bbs::rowUsers(Session& s) {
     char buf[64];
     uint8_t i = s.listIdx++;
     if (i == 0) {
-        snprintf(buf, sizeof(buf), "Accounts: %u of %u", users::count(), syscfg::get().maxUsers);
-        rowText(s, Color::Yellow, buf);
+        snprintf(buf, sizeof(buf), "%u of %u", users::count(), syscfg::get().maxUsers);
+        rowTitle(s, "Accounts", buf);
         return true;
     }
     if (i == 1) {
@@ -593,6 +598,11 @@ bool Bbs::rowUsers(Session& s) {
     }
     if (s.listSub == 0) {
         s.listSub = 1;
+        rowRule(s);
+        return true;
+    }
+    if (s.listSub == 1) {
+        s.listSub = 2;
         rowText(s, Color::DarkGrey, "USER ADD, USER EDIT h, USER DEL h");
         return true;
     }

@@ -6,24 +6,25 @@ Electronic freedom on a microcontroller. No web, no cloud, no browser.
 
 The name is spelled with a micro sign. Where µ can't be shown (PETSCII, hostnames, file names) it's written `unleashed`.
 
-The core has one dial-in port, 6 caller nodes, a busy line and a hidden sysop node. It also has connect-time terminal detection, user accounts with fill-in forms, screens, a line editor with history, paged output, a message bus between nodes, the TTY effects library and a shell.
+The core has one dial-in port, 6 caller nodes, a busy line and a hidden sysop node. It also has connect-time terminal detection, user accounts with fill-in forms, guest access, screens, a line editor with history, paged output, a message bus between nodes, the TTY effects library and a shell.
 
 Docs:
 
 | File | For |
 |---|---|
 | [COMMANDS.md](COMMANDS.md) | every command, key, limit and `system.cfg` setting |
-| [USERS.md](USERS.md) | signing up, logging in, managing accounts |
+| [USERS.md](USERS.md) | signing up, logging in, guests, managing accounts |
 | [BACKUP.md](BACKUP.md) | downloading and uploading config, accounts and screens as a `.zip` |
 | [SCREENS.md](SCREENS.md) | screen formats, naming rules and upload limits |
 
-## Status (0.6.0)
+## Status (0.7.0)
 
 - Host build (Linux): the full scripted suite passes, also under AddressSanitizer and UBSan (`tools/testclient.py --backup`, plus `--slow` and `--ban`).
 - ESP32 build: ESP-IDF 5.3.1 through PlatformIO (`espressif32@6.9.0`), with no warnings in app code.
-  - Image: about 920 KB, 58% of the 1.5 MB OTA slot.
+  - Image: about 920 KB, 59% of the 1.5 MB OTA slot.
   - Static RAM: 104 KB, including the 8-session pool (5.7 KB per session) and the backup buffers.
-- User accounts (0.6.0, not yet on hardware): self-registration through a form, salted SHA-256 passwords, per-handle lockout, PROFILE / PASSWORD / INFO, and a staff user manager. Up to 100 accounts on the board; more will need the SD card plugin.
+- User accounts (0.6.0): self-registration through a form, salted SHA-256 passwords, per-handle lockout, PROFILE / PASSWORD / INFO, and a staff user manager. Up to 100 accounts on the board; more will need the SD card plugin.
+- 0.7.0 (not yet on hardware): `GUEST` logins (15 minutes, nothing saved), input effects in place (errors and passwords resolve on the same line), page and broadcast alerts, title bars on lists, a staff Doing column in WHO and DASH, Wi-Fi signal on DASH.
 - Commands come from a registry (`Command` tables); HELP, dispatch and permissions are generated from it, and plugins will register into it.
 - On hardware:
   - PuTTY and a C64 through TeensyROM have both called in.
