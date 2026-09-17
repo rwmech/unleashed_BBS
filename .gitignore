@@ -12,3 +12,5 @@ data/calls.log
 CLAUDE.local.md
 host/bbs_host
 __pycache__/
+/*.zip
+/backup/
