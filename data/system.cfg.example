@@ -1,7 +1,12 @@
 # File:        data/system.cfg.example
 # Description: Run-time settings for the BBS. Copy to data/system.cfg
-#              (git-ignored), edit, then: pio run -t flashall
-#              key = value, '#' starts a comment. Read once at boot.
+#              (git-ignored) for a fresh board: pio run -t flashall
+#              On a running board, change it through the backup zip
+#              instead (BACKUP.md): no reflash, applies at once.
+#              key = value, '#' starts a comment.
+
+# Network name for DHCP and mDNS (name.local). a-z 0-9 -, applies at boot.
+hostname = unleashed
 
 # Timezone as a POSIX TZ string: STDoffsetDST,start,end
 #   offset is hours WEST of UTC (so US zones are positive)
@@ -36,6 +41,13 @@ idle_minutes = 20
 # Time limits in minutes, 0 = unlimited
 call_minutes = 60
 day_minutes = 480
+
+# Backup window (BACKUP.md): the BOOT button, pressed while the sysop is
+# logged in, opens http://<board>:<backup_port>/ for this many minutes.
+# backup_button_gpio = -1 disables the button and the window.
+backup_port = 8080
+backup_window_minutes = 5
+backup_button_gpio = 0
 
 # Staff access matrix. X = allowed, - = denied.
 # SYSOP always has everything; its column is there for reference.

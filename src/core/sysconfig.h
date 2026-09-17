@@ -4,28 +4,28 @@
  *              key = value lines, '#' starts a comment. Unknown keys are
  *              logged and ignored; a missing file means defaults.
  *
- *   tz                 POSIX TZ string, e.g. CST6CDT,M3.2.0,M11.1.0
- *   ntp_server         NTP host name
- *   sysop_password     BYE <pw>: hidden sysop node, every permission
- *   cosysop1_password  BYE <pw>: co-sysop level 1, stays on its node
- *   cosysop2_password  BYE <pw>: co-sysop level 2, stays on its node
- *   idle_minutes       shell idle hangup (warning 1 min before), 0 = never
- *   call_minutes       per-call time limit, 0 = unlimited
- *   day_minutes        per-day time limit, 0 = unlimited
+ *   hostname               DHCP and mDNS name (a-z 0-9 -), applies at boot
+ *   tz                     POSIX TZ string, e.g. CST6CDT,M3.2.0,M11.1.0
+ *   ntp_server             NTP host name
+ *   sysop_password         BYE <pw>: hidden sysop node, every permission
+ *   cosysop1_password      BYE <pw>: co-sysop level 1, stays on its node
+ *   cosysop2_password      BYE <pw>: co-sysop level 2, stays on its node
+ *   idle_minutes           shell idle hangup (warning 1 min before), 0 = never
+ *   call_minutes           per-call time limit, 0 = unlimited
+ *   day_minutes            per-day time limit, 0 = unlimited
+ *   backup_port            HTTP port while the backup window is open
+ *   backup_window_minutes  how long a button press keeps the window open
+ *   backup_button_gpio     button pin (active low), -1 = no button
  *
  *   [access] section: one row per permission, columns SYSOP CO1 CO2,
  *   X = allowed, - = denied. The SYSOP column is informational; the
  *   sysop always has everything. Rows left out keep their defaults.
- *
- *     [access]
- *     # permission  SYSOP  CO1  CO2
- *     NODES         X      X    X
- *     KICK          X      X    -
  * Listing:     COMPLETE FILE
  * Libraries:   none (libc stdio)
  */
 #pragma once
 #include <cstdint>
+#include <cstddef>
 #include "../config.h"
 
 // Staff levels, ordered: a higher level outranks a lower one
@@ -50,6 +50,7 @@ extern const PermName kPermNames[];
 extern const uint8_t  kPermCount;
 
 struct SysConfig {
+    char     hostname[32]  = BBS_HOSTNAME;
     char     tz[48]        = BBS_DEFAULT_TZ;
     char     ntpServer[64] = BBS_DEFAULT_NTP;
     char     sysopPass[33] = "";
@@ -59,13 +60,24 @@ struct SysConfig {
     uint16_t idleMinutes   = BBS_IDLE_MINUTES;
     uint16_t callMinutes   = BBS_CALL_MINUTES;
     uint16_t dayMinutes    = BBS_DAY_MINUTES;
+    uint16_t backupPort    = BBS_BACKUP_PORT;
+    uint16_t backupMinutes = BBS_BACKUP_MINUTES;
+    int8_t   backupGpio    = BBS_BACKUP_GPIO;
     bool     fromFile      = false;
 };
 
 namespace syscfg {
 
-// load: read the file (once at boot) and apply the timezone
+// load: read <fs>/system.cfg once at boot into the live config, apply TZ
 bool load();
+
+// reload: parse the file again. On problems the live config is kept and
+// false is returned with the first problem in err.
+bool reload(char* err, size_t errLen);
+
+// parseFile: parse any config file into out. Returns the number of hard
+// problems (bad value, bad [access] row); the first is copied to err.
+int parseFile(const char* path, SysConfig& out, char* err, size_t errLen);
 
 // get: the active configuration
 const SysConfig& get();
@@ -82,5 +94,13 @@ bool anyPassword();
 
 // levelName: "Sysop", "Co-sysop 1", "Co-sysop 2", ""
 const char* levelName(Access level);
+
+// redactLine: a password assignment with a value becomes "key = ***".
+// Returns true and fills out when the line was rewritten.
+bool redactLine(const char* line, char* out, size_t outLen);
+
+// unredactLine: "key = ***" becomes "key = <live password>".
+// Returns true and fills out when the line was rewritten.
+bool unredactLine(const char* line, char* out, size_t outLen);
 
 } // namespace syscfg

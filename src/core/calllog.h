@@ -1,9 +1,9 @@
 /*
  * File:        src/core/calllog.h
  * Description: Caller log: a fixed ring of BBS_CALLLOG_SIZE records in one
- *              LittleFS file (<fs>/calls.log). One write per logoff, reads
- *              one record at a time for LAST. Note: uploadfs rewrites the
- *              whole partition and erases this file.
+ *              file on the logs partition (<logs>/calls.log). One write per
+ *              logoff, reads one record at a time for LAST. It never grows,
+ *              is not part of the backup zip, and survives uploadfs.
  *
  *   File layout: 8-byte header (magic "CLG1", next u16, count u16),
  *   then BBS_CALLLOG_SIZE fixed-size CallRec slots.

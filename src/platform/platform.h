@@ -33,12 +33,14 @@ uint32_t millis();
 uint32_t random32();
 
 // ---------------------------------------------------------------------------
-// fsBase: mount point of the data filesystem, no trailing slash
+// fsBase: mount point of the data filesystem (screens, system.cfg), no
+// trailing slash. logsBase: mount point of the separate logs filesystem.
 // ---------------------------------------------------------------------------
 const char* fsBase();
+const char* logsBase();
 
 // ---------------------------------------------------------------------------
-// heap: heap statistics for MEM command and C1 per-session measurement
+// heap: heap statistics for MEM command and per-session measurement
 // ---------------------------------------------------------------------------
 HeapStats heap();
 
@@ -46,5 +48,23 @@ HeapStats heap();
 // log: printf-style line to the console (UART on ESP32, stdout on host)
 // ---------------------------------------------------------------------------
 void log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+
+// ---------------------------------------------------------------------------
+// backupButtonBegin / backupButtonPressed: the physical button that opens
+// the backup window. Pressed() returns true once per debounced press.
+// A test build (BBS_BACKUP_TEST_OPEN) reports a press on every call.
+// ---------------------------------------------------------------------------
+void backupButtonBegin(int gpio);
+bool backupButtonPressed(uint32_t now);
+
+// ---------------------------------------------------------------------------
+// inflateRaw: decode a raw DEFLATE stream (ZIP method 8). in() fills a
+// buffer and returns the byte count (0 = end of input); out() takes
+// decoded bytes and returns false to abort (size cap). True on a clean end.
+// Uses temporary heap (about 43 KB on ESP32), released before returning.
+// ---------------------------------------------------------------------------
+using InflateIn  = size_t (*)(void* ctx, uint8_t* buf, size_t cap);
+using InflateOut = bool   (*)(void* ctx, const uint8_t* data, size_t n);
+bool inflateRaw(InflateIn in, InflateOut out, void* ctx);
 
 } // namespace plat

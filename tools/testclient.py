@@ -21,12 +21,16 @@ Listing:     COMPLETE FILE
 Libraries:   Python 3 standard library only
 Usage:       python3 tools/testclient.py [host] [port] [--ban] [--slow]
 """
+import http.client
+import io
 import os
 import pathlib
 import re
 import socket
 import sys
+import threading
 import time
+import zipfile
 
 ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
 FLAGS = {a for a in sys.argv[1:] if a.startswith("--")}
@@ -55,6 +59,7 @@ def cfg_value(key):
 PASSWORD = cfg_value("sysop_password")
 CO1 = cfg_value("cosysop1_password")
 CO2 = cfg_value("cosysop2_password")
+BACKUP_PORT = int(cfg_value("backup_port") or 8080)
 UP = b"\x1b[A"
 
 
@@ -532,6 +537,159 @@ def test_bulletin():
     return ok
 
 
+# ---------------------------------------------------------------------------
+# Backup window (needs the button held: BBS_BACKUP_TEST_OPEN on host, or the
+# esp32dev_backuptest build on a board)
+# ---------------------------------------------------------------------------
+def http_call(method, path, body=None, timeout=60, headers=None):
+    conn = http.client.HTTPConnection(HOST, BACKUP_PORT, timeout=timeout)
+    try:
+        conn.request(method, path, body=body, headers=headers or {})
+        r = conn.getresponse()
+        return r.status, r.read()
+    except (OSError, http.client.HTTPException) as e:
+        return 0, str(e).encode()
+    finally:
+        conn.close()
+
+
+def make_zip(files, compress=zipfile.ZIP_DEFLATED):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compress) as z:
+        for name, data in files.items():
+            z.writestr(name, data)
+    return buf.getvalue()
+
+
+def upload_with_answer(sysop, data, answer, expect_prompt=True):
+    """PUT the zip in a thread, answer the sysop prompt, return (status, body, prompt_seen)."""
+    result = {}
+
+    def worker():
+        result["r"] = http_call("PUT", "/restore", data, timeout=90)
+
+    sysop.buf.clear()
+    th = threading.Thread(target=worker)
+    th.start()
+    seen = sysop.wait_for(b"Accept upload (Y/N)?", 20) if expect_prompt else False
+    if seen and answer is not None:
+        sysop.send(answer)
+    if answer == "hangup" or answer is None:
+        pass
+    th.join(95)
+    status, body = result.get("r", (0, b"no reply"))
+    return status, body, seen
+
+
+def test_backup():
+    print("Backup window: download, edit, upload")
+    if not PASSWORD:
+        print("  SKIP  no sysop_password")
+        return True
+    s = ansi_login("Rob")
+    s.buf.clear()
+    s.send(f"bye {PASSWORD}\r".encode())
+    ok = check("sysop node", s.wait_for(b"Sysop node.", 5))
+    ok &= check("window-open notice on the sysop console", s.wait_for(b"*** Backup open", 8))
+
+    status, _ = http_call("GET", "/")
+    ok &= check("GET / answers", status == 200)
+    status, _ = http_call("GET", "/nope")
+    ok &= check("unknown path is 404", status == 404)
+
+    status, data = http_call("GET", "/backup.zip")
+    ok &= check("GET /backup.zip is 200", status == 200)
+    try:
+        z = zipfile.ZipFile(io.BytesIO(data))
+        bad = z.testzip()
+        names = z.namelist()
+    except zipfile.BadZipFile:
+        z, bad, names = None, "not a zip", []
+    ok &= check("download is a valid zip (all CRCs good)", z is not None and bad is None)
+    ok &= check("zip has system.cfg, MANIFEST.txt, screens",
+                "system.cfg" in names and "MANIFEST.txt" in names and "screens/welcome.ans" in names)
+    cfg = z.read("system.cfg").decode() if z else ""
+    ok &= check("passwords redacted as ***", "sysop_password = ***" in cfg and PASSWORD not in cfg)
+    ok &= check("download notice on the sysop console", s.wait_for(b"*** Backup downloaded by", 5))
+
+    # --- edit and upload inside a folder, deflated (what re-zipping an unpacked folder gives)
+    files = {f"unleashed-backup/{n}": z.read(n) for n in names if n != "screens/busy.seq"}
+    files["unleashed-backup/screens/help.asc"] = z.read("screens/help.asc") + b"Custom line from upload test\n"
+    files["unleashed-backup/screens/extra.asc"] = b"extra screen\n"
+    files["unleashed-backup/system.cfg"] = (cfg + "\nidle_minutes = 21\n").encode()
+    status, body, seen = upload_with_answer(s, make_zip(files), b"y")
+    ok &= check("sysop asked Y/N for the upload", seen)
+    ok &= check("summary names the files", b"system.cfg, screens" in bytes(s.buf))
+    ok &= check("upload applied (200)", status == 200 and b"Applied" in body)
+    local = HOST in ("127.0.0.1", "localhost")
+    if local:
+        live_cfg = (DATA / "system.cfg").read_text()
+        ok &= check("*** kept the real password on disk", f"sysop_password = {PASSWORD}" in live_cfg)
+    status, again = http_call("GET", "/backup.zip")
+    z2 = zipfile.ZipFile(io.BytesIO(again)) if status == 200 else None
+    names2 = z2.namelist() if z2 else []
+    cfg2 = z2.read("system.cfg").decode() if z2 else ""
+    ok &= check("password still set after upload (***)", "sysop_password = ***" in cfg2)
+    ok &= check("edited value live", "idle_minutes = 21" in cfg2)
+    ok &= check("new screen added", "screens/extra.asc" in names2)
+    ok &= check("screen missing from the upload removed", "screens/busy.seq" not in names2)
+    c = ansi_login("Reader")
+    c.buf.clear()
+    c.send(b"help\r")
+    ok &= check("callers see the uploaded help screen", c.wait_for(b"Custom line from upload test", 5))
+    c.close()
+
+    # --- junk plus one real change, sysop says no
+    junk = {
+        "../evil.txt": b"x",
+        "notes.txt": b"x",
+        "screens/toolongname.asc": b"x",
+        "screens/virus.exe": b"x",
+        "screens/extra.asc": b"changed but refused\n",
+    }
+    status, body, seen = upload_with_answer(s, make_zip(junk), b"n")
+    ok &= check("junk listed as rejected in the prompt", seen and b"4 rejected" in bytes(s.buf))
+    ok &= check("sysop N refuses (403)", status == 403)
+    def extra_now():
+        st, zz = http_call("GET", "/backup.zip")
+        return zipfile.ZipFile(io.BytesIO(zz)).read("screens/extra.asc") if st == 200 else b""
+
+    ok &= check("refused upload changed nothing", extra_now() == b"extra screen\n")
+    if local:
+        ok &= check("no file escaped the data directory", not (DATA.parent / "evil.txt").exists())
+
+    # --- uploads refused without asking
+    status, body, _ = upload_with_answer(s, make_zip({"readme.txt": b"x"}), None, expect_prompt=False)
+    ok &= check("nothing usable: 422, no prompt", status == 422)
+    bad_cfg = make_zip({"system.cfg": b"hostname = Bad Host!\n"})
+    status, body, _ = upload_with_answer(s, bad_cfg, None, expect_prompt=False)
+    ok &= check("invalid system.cfg rejected (422)", status == 422 and b"hostname" in body)
+    status, body, _ = upload_with_answer(s, b"this is not a zip file at all", None, expect_prompt=False)
+    ok &= check("not a zip: 400", status == 400)
+    bomb = io.BytesIO()
+    with zipfile.ZipFile(bomb, "w", zipfile.ZIP_DEFLATED) as zz:
+        zz.writestr("screens/bomb.asc", b"\0" * 2_000_000)
+    status, body, _ = upload_with_answer(s, bomb.getvalue(), None, expect_prompt=False)
+    ok &= check("zip bomb (2 MB unpacked) rejected", status == 422)
+    status, body = http_call("PUT", "/restore", b"x", headers={"Content-Length": "500000"}, timeout=10)
+    ok &= check("oversize Content-Length: 413", status == 413)
+    ok &= check("server still serving after abuse", http_call("GET", "/")[0] == 200)
+
+    # --- sysop hangs up while an upload waits: discarded
+    result = {}
+    th = threading.Thread(target=lambda: result.setdefault("r", http_call("PUT", "/restore", make_zip({"screens/extra.asc": b"late\n"}), timeout=60)))
+    s.buf.clear()
+    th.start()
+    s.wait_for(b"Accept upload (Y/N)?", 20)
+    s.close()
+    th.join(65)
+    status = result.get("r", (0, b""))[0]
+    ok &= check("sysop leaving discards the upload (403)", status == 403)
+    if local:
+        ok &= check("and changes nothing", (DATA / "screens" / "extra.asc").read_bytes() == b"extra screen\n")
+    return ok
+
+
 def test_ban():
     print("Ban after 3 wrong sysop passwords")
     for _ in range(3):
@@ -549,6 +707,8 @@ def test_ban():
 if __name__ == "__main__":
     results = [test_ansi(), test_telnet_first(), test_petscii(), test_ascii(),
                test_page(), test_sysop(), test_cosysop(), test_bulletin(), test_idle_login(), test_busy()]
+    if "--backup" in FLAGS:
+        results.append(test_backup())
     if "--ban" in FLAGS:
         results.append(test_ban())
     print("ALL PASS" if all(results) else "FAILURES")

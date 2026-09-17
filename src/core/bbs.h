@@ -23,6 +23,7 @@
 #include "bus.h"
 #include "guard.h"
 #include "sysconfig.h"
+#include "backup.h"
 
 enum class SState : uint8_t {
     Free,      // slot unused
@@ -36,6 +37,7 @@ enum class SState : uint8_t {
     Fx,        // effects demo running
     BusyWait,  // busy line countdown
     Snoop,     // sysop watching another node
+    Approve,   // sysop answering Y/N on a staged backup upload
     Closing,   // flushing goodbye, then hang up
 };
 
@@ -200,7 +202,14 @@ private:
     void cmdDrop(Session& s, uint32_t now);
     Session* nodeByArg(const char* arg, const char** rest);
 
+    // -- backup window (bbs.cpp) ---------------------------------------------
+    void serviceBackup(uint32_t now);
+    void showApproval(Session& s);
+
     int       lfd_          = -1;
+    BackupService backup_;
+    bool      approvalShown_ = false;
+    uint32_t  lastBtnLog_    = 0;
     uint32_t  heapBaseline_ = 0;
     Session   nodes_[BBS_MAX_NODES];
     Session   busy_;

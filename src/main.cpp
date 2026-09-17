@@ -74,7 +74,7 @@ static void wifiStart() {
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     esp_netif_t* nif = esp_netif_create_default_wifi_sta();
-    esp_netif_set_hostname(nif, BBS_HOSTNAME);
+    esp_netif_set_hostname(nif, syscfg::get().hostname);
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -98,23 +98,24 @@ static void wifiStart() {
 }
 
 // ---------------------------------------------------------------------------
-// fsMount: LittleFS holding screens (and later users, messages, doors)
+// fsMount: one LittleFS partition. "storage" holds what the backup zip
+// carries (system.cfg, screens); "logs" holds fixed-size log rings only.
 // ---------------------------------------------------------------------------
-static void fsMount() {
+static void fsMount(const char* label, const char* base) {
     esp_vfs_littlefs_conf_t conf;
     memset(&conf, 0, sizeof(conf));
-    conf.base_path              = BBS_FS_MOUNT;
-    conf.partition_label        = BBS_FS_LABEL;
+    conf.base_path              = base;
+    conf.partition_label        = label;
     conf.format_if_mount_failed = true;
 
     esp_err_t err = esp_vfs_littlefs_register(&conf);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "littlefs mount failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "littlefs %s mount failed: %s", label, esp_err_to_name(err));
         return;
     }
     size_t total = 0, used = 0;
-    esp_littlefs_info(BBS_FS_LABEL, &total, &used);
-    ESP_LOGI(TAG, "littlefs %u of %u bytes used",
+    esp_littlefs_info(label, &total, &used);
+    ESP_LOGI(TAG, "littlefs %s at %s: %u of %u bytes used", label, base,
              static_cast<unsigned>(used), static_cast<unsigned>(total));
 }
 
@@ -147,10 +148,10 @@ static void netServicesStart() {
         ESP_LOGE(TAG, "mdns_init failed: %s", esp_err_to_name(err));
         return;
     }
-    mdns_hostname_set(BBS_HOSTNAME);
+    mdns_hostname_set(cfg.hostname);
     mdns_instance_name_set(BBS_NAME);
     mdns_service_add(BBS_NAME, "_telnet", "_tcp", BBS_PORT, nullptr, 0);
-    ESP_LOGI(TAG, "mdns: %s.local, _telnet._tcp port %u", BBS_HOSTNAME, BBS_PORT);
+    ESP_LOGI(TAG, "mdns: %s.local, _telnet._tcp port %u", cfg.hostname, BBS_PORT);
 }
 
 // ---------------------------------------------------------------------------
@@ -180,8 +181,9 @@ extern "C" void app_main(void) {
               BBS_NAME, BBS_VERSION, static_cast<unsigned>(h.freeBytes),
               static_cast<unsigned>(h.largestBlock));
 
-    fsMount();
-    syscfg::load();          // TZ, NTP server, sysop password, time limits
+    fsMount(BBS_FS_LABEL, BBS_FS_MOUNT);
+    fsMount(BBS_LOGS_LABEL, BBS_LOGS_MOUNT);
+    syscfg::load();          // hostname, TZ, NTP, staff passwords, limits, backup window
     wifiStart();
 
 #if CONFIG_FREERTOS_UNICORE

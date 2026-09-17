@@ -151,6 +151,7 @@ bool Bbs::begin(uint16_t port) {
 
     plat::HeapStats h = plat::heap();
     heapBaseline_ = h.freeBytes;
+    plat::backupButtonBegin(syscfg::get().backupGpio);
     plat::log("bbs: %s %s listening on %u, %u nodes", BBS_NAME, BBS_VERSION, port, BBS_MAX_NODES);
     plat::log("bbs: session %u bytes, pool %u bytes (static), heap free %u",
               static_cast<unsigned>(sizeof(Session)),
@@ -182,19 +183,94 @@ void Bbs::tick() {
         if (s->wantWrite) FD_SET(s->fd, &wfds);
         if (s->fd > maxfd) maxfd = s->fd;
     }
+    backup_.addFds(rfds, wfds, maxfd);
 
     timeval tv;
     tv.tv_sec  = 0;
     tv.tv_usec = BBS_SELECT_MS * 1000;
     int r = select(maxfd + 1, &rfds, &wfds, nullptr, &tv);
     uint32_t now = plat::millis();
+    if (r <= 0) { FD_ZERO(&rfds); FD_ZERO(&wfds); }
 
-    if (r > 0 && FD_ISSET(lfd_, &rfds)) acceptAll(now);
+    if (FD_ISSET(lfd_, &rfds)) acceptAll(now);
 
     for (Session* s : all_) {
-        if (s->fd >= 0 && r > 0 && FD_ISSET(s->fd, &rfds)) readSession(*s, now);
+        if (s->fd >= 0 && FD_ISSET(s->fd, &rfds)) readSession(*s, now);
         if (s->st != SState::Free) serviceSession(*s, now);
     }
+
+    backup_.service(rfds, wfds, now);
+    serviceBackup(now);
+}
+
+// ===========================================================================
+// Backup window
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// serviceBackup: button, notes to the sysop, the Y/N approval prompt
+// ---------------------------------------------------------------------------
+void Bbs::serviceBackup(uint32_t now) {
+    bool sysopOn = sysop_.st != SState::Free && sysop_.loggedIn && sysop_.fd >= 0;
+
+    if (plat::backupButtonPressed(now) && !backup_.isOpen()) {
+        if (sysopOn) {
+            char ip[16] = "0.0.0.0";
+            sockaddr_in a;
+            socklen_t al = sizeof(a);
+            if (getsockname(sysop_.fd, reinterpret_cast<sockaddr*>(&a), &al) == 0) {
+                ipToText(a.sin_addr.s_addr, ip, sizeof(ip));
+            }
+            backup_.open(now, ip);
+        } else if (now - lastBtnLog_ > 10000u) {
+            lastBtnLog_ = now;
+            plat::log("backup: button pressed, but the sysop is not on the sysop node");
+        }
+    }
+
+    // the window belongs to the sysop session that opened it
+    if (!sysopOn && (backup_.isOpen() || backup_.awaitingApproval())) {
+        backup_.decide(false, "sysop left");
+        backup_.close("sysop left");
+    }
+
+    BackupService::Note n;
+    while (backup_.poll(n)) {
+        if (sysopOn) post(sysop_, BusKind::Notice, nullptr, n.text);
+    }
+
+    if (!backup_.awaitingApproval()) {
+        if (sysop_.st == SState::Approve) {             // decided elsewhere (timeout)
+            sysop_.term.nl(sysop_.tl);
+            prompt(sysop_);
+        }
+        approvalShown_ = false;
+        return;
+    }
+    if (!approvalShown_ && sysopOn && sysop_.st == SState::Shell && sysop_.ed.active() &&
+        !sysop_.scr.active() && sysop_.tl.empty() && sysop_.mb.empty()) {
+        showApproval(sysop_);
+    }
+}
+
+void Bbs::showApproval(Session& s) {
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    t.reset(tl);
+    t.nl(tl);
+    t.bell(tl);
+    t.color(tl, Color::Yellow);
+    t.text(tl, backup_.approvalSummary());
+    t.nl(tl);
+    t.color(tl, Color::Grey);
+    t.text(tl, backup_.approvalDetail());
+    t.nl(tl);
+    t.color(tl, Color::Yellow);
+    t.text(tl, "Accept upload (Y/N)? ");
+    t.color(tl, Color::White);
+    s.ed = LineEditor();
+    s.st = SState::Approve;
+    approvalShown_ = true;
 }
 
 // ===========================================================================
@@ -1165,6 +1241,24 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
 
         case SState::Snoop:
             if (k == 'q' || k == 'Q' || k == KEY_ESC || k == KEY_BREAK) stopSnoop(s, nullptr);
+            return;
+
+        case SState::Approve:
+            if (k == 'y' || k == 'Y') {
+                t.ch(tl, 'Y');
+                t.nl(tl);
+                approvalShown_ = false;
+                s.st = SState::Shell;                    // before decide: notes queue for the prompt
+                backup_.decide(true, "");
+                prompt(s);
+            } else if (k == 'n' || k == 'N' || k == KEY_ESC || k == KEY_BREAK) {
+                t.ch(tl, 'N');
+                t.nl(tl);
+                approvalShown_ = false;
+                s.st = SState::Shell;
+                backup_.decide(false, "rejected by the sysop");
+                prompt(s);
+            }
             return;
 
         default:

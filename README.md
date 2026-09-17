@@ -8,33 +8,45 @@ The name is spelled with a micro sign. Where µ can't be shown (PETSCII, hostnam
 
 The core has one dial-in port, 6 caller nodes, a busy line and a hidden sysop node. It also has connect-time terminal detection, screens, a line editor with history, paged output, a message bus between nodes, the TTY effects library and a shell.
 
-Every command and key is documented in [COMMANDS.md](COMMANDS.md).
+Docs:
 
-## Status (0.3.0)
+| File | For |
+|---|---|
+| [COMMANDS.md](COMMANDS.md) | every command, key, limit and `system.cfg` setting |
+| [BACKUP.md](BACKUP.md) | downloading and uploading config and screens as a `.zip` |
+| [SCREENS.md](SCREENS.md) | screen formats, naming rules and upload limits |
 
-- Host build (Linux): the full scripted suite passes (`tools/testclient.py`, plus `--slow` and `--ban`).
+## Status (0.4.0)
+
+- Host build (Linux): the full scripted suite passes under AddressSanitizer and UBSan (`tools/testclient.py --backup`, plus `--slow` and `--ban`).
 - ESP32 build: ESP-IDF 5.3.1 through PlatformIO (`espressif32@6.9.0`), with no warnings in app code.
-  - Image: about 853 KB, 54% of the 1.5 MB OTA slot.
-  - Static RAM: 66 KB, including the 8-session pool at 3,556 bytes each.
-  - Heap: 243 KB free at boot before Wi-Fi, 186 KB with the BBS listening.
+  - Image: about 894 KB, 57% of the 1.5 MB OTA slot.
+  - Static RAM: 81 KB, including the 8-session pool and the backup buffers.
 - On hardware:
   - PuTTY and a C64 through TeensyROM have both called in.
   - Every PETSCII glyph (spinner, lines, shade, underscore) is verified on the C64.
-  - NTP and mDNS come up on boot.
+  - NTP and mDNS come up on boot; the backup window works on the board.
 
 ## Build and flash (PlatformIO)
 
+First time on a board:
+
 ```bash
 cp include/secrets.h.example include/secrets.h   # Wi-Fi SSID (case-sensitive) and password
-cp data/system.cfg.example data/system.cfg       # timezone, sysop password, time limits
-pio run -t flashall                              # firmware + data/ (screens, system.cfg)
+cp data/system.cfg.example data/system.cfg       # timezone, passwords, limits
+pio run -t flashall                              # firmware + partition table + data/
 pio device monitor
 ```
 
-- `pio run -t upload` flashes only the firmware and leaves LittleFS alone.
-- `flashall` and `uploadfs` rewrite the whole filesystem, which erases `calls.log`.
-- The console prints `online <ip>  dial in: telnet <ip> 6400`.
-- On the LAN the board answers as `unleashed.local` (also its DHCP hostname) and advertises `_telnet._tcp`.
+After that:
+
+- `pio run -t upload` for new firmware. Config, screens and logs stay as they are.
+- Config and screens change through the backup window ([BACKUP.md](BACKUP.md)), not by reflashing.
+- `flashall` / `uploadfs` rewrite the `storage` partition with `data/` (fresh board, or a deliberate reset).
+
+Flash layout (4 MB): two 1.5 MB OTA app slots, `logs` (128 KB, caller log), `storage` (768 KB, `system.cfg` and screens). Changing `partitions.csv` wipes the filesystems, so back up first.
+
+The console prints `online <ip>  dial in: telnet <ip> 6400`. On the LAN the board answers as `<hostname>.local` (default `unleashed.local`, also its DHCP name) and advertises `_telnet._tcp`.
 
 LittleFS and mDNS come from the ESP-IDF Component Manager (`src/idf_component.yml`). If the LittleFS fetch fails, vendor it instead:
 
@@ -47,12 +59,14 @@ git clone --recursive https://github.com/joltwallet/esp_littlefs components/esp_
 ## Test on a PC first
 
 ```bash
-cd host && make && ./bbs_host ../data 6400
-python3 tools/testclient.py 127.0.0.1 6400           # add --slow for the 60 s hangup test
+cd host && make && BBS_BACKUP_TEST_OPEN=1 ./bbs_host ../data 6400
+python3 tools/testclient.py 127.0.0.1 6400 --backup  # add --slow for the 60 s hangup test
 python3 tools/testclient.py 127.0.0.1 6400 --ban     # bans 127.0.0.1 for 15 min
 ```
 
-The same script runs against a board: `python3 tools/testclient.py <ip> 6400`. Don't use `--ban` there, because it bans your own PC.
+- `make SAN=1` builds with AddressSanitizer and UBSan.
+- `BBS_BACKUP_TEST_OPEN=1` holds the backup button down, so the window opens as soon as the sysop logs in.
+- The same script runs against a board: `python3 tools/testclient.py <ip> 6400`. `--backup` there needs the bench build (`pio run -e esp32dev_backuptest -t upload`). Don't use `--ban` against a board, because it bans your own PC.
 
 ## Layout
 
@@ -69,13 +83,16 @@ src/core/editor.*         line editor, BYE password mask, command history
 src/core/screens.*        streaming screen player with @-codes and paging
 src/core/bus.*            per-session message ring (PAGE, notices, broadcast)
 src/core/guard.*          IP ban list, daily time bank
-src/core/calllog.*        caller log ring file (LAST)
+src/core/calllog.*        caller log ring file on the logs partition (LAST)
 src/core/clock.*          wall clock formatting (NTP)
-src/core/sysconfig.*      data/system.cfg loader
+src/core/sysconfig.*      system.cfg loader, validator, password redaction, access matrix
+src/core/backup.*         backup window: button, HTTP in the BBS loop, Y/N approval
+src/core/ziparc.*         backup zip export (stored) and import (stored/deflate, staged)
+src/core/crc32.h          CRC-32 for the zip
 src/core/bbs.*            listener, sessions, flow, timers, paging
 src/core/bbs_shell.cpp    caller commands
 src/core/bbs_sysop.cpp    sysop node and commands
-data/screens/             welcome, help, busy, goodbye (.seq/.ans/.asc)
+data/screens/             stock welcome, help, busy, goodbye (.seq/.ans/.asc) for a fresh board
 data/system.cfg.example   run-time settings template
 tools/mkscreens.py        regenerates the stock screens
 tools/pio_flashall.py     adds the flashall target

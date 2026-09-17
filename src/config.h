@@ -16,7 +16,7 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "0.3.0"
+#define BBS_VERSION         "0.4.0"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // ---------------------------------------------------------------------------
@@ -92,9 +92,30 @@
 // ---------------------------------------------------------------------------
 // Filesystem
 // ---------------------------------------------------------------------------
-#define BBS_FS_MOUNT        "/fs"
+#define BBS_FS_MOUNT        "/fs"        // storage partition: system.cfg, screens (the backup zip)
 #define BBS_FS_LABEL        "storage"
+#define BBS_LOGS_MOUNT      "/logs"      // logs partition: fixed-size rings only, never in the zip
+#define BBS_LOGS_LABEL      "logs"
 #define BBS_SCREEN_DIR      "screens"
 #define BBS_CONFIG_FILE     "system.cfg"
 #define BBS_CALLLOG_FILE    "calls.log"
 #define BBS_CALLLOG_SIZE    50
+
+// ---------------------------------------------------------------------------
+// Backup window (HTTP, only while open). Defaults for system.cfg keys.
+// ---------------------------------------------------------------------------
+#define BBS_BACKUP_PORT         8080
+#define BBS_BACKUP_MINUTES      5
+#define BBS_BACKUP_GPIO         0        // BOOT button on ESP32 dev boards
+#define BBS_BACKUP_APPROVE_MS   120000   // sysop has this long to answer Y/N
+#define BBS_BACKUP_IDLE_MS      30000    // HTTP client silent this long: dropped
+#define BBS_BACKUP_HEADER_MS    10000    // whole request header must arrive in this
+#define BBS_BACKUP_TRANSFER_MS  180000   // whole upload body or download in this
+#define BBS_BACKUP_STAGING      ".staging"
+
+// Upload limits (enforced, documented in SCREENS.md)
+#define BBS_ZIP_MAX_BYTES       400000   // the uploaded .zip itself
+#define BBS_ZIP_MAX_FILES       64       // accepted files per upload
+#define BBS_ZIP_FILE_MAX        65536    // one unpacked file
+#define BBS_ZIP_TOTAL_MAX       360000   // all unpacked files together
+#define BBS_SCREEN_NAME_MAX     8        // screen base name, a-z 0-9 _ -

@@ -23,7 +23,7 @@ Header g_hdr;
 bool   g_loaded = false;
 
 void path(char* out, size_t n) {
-    snprintf(out, n, "%s/%s", plat::fsBase(), BBS_CALLLOG_FILE);
+    snprintf(out, n, "%s/%s", plat::logsBase(), BBS_CALLLOG_FILE);
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 # µnleashed BBS: command reference
 
-Version 0.3.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
+Version 0.4.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
 
 ## Calling in
 
@@ -120,9 +120,20 @@ Rank rules:
 - A hidden co-sysop shows as a free line in WHO, and hidden higher-level staff are masked in `NODES`.
 - Any staff level sees sysop-node calls in `LAST`. `NODES` permission also shows caller IPs there on wide screens.
 
+## Backup window (sysop)
+
+The sysop can download and upload everything that matters (`system.cfg` and the screens) as one `.zip`, without reflashing. Full steps: [BACKUP.md](BACKUP.md).
+
+- Log in as sysop, then press BOOT on the board. The console shows `*** Backup open 5 min: http://<ip>:8080/backup.zip`.
+- Download: `curl.exe -o backup.zip http://<ip>:8080/backup.zip`. No confirmation; passwords come out as `***`.
+- Upload: `curl.exe -T backup.zip http://<ip>:8080/restore`. The sysop console shows what arrived and asks `Accept upload (Y/N)?`.
+  - `Y` applies it at once, `N` discards it. No answer in 2 minutes counts as `N`.
+  - While the question is on screen, only `Y`, `N`, ESC or Ctrl-C are accepted.
+- The window closes after `backup_window_minutes` or when the sysop logs off.
+
 ## Screens
 
-Files in `data/screens/`, chosen by terminal type:
+Files in `screens/`, chosen by terminal type. Names, formats and upload limits: [SCREENS.md](SCREENS.md).
 
 | Name | When |
 |---|---|
@@ -136,10 +147,11 @@ Files in `data/screens/`, chosen by terminal type:
 
 ## system.cfg
 
-`data/system.cfg` is git-ignored; copy it from `data/system.cfg.example`. Upload it with `pio run -t flashall`.
+On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP.md)); it applies without a reboot. For a fresh board, `data/system.cfg` (git-ignored, copy from `data/system.cfg.example`) goes on with `pio run -t flashall`.
 
 | Key | Default | Meaning |
 |---|---|---|
+| `hostname` | `unleashed` | DHCP and mDNS name (`unleashed.local`), `a-z 0-9 -`, applies at reboot |
 | `tz` | `UTC0` | POSIX TZ string, e.g. `CST6CDT,M3.2.0,M11.1.0` |
 | `ntp_server` | `pool.ntp.org` | clock source |
 | `sysop_password` | empty | sysop level, empty = disabled |
@@ -148,6 +160,11 @@ Files in `data/screens/`, chosen by terminal type:
 | `idle_minutes` | `20` | shell idle hangup, 0 = never |
 | `call_minutes` | `60` | per-call limit, 0 = unlimited |
 | `day_minutes` | `480` | per-day limit, 0 = unlimited |
+| `backup_port` | `8080` | HTTP port while the backup window is open (not 6400) |
+| `backup_window_minutes` | `5` | how long one button press keeps the window open (1..60) |
+| `backup_button_gpio` | `0` | button pin, active low (BOOT on dev boards), -1 = no window |
+
+A value out of range is logged and the default is kept. An upload with a bad value is rejected, so it never replaces a working config.
 
 ### [access] matrix
 
@@ -181,4 +198,4 @@ NOLIMITS       X      X    X
 
 The boot log prints each level's permission bits (`cfg: sysop on co1 off perms 0x1bf ...`) so you can confirm what loaded. Bad rows are logged and skipped.
 
-`flashall` and `uploadfs` rewrite the whole filesystem, which also erases the caller log.
+`flashall` and `uploadfs` rewrite the storage partition (config and screens). The caller log is on its own `logs` partition and survives them.

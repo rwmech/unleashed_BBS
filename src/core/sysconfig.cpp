@@ -1,6 +1,7 @@
 /*
  * File:        src/core/sysconfig.cpp
- * Description: system.cfg loader and staff access matrix (see sysconfig.h).
+ * Description: system.cfg loader, validator, password redaction and the
+ *              staff access matrix (see sysconfig.h).
  * Listing:     COMPLETE FILE
  * Libraries:   none (libc stdio, stdlib, time)
  */
@@ -27,11 +28,29 @@ const uint8_t kPermCount = sizeof(kPermNames) / sizeof(kPermNames[0]);
 
 namespace {
 
-SysConfig g_cfg;   // static storage, filled once at boot
+SysConfig g_cfg;   // static storage, the live configuration
+
+const char* const kPasswordKeys[] = { "sysop_password", "cosysop1_password", "cosysop2_password" };
 
 // ---------------------------------------------------------------------------
-// trim: strip leading/trailing whitespace in place, return the start
+// Parse context: where problems are counted and the first one kept
 // ---------------------------------------------------------------------------
+struct Ctx {
+    SysConfig* cfg;
+    int        problems;
+    char*      err;
+    size_t     errLen;
+    int        lineNo;
+};
+
+void problem(Ctx& c, const char* what, const char* detail) {
+    if (!c.problems && c.err && c.errLen) {
+        snprintf(c.err, c.errLen, "system.cfg line %d: %s %s", c.lineNo, what, detail);
+    }
+    ++c.problems;
+}
+
+// trim: strip leading/trailing whitespace in place, return the start
 char* trim(char* s) {
     while (*s == ' ' || *s == '\t') ++s;
     size_t n = strlen(s);
@@ -45,13 +64,6 @@ void copyStr(char* dst, size_t cap, const char* src) {
     dst[cap - 1] = '\0';
 }
 
-uint16_t toMinutes(const char* v) {
-    long n = strtol(v, nullptr, 10);
-    if (n < 0) n = 0;
-    if (n > 1440) n = 1440;
-    return static_cast<uint16_t>(n);
-}
-
 bool ieq(const char* a, const char* b) {
     while (*a && *b) {
         if (toupper(static_cast<unsigned char>(*a)) != toupper(static_cast<unsigned char>(*b))) return false;
@@ -60,9 +72,21 @@ bool ieq(const char* a, const char* b) {
     return *a == *b;
 }
 
-// ---------------------------------------------------------------------------
+// number: whole decimal in [lo, hi], else a problem and false
+bool number(Ctx& c, const char* key, const char* v, long lo, long hi, long& out) {
+    char* end = nullptr;
+    long n = strtol(v, &end, 10);
+    if (!*v || (end && *end) || n < lo || n > hi) {
+        char d[48];
+        snprintf(d, sizeof(d), "(%ld..%ld)", lo, hi);
+        problem(c, key, d);
+        return false;
+    }
+    out = n;
+    return true;
+}
+
 // cell: one matrix cell. 1 allowed, 0 denied, -1 unreadable.
-// ---------------------------------------------------------------------------
 int cell(const char* tok) {
     if (!tok) return -1;
     if (ieq(tok, "X") || ieq(tok, "Y") || ieq(tok, "YES")) return 1;
@@ -70,30 +94,65 @@ int cell(const char* tok) {
     return -1;
 }
 
-// ---------------------------------------------------------------------------
 // accessRow: "NAME SYSOP CO1 CO2"
-// ---------------------------------------------------------------------------
-void accessRow(char* line) {
+void accessRow(Ctx& c, char* line) {
     char* tok[4] = {};
     uint8_t n = 0;
     char* save = nullptr;
     for (char* p = strtok_r(line, " \t", &save); p && n < 4; p = strtok_r(nullptr, " \t", &save)) tok[n++] = p;
     if (n == 0) return;
-    if (n < 4) { plat::log("cfg: [access] row '%s' needs SYSOP CO1 CO2 columns", tok[0]); return; }
+    if (n < 4) { problem(c, "[access] row needs SYSOP CO1 CO2 columns:", tok[0]); return; }
 
     uint16_t bit = 0;
     for (uint8_t i = 0; i < kPermCount; ++i) {
         if (ieq(tok[0], kPermNames[i].name)) { bit = kPermNames[i].bit; break; }
     }
-    if (!bit) { plat::log("cfg: [access] unknown permission '%s'", tok[0]); return; }
+    if (!bit) { problem(c, "[access] unknown permission", tok[0]); return; }
 
-    if (cell(tok[1]) != 1) plat::log("cfg: [access] %s: SYSOP always has every permission", tok[0]);
-    for (uint8_t c = 0; c < 2; ++c) {
-        int v = cell(tok[2 + c]);
-        if (v < 0) { plat::log("cfg: [access] %s: use X or - in CO%u", tok[0], c + 1); continue; }
-        if (v) g_cfg.coPerms[c] = static_cast<uint16_t>(g_cfg.coPerms[c] | bit);
-        else   g_cfg.coPerms[c] = static_cast<uint16_t>(g_cfg.coPerms[c] & ~bit);
+    for (uint8_t col = 0; col < 2; ++col) {
+        int v = cell(tok[2 + col]);
+        if (v < 0) { problem(c, "[access] use X or - in", tok[0]); continue; }
+        uint16_t& perms = c.cfg->coPerms[col];
+        perms = static_cast<uint16_t>(v ? (perms | bit) : (perms & ~bit));
     }
+}
+
+// validHostname: a-z 0-9 -, 1..31, not starting or ending with '-'
+bool validHostname(char* v) {
+    size_t n = strlen(v);
+    if (!n || n >= 32 || v[0] == '-' || v[n - 1] == '-') return false;
+    for (size_t i = 0; i < n; ++i) {
+        v[i] = static_cast<char>(tolower(static_cast<unsigned char>(v[i])));
+        if (!isalnum(static_cast<unsigned char>(v[i])) && v[i] != '-') return false;
+    }
+    return true;
+}
+
+// keyValue: one "key = value" line
+void keyValue(Ctx& c, char* key, char* val) {
+    SysConfig& g = *c.cfg;
+    long n = 0;
+    if (!strcmp(key, "hostname")) {
+        if (validHostname(val)) copyStr(g.hostname, sizeof(g.hostname), val);
+        else problem(c, "hostname must be a-z 0-9 - (1..31):", val);
+    }
+    else if (!strcmp(key, "tz"))                     copyStr(g.tz, sizeof(g.tz), val);
+    else if (!strcmp(key, "ntp_server"))             copyStr(g.ntpServer, sizeof(g.ntpServer), val);
+    else if (!strcmp(key, "sysop_password"))         copyStr(g.sysopPass, sizeof(g.sysopPass), val);
+    else if (!strcmp(key, "cosysop1_password"))      copyStr(g.coPass[0], sizeof(g.coPass[0]), val);
+    else if (!strcmp(key, "cosysop2_password"))      copyStr(g.coPass[1], sizeof(g.coPass[1]), val);
+    else if (!strcmp(key, "idle_minutes"))          { if (number(c, key, val, 0, 1440, n)) g.idleMinutes = static_cast<uint16_t>(n); }
+    else if (!strcmp(key, "call_minutes"))          { if (number(c, key, val, 0, 1440, n)) g.callMinutes = static_cast<uint16_t>(n); }
+    else if (!strcmp(key, "day_minutes"))           { if (number(c, key, val, 0, 1440, n)) g.dayMinutes  = static_cast<uint16_t>(n); }
+    else if (!strcmp(key, "backup_window_minutes")) { if (number(c, key, val, 1, 60, n)) g.backupMinutes = static_cast<uint16_t>(n); }
+    else if (!strcmp(key, "backup_button_gpio"))    { if (number(c, key, val, -1, 39, n)) g.backupGpio = static_cast<int8_t>(n); }
+    else if (!strcmp(key, "backup_port")) {
+        if (number(c, key, val, 1, 65535, n)) {
+            if (n == BBS_PORT) problem(c, "backup_port cannot be the BBS port", val);
+            else g.backupPort = static_cast<uint16_t>(n);
+        }
+    }
+    else plat::log("cfg: line %d unknown key '%s' ignored", c.lineNo, key);
 }
 
 // ---------------------------------------------------------------------------
@@ -111,76 +170,128 @@ bool ctEqual(const char* pw, size_t cap, const char* candidate) {
     return diff == 0 && a > 0;
 }
 
+// ---------------------------------------------------------------------------
+// passwordAssignment: is this line "<password key> = value"? Fills the key
+// index and a pointer to the trimmed value (inside tmp).
+// ---------------------------------------------------------------------------
+bool passwordAssignment(const char* line, char* tmp, size_t tmpLen, int& keyIdx, char*& value) {
+    copyStr(tmp, tmpLen, line);
+    char* hash = strchr(tmp, '#');
+    if (hash) *hash = '\0';
+    char* eq = strchr(tmp, '=');
+    if (!eq) return false;
+    *eq = '\0';
+    char* key = trim(tmp);
+    for (int i = 0; i < 3; ++i) {
+        if (!strcmp(key, kPasswordKeys[i])) {
+            keyIdx = i;
+            value  = trim(eq + 1);
+            return true;
+        }
+    }
+    return false;
+}
+
+const char* livePassword(int idx) {
+    switch (idx) {
+        case 0:  return g_cfg.sysopPass;
+        case 1:  return g_cfg.coPass[0];
+        default: return g_cfg.coPass[1];
+    }
+}
+
+void logSummary() {
+    plat::log("cfg: %s  host %s  tz %s  ntp %s",
+              g_cfg.fromFile ? BBS_CONFIG_FILE : "defaults (no " BBS_CONFIG_FILE ")",
+              g_cfg.hostname, g_cfg.tz, g_cfg.ntpServer);
+    plat::log("cfg: idle %u  limits %u/call %u/day  backup port %u, %u min, gpio %d",
+              g_cfg.idleMinutes, g_cfg.callMinutes, g_cfg.dayMinutes,
+              g_cfg.backupPort, g_cfg.backupMinutes, g_cfg.backupGpio);
+    plat::log("cfg: sysop %s  co1 %s perms 0x%03x  co2 %s perms 0x%03x",     // never the passwords
+              g_cfg.sysopPass[0] ? "on" : "off",
+              g_cfg.coPass[0][0] ? "on" : "off", g_cfg.coPerms[0],
+              g_cfg.coPass[1][0] ? "on" : "off", g_cfg.coPerms[1]);
+}
+
 } // namespace
 
 namespace syscfg {
 
 // ---------------------------------------------------------------------------
-// load: parse key=value lines and the [access] section, then apply TZ
+// parseFile: key=value lines and the [access] section
 // ---------------------------------------------------------------------------
+int parseFile(const char* path, SysConfig& out, char* err, size_t errLen) {
+    Ctx c{ &out, 0, err, errLen, 0 };
+    if (err && errLen) err[0] = '\0';
+    FILE* f = fopen(path, "r");
+    if (!f) return 0;                               // no file: defaults, not a problem
+
+    char line[160];
+    bool inAccess = false;
+    while (fgets(line, sizeof(line), f)) {
+        ++c.lineNo;
+        if (!strchr(line, '\n') && !feof(f)) {      // overlong line: skip the rest of it
+            int ch;
+            while ((ch = fgetc(f)) != EOF && ch != '\n') {}
+            problem(c, "line too long", "");
+            continue;
+        }
+        char* hash = strchr(line, '#');
+        if (hash) *hash = '\0';
+        char* l = trim(line);
+        if (!*l) continue;
+
+        if (*l == '[') {
+            inAccess = ieq(l, "[access]");
+            if (!inAccess) problem(c, "unknown section", l);
+            continue;
+        }
+        if (inAccess) { accessRow(c, l); continue; }
+
+        char* eq = strchr(l, '=');
+        if (!eq) { problem(c, "expected key = value:", l); continue; }
+        *eq = '\0';
+        char* key = trim(l);
+        char* val = trim(eq + 1);
+        if (!strcmp(val, "***")) continue;          // redacted password: keep what is set
+        keyValue(c, key, val);
+    }
+    fclose(f);
+    out.fromFile = true;
+    return c.problems;
+}
+
 bool load() {
     char path[96];
     snprintf(path, sizeof(path), "%s/%s", plat::fsBase(), BBS_CONFIG_FILE);
-    FILE* f = fopen(path, "r");
-    if (f) {
-        char line[128];
-        bool inAccess = false;
-        while (fgets(line, sizeof(line), f)) {
-            char* hash = strchr(line, '#');
-            if (hash) *hash = '\0';
-            char* l = trim(line);
-            if (!*l) continue;
-
-            if (*l == '[') {
-                inAccess = ieq(l, "[access]");
-                if (!inAccess) plat::log("cfg: unknown section %s", l);
-                continue;
-            }
-            if (inAccess) { accessRow(l); continue; }
-
-            char* eq = strchr(l, '=');
-            if (!eq) continue;
-            *eq = '\0';
-            char* key = trim(l);
-            char* val = trim(eq + 1);
-
-            if (!strcmp(key, "tz"))                     copyStr(g_cfg.tz, sizeof(g_cfg.tz), val);
-            else if (!strcmp(key, "ntp_server"))        copyStr(g_cfg.ntpServer, sizeof(g_cfg.ntpServer), val);
-            else if (!strcmp(key, "sysop_password"))    copyStr(g_cfg.sysopPass, sizeof(g_cfg.sysopPass), val);
-            else if (!strcmp(key, "cosysop1_password")) copyStr(g_cfg.coPass[0], sizeof(g_cfg.coPass[0]), val);
-            else if (!strcmp(key, "cosysop2_password")) copyStr(g_cfg.coPass[1], sizeof(g_cfg.coPass[1]), val);
-            else if (!strcmp(key, "idle_minutes"))      g_cfg.idleMinutes = toMinutes(val);
-            else if (!strcmp(key, "call_minutes"))      g_cfg.callMinutes = toMinutes(val);
-            else if (!strcmp(key, "day_minutes"))       g_cfg.dayMinutes  = toMinutes(val);
-            else plat::log("cfg: unknown key '%s'", key);
-        }
-        fclose(f);
-        g_cfg.fromFile = true;
-    }
-
+    char err[96];
+    int problems = parseFile(path, g_cfg, err, sizeof(err));
+    if (problems) plat::log("cfg: %d problem(s), first: %s", problems, err);
     setenv("TZ", g_cfg.tz, 1);
     tzset();
-
-    // never log the passwords themselves
-    plat::log("cfg: %s  tz %s  ntp %s  idle %u  limits %u/call %u/day",
-              g_cfg.fromFile ? BBS_CONFIG_FILE : "defaults (no " BBS_CONFIG_FILE ")",
-              g_cfg.tz, g_cfg.ntpServer, g_cfg.idleMinutes, g_cfg.callMinutes, g_cfg.dayMinutes);
-    plat::log("cfg: sysop %s  co1 %s perms 0x%03x  co2 %s perms 0x%03x",
-              g_cfg.sysopPass[0] ? "on" : "off",
-              g_cfg.coPass[0][0] ? "on" : "off", g_cfg.coPerms[0],
-              g_cfg.coPass[1][0] ? "on" : "off", g_cfg.coPerms[1]);
+    logSummary();
     return g_cfg.fromFile;
+}
+
+bool reload(char* err, size_t errLen) {
+    char path[96];
+    snprintf(path, sizeof(path), "%s/%s", plat::fsBase(), BBS_CONFIG_FILE);
+    static SysConfig fresh;                         // static: SysConfig is ~300 bytes
+    fresh = SysConfig();
+    if (parseFile(path, fresh, err, errLen)) return false;
+    g_cfg = fresh;
+    setenv("TZ", g_cfg.tz, 1);
+    tzset();
+    logSummary();
+    return true;
 }
 
 const SysConfig& get() {
     return g_cfg;
 }
 
-// ---------------------------------------------------------------------------
-// passwordLevel: compare all three so timing does not reveal which exist
-// ---------------------------------------------------------------------------
 Access passwordLevel(const char* candidate) {
-    if (!candidate || !*candidate) return Access::None;
+    if (!candidate || !*candidate || !strcmp(candidate, "***")) return Access::None;
     bool sys = ctEqual(g_cfg.sysopPass, sizeof(g_cfg.sysopPass), candidate);
     bool co1 = ctEqual(g_cfg.coPass[0], sizeof(g_cfg.coPass[0]), candidate);
     bool co2 = ctEqual(g_cfg.coPass[1], sizeof(g_cfg.coPass[1]), candidate);
@@ -210,6 +321,24 @@ const char* levelName(Access level) {
         case Access::CoSysop2: return "Co-sysop 2";
         default:               return "";
     }
+}
+
+bool redactLine(const char* line, char* out, size_t outLen) {
+    char tmp[160];
+    int idx = 0;
+    char* value = nullptr;
+    if (!passwordAssignment(line, tmp, sizeof(tmp), idx, value) || !*value) return false;
+    snprintf(out, outLen, "%s = ***\n", kPasswordKeys[idx]);
+    return true;
+}
+
+bool unredactLine(const char* line, char* out, size_t outLen) {
+    char tmp[160];
+    int idx = 0;
+    char* value = nullptr;
+    if (!passwordAssignment(line, tmp, sizeof(tmp), idx, value) || strcmp(value, "***")) return false;
+    snprintf(out, outLen, "%s = %s\n", kPasswordKeys[idx], livePassword(idx));
+    return true;
 }
 
 } // namespace syscfg
