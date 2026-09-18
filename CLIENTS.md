@@ -60,7 +60,7 @@ PETSCII is a first-class citizen here, not a fallback: the board detects it, swi
 |---|---|---|
 | Apple II, IIgs | [ProTERM](https://en.wikipedia.org/wiki/ProTERM) ([disk images](https://www.applearchives.com/software/intrec-proterm-apple-ii/)), [ASCII Express](https://en.wikipedia.org/wiki/ASCII_Express), [Spectrum](https://speccie.uk/software/spectrum/) | [Uthernet II](https://a2retrosystems.com/products.htm), or a [Super Serial Card](https://en.wikipedia.org/wiki/Apple_II_serial_cards) to a bridge |
 | Classic Mac | [ZTerm](https://www.dalverson.com/zterm/), [MicroPhone II](https://www.macintoshrepository.org/33227-microphone-ii), [White Knight](https://www.macintoshrepository.org/33223-white-knight) | the modem or printer port to a bridge |
-| Modern Mac | the built-in `telnet` or `nc` | it is already on the network |
+| Modern Mac | [MuffinTerm](https://apps.apple.com/us/app/muffinterm/id1583236494), [SyncTERM](https://syncterm.bbsdev.net/), or `nc host 6400` | it is already on the network |
 
 ## Amiga
 
@@ -91,9 +91,11 @@ PETSCII is a first-class citizen here, not a fallback: the board detects it, swi
 | Era | Software |
 |---|---|
 | DOS | [Telix](https://en.wikipedia.org/wiki/Telix), [Procomm Plus](https://en.wikipedia.org/wiki/Datastorm_Technologies), [Qmodem](https://en.wikipedia.org/wiki/Qmodem), [Terminate](https://en.wikipedia.org/wiki/Terminate_%28software%29), [Telemate](https://archive.org/details/msdos_festival_TM421-1) |
-| Today | [SyncTERM](https://syncterm.net/), [NetRunner](https://www.mysticbbs.com/downloads.html), [mTelnet](https://mt32.bbses.info/), [PuTTY](https://www.chiark.greenend.org.uk/~sgtatham/putty/), [Windows Terminal](https://github.com/microsoft/terminal) |
+| Today | [SyncTERM](https://syncterm.bbsdev.net/), [NetRunner](https://www.mysticbbs.com/downloads.html), [mTelnet](https://mt32.bbses.info/), [PuTTY](https://www.chiark.greenend.org.uk/~sgtatham/putty/) |
 
 SyncTERM and NetRunner are the ones to reach for if you want the full ANSI experience with CP437 line drawing. PuTTY works and is what most of the development testing runs against.
+
+Windows Terminal is a terminal host, not a telnet client: it has no telnet of its own. Turn the optional Windows feature on first (`dism /online /Enable-Feature /FeatureName:TelnetClient`), then `telnet host 6400` inside it.
 
 ## Real terminals
 
@@ -109,9 +111,25 @@ A glass terminal gets the board's ANSI mode. The ones that predate ANSI get plai
 
 | Client | Notes |
 |---|---|
-| [GNU inetutils telnet](https://www.gnu.org/software/inetutils/) | `telnet unleashed.local 6400` |
-| [netcat](https://man.openbsd.org/nc.1) | `nc unleashed.local 6400`, no telnet negotiation, works fine |
-| iOS and Android telnet apps | anything that opens a raw socket |
+| [GNU inetutils telnet](https://www.gnu.org/software/inetutils/) | `telnet unleashed.local 6400`. On Debian and Ubuntu: `sudo apt -y install inetutils-telnet` |
+| [netcat](https://man.openbsd.org/nc.1) | `nc unleashed.local 6400`. No telnet negotiation, fine for a quick look |
+| [SyncTERM](https://syncterm.bbsdev.net/) | the one to use on Linux and macOS for proper ANSI art |
+
+macOS has not shipped `telnet` since 10.13 High Sierra. Use `nc`, install one with `brew install inetutils`, or run SyncTERM or MuffinTerm.
+
+## Phones and tablets
+
+The phone in your pocket is a perfectly good terminal, and these all speak telnet rather than SSH only.
+
+| Platform | App | Notes |
+|---|---|---|
+| Android | [TERMinator](https://play.google.com/store/apps/details?id=com.terminator.android) | built for BBSes: CP437 and ANSI art, IBM VGA and Topaz fonts, 80x25 through 132x50, ZMODEM. The one to install |
+| Android | [ConnectBot](https://play.google.com/store/apps/details?id=org.connectbot) | open source, telnet is in there despite the store copy saying SSH |
+| Android | [Termius](https://play.google.com/store/apps/details?id=com.server.auditor.ssh.client) | telnet in the free tier, modern, but a plain xterm renderer rather than CP437 |
+| iOS | [TERMinator](https://apps.apple.com/us/app/terminator-bbs-terminal/id6759012939) | the same BBS-minded client as the Android build |
+| iOS, macOS | [MuffinTerm](https://apps.apple.com/us/app/muffinterm/id1583236494) | ANSI, **PETSCII** and ATASCII, XMODEM through ZMODEM, a dialling directory. The PETSCII support makes it the pick if you care about the C64 side |
+
+Termux plus `pkg install inetutils` works too, but it is UTF-8 only, so CP437 art will come out wrong.
 
 ## What has actually been tested
 
