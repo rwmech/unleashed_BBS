@@ -85,7 +85,13 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 
 | Command | Shortcut | What it does |
 |---|---|---|
-| `HELP` | `H`, `?` | Command list, generated from the command table: only the commands you can use, 40 columns wide on every terminal, descriptions aligned in one column. |
+| `HELP` | `H`, `?` | The commands you use most, generated from the command table: only what you may run, 40 columns wide on every terminal, the shortcut letter picked out inside the word. The last line names the other menus. |
+| `? chat` | | Chat and messages. |
+| `? account` | | Your account, your terminal, your profile. |
+| `? staff` | | Staff tools (staff only). |
+| `? sysop` | | Sysop tools (sysop only). |
+| `? all` | | Every menu in turn, each with its own heading. |
+| `MAIL` | | Read the message waiting for you. `MAIL handle your message` leaves one. See [CHAT.md](CHAT.md). |
 | `WHO` | `W` | Who is on each node: a marker, handle, terminal, minutes on, idle time (mm:ss). The busy line is never listed, and a hidden sysop or co-sysop looks like a free line to callers. Staff see hidden and lurking sessions, marked `hidden` or `lurking`, and with `NODES` get a Doing column (the last command each caller ran, verb only, never arguments) instead of the terminal. |
 | `WHO n` | `W n` | The same list redrawn in place every n seconds (`who_refresh_min`..`who_refresh_max`, default 1..30) until you press a key. The footer shows the idle clock: refreshing is not input, so the idle hangup still counts down. |
 | `MEM` | `M` | Heap statistics and session sizing. |
@@ -95,7 +101,7 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | `TIME` | | Date and time, minutes online, minutes left. |
 | `LAST` | | The last 50 calls, newest first. |
 | `ABOUT` | | What this BBS is, its version and its license. Plays `screens/about.*`, so a sysop can rewrite it. |
-| `CHAT` | | Join the chat room (the `chat` plugin). Everything you type goes to everyone in the room, tagged DDial style: `#2:Daytona) hi`. The bracket is the rank: `)` a caller, `*` a guest, `>` a co-sysop, `]` the sysop. There is no prompt character: the cursor waits at the start of the line. While you are typing, nothing from the room lands on your screen; the lines wait and print in order when you press Enter. The room buffers 48 lines, and one caller may send 80 lines a minute (`rate =`), with 8 in a burst; going over tells that caller alone, and the room never sees it. `/s` lists who is there (`/w` works too), `/q` or ESC leaves. |
+| `CHAT` | | Join the chat room (the `chat` plugin). Everything you type goes to everyone in the room, tagged DDial style: `#2:Daytona) hi`. The bracket is the rank: `)` a caller, `*` a guest, `>` a co-sysop, `]` the sysop. There is no prompt character: the cursor waits at the start of the line. While you are typing, nothing from the room lands on your screen; the lines wait and print in order when you press Enter. The room buffers 48 lines, and one caller may send 80 lines a minute (`rate =`), with 8 in a burst; going over tells that caller alone, and the room never sees it. `/s` lists who is there, `/?` lists every room command, `/q` or ESC leaves. Private lines, away notes, squelch, kicks, the vote to kick and messages are all in [CHAT.md](CHAT.md). |
 | `SERIAL` | | Watch the serial device (the `serial` plugin). `T` takes the keyboard if you are allowed and it is free, ESC leaves. `SERIAL STATUS` prints the port, `SERIAL SET 9600 8N1` changes the line. |
 | `INFO [handle]` | `I` | An account: name, member since, last call, calls, profile. Email, address and phone only on your own account (or with `USERS`). |
 | `PROFILE` | | Form to change your name, email, address, phone and profile. Not for guests. |
@@ -199,6 +205,16 @@ Rank rules:
 - `KICK` and `SNOOP` only work on callers and lower levels. Co-sysop 1 can act on co-sysop 2; nobody can act on the sysop.
 - A hidden co-sysop shows as a free line in WHO, and hidden higher-level staff are masked in `NODES`.
 - Any staff level sees sysop-node calls in `LAST`. `NODES` permission also shows caller IPs there on wide screens.
+
+### Sysop screens
+
+| Command | What it does |
+|---|---|
+| `SYS` | The whole board on one screen, in groups: network (SSID, signal in dBm with a word for what it means, channel, address, port), memory (heap free, the lowest it has been, the biggest block, session size), storage (used, free, what is held back for the board), load (uptime, clock, scheduler work per pass in microseconds, worst pass, passes since boot) and traffic (nodes busy and the peak, calls answered since boot, records in the caller log, plugins running, active IP bans). |
+| `CALLS` | The caller log bucketed by hour of the day, as a bar chart, with the busiest hour named. Costs one pass over the log and no storage. |
+| `CONFIG` | The settings, page by page. On its own it lists the pages: `board`, `limits`, `accounts`, `backup`, `staff`, and one per plugin. `CONFIG limits` opens that page as the same kind of form the user manager uses: Up and Down move, F1 saves, ESC cancels. Only what you changed is written, the rest of `system.cfg` is left exactly as it was, comments included, and the board reloads the new settings straight away. Passwords show as `********` and are only written when you type a new one. One sysop edits at a time. |
+
+`CONFIG` is the sysop's own command: co-sysops do not get it whatever the `[access]` matrix says, because it can change the staff passwords.
 
 ## Backup window (sysop)
 

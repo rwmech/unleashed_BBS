@@ -45,6 +45,7 @@
 #include "bbs.h"
 #include "bbs_util.h"
 #include "clock.h"
+#include "plugin.h"
 #include "sysconfig.h"
 #include "../platform/platform.h"
 
@@ -534,4 +535,364 @@ void Bbs::cmdDrop(Session& s, uint32_t now) {
     say(d.term, d.tl, Color::LightGreen, buf);
     plat::log("bbs: sysop node -> node %u (%s)", id, d.user);
     prompt(d);
+}
+
+// ===========================================================================
+// CONFIG: the settings, in the same forms the user manager uses
+// ===========================================================================
+
+namespace {
+
+// Field kinds. The form widget only knows about text, masks and cycles;
+// the kind is what CONFIG checks before anything reaches the file.
+enum : uint8_t { CK_TEXT, CK_NUM, CK_YESNO, CK_LEVEL, CK_PASS };
+
+struct CfgField {
+    const char* key;      // key in system.cfg
+    const char* label;    // 9 characters, the form column
+    uint8_t     kind;
+    uint16_t    lo;       // CK_NUM: the range the parser will accept
+    uint16_t    hi;
+    uint8_t     cap;      // characters, excluding the terminator
+};
+
+constexpr const char kYesNo[]  = "yes|no";
+constexpr const char kLevels[] = "all|users|staff|co2|co1|sysop";
+constexpr const char kMasked[] = "********";       // shown for a password already set
+
+const CfgField kBoard[] = {
+    { "hostname",          "Hostname", CK_TEXT, 0, 0, 31 },
+    { "tz",                "Timezone", CK_TEXT, 0, 0, 40 },
+    { "ntp_server",        "NTP",      CK_TEXT, 0, 0, 40 },
+    { "idle_minutes",      "Idle min", CK_NUM,  1, 240, 4 },
+    { "activity_led_gpio", "LED gpio", CK_NUM,  0, 39, 2 },
+};
+
+const CfgField kLimits[] = {
+    { "call_minutes",    "Per call", CK_NUM, 1, 1440, 4 },
+    { "day_minutes",     "Per day",  CK_NUM, 1, 1440, 4 },
+    { "who_refresh_min", "WHO min",  CK_NUM, 1, 60, 3 },
+    { "who_refresh_max", "WHO max",  CK_NUM, 1, 240, 3 },
+    { "max_users",       "Accounts", CK_NUM, 1, 250, 3 },
+};
+
+const CfgField kAccounts[] = {
+    { "self_register", "Sign-ups", CK_YESNO, 0, 0, 4 },
+    { "guest",         "Guests",   CK_YESNO, 0, 0, 4 },
+    { "guest_minutes", "Guest mn", CK_NUM,   1, 240, 4 },
+};
+
+const CfgField kBackup[] = {
+    { "backup_port",           "Port",     CK_NUM, 1, 65535, 5 },
+    { "backup_window_minutes", "Open for", CK_NUM, 1, 120, 4 },
+    { "backup_button_gpio",    "Button",   CK_NUM, 0, 39, 2 },
+};
+
+const CfgField kStaff[] = {
+    { "sysop_password",    "Sysop",    CK_PASS, 0, 0, 32 },
+    { "cosysop1_password", "Co-sysop 1", CK_PASS, 0, 0, 32 },
+    { "cosysop2_password", "Co-sysop 2", CK_PASS, 0, 0, 32 },
+};
+
+struct CfgPage {
+    const char*     name;      // what a caller types after CONFIG
+    const char*     title;     // the form's title bar
+    const char*     what;      // one line in the page list
+    const CfgField* fields;
+    uint8_t         count;
+};
+
+const CfgPage kPages[] = {
+    { "board",    "BOARD",           "name, clock, idle timeout, LED", kBoard, 5 },
+    { "limits",   "TIME LIMITS",     "minutes per call and per day",   kLimits, 5 },
+    { "accounts", "ACCOUNTS",        "sign-ups and guest calls",       kAccounts, 3 },
+    { "backup",   "BACKUP WINDOW",   "port, how long it stays open",   kBackup, 3 },
+    { "staff",    "STAFF PASSWORDS", "sysop and co-sysop passwords",   kStaff, 3 },
+};
+constexpr uint8_t kPageCount = sizeof(kPages) / sizeof(kPages[0]);
+
+// One settings editor at a time. The sysop is a single caller, and two
+// people writing the file at once is a good way to lose it.
+const Session*  g_cfgOwner = nullptr;
+const CfgPage*  g_cfgPage  = nullptr;
+char            g_cfgSection[24] = "";                  // plugin section, empty for the board
+char            g_cfgBuf[Form::kMaxFields][48] = {};
+char            g_cfgWas[Form::kMaxFields][48] = {};     // to write only what changed
+char            g_cfgKeys[Form::kMaxFields][24] = {};   // plugin pages build their keys here
+CfgField        g_cfgPlugin[Form::kMaxFields] = {};     // and their field table
+CfgPage         g_cfgPluginPage = {};
+
+// cfgFileValue: what the file says this key is, empty when it says nothing
+bool cfgFileValue(const char* section, const char* key, char* out, size_t n) {
+    char path[160], line[192], want[40];
+    out[0] = '\0';
+    snprintf(path, sizeof(path), "%s/system.cfg", plat::fsBase());
+    FILE* f = fopen(path, "r");
+    if (!f) return false;
+    bool inSection = section == nullptr || !*section;
+    bool found = false;
+    while (fgets(line, sizeof(line), f)) {
+        const char* p = line;
+        while (*p == ' ' || *p == '\t') ++p;
+        if (*p == '[') {
+            char name[40];
+            size_t w = 0;
+            ++p;
+            while (*p && *p != ']' && w + 1 < sizeof(name)) name[w++] = *p++;
+            name[w] = '\0';
+            inSection = section && *section && !strcasecmp(name, section);
+            continue;
+        }
+        if (!inSection || *p == '#' || *p == ';' || *p == '\n' || !*p) continue;
+        size_t klen = 0;
+        while (p[klen] && p[klen] != '=' && p[klen] != ' ' && p[klen] != '\t') ++klen;
+        if (klen + 1 >= sizeof(want)) continue;
+        memcpy(want, p, klen);
+        want[klen] = '\0';
+        if (strcasecmp(want, key)) continue;
+        const char* v = p + klen;
+        while (*v == ' ' || *v == '\t') ++v;
+        if (*v != '=') continue;
+        ++v;
+        while (*v == ' ' || *v == '\t') ++v;
+        size_t w = 0;
+        while (*v && *v != '\n' && *v != '\r' && w + 1 < n) out[w++] = *v++;
+        while (w && out[w - 1] == ' ') --w;
+        out[w] = '\0';
+        found = true;                                   // a later line wins, as the parser does
+    }
+    fclose(f);
+    return found;
+}
+
+// cfgLiveValue: what the board is actually running with, for a key the
+// file does not mention. Keeps the form honest about defaults.
+void cfgLiveValue(const char* key, char* out, size_t n) {
+    const SysConfig& c = syscfg::get();
+    if      (!strcmp(key, "hostname"))              snprintf(out, n, "%.*s", static_cast<int>(n) - 1, c.hostname);
+    else if (!strcmp(key, "tz"))                    snprintf(out, n, "%.*s", static_cast<int>(n) - 1, c.tz);
+    else if (!strcmp(key, "ntp_server"))            snprintf(out, n, "%.*s", static_cast<int>(n) - 1, c.ntpServer);
+    else if (!strcmp(key, "idle_minutes"))          snprintf(out, n, "%u", c.idleMinutes);
+    else if (!strcmp(key, "activity_led_gpio"))     snprintf(out, n, "%d", c.ledGpio);
+    else if (!strcmp(key, "call_minutes"))          snprintf(out, n, "%u", c.callMinutes);
+    else if (!strcmp(key, "day_minutes"))           snprintf(out, n, "%u", c.dayMinutes);
+    else if (!strcmp(key, "who_refresh_min"))       snprintf(out, n, "%u", c.whoMin);
+    else if (!strcmp(key, "who_refresh_max"))       snprintf(out, n, "%u", c.whoMax);
+    else if (!strcmp(key, "max_users"))             snprintf(out, n, "%u", c.maxUsers);
+    else if (!strcmp(key, "self_register"))         snprintf(out, n, "%s", c.selfRegister ? "yes" : "no");
+    else if (!strcmp(key, "guest"))                 snprintf(out, n, "%s", c.guestEnabled ? "yes" : "no");
+    else if (!strcmp(key, "guest_minutes"))         snprintf(out, n, "%u", c.guestMinutes);
+    else if (!strcmp(key, "backup_port"))           snprintf(out, n, "%u", c.backupPort);
+    else if (!strcmp(key, "backup_window_minutes")) snprintf(out, n, "%u", c.backupMinutes);
+    else if (!strcmp(key, "backup_button_gpio"))    snprintf(out, n, "%d", c.backupGpio);
+    else if (!strcmp(key, "sysop_password"))        snprintf(out, n, "%s", c.sysopPass[0] ? kMasked : "");
+    else if (!strcmp(key, "cosysop1_password"))     snprintf(out, n, "%s", c.coPass[0][0] ? kMasked : "");
+    else if (!strcmp(key, "cosysop2_password"))     snprintf(out, n, "%s", c.coPass[1][0] ? kMasked : "");
+    else out[0] = '\0';
+}
+
+// cfgPluginValue: what a plugin is running with, for the keys the file
+// does not mention. Its own settings have no name here, so they come back
+// empty and the sysop sees a blank rather than a wrong value.
+void cfgPluginValue(const char* name, const char* key, char* out, size_t n) {
+    out[0] = '\0';
+    uint8_t i = plugins::indexOf(name);
+    if (i == 0xFF) return;
+    if      (!strcmp(key, "enabled")) snprintf(out, n, "%s", plugins::enabled(i) ? "yes" : "no");
+    else if (!strcmp(key, "read"))    snprintf(out, n, "%s", plugins::levelName(plugins::levelFor(i, 0)));
+    else if (!strcmp(key, "write"))   snprintf(out, n, "%s", plugins::levelName(plugins::levelFor(i, 1)));
+    else if (!strcmp(key, "admin"))   snprintf(out, n, "%s", plugins::levelName(plugins::levelFor(i, 2)));
+}
+
+// pageByName: "board", or a plugin's name
+const CfgPage* pageByName(const char* name) {
+    for (uint8_t i = 0; i < kPageCount; ++i)
+        if (!strcasecmp(kPages[i].name, name)) return &kPages[i];
+    return nullptr;
+}
+
+// digitsOnly: what CK_NUM accepts before anything is written
+bool digitsOnly(const char* v) {
+    if (!*v) return false;
+    for (const char* p = v; *p; ++p) if (*p < '0' || *p > '9') return false;
+    return true;
+}
+
+// collectKey: plugin pages are built from the keys the file already has,
+// which is every key that matters once system.cfg.example has been used.
+struct KeyGrab { uint8_t n; };
+
+void collectKey(void* ctx, const char* key, const char* value) {
+    (void)value;
+    KeyGrab* g = static_cast<KeyGrab*>(ctx);
+    if (g->n >= Form::kMaxFields - 4) return;             // enabled/read/write/admin first
+    for (uint8_t i = 0; i < g->n; ++i) if (!strcmp(g_cfgKeys[i], key)) return;
+    snprintf(g_cfgKeys[g->n], sizeof(g_cfgKeys[0]), "%.23s", key);
+    ++g->n;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// configRelease: give the settings editor back. Called when the form ends
+// and whenever a session closes, so a dropped line cannot lock CONFIG out.
+// ---------------------------------------------------------------------------
+void Bbs::configRelease(const Session& s) {
+    if (g_cfgOwner == &s) {
+        g_cfgOwner = nullptr;
+        g_cfgPage  = nullptr;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// configPages: what CONFIG on its own shows
+// ---------------------------------------------------------------------------
+void Bbs::configPages(Session& s) {
+    char buf[64];
+    rowTitle(s, "Settings", "CONFIG page");
+    for (uint8_t i = 0; i < kPageCount; ++i) {
+        uint8_t col = 0;
+        snprintf(buf, sizeof(buf), "%-10.10s", kPages[i].name);
+        rowSeg(s, Color::Yellow, buf, col);
+        rowSeg(s, Color::Grey, kPages[i].what, col);
+        rowEnd(s, col);
+    }
+    for (uint8_t i = 0; i < plugins::count(); ++i) {
+        uint8_t col = 0;
+        snprintf(buf, sizeof(buf), "%-10.10s", plugins::at(i)->info.name);
+        rowSeg(s, Color::Yellow, buf, col);
+        snprintf(buf, sizeof(buf), "plugin: %.24s", plugins::at(i)->info.title);
+        rowSeg(s, Color::Grey, buf, col);
+        rowEnd(s, col);
+    }
+    rowRule(s);
+    rowText(s, Color::DarkGrey, "F1 saves a page, left arrow leaves it");
+    prompt(s);
+}
+
+// ---------------------------------------------------------------------------
+// cmdConfig: CONFIG lists the pages, CONFIG <page> opens one as a form.
+// Editing is one page at a time and one sysop at a time; saving writes only
+// that page's keys and reloads the running configuration.
+// ---------------------------------------------------------------------------
+void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now) {
+    char buf[80];
+    while (*arg == ' ') ++arg;
+    if (!*arg) { configPages(s); return; }
+
+    if (g_cfgOwner && g_cfgOwner != &s) {
+        snprintf(buf, sizeof(buf), "%.20s is editing the settings.", g_cfgOwner->user);
+        say(s.term, s.tl, Color::LightRed, buf);
+        prompt(s);
+        return;
+    }
+
+    const CfgPage* page = pageByName(arg);
+    g_cfgSection[0] = '\0';
+    if (!page) {                                          // a plugin's own section
+        uint8_t pi = plugins::indexOf(arg);
+        if (pi == 0xFF) {
+            say(s.term, s.tl, Color::LightRed, "No such page. CONFIG lists them.");
+            prompt(s);
+            return;
+        }
+        snprintf(g_cfgSection, sizeof(g_cfgSection), "plugin:%.15s", plugins::at(pi)->info.name);
+        KeyGrab grab{ 0 };
+        memset(g_cfgKeys, 0, sizeof(g_cfgKeys));
+        plugins::forEachKey(pi, collectKey, &grab);
+
+        uint8_t n = 0;
+        g_cfgPlugin[n++] = { "enabled", "Enabled", CK_YESNO, 0, 0, 4 };
+        g_cfgPlugin[n++] = { "read",    "Read",    CK_LEVEL, 0, 0, 6 };
+        g_cfgPlugin[n++] = { "write",   "Write",   CK_LEVEL, 0, 0, 6 };
+        g_cfgPlugin[n++] = { "admin",   "Admin",   CK_LEVEL, 0, 0, 6 };
+        for (uint8_t i = 0; i < grab.n && n < Form::kMaxFields; ++i)
+            g_cfgPlugin[n++] = { g_cfgKeys[i], g_cfgKeys[i], CK_TEXT, 0, 0, 40 };
+        g_cfgPluginPage = { plugins::at(pi)->info.name, plugins::at(pi)->info.name,
+                            "", g_cfgPlugin, n };
+        page = &g_cfgPluginPage;
+    }
+
+    g_cfgOwner = &s;
+    g_cfgPage  = page;
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < page->count && i < Form::kMaxFields; ++i) {
+        const CfgField& f = page->fields[i];
+        char* buf2 = g_cfgBuf[i];
+        if (!cfgFileValue(g_cfgSection, f.key, buf2, sizeof(g_cfgBuf[0]))) {
+            if (g_cfgSection[0]) cfgPluginValue(arg, f.key, buf2, sizeof(g_cfgBuf[0]));
+            else                 cfgLiveValue(f.key, buf2, sizeof(g_cfgBuf[0]));
+        }
+        if (f.kind == CK_PASS && *buf2) snprintf(buf2, sizeof(g_cfgBuf[0]), "%s", kMasked);
+        snprintf(g_cfgWas[i], sizeof(g_cfgWas[0]), "%.47s", buf2);      // what it was when it opened
+        uint8_t flags = FF_NONE;
+        const char* choices = nullptr;
+        if (f.kind == CK_YESNO) { flags |= FF_CYCLE; choices = kYesNo; }
+        if (f.kind == CK_LEVEL) { flags |= FF_CYCLE; choices = kLevels; }
+        if (f.kind == CK_PASS)  flags |= FF_MASK;
+        addField(s, n, f.label, buf2, f.cap, flags, choices);
+    }
+    s.formKind  = FormKind::Config;
+    s.st        = SState::Form;
+    s.lastInput = now;
+    s.form.begin(page->title, s.fields, n, s.term, s.tl);   // the title outlives the form
+}
+
+// ---------------------------------------------------------------------------
+// configSave: check every field, then write the page in one pass and reload.
+// A password left showing its mask is left alone; an empty one clears it.
+// ---------------------------------------------------------------------------
+bool Bbs::configSave(Session& s, char* err, size_t errLen) {
+    if (!g_cfgPage) { snprintf(err, errLen, "nothing to save"); return false; }
+    syscfg::KeyVal pairs[Form::kMaxFields];
+    uint8_t n = 0;
+
+    for (uint8_t i = 0; i < g_cfgPage->count && i < Form::kMaxFields; ++i) {
+        const CfgField& f = g_cfgPage->fields[i];
+        const char* v = g_cfgBuf[i];
+        if (f.kind == CK_PASS && !strcmp(v, kMasked)) continue;      // untouched
+        if (!strcmp(v, g_cfgWas[i])) continue;                       // nothing to write
+        if (!*v && (f.kind == CK_YESNO || f.kind == CK_LEVEL)) continue;
+        if (f.kind == CK_NUM) {
+            if (!digitsOnly(v)) {
+                s.form.fail(i, "Numbers only", s.term, s.tl);
+                return false;
+            }
+            long val = strtol(v, nullptr, 10);
+            if (val < f.lo || val > f.hi) {
+                char msg[48];
+                snprintf(msg, sizeof(msg), "Between %u and %u", static_cast<unsigned>(f.lo),
+                         static_cast<unsigned>(f.hi));
+                s.form.fail(i, msg, s.term, s.tl);
+                return false;
+            }
+        }
+        pairs[n].key   = f.key;
+        pairs[n].value = v;
+        ++n;
+    }
+    if (!n) { snprintf(err, errLen, "Nothing changed"); return true; }
+    if (!syscfg::write(pairs, n, g_cfgSection[0] ? g_cfgSection : nullptr, err, errLen)) return false;
+
+    char rerr[80] = "";
+    if (!syscfg::reload(rerr, sizeof(rerr))) {
+        snprintf(err, errLen, "saved, but %.48s", rerr);
+        return true;
+    }
+    // A plugin about to be stopped may have callers inside it. Hand them
+    // back to the command prompt first: a session left owning a plugin
+    // that has given its memory back is a session that never comes home.
+    eachSession([](void*, Session& o) {
+        if (o.st == SState::Plugin) {
+            o.term.color(o.tl, Color::Yellow);
+            o.term.nl(o.tl);
+            o.term.text(o.tl, "The sysop changed the settings.");
+            o.term.nl(o.tl);
+            Bbs::instance().release(o);
+        }
+    }, nullptr);
+    plugins::stopAll();
+    plugins::begin(*this);
+    snprintf(err, errLen, "Saved and live");
+    return true;
 }

@@ -383,6 +383,103 @@ const char* levelName(Access level) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// sameKey: does this line set that key? Leading spaces and the spacing
+// around the = are all allowed, so a hand-edited file still matches.
+// ---------------------------------------------------------------------------
+namespace {
+
+bool sameKey(const char* line, const char* key) {
+    while (*line == ' ' || *line == '\t') ++line;
+    size_t n = strlen(key);
+    if (strncasecmp(line, key, n) != 0) return false;
+    const char* p = line + n;
+    while (*p == ' ' || *p == '\t') ++p;
+    return *p == '=';
+}
+
+// sectionOf: "[chat]" -> chat. Returns false for anything else.
+bool sectionOf(const char* line, char* out, size_t n) {
+    while (*line == ' ' || *line == '\t') ++line;
+    if (*line != '[') return false;
+    ++line;
+    size_t w = 0;
+    while (*line && *line != ']' && w + 1 < n) out[w++] = *line++;
+    out[w] = '\0';
+    return *line == ']';
+}
+
+} // namespace
+
+bool write(const KeyVal* pairs, uint8_t count, const char* section, char* err, size_t errLen) {
+    char path[160], tmp[176];
+    snprintf(path, sizeof(path), "%s/system.cfg", plat::fsBase());
+    snprintf(tmp, sizeof(tmp), "%s/system.tmp", plat::fsBase());
+
+    bool done[16] = {};
+    if (count > 16) {
+        snprintf(err, errLen, "too many settings at once");
+        return false;
+    }
+
+    FILE* out = fopen(tmp, "w");
+    if (!out) {
+        snprintf(err, errLen, "cannot write the config file");
+        return false;
+    }
+
+    FILE* in = fopen(path, "r");
+    bool inSection = section == nullptr;        // the top of the file is the unnamed section
+    bool seen      = inSection;
+    if (in) {
+        char line[192];
+        while (fgets(line, sizeof(line), in)) {
+            char name[40];
+            if (sectionOf(line, name, sizeof(name))) {
+                if (inSection) {                // leaving the section: add what is missing
+                    for (uint8_t i = 0; i < count; ++i)
+                        if (!done[i]) { fprintf(out, "%s = %s\n", pairs[i].key, pairs[i].value); done[i] = true; }
+                }
+                inSection = section && !strcasecmp(name, section);
+                if (inSection) seen = true;
+            } else if (inSection) {
+                bool replaced = false;
+                for (uint8_t i = 0; i < count; ++i) {
+                    if (done[i] || !sameKey(line, pairs[i].key)) continue;
+                    fprintf(out, "%s = %s\n", pairs[i].key, pairs[i].value);
+                    done[i] = replaced = true;
+                    break;
+                }
+                if (replaced) continue;
+            }
+            fputs(line, out);
+            size_t len = strlen(line);
+            if (len && line[len - 1] != '\n') fputc('\n', out);
+        }
+        fclose(in);
+    }
+
+    bool missing = false;
+    for (uint8_t i = 0; i < count; ++i) if (!done[i]) missing = true;
+    if (missing) {
+        if (!seen && section) fprintf(out, "\n[%s]\n", section);
+        for (uint8_t i = 0; i < count; ++i)
+            if (!done[i]) fprintf(out, "%s = %s\n", pairs[i].key, pairs[i].value);
+    }
+
+    if (fflush(out) != 0 || fclose(out) != 0) {
+        remove(tmp);
+        snprintf(err, errLen, "the config file could not be finished");
+        return false;
+    }
+    remove(path);
+    if (rename(tmp, path) != 0) {
+        snprintf(err, errLen, "the new config file could not be put in place");
+        return false;
+    }
+    return true;
+}
+
 bool redactLine(const char* line, char* out, size_t outLen) {
     char tmp[160];
     int idx = 0;

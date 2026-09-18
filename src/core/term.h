@@ -66,6 +66,14 @@ enum class Color : uint8_t {
     Orange, Brown, LightRed, DarkGrey, Grey, LightGreen, LightBlue, LightGrey
 };
 
+// colorByName: a colour written in a config file ("cyan", "ltgreen") to a
+// palette entry. Returns fallback when the name is not one of ours, so a
+// typo in system.cfg leaves the screen readable instead of blank.
+Color colorByName(const char* name, Color fallback);
+
+// colorName: the name colorByName accepts, for writing settings back out
+const char* colorName(Color c);
+
 // Drawing glyphs with a per-terminal best match
 enum class Glyph : uint8_t { Block, Shade, HLine, VLine, Bullet, Micro };
 

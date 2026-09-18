@@ -146,6 +146,9 @@ uint8_t indexOf(const char* name);
 // levels for this plugin, as configured
 PlugLevel levelFor(uint8_t index, uint8_t which);   // 0 read, 1 write, 2 admin
 
+// levelName: the word a config file uses for a level
+const char* levelName(PlugLevel level);
+
 // mayUse: does this session meet a level?
 bool mayUse(const Session& s, PlugLevel level);
 

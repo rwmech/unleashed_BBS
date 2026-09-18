@@ -69,6 +69,12 @@ uint32_t millis() {
     return static_cast<uint32_t>(ts.tv_sec * 1000ULL + ts.tv_nsec / 1000000ULL);
 }
 
+uint32_t micros() {
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<uint32_t>(ts.tv_sec * 1000000ULL + ts.tv_nsec / 1000ULL);
+}
+
 uint32_t random32() {
     return static_cast<uint32_t>(rand());
 }
@@ -87,6 +93,11 @@ HeapStats heap() {
 
 int8_t wifiRssi() {
     return 0;
+}
+
+// netInfo: the host has no radio. The system screen shows the dashes.
+NetInfo netInfo() {
+    return NetInfo{};
 }
 
 // ---------------------------------------------------------------------------

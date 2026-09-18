@@ -179,6 +179,18 @@ uint8_t indexOf(const char* name) {
     return 0xFF;
 }
 
+const char* levelName(PlugLevel level) {
+    switch (level) {
+        case PlugLevel::All:    return "all";
+        case PlugLevel::Users:  return "users";
+        case PlugLevel::Staff:  return "staff";
+        case PlugLevel::Co2:    return "co2";
+        case PlugLevel::Co1:    return "co1";
+        case PlugLevel::Sysop:  return "sysop";
+        default:                return "nobody";
+    }
+}
+
 PlugLevel levelFor(uint8_t index, uint8_t which) {
     if (index >= count() || which > 2) return PlugLevel::Nobody;
     return g_state[index].level[which];

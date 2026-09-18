@@ -139,6 +139,16 @@ bool anyPassword();
 // levelName: "Sysop", "Co-sysop 1", "Co-sysop 2", ""
 const char* levelName(Access level);
 
+// ---------------------------------------------------------------------------
+// write: change these keys in system.cfg and leave everything else exactly
+// as it was, comments and ordering included. section is the [name] the keys
+// live under, or null for the top of the file; a section that is not there
+// yet is added at the end. The file is written through a temp file and a
+// rename, so an interrupted write cannot lose the settings.
+// ---------------------------------------------------------------------------
+struct KeyVal { const char* key; const char* value; };
+bool write(const KeyVal* pairs, uint8_t count, const char* section, char* err, size_t errLen);
+
 // redactLine: a password assignment with a value becomes "key = ***".
 // Returns true and fills out when the line was rewritten.
 bool redactLine(const char* line, char* out, size_t outLen);

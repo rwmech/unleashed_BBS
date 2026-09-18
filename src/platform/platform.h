@@ -65,6 +65,12 @@ uint32_t millis();
 uint32_t random32();
 
 // ---------------------------------------------------------------------------
+// micros: monotonic microseconds since boot, for loop timing. Wraps every
+// 71 minutes; callers use unsigned subtraction, so a wrap is harmless.
+// ---------------------------------------------------------------------------
+uint32_t micros();
+
+// ---------------------------------------------------------------------------
 // fsBase: mount point of the data filesystem (screens, system.cfg), no
 // trailing slash. logsBase: mount point of the separate logs filesystem.
 // ---------------------------------------------------------------------------
@@ -81,6 +87,19 @@ HeapStats heap();
 // connected or not available (host)
 // ---------------------------------------------------------------------------
 int8_t wifiRssi();
+
+// ---------------------------------------------------------------------------
+// netInfo: what the radio is attached to, for the sysop's system screen.
+// valid is false on the host build and before the join completes.
+// ---------------------------------------------------------------------------
+struct NetInfo {
+    char    ssid[33] = {};
+    char    ip[16]   = {};
+    uint8_t channel  = 0;
+    int8_t  rssi     = 0;
+    bool    valid    = false;
+};
+NetInfo netInfo();
 
 // ---------------------------------------------------------------------------
 // fsInfo: size and used bytes of the data filesystem. False when the

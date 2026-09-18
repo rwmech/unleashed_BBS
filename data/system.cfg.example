@@ -92,6 +92,24 @@ write = all
 admin = sysop
 room = Main
 rate = 80        ; lines a minute one caller may send, 8 in a burst
+history = 48     ; lines the room remembers, 8 to 2000
+
+; Messages: one per caller, waiting to be read. Not private: they are
+; plain text in the filesystem and they travel in a backup zip.
+mail_slots = 32  ; messages the board holds at once, 0 switches mail off
+mail_chars = 512 ; longest a message may be
+mail_days  = 14  ; how long one waits before it expires
+
+; Room colours. Any C64 colour name: black white red cyan purple green
+; blue yellow orange brown ltred darkgrey grey ltgreen ltblue ltgrey
+color_node    = cyan      ; the #2 in "#2:Daytona) hi"
+color_punct   = darkgrey  ; the : and the rank bracket
+color_handle  = ltgreen   ; the handle
+color_text    = white     ; what was said
+color_old     = darkgrey  ; history shown on the way in
+color_notice  = yellow    ; *** joined, left, votes, kicks
+color_room    = cyan      ; the banner and /s
+color_private = purple    ; a line meant for one caller
 
 # Share a serial device: one operator types, everyone else watches.
 # Uses the second UART, never the console, so flashing still works.

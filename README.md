@@ -15,7 +15,7 @@ source. See the LICENSE file for terms.
 
 Electronic freedom on a microcontroller. No web, no cloud, no browser.
 
-µnleashed is a telnet BBS that runs on a bare ESP32-WROOM-32E and grows into an IoT terminal server through plugins: real hardware you reach from a C64, a PC terminal, or anything that speaks telnet. The C64 connects through TeensyROM.
+µnleashed is a telnet BBS that runs on a bare ESP32-WROOM-32E and grows into an IoT terminal server through plugins: real hardware you reach from a 1982 home computer, a glass terminal, a phone or anything else that speaks telnet.
 
 The name is spelled with a micro sign. Where µ can't be shown (PETSCII, hostnames, file names) it's written `unleashed`.
 
@@ -30,23 +30,97 @@ Docs:
 | [PLUGINS.md](PLUGINS.md) | writing and running plugins |
 | [BACKUP.md](BACKUP.md) | downloading and uploading config, accounts and screens as a `.zip` |
 | [SCREENS.md](SCREENS.md) | screen formats, naming rules and upload limits |
+| [CHANGELOG.md](CHANGELOG.md) | what changed in every build |
 
-## Status (0.10.0)
+## What it's for
 
-- Host build (Linux): the full scripted suite passes, also under AddressSanitizer and UBSan (`tools/testclient.py --backup`, plus `--slow` and `--ban`).
-- ESP32 build: ESP-IDF 5.3.1 through PlatformIO (`espressif32@6.9.0`), with no warnings in app code.
-  - Image: about 928 KB, 59% of the 1.5 MB OTA slot.
-  - Static RAM: 107 KB, including the 8-session pool and the backup buffers.
-- User accounts (0.6.0): self-registration through a form, salted SHA-256 passwords, per-handle lockout, PROFILE / PASSWORD / INFO, and a staff user manager. Up to 100 accounts on the board; more will need the SD card plugin.
-- 0.10.0: the first two plugins. `chat` is a DDial style room, and `serial` shares a serial device with one operator and any number of watchers, on the second UART so flashing still works.
-- 0.9.0: the plugin API. Plugins are compiled in, switched on per board in `system.cfg`, with their own config section, storage folder, periodic hook, caller hooks, commands and read / write / admin levels. A plugin can own a caller's session (for a serial bridge or a door). Ships with an example plugin, an `ABOUT` screen, a `PLUGINS` status command and free-space reporting.
-- 0.8.0: staff rank marked on the account (`>` co-sysop, `]` sysop, `*` guest) shown in every list, staff manage only their own rank and below, staff see hidden callers, plus the fixes from the first full code review of the account system.
-- 0.7.0 (on hardware: registration, guests and the DASH Wi-Fi reading verified): guest logins under any unused handle (marked `*`, 15 minutes, nothing saved), input effects in place (errors and passwords resolve on the same line), page and broadcast alerts, title bars on lists, a staff Doing column in WHO and DASH, Wi-Fi signal on DASH.
-- Commands come from a registry (`Command` tables); HELP, dispatch and permissions are generated from it, and plugins will register into it.
+A board the size of a stick of gum, 40 columns of text, and a port anyone can reach. That combination turns out to be useful well beyond nostalgia.
+
+- **Run a BBS again.** Nodes, handles, a user list, a chat room, doors, a caller log, a sysop who can page you. All of it on hardware that costs less than lunch and draws less power than a night light. Leave it on a shelf for a year.
+- **Give old hardware something to do.** A C64, an Atari 800, a VT220 on a desk: machines with no browser and no future on the modern web get a live system to call, today, with no cloud account and nothing to subscribe to.
+- **Somewhere to hang out.** The chat room is DDial and Gtalk in spirit: everybody in one room, one line at a time, handles and ranks in the margin. Small, fast, and with a personality that group chat lost somewhere around 2010.
+- **Teach the whole stack.** One repository shows a TCP listener, a cooperative scheduler, terminal detection, a line editor, a permission model and a plugin API, all in a few thousand lines of C++ you can read on a rainy afternoon. Nothing is hidden behind a framework.
+- **Reach into the physical world.** The board has GPIO. A caller who types a command can read a sensor or throw a relay, from anywhere, with a client that fits in 8 KB. That is a greenhouse you can water from a Kaypro, a garage door, a ham shack antenna switch or rotator, a sprinkler zone, a 3D print farm, a brew rig, a generator that needs starting before you drive home, a model rocket launch controller, a lab bench you want to poke at from the other side of the building, a deployment you want to kick off from a terminal on a boat.
+- **Work where the web does not.** No browser, no TLS handshake, no 4 MB of JavaScript. The protocol is plain text over a socket, so it survives a satellite hop, a packet radio link, a cellular modem on one bar, and an afternoon when the DNS provider is having a bad day. A whole board fits in the bandwidth of a single modern web page.
+- **Keep the conversation off the web.** Nothing here is indexed, syndicated, analysed, or sold. There is no third party in the middle: messages go from one caller to another through a chip you own, on a port you chose, and they are gone when you clear them.
+- **Stay small on purpose.** No web server, no scripting runtime, no package tree to audit at 2 a.m. The whole system is one static binary with a fixed memory budget, which is a security posture as much as an engineering one. What is not built cannot be exploited.
+
+## What can call in
+
+Anything with a telnet client, and, with a modem emulator or a serial bridge, very nearly anything with a serial port. A partial list, all of it terminal software people still run:
+
+- **Commodore.** C64 and C128 (CCGMS, Novaterm, StrikeTerm, Desterm), VIC-20, PET and CBM, Plus/4. On the wire: TeensyROM, WiModem232, Comet64, Zimodem, an RS-232 cartridge, or a UP9600 cable to a bridge.
+- **Atari.** 8-bit (BobTerm, Ice-T, Amodem) through an 850 interface, an FujiNet or a serial bridge. ST and Falcon (Uniterm, Flash, Connect).
+- **Apple.** II and IIgs (ProTERM, Ascii Express, Spectrum) with a Super Serial Card or Uthernet. Classic Mac (ZTerm, MicroPhone, White Knight), and anything since through the built-in telnet.
+- **Tandy and friends.** TRS-80 models I/III/4, Color Computer (Greg-E-Term), Model 100 and 102, MSX, Amstrad CPC, ZX Spectrum, Sinclair QL.
+- **Amiga.** NComm, Term, JR-Comm, A-Talk, or AmiTelnet over a network stack.
+- **CP/M and S-100.** Kaypro, Osborne, Altair, Northstar, anything running Kermit or MEX through its serial port.
+- **DOS and Windows.** Telix, Procomm Plus, Qmodem, Terminate, Telemate, and today SyncTERM, NetRunner, mTelnet, PuTTY, Windows Terminal.
+- **Real glass terminals.** DEC VT52, VT100, VT220, VT320 and VT420, Wyse 50 and 60, Televideo 925, ADM-3A, IBM 3151, Heathkit H19. A terminal server or a USB serial adapter puts them straight on the board, and the serial bridge plugin goes the other way.
+- **Teleprinters.** An ASR-33 or a Teletype Model 43 through a current loop converter, at 110 baud, if that is the sort of thing you enjoy. The BAUD command will slow the board down to match.
+- **Unix and everything modern.** telnet and nc on Linux, macOS and BSD, telnet apps on iOS and Android, a terminal in a browser tab if you must, and any serial console through the bridge.
+
+Terminal type, character set and width are detected at connect time: ANSI with CP437 or UTF-8, PETSCII at 40 or 80 columns, or plain ASCII. Nothing needs configuring at the caller's end.
+
+## Hardware integration
+
+The reference board is a bare ESP32-WROOM-32E: 520 KB of SRAM, 4 MB of flash, no PSRAM, Bluetooth switched off. Any ESP32 module with the same flash size will do. A dev board with a USB-serial chip needs nothing but the cable; a bare module needs 3V3, ground, EN pulled up, GPIO0 to ground for flashing, and a USB-serial adapter on the console pins.
+
+Power: it runs from the USB port of the machine you flash it with, from a phone charger, or from 3V3 on a bench supply. Draw is a few tens of milliamps idling with six callers on, with peaks when the radio transmits, so anything that can deliver 500 mA is comfortable.
+
+A carrier PCB with the module, a level shifter and screw terminals is the obvious next step. Not today.
+
+### Getting it on Wi-Fi
+
+- Credentials live in `include/secrets.h`, which is never committed. Copy the example, put the SSID and the passphrase in, and build. SSIDs are case sensitive.
+- The board scans every channel and joins the strongest access point with that name, so a mesh or a pair of repeaters needs no extra configuration.
+- `hostname` in `system.cfg` sets both the DHCP hostname and the mDNS name, so `unleashed.local` finds the board on a normal home network without hunting for its address.
+- The clock comes from NTP at boot, and the time zone is a `system.cfg` setting. The board runs fine without either; only the log timestamps and time limits care.
+- `SYS` shows the SSID, the channel, the signal in dBm with a plain word for what that means, and the address the board answers on. If callers are dropping, look there first: anything past about -75 dBm is a marginal link, and a board in a metal case is a board with a bad antenna.
+- The dial-in port is 6400 by default. Forwarding it from a router is what puts the board on the internet, which is a decision to make deliberately: the protocol is plain telnet and the passwords cross the wire in the clear.
+
+### Serial
+
+The second UART is wired to the serial bridge plugin, so a caller with permission can drive a device attached to the board and everyone else can watch. The console UART is never touched: flashing and the serial monitor keep working while somebody is using the bridge.
+
+- Pins, baud rate and line format are `[plugin:serial]` settings, not compiled in. `SERIAL SET 9600 8N1` changes the line while the board is running.
+- The plugin refuses the pins that would break the board: the flash pins (6 to 11), the console pins, and transmit on the input-only pins (34 to 39).
+- The ESP32 speaks 3V3 logic. A 5 V device needs a level shifter, and anything with a real RS-232 port needs a transceiver such as a MAX3232. Wiring a bare RS-232 line to a GPIO pin destroys the pin.
+- This is what puts a glass terminal, a piece of test equipment, a radio, a PLC or a label printer on the board. It is also how the board itself can be reached from a terminal that has no network at all.
+
+### GPIO and the physical world
+
+- GPIO2 drives the activity LED by default, which is the LED already fitted to most dev boards. `activity_led_gpio` moves it.
+- GPIO0, the BOOT button on a dev board, opens the backup window while the sysop is logged in. Hold it, and `system.cfg`, the accounts and the screens can be downloaded or uploaded over HTTP for a few minutes.
+- The remaining pins are free. The planned GPIO plugin exposes them to callers as commands with their own read, write and admin levels, so reading a sensor can be open to everyone while throwing a relay is staff only.
+- Reserved by the hardware, not by this firmware: 6 to 11 are the flash, 34 to 39 are input only and have no pull-ups, and the strapping pins (0, 2, 12, 15) decide how the chip boots and should be left alone unless you know what they do at reset.
+- Anything switching mains, motors or an inductive load belongs behind a relay module or an opto-isolated driver with its own supply, not on a board that also has to keep six telnet sessions alive.
+
+### Putting a retro machine on it
+
+Old hardware reaches the board in one of three ways:
+
+- A Wi-Fi modem emulator in the machine's own serial or cartridge port, which answers `ATDT` and opens a telnet session. TeensyROM, WiModem232, Comet64, Zimodem and FujiNet all do this.
+- A serial-to-telnet bridge on the network, with a null modem cable to the machine's RS-232 port. An ESP-Link board, a Lantronix, or a small Linux box all work.
+- The serial bridge plugin on this board, going the other way, for a terminal that has nothing but a serial port.
+
+## Status (0.11.0)
+
+- Host build: the scripted suite (`tools/testclient.py --backup`) passes, also under ASan/UBSan.
+- 0.11.0 adds: HELP as menus sorted by use, with headings, colour and the shortcut letter picked out; a colour pass over WHO and MEM; `SYS` and `CALLS` for staff; the chat room's command set (`/?`, `/p`, `/me`, `/a`, `/sq`, `/t`, `/clear`), moderation (`/k`, `/b`, `/unb`, `/bans`) and a vote to kick when no staff are in the room; messages (`MAIL`, `/email`, `/e`) with expiry and a fixed number of slots; configurable chat colours and history depth; `CONFIG`, the sysop's settings manager, as the same forms the user manager uses.
+- 0.10.0 (on hardware): chat room and serial bridge plugins.
+- 0.9.0: the plugin API, an example plugin, the ABOUT screen.
+- 0.8.0 (on hardware): staff ranks on accounts, markers in every list, staff see hidden callers.
+- 0.7.0 (on hardware): guest logins, input effects in place, page alerts, title bars on lists, a staff Doing column, Wi-Fi signal on DASH.
+- 0.6.0: user accounts with fill-in forms, salted SHA-256, lockout, the user manager.
+- Commands come from a registry (`Command` tables); the menus, dispatch and permissions are generated from it, and plugins register into it.
 - On hardware:
   - PuTTY and a C64 through TeensyROM have both called in.
   - Every PETSCII glyph (spinner, lines, shade, underscore) is verified on the C64.
   - NTP and mDNS come up on boot; the backup window works on the board.
+  - Measured with six callers on: heap free 136,424, lowest 119,764, largest block 110,592, session 5,600 bytes each.
+
+Full history: [CHANGELOG.md](CHANGELOG.md).
 
 ## Build and flash (PlatformIO)
 

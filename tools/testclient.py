@@ -195,6 +195,14 @@ def pet(s):
     return bytes(out)
 
 
+ANSI_RE = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def plain(data):
+    """Row output carries colour changes between the columns now: drop them."""
+    return ANSI_RE.sub(b"", bytes(data))
+
+
 TEST_PW = "pw1234"
 DOWN = b"\x1b[B"
 F1 = b"\x1bOP"
@@ -214,19 +222,31 @@ def wait_any(c, pats, secs=10):
     return -1
 
 
+PROMPT_RE = re.compile(rb"\[(\d|S|B)\] [^:]*: ")
+
+
 def read_list(c, secs=8):
-    """Pump a paged list to its end, answering each [More] once. On ANSI a
-    color code follows the prompt, so match it near the tail, not at the
-    very end of the buffer."""
+    """Pump a paged list to its end, answering each [More] once. The list is
+    over when the command prompt comes back and nothing more arrives."""
     end = time.time() + secs
     answered = 0
-    while time.time() < end and b"stops output" not in c.buf:
+    quiet = 0
+    while time.time() < end:
         seen = bytes(c.buf).count(b"[More] Y/n/c")
         if seen > answered:
             c.send(b"c")
             answered = seen
+            quiet = 0
+            continue
+        before = len(c.buf)
         c.pump(0.2)
-    return b"stops output" in c.buf
+        if len(c.buf) == before and PROMPT_RE.search(bytes(c.buf)[-64:]):
+            quiet += 1
+            if quiet >= 2:
+                break
+        elif len(c.buf) != before:
+            quiet = 0
+    return PROMPT_RE.search(bytes(c.buf)[-64:]) is not None
 
 
 def login(c, handle, pw=TEST_PW, as_pet=False, wait_main=True):
@@ -384,7 +404,8 @@ def test_ascii():
     read_list(c)
     text = bytes(c.buf).replace(b"[More] Y/n/c ", b"").replace(b"\x08 \x08", b"").decode("ascii", "replace")
     lines = [l for l in text.split("\r\n") if l]
-    body = [l for l in lines if l != "help" and "---" not in l and "stops output" not in l and "Main" not in l]
+    body = [l for l in lines if l != "help" and "---" not in l and "Main" not in l
+            and not l.startswith("More:") and not l.lstrip().startswith("?")]
     ok &= check("HELP generated with rows", len(body) >= 10)
     ok &= check("every HELP line fits 39 columns", all(len(l) <= 39 for l in lines))
     ok &= check("descriptions start at column 14",
@@ -475,7 +496,7 @@ def test_sysop():
     r.send(b"help\r")
     ok &= check("long HELP pauses at [More]", r.wait_for(b"[More] Y/n/c", 4))
     r.send(b"c")
-    ok &= check("C continues nonstop", r.wait_for(b"stops output", 4))
+    ok &= check("C continues nonstop", r.wait_for(b"? all", 4))
 
     x.buf.clear()
     r.buf.clear()
@@ -505,14 +526,15 @@ def test_sysop():
     x.send(b"w\r")
     x.wait_for(b"Who's online", 3)
     x.pump(0.5)
-    ok &= check("SHOW lists the sysop, marked ] for sysop", re.search(rb"S\]Rob", x.buf) is not None)
-    ok &= check("WHO explains the markers", b"*GUEST" in x.buf and b"]SYSOP" in x.buf)
+    ok &= check("SHOW lists the sysop, marked ] for sysop", re.search(rb"S\]Rob", plain(x.buf)) is not None)
+    ok &= check("WHO explains the markers",
+                b"*GUEST" in plain(x.buf) and b"]SYSOP" in plain(x.buf))
     r.buf.clear()
     r.send(b"who\r")
     r.wait_for(b"Who's online", 3)
     r.pump(0.5)
     ok &= check("staff WHO shows each caller's last command", b"Doing" in r.buf and
-                re.search(rb"\d Xavier +WHO ", r.buf) is not None)
+                re.search(rb"\d Xavier +WHO ", plain(r.buf)) is not None)
     if HOST in ("127.0.0.1", "localhost"):
         users = (DATA / "users.txt").read_text()
         ok &= check("the sysop password marks the account", "[Rob]" in users and
@@ -556,14 +578,14 @@ def test_cosysop():
     a.wait_for(b"Who's online", 3)
     a.pump(0.5)
     ok &= check("co-sysops stay visible in WHO, marked >",
-                re.search(rb"\d>Cora ", a.buf) is not None and re.search(rb"\d>Dex ", a.buf) is not None)
+                re.search(rb"\d>Cora ", plain(a.buf)) is not None and
+                re.search(rb"\d>Dex ", plain(a.buf)) is not None)
 
     c1.buf.clear()
-    c1.send(b"help\r")
-    c1.wait_for(b"[More] Y/n/c", 4)
-    c1.send(b"c")
-    c1.wait_for(b"stops output", 4)
-    ok &= check("CO1 help lists KICK, not UNBAN", b"KICK n [msg]" in c1.buf and b"UNBAN" not in c1.buf)
+    c1.send(b"? staff\r")
+    read_list(c1)
+    ok &= check("CO1 staff menu lists KICK, not UNBAN",
+                b"KICK n [msg]" in plain(c1.buf) and b"UNBAN" not in plain(c1.buf))
 
     c2.buf.clear()
     c2.send(f"kick {na}\r".encode())
@@ -595,7 +617,7 @@ def test_cosysop():
     c2.wait_for(b"Who's online", 3)
     c2.pump(0.5)
     ok &= check("staff see a hidden co-sysop, marked hidden",
-                re.search(rb"\d>Cora +hidden", c2.buf) is not None)
+                re.search(rb"\d>Cora +hidden", plain(c2.buf)) is not None)
     c1.buf.clear()
     c1.send(b"user edit Rob\r")
     ok &= check("a co-sysop cannot edit the sysop's account",
@@ -869,10 +891,11 @@ def test_guest():
     a = ansi_login("Alice")
     a.buf.clear()
     a.send(b"who\r")
-    a.wait_for(b"*GUEST", 4)
+    a.wait_for(b"GUEST", 4)
     ok &= check("WHO marks the guest with * and shows the key",
-                re.search(rb"\d\*Visitor ", a.buf) is not None and re.search(rb"\d Alice ", a.buf) is not None
-                and b"*GUEST" in a.buf)
+                re.search(rb"\d\*Visitor ", plain(a.buf)) is not None and
+                re.search(rb"\d Alice ", plain(a.buf)) is not None and
+                b"*GUEST" in plain(a.buf))
     if PASSWORD:
         c.buf.clear()
         c.send(f"bye {PASSWORD}\r".encode())
@@ -885,8 +908,8 @@ def test_guest():
     time.sleep(0.3)
     a.buf.clear()
     a.send(b"last\r")
-    a.wait_for(b"*GUEST", 4)
-    ok &= check("LAST marks guest calls with *", re.search(rb"\*Visitor ", a.buf) is not None)
+    a.wait_for(b"GUEST", 4)
+    ok &= check("LAST marks guest calls with *", re.search(rb"\*Visitor ", plain(a.buf)) is not None)
     a.close()
     if HOST in ("127.0.0.1", "localhost"):
         users = (DATA / "users.txt").read_text()
@@ -977,7 +1000,7 @@ def test_chat():
     ok = check("CHAT joins the room", a.wait_for(b"Main: 1 here", 4))
     b.send(b"chat\r")
     ok &= check("a second caller joins", b.wait_for(b"Main: 2 here", 4))
-    ok &= check("the room is told who arrived", a.wait_for(b":Listener) joined", 4))
+    ok &= check("the room is told who arrived", a.wait_for(b"Listener) joined", 4))
     a.buf.clear()
     b.buf.clear()
     b.send(b"half typed")                              # b is mid-sentence
@@ -986,15 +1009,16 @@ def test_chat():
     a.send(b"hello room\r")
     a.wait_for(b"hello room", 4)
     b.pump(1.0)
-    ok &= check("nothing lands while a caller is typing", b":Chatty)" not in b.buf)
+    ok &= check("nothing lands while a caller is typing", b":Chatty)" not in plain(b.buf))
     b.send(b"\r")
     ok &= check("the held line arrives on Enter, tagged with the node",
-                b.wait_for(b":Chatty) hello room", 4) and re.search(rb"#\d:Chatty\)", b.buf) is not None)
+                b.wait_for(b"hello room", 4) and
+                re.search(rb"#\d:Chatty\) hello room", plain(b.buf)) is not None)
     ok &= check("no prompt character in the room", b"> " not in b.buf)
     b.buf.clear()
     b.send(b"/s\r")
-    ok &= check("/s lists the room with node tags", b.wait_for(b":Chatty)", 4) and b.wait_for(b"(you)", 3)
-                and b.wait_for(b"2 in Main", 3))
+    ok &= check("/s lists the room with node tags",
+                b.wait_for(b"2 in Main", 4) and b":Chatty)" in plain(b.buf) and b"(you)" in plain(b.buf))
     # flooding is refused, and only the flooder hears about it
     a.buf.clear()
     b.buf.clear()
@@ -1005,7 +1029,7 @@ def test_chat():
     b.pump(0.5)
     ok &= check("a flood is throttled", b"lines a minute is the limit" in a.buf)
     ok &= check("only the flooder is told", b"lines a minute" not in b.buf)
-    ok &= check("the lines under the limit still reached the room", b":Chatty) spam" in b.buf)
+    ok &= check("the lines under the limit still reached the room", b":Chatty) spam" in plain(b.buf))
 
     b.buf.clear()
     a.send(b"/q\r")
@@ -1355,10 +1379,259 @@ def test_ban():
     return ok
 
 
+
+def test_menus():
+    """HELP is a set of menus now: most used first, areas behind ? <name>."""
+    print("Help menus")
+    c = ansi_login("Menus")
+    c.buf.clear()
+    c.send(b"?\r")
+    read_list(c)
+    main = plain(c.buf)
+    ok = check("? lists the everyday commands", b"WHO" in main and b"CHAT" in main)
+    ok &= check("? does not list staff tools", b"BROADCAST" not in main)
+    ok &= check("? names the other menus", b"? chat" in main and b"? account" in main)
+    ok &= check("a plain caller is not offered the staff menu", b"? staff" not in main)
+
+    c.buf.clear()
+    c.send(b"? account\r")
+    read_list(c)
+    acct = plain(c.buf)
+    ok &= check("? account is its own menu", b"PROFILE" in acct and b"PASSWORD" in acct)
+    ok &= check("the account menu leaves the everyday commands out", b"PAGE n msg" not in acct)
+
+    c.buf.clear()
+    c.send(b"? chat\r")
+    read_list(c)
+    ok &= check("? chat lists the room and mail", b"CHAT" in plain(c.buf) and b"MAIL" in plain(c.buf))
+
+    c.buf.clear()
+    c.send(b"? all\r")
+    read_list(c)
+    every = plain(c.buf)
+    ok &= check("? all walks every section",
+                b"Commands" in every and b"Chat and messages" in every and b"PROFILE" in every)
+    ok &= check("the shortcut letter is picked out", b"\x1b[1;33mW" in bytes(c.buf))
+    c.close()
+    return ok
+
+
+def test_sysinfo():
+    """SYS and CALLS: the sysop's two read-only screens."""
+    print("System screens")
+    for i in range(3):                                  # a few calls for the histogram
+        x = ansi_login("Caller%d" % i)
+        x.send(b"bye\r")
+        x.pump(0.3)
+        x.close()
+    s = ansi_login("Sysop2")
+    s.send(b"bye testsysop\r")
+    s.wait_for(b"Sysop", 4)
+    s.buf.clear()
+
+    s.send(b"sys\r")
+    read_list(s)
+    sys_out = plain(s.buf)
+    ok = check("SYS has the network group", b"network" in sys_out and b"Signal" in sys_out)
+    ok &= check("SYS has memory and storage", b"Heap free" in sys_out and b"Data free" in sys_out)
+    ok &= check("SYS reports the scheduler", b"Loop avg" in sys_out and b"Loop passes" in sys_out)
+    ok &= check("SYS counts the lines", b"Nodes busy" in sys_out and b"Calls" in sys_out)
+
+    s.buf.clear()
+    s.send(b"calls\r")
+    read_list(s)
+    calls = plain(s.buf)
+    ok &= check("CALLS draws the day", b"Calls by hour" in calls and b"Busiest" in calls)
+    ok &= check("CALLS counts the calls logged", re.search(rb"\d+ calls", calls) is not None)
+
+    g = ansi_login("NotStaff")
+    g.buf.clear()
+    g.send(b"sys\r")
+    g.pump(0.8)
+    ok &= check("SYS is staff only", b"Unknown" in g.buf or b"network" not in plain(g.buf))
+    g.close()
+    s.close()
+    return ok
+
+
+def test_room_commands():
+    """The room command set: /?, private lines, away, squelch, kicks, votes."""
+    print("Chat room commands")
+    a = ansi_login("Ay")
+    b = ansi_login("Bee")
+    c = ansi_login("Cee")
+    for x in (a, b, c):
+        x.send(b"chat\r")
+        x.wait_for(b"here.", 4)
+        x.buf.clear()
+
+    a.send(b"/?\r")
+    ok = check("/? lists the room commands", a.wait_for(b"/sq", 4) and b"/email" in plain(a.buf))
+
+    a.buf.clear()
+    c.buf.clear()
+    b.send(b"/me waves\r")
+    ok &= check("/me is an action line",
+                a.wait_for(b"* waves", 4) and b":Bee) * waves" in plain(a.buf))
+
+    a.buf.clear()
+    c.buf.clear()
+    b.send(b"/p 1 just for you\r")
+    ok &= check("a private line reaches the one node", a.wait_for(b"just for you", 4))
+    c.pump(0.8)
+    ok &= check("and nobody else", b"just for you" not in c.buf)
+
+    b.buf.clear()
+    a.send(b"/a making tea\r")
+    ok &= check("away tells the room", b.wait_for(b"is away: making tea", 4))
+    b.buf.clear()
+    b.send(b"/s\r")
+    ok &= check("the roster shows the note", b.wait_for(b"away: making tea", 4))
+
+    c.buf.clear()
+    c.send(b"/sq 2\r")
+    c.wait_for(b"hidden", 3)
+    c.buf.clear()
+    b.send(b"/a\r")                                     # back: a notice, never squelched
+    ok &= check("join and leave notices ignore a squelch", c.wait_for(b"is back", 4))
+    c.buf.clear()
+    b.send(b"squelched line\r")
+    c.pump(1.0)
+    ok &= check("a squelched caller's lines are hidden", b"squelched line" not in c.buf)
+    a.buf.clear()
+    b.send(b"still heard elsewhere\r")
+    ok &= check("the squelch is per caller", a.wait_for(b"still heard elsewhere", 4))
+
+    # a vote with three in the room and no staff
+    b.buf.clear()
+    c.buf.clear()
+    a.send(b"/vk 3\r")
+    ok &= check("a vote opens", b.wait_for(b"vote to remove Cee", 4))
+    b.send(b"/vk 3\r")
+    ok &= check("two thirds carries it", c.wait_for(b"removed from the room", 5))
+    ok &= check("the room is told", a.wait_for(b"was removed by a vote", 4))
+
+    # staff kick and the room ban list
+    s = ansi_login("RoomBoss")
+    s.send(b"bye testsysop\r")
+    s.wait_for(b"Sysop", 4)
+    s.send(b"chat\r")
+    s.wait_for(b"here.", 4)
+    s.buf.clear()
+    b.buf.clear()
+    s.send(b"/k 2 enough of that\r")
+    ok &= check("staff can kick from the room", b.wait_for(b"removed from the room", 5))
+    s.buf.clear()
+    s.send(b"/b Bee\r")
+    ok &= check("a handle can be barred", s.wait_for(b"barred from the room", 4))
+    b.buf.clear()
+    b.send(b"chat\r")
+    ok &= check("a barred handle cannot come back", b.wait_for(b"not welcome", 4))
+    s.buf.clear()
+    s.send(b"/unb Bee\r")
+    ok &= check("and can be let back in", s.wait_for(b"may come back", 4))
+    b.buf.clear()
+    b.send(b"chat\r")
+    ok &= check("the room takes them again", b.wait_for(b"here.", 4))
+
+    for x in (a, b, c, s):
+        x.close()
+    return ok
+
+
+def test_mail():
+    """One message per caller, read once, replaced rather than doubled."""
+    print("Messages")
+    a = ansi_login("Sender")
+    b = ansi_login("Reader")
+    a.buf.clear()
+    b.buf.clear()
+
+    a.send(b"mail Reader the eagle lands at nine\r")
+    ok = check("a message is left", a.wait_for(b"Left for Reader", 4))
+    ok &= check("somebody online is told at once", b.wait_for(b"You have mail", 4))
+
+    b.buf.clear()
+    b.send(b"mail\r")
+    ok &= check("MAIL reads it", b.wait_for(b"the eagle lands at nine", 4) and
+                b"Message from Sender" in plain(b.buf))
+    b.buf.clear()
+    b.send(b"mail\r")
+    ok &= check("reading clears it", b.wait_for(b"No mail", 4))
+
+    a.buf.clear()
+    a.send(b"mail Reader first one\r")
+    a.wait_for(b"Left for", 4)
+    a.buf.clear()
+    a.send(b"mail Reader second one\r")
+    ok &= check("a second message replaces the first, and says so",
+                a.wait_for(b"replacing the one they had", 4))
+
+    a.buf.clear()
+    a.send(b"mail Nobody hello?\r")
+    ok &= check("a message needs a real account", a.wait_for(b"No account called Nobody", 4))
+
+    b.close()
+    b = ansi_login("Reader", pw=TEST_PW)
+    ok &= check("mail is announced at login", b.wait_for(b"You have mail", 6))
+    b.send(b"mail\r")
+    ok &= check("the message that survived is the newer one", b.wait_for(b"second one", 4))
+    a.close()
+    b.close()
+    return ok
+
+
+def test_config():
+    """CONFIG: settings as forms, written back without disturbing the file."""
+    print("CONFIG")
+    s = ansi_login("Cfg")
+    s.send(b"bye testsysop\r")
+    s.wait_for(b"Sysop", 4)
+    s.buf.clear()
+
+    s.send(b"config\r")
+    read_list(s)
+    pages = plain(s.buf)
+    ok = check("CONFIG lists its pages", b"limits" in pages and b"backup" in pages)
+    ok &= check("plugins are pages too", b"chat" in pages)
+
+    s.buf.clear()
+    s.send(b"config limits\r")
+    ok &= check("a page opens as a form", s.wait_for(b"Per call", 5))
+
+    s.buf.clear()
+    s.send(DOWN * 4 + b"\x08" * 4 + b"77" + F1)         # Accounts -> 77
+    ok &= check("the page saves", s.wait_for(b"Saved and live", 5))
+    if HOST in ("127.0.0.1", "localhost"):
+        cfg = (DATA / "system.cfg").read_text()
+        ok &= check("the new value is in system.cfg", "max_users = 77" in cfg)
+        ok &= check("the rest of the file is untouched",
+                    "sysop_password = testsysop" in cfg and "[plugin:chat]" in cfg)
+
+    s.buf.clear()
+    s.send(b"config limits\r")
+    s.wait_for(b"Per call", 5)
+    s.buf.clear()
+    s.send(DOWN * 4 + b"\x08" * 4 + b"9999" + F1)
+    ok &= check("a value out of range is refused", s.wait_for(b"Between", 5))
+    s.send(b"\x1b")                                     # cancel
+    s.pump(0.5)
+
+    n = ansi_login("NotSysop")
+    n.buf.clear()
+    n.send(b"config\r")
+    n.pump(0.8)
+    ok &= check("CONFIG is the sysop's alone", b"Unknown" in n.buf)
+    n.close()
+    s.close()
+    return ok
+
+
 if __name__ == "__main__":
     results = [test_ansi(), test_telnet_first(), test_petscii(), test_ascii(),
                test_page(), test_sysop(), test_cosysop(), test_accounts(), test_user_admin(), test_guest(),
-               test_plugins(), test_about(), test_chat(), test_serial(),
+               test_plugins(), test_about(), test_chat(), test_room_commands(),
+               test_mail(), test_menus(), test_sysinfo(), test_config(), test_serial(),
                test_bulletin(), test_idle_login(), test_busy()]
     if "--backup" in FLAGS:
         results.append(test_backup())

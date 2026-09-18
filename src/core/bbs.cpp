@@ -275,7 +275,8 @@ void Bbs::tick() {
     tv.tv_sec  = 0;
     tv.tv_usec = BBS_SELECT_MS * 1000;
     int r = select(maxfd + 1, &rfds, &wfds, nullptr, &tv);
-    uint32_t now = plat::millis();
+    uint32_t now   = plat::millis();
+    uint32_t work0 = plat::micros();        // time the work, not the wait
     if (r <= 0) { FD_ZERO(&rfds); FD_ZERO(&wfds); }
 
     if (FD_ISSET(lfd_, &rfds)) acceptAll(now);
@@ -290,6 +291,11 @@ void Bbs::tick() {
     serviceBackup(now);
     plugins::tick(now);
     plat::activityTick(now);
+
+    uint32_t dt = plat::micros() - work0;
+    if (dt > loopMaxUs_) loopMaxUs_ = dt;
+    loopAvgUs_ = loopAvgUs_ ? (loopAvgUs_ * 7 + dt) / 8 : dt;    // gentle average
+    ++loopPasses_;
 }
 
 // ===========================================================================
@@ -486,6 +492,12 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
     s.histPos       = -1;
     s.snooper       = nullptr;
 
+    if (role == Role::Caller) {                  // what the board has handled since boot
+        ++callsBoot_;
+        uint8_t busy = static_cast<uint8_t>(activeNodes() + 1);
+        if (busy > peakNodes_) peakNodes_ = busy;
+    }
+
     s.tl.clear();
     s.tl.setCps(0);
     s.tn.reset();
@@ -512,6 +524,8 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
 // closeSession: log the call, bank the minutes, tell the others, release
 // ---------------------------------------------------------------------------
 void Bbs::closeSession(Session& s, const char* why, uint32_t now) {
+    configRelease(s);                        // a dropped line must not lock CONFIG out
+
     // snoop links in both directions
     for (Session* o : all_) if (o->snooper == &s) o->snooper = nullptr;
     if (s.snooper) {

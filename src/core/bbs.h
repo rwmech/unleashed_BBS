@@ -90,10 +90,22 @@ enum class Role : uint8_t {
     Sysop,     // hidden sysop node, entered with BYE <password>
 };
 
-enum class ListKind : uint8_t { None, Help, Who, Last, Nodes, Bans, Dash, Users, Plugins };
+enum class ListKind : uint8_t { None, Help, Who, Last, Nodes, Bans, Dash, Users, Plugins,
+                                Sys, Calls };
 enum class MoreFrom : uint8_t { List, Screen };
-enum class FormKind : uint8_t { None, Signup, Profile, Password, UserAdd, UserEdit };
+enum class FormKind : uint8_t { None, Signup, Profile, Password, UserAdd, UserEdit, Config };
 enum class ConfirmKind : uint8_t { Logoff, DeleteUser };
+
+// Which menu a command appears in. HELP with no argument shows Main, the
+// handful people use all the time, and names the other menus.
+enum class Menu : uint8_t {
+    Main,       // the everyday commands
+    Chat,       // the chat room and messaging
+    Account,    // your account and other callers
+    Staff,      // staff tools
+    Sysop,      // sysop only
+    Hidden,     // never listed
+};
 
 struct Session {
     int          fd          = -1;
@@ -143,6 +155,8 @@ struct Session {
     MoreFrom     moreFrom    = MoreFrom::List;
 
     // WHO n / DASH n refresh
+    Menu         helpMenu    = Menu::Main;   // which HELP section is being drawn
+    bool         helpAll     = false;        // ? all: walk every section in turn
     ListKind     watch       = ListKind::None;
     uint8_t      watchSecs   = 0;
     uint32_t     watchNext   = 0;      // next redraw; 0 = drawing now
@@ -207,6 +221,7 @@ enum CmdFlag : uint8_t {
     CF_READ     = 16,  // plugin command: needs the plugin's read level
     CF_WRITE    = 32,  // plugin command: needs its write level (the default)
     CF_ADMIN    = 64,  // plugin command: needs its admin level
+    CF_SYSOP    = 128, // the sysop only, whatever the permission matrix says
 };
 
 struct Command {
@@ -217,6 +232,8 @@ struct Command {
     const char* usage;   // HELP column, 12 characters max, e.g. "[W]HO [n]"
     const char* help;    // description, wrapped to the HELP width
     CmdFn       fn;
+    Menu        menu = Menu::Main;   // which menu lists it
+    uint8_t     rank = 50;           // lower sorts first: 0 is the most used
 };
 
 class Bbs {
@@ -342,7 +359,16 @@ private:
     void stopWatch(Session& s);
 
     // -- output helpers (bbs_shell.cpp) --------------------------------------
-    void rowText(Session& s, Color c, const char* text, bool newline = true);   // padded when refreshing
+    void rowText(Session& s, Color c, const char* text, bool newline = true);
+    void rowSeg(Session& s, Color c, const char* text, uint8_t& col);
+    void rowEnd(Session& s, uint8_t col);
+    void statRow(Session& s, const char* label, const char* value, Color c = Color::LightGreen,
+                 const char* note = nullptr);
+    void statNum(Session& s, const char* label, uint32_t value, const char* note = nullptr);
+    void rowSection(Session& s, const char* name);
+    bool rowSys(Session& s);
+    bool rowCalls(Session& s);
+    void cmdCalls(Session& s);   // padded when refreshing
     void rowRule(Session& s);
     void rowTitle(Session& s, const char* title, const char* right = nullptr);
     uint8_t rowWidth(const Session& s) const;
@@ -361,7 +387,11 @@ private:
     bool rowDash(Session& s);
     bool rowPlugins(Session& s);
     bool rowWatchFooter(Session& s);
-    void cmdHelp(Session& s);
+    void cmdHelp(Session& s, const char* arg);
+    bool helpRow(Session& s, uint8_t index, uint8_t plugin);
+    void helpUsage(Session& s, const char* usage, bool dim);
+    bool helpWanted(const Session& s, const Command& c) const;
+    bool helpEmpty(const Session& s) const;
     void cmdWho(Session& s, const char* arg);
     void cmdDash(Session& s, const char* arg);
     void cmdMem(Session& s);
@@ -387,6 +417,10 @@ private:
     void cmdTimeAdjust(Session& s, const char* arg);
     void cmdUnban(Session& s, const char* arg);
     void cmdDrop(Session& s, uint32_t now);
+    void cmdConfig(Session& s, const char* arg, uint32_t now);
+    void configPages(Session& s);
+    bool configSave(Session& s, char* err, size_t errLen);
+    void configRelease(const Session& s);
     void cmdShow(Session& s, bool show);
     void cmdLurk(Session& s);
     Session* nodeByArg(const char* arg, const char** rest);
@@ -400,6 +434,16 @@ private:
     bool      approvalShown_ = false;
     uint32_t  lastBtnLog_    = 0;
     uint32_t  heapBaseline_ = 0;
+
+    // Running figures for the sysop's system screen. All of them are a few
+    // bytes and cost nothing to keep; SYS is where they surface.
+    uint32_t  loopAvgUs_   = 0;      // smoothed work per pass, microseconds
+    uint32_t  loopMaxUs_   = 0;      // worst pass since boot
+    uint32_t  loopPasses_  = 0;      // passes of the scheduler since boot
+    uint16_t  callsBoot_   = 0;      // calls answered since boot
+    uint8_t   peakNodes_   = 0;      // most nodes busy at once since boot
+    uint16_t  callHours_[24] = {};   // CALLS: calls per hour of the day
+    uint16_t  callsCounted_ = 0;     // records that went into callHours_
     Session   nodes_[BBS_MAX_NODES];
     Session   busy_;
     Session   sysop_;

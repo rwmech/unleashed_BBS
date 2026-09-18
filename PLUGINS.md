@@ -50,7 +50,7 @@ Disk free 612K, reserve 32K
 
 | Plugin | Purpose |
 |---|---|
-| `chat` | one chat room, DDial style (`#2:Daytona) hi`), with a short history for late arrivals. On by default. |
+| `chat` | one chat room, DDial style (`#2:Daytona) hi`), room commands, moderation and the message system. On by default. Its own doc: [CHAT.md](CHAT.md). |
 | `serial` | shares a serial device: one operator with `write`, any number of watchers with `read` |
 | `example` | the template, and what the tests drive |
 

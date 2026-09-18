@@ -240,6 +240,13 @@ void Bbs::formSave(Session& s, uint32_t now) {
     char msg[64];
 
     switch (s.formKind) {
+        case FormKind::Config: {
+            char err[80] = "";
+            if (!configSave(s, err, sizeof(err))) return;          // the form said why
+            configRelease(s);
+            formDone(s, Color::LightGreen, err);
+            return;
+        }
         case FormKind::Signup: {
             if (!users::validHandle(s.edit.handle) || ieq(s.edit.handle, "SYSOP") ||
                 handleOnline(s, s.edit.handle)) {     // the read-only handle cannot be fixed here
@@ -374,6 +381,7 @@ void Bbs::formSave(Session& s, uint32_t now) {
 }
 
 void Bbs::formCancel(Session& s, uint32_t now) {
+    configRelease(s);
     (void)now;
     if (s.formKind == FormKind::Signup) {
         s.form.after(s.term, s.tl);

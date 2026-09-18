@@ -100,6 +100,30 @@ inline char markForFlags(uint8_t flags) {
     return ' ';
 }
 
+// fmtCommas: 136424 -> "136,424". Long numbers are read at a glance on a
+// 40 column screen only when they are grouped.
+inline void fmtCommas(uint32_t v, char* out, size_t n) {
+    char digits[12];
+    int len = snprintf(digits, sizeof(digits), "%u", static_cast<unsigned>(v));
+    size_t w = 0;
+    for (int i = 0; i < len && w + 1 < n; ++i) {
+        if (i && (len - i) % 3 == 0 && w + 2 < n) out[w++] = ',';
+        out[w++] = digits[i];
+    }
+    out[w < n ? w : n - 1] = '\0';
+}
+
+// markColor: the colour of a rank marker, used wherever one is printed so
+// the same character always means the same thing
+inline Color markColor(char mark) {
+    switch (mark) {
+        case '*': return Color::DarkGrey;      // guest
+        case '>': return Color::Yellow;        // co-sysop
+        case ']': return Color::LightRed;      // sysop
+        default:  return Color::Grey;
+    }
+}
+
 // listHandle: a handle cut to a list column
 inline void listHandle(char* out, size_t n, const char* user, int width) {
     snprintf(out, n, "%.*s", width, user);

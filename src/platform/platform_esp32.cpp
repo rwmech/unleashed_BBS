@@ -41,6 +41,7 @@
 #include "esp_heap_caps.h"
 #include "driver/gpio.h"
 #include "esp_wifi.h"
+#include "esp_netif.h"
 #include "esp_littlefs.h"
 #include "driver/uart.h"
 extern "C" {
@@ -54,6 +55,10 @@ namespace plat {
 
 uint32_t millis() {
     return static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+}
+
+uint32_t micros() {
+    return static_cast<uint32_t>(esp_timer_get_time());
 }
 
 uint32_t random32() {
@@ -170,6 +175,28 @@ int8_t wifiRssi() {
     wifi_ap_record_t ap;
     if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) return 0;
     return ap.rssi;
+}
+
+// ---------------------------------------------------------------------------
+// netInfo: SSID, channel and signal come from the station record, the
+// address from the default station netif. Anything missing leaves the
+// field empty rather than failing the whole call.
+// ---------------------------------------------------------------------------
+NetInfo netInfo() {
+    NetInfo n;
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+        snprintf(n.ssid, sizeof(n.ssid), "%.32s", reinterpret_cast<const char*>(ap.ssid));
+        n.channel = ap.primary;
+        n.rssi    = ap.rssi;
+        n.valid   = true;
+    }
+    esp_netif_t* nif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    esp_netif_ip_info_t ip;
+    if (nif && esp_netif_get_ip_info(nif, &ip) == ESP_OK && ip.ip.addr) {
+        snprintf(n.ip, sizeof(n.ip), IPSTR, IP2STR(&ip.ip));
+    }
+    return n;
 }
 
 void log(const char* fmt, ...) {

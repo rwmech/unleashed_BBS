@@ -155,6 +155,45 @@ void Term::setType(TermType t, Charset cs, uint8_t cols, uint8_t rows) {
 // ---------------------------------------------------------------------------
 // nameOf: human-readable terminal name for TERM / WHO / LAST
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Colour names. The palette is the C64 one, so the names are the C64 names
+// with the obvious aliases: "grey" and "gray", "ltblue" and "lightblue".
+// ---------------------------------------------------------------------------
+namespace {
+struct ColorName { const char* name; Color color; };
+const ColorName kColorNames[] = {
+    { "black",     Color::Black },      { "white",     Color::White },
+    { "red",       Color::Red },        { "cyan",      Color::Cyan },
+    { "purple",    Color::Purple },     { "magenta",   Color::Purple },
+    { "green",     Color::Green },      { "blue",      Color::Blue },
+    { "yellow",    Color::Yellow },     { "orange",    Color::Orange },
+    { "brown",     Color::Brown },      { "ltred",     Color::LightRed },
+    { "lightred",  Color::LightRed },   { "darkgrey",  Color::DarkGrey },
+    { "darkgray",  Color::DarkGrey },   { "dgrey",     Color::DarkGrey },
+    { "grey",      Color::Grey },       { "gray",      Color::Grey },
+    { "ltgreen",   Color::LightGreen }, { "lightgreen", Color::LightGreen },
+    { "ltblue",    Color::LightBlue },  { "lightblue", Color::LightBlue },
+    { "ltgrey",    Color::LightGrey },  { "lightgrey", Color::LightGrey },
+    { "ltgray",    Color::LightGrey },
+};
+} // namespace
+
+Color colorByName(const char* name, Color fallback) {
+    if (!name || !*name) return fallback;
+    for (const ColorName& c : kColorNames) {
+        const char* a = c.name;
+        const char* b = name;
+        while (*a && *b && *a == (*b >= 'A' && *b <= 'Z' ? *b + 32 : *b)) { ++a; ++b; }
+        if (!*a && !*b) return c.color;
+    }
+    return fallback;
+}
+
+const char* colorName(Color c) {
+    for (const ColorName& n : kColorNames) if (n.color == c) return n.name;
+    return "white";
+}
+
 const char* Term::nameOf(TermType t, Charset cs) {
     switch (t) {
         case TermType::Pet40: return "PETSCII-40";

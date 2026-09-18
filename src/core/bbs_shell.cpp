@@ -57,6 +57,7 @@ using namespace bbsu;
 namespace {
 
 constexpr uint8_t kUsageCol = 13;       // HELP: usage column width incl. the gap
+constexpr uint8_t kMainRank = 20;       // chat commands below this rank also sit on the main menu
 
 // label: fixed-width demo label
 void label(Term& t, Timeline& tl, const char* name) {
@@ -102,92 +103,146 @@ bool parseSeconds(const char* arg, uint8_t lo, uint8_t hi, uint8_t& out) {
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
-// coreCommands: the built-in commands in HELP order. Usage stays within 12
-// characters; descriptions wrap onto indented lines.
+// coreCommands: the built-in commands. The table order is the HELP order, so
+// it is kept sorted by how often a command gets used, most first, grouped by
+// the menu it belongs to. Usage stays within 12 characters and marks the
+// shortcut letter as [W]HO; descriptions wrap onto indented lines.
 // ---------------------------------------------------------------------------
 const Command* Bbs::coreCommands(uint8_t& count) {
     static const Command k[] = {
-        // -- everyone -------------------------------------------------------
-        { "HELP", "H?", 0, CF_NONE, "[H]ELP", "this list, also ?",
-          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdHelp(s); } },
+        // -- main: what nearly every caller types ---------------------------
+        { "HELP", "H?", 0, CF_NONE, "[H]ELP [x]", "this menu; x picks another",
+          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdHelp(s, a); },
+          Menu::Main, 0 },
         { "WHO", "W", 0, CF_NONE, "[W]HO [n]", "who is on; n refreshes",
-          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdWho(s, a); } },
-        { "LAST", "", 0, CF_NONE, "LAST", "the most recent calls",
-          [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Last); } },
-        { "INFO", "I", 0, CF_NONE, "[I]NFO [h]", "a caller's profile",
-          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdInfo(s, a); } },
-        { "PROFILE", "", 0, CF_ACCOUNT, "PROFILE", "edit your profile",
-          [](Bbs& b, Session& s, const char*, uint32_t n) { b.cmdProfile(s, n); } },
-        { "PASSWORD", "", 0, CF_ACCOUNT, "PASSWORD", "change your password",
-          [](Bbs& b, Session& s, const char*, uint32_t n) { b.cmdPassword(s, n); } },
+          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdWho(s, a); },
+          Menu::Main, 1 },
         { "PAGE", "", 0, CF_NONE, "PAGE n msg", "message node n",
-          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdPage(s, a); b.prompt(s); } },
-        { "DND", "", 0, CF_NONE, "DND", "pages off / on",
-          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdDnd(s); b.prompt(s); } },
+          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdPage(s, a); b.prompt(s); },
+          Menu::Main, 2 },
+        { "INFO", "I", 0, CF_NONE, "[I]NFO [h]", "a caller's profile",
+          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdInfo(s, a); },
+          Menu::Main, 3 },
         { "TIME", "", 0, CF_NONE, "TIME", "clock and time left",
-          [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdTime(s, a, n); } },
-        { "MEM", "M", 0, CF_NONE, "[M]EM", "memory use",
-          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdMem(s); b.prompt(s); } },
-        { "TERM", "T", 0, CF_NONE, "[T]ERM", "terminal type and size",
-          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdTerm(s); b.prompt(s); } },
-        { "BAUD", "", 0, CF_NONE, "BAUD n|OFF", "emulate 300-19200 bps",
-          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdBaud(s, a); b.prompt(s); } },
+          [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdTime(s, a, n); },
+          Menu::Main, 4 },
+        { "LAST", "", 0, CF_NONE, "LAST", "the most recent calls",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Last); },
+          Menu::Main, 5 },
         { "CLS", "C", 0, CF_NONE, "[C]LS", "clear the screen",
-          [](Bbs& b, Session& s, const char*, uint32_t) { s.term.cls(s.tl); b.prompt(s); } },
-        { "FX", "F", 0, CF_NONE, "[F]X", "effects demo",
-          [](Bbs&, Session& s, const char*, uint32_t) {
-              s.st = SState::Fx; s.fxStep = 0; s.savedCps = s.tl.cps();
-          } },
+          [](Bbs& b, Session& s, const char*, uint32_t) { s.term.cls(s.tl); b.prompt(s); },
+          Menu::Main, 6 },
+        { "ABOUT", "", 0, CF_NONE, "ABOUT", "this BBS, version, license",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdAbout(s); },
+          Menu::Main, 8 },
         { "G", "", 0, CF_NONE, "[G]", "log off, asks first",
           [](Bbs&, Session& s, const char*, uint32_t) {
               s.st = SState::Confirm;
               s.term.color(s.tl, Color::Yellow);
               s.term.text(s.tl, kConfirmText);
               s.term.color(s.tl, Color::White);
-          } },
-        { "ABOUT", "", 0, CF_NONE, "ABOUT", "this BBS, version, license",
-          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdAbout(s); } },
+          },
+          Menu::Main, 9 },
         { "BYE", "", 0, CF_NONE, "BYE", "log off now",
-          [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdBye(s, a, n); } },
+          [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdBye(s, a, n); },
+          Menu::Main, 10 },
+
+        // -- your account and your terminal ---------------------------------
+        { "PROFILE", "", 0, CF_ACCOUNT, "PROFILE", "edit your profile",
+          [](Bbs& b, Session& s, const char*, uint32_t n) { b.cmdProfile(s, n); },
+          Menu::Account, 0 },
+        { "PASSWORD", "", 0, CF_ACCOUNT, "PASSWORD", "change your password",
+          [](Bbs& b, Session& s, const char*, uint32_t n) { b.cmdPassword(s, n); },
+          Menu::Account, 1 },
+        { "DND", "", 0, CF_NONE, "DND", "pages off / on",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdDnd(s); b.prompt(s); },
+          Menu::Account, 2 },
+        { "TERM", "T", 0, CF_NONE, "[T]ERM", "terminal type and size",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdTerm(s); b.prompt(s); },
+          Menu::Account, 3 },
+        { "BAUD", "", 0, CF_NONE, "BAUD n|OFF", "emulate 300-19200 bps",
+          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdBaud(s, a); b.prompt(s); },
+          Menu::Account, 4 },
+        { "MEM", "M", 0, CF_NONE, "[M]EM", "memory use",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdMem(s); b.prompt(s); },
+          Menu::Account, 5 },
+        { "FX", "F", 0, CF_NONE, "[F]X", "effects demo",
+          [](Bbs&, Session& s, const char*, uint32_t) {
+              s.st = SState::Fx; s.fxStep = 0; s.savedCps = s.tl.cps();
+          },
+          Menu::Account, 6 },
+
+        // -- spellings of BYE that never need listing ------------------------
         { "OFF", "", 0, CF_HIDDEN, "", "",
-          [](Bbs& b, Session& s, const char*, uint32_t n) { b.goodbye(s, n); } },
+          [](Bbs& b, Session& s, const char*, uint32_t n) { b.goodbye(s, n); },
+          Menu::Hidden, 99 },
         { "LOGOFF", "", 0, CF_HIDDEN, "", "",
-          [](Bbs& b, Session& s, const char*, uint32_t n) { b.goodbye(s, n); } },
+          [](Bbs& b, Session& s, const char*, uint32_t n) { b.goodbye(s, n); },
+          Menu::Hidden, 99 },
         { "QUIT", "", 0, CF_HIDDEN, "", "",
-          [](Bbs& b, Session& s, const char*, uint32_t n) { b.goodbye(s, n); } },
+          [](Bbs& b, Session& s, const char*, uint32_t n) { b.goodbye(s, n); },
+          Menu::Hidden, 99 },
 
         // -- staff (shown and dispatched only with the permission) ------------
         { "DASH", "", PERM_DASH, CF_NONE, "DASH [n]", "dashboard; n refreshes",
-          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdDash(s, a); } },
+          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdDash(s, a); },
+          Menu::Staff, 0 },
         { "USERS", "", PERM_USERS, CF_NONE, "USERS", "manage accounts",
-          [](Bbs& b, Session& s, const char*, uint32_t n) { b.cmdUsers(s, n); } },
+          [](Bbs& b, Session& s, const char*, uint32_t n) { b.cmdUsers(s, n); },
+          Menu::Staff, 1 },
         { "USER", "", PERM_USERS, CF_NONE, "USER ADD", "add an account",
-          [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdUser(s, a, n); } },
-        { "USER", "", PERM_USERS, CF_HELPONLY, "USER EDIT h", "edit account h", nullptr },
-        { "USER", "", PERM_USERS, CF_HELPONLY, "USER DEL h", "delete account h", nullptr },
-        { "NODES", "", PERM_NODES, CF_NONE, "NODES", "every session with its IP",
-          [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Nodes); } },
+          [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdUser(s, a, n); },
+          Menu::Staff, 2 },
+        { "USER", "", PERM_USERS, CF_HELPONLY, "USER EDIT h", "edit account h", nullptr,
+          Menu::Staff, 3 },
+        { "USER", "", PERM_USERS, CF_HELPONLY, "USER DEL h", "delete account h", nullptr,
+          Menu::Staff, 4 },
         { "KICK", "", PERM_KICK, CF_NONE, "KICK n [msg]", "disconnect node n",
-          [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdKick(s, a, n); b.prompt(s); } },
-        { "BROADCAST", "", PERM_BROADCAST, CF_NONE, "BROADCAST m", "message every node",
-          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdBroadcast(s, a); b.prompt(s); } },
+          [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdKick(s, a, n); b.prompt(s); },
+          Menu::Staff, 5 },
         { "SNOOP", "", PERM_SNOOP, CF_NONE, "SNOOP n", "watch node n, Q stops",
-          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdSnoop(s, a); } },
-        { "TIME", "", PERM_TIME, CF_HELPONLY, "TIME n +/-m", "add/remove node minutes", nullptr },
-        { "SHOW", "", PERM_HIDE, CF_NONE, "SHOW", "list me in WHO",
-          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdShow(s, true); b.prompt(s); } },
+          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdSnoop(s, a); },
+          Menu::Staff, 6 },
+        { "BROADCAST", "", PERM_BROADCAST, CF_NONE, "BROADCAST m", "message every node",
+          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdBroadcast(s, a); b.prompt(s); },
+          Menu::Staff, 7 },
+        { "TIME", "", PERM_TIME, CF_HELPONLY, "TIME n +/-m", "add/remove node minutes", nullptr,
+          Menu::Staff, 8 },
         { "HIDE", "", PERM_HIDE, CF_NONE, "HIDE", "hide me from WHO",
-          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdShow(s, false); b.prompt(s); } },
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdShow(s, false); b.prompt(s); },
+          Menu::Staff, 9 },
+        { "SHOW", "", PERM_HIDE, CF_NONE, "SHOW", "list me in WHO",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdShow(s, true); b.prompt(s); },
+          Menu::Staff, 10 },
         { "LURK", "", PERM_HIDE, CF_NONE, "LURK", "hide and refuse pages",
-          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdLurk(s); b.prompt(s); } },
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdLurk(s); b.prompt(s); },
+          Menu::Staff, 11 },
+        { "NODES", "", PERM_NODES, CF_NONE, "NODES", "every session with its IP",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Nodes); },
+          Menu::Staff, 12 },
         { "BANS", "", PERM_BANS, CF_NONE, "BANS", "banned IP addresses",
-          [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Bans); } },
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Bans); },
+          Menu::Staff, 13 },
         { "UNBAN", "", PERM_UNBAN, CF_NONE, "UNBAN ip", "lift a ban",
-          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdUnban(s, a); b.prompt(s); } },
-        { "PLUGINS", "", 0, CF_STAFF, "PLUGINS", "plugins and their state",
-          [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Plugins); } },
+          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdUnban(s, a); b.prompt(s); },
+          Menu::Staff, 14 },
         { "DROP", "", 0, CF_STAFF, "DROP", "give up staff access",
-          [](Bbs& b, Session& s, const char*, uint32_t n) { b.cmdDrop(s, n); } },
+          [](Bbs& b, Session& s, const char*, uint32_t n) { b.cmdDrop(s, n); },
+          Menu::Staff, 20 },
+
+        // -- sysop ------------------------------------------------------------
+        { "SYS", "", 0, CF_STAFF, "SYS", "radio, memory, storage, load",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Sys); },
+          Menu::Sysop, 0 },
+        { "CALLS", "", 0, CF_STAFF, "CALLS", "when the board is busy",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdCalls(s); },
+          Menu::Sysop, 1 },
+        { "CONFIG", "", 0, CF_SYSOP, "CONFIG [p]", "board settings, page by page",
+          [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdConfig(s, a, n); },
+          Menu::Sysop, 3 },
+        { "PLUGINS", "", 0, CF_STAFF, "PLUGINS", "plugins and their state",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Plugins); },
+          Menu::Sysop, 2 },
     };
     count = static_cast<uint8_t>(sizeof(k) / sizeof(k[0]));
     return k;
@@ -222,6 +277,7 @@ uint8_t Bbs::pluginOf(uint8_t index) const {
 bool Bbs::allowed(const Session& s, const Command& c, uint8_t plugin) const {
     if (c.perm && !can(s, c.perm)) return false;
     if ((c.flags & CF_STAFF) && !s.perms) return false;
+    if ((c.flags & CF_SYSOP) && s.level != Access::Sysop) return false;
     if ((c.flags & CF_ACCOUNT) && s.guest) return false;
     if (plugin == 0xFF) return true;
     if (!plugins::running(plugin)) return false;
@@ -314,6 +370,8 @@ bool Bbs::listRow(Session& s) {
         case ListKind::Dash:  return rowDash(s);
         case ListKind::Users: return rowUsers(s);
         case ListKind::Plugins: return rowPlugins(s);
+        case ListKind::Sys:   return rowSys(s);
+        case ListKind::Calls: return rowCalls(s);
         default:              return false;
     }
 }
@@ -341,6 +399,62 @@ void Bbs::rowText(Session& s, Color c, const char* text, bool newline) {
         for (size_t i = used; i < rowWidth(s); ++i) t.ch(s.tl, ' ');
     }
     if (newline) t.nl(s.tl);
+}
+
+// ---------------------------------------------------------------------------
+// rowSeg / rowEnd: a row built from coloured pieces. col carries the columns
+// used so far, so a refresh screen can still pad the line to the full width
+// and leave nothing of the previous frame behind.
+// ---------------------------------------------------------------------------
+void Bbs::rowSeg(Session& s, Color c, const char* text, uint8_t& col) {
+    s.term.color(s.tl, c);
+    s.term.text(s.tl, text);
+    col = static_cast<uint8_t>(col + visibleLen(text));
+}
+
+void Bbs::rowEnd(Session& s, uint8_t col) {
+    if (s.watch != ListKind::None)
+        for (uint8_t i = col; i < rowWidth(s); ++i) s.term.ch(s.tl, ' ');
+    s.term.nl(s.tl);
+}
+
+// ---------------------------------------------------------------------------
+// statRow: "Heap free       136,424 bytes". The label stays quiet, the
+// number is the thing being read, the note behind it is quieter still.
+// ---------------------------------------------------------------------------
+void Bbs::statRow(Session& s, const char* label, const char* value, Color c, const char* note) {
+    char buf[24];
+    uint8_t col = 0;
+    snprintf(buf, sizeof(buf), "%-13.13s", label);
+    rowSeg(s, Color::Grey, buf, col);
+    snprintf(buf, sizeof(buf), "%9.9s", value);
+    rowSeg(s, c, buf, col);
+    if (note) {
+        rowSeg(s, Color::DarkGrey, " ", col);
+        rowSeg(s, Color::DarkGrey, note, col);
+    }
+    rowEnd(s, col);
+}
+
+void Bbs::statNum(Session& s, const char* label, uint32_t value, const char* note) {
+    char num[16];
+    fmtCommas(value, num, sizeof(num));
+    statRow(s, label, num, Color::LightGreen, note);
+}
+
+// ---------------------------------------------------------------------------
+// rowSection: a quiet divider inside a screen, "-- network ------------".
+// Used by the system screen so a wall of numbers reads in groups.
+// ---------------------------------------------------------------------------
+void Bbs::rowSection(Session& s, const char* name) {
+    Term& t = s.term;
+    uint8_t col = 0;
+    rowSeg(s, Color::DarkGrey, "-- ", col);
+    rowSeg(s, Color::Cyan, name, col);
+    rowSeg(s, Color::DarkGrey, " ", col);
+    t.color(s.tl, Color::DarkGrey);
+    for (uint8_t i = col; i < rowWidth(s); ++i) { t.ch(s.tl, '-'); ++col; }
+    rowEnd(s, col);
 }
 
 void Bbs::rowRule(Session& s) {
@@ -400,87 +514,216 @@ const char* Bbs::doingText(const Session& s) {
 // HELP
 // ===========================================================================
 
-void Bbs::cmdHelp(Session& s) {
+namespace {
+
+// menuName: the word a caller types after ? to reach a menu
+const char* menuName(Menu m) {
+    switch (m) {
+        case Menu::Chat:    return "chat";
+        case Menu::Account: return "account";
+        case Menu::Staff:   return "staff";
+        case Menu::Sysop:   return "sysop";
+        default:            return "main";
+    }
+}
+
+// menuTitle: the heading on the bar above a section
+const char* menuTitle(Menu m) {
+    switch (m) {
+        case Menu::Chat:    return "Chat and messages";
+        case Menu::Account: return "You and your terminal";
+        case Menu::Staff:   return "Staff";
+        case Menu::Sysop:   return "Sysop";
+        default:            return "Commands";
+    }
+}
+
+// menuNext: section order for "? all"
+Menu menuNext(Menu m) {
+    switch (m) {
+        case Menu::Main:    return Menu::Chat;
+        case Menu::Chat:    return Menu::Account;
+        case Menu::Account: return Menu::Staff;
+        default:            return Menu::Sysop;
+    }
+}
+
+// menuFromText: the word after ? or HELP. Menu::Hidden means "all of them",
+// which is safe as a marker because a Hidden command is never listed.
+Menu menuFromText(const char* arg) {
+    if (!arg || !*arg) return Menu::Main;
+    if (ieq(arg, "all"))                               return Menu::Hidden;
+    if (ieq(arg, "chat") || ieq(arg, "mail"))          return Menu::Chat;
+    if (ieq(arg, "account") || ieq(arg, "me"))         return Menu::Account;
+    if (ieq(arg, "staff") || ieq(arg, "co"))           return Menu::Staff;
+    if (ieq(arg, "sysop"))                             return Menu::Sysop;
+    return Menu::Main;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// cmdHelp: "?" alone is the main menu; "? staff", "? chat", "? account",
+// "? sysop" and "? all" pick the others.
+// ---------------------------------------------------------------------------
+void Bbs::cmdHelp(Session& s, const char* arg) {
+    Menu m = menuFromText(arg);
+    s.helpAll  = m == Menu::Hidden;
+    s.helpMenu = s.helpAll ? Menu::Main : m;
     startList(s, ListKind::Help);
 }
 
 // ---------------------------------------------------------------------------
-// rowHelp: generated from the command tables. Sections: everyone, then the
-// staff commands this session holds. Usage in a 13-column field, the
-// description wraps under itself within 40 columns.
-//   listIdx: 0 title | 1..n everyone | n+1 staff title | n+2..2n+1 staff |
-//            2n+2 rule | 2n+3 footer
-//   listSub: offset into the current description (continuation lines)
+// helpUsage: the usage column with the shortcut letter picked out, so
+// "[W]HO [n]" prints as a bright W inside a quieter word. Anything in
+// brackets that is not a single letter (the "[n]" argument) is left alone.
 // ---------------------------------------------------------------------------
-bool Bbs::rowHelp(Session& s) {
+void Bbs::helpUsage(Session& s, const char* usage, bool dim) {
     Term& t = s.term;
     Timeline& tl = s.tl;
+    Color body = dim ? Color::Grey : Color::LightBlue;
+    uint8_t col = 0;
+    t.color(tl, body);
+    for (const char* u = usage; *u && col + 1 < kUsageCol; ++u) {
+        if (!col && *u == '[' && u[1] && u[2] == ']') {  // the shortcut letter
+            t.color(tl, Color::Yellow);
+            t.ch(tl, u[1]);
+            t.color(tl, body);
+            u += 2;
+            ++col;
+            continue;
+        }
+        t.ch(tl, *u);
+        ++col;
+    }
+    for (; col < kUsageCol; ++col) t.ch(tl, ' ');
+}
 
+// ---------------------------------------------------------------------------
+// helpRow: one command's line, or the next slice of a wrapped description.
+// False means the command is not listed for this session.
+// ---------------------------------------------------------------------------
+bool Bbs::helpRow(Session& s, uint8_t index, uint8_t plugin) {
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    const Command* c = commandAt(index);
+    if (!c || (c->flags & CF_HIDDEN) || c->menu == Menu::Hidden) return false;
+    if (!c->usage[0]) return false;
+    if (!allowed(s, *c, plugin)) return false;
+
+    uint8_t descW = static_cast<uint8_t>(rowWidth(s) - kUsageCol);
+    const char* d = c->help + s.listSub;
+    while (*d == ' ') ++d;
+    size_t take = wrapTake(d, descW);
+
+    if (s.listSub) {
+        t.color(tl, Color::LightBlue);
+        for (uint8_t i = 0; i < kUsageCol; ++i) t.ch(tl, ' ');
+    } else {
+        helpUsage(s, c->usage, false);
+    }
+    t.color(tl, Color::Grey);
+    t.textN(tl, d, take);
+    t.nl(tl);
+
+    const char* rest = d + take;
+    while (*rest == ' ') ++rest;
+    s.listSub = *rest ? static_cast<uint8_t>(rest - c->help) : 0;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// helpWanted: does this command belong in the menu being drawn? The chat
+// commands people use every call are also lifted onto the main menu, but
+// only there, so "? all" never prints one twice.
+// ---------------------------------------------------------------------------
+bool Bbs::helpWanted(const Session& s, const Command& c) const {
+    if (c.menu == s.helpMenu) return true;
+    return !s.helpAll && s.helpMenu == Menu::Main &&
+           c.menu == Menu::Chat && c.rank < kMainRank;
+}
+
+// helpEmpty: true when a section has nothing this session may run, so
+// "? all" can skip its title bar instead of printing a bare heading.
+bool Bbs::helpEmpty(const Session& s) const {
+    for (uint8_t i = 0;; ++i) {
+        const Command* c = commandAt(i);
+        if (!c) return true;
+        if ((c->flags & CF_HIDDEN) || c->menu == Menu::Hidden || !c->usage[0]) continue;
+        if (helpWanted(s, *c) && allowed(s, *c, pluginOf(i))) return false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// rowHelp: the menu, one row per call. Commands come out in table order,
+// which is kept sorted by how often they are used. listIdx 0 is the title
+// bar, 1..total the commands, then the closing rows. "? all" walks every
+// section in turn, each with its own title bar.
+// ---------------------------------------------------------------------------
+bool Bbs::rowHelp(Session& s) {
     uint8_t total = 0;
     while (commandAt(total)) ++total;
 
     for (;;) {
-        uint16_t i = s.listIdx;
-        if (i == 0) {
+        if (s.listIdx == 0) {
+            if (s.helpAll && helpEmpty(s)) {             // nothing here for them
+                if (s.helpMenu == Menu::Sysop) { s.listIdx = static_cast<uint8_t>(total + 1); continue; }
+                s.helpMenu = menuNext(s.helpMenu);
+                continue;
+            }
             ++s.listIdx;
-            rowTitle(s, "Commands", s.guest ? "guest" : nullptr);
+            rowTitle(s, menuTitle(s.helpMenu), nullptr);
             return true;
         }
-        if (i == total + 1u) {
-            ++s.listIdx;
-            if (!s.perms) continue;
-            rowTitle(s, syscfg::levelName(s.level), "staff");
-            return true;
-        }
-        if (i == 2u * total + 2u) {
-            ++s.listIdx;
-            rowRule(s);
-            return true;
-        }
-        if (i == 2u * total + 3u) {
-            ++s.listIdx;
-            rowText(s, Color::DarkGrey, t.isPet() ? "SPACE or RUN/STOP stops output"
-                                                  : "Space or Ctrl-C stops output");
-            return true;
-        }
-        if (i > 2u * total + 3u) return false;
 
-        bool staffPass = i > total + 1u;
-        uint8_t at = static_cast<uint8_t>(staffPass ? i - total - 2u : i - 1u);
-        const Command* c = commandAt(at);
-        uint8_t plugin = pluginOf(at);
-        bool isStaff = c->perm || (c->flags & CF_STAFF);
-        bool granted = allowed(s, *c, plugin);
-        if ((c->flags & CF_HIDDEN) || isStaff != staffPass || !granted) {
+        while (s.listIdx <= total) {                      // the commands themselves
+            uint8_t at = static_cast<uint8_t>(s.listIdx - 1);
+            const Command* c = commandAt(at);
+            if (!c) break;
+            if (helpWanted(s, *c) && helpRow(s, at, pluginOf(at))) {
+                if (!s.listSub) ++s.listIdx;              // a wrapped line continues here
+                return true;
+            }
             ++s.listIdx;
             s.listSub = 0;
+        }
+
+        if (s.helpAll && s.helpMenu != Menu::Sysop) {      // on to the next section
+            s.helpMenu = menuNext(s.helpMenu);
+            s.listIdx  = 0;
             continue;
         }
+        break;
+    }
 
-        // one visual line of this command
-        uint8_t descW = static_cast<uint8_t>(rowWidth(s) - kUsageCol);
-        const char* d = c->help + s.listSub;
-        while (*d == ' ') ++d;
-        size_t take = wrapTake(d, descW);
-
-        char usage[16];
-        snprintf(usage, sizeof(usage), "%-*.*s", kUsageCol, kUsageCol - 1, s.listSub ? "" : c->usage);
-        t.color(tl, Color::LightBlue);
-        t.text(tl, usage);
-        t.color(tl, Color::Grey);
-        t.textN(tl, d, take);
-        t.nl(tl);
-
-        const char* rest = d + take;
-        while (*rest == ' ') ++rest;
-        if (*rest) {
-            s.listSub = static_cast<uint8_t>(rest - c->help);
-        } else {
-            s.listSub = 0;
-            ++s.listIdx;
-        }
+    if (s.listIdx == static_cast<uint8_t>(total + 1)) {
+        ++s.listIdx;
+        rowRule(s);
         return true;
     }
+    if (s.listIdx == static_cast<uint8_t>(total + 2)) {
+        ++s.listIdx;
+        if (s.helpAll) {
+            rowText(s, Color::DarkGrey, "? on its own for the short menu");
+            return true;
+        }
+        if (s.helpMenu != Menu::Main) {
+            rowText(s, Color::DarkGrey, "? = this menu   ? all = everything");
+            return true;
+        }
+        char line[48];
+        snprintf(line, sizeof(line), "More: ? %s  ? %s  ? %s", menuName(Menu::Chat),
+                 menuName(Menu::Account), s.perms ? menuName(Menu::Staff) : "all");
+        rowText(s, Color::LightGreen, line);
+        return true;
+    }
+    if (s.listIdx == static_cast<uint8_t>(total + 3)) {
+        ++s.listIdx;
+        if (s.helpAll || s.helpMenu != Menu::Main || !s.perms) return false;
+        rowText(s, Color::LightGreen, "      ? sysop  ? all");
+        return true;
+    }
+    return false;
 }
 
 // ===========================================================================
@@ -545,16 +788,26 @@ bool Bbs::rowWho(Session& s) {
             rowRule(s);
             return true;
         } else if (k == BBS_MAX_NODES + 2) {
-            rowText(s, Color::DarkGrey, kMarkKey);
+            uint8_t col = 0;                             // the key, each mark in its own colour
+            rowSeg(s, markColor('*'), "*", col);
+            rowSeg(s, Color::Grey, "GUEST  ", col);
+            rowSeg(s, markColor('>'), ">", col);
+            rowSeg(s, Color::Grey, "CO-SYSOP  ", col);
+            rowSeg(s, markColor(']'), "]", col);
+            rowSeg(s, Color::Grey, "SYSOP", col);
+            rowEnd(s, col);
             return true;
         } else {
             return false;
         }
 
         bool hidden = n != &s && (!n->visible || n->lurk);   // hidden co-sysop looks like a free line
+        uint8_t col = 0;
+        char nodeStr[2] = { nodeChar(*n), '\0' };
         if (n->st == SState::Free || (hidden && !seeAll)) {
-            snprintf(buf, sizeof(buf), "%c -- waiting for caller --", nodeChar(*n));
-            rowText(s, Color::DarkGrey, buf);
+            rowSeg(s, Color::DarkGrey, nodeStr, col);
+            rowSeg(s, Color::DarkGrey, " -- waiting for caller --", col);
+            rowEnd(s, col);
             return true;
         }
         char h[16];
@@ -563,8 +816,19 @@ bool Bbs::rowWho(Session& s) {
         const char* what = staff ? (hidden ? (n->lurk ? "lurking" : "hidden") : doingText(*n)) : n->term.name();
         snprintf(on, sizeof(on), "%u", static_cast<unsigned>((now - n->connectedAt) / 60000u));
         fmtIdle(idle, sizeof(idle), now - n->lastInput);
-        snprintf(buf, sizeof(buf), fmt, nodeChar(*n), markFor(*n), h, what, on, idle);
-        rowText(s, n == &s ? Color::White : (hidden ? Color::DarkGrey : Color::Grey), buf);
+
+        char mark[2] = { markFor(*n), '\0' };
+        rowSeg(s, Color::LightBlue, nodeStr, col);              // node
+        rowSeg(s, markColor(mark[0]), mark, col);               // rank marker
+        snprintf(buf, sizeof(buf), "%-12.12s ", h);
+        rowSeg(s, n == &s ? Color::White : (hidden ? Color::DarkGrey : Color::LightGreen), buf, col);
+        snprintf(buf, sizeof(buf), "%-10.10s ", what);
+        rowSeg(s, hidden ? Color::DarkGrey : (staff ? Color::Cyan : Color::Grey), buf, col);
+        snprintf(buf, sizeof(buf), "%3s ", on);
+        rowSeg(s, Color::Grey, buf, col);
+        snprintf(buf, sizeof(buf), "%5s", idle);
+        rowSeg(s, (now - n->lastInput) > 300000u ? Color::DarkGrey : Color::Grey, buf, col);
+        rowEnd(s, col);
         return true;
     }
 }
@@ -821,27 +1085,259 @@ void Bbs::cmdMem(Session& s) {
     char buf[48];
     plat::HeapStats h = plat::heap();
 
-    rowTitle(s, "Memory");
-    t.color(tl, Color::Cyan);
+    rowTitle(s, "Memory", BBS_VERSION);
     if (h.valid) {
-        snprintf(buf, sizeof(buf), "Heap free     %7u", static_cast<unsigned>(h.freeBytes));    t.text(tl, buf); t.nl(tl);
-        snprintf(buf, sizeof(buf), "Heap min      %7u", static_cast<unsigned>(h.minFree));      t.text(tl, buf); t.nl(tl);
-        snprintf(buf, sizeof(buf), "Largest block %7u", static_cast<unsigned>(h.largestBlock)); t.text(tl, buf); t.nl(tl);
+        statNum(s, "Heap free", h.freeBytes, "bytes");
+        statNum(s, "Heap low", h.minFree, "since boot");
+        statNum(s, "Biggest block", h.largestBlock, "bytes");
         long used = static_cast<long>(heapBaseline_) - static_cast<long>(h.freeBytes);
-        snprintf(buf, sizeof(buf), "Heap vs boot  %7ld", used);          t.text(tl, buf); t.nl(tl);
+        char num[16];
+        fmtCommas(static_cast<uint32_t>(used < 0 ? -used : used), num, sizeof(num));
+        statRow(s, "Used by BBS", num, used > 0 ? Color::Yellow : Color::LightGreen, "since boot");
     } else {
-        t.text(tl, "Heap stats not available on host.");
+        t.color(tl, Color::DarkGrey);
+        t.text(tl, "Heap stats are an ESP32 thing.");
         t.nl(tl);
     }
-    snprintf(buf, sizeof(buf), "Session       %7u x %u",
-             static_cast<unsigned>(sizeof(Session)), static_cast<unsigned>(kSessions));
-    t.text(tl, buf);
-    t.nl(tl);
-    snprintf(buf, sizeof(buf), "Nodes active  %7u", activeNodes());
-    t.text(tl, buf);
-    t.nl(tl);
-    snprintf(buf, sizeof(buf), "Disk free     %7u", static_cast<unsigned>(plugins::freeBytes()));
-    t.text(tl, buf);
+    snprintf(buf, sizeof(buf), "x %u", static_cast<unsigned>(kSessions));
+    char num[16];
+    fmtCommas(static_cast<uint32_t>(sizeof(Session)), num, sizeof(num));
+    statRow(s, "Session", num, Color::LightGreen, buf);
+    snprintf(buf, sizeof(buf), "of %u", static_cast<unsigned>(BBS_MAX_NODES));
+    fmtCommas(activeNodes(), num, sizeof(num));
+    statRow(s, "Nodes busy", num, Color::LightGreen, buf);
+    statNum(s, "Disk free", plugins::freeBytes(), "bytes");
+    rowRule(s);
+}
+
+// ---------------------------------------------------------------------------
+// fmtUptime: "3d 04:12" from milliseconds. millis wraps at 49 days, which
+// is honest enough for a board that reboots for a flash every few days.
+// ---------------------------------------------------------------------------
+namespace {
+
+void fmtUptime(char* out, size_t n, uint32_t ms) {
+    uint32_t secs = ms / 1000u;
+    uint32_t days = secs / 86400u;
+    uint32_t hrs  = (secs % 86400u) / 3600u;
+    uint32_t mins = (secs % 3600u) / 60u;
+    if (days) snprintf(out, n, "%ud %02u:%02u", static_cast<unsigned>(days),
+                       static_cast<unsigned>(hrs), static_cast<unsigned>(mins));
+    else      snprintf(out, n, "%02u:%02u:%02u", static_cast<unsigned>(hrs),
+                       static_cast<unsigned>(mins), static_cast<unsigned>(secs % 60u));
+}
+
+// signalWord: what an RSSI in dBm means to a human, and how alarmed to look
+const char* signalWord(int8_t rssi, Color& c) {
+    if (rssi == 0)    { c = Color::DarkGrey;   return "no radio"; }
+    if (rssi >= -55)  { c = Color::LightGreen; return "excellent"; }
+    if (rssi >= -67)  { c = Color::LightGreen; return "good"; }
+    if (rssi >= -75)  { c = Color::Yellow;     return "fair"; }
+    return              (c = Color::LightRed,         "weak");
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// rowSys: the whole board on one screen for staff: radio, memory, storage,
+// how hard the scheduler is working and how busy the lines have been. Every
+// figure here is already kept, so the screen costs a few hundred bytes of
+// formatting and nothing else.
+// ---------------------------------------------------------------------------
+bool Bbs::rowSys(Session& s) {
+    char buf[48], num[16];
+    uint8_t i = s.listIdx++;
+    plat::NetInfo net = plat::netInfo();
+    plat::HeapStats h = plat::heap();
+
+    switch (i) {
+        case 0:  rowTitle(s, "System", BBS_VERSION); return true;
+
+        case 1:  rowSection(s, "network"); return true;
+        case 2:  statRow(s, "Wi-Fi", net.ssid[0] ? net.ssid : "-", Color::White); return true;
+        case 3: {
+            int8_t rssi = net.valid ? net.rssi : plat::wifiRssi();
+            Color c = Color::Grey;
+            const char* word = signalWord(rssi, c);
+            if (rssi) snprintf(num, sizeof(num), "%d dBm", static_cast<int>(rssi));
+            else      snprintf(num, sizeof(num), "-");
+            statRow(s, "Signal", num, c, word);
+            return true;
+        }
+        case 4:
+            if (net.channel) snprintf(num, sizeof(num), "%u", static_cast<unsigned>(net.channel));
+            else             snprintf(num, sizeof(num), "-");
+            statRow(s, "Channel", num, Color::LightGreen);
+            return true;
+        case 5:  statRow(s, "Address", net.ip[0] ? net.ip : "-", Color::White); return true;
+        case 6:
+            snprintf(num, sizeof(num), "%u", static_cast<unsigned>(BBS_PORT));
+            statRow(s, "Port", num, Color::LightGreen, syscfg::get().hostname);
+            return true;
+
+        case 7:  rowSection(s, "memory"); return true;
+        case 8:
+            if (h.valid) statNum(s, "Heap free", h.freeBytes, "bytes");
+            else         statRow(s, "Heap free", "-", Color::DarkGrey, "host build");
+            return true;
+        case 9:
+            if (h.valid) statNum(s, "Heap low", h.minFree, "since boot");
+            else         statRow(s, "Heap low", "-", Color::DarkGrey);
+            return true;
+        case 10:
+            if (h.valid) statNum(s, "Biggest blk", h.largestBlock, "bytes");
+            else         statRow(s, "Biggest blk", "-", Color::DarkGrey);
+            return true;
+        case 11:
+            fmtCommas(static_cast<uint32_t>(sizeof(Session)), num, sizeof(num));
+            snprintf(buf, sizeof(buf), "x %u sessions", static_cast<unsigned>(kSessions));
+            statRow(s, "Session", num, Color::LightGreen, buf);
+            return true;
+
+        case 12: rowSection(s, "storage"); return true;
+        case 13: {
+            uint32_t total = 0, used = 0;
+            if (plat::fsInfo(total, used)) {
+                fmtCommas(used, num, sizeof(num));
+                char tot[16];
+                fmtCommas(total, tot, sizeof(tot));
+                snprintf(buf, sizeof(buf), "of %s", tot);
+                statRow(s, "Data used", num, used * 10u > total * 9u ? Color::LightRed : Color::LightGreen, buf);
+            } else {
+                statRow(s, "Data used", "-", Color::DarkGrey);
+            }
+            return true;
+        }
+        case 14: statNum(s, "Data free", plugins::freeBytes(), "bytes"); return true;
+        case 15: statNum(s, "Held back", plugins::reserveBytes(), "for the board"); return true;
+
+        case 16: rowSection(s, "load"); return true;
+        case 17:
+            fmtUptime(buf, sizeof(buf), plat::millis());
+            statRow(s, "Uptime", buf, Color::White);
+            return true;
+        case 18: {
+            char when[24] = "-";
+            if (clk::valid()) clk::fmt(when, sizeof(when), "%H:%M:%S");
+            statRow(s, "Clock", when, Color::White, clk::valid() ? nullptr : "not set");
+            return true;
+        }
+        case 19: statNum(s, "Loop avg", loopAvgUs_, "us of work"); return true;
+        case 20: statNum(s, "Loop worst", loopMaxUs_, "us"); return true;
+        case 21: statNum(s, "Loop passes", loopPasses_, nullptr); return true;
+
+        case 22: rowSection(s, "traffic"); return true;
+        case 23:
+            snprintf(num, sizeof(num), "%u", static_cast<unsigned>(activeNodes()));
+            snprintf(buf, sizeof(buf), "of %u, peak %u", static_cast<unsigned>(BBS_MAX_NODES),
+                     static_cast<unsigned>(peakNodes_));
+            statRow(s, "Nodes busy", num, Color::LightGreen, buf);
+            return true;
+        case 24: statNum(s, "Calls", callsBoot_, "since boot"); return true;
+        case 25:
+            snprintf(num, sizeof(num), "%u", static_cast<unsigned>(calllog::count()));
+            snprintf(buf, sizeof(buf), "of %u kept", static_cast<unsigned>(BBS_CALLLOG_SIZE));
+            statRow(s, "Log", num, Color::LightGreen, buf);
+            return true;
+        case 26: {
+            uint8_t run = 0;
+            for (uint8_t k = 0; k < plugins::count(); ++k) if (plugins::running(k)) ++run;
+            snprintf(num, sizeof(num), "%u", static_cast<unsigned>(run));
+            snprintf(buf, sizeof(buf), "of %u compiled in", static_cast<unsigned>(plugins::count()));
+            statRow(s, "Plugins", num, Color::LightGreen, buf);
+            return true;
+        }
+        case 27: {
+            uint8_t live = 0;                                  // only the bans still running
+            BanList::Entry e;
+            for (uint8_t k = 0; k < BBS_BAN_SLOTS; ++k) if (bans_.at(k, plat::millis(), e)) ++live;
+            statNum(s, "IP bans", live, live ? "active" : nullptr);
+            return true;
+        }
+
+        case 28: rowRule(s); return true;
+        case 29: rowText(s, Color::DarkGrey, "CALLS shows the board hour by hour"); return true;
+        default: return false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// cmdCalls: bucket the caller log by hour of the day before drawing, so the
+// screen is one pass over the log and the rows are just arithmetic.
+// ---------------------------------------------------------------------------
+void Bbs::cmdCalls(Session& s) {
+    memset(callHours_, 0, sizeof(callHours_));
+    callsCounted_ = 0;
+    uint8_t n = calllog::count();
+    for (uint8_t i = 0; i < n; ++i) {
+        CallRec r;
+        if (!calllog::get(i, r) || !r.start) continue;
+        char hh[4];
+        clk::fmtEpoch(hh, sizeof(hh), "%H", r.start);
+        if (hh[0] < '0' || hh[0] > '9') continue;              // clock was not set
+        uint8_t hour = static_cast<uint8_t>((hh[0] - '0') * 10 + (hh[1] - '0'));
+        if (hour > 23) continue;
+        ++callHours_[hour];
+        ++callsCounted_;
+    }
+    startList(s, ListKind::Calls);
+}
+
+// ---------------------------------------------------------------------------
+// rowCalls: calls per hour as a bar chart. The busiest hours are picked out
+// so a glance says when the board is worth being around for.
+// ---------------------------------------------------------------------------
+bool Bbs::rowCalls(Session& s) {
+    char buf[32];
+    uint8_t i = s.listIdx++;
+
+    uint16_t peak = 0;
+    uint8_t  peakAt = 0;
+    for (uint8_t k = 0; k < 24; ++k) if (callHours_[k] > peak) { peak = callHours_[k]; peakAt = k; }
+
+    if (i == 0) {
+        snprintf(buf, sizeof(buf), "%u calls", static_cast<unsigned>(callsCounted_));
+        rowTitle(s, "Calls by hour", buf);
+        return true;
+    }
+    if (i == 1 && !callsCounted_) {
+        s.listIdx = 25;                                    // no bars worth drawing
+        rowText(s, Color::DarkGrey, "Nothing logged with a clock yet.");
+        return true;
+    }
+    if (i >= 1 && i <= 24) {
+        uint8_t hour = static_cast<uint8_t>(i - 1);
+        uint16_t v = callHours_[hour];
+        uint8_t room = static_cast<uint8_t>(rowWidth(s) - 10);         // hour + count columns
+        uint8_t bar  = peak ? static_cast<uint8_t>((static_cast<uint32_t>(v) * room) / peak) : 0;
+        if (v && !bar) bar = 1;                                        // one call still shows
+
+        uint8_t col = 0;
+        snprintf(buf, sizeof(buf), "%02u ", static_cast<unsigned>(hour));
+        rowSeg(s, v ? Color::LightBlue : Color::DarkGrey, buf, col);
+        s.term.color(s.tl, v == peak && peak ? Color::Yellow : Color::LightGreen);
+        for (uint8_t k = 0; k < bar; ++k) { s.term.glyph(s.tl, Glyph::Block); ++col; }
+        for (uint8_t k = bar; k < room; ++k) { s.term.ch(s.tl, ' '); ++col; }
+        snprintf(buf, sizeof(buf), " %4u", static_cast<unsigned>(v));
+        rowSeg(s, v ? Color::LightGrey : Color::DarkGrey, buf, col);
+        rowEnd(s, col);
+        return true;
+    }
+    if (i == 25) { rowRule(s); return true; }
+    if (i == 26) {
+        if (!callsCounted_) return false;
+        snprintf(buf, sizeof(buf), "Busiest %02u:00 with %u", static_cast<unsigned>(peakAt),
+                 static_cast<unsigned>(peak));
+        rowText(s, Color::Cyan, buf);
+        return true;
+    }
+    if (i == 27) {
+        if (!callsCounted_) return false;
+        snprintf(buf, sizeof(buf), "Last %u calls kept", static_cast<unsigned>(BBS_CALLLOG_SIZE));
+        rowText(s, Color::DarkGrey, buf);
+        return true;
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------

@@ -56,7 +56,21 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
 
 Also done: busy line, paging (`[More]`), abort keys, command history, time limits (per call, per day), caller log (`LAST`), NTP + TZ, mDNS, backup window, config reload without reboot.
 
-## Current state (0.10.0, built, not flashed)
+## Current state (0.11.0, host-tested, not flashed)
+
+- Host build: 327/327 scripted checks (`tools/testclient.py --backup`), also under ASan/UBSan (run the sanitizer server under `setarch $(uname -m) -R`).
+- ESP32 0.11.0: image 987 KB (62.8% of the slot), static RAM 111 KB. No app warnings.
+- Help is a set of menus. `Command` gained `Menu menu` and `uint8_t rank`; the table order is the display order, so "sorted by how often it is used" costs nothing at runtime. `?` shows Main (chat commands with rank < 20 are lifted onto it), `? chat|account|staff|sysop` show one section, `? all` walks them all (`Session::helpAll`, with `Menu::Hidden` as the marker for "everything"). Section title bars come from `rowTitle`, and `helpUsage()` prints the leading `[X]` shortcut in yellow inside the word. Only the first bracket group is a shortcut: `[n]` later in a usage string is an argument and stays literal.
+- Row helpers: `rowSeg`/`rowEnd` build a coloured row while counting columns, so refresh screens still pad to the full width. `statRow`/`statNum` are the label + figure + dim note layout, with `fmtCommas` for thousands separators and `markColor` so a rank marker is the same colour everywhere.
+- `SYS` and `CALLS` are staff screens (`ListKind::Sys`, `ListKind::Calls`). SYS needed `plat::netInfo()` (SSID, channel, RSSI, address; empty on the host) and `plat::micros()`. Scheduler timing is measured around the work in `tick()` after `select()` returns, not the wait: `loopAvgUs_` (smoothed 7/8), `loopMaxUs_`, `loopPasses_`, plus `callsBoot_` and `peakNodes_` counted in `openSession`. CALLS buckets the caller log into `callHours_[24]` in one pass before drawing.
+- Chat gained the room command set, moderation and messages, all in `src/plugins/chat.cpp`. Squelch and away notes are per node (`g_squelch`, `g_away`), cleared on logoff and cleared out of everybody else's mask when a node drops, so a new caller never inherits one. Notices (anything not starting with `#`) are never squelched. The room ban list is a plain file in the plugin folder. The vote to kick only opens with no staff in the room and three or more callers, needs two thirds of everyone but the target, closes after 60 s from the plugin's `tick`, and can only remove somebody from the room.
+- Messages are a fixed-size record file (`p/chat/mail.dat`) rewritten through a temp file; RAM holds only the addressees and dates (`g_mailTo`, `g_mailAt`) so "you have mail" costs no reads. One message per account, newest replaces an unread one and the sender is told, 32 slots, 512 characters, 14 days, all configurable. Documented plainly as not private.
+- Chat colours are settings, parsed by the new `colorByName()` in the terminal layer. `showLine()` re-parses a stored line (`#2:Daytona) hi`) into node, punctuation, handle and text instead of storing colour with it. The room buffer is one `calloc` in `start()` and a `free()` in `stop()`, sized by `history` (8..2000), falling back to the default if the board cannot spare it. That is the first heap allocation outside the backup path, and it is at plugin start, never in the loop.
+- `CONFIG` is the sysop's settings manager (new `CF_SYSOP` command flag: sysop only whatever the `[access]` matrix says, because it can change the staff passwords). Pages are tables of `CfgField`; a plugin page is built from the four core keys plus whatever keys that section already has. Values come from the file first, then from the running config, so a blank never means "unset by accident". `syscfg::write()` rewrites `system.cfg` key by key, keeping comments, order and unknown keys, adding a missing section at the end, through a temp file and a rename. Only changed fields are written, passwords show as a mask and are skipped unless retyped, and one session at a time may edit (a static guard released on save, cancel and `closeSession`). Saving reloads the config and restarts the plugins, and any caller sitting inside a plugin is handed back to the prompt first.
+- Docs: CHAT.md (the room and messages), CHANGELOG.md (every build, kept current), README gained "What it's for", "What can call in" and "Hardware integration".
+- Not yet on hardware: everything in 0.11.0.
+
+## Previous state (0.10.0, built, not flashed)
 
 - Host build: 226/226 scripted checks (`tools/testclient.py --backup`), also under ASan/UBSan. Layouts checked through a C64 screen model (in-place errors and passwords stay on one 40-column line, title bars 39 wide).
 - ESP32 0.7.0: image 923 KB (58.7% of the slot), static RAM 104 KB; session 5,688 bytes. No app warnings. Flashed by Rob.
@@ -111,7 +125,18 @@ Next, in order (Rob's plan): 0.11.0 XMODEM/YMODEM plus the SD file plugin, 0.12.
 
 Still open on serial: autoprobe (listen at each common speed and score framing errors, a stretch goal), capture to file for later download, and hardware flow control (rts/cts keys exist in the config but the driver is set to no flow control). Rob has not yet said what is wired to the port.
 
-Queued for the next build: nothing yet.
+0.11.0: help menus, list colours, SYS and CALLS, the chat room command set with moderation and the vote to kick, messages, CONFIG. Host-tested, waiting for Rob to flash.
+
+Queued for the next build (Rob's plan, in order):
+
+- Build profiles: PlatformIO environments for a logger-only board, a chat-only board and the full board, rather than forking the repository.
+- XMODEM / YMODEM and the SD card file plugin.
+- GPIO plugin with a named point table and a dashboard (needs Rob's pin list).
+- OTA updates, and browser flashing with ESP Web Tools.
+- Zones, maintenance mode, watchdog.
+- A carrier PCB for the module.
+
+HA stays parked (its TLS was the only real RAM risk). Lua stays the drop-in path for doors, one door at a time.
 
 - Tabled: robustness/pen test script (`tools/robustness.py`, untracked stub).
 - Tagline: current screens are fine for now.
