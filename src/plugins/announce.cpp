@@ -33,7 +33,7 @@
  *                 name        = The Rusty Modem
  *                 owner       = KE9CXN
  *                 description = A BBS on a chip in a shack in Illinois
- *                 servers     = http://unleashedbbs.com/announce
+ *                 servers     = http://unleashedbbs.net/announce
  *                 host        =                  ; a DNS name, if you have one
  *                 public_port = 6400             ; the port callers dial
  *                 interval    = 10               ; minutes between heartbeats
@@ -585,7 +585,7 @@ bool start(Bbs& bbs) {
     g_activity   = false;
     g_public     = BBS_PORT;
     g_interval   = kIntervalDef;
-    readServers("http://unleashedbbs.com/announce");         // the default, replaceable
+    readServers("http://unleashedbbs.net/announce");         // the default, replaceable
     plugins::forEachKey(g_index, readKey, nullptr);
 
     for (uint8_t i = 0; i < g_count; ++i) resolve(g_servers[i]);   // quiet board, safe to block

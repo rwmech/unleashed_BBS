@@ -43,11 +43,12 @@ enabled     = yes
 name        = The Rusty Modem
 owner       = KE9CXN
 description = A BBS on a chip in a shack in Illinois
-servers     = http://unleashedbbs.com/announce
+servers     = http://unleashedbbs.net/announce
 host        =                     ; a DNS name of your own, if you have one
 public_port = 6400                ; the port callers dial, if you forwarded a different one
 interval    = 10                  ; minutes between heartbeats, 1 to 1440
-token       =                     ; only if your directory issues them
+token       =                     ; left empty: the directory fills this in
+share_activity = no               ; send call counts so a directory can rank
 ```
 
 | Key | What it is |
@@ -55,11 +56,12 @@ token       =                     ; only if your directory issues them
 | `name` | what your board is called. Falls back to `hostname` if you leave it out |
 | `owner` | you. A handle, a call sign, a name, whatever you want listed |
 | `description` | one line, up to 120 characters, in your own words |
-| `servers` | comma separated. Up to four directories, each `http://host[:port]/path` |
+| `servers` | comma separated. Up to four directories, each `http://host[:port]/path`. The project's own directory answers on all three of its names; `.net` is the one meant for machines, and `.com` and `.org` are for people |
 | `host` | the name you want listed. Leave it empty and the directory uses the address your heartbeat came from |
 | `public_port` | the port on the outside. Set this if you forwarded an external port that is not 6400 |
 | `interval` | minutes between heartbeats. Ten is plenty; a directory usually considers a board gone after three missed |
-| `token` | a shared secret, if the directory you post to issues them |
+| `token` | leave it empty. The directory mints one on the first heartbeat and the board writes it back here itself |
+| `share_activity` | `yes` adds counts of calls and caller-minutes over the last day, so a directory can rank by how busy a board is. Counts only, never who |
 
 `CONFIG announce` edits all of it from the board, and the plugin restarts with the new settings the moment you save.
 
@@ -93,11 +95,11 @@ Content-Type: application/json
 Content-Length: <n>
 Connection: close
 
-{"software":"unleashed","version":"0.12.0",
+{"software":"unleashed","version":"0.13.0",
  "name":"The Rusty Modem","owner":"KE9CXN",
  "description":"A BBS on a chip in a shack in Illinois",
  "host":"","port":2323,"nodes":6,"busy":0,
- "uptime":3600,"token":""}
+ "uptime":3600,"interval":10,"token":"1935bc3c..."}
 ```
 
 | Field | Type | Meaning |
@@ -112,37 +114,56 @@ Connection: close
 | `nodes` | number | how many caller lines the board has |
 | `busy` | number | how many are in use right now |
 | `uptime` | number | seconds since the board booted |
-| `token` | string | a shared secret, or empty |
+| `interval` | number | minutes between heartbeats, so a directory knows when to call the board quiet rather than guessing |
+| `token` | string | empty on the very first heartbeat, then whatever the directory issued |
+| `calls24` | number | calls in the last 24 hours. Only when the sysop turned `share_activity` on |
+| `minutes24` | number | caller-minutes in the last 24 hours. Same condition |
 
-A payload is around 200 bytes. Nothing in it identifies a caller.
+A payload is around 200 bytes. Nothing in it identifies a caller, and nothing ever should.
 
 ### Response
 
-Return `200` when the listing was accepted. Anything else is treated as a refusal and shown to the sysop as such. The body is ignored.
-
-One optional header is understood:
+Return `200` when the listing was accepted. Anything else is treated as a refusal and shown to the sysop as such.
 
 ```
+HTTP/1.1 200 OK
 X-Seen-Address: 203.0.113.9
+X-Listing-Token: 1935bc3ca80c43fcd52bacf6d3db6673
+X-Listing-State: pending
+X-Listing-Public-In: 9840
 ```
 
-The address the request arrived from. The board shows it under `ANNOUNCE` and on the `SYS` screen, which is how a sysop behind a changing address finds out what their address currently is. Sending it is good manners and costs a directory nothing.
+| Header | What the board does with it |
+|---|---|
+| `X-Seen-Address` | the address the request came from. Shown under `ANNOUNCE` and on `SYS`, which is how a sysop behind a changing address finds out what theirs currently is. Sending it costs a directory nothing and is good manners |
+| `X-Listing-Token` | the token for this listing. On the first heartbeat it is newly minted, and the board writes it into its own config so the listing survives a reboot |
+| `X-Listing-State` | `pending`, `online`, `offline` or `queued` |
+| `X-Listing-Public-In` | seconds until a pending listing appears, so a board can show `public in 2h41m` instead of nothing happening |
+
+The same values appear in the JSON body, for implementations that would rather parse one thing than two.
 
 ### What a directory is expected to do
 
 - Record the listing against the source address, or against `host` when the board supplied one.
-- Treat a board as gone after a few missed heartbeats. Three intervals is the convention.
-- Never publish anything the board did not send.
-- If you issue tokens, refuse a listing whose token does not match the name it claims. That is the only thing stopping somebody listing a board as yours.
+- Mint a random token on the first heartbeat and return it. **Do not derive it from anything public.** A token computed from the board's name, or from its MAC address, is a lock whose key is printed on the door: the firmware and the reference server are both open source, so everybody has the algorithm.
+- Treat an unknown token as a brand new listing. Never transfer an existing one.
+- Hold a new listing back until it has sustained heartbeats for a few hours. This is the anti-spam measure that costs a spammer real infrastructure and a genuine board nothing, since it was going to be up anyway.
+- Treat a board as quiet after three of its own intervals, rather than deleting it. A reboot should not cost a board the hours it spent earning its place.
+- Limit automatic listings per source address, counted per `/64` on IPv6, and queue the rest for a human. Addresses are the scarce resource, which is why this is the control that bites.
+- Never publish anything the board did not send, and never connect outwards to verify a listing: a directory that connects to whatever host and port a stranger posts to it is a port scanner with a public API.
+- Treat activity figures as self-reported, because they are. If you rank by them, say so, and pair them with something you measured yourself, such as how long a board has been continuously up.
+
+The token stops somebody taking over an existing listing. It is **not** a spam control and no token scheme could be, because tokens are free to mint.
 
 ## Running your own directory
 
-Please do. The server for unleashedbbs.com will be published under the same licence as the board, and it is a small program: accept a POST, validate it, write it to a list, serve the list. Nothing about this project should depend on one server staying up, including this part of it.
+Please do. The server behind unleashedbbs.com is published under the same licence as the board, at
+[github.com/rwmech/unleashed_directory](https://github.com/rwmech/unleashed_directory): Python 3, standard library only, SQLite, one file. Accept a POST, validate it, write it to a list, serve the list. Nothing about this project should depend on one server staying up, including this part of it.
 
 A board posting to several directories at once is an ordinary configuration, not a workaround:
 
 ```
-servers = http://unleashedbbs.com/announce, http://bbs.example.org/announce
+servers = http://unleashedbbs.net/announce, http://bbs.example.org/announce
 ```
 
 ## The house rules on unleashedbbs.com
