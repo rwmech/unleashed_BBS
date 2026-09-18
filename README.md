@@ -21,6 +21,8 @@ Electronic freedom on a microcontroller. No web, no cloud, no browser.
 
 **Before the web, this is how it worked.** Somebody put a spare machine in a spare room, hung a modem off it, and other people called it. No terms of service, no algorithm deciding what you saw, no third party keeping a copy for later. The sysop was a person you could ring up and argue with. [CBBS](https://en.wikipedia.org/wiki/CBBS) went online in Chicago on 16 February 1978, written by Ward Christensen with hardware by Randy Suess, the January blizzard having handed them the quiet weeks to finish it. Thousands of boards followed, each one somebody's own idea of what a community should look like, and at the [peak in the mid-1990s](https://en.wikipedia.org/wiki/Bulletin_board_system) an estimated 60,000 were running in the United States alone. Most of them on hardware weaker than the chip this runs on.
 
+**And you can do it today.** Not as a re-enactment: as a live system with callers on it tonight. Flash the board, give it your Wi-Fi, forward one port on your router to it, and you are running a public BBS. That is the whole procedure. No hosting bill, no domain required, no provider to ask permission from, no account with anybody. A chip on a shelf and one line in your router, and your board is on the internet with a name you chose, run by you, for whoever you tell about it. [PUBLIC.md](PUBLIC.md) walks through it, including the parts that actually carry risk and the two settings that deal with them.
+
 **Then we traded it for convenience.** Now the conversation lives on machines you cannot see, indexed, scraped to train something, monetised, ranked, and deleted at somebody else's discretion. You do not own the room, the member list, the history, or the right to keep any of it. You rent all of it, and the rent is paid in attention and data.
 
 **This hands some of it back.** The user list is a text file. The settings are a text file. A message goes from one caller to another through a chip on your shelf and is gone the moment it is read. Nothing here is indexed, syndicated, profiled or sold, because there is no third party in the middle to do it. There is no account to create, nothing to subscribe to, and no vendor who can change the deal. It is GPL, so nobody can take it away from you later. That includes me.
@@ -29,7 +31,7 @@ Electronic freedom on a microcontroller. No web, no cloud, no browser.
 
 **Small on purpose.** One static binary, static allocation, no heap in the main loop, a fixed memory budget on a chip with 520 KB of RAM. No web stack, no scripting runtime, no package tree to audit at two in the morning, no telemetry, no update that arrives without you. What is not built cannot be exploited, and what fits in one head can be trusted by the person whose head it fits in.
 
-**Quiet by default.** The whole internet is crawled, catalogued and probed over HTTP. Almost nobody is indexing what a telnet port on a number you picked has to say. That is not security by obscurity standing in for security; it is a system that simply does not advertise, on top of one that does not carry much to attack.
+**Quiet by default.** Your board will still be found: scanners sweep every address on the internet, and the ones that matter fingerprint the protocol rather than trusting the port number. But being found is not being read. Nothing crawls a BBS, logs in, sits in the room and scrapes the conversation, because there is no API to hand it over and nobody whose business it is to want it. Somebody learns a board answers there; they do not walk away with what was said on it. That is a different arrangement from everything else you use, and it is the arrangement worth keeping.
 
 **Easy to put anywhere.** Flash it, power it, five minutes and it is answering calls. It costs less than lunch and draws less than a night light, which means you put ten of them around doing ten different jobs instead of building one enormous system that does everything and belongs to nobody. A board in the shack, a board in the garage, a board at the repeater site.
 
@@ -52,6 +54,7 @@ Docs:
 | [SCREENS.md](SCREENS.md) | screen formats, naming rules and upload limits |
 | [CHAT.md](CHAT.md) | the chat room, room commands and messages |
 | [CLIENTS.md](CLIENTS.md) | every machine that can call in, and what it needs |
+| [PUBLIC.md](PUBLIC.md) | putting your board on the internet, and what that risks |
 | [CHANGELOG.md](CHANGELOG.md) | what changed in every build |
 
 ## What it's for
