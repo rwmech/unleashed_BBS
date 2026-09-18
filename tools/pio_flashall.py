@@ -10,10 +10,12 @@ Module:       Tools / PlatformIO extra script
 
 Purpose:      PlatformIO extra script. Adds "pio run -t flashall", which uploads the
               firmware and then the data/ filesystem image. Plain "pio run -t upload"
-              is unchanged and leaves the storage partition (screens, system.cfg,
-              users.txt) alone.
-              Warning: flashall rewrites the whole storage partition, which erases the
-              accounts and the caller log.
+              is unchanged and leaves every filesystem alone.
+              flashall rewrites the storage partition, which is the screens and nothing
+              else. The accounts, the live config and each plugin's files are on the
+              userdata partition and the caller log is on logs, so neither this nor
+              uploadfs touches them. Editing partitions.csv is the exception: moving a
+              partition needs a full erase, and takes everything with it.
 
 Libraries:    PlatformIO SCons environment
 Targets:      developer PC, PlatformIO
@@ -52,5 +54,5 @@ env.AddCustomTarget(  # noqa: F821
         f'"$PYTHONEXE" -m platformio run -e $PIOENV -t uploadfs{port_arg}',
     ],
     title="Flash All",
-    description="Upload firmware, then the data/ filesystem image",
+    description="Upload firmware, then the screens. Accounts and config stay.",
 )

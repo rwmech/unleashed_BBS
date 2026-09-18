@@ -245,7 +245,7 @@ Files in `screens/`, chosen by terminal type. Names, formats and upload limits: 
 
 ## system.cfg
 
-On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP.md)); it applies without a reboot. For a fresh board, `data/system.cfg` (git-ignored, copy from `data/system.cfg.example`) goes on with `pio run -t flashall`.
+On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP.md)); it applies without a reboot. For a fresh board, `data/system.cfg` (git-ignored, copy from `data/system.cfg.example`) goes on with `pio run -t flashall`, and the board copies it to `userdata` the first time it boots. From then on that copy is the board's, and reflashing does not overwrite it.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -355,4 +355,4 @@ USERS          X      X    -
 
 The boot log prints each level's permission bits (`cfg: sysop on co1 off perms 0x1bf ...`) so you can confirm what loaded. Bad rows are logged and skipped.
 
-`flashall` and `uploadfs` rewrite the storage partition (config, accounts and screens), so download a backup first. The caller log is on its own `logs` partition and survives them.
+`flashall` and `uploadfs` rewrite the storage partition, which holds the screens. The live config and the accounts are on `userdata` and the caller log is on `logs`, so neither is touched. A backup is still worth having before a big change, and it is the only way back if you move a partition, because that needs a full erase.

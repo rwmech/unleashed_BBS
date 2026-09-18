@@ -167,7 +167,7 @@ After that:
 
 - `pio run -t upload` for new firmware. Config, screens and logs stay as they are.
 - Config and screens change through the backup window ([BACKUP.md](BACKUP.md)), not by reflashing.
-- `flashall` / `uploadfs` rewrite the `storage` partition with `data/` (fresh board, or a deliberate reset). That wipes the accounts too: download a backup first.
+- `flashall` / `uploadfs` rewrite the `storage` partition with `data/`, which is the screens. The accounts and the config are on `userdata` and stay put, so reflashing a board is no longer a reset.
 
 Flash layout (4 MB): two 1.5 MB OTA app slots and three data partitions.
 
