@@ -75,7 +75,11 @@ struct FormField {
 class Form {
 public:
     enum class Res : uint8_t { Editing, Save, Cancel };
-    static constexpr uint8_t kMaxFields = 10;
+    // 16, not 10, because a plugin's own settings sit on the CONFIG form
+    // underneath the four core keys, and announce alone declares nine. A
+    // form this tall still fits a 25 row C64 screen with its title bar,
+    // buttons and the prompt underneath.
+    static constexpr uint8_t kMaxFields = 16;
 
     // begin: draw the form (with a little flourish) and focus the first field
     void begin(const char* title, FormField* fields, uint8_t count, Term& t, Timeline& tl);

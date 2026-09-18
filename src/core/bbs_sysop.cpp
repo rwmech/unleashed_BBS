@@ -616,8 +616,8 @@ constexpr uint8_t kPageCount = sizeof(kPages) / sizeof(kPages[0]);
 const Session*  g_cfgOwner = nullptr;
 const CfgPage*  g_cfgPage  = nullptr;
 char            g_cfgSection[24] = "";                  // plugin section, empty for the board
-char            g_cfgBuf[Form::kMaxFields][48] = {};
-char            g_cfgWas[Form::kMaxFields][48] = {};     // to write only what changed
+char            g_cfgBuf[Form::kMaxFields][96] = {};
+char            g_cfgWas[Form::kMaxFields][96] = {};     // to write only what changed
 char            g_cfgKeys[Form::kMaxFields][24] = {};   // plugin pages build their keys here
 CfgField        g_cfgPlugin[Form::kMaxFields] = {};     // and their field table
 CfgPage         g_cfgPluginPage = {};
@@ -702,6 +702,25 @@ void cfgPluginValue(const char* name, const char* key, char* out, size_t n) {
     else if (!strcmp(key, "read"))    snprintf(out, n, "%s", plugins::levelName(plugins::levelFor(i, 0)));
     else if (!strcmp(key, "write"))   snprintf(out, n, "%s", plugins::levelName(plugins::levelFor(i, 1)));
     else if (!strcmp(key, "admin"))   snprintf(out, n, "%s", plugins::levelName(plugins::levelFor(i, 2)));
+    else {
+        // Its own settings. Without this a declared setting the file has
+        // never carried shows blank, and the sysop cannot tell "empty" from
+        // "running on a default I have no way to see".
+        const Plugin* pl = plugins::at(i);
+        if (pl && pl->setting) pl->setting(key, out, n);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// cfgDeclared: does this plugin already offer the key as a proper field?
+// Used to keep a hand-added key in the file from appearing twice.
+// ---------------------------------------------------------------------------
+bool cfgDeclared(const Plugin* pl, const char* key) {
+    if (!strcmp(key, "enabled") || !strcmp(key, "read") ||
+        !strcmp(key, "write")   || !strcmp(key, "admin")) return true;
+    for (uint8_t i = 0; pl && i < pl->settingCount; ++i)
+        if (!strcmp(pl->settings[i].key, key)) return true;
+    return false;
 }
 
 // pageByName: "board", or a plugin's name
@@ -801,13 +820,32 @@ void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now) {
         memset(g_cfgKeys, 0, sizeof(g_cfgKeys));
         plugins::forEachKey(pi, collectKey, &grab);
 
+        const Plugin* pl = plugins::at(pi);
         uint8_t n = 0;
         g_cfgPlugin[n++] = { "enabled", "Enabled", CK_YESNO, 0, 0, 4 };
         g_cfgPlugin[n++] = { "read",    "Read",    CK_LEVEL, 0, 0, 6 };
         g_cfgPlugin[n++] = { "write",   "Write",   CK_LEVEL, 0, 0, 6 };
         g_cfgPlugin[n++] = { "admin",   "Admin",   CK_LEVEL, 0, 0, 6 };
-        for (uint8_t i = 0; i < grab.n && n < Form::kMaxFields; ++i)
+
+        // What the plugin says it has, in its own order, whether or not the
+        // file has ever carried it. This is the whole point: a setting a
+        // sysop has never written is still a setting they can find.
+        const uint8_t kValueMax = static_cast<uint8_t>(sizeof(g_cfgBuf[0]) - 1);
+        for (uint8_t i = 0; pl && i < pl->settingCount && n < Form::kMaxFields; ++i) {
+            const PluginSetting& ps = pl->settings[i];
+            uint8_t kind = ps.kind == PS_NUM   ? CK_NUM
+                         : ps.kind == PS_YESNO ? CK_YESNO
+                                               : CK_TEXT;
+            uint8_t cap = ps.cap < kValueMax ? ps.cap : kValueMax;
+            g_cfgPlugin[n++] = { ps.key, ps.label, kind, ps.lo, ps.hi, cap };
+        }
+
+        // Anything else the file carries stays editable, so a key somebody
+        // added by hand is never silently dropped on the next save.
+        for (uint8_t i = 0; i < grab.n && n < Form::kMaxFields; ++i) {
+            if (cfgDeclared(pl, g_cfgKeys[i])) continue;
             g_cfgPlugin[n++] = { g_cfgKeys[i], g_cfgKeys[i], CK_TEXT, 0, 0, 40 };
+        }
         g_cfgPluginPage = { plugins::at(pi)->info.name, plugins::at(pi)->info.name,
                             "", g_cfgPlugin, n };
         page = &g_cfgPluginPage;

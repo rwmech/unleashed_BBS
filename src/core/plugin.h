@@ -97,6 +97,27 @@ struct PluginInfo {
 };
 
 // Hooks. Every one is optional; leave it null and the core skips it.
+// ---------------------------------------------------------------------------
+// PluginSetting: one row on this plugin's page in CONFIG.
+//
+// Declaring a setting here is what makes it editable at all. CONFIG used to
+// build a plugin's page out of whatever keys system.cfg already carried,
+// which meant a setting nobody had written yet was invisible, and the only
+// way to reach it was to know it existed and edit the file by hand. A
+// declared setting shows up on a fresh board with its live value in it.
+// ---------------------------------------------------------------------------
+enum : uint8_t { PS_TEXT, PS_NUM, PS_YESNO };
+
+struct PluginSetting {
+    const char* key;      // key inside the [plugin:<name>] section
+    const char* label;    // 9 characters, the form's left column
+    uint8_t     kind;     // PS_TEXT, PS_NUM, PS_YESNO
+    uint16_t    lo;       // PS_NUM: the range the plugin will accept
+    uint16_t    hi;
+    uint8_t     cap;      // characters, excluding the terminator. May exceed
+                          // the form's box: long values scroll while typed.
+};
+
 struct Plugin {
     PluginInfo info;
 
@@ -126,6 +147,21 @@ struct Plugin {
 
     const Command* commands;
     uint8_t        commandCount;
+
+    // ----------------------------------------------------------------------
+    // Everything below is optional and was added after the first plugins
+    // were written, so it sits at the end: a descriptor that leaves these
+    // out still compiles and simply offers no settings of its own.
+    // ----------------------------------------------------------------------
+
+    // settings: the rows CONFIG offers, in the order they should appear.
+    const PluginSetting* settings;
+    uint8_t              settingCount;
+
+    // setting: this plugin's live value for one key, used when system.cfg
+    // does not carry it. Leave out empty for a key you do not recognise, so
+    // a blank on the form never quietly means something else.
+    void (*setting)(const char* key, char* out, size_t n);
 };
 
 namespace plugins {

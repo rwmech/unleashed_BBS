@@ -56,7 +56,10 @@ using namespace bbsu;
 
 namespace {
 
-constexpr uint8_t kUsageCol = 13;       // HELP: usage column width incl. the gap
+// HELP: usage column width including the gap. The column has to clear the
+// widest usage string there is ("ANNOUNCE TEST", 13) plus a space, or the
+// longest command on the board is the one that gets truncated.
+constexpr uint8_t kUsageCol = 15;
 constexpr uint8_t kMainRank = 20;       // chat commands below this rank also sit on the main menu
 
 // label: fixed-width demo label

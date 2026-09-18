@@ -645,6 +645,59 @@ void stop() {
     g_at    = 0xFF;
 }
 
+// ---------------------------------------------------------------------------
+// What CONFIG offers. Declaring these is what makes them reachable: before,
+// a plugin's page was built from whatever keys system.cfg already carried,
+// so a board that had never written "description" had no way to set one
+// short of editing the file by hand.
+//
+// Labels are nine characters, the width of the form's left column.
+// ---------------------------------------------------------------------------
+const PluginSetting kSettings[] = {
+    { "name",           "Board",     PS_TEXT,  0, 0,     kNameMax },
+    { "owner",          "Sysop",     PS_TEXT,  0, 0,     kNameMax },
+    { "description",    "About",     PS_TEXT,  0, 0,     kDescMax },
+    // Empty means "advertise whatever address the directory saw". A board on
+    // a name of its own puts it here: quantum.dnsfor.me, say.
+    { "host",           "DNS name",  PS_TEXT,  0, 0,     kUrlMax - 1 },
+    { "public_port",    "Port",      PS_NUM,   1, 65535, 5 },
+    // Comma separated, so one board can be listed in several directories.
+    { "servers",        "Directory", PS_TEXT,  0, 0,     90 },
+    { "interval",       "Every min", PS_NUM,   1, 1440,  4 },
+    { "share_activity", "Activity",  PS_YESNO, 0, 0,     4 },
+    // Issued by the directory and kept so a listing survives a reflash.
+    { "token",          "Token",     PS_TEXT,  0, 0,     40 },
+};
+
+// ---------------------------------------------------------------------------
+// setting: what this plugin is running with, for a key system.cfg has not
+// been given yet. A blank on the form should mean "not set", never "set to
+// something I cannot show you".
+// ---------------------------------------------------------------------------
+void setting(const char* key, char* out, size_t n) {
+    if      (!strcmp(key, "name"))        snprintf(out, n, "%s", g_bbsName);
+    else if (!strcmp(key, "owner"))       snprintf(out, n, "%s", g_owner);
+    else if (!strcmp(key, "description")) snprintf(out, n, "%s", g_desc);
+    else if (!strcmp(key, "host"))        snprintf(out, n, "%s", g_host);
+    else if (!strcmp(key, "token"))       snprintf(out, n, "%s", g_token);
+    else if (!strcmp(key, "public_port")) snprintf(out, n, "%u", static_cast<unsigned>(g_public));
+    else if (!strcmp(key, "interval"))    snprintf(out, n, "%u", static_cast<unsigned>(g_interval));
+    else if (!strcmp(key, "share_activity")) snprintf(out, n, "%s", g_activity ? "yes" : "no");
+    else if (!strcmp(key, "servers")) {
+        // Rebuilt from the parsed list rather than echoed, so what the form
+        // shows is what the board will actually post to.
+        size_t used = 0;
+        out[0] = '\0';
+        for (uint8_t i = 0; i < g_count && used + 1 < n; ++i) {
+            int w = snprintf(out + used, n - used, "%s%s://%s%s",
+                             used ? "," : "", "http", g_servers[i].host, g_servers[i].path);
+            if (w < 0) break;
+            used += static_cast<size_t>(w);
+        }
+    }
+    else out[0] = '\0';
+}
+
 } // namespace
 
 extern const Plugin kAnnouncePlugin = {
@@ -660,4 +713,7 @@ extern const Plugin kAnnouncePlugin = {
     status,
     kCommands,
     sizeof(kCommands) / sizeof(kCommands[0]),
+    kSettings,
+    sizeof(kSettings) / sizeof(kSettings[0]),
+    setting,
 };
