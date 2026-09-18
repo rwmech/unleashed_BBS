@@ -152,3 +152,24 @@ HIDE           X      X    -
 NOLIMITS       X      X    X
 DASH           X      X    X
 USERS          X      X    -
+
+# Tell a directory server this board exists, so people can find it. Off
+# until you switch it on. It sends the board's name, owner, description,
+# port and how busy it is, and nothing whatever about callers: ANNOUNCE
+# TEST prints the exact payload before you have to trust it.
+#
+# The directory records the address the heartbeat came from, so a board on
+# a changing home address stays findable without dynamic DNS.
+#
+# servers is comma separated, up to four, and the default is replaceable:
+# the format is documented in ANNOUNCE.md so anybody can run a directory.
+[plugin:announce]
+enabled     = no
+name        = My Board
+owner       = Somebody
+description = One line about this board, up to 120 characters
+servers     = http://unleashedbbs.com/announce
+host        =              ; a DNS name of your own, if you have one
+public_port = 6400         ; the port callers dial, if you forwarded another
+interval    = 10           ; minutes between heartbeats, 1 to 1440
+token       =              ; only if your directory issues them

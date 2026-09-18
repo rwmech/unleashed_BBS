@@ -55,6 +55,7 @@ Docs:
 | [CHAT.md](CHAT.md) | the chat room, room commands and messages |
 | [CLIENTS.md](CLIENTS.md) | every machine that can call in, and what it needs |
 | [PUBLIC.md](PUBLIC.md) | putting your board on the internet, and what that risks |
+| [ANNOUNCE.md](ANNOUNCE.md) | listing your board in a directory, and the protocol for running one |
 | [CHANGELOG.md](CHANGELOG.md) | what changed in every build |
 
 ## What it's for

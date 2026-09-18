@@ -56,7 +56,16 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
 
 Also done: busy line, paging (`[More]`), abort keys, command history, time limits (per call, per day), caller log (`LAST`), NTP + TZ, mDNS, backup window, config reload without reboot.
 
-## Current state (0.11.0, host-tested, not flashed)
+## Current state (0.13.0, host-tested, not flashed)
+
+- Host build: 350/350 scripted checks (`tools/testclient.py --backup`), also under ASan/UBSan. `--only=<name>` runs one test, which is how a single failure gets chased without an eight minute wait.
+- ESP32 0.13.0: image 999 KB (63.5% of the slot), static RAM 114 KB. No app warnings.
+- 0.12.0: nobody types a password uninformed. Registering warns that telnet is not encrypted, offers "Would you like to know more?", and Y plays `screens/privacy.*` before the form opens. Needed `SState::AskKnowMore` and `Session::pendingForm` (a screen that leads into a form rather than back to the prompt). `PRIVACY` replays it.
+- 0.13.0 is the `announce` plugin: an opt-in ~200 byte JSON POST to a directory every few minutes. Off until switched on, sends nothing about callers, and `ANNOUNCE TEST` prints the exact payload. Non-blocking socket driven from `tick()`; DNS resolved once at `start()` while the board is quiet. The directory issues a token which the board writes back to its own config with `syscfg::write()`, and the reply's `X-Seen-Address` is how a board behind a changing address learns its public address, which makes this a rough DDNS as a side effect. `share_activity` adds 24 hour call and caller-minute counts for ranking, off by default.
+- Trap worth remembering: on a non-blocking socket, `SO_ERROR` is 0 while a connect is still in progress, so writability has to be the test and the error check only means anything after it. Getting that backwards works on loopback and fails on a real network.
+- The directory server is a separate repository (`rwmech/unleashed_directory`, GPL v2 or later): Python 3 stdlib, SQLite, one file, 39 self-test checks. One process serves three faces by Host header: the board list, the argument, and the API. Anti-spam is three hours of sustained heartbeats plus one automatic listing per address (per `/64` on v6), never an outbound probe, because a directory that connects to whatever a stranger posts is a port scanner with a public API. Tokens are anti-hijack only and the protocol says so.
+
+## Previous state (0.11.0, host-tested)
 
 - Host build: 327/327 scripted checks (`tools/testclient.py --backup`), also under ASan/UBSan (run the sanitizer server under `setarch $(uname -m) -R`).
 - ESP32 0.11.0: image 987 KB (62.8% of the slot), static RAM 111 KB. No app warnings.
@@ -137,6 +146,7 @@ Queued for the next build (Rob's plan, in order):
 
 HA stays parked (its TLS was the only real RAM risk). Lua stays the drop-in path for doors, one door at a time.
 
+- Announce plugin (Rob, 0.13.0): opt-in directory listing. Plain HTTP POST of a ~200 byte JSON payload (name, owner, description, host, port, nodes, busy, uptime, token) to a comma separated list of directories, default `http://unleashedbbs.com/announce` (Rob owns unleashedbbs .com/.net/.org). No TLS on purpose: the payload is public and mbedTLS would cost more heap than the plugin. The socket is non-blocking and driven from `tick()`; DNS is resolved once at `start()` while the board is quiet and only re-resolved after a failure, so a slow lookup never stalls a caller. The reply's optional `X-Seen-Address` header is how a board behind a changing address learns its public address, which makes this a rough DDNS as a side effect. `ANNOUNCE TEST` prints the payload without sending. The directory server is to be a separate open-source repo; ANNOUNCE.md is the protocol spec so anybody can run one.
 - Tabled: robustness/pen test script (`tools/robustness.py`, untracked stub).
 - Tagline: current screens are fine for now.
 

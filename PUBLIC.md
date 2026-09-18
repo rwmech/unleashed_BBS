@@ -90,6 +90,10 @@ If it does not:
 
 ## 4. Tell people
 
+The board can also announce itself. The `announce` plugin posts a small heartbeat to a directory server every few minutes, which lists it for callers to find, and tells the board what its public address currently is. That last part makes it a rough dynamic DNS in its own right, because the directory always knows where the board answered from. It is off until you switch it on and it sends nothing about callers: see [ANNOUNCE.md](ANNOUNCE.md).
+
+Directories and word of mouth both work. Use both.
+
 A board nobody knows about is a board nobody calls. The telnet BBS scene is small, friendly and still keeps directories. Get yourself listed, and put the address somewhere people who would enjoy it will see it.
 
 ## What you are actually exposing

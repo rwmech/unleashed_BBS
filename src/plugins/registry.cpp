@@ -39,11 +39,13 @@
 extern const Plugin kExamplePlugin;
 extern const Plugin kChatPlugin;
 extern const Plugin kSerialPlugin;
+extern const Plugin kAnnouncePlugin;
 
 const Plugin* const kPlugins[] = {
     &kExamplePlugin,
     &kChatPlugin,
     &kSerialPlugin,
+    &kAnnouncePlugin,
 };
 
 const uint8_t kPluginCount = sizeof(kPlugins) / sizeof(kPlugins[0]);

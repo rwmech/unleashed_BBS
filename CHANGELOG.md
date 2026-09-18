@@ -24,6 +24,17 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.13.0, 2026-09-18
+
+The board can put itself on the map.
+
+- `announce` plugin: a small heartbeat to a directory server so callers can find the board, and the board learns its own public address back from the reply, which is dynamic DNS for the price of a couple of hundred bytes every ten minutes. Off until switched on, never sends anything about a caller, and `ANNOUNCE TEST` prints the exact payload before anybody has to trust it. Several directories at once, comma separated.
+- ANNOUNCE.md documents the wire format so anybody can run a directory, and says plainly that the default one's house rules bind the project rather than its users.
+- The directory issues a token on the first heartbeat and the board writes it back into its own config through the same writer `CONFIG` uses, so a listing survives a reboot and nobody else can claim it. The reply also carries the listing's state and how long until it is public, which `ANNOUNCE` shows as `pending, public in 2h41m` rather than leaving a sysop staring at an empty page for three hours.
+- `share_activity` (off by default) adds calls and caller-minutes over the last day, counted from the caller log. A directory can rank by them so a small board with five friends on it outranks a famous dead one. Counts only: no handles, no addresses, nothing about who.
+- The board sends its heartbeat interval, so a directory knows when to call it quiet rather than guessing.
+- The companion directory server is its own repository, also GPL v2 or later: github.com/rwmech/unleashed_directory
+
 ## 0.12.0, 2026-09-18
 
 Disclosure before anybody types a password, and the documentation to go with it.

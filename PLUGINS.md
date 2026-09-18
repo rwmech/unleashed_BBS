@@ -51,6 +51,7 @@ Disk free 612K, reserve 32K
 | Plugin | Purpose |
 |---|---|
 | `chat` | one chat room, DDial style (`#2:Daytona) hi`), room commands, moderation and the message system. On by default. Its own doc: [CHAT.md](CHAT.md). |
+| `announce` | tells a directory server the board exists, so callers can find it, and learns the board's public address back. Off by default, sends nothing about callers. Its own doc: [ANNOUNCE.md](ANNOUNCE.md). |
 | `serial` | shares a serial device: one operator with `write`, any number of watchers with `read` |
 | `example` | the template, and what the tests drive |
 

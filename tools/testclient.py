@@ -1684,10 +1684,138 @@ def test_privacy():
     return ok
 
 
+
+def test_announce():
+    """The board lists itself, sends nothing about callers, and can prove it."""
+    print("Directory listing")
+    import json as _json
+    import socket as _socket
+    import threading as _threading
+
+    got = []
+
+    def directory(port):
+        """A stand-in directory: take one heartbeat, answer 200, remember it."""
+        srv = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        srv.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", port))
+        srv.listen(2)
+        srv.settimeout(20)
+        try:
+            c, _ = srv.accept()
+        except _socket.timeout:
+            return
+        c.settimeout(5)
+        data = b""
+        try:
+            while b"\r\n\r\n" not in data:
+                more = c.recv(4096)
+                if not more:
+                    break
+                data += more
+            head, _, body = data.partition(b"\r\n\r\n")
+            need = 0
+            for line in head.split(b"\r\n"):
+                if line.lower().startswith(b"content-length:"):
+                    need = int(line.split(b":")[1])
+            while len(body) < need:
+                more = c.recv(4096)
+                if not more:
+                    break
+                body += more
+            got.append((head, body))
+            c.sendall(b"HTTP/1.1 200 OK\r\nX-Seen-Address: 203.0.113.9\r\n"
+                      b"Content-Length: 2\r\nConnection: close\r\n\r\nok")
+        finally:
+            c.close()
+            srv.close()
+
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  announce needs the host build")
+        return True
+
+    port = 8099
+    th = _threading.Thread(target=directory, args=(port,), daemon=True)
+    th.start()
+
+    s = ansi_login("Announcer")
+    s.send(b"bye testsysop\r")
+    s.wait_for(b"Sysop", 4)
+    s.buf.clear()
+
+    s.send(b"announce test\r")           # prints the payload, sends nothing
+    ok = check("ANNOUNCE TEST prints the payload", s.wait_for(b'"software":"unleashed"', 5))
+    shown = plain(s.buf)
+    ok &= check("the payload says what it is for", b"Nothing about callers" in shown)
+    ok &= check("and carries no caller data", b"Announcer" not in shown)
+
+    s.buf.clear()
+    s.send(b"announce now\r")
+    s.wait_for(b"Sending now", 4)
+    th.join(15)
+    ok &= check("the directory got a heartbeat", len(got) == 1)
+    if got:
+        head, body = got[0]
+        ok &= check("it is a POST with a JSON body",
+                    head.startswith(b"POST ") and b"application/json" in head)
+        try:
+            rec = _json.loads(body.decode())
+        except Exception:
+            rec = {}
+        ok &= check("the payload parses", bool(rec))
+        ok &= check("it names the board, not the callers",
+                    rec.get("software") == "unleashed" and "name" in rec and
+                    "owner" in rec and "description" in rec)
+        ok &= check("it reports the lines, not who is on them",
+                    rec.get("nodes") == 6 and isinstance(rec.get("busy"), int))
+        ok &= check("no caller ever appears in it",
+                    "Announcer" not in body.decode() and "handle" not in rec)
+
+    status = b""                       # the reply lands on the plugin's next tick
+    for _ in range(10):
+        s.buf.clear()
+        s.send(b"announce\r")
+        s.wait_for(b"Announce", 4)
+        s.pump(0.6)
+        status = plain(s.buf)
+        if b"listed" in status:
+            break
+    if b"listed" not in status:
+        print("    status was:", status.decode("ascii", "replace").replace("\r\n", " | "))
+    ok &= check("the status shows the listing took", b"listed" in status)
+    ok &= check("and the address the directory saw", b"203.0.113.9" in status)
+
+    n = ansi_login("NotStaff2")
+    n.buf.clear()
+    n.send(b"announce\r")
+    n.pump(0.8)
+    ok &= check("ANNOUNCE is staff only", b"Unknown" in n.buf)
+    n.close()
+    s.close()
+    return ok
+
+
+def run_selected(only):
+    """--only=announce runs just the tests whose name contains "announce"."""
+    import types
+    picked = [(n, f) for n, f in sorted(globals().items())
+              if n.startswith("test_") and isinstance(f, types.FunctionType) and only in n]
+    if not picked:
+        print("no test matches", only)
+        return False
+    return all(f() for _, f in picked)
+
+
 if __name__ == "__main__":
+    ONLY = next((a.split("=", 1)[1] for a in FLAGS if a.startswith("--only=")), None)
+    if ONLY:
+        picked_ok = run_selected(ONLY)
+        print("ALL PASS" if picked_ok else "FAILURES")
+        sys.exit(0 if picked_ok else 1)
     results = [test_ansi(), test_telnet_first(), test_petscii(), test_ascii(),
                test_page(), test_sysop(), test_cosysop(), test_accounts(), test_user_admin(), test_guest(),
-               test_privacy(), test_plugins(), test_about(), test_chat(), test_room_commands(),
+               test_privacy(), test_plugins(), test_about(), test_announce(),
+               test_chat(), test_room_commands(),
                test_mail(), test_menus(), test_sysinfo(), test_config(), test_serial(),
                test_bulletin(), test_idle_login(), test_busy()]
     if "--backup" in FLAGS:
