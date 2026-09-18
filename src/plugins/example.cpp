@@ -164,6 +164,7 @@ extern const Plugin kExamplePlugin = {
     nullptr,                 // onLogin
     nullptr,                 // onLogoff
     onKey,
+    nullptr,                 // status
     kCommands,
     sizeof(kCommands) / sizeof(kCommands[0]),
 };

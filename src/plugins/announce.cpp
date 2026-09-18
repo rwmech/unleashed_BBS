@@ -119,7 +119,7 @@ struct Server {
     uint16_t port          = 80;
     uint32_t addr          = 0;        // resolved, 0 = needs a lookup
     bool     used          = false;
-    char     result[40]    = "never sent";
+    char     result[48]    = "never sent";
 };
 
 Server   g_servers[kMaxServers];
@@ -357,6 +357,27 @@ void saveToken() {
         plat::log("announce: could not save the token: %s", err);
 }
 
+// ---------------------------------------------------------------------------
+// codeMeans: an HTTP status in words. A sysop looking at a dashboard should
+// not have to know what a 429 is to understand that their board is fine and
+// simply talking too often.
+// ---------------------------------------------------------------------------
+const char* codeMeans(int code) {
+    switch (code) {
+        case 200: return "listed";
+        case 400: return "payload refused";
+        case 401:
+        case 403: return "board refused";
+        case 404: return "no directory there";
+        case 413: return "payload too large";
+        case 429: return "too often, will settle";
+        case 500:
+        case 502:
+        case 503: return "directory busy";
+        default:  return "refused";
+    }
+}
+
 void finish(const char* how, bool ok) {
     if (g_fd >= 0) { close(g_fd); g_fd = -1; }
     g_stage = Stage::Idle;
@@ -458,9 +479,7 @@ void service(uint32_t now) {
             saveToken();
         }
 
-        char how[40];
-        snprintf(how, sizeof(how), "%s (%d)", code == 200 ? "listed" : "refused", code);
-        finish(how, code == 200);
+        finish(codeMeans(code), code == 200);
     }
 }
 
@@ -556,8 +575,11 @@ const Command kCommands[] = {
       [](Bbs& b, Session& s, const char* a, uint32_t now) {
           if (ieq(a, "test"))  { showPayload(b, s); return; }
           if (ieq(a, "now")) {
+              // Start a round now, and put the timer where it belongs. Setting
+              // it to now as well makes the timer fire the instant the round
+              // finishes, so every manual send went out twice.
               g_at      = 0;
-              g_nextRun = now;
+              g_nextRun = now + static_cast<uint32_t>(g_interval) * 60000u;
               s.term.color(s.tl, Color::LightGreen);
               s.term.text(s.tl, "Sending now.");
               b.prompt(s);
@@ -596,6 +618,27 @@ bool start(Bbs& bbs) {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// status: one line for the sysop dashboard. Whether this board is listed,
+// and while it is still earning its listing, how long is left.
+// ---------------------------------------------------------------------------
+const char* status() {
+    static char line[64];
+    if (!g_count) return nullptr;
+    if (g_state[0] && g_publicIn) {
+        snprintf(line, sizeof(line), "Directory: %.8s, public in %uh%02um  %u sent", g_state,
+                 static_cast<unsigned>(g_publicIn / 3600u),
+                 static_cast<unsigned>((g_publicIn % 3600u) / 60u),
+                 static_cast<unsigned>(g_okCount));
+    } else if (g_state[0]) {
+        snprintf(line, sizeof(line), "Directory: %.10s  %u sent %u failed", g_state,
+                 static_cast<unsigned>(g_okCount), static_cast<unsigned>(g_failCount));
+    } else {
+        snprintf(line, sizeof(line), "Directory: %.34s", g_servers[0].result);
+    }
+    return line;
+}
+
 void stop() {
     if (g_fd >= 0) { close(g_fd); g_fd = -1; }
     g_stage = Stage::Idle;
@@ -614,6 +657,7 @@ extern const Plugin kAnnouncePlugin = {
     nullptr,                 // onLogin
     nullptr,                 // onLogoff
     nullptr,                 // onKey
+    status,
     kCommands,
     sizeof(kCommands) / sizeof(kCommands[0]),
 };

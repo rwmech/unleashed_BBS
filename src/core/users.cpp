@@ -75,7 +75,7 @@ char* trim(char* s) {
 }
 
 void path(char* out, size_t n, const char* suffix) {
-    snprintf(out, n, "%s/%s%s", plat::fsBase(), BBS_USERS_FILE, suffix);
+    snprintf(out, n, "%s/%s%s", plat::userBase(), BBS_USERS_FILE, suffix);
 }
 
 void toHex(const uint8_t* d, size_t n, char* out) {

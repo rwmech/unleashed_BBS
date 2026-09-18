@@ -1336,6 +1336,7 @@ extern const Plugin kChatPlugin = {
     onLogin,
     onLogoff,
     onKey,
+    nullptr,                 // status
     kCommands,
     sizeof(kCommands) / sizeof(kCommands[0]),
 };

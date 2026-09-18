@@ -73,10 +73,11 @@ PORT = int(ARGS[1]) if len(ARGS) > 1 else 6400
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 DATA = pathlib.Path(os.environ.get("BBS_DATA", ROOT / "data"))   # same dir the server reads
+USERDATA = DATA / "user"      # accounts, config and plugin files
 
 
 def cfg_value(key):
-    cfg = DATA / "system.cfg"
+    cfg = USERDATA / "system.cfg"
     if not cfg.exists():
         return ""
     for line in cfg.read_text().splitlines():
@@ -538,7 +539,7 @@ def test_sysop():
     ok &= check("staff WHO shows each caller's last command", b"Doing" in r.buf and
                 re.search(rb"\d Xavier +WHO ", plain(r.buf)) is not None)
     if HOST in ("127.0.0.1", "localhost"):
-        users = (DATA / "users.txt").read_text()
+        users = (USERDATA / "users.txt").read_text()
         ok &= check("the sysop password marks the account", "[Rob]" in users and
                     users.split("[Rob]")[1].split("[")[0].count("level = sysop") == 1)
 
@@ -767,7 +768,7 @@ def test_accounts():
     c.close()
 
     if HOST in ("127.0.0.1", "localhost"):
-        users = (DATA / "users.txt").read_text()
+        users = (USERDATA / "users.txt").read_text()
         ok &= check("users.txt has no plaintext password", "newpw99" not in users and TEST_PW not in users)
         ok &= check("users.txt stores salt$hash", re.search(r"\b[0-9a-f]{16}\$[0-9a-f]{64}\b", users) is not None)
 
@@ -824,7 +825,7 @@ def test_user_admin():
     s.send(DOWN * 7 + b"c" + DOWN + b"y" + F1)      # Level -> Co2, Locked -> Y
     ok &= check("lock and level saved", s.wait_for(b"Account Newbie saved.", 5))
     if HOST in ("127.0.0.1", "localhost"):
-        users = (DATA / "users.txt").read_text()
+        users = (USERDATA / "users.txt").read_text()
         ok &= check("level written to users.txt", "level = co2" in users)
     c, which = handle_then("Newbie", [b"This account is locked."])
     ok &= check("locked account refused", which == 0 and c.wait_closed(8))
@@ -920,7 +921,7 @@ def test_guest():
     ok &= check("LAST marks guest calls with *", re.search(rb"\*Visitor ", plain(a.buf)) is not None)
     a.close()
     if HOST in ("127.0.0.1", "localhost"):
-        users = (DATA / "users.txt").read_text()
+        users = (USERDATA / "users.txt").read_text()
         ok &= check("nothing saved for the guest", "[Visitor]" not in users)
     return ok
 
@@ -982,7 +983,7 @@ def test_plugins():
     ok &= check("MEM reports free disk space", s.wait_for(b"Disk free", 4))
     s.close()
     if HOST in ("127.0.0.1", "localhost"):
-        count = DATA / "p" / "example" / "count"
+        count = USERDATA / "p" / "example" / "count"
         ok &= check("the plugin wrote its file under p/example/", count.exists())
     return ok
 
@@ -1279,7 +1280,7 @@ def test_backup():
     ok &= check("upload applied (200)", status == 200 and b"Applied" in body)
     local = HOST in ("127.0.0.1", "localhost")
     if local:
-        live_cfg = (DATA / "system.cfg").read_text()
+        live_cfg = (USERDATA / "system.cfg").read_text()
         ok &= check("*** kept the real password on disk", f"sysop_password = {PASSWORD}" in live_cfg)
     status, again = http_call("GET", "/backup.zip")
     z2 = zipfile.ZipFile(io.BytesIO(again)) if status == 200 else None
@@ -1611,7 +1612,7 @@ def test_config():
     s.send(DOWN * 4 + b"\x08" * 4 + b"77" + F1)         # Accounts -> 77
     ok &= check("the page saves", s.wait_for(b"Saved and live", 5))
     if HOST in ("127.0.0.1", "localhost"):
-        cfg = (DATA / "system.cfg").read_text()
+        cfg = (USERDATA / "system.cfg").read_text()
         ok &= check("the new value is in system.cfg", "max_users = 77" in cfg)
         ok &= check("the rest of the file is untouched",
                     "sysop_password = testsysop" in cfg and "[plugin:chat]" in cfg)
@@ -1651,16 +1652,32 @@ def test_privacy():
     ok &= check("and says what to do about it", b"anywhere else" in plain(c.buf))
     ok &= check("would you like to know more", b"know more" in plain(c.buf))
 
+    # Four pages, each waiting for a key. Collect the lot.
     c.buf.clear()
     c.send(b"y")
-    read_list(c, 6)
-    told = plain(c.buf)
-    ok &= check("Y explains telnet has no encryption", b"no encryption" in told)
-    ok &= check("and how the password is stored", b"SHA-256" in told)
-    ok &= check("and what the sysop can see", b"WHAT THE SYSOP CAN SEE" in told)
-    ok &= check("and gives the honest risk", b"SO WHAT IS MY REAL RISK" in told)
-    ok &= check("and the one rule that matters", b"a password you use somewhere else" in told)
-    ok &= check("the form opens after the disclosure", c.wait_for(b"NEW ACCOUNT", 8))
+    told = b""
+    pages = 0
+    for _ in range(5):
+        if not c.wait_for(b"SPACE to continue", 6):
+            break
+        pages += 1
+        told += plain(c.buf)
+        c.buf.clear()
+        c.send(b" ")
+        c.pump(0.8)
+    told += plain(c.buf)
+
+    ok &= check("it is paged rather than a wall of text", pages == 4)
+    ok &= check("it says up front how long this takes", b"Four short pages" in told)
+    ok &= check("every page is numbered", b"Page 1 of 4" in told and b"Page 4 of 4" in told)
+    ok &= check("telnet is not encrypted", b"TELNET IS NOT ENCRYPTED" in told)
+    ok &= check("what it would actually take to read it",
+                b"sniffer" in told and b"Low risk. Not no risk." in told)
+    ok &= check("how the password is stored", b"SHA-256" in told)
+    ok &= check("and that a hash is not magic", b"lookup table" in told)
+    ok &= check("what the sysop can see", b"WHAT THIS BOARD KNOWS" in told)
+    ok &= check("and the one rule that matters", b"use nowhere else" in told)
+    ok &= check("the form opens at the end", c.wait_for(b"NEW ACCOUNT", 8))
     c.close()
 
     # N skips it, and the command brings it back later
@@ -1770,6 +1787,14 @@ def test_announce():
                     rec.get("nodes") == 6 and isinstance(rec.get("busy"), int))
         ok &= check("no caller ever appears in it",
                     "Announcer" not in body.decode() and "handle" not in rec)
+
+    s.buf.clear()                      # the dashboard carries a line per plugin
+    s.send(b"dash\r")
+    s.wait_for(b"SYSOP DASHBOARD", 5)
+    s.pump(1.2)
+    ok &= check("the dashboard reports the listing", b"Directory:" in plain(s.buf))
+    s.send(b"q")
+    s.pump(0.4)
 
     status = b""                       # the reply lands on the plugin's next tick
     for _ in range(10):

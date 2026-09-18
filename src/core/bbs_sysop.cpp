@@ -626,7 +626,7 @@ CfgPage         g_cfgPluginPage = {};
 bool cfgFileValue(const char* section, const char* key, char* out, size_t n) {
     char path[160], line[192], want[40];
     out[0] = '\0';
-    snprintf(path, sizeof(path), "%s/system.cfg", plat::fsBase());
+    snprintf(path, sizeof(path), "%s/system.cfg", plat::userBase());
     FILE* f = fopen(path, "r");
     if (!f) return false;
     bool inSection = section == nullptr || !*section;

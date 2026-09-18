@@ -51,13 +51,16 @@
 
 namespace {
 std::string g_fsBase   = "../data";
+std::string g_userBase = "../data/user";
 std::string g_logsBase = "../data/logs";
 }
 
 // host-only: set by main_host.cpp; logs live in <data>/logs
 void hostSetFsBase(const char* path) {
     g_fsBase   = path;
+    g_userBase = std::string(path) + "/user";
     g_logsBase = std::string(path) + "/logs";
+    mkdir(g_userBase.c_str(), 0755);
     mkdir(g_logsBase.c_str(), 0755);
 }
 
@@ -85,6 +88,10 @@ const char* fsBase() {
 
 const char* logsBase() {
     return g_logsBase.c_str();
+}
+
+const char* userBase() {
+    return g_userBase.c_str();
 }
 
 HeapStats heap() {
@@ -194,6 +201,13 @@ uint32_t serialFramingErrors() { return 0; }
 bool fsInfo(uint32_t& total, uint32_t& used) {
     total = 768u * 1024u;                            // the board's storage partition
     used  = dirBytes(g_fsBase);
+    return true;
+}
+// userInfo: the host has no partitions, so report the same notional size the
+// board gives its user partition, with what the directory actually holds.
+bool userInfo(uint32_t& total, uint32_t& used) {
+    total = 128u * 1024u;
+    used  = dirBytes(g_userBase);
     return true;
 }
 

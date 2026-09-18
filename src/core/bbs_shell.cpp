@@ -396,10 +396,17 @@ uint8_t Bbs::rowWidth(const Session& s) const {
 void Bbs::rowText(Session& s, Color c, const char* text, bool newline) {
     Term& t = s.term;
     t.color(s.tl, c);
-    t.text(s.tl, text);
     if (s.watch != ListKind::None) {
-        size_t used = visibleLen(text);
+        // A refresh screen redraws from home, so anything wider than the
+        // frame wraps and leaves its tail on screen at every redraw. Cut it.
+        size_t used = 0;
+        for (const char* p = text; *p && used < rowWidth(s); ++p) {
+            t.ch(s.tl, *p);
+            if ((static_cast<uint8_t>(*p) & 0xC0) != 0x80) ++used;
+        }
         for (size_t i = used; i < rowWidth(s); ++i) t.ch(s.tl, ' ');
+    } else {
+        t.text(s.tl, text);
     }
     if (newline) t.nl(s.tl);
 }
@@ -510,6 +517,7 @@ const char* Bbs::doingText(const Session& s) {
         case SState::Form:        return "sign-up";
         case SState::AskRegister: return "sign-up";
         case SState::AskKnowMore: return "sign-up";
+        case SState::AnyKey:      return "reading";
         default:                  return "login";
     }
 }
@@ -992,6 +1000,21 @@ bool Bbs::rowDash(Session& s) {
         return true;
     }
 
+    if (i >= 22) {                                              // what the plugins say
+        uint8_t wanted = static_cast<uint8_t>(i - 22);
+        uint8_t seen = 0;
+        for (uint8_t k = 0; k < plugins::count(); ++k) {
+            const Plugin* p = plugins::at(k);
+            if (!plugins::running(k) || !p->status) continue;
+            const char* line = p->status();
+            if (!line || !*line) continue;
+            if (seen++ != wanted) continue;
+            rowText(s, Color::Cyan, line);
+            return true;
+        }
+        return false;
+    }
+
     if (i >= 16 && i <= 20) {                                   // last 5 calls
         CallRec r;
         if (calllog::get(static_cast<uint8_t>(i - 16), r)) {
@@ -1350,21 +1373,7 @@ bool Bbs::rowCalls(Session& s) {
 // again without making a new account.
 // ---------------------------------------------------------------------------
 void Bbs::cmdPrivacy(Session& s) {
-    if (playScreen(s, "privacy")) return;
-    Term& t = s.term;
-    Timeline& tl = s.tl;
-    rowTitle(s, "What this board knows", nullptr);
-    rowText(s, Color::Yellow, "This link is not encrypted.");
-    rowText(s, Color::Grey, "Telnet has no encryption, so everything");
-    rowText(s, Color::Grey, "you type crosses the network readable.");
-    rowText(s, Color::Grey, "Your password is salted and hashed here,");
-    rowText(s, Color::Grey, "which protects the file, not the wire.");
-    rowText(s, Color::Grey, "The sysop sees your handle, address, times");
-    rowText(s, Color::Grey, "and last command, and can watch a node.");
-    rowText(s, Color::LightRed, "Never use a password from anywhere else.");
-    rowRule(s);
-    (void)t; (void)tl;
-    prompt(s);
+    showPrivacy(s, AfterKey::Prompt);
 }
 
 // ---------------------------------------------------------------------------

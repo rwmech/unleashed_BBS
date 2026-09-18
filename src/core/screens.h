@@ -73,7 +73,7 @@ public:
     void close();
 
     // detach: forget the file without closing it (session moved elsewhere)
-    void detach() { f_ = nullptr; paused_ = false; }
+    void detach() { f_ = nullptr; paused_ = false; pageBreak_ = false; }
 
     // pump: stream as much as fits. Returns true while more remains.
     bool pump(Term& t, Timeline& tl, const Vars& v);
@@ -81,7 +81,13 @@ public:
     // paging for .asc files: pause after rows lines (0 = off)
     void setPaging(uint8_t rows) { pageRows_ = rows; }
     bool paused() const { return paused_; }
-    void resume()       { paused_ = false; lines_ = 0; }
+    void resume()       { paused_ = false; pageBreak_ = false; lines_ = 0; }
+
+    // pageBreak: the screen asked to stop here with a form feed (0x0C),
+    // rather than simply having filled the screen. The difference matters:
+    // a deliberate break is a page in a document and gets a clear screen
+    // and a "press a key", where a full screen gets [More].
+    bool pageBreak() const { return pageBreak_; }
 
 private:
     enum class Mode : uint8_t { Text, Pet, Ansi };
@@ -106,4 +112,5 @@ private:
     uint8_t pageRows_ = 0;
     uint8_t lines_    = 0;
     bool    paused_   = false;
+    bool    pageBreak_ = false;
 };

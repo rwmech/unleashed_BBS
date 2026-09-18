@@ -352,6 +352,7 @@ extern const Plugin kSerialPlugin = {
     nullptr,                 // onLogin
     onLogoff,
     onKey,
+    nullptr,                 // status
     kCommands,
     sizeof(kCommands) / sizeof(kCommands[0]),
 };

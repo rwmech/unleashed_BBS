@@ -39,5 +39,6 @@ otadata,   data, ota,     0xf000,   0x2000
 phy_init,  data, phy,     0x11000,  0x1000
 ota_0,     app,  ota_0,   0x20000,  0x180000
 ota_1,     app,  ota_1,   0x1A0000, 0x180000
-logs,      data, spiffs,  0x320000, 0x20000
-storage,   data, spiffs,  0x340000, 0xC0000
+logs,      data, spiffs,  0x320000, 0x8000
+userdata,  data, spiffs,  0x328000, 0x20000
+storage,   data, spiffs,  0x348000, 0xB8000

@@ -118,6 +118,12 @@ struct Plugin {
     // onKey: only while this plugin owns the session (see plugins::own)
     void (*onKey)(Session& s, int key, uint32_t now);
 
+    // status: one short line for the sysop dashboard, or null for none.
+    // Keep it under the row width, and remember DASH redraws on a timer:
+    // return a pointer to storage that outlives the call, and do no work
+    // worth mentioning.
+    const char* (*status)();
+
     const Command* commands;
     uint8_t        commandCount;
 };

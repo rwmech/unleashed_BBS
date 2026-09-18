@@ -182,6 +182,8 @@
 // Filesystem
 // ---------------------------------------------------------------------------
 #define BBS_FS_MOUNT        "/fs"        // storage partition: system.cfg, screens (the backup zip)
+#define BBS_USER_LABEL      "userdata"   // accounts, config, plugin files
+#define BBS_USER_BASE       "/userdata"  // never rewritten by uploadfs
 #define BBS_FS_LABEL        "storage"
 #define BBS_LOGS_MOUNT      "/logs"      // logs partition: fixed-size rings only, never in the zip
 #define BBS_LOGS_LABEL      "logs"

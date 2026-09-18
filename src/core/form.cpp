@@ -92,7 +92,8 @@ void Form::begin(const char* title, FormField* fields, uint8_t count, Term& t, T
         tl.delay(35);                            // fields cascade in
     }
     drawButtons(t, tl);
-    status(t.isPet() ? "CRSR moves, F1 saves, <- cancels" : "Up/Down move, F1 saves, ESC cancels",
+    status(t.isPet() ? "CRSR or TAB moves, F1 saves, <- quits"
+                     : "Tab or arrows move, F1 saves, ESC quits",
            Color::DarkGrey, t, tl);
     t.cursor(tl, true);
     placeCursor(t, tl);
@@ -223,6 +224,13 @@ void Form::setFocus(uint8_t next, Term& t, Timeline& tl) {
 Form::Res Form::key(int k, Term& t, Timeline& tl) {
     if (k == KEY_ESC || k == KEY_BREAK) return Res::Cancel;
     if (k == KEY_F1) return Res::Save;
+    if (k == '\t') {                       // tab: on to the next field
+        if (positional(t)) {
+            setFocus(nextFocus(+1), t, tl);
+            return Res::Editing;
+        }
+        return Res::Editing;               // line mode has no fields to move to
+    }
     return positional(t) ? keyPositional(k, t, tl) : keyLine(k, t, tl);
 }
 

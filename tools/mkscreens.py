@@ -384,36 +384,136 @@ def make_about_ans():
 
 
 # ---------------------------------------------------------------------------
-# privacy: the full disclosure screen, shown on request at sign-up and by
-# the PRIVACY command. Plain language on purpose: a caller deciding what
-# password to type deserves the truth in words they will actually read.
+# privacy: the disclosure, four pages separated by form feeds. The player
+# treats 0x0C as "stop here, wait for a key, clear the screen", so this reads
+# like a short document rather than a wall of text sliding past.
+#
+# It is an ordinary screen file on purpose. A sysop should be able to say
+# this in their own words for their own board, without a compiler.
+#
+# 39 columns so a C64 sees the same shape as everything else.
 # ---------------------------------------------------------------------------
-PRIVACY_BODY = [('h', 'WHAT THIS BOARD KNOWS'), ('', ''), ('t', 'Would you like to know more? You would.'), ('', ''), ('s', 'THE LINK IS NOT ENCRYPTED'), ('t', 'You are connected over telnet. Telnet has'), ('t', 'no encryption. Everything you type crosses'), ('t', 'the network as readable text: your'), ('t', 'password, your messages, all of it.'), ('', ''), ('t', 'Anyone on the path can read it. Whoever'), ('t', 'runs the wifi you are on, your internet'), ('t', "provider, the sysop's provider, anyone"), ('t', 'between. That is not a bug here. It is the'), ('t', 'price of letting a 1982 computer call in,'), ('t', 'because a C64 cannot do encryption.'), ('', ''), ('s', 'YOUR PASSWORD ON THE BOARD'), ('t', 'It is never stored as you typed it. It is'), ('t', 'salted and hashed with SHA-256, a thousand'), ('t', 'rounds, and only the hash is written down.'), ('t', 'Nobody can read it back, including the'), ('t', 'sysop. Backups redact it.'), ('', ''), ('t', 'That protects the file. It does nothing'), ('t', 'about the wire, where you typed it in the'), ('t', 'clear on the way here.'), ('', ''), ('s', 'WHAT THE SYSOP CAN SEE'), ('t', 'Your handle, your address, when you called'), ('t', 'and for how long, and the last command you'), ('t', 'ran. Staff can watch a node live. Messages'), ('t', 'you leave sit in a file on the board until'), ('t', 'they are read. Assume the sysop can read'), ('t', 'anything on their own machine, because'), ('t', 'they can. It is their machine.'), ('', ''), ('s', 'SO WHAT IS MY REAL RISK'), ('t', 'Honestly? Small. This is a hobby board on'), ('t', 'a five dollar chip. It is conversation and'), ('t', 'nothing critical. There is no money here,'), ('t', 'no card numbers, no keys to anything. If'), ('t', 'somebody read every word of it they would'), ('t', 'learn what you said in a chat room.'), ('', ''), ('w', 'There is one real risk, and it is this:'), ('w', 'a password you use somewhere else.'), ('', ''), ('t', 'If you reuse one and it is read on the'), ('t', 'way here, the person reading it now has a'), ('t', 'password that works on your email. That is'), ('t', 'how accounts get taken, and it has nothing'), ('t', 'to do with this board being good or bad.'), ('', ''), ('s', 'SO'), ('g', 'Use a password you use nowhere else.'), ('t', 'Make it up here, forget it afterwards. Say'), ('t', 'nothing on the board you would mind being'), ('t', 'read out. Then enjoy yourself, because'), ('t', 'that is what it is for.'), ('', ''), ('d', 'Sysops: do staff work from your own'), ('d', 'network or a VPN, never across the'), ('d', 'internet. See PUBLIC.md.')]
+PRIVACY_PAGES = [
+    [   ("h", "THE RISKS OF AN UNENCRYPTED BBS"),
+        ("s", "and what it means for your privacy"),
+        ("", ""),
+        ("t", "Four short pages. They take a minute,"),
+        ("t", "and they are the minute worth spending."),
+        ("", ""),
+        ("y", "TELNET IS NOT ENCRYPTED"),
+        ("", ""),
+        ("t", "Telnet has no encryption. It never has,"),
+        ("t", "and on this board it never will."),
+        ("", ""),
+        ("t", "Everything you type crosses the network"),
+        ("t", "as readable text. What you say, and the"),
+        ("t", "password you type to get in."),
+        ("", ""),
+        ("t", "That is not an oversight. It is the"),
+        ("t", "price of letting a 1982 computer call,"),
+        ("t", "and a C64 cannot do encryption. Better"),
+        ("t", "to tell you than quietly pretend."),
+        ("", ""),
+        ("d", "Page 1 of 4") ],
+
+    [   ("y", "WHAT THAT ACTUALLY RISKS"),
+        ("", ""),
+        ("t", "Reading your password needs two things:"),
+        ("t", "a sniffer, which is any program that"),
+        ("t", "records network traffic, and a position"),
+        ("t", "on the path between you and this board."),
+        ("", ""),
+        ("t", "Who has that? Whoever runs the wifi you"),
+        ("t", "are on. Whoever runs the office"),
+        ("t", "network. Your internet provider, and"),
+        ("t", "the board's. Somebody who has put"),
+        ("t", "themselves in the middle on purpose."),
+        ("", ""),
+        ("t", "Not a stranger on the internet, then."),
+        ("t", "It takes access, and most people simply"),
+        ("t", "do not have it."),
+        ("", ""),
+        ("t", "Low risk. Not no risk. Worth one unique"),
+        ("t", "password, not an afternoon of worry."),
+        ("", ""),
+        ("d", "Page 2 of 4") ],
+
+    [   ("y", "YOUR PASSWORD ON THIS BOARD"),
+        ("", ""),
+        ("t", "It is never stored as you typed it. It"),
+        ("t", "is salted and hashed with SHA-256, a"),
+        ("t", "thousand rounds, and only the result is"),
+        ("t", "written down. Nobody can read it back,"),
+        ("t", "including the sysop."),
+        ("", ""),
+        ("t", "That protects the file if the file is"),
+        ("t", "stolen. It does nothing for the wire,"),
+        ("t", "where you typed it in the clear."),
+        ("", ""),
+        ("t", "And a hash is not magic. A common"),
+        ("t", "password still falls to a lookup table."),
+        ("", ""),
+        ("d", "Page 3 of 4") ],
+
+    [   ("y", "WHAT THIS BOARD KNOWS"),
+        ("", ""),
+        ("t", "The sysop sees your handle, the address"),
+        ("t", "you called from, when you called and for"),
+        ("t", "how long, and the last command you ran."),
+        ("t", "Staff can watch a node. Messages you"),
+        ("t", "leave sit in a file until they are read."),
+        ("", ""),
+        ("t", "Assume whoever owns the machine can read"),
+        ("t", "what is on it. That is true everywhere."),
+        ("t", "Here you at least know who they are."),
+        ("", ""),
+        ("t", "Honestly? It is a hobby board on a five"),
+        ("t", "dollar chip, and it is conversation."),
+        ("", ""),
+        ("g", "Use a password you use nowhere else."),
+        ("", ""),
+        ("d", "Page 4 of 4") ],
+]
+
+PRIV_ANSI = {"h": "1;36", "s": "0;36", "y": "1;33", "t": "0;37",
+             "g": "1;32", "d": "1;30", "": "0;37"}
+PRIV_PET  = {"h": "cyan", "s": "cyan", "y": "yellow", "t": "grey",
+             "g": "lgreen", "d": "dgrey", "": "grey"}
+
+FF = b"\x0c"          # the player's page break
 
 
 def make_privacy_ans():
-    b = bytearray()
-    b += sgr("0;36") + bytes([H_DOUBLE]) * 60 + b"\r\n"
-    for kind, line in PRIVACY_BODY:
-        b += sgr({'h': '1;36', 's': '1;33', 't': '0;37', 'w': '1;31', 'g': '1;32', 'd': '1;30', '': '0;37'}[kind]) + b" " + line.encode("ascii") + b"\r\n"
-    b += sgr("0;36") + bytes([H_DOUBLE]) * 60 + sgr("0") + b"\r\n"
-    return bytes(b)
+    out = bytearray()
+    for n, page in enumerate(PRIVACY_PAGES):
+        if n:
+            out += FF
+        for kind, line in page:
+            out += sgr(PRIV_ANSI[kind]) + b" " + line.encode("ascii") + b"\r\n"
+    out += sgr("0")
+    return bytes(out)
 
 
 def make_privacy_seq():
-    out = [pet("clr", "lower", "cyan"), pet_rule("cyan")]
-    for kind, line in PRIVACY_BODY:
-        out.append(pet({'h': 'cyan', 's': 'yellow', 't': 'grey', 'w': 'lred', 'g': 'lgreen', 'd': 'dgrey', '': 'grey'}[kind]) + pet_text(line) + pet("cr"))
-    out.append(pet_rule("cyan"))
-    return b"".join(out)
+    out = bytearray()
+    for n, page in enumerate(PRIVACY_PAGES):
+        if n:
+            out += FF
+        else:
+            out += pet("lower")
+        for kind, line in page:
+            out += pet(PRIV_PET[kind]) + pet_text(line) + pet("cr")
+    return bytes(out)
 
 
 def make_privacy_asc():
-    out = ["-" * 38]
-    for kind, line in PRIVACY_BODY:
-        out.append(line)
-    out.append("-" * 38)
-    return ("\r\n".join(out) + "\r\n").encode("ascii")
+    out = bytearray()
+    for n, page in enumerate(PRIVACY_PAGES):
+        if n:
+            out += FF
+        for _, line in page:
+            out += line.encode("ascii") + b"\r\n"
+    return bytes(out)
 
 
 def main():

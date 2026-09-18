@@ -567,6 +567,7 @@ void Term::feed(uint8_t b, KeyFn fn, void* ctx) {
             esc_ = 0;
             switch (b) {
                 case 'P': fn(ctx, KEY_F1); break;
+                case 'Z': fn(ctx, KEY_UP); break;   // shift-tab: back a field
                 case 'Q': fn(ctx, KEY_F2); break;
                 case 'R': fn(ctx, KEY_F3); break;
                 case 'S': fn(ctx, KEY_F4); break;

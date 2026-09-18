@@ -132,8 +132,10 @@ static void wifiStart() {
 }
 
 // ---------------------------------------------------------------------------
-// fsMount: one LittleFS partition. "storage" holds what the backup zip
-// carries (system.cfg, screens); "logs" holds fixed-size log rings only.
+// fsMount: one LittleFS partition. "storage" holds the screens, and is the
+// one a filesystem upload replaces; "userdata" holds the accounts, the live
+// config and each plugin's files, which survive a reflash; "logs" holds
+// fixed-size log rings only.
 // ---------------------------------------------------------------------------
 static void fsMount(const char* label, const char* base) {
     esp_vfs_littlefs_conf_t conf;
@@ -217,6 +219,7 @@ extern "C" void app_main(void) {
               static_cast<unsigned>(h.largestBlock));
 
     fsMount(BBS_FS_LABEL, BBS_FS_MOUNT);
+    fsMount(BBS_USER_LABEL, BBS_USER_BASE);
     fsMount(BBS_LOGS_LABEL, BBS_LOGS_MOUNT);
     syscfg::load();          // hostname, TZ, NTP, staff passwords, limits, backup window
     wifiStart();

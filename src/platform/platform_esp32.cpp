@@ -65,6 +65,18 @@ uint32_t random32() {
     return esp_random();
 }
 
+const char* userBase() {
+    return BBS_USER_BASE;
+}
+
+bool userInfo(uint32_t& total, uint32_t& used) {
+    size_t t = 0, u = 0;
+    if (esp_littlefs_info(BBS_USER_LABEL, &t, &u) != ESP_OK) return false;
+    total = static_cast<uint32_t>(t);
+    used  = static_cast<uint32_t>(u);
+    return true;
+}
+
 const char* fsBase() {
     return BBS_FS_MOUNT;
 }

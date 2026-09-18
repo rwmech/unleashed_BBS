@@ -110,6 +110,7 @@ void ScreenPlayer::close() {
         f_ = nullptr;
     }
     paused_ = false;
+    pageBreak_ = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +221,11 @@ bool ScreenPlayer::pump(Term& t, Timeline& tl, const Vars& v) {
             bufPos_ = 0;
         }
         while (bufPos_ < bufLen_ && !sauce_) {
+            if (buf_[bufPos_] == 0x0C) {         // form feed: the screen's own page break
+                ++bufPos_;
+                paused_ = pageBreak_ = true;
+                return true;
+            }
             if (pageRows_ && mode_ == Mode::Text && lines_ >= pageRows_) {
                 paused_ = true;                  // caller shows More, then resume()
                 return true;

@@ -321,9 +321,36 @@ int parseFile(const char* path, SysConfig& out, char* err, size_t errLen) {
     return c.problems;
 }
 
+// ---------------------------------------------------------------------------
+// seed: the very first boot on a blank user partition. A filesystem upload
+// can only write the storage partition, so a config shipped with the screens
+// is copied across once and then belongs to the board. Every later edit goes
+// to the user partition and survives a reflash.
+// ---------------------------------------------------------------------------
+static void seed() {
+    char live[96], shipped[96];
+    snprintf(live, sizeof(live), "%s/%s", plat::userBase(), BBS_CONFIG_FILE);
+    snprintf(shipped, sizeof(shipped), "%s/%s", plat::fsBase(), BBS_CONFIG_FILE);
+
+    FILE* have = fopen(live, "r");
+    if (have) { fclose(have); return; }              // already ours, leave it
+    FILE* from = fopen(shipped, "r");
+    if (!from) return;                               // nothing to seed from
+    FILE* to = fopen(live, "w");
+    if (!to) { fclose(from); return; }
+
+    char buf[256];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), from)) > 0) fwrite(buf, 1, n, to);
+    fclose(from);
+    fclose(to);
+    plat::log("cfg: seeded %s from the shipped copy", live);
+}
+
 bool load() {
     char path[96];
-    snprintf(path, sizeof(path), "%s/%s", plat::fsBase(), BBS_CONFIG_FILE);
+    seed();
+    snprintf(path, sizeof(path), "%s/%s", plat::userBase(), BBS_CONFIG_FILE);
     char err[96];
     int problems = parseFile(path, g_cfg, err, sizeof(err));
     if (problems) plat::log("cfg: %d problem(s), first: %s", problems, err);
@@ -335,7 +362,7 @@ bool load() {
 
 bool reload(char* err, size_t errLen) {
     char path[96];
-    snprintf(path, sizeof(path), "%s/%s", plat::fsBase(), BBS_CONFIG_FILE);
+    snprintf(path, sizeof(path), "%s/%s", plat::userBase(), BBS_CONFIG_FILE);
     static SysConfig fresh;                         // static: SysConfig is ~300 bytes
     fresh = SysConfig();
     if (parseFile(path, fresh, err, errLen)) return false;
@@ -413,8 +440,8 @@ bool sectionOf(const char* line, char* out, size_t n) {
 
 bool write(const KeyVal* pairs, uint8_t count, const char* section, char* err, size_t errLen) {
     char path[160], tmp[176];
-    snprintf(path, sizeof(path), "%s/system.cfg", plat::fsBase());
-    snprintf(tmp, sizeof(tmp), "%s/system.tmp", plat::fsBase());
+    snprintf(path, sizeof(path), "%s/system.cfg", plat::userBase());
+    snprintf(tmp, sizeof(tmp), "%s/system.tmp", plat::userBase());
 
     bool done[16] = {};
     if (count > 16) {

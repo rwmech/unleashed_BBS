@@ -70,6 +70,7 @@ enum class SState : uint8_t {
     AskPass,   // password for an existing account
     AskRegister, // unknown handle: register (Y/n)?
     AskKnowMore, // sign-up: "would you like to know more?" before the form
+    AnyKey,      // something was printed worth reading: waiting for a key
     Form,      // a fill-in form (signup, profile, password, user add/edit)
     UserList,  // staff user manager screen
     Shell,     // command prompt, or a screen playing inside the shell
@@ -96,6 +97,9 @@ enum class ListKind : uint8_t { None, Help, Who, Last, Nodes, Bans, Dash, Users,
 enum class MoreFrom : uint8_t { List, Screen };
 enum class FormKind : uint8_t { None, Signup, Profile, Password, UserAdd, UserEdit, Config };
 enum class ConfirmKind : uint8_t { Logoff, DeleteUser };
+
+// What happens once the caller has pressed a key at a pause.
+enum class AfterKey : uint8_t { Prompt, SignupForm, ScreenNext };
 
 // Which menu a command appears in. HELP with no argument shows Main, the
 // handful people use all the time, and names the other menus.
@@ -128,6 +132,7 @@ struct Session {
     uint16_t     savedCps    = 0;
     bool         pendingPrompt = false;  // prompt once the screen finishes
     FormKind     pendingForm = FormKind::None;  // form to open once it finishes
+    AfterKey     afterKey    = AfterKey::Prompt; // what a pause leads to
     bool         pendingTail   = false;  // hangup tail after goodbye screen
     uint32_t     heapAtOpen  = 0;
     char         user[BBS_USER_MAX + 1] = {};
@@ -306,6 +311,9 @@ private:
     void onHandle(Session& s, uint32_t now);
     void onNewHandle(Session& s, int k, uint32_t now);
     void askKnowMore(Session& s);
+    void pauseFor(Session& s, AfterKey then);
+    void showPrivacy(Session& s, AfterKey then);
+    void onAnyKey(Session& s, uint32_t now);
     void onKnowMore(Session& s, int k, uint32_t now);
     void cmdPrivacy(Session& s);
     bool handleOnline(const Session& s, const char* handle) const;

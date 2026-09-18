@@ -448,6 +448,7 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
     s.savedCps      = 0;
     s.pendingPrompt = false;
     s.pendingForm   = FormKind::None;
+    s.afterKey      = AfterKey::Prompt;
     s.pendingTail   = false;
     s.user[0]       = '\0';
 
@@ -697,12 +698,13 @@ void Bbs::serviceSession(Session& s, uint32_t now) {
         case SState::Shell:
             if (s.scr.active()) {
                 bool more = s.scr.pump(t, tl, vars);
-                if (s.scr.paused()) {
+                if (s.scr.pageBreak()) {         // the screen asked for a page turn
+                    pauseFor(s, AfterKey::ScreenNext);
+                } else if (s.scr.paused()) {
                     showMore(s, MoreFrom::Screen);
                 } else if (!more && s.pendingForm != FormKind::None) {
-                    FormKind f = s.pendingForm;      // a screen that leads into a form
-                    s.pendingForm = FormKind::None;
-                    startForm(s, f, now);
+                    s.pendingForm = FormKind::None;  // a screen that leads into a form
+                    pauseFor(s, AfterKey::SignupForm);   // let them read it first
                 } else if (!more && s.pendingPrompt) {
                     s.pendingPrompt = false;
                     prompt(s);
@@ -1018,10 +1020,12 @@ void Bbs::onHandle(Session& s, uint32_t now) {
 
     t.reset(tl);
     t.nl(tl);
+    t.nl(tl);                                        // clear of what they typed
     t.color(tl, Color::White);
     t.text(tl, s.user);
     t.color(tl, Color::Yellow);
     fx::typewriter(t, tl, " is new here.", 12);
+    t.nl(tl);                                        // a beat before the question
     t.nl(tl);
     t.color(tl, Color::Yellow);
     if (canRegister && cfg.guestEnabled) t.text(tl, "[R]egister, [G]uest or [N]ew handle? ");
@@ -1096,25 +1100,84 @@ void Bbs::onKnowMore(Session& s, int k, uint32_t now) {
     if (k == 'y' || k == 'Y') {
         t.ch(s.tl, 'Y');
         t.nl(s.tl);
-        if (playScreen(s, "privacy")) {
-            s.pendingPrompt = false;                 // the form follows, not the prompt
-            s.pendingForm   = FormKind::Signup;
-            return;
-        }
-        s.term.color(s.tl, Color::Grey);             // no screen file: the short version
-        s.term.text(s.tl, "Telnet is plain text. Your password is hashed");
-        s.term.nl(s.tl);
-        s.term.text(s.tl, "here, but it crosses the wire readable. Use one");
-        s.term.nl(s.tl);
-        s.term.text(s.tl, "you use nowhere else.");
-        s.term.nl(s.tl);
+        showPrivacy(s, AfterKey::SignupForm);
+        return;
     } else if (k == 'n' || k == 'N' || k == KEY_ENTER || k == KEY_ESC || k == KEY_BREAK) {
         t.ch(s.tl, 'N');
         t.nl(s.tl);
+        t.nl(s.tl);                                  // room to breathe before the form
     } else {
         return;                                      // any other key: keep waiting
     }
     startForm(s, FormKind::Signup, now);
+}
+
+// ---------------------------------------------------------------------------
+// pauseFor: stop and let somebody read what was just printed. Anything that
+// clears the screen next, a form or another screen, would otherwise wipe it
+// before it could be read.
+// ---------------------------------------------------------------------------
+void Bbs::pauseFor(Session& s, AfterKey then) {
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    t.nl(tl);
+    t.color(tl, Color::Cyan);
+    t.text(tl, t.isPet() ? "PRESS SPACE TO CONTINUE" : "Press SPACE to continue");
+    t.cursor(tl, true);
+    s.afterKey = then;
+    s.st       = SState::AnyKey;
+}
+
+// onAnyKey: any key at all, then on with whatever we paused in front of
+void Bbs::onAnyKey(Session& s, uint32_t now) {
+    s.term.nl(s.tl);
+    AfterKey then = s.afterKey;
+    s.afterKey = AfterKey::Prompt;
+    s.st       = SState::Shell;
+
+    if (then == AfterKey::ScreenNext) {           // next page of a screen
+        s.term.cls(s.tl);
+        s.scr.resume();
+        return;                                   // the player takes it from here
+    }
+    if (then == AfterKey::SignupForm) startForm(s, FormKind::Signup, now);
+    else                              prompt(s);
+}
+
+// ---------------------------------------------------------------------------
+// showPrivacy: play screens/privacy.*, which is an ordinary screen file so a
+// sysop can say this in their own words. It uses form feeds as page breaks.
+// The built-in text below is only the fallback for a board whose screens are
+// missing: the real version lives on the filesystem, where text belongs.
+// ---------------------------------------------------------------------------
+void Bbs::showPrivacy(Session& s, AfterKey then) {
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    t.cls(tl);
+    if (playScreen(s, "privacy")) {
+        s.pendingPrompt = then != AfterKey::SignupForm;
+        s.pendingForm   = then == AfterKey::SignupForm ? FormKind::Signup : FormKind::None;
+        return;
+    }
+
+    t.color(tl, Color::Cyan);                     // no screen file: the short version
+    t.text(tl, "TELNET IS NOT ENCRYPTED");
+    t.nl(tl);
+    t.nl(tl);
+    t.color(tl, Color::Grey);
+    t.text(tl, "Everything you type crosses the network");
+    t.nl(tl);
+    t.text(tl, "readable, including your password. On the");
+    t.nl(tl);
+    t.text(tl, "board it is salted and hashed, which");
+    t.nl(tl);
+    t.text(tl, "protects the file, not the wire.");
+    t.nl(tl);
+    t.nl(tl);
+    t.color(tl, Color::LightGreen);
+    t.text(tl, "Use a password you use nowhere else.");
+    t.nl(tl);
+    pauseFor(s, then);
 }
 
 // handleOnline: another logged-in session uses this handle
@@ -1458,7 +1521,8 @@ void Bbs::checkTimers(Session& s, uint32_t now) {
     bool inForm      = s.st == SState::Form || s.st == SState::UserList;
     bool signingUp   = inForm && !s.loggedIn;               // sign-up form: still a login
     bool login       = s.st == SState::AskName || s.st == SState::AskPass ||
-                       s.st == SState::AskRegister || s.st == SState::AskKnowMore || signingUp;
+                       s.st == SState::AskRegister || s.st == SState::AskKnowMore ||
+                       s.st == SState::AnyKey || signingUp;
     uint32_t idleMin = syscfg::get().idleMinutes;           // 0 = shell never idles out
     if (!can(s, PERM_NOLIMITS) && (login || idleMin)) {
         uint32_t limit = signingUp ? BBS_FORM_TIMEOUT_MS
@@ -1817,6 +1881,11 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
         case SState::AskKnowMore:
             if (!tl.empty()) tl.skipDelays();
             onKnowMore(s, k, now);
+            return;
+
+        case SState::AnyKey:
+            if (!tl.empty()) { tl.skipDelays(); return; }   // still printing: let it finish
+            onAnyKey(s, now);
             return;
 
         case SState::Form: {

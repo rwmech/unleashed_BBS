@@ -78,6 +78,18 @@ const char* fsBase();
 const char* logsBase();
 
 // ---------------------------------------------------------------------------
+// userBase: mount point of the partition holding what the callers own:
+// accounts, the live configuration, and each plugin's files. Separate from
+// fsBase on purpose, because a filesystem upload replaces everything under
+// fsBase and must never take the accounts with it.
+// ---------------------------------------------------------------------------
+const char* userBase();
+
+// userInfo: size and used bytes of that partition, for the space a plugin
+// is allowed to claim. False when the platform cannot tell.
+bool userInfo(uint32_t& total, uint32_t& used);
+
+// ---------------------------------------------------------------------------
 // heap: heap statistics for MEM command and per-session measurement
 // ---------------------------------------------------------------------------
 HeapStats heap();

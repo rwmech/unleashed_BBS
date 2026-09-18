@@ -30,6 +30,23 @@ The names the BBS looks for:
 | `welcome` | after terminal detection |
 | `about` | the `ABOUT` command |
 | `privacy` | the disclosure offered at sign-up and shown by `PRIVACY`. Rewrite it to match your board, but keep it honest: callers are deciding what password to type |
+
+## Page breaks
+
+A screen can stop deliberately, rather than only when it has filled the
+terminal. A **form feed** byte (`0x0C`) in the file means: wait for a key,
+clear the screen, carry on. That turns a long screen into a short document
+somebody will actually read, instead of a wall sliding past.
+
+Ordinary paging still applies to anything that overflows: a screen that
+fills the terminal shows `[More]` as before. The two do not fight.
+
+`screens/privacy.*` is the worked example, four pages with its own
+`Page 1 of 4` markers in the text. Nothing counts pages for you: if you
+rewrite that screen, write your own numbers, or leave them out.
+
+`tools/mkscreens.py` generates it, and is the easiest place to start from
+if you want to write your own version for your board.
 | `bulletin` | after login (optional) |
 | `busy` | when every node is in use |
 | `goodbye` | at logoff |

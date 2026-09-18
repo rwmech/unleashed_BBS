@@ -64,8 +64,13 @@ void put32(uint8_t* p, uint32_t v) { put16(p, v & 0xFFFF); put16(p + 2, (v >> 16
 uint16_t get16(const uint8_t* p) { return static_cast<uint16_t>(p[0] | (p[1] << 8)); }
 uint32_t get32(const uint8_t* p) { return get16(p) | (static_cast<uint32_t>(get16(p + 2)) << 16); }
 
+// livePath: where a file in the zip belongs on the board. The backup spans
+// two partitions now: the screens are on the one a filesystem upload can
+// replace, while the config and the accounts sit on the user partition that
+// survives a reflash. Restoring has to put each back where it lives.
 void livePath(char* out, size_t n, const char* name) {
-    snprintf(out, n, "%s/%s", plat::fsBase(), name);
+    bool owned = !strcmp(name, BBS_CONFIG_FILE) || !strcmp(name, BBS_USERS_FILE);
+    snprintf(out, n, "%s/%s", owned ? plat::userBase() : plat::fsBase(), name);
 }
 
 void stagePath(char* out, size_t n, const char* name) {

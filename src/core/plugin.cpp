@@ -103,7 +103,7 @@ void scan(uint8_t index, plugins::KeyFn fn, void* ctx, bool core) {
     const Plugin* p = plugins::at(index);
     if (!p) return;
     char path[96], want[40], line[176];
-    snprintf(path, sizeof(path), "%s/%s", plat::fsBase(), BBS_CONFIG_FILE);
+    snprintf(path, sizeof(path), "%s/%s", plat::userBase(), BBS_CONFIG_FILE);
     sectionName(p->info.name, want, sizeof(want));
     FILE* f = fopen(path, "r");
     if (!f) return;
@@ -219,9 +219,11 @@ void forEachKey(uint8_t index, KeyFn fn, void* ctx) {
 
 uint32_t reserveBytes() { return BBS_FS_RESERVE; }
 
+// freeBytes: room left where plugins keep their files, which is the user
+// partition, not the one the screens are on.
 uint32_t freeBytes() {
     uint32_t total = 0, used = 0;
-    if (!plat::fsInfo(total, used) || used > total) return 0;
+    if (!plat::userInfo(total, used) || used > total) return 0;
     return total - used;
 }
 
@@ -238,9 +240,9 @@ bool path(uint8_t index, const char* file, char* out, size_t n) {
     if (strchr(file, '/') || strstr(file, "..")) return false;
 
     char dir[96];
-    snprintf(dir, sizeof(dir), "%s/%s", plat::fsBase(), BBS_PLUGIN_DIR);
+    snprintf(dir, sizeof(dir), "%s/%s", plat::userBase(), BBS_PLUGIN_DIR);
     ensureDir(dir);
-    snprintf(dir, sizeof(dir), "%s/%s/%s", plat::fsBase(), BBS_PLUGIN_DIR, p->info.name);
+    snprintf(dir, sizeof(dir), "%s/%s/%s", plat::userBase(), BBS_PLUGIN_DIR, p->info.name);
     ensureDir(dir);
     snprintf(out, n, "%s/%.16s", dir, file);
     return true;
