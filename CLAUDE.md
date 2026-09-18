@@ -43,6 +43,33 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
 - Input backpressure: a session's socket is only read, and held keys only fed, while its timeline has `BBS_RX_ROOM` (1 KB) free. Form redraws (~1.2 KB on PETSCII) overflowed the old 2 KB timeline when keys were typed ahead; `BBS_TL_BYTES` is now 3 KB.
 - Workflow: commit and push after every flashed build. COMMANDS.md, README.md, CHANGELOG.md and this file are updated in the same change. CLIENTS.md holds the full list of machines that can call in and README.md carries the short version of the same list: change one, change the other. Code review at phase checkpoints; a robustness/pen test of the live board before any internet exposure (tabled for now).
 
+## Processes
+
+These are the standing rules about who does what. They are not preferences,
+they are the process, and getting them wrong wastes Rob's time.
+
+- **Rob flashes the board. I never do.** I build, test on the host, report the
+  exact command and what to expect, and stop there.
+- **Rob deploys the directory server. I never do.** The process is: the change
+  goes into the `unleashed_directory` repo, pushed; Rob runs
+  `sudo /srv/unleashed_directory/deploy/update.sh` on the droplet. I have no
+  SSH access to it and am not to go looking for a way in. "Get it on the
+  website" means "get it into the repo", not "connect to the server".
+- **Tests and subagents stay on 127.0.0.1.** Never send traffic at the live
+  board or the live directory unless Rob asks for an on-board test. My
+  "external" checks once ran over his own LAN and every result was hairpin
+  NAT, which sent him chasing a router problem that did not exist.
+- **Commit and push after every build**, and again at checkpoints during long
+  work so there is a history to go back to. COMMANDS.md, README.md,
+  CHANGELOG.md and this file are updated in the same change, not afterwards.
+- **Never commit** `include/secrets.h`, `data/system.cfg`, `CLAUDE.local.md` or
+  `data/calls.log`. No passwords in git history, ever.
+- **Proposal before new code.** Confirm the approach, get a go-ahead, then
+  write it. A bug I introduced myself is still a proposal, just a short one.
+- **Verify before asserting.** Claims get checked against the source or a
+  primary reference first. Stale warnings and confident wrong answers cost
+  more than saying "I do not know yet".
+
 ## Phase plan
 
 | Phase | Scope | State |
