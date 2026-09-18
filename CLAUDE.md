@@ -56,7 +56,18 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
 
 Also done: busy line, paging (`[More]`), abort keys, command history, time limits (per call, per day), caller log (`LAST`), NTP + TZ, mDNS, backup window, config reload without reboot.
 
-## Current state (0.13.0, host-tested, not flashed)
+## Current state (0.14.0, host-tested, not flashed)
+
+- Host build: 364/364 scripted checks (`tools/testclient.py --backup`), 0 failures. ESP32 0.14.0: image 1000 KB (63.6% of the slot), static RAM 114 KB. No app warnings.
+- 0.14.0 splits the flash by who owns what is on it. The sizing was the giveaway: `logs` was 128 KB for a log that fills about 3 KB a day. It is 32 KB now, and the 96 KB plus a slice of `storage` became `userdata` (128 KB).
+- What makes it work is the ordering rule that was already there. PlatformIO's `uploadfs` writes the LAST spiffs partition, so keeping `storage` last means a filesystem upload can only reach the screens. `flashall` stopped being destructive without needing a new flag or a prompt.
+- On the protected side: `users.txt`, `system.cfg`, `p/<plugin>/` (chat mail, the room ban list) and the announce token. A sysop can now reflash a board without losing its directory listing, which was the specific thing that made updates cost something.
+- `syscfg::seed()` copies the shipped `system.cfg` to `userdata` once on a blank board. Without it a fresh board has no sysop password and no way to ever have staff: a board nobody can administer. Verified end to end on the host (blank user dir, seed line in the log, `BYE <password>` reaching the sysop node).
+- `ziparc::livePath` routes each restored file back to the partition it belongs on, so the backup zip format is unchanged and older backups still restore. Only the three staff passwords are redacted in a download, so the announce token survives a backup and restore too.
+- This is a breaking layout change: moving a partition needs one full erase (`pio run -t erase`), because the old filesystem contents sit where the new ones go. After that erase, `flashall` is safe permanently.
+- Four places in the docs and one in `pio_flashall.py` still warned that flashing wipes the accounts, and one claimed `uploadfs` erases the caller log, which had not been true since the log got its own partition. Stale warnings about data loss are worse than none: they are what a sysop reads before deciding whether an update is safe.
+
+## Previous state (0.13.0, host-tested, not flashed)
 
 - Host build: 350/350 scripted checks (`tools/testclient.py --backup`), also under ASan/UBSan. `--only=<name>` runs one test, which is how a single failure gets chased without an eight minute wait.
 - ESP32 0.13.0: image 999 KB (63.5% of the slot), static RAM 114 KB. No app warnings.
