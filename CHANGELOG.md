@@ -24,6 +24,17 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.14.0, 2026-09-18
+
+Flashing the board stops costing you the board.
+
+- The flash layout is split by who owns what. `storage` (736 KB) holds the screens and is the only partition a filesystem upload rewrites; `userdata` (128 KB) holds accounts, the live configuration and each plugin's files; `logs` is 32 KB, which is forty times the caller log rather than four hundred times. `storage` is kept last in the table because PlatformIO's `uploadfs` writes the last spiffs partition, so that is the only thing it can reach.
+- `pio run -t flashall` is therefore no longer destructive: firmware and screens in one command, and the accounts, the configuration, the chat mail, the room ban list and the directory listing token all stay put.
+- On a blank board the configuration is seeded once from the copy shipped with the screens. Without that, a fresh board would have no sysop password and no way ever to have staff.
+- A restore routes each file in the backup zip back to the partition it belongs on. The zip format is unchanged and older backups still work.
+- Nine checks cover the split, including simulating the destructive half of a filesystem upload and proving the accounts are still there afterwards.
+- Breaking layout change: an existing board needs one full erase, because the partitions move.
+
 ## 0.13.0, 2026-09-18
 
 The board can put itself on the map.

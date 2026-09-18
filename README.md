@@ -169,7 +169,27 @@ After that:
 - Config and screens change through the backup window ([BACKUP.md](BACKUP.md)), not by reflashing.
 - `flashall` / `uploadfs` rewrite the `storage` partition with `data/` (fresh board, or a deliberate reset). That wipes the accounts too: download a backup first.
 
-Flash layout (4 MB): two 1.5 MB OTA app slots, `logs` (128 KB, caller log), `storage` (768 KB, `system.cfg`, `users.txt` and screens). Changing `partitions.csv` wipes the filesystems, so back up first.
+Flash layout (4 MB): two 1.5 MB OTA app slots and three data partitions.
+
+| Partition | Size | Holds | Rewritten by `uploadfs`? |
+|---|---|---|---|
+| `logs` | 32 KB | the caller log | no |
+| `userdata` | 128 KB | `users.txt`, `system.cfg`, plugin files | no |
+| `storage` | 736 KB | screens | **yes** |
+
+`storage` is deliberately last, because PlatformIO's `uploadfs` writes the last
+spiffs partition. That is what makes flashing safe: a filesystem upload can only
+reach the screens. Accounts, configuration, chat mail and a directory listing
+token all sit on `userdata` and survive a reflash.
+
+| Command | Firmware | Screens | Keeps accounts and config |
+|---|---|---|---|
+| `pio run -t upload` | ✅ | no | ✅ |
+| `pio run -t flashall` | ✅ | ✅ | ✅ |
+
+On a blank board, `system.cfg` is seeded once from the copy shipped with the
+screens, then belongs to the board. Changing `partitions.csv` itself moves the
+filesystems and needs a full erase, so back up first.
 
 The console prints `online <ip>  dial in: telnet <ip> 6400`. On the LAN the board answers as `<hostname>.local` (default `unleashed.local`, also its DHCP name) and advertises `_telnet._tcp`.
 

@@ -1820,6 +1820,74 @@ def test_announce():
     return ok
 
 
+def test_partitions():
+    """What a filesystem upload may and may not reach.
+
+    uploadfs rewrites the storage partition from data/. The whole point of
+    the split is that accounts, config and plugin files are not on it, so
+    this checks where things actually land rather than trusting the layout.
+    """
+    print("User data lives apart from the screens")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build's filesystem")
+        return True
+
+    c = ansi_login("Partitioned")
+    c.send(b"bye\r")
+    c.pump(0.5)
+    c.close()
+
+    ok = check("accounts are on the user partition", (USERDATA / "users.txt").exists())
+    ok &= check("and not among the screens", not (DATA / "users.txt").exists())
+    ok &= check("config is on the user partition", (USERDATA / "system.cfg").exists())
+    ok &= check("plugin files are too", (USERDATA / "p").is_dir())
+    ok &= check("screens are where uploadfs writes", (DATA / "screens").is_dir())
+
+    # The announce token is the thing a sysop would hate to lose: it is what
+    # keeps a directory listing theirs across a reflash.
+    cfg = (USERDATA / "system.cfg").read_text()
+    ok &= check("the announce section is on the protected side",
+                "[plugin:announce]" in cfg or "announce" not in cfg)
+
+    # Simulate the destructive half of a flashall: everything on the storage
+    # partition goes, then is written again from data/. The account file is
+    # compared by content rather than bytes, because a logoff legitimately
+    # rewrites it with the call stats.
+    import shutil
+    wiped = []
+    for item in DATA.iterdir():
+        if item.name in ("user", "logs"):
+            continue
+        if item.is_dir():
+            for f in sorted(item.rglob("*")):
+                if f.is_file():
+                    wiped.append(f)
+                    f.unlink()
+        elif item.is_file():
+            wiped.append(item)
+            item.unlink()
+
+    ok &= check("a filesystem upload does not touch the accounts",
+                (USERDATA / "users.txt").exists() and
+                "[Partitioned]" in (USERDATA / "users.txt").read_text())
+    ok &= check("nor the configuration", (USERDATA / "system.cfg").exists())
+    ok &= check("nor the plugin files", (USERDATA / "p").is_dir())
+    ok &= check("and the screens really were wiped", wiped and
+                not (DATA / "screens" / "welcome.ans").exists())
+
+    # Put the screens back, the way uploadfs would, so whatever runs next is
+    # not looking at a board this test emptied.
+    src = ROOT / "data" / "screens"
+    if src.is_dir():
+        (DATA / "screens").mkdir(parents=True, exist_ok=True)
+        for f in src.iterdir():
+            if f.is_file():
+                shutil.copy2(f, DATA / "screens" / f.name)
+    ok &= check("and the screens can be written again",
+                (DATA / "screens" / "welcome.ans").exists())
+    return ok
+
+
 def run_selected(only):
     """--only=announce runs just the tests whose name contains "announce"."""
     import types
@@ -1842,7 +1910,8 @@ if __name__ == "__main__":
                test_privacy(), test_plugins(), test_about(), test_announce(),
                test_chat(), test_room_commands(),
                test_mail(), test_menus(), test_sysinfo(), test_config(), test_serial(),
-               test_bulletin(), test_idle_login(), test_busy()]
+               test_bulletin(), test_idle_login(), test_busy(),
+               test_partitions()]
     if "--backup" in FLAGS:
         results.append(test_backup())
     if "--ban" in FLAGS:
