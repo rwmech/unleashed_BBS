@@ -6,11 +6,18 @@
 # File:         partitions.csv
 # Module:       Build / flash partition table
 #
-# Purpose:      4 MB flash layout: two 1.5 MB OTA application slots, a 128 KB logs
-#               partition for the caller log, and a 768 KB storage partition holding
-#               system.cfg, users.txt and the screens.
+# Purpose:      4 MB flash layout: two 1.5 MB OTA application slots and three
+#               filesystems, split by who owns what is on them.
+#
+#                 logs      32 KB   the caller log ring
+#                 userdata 128 KB   users.txt, system.cfg, p/<plugin>/
+#                 storage  736 KB   the screens
+#
 #               "storage" must stay the LAST filesystem partition: PlatformIO uploadfs
-#               writes to the last data partition of type spiffs/fat/littlefs.
+#               writes to the last data partition of type spiffs/fat/littlefs. That is
+#               what makes flashing safe, because a filesystem upload can then only
+#               reach the screens, and the accounts, the configuration and a directory
+#               listing token all survive a reflash.
 #
 # Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
 # See also:     README.md
