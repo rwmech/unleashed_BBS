@@ -199,7 +199,8 @@ bool Bbs::registerCommands(const Command* list, uint8_t count, uint8_t plugin) {
 // ---------------------------------------------------------------------------
 bool Bbs::own(Session& s, uint8_t plugin) {
     if (s.st == SState::Free || s.role == Role::Busy || !s.loggedIn) return false;
-    s.owner = plugin;
+    s.owner     = plugin;
+    s.ownerData = 0;
     s.ed    = LineEditor();
     s.st    = SState::Plugin;
     return true;
@@ -207,7 +208,8 @@ bool Bbs::own(Session& s, uint8_t plugin) {
 
 void Bbs::release(Session& s) {
     if (s.owner == 0xFF) return;
-    s.owner = 0xFF;
+    s.owner     = 0xFF;
+    s.ownerData = 0;
     if (s.st == SState::Plugin) {
         s.term.reset(s.tl);
         s.term.cursor(s.tl, true);

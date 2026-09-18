@@ -64,22 +64,32 @@ constexpr const char kName[]    = "chat";
 constexpr uint8_t    kHistory   = 8;      // lines kept for a caller who joins
 constexpr uint8_t    kLineMax   = 64;     // one chat line, fits 40 columns twice
 
-char    g_room[20] = "Main";
-char    g_hist[kHistory][kLineMax + 1] = {};
-uint8_t g_histCount = 0;
-uint8_t g_histNext  = 0;
-uint8_t g_index     = 0xFF;
+char     g_room[20] = "Main";
+char     g_hist[kHistory][kLineMax + 1] = {};
+uint8_t  g_histCount = 0;
+uint8_t  g_histNext  = 0;
+uint8_t  g_index     = 0xFF;
+uint32_t g_seq       = 0;              // lines said in the room since boot
 
 void readKey(void* ctx, const char* key, const char* value) {
     (void)ctx;
     if (!strcmp(key, "room")) snprintf(g_room, sizeof(g_room), "%.19s", value);
 }
 
-// remember: keep the line for whoever joins next
+// remember: keep the line for whoever joins next, and number it
 void remember(const char* line) {
     snprintf(g_hist[g_histNext], kLineMax + 1, "%.*s", kLineMax, line);
     g_histNext = static_cast<uint8_t>((g_histNext + 1) % kHistory);
     if (g_histCount < kHistory) ++g_histCount;
+    ++g_seq;
+}
+
+// lineAt: room line number seq, or null once it has scrolled out of the ring
+const char* lineAt(uint32_t seq) {
+    if (seq >= g_seq || g_seq - seq > g_histCount) return nullptr;
+    uint8_t back = static_cast<uint8_t>(g_seq - seq);          // 1 = the newest
+    uint8_t at   = static_cast<uint8_t>((g_histNext + kHistory - back) % kHistory);
+    return g_hist[at];
 }
 
 // who: "#2:Daytona)" - node, handle, and the bracket says the rank:
@@ -113,25 +123,43 @@ void wipeInput(Session& s) {
     s.term.eraseBack(s.tl, s.ed.shown());
 }
 
-struct Fan { const Session* from; Color color; const char* text; };
-
-// toEveryone: one line in the room. Each screen loses its input line, gets
-// the chat line, then has its input line put back underneath, so the
-// conversation scrolls with nothing blank between.
-void toEveryone(const char* text, Color color, const Session* skip) {
-    Fan f{ skip, color, text };
-    Bbs::instance().eachSession([](void* ctx, Session& s) {
-        Fan* f = static_cast<Fan*>(ctx);
-        if (!Bbs::instance().owns(s, g_index)) return;
-        if (&s == f->from) return;
-        if (s.tl.freeBytes() < 256) return;                  // slow line: skip this one
-        wipeInput(s);
-        s.term.color(s.tl, f->color);
-        s.term.text(s.tl, f->text);
+// flush: hand a caller everything said since they last saw the room. Only
+// called when their own line is empty, so nothing ever lands in the middle
+// of what somebody is typing.
+void flush(Session& s) {
+    if (s.ownerData >= g_seq) return;
+    if (s.tl.freeBytes() < 256) return;                      // slow line: next time
+    uint32_t missed = 0;
+    while (s.ownerData < g_seq) {
+        const char* line = lineAt(s.ownerData);
+        ++s.ownerData;
+        if (!line) { ++missed; continue; }                   // scrolled out of the ring
+        s.term.color(s.tl, Color::White);
+        s.term.text(s.tl, line);
         s.term.nl(s.tl);
-        chatPrompt(s);
-        s.ed.redraw(s.term, s.tl);                           // what they were typing
-    }, &f);
+    }
+    if (missed) {
+        char note[40];
+        snprintf(note, sizeof(note), "[%u lines missed]", static_cast<unsigned>(missed));
+        s.term.color(s.tl, Color::DarkGrey);
+        s.term.text(s.tl, note);
+        s.term.nl(s.tl);
+    }
+    chatPrompt(s);
+}
+
+// post: say it in the room. Callers sitting with an empty line see it now;
+// anyone part way through typing gets it when they press Enter.
+void post(const char* text, const Session* from) {
+    remember(text);
+    Session* skip = const_cast<Session*>(from);
+    Bbs::instance().eachSession([](void* ctx, Session& s) {
+        Session* skip = static_cast<Session*>(ctx);
+        if (!Bbs::instance().owns(s, g_index)) return;
+        if (&s == skip) { s.ownerData = g_seq; return; }      // they printed it themselves
+        if (s.ed.len()) return;                               // mid-sentence: hold it
+        flush(s);
+    }, skip);
 }
 
 uint8_t roomCount() {
@@ -149,8 +177,7 @@ void leave(Session& s, const char* why) {
     snprintf(line, sizeof(line), "*** %.28s %s", me, why);
     wipeInput(s);                                            // drop the chat input line
     bbs.release(s);                                          // the prompt starts its own line
-    toEveryone(line, Color::Grey, &s);
-    remember(line);
+    post(line, &s);
 }
 
 void join(Bbs& bbs, Session& s) {
@@ -162,7 +189,7 @@ void join(Bbs& bbs, Session& s) {
     Timeline& tl = s.tl;
     t.reset(tl);
     t.color(tl, Color::Cyan);
-    snprintf(line, sizeof(line), "%.19s: %u here. /q quits, /w lists.", g_room, roomCount());
+    snprintf(line, sizeof(line), "%.19s: %u here. /s who, /q quits.", g_room, roomCount());
     t.text(tl, line);
     t.nl(tl);
     for (uint8_t i = 0; i < g_histCount; ++i) {              // what they just missed
@@ -171,13 +198,13 @@ void join(Bbs& bbs, Session& s) {
         t.text(tl, g_hist[at]);
         t.nl(tl);
     }
+    s.ownerData = g_seq;                                     // the history above covers it
     armInput(s);
 
     char me[32];
     tag(s, me, sizeof(me));
     snprintf(line, sizeof(line), "*** %.28s joined", me);
-    toEveryone(line, Color::Grey, &s);
-    remember(line);
+    post(line, &s);
 }
 
 // who: the room's roster on one caller's screen
@@ -199,6 +226,7 @@ void who(Session& s) {
     s.term.color(s.tl, Color::Cyan);
     s.term.text(s.tl, line);
     s.term.nl(s.tl);
+    flush(s);
     armInput(s);
 }
 
@@ -212,14 +240,14 @@ void say(Session& s, const char* text) {
         armInput(s);
         return;
     }
+    flush(s);                                                   // held while they typed, first
     tag(s, me, sizeof(me));
     snprintf(line, sizeof(line), "%.28s %.60s", me, text);
-    s.term.color(s.tl, Color::LightGrey);                       // the speaker sees it too
+    s.term.color(s.tl, Color::LightGrey);                       // then their own line
     s.term.text(s.tl, line);
     s.term.nl(s.tl);
+    post(line, &s);
     armInput(s);
-    toEveryone(line, Color::White, &s);
-    remember(line);
 }
 
 // ---------------------------------------------------------------------------
@@ -229,7 +257,10 @@ void onKey(Session& s, int k, uint32_t now) {
     (void)now;
     LineEditor::Res r = s.ed.key(k, s.term, s.tl);
     if (r == LineEditor::Res::Abort) { leave(s, "left the room"); return; }
-    if (r != LineEditor::Res::Done) return;
+    if (r != LineEditor::Res::Done) {
+        if (!s.ed.len()) flush(s);                           // nothing typed: catch up
+        return;
+    }
 
     char line[BBS_LINE_MAX + 1];
     strncpy(line, s.ed.text(), BBS_LINE_MAX);
@@ -237,9 +268,9 @@ void onKey(Session& s, int k, uint32_t now) {
     const char* p = line;
     while (*p == ' ') ++p;
 
-    if (!*p)                              { wipeInput(s); armInput(s); return; }
+    if (!*p)                              { wipeInput(s); flush(s); armInput(s); return; }
     if (ieq(p, "/q") || ieq(p, "/quit"))  { leave(s, "left the room"); return; }
-    if (ieq(p, "/w") || ieq(p, "/who"))   { who(s); return; }
+    if (ieq(p, "/s") || ieq(p, "/w") || ieq(p, "/who")) { who(s); return; }
     say(s, p);
 }
 
@@ -248,8 +279,7 @@ void onLogoff(Session& s) {
     char line[80], me[32];
     tag(s, me, sizeof(me));
     snprintf(line, sizeof(line), "*** %.28s logged off", me);
-    toEveryone(line, Color::Grey, &s);
-    remember(line);
+    post(line, &s);
 }
 
 bool start(Bbs& bbs) {

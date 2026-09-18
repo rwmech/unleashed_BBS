@@ -132,6 +132,7 @@ struct Session {
                                        // the WHO/NODES/DASH marker; raised on elevation
     char         doing[BBS_DOING_MAX + 1] = {};   // last command verb (staff WHO/DASH)
     uint8_t      owner       = 0xFF;   // plugin holding this session, 0xFF none
+    uint32_t     ownerData   = 0;      // scratch for that plugin, cleared on own/release
 
     // paging and generated lists
     ListKind     list        = ListKind::None;

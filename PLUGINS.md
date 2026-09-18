@@ -115,6 +115,7 @@ While a plugin owns a session the idle timeout pauses, because watching is not i
 | `bbs.eachSession(fn, ctx)` | walk every session |
 | `bbs.setDoing(s, "CHAT")` | what staff see in the Doing column of WHO and DASH |
 | `bbs.prompt(s)` | end a command back at the prompt |
+| `s.ownerData` | a 32-bit scratch word per session, yours while you own it |
 
 ### Config and storage
 
