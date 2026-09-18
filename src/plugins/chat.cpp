@@ -93,24 +93,24 @@ void tag(const Session& s, char* out, size_t n) {
     snprintf(out, n, "#%c:%.20s%c", nodeChar(s), s.user, rankBracket(s));
 }
 
-// prompt: the chat input line
+// chatPrompt: no prompt character in the room, just the cursor waiting at
+// the start of the line, the way DDial and Gtalk did it
 void chatPrompt(Session& s) {
-    s.term.color(s.tl, Color::LightGreen);
-    s.term.text(s.tl, "> ");
     s.term.color(s.tl, Color::White);
+    s.term.cursor(s.tl, true);
 }
 
 // armInput: take a line of chat from this caller. F_STAY keeps Enter on
 // the same line so the line can be rewritten in its finished form.
 void armInput(Session& s) {
-    uint8_t room = static_cast<uint8_t>(s.term.cols() > 6 ? s.term.cols() - 4 : 32);
+    uint8_t room = static_cast<uint8_t>(s.term.cols() > 4 ? s.term.cols() - 2 : 32);
     s.ed.begin(room < kLineMax ? room : kLineMax, LineEditor::F_STAY);
     chatPrompt(s);
 }
 
-// wipeInput: take back the "> " prompt and whatever is typed after it
+// wipeInput: take back whatever the caller has typed so far
 void wipeInput(Session& s) {
-    s.term.eraseBack(s.tl, static_cast<uint8_t>(2 + s.ed.shown()));
+    s.term.eraseBack(s.tl, s.ed.shown());
 }
 
 struct Fan { const Session* from; Color color; const char* text; };

@@ -980,10 +980,16 @@ def test_chat():
     ok &= check("the room is told who arrived", a.wait_for(b":Listener) joined", 4))
     a.buf.clear()
     b.buf.clear()
+    b.send(b"half typed")                              # b is mid-sentence
+    b.wait_for(b"half typed", 3)
+    b.buf.clear()
     a.send(b"hello room\r")
     ok &= check("what one types, the others see, tagged with the node",
                 b.wait_for(b":Chatty) hello room", 4) and re.search(rb"#\d:Chatty\)", b.buf) is not None)
-    ok &= check("and the typist keeps their line", b.wait_for(b"> ", 3))
+    ok &= check("the listener's half-typed line comes back", b.wait_for(b"half typed", 3))
+    ok &= check("no prompt character in the room", b"> " not in b.buf)
+    b.send(b"\r")
+    b.wait_for(b"half typed", 3)
     b.buf.clear()
     b.send(b"/w\r")
     ok &= check("/w lists the room with node tags", b.wait_for(b":Chatty)", 4) and b.wait_for(b"(you)", 3)
