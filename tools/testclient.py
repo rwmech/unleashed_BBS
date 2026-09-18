@@ -995,6 +995,18 @@ def test_chat():
     b.send(b"/s\r")
     ok &= check("/s lists the room with node tags", b.wait_for(b":Chatty)", 4) and b.wait_for(b"(you)", 3)
                 and b.wait_for(b"2 in Main", 3))
+    # flooding is refused, and only the flooder hears about it
+    a.buf.clear()
+    b.buf.clear()
+    for _ in range(14):
+        a.send(b"spam\r")
+        a.pump(0.05)
+    a.pump(1.0)
+    b.pump(0.5)
+    ok &= check("a flood is throttled", b"lines a minute is the limit" in a.buf)
+    ok &= check("only the flooder is told", b"lines a minute" not in b.buf)
+    ok &= check("the lines under the limit still reached the room", b":Chatty) spam" in b.buf)
+
     b.buf.clear()
     a.send(b"/q\r")
     ok &= check("/q leaves the room", a.wait_for(b"Main", 4))
@@ -1003,7 +1015,7 @@ def test_chat():
     c = ansi_login("Latecomer")
     c.buf.clear()
     c.send(b"chat\r")
-    ok &= check("a joiner sees the recent lines", c.wait_for(b":Chatty) hello room", 4))
+    ok &= check("a joiner sees the recent lines", c.wait_for(b":Chatty) spam", 4))
     c.send(b"\x1b")
     ok &= check("ESC leaves too", c.wait_for(b"Main", 4))
     for x in (a, b, c):

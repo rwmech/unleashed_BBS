@@ -91,6 +91,7 @@ read  = all
 write = all
 admin = sysop
 room = Main
+rate = 80        ; lines a minute one caller may send, 8 in a burst
 
 # Share a serial device: one operator types, everyone else watches.
 # Uses the second UART, never the console, so flashing still works.

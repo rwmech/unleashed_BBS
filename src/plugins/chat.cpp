@@ -24,6 +24,7 @@
  *                 write   = all      who may speak
  *                 admin   = sysop    who may clear the room
  *                 room    = Main
+ *                 rate    = 80       lines a minute one caller may send
  *
  * Libraries:    none (libc)
  * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
@@ -54,6 +55,7 @@
 #include "../platform/platform.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 using namespace bbsu;
@@ -61,8 +63,11 @@ using namespace bbsu;
 namespace {
 
 constexpr const char kName[]    = "chat";
-constexpr uint8_t    kHistory   = 8;      // lines kept for a caller who joins
+constexpr uint8_t    kHistory   = 48;     // room buffer: nothing is dropped in practice
+constexpr uint8_t    kJoinShow  = 8;      // of those, how many a joiner is shown
 constexpr uint8_t    kLineMax   = 64;     // one chat line, fits 40 columns twice
+constexpr uint8_t    kBurst     = 8;      // lines a caller may fire off at once
+constexpr uint16_t   kRateDef   = 80;     // lines a minute after that (see rate =)
 
 char     g_room[20] = "Main";
 char     g_hist[kHistory][kLineMax + 1] = {};
@@ -70,10 +75,48 @@ uint8_t  g_histCount = 0;
 uint8_t  g_histNext  = 0;
 uint8_t  g_index     = 0xFF;
 uint32_t g_seq       = 0;              // lines said in the room since boot
+uint16_t g_rate      = kRateDef;       // lines a minute one caller may send
 
 void readKey(void* ctx, const char* key, const char* value) {
     (void)ctx;
     if (!strcmp(key, "room")) snprintf(g_room, sizeof(g_room), "%.19s", value);
+    else if (!strcmp(key, "rate")) {
+        long v = strtol(value, nullptr, 10);
+        if (v >= 6 && v <= 600) g_rate = static_cast<uint16_t>(v);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rate limit. A caller gets kBurst lines to fire off, then one line back
+// every 60/rate seconds. At the default that is 80 lines a minute, which is
+// faster than anyone types and slow enough that nobody can flood the room.
+// Only the caller who trips it is told; the room never sees it.
+// ---------------------------------------------------------------------------
+uint16_t g_tokens[BBS_MAX_NODES + 2] = {};      // sixteenths of a line
+uint16_t g_lastSec[BBS_MAX_NODES + 2] = {};
+
+void primeBuckets() {
+    for (uint8_t i = 0; i < BBS_MAX_NODES + 2; ++i) {
+        g_tokens[i]  = static_cast<uint16_t>(kBurst * 16u);
+        g_lastSec[i] = 0;
+    }
+}
+
+bool spendToken(const Session& s, uint32_t now) {
+    uint16_t stamp = static_cast<uint16_t>(now / 1000u);             // seconds
+    uint16_t* tokens = g_tokens;
+    uint16_t* last   = g_lastSec;
+    uint8_t slot = s.id <= BBS_MAX_NODES + 1 ? s.id : 0;
+    uint16_t elapsed = static_cast<uint16_t>(stamp - last[slot]);
+    if (elapsed) {
+        last[slot] = stamp;
+        uint32_t gain = static_cast<uint32_t>(elapsed) * g_rate * 16u / 60u;
+        uint32_t now16 = tokens[slot] + gain;
+        tokens[slot] = static_cast<uint16_t>(now16 > kBurst * 16u ? kBurst * 16u : now16);
+    }
+    if (tokens[slot] < 16u) return false;
+    tokens[slot] = static_cast<uint16_t>(tokens[slot] - 16u);
+    return true;
 }
 
 // remember: keep the line for whoever joins next, and number it
@@ -129,23 +172,24 @@ void wipeInput(Session& s) {
 void flush(Session& s) {
     if (s.ownerData >= g_seq) return;
     if (s.tl.freeBytes() < 256) return;                      // slow line: next time
-    uint32_t missed = 0;
     while (s.ownerData < g_seq) {
         const char* line = lineAt(s.ownerData);
         ++s.ownerData;
-        if (!line) { ++missed; continue; }                   // scrolled out of the ring
+        if (!line) continue;                                 // older than the buffer
         s.term.color(s.tl, Color::White);
         s.term.text(s.tl, line);
         s.term.nl(s.tl);
     }
-    if (missed) {
-        char note[40];
-        snprintf(note, sizeof(note), "[%u lines missed]", static_cast<unsigned>(missed));
-        s.term.color(s.tl, Color::DarkGrey);
-        s.term.text(s.tl, note);
-        s.term.nl(s.tl);
-    }
     chatPrompt(s);
+}
+
+// catchUp: a caller part way through a line whose held lines are close to
+// filling the buffer. Nothing is thrown away: their typing is lifted, the
+// room prints, and their line goes back underneath.
+void catchUp(Session& s) {
+    wipeInput(s);
+    flush(s);
+    s.ed.redraw(s.term, s.tl);
 }
 
 // post: say it in the room. Callers sitting with an empty line see it now;
@@ -157,7 +201,10 @@ void post(const char* text, const Session* from) {
         Session* skip = static_cast<Session*>(ctx);
         if (!Bbs::instance().owns(s, g_index)) return;
         if (&s == skip) { s.ownerData = g_seq; return; }      // they printed it themselves
-        if (s.ed.len()) return;                               // mid-sentence: hold it
+        if (s.ed.len()) {                                     // mid-sentence: hold it
+            if (g_seq - s.ownerData >= kHistory - 4u) catchUp(s);   // unless the buffer is filling
+            return;
+        }
         flush(s);
     }, skip);
 }
@@ -192,8 +239,9 @@ void join(Bbs& bbs, Session& s) {
     snprintf(line, sizeof(line), "%.19s: %u here. /s who, /q quits.", g_room, roomCount());
     t.text(tl, line);
     t.nl(tl);
-    for (uint8_t i = 0; i < g_histCount; ++i) {              // what they just missed
-        uint8_t at = static_cast<uint8_t>((g_histNext + kHistory - g_histCount + i) % kHistory);
+    uint8_t show = g_histCount < kJoinShow ? g_histCount : kJoinShow;
+    for (uint8_t i = 0; i < show; ++i) {                      // what was just said
+        uint8_t at = static_cast<uint8_t>((g_histNext + kHistory - show + i) % kHistory);
         t.color(tl, Color::DarkGrey);
         t.text(tl, g_hist[at]);
         t.nl(tl);
@@ -230,13 +278,23 @@ void who(Session& s) {
     armInput(s);
 }
 
-void say(Session& s, const char* text) {
+void say(Session& s, const char* text, uint32_t now) {
     char line[96], me[32];
     wipeInput(s);
     if (!plugins::mayUse(s, plugins::levelFor(g_index, 1))) {   // read-only in the room
         s.term.color(s.tl, Color::LightRed);
         s.term.text(s.tl, "You can watch, but not talk here.");
         s.term.nl(s.tl);
+        armInput(s);
+        return;
+    }
+    if (!spendToken(s, now)) {                                  // flooding the room
+        char note[64];
+        snprintf(note, sizeof(note), "Too fast: %u lines a minute is the limit.", g_rate);
+        s.term.color(s.tl, Color::LightRed);
+        s.term.text(s.tl, note);
+        s.term.nl(s.tl);
+        flush(s);
         armInput(s);
         return;
     }
@@ -254,7 +312,6 @@ void say(Session& s, const char* text) {
 // onKey: the caller is in the room. Lines go to everyone; /q leaves.
 // ---------------------------------------------------------------------------
 void onKey(Session& s, int k, uint32_t now) {
-    (void)now;
     LineEditor::Res r = s.ed.key(k, s.term, s.tl);
     if (r == LineEditor::Res::Abort) { leave(s, "left the room"); return; }
     if (r != LineEditor::Res::Done) {
@@ -271,7 +328,7 @@ void onKey(Session& s, int k, uint32_t now) {
     if (!*p)                              { wipeInput(s); flush(s); armInput(s); return; }
     if (ieq(p, "/q") || ieq(p, "/quit"))  { leave(s, "left the room"); return; }
     if (ieq(p, "/s") || ieq(p, "/w") || ieq(p, "/who")) { who(s); return; }
-    say(s, p);
+    say(s, p, now);
 }
 
 void onLogoff(Session& s) {
@@ -286,7 +343,9 @@ bool start(Bbs& bbs) {
     (void)bbs;
     g_index = plugins::indexOf(kName);
     g_histCount = g_histNext = 0;
+    g_seq = 0;
     plugins::forEachKey(g_index, readKey, nullptr);
+    primeBuckets();
     return true;
 }
 
