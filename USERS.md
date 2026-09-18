@@ -23,6 +23,22 @@ How callers get accounts, and how staff create, change, lock and delete them. Co
 
 ## Callers
 
+### Before the password
+
+Nobody on this board types a password before being told what happens to it. Pressing `R` at the handle prompt does not open the sign-up form straight away. It says, in yellow:
+
+```
+This connection is not encrypted. Use a password
+you do not use anywhere else.
+Would you like to know more? [Y/N]
+```
+
+`N` opens the form. `Y` plays `screens/privacy.*` first, which is the full disclosure: telnet carries everything in the clear, the password is salted and hashed with SHA-256 a thousand rounds so the stored file gives nothing away, the sysop can see handles, addresses, times, the last command run and can watch a node live, and the honest summary of what any of that is worth. The board is conversation and nothing critical, and the one real risk is a password reused from somewhere else.
+
+The form opens when the screen finishes either way.
+
+`PRIVACY` shows the same screen at any time, so a caller who agreed to something months ago can read it again without making a new account. Being an ordinary screen file, a sysop can rewrite it to match their own board: see [SCREENS.md](SCREENS.md).
+
 ### Signing up
 
 Everyone starts at the same handle prompt. A handle the BBS doesn't know asks what to do:

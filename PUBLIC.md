@@ -24,17 +24,40 @@
 
 People think running a public system is something you need a provider, a bill and a certificate for. It is not, and it never was. A board on the internet is a machine that answers a phone number. The phone number is now an address and a port, and forwarding it is one line in your router.
 
-The whole procedure:
+## What you need first
 
-1. Give the board a fixed address on your network.
-2. Forward one TCP port on your router to that address, port 6400.
-3. Check it from outside.
-4. Give it a name if you want one.
+Two things, and one of them catches most people out.
+
+**A public address that people can reach.** Some internet providers put home connections behind carrier-grade NAT, which means your router does not have a public address at all and no amount of port forwarding will help. Check it: compare the address your router says its internet side has against what a "what is my IP" page tells you. If they are different, you are behind your provider's NAT, and you need to ask them for a real address, pay for a static one, or use a tunnel.
+
+**A name, because your address will change.** This is the part worth understanding before you start. Almost every home connection gets its address by DHCP from the provider, on a lease, and that address changes: on a reboot, on a line fault, on an outage, or just because the lease expired. A board people reach at `198.51.100.23` today is a board nobody can reach next Tuesday, and your callers have no way of knowing where it went. A number that changes is no use to anybody.
+
+So get a dynamic DNS name before you tell a single person about the board. A small client (usually built into your router) tells the provider your current address whenever it changes, and the name keeps working. Callers dial `yourboard.example.net 6400` and never think about it again.
+
+| Provider | Notes |
+|---|---|
+| [No-IP](https://www.noip.com/personal) | one free hostname, no card. The catch: you have to reconfirm it every 30 days from an emailed link or it is released |
+| [Dynu](https://www.dynu.com/en-US/DynamicDNS) | free, and accounts do not expire |
+| [FreeDNS](https://freedns.afraid.org/) | free, long running, a lot of shared domains to pick from |
+| [Cloudflare](https://developers.cloudflare.com/dns/manage-dns-records/how-to/managing-dynamic-ip-addresses/) | if you already own a domain there, update a record from a script or ddclient |
+
+Most routers have a dynamic DNS client built in, under a name like DDNS or Dynamic DNS, and it takes about two minutes. If yours does not, run a client on any machine that is always on.
+
+Paying your provider for a static address also works, and some of them will sell you one for a few pounds or dollars a month. That is the tidiest answer if it is on offer.
+
+DuckDNS used to be the obvious free recommendation. It has been offline since August 2025, so do not build anything on it.
+
+## The whole procedure
+
+1. Get a dynamic DNS name, or a static address from your provider.
+2. Give the board a fixed address on your own network.
+3. Forward one TCP port on your router to that address, port 6400.
+4. Check it from outside.
 5. Tell people it exists.
 
-That is it. Nothing below is longer than it is because it is difficult; it is longer because the parts that carry real risk deserve saying properly.
+Nothing below is longer than it is because it is difficult; it is longer because the parts that carry real risk deserve saying properly.
 
-## 1. Fix the board's address
+## 1. Fix the board's address on your own network
 
 Your router hands out addresses by DHCP and will eventually give the board a different one, at which point your port forward points at your television. Fix it in one of two ways:
 
@@ -61,26 +84,11 @@ Your phone on cellular data is the easiest outside machine you own. Turn Wi-Fi o
 
 If it does not:
 
-- Some ISPs put home connections behind carrier-grade NAT, which means you have no public address to forward to. Check whether the address your router thinks it has matches the address the internet thinks you have. If they differ, port forwarding cannot work, and you need an ISP that gives you a real address, or a tunnel.
-- Some ISPs block inbound ports, or forbid running servers in their terms. Worth two minutes of reading before you blame the board.
-- Test from a genuinely outside network. Many routers will not let you reach your own public address from inside your own network.
+- Check the carrier-grade NAT question above, if you have not already. It is the most common reason a forward that looks right does nothing.
+- Some providers block inbound ports, or forbid running servers in their terms. Worth two minutes of reading before you blame the board.
+- Test from a genuinely outside network. Many routers will not let you reach your own public address from inside your own network, so a failure from your own sofa proves nothing.
 
-## 4. A name, if you want one
-
-An address like `198.51.100.23 6400` works fine and is how half the boards in 1993 were reached. If your ISP changes your address from time to time, a dynamic DNS name keeps it working: the board's `hostname` handles finding it on your own LAN, and dynamic DNS handles finding it from outside.
-
-Most routers have a dynamic DNS client built in, which is the easiest place to set this up. Providers worth using:
-
-| Provider | Notes |
-|---|---|
-| [No-IP](https://www.noip.com/personal) | one free hostname, no card. The catch: you have to reconfirm it every 30 days from an emailed link or it is released |
-| [Dynu](https://www.dynu.com/en-US/DynamicDNS) | free, and accounts do not expire |
-| [FreeDNS](https://freedns.afraid.org/) | free, long running, a lot of shared domains to pick from |
-| [Cloudflare](https://developers.cloudflare.com/dns/manage-dns-records/how-to/managing-dynamic-ip-addresses/) | if you already own a domain there, update a record from a script or ddclient |
-
-DuckDNS used to be the obvious recommendation. It has been offline since August 2025, so do not build anything on it.
-
-## 5. Tell people
+## 4. Tell people
 
 A board nobody knows about is a board nobody calls. The telnet BBS scene is small, friendly and still keeps directories. Get yourself listed, and put the address somewhere people who would enjoy it will see it.
 

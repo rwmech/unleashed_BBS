@@ -29,6 +29,7 @@ The names the BBS looks for:
 |---|---|
 | `welcome` | after terminal detection |
 | `about` | the `ABOUT` command |
+| `privacy` | the disclosure offered at sign-up and shown by `PRIVACY`. Rewrite it to match your board, but keep it honest: callers are deciding what password to type |
 | `bulletin` | after login (optional) |
 | `busy` | when every node is in use |
 | `goodbye` | at logoff |

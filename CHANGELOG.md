@@ -24,6 +24,16 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.12.0, 2026-09-18
+
+Disclosure before anybody types a password, and the documentation to go with it.
+
+- Nobody types a password before being told the link is in the clear. Registering now warns that the connection is not encrypted and that the password must not be one used anywhere else, then asks "Would you like to know more?". Yes plays the new `privacy` screen: what telnet does and does not protect, how the password is stored, what the sysop can see, and an honest answer to "what is my real risk". The sign-up form opens when it finishes.
+- `PRIVACY` shows the same screen at any time, and it is an ordinary screen file a sysop can rewrite.
+- PUBLIC.md is new: how to put a board on the internet, what forwarding a port actually exposes, and the risks that are real. The address problem leads it, because a home connection's address changes and a board nobody can find twice is no use.
+- CLIENTS.md is new: every machine that can call in, what terminal software it runs and what puts it on the wire, including phones. README carries the short version.
+- README opens with what the board is for rather than a feature list.
+
 ## 0.11.0, 2026-09-18
 
 Help, screens, the chat room's command set, messages and a settings manager.

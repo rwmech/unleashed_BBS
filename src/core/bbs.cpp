@@ -447,6 +447,7 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
     s.fxStep        = 0;
     s.savedCps      = 0;
     s.pendingPrompt = false;
+    s.pendingForm   = FormKind::None;
     s.pendingTail   = false;
     s.user[0]       = '\0';
 
@@ -698,6 +699,10 @@ void Bbs::serviceSession(Session& s, uint32_t now) {
                 bool more = s.scr.pump(t, tl, vars);
                 if (s.scr.paused()) {
                     showMore(s, MoreFrom::Screen);
+                } else if (!more && s.pendingForm != FormKind::None) {
+                    FormKind f = s.pendingForm;      // a screen that leads into a form
+                    s.pendingForm = FormKind::None;
+                    startForm(s, f, now);
                 } else if (!more && s.pendingPrompt) {
                     s.pendingPrompt = false;
                     prompt(s);
@@ -1049,7 +1054,8 @@ void Bbs::onNewHandle(Session& s, int k, uint32_t now) {
     }
     if (reg) {
         t.ch(tl, 'R');
-        startForm(s, FormKind::Signup, now);
+        t.nl(tl);
+        askKnowMore(s);
     } else if (guest) {
         t.ch(tl, 'G');
         loginGuest(s, now);
@@ -1060,12 +1066,64 @@ void Bbs::onNewHandle(Session& s, int k, uint32_t now) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// askKnowMore: before anybody types a password, say plainly that the link
+// is not encrypted, and offer the whole story to those who want it.
+// ---------------------------------------------------------------------------
+void Bbs::askKnowMore(Session& s) {
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    t.color(tl, Color::Yellow);
+    t.text(tl, t.cols() >= 64 ? "This connection is not encrypted. Use a password"
+                              : "Not encrypted. Use a password");
+    t.nl(tl);
+    t.text(tl, t.cols() >= 64 ? "you do not use anywhere else." : "you use nowhere else.");
+    t.nl(tl);
+    t.color(tl, Color::LightGreen);
+    t.text(tl, "Would you like to know more? ");
+    t.color(tl, Color::White);
+    t.text(tl, "[Y/N] ");
+    t.cursor(tl, true);
+    s.st = SState::AskKnowMore;
+}
+
+// ---------------------------------------------------------------------------
+// onKnowMore: Y plays screens/privacy.*, and the sign-up form opens when it
+// finishes. Anything else goes straight to the form.
+// ---------------------------------------------------------------------------
+void Bbs::onKnowMore(Session& s, int k, uint32_t now) {
+    Term& t = s.term;
+    if (k == 'y' || k == 'Y') {
+        t.ch(s.tl, 'Y');
+        t.nl(s.tl);
+        if (playScreen(s, "privacy")) {
+            s.pendingPrompt = false;                 // the form follows, not the prompt
+            s.pendingForm   = FormKind::Signup;
+            return;
+        }
+        s.term.color(s.tl, Color::Grey);             // no screen file: the short version
+        s.term.text(s.tl, "Telnet is plain text. Your password is hashed");
+        s.term.nl(s.tl);
+        s.term.text(s.tl, "here, but it crosses the wire readable. Use one");
+        s.term.nl(s.tl);
+        s.term.text(s.tl, "you use nowhere else.");
+        s.term.nl(s.tl);
+    } else if (k == 'n' || k == 'N' || k == KEY_ENTER || k == KEY_ESC || k == KEY_BREAK) {
+        t.ch(s.tl, 'N');
+        t.nl(s.tl);
+    } else {
+        return;                                      // any other key: keep waiting
+    }
+    startForm(s, FormKind::Signup, now);
+}
+
 // handleOnline: another logged-in session uses this handle
 bool Bbs::handleOnline(const Session& s, const char* handle) const {
     for (const Session* o : all_) {
         if (o == &s || !o->user[0] || !ieq(o->user, handle)) continue;
         if (o->loggedIn) return true;
         if (o->st == SState::AskRegister) return true;            // choosing R or G
+        if (o->st == SState::AskKnowMore) return true;            // reading the disclosure
         if (o->st == SState::Form && o->formKind == FormKind::Signup) return true;
     }
     return false;
@@ -1400,7 +1458,7 @@ void Bbs::checkTimers(Session& s, uint32_t now) {
     bool inForm      = s.st == SState::Form || s.st == SState::UserList;
     bool signingUp   = inForm && !s.loggedIn;               // sign-up form: still a login
     bool login       = s.st == SState::AskName || s.st == SState::AskPass ||
-                       s.st == SState::AskRegister || signingUp;
+                       s.st == SState::AskRegister || s.st == SState::AskKnowMore || signingUp;
     uint32_t idleMin = syscfg::get().idleMinutes;           // 0 = shell never idles out
     if (!can(s, PERM_NOLIMITS) && (login || idleMin)) {
         uint32_t limit = signingUp ? BBS_FORM_TIMEOUT_MS
@@ -1637,6 +1695,7 @@ void Bbs::abortOutput(Session& s) {
     s.tl.clear();
     s.list          = ListKind::None;
     s.pendingPrompt = false;
+    s.pendingForm   = FormKind::None;
     s.term.reset(s.tl);
     s.term.cursor(s.tl, true);
     s.term.nl(s.tl);
@@ -1753,6 +1812,11 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
         case SState::AskRegister:
             if (!tl.empty()) tl.skipDelays();
             onNewHandle(s, k, now);
+            return;
+
+        case SState::AskKnowMore:
+            if (!tl.empty()) tl.skipDelays();
+            onKnowMore(s, k, now);
             return;
 
         case SState::Form: {

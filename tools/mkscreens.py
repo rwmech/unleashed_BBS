@@ -383,6 +383,39 @@ def make_about_ans():
     return bytes(b)
 
 
+# ---------------------------------------------------------------------------
+# privacy: the full disclosure screen, shown on request at sign-up and by
+# the PRIVACY command. Plain language on purpose: a caller deciding what
+# password to type deserves the truth in words they will actually read.
+# ---------------------------------------------------------------------------
+PRIVACY_BODY = [('h', 'WHAT THIS BOARD KNOWS'), ('', ''), ('t', 'Would you like to know more? You would.'), ('', ''), ('s', 'THE LINK IS NOT ENCRYPTED'), ('t', 'You are connected over telnet. Telnet has'), ('t', 'no encryption. Everything you type crosses'), ('t', 'the network as readable text: your'), ('t', 'password, your messages, all of it.'), ('', ''), ('t', 'Anyone on the path can read it. Whoever'), ('t', 'runs the wifi you are on, your internet'), ('t', "provider, the sysop's provider, anyone"), ('t', 'between. That is not a bug here. It is the'), ('t', 'price of letting a 1982 computer call in,'), ('t', 'because a C64 cannot do encryption.'), ('', ''), ('s', 'YOUR PASSWORD ON THE BOARD'), ('t', 'It is never stored as you typed it. It is'), ('t', 'salted and hashed with SHA-256, a thousand'), ('t', 'rounds, and only the hash is written down.'), ('t', 'Nobody can read it back, including the'), ('t', 'sysop. Backups redact it.'), ('', ''), ('t', 'That protects the file. It does nothing'), ('t', 'about the wire, where you typed it in the'), ('t', 'clear on the way here.'), ('', ''), ('s', 'WHAT THE SYSOP CAN SEE'), ('t', 'Your handle, your address, when you called'), ('t', 'and for how long, and the last command you'), ('t', 'ran. Staff can watch a node live. Messages'), ('t', 'you leave sit in a file on the board until'), ('t', 'they are read. Assume the sysop can read'), ('t', 'anything on their own machine, because'), ('t', 'they can. It is their machine.'), ('', ''), ('s', 'SO WHAT IS MY REAL RISK'), ('t', 'Honestly? Small. This is a hobby board on'), ('t', 'a five dollar chip. It is conversation and'), ('t', 'nothing critical. There is no money here,'), ('t', 'no card numbers, no keys to anything. If'), ('t', 'somebody read every word of it they would'), ('t', 'learn what you said in a chat room.'), ('', ''), ('w', 'There is one real risk, and it is this:'), ('w', 'a password you use somewhere else.'), ('', ''), ('t', 'If you reuse one and it is read on the'), ('t', 'way here, the person reading it now has a'), ('t', 'password that works on your email. That is'), ('t', 'how accounts get taken, and it has nothing'), ('t', 'to do with this board being good or bad.'), ('', ''), ('s', 'SO'), ('g', 'Use a password you use nowhere else.'), ('t', 'Make it up here, forget it afterwards. Say'), ('t', 'nothing on the board you would mind being'), ('t', 'read out. Then enjoy yourself, because'), ('t', 'that is what it is for.'), ('', ''), ('d', 'Sysops: do staff work from your own'), ('d', 'network or a VPN, never across the'), ('d', 'internet. See PUBLIC.md.')]
+
+
+def make_privacy_ans():
+    b = bytearray()
+    b += sgr("0;36") + bytes([H_DOUBLE]) * 60 + b"\r\n"
+    for kind, line in PRIVACY_BODY:
+        b += sgr({'h': '1;36', 's': '1;33', 't': '0;37', 'w': '1;31', 'g': '1;32', 'd': '1;30', '': '0;37'}[kind]) + b" " + line.encode("ascii") + b"\r\n"
+    b += sgr("0;36") + bytes([H_DOUBLE]) * 60 + sgr("0") + b"\r\n"
+    return bytes(b)
+
+
+def make_privacy_seq():
+    out = [pet("clr", "lower", "cyan"), pet_rule("cyan")]
+    for kind, line in PRIVACY_BODY:
+        out.append(pet({'h': 'cyan', 's': 'yellow', 't': 'grey', 'w': 'lred', 'g': 'lgreen', 'd': 'dgrey', '': 'grey'}[kind]) + pet_text(line) + pet("cr"))
+    out.append(pet_rule("cyan"))
+    return b"".join(out)
+
+
+def make_privacy_asc():
+    out = ["-" * 38]
+    for kind, line in PRIVACY_BODY:
+        out.append(line)
+    out.append("-" * 38)
+    return ("\r\n".join(out) + "\r\n").encode("ascii")
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     files = {
@@ -398,6 +431,9 @@ def main():
         "about.seq": make_about_seq(),
         "about.ans": make_about_ans(),
         "about.asc": ABOUT_ASC.encode("ascii"),
+        "privacy.seq": make_privacy_seq(),
+        "privacy.ans": make_privacy_ans(),
+        "privacy.asc": make_privacy_asc(),
     }
     for name, data in files.items():
         (OUT / name).write_bytes(data)

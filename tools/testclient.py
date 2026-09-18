@@ -258,6 +258,8 @@ def login(c, handle, pw=TEST_PW, as_pet=False, wait_main=True):
     if which == 0:
         email = "".join(ch for ch in handle.lower() if ch.isalnum()) + "@example.com"
         c.send(b"r")
+        c.wait_for(enc("know more"), 6)     # the disclosure offer comes first
+        c.send(b"n")
         c.wait_for(enc("NEW ACCOUNT"), 6)
         c.send(enc(pw) + b"\r" + enc(pw) + b"\r" + enc(handle) + b"\r" + enc(email) + b"\r\r\r\r\r")
         if not c.wait_for(enc("WELCOME ABOARD"), 10):
@@ -664,6 +666,8 @@ def test_accounts():
     c.send(b"Zed\r")
     c.wait_for(b"[R]egister", 5)
     c.send(b"r")
+    c.wait_for(b"know more", 5)
+    c.send(b"n")
     ok &= check("sign-up form opens", c.wait_for(b"NEW ACCOUNT", 5))
     c.buf.clear()
     c.send(b"abc\rabc\r\r\r\r\r\r\r")
@@ -674,6 +678,8 @@ def test_accounts():
     c.send(b"Zed\r")
     c.wait_for(b"[R]egister", 5)
     c.send(b"r")
+    c.wait_for(b"know more", 5)
+    c.send(b"n")
     c.wait_for(b"NEW ACCOUNT", 5)
     c.buf.clear()
     c.send(b"abcd\rabce\rZed\rzed@example.com\r\r\r\r\r")
@@ -683,6 +689,8 @@ def test_accounts():
     c.send(b"Zed\r")
     c.wait_for(b"[R]egister", 5)
     c.send(b"r")
+    c.wait_for(b"know more", 5)
+    c.send(b"n")
     c.wait_for(b"NEW ACCOUNT", 5)
     c.buf.clear()
     c.send(b"abcd\rabcd\rZed\rnot-an-email\r\r\r\r\r")
@@ -1627,10 +1635,59 @@ def test_config():
     return ok
 
 
+
+def test_privacy():
+    """Nobody types a password before being told the link is in the clear."""
+    print("Disclosure at sign-up")
+    c = Caller(ansi=True)
+    c.wait_for(b"Enter your handle", 10)
+    c.buf.clear()
+    c.send(b"Curious\r")
+    c.wait_for(b"[R]egister", 6)
+    c.buf.clear()
+    c.send(b"r")
+    ok = check("registering warns the link is not encrypted",
+               c.wait_for(b"not encrypted", 5))
+    ok &= check("and says what to do about it", b"anywhere else" in plain(c.buf))
+    ok &= check("would you like to know more", b"know more" in plain(c.buf))
+
+    c.buf.clear()
+    c.send(b"y")
+    read_list(c, 6)
+    told = plain(c.buf)
+    ok &= check("Y explains telnet has no encryption", b"no encryption" in told)
+    ok &= check("and how the password is stored", b"SHA-256" in told)
+    ok &= check("and what the sysop can see", b"WHAT THE SYSOP CAN SEE" in told)
+    ok &= check("and gives the honest risk", b"SO WHAT IS MY REAL RISK" in told)
+    ok &= check("and the one rule that matters", b"a password you use somewhere else" in told)
+    ok &= check("the form opens after the disclosure", c.wait_for(b"NEW ACCOUNT", 8))
+    c.close()
+
+    # N skips it, and the command brings it back later
+    d = Caller(ansi=True)
+    d.wait_for(b"Enter your handle", 10)
+    d.send(b"Hasty\r")
+    d.wait_for(b"[R]egister", 6)
+    d.send(b"r")
+    d.wait_for(b"know more", 5)
+    d.buf.clear()
+    d.send(b"n")
+    ok &= check("N goes straight to the form", d.wait_for(b"NEW ACCOUNT", 6))
+    d.send(TEST_PW.encode() + b"\r" + TEST_PW.encode() + b"\rHasty\rhasty@example.com\r\r\r\r\r")
+    d.wait_for(b"WELCOME ABOARD", 10)
+    d.wait_for(b"Main", 8)
+    d.buf.clear()
+    d.send(b"privacy\r")
+    read_list(d, 6)
+    ok &= check("PRIVACY shows it again any time", b"no encryption" in plain(d.buf))
+    d.close()
+    return ok
+
+
 if __name__ == "__main__":
     results = [test_ansi(), test_telnet_first(), test_petscii(), test_ascii(),
                test_page(), test_sysop(), test_cosysop(), test_accounts(), test_user_admin(), test_guest(),
-               test_plugins(), test_about(), test_chat(), test_room_commands(),
+               test_privacy(), test_plugins(), test_about(), test_chat(), test_room_commands(),
                test_mail(), test_menus(), test_sysinfo(), test_config(), test_serial(),
                test_bulletin(), test_idle_login(), test_busy()]
     if "--backup" in FLAGS:

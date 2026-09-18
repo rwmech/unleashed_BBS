@@ -69,6 +69,7 @@ enum class SState : uint8_t {
     AskName,   // handle prompt
     AskPass,   // password for an existing account
     AskRegister, // unknown handle: register (Y/n)?
+    AskKnowMore, // sign-up: "would you like to know more?" before the form
     Form,      // a fill-in form (signup, profile, password, user add/edit)
     UserList,  // staff user manager screen
     Shell,     // command prompt, or a screen playing inside the shell
@@ -126,6 +127,7 @@ struct Session {
     uint8_t      fxStep      = 0;
     uint16_t     savedCps    = 0;
     bool         pendingPrompt = false;  // prompt once the screen finishes
+    FormKind     pendingForm = FormKind::None;  // form to open once it finishes
     bool         pendingTail   = false;  // hangup tail after goodbye screen
     uint32_t     heapAtOpen  = 0;
     char         user[BBS_USER_MAX + 1] = {};
@@ -303,6 +305,9 @@ private:
     void drawNamePrompt(Session& s);
     void onHandle(Session& s, uint32_t now);
     void onNewHandle(Session& s, int k, uint32_t now);
+    void askKnowMore(Session& s);
+    void onKnowMore(Session& s, int k, uint32_t now);
+    void cmdPrivacy(Session& s);
     bool handleOnline(const Session& s, const char* handle) const;
     void loginGuest(Session& s, uint32_t now);
     void inputError(Session& s, uint8_t used, const char* longMsg, const char* shortMsg);

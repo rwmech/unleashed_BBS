@@ -157,6 +157,9 @@ const Command* Bbs::coreCommands(uint8_t& count) {
         { "DND", "", 0, CF_NONE, "DND", "pages off / on",
           [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdDnd(s); b.prompt(s); },
           Menu::Account, 2 },
+        { "PRIVACY", "", 0, CF_NONE, "PRIVACY", "what this board knows about you",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdPrivacy(s); },
+          Menu::Account, 7 },
         { "TERM", "T", 0, CF_NONE, "[T]ERM", "terminal type and size",
           [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdTerm(s); b.prompt(s); },
           Menu::Account, 3 },
@@ -506,6 +509,7 @@ const char* Bbs::doingText(const Session& s) {
         case SState::Intro:       return "connect";
         case SState::Form:        return "sign-up";
         case SState::AskRegister: return "sign-up";
+        case SState::AskKnowMore: return "sign-up";
         default:                  return "login";
     }
 }
@@ -1338,6 +1342,29 @@ bool Bbs::rowCalls(Session& s) {
         return true;
     }
     return false;
+}
+
+// ---------------------------------------------------------------------------
+// cmdPrivacy: the same disclosure the sign-up offers, available any time.
+// A caller who agreed to something months ago should be able to read it
+// again without making a new account.
+// ---------------------------------------------------------------------------
+void Bbs::cmdPrivacy(Session& s) {
+    if (playScreen(s, "privacy")) return;
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    rowTitle(s, "What this board knows", nullptr);
+    rowText(s, Color::Yellow, "This link is not encrypted.");
+    rowText(s, Color::Grey, "Telnet has no encryption, so everything");
+    rowText(s, Color::Grey, "you type crosses the network readable.");
+    rowText(s, Color::Grey, "Your password is salted and hashed here,");
+    rowText(s, Color::Grey, "which protects the file, not the wire.");
+    rowText(s, Color::Grey, "The sysop sees your handle, address, times");
+    rowText(s, Color::Grey, "and last command, and can watch a node.");
+    rowText(s, Color::LightRed, "Never use a password from anywhere else.");
+    rowRule(s);
+    (void)t; (void)tl;
+    prompt(s);
 }
 
 // ---------------------------------------------------------------------------
