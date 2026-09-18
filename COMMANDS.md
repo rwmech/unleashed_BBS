@@ -95,7 +95,7 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | `TIME` | | Date and time, minutes online, minutes left. |
 | `LAST` | | The last 50 calls, newest first. |
 | `ABOUT` | | What this BBS is, its version and its license. Plays `screens/about.*`, so a sysop can rewrite it. |
-| `CHAT` | | Join the chat room (the `chat` plugin). Everything you type goes to everyone in the room. `/w` lists who is there, `/q` or ESC leaves. |
+| `CHAT` | | Join the chat room (the `chat` plugin). Everything you type goes to everyone in the room, tagged DDial style: `#2:Daytona) hi`. The bracket is the rank: `)` a caller, `*` a guest, `>` a co-sysop, `]` the sysop. `/w` lists who is there, `/q` or ESC leaves. |
 | `SERIAL` | | Watch the serial device (the `serial` plugin). `T` takes the keyboard if you are allowed and it is free, ESC leaves. `SERIAL STATUS` prints the port, `SERIAL SET 9600 8N1` changes the line. |
 | `INFO [handle]` | `I` | An account: name, member since, last call, calls, profile. Email, address and phone only on your own account (or with `USERS`). |
 | `PROFILE` | | Form to change your name, email, address, phone and profile. Not for guests. |

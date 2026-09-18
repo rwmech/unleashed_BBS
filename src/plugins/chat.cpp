@@ -82,6 +82,17 @@ void remember(const char* line) {
     if (g_histCount < kHistory) ++g_histCount;
 }
 
+// who: "#2:Daytona)" - node, handle, and the bracket says the rank:
+// ) a caller, * a guest, > a co-sysop, ] the sysop
+char rankBracket(const Session& s) {
+    char m = markFor(s);
+    return m == ' ' ? ')' : m;
+}
+
+void tag(const Session& s, char* out, size_t n) {
+    snprintf(out, n, "#%c:%.20s%c", nodeChar(s), s.user, rankBracket(s));
+}
+
 // prompt: the chat input line
 void chatPrompt(Session& s) {
     s.term.color(s.tl, Color::LightGreen);
@@ -89,16 +100,24 @@ void chatPrompt(Session& s) {
     s.term.color(s.tl, Color::White);
 }
 
-// armInput: take a line of chat from this caller
+// armInput: take a line of chat from this caller. F_STAY keeps Enter on
+// the same line so the line can be rewritten in its finished form.
 void armInput(Session& s) {
     uint8_t room = static_cast<uint8_t>(s.term.cols() > 6 ? s.term.cols() - 4 : 32);
-    s.ed.begin(room < kLineMax ? room : kLineMax);
+    s.ed.begin(room < kLineMax ? room : kLineMax, LineEditor::F_STAY);
     chatPrompt(s);
+}
+
+// wipeInput: take back the "> " prompt and whatever is typed after it
+void wipeInput(Session& s) {
+    s.term.eraseBack(s.tl, static_cast<uint8_t>(2 + s.ed.shown()));
 }
 
 struct Fan { const Session* from; Color color; const char* text; };
 
-// toEveryone: print a line in the room, then put each caller's typing back
+// toEveryone: one line in the room. Each screen loses its input line, gets
+// the chat line, then has its input line put back underneath, so the
+// conversation scrolls with nothing blank between.
 void toEveryone(const char* text, Color color, const Session* skip) {
     Fan f{ skip, color, text };
     Bbs::instance().eachSession([](void* ctx, Session& s) {
@@ -106,11 +125,9 @@ void toEveryone(const char* text, Color color, const Session* skip) {
         if (!Bbs::instance().owns(s, g_index)) return;
         if (&s == f->from) return;
         if (s.tl.freeBytes() < 256) return;                  // slow line: skip this one
-        s.term.reset(s.tl);
-        s.term.nl(s.tl);
+        wipeInput(s);
         s.term.color(s.tl, f->color);
         s.term.text(s.tl, f->text);
-        s.term.reset(s.tl);
         s.term.nl(s.tl);
         chatPrompt(s);
         s.ed.redraw(s.term, s.tl);                           // what they were typing
@@ -127,9 +144,11 @@ uint8_t roomCount() {
 
 void leave(Session& s, const char* why) {
     Bbs& bbs = Bbs::instance();
-    char line[80];
-    snprintf(line, sizeof(line), "*** %.20s %s", s.user, why);
-    bbs.release(s);                                          // back to the prompt first
+    char line[80], me[32];
+    tag(s, me, sizeof(me));
+    snprintf(line, sizeof(line), "*** %.28s %s", me, why);
+    wipeInput(s);                                            // drop the chat input line
+    bbs.release(s);                                          // the prompt starts its own line
     toEveryone(line, Color::Grey, &s);
     remember(line);
 }
@@ -142,7 +161,6 @@ void join(Bbs& bbs, Session& s) {
     Term& t = s.term;
     Timeline& tl = s.tl;
     t.reset(tl);
-    t.nl(tl);
     t.color(tl, Color::Cyan);
     snprintf(line, sizeof(line), "%.19s: %u here. /q quits, /w lists.", g_room, roomCount());
     t.text(tl, line);
@@ -155,7 +173,9 @@ void join(Bbs& bbs, Session& s) {
     }
     armInput(s);
 
-    snprintf(line, sizeof(line), "*** %.20s joined", s.user);
+    char me[32];
+    tag(s, me, sizeof(me));
+    snprintf(line, sizeof(line), "*** %.28s joined", me);
     toEveryone(line, Color::Grey, &s);
     remember(line);
 }
@@ -164,11 +184,13 @@ void join(Bbs& bbs, Session& s) {
 void who(Session& s) {
     char line[80];
     Session* me = &s;
+    wipeInput(s);
     Bbs::instance().eachSession([](void* ctx, Session& o) {
         Session* me = static_cast<Session*>(ctx);
         if (!Bbs::instance().owns(o, g_index)) return;
-        char row[48];
-        snprintf(row, sizeof(row), "  %c%-20.20s%s", markFor(o), o.user, &o == me ? " (you)" : "");
+        char who[32], row[48];
+        tag(o, who, sizeof(who));
+        snprintf(row, sizeof(row), "  %-24.24s%s", who, &o == me ? " (you)" : "");
         me->term.color(me->tl, Color::Grey);
         me->term.text(me->tl, row);
         me->term.nl(me->tl);
@@ -181,7 +203,8 @@ void who(Session& s) {
 }
 
 void say(Session& s, const char* text) {
-    char line[96];
+    char line[96], me[32];
+    wipeInput(s);
     if (!plugins::mayUse(s, plugins::levelFor(g_index, 1))) {   // read-only in the room
         s.term.color(s.tl, Color::LightRed);
         s.term.text(s.tl, "You can watch, but not talk here.");
@@ -189,11 +212,14 @@ void say(Session& s, const char* text) {
         armInput(s);
         return;
     }
-    snprintf(line, sizeof(line), "%c%.20s: %.60s", markFor(s), s.user, text);
-    toEveryone(line, Color::White, &s);
-    remember(line);
+    tag(s, me, sizeof(me));
+    snprintf(line, sizeof(line), "%.28s %.60s", me, text);
+    s.term.color(s.tl, Color::LightGrey);                       // the speaker sees it too
+    s.term.text(s.tl, line);
     s.term.nl(s.tl);
     armInput(s);
+    toEveryone(line, Color::White, &s);
+    remember(line);
 }
 
 // ---------------------------------------------------------------------------
@@ -211,7 +237,7 @@ void onKey(Session& s, int k, uint32_t now) {
     const char* p = line;
     while (*p == ' ') ++p;
 
-    if (!*p)                              { armInput(s); return; }
+    if (!*p)                              { wipeInput(s); armInput(s); return; }
     if (ieq(p, "/q") || ieq(p, "/quit"))  { leave(s, "left the room"); return; }
     if (ieq(p, "/w") || ieq(p, "/who"))   { who(s); return; }
     say(s, p);
@@ -219,8 +245,9 @@ void onKey(Session& s, int k, uint32_t now) {
 
 void onLogoff(Session& s) {
     if (!Bbs::instance().owns(s, g_index)) return;
-    char line[80];
-    snprintf(line, sizeof(line), "*** %.20s logged off", s.user);
+    char line[80], me[32];
+    tag(s, me, sizeof(me));
+    snprintf(line, sizeof(line), "*** %.28s logged off", me);
     toEveryone(line, Color::Grey, &s);
     remember(line);
 }
