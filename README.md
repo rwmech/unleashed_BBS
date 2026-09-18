@@ -17,9 +17,29 @@ Electronic freedom on a microcontroller. No web, no cloud, no browser.
 
 µnleashed is a telnet BBS that runs on a bare ESP32-WROOM-32E and grows into an IoT terminal server through plugins: real hardware you reach from a 1982 home computer, a glass terminal, a phone or anything else that speaks telnet.
 
-The name is spelled with a micro sign. Where µ can't be shown (PETSCII, hostnames, file names) it's written `unleashed`.
+**The board is yours.** Not an account on somebody's platform, not a tenant on a server farm, not a feature that can be deprecated out from under you. It is a chip you own, on a port you chose, running software you can read all of in an afternoon and change when you disagree with it. Switch it off and it is off. Leave it in a drawer for a year, plug it back in, and it still works, because there is nothing at the other end that has to still exist.
 
-The core has one dial-in port, 6 caller nodes, a busy line and a hidden sysop node. It also has connect-time terminal detection, user accounts with fill-in forms, guest access, screens, a line editor with history, paged output, a message bus between nodes, the TTY effects library and a shell.
+**Before the web, this is how it worked.** Somebody put a spare machine in a spare room, hung a modem off it, and other people called it. No terms of service, no algorithm deciding what you saw, no third party keeping a copy for later. The sysop was a person you could ring up and argue with. [CBBS](https://en.wikipedia.org/wiki/CBBS) went online in Chicago on 16 February 1978, written by Ward Christensen with hardware by Randy Suess, the January blizzard having handed them the quiet weeks to finish it. Thousands of boards followed, each one somebody's own idea of what a community should look like, and at the [peak in the mid-1990s](https://en.wikipedia.org/wiki/Bulletin_board_system) an estimated 60,000 were running in the United States alone. Most of them on hardware weaker than the chip this runs on.
+
+**Then we traded it for convenience.** Now the conversation lives on machines you cannot see, indexed, scraped to train something, monetised, ranked, and deleted at somebody else's discretion. You do not own the room, the member list, the history, or the right to keep any of it. You rent all of it, and the rent is paid in attention and data.
+
+**This hands some of it back.** The user list is a text file. The settings are a text file. A message goes from one caller to another through a chip on your shelf and is gone the moment it is read. Nothing here is indexed, syndicated, profiled or sold, because there is no third party in the middle to do it. There is no account to create, nothing to subscribe to, and no vendor who can change the deal. It is GPL, so nobody can take it away from you later. That includes me.
+
+**Honest about the limit.** Telnet is plain text, because a C64 cannot do TLS and pretending otherwise would be worse than saying so. This keeps your board off the public internet's record, not off the wire. If it has to survive somebody watching the link, put it behind a VPN or leave it on the LAN. Privacy you can explain in one sentence beats privacy you have to take on faith.
+
+**Small on purpose.** One static binary, static allocation, no heap in the main loop, a fixed memory budget on a chip with 520 KB of RAM. No web stack, no scripting runtime, no package tree to audit at two in the morning, no telemetry, no update that arrives without you. What is not built cannot be exploited, and what fits in one head can be trusted by the person whose head it fits in.
+
+**Quiet by default.** The whole internet is crawled, catalogued and probed over HTTP. Almost nobody is indexing what a telnet port on a number you picked has to say. That is not security by obscurity standing in for security; it is a system that simply does not advertise, on top of one that does not carry much to attack.
+
+**Easy to put anywhere.** Flash it, power it, five minutes and it is answering calls. It costs less than lunch and draws less than a night light, which means you put ten of them around doing ten different jobs instead of building one enormous system that does everything and belongs to nobody. A board in the shack, a board in the garage, a board at the repeater site.
+
+**Serial did not die.** [RS-232](https://en.wikipedia.org/wiki/RS-232) was standardised by the EIA in 1960 and still runs the console and management ports on network equipment, PLCs and test gear, and its asynchronous framing survives on nearly every microcontroller made since as a [TTL-level UART](https://en.wikipedia.org/wiki/Universal_asynchronous_receiver-transmitter). Sixty-five years on, the way a machine from 1982 talks is still the way you talk to the switch in the rack. That is why a [Commodore 64](https://en.wikipedia.org/wiki/Commodore_64) and a laptop bought this year can both call this board, and why the board can turn round and drive whatever is hanging off its own serial port.
+
+**It brings the old iron back.** Not emulated, not behind glass in a museum: a C64, an Atari 800, a VT220 on a desk, dialled in tonight, doing something real. Hardware with no browser and no future on the modern web gets a live system to call, over the same port it always used.
+
+**The name.** The micro sign is there because this runs on a microcontroller, and because microcomputers are what put computing in the hands of people who were never going to be given time on a mainframe. The [Altair 8800](https://en.wikipedia.org/wiki/Altair_8800) in 1975, then the Apple II, the PET and the TRS-80 in [1977](https://en.wikipedia.org/wiki/History_of_personal_computers#1977_and_the_emergence_of_the_%22Trinity%22), took the computer out of the raised-floor room that somebody else controlled and put it on a kitchen table. This is the same move, one more time, on a chip the size of a postage stamp. Where µ cannot be shown (PETSCII, hostnames, file names) it is written `unleashed`.
+
+The core has one dial-in port, 6 caller nodes, a busy line and a hidden sysop node. It also has connect-time terminal detection, user accounts with fill-in forms, guest access, screens, a line editor with history, paged output, a message bus between nodes, a chat room, the TTY effects library and a shell.
 
 Docs:
 
