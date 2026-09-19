@@ -188,6 +188,8 @@ Still open on serial: autoprobe (listen at each common speed and score framing e
 
 0.11.0: help menus, list colours, SYS and CALLS, the chat room command set with moderation and the vote to kick, messages, CONFIG. Host-tested, waiting for Rob to flash.
 
+**0.17.0 is specified in [NEXT.md](NEXT.md)**: the queued bugs, Wi-Fi at runtime plus Improv, and message bases, with measured size budgets and poker specified for the build after. Five questions in it are Rob's to answer before building starts.
+
 Queued for the next build (Rob's plan, in order):
 
 - Wi-Fi credentials move out of `include/secrets.h` and into `system.cfg` on the `userdata` partition, then Improv Wi-Fi Serial so a browser can provision a board over the same connection it flashed it with. This is the prerequisite for a web installer: today the SSID and passphrase are compiled in, so any published binary carries whoever built it's home network password, and a shared binary could never join anybody else's network anyway.
