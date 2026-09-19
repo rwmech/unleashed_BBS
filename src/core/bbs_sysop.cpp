@@ -258,7 +258,7 @@ bool Bbs::rowNodes(Session& s) {
         char h[24] = "(no handle)";
         if (o->user[0]) listHandle(h, sizeof(h), o->user, wide ? 20 : 10);
         bool hidden = o != &s && (!o->visible || o->lurk);
-        if (o->role == Role::Caller && o->loggedIn && !can(*o, PERM_NOLIMITS)) {
+        if (o->role == Role::Caller && o->loggedIn && !unlimited(*o)) {
             int32_t sec = secondsLeft(*o, now);
             if (sec == INT32_MAX) snprintf(left, sizeof(left), "--");
             else                  snprintf(left, sizeof(left), "%ld", static_cast<long>((sec + 59) / 60));
@@ -435,25 +435,60 @@ void Bbs::stopSnoop(Session& s, const char* why) {
 // ---------------------------------------------------------------------------
 // cmdTimeAdjust: TIME n +m / -m / m
 // ---------------------------------------------------------------------------
+// offClock: the words that mean "stop counting". "-1" is the one Rob asked
+// for, and it costs the ability to take a single minute off a caller, which
+// nobody has ever wanted to do.
+static bool offClock(const char* v) {
+    while (*v == ' ') ++v;
+    return !strcmp(v, "-1") || ieq(v, "off") || ieq(v, "none") ||
+           ieq(v, "unlimited") || ieq(v, "nolimit");
+}
+
 void Bbs::cmdTimeAdjust(Session& s, const char* arg) {
     Term& t = s.term;
     Timeline& tl = s.tl;
+    char buf2[64];
+
+    // TIME -1 with no node is about this line, which is how a sysop settling
+    // in for a long evening will type it.
+    if (offClock(arg)) {
+        s.noLimits  = true;
+        s.timeWarned = 0;
+        snprintf(buf2, sizeof(buf2), "Node %c is off the clock: no limit, no idle hangup.",
+                 nodeChar(s));
+        say(t, tl, Color::LightGreen, buf2);
+        return;
+    }
+
     const char* rest = nullptr;
     Session* o = nodeByArg(arg, &rest);
     if (!o || !rest || !*rest) {
-        say(t, tl, Color::LightRed, "Usage: TIME n +minutes");
+        say(t, tl, Color::LightRed, "Usage: TIME n +minutes, or TIME n -1 for no limit");
         return;
     }
     if (o->role != Role::Caller || !o->loggedIn) {
         say(t, tl, Color::LightRed, "No logged-in caller on that node.");
         return;
     }
+    // TIME n -1: that node stops being on the clock at all, until it hangs
+    // up. It is per call on purpose, so nobody is quietly unlimited for ever
+    // because of something typed one evening months ago.
+    if (offClock(rest)) {
+        o->noLimits   = true;
+        o->timeWarned = 0;
+        snprintf(buf2, sizeof(buf2), "Node %c is off the clock: no limit, no idle hangup.",
+                 nodeChar(*o));
+        say(t, tl, Color::LightGreen, buf2);
+        return;
+    }
+
     char* end = nullptr;
     long v = strtol(rest, &end, 10);
     if (end == rest) {
-        say(t, tl, Color::LightRed, "Usage: TIME n +minutes");
+        say(t, tl, Color::LightRed, "Usage: TIME n +minutes, or TIME n -1 for no limit");
         return;
     }
+    o->noLimits = false;                      // back on the clock if it was off
     long adj = static_cast<long>(o->timeAdjMin) + v;
     if (adj > 1440)  adj = 1440;
     if (adj < -1440) adj = -1440;

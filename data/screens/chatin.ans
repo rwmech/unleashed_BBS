@@ -1,11 +1,15 @@
 @CLS@[1;37m                                 ENTERING CHAT
 [0;34m  ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
-[0;37m  Everyone in the room sees everything you type. There is no
-[0;37m  private mode, and there is no history older than the buffer.
+[0;37m  Everyone in the room sees what you type. /p sends a line to
+[0;37m  one person, which is quieter but not private: it crosses the
+[0;37m  wire in the clear and the sysop has the log. Nothing here is
+[0;37m  kept once the buffer rolls over.
 
-[0;32m      ù [0;37m/s      who else is here
-[0;32m      ù [0;37m/help   the rest of the commands
-[0;32m      ù [0;37m/q      leave, or press ESC
+[0;32m      ù [0;37m/s        who else is here
+[0;32m      ù [0;37m/p n      a line to one person
+[0;32m      ù [0;37m/welcome  read this again
+[0;32m      ù [0;37m/help     the rest of the commands
+[0;32m      ù [0;37m/q        leave, or press ESC
 
 [0;34m  ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
 [0m

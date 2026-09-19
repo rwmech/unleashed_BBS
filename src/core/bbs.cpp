@@ -250,6 +250,26 @@ uint8_t Bbs::activeNodes() const {
 }
 
 // ---------------------------------------------------------------------------
+// publicNodes / publicBusy: what the board looks like from outside.
+//
+// The sysop line is a seventh line that is not there most of the time and
+// is hidden by default. When a sysop is on it and has made themselves
+// visible, leaving them out means a board with somebody on it advertises
+// itself as empty, so they count on both sides of the figure.
+// ---------------------------------------------------------------------------
+static bool sysopCounts(const Session& s) {
+    return s.st != SState::Free && s.visible && !s.lurk;
+}
+
+uint8_t Bbs::publicNodes() const {
+    return static_cast<uint8_t>(BBS_MAX_NODES + (sysopCounts(sysop_) ? 1 : 0));
+}
+
+uint8_t Bbs::publicBusy() const {
+    return static_cast<uint8_t>(activeNodes() + (sysopCounts(sysop_) ? 1 : 0));
+}
+
+// ---------------------------------------------------------------------------
 // tick: one pass of the cooperative scheduler
 // ---------------------------------------------------------------------------
 void Bbs::tick() {
@@ -445,6 +465,7 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
     s.lastRx        = now;
     s.closeAt       = 0;
     s.lingerAt      = 0;
+    s.noLimits      = false;
     s.fxStep        = 0;
     s.savedCps      = 0;
     s.pendingPrompt = false;
@@ -1408,7 +1429,7 @@ void Bbs::saveCallStats(Session& s, uint32_t now) {
     uint32_t mins = ((now - s.loginAt) / 1000u + 59u) / 60u;
     uint32_t day  = clk::dayKey(now);
     if (u.dayKey != day) { u.dayKey = day; u.dayMinutes = 0; }
-    if (s.role == Role::Caller && !can(s, PERM_NOLIMITS)) {
+    if (s.role == Role::Caller && !unlimited(s)) {
         uint32_t total = u.dayMinutes + mins;
         u.dayMinutes = static_cast<uint16_t>(total > 0xFFFF ? 0xFFFF : total);
     }
@@ -1561,7 +1582,17 @@ void Bbs::exitScreen(Session& s, uint32_t now) {
 // secondsLeft: the tighter of the per-call and per-day limits. Guests have
 // guest_minutes per call and no daily limit.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// unlimited: whether the clock applies to this call at all. Two ways to be
+// off it: the caller's rank says so for every call, or a sysop typed
+// TIME n -1 for this one.
+// ---------------------------------------------------------------------------
+bool Bbs::unlimited(const Session& s) const {
+    return can(s, PERM_NOLIMITS) || s.noLimits;
+}
+
 int32_t Bbs::secondsLeft(const Session& s, uint32_t now) const {
+    if (s.noLimits) return INT32_MAX;          // taken off the clock for tonight
     const SysConfig& c = syscfg::get();
     int32_t on   = static_cast<int32_t>((now - s.loginAt) / 1000u);
     int32_t adj  = static_cast<int32_t>(s.timeAdjMin) * 60;
@@ -1603,7 +1634,7 @@ void Bbs::checkTimers(Session& s, uint32_t now) {
                        s.st == SState::AskRegister || s.st == SState::AskKnowMore ||
                        s.st == SState::AnyKey || signingUp;
     uint32_t idleMin = syscfg::get().idleMinutes;           // 0 = shell never idles out
-    if (!can(s, PERM_NOLIMITS) && (login || idleMin)) {
+    if (!unlimited(s) && (login || idleMin)) {
         uint32_t limit = signingUp ? BBS_FORM_TIMEOUT_MS
                        : login     ? BBS_NAME_TIMEOUT_MS : idleMin * 60000u;
         uint32_t warn  = signingUp ? BBS_FORM_WARN_MS
@@ -1625,7 +1656,7 @@ void Bbs::checkTimers(Session& s, uint32_t now) {
         }
     }
 
-    if (s.loggedIn && s.role == Role::Caller && !can(s, PERM_NOLIMITS)) {
+    if (s.loggedIn && s.role == Role::Caller && !unlimited(s)) {
         int32_t left = secondsLeft(s, now);
         if (left <= 0) {
             hangup(s, "TIME LIMIT REACHED", now);
@@ -1856,7 +1887,7 @@ void Bbs::abortOutput(Session& s) {
 // ---------------------------------------------------------------------------
 int32_t Bbs::idleSecondsLeft(const Session& s, uint32_t now) const {
     uint32_t mins = syscfg::get().idleMinutes;
-    if (!mins || can(s, PERM_NOLIMITS) || s.role == Role::Busy) return -1;
+    if (!mins || unlimited(s) || s.role == Role::Busy) return -1;
     int32_t since = static_cast<int32_t>(now - s.lastInput);
     if (since < 0) since = 0;
     int32_t left = static_cast<int32_t>(mins * 60u) - since / 1000;

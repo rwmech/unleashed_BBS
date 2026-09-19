@@ -1953,10 +1953,16 @@ def test_screens():
     c.buf.clear()
     c.send(b"chat\r")
     ok &= check("joining chat plays the transition", c.wait_for(b"ENTERING CHAT", 6))
-    ok &= check("which says the room is not private",
-                b"private mode" in plain(c.buf))
+    ok &= check("which is honest that /p is not private either",
+                b"not private" in plain(c.buf))
     ok &= check("and the caller is in the room afterwards",
                 c.wait_for(b"/s who, /q quits", 6))
+    c.buf.clear()
+    c.send(b"/welcome\r")
+    ok &= check("/welcome replays the transition in the room",
+                c.wait_for(b"ENTERING CHAT", 6))
+    ok &= check("and does not say there is no private mode when /p exists",
+                b"private mode" not in plain(c.buf))
     c.send(b"/q")
     c.wait_for(b"Main", 6)
 

@@ -990,7 +990,7 @@ bool Bbs::rowDash(Session& s) {
         char idle[8];
         char left[12] = "--";
         fmtIdle(idle, sizeof(idle), now - n.lastInput);
-        if (n.role == Role::Caller && n.loggedIn && !can(n, PERM_NOLIMITS)) {
+        if (n.role == Role::Caller && n.loggedIn && !unlimited(n)) {
             int32_t sec = secondsLeft(n, now);
             if (sec != INT32_MAX) snprintf(left, sizeof(left), "%ld", static_cast<long>(sec > 0 ? (sec + 59) / 60 : 0));
         }
@@ -1484,7 +1484,7 @@ void Bbs::cmdTime(Session& s, const char* arg, uint32_t now) {
     t.text(tl, buf);
     t.nl(tl);
 
-    int32_t left = (s.role == Role::Caller && s.loggedIn && !can(s, PERM_NOLIMITS)) ? secondsLeft(s, now) : INT32_MAX;
+    int32_t left = (s.role == Role::Caller && s.loggedIn && !unlimited(s)) ? secondsLeft(s, now) : INT32_MAX;
     if (left == INT32_MAX) snprintf(buf, sizeof(buf), "Left     no limit");
     else                   snprintf(buf, sizeof(buf), "Left     %ld min", static_cast<long>((left + 59) / 60));
     t.text(tl, buf);

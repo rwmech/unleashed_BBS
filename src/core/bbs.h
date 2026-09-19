@@ -129,6 +129,7 @@ struct Session {
     uint32_t     lastRx      = 0;
     uint32_t     closeAt     = 0;
     uint32_t     lingerAt    = 0;    // earliest drop once the send-off is out
+    bool         noLimits    = false; // TIME n -1: no clock, no idle hangup
     uint8_t      fxStep      = 0;
     uint16_t     savedCps    = 0;
     bool         pendingPrompt = false;  // prompt once the screen finishes
@@ -257,6 +258,12 @@ public:
     void tick();
 
     uint8_t activeNodes() const;
+
+    // publicNodes / publicBusy: capacity and occupancy as the directory and
+    // anyone else outside should see them. The sysop's own line counts only
+    // while a sysop is on it and has chosen to be visible.
+    uint8_t publicNodes() const;
+    uint8_t publicBusy() const;
     static size_t sessionSize() { return sizeof(Session); }
 
     // key dispatch target (public for the Term callback trampoline)
@@ -447,6 +454,11 @@ private:
     void cmdSnoop(Session& s, const char* arg);
     void stopSnoop(Session& s, const char* why);
     void cmdTimeAdjust(Session& s, const char* arg);
+
+    // unlimited: this call is not on the clock, either because of the
+    // caller's rank or because a sysop said so for tonight. Defined in
+    // bbs.cpp: can() lives in bbs_util.h, which includes this header.
+    bool unlimited(const Session& s) const;
     void cmdUnban(Session& s, const char* arg);
     void cmdDrop(Session& s, uint32_t now);
     void cmdConfig(Session& s, const char* arg, uint32_t now);

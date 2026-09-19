@@ -787,6 +787,7 @@ void roomHelp(Session& s) {
     helpLine(s, "/e", "read yours");
     helpLine(s, "/t", "the time");
     helpLine(s, "/clear", "wipe the screen");
+    helpLine(s, "/welcome", "the screen you came in on");
     helpLine(s, "/q", "leave the room");
     if (s.perms) {
         helpLine(s, "/k n [why]", "kick a node out");
@@ -960,6 +961,15 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
     if (is("/?") || is("/help") || is("/h")) { roomHelp(s); return true; }
     if (is("/q") || is("/quit"))             { leave(s, "left the room"); return true; }
     if (is("/s") || is("/w") || is("/who"))  { who(s); return true; }
+    if (is("/welcome") || is("/intro")) {    // the screen you got on the way in
+        if (!Bbs::instance().showScreen(s, "chatin")) {
+            s.term.color(s.tl, g_cNotice);
+            s.term.text(s.tl, "This board has no chat welcome screen.");
+            s.term.nl(s.tl);
+        }
+        armInput(s);
+        return true;
+    }
 
     if (is("/t") || is("/time")) {
         char when[24] = "no clock";

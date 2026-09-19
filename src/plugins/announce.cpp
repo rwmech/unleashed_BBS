@@ -286,8 +286,8 @@ void buildBody() {
         "\"uptime\":%u,\"interval\":%u,\"token\":\"%s\"%s}",
         BBS_VERSION, name, owner, desc, host,
         static_cast<unsigned>(g_public),
-        static_cast<unsigned>(BBS_MAX_NODES),
-        static_cast<unsigned>(bbs.activeNodes()),
+        static_cast<unsigned>(bbs.publicNodes()),
+        static_cast<unsigned>(bbs.publicBusy()),
         static_cast<unsigned>(plat::millis() / 1000u),
         static_cast<unsigned>(g_interval),
         token, extra));
