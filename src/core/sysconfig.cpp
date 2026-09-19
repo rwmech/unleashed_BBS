@@ -178,6 +178,7 @@ void keyValue(Ctx& c, char* key, char* val) {
         if (validHostname(val)) copyStr(g.hostname, sizeof(g.hostname), val);
         else problem(c, "hostname must be a-z 0-9 - (1..31):", val);
     }
+    else if (!strcmp(key, "board_name"))             copyStr(g.boardName, sizeof(g.boardName), val);
     else if (!strcmp(key, "tz"))                     copyStr(g.tz, sizeof(g.tz), val);
     else if (!strcmp(key, "ntp_server"))             copyStr(g.ntpServer, sizeof(g.ntpServer), val);
     else if (!strcmp(key, "sysop_password"))         copyStr(g.sysopPass, sizeof(g.sysopPass), val);

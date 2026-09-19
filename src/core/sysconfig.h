@@ -86,6 +86,10 @@ extern const PermName kPermNames[];
 extern const uint8_t  kPermCount;
 
 struct SysConfig {
+    // What this board calls itself, as opposed to what the software is
+    // called. Empty falls back to the software name, so a board that has
+    // never been told still introduces itself as something.
+    char     boardName[41] = "";
     char     hostname[32]  = BBS_HOSTNAME;
     char     tz[48]        = BBS_DEFAULT_TZ;
     char     ntpServer[64] = BBS_DEFAULT_NTP;

@@ -107,6 +107,9 @@ constexpr const char kName[]      = "announce";
 constexpr uint8_t    kMaxServers  = 4;      // post to this many directories
 constexpr uint8_t    kUrlMax      = 96;
 constexpr uint8_t    kNameMax     = 40;
+constexpr uint16_t   kNudgeDef    = 60;     // seconds: shortest gap a caller change may force
+constexpr uint16_t   kReplyMax    = 768;    // enough for the status line, headers and a small body
+constexpr size_t     kTokenMin    = 16;     // shortest token worth believing
 constexpr uint8_t    kDescMax     = 120;
 constexpr uint16_t   kBodyMax     = 512;    // the payload never gets near this
 constexpr uint32_t   kTimeoutMs   = 10000;  // a directory has this long to answer
@@ -133,6 +136,14 @@ char     g_host[kUrlMax]         = {};     // what to advertise, empty = our add
 char     g_token[41]             = {};
 uint16_t g_public   = BBS_PORT;
 uint16_t g_interval = kIntervalDef;
+uint32_t g_lastRound = 0;                  // when the last round of posts began
+uint16_t g_nudgeSecs = kNudgeDef;          // 0 = never push on a caller change
+
+// The reply is read across as many passes as it takes. A single recv is
+// not a message: TCP will happily hand over half a header, and parsing
+// that half gives you half a token, which is exactly what happened.
+char     g_reply[kReplyMax] = {};
+uint16_t g_replyLen = 0;
 bool     g_activity = false;               // send call counts, off unless asked
 
 // The send state machine. One directory at a time; the whole thing is
@@ -210,6 +221,10 @@ void readKey(void* ctx, const char* key, const char* value) {
     else if (!strcmp(key, "public_port")) {
         long p = strtol(value, nullptr, 10);
         if (p >= 1 && p <= 65535) g_public = static_cast<uint16_t>(p);
+    }
+    else if (!strcmp(key, "nudge_seconds")) {
+        long v = strtol(value, nullptr, 10);
+        if (v >= 0 && v <= 3600) g_nudgeSecs = static_cast<uint16_t>(v);
     }
     else if (!strcmp(key, "interval")) {
         long m = strtol(value, nullptr, 10);
@@ -359,6 +374,25 @@ void saveToken() {
 }
 
 // ---------------------------------------------------------------------------
+// nudge: somebody arrived or left, so the caller count on the directory is
+// now wrong. Bring the next heartbeat forward rather than leaving a board
+// advertising "nobody on" for the rest of the interval.
+//
+// Never sooner than kNudgeGapMs after the last round. Six callers arriving
+// together is one update, not six, and a directory that rate limits at
+// thirty seconds would refuse the rest anyway.
+// ---------------------------------------------------------------------------
+void nudge(uint32_t now) {
+    if (!g_count || !g_nudgeSecs || g_stage != Stage::Idle) return;
+    uint32_t soonest = g_lastRound + static_cast<uint32_t>(g_nudgeSecs) * 1000u;
+    if (static_cast<int32_t>(now - soonest) >= 0) soonest = now;   // already allowed
+    if (static_cast<int32_t>(soonest - g_nextRun) < 0) g_nextRun = soonest;
+}
+
+void onLogin(Session& s)  { (void)s; nudge(plat::millis()); }
+void onLogoff(Session& s) { (void)s; nudge(plat::millis()); }
+
+// ---------------------------------------------------------------------------
 // codeMeans: an HTTP status in words. A sysop looking at a dashboard should
 // not have to know what a 429 is to understand that their board is fine and
 // simply talking too often.
@@ -390,6 +424,8 @@ void finish(const char* how, bool ok) {
 // startPost: open a non-blocking connection to one directory
 void startPost(uint32_t now) {
     Server& s = g_servers[g_at];
+    g_replyLen = 0;                            // this exchange starts with nothing
+    g_reply[0] = '\0';
     if (!s.addr && !resolve(s)) { finish(s.result, false); return; }
 
     g_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -455,27 +491,50 @@ void service(uint32_t now) {
     }
 
     if (g_stage == Stage::Reading) {
-        char buf[256];
-        ssize_t n = recv(g_fd, buf, sizeof(buf) - 1, 0);
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
-        if (n <= 0) { finish("no reply", false); return; }
-        buf[n] = '\0';
+        // Keep reading until the headers are complete, the far end hangs up
+        // or the buffer is full. A recv boundary is not a message boundary,
+        // and a header cut in half parses as a shorter value rather than as
+        // an error: a 32 character token arriving as "1e94" looks perfectly
+        // valid, never matches again, and mints a fresh listing on every
+        // heartbeat for ever.
+        while (g_replyLen + 1 < kReplyMax) {
+            ssize_t n = recv(g_fd, g_reply + g_replyLen,
+                             static_cast<size_t>(kReplyMax - 1 - g_replyLen), 0);
+            if (n > 0) {
+                g_replyLen = static_cast<uint16_t>(g_replyLen + n);
+                g_reply[g_replyLen] = '\0';
+                if (strstr(g_reply, "\r\n\r\n")) break;   // headers are all here
+                continue;
+            }
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                // Nothing more yet. Come back next tick unless what we have
+                // is already a complete set of headers.
+                if (strstr(g_reply, "\r\n\r\n")) break;
+                return;
+            }
+            break;                                  // closed, or an error
+        }
+
+        if (!g_replyLen) { finish("no reply", false); return; }
+        g_reply[g_replyLen] = '\0';
 
         int code = 0;                              // "HTTP/1.1 200 OK"
-        if (!strncmp(buf, "HTTP/1.", 7) && n > 12) code = atoi(buf + 9);
+        if (!strncmp(g_reply, "HTTP/1.", 7) && g_replyLen > 12) code = atoi(g_reply + 9);
 
-        header(buf, "X-Seen-Address:", g_seenIp, sizeof(g_seenIp));
-        header(buf, "X-Listing-State:", g_state, sizeof(g_state));
+        header(g_reply, "X-Seen-Address:", g_seenIp, sizeof(g_seenIp));
+        header(g_reply, "X-Listing-State:", g_state, sizeof(g_state));
 
         char field[24];
-        if (header(buf, "X-Listing-Public-In:", field, sizeof(field)))
+        if (header(g_reply, "X-Listing-Public-In:", field, sizeof(field)))
             g_publicIn = static_cast<uint32_t>(strtoul(field, nullptr, 10));
 
         // The directory issues a token the first time and the board keeps it
         // from then on. Saving it is what makes the listing survive a reboot.
+        // Only a whole one: a short read must never overwrite a good token
+        // with a fragment of a new one.
         char issued[sizeof(g_token)];
-        if (header(buf, "X-Listing-Token:", issued, sizeof(issued)) &&
-            issued[0] && strcmp(issued, g_token)) {
+        if (header(g_reply, "X-Listing-Token:", issued, sizeof(issued)) &&
+            strlen(issued) >= kTokenMin && strcmp(issued, g_token)) {
             snprintf(g_token, sizeof(g_token), "%.40s", issued);
             saveToken();
         }
@@ -489,8 +548,9 @@ void tick(uint32_t now) {
     if (g_at < g_count) { startPost(now); return; }          // more directories to do
     if (!g_count || !g_nextRun) return;
     if (static_cast<int32_t>(now - g_nextRun) < 0) return;
-    g_nextRun = now + static_cast<uint32_t>(g_interval) * 60000u;
-    g_at      = 0;                                           // round again
+    g_nextRun  = now + static_cast<uint32_t>(g_interval) * 60000u;
+    g_lastRound = now;
+    g_at       = 0;                                          // round again
 }
 
 // ---------------------------------------------------------------------------
@@ -606,14 +666,19 @@ bool start(Bbs& bbs) {
     g_state[0]   = '\0';
     g_publicIn   = 0;
     g_activity   = false;
+    g_nudgeSecs  = kNudgeDef;
     g_public     = BBS_PORT;
     g_interval   = kIntervalDef;
+    // The board already has a name in system.cfg. Asking a sysop to type
+    // it again in the plugin is how the two end up disagreeing.
+    snprintf(g_bbsName, sizeof(g_bbsName), "%.*s", kNameMax, syscfg::get().boardName);
     readServers("http://unleashedbbs.net/announce");         // the default, replaceable
     plugins::forEachKey(g_index, readKey, nullptr);
 
     for (uint8_t i = 0; i < g_count; ++i) resolve(g_servers[i]);   // quiet board, safe to block
-    g_at      = 0;                                                 // first heartbeat right away
-    g_nextRun = plat::millis() + static_cast<uint32_t>(g_interval) * 60000u;
+    g_at       = 0;                                                // first heartbeat right away
+    g_lastRound = plat::millis();
+    g_nextRun  = plat::millis() + static_cast<uint32_t>(g_interval) * 60000u;
     plat::log("announce: %u director%s, every %u min", static_cast<unsigned>(g_count),
               g_count == 1 ? "y" : "ies", static_cast<unsigned>(g_interval));
     return true;
@@ -665,6 +730,10 @@ const PluginSetting kSettings[] = {
     // Comma separated, so one board can be listed in several directories.
     { "servers",        "Directory", PS_TEXT,  0, 0,     90 },
     { "interval",       "Every min", PS_NUM,   1, 1440,  4 },
+    // A caller arriving makes the directory's count wrong at once, so the
+    // board pushes an update. This is the shortest gap between pushes;
+    // 0 turns them off and leaves only the timed heartbeat.
+    { "nudge_seconds",  "Push secs", PS_NUM,   0, 3600,  4 },
     { "share_activity", "Activity",  PS_YESNO, 0, 0,     4 },
     // Issued by the directory and kept so a listing survives a reflash.
     { "token",          "Token",     PS_TEXT,  0, 0,     40 },
@@ -683,6 +752,7 @@ void setting(const char* key, char* out, size_t n) {
     else if (!strcmp(key, "token"))       snprintf(out, n, "%s", g_token);
     else if (!strcmp(key, "public_port")) snprintf(out, n, "%u", static_cast<unsigned>(g_public));
     else if (!strcmp(key, "interval"))    snprintf(out, n, "%u", static_cast<unsigned>(g_interval));
+    else if (!strcmp(key, "nudge_seconds")) snprintf(out, n, "%u", static_cast<unsigned>(g_nudgeSecs));
     else if (!strcmp(key, "share_activity")) snprintf(out, n, "%s", g_activity ? "yes" : "no");
     else if (!strcmp(key, "servers")) {
         // Rebuilt from the parsed list rather than echoed, so what the form
@@ -708,8 +778,8 @@ extern const Plugin kAnnouncePlugin = {
     stop,
     tick,
     nullptr,                 // onConnect
-    nullptr,                 // onLogin
-    nullptr,                 // onLogoff
+    onLogin,                 // a caller arrived: the count on the directory is stale
+    onLogoff,                // and again when they leave
     nullptr,                 // onKey
     status,
     kCommands,

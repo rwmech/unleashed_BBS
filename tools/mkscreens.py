@@ -19,7 +19,9 @@ Purpose:      Generates the stock µnleashed BBS display files in data/screens/:
 
                  Layout rules: PETSCII and ASCII lines stay under 40 columns
                  (a 40th character auto-wraps on a C64). ANSI art is 80 columns.
-                 @BBS@ prints the name with a real µ on ANSI and "u" elsewhere.
+                 @BBS@ is the software and prints the name with a real µ on
+                 ANSI, "u" elsewhere. @BOARD@ is what this board calls itself
+                 (board_name in system.cfg), falling back to @BBS@ when unset.
 
 Usage:        python3 tools/mkscreens.py
 
@@ -252,8 +254,9 @@ def make_welcome_ans():
           + sgr("0;32") + b" of " + sgr("1;33") + b"@NODES@"
           + b"      " + sgr("1;36") + bytes([BULLET]) + sgr("0;32") + b" Terminal " + sgr("1;33") + b"@TERM@"
           + b"      " + sgr("1;36") + bytes([BULLET]) + sgr("0;32") + b" " + sgr("1;33") + b"@DATE@ @TIME@\r\n")
-    b += (b"    " + sgr("1;36") + bytes([BULLET]) + b" " + sgr("1;37") + b"@BBS@" + sgr("0;37")
-          + b" v@VER@  " + sgr("0;36") + b"a BBS that lives on a microcontroller\r\n")
+    b += (b"    " + sgr("1;36") + bytes([BULLET]) + b" " + sgr("1;33") + b"@BOARD@"
+          + sgr("0;36") + b"  running " + sgr("0;37") + b"@BBS@ v@VER@"
+          + sgr("0;36") + b" on a microcontroller\r\n")
     b += sgr("0;34") + b"  " + bytes([H_DOUBLE]) * 76 + b"\r\n"
     b += sgr("1;30") + b" " * ((80 - len(COPY80)) // 2) + COPY80.encode() + b"\r\n"
     b += sgr("0;37") + b"    Connecting you @SPIN:900@" + sgr("1;32") + b"unleashed" + sgr("0") + b"\r\n"
@@ -276,6 +279,7 @@ def make_welcome_seq():
     s += pet("lgreen", " Node ", "yellow", "@NODE@", "lgreen", " of ", "yellow", "@NODES@",
              "lgreen", "   ", "yellow", "@TERM@\n")
     s += pet("lgreen", " ", "yellow", "@DATE@ @TIME@\n")
+    s += pet("yellow", " @BOARD@\n")
     s += pet("white", " @BBS@", "grey", " v@VER@\n")
     s += pet("grey", " " + COPY40 + "\n")
     s += pet_rule("cyan")
@@ -296,6 +300,7 @@ def make_welcome_asc():
         "-" * 38,
         " Node @NODE@ of @NODES@   Term @TERM@",
         " @DATE@ @TIME@",
+        " @BOARD@",
         " @BBS@ v@VER@",
         " " + COPY40,
         "-" * 38,
@@ -346,7 +351,7 @@ def make_busy_seq():
     s = bytearray()
     s += pet("clr", "lower", "lock", "cr")
     s += pet_rule("red")
-    s += pet("white", " @BBS@\n")
+    s += pet("white", " @BOARD@\n")
     s += pet_rule("red")
     s += pet("yellow", " Sorry, all @NODES@ lines are busy.\n")
     s += pet("cyan", " Every node is unleashed right now.\n")
@@ -360,7 +365,7 @@ def make_busy_seq():
 # ==========================================================================
 GOODBYE_ASC = """--------------------------------------
 Stay unleashed, @USER@.
-@BBS@ node @NODE@ is free again.
+@BOARD@ node @NODE@ is free again.
 @DATE@ @TIME@@DELAY:400@
 (C) 2026 Robert Mech  GPLv2+
 """
@@ -370,7 +375,7 @@ def make_goodbye_ans():
     b = bytearray()
     b += sgr("0;34") + bytes([H_DOUBLE]) * 60 + b"\r\n"
     b += sgr("1;36") + b"Stay unleashed, " + sgr("1;33") + b"@USER@" + sgr("1;36") + b".\r\n"
-    b += sgr("1;37") + b"@BBS@" + sgr("0;36") + b" node @NODE@ is free again.\r\n"
+    b += sgr("1;37") + b"@BOARD@" + sgr("0;36") + b" node @NODE@ is free again.\r\n"
     b += sgr("0;37") + b"@DATE@ @TIME@@DELAY:400@\r\n"
     b += sgr("1;30") + COPY80.encode() + sgr("0") + b"\r\n"
     return bytes(b)

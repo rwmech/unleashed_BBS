@@ -596,6 +596,7 @@ constexpr const char kLevels[] = "all|users|staff|co2|co1|sysop";
 constexpr const char kMasked[] = "********";       // shown for a password already set
 
 const CfgField kBoard[] = {
+    { "board_name",        "Board",    CK_TEXT, 0, 0, 40 },
     { "hostname",          "Hostname", CK_TEXT, 0, 0, 31 },
     { "tz",                "Timezone", CK_TEXT, 0, 0, 40 },
     { "ntp_server",        "NTP",      CK_TEXT, 0, 0, 40 },
@@ -704,7 +705,8 @@ bool cfgFileValue(const char* section, const char* key, char* out, size_t n) {
 // file does not mention. Keeps the form honest about defaults.
 void cfgLiveValue(const char* key, char* out, size_t n) {
     const SysConfig& c = syscfg::get();
-    if      (!strcmp(key, "hostname"))              snprintf(out, n, "%.*s", static_cast<int>(n) - 1, c.hostname);
+    if      (!strcmp(key, "board_name"))            snprintf(out, n, "%s", c.boardName);
+    else if (!strcmp(key, "hostname"))              snprintf(out, n, "%.*s", static_cast<int>(n) - 1, c.hostname);
     else if (!strcmp(key, "tz"))                    snprintf(out, n, "%.*s", static_cast<int>(n) - 1, c.tz);
     else if (!strcmp(key, "ntp_server"))            snprintf(out, n, "%.*s", static_cast<int>(n) - 1, c.ntpServer);
     else if (!strcmp(key, "idle_minutes"))          snprintf(out, n, "%u", c.idleMinutes);

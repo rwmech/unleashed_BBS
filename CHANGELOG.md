@@ -24,6 +24,12 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.16.0, 2026-09-19
+
+- **Fixed: the board kept only the first few characters of its directory token.** The reply was read with a single `recv` into a 256 byte buffer and parsed immediately, but a TCP read boundary is not a message boundary: the 32 character token arrived split across packets and the board stored the four characters that had landed. It then never matched that token again, so every heartbeat minted a brand new listing. One board produced ninety of them in fourteen hours. The reply is now accumulated until the headers are complete, and a token shorter than 16 characters is refused outright rather than overwriting a good one.
+- The board has a name of its own. `board_name` in `system.cfg`, `@BOARD@` in screens, and the announce plugin starts from it instead of asking you to type it twice. `@BBS@` still means the software, so the credit line stays true. Welcome and goodbye now lead with the board.
+- A caller arriving or leaving pushes an update to the directory rather than leaving it up to ten minutes out of date. `nudge_seconds` (default 60, 0 disables) is the shortest gap between pushes, so six callers arriving together is one update.
+
 ## 0.15.2, 2026-09-19
 
 - **Fixed: refresh screens showed `??nleashed BBS`.** The row truncation added in 0.14.0 walked the text a byte at a time, so the micro sign's two bytes each went through the charset map on their own and each came back as `?`. Counting columns is the terminal layer's job now (`Term::textCols`), because it is the only thing that knows which bytes make a character.

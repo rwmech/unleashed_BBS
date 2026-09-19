@@ -36,6 +36,7 @@
 #include "screens.h"
 #include "fx.h"
 #include "clock.h"
+#include "sysconfig.h"
 #include "../config.h"
 #include "../platform/platform.h"
 #include <cstring>
@@ -154,6 +155,10 @@ void ScreenPlayer::runToken(Term& t, Timeline& tl, const Vars& v) {
     char num[8];
 
     if (!strcmp(tok_, "BBS"))        { t.text(tl, BBS_NAME); }
+    else if (!strcmp(tok_, "BOARD")) {          // this board, not the software
+        const char* n = syscfg::get().boardName;
+        t.text(tl, n[0] ? n : BBS_NAME);
+    }
     else if (!strcmp(tok_, "VER"))   { t.text(tl, BBS_VERSION); }
     else if (!strcmp(tok_, "NODE"))  { snprintf(num, sizeof(num), "%u", v.node);  t.text(tl, num); }
     else if (!strcmp(tok_, "NODES")) { snprintf(num, sizeof(num), "%u", v.nodes); t.text(tl, num); }

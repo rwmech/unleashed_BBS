@@ -1727,6 +1727,9 @@ def test_privacy():
 
 
 
+DIRECTORY_TOKEN = "a1b2c3d4e5f60718293a4b5c6d7e8f90"    # 32 chars, like the real one
+
+
 def test_announce():
     """The board lists itself, sends nothing about callers, and can prove it."""
     print("Directory listing")
@@ -1766,8 +1769,16 @@ def test_announce():
                     break
                 body += more
             got.append((head, body))
-            c.sendall(b"HTTP/1.1 200 OK\r\nX-Seen-Address: 203.0.113.9\r\n"
-                      b"Content-Length: 2\r\nConnection: close\r\n\r\nok")
+            reply = (b"HTTP/1.1 200 OK\r\n"
+                     b"X-Seen-Address: 203.0.113.9\r\n"
+                     b"X-Listing-State: pending\r\n"
+                     b"X-Listing-Token: " + DIRECTORY_TOKEN.encode() + b"\r\n"
+                     b"Content-Length: 2\r\nConnection: close\r\n\r\nok")
+            # Split four characters into the token, on purpose.
+            cut = reply.index(DIRECTORY_TOKEN.encode()) + 4
+            c.sendall(reply[:cut])
+            time.sleep(0.3)
+            c.sendall(reply[cut:])
         finally:
             c.close()
             srv.close()
@@ -1796,6 +1807,21 @@ def test_announce():
     s.wait_for(b"Sending now", 4)
     th.join(15)
     ok &= check("the directory got a heartbeat", len(got) == 1)
+
+    # A reply arriving in pieces must not leave the board holding half a
+    # token. This is the bug that produced ninety listings for one board.
+    s.pump(1.5)                      # the reply lands on a later plugin tick
+    s.buf.clear()
+    s.send(b"announce test\r")
+    s.wait_for(b'"software"', 5)
+    payload = plain(s.buf).decode("latin-1", "replace")
+    import re as _re
+    m = _re.search(r'"token":"([^"]*)"', payload)
+    held = m.group(1) if m else ""
+    if held != DIRECTORY_TOKEN:
+        print(f"        (board holds {held!r}, expected {DIRECTORY_TOKEN!r})")
+    ok &= check("a token split across packets is kept whole",
+                held == DIRECTORY_TOKEN)
     if got:
         head, body = got[0]
         ok &= check("it is a POST with a JSON body",
