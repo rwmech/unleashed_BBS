@@ -52,11 +52,54 @@ inline bool ieq(const char* a, const char* b) {
     return *a == *b;
 }
 
-// nodeChar: '1'..'6' for callers, 'S' sysop node, 'B' busy line
-inline char nodeChar(const Session& s) {
-    if (s.role == Role::Sysop) return 'S';
-    if (s.role == Role::Busy)  return 'B';
-    return static_cast<char>('0' + s.id);
+// ---------------------------------------------------------------------------
+// How a node is written down.
+//
+// This used to be one function returning one character: 'S' for the sysop,
+// 'B' for the busy line, otherwise '0' + id. That worked while there were
+// six nodes and silently produced ':' for node 10 and ';' for node 11 the
+// moment there were sixteen, so it is gone rather than fixed in place.
+//
+// Two forms, because the two uses want different things:
+//
+//   nodeName   "1", "16", "S", "B"     for prose: "Node 16 is not taking pages"
+//   nodeLabel  " 1", "16", " S", " B"  for lists, where a fixed column has to
+//                                      line up under its heading
+//
+// Digits, not letters, for 10 and up: nodeByArg parses a node argument with
+// strtol, so the number in a list is the number you type at the prompt. A
+// list showing 'c' for the node you have to call 12 is a bug wearing a
+// disguise.
+//
+// Both return by value. NodeStr is three bytes, so this costs nothing and
+// needs no caller-supplied buffer; pass `.t` to printf-family functions,
+// since varargs will not apply the conversion operator for you.
+// ---------------------------------------------------------------------------
+struct NodeStr {
+    char t[3];
+    operator const char*() const { return t; }
+};
+
+// nodeNum: a bare node number, for a stored record that has the number but
+// not the Session it came from (the caller log keeps CallRec::node).
+inline NodeStr nodeNum(uint8_t id) {
+    NodeStr r{};
+    if (id >= 10) { r.t[0] = static_cast<char>('0' + id / 10);
+                    r.t[1] = static_cast<char>('0' + id % 10); }
+    else          { r.t[0] = static_cast<char>('0' + id); }
+    return r;
+}
+
+inline NodeStr nodeName(const Session& s) {
+    if (s.role == Role::Sysop) { NodeStr r{}; r.t[0] = 'S'; return r; }
+    if (s.role == Role::Busy)  { NodeStr r{}; r.t[0] = 'B'; return r; }
+    return nodeNum(s.id);
+}
+
+inline NodeStr nodeLabel(const Session& s) {
+    NodeStr r = nodeName(s);
+    if (r.t[1] == '\0') { r.t[1] = r.t[0]; r.t[0] = ' '; }   // right align in two columns
+    return r;
 }
 
 // fmtIdle: mm:ss, minutes capped at 99

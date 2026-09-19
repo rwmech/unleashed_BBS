@@ -608,8 +608,8 @@ void Bbs::closeSession(Session& s, const char* why, uint32_t now) {
     s.st   = SState::Free;
 
     plat::HeapStats h = plat::heap();
-    plat::log("bbs: node %c HANGUP (%s)  nodes %u/%u  heap free %u",
-              nodeChar(s), why, activeNodes(), BBS_MAX_NODES, static_cast<unsigned>(h.freeBytes));
+    plat::log("bbs: node %s HANGUP (%s)  nodes %u/%u  heap free %u",
+              nodeName(s).t, why, activeNodes(), BBS_MAX_NODES, static_cast<unsigned>(h.freeBytes));
 }
 
 // ---------------------------------------------------------------------------
@@ -840,7 +840,7 @@ void Bbs::onDetected(Session& s, uint32_t now) {
     s.term.setIacEscape(telnet);
     if (s.term.isAnsi() && s.tn.hasSize()) s.term.setGeometry(s.tn.cols(), s.tn.rows());
 
-    plat::log("bbs: node %c %s (telnet %s)", nodeChar(s), s.term.name(), telnet ? "on" : "off");
+    plat::log("bbs: node %s %s (telnet %s)", nodeName(s).t, s.term.name(), telnet ? "on" : "off");
     for (uint8_t i = 0; i < plugins::count(); ++i) {
         const Plugin* p = plugins::at(i);
         if (plugins::running(i) && p->onConnect) p->onConnect(s);
@@ -1489,7 +1489,7 @@ void Bbs::drawPrompt(Session& s) {
     t.reset(tl);
     t.nl(tl);
     t.color(tl, Color::LightBlue);
-    snprintf(buf, sizeof(buf), "[%c] ", nodeChar(s));
+    snprintf(buf, sizeof(buf), "[%s] ", nodeName(s).t);
     t.text(tl, buf);
     t.color(tl, Color::Yellow);
     t.text(tl, s.role == Role::Sysop ? "Sysop" : "Main");
@@ -1516,7 +1516,7 @@ void Bbs::armPrompt(Session& s) {
 }
 
 void Bbs::hangup(Session& s, const char* msg, uint32_t now) {
-    plat::log("bbs: node %c hangup: %s", nodeChar(s), msg);
+    plat::log("bbs: node %s hangup: %s", nodeName(s).t, msg);
     s.scr.close();
     s.pendingTail = false;
     s.list = ListKind::None;
@@ -1542,7 +1542,7 @@ void Bbs::hangup(Session& s, const char* msg, uint32_t now) {
 // goodbye: logoff screen, line noise, NO CARRIER
 // ---------------------------------------------------------------------------
 void Bbs::goodbye(Session& s, uint32_t now) {
-    plat::log("bbs: node %c logoff", nodeChar(s));
+    plat::log("bbs: node %s logoff", nodeName(s).t);
     s.term.reset(s.tl);
     s.term.nl(s.tl);
     exitScreen(s, now);
@@ -1796,7 +1796,7 @@ void Bbs::post(Session& to, BusKind kind, const Session* from, const char* text)
     m.fromNode = (from && from->role == Role::Caller) ? from->id : 0;
     if (from) strncpy(m.from, from->user, BBS_USER_MAX);
     strncpy(m.text, text, BBS_LINE_MAX);
-    if (!to.mb.push(m)) plat::log("bbs: node %c mailbox full, oldest dropped", nodeChar(to));
+    if (!to.mb.push(m)) plat::log("bbs: node %s mailbox full, oldest dropped", nodeName(to).t);
 }
 
 // ---------------------------------------------------------------------------

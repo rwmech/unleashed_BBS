@@ -346,7 +346,7 @@ char rankBracket(const Session& s) {
 }
 
 void tag(const Session& s, char* out, size_t n) {
-    snprintf(out, n, "#%c:%.20s%c", nodeChar(s), s.user, rankBracket(s));
+    snprintf(out, n, "#%s:%.20s%c", nodeName(s).t, s.user, rankBracket(s));
 }
 
 // chatPrompt: no prompt character in the room, just the cursor waiting at
@@ -1065,7 +1065,7 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
                 tell(s, Color::Grey, buf);
             }
             s.term.color(s.tl, g_cPriv);
-            snprintf(buf, sizeof(buf), ">to #%c %.40s", nodeChar(*to), rest);
+            snprintf(buf, sizeof(buf), ">to #%s %.40s", nodeName(*to).t, rest);
             s.term.text(s.tl, buf);
             s.term.nl(s.tl);
         }

@@ -22,7 +22,9 @@
  *
  *                  Every change rewrites the file through a temp file and a rename, so a
  *                  power cut leaves either the old or the new file. Unknown keys are not
- *                  kept. Onboard storage allows about 100 accounts (max_users).
+ *                  kept. max_users caps the file at 250 accounts; the userdata
+ *                  partition has room for far more, but the list indices are
+ *                  uint8_t. See BBS_MAX_USERS in config.h.
  *
  * Design:       One record is read at a time, so memory use does not grow with the
  *               number of accounts. Every change rewrites the file through a temp file

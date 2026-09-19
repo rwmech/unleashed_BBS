@@ -51,14 +51,17 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "0.16.1"
+#define BBS_VERSION         "0.17.0"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // ---------------------------------------------------------------------------
-// Network: one dial-in port, 6 caller nodes, a busy line, a hidden sysop node
+// Network: one dial-in port, 16 caller nodes, a busy line, a hidden sysop node
 // ---------------------------------------------------------------------------
 #define BBS_PORT            6400
-#define BBS_MAX_NODES       6        // caller nodes (DDial-style 6 lines)
+// Sixteen caller lines. A Session is ~5.7 KB, so sixteen plus the busy
+// line and the sysop is ~103 KB of the 320 KB static budget. Past about
+// 24 would want PSRAM, which the WROOM does not have.
+#define BBS_MAX_NODES       16
 #define BBS_LISTEN_BACKLOG  4
 
 // TCP keepalive on every caller socket: a line whose far end vanished
@@ -143,7 +146,18 @@
 // User accounts (users.txt on the storage partition, in the backup zip)
 // ---------------------------------------------------------------------------
 #define BBS_USERS_FILE      "users.txt"
-#define BBS_MAX_USERS       100      // system.cfg max_users; more needs the SD card plugin
+// Accounts never move to the SD card: they are the one thing that has to
+// survive a card failing, and LittleFS is power-fail safe in a way FAT is
+// not. userdata is 608 KB and a UserRec is about 450 bytes, so the space is
+// there for roughly 1,380 of them.
+//
+// The cap is 250 anyway, and it is an index width, not a space limit.
+// users::count, users::at, Session::ulSel/ulTop/ulCount and Session::listIdx
+// are all uint8_t, and listIdx is the row counter in every list on the board.
+// Widening that is mechanical but it touches every list, so it is not a thing
+// to do in the same build as a partition move. Raising this later costs no
+// erase and no reflash: the space is already allocated.
+#define BBS_MAX_USERS       250      // system.cfg max_users; see above
 #define BBS_PROFILE_MAX     148      // 4 rows of 37 columns on a C64
 #define BBS_PASS_MIN        4
 #define BBS_PASS_MAX        32

@@ -97,7 +97,15 @@ def bbs_version():
     return m.group(1) if m else "?"
 
 
+def config_num(name, fallback):
+    """A numeric #define from src/config.h, so the suite follows the build."""
+    src = (ROOT / "src" / "config.h").read_text()
+    m = re.search(r'#define\s+' + name + r'\s+(\d+)', src)
+    return int(m.group(1)) if m else fallback
+
+
 BBS_VERSION = bbs_version()
+MAX_NODES   = config_num("BBS_MAX_NODES", 6)
 PASSWORD = cfg_value("sysop_password")
 CO1 = cfg_value("cosysop1_password")
 CO2 = cfg_value("cosysop2_password")
@@ -1139,19 +1147,20 @@ def test_idle_login():
 
 
 def test_busy():
-    print("Busy line")
-    callers = [Caller(ansi=True) for _ in range(6)]
-    time.sleep(0.5)
-    seventh = Caller(ansi=True)
-    ok = check("7th caller gets the busy screen", seventh.wait_for(b"lines are busy", 5))
-    ok &= check("countdown shown", seventh.wait_for(b"Disconnecting in", 5))
+    print("Busy line (%d nodes)" % MAX_NODES)
+    callers = [Caller(ansi=True) for _ in range(MAX_NODES)]
+    time.sleep(0.5 + MAX_NODES * 0.05)       # every node has to finish detection
+    over = Caller(ansi=True)                 # the caller past the last node
+    ok = check("the caller past the last node gets the busy screen",
+               over.wait_for(b"lines are busy", 5))
+    ok &= check("countdown shown", over.wait_for(b"Disconnecting in", 5))
     t0 = time.time()
-    eighth = Caller()
-    ok &= check("8th caller gets BUSY", eighth.wait_for(b"BUSY", 3))
-    ok &= check("8th caller dropped at once", eighth.wait_closed(2))
-    ok &= check("busy line hangs up after countdown", seventh.wait_for(b"NO CARRIER", 13))
+    eighth = Caller()                        # and the one after that is refused
+    ok &= check("the next caller gets BUSY", eighth.wait_for(b"BUSY", 3))
+    ok &= check("and is dropped at once", eighth.wait_closed(2))
+    ok &= check("busy line hangs up after countdown", over.wait_for(b"NO CARRIER", 13))
     ok &= check("busy countdown ~10 s", 9 < time.time() - t0 < 12)
-    seventh.close()
+    over.close()
     eighth.close()
 
     if PASSWORD:
@@ -1835,7 +1844,7 @@ def test_announce():
                     rec.get("software") == "unleashed" and "name" in rec and
                     "owner" in rec and "description" in rec)
         ok &= check("it reports the lines, not who is on them",
-                    rec.get("nodes") == 6 and isinstance(rec.get("busy"), int))
+                    rec.get("nodes") == MAX_NODES and isinstance(rec.get("busy"), int))
         ok &= check("no caller ever appears in it",
                     "Announcer" not in body.decode() and "handle" not in rec)
 

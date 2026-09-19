@@ -110,11 +110,11 @@ void Bbs::markAccount(Session& s, Access level) {
 // ---------------------------------------------------------------------------
 void Bbs::elevate(Session& s, uint32_t now) {
     if (sysop_.st != SState::Free) {
-        plat::log("bbs: sysop node in use, node %c logs off instead", nodeChar(s));
+        plat::log("bbs: sysop node in use, node %s logs off instead", nodeName(s).t);
         goodbye(s, now);
         return;
     }
-    char from = nodeChar(s);
+    NodeStr from = nodeName(s);
     bool fromNode = s.role == Role::Caller;
 
     moveSession(s, sysop_, 0, Role::Sysop);
@@ -142,14 +142,14 @@ void Bbs::elevate(Session& s, uint32_t now) {
     t.nl(tl);
     t.color(tl, Color::Grey);
     if (fromNode) {
-        snprintf(buf, sizeof(buf), "Node %c is free for callers.", from);
+        snprintf(buf, sizeof(buf), "Node %s is free for callers.", from.t);
         t.text(tl, buf);
         t.nl(tl);
     }
     t.text(tl, "Hidden from WHO. HELP for commands.");
     t.nl(tl);
 
-    plat::log("bbs: node %c -> sysop node (%s, %s)", from, d.user, d.ip);
+    plat::log("bbs: node %s -> sysop node (%s, %s)", from.t, d.user, d.ip);
     prompt(d);
 }
 
@@ -223,7 +223,7 @@ bool Bbs::rowNodes(Session& s) {
     Term& t = s.term;
     Timeline& tl = s.tl;
     bool wide = t.cols() >= 60;
-    const char* fmt = wide ? "%c%c%-20.20s %-15.15s %-10.10s %4s %5s" : "%c%c%-10.10s %-15.15s %4s %5s";
+    const char* fmt = wide ? "%s%c%-20.20s %-15.15s %-9.9s %4s %5s" : "%s%c%-9.9s %-15.15s %4s %5s";
     char buf[96];
     char left[12];
     char idle[8];
@@ -238,8 +238,8 @@ bool Bbs::rowNodes(Session& s) {
             return true;
         }
         if (i == 1) {
-            if (wide) snprintf(buf, sizeof(buf), fmt, 'N', ' ', "Handle", "IP", "Terminal", "Left", "Idle");
-            else      snprintf(buf, sizeof(buf), fmt, 'N', ' ', "Handle", "IP", "Left", "Idle");
+            if (wide) snprintf(buf, sizeof(buf), fmt, " N", ' ', "Handle", "IP", "Terminal", "Left", "Idle");
+            else      snprintf(buf, sizeof(buf), fmt, " N", ' ', "Handle", "IP", "Left", "Idle");
             t.color(tl, Color::LightBlue);
             t.text(tl, buf);
             t.nl(tl);
@@ -257,7 +257,7 @@ bool Bbs::rowNodes(Session& s) {
         if (o->role != Role::Caller && o->st == SState::Free) continue;
 
         if (o->st == SState::Free) {
-            snprintf(buf, sizeof(buf), "%c -", nodeChar(*o));
+            snprintf(buf, sizeof(buf), "%s -", nodeLabel(*o).t);
             t.color(tl, Color::DarkGrey);
             t.text(tl, buf);
             t.nl(tl);
@@ -265,7 +265,7 @@ bool Bbs::rowNodes(Session& s) {
         }
 
         char h[24] = "(no handle)";
-        if (o->user[0]) listHandle(h, sizeof(h), o->user, wide ? 20 : 10);
+        if (o->user[0]) listHandle(h, sizeof(h), o->user, wide ? 20 : 9);
         bool hidden = o != &s && (!o->visible || o->lurk);
         if (o->role == Role::Caller && o->loggedIn && !unlimited(*o)) {
             int32_t sec = secondsLeft(*o, now);
@@ -275,8 +275,8 @@ bool Bbs::rowNodes(Session& s) {
             snprintf(left, sizeof(left), "--");
         }
         fmtIdle(idle, sizeof(idle), now - o->lastInput);
-        if (wide) snprintf(buf, sizeof(buf), fmt, nodeChar(*o), markFor(*o), h, o->ip, o->term.name(), left, idle);
-        else      snprintf(buf, sizeof(buf), fmt, nodeChar(*o), markFor(*o), h, o->ip, left, idle);
+        if (wide) snprintf(buf, sizeof(buf), fmt, nodeLabel(*o).t, markFor(*o), h, o->ip, o->term.name(), left, idle);
+        else      snprintf(buf, sizeof(buf), fmt, nodeLabel(*o).t, markFor(*o), h, o->ip, left, idle);
         t.color(tl, o == &s ? Color::White : (hidden ? Color::DarkGrey : Color::Grey));
         t.text(tl, buf);
         t.nl(tl);
@@ -357,12 +357,12 @@ void Bbs::cmdKick(Session& s, const char* arg, uint32_t now) {
     char text[BBS_LINE_MAX + 32];
     if (msg && *msg) snprintf(text, sizeof(text), "Disconnected by sysop: %s", msg);
     else             snprintf(text, sizeof(text), "Disconnected by sysop.");
-    char c = nodeChar(*o);
-    plat::log("bbs: sysop kicked node %c (%s, %s)", c, o->user, o->ip);
+    NodeStr c = nodeName(*o);
+    plat::log("bbs: sysop kicked node %s (%s, %s)", c.t, o->user, o->ip);
     hangup(*o, text, now);
 
     char buf[32];
-    snprintf(buf, sizeof(buf), "Node %c disconnected.", c);
+    snprintf(buf, sizeof(buf), "Node %s disconnected.", c.t);
     say(t, tl, Color::LightGreen, buf);
 }
 
@@ -408,7 +408,7 @@ void Bbs::cmdSnoop(Session& s, const char* arg) {
     if (o->term.type() != t.type() || o->term.charset() != t.charset() ||
         o->term.iacEscape() != t.iacEscape()) {
         char buf[64];
-        snprintf(buf, sizeof(buf), "Node %c is %s, you are %s.", nodeChar(*o), o->term.name(), t.name());
+        snprintf(buf, sizeof(buf), "Node %s is %s, you are %s.", nodeName(*o).t, o->term.name(), t.name());
         say(t, tl, Color::LightRed, buf);
         prompt(s);
         return;
@@ -418,11 +418,11 @@ void Bbs::cmdSnoop(Session& s, const char* arg) {
     s.st = SState::Snoop;
 
     char buf[40];
-    snprintf(buf, sizeof(buf), "Snooping node %c. Q stops.", nodeChar(*o));
+    snprintf(buf, sizeof(buf), "Snooping node %s. Q stops.", nodeName(*o).t);
     say(t, tl, Color::Yellow, buf);
     t.reset(tl);
     t.nl(tl);
-    plat::log("bbs: sysop snooping node %c", nodeChar(*o));
+    plat::log("bbs: sysop snooping node %s", nodeName(*o).t);
 }
 
 // ---------------------------------------------------------------------------
@@ -463,8 +463,8 @@ void Bbs::cmdTimeAdjust(Session& s, const char* arg) {
     if (offClock(arg)) {
         s.noLimits  = true;
         s.timeWarned = 0;
-        snprintf(buf2, sizeof(buf2), "Node %c is off the clock: no limit, no idle hangup.",
-                 nodeChar(s));
+        snprintf(buf2, sizeof(buf2), "Node %s is off the clock: no limit, no idle hangup.",
+                 nodeName(s).t);
         say(t, tl, Color::LightGreen, buf2);
         return;
     }
@@ -485,8 +485,8 @@ void Bbs::cmdTimeAdjust(Session& s, const char* arg) {
     if (offClock(rest)) {
         o->noLimits   = true;
         o->timeWarned = 0;
-        snprintf(buf2, sizeof(buf2), "Node %c is off the clock: no limit, no idle hangup.",
-                 nodeChar(*o));
+        snprintf(buf2, sizeof(buf2), "Node %s is off the clock: no limit, no idle hangup.",
+                 nodeName(*o).t);
         say(t, tl, Color::LightGreen, buf2);
         return;
     }
@@ -506,8 +506,8 @@ void Bbs::cmdTimeAdjust(Session& s, const char* arg) {
 
     char buf[48];
     int32_t sec = secondsLeft(*o, plat::millis());
-    if (sec == INT32_MAX) snprintf(buf, sizeof(buf), "Node %c has no limit.", nodeChar(*o));
-    else                  snprintf(buf, sizeof(buf), "Node %c: %ld min left.", nodeChar(*o),
+    if (sec == INT32_MAX) snprintf(buf, sizeof(buf), "Node %s has no limit.", nodeName(*o).t);
+    else                  snprintf(buf, sizeof(buf), "Node %s: %ld min left.", nodeName(*o).t,
                                    static_cast<long>(sec > 0 ? (sec + 59) / 60 : 0));
     say(t, tl, Color::LightGreen, buf);
 }

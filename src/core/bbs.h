@@ -433,6 +433,12 @@ private:
     bool rowWho(Session& s);
     bool rowLast(Session& s);
     bool rowDash(Session& s);
+    // DASH keeps a fixed frame height, so its node block is a fixed number of
+    // rows whatever BBS_MAX_NODES is: dashNode picks which session each row
+    // shows, busy lines first. See rowDash for why.
+    static constexpr uint8_t kDashNodeRows = 6;
+    const Session* dashNode(uint8_t slot) const;
+    uint8_t dashBusyCount() const;
     bool rowPlugins(Session& s);
     bool rowWatchFooter(Session& s);
     void cmdHelp(Session& s, const char* arg);

@@ -10,8 +10,13 @@
 #               filesystems, split by who owns what is on them.
 #
 #                 logs      32 KB   the caller log ring
-#                 userdata 128 KB   users.txt, system.cfg, p/<plugin>/
-#                 storage  736 KB   the screens
+#                 userdata 608 KB   users.txt, system.cfg, p/<plugin>/
+#                 storage  256 KB   the screens
+#
+#               userdata holds roughly 1,380 accounts at ~450 bytes each.
+#               storage holds 18.5 KB of stock screens, so 256 KB is still
+#               fourteen times what it needs; the 736 KB it had before was
+#               left over from when accounts lived there too.
 #
 #               "storage" must stay the LAST filesystem partition: PlatformIO uploadfs
 #               writes to the last data partition of type spiffs/fat/littlefs. That is
@@ -47,5 +52,5 @@ phy_init,  data, phy,     0x11000,  0x1000
 ota_0,     app,  ota_0,   0x20000,  0x180000
 ota_1,     app,  ota_1,   0x1A0000, 0x180000
 logs,      data, spiffs,  0x320000, 0x8000
-userdata,  data, spiffs,  0x328000, 0x20000
-storage,   data, spiffs,  0x348000, 0xB8000
+userdata,  data, spiffs,  0x328000, 0x98000
+storage,   data, spiffs,  0x3C0000, 0x40000

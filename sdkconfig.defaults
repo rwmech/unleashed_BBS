@@ -42,7 +42,7 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 
 # Sockets: 1 listener + 6 nodes + 1 busy line + spares (lwIP ceiling is 16)
-CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_LWIP_MAX_SOCKETS=24
 CONFIG_LWIP_SO_REUSE=y
 
 # 1 ms tick so effect timing is smooth

@@ -768,7 +768,7 @@ bool Bbs::rowWho(Session& s) {
     char buf[80];
     char on[8];
     char idle[8];
-    const char* fmt = "%c%c%-12.12s %-10.10s %3s %5s";
+    const char* fmt = "%s%c%-12.12s %-9.9s %3s %5s";
     uint32_t now = plat::millis();
     bool refresh = s.watch != ListKind::None;
     bool staff   = can(s, PERM_NODES);
@@ -783,7 +783,7 @@ bool Bbs::rowWho(Session& s) {
             return true;
         }
         if (i == 1) {
-            snprintf(buf, sizeof(buf), fmt, 'N', ' ', "Handle", staff ? "Doing" : "Terminal", "Min", "Idle");
+            snprintf(buf, sizeof(buf), fmt, " N", ' ', "Handle", staff ? "Doing" : "Terminal", "Min", "Idle");
             rowText(s, Color::LightBlue, buf);
             return true;
         }
@@ -816,9 +816,9 @@ bool Bbs::rowWho(Session& s) {
 
         bool hidden = n != &s && (!n->visible || n->lurk);   // hidden co-sysop looks like a free line
         uint8_t col = 0;
-        char nodeStr[2] = { nodeChar(*n), '\0' };
+        NodeStr nodeStr = nodeLabel(*n);
         if (n->st == SState::Free || (hidden && !seeAll)) {
-            rowSeg(s, Color::DarkGrey, nodeStr, col);
+            rowSeg(s, Color::DarkGrey, nodeStr.t, col);
             rowSeg(s, Color::DarkGrey, " -- waiting for caller --", col);
             rowEnd(s, col);
             return true;
@@ -831,7 +831,7 @@ bool Bbs::rowWho(Session& s) {
         fmtIdle(idle, sizeof(idle), now - n->lastInput);
 
         char mark[2] = { markFor(*n), '\0' };
-        rowSeg(s, Color::LightBlue, nodeStr, col);              // node
+        rowSeg(s, Color::LightBlue, nodeStr.t, col);            // node
         rowSeg(s, markColor(mark[0]), mark, col);               // rank marker
         snprintf(buf, sizeof(buf), "%-12.12s ", h);
         rowSeg(s, n == &s ? Color::White : (hidden ? Color::DarkGrey : Color::LightGreen), buf, col);
@@ -896,9 +896,46 @@ void Bbs::cmdDash(Session& s, const char* arg) {
 }
 
 // ---------------------------------------------------------------------------
-// rowDash: 22 rows, 40 columns. Clock, uptime, NTP, memory, every node
-// with what it is doing, the day's calls, bans, busy line, Wi-Fi signal,
-// backup window, the last 5 calls.
+// dashNode: the session shown in DASH node row `slot`, or nullptr for none.
+//
+// Busy lines first in node order, then the sysop if it is up, then free lines
+// to fill whatever rows are left. A quiet board therefore looks the way it
+// always did, a row per waiting line, and a busy one spends its six rows on
+// the callers instead of on "waiting for caller" repeated sixteen times.
+// ---------------------------------------------------------------------------
+const Session* Bbs::dashNode(uint8_t slot) const {
+    uint8_t seen = 0;
+    for (uint8_t pass = 0; pass < 2; ++pass) {           // 0 = in use, 1 = free
+        for (uint8_t k = 0; k <= BBS_MAX_NODES; ++k) {
+            const Session& n = k < BBS_MAX_NODES ? nodes_[k] : sysop_;
+            bool inUse = n.st != SState::Free;
+            if (inUse != (pass == 0)) continue;
+            if (&n == &sysop_ && !inUse) continue;       // an idle sysop line is not worth a row
+            if (seen++ == slot) return &n;
+        }
+    }
+    return nullptr;
+}
+
+// dashBusyCount: lines in use, sysop included, for the summary row
+uint8_t Bbs::dashBusyCount() const {
+    uint8_t n = 0;
+    for (uint8_t k = 0; k < BBS_MAX_NODES; ++k) if (nodes_[k].st != SState::Free) ++n;
+    if (sysop_.st != SState::Free) ++n;
+    return n;
+}
+
+// ---------------------------------------------------------------------------
+// rowDash: 22 rows, 40 columns. Clock, uptime, NTP, memory, the busiest
+// nodes with what each is doing, the day's calls, bans, busy line, Wi-Fi
+// signal, backup window, the last 5 calls.
+//
+// The row map is fixed because DASH is a refresh screen: it redraws from
+// home, so a frame taller than the terminal scrolls and leaves its own tail
+// behind on every pass. That is why the node block is kDashNodeRows rows
+// plus one summary row rather than one row per node. At six nodes those were
+// the same thing; at sixteen they are not, and the frame is what has to give.
+// WHO is the paged list that still shows every line.
 // ---------------------------------------------------------------------------
 bool Bbs::rowDash(Session& s) {
     char buf[80];
@@ -938,7 +975,7 @@ bool Bbs::rowDash(Session& s) {
             rowRule(s);
             return true;
         case 4:
-            snprintf(buf, sizeof(buf), "%c%c%-12.12s %-10.10s %5s %4s", 'N', ' ', "Handle", "Doing", "Idle", "Left");
+            snprintf(buf, sizeof(buf), "%s%c%-12.12s %-9.9s %5s %4s", " N", ' ', "Handle", "Doing", "Idle", "Left");
             rowText(s, Color::LightBlue, buf);
             return true;
         case 13: {
@@ -978,10 +1015,12 @@ bool Bbs::rowDash(Session& s) {
             break;
     }
 
-    if (i >= 5 && i <= 11) {                                    // nodes 1..6, then S
-        const Session& n = i <= 10 ? nodes_[i - 5] : sysop_;
+    if (i >= 5 && i < 5 + kDashNodeRows) {                      // the busiest lines
+        const Session* np = dashNode(static_cast<uint8_t>(i - 5));
+        if (!np) { rowText(s, Color::Grey, ""); return true; }  // blank, to keep the frame height
+        const Session& n = *np;
         if (n.st == SState::Free) {
-            snprintf(buf, sizeof(buf), "%c -", nodeChar(n));
+            snprintf(buf, sizeof(buf), "%s -", nodeLabel(n).t);
             rowText(s, Color::DarkGrey, buf);
             return true;
         }
@@ -995,9 +1034,22 @@ bool Bbs::rowDash(Session& s) {
         char h[16] = "(logging in)";
         if (n.user[0]) listHandle(h, sizeof(h), n.user, 12);
         bool hidden = &n != &s && (!n.visible || n.lurk);
-        snprintf(buf, sizeof(buf), "%c%c%-12.12s %-10.10s %5s %4s", nodeChar(n), markFor(n), h,
+        snprintf(buf, sizeof(buf), "%s%c%-12.12s %-9.9s %5s %4s", nodeLabel(n).t, markFor(n), h,
                  hidden ? (n.lurk ? "lurking" : "hidden") : doingText(n), idle, left);
         rowText(s, &n == &s ? Color::White : Color::Grey, buf);
+        return true;
+    }
+
+    if (i == 5 + kDashNodeRows) {                               // what the rows could not hold
+        uint8_t used = dashBusyCount();
+        uint8_t free = static_cast<uint8_t>(BBS_MAX_NODES - (used > BBS_MAX_NODES ? BBS_MAX_NODES : used));
+        if (used > kDashNodeRows) {
+            snprintf(buf, sizeof(buf), "%u in use, %u not shown, %u free",
+                     used, static_cast<unsigned>(used - kDashNodeRows), free);
+        } else {
+            snprintf(buf, sizeof(buf), "%u of %u lines free", free, BBS_MAX_NODES);
+        }
+        rowText(s, used > kDashNodeRows ? Color::Yellow : Color::DarkGrey, buf);
         return true;
     }
 
@@ -1021,10 +1073,11 @@ bool Bbs::rowDash(Session& s) {
         if (calllog::get(static_cast<uint8_t>(i - 16), r)) {
             char when[16];
             clk::fmtEpoch(when, sizeof(when), "%m/%d %H:%M", r.start);
-            char node = (r.flags & CallRec::F_SYSOP) ? 'S' : static_cast<char>('0' + (r.node % 10));
+            NodeStr node = nodeNum(r.node);
+            if (r.flags & CallRec::F_SYSOP) { node.t[0] = 'S'; node.t[1] = '\0'; }
             char h[16];
             listHandle(h, sizeof(h), r.user, 12);
-            snprintf(buf, sizeof(buf), "%c%-11.11s %c %-11s %4u min", markForFlags(r.flags), h, node, when,
+            snprintf(buf, sizeof(buf), "%c%-10.10s %-2s %-11s %4u min", markForFlags(r.flags), h, node.t, when,
                      static_cast<unsigned>((r.secs + 59u) / 60u));
             rowText(s, Color::Grey, buf);
         } else {
@@ -1544,14 +1597,14 @@ void Bbs::cmdPage(Session& s, const char* arg) {
     bool hidden = !to->visible || to->lurk;
     if (!to->loggedIn || to->role == Role::Busy || to->dnd || hidden) {
         char buf[40];
-        snprintf(buf, sizeof(buf), "Node %c is not taking pages.", nodeChar(*to));
+        snprintf(buf, sizeof(buf), "Node %s is not taking pages.", nodeName(*to).t);
         t.color(tl, Color::LightRed);
         t.text(tl, buf);
         return;
     }
     post(*to, BusKind::Page, &s, msg);
     char buf[32];
-    snprintf(buf, sizeof(buf), "Page sent to node %c.", nodeChar(*to));
+    snprintf(buf, sizeof(buf), "Page sent to node %s.", nodeName(*to).t);
     t.color(tl, Color::LightGreen);
     t.text(tl, buf);
 }
@@ -1572,7 +1625,7 @@ void Bbs::cmdDnd(Session& s) {
 // ---------------------------------------------------------------------------
 void Bbs::cmdBye(Session& s, const char* arg, uint32_t now) {
     if (*arg && s.guest) {
-        plat::log("bbs: node %c guest BYE with an argument: plain logoff", nodeChar(s));
+        plat::log("bbs: node %s guest BYE with an argument: plain logoff", nodeName(s).t);
     } else if (*arg && s.role != Role::Sysop && syscfg::anyPassword()) {
         Access lv = syscfg::passwordLevel(arg);
         if (lv != Access::None) {
@@ -1582,7 +1635,7 @@ void Bbs::cmdBye(Session& s, const char* arg, uint32_t now) {
             goodbye(s, now);                     // busy line has no node to keep
             return;
         }
-        plat::log("bbs: node %c staff password failed from %s", nodeChar(s), s.ip);
+        plat::log("bbs: node %s staff password failed from %s", nodeName(s).t, s.ip);
         if (bans_.fail(s.ipAddr, now)) {
             plat::log("bbs: %s banned for %u min (sysop password)", s.ip,
                       static_cast<unsigned>(BBS_BAN_MS / 60000u));

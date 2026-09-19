@@ -24,7 +24,7 @@
  *                  backup_window_minutes  how long a button press keeps the window open
  *                  backup_button_gpio     button pin (active low), -1 = no button
  *                  self_register          yes: new handles can sign up; no: sysop creates accounts
- *                  max_users              account limit (1..100 on onboard storage)
+ *                  max_users              account limit (1..250)
  *                  who_refresh_min        WHO n / DASH n lowest refresh, seconds
  *                  who_refresh_max        WHO n / DASH n highest refresh, seconds
  *                  activity_led_gpio      LED blinked on network traffic, -1 = none
