@@ -37,7 +37,11 @@
 FILE(GLOB_RECURSE app_sources ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/*.c)
 
 set(app_requires esp_wifi esp_netif esp_event nvs_flash esp_timer esp_hw_support heap lwip
-                 esp_driver_gpio esp_driver_uart esp_rom)
+                 esp_driver_gpio esp_driver_uart esp_rom
+                 # The optional SD card: SPI host, card protocol, FAT and the
+                 # VFS glue. fatfs is the one that costs image space, so it is
+                 # worth remembering it is here if the build ever gets tight.
+                 esp_driver_spi esp_driver_sdspi sdmmc fatfs vfs)
 if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../components/esp_littlefs")
     list(APPEND app_requires esp_littlefs)     # vendored fallback
 endif()

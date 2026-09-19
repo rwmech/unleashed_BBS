@@ -273,6 +273,12 @@ public:
     // static). plugin is the plugin's index, 0xFF for the core table.
     // False when the registry is full.
     bool registerCommands(const Command* list, uint8_t count, uint8_t plugin = 0xFF);
+    // dropPluginCommands: take every plugin's table back out, keeping the
+    // core's. Called before the plugins are restarted by a config reload.
+    void dropPluginCommands();
+    // closeCardScreens: end any screen being read from the SD card and hand
+    // those callers back to the prompt. Called before the card is unmounted.
+    void closeCardScreens();
 
     // -- for plugins ---------------------------------------------------------
     // own: the plugin takes this session: keys go to its onKey hook and the
@@ -312,7 +318,7 @@ private:
     Bbs() = default;
 
     static constexpr uint8_t kSessions      = BBS_MAX_NODES + 2;   // + busy + sysop
-    static constexpr uint8_t kCommandTables = 8;                   // core + plugins
+    static constexpr uint8_t kCommandTables = 12;                  // core + plugins
 
     // -- connections (bbs.cpp) ---------------------------------------------
     void acceptAll(uint32_t now);

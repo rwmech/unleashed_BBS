@@ -35,7 +35,8 @@ greeting = howdy     ; the plugin's own keys
 - The access ladder is `all`, `users`, `staff`, `co2`, `co1`, `sysop`, and `none`. `all` includes guests, `users` means an account, `staff` is any staff level, and `co1` means co-sysop 1 and up.
 - Defaults when a line is missing: `read = all`, `write = staff`, `admin = sysop`.
 - A plugin that isn't `enabled` never starts, and its commands don't exist.
-- A plugin marked `PF_ON` in its descriptor is on without a section at all, and `enabled = no` turns it off. Chat ships that way; everything else waits to be switched on.
+- A plugin marked `PF_ON` in its descriptor is on without a section at all, and `enabled = no` turns it off. Chat and `sd` ship that way; everything else waits to be switched on.
+- `PF_EARLY` starts a plugin before the ones without it. It exists for a plugin that provides something another plugin's requirements are checked against: `sd` mounts the card, and whether a `PF_SD` plugin may start is decided by whether a card is mounted. Leaving that to the order of the registry table would work and would be invisible, which is the kind of dependency that survives until somebody tidies the list alphabetically.
 
 Staff can see the state of every plugin with `PLUGINS`:
 
@@ -126,7 +127,9 @@ plugins::path(myIndex, "count", buf, sizeof(buf)); // <fs>/p/<name>/count
 ```
 
 - Each plugin gets its own folder and may not touch core files.
-- Only plugins shipped in this repository (`PF_CORE`) may use the onboard filesystem. Anything else declares `PF_SD` and waits for the SD card.
+- Only plugins shipped in this repository (`PF_CORE`) get storage at all.
+- `PF_SD` says a plugin's files live on the SD card. It gets `<sd>/p/<name>/` instead of `<userdata>/p/<name>/`, and it does not start at all when no card is mounted (`PLUGINS` says "no SD card"). There is deliberately no fallback to internal flash: a plugin that quietly writes somewhere other than where it said it would is worse than one that is refused, because the sysop pulls the card expecting the data to be on it.
+- The free-space check follows the same split. A `PF_SD` plugin's `storageBytes` is weighed against the card, not against the 608 KB flash partition it is never going to touch.
 - The core keeps 32 KB of free space in reserve so accounts can always be written. Once space is that tight, `plugins::path` returns false and the plugin should carry on without saving.
 
 ## Memory

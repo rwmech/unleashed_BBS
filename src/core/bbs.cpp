@@ -190,6 +190,54 @@ bool Bbs::registerCommands(const Command* list, uint8_t count, uint8_t plugin) {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// closeCardScreens: nobody may still be reading the card when it goes away.
+//
+// A ScreenPlayer holds an open file for as long as the screen is playing,
+// and at a page break that is until the caller presses a key, which may be
+// never. Unmounting under that leaves a descriptor pointing into a torn-down
+// filesystem; on the board the VFS slot is reused by the next mount, so the
+// stale handle can come back as somebody else's file rather than as an
+// error. A screen that stops early is a far smaller thing.
+//
+// The caller is put back at the prompt rather than left staring at a half
+// drawn screen with no way on.
+// ---------------------------------------------------------------------------
+void Bbs::closeCardScreens() {
+    for (uint8_t i = 0; i < kSessions; ++i) {
+        Session& s = *all_[i];
+        if (s.st == SState::Free || !s.scr.onCard()) continue;
+        s.scr.close();
+        s.pendingPrompt = false;
+        s.pendingForm   = FormKind::None;
+        if (s.st == SState::AnyKey || s.st == SState::More || s.st == SState::Intro)
+            s.st = SState::Shell;
+        s.term.color(s.tl, Color::Grey);
+        s.term.nl(s.tl);
+        s.term.text(s.tl, "Screen ended: the card was removed.");
+        if (s.loggedIn) prompt(s);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// dropPluginCommands: forget every plugin's commands, keeping the core's.
+//
+// A config reload stops the plugins and starts them again, and each one
+// registers its command table on the way up. Nothing was taking the old
+// registrations back down, so the table grew by the number of running
+// plugins on every reload until it was full, and from then on whichever
+// plugins came last silently had no commands at all. Not a dangling pointer,
+// because the tables are static, but a caller typing ANNOUNCE was told
+// "Unknown command" on a board where the plugin was running fine.
+//
+// Table 0 is the core's and stays: it is registered in begin() and the core
+// is not restarted by a reload.
+// ---------------------------------------------------------------------------
+void Bbs::dropPluginCommands() {
+    for (uint8_t t = 1; t < tableCount_; ++t) tables_[t] = CommandTable{};
+    tableCount_ = 1;
+}
+
 // ===========================================================================
 // Plugin-facing helpers
 // ===========================================================================

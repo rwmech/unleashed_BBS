@@ -41,7 +41,7 @@ Electronic freedom on a microcontroller. No web, no cloud, no browser.
 
 **The name.** The micro sign is there because this runs on a microcontroller, and because microcomputers are what put computing in the hands of people who were never going to be given time on a mainframe. The [Altair 8800](https://en.wikipedia.org/wiki/Altair_8800) in 1975, then the Apple II, the PET and the TRS-80 in [1977](https://en.wikipedia.org/wiki/History_of_personal_computers#1977_and_the_emergence_of_the_%22Trinity%22), took the computer out of the raised-floor room that somebody else controlled and put it on a kitchen table. This is the same move, one more time, on a chip the size of a postage stamp. Where µ cannot be shown (PETSCII, hostnames, file names) it is written `unleashed`.
 
-The core has one dial-in port, 6 caller nodes, a busy line and a hidden sysop node. It also has connect-time terminal detection, user accounts with fill-in forms, guest access, screens, a line editor with history, paged output, a message bus between nodes, a chat room, the TTY effects library and a shell.
+The core has one dial-in port, 16 caller nodes, a busy line and a hidden sysop node. It also has connect-time terminal detection, user accounts with fill-in forms, guest access, screens, a line editor with history, paged output, a message bus between nodes, a chat room, the TTY effects library and a shell.
 
 Docs:
 
@@ -174,8 +174,9 @@ Flash layout (4 MB): two 1.5 MB OTA app slots and three data partitions.
 | Partition | Size | Holds | Rewritten by `uploadfs`? |
 |---|---|---|---|
 | `logs` | 32 KB | the caller log | no |
-| `userdata` | 128 KB | `users.txt`, `system.cfg`, plugin files | no |
-| `storage` | 736 KB | screens | **yes** |
+| `userdata` | 608 KB | `users.txt`, `system.cfg`, plugin files | no |
+| `storage` | 256 KB | screens | **yes** |
+| SD card | optional | message bases, file areas, your own screens | no |
 
 `storage` is deliberately last, because PlatformIO's `uploadfs` writes the last
 spiffs partition. That is what makes flashing safe: a filesystem upload can only
@@ -308,4 +309,4 @@ notices along: they are collected in
 ## Next
 
 - C5: plugin API. The first plugins will be GPIO and chat.
-- SD card plugin: more than 100 accounts, logs on the card.
+- SD card: file areas and message bases on the card, and logs redirected to it. Mounting works; the file manager is next.

@@ -228,32 +228,61 @@ uint32_t freeBytes() {
 }
 
 // ---------------------------------------------------------------------------
-// path: <fs>/p/<name>/<file>. Plugins that need the SD card get nothing
-// here, and neither does anyone once free space is down to the reserve.
+// path: where a plugin's files live.
+//
+// <userdata>/p/<name>/<file> normally, and <sd>/p/<name>/<file> for a PF_SD
+// plugin. The split is by who owns the data, the same rule the partitions
+// follow: a PF_SD plugin has said its files are the kind that can be large
+// and can be lost, so they go on the card and nowhere else. No falling back
+// to internal flash when the card is missing, because a plugin that silently
+// writes somewhere other than where it was told is worse than one that is
+// refused: the sysop pulls the card expecting the data to be on it.
+//
+// Nobody gets a path once free space is down to the reserve.
 // ---------------------------------------------------------------------------
 bool path(uint8_t index, const char* file, char* out, size_t n) {
     const Plugin* p = at(index);
     if (!p || !file || !*file) return false;
-    if (p->info.flags & PF_SD) return false;                  // SD card not here yet
-    if (!(p->info.flags & PF_CORE)) return false;             // only shipped plugins use flash
-    if (freeBytes() <= reserveBytes()) return false;
+    if (!(p->info.flags & PF_CORE)) return false;             // only shipped plugins get storage
     if (strchr(file, '/') || strstr(file, "..")) return false;
 
+    const bool sd = (p->info.flags & PF_SD) != 0;
+    const char* base = sd ? plat::sdBase() : plat::userBase();
+    if (sd) {
+        if (!base[0]) return false;                           // no card, so no files
+        plat::SdInfo i = plat::sdInfo();
+        // The reserve is a flash rule: LittleFS needs room to garbage collect
+        // and the core has to be able to write users.txt whatever a plugin is
+        // doing. A card has neither problem, so the only question is whether
+        // there is any room left at all.
+        if (i.mounted && i.totalKB && i.freeKB == 0) return false;
+    } else {
+        if (freeBytes() <= reserveBytes()) return false;
+    }
+
     char dir[96];
-    snprintf(dir, sizeof(dir), "%s/%s", plat::userBase(), BBS_PLUGIN_DIR);
+    snprintf(dir, sizeof(dir), "%s/%s", base, BBS_PLUGIN_DIR);
     ensureDir(dir);
-    snprintf(dir, sizeof(dir), "%s/%s/%s", plat::userBase(), BBS_PLUGIN_DIR, p->info.name);
+    snprintf(dir, sizeof(dir), "%s/%s/%s", base, BBS_PLUGIN_DIR, p->info.name);
     ensureDir(dir);
     snprintf(out, n, "%s/%.16s", dir, file);
     return true;
 }
 
 // ---------------------------------------------------------------------------
-// begin: every plugin that is switched on and fits gets started
+// begin: every plugin that is switched on and fits gets started.
+//
+// Two passes. PF_EARLY plugins go first because what they do decides whether
+// the others may start at all: the sd plugin mounts the card, and a PF_SD
+// plugin's requirement is a mounted card. One pass in table order would give
+// the same answer today and a different one the first time somebody reorders
+// the registry, which is not a thing that should change behaviour.
 // ---------------------------------------------------------------------------
 void begin(Bbs& bbs) {
+    for (uint8_t pass = 0; pass < 2; ++pass) {
     for (uint8_t i = 0; i < count(); ++i) {
         const Plugin* p = kPlugins[i];
+        if (((p->info.flags & PF_EARLY) != 0) != (pass == 0)) continue;
         State& st = g_state[i];
         st = State();
         st.enabled  = (p->info.flags & PF_ON) != 0;           // on unless told otherwise
@@ -263,9 +292,18 @@ void begin(Bbs& bbs) {
         scan(i, nullptr, nullptr, true);                      // enabled + levels
 
         if (!st.enabled) { st.why = "off in system.cfg"; continue; }
-        if ((p->info.flags & PF_SD) || !(p->info.flags & PF_CORE)) {
-            st.why = "needs the SD card";
-            plat::log("plugin: %s needs the SD card, not started", p->info.name);
+        if (!(p->info.flags & PF_CORE)) {
+            st.why = "not a shipped plugin";
+            plat::log("plugin: %s is not a shipped plugin, not started", p->info.name);
+            continue;
+        }
+        if ((p->info.flags & PF_SD) && !plat::sdBase()[0]) {
+            // Not an error and not a misconfiguration: a board with no card
+            // is a supported board. Say which it is so a sysop who *has*
+            // wired a card knows to go and look at SD rather than at this.
+            st.why = "no SD card";
+            plat::log("plugin: %s keeps its files on the SD card and none is mounted, not started",
+                      p->info.name);
             continue;
         }
         plat::HeapStats h = plat::heap();
@@ -276,12 +314,24 @@ void begin(Bbs& bbs) {
                       static_cast<unsigned>(h.freeBytes));
             continue;
         }
-        uint32_t freeFs = freeBytes();
-        if (p->info.storageBytes && freeFs && freeFs < p->info.storageBytes + reserveBytes()) {
+        // Measure the partition the plugin will actually write to. A PF_SD
+        // plugin asking for 2 MB was being weighed against a 608 KB flash
+        // partition it is never going to touch, which would refuse it on a
+        // card with gigabytes free.
+        uint32_t freeFs  = 0;
+        uint32_t reserve = 0;
+        if (p->info.flags & PF_SD) {
+            plat::SdInfo si = plat::sdInfo();
+            freeFs = si.freeKB > (0xFFFFFFFFu / 1024u) ? 0xFFFFFFFFu : si.freeKB * 1024u;
+        } else {
+            freeFs  = freeBytes();
+            reserve = reserveBytes();
+        }
+        if (p->info.storageBytes && freeFs && freeFs < p->info.storageBytes + reserve) {
             st.why = "not enough storage";
-            plat::log("plugin: %s wants %u bytes of storage, %u free: not started",
+            plat::log("plugin: %s wants %u bytes of storage, %u free on %s: not started",
                       p->info.name, static_cast<unsigned>(p->info.storageBytes),
-                      static_cast<unsigned>(freeFs));
+                      static_cast<unsigned>(freeFs), (p->info.flags & PF_SD) ? "the card" : "flash");
             continue;
         }
         if (p->start && !p->start(bbs)) {
@@ -298,6 +348,7 @@ void begin(Bbs& bbs) {
         st.running = true;
         plat::log("plugin: %s %s started (read %s, write %s, admin %s)", p->info.name, p->info.version,
                   levelText(st.level[0]), levelText(st.level[1]), levelText(st.level[2]));
+    }
     }
 }
 

@@ -153,6 +153,10 @@ private:
     uint8_t  cols_ = 80;
     uint8_t  rows_ = 24;
     bool     rev_  = false;
+    // The last colour set. reverse(o,false) re-asserts it instead of sending
+    // ESC[27m, so turning reverse off does not depend on the terminal
+    // implementing the least widely supported code in the SGR set.
+    Color    cur_  = Color::LightGrey;
     bool     iacEsc_ = false;
 
     // input escape parser (ANSI arrow keys, stray CPR replies)

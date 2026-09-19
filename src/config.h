@@ -51,7 +51,7 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "0.17.0"
+#define BBS_VERSION         "0.17.1"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // ---------------------------------------------------------------------------
@@ -207,6 +207,22 @@
 #define BBS_LOGS_MOUNT      "/logs"      // logs partition: fixed-size rings only, never in the zip
 #define BBS_LOGS_LABEL      "logs"
 #define BBS_SCREEN_DIR      "screens"
+
+// The SD card, when there is one. Optional throughout: a board with no card
+// is a complete board, and nothing that has to survive a power cut lives
+// here. FAT32 rather than LittleFS on purpose, so the card can be pulled and
+// read on any laptop; that is the whole point of it.
+#define BBS_SD_MOUNT        "/sd"
+// Open handles FATFS keeps room for. Every session has its own
+// ScreenPlayer and holds a file open for as long as a screen is playing,
+// which at a page break is until the caller presses a key. Five was the
+// IDF example's number and it does not survive sixteen nodes: the sixth
+// caller to open a screen from the card silently gets the flash copy
+// instead, because a failed open here looks exactly like a file that is
+// not on the card. Costs about 550 bytes of heap per slot at mount.
+#define BBS_SD_MAX_FILES    (BBS_MAX_NODES + 4)
+#define BBS_SD_SCREEN_DIR   "screens"    // a card's screens override the stock set
+
 #define BBS_CONFIG_FILE     "system.cfg"
 #define BBS_CALLLOG_FILE    "calls.log"
 #define BBS_REBOOT_FILE     "reboots.log"  // why the board started, one line each

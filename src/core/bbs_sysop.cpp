@@ -973,9 +973,18 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
             o.term.text(o.tl, "The sysop changed the settings.");
             o.term.nl(o.tl);
             Bbs::instance().release(o);
+            return;
         }
+        // A caller part way through a generated list is holding a flat index
+        // across the command tables, and dropPluginCommands is about to
+        // renumber everything past the core. Resuming would carry on at the
+        // wrong command or stop early. Cheaper to end the list than to make
+        // the index survive a reload.
+        if (o.st == SState::List || o.st == SState::More || o.list != ListKind::None)
+            Bbs::instance().abortOutput(o);
     }, nullptr);
     plugins::stopAll();
+    dropPluginCommands();        // or every reload registers them again
     plugins::begin(*this);
     snprintf(err, errLen, "Saved and live");
     return true;

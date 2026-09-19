@@ -45,6 +45,10 @@
 #include "esp_netif.h"
 #include "esp_littlefs.h"
 #include "driver/uart.h"
+#include "driver/sdspi_host.h"
+#include "driver/spi_common.h"
+#include "sdmmc_cmd.h"
+#include "esp_vfs_fat.h"
 extern "C" {
 #include "miniz.h"
 }
@@ -101,6 +105,171 @@ bool fsInfo(uint32_t& total, uint32_t& used) {
     total = static_cast<uint32_t>(t);
     used  = static_cast<uint32_t>(u);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// The SD card, over SPI.
+//
+// SPI and not SDMMC on purpose. SDMMC is faster, but it is nailed to fixed
+// pins on the ESP32, two of which are strapping pins, and it wants pull-ups
+// a plain breakout module does not always have. SPI works on any four free
+// pins and on every cheap module, which is what somebody following the wiring
+// page will actually have in their hand. A BBS moves a few kilobytes at a
+// time; the card is never the slow part of a 2400 baud illusion.
+//
+// Everything here is blocking, which is why nothing in this file is ever
+// called from the BBS loop. See the note in platform.h.
+// ---------------------------------------------------------------------------
+static sdmmc_card_t* g_card  = nullptr;
+static bool          g_mount = false;
+static uint32_t      g_speed = 0;
+// Whether *this* code called spi_bus_initialize, so it knows whether it is
+// entitled to free the bus. Without it, a mount that failed after the bus
+// came up left the bus initialised with the old pins: the sysop corrected a
+// pin in CONFIG, the next attempt got ESP_ERR_INVALID_STATE, the tolerance
+// for that swallowed it, and the card was probed on the old wiring forever
+// while the config showed the new number. That is the exact troubleshooting
+// loop the wiring page sends people into.
+static bool          g_busUp = false;
+static SdPins        g_busPins;
+
+const char* sdBase() {
+    return g_mount ? BBS_SD_MOUNT : "";
+}
+
+bool sdMount(const SdPins& pins, char* err, size_t errLen) {
+    auto fail = [&](const char* why) {
+        if (err && errLen) snprintf(err, errLen, "%s", why);
+        return false;
+    };
+    if (err && errLen) err[0] = '\0';
+    if (g_mount) return true;                      // already up, nothing to do
+
+    // The bus is configured with MOSI, MISO and CLK, so a change to any of
+    // them needs it rebuilt. CS is a device setting and does not.
+    if (g_busUp && (g_busPins.mosi != pins.mosi || g_busPins.miso != pins.miso ||
+                    g_busPins.clk  != pins.clk)) {
+        spi_bus_free(SDSPI_DEFAULT_HOST);
+        g_busUp = false;
+    }
+
+    // SDSPI_HOST_DEFAULT() is the IDF's own macro and does not list every
+    // member of the struct it initialises, so it warns under the project's
+    // warning settings. Not our bug and not one we can fix upstream, but a
+    // warning that is always there is a warning nobody reads, so it is
+    // silenced here and nowhere else.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    sdspi_device_config_t devDefaults = SDSPI_DEVICE_CONFIG_DEFAULT();
+#pragma GCC diagnostic pop
+    host.max_freq_khz = pins.speedKHz ? pins.speedKHz : 20000;
+    spi_bus_config_t bus = {};
+    bus.mosi_io_num     = pins.mosi;
+    bus.miso_io_num     = pins.miso;
+    bus.sclk_io_num     = pins.clk;
+    bus.quadwp_io_num   = -1;
+    bus.quadhd_io_num   = -1;
+    bus.max_transfer_sz = 4000;
+
+    if (!g_busUp) {
+        esp_err_t be = spi_bus_initialize(static_cast<spi_host_device_t>(host.slot),
+                                          &bus, SDSPI_DEFAULT_DMA);
+        // INVALID_STATE means somebody else owns this bus. Carry on and try
+        // the card, but do not record it as ours: freeing a bus this code did
+        // not raise would take it out from under whatever did.
+        if (be != ESP_OK && be != ESP_ERR_INVALID_STATE)
+            return fail("SPI bus would not start: check the pin numbers");
+        if (be == ESP_OK) { g_busUp = true; g_busPins = pins; }
+    }
+
+    sdspi_device_config_t dev = devDefaults;
+    dev.gpio_cs = static_cast<gpio_num_t>(pins.cs);
+    dev.host_id = static_cast<spi_host_device_t>(host.slot);
+
+    esp_vfs_fat_sdmmc_mount_config_t cfg = {};
+    // format_if_mount_failed stays false, deliberately. A card that does not
+    // mount is far more often somebody's card with their files on it, in the
+    // wrong format or badly seated, than a card that wants erasing. Wiping it
+    // to make an error message go away is not a decision firmware gets to
+    // make on a sysop's behalf.
+    cfg.format_if_mount_failed = false;
+    cfg.max_files              = BBS_SD_MAX_FILES;
+    cfg.allocation_unit_size   = 16 * 1024;
+
+    esp_err_t e = esp_vfs_fat_sdspi_mount(BBS_SD_MOUNT, &host, &dev, &cfg, &g_card);
+    if (e != ESP_OK) {
+        g_card = nullptr;
+        // Put the bus back down. A failed mount that leaves the bus up holds
+        // the old pins and makes the next attempt, with corrected wiring,
+        // fail identically.
+        if (g_busUp) { spi_bus_free(SDSPI_DEFAULT_HOST); g_busUp = false; }
+        // Three different evenings, so three different messages. The error
+        // code goes in the log as well: the first cut mapped everything that
+        // was not a timeout or a bad filesystem onto one catch-all string,
+        // and when a real card hit that branch the message named three things
+        // to check and none of them was the problem.
+        plat::log("sd: mount failed at %u kHz: %s (0x%x)",
+                  static_cast<unsigned>(host.max_freq_khz), esp_err_to_name(e),
+                  static_cast<unsigned>(e));
+        if (e == ESP_ERR_TIMEOUT || e == ESP_ERR_NOT_FOUND)
+            return fail("no card found: check it is seated, and the CS pin");
+        if (e == ESP_FAIL)
+            return fail("card found but no FAT filesystem: format it FAT32");
+        // Out of memory is its own answer and must not be filed under
+        // "check your wiring". The first version of this lumped it in with
+        // everything that was not a timeout and told the sysop to try a
+        // lower bus speed, which is advice that cannot work: the mount had
+        // not got as far as the bus. Three attempts were spent on it.
+        if (e == ESP_ERR_NO_MEM)
+            return fail("not enough memory to mount the card: see MEM");
+        char why[72];
+        snprintf(why, sizeof(why), "card answered then failed (%s)", esp_err_to_name(e));
+        return fail(why);
+    }
+
+    g_mount = true;
+    g_speed = static_cast<uint32_t>(g_card->max_freq_khz);
+    plat::log("sd: mounted %s at %s, %u MHz",
+              g_card->is_mmc ? "MMC" : (g_card->ocr & (1u << 30)) ? "SDHC/SDXC" : "SDSC",
+              BBS_SD_MOUNT, static_cast<unsigned>(g_speed / 1000));
+    return true;
+}
+
+void sdUnmount() {
+    if (!g_mount) return;
+    esp_vfs_fat_sdcard_unmount(BBS_SD_MOUNT, g_card);
+    // The bus comes down with it, but only if this code raised it.
+    if (g_busUp) { spi_bus_free(SDSPI_DEFAULT_HOST); g_busUp = false; }
+    g_card  = nullptr;
+    g_mount = false;
+    g_speed = 0;
+    plat::log("sd: unmounted");
+}
+
+SdInfo sdInfo() {
+    SdInfo i;
+    if (!g_mount || !g_card) return i;
+    i.mounted  = true;
+    i.speedKHz = g_speed;
+    snprintf(i.type, sizeof(i.type), "%s",
+             g_card->is_mmc ? "MMC" : (g_card->ocr & (1u << 30)) ? "SDHC/SDXC" : "SDSC");
+
+    // By mount point, not by drive number. The first version called
+    // f_getfree("0:"), which is right only because this is the only FAT
+    // volume on the board: the drive number comes from the first free slot
+    // in the FATFS table, so "0:" was a coincidence rather than a contract.
+    // esp_vfs_fat_info reads the drive out of the mount it was given and
+    // cannot be wrong. It is also the cheap path: the failure mode of the
+    // old call was a whole-FAT scan on a card whose free-cluster hint was
+    // stale, which is what pulling a FAT card mid-write produces, and that
+    // scan would have run on the DASH refresh timer.
+    uint64_t total = 0, freeB = 0;
+    if (esp_vfs_fat_info(BBS_SD_MOUNT, &total, &freeB) == ESP_OK) {
+        i.totalKB = static_cast<uint32_t>(total / 1024ULL);
+        i.freeKB  = static_cast<uint32_t>(freeB / 1024ULL);
+    }
+    return i;
 }
 
 // ---------------------------------------------------------------------------

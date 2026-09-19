@@ -17,8 +17,13 @@ How callers get accounts, and how staff create, change, lock and delete them. Co
 
 ## Limits
 
-- Up to 100 accounts on the board's own flash (`max_users`, 1..100).
-- More than 100 accounts needs the SD card plugin (planned).
+- Up to 250 accounts on the board's own flash (`max_users`, 1..250).
+- The cap is an index width, not a space limit: the `userdata` partition holds
+  roughly 1,380 accounts at about 450 bytes each. The list indices are `uint8_t`
+  and one of them counts rows in every list on the board, so raising the cap is
+  a change to all of them rather than a change to this number.
+- Accounts never move to the SD card. They are the one thing that has to survive
+  a card failing, and LittleFS on the board is power-fail safe in a way FAT is not.
 - Accounts live in `users.txt` on the storage partition and travel in the backup zip ([BACKUP.md](BACKUP.md)).
 
 ## Callers
@@ -63,7 +68,49 @@ Rob is new here.
 | Phone | optional, up to 20 | you and staff with `USERS` |
 | Profile | optional, 4 rows of 37 (148 characters) | everyone |
 
+"Who sees it" is the whole story for callers but not for a sysop: see
+[Who can actually see your details](#who-can-actually-see-your-details) below,
+which covers staff, backups and the fact that telnet is plaintext.
+
 Handles match without regard to case, so `rob` and `ROB` are the same account. The BBS always shows the spelling it was created with.
+
+### Who can actually see your details
+
+This matters more than a column in a table, so it is spelled out.
+
+**Other callers cannot see your email, address or phone.** `INFO handle` shows
+another caller their name, profile, when they joined, their last call and their
+staff level, and nothing else. The three private fields are skipped unless you
+are looking at your own account or you hold the `USERS` permission.
+
+**Staff can.** Anyone with `USERS` sees every field of every account, because
+that is what running a board requires. By default that is the sysop and
+co-sysop 1, not co-sysop 2, and it is a row in the `[access]` matrix a sysop
+can change. There is no setting that hides a caller's details from the person
+who runs the board, and there should not be: pretending otherwise would be
+worse than saying it.
+
+**A backup zip contains all of it in the clear.** The download redacts the
+three staff passwords and nothing else, so `users.txt` inside it carries every
+caller's email, address and phone as typed. Whoever can open the backup window
+can read them. That is why the backup port refuses connections from anywhere
+but a private address and why the window closes on a timer.
+
+**Passwords are not in there in any readable form.** They are stored as a
+salted SHA-256 run a thousand times. That is not state of the art and is not
+meant to be; it means a stolen `users.txt` does not hand over the passwords,
+and the file has to be stolen first.
+
+**Nothing typed into this board is private in transit.** Telnet has no
+encryption, so everything, including the password at the prompt, crosses the
+network as readable text. That is the price of letting a 1982 computer call in
+and it is not going to change. The practical rule for a caller is the one the
+sign-up screen gives them: use a password you use nowhere else, and do not type
+anything here you would mind the sysop, or somebody on the same network,
+reading.
+
+A sysop putting a board on the public internet is taking on other people's
+email addresses and phone numbers. Collect the ones you actually need.
 
 With `self_register = no`, only `[G]uest` is offered, and staff add accounts. With guests off too, an unknown handle is refused in place: `No account. The sysop creates accounts here.`
 

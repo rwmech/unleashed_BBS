@@ -26,6 +26,25 @@ Four things: reclaim the flash sitting idle, go to sixteen nodes, the Wi-Fi
 change that unblocks a web installer, and the queued bugs. Message bases and
 the SD card follow immediately after, as one piece of work.
 
+## Where this has got to
+
+Built in blocks, each checkpointed into git before and after.
+
+| Block | What | State |
+|---|---|---|
+| A | Repartition, sixteen nodes | **done**, flashed 2026-09-19 |
+| B | SD card: mount, `SD` command, screens override | **done**, host-tested, not flashed |
+| C | File areas: browse, list, describe. Logs to the card | next |
+| D | Sixteen-node fallout in the remaining lists | after C |
+| E | The queued bugs in Part 4 | if there is time |
+
+Regression runs after D, on Rob's instruction. The SD card work is verified in
+two modes, with a card and without, because "runs without a card" is the claim
+the whole design rests on and it is the one that would rot silently.
+
+The five open questions at the bottom are still Rob's to answer. None of them
+block C.
+
 ## The hardware, confirmed rather than assumed
 
 Read off the chip with `esptool flash_id`, not taken from the build config:

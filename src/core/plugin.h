@@ -80,8 +80,18 @@ enum class PlugLevel : uint8_t { All, Users, Staff, Co2, Co1, Sysop, Nobody };
 enum PluginFlag : uint8_t {
     PF_NONE  = 0,
     PF_CORE  = 1,    // shipped in this repo: may use the onboard filesystem
-    PF_SD    = 2,    // needs the SD card for its files
+    PF_SD    = 2,    // its files live on the SD card, and it needs one mounted
     PF_ON    = 4,    // on unless system.cfg says enabled = no
+    // PF_EARLY: started before the plugins that are not marked with it.
+    //
+    // This exists for exactly one situation: a plugin that provides something
+    // another plugin's requirements are checked against. The sd plugin mounts
+    // the card, and whether a PF_SD plugin may start at all is decided by
+    // whether a card is mounted, so the answer depends on the sd plugin having
+    // already run. Leaving that to the order of the registry table would work
+    // and would be invisible, which is the kind of dependency that survives
+    // until somebody tidies the list alphabetically.
+    PF_EARLY = 8,
 };
 
 struct PluginInfo {

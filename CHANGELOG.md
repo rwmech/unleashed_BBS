@@ -24,6 +24,39 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.17.1, 2026-09-19
+
+The SD card. Its own version number because it is its own flash: 0.17.0 and
+this were briefly the same version, which meant ABOUT could not tell a sysop
+which of the two was on the board and PLUGINS was the only way to find out.
+Every flashed build gets its own number.
+
+### The SD card
+
+- **An optional SD card, mounted FAT32 over SPI.** Four wires. A board with no card is still a complete board, and that is the case the tests run by default. What goes on the card is what grows without limit and can be lost: message bases, file areas, a sysop's own screens. What stays on internal flash is everything that has to survive the card failing, which is the accounts, the configuration and the caller log.
+- FAT32 rather than LittleFS so the card can be pulled and read on any laptop. That is the whole point of it. The price is that FAT is not safe against losing power mid-write, which is exactly why nothing that matters lives there.
+- `SD`, `SD MOUNT` and `SD UNMOUNT`, sysop only. **Mounting pauses the board** for a few hundred milliseconds while it negotiates over SPI, so it happens at boot before any caller exists, or when a sysop asks and is told. Nothing retries on a timer, and there is no insertion event: there is no card-detect line on this wiring, and probing the bus to find out would be the same stall repeated forever.
+- `SD` with no card names the pins it tried. "No card found" on its own sends somebody to re-seat a card that was never the problem, and the three failures get three different messages, because "no card", "not FAT32" and "miswired" are three different evenings.
+- A card is never reformatted to make an error go away. A card that will not mount is far more often somebody's card with their files on it than a card that wants erasing.
+- Screens on the card override the stock set **per file**, so one custom screen does not mean supplying all of them, and pulling the card falls back rather than losing them.
+- **Fixed: a config reload gave every plugin its commands a second time.** The command table was only reset at boot, so each reload added another copy of every running plugin's table until it was full. From then on whichever plugins came last were running, shown as running, and answering "Unknown command" to their own verbs. It took a reload to show, so nothing caught it, and at four plugins it had already been costing `announce` its commands. Found because a fifth plugin made it obvious.
+- **Fixed before it shipped, by the code review:** saving any CONFIG page unmounted and remounted the card, stalling every caller's line; unmounting while a caller was paused mid-screen left a descriptor into a torn-down filesystem; a failed mount left the SPI bus holding the old pins, so correcting a pin in CONFIG changed nothing and the sysop was sent to check wiring that was already right; GPIO36 was refused for MISO although input-only pins are exactly what MISO is for; the open-file budget was five against sixteen nodes, so the sixth caller silently got the flash screen instead of the card's; and the screen lookup preferred any format on the card over the right format in flash, so one stray `.asc` would have taken every C64 caller off PETSCII while looking like it worked.
+- Flash is 68.1% of the slot, up from 63.9%: FATFS and the SD driver cost 63 KB, and they cost it whether or not a card is fitted.
+
+## 0.17.0, 2026-09-19
+
+The partition rebalance and sixteen nodes. Flashed 2026-09-19.
+
+### Sixteen nodes and a bigger user partition
+
+- **The flash is split by what is actually stored on it.** `storage` held 18.5 KB of screens in a 736 KB partition, sized back when the accounts lived there too, and the hundred-account cap came from the 128 KB left over rather than from anything real. Same 896 KB of data region, redistributed: `logs` 32 KB, `userdata` 608 KB, `storage` 256 KB. `storage` stays last so a filesystem upload can still only reach the screens. **Breaking layout change:** one `pio run -t erase` before the first flash, because the old contents sit where the new ones go.
+- Six caller lines become sixteen. That is 65 KB more static RAM, ten more sessions at about 5.7 KB each, and the socket budget goes to 24: every caller holds one, and the listener, mDNS and the backup window want theirs.
+- **Fixed: a node number above nine printed as punctuation.** `nodeChar` returned `'0' + id`, so node 10 was `:` and node 11 was `;`. Replaced by `nodeName` for prose and `nodeLabel` for the fixed column in a list. Digits rather than letters, because a node argument is parsed with `strtol`: the number in the list has to be the number you type at the prompt.
+- The caller log had the same bug one layer down. DASH printed `'0' + (node % 10)`, so node 12 would have appeared as "2" — worse than a wrong glyph, because it names a different line.
+- Every list that gained a column gave one back. A 40 column row that becomes 41 wraps, and a refresh screen then leaves its own tail behind on every redraw. `NODES` was at 60 and 39 columns exactly.
+- DASH could not grow a row per node: it redraws from home, so a frame taller than the terminal corrupts itself. Its node block is six rows plus a summary, busy lines first and free lines filling the rest. A quiet board looks the way it always did; a busy one spends its rows on callers instead of on "waiting for caller" sixteen times. WHO still lists every line.
+- `max_users` is 250, not the ~1,380 the partition now holds. The cap is an index width: the account and list indices are all `uint8_t`, and one of them is the row counter in every list on the board. Widening it touches every list, which is not work to land in the same build as a partition move. Raising it later costs no erase.
+
 ## 0.16.1, 2026-09-19
 
 - **Fixed: a token saved by the truncating firmware was still being sent.** 0.16.0 stopped storing a short token but happily loaded one, so a board that had run the old firmware kept posting its four-character wreckage and kept minting duplicate listings. Anything under 16 characters is now ignored on load and the board registers again cleanly.

@@ -120,6 +120,60 @@ NetInfo netInfo();
 bool fsInfo(uint32_t& total, uint32_t& used);
 
 // ---------------------------------------------------------------------------
+// The SD card (the sd plugin). Optional: a board with no card is a complete
+// board, and everything that must survive stays on internal flash whatever
+// is plugged in.
+//
+// Mounting blocks. An SPI card negotiation is a few hundred milliseconds of
+// synchronous work, and there is no way to do it from the BBS loop without
+// every caller feeling it. So it happens at plugin start, before there are
+// any callers, or when a sysop asks for it and knows what they asked for.
+// Nothing polls for a card in the background, which is also why there is no
+// insertion event: there is no card-detect line on the wiring this supports,
+// and probing the bus to find out would be the same stall on a timer.
+//
+// Sizes are in kilobytes rather than bytes so a 32 GB card still fits a
+// uint32_t. That avoids dragging 64-bit printf support into the image for
+// the sake of one status line.
+// ---------------------------------------------------------------------------
+struct SdPins {
+    int8_t   cs   = 5;   // the board Rob wired: CS D5, MOSI D23, CLK D18, MISO D19
+    int8_t   mosi = 23;  // GPIO5 is a strapping pin, so cs is the one to move
+    int8_t   clk  = 18;  // first if a board will not boot with a card attached
+    int8_t   miso = 19;
+    // Bus speed in kHz. A setting rather than a constant because it is the
+    // first thing to change when a card enumerates and then fails its first
+    // real read, which is what dupont jumpers to a breakout produce: the card
+    // is found at 400 kHz, the driver steps up, and the bus no longer carries
+    // a clean edge. Telling a sysop to reflash to try a slower bus is not an
+    // answer, so this is in system.cfg.
+    uint16_t speedKHz = 20000;
+};
+
+struct SdInfo {
+    char     type[12] = {};   // "SDSC", "SDHC/SDXC", "MMC", empty when unmounted
+    uint32_t totalKB  = 0;
+    uint32_t freeKB   = 0;
+    uint32_t speedKHz = 0;
+    bool     mounted  = false;
+};
+
+// sdMount: mount FAT32 at sdBase(). Blocking, see above. On failure writes a
+// reason into err (a sysop has to be told which of "no card", "not FAT32" and
+// "miswired" it was, because they are three different evenings) and returns
+// false. Mounting when already mounted succeeds and changes nothing.
+bool sdMount(const SdPins& pins, char* err, size_t errLen);
+
+// sdUnmount: flush and release. Safe to call when not mounted.
+void sdUnmount();
+
+// sdBase: mount point, no trailing slash. Empty string when no card, which
+// is the test callers should use: a board without a card is not an error.
+const char* sdBase();
+
+SdInfo sdInfo();
+
+// ---------------------------------------------------------------------------
 // Device serial port (the serial bridge plugin). This is the second UART,
 // never the console: flashing and the monitor keep working while a caller
 // is driving the device. On the host build it is a loopback (or a real

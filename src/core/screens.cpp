@@ -82,12 +82,39 @@ bool ScreenPlayer::open(const char* name, const Term& t) {
         case TermType::Ansi:  list = kAnsi;  cnt = 2; break;
         default: break;
     }
+    // The SD card first, when there is one, then the stock set.
+    //
+    // Override rather than replace: a sysop who wants one custom screen puts
+    // one file on the card and keeps the rest. Pull the card and the board
+    // falls back to the screens it shipped with rather than losing them,
+    // which is the difference between the card being optional and the card
+    // being required. Asked through a function so the core does not have to
+    // know a plugin exists; it returns null when there is no card.
+    // Both entries are complete screen directories, not roots to build one
+    // out of. sdScreensDir() already names the directory, and the first cut
+    // of this appended the screens folder to it a second time and looked in
+    // <sd>/screens/screens. It failed silently, because a screen that is not
+    // found is an ordinary thing here: the flash copy was found on the next
+    // pass and every screen still played.
+    char flashDir[96];
+    snprintf(flashDir, sizeof(flashDir), "%s/%s", plat::fsBase(), BBS_SCREEN_DIR);
+    const char* dirs[2] = { sdScreensDir(), flashDir };
+
+    // Extension first, then directory. The other way round let a lower
+    // preference format on the card beat the right format in flash: a sysop
+    // dropping a quick welcome.asc on a card to try the override would have
+    // silently taken every C64 caller off welcome.p40 and every ANSI caller
+    // off welcome.ans, and it would have looked like it worked. The override
+    // is per file, not per format, so the card wins only for the same
+    // extension the flash copy would have used.
     char path[96];
     for (size_t i = 0; i < cnt; ++i) {
-        snprintf(path, sizeof(path), "%s/%s/%s%s",
-                 plat::fsBase(), BBS_SCREEN_DIR, name, list[i].ext);
+    for (size_t r = 0; r < 2; ++r) {
+        if (!dirs[r] || !dirs[r][0]) continue;
+        snprintf(path, sizeof(path), "%s/%s%s", dirs[r], name, list[i].ext);
         FILE* f = fopen(path, "rb");
         if (f) {
+            fromCard_ = (r == 0);
             f_        = f;
             mode_     = static_cast<Mode>(list[i].mode);
             inTok_    = false;
@@ -102,6 +129,7 @@ bool ScreenPlayer::open(const char* name, const Term& t) {
             return true;
         }
     }
+    }
     return false;
 }
 
@@ -110,7 +138,8 @@ void ScreenPlayer::close() {
         fclose(f_);
         f_ = nullptr;
     }
-    paused_ = false;
+    fromCard_  = false;
+    paused_    = false;
     pageBreak_ = false;
 }
 

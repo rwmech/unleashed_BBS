@@ -149,6 +149,7 @@ void Term::setType(TermType t, Charset cs, uint8_t cols, uint8_t rows) {
     cols_ = cols;
     rows_ = rows;
     rev_  = false;
+    cur_  = Color::LightGrey;
     esc_  = 0;
 }
 
@@ -221,6 +222,7 @@ void Term::init(ByteSink& o) {
         o.puts("\r\n");
     }
     rev_ = false;
+    cur_ = Color::LightGrey;
 }
 
 // ===========================================================================
@@ -312,15 +314,26 @@ void Term::cls(ByteSink& o) {
 
 // ---------------------------------------------------------------------------
 // color: foreground color (backgrounds are left to the terminal)
+//
+// Every colour leads with SGR 0, so setting a colour is self-contained.
+// Before this, half the palette emitted ESC[1;NNm, which sets bold and a
+// foreground and clears nothing at all; the other half emitted ESC[0;NNm and
+// did clear. So whether a row recovered from a reverse attribute that was
+// still set was decided by which C64 colour that row happened to be, which
+// is why some rows under a stale highlight looked fine and others were
+// filled blocks.
 // ---------------------------------------------------------------------------
 void Term::color(ByteSink& o, Color c) {
     uint8_t i = static_cast<uint8_t>(c) & 0x0F;
+    cur_ = c;                                   // for reverse(o, false)
     if (isPet()) {
         o.putc(kPetColor[i]);
     } else if (isAnsi()) {
-        char buf[16];
-        snprintf(buf, sizeof(buf), "\x1b[%u;%u%sm",
-                 kAnsiColor[i].bold, kAnsiColor[i].fg, rev_ ? ";7" : "");
+        char buf[16];                           // worst case "\x1b[0;37;1;7m"
+        snprintf(buf, sizeof(buf), "\x1b[0;%u%s%sm",
+                 kAnsiColor[i].fg,
+                 kAnsiColor[i].bold ? ";1" : "",
+                 rev_ ? ";7" : "");
         o.puts(buf);
     }
 }
@@ -330,6 +343,7 @@ void Term::color(ByteSink& o, Color c) {
 // ---------------------------------------------------------------------------
 void Term::reset(ByteSink& o) {
     rev_ = false;
+    cur_ = Color::LightGrey;
     if (isPet()) {
         o.putc(0x92);
         color(o, Color::LightGrey);
@@ -339,12 +353,26 @@ void Term::reset(ByteSink& o) {
 }
 
 // ---------------------------------------------------------------------------
-// reverse: reverse video on/off
+// reverse: reverse video on/off.
+//
+// Off re-asserts the current colour rather than sending ESC[27m. SGR 27 is
+// the least widely implemented code in the set, ANSI.SYS never had it, and
+// it was the only attribute-off in the entire output stream: one terminal
+// that drops it and the highlight runs on until something happens to emit
+// SGR 0. Re-asserting the colour clears reverse everywhere and keeps the
+// colour, which is what ESC[27m was doing on the terminals where it worked.
+//
+// It has to be the colour and not a bare ESC[0m, because fx::blink prints
+// text straight after turning reverse off and expects the colour to still
+// be set. PETSCII keeps 0x92: it is the C64's own reverse-off, and a CR
+// clears reverse there in any case.
 // ---------------------------------------------------------------------------
 void Term::reverse(ByteSink& o, bool on) {
     rev_ = on;
-    if (isPet())       o.putc(on ? 0x12 : 0x92);
-    else if (isAnsi()) o.puts(on ? "\x1b[7m" : "\x1b[27m");
+    if (isPet())  { o.putc(on ? 0x12 : 0x92); return; }
+    if (!isAnsi()) return;
+    if (on) o.puts("\x1b[7m");
+    else    color(o, cur_);
 }
 
 // ---------------------------------------------------------------------------

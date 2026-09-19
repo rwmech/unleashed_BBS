@@ -59,6 +59,18 @@
 #include "term.h"
 #include "timeline.h"
 
+// ---------------------------------------------------------------------------
+// sdScreensDir: the directory on the SD card that overrides the stock
+// screens, or null when there is no card or the override is switched off.
+//
+// Defined by the sd plugin and declared here so the screen player can look
+// on the card first without the core knowing that plugins exist. The core
+// reaching into a plugin is the wrong direction for a dependency, so it is
+// one function returning a path: the core asks "is there another place to
+// look" and does not care who answers.
+// ---------------------------------------------------------------------------
+const char* sdScreensDir();
+
 class ScreenPlayer {
 public:
     struct Vars {
@@ -70,6 +82,11 @@ public:
     // open: find the best file for this terminal. False if none exists.
     bool open(const char* name, const Term& t);
     bool active() const { return f_ != nullptr; }
+    // onCard: this screen is being read from the SD card. The card can be
+    // unmounted under a caller who is paused at a page break, and a stale
+    // descriptor into a torn-down filesystem is worse than a screen that
+    // stops early, so the unmount path closes these first.
+    bool onCard() const { return f_ != nullptr && fromCard_; }
     void close();
 
     // detach: forget the file without closing it (session moved elsewhere)
@@ -98,6 +115,7 @@ private:
     void byteIn(Term& t, Timeline& tl, const Vars& v, uint8_t b);
 
     FILE*   f_       = nullptr;
+    bool    fromCard_ = false;
     Mode    mode_    = Mode::Text;
     bool    inTok_   = false;
     uint8_t tokLen_  = 0;

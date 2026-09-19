@@ -97,6 +97,23 @@ def bbs_version():
     return m.group(1) if m else "?"
 
 
+def ansi_color(fg, bold=False, reverse=False):
+    """The bytes Term::color emits for one colour.
+
+    Derived rather than hardcoded: these assertions used to spell out
+    ESC[1;33m, and when the terminal layer started leading every colour with
+    SGR 0 they failed on the spelling while the behaviour was right. What the
+    tests care about is that the shortcut letter is yellow, not how yellow is
+    encoded this month.
+    """
+    out = "\x1b[0;%d" % fg
+    if bold:
+        out += ";1"
+    if reverse:
+        out += ";7"
+    return (out + "m").encode()
+
+
 def config_num(name, fallback):
     """A numeric #define from src/config.h, so the suite follows the build."""
     src = (ROOT / "src" / "config.h").read_text()
@@ -315,6 +332,9 @@ def test_ansi():
     ok = check("detected ANSI-UTF8", c.wait_for(b"ANSI-UTF8 DETECTED", 5))
     ok &= check("telnet negotiation sent", c.wait_for(b"\xff\xfb\x01", 2))
     ok &= check("welcome art streamed (UTF-8 block)", c.wait_for("█".encode(), 8))
+    # The screen's own bytes, not Term::color: welcome.ans is ANSI art and
+    # carries its escapes literally, so this one does not follow the
+    # terminal layer's encoding.
     ok &= check("@NODE@ expanded", c.wait_for(b"Node \x1b[1;33m", 2))
     ok &= check("@BBS@ shows a real micro sign", c.wait_for("µnleashed BBS".encode(), 3))
     ok &= check("handle prompt", c.wait_for(b"Enter your handle", 8))
@@ -1139,7 +1159,8 @@ def test_idle_login():
     c.send(b"Ro")
     c.buf.clear()
     ok = check("warning at 30 s", c.wait_for(b"Still there? Disconnecting in 30 seconds.", 34))
-    ok &= check("partial input redrawn", c.wait_for(b"Enter your handle: \x1b[1;37mRo", 2))
+    ok &= check("partial input redrawn",
+                c.wait_for(b"Enter your handle: " + ansi_color(37, bold=True) + b"Ro", 2))
     if "--slow" in FLAGS:
         ok &= check("hangup at 60 s", c.wait_for(b"IDLE TIMEOUT", 32) and c.wait_closed(8))
     c.close()
@@ -1450,7 +1471,8 @@ def test_menus():
     every = plain(c.buf)
     ok &= check("? all walks every section",
                 b"Commands" in every and b"Chat and messages" in every and b"PROFILE" in every)
-    ok &= check("the shortcut letter is picked out", b"\x1b[1;33mW" in bytes(c.buf))
+    ok &= check("the shortcut letter is picked out",
+                ansi_color(33, bold=True) + b"W" in bytes(c.buf))
     c.close()
     return ok
 
@@ -1646,6 +1668,32 @@ def test_config():
         ok &= check("the new value is in system.cfg", "max_users = 77" in cfg)
         ok &= check("the rest of the file is untouched",
                     "sysop_password = testsysop" in cfg and "[plugin:chat]" in cfg)
+
+    # Saving restarts the plugins, and each one registers its command table
+    # on the way up. Nothing used to take the old registrations back down, so
+    # the table filled with duplicates and, once it was full, whichever
+    # plugins came last were left with no commands at all: running, shown as
+    # running, and answering "Unknown command" to their own verbs.
+    #
+    # Checked by counting rather than by waiting for the overflow, because
+    # the overflow depends on how many plugins are compiled in and how many
+    # table slots there are. A duplicate row in HELP is the leak itself, and
+    # it shows on the first reload rather than the third.
+    s.buf.clear()
+    s.send(b"sd\r")
+    ok &= check("a plugin still has its commands after a reload",
+                s.wait_for(b"SD card", 5))
+    s.buf.clear()
+    s.send(b"? sysop\r")
+    s.pump(1.2)
+    listed = plain(s.buf)
+    ok &= check("and is listed in HELP exactly once, not once per reload",
+                listed.count(b"SD MOUNT") == 1)
+    ok &= check("which is true of the last plugin in the table too",
+                listed.count(b"ANNOUNCE TEST") == 1)
+    if b"[More]" in listed or b"Press SPACE" in listed:
+        s.send(b"n")
+        s.wait_for(b"Sysop", 4)
 
     s.buf.clear()
     s.send(b"config limits\r")
@@ -1880,6 +1928,167 @@ def test_announce():
     return ok
 
 
+def test_sd():
+    """The SD card, mounted and not.
+
+    Both halves matter and they are different code. Without a card the board
+    has to be a complete board that says so plainly; with one, the screens on
+    the card have to win over the stock set without replacing it. The harness
+    decides which by whether BBS_SD_DIR was set for the server, so this test
+    asks the board what it has rather than assuming.
+    """
+    print("SD card")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+
+    s = ansi_login("Carder")
+    s.send(b"bye " + PASSWORD.encode() + b"\r")
+    s.wait_for(b"Sysop", 4)
+    s.buf.clear()
+
+    s.send(b"sd\r")
+    s.wait_for(b"SD card", 4)
+    s.pump(0.4)
+    shown = plain(s.buf)
+    mounted = b"no card" not in shown
+
+    ok = check("SD reports the card either way", b"SD card" in shown)
+
+    if not mounted:
+        # The board with no card is the one most people will have, and it is
+        # a supported configuration rather than a broken one. It has to say
+        # which pins it tried, because "no card found" with no pin numbers
+        # sends somebody to re-seat a card that was never the problem.
+        ok &= check("it says there is no card", b"no card" in shown)
+        ok &= check("and which pins it tried", b"CS 5" in shown and b"MOSI 23" in shown)
+        ok &= check("and that the board is fine without one", b"runs fine without" in shown)
+
+        s.buf.clear()
+        s.send(b"sd unmount\r")
+        ok &= check("unmounting nothing is not an error",
+                    s.wait_for(b"No card is mounted", 4))
+
+        # The claim the whole design rests on: no card, complete board.
+        s.buf.clear()
+        s.send(b"who\r")
+        ok &= check("the board still works with no card", s.wait_for(b"Who's online", 4))
+    else:
+        ok &= check("it names the mount point", b"/" in shown)
+        ok &= check("and reports free space", b"MB free of" in shown)
+        ok &= check("and where screens come from", b"screens:" in shown)
+
+        # The override is the part worth testing: a file on the card wins,
+        # and a file only the stock set has still plays. Replacing rather
+        # than overriding would be a silent way to lose every screen a
+        # sysop did not think to copy.
+        sd = pathlib.Path(os.environ["BBS_SD_DIR"])
+        (sd / "screens").mkdir(parents=True, exist_ok=True)
+
+        # The caller is ANSI, so .ans is the format it should get. A card
+        # file of the same format wins.
+        (sd / "screens" / "about.ans").write_text("CARD ABOUT OVERRIDE\n")
+        s.buf.clear()
+        s.send(b"about\r")
+        s.pump(1.2)
+        ok &= check("a screen on the card overrides the stock one",
+                    b"CARD ABOUT OVERRIDE" in plain(s.buf))
+
+        # One run of privacy, two things checked from the same output, because
+        # privacy pauses at a page break and a second `privacy` typed while it
+        # is paused has its "p" eaten as a page key. Two commands here is what
+        # made this test fail against correct code.
+        #
+        # The card gets a privacy.asc. An ANSI caller should still get the
+        # flash privacy.ans, because the lookup is extension-major: for each
+        # format in the terminal's order, card first and then flash. The first
+        # version searched per directory, so one .asc dropped on a card to try
+        # the override silently took every C64 caller off .p40 and every ANSI
+        # caller off .ans, and it looked like it had worked.
+        (sd / "screens" / "privacy.asc").write_text("CARD PRIVACY ASCII\n")
+        s.buf.clear()
+        s.send(b"privacy\r")
+        s.pump(1.2)
+        played = plain(s.buf)
+        ok &= check("a screen only flash has in this format still plays",
+                    b"THE RISKS OF AN UNENCRYPTED BBS" in played)
+        ok &= check("and a card .asc does not beat a flash .ans",
+                    b"CARD PRIVACY ASCII" not in played)
+
+        # privacy is four pages and pauses at "Press SPACE to continue". That
+        # is the screen player's page break, not the list pager's [More], and
+        # a key there advances to the next page rather than stopping. Leaving
+        # it paused fed "s" and "d" of the next command to the screen as page
+        # keys and left "unmount" at the prompt as an unknown command, so the
+        # card never unmounted and this test called working code broken.
+        # Page to the end rather than assuming how many pages there are.
+        ok &= check("the privacy screen pauses for the reader",
+                    b"Press SPACE to continue" in played)
+        for _ in range(10):
+            if b"Sysop:" in plain(s.buf):
+                break
+            s.send(b" ")
+            s.pump(0.5)
+        ok &= check("and paging through it reaches the prompt", b"Sysop:" in plain(s.buf))
+
+        # A second caller parked mid-screen ON THE CARD while the sysop
+        # unmounts. A ScreenPlayer holds the file open for as long as the
+        # screen plays, and at a page break that is until a key arrives,
+        # possibly never. Unmounting under that leaves a descriptor into a
+        # torn-down filesystem, and on the board the VFS slot is reused by
+        # the next mount, so the stale handle can come back as somebody
+        # else's file rather than as an error. The caller has to be let go
+        # first, and told why, rather than left on a half-drawn screen.
+        #
+        # privacy.ans, because the reader is an ANSI caller and the lookup is
+        # extension-major: a .asc on the card would lose to the flash .ans
+        # and the reader would never be holding a card file at all. The form
+        # feed is what makes it stop and wait.
+        (sd / "screens" / "privacy.ans").write_text(
+            "CARD PRIVACY PAGE ONE" + chr(10) + chr(12) +
+            "CARD PRIVACY PAGE TWO" + chr(10))
+        reader = ansi_login("Reader")
+        reader.send(b"privacy\r")
+        onCard = reader.wait_for(b"CARD PRIVACY PAGE ONE", 6)
+        ok &= check("a second caller is reading a screen off the card", onCard)
+        ok &= check("and is parked at its page break",
+                    reader.wait_for(b"Press SPACE to continue", 4))
+
+        s.buf.clear()
+        s.send(b"sd unmount\r")
+        ok &= check("the unmount completes", s.wait_for(b"safe to pull", 6))
+        reader.pump(1.5)
+        ok &= check("the parked caller is told the card went away",
+                    b"card was removed" in plain(reader.buf))
+        reader.buf.clear()
+        reader.send(b"who\r")
+        ok &= check("and is back at a working prompt, not stuck",
+                    reader.wait_for(b"Who's online", 6))
+        reader.close()
+
+        s.buf.clear()
+        s.send(b"sd mount\r")
+        ok &= check("the card mounts again after that", s.wait_for(b"Mounted", 6))
+        (sd / "screens" / "privacy.ans").unlink()
+
+        # Unmount and the board falls back rather than losing its screens.
+        s.buf.clear()
+        s.send(b"sd unmount\r")
+        s.wait_for(b"safe to pull", 4)
+        s.buf.clear()
+        s.send(b"about\r")
+        s.pump(1.2)
+        after = plain(s.buf)
+        ok &= check("pulling the card falls back to the stock screen",
+                    b"CARD ABOUT OVERRIDE" not in after and b"v0." in after)
+        s.buf.clear()
+        s.send(b"sd mount\r")
+        ok &= check("and it mounts again", s.wait_for(b"Mounted", 5))
+
+    s.close()
+    return ok
+
+
 def test_partitions():
     """What a filesystem upload may and may not reach.
 
@@ -2096,7 +2305,7 @@ if __name__ == "__main__":
                test_bulletin(), test_idle_login(), test_busy(),
                test_screens(), test_exit_screen(),
                test_refresh_and_ctrl_l(),
-               test_partitions()]
+               test_sd(), test_partitions()]
     if "--backup" in FLAGS:
         results.append(test_backup())
     if "--ban" in FLAGS:

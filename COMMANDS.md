@@ -193,6 +193,9 @@ All caller commands still work. Node arguments are `1`-`6`, `S` (sysop node) or 
 | `LURK` | `HIDE` | Toggle lurking: hidden from WHO and pages refused. |
 | `BANS` | `BANS` | Active IP bans and minutes remaining. |
 | `PLUGINS` | any staff | Every plugin compiled in: version, whether it is running, and why not. Also free disk space and the reserve. |
+| `SD` | sysop | SD card status: type, mount point, free space, and where screens are coming from. With no card it says which pins it tried, because "no card found" without them sends you to re-seat a card that was never the problem. |
+| `SD MOUNT` | sysop | Mount the card without rebooting. **Pauses the whole board** for a few hundred milliseconds while it negotiates over SPI, which is why it is typed rather than retried on a timer. |
+| `SD UNMOUNT` | sysop | Flush and release, so the card can be pulled safely. Screens fall back to the stock set. |
 | `UNBAN a.b.c.d` | `UNBAN` | Lift a ban. |
 | `USERS` | `USERS` | User manager: cursor list of accounts with edit, add and delete (ANSI, PETSCII). A paged list on plain ASCII. |
 | `USER ADD` | `USERS` | Add-account form: handle, password, fields, Level, Locked. |
@@ -265,7 +268,7 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `who_refresh_max` | `30` | highest `WHO n` / `DASH n` refresh, seconds |
 | `activity_led_gpio` | `2` | LED that blinks on network traffic (the blue LED on DOIT-style boards), -1 = none |
 | `self_register` | `yes` | `no`: unknown handles can't sign up, staff add accounts |
-| `max_users` | `100` | account limit, 1..100 (more needs the SD card plugin) |
+| `max_users` | `250` | account limit, 1..250. Not a space limit: `userdata` holds roughly 1,380 accounts. The cap is that the list indices are `uint8_t`, which reaches into every list on the board, so raising it is its own piece of work. The SD card does not help and is not meant to: accounts stay on internal flash so they survive the card failing. |
 | `guest` | `yes` | `no`: unknown handles are not offered `[G]uest` |
 | `guest_minutes` | `15` | per guest call, 0 = unlimited; guests have no daily limit |
 
@@ -273,14 +276,38 @@ Keys must appear above the first `[section]` line. Sections are `[access]` for t
 
 ### Plugins
 
-Two plugins ship with the firmware:
+Four plugins ship with the firmware:
 
 | Plugin | What it does | Defaults |
 |---|---|---|
 | `chat` | one chat room, DDial style, with a few lines of history for whoever joins | `read = all`, `write = all` |
 | `serial` | shares a serial device: one operator types, any number watch | `read = all`, `write = staff` |
+| `announce` | posts a small heartbeat to a directory so the board can be found | `sysop` throughout |
+| `sd` | mounts an optional SD card and lets its screens override the stock ones | `sysop` throughout |
 
-Chat is on by default, even with no section in `system.cfg`; `enabled = no` turns it off. The serial bridge waits to be switched on, since it needs wiring. Turning either off costs nothing: no commands, no hooks, no memory. The `example` plugin is the template for writing your own ([PLUGINS.md](PLUGINS.md)).
+Chat and `sd` are on by default, even with no section in `system.cfg`; `enabled = no` turns either off. `sd` on a board with no card costs one failed mount at boot and then nothing. The serial bridge waits to be switched on, since it needs wiring, and so does `announce`, since it is the one thing that talks out. Turning either off costs nothing: no commands, no hooks, no memory. The `example` plugin is the template for writing your own ([PLUGINS.md](PLUGINS.md)).
+
+The SD card is optional and the board is complete without one. What goes on
+it is the things that grow without limit and can be lost: message bases, file
+areas, a sysop's own screens. What stays on internal flash is everything that
+has to survive the card failing, which is the accounts, the configuration and
+the caller log. FAT32 rather than LittleFS so the card can be pulled and read
+on any laptop, and the price of that is that FAT is not safe against losing
+power mid-write, which is why nothing that matters lives there.
+
+```
+[plugin:sd]
+enabled = yes
+cs      = 5         ; GPIO. Move to 4 if the board will not boot with a card
+mosi    = 23
+clk     = 18
+miso    = 19
+screens = yes       ; screens on the card override the stock set, per file
+```
+
+Wiring: `3V3` (**not VIN**), `GND`, `CS` to D5, `MOSI` to D23, `CLK` to D18,
+`MISO` to D19. GPIO5 is a strapping pin, so if the board will not start with
+the card attached, move `CS` to D4 and set `cs = 4`.
 
 Each plugin reads its own section:
 

@@ -43,6 +43,22 @@ CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 
 # Sockets: 1 listener + 6 nodes + 1 busy line + spares (lwIP ceiling is 16)
 CONFIG_LWIP_MAX_SOCKETS=24
+
+# FATFS: one shared sector window instead of one per open file.
+#
+# esp_vfs_fat_sdspi_mount makes a single contiguous allocation of
+# sizeof(vfs_fat_ctx_t) + max_files * sizeof(FIL), and with a per-file cache
+# every FIL carries its own 512 byte window. At the 20 open files sixteen
+# caller nodes need, that is about 12 KB in one block, and on a board whose
+# static RAM is already 175 KB it is the allocation that fails: the card
+# reported ESP_ERR_NO_MEM at every bus speed, which is what told us it was
+# never a signal problem.
+#
+# With this off, FF_FS_TINY is 1 and the open files share the filesystem's
+# window, so the same 20 files cost a few hundred bytes. The price is more
+# sector re-reads when several files are read interleaved. The BBS streams
+# one screen at a time, so it pays almost nothing for it.
+CONFIG_FATFS_PER_FILE_CACHE=n
 CONFIG_LWIP_SO_REUSE=y
 
 # 1 ms tick so effect timing is smooth

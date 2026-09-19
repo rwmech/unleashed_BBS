@@ -388,7 +388,13 @@ bool Bbs::listRow(Session& s) {
 
 // rowWidth: lists and menus are laid out for 40 columns everywhere
 uint8_t Bbs::rowWidth(const Session& s) const {
+    // A zero here underflows to 255 and a title bar pads 255 reverse-video
+    // spaces, which is the one mechanism that would genuinely paint a bar
+    // past the right edge and onto the rows below. Unreachable today, since
+    // setGeometry guards zero and detection only ever yields 40 or 80, but a
+    // NAWS negotiation carrying zero does reach Telnet, and the guard is free.
     uint8_t cols = s.term.cols();
+    if (!cols) cols = 80;
     return static_cast<uint8_t>((cols < 40 ? cols : 40) - 1);
 }
 

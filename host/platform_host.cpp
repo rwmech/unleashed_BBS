@@ -41,6 +41,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cerrno>
 #include <ctime>
 #include <string>
 #include <sys/stat.h>
@@ -130,6 +131,68 @@ uint32_t dirBytes(const std::string& dir) {
     return total;
 }
 }   // namespace
+
+// ---------------------------------------------------------------------------
+// The SD card on the host: a directory, mounted on demand.
+//
+// BBS_SD_DIR names it. Without that variable the host build has no card,
+// which is the case worth having as the default, because "runs without a
+// card" is the claim the whole design rests on and it should be what the
+// tests exercise unless they say otherwise.
+//
+// Mounting here is creating a directory and is not slow. On the board it is
+// a few hundred milliseconds of SPI, so anything written against this must
+// still treat a mount as something that happens at start or on a sysop's
+// say-so, never from the loop. A host stub that is faster than the real
+// thing is how blocking calls end up somewhere they cannot be.
+// ---------------------------------------------------------------------------
+namespace {
+std::string g_sdBase;
+bool        g_sdMount = false;
+}   // namespace
+
+const char* sdBase() {
+    return g_sdMount ? g_sdBase.c_str() : "";
+}
+
+bool sdMount(const SdPins& pins, char* err, size_t errLen) {
+    (void)pins;                       // the host has no bus to wire wrongly
+    if (err && errLen) err[0] = '\0';
+    if (g_sdMount) return true;
+    const char* dir = getenv("BBS_SD_DIR");
+    if (!dir || !*dir) {
+        if (err && errLen) snprintf(err, errLen, "no card found: set BBS_SD_DIR to fake one");
+        return false;
+    }
+    if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+        if (err && errLen) snprintf(err, errLen, "cannot use %s: %s", dir, strerror(errno));
+        return false;
+    }
+    g_sdBase  = dir;
+    g_sdMount = true;
+    plat::log("sd: mounted %s (host)", dir);
+    return true;
+}
+
+void sdUnmount() {
+    if (!g_sdMount) return;
+    g_sdMount = false;
+    plat::log("sd: unmounted");
+}
+
+SdInfo sdInfo() {
+    SdInfo i;
+    if (!g_sdMount) return i;
+    i.mounted  = true;
+    i.speedKHz = 20000;
+    snprintf(i.type, sizeof(i.type), "%s", "host dir");
+    // A notional 2 GB, so the free-space arithmetic a plugin does is
+    // exercised rather than skipped.
+    i.totalKB = 2u * 1024u * 1024u;
+    uint32_t used = dirBytes(g_sdBase) / 1024u;
+    i.freeKB  = used < i.totalKB ? i.totalKB - used : 0;
+    return i;
+}
 
 // ---------------------------------------------------------------------------
 // Device serial port on the host. BBS_SERIAL_DEV points at a real port or
