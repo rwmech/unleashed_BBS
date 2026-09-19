@@ -34,9 +34,10 @@ Built in blocks, each checkpointed into git before and after.
 |---|---|---|
 | A | Repartition, sixteen nodes | **done**, flashed 2026-09-19 |
 | B | SD card: mount, `SD` command, screens override | **done**, host-tested, not flashed |
-| C | File areas: browse, list, describe. Logs to the card | next |
+| C | File areas: browse, list, describe. Logs mirrored to the card | in progress |
 | D | Sixteen-node fallout in the remaining lists | after C |
 | E | The queued bugs in Part 4 | if there is time |
+| F | Disk activity light, selectable styles | Rob's priority, wanted soon |
 
 Regression runs after D, on Rob's instruction. The SD card work is verified in
 two modes, with a card and without, because "runs without a card" is the claim
@@ -44,6 +45,47 @@ the whole design rests on and it is the one that would rot silently.
 
 The five open questions at the bottom are still Rob's to answer. None of them
 block C.
+
+## Block C as decided
+
+**An area is a folder the sysop mounts under a name.** Rob's shape, and a
+better one than either of the alternatives offered: the config maps a path on
+the card to a human-readable name, so `/bbs/c64stuff` becomes "C64 Downloads"
+and a sysop can point an area at a folder they already have rather than
+rearranging the card to suit the BBS. Areas are a naming layer, not a
+directory convention.
+
+```
+[area:c64]
+name  = C64 Downloads
+path  = bbs/c64stuff      ; relative to the card
+read  = all               ; optional, defaults to all
+write = staff             ; optional, defaults to staff: who may upload here
+```
+
+A folder with no section is not an area. That is the difference from "every
+directory is an area" and it is what lets a sysop keep their own files on the
+same card without publishing them.
+
+**Descriptions are a plain text file in each folder**, one line per file,
+`name  description`, in the style every BBS used. A sysop can edit them on a
+laptop with the card in hand, which is the entire reason the card is FAT32.
+Written back through temp file, flush, rename, because FAT is not power-fail
+safe and this is the only thing the board writes there.
+
+**The caller log stays internal and is mirrored.** The fixed-size ring on the
+logs partition is untouched and `LAST` still reads it, so pulling the card
+costs the long history and nothing else. The card gets an append-only copy
+that can run to months. Rob's call, and the conservative one: the log is the
+sysop's security record and it should not depend on a card being seated.
+
+**Not in this block: uploads and the move interface.** Rob wants an upload
+approval area and a way to shuffle files between folders, using the existing
+level groups. Both are real and both wait for file transfer, because an upload
+area on a board with no transfer protocol cannot be used and therefore cannot
+be tested. The `write` level is carried in the area config from the start so
+the permission model is in place when XMODEM lands, rather than being
+retrofitted onto areas people already have.
 
 ## The hardware, confirmed rather than assumed
 
