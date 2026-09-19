@@ -182,10 +182,31 @@ them in. Two consequences:
   a mask and is only written when retyped, like the staff passwords.
 - Changing either needs a reboot, and the form says so.
 
-**Watch for:** the backup zip carries `system.cfg`, so a downloaded backup now
-contains a Wi-Fi password. The download already redacts the three staff
-passwords through `syscfg::redactLine`; `wifi_pass` must join that list, and
-`unredactLine` must put the live one back on restore.
+**The backup zip.** It carries `system.cfg`, so a backup now contains the
+Wi-Fi password. Rob's call, and it stands: **not redacted**. The backup window
+is a separate port, opened by hand with the BOOT button while the sysop is
+logged in, and it closes itself. A sysop who forwards that port has made a
+different mistake.
+
+Two things follow from that rather than from redaction.
+
+**Say it plainly in the documentation.** The backup port is never to be
+forwarded. BACKUP.md and the build page both get a line saying so, in the
+same register as the telnet warning: it holds your accounts, your settings and
+now your Wi-Fi password, and it hands them over without asking.
+
+**And enforce it, because documentation only protects people who read it.**
+The download needs no confirmation by design, which is the right call for a
+sysop at their own desk and the wrong one for a stranger who found an open
+port. The backup HTTP server should refuse any connection whose source address
+is not private: `10/8`, `172.16/12`, `192.168/16`, `127/8`, and the IPv6
+equivalents. A forwarded port then still cannot be used from outside, whether
+it was forwarded deliberately, by accident, or by UPnP without anybody asking.
+About 20 lines in `src/core/backup.cpp`, and it turns a documented rule into a
+structural one.
+
+A sysop who genuinely wants remote backups can reach the board over a VPN,
+which puts them on a private address and works unchanged.
 
 ## 2.2 No credentials, no board
 
