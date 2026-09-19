@@ -54,6 +54,11 @@ size_t fmt(char* buf, size_t n, const char* strftimeFmt);
 size_t fmtEpoch(char* buf, size_t n, const char* strftimeFmt, uint32_t e);
 
 // todayStart: epoch of local midnight today, 0 when the clock is not set
+// utcOffset: minutes east of UTC right now, daylight saving included,
+// or 0 when the clock has never been set. Sent to a directory so it can
+// describe a board's busy hours in local time instead of UTC.
+int16_t utcOffset();
+
 uint32_t todayStart();
 
 // dayKey: local calendar day (YYYYDDD). Before NTP sync, a day number

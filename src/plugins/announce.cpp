@@ -283,13 +283,14 @@ void buildBody() {
         "{\"software\":\"unleashed\",\"version\":\"%s\","
         "\"name\":\"%s\",\"owner\":\"%s\",\"description\":\"%s\","
         "\"host\":\"%s\",\"port\":%u,\"nodes\":%u,\"busy\":%u,"
-        "\"uptime\":%u,\"interval\":%u,\"token\":\"%s\"%s}",
+        "\"uptime\":%u,\"interval\":%u,\"tz\":%d,\"token\":\"%s\"%s}",
         BBS_VERSION, name, owner, desc, host,
         static_cast<unsigned>(g_public),
         static_cast<unsigned>(bbs.publicNodes()),
         static_cast<unsigned>(bbs.publicBusy()),
         static_cast<unsigned>(plat::millis() / 1000u),
         static_cast<unsigned>(g_interval),
+        static_cast<int>(clk::utcOffset()),
         token, extra));
 }
 

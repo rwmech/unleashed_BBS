@@ -118,6 +118,7 @@ Connection: close
 | `nodes` | number | how many caller lines the board has |
 | `busy` | number | how many are in use right now |
 | `uptime` | number | seconds since the board booted |
+| `tz` | number | minutes east of UTC, daylight saving already applied. Lets a directory describe this board's busy hours in the hours its own callers keep, instead of in UTC. 0 when the clock has never been set |
 | `interval` | number | minutes between heartbeats, so a directory knows when to call the board quiet rather than guessing |
 | `token` | string | empty on the very first heartbeat, then whatever the directory issued |
 | `calls24` | number | calls in the last 24 hours. Only when the sysop turned `share_activity` on |

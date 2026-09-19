@@ -67,6 +67,30 @@ size_t fmt(char* buf, size_t n, const char* strftimeFmt) {
     return fmtEpoch(buf, n, strftimeFmt, epoch());
 }
 
+// ---------------------------------------------------------------------------
+// utcOffset: minutes east of UTC, as of now, with daylight saving already
+// applied because it comes from the resolved local time rather than from
+// the rule in the TZ string.
+// ---------------------------------------------------------------------------
+// tm_gmtoff is a glibc extension and the IDF's newlib does not have it, so
+// the offset is the difference between the same instant told two ways. The
+// day comparison catches the cases where local time has already crossed
+// midnight and UTC has not, or the other way round, including at new year
+// where tm_yday jumps by a whole year instead of one.
+int16_t utcOffset() {
+    if (!valid()) return 0;
+    time_t t = static_cast<time_t>(epoch());
+    struct tm lt, gt;
+    localtime_r(&t, &lt);
+    gmtime_r(&t, &gt);
+
+    int diff = (lt.tm_hour * 60 + lt.tm_min) - (gt.tm_hour * 60 + gt.tm_min);
+    int days = lt.tm_yday - gt.tm_yday;
+    if (days == 1 || days < -1)       diff += 1440;   // local is the next day
+    else if (days == -1 || days > 1)  diff -= 1440;   // local is the day before
+    return static_cast<int16_t>(diff);
+}
+
 uint32_t todayStart() {
     uint32_t e = epoch();
     if (!e) return 0;

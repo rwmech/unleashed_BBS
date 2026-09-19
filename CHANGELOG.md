@@ -24,6 +24,13 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.15.1, 2026-09-19
+
+- `TIME -1` takes a line off the clock: no per-call limit, no daily limit, no idle hangup, until it hangs up. `TIME n -1` does it to somebody else's node. It lasts for the call only, so nobody ends up quietly unlimited for ever. `OFF`, `NONE`, `UNLIMITED` and `NOLIMIT` all work too. The cost is that `-1` no longer means "take one minute away".
+- A sysop who has made themselves visible now counts in what the board tells a directory, so a board with somebody sitting on it stops advertising itself as empty. It reports 1 of 7 rather than 0 of 6.
+- `/welcome` in chat replays the screen you came in on. Not `/w`, which has been the who list since 0.10.0.
+- The board reports its offset from UTC in the announce payload, so a directory can describe its busy hours in local time.
+
 ## 0.15.0, 2026-09-18
 
 Settings you can find, and a send-off everybody gets.

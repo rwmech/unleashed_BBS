@@ -202,6 +202,7 @@ HA stays parked (its TLS was the only real RAM risk). Lua stays the drop-in path
 ## Build gotchas already hit
 
 - On Xtensa, `uint32_t` is `unsigned long`. Cast to `unsigned` for `%u`; `plat::log` has a printf format attribute.
+- The IDF's newlib is not glibc. `struct tm` has no `tm_gmtoff`, so a UTC offset has to be worked out by comparing `localtime_r` with `gmtime_r` for the same instant. The host build compiles the glibc version happily, so this class of mistake only shows up on `pio run`.
 - Partition labels `storage` and `logs`. `littlefs` as a name collides with an IDF 5.3 subtype name.
 - PlatformIO `uploadfs` writes to the LAST data partition of subtype spiffs/fat/littlefs, so `storage` must stay last in `partitions.csv`. esp_littlefs mounts by label with any subtype.
 - PlatformIO registers `src/` as an extra component, not `main`: IDF deps are listed in `src/CMakeLists.txt` (incl. `esp_driver_gpio`, `esp_rom` for ROM `tinfl_decompress`). LittleFS and mDNS come from `src/idf_component.yml`.
