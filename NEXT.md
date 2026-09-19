@@ -190,10 +190,26 @@ different mistake.
 
 Two things follow from that rather than from redaction.
 
-**Say it plainly in the documentation.** The backup port is never to be
-forwarded. BACKUP.md and the build page both get a line saying so, in the
-same register as the telnet warning: it holds your accounts, your settings and
-now your Wi-Fi password, and it hands them over without asking.
+**Say it where it is used, not where it is documented.** The window already
+announces itself on the sysop's screen when the button is pressed:
+
+```
+*** Backup open 5 min: http://192.168.1.50:8080/backup.zip
+```
+
+That line gains the constraint, so nobody has to have read anything:
+
+```
+*** Backup open 5 min, local network only
+    http://192.168.1.50:8080/backup.zip
+    Holds your accounts, settings and wifi password. Not reachable
+    from outside, and never forward this port.
+```
+
+Both numbers come from the live config rather than being written into the
+string, so a board with `backup_window_minutes = 10` says ten. BACKUP.md gets
+the same line, but the screen is the one that matters: it is in front of the
+only person who can act on it, at the moment they are acting.
 
 **And enforce it, because documentation only protects people who read it.**
 The download needs no confirmation by design, which is the right call for a
