@@ -186,6 +186,10 @@ Still open on serial: autoprobe (listen at each common speed and score framing e
 
 Queued for the next build (Rob's plan, in order):
 
+- Wi-Fi credentials move out of `include/secrets.h` and into `system.cfg` on the `userdata` partition, then Improv Wi-Fi Serial so a browser can provision a board over the same connection it flashed it with. This is the prerequisite for a web installer: today the SSID and passphrase are compiled in, so any published binary carries whoever built it's home network password, and a shared binary could never join anybody else's network anyway.
+- A web installer page in the style of WLED, once the above lands: an ESP Web Tools manifest, the binaries in a `releases/` directory with the third-party licences, and the directory server hosting a copy while the firmware repo is private.
+- A bell when somebody logs in and when somebody joins the chat room (Rob). Neither rings today: the only bells are pages, broadcasts and form errors, so a caller arriving is silent. Wants the same treatment as a page: bell, then the notice.
+
 - Build profiles: PlatformIO environments for a logger-only board, a chat-only board and the full board, rather than forking the repository.
 - XMODEM / YMODEM and the SD card file plugin.
 - GPIO plugin with a named point table and a dashboard (needs Rob's pin list).
