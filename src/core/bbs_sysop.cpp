@@ -170,6 +170,15 @@ void Bbs::coElevate(Session& s, Access level, uint32_t now) {
     snprintf(buf, sizeof(buf), "%s access on node %u.", syscfg::levelName(level), s.id);
     say(t, tl, Color::LightGreen, buf);
     t.nl(tl);
+    if (bootWasCrash()) {
+        // Said to staff only, and said plainly. A board that restarted on
+        // its own has lost every caller who was on it.
+        char why[64];
+        snprintf(why, sizeof(why), "Last restart was not clean: %s.", bootReason());
+        say(t, tl, Color::LightRed, why);
+        say(t, tl, Color::Grey, "SYS has the detail. The log is reboots.log.");
+        t.nl(tl);
+    }
     say(t, tl, Color::Grey, can(s, PERM_NOLIMITS) ? "No time limits. HELP for commands."
                                                : "HELP for commands.");
     plat::log("bbs: node %u -> %s (%s, %s) perms 0x%03x", s.id, syscfg::levelName(level),

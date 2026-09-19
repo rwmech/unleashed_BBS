@@ -237,6 +237,11 @@ bool backupButtonPressed(uint32_t) {
 void activityLedBegin(int) {}
 void activityPulse(uint32_t) {}
 void activityTick(uint32_t) {}
+void ledSignal(uint32_t, uint32_t) {}   // no LED on a PC
+
+// The host build is started by a person, so it never crashed its way here.
+const char* resetReason()  { return "host start"; }
+bool        resetWasCrash() { return false; }
 
 // ---------------------------------------------------------------------------
 // inflateRaw: zlib in raw mode (windowBits -15)

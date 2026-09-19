@@ -51,7 +51,7 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "0.16.0"
+#define BBS_VERSION         "0.16.1"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // ---------------------------------------------------------------------------
@@ -195,6 +195,8 @@
 #define BBS_SCREEN_DIR      "screens"
 #define BBS_CONFIG_FILE     "system.cfg"
 #define BBS_CALLLOG_FILE    "calls.log"
+#define BBS_REBOOT_FILE     "reboots.log"  // why the board started, one line each
+#define BBS_REBOOT_MAX      4096           // bytes before it starts again
 #define BBS_CALLLOG_SIZE    50
 
 // ---------------------------------------------------------------------------

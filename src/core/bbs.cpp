@@ -133,6 +133,7 @@ Bbs& Bbs::instance() {
 // begin: wire the session table, bind the single dial-in port
 // ---------------------------------------------------------------------------
 bool Bbs::begin(uint16_t port) {
+    noteBoot();                       // why we are here, before anything else
     for (uint8_t i = 0; i < BBS_MAX_NODES; ++i) {
         nodes_[i].id   = static_cast<uint8_t>(i + 1);
         nodes_[i].role = Role::Caller;
@@ -1582,6 +1583,50 @@ void Bbs::exitScreen(Session& s, uint32_t now) {
 // secondsLeft: the tighter of the per-call and per-day limits. Guests have
 // guest_minutes per call and no daily limit.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// noteBoot: why this boot happened, into the log on the logs partition and
+// into a flag for the next staff login.
+//
+// The file is plain text and capped, because the point of it is to be read
+// by a person who is wondering what happened last night, not to be complete
+// for ever.
+// ---------------------------------------------------------------------------
+void Bbs::noteBoot() {
+    snprintf(bootReason_, sizeof(bootReason_), "%s", plat::resetReason());
+    bootCrash_ = plat::resetWasCrash();
+    plat::log("boot: %s", bootReason_);
+
+    char path[96];
+    snprintf(path, sizeof(path), "%s/%s", plat::logsBase(), BBS_REBOOT_FILE);
+
+    // Count what is already there, and start again if it has grown past the
+    // cap. Losing the oldest lines matters less than the file growing
+    // without limit on a board that is genuinely stuck in a reboot loop.
+    uint16_t lines = 0;
+    long size = 0;
+    if (FILE* r = fopen(path, "r")) {
+        char line[96];
+        while (fgets(line, sizeof(line), r)) {
+            ++lines;
+            if (strstr(line, "crash") || strstr(line, "watchdog") || strstr(line, "brownout"))
+                ++bootCrashes_;
+        }
+        fseek(r, 0, SEEK_END);
+        size = ftell(r);
+        fclose(r);
+    }
+
+    FILE* f = fopen(path, size > BBS_REBOOT_MAX ? "w" : "a");
+    if (!f) return;
+    if (size > BBS_REBOOT_MAX) bootCrashes_ = bootCrash_ ? 1 : 0;
+
+    char when[32];
+    if (clk::valid()) clk::fmt(when, sizeof(when), "%Y-%m-%d %H:%M");
+    else              snprintf(when, sizeof(when), "clock not set yet");
+    fprintf(f, "%s  %s\n", when, bootReason_);
+    fclose(f);
+}
+
 // ---------------------------------------------------------------------------
 // unlimited: whether the clock applies to this call at all. Two ways to be
 // off it: the caller's rank says so for every call, or a sysop typed

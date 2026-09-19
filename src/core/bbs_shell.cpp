@@ -1242,7 +1242,10 @@ bool Bbs::rowSys(Session& s) {
         case 16: rowSection(s, "load"); return true;
         case 17:
             fmtUptime(buf, sizeof(buf), plat::millis());
-            statRow(s, "Uptime", buf, Color::White);
+            // An uptime that keeps starting over is the only symptom of a
+            // board that restarts on its own, so say why it started.
+            statRow(s, "Uptime", buf, Color::White,
+                    bootWasCrash() ? bootReason() : nullptr);
             return true;
         case 18: {
             char when[24] = "-";

@@ -24,6 +24,12 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.16.1, 2026-09-19
+
+- **Fixed: a token saved by the truncating firmware was still being sent.** 0.16.0 stopped storing a short token but happily loaded one, so a board that had run the old firmware kept posting its four-character wreckage and kept minting duplicate listings. Anything under 16 characters is now ignored on load and the board registers again cleanly.
+- The activity LED holds for a full second once the board is actually listening. Wi-Fi being up is not the same as the board being ready, and without a sign the only way to find out was to dial in and be refused.
+- The board records why it started. A crash, watchdog or brownout reboot is written to `reboots.log` on the logs partition with the time, the next staff member to log in is told in plain words, and `SYS` shows it beside the uptime. A board that restarts on its own is otherwise invisible: the only symptom is an uptime that keeps starting over.
+
 ## 0.16.0, 2026-09-19
 
 - **Fixed: the board kept only the first few characters of its directory token.** The reply was read with a single `recv` into a 256 byte buffer and parsed immediately, but a TCP read boundary is not a message boundary: the 32 character token arrived split across packets and the board stored the four characters that had landed. It then never matched that token again, so every heartbeat minted a brand new listing. One board produced ninety of them in fourteen hours. The reply is now accumulated until the headers are complete, and a token shorter than 16 characters is refused outright rather than overwriting a good one.

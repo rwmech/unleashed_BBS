@@ -159,6 +159,20 @@ void activityLedBegin(int gpio);
 void activityPulse(uint32_t now);
 void activityTick(uint32_t now);
 
+// ledSignal: hold the activity LED on for ms, for something worth noticing
+// rather than ordinary traffic. Used once at boot so a sysop can see the
+// board is listening instead of guessing and dialling in too early.
+void ledSignal(uint32_t now, uint32_t ms);
+
+// ---------------------------------------------------------------------------
+// resetReason / resetWasCrash: why this boot happened, in words a sysop can
+// read. A crash that reboots cleanly is invisible, so the board has to say
+// so itself rather than leaving somebody to infer it from an uptime that
+// keeps starting over.
+// ---------------------------------------------------------------------------
+const char* resetReason();
+bool        resetWasCrash();
+
 // ---------------------------------------------------------------------------
 // inflateRaw: decode a raw DEFLATE stream (ZIP method 8). in() fills a
 // buffer and returns the byte count (0 = end of input); out() takes

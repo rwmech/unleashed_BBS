@@ -375,6 +375,15 @@ private:
     void hangup(Session& s, const char* msg, uint32_t now);
     void goodbye(Session& s, uint32_t now);
     void exitScreen(Session& s, uint32_t now);
+
+    // noteBoot: write why the board started into the reboot log, and keep it
+    // so the next staff member to log in is told. A crash that reboots
+    // cleanly is otherwise invisible: the only symptom is an uptime that
+    // keeps starting over, which is easy to miss and easier to misattribute.
+    void noteBoot();
+    bool bootWasCrash() const { return bootCrash_; }
+    const char* bootReason() const { return bootReason_; }
+    uint16_t bootCrashCount() const { return bootCrashes_; }
     bool playScreen(Session& s, const char* name);
 
     // -- timers, notices, paging, refresh (bbs.cpp) --------------------------
@@ -485,6 +494,9 @@ private:
     uint32_t  loopMaxUs_   = 0;      // worst pass since boot
     uint32_t  loopPasses_  = 0;      // passes of the scheduler since boot
     uint16_t  callsBoot_   = 0;      // calls answered since boot
+    bool      bootCrash_   = false;  // this boot followed a crash or watchdog
+    char      bootReason_[32] = "";  // in words, for the sysop
+    uint16_t  bootCrashes_ = 0;      // how many are in the reboot log
     uint8_t   peakNodes_   = 0;      // most nodes busy at once since boot
     uint16_t  callHours_[24] = {};   // CALLS: calls per hour of the day
     uint16_t  callsCounted_ = 0;     // records that went into callHours_

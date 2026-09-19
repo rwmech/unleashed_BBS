@@ -37,6 +37,7 @@
 #include "platform.h"
 #include "../config.h"
 #include "esp_timer.h"
+#include "esp_system.h"      // esp_reset_reason
 #include "esp_random.h"
 #include "esp_heap_caps.h"
 #include "driver/gpio.h"
@@ -274,6 +275,42 @@ namespace {
 int      g_ledGpio  = -1;
 bool     g_ledOn    = false;
 uint32_t g_ledSince = 0;
+uint32_t g_ledHold  = BBS_LED_PULSE_MS;   // how long the current show lasts
+}
+
+// ---------------------------------------------------------------------------
+// Why we booted. esp_reset_reason is only meaningful before anything else
+// resets it, so it is read once and kept.
+// ---------------------------------------------------------------------------
+esp_reset_reason_t g_reset = ESP_RST_UNKNOWN;
+bool               g_resetRead = false;
+
+void readReset() {
+    if (!g_resetRead) { g_reset = esp_reset_reason(); g_resetRead = true; }
+}
+
+const char* resetReason() {
+    readReset();
+    switch (g_reset) {
+        case ESP_RST_POWERON:  return "power on";
+        case ESP_RST_EXT:      return "reset pin";
+        case ESP_RST_SW:       return "software restart";
+        case ESP_RST_PANIC:    return "crash (panic)";
+        case ESP_RST_INT_WDT:  return "interrupt watchdog";
+        case ESP_RST_TASK_WDT: return "task watchdog";
+        case ESP_RST_WDT:      return "watchdog";
+        case ESP_RST_BROWNOUT: return "brownout (power dipped)";
+        case ESP_RST_DEEPSLEEP: return "woke from deep sleep";
+        case ESP_RST_SDIO:     return "sdio";
+        default:               return "unknown";
+    }
+}
+
+bool resetWasCrash() {
+    readReset();
+    return g_reset == ESP_RST_PANIC || g_reset == ESP_RST_INT_WDT ||
+           g_reset == ESP_RST_TASK_WDT || g_reset == ESP_RST_WDT ||
+           g_reset == ESP_RST_BROWNOUT;
 }
 
 void activityLedBegin(int gpio) {
@@ -291,14 +328,23 @@ void activityLedBegin(int gpio) {
 void activityPulse(uint32_t now) {
     if (g_ledGpio < 0) return;
     g_ledSince = now;
+    g_ledHold  = BBS_LED_PULSE_MS;
     if (!g_ledOn) {
         g_ledOn = true;
         gpio_set_level(static_cast<gpio_num_t>(g_ledGpio), 1);
     }
 }
 
+void ledSignal(uint32_t now, uint32_t ms) {
+    if (g_ledGpio < 0) return;
+    g_ledSince = now;
+    g_ledHold  = ms;
+    g_ledOn    = true;
+    gpio_set_level(static_cast<gpio_num_t>(g_ledGpio), 1);
+}
+
 void activityTick(uint32_t now) {
-    if (g_ledOn && now - g_ledSince >= BBS_LED_PULSE_MS) {
+    if (g_ledOn && now - g_ledSince >= g_ledHold) {
         g_ledOn = false;
         gpio_set_level(static_cast<gpio_num_t>(g_ledGpio), 0);
     }

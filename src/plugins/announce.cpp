@@ -216,7 +216,12 @@ void readKey(void* ctx, const char* key, const char* value) {
     else if (!strcmp(key, "owner"))       snprintf(g_owner, sizeof(g_owner), "%.*s", kNameMax, value);
     else if (!strcmp(key, "description")) snprintf(g_desc, sizeof(g_desc), "%.*s", kDescMax, value);
     else if (!strcmp(key, "host"))        snprintf(g_host, sizeof(g_host), "%.*s", kUrlMax - 1, value);
-    else if (!strcmp(key, "token"))       snprintf(g_token, sizeof(g_token), "%.40s", value);
+    else if (!strcmp(key, "token")) {
+        // Anything shorter than a real token is wreckage from the firmware
+        // that truncated them. Start again rather than carry it forward.
+        if (strlen(value) >= kTokenMin) snprintf(g_token, sizeof(g_token), "%.40s", value);
+        else if (value[0]) plat::log("announce: ignoring a short stored token, re-registering");
+    }
     else if (!strcmp(key, "servers"))     readServers(value);
     else if (!strcmp(key, "public_port")) {
         long p = strtol(value, nullptr, 10);

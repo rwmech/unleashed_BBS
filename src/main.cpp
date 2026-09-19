@@ -199,6 +199,12 @@ static void bbsTask(void*) {
     Bbs& bbs = Bbs::instance();
     while (!bbs.begin(BBS_PORT)) vTaskDelay(pdMS_TO_TICKS(1000));
     plugins::begin(bbs);
+
+    // A second on the LED once the line is genuinely open. Wi-Fi being up is
+    // not the same as the board being ready, and without a sign the only way
+    // to find out is to dial in and be refused.
+    plat::ledSignal(plat::millis(), 1000);
+
     for (;;) {
         bbs.tick();
         vTaskDelay(1);   // let lower-priority tasks on this core breathe
