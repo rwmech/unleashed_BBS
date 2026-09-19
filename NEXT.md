@@ -20,184 +20,172 @@
  ===========================================================================
 -->
 
-# 0.17.0: the build that makes it a BBS
+# 0.17.0: reclaim the board, then make it a BBS
 
-Three things at once: the small stuff that has piled up, the one change that
-unblocks a web installer, and message bases, which are the feature that turns
-this from a chat system with accounts into a bulletin board.
+Four things: reclaim the flash sitting idle, go to sixteen nodes, the Wi-Fi
+change that unblocks a web installer, and the queued bugs. Message bases and
+the SD card follow immediately after, as one piece of work.
 
-Poker is specified here too but is the build after, for reasons in its own
-section.
+## The hardware, confirmed rather than assumed
+
+Read off the chip with `esptool flash_id`, not taken from the build config:
+
+- **ESP32-D0WD-V3**, revision 3, dual core, 240 MHz, 40 MHz crystal
+- **4 MB flash**, device id `0x4016`
+- **No PSRAM.** This is a WROOM, not a WROVER.
+
+`platformio.ini` says `board_upload.flash_size = 4MB`, which turns out to be
+right. It was an assumption that happened to match, and it had never once been
+checked against the hardware.
 
 ## The budget
-
-Measured, not estimated. Current build:
 
 - **Flash** 1,004 KB of the 1,536 KB OTA slot, **65%**
 - **Static RAM** 118 KB of 320 KB, **37%**
 
-Per-module costs from the current image, which is what the estimates below
-are calibrated against:
+Per-module costs measured from the current image, which every estimate below
+is calibrated against:
 
 | Module | Flash |
 |---|---|
 | `chat` (rooms, moderation, mail, vote to kick, colours) | 15.2 KB |
 | `announce` (non-blocking HTTP, config, commands) | 9.3 KB |
+| `ziparc` (the backup zip) | 10.6 KB |
+| `backup` (the window) | 6.6 KB |
 | `serialbridge` | 3.6 KB |
-| `example` | 1.6 KB |
 
-Chat is the yardstick: a plugin with real features costs about 15 KB.
-
-Projected after this build:
+A plugin with real features costs about 15 KB. That is the yardstick.
 
 | Part | Flash | Static RAM |
 |---|---|---|
-| Bugs and small features | +3 KB | +0.2 KB |
+| Queued bugs and small features | +3 KB | +0.2 KB |
+| Sixteen nodes | 0 | **+58 KB** |
 | Wi-Fi runtime config and Improv | +6 KB | +0.3 KB |
-| Message bases | +18-25 KB | +2-4 KB |
-| **0.17.0 total** | **~1,035 KB, 67%** | **~122 KB, 38%** |
+| **0.17.0** | **~1,013 KB, 66%** | **~176 KB, 55%** |
+| Message bases and SD, next | +26-37 KB | +3-5 KB |
+| Poker, later | +20-30 KB | +1-2 KB |
+| **Everything imagined** | **~1,080 KB, 70%** | **~183 KB, 57%** |
 
-And with everything currently imagined:
+Flash is not the constraint and will not become one. RAM is, and sixteen nodes
+is what spends it.
 
-| Later | Flash | Static RAM |
+---
+
+# Part 1: reclaim the wasted partition
+
+The finding that changes the plan. The 4 MB splits into ~3.2 MB of app slots
+and **896 KB of data partitions**:
+
+| Partition | Size | Holding |
 |---|---|---|
-| Poker | +20-30 KB | +1-2 KB |
-| SD card plugin | +8-12 KB | +1 KB |
-| XMODEM / YMODEM and file areas | +12-18 KB | +2 KB |
-| **Everything** | **~1,090 KB, 71%** | **~127 KB, 40%** |
+| `logs` | 32 KB | the caller log, a few KB |
+| `userdata` | 128 KB | accounts, config, plugin files |
+| `storage` | 736 KB | **18.5 KB of screens** |
 
-There is room for all of it with about 450 KB of the slot spare. For contrast
-a Lua runtime is 100-220 KB of flash before a single door exists, plus 20-40 KB
-of heap per state: more than message bases, poker, files and SD combined.
+`storage` is **97.5% empty**. It was sized when screens and accounts shared
+it; the 0.14.0 split moved accounts out and nobody revisited the number.
 
-Note for later: a disabled plugin costs no RAM, because it claims nothing until
-`start()`, but its code is still in the image. Reducing **flash** means
-compiling it out, which is the build-profiles work. At 65% that is not urgent.
+That 128 KB is where the hundred-user cap comes from. A `UserRec` is about
+450 bytes, so 128 KB holds roughly 250 accounts with nothing else on the
+partition, and `BBS_MAX_USERS` sits at 100 to stay clear of it.
 
----
+## The rebalance
 
-# Part 1: bugs and small features
+The same 896 KB, redistributed:
 
-Everything Rob has reported that is not already fixed. Small, independent, and
-worth doing first so the build has visible results early.
+| Partition | Now | New | Why |
+|---|---|---|---|
+| `logs` | 32 KB | 32 KB | ~50 calls, enough, and LittleFS is power-fail safe |
+| `userdata` | 128 KB | **608 KB** | **~1,380 accounts** |
+| `storage` | 736 KB | 256 KB | 14x what the stock screens need |
 
-## 1.1 Node lists disagree about a caller who has not logged in
+`storage` stays **last** in the table. PlatformIO's `uploadfs` writes the last
+spiffs partition, and that ordering is the only reason `flashall` cannot reach
+anything but the screens.
 
-**Seen:** a node with somebody mid-login reads differently in each list.
+`BBS_MAX_USERS` rises to 1000, still a `system.cfg` setting so a sysop can
+hold it lower.
 
-**Measured on the host:** `WHO` says `(connecting)`, `DASH` says
-`(logging in)`, `NODES` says neither. The handling exists in
-`rowWho`/`rowDash` and the strings differ; `NODES` takes a different path.
+**Accounts stay on internal LittleFS permanently.** They are the one thing
+that must survive a card failing, and LittleFS is log-structured and power-fail
+safe in a way FAT is not. The SD card never holds accounts.
 
-**Change:** one helper used by all three. `(connecting)` while
-`SState::Detect` or `Intro`, `(logging in)` from the handle prompt onward,
-`-- waiting for caller --` only for a genuinely `Free` node.
+## The cost, and why now
 
-**Where:** `src/core/bbs_shell.cpp`, `rowWho`, `rowDash`, and the nodes path.
+A partition change is a **full erase**: accounts, config and the announce
+token all go. Same event as 0.14.0.
 
-**Verified by:** a caller that connects and stops at the handle prompt while
-another session reads all three lists. Add to `tools/testclient.py`.
+Do it in this build, while Rob owns the only board with real data on it. Once
+other people are running boards, a layout change stops being free and starts
+needing a migration path nobody wants to write.
 
-## 1.2 No bell when anybody arrives
-
-**Seen:** a caller logging in or joining chat is silent. The only bells are
-pages, broadcasts and form errors.
-
-**Change:** bell then notice, the way a page already does it, on login and on
-chat join. Two settings so a busy board can turn them off separately:
-`bell_login` and `bell_chat`, both `yes` by default.
-
-**Where:** `completeLogin` in `src/core/bbs.cpp`, `join()` in
-`src/plugins/chat.cpp`.
-
-**Watch for:** a caller in chat should not get a bell for their own join, and
-`DND` must suppress both.
-
-## 1.3 Chat does not show the room by itself
-
-**Seen:** Rob, "show `/s` automatically after a period of time, see what DDial
-did".
-
-**Honest note:** DDial's actual behaviour is not documented anywhere I could
-find. Wikipedia and ddial.com describe a seven line Apple II chat server at
-300 baud and nothing about how it displayed the roster. This is a design, not
-a reconstruction.
-
-**Change:** a `roster` setting in the chat section, minutes, default 10, `0`
-off. On the timer, print the room list, but:
-
-- through the held-line path chat already uses, so it never lands in the
-  middle of somebody typing
-- only if the room has changed since the last one. An unchanged list repeating
-  on a timer is noise and people stop reading it
-- never to a caller who has been idle longer than the interval: they are not
-  reading it either
-
-**Where:** `tick()` in `src/plugins/chat.cpp`.
-
-## 1.4 Sysop page
-
-**Seen:** every board had one. `PAGE` today is caller to caller.
-
-**Change:** `SYSOP [message]` rings the operator wherever they are, on their
-own node and on the console. Needs:
-
-- an away state the sysop sets, with the caller told rather than left hanging
-- a way to decline that says so
-- a rate limit per caller per call, so one person cannot ring the bell all
-  night. Three per call, then "the sysop has been told"
-- the page goes in the caller log, since it is the sysop's own record
-
-**Where:** new command in `src/core/bbs_shell.cpp`, state on `Session`.
-
-## 1.5 Wi-Fi credentials are compiled into the firmware
-
-Covered in Part 2. Listed here because it is a **bug**, not a feature: any
-binary built today carries the builder's home network password in plaintext.
+**Before flashing:** open the backup window and download the zip. Restore it
+afterwards. The zip carries `system.cfg` and `users.txt` and puts both back.
 
 ---
 
-# Part 2: Wi-Fi at runtime, and Improv
+# Part 2: sixteen nodes
 
-The one change that unblocks everything about distribution.
+Six has never made the board sweat, the loop is cooperative and mostly idle,
+and a board that can be full is a board worth calling back to.
+
+`BBS_MAX_NODES` goes to 16. The cost is RAM: a `Session` is ~5.7 KB, mostly
+its 3 KB timeline, and sixteen nodes plus the busy line plus the sysop is
+eighteen sessions.
+
+| Nodes | Sessions | Static RAM | of 320 KB |
+|---|---|---|---|
+| 6 (now) | 8 | 118 KB | 37% |
+| **16** | **18** | **~176 KB** | **55%** |
+| 24 | 26 | ~221 KB | 69% |
+
+Past 24 wants PSRAM, which this module does not have. Sixteen is comfortable.
+
+## What comes with it
+
+- **Socket budget** from 16 to at least 24, with lwIP's per-socket memory
+  reviewed alongside.
+- **Busy line** boundary: the seventeenth caller now gets the busy screen.
+- **The lists stop fitting.** Sixteen node rows plus a title plus a footer is
+  more than 25 rows, so `WHO`, `NODES` and `DASH` need paging on a C64 screen.
+  At 40 columns this is the real work in this part, not the node count itself.
+- **Node characters past 9.** The marker is one character today. Check
+  everything that formats a node, and `@NODES@` with it.
+
+---
+
+# Part 3: Wi-Fi at runtime, and Improv
+
+The change that unblocks distribution.
 
 ## Why
 
-`include/secrets.h` defines `WIFI_SSID` and `WIFI_PASS` and `main.cpp` compiles
-them in. Two consequences:
+`include/secrets.h` defines `WIFI_SSID` and `WIFI_PASS` and `main.cpp`
+compiles them in. Any binary built today carries the builder's home network
+password in plaintext and could not join anybody else's network anyway. A web
+installer is impossible until this moves.
 
-1. A published binary contains whoever built it's Wi-Fi password. `strings`
-   finds it in seconds.
-2. A shared binary could not join anybody else's network anyway, so a web
-   installer is impossible, not merely awkward.
+## 3.1 Credentials move to the config
 
-## 2.1 Credentials move to the config
-
-- `wifi_ssid` and `wifi_pass` in `system.cfg`, on the `userdata` partition, so
-  they survive a reflash like everything else there.
-- `secrets.h` stays supported as a **build-time default only**, for people who
-  want it, and is used only when the config has no SSID. It is removed from
-  the documented path.
-- `CONFIG board` gains both. The password is a `CK_PASS` field, so it shows as
-  a mask and is only written when retyped, like the staff passwords.
+- `wifi_ssid` and `wifi_pass` in `system.cfg` on `userdata`, surviving a
+  reflash like everything else there.
+- `secrets.h` stays as a build-time default only, used when the config has no
+  SSID, and leaves the documented path.
+- `CONFIG board` gains both, the password as `CK_PASS` so it masks and is only
+  written when retyped.
 - Changing either needs a reboot, and the form says so.
 
-**The backup zip.** It carries `system.cfg`, so a backup now contains the
-Wi-Fi password. Rob's call, and it stands: **not redacted**. The backup window
-is a separate port, opened by hand with the BOOT button while the sysop is
-logged in, and it closes itself. A sysop who forwards that port has made a
-different mistake.
+## 3.2 The backup zip: not redacted, but the port refuses strangers
 
-Two things follow from that rather than from redaction.
+The zip carries `system.cfg`, so it now contains the Wi-Fi password. **Rob's
+call and it stands: not redacted.** The window is a separate port, opened by
+hand with the BOOT button, and it closes itself.
 
-**Say it where it is used, not where it is documented.** The window already
-announces itself on the sysop's screen when the button is pressed:
+Two things instead of redaction.
 
-```
-*** Backup open 5 min: http://192.168.1.50:8080/backup.zip
-```
-
-That line gains the constraint, so nobody has to have read anything:
+**Say it where it is used.** The window already announces itself when the
+button is pressed. That line gains the constraint, so nobody has to have read
+any documentation:
 
 ```
 *** Backup open 5 min, local network only
@@ -206,263 +194,224 @@ That line gains the constraint, so nobody has to have read anything:
     from outside, and never forward this port.
 ```
 
-Both numbers come from the live config rather than being written into the
-string, so a board with `backup_window_minutes = 10` says ten. BACKUP.md gets
-the same line, but the screen is the one that matters: it is in front of the
-only person who can act on it, at the moment they are acting.
+Minutes and address come from the live config, so a board set to ten says ten.
 
-**And enforce it, because documentation only protects people who read it.**
-The download needs no confirmation by design, which is the right call for a
-sysop at their own desk and the wrong one for a stranger who found an open
-port. The backup HTTP server should refuse any connection whose source address
-is not private: `10/8`, `172.16/12`, `192.168/16`, `127/8`, and the IPv6
-equivalents. A forwarded port then still cannot be used from outside, whether
-it was forwarded deliberately, by accident, or by UPnP without anybody asking.
-About 20 lines in `src/core/backup.cpp`, and it turns a documented rule into a
-structural one.
+**And enforce it.** The download needs no confirmation by design, which is
+right for a sysop at their own desk and wrong for a stranger who found an open
+port. The backup server refuses any source address that is not private:
+`10/8`, `172.16/12`, `192.168/16`, `127/8` and the IPv6 equivalents. A
+forwarded port then cannot be used from outside at all, including when UPnP
+forwarded it without anybody asking. About 20 lines in `src/core/backup.cpp`.
 
-A sysop who genuinely wants remote backups can reach the board over a VPN,
-which puts them on a private address and works unchanged.
+A VPN still works, since that puts the caller on a private address.
 
-## 2.2 No credentials, no board
+## 3.3 No credentials, no board
 
-A board with no SSID cannot do anything useful, so it has to say so rather
-than sit silently retrying. On boot with an empty `wifi_ssid`:
+On boot with an empty `wifi_ssid`: the console says how to set it and repeats
+every 30 seconds, the LED gives a slow double blink distinct from the one
+second ready flash, and Improv is listening.
 
-- the console prints how to set it, and keeps printing every 30 seconds
-- the LED gives a slow double blink, distinct from the one second "ready"
-  flash
-- Improv, below, is listening
+## 3.4 Improv Wi-Fi Serial
 
-## 2.3 Improv Wi-Fi Serial
+The protocol ESP Web Tools speaks over the serial connection it just flashed
+with, so a browser can ask for the network and hand it over. This is how WLED
+does it.
 
-The protocol ESP Web Tools speaks over the same serial connection it flashed
-with, so a browser can ask for the network and hand it to the board. This is
-how WLED does it.
+A framed state machine on the console UART alongside the logging. Packets
+start with `IMPROV` so ordinary log output is never mistaken for one. Four
+commands: state, device info, scan, set credentials. On success it returns the
+address to dial. Roughly 4-5 KB.
 
-- A small state machine on the console UART, alongside the existing logging.
-  Packets are framed and start with `IMPROV`, so ordinary log output is not
-  mistaken for one.
-- Supports the four commands: current state, device info, scan for networks,
-  and set credentials.
-- On credentials: write them to `system.cfg`, join, and report the result. On
-  success return the URL to dial: `telnet://<ip>:6400`.
-- Estimated 4-5 KB of flash.
-
-**Verified by:** the host build cannot speak serial to a browser, so this
-needs a scripted Improv client on the host build's serial loopback, plus one
-manual check by Rob with a real browser and a real board.
-
-## 2.4 Then, and only then, the installer
-
-Not in this build. Once 2.1 to 2.3 are done and Rob has flashed and confirmed:
-
-- `releases/` in the repo with the four binaries, a `manifest.json` for ESP Web
-  Tools, and a `THIRD_PARTY_NOTICES` covering ESP-IDF, LittleFS, mDNS and the
-  ROM inflate
-- the directory server hosts a copy while the firmware repo is private, with
-  `deploy/update.sh` pulling the current one
-- a `/install` page on the directory with the install button
+**Verified by:** a scripted Improv client against the host build's serial
+loopback, plus one manual check by Rob with a real browser and a real board.
 
 ---
 
-# Part 3: message bases
+# Part 4: the queued bugs
 
-The feature that makes this a bulletin board rather than a chat system with
-accounts.
+Small, independent, and worth doing first so the build shows results early.
 
-## Why, since Rob asked whether they would be used
+## 4.1 Node lists disagree about a caller who has not logged in
 
-Chat needs two people online at once. On a board with a handful of callers
-that almost never happens. A message base is the thing that works when nobody
-else is there, and it is the reason somebody calls back tomorrow. It is also
-what CBBS actually was: in 1978 one phone line meant you could not all be on
-at once, so the messages were the board.
+Measured on the host: `WHO` says `(connecting)`, `DASH` says `(logging in)`,
+`NODES` says neither. One helper for all three. `(connecting)` during
+`SState::Detect` and `Intro`, `(logging in)` from the handle prompt on,
+`-- waiting for caller --` only for a genuinely `Free` node.
 
-They do not need the SD card. At roughly 300 bytes a message the 128 KB
-`userdata` partition holds 300 to 400, which is more than a small board will
-produce in a year. SD raises the ceiling later; it is not a prerequisite.
+## 4.2 No bell when anybody arrives
 
-## 3.1 Shape
+Only pages, broadcasts and form errors ring today. Bell then notice, as a page
+already does, on login and on chat join. `bell_login` and `bell_chat`, both
+`yes`. A caller gets no bell for their own arrival, and `DND` suppresses both.
 
-- **Areas.** Named, each with its own read and write level, defined in
-  `system.cfg`. Start with three on a fresh board: General, Sysop, and one the
-  sysop renames.
-- **Messages** are flat within an area, numbered from 1, with a `reply_to`
-  field so a reader can follow a thread without the storage being a tree.
-- **No editing.** A message can be deleted by its author or by staff. Editing
-  history is a problem nobody on a board this size needs.
+## 4.3 Chat does not show the room by itself
 
-## 3.2 Storage
+A `roster` setting in minutes, default 10, `0` off. Printed through the
+held-line path so it never lands mid-sentence, only when the room has changed
+since the last one, and never to a caller idle longer than the interval.
 
-One file per area on `userdata`, `p/msg/<area>.dat`, fixed-size records so a
-message can be found by seeking rather than by reading the file:
+DDial's actual behaviour is not documented anywhere findable. This is a
+design, not a reconstruction.
 
-```
-struct MsgRec {
-    uint16_t num;              // 1-based within the area, 0 = deleted
-    uint16_t replyTo;          // 0 = not a reply
-    char     from[BBS_USER_MAX + 1];
-    char     to[BBS_USER_MAX + 1];   // empty = to all
-    char     subject[41];
-    uint32_t at;               // epoch
-    uint16_t len;
-    char     text[BBS_MSG_CHARS + 1];
-};
-```
+## 4.4 Sysop page
 
-`BBS_MSG_CHARS` starts at 1024. A record is then about 1.1 KB, and a 128 KB
-partition shared with accounts and plugin files holds perhaps 60 to 80 at that
-size. **Open question for Rob below.**
+`SYSOP [message]` rings the operator on their node and on the console. Needs
+an away state that tells the caller rather than leaving them hanging, a way to
+decline that says so, a limit of three per call, and an entry in the caller
+log since it is the sysop's own record.
 
-RAM holds only a small index per area, rebuilt at start: number, author, date,
-subject offset. At 48 bytes an entry and 64 entries that is 3 KB per area,
-which is why areas are capped at three until SD lands.
+---
 
-Written through a temp file and renamed, like `users.txt` and `mail.dat`.
+# Next build: message bases and SD, together
 
-## 3.3 Reading and writing
+One piece of work. A message base that expects a card cannot ship before the
+card support does.
 
-Commands, all `CF_ACCOUNT` so guests can read but not post:
+## 5.1 What lives where
 
-| Command | What it does |
+| Internal flash (LittleFS) | SD card (FAT32) |
 |---|---|
-| `AREAS` | list the areas, with unread counts |
-| `AREA n` | choose one |
-| `MSGS` | list messages in the current area, newest first, paged |
-| `READ [n]` | read one, or the next unread |
-| `POST` | write one |
-| `REPLY n` | write one with `reply_to` set and the subject carried over |
-| `KILL n` | delete, author or staff only |
+| Firmware | Message bases |
+| Wi-Fi, staff passwords, announce token | File areas |
+| **Accounts, up to ~1,380** | Optional: bigger logs, custom screens |
+| Stock screens, 18.5 KB | |
+| Caller log | |
 
-Unread tracking is one `uint16_t` high-water mark per area on the `UserRec`,
-which is one new field and one new `kUserFields` row.
+**Without a card the board is complete**: chat, mail, accounts, screens,
+caller log, directory listing, serial bridge, and a handful of messages for
+trying it out. More than CBBS had. The card is what a board with ambitions
+adds.
 
-## 3.4 Writing on a terminal from 1982
+Screens stay internal because 18.5 KB against a 256 KB partition is not a
+problem worth solving. SD **overrides** them when present, which is not
+duplication: internal holds the set that ships, the card holds the sysop's
+own. Pull the card and the board runs on stock screens rather than failing.
 
-This is the hard part, not the storage.
+## 5.2 Why FAT32
 
-- **ANSI:** the existing `Form` widget for subject and recipient, then a
-  simple full-screen editor for the body: type, backspace, arrow keys within
-  the current line, F1 to save, ESC to abandon.
-- **PETSCII at 40 columns:** the same, but the body editor is line-based. No
-  cursor addressing beyond what the form already does.
-- **Plain ASCII:** line by line, `.S` to save, `.A` to abort, the way every
-  board did it. This is also the fallback whenever the editor cannot be drawn.
+Not convenience. **Pulling the card and reading your messages on a laptop is
+the "you own your data" claim made physical.** LittleFS on the card would be
+consistent and unreadable anywhere else.
 
-Reuse `LineEditor` for a line rather than writing a second editor.
+The cost is power-fail safety and it is real: FAT's file, table and directory
+updates are not atomic, and a board losing power mid-write can lose a cluster
+chain. Mitigated by keeping everything that must survive on internal LittleFS,
+by write-then-rename with an explicit flush, and by the fact that the format
+creating the risk is also the one a sysop can repair with `chkdsk`.
 
-## 3.5 Cost
+## 5.3 Message storage
 
-Estimated 18-25 KB of flash, 2-4 KB of static RAM. Storage is the real
-constraint and it is a setting, not a code problem.
+Fixed-size records, so a message is found by seeking rather than reading. 1 KB
+of text each, which on a card is free and on internal flash is exactly why the
+no-card mode is capped at a handful.
 
----
+**A version byte in every file header from the first release.** When a record
+format changes the plugin migrates or refuses with a clear reason. Retrofitting
+that after people have real boards is expensive; doing it now is free.
 
-# Part 4: poker
+RAM holds a per-area index, so it scales with message **count**, not size. On
+a card holding thousands, the index is paged rather than held whole.
 
-Specified now, built after 0.17.0. It is the most fun and the least load
-bearing, and message bases should not wait behind it.
+## 5.4 Areas, reading and writing
 
-## Why C++ rather than Lua
+Areas are named, with read and write levels, defined in `system.cfg`. Messages
+are flat within an area, numbered from 1, with a `reply_to` so a thread can be
+followed without the storage being a tree. No editing; delete by author or
+staff.
 
-Rob asked and the answer has not changed: no Lua runtime exists, and adding one
-costs 100-220 KB of flash plus 20-40 KB of heap per state before a card is
-dealt. Everything poker needs (shared table state, an action clock, chip
-persistence, a shuffle from the hardware RNG) lives in C++ regardless, so a Lua
-layer would mostly call back into C++.
+`AREAS`, `AREA n`, `MSGS`, `READ [n]`, `POST`, `REPLY n`, `KILL n`. All
+`CF_ACCOUNT`, so guests read and do not post. Unread tracking is one
+`uint16_t` high-water mark per area on `UserRec`.
 
-Build it in C++, and deliberately shape `deal`, `act`, `showdown` and `render`
-as the interface a Lua door API would later expose. Then Lua arrives with a
-working reference to port rather than a blank file.
+Writing a message on a terminal from 1982 is the hard part, not the storage.
+ANSI gets the `Form` widget plus a simple full-screen body editor. PETSCII at
+40 columns gets the same with a line-based body. Plain ASCII gets line entry
+with `.S` to save and `.A` to abort, which is also the fallback whenever the
+editor cannot be drawn.
 
-## 4.1 Shape
+## 5.5 The file manager, and what it eventually replaces
 
-- One table, Texas hold'em, **six seats**. Six because the board has six caller
-  nodes, and because a six-seat table fits 40 columns without cruelty.
-- Unlimited observers at read level. Observers never see a hole card until
-  showdown, and then only cards that were shown.
-- The plugin owns a joined session the way chat does. `POKER` from the prompt,
-  or `/poker` from the chat room, and `/q` returns to wherever they came from.
+File areas need a file manager: browse, describe, upload, download. Two
+consequences.
 
-## 4.2 The hand
+**XMODEM/YMODEM is what makes it work remotely.** Pulling the card serves a
+sysop standing next to the board; a caller in another state needs a transfer
+protocol. But the file *area* ships before the protocol does: browse and read
+descriptions first, downloads after.
 
-A state machine driven from `tick()`: waiting, blinds, preflop, flop, turn,
-river, showdown, payout. An action clock per player, default 45 seconds,
-folding on timeout.
+**It eventually replaces the backup window.** `backup.cpp` and `ziparc.cpp`
+are **17.2 KB** between them, more than the serial bridge and example plugin
+combined. A file manager with transfers does everything the window does and
+lets a co-sysop do it from another state.
 
-The shuffle is Fisher-Yates from `esp_random()`, which is the hardware RNG.
-Never `rand()`.
-
-Hand evaluation: a compact 7-card evaluator without large lookup tables,
-about 3-5 KB. Slower than a table-driven one and irrelevant at this scale,
-where a showdown happens once every few minutes.
-
-## 4.3 Chips and statistics
-
-Play money, per account, in `p/poker/chips.dat` on `userdata` so it survives a
-reflash. Statistics per account: hands played, hands won, biggest pot, total
-time at the table. Shown by a `POKER STATS` command and on the caller's
-`INFO`.
-
-**Open question below** on whether a bankroll can run dry.
-
-## 4.4 The table on a 40 column screen
-
-The actual design problem. Six seats, a board of five cards, a pot, and a
-prompt, in 40 columns and 25 rows, redrawn without flicker on a C64 at 1200
-baud. Card notation is two characters (`As`, `Kh`), suits coloured where the
-terminal has colour and lettered where it does not.
-
-Budget the rendering before writing the logic: if it does not fit on a C64 it
-does not ship, because a poker room a C64 cannot play at misses the point of
-the project.
-
-## 4.5 Cost
-
-Estimated 20-30 KB of flash, 1-2 KB of static RAM plus per-session render
-scratch.
+Do not reclaim that space on a promise. The zip is **atomic**, capturing
+config, accounts and screens at one instant and validating them as a set, and
+a file manager that can read and write anything is a far larger permission
+surface than a time-boxed, physically triggered window. Ship the file manager,
+run a board on it, then delete 17.2 KB with confidence.
 
 ---
 
-# Deferred, deliberately
+# Later: poker
 
-Not in this build, listed so they are not forgotten:
+Specified, and after the above. Most fun, least load bearing.
 
-- Build profiles. Worth doing when flash gets tight, which at 65% it is not.
-- SD card plugin, then XMODEM/YMODEM and file areas.
-- GPIO plugin. Needs Rob's pin list.
-- OTA updates.
-- Zones, maintenance mode, hardware watchdog feeding.
-- 40/80/terminal-width support, still queued from way back.
-- A carrier PCB.
-- Lua, once there is a door worth porting.
-- HA, still parked on TLS memory.
+C++ rather than Lua: no Lua runtime exists and one costs 100-220 KB of flash
+plus 20-40 KB of heap per state, more than message bases, files and poker put
+together. Everything poker needs lives in C++ anyway. Shape `deal`, `act`,
+`showdown` and `render` as the interface a Lua door API would later expose, so
+Lua arrives with a working reference to port rather than a blank file.
+
+Six seats, because six fits 40 columns without cruelty. Unlimited observers at
+read level, never seeing a hole card before showdown. A state machine from
+`tick()`, a 45 second action clock, Fisher-Yates from `esp_random()` and never
+`rand()`. A compact 7-card evaluator without large tables, 3-5 KB, slow and
+irrelevant at one showdown every few minutes. Play chips per account in
+`p/poker/chips.dat` on `userdata`.
+
+Budget the 40 column rendering **before** writing the logic. A poker room a
+C64 cannot play at misses the point of the project.
 
 ---
 
-# Open questions, for Rob
+# Deferred
 
-1. **Message size.** 1 KB a message gives 60-80 messages on `userdata`. 512
-   bytes doubles that and is still four times what DDial allowed. Which?
-2. **Areas.** Three fixed areas to start, or sysop-definable from the
-   beginning? Three is simpler and the index RAM is why.
-3. **Poker chips.** Everyone starts each session with the same stack, or a
-   persistent bankroll that can run dry and need topping up by the sysop?
-4. **Poker seats.** Six to match the node count, or fewer for a roomier 40
-   column layout?
-5. **Showdown.** Do observers see every hole card at showdown, or only those
-   the players actually showed?
+Build profiles, GPIO (needs Rob's pin list), OTA updates, zones and
+maintenance mode, hardware watchdog feeding, 40/80/terminal-width support, a
+carrier PCB, Lua once there is a door worth porting, HA still parked on TLS
+memory.
+
+**Not needed: a 16 MB module.** Pin-compatible and a drop-in if wanted, but
+the rebalanced partition table gets ~1,380 accounts out of the 4 MB board that
+already exists. A WROVER with PSRAM is only worth looking at if nodes ever go
+past 24.
+
+**Keep OTA.** Both 1.5 MB app slots stay. Dropping `ota_1` would free 1.5 MB
+with no better use, and OTA is the only update path that needs no cable: a web
+installer still talks over USB.
+
+---
+
+# Open questions for Rob
+
+1. **Message size.** 1 KB per message or 2 KB? On a card either is free; this
+   only decides how many fit in the no-card test mode.
+2. **Areas.** Three fixed to start, or sysop-definable from the beginning?
+3. **Poker chips.** Same stack every session, or a persistent bankroll that can
+   run dry and be topped up?
+4. **Poker seats.** Six, or fewer for a roomier 40 column table?
+5. **Showdown.** Do observers see every hole card, or only those actually
+   shown?
 
 ---
 
 # How this build is verified
 
-- `bbs-regression` before every commit: both targets built, suite run, sizes
-  reported against the figures at the top of this file.
-- `bbs-qa` for anything a caller sees, in all three terminal types. Message
-  posting and the poker table both qualify.
-- `code-review` on the storage formats and the Improv state machine in
-  particular: fixed-size records and a serial protocol are both places where a
-  partial read has already cost this project a day.
-- Rob flashes. Nothing here is done until he has.
+- `bbs-regression` before every commit: both targets, the suite, sizes against
+  the figures above.
+- `bbs-qa` for anything a caller sees, in all three terminal types. Sixteen
+  node rows on a 40 column screen especially.
+- `code-review` on the Improv state machine and the partition change: a serial
+  protocol and a storage layout are both places where a partial read has
+  already cost this project a day.
+- Rob flashes, and backs up first. Nothing here is done until he has.
