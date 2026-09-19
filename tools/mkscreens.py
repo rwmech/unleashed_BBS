@@ -152,31 +152,6 @@ def sgr(code):
     return f"{ESC}[{code}m".encode("ascii")
 
 
-def ansi_logo(indent, gradient, shadow="1;30"):
-    """Double-width block logo with a drop shadow one cell down and right."""
-    rows = logo_rows(LOGO)
-    height, width = len(rows), len(rows[0])
-
-    def on(r, c):
-        return 0 <= r < height and 0 <= c < width and rows[r][c] == "#"
-
-    out = bytearray()
-    for r in range(height + 1):
-        line = bytearray(b" " * indent)
-        cur = None
-        for c in range(width + 1):
-            if on(r, c):
-                want, cell = gradient[min(r, height - 1)], bytes([BLOCK, BLOCK])
-            elif on(r - 1, c - 1):
-                want, cell = shadow, bytes([SHADE_LIGHT, SHADE_LIGHT])
-            else:
-                want, cell = None, b"  "
-            if want and want != cur:
-                line += sgr(want)
-                cur = want
-            line += cell
-        out += bytes(line.rstrip()) + b"\r\n@DELAY:90@"
-    return bytes(out)
 
 
 # --------------------------------------------------------------------------
@@ -253,14 +228,6 @@ def ansi_wordmark(indent, gradient):
         out += bytes(line) + b"\r\n@DELAY:90@"
     return bytes(out)
 
-
-def wordmark_ascii(indent=9):
-    """The same shape for a terminal with no block characters at all."""
-    out = []
-    for row in wordmark_cells():
-        line = "".join(" " if c is None else "#" for c in row)
-        out.append(" " * indent + line.rstrip())
-    return "\n".join(out)
 
 
 def centered(text, width=80):
@@ -612,39 +579,39 @@ RULES_P1 = [
     ("d", "it is shorter than the thing you clicked through this morning."),
     ("", ""),
     ("n", "1.  NO HATE."),
-    ("b", "Argue with anybody about anything. Come after a person"),
-    ("b", "for who they are and you are off the board. No warning,"),
-    ("b", "no appeal, no long conversation about it."),
+    ("i", "Argue with anybody about anything. Come after a person"),
+    ("i", "for who they are and you are off the board. No warning,"),
+    ("i", "no appeal, no long conversation about it."),
     ("", ""),
     ("n", "2.  NOTHING HERE IS ENCRYPTED."),
-    ("b", "This is telnet, the way it was in 1969. Every word you"),
-    ("b", "type crosses the network in the clear, your password"),
-    ("b", "included. Anyone sharing a wire or an access point with"),
-    ("b", "you can read the lot."),
+    ("i", "This is telnet, the way it was in 1969. Every word you"),
+    ("i", "type crosses the network in the clear, your password"),
+    ("i", "included. Anyone sharing a wire or an access point with"),
+    ("i", "you can read the lot."),
     ("", ""),
     ("n", "3.  USE A PASSWORD YOU USE NOWHERE ELSE."),
-    ("b", "This is the one that matters. If what you type here is"),
-    ("b", "also the password on your mail, you have just handed"),
-    ("b", "your mail to everyone between you and this board. Make"),
-    ("b", "one up. It does not have to be clever. It has to be new."),
+    ("i", "This is the one that matters. If what you type here is"),
+    ("i", "also the password on your mail, you have just handed"),
+    ("i", "your mail to everyone between you and this board. Make"),
+    ("i", "one up. It does not have to be clever. It has to be new."),
 ]
 
 RULES_P2 = [
     ("t", "THE HOUSE RULES"),
     ("r", ""),
     ("n", "4.  THE SYSOP SEES EVERYTHING."),
-    ("b", "Calls are logged. Chat is not private and neither is"),
-    ("b", "mail on this board. Nothing here is a secret keeper."),
-    ("b", "Do not type anything you would not say out loud in the"),
-    ("b", "room."),
+    ("i", "Calls are logged. Chat is not private and neither is"),
+    ("i", "mail on this board. Nothing here is a secret keeper."),
+    ("i", "Do not type anything you would not say out loud in the"),
+    ("i", "room."),
     ("", ""),
     ("n", "5.  IT IS A FIVE DOLLAR CHIP."),
-    ("b", "The whole board is a microcontroller with less memory"),
-    ("b", "than a floppy disk, sitting on a shelf somewhere. Be"),
-    ("b", "patient with it. If it drops you, call back."),
+    ("i", "The whole board is a microcontroller with less memory"),
+    ("i", "than a floppy disk, sitting on a shelf somewhere. Be"),
+    ("i", "patient with it. If it drops you, call back."),
     ("", ""),
     ("n", "6.  CHAOTIC NEUTRAL."),
-    ("b", "Past all that, do as you like. Get along."),
+    ("i", "Past all that, do as you like. Get along."),
     ("", ""),
     ("r", ""),
     ("d", "Still here? Good. Pick a handle and a password nobody else"),
@@ -703,6 +670,8 @@ def ansi_page(lines, width=76):
             b += sgr("1;36") + b"  " + text.encode("ascii") + b"\r\n"
         elif kind == "b":
             b += sgr("0;32") + b"      " + bytes([BULLET]) + b" " + sgr("0;37") + text.encode("ascii") + b"\r\n"
+        elif kind == "i":
+            b += sgr("0;37") + b"        " + text.encode("ascii") + b"\r\n"
         elif kind == "d":
             b += sgr("0;37") + b"  " + text.encode("ascii") + b"\r\n"
         else:
@@ -719,6 +688,8 @@ def ascii_page(lines, width=76):
             out.append("  " + "-" * width)
         elif kind == "b":
             out.append("      * " + text)
+        elif kind == "i":
+            out.append("        " + text)
         elif kind in ("n", "d"):
             out.append("  " + text)
         else:
