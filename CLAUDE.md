@@ -218,6 +218,7 @@ HA stays parked (its TLS was the only real RAM risk). Lua stays the drop-in path
 - New source files need a clean build (`pio run -t clean`): the component uses `GLOB_RECURSE`.
 - Git on this PC has `core.autocrlf`; `.gitattributes` keeps screens binary and text LF.
 - Windows PowerShell 5.1: `curl` is Invoke-WebRequest, use `curl.exe`; no `Set-Content -NoNewline`.
+- Tera Term only begins telnet option negotiation when the port is 23. On 6400 it opens the socket and says nothing, so the IAC-first path in connect-time detection never fires and the caller falls through to the CPR probe. Not a bug here, but it explains a Tera Term caller taking the slow route, and it is documented behaviour in Tera Term's own manual.
 - Wi-Fi: SSIDs are case-sensitive (`HOMENET`). The board scans all channels and joins the strongest AP. Auth timeouts (reason 2/15/39) turned out to be an unplugged AP, not firmware.
 - A non-interactive shell cannot push to GitHub the first time: Git Credential Manager needs one interactive browser sign-in (done on this PC).
 
