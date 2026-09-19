@@ -271,6 +271,28 @@ void Term::textN(ByteSink& o, const char* s, size_t n) {
 }
 
 // ---------------------------------------------------------------------------
+// textCols: as much of s as fits in maxCols columns, and how many it used.
+//
+// A refresh screen has to pad every row to the full width or the previous
+// frame shows through, so it needs the column count back. Doing that by
+// walking bytes in the caller is what produced "??nleashed": the micro sign
+// is two bytes and both went through ch() on their own.
+// ---------------------------------------------------------------------------
+uint8_t Term::textCols(ByteSink& o, const char* s, uint8_t maxCols) {
+    uint8_t used = 0;
+    while (*s && used < maxCols) {
+        if (static_cast<uint8_t>(s[0]) == 0xC2 && static_cast<uint8_t>(s[1]) == 0xB5) {
+            glyph(o, Glyph::Micro);
+            s += 2;
+        } else {
+            ch(o, *s++);
+        }
+        ++used;
+    }
+    return used;
+}
+
+// ---------------------------------------------------------------------------
 // nl: newline. PETSCII has no CR-without-LF, so line rewrites must use
 // cursor-left or DEL, never a bare carriage return.
 // ---------------------------------------------------------------------------
@@ -502,6 +524,7 @@ void Term::feed(uint8_t b, KeyFn fn, void* ctx) {
             case 0x9D: k = KEY_LEFT; break;
             case 0x1D: k = KEY_RIGHT; break;
             case 0x13: k = KEY_HOME; break;
+            case 0x93: k = KEY_CLEAR; break;    // SHIFT+CLR/HOME
             case 0x85: k = KEY_F1; break;
             case 0x89: k = KEY_F2; break;
             case 0x86: k = KEY_F3; break;
@@ -533,6 +556,7 @@ void Term::feed(uint8_t b, KeyFn fn, void* ctx) {
             if (b == 0x0D || b == 0x0A)       { fn(ctx, KEY_ENTER); return; }
             if (b == 0x08 || b == 0x7F)       { fn(ctx, KEY_BACKSPACE); return; }
             if (b == 0x03)                    { fn(ctx, KEY_BREAK); return; }
+            if (b == 0x0C)                    { fn(ctx, KEY_CLEAR); return; }
             if (b >= 0x20 && b <= 0x7E)       { fn(ctx, b); return; }
             return;
         case 1:

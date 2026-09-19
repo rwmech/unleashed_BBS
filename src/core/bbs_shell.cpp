@@ -401,12 +401,10 @@ void Bbs::rowText(Session& s, Color c, const char* text, bool newline) {
     t.color(s.tl, c);
     if (s.watch != ListKind::None) {
         // A refresh screen redraws from home, so anything wider than the
-        // frame wraps and leaves its tail on screen at every redraw. Cut it.
-        size_t used = 0;
-        for (const char* p = text; *p && used < rowWidth(s); ++p) {
-            t.ch(s.tl, *p);
-            if ((static_cast<uint8_t>(*p) & 0xC0) != 0x80) ++used;
-        }
+        // frame wraps and leaves its tail on screen at every redraw. Cut it,
+        // and let the terminal layer do the counting: it is the only thing
+        // that knows which bytes are a character.
+        uint8_t used = t.textCols(s.tl, text, static_cast<uint8_t>(rowWidth(s)));
         for (size_t i = used; i < rowWidth(s); ++i) t.ch(s.tl, ' ');
     } else {
         t.text(s.tl, text);

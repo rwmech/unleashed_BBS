@@ -2020,6 +2020,17 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
             if (!tl.empty()) tl.skipDelays();
             if (!s.ed.active()) return;
 
+            // Ctrl-L clears the screen, the way it does in every shell since
+            // roughly forever, and SHIFT+CLR/HOME does it on a C64. Whatever
+            // was half-typed is kept and redrawn underneath, because
+            // clearing the screen is not the same as abandoning the line.
+            if (k == KEY_CLEAR) {
+                t.cls(tl);
+                drawPrompt(s);
+                s.ed.redraw(t, tl);
+                return;
+            }
+
             if (k == KEY_UP) {
                 if (s.histPos + 1 < s.hist.count()) {
                     ++s.histPos;

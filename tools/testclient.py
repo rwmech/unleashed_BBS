@@ -1913,6 +1913,38 @@ def test_partitions():
     return ok
 
 
+def test_refresh_and_ctrl_l():
+    """Two shell behaviours that only show up on a live terminal."""
+    print("Refresh rows and Ctrl-L")
+    c = ansi_login("Refresher")
+    c.send(b"bye testsysop\r")   # DASH is staff only
+    c.pump(1.5)
+    c.buf.clear()
+    c.send(b"dash 2\r")
+    c.pump(2.5)
+    seen = plain(c.buf)
+    # The status line carries the micro sign. Walking it a byte at a time
+    # sent 0xC2 and 0xB5 through the charset map separately and each came
+    # back as '?', so a refresh screen said "??nleashed BBS".
+    ok = check("the refresh header keeps the micro sign", b"?nleashed" not in seen)
+    ok &= check("and still names the board", b"nleashed BBS" in seen)
+    c.send(b"x")                          # any key stops the refresh
+    c.pump(1.0)
+
+    c.buf.clear()
+    c.send(b"who")                        # half a command, deliberately unsent
+    c.pump(0.4)
+    c.send(b"\x0c")                       # Ctrl-L
+    c.pump(1.0)
+    ok &= check("Ctrl-L clears the screen", b"\x1b[2J" in bytes(c.buf))
+    ok &= check("and keeps what was half typed",
+                plain(c.buf).rstrip().endswith(b"who"))
+    c.send(b"\r")
+    c.pump(1.0)
+    c.close()
+    return ok
+
+
 def test_screens():
     """The three screens added for the sign-up and chat flows.
 
@@ -2028,6 +2060,7 @@ if __name__ == "__main__":
                test_mail(), test_menus(), test_sysinfo(), test_config(), test_serial(),
                test_bulletin(), test_idle_login(), test_busy(),
                test_screens(), test_exit_screen(),
+               test_refresh_and_ctrl_l(),
                test_partitions()]
     if "--backup" in FLAGS:
         results.append(test_backup())

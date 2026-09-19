@@ -86,6 +86,7 @@ enum Key : int {
     KEY_BREAK,      // Ctrl-C on PC, RUN/STOP on C64
     KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT,
     KEY_HOME,
+    KEY_CLEAR,      // Ctrl-L on PC, SHIFT+CLR/HOME on C64
     KEY_F1, KEY_F2, KEY_F3, KEY_F4, KEY_F5, KEY_F6, KEY_F7, KEY_F8,
 };
 
@@ -115,6 +116,11 @@ public:
     void ch(ByteSink& o, char c);                  // one ASCII char, translated
     void text(ByteSink& o, const char* s);         // ASCII string, '\n' = newline, UTF-8 µ allowed
     void textN(ByteSink& o, const char* s, size_t n);
+
+    // textCols: at most maxCols columns of s, returning how many were
+    // written. Multi-byte characters count as one column and are never
+    // split, which is why a caller must not do this arithmetic itself.
+    uint8_t textCols(ByteSink& o, const char* s, uint8_t maxCols);
     void nl(ByteSink& o);
     void cls(ByteSink& o);
     void color(ByteSink& o, Color c);

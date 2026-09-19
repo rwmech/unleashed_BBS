@@ -24,6 +24,11 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.15.2, 2026-09-19
+
+- **Fixed: refresh screens showed `??nleashed BBS`.** The row truncation added in 0.14.0 walked the text a byte at a time, so the micro sign's two bytes each went through the charset map on their own and each came back as `?`. Counting columns is the terminal layer's job now (`Term::textCols`), because it is the only thing that knows which bytes make a character.
+- Ctrl-L clears the screen and redraws what you were half way through typing, the way it does in every other shell. SHIFT+CLR/HOME does the same on a C64. Every byte below 0x20 except a handful was previously discarded before it ever became a key, so Ctrl-L had never arrived at all.
+
 ## 0.15.1, 2026-09-19
 
 - `TIME -1` takes a line off the clock: no per-call limit, no daily limit, no idle hangup, until it hangs up. `TIME n -1` does it to somebody else's node. It lasts for the call only, so nobody ends up quietly unlimited for ever. `OFF`, `NONE`, `UNLIMITED` and `NOLIMIT` all work too. The cost is that `-1` no longer means "take one minute away".
