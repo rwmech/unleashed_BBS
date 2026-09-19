@@ -250,6 +250,24 @@ def read_list(c, secs=8):
     return PROMPT_RE.search(bytes(c.buf)[-64:]) is not None
 
 
+def pass_rules(c, enc=lambda s: s.encode()):
+    """After R the house rules play, a page at a time, before the encryption
+    warning. Press through them and stop at the warning.
+
+    The buffer is cleared between pages: wait_any matches everything received
+    so far, so the previous page's "continue" would match again at once.
+    """
+    for _ in range(8):
+        hit = wait_any(c, [enc("know more"), enc("continue"), enc("CONTINUE")], 6)
+        if hit == 0:
+            return True
+        if hit < 0:
+            return False
+        c.buf = bytearray()
+        c.send(b" ")
+    return False
+
+
 def login(c, handle, pw=TEST_PW, as_pet=False, wait_main=True):
     """At the handle prompt: log in, or register when the handle is new.
     The signup keys work for the cursor form and the ASCII line form alike."""
@@ -259,7 +277,8 @@ def login(c, handle, pw=TEST_PW, as_pet=False, wait_main=True):
     if which == 0:
         email = "".join(ch for ch in handle.lower() if ch.isalnum()) + "@example.com"
         c.send(b"r")
-        c.wait_for(enc("know more"), 6)     # the disclosure offer comes first
+        if not pass_rules(c, enc):          # house rules, then the warning
+            return False
         c.send(b"n")
         c.wait_for(enc("NEW ACCOUNT"), 6)
         c.send(enc(pw) + b"\r" + enc(pw) + b"\r" + enc(handle) + b"\r" + enc(email) + b"\r\r\r\r\r")
@@ -411,10 +430,12 @@ def test_ascii():
             and not l.startswith("More:") and not l.lstrip().startswith("?")]
     ok &= check("HELP generated with rows", len(body) >= 10)
     ok &= check("every HELP line fits 39 columns", all(len(l) <= 39 for l in lines))
-    ok &= check("descriptions start at column 14",
-                all(len(l) > 13 and l[12] == " " and l[13] != " " for l in body))
+    # The usage column is 15 wide so that "ANNOUNCE TEST", the widest usage
+    # string there is, is not the one command that gets truncated.
+    ok &= check("descriptions start at column 16",
+                all(len(l) > 15 and l[14] == " " and l[15] != " " for l in body))
     ok &= check("wrapped lines (if any) sit under the description column",
-                all(l[:13] == " " * 13 for l in body if l.startswith(" ")))
+                all(l[:15] == " " * 15 for l in body if l.startswith(" ")))
     c.close()
     return ok
 
@@ -667,7 +688,7 @@ def test_accounts():
     c.send(b"Zed\r")
     c.wait_for(b"[R]egister", 5)
     c.send(b"r")
-    c.wait_for(b"know more", 5)
+    pass_rules(c)
     c.send(b"n")
     ok &= check("sign-up form opens", c.wait_for(b"NEW ACCOUNT", 5))
     c.buf.clear()
@@ -679,7 +700,7 @@ def test_accounts():
     c.send(b"Zed\r")
     c.wait_for(b"[R]egister", 5)
     c.send(b"r")
-    c.wait_for(b"know more", 5)
+    pass_rules(c)
     c.send(b"n")
     c.wait_for(b"NEW ACCOUNT", 5)
     c.buf.clear()
@@ -690,7 +711,7 @@ def test_accounts():
     c.send(b"Zed\r")
     c.wait_for(b"[R]egister", 5)
     c.send(b"r")
-    c.wait_for(b"know more", 5)
+    pass_rules(c)
     c.send(b"n")
     c.wait_for(b"NEW ACCOUNT", 5)
     c.buf.clear()
@@ -1647,8 +1668,12 @@ def test_privacy():
     c.wait_for(b"[R]egister", 6)
     c.buf.clear()
     c.send(b"r")
-    ok = check("registering warns the link is not encrypted",
-               c.wait_for(b"not encrypted", 5))
+    ok = check("the house rules come first", c.wait_for(b"HOUSE RULES", 6))
+    ok &= check("they lead with the one that removes you", b"NO HATE" in plain(c.buf))
+    ok &= check("and they are paged, not a wall", b"continue" in plain(c.buf).lower())
+    ok &= check("the warning still sits right before the password", pass_rules(c))
+    ok &= check("registering warns the link is not encrypted",
+                b"not encrypted" in plain(c.buf))
     ok &= check("and says what to do about it", b"anywhere else" in plain(c.buf))
     ok &= check("would you like to know more", b"know more" in plain(c.buf))
 
@@ -1686,7 +1711,7 @@ def test_privacy():
     d.send(b"Hasty\r")
     d.wait_for(b"[R]egister", 6)
     d.send(b"r")
-    d.wait_for(b"know more", 5)
+    pass_rules(d)
     d.buf.clear()
     d.send(b"n")
     ok &= check("N goes straight to the form", d.wait_for(b"NEW ACCOUNT", 6))

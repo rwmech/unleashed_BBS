@@ -99,7 +99,7 @@ enum class FormKind : uint8_t { None, Signup, Profile, Password, UserAdd, UserEd
 enum class ConfirmKind : uint8_t { Logoff, DeleteUser };
 
 // What happens once the caller has pressed a key at a pause.
-enum class AfterKey : uint8_t { Prompt, SignupForm, ScreenNext };
+enum class AfterKey : uint8_t { Prompt, SignupForm, ScreenNext, KnowMore };
 
 // Which menu a command appears in. HELP with no argument shows Main, the
 // handful people use all the time, and names the other menus.
@@ -128,12 +128,15 @@ struct Session {
     uint32_t     lastInput   = 0;
     uint32_t     lastRx      = 0;
     uint32_t     closeAt     = 0;
+    uint32_t     lingerAt    = 0;    // earliest drop once the send-off is out
     uint8_t      fxStep      = 0;
     uint16_t     savedCps    = 0;
     bool         pendingPrompt = false;  // prompt once the screen finishes
     FormKind     pendingForm = FormKind::None;  // form to open once it finishes
     AfterKey     afterKey    = AfterKey::Prompt; // what a pause leads to
     bool         pendingTail   = false;  // hangup tail after goodbye screen
+    bool         pendingKnowMore = false; // rules screen leads to the warning
+    bool         newAccount      = false; // first call: show newuser, not bulletin
     uint32_t     heapAtOpen  = 0;
     char         user[BBS_USER_MAX + 1] = {};
 
@@ -313,6 +316,7 @@ private:
     void askKnowMore(Session& s);
     void pauseFor(Session& s, AfterKey then);
     void showPrivacy(Session& s, AfterKey then);
+    void showRules(Session& s);
     void onAnyKey(Session& s, uint32_t now);
     void onKnowMore(Session& s, int k, uint32_t now);
     void cmdPrivacy(Session& s);
@@ -349,6 +353,7 @@ private:
     void drawPrompt(Session& s);
     void hangup(Session& s, const char* msg, uint32_t now);
     void goodbye(Session& s, uint32_t now);
+    void exitScreen(Session& s, uint32_t now);
     bool playScreen(Session& s, const char* name);
 
     // -- timers, notices, paging, refresh (bbs.cpp) --------------------------

@@ -284,6 +284,7 @@ void Bbs::formSave(Session& s, uint32_t now) {
             fx::scramble(t, tl, "WELCOME ABOARD", 10, 55);
             t.nl(tl);
             strncpy(s.user, s.edit.handle, BBS_USER_MAX);
+            s.newAccount = true;          // first call: the short rules, not the bulletin
             completeLogin(s, now);
             return;
         }

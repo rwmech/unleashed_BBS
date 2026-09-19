@@ -179,6 +179,90 @@ def ansi_logo(indent, gradient, shadow="1;30"):
     return bytes(out)
 
 
+# --------------------------------------------------------------------------
+# The wordmark: a 6x12 pixel face drawn with CP437 half-block characters.
+#
+# A half block fills the top or the bottom of a cell, so a text row carries
+# two pixel rows and a letter can have a 2px stroke, a shoulder and a curve.
+# The old 3x5 face below is still used for PETSCII, where there is no
+# equivalent trick and 40 columns to fit into.
+#
+# Capitals stand 10 pixels tall on a baseline two rows from the bottom. The
+# micro sign is lowercase, so it is set at an x-height and its stem carries
+# on below: a real descender, not a capital squashed to make room.
+#
+# Term::cp437 re-encodes these for a UTF-8 terminal, so one file serves both.
+# --------------------------------------------------------------------------
+BLK_FULL, BLK_TOP, BLK_BOT = 0xDB, 0xDF, 0xDC
+WBLANK = "......"
+
+WCAPS = {
+    "U": ["##..##", "##..##", "##..##", "##..##", "##..##", "##..##", "##..##", "##..##", "######", ".####."],
+    "N": ["##..##", "##..##", "###.##", "###.##", "###.##", "######", "##.###", "##.###", "##.###", "##..##"],
+    "L": ["##....", "##....", "##....", "##....", "##....", "##....", "##....", "##....", "######", "######"],
+    "E": ["######", "######", "##....", "##....", "#####.", "#####.", "##....", "##....", "######", "######"],
+    "A": [".####.", "##..##", "##..##", "##..##", "######", "######", "##..##", "##..##", "##..##", "##..##"],
+    "S": [".#####", "##...#", "##....", "##....", ".####.", "..####", "....##", "##..##", "#####.", ".####."],
+    "H": ["##..##", "##..##", "##..##", "##..##", "######", "######", "##..##", "##..##", "##..##", "##..##"],
+    "D": ["#####.", "##..##", "##..##", "##..##", "##..##", "##..##", "##..##", "##..##", "##..##", "#####."],
+}
+WFONT = {k: v + [WBLANK, WBLANK] for k, v in WCAPS.items()}
+WFONT["\u00b5"] = [WBLANK, WBLANK,
+                    "##..##", "##..##", "##..##", "##..##", "##..##", "##..##", "##..##", "######",
+                    "##....", "##...."]
+
+WORD = "\u00b5NLEASHED"
+
+
+def wordmark_pixels(word=WORD, gap=1):
+    rows = [""] * 12
+    for i, ch in enumerate(word):
+        for r in range(12):
+            rows[r] += WFONT[ch][r] + ("." * gap if i < len(word) - 1 else "")
+    return rows
+
+
+def wordmark_cells(word=WORD):
+    """Pixel rows folded into half-block cells: 12 pixels become 6 rows."""
+    px = wordmark_pixels(word)
+    out = []
+    for r in range(0, len(px), 2):
+        top, bot = px[r], px[r + 1]
+        row = []
+        for c in range(len(top)):
+            hi, lo = top[c] == "#", bot[c] == "#"
+            row.append(BLK_FULL if hi and lo else BLK_TOP if hi else BLK_BOT if lo else None)
+        out.append(row)
+    return out
+
+
+def ansi_wordmark(indent, gradient):
+    """The wordmark in CP437 half blocks, one colour per row."""
+    out = bytearray()
+    for r, row in enumerate(wordmark_cells()):
+        line = bytearray(b" " * indent)
+        line += sgr(gradient[min(r, len(gradient) - 1)])
+        trail = 0
+        for cell in row:
+            if cell is None:
+                trail += 1
+            else:
+                line += b" " * trail
+                trail = 0
+                line.append(cell)
+        out += bytes(line) + b"\r\n@DELAY:90@"
+    return bytes(out)
+
+
+def wordmark_ascii(indent=9):
+    """The same shape for a terminal with no block characters at all."""
+    out = []
+    for row in wordmark_cells():
+        line = "".join(" " if c is None else "#" for c in row)
+        out.append(" " * indent + line.rstrip())
+    return "\n".join(out)
+
+
 def centered(text, width=80):
     return b" " * ((width - len(text)) // 2) + text.encode()
 
@@ -189,8 +273,9 @@ def centered(text, width=80):
 def make_welcome_ans():
     b = bytearray()
     b += f"{ESC}[0m{ESC}[2J{ESC}[H\r\n".encode()
-    logo_w = (len(logo_rows(LOGO)[0]) + 1) * 2
-    b += ansi_logo((80 - logo_w) // 2, ["1;37", "1;36", "0;36", "1;34", "0;34"])
+    logo_w = len(wordmark_cells()[0])
+    b += ansi_wordmark((80 - logo_w) // 2,
+                       ["1;37", "1;36", "0;36", "1;34", "0;34", "0;34"])
     b += b"\r\n"
     b += sgr("1;37") + centered(MOTTO) + b"\r\n"
     tag = "no web  \xf9  no cloud  \xf9  no browser  \xf9  real hardware"
@@ -516,6 +601,156 @@ def make_privacy_asc():
     return bytes(out)
 
 
+# ==========================================================================
+# rules: shown when somebody presses R to register, before they type a
+# password. Two pages, because a 24 row terminal is the small one.
+# ==========================================================================
+RULES_P1 = [
+    ("t", "THE HOUSE RULES"),
+    ("r", ""),
+    ("d", "You are about to make an account. This is the whole deal, and"),
+    ("d", "it is shorter than the thing you clicked through this morning."),
+    ("", ""),
+    ("n", "1.  NO HATE."),
+    ("b", "Argue with anybody about anything. Come after a person"),
+    ("b", "for who they are and you are off the board. No warning,"),
+    ("b", "no appeal, no long conversation about it."),
+    ("", ""),
+    ("n", "2.  NOTHING HERE IS ENCRYPTED."),
+    ("b", "This is telnet, the way it was in 1969. Every word you"),
+    ("b", "type crosses the network in the clear, your password"),
+    ("b", "included. Anyone sharing a wire or an access point with"),
+    ("b", "you can read the lot."),
+    ("", ""),
+    ("n", "3.  USE A PASSWORD YOU USE NOWHERE ELSE."),
+    ("b", "This is the one that matters. If what you type here is"),
+    ("b", "also the password on your mail, you have just handed"),
+    ("b", "your mail to everyone between you and this board. Make"),
+    ("b", "one up. It does not have to be clever. It has to be new."),
+]
+
+RULES_P2 = [
+    ("t", "THE HOUSE RULES"),
+    ("r", ""),
+    ("n", "4.  THE SYSOP SEES EVERYTHING."),
+    ("b", "Calls are logged. Chat is not private and neither is"),
+    ("b", "mail on this board. Nothing here is a secret keeper."),
+    ("b", "Do not type anything you would not say out loud in the"),
+    ("b", "room."),
+    ("", ""),
+    ("n", "5.  IT IS A FIVE DOLLAR CHIP."),
+    ("b", "The whole board is a microcontroller with less memory"),
+    ("b", "than a floppy disk, sitting on a shelf somewhere. Be"),
+    ("b", "patient with it. If it drops you, call back."),
+    ("", ""),
+    ("n", "6.  CHAOTIC NEUTRAL."),
+    ("b", "Past all that, do as you like. Get along."),
+    ("", ""),
+    ("r", ""),
+    ("d", "Still here? Good. Pick a handle and a password nobody else"),
+    ("d", "has ever seen, and welcome aboard."),
+]
+
+# ==========================================================================
+# newuser: the short version, once they are actually in
+# ==========================================================================
+NEWUSER = [
+    ("t", "YOU ARE ON THE BOARD"),
+    ("r", ""),
+    ("d", "Welcome aboard, @USER@. Node @NODE@ of @NODES@ is yours."),
+    ("", ""),
+    ("n", "The short version, now that you have joined:"),
+    ("", ""),
+    ("b", "No hate. That is the one that gets you removed."),
+    ("b", "Nothing here is encrypted. Never reuse a password."),
+    ("b", "Chat and mail are not private. The sysop reads the logs."),
+    ("b", "Be patient. It is a microcontroller, not a data centre."),
+    ("", ""),
+    ("r", ""),
+    ("d", "?         the command list"),
+    ("d", "PRIVACY   the long version of rule two, any time you like"),
+    ("d", "CHAT      find out whether anyone else is awake"),
+]
+
+# ==========================================================================
+# chat: the transition into the room
+# ==========================================================================
+CHATIN = [
+    ("t", "ENTERING CHAT"),
+    ("r", ""),
+    ("d", "Everyone in the room sees everything you type. There is no"),
+    ("d", "private mode, and there is no history older than the buffer."),
+    ("", ""),
+    ("b", "/s      who else is here"),
+    ("b", "/help   the rest of the commands"),
+    ("b", "/q      leave, or press ESC"),
+    ("", ""),
+    ("r", ""),
+]
+
+
+def ansi_page(lines, width=76):
+    """One screen of headed text. 't' title, 'r' rule, 'n' note, 'b' bullet,
+    'd' body, '' blank."""
+    b = bytearray()
+    for kind, text in lines:
+        if kind == "t":
+            pad = (width - len(text)) // 2
+            b += sgr("1;37") + b" " * (2 + pad) + text.encode("ascii") + b"\r\n"
+        elif kind == "r":
+            b += sgr("0;34") + b"  " + bytes([H_LINE]) * width + b"\r\n"
+        elif kind == "n":
+            b += sgr("1;36") + b"  " + text.encode("ascii") + b"\r\n"
+        elif kind == "b":
+            b += sgr("0;32") + b"      " + bytes([BULLET]) + b" " + sgr("0;37") + text.encode("ascii") + b"\r\n"
+        elif kind == "d":
+            b += sgr("0;37") + b"  " + text.encode("ascii") + b"\r\n"
+        else:
+            b += b"\r\n"
+    return bytes(b)
+
+
+def ascii_page(lines, width=76):
+    out = []
+    for kind, text in lines:
+        if kind == "t":
+            out.append(" " * (2 + (width - len(text)) // 2) + text)
+        elif kind == "r":
+            out.append("  " + "-" * width)
+        elif kind == "b":
+            out.append("      * " + text)
+        elif kind in ("n", "d"):
+            out.append("  " + text)
+        else:
+            out.append("")
+    return ("\n".join(out) + "\n").encode("ascii")
+
+
+def make_rules_ans():
+    return (b"@CLS@" + ansi_page(RULES_P1) + FF +
+            b"@CLS@" + ansi_page(RULES_P2) + sgr("0"))
+
+
+def make_rules_asc():
+    return b"@CLS@" + ascii_page(RULES_P1) + FF + b"@CLS@" + ascii_page(RULES_P2)
+
+
+def make_newuser_ans():
+    return b"@CLS@" + ansi_page(NEWUSER) + sgr("0")
+
+
+def make_newuser_asc():
+    return b"@CLS@" + ascii_page(NEWUSER)
+
+
+def make_chatin_ans():
+    return b"@CLS@" + ansi_page(CHATIN) + sgr("0")
+
+
+def make_chatin_asc():
+    return b"@CLS@" + ascii_page(CHATIN)
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     files = {
@@ -531,6 +766,12 @@ def main():
         "about.seq": make_about_seq(),
         "about.ans": make_about_ans(),
         "about.asc": ABOUT_ASC.encode("ascii"),
+        "rules.ans": make_rules_ans(),
+        "rules.asc": make_rules_asc(),
+        "newuser.ans": make_newuser_ans(),
+        "newuser.asc": make_newuser_asc(),
+        "chatin.ans": make_chatin_ans(),
+        "chatin.asc": make_chatin_asc(),
         "privacy.seq": make_privacy_seq(),
         "privacy.ans": make_privacy_ans(),
         "privacy.asc": make_privacy_asc(),

@@ -444,12 +444,15 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
     s.lastInput     = now;
     s.lastRx        = now;
     s.closeAt       = 0;
+    s.lingerAt      = 0;
     s.fxStep        = 0;
     s.savedCps      = 0;
     s.pendingPrompt = false;
     s.pendingForm   = FormKind::None;
     s.afterKey      = AfterKey::Prompt;
     s.pendingTail   = false;
+    s.pendingKnowMore = false;
+    s.newAccount      = false;
     s.user[0]       = '\0';
 
     s.loggedIn      = false;
@@ -705,6 +708,9 @@ void Bbs::serviceSession(Session& s, uint32_t now) {
                 } else if (!more && s.pendingForm != FormKind::None) {
                     s.pendingForm = FormKind::None;  // a screen that leads into a form
                     pauseFor(s, AfterKey::SignupForm);   // let them read it first
+                } else if (!more && s.pendingKnowMore) {
+                    s.pendingKnowMore = false;   // rules read, now the warning
+                    pauseFor(s, AfterKey::KnowMore);
                 } else if (!more && s.pendingPrompt) {
                     s.pendingPrompt = false;
                     prompt(s);
@@ -760,9 +766,15 @@ void Bbs::serviceSession(Session& s, uint32_t now) {
                 }
             }
             flush(s, now);
-            if (s.st == SState::Closing &&
-                ((tl.empty() && !s.scr.active()) || static_cast<int32_t>(now - s.closeAt) >= 0)) {
-                closeSession(s, "hangup", now);
+            if (s.st == SState::Closing) {
+                bool drained = tl.empty() && !s.scr.active();
+                // Start the clock the moment the last byte is away, not when
+                // the send-off began: a slow terminal gets the same five
+                // seconds to look at it as a fast one.
+                if (drained && !s.lingerAt) s.lingerAt = now + BBS_EXIT_LINGER_MS;
+                bool lingered = drained && static_cast<int32_t>(now - s.lingerAt) >= 0;
+                if (lingered || static_cast<int32_t>(now - s.closeAt) >= 0)
+                    closeSession(s, "hangup", now);
             }
             return;
         default:
@@ -1059,7 +1071,7 @@ void Bbs::onNewHandle(Session& s, int k, uint32_t now) {
     if (reg) {
         t.ch(tl, 'R');
         t.nl(tl);
-        askKnowMore(s);
+        showRules(s);
     } else if (guest) {
         t.ch(tl, 'G');
         loginGuest(s, now);
@@ -1068,6 +1080,24 @@ void Bbs::onNewHandle(Session& s, int k, uint32_t now) {
         s.user[0] = '\0';
         askName(s);
     }
+}
+
+// ---------------------------------------------------------------------------
+// showRules: pressing R gets the house rules before anything else. They are
+// the terms of the place, so they come before the sign-up form rather than
+// after it, and before the encryption warning, which stays immediately in
+// front of the password where it does the most good.
+//
+// A board with no rules screen loses nothing: the flow carries straight on.
+// ---------------------------------------------------------------------------
+void Bbs::showRules(Session& s) {
+    s.term.cls(s.tl);
+    if (playScreen(s, "rules")) {
+        s.pendingPrompt   = false;       // not back to a prompt: on to the warning
+        s.pendingKnowMore = true;
+        return;
+    }
+    askKnowMore(s);
 }
 
 // ---------------------------------------------------------------------------
@@ -1141,6 +1171,7 @@ void Bbs::onAnyKey(Session& s, uint32_t now) {
         return;                                   // the player takes it from here
     }
     if (then == AfterKey::SignupForm) startForm(s, FormKind::Signup, now);
+    else if (then == AfterKey::KnowMore) askKnowMore(s);   // rules read, now the warning
     else                              prompt(s);
 }
 
@@ -1361,7 +1392,11 @@ void Bbs::completeLogin(Session& s, uint32_t now) {
     snprintf(buf, sizeof(buf), "*** %s is on node %u", s.user, s.id);
     noticeAll(s, buf);
 
-    if (!playScreen(s, "bulletin")) prompt(s);
+    // A caller who just registered gets the short rules; everybody else
+    // gets whatever the board has to say today.
+    const char* first = s.newAccount ? "newuser" : "bulletin";
+    s.newAccount = false;
+    if (!playScreen(s, first)) prompt(s);
 }
 
 // ---------------------------------------------------------------------------
@@ -1446,9 +1481,19 @@ void Bbs::hangup(Session& s, const char* msg, uint32_t now) {
     s.term.nl(s.tl);
     s.term.color(s.tl, Color::LightRed);
     s.term.text(s.tl, msg);
+
+    // Somebody who got as far as being a caller gets the send-off, however
+    // the call ended: idle, out of time, kicked or banned. Somebody who
+    // never logged in does not, and that is deliberate. The busy line and a
+    // refused password have nothing to say goodbye to, and a detection
+    // timeout means the terminal type is still unknown, so an ANSI screen
+    // would arrive as line noise.
+    if (s.loginAt) { s.term.nl(s.tl); exitScreen(s, now); return; }
+
     fx::hangup(s.term, s.tl);
-    s.st      = SState::Closing;
-    s.closeAt = now + 5000;
+    s.st       = SState::Closing;
+    s.lingerAt = 0;
+    s.closeAt  = now + 5000;
 }
 
 // ---------------------------------------------------------------------------
@@ -1456,11 +1501,25 @@ void Bbs::hangup(Session& s, const char* msg, uint32_t now) {
 // ---------------------------------------------------------------------------
 void Bbs::goodbye(Session& s, uint32_t now) {
     plat::log("bbs: node %c logoff", nodeChar(s));
+    s.term.reset(s.tl);
+    s.term.nl(s.tl);
+    exitScreen(s, now);
+}
+
+// ---------------------------------------------------------------------------
+// exitScreen: the send-off, and the one place that decides how a call ends.
+// Plays screens/goodbye if the board has one, otherwise says thank you in
+// plain text, and either way finishes with line noise and NO CARRIER.
+//
+// The line is then held open for BBS_EXIT_LINGER_MS after everything has
+// drained, because a screen that is sent and immediately followed by a
+// closed socket is a screen most terminals never draw.
+// ---------------------------------------------------------------------------
+void Bbs::exitScreen(Session& s, uint32_t now) {
     Term& t = s.term;
-    t.reset(s.tl);
-    t.nl(s.tl);
-    s.st      = SState::Closing;
-    s.closeAt = now + 20000;
+    s.st       = SState::Closing;
+    s.lingerAt = 0;
+    s.closeAt  = now + 20000;          // cap, for a far end that stopped reading
     if (s.scr.open("goodbye", t)) {
         s.pendingTail = true;
         return;

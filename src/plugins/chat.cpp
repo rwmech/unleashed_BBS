@@ -1339,4 +1339,7 @@ extern const Plugin kChatPlugin = {
     nullptr,                 // status
     kCommands,
     sizeof(kCommands) / sizeof(kCommands[0]),
+    nullptr,                 // settings: nothing of its own in CONFIG yet
+    0,
+    nullptr,                 // setting
 };

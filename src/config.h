@@ -51,7 +51,7 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "0.14.0"
+#define BBS_VERSION         "0.15.0"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // ---------------------------------------------------------------------------
@@ -70,6 +70,11 @@
 // Activity LED (system.cfg activity_led_gpio overrides the pin)
 #define BBS_LED_GPIO        2        // blue LED on DOIT-style dev boards, -1 = none
 #define BBS_LED_PULSE_MS    40
+
+// How long the line is held open after the exit screen has been sent, so the
+// last thing a caller sees is not a screen that flashed past on its way to a
+// closed socket. Applies however the call ended.
+#define BBS_EXIT_LINGER_MS  5000
 
 // ---------------------------------------------------------------------------
 // Terminal detection

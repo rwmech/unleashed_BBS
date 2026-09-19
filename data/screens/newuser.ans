@@ -1,0 +1,16 @@
+@CLS@[1;37m                              YOU ARE ON THE BOARD
+[0;34m  ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+[0;37m  Welcome aboard, @USER@. Node @NODE@ of @NODES@ is yours.
+
+[1;36m  The short version, now that you have joined:
+
+[0;32m      ù [0;37mNo hate. That is the one that gets you removed.
+[0;32m      ù [0;37mNothing here is encrypted. Never reuse a password.
+[0;32m      ù [0;37mChat and mail are not private. The sysop reads the logs.
+[0;32m      ù [0;37mBe patient. It is a microcontroller, not a data centre.
+
+[0;34m  ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+[0;37m  ?         the command list
+[0;37m  PRIVACY   the long version of rule two, any time you like
+[0;37m  CHAT      find out whether anyone else is awake
+[0m
