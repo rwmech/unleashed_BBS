@@ -24,6 +24,17 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.15.0, 2026-09-18
+
+Settings you can find, and a send-off everybody gets.
+
+- A plugin now declares what `CONFIG` should offer. Until now a plugin's settings page was built from whatever keys `system.cfg` already contained, which meant a setting nobody had written yet was invisible: the announce plugin could read a board name, owner, description, DNS name and directory list, but there was no way to set any of them short of editing the file by hand. All nine are on the form now, on a fresh board, with the running value already in them.
+- A board can advertise a name of its own (`quantum.dnsfor.me`, say) instead of whatever address the directory saw, and can list itself in several directories at once with a comma-separated list. Both were always in the protocol; neither was reachable.
+- The wordmark is redrawn with half-block characters, which carry two pixels per cell vertically and so allow a real stroke weight instead of chunky squares. The micro sign is set as a lowercase letter on the shared baseline with its stem below it, rather than a capital squashed to make room for a tail.
+- New screens: the house rules when you press R to register, a short welcome once you are in, and a transition into chat. All three are optional, and a board without the files behaves exactly as before.
+- The goodbye screen now plays however the call ended, not only when you typed BYE, and the line is held open for five seconds afterwards so it is not a screen that flashes past on its way to a closed socket. A caller who never logged in still gets the short version.
+- HELP no longer truncates its own longest command.
+
 ## 0.14.0, 2026-09-18
 
 Flashing the board stops costing you the board.

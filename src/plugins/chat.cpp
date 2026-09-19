@@ -700,6 +700,9 @@ void join(Bbs& bbs, Session& s) {
     Term& t = s.term;
     Timeline& tl = s.tl;
     t.reset(tl);
+    // A board with screens/chatin gets a transition into the room. Without
+    // one the caller lands straight on the room line as before.
+    if (bbs.showScreen(s, "chatin")) t.nl(tl);
     t.color(tl, g_cRoom);
     snprintf(line, sizeof(line), "%.19s: %u here. /s who, /q quits.", g_room, roomCount());
     t.text(tl, line);

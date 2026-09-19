@@ -1913,6 +1913,91 @@ def test_partitions():
     return ok
 
 
+def test_screens():
+    """The three screens added for the sign-up and chat flows.
+
+    Each one is optional by design: a board without the file carries on.
+    These check the wiring, that each plays at the right moment and hands
+    the caller on to the right place afterwards.
+    """
+    print("Rules, new user and the chat transition")
+    c = Caller(ansi=True)
+    c.wait_for(b"Enter your handle", 10)
+    c.send(b"Screeny\r")
+    c.wait_for(b"[R]egister", 6)
+    c.buf.clear()
+    c.send(b"r")
+
+    ok = check("R plays the house rules", c.wait_for(b"HOUSE RULES", 6))
+    ok &= check("which lead with the rule that removes you", b"NO HATE" in plain(c.buf))
+    ok &= check("and warn the link is not encrypted",
+                b"NOTHING HERE IS ENCRYPTED" in plain(c.buf))
+    ok &= check("paged, not a wall of text", b"continue" in plain(c.buf).lower())
+
+    ok &= check("the rules lead to the encryption warning", pass_rules(c))
+    c.send(b"n")
+    ok &= check("and then to the sign-up form", c.wait_for(b"NEW ACCOUNT", 6))
+
+    c.buf.clear()
+    c.send(b"pw1234\rpw1234\rScreeny\rscreeny@example.com\r\r\r\r\r")
+    ok &= check("registering works", c.wait_for(b"WELCOME ABOARD", 10))
+    ok &= check("a new account gets the new-user screen",
+                c.wait_for(b"YOU ARE ON THE BOARD", 8))
+    seen = plain(c.buf)
+    ok &= check("which is the short version, not the long one",
+                b"HOUSE RULES" not in seen and b"No hate" in seen)
+    ok &= check("and points at the long one", b"PRIVACY" in seen)
+    ok &= check("then lands at the prompt", c.wait_for(b"Main", 8))
+
+    # Joining chat gets the transition, and still ends up in the room.
+    c.buf.clear()
+    c.send(b"chat\r")
+    ok &= check("joining chat plays the transition", c.wait_for(b"ENTERING CHAT", 6))
+    ok &= check("which says the room is not private",
+                b"private mode" in plain(c.buf))
+    ok &= check("and the caller is in the room afterwards",
+                c.wait_for(b"/s who, /q quits", 6))
+    c.send(b"/q")
+    c.wait_for(b"Main", 6)
+
+    # A returning caller gets the bulletin, not the new-user screen.
+    c.send(b"bye\r")
+    c.pump(0.5)
+    c.close()
+
+    d = Caller(ansi=True)
+    d.wait_for(b"Enter your handle", 10)
+    d.send(b"Screeny\r")
+    d.wait_for(b"Password:", 6)
+    d.buf.clear()
+    d.send(b"pw1234\r")
+    d.wait_for(b"Main", 10)
+    ok &= check("a returning caller does not see it again",
+                b"YOU ARE ON THE BOARD" not in plain(d.buf))
+    d.close()
+    return ok
+
+
+def test_exit_screen():
+    """The send-off runs however the call ended, and the line is held open
+    afterwards so the screen can actually be read."""
+    print("The send-off")
+    c = ansi_login("Leaver")
+    c.buf.clear()
+    c.send(b"bye\r")
+    ok = check("a voluntary logoff gets the send-off",
+               c.wait_for(b"Stay unleashed", 6))
+    start = time.time()
+    c.wait_closed(12)
+    held = time.time() - start
+    # Five seconds of linger, minus the time the screen itself took to send.
+    print(f"        (line held {held:.1f}s)")
+    ok &= check("the line is held open afterwards, not dropped at once",
+                held >= 3.0)
+    c.close()
+    return ok
+
+
 def run_selected(only):
     """--only=announce runs just the tests whose name contains "announce"."""
     import types
@@ -1936,6 +2021,7 @@ if __name__ == "__main__":
                test_chat(), test_room_commands(),
                test_mail(), test_menus(), test_sysinfo(), test_config(), test_serial(),
                test_bulletin(), test_idle_login(), test_busy(),
+               test_screens(), test_exit_screen(),
                test_partitions()]
     if "--backup" in FLAGS:
         results.append(test_backup())

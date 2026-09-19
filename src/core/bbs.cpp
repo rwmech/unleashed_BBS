@@ -1424,6 +1424,26 @@ uint16_t Bbs::dayMinutesUsed(const char* handle, uint32_t now) {
 }
 
 // ---------------------------------------------------------------------------
+// showScreen: a whole screen, now, without touching the session state.
+// See bbs.h for why this is not playScreen.
+// ---------------------------------------------------------------------------
+bool Bbs::showScreen(Session& s, const char* name) {
+    static ScreenPlayer one;                 // never the session's own player:
+    if (!one.open(name, s.term)) return false;   // that one may be mid-screen
+    one.setPaging(0);                        // no More: they asked to go, not to read
+    ScreenPlayer::Vars vars{ s.user, s.id, BBS_MAX_NODES };
+    // Bounded twice over: by the screen ending, and by the room left to say
+    // it in. A transition screen that does not fit is a transition screen
+    // that was too long.
+    for (uint16_t guard = 0; guard < 2000; ++guard) {
+        if (s.tl.freeBytes() < 256) break;
+        if (!one.pump(s.term, s.tl, vars)) break;
+    }
+    one.close();
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // playScreen: stream a screen inside the shell (paged), prompt after
 // ---------------------------------------------------------------------------
 bool Bbs::playScreen(Session& s, const char* name) {

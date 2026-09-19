@@ -51,6 +51,10 @@ token       =                     ; left empty: the directory fills this in
 share_activity = no               ; send call counts so a directory can rank
 ```
 
+You do not have to edit the file. `CONFIG announce` puts every one of these
+on a form, on a fresh board, with whatever the plugin is currently running
+with already filled in.
+
 | Key | What it is |
 |---|---|
 | `name` | what your board is called. Falls back to `hostname` if you leave it out |

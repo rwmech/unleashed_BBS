@@ -113,4 +113,17 @@ Logs (the caller log behind `LAST`) live on their own 128 KB partition. They are
 
 ## Regenerating the stock screens
 
+Optional screens, each of which the board simply skips when the file is
+absent:
+
+| Screen | When it plays |
+|---|---|
+| `rules` | pressing R to register, before anything is typed. Two pages. |
+| `newuser` | once a registration succeeds, in place of the bulletin |
+| `chatin` | joining the chat room |
+| `goodbye` | every ending: BYE, idle, out of time, kicked or banned |
+
+`goodbye` is followed by a five second hold (`BBS_EXIT_LINGER_MS`) so the
+screen is not cut off by the socket closing.
+
 `tools/mkscreens.py` rebuilds the stock set in `data/screens/`. Those are only used for a fresh board (`pio run -t flashall`). Day to day, edit screens through the backup zip.

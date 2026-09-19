@@ -272,6 +272,20 @@ public:
     // idle clock pauses. release() hands it back to the command prompt.
     bool own(Session& s, uint8_t plugin);
     void release(Session& s);
+
+    // showScreen: draw one of the board's screens to a caller now, in one
+    // go, leaving the session state alone.
+    //
+    // This is not playScreen. That one hands the session to the screen
+    // player and returns the caller to the prompt afterwards, which is
+    // exactly wrong for a plugin that owns the session and wants the caller
+    // to end up inside it. Paging is off for the same reason: the caller
+    // asked to go somewhere, not to read something.
+    //
+    // For short transition screens only. It stops early rather than
+    // overrun the caller's timeline. False when the board has no such
+    // screen, in which case the plugin simply carries on.
+    bool showScreen(Session& s, const char* name);
     bool owns(const Session& s, uint8_t plugin) const;
 
     // sayTo: one line on a caller's screen, redrawing whatever they were at
