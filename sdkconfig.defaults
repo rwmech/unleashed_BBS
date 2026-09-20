@@ -70,6 +70,30 @@ CONFIG_LWIP_MAX_SOCKETS=16
 # sector re-reads when several files are read interleaved. The BBS streams
 # one screen at a time, so it pays almost nothing for it.
 CONFIG_FATFS_PER_FILE_CACHE=n
+
+# FATFS: long filenames, because without them a file area is unusable.
+#
+# The IDF default is CONFIG_FATFS_LFN_NONE, which is strict 8.3: a path
+# component of more than eight characters is not merely awkward, it is an
+# invalid name, so FatFs refuses to create it and refuses to open it. A
+# sysop typing "storage/textfiles" into CONFIG got a folder that was never
+# made and an area that reported "that folder is not on the card any more",
+# with nothing in the log saying why. Worse, every file already on the card
+# with an ordinary modern name would have been invisible to the listing, and
+# that would only have been discovered once downloads worked.
+#
+# 8.3 is the wrong constraint for this board anyway. The point of the card
+# is that a sysop fills it from a laptop, and a laptop does not make 8.3
+# names. The era being honoured is the software, not the filesystem's
+# limits.
+#
+# HEAP rather than STACK: the buffer is (MAX_LFN + 1) * 2 bytes and the BBS
+# loop task's stack is not the place to find another quarter kilobyte per
+# open directory. 128 is generous for a BBS file and well short of the 255
+# maximum, which would cost twice as much for names nobody types.
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=128
+
 CONFIG_LWIP_SO_REUSE=y
 
 # 1 ms tick so effect timing is smooth

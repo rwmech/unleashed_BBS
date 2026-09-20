@@ -391,7 +391,20 @@ bool start(Bbs& bbs) {
         snprintf(full, sizeof(full), "%s/%s", plat::sdBase(), g_area[i].path);
         struct stat st;
         bool had = stat(full, &st) == 0 && S_ISDIR(st.st_mode);
-        if (!had && makeAreaDir(g_area[i].path)) ++made;
+        if (!had) {
+            if (makeAreaDir(g_area[i].path)) {
+                ++made;
+            } else {
+                // Say so. This failed silently once and cost real time: the
+                // card was 8.3 only, a folder called "textfiles" is nine
+                // characters and therefore not a valid name at all, so the
+                // mkdir was refused, the area listed as configured, and the
+                // only symptom a sysop ever saw was "that folder is not on
+                // the card" with nothing anywhere explaining it.
+                plat::log("files: area%u could not make %s, so it will not list",
+                          static_cast<unsigned>(i + 1), full);
+            }
+        }
     }
     plat::log("files: %u area%s, %u folder%s created",
               live, live == 1 ? "" : "s", made, made == 1 ? "" : "s");
@@ -566,7 +579,12 @@ bool rows(Session& s) {
         // The folder is made at start, so reaching this means it went away
         // afterwards: the card was pulled, or somebody deleted it on a PC.
         if (i == 1) {
-            b.rowText(s, Color::LightRed, "That folder is not on the card any more.");
+            // Not "any more": it may never have been there. The old wording
+            // sent a sysop looking for a folder that had gone missing when
+            // the truth was that it was never created.
+            b.rowText(s, Color::LightRed, "That folder is not on the card.");
+            if (plugins::mayUse(s, PlugLevel::Staff))
+                b.rowText(s, Color::Grey, "Check the area's path in CONFIG files.");
             return true;
         }
         return false;

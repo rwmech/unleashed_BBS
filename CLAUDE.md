@@ -187,6 +187,53 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
   Worth knowing: **saving an area pins its levels.** The sub-page seeds Read and Write with what the area is effectively running under, and Save writes all four parts, so an area that was inheriting the plugin's levels stops inheriting. Deliberate, and documented, but inherit-by-default would need a seventh rung on the ladder meaning "the plugin's".
 - **Fixed in passing, and it was live:** `g_cfgWas[i]` was filled with `"%.47s"` into a 96 byte buffer, so any CONFIG value longer than 47 characters always compared unequal to itself and was rewritten on every page save whether or not it had been touched. The 96 byte buffers exist precisely for long values such as announce's comma-separated `servers`.
 
+### Upload, approval and per-area permissions (Rob, 2026-09-20, agreed shape for phase 6)
+
+- **Four levels per area, not two.** Today an area has `read` and `write`, and
+  `write` gates exactly one thing, `DESC`. Rob's point: when upload lands, one
+  level would have to mean both "can pull files out" and "can push files in",
+  which are not the same trust. So: `read` (the area appears and lists),
+  `down` (download), `up` (upload), `del` (remove files).
+  **`del` also covers approving and rejecting uploads**, because rejecting an
+  upload and deleting a file are the same physical act, which keeps this at
+  four levels rather than five.
+  Config becomes `area1 = path | name | read | down | up | del`. Old four
+  field lines still parse: `write` becomes `up`, `down` defaults to `read`,
+  and `del` defaults to the plugin's admin level rather than to `up`, so it
+  fails shut.
+- **An upload lands unapproved and goes live only when staff say so** (Rob):
+  upload, then approval, then live, with a notice to co-sysop 2 and above on
+  login.
+- **Pending files go in a `.pending/` subfolder inside the area, not in the
+  area with a marker.** This is the one design decision here that is not
+  cosmetic. A marker means every listing and download path has to remember to
+  check it, and forgetting one check serves an unapproved file: fail-open. A
+  staging folder means an unapproved file is simply not in the area, so the
+  existing listing and download code needs no changes at all to keep it
+  invisible. Approval is a rename on the same filesystem, cheap and near
+  atomic on FAT, and a power cut mid-upload leaves junk in staging rather
+  than in the public area. It is still on the card with the files and still
+  readable on a laptop, which is what Rob asked for.
+- `UPLOADS.BBS` in the staging folder carries who and when, tab separated the
+  way the caller log mirror already is: `name<TAB>handle<TAB>epoch<TAB>desc`.
+  Appended on upload, the line removed on approval; approving moves the file
+  and appends its description to the area's real `FILES.BBS`, which is
+  machinery that already exists.
+- The pending count is held in RAM, counted at plugin start and on mount,
+  incremented on upload and decremented on approve or reject, so a staff
+  login can say "3 uploads awaiting approval" without touching the card. Same
+  shape as chat's "you have mail", which exists precisely so knowing costs no
+  reads. A card edited externally goes stale until the next start or mount,
+  which is the accepted trade.
+- `UPLOADS` is the command, staff only, drawn with `startPluginList` and the
+  cursor selection built in 0.17.3: area, name, who, when, size, A to
+  approve, D to reject.
+- **Decide the caps before building, not after.** Uploads are the first thing
+  on this board a caller can use to consume unbounded resources, so a per
+  area cap and a per caller rate limit belong in the first version or the
+  first person who finds it fills the card. Same concern as the feedback
+  plugin.
+
 ### The file subsystem, the rest
 
 - **`FILES` is a place, not a command.** It takes the session the way `CHAT` does, plays `screens/files` if the board has one, and shows the areas as a numbered menu in as many columns as the terminal has room for. A digit opens an area, `Q` goes back one level, `Q` again leaves. That distinction, back one level rather than all the way out, is what a subsystem has that a command does not.
@@ -511,6 +558,8 @@ list.
 - Tera Term only begins telnet option negotiation when the port is 23. On 6400 it opens the socket and says nothing, so the IAC-first path in connect-time detection never fires and the caller falls through to the CPR probe. Not a bug here, but it explains a Tera Term caller taking the slow route, and it is documented behaviour in Tera Term's own manual.
 - Wi-Fi: SSIDs are case-sensitive (`HOMENET`). The board scans all channels and joins the strongest AP. Auth timeouts (reason 2/15/39) turned out to be an unplugged AP, not firmware.
 - A non-interactive shell cannot push to GitHub the first time: Git Credential Manager needs one interactive browser sign-in (done on this PC).
+- **The IDF defaults FATFS to 8.3 names, and no host test can ever catch it.** `CONFIG_FATFS_LFN_NONE` is the default, and under it a path component of more than eight characters is not awkward, it is an *invalid name*: FatFs refuses to create it and refuses to open it. Rob typed `storage/textfiles` into CONFIG, the `mkdir` was refused because `textfiles` is nine characters, the area listed as configured, and the only symptom was "that folder is not on the card" with nothing in the log. Every file already on the card with an ordinary laptop-made name would also have been invisible, which would only have surfaced once downloads worked. Now `CONFIG_FATFS_LFN_HEAP=y` with `CONFIG_FATFS_MAX_LFN=128`, costing 3,452 bytes of flash and no static RAM, since the buffer is heap per open handle. **The host build uses the real Linux filesystem, so long names worked in every test ever run here.** This class of bug is target-only and the generated `sdkconfig.esp32dev` is the only place it is visible. Two lessons: check the generated config for filesystem behaviour rather than assuming the default is sane, and remember that the host build is not a filesystem simulator.
+- A file area path is relative to the **card root**, so `storage/textfiles` means `/sd/storage/textfiles`. `storage` is also the name of a flash partition, which makes it an easy thing to type by mistake. File areas are card-only on purpose: a sysop cannot point an area at the screens in flash and hand them out.
 - **Capture a server's stdout with a drain, or you will diagnose a phantom.** The directory server logs one blocking `print(..., flush=True)` per request from the handler thread. Start it under `subprocess.PIPE` without reading the pipe and the buffer fills after a few KB, every thread blocks inside `log_message`, and the server stops answering while staying alive. That looks exactly like a wedge under load and it cost two investigations on 2026-09-20: an agent reported the server "exiting with code 1 after an aborted image fetch", and a reproduction attempt then wedged it on demand and blamed client aborts. Draining the pipe, 360 abusive connections across every abort shape survived with the server still serving. The exit code 1 was `terminate()` on Windows. Two rules out of it: read the pipe in a thread, and when a server appears hung, dump the thread stacks (`faulthandler.dump_traceback_later`) before forming a theory. The stacks named the real line in one shot after two wrong guesses.
 
 ## Open questions
