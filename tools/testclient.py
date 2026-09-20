@@ -2662,24 +2662,28 @@ def test_files():
     ok &= check("and that list can be left cleanly", drain(s))
 
     s.buf.clear()
-    s.send(b"1")
-    s.wait_for(b"C64 Downloads", 5)
-    s.pump(0.6)
-    # DESC is a shell command and acts on the area you last opened, which
-    # is remembered past leaving the room. Re-entering here would put the
-    # DESC that follows inside the room, where its letters are swallowed.
-    ok &= check("and left again for a shell command", leave_files(s))
-    s.buf.clear()
-    s.send(b"desc NOTES.TXT Some notes I made\r")
-    ok &= check("a description is written", s.wait_for(b"Described", 5))
-    s.buf.clear()
-    s.send(b"files 1\r")
-    s.pump(1.2)
-    ok &= check("and shows on the next listing",
-                b"Some notes I made" in plain(s.buf))
-    ok &= check("without disturbing the one that was already there",
-                b"A game from the card" in plain(s.buf))
-    # Back out: everything after this is a shell command again.
+    # Describing lives in the file manager, not on the command list.
+    # D takes the number the listing showed, then the text.
+    ok &= check("the section opens", enter_area(s, 1, b"C64 Downloads"))
+    n = number_of(s, b"NOTES.TXT")
+    ok &= check("NOTES.TXT is numbered in the listing", n is not None)
+    if n is not None:
+        s.buf.clear()
+        s.send(b"d")
+        ok &= check("D asks which number", s.wait_for(b"Describe which", 4))
+        s.buf.clear()
+        s.send(str(n).encode() + b"\r")
+        ok &= check("then asks for the text", s.wait_for(b"Description", 4))
+        s.buf.clear()
+        s.send(b"Some notes I made\r")
+        ok &= check("a description is written", s.wait_for(b"Described", 5))
+        s.buf.clear()
+        s.send(b"l")
+        s.pump(1.2)
+        ok &= check("and shows on the next listing",
+                    b"Some notes I made" in plain(s.buf))
+        ok &= check("without disturbing the one already there",
+                    b"A game from the card" in plain(s.buf))
     ok &= check("out of the room once more", leave_files(s))
 
     # The file on the card has to be readable on a PC, which is the whole
@@ -2691,15 +2695,22 @@ def test_files():
     ok &= check("and has no leftover temp file beside it",
                 not (pathlib.Path(sd) / "pub" / "c64" / "FILES.BBS.tmp").exists())
 
-    # ---- a caller cannot walk out of the area ----------------------------
+    # ---- a caller cannot walk out of the section -------------------------
+    # There is no typed filename left to climb out with: describing,
+    # downloading and erasing all take a number off the listing, and a
+    # number can only ever name a file the section already showed. The
+    # old "../../users.txt" case is not refused, it is unreachable, and
+    # that is a better answer than a check. What can still be typed is a
+    # number, so that is what gets tested.
+    ok &= check("back in the section", enter_area(s, 1, b"C64 Downloads"))
     s.buf.clear()
-    s.send(b"desc ../../users.txt owned\r")
-    ok &= check("a filename that climbs out of the area is refused",
-                s.wait_for(b"DESC <file>", 4))
+    s.send(b"d")
+    s.wait_for(b"Describe which", 4)
     s.buf.clear()
-    s.send(b"desc nosuchfile.txt hello\r")
-    ok &= check("and so is a file that is not there",
-                s.wait_for(b"No file by that name", 4))
+    s.send(b"999\r")
+    ok &= check("a number with no file behind it is refused",
+                s.wait_for(b"No file with that number", 4))
+    ok &= check("and leaves the caller in the section", leave_files(s))
 
     # ---- the caller log is mirrored, not moved ---------------------------
     # The ring on the logs partition stays the record LAST reads, because it
@@ -3068,12 +3079,17 @@ def test_xfer():
     ok &= check("staff reach the sysop node", sy.wait_for(b"Sysop node.", 5))
     sy.wait_for(b"Sysop", 3)
     sy.buf.clear()
-    sy.send(b"uploads\r")
-    ok &= check("UPLOADS lists what is waiting", sy.wait_for(b"SENTUP.BIN", 5))
+    # Approval lives in the file manager now, not on the command list. A
+    # staff member walks into the section, P shows what is waiting with a
+    # number beside it, and A takes that number. Nobody retypes a
+    # filename off their own screen.
+    ok &= check("staff can open the drop box", enter_area(sy, 5, b"Drop Box"))
     sy.buf.clear()
-    enter_area(sy, 5, b"Drop Box")
-    ok &= check("approving says it is live",
-                area_key(sy, b"a", "SENTUP.BIN", b"is live"))
+    sy.send(b"p")
+    ok &= check("P lists what is waiting", sy.wait_for(b"SENTUP.BIN", 5))
+    ok &= check("and numbers it", b" 1 SENTUP.BIN" in plain(sy.buf))
+    ok &= check("approving by number says it is live",
+                area_key(sy, b"a", "1", b"is live"))
     ok &= check("and the file is now in the area",
                 os.path.exists(os.path.join(drop, "SENTUP.BIN")))
     ok &= check("and gone from the staging folder",
@@ -3112,6 +3128,21 @@ def enter_area(s, n, name, secs=6):
         return False
     drain(s)                       # page to the end of the listing
     return b"Files>" in plain(s.buf)
+
+
+def number_of(s, name):
+    """The number the listing gave a file, or None.
+
+    readdir order is not guaranteed, so a test that hardcodes "file 3"
+    is a test that breaks the day somebody adds a file. Read the number
+    off the screen the way a caller does.
+    """
+    for line in plain(s.buf).split(b"\n"):
+        if name in line:
+            head = line.strip().split(b" ", 1)[0]
+            if head.isdigit():
+                return int(head)
+    return None
 
 
 def file_num(s, n, wait, proto=b"y", secs=10):

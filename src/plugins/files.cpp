@@ -189,6 +189,8 @@ enum : uint8_t {
     AskReject,       // which waiting upload to throw away
     AskYesDown,      // "Download GAME.PRG?" one key
     AskYesDel,       // "Erase GAME.PRG?" one key
+    AskDescNum,      // which numbered file to describe
+    AskDescText,     // the description itself
 };
 
 // The file a yes/no question is about. A number chooses it, the question
@@ -271,6 +273,30 @@ bool mayWrite(const Session& s, uint8_t i) { return mayUp(s, i); }
 // the listing itself does for every row.
 // ---------------------------------------------------------------------------
 bool areaPath(uint8_t i, char* out, size_t n);       // just below
+
+bool pendPath(uint8_t i, char* out, size_t n);       // just below
+
+// nthPending: the Nth upload waiting in a section, numbered the way the
+// pending list shows them. Same walk as nthFile, different folder.
+bool nthPending(uint8_t area, uint16_t want, char* out, size_t n) {
+    char pd[160];
+    if (!want || !pendPath(area, pd, sizeof(pd))) return false;
+    DIR* d = opendir(pd);
+    if (!d) return false;
+    uint16_t seen = 0;
+    bool found = false;
+    struct dirent* e;
+    while ((e = readdir(d)) != nullptr) {
+        if (e->d_name[0] == '.') continue;
+        if (ieq(e->d_name, kPendList)) continue;
+        if (++seen != want) continue;
+        snprintf(out, n, "%.48s", e->d_name);
+        found = true;
+        break;
+    }
+    closedir(d);
+    return found;
+}
 
 bool nthFile(uint8_t area, uint16_t want, char* out, size_t n) {
     char dir[128];
@@ -589,6 +615,10 @@ void doReject(Bbs& b, Session& s, const char* a);
 void doErase(Bbs& b, Session& s, const char* a);
 void askFor(Session& s, uint8_t what);
 void askYes(Session& s, uint8_t what, const char* name);
+void listPending(Bbs& b, Session& s, uint8_t area);
+void filesHelp(Bbs& b, Session& s, uint8_t area);
+bool doApproveQuiet(Bbs& b, Session& s, uint8_t area, const char* name);
+bool doRejectQuiet(Bbs& b, Session& s, uint8_t area, const char* name);
 void backToArea(Bbs& b, Session& s);
 
 void onLogoff(Session& s) {
@@ -728,11 +758,13 @@ void filesPrompt(Session& s) {
         bool dl = at != 0xFF && mayDel(s, at);
         char line[80];
         if (t.cols() >= 60)
-            snprintf(line, sizeof(line), "L lists, a number downloads%s%s, Q back",
-                     up ? ", U uploads" : "", dl ? ", E erases" : "");
+            snprintf(line, sizeof(line),
+                     "L lists, a number downloads%s%s, ? help, Q back",
+                     up ? ", U uploads, D describes" : "",
+                     dl ? ", P pending" : "");
         else
-            snprintf(line, sizeof(line), "L list, number gets%s%s, Q back",
-                     up ? ", U send" : "", dl ? ", E del" : "");
+            snprintf(line, sizeof(line), "L list, number gets%s%s, ? help, Q back",
+                     up ? ", U send" : "", dl ? ", P pend" : "");
         t.text(tl, line);
         t.nl(tl);
         // [S1] Files> : the section you are in, the way a node number is
@@ -947,6 +979,29 @@ void onKey(Session& s, int k, uint32_t now) {
         uint8_t at = g_at[slot];
         char name[kDescMax + 1];
         switch (what) {
+        case AskDescNum: {
+            long want = strtol(answer, nullptr, 10);
+            if (want < 1 || !nthFile(at, static_cast<uint16_t>(want),
+                                     name, sizeof(name))) {
+                s.term.color(s.tl, Color::LightRed);
+                s.term.text(s.tl, "No file with that number. L lists them.");
+                backToArea(b, s);
+                return;
+            }
+            snprintf(g_pend[slot], sizeof(g_pend[0]), "%s", name);
+            askFor(s, AskDescText);
+            return;
+        }
+        case AskDescText: {
+            char dir[128];
+            if (!areaPath(at, dir, sizeof(dir))) { backToArea(b, s); return; }
+            bool ok = setDesc(dir, g_pend[slot], answer);
+            s.term.color(s.tl, ok ? Color::LightGreen : Color::LightRed);
+            s.term.text(s.tl, ok ? (answer[0] ? "Described." : "Description cleared.")
+                                 : "Could not write the description file.");
+            backToArea(b, s);
+            return;
+        }
         case AskNum:
         case AskDelNum: {
             long want = strtol(answer, nullptr, 10);
@@ -964,8 +1019,45 @@ void onKey(Session& s, int k, uint32_t now) {
         // question says "Enter alone": the sending terminal already knows
         // the filename and there is no reason to make somebody type it.
         case AskUp:      startRecv(b, s, answer, now); break;
-        case AskApprove: doApprove(b, s, answer); break;
-        case AskReject:  doReject(b, s, answer); break;
+
+        // Numbers, not filenames. A sysop clearing a queue should not be
+        // retyping names off their own screen, and "A" doing the lot is the
+        // whole reason the queue is worth having.
+        case AskApprove:
+        case AskReject: {
+            bool all = answer[0] == 'a' || answer[0] == 'A';
+            bool ok  = false;
+            uint16_t done = 0;
+            if (all) {
+                // Walked from the top each time, because each one removes
+                // itself from the folder as it goes.
+                while (nthPending(at, 1, name, sizeof(name))) {
+                    if (what == AskApprove) doApproveQuiet(b, s, at, name);
+                    else                    doRejectQuiet(b, s, at, name);
+                    if (++done >= kMaxPendPerArea) break;
+                }
+                char msg[80];
+                snprintf(msg, sizeof(msg), "%u upload%s %s.",
+                         static_cast<unsigned>(done), done == 1 ? "" : "s",
+                         what == AskApprove ? "approved" : "rejected");
+                s.term.color(s.tl, done ? Color::LightGreen : Color::Grey);
+                s.term.text(s.tl, done ? msg : "Nothing was waiting.");
+                backToArea(b, s);
+                return;
+            }
+            long want = strtol(answer, nullptr, 10);
+            ok = want >= 1 && nthPending(at, static_cast<uint16_t>(want),
+                                         name, sizeof(name));
+            if (!ok) {
+                s.term.color(s.tl, Color::LightRed);
+                s.term.text(s.tl, "No upload with that number. P lists them.");
+                backToArea(b, s);
+                return;
+            }
+            if (what == AskApprove) doApprove(b, s, name);
+            else                    doReject(b, s, name);
+            return;
+        }
         default:         backToArea(b, s); break;
         }
         return;
@@ -987,6 +1079,21 @@ void onKey(Session& s, int k, uint32_t now) {
         if ((k == 'e' || k == 'E') && mayDel(s, at)) { askFor(s, AskDelNum); return; }
         if ((k == 'a' || k == 'A') && mayDel(s, at)) { askFor(s, AskApprove); return; }
         if ((k == 'r' || k == 'R') && mayDel(s, at)) { askFor(s, AskReject); return; }
+        if ((k == 'd' || k == 'D') && mayWrite(s, at)) {
+            askFor(s, AskDescNum); return;
+        }
+        if ((k == 'p' || k == 'P') && mayDel(s, at)) {
+            s.term.cls(s.tl);
+            listPending(b, s, at);
+            filesPrompt(s);
+            return;
+        }
+        if (k == '?') {
+            s.term.cls(s.tl);
+            filesHelp(b, s, at);
+            filesPrompt(s);
+            return;
+        }
     }
 
     if (k == 'q' || k == 'Q' || k == KEY_ESC || k == KEY_BREAK) {
@@ -997,6 +1104,18 @@ void onKey(Session& s, int k, uint32_t now) {
     if (k == 'l' || k == 'L') {
         if (g_where[slot] == Where::Area) { listArea(b, s, g_at[slot]); return; }
         showMenu(b, s);
+        return;
+    }
+    if (k == '?' && g_where[slot] == Where::Menu) {
+        s.term.cls(s.tl);
+        b.rowTitle(s, "File sections");
+        b.rowText(s, Color::White, "1 2 3    a number opens that section");
+        if (canPoint(s))
+            b.rowText(s, Color::White, "cursors  move the bar, Enter opens");
+        b.rowText(s, Color::White, "?        this");
+        b.rowText(s, Color::White, "Q  ESC   leave the file areas");
+        b.rowRule(s);
+        showMenu(b, s, false);
         return;
     }
     // Cursor keys move the bar. Only on the menu: inside an area the list
@@ -1087,6 +1206,16 @@ struct Xfer {
 Xfer            g_x;
 xmodem::Engine  g_eng;
 
+// Why the board said no, in words, for after the line comes out of binary.
+//
+// A YMODEM receiver that refuses a file can only say so with a CAN, and the
+// far end renders that as "Canceled remotely" with no reason at all. That is
+// exactly what a sysop retrying an upload sees when an earlier attempt left
+// a file of the same name waiting: the board knows precisely what is wrong
+// and had no way to say it. Kept here and printed once the terminal can read
+// text again.
+char g_why[96] = {};
+
 // How many uploads are waiting on staff, board-wide. Counted at start and on
 // mount, then kept by hand as uploads arrive and are dealt with, so telling a
 // staff member at login costs no reads at all. Same reasoning as chat's "you
@@ -1165,24 +1294,40 @@ bool xferOpen(void* ctx, const char* name, uint32_t size) {
     struct stat st;
 
     if (!safeName(name)) {
+        snprintf(g_why, sizeof(g_why), "that name is not one the board will store");
         plat::log("files: upload refused, unsafe name from block 0");
         return false;
     }
     // The catalogue is the area's, not a caller's to overwrite.
-    if (ieq(name, BBS_FILES_DESC) || ieq(name, kPendList)) return false;
+    if (ieq(name, BBS_FILES_DESC) || ieq(name, kPendList)) {
+        snprintf(g_why, sizeof(g_why), "that name belongs to the section itself");
+        return false;
+    }
     if (size > kMaxUploadBytes) {
+        snprintf(g_why, sizeof(g_why), "%lu bytes is over the %lu byte limit",
+                 static_cast<unsigned long>(size),
+                 static_cast<unsigned long>(kMaxUploadBytes));
         plat::log("files: upload %s refused, block 0 says %lu bytes",
                   name, static_cast<unsigned long>(size));
         return false;
     }
     if (!areaPath(x->area, dir, sizeof(dir))) return false;
     snprintf(full, sizeof(full), "%s/%.48s", dir, name);
-    if (stat(full, &st) == 0) return false;            // already live here
+    if (stat(full, &st) == 0) {
+        snprintf(g_why, sizeof(g_why), "%.40s is already in this section", name);
+        return false;
+    }
 
     if (!pendPath(x->area, pd, sizeof(pd))) return false;
     mkdir(pd, 0755);
     snprintf(full, sizeof(full), "%s/%.48s", pd, name);
-    if (stat(full, &st) == 0) return false;            // already waiting
+    if (stat(full, &st) == 0) {
+        // The one a sysop hits constantly while testing: an earlier attempt
+        // that failed still left its name in the staging folder.
+        snprintf(g_why, sizeof(g_why),
+                 "%.36s is already waiting for approval. E erases it.", name);
+        return false;
+    }
 
     x->fp = fopen(full, "wb");
     if (!x->fp) return false;
@@ -1232,6 +1377,11 @@ void xferEnd(Bbs& b, Session& s) {
         snprintf(buf, sizeof(buf), "%s failed: %s",
                  g_x.sending ? "Download" : "Upload", g_eng.errorText());
         s.term.color(s.tl, Color::LightRed);
+        if (g_why[0]) {
+            s.term.text(s.tl, buf);
+            s.term.nl(s.tl);
+            snprintf(buf, sizeof(buf), "%s", g_why);
+        }
     }
     s.term.text(s.tl, buf);
     s.term.nl(s.tl);
@@ -1263,6 +1413,7 @@ void xferEnd(Bbs& b, Session& s) {
 
     g_eng.reset();
     g_x = Xfer();
+    g_why[0] = 0;
 
     // Back exactly where they were, which for a transfer means the area
     // they were standing in rather than the menu above it. Somebody who
@@ -1321,6 +1472,7 @@ void xferDropped(Session& s) {
     if (g_x.fp) { fclose(g_x.fp); g_x.fp = nullptr; }
     g_eng.reset();
     g_x = Xfer();
+    g_why[0] = 0;
     plat::log("files: transfer dropped, node %u left", static_cast<unsigned>(s.id));
 }
 
@@ -1519,7 +1671,8 @@ void startRecv(Bbs& b, Session& s, const char* arg, uint32_t now) {
     snprintf(buf, sizeof(buf), "%s/%.48s", pd, name);
     if (stat(buf, &st) == 0) {
         s.term.color(s.tl, Color::LightRed);
-        s.term.text(s.tl, "Somebody has already sent one by that name, still waiting.");
+        s.term.text(s.tl,
+            "One by that name is already waiting for approval. E erases it.");
         backToArea(b, s);
         return;
     }
@@ -1570,8 +1723,10 @@ void askFor(Session& s, uint8_t what) {
     case AskUp:      q = s.term.cols() >= 60
                          ? "Upload (Enter alone = YMODEM, or type a name): "
                          : "Upload (Enter = YMODEM): ";    break;
-    case AskApprove: q = "Approve which file? ";           break;
-    case AskReject:  q = "Reject which file? ";            break;
+    case AskApprove: q = "Approve which number? (A = all) ";  break;
+    case AskReject:  q = "Reject which number? (A = all) ";   break;
+    case AskDescNum: q = "Describe which number? ";           break;
+    case AskDescText: q = "Description (empty clears it): ";  break;
     default:         q = "? ";                             break;
     }
 
@@ -1614,6 +1769,96 @@ void backToArea(Bbs& b, Session& s) {
     if (g_where[slotOf(s)] == Where::Out) { b.prompt(s); return; }
     s.term.nl(s.tl);
     filesPrompt(s);
+}
+
+// doApproveQuiet / doRejectQuiet: the file operation with nothing said.
+//
+// Approving twenty uploads should report "20 approved", not twenty lines of
+// "X is live". The single-file forms keep their own messages because there
+// the message is the whole feedback.
+bool doApproveQuiet(Bbs& b, Session& s, uint8_t area, const char* name) {
+    (void)b;
+    char dir[128], pd[160], from[224], to[224];
+    if (!areaPath(area, dir, sizeof(dir))) return false;
+    if (!pendPath(area, pd, sizeof(pd))) return false;
+    snprintf(from, sizeof(from), "%s/%.48s", pd, name);
+    snprintf(to,   sizeof(to),   "%s/%.48s", dir, name);
+    if (rename(from, to) != 0) return false;
+    if (g_pending) --g_pending;
+    plat::log("files: %s approved %s into area %u",
+              s.user, name, static_cast<unsigned>(area + 1));
+    return true;
+}
+
+bool doRejectQuiet(Bbs& b, Session& s, uint8_t area, const char* name) {
+    (void)b;
+    char pd[160], full[224];
+    if (!pendPath(area, pd, sizeof(pd))) return false;
+    snprintf(full, sizeof(full), "%s/%.48s", pd, name);
+    if (remove(full) != 0) return false;
+    if (g_pending) --g_pending;
+    plat::log("files: %s rejected %s in area %u",
+              s.user, name, static_cast<unsigned>(area + 1));
+    return true;
+}
+
+// listPending: what is waiting in this section, numbered so staff never
+// type a filename. Capped by kMaxPendPerArea, so it always fits a screen
+// and never needs the pager.
+void listPending(Bbs& b, Session& s, uint8_t area) {
+    char pd[160], full[224], buf[120];
+    struct stat st;
+    uint16_t n = 0;
+
+    b.rowTitle(s, "Waiting for approval");
+    if (pendPath(area, pd, sizeof(pd))) {
+        DIR* d = opendir(pd);
+        if (d) {
+            struct dirent* e;
+            while ((e = readdir(d)) != nullptr) {
+                if (e->d_name[0] == '.') continue;
+                if (ieq(e->d_name, kPendList)) continue;
+                unsigned long kb = 0;
+                snprintf(full, sizeof(full), "%s/%.48s", pd, e->d_name);
+                if (stat(full, &st) == 0)
+                    kb = (static_cast<unsigned long>(st.st_size) + 1023u) / 1024u;
+                snprintf(buf, sizeof(buf), "%2u %-24.24s %5luK",
+                         static_cast<unsigned>(++n), e->d_name, kb);
+                b.rowText(s, Color::White, buf);
+            }
+            closedir(d);
+        }
+    }
+    if (!n) b.rowText(s, Color::Grey, "Nothing waiting in this section.");
+    else    b.rowText(s, Color::Grey, "A approves, R rejects. A number or A for all.");
+    b.rowRule(s);
+}
+
+// filesHelp: what the keys do, on the one screen they apply to. A caller
+// who has to leave a place to find out how to use it has been failed by it.
+void filesHelp(Bbs& b, Session& s, uint8_t area) {
+    bool up = area != 0xFF && mayUp(s, area);
+    bool dl = area != 0xFF && mayDel(s, area);
+    b.rowTitle(s, "Files: what the keys do");
+    b.rowText(s, Color::White, "L        list this section's files, numbered");
+    b.rowText(s, Color::White, "1 2 3    a number picks that file to download");
+    if (up) {
+        b.rowText(s, Color::White, "U        send a file to this section");
+        b.rowText(s, Color::White, "D        describe a file by number");
+    }
+    if (dl) {
+        b.rowText(s, Color::White, "P        list uploads waiting for approval");
+        b.rowText(s, Color::White, "A        approve one by number, or A for all");
+        b.rowText(s, Color::White, "R        reject one by number, or A for all");
+        b.rowText(s, Color::White, "E        erase a file by number");
+    }
+    b.rowText(s, Color::White, "?        this");
+    b.rowText(s, Color::White, "Q  ESC   back to the section list");
+    b.rowRule(s);
+    b.rowText(s, Color::Grey, "Downloads offer YMODEM, or X for plain XMODEM.");
+    if (up)
+        b.rowText(s, Color::Grey,
+                  "Uploads wait for staff before anyone else can see them.");
 }
 
 // ---------------------------------------------------------------------------
@@ -1783,104 +2028,6 @@ const Command kCommands[] = {
           listArea(b, s, static_cast<uint8_t>(n - 1));
       },
       Menu::Main, 8 },
-    { "APPROVE", "", 0, CF_ADMIN, "APPROVE f", "make an upload live in this area",
-      [](Bbs& b, Session& s, const char* a, uint32_t) { doApprove(b, s, a); },
-      Menu::Sysop, 22 },
-    { "REJECT", "", 0, CF_ADMIN, "REJECT f", "throw an upload away",
-      [](Bbs& b, Session& s, const char* a, uint32_t) { doReject(b, s, a); },
-      Menu::Sysop, 23 },
-    { "ERASE", "", 0, CF_ADMIN, "ERASE f", "remove a file from this area",
-      [](Bbs& b, Session& s, const char* a, uint32_t) { doErase(b, s, a); },
-      Menu::Sysop, 20 },
-    { "UPLOADS", "", 0, CF_ADMIN, "UPLOADS", "uploads waiting for approval",
-      [](Bbs& b, Session& s, const char*, uint32_t) {
-          char buf[192];
-          uint8_t shown = 0;
-          b.rowTitle(s, "Uploads awaiting approval");
-          for (uint8_t i = 0; i < g_areas && shown < 40; ++i) {
-              if (!g_area[i].path[0] || !mayDel(s, i)) continue;
-              char pd[160];
-              if (!pendPath(i, pd, sizeof(pd))) continue;
-              DIR* d = opendir(pd);
-              if (!d) continue;
-              struct dirent* e;
-              while ((e = readdir(d)) != nullptr && shown < 40) {
-                  if (e->d_name[0] == '.') continue;
-                  if (ieq(e->d_name, kPendList)) continue;
-                  char full[224];
-                  struct stat st;
-                  unsigned long kb = 0;
-                  snprintf(full, sizeof(full), "%s/%.48s", pd, e->d_name);
-                  if (stat(full, &st) == 0)
-                      kb = (static_cast<unsigned long>(st.st_size) + 1023u) / 1024u;
-                  snprintf(buf, sizeof(buf), "%2u  %-20.20s %4lu KB  %s",
-                           static_cast<unsigned>(i + 1), e->d_name, kb, g_area[i].name);
-                  b.rowText(s, Color::White, buf);
-                  ++shown;
-              }
-              closedir(d);
-          }
-          if (!shown) b.rowText(s, Color::Grey, "Nothing waiting.");
-          else        b.rowText(s, Color::Grey,
-                                "FILES n, then APPROVE <file> or REJECT <file>.");
-          b.rowRule(s);
-          b.prompt(s);
-      },
-      Menu::Sysop, 21 },
-    { "DESC", "", 0, CF_WRITE, "DESC f text", "describe a file in this area",
-      [](Bbs& b, Session& s, const char* a, uint32_t) {
-          char buf[96];
-          uint8_t at = g_at[slotOf(s)];
-          char dir[128];
-          if (at == 0xFF || !areaPath(at, dir, sizeof(dir))) {
-              s.term.color(s.tl, Color::Grey);
-              s.term.text(s.tl, "Open an area first with FILES n.");
-              b.prompt(s);
-              return;
-          }
-          // The command's CF_WRITE got them this far against the plugin's
-          // level; this is the area's own, which may be higher.
-          if (!mayWrite(s, at)) {
-              s.term.color(s.tl, Color::LightRed);
-              s.term.text(s.tl, "This area is not yours to describe.");
-              b.prompt(s);
-              return;
-          }
-          char name[40] = {};
-          const char* rest = a;
-          while (*rest == ' ') ++rest;
-          size_t k = 0;
-          while (*rest && *rest != ' ' && k + 1 < sizeof(name)) name[k++] = *rest++;
-          name[k] = '\0';
-          while (*rest == ' ') ++rest;
-          if (!safeName(name)) {
-              s.term.color(s.tl, Color::LightRed);
-              s.term.text(s.tl, "DESC <file> <description>");
-              b.prompt(s);
-              return;
-          }
-          char full[192];
-          snprintf(full, sizeof(full), "%s/%s", dir, name);
-          struct stat st;
-          if (stat(full, &st) != 0) {
-              s.term.color(s.tl, Color::LightRed);
-              s.term.text(s.tl, "No file by that name in this area.");
-              b.prompt(s);
-              return;
-          }
-          char text[kDescMax + 1];
-          snprintf(text, sizeof(text), "%.*s", kDescMax, rest);
-          if (setDesc(dir, name, text)) {
-              snprintf(buf, sizeof(buf), *text ? "Described %.20s." : "Description cleared.", name);
-              s.term.color(s.tl, Color::LightGreen);
-              s.term.text(s.tl, buf);
-          } else {
-              s.term.color(s.tl, Color::LightRed);
-              s.term.text(s.tl, "Could not write the description file.");
-          }
-          b.prompt(s);
-      },
-      Menu::Main, 9 },
 };
 
 const PluginSetting kSettings[] = {

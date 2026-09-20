@@ -445,11 +445,16 @@ void Bbs::rowEnd(Session& s, uint8_t col) {
 // number is the thing being read, the note behind it is quieter still.
 // ---------------------------------------------------------------------------
 void Bbs::statRow(Session& s, const char* label, const char* value, Color c, const char* note) {
-    char buf[24];
+    char buf[40];
     uint8_t col = 0;
     snprintf(buf, sizeof(buf), "%-13.13s", label);
     rowSeg(s, Color::Grey, buf, col);
-    snprintf(buf, sizeof(buf), "%9.9s", value);
+    // Pad to the column, but never cut. This was "%9.9s", which silently
+    // truncated anything longer than nine characters, and an IPv4 address is
+    // up to fifteen: SYS reported the board's address as "192.168.0" with the
+    // host part missing. A value that overflows its column is untidy; a value
+    // that is quietly wrong is a bug somebody acts on.
+    snprintf(buf, sizeof(buf), "%9s", value);
     rowSeg(s, c, buf, col);
     if (note) {
         rowSeg(s, Color::DarkGrey, " ", col);

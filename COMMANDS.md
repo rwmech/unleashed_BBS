@@ -194,12 +194,29 @@ All caller commands still work. Node arguments are `1`-`6`, `S` (sysop node) or 
 | `BANS` | `BANS` | Active IP bans and minutes remaining. |
 | `PLUGINS` | any staff | Every plugin compiled in: version, whether it is running, and why not. Also free disk space and the reserve. |
 | `FILES` / `F` | all | **Goes into the file area**, the way `CHAT` goes into the room, rather than printing a list and returning. A screen plays on the way in if the board has `screens/files`, then the areas appear as a numbered menu laid out in as many columns as the terminal has room for. A digit opens an area, `Q` goes back one level and `Q` again leaves. `FILES n` enters and opens that area in one go. Only on a board with a card: the plugin does not start without one, so on a cardless board the command does not exist rather than offering an empty file area. |
-| `DOWNLOAD file [X]` / `D` | area's download level | Sends a file from the area you last opened. **YMODEM by default**, which carries the name and the exact size so the file arrives byte-for-byte. Add `X` if your terminal only speaks XMODEM, and understand the cost: XMODEM has no length field, so the last block is padded with `0x1A` and you receive a file up to 1023 bytes longer than the one on the card. The board will not strip that padding, because `0x1A` is a perfectly legal byte inside a `.PRG` and guessing would truncate somebody's file. One transfer at a time board-wide. |
-| `UPLOAD [file]` / `U` | area's upload level | Receives a file into the area you last opened. **It is not in the area when it finishes.** It waits in a staging folder until staff approve it, so nothing a caller sends is visible to anyone else until somebody has looked at it. With no filename it uses **YMODEM** and takes the name from your terminal. Give a filename only if your terminal speaks XMODEM alone, which has no name on the wire. A name arriving in a YMODEM header is checked exactly as hard as one you type. Limits: 4 MB per file and 20 waiting per area. |
-| `UPLOADS` | area's delete level | Lists every upload waiting for approval, across all the areas you can approve in, with its size and which area it landed in. Staff are also told the count when they log in. |
-| `APPROVE file` | area's delete level | Moves a waiting upload into the area you last opened, where everyone who may read it can see it. Describe it afterwards with `DESC`. |
-| `REJECT file` | area's delete level | Throws a waiting upload away. |
-| `ERASE file` | area's delete level | Removes a file from the area you last opened. Never `FILES.BBS`, which is the area's catalogue rather than one of its files. |
+
+**Everything else about files happens inside `FILES`, not here.** It is a
+place, not a set of commands: the section has its own `[S1] Files>` prompt
+and its own keys, and a caller who is standing in it should not have to
+leave to use it.
+
+| key in a section | who | what it does |
+|---|---|---|
+| `L` | area's read | Lists this section's files, numbered. |
+| a number | area's download | Picks that file, then asks: `Download NAME? [Y]es [X]modem [N]o`. Y is YMODEM, which carries the exact length so the file arrives byte for byte. X is plain XMODEM for terminals that only speak it, and pads the last block with `0x1A`. |
+| `U` | area's upload | Receives a file. Enter alone uses YMODEM and takes the name off the wire; type a name only if your terminal speaks XMODEM alone. **It waits for staff approval before anyone else sees it.** |
+| `D` | area's upload | Describes a file by number. Describing is part of putting one somewhere, so it follows the upload level. |
+| `P` | area's delete | Lists the uploads waiting for approval in this section, numbered. |
+| `A` | area's delete | Approves one by number, or `A` for all of them. |
+| `R` | area's delete | Rejects one by number, or `A` for all of them. |
+| `E` | area's delete | Erases a file by number. Never `FILES.BBS`, which is the section's catalogue rather than one of its files. |
+| `?` | all | What the keys do, on the screen they apply to. |
+| `Q` `ESC` | all | Back one level. Again to leave. |
+
+Nothing here takes a typed filename. A number can only ever mean a file the
+section has just shown you, which is why there is no way to name something
+outside it and no way to approve a file that is waiting somewhere else.
+
 | `DESC file text` | staff | Set a file's description in the area you last opened. Empty text clears it. Typed at the command prompt, not inside the file area, because the file area takes keys rather than lines; the area you opened is remembered after you leave it. Written to `FILES.BBS` in that folder, which is plain text you can edit on a laptop with the card in hand. |
 | `SD` | sysop | SD card status: type, mount point, free space, and where screens are coming from. With no card it says which pins it tried, because "no card found" without them sends you to re-seat a card that was never the problem. |
 | `SD MOUNT` | sysop | Mount the card without rebooting. **Pauses the whole board** for a few hundred milliseconds while it negotiates over SPI, which is why it is typed rather than retried on a timer. |
