@@ -628,7 +628,7 @@ specifies the layout before any of it is written**, and the wide-terminal
   The residual work is the screens that never call `rowWidth` and carry hand-built fixed columns: NODES is laid out at exactly 39 and WHO likewise, so they would sit 40 wide under an 80 wide title bar. Cosmetic mismatch rather than breakage, and it is the actual scope of the job.
   Keep the zero guard: a NAWS negotiation carrying zero reaches Telnet, and zero underflows to 255, which pads 255 reverse-video spaces and paints a bar down the screen.
 - **Website cleanup**, from `reports/website-copy-review-2026-09-20.md` and `reports/tty-ux-website-2026-09-20.md`. The copy plan is to be executed by `explain`, not `docs`: it is human-facing. Confirmed P1s include `article .warn` never having had a left margin (the shorthand `margin:14px 0` sets `margin-left:0`, and the earlier fix moved `article .pull` instead, which is why it never took), `md_render` having no ordered-list support so 53 numbered router steps render as run-on paragraphs, `/about` and `/data` returning 404 on a single-domain deployment, and the manifesto still saying six callers plus a sysop line when it is ten plus the hidden node.
-- **YMODEM, after the menu rework** (Rob asked why it mattered, and the
+- **YMODEM: DONE in 0.17.5**, built before the menu rework rather than after, so Rob could test uploads in one flash. Kept here for the reasoning. (Rob asked why it mattered, and the
   earlier note did not say). XMODEM has no length field: the last block is
   padded with 0x1A, so every downloaded file arrives up to 127 bytes longer
   than the original, 1023 with 1K blocks. The engine reports the padding and
