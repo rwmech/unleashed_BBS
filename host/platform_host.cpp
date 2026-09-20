@@ -96,7 +96,7 @@ const char* userBase() {
 }
 
 HeapStats heap() {
-    return HeapStats{ 0, 0, 0, false };
+    return HeapStats{ 0, 0, 0, 0, false };
 }
 
 int8_t wifiRssi() {

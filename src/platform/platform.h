@@ -50,6 +50,7 @@ struct HeapStats {
     uint32_t freeBytes;     // current free 8-bit heap
     uint32_t minFree;       // lowest free heap since boot
     uint32_t largestBlock;  // largest contiguous free block
+    uint32_t totalBytes;    // the whole 8-bit heap, free or not
     bool     valid;         // false on hosts that cannot report
 };
 

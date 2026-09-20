@@ -48,6 +48,21 @@ public:
 
     void setEnabled(bool on) { enabled_ = on; }
     bool enabled()     const { return enabled_; }
+
+    // Binary mode: telnet commands are still understood, CR is not touched.
+    //
+    // The input filter normally drops a 0x0A or a 0x00 that follows a 0x0D,
+    // because telnet says a bare CR travels as CR NUL and a line ending as
+    // CR LF, and a terminal wants one newline rather than two. In a file
+    // transfer those are data, and deleting them corrupts the file silently:
+    // it is the same class of bug as not escaping IAC, with a different byte
+    // pair, and a test that only checks 0xFF will not catch it.
+    //
+    // Not the same as setEnabled(false), which also stops IAC being
+    // unescaped, so every 0xFF in the file would arrive doubled instead.
+    void setBinary(bool on) { binary_ = on; }
+    bool binary()      const { return binary_; }
+
     bool clientSpoke() const { return seenIac_; }   // client sent IAC first
 
     // filter: raw socket bytes in, clean data bytes out (out >= n bytes).
@@ -69,6 +84,7 @@ private:
     void onSubneg();
 
     bool     enabled_ = true;
+    bool     binary_  = false;   // a transfer is running: leave CR alone
     bool     seenIac_ = false;
     bool     lastCR_  = false;
     uint8_t  st_      = S_DATA;

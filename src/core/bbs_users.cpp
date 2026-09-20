@@ -247,6 +247,16 @@ void Bbs::formSave(Session& s, uint32_t now) {
             formDone(s, Color::LightGreen, err);
             return;
         }
+
+        // A sub-page saves its one row and goes back to the page it came
+        // from. The editing guard is deliberately NOT released: the sysop is
+        // still in CONFIG, just one level up.
+        case FormKind::ConfigArea: {
+            char err[80] = "";
+            if (!configSubSave(s, err, sizeof(err))) return;       // the form said why
+            configSubBack(s, Color::LightGreen, err, now);
+            return;
+        }
         case FormKind::Signup: {
             if (!users::validHandle(s.edit.handle) || ieq(s.edit.handle, "SYSOP") ||
                 handleOnline(s, s.edit.handle)) {     // the read-only handle cannot be fixed here
@@ -381,7 +391,23 @@ void Bbs::formSave(Session& s, uint32_t now) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// formOpen: a button on the form was pressed. CONFIG is the only form with
+// buttons; any other kind ignores it rather than guessing.
+// ---------------------------------------------------------------------------
+void Bbs::formOpen(Session& s, uint8_t field, uint32_t now) {
+    if (s.formKind == FormKind::Config) configSubOpen(s, field, now);
+}
+
 void Bbs::formCancel(Session& s, uint32_t now) {
+    // Cancelling a sub-page is not leaving CONFIG: the sysop lands back on
+    // the page the button was on and keeps the editing guard. Releasing it
+    // here would let a second staff session walk in under the one still
+    // holding the parent page.
+    if (s.formKind == FormKind::ConfigArea) {
+        configSubBack(s, Color::Grey, "Nothing changed", now);
+        return;
+    }
     configRelease(s);
     (void)now;
     if (s.formKind == FormKind::Signup) {

@@ -24,6 +24,39 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.17.2, 2026-09-20
+
+The file subsystem. Areas you can walk into, a settings page that opens
+other pages, and the groundwork that file transfer will stand on.
+
+### Files
+
+- **`FILES` is a place, not a command.** It takes the session the way `CHAT` does, plays `screens/files` if the board has one, and lays the areas out as a numbered menu in as many columns as the terminal has room for. A digit opens an area, `Q` goes back one level, `Q` again leaves. Going back one level rather than all the way out is the thing a subsystem has that a command does not.
+- **An area is a folder mounted under a name**, and it can carry its own read and write levels: `area1 = pub/c64 | C64 Downloads | staff | sysop`. An area a caller may not read is not listed for them, and opening it by number is refused in the same words as a number that is not an area at all, so the command cannot be used to find out which numbers are hiding something.
+- **Setting one up no longer means finding a PC.** Typing a path into CONFIG creates the folder on the card, parents and all.
+- **`CONFIG files` shows each area as a button** that opens a page of its own, with Path, Name, Read and Write as proper fields and the levels as pickers rather than words you have to spell. Save lands you back on the files page. Plain ASCII has no cursor to put a button under, so it asks instead.
+- Descriptions live in `FILES.BBS` in each folder, plain text, editable on a laptop with the card in hand. Written through a temp file and a rename, because FAT is not safe against losing power mid-write.
+- The caller log is mirrored to the card, one plain text file per month. The ring on the logs partition stays what `LAST` reads, so pulling the card costs the long history and nothing else.
+- `MEM` shows the card's free space, and now also shows the session pool beside the heap. The pool is the largest thing the firmware owns and it was invisible: decided at compile time, so it never appeared as heap usage, and a sysop looking at a small heap had no way to see the node count holding a hundred kilobytes.
+
+### Ten nodes, not sixteen
+
+- **Sixteen did not fit.** A session is 6,000 bytes and eighteen of them was 108,000 bytes of static RAM; the link failed with `dram0_0_seg overflowed by 104 bytes`. The figure that matters is not the 320 KB the part advertises but what is left for static data once the ROM and the radio have taken theirs, and PlatformIO's percentage is measured against the larger number: it read 54.9% while being over.
+- Ten caller lines, plus the busy line and the hidden sysop node. That frees 36,000 bytes, which is what the transfer buffers and what follows them will be spent from.
+- [ESP32_BOARD_CHOICE.md](ESP32_BOARD_CHOICE.md) records which parts this runs on and roughly how many nodes each would carry, with the arithmetic shown and a warning that only the WROOM has actually been tested.
+
+### Fixed
+
+- **A config reload rewrote every long setting whether or not it had changed.** Values were compared using only their first 47 characters against a 96 byte buffer, so anything longer never matched itself. The long buffers exist precisely for values like announce's comma-separated directory list.
+- **`SHOW`, `HIDE` and `LURK` did not tell the directory.** The published caller count includes a staff member only while they are visible, so toggling visibility changed what the board advertised and nothing pushed the update. There is one hook for it now, called from login, logoff and all three, rather than three calls bolted onto three commands.
+- **An absolute card path was not understood.** `SD` prints the screens folder as `/sd/screens`, so that is what a sysop types, and it was being treated as relative to the card and turned into `/sd//sd/screens`, pointing the area at nothing.
+
+### Groundwork for file transfer
+
+- The XMODEM and YMODEM engine is written and tested on its own: 82 checks, clean under ASan and UBSan, 2,696 bytes of code, one 1K buffer. It knows nothing about sockets, sessions or the card.
+- **Two ways binary would have been corrupted, both closed, and both invisible to an ordinary test.** Telnet normalised CR on input, silently deleting a `0x0A` or `0x00` that followed a `0x0D`; in a file those are data. And there was no outbound path that escaped IAC without also translating the charset, so nothing could carry a file out. A caller in raw mode now gets bytes rather than decoded keys, because during a transfer an `0x1B` is not an escape sequence and an `0x0D` is not Enter.
+- The suite proves it rather than assuming: it sends every byte value, the CR pairs, and a run of `0xFF`, and checks the board counted and summed exactly what was sent. That test found an out-of-bounds read in the new raw path within minutes of existing.
+
 ## 0.17.1, 2026-09-19
 
 The SD card. Its own version number because it is its own flash: 0.17.0 and

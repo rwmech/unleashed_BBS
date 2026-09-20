@@ -44,6 +44,7 @@ data/system.cfg
 data/calls.log
 CLAUDE.local.md
 host/bbs_host
+host/test_xmodem
 __pycache__/
 /*.zip
 /backup/

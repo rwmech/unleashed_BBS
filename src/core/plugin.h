@@ -187,6 +187,30 @@ struct Plugin {
     // struct is filled positionally, so a field inserted in the middle
     // silently shifts every existing one.
     bool (*rows)(Session& s);
+
+    // onPresence: what the outside can see about who is on has changed.
+    //
+    // Not the same thing as onLogin and onLogoff, which mean a caller
+    // arrived or left. A staff member typing SHOW, HIDE or LURK changes the
+    // figure the board publishes without anybody arriving or leaving, because
+    // Bbs::publicBusy counts a session only while it is visible.
+    //
+    // One hook rather than three calls bolted onto three commands, so that
+    // the next thing that changes the public count, a sysop page or a door,
+    // is not a fourth place somebody has to remember.
+    void (*onPresence)(Session& s);
+
+    // onBytes: input as it arrived, for a plugin in raw mode.
+    //
+    // onKey delivers decoded keys, which is right for everything a caller
+    // types and wrong for a file: the terminal layer would read an 0x1B in
+    // a data block as the start of an escape sequence and an 0x0D as Enter.
+    // A plugin turns this on with Bbs::setRawInput while it owns the
+    // session, and off again afterwards.
+    //
+    // Telnet has already been unescaped by the time these arrive, so IAC IAC
+    // is one 0xFF here. Whether CR is left alone is Telnet::setBinary.
+    void (*onBytes)(Session& s, const uint8_t* b, size_t n, uint32_t now);
 };
 
 namespace plugins {
@@ -215,6 +239,11 @@ PlugLevel levelFor(uint8_t index, uint8_t which);   // 0 read, 1 write, 2 admin
 
 // levelName: the word a config file uses for a level
 const char* levelName(PlugLevel level);
+
+// levelFromText: the reverse. A plugin with levels of its own, such as a
+// file area that is staff only, parses them with the same words and the
+// same ladder the core uses, so a sysop learns one vocabulary.
+bool levelFromText(const char* v, PlugLevel& out);
 
 // mayUse: does this session meet a level?
 bool mayUse(const Session& s, PlugLevel level);

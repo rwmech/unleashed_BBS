@@ -394,8 +394,11 @@ void nudge(uint32_t now) {
     if (static_cast<int32_t>(soonest - g_nextRun) < 0) g_nextRun = soonest;
 }
 
-void onLogin(Session& s)  { (void)s; nudge(plat::millis()); }
-void onLogoff(Session& s) { (void)s; nudge(plat::millis()); }
+// The count the directory publishes follows what the outside can see, so
+// the nudge hangs on onPresence, which fires for login and logoff and for a
+// staff member making themselves visible or invisible. onLogin and onLogoff
+// are left off this descriptor rather than doing the same work twice.
+void onPresence(Session& s) { (void)s; nudge(plat::millis()); }
 
 // ---------------------------------------------------------------------------
 // codeMeans: an HTTP status in words. A sysop looking at a dashboard should
@@ -783,8 +786,8 @@ extern const Plugin kAnnouncePlugin = {
     stop,
     tick,
     nullptr,                 // onConnect
-    onLogin,                 // a caller arrived: the count on the directory is stale
-    onLogoff,                // and again when they leave
+    nullptr,                 // onLogin: see onPresence
+    nullptr,                 // onLogoff: see onPresence
     nullptr,                 // onKey
     status,
     kCommands,
@@ -793,4 +796,6 @@ extern const Plugin kAnnouncePlugin = {
     sizeof(kSettings) / sizeof(kSettings[0]),
     setting,
     nullptr,                 // rows: no paged list of its own
+    onPresence,              // arrivals, departures and SHOW/HIDE/LURK
+    nullptr,                 // onBytes
 };

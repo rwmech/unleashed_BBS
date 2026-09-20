@@ -51,17 +51,26 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "0.17.1"
+#define BBS_VERSION         "0.17.2"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // ---------------------------------------------------------------------------
-// Network: one dial-in port, 16 caller nodes, a busy line, a hidden sysop node
+// Network: one dial-in port, 10 caller nodes, a busy line, a hidden sysop node
 // ---------------------------------------------------------------------------
 #define BBS_PORT            6400
-// Sixteen caller lines. A Session is ~5.7 KB, so sixteen plus the busy
-// line and the sysop is ~103 KB of the 320 KB static budget. Past about
-// 24 would want PSRAM, which the WROOM does not have.
-#define BBS_MAX_NODES       16
+// Ten caller lines, plus the busy line and the hidden sysop node.
+//
+// Sixteen did not fit. A Session is 6,000 bytes, so eighteen of them was
+// 108,000 bytes of static RAM and the link failed with dram0_0_seg
+// overflowed by 104 bytes: not near the limit, past it. The figure that
+// matters is not the 320 KB of SRAM the part advertises but what is left
+// for statically allocated DRAM once the ROM and the radio have taken
+// theirs, and that is a good deal less.
+//
+// Ten is twelve sessions, 72,000 bytes, which leaves room for the file
+// transfer buffers and for whatever comes after them. It is also the sort
+// of number the boards this is modelled on actually had.
+#define BBS_MAX_NODES       10
 #define BBS_LISTEN_BACKLOG  4
 
 // TCP keepalive on every caller socket: a line whose far end vanished

@@ -250,6 +250,24 @@ void Term::ch(ByteSink& o, char c) {
 // ---------------------------------------------------------------------------
 // The only non-ASCII character allowed above this layer is UTF-8 µ
 // (C2 B5), used by the BBS name; it becomes Glyph::Micro per terminal.
+// ---------------------------------------------------------------------------
+// raw: a file's bytes, untouched except for telnet's IAC.
+//
+// A 0xFF in the data is IAC and has to leave as 0xFF 0xFF or the client
+// reads the next byte as a telnet command. Everything else goes exactly as
+// it is: no charset mapping, no CR rewriting, no colour. Roughly one byte in
+// 256 of arbitrary binary is 0xFF, so about half of all 128 byte blocks
+// contain one, which is why skipping this looks like it works on a text file
+// and then quietly ruins the first real download.
+// ---------------------------------------------------------------------------
+void Term::raw(ByteSink& o, const uint8_t* b, size_t n) {
+    const bool esc = iacEscape();
+    for (size_t i = 0; i < n; ++i) {
+        o.putc(b[i]);
+        if (esc && b[i] == 0xFF) o.putc(0xFF);
+    }
+}
+
 void Term::text(ByteSink& o, const char* s) {
     while (*s) {
         if (static_cast<uint8_t>(s[0]) == 0xC2 && static_cast<uint8_t>(s[1]) == 0xB5) {

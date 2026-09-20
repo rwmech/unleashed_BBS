@@ -1,6 +1,6 @@
 ---
 name: docs
-description: Writes and audits the Markdown documentation for both repositories, and the directory site's page files. Use when a change needs its docs updated, when a doc has drifted from the code, or to audit a file for accuracy, structure and dead links. Checks claims against the source rather than trusting the prose, because a confidently wrong doc costs more than a missing one.
+description: The developer-facing writer. Writes and audits the reference documentation for both repositories: README, COMMANDS, USERS, PLUGINS, BACKUP, SCREENS, CHANGELOG, PROTOCOL and the design history. Anything a caller or a newcomer reads, including the website and the board's screens, belongs to the explain agent instead. Use when a change needs its docs updated, when a doc has drifted from the code, or to audit a file for accuracy, structure and dead links. Checks claims against the source rather than trusting the prose, because a confidently wrong doc costs more than a missing one.
 tools: Read, Grep, Glob, Bash, Write, Edit
 model: sonnet
 ---

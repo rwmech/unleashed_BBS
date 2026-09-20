@@ -136,7 +136,7 @@ size_t Telnet::filter(const uint8_t* in, size_t n, uint8_t* out, ByteSink& reply
         uint8_t b = in[i];
 
         if (!enabled_ && st_ == S_DATA) {
-            if (lastCR_ && (b == 0x0A || b == 0x00)) { lastCR_ = false; continue; }
+            if (!binary_ && lastCR_ && (b == 0x0A || b == 0x00)) { lastCR_ = false; continue; }
             lastCR_ = (b == 0x0D);
             out[o++] = b;
             continue;
@@ -145,7 +145,8 @@ size_t Telnet::filter(const uint8_t* in, size_t n, uint8_t* out, ByteSink& reply
         switch (st_) {
             case S_DATA:
                 if (b == T_IAC) { st_ = S_IAC; seenIac_ = true; break; }
-                if (lastCR_ && (b == 0x0A || b == 0x00)) { lastCR_ = false; break; }
+                // In binary mode this pair is data, not a line ending.
+                if (!binary_ && lastCR_ && (b == 0x0A || b == 0x00)) { lastCR_ = false; break; }
                 lastCR_ = (b == 0x0D);
                 out[o++] = b;
                 break;

@@ -62,6 +62,12 @@ enum FormFlag : uint8_t {
     FF_TEXTAREA = 8,    // four 37-column rows under the label
     FF_YESNO    = 16,   // one letter, Y or N, space toggles
     FF_CYCLE    = 32,   // one of choices, space steps to the next
+    // A button rather than a value: focusable, never typed into, and Enter
+    // (or space) on it ends the key with Res::Open and the field's index.
+    // buf is the summary the button shows, not a value the form edits, so
+    // the owner keeps the real thing somewhere of its own. This is what
+    // lets one row of a form stand for a page of its own.
+    FF_ACTION   = 64,
 };
 
 struct FormField {
@@ -74,18 +80,26 @@ struct FormField {
 
 class Form {
 public:
-    enum class Res : uint8_t { Editing, Save, Cancel };
+    // Open: an FF_ACTION field was pressed. opened() says which one, and the
+    // owner takes the session somewhere else and comes back with begin().
+    enum class Res : uint8_t { Editing, Save, Cancel, Open };
     // 16, not 10, because a plugin's own settings sit on the CONFIG form
     // underneath the four core keys, and announce alone declares nine. A
     // form this tall still fits a 25 row C64 screen with its title bar,
     // buttons and the prompt underneath.
     static constexpr uint8_t kMaxFields = 16;
 
-    // begin: draw the form (with a little flourish) and focus the first field
-    void begin(const char* title, FormField* fields, uint8_t count, Term& t, Timeline& tl);
+    // begin: draw the form (with a little flourish) and focus a field. focus
+    // defaults to the first one; an owner returning from a sub-page passes
+    // the button that opened it, so the caller lands where they left.
+    void begin(const char* title, FormField* fields, uint8_t count, Term& t, Timeline& tl,
+               uint8_t focus = 0);
 
     // key: one key event
     Res key(int k, Term& t, Timeline& tl);
+
+    // opened: which field returned Res::Open
+    uint8_t opened() const { return opened_; }
 
     // fail: flash an error, focus the field that caused it
     void fail(uint8_t field, const char* msg, Term& t, Timeline& tl);
@@ -124,6 +138,7 @@ private:
     FormField*  f_          = nullptr;
     uint8_t     n_          = 0;
     uint8_t     focus_      = 0;      // 0..n-1 fields, n = Save, n+1 = Cancel
+    uint8_t     opened_     = 0;      // field that returned Res::Open
     uint8_t     row_[kMaxFields] = {};
     uint8_t     buttonRow_  = 0;
     uint8_t     statusRow_  = 0;

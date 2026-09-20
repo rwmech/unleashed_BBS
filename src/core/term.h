@@ -114,7 +114,16 @@ public:
 
     // -- output ----------------------------------------------------------
     void ch(ByteSink& o, char c);                  // one ASCII char, translated
-    void text(ByteSink& o, const char* s);         // ASCII string, '\n' = newline, UTF-8 µ allowed
+    void text(ByteSink& o, const char* s);
+
+    // raw: bytes straight out, with only telnet's IAC doubled.
+    //
+    // For a file transfer. Nothing else on the way out may touch the bytes:
+    // no charset mapping, no CR rewriting, no colour. Term::text and
+    // Term::ch both translate, so neither can carry a binary file, and
+    // ByteSink::put does no escaping at all, so it cannot carry one once
+    // telnet has been negotiated. Hence this.
+    void raw(ByteSink& o, const uint8_t* b, size_t n);         // ASCII string, '\n' = newline, UTF-8 µ allowed
     void textN(ByteSink& o, const char* s, size_t n);
 
     // textCols: at most maxCols columns of s, returning how many were

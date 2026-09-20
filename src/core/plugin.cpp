@@ -65,8 +65,10 @@ void sectionName(const char* name, char* out, size_t n) {
     snprintf(out, n, "[plugin:%s]", name);
 }
 
-// levelFromText: the access ladder
-bool levelFromText(const char* v, PlugLevel& out) {
+// levelParse: the access ladder. plugins::levelFromText below is the public
+// face of this; it lives here because the config scan above needs it before
+// the plugins namespace opens.
+bool levelParse(const char* v, PlugLevel& out) {
     if (ieq(v, "all"))    { out = PlugLevel::All;    return true; }
     if (ieq(v, "users"))  { out = PlugLevel::Users;  return true; }
     if (ieq(v, "staff"))  { out = PlugLevel::Staff;  return true; }
@@ -132,13 +134,13 @@ void scan(uint8_t index, plugins::KeyFn fn, void* ctx, bool core) {
                 st.enabled = ieq(val, "yes") || ieq(val, "on") || !strcmp(val, "1");
                 continue;
             }
-            if (ieq(key, "read"))  { if (levelFromText(val, lv)) st.level[0] = lv;
+            if (ieq(key, "read"))  { if (levelParse(val, lv)) st.level[0] = lv;
                                      else plat::log("cfg: [plugin:%s] bad read level '%s'", p->info.name, val);
                                      continue; }
-            if (ieq(key, "write")) { if (levelFromText(val, lv)) st.level[1] = lv;
+            if (ieq(key, "write")) { if (levelParse(val, lv)) st.level[1] = lv;
                                      else plat::log("cfg: [plugin:%s] bad write level '%s'", p->info.name, val);
                                      continue; }
-            if (ieq(key, "admin")) { if (levelFromText(val, lv)) st.level[2] = lv;
+            if (ieq(key, "admin")) { if (levelParse(val, lv)) st.level[2] = lv;
                                      else plat::log("cfg: [plugin:%s] bad admin level '%s'", p->info.name, val);
                                      continue; }
         }
@@ -178,6 +180,8 @@ uint8_t indexOf(const char* name) {
     }
     return 0xFF;
 }
+
+bool levelFromText(const char* v, PlugLevel& out) { return levelParse(v, out); }
 
 const char* levelName(PlugLevel level) {
     switch (level) {

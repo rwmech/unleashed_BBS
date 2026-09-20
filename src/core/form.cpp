@@ -54,7 +54,8 @@ bool editable(const FormField& f) { return !(f.flags & FF_READONLY); }
 // ---------------------------------------------------------------------------
 // begin: layout rows, draw title, fields and buttons, focus the first field
 // ---------------------------------------------------------------------------
-void Form::begin(const char* title, FormField* fields, uint8_t count, Term& t, Timeline& tl) {
+void Form::begin(const char* title, FormField* fields, uint8_t count, Term& t, Timeline& tl,
+                 uint8_t focus) {
     f_          = fields;
     n_          = count > kMaxFields ? kMaxFields : count;
     confirming_ = false;
@@ -69,7 +70,11 @@ void Form::begin(const char* title, FormField* fields, uint8_t count, Term& t, T
     buttonRow_ = static_cast<uint8_t>(row + 1);
     statusRow_ = static_cast<uint8_t>(row + 3);
 
-    focus_ = 0;
+    // focus == n_ is the Save button, and in line mode it is "every field
+    // asked": that is where an owner returning from the last field's own
+    // page lands, so it is allowed rather than wrapped back to the top.
+    focus_  = focus <= n_ ? focus : 0;
+    opened_ = 0;
     while (focus_ < n_ && !editable(f_[focus_])) ++focus_;
 
     t.reset(tl);
@@ -117,6 +122,23 @@ void Form::drawField(uint8_t i, Term& t, Timeline& tl) {
     t.text(tl, label);
 
     size_t len = strlen(f.buf);
+
+    // A button: "[ summary ]" filling the same box a value would, so the
+    // column still lines up and a sysop can see at a glance which rows lead
+    // somewhere. Green like [ Save ], reversed when it has the focus.
+    if (f.flags & FF_ACTION) {
+        t.gotoXY(tl, kBoxCol, row_[i]);
+        if (focused) { t.reverse(tl, true); t.color(tl, Color::White); }
+        else         t.color(tl, Color::LightGreen);
+        t.text(tl, "[ ");
+        size_t k = 0;                         // 27 = "[ " + 23 + " ]"
+        for (; k < len && k + 4 < kBoxW; ++k) t.ch(tl, f.buf[k]);
+        for (; k + 4 < kBoxW; ++k) t.ch(tl, ' ');
+        t.text(tl, " ]");
+        if (focused) t.reverse(tl, false);
+        return;
+    }
+
     if (!area) {
         const char* shown = f.buf;
         size_t showLen = len;
@@ -183,6 +205,10 @@ void Form::placeCursor(Term& t, Timeline& tl) {
         return;
     }
     const FormField& f = f_[focus_];
+    if (f.flags & FF_ACTION) {              // on the button, not inside it
+        t.gotoXY(tl, kBoxCol, row_[focus_]);
+        return;
+    }
     size_t len = strlen(f.buf);
     if (f.flags & FF_TEXTAREA) {
         size_t pos = len < static_cast<size_t>(kAreaW) * kAreaRows ? len : static_cast<size_t>(kAreaW) * kAreaRows - 1;
@@ -251,6 +277,7 @@ Form::Res Form::keyPositional(int k, Term& t, Timeline& tl) {
         case KEY_ENTER:
             if (focus_ == n_)     return Res::Save;
             if (focus_ == n_ + 1) return Res::Cancel;
+            if (f_[focus_].flags & FF_ACTION) { opened_ = focus_; return Res::Open; }
             setFocus(nextFocus(+1), t, tl);
             return Res::Editing;
         default:
@@ -259,6 +286,16 @@ Form::Res Form::keyPositional(int k, Term& t, Timeline& tl) {
     if (focus_ >= n_ || !editable(f_[focus_])) return Res::Editing;
 
     FormField& f = f_[focus_];
+
+    // A button is not typed into. Space opens it as Enter does (space is
+    // what FF_CYCLE and FF_YESNO already mean by "do the thing"), and every
+    // other key is ignored rather than dropped into a buffer the caller
+    // cannot see.
+    if (f.flags & FF_ACTION) {
+        if (k == ' ') { opened_ = focus_; return Res::Open; }
+        return Res::Editing;
+    }
+
     size_t len = strlen(f.buf);
 
     if (f.flags & FF_CYCLE) {
@@ -418,6 +455,24 @@ void Form::linePrompt(Term& t, Timeline& tl) {
         return;
     }
     const FormField& f = f_[focus_];
+
+    // A button has no value to type. Plain ASCII cannot draw one, so it is
+    // a question instead: Y goes to its page, anything else moves on.
+    if (f.flags & FF_ACTION) {
+        t.color(tl, Color::LightGreen);
+        t.text(tl, f.label);
+        t.color(tl, Color::DarkGrey);
+        t.text(tl, " [");
+        t.text(tl, f.buf[0] ? f.buf : "empty");
+        t.text(tl, "]");
+        t.color(tl, Color::Grey);
+        t.text(tl, " open (y/N)? ");
+        t.color(tl, Color::White);
+        inLen_ = 0;
+        in_[0] = '\0';
+        return;
+    }
+
     t.color(tl, Color::LightBlue);
     t.text(tl, f.label);
     if (f.buf[0]) {
@@ -442,6 +497,15 @@ Form::Res Form::keyLine(int k, Term& t, Timeline& tl) {
         return Res::Editing;
     }
     FormField& f = f_[focus_];
+    if (f.flags & FF_ACTION) {                           // "open (y/N)?"
+        if (k == 'y' || k == 'Y') { t.ch(tl, 'Y'); opened_ = focus_; return Res::Open; }
+        if (k == KEY_ENTER || k == 'n' || k == 'N') {
+            if (k != KEY_ENTER) t.ch(tl, 'N');
+            ++focus_;
+            linePrompt(t, tl);
+        }
+        return Res::Editing;
+    }
     if (k == KEY_ENTER) {
         if (inLen_) {                                    // Enter on an empty line keeps the value
             in_[inLen_] = '\0';

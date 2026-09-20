@@ -258,6 +258,7 @@ bool Bbs::own(Session& s, uint8_t plugin) {
 void Bbs::release(Session& s) {
     if (s.owner == 0xFF) return;
     s.owner     = 0xFF;
+    s.rawInput  = false;         // whatever was transferring is not any more
     s.ownerData = 0;
     if (s.st == SState::Plugin) {
         s.term.reset(s.tl);
@@ -506,6 +507,7 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
     s.negotiated    = false;
     s.rxLen         = 0;
     s.rxPos         = 0;
+    s.rawInput      = false;     // a static pool: never inherit a transfer
     strncpy(s.ip, ip, sizeof(s.ip) - 1);
     s.ip[sizeof(s.ip) - 1] = '\0';
     s.ipAddr        = ipAddr;
@@ -613,6 +615,7 @@ void Bbs::closeSession(Session& s, const char* why, uint32_t now) {
         for (uint8_t i = 0; i < plugins::count(); ++i) {          // tell the plugins first
             const Plugin* p = plugins::at(i);
             if (plugins::running(i) && p->onLogoff) p->onLogoff(s);
+            if (plugins::running(i) && p->onPresence) p->onPresence(s);
         }
         s.owner = 0xFF;
         uint32_t secs = (now - s.loginAt) / 1000u;
@@ -724,6 +727,23 @@ void Bbs::processInput(Session& s, uint32_t now) {
     while (s.rxPos < s.rxLen) {
         if (s.st == SState::Free) { s.rxLen = s.rxPos = 0; return; }
         if (s.st != SState::Detect && s.tl.freeBytes() < BBS_RX_ROOM) return;
+        // A plugin in raw mode gets what is left of the buffer in one go,
+        // undecoded. One call rather than a byte at a time, because a
+        // transfer wants blocks and calling a protocol engine 1,024 times
+        // for a 1K block is work for nothing.
+        if (s.rawInput && s.owner != 0xFF && plugins::running(s.owner)) {
+            // This runs before the byte is read below, so everything from
+            // rxPos to rxLen is still theirs. An earlier version decremented
+            // rxPos here as though a byte had already been taken, which on
+            // the first pass underflowed a uint8_t to 255 and read a long
+            // way past the buffer.
+            const Plugin* p = plugins::at(s.owner);
+            size_t left = static_cast<size_t>(s.rxLen - s.rxPos);
+            if (p && p->onBytes && left) p->onBytes(s, s.rxBuf + s.rxPos, left, now);
+            s.lastRx = now;
+            s.rxLen = s.rxPos = 0;
+            return;
+        }
         uint8_t b = s.rxBuf[s.rxPos++];
         s.lastRx = now;                              // keeps ESC [ B from splitting into ESC
         if (s.st == SState::Detect) {
@@ -1457,6 +1477,7 @@ void Bbs::completeLogin(Session& s, uint32_t now) {
     for (uint8_t i = 0; i < plugins::count(); ++i) {
         const Plugin* p = plugins::at(i);
         if (plugins::running(i) && p->onLogin) p->onLogin(s);
+        if (plugins::running(i) && p->onPresence) p->onPresence(s);
     }
 
     snprintf(buf, sizeof(buf), "*** %s is on node %u", s.user, s.id);
@@ -1918,10 +1939,30 @@ uint8_t Bbs::pageRows(const Session& s) const {
     return static_cast<uint8_t>(rows > 8 ? rows - 2 : 6);
 }
 
+// ---------------------------------------------------------------------------
+// presenceChanged: somebody became visible or invisible.
+//
+// Called from the visibility commands as well as from login and logoff,
+// because publicBusy counts a session only while it is visible: a sysop
+// typing HIDE changes what the directory publishes without anybody hanging
+// up, and before this nothing told the directory that.
+// ---------------------------------------------------------------------------
+void Bbs::presenceChanged(Session& s) {
+    for (uint8_t i = 0; i < plugins::count(); ++i) {
+        const Plugin* p = plugins::at(i);
+        if (plugins::running(i) && p->onPresence) p->onPresence(s);
+    }
+}
+
 // startPluginList: a plugin's own paged list. The plugin is remembered on
 // the session because listRow is called back later, on a different pass of
 // the loop, and by then the only thing that knows whose list this is is the
 // session itself.
+void Bbs::setRawInput(Session& s, bool on) {
+    if (s.owner == 0xFF) return;                 // nobody to give the bytes to
+    s.rawInput = on;
+}
+
 void Bbs::startPluginList(Session& s, uint8_t plugin) {
     s.listPlugin = plugin;
     startList(s, ListKind::PlugRows);
@@ -1940,6 +1981,27 @@ void Bbs::startList(Session& s, ListKind kind) {
 // ---------------------------------------------------------------------------
 // serviceList: one row at a time while the Timeline has room
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// listEnded: where a caller goes when a list finishes or is stopped.
+//
+// The shell prompt, normally. But a list started from inside a plugin that
+// owns the session belongs to a caller who is somewhere else: in the file
+// area, or a message base later. Prompting them would drop them out of it
+// without saying so, which is the sort of thing that reads as the board
+// losing track of where you are.
+//
+// The plugin draws its own prompt as the last thing its rows() emits, so
+// there is nothing to call back into: the session simply goes back to being
+// the plugin's.
+// ---------------------------------------------------------------------------
+void Bbs::listEnded(Session& s) {
+    if (s.owner != 0xFF && plugins::running(s.owner)) {
+        s.st = SState::Plugin;
+        return;
+    }
+    prompt(s);
+}
+
 void Bbs::serviceList(Session& s) {
     while (s.st == SState::List && s.tl.freeBytes() > 512 && s.tl.freeFrames() > 16) {
         if (!s.nonstop && s.pageLines >= pageRows(s)) {
@@ -1948,7 +2010,7 @@ void Bbs::serviceList(Session& s) {
         }
         if (!listRow(s)) {
             s.list = ListKind::None;
-            prompt(s);
+            listEnded(s);
             return;
         }
         ++s.pageLines;
@@ -1977,7 +2039,7 @@ void Bbs::abortOutput(Session& s) {
     s.term.nl(s.tl);
     s.term.color(s.tl, Color::Grey);
     s.term.text(s.tl, "Stopped.");
-    prompt(s);
+    listEnded(s);
 }
 
 // ===========================================================================
@@ -2105,6 +2167,7 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
             Form::Res r = s.form.key(k, t, tl);
             if (r == Form::Res::Save)   formSave(s, now);
             if (r == Form::Res::Cancel) formCancel(s, now);
+            if (r == Form::Res::Open)   formOpen(s, s.form.opened(), now);
             return;
         }
 

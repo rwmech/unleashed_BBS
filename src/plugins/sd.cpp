@@ -399,4 +399,6 @@ extern const Plugin kSdPlugin = {
     sizeof(kSettings) / sizeof(kSettings[0]),
     setting,
     nullptr,                 // rows: no paged list of its own
+    nullptr,                 // onPresence
+    nullptr,                 // onBytes
 };

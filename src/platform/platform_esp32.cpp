@@ -95,6 +95,7 @@ HeapStats heap() {
     h.freeBytes    = static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_8BIT));
     h.minFree      = static_cast<uint32_t>(heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
     h.largestBlock = static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    h.totalBytes   = static_cast<uint32_t>(heap_caps_get_total_size(MALLOC_CAP_8BIT));
     h.valid        = true;
     return h;
 }

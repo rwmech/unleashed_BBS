@@ -1191,10 +1191,26 @@ void Bbs::cmdMem(Session& s) {
         t.text(tl, "Heap stats are an ESP32 thing.");
         t.nl(tl);
     }
-    snprintf(buf, sizeof(buf), "x %u", static_cast<unsigned>(kSessions));
+    // Where the RAM actually went, not just what is left of it.
+    //
+    // The session pool is the largest single thing this firmware owns and it
+    // was invisible: it is decided at compile time, so it never appears as
+    // heap usage, and a sysop looking at a small heap had no way to see that
+    // sixteen caller nodes are holding a hundred kilobytes. Showing the two
+    // figures side by side is the difference between "something ate my RAM"
+    // and "the node count costs this much".
+    char buf2[48];
     char num[16];
+    snprintf(buf2, sizeof(buf2), "x %u = %u KB", static_cast<unsigned>(kSessions),
+             static_cast<unsigned>(sizeof(Session) * kSessions / 1024u));
     fmtCommas(static_cast<uint32_t>(sizeof(Session)), num, sizeof(num));
-    statRow(s, "Session", num, Color::LightGreen, buf);
+    statRow(s, "Session", num, Color::LightGreen, buf2);
+    if (h.valid && h.totalBytes) {
+        fmtCommas(h.totalBytes, num, sizeof(num));
+        snprintf(buf2, sizeof(buf2), "%u%% free",
+                 static_cast<unsigned>(h.freeBytes * 100u / h.totalBytes));
+        statRow(s, "Heap total", num, Color::Grey, buf2);
+    }
     snprintf(buf, sizeof(buf), "of %u", static_cast<unsigned>(BBS_MAX_NODES));
     fmtCommas(activeNodes(), num, sizeof(num));
     statRow(s, "Nodes busy", num, Color::LightGreen, buf);

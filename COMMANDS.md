@@ -193,8 +193,8 @@ All caller commands still work. Node arguments are `1`-`6`, `S` (sysop node) or 
 | `LURK` | `HIDE` | Toggle lurking: hidden from WHO and pages refused. |
 | `BANS` | `BANS` | Active IP bans and minutes remaining. |
 | `PLUGINS` | any staff | Every plugin compiled in: version, whether it is running, and why not. Also free disk space and the reserve. |
-| `FILES` / `F` | all | The file areas on the card. `FILES n` opens one and lists its files with sizes and descriptions. Only on a board with a card: the plugin does not start without one, so on a cardless board the command does not exist rather than showing an empty list. |
-| `DESC file text` | staff | Set a file's description in the area you have open. Empty text clears it. Written to `FILES.BBS` in that folder, which is plain text you can edit on a laptop with the card in hand. |
+| `FILES` / `F` | all | **Goes into the file area**, the way `CHAT` goes into the room, rather than printing a list and returning. A screen plays on the way in if the board has `screens/files`, then the areas appear as a numbered menu laid out in as many columns as the terminal has room for. A digit opens an area, `Q` goes back one level and `Q` again leaves. `FILES n` enters and opens that area in one go. Only on a board with a card: the plugin does not start without one, so on a cardless board the command does not exist rather than offering an empty file area. |
+| `DESC file text` | staff | Set a file's description in the area you last opened. Empty text clears it. Typed at the command prompt, not inside the file area, because the file area takes keys rather than lines; the area you opened is remembered after you leave it. Written to `FILES.BBS` in that folder, which is plain text you can edit on a laptop with the card in hand. |
 | `SD` | sysop | SD card status: type, mount point, free space, and where screens are coming from. With no card it says which pins it tried, because "no card found" without them sends you to re-seat a card that was never the problem. |
 | `SD MOUNT` | sysop | Mount the card without rebooting. **Pauses the whole board** for a few hundred milliseconds while it negotiates over SPI, which is why it is typed rather than retried on a timer. |
 | `SD UNMOUNT` | sysop | Flush and release, so the card can be pulled safely. Screens fall back to the stock set. |
@@ -222,6 +222,16 @@ Rank rules:
 | `CONFIG` | The settings, page by page. On its own it lists the pages: `board`, `limits`, `accounts`, `backup`, `staff`, and one per plugin. `CONFIG limits` opens that page as the same kind of form the user manager uses: Up and Down move, F1 saves, ESC cancels. Only what you changed is written, the rest of `system.cfg` is left exactly as it was, comments included, and the board reloads the new settings straight away. Passwords show as `********` and are only written when you type a new one. One sysop edits at a time. |
 
 `CONFIG` is the sysop's own command: co-sysops do not get it whatever the `[access]` matrix says, because it can change the staff passwords.
+
+A setting whose value is several values packed with bars, as a file area is,
+is not a text box on its page. It is a button showing the area's name, and
+Enter (or space) on it opens **that area as a page of its own**: Path, Name,
+Read and Write, with the two levels stepped through with space or picked with
+their first letter rather than spelled out. Save or ESC comes back to the
+page the button was on. The file still keeps the bar-separated form, so a
+`system.cfg` edited by hand on a laptop reads and parses exactly as before.
+On a plain ASCII terminal, which has no cursor to put a button under, the row
+becomes `Area 1 [C64 Downloads] open (y/N)?` instead.
 
 ## Backup window (sysop)
 
@@ -324,12 +334,33 @@ read    = all        ; who may browse
 write   = staff      ; who may write descriptions
 area1   = pub/c64 | C64 Downloads
 area2   = pub/text | Text Files
+area3   = screens | Screens | staff | sysop
 ```
 
-Up to eight areas. The path is relative to the card. Descriptions live in
-`FILES.BBS` inside each folder, one line per file, `name description`, the
-way every BBS did it; the board rewrites that file through a temp file and a
-rename, because FAT is not safe against losing power mid-write.
+Up to eight areas, and an area may set its own read and write levels after
+the name. Leave them off and it uses the plugin's; set one through
+`CONFIG files` and both are written down, because the form shows you the
+level the area is running under and saving it is you agreeing to it. An area a caller may not
+read is not listed for them, and opening it by number is refused in the same
+words as a number that is not an area at all, so the command cannot be used
+to find out which numbers are hiding something. The number is the config
+slot, the same for everybody, rather than a position in whatever list you
+happen to see.
+
+The path is relative to the card, and the board creates the folder when it
+starts, so setting an area up does not mean pulling the card and finding a
+PC.
+
+`screens` is worth knowing about: it is the folder the board already reads
+its screen overrides from, the one `SD` prints. Mounting it as a staff area
+gives you a view of your own screens from the board. Note that is `screens`,
+not `admin/screens`; any other path is just an ordinary folder that no
+screen comes from.
+
+Descriptions live in `FILES.BBS` inside each folder, one line per file,
+`name description`, the way every BBS did it; the board rewrites that file
+through a temp file and a rename, because FAT is not safe against losing
+power mid-write.
 
 There is no file transfer yet, so an area is for browsing and for files you
 put there yourself. Uploads and moving files between areas wait for XMODEM.

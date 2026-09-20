@@ -82,21 +82,53 @@ constexpr uint8_t kPathMax  = 48;
 constexpr uint8_t kNameMax  = 24;
 constexpr uint8_t kDescMax  = 48;
 
+// An area's own read and write levels, which are the plugin's unless the
+// area says otherwise. Deferring these to the upload phase was a mistake:
+// the first thing anybody wants is a staff-only area, and that has nothing
+// to do with uploading. Same words and same ladder as everywhere else, so a
+// sysop learns the vocabulary once.
 struct Area {
-    char path[kPathMax + 1] = {};   // relative to the card root
-    char name[kNameMax + 1] = {};   // what a caller sees
+    char      path[kPathMax + 1] = {};   // relative to the card root
+    char      name[kNameMax + 1] = {};   // what a caller sees
+    PlugLevel read  = PlugLevel::Nobody; // Nobody here means "use the plugin's"
+    PlugLevel write = PlugLevel::Nobody;
 };
 
 Area    g_area[kMaxAreas];
 uint8_t g_areas  = 0;
 uint8_t g_index  = 0;
 
-// Which area a caller is listing. Per session, because two callers may be in
-// two areas at once, and it is cleared on logoff so the next caller on that
-// node does not inherit it: sessions come from a static pool.
+// Which area a caller is in, 0xFF for the area menu. Per session, because
+// two callers may be in two areas at once, and it is cleared on logoff so
+// the next caller on that node does not inherit it: sessions come from a
+// static pool.
 uint8_t g_at[BBS_MAX_NODES + 2] = {};
 
+// FILES is a place, not a command. The plugin owns the session while a
+// caller is in it, so keys come here and the shell prompt is not drawn
+// underneath. Q or ESC leaves. Modelled on the chat room, which works the
+// same way and for the same reason.
+enum class Where : uint8_t { Out, Menu, Area };
+Where   g_where[BBS_MAX_NODES + 2] = {};
+
 uint8_t slotOf(const Session& s) { return s.id <= BBS_MAX_NODES + 1 ? s.id : 0; }
+
+// mayRead / mayWrite: this caller against this area. An area that set no
+// level of its own falls back to the plugin's, which is what the levels on
+// the [plugin:files] section have always meant.
+bool mayRead(const Session& s, uint8_t i) {
+    if (i >= g_areas || !g_area[i].path[0]) return false;
+    PlugLevel lv = g_area[i].read;
+    if (lv == PlugLevel::Nobody) lv = plugins::levelFor(g_index, 0);
+    return plugins::mayUse(s, lv);
+}
+
+bool mayWrite(const Session& s, uint8_t i) {
+    if (i >= g_areas || !g_area[i].path[0]) return false;
+    PlugLevel lv = g_area[i].write;
+    if (lv == PlugLevel::Nobody) lv = plugins::levelFor(g_index, 1);
+    return plugins::mayUse(s, lv);
+}
 
 // ---------------------------------------------------------------------------
 // areaPath: the full path of an area, or false when the card is not there.
@@ -252,19 +284,47 @@ void readKey(void* ctx, const char* key, const char* value) {
     long n = strtol(key + 4, nullptr, 10);
     if (n < 1 || n > kMaxAreas) return;
 
-    const char* bar = strchr(value, '|');
-    Area a;
-    if (bar) {
-        size_t plen = static_cast<size_t>(bar - value);
-        while (plen && (value[plen - 1] == ' ' || value[plen - 1] == '\t')) --plen;
-        snprintf(a.path, sizeof(a.path), "%.*s", static_cast<int>(plen), value);
-        const char* nm = bar + 1;
-        while (*nm == ' ' || *nm == '\t') ++nm;
-        snprintf(a.name, sizeof(a.name), "%.*s", kNameMax, nm);
-    } else {
-        snprintf(a.path, sizeof(a.path), "%.*s", kPathMax, value);
-        snprintf(a.name, sizeof(a.name), "%.*s", kNameMax, value);
+    // <path> | <name> | <read> | <write>, the last two optional. Split on
+    // every bar rather than the first, so a sysop can say
+    //   area1 = admin/screens | Screens | staff | sysop
+    char parts[4][kPathMax + kNameMax + 4] = {};
+    uint8_t np = 0;
+    const char* p = value;
+    while (np < 4) {
+        const char* bar = strchr(p, '|');
+        size_t len = bar ? static_cast<size_t>(bar - p) : strlen(p);
+        while (len && (p[len - 1] == ' ' || p[len - 1] == '\t')) --len;
+        while (len && (*p == ' ' || *p == '\t')) { ++p; --len; }
+        snprintf(parts[np], sizeof(parts[0]), "%.*s", static_cast<int>(len), p);
+        ++np;
+        if (!bar) break;
+        p = bar + 1;
     }
+
+    // Accept the path however a sysop naturally writes it. SD prints the
+    // screens folder as /sd/screens, so that is what somebody types, and
+    // treating it as relative to the card turned it into /sd//sd/screens
+    // and silently pointed the area at nothing. All four of these mean the
+    // same folder:  /sd/screens   sd/screens   /screens   screens
+    const char* rel = parts[0];
+    while (*rel == '/') ++rel;
+    const char* mount = plat::sdBase()[0] ? plat::sdBase() + 1 : "sd";   // past its slash
+    size_t mlen = strlen(mount);
+    if (!strncmp(rel, mount, mlen) && (rel[mlen] == '/' || !rel[mlen])) {
+        rel += mlen;
+        while (*rel == '/') ++rel;
+    }
+
+    Area a;
+    snprintf(a.path, sizeof(a.path), "%.*s", kPathMax, rel);
+    snprintf(a.name, sizeof(a.name), "%.*s", kNameMax, np > 1 && parts[1][0] ? parts[1] : parts[0]);
+    // A level the ladder does not recognise is refused rather than guessed
+    // at, and the area keeps the plugin's level. Guessing here would mean a
+    // typo quietly opening a staff area to everybody.
+    if (np > 2 && parts[2][0] && !plugins::levelFromText(parts[2], a.read))
+        plat::log("files: area%ld read level '%s' is not a level, using the plugin's", n, parts[2]);
+    if (np > 3 && parts[3][0] && !plugins::levelFromText(parts[3], a.write))
+        plat::log("files: area%ld write level '%s' is not a level, using the plugin's", n, parts[3]);
     if (!a.path[0]) return;
     if (strstr(a.path, "..")) {                      // a sysop typo, not an attack
         plat::log("files: area%ld path has .. in it, ignored", n);
@@ -308,7 +368,88 @@ void stop() {}
 // A caller leaving takes their place in an area with them. Sessions are a
 // static pool, so anything not cleared here is inherited by the next caller
 // on that node.
-void onLogoff(Session& s) { g_at[slotOf(s)] = 0xFF; }
+void onLogoff(Session& s) {
+    g_at[slotOf(s)]    = 0xFF;
+    g_where[slotOf(s)] = Where::Out;
+}
+
+// ---------------------------------------------------------------------------
+// areaMenu: the areas, numbered, in as many columns as the terminal has room
+// for.
+//
+// One column at 40, two at 80, and the width of a column comes from the
+// longest name rather than from a guess, so a board with short names gets
+// more of them on a line. A C64 caller and a PuTTY caller should both get
+// something that fits; giving both the narrow case is the mistake already
+// made once with the description column.
+//
+// Areas the caller may not read are not here, and the numbers are still the
+// config slots, so FILES 4 means area 4 to everybody.
+// ---------------------------------------------------------------------------
+void areaMenu(Bbs& b, Session& s) {
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    char buf[96];
+
+    uint8_t visible[kMaxAreas];
+    uint8_t n = 0;
+    uint8_t widest = 0;
+    for (uint8_t i = 0; i < g_areas; ++i) {
+        if (!g_area[i].path[0] || !mayRead(s, i)) continue;
+        visible[n++] = i;
+        uint8_t w = static_cast<uint8_t>(strlen(g_area[i].name));
+        if (w > widest) widest = w;
+    }
+
+    b.rowTitle(s, "File areas");
+    if (!n) {
+        t.color(tl, Color::Grey);
+        t.text(tl, "Nothing here yet. The sysop sets areas up in CONFIG.");
+        t.nl(tl);
+        return;
+    }
+
+    // "nn  name" plus two spaces between columns.
+    uint8_t cols  = t.cols() ? t.cols() : 40;
+    uint8_t cellW = static_cast<uint8_t>(widest + 6);
+    uint8_t perRow = cellW ? static_cast<uint8_t>(cols / cellW) : 1;
+    if (!perRow) perRow = 1;
+    if (perRow > 4) perRow = 4;
+
+    t.color(tl, Color::LightGreen);
+    for (uint8_t i = 0; i < n; ++i) {
+        uint8_t a = visible[i];
+        bool last = (i % perRow) == static_cast<uint8_t>(perRow - 1) || i + 1 == n;
+        // An area with a read level of its own is marked, so a sysop can see
+        // at a glance which ones a caller will not be shown. Lost when the
+        // menu moved out of rows() into here, and only a test noticed.
+        bool shut = g_area[a].read != PlugLevel::Nobody &&
+                    g_area[a].read != PlugLevel::All;
+        char nm[kNameMax + 10];
+        snprintf(nm, sizeof(nm), "%s%s", g_area[a].name, shut ? " (staff)" : "");
+        snprintf(buf, sizeof(buf), "%2u  %-*.*s", static_cast<unsigned>(a + 1),
+                 last ? 0 : static_cast<int>(widest + 10),
+                 static_cast<int>(widest + 8), nm);
+        t.text(tl, buf);
+        if (last) t.nl(tl);
+    }
+}
+
+// filesPrompt: the subsystem's own prompt line, drawn wherever a caller
+// lands. The core's shell prompt is not running while the plugin owns the
+// session, so this is the only thing telling them what to type.
+void filesPrompt(Session& s) {
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    t.nl(tl);
+    t.color(tl, Color::Cyan);
+    if (g_where[slotOf(s)] == Where::Area)
+        t.text(tl, "Area: number, L lists, Q back");
+    else
+        t.text(tl, "Files: number opens an area, Q quits");
+    t.nl(tl);
+    t.color(tl, Color::White);
+}
 
 // ---------------------------------------------------------------------------
 // rows: the paged list, both kinds. listIdx is the row, as in the core's own
@@ -318,27 +459,7 @@ bool rows(Session& s) {
     Bbs& b = Bbs::instance();
     char buf[96];
     uint8_t at = g_at[slotOf(s)];
-
-    // ---- the areas -------------------------------------------------------
-    if (at == 0xFF) {
-        uint8_t i = s.listIdx++;
-        if (i == 0) { b.rowTitle(s, "File areas"); return true; }
-        uint8_t n = static_cast<uint8_t>(i - 1);
-        if (n < g_areas) {
-            if (!g_area[n].path[0]) { b.rowText(s, Color::DarkGrey, ""); return true; }
-            snprintf(buf, sizeof(buf), "%2u  %-24.24s", static_cast<unsigned>(n + 1),
-                     g_area[n].name);
-            b.rowText(s, Color::LightGreen, buf);
-            return true;
-        }
-        if (n == g_areas) { b.rowRule(s); return true; }
-        if (n == g_areas + 1) {
-            b.rowText(s, Color::Grey, g_areas ? "FILES n opens an area."
-                                              : "The sysop has not set any up yet.");
-            return true;
-        }
-        return false;
-    }
+    if (at == 0xFF) return false;
 
     // ---- one area's files ------------------------------------------------
     char dir[128];
@@ -382,10 +503,11 @@ bool rows(Session& s) {
             return true;
         }
         if (want == seen) { b.rowRule(s); return true; }
-        if (want == seen + 1) {
-            b.rowText(s, Color::Grey, "FILES on its own goes back to the areas.");
-            return true;
-        }
+        // The subsystem's own prompt is the last thing the list emits. The
+        // core hands the session back to this plugin when rows() returns
+        // false, and draws no shell prompt, so if this is not here the
+        // caller is left with no idea what to type.
+        if (want == seen + 1) { filesPrompt(s); return true; }
         return false;
     }
 
@@ -413,32 +535,115 @@ bool rows(Session& s) {
 }
 
 // ---------------------------------------------------------------------------
+// enter / leave / listArea: the subsystem.
+// ---------------------------------------------------------------------------
+void showMenu(Bbs& b, Session& s) {
+    // g_at is deliberately left alone: it is the area this caller last
+    // opened, not where they are standing, and DESC at the command prompt
+    // reads it. g_where is the one that says where they are.
+    g_where[slotOf(s)] = Where::Menu;
+    areaMenu(b, s);
+    filesPrompt(s);
+}
+
+// listArea: hand the session to the core's list machinery for this area's
+// files. The plugin still owns the session, so when the list finishes the
+// core gives it back rather than dropping the caller at the shell prompt.
+void listArea(Bbs& b, Session& s, uint8_t area) {
+    g_where[slotOf(s)] = Where::Area;
+    g_at[slotOf(s)]    = area;
+    b.startPluginList(s, g_index);
+}
+
+void leave(Bbs& b, Session& s) {
+    g_where[slotOf(s)] = Where::Out;
+    s.term.nl(s.tl);
+    s.term.color(s.tl, Color::Grey);
+    s.term.text(s.tl, "Out of files.");
+    b.release(s);
+}
+
+void enter(Bbs& b, Session& s) {
+    if (!plat::sdBase()[0]) {
+        s.term.color(s.tl, Color::Grey);
+        s.term.text(s.tl, "No card in the board, so no file areas.");
+        b.prompt(s);
+        return;
+    }
+    if (!b.own(s, g_index)) { b.prompt(s); return; }
+    b.setDoing(s, "FILES");
+    s.term.reset(s.tl);
+    // A board with screens/files gets a way in. Without one the caller lands
+    // on the menu, the same deal the chat room has with chatin.
+    if (b.showScreen(s, "files")) s.term.nl(s.tl);
+    showMenu(b, s);
+}
+
+// onKey: the subsystem's keys. Digits pick an area, and they accumulate so
+// area 12 is reachable on a board with twelve of them: a single keypress
+// would cap the whole design at nine.
+void onKey(Session& s, int k, uint32_t now) {
+    (void)now;
+    Bbs& b = Bbs::instance();
+    uint8_t slot = slotOf(s);
+
+    if (k == 'q' || k == 'Q' || k == KEY_ESC || k == KEY_BREAK) {
+        if (g_where[slot] == Where::Area) { showMenu(b, s); return; }   // back one level
+        leave(b, s);
+        return;
+    }
+    if (k == 'l' || k == 'L') {
+        if (g_where[slot] == Where::Area) { listArea(b, s, g_at[slot]); return; }
+        showMenu(b, s);
+        return;
+    }
+    if (k >= '0' && k <= '9') {
+        // One digit is enough: there are eight areas at most, so there is no
+        // two-digit case to hold a keypress open for. An earlier version
+        // buffered a digit in case a second one followed, which bought
+        // nothing and meant a caller pressing 9 on a three area board sat
+        // there with nothing happening.
+        uint8_t want = static_cast<uint8_t>(k - '0');
+        if (want >= 1 && want <= g_areas && g_area[want - 1].path[0] &&
+            mayRead(s, static_cast<uint8_t>(want - 1))) {
+            s.term.ch(s.tl, static_cast<char>(k));
+            listArea(b, s, static_cast<uint8_t>(want - 1));
+            return;
+        }
+        // Same answer for a number that is not an area and for one the
+        // caller may not read, so pressing digits cannot be used to find out
+        // which numbers are hiding something. Saying nothing at all would
+        // leak just as little and leave the caller wondering if the board
+        // heard them.
+        s.term.nl(s.tl);
+        s.term.color(s.tl, Color::LightRed);
+        s.term.text(s.tl, "No area by that number.");
+        filesPrompt(s);
+        return;
+    }
+    if (k == KEY_ENTER) { filesPrompt(s); return; }
+}
+
+// ---------------------------------------------------------------------------
 // The commands.
 // ---------------------------------------------------------------------------
 const Command kCommands[] = {
-    { "FILES", "F", 0, CF_READ, "[F]ILES [n]", "file areas on the card",
+    { "FILES", "F", 0, CF_READ, "[F]ILES [n]", "the file areas",
       [](Bbs& b, Session& s, const char* a, uint32_t) {
-          uint8_t slot = slotOf(s);
-          if (!plat::sdBase()[0]) {
-              s.term.color(s.tl, Color::Grey);
-              s.term.text(s.tl, "No card in the board, so no file areas.");
-              b.prompt(s);
+          enter(b, s);
+          if (!b.owns(s, g_index) || !*a) return;      // entry refused, or no area asked for
+          long n = strtol(a, nullptr, 10);
+          // An area they may not read is refused in the same words as one
+          // that does not exist, so the command cannot be used to find out
+          // which numbers are hiding something.
+          if (n < 1 || n > g_areas || !g_area[n - 1].path[0] ||
+              !mayRead(s, static_cast<uint8_t>(n - 1))) {
+              s.term.color(s.tl, Color::LightRed);
+              s.term.text(s.tl, "No area by that number.");
+              filesPrompt(s);
               return;
           }
-          if (*a) {
-              long n = strtol(a, nullptr, 10);
-              if (n < 1 || n > g_areas || !g_area[n - 1].path[0]) {
-                  s.term.color(s.tl, Color::LightRed);
-                  s.term.text(s.tl, "No area by that number.");
-                  b.prompt(s);
-                  return;
-              }
-              g_at[slot] = static_cast<uint8_t>(n - 1);
-          } else {
-              g_at[slot] = 0xFF;                       // back to the area list
-          }
-          b.setDoing(s, "FILES");
-          b.startPluginList(s, g_index);
+          listArea(b, s, static_cast<uint8_t>(n - 1));
       },
       Menu::Main, 8 },
     { "DESC", "", 0, CF_WRITE, "DESC f text", "describe a file in this area",
@@ -449,6 +654,14 @@ const Command kCommands[] = {
           if (at == 0xFF || !areaPath(at, dir, sizeof(dir))) {
               s.term.color(s.tl, Color::Grey);
               s.term.text(s.tl, "Open an area first with FILES n.");
+              b.prompt(s);
+              return;
+          }
+          // The command's CF_WRITE got them this far against the plugin's
+          // level; this is the area's own, which may be higher.
+          if (!mayWrite(s, at)) {
+              s.term.color(s.tl, Color::LightRed);
+              s.term.text(s.tl, "This area is not yours to describe.");
               b.prompt(s);
               return;
           }
@@ -504,7 +717,15 @@ void setting(const char* key, char* out, size_t n) {
     if (strncmp(key, "area", 4) != 0) return;
     long i = strtol(key + 4, nullptr, 10) - 1;
     if (i < 0 || i >= kMaxAreas || !g_area[i].path[0]) return;
-    snprintf(out, n, "%s | %s", g_area[i].path, g_area[i].name);
+    if (g_area[i].read == PlugLevel::Nobody && g_area[i].write == PlugLevel::Nobody) {
+        snprintf(out, n, "%s | %s", g_area[i].path, g_area[i].name);
+    } else {
+        snprintf(out, n, "%s | %s | %s | %s", g_area[i].path, g_area[i].name,
+                 plugins::levelName(g_area[i].read == PlugLevel::Nobody
+                                    ? plugins::levelFor(g_index, 0) : g_area[i].read),
+                 plugins::levelName(g_area[i].write == PlugLevel::Nobody
+                                    ? plugins::levelFor(g_index, 1) : g_area[i].write));
+    }
 }
 
 const char* status() {
@@ -530,7 +751,7 @@ extern const Plugin kFilesPlugin = {
     nullptr,                 // onConnect
     nullptr,                 // onLogin
     onLogoff,
-    nullptr,                 // onKey
+    onKey,
     status,
     kCommands,
     sizeof(kCommands) / sizeof(kCommands[0]),
@@ -538,4 +759,6 @@ extern const Plugin kFilesPlugin = {
     sizeof(kSettings) / sizeof(kSettings[0]),
     setting,
     rows,
+    nullptr,                 // onPresence
+    nullptr,                 // onBytes
 };

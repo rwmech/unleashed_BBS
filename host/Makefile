@@ -46,7 +46,16 @@ SRCS      = $(wildcard ../src/core/*.cpp) $(wildcard ../src/plugins/*.cpp) platf
 bbs_host: $(SRCS) $(wildcard ../src/core/*.h) $(wildcard ../src/plugins/*.h) ../src/config.h ../src/platform/platform.h
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) $(LDLIBS)
 
-clean:
-	rm -f bbs_host
+# The XMODEM engine has no session, socket or card in it, so it is tested on
+# its own: a sender wired to a receiver through a pipe that can corrupt and
+# drop bytes. make test runs it.
+test_xmodem: test_xmodem.cpp ../src/core/xmodem.cpp ../src/core/xmodem.h
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_xmodem.cpp ../src/core/xmodem.cpp
 
-.PHONY: clean
+test: test_xmodem
+	./test_xmodem
+
+clean:
+	rm -f bbs_host test_xmodem
+
+.PHONY: clean test

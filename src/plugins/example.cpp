@@ -96,6 +96,49 @@ void tick(uint32_t now) {
     ++g_ticks;
 }
 
+// ---------------------------------------------------------------------------
+// RAW: the binary path, exercised end to end.
+//
+// This is here rather than in the file plugin because the two things it
+// proves are needed before any transfer exists, and both fail in ways that
+// hide from an ordinary test:
+//
+//   - Telnet doubles 0xFF as IAC. Miss the unescaping and every 0xFF in a
+//     file arrives twice; a text file has none at all, so it looks fine.
+//   - Telnet normalises CR, silently dropping a 0x0A or 0x00 after a 0x0D.
+//     In a file those are data. A different byte pair, the same shape of
+//     bug, and the 0xFF test will not catch it.
+//
+// So RAW turns on raw input and binary mode, counts what arrives, echoes it
+// back untranslated, and leaves on a byte that cannot appear in the middle
+// of a block by accident. A test sends every byte value and compares.
+// ---------------------------------------------------------------------------
+uint32_t g_rawBytes = 0;
+uint32_t g_rawSum   = 0;          // so the test can prove the bytes were not mangled
+
+void rawEnd(Bbs& b, Session& s) {
+    char buf[64];
+    b.setRawInput(s, false);
+    s.tn.setBinary(false);
+    snprintf(buf, sizeof(buf), "RAW %u bytes sum %u",
+             static_cast<unsigned>(g_rawBytes), static_cast<unsigned>(g_rawSum));
+    s.term.nl(s.tl);
+    s.term.color(s.tl, Color::LightGreen);
+    s.term.text(s.tl, buf);
+    b.release(s);
+}
+
+void onBytes(Session& s, const uint8_t* b, size_t n, uint32_t now) {
+    (void)now;
+    Bbs& bbs = Bbs::instance();
+    for (size_t i = 0; i < n; ++i) {
+        if (b[i] == 0x03) { rawEnd(bbs, s); return; }   // Ctrl-C ends it
+        ++g_rawBytes;
+        g_rawSum += b[i];
+    }
+    s.term.raw(s.tl, b, n);        // straight back out, only IAC doubled
+}
+
 // onKey: we own the session while ECHO runs. Q or the abort keys leave.
 void onKey(Session& s, int k, uint32_t now) {
     (void)now;
@@ -141,6 +184,18 @@ const Command kCommands[] = {
           s.term.nl(s.tl);
           s.term.color(s.tl, Color::LightGreen);    // everything typed comes back green
       } },
+    { "RAW", "", 0, CF_READ, "RAW", "example: binary echo, Ctrl-C ends",
+      [](Bbs& b, Session& s, const char*, uint32_t) {
+          if (!b.own(s, g_index)) { b.prompt(s); return; }
+          g_rawBytes = 0;
+          g_rawSum   = 0;
+          b.setDoing(s, "RAW");
+          s.term.color(s.tl, Color::Grey);
+          s.term.text(s.tl, "Raw on.");
+          s.term.nl(s.tl);
+          s.tn.setBinary(true);    // CR is data now, not a line ending
+          b.setRawInput(s, true);
+      } },
     { "EXAMPLE", "", 0, CF_ADMIN, "EXAMPLE", "example: settings (admin)",
       [](Bbs& b, Session& s, const char*, uint32_t) {
           char buf[80];
@@ -171,4 +226,6 @@ extern const Plugin kExamplePlugin = {
     0,
     nullptr,                 // setting
     nullptr,                 // rows: no paged list of its own
+    nullptr,                 // onPresence
+    onBytes,
 };

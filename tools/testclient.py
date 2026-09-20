@@ -97,6 +97,25 @@ def bbs_version():
     return m.group(1) if m else "?"
 
 
+def send_maybe(c, data):
+    """Send, and treat a closed connection as an outcome rather than a crash.
+
+    Some tests deliberately provoke a hangup and then keep typing: the
+    lockout test sends wrong passwords until the board drops the call, and
+    whether the drop lands on one attempt or the next depends on timing. The
+    board closing the socket is the thing being tested, so a send that
+    arrives after it is expected, not a failure. Without this the test dies
+    with BrokenPipeError and takes the rest of the suite with it.
+
+    Returns True if the bytes went, False if the far end had already gone.
+    """
+    try:
+        c.send(data)
+        return True
+    except (BrokenPipeError, ConnectionResetError, OSError):
+        return False
+
+
 def drain(c, tries=12):
     """Get a session back to a command prompt, however it is currently held.
 
@@ -123,6 +142,24 @@ def drain(c, tries=12):
             return True
         c.pump(0.6)
     return False
+
+
+def leave_files(c, tries=4):
+    """Get a caller out of the file subsystem, from whatever depth.
+
+    Q goes back one level, so from inside an area it lands on the area menu
+    rather than at the command prompt. A test that sends one Q and then a
+    command types that command into the file room, where the letters are
+    swallowed and any digit in it opens an area. That broke six checks in
+    one run and none of them were the code's fault.
+    """
+    for _ in range(tries):
+        if b"Out of files" in plain(c.buf):
+            return True
+        c.buf.clear()
+        c.send(b"q")
+        c.pump(0.6)
+    return b"Out of files" in plain(c.buf)
 
 
 def ansi_color(fg, bold=False, reverse=False):
@@ -855,14 +892,18 @@ def test_accounts():
     c, _ = handle_then("Locky", [b"Password:"])
     for _ in range(3):                                 # retries stay on the same line
         c.buf.clear()
-        c.send(b"wrong1\r")
+        if not send_maybe(c, b"wrong1\r"):
+            break                                      # already dropped, which is the point
         c.wait_for(b"ACCESS DENIED", 6)
     ok &= check("3 wrong passwords hang up the call", c.wait_for(b"Too many wrong passwords.", 5) and c.wait_closed(8))
     c.close()
     c, _ = handle_then("Locky", [b"Password:"])
     for _ in range(2):
         c.buf.clear()
-        c.send(b"wrong2\r")
+        # The fifth miss for this handle drops the call, and whether that is
+        # this attempt or the next depends on how fast the board got here.
+        if not send_maybe(c, b"wrong2\r"):
+            break
         c.wait_for(b"ACCESS DENIED", 6)
     ok &= check("5th miss for the handle hangs up early", c.wait_for(b"Too many wrong passwords.", 5) and c.wait_closed(8))
     c.close()
@@ -1742,6 +1783,284 @@ def test_config():
     return ok
 
 
+def max_column(data):
+    """The rightmost screen column anything in this output lands on.
+
+    A small screen model rather than a byte search, because the form draws
+    by moving the cursor and then writing a run, and a colour change in the
+    middle of a run breaks any pattern that tries to measure it in one go.
+    Only the column is tracked: what matters is that nothing reaches past
+    column 39, because column 40 wraps on a C64 and a wrapped form row
+    scrolls the screen out from under the caller.
+
+    Measured on the ANSI caller, which proves the 40-column case too: the
+    form's layout is fixed (label at 2, box at 12, 27 wide) and does not
+    follow the terminal's width.
+    """
+    col = 1
+    worst = 0
+    i = 0
+    while i < len(data):
+        b = data[i]
+        if b == 0x1B:
+            m = ANSI_RE.match(data, i)
+            if not m:
+                i += 1
+                continue
+            seq = m.group(0)
+            body = seq[2:-1]
+            if seq.endswith(b"H"):
+                parts = body.split(b";")
+                col = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+            elif seq.endswith(b"D"):          # scramble rewrites its text in place
+                col = max(1, col - (int(body) if body.isdigit() else 1))
+            elif seq.endswith(b"C"):
+                col += int(body) if body.isdigit() else 1
+            i = m.end()
+            continue
+        if b == 0x0D:
+            col = 1
+        elif b == 0x08:
+            col = max(1, col - 1)
+        elif 0x80 <= b <= 0xBF:
+            pass                              # UTF-8 tail byte: no column of its own
+        elif b >= 0x20:
+            col += 1
+            worst = max(worst, col - 1)
+        i += 1
+    return worst
+
+
+def test_config_areas():
+    """A file area is a page of its own, not four values in one text box.
+
+    The row on CONFIG files is a button showing the area's name; Enter opens
+    Path, Name, Read and Write as fields; Save writes the bar-separated form
+    back so a hand-edited system.cfg still parses, and lands on the page the
+    button was on.
+    """
+    print("CONFIG area pages")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    sd = os.environ.get("BBS_SD_DIR", "")
+    if not sd:
+        print("  SKIP  the files plugin needs a card")
+        return True
+
+    cfg = USERDATA / "system.cfg"
+    s = ansi_login("Areas")
+    s.send(b"bye " + PASSWORD.encode() + b"\r")
+    s.wait_for(b"Sysop", 4)
+    s.buf.clear()
+
+    # ---- the files page: rows that lead somewhere -------------------------
+    s.send(b"config files\r")
+    ok = check("the files page opens", s.wait_for(b"Area 1", 6))
+    s.pump(1.0)
+    page = plain(s.buf)
+    ok &= check("an area row is a button showing its name",
+                b"[ C64 Downloads" in page)
+    ok &= check("not the stored format a sysop would have to already know",
+                b"pub/c64 | C64 Downloads" not in page)
+    ok &= check("and a row nobody has set up says so", b"[ not set" in page)
+    ok &= check("nothing on the page reaches past column 39",
+                max_column(bytes(s.buf)) <= 39)
+
+    # ---- the area's own page ---------------------------------------------
+    s.buf.clear()
+    s.send(DOWN * 4 + b"\r")
+    ok &= check("Enter on the row opens that area's own page",
+                s.wait_for(b"FILE AREA 1", 6))
+    s.pump(1.0)
+    sub = plain(s.buf)
+    ok &= check("with a field for each part",
+                b"Path" in sub and b"Name" in sub and b"Read" in sub and b"Write" in sub)
+    ok &= check("the path is a value of its own", b"pub/c64" in sub)
+    # area1 in the harness names no levels, so the form shows the ones the
+    # area is actually running under rather than a blank that would step to
+    # "all" on the first press and quietly open it to everybody.
+    ok &= check("and a level the file never named shows what it is running as",
+                b"all" in sub and b"staff" in sub)
+    ok &= check("the area page fits 40 columns too",
+                max_column(bytes(s.buf)) <= 39)
+
+    # ---- edit, cycle, save -----------------------------------------------
+    s.buf.clear()
+    s.send(b"\x08" * 8 + b"pub/edited")
+    s.pump(0.4)
+    s.send(DOWN + b"\x08" * 16 + b"Edited Area")
+    s.pump(0.4)
+    s.send(DOWN + b" ")                       # Read: all -> users
+    s.pump(0.4)
+    ok &= check("space steps the level to the next one on the ladder",
+                b"users" in plain(s.buf))
+    s.buf.clear()
+    s.send(F1)
+    ok &= check("saving lands back on the files page", s.wait_for(b"Area 8", 6))
+    s.pump(1.2)
+    back = plain(s.buf)
+    ok &= check("and says the save took", b"Saved and live" in back)
+    ok &= check("the row now shows the new name", b"[ Edited Area" in back)
+
+    body = cfg.read_text()
+    ok &= check("system.cfg keeps the bar-separated form the plugin parses",
+                "area1 = pub/edited | Edited Area | users | staff" in body)
+    ok &= check("and the rest of the file is untouched",
+                "area2 = pub/empty | Empty Area" in body and
+                "sysop_password = testsysop" in body)
+    ok &= check("the board made the new area's folder on the card",
+                (pathlib.Path(sd) / "pub" / "edited").is_dir())
+
+    # ---- cancel changes nothing ------------------------------------------
+    s.buf.clear()
+    s.send(DOWN + b"\r")                      # Area 1 -> Area 2, open it
+    ok &= check("the next area opens from the same page",
+                s.wait_for(b"FILE AREA 2", 6))
+    s.pump(0.6)
+    s.buf.clear()
+    s.send(DOWN + b"\x08" * 16 + b"Never Saved")
+    s.pump(0.4)
+    s.send(b"\x1b")
+    ok &= check("cancelling comes back to the files page as well",
+                s.wait_for(b"Area 8", 6))
+    s.pump(1.0)
+    after = plain(s.buf)
+    ok &= check("saying nothing changed", b"Nothing changed" in after)
+    ok &= check("and the row still reads as it did", b"[ Empty Area" in after)
+    ok &= check("with nothing written to the file",
+                "area2 = pub/empty | Empty Area" in cfg.read_text() and
+                "Never Saved" not in cfg.read_text())
+
+    # ---- and the page itself still leaves CONFIG -------------------------
+    s.buf.clear()
+    s.send(b"\x1b")
+    ok &= check("ESC on the page itself leaves CONFIG",
+                s.wait_for(b"Cancelled, nothing changed", 6))
+
+    # ---- a line dropped inside a sub-page releases the editor ------------
+    # The one thing most likely to go wrong: the guard is released on save,
+    # on cancel and in closeSession, and a nested page must not slip past
+    # all three. Checked with a real drop rather than a logoff.
+    #
+    # The sysop node holds exactly one caller, so the dropped session has to
+    # be gone before the next one elevates, or the second BYE is refused and
+    # dropped and this reads as a failure that is not there.
+    s.buf.clear()
+    s.send(b"config files\r")
+    s.wait_for(b"Area 1", 6)
+    s.send(DOWN * 4 + b"\r")
+    ok &= check("a sysop can be two pages deep", s.wait_for(b"FILE AREA 1", 6))
+    s.close()
+    time.sleep(1.5)
+
+    t = ansi_login("Areas2")
+    t.send(b"bye " + PASSWORD.encode() + b"\r")
+    t.wait_for(b"Sysop", 5)
+    t.buf.clear()
+    t.send(b"config files\r")
+    opened = t.wait_for(b"Area 1", 6)
+    ok &= check("dropping the line inside one does not lock CONFIG out",
+                opened and b"is editing the settings" not in plain(t.buf))
+
+    # ---- put area1 back, through the same page ---------------------------
+    t.buf.clear()
+    t.send(DOWN * 4 + b"\r")
+    t.wait_for(b"FILE AREA 1", 6)
+    t.pump(0.6)
+    t.send(b"\x08" * 12 + b"pub/c64")
+    t.pump(0.4)
+    t.send(DOWN + b"\x08" * 16 + b"C64 Downloads")
+    t.pump(0.4)
+    t.send(DOWN + b"a")                       # Read: back to all
+    t.pump(0.4)
+    t.buf.clear()
+    t.send(F1)
+    t.wait_for(b"Area 8", 6)
+    t.pump(1.0)
+    ok &= check("a letter picks a level straight off the ladder",
+                "area1 = pub/c64 | C64 Downloads | all | staff" in cfg.read_text())
+    t.send(b"\x1b")
+    t.pump(0.6)
+    t.close()
+    time.sleep(1.2)
+
+    # ---- the narrow terminal and the one with no cursor at all -----------
+    p = Caller(ansi=False)
+    p.wait_for(b"HIT DEL OR BACKSPACE", 6)
+    p.send(b"\x14")
+    p.wait_for(b"40 OR 80 COLUMNS", 5)
+    p.send(b"4")
+    p.wait_for(pet("Enter your handle"), 10)
+    ok &= check("a C64 caller gets on the board", login(p, "Petarea", as_pet=True))
+    p.send(pet("bye " + PASSWORD) + b"\r")
+    p.wait_for(pet("Sysop"), 6)
+    p.buf.clear()
+    p.send(pet("config files") + b"\r")
+    ok &= check("40 columns gets the same buttons", p.wait_for(pet("[ C64 Downloads"), 6))
+    p.buf.clear()
+    p.send(b"\x11" * 4 + b"\r")               # C64 CRSR down, then RETURN
+    ok &= check("and CRSR plus RETURN opens the area",
+                p.wait_for(pet("FILE AREA 1"), 6))
+    p.send(b"\x5f")                           # C64 left-arrow cancels
+    ok &= check("left-arrow comes back to the files page",
+                p.wait_for(pet("Area 8"), 6))
+    p.send(b"\x5f")
+    p.pump(0.8)
+    p.close()
+    time.sleep(1.2)
+
+    a = Caller(ansi=False)
+    a.wait_for(b"HIT DEL OR BACKSPACE", 6)
+    a.send(b"\x08")
+    a.wait_for(b"Enter your handle", 10)
+    ok &= check("a plain ASCII caller gets on the board", login(a, "Asciiarea"))
+    a.send(b"bye " + PASSWORD.encode() + b"\r")
+    a.wait_for(b"Sysop", 6)
+    a.buf.clear()
+    a.send(b"config files\r")
+    a.wait_for(b"Enabled", 6)
+    a.send(b"\r\r\r\r")                       # past enabled, read, write, admin
+    a.pump(1.0)
+    # No cursor to put a button under, so the row becomes a question.
+    ok &= check("plain ASCII asks rather than draws a button",
+                b"open (y/N)" in plain(a.buf) and b"[ Area" not in plain(a.buf))
+    a.buf.clear()
+    a.send(b"y")
+    ok &= check("and Y opens the area's page there too",
+                a.wait_for(b"FILE AREA 1", 6))
+    a.buf.clear()
+    a.send(b"\rNew Ascii Name\r\r\ry")        # keep path, new name, keep levels, save
+    ok &= check("which saves from the line prompts", a.wait_for(b"Saved and live", 8))
+    ok &= check("in the same bar-separated form",
+                "area1 = pub/c64 | New Ascii Name | all | staff" in cfg.read_text())
+    a.send(b"\x1b")
+    a.pump(0.6)
+    a.close()
+    time.sleep(1.2)
+
+    # Leave area1 as the rest of the suite expects to find it.
+    z = ansi_login("Areas3")
+    z.send(b"bye " + PASSWORD.encode() + b"\r")
+    z.wait_for(b"Sysop", 5)
+    z.send(b"config files\r")
+    z.wait_for(b"Area 1", 6)
+    z.send(DOWN * 4 + b"\r")
+    z.wait_for(b"FILE AREA 1", 6)
+    z.pump(0.6)
+    z.send(DOWN + b"\x08" * 20 + b"C64 Downloads")
+    z.pump(0.4)
+    z.send(F1)
+    z.wait_for(b"Area 8", 6)
+    z.pump(0.8)
+    ok &= check("and the area is back the way the suite found it",
+                "area1 = pub/c64 | C64 Downloads | all | staff" in cfg.read_text())
+    z.send(b"\x1b")
+    z.pump(0.5)
+    z.close()
+    return ok
+
+
 
 def test_privacy():
     """Nobody types a password before being told the link is in the clear."""
@@ -1872,7 +2191,11 @@ def test_announce():
         print("  SKIP  announce needs the host build")
         return True
 
-    port = 8099
+    # The stand-in directory's port. From the environment so parallel runs
+    # do not fight over it: it was the one shared resource the harness did
+    # not isolate, and two runs at once produced a broken pipe on the BBS
+    # socket, which reads exactly like a bug in the board.
+    port = int(os.environ.get("BBS_DIR_PORT", "8099"))
     th = _threading.Thread(target=directory, args=(port,), daemon=True)
     th.start()
 
@@ -1980,10 +2303,47 @@ def test_files():
         s.close()
         return ok
 
-    # ---- the area list ---------------------------------------------------
+    # ---- FILES is a place, not a command ---------------------------------
+    # It takes the session the way CHAT takes it: the plugin owns the keys,
+    # the shell prompt is not underneath, and Q leaves. A list started from
+    # inside it hands the session back to the plugin rather than dropping the
+    # caller at the command line, which is what listEnded exists for.
     s.buf.clear()
     s.send(b"files\r")
-    ok = check("FILES lists the areas", s.wait_for(b"File areas", 5))
+    ok = check("FILES opens the file area", s.wait_for(b"File areas", 5))
+    s.pump(0.8)
+    areas = plain(s.buf)
+    ok &= check("with its own prompt, not the shell's",
+                b"number opens an area" in areas)
+
+    # A single keypress picks an area: no Enter, because this is a menu.
+    s.buf.clear()
+    s.send(b"1")
+    ok &= check("a digit opens that area", s.wait_for(b"C64 Downloads", 5))
+    s.pump(0.8)
+    inside = plain(s.buf)
+    ok &= check("and the files are there", b"GAME.PRG" in inside)
+    ok &= check("with the area's own prompt", b"L lists" in inside)
+
+    # Q goes back one level, not all the way out. That distinction is the
+    # thing a subsystem has that a command does not.
+    s.buf.clear()
+    s.send(b"q")
+    ok &= check("Q goes back to the area menu", s.wait_for(b"File areas", 5))
+    s.pump(0.6)
+    s.buf.clear()
+    s.send(b"q")
+    ok &= check("and Q again leaves", s.wait_for(b"Out of files", 5))
+    s.buf.clear()
+    s.send(b"who\r")
+    ok &= check("the shell has the session back",
+                s.wait_for(b"Who's online", 5))
+    ok &= check("and that list can be left cleanly", drain(s))
+
+    # Back in for the rest of the checks.
+    s.buf.clear()
+    s.send(b"files\r")
+    s.wait_for(b"File areas", 5)
     s.pump(0.8)
     areas = plain(s.buf)
     ok &= check("an area shows under the name the sysop gave it",
@@ -1994,8 +2354,12 @@ def test_files():
 
     # ---- inside an area --------------------------------------------------
     s.buf.clear()
+    s.send(b"q")
+    s.pump(0.4)
+    s.buf.clear()
     s.send(b"files 1\r")
-    ok &= check("FILES n opens that area", s.wait_for(b"C64 Downloads", 5))
+    ok &= check("FILES n enters and opens in one go",
+                s.wait_for(b"C64 Downloads", 5))
     s.pump(0.8)
     listing = plain(s.buf)
     ok &= check("the files are listed", b"GAME.PRG" in listing and b"NOTES.TXT" in listing)
@@ -2018,6 +2382,19 @@ def test_files():
                 s.wait_for(b"Made By The BBS", 5))
     s.pump(0.6)
 
+    # ---- an area with its own levels -------------------------------------
+    # area4 is read staff, write sysop. A plain caller must not see it in the
+    # list and must not be able to open it by guessing the number, and the
+    # refusal has to read the same as a number that is not an area at all: a
+    # different message would turn FILES into a way to find out which numbers
+    # are hiding something.
+    ok &= check("a staff-only area is not in a plain caller's list",
+                b"Screens" not in areas)
+    s.buf.clear()
+    s.send(b"4")
+    ok &= check("and cannot be opened by guessing its number",
+                s.wait_for(b"No area by that number", 4))
+
     # ---- an empty area is not an error -----------------------------------
     s.buf.clear()
     s.send(b"files 2\r")
@@ -2026,8 +2403,8 @@ def test_files():
 
     # ---- a number that is not an area ------------------------------------
     s.buf.clear()
-    s.send(b"files 99\r")
-    ok &= check("a number with no area is refused",
+    s.send(b"9")
+    ok &= check("a number with no area is refused in the same words",
                 s.wait_for(b"No area by that number", 4))
 
     # ---- writing a description -------------------------------------------
@@ -2039,6 +2416,29 @@ def test_files():
     s.wait_for(b"C64 Downloads", 5)
     s.pump(0.6)
     s.buf.clear()
+    # The same area, from the sysop, is there. Leave the room first: BYE is
+    # a shell command and the room owns the keys while a caller is in it.
+    ok &= check("the file room can be left from any depth", leave_files(s))
+    s.buf.clear()
+    s.send(b"bye " + PASSWORD.encode() + b"\r")
+    s.wait_for(b"Sysop", 5)
+    s.buf.clear()
+    s.send(b"files\r")
+    s.wait_for(b"File areas", 5)
+    s.pump(0.8)
+    ok &= check("but the sysop sees it", b"Screens" in plain(s.buf))
+    ok &= check("and it is marked as restricted", b"(staff)" in plain(s.buf))
+    ok &= check("and that list can be left cleanly", drain(s))
+
+    s.buf.clear()
+    s.send(b"1")
+    s.wait_for(b"C64 Downloads", 5)
+    s.pump(0.6)
+    # DESC is a shell command and acts on the area you last opened, which
+    # is remembered past leaving the room. Re-entering here would put the
+    # DESC that follows inside the room, where its letters are swallowed.
+    ok &= check("and left again for a shell command", leave_files(s))
+    s.buf.clear()
     s.send(b"desc NOTES.TXT Some notes I made\r")
     ok &= check("a description is written", s.wait_for(b"Described", 5))
     s.buf.clear()
@@ -2048,6 +2448,8 @@ def test_files():
                 b"Some notes I made" in plain(s.buf))
     ok &= check("without disturbing the one that was already there",
                 b"A game from the card" in plain(s.buf))
+    # Back out: everything after this is a shell command again.
+    ok &= check("out of the room once more", leave_files(s))
 
     # The file on the card has to be readable on a PC, which is the whole
     # reason the card is FAT32. Checked as a file, not through the BBS.
@@ -2104,6 +2506,61 @@ def test_files():
     ok &= check("MEM shows the card's free space when one is mounted",
                 b"Card free" in plain(s.buf))
 
+    s.close()
+    return ok
+
+
+def test_binary():
+    """Binary survives the wire, which is the prerequisite for any transfer.
+
+    Two ways this fails, and both hide from an ordinary test:
+
+    Telnet doubles 0xFF as IAC. Miss the unescaping and every 0xFF arrives
+    twice. A text file contains none at all, so a transfer of one looks
+    perfect and the first real download is quietly ruined.
+
+    Telnet also normalises CR, dropping a 0x0A or 0x00 that follows a 0x0D.
+    In a file those are data. Same shape of bug, different byte pair, and a
+    test that only checks 0xFF will sail past it.
+
+    So this sends every byte value, plus the pairs that trip the CR rule,
+    plus a run of 0xFF, and checks the board counted what was sent and got
+    the same arithmetic back.
+    """
+    print("Binary safety on the wire")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+
+    payload = bytes(range(256))                       # every value, 0xFF included
+    payload += bytes([0x0D, 0x0A, 0x0D, 0x00, 0x0D])  # the CR pairs that get eaten
+    payload += bytes([0xFF]) * 64                     # a run of IAC
+    payload = payload.replace(bytes([0x03]), bytes([0x02]))   # 0x03 ends the echo
+
+    s = ansi_login("Binary")
+    s.buf.clear()
+    s.send(b"raw\r")
+    ok = check("raw mode starts", s.wait_for(b"Raw on.", 5))
+
+    s.buf.clear()
+    # IAC has to be doubled going up as well: this client is a telnet client.
+    s.send(payload.replace(bytes([0xFF]), bytes([0xFF, 0xFF])))
+    s.pump(1.5)
+    s.send(bytes([0x03]))                             # end it
+    ok &= check("raw mode ends", s.wait_for(b"RAW ", 5))
+
+    seen = plain(s.buf)
+    want_n = len(payload)
+    want_sum = sum(payload)
+    ok &= check("every byte arrived, none eaten by the CR rule",
+                ("RAW %d bytes" % want_n).encode() in seen)
+    ok &= check("and arrived unaltered, none doubled or dropped",
+                ("sum %d" % want_sum).encode() in seen)
+
+    s.buf.clear()
+    s.send(b"who\r")
+    ok &= check("the shell has the session back", s.wait_for(b"Who\'s online", 5))
+    ok &= check("and that list can be left cleanly", drain(s))
     s.close()
     return ok
 
@@ -2485,7 +2942,7 @@ if __name__ == "__main__":
                test_bulletin(), test_idle_login(), test_busy(),
                test_screens(), test_exit_screen(),
                test_refresh_and_ctrl_l(),
-               test_sd(), test_files(), test_partitions()]
+               test_binary(), test_sd(), test_files(), test_config_areas(), test_partitions()]
     if "--backup" in FLAGS:
         results.append(test_backup())
     if "--ban" in FLAGS:

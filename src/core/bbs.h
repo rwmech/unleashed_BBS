@@ -102,7 +102,13 @@ enum class Role : uint8_t {
 enum class ListKind : uint8_t { None, Help, Who, Last, Nodes, Bans, Dash, Users, Plugins,
                                 Sys, Calls, PlugRows };
 enum class MoreFrom : uint8_t { List, Screen };
-enum class FormKind : uint8_t { None, Signup, Profile, Password, UserAdd, UserEdit, Config };
+// ConfigArea is a CONFIG page opened from a button on another CONFIG page:
+// one level of nesting, which is what a row standing for several values
+// needs and as deep as settings have ever had to go. The page it came back
+// to is remembered with the rest of the CONFIG editing state, so a caller
+// dropping the line inside one releases the editor exactly as before.
+enum class FormKind : uint8_t { None, Signup, Profile, Password, UserAdd, UserEdit, Config,
+                                ConfigArea };
 enum class ConfirmKind : uint8_t { Logoff, DeleteUser };
 
 // What happens once the caller has pressed a key at a pause.
@@ -162,6 +168,11 @@ struct Session {
                                        // the WHO/NODES/DASH marker; raised on elevation
     char         doing[BBS_DOING_MAX + 1] = {};   // last command verb (staff WHO/DASH)
     uint8_t      owner       = 0xFF;   // plugin holding this session, 0xFF none
+    // rawInput: the owning plugin wants bytes, not keys. For a file
+    // transfer, where the terminal layer's key decoding would eat half the
+    // protocol: an 0x1B in a data block is not the start of an escape
+    // sequence and an 0x0D is not Enter.
+    bool         rawInput    = false;
     uint32_t     ownerData   = 0;      // scratch for that plugin, cleared on own/release
 
     // paging and generated lists
@@ -338,6 +349,10 @@ public:
     // its own rows should produce rows that look like everything else: same
     // title bar, same closing rule, same width discipline.
     // ----------------------------------------------------------------------
+    // setRawInput: hand this session's bytes to the owning plugin's
+    // onBytes instead of decoding them into keys. Only while a plugin owns
+    // the session; turning it on without owning it does nothing.
+    void setRawInput(Session& s, bool on);
     void startPluginList(Session& s, uint8_t plugin);
     void rowText(Session& s, Color c, const char* text, bool newline = true);
     void rowRule(Session& s);
@@ -393,6 +408,9 @@ private:
     void startForm(Session& s, FormKind kind, uint32_t now);
     void formSave(Session& s, uint32_t now);
     void formCancel(Session& s, uint32_t now);
+    // formOpen: an FF_ACTION button was pressed on the form this session is
+    // holding. Only CONFIG has buttons today; anything else ignores it.
+    void formOpen(Session& s, uint8_t field, uint32_t now);
     bool checkUserFields(Session& s, uint8_t firstField);
     void formDone(Session& s, Color c, const char* msg);
     void cmdProfile(Session& s, uint32_t now);
@@ -435,6 +453,9 @@ private:
     void noticeAll(const Session& about, const char* text);
     void startList(Session& s, ListKind kind);
     void serviceList(Session& s);
+    // listEnded: the shell prompt, or back to the plugin that owns the
+    // session if a subsystem started this list
+    void listEnded(Session& s);
     void showMore(Session& s, MoreFrom from);
     void abortOutput(Session& s);
     uint8_t pageRows(const Session& s) const;
@@ -514,7 +535,20 @@ private:
     void configPages(Session& s);
     bool configSave(Session& s, char* err, size_t errLen);
     void configRelease(const Session& s);
+    // The page stack. A row whose value is several values packed with bars
+    // is drawn as a button; pressing it opens that row as a page of its
+    // own, and saving or cancelling comes back to the row it came from.
+    void configOpenPage(Session& s, uint8_t focus, uint32_t now);
+    void configSubOpen(Session& s, uint8_t field, uint32_t now);
+    bool configSubSave(Session& s, char* err, size_t errLen);
+    void configSubBack(Session& s, Color c, const char* msg, uint32_t now);
+    // configReloadAll: reread system.cfg and restart the plugins, having
+    // first handed home any caller sitting inside one. Shared by the page
+    // and the sub-page so a save means the same thing from either.
+    bool configReloadAll(char* err, size_t errLen);
     void cmdShow(Session& s, bool show);
+    // presenceChanged: tell the plugins the public picture moved
+    void presenceChanged(Session& s);
     void cmdLurk(Session& s);
     Session* nodeByArg(const char* arg, const char** rest);
 

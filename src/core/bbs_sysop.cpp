@@ -80,6 +80,7 @@ void Bbs::cmdShow(Session& s, bool show) {
         s.visible = false;
         say(s.term, s.tl, Color::Cyan, "You are hidden from WHO.");
     }
+    presenceChanged(s);          // the public count just moved
 }
 
 void Bbs::cmdLurk(Session& s) {
@@ -87,6 +88,7 @@ void Bbs::cmdLurk(Session& s) {
     if (s.lurk) { s.visible = false; s.dnd = true; }
     else        { s.dnd = false; }
     say(s.term, s.tl, Color::Cyan, s.lurk ? "Lurking: hidden, pages off." : "Lurk off: still hidden, pages on.");
+    presenceChanged(s);
 }
 
 // ---------------------------------------------------------------------------
@@ -589,7 +591,8 @@ namespace {
 
 // Field kinds. The form widget only knows about text, masks and cycles;
 // the kind is what CONFIG checks before anything reaches the file.
-enum : uint8_t { CK_TEXT, CK_NUM, CK_YESNO, CK_LEVEL, CK_PASS };
+// CK_SUB is the odd one: not a value at all, a button that opens a page.
+enum : uint8_t { CK_TEXT, CK_NUM, CK_YESNO, CK_LEVEL, CK_PASS, CK_SUB };
 
 struct CfgField {
     const char* key;      // key in system.cfg
@@ -656,6 +659,53 @@ const CfgPage kPages[] = {
 };
 constexpr uint8_t kPageCount = sizeof(kPages) / sizeof(kPages[0]);
 
+// ---------------------------------------------------------------------------
+// Composite settings: one key whose value is several values packed with
+// bars, the way a file area is "path | name | read | write".
+//
+// The packed form stays in the file on purpose: it is what a sysop editing
+// system.cfg on a laptop reads and what the plugin's own parser expects. It
+// is a terrible thing to put in a text box, though, because the format is
+// invisible unless you already know it, and there is no way to set one part
+// without retyping the rest. So CONFIG draws the row as a button showing a
+// summary and opens the parts as a page of their own.
+//
+// Two conventions a composite follows, both worth stating because they are
+// what keeps this table one line per plugin rather than a special case:
+//   - part 0 is what the record points at and part 1 is its human name, so
+//     the button's summary is the name, or the path when it has none.
+//   - the CK_LEVEL parts, in order, are the plugin's read, write and admin
+//     levels, so a part the file does not carry shows the level the record
+//     is actually running under rather than a blank or a guess.
+// ---------------------------------------------------------------------------
+struct CfgPart {
+    const char* label;    // 9 characters, the form column
+    uint8_t     kind;     // CK_TEXT or CK_LEVEL
+    uint8_t     cap;
+};
+
+const CfgPart kAreaParts[] = {
+    { "Path",  CK_TEXT,  48 },      // files.cpp kPathMax
+    { "Name",  CK_TEXT,  24 },      // files.cpp kNameMax
+    { "Read",  CK_LEVEL,  6 },
+    { "Write", CK_LEVEL,  6 },
+};
+
+struct CfgComposite {
+    const char*    section;   // the config section these keys live in
+    const char*    prefix;    // keys starting with this are records
+    const char*    title;     // the sub-page's title bar
+    const char*    what;      // one word for the status line
+    const CfgPart* parts;
+    uint8_t        count;
+};
+
+const CfgComposite kComposites[] = {
+    { "plugin:files", "area", "FILE AREA", "area", kAreaParts, 4 },
+};
+constexpr uint8_t kCompositeCount = sizeof(kComposites) / sizeof(kComposites[0]);
+constexpr uint8_t kMaxParts       = 4;
+
 // One settings editor at a time. The sysop is a single caller, and two
 // people writing the file at once is a good way to lose it.
 const Session*  g_cfgOwner = nullptr;
@@ -663,9 +713,19 @@ const CfgPage*  g_cfgPage  = nullptr;
 char            g_cfgSection[24] = "";                  // plugin section, empty for the board
 char            g_cfgBuf[Form::kMaxFields][96] = {};
 char            g_cfgWas[Form::kMaxFields][96] = {};     // to write only what changed
+char            g_cfgSum[Form::kMaxFields][28] = {};     // CK_SUB: the button's summary
 char            g_cfgKeys[Form::kMaxFields][24] = {};   // plugin pages build their keys here
 CfgField        g_cfgPlugin[Form::kMaxFields] = {};     // and their field table
 CfgPage         g_cfgPluginPage = {};
+
+// The one open sub-page. Null means "not nested", and configRelease clears
+// it with the rest, so a caller who drops the line inside a sub-page leaves
+// nothing behind: the guard, the page and the nesting all go together.
+const CfgComposite* g_subComp  = nullptr;
+uint8_t             g_subField = 0;                      // row on the parent page
+char                g_subKey[24]  = "";                  // "area3"
+char                g_subOrig[96] = "";                  // packed value as it opened
+char                g_subBuf[kMaxParts][64] = {};        // the parts, edited in place
 
 // cfgFileValue: what the file says this key is, empty when it says nothing
 bool cfgFileValue(const char* section, const char* key, char* out, size_t n) {
@@ -769,6 +829,60 @@ bool cfgDeclared(const Plugin* pl, const char* key) {
     return false;
 }
 
+// ---------------------------------------------------------------------------
+// Composite helpers.
+// ---------------------------------------------------------------------------
+
+// compositeFor: is this section's key one of the packed ones?
+const CfgComposite* compositeFor(const char* section, const char* key) {
+    if (!section || !*section || !key) return nullptr;
+    for (uint8_t i = 0; i < kCompositeCount; ++i) {
+        const CfgComposite& c = kComposites[i];
+        size_t plen = strlen(c.prefix);
+        if (strcasecmp(section, c.section)) continue;
+        if (strncasecmp(key, c.prefix, plen)) continue;
+        if (!key[plen]) continue;                      // the prefix alone is not a record
+        return &c;
+    }
+    return nullptr;
+}
+
+// cfgPart: one bar-separated part of a packed value, trimmed. Empty when
+// the value does not go that far, which is how an optional part reads.
+void cfgPart(const char* packed, uint8_t want, char* out, size_t n) {
+    out[0] = '\0';
+    const char* p = packed;
+    for (uint8_t i = 0; p; ++i) {
+        const char* bar = strchr(p, '|');
+        size_t len = bar ? static_cast<size_t>(bar - p) : strlen(p);
+        if (i == want) {
+            while (len && (*p == ' ' || *p == '\t')) { ++p; --len; }
+            while (len && (p[len - 1] == ' ' || p[len - 1] == '\t')) --len;
+            if (len > n - 1) len = n - 1;
+            memcpy(out, p, len);
+            out[len] = '\0';
+            return;
+        }
+        p = bar ? bar + 1 : nullptr;
+    }
+}
+
+// cfgSectionPlugin: the plugin index behind "plugin:files", 0xFF for none
+uint8_t cfgSectionPlugin(const char* section) {
+    if (!section || strncasecmp(section, "plugin:", 7)) return 0xFF;
+    return plugins::indexOf(section + 7);
+}
+
+// cfgSummary: what the button says. The name, or what it points at when it
+// has no name, or plainly nothing so an unused row reads as unused rather
+// than as a blank somebody forgot to fill in.
+void cfgSummary(const char* packed, char* out, size_t n) {
+    char part[64];
+    cfgPart(packed, 1, part, sizeof(part));
+    if (!part[0]) cfgPart(packed, 0, part, sizeof(part));
+    snprintf(out, n, "%.*s", static_cast<int>(n) - 1, part[0] ? part : "not set");
+}
+
 // pageByName: "board", or a plugin's name
 const CfgPage* pageByName(const char* name) {
     for (uint8_t i = 0; i < kPageCount; ++i)
@@ -806,6 +920,12 @@ void Bbs::configRelease(const Session& s) {
     if (g_cfgOwner == &s) {
         g_cfgOwner = nullptr;
         g_cfgPage  = nullptr;
+        // The nesting goes with it. A line dropped two levels in is still
+        // one dropped line, and leaving g_subComp set would have the next
+        // sysop's first Save write somebody else's half-edited area.
+        g_subComp  = nullptr;
+        g_subKey[0]  = '\0';
+        g_subOrig[0] = '\0';
     }
 }
 
@@ -883,6 +1003,9 @@ void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now) {
                          : ps.kind == PS_YESNO ? CK_YESNO
                                                : CK_TEXT;
             uint8_t cap = ps.cap < kValueMax ? ps.cap : kValueMax;
+            // A packed setting is a button, not a box: the parts are a page
+            // of their own and nothing is ever typed into the row itself.
+            if (compositeFor(g_cfgSection, ps.key)) kind = CK_SUB;
             g_cfgPlugin[n++] = { ps.key, ps.label, kind, ps.lo, ps.hi, cap };
         }
 
@@ -899,7 +1022,7 @@ void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now) {
 
     g_cfgOwner = &s;
     g_cfgPage  = page;
-    uint8_t n = 0;
+    g_subComp  = nullptr;                                  // a fresh page is never nested
     for (uint8_t i = 0; i < page->count && i < Form::kMaxFields; ++i) {
         const CfgField& f = page->fields[i];
         char* buf2 = g_cfgBuf[i];
@@ -908,18 +1031,47 @@ void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now) {
             else                 cfgLiveValue(f.key, buf2, sizeof(g_cfgBuf[0]));
         }
         if (f.kind == CK_PASS && *buf2) snprintf(buf2, sizeof(g_cfgBuf[0]), "%s", kMasked);
-        snprintf(g_cfgWas[i], sizeof(g_cfgWas[0]), "%.47s", buf2);      // what it was when it opened
+        // What it was when the page opened, at full width. Truncating this
+        // meant any value longer than the truncation always compared
+        // different and so was rewritten on every save, touched or not.
+        snprintf(g_cfgWas[i], sizeof(g_cfgWas[0]), "%.*s",
+                 static_cast<int>(sizeof(g_cfgWas[0])) - 1, buf2);
+    }
+    configOpenPage(s, 0, now);
+}
+
+// ---------------------------------------------------------------------------
+// configOpenPage: draw the page that is already loaded into g_cfgBuf, with
+// the focus where the caller left it.
+//
+// Split out of cmdConfig because a sub-page has to come back to the page it
+// was opened from, and that page's edits are still in the buffers. Reading
+// the file again would be simpler and would throw away anything typed on
+// the parent row above before the button was pressed.
+// ---------------------------------------------------------------------------
+void Bbs::configOpenPage(Session& s, uint8_t focus, uint32_t now) {
+    if (!g_cfgPage) return;
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < g_cfgPage->count && i < Form::kMaxFields; ++i) {
+        const CfgField& f = g_cfgPage->fields[i];
         uint8_t flags = FF_NONE;
         const char* choices = nullptr;
+        char* buf2 = g_cfgBuf[i];
         if (f.kind == CK_YESNO) { flags |= FF_CYCLE; choices = kYesNo; }
         if (f.kind == CK_LEVEL) { flags |= FF_CYCLE; choices = kLevels; }
         if (f.kind == CK_PASS)  flags |= FF_MASK;
-        addField(s, n, f.label, buf2, f.cap, flags, choices);
+        if (f.kind == CK_SUB) {
+            flags |= FF_ACTION;
+            cfgSummary(buf2, g_cfgSum[i], sizeof(g_cfgSum[0]));
+            buf2 = g_cfgSum[i];                 // the button shows the summary
+        }
+        addField(s, n, f.label, buf2, f.kind == CK_SUB ? 0 : f.cap, flags, choices);
     }
+    s.ed        = LineEditor();
     s.formKind  = FormKind::Config;
     s.st        = SState::Form;
     s.lastInput = now;
-    s.form.begin(page->title, s.fields, n, s.term, s.tl);   // the title outlives the form
+    s.form.begin(g_cfgPage->title, s.fields, n, s.term, s.tl, focus);
 }
 
 // ---------------------------------------------------------------------------
@@ -934,6 +1086,7 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
     for (uint8_t i = 0; i < g_cfgPage->count && i < Form::kMaxFields; ++i) {
         const CfgField& f = g_cfgPage->fields[i];
         const char* v = g_cfgBuf[i];
+        if (f.kind == CK_SUB) continue;                              // its own page writes it
         if (f.kind == CK_PASS && !strcmp(v, kMasked)) continue;      // untouched
         if (!strcmp(v, g_cfgWas[i])) continue;                       // nothing to write
         if (!*v && (f.kind == CK_YESNO || f.kind == CK_LEVEL)) continue;
@@ -957,7 +1110,15 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
     }
     if (!n) { snprintf(err, errLen, "Nothing changed"); return true; }
     if (!syscfg::write(pairs, n, g_cfgSection[0] ? g_cfgSection : nullptr, err, errLen)) return false;
+    return configReloadAll(err, errLen);
+}
 
+// ---------------------------------------------------------------------------
+// configReloadAll: read the file again and restart the plugins, having
+// first got every caller out of one. Shared by a page save and a sub-page
+// save, so "Saved and live" means exactly the same thing either way.
+// ---------------------------------------------------------------------------
+bool Bbs::configReloadAll(char* err, size_t errLen) {
     char rerr[80] = "";
     if (!syscfg::reload(rerr, sizeof(rerr))) {
         snprintf(err, errLen, "saved, but %.48s", rerr);
@@ -988,4 +1149,142 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
     plugins::begin(*this);
     snprintf(err, errLen, "Saved and live");
     return true;
+}
+
+// ===========================================================================
+// CONFIG sub-pages: one row of a page, opened as a page of its own
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// configSubOpen: a button was pressed. Unpack the row into its parts and
+// open them as a form. The parent page's buffers are left exactly as they
+// are, so anything typed on it before the button was pressed survives.
+// ---------------------------------------------------------------------------
+void Bbs::configSubOpen(Session& s, uint8_t field, uint32_t now) {
+    if (g_cfgOwner != &s || !g_cfgPage) return;
+    if (field >= g_cfgPage->count || field >= Form::kMaxFields) return;
+    const CfgField& f = g_cfgPage->fields[field];
+    const CfgComposite* comp = compositeFor(g_cfgSection, f.key);
+    if (f.kind != CK_SUB || !comp) return;
+
+    g_subComp  = comp;
+    g_subField = field;
+    snprintf(g_subKey,  sizeof(g_subKey),  "%s", f.key);
+    snprintf(g_subOrig, sizeof(g_subOrig), "%s", g_cfgBuf[field]);
+
+    uint8_t pi = cfgSectionPlugin(g_cfgSection);
+    uint8_t n = 0;
+    uint8_t which = 0;                       // CK_LEVEL parts are read, write, admin
+    for (uint8_t i = 0; i < comp->count && i < kMaxParts && n < Form::kMaxFields; ++i) {
+        const CfgPart& p = comp->parts[i];
+        cfgPart(g_subOrig, i, g_subBuf[i], sizeof(g_subBuf[0]));
+        uint8_t flags = FF_NONE;
+        const char* choices = nullptr;
+        if (p.kind == CK_LEVEL) {
+            // A level the record does not carry, or one the ladder does not
+            // know, shows the level the record is actually running under.
+            // A blank cycle field would step to "all" on the first space,
+            // which is the one wrong answer that opens an area to everybody.
+            PlugLevel lv = PlugLevel::Nobody;
+            if (!plugins::levelFromText(g_subBuf[i], lv) || lv == PlugLevel::Nobody)
+                snprintf(g_subBuf[i], sizeof(g_subBuf[0]), "%s",
+                         plugins::levelName(plugins::levelFor(pi, which)));
+            ++which;
+            flags |= FF_CYCLE;
+            choices = kLevels;
+        }
+        uint8_t cap = p.cap < sizeof(g_subBuf[0]) - 1 ? p.cap
+                                                      : static_cast<uint8_t>(sizeof(g_subBuf[0]) - 1);
+        addField(s, n, p.label, g_subBuf[i], cap, flags, choices);
+    }
+
+    char title[40];
+    snprintf(title, sizeof(title), "%s %s", comp->title, g_subKey + strlen(comp->prefix));
+    s.ed        = LineEditor();
+    s.formKind  = FormKind::ConfigArea;
+    s.st        = SState::Form;
+    s.lastInput = now;
+    s.form.begin(title, s.fields, n, s.term, s.tl);
+}
+
+// ---------------------------------------------------------------------------
+// configSubSave: pack the parts back up and write the one key.
+//
+// The packed form is what goes in the file, because that is what the plugin
+// parses and what a sysop reads with the card in a laptop. An empty first
+// part writes an empty value, which is how a row is cleared: the plugin
+// already ignores a record with nothing to point at.
+// ---------------------------------------------------------------------------
+bool Bbs::configSubSave(Session& s, char* err, size_t errLen) {
+    if (!g_subComp || !g_cfgPage) { snprintf(err, errLen, "nothing to save"); return false; }
+    const CfgComposite* comp = g_subComp;
+
+    for (uint8_t i = 0; i < comp->count && i < kMaxParts; ++i) {
+        // A bar in a part would pack into a value that unpacks as two, so
+        // it is refused where the sysop can see it rather than silently
+        // moving the name into the level column on the next reload.
+        if (strchr(g_subBuf[i], '|')) {
+            s.form.fail(i, "No | in a value", s.term, s.tl);
+            return false;
+        }
+        if (comp->parts[i].kind == CK_TEXT && strstr(g_subBuf[i], "..")) {
+            s.form.fail(i, "No .. in a path", s.term, s.tl);
+            return false;
+        }
+    }
+
+    char packed[160] = "";
+    if (g_subBuf[0][0]) {
+        size_t at = 0;
+        for (uint8_t i = 0; i < comp->count && i < kMaxParts; ++i) {
+            int w = snprintf(packed + at, sizeof(packed) - at, "%s%s",
+                             i ? " | " : "", g_subBuf[i]);
+            if (w <= 0 || at + static_cast<size_t>(w) >= sizeof(packed)) break;
+            at += static_cast<size_t>(w);
+        }
+    }
+
+    if (!strcmp(packed, g_subOrig)) {
+        snprintf(err, errLen, "Nothing changed");
+        return true;
+    }
+
+    syscfg::KeyVal pair = { g_subKey, packed };
+    if (!syscfg::write(&pair, 1, g_cfgSection[0] ? g_cfgSection : nullptr, err, errLen))
+        return false;
+    plat::log("bbs: %s set %s %s = %s", s.user, g_cfgSection, g_subKey, packed);
+    return configReloadAll(err, errLen);
+}
+
+// ---------------------------------------------------------------------------
+// configSubBack: back to the page the button was on, with the row's summary
+// caught up to whatever is in the file now.
+//
+// The editing guard is not touched. The sysop never left CONFIG, and
+// handing it back here would let a second staff session open a page under
+// the one still on screen. A dropped line is the other case and closeSession
+// still releases everything, nesting included.
+// ---------------------------------------------------------------------------
+void Bbs::configSubBack(Session& s, Color c, const char* msg, uint32_t now) {
+    uint8_t field = g_subField;
+    g_subComp = nullptr;
+    if (!g_cfgPage || g_cfgOwner != &s) {         // the page went away under us
+        configRelease(s);
+        formDone(s, c, msg);                      // which ends the form properly
+        return;
+    }
+    if (field < g_cfgPage->count && field < Form::kMaxFields) {
+        const CfgField& f = g_cfgPage->fields[field];
+        char* buf = g_cfgBuf[field];
+        if (!cfgFileValue(g_cfgSection, f.key, buf, sizeof(g_cfgBuf[0])) &&
+            cfgSectionPlugin(g_cfgSection) != 0xFF)
+            cfgPluginValue(g_cfgSection + 7, f.key, buf, sizeof(g_cfgBuf[0]));
+        snprintf(g_cfgWas[field], sizeof(g_cfgWas[0]), "%s", buf);
+    }
+    // Plain ASCII has no cursor to put back on the button, so the page is
+    // asked again from the row after it: re-asking the row just dealt with
+    // would walk the sysop straight back into the page they came out of.
+    bool positional = s.term.isAnsi() || s.term.isPet();
+    configOpenPage(s, positional ? field : static_cast<uint8_t>(field + 1), now);
+    s.form.status(msg, c, s.term, s.tl);
 }
