@@ -71,6 +71,13 @@ they are the process, and getting them wrong wastes Rob's time.
   board or the live directory unless Rob asks for an on-board test. My
   "external" checks once ran over his own LAN and every result was hairpin
   NAT, which sent him chasing a router problem that did not exist.
+- **Bump `BBS_VERSION` with every change that gets committed** (Rob,
+  2026-09-20). The patch number is how a board says which build it is
+  running, so two commits must never report the same version. This went
+  wrong the day it was written down: three separate commits all said
+  0.17.3, and the only way to tell which one was on the board was that its
+  HELP had no DOWNLOAD in it. A version that does not identify a build is
+  worse than no version, because it is trusted.
 - **Commit and push after every build**, and again at checkpoints during long
   work so there is a history to go back to. COMMANDS.md, README.md,
   CHANGELOG.md and this file are updated in the same change, not afterwards.
@@ -535,6 +542,59 @@ Queued for the next build (Rob's plan, in order):
 - A sysop page (Rob): a caller can ring for the sysop and the sysop can answer, the way every board had. PAGE exists caller to caller; this is the one that gets the operator's attention wherever they are, and needs a way to be away, a way to decline, and something that does not let one caller ring a bell forever.
 - A bell when somebody logs in and when somebody joins the chat room (Rob). Neither rings today: the only bells are pages, broadcasts and form errors, so a caller arriving is silent. Wants the same treatment as a page: bell, then the notice.
 
+## The shell and menu rework (Rob, 2026-09-20, the next block)
+
+Nine items from one sitting with 0.17.3 on the board. They are one piece of
+work, not nine: every one of them is the shell's presentation, and doing them
+separately would mean redrawing the same screens five times. **`tty-ux`
+specifies the layout before any of it is written**, and the wide-terminal
+`rowWidth` item below is part of the same block.
+
+1. **A linefeed after ACCESS GRANTED or DENIED.** Login runs straight into
+   the welcome with nothing between them and it reads as one crushed block.
+2. **Say more at login, in full sentences.** Rob's copy, close to verbatim:
+   "Welcome back <user>. Connected to node 1 of 10 at <date time>. Time
+   brought to you by NTP." then a blank line, then "You're the 7th caller
+   today and have 60 minutes for this session." then "[H]ELP for commands."
+   The NTP mention is deliberate: it is a small brag and it tells a sysop the
+   clock is real.
+3. **A sysop who elevates with BYE stays visible.** Today elevation lands
+   them lurking, which is backwards: the common case is the sysop being
+   around, and invisibility should be the thing you ask for. New wording:
+   "You've been switched to the SysOp node. / Node 1 is free for callers. /
+   Shown in WHO, use LURK to become invisible. / HELP for commands."
+4. **`?` must fit one page.** It pages every single time, which trains
+   people to hammer a key through it. One screen, no `[More]`.
+5. **Reorganise the menus by what people actually use, and write them like a
+   command reference.** The first menu currently leads with the least useful
+   things. Rob wants the top menu to be WHO, FILES, CHAT, MAIL and one
+   logoff entry, with everything explanatory moved off it. **`G` and `BYE`
+   collapse to one line**: a caller does not need both explained, only that
+   it logs off. And the usage lines get a proper grammar rather than prose,
+   in the shape `?/H/HELP [CHAT | ACCOUNT | STAFF | SYSOP | ALL]`. Rob on
+   the current text: "this reads like shit."
+6. **Reconsider `DESC`.** Rob: "wtf does this actually do now that we have
+   the file area." It writes the description shown beside a file in the
+   listing, so the function is still needed, but as a top-level command
+   typed at the shell against "the area you last opened" it is an odd thing
+   to hand a caller. The likely answer is that it stops being a command:
+   an uploader is asked for the description as part of the upload, and staff
+   get a chance to edit it at the approval step. That removes a command from
+   the menu, which item 5 wants anyway.
+7. **The files door is wiped by the first keypress.** The screen plays and
+   then the menu clears it. Rob wants either the banner to stay, or the
+   banner plus a short hold with a loading effect and some `fx::` before the
+   screen clears and the menu appears. The second is nicer and the `fx::`
+   thinking-effect already queued below is the same piece of work.
+8. **Themes.** The reverse-video cyan header is fine as a default, but the
+   colours should be somebody's to choose. Two options and Rob is happy
+   either way: a CONFIG page of colour pickers, or a `theme.txt` in the
+   screens folder that a sysop edits on a laptop, with the built-in defaults
+   used when it is absent. Decide during the menu rework, since that is when
+   the colour choices are all in one place anyway. The card already
+   overrides screens per file, so `theme.txt` fits the existing shape.
+9. **ESC works, so say so.** Menus advertise `Q` and should say `Q/ESC`.
+
 - **Wide-terminal layout rework (Rob, scheduled straight after upload and download in this batch).** The board draws for 40 columns everywhere and never re-measures, so SyncTERM at 80 gets wrapped descriptions with half the screen black. HELP is the worst case and the screenshot is unambiguous: two-line wraps on "this menu; x picks another" with forty columns of unused screen to the right. This is not one constant, it is a habit spread across every drawing path, so the fix is a rule rather than a patch: a layout takes its widths from `Term::cols()` with a stated minimum, never from a frozen guess. `tty-ux` specifies it before anybody writes code. Rob's words: "it doesnt look like butt and all jamed together being 40col when on an 80col or wider device. This constantly triggers me."
 
   **Start at `Bbs::rowWidth`** (`src/core/bbs_shell.cpp:395`), because it is the single clamp most of this hangs off: `return (cols < 40 ? cols : 40) - 1`, comment and all, "lists and menus are laid out for 40 columns everywhere". Rob asked why it could not just be set per caller and the answer is that **it already is**: `cols` comes from `s.term.cols()`, so the width is per session and only the clamp makes it narrow. I first called this a one-line change with board-wide blast radius, which overstated it, and the correction is the useful part.
@@ -542,6 +602,18 @@ Queued for the next build (Rob's plan, in order):
   The residual work is the screens that never call `rowWidth` and carry hand-built fixed columns: NODES is laid out at exactly 39 and WHO likewise, so they would sit 40 wide under an 80 wide title bar. Cosmetic mismatch rather than breakage, and it is the actual scope of the job.
   Keep the zero guard: a NAWS negotiation carrying zero reaches Telnet, and zero underflows to 255, which pads 255 reverse-video spaces and paints a bar down the screen.
 - **Website cleanup**, from `reports/website-copy-review-2026-09-20.md` and `reports/tty-ux-website-2026-09-20.md`. The copy plan is to be executed by `explain`, not `docs`: it is human-facing. Confirmed P1s include `article .warn` never having had a left margin (the shorthand `margin:14px 0` sets `margin-left:0`, and the earlier fix moved `article .pull` instead, which is why it never took), `md_render` having no ordered-list support so 53 numbered router steps render as run-on paragraphs, `/about` and `/data` returning 404 on a single-domain deployment, and the manifesto still saying six callers plus a sysop line when it is ten plus the hidden node.
+- **YMODEM, after the menu rework** (Rob asked why it mattered, and the
+  earlier note did not say). XMODEM has no length field: the last block is
+  padded with 0x1A, so every downloaded file arrives up to 127 bytes longer
+  than the original, 1023 with 1K blocks. The engine reports the padding and
+  deliberately refuses to strip it, because 0x1A is a legal byte inside a
+  .PRG and a receiver that guesses is a receiver that truncates somebody's
+  file. A .ZIP tolerates the junk; a .PRG or a .D64 does not. **YMODEM's
+  block 0 carries the filename and the exact byte count**, which fixes the
+  padding and also means an upload no longer needs the caller to type the
+  filename first. The engine already does 1K blocks, CRC-16 and the framing,
+  so this is block 0 plus truncate-to-size, not a rewrite. ZMODEM stays last
+  by Rob's standing rule.
 - Build profiles: PlatformIO environments for a logger-only board, a chat-only board and the full board, rather than forking the repository.
   **And a bigger-board profile** (Rob asked whether more memory means more nodes: it does). `BBS_MAX_NODES` already drives everything, since Block A parameterised the lists and gave node numbers two digits, so a WROVER or an S3 is a sizing change rather than a port. The move that actually unlocks it is `CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY`, which puts static `.bss` in PSRAM and so takes the session pool, the thing that broke the build at sixteen nodes, off internal DRAM entirely.
   Moves with it: `CONFIG_LWIP_MAX_SOCKETS`, and the knowledge that PSRAM is slower so a session's output buffer living there costs a little on every write. Hard ceilings at 255 in both cases, because `Session::id` and `Session::listIdx` are `uint8_t`.
