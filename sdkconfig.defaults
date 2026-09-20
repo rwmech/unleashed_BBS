@@ -42,7 +42,18 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 
 # Sockets: 1 listener + 6 nodes + 1 busy line + spares (lwIP ceiling is 16)
-CONFIG_LWIP_MAX_SOCKETS=24
+# Sixteen is lwIP's hard maximum in IDF 5.3.1: the Kconfig is "range 1 16,
+# default 10". A value outside that range in a defaults file is DISCARDED
+# rather than clamped, silently, so asking for 24 here gave the board 10 and
+# nobody noticed until a map file was read. Seven callers then filled a board
+# advertising ten nodes and the eighth accept() failed.
+#
+# Budget at 16: the listener, mDNS and SNTP take three, leaving thirteen. Ten
+# caller lines plus the busy line and the sysop node is twelve sessions, and
+# announce and the backup window each want one while they are active. So a
+# completely full board with a backup window open can still run out; ten
+# nodes is the honest number for a part that cannot go past sixteen sockets.
+CONFIG_LWIP_MAX_SOCKETS=16
 
 # FATFS: one shared sector window instead of one per open file.
 #

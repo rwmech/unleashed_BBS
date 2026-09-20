@@ -68,27 +68,43 @@ Measured on the reference board, an ESP32-WROOM-32E at 0.17.1:
 
 | | |
 |---|---|
-| One caller session | **6,000 bytes** |
+| One caller session | **5,716 bytes** (from DWARF, not estimated) |
 | Sessions allocated | `BBS_MAX_NODES + 2`, for the busy line and the hidden sysop node |
-| Ten nodes | 12 sessions, **72,000 bytes** |
-| Total static RAM | **146,364 bytes** |
-| Usable DRAM ceiling | **about 179,870 bytes** |
-| Headroom left | about 33,500 bytes |
+| Ten nodes | 12 sessions, **68,592 bytes** |
+| Total static RAM | **146,732 bytes** |
+| Usable DRAM ceiling | **180,736 bytes** |
+| Headroom left | **34,004 bytes** |
+| Sockets | **16**, which is lwIP's hard maximum in IDF 5.3.1 |
 
-That ceiling is derived rather than published. At sixteen nodes the build
-used 179,972 bytes of static RAM and the linker refused with `dram0_0_seg
-overflowed by 104 bytes`, which puts the real limit just under 179,870. Note
-that PlatformIO reported that same failing build as using 54.9% of RAM,
-because it measures against 320 KB. **The percentage is not the limit. The
-link succeeding is the limit.**
+That ceiling is in the linker script, not on a datasheet:
+`esp-idf/esp_system/ld/memory.ld` sets `dram0_0_seg` to `org = 0x3FFB0000,
+len = 0x2c200`, and `sections.ld` asserts `_bss_end` stays inside it. So the
+figure to measure is `_bss_end - 0x3FFB0000`.
+
+**PlatformIO's RAM percentage is measured against 327,680 and is therefore
+wrong by a factor of 1.81.** It reported 54.9% for a build that would not
+link. Multiply its number by 1.81 for the truth: 55% on its scale is the
+wall. At 0.17.2 the board is at 81% of what it actually has.
+
+**And the node count is bounded by sockets before it is bounded by RAM.**
+IDF 5.3.1 caps `CONFIG_LWIP_MAX_SOCKETS` at 16, the listener, mDNS and SNTP
+take three, and announce and the backup window each want one while active.
+That, not memory, is what makes ten caller lines the honest number on this
+part. A value outside the Kconfig range is discarded rather than clamped, so
+check the generated `sdkconfig.esp32dev` rather than what the defaults file
+asks for: this project asked for 24 and silently ran on 10 for two builds.
 
 Everything else on the board, the buffers, the tables, the stacks, the
 plugins, comes to about 74 KB. That part does not grow with the node count,
 so the arithmetic for any part is:
 
 ```
-nodes = (usable DRAM - 74 KB of fixed cost - headroom you want) / 6,000 - 2
+nodes = (usable DRAM - 78 KB of fixed cost - headroom you want) / 5,716 - 2
 ```
+
+subject to the socket ceiling, which on any ESP32 running IDF 5.3.1 is
+`16 - 3 infrastructure - 2 transient`, so about eleven sessions whatever the
+memory says.
 
 ## The parts
 

@@ -47,6 +47,9 @@ other pages, and the groundwork that file transfer will stand on.
 
 ### Fixed
 
+- **The board had ten sockets, not the twenty four it asked for, and that was self-inflicted.** IDF 5.3.1 caps `CONFIG_LWIP_MAX_SOCKETS` at 16 and **discards an out-of-range value in a defaults file rather than clamping it**, silently. 0.17.0 "raised" it from a working 16 to 24 and the board quietly fell back to the default of 10; with the listener, mDNS and SNTP taking three, seven callers filled a board advertising sixteen nodes and the eighth connection simply failed. Found by reading a map file, not by anything failing, because nobody has had seven callers at once.
+  It also reframes the node count: sixteen sessions would have fit in DRAM within about a hundred bytes. **The limit was sockets all along**, and sixteen of them is what makes ten caller lines the honest number for this part.
+
 - **A config reload rewrote every long setting whether or not it had changed.** Values were compared using only their first 47 characters against a 96 byte buffer, so anything longer never matched itself. The long buffers exist precisely for values like announce's comma-separated directory list.
 - **`SHOW`, `HIDE` and `LURK` did not tell the directory.** The published caller count includes a staff member only while they are visible, so toggling visibility changed what the board advertised and nothing pushed the update. There is one hook for it now, called from login, logoff and all three, rather than three calls bolted onto three commands.
 - **An absolute card path was not understood.** `SD` prints the screens folder as `/sd/screens`, so that is what a sysop types, and it was being treated as relative to the card and turned into `/sd//sd/screens`, pointing the area at nothing.
