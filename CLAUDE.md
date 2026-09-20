@@ -187,9 +187,49 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
   Worth knowing: **saving an area pins its levels.** The sub-page seeds Read and Write with what the area is effectively running under, and Save writes all four parts, so an area that was inheriting the plugin's levels stops inheriting. Deliberate, and documented, but inherit-by-default would need a seventh rung on the ladder meaning "the plugin's".
 - **Fixed in passing, and it was live:** `g_cfgWas[i]` was filled with `"%.47s"` into a 96 byte buffer, so any CONFIG value longer than 47 characters always compared unequal to itself and was rewritten on every page save whether or not it had been touched. The 96 byte buffers exist precisely for long values such as announce's comma-separated `servers`.
 
+### File transfer: phases 4, 5 and 6, built 2026-09-20
+
+- **XMODEM and XMODEM-1K. There is no YMODEM**, despite earlier notes in this
+  file calling the engine "XMODEM/YMODEM". Checked rather than assumed: there
+  is no block-0 handling anywhere in `src/core/xmodem.cpp`. The consequence is
+  that no filename crosses the wire, so a download is named by the command and
+  an upload is named at a prompt before the line goes binary. That is how
+  boards did XMODEM uploads and it is not a workaround. YMODEM is a later
+  addition on the same engine.
+- **One transfer at a time, board-wide**, which is the engine's own documented
+  design. XMODEM is stop-and-wait, so a transfer is mostly idle, and a second
+  engine would cost 1.1 KB of static RAM to overlap two things that are each
+  waiting. A second caller is told to try in a moment rather than queued: a
+  queue on a ten line board is a way of making somebody watch nothing happen.
+- **The pump is sized against the room actually left, then halved.**
+  `Term::raw` doubles every 0xFF for telnet and a timeline `put()` is
+  all-or-nothing, so asking for more than fits drops a block silently and
+  stalls the transfer with no error anywhere.
+- A caller dropping mid-transfer takes the engine with them. Sessions come
+  from a static pool, so a stale `Session*` would have been handed to whoever
+  dialled in next and the board would have pushed a file at them.
+- **`UPLOAD` had to be `CF_READ`, not `CF_WRITE`, and the test is what found
+  it.** A command flag is checked against the *plugin's* levels, so tagging
+  upload `CF_WRITE` meant a caller needed the plugin's write level merely to
+  invoke it, and the per-area upload level could never be reached: an area
+  configured to say "users may upload here" was unreachable for exactly the
+  users it named. The command flag answers "may you use the file areas at
+  all"; `mayUp()` answers "may you upload into this one". Same shape as the
+  review agent's own third pattern, a guard bounding the wrong quantity.
+- **The round-trip test is the point.** Everything XMODEM gets wrong is
+  invisible to a test that only checks the board said "complete": a doubled
+  0xFF, a CR eaten by telnet's line-ending rule, a block boundary off by one.
+  `test_xfer` moves a payload built to trip exactly those, compares bytes, and
+  drives a deliberately dumb XMODEM client rather than a library, because a
+  library would paper over the same mistakes the board might make and then
+  both ends would agree on something wrong. 22 checks.
+- The harness gained `area5 = pub/drop | Drop Box | all | users | all | sysop`,
+  which exercises the six-field format and gives an ordinary caller somewhere
+  to upload. `area1` deliberately stays staff-only so the refusal is tested too.
+
 ### Upload, approval and per-area permissions (Rob, 2026-09-20, agreed shape for phase 6)
 
-- **Four levels per area, not two.** Today an area has `read` and `write`, and
+- **Four levels per area, not two.** DONE. Before this an area had `read` and `write`, and
   `write` gates exactly one thing, `DESC`. Rob's point: when upload lands, one
   level would have to mean both "can pull files out" and "can push files in",
   which are not the same trust. So: `read` (the area appears and lists),

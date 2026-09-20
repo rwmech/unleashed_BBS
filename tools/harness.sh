@@ -140,10 +140,14 @@ area1 = pub/c64 | C64 Downloads
 area2 = pub/empty | Empty Area
 area3 = made/bythebbs | Made By The BBS
 area4 = admin/screens | Screens | staff | sysop
+# Six fields: path | name | read | up | down | del. Exercises the
+# four-level format and gives an ordinary caller somewhere to upload,
+# which area1 deliberately does not.
+area5 = pub/drop | Drop Box | all | users | all | sysop
 CFG
 
 if [ "$CARD" = yes ]; then
-    mkdir -p "$CARDDIR/pub/c64" "$CARDDIR/pub/empty"
+    mkdir -p "$CARDDIR/pub/c64" "$CARDDIR/pub/empty" "$CARDDIR/pub/drop"
     echo 'CBM PRG content' > "$CARDDIR/pub/c64/GAME.PRG"
     echo 'a text file'     > "$CARDDIR/pub/c64/NOTES.TXT"
     echo 'GAME.PRG A game from the card' > "$CARDDIR/pub/c64/FILES.BBS"

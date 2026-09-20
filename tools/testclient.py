@@ -2638,6 +2638,266 @@ def test_binary():
     return ok
 
 
+
+# ---------------------------------------------------------------------------
+# XMODEM, both directions, against the real engine on the real socket.
+#
+# This is the test the transfer work needed and did not have. Everything
+# XMODEM gets wrong is invisible to a test that only checks the board said
+# "complete": a doubled 0xFF, a CR eaten by telnet's line-ending rule, a
+# block boundary off by one. So this moves a payload built to trip exactly
+# those, and compares bytes.
+#
+# The client here is deliberately a dumb, literal XMODEM implementation
+# rather than a library: a library would paper over the same mistakes the
+# board might make, and then both ends would agree on something wrong.
+# ---------------------------------------------------------------------------
+SOH, STX, EOT, ACK, NAK, CAN, SUB, CRCREQ = 1, 2, 4, 6, 0x15, 0x18, 0x1A, 0x43
+
+
+def _crc16(d):
+    crc = 0
+    for b in d:
+        crc ^= b << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return crc
+
+
+def _unescape(buf):
+    """Telnet IAC unescaping. 0xFF 0xFF is one data 0xFF."""
+    out = bytearray()
+    i = 0
+    while i < len(buf):
+        if buf[i] == 0xFF and i + 1 < len(buf) and buf[i + 1] == 0xFF:
+            out.append(0xFF)
+            i += 2
+        else:
+            out.append(buf[i])
+            i += 1
+    return bytes(out)
+
+
+def _escape(data):
+    return data.replace(b"\xff", b"\xff\xff")
+
+
+def xmodem_receive(s, timeout=25.0):
+    """Receive a file the board is sending. Returns the payload, padding and all."""
+    s.buf.clear()
+    got = bytearray()
+    blk = 1
+    s.send(bytes([CRCREQ]))                     # ask for CRC-16
+    end = time.time() + timeout
+    pending = bytearray()
+    while time.time() < end:
+        s.pump(0.15)
+        pending += _unescape(bytes(s.buf))
+        s.buf.clear()
+        while pending:
+            if pending[0] == EOT:
+                pending.pop(0)
+                s.send(bytes([NAK]))            # the engine wants one NAK first
+                end = time.time() + timeout
+                # the second EOT is the real one
+                s.pump(0.5)
+                pending += _unescape(bytes(s.buf))
+                s.buf.clear()
+                if pending and pending[0] == EOT:
+                    pending.pop(0)
+                s.send(bytes([ACK]))
+                return bytes(got)
+            if pending[0] in (SOH, STX):
+                size = 128 if pending[0] == SOH else 1024
+                need = 3 + size + 2
+                if len(pending) < need:
+                    break
+                frame = bytes(pending[:need])
+                del pending[:need]
+                num, inv, body, chk = frame[1], frame[2], frame[3:3 + size], frame[-2:]
+                if num != (inv ^ 0xFF) or _crc16(body) != (chk[0] << 8 | chk[1]):
+                    s.send(bytes([NAK]))
+                    continue
+                if num == (blk & 0xFF):
+                    got += body
+                    blk += 1
+                s.send(bytes([ACK]))
+                end = time.time() + timeout
+            else:
+                pending.pop(0)                  # noise before the first block
+    return bytes(got)
+
+
+def xmodem_send(s, data, timeout=25.0):
+    """Send a file to the board. Waits for its 'C' or NAK first."""
+    end = time.time() + timeout
+    crc = None
+    while time.time() < end and crc is None:
+        s.pump(0.2)
+        seen = _unescape(bytes(s.buf))
+        for b in seen:
+            if b == CRCREQ:
+                crc = True
+                break
+            if b == NAK:
+                crc = False
+                break
+        s.buf.clear()
+    if crc is None:
+        return False
+
+    pos, blk = 0, 1
+    while pos < len(data):
+        chunk = data[pos:pos + 128]
+        chunk = chunk + bytes([SUB]) * (128 - len(chunk))
+        body = bytes([SOH, blk & 0xFF, (blk & 0xFF) ^ 0xFF]) + chunk
+        body += (bytes([_crc16(chunk) >> 8, _crc16(chunk) & 0xFF]) if crc
+                 else bytes([sum(chunk) & 0xFF]))
+        for _ in range(6):
+            s.buf.clear()
+            s.send(_escape(body))
+            done = time.time() + 6
+            ans = None
+            while time.time() < done and ans is None:
+                s.pump(0.1)
+                for b in _unescape(bytes(s.buf)):
+                    if b in (ACK, NAK, CAN):
+                        ans = b
+                        break
+                s.buf.clear()
+            if ans == ACK:
+                break
+            if ans == CAN:
+                return False
+        else:
+            return False
+        pos += 128
+        blk += 1
+
+    s.buf.clear()
+    s.send(bytes([EOT]))
+    s.pump(0.5)
+    s.send(bytes([EOT]))                        # the engine NAKs the first
+    s.pump(0.5)
+    return True
+
+
+def test_xfer():
+    """Download and upload, end to end, with the approval step in between."""
+    print("File transfer: XMODEM down, XMODEM up, approval")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    sd = os.environ.get("BBS_SD_DIR", "")
+    if not sd:
+        print("  SKIP  needs a card")
+        return True
+    if not PASSWORD:
+        print("  SKIP  no sysop_password")
+        return True
+
+    # A payload built to break the two things that actually break: 0xFF is
+    # telnet's escape and CR followed by LF or NUL is what the line-ending
+    # rule used to eat.
+    payload = bytes(range(256)) * 3
+    payload += bytes([0x0D, 0x0A, 0x0D, 0x00, 0x0D]) * 10
+    payload += bytes([0xFF]) * 100
+    area = os.path.join(sd, "pub", "c64")
+    os.makedirs(area, exist_ok=True)
+    with open(os.path.join(area, "BINTEST.BIN"), "wb") as f:
+        f.write(payload)
+
+    s = ansi_login("Mover")
+    s.buf.clear()
+    s.send(b"files 1\r")
+    ok = check("area opens for the transfer", s.wait_for(b"C64 Downloads", 5))
+    ok &= check("and the list can be left", leave_files(s))
+
+    # ---- download --------------------------------------------------------
+    s.buf.clear()
+    s.send(b"download BINTEST.BIN\r")
+    ok &= check("download announces itself", s.wait_for(b"Start your XMODEM receive", 6))
+    got = xmodem_receive(s)
+    ok &= check("every byte of the file arrived",
+                got[:len(payload)] == payload)
+    ok &= check("and only XMODEM's own padding followed",
+                set(got[len(payload):]) <= {SUB})
+    ok &= check("the board says the download finished", s.wait_for(b"Download complete", 8))
+    # A download started from the command prompt ends back at the command
+    # prompt, not in a list: xferEnd only returns a caller to the file menu
+    # if that is where they were. So there is nothing here to page out of,
+    # and an earlier version of this test sent a page key at the shell and
+    # desynced everything after it.
+    s.pump(0.5)
+    s.buf.clear()
+    s.send(b"who\r")
+    ok &= check("and hands the session back to the shell", s.wait_for(b"online", 5))
+    ok &= check("which still pages properly", drain(s))
+
+    # ---- an area that is not yours to upload to --------------------------
+    # area1 sets no levels, so upload falls back to the plugin's write, which
+    # is staff. An ordinary caller must be refused, and refused before the
+    # line goes binary: a refusal after the switch is one the terminal cannot
+    # read.
+    s.buf.clear()
+    s.send(b"files 1\r")
+    s.wait_for(b"C64 Downloads", 5)
+    leave_files(s)
+    s.buf.clear()
+    s.send(b"upload NOPE.BIN\r")
+    ok &= check("a staff-only area refuses an ordinary caller's upload",
+                s.wait_for(b"not yours to upload", 5))
+
+    # ---- upload, into an area that allows it -----------------------------
+    up = bytes([0xFF, 0x0D, 0x0A, 0x1A, 0x00]) * 40
+    drop = os.path.join(sd, "pub", "drop")
+    s.buf.clear()
+    s.send(b"files 5\r")
+    ok &= check("the drop box opens", s.wait_for(b"Drop Box", 5))
+    leave_files(s)
+    s.buf.clear()
+    s.send(b"upload SENTUP.BIN\r")
+    ok &= check("upload is offered", s.wait_for(b"Start your XMODEM send", 6))
+    ok &= check("it says approval is needed first",
+                b"waits for staff approval" in plain(s.buf))
+    ok &= check("the board took the file", xmodem_send(s, up))
+    ok &= check("and says so", s.wait_for(b"Upload complete", 10))
+
+    # It is NOT in the area until staff approve it. This is the assertion the
+    # whole staging-folder design exists for.
+    ok &= check("the upload is not on the card in the area itself",
+                not os.path.exists(os.path.join(drop, "SENTUP.BIN")))
+    ok &= check("it is waiting in the staging folder",
+                os.path.exists(os.path.join(drop, ".pending", "SENTUP.BIN")))
+    with open(os.path.join(drop, ".pending", "SENTUP.BIN"), "rb") as f:
+        landed = f.read()
+    ok &= check("and what landed is what was sent", landed[:len(up)] == up)
+    s.close()
+
+    # ---- approval --------------------------------------------------------
+    sy = ansi_login("Keeper2")
+    sy.buf.clear()
+    sy.send(f"bye {PASSWORD}\r".encode())
+    ok &= check("staff reach the sysop node", sy.wait_for(b"Sysop node.", 5))
+    sy.wait_for(b"Sysop", 3)
+    sy.buf.clear()
+    sy.send(b"uploads\r")
+    ok &= check("UPLOADS lists what is waiting", sy.wait_for(b"SENTUP.BIN", 5))
+    sy.buf.clear()
+    sy.send(b"files 5\r")
+    sy.wait_for(b"Drop Box", 5)
+    leave_files(sy)
+    sy.buf.clear()
+    sy.send(b"approve SENTUP.BIN\r")
+    ok &= check("approving says it is live", sy.wait_for(b"is live", 5))
+    ok &= check("and the file is now in the area",
+                os.path.exists(os.path.join(drop, "SENTUP.BIN")))
+    ok &= check("and gone from the staging folder",
+                not os.path.exists(os.path.join(drop, ".pending", "SENTUP.BIN")))
+    sy.close()
+    return ok
+
+
 def test_sd():
     """The SD card, mounted and not.
 
@@ -3015,7 +3275,8 @@ if __name__ == "__main__":
                test_bulletin(), test_idle_login(), test_busy(),
                test_screens(), test_exit_screen(),
                test_refresh_and_ctrl_l(),
-               test_binary(), test_sd(), test_files(), test_config_areas(), test_partitions()]
+               test_binary(), test_sd(), test_files(), test_xfer(),
+               test_config_areas(), test_partitions()]
     if "--backup" in FLAGS:
         results.append(test_backup())
     if "--ban" in FLAGS:

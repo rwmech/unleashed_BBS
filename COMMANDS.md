@@ -194,6 +194,12 @@ All caller commands still work. Node arguments are `1`-`6`, `S` (sysop node) or 
 | `BANS` | `BANS` | Active IP bans and minutes remaining. |
 | `PLUGINS` | any staff | Every plugin compiled in: version, whether it is running, and why not. Also free disk space and the reserve. |
 | `FILES` / `F` | all | **Goes into the file area**, the way `CHAT` goes into the room, rather than printing a list and returning. A screen plays on the way in if the board has `screens/files`, then the areas appear as a numbered menu laid out in as many columns as the terminal has room for. A digit opens an area, `Q` goes back one level and `Q` again leaves. `FILES n` enters and opens that area in one go. Only on a board with a card: the plugin does not start without one, so on a cardless board the command does not exist rather than offering an empty file area. |
+| `DOWNLOAD file` / `D` | area's download level | Sends a file from the area you last opened, by XMODEM or XMODEM-1K. Start your terminal's receive when the board says to. One transfer at a time board-wide: a second caller is told to try again in a moment rather than queued. Named by the command because XMODEM carries no filename on the wire. |
+| `UPLOAD file` / `U` | area's upload level | Receives a file into the area you last opened. **It is not in the area when it finishes.** It waits in a staging folder until staff approve it, so nothing a caller sends is visible to anyone else until somebody has looked at it. You name the file before the transfer starts, again because XMODEM has no filename on the wire. Limits: 4 MB per file and 20 waiting per area. |
+| `UPLOADS` | area's delete level | Lists every upload waiting for approval, across all the areas you can approve in, with its size and which area it landed in. Staff are also told the count when they log in. |
+| `APPROVE file` | area's delete level | Moves a waiting upload into the area you last opened, where everyone who may read it can see it. Describe it afterwards with `DESC`. |
+| `REJECT file` | area's delete level | Throws a waiting upload away. |
+| `ERASE file` | area's delete level | Removes a file from the area you last opened. Never `FILES.BBS`, which is the area's catalogue rather than one of its files. |
 | `DESC file text` | staff | Set a file's description in the area you last opened. Empty text clears it. Typed at the command prompt, not inside the file area, because the file area takes keys rather than lines; the area you opened is remembered after you leave it. Written to `FILES.BBS` in that folder, which is plain text you can edit on a laptop with the card in hand. |
 | `SD` | sysop | SD card status: type, mount point, free space, and where screens are coming from. With no card it says which pins it tried, because "no card found" without them sends you to re-seat a card that was never the problem. |
 | `SD MOUNT` | sysop | Mount the card without rebooting. **Pauses the whole board** for a few hundred milliseconds while it negotiates over SPI, which is why it is typed rather than retried on a timer. |
@@ -356,6 +362,34 @@ its screen overrides from, the one `SD` prints. Mounting it as a staff area
 gives you a view of your own screens from the board. Note that is `screens`,
 not `admin/screens`; any other path is just an ordinary folder that no
 screen comes from.
+
+Each area carries four permission levels of its own, and they are separate
+because they are different kinds of trust:
+
+```
+area1 = pub/c64 | C64 Downloads | read | upload | download | delete
+```
+
+- **read** sees the area in the menu and lists what is in it
+- **upload** puts files in, and writes descriptions
+- **download** takes files out
+- **delete** removes files, and approves or rejects uploads
+
+All four are optional and each falls back on its own: read to the plugin's
+`read`, upload to the plugin's `write`, **download to that area's own read**,
+and delete to the plugin's `admin`. Delete never inherits from upload, so an
+area that says nothing about deletion does not get it from permission to
+upload.
+
+Upload sits before download in that line even though it reads oddly. It is
+where the old single `write` level used to be, and moving it would silently
+have turned every already-configured area's upload level into its download
+level.
+
+An area an ordinary caller may not read is not listed for them at all, and
+opening it by number is refused in the same words as a number that is not an
+area, so the menu cannot be used to find out which numbers are hiding
+something.
 
 Descriptions live in `FILES.BBS` inside each folder, one line per file,
 `name description`, the way every BBS did it; the board rewrites that file

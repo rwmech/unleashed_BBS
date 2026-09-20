@@ -1302,7 +1302,14 @@ const Command kCommands[] = {
           listArea(b, s, static_cast<uint8_t>(n - 1));
       },
       Menu::Main, 8 },
-    { "UPLOAD", "U", 0, CF_WRITE, "[U]PLOAD f", "send a file to this area",
+    // CF_READ, not CF_WRITE, and the distinction matters. The command flag
+    // is checked against the PLUGIN's levels, so tagging this CF_WRITE meant
+    // a caller needed the plugin's write level merely to invoke it, and the
+    // per-area upload level could never be reached: an area saying "users
+    // may upload here" was unreachable for exactly the users it named. The
+    // command flag answers "may you use the file areas at all"; mayUp()
+    // answers "may you upload into this one", and that is the real gate.
+    { "UPLOAD", "U", 0, CF_READ, "[U]PLOAD f", "send a file to this area",
       [](Bbs& b, Session& s, const char* a, uint32_t now) { startRecv(b, s, a, now); },
       Menu::Main, 10 },
     { "UPLOADS", "", 0, CF_ADMIN, "UPLOADS", "uploads waiting for approval",
