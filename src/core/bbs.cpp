@@ -1918,6 +1918,15 @@ uint8_t Bbs::pageRows(const Session& s) const {
     return static_cast<uint8_t>(rows > 8 ? rows - 2 : 6);
 }
 
+// startPluginList: a plugin's own paged list. The plugin is remembered on
+// the session because listRow is called back later, on a different pass of
+// the loop, and by then the only thing that knows whose list this is is the
+// session itself.
+void Bbs::startPluginList(Session& s, uint8_t plugin) {
+    s.listPlugin = plugin;
+    startList(s, ListKind::PlugRows);
+}
+
 void Bbs::startList(Session& s, ListKind kind) {
     s.list      = kind;
     s.listIdx   = 0;

@@ -378,6 +378,11 @@ bool Bbs::listRow(Session& s) {
         case ListKind::Plugins: return rowPlugins(s);
         case ListKind::Sys:   return rowSys(s);
         case ListKind::Calls: return rowCalls(s);
+        case ListKind::PlugRows: {
+            const Plugin* p = plugins::at(s.listPlugin);
+            if (!p || !p->rows || !plugins::running(s.listPlugin)) return false;
+            return p->rows(s);
+        }
         default:              return false;
     }
 }
@@ -1194,6 +1199,15 @@ void Bbs::cmdMem(Session& s) {
     fmtCommas(activeNodes(), num, sizeof(num));
     statRow(s, "Nodes busy", num, Color::LightGreen, buf);
     statNum(s, "Disk free", plugins::freeBytes(), "bytes");
+    // The card, when there is one. In megabytes rather than bytes: a figure
+    // with seven digits on it is not a figure anybody reads, and the point
+    // of the row is whether there is room, not how many bytes of room.
+    plat::SdInfo sd = plat::sdInfo();
+    if (sd.mounted) {
+        fmtCommas(sd.freeKB / 1024u, num, sizeof(num));
+        snprintf(buf, sizeof(buf), "MB of %u", static_cast<unsigned>(sd.totalKB / 1024u));
+        statRow(s, "Card free", num, Color::LightGreen, buf);
+    }
     rowRule(s);
 }
 

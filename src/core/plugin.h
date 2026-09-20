@@ -172,6 +172,21 @@ struct Plugin {
     // does not carry it. Leave out empty for a key you do not recognise, so
     // a blank on the form never quietly means something else.
     void (*setting)(const char* key, char* out, size_t n);
+
+    // rows: one line of a paged list, false when the list is finished.
+    //
+    // Called by the core after Bbs::startPluginList, once per line, with the
+    // row number in Session::listIdx exactly as the core's own list builders
+    // use it. The plugin gets the core's paging, [More] prompt, abort keys
+    // and output backpressure rather than reimplementing them, which is the
+    // whole reason this hook exists: a plugin printing a long list straight
+    // into the timeline either truncates it or outruns a slow terminal.
+    //
+    // Appended, like everything below the line above, so the descriptors
+    // written before it compile untouched and simply offer no list. The
+    // struct is filled positionally, so a field inserted in the middle
+    // silently shifts every existing one.
+    bool (*rows)(Session& s);
 };
 
 namespace plugins {

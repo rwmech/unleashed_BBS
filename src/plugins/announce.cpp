@@ -792,4 +792,5 @@ extern const Plugin kAnnouncePlugin = {
     kSettings,
     sizeof(kSettings) / sizeof(kSettings[0]),
     setting,
+    nullptr,                 // rows: no paged list of its own
 };

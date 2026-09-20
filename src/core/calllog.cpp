@@ -35,6 +35,9 @@
 
 #include "calllog.h"
 #include "../platform/platform.h"
+#include "clock.h"
+#include "../config.h"
+#include <sys/stat.h>
 #include <cstdio>
 #include <cstring>
 
@@ -85,6 +88,63 @@ long slotOffset(uint16_t slot) {
 namespace calllog {
 
 // ---------------------------------------------------------------------------
+// mirror: append one line to a plain text copy on the SD card.
+//
+// The ring above is the record. This is a second copy, and the difference
+// matters: the ring is fifty calls on a partition that is always there, and
+// this is months of them on a card that can be pulled at any moment. LAST
+// reads the ring, so nothing a sysop relies on stops working when the card
+// goes, and that was the point of mirroring rather than moving.
+//
+// Plain text, one file per month, because the reason the card is FAT32 is
+// that you can take it out and read it. A fixed-size binary ring would be
+// the wrong shape for a file somebody opens in a text editor.
+//
+// Failure here is deliberately quiet past the first complaint: a caller
+// hanging up must not be held up, and a card that has been pulled should not
+// fill the console with one message per call.
+// ---------------------------------------------------------------------------
+static bool g_mirrorWarned = false;
+
+static void mirror(const CallRec& r) {
+    const char* base = plat::sdBase();
+    if (!base[0]) return;                       // no card, nothing to mirror to
+
+    char dir[96];
+    snprintf(dir, sizeof(dir), "%s/%s", base, BBS_SD_LOG_DIR);
+    mkdir(dir, 0755);                           // harmless when it exists
+
+    char when[24] = "unknown";
+    char month[8] = "000000";
+    if (r.start) {
+        clk::fmtEpoch(when, sizeof(when), "%Y-%m-%d %H:%M", r.start);
+        clk::fmtEpoch(month, sizeof(month), "%Y-%m", r.start);
+    }
+
+    char p[128];
+    snprintf(p, sizeof(p), "%s/calls-%.7s.log", dir, month);
+    FILE* f = fopen(p, "a");
+    if (!f) {
+        if (!g_mirrorWarned) {
+            plat::log("calllog: cannot mirror to the card (%s)", p);
+            g_mirrorWarned = true;
+        }
+        return;
+    }
+    g_mirrorWarned = false;
+
+    // Tab separated so a spreadsheet opens it and a human can still read it.
+    fprintf(f, "%s\t%-20s\t%-15s\tnode %u\t%u min%s\n",
+            when, r.user[0] ? r.user : "(none)", r.ip,
+            static_cast<unsigned>(r.node),
+            static_cast<unsigned>((r.secs + 59u) / 60u),
+            (r.flags & CallRec::F_GUEST) ? "\tguest" :
+            (r.flags & CallRec::F_SYSOP) ? "\tsysop" : "");
+    fflush(f);
+    fclose(f);
+}
+
+// ---------------------------------------------------------------------------
 // append: record into slot "next", then rewrite the header
 // ---------------------------------------------------------------------------
 bool append(const CallRec& r) {
@@ -107,6 +167,7 @@ bool append(const CallRec& r) {
     }
     fclose(f);
     if (!ok) plat::log("calllog: write failed");
+    mirror(r);
     return ok;
 }
 

@@ -92,8 +92,15 @@ enum class Role : uint8_t {
     Sysop,     // hidden sysop node, entered with BYE <password>
 };
 
+// PlugRows is a list a plugin builds, row by row, through its rows() hook.
+// Everything else here is a list the core builds. Paging, the [More] prompt,
+// the abort keys and the backpressure that stops a list outrunning a slow
+// terminal all live in the core, and a plugin that wants a list longer than a
+// screen has no way to reimplement any of that correctly. Plugins:: is the
+// PLUGINS command and is unrelated; the names are close because the two
+// things are not.
 enum class ListKind : uint8_t { None, Help, Who, Last, Nodes, Bans, Dash, Users, Plugins,
-                                Sys, Calls };
+                                Sys, Calls, PlugRows };
 enum class MoreFrom : uint8_t { List, Screen };
 enum class FormKind : uint8_t { None, Signup, Profile, Password, UserAdd, UserEdit, Config };
 enum class ConfirmKind : uint8_t { Logoff, DeleteUser };
@@ -159,6 +166,7 @@ struct Session {
 
     // paging and generated lists
     ListKind     list        = ListKind::None;
+    uint8_t      listPlugin  = 0xFF;   // ListKind::PlugRows: whose rows these are
     uint8_t      listIdx     = 0;
     uint8_t      listSub     = 0;      // wrap offset inside the current row
     uint8_t      pageLines   = 0;
@@ -314,6 +322,28 @@ public:
     // prompt: draw the command prompt and take a line (plugins end here)
     void prompt(Session& s);
 
+    // ----------------------------------------------------------------------
+    // Paged lists for plugins.
+    //
+    // startPluginList hands the session to the core's list machinery, which
+    // then calls this plugin's rows() hook once per line until it returns
+    // false. The plugin gets paging, the [More] prompt, the abort keys and
+    // the backpressure that stops a list outrunning a slow terminal, none of
+    // which it could reimplement correctly on its own.
+    //
+    // The row index is Session::listIdx, the same counter the core's own
+    // lists use, so a plugin's rows() looks like rowWho or rowLast.
+    //
+    // The row helpers are here rather than private because a plugin drawing
+    // its own rows should produce rows that look like everything else: same
+    // title bar, same closing rule, same width discipline.
+    // ----------------------------------------------------------------------
+    void startPluginList(Session& s, uint8_t plugin);
+    void rowText(Session& s, Color c, const char* text, bool newline = true);
+    void rowRule(Session& s);
+    void rowTitle(Session& s, const char* title, const char* right = nullptr);
+    uint8_t rowWidth(const Session& s) const;
+
 private:
     Bbs() = default;
 
@@ -413,7 +443,6 @@ private:
     void stopWatch(Session& s);
 
     // -- output helpers (bbs_shell.cpp) --------------------------------------
-    void rowText(Session& s, Color c, const char* text, bool newline = true);
     void rowSeg(Session& s, Color c, const char* text, uint8_t& col);
     void rowEnd(Session& s, uint8_t col);
     void statRow(Session& s, const char* label, const char* value, Color c = Color::LightGreen,
@@ -423,9 +452,8 @@ private:
     bool rowSys(Session& s);
     bool rowCalls(Session& s);
     void cmdCalls(Session& s);   // padded when refreshing
-    void rowRule(Session& s);
-    void rowTitle(Session& s, const char* title, const char* right = nullptr);
-    uint8_t rowWidth(const Session& s) const;
+    // rowText, rowRule, rowTitle and rowWidth are public: a plugin drawing
+    // its own paged list has to produce rows that look like everything else.
     static const char* doingText(const Session& s);
 
     // -- shell (bbs_shell.cpp) -----------------------------------------------

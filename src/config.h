@@ -222,6 +222,15 @@
 // not on the card. Costs about 550 bytes of heap per slot at mount.
 #define BBS_SD_MAX_FILES    (BBS_MAX_NODES + 4)
 #define BBS_SD_SCREEN_DIR   "screens"    // a card's screens override the stock set
+// One line per file, "name description", the way every BBS did it. A plain
+// text file inside each area folder so a sysop can edit it on a laptop with
+// the card in hand, which is the whole reason the card is FAT32.
+#define BBS_FILES_DESC      "FILES.BBS"
+// Where the caller log is mirrored on the card, one file per month. The
+// ring on the logs partition stays the record LAST reads: it is the sysop's
+// security log and must not depend on a card being seated. The card gets a
+// plain text copy that can run to months instead of fifty calls.
+#define BBS_SD_LOG_DIR      "logs"
 
 #define BBS_CONFIG_FILE     "system.cfg"
 #define BBS_CALLLOG_FILE    "calls.log"

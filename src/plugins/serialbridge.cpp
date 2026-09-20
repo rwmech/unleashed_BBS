@@ -358,4 +358,5 @@ extern const Plugin kSerialPlugin = {
     nullptr,                 // settings: nothing of its own in CONFIG yet
     0,
     nullptr,                 // setting
+    nullptr,                 // rows: no paged list of its own
 };

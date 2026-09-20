@@ -34,7 +34,7 @@ Built in blocks, each checkpointed into git before and after.
 |---|---|---|
 | A | Repartition, sixteen nodes | **done**, flashed 2026-09-19 |
 | B | SD card: mount, `SD` command, screens override | **done**, host-tested, not flashed |
-| C | File areas: browse, list, describe. Logs mirrored to the card | in progress |
+| C | File areas: browse, list, describe. Logs mirrored to the card | **done**, host-tested |
 | D | Sixteen-node fallout in the remaining lists | after C |
 | E | The queued bugs in Part 4 | if there is time |
 | F | Disk activity light, selectable styles | Rob's priority, wanted soon |

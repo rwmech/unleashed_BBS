@@ -176,7 +176,7 @@ Flash layout (4 MB): two 1.5 MB OTA app slots and three data partitions.
 | `logs` | 32 KB | the caller log | no |
 | `userdata` | 608 KB | `users.txt`, `system.cfg`, plugin files | no |
 | `storage` | 256 KB | screens | **yes** |
-| SD card | optional | message bases, file areas, your own screens | no |
+| SD card | optional | file areas, your own screens, a long caller log; message bases later | no |
 
 `storage` is deliberately last, because PlatformIO's `uploadfs` writes the last
 spiffs partition. That is what makes flashing safe: a filesystem upload can only

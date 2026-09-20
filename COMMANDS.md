@@ -193,6 +193,8 @@ All caller commands still work. Node arguments are `1`-`6`, `S` (sysop node) or 
 | `LURK` | `HIDE` | Toggle lurking: hidden from WHO and pages refused. |
 | `BANS` | `BANS` | Active IP bans and minutes remaining. |
 | `PLUGINS` | any staff | Every plugin compiled in: version, whether it is running, and why not. Also free disk space and the reserve. |
+| `FILES` / `F` | all | The file areas on the card. `FILES n` opens one and lists its files with sizes and descriptions. Only on a board with a card: the plugin does not start without one, so on a cardless board the command does not exist rather than showing an empty list. |
+| `DESC file text` | staff | Set a file's description in the area you have open. Empty text clears it. Written to `FILES.BBS` in that folder, which is plain text you can edit on a laptop with the card in hand. |
 | `SD` | sysop | SD card status: type, mount point, free space, and where screens are coming from. With no card it says which pins it tried, because "no card found" without them sends you to re-seat a card that was never the problem. |
 | `SD MOUNT` | sysop | Mount the card without rebooting. **Pauses the whole board** for a few hundred milliseconds while it negotiates over SPI, which is why it is typed rather than retried on a timer. |
 | `SD UNMOUNT` | sysop | Flush and release, so the card can be pulled safely. Screens fall back to the stock set. |
@@ -284,6 +286,7 @@ Four plugins ship with the firmware:
 | `serial` | shares a serial device: one operator types, any number watch | `read = all`, `write = staff` |
 | `announce` | posts a small heartbeat to a directory so the board can be found | `sysop` throughout |
 | `sd` | mounts an optional SD card and lets its screens override the stock ones | `sysop` throughout |
+| `files` | publishes folders on the card as file areas callers can browse | `read = all`, `write = staff` |
 
 Chat and `sd` are on by default, even with no section in `system.cfg`; `enabled = no` turns either off. `sd` on a board with no card costs one failed mount at boot and then nothing. The serial bridge waits to be switched on, since it needs wiring, and so does `announce`, since it is the one thing that talks out. Turning either off costs nothing: no commands, no hooks, no memory. The `example` plugin is the template for writing your own ([PLUGINS.md](PLUGINS.md)).
 
@@ -308,6 +311,28 @@ screens = yes       ; screens on the card override the stock set, per file
 Wiring: `3V3` (**not VIN**), `GND`, `CS` to D5, `MOSI` to D23, `CLK` to D18,
 `MISO` to D19. GPIO5 is a strapping pin, so if the board will not start with
 the card attached, move `CS` to D4 and set `cs = 4`.
+
+A file area is a folder on the card that the sysop mounts under a name. The
+path is never shown to callers, so an area can point at a folder you already
+have, and a folder with no entry here is not an area at all, which is what
+lets you keep your own files on the same card.
+
+```
+[plugin:files]
+enabled = yes
+read    = all        ; who may browse
+write   = staff      ; who may write descriptions
+area1   = pub/c64 | C64 Downloads
+area2   = pub/text | Text Files
+```
+
+Up to eight areas. The path is relative to the card. Descriptions live in
+`FILES.BBS` inside each folder, one line per file, `name description`, the
+way every BBS did it; the board rewrites that file through a temp file and a
+rename, because FAT is not safe against losing power mid-write.
+
+There is no file transfer yet, so an area is for browsing and for files you
+put there yourself. Uploads and moving files between areas wait for XMODEM.
 
 Each plugin reads its own section:
 

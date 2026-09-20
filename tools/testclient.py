@@ -97,6 +97,34 @@ def bbs_version():
     return m.group(1) if m else "?"
 
 
+def drain(c, tries=12):
+    """Get a session back to a command prompt, however it is currently held.
+
+    A list that filled the screen stops at "[More] Y/n/c" and a screen with
+    more than one page stops at "Press SPACE to continue". Both hold the
+    session until a key arrives, and both then eat the first characters of
+    whatever the test sends next, as page keys rather than as a command. That
+    has broken three tests in this file, each time reporting working code as
+    broken, and each time the give-away was that the test passed on its own
+    and failed in a full run, because the lists are longer once the suite has
+    made fifty calls.
+
+    Call this after any command whose output might not fit a screen.
+    """
+    for _ in range(tries):
+        seen = plain(c.buf)
+        if b"[More]" in seen:
+            c.buf.clear()
+            c.send(b"n")            # n stops a list
+        elif b"Press SPACE to continue" in seen or b"PRESS SPACE" in seen:
+            c.buf.clear()
+            c.send(b" ")            # any key turns a screen's page
+        else:
+            return True
+        c.pump(0.6)
+    return False
+
+
 def ansi_color(fg, bold=False, reverse=False):
     """The bytes Term::color emits for one colour.
 
@@ -1928,6 +1956,158 @@ def test_announce():
     return ok
 
 
+def test_files():
+    """File areas on the card: the areas, one area's files, descriptions.
+
+    Runs in both harness modes and checks a different thing in each. With no
+    card the plugin is PF_SD and does not start at all, so FILES is not a
+    command: that is the behaviour, and a board that quietly offered an empty
+    file area on hardware that cannot hold files would be worse.
+    """
+    print("File areas")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+
+    sd = os.environ.get("BBS_SD_DIR", "")
+    s = ansi_login("Browser")
+
+    if not sd:
+        s.buf.clear()
+        s.send(b"files\r")
+        ok = check("with no card there is no FILES command",
+                   s.wait_for(b"Unknown command", 4))
+        s.close()
+        return ok
+
+    # ---- the area list ---------------------------------------------------
+    s.buf.clear()
+    s.send(b"files\r")
+    ok = check("FILES lists the areas", s.wait_for(b"File areas", 5))
+    s.pump(0.8)
+    areas = plain(s.buf)
+    ok &= check("an area shows under the name the sysop gave it",
+                b"C64 Downloads" in areas)
+    ok &= check("and the path it maps to is not shown to callers",
+                b"pub/c64" not in areas)
+    ok &= check("a second area is listed too", b"Empty Area" in areas)
+
+    # ---- inside an area --------------------------------------------------
+    s.buf.clear()
+    s.send(b"files 1\r")
+    ok &= check("FILES n opens that area", s.wait_for(b"C64 Downloads", 5))
+    s.pump(0.8)
+    listing = plain(s.buf)
+    ok &= check("the files are listed", b"GAME.PRG" in listing and b"NOTES.TXT" in listing)
+    ok &= check("with a size", b"K" in listing)
+    ok &= check("and the description out of FILES.BBS",
+                b"A game from the card" in listing)
+    ok &= check("the description file is not itself listed as a file",
+                b"FILES.BBS" not in listing)
+
+    # ---- the board makes an area's folder itself -------------------------
+    # area3 in the harness config points at a path that is deliberately not
+    # on the card. Configuring an area should not mean pulling the card and
+    # finding a PC, so the plugin creates the folder, parents and all, when
+    # it starts.
+    made = pathlib.Path(sd) / "made" / "bythebbs"
+    ok &= check("an area folder that did not exist was created", made.is_dir())
+    s.buf.clear()
+    s.send(b"files 3\r")
+    ok &= check("and it opens as an ordinary, empty area",
+                s.wait_for(b"Made By The BBS", 5))
+    s.pump(0.6)
+
+    # ---- an empty area is not an error -----------------------------------
+    s.buf.clear()
+    s.send(b"files 2\r")
+    ok &= check("an empty area says so rather than looking broken",
+                s.wait_for(b"Nothing in here yet", 5))
+
+    # ---- a number that is not an area ------------------------------------
+    s.buf.clear()
+    s.send(b"files 99\r")
+    ok &= check("a number with no area is refused",
+                s.wait_for(b"No area by that number", 4))
+
+    # ---- writing a description -------------------------------------------
+    s.buf.clear()
+    s.send(b"bye " + PASSWORD.encode() + b"\r")
+    s.wait_for(b"Sysop", 4)
+    s.buf.clear()
+    s.send(b"files 1\r")
+    s.wait_for(b"C64 Downloads", 5)
+    s.pump(0.6)
+    s.buf.clear()
+    s.send(b"desc NOTES.TXT Some notes I made\r")
+    ok &= check("a description is written", s.wait_for(b"Described", 5))
+    s.buf.clear()
+    s.send(b"files 1\r")
+    s.pump(1.2)
+    ok &= check("and shows on the next listing",
+                b"Some notes I made" in plain(s.buf))
+    ok &= check("without disturbing the one that was already there",
+                b"A game from the card" in plain(s.buf))
+
+    # The file on the card has to be readable on a PC, which is the whole
+    # reason the card is FAT32. Checked as a file, not through the BBS.
+    desc = pathlib.Path(sd) / "pub" / "c64" / "FILES.BBS"
+    body = desc.read_text()
+    ok &= check("FILES.BBS is still plain text a laptop can read",
+                "NOTES.TXT" in body and "GAME.PRG" in body)
+    ok &= check("and has no leftover temp file beside it",
+                not (pathlib.Path(sd) / "pub" / "c64" / "FILES.BBS.tmp").exists())
+
+    # ---- a caller cannot walk out of the area ----------------------------
+    s.buf.clear()
+    s.send(b"desc ../../users.txt owned\r")
+    ok &= check("a filename that climbs out of the area is refused",
+                s.wait_for(b"DESC <file>", 4))
+    s.buf.clear()
+    s.send(b"desc nosuchfile.txt hello\r")
+    ok &= check("and so is a file that is not there",
+                s.wait_for(b"No file by that name", 4))
+
+    # ---- the caller log is mirrored, not moved ---------------------------
+    # The ring on the logs partition stays the record LAST reads, because it
+    # is the sysop's security log and must not depend on a card being seated.
+    # The card gets a plain text copy that can run to months.
+    caller = ansi_login("Mirrored")
+    caller.send(b"bye\r")
+    caller.pump(0.8)
+    caller.close()
+    time.sleep(0.8)
+
+    logs = sorted((pathlib.Path(sd) / "logs").glob("calls-*.log")) if \
+           (pathlib.Path(sd) / "logs").is_dir() else []
+    ok &= check("a call is mirrored to a month file on the card", bool(logs))
+    if logs:
+        body = logs[-1].read_text(errors="replace")
+        ok &= check("the mirrored line names the caller", "Mirrored" in body)
+        ok &= check("and is plain text a laptop can read",
+                    chr(9) in body and "node" in body)
+
+    # And the ring is still the thing LAST reads, card or no card. Asked on
+    # the session that is already the sysop: the sysop node holds one caller,
+    # so a second session elevating is refused and dropped, which is correct
+    # behaviour and cost this test a run to work out.
+    s.buf.clear()
+    s.send(b"last\r")
+    ok &= check("LAST still reads the internal ring", s.wait_for(b"Mirrored", 5))
+    s.pump(0.6)
+    # LAST pages once the ring has a screenful in it, which it does by this
+    # point in a full run but not when this test is run on its own.
+    ok &= check("and the list can be left cleanly", drain(s))
+    s.buf.clear()
+    s.send(b"mem\r")
+    s.pump(1.2)
+    ok &= check("MEM shows the card's free space when one is mounted",
+                b"Card free" in plain(s.buf))
+
+    s.close()
+    return ok
+
+
 def test_sd():
     """The SD card, mounted and not.
 
@@ -2305,7 +2485,7 @@ if __name__ == "__main__":
                test_bulletin(), test_idle_login(), test_busy(),
                test_screens(), test_exit_screen(),
                test_refresh_and_ctrl_l(),
-               test_sd(), test_partitions()]
+               test_sd(), test_files(), test_partitions()]
     if "--backup" in FLAGS:
         results.append(test_backup())
     if "--ban" in FLAGS:
