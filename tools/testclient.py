@@ -2815,7 +2815,10 @@ def test_xfer():
 
     # ---- download --------------------------------------------------------
     s.buf.clear()
-    s.send(b"download BINTEST.BIN\r")
+    # Explicitly plain XMODEM. YMODEM is the default now, and this test
+    # exists to keep the older protocol covered end to end rather than
+    # quietly stopping when the default moved.
+    s.send(b"download BINTEST.BIN X\r")
     ok &= check("download announces itself", s.wait_for(b"Start your XMODEM receive", 6))
     got = xmodem_receive(s)
     ok &= check("every byte of the file arrived",
@@ -2895,6 +2898,267 @@ def test_xfer():
     ok &= check("and gone from the staging folder",
                 not os.path.exists(os.path.join(drop, ".pending", "SENTUP.BIN")))
     sy.close()
+    return ok
+
+
+
+def ymodem_receive(s, timeout=25.0):
+    """Receive one file by YMODEM. Returns (name, size, payload).
+
+    Written against the protocol rather than against our engine, on purpose:
+    a client that mirrors the implementation agrees with it even when both
+    are wrong. The payload is returned untrimmed so the test can prove the
+    trimming happened at the right end.
+    """
+    s.buf.clear()
+    pending = bytearray()
+    name, size = None, 0
+    got = bytearray()
+    blk = 1
+    stage = "hdr"
+    s.send(bytes([CRCREQ]))
+    end = time.time() + timeout
+
+    while time.time() < end:
+        s.pump(0.15)
+        pending += _unescape(bytes(s.buf))
+        s.buf.clear()
+        progressed = True
+        while pending and progressed:
+            progressed = False
+            if pending[0] in (SOH, STX):
+                size_b = 128 if pending[0] == SOH else 1024
+                need = 3 + size_b + 2
+                if len(pending) < need:
+                    break
+                frame = bytes(pending[:need])
+                del pending[:need]
+                progressed = True
+                num, inv = frame[1], frame[2]
+                body, chk = frame[3:3 + size_b], frame[-2:]
+                if num != (inv ^ 0xFF) or _crc16(body) != (chk[0] << 8 | chk[1]):
+                    s.send(bytes([NAK]))
+                    continue
+                if stage == "hdr" and num == 0:
+                    if body[0] == 0:                 # empty block 0: batch over
+                        s.send(bytes([ACK]))
+                        return name, size, bytes(got)
+                    nul = body.index(0)
+                    name = body[:nul].decode("ascii", "replace")
+                    rest = body[nul + 1:].split(b"\x00", 1)[0].split()
+                    size = int(rest[0]) if rest else 0
+                    s.send(bytes([ACK]))
+                    s.send(bytes([CRCREQ]))          # now send me the file
+                    stage = "data"
+                    end = time.time() + timeout
+                    continue
+                if stage == "trailer" and num == 0:
+                    s.send(bytes([ACK]))
+                    return name, size, bytes(got)
+                if num == (blk & 0xFF):
+                    got += body
+                    blk += 1
+                s.send(bytes([ACK]))
+                end = time.time() + timeout
+            elif pending[0] == EOT:
+                pending.pop(0)
+                progressed = True
+                s.send(bytes([NAK]))                 # the engine wants one NAK
+                s.pump(0.4)
+                pending += _unescape(bytes(s.buf))
+                s.buf.clear()
+                if pending and pending[0] == EOT:
+                    pending.pop(0)
+                s.send(bytes([ACK]))
+                s.send(bytes([CRCREQ]))              # ask for the trailer
+                stage = "trailer"
+                end = time.time() + timeout
+            else:
+                pending.pop(0)
+                progressed = True
+    return name, size, bytes(got)
+
+
+# Everything the protocol client saw while it was draining the socket. The
+# board prints "Upload complete" the moment it leaves binary mode, which is
+# while this client is still watching for the last ACK, so without keeping a
+# copy the test looks for a message that was thrown away a moment earlier.
+_seen = bytearray()
+
+
+def ymodem_send(s, fname, data, timeout=25.0):
+    """Send one file by YMODEM, header block and closing block included."""
+    def wait_for_byte(want, secs=8.0):
+        stop = time.time() + secs
+        while time.time() < stop:
+            s.pump(0.1)
+            raw = bytes(s.buf)
+            _seen.extend(raw)
+            seen = _unescape(raw)
+            s.buf.clear()
+            for b in seen:
+                if b in want:
+                    return b
+        return None
+
+    def block(num, payload):
+        body = bytes([SOH, num & 0xFF, (num & 0xFF) ^ 0xFF]) + payload
+        c = _crc16(payload)
+        return body + bytes([c >> 8, c & 0xFF])
+
+    if wait_for_byte({CRCREQ, NAK}, timeout) is None:
+        return False
+
+    hdr = fname.encode() + b"\x00" + str(len(data)).encode()
+    hdr = hdr + bytes(128 - len(hdr))
+    s.buf.clear()
+    s.send(_escape(block(0, hdr)))
+    if wait_for_byte({ACK}) != ACK:
+        return False
+    if wait_for_byte({CRCREQ}) != CRCREQ:
+        return False
+
+    pos, num = 0, 1
+    while pos < len(data):
+        chunk = data[pos:pos + 128]
+        chunk = chunk + bytes([SUB]) * (128 - len(chunk))
+        s.buf.clear()
+        s.send(_escape(block(num, chunk)))
+        if wait_for_byte({ACK, NAK, CAN}) != ACK:
+            return False
+        pos += 128
+        num += 1
+
+    s.buf.clear()
+    s.send(bytes([EOT]))
+    wait_for_byte({NAK, ACK}, 4)
+    s.send(bytes([EOT]))
+    wait_for_byte({ACK}, 4)
+    if wait_for_byte({CRCREQ}, 6) != CRCREQ:
+        return True                       # some senders stop here; not fatal
+    s.buf.clear()
+    s.send(_escape(block(0, bytes(128))))  # empty header closes the batch
+    wait_for_byte({ACK}, 4)
+    return True
+
+
+def settle_after_transfer(s):
+    """Clear the shell line of anything the protocol left on it.
+
+    A transfer ends with the client still speaking protocol: the closing ACK,
+    and under YMODEM a 'C' asking for the batch trailer. Whatever is in
+    flight when the board leaves raw mode lands at the command prompt as
+    typed characters, so the next command becomes "Cwho" and goes nowhere.
+    This is the test client's mess rather than the board's, and a real
+    terminal makes it too: sending a bare Enter first is what a person does
+    without noticing.
+    """
+    s.pump(0.4)
+    s.buf.clear()
+    s.send(chr(13).encode())
+    s.pump(0.4)
+    s.buf.clear()
+
+
+def test_ymodem():
+    """YMODEM both ways, and the thing YMODEM exists for: no padding."""
+    print("File transfer: YMODEM, exact sizes")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    sd = os.environ.get("BBS_SD_DIR", "")
+    if not sd:
+        print("  SKIP  needs a card")
+        return True
+    if not PASSWORD:
+        print("  SKIP  no sysop_password")
+        return True
+
+    # Deliberately not a multiple of 128, so padding would show.
+    body = bytes(range(256)) * 2 + bytes([0x0D, 0x0A, 0x00, 0xFF]) * 5 + b"tail"
+    assert len(body) % 128 != 0
+    area = os.path.join(sd, "pub", "c64")
+    os.makedirs(area, exist_ok=True)
+    with open(os.path.join(area, "EXACT.BIN"), "wb") as f:
+        f.write(body)
+
+    s = ansi_login("Yoda")
+    s.buf.clear()
+    s.send(b"files 1\r")
+    ok = check("area opens", s.wait_for(b"C64 Downloads", 5))
+    ok &= check("list leaves cleanly", leave_files(s))
+
+    # ---- download by YMODEM ---------------------------------------------
+    s.buf.clear()
+    s.send(b"download EXACT.BIN\r")
+    ok &= check("YMODEM is the default", s.wait_for(b"Start your YMODEM receive", 6))
+    name, size, got = ymodem_receive(s)
+    ok &= check("block 0 carried the filename", name == "EXACT.BIN")
+    ok &= check("block 0 carried the exact size", size == len(body))
+    ok &= check("the bytes are right", got[:len(body)] == body)
+    # The board is the sender here, so the last block is padded on the wire
+    # by necessity: XMODEM framing has no short block. What YMODEM buys is
+    # that block 0 told the receiver exactly where to stop, so trimming to
+    # the stated size reproduces the file. That is the assertion worth
+    # making, and the earlier one (len(got) >= len(body)) was always true
+    # and proved nothing at all.
+    ok &= check("and block 0's size trims the padding back to the original",
+                got[:size] == body)
+    ok &= check("the board agrees it finished", s.wait_for(b"Download complete", 8))
+    settle_after_transfer(s)
+    s.send(b"who\r")
+    ok &= check("session comes back", s.wait_for(b"online", 5))
+    ok &= check("and pages properly", drain(s))
+
+    # ---- XMODEM on request still works, and still pads --------------------
+    # Proves the two are genuinely different rather than the test lying.
+    # Re-establish the area explicitly rather than assuming the session is
+    # still where the last step left it. A stray key at the file menu
+    # opens an area, and from there the next command is read as menu
+    # keys: the "l" in "download" is the area's own "L lists", which is
+    # exactly how this failed. Deterministic beats clever.
+    s.buf.clear()
+    s.send(b"files 1\r")
+    s.wait_for(b"C64 Downloads", 5)
+    leave_files(s)
+    settle_after_transfer(s)
+    s.send(b"download EXACT.BIN X\r")
+    ok &= check("X asks for plain XMODEM",
+                s.wait_for(b"Start your XMODEM receive", 6))
+    xgot = xmodem_receive(s)
+    ok &= check("XMODEM carries the same bytes", xgot[:len(body)] == body)
+    ok &= check("but pads the tail, which is why YMODEM exists",
+                len(xgot) > len(body) and set(xgot[len(body):]) <= {SUB})
+    s.wait_for(b"Download complete", 8)
+    settle_after_transfer(s)
+    s.send(b"who\r")
+    s.wait_for(b"online", 5)
+    drain(s)
+
+    # ---- upload by YMODEM, no filename typed ------------------------------
+    drop = os.path.join(sd, "pub", "drop")
+    up = bytes([0xFF, 0x0D, 0x0A, 0x1A]) * 33 + b"END"
+    s.buf.clear()
+    s.send(b"files 5\r")
+    s.wait_for(b"Drop Box", 5)
+    leave_files(s)
+    s.buf.clear()
+    s.send(b"upload\r")
+    ok &= check("bare UPLOAD asks for YMODEM", s.wait_for(b"Start your YMODEM send", 6))
+    _seen.clear()
+    ok &= check("the board took it", ymodem_send(s, "FROMTERM.BIN", up))
+    s.pump(1.0)
+    _seen.extend(bytes(s.buf))
+    ok &= check("and says so", b"Upload complete" in plain(bytes(_seen)))
+    ok &= check("named from block 0, not typed",
+                os.path.exists(os.path.join(drop, ".pending", "FROMTERM.BIN")))
+    with open(os.path.join(drop, ".pending", "FROMTERM.BIN"), "rb") as f:
+        landed = f.read()
+    ok &= check("and it landed byte-exact, trailing 0x1A and all",
+                landed == up)
+    ok &= check("still not visible in the area until approved",
+                not os.path.exists(os.path.join(drop, "FROMTERM.BIN")))
+    s.close()
     return ok
 
 
@@ -3275,7 +3539,7 @@ if __name__ == "__main__":
                test_bulletin(), test_idle_login(), test_busy(),
                test_screens(), test_exit_screen(),
                test_refresh_and_ctrl_l(),
-               test_binary(), test_sd(), test_files(), test_xfer(),
+               test_binary(), test_sd(), test_files(), test_xfer(), test_ymodem(),
                test_config_areas(), test_partitions()]
     if "--backup" in FLAGS:
         results.append(test_backup())

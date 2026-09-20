@@ -5,12 +5,14 @@
  * ===========================================================================
  *
  * File:         src/core/xmodem.cpp
- * Module:       Core / XMODEM transfer engine
+ * Module:       Core / XMODEM and YMODEM transfer engine
  *
  * Purpose:      The XMODEM state machine (see xmodem.h). Checksum and
  *                  CRC-16, 128 byte and 1K blocks, send and receive, with
  *                  the protocol's own timeouts and retries. No heap, no
- *                  blocking, no timer of its own.
+ *                  blocking, no timer of its own. YMODEM sits on top of it
+ *                  as block 0, a batch of one, and a length that makes the
+ *                  received file byte exact.
  *
  * Libraries:    none (libc: memset)
  * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
@@ -79,10 +81,15 @@ void Engine::reset() {
 
     read_  = nullptr;
     write_ = nullptr;
+    open_  = nullptr;
     ctx_   = nullptr;
 
     crc_ = use1k_ = started_ = pktLive_ = false;
-    eotSeen_ = eotNak_ = false;
+    eotSeen_ = eotNak_ = selfNak_ = false;
+    ymodem_ = yHdr_ = yEnd_ = yFile_ = false;
+
+    ySize_ = yWritten_ = 0;
+    name_[0] = '\0';
 
     blkNum_  = 1;
     rxNum_   = 0;
@@ -120,6 +127,60 @@ void Engine::beginRecv(WriteFn fn, void* ctx, uint32_t now, bool wantCrc) {
     write_    = fn;
     ctx_      = ctx;
     crc_      = wantCrc;
+    st_       = Stat::Receiving;
+    ph_       = Ph::RecvWait;
+    lastRx_   = now;
+    deadline_ = now;        // the first start character goes out at once
+}
+
+// ---------------------------------------------------------------------------
+// beginSendY: the same send, with a block 0 in front of it carrying the name
+// and the length. Everything after block 0 is ordinary XMODEM framing, which
+// is the whole trick of YMODEM and the reason this is a wrapper rather than
+// a second engine.
+//
+// The start character is still the receiver's to choose. YMODEM is defined
+// CRC only, but a receiver that opens with NAK gets the checksum rather than
+// a stall: liberal in what we accept costs nothing here, and the far end is
+// the one that has to verify the block.
+// ---------------------------------------------------------------------------
+void Engine::beginSendY(ReadFn fn, void* ctx, const char* name, uint32_t size,
+                        uint32_t now, bool allow1k) {
+    reset();
+    read_     = fn;
+    ctx_      = ctx;
+    use1k_    = allow1k;
+    ymodem_   = true;
+    ySize_    = size;
+
+    // A header with no name in it is the end-of-batch marker, so a nameless
+    // file would close the batch before it started. Give it a name instead.
+    uint16_t i = 0;
+    if (name) while (name[i] && i < kMaxName - 1) { name_[i] = name[i]; ++i; }
+    name_[i] = '\0';
+    if (!name_[0]) { name_[0] = 'F'; name_[1] = 'I'; name_[2] = 'L';
+                     name_[3] = 'E'; name_[4] = '\0'; }
+
+    st_       = Stat::Sending;
+    ph_       = Ph::SendStart;
+    lastRx_   = now;
+    deadline_ = now + kSenderWaitMs;
+}
+
+// ---------------------------------------------------------------------------
+// beginRecvY: CRC-16 only. There is no checksum YMODEM, and a sender that
+// got block 0 past us has already proved it can do CRC, so the XMODEM
+// fallback would only ever break a line that was working.
+// ---------------------------------------------------------------------------
+void Engine::beginRecvY(OpenFn open, WriteFn write, void* ctx, uint32_t now) {
+    reset();
+    open_     = open;
+    write_    = write;
+    ctx_      = ctx;
+    crc_      = true;
+    ymodem_   = true;
+    yHdr_     = true;
+    blkNum_   = 0;          // block 0 is the header, not the first block
     st_       = Stat::Receiving;
     ph_       = Ph::RecvWait;
     lastRx_   = now;
@@ -173,6 +234,18 @@ void Engine::queueCtl(uint8_t b, uint8_t n) {
     for (uint8_t i = 0; i < n; ++i) ctl_[ctlLen_++] = b;
 }
 
+// ---------------------------------------------------------------------------
+// queuePair: two different control bytes, which only YMODEM needs. The
+// receiver answers block 0 with ACK and then 'C', and they have to go out in
+// that order: the ACK settles the header and the 'C' starts the file.
+// ---------------------------------------------------------------------------
+void Engine::queuePair(uint8_t a, uint8_t b) {
+    ctlPos_ = 0;
+    ctlLen_ = 0;
+    ctl_[ctlLen_++] = a;
+    ctl_[ctlLen_++] = b;
+}
+
 bool Engine::pending() const {
     return ctlPos_ < ctlLen_ || (pktLive_ && outPos_ < pktLen());
 }
@@ -198,6 +271,9 @@ size_t Engine::pull(uint8_t* dst, size_t max, uint32_t now) {
             // the same moment and the difference is a false timeout.
             if (ph_ == Ph::SendData) {
                 ph_       = Ph::SendAck;
+                deadline_ = now + kBlockTimeoutMs;
+            } else if (ph_ == Ph::SendY0) {
+                ph_       = Ph::SendY0Ack;
                 deadline_ = now + kBlockTimeoutMs;
             }
         }
@@ -281,10 +357,63 @@ void Engine::frameNext() {
 }
 
 // ---------------------------------------------------------------------------
+// startY0: build block 0 and arm it. Always 128 bytes and always numbered 0,
+// whatever the rest of the file is going out as.
+//
+// The payload is the filename, a NUL, then the length in decimal ASCII, then
+// NULs to the end of the block. The modification time is optional in the
+// protocol and is left out here, because the engine has no clock: it is told
+// what time it is in milliseconds since the board booted, which is not a
+// date and must not be dressed up as one.
+//
+// An empty block 0 is the end of the batch, and it is how the far end knows
+// there is no second file coming.
+// ---------------------------------------------------------------------------
+void Engine::startY0(bool end) {
+    memset(data_, 0, kBlk128);
+
+    if (!end) {
+        uint16_t i = 0;
+        while (name_[i] && i < kMaxName - 1 && i < kBlk128 - 12)
+            { data_[i] = static_cast<uint8_t>(name_[i]); ++i; }
+        data_[i++] = 0;
+
+        // The length, in decimal, and it is the entire reason YMODEM is
+        // here: it is what lets the far end stop at the last real byte
+        // instead of writing 127 bytes of padding into somebody's .PRG.
+        // Written backwards into a scratch and reversed, which keeps stdio
+        // out of an engine that otherwise needs nothing but memset.
+        char     num[10];
+        uint8_t  nd = 0;
+        uint32_t v  = ySize_;
+        do { num[nd++] = static_cast<char>('0' + (v % 10)); v /= 10; } while (v);
+        while (nd && i < kBlk128) data_[i++] = static_cast<uint8_t>(num[--nd]);
+    }
+
+    blkNum_  = 0;
+    blkLen_  = kBlk128;
+    yEnd_    = end;
+    dataOff_ = 0;
+    dataLen_ = 0;
+    buildPkt();
+    outPos_  = 0;
+    pktLive_ = true;
+    ph_      = Ph::SendY0;
+}
+
+// ---------------------------------------------------------------------------
 // retransmit: a NAK arrived, or the ACK never did
 // ---------------------------------------------------------------------------
 void Engine::retransmit() {
     if (!bumpError()) { abortWith(Err::TooManyErrors); return; }
+
+    // Block 0 is rebuilt rather than resent out of the buffer, because by
+    // the time the second 'C' is overdue the block number has already moved
+    // on to 1 and the buffer is about to be filled with file data.
+    if (ph_ == Ph::SendY0 || ph_ == Ph::SendY0Ack || ph_ == Ph::SendY0Crc) {
+        startY0(yEnd_);
+        return;
+    }
 
     if (ph_ == Ph::SendEot || ph_ == Ph::SendEotAck) {
         ph_ = Ph::SendEot;
@@ -333,6 +462,110 @@ void Engine::enterPurge(uint32_t now) {
 }
 
 // ---------------------------------------------------------------------------
+// recvHeader: block 0 arrived and checked out. It is either the name and the
+// length of a file, or, empty, the end of the batch.
+//
+// This is reached on the yHdr_ flag and never on "the block number is 0",
+// because block numbers wrap: block 256 of a long file is numbered 0 and is
+// file data, not a header. Keying on the number would corrupt every file
+// over 256 blocks at exactly the same place.
+// ---------------------------------------------------------------------------
+void Engine::recvHeader(uint32_t now) {
+    yHdr_ = false;
+
+    if (data_[0] == 0) {
+        // Nothing in the header. Before a file it means the sender has
+        // nothing to send; after one it closes the batch. Either way we are
+        // finished and the ACK is the last byte we owe.
+        queueCtl(ACK, 1);
+        st_ = Stat::Done;
+        ph_ = Ph::Idle;
+        return;
+    }
+
+    if (yEnd_) {
+        // A second file. The board asked for one and the one we have is
+        // already written in full, so stopping the sender is better than
+        // acknowledging a header for a file we will never store. The
+        // transfer is Done, not Failed: the file the caller wanted is safe.
+        pktLive_ = false;
+        queueCtl(CAN, kCanSeq);
+        st_ = Stat::Done;
+        ph_ = Ph::Idle;
+        return;
+    }
+
+    // filename, NUL, decimal length, then an optional space and an octal
+    // modification time we have no use for.
+    uint16_t i = 0;
+    while (i < blkLen_ && data_[i]) ++i;
+    if (i >= blkLen_ || i >= kMaxName) {
+        // No NUL, or a name too long for the buffer. Shortening it would
+        // write the file under a name the caller did not choose, which is a
+        // worse outcome than a transfer that plainly did not start.
+        abortWith(Err::SinkFailed);
+        return;
+    }
+    memcpy(name_, data_, i);
+    name_[i] = '\0';
+
+    uint32_t sz = 0;
+    for (uint16_t j = static_cast<uint16_t>(i + 1);
+         j < blkLen_ && data_[j] >= '0' && data_[j] <= '9'; ++j) {
+        const uint8_t d = static_cast<uint8_t>(data_[j] - '0');
+        // Saturate rather than wrap. A wrapped length would be small, and a
+        // small length silently truncates the file it was supposed to protect.
+        if (sz > (0xFFFFFFFFu - d) / 10u) { sz = 0xFFFFFFFFu; break; }
+        sz = sz * 10u + d;
+    }
+    ySize_    = sz;
+    yWritten_ = 0;
+
+    if (open_ && !open_(ctx_, name_, ySize_)) { abortWith(Err::SinkFailed); return; }
+
+    yFile_   = true;
+    blkNum_  = 1;
+    retries_ = 0;
+
+    // ACK the header, then 'C' again. The second start character is what
+    // tells the sender to begin the file itself, and until it arrives the
+    // sender is sitting waiting for it, so a stall here has to re-send it
+    // rather than NAK: started_ goes back to false to get that.
+    queuePair(ACK, CRCREQ);
+    started_  = false;
+    polls_    = 1;
+    ph_       = Ph::RecvWait;
+    deadline_ = now + kStartPollMs;
+}
+
+// ---------------------------------------------------------------------------
+// endOfFile: the EOT handshake is finished and the file is complete.
+//
+// Under XMODEM that is the end of the transfer. Under YMODEM one more 'C'
+// goes out and the sender answers with an empty block 0 to close the batch.
+// ---------------------------------------------------------------------------
+void Engine::endOfFile(uint32_t now) {
+    if (!ymodem_ || !yFile_) {
+        queueCtl(ACK, 1);
+        st_ = Stat::Done;
+        ph_ = Ph::Idle;
+        return;
+    }
+
+    queuePair(ACK, CRCREQ);
+    yHdr_     = true;
+    yEnd_     = true;
+    yFile_    = false;
+    blkNum_   = 0;
+    started_  = false;
+    polls_    = 1;
+    eotSeen_  = false;
+    retries_  = 0;
+    ph_       = Ph::RecvWait;
+    deadline_ = now + kStartPollMs;
+}
+
+// ---------------------------------------------------------------------------
 // blockDone: a whole block is in. Check it, place it, answer it.
 // ---------------------------------------------------------------------------
 void Engine::blockDone(uint32_t now) {
@@ -342,10 +575,29 @@ void Engine::blockDone(uint32_t now) {
     if (!ok) { enterPurge(now); return; }
 
     if (rxNum_ == blkNum_) {
-        if (write_ && !write_(ctx_, data_, blkLen_)) { abortWith(Err::SinkFailed); return; }
-        bytes_ += blkLen_;
+        if (yHdr_) { recvHeader(now); return; }   // sets its own phase
+
+        // The length out of block 0 is what makes a YMODEM file byte exact.
+        // The sender still pads its last block out to 128 or 1024 with SUB,
+        // and this is where that padding stops: everything past the stated
+        // length is on the wire but never reaches the owner. Without a
+        // length (plain XMODEM, or a sender that did not say) every byte is
+        // written, padding included, because guessing truncates files.
+        uint16_t take = blkLen_;
+        if (ymodem_ && ySize_) {
+            const uint32_t left = (yWritten_ < ySize_) ? (ySize_ - yWritten_) : 0;
+            if (take > left) take = static_cast<uint16_t>(left);
+        }
+
+        if (take && write_ && !write_(ctx_, data_, take)) {
+            abortWith(Err::SinkFailed);
+            return;
+        }
+        yWritten_ += take;
+        bytes_    += take;
         ++blocks_;
-        countPad();
+        if (ymodem_ && ySize_) pad_ += static_cast<uint32_t>(blkLen_ - take);
+        else                   countPad();
         ++blkNum_;                       // wraps at 255, which is the protocol
         retries_ = 0;
         queueCtl(ACK, 1);
@@ -355,7 +607,19 @@ void Engine::blockDone(uint32_t now) {
         // copy. Writing it a second time is the classic XMODEM bug and it
         // shows up as a file that is one block too long and corrupt from
         // there on.
-        queueCtl(ACK, 1);
+        if (ymodem_ && yFile_ && rxNum_ == 0 && blkNum_ == 1 && blocks_ == 0) {
+            // Block 0 again, which means the 'C' that followed our ACK was
+            // lost. The sender needs that 'C' as well, or it sits there
+            // repeating a header we already have until it runs out of tries.
+            //
+            // blocks_ is what keeps this off block 256. Numbers wrap, so the
+            // 256th block of a long file is also numbered 0 and a lost ACK
+            // on it looks identical from the header down. Only a block 0
+            // before any data has been accepted can be the header.
+            queuePair(ACK, CRCREQ);
+        } else {
+            queueCtl(ACK, 1);
+        }
     } else {
         abortWith(Err::Sequence);
         return;
@@ -393,7 +657,10 @@ void Engine::feedByte(uint8_t b, uint32_t now) {
         if (b == NAK || b == CRCREQ) {
             crc_  = (b == CRCREQ);
             cans_ = 0;
-            frameNext();
+            // Under YMODEM the name and the length go first, and the file
+            // itself waits for the receiver's second start character.
+            if (ymodem_) startY0(false);
+            else         frameNext();
         } else if (b == CAN) {
             if (++cans_ >= 2) fail(Err::RemoteCancel);
         } else {
@@ -412,6 +679,7 @@ void Engine::feedByte(uint8_t b, uint32_t now) {
     case Ph::SendAck:
         if (b == ACK) {
             cans_    = 0;
+            selfNak_ = false;
             bytes_  += blkLen_;
             ++blocks_;
             dataOff_ = static_cast<uint16_t>(dataOff_ + blkLen_);
@@ -421,7 +689,18 @@ void Engine::feedByte(uint8_t b, uint32_t now) {
             frameNext();
         } else if (b == NAK) {
             cans_ = 0;
-            retransmit();
+            // A NAK for the block we have already resent off our own clock.
+            // The receiver wrote it before it saw the retransmission, so it
+            // is asking for what is already on the way. Sending a third copy
+            // earns a second ACK for one block, which leaves the sender one
+            // ACK ahead of itself and ends the file with a block number the
+            // receiver calls out of sequence. The same policy as the one in
+            // Ph::SendData above, held across the gap where the copy has
+            // finished going out but has not been answered yet. A NAK that
+            // really is about the copy we resent arrives after it, by which
+            // time the flag is spent.
+            if (selfNak_) selfNak_ = false;
+            else          retransmit();
         } else if (b == CAN) {
             if (++cans_ >= 2) fail(Err::RemoteCancel);
         } else {
@@ -440,8 +719,82 @@ void Engine::feedByte(uint8_t b, uint32_t now) {
         else cans_ = 0;
         break;
 
+    // -- sending, the YMODEM block 0 phases -------------------------------
+    case Ph::SendY0:
+        // Mid-block, same as SendData: nothing but an abort is worth hearing.
+        if (b == CAN) { if (++cans_ >= 2) fail(Err::RemoteCancel); }
+        else cans_ = 0;
+        break;
+
+    case Ph::SendY0Ack:
+        if (b == ACK) {
+            cans_    = 0;
+            selfNak_ = false;
+            retries_ = 0;
+            pktLive_ = false;
+            if (yEnd_) {
+                // That was the empty header closing the batch. Done.
+                st_ = Stat::Done;
+                ph_ = Ph::Idle;
+            } else {
+                // Block 0 is the name and the length, not the file, so
+                // nothing is counted towards bytes() and dataOff_ does not
+                // move. The file starts at block 1 on the receiver's next 'C'.
+                blkNum_   = 1;
+                ph_       = Ph::SendY0Crc;
+                deadline_ = now + kBlockTimeoutMs;
+            }
+        } else if (b == NAK) {
+            cans_ = 0;
+            if (selfNak_) selfNak_ = false;   // stale, as in SendAck
+            else          retransmit();
+        } else if (b == CAN) {
+            if (++cans_ >= 2) fail(Err::RemoteCancel);
+        } else {
+            cans_ = 0;
+        }
+        break;
+
+    case Ph::SendY0Crc:
+        if (b == CRCREQ || b == NAK) {
+            cans_    = 0;
+            retries_ = 0;
+            frameNext();
+        } else if (b == CAN) {
+            if (++cans_ >= 2) fail(Err::RemoteCancel);
+        } else {
+            cans_ = 0;
+        }
+        break;
+
+    case Ph::SendYEndWait:
+        // The file is across and acknowledged. The receiver asks for the
+        // closing header with one more start character.
+        if (b == CRCREQ || b == NAK) {
+            cans_    = 0;
+            retries_ = 0;
+            startY0(true);
+        } else if (b == CAN) {
+            if (++cans_ >= 2) fail(Err::RemoteCancel);
+        } else {
+            cans_ = 0;
+        }
+        break;
+
     case Ph::SendEotAck:
-        if (b == ACK) { st_ = Stat::Done; ph_ = Ph::Idle; }
+        if (b == ACK) {
+            if (ymodem_) {
+                // Not finished yet: YMODEM closes with an empty block 0, so
+                // the sender waits for the receiver to ask for it.
+                cans_     = 0;
+                retries_  = 0;
+                ph_       = Ph::SendYEndWait;
+                deadline_ = now + kBlockTimeoutMs;
+            } else {
+                st_ = Stat::Done;
+                ph_ = Ph::Idle;
+            }
+        }
         else if (b == NAK) {
             cans_ = 0;
             // A receiver is supposed to NAK the first EOT (see the note on
@@ -481,9 +834,7 @@ void Engine::feedByte(uint8_t b, uint32_t now) {
                 queueCtl(NAK, 1);
                 deadline_ = now + kBlockTimeoutMs;
             } else {
-                queueCtl(ACK, 1);
-                st_ = Stat::Done;
-                ph_ = Ph::Idle;
+                endOfFile(now);
             }
         } else if (b == CAN) {
             if (++cans_ >= 2) fail(Err::RemoteCancel);
@@ -546,35 +897,59 @@ void Engine::tick(uint32_t now) {
 
     case Ph::SendData:
     case Ph::SendEot:
+    case Ph::SendY0:
         break;                           // waiting on pull(), not on the clock
 
     case Ph::SendAck:
+    case Ph::SendY0Ack:
+        // Resending off our own clock. Any NAK already in flight was written
+        // before the receiver could see this copy, so it is answered by it.
+        if (timeUp(now, deadline_)) { retransmit(); selfNak_ = true; }
+        break;
+
     case Ph::SendEotAck:
+    case Ph::SendY0Crc:
         if (timeUp(now, deadline_)) retransmit();
+        break;
+
+    case Ph::SendYEndWait:
+        // The receiver never asked for the closing header. The file is
+        // across and was acknowledged, and failing a complete transfer over
+        // the bookkeeping that follows it would be absurd.
+        if (timeUp(now, deadline_)) { st_ = Stat::Done; ph_ = Ph::Idle; }
         break;
 
     case Ph::RecvWait:
         if (!timeUp(now, deadline_)) break;
-        if (!started_) {
-            if (polls_ >= kMaxErrors) { fail(Err::NoStart); break; }
-            // A sender that ignores 'C' may be checksum-only, which is half
-            // the 8-bit world. Ask the old way rather than sit here.
-            if (crc_ && polls_ >= kCrcPolls) crc_ = false;
-            queueCtl(crc_ ? CRCREQ : NAK, 1);
-            ++polls_;
-            deadline_ = now + kStartPollMs;
-        } else if (eotSeen_) {
+        if (yEnd_ && polls_ >= kCrcPolls) {
+            // Same the other way about: the file is written and complete and
+            // the sender is simply not sending the empty block 0 that closes
+            // the batch. Take the file.
+            st_ = Stat::Done;
+            ph_ = Ph::Idle;
+            break;
+        }
+        if (eotSeen_ && (started_ || yFile_)) {
             // We NAKed an EOT and nothing has been heard since. A sender
             // that does not resend an EOT it has already sent is sitting
             // waiting for an ACK it will never get, so take the end of the
             // file at its word rather than fail a complete transfer over a
             // handshake. A line-hit EOT does not reach here: a real sender
             // carries on with the next block, which clears the flag. And
-            // this branch needs started_, so a stray EOT before the first
-            // block can never be accepted as an empty file.
-            queueCtl(ACK, 1);
-            st_ = Stat::Done;
-            ph_ = Ph::Idle;
+            // this branch needs started_ (or, under YMODEM, an open file),
+            // so a stray EOT before anything has arrived can never be
+            // accepted as an empty file.
+            endOfFile(now);
+        } else if (!started_) {
+            if (polls_ >= kMaxErrors) { fail(Err::NoStart); break; }
+            // A sender that ignores 'C' may be checksum-only, which is half
+            // the 8-bit world. Ask the old way rather than sit here. Never
+            // under YMODEM: there is no checksum YMODEM, and a sender whose
+            // block 0 we have already checked has proved it speaks CRC.
+            if (crc_ && polls_ >= kCrcPolls && !ymodem_) crc_ = false;
+            queueCtl(crc_ ? CRCREQ : NAK, 1);
+            ++polls_;
+            deadline_ = now + kStartPollMs;
         } else {
             if (!bumpError()) { abortWith(Err::Timeout); break; }
             queueCtl(NAK, 1);

@@ -5,22 +5,32 @@
  * ===========================================================================
  *
  * File:         src/core/xmodem.h
- * Module:       Core / XMODEM transfer engine
+ * Module:       Core / XMODEM and YMODEM transfer engine
  *
- * Purpose:      XMODEM send and receive as a state machine that knows
- *                  nothing about sessions, sockets, files or the card.
+ * Purpose:      XMODEM and YMODEM send and receive as a state machine that
+ *                  knows nothing about sessions, sockets, files or the card.
  *                  Checksum and CRC-16, 128 byte and 1K blocks, both
  *                  directions. It is fed bytes, asked for bytes, and told
  *                  what time it is; it never blocks, never allocates and
  *                  owns no timer.
  *
- * Design:       One engine holds one 1K block (about 1.1 KB all in). The
+ * Design:       One engine holds one 1K block (about 1.2 KB all in). The
  *               board keeps exactly one, because only one caller is in the
  *               file area at a time; nothing here is sized per node.
  *
  *               The data itself belongs to the owner. The engine asks for
  *               it through ReadFn and hands it back through WriteFn, so it
  *               never calls fopen and never learns what a file is.
+ *
+ *               YMODEM is here for one reason: the length. XMODEM has no
+ *               length field, so its last block is padded out with SUB and
+ *               a received file can be up to 127 or 1023 bytes longer than
+ *               the original. This engine refuses to strip that padding,
+ *               because 0x1A is a legal byte inside a C64 .PRG and a
+ *               receiver that guesses truncates somebody's file. YMODEM's
+ *               block 0 carries the name and the exact byte count, so the
+ *               receiver stops at the last real byte and there is nothing
+ *               left to guess about.
  *
  *               IAC escaping is deliberately NOT done here. This engine
  *               emits and consumes raw protocol bytes. A 0xFF in the data
@@ -29,8 +39,9 @@
  *               as well would double it twice and corrupt every binary
  *               file, so do not add it to this file.
  *
- * Interfaces:   xmodem::Engine (beginSend, beginRecv, feed, pull, tick,
- *               cancel, reset, status), xmodem::crc16, xmodem::sum8
+ * Interfaces:   xmodem::Engine (beginSend, beginRecv, beginSendY, beginRecvY,
+ *               feed, pull, tick, cancel, reset, status), xmodem::crc16,
+ *               xmodem::sum8
  *
  * Libraries:    none (libc: memcpy, memset)
  * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
@@ -79,6 +90,12 @@ enum : uint8_t {
 constexpr uint16_t kBlk128 = 128;
 constexpr uint16_t kBlk1K  = 1024;
 
+// The longest filename block 0 will carry, NUL included. A name that does
+// not fit is refused rather than shortened: a file written under a name the
+// caller did not choose is worse than a transfer that plainly did not start.
+// 63 characters is far past anything a file area on a FAT card holds.
+constexpr uint16_t kMaxName = 64;
+
 // ---------------------------------------------------------------------------
 // Timing. XMODEM's own numbers, and they are generous on purpose: a board
 // that stops for a few milliseconds to read a card is nowhere near them.
@@ -112,10 +129,17 @@ uint8_t sum8(const uint8_t* d, uint16_t n);
 //
 // WriteFn: the receiver handing its owner one whole received block. Return
 //   false to abort the transfer (out of space, write failed); the engine
-//   then cancels and reports Err::SinkFailed.
+//   then cancels and reports Err::SinkFailed. Under YMODEM with a length in
+//   block 0 the last call is short, because the padding is cut off there.
+//
+// OpenFn: the YMODEM receiver handing its owner what block 0 said. The owner
+//   opens the file when block 0 names it. Return false to refuse (bad name,
+//   no room, already exists); the engine then cancels with Err::SinkFailed.
+//   Called exactly once, before any WriteFn call.
 // ---------------------------------------------------------------------------
 using ReadFn  = uint16_t (*)(void* ctx, uint8_t* dst, uint16_t max);
 using WriteFn = bool     (*)(void* ctx, const uint8_t* src, uint16_t len);
+using OpenFn  = bool     (*)(void* ctx, const char* name, uint32_t size);
 
 // ---------------------------------------------------------------------------
 // Engine: one transfer, either direction.
@@ -137,13 +161,26 @@ using WriteFn = bool     (*)(void* ctx, const uint8_t* src, uint16_t len);
 // report success. A NAK after an EOT is the protocol working, not an error,
 // and errors() does not count it.
 //
-// Padding, and why it is the caller's problem: XMODEM has no length field.
-// The last block is filled out with SUB (0x1A), so a received file can
-// carry up to 127 or 1023 bytes that were never in the original. This
-// engine writes every byte it receives, padding included, and reports
+// Padding, and why it is the caller's problem under XMODEM: XMODEM has no
+// length field. The last block is filled out with SUB (0x1A), so a received
+// file can carry up to 127 or 1023 bytes that were never in the original.
+// This engine writes every byte it receives, padding included, and reports
 // trailingPad() as advice. It does not strip anything, because 0x1A is a
 // perfectly legal byte in a .PRG and a receiver that guesses is a receiver
 // that truncates somebody's file.
+//
+// YMODEM is the answer to exactly that, and it is why it is in here. Block 0
+// carries the filename and the file's length in bytes, so a YMODEM receiver
+// hands WriteFn at most that many bytes in total and the file on the card is
+// byte for byte the file that was sent. Nothing is guessed and nothing is
+// stripped on a hunch. A sender that leaves the length out (a length of 0)
+// falls back to the XMODEM behaviour, padding and all.
+//
+// Batch of one. YMODEM can carry several files in a row; this engine takes
+// the first and refuses the rest, because a board sends one file at a time
+// and a caller uploading three has two the sysop never asked for. The
+// closing empty block 0 is still exchanged, so the far end sees a clean
+// end of batch rather than a dropped line.
 // ---------------------------------------------------------------------------
 class Engine {
 public:
@@ -169,6 +206,21 @@ public:
     // beginRecv: we receive a file. wantCrc asks for CRC-16 first and falls
     // back to the checksum if the sender ignores kCrcPolls of them.
     void beginRecv(WriteFn fn, void* ctx, uint32_t now, bool wantCrc = true);
+
+    // beginSendY: YMODEM send of one file. name and size go out in block 0,
+    // and size must be what ReadFn will actually produce, because that is
+    // the number the far end trims the padding against. The name is the bare
+    // filename: it is copied as given, so a path in it is a path the caller
+    // sees. An empty name would reach the far end as the end-of-batch header,
+    // so the engine substitutes one rather than close a batch by accident.
+    void beginSendY(ReadFn fn, void* ctx, const char* name, uint32_t size,
+                    uint32_t now, bool allow1k = true);
+
+    // beginRecvY: YMODEM receive. The name and size arrive in block 0 and are
+    // handed to open() before any data. CRC-16 only, and deliberately: there
+    // is no checksum YMODEM, and falling back to one mid-transfer against a
+    // sender that has already spoken CRC would break a working line.
+    void beginRecvY(OpenFn open, WriteFn write, void* ctx, uint32_t now);
 
     // cancel: abort from our side. Queues the CAN sequence, which the owner
     // must still pull() out; the transfer is Failed with Err::LocalCancel.
@@ -204,20 +256,36 @@ public:
     const char* errorText() const;
 
     // -- figures for a progress line ---------------------------------------
-    uint32_t bytes()       const { return bytes_; }    // payload moved, padding included
+    // bytes(): payload moved. Padding is counted under XMODEM because it is
+    // written; under YMODEM with a length it is not, so bytes() ends equal
+    // to fileSize() and a progress line divides cleanly.
+    uint32_t bytes()       const { return bytes_; }
     uint32_t blocks()      const { return blocks_; }   // blocks accepted
     uint16_t errors()      const { return errs_; }     // bad blocks and timeouts
     bool     crcMode()     const { return crc_; }
     uint16_t blockSize()   const { return blkLen_; }   // the block in hand
-    uint32_t trailingPad() const { return pad_; }      // see the note above
+    // trailingPad(): under XMODEM, the run of SUB at the end and only a
+    // guess. Under YMODEM with a length, the padding that was cut off, which
+    // is not a guess at all.
+    uint32_t trailingPad() const { return pad_; }
+
+    // -- what block 0 said -------------------------------------------------
+    bool        ymodem()   const { return ymodem_; }   // this transfer is YMODEM
+    const char* fileName() const { return name_; }     // once block 0 is parsed
+    uint32_t    fileSize() const { return ySize_; }    // 0: the sender did not say
 
 private:
     // Phases. Send and receive never share one, which is what keeps the
     // CAN CAN check honest: it only ever runs in a phase where a data byte
     // cannot appear, so a 0x18 inside a file can never abort a transfer.
+    // The YMODEM block 0 phases are their own rather than a flag on the
+    // XMODEM ones, because block 0 is not file data: it must not advance
+    // dataOff_, must not count towards bytes(), and is always 128 bytes even
+    // when the rest of the file is going out in 1K blocks.
     enum class Ph : uint8_t {
         Idle,
         SendStart, SendData, SendAck, SendEot, SendEotAck,
+        SendY0, SendY0Ack, SendY0Crc, SendYEndWait,
         RecvWait, RecvNum, RecvNumInv, RecvData, RecvCheck, RecvPurge,
     };
 
@@ -230,6 +298,10 @@ private:
     void enterPurge(uint32_t now);    // drain the rest of a bad block first
     void countPad();                  // trailing SUB run of the received stream
     void queueCtl(uint8_t b, uint8_t n);
+    void queuePair(uint8_t a, uint8_t b);   // ACK then 'C', which YMODEM needs
+    void startY0(bool end);           // sender: build and arm block 0
+    void recvHeader(uint32_t now);    // receiver: block 0 arrived and checked out
+    void endOfFile(uint32_t now);     // receiver: the EOT handshake is finished
     void abortWith(Err e);            // CAN sequence out, then Failed
     void fail(Err e) { st_ = Stat::Failed; err_ = e; ph_ = Ph::Idle; }
     bool bumpError();                 // count one error, false when out of retries
@@ -246,6 +318,7 @@ private:
 
     ReadFn  read_  = nullptr;
     WriteFn write_ = nullptr;
+    OpenFn  open_  = nullptr;
     void*   ctx_   = nullptr;
 
     bool    crc_     = false;   // CRC-16 rather than the 8-bit checksum
@@ -254,6 +327,13 @@ private:
     bool    pktLive_ = false;   // a framed block is waiting to go out
     bool    eotSeen_ = false;   // receiver: an EOT arrived and was NAKed once
     bool    eotNak_  = false;   // sender: the receiver's one free NAK is spent
+    bool    selfNak_ = false;   // sender: we resent on our own clock, so the
+                                // next NAK is stale (see feedByte, SendAck)
+
+    bool    ymodem_  = false;   // block 0, a name and a length
+    bool    yHdr_    = false;   // receiver: the next block 0 is a header, not data
+    bool    yEnd_    = false;   // that block 0 is the one that closes the batch
+    bool    yFile_   = false;   // receiver: a file is open and being written
 
     uint8_t blkNum_  = 1;       // sender: block in flight; receiver: expected
     uint8_t rxNum_   = 0;       // receiver: block number of the block arriving
@@ -269,6 +349,9 @@ private:
     uint32_t blocks_ = 0;
     uint32_t pad_    = 0;
     uint16_t errs_   = 0;
+
+    uint32_t ySize_    = 0;     // the length out of block 0, 0 if unstated
+    uint32_t yWritten_ = 0;     // receiver: how much of it has been handed on
 
     // Outgoing block, as three pieces so a 1K block is never copied: the
     // header, the data where it already sits, and the check bytes.
@@ -287,6 +370,10 @@ private:
     uint16_t dataLen_ = 0;         // sender: bytes held in data_
     uint16_t dataOff_ = 0;         // sender: where the block in hand starts
     uint16_t blkLen_  = 0;         // size of the block in hand
+
+    // The filename, sent in block 0 or parsed out of it. It is a copy, so
+    // the owner may hand beginSendY a name off its own stack.
+    char     name_[kMaxName] = {};
 
     // The one block. Source data going out, landing area coming in.
     uint8_t  data_[kBlk1K] = {};

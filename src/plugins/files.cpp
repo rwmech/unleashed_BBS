@@ -50,6 +50,12 @@
  * Commands:     FILES, FILES n, DOWNLOAD, UPLOAD, UPLOADS, APPROVE,
  *               REJECT, ERASE, DESC
  *
+ * Protocol:     YMODEM by default both ways, XMODEM on request. YMODEM's
+ *                  block 0 carries the name and the exact size, so a file
+ *                  arrives byte-exact; XMODEM has no length field and pads
+ *                  the last block with 0x1A, which the engine refuses to
+ *                  strip because 0x1A is legal inside a .PRG.
+ *
  * Depends on:   the sd plugin for a mounted card (PF_SD)
  * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
  * See also:     CLAUDE.md, NEXT.md
@@ -894,6 +900,7 @@ struct Xfer {
     bool     sending = false;
     uint8_t  area   = 0xFF;
     uint32_t started = 0;
+    bool     ymodem = false;       // block 0 carried the name and the size
     uint32_t written = 0;          // receiving: bytes accepted, for the cap
     char     name[kDescMax + 1] = {};
 };
@@ -966,6 +973,44 @@ bool xferWrite(void* ctx, const uint8_t* src, uint16_t len) {
     return true;
 }
 
+// xferOpen: YMODEM block 0 has named a file. This is the first moment the
+// board learns what is being sent, and the name came off the wire from a
+// caller, so it is checked exactly as hard as one typed at a prompt.
+//
+// Returning false aborts the transfer with SinkFailed, which is the right
+// answer for every refusal here: the caller is told the upload failed rather
+// than discovering later that the board quietly renamed or dropped it.
+bool xferOpen(void* ctx, const char* name, uint32_t size) {
+    Xfer* x = static_cast<Xfer*>(ctx);
+    char dir[128], pd[160], full[224];
+    struct stat st;
+
+    if (!safeName(name)) {
+        plat::log("files: upload refused, unsafe name from block 0");
+        return false;
+    }
+    // The catalogue is the area's, not a caller's to overwrite.
+    if (ieq(name, BBS_FILES_DESC) || ieq(name, kPendList)) return false;
+    if (size > kMaxUploadBytes) {
+        plat::log("files: upload %s refused, block 0 says %lu bytes",
+                  name, static_cast<unsigned long>(size));
+        return false;
+    }
+    if (!areaPath(x->area, dir, sizeof(dir))) return false;
+    snprintf(full, sizeof(full), "%s/%.48s", dir, name);
+    if (stat(full, &st) == 0) return false;            // already live here
+
+    if (!pendPath(x->area, pd, sizeof(pd))) return false;
+    mkdir(pd, 0755);
+    snprintf(full, sizeof(full), "%s/%.48s", pd, name);
+    if (stat(full, &st) == 0) return false;            // already waiting
+
+    x->fp = fopen(full, "wb");
+    if (!x->fp) return false;
+    snprintf(x->name, sizeof(x->name), "%.48s", name);
+    return true;
+}
+
 // xferPump: move whatever the engine has ready into the caller's timeline.
 //
 // Sized against the room actually left, and halved, because Term::raw
@@ -998,9 +1043,10 @@ void xferEnd(Bbs& b, Session& s) {
 
     if (g_eng.done()) {
         unsigned kb = static_cast<unsigned>((g_eng.bytes() + 512) / 1024);
-        snprintf(buf, sizeof(buf), "%s complete: %s, %u KB in %u blocks%s",
+        snprintf(buf, sizeof(buf), "%s complete: %s, %u KB in %u blocks, %s%s",
                  g_x.sending ? "Download" : "Upload", g_x.name, kb,
                  static_cast<unsigned>(g_eng.blocks()),
+                 g_x.ymodem ? "YMODEM" : "XMODEM",
                  g_eng.crcMode() ? ", CRC" : ", checksum");
         s.term.color(s.tl, Color::LightGreen);
     } else {
@@ -1134,7 +1180,16 @@ void startSend(Bbs& b, Session& s, const char* arg, uint32_t now) {
         return;
     }
 
-    snprintf(buf, sizeof(buf), "%s/%s", dir, name);
+    // A second word picks the protocol. YMODEM is the default because it is
+    // the one that does not damage the file: XMODEM has no length field, so
+    // it pads the last block with 0x1A and the caller receives a file up to
+    // 1023 bytes longer than the one on the card. Anyone whose terminal only
+    // speaks XMODEM asks for it by name.
+    bool useY = true;
+    while (*r == ' ') ++r;
+    if (*r == 'x' || *r == 'X') useY = false;
+
+    snprintf(buf, sizeof(buf), "%s/%.48s", dir, name);
     FILE* fp = fopen(buf, "rb");
     if (!fp) {
         s.term.color(s.tl, Color::LightRed);
@@ -1142,6 +1197,9 @@ void startSend(Bbs& b, Session& s, const char* arg, uint32_t now) {
         b.prompt(s);
         return;
     }
+    struct stat sst;
+    uint32_t fsize = 0;
+    if (stat(buf, &sst) == 0) fsize = static_cast<uint32_t>(sst.st_size);
 
     if (!b.own(s, g_index)) { fclose(fp); b.prompt(s); return; }
     b.setDoing(s, "DOWNLOAD");
@@ -1149,22 +1207,30 @@ void startSend(Bbs& b, Session& s, const char* arg, uint32_t now) {
     g_x.s       = &s;
     g_x.fp      = fp;
     g_x.sending = true;
+    g_x.ymodem  = useY;
     g_x.area    = at;
     g_x.started = now;
-    snprintf(g_x.name, sizeof(g_x.name), "%s", name);
+    snprintf(g_x.name, sizeof(g_x.name), "%.48s", name);
 
     // Told before the line goes binary, because after this the caller's
     // terminal is a transfer and nothing readable reaches it again until
     // the transfer ends.
     s.term.color(s.tl, Color::Cyan);
-    snprintf(buf, sizeof(buf), "Sending %s. Start your XMODEM receive now.", name);
+    snprintf(buf, sizeof(buf), "Sending %.48s. Start your %s receive now.",
+             name, useY ? "YMODEM" : "XMODEM");
     s.term.text(s.tl, buf);
     s.term.nl(s.tl);
+    if (useY) {
+        s.term.color(s.tl, Color::Grey);
+        s.term.text(s.tl, "DOWNLOAD <file> X if your terminal only does XMODEM.");
+        s.term.nl(s.tl);
+    }
     s.term.reset(s.tl);
 
     s.tn.setBinary(true);        // CR is data now, not a line ending
-    b.setRawInput(s, true);          // and 0x1B is data, not an escape
-    g_eng.beginSend(xferRead, &g_x, now, true);
+    b.setRawInput(s, true);      // and 0x1B is data, not an escape
+    if (useY) g_eng.beginSendY(xferRead, &g_x, name, fsize, now, true);
+    else      g_eng.beginSend(xferRead, &g_x, now, true);
 }
 
 // argName: the first word of an argument as a filename, checked. Shared by
@@ -1212,11 +1278,36 @@ void startRecv(Bbs& b, Session& s, const char* arg, uint32_t now) {
         return;
     }
 
+    // No name means YMODEM: block 0 carries it, so the caller does not have
+    // to type what their own terminal already knows. A name means the
+    // caller's terminal only speaks XMODEM, which has no filename on the
+    // wire and therefore needs one here.
     char name[kDescMax + 1] = {};
-    if (!argName(arg, name, sizeof(name))) {
-        s.term.color(s.tl, Color::LightRed);
-        s.term.text(s.tl, "UPLOAD <file>");
-        b.prompt(s);
+    bool useY = !argName(arg, name, sizeof(name));
+
+    if (useY) {
+        if (!b.own(s, g_index)) { b.prompt(s); return; }
+        b.setDoing(s, "UPLOAD");
+        g_x.s       = &s;
+        g_x.fp      = nullptr;            // xferOpen opens it when block 0 lands
+        g_x.sending = false;
+        g_x.ymodem  = true;
+        g_x.area    = at;
+        g_x.started = now;
+        g_x.written = 0;
+        snprintf(g_x.name, sizeof(g_x.name), "%s", "(unnamed)");
+
+        s.term.color(s.tl, Color::Cyan);
+        s.term.text(s.tl, "Ready. Start your YMODEM send now.");
+        s.term.nl(s.tl);
+        s.term.color(s.tl, Color::Grey);
+        s.term.text(s.tl, "It waits for staff approval before anyone else sees it.");
+        s.term.nl(s.tl);
+        s.term.reset(s.tl);
+
+        s.tn.setBinary(true);
+        b.setRawInput(s, true);
+        g_eng.beginRecvY(xferOpen, xferWrite, &g_x, now);
         return;
     }
     // Never let an upload be named as the catalogue: approving it would
@@ -1309,7 +1400,7 @@ const Command kCommands[] = {
     // may upload here" was unreachable for exactly the users it named. The
     // command flag answers "may you use the file areas at all"; mayUp()
     // answers "may you upload into this one", and that is the real gate.
-    { "UPLOAD", "U", 0, CF_READ, "[U]PLOAD f", "send a file to this area",
+    { "UPLOAD", "U", 0, CF_READ, "[U]PLOAD [f]", "receive a file; name it only for XMODEM",
       [](Bbs& b, Session& s, const char* a, uint32_t now) { startRecv(b, s, a, now); },
       Menu::Main, 10 },
     { "UPLOADS", "", 0, CF_ADMIN, "UPLOADS", "uploads waiting for approval",
@@ -1489,7 +1580,7 @@ const Command kCommands[] = {
           b.prompt(s);
       },
       Menu::Sysop, 20 },
-    { "DOWNLOAD", "D", 0, CF_READ, "[D]OWNLOAD f", "send a file by XMODEM",
+    { "DOWNLOAD", "D", 0, CF_READ, "[D]OWNLOAD f [x]", "send a file, YMODEM unless x",
       [](Bbs& b, Session& s, const char* a, uint32_t now) { startSend(b, s, a, now); },
       Menu::Main, 9 },
     { "DESC", "", 0, CF_WRITE, "DESC f text", "describe a file in this area",

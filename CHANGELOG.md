@@ -24,6 +24,40 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.17.5, 2026-09-20
+
+File transfer, and the file area finally does what a file area is for.
+
+### Transfer
+
+- **YMODEM, and it is the default both ways.** `DOWNLOAD <file>` sends by YMODEM; add `X` if your terminal only speaks XMODEM. A bare `UPLOAD` receives by YMODEM and takes the filename off the wire; `UPLOAD <file>` is the XMODEM form, which needs the name because XMODEM has none.
+- **Why that matters, which is the only reason YMODEM is here: the length.** XMODEM has no length field, so its last block is padded out with `0x1A` and a received file can be up to 1023 bytes longer than the original. The engine refuses to strip that padding, and it is right to: `0x1A` is a perfectly legal byte inside a C64 `.PRG`, and a receiver that guesses truncates somebody's file. YMODEM's block 0 carries the exact byte count, so there is nothing left to guess.
+- One transfer at a time, board-wide. XMODEM is stop-and-wait, so a transfer is mostly spent waiting, and a second engine would cost 1.1 KB of static RAM to overlap two idle things. A second caller is told to try again in a moment rather than queued.
+- Nothing blocks. The engine is fed as the far end answers and nudged from the plugin tick for timeouts, so a transfer advances one block per round trip. That is XMODEM behaving correctly, not the board being slow.
+
+### Uploads wait for staff
+
+- An upload lands in a `.pending` folder inside the area and **is not in the area** until staff approve it. A staging folder rather than a flag on the file, and that is the whole safety argument: with a flag, every listing and download path has to remember to check it, and forgetting one check serves an unapproved file. With a folder, an unapproved file simply is not there. Approval is a rename on the same filesystem, so it is near atomic, and a power cut mid-upload leaves junk in staging rather than in the public area.
+- `UPLOADS` lists what is waiting, `APPROVE` makes one live, `REJECT` throws it away. Staff are told the count at login, which costs no card reads because the count is kept rather than counted.
+- A filename arriving in a YMODEM header is checked exactly as hard as one typed at a prompt, and one over 63 characters is refused rather than shortened. A file written under a name nobody chose is worse than a transfer that plainly did not start.
+- Caps from the start rather than after somebody finds them: 4 MB per upload, 20 waiting per area.
+
+### Four permission levels per area
+
+- `area1 = path | name | read | up | down | del`. Read sees and lists, up puts files in, down takes them out, del removes them and approves or rejects uploads. Before this there was one `write` level doing two different jobs, which meant a board could not offer downloads without also offering uploads.
+- Upload sits before download on that line even though it reads oddly. It is where the old single `write` level was, and moving it would silently have turned every configured area's upload level into its download level.
+
+### Fixed
+
+- **Long filenames on the card, without which a file area is unusable.** The IDF defaults FATFS to 8.3, where a name of more than eight characters is not awkward but *invalid*: FatFs refuses to create it and refuses to open it. A folder called `textfiles` was never created, the area listed as configured, and the only symptom was "that folder is not on the card" with nothing in the log. Every file already on the card with an ordinary laptop-made name was invisible too, which would only have surfaced once downloads worked. No host test could have caught this: the host build uses the real Linux filesystem.
+- **A lost ACK could desynchronise a whole XMODEM transfer.** The sender times out and resends on its own clock while the receiver, having timed out on the same pass, already has a NAK on the wire for the same block. The sender acted on that NAK, sent a third copy, collected a second ACK for one block, and was one ACK ahead of itself for the rest of the file, failing near the end after every byte had already arrived. Whether the two timeouts align is luck, which is why this never showed up before. Found by writing the YMODEM loopback test.
+- An area whose folder cannot be created now says which area and which path, instead of failing silently and leaving a sysop to find out from a caller.
+
+### Notes
+
+- Engine: 161 self-checks, clean under ASan and UBSan. `sizeof(Engine)` 1208 bytes, one 1K block plus change.
+- Board: 494 checks with a card, 371 without. Flash 69.8%, static RAM 148,188 bytes.
+
 ## 0.17.2, 2026-09-20
 
 The file subsystem. Areas you can walk into, a settings page that opens

@@ -196,13 +196,39 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
 
 ### File transfer: phases 4, 5 and 6, built 2026-09-20
 
-- **XMODEM and XMODEM-1K. There is no YMODEM**, despite earlier notes in this
-  file calling the engine "XMODEM/YMODEM". Checked rather than assumed: there
-  is no block-0 handling anywhere in `src/core/xmodem.cpp`. The consequence is
-  that no filename crosses the wire, so a download is named by the command and
-  an upload is named at a prompt before the line goes binary. That is how
-  boards did XMODEM uploads and it is not a workaround. YMODEM is a later
-  addition on the same engine.
+- **XMODEM, XMODEM-1K and YMODEM.** YMODEM landed in 0.17.5 and is the
+  default in both directions; XMODEM is there for terminals that only speak
+  it. `DOWNLOAD <file>` is YMODEM, `DOWNLOAD <file> X` is XMODEM, bare
+  `UPLOAD` is YMODEM and takes the name off the wire, `UPLOAD <file>` is
+  XMODEM and needs the name because XMODEM has none.
+- **Why YMODEM was worth it, in one line: the length.** XMODEM pads its last
+  block with 0x1A and the engine refuses to strip that, correctly, because
+  0x1A is legal inside a .PRG and a receiver that guesses truncates somebody's
+  file. Block 0 carries the exact byte count, and the spec is explicit that
+  the receiver "stores the specified number of characters, discarding any
+  padding". The test asserts both halves: the same file comes back padded
+  under XMODEM and byte-exact under YMODEM, so the test cannot quietly agree
+  with a broken implementation.
+- **A name arriving in block 0 is untrusted input** and goes through exactly
+  the checks a typed one does, plus "already live here" and "already waiting".
+  A name over 63 characters is refused rather than shortened: a file written
+  under a name nobody chose is worse than a transfer that plainly did not
+  start.
+- **A real XMODEM bug fell out of writing the YMODEM loopback test**, and it
+  was always reachable. An ACK is lost; the sender times out and resends on
+  its own clock; the receiver, having timed out on the same pass, already has
+  a NAK on the wire for the same block. The sender acted on that NAK, sent a
+  third copy, collected a second ACK for one block, and was **one ACK ahead of
+  itself for the rest of the file**, dying with `Err::Sequence` near the end
+  after all the data had arrived. Whether the two timeouts land on the same
+  pass is pure alignment, which is why the existing fixtures never hit it.
+  The fix is one bool, `selfNak_`, swallowing exactly one NAK per
+  self-initiated resend, which extends a policy the code already stated in
+  `Ph::SendData`. **Verified by disabling it**: three lost-ACK checks fail
+  without it and 161 pass with it. The cost is that a genuinely corrupt resend
+  waits for the next 10 s timeout instead of going again at once. Slower
+  recovery, not a lost file.
+- `sizeof(Engine)` went 1128 to 1208 on the host, about 1204 on the target.
 - **One transfer at a time, board-wide**, which is the engine's own documented
   design. XMODEM is stop-and-wait, so a transfer is mostly idle, and a second
   engine would cost 1.1 KB of static RAM to overlap two things that are each
@@ -685,5 +711,13 @@ list.
 - HomeTo64: https://github.com/JKnivesworthy/hometo64
 - Image BBS source: https://github.com/Pinacolada64/ImageBBS
 - Synchronet PETSCII: https://wiki.synchro.net/howto:petscii
+- YMODEM, Chuck Forsberg's original spec: https://pauillac.inria.fr/~doligez/zmodem/ymodem.txt
+  Checked rather than recalled when the engine work was specified. The four
+  points that matter: the receiver opens with 'C'; block 0 is a NUL-terminated
+  filename then the length as a decimal string, unused bytes NUL; the receiver
+  ACKs block 0 and then sends 'C' again to start the file; and the receiver
+  **must** truncate to the stated length, "discarding any padding added by the
+  sender to fill up the last block". That truncation is the spec, not an
+  optimisation, and it is the whole reason YMODEM is worth having here.
 - esp_littlefs: https://github.com/joltwallet/esp_littlefs
 - ESP-IDF 5.3.1 mbedTLS RAM: https://docs.espressif.com/projects/esp-idf/en/v5.3.1/esp32/api-reference/protocols/mbedtls.html
