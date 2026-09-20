@@ -522,10 +522,18 @@ void filesPrompt(Session& s) {
     Timeline& tl = s.tl;
     t.nl(tl);
     t.color(tl, Color::Cyan);
+    // Two tests, not one. A PETSCII C64 can point, so canPoint() alone put a
+    // 49 character line on a 40 column screen, where it wrapped and cost a
+    // row off a screen that only has 25. Pointing is about the terminal's
+    // attributes; fitting is about its width, and they are not the same
+    // question.
+    bool wide = t.cols() >= 60;
     if (g_where[slotOf(s)] == Where::Area)
         t.text(tl, "Area: number, L lists, Q back");
-    else if (canPoint(s))
+    else if (canPoint(s) && wide)
         t.text(tl, "Files: cursor keys and Enter, or a number. Q quits");
+    else if (canPoint(s))
+        t.text(tl, "Files: cursors, Enter, number. Q quits");   // 38, fits 40
     else
         t.text(tl, "Files: number opens an area, Q quits");
     t.nl(tl);

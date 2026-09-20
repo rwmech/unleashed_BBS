@@ -121,7 +121,15 @@ absent:
 | `rules` | pressing R to register, before anything is typed. Two pages. |
 | `newuser` | once a registration succeeds, in place of the bulletin |
 | `chatin` | joining the chat room |
+| `files` | entering the file subsystem, above the area menu |
 | `goodbye` | every ending: BYE, idle, out of time, kicked or banned |
+
+`files` is a door rather than a page: the area menu is drawn underneath it,
+so it has to leave room. Budget about eight rows at 80 columns and seven at
+40, which keeps the menu and its prompt on screen even with ten areas.
+Entering the subsystem clears the screen first, and the menu deliberately
+does not clear again afterwards, because wiping a screen that has just
+played is the same as not having one.
 
 `goodbye` is followed by a five second hold (`BBS_EXIT_LINGER_MS`) so the
 screen is not cut off by the socket closing.

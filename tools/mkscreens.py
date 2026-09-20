@@ -11,7 +11,8 @@ Module:       Tools / stock screen generator
 
 Purpose:      Generates the stock µnleashed BBS display files in data/screens/:
                  welcome.seq/.ans/.asc, busy.seq/.ans/.asc,
-                 goodbye.seq/.ans/.asc, about.seq/.ans/.asc. No bulletin ships: add
+                 goodbye.seq/.ans/.asc, about.seq/.ans/.asc,
+                 files.seq/.ans/.asc. No bulletin ships: add
                  bulletin.asc/.ans/.seq to show one after login.
                  Hand-drawn art from PETSCII/ANSI editors can replace any of
                  these; the BBS only cares about the file name and extension.
@@ -70,6 +71,8 @@ FONT = {
     "S": ["###", "#..", "###", "..#", "###"],
     "H": ["#.#", "#.#", "###", "#.#", "#.#"],
     "D": ["##.", "#.#", "#.#", "#.#", "##."],
+    "F": ["###", "#..", "##.", "#..", "#.."],
+    "I": ["###", ".#.", ".#.", ".#.", "###"],
 }
 LOGO = "µnLEASHED"
 
@@ -182,6 +185,8 @@ WCAPS = {
     "S": [".#####", "##...#", "##....", "##....", ".####.", "..####", "....##", "##..##", "#####.", ".####."],
     "H": ["##..##", "##..##", "##..##", "##..##", "######", "######", "##..##", "##..##", "##..##", "##..##"],
     "D": ["#####.", "##..##", "##..##", "##..##", "##..##", "##..##", "##..##", "##..##", "##..##", "#####."],
+    "F": ["######", "######", "##....", "##....", "#####.", "#####.", "##....", "##....", "##....", "##...."],
+    "I": ["######", "######", "..##..", "..##..", "..##..", "..##..", "..##..", "..##..", "######", "######"],
 }
 WFONT = {k: v + [WBLANK, WBLANK] for k, v in WCAPS.items()}
 WFONT["\u00b5"] = [WBLANK, WBLANK,
@@ -199,9 +204,9 @@ def wordmark_pixels(word=WORD, gap=1):
     return rows
 
 
-def wordmark_cells(word=WORD):
-    """Pixel rows folded into half-block cells: 12 pixels become 6 rows."""
-    px = wordmark_pixels(word)
+def fold_half_blocks(px):
+    """Pixel rows folded into half-block cells: two pixel rows become one
+    text row. None is a cell with no ink in either half."""
     out = []
     for r in range(0, len(px), 2):
         top, bot = px[r], px[r + 1]
@@ -211,6 +216,22 @@ def wordmark_cells(word=WORD):
             row.append(BLK_FULL if hi and lo else BLK_TOP if hi else BLK_BOT if lo else None)
         out.append(row)
     return out
+
+
+def wordmark_cells(word=WORD):
+    """Pixel rows folded into half-block cells: 12 pixels become 6 rows."""
+    return fold_half_blocks(wordmark_pixels(word))
+
+
+def caps_cells(word, gap=1):
+    """A word in the 6x10 caps only: 10 pixels become 5 text rows. No blank
+    rows underneath, because nothing here has a descender and a door screen
+    cannot spare the height."""
+    px = [""] * 10
+    for i, ch in enumerate(word):
+        for r in range(10):
+            px[r] += WCAPS[ch][r] + ("." * gap if i < len(word) - 1 else "")
+    return fold_half_blocks(px)
 
 
 def ansi_wordmark(indent, gradient):
@@ -731,6 +752,147 @@ def make_chatin_asc():
     return b"@CLS@" + ascii_page(CHATIN)
 
 
+# ==========================================================================
+# files: the door into the file subsystem
+#
+# The files plugin clears the screen, plays this, prints one blank line and
+# then draws the numbered area menu underneath. So this is a lintel and not
+# a mural: seven rows on 40 columns and eight on 80, which leaves a 24-row
+# terminal room for a title bar, ten areas and the prompt without the top of
+# the door scrolling away.
+#
+# PETSCII note. Term::begin locks the mixed-case charset (0x0E then 0x08),
+# so the graphics that survive are 0xA0-0xBF, plus 0xC0 and 0xDB-0xDF:
+# 0xC1-0xDA are the capitals in that charset, which takes the rounded box
+# corners off the table. Everything used here is from the range that stays:
+#   0xA4  lower one eighth block    1px, the thin end of the top rule
+#   0xAF  lower one quarter block   2px, a rule hugging the row below it
+#   0xA3  upper one eighth block    1px, the thin end of the bottom rule
+#   0xB7  upper one quarter block   2px, a rule hugging the row above it
+#   0xA7  right one eighth block    1px vertical hairline
+# Those quarter-block rules are the PETSCII way to draw a line that touches
+# what it frames. 0xC0 (the full-cell horizontal) sits in the middle of its
+# row and leaves a gap, which is right for a section rule and wrong for a
+# lintel. And because the eighth and the quarter are different glyphs and
+# not different colours, a rule tapers at its ends without a second colour
+# being introduced, which CP437 has no way to do at all.
+# ==========================================================================
+FILES_SUB80 = "the file library"
+FILES_SUB40 = "file library"
+
+PET_LOW_8 = 0xA4          # lower one eighth block   (1 pixel)
+PET_LOW_4 = 0xAF          # lower one quarter block  (2 pixels)
+PET_TOP_8 = 0xA3          # upper one eighth block
+PET_TOP_4 = 0xB7          # upper one quarter block
+PET_HAIR_R = 0xA7         # right one eighth block
+
+
+def pet_taper(thin, thick, width, ends=4):
+    """A rule that thins at both ends. PETSCII has three weights below a
+    half block, so a fade is drawn by changing glyph rather than colour,
+    which is the one thing 40 columns can do that CP437 cannot."""
+    mid = width - 2 * ends
+    return bytes([thin]) * ends + bytes([thick]) * mid + bytes([thin]) * ends
+
+
+def make_files_ans():
+    """80 columns, 8 rows. The mark in half blocks with the small text set
+    against it on the right, because a 34 column mark on an 80 column screen
+    leaves half the width black otherwise."""
+    cells = caps_cells("FILES")           # 5 rows of 34 cells
+    w = len(cells[0])
+    left = 4                              # the mark starts in column 5
+    rule = 72                             # columns 5 to 76
+    aside_col = 43                        # the small text starts in column 44
+    # White on the cap line, cyan through the body, and the brightness put
+    # back into the closing bar. A brighter row under a dimmer one breaks the
+    # fade, which is what a light blue foot above a bright bar was doing.
+    ramp = ["1;37", "1;36", "1;36", "0;36", "0;36"]
+    # The small text is anchored rather than floated: the title sits on the
+    # cap line of the mark and the stamp on its baseline, so the block reads
+    # as set against the word instead of dropped next to it.
+    aside = {
+        0: ("1;37", FILES_SUB80.encode("ascii")),
+        1: ("0;34", bytes([H_LINE]) * len(FILES_SUB80)),
+        4: ("1;30", b"@DATE@  @TIME@"),
+    }
+    b = bytearray()
+    b += sgr("0") + b"\r\n"
+    # A lower half block puts its ink at the foot of the row, so the bar
+    # lands hard against the top of the mark instead of floating above it.
+    b += sgr("0;34") + b" " * left + bytes([BLK_BOT]) * rule + b"\r\n"
+    for r, row in enumerate(cells):
+        line = bytearray(b" " * left)
+        line += sgr(ramp[r])
+        for cell in row:
+            line.append(cell if cell else 0x20)
+        if r in aside:
+            color, text = aside[r]
+            line += b" " * (aside_col - (left + w))
+            line += sgr(color) + text
+        b += bytes(line) + b"\r\n"
+    # The closing bar is brighter under the mark and dim past it: the eye is
+    # told where the word ends without a second colour being introduced.
+    b += sgr("1;36") + b" " * left + bytes([BLK_TOP]) * w
+    b += sgr("0;34") + bytes([BLK_TOP]) * (rule - w) + b"\r\n"
+    b += sgr("0")
+    return bytes(b)
+
+
+def make_files_seq():
+    """40 columns, 7 rows. Redrawn rather than scaled: the 3x5 reverse-space
+    face is the one that keeps a letter taller than it is wide on an 8x8
+    cell, and the rules are quarter blocks rather than 0xC0."""
+    rows = logo_rows("FILES")             # 5 rows of 19 cells
+    indent = 1                            # the mark runs columns 2 to 20
+    bar = 37                              # the rules run columns 2 to 38, so
+    #                                       they start where the mark starts
+    #                                       and end where the date stamp ends
+    ramp = ["white", "cyan", "cyan", "cyan", "lblue"]
+    aside = {1: pet_text(FILES_SUB40), 3: pet_text("@DATE@")}
+    s = bytearray()
+    s += pet("cyan") + b" " + pet_taper(PET_LOW_8, PET_LOW_4, bar) + pet("cr")
+    for r, row in enumerate(rows):
+        line = bytearray([PET[ramp[r]]])
+        line += b" " * indent
+        rvs = False
+        for cell in row:
+            want = cell == "#"
+            if want != rvs:
+                line.append(PET["rvs"] if want else PET["off"])
+                rvs = want
+            line += b" "
+        if rvs:
+            line.append(PET["off"])       # never leave reverse on at a CR
+        line += b" "                                    # column 21
+        line += bytes([PET["lblue"], PET_HAIR_R])       # column 22
+        if r in aside:
+            line += b" " + bytes([PET["grey"]]) + aside[r]   # column 24 on
+        line.append(PET["cr"])
+        s += bytes(line)
+    s += pet("cyan") + b" " + pet_taper(PET_TOP_8, PET_TOP_4, bar) + pet("cr")
+    s += bytes([PET["off"], PET["white"]])
+    return bytes(s)
+
+
+def make_files_asc():
+    """39 columns, 7 rows, 7-bit. No colour and no reverse video, so the
+    shape has to come from the rules and the gutter."""
+    rows = logo_rows("FILES")
+    out = [" " + "-" * 37]                # columns 2 to 38, as in the PETSCII
+    aside = {1: FILES_SUB40, 3: "@DATE@"}
+    for r, row in enumerate(rows):
+        # " " + 19 cells fills columns 1 to 20, the divider sits in column 22
+        # and the small text starts in column 24, the same gutter the PETSCII
+        # and ANSI versions use.
+        line = " " + "".join("#" if c == "#" else " " for c in row) + " |"
+        if r in aside:
+            line += " " + aside[r]
+        out.append(line.rstrip())
+    out.append(" " + "-" * 37)
+    return ("\n".join(out) + "\n").encode("ascii")
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     files = {
@@ -752,6 +914,9 @@ def main():
         "newuser.asc": make_newuser_asc(),
         "chatin.ans": make_chatin_ans(),
         "chatin.asc": make_chatin_asc(),
+        "files.ans": make_files_ans(),
+        "files.seq": make_files_seq(),
+        "files.asc": make_files_asc(),
         "privacy.seq": make_privacy_seq(),
         "privacy.ans": make_privacy_ans(),
         "privacy.asc": make_privacy_asc(),
