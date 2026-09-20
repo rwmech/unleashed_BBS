@@ -190,9 +190,11 @@ cannot do it.
 
 Rob wants it and it is worth having: it streams instead of waiting for an
 ACK per block, which is five to ten times faster on a link with any latency,
-and it resumes a broken transfer.
+and it resumes a broken transfer. **It is on the list, not filed under
+someday.**
 
-It is deliberately last, and not as a brush-off.
+It is last because of what it costs to build well, not because of who can
+use it.
 
 **Streaming is the whole point and also the whole cost.** A sender that does
 not wait for an ACK has to hold everything it has sent but not had confirmed,
@@ -202,11 +204,13 @@ that also has fifteen other callers on it is the hard part. Built
 half-heartedly it has ZMODEM's complexity and XMODEM's speed, which is the
 worst of both.
 
-**The reference client cannot use it.** A C64 through TeensyROM is a 1 MHz
-6510 doing CRC-32 on a continuous stream with a sliding window to manage. It
-will negotiate its way down to XMODEM. So ZMODEM is a speed improvement for
-SyncTERM and PuTTY users and buys nothing at all for the machine this project
-exists for, which is a reason to do it properly rather than early.
+**Not all callers will use it, and that is fine.** ZMODEM asks a receiver to
+handle a continuous stream, CRC-32 on the fly and a sliding window; some
+period machines will do that comfortably and some will negotiate down to
+XMODEM. That is an argument for having all three and letting a caller use
+what suits their machine, not an argument about any one of them. It is also
+not a reason to rush ZMODEM, because the callers who benefit most are the
+ones already having the easiest time.
 
 **It wants measurements that phases 5 and 6 produce.** What the socket
 actually sustains, what a card read actually costs under load, how much of
