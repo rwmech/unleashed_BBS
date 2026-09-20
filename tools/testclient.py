@@ -2312,9 +2312,58 @@ def test_files():
     s.send(b"files\r")
     ok = check("FILES opens the file area", s.wait_for(b"File areas", 5))
     s.pump(0.8)
+    raw_menu = bytes(s.buf)
     areas = plain(s.buf)
     ok &= check("with its own prompt, not the shell's",
-                b"number opens an area" in areas)
+                b"Q quits" in areas)
+
+    # Entering is arriving somewhere, so the screen is cleared. Without this
+    # each view prints under the last one and the subsystem reads as a
+    # command that keeps talking rather than as a place. The complaint that
+    # produced this test was "screen clears bro".
+    ok &= check("and the screen was cleared on the way in",
+                b"\x1b[2J" in raw_menu)
+
+    # An ANSI caller points and shoots; the numbers stay as the fallback for
+    # plain ASCII, which has neither a cursor nor reverse video.
+    ok &= check("an ANSI caller is offered the cursor keys",
+                b"cursor keys" in areas)
+    ok &= check("and one area is highlighted to point at",
+                b"\x1b[7m" in raw_menu)
+
+    # Down then Enter opens whatever the bar is sitting on. The menu is a
+    # grid, so down moves by a row rather than by one area, and the test
+    # only needs to prove the pair agree: the area that opens is the area
+    # that was lit. When drawing and the keys each worked the column count
+    # out for themselves, they disagreed.
+    s.buf.clear()
+    s.send(b"\x1b[B")
+    ok &= check("the cursor moves and the menu is redrawn",
+                s.wait_for(b"File areas", 5))
+    s.pump(0.6)
+    moved = plain(s.buf)
+
+    s.buf.clear()
+    s.send(b"\x1b[A")            # back up to the first area
+    s.pump(0.6)
+    s.buf.clear()
+    s.send(chr(13).encode())
+    ok &= check("Enter opens the highlighted area", s.wait_for(b"C64 Downloads", 5))
+    ok &= check("and that list leaves cleanly", leave_files(s))
+
+    s.buf.clear()
+    s.send(b"files\r")
+    ok &= check("back in the file areas", s.wait_for(b"File areas", 5))
+    s.pump(0.8)
+    areas = plain(s.buf)
+
+    # The board provides two areas of its own, Screens and Logs, so a fresh
+    # card is not an empty room and a sysop has the screen folder and the
+    # caller log to hand. Both are staff-only, and this caller is not staff,
+    # so the interesting assertion here is the negative one: an area you may
+    # not read is not listed, rather than listed and refused.
+    ok &= check("an ordinary caller is not shown the board's own areas",
+                b"Screens" not in areas and b"Logs" not in areas)
 
     # A single keypress picks an area: no Enter, because this is a menu.
     s.buf.clear()
@@ -2323,6 +2372,30 @@ def test_files():
     s.pump(0.8)
     inside = plain(s.buf)
     ok &= check("and the files are there", b"GAME.PRG" in inside)
+
+    # ---- the same menu as staff ------------------------------------------
+    # Proves the built-ins exist and are reachable rather than merely hidden
+    # from everybody, which a permission bug would look exactly like.
+    if PASSWORD:
+        sy = ansi_login("Keeper")
+        sy.buf.clear()
+        sy.send(f"bye {PASSWORD}\r".encode())
+        ok &= check("staff session on the sysop node", sy.wait_for(b"Sysop node.", 5))
+        sy.wait_for(b"Sysop", 3)
+        sy.buf.clear()
+        sy.send(b"files\r")
+        ok &= check("staff open the file areas", sy.wait_for(b"File areas", 5))
+        sy.pump(0.8)
+        smenu = plain(sy.buf)
+        ok &= check("the board's own Screens area is there for staff",
+                    b"Screens" in smenu)
+        ok &= check("and the Logs area", b"Logs" in smenu)
+        ok &= check("both marked so a sysop can see they are shut",
+                    smenu.count(b"(staff)") >= 2)
+        sy.buf.clear()
+        sy.send(b"q")
+        sy.pump(0.5)
+        sy.close()
     ok &= check("with the area's own prompt", b"L lists" in inside)
 
     # Q goes back one level, not all the way out. That distinction is the

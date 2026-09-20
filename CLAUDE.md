@@ -81,7 +81,7 @@ they are the process, and getting them wrong wastes Rob's time.
 - **Batch board work, do not drift into it.** Rob asks for board features while other work is in flight. They go in the queue below, and they get built together as one version with one regression run and one flash. Wandering off to implement or investigate a queued item mid-task is how a session ends with six half-finished things and nothing flashed.
 - **A web change is not verified until the rendered page has been checked.** grep on the HTML proves a string is present, not that a stylesheet applied, an element is positioned, or a menu is readable. Fetch the page and check the CSS rules actually reached it; if a change is visual, say plainly that it has not been looked at rather than implying it has.
 - **A patch script that gets replaced takes its edits with it.** Rewriting a scratchpad script and rerunning it silently drops anything the earlier version did. Either re-check the file afterwards or make each change once and confirm it landed. The nav stylesheet went missing exactly this way and shipped unstyled.
-- **Use the agents.** `.claude/agents/` holds eight. They exist because each one encodes a bug that already shipped here, and running one is cheaper than finding those bugs the way they were found the first time.
+- **Use the agents.** `.claude/agents/` holds ten. They exist because each one encodes a bug that already shipped here, and running one is cheaper than finding those bugs the way they were found the first time.
 
 | Agent | When |
 |---|---|
@@ -93,16 +93,26 @@ they are the process, and getting them wrong wastes Rob's time.
 | `docs` | **developer-facing writing.** README, COMMANDS, USERS, PLUGINS, BACKUP, SCREENS, CHANGELOG, PROTOCOL, the design history. Its rule is to check every claim against the source, not against other prose |
 | `optimize` | RAM or flash is tight, or before committing to a feature that needs room. Reads, measures and researches, then writes **one report** to `reports/` and changes nothing. Its first rule is not to trust PlatformIO's RAM percentage: this board read 54.9% while being over the DRAM limit |
 | `explain` | **human-facing writing.** The website, and the board's screens: `welcome`, `rules`, `privacy`, `newuser`, `chatin`, `goodbye`. Researches current facts on the web first, because router menus and client software move. Writes for somebody who does not know what telnet is |
+| `tty-ux` | **design consultant**, terminal screens and the website both. Judges whether a layout reads as designed or accidental, and specifies the fix in real units: columns and characters, or px and ch. Measures at 40, 80 and 132, or at 1920, 1366 and 390. Writes **one report** and never code. Added 2026-09-20 because the board draws for 40 columns everywhere and never re-measures |
+| `screen-artist` | **draws the screens.** ANSI/CP437 at 80x24, PETSCII at 40x25, plain ASCII. Writes screen files and `tools/mkscreens.py`, never `src/`. Its rule is to render what it drew back to a character grid with a ruler and read it: an unterminated colour run and a frame one cell out both look perfect in a hex dump |
 
   The two writing agents split by **audience, not by importance**. If a person
   reads it, `explain` owns it. If a developer reads it, `docs` owns it.
 
-  A caveat learned the hard way: **agents running in parallel share the test
-  harness.** `/tmp/ht3.sh` and `/tmp/ht3sd.sh` both `pkill bbs_host` and bind
-  port 6400, so two runs at once kill each other's board mid-test and the
-  symptom is a broken pipe that reads exactly like a bug in the code under
-  test. Give a parallel run its own port, data directory and card, and make
-  its `pkill` match the data directory rather than the process name. They exist because each one encodes a bug that already shipped here, and running them is cheaper than finding those bugs the way they were found the first time.
+  Neither of the design pair writes BBS source. `tty-ux` specifies and
+  `screen-artist` draws; anything either of them finds that needs a code
+  change comes back as a hand-back, not a patch.
+
+  **Gate parallel agents on runtime resources, not on code areas.** This was
+  learned the hard way and it is the standing rule. Two agents editing
+  different files still collide if they both stand up a board, because the
+  old scripts each did `pkill bbs_host` and bound port 6400: two runs at once
+  killed each other's board mid-test, and the symptom was a broken pipe that
+  reads exactly like a bug in the code under test. `tools/harness.sh --tag
+  NAME [--card]` is the fix. It derives the port from the tag, gives the run
+  its own data directory, card and directory port, and matches its `pkill` on
+  the data directory rather than the process name. Anything that binds a
+  socket gets a tag; a web agent gets an explicit port in its prompt.
 - **Every milestone gets a fresh optimization report** (Rob). When a block or a version reaches its regression run, send the `optimize` agent off as part of that run and put its report in `reports/`. Dated, one per milestone, kept. The point is the trend as much as the findings: a figure that has quietly grown by 2 KB a milestone is invisible in any single report and obvious across four, and the cheapest time to notice something is eating the budget is before it matters. The report is also what makes a size decision reviewable rather than remembered.
 - **Verify before asserting.** Claims get checked against the source or a
   primary reference first. Stale warnings and confident wrong answers cost
@@ -120,6 +130,39 @@ they are the process, and getting them wrong wastes Rob's time.
 | C6 | network zones, bans, maintenance mode, OTA | partial: bans |
 
 Also done: busy line, paging (`[More]`), abort keys, command history, time limits (per call, per day), caller log (`LAST`), NTP + TZ, mDNS, backup window, config reload without reboot.
+
+## File subsystem UX (0.17.3, in progress)
+
+- **The screen is cleared between views.** Entering FILES, going back to the
+  area menu and opening an area each start fresh. Without it every view
+  printed underneath the last one, so pressing a number three times gave
+  three stacked listings and no sense of having gone anywhere. One exception:
+  if `screens/files` played on the way in, the menu does not wipe it. Rob:
+  "screen clears bro. Without them you just feel like youre in a bad layout
+  not a gateway door to files."
+- **The area menu is cursor-driven, with numbers as the fallback.** Cursor
+  keys move a reverse-video bar, Enter opens what it is sitting on, and the
+  numbers still work. Plain ASCII has neither a cursor nor reverse video, so
+  it gets the numbers and the prompt says so; the same split the forms make.
+  Drawing and the cursor keys both go through one `visibleAreas()` helper on
+  purpose: when each worked the column count out for itself, the highlight
+  could sit on a different area than the one that opened, and a caller reads
+  that as the board being broken rather than as an off-by-one.
+- **Two areas the board provides**, so a fresh card is not an empty room:
+  `Screens` on the card's screen folder and `Logs` on its log folder, both
+  staff read and sysop write. They sit at fixed numbers 9 and 10 above the
+  eight configured ones, because giving them the first free slot would move
+  them every time somebody added a folder. `0` means ten at the menu, or the
+  Logs area would be reachable by cursor and not by number, and plain ASCII
+  has no cursor. Logs only works because the log is mirrored to the card; the
+  ring on the internal partition is not reachable from a file area and should
+  not be.
+- Fixed on the way past: the menu computed its column count from `widest + 6`
+  while printing cells `widest + 14` wide, so a wide board packed four columns
+  into a line that fitted three and wrapped every row. First instance of the
+  wide-terminal habit to be found and fixed rather than specified.
+- `screens/files` did not exist, so callers walked into a bare menu. Being
+  drawn by `screen-artist` in all three flavours.
 
 ## Current state (0.17.1 Block C, host-tested, not flashed)
 
@@ -400,6 +443,8 @@ Queued for the next build (Rob's plan, in order):
 - A sysop page (Rob): a caller can ring for the sysop and the sysop can answer, the way every board had. PAGE exists caller to caller; this is the one that gets the operator's attention wherever they are, and needs a way to be away, a way to decline, and something that does not let one caller ring a bell forever.
 - A bell when somebody logs in and when somebody joins the chat room (Rob). Neither rings today: the only bells are pages, broadcasts and form errors, so a caller arriving is silent. Wants the same treatment as a page: bell, then the notice.
 
+- **Wide-terminal layout rework (Rob, scheduled straight after upload and download in this batch).** The board draws for 40 columns everywhere and never re-measures, so SyncTERM at 80 gets wrapped descriptions with half the screen black. HELP is the worst case and the screenshot is unambiguous: two-line wraps on "this menu; x picks another" with forty columns of unused screen to the right. This is not one constant, it is a habit spread across every drawing path, so the fix is a rule rather than a patch: a layout takes its widths from `Term::cols()` with a stated minimum, never from a frozen guess. `tty-ux` specifies it before anybody writes code. Rob's words: "it doesnt look like butt and all jamed together being 40col when on an 80col or wider device. This constantly triggers me."
+- **Website cleanup**, from `reports/website-copy-review-2026-09-20.md` and `reports/tty-ux-website-2026-09-20.md`. The copy plan is to be executed by `explain`, not `docs`: it is human-facing. Confirmed P1s include `article .warn` never having had a left margin (the shorthand `margin:14px 0` sets `margin-left:0`, and the earlier fix moved `article .pull` instead, which is why it never took), `md_render` having no ordered-list support so 53 numbered router steps render as run-on paragraphs, `/about` and `/data` returning 404 on a single-domain deployment, and the manifesto still saying six callers plus a sysop line when it is ten plus the hidden node.
 - Build profiles: PlatformIO environments for a logger-only board, a chat-only board and the full board, rather than forking the repository.
   **And a bigger-board profile** (Rob asked whether more memory means more nodes: it does). `BBS_MAX_NODES` already drives everything, since Block A parameterised the lists and gave node numbers two digits, so a WROVER or an S3 is a sizing change rather than a port. The move that actually unlocks it is `CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY`, which puts static `.bss` in PSRAM and so takes the session pool, the thing that broke the build at sixteen nodes, off internal DRAM entirely.
   Moves with it: `CONFIG_LWIP_MAX_SOCKETS`, and the knowledge that PSRAM is slower so a session's output buffer living there costs a little on every write. Hard ceilings at 255 in both cases, because `Session::id` and `Session::listIdx` are `uint8_t`.
@@ -456,6 +501,7 @@ list.
 - Tera Term only begins telnet option negotiation when the port is 23. On 6400 it opens the socket and says nothing, so the IAC-first path in connect-time detection never fires and the caller falls through to the CPR probe. Not a bug here, but it explains a Tera Term caller taking the slow route, and it is documented behaviour in Tera Term's own manual.
 - Wi-Fi: SSIDs are case-sensitive (`HOMENET`). The board scans all channels and joins the strongest AP. Auth timeouts (reason 2/15/39) turned out to be an unplugged AP, not firmware.
 - A non-interactive shell cannot push to GitHub the first time: Git Credential Manager needs one interactive browser sign-in (done on this PC).
+- **Capture a server's stdout with a drain, or you will diagnose a phantom.** The directory server logs one blocking `print(..., flush=True)` per request from the handler thread. Start it under `subprocess.PIPE` without reading the pipe and the buffer fills after a few KB, every thread blocks inside `log_message`, and the server stops answering while staying alive. That looks exactly like a wedge under load and it cost two investigations on 2026-09-20: an agent reported the server "exiting with code 1 after an aborted image fetch", and a reproduction attempt then wedged it on demand and blamed client aborts. Draining the pipe, 360 abusive connections across every abort shape survived with the server still serving. The exit code 1 was `terminate()` on Windows. Two rules out of it: read the pipe in a thread, and when a server appears hung, dump the thread stacks (`faulthandler.dump_traceback_later`) before forming a theory. The stacks named the real line in one shot after two wrong guesses.
 
 ## Open questions
 

@@ -77,7 +77,14 @@ const char* const kName = "files";
 // Eight areas. The limit is the CONFIG form, which holds 16 fields and
 // spends four on the core keys; eight areas plus those is twelve and leaves
 // room. A board wanting more than eight has outgrown a form anyway.
-constexpr uint8_t kMaxAreas = 8;
+// Eight the sysop configures, then two the board provides. The built-ins sit
+// at fixed numbers ABOVE the configured ones so a number always means the
+// same area: giving them the first free slot would move them every time
+// somebody added a folder.
+constexpr uint8_t kCfgAreas    = 8;
+constexpr uint8_t kMaxAreas    = kCfgAreas + 2;
+constexpr uint8_t kAreaScreens = kCfgAreas;       // shows as 9
+constexpr uint8_t kAreaLogs    = kCfgAreas + 1;   // shows as 10
 constexpr uint8_t kPathMax  = 48;
 constexpr uint8_t kNameMax  = 24;
 constexpr uint8_t kDescMax  = 48;
@@ -96,6 +103,11 @@ struct Area {
 
 Area    g_area[kMaxAreas];
 uint8_t g_areas  = 0;
+
+// Where the highlight is sitting, as an index into the list of areas THIS
+// caller can see, not an area number. Two callers with different levels see
+// different menus, so an area number would put the bar on the wrong row.
+uint8_t g_sel[BBS_MAX_NODES + 2] = {};
 uint8_t g_index  = 0;
 
 // Which area a caller is in, 0xFF for the area menu. Per session, because
@@ -282,7 +294,7 @@ void readKey(void* ctx, const char* key, const char* value) {
     (void)ctx;
     if (strncmp(key, "area", 4) != 0) return;
     long n = strtol(key + 4, nullptr, 10);
-    if (n < 1 || n > kMaxAreas) return;
+    if (n < 1 || n > kCfgAreas) return;
 
     // <path> | <name> | <read> | <write>, the last two optional. Split on
     // every bar rather than the first, so a sysop can say
@@ -345,6 +357,29 @@ bool start(Bbs& bbs) {
     for (uint8_t i = 0; i < BBS_MAX_NODES + 2; ++i) g_at[i] = 0xFF;
     plugins::forEachKey(g_index, readKey, nullptr);
 
+    // The two the board provides, so a fresh card is not an empty room.
+    // Screens is the folder the screen player already reads its overrides
+    // from and Logs is where the caller log is mirrored, so both are things
+    // a sysop wants at hand and neither is anybody else's business: staff
+    // may look, the sysop may change.
+    //
+    // Logs only works because the log is mirrored to the card. The ring on
+    // the internal partition is not reachable from a file area and should
+    // not be.
+    Area& scr = g_area[kAreaScreens];
+    snprintf(scr.path, sizeof(scr.path), "%s", BBS_SD_SCREEN_DIR);
+    snprintf(scr.name, sizeof(scr.name), "%s", "Screens");
+    scr.read  = PlugLevel::Staff;
+    scr.write = PlugLevel::Sysop;
+
+    Area& lg = g_area[kAreaLogs];
+    snprintf(lg.path, sizeof(lg.path), "%s", BBS_SD_LOG_DIR);
+    snprintf(lg.name, sizeof(lg.name), "%s", "Logs");
+    lg.read  = PlugLevel::Staff;
+    lg.write = PlugLevel::Sysop;
+
+    g_areas = kMaxAreas;
+
     // Make each area's folder if it is not there yet. This runs at start,
     // and a CONFIG save restarts the plugins, so adding an area in CONFIG
     // creates its folder on the way back up with nothing else to do.
@@ -358,7 +393,7 @@ bool start(Bbs& bbs) {
         bool had = stat(full, &st) == 0 && S_ISDIR(st.st_mode);
         if (!had && makeAreaDir(g_area[i].path)) ++made;
     }
-    plat::log("files: %u area%s configured, %u folder%s created",
+    plat::log("files: %u area%s, %u folder%s created",
               live, live == 1 ? "" : "s", made, made == 1 ? "" : "s");
     return true;
 }
@@ -371,6 +406,7 @@ void stop() {}
 void onLogoff(Session& s) {
     g_at[slotOf(s)]    = 0xFF;
     g_where[slotOf(s)] = Where::Out;
+    g_sel[slotOf(s)]   = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -386,20 +422,57 @@ void onLogoff(Session& s) {
 // Areas the caller may not read are not here, and the numbers are still the
 // config slots, so FILES 4 means area 4 to everybody.
 // ---------------------------------------------------------------------------
+// canPoint: this terminal can draw a highlight bar and send cursor keys.
+// Plain ASCII can do neither, so it gets the numbers and nothing else,
+// which is the same split the forms already make.
+bool canPoint(Session& s) { return s.term.isAnsi() || s.term.isPet(); }
+
+// visibleAreas: the areas this caller may see, in menu order, and the number
+// of columns the menu will lay them out in.
+//
+// Drawing and the cursor keys both go through here on purpose. When they
+// each worked it out for themselves the highlight could sit on a different
+// area than the one that opened, and that is a bug a caller reads as the
+// board being broken rather than as an off-by-one.
+uint8_t visibleAreas(Session& s, uint8_t* out, uint8_t* perRow, uint8_t* widestOut) {
+    uint8_t n = 0, widest = 0;
+    for (uint8_t i = 0; i < g_areas; ++i) {
+        if (!g_area[i].path[0] || !mayRead(s, i)) continue;
+        out[n++] = i;
+        uint8_t w = static_cast<uint8_t>(strlen(g_area[i].name));
+        if (w > widest) widest = w;
+    }
+    if (widestOut) *widestOut = widest;
+    if (perRow) {
+        // A cell is "nn  " plus the name field, and the name field has to
+        // hold the widest name plus the " (staff)" marker plus two spaces
+        // between columns. The old arithmetic divided by widest + 6 while
+        // printing widest + 14, so a wide board packed four columns into a
+        // line that fitted three and wrapped every row.
+        uint8_t cols  = s.term.cols() ? s.term.cols() : 40;
+        uint8_t cellW = static_cast<uint8_t>(widest + 14);
+        uint8_t pr    = static_cast<uint8_t>(cols / cellW);
+        if (!pr) pr = 1;
+        if (pr > 4) pr = 4;
+        *perRow = pr;
+    }
+    return n;
+}
+
 void areaMenu(Bbs& b, Session& s) {
     Term& t = s.term;
     Timeline& tl = s.tl;
     char buf[96];
 
     uint8_t visible[kMaxAreas];
-    uint8_t n = 0;
     uint8_t widest = 0;
-    for (uint8_t i = 0; i < g_areas; ++i) {
-        if (!g_area[i].path[0] || !mayRead(s, i)) continue;
-        visible[n++] = i;
-        uint8_t w = static_cast<uint8_t>(strlen(g_area[i].name));
-        if (w > widest) widest = w;
-    }
+    uint8_t perRow = 1;
+    uint8_t n = visibleAreas(s, visible, &perRow, &widest);
+
+    // A config reload can take areas away underneath a caller who is sitting
+    // on the menu, so the bar is clamped here rather than trusted.
+    uint8_t slot = slotOf(s);
+    if (n && g_sel[slot] >= n) g_sel[slot] = static_cast<uint8_t>(n - 1);
 
     b.rowTitle(s, "File areas");
     if (!n) {
@@ -409,17 +482,12 @@ void areaMenu(Bbs& b, Session& s) {
         return;
     }
 
-    // "nn  name" plus two spaces between columns.
-    uint8_t cols  = t.cols() ? t.cols() : 40;
-    uint8_t cellW = static_cast<uint8_t>(widest + 6);
-    uint8_t perRow = cellW ? static_cast<uint8_t>(cols / cellW) : 1;
-    if (!perRow) perRow = 1;
-    if (perRow > 4) perRow = 4;
-
+    bool point = canPoint(s);
     t.color(tl, Color::LightGreen);
     for (uint8_t i = 0; i < n; ++i) {
         uint8_t a = visible[i];
         bool last = (i % perRow) == static_cast<uint8_t>(perRow - 1) || i + 1 == n;
+        bool here = point && i == g_sel[slot];
         // An area with a read level of its own is marked, so a sysop can see
         // at a glance which ones a caller will not be shown. Lost when the
         // menu moved out of rows() into here, and only a test noticed.
@@ -427,10 +495,21 @@ void areaMenu(Bbs& b, Session& s) {
                     g_area[a].read != PlugLevel::All;
         char nm[kNameMax + 10];
         snprintf(nm, sizeof(nm), "%s%s", g_area[a].name, shut ? " (staff)" : "");
+        // The highlight covers the number and the name together, because a
+        // bar on the name alone reads as the name being special rather than
+        // as this being the row you are standing on.
+        // The last cell on a row is padded only when it is highlighted, and
+        // then only to the name width rather than the full cell, so the bar
+        // still looks deliberate without ever reaching the final column.
+        // Filling the last column makes the terminal wrap, and the newline
+        // that follows then lands as a blank row.
+        int pad = last ? (here ? static_cast<int>(widest + 8) : 0)
+                       : static_cast<int>(widest + 10);
         snprintf(buf, sizeof(buf), "%2u  %-*.*s", static_cast<unsigned>(a + 1),
-                 last ? 0 : static_cast<int>(widest + 10),
-                 static_cast<int>(widest + 8), nm);
+                 pad, static_cast<int>(widest + 8), nm);
+        if (here) t.reverse(tl, true);
         t.text(tl, buf);
+        if (here) t.reverse(tl, false);
         if (last) t.nl(tl);
     }
 }
@@ -445,6 +524,8 @@ void filesPrompt(Session& s) {
     t.color(tl, Color::Cyan);
     if (g_where[slotOf(s)] == Where::Area)
         t.text(tl, "Area: number, L lists, Q back");
+    else if (canPoint(s))
+        t.text(tl, "Files: cursor keys and Enter, or a number. Q quits");
     else
         t.text(tl, "Files: number opens an area, Q quits");
     t.nl(tl);
@@ -537,11 +618,14 @@ bool rows(Session& s) {
 // ---------------------------------------------------------------------------
 // enter / leave / listArea: the subsystem.
 // ---------------------------------------------------------------------------
-void showMenu(Bbs& b, Session& s) {
+// clear: true everywhere except the way in, where an intro screen has just
+// played and wiping it would be the same as not having one.
+void showMenu(Bbs& b, Session& s, bool clear = true) {
     // g_at is deliberately left alone: it is the area this caller last
     // opened, not where they are standing, and DESC at the command prompt
     // reads it. g_where is the one that says where they are.
     g_where[slotOf(s)] = Where::Menu;
+    if (clear) s.term.cls(s.tl);
     areaMenu(b, s);
     filesPrompt(s);
 }
@@ -552,6 +636,7 @@ void showMenu(Bbs& b, Session& s) {
 void listArea(Bbs& b, Session& s, uint8_t area) {
     g_where[slotOf(s)] = Where::Area;
     g_at[slotOf(s)]    = area;
+    s.term.cls(s.tl);
     b.startPluginList(s, g_index);
 }
 
@@ -575,8 +660,9 @@ void enter(Bbs& b, Session& s) {
     s.term.reset(s.tl);
     // A board with screens/files gets a way in. Without one the caller lands
     // on the menu, the same deal the chat room has with chatin.
+    s.term.cls(s.tl);
     if (b.showScreen(s, "files")) s.term.nl(s.tl);
-    showMenu(b, s);
+    showMenu(b, s, false);          // the screen just played: do not wipe it
 }
 
 // onKey: the subsystem's keys. Digits pick an area, and they accumulate so
@@ -597,13 +683,34 @@ void onKey(Session& s, int k, uint32_t now) {
         showMenu(b, s);
         return;
     }
+    // Cursor keys move the bar. Only on the menu: inside an area the list
+    // pager owns the screen and moving a highlight that is not drawn would
+    // just eat the key.
+    if (g_where[slot] == Where::Menu && canPoint(s) &&
+        (k == KEY_UP || k == KEY_DOWN || k == KEY_LEFT || k == KEY_RIGHT)) {
+        uint8_t visible[kMaxAreas];
+        uint8_t perRow = 1;
+        uint8_t n = visibleAreas(s, visible, &perRow, nullptr);
+        if (!n) return;
+        int sel = g_sel[slot];
+        // Left and right walk the whole menu rather than stopping at the end
+        // of a row, so a caller who never works out that it is a grid can
+        // still reach every area with one key.
+        if (k == KEY_LEFT)  sel -= 1;
+        if (k == KEY_RIGHT) sel += 1;
+        if (k == KEY_UP)    sel -= perRow;
+        if (k == KEY_DOWN)  sel += perRow;
+        if (sel < 0)   sel = 0;
+        if (sel >= n)  sel = n - 1;
+        g_sel[slot] = static_cast<uint8_t>(sel);
+        showMenu(b, s);
+        return;
+    }
     if (k >= '0' && k <= '9') {
-        // One digit is enough: there are eight areas at most, so there is no
-        // two-digit case to hold a keypress open for. An earlier version
-        // buffered a digit in case a second one followed, which bought
-        // nothing and meant a caller pressing 9 on a three area board sat
-        // there with nothing happening.
-        uint8_t want = static_cast<uint8_t>(k - '0');
+        // One keypress per area, and '0' means ten: the two built-in areas
+        // sit at 9 and 10, so without that the Logs area would be reachable
+        // by cursor but not by number, and plain ASCII has no cursor.
+        uint8_t want = k == '0' ? 10 : static_cast<uint8_t>(k - '0');
         if (want >= 1 && want <= g_areas && g_area[want - 1].path[0] &&
             mayRead(s, static_cast<uint8_t>(want - 1))) {
             s.term.ch(s.tl, static_cast<char>(k));
@@ -621,7 +728,15 @@ void onKey(Session& s, int k, uint32_t now) {
         filesPrompt(s);
         return;
     }
-    if (k == KEY_ENTER) { filesPrompt(s); return; }
+    if (k == KEY_ENTER) {
+        if (g_where[slot] == Where::Menu && canPoint(s)) {
+            uint8_t visible[kMaxAreas];
+            uint8_t n = visibleAreas(s, visible, nullptr, nullptr);
+            if (n) { listArea(b, s, visible[g_sel[slot]]); return; }
+        }
+        filesPrompt(s);
+        return;
+    }
 }
 
 // ---------------------------------------------------------------------------
