@@ -44,6 +44,7 @@ constexpr uint8_t T_DO   = 253;
 constexpr uint8_t T_DONT = 254;
 constexpr uint8_t T_IAC  = 255;
 
+constexpr uint8_t O_BIN  = 0;    // RFC 856 TRANSMIT-BINARY
 constexpr uint8_t O_ECHO = 1;
 constexpr uint8_t O_SGA  = 3;
 constexpr uint8_t O_NAWS = 31;
@@ -75,6 +76,29 @@ void Telnet::send3(ByteSink& o, uint8_t cmd, uint8_t opt) {
 // ---------------------------------------------------------------------------
 // negotiate: echo and SGA from us (character mode), window size from them
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// setBinary: ask for, or give up, a clean 8-bit path in both directions.
+//
+// Both directions matter and for different reasons. DO BINARY stops the
+// far end inserting a NUL after every CR it sends, which is what corrupted
+// uploads. WILL BINARY says the board's own output is 8-bit, which a strict
+// client needs before it will accept a download containing bare CRs.
+//
+// IAC is still doubled either way: RFC 856 makes the data path 8-bit, it
+// does not retire the escape. Term::raw keeps doing that and must.
+// ---------------------------------------------------------------------------
+void Telnet::setBinary(ByteSink& reply, bool on) {
+    binary_ = on;
+    if (!enabled_) return;            // a caller who never spoke telnet
+    if (on) {
+        us_  |= bit(O_BIN);  send3(reply, T_WILL, O_BIN);
+        him_ |= bit(O_BIN);  send3(reply, T_DO,   O_BIN);
+    } else {
+        us_  &= ~bit(O_BIN); send3(reply, T_WONT, O_BIN);
+        him_ &= ~bit(O_BIN); send3(reply, T_DONT, O_BIN);
+    }
+}
+
 void Telnet::negotiate(ByteSink& reply) {
     enabled_ = true;
     if (!(us_ & bit(O_ECHO))) { us_ |= bit(O_ECHO); send3(reply, T_WILL, O_ECHO); }
@@ -86,8 +110,11 @@ void Telnet::negotiate(ByteSink& reply) {
 // onOption: answer one WILL/WONT/DO/DONT without creating loops
 // ---------------------------------------------------------------------------
 void Telnet::onOption(uint8_t cmd, uint8_t opt, ByteSink& reply) {
-    bool weDo    = (opt == O_ECHO || opt == O_SGA);   // options we perform
-    bool heMayDo = (opt == O_NAWS || opt == O_SGA);   // options we accept
+    // Binary is accepted in both directions, but only ever asked for by
+    // setBinary: a caller who offers it unprompted is answered honestly,
+    // and a transfer is what actually turns it on.
+    bool weDo    = (opt == O_ECHO || opt == O_SGA || opt == O_BIN);
+    bool heMayDo = (opt == O_NAWS || opt == O_SGA || opt == O_BIN);
 
     switch (cmd) {
         case T_WILL:

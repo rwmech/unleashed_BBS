@@ -119,7 +119,7 @@ uint32_t g_rawSum   = 0;          // so the test can prove the bytes were not ma
 void rawEnd(Bbs& b, Session& s) {
     char buf[64];
     b.setRawInput(s, false);
-    s.tn.setBinary(false);
+    s.tn.setBinary(s.tl, false);
     snprintf(buf, sizeof(buf), "RAW %u bytes sum %u",
              static_cast<unsigned>(g_rawBytes), static_cast<unsigned>(g_rawSum));
     s.term.nl(s.tl);
@@ -193,7 +193,7 @@ const Command kCommands[] = {
           s.term.color(s.tl, Color::Grey);
           s.term.text(s.tl, "Raw on.");
           s.term.nl(s.tl);
-          s.tn.setBinary(true);    // CR is data now, not a line ending
+          s.tn.setBinary(s.tl, true);    // CR is data now, not a line ending
           b.setRawInput(s, true);
       } },
     { "EXAMPLE", "", 0, CF_ADMIN, "EXAMPLE", "example: settings (admin)",

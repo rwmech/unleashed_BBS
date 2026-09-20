@@ -60,7 +60,23 @@ public:
     //
     // Not the same as setEnabled(false), which also stops IAC being
     // unescaped, so every 0xFF in the file would arrive doubled instead.
-    void setBinary(bool on) { binary_ = on; }
+    // setBinary: RFC 856 TRANSMIT-BINARY, in both directions, for the
+    // duration of a file transfer.
+    //
+    // This used to set a local flag and nothing else, and that was a real
+    // bug rather than an omission. Without the negotiation the link is
+    // still NVT ASCII, where a sender transmitting a bare CR must follow it
+    // with LF or NUL. A terminal sending XMODEM obeys that, so every block
+    // containing a 0x0D arrived with an extra byte in it, the check failed,
+    // and the board NAKed every block of every upload. SyncTERM showed it
+    // as "Received NAK Expected ACK" until it gave up.
+    //
+    // The local flag alone made it worse, not better: it stopped the board
+    // deleting the byte after a CR, which is right for real binary and
+    // exactly wrong while the far end is still inserting one.
+    //
+    // reply carries the option bytes, so this needs the session's sink.
+    void setBinary(ByteSink& reply, bool on);
     bool binary()      const { return binary_; }
 
     bool clientSpoke() const { return seenIac_; }   // client sent IAC first

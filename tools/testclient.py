@@ -294,6 +294,138 @@ def plain(data):
     return ANSI_RE.sub(b"", bytes(data))
 
 
+def form_const(name, fallback):
+    """A layout constant out of form.h, so these checks follow the form."""
+    src = (ROOT / "src" / "core" / "form.h").read_text()
+    m = re.search(r'constexpr uint8_t\s+' + name + r'\s*=\s*(\d+)', src)
+    return int(m.group(1)) if m else fallback
+
+
+BOX_COL = form_const("kBoxCol", 12)    # first column of a field's input box
+BOX_W = form_const("kBoxW", 27)        # how wide that box is
+
+
+def colours_self_contained(data):
+    """Every SGR that sets a foreground has to clear the attributes first.
+
+    ESC[1;33m sets bold and a foreground and clears nothing, so a reverse
+    attribute that is still set survives it; ESC[0;33;1m does not. That is
+    the rule that fixed the form's reverse-video bleed and it is cheap to
+    hold, so hold it.
+    """
+    for m in re.finditer(rb"\x1b\[([0-9;]*)m", bytes(data)):
+        p = m.group(1).decode().split(";")
+        if any(v.isdigit() and 30 <= int(v) <= 37 for v in p) and p[0] != "0":
+            return False
+    return True
+
+
+class AttrScreen:
+    """An 80x25 screen model that keeps the reverse-video ATTRIBUTE.
+
+    plain() throws the escapes away, so no text check can see a highlight
+    that was never turned off: the bleed IS the escape stream. This model
+    also IGNORES SGR 27 (reverse off) on purpose, because ANSI.SYS never
+    implemented it and SyncTERM does not act on it.
+
+    That is exactly how the sign-up form failed on Rob's SyncTERM at 0.17.0:
+    reverse was turned off with ESC[27m alone, every colour sent afterwards
+    was ESC[1;NNm, and so the label of every row the cursor had left stayed
+    painted as a filled block. Every text assertion in this file passed.
+    """
+
+    CSI = re.compile(rb"\x1b\[([0-9;?]*)([A-Za-z])")
+
+    def __init__(self, cols=80, rows=25):
+        self.cols, self.rows = cols, rows
+        self.ch = [[" "] * cols for _ in range(rows)]
+        self.rv = [[0] * cols for _ in range(rows)]
+        self.x = self.y = 0
+        self.rev = 0
+
+    def feed(self, data):
+        data = bytes(data)
+        i, n = 0, len(data)
+        while i < n:
+            b = data[i]
+            if b == 0x1B:
+                m = self.CSI.match(data, i)
+                if m:
+                    self._csi(m.group(1).decode(), m.group(2).decode())
+                    i = m.end()
+                    continue
+                i += 1
+            elif b == 0xFF:                       # telnet IAC: skip the command
+                i += 3
+            elif b == 0x0D:
+                self.x = 0
+                i += 1
+            elif b == 0x0A:
+                self.y = min(self.rows - 1, self.y + 1)
+                i += 1
+            elif b == 0x08:
+                self.x = max(0, self.x - 1)
+                i += 1
+            elif b >= 0x20:                       # one glyph, one cell, UTF-8 or not
+                self._put("?" if b >= 0x80 else chr(b))
+                i += 1 if b < 0x80 else (2 if b < 0xE0 else (3 if b < 0xF0 else 4))
+            else:
+                i += 1
+
+    def _put(self, c):
+        if self.x < self.cols:
+            self.ch[self.y][self.x] = c
+            self.rv[self.y][self.x] = self.rev
+            self.x += 1
+
+    def _csi(self, params, final):
+        p = [int(v) for v in params.split(";") if v.isdigit()]
+        if final in "Hf":
+            self.y = max(0, min(self.rows - 1, (p[0] - 1) if p else 0))
+            self.x = max(0, min(self.cols - 1, (p[1] - 1) if len(p) > 1 else 0))
+        elif final == "J" and p and p[0] == 2:
+            self.ch = [[" "] * self.cols for _ in range(self.rows)]
+            self.rv = [[0] * self.cols for _ in range(self.rows)]
+        elif final == "K":
+            for x in range(self.x, self.cols):
+                self.ch[self.y][x] = " "
+                self.rv[self.y][x] = self.rev
+        elif final == "A":
+            self.y = max(0, self.y - (p[0] if p else 1))
+        elif final == "B":
+            self.y = min(self.rows - 1, self.y + (p[0] if p else 1))
+        elif final == "C":
+            self.x = min(self.cols - 1, self.x + (p[0] if p else 1))
+        elif final == "D":
+            self.x = max(0, self.x - (p[0] if p else 1))
+        elif final == "m":
+            for v in (p or [0]):
+                if v == 0:
+                    self.rev = 0
+                elif v == 7:
+                    self.rev = 1
+                # 27 is deliberately not handled: see the class comment.
+
+    def reverse_runs(self):
+        """[(row, first column, width)] for every run of reverse video, both
+        counted from 1 the way a screen is."""
+        out = []
+        for y in range(self.rows):
+            x = 0
+            while x < self.cols:
+                if self.rv[y][x]:
+                    s = x
+                    while x < self.cols and self.rv[y][x]:
+                        x += 1
+                    out.append((y + 1, s + 1, x - s))
+                else:
+                    x += 1
+        return out
+
+    def row(self, y):
+        return "".join(self.ch[y - 1]).rstrip()
+
+
 TEST_PW = "pw1234"
 DOWN = b"\x1b[B"
 F1 = b"\x1bOP"
@@ -794,11 +926,35 @@ def test_accounts():
     c.wait_for(b"[R]egister", 5)
     c.send(b"r")
     pass_rules(c)
+    c.buf.clear()                       # from here the buffer is the form's own bytes
     c.send(b"n")
     c.wait_for(b"NEW ACCOUNT", 5)
-    c.buf.clear()
     c.send(b"abcd\rabce\rZed\rzed@example.com\r\r\r\r\r")
     ok &= check("password mismatch refused", c.wait_for(b"The passwords do not match", 5))
+
+    # --- the attribute stream, not the stripped text.
+    #
+    # That last line walked the focus down every field and on to [ Save ],
+    # which is the path Rob was on when SyncTERM showed the NEW ACCOUNT form
+    # with a filled orange block across the Name, Email and Address labels.
+    # Nothing in this file could see it, because plain() had already thrown
+    # the attributes away. The rule is simple and worth asserting: the only
+    # thing a form may leave in reverse video is the focused field's box.
+    c.pump(1.5)                         # fail() blinks the message: let it finish
+    form = bytes(c.buf)
+    scr = AttrScreen()
+    scr.feed(form)
+    runs = scr.reverse_runs()
+    one_box = len(runs) == 1 and runs[0][1] == BOX_COL and runs[0][2] == BOX_W
+    if not one_box:
+        for r in runs:
+            print("        reverse at row %d col %d, %d wide: %r"
+                  % (r[0], r[1], r[2], scr.row(r[0])))
+    ok &= check("the form leaves exactly one run of reverse video", len(runs) == 1)
+    ok &= check("and it is the focused field's box (col %d, %d wide), not a label"
+                % (BOX_COL, BOX_W), one_box)
+    ok &= check("every colour the form sends clears the attributes before it",
+                colours_self_contained(form))
     c.send(b"\x1b")
     c.wait_for(b"Enter your handle", 3)
     c.send(b"Zed\r")
@@ -2449,11 +2605,8 @@ def test_files():
     # it starts.
     made = pathlib.Path(sd) / "made" / "bythebbs"
     ok &= check("an area folder that did not exist was created", made.is_dir())
-    s.buf.clear()
-    s.send(b"files 3\r")
     ok &= check("and it opens as an ordinary, empty area",
-                s.wait_for(b"Made By The BBS", 5))
-    s.pump(0.6)
+                enter_area(s, 3, b"Made By The BBS"))
 
     # ---- an area with its own levels -------------------------------------
     # area4 is read staff, write sysop. A plain caller must not see it in the
@@ -2463,22 +2616,27 @@ def test_files():
     # are hiding something.
     ok &= check("a staff-only area is not in a plain caller's list",
                 b"Screens" not in areas)
+    # Guessing a number is a thing you do at the SECTION MENU. Inside a
+    # section a digit picks a file, not an area, so this has to step back
+    # up one level first. Q does that; a second Q would leave entirely.
+    s.buf.clear()
+    s.send(b"q")
+    s.wait_for(b"File areas", 4)
     s.buf.clear()
     s.send(b"4")
     ok &= check("and cannot be opened by guessing its number",
                 s.wait_for(b"No area by that number", 4))
-
-    # ---- an empty area is not an error -----------------------------------
-    s.buf.clear()
-    s.send(b"files 2\r")
-    ok &= check("an empty area says so rather than looking broken",
-                s.wait_for(b"Nothing in here yet", 5))
 
     # ---- a number that is not an area ------------------------------------
     s.buf.clear()
     s.send(b"9")
     ok &= check("a number with no area is refused in the same words",
                 s.wait_for(b"No area by that number", 4))
+
+    # ---- an empty area is not an error -----------------------------------
+    ok &= check("an empty area opens", enter_area(s, 2, b"Empty Area"))
+    ok &= check("an empty area says so rather than looking broken",
+                b"Nothing in here yet" in plain(s.buf))
 
     # ---- writing a description -------------------------------------------
     s.buf.clear()
@@ -2666,6 +2824,7 @@ def _crc16(d):
 
 def _unescape(buf):
     """Telnet IAC unescaping. 0xFF 0xFF is one data 0xFF."""
+    _note_options(buf)
     out = bytearray()
     i = 0
     while i < len(buf):
@@ -2678,8 +2837,41 @@ def _unescape(buf):
     return bytes(out)
 
 
+# Whether the board has negotiated RFC 856 TRANSMIT-BINARY with us.
+#
+# This client used to send raw bytes and double 0xFF, and nothing else, which
+# is NOT what a telnet client does. In NVT ASCII a sender transmitting a bare
+# CR must follow it with LF or NUL, and a real terminal obeys that. Because
+# this client did not, every test passed against a board that never asked for
+# binary mode, while SyncTERM NAKed every block of every upload.
+#
+# So the client now behaves like a terminal: it pads CRs until the board asks
+# it not to. Remove the negotiation from the board and these tests fail, which
+# is the point of having them.
+_binary = {"on": False}
+
+
+def _note_options(raw):
+    """Watch the stream for the board asking for binary, either direction."""
+    i = 0
+    while i + 2 < len(raw):
+        if raw[i] == 0xFF and raw[i + 1] in (0xFB, 0xFD) and raw[i + 2] == 0x00:
+            _binary["on"] = True
+            i += 3
+        elif raw[i] == 0xFF and raw[i + 1] in (0xFC, 0xFE) and raw[i + 2] == 0x00:
+            _binary["on"] = False
+            i += 3
+        else:
+            i += 1
+
+
 def _escape(data):
-    return data.replace(b"\xff", b"\xff\xff")
+    out = data.replace(b"\xff", b"\xff\xff")
+    if not _binary["on"]:
+        # NVT ASCII: a bare CR is followed by NUL. This is the byte that
+        # corrupted every upload from a real terminal.
+        out = out.replace(b"\r", b"\r\x00")
+    return out
 
 
 def xmodem_receive(s, timeout=25.0):
@@ -2730,6 +2922,7 @@ def xmodem_receive(s, timeout=25.0):
 
 def xmodem_send(s, data, timeout=25.0):
     """Send a file to the board. Waits for its 'C' or NAK first."""
+    _note_options(bytes(s.buf))
     end = time.time() + timeout
     crc = None
     while time.time() < end and crc is None:
@@ -2808,59 +3001,50 @@ def test_xfer():
         f.write(payload)
 
     s = ansi_login("Mover")
-    s.buf.clear()
-    s.send(b"files 1\r")
-    ok = check("area opens for the transfer", s.wait_for(b"C64 Downloads", 5))
-    ok &= check("and the list can be left", leave_files(s))
+    ok = check("area opens for the transfer", enter_area(s, 1, b"C64 Downloads"))
+    ok &= check("and the prompt names the section it is in",
+                b"[S1]" in plain(s.buf))
+    ok &= check("and says a number downloads",
+                b"number downloads" in plain(s.buf) or b"number gets" in plain(s.buf))
 
     # ---- download --------------------------------------------------------
-    s.buf.clear()
-    # Explicitly plain XMODEM. YMODEM is the default now, and this test
-    # exists to keep the older protocol covered end to end rather than
-    # quietly stopping when the default moved.
-    s.send(b"download BINTEST.BIN X\r")
-    ok &= check("download announces itself", s.wait_for(b"Start your XMODEM receive", 6))
+    # Explicitly plain XMODEM: YMODEM is the default now, and this test keeps
+    # the older protocol covered rather than quietly stopping when the
+    # default moved.
+    # BINTEST.BIN is the third file the harness puts in this area, after
+    # GAME.PRG and NOTES.TXT. X in the dialog asks for plain XMODEM, which
+    # this test keeps covered now that YMODEM is the default.
+    ok &= check("the listing numbers the files", b" 1 GAME.PRG" in plain(s.buf))
+    ok &= check("download announces itself",
+                file_num(s, 3, b"Start your XMODEM receive", proto=b"x"))
     got = xmodem_receive(s)
     ok &= check("every byte of the file arrived",
                 got[:len(payload)] == payload)
     ok &= check("and only XMODEM's own padding followed",
                 set(got[len(payload):]) <= {SUB})
     ok &= check("the board says the download finished", s.wait_for(b"Download complete", 8))
-    # A download started from the command prompt ends back at the command
-    # prompt, not in a list: xferEnd only returns a caller to the file menu
-    # if that is where they were. So there is nothing here to page out of,
-    # and an earlier version of this test sent a page key at the shell and
-    # desynced everything after it.
-    s.pump(0.5)
-    s.buf.clear()
-    s.send(b"who\r")
-    ok &= check("and hands the session back to the shell", s.wait_for(b"online", 5))
-    ok &= check("which still pages properly", drain(s))
+    # And leaves the caller standing in the area they were in, so the next
+    # file is one keypress away rather than a walk back down from the menu.
+    ok &= check("and leaves the caller at the section prompt",
+                s.wait_for(b"Files>", 4))
 
     # ---- an area that is not yours to upload to --------------------------
     # area1 sets no levels, so upload falls back to the plugin's write, which
-    # is staff. An ordinary caller must be refused, and refused before the
-    # line goes binary: a refusal after the switch is one the terminal cannot
-    # read.
-    s.buf.clear()
-    s.send(b"files 1\r")
-    s.wait_for(b"C64 Downloads", 5)
-    leave_files(s)
-    s.buf.clear()
-    s.send(b"upload NOPE.BIN\r")
-    ok &= check("a staff-only area refuses an ordinary caller's upload",
-                s.wait_for(b"not yours to upload", 5))
+    # is staff. An ordinary caller is not offered U at all there, which is
+    # better than offering it and refusing: the prompt only shows what you
+    # can actually do.
+    ok &= check("a staff-only section does not offer an ordinary caller U",
+                b"U upload" not in plain(s.buf) and b"U send" not in plain(s.buf))
 
     # ---- upload, into an area that allows it -----------------------------
     up = bytes([0xFF, 0x0D, 0x0A, 0x1A, 0x00]) * 40
     drop = os.path.join(sd, "pub", "drop")
-    s.buf.clear()
-    s.send(b"files 5\r")
-    ok &= check("the drop box opens", s.wait_for(b"Drop Box", 5))
-    leave_files(s)
-    s.buf.clear()
-    s.send(b"upload SENTUP.BIN\r")
-    ok &= check("upload is offered", s.wait_for(b"Start your XMODEM send", 6))
+    ok &= check("the drop box opens", enter_area(s, 5, b"Drop Box"))
+    ok &= check("and offers U there",
+                b"U upload" in plain(s.buf) or b"U send" in plain(s.buf))
+    ok &= check("and names section 5 in its prompt", b"[S5]" in plain(s.buf))
+    ok &= check("upload is offered",
+                area_key(s, b"u", "SENTUP.BIN", b"Start your XMODEM send"))
     ok &= check("it says approval is needed first",
                 b"waits for staff approval" in plain(s.buf))
     ok &= check("the board took the file", xmodem_send(s, up))
@@ -2887,12 +3071,9 @@ def test_xfer():
     sy.send(b"uploads\r")
     ok &= check("UPLOADS lists what is waiting", sy.wait_for(b"SENTUP.BIN", 5))
     sy.buf.clear()
-    sy.send(b"files 5\r")
-    sy.wait_for(b"Drop Box", 5)
-    leave_files(sy)
-    sy.buf.clear()
-    sy.send(b"approve SENTUP.BIN\r")
-    ok &= check("approving says it is live", sy.wait_for(b"is live", 5))
+    enter_area(sy, 5, b"Drop Box")
+    ok &= check("approving says it is live",
+                area_key(sy, b"a", "SENTUP.BIN", b"is live"))
     ok &= check("and the file is now in the area",
                 os.path.exists(os.path.join(drop, "SENTUP.BIN")))
     ok &= check("and gone from the staging folder",
@@ -2900,6 +3081,69 @@ def test_xfer():
     sy.close()
     return ok
 
+
+
+def enter_area(s, n, name, secs=6):
+    """Open an area and come to rest at its prompt.
+
+    DOWNLOAD and UPLOAD are not shell commands. FILES is a door, so a
+    transfer is something done in the room: the area's own prompt offers
+    D and U, and a key there opens a one-line question. A test that typed
+    "download x" at the shell used to work and now correctly does nothing,
+    which is the point of the change.
+    """
+    # Work out where we are before trying to get somewhere else, because
+    # the two places take input completely differently. "files 5" typed
+    # at a section prompt is not a command, it is seven keypresses, and
+    # "e" there is erase. But leave_files at the SHELL is just as bad:
+    # it types "qqqq" onto the command line, so the next command becomes
+    # "qqqqfiles 5" and goes nowhere. That is exactly how this failed.
+    #
+    # Enter is the safe probe: at the shell it redraws the prompt, and
+    # inside the subsystem it redraws the files prompt.
+    s.buf.clear()
+    s.send(b"\r")
+    s.pump(0.5)
+    if b"Files>" in plain(s.buf) or b"Files:" in plain(s.buf):
+        leave_files(s)
+    s.buf.clear()
+    s.send(("files %d" % n).encode() + b"\r")
+    if not s.wait_for(name, secs):
+        return False
+    drain(s)                       # page to the end of the listing
+    return b"Files>" in plain(s.buf)
+
+
+def file_num(s, n, wait, proto=b"y", secs=10):
+    """Pick a numbered file at the section prompt and answer the dialog.
+
+    The flow a caller sees: press the number, Enter, then one key in the
+    "Download NAME? [Y]es [X]modem [N]o" dialog. The dialog names the file
+    rather than repeating the number, because a number is easy to miscount
+    off a listing and a filename is not.
+    """
+    s.buf.clear()
+    s.send(str(n).encode())
+    if not s.wait_for(b"File number", 4):
+        return False
+    s.buf.clear()
+    s.send(b"\r")
+    if not s.wait_for(b"Download", 5):
+        return False
+    s.buf.clear()
+    s.send(proto)
+    return s.wait_for(wait, secs)
+
+
+def area_key(s, key, answer, wait, secs=8):
+    """Press a letter in the section, answer its typed question."""
+    s.buf.clear()
+    s.send(key)
+    if not s.wait_for(b"?", 4) and not s.wait_for(b":", 2):
+        return False
+    s.buf.clear()
+    s.send(answer.encode() + b"\r")
+    return s.wait_for(wait, secs)
 
 
 def ymodem_receive(s, timeout=25.0):
@@ -2988,6 +3232,7 @@ _seen = bytearray()
 
 def ymodem_send(s, fname, data, timeout=25.0):
     """Send one file by YMODEM, header block and closing block included."""
+    _note_options(bytes(s.buf))
     def wait_for_byte(want, secs=8.0):
         stop = time.time() + secs
         while time.time() < stop:
@@ -3083,15 +3328,25 @@ def test_ymodem():
         f.write(body)
 
     s = ansi_login("Yoda")
-    s.buf.clear()
-    s.send(b"files 1\r")
-    ok = check("area opens", s.wait_for(b"C64 Downloads", 5))
-    ok &= check("list leaves cleanly", leave_files(s))
+    ok = check("area opens", enter_area(s, 1, b"C64 Downloads"))
 
     # ---- download by YMODEM ---------------------------------------------
-    s.buf.clear()
-    s.send(b"download EXACT.BIN\r")
-    ok &= check("YMODEM is the default", s.wait_for(b"Start your YMODEM receive", 6))
+    # EXACT.BIN is the fourth file in this area once the xfer test has run,
+    # so find it by name in the listing rather than by a fixed number.
+    listing = plain(s.buf)
+    num = None
+    for line in listing.split(b"\n"):
+        if b"EXACT.BIN" in line:
+            head = line.strip().split(b" ", 1)[0]
+            if head.isdigit():
+                num = int(head)
+            break
+    ok &= check("EXACT.BIN is numbered in the listing", num is not None)
+    if num is None:
+        s.close()
+        return False
+    ok &= check("YMODEM is the default",
+                file_num(s, num, b"Start your YMODEM receive"))
     name, size, got = ymodem_receive(s)
     ok &= check("block 0 carried the filename", name == "EXACT.BIN")
     ok &= check("block 0 carried the exact size", size == len(body))
@@ -3106,45 +3361,31 @@ def test_ymodem():
                 got[:size] == body)
     ok &= check("the board agrees it finished", s.wait_for(b"Download complete", 8))
     settle_after_transfer(s)
-    s.send(b"who\r")
-    ok &= check("session comes back", s.wait_for(b"online", 5))
-    ok &= check("and pages properly", drain(s))
 
     # ---- XMODEM on request still works, and still pads --------------------
     # Proves the two are genuinely different rather than the test lying.
-    # Re-establish the area explicitly rather than assuming the session is
-    # still where the last step left it. A stray key at the file menu
-    # opens an area, and from there the next command is read as menu
-    # keys: the "l" in "download" is the area's own "L lists", which is
-    # exactly how this failed. Deterministic beats clever.
-    s.buf.clear()
-    s.send(b"files 1\r")
-    s.wait_for(b"C64 Downloads", 5)
-    leave_files(s)
-    settle_after_transfer(s)
-    s.send(b"download EXACT.BIN X\r")
+    # Re-open the area rather than assuming the session is still where the
+    # last step left it. A transfer leaves the caller at the area prompt,
+    # but a protocol client can leave a stray byte behind, and a stray byte
+    # at an area prompt is a keypress.
+    ok &= check("back in the section", enter_area(s, 1, b"C64 Downloads"))
     ok &= check("X asks for plain XMODEM",
-                s.wait_for(b"Start your XMODEM receive", 6))
+                file_num(s, num, b"Start your XMODEM receive", proto=b"x"))
     xgot = xmodem_receive(s)
     ok &= check("XMODEM carries the same bytes", xgot[:len(body)] == body)
     ok &= check("but pads the tail, which is why YMODEM exists",
                 len(xgot) > len(body) and set(xgot[len(body):]) <= {SUB})
     s.wait_for(b"Download complete", 8)
     settle_after_transfer(s)
-    s.send(b"who\r")
-    s.wait_for(b"online", 5)
-    drain(s)
 
     # ---- upload by YMODEM, no filename typed ------------------------------
     drop = os.path.join(sd, "pub", "drop")
     up = bytes([0xFF, 0x0D, 0x0A, 0x1A]) * 33 + b"END"
-    s.buf.clear()
-    s.send(b"files 5\r")
-    s.wait_for(b"Drop Box", 5)
-    leave_files(s)
-    s.buf.clear()
-    s.send(b"upload\r")
-    ok &= check("bare UPLOAD asks for YMODEM", s.wait_for(b"Start your YMODEM send", 6))
+    ok &= check("the drop box opens", enter_area(s, 5, b"Drop Box"))
+    # An empty answer is the YMODEM case: the sending terminal already knows
+    # the filename, so there is no reason to make somebody type it.
+    ok &= check("an empty answer asks for YMODEM",
+                area_key(s, b"u", "", b"Start your YMODEM send"))
     _seen.clear()
     ok &= check("the board took it", ymodem_send(s, "FROMTERM.BIN", up))
     s.pump(1.0)
