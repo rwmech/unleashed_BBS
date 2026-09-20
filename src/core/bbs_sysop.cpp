@@ -684,11 +684,17 @@ struct CfgPart {
     uint8_t     cap;
 };
 
+// The order here is the order on the wire, and Upload sits above Download
+// because it is where the old single "Write" level lived. Reordering them
+// to read nicely would silently reinterpret every area already configured,
+// turning its upload level into its download level.
 const CfgPart kAreaParts[] = {
-    { "Path",  CK_TEXT,  48 },      // files.cpp kPathMax
-    { "Name",  CK_TEXT,  24 },      // files.cpp kNameMax
-    { "Read",  CK_LEVEL,  6 },
-    { "Write", CK_LEVEL,  6 },
+    { "Path",     CK_TEXT,  48 },      // files.cpp kPathMax
+    { "Name",     CK_TEXT,  24 },      // files.cpp kNameMax
+    { "Read",     CK_LEVEL,  6 },      // see the area and list it
+    { "Upload",   CK_LEVEL,  6 },      // put files in, and describe them
+    { "Download", CK_LEVEL,  6 },      // take files out
+    { "Delete",   CK_LEVEL,  6 },      // remove files, approve or reject
 };
 
 struct CfgComposite {

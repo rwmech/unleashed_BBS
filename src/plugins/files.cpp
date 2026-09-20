@@ -19,18 +19,36 @@
  *                  on a laptop with the card in hand, which is the whole
  *                  reason the card is FAT32 rather than LittleFS.
  *
- *               No transfer here. Browsing is useful on its own and XMODEM
- *                  is its own piece of work; uploads and the move interface
- *                  wait for it, because an upload area on a board with no
- *                  transfer protocol cannot be used and so cannot be tested.
+ *               Transfer is XMODEM and XMODEM-1K, one at a time board-wide.
+ *                  The engine in core/xmodem.h does the protocol and knows
+ *                  nothing about sockets or files; this plugin feeds it from
+ *                  onBytes, drains it into the caller's timeline, and nudges
+ *                  it from tick() for timeouts. A transfer advances one block
+ *                  per round trip, which is XMODEM being stop-and-wait rather
+ *                  than the integration being slow.
+ *
+ *               No YMODEM yet, so there is no filename on the wire: a
+ *                  download is named by the command and an upload is named
+ *                  at a prompt before the line goes binary. That is how
+ *                  boards did XMODEM uploads and it is not a workaround.
  *
  * Config:       [plugin:files]
  *                  enabled  yes
  *                  read     all        who may browse
- *                  write    staff      who may write descriptions
- *                  area1..8 <path> | <name>
+ *                  write    staff      the fallback upload level
+ *                  admin    sysop      the fallback delete level
+ *                  area1..8 <path> | <name> | read | up | down | del
  *
- * Commands:     FILES, FILES n, DESC
+ *               The four area levels are optional and each falls back on
+ *                  its own: read to the plugin's read, up to the plugin's
+ *                  write, down to THIS AREA's read, del to the plugin's
+ *                  admin. Upload sits before download on the wire because
+ *                  that is where the old single "write" level was, and
+ *                  moving it would silently reinterpret every area already
+ *                  configured.
+ *
+ * Commands:     FILES, FILES n, DOWNLOAD, UPLOAD, UPLOADS, APPROVE,
+ *               REJECT, ERASE, DESC
  *
  * Depends on:   the sd plugin for a mounted card (PF_SD)
  * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
@@ -59,6 +77,7 @@
 #include "../core/plugin.h"
 #include "../core/bbs.h"
 #include "../core/bbs_util.h"
+#include "../core/xmodem.h"
 #include "../platform/platform.h"
 #include "../config.h"
 
@@ -67,6 +86,7 @@
 #include <cstdlib>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <ctime>
 
 using bbsu::ieq;
 
@@ -87,18 +107,55 @@ constexpr uint8_t kAreaScreens = kCfgAreas;       // shows as 9
 constexpr uint8_t kAreaLogs    = kCfgAreas + 1;   // shows as 10
 constexpr uint8_t kPathMax  = 48;
 constexpr uint8_t kNameMax  = 24;
+// path | name | read | up | down | del, with " | " between each pair.
+constexpr uint8_t kAreaValMax = kPathMax + kNameMax + 4 * 6 + 5 * 3;
 constexpr uint8_t kDescMax  = 48;
+
+// An upload lands here and is not in the area until staff move it.
+//
+// A staging folder rather than a flag on the file, and that is the whole
+// safety argument: with a marker, every listing and download path has to
+// remember to check it, and forgetting one check serves an unapproved file.
+// Fail-open. With a folder, an unapproved file simply is not in the area, so
+// the code that lists and sends needs no changes at all to keep it out of
+// sight. Approval is then a rename on the same filesystem, which is cheap
+// and near atomic on FAT, and a power cut mid-upload leaves junk in staging
+// rather than in the public area.
+//
+// The leading dot is not decoration: the area listing already skips entries
+// starting with one, so this folder is invisible to callers for free.
+const char* const kPendDir  = ".pending";
+const char* const kPendList = "UPLOADS.BBS";
+
+// Caps, because an upload is the first thing on this board a caller can use
+// to consume somebody else's resources. Without these the first person to
+// find it fills the card.
+constexpr uint8_t  kMaxPendPerArea = 20;
+constexpr uint32_t kMaxUploadBytes = 4u * 1024u * 1024u;
 
 // An area's own read and write levels, which are the plugin's unless the
 // area says otherwise. Deferring these to the upload phase was a mistake:
 // the first thing anybody wants is a staff-only area, and that has nothing
 // to do with uploading. Same words and same ladder as everywhere else, so a
 // sysop learns the vocabulary once.
+// Four levels, because "write" was doing two jobs and they are not the same
+// trust. Pulling a file out of an area and pushing one into it are different
+// permissions on every BBS that ever ran, and lumping them together would
+// have meant a board could not offer downloads to callers without also
+// letting them upload.
+//
+// The wire order is path | name | read | up | down | del, and `up` sits
+// where the old `write` was **on purpose**. Inserting `down` in its place
+// would have silently turned every existing area's upload level into its
+// download level, which is the exact class of change this project refuses
+// to make quietly. Ugly order, no ambiguity, nothing reinterpreted.
 struct Area {
     char      path[kPathMax + 1] = {};   // relative to the card root
     char      name[kNameMax + 1] = {};   // what a caller sees
-    PlugLevel read  = PlugLevel::Nobody; // Nobody here means "use the plugin's"
-    PlugLevel write = PlugLevel::Nobody;
+    PlugLevel read  = PlugLevel::Nobody; // Nobody here means "use the fallback"
+    PlugLevel up    = PlugLevel::Nobody; // was `write`, same position on the wire
+    PlugLevel down  = PlugLevel::Nobody;
+    PlugLevel del   = PlugLevel::Nobody;
 };
 
 Area    g_area[kMaxAreas];
@@ -125,9 +182,20 @@ Where   g_where[BBS_MAX_NODES + 2] = {};
 
 uint8_t slotOf(const Session& s) { return s.id <= BBS_MAX_NODES + 1 ? s.id : 0; }
 
-// mayRead / mayWrite: this caller against this area. An area that set no
-// level of its own falls back to the plugin's, which is what the levels on
-// the [plugin:files] section have always meant.
+// This caller against this area. An area that set no level of its own falls
+// back, and what it falls back to is chosen per permission rather than all
+// landing on the plugin's read level:
+//
+//   read  -> the plugin's read.   Seeing an area is the plugin's own gate.
+//   up    -> the plugin's write.  Where the old `write` went, unchanged.
+//   down  -> this area's READ.    If you can see what is in an area, taking
+//            it is the least surprising default, and it is what the board
+//            did before download existed. A sysop who wants "everyone can
+//            look, members can fetch" sets it explicitly.
+//   del   -> the plugin's ADMIN.  Never the area's write. Removing files is
+//            the destructive one, so it fails shut: an area that says
+//            nothing about deletion does not quietly inherit permission to
+//            delete from permission to upload.
 bool mayRead(const Session& s, uint8_t i) {
     if (i >= g_areas || !g_area[i].path[0]) return false;
     PlugLevel lv = g_area[i].read;
@@ -135,12 +203,31 @@ bool mayRead(const Session& s, uint8_t i) {
     return plugins::mayUse(s, lv);
 }
 
-bool mayWrite(const Session& s, uint8_t i) {
+bool mayUp(const Session& s, uint8_t i) {
     if (i >= g_areas || !g_area[i].path[0]) return false;
-    PlugLevel lv = g_area[i].write;
+    PlugLevel lv = g_area[i].up;
     if (lv == PlugLevel::Nobody) lv = plugins::levelFor(g_index, 1);
     return plugins::mayUse(s, lv);
 }
+
+bool mayDown(const Session& s, uint8_t i) {
+    if (i >= g_areas || !g_area[i].path[0]) return false;
+    PlugLevel lv = g_area[i].down;
+    if (lv == PlugLevel::Nobody) lv = g_area[i].read;              // the area's
+    if (lv == PlugLevel::Nobody) lv = plugins::levelFor(g_index, 0);
+    return plugins::mayUse(s, lv);
+}
+
+bool mayDel(const Session& s, uint8_t i) {
+    if (i >= g_areas || !g_area[i].path[0]) return false;
+    PlugLevel lv = g_area[i].del;
+    if (lv == PlugLevel::Nobody) lv = plugins::levelFor(g_index, 2);   // admin
+    return plugins::mayUse(s, lv);
+}
+
+// Kept as the name DESC uses. Describing a file is part of putting one
+// there, so it follows upload rather than being a fifth level.
+bool mayWrite(const Session& s, uint8_t i) { return mayUp(s, i); }
 
 // ---------------------------------------------------------------------------
 // areaPath: the full path of an area, or false when the card is not there.
@@ -299,10 +386,10 @@ void readKey(void* ctx, const char* key, const char* value) {
     // <path> | <name> | <read> | <write>, the last two optional. Split on
     // every bar rather than the first, so a sysop can say
     //   area1 = admin/screens | Screens | staff | sysop
-    char parts[4][kPathMax + kNameMax + 4] = {};
+    char parts[6][kPathMax + kNameMax + 4] = {};
     uint8_t np = 0;
     const char* p = value;
-    while (np < 4) {
+    while (np < 6) {
         const char* bar = strchr(p, '|');
         size_t len = bar ? static_cast<size_t>(bar - p) : strlen(p);
         while (len && (p[len - 1] == ' ' || p[len - 1] == '\t')) --len;
@@ -334,9 +421,13 @@ void readKey(void* ctx, const char* key, const char* value) {
     // at, and the area keeps the plugin's level. Guessing here would mean a
     // typo quietly opening a staff area to everybody.
     if (np > 2 && parts[2][0] && !plugins::levelFromText(parts[2], a.read))
-        plat::log("files: area%ld read level '%s' is not a level, using the plugin's", n, parts[2]);
-    if (np > 3 && parts[3][0] && !plugins::levelFromText(parts[3], a.write))
-        plat::log("files: area%ld write level '%s' is not a level, using the plugin's", n, parts[3]);
+        plat::log("files: area%ld read level '%s' is not a level, using the fallback", n, parts[2]);
+    if (np > 3 && parts[3][0] && !plugins::levelFromText(parts[3], a.up))
+        plat::log("files: area%ld upload level '%s' is not a level, using the fallback", n, parts[3]);
+    if (np > 4 && parts[4][0] && !plugins::levelFromText(parts[4], a.down))
+        plat::log("files: area%ld download level '%s' is not a level, using the fallback", n, parts[4]);
+    if (np > 5 && parts[5][0] && !plugins::levelFromText(parts[5], a.del))
+        plat::log("files: area%ld delete level '%s' is not a level, using the fallback", n, parts[5]);
     if (!a.path[0]) return;
     if (strstr(a.path, "..")) {                      // a sysop typo, not an attack
         plat::log("files: area%ld path has .. in it, ignored", n);
@@ -348,6 +439,10 @@ void readKey(void* ctx, const char* key, const char* value) {
     g_area[i] = a;
     if (i + 1 > g_areas) g_areas = static_cast<uint8_t>(i + 1);
 }
+
+// Defined with the transfer code below, but start() is what establishes the
+// count in the first place.
+void recountPending();
 
 bool start(Bbs& bbs) {
     (void)bbs;
@@ -370,13 +465,17 @@ bool start(Bbs& bbs) {
     snprintf(scr.path, sizeof(scr.path), "%s", BBS_SD_SCREEN_DIR);
     snprintf(scr.name, sizeof(scr.name), "%s", "Screens");
     scr.read  = PlugLevel::Staff;
-    scr.write = PlugLevel::Sysop;
+    scr.down  = PlugLevel::Staff;
+    scr.up    = PlugLevel::Sysop;
+    scr.del   = PlugLevel::Sysop;
 
     Area& lg = g_area[kAreaLogs];
     snprintf(lg.path, sizeof(lg.path), "%s", BBS_SD_LOG_DIR);
     snprintf(lg.name, sizeof(lg.name), "%s", "Logs");
     lg.read  = PlugLevel::Staff;
-    lg.write = PlugLevel::Sysop;
+    lg.down  = PlugLevel::Staff;
+    lg.up    = PlugLevel::Sysop;
+    lg.del   = PlugLevel::Sysop;
 
     g_areas = kMaxAreas;
 
@@ -406,6 +505,7 @@ bool start(Bbs& bbs) {
             }
         }
     }
+    recountPending();
     plat::log("files: %u area%s, %u folder%s created",
               live, live == 1 ? "" : "s", made, made == 1 ? "" : "s");
     return true;
@@ -416,7 +516,12 @@ void stop() {}
 // A caller leaving takes their place in an area with them. Sessions are a
 // static pool, so anything not cleared here is inherited by the next caller
 // on that node.
+// Defined with the rest of the transfer code further down; onLogoff is the
+// one thing above it that has to know a caller can vanish mid-transfer.
+void xferDropped(Session& s);
+
 void onLogoff(Session& s) {
+    xferDropped(s);
     g_at[slotOf(s)]    = 0xFF;
     g_where[slotOf(s)] = Where::Out;
     g_sel[slotOf(s)]   = 0;
@@ -765,6 +870,416 @@ void onKey(Session& s, int k, uint32_t now) {
     }
 }
 
+
+// ===========================================================================
+// Transfers.
+//
+// One at a time, board-wide. That is the engine's own documented design and
+// it is the right one here: XMODEM is stop-and-wait, so a transfer spends
+// almost all of its time waiting for the far end, and a second engine would
+// cost 1.1 KB of static RAM to overlap two things that are each mostly idle.
+// A caller asking while somebody else is transferring is told to wait rather
+// than queued, because a queue on a board with ten lines is a way of making
+// somebody sit and watch nothing happen.
+//
+// Nothing here blocks. The engine is fed from onBytes as the far end
+// answers, drained into the caller's timeline, and nudged from tick() for
+// timeouts and the receiver's start polling. A transfer therefore advances
+// one block per round trip, which is XMODEM behaving correctly rather than
+// the integration being slow.
+// ===========================================================================
+struct Xfer {
+    Session* s      = nullptr;     // who holds it, null when free
+    FILE*    fp     = nullptr;
+    bool     sending = false;
+    uint8_t  area   = 0xFF;
+    uint32_t started = 0;
+    uint32_t written = 0;          // receiving: bytes accepted, for the cap
+    char     name[kDescMax + 1] = {};
+};
+
+Xfer            g_x;
+xmodem::Engine  g_eng;
+
+// How many uploads are waiting on staff, board-wide. Counted at start and on
+// mount, then kept by hand as uploads arrive and are dealt with, so telling a
+// staff member at login costs no reads at all. Same reasoning as chat's "you
+// have mail". A card edited on a laptop goes stale until the next start,
+// which is the accepted trade for a login that does not touch the card.
+uint16_t g_pending = 0;
+
+// pendPath: an area's staging folder, or false when there is no card.
+bool pendPath(uint8_t i, char* out, size_t n) {
+    char dir[128];
+    if (!areaPath(i, dir, sizeof(dir))) return false;
+    snprintf(out, n, "%s/%s", dir, kPendDir);
+    return true;
+}
+
+// countPending: how many real files are staged in one area. The list file is
+// not one of them.
+uint16_t countPending(uint8_t i) {
+    char pd[160];
+    if (!pendPath(i, pd, sizeof(pd))) return 0;
+    DIR* d = opendir(pd);
+    if (!d) return 0;
+    uint16_t n = 0;
+    struct dirent* e;
+    while ((e = readdir(d)) != nullptr) {
+        if (e->d_name[0] == '.') continue;
+        if (ieq(e->d_name, kPendList)) continue;
+        ++n;
+    }
+    closedir(d);
+    return n;
+}
+
+void recountPending() {
+    g_pending = 0;
+    for (uint8_t i = 0; i < g_areas; ++i)
+        if (g_area[i].path[0]) g_pending = static_cast<uint16_t>(g_pending + countPending(i));
+}
+
+// The engine asks for file data through this and never learns what a file
+// is. A short read is taken as end of file, so this must return max until
+// the file really ends.
+uint16_t xferRead(void* ctx, uint8_t* dst, uint16_t max) {
+    Xfer* x = static_cast<Xfer*>(ctx);
+    if (!x->fp) return 0;
+    size_t got = fread(dst, 1, max, x->fp);
+    return static_cast<uint16_t>(got);
+}
+
+// The engine hands a received block here. Returning false aborts the
+// transfer with SinkFailed, which is how the size cap and a full card are
+// both reported: the caller is told the upload failed rather than being left
+// to discover a truncated file later.
+bool xferWrite(void* ctx, const uint8_t* src, uint16_t len) {
+    Xfer* x = static_cast<Xfer*>(ctx);
+    if (!x->fp) return false;
+    if (x->written + len > kMaxUploadBytes) {
+        plat::log("files: upload %s refused, over the size cap", x->name);
+        return false;
+    }
+    if (fwrite(src, 1, len, x->fp) != len) return false;
+    x->written += len;
+    return true;
+}
+
+// xferPump: move whatever the engine has ready into the caller's timeline.
+//
+// Sized against the room actually left, and halved, because Term::raw
+// doubles every 0xFF for telnet: 1 KB of 0xFF becomes 2 KB on the wire, and
+// a timeline put() is all-or-nothing, so asking for more than will fit
+// silently drops the block and stalls the transfer with no error anywhere.
+void xferPump(Session& s, uint32_t now) {
+    uint8_t buf[256];
+    for (;;) {
+        size_t room = s.tl.freeBytes();
+        if (room < 64) return;                       // let the socket drain
+        size_t want = (room - 32) / 2;               // worst case IAC doubling
+        if (want > sizeof(buf)) want = sizeof(buf);
+        size_t n = g_eng.pull(buf, want, now);
+        if (!n) return;
+        s.term.raw(s.tl, buf, n);
+    }
+}
+
+// xferEnd: close the file, put the terminal back, tell the caller, and hand
+// the session to whoever should have it next.
+void xferEnd(Bbs& b, Session& s) {
+    char buf[160];
+    if (g_x.fp) { fclose(g_x.fp); g_x.fp = nullptr; }
+
+    b.setRawInput(s, false);
+    s.tn.setBinary(false);
+    s.term.reset(s.tl);
+    s.term.nl(s.tl);
+
+    if (g_eng.done()) {
+        unsigned kb = static_cast<unsigned>((g_eng.bytes() + 512) / 1024);
+        snprintf(buf, sizeof(buf), "%s complete: %s, %u KB in %u blocks%s",
+                 g_x.sending ? "Download" : "Upload", g_x.name, kb,
+                 static_cast<unsigned>(g_eng.blocks()),
+                 g_eng.crcMode() ? ", CRC" : ", checksum");
+        s.term.color(s.tl, Color::LightGreen);
+    } else {
+        snprintf(buf, sizeof(buf), "%s failed: %s",
+                 g_x.sending ? "Download" : "Upload", g_eng.errorText());
+        s.term.color(s.tl, Color::LightRed);
+    }
+    s.term.text(s.tl, buf);
+    s.term.nl(s.tl);
+
+    plat::log("files: %s %s %s, %lu bytes, %u errors",
+              g_x.sending ? "sent" : "received", g_x.name,
+              g_eng.done() ? "ok" : "failed",
+              static_cast<unsigned long>(g_eng.bytes()),
+              static_cast<unsigned>(g_eng.errors()));
+
+    // A finished upload is recorded next to the file it describes, so a
+    // sysop with the card in a laptop can see who sent what without the
+    // board running. Appended rather than rewritten: an append cannot lose
+    // the lines already there if the power goes.
+    if (!g_x.sending && g_eng.done() && g_x.area != 0xFF) {
+        char pd[160], lf[192];
+        if (pendPath(g_x.area, pd, sizeof(pd))) {
+            snprintf(lf, sizeof(lf), "%s/%s", pd, kPendList);
+            FILE* f = fopen(lf, "a");
+            if (f) {
+                fprintf(f, "%s\t%s\t%lu\t%lu\n", g_x.name, s.user,
+                        static_cast<unsigned long>(time(nullptr)),
+                        static_cast<unsigned long>(g_x.written));
+                fclose(f);
+            }
+        }
+        ++g_pending;
+    }
+
+    g_eng.reset();
+    g_x = Xfer();
+
+    // Back where they came from. A caller who was in the file area when they
+    // started a download belongs in the file area afterwards, not dropped at
+    // the shell without being told why the room changed.
+    if (g_where[slotOf(s)] != Where::Out) showMenu(b, s);
+    else                                  b.prompt(s);
+}
+
+// xferDrive: one pass of feed, tick and pull. Both entry points share it so
+// there is one order of operations rather than two that can drift.
+void xferDrive(Session& s, const uint8_t* in, size_t n, uint32_t now) {
+    if (in && n) g_eng.feed(in, n, now);
+    g_eng.tick(now);
+    xferPump(s, now);
+    if (!g_eng.running() && !g_eng.pending())
+        xferEnd(Bbs::instance(), s);
+}
+
+void onBytes(Session& s, const uint8_t* in, size_t n, uint32_t now) {
+    if (g_x.s != &s) return;            // not this caller's transfer
+    xferDrive(s, in, n, now);
+}
+
+// tick: timeouts and retries only. The transfer is driven by the far end
+// answering, so this is what notices when it stops answering.
+void tick(uint32_t now) {
+    if (!g_x.s) return;
+    xferDrive(*g_x.s, nullptr, 0, now);
+}
+
+// A caller dropping mid-transfer takes the engine with them. Sessions come
+// from a static pool, so a stale pointer here would be handed to whoever
+// dialled in next and the board would push a file at them.
+// Staff are told once, at login, and only if there is something to tell.
+// Costs no reads: g_pending is kept as uploads come and go.
+void onLogin(Session& s) {
+    if (!g_pending) return;
+    if (!plugins::mayUse(s, PlugLevel::Staff)) return;
+    char buf[80];
+    snprintf(buf, sizeof(buf), "%u upload%s awaiting approval. UPLOADS lists them.",
+             static_cast<unsigned>(g_pending), g_pending == 1 ? "" : "s");
+    s.term.nl(s.tl);
+    s.term.color(s.tl, Color::Yellow);
+    s.term.text(s.tl, buf);
+    s.term.nl(s.tl);
+    s.term.reset(s.tl);
+}
+
+void xferDropped(Session& s) {
+    if (g_x.s != &s) return;
+    if (g_x.fp) { fclose(g_x.fp); g_x.fp = nullptr; }
+    g_eng.reset();
+    g_x = Xfer();
+    plat::log("files: transfer dropped, node %u left", static_cast<unsigned>(s.id));
+}
+
+// startSend: the download. Everything that can be refused is refused before
+// the terminal is put into binary mode, because a refusal that arrives after
+// the switch is a refusal the caller's terminal cannot read.
+void startSend(Bbs& b, Session& s, const char* arg, uint32_t now) {
+    char buf[192];
+    uint8_t at = g_at[slotOf(s)];
+    char dir[128];
+
+    if (at == 0xFF || !areaPath(at, dir, sizeof(dir))) {
+        s.term.color(s.tl, Color::Grey);
+        s.term.text(s.tl, "Open an area first with FILES n.");
+        b.prompt(s);
+        return;
+    }
+    if (!mayDown(s, at)) {
+        s.term.color(s.tl, Color::LightRed);
+        s.term.text(s.tl, "This area is not yours to download from.");
+        b.prompt(s);
+        return;
+    }
+    if (g_x.s) {
+        s.term.color(s.tl, Color::Grey);
+        s.term.text(s.tl, "Somebody is transferring right now. Try in a moment.");
+        b.prompt(s);
+        return;
+    }
+
+    char name[kDescMax + 1] = {};
+    const char* r = arg;
+    while (*r == ' ') ++r;
+    size_t k = 0;
+    while (*r && *r != ' ' && k + 1 < sizeof(name)) name[k++] = *r++;
+    name[k] = '\0';
+    if (!safeName(name)) {
+        s.term.color(s.tl, Color::LightRed);
+        s.term.text(s.tl, "DOWNLOAD <file>");
+        b.prompt(s);
+        return;
+    }
+
+    snprintf(buf, sizeof(buf), "%s/%s", dir, name);
+    FILE* fp = fopen(buf, "rb");
+    if (!fp) {
+        s.term.color(s.tl, Color::LightRed);
+        s.term.text(s.tl, "No such file in this area.");
+        b.prompt(s);
+        return;
+    }
+
+    if (!b.own(s, g_index)) { fclose(fp); b.prompt(s); return; }
+    b.setDoing(s, "DOWNLOAD");
+
+    g_x.s       = &s;
+    g_x.fp      = fp;
+    g_x.sending = true;
+    g_x.area    = at;
+    g_x.started = now;
+    snprintf(g_x.name, sizeof(g_x.name), "%s", name);
+
+    // Told before the line goes binary, because after this the caller's
+    // terminal is a transfer and nothing readable reaches it again until
+    // the transfer ends.
+    s.term.color(s.tl, Color::Cyan);
+    snprintf(buf, sizeof(buf), "Sending %s. Start your XMODEM receive now.", name);
+    s.term.text(s.tl, buf);
+    s.term.nl(s.tl);
+    s.term.reset(s.tl);
+
+    s.tn.setBinary(true);        // CR is data now, not a line ending
+    b.setRawInput(s, true);          // and 0x1B is data, not an escape
+    g_eng.beginSend(xferRead, &g_x, now, true);
+}
+
+// argName: the first word of an argument as a filename, checked. Shared by
+// every command that takes one, so they cannot drift apart on what they
+// accept.
+bool argName(const char* a, char* out, size_t n) {
+    const char* r = a;
+    while (*r == ' ') ++r;
+    size_t k = 0;
+    while (*r && *r != ' ' && k + 1 < n) out[k++] = *r++;
+    out[k] = 0;
+    return safeName(out);
+}
+
+// startRecv: the upload. It lands in the area's staging folder and is not in
+// the area at all until staff move it, so nothing else on the board has to
+// know it exists.
+void startRecv(Bbs& b, Session& s, const char* arg, uint32_t now) {
+    char buf[224];        // holds "<pending dir 160>/<name 48>" with room over
+    uint8_t at = g_at[slotOf(s)];
+    char dir[128];
+
+    if (at == 0xFF || !areaPath(at, dir, sizeof(dir))) {
+        s.term.color(s.tl, Color::Grey);
+        s.term.text(s.tl, "Open an area first with FILES n.");
+        b.prompt(s);
+        return;
+    }
+    if (!mayUp(s, at)) {
+        s.term.color(s.tl, Color::LightRed);
+        s.term.text(s.tl, "This area is not yours to upload to.");
+        b.prompt(s);
+        return;
+    }
+    if (g_x.s) {
+        s.term.color(s.tl, Color::Grey);
+        s.term.text(s.tl, "Somebody is transferring right now. Try in a moment.");
+        b.prompt(s);
+        return;
+    }
+    if (countPending(at) >= kMaxPendPerArea) {
+        s.term.color(s.tl, Color::LightRed);
+        s.term.text(s.tl, "This area has all the uploads it can hold until staff clear some.");
+        b.prompt(s);
+        return;
+    }
+
+    char name[kDescMax + 1] = {};
+    if (!argName(arg, name, sizeof(name))) {
+        s.term.color(s.tl, Color::LightRed);
+        s.term.text(s.tl, "UPLOAD <file>");
+        b.prompt(s);
+        return;
+    }
+    // Never let an upload be named as the catalogue: approving it would
+    // overwrite every description in the area.
+    if (ieq(name, BBS_FILES_DESC) || ieq(name, kPendList)) {
+        s.term.color(s.tl, Color::LightRed);
+        s.term.text(s.tl, "That name belongs to the area. Pick another.");
+        b.prompt(s);
+        return;
+    }
+
+    struct stat st;
+    snprintf(buf, sizeof(buf), "%s/%s", dir, name);
+    if (stat(buf, &st) == 0) {
+        s.term.color(s.tl, Color::LightRed);
+        s.term.text(s.tl, "There is already a file by that name here.");
+        b.prompt(s);
+        return;
+    }
+
+    char pd[160];
+    if (!pendPath(at, pd, sizeof(pd))) { b.prompt(s); return; }
+    mkdir(pd, 0755);                                   // first upload makes it
+
+    snprintf(buf, sizeof(buf), "%s/%.48s", pd, name);
+    if (stat(buf, &st) == 0) {
+        s.term.color(s.tl, Color::LightRed);
+        s.term.text(s.tl, "Somebody has already sent one by that name, still waiting.");
+        b.prompt(s);
+        return;
+    }
+    FILE* fp = fopen(buf, "wb");
+    if (!fp) {
+        s.term.color(s.tl, Color::LightRed);
+        s.term.text(s.tl, "Could not open that name on the card.");
+        b.prompt(s);
+        return;
+    }
+
+    if (!b.own(s, g_index)) { fclose(fp); remove(buf); b.prompt(s); return; }
+    b.setDoing(s, "UPLOAD");
+
+    g_x.s       = &s;
+    g_x.fp      = fp;
+    g_x.sending = false;
+    g_x.area    = at;
+    g_x.started = now;
+    g_x.written = 0;
+    snprintf(g_x.name, sizeof(g_x.name), "%s", name);
+
+    s.term.color(s.tl, Color::Cyan);
+    s.term.text(s.tl, "Ready. Start your XMODEM send now.");
+    s.term.nl(s.tl);
+    s.term.color(s.tl, Color::Grey);
+    s.term.text(s.tl, "It waits for staff approval before anyone else sees it.");
+    s.term.nl(s.tl);
+    s.term.reset(s.tl);
+
+    s.tn.setBinary(true);
+    b.setRawInput(s, true);
+    g_eng.beginRecv(xferWrite, &g_x, now, true);
+}
+
 // ---------------------------------------------------------------------------
 // The commands.
 // ---------------------------------------------------------------------------
@@ -787,6 +1302,189 @@ const Command kCommands[] = {
           listArea(b, s, static_cast<uint8_t>(n - 1));
       },
       Menu::Main, 8 },
+    { "UPLOAD", "U", 0, CF_WRITE, "[U]PLOAD f", "send a file to this area",
+      [](Bbs& b, Session& s, const char* a, uint32_t now) { startRecv(b, s, a, now); },
+      Menu::Main, 10 },
+    { "UPLOADS", "", 0, CF_ADMIN, "UPLOADS", "uploads waiting for approval",
+      [](Bbs& b, Session& s, const char*, uint32_t) {
+          char buf[192];
+          uint8_t shown = 0;
+          b.rowTitle(s, "Uploads awaiting approval");
+          for (uint8_t i = 0; i < g_areas && shown < 40; ++i) {
+              if (!g_area[i].path[0] || !mayDel(s, i)) continue;
+              char pd[160];
+              if (!pendPath(i, pd, sizeof(pd))) continue;
+              DIR* d = opendir(pd);
+              if (!d) continue;
+              struct dirent* e;
+              while ((e = readdir(d)) != nullptr && shown < 40) {
+                  if (e->d_name[0] == '.') continue;
+                  if (ieq(e->d_name, kPendList)) continue;
+                  char full[224];
+                  struct stat st;
+                  unsigned long kb = 0;
+                  snprintf(full, sizeof(full), "%s/%.48s", pd, e->d_name);
+                  if (stat(full, &st) == 0)
+                      kb = (static_cast<unsigned long>(st.st_size) + 1023u) / 1024u;
+                  snprintf(buf, sizeof(buf), "%2u  %-20.20s %4lu KB  %s",
+                           static_cast<unsigned>(i + 1), e->d_name, kb, g_area[i].name);
+                  b.rowText(s, Color::White, buf);
+                  ++shown;
+              }
+              closedir(d);
+          }
+          if (!shown) b.rowText(s, Color::Grey, "Nothing waiting.");
+          else        b.rowText(s, Color::Grey,
+                                "FILES n, then APPROVE <file> or REJECT <file>.");
+          b.rowRule(s);
+          b.prompt(s);
+      },
+      Menu::Sysop, 21 },
+    { "APPROVE", "", 0, CF_ADMIN, "APPROVE f", "make an upload live in this area",
+      [](Bbs& b, Session& s, const char* a, uint32_t) {
+          char buf[192], pd[160], from[224], to[224];
+          char name[kDescMax + 1] = {};
+          uint8_t at = g_at[slotOf(s)];
+          char dir[128];
+          if (at == 0xFF || !areaPath(at, dir, sizeof(dir))) {
+              s.term.color(s.tl, Color::Grey);
+              s.term.text(s.tl, "Open the area first with FILES n.");
+              b.prompt(s);
+              return;
+          }
+          if (!mayDel(s, at)) {
+              s.term.color(s.tl, Color::LightRed);
+              s.term.text(s.tl, "Approving in this area is not yours to do.");
+              b.prompt(s);
+              return;
+          }
+          if (!argName(a, name, sizeof(name)) || !pendPath(at, pd, sizeof(pd))) {
+              s.term.color(s.tl, Color::LightRed);
+              s.term.text(s.tl, "APPROVE <file>");
+              b.prompt(s);
+              return;
+          }
+          snprintf(from, sizeof(from), "%s/%s", pd, name);
+          snprintf(to,   sizeof(to),   "%s/%s", dir, name);
+          // A rename on the same filesystem, which is what makes approval
+          // cheap and near atomic. The file is in the area the instant this
+          // returns, and was in nobody's way before it.
+          if (rename(from, to) != 0) {
+              s.term.color(s.tl, Color::LightRed);
+              s.term.text(s.tl, "No upload by that name is waiting here.");
+              b.prompt(s);
+              return;
+          }
+          if (g_pending) --g_pending;
+          plat::log("files: %s approved %s into area %u",
+                    s.user, name, static_cast<unsigned>(at + 1));
+          s.term.color(s.tl, Color::LightGreen);
+          snprintf(buf, sizeof(buf), "%.48s is live. DESC it to say what it is.", name);
+          s.term.text(s.tl, buf);
+          b.prompt(s);
+      },
+      Menu::Sysop, 22 },
+    { "REJECT", "", 0, CF_ADMIN, "REJECT f", "throw an upload away",
+      [](Bbs& b, Session& s, const char* a, uint32_t) {
+          char buf[224], pd[160];
+          char name[kDescMax + 1] = {};
+          uint8_t at = g_at[slotOf(s)];
+          char dir[128];
+          if (at == 0xFF || !areaPath(at, dir, sizeof(dir))) {
+              s.term.color(s.tl, Color::Grey);
+              s.term.text(s.tl, "Open the area first with FILES n.");
+              b.prompt(s);
+              return;
+          }
+          if (!mayDel(s, at)) {
+              s.term.color(s.tl, Color::LightRed);
+              s.term.text(s.tl, "Rejecting in this area is not yours to do.");
+              b.prompt(s);
+              return;
+          }
+          if (!argName(a, name, sizeof(name)) || !pendPath(at, pd, sizeof(pd))) {
+              s.term.color(s.tl, Color::LightRed);
+              s.term.text(s.tl, "REJECT <file>");
+              b.prompt(s);
+              return;
+          }
+          snprintf(buf, sizeof(buf), "%s/%s", pd, name);
+          if (remove(buf) != 0) {
+              s.term.color(s.tl, Color::LightRed);
+              s.term.text(s.tl, "No upload by that name is waiting here.");
+              b.prompt(s);
+              return;
+          }
+          if (g_pending) --g_pending;
+          plat::log("files: %s rejected %s in area %u",
+                    s.user, name, static_cast<unsigned>(at + 1));
+          s.term.color(s.tl, Color::Yellow);
+          snprintf(buf, sizeof(buf), "%s thrown away.", name);
+          s.term.text(s.tl, buf);
+          b.prompt(s);
+      },
+      Menu::Sysop, 23 },
+    { "ERASE", "", 0, CF_ADMIN, "ERASE f", "remove a file from this area",
+      [](Bbs& b, Session& s, const char* a, uint32_t) {
+          char buf[192];
+          uint8_t at = g_at[slotOf(s)];
+          char dir[128];
+          if (at == 0xFF || !areaPath(at, dir, sizeof(dir))) {
+              s.term.color(s.tl, Color::Grey);
+              s.term.text(s.tl, "Open an area first with FILES n.");
+              b.prompt(s);
+              return;
+          }
+          // The command's CF_ADMIN got them past the plugin's gate; this is
+          // the area's own delete level, which may be higher and which
+          // defaults to the plugin's admin rather than to its upload level.
+          // Being allowed to put files somewhere is not the same as being
+          // allowed to remove somebody else's.
+          if (!mayDel(s, at)) {
+              s.term.color(s.tl, Color::LightRed);
+              s.term.text(s.tl, "This area is not yours to erase from.");
+              b.prompt(s);
+              return;
+          }
+          char name[kDescMax + 1] = {};
+          const char* r = a;
+          while (*r == ' ') ++r;
+          size_t k = 0;
+          while (*r && *r != ' ' && k + 1 < sizeof(name)) name[k++] = *r++;
+          name[k] = 0;
+          if (!safeName(name)) {
+              s.term.color(s.tl, Color::LightRed);
+              s.term.text(s.tl, "ERASE <file>");
+              b.prompt(s);
+              return;
+          }
+          // Never the description file. FILES.BBS is the area's catalogue,
+          // not one of its files, and losing it would silently take every
+          // description with it.
+          if (ieq(name, BBS_FILES_DESC)) {
+              s.term.color(s.tl, Color::LightRed);
+              s.term.text(s.tl, "That one belongs to the area, not to you.");
+              b.prompt(s);
+              return;
+          }
+          snprintf(buf, sizeof(buf), "%s/%s", dir, name);
+          if (remove(buf) != 0) {
+              s.term.color(s.tl, Color::LightRed);
+              s.term.text(s.tl, "No such file in this area.");
+              b.prompt(s);
+              return;
+          }
+          plat::log("files: %s erased %s from area %u",
+                    s.user, name, static_cast<unsigned>(at + 1));
+          s.term.color(s.tl, Color::LightGreen);
+          snprintf(buf, sizeof(buf), "%s erased.", name);
+          s.term.text(s.tl, buf);
+          b.prompt(s);
+      },
+      Menu::Sysop, 20 },
+    { "DOWNLOAD", "D", 0, CF_READ, "[D]OWNLOAD f", "send a file by XMODEM",
+      [](Bbs& b, Session& s, const char* a, uint32_t now) { startSend(b, s, a, now); },
+      Menu::Main, 9 },
     { "DESC", "", 0, CF_WRITE, "DESC f text", "describe a file in this area",
       [](Bbs& b, Session& s, const char* a, uint32_t) {
           char buf[96];
@@ -844,29 +1542,36 @@ const Command kCommands[] = {
 };
 
 const PluginSetting kSettings[] = {
-    { "area1", "Area 1", PS_TEXT, 0, 0, kPathMax + kNameMax + 3 },
-    { "area2", "Area 2", PS_TEXT, 0, 0, kPathMax + kNameMax + 3 },
-    { "area3", "Area 3", PS_TEXT, 0, 0, kPathMax + kNameMax + 3 },
-    { "area4", "Area 4", PS_TEXT, 0, 0, kPathMax + kNameMax + 3 },
-    { "area5", "Area 5", PS_TEXT, 0, 0, kPathMax + kNameMax + 3 },
-    { "area6", "Area 6", PS_TEXT, 0, 0, kPathMax + kNameMax + 3 },
-    { "area7", "Area 7", PS_TEXT, 0, 0, kPathMax + kNameMax + 3 },
-    { "area8", "Area 8", PS_TEXT, 0, 0, kPathMax + kNameMax + 3 },
+    // path + name + four level words, each at most 6, with " | " between.
+    { "area1", "Area 1", PS_TEXT, 0, 0, kAreaValMax },
+    { "area2", "Area 2", PS_TEXT, 0, 0, kAreaValMax },
+    { "area3", "Area 3", PS_TEXT, 0, 0, kAreaValMax },
+    { "area4", "Area 4", PS_TEXT, 0, 0, kAreaValMax },
+    { "area5", "Area 5", PS_TEXT, 0, 0, kAreaValMax },
+    { "area6", "Area 6", PS_TEXT, 0, 0, kAreaValMax },
+    { "area7", "Area 7", PS_TEXT, 0, 0, kAreaValMax },
+    { "area8", "Area 8", PS_TEXT, 0, 0, kAreaValMax },
 };
 
 void setting(const char* key, char* out, size_t n) {
     if (strncmp(key, "area", 4) != 0) return;
     long i = strtol(key + 4, nullptr, 10) - 1;
     if (i < 0 || i >= kMaxAreas || !g_area[i].path[0]) return;
-    if (g_area[i].read == PlugLevel::Nobody && g_area[i].write == PlugLevel::Nobody) {
-        snprintf(out, n, "%s | %s", g_area[i].path, g_area[i].name);
-    } else {
-        snprintf(out, n, "%s | %s | %s | %s", g_area[i].path, g_area[i].name,
-                 plugins::levelName(g_area[i].read == PlugLevel::Nobody
-                                    ? plugins::levelFor(g_index, 0) : g_area[i].read),
-                 plugins::levelName(g_area[i].write == PlugLevel::Nobody
-                                    ? plugins::levelFor(g_index, 1) : g_area[i].write));
+    const Area& a = g_area[i];
+    if (a.read == PlugLevel::Nobody && a.up == PlugLevel::Nobody &&
+        a.down == PlugLevel::Nobody && a.del == PlugLevel::Nobody) {
+        snprintf(out, n, "%s | %s", a.path, a.name);
+        return;
     }
+    // Show what each one is actually running under, never a blank, because a
+    // blank reads as "unset by accident" rather than as "inheriting".
+    PlugLevel rd = a.read == PlugLevel::Nobody ? plugins::levelFor(g_index, 0) : a.read;
+    PlugLevel up = a.up   == PlugLevel::Nobody ? plugins::levelFor(g_index, 1) : a.up;
+    PlugLevel dn = a.down == PlugLevel::Nobody ? rd : a.down;
+    PlugLevel dl = a.del  == PlugLevel::Nobody ? plugins::levelFor(g_index, 2) : a.del;
+    snprintf(out, n, "%s | %s | %s | %s | %s | %s", a.path, a.name,
+             plugins::levelName(rd), plugins::levelName(up),
+             plugins::levelName(dn), plugins::levelName(dl));
 }
 
 const char* status() {
@@ -888,9 +1593,9 @@ extern const Plugin kFilesPlugin = {
       PlugLevel::All, PlugLevel::Staff, PlugLevel::Sysop },
     start,
     stop,
-    nullptr,                 // tick
+    tick,
     nullptr,                 // onConnect
-    nullptr,                 // onLogin
+    onLogin,
     onLogoff,
     onKey,
     status,
@@ -901,5 +1606,5 @@ extern const Plugin kFilesPlugin = {
     setting,
     rows,
     nullptr,                 // onPresence
-    nullptr,                 // onBytes
+    onBytes,
 };
