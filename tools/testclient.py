@@ -224,8 +224,37 @@ class Caller:
                 return False
         return True
 
+    def _options(self, d):
+        """Answer telnet option negotiation, the way a terminal does.
+
+        This client used to ignore negotiation entirely, which was fine while
+        the board never asked for anything that mattered. It asks for RFC 856
+        binary before a transfer now, and a client that never replies has not
+        agreed, so the board correctly keeps stripping the NUL a terminal puts
+        after a bare CR. Silence is an answer, and it was the wrong one.
+
+        _binary["refuse"] makes this decline, which is the terminal that
+        broke on real hardware.
+        """
+        i = 0
+        while i + 2 < len(d):
+            if d[i] != 0xFF or d[i + 1] not in (0xFB, 0xFD):   # WILL, DO
+                i += 1
+                continue
+            cmd, opt = d[i + 1], d[i + 2]
+            if opt == 0x00:                                   # TRANSMIT-BINARY
+                if _binary["refuse"]:
+                    self.s.sendall(bytes([0xFF, 0xFC if cmd == 0xFD else 0xFE, 0x00]))
+                elif cmd == 0xFD:                             # DO  -> WILL
+                    self.s.sendall(bytes([0xFF, 0xFB, 0x00]))
+                    _binary["on"] = True
+                else:                                         # WILL -> DO
+                    self.s.sendall(bytes([0xFF, 0xFD, 0x00]))
+            i += 3
+
     def _answer(self, d):
         """Emulate an ANSI terminal answering ESC[6n with the cursor column."""
+        self._options(d)
         if b"DETECTING TERMINAL" in d and self.first_probe is None:
             self.first_probe = time.time() - self.t0
         if not self.ansi:
@@ -2710,6 +2739,40 @@ def test_files():
     s.send(b"999\r")
     ok &= check("a number with no file behind it is refused",
                 s.wait_for(b"No file with that number", 4))
+
+    # Nothing but Q leaves the section. Every action used to end at
+    # Bbs::prompt, which is right for a command and wrong for a door:
+    # erasing one file dropped the caller out to the shell, so clearing
+    # three meant walking back in three times. Rob found it on the board
+    # ("it shouldnt drop you out when you erase a file"), and the shape
+    # is easy to reintroduce, so it is pinned here.
+    ok &= check("a refusal leaves the caller where they were",
+                b"Files>" in plain(s.buf))
+
+    # An erase that actually happens, on a file made for the purpose. An
+    # earlier version deleted NOTES.TXT, which the transfer tests count on,
+    # and the symptom was four failures in a different test entirely.
+    with open(os.path.join(sd, "pub", "c64", "ERASEME.TMP"), "wb") as f:
+        f.write(b"throwaway")
+    s.buf.clear()
+    s.send(b"l")
+    s.pump(1.0)
+    gone = number_of(s, b"ERASEME.TMP")
+    if gone is not None:
+        s.buf.clear()
+        s.send(b"e")
+        s.wait_for(b"Erase which", 4)
+        s.buf.clear()
+        s.send(str(gone).encode() + b"\r")
+        ok &= check("erase names the file before asking",
+                    s.wait_for(b"Erase ERASEME.TMP?", 4))
+        s.buf.clear()
+        s.send(b"y")
+        ok &= check("the file goes", s.wait_for(b"erased", 4))
+        s.pump(0.6)
+        ok &= check("and the caller is still in the section, not the shell",
+                    b"Files>" in plain(s.buf))
+
     ok &= check("and leaves the caller in the section", leave_files(s))
 
     # ---- the caller log is mirrored, not moved ---------------------------
@@ -2859,11 +2922,17 @@ def _unescape(buf):
 # So the client now behaves like a terminal: it pads CRs until the board asks
 # it not to. Remove the negotiation from the board and these tests fail, which
 # is the point of having them.
-_binary = {"on": False}
+# "on"     : the far end has agreed and we have stopped padding CRs.
+# "refuse" : behave like a terminal that does not do telnet BINARY at all.
+#            It keeps padding, for ever, which is correct NVT behaviour and
+#            is what a board must cope with rather than assume away.
+_binary = {"on": False, "refuse": False}
 
 
 def _note_options(raw):
     """Watch the stream for the board asking for binary, either direction."""
+    if _binary["refuse"]:
+        return                      # we never agree, so we never stop padding
     i = 0
     while i + 2 < len(raw):
         if raw[i] == 0xFF and raw[i + 1] in (0xFB, 0xFD) and raw[i + 2] == 0x00:
@@ -3022,12 +3091,19 @@ def test_xfer():
     # Explicitly plain XMODEM: YMODEM is the default now, and this test keeps
     # the older protocol covered rather than quietly stopping when the
     # default moved.
-    # BINTEST.BIN is the third file the harness puts in this area, after
-    # GAME.PRG and NOTES.TXT. X in the dialog asks for plain XMODEM, which
-    # this test keeps covered now that YMODEM is the default.
-    ok &= check("the listing numbers the files", b" 1 GAME.PRG" in plain(s.buf))
+    # Find it by name. readdir order is not guaranteed and earlier tests add
+    # and remove files, so a hardcoded number is a test that breaks for
+    # reasons that have nothing to do with what it checks.
+    ok &= check("the listing numbers the files", b" 1 " in plain(s.buf))
+    bn = number_of(s, b"BINTEST.BIN")
+    ok &= check("BINTEST.BIN is numbered in the listing", bn is not None)
+    if bn is None:
+        s.close()
+        return False
+    # X in the dialog asks for plain XMODEM, which this test keeps covered
+    # now that YMODEM is the default.
     ok &= check("download announces itself",
-                file_num(s, 3, b"Start your XMODEM receive", proto=b"x"))
+                file_num(s, bn, b"Start your XMODEM receive", proto=b"x"))
     got = xmodem_receive(s)
     ok &= check("every byte of the file arrived",
                 got[:len(payload)] == payload)
@@ -3334,6 +3410,57 @@ def settle_after_transfer(s):
     s.send(chr(13).encode())
     s.pump(0.4)
     s.buf.clear()
+
+
+def test_upload_no_binary():
+    """A terminal that will not do telnet BINARY must still be able to upload.
+
+    This is the case that broke on real hardware while every test passed.
+    The board asked for RFC 856 binary and then assumed it had got it, so it
+    stopped stripping the NUL a terminal inserts after a bare CR. A terminal
+    that never agreed went on inserting one, every block carrying a 0x0D
+    arrived a byte long, and the board NAKed all of them.
+
+    The test client used to honour the request, which is exactly why it
+    never saw this. Here it refuses, the way the real terminal evidently
+    does, and the upload still has to work: the board must keep NVT input
+    handling until the far end actually says WILL BINARY.
+    """
+    print("Upload from a terminal that refuses telnet BINARY")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    sd = os.environ.get("BBS_SD_DIR", "")
+    if not sd:
+        print("  SKIP  needs a card")
+        return True
+
+    drop = os.path.join(sd, "pub", "drop")
+    # Deliberately full of the byte that triggers the padding.
+    body = (bytes([0x0D]) * 8 + bytes(range(64)) + bytes([0x0D, 0x0A]) * 16) * 2
+
+    _binary["refuse"] = True
+    _binary["on"] = False
+    try:
+        s = ansi_login("NoBin")
+        ok = check("the drop box opens", enter_area(s, 5, b"Drop Box"))
+        ok &= check("upload is offered",
+                    area_key(s, b"u", "NOBIN.BIN", b"Start your XMODEM send"))
+        ok &= check("the board took it from a padding terminal",
+                    xmodem_send(s, body))
+        ok &= check("and says so", s.wait_for(b"Upload complete", 12))
+        landed = os.path.join(drop, ".pending", "NOBIN.BIN")
+        ok &= check("it is waiting in the staging folder", os.path.exists(landed))
+        if os.path.exists(landed):
+            with open(landed, "rb") as f:
+                got = f.read()
+            ok &= check("and every CR survived intact", got[:len(body)] == body)
+            os.remove(landed)
+        s.close()
+    finally:
+        _binary["refuse"] = False
+        _binary["on"] = False
+    return ok
 
 
 def test_ymodem():
@@ -3811,7 +3938,7 @@ if __name__ == "__main__":
                test_bulletin(), test_idle_login(), test_busy(),
                test_screens(), test_exit_screen(),
                test_refresh_and_ctrl_l(),
-               test_binary(), test_sd(), test_files(), test_xfer(), test_ymodem(),
+               test_binary(), test_sd(), test_files(), test_xfer(), test_upload_no_binary(), test_ymodem(),
                test_config_areas(), test_partitions()]
     if "--backup" in FLAGS:
         results.append(test_backup())

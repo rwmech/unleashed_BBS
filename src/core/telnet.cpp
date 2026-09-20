@@ -88,14 +88,29 @@ void Telnet::send3(ByteSink& o, uint8_t cmd, uint8_t opt) {
 // does not retire the escape. Term::raw keeps doing that and must.
 // ---------------------------------------------------------------------------
 void Telnet::setBinary(ByteSink& reply, bool on) {
-    binary_ = on;
-    if (!enabled_) return;            // a caller who never spoke telnet
+    wantBin_ = on;
+
+    // A caller who never spoke telnet is a raw socket: there is nobody to
+    // negotiate with and nobody inserting anything, so the flag alone is
+    // the whole truth.
+    if (!enabled_) { binary_ = on; return; }
+
     if (on) {
-        us_  |= bit(O_BIN);  send3(reply, T_WILL, O_BIN);
-        him_ |= bit(O_BIN);  send3(reply, T_DO,   O_BIN);
+        us_ |= bit(O_BIN);
+        send3(reply, T_WILL, O_BIN);   // our output is 8-bit from here
+        send3(reply, T_DO,   O_BIN);   // please stop padding your CRs
+        // binary_ is NOT set here, and that is the whole point. Asking is
+        // not agreeing. Setting it on the request meant the board stopped
+        // stripping the NUL after a CR the instant a transfer began, while
+        // a terminal that had not agreed went on correctly inserting one.
+        // Every block carrying a 0x0D then arrived a byte long and the
+        // board NAKed it, which is the failure this was supposed to fix,
+        // reached from the other side. The reply is what flips it, in
+        // onOption.
     } else {
         us_  &= ~bit(O_BIN); send3(reply, T_WONT, O_BIN);
         him_ &= ~bit(O_BIN); send3(reply, T_DONT, O_BIN);
+        binary_ = false;
     }
 }
 
@@ -115,6 +130,16 @@ void Telnet::onOption(uint8_t cmd, uint8_t opt, ByteSink& reply) {
     // and a transfer is what actually turns it on.
     bool weDo    = (opt == O_ECHO || opt == O_SGA || opt == O_BIN);
     bool heMayDo = (opt == O_NAWS || opt == O_SGA || opt == O_BIN);
+
+    // WILL BINARY from the far end is the only thing that means "I have
+    // stopped padding". Until it arrives the input path stays NVT, which is
+    // correct for a terminal that cannot or will not do binary, and costs a
+    // transfer nothing because the CR rule only ever removes a byte the far
+    // end actually inserted.
+    if (opt == O_BIN) {
+        if (cmd == T_WILL)      { him_ |= bit(O_BIN);  binary_ = wantBin_; }
+        else if (cmd == T_WONT) { him_ &= ~bit(O_BIN); binary_ = false;    }
+    }
 
     switch (cmd) {
         case T_WILL:

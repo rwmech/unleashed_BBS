@@ -1875,19 +1875,19 @@ void doApprove(Bbs& b, Session& s, const char* a) {
           if (at == 0xFF || !areaPath(at, dir, sizeof(dir))) {
               s.term.color(s.tl, Color::Grey);
               s.term.text(s.tl, "Open the area first with FILES n.");
-              b.prompt(s);
+              backToArea(b, s);
               return;
           }
           if (!mayDel(s, at)) {
               s.term.color(s.tl, Color::LightRed);
               s.term.text(s.tl, "Approving in this area is not yours to do.");
-              b.prompt(s);
+              backToArea(b, s);
               return;
           }
           if (!argName(a, name, sizeof(name)) || !pendPath(at, pd, sizeof(pd))) {
               s.term.color(s.tl, Color::LightRed);
               s.term.text(s.tl, "APPROVE <file>");
-              b.prompt(s);
+              backToArea(b, s);
               return;
           }
           snprintf(from, sizeof(from), "%s/%s", pd, name);
@@ -1898,7 +1898,7 @@ void doApprove(Bbs& b, Session& s, const char* a) {
           if (rename(from, to) != 0) {
               s.term.color(s.tl, Color::LightRed);
               s.term.text(s.tl, "No upload by that name is waiting here.");
-              b.prompt(s);
+              backToArea(b, s);
               return;
           }
           if (g_pending) --g_pending;
@@ -1907,7 +1907,7 @@ void doApprove(Bbs& b, Session& s, const char* a) {
           s.term.color(s.tl, Color::LightGreen);
           snprintf(buf, sizeof(buf), "%.48s is live. DESC it to say what it is.", name);
           s.term.text(s.tl, buf);
-          b.prompt(s);
+          backToArea(b, s);
 }
 
 void doReject(Bbs& b, Session& s, const char* a) {
@@ -1918,26 +1918,26 @@ void doReject(Bbs& b, Session& s, const char* a) {
           if (at == 0xFF || !areaPath(at, dir, sizeof(dir))) {
               s.term.color(s.tl, Color::Grey);
               s.term.text(s.tl, "Open the area first with FILES n.");
-              b.prompt(s);
+              backToArea(b, s);
               return;
           }
           if (!mayDel(s, at)) {
               s.term.color(s.tl, Color::LightRed);
               s.term.text(s.tl, "Rejecting in this area is not yours to do.");
-              b.prompt(s);
+              backToArea(b, s);
               return;
           }
           if (!argName(a, name, sizeof(name)) || !pendPath(at, pd, sizeof(pd))) {
               s.term.color(s.tl, Color::LightRed);
               s.term.text(s.tl, "REJECT <file>");
-              b.prompt(s);
+              backToArea(b, s);
               return;
           }
           snprintf(buf, sizeof(buf), "%s/%s", pd, name);
           if (remove(buf) != 0) {
               s.term.color(s.tl, Color::LightRed);
               s.term.text(s.tl, "No upload by that name is waiting here.");
-              b.prompt(s);
+              backToArea(b, s);
               return;
           }
           if (g_pending) --g_pending;
@@ -1946,7 +1946,7 @@ void doReject(Bbs& b, Session& s, const char* a) {
           s.term.color(s.tl, Color::Yellow);
           snprintf(buf, sizeof(buf), "%s thrown away.", name);
           s.term.text(s.tl, buf);
-          b.prompt(s);
+          backToArea(b, s);
 }
 
 void doErase(Bbs& b, Session& s, const char* a) {
@@ -1956,7 +1956,7 @@ void doErase(Bbs& b, Session& s, const char* a) {
           if (at == 0xFF || !areaPath(at, dir, sizeof(dir))) {
               s.term.color(s.tl, Color::Grey);
               s.term.text(s.tl, "Open an area first with FILES n.");
-              b.prompt(s);
+              backToArea(b, s);
               return;
           }
           // The command's CF_ADMIN got them past the plugin's gate; this is
@@ -1967,7 +1967,7 @@ void doErase(Bbs& b, Session& s, const char* a) {
           if (!mayDel(s, at)) {
               s.term.color(s.tl, Color::LightRed);
               s.term.text(s.tl, "This area is not yours to erase from.");
-              b.prompt(s);
+              backToArea(b, s);
               return;
           }
           char name[kDescMax + 1] = {};
@@ -1979,7 +1979,7 @@ void doErase(Bbs& b, Session& s, const char* a) {
           if (!safeName(name)) {
               s.term.color(s.tl, Color::LightRed);
               s.term.text(s.tl, "ERASE <file>");
-              b.prompt(s);
+              backToArea(b, s);
               return;
           }
           // Never the description file. FILES.BBS is the area's catalogue,
@@ -1988,14 +1988,14 @@ void doErase(Bbs& b, Session& s, const char* a) {
           if (ieq(name, BBS_FILES_DESC)) {
               s.term.color(s.tl, Color::LightRed);
               s.term.text(s.tl, "That one belongs to the area, not to you.");
-              b.prompt(s);
+              backToArea(b, s);
               return;
           }
           snprintf(buf, sizeof(buf), "%s/%s", dir, name);
           if (remove(buf) != 0) {
               s.term.color(s.tl, Color::LightRed);
               s.term.text(s.tl, "No such file in this area.");
-              b.prompt(s);
+              backToArea(b, s);
               return;
           }
           plat::log("files: %s erased %s from area %u",
@@ -2003,7 +2003,7 @@ void doErase(Bbs& b, Session& s, const char* a) {
           s.term.color(s.tl, Color::LightGreen);
           snprintf(buf, sizeof(buf), "%s erased.", name);
           s.term.text(s.tl, buf);
-          b.prompt(s);
+          backToArea(b, s);
 }
 
 // ---------------------------------------------------------------------------

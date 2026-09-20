@@ -107,6 +107,7 @@ private:
     uint8_t  cmd_     = 0;
     uint8_t  sb_[8]   = {};
     uint8_t  sbLen_   = 0;
+    bool     wantBin_ = false;  // a transfer asked for binary
     uint32_t us_      = 0;   // options we have agreed to (WILL)
     uint32_t him_     = 0;   // options we asked the client for (DO)
     uint8_t  cols_    = 0;

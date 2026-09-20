@@ -260,6 +260,15 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
   which exercises the six-field format and gives an ordinary caller somewhere
   to upload. `area1` deliberately stays staff-only so the refusal is tested too.
 
+### Transfers, and the two bugs the project's own tests could not see
+
+- **The board never negotiated RFC 856 TRANSMIT-BINARY.** `Telnet::setBinary` set an internal flag and nothing else, so the link stayed NVT ASCII, where a sender transmitting a bare CR must follow it with LF or NUL. SyncTERM obeys that; the board no longer stripped the padding byte, which is what `setBinary` existed to stop; every block containing a `0x0D` arrived a byte long and was NAKed. Uploads only, because the board's own output does not pad, which is why Rob's downloads worked and both failing screenshots were uploads.
+- **Then the fix had the same bug from the other side.** `setBinary` set the flag on the *request* rather than on the reply. A terminal that declines binary, or never implements it, keeps padding for ever, and the board had already stopped stripping. **Asking is not agreeing.** Only `WILL BINARY` from the far end flips the input path now.
+- **Both bugs were invisible to `tools/testclient.py`, and for the same reason: it was written alongside the board and agreed with it.** It sent raw bytes and doubled `0xFF`, which is not what a telnet client does, and it then honoured the binary request, which a real terminal may not. Each time, every test passed while the hardware failed. This is the single most expensive habit in this project's testing and it has now cost two rounds.
+- **`tools/lrzsz_check.py` exists so there is one test the board cannot talk itself into passing.** It drives `sz` from lrzsz, the reference XMODEM and YMODEM sender, over a pty with a telnet layer in between, and it runs four ways: XMODEM and YMODEM, each against a client that agrees to binary and one that refuses. Needs `lrzsz` installed (`sudo apt-get install -y lrzsz`), so it is a manual check rather than part of the suite. Results that matter: all four pass, and the byte counts show the padding argument directly, 1152 received for a 1026 byte file under XMODEM against exactly 1026 under YMODEM.
+  **The rule to take from it:** when a protocol is involved, test against somebody else's implementation. A client written next to the server tests that the two agree, not that either is right.
+- `tools/testclient.py` now pads CRs like a terminal, with `_binary["refuse"]` to play one that will not do binary at all. `test_upload_no_binary` pins the second bug; verified by reverting the fix, which fails three of its checks.
+
 ### The file manager (Rob's design, 0.17.7)
 
 - **FILES is a place and everything about files happens inside it.** `DOWNLOAD`, `UPLOAD`, `APPROVE`, `REJECT`, `ERASE` and `DESC` are gone from the shell entirely. Rob, on seeing them in HELP: "All this should live inside the file manager."
