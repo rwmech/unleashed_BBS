@@ -114,31 +114,19 @@ bool parseSeconds(const char* arg, uint8_t lo, uint8_t hi, uint8_t& out) {
 const Command* Bbs::coreCommands(uint8_t& count) {
     static const Command k[] = {
         // -- main: what nearly every caller types ---------------------------
-        { "HELP", "H?", 0, CF_NONE, "[H]ELP [x]", "this menu; x picks another",
-          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdHelp(s, a); },
-          Menu::Main, 0 },
-        { "WHO", "W", 0, CF_NONE, "[W]HO [n]", "who is on; n refreshes",
+        { "WHO", "W", 0, CF_NONE, "[W]HO [n]", "who is on the board",
           [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdWho(s, a); },
-          Menu::Main, 1 },
-        { "PAGE", "", 0, CF_NONE, "PAGE n msg", "message node n",
+          Menu::Main, 0 },
+        { "PAGE", "", 0, CF_NONE, "PAGE <n> <msg>", "send a caller a message",
           [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdPage(s, a); b.prompt(s); },
-          Menu::Main, 2 },
-        { "INFO", "I", 0, CF_NONE, "[I]NFO [h]", "a caller's profile",
-          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdInfo(s, a); },
           Menu::Main, 3 },
-        { "TIME", "", 0, CF_NONE, "TIME", "clock and time left",
-          [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdTime(s, a, n); },
-          Menu::Main, 4 },
-        { "LAST", "", 0, CF_NONE, "LAST", "the most recent calls",
-          [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Last); },
-          Menu::Main, 5 },
-        { "CLS", "C", 0, CF_NONE, "[C]LS", "clear the screen",
-          [](Bbs& b, Session& s, const char*, uint32_t) { s.term.cls(s.tl); b.prompt(s); },
-          Menu::Main, 6 },
-        { "ABOUT", "", 0, CF_NONE, "ABOUT", "this BBS, version, license",
-          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdAbout(s); },
-          Menu::Main, 8 },
-        { "G", "", 0, CF_NONE, "[G]", "log off, asks first",
+
+        // G and BYE are one line, not two. A caller does not need both
+        // explained, only that it logs them off; G asks first and BYE does
+        // not, which is what the usage line says without spending a row on
+        // each. BYE is still its own entry so HELPONLY keeps it dispatchable
+        // and out of the menu.
+        { "G", "", 0, CF_NONE, "[G] | BYE", "log off (G asks first)",
           [](Bbs&, Session& s, const char*, uint32_t) {
               s.st = SState::Confirm;
               s.term.color(s.tl, Color::Yellow);
@@ -146,9 +134,34 @@ const Command* Bbs::coreCommands(uint8_t& count) {
               s.term.color(s.tl, Color::White);
           },
           Menu::Main, 9 },
+        // NOT CF_HELPONLY. That flag means "never dispatched", and BYE is
+        // both how a caller logs off and how staff elevate, so flagging it
+        // turned "bye <password>" into "Unknown command" and took staff
+        // access off the board with it. Menu::Hidden is what keeps it off
+        // the menu; the flag decides whether it runs at all.
         { "BYE", "", 0, CF_NONE, "BYE", "log off now",
           [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdBye(s, a, n); },
-          Menu::Main, 10 },
+          Menu::Hidden, 10 },
+
+        // -- the board describing itself. Useful, not what anybody came for.
+        { "HELP", "H?", 0, CF_NONE, "?|[H]ELP [x]", "these menus",
+          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdHelp(s, a); },
+          Menu::Account, 90 },
+        { "INFO", "I", 0, CF_NONE, "[I]NFO [handle]", "a caller's profile",
+          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdInfo(s, a); },
+          Menu::Account, 91 },
+        { "TIME", "", 0, CF_NONE, "TIME", "the clock and your time left",
+          [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdTime(s, a, n); },
+          Menu::Account, 92 },
+        { "LAST", "", 0, CF_NONE, "LAST", "the most recent calls",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Last); },
+          Menu::Account, 93 },
+        { "CLS", "C", 0, CF_NONE, "[C]LS", "clear the screen",
+          [](Bbs& b, Session& s, const char*, uint32_t) { s.term.cls(s.tl); b.prompt(s); },
+          Menu::Account, 94 },
+        { "ABOUT", "", 0, CF_NONE, "ABOUT", "this BBS, its version and licence",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdAbout(s); },
+          Menu::Account, 95 },
 
         // -- your account and your terminal ---------------------------------
         { "PROFILE", "", 0, CF_ACCOUNT, "PROFILE", "edit your profile",
@@ -740,16 +753,32 @@ bool Bbs::rowHelp(Session& s) {
             rowText(s, Color::DarkGrey, "? = this menu   ? all = everything");
             return true;
         }
-        char line[48];
-        snprintf(line, sizeof(line), "More: ? %s  ? %s  ? %s", menuName(Menu::Chat),
-                 menuName(Menu::Account), s.perms ? menuName(Menu::Staff) : "all");
+        // A grammar, not a sentence. Rob asked for something that reads like
+        // a command reference, and it has to be one row: HELP paged every
+        // single time, which trains people to hammer a key through it.
+        char line[80];
+        // Built from menuName so the grammar always lists exactly the words
+        // menuFromText accepts. Hardcoding them here would be one rename
+        // away from telling a caller to type something the parser refuses.
+        // Upper case because that is how a command reference writes the
+        // alternatives; the names themselves stay lower case elsewhere.
+        auto upper = [](const char* w, char* out, size_t n) {
+            size_t i = 0;
+            for (; w[i] && i + 1 < n; ++i)
+                out[i] = (w[i] >= 'a' && w[i] <= 'z') ? w[i] - 32 : w[i];
+            out[i] = 0;
+        };
+        char a[12], b2[12], c[12], d[12];
+        upper(menuName(Menu::Chat), a, sizeof(a));
+        upper(menuName(Menu::Account), b2, sizeof(b2));
+        if (s.perms) {
+            upper(menuName(Menu::Staff), c, sizeof(c));
+            upper(menuName(Menu::Sysop), d, sizeof(d));
+            snprintf(line, sizeof(line), "?|H|HELP [%s|%s|%s|%s|ALL]", a, b2, c, d);
+        } else {
+            snprintf(line, sizeof(line), "?|H|HELP [%s|%s|ALL]", a, b2);
+        }
         rowText(s, Color::LightGreen, line);
-        return true;
-    }
-    if (s.listIdx == static_cast<uint8_t>(total + 3)) {
-        ++s.listIdx;
-        if (s.helpAll || s.helpMenu != Menu::Main || !s.perms) return false;
-        rowText(s, Color::LightGreen, "      ? sysop  ? all");
         return true;
     }
     return false;

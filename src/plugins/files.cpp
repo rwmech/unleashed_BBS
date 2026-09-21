@@ -756,14 +756,14 @@ void filesPrompt(Session& s) {
         uint8_t at = g_at[slotOf(s)];
         bool up = at != 0xFF && mayUp(s, at);
         bool dl = at != 0xFF && mayDel(s, at);
-        char line[80];
+        char line[96];
         if (t.cols() >= 60)
             snprintf(line, sizeof(line),
-                     "L lists, a number downloads%s%s, ? help, Q back",
+                     "L lists, a number downloads%s%s, ? help, Q/ESC back",
                      up ? ", U uploads, D describes" : "",
                      dl ? ", P pending" : "");
         else
-            snprintf(line, sizeof(line), "L list, number gets%s%s, ? help, Q back",
+            snprintf(line, sizeof(line), "L list, number gets%s%s, ? help, Q/ESC",
                      up ? ", U send" : "", dl ? ", P pend" : "");
         t.text(tl, line);
         t.nl(tl);
@@ -1271,6 +1271,9 @@ uint16_t xferRead(void* ctx, uint8_t* dst, uint16_t max) {
 // to discover a truncated file later.
 bool xferWrite(void* ctx, const uint8_t* src, uint16_t len) {
     Xfer* x = static_cast<Xfer*>(ctx);
+#ifdef BBS_XFER_DIAG
+    plat::log("xfer: block accepted, %u bytes", static_cast<unsigned>(len));
+#endif
     if (!x->fp) return false;
     if (x->written + len > kMaxUploadBytes) {
         plat::log("files: upload %s refused, over the size cap", x->name);
@@ -1290,6 +1293,10 @@ bool xferWrite(void* ctx, const uint8_t* src, uint16_t len) {
 // than discovering later that the board quietly renamed or dropped it.
 bool xferOpen(void* ctx, const char* name, uint32_t size) {
     Xfer* x = static_cast<Xfer*>(ctx);
+#ifdef BBS_XFER_DIAG
+    plat::log("xfer: block 0 named [%s] size %lu", name,
+              static_cast<unsigned long>(size));
+#endif
     char dir[128], pd[160], full[224];
     struct stat st;
 
@@ -1429,10 +1436,39 @@ void xferEnd(Bbs& b, Session& s) {
 
 // xferDrive: one pass of feed, tick and pull. Both entry points share it so
 // there is one order of operations rather than two that can drift.
+//
+// With BBS_XFER_DIAG defined it also narrates, because two rounds of
+// reasoning from screenshots got the wrong answer and each one cost a flash.
+// A terminal window shows what the far end thinks happened; this shows what
+// the board actually received and what the engine made of it.
 void xferDrive(Session& s, const uint8_t* in, size_t n, uint32_t now) {
+#ifdef BBS_XFER_DIAG
+    static uint32_t fed = 0;
+    if (in && n) {
+        fed += n;
+        char hex[64] = {};
+        size_t show = n < 12 ? n : 12;
+        for (size_t i = 0; i < show; ++i)
+            snprintf(hex + i * 3, sizeof(hex) - i * 3, "%02X ", in[i]);
+        plat::log("xfer: in %u (total %lu) [%s] st=%d err=%d blk=%lu",
+                  static_cast<unsigned>(n), static_cast<unsigned long>(fed), hex,
+                  static_cast<int>(g_eng.status()), static_cast<int>(g_eng.error()),
+                  static_cast<unsigned long>(g_eng.blocks()));
+    }
+#endif
     if (in && n) g_eng.feed(in, n, now);
     g_eng.tick(now);
+    size_t before = s.tl.freeBytes();
     xferPump(s, now);
+#ifdef BBS_XFER_DIAG
+    if (before != s.tl.freeBytes())
+        plat::log("xfer: out %u bytes, st=%d err=%d errs=%u",
+                  static_cast<unsigned>(before - s.tl.freeBytes()),
+                  static_cast<int>(g_eng.status()), static_cast<int>(g_eng.error()),
+                  static_cast<unsigned>(g_eng.errors()));
+#else
+    (void)before;
+#endif
     if (!g_eng.running() && !g_eng.pending())
         xferEnd(Bbs::instance(), s);
 }
@@ -1853,7 +1889,7 @@ void filesHelp(Bbs& b, Session& s, uint8_t area) {
         b.rowText(s, Color::White, "E        erase a file by number");
     }
     b.rowText(s, Color::White, "?        this");
-    b.rowText(s, Color::White, "Q  ESC   back to the section list");
+    b.rowText(s, Color::White, "Q  ESC   back one level, again to leave");
     b.rowRule(s);
     b.rowText(s, Color::Grey, "Downloads offer YMODEM, or X for plain XMODEM.");
     if (up)

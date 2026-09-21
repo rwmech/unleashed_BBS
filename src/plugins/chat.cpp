@@ -1305,7 +1305,7 @@ const Command kCommands[] = {
     { "CHAT", "", 0, CF_READ, "CHAT", "join the chat room",
       [](Bbs& b, Session& s, const char*, uint32_t) { join(b, s); },
       Menu::Chat, 0 },
-    { "MAIL", "", 0, CF_WRITE | CF_ACCOUNT, "MAIL [h m]", "read your message, or leave one",
+    { "MAIL", "", 0, CF_WRITE | CF_ACCOUNT, "MAIL [h] [m]", "read or leave a message",
       [](Bbs& b, Session& s, const char* a, uint32_t) {
           if (!*a) {
               mailRead(s, false);

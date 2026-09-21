@@ -288,7 +288,10 @@ class Caller:
         return False
 
     def node(self):
-        m = re.search(rb"Node (\d) of", self.buf)
+        # Case-insensitive, and \d+ not \d. The login says "Connected to
+        # node 1 of 10" now, and the old pattern also could not have read a
+        # two digit node on a ten line board.
+        m = re.search(rb"node (\d+) of", self.buf, re.IGNORECASE)
         return m.group(1).decode() if m else "?"
 
     def close(self):
@@ -570,7 +573,7 @@ def test_ansi():
     c.buf.clear()
     ok &= check("new handle registers through the form", login(c, "Rob"))
     ok &= check("welcome by handle", b"Welcome" in c.buf and b"Rob" in c.buf)
-    ok &= check("time left shown", b"Time left" in c.buf)
+    ok &= check("time left shown", b"minutes" in c.buf)
     ok &= check("shell prompt", b"Main" in c.buf)
     c.buf.clear()
     c.send(b"term\r")
@@ -737,7 +740,7 @@ def test_sysop():
     nr = r.node()
     r.buf.clear()
     r.send(f"bye {PASSWORD}\r".encode())
-    ok = check("BYE <password> reaches the sysop node", r.wait_for(b"Sysop node.", 4))
+    ok = check("BYE <password> reaches the sysop node", r.wait_for(b"SysOp node", 4))
     ok &= check("sysop prompt", r.wait_for(b"Sysop", 3))
     ok &= check("password never echoed", PASSWORD.encode() not in r.buf)
     ok &= check("old node reported free", f"Node {nr} is free".encode() in r.buf)
@@ -772,9 +775,16 @@ def test_sysop():
     ok &= check("key ends the dashboard", r.wait_for(b"Sysop", 3))
     r.buf.clear()
     r.send(b"help\r")
-    ok &= check("long HELP pauses at [More]", r.wait_for(b"[More] Y/n/c", 4))
-    r.send(b"c")
-    ok &= check("C continues nonstop", r.wait_for(b"? all", 4))
+    ok &= check("HELP reaches its footer", r.wait_for(b"?|H|HELP", 5))
+    r.pump(1.0)
+    # The point of the rework: one screen, no pager. A menu that stops at
+    # [More] every time teaches people to mash a key through it, and then
+    # they never read any of it. The old test asserted the paging, which was
+    # the board's worst habit written down as a requirement.
+    ok &= check("and does not page, because it fits",
+                b"[More]" not in plain(r.buf))
+    ok &= check("the sysop menu is offered", b"SYSOP" in plain(r.buf))
+    drain(r)
 
     x.buf.clear()
     r.buf.clear()
@@ -1009,7 +1019,7 @@ def test_accounts():
     ok &= check("right password: ACCESS GRANTED", c.wait_for(b"ACCESS GRANTED", 6))
     ok &= check("stars turn into ACCESS GRANTED on the same line",
                 re.search(rb"Password: [^\n]*\*[^\n]*ACCESS GRANTED", c.buf) is not None)
-    ok &= check("second call: welcome back, call 2", c.wait_for(b"Welcome back, ", 5) and c.wait_for(b"Call 2.", 3))
+    ok &= check("second call: welcome back, call 2", c.wait_for(b"Welcome back, ", 5) and c.wait_for(b"This is call 2 for you", 3))
     ok &= check("account's own spelling used", c.wait_for(b"Acct", 2))
     c.wait_for(b"Main", 5)
 
@@ -1106,7 +1116,7 @@ def test_user_admin():
     s = ansi_login("Rob")
     s.buf.clear()
     s.send(f"bye {PASSWORD}\r".encode())
-    ok = check("sysop node", s.wait_for(b"Sysop node.", 5))
+    ok = check("sysop node", s.wait_for(b"SysOp node", 5))
     s.wait_for(b"Sysop", 3)
     s.buf.clear()
     s.send(b"users\r")
@@ -1180,7 +1190,7 @@ def test_guest():
     ok &= check("guest keeps the handle they typed",
                 re.search(rb"Welcome, (?:\x1b\[[0-9;]*m)*Visitor", c.buf) is not None)
     ok &= check("guest told nothing is saved", b"nothing is saved" in c.buf)
-    ok &= check("guest time limit 15 minutes", b"Time left: 15 min." in c.buf)
+    ok &= check("guest time limit 15 minutes", b"have 15 minutes" in plain(c.buf))
     c.buf.clear()
     c.send(b"time\r")
     ok &= check("TIME: 15 min left, no daily limit", c.wait_for(b"Left     15 min", 3))
@@ -1193,8 +1203,11 @@ def test_guest():
     c.buf.clear()
     c.send(b"help\r")
     read_list(c)
+    gh = plain(c.buf)
+    if b"PROFILE" in gh or b"PASSWORD" in gh or b"WHO" not in gh:
+        print("      DBG guest help: %r" % gh[-400:])
     ok &= check("HELP hides PROFILE and PASSWORD from guests",
-                b"LAST" in c.buf and b"PROFILE" not in c.buf and b"PASSWORD" not in c.buf)
+                b"WHO" in gh and b"PROFILE" not in gh and b"PASSWORD" not in gh)
 
     d, which = handle_then("visitor", [b"That handle is online right now.", b"ew handle?"])
     ok &= check("a guest's handle can't be taken while they are on", which == 0)
@@ -1212,7 +1225,7 @@ def test_guest():
         c.buf.clear()
         c.send(f"bye {PASSWORD}\r".encode())
         ok &= check("guest BYE <sysop password> is a plain logoff",
-                    c.wait_closed(12) and b"Sysop node." not in c.buf and PASSWORD.encode() not in c.buf)
+                    c.wait_closed(12) and b"SysOp node" not in c.buf and PASSWORD.encode() not in c.buf)
     else:
         c.send(b"bye\r")
         c.wait_closed(8)
@@ -1264,7 +1277,7 @@ def test_plugins():
     s = ansi_login("Rob")
     s.buf.clear()
     s.send(f"bye {PASSWORD}\r".encode())
-    s.wait_for(b"Sysop node.", 5)
+    s.wait_for(b"SysOp node", 5)
     s.buf.clear()
     s.send(b"poke\r")
     ok &= check("staff may run the write command", s.wait_for(b"Poked. Count is", 4))
@@ -1376,7 +1389,7 @@ def test_serial():
     s = ansi_login("Rob")
     s.buf.clear()
     s.send(f"bye {PASSWORD}\r".encode())
-    s.wait_for(b"Sysop node.", 5)
+    s.wait_for(b"SysOp node", 5)
     s.buf.clear()
     s.send(b"serial\r")
     ok &= check("staff join and take the keyboard", s.wait_for(b"You have the keyboard", 5))
@@ -1447,7 +1460,7 @@ def test_busy():
         ok &= check("guest prompt", guest.wait_for(b"Main", 3))
         guest.buf.clear()
         guest.send(f"bye {PASSWORD}\r".encode())
-        ok &= check("busy-line guest reaches sysop node", guest.wait_for(b"Sysop node.", 4))
+        ok &= check("busy-line guest reaches sysop node", guest.wait_for(b"SysOp node", 4))
         guest.close()
 
     for c in callers:
@@ -1548,7 +1561,7 @@ def test_backup():
     s = ansi_login("Rob")
     s.buf.clear()
     s.send(f"bye {PASSWORD}\r".encode())
-    ok = check("sysop node", s.wait_for(b"Sysop node.", 5))
+    ok = check("sysop node", s.wait_for(b"SysOp node", 5))
     ok &= check("window-open notice on the sysop console", s.wait_for(b"*** Backup open", 8))
 
     status, _ = http_call("GET", "/")
@@ -1704,7 +1717,9 @@ def test_menus():
     main = plain(c.buf)
     ok = check("? lists the everyday commands", b"WHO" in main and b"CHAT" in main)
     ok &= check("? does not list staff tools", b"BROADCAST" not in main)
-    ok &= check("? names the other menus", b"? chat" in main and b"? account" in main)
+    # The footer is a grammar now, not a sentence: "?|H|HELP [CHAT|ACCOUNT|ALL]"
+    ok &= check("? names the other menus",
+                b"?|H|HELP" in main and b"CHAT" in main and b"ACCOUNT" in main)
     ok &= check("a plain caller is not offered the staff menu", b"? staff" not in main)
 
     c.buf.clear()
@@ -2427,8 +2442,14 @@ def test_announce():
         ok &= check("it names the board, not the callers",
                     rec.get("software") == "unleashed" and "name" in rec and
                     "owner" in rec and "description" in rec)
+        # MAX_NODES, or one more when the sysop is on and visible. That is
+        # publicNodes() working as designed: the sysop line is a real line,
+        # so a board with the operator on it has one more and one busier.
+        # The test used to assume MAX_NODES because the sysop always started
+        # hidden, which stopped being true when the default flipped.
         ok &= check("it reports the lines, not who is on them",
-                    rec.get("nodes") == MAX_NODES and isinstance(rec.get("busy"), int))
+                    rec.get("nodes") in (MAX_NODES, MAX_NODES + 1) and
+                    isinstance(rec.get("busy"), int))
         ok &= check("no caller ever appears in it",
                     "Announcer" not in body.decode() and "handle" not in rec)
 
@@ -2565,7 +2586,7 @@ def test_files():
         sy = ansi_login("Keeper")
         sy.buf.clear()
         sy.send(f"bye {PASSWORD}\r".encode())
-        ok &= check("staff session on the sysop node", sy.wait_for(b"Sysop node.", 5))
+        ok &= check("staff session on the sysop node", sy.wait_for(b"SysOp node", 5))
         sy.wait_for(b"Sysop", 3)
         sy.buf.clear()
         sy.send(b"files\r")
@@ -3152,7 +3173,7 @@ def test_xfer():
     sy = ansi_login("Keeper2")
     sy.buf.clear()
     sy.send(f"bye {PASSWORD}\r".encode())
-    ok &= check("staff reach the sysop node", sy.wait_for(b"Sysop node.", 5))
+    ok &= check("staff reach the sysop node", sy.wait_for(b"SysOp node", 5))
     sy.wait_for(b"Sysop", 3)
     sy.buf.clear()
     # Approval lives in the file manager now, not on the command list. A

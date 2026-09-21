@@ -593,6 +593,57 @@ Queued for the next build (Rob's plan, in order):
 - A sysop page (Rob): a caller can ring for the sysop and the sysop can answer, the way every board had. PAGE exists caller to caller; this is the one that gets the operator's attention wherever they are, and needs a way to be away, a way to decline, and something that does not let one caller ring a bell forever.
 - A bell when somebody logs in and when somebody joins the chat room (Rob). Neither rings today: the only bells are pages, broadcasts and form errors, so a caller arriving is silent. Wants the same treatment as a page: bell, then the notice.
 
+### The shell and menu rework: done in 0.17.9, except themes and the door hold
+
+Seven of Rob's nine, and the two left are the ones that want design rather
+than editing.
+
+1. **A blank line after ACCESS GRANTED.** The welcome ran straight into the
+   password and read as one crushed block.
+2. **The login speaks in sentences.** "Connected to node 1 of 10 on Sun 20
+   Sep at 22:07." / "Time brought to you by NTP." / "You're the 1st caller
+   today and have 60 minutes." The caller count comes from
+   `calllog::countSince(clk::todayStart())`, one pass over at most fifty
+   records, once per login: right across a reboot and across midnight with
+   no state to maintain.
+3. **The sysop arrives visible.** `d.visible` was false on elevation, so a
+   board could have its operator on it and look empty to every caller, which
+   is the opposite of what a sysop node is for. Invisibility is what you ask
+   for with LURK. The elevation also calls `presenceChanged()` now, because
+   the public count moved.
+4. **`?` fits one page.** 11 rows, no pager. It used to stop at `[More]`
+   every single time, which teaches people to mash a key through it and then
+   they never read any of it.
+5. **The main menu is what callers use**: WHO, PAGE, G|BYE, FILES, CHAT,
+   MAIL. HELP, INFO, TIME, LAST, CLS and ABOUT moved to `? account`, because
+   they are the board describing itself rather than what anybody came for.
+   **G and BYE are one row**, `[G] | BYE  log off (G asks first)`: a caller
+   does not need both explained.
+6. **DESC is gone from the shell** and lives in the file manager as `D`.
+9. **Menus advertise Q/ESC**, and the help footer is a grammar built from
+   `menuName()` so it always lists exactly what `menuFromText()` accepts:
+   `?|H|HELP [CHAT|ACCOUNT|STAFF|SYSOP|ALL]`.
+
+Still open from the nine: **7, the files door being wiped by the first
+keypress** (wants the `fx::` loading effect, same piece of work as the
+thinking effect), and **8, themes**, which is a decision between a CONFIG
+colour page and a `theme.txt` on the card.
+
+**Two regressions this caused, and what they teach.**
+
+- **`CF_HELPONLY` on BYE took staff access off the board.** That flag means
+  "never dispatched", and BYE is both how a caller logs off and how staff
+  elevate, so `bye <password>` became "Unknown command". `Menu::Hidden` is
+  what keeps a command off a menu; the flag decides whether it runs at all.
+  The suite caught it as 139 failures, which is the system working.
+- **`publicNodes()` started advertising 11 nodes.** It adds the sysop line
+  when the sysop is visible, which is correct and documented, and only
+  looked wrong because the sysop used to start hidden. The board was right;
+  the test had encoded the old default.
+- The test client's `node()` parsed `"Node (\d) of"`, which the reworded
+  login broke and which could never have read a two digit node anyway. It is
+  `node (\d+) of`, case-insensitive, now.
+
 ## The shell and menu rework (Rob, 2026-09-20, the next block)
 
 Nine items from one sitting with 0.17.3 on the board. They are one piece of

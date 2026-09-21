@@ -1388,6 +1388,7 @@ void Bbs::onPassword(Session& s, uint32_t now) {
         t.color(tl, Color::LightGreen);
         fx::scramble(t, tl, "ACCESS GRANTED", 10, 55);
         t.nl(tl);
+        t.nl(tl);            // the welcome crowded straight onto the password
         completeLogin(s, now);
         return;
     }
@@ -1433,7 +1434,7 @@ void Bbs::completeLogin(Session& s, uint32_t now) {
     s.loginEpoch = clk::epoch();
     s.timeWarned = 0;
 
-    char buf[64];
+    char buf[96];          // full sentences need more room than fragments did
     t.reset(tl);
     t.color(tl, Color::LightGreen);
     fx::typewriter(t, tl, s.edit.calls ? "Welcome back, " : "Welcome, ", 18);
@@ -1443,26 +1444,58 @@ void Bbs::completeLogin(Session& s, uint32_t now) {
     t.text(tl, "!");
     t.nl(tl);
 
+    // Sentences rather than a column of fragments. A caller arriving should
+    // be told where they are and how long they have, the way a person would
+    // say it. The NTP line is a small brag and it also tells a sysop the
+    // clock is real rather than whatever the chip powered up believing.
     t.color(tl, Color::Grey);
-    snprintf(buf, sizeof(buf), "Node %u of %u", s.id, BBS_MAX_NODES);
-    t.text(tl, buf);
+    bool wide = t.cols() >= 60;
     if (clk::valid()) {
-        clk::fmt(buf, sizeof(buf), "   %a %d %b %H:%M");
-        t.text(tl, buf);
+        char when[40];
+        clk::fmt(when, sizeof(when), "%a %d %b at %H:%M");
+        snprintf(buf, sizeof(buf), wide ? "Connected to node %u of %u on %s."
+                                        : "Node %u of %u, %s.",
+                 s.id, BBS_MAX_NODES, when);
+    } else {
+        snprintf(buf, sizeof(buf), "Connected to node %u of %u.",
+                 s.id, BBS_MAX_NODES);
+    }
+    t.text(tl, buf);
+    t.nl(tl);
+    if (clk::valid() && wide) {
+        t.color(tl, Color::DarkGrey);
+        t.text(tl, "Time brought to you by NTP.");
+        t.nl(tl);
+        t.color(tl, Color::Grey);
     }
     t.nl(tl);
+
+    // How many callers today, and how long you have, in one breath.
+    int32_t left = secondsLeft(s, now);
+    char mins[32];
+    if (left == INT32_MAX) snprintf(mins, sizeof(mins), "no time limit");
+    else snprintf(mins, sizeof(mins), "%ld minutes", static_cast<long>((left + 59) / 60));
+
+    // Counted off the caller log rather than kept as state: one pass over at
+    // most BBS_CALLLOG_SIZE records, once per login, and it stays right
+    // across a reboot and across midnight without anything to maintain.
+    unsigned today = (clk::valid() ? calllog::countSince(clk::todayStart()) : 0u) + 1u;
+    const char* ord = (today % 10 == 1 && today % 100 != 11) ? "st"
+                    : (today % 10 == 2 && today % 100 != 12) ? "nd"
+                    : (today % 10 == 3 && today % 100 != 13) ? "rd" : "th";
+    snprintf(buf, sizeof(buf), "You're the %u%s caller today and have %s.",
+             today, ord, mins);
+    t.text(tl, buf);
+    t.nl(tl);
+
     if (s.edit.calls) {
         char when[20];
         clk::fmtEpoch(when, sizeof(when), "%m/%d %H:%M", s.edit.lastCall);
-        snprintf(buf, sizeof(buf), "Call %u. Last call %s.", s.edit.calls + 1u, when);
+        snprintf(buf, sizeof(buf), "This is call %u for you; the last was %s.",
+                 s.edit.calls + 1u, when);
         t.text(tl, buf);
         t.nl(tl);
     }
-
-    int32_t left = secondsLeft(s, now);
-    if (left == INT32_MAX) snprintf(buf, sizeof(buf), "No time limit today.");
-    else                   snprintf(buf, sizeof(buf), "Time left: %ld min.", static_cast<long>((left + 59) / 60));
-    t.text(tl, buf);
     t.nl(tl);
     if (s.guest) {
         t.color(tl, Color::Yellow);

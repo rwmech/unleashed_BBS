@@ -124,7 +124,12 @@ void Bbs::elevate(Session& s, uint32_t now) {
     Session& d = sysop_;
     d.level      = Access::Sysop;
     d.perms      = syscfg::permsFor(Access::Sysop);
-    d.visible    = false;
+    // Visible, not lurking. The common case is the sysop being around, so
+    // being seen should be the default and disappearing should be the thing
+    // you ask for. Starting hidden meant a board could have its operator on
+    // it and look empty to every caller, which is the opposite of what a
+    // sysop node is for.
+    d.visible    = true;
     d.lurk       = false;
     d.dnd        = false;
     d.busyLoginUntil = 0;
@@ -140,7 +145,7 @@ void Bbs::elevate(Session& s, uint32_t now) {
     Timeline& tl = d.tl;
     char buf[48];
     t.color(tl, Color::LightGreen);
-    t.text(tl, "Sysop node.");
+    t.text(tl, "You've been switched to the SysOp node.");
     t.nl(tl);
     t.color(tl, Color::Grey);
     if (fromNode) {
@@ -148,10 +153,16 @@ void Bbs::elevate(Session& s, uint32_t now) {
         t.text(tl, buf);
         t.nl(tl);
     }
-    t.text(tl, "Hidden from WHO. HELP for commands.");
+    t.text(tl, "Shown in WHO. LURK makes you invisible.");
+    t.nl(tl);
+    t.text(tl, "HELP for commands.");
     t.nl(tl);
 
     plat::log("bbs: node %s -> sysop node (%s, %s)", from.t, d.user, d.ip);
+    // The sysop arrives visible now, so the public caller count just moved
+    // and the directory should hear about it. Without this a board would
+    // advertise one fewer caller than it has until the next login.
+    presenceChanged(d);
     prompt(d);
 }
 
