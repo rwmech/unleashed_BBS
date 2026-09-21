@@ -282,6 +282,13 @@ public:
     // anyone else outside should see them. The sysop's own line counts only
     // while a sysop is on it and has chosen to be visible.
     uint8_t publicNodes() const;
+
+    // preLoginName: what to call a session that has no handle yet.
+    //
+    // "connecting" while the terminal is still being worked out, "logging
+    // in" once it is, because those are genuinely different states and a
+    // sysop watching a line stuck on one of them wants to know which.
+    static const char* preLoginName(const Session& s);
     uint8_t publicBusy() const;
     static size_t sessionSize() { return sizeof(Session); }
 

@@ -260,6 +260,15 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
   which exercises the six-field format and gives an ordinary caller somewhere
   to upload. `area1` deliberately stays staff-only so the refusal is tested too.
 
+### The upload bug, third and last: the board got bored waiting
+
+- **The cause, found from Rob's own serial log rather than from reasoning.** The board polls `C` for CRC-16 every three seconds while waiting for a transfer to start. `kCrcPolls` was **3**, so after nine seconds it concluded nobody could do CRC and switched to asking with `NAK`, which means the 8-bit checksum. SyncTERM had committed to CRC-16 on the first `C` and went on sending 133 byte blocks; the board read 132 and checked an 8-bit sum against the first CRC byte. Every block of every upload refused, with both ends behaving exactly as specified.
+  **Seventeen seconds of choosing a file in a dialog was the whole bug.**
+- **Why lrzsz could not find it, which is the lesson.** `sz` is adaptive: when the board dropped to checksum, `sz` followed it down and the two agreed. Reproducing it needed a deliberately *stubborn* sender that commits to CRC on the first `C` and never reconsiders, which is what SyncTERM and most real terminals do. **A reference implementation is necessary and not sufficient: a tolerant one hides the bug a strict one finds.**
+- Reproduced at three delays, before and after: start immediately passes, start after 20 s fails with every block NAKed, start after 60 s fails with no start byte at all. After the fix all three pass.
+- **The fix is three timing constants, no protocol logic.** `kCrcPolls` 3 to 40 (two minutes of asking in CRC, then a minute the old way for a genuinely checksum-only sender, which is exactly the kind of machine this board is for). A new `kStartPolls` (60) separates "how long to wait for a person to find a file" from `kMaxErrors`, which is the error budget for bad blocks on a live transfer and a different question. `kSenderWaitMs` 60 s to 180 s for the same reason on a download, where the caller is choosing somewhere to save.
+  **Rob's number is the requirement: up to a full minute to find and select a file.** Anything that expires inside that is a bug, however correct it looks against a program.
+
 ### Transfers, and the two bugs the project's own tests could not see
 
 - **The board never negotiated RFC 856 TRANSMIT-BINARY.** `Telnet::setBinary` set an internal flag and nothing else, so the link stayed NVT ASCII, where a sender transmitting a bare CR must follow it with LF or NUL. SyncTERM obeys that; the board no longer stripped the padding byte, which is what `setBinary` existed to stop; every block containing a `0x0D` arrived a byte long and was NAKed. Uploads only, because the board's own output does not pad, which is why Rob's downloads worked and both failing screenshots were uploads.
@@ -592,6 +601,21 @@ Queued for the next build (Rob's plan, in order):
 - Node lists should say what a caller is doing before they have a handle (Rob). Checked on the host: WHO says "(connecting)", DASH says "(logging in)", NODES says neither, so the gap is real but narrower than it looked. Make all three agree, and prefer "logging in" once detection is done.
 - A sysop page (Rob): a caller can ring for the sysop and the sysop can answer, the way every board had. PAGE exists caller to caller; this is the one that gets the operator's attention wherever they are, and needs a way to be away, a way to decline, and something that does not let one caller ring a bell forever.
 - A bell when somebody logs in and when somebody joins the chat room (Rob). Neither rings today: the only bells are pages, broadcasts and form errors, so a caller arriving is silent. Wants the same treatment as a page: bell, then the notice.
+
+### Wide terminals: rowWidth unclamped (0.17.10)
+
+- `Bbs::rowWidth` returned `(cols < 40 ? cols : 40) - 1` with the comment "lists and menus are laid out for 40 columns everywhere". That one line is where most of the board's wasted screen came from. It was always per-caller, since `cols` comes from the session; only the clamp made it narrow. Now it is `cols - 1`, capped at 132 because a 200 column reverse-video bar is a stripe rather than a design.
+- **An unknown width gets 40, not 80.** A terminal that never said how wide it is has not promised anything, and a row that wraps is worse everywhere than a row that is short somewhere. Only terminals that actually report a width get the benefit.
+- Most of the board followed for free, because it already derived from `rowWidth`: the HELP description column, the CALLS histogram, the refresh frame truncation, every bar, rule and padded row.
+- **Two real bugs fell out of it, both latent.** The refresh footer did `buf[rowWidth(s)] = 0` into a 64 byte buffer, which at 79 columns is a stack smash and crashed the board. And `SYS` formatted its value column with `%9.9s`, where the `.9` is a truncation: the board reported its own address as "192.168.0" with the host part missing. **A misaligned value is untidy; a truncated one is a wrong answer somebody acts on.**
+- The suite had the old clamp written down as a requirement, "every HELP line fits 39 columns", for a caller detection gives 80x24. SCREENS.md's 39 column rule is about screen *files*, which have to suit a C64, not about rows the board draws.
+
+### Small things fixed in the same pass
+
+- **"Address" is "From"** (Rob). A town and a country, not a postal address: nobody should type their street into a board whose own sign-up screen says nothing here is encrypted. The stored key stays `address`, so every `users.txt` already written keeps working.
+- **Private fields say so while you are typing in them.** `FormField` gained a `note`, shown on the status line for the focused field and driven off `UF_PRIVATE` rather than written out per field. The posture was already right; a caller entering a phone number was simply never told, and a policy screen elsewhere is not an answer.
+  Trap worth keeping: `Form::f_` is a pointer that `begin()` aims at `s.fields`, so setting a note through the Form before `begin()` dereferences whatever the last form left there. On a fresh session that is nothing at all, and it crashed the board the moment anybody opened the sign-up form. Notes go on `s.fields[]` directly.
+- **WHO, DASH and NODES agree on a caller with no handle yet.** They said "(connecting)", "(logging in)" and "(no handle)" respectively. One `preLoginName()` now, which keeps the genuinely useful distinction between still detecting the terminal and waiting for a password, and drops "(no handle)", which described the record rather than the person.
 
 ### The shell and menu rework: done in 0.17.9, except themes and the door hold
 

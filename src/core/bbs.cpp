@@ -311,6 +311,11 @@ static bool sysopCounts(const Session& s) {
     return s.st != SState::Free && s.visible && !s.lurk;
 }
 
+const char* Bbs::preLoginName(const Session& s) {
+    return (s.st == SState::Detect || s.st == SState::Intro) ? "(connecting)"
+                                                             : "(logging in)";
+}
+
 uint8_t Bbs::publicNodes() const {
     return static_cast<uint8_t>(BBS_MAX_NODES + (sysopCounts(sysop_) ? 1 : 0));
 }

@@ -76,6 +76,16 @@ struct FormField {
     uint8_t     cap     = 0;         // max characters, excluding the terminator
     uint8_t     flags   = FF_NONE;
     const char* choices = nullptr;   // FF_CYCLE: "User|Co2|Co1|Sysop"
+
+    // note: shown on the status line while this field has the focus.
+    //
+    // For telling somebody who can read what they are about to type, at the
+    // moment they type it. The posture was already right, email, address and
+    // phone are UF_PRIVATE and INFO shows them only to the owner and to
+    // staff holding USERS, but a caller entering a phone number was told
+    // none of that, and a policy screen somewhere else is not an answer.
+    // Appended, so every existing field initialiser is untouched.
+    const char* note    = nullptr;
 };
 
 class Form {
@@ -106,6 +116,10 @@ public:
 
     // status: one line under the buttons (hint, progress, result)
     void status(const char* msg, Color c, Term& t, Timeline& tl);
+
+    // statusForFocus: the focused field's note, or the movement hint
+    void statusForFocus(Term& t, Timeline& tl);
+
 
     // after: cursor below the form, ready for normal output
     void after(Term& t, Timeline& tl);

@@ -685,8 +685,22 @@ def test_ascii():
     lines = [l for l in text.split("\r\n") if l]
     body = [l for l in lines if l != "help" and "---" not in l and "Main" not in l
             and not l.startswith("More:") and not l.lstrip().startswith("?")]
-    ok &= check("HELP generated with rows", len(body) >= 10)
-    ok &= check("every HELP line fits 39 columns", all(len(l) <= 39 for l in lines))
+    # The main menu is deliberately short now: the things a caller actually
+    # uses, with everything explanatory moved to ? account. Counting to ten
+    # was counting the old menu. What matters is that it is generated from
+    # the command table and names the everyday commands, and FILES is absent
+    # here because there is no card.
+    ok &= check("HELP generated with rows", len(body) >= 4)
+    ok &= check("and names the everyday commands",
+                b"WHO" in c.buf and b"CHAT" in c.buf)
+    # Detection gives a plain ASCII caller 80x24 (detect.cpp), so 79 is the
+    # bar, not 39. The old 39 was the rowWidth clamp written down as a
+    # requirement: rows follow Term::cols() now instead of being capped at
+    # 40 for everybody, which is what left an 80 column caller looking at
+    # half a screen of black. SCREENS.md's 39 column rule is about screen
+    # FILES, which have to suit a C64, not about rows the board draws.
+    ok &= check("every HELP line fits the terminal", all(len(l) <= 79 for l in lines))
+    ok &= check("and uses the width it was given", any(len(l) > 39 for l in lines))
     # The usage column is 15 wide so that "ANNOUNCE TEST", the widest usage
     # string there is, is not the one command that gets truncated.
     ok &= check("descriptions start at column 16",

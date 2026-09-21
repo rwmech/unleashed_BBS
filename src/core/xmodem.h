@@ -103,11 +103,38 @@ constexpr uint16_t kMaxName = 64;
 constexpr uint32_t kStartPollMs    = 3000;    // receiver: gap between 'C'/NAK
 constexpr uint32_t kBlockTimeoutMs = 10000;   // waiting for a block or an ACK
 constexpr uint32_t kCharTimeoutMs  = 1000;    // gap allowed inside one block
-constexpr uint32_t kSenderWaitMs   = 60000;   // sender: for the receiver to begin
+// Three minutes, for the same reason: a caller downloading has to pick a
+// folder to save into, and a sender that hangs up while they are still in
+// the dialog is a transfer that never had a chance.
+constexpr uint32_t kSenderWaitMs   = 180000;  // sender: for the receiver to begin
 constexpr uint32_t kPurgeQuietMs   = 500;     // silence before NAKing a bad block
 
 constexpr uint8_t  kMaxErrors      = 10;      // consecutive errors, then give up
-constexpr uint8_t  kCrcPolls       = 3;       // 'C's before falling back to NAK
+
+// Waiting for a person, not for a machine.
+//
+// These were 3 polls before dropping CRC and kMaxErrors polls before giving
+// up, which is 9 seconds and 30 seconds at kStartPollMs. Both are fine
+// against a program, and both are far too short against somebody choosing a
+// file in their terminal's dialog, which Rob puts at up to a full minute.
+//
+// What that cost: the board sent 'C', the caller went looking for a file,
+// the board decided after 9 seconds that nobody could do CRC and switched
+// to asking with NAK. The terminal had already committed to CRC-16 from
+// that first 'C' and sent 133 byte blocks for ever after; the board was
+// reading 132 and checking an 8-bit sum against the first CRC byte. Every
+// block NAKed, every time, and both ends behaving exactly as written.
+//
+// lrzsz cannot show this because sz is adaptive: it follows the board down
+// to checksum and the two agree. SyncTERM is not, and neither is most of
+// what a caller will actually use.
+//
+// So: two full minutes of asking in CRC, then a minute of asking the old
+// way for the genuinely ancient sender that only does checksums, then give
+// up. The fallback is kept rather than deleted because a checksum-only
+// sender is exactly the kind of machine this board exists for.
+constexpr uint8_t  kCrcPolls       = 40;      // 'C's before falling back to NAK
+constexpr uint8_t  kStartPolls     = 60;      // start polls before Err::NoStart
 constexpr uint8_t  kFallbackErrors = 3;       // 1K failures before dropping to 128
 constexpr uint8_t  kCanSeq         = 8;       // CANs sent to abort (2 is the minimum)
 

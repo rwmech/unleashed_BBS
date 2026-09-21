@@ -277,8 +277,9 @@ bool Bbs::rowNodes(Session& s) {
             return true;
         }
 
-        char h[24] = "(no handle)";
+        char h[24];
         if (o->user[0]) listHandle(h, sizeof(h), o->user, wide ? 20 : 9);
+        else            snprintf(h, sizeof(h), "%s", preLoginName(*o));
         bool hidden = o != &s && (!o->visible || o->lurk);
         if (o->role == Role::Caller && o->loggedIn && !unlimited(*o)) {
             int32_t sec = secondsLeft(*o, now);

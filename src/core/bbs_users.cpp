@@ -120,7 +120,18 @@ uint8_t Bbs::addUserFields(Session& s, uint8_t n) {
         uint8_t flags = FF_NONE;
         if (uf.flags & UF_REQUIRED) flags |= FF_REQUIRED;
         if (uf.flags & UF_TEXTAREA) flags |= FF_TEXTAREA;
+        uint8_t at = n;
         addField(s, n, uf.label, users::fieldPtr(s.edit, uf), static_cast<uint8_t>(uf.size - 1), flags);
+        // Set on the session's own field array, NOT through the Form.
+        // Form::f_ is a pointer that begin() aims at s.fields, so touching
+        // it before begin() dereferences whatever the last form left there,
+        // which on a fresh session is nothing at all. That crashed the board
+        // the moment a caller opened the sign-up form.
+        //
+        // Driven off the flag rather than written out per field, so a field
+        // that becomes private later says so without anybody remembering.
+        if ((uf.flags & UF_PRIVATE) && at < Form::kMaxFields)
+            s.fields[at].note = "Only you and staff can see this.";
     }
     (void)first;
     return n;

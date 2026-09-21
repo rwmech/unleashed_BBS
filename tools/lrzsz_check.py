@@ -123,6 +123,22 @@ def main():
         print("board did not offer the transfer:", tc.plain(s.buf)[-200:])
         return 1
 
+    # --delay N: sit still for N seconds before starting the transfer, the
+    # way a person does while picking a file in their terminal's dialog.
+    # The board polls 'C' every three seconds while waiting, and a receiver
+    # that falls back from CRC to checksum after a few polls has changed
+    # protocol behind a sender that already committed to CRC.
+    delay = 0
+    for i, a in enumerate(sys.argv):
+        if a == "--delay" and i + 1 < len(sys.argv):
+            delay = int(sys.argv[i + 1])
+    if delay:
+        print("waiting %d s before starting, like somebody choosing a file" % delay)
+        end = time.time() + delay
+        while time.time() < end:
+            s.pump(0.5)
+        s.buf.clear()
+
     print("protocol: %s   telnet binary agreed by client: %s"
           % ("YMODEM" if ymodem else "XMODEM", not refuse))
     bridge(s.s, argv)

@@ -959,21 +959,35 @@ static bool test_silence() {
     printf("Nobody at the other end\n");
     bool ok = true;
 
-    // A receiver whose sender never answers: 'C' three times, then NAK, and
-    // then it has to give up rather than hold the line for ever.
+    // A receiver whose sender never answers: 'C' for a long time, then NAK
+    // for a while in case the far end is checksum-only, then give up rather
+    // than hold the line for ever.
+    //
+    // The numbers are deliberately patient. They used to be three 'C's and
+    // thirty seconds, which is fine against a program and far too short
+    // against somebody choosing a file in a terminal dialog: the board
+    // switched to asking with NAK after nine seconds while the terminal had
+    // already committed to CRC, and every block of every upload was then
+    // checked the wrong way and refused.
     {
         Lone L;
         static uint8_t got[1024];
         Dst d { got, sizeof got, 0, -1, 0 };
         L.e.beginRecv(dstWrite, &d, L.now, true);
         int guard = 0;
-        while (L.e.running() && guard++ < 4000) { L.collect(1); L.now += 25; }
+        while (L.e.running() && guard++ < 40000) { L.collect(1); L.now += 25; }
         ok &= check("a receiver times out when the sender never starts",
                     L.e.failed() && L.e.error() == Engine::Err::NoStart);
         ok &= check("having asked for CRC first", L.out[0] == CRCREQ);
         ok &= check("then fallen back to the checksum NAK", L.count(NAK) >= 1);
-        ok &= check("and it took about half a minute, not for ever",
-                    L.now >= 25000 && L.now <= 40000);
+        // A full minute of CRC is the requirement: that is how long a person
+        // takes to find a file. Falling back before then is the bug.
+        // One poll every kStartPollMs, so counting the CRC polls is the
+        // same statement as "it stayed on CRC for this long".
+        ok &= check("and it stayed on CRC for well over a minute",
+                    L.count(CRCREQ) >= 25);
+        ok &= check("and gave up eventually, not for ever",
+                    L.now >= 150000 && L.now <= 220000);
     }
 
     // A sender whose receiver never starts.
@@ -1480,8 +1494,11 @@ static bool test_ymodem_headers() {
         L.collect();
         L.give(&eot, 1);
         L.collect();
+        // Long enough for the new start-poll budget: the receiver asks for
+        // the closing header for as long as it would wait for a first
+        // block, which is now minutes rather than seconds.
         int guard = 0;
-        while (L.e.running() && guard++ < 4000) { L.collect(1); L.now += 25; }
+        while (L.e.running() && guard++ < 40000) { L.collect(1); L.now += 25; }
         ok &= check("a sender that never sends the closing header loses nothing",
                     L.e.done() && d.n == 128 && memcmp(got, data, 128) == 0);
     }

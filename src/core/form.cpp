@@ -97,9 +97,7 @@ void Form::begin(const char* title, FormField* fields, uint8_t count, Term& t, T
         tl.delay(35);                            // fields cascade in
     }
     drawButtons(t, tl);
-    status(t.isPet() ? "CRSR or TAB moves, F1 saves, <- quits"
-                     : "Tab or arrows move, F1 saves, ESC quits",
-           Color::DarkGrey, t, tl);
+    statusForFocus(t, tl);
     t.cursor(tl, true);
     placeCursor(t, tl);
 }
@@ -182,6 +180,21 @@ void Form::drawButtons(Term& t, Timeline& tl) {
     if (cancel) t.reverse(tl, false);
 }
 
+// statusForFocus: the note on the field you are standing in, or the
+// movement hint when it has none.
+//
+// The hint is on screen the whole time a caller is in a form and is learned
+// in about four seconds; a line saying who can read your phone number is
+// worth more at the moment you are typing one, which is the only moment it
+// can change what somebody does.
+void Form::statusForFocus(Term& t, Timeline& tl) {
+    const char* note = (focus_ < n_) ? f_[focus_].note : nullptr;
+    if (note) { status(note, Color::Yellow, t, tl); return; }
+    status(t.isPet() ? "CRSR or TAB moves, F1 saves, <- quits"
+                     : "Tab or arrows move, F1 saves, ESC quits",
+           Color::DarkGrey, t, tl);
+}
+
 void Form::status(const char* msg, Color c, Term& t, Timeline& tl) {
     if (!positional(t)) {
         t.nl(tl);
@@ -239,6 +252,9 @@ void Form::setFocus(uint8_t next, Term& t, Timeline& tl) {
     if (prev < n_) drawField(prev, t, tl);
     if (next < n_) drawField(next, t, tl);
     if (prev >= n_ || next >= n_) drawButtons(t, tl);
+    // The note belongs to the field you are standing in, so it has to
+    // follow the focus rather than being drawn once when the form opens.
+    statusForFocus(t, tl);
     t.cursor(tl, true);
     placeCursor(t, tl);
 }

@@ -941,7 +941,10 @@ void Engine::tick(uint32_t now) {
             // accepted as an empty file.
             endOfFile(now);
         } else if (!started_) {
-            if (polls_ >= kMaxErrors) { fail(Err::NoStart); break; }
+            // kStartPolls, not kMaxErrors. The error budget is about bad
+            // blocks on a live transfer; how long to wait for somebody to
+            // find a file is a different question with a different answer.
+            if (polls_ >= kStartPolls) { fail(Err::NoStart); break; }
             // A sender that ignores 'C' may be checksum-only, which is half
             // the 8-bit world. Ask the old way rather than sit here. Never
             // under YMODEM: there is no checksum YMODEM, and a sender whose

@@ -404,16 +404,39 @@ bool Bbs::listRow(Session& s) {
 // Row output
 // ===========================================================================
 
-// rowWidth: lists and menus are laid out for 40 columns everywhere
+// rowWidth: a row is as wide as the terminal, not as wide as a C64
+//
+// This used to clamp at 40 for everybody, with the comment "lists and menus
+// are laid out for 40 columns everywhere", and that one line is where most
+// of the board's wasted screen came from: an 80 column caller got 40 columns
+// of content and 40 of black, and HELP wrapped descriptions that had room to
+// spare. It was always per-caller, since cols comes from the session; only
+// the clamp made it narrow.
+//
+// Most of the board follows this for free, because it already derived from
+// rowWidth: the HELP description column, the CALLS histogram, the refresh
+// frame truncation, and every bar, rule and padded row. What does not follow
+// are the few screens that build fixed columns of their own, which stay at
+// their old width under a wider bar until each is given the same treatment.
+//
+// A zero here underflows to 255 and a title bar pads 255 reverse-video
+// spaces, which is the one mechanism that would genuinely paint a bar past
+// the right edge and onto the rows below. Unreachable today, since
+// setGeometry guards zero and detection only ever yields 40 or 80, but a
+// NAWS negotiation carrying zero does reach Telnet, and the guard is free.
+//
+// Capped at 132: a terminal can report a great deal more, and a 200 column
+// reverse-video bar is not a design, it is a stripe.
 uint8_t Bbs::rowWidth(const Session& s) const {
-    // A zero here underflows to 255 and a title bar pads 255 reverse-video
-    // spaces, which is the one mechanism that would genuinely paint a bar
-    // past the right edge and onto the rows below. Unreachable today, since
-    // setGeometry guards zero and detection only ever yields 40 or 80, but a
-    // NAWS negotiation carrying zero does reach Telnet, and the guard is free.
     uint8_t cols = s.term.cols();
-    if (!cols) cols = 80;
-    return static_cast<uint8_t>((cols < 40 ? cols : 40) - 1);
+    // An unknown width gets the narrow case, not the optimistic one. A
+    // terminal that never said how wide it is has not promised 80, and a
+    // row that wraps is worse on every terminal than a row that is short on
+    // some. Plain ASCII callers land here and stay at the 39 columns
+    // SCREENS.md has always specified for them.
+    if (!cols) cols = 40;
+    if (cols > 132) cols = 132;
+    return static_cast<uint8_t>(cols - 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -870,7 +893,7 @@ bool Bbs::rowWho(Session& s) {
         }
         char h[16];
         if (n->user[0]) listHandle(h, sizeof(h), n->user, 12);
-        else snprintf(h, sizeof(h), "%s", n->st == SState::Detect || n->st == SState::Intro ? "(connecting)" : "(logging in)");
+        else snprintf(h, sizeof(h), "%s", preLoginName(*n));
         const char* what = staff ? (hidden ? (n->lurk ? "lurking" : "hidden") : doingText(*n)) : n->term.name();
         snprintf(on, sizeof(on), "%u", static_cast<unsigned>((now - n->connectedAt) / 60000u));
         fmtIdle(idle, sizeof(idle), now - n->lastInput);
@@ -909,7 +932,15 @@ bool Bbs::rowWatchFooter(Session& s) {
         if (left < 0) snprintf(buf, sizeof(buf), "No idle limit%s", page);
         else          snprintf(buf, sizeof(buf), "Idle counts: %ld:%02ld left%s",
                                static_cast<long>(left / 60), static_cast<long>(left % 60), page);
-        buf[rowWidth(s)] = '\0';                      // never wrap a refresh frame
+        // Never wrap a refresh frame: a row wider than the terminal scrolls
+        // it, and a refresh screen that scrolls corrupts itself on every
+        // redraw. Clamped to the buffer as well as to the width, because
+        // rowWidth is the terminal's now rather than a fixed 40, and an 80
+        // column caller was writing the terminator past the end of a 64
+        // byte buffer. That is a stack smash, and it crashed the board.
+        uint8_t cut = rowWidth(s);
+        if (cut > sizeof(buf) - 1) cut = sizeof(buf) - 1;
+        buf[cut] = '\0';
         rowText(s, left >= 0 && left < 60 ? Color::LightRed : Color::DarkGrey, buf, false);
         s.listSub = 3;
         return true;
@@ -1076,8 +1107,9 @@ bool Bbs::rowDash(Session& s) {
             int32_t sec = secondsLeft(n, now);
             if (sec != INT32_MAX) snprintf(left, sizeof(left), "%ld", static_cast<long>(sec > 0 ? (sec + 59) / 60 : 0));
         }
-        char h[16] = "(logging in)";
+        char h[16];
         if (n.user[0]) listHandle(h, sizeof(h), n.user, 12);
+        else           snprintf(h, sizeof(h), "%s", preLoginName(n));
         bool hidden = &n != &s && (!n.visible || n.lurk);
         snprintf(buf, sizeof(buf), "%s%c%-12.12s %-9.9s %5s %4s", nodeLabel(n).t, markFor(n), h,
                  hidden ? (n.lurk ? "lurking" : "hidden") : doingText(n), idle, left);
