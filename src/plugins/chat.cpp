@@ -1807,4 +1807,5 @@ extern const Plugin kChatPlugin = {
     nullptr,                 // onPresence
     nullptr,                 // onBytes
     onRename,
+    nullptr,                 // listDone
 };

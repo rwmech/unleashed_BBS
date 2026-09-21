@@ -21,6 +21,52 @@
 
 # Identity, and the forums
 
+## Decisions taken since this was written (2026-09-21)
+
+Four questions this plan left open have been answered by Rob. They change
+what Part 2 costs, so they are here rather than buried.
+
+- **Votes are not being built.** Not deferred, dropped from the first
+  version. That removes the votes file, the per-user record that stops
+  double-voting, the permission rule for who may vote, and the whole
+  question of whether a score appears in a listing. It can be added later
+  as an additive file without touching the message format, because nothing
+  else depends on it.
+- **A forum fills by rolling, not refusing.** The cap is per forum and the
+  default can be generous, because the arithmetic says this will essentially
+  never fire: `INDEX.TXT` is 128 bytes a message and a body is a few
+  hundred, so 8 GB is on the order of **12.7 million messages**, about 1,700
+  years at twenty posts a day. The cap exists to stop one pathological forum
+  and to keep `INDEX.TXT` a sane size to scan, not to stop the card filling.
+  Rolling is safe here only because message numbers never move: a pointer
+  below the oldest surviving message means "that text is gone", never "you
+  are now pointing at somebody else's message".
+- **Messages are grouped by subject, and this is required rather than a
+  nicety.** Rob: "based on Email, reddit and a zillion other places I feel
+  like at the least, grouped subjects has to be."
+  His case is the one that matters: a `Ham Radio` forum carrying both "20m
+  tips and tricks" and "20m antennas" is useless if following one means
+  reading the other ten conversations interleaved with it.
+  **This is not threading and does not reopen that decision.** Each message
+  carries a subject; a reply carries it forward as `Re: ...`; and a forum
+  can be read filtered to one subject, in time order. There is no tree, no
+  nesting, no indentation and no parent pointers, so it still lays out at 40
+  columns, deleting or rolling a message cannot orphan a subtree, and the
+  read pointer still means exactly what it meant, because subject grouping
+  is a filter over the flat list rather than a different structure. `rn` and
+  `tin` called this threading by subject, and it is most of what people
+  actually wanted from threads; the tree was always the expensive part and
+  rarely the useful one.
+  It is cheap here specifically because `INDEX.TXT` is fixed-size records:
+  finding every message with a subject is one sequential scan of a compact
+  index, not a per-message walk of the card, which is the shape that caused
+  a measured 126 ms stall in the file listing.
+- **The `files` abort bug is fixed** (0.19.x), so Part 2 does not inherit it.
+  A new `listDone(Session&, bool aborted)` plugin hook tells a plugin its
+  list has ended and whether the caller stopped it, because the core hands
+  the session back and deliberately draws no prompt. The forums will hit
+  that path constantly.
+
 ## Read this first: what changed and why
 
 The first version of this plan designed a message base keyed on caller

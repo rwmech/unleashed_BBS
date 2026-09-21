@@ -362,4 +362,5 @@ extern const Plugin kSerialPlugin = {
     nullptr,                 // onPresence
     nullptr,                 // onBytes
     nullptr,                 // onRename
+    nullptr,                 // listDone
 };

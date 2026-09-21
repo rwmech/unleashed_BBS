@@ -635,6 +635,21 @@ void filesHelp(Bbs& b, Session& s, uint8_t area);
 bool doApproveQuiet(Bbs& b, Session& s, uint8_t area, const char* name);
 bool doRejectQuiet(Bbs& b, Session& s, uint8_t area, const char* name);
 void backToArea(Bbs& b, Session& s);
+void filesPrompt(Session& s);          // defined below, used by listDone
+
+// listDone: a listing has finished, one way or the other.
+//
+// The prompt is emitted as the last row of a listing that runs to the end,
+// which works right up until somebody presses Q at [More]. Then the row is
+// never reached, the core hands the session back here without drawing a
+// shell prompt, and the caller is left staring at "Stopped." with no way to
+// know the file areas still have them.
+//
+// Only on an abort: a listing that finished has already drawn its prompt,
+// and drawing a second one would just be a blank line and a repeat.
+void listDone(Session& s, bool aborted) {
+    if (aborted) filesPrompt(s);
+}
 
 void onLogoff(Session& s) {
     xferDropped(s);
@@ -2258,4 +2273,5 @@ extern const Plugin kFilesPlugin = {
     nullptr,                 // onPresence
     onBytes,
     nullptr,                 // onRename
+    listDone,
 };

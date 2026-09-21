@@ -236,4 +236,5 @@ extern const Plugin kExamplePlugin = {
     nullptr,                 // onPresence
     onBytes,
     nullptr,                 // onRename
+    nullptr,                 // listDone
 };

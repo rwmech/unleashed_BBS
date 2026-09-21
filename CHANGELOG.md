@@ -24,6 +24,31 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.19.1, 2026-09-21
+
+Stopping a listing hands you back to where you were.
+
+- **`Q` at `[More]` inside a subsystem left the caller nowhere.** The core
+  hands a finished list back to the plugin that owns the session and
+  deliberately draws no shell prompt, because the plugin owns the screen. The
+  file manager printed its prompt as the last *row* of a listing, which works
+  right up until somebody stops the listing early: that row is never reached,
+  so the caller was left looking at "Stopped." with nothing to say the file
+  areas still had them, and every key after that went to a subsystem they
+  could not see.
+- New `listDone(Session&, bool aborted)` plugin hook, **appended** to
+  `Plugin` like everything after the line in that struct, dispatched from
+  `Bbs::listEnded(s, aborted)`. `files` redraws its prompt on an abort only:
+  a listing that ran to the end has already drawn one.
+- Invisible to any test that reads a listing to the end, which is why it
+  lasted. `test_list_abort_returns` now drives the case that matters.
+- Naming: the message boards are **forums**, settled in 0.18.0 and carried
+  into `LAND_FORUMS` and the `Start` field. Two stale comments still said
+  "the bulletin plugin". `screens/bulletin.*` keeps its name because it is
+  the login notice screen, which is the collision that forced the rename.
+
+Host: 638 checks with a card, 468 without, 0 failures.
+
 ## 0.19.0, 2026-09-21
 
 A handle stops being an identity, the board can be taken down on purpose, and the radio stops going to sleep mid-call.

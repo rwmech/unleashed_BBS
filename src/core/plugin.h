@@ -231,6 +231,19 @@ struct Plugin {
     // succeeded, so a plugin acting on it can trust that the new name is
     // the real one. Both names are valid for the length of the call only.
     void (*onRename)(const char* oldHandle, const char* newHandle);
+
+    // listDone: a paged list this plugin started has finished.
+    //
+    // aborted is true when the caller stopped it at [More] rather than
+    // reading to the end. A plugin that owns the session gets it back
+    // either way and has to put something on the screen, because the core
+    // deliberately does not print its prompt for it.
+    //
+    // Without this, stopping a file listing with Q left the caller looking
+    // at "Stopped." and nothing else: the session was handed back to the
+    // plugin with no way for it to know, and the file manager only drew its
+    // prompt as the last row of a listing that had just been abandoned.
+    void (*listDone)(Session& s, bool aborted);
 };
 
 namespace plugins {
@@ -246,6 +259,9 @@ void tick(uint32_t now);
 
 // renamed: a caller's handle changed. Call after users.txt is written.
 void renamed(const char* oldHandle, const char* newHandle);
+
+// listDone: tell the plugin that owns this session its list has ended.
+void listDone(uint8_t index, Session& s, bool aborted);
 
 // count / at / info: the compiled-in table, enabled or not
 uint8_t count();

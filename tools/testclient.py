@@ -3934,6 +3934,76 @@ def test_mail_rsd():
     return ok
 
 
+def test_list_abort_returns():
+    """Stopping a plugin's listing at [More] must hand the caller back.
+
+    The core gives the session to the owning plugin when a list ends and
+    deliberately draws no shell prompt, because the plugin owns the screen.
+    The file manager relied on emitting its prompt as the last ROW of the
+    listing, which works right up until somebody presses Q at [More]: the
+    row is never reached, so the caller was left looking at "Stopped." with
+    nothing to tell them the file areas still had them, and every key after
+    that went to a subsystem they could not see.
+
+    Invisible to any test that reads a listing to the end, which is why it
+    lasted. The plugin gets a listDone hook now.
+    """
+    print("A stopped listing hands you back")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+
+    # The files plugin is PF_SD, so on a board with no card it does not start
+    # and FILES is not a command at all. That is the design, not a gap: this
+    # test needs a subsystem that owns a session and produces a long listing,
+    # and without a card there is not one.
+    if not os.environ.get("BBS_SD_DIR", ""):
+        print("  SKIP  the files plugin needs a card")
+        return True
+
+    if not PASSWORD:
+        print("  SKIP  needs a sysop password to reach a listing long enough to page")
+        return True
+
+    s = ansi_login("Aborter")
+    drain(s)
+    s.buf.clear()
+    s.send(f"bye {PASSWORD}\r".encode())
+    if not s.wait_for(b"SysOp node", 6):
+        print("  SKIP  could not elevate")
+        s.close()
+        return True
+    s.pump(0.6)
+
+    # Area 9 is the board's own Screens area, which the card seeding fills
+    # with the two dozen stock screens, so it is long enough to page. That
+    # is the whole requirement here: a listing that stops at [More].
+    s.buf.clear()
+    s.send(b"files 9\r")
+    ok = check("a staff area with a long listing opens", s.wait_for(b"Screens", 6))
+    if not s.wait_for(b"[More]", 6):
+        print("  SKIP  the listing did not page, nothing to abort")
+        drain(s); leave_files(s); s.close()
+        return ok
+
+    s.buf.clear()
+    s.send(b"q")
+    s.pump(1.2)
+    out = plain(s.buf)
+    ok &= check("the listing stops", b"Stopped" in out)
+    ok &= check("and the subsystem prompt comes back rather than nothing",
+                b"Files>" in out)
+
+    # And the session really is usable, not merely showing a prompt.
+    s.buf.clear()
+    s.send(b"q")
+    ok &= check("Q still works afterwards", s.wait_for(b"File areas", 5))
+    drain(s)
+    leave_files(s)
+    s.close()
+    return ok
+
+
 def test_shutdown():
     """SHUTDOWN warns more than once, and CANCEL stops it.
 
@@ -4503,7 +4573,8 @@ if __name__ == "__main__":
                test_refresh_and_ctrl_l(),
                test_binary(), test_sd(), test_files(), test_mail_never_lost(),
                test_mail_rsd(), test_rename_follows(),
-               test_staff_remembered(), test_shutdown(), test_xfer(),
+               test_staff_remembered(), test_shutdown(),
+               test_list_abort_returns(), test_xfer(),
                test_upload_no_binary(), test_ymodem(),
                test_config_areas(), test_partitions()]
     if "--backup" in FLAGS:

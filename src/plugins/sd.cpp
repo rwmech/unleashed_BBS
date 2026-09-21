@@ -498,4 +498,5 @@ extern const Plugin kSdPlugin = {
     nullptr,                 // onPresence
     nullptr,                 // onBytes
     nullptr,                 // onRename
+    nullptr,                 // listDone
 };

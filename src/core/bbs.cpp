@@ -1575,8 +1575,8 @@ void Bbs::completeLogin(Session& s, uint32_t now) {
 // board's setting.
 //
 // Anything the board cannot actually do falls back to the main prompt
-// without comment. That is what lets Bulletin be offered as a choice before
-// the bulletin plugin exists, and it is also the right answer for a board
+// without comment. That is what lets Forums be offered as a choice before
+// the forums plugin exists, and it is also the right answer for a board
 // that has switched chat off: a caller should not be greeted with "Unknown
 // command" because of a preference they set months ago.
 // ---------------------------------------------------------------------------
@@ -2204,9 +2204,13 @@ void Bbs::startList(Session& s, ListKind kind) {
 // there is nothing to call back into: the session simply goes back to being
 // the plugin's.
 // ---------------------------------------------------------------------------
-void Bbs::listEnded(Session& s) {
+void Bbs::listEnded(Session& s, bool aborted) {
     if (s.owner != 0xFF && plugins::running(s.owner)) {
         s.st = SState::Plugin;
+        // And say so. The plugin owns the screen now and the core will not
+        // print a prompt for it, so without this the caller is left looking
+        // at whatever the list stopped on.
+        plugins::listDone(s.owner, s, aborted);
         return;
     }
     prompt(s);
@@ -2249,7 +2253,7 @@ void Bbs::abortOutput(Session& s) {
     s.term.nl(s.tl);
     s.term.color(s.tl, Color::Grey);
     s.term.text(s.tl, "Stopped.");
-    listEnded(s);
+    listEnded(s, true);
 }
 
 // ===========================================================================

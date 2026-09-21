@@ -64,7 +64,7 @@ Full guide to accounts: [USERS.md](USERS.md).
 | Space, Ctrl-C, ESC (C64: SPACE, RUN/STOP, left-arrow) | lists, screens, FX demo | stop the output |
 | any other key | animations, screens | skip delays |
 | Y, Enter or Space | `[More] Y/n/c` | next page |
-| N, Q, ESC or Ctrl-C | `[More] Y/n/c` | stop |
+| N, Q, ESC or Ctrl-C | `[More] Y/n/c` | stop; inside a subsystem such as FILES this returns you to that subsystem's prompt, not to the main one |
 | C | `[More] Y/n/c` | continue without pausing |
 | any key | `WHO n`, `DASH n` refresh | stop refreshing, back to the prompt |
 | ESC or Ctrl-C | command prompt | clear the line |

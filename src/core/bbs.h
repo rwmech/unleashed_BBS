@@ -469,7 +469,7 @@ private:
     void serviceList(Session& s);
     // listEnded: the shell prompt, or back to the plugin that owns the
     // session if a subsystem started this list
-    void listEnded(Session& s);
+    void listEnded(Session& s, bool aborted = false);
     void showMore(Session& s, MoreFrom from);
     void abortOutput(Session& s);
     uint8_t pageRows(const Session& s) const;

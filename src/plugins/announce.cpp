@@ -810,4 +810,5 @@ extern const Plugin kAnnouncePlugin = {
     onPresence,              // arrivals, departures and SHOW/HIDE/LURK
     nullptr,                 // onBytes
     nullptr,                 // onRename
+    nullptr,                 // listDone
 };

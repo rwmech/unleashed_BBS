@@ -363,6 +363,34 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
 - **A deliberate deviation from the plan, and the reasoning is the useful part.** The plan had mail and bans moving to ids. `MailRec` is a fixed-size record with a static assert on its layout, so that means changing `sizeof` and converting every live mailbox, on the one board that exists, to fix a bug that has a cheaper fix. Following renames gets the same visible outcome with no format change. The forums will store ids natively, so mail ends up the only holdout and a far smaller job later. **Prefer the fix that does not migrate somebody's data when both fixes close the same hole.**
 - **The positional-descriptor trap caught me exactly as CLAUDE.md predicted.** `onRename` inserted before `onBytes` shifted every field after it, and the compiler said so. Append-only is not a style rule here, it is the only safe edit.
 
+### A stopped listing has to hand you back (0.19.1)
+
+- **The core draws no prompt when a plugin owns the session, and that is
+  correct.** `listEnded()` gives the caller back to the owning plugin
+  precisely so the plugin can decide what the screen says. The file manager
+  met that by printing its prompt as the last *row* of the listing, which is
+  the same thing right up until somebody presses `Q` at `[More]`: the row is
+  never reached, so the caller sat looking at "Stopped." with nothing saying
+  the file areas still had them, and every key afterwards went to a
+  subsystem they could not see.
+- `listDone(Session&, bool aborted)`, **appended** to `Plugin`, dispatched
+  from `Bbs::listEnded(s, aborted)`. Only on an abort: a listing that ran to
+  the end has already drawn its prompt, and a second one is a blank line and
+  a repeat.
+- **The shape worth remembering is the one this shares with the mail bug in
+  0.17.12.** A plugin that owns a session for two different reasons has to
+  say which, and a core that hands control back without saying why leaves the
+  plugin guessing. Both were fixed by making the distinction explicit rather
+  than by inferring it.
+- **Invisible to every test that reads a listing to the end**, which is why
+  it survived. The test that finds it has to abort deliberately, and it also
+  has to reach a listing long enough to page: the first version of
+  `test_list_abort_returns` fell back to an empty area and reported SKIP
+  while looking like a pass. It elevates to sysop and uses the Screens area
+  now. It also needs a card, because `files` is `PF_SD` and does not exist on
+  a cardless board; without that guard it failed the no-card suite for a
+  reason that had nothing to do with what it tests.
+
 ### The stall was Wi-Fi power save, and how it was finally caught (0.18.0)
 
 - **`esp_wifi_set_ps(WIFI_PS_NONE)` was on the line after `esp_wifi_start()`, and never took.** Starting the station raises `WIFI_EVENT_STA_START`, whose handler calls `esp_wifi_connect()` at once, so the call raced association. Its return was unchecked, and nothing re-applied it after a reconnect, which with `CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE` leaves the board on the IDF default `WIFI_PS_MIN_MODEM`. It lives in the `IP_EVENT_STA_GOT_IP` handler now, where it cannot race and runs on every reconnect, with the return checked.

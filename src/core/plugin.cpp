@@ -374,6 +374,12 @@ void renamed(const char* oldHandle, const char* newHandle) {
     }
 }
 
+void listDone(uint8_t index, Session& s, bool aborted) {
+    if (index >= count() || !running(index)) return;
+    const Plugin* p = at(index);
+    if (p->listDone) p->listDone(s, aborted);
+}
+
 void tick(uint32_t now) {
     if (static_cast<int32_t>(now - g_nextTick) < 0) return;
     g_nextTick = now + BBS_PLUGIN_TICK_MS;
