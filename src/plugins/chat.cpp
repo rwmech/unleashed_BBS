@@ -114,7 +114,22 @@ constexpr uint8_t    kSlots      = BBS_MAX_NODES + 2;   // nodes, sysop, busy li
 constexpr uint8_t    kBanMax     = 16;    // handles barred from the room
 constexpr uint32_t   kVoteMs     = 60000; // how long a vote to kick stays open
 constexpr uint8_t    kAwayMax    = 16;    // characters of an away note
-constexpr uint8_t    kMailSlots  = 32;    // messages the board holds at once
+// Messages the board holds at once, and how many any one person may have
+// waiting.
+//
+// It used to be one each, and a second message REPLACED the first: somebody
+// else writing to you destroyed your unread mail and the board told the
+// sender it had done it. That is not a mailbox, it is a doormat, and losing
+// somebody's message because a third party wrote to them is data loss
+// whatever the storage costs.
+//
+// So: never replace, and refuse when a box is full. How full is full
+// depends on where the mail lives. Internal flash is shared with accounts
+// and screens and is the thing that must survive, so a board without a card
+// keeps it small; a card has room and no reason to ration.
+constexpr uint8_t    kMailSlots  = 64;    // messages the board holds at once
+constexpr uint8_t    kMailBoxSd  = 12;    // per person, with a card
+constexpr uint8_t    kMailBoxFs  = 3;     // per person, on internal flash
 constexpr uint16_t   kMailChars  = 512;   // longest message, DDial had 100
 constexpr uint8_t    kMailDays   = 14;    // how long one waits to be read
 
@@ -525,13 +540,30 @@ uint8_t mailUsed() {
     return n;
 }
 
+// mailBoxLimit: how many messages one person may have waiting.
+uint8_t mailBoxLimit() {
+    return plat::sdBase()[0] ? kMailBoxSd : kMailBoxFs;
+}
+
+// mailCountFor: how many are waiting for this handle.
+uint8_t mailCountFor(const char* handle) {
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < kMailSlots; ++i)
+        if (g_mailTo[i][0] && ieq(g_mailTo[i], handle)) ++n;
+    return n;
+}
+
 // ---------------------------------------------------------------------------
 // mailRewrite: copy the file across, keeping every record the filter says
 // to keep and adding one if there is one to add. Everything goes through a
 // temp file and a rename, so a power cut during a write cannot lose the
 // mailbox.
 // ---------------------------------------------------------------------------
-bool mailRewrite(const char* dropFor, const MailRec* add, uint32_t nowEpoch) {
+// dropIdx is a position in the same order mailIndex() walks: the nth
+// non-empty record in the file. It used to be a handle, which meant reading
+// one message threw away every message that person had, which was invisible
+// while nobody could have two.
+bool mailRewrite(int16_t dropIdx, const MailRec* add, uint32_t nowEpoch) {
     char path[96], tmp[112];
     if (!mailPath(path, sizeof(path))) return false;
     snprintf(tmp, sizeof(tmp), "%s.tmp", path);
@@ -542,10 +574,15 @@ bool mailRewrite(const char* dropFor, const MailRec* add, uint32_t nowEpoch) {
     uint8_t kept = 0;
     if (in) {
         MailRec r;
+        int16_t seen = 0;
         while (fread(&r, sizeof(r), 1, in) == 1) {
             if (!r.to[0]) continue;
-            if (dropFor && ieq(r.to, dropFor)) continue;           // read, or replaced
-            if (add && ieq(r.to, add->to)) continue;               // one each, newest wins
+            int16_t idx = seen++;
+            if (dropIdx >= 0 && idx == dropIdx) continue;          // the one just read
+            // The line that used to sit here dropped every record addressed
+            // to the sender's recipient, so a new message quietly deleted
+            // whatever was already waiting. Mail is never replaced now; a
+            // full box is refused instead, which the sender can act on.
             if (mailExpired(r.at, nowEpoch)) continue;             // too old to keep
             if (kept >= g_mailSlots) continue;
             if (fwrite(&r, sizeof(r), 1, out) != 1) { fclose(in); fclose(out); remove(tmp); return false; }
@@ -581,7 +618,7 @@ bool mailRead(Session& s, bool quiet) {
         return false;
     }
     if (mailExpired(g_mailAt[slot], nowEpoch)) {                   // gone stale
-        mailRewrite(s.user, nullptr, nowEpoch);
+        mailRewrite(static_cast<int16_t>(slot), nullptr, nowEpoch);
         s.term.color(s.tl, Color::Yellow);
         snprintf(buf, sizeof(buf), "A message for you expired after %u days.",
                  static_cast<unsigned>(g_mailDays));
@@ -592,10 +629,16 @@ bool mailRead(Session& s, bool quiet) {
     if (!mailPath(path, sizeof(path))) return false;
     FILE* f = fopen(path, "rb");
     if (!f) return false;
+    // The slot mailIndex() found, read by position rather than by searching
+    // for the handle again: with more than one message waiting those are
+    // different records, and taking the first match would read the same one
+    // for ever while the rest piled up behind it.
     MailRec r;
     bool found = false;
+    int16_t seen = 0;
     while (fread(&r, sizeof(r), 1, f) == 1) {
-        if (r.to[0] && ieq(r.to, s.user)) { found = true; break; }
+        if (!r.to[0]) continue;
+        if (seen++ == static_cast<int16_t>(slot)) { found = true; break; }
     }
     fclose(f);
     if (!found) return false;
@@ -610,14 +653,29 @@ bool mailRead(Session& s, bool quiet) {
     s.term.color(s.tl, g_cText);
     s.term.text(s.tl, r.text);
     s.term.nl(s.tl);
-    mailRewrite(s.user, nullptr, nowEpoch);                        // read once, then gone
+    mailRewrite(static_cast<int16_t>(slot), nullptr, nowEpoch);    // read once, then gone
+
+    // Say what is still waiting, so nobody walks away from a full box
+    // thinking they have seen everything.
+    uint8_t left = mailCountFor(s.user);
+    if (left) {
+        snprintf(buf, sizeof(buf), "%u more waiting. MAIL reads the next one.",
+                 static_cast<unsigned>(left));
+        s.term.color(s.tl, Color::Yellow);
+        s.term.text(s.tl, buf);
+        s.term.nl(s.tl);
+    }
     return true;
 }
 
 // ---------------------------------------------------------------------------
-// mailSend: leave one message for a handle that has an account. Replacing
-// an unread message is allowed, and the sender is told that is what
-// happened so nobody thinks two messages arrived.
+// mailSend: leave a message for a handle that has an account.
+//
+// Nothing is ever replaced. A full box is refused and the sender is told,
+// which is information they can act on: wait, or find the person another
+// way. Silently destroying somebody's unread mail because a third party
+// wrote to them is not a trade-off, it is losing data and reporting
+// success.
 // ---------------------------------------------------------------------------
 void mailSend(Session& s, const char* handle, const char* text) {
     char buf[96];
@@ -636,9 +694,16 @@ void mailSend(Session& s, const char* handle, const char* text) {
         return;
     }
     uint32_t nowEpoch = clk::epoch();
-    uint8_t had = mailSlotFor(u.handle);
-    if (had == 0xFF && mailUsed() >= g_mailSlots) {
-        tell(s, Color::LightRed, "The email system is full. Try again later.");
+    uint8_t mine = mailCountFor(u.handle);
+    if (mine >= mailBoxLimit()) {
+        snprintf(buf, sizeof(buf),
+                 "%.20s already has %u messages waiting. Nothing was replaced.",
+                 u.handle, static_cast<unsigned>(mine));
+        tell(s, Color::LightRed, buf);
+        return;
+    }
+    if (mailUsed() >= g_mailSlots) {
+        tell(s, Color::LightRed, "The board's mail is full. Try again later.");
         return;
     }
 
@@ -650,12 +715,15 @@ void mailSend(Session& s, const char* handle, const char* text) {
     snprintf(r.text, sizeof(r.text), "%.*s", static_cast<int>(g_mailChars), text);
     r.len = static_cast<uint16_t>(strlen(r.text));
 
-    if (!mailRewrite(nullptr, &r, nowEpoch)) {
+    if (!mailRewrite(-1, &r, nowEpoch)) {
         tell(s, Color::LightRed, "The message could not be stored.");
         return;
     }
-    snprintf(buf, sizeof(buf), "Left for %.20s%s", u.handle,
-             had != 0xFF ? " (replacing the one they had)" : "");
+    if (mine)
+        snprintf(buf, sizeof(buf), "Left for %.20s, who now has %u waiting.",
+                 u.handle, static_cast<unsigned>(mine + 1));
+    else
+        snprintf(buf, sizeof(buf), "Left for %.20s", u.handle);
     tell(s, Color::LightGreen, buf);
 
     Session* now = online(u.handle);                               // tell them if they are on

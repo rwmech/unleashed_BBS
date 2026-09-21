@@ -1903,13 +1903,19 @@ def test_mail():
     b.send(b"mail\r")
     ok &= check("reading clears it", b.wait_for(b"No mail", 4))
 
+    # This used to assert that a second message REPLACED the first and
+    # that the board said so. That was the bad design written into the
+    # suite as a requirement, which is part of why it lasted: a third
+    # party writing to you destroyed a message you had not read.
     a.buf.clear()
     a.send(b"mail Reader first one\r")
     a.wait_for(b"Left for", 4)
     a.buf.clear()
     a.send(b"mail Reader second one\r")
-    ok &= check("a second message replaces the first, and says so",
-                a.wait_for(b"replacing the one they had", 4))
+    ok &= check("a second message is kept alongside the first",
+                a.wait_for(b"Left for", 4))
+    ok &= check("and nothing is replaced",
+                b"replacing" not in plain(a.buf))
 
     a.buf.clear()
     a.send(b"mail Nobody hello?\r")
@@ -1919,7 +1925,13 @@ def test_mail():
     b = ansi_login("Reader", pw=TEST_PW)
     ok &= check("mail is announced at login", b.wait_for(b"You have mail", 6))
     b.send(b"mail\r")
-    ok &= check("the message that survived is the newer one", b.wait_for(b"second one", 4))
+    # Oldest first, because that is the order they were sent in and the
+    # order somebody would expect to read them.
+    ok &= check("the oldest message is read first", b.wait_for(b"first one", 4))
+    ok &= check("and the newer one is still waiting", b.wait_for(b"more waiting", 4))
+    b.buf.clear()
+    b.send(b"mail\r")
+    ok &= check("which reads next", b.wait_for(b"second one", 4))
     a.close()
     b.close()
     return ok
@@ -3596,6 +3608,83 @@ def test_ymodem():
     return ok
 
 
+
+def test_mail_never_lost():
+    """A second message must not destroy the first.
+
+    The board used to hold one message per account and let a new one
+    REPLACE an unread one, telling the sender "(replacing the one they
+    had)" as though that were a feature. Somebody else writing to you threw
+    away your mail, which is losing data and reporting success.
+
+    So the two things that matter here: two different people can both leave
+    a message and both survive, and a full box is refused rather than
+    quietly making room.
+    """
+    print("Mail: nothing is ever replaced")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+
+    rx = ansi_login("Boxer")
+    a  = ansi_login("Senda")
+    b  = ansi_login("Sendb")
+
+    a.buf.clear()
+    a.send(b"mail Boxer first message from A\r")
+    ok = check("the first message is accepted", a.wait_for(b"Left for Boxer", 5))
+    ok &= check("and nothing was said about replacing",
+                b"replacing" not in plain(a.buf))
+
+    b.buf.clear()
+    b.send(b"mail Boxer second message from B\r")
+    ok &= check("a second sender is also accepted", b.wait_for(b"Left for Boxer", 5))
+    ok &= check("and is told the box now holds two",
+                b"2 waiting" in plain(b.buf))
+    ok &= check("and still nothing about replacing",
+                b"replacing" not in plain(b.buf))
+
+    # Both survive, oldest first, and the caller is told what is left.
+    rx.buf.clear()
+    rx.send(b"mail\r")
+    ok &= check("the first message is still there",
+                rx.wait_for(b"first message from A", 5))
+    ok &= check("and the caller is told one more is waiting",
+                rx.wait_for(b"1 more waiting", 4))
+    rx.buf.clear()
+    rx.send(b"mail\r")
+    ok &= check("the second message survived too",
+                rx.wait_for(b"second message from B", 5))
+    rx.buf.clear()
+    rx.send(b"mail\r")
+    ok &= check("and then the box is empty", rx.wait_for(b"No mail", 4))
+
+    # A full box is refused, not emptied to make room. The limit depends
+    # on where the mail lives, three on internal flash and twelve with a
+    # card, so fill until the board says no rather than hardcoding a
+    # number the test would have to keep in step with the board.
+    refused = False
+    for i in range(20):
+        a.buf.clear()
+        a.send(("mail Boxer filler %d" % i).encode() + b"\r")
+        if not a.wait_for(b"Left for", 5):
+            refused = b"messages waiting" in plain(a.buf)
+            break
+    ok &= check("a full box is refused rather than making room", refused)
+    ok &= check("and says plainly that nothing was replaced",
+                b"Nothing was replaced" in plain(a.buf))
+
+    rx.buf.clear()
+    rx.send(b"mail\r")
+    ok &= check("the refused message displaced nothing",
+                rx.wait_for(b"filler 0", 5))
+
+    for c in (rx, a, b):
+        drain(c)
+        c.close()
+    return ok
+
+
 def test_sd():
     """The SD card, mounted and not.
 
@@ -3973,7 +4062,8 @@ if __name__ == "__main__":
                test_bulletin(), test_idle_login(), test_busy(),
                test_screens(), test_exit_screen(),
                test_refresh_and_ctrl_l(),
-               test_binary(), test_sd(), test_files(), test_xfer(), test_upload_no_binary(), test_ymodem(),
+               test_binary(), test_sd(), test_files(), test_mail_never_lost(), test_xfer(),
+               test_upload_no_binary(), test_ymodem(),
                test_config_areas(), test_partitions()]
     if "--backup" in FLAGS:
         results.append(test_backup())

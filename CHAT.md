@@ -99,16 +99,24 @@ A vote can **only remove somebody from the room**. It cannot ban them, it cannot
 
 ## Messages
 
-The message system is deliberately small: **one message per caller, waiting to be read**. It is a note left on the door, not a mailbox.
+The message system is small, but **nothing you are sent is ever thrown away
+to make room for something else**. It is a small mailbox, not a note left on
+the door.
 
 - `MAIL handle your message` at the command prompt, or `/email handle your message` in the room.
 - Up to 512 characters, which is enough to say something real.
 - The recipient is told `You have mail.` when they log in, when they enter the room, and straight away if they are already on.
-- `MAIL` on its own, or `/e` in the room, reads the message and clears it.
-- Sending to somebody who already has an unread message replaces it. The sender is told that is what happened, so nobody thinks two messages arrived.
+- `MAIL` on its own, or `/e` in the room, reads the oldest message and clears it. If more are waiting it says how many, so nobody walks away from a full box thinking they have seen everything.
+- **How many you can have waiting depends on where the mail lives.** Three on a board with no SD card, because that storage is shared with the accounts and is the thing that has to survive. Twelve with a card, which has room and no reason to ration.
+- **A full mailbox is refused, never emptied.** The sender is told the box is full and that nothing was replaced, which is something they can act on: wait, or reach the person another way.
 - Messages need an account at both ends. Guests can neither send nor receive.
-- The board holds 32 messages at a time. When they are all spoken for, a sender is told **the email system is full** and nothing is silently thrown away.
+- The board holds 64 messages in total. When they are all spoken for a sender is told the board's mail is full.
 - A message that is not read within 14 days expires. The caller it was waiting for is told that a message expired, so they know they missed something.
+
+> An earlier version held one message per person and let a new one replace an
+> unread one, telling the sender it had done so. That meant a third party
+> writing to you could destroy a message you had not read yet. It was a bad
+> design and it is gone.
 
 ### Mail is not private
 
