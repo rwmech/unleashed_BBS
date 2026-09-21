@@ -24,6 +24,48 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.19.2, 2026-09-21
+
+The loop says where it went, and two bugs found looking for the one it did not explain.
+
+- **"Loop worst" was a bare number.** SYS reported that a pass took 280 ms and
+  never which part of it did, so both stall investigations so far opened with a
+  guess, and the first one guessed wrong and wrote the guess into a comment as
+  fact. `tick()` now times its five phases separately, keeps the phase name and
+  the node behind the worst pass, and logs one console line per slow pass with
+  the whole split. **`Slow passes` on SYS is the number that was actually
+  missing:** a high-water mark cannot tell one stall at boot from a stall every
+  minute, and that was the first question worth asking both times.
+- Permanent rather than a diagnostic build. Five `esp_timer` reads against a
+  58 us average pass is affordable, and a stall that only appears on a real
+  board at hour three is exactly the one a special build switched on afterwards
+  never catches.
+- **`heapWatch` took the cost its own comment said it avoided, for two
+  versions.** The comment reads "It deliberately does NOT call plat::heap(),
+  which walks the allocator"; the next line was `plat::heap().freeBytes`, and
+  that reaches `heap_caps_get_largest_free_block`, which walks the entire pool
+  under `portENTER_CRITICAL`: interrupts off on core 1, holding a spinlock the
+  allocator on core 0 contends for, once a second, on every board. New
+  `plat::heapFree()` is the counter read the comment always described.
+  The lesson is about the comment, not the call: a comment asserting what the
+  code does *not* do reads as a decision already taken rather than a claim to
+  check, so it survives review in a way a wrong positive claim would not.
+- **`pendingLand` and `landing` were never reset in `openSession`**, while six
+  siblings in the same block were. Sessions come from a static pool, so a
+  caller who dropped the line during the bulletin left the flag set and the
+  next caller on that node was dropped into the chat room by the first screen
+  they played. Reachable without disconnecting too: `abortOutput` cleared
+  `pendingPrompt` and not this, so Ctrl-C out of the bulletin and then `ABOUT`
+  landed somebody somewhere they never asked to go. Reset in both places.
+
+Measured against the live board while chasing this: storage work costs about
+40 ms of ICMP and a command touching no storage costs 17 ms, which is a real
+correlation and an order of magnitude short of the 280 ms stall. No code path
+was found that blocks that long in one operation. The instrumentation is what
+settles it.
+
+Host: 638 checks with a card, 468 without, 0 failures.
+
 ## 0.19.1, 2026-09-21
 
 Stopping a listing hands you back to where you were.

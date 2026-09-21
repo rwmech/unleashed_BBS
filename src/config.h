@@ -51,7 +51,7 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "0.19.1"
+#define BBS_VERSION         "0.19.2"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // ---------------------------------------------------------------------------
@@ -205,6 +205,13 @@
 #define BBS_TASK_CORE       1        // Wi-Fi lives on core 0
 #define BBS_TASK_STACK      8192
 #define BBS_TASK_PRIO       5
+
+// A pass slower than this gets a line on the console naming which phase ate
+// it. SYS has always shown "Loop worst" as a bare number, which says a stall
+// happened and never says where, so every investigation started by guessing.
+// 50 ms is five loop cadences: long enough that nothing healthy trips it,
+// short enough to catch a stall well before it is one a caller notices.
+#define BBS_SLOW_PASS_US    50000u
 
 // ---------------------------------------------------------------------------
 // Filesystem

@@ -367,6 +367,59 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
 - **A deliberate deviation from the plan, and the reasoning is the useful part.** The plan had mail and bans moving to ids. `MailRec` is a fixed-size record with a static assert on its layout, so that means changing `sizeof` and converting every live mailbox, on the one board that exists, to fix a bug that has a cheaper fix. Following renames gets the same visible outcome with no format change. The forums will store ids natively, so mail ends up the only holdout and a far smaller job later. **Prefer the fix that does not migrate somebody's data when both fixes close the same hole.**
 - **The positional-descriptor trap caught me exactly as CLAUDE.md predicted.** `onRename` inserted before `onBytes` shifted every field after it, and the compiler said so. Append-only is not a style rule here, it is the only safe edit.
 
+### The loop says where it went, and two bugs found on the way (0.19.2)
+
+- **`SYS` showed "Loop worst" as a bare number and never said which phase ate
+  it**, so every stall investigation opened with a guess. That is how the
+  0.18.0 one was got wrong. `tick()` now times its five phases separately,
+  keeps the phase name and the node behind the worst pass, and logs one
+  console line per slow pass with the full split. `Slow passes` on SYS counts
+  how many exceeded `BBS_SLOW_PASS_US` (50 ms), which is the number that
+  separates **one stall at boot from a stall every minute**: a high-water mark
+  cannot tell those apart and both investigations so far have started by not
+  knowing which one they were looking at.
+- **It is permanent rather than a diagnostic build, on purpose.** Five
+  `esp_timer` reads against a 58 us average pass is affordable, and a stall
+  that only shows on a real board at hour three is exactly the one that a
+  special build switched on afterwards never catches.
+- **`heapWatch` took the cost its own comment said it avoided, for two
+  versions.** The comment reads "It deliberately does NOT call plat::heap(),
+  which walks the allocator for the full statistics MEM wants"; the next line
+  was `plat::heap().freeBytes`. `plat::heap()` calls
+  `heap_caps_get_largest_free_block`, which walks the entire pool under
+  `portENTER_CRITICAL`: interrupts off on core 1, holding a spinlock the
+  allocator on core 0 contends for, once a second, on every board.
+  `plat::heapFree()` is the counter read the comment always described.
+  **The general lesson is about the comment, not the call.** A comment
+  asserting what the code does *not* do reads as a decision already taken
+  rather than as a claim to check, so it survives review in a way a wrong
+  positive claim would not. This is the third time in this project that a
+  comment and its code disagreed and the comment was believed.
+- **`pendingLand` and `landing` were never reset in `openSession`** while six
+  siblings in the same block were. Sessions come from a static pool, so a
+  caller who dropped the line during the bulletin left the flag set and the
+  **next caller on that node** was dropped into the chat room by the first
+  screen they played. Reachable without disconnecting too: `abortOutput`
+  cleared `pendingPrompt` and not this, so Ctrl-C out of the bulletin and then
+  `ABOUT` landed somebody somewhere they never asked to go. Reset in both
+  places. Same "state that outlives its owner" shape as the squelch and away
+  masks, and the fields were sitting in the same struct block as the ones that
+  were already handled.
+- **Still open, and the instrumentation is what settles it.** No code path
+  was found that blocks for 280 ms in one atomic operation; every candidate is
+  a *sequence* of smaller ones. The ranked suspects are all new in 0.18.0 or
+  0.19.0: screens now stream off the SD card because `seedScreens()` populated
+  it and `ScreenPlayer::open` tries card before flash, so every `welcome` and
+  `goodbye` moved onto a synchronous SPI bus; the built-in Screens file area
+  went from zero files to 24 with no `FILES.BBS`, making every row's
+  description lookup a full-directory miss against the known O(n^2) listing;
+  and `users.txt` is rewritten whole at every logoff, now with six more fields
+  per account and a new write path from `rememberStaff`.
+  **The free discriminator, no code needed: flash work puts 20-60 ms bumps
+  into ICMP because a flash erase disables the cache on both cores, while SD
+  work leaves ICMP completely flat because SDSPI blocks only the calling
+  task.** Ping while triggering each and the suspect set halves.
+
 ### A stopped listing has to hand you back (0.19.1)
 
 - **The core draws no prompt when a plugin owns the session, and that is
@@ -638,6 +691,34 @@ Queued for the next build (Rob's plan, in order):
   - **What it does to a transfer in flight.** A caller three minutes into a download loses it. Either refuse to start a shutdown while a transfer is running, or say so in the warning so the sysop can choose. Refusing silently would be worse than either.
   - **The announcements want a cadence, not a tick per second.** A line a second for two minutes is noise people stop reading, and on a 40 column screen it is the whole screen. Something like 120, 60, 30, 10, 5, 4, 3, 2, 1.
   It also has to be logged, for the same reason the caller log exists: a board that went down needs to say whether somebody did it on purpose.
+
+- **Calling a board from a browser, via fTelnet** (Rob, 2026-09-21, raised by the
+  Chromebook finding, detail deferred). A browser cannot open a raw TCP socket,
+  so the only route is a WebSocket-to-telnet proxy in the middle, which is what
+  DigitalOcean's web console does. The BBS world already built this:
+  [fTelnet](https://www.ftelnet.ca/) is a browser terminal client written for
+  BBSes (CP437, ANSI art, ZMODEM) with `fTelnetProxy` as the translator, and
+  Synchronet ships `websocketservice.js` for the same job.
+  **The proxy cannot be the ESP32**, and the reason is not RAM in the first
+  instance: browsers block `ws://` from an `https://` page as mixed content, so
+  the proxy needs a certificate, and TLS on a WROOM is two or three sessions
+  before the heap is gone. It has to live on a real machine.
+  Three places it could go, and the choice is about trust rather than
+  engineering: a public fTelnet proxy (free, works today, a stranger sees every
+  byte); the directory droplet (Rob controls it, but then the directory sees
+  every proxied caller's traffic on every board including passwords, which
+  fights the privacy page, and it makes the directory a dependency for boards,
+  which fights "run your own directory"); or the sysop's own network, which adds
+  no new trust because a sysop can already see their own LAN, at the cost of a
+  second box each.
+  Cheapest first step, and it needs no firmware: link a public proxy from a
+  listing as an experiment, with one honest line that the connection passes
+  through a third party and not to type a password that matters. That answers
+  the Chromebook problem today and shows whether anybody actually uses browser
+  access before committing to run a proxy.
+  **Unconfirmed and load-bearing:** whether the public proxies speak `wss://`.
+  unleashedbbs.com is https, so without it the link cannot work at all. Check
+  before promising it anywhere on the site.
 
 - **Board linking, DDial style** (Rob, to be designed when the terminal mode plugin is). Link two boards and the chat room spans both, so a quiet board borrows company from a busier one and neither needs more nodes of its own. That is what DDial did and it is the feature that made small systems worth calling.
   Rob's insight is the part worth keeping: **this is the same capability as dialing out.** A board that can open an outbound connection and hand a stream to a caller can talk to a modem, to a serial device, or to another BBS, and the far end being a peer rather than a terminal is a matter of what speaks on it. So linking is not a separate subsystem; it is the terminal mode plugin with a protocol on top, and designing terminal mode without that in mind is how it ends up needing rewriting.

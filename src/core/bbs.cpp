@@ -361,24 +361,84 @@ void Bbs::tick() {
     uint32_t work0 = plat::micros();        // time the work, not the wait
     if (r <= 0) { FD_ZERO(&rfds); FD_ZERO(&wfds); }
 
-    if (FD_ISSET(lfd_, &rfds)) acceptAll(now);
+    // Phase timing. Each mark is one plat::micros(), which is an esp_timer
+    // read and costs well under a microsecond against an average pass of 58,
+    // so this is affordable to leave in permanently. Leaving it in is the
+    // point: a stall that only shows up on Rob's board at hour three is not
+    // one a diagnostic build switched on afterwards will ever catch.
+    uint32_t mark    = work0;
+    uint32_t usAcc   = 0, usSess = 0, usBack = 0, usPlug = 0, usTail = 0;
+    uint8_t  slowest = 0;                         // node whose service took longest
 
-    for (Session* s : all_) {
-        if (s->fd >= 0 && s->rxLen)                    processInput(*s, now);   // held from before
-        else if (s->fd >= 0 && FD_ISSET(s->fd, &rfds)) readSession(*s, now);
-        if (s->st != SState::Free) serviceSession(*s, now);
+    if (FD_ISSET(lfd_, &rfds)) acceptAll(now);
+    usAcc = plat::micros() - mark; mark += usAcc;
+
+    {
+        uint32_t worstSess = 0;
+        for (Session* s : all_) {
+            uint32_t s0 = plat::micros();
+            if (s->fd >= 0 && s->rxLen)                    processInput(*s, now);   // held from before
+            else if (s->fd >= 0 && FD_ISSET(s->fd, &rfds)) readSession(*s, now);
+            if (s->st != SState::Free) serviceSession(*s, now);
+            uint32_t sd = plat::micros() - s0;
+            // Which caller, not just how long. A stall inside one session is
+            // a different bug from one spread across all of them, and the
+            // node number is what makes it reproducible.
+            if (sd > worstSess) { worstSess = sd; slowest = s->id; }
+        }
     }
+    usSess = plat::micros() - mark; mark += usSess;
 
     backup_.service(rfds, wfds, now);
     serviceBackup(now);
-    plugins::tick(now);
-    plat::activityTick(now);
+    usBack = plat::micros() - mark; mark += usBack;
 
+    plugins::tick(now);
+    usPlug = plat::micros() - mark; mark += usPlug;
+
+    plat::activityTick(now);
     heapWatch(now);
     serviceShutdown(now);
+    usTail = plat::micros() - mark;
 
     uint32_t dt = plat::micros() - work0;
-    if (dt > loopMaxUs_) loopMaxUs_ = dt;
+
+    // Name the phase that owned this pass. Ties do not matter; the biggest
+    // one is the one worth looking at.
+    const char* phase = "tail";
+    uint32_t    worst = usTail;
+    if (usAcc  > worst) { worst = usAcc;  phase = "accept";  }
+    if (usSess > worst) { worst = usSess; phase = "session"; }
+    if (usBack > worst) { worst = usBack; phase = "backup";  }
+    if (usPlug > worst) { worst = usPlug; phase = "plugins"; }
+
+    if (dt > loopMaxUs_) {
+        loopMaxUs_  = dt;
+        worstPhase_ = phase;
+        worstNode_  = (phase[0] == 's' && phase[1] == 'e') ? slowest : 0;
+    }
+
+    // A slow pass says so on the console, with the split, so the next one of
+    // these is read off a log rather than reasoned about. Rate limited to one
+    // line a second: a board stalling every pass must not spend the rest of
+    // its time describing it.
+    if (dt > BBS_SLOW_PASS_US) {
+        ++slowCount_;
+        if (!slowLogAt_ || now - slowLogAt_ >= 1000) {
+            slowLogAt_ = now ? now : 1;
+            plat::log("bbs: slow pass %luus in %s (node %u): accept %lu session %lu "
+                      "backup %lu plugins %lu tail %lu, %lu slow since boot",
+                      static_cast<unsigned long>(dt), phase,
+                      static_cast<unsigned>(slowest),
+                      static_cast<unsigned long>(usAcc),
+                      static_cast<unsigned long>(usSess),
+                      static_cast<unsigned long>(usBack),
+                      static_cast<unsigned long>(usPlug),
+                      static_cast<unsigned long>(usTail),
+                      static_cast<unsigned long>(slowCount_));
+        }
+    }
+
     loopAvgUs_ = loopAvgUs_ ? (loopAvgUs_ * 7 + dt) / 8 : dt;    // gentle average
     ++loopPasses_;
 }
@@ -555,6 +615,16 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
     s.pendingTail   = false;
     s.pendingKnowMore = false;
     s.newAccount      = false;
+    // Both of these were added in 0.18.0 and neither was reset here, which
+    // matters because sessions come from a static pool. A caller who drops
+    // the line while the bulletin is playing leaves pendingLand set, and the
+    // next caller on that node is dropped into the chat room by the first
+    // screen they play. The same caller can reach it without disconnecting:
+    // abortOutput clears pendingPrompt and pendingForm and not these, so a
+    // Ctrl-C out of the bulletin followed by ABOUT lands them somewhere they
+    // did not ask to go.
+    s.pendingLand   = false;
+    s.landing       = false;
     s.user[0]       = '\0';
 
     s.loggedIn      = false;
@@ -1620,12 +1690,22 @@ void Bbs::landAfterLogin(Session& s) {
 // Sampling costs a counter read. It deliberately does NOT call
 // plat::heap(), which walks the allocator for the full statistics MEM
 // wants; this only needs one number and it is on the loop's own path.
+//
+// That paragraph was written in 0.18.0 and the line under it called
+// plat::heap() anyway, so for two versions this took the exact cost the
+// comment said it avoided: heap_caps_get_largest_free_block walks the whole
+// pool under portENTER_CRITICAL, interrupts off on core 1 and a spinlock the
+// allocator on core 0 contends for, once a second, on every board. It is
+// plat::heapFree() now, which is what the comment always described.
+// Worth remembering generally: a comment asserting what the code does not do
+// is the kind that survives review, because it reads as a decision already
+// taken rather than as a claim to check.
 // ---------------------------------------------------------------------------
 void Bbs::heapWatch(uint32_t now) {
     if (heapCheckAt_ && now - heapCheckAt_ < 1000) return;   // once a second
     heapCheckAt_ = now ? now : 1;
 
-    uint32_t freeNow = plat::heap().freeBytes;
+    uint32_t freeNow = plat::heapFree();
     if (!freeNow) return;                                    // host build says nothing
     if (freeNow < heapLow_) heapLow_ = freeNow;
 
@@ -2248,6 +2328,10 @@ void Bbs::abortOutput(Session& s) {
     s.list          = ListKind::None;
     s.pendingPrompt = false;
     s.pendingForm   = FormKind::None;
+    // Stopping the bulletin means stopping what it was leading to. Without
+    // this, the landing survives the abort and fires on the next screen the
+    // caller plays, which reads as the board moving them at random.
+    s.pendingLand   = false;
     s.term.reset(s.tl);
     s.term.cursor(s.tl, true);
     s.term.nl(s.tl);

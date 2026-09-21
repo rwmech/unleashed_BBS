@@ -90,6 +90,12 @@ const char* logsBase() {
     return BBS_LOGS_MOUNT;
 }
 
+uint32_t heapFree() {
+    // heap_caps_get_free_size sums a per-heap counter. No walk, no lock held
+    // across a traversal, which is the whole reason this exists separately.
+    return static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_8BIT));
+}
+
 HeapStats heap() {
     HeapStats h;
     h.freeBytes    = static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_8BIT));

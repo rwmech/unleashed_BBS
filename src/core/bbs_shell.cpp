@@ -1568,23 +1568,40 @@ bool Bbs::rowSys(Session& s) {
             return true;
         }
         case 19: statNum(s, "Loop avg", loopAvgUs_, "us of work"); return true;
-        case 20: statNum(s, "Loop worst", loopMaxUs_, "us"); return true;
+        case 20: {
+            // The worst pass says which phase owned it. Without that a stall
+            // is a bare number and the investigation starts with a guess,
+            // which is exactly how the last one was got wrong.
+            char note[40] = "us";
+            if (worstPhase_) {
+                if (worstNode_) snprintf(note, sizeof(note), "us in %s, node %u",
+                                         worstPhase_, static_cast<unsigned>(worstNode_));
+                else            snprintf(note, sizeof(note), "us in %s", worstPhase_);
+            }
+            statNum(s, "Loop worst", loopMaxUs_, note);
+            return true;
+        }
         case 21: statNum(s, "Loop passes", loopPasses_, nullptr); return true;
+        case 22:
+            // How many, not just how bad. One stall at boot and a stall every
+            // minute look identical on a high-water mark.
+            statNum(s, "Slow passes", slowCount_, "over 50ms");
+            return true;
 
-        case 22: rowSection(s, "traffic"); return true;
-        case 23:
+        case 23: rowSection(s, "traffic"); return true;
+        case 24:
             snprintf(num, sizeof(num), "%u", static_cast<unsigned>(activeNodes()));
             snprintf(buf, sizeof(buf), "of %u, peak %u", static_cast<unsigned>(BBS_MAX_NODES),
                      static_cast<unsigned>(peakNodes_));
             statRow(s, "Nodes busy", num, Color::LightGreen, buf);
             return true;
-        case 24: statNum(s, "Calls", callsBoot_, "since boot"); return true;
-        case 25:
+        case 25: statNum(s, "Calls", callsBoot_, "since boot"); return true;
+        case 26:
             snprintf(num, sizeof(num), "%u", static_cast<unsigned>(calllog::count()));
             snprintf(buf, sizeof(buf), "of %u kept", static_cast<unsigned>(BBS_CALLLOG_SIZE));
             statRow(s, "Log", num, Color::LightGreen, buf);
             return true;
-        case 26: {
+        case 27: {
             uint8_t run = 0;
             for (uint8_t k = 0; k < plugins::count(); ++k) if (plugins::running(k)) ++run;
             snprintf(num, sizeof(num), "%u", static_cast<unsigned>(run));
@@ -1592,7 +1609,7 @@ bool Bbs::rowSys(Session& s) {
             statRow(s, "Plugins", num, Color::LightGreen, buf);
             return true;
         }
-        case 27: {
+        case 28: {
             uint8_t live = 0;                                  // only the bans still running
             BanList::Entry e;
             for (uint8_t k = 0; k < BBS_BAN_SLOTS; ++k) if (bans_.at(k, plat::millis(), e)) ++live;
@@ -1600,8 +1617,8 @@ bool Bbs::rowSys(Session& s) {
             return true;
         }
 
-        case 28: rowRule(s); return true;
-        case 29: rowText(s, Color::DarkGrey, "CALLS shows the board hour by hour"); return true;
+        case 29: rowRule(s); return true;
+        case 30: rowText(s, Color::DarkGrey, "CALLS shows the board hour by hour"); return true;
         default: return false;
     }
 }

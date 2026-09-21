@@ -590,6 +590,16 @@ private:
     uint32_t  loopMaxUs_   = 0;      // worst pass since boot
     uint32_t  loopPasses_  = 0;      // passes of the scheduler since boot
 
+    // What the worst pass was doing. loopMaxUs_ on its own says a stall
+    // happened and nothing about where, which is how the last one got
+    // diagnosed by reasoning instead of by measuring, and diagnosed wrong.
+    // These name the phase and survive to the SYS screen, so the evidence is
+    // on the board rather than only on a console somebody had to be watching.
+    uint32_t  slowLogAt_   = 0;      // rate limit: one console line a second
+    uint32_t  slowCount_   = 0;      // passes over BBS_SLOW_PASS_US since boot
+    const char* worstPhase_ = nullptr;   // which phase owned the worst pass
+    uint8_t   worstNode_   = 0;      // and which node, when it was a session
+
     // Heap watch. A board that ran out of heap rebooted with nothing said,
     // and the only evidence afterwards was MEM's "heap low since boot"
     // counter having gone UP, which can only happen across a restart. That

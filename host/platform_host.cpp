@@ -99,6 +99,12 @@ HeapStats heap() {
     return HeapStats{ 0, 0, 0, 0, false };
 }
 
+// The host has no heap worth reporting, and 0 is what heapWatch reads as
+// "say nothing", which is the same answer heap() already gives it.
+uint32_t heapFree() {
+    return 0;
+}
+
 int8_t wifiRssi() {
     return 0;
 }

@@ -95,6 +95,13 @@ bool userInfo(uint32_t& total, uint32_t& used);
 // ---------------------------------------------------------------------------
 HeapStats heap();
 
+// Free bytes alone, and nothing else. heap() also asks for the largest free
+// block, which on the IDF walks the whole pool under a critical section with
+// interrupts off and a spinlock core 0's allocator contends for. That is the
+// right price for MEM, which a person types; it is the wrong price for
+// anything on the loop's own path. This is a counter read.
+uint32_t heapFree();
+
 // ---------------------------------------------------------------------------
 // wifiRssi: signal strength of the joined access point in dBm, 0 when not
 // connected or not available (host)
