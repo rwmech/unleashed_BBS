@@ -297,7 +297,11 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
   **`del` also covers approving and rejecting uploads**, because rejecting an
   upload and deleting a file are the same physical act, which keeps this at
   four levels rather than five.
-  Config becomes `area1 = path | name | read | down | up | del`. Old four
+  Config becomes `area1 = path | name | read | up | down | del`, which is
+  the order `readKey` in files.cpp actually parses and the order
+  `kAreaParts` lists. This line said `read | down | up | del` until
+  2026-09-21, which would have had a sysop following it set the download
+  level where the upload level goes. Old four
   field lines still parse: `write` becomes `up`, `down` defaults to `read`,
   and `del` defaults to the plugin's admin level rather than to `up`, so it
   fails shut.
