@@ -144,6 +144,18 @@ area4 = admin/screens | Screens | staff | sysop
 # four-level format and gives an ordinary caller somewhere to upload,
 # which area1 deliberately does not.
 area5 = pub/drop | Drop Box | all | users | all | sysop
+
+[plugin:forums]
+enabled = yes
+read = all
+write = users
+# Seven fields: key | name | about | read | start | reply | mod.
+# general leaves the levels to the plugin, which exercises every fallback.
+topic1 = general | General | Anything at all
+# news is the read-only-but-answerable shape: staff start subjects, anybody
+# may reply to one. That split is the reason there are four levels and not
+# two, so it gets a test rather than only a comment.
+topic2 = news | Board News | What the sysop is up to | all | sysop | users | sysop
 CFG
 
 if [ "$CARD" = yes ]; then

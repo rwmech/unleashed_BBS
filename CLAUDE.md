@@ -367,6 +367,47 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
 - **A deliberate deviation from the plan, and the reasoning is the useful part.** The plan had mail and bans moving to ids. `MailRec` is a fixed-size record with a static assert on its layout, so that means changing `sizeof` and converting every live mailbox, on the one board that exists, to fix a bug that has a cheaper fix. Following renames gets the same visible outcome with no format change. The forums will store ids natively, so mail ends up the only holdout and a far smaller job later. **Prefer the fix that does not migrate somebody's data when both fixes close the same hole.**
 - **The positional-descriptor trap caught me exactly as CLAUDE.md predicted.** `onRename` inserted before `onBytes` shifted every field after it, and the compiler said so. Append-only is not a style rule here, it is the only safe edit.
 
+### Forums, phase 2: reading, posting, and two bugs the tests found (0.21.0)
+
+- **Three levels with a fast path over the top.** Forum, subject, message
+  for browsing; Enter for reading, which walks everything unread wherever it
+  lives. Both, because the drill-down alone would be slower than the flat
+  design it replaced, and a regular caller uses nothing but Enter.
+- **The read pointer earns the whole design.** A mark plus a 16 byte window
+  of what has been read above it. A bare forum-wide mark cannot serve a
+  subject list: either it declares older subjects read when a newer one is
+  finished, or the finished subject still reports unread. The window
+  self-drains, so sequential reading never accumulates anything, and its
+  failure direction is the safe one: it forgets that something was read
+  rather than hiding something unread. Lives in `forums_ptr.h` with no board
+  in it and is tested in `host/test_forums_ptr.cpp`, 22 checks.
+- **`Enter` did nothing, and the test that caught it pointed somewhere
+  else.** The comparison was `key == ''`; the terminal layer decodes Enter
+  to `KEY_ENTER`, which is `0x100`, so the single most important key in the
+  subsystem silently never matched. The failing check read "the subject that
+  was read is no longer marked new", which is three steps from the cause.
+  **Worth generalising: a key constant above 0xFF compared against a
+  character literal fails silently and looks like dead code rather than
+  wrong code.**
+- **A per-caller number was being written into a board-wide file**, and this
+  is the one worth remembering. One field held both the forum's live message
+  total and the current caller's unread count. The post path incremented the
+  caller's figure and saved it as the forum's, so a forum with four messages
+  wrote `count=1`. **No caller-visible behaviour would ever have shown it**,
+  because the header is only read at plugin start. It was found by
+  `tools/forum_check.py` printing the header beside the records.
+  Two different quantities in one field is the same shape as `owns()`
+  answering two questions in chat, and as `count` meaning both "how many
+  accounts" and "how many slots" in users. When a name is a noun that could
+  mean two things, it eventually does.
+- **`tools/forum_check.py` shares no code with the board, deliberately**, and
+  paid for itself on its first run. It reads a forum against offsets typed in
+  from the plan and can also build one for the board to read back. The rule
+  this project keeps relearning: a format tested only by the code that wrote
+  it agrees with itself. `tools/testclient.py` honoured the board's own
+  telnet quirks and let two real bugs pass every test while hardware failed;
+  lrzsz found an XMODEM bug by being somebody else's implementation.
+
 ### Forums, phase 1: the formats, and the two permission bugs found on the way (0.20.0)
 
 - **Phase 1 is a forum list and nothing else, deliberately.** What it buys is

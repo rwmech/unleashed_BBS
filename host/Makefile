@@ -60,11 +60,19 @@ test_xmodem: test_xmodem.cpp ../src/core/xmodem.cpp ../src/core/xmodem.h
 test_wrap: test_wrap.cpp ../src/core/bbs_util.h
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_wrap.cpp
 
-test: test_xmodem test_wrap
+# The forums read pointer: pure arithmetic over a struct, and the piece of
+# that subsystem most likely to be subtly wrong while looking right. Its
+# failure is not a crash, it is a board quietly claiming three unread
+# messages in a subject somebody just finished.
+test_forums_ptr: test_forums_ptr.cpp ../src/plugins/forums_ptr.h
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_forums_ptr.cpp
+
+test: test_xmodem test_wrap test_forums_ptr
 	./test_xmodem
 	./test_wrap
+	./test_forums_ptr
 
 clean:
-	rm -f bbs_host test_xmodem test_wrap
+	rm -f bbs_host test_xmodem test_wrap test_forums_ptr
 
 .PHONY: clean test

@@ -2492,6 +2492,127 @@ def test_config_area_keeps_every_part():
     return ok
 
 
+def test_forums():
+    """Forums: post, group by subject, and keep the unread counts honest.
+
+    The case that matters is Rob's own: a forum carrying two conversations,
+    one read to its end, and the other still reporting the right number. A
+    single forum-wide high-water mark cannot do that, which is why there is
+    a window above the mark, and this is the test that would fail if the
+    window were ever quietly dropped for being fiddly.
+
+    Deliberately not "post a message, read it back". That passes with a
+    broken pointer.
+    """
+    print("Forums")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    if not os.environ.get("BBS_SD_DIR", ""):
+        print("  SKIP  the forums plugin needs a card")
+        return True
+
+    s = ansi_login("Forumist")
+    drain(s)
+    s.buf.clear()
+    s.send(b"forums\r")
+    if not s.wait_for(b"Forums", 6):
+        print("  SKIP  forums are not enabled on this board")
+        s.close()
+        return True
+    s.pump(1.0)
+    ok = check("the forum list opens", b"Forums" in plain(s.buf))
+
+    # Open the first forum.
+    s.buf.clear()
+    s.send(b"1")
+    s.pump(1.2)
+    ok &= check("a forum opens", b"F1" in plain(s.buf) or b"subject" in plain(s.buf).lower())
+
+    def post(subject, body):
+        s.buf.clear()
+        s.send(b"p")
+        if not s.wait_for(b"Subject:", 6):
+            return False
+        s.send(subject.encode() + b"\r")
+        if not s.wait_for(b"Your message:", 6):
+            return False
+        s.buf.clear()
+        s.send(body.encode() + b"\r")
+        return s.wait_for(b"Posted as message", 8)
+
+    # Two conversations, interleaved, the way a real forum fills up.
+    ok &= check("a new subject posts", post("20m antennas", "What is everyone using"))
+    ok &= check("a second subject posts", post("20m tips", "Work split frequencies"))
+    ok &= check("and a third message", post("20m antennas", "I have a dipole up"))
+    ok &= check("and a fourth", post("20m tips", "Listen before transmitting"))
+
+    # The listing groups them: four messages, two subjects.
+    s.buf.clear()
+    s.send(b"l")
+    s.pump(1.5)
+    listing = plain(s.buf)
+    ok &= check("the listing groups by subject rather than listing every message",
+                b"20m antennas" in listing and b"20m tips" in listing)
+    ok &= check("and shows a message count per subject",
+                b"2 msgs" in listing or b"of 2" in listing)
+
+    # Everything posted by this caller is already read by definition, so a
+    # second caller is what makes the unread counts mean anything.
+    t2 = ansi_login("Reader2")
+    drain(t2)
+    t2.buf.clear()
+    t2.send(b"forums\r")
+    t2.wait_for(b"Forums", 6)
+    t2.pump(1.0)
+    ok &= check("a second caller sees the messages as new",
+                b"4 new" in plain(t2.buf))
+
+    t2.buf.clear()
+    t2.send(b"1")
+    t2.pump(1.5)
+    subs = plain(t2.buf)
+    ok &= check("both subjects are listed for them",
+                b"20m antennas" in subs and b"20m tips" in subs)
+
+    # Read ONE subject to its end. This is the whole point of the test.
+    which = 1 if subs.index(b"20m antennas") < subs.index(b"20m tips") else 2
+    t2.buf.clear()
+    t2.send(str(which).encode())
+    t2.pump(1.5)
+    ok &= check("opening a subject shows its first message",
+                b"20m antennas" in plain(t2.buf))
+    t2.buf.clear()
+    t2.send(b"\r")                       # the second message in that subject
+    t2.pump(1.5)
+    t2.buf.clear()
+    t2.send(b"\r")                       # past the end: rolls to the rest
+    t2.pump(1.5)
+
+    # Back to the subject list and check the arithmetic.
+    t2.buf.clear()
+    t2.send(b"l")
+    t2.pump(1.5)
+    after = plain(t2.buf)
+    ok &= check("the subject that was read is no longer marked new",
+                b"2 msgs" in after)
+    ok &= check("and the other subject still reports what is left in IT",
+                b"new" in after)
+
+    # The forum list must agree with the sum of its subjects. A forum
+    # claiming a number its own subjects do not add up to reads as broken.
+    t2.buf.clear()
+    t2.send(b"q")
+    t2.pump(1.5)
+    ok &= check("the forum list agrees with the subjects underneath it",
+                b"4 new" not in plain(t2.buf))
+
+    drain(t2); t2.send(b"q"); t2.pump(0.5); t2.close()
+    drain(s);  s.send(b"q");  s.pump(0.5)
+    s.send(b"q"); s.pump(0.5); s.close()
+    return ok
+
+
 def test_privacy():
     """Nobody types a password before being told the link is in the clear."""
     print("Disclosure at sign-up")
@@ -4725,7 +4846,8 @@ if __name__ == "__main__":
                test_staff_remembered(), test_shutdown(),
                test_list_abort_returns(), test_xfer(),
                test_upload_no_binary(), test_ymodem(),
-               test_config_areas(), test_config_area_keeps_every_part(), test_partitions()]
+               test_config_areas(), test_config_area_keeps_every_part(),
+               test_forums(), test_partitions()]
     if "--backup" in FLAGS:
         results.append(test_backup())
     if "--ban" in FLAGS:

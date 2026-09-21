@@ -50,7 +50,12 @@ CLAUDE.local.md
 # git history is forever and "we were private then" is not a defence.
 *.local.md
 host/bbs_host
-host/test_xmodem
+# Every compiled test, by pattern rather than by name. Naming them one
+# at a time meant test_wrap's binary was committed the day it was
+# written, 72 KB of build output in the tree, and nothing noticed
+# because git status stops mentioning a file once it is tracked.
+host/test_*
+!host/test_*.cpp
 __pycache__/
 /*.zip
 /backup/

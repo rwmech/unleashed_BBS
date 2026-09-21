@@ -13,7 +13,7 @@ source. See the LICENSE file for terms.
 
 # µnleashed BBS: command reference
 
-Version 0.20.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
+Version 0.21.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
 
 ## Calling in
 
@@ -196,7 +196,25 @@ All caller commands still work. Node arguments are `1`-`6`, `S` (sysop node) or 
 | `PLUGINS` | any staff | Every plugin compiled in: version, whether it is running, and why not. Also free disk space and the reserve. |
 | `FILES` / `F` | all | **Goes into the file area**, the way `CHAT` goes into the room, rather than printing a list and returning. A screen plays on the way in if the board has `screens/files`, then the areas appear as a numbered menu laid out in as many columns as the terminal has room for. A digit opens an area, `Q` goes back one level and `Q` again leaves. `FILES n` enters and opens that area in one go. Only on a board with a card: the plugin does not start without one, so on a cardless board the command does not exist rather than offering an empty file area. |
 
-| `FORUMS` | **Goes into the message boards**, the way `FILES` and `CHAT` go into theirs. Topic areas the sysop sets up (`CONFIG FORUMS TOPICS`) are listed with the number of messages you have not read in each; a number opens one, `?` is help, `Q` goes back one level and `Q` again leaves. A screen plays on the way in if the board has `screens/forums`. Only on a board with a card, the same as `FILES`: the plugin does not start without one, so on a cardless board the command does not exist rather than offering empty boards. `FORUMS SCAN` is staff only and prints what the board thinks is on the card. |
+| `FORUMS` | **Goes into the message boards**, the way `FILES` and `CHAT` go into theirs. Three levels: topic areas the sysop sets up (`CONFIG FORUMS TOPICS`), subjects that callers start inside them, and the messages in each subject. A screen plays on the way in if the board has `screens/forums`. Only on a board with a card, the same as `FILES`: the plugin does not start without one, so on a cardless board the command does not exist rather than offering empty boards. `FORUMS SCAN` is staff only and prints what the board thinks is on the card. |
+**Inside `FORUMS`, keys rather than commands**, the same as the file areas.
+
+| Key | What it does |
+|---|---|
+| Enter, Space | The next message you have not read, wherever it is. From the forum list it walks *into* the first forum with something new, so a caller who only ever presses Enter never has to navigate at all. Inside a subject it reads that conversation in order and then rolls on to the rest of the forum rather than dead-ending. |
+| `1`..`9` | On the forum list, opens that forum. On a subject list, opens that conversation and starts reading it. |
+| `P` | Post a new subject here. Asks for the subject, then the message. |
+| `R` | Reply to the message on screen. No subject is asked for: a reply carries its parent's, and grouping means the subject is drawn once as the screen's title rather than on every message. |
+| `L` | Back to the list you came from. |
+| `?` | The keys, on one screen. |
+| `Q`, ESC | Back one level. Reading goes back to the subjects, subjects back to the forums, and `Q` at the forum list leaves. |
+
+**The screen is not cleared between messages**, deliberately, and it is the one place in the board where that rule is reversed. Reading is a scroll rather than a view: the message before is the context for this one, and somebody glancing back at what they just read should be able to. Entering, listing and help all still clear.
+
+Message bodies are **word-wrapped at your terminal's width when they are read**, not at the width they were typed. A message written at 72 columns on SyncTERM reads on a C64, and one written at 35 columns does not sit in a stripe down an 80 column screen.
+
+**Unread counts are per caller and they add up.** A forum's count is the sum of its subjects' counts, both computed the same way, because a forum claiming twelve whose subjects sum to nine reads as a broken board. Guests keep no read pointer, having no account for one to belong to.
+
 | `CALLS` | The caller log bucketed by hour of the day, as a bar chart, with the busiest hour named. Costs one pass over the log and no storage. Public: it names no handles and no addresses, and knowing when a board is busy is what tells somebody when to call. |
 
 **Everything else about files happens inside `FILES`, not here.** It is a

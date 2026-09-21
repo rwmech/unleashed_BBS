@@ -24,6 +24,71 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.21.0, 2026-09-21
+
+Forums, phase 2: posting, reading, and conversations that stay together.
+
+- **Three levels, and one key that skips all of them.** Browsing is forum to
+  subject to message. Reading is Enter, which walks everything unread
+  wherever it lives and never asks the caller to choose. Both exist on
+  purpose: the drill-down is for somebody hunting one conversation, and the
+  fast path is what a regular caller uses every call. If the drill-down were
+  the only way in, this would be slower than the flat design it replaced.
+- **Grouping is by a stored hash, never by the subject text.** A reply
+  carries its parent's hash rather than rehashing what it says, so renaming a
+  subject cannot split a conversation and two that happen to read alike
+  cannot be merged. Case and surrounding space are folded, because
+  "20m Antennas" and "20m antennas " are the same conversation to everybody
+  except a computer.
+- **The read pointer is a mark plus a 16 byte window of what was read above
+  it**, and the window is what makes a subject list honest. A single
+  forum-wide mark cannot serve one: read a subject to its end and the mark
+  declares every older subject read too, or refuse to move it and the subject
+  still says "3 new" straight after somebody read all three. Either way the
+  number is a lie and it is the first thing anybody checks.
+  **It self-drains**, which is what makes 16 bytes enough rather than merely
+  small: catching up gives the space back, so ordinary sequential reading
+  never accumulates anything. Its failure direction is deliberate and tested:
+  it never marks an unread message read, it only forgets that one was read
+  and shows it again.
+  `src/plugins/forums_ptr.h` holds it with no board, card or session in it,
+  and `host/test_forums_ptr.cpp` has **22 checks** including Rob's own
+  interleaved-subject example walked through by hand.
+- **Bodies are word-wrapped when they are read, at the reader's width**, not
+  at the width they were typed. A message written at 72 columns has to read
+  on a C64 and one written at 35 should not sit in a stripe down an 80 column
+  screen, and the reader's width is not knowable when the message is written.
+- **The screen is not cleared between messages**, and this is the one place
+  the board's own "screens clear" rule is deliberately reversed. Reading is a
+  scroll, not a view: the previous message is the context for this one.
+- **`tools/forum_check.py`, which shares no code with the board.** It reads a
+  forum from the outside against offsets typed in from the plan, and it can
+  build one by hand for the board to read back. A format tested only by the
+  program that wrote it is a format that agrees with itself, and this project
+  has paid for that twice: the test client honoured the board's own telnet
+  quirks so two real bugs passed every test while hardware failed, and lrzsz
+  found an XMODEM bug precisely by being somebody else's implementation.
+  **It immediately earned its place**, see below.
+- **Two bugs, both found by tests rather than by reading the code:**
+  - `Enter` did nothing. The comparison was against `''` and the terminal
+    layer decodes Enter to `KEY_ENTER`, which is `0x100`. So the key that is
+    the entire fast path silently never matched. The test reported it as "the
+    subject that was read is no longer marked new", which points nowhere near
+    the cause: only the first message had ever been shown, because opening a
+    subject is what displayed it.
+  - **A per-caller number was being written into a board-wide file.** One
+    field held both the forum's live message total, which belongs in the
+    header, and this caller's unread count, which must never be persisted.
+    The post path incremented the reader's figure and then saved it, so a
+    forum with four messages recorded `count=1`. Nothing a caller could see
+    would have shown it, because the header is only read at start.
+    `forum_check.py` printed the header next to the records and the
+    disagreement was obvious. Split into `total` and `unread`, and the
+    checker now pins it.
+
+Host: 663 checks with a card, 469 without, 0 failures. Unit tests: 22 for the
+read pointer, 11 for the word wrap, 82 for the transfer engine.
+
 ## 0.20.0, 2026-09-21
 
 Forums, phase 1: the formats, and a list to prove they are reachable.
