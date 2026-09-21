@@ -42,6 +42,7 @@ extern const Plugin kSerialPlugin;
 extern const Plugin kAnnouncePlugin;
 extern const Plugin kSdPlugin;
 extern const Plugin kFilesPlugin;
+extern const Plugin kForumsPlugin;
 
 // Order here is display order, not start order: the sd plugin is PF_EARLY
 // and plugins::begin() runs those first whatever position they hold, so this
@@ -49,6 +50,7 @@ extern const Plugin kFilesPlugin;
 const Plugin* const kPlugins[] = {
     &kSdPlugin,
     &kFilesPlugin,
+    &kForumsPlugin,
     &kExamplePlugin,
     &kChatPlugin,
     &kSerialPlugin,

@@ -13,7 +13,7 @@ source. See the LICENSE file for terms.
 
 # µnleashed BBS: command reference
 
-Version 0.18.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
+Version 0.20.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
 
 ## Calling in
 
@@ -196,6 +196,9 @@ All caller commands still work. Node arguments are `1`-`6`, `S` (sysop node) or 
 | `PLUGINS` | any staff | Every plugin compiled in: version, whether it is running, and why not. Also free disk space and the reserve. |
 | `FILES` / `F` | all | **Goes into the file area**, the way `CHAT` goes into the room, rather than printing a list and returning. A screen plays on the way in if the board has `screens/files`, then the areas appear as a numbered menu laid out in as many columns as the terminal has room for. A digit opens an area, `Q` goes back one level and `Q` again leaves. `FILES n` enters and opens that area in one go. Only on a board with a card: the plugin does not start without one, so on a cardless board the command does not exist rather than offering an empty file area. |
 
+| `FORUMS` | **Goes into the message boards**, the way `FILES` and `CHAT` go into theirs. Topic areas the sysop sets up (`CONFIG FORUMS TOPICS`) are listed with the number of messages you have not read in each; a number opens one, `?` is help, `Q` goes back one level and `Q` again leaves. A screen plays on the way in if the board has `screens/forums`. Only on a board with a card, the same as `FILES`: the plugin does not start without one, so on a cardless board the command does not exist rather than offering empty boards. `FORUMS SCAN` is staff only and prints what the board thinks is on the card. |
+| `CALLS` | The caller log bucketed by hour of the day, as a bar chart, with the busiest hour named. Costs one pass over the log and no storage. Public: it names no handles and no addresses, and knowing when a board is busy is what tells somebody when to call. |
+
 **Everything else about files happens inside `FILES`, not here.** It is a
 place, not a set of commands: the section has its own `[S1] Files>` prompt
 and its own keys, and a caller who is standing in it should not have to
@@ -240,8 +243,7 @@ Rank rules:
 
 | Command | What it does |
 |---|---|
-| `SYS` | The whole board on one screen, in groups: network (SSID, signal in dBm with a word for what it means, channel, address, port), memory (heap free, the lowest it has been, the biggest block, session size), storage (used, free, what is held back for the board), load (uptime, clock, scheduler work per pass in microseconds, worst pass, passes since boot) and traffic (nodes busy and the peak, calls answered since boot, records in the caller log, plugins running, active IP bans). |
-| `CALLS` | The caller log bucketed by hour of the day, as a bar chart, with the busiest hour named. Costs one pass over the log and no storage. |
+| `SYS` | The whole board on one screen, in groups: network (SSID, signal in dBm with a word for what it means, channel, address, port), memory (heap free, the lowest it has been, the biggest block, session size), storage (used, free, what is held back for the board), load (uptime, clock, scheduler work per pass in microseconds, worst pass **and which phase of the loop it happened in**, how many passes have run over 50 ms since boot, passes since boot) and traffic (nodes busy and the peak, calls answered since boot, records in the caller log, plugins running, active IP bans). |
 | `ANNOUNCE` | Whether this board is listed in a directory, when each one last answered, and the public address the directory sees. `ANNOUNCE TEST` prints the exact payload and sends nothing; `ANNOUNCE NOW` sends a heartbeat immediately. Off until switched on: see [ANNOUNCE.md](ANNOUNCE.md). |
 | `SHUTDOWN [n]` | Take the board off the air on purpose. Announces to every node, counts down n seconds (5 to 3600, default 60), then hangs up on everyone including you, each with the ordinary send-off. `SHUTDOWN CANCEL` stops a countdown and says so. Afterwards the board keeps answering and tells callers it has been shut down, rather than refusing connections in a way that looks like a crash. A physical reboot brings it back. Any transfer running when the countdown ends is lost, and the warning says so. |
 | `CONFIG` | The settings, page by page. On its own it lists the pages: `board`, `limits`, `accounts`, `backup`, `staff`, and one per plugin. `CONFIG limits` opens that page as the same kind of form the user manager uses: Up and Down move, F1 saves, ESC cancels. Only what you changed is written, the rest of `system.cfg` is left exactly as it was, comments included, and the board reloads the new settings straight away. Passwords show as `********` and are only written when you type a new one. One sysop edits at a time. |

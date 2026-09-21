@@ -371,6 +371,11 @@ public:
     void rowText(Session& s, Color c, const char* text, bool newline = true);
     void rowRule(Session& s);
     void rowTitle(Session& s, const char* title, const char* right = nullptr);
+    // The same bar in a colour of the caller's choosing. rowTitle is this
+    // with Cyan; a subsystem that wants to mark a row differently, or that
+    // is drawing a string a caller typed, uses this. The title is truncated
+    // to the row rather than allowed to wrap.
+    void rowBar(Session& s, Color c, const char* title, const char* right = nullptr);
     uint8_t rowWidth(const Session& s) const;
 
 private:

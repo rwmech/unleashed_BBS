@@ -38,6 +38,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include "bbs.h"
 #include "calllog.h"
 
@@ -170,6 +171,72 @@ inline Color markColor(char mark) {
 // listHandle: a handle cut to a list column
 inline void listHandle(char* out, size_t n, const char* user, int width) {
     snprintf(out, n, "%.*s", width, user);
+}
+
+// wrap: one line of word-wrapped text, returning where the next line starts.
+//
+// Wrapping happens on OUTPUT, at the reader's width, not on input at the
+// writer's. A message typed at 72 columns on SyncTERM has to be readable on
+// a C64, and one typed at 35 on a C64 should not sit in a narrow stripe down
+// the left of an 80 column screen. The reader's width is not knowable when
+// the text is written, so it cannot be baked in then.
+//
+// Returns nullptr when there is nothing left. `out` gets one line, never
+// wider than `cols` columns and never with the trailing space.
+//
+// An over-long word is broken rather than allowed to overflow: a URL or a
+// row of dashes that is wider than the terminal has to go somewhere, and a
+// row that runs past the margin wraps in the terminal, which on a refresh
+// screen leaves a tail behind on every redraw.
+//
+// The forums need this for message bodies and the queued "profile text
+// should word wrap" item needs exactly the same function, which is why it
+// lives here rather than in either of them.
+inline const char* wrap(const char* src, char* out, size_t outN, uint8_t cols) {
+    if (!src || !*src || !outN) return nullptr;
+    if (cols == 0) cols = 1;
+    while (*src == ' ') ++src;                    // no line starts on a space
+    if (!*src) return nullptr;
+
+    size_t limit = (cols < outN - 1) ? cols : outN - 1;
+    size_t take  = 0;                             // bytes that certainly fit
+    size_t lastSp = 0;                            // byte after the last space
+
+    while (src[take] && take < limit) {
+        if (src[take] == '\n') {                  // an explicit break wins
+            memcpy(out, src, take);
+            out[take] = '\0';
+            return src + take + 1;
+        }
+        if (src[take] == ' ') lastSp = take;
+        ++take;
+    }
+
+    // Where this line ends, and where the next one starts, are the same
+    // index; how much of it is PRINTED is not, because trailing spaces are
+    // rubbed off. Keeping the two separate is what stops a line ending in a
+    // space, which on a reverse-video row is a visible notch.
+    size_t brk;
+    if (!src[take])          brk = take;   // the rest fits
+    else if (src[take] == ' ') brk = take; // a word ends exactly on the margin
+    else if (lastSp)         brk = lastSp; // step back to the last space
+    else                     brk = take;   // one word wider than the row
+
+    // The `src[take] == ' '` case is the one worth naming. The scan stops
+    // before the column at the margin, so a word whose last character lands
+    // on it is never seen to have ended, and stepping back to the previous
+    // space threw that whole word onto the next line. "abcd efgh ijkl" at
+    // nine columns came out as "abcd" and then "efgh ijkl", which wastes
+    // half the row and looks like the wrap is broken rather than tight.
+    // lastSp cannot be 0 for a real space, because leading spaces are
+    // skipped above, so 0 reliably means "no space in this line".
+
+    size_t outLen = brk;
+    while (outLen && src[outLen - 1] == ' ') --outLen;
+
+    memcpy(out, src, outLen);
+    out[outLen] = '\0';
+    return src + brk;
 }
 
 constexpr const char kMarkKey[]     = "*GUEST  >CO-SYSOP  ]SYSOP";

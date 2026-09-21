@@ -154,12 +154,12 @@ def leave_files(c, tries=4):
     one run and none of them were the code's fault.
     """
     for _ in range(tries):
-        if b"Out of files" in plain(c.buf):
+        if b"Leaving the file areas" in plain(c.buf):
             return True
         c.buf.clear()
         c.send(b"q")
         c.pump(0.6)
-    return b"Out of files" in plain(c.buf)
+    return b"Leaving the file areas" in plain(c.buf)
 
 
 def ansi_color(fg, bold=False, reverse=False):
@@ -1837,6 +1837,17 @@ def test_sysinfo():
     g.send(b"sys\r")
     g.pump(0.8)
     ok &= check("SYS is staff only", b"Unknown" in g.buf or b"network" not in plain(g.buf))
+
+    # CALLS is not, and that is deliberate (Rob). It is a bar chart of calls
+    # per hour with no handles and no addresses in it, and knowing when a
+    # board is busy is what tells somebody when to call. The two screens sat
+    # together under Menu::Sysop only because they were written together.
+    g.buf.clear()
+    g.send(b"calls\r")
+    g.pump(1.0)
+    pub = plain(g.buf)
+    ok &= check("CALLS is not, an ordinary caller can see it",
+                b"Calls by hour" in pub and b"Unknown" not in pub)
     g.close()
     s.close()
     return ok
@@ -2311,10 +2322,37 @@ def test_config_areas():
     ok &= check("and Y opens the area's page there too",
                 a.wait_for(b"FILE AREA 1", 6))
     a.buf.clear()
-    a.send(b"\rNew Ascii Name\r\r\ry")        # keep path, new name, keep levels, save
-    ok &= check("which saves from the line prompts", a.wait_for(b"Saved and live", 8))
+    a.send(b"\rNew Ascii Name\r")             # keep the path, type a new name
+    # Then Enter past every remaining level field until the board asks to
+    # save. NOT a fixed run of Enters: this was "\r\r\ry" for the four fields
+    # the page used to have, and it broke the day the page gained the two
+    # that were being silently dropped. The symptom was "which saves from the
+    # line prompts" failing, which points nowhere near the cause.
+    #
+    # Same lesson as to_save() in the cursor forms, now on the plain ASCII
+    # path: press until the board gives a verdict, never count the fields.
+    saved = False
+    for _ in range(10):
+        if b"Save (Y/n)" in plain(a.buf):
+            a.send(b"y")
+            saved = a.wait_for(b"Saved and live", 8)
+            break
+        a.send(b"\r")
+        a.pump(0.4)
+    ok &= check("which saves from the line prompts", saved)
+    # The form it writes, not the exact levels. This used to pin the whole
+    # line including a four-field tail, which made it a test of how many
+    # permission levels an area has rather than of whether the ASCII path
+    # writes the same bar-separated format the cursor path does. The levels
+    # have their own test; this one is about the shape.
+    line1 = ""
+    for ln in cfg.read_text().splitlines():
+        if ln.strip().startswith("area1"):
+            line1 = ln.strip()
     ok &= check("in the same bar-separated form",
-                "area1 = pub/c64 | New Ascii Name | all | staff" in cfg.read_text())
+                line1.startswith("area1 = pub/c64 | New Ascii Name |"))
+    ok &= check("and with every part the page offered",
+                line1.count("|") == 5)
     a.send(b"\x1b")
     a.pump(0.6)
     a.close()
@@ -2341,6 +2379,117 @@ def test_config_areas():
     z.close()
     return ok
 
+
+
+def test_config_area_keeps_every_part():
+    """Saving an area must not throw away the parts the page did not show.
+
+    kAreaParts has six entries. kComposites registered it with a count of
+    four and kMaxParts was four, so the sub-page offered Path, Name, Read and
+    Upload, and configSubSave packs exactly comp->count parts over whatever
+    was already in the file. Saving any area therefore dropped its Download
+    and Delete levels, and files::mayDown falls back to the area's READ
+    level, so a staff-only download area silently became downloadable by
+    everybody. The board reported success.
+
+    The shape of this test is the point. Asserting that the save succeeded
+    passes against the bug, because the save did succeed; it is the FILE that
+    is wrong afterwards. So it reads system.cfg back and counts the parts.
+
+    Verified to fail against the broken tree: with count 4 the area5 line
+    comes back as four fields and the last two checks fail.
+    """
+    print("An area keeps the parts its page never showed")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    sd = os.environ.get("BBS_SD_DIR", "")
+    if not sd:
+        print("  SKIP  the files plugin needs a card")
+        return True
+    if not PASSWORD:
+        print("  SKIP  CONFIG is sysop only")
+        return True
+
+    cfg = USERDATA / "system.cfg"
+    before = ""
+    for line in cfg.read_text(errors="replace").splitlines():
+        if line.strip().startswith("area5"):
+            before = line.strip()
+    # area5 in the harness is the six-field form:
+    #   pub/drop | Drop Box | all | users | all | sysop
+    ok = check("the harness has a six-part area to save",
+               before.count("|") == 5)
+    if not ok:
+        print("  SKIP  no six-part area in this config")
+        return True
+
+    s = ansi_login("AreaKeep")
+    drain(s)
+    s.buf.clear()
+    s.send(f"bye {PASSWORD}\r".encode())
+    if not s.wait_for(b"SysOp node", 6):
+        print("  SKIP  could not elevate")
+        s.close()
+        return True
+    s.pump(0.6)
+
+    s.buf.clear()
+    s.send(b"config files\r")
+    ok &= check("the files page opens", s.wait_for(b"Area 1", 6))
+    s.pump(0.8)
+
+    # Four fields (enabled, read, write, admin) then the area buttons, so
+    # area 5 is eight rows down. Counting rows is fragile by nature; it is
+    # checked by what opens rather than assumed.
+    s.buf.clear()
+    s.send(DOWN * 8 + b"\r")
+    ok &= check("area 5's own page opens", s.wait_for(b"FILE AREA 5", 6))
+    s.pump(0.8)
+    sub = plain(s.buf)
+
+    # The fix is visible on the page itself: all six parts get a field.
+    ok &= check("the page offers Download, which it used to leave out",
+                b"Download" in sub)
+    ok &= check("and Delete", b"Delete" in sub)
+
+    # Change ONE thing and save. Changing nothing proves nothing: configSubSave
+    # short-circuits an unchanged page with "Nothing changed" and never writes
+    # the file, so a no-op save leaves the line intact whether the code is
+    # right or not. The first version of this test did exactly that and passed
+    # against the bug for the wrong reason.
+    #
+    # Editing the name is also the real report: a sysop renames an area and
+    # its download and delete levels go with it.
+    s.buf.clear()
+    s.send(DOWN)                                   # Path -> Name
+    s.pump(0.4)
+    s.send(b"\x08" * 24 + b"Drop Zone")
+    s.pump(0.4)
+    to_save(s, b"Saved")
+    s.pump(1.2)
+    ok &= check("the save is accepted", b"Saved" in plain(s.buf))
+    s.pump(1.5)
+
+    after = ""
+    for line in cfg.read_text(errors="replace").splitlines():
+        if line.strip().startswith("area5"):
+            after = line.strip()
+
+    # Proof the write really happened, so the checks below mean something.
+    ok &= check("the edit reached the file", "Drop Zone" in after)
+
+    # The two that fail against the bug.
+    ok &= check("the saved line still has all six parts",
+                after.count("|") == 5)
+    ok &= check("and the download and delete levels survived the rename",
+                after.endswith("all | sysop"))
+
+    drain(s)
+    s.send(b"\x1b")
+    s.pump(0.5)
+    s.close()
+    return ok
 
 
 def test_privacy():
@@ -2778,7 +2927,7 @@ def test_files():
     s.pump(0.6)
     s.buf.clear()
     s.send(b"q")
-    ok &= check("and Q again leaves", s.wait_for(b"Out of files", 5))
+    ok &= check("and Q again leaves", s.wait_for(b"Leaving the file areas", 5))
     s.buf.clear()
     s.send(b"who\r")
     ok &= check("the shell has the session back",
@@ -4576,7 +4725,7 @@ if __name__ == "__main__":
                test_staff_remembered(), test_shutdown(),
                test_list_abort_returns(), test_xfer(),
                test_upload_no_binary(), test_ymodem(),
-               test_config_areas(), test_partitions()]
+               test_config_areas(), test_config_area_keeps_every_part(), test_partitions()]
     if "--backup" in FLAGS:
         results.append(test_backup())
     if "--ban" in FLAGS:

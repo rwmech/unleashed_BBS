@@ -3,14 +3,14 @@
   µnleashed BBS
  ===========================================================================
 
- File:         PLAN-BULLETINS.md
+ File:         PLAN-FORUMS.md
  Purpose:      Two pieces of work that turned out to be one. A stable user
                identity, which the board needs and does not have, and the
                FORUMS subsystem, which is the first thing that would have
                been built wrong without it.
 
  Note:         Rename this file to PLAN-FORUMS.md if the name in part 2 is
-               accepted. It is called PLAN-BULLETINS.md because that is what
+               accepted. It is called PLAN-FORUMS.md because that is what
                the work was called before it had a better name.
 
  Copyright 2026 - Robert Mech

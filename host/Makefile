@@ -52,10 +52,19 @@ bbs_host: $(SRCS) $(wildcard ../src/core/*.h) $(wildcard ../src/plugins/*.h) ../
 test_xmodem: test_xmodem.cpp ../src/core/xmodem.cpp ../src/core/xmodem.h
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_xmodem.cpp ../src/core/xmodem.cpp
 
-test: test_xmodem
+# bbsu::wrap has no board in it either: it is a pure function over a string
+# and a column count, and every bug in it lives at a margin. Two were found
+# the day it was written, both invisible to a reading of the code: a word
+# ending exactly on the boundary was thrown onto the next line, and a line
+# could end in a space, which on a reverse-video row is a visible notch.
+test_wrap: test_wrap.cpp ../src/core/bbs_util.h
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_wrap.cpp
+
+test: test_xmodem test_wrap
 	./test_xmodem
+	./test_wrap
 
 clean:
-	rm -f bbs_host test_xmodem
+	rm -f bbs_host test_xmodem test_wrap
 
 .PHONY: clean test

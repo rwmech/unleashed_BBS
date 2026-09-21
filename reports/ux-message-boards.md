@@ -15,7 +15,7 @@
 
  Audience:     Rob, and whoever builds the forums plugin.
 
- Scope note:   PLAN-BULLETINS.md owns the data model, the file formats, the
+ Scope note:   PLAN-FORUMS.md owns the data model, the file formats, the
                RAM budget and the phasing. This document owns what a caller
                sees and what the keys do. Where the two touch, this one says
                so and defers, EXCEPT where the UX forces a storage decision,
@@ -53,7 +53,7 @@ Read this section and the next two and you have the delta.
   mandatory (Rob), and they change the reading screen too: the subject is
   drawn once as the screen's title instead of once per message.
 - **Votes are gone.** Not deferred in the mock-ups, absent. There is no vote
-  column, no `+`/`-` key, no score in any header. `PLAN-BULLETINS.md` says
+  column, no `+`/`-` key, no score in any header. `PLAN-FORUMS.md` says
   they are dropped from the first version; the old document drew them
   everywhere and argued about where to put them. That argument is preserved
   under "Considered and rejected" so it does not have to happen again.
@@ -1277,7 +1277,7 @@ There is no blank line above the header on ASCII, because the `-- ` already
 separates and 24 rows is one fewer than a C64 has.
 
 Note this is the same `-- ` that opens every message in the body segment
-files on the card (`PLAN-BULLETINS.md`, the `M####.TXT` format). A sysop
+files on the card (`PLAN-FORUMS.md`, the `M####.TXT` format). A sysop
 reading the card on a laptop and a caller on a VT220 see the same shape.
 That is a coincidence worth keeping rather than fixing.
 
@@ -2271,7 +2271,7 @@ of forums with a moved pointer) and the `PTRS.TXT` record going from 320 to
 ## Where this contradicts the plan, and the first one is expensive
 
 Four things. The first two are storage decisions that the UX forces, and
-`PLAN-BULLETINS.md` is explicit that `INDEX.TXT` and `PTRS.TXT` are the
+`PLAN-FORUMS.md` is explicit that `INDEX.TXT` and `PTRS.TXT` are the
 decisions that are expensive to change later. **These want settling before
 phase 1, not after.**
 
@@ -2453,7 +2453,7 @@ because in six months only the number will be obvious:
 **This number is load-bearing and it is fixed-width.** It is not a runtime
 setting, it is not a CONFIG value, and **raising it later means converting
 every `PTRS.TXT` on every card**, which is exactly the class of migration
-`PLAN-BULLETINS.md` exists to avoid. Sixteen is the number; write it into the
+`PLAN-FORUMS.md` exists to avoid. Sixteen is the number; write it into the
 format version so a future build can at least tell what it is reading.
 
 #### What must not happen
@@ -2483,7 +2483,7 @@ Take those and one character off the subject:
 
 #### Say this in the right words: votes are closed off, not merely unbuilt
 
-`PLAN-BULLETINS.md` says votes are "dropped from the first version" and can
+`PLAN-FORUMS.md` says votes are "dropped from the first version" and can
 be added later "as an additive file without touching the message format".
 **That sentence is now only half true and the half that changed is the
 important one.**
@@ -2674,7 +2674,7 @@ Message bodies must be wrapped at the reader's width and nothing in `Term` or
 `Bbs` does that. It is the same helper the queued "profile text should word
 wrap" item needs. Wrap at `rowWidth(s)`, break on spaces, break a word longer
 than the width rather than overflowing it, and emit one row per call so it
-can drive `rows()` directly. `PLAN-BULLETINS.md` already names it `bbsu::wrap`.
+can drive `rows()` directly. `PLAN-FORUMS.md` already names it `bbsu::wrap`.
 
 ### 5. `screens/forums`
 

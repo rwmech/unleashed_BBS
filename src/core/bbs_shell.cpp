@@ -253,9 +253,16 @@ const Command* Bbs::coreCommands(uint8_t& count) {
         { "SYS", "", 0, CF_STAFF, "SYS", "radio, memory, storage, load",
           [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Sys); },
           Menu::Sysop, 0 },
-        { "CALLS", "", 0, CF_STAFF, "CALLS", "when the board is busy",
+        // CALLS is public (Rob). It is a bar chart of calls per hour and
+        // nothing else: no handles, no addresses, nobody's session. Knowing
+        // when a board is busy is what tells a caller when to turn up, which
+        // is the whole point of a small board. The same figures are already
+        // published on the directory's own website for any board that opts
+        // in to sharing activity, so there is no exposure here that a caller
+        // could not already get from a browser.
+        { "CALLS", "", 0, CF_NONE, "CALLS", "when the board is busy",
           [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdCalls(s); },
-          Menu::Sysop, 1 },
+          Menu::Account, 6 },
         { "SHUTDOWN", "", 0, CF_SYSOP, "SHUTDOWN [n]", "warn everyone, then close the board",
           [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdShutdown(s, a, n); },
           Menu::Sysop, 40 },
@@ -562,31 +569,55 @@ void Bbs::rowRule(Session& s) {
 // a reverse-video bar; plain ASCII gets the title inside a dashed rule.
 // right: optional text flush right (clock, counts).
 // ---------------------------------------------------------------------------
-void Bbs::rowTitle(Session& s, const char* title, const char* right) {
+// rowBar: rowTitle with the colour chosen by the caller.
+//
+// Every title on the board is Cyan and that stays the default, but a
+// subsystem drawing a caller-supplied string wants to say which colour it
+// is, and the forums want a different one for the row a caller is standing
+// on. Splitting it costs nothing: rowTitle is this with Cyan.
+//
+// **The title is truncated to fit, and that is the fix rather than the
+// refactor.** Every caller until now passed a short literal, so `used`
+// never exceeded `w`, the padding loop simply did nothing, and nobody
+// noticed there was no clamp. A forum subject is typed by a caller and can
+// be 49 characters against a 39 column bar: the row would run long, wrap,
+// and leave the reverse attribute hanging down the next line. It has to be
+// fixed here and not in each plugin, because the plugin cannot know what
+// the right margin is doing.
+void Bbs::rowBar(Session& s, Color c, const char* title, const char* right) {
     Term& t = s.term;
     Timeline& tl = s.tl;
     uint8_t w = rowWidth(s);
-    size_t tlen = visibleLen(title);
     size_t rlen = right ? visibleLen(right) : 0;
 
+    // What the title may take: the whole row, less the leading space, less
+    // the right text and the space before it. Never less than one, because
+    // a right text wider than the row would otherwise underflow this.
+    size_t reserve = 1 + (rlen ? rlen + 1 : 0);
+    uint8_t avail = (reserve < w) ? static_cast<uint8_t>(w - reserve) : 1;
+
     if (t.isAnsi() || t.isPet()) {
-        t.color(tl, Color::Cyan);
+        t.color(tl, c);
         t.reverse(tl, true);
-        t.color(tl, Color::Cyan);
+        t.color(tl, c);
         t.ch(tl, ' ');
-        t.text(tl, title);
-        size_t used = 1 + tlen + (rlen ? rlen + 1 : 0);
+        uint8_t drew = t.textCols(tl, title, avail);
+        size_t used = 1 + drew + (rlen ? rlen + 1 : 0);
         for (size_t i = used; i < w; ++i) t.ch(tl, ' ');
         if (rlen) { t.text(tl, right); t.ch(tl, ' '); }
         t.reverse(tl, false);
     } else {
-        t.text(tl, title);
+        uint8_t drew = t.textCols(tl, title, avail);
         t.ch(tl, ' ');
-        size_t used = tlen + 1 + (rlen ? rlen + 1 : 0);
+        size_t used = drew + 1 + (rlen ? rlen + 1 : 0);
         for (size_t i = used; i < w; ++i) t.glyph(tl, Glyph::HLine);
         if (rlen) { t.ch(tl, ' '); t.text(tl, right); }
     }
     t.nl(tl);
+}
+
+void Bbs::rowTitle(Session& s, const char* title, const char* right) {
+    rowBar(s, Color::Cyan, title, right);
 }
 
 // ---------------------------------------------------------------------------

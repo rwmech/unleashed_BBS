@@ -967,11 +967,18 @@ void listArea(Bbs& b, Session& s, uint8_t area) {
     b.startPluginList(s, g_index);
 }
 
+// leave: hand the caller back to the shell, and say where they are going
+// rather than what they have stopped doing.
+//
+// This said "Out of files.", which reads as the board having run out of
+// them rather than as the caller stepping out of a room. A line a caller
+// sees on the way out of every subsystem is worth getting right, and the
+// forums will say the same thing in their own words.
 void leave(Bbs& b, Session& s) {
     g_where[slotOf(s)] = Where::Out;
     s.term.nl(s.tl);
     s.term.color(s.tl, Color::Grey);
-    s.term.text(s.tl, "Out of files.");
+    s.term.text(s.tl, "Leaving the file areas. Returning to the BBS...");
     b.release(s);
 }
 

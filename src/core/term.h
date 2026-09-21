@@ -75,7 +75,13 @@ Color colorByName(const char* name, Color fallback);
 const char* colorName(Color c);
 
 // Drawing glyphs with a per-terminal best match
-enum class Glyph : uint8_t { Block, Shade, HLine, VLine, Bullet, Micro };
+// HLine2 is the double horizontal rule, APPENDED because this enum is
+// indexed by the translation tables in term.cpp and inserting into it
+// would silently renumber every glyph after the insertion point.
+// The forums use it for the row a caller acts on, where plain ASCII has
+// no colour and no reverse video to make that row different: '=' against
+// '-' is the distinction that 1987 used and it still reads.
+enum class Glyph : uint8_t { Block, Shade, HLine, VLine, Bullet, Micro, HLine2 };
 
 // Canonical key codes returned by Term::feed (printables are plain ASCII)
 enum Key : int {

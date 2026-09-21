@@ -367,6 +367,69 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
 - **A deliberate deviation from the plan, and the reasoning is the useful part.** The plan had mail and bans moving to ids. `MailRec` is a fixed-size record with a static assert on its layout, so that means changing `sizeof` and converting every live mailbox, on the one board that exists, to fix a bug that has a cheaper fix. Following renames gets the same visible outcome with no format change. The forums will store ids natively, so mail ends up the only holdout and a far smaller job later. **Prefer the fix that does not migrate somebody's data when both fixes close the same hole.**
 - **The positional-descriptor trap caught me exactly as CLAUDE.md predicted.** `onRename` inserted before `onBytes` shifted every field after it, and the compiler said so. Append-only is not a style rule here, it is the only safe edit.
 
+### Forums, phase 1: the formats, and the two permission bugs found on the way (0.20.0)
+
+- **Phase 1 is a forum list and nothing else, deliberately.** What it buys is
+  the file formats frozen, and every later phase stands on those. This is the
+  phase somebody would skip.
+- **`CONFIG files` was silently stripping two permission levels off every
+  area a sysop saved, and it was live.** `kAreaParts` has six entries;
+  `kComposites` registered it with a count of 4 and `kMaxParts` was 4. So the
+  sub-page offered Path, Name, Read and Upload, and `configSubSave` packs
+  exactly `comp->count` parts over whatever was in the file. `files::mayDown`
+  falls back to the area's **read** level, which is documented, sensible in
+  isolation, and means a staff-only download area became downloadable by
+  everybody the moment its name was edited. The board said "Saved and live".
+  The count is derived from the table now, so a part cannot be added half
+  way. **Third instance of the same shape**: a count written beside a table
+  instead of computed from it, after the CONFIG Board page showing 5 of 7
+  fields and `max_users` at 100.
+- **A test that passes against the bug is worse than no test, and mine did at
+  first.** It saved the area unchanged, and `configSubSave` short-circuits an
+  unchanged page with "Nothing changed" and never writes the file, so the
+  line survived because nothing touched it. It edits the name first now,
+  which is also the actual report: rename an area, lose its permissions.
+  Proven in both directions before it was kept.
+- **The same six fields had a second permission bug, in the prose.**
+  CLAUDE.md documented `read | down | up | del`; `readKey` parses
+  `read | up | down | del`. A sysop following the docs would set the download
+  level where the upload level goes. **A packed bar-separated value invites
+  this**, which is an argument for the labelled sub-page beyond convenience.
+- **`rowTitle` never truncated its title.** Every caller until now passed a
+  short literal, so `used` never exceeded the width, the padding loop did
+  nothing, and nobody noticed there was no clamp. A caller-typed forum
+  subject at 49 characters into a 39 column bar wraps and leaves the reverse
+  attribute hanging down the next line. Fixed in the core, not per plugin: a
+  plugin cannot know what the right margin is doing. `rowBar(colour, ...)` is
+  the general form and `rowTitle` is it in Cyan.
+- **`bbsu::wrap` wraps at the reader's width, not the writer's**, because the
+  reader's width is not knowable when the text is written. **Two bugs in it
+  were found by its unit tests and neither was visible in the code**: a word
+  ending exactly on the margin was thrown onto the next line, because the
+  scan stops before the boundary column and never sees that word end; and a
+  line could end in a space, which on a reverse-video row is a visible notch.
+  Eleven checks under ASan and UBSan, in `make test`. The queued profile-wrap
+  item wants the same function, so it is built once.
+- **Sixteen forums because that is where `Form::kMaxFields` puts the wall**,
+  not a number somebody chose. An honest ceiling reads differently from a
+  picked one: `max_users = 100` was picked, and it was wrong for years.
+- **Four levels per forum, and `start` versus `reply` is the one that earns
+  its place.** `read=all, start=co1, reply=users` is "staff post the news,
+  anybody may answer it", which is a thing boards wanted and could not
+  express with one write level.
+- **The index format is frozen: message N at byte offset N x 128, forever.**
+  Nothing packs, compacts or rewrites it, and a deleted message keeps its
+  slot and flips a flag. The usual way a read pointer stops meaning anything
+  is a well-meaning compaction pass. Asserted on **offsets and the total**,
+  never on a sum of field widths: that is the version that fails on correct
+  code the day padding appears, which is exactly how the `MailRec` assert
+  cost a round.
+- **I baked a literal NUL byte into the source again**, through a shell
+  heredoc, in the same session in which CLAUDE.md already warned about it.
+  `' '` became a real 0x00 in the file. Use the Write tool or the Edit tool
+  for anything containing a backslash escape. The compiler caught it as a
+  warning, which is luck rather than a safety net.
+
 ### The loop says where it went, and two bugs found on the way (0.19.2)
 
 - **`SYS` showed "Loop worst" as a bare number and never said which phase ate
@@ -719,6 +782,10 @@ Queued for the next build (Rob's plan, in order):
   **Unconfirmed and load-bearing:** whether the public proxies speak `wss://`.
   unleashedbbs.com is https, so without it the link cannot work at all. Check
   before promising it anywhere on the site.
+
+- **Doors on a second ESP32 over serial**: the transport is specified in
+  the queue entry below. What runs on the far end is being designed
+  privately and is not in this file. See IDEAS.local.md.
 
 - **Board linking, DDial style** (Rob, to be designed when the terminal mode plugin is). Link two boards and the chat room spans both, so a quiet board borrows company from a busier one and neither needs more nodes of its own. That is what DDial did and it is the feature that made small systems worth calling.
   Rob's insight is the part worth keeping: **this is the same capability as dialing out.** A board that can open an outbound connection and hand a stream to a caller can talk to a modem, to a serial device, or to another BBS, and the far end being a peer rather than a terminal is a matter of what speaks on it. So linking is not a separate subsystem; it is the terminal mode plugin with a protocol on top, and designing terminal mode without that in mind is how it ends up needing rewriting.

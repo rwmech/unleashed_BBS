@@ -836,11 +836,54 @@ struct CfgComposite {
     uint8_t        count;
 };
 
+// The count MUST come from the table, not be written out again beside it.
+// It was 4 against a six-entry kAreaParts, and the consequence was not a
+// cosmetic one: the sub-page showed Path, Name, Read and Upload, and
+// configSubSave packs exactly comp->count parts over whatever was in the
+// file, so saving any area silently dropped its Download and Delete levels.
+// files::mayDown then falls back to the area's READ level, which is
+// documented and sensible on its own terms and means a staff-only download
+// area quietly became downloadable by everybody. The board said "Saved and
+// live" both times.
+//
+// Same shape as the CONFIG Board page rendering 5 of 7 fields: a count
+// written next to a table instead of derived from it. Deriving it is the fix
+// in both places, because then adding a part cannot be half done.
+#define CFG_PARTS(t) (t), (sizeof(t) / sizeof((t)[0]))
+
+// A forum's seven parts. The order here IS the wire format, and it is the
+// order src/plugins/forums.cpp readKey() parses, checked against that
+// function rather than against anybody's memory of it. The file areas
+// shipped with the documentation naming a different order than the parser
+// used, which would have had a sysop set the download level where the upload
+// level goes, so this is written down once and verified in one place.
+//
+//   topic1 = key | name | about | read | start | reply | mod
+//
+// `start` and `reply` are separate on purpose, and the split is what makes a
+// read-only announcements forum work BETTER than read-only:
+// read=all, start=co1, reply=users is "staff post the news, anybody may
+// answer it", which boards wanted and could not say.
+const CfgPart kTopicParts[] = {
+    { "Key",      CK_TEXT,  12 },      // folder on the card, forums.cpp kKeyMax
+    { "Name",     CK_TEXT,  24 },      // forums.cpp kNameMax
+    { "About",    CK_TEXT,  40 },      // one line, shown at 64 columns and up
+    { "Read",     CK_LEVEL,  6 },      // see the forum in the list
+    { "Start",    CK_LEVEL,  6 },      // open a NEW subject
+    { "Reply",    CK_LEVEL,  6 },      // add to an existing one
+    { "Moderate", CK_LEVEL,  6 },      // delete, pin, move
+};
+
 const CfgComposite kComposites[] = {
-    { "plugin:files", "area", "FILE AREA", "area", kAreaParts, 4 },
+    { "plugin:files",  "area",  "FILE AREA", "area",  CFG_PARTS(kAreaParts)  },
+    { "plugin:forums", "topic", "FORUM",     "forum", CFG_PARTS(kTopicParts) },
 };
 constexpr uint8_t kCompositeCount = sizeof(kComposites) / sizeof(kComposites[0]);
-constexpr uint8_t kMaxParts       = 4;
+
+// Room for the widest composite, not for the one that happened to be first.
+// Forums want seven parts, so this is sized for them rather than raised
+// again when they land. 8 x 64 is 512 bytes of static RAM, up from 256.
+constexpr uint8_t kMaxParts       = 8;
 
 // One settings editor at a time. The sysop is a single caller, and two
 // people writing the file at once is a good way to lose it.

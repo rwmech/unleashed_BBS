@@ -24,6 +24,79 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.20.0, 2026-09-21
+
+Forums, phase 1: the formats, and a list to prove they are reachable.
+
+**What a caller sees is a forum list and nothing else.** Said plainly because
+this is the phase people skip. Posting and reading are phase 2; what phase 1
+buys is the file formats frozen, and those are what every later phase stands
+on.
+
+- **A live permission bug fixed first, because it was shipping.** `CONFIG
+  files` defined six parts for an area and registered the table with a count
+  of four, so the sub-page showed Path, Name, Read and Upload, and saving any
+  area packed four parts over the six in the file. `files::mayDown` then
+  falls back to the area's READ level, which is sensible in isolation and
+  meant **a staff-only download area silently became downloadable by
+  everybody** the moment a sysop renamed it. The board reported success.
+  The count is derived from the table now (`CFG_PARTS`), so adding a part
+  cannot be half done. Same shape as the CONFIG Board page rendering 5 of 7
+  fields, and the same fix.
+  **The test is the part worth keeping.** Its first version saved the area
+  without changing anything and passed against the broken code, because
+  `configSubSave` short-circuits an unchanged page and never writes the file
+  at all. It edits the name first now, which is also the real report: rename
+  an area, lose its permissions.
+- **Documentation bug in the same six fields, found the same afternoon.**
+  CLAUDE.md gave the wire format as `read | down | up | del`; `readKey`
+  parses `read | up | down | del`. A sysop following the documentation would
+  have set the download level where the upload level goes. Two permission
+  bugs in one set of six fields, one in the editor and one in the prose,
+  which is what a packed bar-separated value invites.
+- **`rowTitle` never truncated**, and every caller until now passed a short
+  literal, so the missing clamp was invisible. A forum subject is typed by a
+  caller: 49 characters into a 39 column bar would run long, wrap, and leave
+  the reverse attribute hanging down the next line. Now `rowBar(colour, ...)`
+  with truncation, and `rowTitle` is that in Cyan.
+- **`bbsu::wrap`**, word wrap at the reader's width rather than the writer's,
+  because a message typed at 72 columns has to read on a C64 and one typed at
+  35 should not sit in a stripe down an 80 column screen. Eleven unit tests
+  under ASan and UBSan, wired into `make test`. **Two bugs in it were found
+  by those tests and neither was visible in a reading of the code**: a word
+  ending exactly on the margin was thrown onto the next line, wasting half a
+  row, and a line could end in a space, which on a reverse-video row is a
+  visible notch. The queued "profile text should word wrap" item wants this
+  same function.
+- `Glyph::HLine2`, the double rule, appended to the enum because the
+  translation tables index it. Plain ASCII has no colour and no reverse
+  video, so `===` against `---` is what marks the row a caller acts on.
+- **The forums plugin.** `PF_SD`: no card, no plugin, and `FORUMS` is not a
+  command at all. Sixteen topic areas, which is where `Form::kMaxFields`
+  actually puts the wall rather than a number somebody picked. Four levels
+  per forum, and the split between `start` and `reply` is what makes a
+  read-only announcements forum work *better* than read-only:
+  `read=all, start=co1, reply=users` is "staff post the news, anybody may
+  answer", which boards wanted and could not say. `CONFIG FORUMS TOPICS`
+  edits them as labelled fields rather than a bar-separated line.
+- **The index format is frozen.** 128 bytes a record, four to a sector,
+  message N at byte offset N x 128 forever. Nothing packs, compacts or
+  rewrites it; a deleted message keeps its slot and flips a flag, because the
+  usual way a read pointer stops meaning anything is a well-meaning
+  compaction pass. Guarded by asserts on **offsets and the total**, never on
+  a sum of field widths, which is the version that fails on correct code the
+  day padding appears and has already cost this project a round.
+- **Grouping is by a stored subject hash and never by the display string**,
+  so renaming a subject, or disambiguating two that collide, cannot split a
+  thread or merge two.
+- `CALLS` is public (Rob). It is a bar chart of calls per hour with no
+  handles and no addresses in it, and knowing when a board is busy is what
+  tells somebody when to call. The same figures are already on the
+  directory's website for any board sharing activity.
+- "Out of files." is "Leaving the file areas. Returning to the BBS...", which
+  reads as leaving a room rather than as the board having run out of
+  something.
+
 ## 0.19.2, 2026-09-21
 
 The loop says where it went, and two bugs found looking for the one it did not explain.

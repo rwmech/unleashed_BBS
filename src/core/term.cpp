@@ -505,6 +505,7 @@ void Term::glyph(ByteSink& o, Glyph g) {
             }
             case Glyph::Shade:  o.putc(0xA6); break; // checker
             case Glyph::HLine:  o.putc(0xC0); break; // horizontal line
+            case Glyph::HLine2: o.putc(0xE3); break; // PETSCII double rule
             case Glyph::VLine:  o.putc(0xDD); break; // vertical line
             case Glyph::Bullet: o.putc('*');  break;
             case Glyph::Micro:  o.putc(0x55); break; // no micro sign: lowercase u
@@ -517,6 +518,7 @@ void Term::glyph(ByteSink& o, Glyph g) {
             case Glyph::Block:  b = 0xDB; break;
             case Glyph::Shade:  b = 0xB1; break;
             case Glyph::HLine:  b = 0xC4; break;
+            case Glyph::HLine2: b = 0xCD; break;     // CP437 double rule
             case Glyph::VLine:  b = 0xB3; break;
             case Glyph::Bullet: b = 0xF9; break;
             case Glyph::Micro:  b = 0xE6; break;     // CP437 micro sign
@@ -528,6 +530,7 @@ void Term::glyph(ByteSink& o, Glyph g) {
         case Glyph::Block:  o.putc('#'); break;
         case Glyph::Shade:  o.putc(':'); break;
         case Glyph::HLine:  o.putc('-'); break;
+        case Glyph::HLine2: o.putc('='); break;
         case Glyph::VLine:  o.putc('|'); break;
         case Glyph::Bullet: o.putc('*'); break;
         case Glyph::Micro:  o.putc('u'); break;

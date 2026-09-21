@@ -43,6 +43,12 @@ include/secrets.h
 data/system.cfg
 data/calls.log
 CLAUDE.local.md
+
+# Anything *.local.md is private working material and never ships.
+# The repo is intended to go public, so an idea that is not ready to be
+# public does not live in a tracked file, not even a private repo's:
+# git history is forever and "we were private then" is not a defence.
+*.local.md
 host/bbs_host
 host/test_xmodem
 __pycache__/
