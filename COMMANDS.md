@@ -13,12 +13,12 @@ source. See the LICENSE file for terms.
 
 # µnleashed BBS: command reference
 
-Version 0.10.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
+Version 0.18.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
 
 ## Calling in
 
 - Port 6400, telnet or raw TCP. `unleashed.local` resolves on the LAN through mDNS.
-- 6 caller nodes. When all six are busy, the next caller gets the busy line (see below), and anyone beyond that gets `BUSY` and an immediate hangup.
+- 10 caller nodes. When all ten are busy, the next caller gets the busy line (see below), and anyone beyond that gets `BUSY` and an immediate hangup.
 - The terminal type is detected on connect:
   - Telnet clients (PuTTY, SyncTERM) are switched to character mode and detected straight away.
   - Other ANSI terminals are detected automatically within about 2 s.
@@ -43,6 +43,7 @@ Full guide to accounts: [USERS.md](USERS.md).
 - A locked account is refused before the password.
 - If nothing is typed at the handle prompt, a warning appears at 30 s, followed by your partial input redrawn. The line hangs up at 60 s.
 - After login you see your node, the date and time, your call count and your remaining time. If `screens/bulletin.*` exists, it plays next.
+- Then you land wherever your account's `Start` says: the main prompt, the chat room, or the forums (the message boards, being built now). `Start` is `Default` on a new account, which follows the board's `landing` setting. `[H]ELP for commands.` is printed only when the main prompt is where you actually end up, because it is advice about that prompt and nowhere else. A landing this board cannot do falls back to the main prompt without complaint.
 
 ### Guests
 
@@ -91,7 +92,7 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | `? staff` | | Staff tools (staff only). |
 | `? sysop` | | Sysop tools (sysop only). |
 | `? all` | | Every menu in turn, each with its own heading. |
-| `MAIL` | | Read the message waiting for you. `MAIL handle your message` leaves one. See [CHAT.md](CHAT.md). |
+| `MAIL` | | Read the message waiting for you, then `[R]eply`, `[S]ave` or `[D]elete` it. Reading alone changes nothing. `MAIL handle your message` leaves one. See [CHAT.md](CHAT.md). |
 | `WHO` | `W` | Who is on each node: a marker, handle, terminal, minutes on, idle time (mm:ss). The busy line is never listed, and a hidden sysop or co-sysop looks like a free line to callers. Staff see hidden and lurking sessions, marked `hidden` or `lurking`, and with `NODES` get a Doing column (the last command each caller ran, verb only, never arguments) instead of the terminal. |
 | `WHO n` | `W n` | The same list redrawn in place every n seconds (`who_refresh_min`..`who_refresh_max`, default 1..30) until you press a key. The footer shows the idle clock: refreshing is not input, so the idle hangup still counts down. |
 | `MEM` | `M` | Heap statistics and session sizing. |
@@ -294,6 +295,7 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `cosysop1_password` | empty | co-sysop 1 level, empty = disabled |
 | `cosysop2_password` | empty | co-sysop 2 level, empty = disabled |
 | `idle_minutes` | `20` | shell idle hangup, 0 = never |
+| `landing` | `main` | where a caller goes after login when their account has not said: `main`, `chat` or `forums` |
 | `call_minutes` | `60` | per-call limit, 0 = unlimited |
 | `day_minutes` | `480` | per-day limit, 0 = unlimited |
 | `backup_port` | `8080` | HTTP port while the backup window is open (not 6400) |
@@ -324,8 +326,8 @@ Four plugins ship with the firmware:
 Chat and `sd` are on by default, even with no section in `system.cfg`; `enabled = no` turns either off. `sd` on a board with no card costs one failed mount at boot and then nothing. The serial bridge waits to be switched on, since it needs wiring, and so does `announce`, since it is the one thing that talks out. Turning either off costs nothing: no commands, no hooks, no memory. The `example` plugin is the template for writing your own ([PLUGINS.md](PLUGINS.md)).
 
 The SD card is optional and the board is complete without one. What goes on
-it is the things that grow without limit and can be lost: message bases, file
-areas, a sysop's own screens. What stays on internal flash is everything that
+it is the things that grow without limit and can be lost: file areas, a
+sysop's own screens, and the message bases that are being designed now. What stays on internal flash is everything that
 has to survive the card failing, which is the accounts, the configuration and
 the caller log. FAT32 rather than LittleFS so the card can be pulled and read
 on any laptop, and the price of that is that FAT is not safe against losing

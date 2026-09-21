@@ -522,6 +522,24 @@ def pass_rules(c, enc=lambda s: s.encode()):
     return False
 
 
+def to_save(c, stop, tries=12):
+    """Walk the focus down to [ Save ] and press it, then wait for a verdict.
+
+    Deliberately not a fixed number of Enters. The sign-up form's field list
+    is not a constant and has grown twice; a hardcoded run stops short the
+    day somebody adds a field, which leaves the form sitting open and the
+    test waiting for a verdict nobody ever asked for. The failure then shows
+    up somewhere else entirely, which is how one added field produced a
+    failure reading "bad email refused".
+    """
+    for _ in range(tries):
+        if stop in c.buf:
+            return True
+        c.send(b"\r")
+        c.pump(0.3)
+    return stop in c.buf
+
+
 def login(c, handle, pw=TEST_PW, as_pet=False, wait_main=True):
     """At the handle prompt: log in, or register when the handle is new.
     The signup keys work for the cursor form and the ASCII line form alike."""
@@ -535,7 +553,18 @@ def login(c, handle, pw=TEST_PW, as_pet=False, wait_main=True):
             return False
         c.send(b"n")
         c.wait_for(enc("NEW ACCOUNT"), 6)
-        c.send(enc(pw) + b"\r" + enc(pw) + b"\r" + enc(handle) + b"\r" + enc(email) + b"\r\r\r\r\r")
+        c.send(enc(pw) + b"\r" + enc(pw) + b"\r" + enc(handle) + b"\r" + enc(email) + b"\r")
+        # Walk to [ Save ] with Enter rather than counting fields. This used
+        # to be a hardcoded run of five Enters, and the number of fields
+        # between Email and the button is not a constant: adding one field
+        # to the sign-up form left every registration sitting on the form,
+        # so every test in this file failed at login with nothing pointing
+        # at the cause. Press until the board says the account exists.
+        for _ in range(12):
+            if enc("WELCOME ABOARD") in c.buf:
+                break
+            c.send(b"\r")
+            c.pump(0.3)
         if not c.wait_for(enc("WELCOME ABOARD"), 10):
             return False
     elif which == 1:
@@ -644,14 +673,14 @@ def test_petscii():
     ok &= check("no telnet IAC sent to C64", b"\xff\xfb" not in c.buf)
     ok &= check("welcome.seq streamed", c.wait_for(pet("No web. No cloud. No browser."), 8) and c.wait_for(pet("unleashed BBS"), 3))
     ok &= check("handle prompt", c.wait_for(pet("Enter your handle"), 8))
-    ok &= check("PETSCII signup form and login", login(c, "KE9CXN", as_pet=True))
+    ok &= check("PETSCII signup form and login", login(c, "Daytona", as_pet=True))
     ok &= check("form drew with cursor moves", b"\x13" in c.buf)
     c.buf.clear()
     c.send(pet("who") + b"\r")
-    ok &= check("WHO lists handle", c.wait_for(pet("KE9CXN"), 3))
+    ok &= check("WHO lists handle", c.wait_for(pet("Daytona"), 3))
     c.buf.clear()
     c.send(b"\x91\r")                     # C64 cursor-up recalls WHO
-    ok &= check("cursor-up recalls on PETSCII", c.wait_for(pet("KE9CXN"), 3))
+    ok &= check("cursor-up recalls on PETSCII", c.wait_for(pet("Daytona"), 3))
     c.buf.clear()
     c.send(pet("xyzzy") + b"\r")
     ok &= check("?SYNTAX  ERROR", c.wait_for(pet("?SYNTAX  ERROR"), 3))
@@ -970,7 +999,8 @@ def test_accounts():
     c.send(b"n")
     ok &= check("sign-up form opens", c.wait_for(b"NEW ACCOUNT", 5))
     c.buf.clear()
-    c.send(b"abc\rabc\r\r\r\r\r\r\r")
+    c.send(b"abc\rabc\r")
+    to_save(c, b"Password needs 4 or more characters")
     ok &= check("short password refused", c.wait_for(b"Password needs 4 or more characters", 5))
     c.send(b"\x1b")
     ok &= check("ESC cancels the sign-up", c.wait_for(b"Sign-up cancelled.", 3) and c.wait_for(b"Enter your handle", 3))
@@ -982,7 +1012,8 @@ def test_accounts():
     c.buf.clear()                       # from here the buffer is the form's own bytes
     c.send(b"n")
     c.wait_for(b"NEW ACCOUNT", 5)
-    c.send(b"abcd\rabce\rZed\rzed@example.com\r\r\r\r\r")
+    c.send(b"abcd\rabce\rZed\rzed@example.com\r")
+    to_save(c, b"The passwords do not match")
     ok &= check("password mismatch refused", c.wait_for(b"The passwords do not match", 5))
 
     # --- the attribute stream, not the stripped text.
@@ -1017,7 +1048,8 @@ def test_accounts():
     c.send(b"n")
     c.wait_for(b"NEW ACCOUNT", 5)
     c.buf.clear()
-    c.send(b"abcd\rabcd\rZed\rnot-an-email\r\r\r\r\r")
+    c.send(b"abcd\rabcd\rZed\rnot-an-email\r")
+    to_save(c, b"That email does not look right")
     ok &= check("bad email refused", c.wait_for(b"That email does not look right", 5))
     c.close()
 
@@ -1899,9 +1931,15 @@ def test_mail():
     b.send(b"mail\r")
     ok &= check("MAIL reads it", b.wait_for(b"the eagle lands at nine", 4) and
                 b"Message from Sender" in plain(b.buf))
+    # Reading is not disposing. The message stays exactly where it is until
+    # one of three keys says what should happen to it.
+    ok &= check("and asks what to do with it", b.wait_for(b"[D]elete", 4))
+    b.buf.clear()
+    b.send(b"d")
+    ok &= check("D deletes it", b.wait_for(b"Deleted", 4))
     b.buf.clear()
     b.send(b"mail\r")
-    ok &= check("reading clears it", b.wait_for(b"No mail", 4))
+    ok &= check("and then the box is empty", b.wait_for(b"No mail", 4))
 
     # This used to assert that a second message REPLACED the first and
     # that the board said so. That was the bad design written into the
@@ -1928,10 +1966,15 @@ def test_mail():
     # Oldest first, because that is the order they were sent in and the
     # order somebody would expect to read them.
     ok &= check("the oldest message is read first", b.wait_for(b"first one", 4))
+    b.send(b"d")
+    # What is still waiting is said after the decision, not before it: until
+    # D was pressed the count would have included the one on screen.
     ok &= check("and the newer one is still waiting", b.wait_for(b"more waiting", 4))
     b.buf.clear()
     b.send(b"mail\r")
     ok &= check("which reads next", b.wait_for(b"second one", 4))
+    b.send(b"d")
+    b.wait_for(b"Deleted", 4)
     a.close()
     b.close()
     return ok
@@ -2345,7 +2388,8 @@ def test_privacy():
     d.buf.clear()
     d.send(b"n")
     ok &= check("N goes straight to the form", d.wait_for(b"NEW ACCOUNT", 6))
-    d.send(TEST_PW.encode() + b"\r" + TEST_PW.encode() + b"\rHasty\rhasty@example.com\r\r\r\r\r")
+    d.send(TEST_PW.encode() + b"\r" + TEST_PW.encode() + b"\rHasty\rhasty@example.com\r")
+    to_save(d, b"WELCOME ABOARD")
     d.wait_for(b"WELCOME ABOARD", 10)
     d.wait_for(b"Main", 8)
     d.buf.clear()
@@ -2370,47 +2414,73 @@ def test_announce():
     got = []
 
     def directory(port):
-        """A stand-in directory: take one heartbeat, answer 200, remember it."""
+        """A stand-in directory: answer every heartbeat 200, remember them all.
+
+        It used to accept exactly ONE connection and then close its
+        listener, so every heartbeat after the first got connection-refused.
+        The board recorded "refused" over the "listed" it had a moment
+        earlier, which is correct behaviour on its part, and the test then
+        raced the board's own retry: it passed when it read the status first
+        and failed when the retry won. That race was invisible until the
+        suite got slower and it started landing the other way.
+
+        A real directory does not stop listening, so neither does this one.
+        It records every heartbeat; the test reads the first. It is not one
+        heartbeat per run: nudge_seconds pushes an update whenever the
+        public caller count moves, and this test logs callers in and out, so
+        counting them would be asserting on the nudge policy rather than on
+        the thing being tested.
+        """
         srv = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
         srv.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
         srv.bind(("127.0.0.1", port))
-        srv.listen(2)
-        srv.settimeout(20)
+        srv.listen(4)
+        srv.settimeout(60)
+        first = True
         try:
-            c, _ = srv.accept()
-        except _socket.timeout:
-            return
-        c.settimeout(5)
-        data = b""
-        try:
-            while b"\r\n\r\n" not in data:
-                more = c.recv(4096)
-                if not more:
-                    break
-                data += more
-            head, _, body = data.partition(b"\r\n\r\n")
-            need = 0
-            for line in head.split(b"\r\n"):
-                if line.lower().startswith(b"content-length:"):
-                    need = int(line.split(b":")[1])
-            while len(body) < need:
-                more = c.recv(4096)
-                if not more:
-                    break
-                body += more
-            got.append((head, body))
-            reply = (b"HTTP/1.1 200 OK\r\n"
-                     b"X-Seen-Address: 203.0.113.9\r\n"
-                     b"X-Listing-State: pending\r\n"
-                     b"X-Listing-Token: " + DIRECTORY_TOKEN.encode() + b"\r\n"
-                     b"Content-Length: 2\r\nConnection: close\r\n\r\nok")
-            # Split four characters into the token, on purpose.
-            cut = reply.index(DIRECTORY_TOKEN.encode()) + 4
-            c.sendall(reply[:cut])
-            time.sleep(0.3)
-            c.sendall(reply[cut:])
+            while True:
+                try:
+                    c, _ = srv.accept()
+                except _socket.timeout:
+                    return
+                c.settimeout(5)
+                try:
+                    data = b""
+                    while b"\r\n\r\n" not in data:
+                        more = c.recv(4096)
+                        if not more:
+                            break
+                        data += more
+                    head, _, body = data.partition(b"\r\n\r\n")
+                    need = 0
+                    for line in head.split(b"\r\n"):
+                        if line.lower().startswith(b"content-length:"):
+                            need = int(line.split(b":")[1])
+                    while len(body) < need:
+                        more = c.recv(4096)
+                        if not more:
+                            break
+                        body += more
+                    got.append((head, body))
+                    reply = (b"HTTP/1.1 200 OK\r\n"
+                             b"X-Seen-Address: 203.0.113.9\r\n"
+                             b"X-Listing-State: pending\r\n"
+                             b"X-Listing-Token: " + DIRECTORY_TOKEN.encode() + b"\r\n"
+                             b"Content-Length: 2\r\nConnection: close\r\n\r\nok")
+                    if first:
+                        # Split four characters into the token, on purpose:
+                        # the board has to cope with a header arriving in
+                        # two reads.
+                        cut = reply.index(DIRECTORY_TOKEN.encode()) + 4
+                        c.sendall(reply[:cut])
+                        time.sleep(0.3)
+                        c.sendall(reply[cut:])
+                        first = False
+                    else:
+                        c.sendall(reply)
+                finally:
+                    c.close()
         finally:
-            c.close()
             srv.close()
 
     if HOST not in ("127.0.0.1", "localhost"):
@@ -2439,8 +2509,14 @@ def test_announce():
     s.buf.clear()
     s.send(b"announce now\r")
     s.wait_for(b"Sending now", 4)
-    th.join(15)
-    ok &= check("the directory got a heartbeat", len(got) == 1)
+    # Wait for the heartbeat, not for the thread. The stand-in keeps
+    # listening now, so joining it would block until its accept timed out
+    # and would add that wait to every run of the suite.
+    for _ in range(40):
+        if got:
+            break
+        time.sleep(0.25)
+    ok &= check("the directory got a heartbeat", len(got) >= 1)
 
     # A reply arriving in pieces must not leave the board holding half a
     # token. This is the bug that produced ninety listings for one board.
@@ -2624,6 +2700,58 @@ def test_files():
         ok &= check("and the Logs area", b"Logs" in smenu)
         ok &= check("both marked so a sysop can see they are shut",
                     smenu.count(b"(staff)") >= 2)
+
+        # The Screens area listed nothing on every board until the card was
+        # seeded, and it was not a file-area bug. The area points at the
+        # screen OVERRIDE folder, which is consulted before flash at
+        # playback but which nothing ever wrote to, so on a fresh card it
+        # was an empty directory and the area correctly listed zero files.
+        # Logs looked healthy right next to it only because the caller log
+        # is actively mirrored there.
+        #
+        # So this asserts the seed, from the caller's side rather than off
+        # the filesystem: open the area a sysop would open and read what
+        # they would read.
+        # Pressed as a digit, not entered with enter_area: this session is
+        # already standing at the area menu, where Enter opens whatever the
+        # highlight is sitting on. enter_area probes with Enter to find out
+        # where it is, which at the menu is not a probe, it is a choice.
+        # Area 9, the built-in, and the number matters: the harness also
+        # configures an area4 called "Screens" pointing at admin/screens,
+        # so asserting on the NAME alone passes on the decoy. What is being
+        # tested here is the folder the screen player actually reads from.
+        #
+        # Opening an area lists it straight away, and 24 files page, so the
+        # [S9] prompt does not arrive until [More] has been cleared. Drain
+        # first, then read: waiting for the prompt before paging is a wait
+        # for something that cannot happen yet.
+        # Collected across pages rather than read once. drain() clears the
+        # buffer every time it answers a [More], so reading after it returns
+        # gets whatever came after the last page break, which for a 24 file
+        # listing is nothing. readdir order is not guaranteed either, so the
+        # file being looked for can be on any page.
+        sy.buf.clear()
+        sy.send(b"9")
+        opened = sy.wait_for(b"Screens", 6)
+        sy.pump(1.0)
+        screens = plain(sy.buf)
+        for _ in range(6):
+            if b"[More]" not in plain(sy.buf):
+                break
+            sy.buf.clear()
+            sy.send(b"y")                    # Y continues, n stops
+            sy.pump(0.8)
+            screens += plain(sy.buf)
+        drain(sy)
+        ok &= check("the built-in Screens area opens for staff", opened)
+        ok &= check("and it is not empty, which it was on every board "
+                    "before the card was seeded", b"welcome" in screens)
+        ok &= check("it holds the stock set, not one stray file",
+                    screens.count(b".an") + screens.count(b".as") >= 4)
+        sy.buf.clear()
+        sy.send(b"q")
+        sy.pump(0.5)
+
         sy.buf.clear()
         sy.send(b"q")
         sy.pump(0.5)
@@ -3649,12 +3777,15 @@ def test_mail_never_lost():
     rx.send(b"mail\r")
     ok &= check("the first message is still there",
                 rx.wait_for(b"first message from A", 5))
+    rx.send(b"d")
     ok &= check("and the caller is told one more is waiting",
                 rx.wait_for(b"1 more waiting", 4))
     rx.buf.clear()
     rx.send(b"mail\r")
     ok &= check("the second message survived too",
                 rx.wait_for(b"second message from B", 5))
+    rx.send(b"d")
+    rx.wait_for(b"Deleted", 4)
     rx.buf.clear()
     rx.send(b"mail\r")
     ok &= check("and then the box is empty", rx.wait_for(b"No mail", 4))
@@ -3678,8 +3809,114 @@ def test_mail_never_lost():
     rx.send(b"mail\r")
     ok &= check("the refused message displaced nothing",
                 rx.wait_for(b"filler 0", 5))
+    rx.send(b"d")
+    rx.wait_for(b"Deleted", 4)
 
     for c in (rx, a, b):
+        drain(c)
+        c.close()
+    return ok
+
+
+def test_mail_rsd():
+    """Reply, Save or Delete: reading a message is not disposing of it.
+
+    Reading used to destroy. The message was shown and cleared in the same
+    breath, so a caller whose line dropped mid-read, or who was paged, had
+    simply lost it with nothing to go back to. Now nothing moves until one
+    of three keys says what should happen, and each of them is a single
+    rewrite of the mailbox through a temp file and a rename, so a power cut
+    either leaves the message alone or leaves the decision made.
+
+    The three are mutually exclusive on purpose. A reply retires the message
+    it answers in the same rewrite, which is why it cannot be done as two
+    steps: delete first and a refused reply has thrown the original away,
+    send first and a failed delete leaves somebody answering it twice.
+    """
+    print("Mail: reply, save or delete")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+
+    a = ansi_login("Rsda")
+    b = ansi_login("Rsdb")
+
+    # -- Save keeps it, and a kept message can be read back ----------------
+    a.buf.clear()
+    a.send(b"mail Rsdb keep this one\r")
+    ok = check("a message to save is left", a.wait_for(b"Left for Rsdb", 5))
+
+    b.buf.clear()
+    b.send(b"mail\r")
+    ok &= check("reading offers the three choices", b.wait_for(b"[D]elete", 5))
+    b.buf.clear()
+    b.send(b"s")
+    ok &= check("S keeps it", b.wait_for(b"Kept", 4))
+    b.buf.clear()
+    b.send(b"mail\r")
+    ok &= check("a kept message is still readable",
+                b.wait_for(b"keep this one", 5))
+    b.send(b"d")
+    ok &= check("and can then be deleted", b.wait_for(b"Deleted", 4))
+
+    # -- Something deliberately kept is not news ---------------------------
+    # If it still rang "You have mail" at every login, S would be the wrong
+    # choice for the thing it exists for: holding on to something.
+    a.buf.clear()
+    a.send(b"mail Rsdb quiet please\r")
+    a.wait_for(b"Left for", 5)
+    b.buf.clear()
+    b.send(b"mail\r")
+    b.wait_for(b"[D]elete", 5)
+    b.send(b"s")
+    ok &= check("the second one is kept too", b.wait_for(b"Kept", 4))
+    b.close()
+    b = ansi_login("Rsdb", pw=TEST_PW)
+    ok &= check("a kept message does not ring at login",
+                b"You have mail" not in plain(b.buf))
+
+    # -- Reply goes back, and retires what it answers ----------------------
+    b.buf.clear()
+    b.send(b"mail\r")
+    ok &= check("the kept message is still there", b.wait_for(b"quiet please", 5))
+    b.send(b"r")
+    ok &= check("R asks who it is going to", b.wait_for(b"Reply to Rsda", 4))
+    a.buf.clear()
+    b.buf.clear()
+    b.send(b"understood\r")
+    ok &= check("the reply is sent", b.wait_for(b"Left for Rsda", 5))
+    ok &= check("and the sender is told at once", a.wait_for(b"You have mail", 5))
+    b.buf.clear()
+    b.send(b"mail\r")
+    ok &= check("replying retired the message it answered",
+                b.wait_for(b"No mail", 5))
+
+    a.buf.clear()
+    a.send(b"mail\r")
+    ok &= check("the reply reads back", a.wait_for(b"understood", 5))
+    a.send(b"d")
+    a.wait_for(b"Deleted", 4)
+
+    # -- Backing out changes nothing ---------------------------------------
+    # Two of the three choices cannot be undone, so the key that is easiest
+    # to press by accident has to be the one that loses nothing.
+    a.buf.clear()
+    a.send(b"mail Rsdb still here\r")
+    a.wait_for(b"Left for", 5)
+    b.buf.clear()
+    b.send(b"mail\r")
+    b.wait_for(b"[D]elete", 5)
+    b.buf.clear()
+    b.send(b"\x1b")
+    ok &= check("ESC leaves it unread", b.wait_for(b"Left unread", 4))
+    b.buf.clear()
+    b.send(b"mail\r")
+    ok &= check("and it is still waiting to be read",
+                b.wait_for(b"still here", 5))
+    b.send(b"d")
+    b.wait_for(b"Deleted", 4)
+
+    for c in (a, b):
         drain(c)
         c.close()
     return ok
@@ -3972,7 +4209,8 @@ def test_screens():
     ok &= check("and then to the sign-up form", c.wait_for(b"NEW ACCOUNT", 6))
 
     c.buf.clear()
-    c.send(b"pw1234\rpw1234\rScreeny\rscreeny@example.com\r\r\r\r\r")
+    c.send(b"pw1234\rpw1234\rScreeny\rscreeny@example.com\r")
+    to_save(c, b"WELCOME ABOARD")
     ok &= check("registering works", c.wait_for(b"WELCOME ABOARD", 10))
     ok &= check("a new account gets the new-user screen",
                 c.wait_for(b"YOU ARE ON THE BOARD", 8))
@@ -4062,7 +4300,8 @@ if __name__ == "__main__":
                test_bulletin(), test_idle_login(), test_busy(),
                test_screens(), test_exit_screen(),
                test_refresh_and_ctrl_l(),
-               test_binary(), test_sd(), test_files(), test_mail_never_lost(), test_xfer(),
+               test_binary(), test_sd(), test_files(), test_mail_never_lost(),
+               test_mail_rsd(), test_xfer(),
                test_upload_no_binary(), test_ymodem(),
                test_config_areas(), test_partitions()]
     if "--backup" in FLAGS:

@@ -357,6 +357,16 @@ void Term::color(ByteSink& o, Color c) {
 }
 
 // ---------------------------------------------------------------------------
+// eolClear: erase to the end of the line. See term.h for why reverse video
+// is refused.
+// ---------------------------------------------------------------------------
+bool Term::eolClear(ByteSink& o) {
+    if (!isAnsi() || rev_) return false;
+    o.puts("\x1b[K");
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // reset: default attributes
 // ---------------------------------------------------------------------------
 void Term::reset(ByteSink& o) {

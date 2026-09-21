@@ -24,6 +24,70 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.18.0, 2026-09-21
+
+The board stops going quiet for a second at a time, reading a message stops destroying it, callers choose where they land, and the room has a voice of its own.
+
+### The stall, and it was never the BBS
+
+- **Wi-Fi power save was left on, and it cost about a second at a time.** `esp_wifi_set_ps(WIFI_PS_NONE)` sat on the line after `esp_wifi_start()`. Starting the station raises `WIFI_EVENT_STA_START`, whose handler calls `esp_wifi_connect()` immediately, so that call was racing the association. Its return value was never checked, so a failure said nothing. And nothing re-applied it after a reconnect, which with `CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE` leaves the board on the IDF default of `WIFI_PS_MIN_MODEM`.
+- A station in `MIN_MODEM` sleeps between DTIM beacons and the access point buffers for it. Measured on the live board **with no callers connected at all**: median ping 13 ms, 90th percentile **1003 ms**, and seventeen of the slow samples inside a 31 ms window at exactly 1.00 s. A cluster that tight on a round number is a timer, not interference. The gateway in the same window never exceeded 1 ms. Poll the board continuously and every spike disappears.
+- It is applied in the `IP_EVENT_STA_GOT_IP` handler now, where it cannot race association and runs again after every reconnect, and the return value is checked.
+- **Why it looked like a BBS bug for weeks:** the delay lands on whoever pauses to read and then types, so it never appears while you are typing. `DASH 1` sends a frame and then goes deliberately quiet for a second, which is precisely the gap that lets the radio doze, which is why the dashboard was where it showed up worst. A strong RSSI reading made it look like anything but the radio; power save is not a signal problem.
+- **The diagnosis was reached by pinging the board**, because ICMP is answered by lwIP on core 0 and never touches the BBS loop, the timeline or the card. When the stall reproduces with nothing running, the application is not the cause.
+
+### Refresh screens send less
+
+- A refresh screen redraws from home, so every row covered the row underneath by writing spaces out to the full width. At 132 columns a DASH frame was 4485 bytes, of which 2704 were padding. It erases to end of line instead, four bytes, and the frame is 2096. PETSCII has no erase to end of line and keeps the spaces.
+- **This is a bandwidth saving and not a bug fix, and the distinction was paid for.** It was first committed with a comment claiming that a frame larger than `BBS_TL_BYTES` was written all-or-nothing and dropped whole, and that this was what stalled callers. That is not what the code does: `serviceWatch` draws row by row while the timeline has 512 bytes free and only begins a new frame once the previous one has drained, so a frame is built across as many passes as it needs. Measured on the board, a 2957 byte frame at 132 columns arrived intact every time for eighty seconds, and keypress latency during it was a flat 31 ms, so `BBS_RX_ROOM` was never starving input either. A plausible mechanism that the code does not implement is worse in a comment than no explanation at all, and both comments were corrected.
+
+### Where you land
+
+- **A caller picks where login puts them.** `Start` on the account form: `Main`, `Chat`, `Bulletin`, or `Default`. The sysop sets the board's own default with `landing` in CONFIG, and `Default` follows it, so changing the board setting moves exactly the people who never expressed a preference and nobody else.
+- `Default` is 0, which is what every account written before this existed already parses as. Nothing needs converting.
+- **`[H]ELP for commands.` moved.** It used to print to everybody at login. It is advice about the main prompt and only the main prompt, so telling somebody who is about to be dropped into the chat room to press H is directions for a place they are not going. It now prints only when the main prompt is where they actually land.
+- **A landing this board cannot do falls back to the main prompt, silently.** That is what lets `Forums` be offered before the message boards are written, and it is also right for a board that has switched chat off: nobody should be greeted with "Unknown command" because of a preference they set months ago. One consequence worth knowing: the forums choice does nothing yet.
+- **It is `Forums`, not `Bulletin`.** On this system "board" already means the BBS itself and "messages" would blur into MAIL, so forums is the word a caller who has never used a BBS already knows. It also settles a real collision: `screens/bulletin.*` is the notice screen that plays at login and is something else entirely, so the word was about to do three jobs at once. An account written by the earlier build carrying `land = bulletin` is read as `forums` and rewritten on its next save, because silently reverting somebody's choice to the board default is the kind of loss nobody thinks to look for.
+
+### The room has a voice
+
+- **Anything the board says in the room is marked `-->`.** The room has no prompt character, DDial style, so `No such command` was indistinguishable from somebody typing those words. Four columns removes the ambiguity.
+- Deliberately not on everything. `***` join and leave notices keep their own mark, because they are events rather than answers; the welcome screen is artwork, not the board talking; and the room command list gets the marker on its heading only, since an arrow on all sixteen rows turns a table into a wall.
+- **One change at `tell()` does it, decided by whether the caller is in the room.** `MAIL` at the shell and `/e` in the room run the same code and print the same sentences, and only one of the two is somebody standing in a chat room. Deciding it once is also what stops the two drifting apart.
+- `color_marker` themes it like every other part of a room line.
+- **`/s` now prints on the way in**, between the room banner and the join notices. The banner says how many are here; somebody walking in wants to know who, and making them type `/s` to find out the one thing they came in wondering is a step for nothing. Split out of `who()` so joining and `/s` cannot show different things.
+
+### The card gets the screens
+
+- **The Screens file area listed nothing on every board, and it was not a file-area bug.** The area points at the screen *override* folder, which the screen player reads before flash but which nothing ever wrote to. On a fresh card it was an empty directory and the area correctly listed zero files. Logs looked healthy beside it only because the caller log is actively mirrored there.
+- The stock screens are now copied to the card on mount, 24 files and about 21 KB, **only where the card does not already have that file**. A file on the card is somebody's edit and the whole point of the override is that it wins, so this fills gaps and never overwrites. Flash is never written, so pulling the card still falls back to the set the board shipped with.
+- A copy that fails anywhere removes its own half-file. A truncated screen on the card would override the good flash copy and play as line noise to every caller until somebody noticed.
+
+### Fixed
+
+- **`EXAMPLE` reported a path that does not exist.** It printed its storage path with `%.40s`, which is a truncation and not a pad, so a data directory more than about forty characters deep reported `.../p/example/co`. Same shape as the `%9.9s` that had `SYS` showing the board's address as `192.168.0`. A long line wrapping is untidy; a cut path is a wrong answer somebody goes looking for on disk.
+- **A static assert that was wrong about its own record.** The `MailRec` guard summed field widths to 563 and compared that with `sizeof`, which is 564: it missed two bytes of padding that have always sat between `from[]` and `at`, and which `flags` and `spare` now occupy. It failed a layout that was byte-for-byte unchanged on disk. It asserts the total size and the offset of `at` now, which is what a file format is actually made of.
+- **Three tests walked to `[ Save ]` by counting Enters.** Adding one field to the sign-up form left every registration sitting on the form, and the suite reported it as "bad email refused". Replaced with a `to_save()` helper that presses until the board gives a verdict, so the next field cannot do this again.
+- COMMANDS.md still said version 0.10.0 and six caller nodes.
+
+### Mail: Reply, Save or Delete
+
+- **Reading is no longer disposing.** `MAIL` used to show a message and clear it in the same breath, so a caller whose line dropped mid-read, or who was paged, had simply lost it with nothing to go back to. The message is now shown and then `[R]eply  [S]ave  [D]elete:` asks what should happen to it. Nothing is touched until one of those keys is pressed.
+- Each of the three is a single rewrite of the mailbox through a temp file and a rename, so a power cut either leaves the message alone or leaves the decision made, never half of it.
+- **The three are mutually exclusive on purpose, and a reply retires the message it answers in the same rewrite.** That cannot be done as two steps without choosing which way to fail: delete first and a refused reply has thrown the original away, send first and a failed delete leaves somebody answering the same message twice. `mailSend` gained a `dropIdx` and now returns whether it stored anything, so a reply refused for a full box leaves the original sitting there to try again with.
+- A reply takes the slot the message it answers gives back, so a board whose mail is full can still be replied to.
+- **Save is `MF_KEPT`, not a second copy.** A kept message stays in the box, stops ringing "You have mail", and still counts against the limit, because it is still taking up room somebody else cannot use. `mailWaiting` and the room's own notice count unread mail rather than anything addressed to you, or S would be the wrong choice for the one thing it exists for.
+- The abort keys and Enter leave the message unread, which is the outcome that loses nothing. Any other key is ignored rather than guessed at, because two of the three choices cannot be undone.
+- **A caller reading mail at the shell is not in the chat room, even though the plugin owns their keys.** `MAIL` borrows the session so it can read single keys, and the code was answering "is this caller in the room" with "does the plugin own this session", which stopped being the same question. Split into `joined` (counted in the room, shown in `/s`) and `listening` (ready to be shown a line now). Without it, somebody reading mail at the shell prompt would be counted in the room and sent everything anybody said.
+- Room lines are held while a caller is deciding and flushed when they are done, the same path that already holds lines for somebody part way through typing. Nothing is lost and nothing lands across the prompt.
+- **A static assert that was wrong about its own record.** The guard on `MailRec` summed the field widths to 563 and compared that with `sizeof`, which is 564: it missed the two bytes of padding that have always sat between `from[]` and `at`, and which `flags` and `spare` now occupy. So it failed a layout that was byte-for-byte correct and unchanged on disk. It now asserts the total size and the offset of `at`, which is what a file format is actually made of.
+
+### Files
+
+- **The file door stops wiping its own banner.** Moving the highlight cleared the screen and redrew, so `screens/files` flashed away on the first cursor key and the door looked like a menu rather than a way in. The menu now redraws over exactly the rows it drew last time and leaves everything above it alone. Terminals that cannot move the cursor fall back to the clear, as before.
+- **A finished upload is asked what it is.** A file with no description is a filename in a list, which tells the next caller nothing, and asking later means asking somebody who has moved on. The description is stored beside the file in the staging folder's own `FILES.BBS` and carried across when the upload is approved, so the uploader's own words survive the approval step.
+- Somebody who could have approved the upload does not queue behind themselves: a caller with delete rights on the area goes straight live. Making a sysop approve their own upload is ceremony rather than review.
+
 ## 0.17.5, 2026-09-20
 
 File transfer, and the file area finally does what a file area is for.

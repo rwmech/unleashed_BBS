@@ -59,6 +59,37 @@ const UserField kUserFields[] = {
 };
 const uint8_t kUserFieldCount = sizeof(kUserFields) / sizeof(kUserFields[0]);
 
+// The landing names, in one place, because the file, the form and the
+// config page all have to agree on them and three copies would not.
+namespace {
+const char* const kLandKeys[]  = { "default", "main", "chat", "forums" };
+const char* const kLandVerbs[] = { nullptr,   nullptr, "CHAT", "FORUMS" };
+}
+const char* users::landKey(uint8_t v) { return kLandKeys[v < 4 ? v : 0]; }
+const char* users::landVerb(uint8_t v) { return kLandVerbs[v < 4 ? v : 0]; }
+
+uint8_t users::landFromKey(const char* s) {
+    if (!s || !*s) return LAND_DEFAULT;
+    // "bulletin" was what this was called for one unreleased build. Accept
+    // it so an account written by that build keeps the landing its owner
+    // chose, instead of silently reverting to the board default, which is
+    // the kind of quiet loss nobody thinks to look for. It is never written
+    // back: the next save records "forums".
+    {
+        const char* a = s; const char* b = "bulletin";
+        while (*a && *b && toupper(static_cast<unsigned char>(*a)) ==
+                           toupper(static_cast<unsigned char>(*b))) { ++a; ++b; }
+        if (!*a && !*b) return LAND_FORUMS;
+    }
+    for (uint8_t i = 0; i < 4; ++i) {
+        const char* a = s; const char* b = kLandKeys[i];
+        while (*a && *b && toupper(static_cast<unsigned char>(*a)) ==
+                           toupper(static_cast<unsigned char>(*b))) { ++a; ++b; }
+        if (!*a && !*b) return i;
+    }
+    return LAND_DEFAULT;
+}
+
 namespace {
 
 // ---------------------------------------------------------------------------
@@ -279,6 +310,7 @@ private:
         else if (!strcmp(key, "day"))         { if (number(iss, key, val, 0xFFFFFFFFu, n)) u.dayKey = n; }
         else if (!strcmp(key, "day_minutes")) { if (number(iss, key, val, 0xFFFFu, n)) u.dayMinutes = static_cast<uint16_t>(n); }
         else if (!strcmp(key, "locked"))      { u.locked = ieq(val, "yes") || !strcmp(val, "1"); }
+        else if (!strcmp(key, "land"))        { u.land = users::landFromKey(val); }
         else if (!strcmp(key, "level")) {
             if      (ieq(val, "sysop")) u.level = static_cast<uint8_t>(Access::Sysop);
             else if (ieq(val, "co1"))   u.level = static_cast<uint8_t>(Access::CoSysop1);
@@ -304,11 +336,12 @@ void writeRecord(FILE* f, const UserRec& u) {
     }
     static const char* kLevels[] = { "user", "co2", "co1", "sysop" };
     fprintf(f, "pass = %s\nlevel = %s\ncreated = %u\nlast_call = %u\ncalls = %u\nday = %u\n"
-               "day_minutes = %u\nlocked = %s\n\n",
+               "day_minutes = %u\nlocked = %s\nland = %s\n\n",
             u.pass, kLevels[u.level < 4 ? u.level : 0],
             static_cast<unsigned>(u.created), static_cast<unsigned>(u.lastCall),
             static_cast<unsigned>(u.calls), static_cast<unsigned>(u.dayKey),
-            static_cast<unsigned>(u.dayMinutes), u.locked ? "yes" : "no");
+            static_cast<unsigned>(u.dayMinutes), u.locked ? "yes" : "no",
+            users::landKey(u.land));
 }
 
 // ---------------------------------------------------------------------------

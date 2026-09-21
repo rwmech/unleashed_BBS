@@ -77,6 +77,12 @@ struct UserRec {
     uint16_t calls      = 0;
     uint32_t dayKey     = 0;           // clk::dayKey of dayMinutes
     uint16_t dayMinutes = 0;           // minutes used that day
+    // Where this caller lands after login.
+    //
+    // LAND_DEFAULT is 0, which is what every account written before this
+    // existed parses as, so nothing needs migrating and an account that has
+    // never been asked simply follows whatever the sysop set.
+    uint8_t  land       = 0;
     bool     locked     = false;       // sysop lock
     uint8_t  level      = 0;           // staff rank, an Access value: 0 user,
                                        // 1 co-sysop 2, 2 co-sysop 1, 3 sysop.
@@ -84,6 +90,24 @@ struct UserRec {
                                        // staff may only change their own level
                                        // and below.
 };
+
+// Where a caller is put when they log in. The board's own default fills in
+// for LAND_DEFAULT, and a landing whose command does not exist on this board
+// falls back to the main prompt rather than failing, which is what lets
+// FORUMS be offered before the message boards are written.
+//
+// "Forums" rather than "bulletin": on this system "board" already means the
+// BBS itself, and "messages" would blur into MAIL. Forums is the word a
+// caller who has never used a BBS already knows. It also settles a genuine
+// collision, because screens/bulletin.* is the notice screen that plays at
+// login and is something else entirely.
+enum : uint8_t { LAND_DEFAULT = 0, LAND_MAIN = 1, LAND_CHAT = 2, LAND_FORUMS = 3 };
+
+namespace users {
+const char* landKey(uint8_t v);          // "default" | "main" | "chat" | "bulletin"
+uint8_t     landFromKey(const char* s);
+const char* landVerb(uint8_t v);         // the command that puts them there, or null
+}
 
 enum UserFieldFlag : uint8_t {
     UF_NONE     = 0,

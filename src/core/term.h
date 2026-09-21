@@ -135,6 +135,16 @@ public:
     void color(ByteSink& o, Color c);
     void reset(ByteSink& o);                       // default color, no reverse
     void reverse(ByteSink& o, bool on);
+
+    // eolClear: erase from the cursor to the end of the line, and say
+    // whether it happened. False means the caller has to pad with spaces
+    // itself, which is the only option on PETSCII.
+    //
+    // Refused while reverse video is on. The erase paints with the current
+    // attributes, so under a reverse bar it would extend the bar to the
+    // edge of the screen rather than clear the row, and terminals do not
+    // agree with each other about it. Spaces are unambiguous there.
+    bool eolClear(ByteSink& o);
     void left(ByteSink& o, uint8_t n);             // non-destructive moves
     void right(ByteSink& o, uint8_t n);
     void up(ByteSink& o, uint8_t n);

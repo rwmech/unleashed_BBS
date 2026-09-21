@@ -198,10 +198,17 @@ const Command kCommands[] = {
       } },
     { "EXAMPLE", "", 0, CF_ADMIN, "EXAMPLE", "example: settings (admin)",
       [](Bbs& b, Session& s, const char*, uint32_t) {
-          char buf[80];
+          // The path is printed whole. It used to be "%.40s", which is a
+          // truncation and not a pad, so a data directory more than about
+          // forty characters deep reported a path that does not exist:
+          // ".../p/example/co". A long line wrapping is untidy; a cut path
+          // is a wrong answer somebody goes looking for on disk. Same shape
+          // as the "%9.9s" that had SYS reporting the board's address as
+          // "192.168.0".
+          char buf[160];
           char path[96] = "(none)";
           plugins::path(g_index, "count", path, sizeof(path));
-          snprintf(buf, sizeof(buf), "greeting=%.20s  file=%.40s", g_greeting, path);
+          snprintf(buf, sizeof(buf), "greeting=%.20s  file=%s", g_greeting, path);
           s.term.color(s.tl, Color::Yellow);
           s.term.text(s.tl, buf);
           b.prompt(s);

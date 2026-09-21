@@ -452,7 +452,12 @@ void Bbs::rowText(Session& s, Color c, const char* text, bool newline) {
         // and let the terminal layer do the counting: it is the only thing
         // that knows which bytes are a character.
         uint8_t used = t.textCols(s.tl, text, static_cast<uint8_t>(rowWidth(s)));
-        for (size_t i = used; i < rowWidth(s); ++i) t.ch(s.tl, ' ');
+        // Erase the rest of the row rather than writing spaces across it.
+        // See rowEnd: this padding was the bulk of a refresh frame. It is a
+        // bandwidth saving and not the fix for the stall callers reported,
+        // which was Wi-Fi power save.
+        if (!t.eolClear(s.tl))
+            for (size_t i = used; i < rowWidth(s); ++i) t.ch(s.tl, ' ');
     } else {
         t.text(s.tl, text);
     }
@@ -471,8 +476,31 @@ void Bbs::rowSeg(Session& s, Color c, const char* text, uint8_t& col) {
 }
 
 void Bbs::rowEnd(Session& s, uint8_t col) {
-    if (s.watch != ListKind::None)
-        for (uint8_t i = col; i < rowWidth(s); ++i) s.term.ch(s.tl, ' ');
+    // A refresh screen redraws from home, so every row has to cover the row
+    // underneath it. That used to mean writing spaces out to the full width:
+    // at 132 columns a DASH frame was 4485 bytes of which 2704 were padding.
+    // Four bytes do the same job on any ANSI terminal, and the frame is now
+    // 2096. PETSCII has no erase to end of line, so it keeps the spaces, and
+    // its 40 column frames were never large anyway.
+    //
+    // **This is a bandwidth saving, not a bug fix, and the distinction was
+    // paid for.** The first version of this comment said a frame larger than
+    // BBS_TL_BYTES was dropped whole and that this was what stalled callers.
+    // That is not what the code does: serviceWatch draws row by row while
+    // the timeline has 512 bytes free and only begins a new frame once the
+    // old one has drained, so a frame is built across as many passes as it
+    // needs. Measured on the board, a 2957 byte WHO frame at 132 columns
+    // arrived intact every time for eighty seconds, and keypress latency
+    // during it was a flat 31 ms, so BBS_RX_ROOM was never starving input
+    // either. The stall callers actually saw was Wi-Fi power save; see the
+    // IP_EVENT_STA_GOT_IP handler in main.cpp.
+    //
+    // Worth keeping anyway: less to send is less to send, and it shortens
+    // the quiet gap a refresh screen leaves between frames.
+    if (s.watch != ListKind::None) {
+        if (!s.term.eolClear(s.tl))
+            for (uint8_t i = col; i < rowWidth(s); ++i) s.term.ch(s.tl, ' ');
+    }
     s.term.nl(s.tl);
 }
 

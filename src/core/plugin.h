@@ -116,7 +116,14 @@ struct PluginInfo {
 // way to reach it was to know it existed and edit the file by hand. A
 // declared setting shows up on a fresh board with its live value in it.
 // ---------------------------------------------------------------------------
-enum : uint8_t { PS_TEXT, PS_NUM, PS_YESNO };
+// PS_INFO: shown on the page, never editable, never written back.
+//
+// For a value the plugin does not own. The board's name belongs to the core
+// and announce only publishes it, so announce shows it and a sysop who wants
+// it changed is changing it in one place. The alternative, two editable
+// fields both labelled "Board" on two pages, is a way of asking somebody to
+// keep two copies in step by hand.
+enum : uint8_t { PS_TEXT, PS_NUM, PS_YESNO, PS_INFO };
 
 struct PluginSetting {
     const char* key;      // key inside the [plugin:<name>] section

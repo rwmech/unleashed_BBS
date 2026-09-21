@@ -70,6 +70,9 @@
 #include <cstring>
 #include <cstdlib>
 
+#include <dirent.h>
+#include <sys/stat.h>
+
 using bbsu::ieq;
 
 namespace {
@@ -171,6 +174,94 @@ void readKey(void* ctx, const char* key, const char* value) {
 // says so; refusing to start would take the SD command away with it, and
 // that is the one command somebody troubleshooting their wiring needs.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// copyOne: one file, flash to card, all or nothing.
+//
+// A partly written screen is worse than no screen at all, because the card
+// wins at playback: a truncated welcome.ans would override the good flash
+// copy and play as line noise to every caller until somebody noticed. So a
+// copy that fails anywhere takes its own half-file with it and leaves the
+// flash copy to be found on the next lookup.
+// ---------------------------------------------------------------------------
+bool copyOne(const char* from, const char* to) {
+    FILE* in = fopen(from, "rb");
+    if (!in) return false;
+    FILE* out = fopen(to, "wb");
+    if (!out) { fclose(in); return false; }
+
+    char   buf[256];
+    size_t n;
+    bool   ok = true;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) { ok = false; break; }
+    }
+    if (ferror(in)) ok = false;
+    fclose(in);
+    if (fclose(out) != 0) ok = false;      // FAT reports a full card here
+    if (!ok) remove(to);
+    return ok;
+}
+
+// ---------------------------------------------------------------------------
+// seedScreens: put the stock screens on the card the first time it is seen.
+//
+// The card's screens folder was only ever an override directory and nothing
+// wrote to it, so on a fresh card it was empty, the Screens file area listed
+// nothing, and a sysop had no way to discover that editing screens was even
+// possible. Logs looked fine next to it only because the caller log is
+// actively mirrored there.
+//
+// Copy only what the card does not already have. A file on the card is
+// somebody's edit and the whole point of the override is that it wins, so
+// this never overwrites: it fills gaps. Flash is never written, which is
+// what keeps the card optional. Pull it and the board falls back to the set
+// it shipped with, exactly as before.
+//
+// ~21 KB across 24 files, done once at mount while no caller is waiting.
+// ---------------------------------------------------------------------------
+void seedScreens() {
+    constexpr size_t kNameCap = 64;        // longest screen filename copied
+    const char* base = plat::sdBase();
+    if (!g_running || !g_screens || !base[0]) return;
+
+    char dst[96], src[96];
+    snprintf(dst, sizeof(dst), "%s/%s", base, BBS_SD_SCREEN_DIR);
+    snprintf(src, sizeof(src), "%s/%s", plat::fsBase(), BBS_SCREEN_DIR);
+
+    mkdir(dst, 0755);                      // already there is success
+
+    DIR* d = opendir(src);
+    if (!d) return;                        // nothing shipped to seed from
+
+    uint8_t made = 0, failed = 0;
+    char    from[208], to[208];
+    for (struct dirent* e = readdir(d); e; e = readdir(d)) {
+        if (e->d_name[0] == '.') continue; // . .. and anything hidden
+
+        // A name too long to hold is skipped rather than truncated. A cut
+        // path does not fail, it names a different file, and the one thing
+        // this function must never do is write a screen under a name
+        // somebody did not choose. No real screen name is near this.
+        size_t len = strlen(e->d_name);
+        if (!len || len > kNameCap) continue;
+
+        snprintf(to, sizeof(to), "%s/%.*s", dst, static_cast<int>(kNameCap), e->d_name);
+        struct stat st;
+        if (stat(to, &st) == 0) continue;  // the card's own copy always wins
+        snprintf(from, sizeof(from), "%s/%.*s", src, static_cast<int>(kNameCap), e->d_name);
+        if (copyOne(from, to)) ++made; else ++failed;
+    }
+    closedir(d);
+
+    if (failed)
+        plat::log("sd: seeded %u screens to the card, %u could not be written",
+                  static_cast<unsigned>(made), static_cast<unsigned>(failed));
+    else if (made)
+        plat::log("sd: seeded %u screens to the card",
+                  static_cast<unsigned>(made));
+}
+
 bool start(Bbs& bbs) {
     g_bbs   = &bbs;
     g_index = plugins::indexOf(kName);
@@ -195,6 +286,10 @@ bool start(Bbs& bbs) {
 
     if (plat::sdMount(g_pins, g_why, sizeof(g_why))) {
         snprintf(g_why, sizeof(g_why), "%s", "mounted");
+        // Only on a mount we actually performed. The early return above
+        // means a CONFIG save does not come through here, so saving an
+        // unrelated setting never walks the screens folder.
+        seedScreens();
     } else {
         plat::log("sd: no card: %s", g_why);
     }
@@ -313,6 +408,7 @@ const Command kCommands[] = {
               t.nl(tl);
               if (plat::sdMount(g_pins, g_why, sizeof(g_why))) {
                   snprintf(g_why, sizeof(g_why), "%s", "mounted");
+                  seedScreens();          // a fresh card gets the stock set
                   const plat::SdInfo& i = cardInfo(true);
                   t.color(tl, Color::LightGreen);
                   snprintf(buf, sizeof(buf), "Mounted: %.10s, %u MB free.", i.type,

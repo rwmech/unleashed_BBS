@@ -62,6 +62,19 @@ constexpr uint8_t kListTop = 4;     // user manager: first list row
 
 const char* kLevelNames[] = { "User", "Co2", "Co1", "Sysop" };
 
+// The Start field. "Default" is a real choice and the one every existing
+// account already has: it means "wherever the sysop points callers", so a
+// board that changes its mind moves everybody who never expressed one.
+const char* kLandNames[] = { "Default", "Main", "Chat", "Forums" };
+const char* kLandPick    = "Default|Main|Chat|Forums";
+
+const char* landText(uint8_t v) { return kLandNames[v < 4 ? v : 0]; }
+
+uint8_t landValue(const char* text) {
+    for (uint8_t i = 0; i < 4; ++i) if (ieq(text, kLandNames[i])) return i;
+    return 0;
+}
+
 // levelText / levelValue: the Level form field
 const char* levelText(uint8_t level) { return kLevelNames[level < 4 ? level : 0]; }
 
@@ -161,12 +174,16 @@ void Bbs::startForm(Session& s, FormKind kind, uint32_t now) {
             addField(s, n, "Password", s.pwA, BBS_PASS_MAX, FF_MASK | FF_REQUIRED);
             addField(s, n, "Again", s.pwB, BBS_PASS_MAX, FF_MASK | FF_REQUIRED);
             n = addUserFields(s, n);
+            snprintf(s.landBuf, sizeof(s.landBuf), "%s", landText(s.edit.land));
+            addField(s, n, "Start", s.landBuf, 8, FF_CYCLE, kLandPick);
             break;
         }
         case FormKind::Profile:
             title = "YOUR PROFILE";
+            snprintf(s.landBuf, sizeof(s.landBuf), "%s", landText(s.edit.land));
             addField(s, n, "Handle", s.edit.handle, BBS_USER_MAX, FF_READONLY);
             n = addUserFields(s, n);
+            addField(s, n, "Start", s.landBuf, 8, FF_CYCLE, kLandPick);
             break;
         case FormKind::Password:
             title = "CHANGE PASSWORD";
@@ -182,8 +199,14 @@ void Bbs::startForm(Session& s, FormKind kind, uint32_t now) {
             addField(s, n, "Handle", s.edit.handle, BBS_USER_MAX, FF_REQUIRED);
             addField(s, n, "Password", s.pwA, BBS_PASS_MAX, FF_MASK | FF_REQUIRED);
             n = addUserFields(s, n);
+            strcpy(s.landBuf, "Default");
             addField(s, n, "Level", s.levelBuf, 5, FF_CYCLE, levelChoices(s.level));
             addField(s, n, "Locked", s.yesno, 1, FF_YESNO);
+            // Last, after the staff controls. Level and Locked are things
+            // staff do TO an account; Start is the account holder's own
+            // preference, and it reads better at the end than wedged
+            // between the profile and the rank.
+            addField(s, n, "Start", s.landBuf, 8, FF_CYCLE, kLandPick);
             break;
         case FormKind::UserEdit:
             title = "EDIT ACCOUNT";
@@ -192,8 +215,10 @@ void Bbs::startForm(Session& s, FormKind kind, uint32_t now) {
             addField(s, n, "Handle", s.edit.handle, BBS_USER_MAX, FF_REQUIRED);
             addField(s, n, "New pass", s.pwA, BBS_PASS_MAX, FF_MASK);
             n = addUserFields(s, n);
+            snprintf(s.landBuf, sizeof(s.landBuf), "%s", landText(s.edit.land));
             addField(s, n, "Level", s.levelBuf, 5, FF_CYCLE, levelChoices(s.level));
             addField(s, n, "Locked", s.yesno, 1, FF_YESNO);
+            addField(s, n, "Start", s.landBuf, 8, FF_CYCLE, kLandPick);
             break;
         default:
             return;
@@ -285,6 +310,7 @@ void Bbs::formSave(Session& s, uint32_t now) {
             if (strcmp(s.pwA, s.pwB))          { s.form.fail(2, "The passwords do not match", t, tl); return; }
             if (!checkUserFields(s, 3)) return;
             users::setPassword(s.edit, s.pwA);
+            s.edit.land    = landValue(s.landBuf);
             s.edit.created = clk::epoch();
             users::Result r = users::add(s.edit);
             if (r == users::Result::Exists) { s.form.fail(0, "That handle was just taken", t, tl); return; }
@@ -318,6 +344,7 @@ void Bbs::formSave(Session& s, uint32_t now) {
                 return;
             }
             copyFields(s.edit, cur);
+            cur.land = landValue(s.landBuf);
             users::Result r = users::update(s.user, cur);
             formDone(s, r == users::Result::Ok ? Color::LightGreen : Color::LightRed,
                      r == users::Result::Ok ? "Profile saved." : "Could not save the profile.");
@@ -378,6 +405,7 @@ void Bbs::formSave(Session& s, uint32_t now) {
             }
             cur.locked = s.yesno[0] == 'Y';
             cur.level  = wantLevel;
+            cur.land   = landValue(s.landBuf);
             if (*s.pwA) users::setPassword(cur, s.pwA);
             s.edit = cur;
             users::Result r = adding ? users::add(cur) : users::update(s.origHandle, cur);

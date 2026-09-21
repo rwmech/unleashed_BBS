@@ -604,7 +604,7 @@ namespace {
 // Field kinds. The form widget only knows about text, masks and cycles;
 // the kind is what CONFIG checks before anything reaches the file.
 // CK_SUB is the odd one: not a value at all, a button that opens a page.
-enum : uint8_t { CK_TEXT, CK_NUM, CK_YESNO, CK_LEVEL, CK_PASS, CK_SUB };
+enum : uint8_t { CK_TEXT, CK_NUM, CK_YESNO, CK_LEVEL, CK_PASS, CK_SUB, CK_INFO };
 
 struct CfgField {
     const char* key;      // key in system.cfg
@@ -626,6 +626,10 @@ const CfgField kBoard[] = {
     { "ntp_server",        "NTP",      CK_TEXT, 0, 0, 40 },
     { "idle_minutes",      "Idle min", CK_NUM,  1, 240, 4 },
     { "activity_led_gpio", "LED gpio", CK_NUM,  0, 39, 2 },
+    // Where a caller goes when their own account has not said. An account
+    // set to anything other than Default overrides this, so changing it
+    // moves exactly the people who never expressed a preference.
+    { "landing",           "Land on",  CK_TEXT, 0, 0, 8 },
 };
 
 const CfgField kLimits[] = {
@@ -662,12 +666,24 @@ struct CfgPage {
     uint8_t         count;
 };
 
+// CFG_PAGE: the field count comes from the array, never from a number
+// typed next to it.
+//
+// This was five hand-written counts, and kBoard's said 5 while the table
+// held 7. The last two rows simply did not exist as far as CONFIG was
+// concerned: activity_led_gpio had been unreachable from the board since
+// the day it was added, and the only symptom was a field nobody could
+// find. Nothing warns, because a short count is a perfectly valid way to
+// describe a shorter page.
+#define CFG_PAGE(name, title, what, arr) \
+    { name, title, what, arr, static_cast<uint8_t>(sizeof(arr) / sizeof((arr)[0])) }
+
 const CfgPage kPages[] = {
-    { "board",    "BOARD",           "name, clock, idle timeout, LED", kBoard, 5 },
-    { "limits",   "TIME LIMITS",     "minutes per call and per day",   kLimits, 5 },
-    { "accounts", "ACCOUNTS",        "sign-ups and guest calls",       kAccounts, 3 },
-    { "backup",   "BACKUP WINDOW",   "port, how long it stays open",   kBackup, 3 },
-    { "staff",    "STAFF PASSWORDS", "sysop and co-sysop passwords",   kStaff, 3 },
+    CFG_PAGE("board",    "BOARD",           "name, clock, idle, LED, landing", kBoard),
+    CFG_PAGE("limits",   "TIME LIMITS",     "minutes per call and per day",    kLimits),
+    CFG_PAGE("accounts", "ACCOUNTS",        "sign-ups and guest calls",        kAccounts),
+    CFG_PAGE("backup",   "BACKUP WINDOW",   "port, how long it stays open",    kBackup),
+    CFG_PAGE("staff",    "STAFF PASSWORDS", "sysop and co-sysop passwords",    kStaff),
 };
 constexpr uint8_t kPageCount = sizeof(kPages) / sizeof(kPages[0]);
 
@@ -797,6 +813,7 @@ void cfgLiveValue(const char* key, char* out, size_t n) {
     else if (!strcmp(key, "tz"))                    snprintf(out, n, "%.*s", static_cast<int>(n) - 1, c.tz);
     else if (!strcmp(key, "ntp_server"))            snprintf(out, n, "%.*s", static_cast<int>(n) - 1, c.ntpServer);
     else if (!strcmp(key, "idle_minutes"))          snprintf(out, n, "%u", c.idleMinutes);
+    else if (!strcmp(key, "landing"))               snprintf(out, n, "%s", users::landKey(c.landing));
     else if (!strcmp(key, "activity_led_gpio"))     snprintf(out, n, "%d", c.ledGpio);
     else if (!strcmp(key, "call_minutes"))          snprintf(out, n, "%u", c.callMinutes);
     else if (!strcmp(key, "day_minutes"))           snprintf(out, n, "%u", c.dayMinutes);
@@ -1019,6 +1036,7 @@ void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now) {
             const PluginSetting& ps = pl->settings[i];
             uint8_t kind = ps.kind == PS_NUM   ? CK_NUM
                          : ps.kind == PS_YESNO ? CK_YESNO
+                         : ps.kind == PS_INFO  ? CK_INFO
                                                : CK_TEXT;
             uint8_t cap = ps.cap < kValueMax ? ps.cap : kValueMax;
             // A packed setting is a button, not a box: the parts are a page
@@ -1078,6 +1096,9 @@ void Bbs::configOpenPage(Session& s, uint8_t focus, uint32_t now) {
         if (f.kind == CK_YESNO) { flags |= FF_CYCLE; choices = kYesNo; }
         if (f.kind == CK_LEVEL) { flags |= FF_CYCLE; choices = kLevels; }
         if (f.kind == CK_PASS)  flags |= FF_MASK;
+        // Shown so a sysop can see what this plugin is working with, and
+        // read-only because something else owns it.
+        if (f.kind == CK_INFO)  flags |= FF_READONLY;
         if (f.kind == CK_SUB) {
             flags |= FF_ACTION;
             cfgSummary(buf2, g_cfgSum[i], sizeof(g_cfgSum[0]));
@@ -1105,6 +1126,7 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
         const CfgField& f = g_cfgPage->fields[i];
         const char* v = g_cfgBuf[i];
         if (f.kind == CK_SUB) continue;                              // its own page writes it
+        if (f.kind == CK_INFO) continue;                             // somebody else owns it
         if (f.kind == CK_PASS && !strcmp(v, kMasked)) continue;      // untouched
         if (!strcmp(v, g_cfgWas[i])) continue;                       // nothing to write
         if (!*v && (f.kind == CK_YESNO || f.kind == CK_LEVEL)) continue;

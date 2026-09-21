@@ -94,6 +94,7 @@
 #include "../core/plugin.h"
 #include "../platform/platform.h"
 
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -143,13 +144,43 @@ constexpr uint8_t    kMailDays   = 14;    // how long one waits to be read
 // It is not private. Anyone with the board in their hands can read the
 // file, and the sysop can read it from a backup. Say so in the docs.
 // ---------------------------------------------------------------------------
+// MF_KEPT: read and deliberately kept, rather than waiting to be read.
+//
+// A kept message does not ring "You have mail", is skipped when MAIL looks
+// for something new, and still counts against the box, because it is still
+// taking up room somebody else cannot use.
+enum : uint8_t { MF_NONE = 0, MF_KEPT = 1 };
+
 struct MailRec {
     char     to[BBS_USER_MAX + 1];
     char     from[BBS_USER_MAX + 1];
+    // flags sits in space this record was already wasting: two bytes of
+    // padding before the uint32_t. So sizeof(MailRec) does not move and a
+    // mail.dat written by an older build still parses, with its padding
+    // zeroed by the memset every write has always done, which reads as
+    // MF_NONE: not yet read. Nobody's mail is lost to the upgrade.
+    uint8_t  flags;
+    uint8_t  spare;
     uint32_t at;                          // epoch when it was left
     uint16_t len;
     char     text[kMailChars + 1];
 };
+
+// If either of these ever fails, the record moved and every existing
+// mailbox is unreadable. Say so at compile time rather than at somebody's
+// board. 564 bytes, with at at offset 44, is what every mail.dat on every
+// board out there was written with.
+//
+// A sum of the field sizes is NOT the check. It comes to 563, because it
+// misses the two bytes of padding that have always sat between from[] and
+// at: exactly the two bytes flags and spare now occupy. Written that way
+// the assert failed a layout that was in fact byte-for-byte correct. A file
+// format is made of offsets and a total size, not of a list of field
+// widths.
+static_assert(sizeof(MailRec) == 564,
+              "MailRec grew: old mail.dat files will not parse");
+static_assert(offsetof(MailRec, at) == 44,
+              "MailRec fields moved: old mail.dat files will not parse");
 
 // The room buffer. It is claimed once when the plugin starts and given back
 // when it stops, never in the BBS loop. history = in the config sizes it:
@@ -169,6 +200,22 @@ Color    g_cOld    = Color::DarkGrey;      // history, on the way in
 Color    g_cNotice = Color::Yellow;        // *** joined, left, kicked
 Color    g_cRoom   = Color::Cyan;          // banner, /s and the like
 Color    g_cPriv   = Color::Purple;        // a line meant for one caller
+Color    g_cMark   = Color::Cyan;          // the --> on a line from the board
+
+// kMark: what the board says, versus what a person said.
+//
+// DDial and Gtalk both marked the system's own voice so it could not be
+// mistaken for somebody talking, and this room needs it more than they did
+// because a chat line here has no prompt character in front of it. Without
+// a marker "No such command" looks exactly like a caller typing "No such
+// command".
+//
+// Deliberately not on everything. A join or a leave is already marked with
+// *** and reads as an event rather than as an answer; the welcome screen is
+// somebody's artwork and is not the board talking; and the room command
+// list gets it on the heading only, because putting an arrow on all sixteen
+// rows turns a table into a wall.
+const char kMark[] = "--> ";
 
 ChatLine* g_hist     = nullptr;        // g_histMax lines, allocated in start()
 uint16_t g_histMax   = kHistDef;       // what the config asked for
@@ -180,6 +227,16 @@ uint16_t g_rate      = kRateDef;       // lines a minute one caller may send
 
 char     g_mailTo[kMailSlots][BBS_USER_MAX + 1] = {};   // who has a message waiting
 uint32_t g_mailAt[kMailSlots] = {};                     // and when it was left
+uint8_t  g_mailFl[kMailSlots] = {};                     // MF_KEPT once read and kept
+
+// What a caller is doing with the message they were just shown. The plugin
+// owns the session while this is set, which is how a shell command gets to
+// read single keys.
+enum : uint8_t { MM_NONE = 0, MM_CHOOSE, MM_REPLY };
+uint8_t  g_mailMode[BBS_MAX_NODES + 2] = {};
+int16_t  g_mailIdx [BBS_MAX_NODES + 2] = {};            // the record in hand
+bool     g_mailRoom[BBS_MAX_NODES + 2] = {};            // read from inside the room
+char     g_mailWho [BBS_MAX_NODES + 2][BBS_USER_MAX + 1] = {};   // who to reply to
 uint8_t  g_mailSlots = kMailSlots;                      // the board's own limit
 uint16_t g_mailChars = kMailChars;
 uint8_t  g_mailDays  = kMailDays;
@@ -202,6 +259,7 @@ void readKey(void* ctx, const char* key, const char* value) {
     else if (!strcmp(key, "color_old"))    g_cOld    = colorByName(value, g_cOld);
     else if (!strcmp(key, "color_notice")) g_cNotice = colorByName(value, g_cNotice);
     else if (!strcmp(key, "color_room"))   g_cRoom   = colorByName(value, g_cRoom);
+    else if (!strcmp(key, "color_marker")) g_cMark   = colorByName(value, g_cMark);
     else if (!strcmp(key, "color_private")) g_cPriv  = colorByName(value, g_cPriv);
     else if (!strcmp(key, "mail_slots")) {
         long v = strtol(value, nullptr, 10);
@@ -291,9 +349,30 @@ bool squelched(const Session& s, const char* line) {
 // carries what is being looked for and what was found.
 struct Finder { uint8_t id; Session* found; char name[BBS_USER_MAX + 1]; };
 
+// mailBusy: sitting on the [R]eply [S]ave [D]elete prompt, or typing a
+// reply. The plugin owns the keys either way.
+bool mailBusy(const Session& s);
+
+// joined: owns the keys AND is actually in the room. A caller who typed
+// MAIL at the shell has been handed to this plugin so it can read single
+// keys, and that is not the same as having walked in: they must not be
+// counted in the room, and must not show up in /s.
+bool joined(const Session& s) {
+    if (!Bbs::instance().owns(s, g_index)) return false;
+    return !mailBusy(s) || g_mailRoom[slotOf(s)];
+}
+
+// listening: in the room with nothing in front of them. Somebody deciding
+// what to do with a message is not, and what is said while they decide
+// waits in the ring until they are done, exactly as it does for a caller
+// who is part way through typing a line.
+bool listening(const Session& s) {
+    return Bbs::instance().owns(s, g_index) && !mailBusy(s);
+}
+
 void matchNode(void* ctx, Session& s) {
     Finder* f = static_cast<Finder*>(ctx);
-    if (!Bbs::instance().owns(s, g_index)) return;
+    if (!joined(s)) return;
     if (s.id == f->id) f->found = &s;
 }
 
@@ -321,10 +400,27 @@ Session* online(const char* handle) {
 
 // tell: one line to a caller who is not in the middle of anything. The
 // room commands lift their own input first and re-arm afterwards.
+//
+// In the room it is the board's voice, so it carries the marker. At the
+// shell it is not: MAIL and /e run the same code and print the same
+// sentences, and only one of the two is somebody standing in a chat room.
+// Deciding it here rather than at forty-odd call sites is also what keeps
+// the two from drifting apart.
 void tell(Session& s, Color c, const char* text) {
+    if (joined(s)) {
+        s.term.color(s.tl, g_cMark);
+        s.term.text(s.tl, kMark);
+    }
     s.term.color(s.tl, c);
     s.term.text(s.tl, text);
     s.term.nl(s.tl);
+}
+
+// mark: the same voice for a line that builds itself rather than going
+// through tell(), so the room banner and the help heading match.
+void mark(Session& s) {
+    s.term.color(s.tl, g_cMark);
+    s.term.text(s.tl, kMark);
 }
 
 // interrupt: one line to a caller who might be part way through typing.
@@ -441,7 +537,7 @@ void post(const char* text, const Session* from) {
     Session* skip = const_cast<Session*>(from);
     Bbs::instance().eachSession([](void* ctx, Session& s) {
         Session* skip = static_cast<Session*>(ctx);
-        if (!Bbs::instance().owns(s, g_index)) return;
+        if (!listening(s)) return;
         if (&s == skip) { s.ownerData = g_seq; return; }      // they printed it themselves
         if (s.ed.len()) {                                     // mid-sentence: hold it
             if (g_seq - s.ownerData + 4u >= g_histMax) catchUp(s);  // unless the buffer is filling
@@ -454,7 +550,7 @@ void post(const char* text, const Session* from) {
 uint8_t roomCount() {
     uint8_t n = 0;
     Bbs::instance().eachSession([](void* ctx, Session& s) {
-        if (Bbs::instance().owns(s, g_index)) ++(*static_cast<uint8_t*>(ctx));
+        if (joined(s)) ++(*static_cast<uint8_t*>(ctx));
     }, &n);
     return n;
 }
@@ -512,6 +608,7 @@ bool mailExpired(uint32_t at, uint32_t nowEpoch) {
 void mailIndex() {
     memset(g_mailTo, 0, sizeof(g_mailTo));
     memset(g_mailAt, 0, sizeof(g_mailAt));
+    memset(g_mailFl, 0, sizeof(g_mailFl));
     char path[96];
     if (!mailPath(path, sizeof(path))) return;
     FILE* f = fopen(path, "rb");
@@ -522,16 +619,32 @@ void mailIndex() {
         if (!r.to[0]) continue;
         snprintf(g_mailTo[n], BBS_USER_MAX + 1, "%.*s", BBS_USER_MAX, r.to);
         g_mailAt[n] = r.at;
+        g_mailFl[n] = r.flags;
         ++n;
     }
     fclose(f);
 }
 
-// mailSlotFor: which index holds a message for this handle, 0xFF for none
+// mailSlotFor: the oldest message for this handle that has not been read,
+// or the oldest kept one when there is nothing new. 0xFF for none.
+//
+// Two passes rather than one, because MAIL should show you what has arrived
+// before it shows you again what you decided to keep.
 uint8_t mailSlotFor(const char* handle) {
+    for (uint8_t i = 0; i < kMailSlots; ++i)
+        if (g_mailTo[i][0] && ieq(g_mailTo[i], handle) && !(g_mailFl[i] & MF_KEPT))
+            return i;
     for (uint8_t i = 0; i < kMailSlots; ++i)
         if (g_mailTo[i][0] && ieq(g_mailTo[i], handle)) return i;
     return 0xFF;
+}
+
+// mailNewFor: how many are waiting to be read. Kept mail is not news.
+uint8_t mailNewFor(const char* handle) {
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < kMailSlots; ++i)
+        if (g_mailTo[i][0] && ieq(g_mailTo[i], handle) && !(g_mailFl[i] & MF_KEPT)) ++n;
+    return n;
 }
 
 uint8_t mailUsed() {
@@ -563,7 +676,8 @@ uint8_t mailCountFor(const char* handle) {
 // non-empty record in the file. It used to be a handle, which meant reading
 // one message threw away every message that person had, which was invisible
 // while nobody could have two.
-bool mailRewrite(int16_t dropIdx, const MailRec* add, uint32_t nowEpoch) {
+bool mailRewrite(int16_t dropIdx, const MailRec* add, uint32_t nowEpoch,
+                 int16_t markIdx = -1) {
     char path[96], tmp[112];
     if (!mailPath(path, sizeof(path))) return false;
     snprintf(tmp, sizeof(tmp), "%s.tmp", path);
@@ -585,6 +699,7 @@ bool mailRewrite(int16_t dropIdx, const MailRec* add, uint32_t nowEpoch) {
             // full box is refused instead, which the sender can act on.
             if (mailExpired(r.at, nowEpoch)) continue;             // too old to keep
             if (kept >= g_mailSlots) continue;
+            if (markIdx >= 0 && idx == markIdx) r.flags |= MF_KEPT;   // read and kept
             if (fwrite(&r, sizeof(r), 1, out) != 1) { fclose(in); fclose(out); remove(tmp); return false; }
             ++kept;
         }
@@ -600,10 +715,53 @@ bool mailRewrite(int16_t dropIdx, const MailRec* add, uint32_t nowEpoch) {
     return true;
 }
 
+// mailForget: no half-made decision outlives the call it was made in.
+void mailForget(uint8_t slot) {
+    if (slot >= kSlots) return;
+    g_mailMode[slot]    = MM_NONE;
+    g_mailIdx [slot]    = -1;
+    g_mailRoom[slot]    = false;
+    g_mailWho [slot][0] = '\0';
+}
+
+bool mailBusy(const Session& s) {
+    return g_mailMode[slotOf(s)] != MM_NONE;
+}
+
+// mailChoosePrompt: the line that turns reading into a decision. Until one
+// of these three keys is pressed the message has not been touched.
+void mailChoosePrompt(Session& s) {
+    s.term.color(s.tl, Color::Cyan);
+    s.term.text(s.tl, "[R]eply  [S]ave  [D]elete: ");
+    s.term.color(s.tl, Color::White);
+    s.term.cursor(s.tl, true);
+}
+
+// mailDone: the decision is made. Say what is still waiting, then put the
+// caller back exactly where reading found them, which is the room if that
+// is where they were and the shell prompt if it is not.
+void mailDone(Session& s) {
+    uint8_t slot = slotOf(s);
+    bool    room = g_mailRoom[slot];
+    mailForget(slot);
+
+    // Kept mail is not news, so this is the count of what has still not
+    // been looked at rather than of what is in the box.
+    uint8_t left = mailNewFor(s.user);
+    if (left) {
+        char buf[72];
+        snprintf(buf, sizeof(buf), "%u more waiting. %s reads the next one.",
+                 static_cast<unsigned>(left), room ? "/e" : "MAIL");
+        tell(s, Color::Yellow, buf);
+    }
+    if (room) { flush(s); armInput(s); return; }   // back to the room, caught up
+    Bbs::instance().release(s);                    // release starts its own prompt
+}
+
 // ---------------------------------------------------------------------------
-// mailRead: hand a caller the message waiting for them and clear it. False
-// when there was nothing, or when it had sat there too long, in which case
-// they are told that rather than left wondering.
+// mailRead: hand a caller the message waiting for them and then ask what
+// should happen to it. False when there was nothing, or when it had sat
+// there too long, in which case they are told rather than left wondering.
 // ---------------------------------------------------------------------------
 bool mailRead(Session& s, bool quiet) {
     char path[96], buf[80];
@@ -653,18 +811,24 @@ bool mailRead(Session& s, bool quiet) {
     s.term.color(s.tl, g_cText);
     s.term.text(s.tl, r.text);
     s.term.nl(s.tl);
-    mailRewrite(static_cast<int16_t>(slot), nullptr, nowEpoch);    // read once, then gone
-
-    // Say what is still waiting, so nobody walks away from a full box
-    // thinking they have seen everything.
-    uint8_t left = mailCountFor(s.user);
-    if (left) {
-        snprintf(buf, sizeof(buf), "%u more waiting. MAIL reads the next one.",
-                 static_cast<unsigned>(left));
-        s.term.color(s.tl, Color::Yellow);
-        s.term.text(s.tl, buf);
-        s.term.nl(s.tl);
+    // Nothing has been decided yet, so nothing has been touched. That is
+    // the whole difference between a mailbox and a message that evaporates
+    // the moment somebody looks at it.
+    uint8_t id   = slotOf(s);
+    bool    room = Bbs::instance().owns(s, g_index);
+    if (!room && !Bbs::instance().own(s, g_index)) {
+        // No way to read single keys, so there is no decision to offer.
+        // Mark it kept rather than leaving it unread: unread would show
+        // this same message again on the next MAIL, for ever.
+        mailRewrite(-1, nullptr, nowEpoch, static_cast<int16_t>(slot));
+        return true;
     }
+
+    g_mailIdx [id] = static_cast<int16_t>(slot);
+    g_mailRoom[id] = room;
+    g_mailMode[id] = MM_CHOOSE;
+    snprintf(g_mailWho[id], BBS_USER_MAX + 1, "%.*s", BBS_USER_MAX, r.from);
+    mailChoosePrompt(s);
     return true;
 }
 
@@ -676,22 +840,31 @@ bool mailRead(Session& s, bool quiet) {
 // way. Silently destroying somebody's unread mail because a third party
 // wrote to them is not a trade-off, it is losing data and reporting
 // success.
+//
+// dropIdx is the message this one answers, retired in the same rewrite that
+// stores the reply. One pass over the file, one rename, so the pair either
+// both happen or neither does. Doing it as two steps would mean choosing
+// which to risk: delete first and a refused reply has thrown the original
+// away, send first and a failed delete leaves the caller answering the same
+// message again.
+//
+// Returns false, having said why, when nothing was stored.
 // ---------------------------------------------------------------------------
-void mailSend(Session& s, const char* handle, const char* text) {
+bool mailSend(Session& s, const char* handle, const char* text, int16_t dropIdx = -1) {
     char buf[96];
     UserRec u;
     if (!g_mailSlots) {
         tell(s, Color::LightRed, "Mail is switched off on this board.");
-        return;
+        return false;
     }
     if (s.guest) {
         tell(s, Color::LightRed, "Mail needs an account.");
-        return;
+        return false;
     }
     if (users::lookup(handle, u) != users::Lookup::Found) {
         snprintf(buf, sizeof(buf), "No account called %.20s.", handle);
         tell(s, Color::LightRed, buf);
-        return;
+        return false;
     }
     uint32_t nowEpoch = clk::epoch();
     uint8_t mine = mailCountFor(u.handle);
@@ -700,11 +873,13 @@ void mailSend(Session& s, const char* handle, const char* text) {
                  "%.20s already has %u messages waiting. Nothing was replaced.",
                  u.handle, static_cast<unsigned>(mine));
         tell(s, Color::LightRed, buf);
-        return;
+        return false;
     }
-    if (mailUsed() >= g_mailSlots) {
+    // A reply takes the slot the message it answers gives back, so the
+    // board's total does not grow and a full board cannot block it.
+    if (dropIdx < 0 && mailUsed() >= g_mailSlots) {
         tell(s, Color::LightRed, "The board's mail is full. Try again later.");
-        return;
+        return false;
     }
 
     MailRec r;
@@ -715,9 +890,9 @@ void mailSend(Session& s, const char* handle, const char* text) {
     snprintf(r.text, sizeof(r.text), "%.*s", static_cast<int>(g_mailChars), text);
     r.len = static_cast<uint16_t>(strlen(r.text));
 
-    if (!mailRewrite(-1, &r, nowEpoch)) {
+    if (!mailRewrite(dropIdx, &r, nowEpoch)) {
         tell(s, Color::LightRed, "The message could not be stored.");
-        return;
+        return false;
     }
     if (mine)
         snprintf(buf, sizeof(buf), "Left for %.20s, who now has %u waiting.",
@@ -729,14 +904,15 @@ void mailSend(Session& s, const char* handle, const char* text) {
     Session* now = online(u.handle);                               // tell them if they are on
     if (now && now != &s) {
         interrupt(*now, Color::Yellow,
-                  Bbs::instance().owns(*now, g_index) ? "You have mail. /e reads it."
-                                                      : "You have mail. MAIL reads it.");
+                  joined(*now) ? "You have mail. /e reads it."
+                               : "You have mail. MAIL reads it.");
     }
+    return true;
 }
 
 // mailWaiting: the line shown at login and on the way into the room
 void mailWaiting(Session& s) {
-    if (s.guest || mailSlotFor(s.user) == 0xFF) return;
+    if (s.guest || !mailNewFor(s.user)) return;
     s.term.color(s.tl, Color::Yellow);
     s.term.text(s.tl, "You have mail.");
     s.term.nl(s.tl);
@@ -751,6 +927,8 @@ void leave(Session& s, const char* why) {
     bbs.release(s);                                          // the prompt starts its own line
     post(line, &s);
 }
+
+void roster(Session& s);          // defined with /s, used on the way in
 
 void join(Bbs& bbs, Session& s) {
     char line[80];
@@ -771,10 +949,17 @@ void join(Bbs& bbs, Session& s) {
     // A board with screens/chatin gets a transition into the room. Without
     // one the caller lands straight on the room line as before.
     if (bbs.showScreen(s, "chatin")) t.nl(tl);
+    mark(s);
     t.color(tl, g_cRoom);
     snprintf(line, sizeof(line), "%.19s: %u here. /s who, /q quits.", g_room, roomCount());
     t.text(tl, line);
     t.nl(tl);
+
+    // Who is actually here, the same list /s gives, before anything else.
+    // The count on the line above says how many; a caller walking in wants
+    // to know who, and asking them to type /s to find out the one thing
+    // they came in wondering is a step for nothing.
+    roster(s);
     uint16_t show = g_histCount < kJoinShow ? g_histCount : kJoinShow;
     for (uint16_t i = 0; i < show; ++i) {                     // what was just said
         uint16_t at = static_cast<uint16_t>((g_histNext + g_histMax - show + i) % g_histMax);
@@ -782,11 +967,17 @@ void join(Bbs& bbs, Session& s) {
         showLine(s, g_hist[at], true);
     }
     s.ownerData = g_seq;                                     // the history above covers it
-    if (!s.guest && mailSlotFor(s.user) != 0xFF) {
+    if (!s.guest && mailNewFor(s.user)) {
         t.color(tl, Color::Yellow);
         t.text(tl, "You have mail. /e reads it.");
         t.nl(tl);
     }
+    // Only when the board put them here. Somebody who typed CHAT knows
+    // perfectly well where they are; somebody who was landed here straight
+    // out of the login needs telling, because the room has no prompt
+    // character and an empty line looks like a board that has stopped.
+    if (s.landing) tell(s, g_cRoom, "Welcome to the chat.");
+
     armInput(s);
 
     char me[32];
@@ -795,14 +986,14 @@ void join(Bbs& bbs, Session& s) {
     post(line, &s);
 }
 
-// who: the room's roster on one caller's screen
-void who(Session& s) {
+// roster: the rows and the count, with nothing around them. Shared so that
+// walking into the room and typing /s cannot ever show different things.
+void roster(Session& s) {
     char line[80];
     Session* me = &s;
-    wipeInput(s);
     Bbs::instance().eachSession([](void* ctx, Session& o) {
         Session* me = static_cast<Session*>(ctx);
-        if (!Bbs::instance().owns(o, g_index)) return;
+        if (!joined(o)) return;
         char who[32], row[64];
         tag(o, who, sizeof(who));
         const char* away = g_away[slotOf(o)];
@@ -811,9 +1002,17 @@ void who(Session& s) {
         showLine(*me, row, false);
     }, me);
     snprintf(line, sizeof(line), "%u in %.19s", roomCount(), g_room);
+    mark(s);
     s.term.color(s.tl, g_cRoom);
     s.term.text(s.tl, line);
     s.term.nl(s.tl);
+}
+
+// who: /s . The roster, with the caller's own half-typed line lifted out of
+// the way first and put back afterwards.
+void who(Session& s) {
+    wipeInput(s);
+    roster(s);
     flush(s);
     armInput(s);
 }
@@ -843,8 +1042,9 @@ void helpLine(Session& s, const char* cmd, const char* what) {
 // ---------------------------------------------------------------------------
 void roomHelp(Session& s) {
     wipeInput(s);
+    mark(s);
     s.term.color(s.tl, g_cRoom);
-    s.term.text(s.tl, "Room commands");
+    s.term.text(s.tl, "Room Commands");
     s.term.nl(s.tl);
     helpLine(s, "/s", "who is here");
     helpLine(s, "/p n text", "one line to node n");
@@ -1146,6 +1346,10 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
         wipeInput(s);
         if (s.guest) tell(s, Color::LightRed, "Mail needs an account.");
         else         mailRead(s, false);
+        // A message on screen owns the keys until R, S or D answers for it.
+        // mailDone puts them back in the room and catches them up on what
+        // was said while they were reading.
+        if (mailBusy(s)) return true;
         flush(s);
         armInput(s);
         return true;
@@ -1287,9 +1491,111 @@ void say(Session& s, const char* text, uint32_t now) {
 }
 
 // ---------------------------------------------------------------------------
+// mailChoose: one key, one outcome, and each of them is a single rewrite of
+// the mailbox through a temp file and a rename. A power cut either leaves
+// the message alone or leaves the decision made, never half of it.
+// ---------------------------------------------------------------------------
+void mailChoose(Session& s, int k) {
+    uint8_t  slot = slotOf(s);
+    int16_t  idx  = g_mailIdx[slot];
+    uint32_t nowEpoch = clk::epoch();
+
+    if (k == 'r' || k == 'R') {
+        char buf[80];
+        s.term.text(s.tl, "R");
+        s.term.nl(s.tl);
+        snprintf(buf, sizeof(buf), "Reply to %.20s:", g_mailWho[slot]);
+        tell(s, Color::Cyan, buf);
+        g_mailMode[slot] = MM_REPLY;
+        uint8_t room = static_cast<uint8_t>(s.term.cols() > 4 ? s.term.cols() - 2 : 32);
+        s.ed.begin(room < kLineMax ? room : kLineMax, 0);
+        s.term.color(s.tl, Color::White);
+        s.term.cursor(s.tl, true);
+        return;
+    }
+
+    if (k == 's' || k == 'S') {
+        s.term.text(s.tl, "S");
+        s.term.nl(s.tl);
+        // Kept, not deleted: it stays in the box, stops ringing "you have
+        // mail", and still counts against the limit, because it is still
+        // taking up room somebody else cannot use.
+        if (idx >= 0 && mailRewrite(-1, nullptr, nowEpoch, idx))
+            tell(s, Color::LightGreen, "Kept.");
+        else
+            tell(s, Color::LightRed, "Could not keep it. It is still unread.");
+        mailDone(s);
+        return;
+    }
+
+    if (k == 'd' || k == 'D') {
+        s.term.text(s.tl, "D");
+        s.term.nl(s.tl);
+        if (idx >= 0 && mailRewrite(idx, nullptr, nowEpoch))
+            tell(s, Color::Grey, "Deleted.");
+        else
+            tell(s, Color::LightRed, "Could not delete it.");
+        mailDone(s);
+        return;
+    }
+
+    // The abort keys and Enter leave the message alone and unread, which is
+    // the outcome that loses nothing. Any other key is ignored rather than
+    // guessed at, because two of the three choices here are irreversible.
+    if (k == KEY_ESC || k == KEY_BREAK || k == KEY_ENTER || k == 'q' || k == 'Q') {
+        s.term.nl(s.tl);
+        tell(s, Color::Grey, "Left unread.");
+        mailDone(s);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// mailReplyKey: a reply is one line, the same as MAIL and /email take. The
+// message being answered goes with it, in the one rewrite, which is why R
+// and S are a choice rather than two things somebody does in turn.
+// ---------------------------------------------------------------------------
+void mailReplyKey(Session& s, int k) {
+    LineEditor::Res rr = s.ed.key(k, s.term, s.tl);
+    if (rr == LineEditor::Res::Editing) return;
+
+    uint8_t slot = slotOf(s);
+    if (rr == LineEditor::Res::Abort) {           // changed their mind about the reply,
+        g_mailMode[slot] = MM_CHOOSE;             // not about the message
+        tell(s, Color::Grey, "Reply dropped.");
+        mailChoosePrompt(s);
+        return;
+    }
+
+    char text[kLineMax + 1];
+    snprintf(text, sizeof(text), "%s", s.ed.text());
+    const char* p = text;
+    while (*p == ' ') ++p;
+    if (!*p) {                                    // an empty line is not a reply
+        g_mailMode[slot] = MM_CHOOSE;
+        mailChoosePrompt(s);
+        return;
+    }
+
+    // Refused, and the original is still sitting there to try again with.
+    if (!mailSend(s, g_mailWho[slot], p, g_mailIdx[slot])) {
+        g_mailMode[slot] = MM_CHOOSE;
+        mailChoosePrompt(s);
+        return;
+    }
+    mailDone(s);
+}
+
+// ---------------------------------------------------------------------------
 // onKey: the caller is in the room. Lines go to everyone; /q leaves.
 // ---------------------------------------------------------------------------
 void onKey(Session& s, int k, uint32_t now) {
+    // A message is in hand. These keys are not chat: they decide what
+    // happens to it, and they are read before the editor sees them because
+    // the answer is one keypress rather than a line.
+    uint8_t slot = slotOf(s);
+    if (g_mailMode[slot] == MM_CHOOSE) { mailChoose(s, k);   return; }
+    if (g_mailMode[slot] == MM_REPLY)  { mailReplyKey(s, k); return; }
+
     LineEditor::Res r = s.ed.key(k, s.term, s.tl);
     if (r == LineEditor::Res::Abort) { leave(s, "left the room"); return; }
     if (r != LineEditor::Res::Done) {
@@ -1315,12 +1621,14 @@ void onLogin(Session& s) {
 
 void onLogoff(Session& s) {
     uint8_t slot = slotOf(s);
+    bool wasIn = joined(s);                 // asked before the mail state is cleared
+    mailForget(slot);
     g_squelch[slot] = 0;
     g_away[slot][0] = '\0';
     for (uint8_t i = 0; i < kSlots; ++i)                    // nobody inherits a squelch
         g_squelch[i] = static_cast<uint16_t>(g_squelch[i] & ~(1u << slot));
     if (g_voteTarget == s.id) voteClose("ended, they left");
-    if (!Bbs::instance().owns(s, g_index)) return;
+    if (!wasIn) return;                     // reading mail at the shell is not the room
     char line[80], me[32];
     tag(s, me, sizeof(me));
     snprintf(line, sizeof(line), "*** %.28s logged off", me);
@@ -1367,6 +1675,10 @@ void stop() {
     free(g_hist);
     g_hist = nullptr;
     g_histCount = g_histNext = 0;
+    // A config save stops and starts every plugin, and the core hands any
+    // caller sitting inside one back to the prompt first. Leaving MM_CHOOSE
+    // set would stand them at a prompt nothing is listening to.
+    for (uint8_t i = 0; i < kSlots; ++i) mailForget(i);
 }
 
 const Command kCommands[] = {
@@ -1377,7 +1689,7 @@ const Command kCommands[] = {
       [](Bbs& b, Session& s, const char* a, uint32_t) {
           if (!*a) {
               mailRead(s, false);
-              b.prompt(s);
+              if (!mailBusy(s)) b.prompt(s);    // else the R/S/D prompt has the keys
               return;
           }
           char handle[BBS_USER_MAX + 1];

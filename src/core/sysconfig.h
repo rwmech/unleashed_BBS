@@ -99,6 +99,11 @@ struct SysConfig {
                                static_cast<uint16_t>(PERM_NODES | PERM_BROADCAST | PERM_TIME | PERM_BANS |
                                                      PERM_NOLIMITS | PERM_DASH) };
     uint16_t idleMinutes   = BBS_IDLE_MINUTES;
+    // Where a caller lands when their account does not say. Numbered as the
+    // LAND_* values in users.h; not including that header here keeps the
+    // config struct free of an account dependency it does not otherwise
+    // have, and the one place they must agree is the parser below.
+    uint8_t  landing       = 1;            // LAND_MAIN
     bool     selfRegister  = true;
     bool     guestEnabled  = true;
     uint16_t guestMinutes  = BBS_GUEST_MINUTES;

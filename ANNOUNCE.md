@@ -41,7 +41,7 @@ This is the only part of the system that talks to the outside world on its own, 
 [plugin:announce]
 enabled     = yes
 name        = The Rusty Modem
-owner       = KE9CXN
+owner       = Daytona
 description = A BBS on a chip in a shack in Illinois
 servers     = http://unleashedbbs.net/announce
 host        =                     ; a DNS name of your own, if you have one
@@ -100,7 +100,7 @@ Content-Length: <n>
 Connection: close
 
 {"software":"unleashed","version":"0.13.0",
- "name":"The Rusty Modem","owner":"KE9CXN",
+ "name":"The Rusty Modem","owner":"Daytona",
  "description":"A BBS on a chip in a shack in Illinois",
  "host":"","port":2323,"nodes":6,"busy":0,
  "uptime":3600,"interval":10,"token":"1935bc3c..."}

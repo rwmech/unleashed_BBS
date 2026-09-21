@@ -85,6 +85,36 @@ static void onNet(void*, esp_event_base_t base, int32_t id, void* data) {
         esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         auto* e = static_cast<ip_event_got_ip_t*>(data);
+        // Power save off, here, every time we come up.
+        //
+        // This used to sit next to esp_wifi_start(), which does not work and
+        // was measured not working. Starting the station raises
+        // WIFI_EVENT_STA_START, and the handler above answers it by calling
+        // esp_wifi_connect() straight away, so the call on the next line was
+        // racing association. Its return value was not checked either, so a
+        // failure was silent, and nothing re-applied it after a reconnect,
+        // which with CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE leaves the
+        // board on the IDF default of WIFI_PS_MIN_MODEM.
+        //
+        // What that costs is not subtle. A station in MIN_MODEM sleeps
+        // between DTIM beacons and the access point buffers for it, so a
+        // packet arriving into a quiet moment waits for the next beacon.
+        // Measured on the live board with no callers at all: a median ping
+        // of 13 ms, a 90th percentile of 1003 ms, and seventeen of the slow
+        // samples inside a 31 ms window at exactly 1.00 s. A cluster that
+        // tight on a round number is a timer, not interference. Keep the
+        // board busy and every spike disappears.
+        //
+        // It is also why this looked like a BBS bug for so long: the stall
+        // lands on whoever pauses to read and then types, and DASH 1 sends a
+        // frame and then goes deliberately quiet for a second, which is
+        // precisely the gap that lets the radio doze.
+        esp_err_t ps = esp_wifi_set_ps(WIFI_PS_NONE);
+        if (ps != ESP_OK) {
+            ESP_LOGW(TAG, "could not turn Wi-Fi power save off (%s); "
+                          "expect about a second of delay on an idle link",
+                     esp_err_to_name(ps));
+        }
         ESP_LOGI(TAG, "online " IPSTR "  dial in: telnet " IPSTR " %u",
                  IP2STR(&e->ip_info.ip), IP2STR(&e->ip_info.ip), BBS_PORT);
         xEventGroupSetBits(s_wifi, WIFI_UP);
@@ -128,7 +158,10 @@ static void wifiStart() {
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
     ESP_ERROR_CHECK(esp_wifi_start());
-    esp_wifi_set_ps(WIFI_PS_NONE);   // latency over power, the board is mains fed
+    // Power save is NOT set here. esp_wifi_start() raises STA_START, whose
+    // handler connects immediately, so anything on this line races the
+    // association. It is applied in the IP_EVENT_STA_GOT_IP handler instead,
+    // where it also gets re-applied after every reconnect. See onNet.
 }
 
 // ---------------------------------------------------------------------------

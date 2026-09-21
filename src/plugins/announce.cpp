@@ -31,7 +31,7 @@
  *                 [plugin:announce]
  *                 enabled     = no
  *                 name        = The Rusty Modem
- *                 owner       = KE9CXN
+ *                 owner       = Daytona
  *                 description = A BBS on a chip in a shack in Illinois
  *                 servers     = http://unleashedbbs.net/announce
  *                 host        =                  ; a DNS name, if you have one
@@ -212,8 +212,12 @@ void readServers(const char* value) {
 
 void readKey(void* ctx, const char* key, const char* value) {
     (void)ctx;
-    if      (!strcmp(key, "name"))        snprintf(g_bbsName, sizeof(g_bbsName), "%.*s", kNameMax, value);
-    else if (!strcmp(key, "owner"))       snprintf(g_owner, sizeof(g_owner), "%.*s", kNameMax, value);
+    // "name" used to be read here and would override the board's own. It
+    // is gone on purpose: the board is not optional and already has a name,
+    // so a second copy in this section could only ever disagree with it.
+    // A name left in an old system.cfg is ignored and dropped the next time
+    // the file is written.
+    if      (!strcmp(key, "owner"))       snprintf(g_owner, sizeof(g_owner), "%.*s", kNameMax, value);
     else if (!strcmp(key, "description")) snprintf(g_desc, sizeof(g_desc), "%.*s", kDescMax, value);
     else if (!strcmp(key, "host"))        snprintf(g_host, sizeof(g_host), "%.*s", kUrlMax - 1, value);
     else if (!strcmp(key, "token")) {
@@ -677,8 +681,10 @@ bool start(Bbs& bbs) {
     g_nudgeSecs  = kNudgeDef;
     g_public     = BBS_PORT;
     g_interval   = kIntervalDef;
-    // The board already has a name in system.cfg. Asking a sysop to type
-    // it again in the plugin is how the two end up disagreeing.
+    // The board's name, and the only place it comes from. This used to be
+    // a seed that the plugin's own "name" key could then override, which
+    // meant two CONFIG pages each offering a field called "Board" and no
+    // way for a sysop to tell which one the directory would publish.
     snprintf(g_bbsName, sizeof(g_bbsName), "%.*s", kNameMax, syscfg::get().boardName);
     readServers("http://unleashedbbs.net/announce");         // the default, replaceable
     plugins::forEachKey(g_index, readKey, nullptr);
@@ -728,7 +734,12 @@ void stop() {
 // Labels are nine characters, the width of the form's left column.
 // ---------------------------------------------------------------------------
 const PluginSetting kSettings[] = {
-    { "name",           "Board",     PS_TEXT,  0, 0,     kNameMax },
+    // Shown, not editable. The board's name lives in board_name on the core
+    // Board page, which every board has whether or not it announces, and
+    // this is the value that gets published. Showing it here answers "what
+    // will the directory call me" without creating a second copy that can
+    // disagree with the first.
+    { "name",           "Board",     PS_INFO,  0, 0,     kNameMax },
     { "owner",          "Sysop",     PS_TEXT,  0, 0,     kNameMax },
     { "description",    "About",     PS_TEXT,  0, 0,     kDescMax },
     // Empty means "advertise whatever address the directory saw". A board on

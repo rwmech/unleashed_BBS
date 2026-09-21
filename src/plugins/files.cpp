@@ -172,6 +172,15 @@ uint8_t g_areas  = 0;
 // different menus, so an area number would put the bar on the wrong row.
 uint8_t g_sel[BBS_MAX_NODES + 2] = {};
 
+// How many rows the section menu and its prompt took last time, so a cursor
+// move can draw over exactly those rows instead of clearing the screen.
+//
+// Clearing on every keypress is what made the door screen flash away the
+// moment anybody moved: the banner is drawn once on the way in and then
+// wiped by the first cursor key. Redrawing in place leaves everything above
+// the menu alone, which is the whole point of having put a banner there.
+uint8_t g_menuRows[BBS_MAX_NODES + 2] = {};
+
 // What the caller is being asked for, while they are being asked. 0 is
 // nothing, and the two transfer prompts are the only users.
 //
@@ -191,12 +200,18 @@ enum : uint8_t {
     AskYesDel,       // "Erase GAME.PRG?" one key
     AskDescNum,      // which numbered file to describe
     AskDescText,     // the description itself
+    AskUpDesc,       // describe the file that has just been uploaded
 };
 
 // The file a yes/no question is about. A number chooses it, the question
 // names it, and the answer acts on it, so the caller confirms a filename
 // rather than a number they might have miscounted.
 char g_pend[BBS_MAX_NODES + 2][kDescMax + 1] = {};
+
+// Which section the just-finished upload went into. g_at is where the
+// caller is standing, which is the same thing today and will not be the
+// moment anything can move them while a transfer finishes.
+uint8_t g_pendArea[BBS_MAX_NODES + 2] = {};
 uint8_t g_ask[BBS_MAX_NODES + 2] = {};
 uint8_t g_index  = 0;
 
@@ -624,9 +639,10 @@ void backToArea(Bbs& b, Session& s);
 void onLogoff(Session& s) {
     xferDropped(s);
     g_at[slotOf(s)]    = 0xFF;
-    g_where[slotOf(s)] = Where::Out;
-    g_sel[slotOf(s)]   = 0;
-    g_ask[slotOf(s)]   = AskNone;
+    g_where[slotOf(s)]   = Where::Out;
+    g_sel[slotOf(s)]     = 0;
+    g_ask[slotOf(s)]     = AskNone;
+    g_menuRows[slotOf(s)] = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -694,11 +710,13 @@ void areaMenu(Bbs& b, Session& s) {
     uint8_t slot = slotOf(s);
     if (n && g_sel[slot] >= n) g_sel[slot] = static_cast<uint8_t>(n - 1);
 
+    uint8_t rows = 1;                     // the title bar
     b.rowTitle(s, "File areas");
     if (!n) {
         t.color(tl, Color::Grey);
         t.text(tl, "Nothing here yet. The sysop sets areas up in CONFIG.");
         t.nl(tl);
+        g_menuRows[slot] = 2;
         return;
     }
 
@@ -718,20 +736,28 @@ void areaMenu(Bbs& b, Session& s) {
         // The highlight covers the number and the name together, because a
         // bar on the name alone reads as the name being special rather than
         // as this being the row you are standing on.
-        // The last cell on a row is padded only when it is highlighted, and
-        // then only to the name width rather than the full cell, so the bar
-        // still looks deliberate without ever reaching the final column.
-        // Filling the last column makes the terminal wrap, and the newline
-        // that follows then lands as a blank row.
-        int pad = last ? (here ? static_cast<int>(widest + 8) : 0)
+        // The last cell on a row is padded to the name width rather than the
+        // full cell, so the bar still looks deliberate without ever reaching
+        // the final column. Filling the final column makes the terminal wrap,
+        // and the newline that follows then lands as a blank row.
+        //
+        // It is padded whether or not it is highlighted, and that matters:
+        // the width has to be the same either way. It used to be widest + 8
+        // when highlighted and nothing at all when not, which was invisible
+        // while every redraw cleared the screen first. Once the menu started
+        // drawing over itself in place, moving the bar OFF the last cell
+        // printed a shorter line than the one underneath and left the old
+        // reverse-video block sitting on the screen to the right of it.
+        int pad = last ? static_cast<int>(widest + 8)
                        : static_cast<int>(widest + 10);
         snprintf(buf, sizeof(buf), "%2u  %-*.*s", static_cast<unsigned>(a + 1),
                  pad, static_cast<int>(widest + 8), nm);
         if (here) t.reverse(tl, true);
         t.text(tl, buf);
         if (here) t.reverse(tl, false);
-        if (last) t.nl(tl);
+        if (last) { t.nl(tl); ++rows; }
     }
+    g_menuRows[slot] = rows;
 }
 
 // filesPrompt: the subsystem's own prompt line, drawn wherever a caller
@@ -883,14 +909,35 @@ bool rows(Session& s) {
 // ---------------------------------------------------------------------------
 // enter / leave / listArea: the subsystem.
 // ---------------------------------------------------------------------------
-// clear: true everywhere except the way in, where an intro screen has just
-// played and wiping it would be the same as not having one.
-void showMenu(Bbs& b, Session& s, bool clear = true) {
+// How the menu gets onto the screen.
+//
+//   Fresh   clear first: coming in from somewhere else
+//   Keep    no clear: a door screen has just played and wiping it would be
+//           the same as not having one
+//   Again   draw over the rows it drew last time, touching nothing above
+//
+// Again is what a cursor key uses. Clearing on every keypress is what made
+// the door banner flash away the moment anybody moved the highlight, and
+// Rob's instinct was right: only the part below the header should refresh.
+// The rows are identical in length between redraws, only the highlight
+// moves, so drawing over them leaves no tails behind.
+enum class Draw : uint8_t { Fresh, Keep, Again };
+
+void showMenu(Bbs& b, Session& s, Draw how = Draw::Fresh) {
     // g_at is deliberately left alone: it is the area this caller last
     // opened, not where they are standing, and DESC at the command prompt
     // reads it. g_where is the one that says where they are.
-    g_where[slotOf(s)] = Where::Menu;
-    if (clear) s.term.cls(s.tl);
+    uint8_t slot = slotOf(s);
+    g_where[slot] = Where::Menu;
+
+    // +2 for the blank line and the hint line filesPrompt adds under the
+    // menu. Only a terminal that can move its cursor can do this; anything
+    // else falls back to a clear, which is what it always did.
+    if (how == Draw::Again && canPoint(s) && g_menuRows[slot])
+        s.term.up(s.tl, static_cast<uint8_t>(g_menuRows[slot] + 2));
+    else if (how == Draw::Fresh)
+        s.term.cls(s.tl);
+
     areaMenu(b, s);
     filesPrompt(s);
 }
@@ -927,7 +974,7 @@ void enter(Bbs& b, Session& s) {
     // on the menu, the same deal the chat room has with chatin.
     s.term.cls(s.tl);
     if (b.showScreen(s, "files")) s.term.nl(s.tl);
-    showMenu(b, s, false);          // the screen just played: do not wipe it
+    showMenu(b, s, Draw::Keep);     // the screen just played: do not wipe it
 }
 
 // onKey: the subsystem's keys. Digits pick an area, and they accumulate so
@@ -990,6 +1037,40 @@ void onKey(Session& s, int k, uint32_t now) {
             }
             snprintf(g_pend[slot], sizeof(g_pend[0]), "%s", name);
             askFor(s, AskDescText);
+            return;
+        }
+        case AskUpDesc: {
+            uint8_t area = g_pendArea[slot];
+            char pd[160], dir[128];
+            if (!pendPath(area, pd, sizeof(pd)) ||
+                !areaPath(area, dir, sizeof(dir))) { backToArea(b, s); return; }
+
+            // The description lives beside the file while it waits, in the
+            // staging folder's own FILES.BBS. Same format, same code, and a
+            // sysop with the card in a laptop can read both.
+            if (answer[0]) setDesc(pd, g_pend[slot], answer);
+
+            // Somebody who can approve does not queue behind themselves.
+            // Making a sysop approve their own upload is ceremony, not
+            // review, and ceremony is what stops people using a thing.
+            if (mayDel(s, area)) {
+                if (doApproveQuiet(b, s, area, g_pend[slot])) {
+                    if (answer[0]) setDesc(dir, g_pend[slot], answer);
+                    setDesc(pd, g_pend[slot], "");       // no longer waiting
+                    s.term.color(s.tl, Color::LightGreen);
+                    char msg[80];
+                    snprintf(msg, sizeof(msg), "%.40s is live.", g_pend[slot]);
+                    s.term.text(s.tl, msg);
+                } else {
+                    s.term.color(s.tl, Color::LightRed);
+                    s.term.text(s.tl, "Could not make it live. It is still waiting.");
+                }
+            } else {
+                s.term.color(s.tl, Color::Yellow);
+                s.term.text(s.tl,
+                    "Thanks. Staff will look at it before anyone else sees it.");
+            }
+            backToArea(b, s);
             return;
         }
         case AskDescText: {
@@ -1115,7 +1196,7 @@ void onKey(Session& s, int k, uint32_t now) {
         b.rowText(s, Color::White, "?        this");
         b.rowText(s, Color::White, "Q  ESC   leave the file areas");
         b.rowRule(s);
-        showMenu(b, s, false);
+        showMenu(b, s, Draw::Keep);
         return;
     }
     // Cursor keys move the bar. Only on the menu: inside an area the list
@@ -1138,7 +1219,7 @@ void onKey(Session& s, int k, uint32_t now) {
         if (sel < 0)   sel = 0;
         if (sel >= n)  sel = n - 1;
         g_sel[slot] = static_cast<uint8_t>(sel);
-        showMenu(b, s);
+        showMenu(b, s, Draw::Again);      // over the menu, not over the banner
         return;
     }
     if (k >= '0' && k <= '9') {
@@ -1418,9 +1499,27 @@ void xferEnd(Bbs& b, Session& s) {
         ++g_pending;
     }
 
+    bool    upOk   = !g_x.sending && g_eng.done() && g_x.area != 0xFF;
+    uint8_t upArea = g_x.area;
+    char    upName[kDescMax + 1];
+    snprintf(upName, sizeof(upName), "%s", g_x.name);
+
     g_eng.reset();
     g_x = Xfer();
     g_why[0] = 0;
+
+    // A file with no description is a filename in a list, which tells the
+    // next caller nothing. Ask while the person who chose it is still here:
+    // asking later means asking somebody who has moved on, and a sysop
+    // writing descriptions for other people's uploads is how a file area
+    // stops being maintained.
+    if (upOk) {
+        uint8_t slot = slotOf(s);
+        snprintf(g_pend[slot], sizeof(g_pend[0]), "%s", upName);
+        g_pendArea[slot] = upArea;
+        askFor(s, AskUpDesc);
+        return;
+    }
 
     // Back exactly where they were, which for a transfer means the area
     // they were standing in rather than the menu above it. Somebody who
@@ -1763,6 +1862,7 @@ void askFor(Session& s, uint8_t what) {
     case AskReject:  q = "Reject which number? (A = all) ";   break;
     case AskDescNum: q = "Describe which number? ";           break;
     case AskDescText: q = "Description (empty clears it): ";  break;
+    case AskUpDesc:  q = "Describe it for the file list: ";   break;
     default:         q = "? ";                             break;
     }
 
@@ -1938,6 +2038,15 @@ void doApprove(Bbs& b, Session& s, const char* a) {
               return;
           }
           if (g_pending) --g_pending;
+          // The uploader's own words go with the file. Losing them at the
+          // approval step would mean the description was only ever worth
+          // asking for from staff.
+          char desc[kDescMax + 1];
+          findDesc(pd, name, desc, sizeof(desc));
+          if (desc[0]) {
+              setDesc(dir, name, desc);
+              setDesc(pd, name, "");
+          }
           plat::log("files: %s approved %s into area %u",
                     s.user, name, static_cast<unsigned>(at + 1));
           s.term.color(s.tl, Color::LightGreen);

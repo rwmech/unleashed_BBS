@@ -106,7 +106,11 @@ the door.
 - `MAIL handle your message` at the command prompt, or `/email handle your message` in the room.
 - Up to 512 characters, which is enough to say something real.
 - The recipient is told `You have mail.` when they log in, when they enter the room, and straight away if they are already on.
-- `MAIL` on its own, or `/e` in the room, reads the oldest message and clears it. If more are waiting it says how many, so nobody walks away from a full box thinking they have seen everything.
+- `MAIL` on its own, or `/e` in the room, reads the oldest message. **Reading it does not dispose of it**: the board then asks `[R]eply  [S]ave  [D]elete:` and nothing is touched until you answer. If more are waiting it says how many once you have, so nobody walks away from a full box thinking they have seen everything.
+- **`R` replies**, on one line, and the message you answered goes with it. That is one action rather than two on purpose: doing it in two steps would mean either deleting before the reply is stored, which loses the original if your reply is refused, or sending first and leaving you answering the same message again if the delete fails. If the reply cannot be stored, nothing moved and the original is still there.
+- **`S` keeps it.** It stays in your box and can be read again, but it stops ringing `You have mail`, because something you decided to keep is not news. It still counts against your limit: it is still taking up room.
+- **`D` deletes it**, and that is the only thing that does.
+- ESC, or Enter, leaves the message unread and changes nothing. Any other key is ignored rather than guessed at, because two of the three choices cannot be undone.
 - **How many you can have waiting depends on where the mail lives.** Three on a board with no SD card, because that storage is shared with the accounts and is the thing that has to survive. Twelve with a card, which has room and no reason to ration.
 - **A full mailbox is refused, never emptied.** The sender is told the box is full and that nothing was replaced, which is something they can act on: wait, or reach the person another way.
 - Messages need an account at both ends. Guests can neither send nor receive.
@@ -148,7 +152,32 @@ color_old     = darkgrey   ; history shown on the way in
 color_notice  = yellow     ; *** joined, left, votes, kicks
 color_room    = cyan       ; the banner, /s and the like
 color_private = purple     ; a line meant for one caller
+color_marker  = cyan       ; the --> in front of anything the board says
 ```
+
+## The board's own voice
+
+Anything the board says in the room is marked `-->`:
+
+```
+--> Main: 3 here. /s who, /q quits.
+--> No such command. /? for the list.
+--> Mon 21 Sep 09:13
+```
+
+The room has no prompt character, DDial style, so without a marker a line
+from the board is indistinguishable from somebody typing the same words.
+`-->` costs four columns and removes the ambiguity entirely.
+
+It is deliberately **not** on everything:
+
+- `*** Daytona joined` and the other `***` notices keep their own mark. They
+  are events, not answers, and they already read as such.
+- The welcome screen is artwork, not the board talking.
+- The room command list gets the marker on its heading only. An arrow on all
+  sixteen rows turns a table into a wall.
+
+`color_marker` themes it like every other part of a room line.
 
 Colour names are the C64 palette: `black white red cyan purple green blue yellow orange brown ltred darkgrey grey ltgreen ltblue ltgrey`. A name the board does not know leaves that colour alone rather than blanking the screen.
 

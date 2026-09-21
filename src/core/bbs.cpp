@@ -806,6 +806,12 @@ void Bbs::serviceSession(Session& s, uint32_t now) {
                 } else if (!more && s.pendingKnowMore) {
                     s.pendingKnowMore = false;   // rules read, now the warning
                     pauseFor(s, AfterKey::KnowMore);
+                } else if (!more && s.pendingLand) {
+                    // Before pendingPrompt, because playScreen set that too
+                    // and landing does its own finishing.
+                    s.pendingLand   = false;
+                    s.pendingPrompt = false;
+                    landAfterLogin(s);
                 } else if (!more && s.pendingPrompt) {
                     s.pendingPrompt = false;
                     prompt(s);
@@ -1508,8 +1514,11 @@ void Bbs::completeLogin(Session& s, uint32_t now) {
         t.nl(tl);
         t.color(tl, Color::Grey);
     }
-    t.text(tl, "[H]ELP for commands.");
-    t.nl(tl);
+    // The "[H]ELP for commands." line used to be printed here, to everybody.
+    // It belongs to the main prompt and only to the main prompt: telling
+    // somebody who is about to be put in the chat room to press H for
+    // commands is advice for a place they are not going. landAfterLogin
+    // prints it when that is in fact where they land.
 
     plat::log("bbs: node %u login '%s'", s.id, s.user);
     for (uint8_t i = 0; i < plugins::count(); ++i) {
@@ -1525,7 +1534,44 @@ void Bbs::completeLogin(Session& s, uint32_t now) {
     // gets whatever the board has to say today.
     const char* first = s.newAccount ? "newuser" : "bulletin";
     s.newAccount = false;
-    if (!playScreen(s, first)) prompt(s);
+    if (!playScreen(s, first)) landAfterLogin(s);
+    else s.pendingLand = true;       // the screen finishes, then they land
+}
+
+// ---------------------------------------------------------------------------
+// landAfterLogin: put the caller where they asked to be put.
+//
+// The account decides; LAND_DEFAULT means it has not said, and the board's
+// own setting fills in. Guests have no account, so they always get the
+// board's setting.
+//
+// Anything the board cannot actually do falls back to the main prompt
+// without comment. That is what lets Bulletin be offered as a choice before
+// the bulletin plugin exists, and it is also the right answer for a board
+// that has switched chat off: a caller should not be greeted with "Unknown
+// command" because of a preference they set months ago.
+// ---------------------------------------------------------------------------
+void Bbs::landAfterLogin(Session& s) {
+    uint8_t want = syscfg::get().landing;
+    if (!s.guest) {
+        static UserRec u;                       // static: off the task stack
+        if (users::find(s.user, u) && u.land != LAND_DEFAULT) want = u.land;
+    }
+
+    const char* verb = users::landVerb(want);
+    if (verb && findCommand(verb, s)) {
+        s.landing = true;                       // "put here", not "typed it"
+        runCommand(s, verb, plat::millis());
+        s.landing = false;
+        return;
+    }
+
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    t.color(tl, Color::Grey);
+    t.text(tl, "[H]ELP for commands.");
+    t.nl(tl);
+    prompt(s);
 }
 
 // ---------------------------------------------------------------------------

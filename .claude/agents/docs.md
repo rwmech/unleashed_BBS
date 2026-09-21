@@ -52,10 +52,17 @@ that can call in and `README.md` carries the short version. A command's row in
 `pages/*.md` go through `md_render` in `server.py`, which supports exactly:
 headings (`#`, `##`, `###`), `- ` bullets with two-space continuation lines,
 fenced code, `> ` blockquotes which become a boxed warning, pipe tables with a
-separator row, and inline `**bold**`, `` `code` `` and `[text](url)`.
+separator row, `N. ` ordered lists, and inline `**bold**`, `` `code` `` and
+`[text](url)`.
 
-Nothing else. No numbered lists, no nested bullets, no images, no HTML, no
-footnotes. Anything unsupported renders as literal text on a live page.
+Nothing else. No nested bullets, no images, no HTML, no footnotes. Anything
+unsupported renders as literal text on a live page.
+
+Ordered lists were added in 2026-09 and this paragraph said they were
+unsupported for as long as they were. Before trusting a list of what the
+dialect handles, check `md_render` in `server.py`: the renderer is the
+specification, and a stale note here is how 53 numbered router steps shipped
+as run-on paragraphs.
 
 Consecutive `> ` lines are one warning box. Check the rendered HTML, not the
 Markdown: a blockquote once produced one box per line, so every warning on five

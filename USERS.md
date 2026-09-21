@@ -196,7 +196,7 @@ Staff may only manage accounts at their own rank or below:
 
 | Command | What it does |
 |---|---|
-| `PROFILE` | Form with your name, email, address, phone and profile. The handle can't be changed here. |
+| `PROFILE` | Form with your name, email, address, phone, profile and `Start`. The handle can't be changed here. |
 | `PASSWORD` | Form: current password, new password twice. A wrong current password counts toward the handle lock. |
 | `INFO` or `I` | Your account: all fields, member since, last call, number of calls, profile. |
 | `INFO handle` | Another caller's account. Email, address and phone are hidden unless you hold `USERS`. |
@@ -242,7 +242,7 @@ These work on every terminal.
 
 | Command | What it does |
 |---|---|
-| `USER ADD` | Add-account form: handle, password, the account fields, Level, Locked. |
+| `USER ADD` | Add-account form: handle, password, the account fields, Start, Level, Locked. |
 | `USER EDIT handle` | Edit-account form. Leave `New pass` empty to keep the password. |
 | `USER DEL handle` | Delete after `Delete handle (y/N)?`. `N`, Enter or ESC keeps it. |
 
@@ -284,6 +284,7 @@ calls = 12
 day = 2026260
 day_minutes = 45
 locked = no
+land = default
 ```
 
 - One `[handle]` block per account. The handle rules above apply, and duplicates are refused.
@@ -291,6 +292,8 @@ locked = no
 - Values keep their spaces. Only the single space after `=` belongs to the format.
 - `pass` is a random 8-byte salt and a SHA-256 hash (repeated 1000 times), both in hex. You can't type a password into the file; set passwords on the BBS. An empty `pass` means nobody can log in to that account until staff set one.
 - `locked = yes` locks the account.
+- `land` is where the caller is put after logging in: `default`, `main`, `chat` or `forums`. An account written by an earlier build may say `bulletin`, which is read as `forums` and rewritten on the next save. `default` means "wherever the board's `landing` setting points", which is what every account written before this existed reads as, so nothing needs converting. It is the `Start` field on the profile form.
+- A landing this board cannot do falls back to the main prompt without comment. That is deliberate: a board with chat switched off, or one that has no bulletins yet, should not greet somebody with an error because of a preference they set months ago.
 - Keys the BBS doesn't know are accepted with a warning that names the line ("line 12: unknown key 'nickname'"), and dropped the next time the file is written.
 - Numbers that aren't numbers, values longer than the field, and a `pass` that isn't a salt and hash are refused, each naming its line.
 - `created` and `last_call` are Unix times; `day` and `day_minutes` track the daily limit.

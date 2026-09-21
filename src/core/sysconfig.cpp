@@ -35,6 +35,7 @@
  */
 
 #include "sysconfig.h"
+#include "users.h"          // LAND_* and the landing names, kept in one place
 #include "../platform/platform.h"
 #include <cstdio>
 #include <cstdlib>
@@ -185,6 +186,14 @@ void keyValue(Ctx& c, char* key, char* val) {
     else if (!strcmp(key, "cosysop1_password"))      copyStr(g.coPass[0], sizeof(g.coPass[0]), val);
     else if (!strcmp(key, "cosysop2_password"))      copyStr(g.coPass[1], sizeof(g.coPass[1]), val);
     else if (!strcmp(key, "idle_minutes"))          { if (number(c, key, val, 0, 1440, n)) g.idleMinutes = static_cast<uint16_t>(n); }
+    else if (!strcmp(key, "landing")) {
+        // "default" is not a board default, so it is refused rather than
+        // quietly meaning main: a board whose default is "whatever the
+        // default is" is a setting that says nothing.
+        uint8_t v = users::landFromKey(val);
+        if (v == LAND_DEFAULT) problem(c, "landing must be main, chat or forums", val);
+        else g.landing = v;
+    }
     else if (!strcmp(key, "call_minutes"))          { if (number(c, key, val, 0, 1440, n)) g.callMinutes = static_cast<uint16_t>(n); }
     else if (!strcmp(key, "day_minutes"))           { if (number(c, key, val, 0, 1440, n)) g.dayMinutes  = static_cast<uint16_t>(n); }
     else if (!strcmp(key, "backup_window_minutes")) { if (number(c, key, val, 1, 60, n)) g.backupMinutes = static_cast<uint16_t>(n); }

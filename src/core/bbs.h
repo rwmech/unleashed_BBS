@@ -209,6 +209,11 @@ struct Session {
     char         pwC[BBS_PASS_MAX + 1] = {};
     char         yesno[2]    = "N";
     char         levelBuf[8] = "User";   // staff form: the Level field
+    char         landBuf[10] = "Default"; // account form: the Start field
+    bool         pendingLand = false;    // the login screen ends, then they land
+    bool         landing     = false;    // true only while the landing command runs,
+                                         // so a plugin can tell "put here at login"
+                                         // from "typed the command".
     UserRec      edit;                 // account being logged in or edited
     FormField    fields[Form::kMaxFields];
     Form         form;
@@ -486,6 +491,7 @@ private:
 
     // -- shell (bbs_shell.cpp) -----------------------------------------------
     void runCommand(Session& s, const char* line, uint32_t now);
+    void landAfterLogin(Session& s);
     const Command* findCommand(const char* verb, const Session& s) const;
     const Command* commandAt(uint8_t index) const;
     static const Command* coreCommands(uint8_t& count);
