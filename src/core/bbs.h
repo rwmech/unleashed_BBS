@@ -123,6 +123,8 @@ enum class Menu : uint8_t {
     Staff,      // staff tools
     Sysop,      // sysop only
     Hidden,     // never listed
+    None,       // not a menu at all: what menuFromText says for a word it
+                // does not know, so HELP can answer instead of guessing
 };
 
 struct Session {
@@ -515,6 +517,10 @@ private:
     bool helpWanted(const Session& s, const Command& c) const;
     bool helpEmpty(const Session& s) const;
     void cmdWho(Session& s, const char* arg);
+    void cmdNodes(Session& s, const char* arg);
+    void cmdShutdown(Session& s, const char* arg, uint32_t now);
+    void serviceShutdown(uint32_t now);
+    bool shuttingDown() const { return shutEnds_ != 0; }
     void cmdDash(Session& s, const char* arg);
     void cmdMem(Session& s);
     void cmdAbout(Session& s);
@@ -529,6 +535,9 @@ private:
     // -- sysop (bbs_sysop.cpp) -----------------------------------------------
     void markAccount(Session& s, Access level);
     void elevate(Session& s, uint32_t now);
+    static bool localAddr(const char* ip);   // RFC1918, loopback, link-local
+    void rememberStaff(const Session& s, Access level);
+    void restoreStaff(Session& s);
     void coElevate(Session& s, Access level, uint32_t now);
     bool rowNodes(Session& s);
     bool rowBans(Session& s);
@@ -580,6 +589,24 @@ private:
     uint32_t  loopAvgUs_   = 0;      // smoothed work per pass, microseconds
     uint32_t  loopMaxUs_   = 0;      // worst pass since boot
     uint32_t  loopPasses_  = 0;      // passes of the scheduler since boot
+
+    // Heap watch. A board that ran out of heap rebooted with nothing said,
+    // and the only evidence afterwards was MEM's "heap low since boot"
+    // counter having gone UP, which can only happen across a restart. That
+    // is a terrible way to find out. These record the floor and say so on
+    // the way down, so the next one leaves a trail.
+    uint32_t  heapLow_     = 0xFFFFFFFFu;  // lowest free seen, this boot
+    uint32_t  heapStep_    = 0;            // lowest threshold already logged
+    uint32_t  heapCheckAt_ = 0;            // millis of the last sample
+    void      heapWatch(uint32_t now);
+
+    // SHUTDOWN. The board going down on purpose, with everybody told first.
+    // shutEnds_ is the millis the countdown reaches zero, and zero means no
+    // shutdown is running, which is why it is never legitimately zero while
+    // one is: the constructor of that value adds 1 if it lands on zero.
+    uint32_t  shutEnds_  = 0;
+    uint32_t  shutSaid_  = 0xFFFFFFFFu;    // smallest threshold already announced
+    bool      shutDone_  = false;          // the lines are closed, stay closed
     uint16_t  callsBoot_   = 0;      // calls answered since boot
     bool      bootCrash_   = false;  // this boot followed a crash or watchdog
     char      bootReason_[32] = "";  // in words, for the sysop

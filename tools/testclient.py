@@ -1207,9 +1207,21 @@ def test_user_admin():
     s.send(b"user del Newbie\r")
     ok &= check("USER DEL asks (y/N)", s.wait_for(b"(y/N)?", 3))
     s.send(b"y")
-    ok &= check("account deleted", s.wait_for(b"Account deleted.", 5))
-    c, which = handle_then("Newbie", [b"[R]egister", b"Password:"])
-    ok &= check("deleted handle is new again", which == 0)
+    ok &= check("account retired", s.wait_for(b"Account retired.", 5))
+
+    # This assertion is inverted from what it used to say, and the old
+    # version was the bug written down as a requirement.
+    #
+    # USER DEL used to remove the block, which put the handle back into
+    # circulation. Mail is matched by handle, so the next person to register
+    # that name was handed the previous owner's undelivered mail. The suite
+    # asserted "deleted handle is new again" and passed, which is how it
+    # survived: the test agreed with the code because both were written from
+    # the same wrong idea.
+    #
+    # A retired handle is reserved for ever. Nobody inherits anything.
+    c, which = handle_then("Newbie", [b"[R]egister", b"Password:", b"locked"])
+    ok &= check("a retired handle is never offered to somebody new", which != 0)
     c.close()
 
     s.buf.clear()
@@ -3922,6 +3934,195 @@ def test_mail_rsd():
     return ok
 
 
+def test_shutdown():
+    """SHUTDOWN warns more than once, and CANCEL stops it.
+
+    The first cut announced the opening threshold and then went silent:
+    the cadence list descends, and the loop broke on the first entry it had
+    already announced instead of stepping past it to reach the smaller ones.
+    So "down in 10 seconds" was announced and 5, 4, 3, 2, 1 never were.
+
+    Nothing about that is visible except by watching a real countdown, which
+    is how Rob found it and why it is pinned here.
+    """
+    print("SHUTDOWN: the countdown, and cancelling it")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and a sysop password")
+        return True
+
+    # Start one and cancel it. Nobody wants the suite's board going down.
+    s = ansi_login("Shutman")
+    s.buf.clear()
+    s.send(f"bye {PASSWORD}\r".encode())
+    ok = check("sysop", s.wait_for(b"SysOp node", 5))
+    s.pump(0.5)
+
+    s.buf.clear()
+    s.send(b"shutdown 9999\r")
+    ok &= check("an out of range countdown is refused",
+                s.wait_for(b"5 to 3600", 4))
+
+    watcher = ansi_login("Watcher")
+    drain(watcher)
+    watcher.buf.clear()
+
+    s.buf.clear()
+    s.send(b"shutdown 20\r")
+    ok &= check("the countdown starts", s.wait_for(b"Going down in 20", 4))
+    ok &= check("and everybody else is told",
+                watcher.wait_for(b"taking the board down", 5))
+
+    # Twenty seconds, and the wait below stops at the ten second mark, so
+    # there are ten left to cancel in. The first version of this test used a
+    # ten second countdown and spent nearly all of it watching, then raced
+    # the board to cancel with about a second to spare. The cadence was
+    # fine; the test was not.
+    ok &= check("a later threshold is announced too, not just the first",
+                watcher.wait_for(b"in 10 second", 16))
+
+    s.buf.clear()
+    s.send(b"shutdown cancel\r")
+    ok &= check("cancel stops it", s.wait_for(b"Shutdown cancelled", 5))
+    ok &= check("and the room is told", watcher.wait_for(b"cancelled", 6))
+
+    # The board must still take calls.
+    after = ansi_login("Stillup")
+    ok &= check("the board is still answering after a cancel",
+                after.sock_alive() if hasattr(after, "sock_alive") else True)
+    drain(after); after.close()
+
+    for c in (s, watcher):
+        drain(c)
+        c.close()
+    return ok
+
+
+def test_staff_remembered():
+    """Staff access is typed once a week, not once a call, and revoking it works.
+
+    The trade this makes is worth stating, because it is a real one. Account
+    passwords cross this board in the clear on every single login, so
+    remembering staff access against the account alone would turn a sniffed
+    account password into a week of staff rights. It is bound to the address
+    it was confirmed from, so a captured password is worth nothing from
+    anywhere else, and the sysop level is never remembered at all.
+
+    What is tested here: it comes back on the next call, and lowering the
+    account's level in USER EDIT takes it away again.
+    """
+    print("Staff access, remembered and revoked")
+    if HOST not in ("127.0.0.1", "localhost") or not CO1 or not PASSWORD:
+        print("  SKIP  needs the host build and the staff passwords")
+        return True
+
+    # Earn it.
+    c = ansi_login("Keeper2")
+    drain(c)
+    c.buf.clear()
+    c.send(f"bye {CO1}\r".encode())
+    ok = check("co-sysop access granted on the password",
+               c.wait_for(b"access on node", 6))
+    drain(c)
+    c.close()
+
+    # Come back. Same address, inside the week, no password typed.
+    back = ansi_login("Keeper2", pw=TEST_PW)
+    shown = plain(back.buf)
+    ok &= check("and is remembered on the next call without typing it",
+                b"remembered from" in shown)
+    back.buf.clear()
+    back.send(b"nodes\r")
+    ok &= check("the rights really came back, not just the message",
+                back.wait_for(b"Nodes", 5))
+    drain(back)
+    back.close()
+
+    # A sysop lowers them. That has to revoke it.
+    s = ansi_login("Revoker")
+    s.buf.clear()
+    s.send(f"bye {PASSWORD}\r".encode())
+    ok &= check("sysop to do the revoking", s.wait_for(b"SysOp node", 5))
+    s.pump(0.6)
+    s.buf.clear()
+    s.send(b"user edit Keeper2\r")
+    ok &= check("the account opens", s.wait_for(b"EDIT ACCOUNT", 5))
+    # Level is a cycle field: walk to it and pick User, then save.
+    s.send(DOWN * 7 + b"u" + F1)
+    ok &= check("level lowered to User", s.wait_for(b"saved.", 6))
+    drain(s)
+    s.close()
+
+    gone = ansi_login("Keeper2", pw=TEST_PW)
+    after = plain(gone.buf)
+    ok &= check("the remembered access is revoked at the next login",
+                b"remembered from" not in after)
+    gone.buf.clear()
+    gone.send(b"nodes\r")
+    ok &= check("and the staff command is unknown again",
+                gone.wait_for(b"Unknown command", 5))
+    drain(gone)
+    gone.close()
+    return ok
+
+
+def test_rename_follows():
+    """A handle is a display name, and what is filed under it must follow.
+
+    Renaming somebody used to write users.txt, patch any live session, and
+    stop. Their own unread mail stayed filed under a name that no longer
+    existed, so it was simply never found again, and a room ban stayed under
+    the old name too, which made renaming a way out of one.
+
+    Nothing announced any of it. The mail did not bounce and the ban did not
+    complain; both just quietly stopped applying to the person they were
+    about.
+    """
+    print("A rename takes your things with you")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and a sysop password")
+        return True
+
+    a = ansi_login("Renamer")
+    victim = ansi_login("Oldname")
+    drain(victim)
+
+    a.buf.clear()
+    a.send(b"mail Oldname this should follow you\r")
+    ok = check("a message is left for the old handle",
+               a.wait_for(b"Left for Oldname", 5))
+    victim.close()          # they must be offline: a rename refuses a live handle
+
+    s = ansi_login("Renman")
+    s.buf.clear()
+    s.send(f"bye {PASSWORD}\r".encode())
+    ok &= check("sysop for the rename", s.wait_for(b"SysOp node", 5))
+    s.pump(0.6)
+    s.buf.clear()
+    s.send(b"user edit Oldname\r")
+    ok &= check("the account opens", s.wait_for(b"EDIT ACCOUNT", 5))
+
+    # The handle field is first and focused. Rub it out and type the new one.
+    s.send(b"\x08" * 24 + b"Newname" + F1)
+    ok &= check("renamed", s.wait_for(b"saved.", 6))
+    drain(s)
+
+    # The mail has to be readable under the new name, and gone from the old.
+    n = ansi_login("Newname", pw=TEST_PW)
+    ok &= check("the new handle is told it has mail",
+                b"You have mail" in plain(n.buf))
+    n.buf.clear()
+    n.send(b"mail\r")
+    ok &= check("and the message followed the rename",
+                n.wait_for(b"this should follow you", 5))
+    n.send(b"d")
+    n.wait_for(b"Deleted", 4)
+
+    for c in (a, s, n):
+        drain(c)
+        c.close()
+    return ok
+
+
 def test_sd():
     """The SD card, mounted and not.
 
@@ -4301,7 +4502,8 @@ if __name__ == "__main__":
                test_screens(), test_exit_screen(),
                test_refresh_and_ctrl_l(),
                test_binary(), test_sd(), test_files(), test_mail_never_lost(),
-               test_mail_rsd(), test_xfer(),
+               test_mail_rsd(), test_rename_follows(),
+               test_staff_remembered(), test_shutdown(), test_xfer(),
                test_upload_no_binary(), test_ymodem(),
                test_config_areas(), test_partitions()]
     if "--backup" in FLAGS:

@@ -1023,6 +1023,16 @@ void onKey(Session& s, int k, uint32_t now) {
         snprintf(answer, sizeof(answer), "%s", s.ed.text());
         s.term.nl(s.tl);
 
+        // A lone Q backs out, because the prompt line still on the screen
+        // above says "Q/ESC back" and a caller has no way to know that
+        // stopped being true once a question opened. ESC always worked; Q
+        // was being typed into the answer, so the board looked deaf to the
+        // key it had just advertised. No answer here is ever a bare Q.
+        if ((answer[0] == 'q' || answer[0] == 'Q') && !answer[1]) {
+            backToArea(b, s);
+            return;
+        }
+
         uint8_t at = g_at[slot];
         char name[kDescMax + 1];
         switch (what) {
@@ -2157,19 +2167,25 @@ void doErase(Bbs& b, Session& s, const char* a) {
 const Command kCommands[] = {
     { "FILES", "F", 0, CF_READ, "[F]ILES [n]", "the file areas",
       [](Bbs& b, Session& s, const char* a, uint32_t) {
-          enter(b, s);
-          if (!b.owns(s, g_index) || !*a) return;      // entry refused, or no area asked for
-          long n = strtol(a, nullptr, 10);
+          // A number that names nothing is refused at the shell, before the
+          // door opens. Somebody who typed FILES 99 asked for one area, not
+          // for the file areas in general, and dropping them inside a
+          // subsystem they did not ask for means everything they type next
+          // is swallowed by it: "term 80" came back as "File number: 80".
+          //
           // An area they may not read is refused in the same words as one
           // that does not exist, so the command cannot be used to find out
           // which numbers are hiding something.
-          if (n < 1 || n > g_areas || !g_area[n - 1].path[0] ||
-              !mayRead(s, static_cast<uint8_t>(n - 1))) {
+          long n = *a ? strtol(a, nullptr, 10) : 0;
+          if (*a && (n < 1 || n > g_areas || !g_area[n - 1].path[0] ||
+                     !mayRead(s, static_cast<uint8_t>(n - 1)))) {
               s.term.color(s.tl, Color::LightRed);
               s.term.text(s.tl, "No area by that number.");
-              filesPrompt(s);
+              b.prompt(s);
               return;
           }
+          enter(b, s);
+          if (!b.owns(s, g_index) || !*a) return;      // entry refused, or no area asked for
           listArea(b, s, static_cast<uint8_t>(n - 1));
       },
       Menu::Main, 8 },
@@ -2241,4 +2257,5 @@ extern const Plugin kFilesPlugin = {
     rows,
     nullptr,                 // onPresence
     onBytes,
+    nullptr,                 // onRename
 };

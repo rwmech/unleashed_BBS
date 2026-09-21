@@ -71,6 +71,52 @@ struct UserRec {
     char     phone[21]                = {};
     char     profile[BBS_PROFILE_MAX + 1] = {};
     // system fields
+    //
+    // id: this account's identity, and the thing everything else should
+    // point at. A handle is a display name: it can be changed by its owner
+    // or by staff, and before this existed a rename orphaned the caller's
+    // mail and their uploads, while a deleted handle could be registered by
+    // somebody else who then inherited both. An id is assigned once, is
+    // never reused, and outlives the name.
+    //
+    // 0 means "not assigned yet", which is what every account written
+    // before this reads as, and what the first load after upgrading fixes.
+    uint32_t id         = 0;
+    // retired: the account is finished but its identity is not. It cannot
+    // log in and its handle is never handed to anybody else.
+    //
+    // Deleting the block outright is what made this necessary: the handle
+    // went back into circulation, and mail is matched by handle, so the
+    // next person to register that name was handed the previous owner's
+    // undelivered mail. Keeping the block costs a few hundred bytes on a
+    // partition with room for over a thousand accounts, and it is also what
+    // makes "the next id is the highest plus one" safe, since a removed
+    // block would put its id back in play.
+    bool     retired    = false;
+    // Staff access, remembered so it does not have to be typed every call.
+    //
+    // staffAt is when the password was last entered, staffIp is the address
+    // it was entered from, and staffLevel is what it bought. Inside the
+    // window, a caller logging in from the same address gets that level
+    // back without typing it again.
+    //
+    // Bound to the address on purpose. Account passwords cross this board in
+    // the clear on every single login, so remembering staff access against
+    // the account alone would turn a sniffed account password into a week of
+    // staff access. Tied to an address, a captured password is worth nothing
+    // unless the attacker is also on the network it was captured from.
+    //
+    // Never the sysop. That one is typed every time: it can change every
+    // password on the board, read every account and rewrite the config, and
+    // it belongs to one person on one machine, so the cost of typing it is
+    // small and the cost of not having to is not.
+    //
+    // Clearing staffLevel in USER EDIT revokes it at the next login. It does
+    // not reach into a session that is already elevated; a sysop who needs
+    // somebody out now has KICK.
+    uint32_t staffAt    = 0;           // epoch, 0 = never
+    uint8_t  staffLevel = 0;           // Access value it was confirmed at
+    char     staffIp[16] = {};         // the address it was confirmed from
     char     pass[82]   = {};          // "salt16hex$sha256hex", empty = no password
     uint32_t created    = 0;           // epoch, 0 = clock not set
     uint32_t lastCall   = 0;           // epoch of the last login
@@ -104,9 +150,21 @@ struct UserRec {
 enum : uint8_t { LAND_DEFAULT = 0, LAND_MAIN = 1, LAND_CHAT = 2, LAND_FORUMS = 3 };
 
 namespace users {
-const char* landKey(uint8_t v);          // "default" | "main" | "chat" | "bulletin"
+const char* landKey(uint8_t v);          // "default" | "main" | "chat" | "forums"
 uint8_t     landFromKey(const char* s);
 const char* landVerb(uint8_t v);         // the command that puts them there, or null
+
+// maxId: the highest id in users.txt, 0 on an empty or unreadable file.
+// The next id is this plus one, derived rather than stored so there is no
+// counter to keep in step, lose in a restore, or have disagree with the
+// file. That is only safe because accounts are never removed: delete a
+// block and its id becomes available again on the next pass.
+uint32_t maxId();
+
+// assignIds: give an id to every account that has none, once, at startup.
+// Returns how many it handed out. Does nothing and reports 0 when every
+// account already has one, which is every boot after the first.
+uint8_t assignIds();
 }
 
 enum UserFieldFlag : uint8_t {
@@ -167,7 +225,16 @@ Result add(const UserRec& u);
 // update: replace the account named originalHandle (handle may change)
 Result update(const char* originalHandle, const UserRec& u);
 
-// remove: delete an account
+// retire: stop the account working, keep its identity and reserve its
+// handle for ever. This is what USER DEL does.
+Result retire(const char* handle);
+
+// purge: blank a person's details, keep the identity and the reservation.
+Result purge(const char* handle);
+
+// remove: delete the block outright. Only for an account nobody has ever
+// used; anything else must retire, or a handle goes back into circulation
+// and its id becomes available again.
 Result remove(const char* handle);
 
 // setPassword / checkPassword: salted SHA-256, BBS_PASS_ROUNDS rounds

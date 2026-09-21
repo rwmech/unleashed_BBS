@@ -311,6 +311,11 @@ private:
         else if (!strcmp(key, "day_minutes")) { if (number(iss, key, val, 0xFFFFu, n)) u.dayMinutes = static_cast<uint16_t>(n); }
         else if (!strcmp(key, "locked"))      { u.locked = ieq(val, "yes") || !strcmp(val, "1"); }
         else if (!strcmp(key, "land"))        { u.land = users::landFromKey(val); }
+        else if (!strcmp(key, "id"))          { if (number(iss, key, val, 0xFFFFFFFFu, n)) u.id = n; }
+        else if (!strcmp(key, "retired"))     { u.retired = ieq(val, "yes") || !strcmp(val, "1"); }
+        else if (!strcmp(key, "staff_at"))    { if (number(iss, key, val, 0xFFFFFFFFu, n)) u.staffAt = n; }
+        else if (!strcmp(key, "staff_level")) { if (number(iss, key, val, 3, n)) u.staffLevel = static_cast<uint8_t>(n); }
+        else if (!strcmp(key, "staff_ip"))    { snprintf(u.staffIp, sizeof(u.staffIp), "%s", val); }
         else if (!strcmp(key, "level")) {
             if      (ieq(val, "sysop")) u.level = static_cast<uint8_t>(Access::Sysop);
             else if (ieq(val, "co1"))   u.level = static_cast<uint8_t>(Access::CoSysop1);
@@ -336,12 +341,16 @@ void writeRecord(FILE* f, const UserRec& u) {
     }
     static const char* kLevels[] = { "user", "co2", "co1", "sysop" };
     fprintf(f, "pass = %s\nlevel = %s\ncreated = %u\nlast_call = %u\ncalls = %u\nday = %u\n"
-               "day_minutes = %u\nlocked = %s\nland = %s\n\n",
+               "day_minutes = %u\nlocked = %s\nland = %s\nid = %u\nretired = %s\n"
+               "staff_at = %u\nstaff_level = %u\nstaff_ip = %s\n\n",
             u.pass, kLevels[u.level < 4 ? u.level : 0],
             static_cast<unsigned>(u.created), static_cast<unsigned>(u.lastCall),
             static_cast<unsigned>(u.calls), static_cast<unsigned>(u.dayKey),
             static_cast<unsigned>(u.dayMinutes), u.locked ? "yes" : "no",
-            users::landKey(u.land));
+            users::landKey(u.land), static_cast<unsigned>(u.id),
+            u.retired ? "yes" : "no",
+            static_cast<unsigned>(u.staffAt), static_cast<unsigned>(u.staffLevel),
+            u.staffIp);
 }
 
 // ---------------------------------------------------------------------------
@@ -492,7 +501,50 @@ Result add(const UserRec& u) {
     static UserRec probe;
     if (find(u.handle, probe)) return Result::Exists;
     if (count() >= syscfg::get().maxUsers) return Result::Full;
-    return rewrite(nullptr, nullptr, &u);
+
+    // An account is never written without an id. The caller may already
+    // have set one (the migration does); otherwise it gets the next.
+    //
+    // The invariant this protects: an id is never used anywhere until the
+    // record carrying it is on disk. rewrite() builds a temp file and only
+    // renames on success, so a failure here means the id was never issued
+    // rather than issued twice.
+    UserRec withId = u;
+    if (!withId.id) withId.id = maxId() + 1;
+    return rewrite(nullptr, nullptr, &withId);
+}
+
+// maxId / assignIds: see users.h for why the counter is derived.
+uint32_t maxId() {
+    char p[96];
+    path(p, sizeof(p), "");
+    FILE* f = fopen(p, "r");
+    if (!f) return 0;
+    static UserRec u;
+    Reader r(f);
+    uint32_t hi = 0;
+    while (r.next(u)) if (u.id > hi) hi = u.id;
+    fclose(f);
+    return hi;
+}
+
+uint8_t assignIds() {
+    uint32_t next = maxId();
+    uint8_t  gave = 0;
+    for (uint8_t i = 0; i < count(); ++i) {
+        UserRec u;
+        if (!at(i, u) || u.id) continue;
+        u.id = ++next;
+        if (update(u.handle, u) != Result::Ok) {
+            plat::log("users: could not give '%s' an id", u.handle);
+            break;                       // stop rather than skip: ids must be dense-ish
+                                         // and a failing file will not fix itself
+        }
+        if (gave < 0xFF) ++gave;
+    }
+    if (gave) plat::log("users: assigned %u account id%s", static_cast<unsigned>(gave),
+                        gave == 1 ? "" : "s");
+    return gave;
 }
 
 Result update(const char* originalHandle, const UserRec& u) {
@@ -501,6 +553,37 @@ Result update(const char* originalHandle, const UserRec& u) {
         if (find(u.handle, probe)) return Result::Exists;
     }
     return rewrite(originalHandle, &u, nullptr);
+}
+
+// retire: the account stops working, the identity stays.
+//
+// This is what USER DEL does now. remove() is still here for the one case
+// that genuinely wants the block gone, and it is deliberately not reachable
+// from a caller-facing command.
+Result retire(const char* handle) {
+    static UserRec u;
+    if (!find(handle, u)) return Result::NotFound;
+    if (u.retired) return Result::Ok;                 // already, and that is fine
+    u.retired = true;
+    u.locked  = true;                                 // belt and braces at the login path
+    return update(handle, u);
+}
+
+// purge: blank what the board knows about a person, keep that they existed.
+//
+// For a sysop who genuinely wants somebody gone. The id, the handle and the
+// retired flag stay, so nothing anywhere is orphaned and the handle is
+// never reissued. Everything a person would recognise as theirs goes.
+Result purge(const char* handle) {
+    static UserRec u;
+    if (!find(handle, u)) return Result::NotFound;
+    UserRec blank;
+    blank.id      = u.id;                             // the identity survives
+    blank.retired = true;
+    blank.locked  = true;
+    blank.created = u.created;
+    snprintf(blank.handle, sizeof(blank.handle), "%s", u.handle);
+    return update(handle, blank);
 }
 
 Result remove(const char* handle) {

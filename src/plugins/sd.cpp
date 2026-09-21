@@ -497,4 +497,5 @@ extern const Plugin kSdPlugin = {
     nullptr,                 // rows: no paged list of its own
     nullptr,                 // onPresence
     nullptr,                 // onBytes
+    nullptr,                 // onRename
 };

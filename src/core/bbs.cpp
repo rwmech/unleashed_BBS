@@ -134,6 +134,13 @@ Bbs& Bbs::instance() {
 // ---------------------------------------------------------------------------
 bool Bbs::begin(uint16_t port) {
     noteBoot();                       // why we are here, before anything else
+
+    // Every account gets an identity before anything can refer to one.
+    // Accounts written before ids existed carry 0, and this is the one pass
+    // that fixes them: it runs before the listener is up, so nobody can be
+    // logging in while the file is being rewritten.
+    users::assignIds();
+
     for (uint8_t i = 0; i < BBS_MAX_NODES; ++i) {
         nodes_[i].id   = static_cast<uint8_t>(i + 1);
         nodes_[i].role = Role::Caller;
@@ -367,6 +374,9 @@ void Bbs::tick() {
     plugins::tick(now);
     plat::activityTick(now);
 
+    heapWatch(now);
+    serviceShutdown(now);
+
     uint32_t dt = plat::micros() - work0;
     if (dt > loopMaxUs_) loopMaxUs_ = dt;
     loopAvgUs_ = loopAvgUs_ ? (loopAvgUs_ * 7 + dt) / 8 : dt;    // gentle average
@@ -464,6 +474,21 @@ void Bbs::acceptAll(uint32_t now) {
         if (bans_.banned(ipAddr, now)) {
             close(fd);
             plat::log("bbs: BANNED %s dropped", ip);
+            continue;
+        }
+
+        // A board that has been shut down answers and says so. Closing the
+        // listener instead would give a connection refused, which is
+        // indistinguishable from a crashed board, a dead Wi-Fi link or a
+        // wrong address, and an unexplained failure is the expensive kind.
+        // The board is powered either way, so silence saves nothing.
+        if (shutDone_) {
+            static const char kDown[] =
+                "\r\nThis board has been shut down by the sysop.\r\n"
+                "It needs restarting before it can take calls again.\r\n";
+            send(fd, kDown, sizeof(kDown) - 1, MSG_DONTWAIT | MSG_NOSIGNAL);
+            close(fd);
+            plat::log("bbs: SHUTDOWN, refused %s", ip);
             continue;
         }
 
@@ -1520,6 +1545,10 @@ void Bbs::completeLogin(Session& s, uint32_t now) {
     // commands is advice for a place they are not going. landAfterLogin
     // prints it when that is in fact where they land.
 
+    // Staff access confirmed within the week, from this same address, comes
+    // back without the password being typed again. See restoreStaff.
+    restoreStaff(s);
+
     plat::log("bbs: node %u login '%s'", s.id, s.user);
     for (uint8_t i = 0; i < plugins::count(); ++i) {
         const Plugin* p = plugins::at(i);
@@ -1572,6 +1601,101 @@ void Bbs::landAfterLogin(Session& s) {
     t.text(tl, "[H]ELP for commands.");
     t.nl(tl);
     prompt(s);
+}
+
+// ---------------------------------------------------------------------------
+// heapWatch: notice the board running out of memory before it dies of it.
+//
+// A board with no heap left does not report a problem, it reboots, and the
+// only trace afterwards is that MEM's "heap low since boot" figure has gone
+// UP, which it can only do across a restart. That is a terrible way to find
+// out, and it is how the first one was found: two readings twelve minutes
+// apart, 25,204 then 50,224, a counter that only falls having risen.
+//
+// So: sample once a second, remember the floor, and say something on the way
+// down. The thresholds are logged once each, lowest-so-far, so a board
+// drifting downward leaves a trail of single lines rather than a flood, and
+// a board that recovers does not start shouting again at the same level.
+//
+// Sampling costs a counter read. It deliberately does NOT call
+// plat::heap(), which walks the allocator for the full statistics MEM
+// wants; this only needs one number and it is on the loop's own path.
+// ---------------------------------------------------------------------------
+void Bbs::heapWatch(uint32_t now) {
+    if (heapCheckAt_ && now - heapCheckAt_ < 1000) return;   // once a second
+    heapCheckAt_ = now ? now : 1;
+
+    uint32_t freeNow = plat::heap().freeBytes;
+    if (!freeNow) return;                                    // host build says nothing
+    if (freeNow < heapLow_) heapLow_ = freeNow;
+
+    // Thresholds a human can act on. 40 KB is "worth knowing", 24 KB is
+    // "this board is in trouble", 16 KB is "the next allocation may be the
+    // one that kills it". Below 16 KB a backup upload cannot even start,
+    // because inflating one wants about 43 KB of its own.
+    static const uint32_t kSteps[] = { 40960u, 24576u, 16384u };
+    for (uint32_t step : kSteps) {
+        if (freeNow >= step) continue;
+        if (heapStep_ && heapStep_ <= step) continue;        // already said this one
+        heapStep_ = step;
+        plat::log("heap: free %lu, low %lu since boot, %u callers on",
+                  static_cast<unsigned long>(freeNow),
+                  static_cast<unsigned long>(heapLow_),
+                  static_cast<unsigned>(publicBusy()));
+        break;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// serviceShutdown: the countdown, and the end of it.
+//
+// Announcements go out on a cadence rather than once a second. A line a
+// second for two minutes is noise people stop reading, and on a 40 column
+// screen it is the whole screen; these are the points at which somebody
+// would actually change what they are doing.
+// ---------------------------------------------------------------------------
+void Bbs::serviceShutdown(uint32_t now) {
+    if (!shutEnds_) return;
+
+    int32_t left = static_cast<int32_t>(shutEnds_ - now);
+    if (left > 0) {
+        static const uint32_t kSay[] = { 120, 60, 30, 10, 5, 4, 3, 2, 1 };
+        uint32_t secs = static_cast<uint32_t>((left + 999) / 1000);
+        for (uint32_t step : kSay) {
+            if (secs > step) continue;
+            // continue, not break. The list descends, so a threshold that
+            // has already been announced must be stepped PAST to reach the
+            // smaller ones behind it. Breaking here meant the first warning
+            // went out and then every later pass hit the same already-said
+            // entry and stopped, so 120 was announced and 60, 30 and the
+            // rest never were.
+            if (step >= shutSaid_) continue;       // already said this one
+            shutSaid_ = step;
+            char buf[72];
+            snprintf(buf, sizeof(buf), "*** The board goes down in %lu second%s.",
+                     static_cast<unsigned long>(step), step == 1 ? "" : "s");
+            // Through the bus, the way BROADCAST goes, so it reaches a
+            // caller whatever they are doing: mid-form, inside the chat
+            // room, or part way through typing a line.
+            for (Session* o : all_) {
+                if (o->st == SState::Free || o->role == Role::Busy) continue;
+                post(*o, BusKind::Broadcast, nullptr, buf);
+            }
+            break;
+        }
+        return;
+    }
+
+    // Time up. Everybody goes out through goodbye(), so the send-off screen
+    // and the linger still happen: the last thing a caller sees should be
+    // the board saying goodbye, not a socket closing under them.
+    shutEnds_ = 0;
+    shutDone_ = true;
+    plat::log("bbs: SHUTDOWN complete, lines closed until restart");
+    for (Session* o : all_) {
+        if (o->st == SState::Free) continue;
+        goodbye(*o, now);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1931,7 +2055,9 @@ void Bbs::redrawInput(Session& s) {
         case SState::Confirm:
             t.nl(s.tl);
             t.color(s.tl, Color::Yellow);
-            t.text(s.tl, s.confirm == ConfirmKind::DeleteUser ? "Delete that account (y/N)? " : kConfirmText);
+            t.text(s.tl, s.confirm == ConfirmKind::DeleteUser
+                             ? "Retire that account? The handle stays reserved (y/N)? "
+                             : kConfirmText);
             t.color(s.tl, Color::White);
             break;
         default:
@@ -2342,10 +2468,17 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
                 t.nl(tl);
                 s.confirm = ConfirmKind::Logoff;
                 if (yes) {
-                    users::Result r = users::remove(s.origHandle);
+                    // Retired, not removed. Deleting the block put the handle
+                    // back into circulation, and mail is matched by handle,
+                    // so the next person to register that name was handed
+                    // the previous owner's undelivered mail. The suite used
+                    // to assert that as correct ("deleted handle is new
+                    // again"), which is how it survived.
+                    users::Result r = users::retire(s.origHandle);
                     t.color(tl, r == users::Result::Ok ? Color::LightGreen : Color::LightRed);
-                    t.text(tl, r == users::Result::Ok ? "Account deleted." : "Could not delete that account.");
-                    if (r == users::Result::Ok) plat::log("bbs: %s deleted account '%s'", s.user, s.origHandle);
+                    t.text(tl, r == users::Result::Ok ? "Account retired. The handle stays reserved."
+                                                      : "Could not retire that account.");
+                    if (r == users::Result::Ok) plat::log("bbs: %s retired account '%s'", s.user, s.origHandle);
                 } else {
                     t.color(tl, Color::Grey);
                     t.text(tl, "Kept.");

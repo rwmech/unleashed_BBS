@@ -42,6 +42,7 @@
 #include "clock.h"
 #include "sysconfig.h"
 #include "users.h"
+#include "plugin.h"     // plugins::renamed, so a rename reaches the plugins
 #include "../platform/platform.h"
 
 #include <cstring>
@@ -404,6 +405,22 @@ void Bbs::formSave(Session& s, uint32_t now) {
                 cur.created = clk::epoch();
             }
             cur.locked = s.yesno[0] == 'Y';
+            // Lowering somebody's level revokes any staff access they had
+            // remembered above it, so USER EDIT is a real revocation and not
+            // just a change of marker. Without this, demoting a co-sysop
+            // took away the > in WHO and left them able to log in with the
+            // rights they had a week ago, which is the opposite of what a
+            // sysop typing that means.
+            //
+            // It takes effect at their next login. A session already
+            // elevated keeps what it has until it drops; KICK is the answer
+            // when "now" is what was meant.
+            if (cur.staffLevel > wantLevel) {
+                cur.staffLevel = 0;
+                cur.staffAt    = 0;
+                cur.staffIp[0] = '\0';
+                plat::log("bbs: %s revoked remembered staff access for '%s'", s.user, cur.handle);
+            }
             cur.level  = wantLevel;
             cur.land   = landValue(s.landBuf);
             if (*s.pwA) users::setPassword(cur, s.pwA);
@@ -417,6 +434,14 @@ void Bbs::formSave(Session& s, uint32_t now) {
                 for (Session* o : all_) {
                     if (o->st != SState::Free && ieq(o->user, s.origHandle)) strncpy(o->user, s.edit.handle, BBS_USER_MAX);
                 }
+                // And everything filed under the old name follows it.
+                //
+                // This used to stop at the line above: users.txt was written
+                // and live sessions were patched, and nothing else. The
+                // caller's own unread mail stayed filed under a name that no
+                // longer existed, and a room ban did too, so renaming was a
+                // way out of one. Only reached when the write succeeded.
+                if (renamed) plugins::renamed(s.origHandle, s.edit.handle);
             }
             plat::log("bbs: %s %s account '%s'", s.user, adding ? "added" : "saved", s.edit.handle);
             snprintf(msg, sizeof(msg), adding ? "Account %s added." : "Account %s saved.", s.edit.handle);
@@ -595,11 +620,13 @@ void Bbs::cmdUser(Session& s, const char* arg, uint32_t now) {
         s.confirm = ConfirmKind::DeleteUser;
         s.st = SState::Confirm;
         t.color(tl, Color::Yellow);
-        t.text(tl, "Delete ");
+        // The words match the action. A verb that says "delete" and
+        // retires instead is worse than either behaviour on its own.
+        t.text(tl, "Retire ");
         t.color(tl, Color::White);
         t.text(tl, s.origHandle);
         t.color(tl, Color::Yellow);
-        t.text(tl, " (y/N)? ");
+        t.text(tl, "? They cannot log in and the handle stays reserved (y/N)? ");
         return;
     }
     say(t, tl, Color::LightRed, "USER ADD | USER EDIT h | USER DEL h");

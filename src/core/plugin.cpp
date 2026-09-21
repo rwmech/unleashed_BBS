@@ -365,6 +365,15 @@ void stopAll() {
     }
 }
 
+// renamed: tell every running plugin that a handle changed.
+void renamed(const char* oldHandle, const char* newHandle) {
+    if (!oldHandle || !newHandle || !*oldHandle || !*newHandle) return;
+    for (uint8_t i = 0; i < count(); ++i) {
+        const Plugin* p = at(i);
+        if (running(i) && p->onRename) p->onRename(oldHandle, newHandle);
+    }
+}
+
 void tick(uint32_t now) {
     if (static_cast<int32_t>(now - g_nextTick) < 0) return;
     g_nextTick = now + BBS_PLUGIN_TICK_MS;

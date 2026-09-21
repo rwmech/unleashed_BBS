@@ -285,6 +285,8 @@ day = 2026260
 day_minutes = 45
 locked = no
 land = default
+id = 42
+retired = no
 ```
 
 - One `[handle]` block per account. The handle rules above apply, and duplicates are refused.
@@ -292,6 +294,13 @@ land = default
 - Values keep their spaces. Only the single space after `=` belongs to the format.
 - `pass` is a random 8-byte salt and a SHA-256 hash (repeated 1000 times), both in hex. You can't type a password into the file; set passwords on the BBS. An empty `pass` means nobody can log in to that account until staff set one.
 - `locked = yes` locks the account.
+- `id` is the account's identity and never changes, even when the handle does. It is assigned once, counting up from the highest already in the file, and **is never reused**. An account written before ids existed has none; the board gives it one on the first boot after upgrading and says so in the log. Everything that needs to refer to a person should refer to the id, because a handle is a display name and can be changed.
+- `staff_at`, `staff_level` and `staff_ip` remember that this account entered a staff password, so it does not have to be typed on every call. Inside a week, logging in **from the same address** brings the level back automatically.
+  The address binding is the point, and it is specific to a plaintext board: account passwords cross telnet in the clear on every login, so remembering staff rights against the account alone would turn a captured account password into a week of staff access. From any other address the password is asked for again.
+  **The sysop level is never remembered.** It can change every password on the board, read every account and rewrite the configuration, so it is typed each time.
+  **Lowering the account's `level` in `USER EDIT` clears all three**, which revokes the access at that caller's next login. A session that is already elevated keeps what it has until it drops; `KICK` is the answer when it has to stop immediately. With no valid clock the board cannot tell whether the week has passed, so it asks for the password rather than assuming.
+- `retired = yes` means the account is finished but its identity is not. It cannot log in and **its handle is never offered to anybody else**. This is what `USER DEL` does.
+  Removing the block outright is what made this necessary: the handle went back into circulation, and mail is matched by handle, so the next person to register that name was handed the previous owner's undelivered mail. Keeping the block costs a few hundred bytes on a partition with room for over a thousand accounts, and it is also what makes "the next id is the highest plus one" safe, since a removed block would put its id back in play.
 - `land` is where the caller is put after logging in: `default`, `main`, `chat` or `forums`. An account written by an earlier build may say `bulletin`, which is read as `forums` and rewritten on the next save. `default` means "wherever the board's `landing` setting points", which is what every account written before this existed reads as, so nothing needs converting. It is the `Start` field on the profile form.
 - A landing this board cannot do falls back to the main prompt without comment. That is deliberate: a board with chat switched off, or one that has no bulletins yet, should not greet somebody with an error because of a preference they set months ago.
 - Keys the BBS doesn't know are accepted with a warning that names the line ("line 12: unknown key 'nickname'"), and dropped the next time the file is written.

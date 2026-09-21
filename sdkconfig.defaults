@@ -104,3 +104,29 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
 
 # Smaller image leaves OTA headroom
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# ---------------------------------------------------------------------------
+# Heap: the board ran out of it, and these are where it goes
+# ---------------------------------------------------------------------------
+# A live board was measured at 19,736 bytes of minimum free heap and was
+# seen to restart on its own, caught only because MEM's "heap low since
+# boot" figure had gone UP, which a high-water mark can only do across a
+# reboot. Nothing in this firmware allocates on that scale: the whole of
+# src/ has two heap allocations, the chat room buffer and the backup
+# inflater. The heap goes to lwIP and Wi-Fi.
+#
+# The send buffer and window are per socket, from the same heap, and there
+# are sixteen sockets. 5760 bytes each is sized for bulk TCP throughput
+# this board does not do: XMODEM and YMODEM are stop-and-wait, one block
+# then wait for the ACK, so a large window is never filled, and chat lines
+# and menus are hundreds of bytes. 2880 is still two full segments at the
+# 1440 byte MSS, which is what matters for not stalling on delayed ACKs.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
+CONFIG_LWIP_TCP_WND_DEFAULT=2880
+
+# Wi-Fi dynamic buffers are allocated on demand and 32 of each is generous
+# for a board whose busiest moment is ten callers reading text. The static
+# RX pool is untouched, since that one is preallocated and is what keeps
+# the radio from dropping frames under burst.
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16

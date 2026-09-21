@@ -24,6 +24,45 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.19.0, 2026-09-21
+
+A handle stops being an identity, the board can be taken down on purpose, and the radio stops going to sleep mid-call.
+
+### Identity: a handle is a name, not a person
+
+- **Accounts have an id now**, 32 bit, assigned once and **never reused**. It is one more key in `users.txt`, and the board gives one to every account that lacks one on the first boot after upgrading, counting up from the highest already present. The next id is derived rather than stored, so there is no counter to keep in step, lose in a restore, or have disagree with the file.
+- **`USER DEL` retires instead of removing, and the confirm says so.** This closes a live bug rather than tidying one: deleting the block put the handle back into circulation, mail is matched by handle, so **the next person to register that name was handed the previous owner's undelivered mail**. The suite asserted that as correct behaviour ("deleted handle is new again"), which is how it survived; the test now asserts the opposite and passes.
+- Retiring is also what makes a derived id counter safe, since a removed block would put its id back in play. The two rules hold each other up.
+- **A rename takes your things with you.** Renaming somebody used to write `users.txt`, patch any live session, and stop: their own unread mail stayed filed under a name that no longer existed, and a room ban did too, which made renaming a way out of one. A new `onRename` plugin hook carries it, and chat rewrites both the mailbox and the ban list. Nothing announced either failure before; the mail did not bounce and the ban did not complain, they simply stopped applying to the person they were about.
+- **Staff access is typed once a week, not once a call**, and it is **bound to the address it was confirmed from**. That binding is the whole point: account passwords cross this board in the clear on every login, so remembering staff rights against the account alone would turn a sniffed account password into a week of staff access. From anywhere else the password is asked for again. **The sysop level is never remembered**, because it can change every password on the board. With no valid clock it fails closed and asks.
+- **Lowering somebody's level in USER EDIT revokes it** at their next login, so the user manager is a real revocation rather than a change of marker. A session already elevated keeps what it has until it drops; KICK is the answer when "now" is what was meant.
+- **What was deliberately not done:** threading ids through `mail.dat` and the ban list. `MailRec` is a fixed-size record with a static assert guarding its layout, so adding an id changes `sizeof` and every existing mailbox needs converting. Following renames fixes the same visible bugs without migrating live data. The forums will store ids natively, which leaves mail as the only holdout and a much smaller job than it is today.
+
+### SHUTDOWN
+
+- `SHUTDOWN [n]` announces to every node, counts down (5 to 3600 seconds, default 60), then hangs up on everyone including the sysop, each through the ordinary send-off screen and linger. `SHUTDOWN CANCEL` stops it and says so.
+- **Afterwards the board keeps answering and says it has been shut down.** Closing the listener would give a connection refused, which is indistinguishable from a crashed board, a dead Wi-Fi link or a wrong address, and an unexplained failure is the expensive kind. The board is powered either way, so silence saves nothing.
+- Warnings go at 120, 60, 30, 10, 5, 4, 3, 2, 1 rather than once a second, through the message bus so they reach a caller mid-form or inside the chat room. A line a second for two minutes is noise people stop reading, and on 40 columns it is the whole screen.
+- No confirmation prompt: the countdown is the confirmation, and there is a cancel. The transfer warning is said rather than enforced, because knowing which caller is mid-download needs a hook into the plugin that owns the engine and a sysop can see it in NODES.
+
+### Heap, and the reboot nobody saw
+
+- **A heap watchdog.** The board was restarting on its own and the only evidence was `MEM`'s "heap low since boot" figure having gone **up**, which a high-water mark can only do across a reboot: two readings twelve minutes apart, 25,204 then 50,224. It now samples once a second and logs at 40K, 24K and 16K on the way down, once per threshold, so the next one leaves a trail instead of just rebooting.
+- **lwIP send buffer and window 5760 to 2880 per socket, Wi-Fi dynamic buffers 32 to 16.** Those are per-socket heap allocations across sixteen sockets, sized for bulk TCP this board does not do: XMODEM and YMODEM are stop-and-wait, so a large window is never filled, and chat lines are hundreds of bytes. 2880 is still two full segments at the 1440 byte MSS. All four confirmed present in the generated `sdkconfig`, because a value out of range there reverts silently rather than warning.
+- `MEM` no longer bypasses the SD plugin's cache, so it stops doing a real `esp_vfs_fat_info()` on every call: measured at 15 to 25 ms typical and 160 ms worst on a real card, on a caller's own keystroke. The cache moved to the platform layer, where mount and unmount can invalidate it.
+
+### Fixed, all of it found by driving the live board
+
+- **Tab does nothing, on every form.** Every form footer says "Tab or arrows move" and `0x09` was dropped by the ANSI decoder, so the form's tab branch was unreachable. Shift-tab too: the decoder answered `ESC O Z` while xterm and SyncTERM send `ESC [ Z`.
+- **`FILES 99` stranded you inside the door.** It opened the file areas, said "No area by that number", and left every command you typed afterwards to be eaten by the subsystem: `term 80` came back as `File number: 80`. A number that names nothing is now refused at the prompt without opening anything.
+- **`Q` at the file-number prompt did nothing** while the line directly above it said `Q/ESC back`.
+- **`WHO` truncated handles at 12 characters** on a 132 column screen, where `BBS_USER_MAX` is 20. The column follows the terminal now.
+- `? staff` drew an empty box for an ordinary caller instead of saying it is not for them, and `HELP nonsense` silently printed the main menu rather than admitting it had not understood.
+- `PAGE` on an empty node said "not taking pages", contradicting the WHO the caller had just read. Hidden and DND stay lumped together deliberately, so HIDE cannot be detected by probing; an empty line gives nothing away that WHO does not already show.
+- The room's help ran two columns together: `/email h m` is exactly ten characters against a ten wide column.
+- **`NODES n`** refreshes like `WHO n`, and `rowNodes` is fixed-height now so it cannot corrupt itself the way DASH did.
+- **Multiple sysop logins from the LAN.** The sysop node holds one caller and has to, so a second sysop used to be hung up on. From the local network they now get sysop rights in place on their own line, like a co-sysop. From the internet the old behaviour stands, so the board never has two sysop sessions open to the outside at once.
+
 ## 0.18.0, 2026-09-21
 
 The board stops going quiet for a second at a time, reading a message stops destroying it, callers choose where they land, and the room has a voice of its own.

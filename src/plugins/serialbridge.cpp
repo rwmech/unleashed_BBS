@@ -361,4 +361,5 @@ extern const Plugin kSerialPlugin = {
     nullptr,                 // rows: no paged list of its own
     nullptr,                 // onPresence
     nullptr,                 // onBytes
+    nullptr,                 // onRename
 };

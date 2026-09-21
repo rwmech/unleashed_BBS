@@ -1028,7 +1028,11 @@ void notice(const char* text, const Session* from) {
 // helpLine: one row of the /? menu
 void helpLine(Session& s, const char* cmd, const char* what) {
     char row[64];
-    snprintf(row, sizeof(row), "%-10.10s", cmd);
+    // Eleven, not ten. "/email h m" is exactly ten characters, so a ten wide
+    // column left no gap at all and the row read "/email h mleave a message".
+    // A column exactly as wide as its widest entry is a column with no
+    // separator, which is the same mistake kUsageCol made in 0.15.0.
+    snprintf(row, sizeof(row), "%-11.11s", cmd);
     s.term.color(s.tl, Color::Yellow);
     s.term.text(s.tl, row);
     s.term.color(s.tl, Color::Grey);
@@ -1615,6 +1619,70 @@ void onKey(Session& s, int k, uint32_t now) {
 }
 
 // onLogin: the one line everybody remembers from a BBS
+// ---------------------------------------------------------------------------
+// onRename: a caller changed their handle, so follow it.
+//
+// Both of this plugin's files are keyed by handle, and before this existed a
+// rename broke both of them:
+//
+//   - mail.dat matches on the addressee's name, so renaming somebody hid
+//     their own unread mail from them. Nothing said so; the mail was simply
+//     never found again.
+//   - the room ban list matches on the name too, so a rename walked straight
+//     out of a ban, and a handle somebody else later took inherited one.
+//
+// The mailbox is rewritten through the same temp file and rename the rest of
+// this code uses, so a power cut leaves the old file or the new one.
+// ---------------------------------------------------------------------------
+void onRename(const char* oldHandle, const char* newHandle) {
+    // The ban list first: it is small, in RAM, and cheap to be sure of.
+    bool banMoved = false;
+    for (uint8_t i = 0; i < kBanMax; ++i) {
+        if (g_bans[i][0] && ieq(g_bans[i], oldHandle)) {
+            snprintf(g_bans[i], BBS_USER_MAX + 1, "%.*s", BBS_USER_MAX, newHandle);
+            banMoved = true;
+        }
+    }
+    if (banMoved) {
+        saveBans();
+        plat::log("chat: room ban follows %s to %s", oldHandle, newHandle);
+    }
+
+    // Then the mailbox. One pass, rewriting every record that names them at
+    // either end, so a reply still shows who it came from.
+    char path[96], tmp[112];
+    if (!mailPath(path, sizeof(path))) return;
+    FILE* in = fopen(path, "rb");
+    if (!in) return;                                  // no mailbox, nothing to do
+
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE* out = fopen(tmp, "wb");
+    if (!out) { fclose(in); return; }
+
+    MailRec r;
+    uint8_t moved = 0;
+    bool    ok    = true;
+    while (fread(&r, sizeof(r), 1, in) == 1) {
+        if (r.to[0] && ieq(r.to, oldHandle)) {
+            snprintf(r.to, sizeof(r.to), "%.*s", BBS_USER_MAX, newHandle);
+            ++moved;
+        }
+        if (r.from[0] && ieq(r.from, oldHandle))
+            snprintf(r.from, sizeof(r.from), "%.*s", BBS_USER_MAX, newHandle);
+        if (fwrite(&r, sizeof(r), 1, out) != 1) { ok = false; break; }
+    }
+    fclose(in);
+    if (fclose(out) != 0) ok = false;
+    if (!ok) { remove(tmp); return; }                 // leave the old file alone
+
+    remove(path);
+    if (rename(tmp, path) != 0) return;
+    mailIndex();                                      // the in-RAM index names them too
+    if (moved) plat::log("chat: %u message%s follow%s %s to %s",
+                         static_cast<unsigned>(moved), moved == 1 ? "" : "s",
+                         moved == 1 ? "s" : "", oldHandle, newHandle);
+}
+
 void onLogin(Session& s) {
     mailWaiting(s);
 }
@@ -1738,4 +1806,5 @@ extern const Plugin kChatPlugin = {
     nullptr,                 // rows: no paged list of its own
     nullptr,                 // onPresence
     nullptr,                 // onBytes
+    onRename,
 };

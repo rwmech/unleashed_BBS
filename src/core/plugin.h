@@ -218,6 +218,19 @@ struct Plugin {
     // Telnet has already been unescaped by the time these arrive, so IAC IAC
     // is one 0xFF here. Whether CR is left alone is Telnet::setBinary.
     void (*onBytes)(Session& s, const uint8_t* b, size_t n, uint32_t now);
+
+    // onRename: a caller's handle has changed, old to new.
+    //
+    // A handle is a display name and a plugin that filed anything under one
+    // has to be told when it changes, or that thing is orphaned. Chat's
+    // mailbox and the room's ban list are both keyed by handle: before this
+    // existed, renaming somebody hid their own unread mail from them, and
+    // walked them straight out of a room ban.
+    //
+    // Called after users.txt has been written and only when the write
+    // succeeded, so a plugin acting on it can trust that the new name is
+    // the real one. Both names are valid for the length of the call only.
+    void (*onRename)(const char* oldHandle, const char* newHandle);
 };
 
 namespace plugins {
@@ -230,6 +243,9 @@ void stopAll();
 
 // tick: call from the BBS loop
 void tick(uint32_t now);
+
+// renamed: a caller's handle changed. Call after users.txt is written.
+void renamed(const char* oldHandle, const char* newHandle);
 
 // count / at / info: the compiled-in table, enabled or not
 uint8_t count();

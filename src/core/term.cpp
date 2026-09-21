@@ -613,6 +613,14 @@ void Term::feed(uint8_t b, KeyFn fn, void* ctx) {
             if (b == 0x08 || b == 0x7F)       { fn(ctx, KEY_BACKSPACE); return; }
             if (b == 0x03)                    { fn(ctx, KEY_BREAK); return; }
             if (b == 0x0C)                    { fn(ctx, KEY_CLEAR); return; }
+            // Tab. Every form on the board prints "Tab or arrows move" in
+            // its footer, and until this line was here that was a lie on
+            // every ANSI and plain ASCII terminal: 0x09 fell through to the
+            // return below, so Form::key's tab branch could never run. The
+            // instruction was in front of callers for months and the key did
+            // nothing. Passed through as the character, because that is what
+            // the form already tests for.
+            if (b == 0x09)                    { fn(ctx, '\t'); return; }
             if (b >= 0x20 && b <= 0x7E)       { fn(ctx, b); return; }
             return;
         case 1:
@@ -635,6 +643,13 @@ void Term::feed(uint8_t b, KeyFn fn, void* ctx) {
                 case 'C': fn(ctx, KEY_RIGHT); break;
                 case 'D': fn(ctx, KEY_LEFT); break;
                 case 'H': fn(ctx, KEY_HOME); break;
+                // Shift-tab, back a field. xterm, SyncTERM and almost
+                // everything else send CSI Z for this. The SS3 branch below
+                // has answered 'Z' since it was written, which is the wrong
+                // sequence and meant shift-tab was dead everywhere; it is
+                // left there because a terminal that does send SS3 Z should
+                // still work.
+                case 'Z': fn(ctx, KEY_UP); break;
                 case '~':
                     if (escParam_ == 1 || escParam_ == 7)        fn(ctx, KEY_HOME);
                     else if (escParam_ >= 11 && escParam_ <= 15) fn(ctx, KEY_F1 + (escParam_ - 11));

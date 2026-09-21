@@ -235,4 +235,5 @@ extern const Plugin kExamplePlugin = {
     nullptr,                 // rows: no paged list of its own
     nullptr,                 // onPresence
     onBytes,
+    nullptr,                 // onRename
 };

@@ -236,8 +236,8 @@ const Command* Bbs::coreCommands(uint8_t& count) {
         { "LURK", "", PERM_HIDE, CF_NONE, "LURK", "hide and refuse pages",
           [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdLurk(s); b.prompt(s); },
           Menu::Staff, 11 },
-        { "NODES", "", PERM_NODES, CF_NONE, "NODES", "every session with its IP",
-          [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Nodes); },
+        { "NODES", "", PERM_NODES, CF_NONE, "NODES [n]", "every session with its IP",
+          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdNodes(s, a); },
           Menu::Staff, 12 },
         { "BANS", "", PERM_BANS, CF_NONE, "BANS", "banned IP addresses",
           [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Bans); },
@@ -256,6 +256,9 @@ const Command* Bbs::coreCommands(uint8_t& count) {
         { "CALLS", "", 0, CF_STAFF, "CALLS", "when the board is busy",
           [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdCalls(s); },
           Menu::Sysop, 1 },
+        { "SHUTDOWN", "", 0, CF_SYSOP, "SHUTDOWN [n]", "warn everyone, then close the board",
+          [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdShutdown(s, a, n); },
+          Menu::Sysop, 40 },
         { "CONFIG", "", 0, CF_SYSOP, "CONFIG [p]", "board settings, page by page",
           [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdConfig(s, a, n); },
           Menu::Sysop, 3 },
@@ -650,7 +653,11 @@ Menu menuFromText(const char* arg) {
     if (ieq(arg, "account") || ieq(arg, "me"))         return Menu::Account;
     if (ieq(arg, "staff") || ieq(arg, "co"))           return Menu::Staff;
     if (ieq(arg, "sysop"))                             return Menu::Sysop;
-    return Menu::Main;
+    // Not a menu. This used to return Menu::Main, so "HELP nonsense" printed
+    // the main menu and never said it had not understood: identical output
+    // to a bare "?", which reads as the board having decided your word meant
+    // "main".
+    return Menu::None;
 }
 
 } // namespace
@@ -661,8 +668,29 @@ Menu menuFromText(const char* arg) {
 // ---------------------------------------------------------------------------
 void Bbs::cmdHelp(Session& s, const char* arg) {
     Menu m = menuFromText(arg);
+    if (m == Menu::None) {
+        char buf[72];
+        snprintf(buf, sizeof(buf), "No menu called %.20s. ? on its own lists them.", arg);
+        s.term.color(s.tl, Color::LightRed);
+        s.term.text(s.tl, buf);
+        prompt(s);
+        return;
+    }
+
     s.helpAll  = m == Menu::Hidden;
     s.helpMenu = s.helpAll ? Menu::Main : m;
+
+    // A menu with nothing on it for this caller drew a title bar, a rule and
+    // no rows, which reads as a broken screen rather than as "not for you".
+    // An ordinary caller reaches one by typing "? staff", because the
+    // grammar line correctly offers them only the menus they have, while
+    // menuFromText still accepts every name.
+    if (!s.helpAll && helpEmpty(s)) {
+        s.term.color(s.tl, Color::Grey);
+        s.term.text(s.tl, "Nothing on that menu for you.");
+        prompt(s);
+        return;
+    }
     startList(s, ListKind::Help);
 }
 
@@ -839,6 +867,92 @@ bool Bbs::rowHelp(Session& s) {
 // WHO
 // ===========================================================================
 
+// cmdNodes: NODES alone lists once, NODES n redraws every n seconds. Same
+// bounds as WHO, because they are the same question asked of the same clock
+// and two different limits would only be two things to remember.
+// ---------------------------------------------------------------------------
+// cmdShutdown: tell everybody, count down, then take the board off the air.
+//
+// A macro over things that already exist: the bus carries the warnings, the
+// tick drives the clock, and goodbye() takes each caller out with the
+// send-off screen and the linger they would get from BYE. What it adds is
+// that nobody is cut off without warning, and that the board says what
+// happened to anyone who calls afterwards.
+//
+// Deliberately no confirmation prompt. The countdown IS the confirmation:
+// there is a cancel, it is announced, and the shortest useful warning is
+// longer than the time it takes to realise you typed the wrong thing.
+// ---------------------------------------------------------------------------
+void Bbs::cmdShutdown(Session& s, const char* arg, uint32_t now) {
+    char buf[80];
+
+    if (ieq(arg, "cancel") || ieq(arg, "off")) {
+        if (!shutEnds_) {
+            sayTo(s, Color::Grey, "No shutdown is running.");
+            prompt(s);
+            return;
+        }
+        shutEnds_ = 0;
+        shutSaid_ = 0xFFFFFFFFu;
+        plat::log("bbs: SHUTDOWN cancelled by %s", s.user);
+        for (Session* o : all_) {
+            if (o->st == SState::Free || o->role == Role::Busy) continue;
+            post(*o, BusKind::Broadcast, nullptr, "*** The shutdown is cancelled. Carry on.");
+        }
+        sayTo(s, Color::LightGreen, "Shutdown cancelled.");
+        prompt(s);
+        return;
+    }
+
+    if (shutEnds_) {
+        sayTo(s, Color::Yellow, "Already going down. SHUTDOWN CANCEL stops it.");
+        prompt(s);
+        return;
+    }
+
+    long secs = *arg ? strtol(arg, nullptr, 10) : 60;
+    if (secs < 5 || secs > 3600) {
+        sayTo(s, Color::LightRed, "SHUTDOWN n: n is 5 to 3600 seconds. SHUTDOWN CANCEL stops one.");
+        prompt(s);
+        return;
+    }
+
+    shutEnds_ = now + static_cast<uint32_t>(secs) * 1000u;
+    if (!shutEnds_) shutEnds_ = 1;             // never the "no shutdown" value
+    shutSaid_ = 0xFFFFFFFFu;
+
+    snprintf(buf, sizeof(buf), "*** %s is taking the board down in %ld seconds.",
+             s.user, secs);
+    for (Session* o : all_) {
+        if (o == &s || o->st == SState::Free || o->role == Role::Busy) continue;
+        post(*o, BusKind::Broadcast, nullptr, buf);
+    }
+
+    plat::log("bbs: SHUTDOWN in %ld s, by %s", secs, s.user);
+    snprintf(buf, sizeof(buf), "Going down in %ld seconds. SHUTDOWN CANCEL stops it.", secs);
+    sayTo(s, Color::LightRed, buf);
+    // Said rather than enforced. Knowing which caller is mid-transfer needs
+    // a hook into the plugin that owns the engine, and a sysop can see it in
+    // NODES; being warned is most of the value and none of the coupling.
+    sayTo(s, Color::Grey, "Any transfer in progress will be lost.");
+    prompt(s);
+}
+
+void Bbs::cmdNodes(Session& s, const char* arg) {
+    if (!*arg) { startList(s, ListKind::Nodes); return; }
+    const SysConfig& cfg = syscfg::get();
+    uint8_t secs = 0;
+    if (!parseSeconds(arg, cfg.whoMin, cfg.whoMax, secs)) {
+        char buf[48];
+        snprintf(buf, sizeof(buf), "NODES n: n is %u to %u seconds.", cfg.whoMin, cfg.whoMax);
+        s.term.color(s.tl, Color::LightRed);
+        s.term.text(s.tl, buf);
+        prompt(s);
+        return;
+    }
+    startWatch(s, ListKind::Nodes, secs);
+}
+
 void Bbs::cmdWho(Session& s, const char* arg) {
     if (!*arg) { startList(s, ListKind::Who); return; }
     const SysConfig& cfg = syscfg::get();
@@ -861,10 +975,27 @@ void Bbs::cmdWho(Session& s, const char* arg) {
 // ran (Doing) instead of the terminal type.
 // ---------------------------------------------------------------------------
 bool Bbs::rowWho(Session& s) {
-    char buf[80];
+    char buf[96];
     char on[8];
     char idle[8];
-    const char* fmt = "%s%c%-12.12s %-9.9s %3s %5s";
+
+    // The handle column follows the terminal instead of being frozen at 12.
+    //
+    // BBS_USER_MAX is 20, so a 12 character column silently cut a handle
+    // short on a 132 column screen with sixty columns of nothing beside it.
+    // A truncated name is worse than a narrow one: WHO is where a caller
+    // goes to find out who to PAGE, and PAGE wants the whole handle.
+    //
+    // The row is " N" + mark + handle + doing/terminal + Min + Idle, which
+    // with its separators is 14 columns plus the two variable ones. 20 and
+    // 12 fit inside 46, so a wide terminal has room to spare and a 40
+    // column screen keeps exactly what it had.
+    bool wideRow = rowWidth(s) >= 60;
+    unsigned hw = wideRow ? BBS_USER_MAX : 12;
+    unsigned dw = wideRow ? 12 : 9;
+    char fmtBuf[40];
+    snprintf(fmtBuf, sizeof(fmtBuf), "%%s%%c%%-%u.%us %%-%u.%us %%3s %%5s", hw, hw, dw, dw);
+    const char* fmt = fmtBuf;
     uint32_t now = plat::millis();
     bool refresh = s.watch != ListKind::None;
     bool staff   = can(s, PERM_NODES);
@@ -1724,8 +1855,25 @@ void Bbs::cmdPage(Session& s, const char* arg) {
         t.text(tl, "That is you.");
         return;
     }
+    // An empty node is not the same as a busy one, and saying so costs
+    // nothing. "Node 4 is not taking pages" directly contradicts the WHO the
+    // caller just read, which said node 4 was free, and leaves them thinking
+    // the board is broken or that somebody is ignoring them.
+    //
+    // Hidden and DND deliberately stay lumped together with each other: a
+    // caller must not be able to tell a hidden staff member from one who has
+    // switched pages off, because that would make HIDE detectable by
+    // probing. Nothing is given away by admitting a line is empty, since WHO
+    // already shows exactly that.
+    if (!to->loggedIn || to->role == Role::Busy) {
+        char buf[48];
+        snprintf(buf, sizeof(buf), "Nobody is on node %s.", nodeName(*to).t);
+        t.color(tl, Color::LightRed);
+        t.text(tl, buf);
+        return;
+    }
     bool hidden = !to->visible || to->lurk;
-    if (!to->loggedIn || to->role == Role::Busy || to->dnd || hidden) {
+    if (to->dnd || hidden) {
         char buf[40];
         snprintf(buf, sizeof(buf), "Node %s is not taking pages.", nodeName(*to).t);
         t.color(tl, Color::LightRed);

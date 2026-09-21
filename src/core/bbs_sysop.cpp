@@ -108,10 +108,108 @@ void Bbs::markAccount(Session& s, Access level) {
 }
 
 // ---------------------------------------------------------------------------
+// rememberStaff / restoreStaff: type the staff password once a week, not
+// once a call.
+//
+// See UserRec for why this is bound to an address and why the sysop is
+// excluded. The short version: account passwords cross this board in the
+// clear on every login, so remembering staff access against the account
+// alone would make a sniffed account password worth a week of staff rights.
+// ---------------------------------------------------------------------------
+namespace { constexpr uint32_t kStaffWindow = 7u * 24u * 60u * 60u; }   // one week
+
+void Bbs::rememberStaff(const Session& s, Access level) {
+    if (s.guest || !s.user[0]) return;
+    if (level == Access::Sysop || level == Access::None) return;   // never the sysop
+    if (!clk::valid()) return;                    // no clock, nothing to date it by
+    static UserRec u;
+    if (!users::find(s.user, u)) return;
+    u.staffAt    = clk::epoch();
+    u.staffLevel = static_cast<uint8_t>(level);
+    snprintf(u.staffIp, sizeof(u.staffIp), "%s", s.ip);
+    users::update(u.handle, u);
+}
+
+void Bbs::restoreStaff(Session& s) {
+    if (s.guest || !s.user[0] || s.role != Role::Caller) return;
+    if (s.level != Access::None) return;           // already elevated this call
+
+    // No clock means no way to tell whether the week has elapsed, so it
+    // fails closed and asks for the password. Guessing "probably still
+    // valid" on a board whose clock has not synced is how a window becomes
+    // permanent.
+    if (!clk::valid()) return;
+
+    static UserRec u;
+    if (!users::find(s.user, u)) return;
+    if (!u.staffLevel || !u.staffAt || !u.staffIp[0]) return;
+
+    uint32_t nowEpoch = clk::epoch();
+    if (nowEpoch < u.staffAt || nowEpoch - u.staffAt > kStaffWindow) return;  // expired
+    if (strcmp(u.staffIp, s.ip) != 0) return;      // somewhere else: type it again
+
+    Access lv = static_cast<Access>(u.staffLevel);
+    if (lv == Access::Sysop || lv == Access::None) return;
+    s.level = lv;
+    s.perms = syscfg::permsFor(lv);
+    char buf[72];
+    snprintf(buf, sizeof(buf), "%s access, remembered from %s.", syscfg::levelName(lv), s.ip);
+    say(s.term, s.tl, Color::Cyan, buf);
+    s.term.nl(s.tl);
+    plat::log("bbs: node %s %s access restored for %s from %s",
+              nodeName(s).t, syscfg::levelName(lv), s.user, s.ip);
+}
+
+// ---------------------------------------------------------------------------
+// localAddr: is this caller on the same network as the board?
+//
+// Text comparison on the dotted quad, because that is the form the session
+// carries and parsing it into an integer to compare ranges would be more
+// code for the same answer. IPv6 link-local and loopback are included for
+// completeness; a board reached over IPv6 from the LAN normally arrives on
+// a ULA or a global address, so this is deliberately conservative and will
+// say "not local" rather than guess.
+// ---------------------------------------------------------------------------
+bool Bbs::localAddr(const char* ip) {
+    if (!ip || !*ip) return false;
+    if (!strcmp(ip, "127.0.0.1") || !strcmp(ip, "::1")) return true;
+    if (!strncmp(ip, "10.", 3))       return true;
+    if (!strncmp(ip, "192.168.", 8))  return true;
+    if (!strncmp(ip, "169.254.", 8))  return true;      // link local
+    if (!strncmp(ip, "fe80:", 5) || !strncmp(ip, "FE80:", 5)) return true;
+    if (!strncmp(ip, "172.", 4)) {                      // 172.16 .. 172.31
+        int n = atoi(ip + 4);
+        if (n >= 16 && n <= 31) return true;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
 // elevate: move a caller (or busy-line guest) onto the sysop node
+//
+// The sysop node holds one caller, and it has to: it is a single hidden
+// Session. A second sysop used to be hung up on, which is safe and is also
+// useless to the person running the board, who wants a dashboard open in one
+// window and somewhere to work in another.
+//
+// So when the node is taken and the caller is on the local network, they get
+// sysop rights in place, on their own caller line, exactly the way a
+// co-sysop does. The line stays visible in WHO, which is right: the hidden
+// node is a property of that one node, not of being the sysop, and a second
+// sysop session that is invisible to everybody would be worse.
+//
+// Local only, on purpose. Somebody arriving from the internet with the
+// password still gets the old behaviour, so the board never has two sysop
+// sessions open to the outside world at once.
 // ---------------------------------------------------------------------------
 void Bbs::elevate(Session& s, uint32_t now) {
     if (sysop_.st != SState::Free) {
+        if (s.role == Role::Caller && localAddr(s.ip)) {
+            plat::log("bbs: sysop node in use, node %s takes sysop in place (%s)",
+                      nodeName(s).t, s.ip);
+            coElevate(s, Access::Sysop, now);
+            return;
+        }
         plat::log("bbs: sysop node in use, node %s logs off instead", nodeName(s).t);
         goodbye(s, now);
         return;
@@ -176,6 +274,7 @@ void Bbs::coElevate(Session& s, Access level, uint32_t now) {
     s.perms      = syscfg::permsFor(level);
     s.timeWarned = 0;
     markAccount(s, level);
+    rememberStaff(s, level);        // so it need not be typed again this week
 
     Term& t = s.term;
     Timeline& tl = s.tl;
@@ -241,6 +340,12 @@ bool Bbs::rowNodes(Session& s) {
     char left[12];
     char idle[8];
     uint32_t now = plat::millis();
+    // A refresh screen redraws from home, so the frame has to be the same
+    // height every time or the tail of a taller frame is left on the screen.
+    // The sysop and busy lines are skipped when free, which makes the height
+    // vary, so while refreshing they become blank rows instead. This is the
+    // same trap DASH hit when it grew a row per node.
+    bool refresh = s.watch != ListKind::None;
 
     for (;;) {
         uint8_t i = s.listIdx++;
@@ -253,9 +358,7 @@ bool Bbs::rowNodes(Session& s) {
         if (i == 1) {
             if (wide) snprintf(buf, sizeof(buf), fmt, " N", ' ', "Handle", "IP", "Terminal", "Left", "Idle");
             else      snprintf(buf, sizeof(buf), fmt, " N", ' ', "Handle", "IP", "Left", "Idle");
-            t.color(tl, Color::LightBlue);
-            t.text(tl, buf);
-            t.nl(tl);
+            rowText(s, Color::LightBlue, buf);
             return true;
         }
         uint8_t k = static_cast<uint8_t>(i - 2);
@@ -267,13 +370,14 @@ bool Bbs::rowNodes(Session& s) {
         }
         if (k > kSessions + 1) return false;
         const Session* o = all_[k];
-        if (o->role != Role::Caller && o->st == SState::Free) continue;
+        if (o->role != Role::Caller && o->st == SState::Free) {
+            if (refresh) { rowText(s, Color::DarkGrey, ""); return true; }  // keep the height
+            continue;
+        }
 
         if (o->st == SState::Free) {
             snprintf(buf, sizeof(buf), "%s -", nodeLabel(*o).t);
-            t.color(tl, Color::DarkGrey);
-            t.text(tl, buf);
-            t.nl(tl);
+            rowText(s, Color::DarkGrey, buf);
             return true;
         }
 
@@ -291,9 +395,7 @@ bool Bbs::rowNodes(Session& s) {
         fmtIdle(idle, sizeof(idle), now - o->lastInput);
         if (wide) snprintf(buf, sizeof(buf), fmt, nodeLabel(*o).t, markFor(*o), h, o->ip, o->term.name(), left, idle);
         else      snprintf(buf, sizeof(buf), fmt, nodeLabel(*o).t, markFor(*o), h, o->ip, left, idle);
-        t.color(tl, o == &s ? Color::White : (hidden ? Color::DarkGrey : Color::Grey));
-        t.text(tl, buf);
-        t.nl(tl);
+        rowText(s, o == &s ? Color::White : (hidden ? Color::DarkGrey : Color::Grey), buf);
         return true;
     }
 }

@@ -138,6 +138,8 @@ const char* sdBase() {
     return g_mount ? BBS_SD_MOUNT : "";
 }
 
+static void sdInfoStale();                        // defined with sdInfo below
+
 bool sdMount(const SdPins& pins, char* err, size_t errLen) {
     auto fail = [&](const char* why) {
         if (err && errLen) snprintf(err, errLen, "%s", why);
@@ -145,6 +147,8 @@ bool sdMount(const SdPins& pins, char* err, size_t errLen) {
     };
     if (err && errLen) err[0] = '\0';
     if (g_mount) return true;                      // already up, nothing to do
+    // Whatever was cached describes a card that is not this one.
+    sdInfoStale();
 
     // The bus is configured with MOSI, MISO and CLK, so a change to any of
     // them needs it rebuilt. CS is a device setting and does not.
@@ -239,6 +243,7 @@ bool sdMount(const SdPins& pins, char* err, size_t errLen) {
 
 void sdUnmount() {
     if (!g_mount) return;
+    sdInfoStale();                                 // the figures die with the card
     esp_vfs_fat_sdcard_unmount(BBS_SD_MOUNT, g_card);
     // The bus comes down with it, but only if this code raised it.
     if (g_busUp) { spi_bus_free(SDSPI_DEFAULT_HOST); g_busUp = false; }
@@ -248,9 +253,28 @@ void sdUnmount() {
     plat::log("sd: unmounted");
 }
 
+// How long a free-space reading is considered current. Three seconds is
+// long enough that a refresh screen redrawing once a second does not pay
+// for it every frame, and short enough that a sysop watching a transfer
+// sees the figure move.
+static constexpr uint32_t kSdInfoMs = 3000;
+static SdInfo   g_sdInfo;
+static uint32_t g_sdInfoAt = 0;          // 0 means nothing cached
+
+// sdInfoStale: called by mount and unmount. The figures are about a card,
+// so they stop meaning anything the moment the card does.
+static void sdInfoStale() { g_sdInfoAt = 0; g_sdInfo = SdInfo(); }
+
 SdInfo sdInfo() {
+    uint32_t now = millis();
+    if (g_sdInfoAt && now - g_sdInfoAt < kSdInfoMs) return g_sdInfo;
+
     SdInfo i;
-    if (!g_mount || !g_card) return i;
+    if (!g_mount || !g_card) {
+        g_sdInfo = i;
+        g_sdInfoAt = now ? now : 1;
+        return i;
+    }
     i.mounted  = true;
     i.speedKHz = g_speed;
     snprintf(i.type, sizeof(i.type), "%s",
@@ -270,6 +294,8 @@ SdInfo sdInfo() {
         i.totalKB = static_cast<uint32_t>(total / 1024ULL);
         i.freeKB  = static_cast<uint32_t>(freeB / 1024ULL);
     }
+    g_sdInfo   = i;
+    g_sdInfoAt = now ? now : 1;
     return i;
 }
 
