@@ -148,7 +148,7 @@ const Command* Bbs::coreCommands(uint8_t& count) {
           [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdHelp(s, a); },
           Menu::Account, 90 },
         { "WHOIS", "", 0, CF_NONE, "WHOIS [handle]", "a caller's profile",
-          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdInfo(s, a); },
+          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdInfo(s, a); b.prompt(s); },
           Menu::Account, 91 },
         { "TIME", "", 0, CF_NONE, "TIME", "the clock and your time left",
           [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdTime(s, a, n); },
@@ -185,7 +185,12 @@ const Command* Bbs::coreCommands(uint8_t& count) {
         { "MEM", "M", 0, CF_NONE, "[M]EM", "memory use",
           [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdMem(s); b.prompt(s); },
           Menu::Account, 5 },
-        { "FX", "F", 0, CF_NONE, "[F]X", "effects demo",
+        // No shortcut: "F" belongs to FILES, which is on the main menu.
+        // Both tables declared it, the core registers first, and
+        // findCommand returns the first match, so FILES's documented
+        // shortcut never worked and COMMANDS.md said it did. Nothing
+        // detects a duplicate shortcut, so it stayed that way.
+        { "FX", "", 0, CF_NONE, "FX", "effects demo",
           [](Bbs&, Session& s, const char*, uint32_t) {
               s.st = SState::Fx; s.fxStep = 0; s.savedCps = s.tl.cps();
           },
@@ -1638,6 +1643,16 @@ bool Bbs::rowSys(Session& s) {
             // How many, not just how bad. One stall at boot and a stall every
             // minute look identical on a high-water mark.
             statNum(s, "Slow passes", slowCount_, "over 50ms");
+            // Stack headroom: the least this task's stack has ever had free.
+            // Not a decoration. It is what says whether the static UserRec
+            // scratch buffers can become ordinary locals, which is about
+            // 10 KB of static DRAM, and it is the only honest way to answer
+            // that question.
+            {
+                uint32_t sf = plat::stackFree();
+                if (sf) statNum(s, "Stack free", sf, "least ever");
+                else    statRow(s, "Stack free", "n/a", Color::Grey, "host build");
+            }
             return true;
 
         case 24: rowSection(s, "traffic"); return true;

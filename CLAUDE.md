@@ -34,7 +34,7 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
 - 10 caller nodes (6 until 0.17.0, briefly 16), a busy line session (the caller past the last node: detection, busy screen, 10 s countdown), a hidden sysop node. Overflow callers get `BUSY` and a drop. Socket budget 24.
 - **The real static RAM ceiling is 180,736 bytes**, and it is in the linker script, not on any datasheet: `memory.ld` sets `dram0_0_seg` to `org = 0x3FFB0000, len = 0x2c200`, and `sections.ld` asserts `_bss_end` stays inside it. Measure with `_bss_end - 0x3FFB0000`. **PlatformIO's RAM percentage is against 327,680, so multiply it by 1.81 to get the truth: 55% on its scale is the wall.** At 0.17.2 the board is at 146,732, which is 81% of what it actually has and 44.8% of what PlatformIO claims.
   **At 0.21.1 it is 175,856, which leaves 4,880 bytes.** Measured off the ELF on 2026-09-22 (`_bss_end` = `0x3ffdaef0`), not read off PlatformIO, which calls the same build 53.7% and looks like half a board of room. The headroom was 34,360 two days earlier: forums, the composer and the per-session buffers spent 29 KB of it. **4,880 bytes is 406 bytes per session across the twelve slots**, so anything new that wants per-session state is now an arithmetic question before it is a design question, and the answer is usually to put it in `s.compose` or in one static guard rather than in an array of twelve. This figure is the reason to re-measure at every milestone rather than at every crisis: the 8,200 byte overflow that cost a build cycle was predicted and shipped anyway because nobody had the current number to hand.
-- **A `Session` is 5,716 bytes, not 6,000** (measured from DWARF, confirmed against `nodes_[10]` at 57,160). Earlier figures in this file and in the commit history say 6,000 and are 5% pessimistic; the shape of the arithmetic is unchanged.
+- **A `Session` is 6,980 bytes** (measured 2026-09-22). It was 5,716 before the forums work and 6,000 in the oldest notes here. The composer's `compose[1153]` is most of the growth, and it is per session, so it cost 13,836 bytes across the twelve. **Every byte added to a Session costs twelve**, which is the number to have in mind before adding a field to it. Earlier figures in this file and in the commit history say 6,000 and are 5% pessimistic; the shape of the arithmetic is unchanged.
 - **`CONFIG_LWIP_MAX_SOCKETS` was silently 10, and that was self-inflicted.** IDF 5.3.1's Kconfig is `range 1 16, default 10`, and a value outside the range in a defaults file is **discarded rather than clamped**. Block A "raised" it from a working 16 to 24, so the board got 10. The listener, mDNS and SNTP take three, so seven callers filled a board advertising sixteen and the eighth `accept()` failed. Now 16, which is the hard maximum. **The node count was never really RAM-bound, it was socket-bound**, and sixteen sockets is what makes ten caller lines the honest number.
   The lesson generalises: a setting that is out of range does not warn, it reverts, and the generated `sdkconfig.esp32dev` is the only place the truth appears. Check it after changing a default.
 - **Sixteen nodes did not fit, and the way it failed is worth remembering.** A `Session` is 6,000 bytes, so eighteen of them was 108,000 bytes of static RAM, and the link failed with `dram0_0_seg overflowed by 104 bytes`. The number that matters is not the 320 KB of SRAM the part advertises: it is what is left for statically allocated DRAM after the ROM and the radio have taken theirs, and PlatformIO's RAM percentage is measured against the larger figure, so it read 54.9% while actually being over. Ten nodes is twelve sessions and 72,000 bytes, which leaves room for the transfer buffers and what follows them.
@@ -53,7 +53,7 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
 - Input effects (0.7.0): the handle, password and command editors use `F_STAY` (Enter does not move to a new line). A rejected handle or unknown command rubs out, flashes the reason in place (`inputError`, short text on 40 columns) and re-arms on the same line; known commands print their own newline first. Passwords: spinner, rub out the stars, `ACCESS GRANTED` in place; denied flashes and clears for a retry on the line. Masked input shows at most 24 stars so it never wraps on a C64. Pages and broadcasts: bell, flashing tag, rub out, message. Lists and MEM/TERM/TIME open with `rowTitle` (reverse bar on ANSI/PETSCII, dashed on ASCII) and lists close with a rule.
 - Staff rank on accounts (0.8.0, Rob): entering a staff password marks the caller's account (`users.txt` `level = user|co2|co1|sysop`, `markAccount()`), which drives the DDial-style marker between node number and handle in WHO, NODES, LAST (CallRec rank flags), DASH and the user manager, with a `*GUEST  >CO-SYSOP  ]SYSOP` key under each list. Staff may only manage accounts at their own rank or below (`mayManage`), and the form's `Level` field (new `FF_CYCLE` field type) offers their rank and below, so nobody self-promotes. Staff also see hidden and lurking sessions (marked `hidden` / `lurking` in the Doing column); the old masking of senior staff in NODES is gone.
 - Staff Doing column (0.7.0): `Session::doing` holds the verb of the last dispatched command (never arguments, never BYE, never unknown input, so a mistyped password can't show). WHO shows it instead of Terminal for staff with `NODES`; DASH always. Plugins can set it later for doors.
-- Input backpressure: a session's socket is only read, and held keys only fed, while its timeline has `BBS_RX_ROOM` (1 KB) free. Form redraws (~1.2 KB on PETSCII) overflowed the old 2 KB timeline when keys were typed ahead; `BBS_TL_BYTES` is now 3 KB.
+- Input backpressure: a session's socket is only read, and held keys only fed, while its timeline has `BBS_RX_ROOM` (1,700 bytes) free. Form redraws (~1.2 KB on PETSCII) overflowed the old 2 KB timeline when keys were typed ahead; `BBS_TL_BYTES` is now 3 KB.
 - Workflow: commit and push after every flashed build. COMMANDS.md, README.md, CHANGELOG.md and this file are updated in the same change. CLIENTS.md holds the full list of machines that can call in and README.md carries the short version of the same list: change one, change the other. Code review at phase checkpoints; a robustness/pen test of the live board before any internet exposure (tabled for now).
 
 ## What things are called (settled 2026-09-22, stop relitigating)
@@ -526,6 +526,126 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
 - **Staff access remembered for a week, bound to the address it was confirmed from.** The binding is the point, and it is specific to this board: **account passwords cross a telnet BBS in the clear on every login**, so remembering staff rights against the account alone would turn a sniffed account password into a week of staff access. The sysop level is never remembered. No valid clock fails closed.
 - **A deliberate deviation from the plan, and the reasoning is the useful part.** The plan had mail and bans moving to ids. `MailRec` is a fixed-size record with a static assert on its layout, so that means changing `sizeof` and converting every live mailbox, on the one board that exists, to fix a bug that has a cheaper fix. Following renames gets the same visible outcome with no format change. The forums will store ids natively, so mail ends up the only holdout and a far smaller job later. **Prefer the fix that does not migrate somebody's data when both fixes close the same hole.**
 - **The positional-descriptor trap caught me exactly as CLAUDE.md predicted.** `onRename` inserted before `onBytes` shifted every field after it, and the compiler said so. Append-only is not a style rule here, it is the only safe edit.
+
+### RAM back, one claims table, and Term::ch is for text (0.21.3 / 0.21.4)
+
+- **Static DRAM headroom went 4,776 to 10,504 bytes**, measured off the ELF
+  (`_bss_end - 0x3FFB0000`). PlatformIO called the same build 53.7% while it
+  sat at 97.4% of the real ceiling, which is the trap this file already
+  warns about and which is worth re-reading every time somebody quotes a
+  percentage.
+  Two tables stopped storing text they only ever compared: `validateFile`'s
+  `seen` (5,250 to 1,000, 250 folded hashes) and CONFIG's `g_cfgWas` (1,536
+  to 64). **Both removals also deleted a bug class**: `g_cfgWas` held a
+  *truncated* copy, `"%.47s"` into 96 bytes, so any value over 47 characters
+  always compared unequal to itself and was rewritten on every save. A hash
+  covers the whole string, so there is no length left to get wrong.
+  `bbsu::hash` and `bbsu::foldHash` are now the one FNV-1a in the tree.
+
+- **`Term::ch` is for text. Anything that moves the cursor or erases goes
+  through a Term primitive.** This is the 0.21.4 lesson and it was live on
+  the board: `Term::ch` translates for the charset and maps every byte below
+  0x20 to `'?'`, so `term.ch(tl, '\b')` never emitted a backspace on any
+  terminal. Four sites hand-rolled BS-space-BS through it, and Rob's
+  screenshot shows what a caller saw: `...we end up with cra? ?? ?? ?` where
+  the carried word should have been rubbed out. `Term::eraseBack` already
+  did it correctly, per terminal, and had done since before any of those
+  sites were written. **Writing control bytes through the text path silently
+  turns them into text.**
+
+- **`claims.h`: one owner table replacing three hand-rolled guards**
+  (`g_cfgOwner` as a `Session*`, `g_subjWho`/`g_subjFor` as two `uint8_t`,
+  the transfer engine as a `bool`). Rob: "why would we have 3 versions and
+  not one ... we should be combining into something reusable right?" They
+  were three separate inventions of one idea, with three release paths that
+  each had to remember to clear themselves.
+  **Keyed by node, never by handle** (Rob): the same person can hold two
+  lines and they are two callers as far as a resource is concerned.
+  **The half that prevents the bug is `releaseAll` in `openSession`, not
+  `closeSession`.** Sessions come from a static pool, so a claim left behind
+  is inherited by the next caller on that node, and every bug of this shape
+  here has been exactly that: `pendingLand` dropping the next caller into
+  chat, the squelch masks leaking, the subject table serving one caller's
+  forum to another. An exit path that did not run cannot be relied on.
+  `claims::transfer` covers `moveSession`, where sysop elevation changes a
+  caller's id and would otherwise strand what they hold until a reboot.
+
+- **Migrating the third guard taught the mechanism something, and a test
+  caught it.** Not all shared state is a lock:
+  - a **lock** is exclusive (CONFIG, the transfer engine): refuse the second
+    caller and say why. `take()`, and act on false.
+  - a **cache** is shared scratch with a tag saying whose data is in it (the
+    forums' subject table): refill it for the second caller rather than
+    refusing. `seize()`, which always succeeds.
+  Using `take()` for the subject table left the second caller into a forum
+  unable to list its subjects. Both kinds want the same release discipline,
+  which is the whole reason they share a table.
+
+- **A composed line follows the terminal** (`compose::lineWidth`), shared by
+  forums and mail so the editor's capacity and the wrap trigger cannot
+  drift. They were two copies of one constant in two files, which is how
+  they would have. Mail's row cap went 12 to 16 so a narrow terminal does
+  not get a smaller mailbox than a wide one.
+
+- **`announce` read past the end of its own buffer and put it on the wire.**
+  `snprintf` returns what it *would* have written, and both `g_bodyLen` and
+  `g_reqLen` were assigned straight from it, so truncation made each larger
+  than the array it described. Reachable through ordinary use: five CONFIG
+  values at 96 bytes each is 475 characters against a 512 byte body. Clamped,
+  and a payload that does not fit is **refused rather than sent**, because a
+  truncated body is invalid JSON and gets the board silently delisted.
+  The comment on `kBodyMax` said "the payload never gets near this". **Third
+  time a comment has been believed over the arithmetic here**, after
+  `heapWatch` and `rowEnd`.
+
+- **Six room commands plus `/t n +m`, for 24 bytes**, because each reuses
+  what exists. `/whois`, `/page` and `/t n +m` call the shell's own handlers
+  rather than reimplementing them, which is why `cmdInfo`, `cmdPage` and
+  `cmdTimeAdjust` are public now, the same argument that made the row
+  helpers public in 0.17.3.
+  **`/whois` and not `/info`**: `INFO` is the information pages now, and one
+  letter meaning two things is what retiring "bulletin" was about.
+  Sticky private (`/p3*`) rewrites the line as `/p <node> <text>` and puts
+  it back through the ordinary path, so the marker, the away note, the rate
+  limit and the confirmation cannot drift from a typed `/p`.
+
+- **Two bugs found by building on top of existing code, both pre-existing.**
+  `cmdInfo` drew its own prompt while `cmdPage` did not, so the room's
+  `/whois` silently walked callers back to the shell. And `*` did not break
+  a verb, so `/p*` parsed as a three character verb and answered "Unknown
+  command".
+
+- **Two harness defects that each reported a board bug that did not exist.**
+  `--only` ran tests alphabetically while the full suite runs a hand-ordered
+  list, so `test_ban` (which bans 127.0.0.1 and is deliberately last) ran
+  second under `--only=login` and killed everything after it. And
+  `test_backup` and `test_cosysop` depended on an account `test_page`
+  creates, so four backup checks failed under `--only=storage` for a reason
+  that had nothing to do with backups.
+  **The order now lives in one place, `ORDER_NAMES`**, which the full run
+  walks and `--only` filters, so a targeted run is always a subset of the
+  real run rather than a reshuffle of it. And a test seeds what it asserts
+  on: **a test that depends on another test reports somebody else's absence
+  as your bug.**
+
+- **`SYS` reports stack headroom** (`plat::stackFree`, the high water mark,
+  not free-right-now). Twenty two static `UserRec` scratch buffers each
+  carry a comment saying "static: off the task stack" and not one was backed
+  by a measurement; turning them into locals is worth about 10 KB and there
+  is already a 1,729 byte frame in `forums.cpp`. Same argument as the loop
+  phase timing: the cure for reasoning about a thing from the outside is
+  making the board say.
+
+- **`FX` gave up `F` to `FILES`.** Both declared it, the core table
+  registers first, `findCommand` returns the first match, so FILES's
+  documented shortcut had never worked and COMMANDS.md said it did. Nothing
+  detects a duplicate shortcut, which is why it lasted.
+
+- **Sizing figures that were stale and are load-bearing:** a `Session` is
+  **6,980 bytes**, not the 6,000 both this file and `config.h` claimed, and
+  `BBS_RX_ROOM` is 1,700 not 1 KB. Every byte added to a `Session` costs
+  twelve, and `UserRec` exists 34 times in DRAM so every byte added to an
+  account costs 34.
 
 ### One message editor, and the radio asleep again (0.21.1)
 

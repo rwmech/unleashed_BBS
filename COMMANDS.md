@@ -98,7 +98,7 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | `MEM` | `M` | Heap statistics and session sizing. |
 | `TERM` | `T` | Terminal type, size, telnet mode, emulated line speed. |
 | `CLS` | `C` | Clear the screen. |
-| `FX` | `F` | TTY effects demo. |
+| `FX` | | TTY effects demo. |
 | `TIME` | | Date and time, minutes online, minutes left. |
 | `LAST` | | The last 50 calls, newest first. |
 | `ABOUT` | | What this BBS is, its version and its license. Plays `screens/about.*`, so a sysop can rewrite it. |
@@ -211,7 +211,7 @@ then you type. Lines are entered one at a time.
 |---|---|
 | Enter | Finishes the line and starts the next one. A blank line is a blank line: it separates paragraphs and does not end the message. |
 | `/s` | On a line of its own, sends it. **This is the one to remember**: it works on every keyboard, including a C64. |
-| Ctrl-D, Ctrl-Z | Also send. Shortcuts for people who expect them, and not a substitute for `/s`: some telnet clients swallow control keys, and a C64's Ctrl combinations are not a PC's. |
+| ~~Ctrl-D, Ctrl-Z~~ | **Gone.** They were offered and never reached the board: SyncTERM eats Ctrl-D, and a C64's Ctrl combinations are not a PC's. A key the board advertises and does not answer to is worse than no shortcut, because the caller assumes the board has frozen. `/s` works on every keyboard. |
 | `/a` | On a line of its own, throws the message away. ESC does the same. |
 | Backspace on an empty line | **Takes the previous line back for editing**, with the cursor at its end. Repeat it to walk back through the whole message, down to nothing. |
 

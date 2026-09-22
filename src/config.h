@@ -51,7 +51,7 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "0.21.3"
+#define BBS_VERSION         "0.21.4"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // ---------------------------------------------------------------------------
@@ -60,7 +60,9 @@
 #define BBS_PORT            6400
 // Ten caller lines, plus the busy line and the hidden sysop node.
 //
-// Sixteen did not fit. A Session is 6,000 bytes, so eighteen of them was
+// Sixteen did not fit. A Session was 6,000 bytes when this was written and
+// is 6,980 now (measured 2026-09-22; the unified composer put 1,153 of
+// that on every session). Eighteen of them was
 // 108,000 bytes of static RAM and the link failed with dram0_0_seg
 // overflowed by 104 bytes: not near the limit, past it. The figure that
 // matters is not the 320 KB of SRAM the part advertises but what is left

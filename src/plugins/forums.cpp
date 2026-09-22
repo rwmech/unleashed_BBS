@@ -54,6 +54,7 @@
 
 #include "../config.h"
 #include "../core/bbs.h"
+#include "../core/claims.h"
 #include "../core/bbs_util.h"
 #include "../core/plugin.h"
 #include "../core/clock.h"
@@ -864,7 +865,10 @@ struct SubjRow {
 SubjRow g_subjRow[kMaxSubjects];
 uint8_t g_subjRows = 0;
 uint8_t g_subjFor  = 0xFF;      // which forum the table describes
-uint8_t g_subjWho  = 0xFF;      // and which session filled it
+// Who filled it is claims::Res::Subjects, keyed by node, so it is released
+// from openSession whatever happened on the way out. g_subjFor stays here
+// because "which forum" is not ownership: two callers in the same forum
+// still cannot share the table, since only one of them filled it.
 
 // ---------------------------------------------------------------------------
 // scanSubjects: one backward pass over INDEX.TXT, grouping by hash.
@@ -885,7 +889,7 @@ constexpr uint32_t kScanMax = 2000;         // records walked for a listing
 void scanSubjects(uint8_t i, const Ptr& p, uint8_t who) {
     g_subjRows = 0;
     g_subjFor  = i;
-    g_subjWho  = who;
+    claims::seize(claims::Res::Subjects, who);   // a cache, not a lock: refill for whoever asks
     uint32_t newest = g_forum[i].newest;
     if (!newest) return;
 
@@ -1006,7 +1010,7 @@ bool rows(Session& s) {
     if (g_view[sl] == View::Subjects) {
         // Drawing somebody else's table would print their forum's subjects
         // under this caller's title bar.
-        if (g_subjWho != sl || g_subjFor != g_at[sl]) return false;
+        if (!claims::holds(claims::Res::Subjects, sl) || g_subjFor != g_at[sl]) return false;
         uint8_t row = s.listIdx;
         if (row >= g_subjRows) return false;
         const SubjRow& r = g_subjRow[row];
@@ -1535,7 +1539,7 @@ void finishPost(Bbs& b, Session& s, const char* body) {
         s.term.color(s.tl, Color::LightGreen);
         s.term.text(s.tl, msg);
         g_subjFor = 0xFF;                       // the tally is stale now
-        g_subjWho = 0xFF;
+        claims::release(claims::Res::Subjects, slotOf(s));
     }
     g_replying[sl] = false;
     prompt(b, s);
@@ -1676,11 +1680,10 @@ void onKey(Session& s, int key, uint32_t) {
             //
             // Four characters: two digits, a colon and a space, which is
             // what bodyPrompt writes.
-            for (uint8_t i = 0; i < 4; ++i) {
-                s.term.ch(s.tl, '\b');
-                s.term.ch(s.tl, ' ');
-                s.term.ch(s.tl, '\b');
-            }
+            // eraseBack, not a hand-rolled BS-space-BS: term.ch translates
+            // for the charset and maps anything under 0x20 to '?', so this
+            // used to PRINT the erase sequence instead of performing it.
+            s.term.eraseBack(s.tl, kBodyPromptCols);
             bodyPrompt(s);
             for (const char* c = back; *c; ++c) s.ed.key(*c, s.term, s.tl);
             return;
@@ -1707,12 +1710,10 @@ void onKey(Session& s, int key, uint32_t) {
             //
             // One backspace per character carried, plus the space at the
             // break, which was echoed too and is not carried.
+            // Same fix as above: this is what put "cra? ?? ?? ?" on screen
+            // where the carried word should have been rubbed out.
             uint8_t rub = static_cast<uint8_t>(s.ed.len() - keep);
-            for (uint8_t i = 0; i < rub; ++i) {
-                s.term.ch(s.tl, '\b');
-                s.term.ch(s.tl, ' ');
-                s.term.ch(s.tl, '\b');
-            }
+            s.term.eraseBack(s.tl, rub);
 
             if (!bodyAdd(s, full)) {
                 s.term.nl(s.tl);
@@ -1799,7 +1800,7 @@ void onKey(Session& s, int key, uint32_t) {
         // The table may belong to another caller by now. Rescan rather
         // than open whatever subject happens to sit at that row in
         // somebody else's forum.
-        if (g_subjWho != sl || g_subjFor != g_at[sl]) {
+        if (!claims::holds(claims::Res::Subjects, sl) || g_subjFor != g_at[sl]) {
             Ptr rp;
             readPtr(callerId(s), g_at[sl], rp);
             scanSubjects(g_at[sl], rp, sl);

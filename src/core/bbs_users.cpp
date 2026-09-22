@@ -518,19 +518,21 @@ void Bbs::cmdPassword(Session& s, uint32_t now) {
 // WHOIS is what this always was, sitting beside WHO.
 // ---------------------------------------------------------------------------
 void Bbs::cmdInfo(Session& s, const char* arg) {
+    // Draws no prompt. The command table does that (see WHOIS), which is
+    // what lets the chat room call this for /whois without the caller being
+    // dropped back at the shell. cmdPage already worked this way; this one
+    // did not, and the room's /whois silently walked people out of chat.
     Term& t = s.term;
     Timeline& tl = s.tl;
     static UserRec u;
     const char* who = *arg ? arg : s.user;
     if (!*arg && s.guest) {
         say(t, tl, Color::Yellow, "Guests have no account.");
-        prompt(s);
-        return;
+            return;
     }
     if (!users::find(who, u)) {
         say(t, tl, Color::LightRed, "No account by that name.");
-        prompt(s);
-        return;
+            return;
     }
     bool privateOk = ieq(u.handle, s.user) || can(s, PERM_USERS);
     char buf[64];
@@ -582,7 +584,6 @@ void Bbs::cmdInfo(Session& s, const char* arg) {
             t.nl(tl);
         }
     }
-    prompt(s);
 }
 
 // ---------------------------------------------------------------------------

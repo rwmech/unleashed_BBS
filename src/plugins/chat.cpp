@@ -332,6 +332,20 @@ uint16_t g_lastSec[kSlots] = {};
 uint16_t g_squelch[kSlots] = {};               // bit per node whose lines are hidden
 char     g_away[kSlots][kAwayMax + 1] = {};    // away note, empty when here
 
+// Sticky private: every ordinary line goes to this node until /p* ends it.
+// 0xFF is off. DDial had /Pn* for the same reason it is wanted here: "/p 3 "
+// retyped in front of every line is nine keystrokes per line on a C64.
+//
+// The danger is obvious and the mitigation is not optional: somebody who
+// forgets they are in it says something for one person that they meant for
+// the room, or worse the reverse. The input line carries a visible [>3]
+// while it is on, and leaving the room or the target leaving clears it.
+uint8_t  g_sticky[kSlots];
+
+// Bell on arrival and on a private. On by default, because a caller who
+// wants quiet can ask for it and a caller who misses a page cannot.
+bool     g_bell[kSlots];
+
 // The room ban list, kept in the plugin folder so it survives a reboot.
 char     g_bans[kBanMax][BBS_USER_MAX + 1] = {};
 
@@ -522,7 +536,27 @@ void tag(const Session& s, char* out, size_t n) {
 
 // chatPrompt: no prompt character in the room, just the cursor waiting at
 // the start of the line, the way DDial and Gtalk did it
+// stickyCols: columns the [>n] marker occupies, 0 when it is off.
+//
+// wipeInput has to erase these as well as the typed text, or every re-arm
+// leaves another marker on the line. Counted here so the two cannot
+// disagree.
+uint8_t stickyCols(const Session& s) {
+    uint8_t to = g_sticky[slotOf(s)];
+    if (to == 0xFF) return 0;
+    return static_cast<uint8_t>(4 + strlen(nodeNum(to).t));    // "[>" + n + "] "
+}
+
 void chatPrompt(Session& s) {
+    uint8_t to = g_sticky[slotOf(s)];
+    if (to != 0xFF) {
+        // Says where the next line is going, every line, because the whole
+        // risk of a sticky private is forgetting you are in one.
+        char tag_[12];
+        snprintf(tag_, sizeof(tag_), "[>%s] ", nodeNum(to).t);
+        s.term.color(s.tl, g_cPmark);
+        s.term.text(s.tl, tag_);
+    }
     s.term.color(s.tl, g_cText);                             // you type in the room's text colour
     s.term.cursor(s.tl, true);
 }
@@ -537,7 +571,7 @@ void armInput(Session& s) {
 
 // wipeInput: take back whatever the caller has typed so far
 void wipeInput(Session& s) {
-    s.term.eraseBack(s.tl, s.ed.shown());
+    s.term.eraseBack(s.tl, static_cast<uint8_t>(s.ed.shown() + stickyCols(s)));
 }
 
 // ---------------------------------------------------------------------------
@@ -1037,6 +1071,8 @@ void join(Bbs& bbs, Session& s) {
     if (!bbs.own(s, g_index)) { bbs.prompt(s); return; }
     g_squelch[slotOf(s)] = 0;                                // a fresh visit hides nobody
     g_away[slotOf(s)][0] = '\0';
+    g_sticky[slotOf(s)]  = 0xFF;                             // and talks to the room
+    g_bell[slotOf(s)]    = true;
     bbs.setDoing(s, "CHAT");
 
     Term& t = s.term;
@@ -1156,12 +1192,18 @@ void roomHelp(Session& s) {
     helpLine(s, "/t", "the time");
     helpLine(s, "/clear", "wipe the screen");
     helpLine(s, "/welcome", "the screen you came in on");
+    helpLine(s, "/sh [n]", "what was said");
+    helpLine(s, "/p n* ", "talk to one node, /p* ends");
+    helpLine(s, "/page n why", "get their attention");
+    helpLine(s, "/whois handle", "who is that");
+    helpLine(s, "/b", "bell on or off");
     helpLine(s, "/q", "leave the room");
     if (s.perms) {
         helpLine(s, "/k n [why]", "kick a node out");
         helpLine(s, "/b handle", "bar from the room");
         helpLine(s, "/unb handle", "let them back");
         helpLine(s, "/bans", "who is barred");
+        helpLine(s, "/t n +m", "give a caller minutes");
     } else {
         helpLine(s, "/vk n", "vote to kick, no staff here");
     }
@@ -1326,8 +1368,12 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
     // Only a digit breaks the verb, never a letter: "/welcome" and "/quit"
     // have to keep working, and a rule that split on any non-letter would
     // turn "/?" into "/" plus something.
+    // '*' breaks the verb for the same reason a digit does: "/p*" is the
+    // command "/p" with "*" as its argument, and without this it parses as
+    // a three character verb that matches nothing and answers "Unknown
+    // command". Still never a letter, so "/welcome" and "/quit" are intact.
     const char* arg = p;
-    while (*arg && *arg != ' ' && !(*arg >= '0' && *arg <= '9')) ++arg;
+    while (*arg && *arg != ' ' && *arg != '*' && !(*arg >= '0' && *arg <= '9')) ++arg;
     size_t vlen = static_cast<size_t>(arg - p);
     while (*arg == ' ') ++arg;
 
@@ -1344,6 +1390,21 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
             s.term.text(s.tl, "This board has no chat welcome screen.");
             s.term.nl(s.tl);
         }
+        armInput(s);
+        return true;
+    }
+
+    // /t n +m and /t n -m : give or take minutes, staff only.
+    //
+    // Rob asked for this in those words: "the same -1 convetion the main bbs
+    // uses", which is TIME n +/-m. cmdTimeAdjust does its own permission
+    // check and its own re-arming of the caller's time warnings, so the room
+    // version is the same command reached from a different place rather than
+    // a second implementation of granting time.
+    if ((is("/t") || is("/time")) && arg && *arg) {
+        wipeInput(s);
+        Bbs::instance().cmdTimeAdjust(s, arg);
+        flush(s);
         armInput(s);
         return true;
     }
@@ -1443,6 +1504,38 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
         return true;
     }
 
+    // /p3* and /p* : stick the conversation to one node, and end it.
+    //
+    // The trailing * is checked before the ordinary /p, because "/p3*" would
+    // otherwise parse as a private to node 3 with "*" as the message.
+    if ((is("/p") || is("/pm") || is("/msg")) && arg && *arg) {
+        const char* r2 = nullptr;
+        uint8_t sid = parseNode(arg, &r2);
+        bool starOnly = arg[0] == '*' && arg[1] == '\0';
+        bool starNode = sid != 0xFF && r2 && r2[0] == '*' && r2[1] == '\0';
+        if (starOnly || starNode) {
+            wipeInput(s);
+            if (starOnly) {
+                g_sticky[slotOf(s)] = 0xFF;
+                tell(s, g_cPriv, "Back to the room.");
+            } else {
+                Session* to = inRoom(sid);
+                if (!to || to == &s) {
+                    tell(s, Color::LightRed, "Nobody on that node.");
+                } else {
+                    g_sticky[slotOf(s)] = sid;
+                    snprintf(buf, sizeof(buf),
+                             "Talking to #%s:%.16s only. /p* ends it.",
+                             nodeName(*to).t, to->user);
+                    tell(s, g_cPriv, buf);
+                }
+            }
+            flush(s);
+            armInput(s);
+            return true;
+        }
+    }
+
     if (is("/p") || is("/pm") || is("/msg")) {
         const char* rest = nullptr;
         uint8_t id = parseNode(arg, &rest);
@@ -1476,6 +1569,85 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
             snprintf(buf, sizeof(buf), "/p to #%s:%.20s sent.",
                      nodeName(*to).t, to->user);
             tell(s, g_cPriv, buf);
+        }
+        flush(s);
+        armInput(s);
+        return true;
+    }
+
+    // /b : bell on or off, for this caller only. DDial had /B.
+    // Bare /b only. "/b handle" is the staff bar-from-the-room command
+    // further down and has been since 0.11.0, so this must not swallow it:
+    // a shortcut that shadows an existing one is the FX/FILES bug, and that
+    // one went unnoticed for months because nothing detects a collision.
+    //
+    // The split is the same shape as /t, where bare /t is the clock and
+    // "/t n +m" grants minutes. /bell always means the bell.
+    if (is("/bell") || (is("/b") && (!arg || !*arg))) {
+        wipeInput(s);
+        bool& on = g_bell[slotOf(s)];
+        on = !on;
+        tell(s, g_cRoom, on ? "Bell on." : "Bell off.");
+        flush(s);
+        armInput(s);
+        return true;
+    }
+
+    // /sh [n] : what the room has said, up to the whole ring.
+    //
+    // Joining replays a handful of lines; this is for somebody who went to
+    // read their mail, or scrolled their terminal, and wants the thread
+    // back. Costs nothing: the ring is already there.
+    if (is("/sh") || is("/history") || is("/scroll")) {
+        wipeInput(s);
+        long want = arg && *arg ? strtol(arg, nullptr, 10) : 20;
+        if (want < 1) want = 20;
+        uint16_t show = static_cast<uint16_t>(want);
+        if (show > g_histCount) show = g_histCount;
+        if (!show) {
+            tell(s, g_cRoom, "Nothing said yet.");
+        } else {
+            for (uint16_t i = 0; i < show; ++i) {
+                uint16_t at = static_cast<uint16_t>((g_histNext + g_histMax - show + i) % g_histMax);
+                if (squelched(s, g_hist[at])) continue;
+                showLine(s, g_hist[at], true);
+            }
+        }
+        flush(s);
+        armInput(s);
+        return true;
+    }
+
+    // /whois <handle> : the shell's own WHOIS, not a second copy of it.
+    //
+    // Deliberately NOT /info. INFO is the information pages now, and /i0 is
+    // how the room reaches them; two meanings for one letter is exactly what
+    // retiring "bulletin" was about. cmdInfo already hides UF_PRIVATE fields
+    // from everybody but the owner and PERM_USERS staff, which is Rob's
+    // condition: the same public fields PROFILE shows.
+    if (is("/whois") || is("/wi")) {
+        wipeInput(s);
+        if (!arg || !*arg) {
+            tell(s, Color::LightRed, "/whois handle");
+        } else {
+            Bbs::instance().cmdInfo(s, arg);
+        }
+        flush(s);
+        armInput(s);
+        return true;
+    }
+
+    // /page n <why> : ring somebody, as distinct from talking to them.
+    //
+    // A private message is a line in a conversation; a page is "look at your
+    // screen". The room had no way to say the second, so callers used the
+    // first and hoped.
+    if (is("/page") || is("/pg")) {
+        wipeInput(s);
+        if (!arg || !*arg) {
+            tell(s, Color::LightRed, "/page n why");
+        } else {
+            Bbs::instance().cmdPage(s, arg);
         }
         flush(s);
         armInput(s);
@@ -1871,11 +2043,9 @@ void writeKey(Session& s, int k) {
         compose::popLine(body, back, sizeof(back));
         // Rub out the prompt rather than starting a new line under it, or
         // the old line numbers stay on screen above the recalled one.
-        for (uint8_t i = 0; i < 4; ++i) {
-            s.term.ch(s.tl, '\b');
-            s.term.ch(s.tl, ' ');
-            s.term.ch(s.tl, '\b');
-        }
+        // eraseBack: term.ch maps bytes under 0x20 to '?', so a hand-rolled
+        // BS-space-BS printed the sequence instead of performing it.
+        s.term.eraseBack(s.tl, kWritePromptCols);
         writePrompt(s);
         for (const char* c = back; *c; ++c) s.ed.key(*c, s.term, s.tl);
         return;
@@ -1892,11 +2062,7 @@ void writeKey(Session& s, int k) {
         // Rub the carried word off this line before it moves down; it was
         // echoed as the caller typed it and would otherwise appear twice.
         uint8_t rub = static_cast<uint8_t>(s.ed.len() - keep);
-        for (uint8_t i = 0; i < rub; ++i) {
-            s.term.ch(s.tl, '\b');
-            s.term.ch(s.tl, ' ');
-            s.term.ch(s.tl, '\b');
-        }
+        s.term.eraseBack(s.tl, rub);
         if (!compose::addLine(body, full)) {
             s.term.nl(s.tl);
             tell(s, Color::Grey, "That is as much as one message holds. /s sends it.");
@@ -1970,6 +2136,33 @@ void onKey(Session& s, int k, uint32_t now) {
 
     if (!*p)                     { wipeInput(s); flush(s); armInput(s); return; }
     if (roomCommand(s, p, now))  return;
+
+    // Sticky private: this line goes to one node rather than to the room.
+    //
+    // Rewritten as "/p <node> <text>" and put back through the ordinary
+    // command path, so the P marker, the away note, the rate limit and the
+    // sender's confirmation are the same code as a typed /p. Two send paths
+    // is how one of them ends up not checking the rate limit.
+    //
+    // If the target has left, the mode ends and the line is NOT sent
+    // anywhere: saying it to the room instead would be the exact accident
+    // the marker exists to prevent.
+    uint8_t stick = g_sticky[slotOf(s)];
+    if (stick != 0xFF) {
+        if (!inRoom(stick)) {
+            wipeInput(s);
+            g_sticky[slotOf(s)] = 0xFF;
+            tell(s, Color::LightRed, "They have gone. Back to the room, that line was not sent.");
+            flush(s);
+            armInput(s);
+            return;
+        }
+        char redirect[BBS_LINE_MAX + 16];
+        snprintf(redirect, sizeof(redirect), "/p %s %s", nodeNum(stick).t, p);
+        roomCommand(s, redirect, now);
+        return;
+    }
+
     say(s, p, now);
 }
 

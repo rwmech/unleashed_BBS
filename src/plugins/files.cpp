@@ -82,6 +82,7 @@
 
 #include "../core/plugin.h"
 #include "../core/bbs.h"
+#include "../core/claims.h"
 #include "../core/bbs_util.h"
 #include "../core/xmodem.h"
 #include "../platform/platform.h"
@@ -1306,7 +1307,13 @@ void onKey(Session& s, int k, uint32_t now) {
 // the integration being slow.
 // ===========================================================================
 struct Xfer {
-    Session* s      = nullptr;     // who holds it, null when free
+    // Who holds it is claims::Res::Transfer, keyed by node. This pointer is
+    // the data path only: the engine has to push bytes into a specific
+    // session's timeline. It is never the test for "is a transfer running",
+    // because a Session* from a static pool is exactly the thing that goes
+    // stale, and a stale one here had the board pushing a file at whoever
+    // dialled in next.
+    Session* s      = nullptr;
     FILE*    fp     = nullptr;
     bool     sending = false;
     uint8_t  area   = 0xFF;
@@ -1537,6 +1544,7 @@ void xferEnd(Bbs& b, Session& s) {
     snprintf(upName, sizeof(upName), "%s", g_x.name);
 
     g_eng.reset();
+    if (g_x.s) claims::release(claims::Res::Transfer, g_x.s->id);
     g_x = Xfer();
     g_why[0] = 0;
 
@@ -1638,6 +1646,7 @@ void xferDropped(Session& s) {
     if (g_x.s != &s) return;
     if (g_x.fp) { fclose(g_x.fp); g_x.fp = nullptr; }
     g_eng.reset();
+    if (g_x.s) claims::release(claims::Res::Transfer, g_x.s->id);
     g_x = Xfer();
     g_why[0] = 0;
     plat::log("files: transfer dropped, node %u left", static_cast<unsigned>(s.id));
@@ -1663,7 +1672,7 @@ void startSend(Bbs& b, Session& s, const char* arg, uint32_t now) {
         backToArea(b, s);
         return;
     }
-    if (g_x.s) {
+    if (claims::held(claims::Res::Transfer)) {
         s.term.color(s.tl, Color::Grey);
         s.term.text(s.tl, "Somebody is transferring right now. Try in a moment.");
         backToArea(b, s);
@@ -1708,6 +1717,7 @@ void startSend(Bbs& b, Session& s, const char* arg, uint32_t now) {
     b.setDoing(s, "DOWNLOAD");
 
     g_x.s       = &s;
+    claims::take(claims::Res::Transfer, s.id);
     g_x.fp      = fp;
     g_x.sending = true;
     g_x.ymodem  = useY;
@@ -1768,7 +1778,7 @@ void startRecv(Bbs& b, Session& s, const char* arg, uint32_t now) {
         backToArea(b, s);
         return;
     }
-    if (g_x.s) {
+    if (claims::held(claims::Res::Transfer)) {
         s.term.color(s.tl, Color::Grey);
         s.term.text(s.tl, "Somebody is transferring right now. Try in a moment.");
         backToArea(b, s);
@@ -1792,6 +1802,7 @@ void startRecv(Bbs& b, Session& s, const char* arg, uint32_t now) {
         if (!b.own(s, g_index)) { backToArea(b, s); return; }
         b.setDoing(s, "UPLOAD");
         g_x.s       = &s;
+        claims::take(claims::Res::Transfer, s.id);
         g_x.fp      = nullptr;            // xferOpen opens it when block 0 lands
         g_x.sending = false;
         g_x.ymodem  = true;
@@ -1855,6 +1866,7 @@ void startRecv(Bbs& b, Session& s, const char* arg, uint32_t now) {
     b.setDoing(s, "UPLOAD");
 
     g_x.s       = &s;
+    claims::take(claims::Res::Transfer, s.id);
     g_x.fp      = fp;
     g_x.sending = false;
     g_x.area    = at;

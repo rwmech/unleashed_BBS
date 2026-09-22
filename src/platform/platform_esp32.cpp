@@ -107,6 +107,13 @@ uint32_t heapFree() {
     return static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_8BIT));
 }
 
+uint32_t stackFree() {
+    // uxTaskGetStackHighWaterMark reports in WORDS on Xtensa, not bytes.
+    // Getting that wrong would under-report by 4x and make a tight stack
+    // look comfortable, which is the failure direction that matters.
+    return static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr)) * sizeof(StackType_t);
+}
+
 HeapStats heap() {
     HeapStats h;
     h.freeBytes    = static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_8BIT));

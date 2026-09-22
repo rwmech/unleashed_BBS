@@ -24,6 +24,119 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.21.4, 2026-09-22
+
+The room grows six commands, the claims table takes over the last two owner
+guards, and the word wrap bug Rob saw on the board is fixed.
+
+**Word wrap printed the erase sequence instead of performing it.** Rob's
+screenshot: `...we end up with cra? ?? ?? ?` where the carried word should
+have been rubbed out. `Term::ch` translates for the terminal's charset and
+maps every byte below 0x20 to `'?'`, so `term.ch(tl, '\b')` has never emitted
+a backspace on any terminal. Four sites hand-rolled BS-space-BS through the
+one call that cannot carry a control byte: the wrap rub-out and the
+backspace-pop prompt rub-out, in forums and in mail alike.
+
+`Term::eraseBack` is the primitive that already did this correctly and per
+terminal (PETSCII DEL, an ANSI CSI run, BS-space-BS otherwise) and it existed
+the whole time. **`Term::ch` is for text**; anything that moves the cursor or
+erases goes through a Term primitive, because that is the layer that knows
+what the terminal is.
+
+**Six room commands, approved from `reports/chat-commands-2026-09-22.md`,
+plus one Rob added.** 24 bytes of static DRAM between them, because every one
+reuses machinery that already exists:
+
+| Command | What it does |
+|---|---|
+| `/p3*`, `/p*` | stick the conversation to one node, and end it |
+| `/sh [n]` | replay what the room has said |
+| `/whois <handle>` | who is that |
+| `/b` | bell on or off |
+| `/page n <why>` | get their attention, as distinct from talking to them |
+| `/t n +m` | give a caller minutes, staff only |
+
+- **`/whois`, not `/info`.** Rob approved it as `/info`, which was the
+  report's name, but `INFO` is the information pages now and `/i0`-`/i9` is
+  how the room reaches them. They would coexist mechanically, because the
+  verb-ends-at-a-digit rule splits them, but a caller would have to know
+  that rule to predict which one they were getting.
+- **`/whois`, `/page` and `/t n +m` call the shell's own handlers**, which
+  were made public for it, the way the row helpers were in 0.17.3. Two
+  implementations of "show me a caller's profile" is how one of them ends up
+  showing a field the other hides, and Rob's condition was that it use the
+  same public fields PROFILE does.
+- **A sticky line is rewritten as `/p <node> <text>` and put back through
+  the ordinary command path**, so the P marker, the away note, the rate
+  limit and the sender's confirmation cannot drift from a typed `/p`.
+- **The input line carries `[>3]` the whole time it is on.** The entire risk
+  of a sticky private is forgetting you are in one, and it is counted in
+  `stickyCols` so `wipeInput` erases it rather than leaving one behind on
+  every re-arm.
+- **If the target leaves, the mode ends and the line is not sent anywhere.**
+  Falling back to the room would be exactly the accident the marker exists
+  to prevent. The test asserts the line reaches nobody, not merely that the
+  mode ended.
+- **`/b` only toggles the bell when it is bare.** `/b handle` has been the
+  staff bar-from-the-room command since 0.11.0, and a shortcut that shadows
+  an existing one is the FX/FILES bug, which went unnoticed for months.
+
+**Two bugs found by building this, both pre-existing:**
+
+- **`cmdInfo` drew its own prompt** while `cmdPage` did not, so the room's
+  `/whois` silently walked callers out of chat and back to the shell. The
+  prompt moved to the command table, where every other handler's is.
+- **`*` did not break a verb**, so `/p*` parsed as a three character verb
+  matching nothing and answered "Unknown command". It breaks a verb now, for
+  the same reason a digit does.
+
+**`claims.h` now owns all three guards.** The forums' subject table and the
+transfer engine joined CONFIG, and migrating the third one taught the
+mechanism something:
+
+- **A LOCK is exclusive** (CONFIG, the transfer engine): a second caller is
+  refused and told why. `take()`, and act on false.
+- **A CACHE is shared scratch with a tag saying whose data is in it** (the
+  subject table): the right answer for a second caller is to refill it, not
+  to refuse. `seize()`, which always succeeds.
+
+Using `take()` for the subject table made the second caller into a forum
+unable to list its subjects, which a test caught. Both kinds want the same
+release discipline, which is why they share a table.
+
+`claims::transfer` also covers `moveSession`: sysop elevation changes a
+caller's node id, and a claim filed under the id they left could never be
+released, locking the resource until a reboot.
+
+**`SYS` reports stack headroom**, the least the BBS task's stack has ever had
+free. Twenty two `UserRec` scratch buffers are static, each with a comment
+saying that keeps them off the task stack, and not one of those comments was
+backed by a measurement; turning them into locals is worth about 10 KB. This
+is the measurement, and it is the same argument as the loop phase timing in
+0.19.2: the cure for reasoning about a thing from the outside is making the
+board say.
+
+**`FX` gave up `F` to `FILES`.** Both declared it, the core table registers
+first, `findCommand` returns the first match, so FILES's documented shortcut
+had never once worked and COMMANDS.md said it did.
+
+**Two harness defects, and both reported board bugs that did not exist.**
+
+- **`--only` ran tests alphabetically while the full suite runs a hand
+  ordered list.** `test_ban` bans 127.0.0.1 and is deliberately last; under
+  `--only=login` it ran second and every later test died with a broken pipe.
+  The order lives in one place now, `ORDER_NAMES`, which the full run walks
+  and `--only` filters, so a targeted run is always a subset of the real run.
+- **`test_backup` and `test_cosysop` depended on an account `test_page`
+  creates.** Under `--only=storage` that test is not picked, and four backup
+  checks failed for a reason that had nothing to do with backups. Both seed
+  their own account now. A test that depends on another test reports
+  somebody else's absence as your bug.
+
+Docs: `BBS_RX_ROOM` is 1,700 bytes and CLAUDE.md said 1 KB; a Session is
+6,980 bytes and both CLAUDE.md and `config.h` said 6,000, which is 14% low
+and is the figure sizing decisions get made against.
+
 ## 0.21.3, 2026-09-22
 
 Static RAM, and the start of one mechanism where there were three. Smoke

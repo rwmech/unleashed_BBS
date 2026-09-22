@@ -111,6 +111,13 @@ uint32_t heapFree() {
     return 0;
 }
 
+// The host runs on a normal thread stack with no FreeRTOS behind it, so
+// there is no high water mark to read. 0 means "not measurable here", and
+// SYS says so rather than printing a confident zero.
+uint32_t stackFree() {
+    return 0;
+}
+
 int8_t wifiRssi() {
     return 0;
 }

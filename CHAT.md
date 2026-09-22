@@ -55,6 +55,11 @@ A line that starts with `/` is a command, not something you said.
 | `/?` | this list, with the staff lines when you are staff |
 | `/s` | who is in the room, with any away notes |
 | `/p n text` | one line to node n only |
+| `/p n*` | **stick** the conversation to node n: every line you type goes to them alone, and the input line shows `[>n]` so you always know. `/p*` ends it. From DDial, where it existed because retyping `/p 3 ` in front of every line is nine keystrokes on a C64 |
+| `/sh [n]` | replay the last n lines the room said, 20 by default |
+| `/whois handle` | a caller's profile, the same public fields `WHOIS` shows at the main prompt. Email, address and phone stay hidden unless it is your own account or you hold `USERS` |
+| `/page n why` | ring node n, as distinct from talking to them. A private line is part of a conversation; a page is "look at your screen" |
+| `/b` | bell on or off, for your call only. On its own: `/b handle` is the staff bar |
 | `/me text` | an action line: `#1:Daytona) * waves` |
 | `/a [note]` | away with a note, or back again when the note is left off |
 | `/sq n` | hide node n's lines for this call, or show them again |
@@ -64,7 +69,15 @@ A line that starts with `/` is a command, not something you said.
 | `/e` | read the message waiting for you |
 | `/q` | leave the room |
 
-`/w` and `/who` also list the room, `/quit` also leaves, and `/mail` also reads your message.
+`/w` and `/who` also list the room, `/quit` also leaves, `/mail` also reads your message, `/history` also replays, `/bell` always means the bell, and `/wi` is short for `/whois`.
+
+### Sticky private conversations
+
+`/p3*` sends everything you type to node 3 until you stop. The input line carries `[>3]` the whole time, because the only real risk here is forgetting you are in it and saying something for one person that you meant for the room.
+
+If they leave while you are stuck to them, the mode ends and **the line you were typing is not sent anywhere**. Falling back to the room would be precisely the accident the marker exists to prevent.
+
+A stuck line is the same code as a typed `/p`: the same `P` marker on their screen, the same away note back to you, the same rate limit, the same confirmation. Two send paths is how one of them ends up not checking something.
 
 ### Squelch
 
@@ -77,6 +90,7 @@ Staff in the room get four more commands:
 | Command | What it does |
 |---|---|
 | `/k n [why]` | put node n back at the command prompt, with a reason |
+| `/t n +m` | give node n m more minutes, or `-m` to take them away. The same convention as `TIME n +/-m` at the main prompt, and the same command underneath, so a caller's time warnings re-arm exactly as they do there |
 | `/b handle` | bar a handle from the room, and remove them if they are in it |
 | `/unb handle` | let them back |
 | `/bans` | who is barred |

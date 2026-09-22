@@ -85,9 +85,28 @@ inline bool holds(Res r, uint8_t node) {
     return slot(r) == static_cast<uint8_t>(node + 1);
 }
 
-// take: claim it. True if this node now holds it, which includes the case
-// where it already did, so a re-entrant path does not have to check first.
-// False means somebody else has it and the caller must say so.
+// Two kinds of resource live in this table, and the difference is not
+// cosmetic. It was found by migrating the third guard and watching a test
+// fail: the second caller into a forum could not list its subjects.
+//
+//   A LOCK is exclusive. CONFIG and the transfer engine are locks: a second
+//   caller must be refused and told why, because two sysops writing
+//   system.cfg is how the file gets lost, and two transfers is a protocol
+//   the engine does not speak. Use take(), and act on false.
+//
+//   A CACHE is a shared scratch space with a tag saying whose data is
+//   currently in it. The forums' subject table is a cache: it holds one
+//   forum's rows for whoever last asked, and the right answer when a second
+//   caller wants it is to refill it for them, not to refuse. Use seize(),
+//   which always succeeds.
+//
+// Both kinds want the same release discipline, which is the whole reason
+// they share a table: releaseAll on the way into a session, so nothing is
+// inherited from the last caller on that node.
+
+// take: claim a LOCK. True if this node now holds it, which includes the
+// case where it already did, so a re-entrant path does not have to check
+// first. False means somebody else has it and the caller must say so.
 inline bool take(Res r, uint8_t node) {
     uint8_t& o = slot(r);
     if (o == 0 || o == static_cast<uint8_t>(node + 1)) {
@@ -95,6 +114,14 @@ inline bool take(Res r, uint8_t node) {
         return true;
     }
     return false;
+}
+
+// seize: claim a CACHE. Always succeeds, because the previous holder's data
+// is being replaced anyway and refusing would mean the second caller simply
+// cannot use the feature. Whoever held it before finds it no longer tagged
+// to them and refills it when they next look, which is what a cache does.
+inline void seize(Res r, uint8_t node) {
+    slot(r) = static_cast<uint8_t>(node + 1);
 }
 
 // release: give it up, but only if this node is the one holding it.

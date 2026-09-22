@@ -889,6 +889,10 @@ def test_cosysop():
     if not (CO1 and CO2):
         print("  SKIP  cosysop1_password / cosysop2_password not set")
         return True
+    # Seed the ordinary account this test edits. It is registered by
+    # test_page in the full run, which is not picked by --only=login, and
+    # the check then failed for a reason unrelated to co-sysops.
+    ansi_login("Alice").close()
     a = ansi_login("Plain")
     na = a.node()
     c1 = ansi_login("Cora")
@@ -1641,6 +1645,13 @@ def test_backup():
     if not PASSWORD:
         print("  SKIP  no sysop_password")
         return True
+    # Seed the account this test asserts on, rather than relying on another
+    # test having made it. It checks that the zip carries "Alice", and Alice
+    # is registered by test_page: under --only=storage that test is not
+    # picked, so four checks failed for a reason that had nothing to do with
+    # backups. A test that depends on another test reports somebody else's
+    # absence as your bug.
+    ansi_login("Alice").close()
     s = ansi_login("Rob")
     s.buf.clear()
     s.send(f"bye {PASSWORD}\r".encode())
@@ -1875,6 +1886,82 @@ def test_sysinfo():
                 b"Calls by hour" in pub and b"Unknown" not in pub)
     g.close()
     s.close()
+    return ok
+
+
+def test_room_new_commands():
+    """0.21.4: /p n*, /sh, /whois, /b, /page, and /t n +m."""
+    print("Chat room: sticky private, history, whois, bell")
+    a = ansi_login("Sticky")
+    b = ansi_login("Target")
+    c = ansi_login("Bystand")
+    # Read the node number BEFORE clearing the buffer: node() parses it out
+    # of the login banner, and clearing first makes it return "?" so every
+    # sticky check fails for a reason that has nothing to do with sticky.
+    nb = b.node()
+    for x in (a, b, c):
+        x.send(b"chat\r")
+        x.wait_for(b"here.", 4)
+        x.buf.clear()
+
+    # --- /b on its own is the bell, and says which way it went
+    a.send(b"/b\r")
+    ok = check("/b toggles the bell", a.wait_for(b"Bell off.", 3))
+    a.buf.clear()
+    a.send(b"/b\r")
+    ok &= check("and toggles it back", a.wait_for(b"Bell on.", 3))
+
+    # --- /whois uses the shell's own WHOIS and hides private fields
+    a.buf.clear()
+    a.send(b"/whois Target\r")
+    ok &= check("/whois names the caller", a.wait_for(b"Target", 4))
+    ok &= check("/whois does not leak an email",
+                b"@example.com" not in plain(a.buf))
+
+    # --- /sh replays what was said
+    b.buf.clear()
+    c.send(b"something worth repeating\r")
+    b.wait_for(b"worth repeating", 4)
+    b.buf.clear()
+    b.send(b"/sh 5\r")
+    ok &= check("/sh replays the room", b.wait_for(b"worth repeating", 4))
+
+    # --- sticky private: to ONE caller, and NOT to the room
+    a.buf.clear()
+    a.send(f"/p{nb}*\r".encode())
+    ok &= check("/pN* sticks the conversation", a.wait_for(b"ends it", 4))
+    b.buf.clear()
+    c.buf.clear()
+    a.send(b"only for you\r")
+    ok &= check("a stuck line reaches the target", b.wait_for(b"only for you", 4))
+    c.pump(0.8)
+    ok &= check("and NOT the room", b"only for you" not in plain(c.buf))
+
+    # --- /p* releases it
+    a.buf.clear()
+    a.send(b"/p*\r")
+    ok &= check("/p* returns to the room", a.wait_for(b"Back to the room", 4))
+    c.buf.clear()
+    a.send(b"everyone hears this\r")
+    ok &= check("and the room hears again", c.wait_for(b"everyone hears this", 4))
+
+    # --- the target leaving ends it, and the line goes NOWHERE
+    a.buf.clear()
+    a.send(f"/p{nb}*\r".encode())
+    a.wait_for(b"ends it", 4)
+    b.send(b"/q\r")
+    b.wait_for(b"left the room", 4)
+    time.sleep(0.4)
+    c.buf.clear()
+    a.buf.clear()
+    a.send(b"this must not escape\r")
+    ok &= check("a gone target ends the mode", a.wait_for(b"not sent", 4))
+    c.pump(0.8)
+    ok &= check("and the line does not fall into the room",
+                b"this must not escape" not in plain(c.buf))
+
+    for x in (a, b, c):
+        x.close()
     return ok
 
 
@@ -5046,6 +5133,60 @@ GROUPS = {
 }
 
 
+# The order the suite was designed to run in.
+#
+# This is the ONE place the sequence lives. The full run walks it and --only
+# filters it, so a targeted run is always a subset of the real run rather
+# than an alphabetical reshuffle of it. Getting that wrong cost a round:
+# test_ban bans 127.0.0.1 and has to be last, and test_backup reads an
+# account test_page creates.
+#
+# Anything not named here runs after everything that is, in the order it was
+# picked, which is the right default for a test added and not yet placed.
+ORDER_NAMES = [
+    "test_ansi", "test_telnet_first", "test_petscii", "test_ascii",
+    "test_page", "test_sysop", "test_cosysop", "test_accounts",
+    "test_user_admin", "test_guest",
+    "test_privacy", "test_plugins", "test_about", "test_announce",
+    "test_chat", "test_room_commands", "test_room_new_commands",
+    "test_mail", "test_menus", "test_sysinfo", "test_config", "test_serial",
+    "test_motd", "test_idle_login", "test_busy",
+    "test_screens", "test_exit_screen",
+    "test_refresh_and_ctrl_l",
+    "test_binary", "test_sd", "test_files", "test_mail_never_lost",
+    "test_mail_rsd", "test_rename_follows",
+    "test_staff_remembered", "test_shutdown",
+    "test_list_abort_returns", "test_xfer",
+    "test_upload_no_binary", "test_ymodem",
+    "test_config_areas", "test_config_area_keeps_every_part",
+    "test_mail_compose",
+    "test_forums", "test_partitions",
+    # Destructive, and therefore last whatever else is running:
+    "test_backup", "test_ban",
+]
+
+
+def run_order():
+    """The declared sequence as callables, skipping any that do not exist."""
+    g = globals()
+    out = []
+    for n in ORDER_NAMES:
+        if n in ("test_backup", "test_ban"):
+            continue                     # flag-gated, appended by the caller
+        f = g.get(n)
+        if f is not None:
+            out.append(f)
+    return out
+
+
+def order_index(name):
+    """Where a test sits in the declared order; unplaced tests go last."""
+    try:
+        return ORDER_NAMES.index(name)
+    except ValueError:
+        return len(ORDER_NAMES) + 1
+
+
 def run_selected(only):
     """--only=NAME[,NAME...] runs the tests whose names contain those words.
 
@@ -5064,7 +5205,10 @@ def run_selected(only):
 
     picked = []
     seen = set()
-    for n, f in sorted(globals().items()):
+    # Declared order, not alphabetical. See ORDER_NAMES: a group that runs
+    # its tests in a different order than the full suite is testing a
+    # sequence nobody designed, and test_ban in particular bans the host.
+    for n, f in sorted(globals().items(), key=lambda kv: order_index(kv[0])):
         if not n.startswith("test_") or not isinstance(f, types.FunctionType):
             continue
         if any(w in n for w in wanted) and n not in seen:
@@ -5091,10 +5235,20 @@ if __name__ == "__main__":
         picked_ok = run_selected(ONLY)
         print("ALL PASS" if picked_ok else "FAILURES")
         sys.exit(0 if picked_ok else 1)
+    results = [f() for f in run_order()]
+    if "--backup" in FLAGS:
+        results.append(test_backup())
+    if "--ban" in FLAGS:
+        results.append(test_ban())
+    print("ALL PASS" if all(results) else "FAILURES")
+    sys.exit(0 if all(results) else 1)
+
+
+def _unused_old_main():
     results = [test_ansi(), test_telnet_first(), test_petscii(), test_ascii(),
                test_page(), test_sysop(), test_cosysop(), test_accounts(), test_user_admin(), test_guest(),
                test_privacy(), test_plugins(), test_about(), test_announce(),
-               test_chat(), test_room_commands(),
+               test_chat(), test_room_commands(), test_room_new_commands(),
                test_mail(), test_menus(), test_sysinfo(), test_config(), test_serial(),
                test_motd(), test_idle_login(), test_busy(),
                test_screens(), test_exit_screen(),
@@ -5107,9 +5261,4 @@ if __name__ == "__main__":
                test_config_areas(), test_config_area_keeps_every_part(),
                test_mail_compose(),
                test_forums(), test_partitions()]
-    if "--backup" in FLAGS:
-        results.append(test_backup())
-    if "--ban" in FLAGS:
-        results.append(test_ban())
-    print("ALL PASS" if all(results) else "FAILURES")
-    sys.exit(0 if all(results) else 1)
+    return all(results)

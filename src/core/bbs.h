@@ -395,6 +395,21 @@ public:
     // business reaching for either: this is the question they actually have.
     int32_t minutesLeft(const Session& s, uint32_t now) const;
 
+    // Shell handlers a plugin may reuse, so the room and the main prompt
+    // cannot drift into two answers for one question.
+    //
+    // cmdInfo is WHOIS: it already hides UF_PRIVATE fields from everybody
+    // but the owner and PERM_USERS staff, and the room's /whois must not
+    // reimplement that rule. cmdPage is PAGE. cmdTimeAdjust is
+    // TIME n +/-m and does its own permission check.
+    //
+    // None of them draws a prompt: the command table does that separately,
+    // which is what makes them safe to call from a plugin that owns the
+    // session and wants to re-arm its own input afterwards.
+    void cmdInfo(Session& s, const char* arg);
+    void cmdPage(Session& s, const char* arg);
+    void cmdTimeAdjust(Session& s, const char* arg);
+
 private:
     Bbs() = default;
 
@@ -451,7 +466,6 @@ private:
     void formDone(Session& s, Color c, const char* msg);
     void cmdProfile(Session& s, uint32_t now);
     void cmdPassword(Session& s, uint32_t now);
-    void cmdInfo(Session& s, const char* arg);
     void cmdUsers(Session& s, uint32_t now);
     void cmdUser(Session& s, const char* arg, uint32_t now);
     bool rowUsers(Session& s);
@@ -549,7 +563,6 @@ private:
     void cmdTerm(Session& s);
     void cmdTime(Session& s, const char* arg, uint32_t now);
     void cmdBaud(Session& s, const char* arg);
-    void cmdPage(Session& s, const char* arg);
     void cmdDnd(Session& s);
     void cmdBye(Session& s, const char* arg, uint32_t now);
     void fxNext(Session& s);
@@ -567,7 +580,6 @@ private:
     void cmdBroadcast(Session& s, const char* arg);
     void cmdSnoop(Session& s, const char* arg);
     void stopSnoop(Session& s, const char* why);
-    void cmdTimeAdjust(Session& s, const char* arg);
 
     // unlimited: this call is not on the clock, either because of the
     // caller's rank or because a sysop said so for tonight. Defined in

@@ -102,6 +102,21 @@ HeapStats heap();
 // anything on the loop's own path. This is a counter read.
 uint32_t heapFree();
 
+// stackFree: the least free space the BBS task's stack has EVER had, in
+// bytes, or 0 where there is no such thing (the host).
+//
+// Not "free right now": the high water mark, which is the only version of
+// this number worth having. A reading taken at the prompt says nothing
+// about the deepest call the board has made since boot, and the deepest
+// call is the one that overflows.
+//
+// It exists to settle an argument rather than to decorate a screen. Twenty
+// two UserRec scratch buffers are static, each with a comment saying that
+// keeps them "off the task stack", and making them ordinary locals would
+// return about 10 KB of static DRAM. Whether that is safe is a measurement,
+// and this is the measurement.
+uint32_t stackFree();
+
 // powerSave: what mode the radio is really in, as a word.
 //
 // "none", "min" or "max", or "" on a build with no radio. Not what the
