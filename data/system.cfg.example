@@ -5,6 +5,11 @@
 #              instead (BACKUP.md): no reflash, applies at once.
 #              key = value, '#' starts a comment.
 
+# This board's name, up to 40 characters: the welcome screen says who a
+# caller is connecting to, and the directory lists the board under it.
+# Empty means the software's own name.
+board_name = My Board
+
 # Network name for DHCP and mDNS (name.local). a-z 0-9 -, applies at boot.
 hostname = unleashed
 
@@ -163,9 +168,9 @@ USERS          X      X    -
 #
 # servers is comma separated, up to four, and the default is replaceable:
 # the format is documented in ANNOUNCE.md so anybody can run a directory.
+# The name the directory shows is board_name at the top of this file.
 [plugin:announce]
 enabled     = no
-name        = My Board
 owner       = Somebody
 description = One line about this board, up to 120 characters
 servers     = http://unleashedbbs.net/announce

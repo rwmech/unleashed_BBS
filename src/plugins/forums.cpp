@@ -1141,16 +1141,21 @@ bool rows(Session& s) {
         if (row > g_subjRows) return false;
         const SubjRow& r = g_subjRow[row];
 
+        // Clamped, because the compiler cannot see that a message number
+        // is at most ten digits and warned that 255 would not fit.
         char num[12];
-        snprintf(num, sizeof(num), "%*lu", static_cast<int>(g_subjNumW),
+        uint8_t nw = g_subjNumW > 10 ? 10 : g_subjNumW;
+        snprintf(num, sizeof(num), "%*lu", static_cast<int>(nw),
                  static_cast<unsigned long>(r.first));
+        // Column 0 is the unread marker, not a margin (Rob: "not sure why
+        // these all start indented, stop that").
         s.term.color(s.tl, Color::Yellow);
-        s.term.text(s.tl, r.unread ? " *" : "  ");
+        s.term.ch(s.tl, r.unread ? '*' : ' ');
         s.term.text(s.tl, num);
         s.term.ch(s.tl, ' ');
 
         s.term.color(s.tl, r.unread ? Color::White : Color::Grey);
-        uint8_t lead  = static_cast<uint8_t>(2 + strlen(num) + 1);
+        uint8_t lead  = static_cast<uint8_t>(1 + strlen(num) + 1);
         uint8_t nameW = w > 56 ? 44 : static_cast<uint8_t>(w > 24 ? w - 18 : 6);
         uint8_t used  = static_cast<uint8_t>(lead + s.term.textCols(s.tl, r.subject, nameW));
 
@@ -1202,18 +1207,17 @@ bool rows(Session& s) {
     char num[6];
     snprintf(num, sizeof(num), "%2u", static_cast<unsigned>(k + 1));
     s.term.color(s.tl, Color::Yellow);
-    s.term.text(s.tl, "  ");
     s.term.text(s.tl, num);
     s.term.ch(s.tl, ' ');
 
     s.term.color(s.tl, Color::White);
-    uint8_t used = static_cast<uint8_t>(4 + s.term.textCols(s.tl, f.name, kNameMax));
+    uint8_t used = static_cast<uint8_t>(3 + s.term.textCols(s.tl, f.name, kNameMax));
 
     // The description earns its place only at 64 columns and up. At 40 the
     // width goes to the name and the count, because a truncated description
     // is worse than none; tin's `d` key toggled exactly this column.
     if (w >= 64 && f.about[0]) {
-        for (uint8_t x = used; x < kNameMax + 6; ++x) { s.term.ch(s.tl, ' '); ++used; }
+        for (uint8_t x = used; x < kNameMax + 4; ++x) { s.term.ch(s.tl, ' '); ++used; }
         s.term.color(s.tl, Color::Grey);
         used = static_cast<uint8_t>(used + s.term.textCols(s.tl, f.about, 34));
     }
@@ -1288,18 +1292,16 @@ void say(Session& s, Color c, const char* text) {
 // "Linefeed before --> Nothing new", and the same for the message header.
 // An answer printed on the line straight under the prompt reads as part of
 // the prompt. The first newline ends the prompt line the key was pressed
-// on, the second sets the answer off from it, and one column of margin
-// lines it up with the footer.
+// on, the second sets the answer off from it. Column 0, like every other
+// line the board says (Rob: "--> starts at the very begining. EVERYWHERE").
 //
 // Only for a SINGLE KEY at the prompt, which prints no newline of its own.
 // A line finished with Enter in an editor has already moved down, so a
 // notice after one needs a single newline, not this.
 void notice(Session& s, Color c, const char* text) {
-    char line[128];
-    snprintf(line, sizeof(line), " %s", text);
     s.term.nl(s.tl);
     s.term.nl(s.tl);
-    say(s, c, line);
+    say(s, c, text);
 }
 
 // listStatus: what Enter will do, under a list's closing rule.
@@ -1312,28 +1314,55 @@ void listStatus(Session& s, uint32_t unread, const char* none) {
     char line[128];
     if (unread)
         snprintf(line, sizeof(line),
-                 " %lu new message%s ready to read. [Enter] to start reading unread.",
+                 "%lu new message%s ready to read. [Enter] to start reading unread.",
                  static_cast<unsigned long>(unread), unread == 1 ? " is" : "s are");
     else
-        snprintf(line, sizeof(line), " %s", none);
+        snprintf(line, sizeof(line), "%s", none);
     s.term.nl(s.tl);
     say(s, unread ? Color::LightGreen : Color::Grey, line);
     s.term.nl(s.tl);
     s.term.nl(s.tl);
 }
 
+// readPrompt: the question under a message, asked the way mail asks it.
+//
+// Rob: "When reading, ask like email, reply, enter for next, etc. the way
+// you have it is not intuitive while reading. The prompt is fine elsewhere,
+// just not when directly reading a post." A footer and a breadcrumb suit a
+// list, where the caller is choosing where to go. Under a message the
+// question is what to do with what was just read, and that wants the verbs,
+// the way mail's [R]eply [S]ave [D]elete does, in the same colours. The
+// keys not named here (# to jump, ? for help) still work, and ? lists them.
+void readPrompt(Bbs& b, Session& s) {
+    uint8_t sl  = slotIdx(s);
+    bool    mod = mayMod(s, g_at[sl]);
+    // 51 columns at the widest, so the long form needs a wide terminal and
+    // a C64 gets the short one, which drops P for a moderator to make room
+    // for D. P still works; ? says so.
+    const char* q = b.rowWidth(s) >= 59
+        ? (mod ? "[R]eply  [Enter] Next  [P]ost  [D]elete  [Q] Back: "
+               : "[R]eply  [Enter] Next  [P]ost  [Q] Back: ")
+        : (mod ? "[R]eply [D]el [Enter]Next [Q]Back: "
+               : "[R]eply [Enter]Next [P]ost [Q]Back: ");
+    s.term.color(s.tl, Color::Cyan);
+    s.term.text(s.tl, q);
+    s.term.color(s.tl, Color::White);
+}
+
 void prompt(Bbs& b, Session& s, bool gap) {
     uint8_t sl = slotIdx(s);
     if (gap) s.term.nl(s.tl);
+    if (g_view[sl] == View::Reading) {
+        readPrompt(b, s);
+        return;
+    }
     // Both through say(), which sets its own colour. The second one was a
     // bare text() and inherited whatever came before it, so after an
     // end-of-subject notice the footer came out cyan.
     if (g_view[sl] == View::Forums)
-        say(s, Color::Grey, " --> Enter reads what is new. # - Open a forum. ? help. Q leaves.");
+        say(s, Color::Grey, "--> Enter reads what is new. # - Open a forum. ? help. Q leaves.");
     else
-        say(s, Color::Grey, mayMod(s, g_at[sl]) && g_view[sl] == View::Reading
-                ? " --> Enter reads on. # - Jump to subject. P posts. D removes. ? help. Q back."
-                : " --> Enter reads on. # - Jump to subject. P posts. ? help. Q back.");
+        say(s, Color::Grey, "--> Enter reads on. # - Jump to subject. P posts. ? help. Q back.");
     s.term.nl(s.tl);
     s.term.nl(s.tl);          // Rob: a blank line before the prompt
 
@@ -1428,7 +1457,7 @@ void drawSubjects(Bbs& b, Session& s, uint8_t forum) {
     b.startPluginList(s, g_index);
 }
 
-// headRule: " == New Message: ID #4 ----------" out to the width.
+// headRule: "== New Message: ID #4 ----------" out to the width.
 //
 // Rob kept the rule ("#4 row is fine") and wanted the right words in it.
 // "New Message" when this caller has not read it, "Message" when they have,
@@ -1442,7 +1471,6 @@ void headRule(Bbs& b, Session& s, bool fresh, uint32_t num) {
     char id[16];
     snprintf(id, sizeof(id), "#%lu", static_cast<unsigned long>(num));
 
-    t.ch(tl, ' ');
     t.color(tl, g_cTitle);
     t.glyphs(tl, Glyph::HLine2, 2);
     t.ch(tl, ' ');
@@ -1451,7 +1479,7 @@ void headRule(Bbs& b, Session& s, bool fresh, uint32_t num) {
     t.color(tl, g_cCount);
     t.text(tl, id);
     t.ch(tl, ' ');
-    size_t used = 1 + 2 + 1 + strlen(label) + strlen(id) + 1;
+    size_t used = 2 + 1 + strlen(label) + strlen(id) + 1;
     if (used < w) {
         t.color(tl, g_cTitle);
         t.glyphs(tl, Glyph::HLine, static_cast<uint8_t>(w - used));
@@ -1462,9 +1490,8 @@ void headRule(Bbs& b, Session& s, bool fresh, uint32_t num) {
 // plainRule: the rule between the header and the body.
 void plainRule(Bbs& b, Session& s) {
     uint8_t w = b.rowWidth(s);
-    s.term.ch(s.tl, ' ');
     s.term.color(s.tl, g_cTitle);
-    s.term.glyphs(s.tl, Glyph::HLine, static_cast<uint8_t>(w > 1 ? w - 1 : 1));
+    s.term.glyphs(s.tl, Glyph::HLine, w ? w : 1);
     s.term.nl(s.tl);
 }
 
@@ -1473,8 +1500,7 @@ void plainRule(Bbs& b, Session& s) {
 // other, which is what makes three lines read as a header and not a list.
 void field(Bbs& b, Session& s, const char* label, Color c, const char* value) {
     uint8_t w = b.rowWidth(s);
-    size_t lead = 1 + strlen(label);
-    s.term.ch(s.tl, ' ');
+    size_t lead = strlen(label);
     s.term.color(s.tl, g_cTitle);
     s.term.text(s.tl, label);
     s.term.color(s.tl, c);
@@ -1517,15 +1543,19 @@ void showMessage(Bbs& b, Session& s, uint8_t forum, uint32_t n) {
 
     // Rob's layout:
     //
-    //    == New Message: ID #4 ---------------
-    //    Subject: Wrapping test
-    //    By:      quantumrob
-    //    Date:    22 Sep 12:32
-    //    -------------------------------------
-    //    the body
+    //   == New Message: ID #4 ---------------
+    //   Subject: Wrapping test
+    //   By:      quantumrob
+    //   Date:    22 Sep 12:32
+    //   -------------------------------------
+    //   the body
     //
-    //    --> Enter reads on. # - Jump to subject. P posts. ? help. Q back.
-    //   Forums>Unleashed BBS>
+    //   --> EOM <--
+    //
+    //   [R]eply  [Enter] Next  [P]ost  [Q] Back:
+    //
+    // All of it from column 0 (Rob: "not sure why these all start indented,
+    // stop that").
     //
     // Two newlines first: one ends the prompt line the key was pressed on,
     // the second is the blank line he asked for above the header.
@@ -1539,11 +1569,11 @@ void showMessage(Bbs& b, Session& s, uint8_t forum, uint32_t n) {
 
     char body[kBodyMax + 1];
     if (!readBody(forum, m, body, sizeof(body))) {
-        say(s, Color::LightRed, " (the text of this message could not be read)");
+        say(s, Color::LightRed, "(the text of this message could not be read)");
         s.term.nl(s.tl);
     } else {
-        // Wrapped at THIS reader's width, not the writer's, one column in
-        // like the header above it. The guard is generous: 1,536 characters
+        // Wrapped at THIS reader's width, not the writer's. The guard is
+        // generous: 1,536 characters
         // at 35 columns is about 45 lines before any paragraph breaks, and
         // the old limit of 40 would have cut the end off a full post on a C64.
         s.term.color(s.tl, g_cBody);
@@ -1551,9 +1581,8 @@ void showMessage(Bbs& b, Session& s, uint8_t forum, uint32_t n) {
         char line[160];
         const char* p = body;
         uint8_t guard = 0;
-        while ((p = bbsu::wrap(p, line, sizeof(line), static_cast<uint8_t>(w > 1 ? w - 1 : 1))) != nullptr
+        while ((p = bbsu::wrap(p, line, sizeof(line), w ? w : 1)) != nullptr
                && ++guard < 96) {
-            s.term.ch(s.tl, ' ');
             s.term.text(s.tl, line);
             s.term.nl(s.tl);
             if (!*p) break;
@@ -1562,8 +1591,9 @@ void showMessage(Bbs& b, Session& s, uint8_t forum, uint32_t n) {
 
     // Rob: "at the end of messages (all) add --> EOM <--". The reading loop
     // does not clear between messages, so a marker at the end of each one
-    // is what says where one stops and the next begins.
-    s.term.ch(s.tl, ' ');
+    // is what says where one stops and the next begins. A blank line
+    // before it (Rob: "Need a linefeed before EOM").
+    s.term.nl(s.tl);
     s.term.color(s.tl, g_cTitle);
     s.term.text(s.tl, "--> EOM <--");
     s.term.nl(s.tl);
@@ -1725,7 +1755,7 @@ void bodyBegin(Bbs& b, Session& s, const char* forumName, const char* subject) {
 
     s.term.nl(s.tl);
     s.term.color(s.tl, g_cMeta);
-    s.term.text(s.tl, " Subject: ");
+    s.term.text(s.tl, "Subject: ");
     s.term.color(s.tl, g_cHead);
     s.term.textCols(s.tl, subject, b.rowWidth(s));
     s.term.nl(s.tl);
@@ -1734,7 +1764,7 @@ void bodyBegin(Bbs& b, Session& s, const char* forumName, const char* subject) {
     s.term.color(s.tl, g_cMeta);
     char how[140];
     snprintf(how, sizeof(how),
-             " Up to %u lines, %u characters. Long lines wrap by themselves.",
+             "Up to %u lines, %u characters. Long lines wrap by themselves.",
              static_cast<unsigned>(kBodyLines),
              static_cast<unsigned>(BBS_COMPOSE_MAX));
     s.term.text(s.tl, how);
@@ -1742,7 +1772,7 @@ void bodyBegin(Bbs& b, Session& s, const char* forumName, const char* subject) {
     // The way out, in its own colour, because a caller who cannot find it is
     // stuck inside the editor with no way forward.
     s.term.color(s.tl, g_cAsk);
-    s.term.text(s.tl, " /s");
+    s.term.text(s.tl, "/s");
     s.term.color(s.tl, g_cMeta);
     s.term.text(s.tl, compose::kHowToEnd);
     s.term.color(s.tl, g_cAsk);
@@ -1783,7 +1813,7 @@ void finishPost(Bbs& b, Session& s, const char* body) {
 
     s.term.nl(s.tl);
     if (!appendMessage(forum, m, body)) {
-        say(s, Color::LightRed, " --> That did not save. The card may be full.");
+        say(s, Color::LightRed, "--> That did not save. The card may be full.");
     } else {
         // The poster has read their own message by definition.
         Ptr p;
@@ -1793,7 +1823,7 @@ void finishPost(Bbs& b, Session& s, const char* body) {
         setUnread(sl, forum, liveUnread(forum, p));
 
         char msg[80];
-        snprintf(msg, sizeof(msg), " --> Posted as message %lu.",
+        snprintf(msg, sizeof(msg), "--> Posted as message %lu.",
                  static_cast<unsigned long>(m.num));
         say(s, Color::LightGreen, msg);
         g_subjFor = 0xFF;                       // the tally is stale now
@@ -1844,7 +1874,7 @@ void startPost(Bbs& b, Session& s, bool reply) {
     s.term.nl(s.tl);
     {
         char q[40];
-        snprintf(q, sizeof(q), " Subject (%u max): ", static_cast<unsigned>(kSubject));
+        snprintf(q, sizeof(q), "Subject (%u max): ", static_cast<unsigned>(kSubject));
         askLine(s, AskSubject, q, kSubject);
     }
 }
@@ -1884,7 +1914,6 @@ void showHelp(Bbs& b, Session& s) {
     };
     for (const char* line : kKeys) {
         s.term.color(s.tl, Color::Grey);
-        s.term.ch(s.tl, ' ');
         s.term.text(s.tl, line);
         s.term.nl(s.tl);
     }
@@ -2185,7 +2214,7 @@ void answered(Session& s, const char* text) {
     if (what == AskSubject) {
         if (!text || !*text) {                    // no subject, no post
             s.term.nl(s.tl);
-            say(s, g_cMark, " --> Nothing posted.");
+            say(s, g_cMark, "--> Nothing posted.");
             g_replying[sl] = false;
             prompt(b, s);
             return;
@@ -2200,7 +2229,7 @@ void answered(Session& s, const char* text) {
     // paragraphs and ending on one would make that impossible.
     if (compose::isAbort(text)) {
         s.term.nl(s.tl);
-        say(s, g_cMark, " --> Nothing posted.");
+        say(s, g_cMark, "--> Nothing posted.");
         g_replying[sl] = false;
         prompt(b, s);
         return;
@@ -2302,7 +2331,7 @@ void cmdScan(Bbs& b, Session& s) {
         s.term.nl(s.tl);
     }
     if (!g_forums) {
-        say(s, Color::Grey, " None configured. CONFIG FORUMS TOPICS sets them up.");
+        say(s, Color::Grey, "None configured. CONFIG FORUMS TOPICS sets them up.");
         s.term.nl(s.tl);
     }
     b.rowRule(s);

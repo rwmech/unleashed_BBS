@@ -25,8 +25,8 @@
  *                  .seq) are drawn with cursor movement and are never paged.
  *
  *                  @-codes, case-insensitive, work in all formats:
- *                  @BBS@ @VER@ @NODE@ @NODES@ @USER@ @TERM@ @COLS@ @DATE@ @TIME@
- *                  @CLS@ @BELL@ @DELAY:ms@ @SPIN:ms@
+ *                  @BBS@ @BOARD@ @VER@ @NODE@ @NODES@ @USER@ @TERM@ @COLS@
+ *                  @DATE@ @TIME@ @CLS@ @BELL@ @DELAY:ms@ @SPIN:ms@ @BAUD:n@
  *
  * Libraries:    none (libc stdio)
  * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
@@ -106,6 +106,14 @@ public:
     // and a "press a key", where a full screen gets [More].
     bool pageBreak() const { return pageBreak_; }
 
+    // fullSpeed: drop any @BAUD@ pacing for the rest of this screen, and
+    // ignore any later @BAUD@ in it. Called when a caller presses a key
+    // (skipDelays alone only hurries the frames already queued, and the
+    // player would pace everything after them), and by showScreen, which
+    // plays a screen in one go with nothing draining the line in between,
+    // so a paced screen there stopped at the frame guard and lost the rest.
+    void fullSpeed() { typeMs_ = 0; pace_ = false; }
+
 private:
     enum class Mode : uint8_t { Text, Pet, Ansi };
 
@@ -113,6 +121,7 @@ private:
     void flushToken(Term& t, Timeline& tl);
     void runToken(Term& t, Timeline& tl, const Vars& v);
     void byteIn(Term& t, Timeline& tl, const Vars& v, uint8_t b);
+    void say(Term& t, Timeline& tl, const char* s);
 
     FILE*   f_       = nullptr;
     bool    fromCard_ = false;
@@ -131,4 +140,12 @@ private:
     uint8_t lines_    = 0;
     bool    paused_   = false;
     bool    pageBreak_ = false;
+    // @BAUD:n@: milliseconds held after each byte, 0 = full speed. Paced
+    // here, one frame per byte, and not with Timeline::setCps, because that
+    // is live rather than queued (it would slow output already waiting) and
+    // it is the caller's own BAUD setting, which a screen must not leave
+    // changed behind it. Cleared by open() and close(), so a screen that
+    // never says @BAUD:0@ still ends at full speed.
+    uint8_t typeMs_   = 0;
+    bool    pace_     = true;     // false after fullSpeed(), until the next open()
 };

@@ -960,7 +960,9 @@ bool mailRead(Session& s, bool quiet) {
         }
     }
     // The end of the message, marked the same way the forums mark theirs
-    // (Rob: "at the end of messages (all) add --> EOM <--").
+    // (Rob: "at the end of messages (all) add --> EOM <--"), with a blank
+    // line between it and the text (Rob: "Need a linefeed before EOM").
+    s.term.nl(s.tl);
     s.term.color(s.tl, g_cMark);
     s.term.text(s.tl, "--> EOM <--");
     s.term.nl(s.tl);
@@ -1188,11 +1190,14 @@ void notice(const char* text, const Session* from) {
 // helpLine: one row of the /? menu
 void helpLine(Session& s, const char* cmd, const char* what) {
     char row[64];
-    // Eleven, not ten. "/email h m" is exactly ten characters, so a ten wide
-    // column left no gap at all and the row read "/email h mleave a message".
-    // A column exactly as wide as its widest entry is a column with no
-    // separator, which is the same mistake kUsageCol made in 0.15.0.
-    snprintf(row, sizeof(row), "%-11.11s", cmd);
+    // Fourteen: "/whois handle" is thirteen, plus one to separate it. This
+    // was eleven, sized for "/email h m" when that was the widest, and the
+    // commands added since cut "/whois handle" to "/whois hand" and ran
+    // "/page n why" straight into its description. A column exactly as wide
+    // as its widest entry is a column with no separator, the mistake
+    // kUsageCol made in 0.15.0. Every description below is 25 columns or
+    // fewer, so a row fits the 39 a C64 has.
+    snprintf(row, sizeof(row), "%-14.14s", cmd);
     s.term.color(s.tl, Color::Yellow);
     s.term.text(s.tl, row);
     s.term.color(s.tl, Color::Grey);
@@ -1212,20 +1217,21 @@ void roomHelp(Session& s) {
     s.term.nl(s.tl);
     helpLine(s, "/s", "who is here");
     helpLine(s, "/p n text", "one line to node n");
+    helpLine(s, "/p n*", "talk to n; /p* ends it");
     helpLine(s, "/me text", "an action line");
+    helpLine(s, "/page n why", "get their attention");
+    helpLine(s, "/whois handle", "who is that");
     helpLine(s, "/a [note]", "away, or back again");
     helpLine(s, "/sq n", "hide or show a node");
     helpLine(s, "/email h m", "leave a message");
     helpLine(s, "/e", "read yours");
-    helpLine(s, "/t", "the time");
+    helpLine(s, "/sh [n]", "what was said");
+    helpLine(s, "/t", "time, and yours left");
+    helpLine(s, "/b", "bell on or off");
     helpLine(s, "/clear", "wipe the screen");
     helpLine(s, "/welcome", "the screen you came in on");
-    helpLine(s, "/sh [n]", "what was said");
-    helpLine(s, "/p n* ", "talk to one node, /p* ends");
-    helpLine(s, "/page n why", "get their attention");
-    helpLine(s, "/whois handle", "who is that");
-    helpLine(s, "/b", "bell on or off");
     helpLine(s, "/q", "leave the room");
+    helpLine(s, "/q+", "leave and log off");
     if (s.perms) {
         helpLine(s, "/k n [why]", "kick a node out");
         helpLine(s, "/b handle", "bar from the room");
@@ -1233,7 +1239,7 @@ void roomHelp(Session& s) {
         helpLine(s, "/bans", "who is barred");
         helpLine(s, "/t n +m", "give a caller minutes");
     } else {
-        helpLine(s, "/vk n", "vote to kick, no staff here");
+        helpLine(s, "/vk n", "vote to kick (no staff)");
     }
     flush(s);
     armInput(s);
@@ -1411,6 +1417,23 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
 
     if (is("/?") || is("/help") || is("/h")) { roomHelp(s); return true; }
     if (is("/q") || is("/quit"))             { leave(s, "left the room"); return true; }
+
+    // /q+ : out of the room and off the board in one go (Rob). '+' does not
+    // break a verb, so this is its own verb rather than /q with an argument.
+    // The room is told here, because once logoff() has moved the session out
+    // of SState::Plugin, onLogoff no longer counts it as in the room and
+    // would say nothing. logoff() before release(), so release() draws no
+    // prompt on the way out.
+    if (is("/q+") || is("/quit+")) {
+        char bye[80], who[32];
+        tag(s, who, sizeof(who));
+        snprintf(bye, sizeof(bye), "*** %.28s logged off", who);
+        wipeInput(s);
+        post(bye, &s);
+        Bbs::instance().logoff(s, now);
+        Bbs::instance().release(s);
+        return true;
+    }
     if (is("/s") || is("/w") || is("/who"))  { who(s); return true; }
     if (is("/welcome") || is("/intro")) {    // the screen you got on the way in
         if (!Bbs::instance().showScreen(s, "chatin")) {
@@ -2014,7 +2037,7 @@ bool writeBegin(Bbs& b, Session& s, const char* to, int16_t dropIdx) {
     s.term.color(s.tl, Color::Grey);
     char how[140];
     snprintf(how, sizeof(how),
-             " Up to %u lines, %u characters. Long lines wrap by themselves.",
+             "Up to %u lines, %u characters. Long lines wrap by themselves.",
              static_cast<unsigned>(kWriteRows),
              static_cast<unsigned>(g_mailChars));
     s.term.text(s.tl, how);

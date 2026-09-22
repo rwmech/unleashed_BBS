@@ -1835,6 +1835,10 @@ bool Bbs::showScreen(Session& s, const char* name) {
     static ScreenPlayer one;                 // never the session's own player:
     if (!one.open(name, s.term)) return false;   // that one may be mid-screen
     one.setPaging(0);                        // no More: they asked to go, not to read
+    // No @BAUD@ here. This loop plays the whole screen in one go and nothing
+    // drains the line between passes, so a paced screen stopped at the
+    // player's frame guard and the rest was discarded at close(), silently.
+    one.fullSpeed();
     ScreenPlayer::Vars vars{ s.user, s.id, BBS_MAX_NODES };
     // Bounded twice over: by the screen ending, and by the room left to say
     // it in. A transition screen that does not fit is a transition screen
@@ -2479,6 +2483,7 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
     switch (s.st) {
         case SState::Intro:
             tl.skipDelays();                 // any key fast-forwards
+            s.scr.fullSpeed();               // including @BAUD@ text not queued yet
             return;
 
         case SState::AskName: {
@@ -2529,7 +2534,7 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
         case SState::Shell: {
             if (s.scr.active()) {            // a screen is playing
                 if (isAbortKey(k)) abortOutput(s);
-                else               tl.skipDelays();
+                else { tl.skipDelays(); s.scr.fullSpeed(); }
                 return;
             }
             if (!tl.empty()) tl.skipDelays();

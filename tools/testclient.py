@@ -1564,12 +1564,18 @@ def test_motd():
     if HOST not in ("127.0.0.1", "localhost"):
         print("  SKIP  needs a local data/ directory")
         return True
+    # Its own account, made before the motd exists. It logged in as
+    # "Reader" and relied on an earlier test having registered that handle;
+    # on a board where none had, the first login was a registration, which
+    # plays screens/newuser in place of the motd, and every check failed.
+    ansi_login("MotdReader").close()
+    time.sleep(0.5)
     path = DATA / "screens" / "motd.asc"
     path.write_text("".join(f"MOTD line {i}\n" for i in range(1, 61)))
     try:
         c = Caller(ansi=True)
         c.wait_for(b"Enter your handle", 10)
-        login(c, "Reader", wait_main=False)
+        login(c, "MotdReader", wait_main=False)
         ok = check("motd plays after login", c.wait_for(b"MOTD line 1\r\n", 5))
         ok &= check("pauses at [More] after 22 lines", c.wait_for(b"[More] Y/n/c", 5)
                     and b"MOTD line 22" in c.buf and b"MOTD line 23" not in c.buf)
@@ -1584,7 +1590,7 @@ def test_motd():
 
         c = Caller(ansi=True)
         c.wait_for(b"Enter your handle", 10)
-        login(c, "Reader", wait_main=False)
+        login(c, "MotdReader", wait_main=False)
         c.wait_for(b"[More] Y/n/c", 8)
         c.buf.clear()
         c.send(b"n")
@@ -2659,6 +2665,209 @@ def test_config_area_keeps_every_part():
     return ok
 
 
+def test_config_forum_levels():
+    """Saving a forum in CONFIG keeps what it was running under.
+
+    Rob, after saving a forum: "oddly it says I cant post in there but I
+    can post I just cant reply". The sub-page seeded every unset level from
+    the plugin's read, write and admin levels BY POSITION. A forum has four
+    level parts, so Reply got the plugin's admin level (co1) and Moderate
+    got "nobody", and Save pinned both. Start got write, so posting worked
+    and replying did not.
+
+    topic1 in the harness sets no levels at all, which is exactly Rob's
+    case: every one of them is a fallback. Renamed rather than saved
+    unchanged, because an unchanged page is never written.
+    """
+    print("A forum keeps its levels through CONFIG")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    if not os.environ.get("BBS_SD_DIR", ""):
+        print("  SKIP  the forums plugin needs a card")
+        return True
+    if not PASSWORD:
+        print("  SKIP  CONFIG is sysop only")
+        return True
+
+    cfg = USERDATA / "system.cfg"
+
+    def topic1():
+        for line in cfg.read_text(errors="replace").splitlines():
+            if line.strip().startswith("topic1"):
+                return line.strip()
+        return ""
+
+    s = ansi_login("LevelKeep")
+    drain(s)
+    s.buf.clear()
+    s.send(f"bye {PASSWORD}\r".encode())
+    if not s.wait_for(b"SysOp node", 6):
+        print("  SKIP  could not elevate")
+        s.close()
+        return True
+    s.pump(0.6)
+
+    s.buf.clear()
+    s.send(b"config forums\r")
+    ok = check("the forums page opens", s.wait_for(b"Topic 1", 6))
+    s.pump(0.8)
+    # enabled, read, write, admin, then Topic 1: the fifth row.
+    s.buf.clear()
+    s.send(DOWN * 4 + b"\r")
+    ok &= check("topic 1's own page opens", s.wait_for(b"FORUM 1", 6))
+    s.pump(0.8)
+
+    # What the page SHOWS before anything is saved. The harness gives the
+    # plugin write = users and leaves admin at the descriptor's co1, so an
+    # unset Reply runs under users and an unset Moderate under co1.
+    # [a-z0-9]+, not \S+: an unfocused box is padded with dots, so \S+
+    # read "users....................." and failed a correct page.
+    shown = "\n".join(render_lines(s.buf))
+    reply = re.search(r"Reply\s+([a-z0-9]+)", shown)
+    mod   = re.search(r"Moderate\s+([a-z0-9]+)", shown)
+    ok &= check("an unset Reply shows what it runs under, users",
+                reply is not None and reply.group(1) == "users")
+    ok &= check("an unset Moderate shows co1, not nobody",
+                mod is not None and mod.group(1) == "co1")
+
+    s.buf.clear()
+    s.send(DOWN)                                   # Key -> Name
+    s.pump(0.4)
+    s.send(b"\x08" * 24 + b"General Talk")
+    s.pump(0.4)
+    to_save(s, b"Saved")
+    s.pump(1.5)
+
+    after = topic1()
+    parts = [x.strip() for x in after.split("=", 1)[-1].split("|")]
+    ok &= check("the edit reached the file", "General Talk" in after)
+    ok &= check("the saved forum has all seven parts", len(parts) == 7)
+    ok &= check("Reply was saved as users, not the admin level",
+                len(parts) == 7 and parts[5] == "users")
+    ok &= check("Start follows Reply",
+                len(parts) == 7 and parts[4] == "users")
+    ok &= check("and Moderate was saved as co1, not nobody",
+                len(parts) == 7 and parts[6] == "co1")
+
+    drain(s)
+    s.send(b"\x1b")
+    s.pump(0.5)
+    s.close()
+    return ok
+
+
+def test_room_quit_logoff():
+    """/q+ leaves the room and logs off, and the room's help says so.
+
+    Rob: "in chat add /q+ which loggs off along with quit, make sure all
+    menus are updated in chat for all commands we've added."
+    """
+    print("Chat room: /q+ and the help that lists it")
+    a = ansi_login("Quitter")
+    b = ansi_login("Watcher")
+    for x in (a, b):
+        x.send(b"chat\r")
+        x.wait_for(b"here.", 4)
+        x.buf.clear()
+
+    a.send(b"/?\r")
+    a.pump(1.0)
+    shown = render_lines(a.buf)
+    ok = check("the room help lists /q+",
+               any(ln.startswith("/q+") for ln in shown))
+    # The column was eleven wide and cut "/whois handle" to "/whois hand".
+    ok &= check("and /whois handle is not cut short",
+                any(ln.startswith("/whois handle") for ln in shown))
+    ok &= check("and every row fits 39 columns",
+                all(len(ln.rstrip()) <= 39 for ln in shown if ln.startswith("/")))
+
+    a.buf.clear()
+    b.buf.clear()
+    a.send(b"/q+\r")
+    gone = False
+    for _ in range(40):                       # the send-off lingers ~5 s
+        if not a.pump(0.5):
+            gone = True
+            break
+    ok &= check("/q+ ends the call", gone)
+    ok &= check("with the send-off rather than a prompt",
+                b"Main:" not in plain(a.buf))
+    b.pump(1.0)
+    ok &= check("and the room is told they logged off",
+                b"Quitter" in plain(b.buf) and b"logged off" in plain(b.buf))
+    b.close()
+    return ok
+
+
+def test_welcome_connecting():
+    """The welcome's last line, as Rob asked for it.
+
+    "add a LF, have it start at the begining of the line and use an fx
+    300baud there and then a waiting motion for the connect like u already
+    do. Then a LF after". And it names the board from CONFIG: the old line
+    read "Connecting you unleashed", with no "to" and the software's name.
+    """
+    print("Welcome: the connecting line")
+    c = Caller(ansi=True)
+    ok = check("the connecting line arrives", c.wait_for(b"Connecting you", 10))
+    t0 = time.time()
+    c.wait_for(b"Enter your handle", 12)
+    dt = time.time() - t0
+    line, above = line_with(c.buf, "Connecting you")
+    ok &= check("it starts in column 0",
+                line is not None and line.startswith("Connecting you"))
+    ok &= check("with a blank line above it",
+                above is not None and above.strip() == "")
+    # The harness sets no board_name, so @BOARD@ falls back to the
+    # software's name here; on Rob's board it is whatever CONFIG says.
+    ok &= check("and says who it is connecting you to",
+                line is not None and "Connecting you to " in line
+                and "nleashed BBS" in line)
+    # At 300 baud the rest of the line is a second or more on its own, then
+    # the spinner. Unpaced it was the spinner alone, about 0.9 s.
+    ok &= check("typed at 300 baud rather than all at once (%.1f s)" % dt, dt > 1.6)
+    c.close()
+    return ok
+
+
+def test_paced_chatin():
+    """A paced screen that a plugin shows on the way in arrives whole.
+
+    Found by code review before 0.21.9 shipped. showScreen plays a
+    transition screen (chatin, files) in one loop with nothing draining the
+    line, bounded by bytes. @BAUD@ pacing stops at frames. The two never
+    meet, so a chatin that began with @BAUD:300@ typed about 48 characters
+    and the rest was dropped at close(), with nothing in the log.
+    """
+    print("A paced chatin arrives whole")
+    sd = os.environ.get("BBS_SD_DIR", "")
+    if not sd:
+        print("  SKIP  a card is where a sysop's own screens go")
+        return True
+    folder = pathlib.Path(sd) / "screens"
+    folder.mkdir(parents=True, exist_ok=True)
+    screen = folder / "chatin.ans"
+    kept = screen.read_bytes() if screen.exists() else None
+    screen.write_bytes(b"@BAUD:300@" + b"x" * 200 + b"PACED-END\r\n")
+    try:
+        c = ansi_login("PacedIn")
+        drain(c)
+        c.buf.clear()
+        c.send(b"chat\r")
+        got = c.wait_for(b"PACED-END", 8)
+        ok = check("the end of a paced chatin still arrives", got)
+        c.send(b"/q\r")
+        c.pump(0.5)
+        c.close()
+    finally:
+        if kept is None:
+            screen.unlink()
+        else:
+            screen.write_bytes(kept)
+    return ok
+
+
 def test_mail_compose():
     """MAIL <handle> opens the same editor a forum post does.
 
@@ -2894,6 +3103,29 @@ def new_count(buf):
     return int(m[-1]) if m else None
 
 
+def ends_at_read_prompt(buf):
+    """Does the screen end at the question asked under a message?
+
+    Rob: "When reading, ask like email, reply, enter for next". The list
+    footer and the Forums> breadcrumb belong to the lists; under a message
+    the last line is the [R]eply question, ending in a colon.
+    """
+    text = plain(buf).replace(b"\r", b"").rstrip()
+    if not text:
+        return False
+    last = text.split(b"\n")[-1].strip()
+    return last.startswith(b"[R]eply") and last.endswith(b":")
+
+
+def line_with(buf, needle):
+    """The rendered screen line containing needle, and the one above it."""
+    lines = render_lines(buf)
+    for i, ln in enumerate(lines):
+        if needle in ln:
+            return ln, (lines[i - 1] if i else None)
+    return None, None
+
+
 def ends_at_prompt(buf, marker):
     """Is the last line on screen a prompt a caller can type at?
 
@@ -2948,6 +3180,9 @@ def test_forums():
     # was on screen twice every time the list was drawn.
     ok &= check("the forum list shows its footer once",
                 count_lines(s.buf, b"Enter reads") == 1)
+    foot, _ = line_with(s.buf, "Enter reads")
+    ok &= check("the footer's --> starts in column 0",
+                foot is not None and foot.startswith("-->"))
     ok &= check("a blank line between the title bar and the first forum",
                 blank_above(s.buf, b"General"))
     ok &= check("a blank line between the footer and the prompt",
@@ -3057,16 +3292,35 @@ def test_forums():
                 b"Subject:" in mine and b"By:" in mine and b"Date:" in mine)
     ok &= check("the message is set off from the prompt by a blank line",
                 blank_before(s.buf, b"Message: ID #"))
-    ok &= check("the breadcrumb has no Messages> level",
-                b"Messages>" not in mine and ends_at_prompt(s.buf, b"Forums>"))
-    ok &= check("the reading screen shows its footer once",
-                count_lines(s.buf, b"Enter reads") == 1)
+    ok &= check("the breadcrumb has no Messages> level", b"Messages>" not in mine)
+    # Rob: "When reading, ask like email, reply, enter for next, etc. ...
+    # The prompt is fine elsewhere, just not when directly reading a post."
+    ok &= check("reading ends at a [R]eply question, not the list footer",
+                ends_at_read_prompt(s.buf))
+    ok &= check("and the list footer is not repeated under a message",
+                count_lines(s.buf, b"Enter reads") == 0)
+    # find, not index: on a build with no [R]eply prompt, index raised and
+    # took every check after this one down with it.
     ok &= check("a message ends with --> EOM <--",
-                b"--> EOM <--" in mine
-                and mine.index(b"--> EOM <--") > mine.index(b"Date:")
-                and mine.index(b"--> EOM <--") < mine.index(b"Enter reads"))
-    ok &= check("a blank line before the prompt when reading",
-                blank_before_prompt(s.buf))
+                b"--> EOM <--" in mine and b"[R]eply" in mine
+                and mine.find(b"--> EOM <--") > mine.find(b"Date:")
+                and mine.find(b"--> EOM <--") < mine.find(b"[R]eply"))
+    # Rob: "Need a linefeed before EOM".
+    eom, above = line_with(s.buf, "--> EOM <--")
+    ok &= check("a blank line before EOM",
+                eom is not None and above is not None and above.strip() == "")
+    # Rob: "--> starts at the very begining. EVERYWHERE unless told
+    # otherwise" and "not sure why these all start indented, stop that."
+    ok &= check("EOM starts in column 0", eom is not None and eom.startswith("-->"))
+    head, _ = line_with(s.buf, "Message: ID #")
+    ok &= check("the message header starts in column 0",
+                head is not None and not head.startswith(" "))
+    subj, _ = line_with(s.buf, "Subject:")
+    ok &= check("and Subject, By and Date do too",
+                subj is not None and subj.startswith("Subject:"))
+    body, _ = line_with(s.buf, "This is the first line")
+    ok &= check("and so does the body",
+                body is not None and body.startswith("This is the first line"))
     s.buf.clear()
     s.send(b"\r")
     s.pump(1.2)
@@ -3297,6 +3551,8 @@ def test_forums_remove():
     u.buf.clear()
     u.send((n + "\r").encode())
     u.pump(1.2)
+    ok &= check("a caller without the moderator level is not offered D",
+                b"[D]el" not in plain(u.buf))
     u.buf.clear()
     u.send(b"d")
     u.pump(0.8)
@@ -3316,7 +3572,7 @@ def test_forums_remove():
     m.buf.clear()
     m.send((n + "\r").encode())
     m.pump(1.2)
-    ok &= check("the moderator is offered D", b"D removes" in plain(m.buf))
+    ok &= check("the moderator is offered D", b"[D]el" in plain(m.buf))
 
     # N keeps it.
     m.buf.clear()
@@ -5639,13 +5895,14 @@ def test_exit_screen():
 GROUPS = {
     # Anything that takes a message from a caller. The editor is shared, so
     # a change to it can break either end.
-    "messaging": ["mail", "forums", "chat", "room_commands", "room_new", "survives_notice"],
+    "messaging": ["mail", "forums", "chat", "room_commands", "room_new", "room_quit",
+                  "survives_notice", "config_forum"],
     # The subsystems that own a session and draw their own screens.
     "places":    ["forums", "files", "chat", "xfer"],
     # Anything that reads or writes the card.
     "storage":   ["files", "forums", "sd", "xfer", "backup"],
     # The shell, its lists and the screens the core draws.
-    "shell":     ["menus", "sysinfo", "page", "about", "config"],
+    "shell":     ["menus", "sysinfo", "page", "about", "config", "welcome", "paced"],
     # Logging in, accounts, staff.
     "login":     ["accounts", "handle_case", "guest", "sysop", "cosysop", "user_admin", "ban"],
     # Terminal handling across the three flavours.
@@ -5668,10 +5925,10 @@ ORDER_NAMES = [
     "test_page", "test_sysop", "test_cosysop", "test_accounts", "test_handle_case",
     "test_user_admin", "test_guest",
     "test_privacy", "test_plugins", "test_about", "test_announce",
-    "test_chat", "test_room_commands", "test_room_new_commands",
+    "test_chat", "test_room_commands", "test_room_new_commands", "test_room_quit_logoff",
     "test_mail", "test_prompt_survives_notice", "test_menus", "test_sysinfo", "test_config", "test_serial",
     "test_motd", "test_idle_login", "test_busy",
-    "test_screens", "test_exit_screen",
+    "test_screens", "test_exit_screen", "test_welcome_connecting", "test_paced_chatin",
     "test_refresh_and_ctrl_l",
     "test_binary", "test_sd", "test_files", "test_mail_never_lost",
     "test_mail_rsd", "test_rename_follows",
@@ -5680,7 +5937,7 @@ ORDER_NAMES = [
     "test_upload_no_binary", "test_ymodem",
     "test_config_areas", "test_config_area_keeps_every_part",
     "test_mail_compose",
-    "test_forums", "test_forums_remove", "test_partitions",
+    "test_forums", "test_forums_remove", "test_config_forum_levels", "test_partitions",
     # Destructive, and therefore last whatever else is running:
     "test_backup", "test_ban",
 ]

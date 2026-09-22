@@ -42,6 +42,10 @@
 #include <cstring>
 #include <cstdlib>
 
+// pump() stops pacing @BAUD@ output at 48 free frames, so there has to be
+// more than that to begin with or a paced screen would never start.
+static_assert(BBS_TL_FRAMES > 64, "@BAUD@ pacing needs frames to spare");
+
 namespace {
 
 struct Ext { const char* ext; uint8_t mode; };   // mode: 0 text, 1 pet, 2 ansi
@@ -126,6 +130,8 @@ bool ScreenPlayer::open(const char* name, const Term& t) {
             pageRows_ = 0;
             lines_    = 0;
             paused_   = false;
+            typeMs_   = 0;
+            pace_     = true;
             return true;
         }
     }
@@ -141,6 +147,7 @@ void ScreenPlayer::close() {
     fromCard_  = false;
     paused_    = false;
     pageBreak_ = false;
+    typeMs_    = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +171,27 @@ void ScreenPlayer::emitByte(Term& t, Timeline& tl, uint8_t b) {
             break;
     }
     prev_ = b;
+    if (typeMs_) tl.delay(typeMs_);
+}
+
+// ---------------------------------------------------------------------------
+// say: a token's value, paced like the file's own bytes under @BAUD@
+//
+// One character at a time, not one byte, so the micro sign's two bytes stay
+// together and Term::text still turns them into the terminal's glyph.
+// ---------------------------------------------------------------------------
+void ScreenPlayer::say(Term& t, Timeline& tl, const char* s) {
+    if (!typeMs_) { t.text(tl, s); return; }
+    char one[5];
+    while (*s) {
+        uint8_t n = 1;
+        while (n < 4 && (static_cast<uint8_t>(s[n]) & 0xC0) == 0x80) ++n;
+        memcpy(one, s, n);
+        one[n] = '\0';
+        t.text(tl, one);
+        tl.delay(typeMs_);
+        s += n;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -183,23 +211,31 @@ void ScreenPlayer::runToken(Term& t, Timeline& tl, const Vars& v) {
     tok_[tokLen_] = '\0';
     char num[8];
 
-    if (!strcmp(tok_, "BBS"))        { t.text(tl, BBS_NAME); }
+    if (!strcmp(tok_, "BBS"))        { say(t, tl, BBS_NAME); }
     else if (!strcmp(tok_, "BOARD")) {          // this board, not the software
         const char* n = syscfg::get().boardName;
-        t.text(tl, n[0] ? n : BBS_NAME);
+        say(t, tl, n[0] ? n : BBS_NAME);
     }
-    else if (!strcmp(tok_, "VER"))   { t.text(tl, BBS_VERSION); }
-    else if (!strcmp(tok_, "NODE"))  { snprintf(num, sizeof(num), "%u", v.node);  t.text(tl, num); }
-    else if (!strcmp(tok_, "NODES")) { snprintf(num, sizeof(num), "%u", v.nodes); t.text(tl, num); }
-    else if (!strcmp(tok_, "USER"))  { t.text(tl, (v.user && *v.user) ? v.user : "caller"); }
-    else if (!strcmp(tok_, "TERM"))  { t.text(tl, t.name()); }
-    else if (!strcmp(tok_, "COLS"))  { snprintf(num, sizeof(num), "%u", t.cols()); t.text(tl, num); }
-    else if (!strcmp(tok_, "DATE"))  { char d[24]; clk::fmt(d, sizeof(d), "%a %d %b %Y"); t.text(tl, d); }
-    else if (!strcmp(tok_, "TIME"))  { char d[16]; clk::fmt(d, sizeof(d), "%H:%M"); t.text(tl, d); }
+    else if (!strcmp(tok_, "VER"))   { say(t, tl, BBS_VERSION); }
+    else if (!strcmp(tok_, "NODE"))  { snprintf(num, sizeof(num), "%u", v.node);  say(t, tl, num); }
+    else if (!strcmp(tok_, "NODES")) { snprintf(num, sizeof(num), "%u", v.nodes); say(t, tl, num); }
+    else if (!strcmp(tok_, "USER"))  { say(t, tl, (v.user && *v.user) ? v.user : "caller"); }
+    else if (!strcmp(tok_, "TERM"))  { say(t, tl, t.name()); }
+    else if (!strcmp(tok_, "COLS"))  { snprintf(num, sizeof(num), "%u", t.cols()); say(t, tl, num); }
+    else if (!strcmp(tok_, "DATE"))  { char d[24]; clk::fmt(d, sizeof(d), "%a %d %b %Y"); say(t, tl, d); }
+    else if (!strcmp(tok_, "TIME"))  { char d[16]; clk::fmt(d, sizeof(d), "%H:%M"); say(t, tl, d); }
     else if (!strcmp(tok_, "CLS"))   { t.cls(tl); lines_ = 0; }
     else if (!strcmp(tok_, "BELL"))  { t.bell(tl); }
     else if (!strncmp(tok_, "DELAY:", 6)) {
         tl.delay(static_cast<uint16_t>(atoi(tok_ + 6)));
+    }
+    else if (!strncmp(tok_, "BAUD:", 5)) {
+        // Ten bits a character on the wire, so 300 baud is 33 ms each.
+        // 0 or anything unparsable is full speed again.
+        long bps = atol(tok_ + 5);
+        long ms  = bps > 0 ? 10000 / bps : 0;
+        if (bps > 0 && ms < 1) ms = 1;
+        typeMs_ = pace_ ? static_cast<uint8_t>(ms > 255 ? 255 : ms) : 0;
     }
     else if (!strncmp(tok_, "SPIN:", 5)) {
         fx::spinner(t, tl, fx::Spin::Line, static_cast<uint16_t>(atoi(tok_ + 5)), 100);
@@ -255,6 +291,11 @@ bool ScreenPlayer::pump(Term& t, Timeline& tl, const Vars& v) {
             bufPos_ = 0;
         }
         while (bufPos_ < bufLen_ && !sauce_) {
+            // Paced output takes a frame per character. Stop while there is
+            // still room for a whole token's worth (a 40 character board
+            // name), because a put() with no frame to open is dropped rather
+            // than refused, and the rest follows on the next pass.
+            if (typeMs_ && tl.freeFrames() <= 48) return true;
             if (buf_[bufPos_] == 0x0C) {         // form feed: the screen's own page break
                 ++bufPos_;
                 paused_ = pageBreak_ = true;

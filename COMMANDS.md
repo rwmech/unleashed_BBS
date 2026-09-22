@@ -43,7 +43,7 @@ Full guide to accounts: [USERS.md](USERS.md).
 - A locked account is refused before the password.
 - If nothing is typed at the handle prompt, a warning appears at 30 s, followed by your partial input redrawn. The line hangs up at 60 s.
 - After login you see your node, the date and time, your call count and your remaining time. If `screens/motd.*` exists, it plays next.
-- Then you land wherever your account's `Start` says: the main prompt, the chat room, or the forums (the message boards, being built now). `Start` is `Default` on a new account, which follows the board's `landing` setting. `[H]ELP for commands.` is printed only when the main prompt is where you actually end up, because it is advice about that prompt and nowhere else. A landing this board cannot do falls back to the main prompt without complaint.
+- Then you land wherever your account's `Start` says: the main prompt, the chat room, or the forums (the message boards). `Start` is `Default` on a new account, which follows the board's `landing` setting. `[H]ELP for commands.` is printed only when the main prompt is where you actually end up, because it is advice about that prompt and nowhere else. A landing this board cannot do falls back to the main prompt without complaint.
 
 ### Guests
 
@@ -102,7 +102,7 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | `TIME` | | Date and time, minutes online, minutes left. |
 | `LAST` | | The last 50 calls, newest first. |
 | `ABOUT` | | What this BBS is, its version and its license. Plays `screens/about.*`, so a sysop can rewrite it. |
-| `CHAT` | | Join the chat room (the `chat` plugin). Everything you type goes to everyone in the room, tagged DDial style: `#2:Daytona) hi`. The bracket is the rank: `)` a caller, `*` a guest, `>` a co-sysop, `]` the sysop. There is no prompt character: the cursor waits at the start of the line. While you are typing, nothing from the room lands on your screen; the lines wait and print in order when you press Enter. The room buffers 48 lines, and one caller may send 80 lines a minute (`rate =`), with 8 in a burst; going over tells that caller alone, and the room never sees it. `/s` lists who is there, `/?` lists every room command, `/q` or ESC leaves. Private lines, away notes, squelch, kicks, the vote to kick and messages are all in [CHAT.md](CHAT.md). |
+| `CHAT` | | Join the chat room (the `chat` plugin). Everything you type goes to everyone in the room, tagged DDial style: `#2:Daytona) hi`. The bracket is the rank: `)` a caller, `*` a guest, `>` a co-sysop, `]` the sysop. There is no prompt character: the cursor waits at the start of the line. While you are typing, nothing from the room lands on your screen; the lines wait and print in order when you press Enter. The room buffers 48 lines, and one caller may send 80 lines a minute (`rate =`), with 8 in a burst; going over tells that caller alone, and the room never sees it. `/s` lists who is there, `/?` lists every room command, `/q` or ESC leaves, and `/q+` leaves and logs off. Private lines, away notes, squelch, kicks, the vote to kick and messages are all in [CHAT.md](CHAT.md). |
 | `SERIAL` | | Watch the serial device (the `serial` plugin). `T` takes the keyboard if you are allowed and it is free, ESC leaves. `SERIAL STATUS` prints the port, `SERIAL SET 9600 8N1` changes the line. |
 | `WHOIS [handle]` | | An account: name, member since, last call, calls, profile. Email, address and phone only on your own account (or with `USERS`). |
 | `PRIVACY` | | What the board knows about you: that telnet is not encrypted, how your password is stored, what the sysop can see, and the one rule that matters. Plays `screens/privacy.*`, so a sysop can rewrite it. The same screen is offered during sign-up. |
@@ -230,11 +230,13 @@ lines and 512 characters, which is what the mail record has room for. The line c
 | Enter, Space | The next message you have not read, wherever it is. From the forum list it walks *into* the first forum with something new, so a caller who only ever presses Enter never has to navigate at all. Inside a subject it reads that conversation in order and then rolls on to the rest of the forum rather than dead-ending. |
 | a number, then Enter | On the forum list, opens that forum. Anywhere else, opens that subject and starts reading it. **A subject's number is the ID of the message that started it**, so the number in the list is the number the message shows when it opens, and it never changes. The number is typed on the prompt line; Backspace to nothing or ESC abandons it. |
 | `P` | Post a new subject here. Asks for the subject, then the message. |
-| `D` | **Remove the message on screen**, for callers holding the forum's `mod` level (the sysop by default). Asks `Remove message #N? (y/N)` first and only `y` removes it. The message disappears from the lists and from every caller's unread count; it is not erased from the card, and the removal is written to the log with who did it. Other callers see `D removes` in the footer only if they may. |
+| `D` | **Remove the message on screen**, for callers holding the forum's `mod` level (the sysop by default). Asks `Remove message #N? (y/N)` first and only `y` removes it. The message disappears from the lists and from every caller's unread count; it is not erased from the card, and the removal is written to the log with who did it. It is offered under a message as `[D]elete` (`[D]el` on a narrow screen) only to callers who may. |
 | `R` | Reply to the message on screen. No subject is asked for: a reply carries its parent's, and grouping means the subject is drawn once as the screen's title rather than on every message. |
 | `L` | Back to the list you came from. |
 | `?` | The keys, on one screen. |
 | `Q`, ESC | Back one level. Reading goes back to the subjects, subjects back to the forums, and `Q` at the forum list leaves. |
+
+**Under a message the board asks what to do with it**, the way mail does: `[R]eply  [Enter] Next  [P]ost  [Q] Back:`, with `[D]elete` for a moderator. The lists keep their footer and the `Forums>` breadcrumb, because on a list the question is where to go; under a message it is what to do with the thing just read. The keys the question leaves out, a number to jump and `?` for help, still work there.
 
 **The screen is not cleared between messages**, deliberately, and it is the one place in the board where that rule is reversed. Reading is a scroll rather than a view: the message before is the context for this one, and somebody glancing back at what they just read should be able to. Entering, listing and help all still clear.
 
@@ -444,7 +446,9 @@ area1 = pub/c64 | C64 Downloads | read | upload | download | delete
 
 All four are optional and each falls back on its own: read to the plugin's
 `read`, upload to the plugin's `write`, **download to that area's own read**,
-and delete to the plugin's `admin`. Delete never inherits from upload, so an
+and delete to the plugin's `admin`. `CONFIG files` shows an unset level as
+exactly that fallback, so what you see before saving is what the area was
+already running under. Delete never inherits from upload, so an
 area that says nothing about deletion does not get it from permission to
 upload.
 

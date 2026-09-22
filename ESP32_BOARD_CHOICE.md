@@ -64,16 +64,20 @@ actually did.
 
 ## What is actually known
 
-Measured on the reference board, an ESP32-WROOM-32E at 0.17.1:
+Measured on the reference board, an ESP32-WROOM-32E at 0.21.8
+(2026-09-22). This table used to carry the 0.17.1 figures, which
+showed 34 KB of headroom: forums, the message editor and the
+per-session buffers spent most of it, which is why these get
+re-measured at every milestone.
 
 | | |
 |---|---|
-| One caller session | **5,716 bytes** (from DWARF, not estimated) |
+| One caller session | **6,980 bytes** (from DWARF, not estimated) |
 | Sessions allocated | `BBS_MAX_NODES + 2`, for the busy line and the hidden sysop node |
-| Ten nodes | 12 sessions, **68,592 bytes** |
-| Total static RAM | **146,732 bytes** |
+| Ten nodes | 12 sessions, **83,760 bytes** |
+| Total static RAM | **175,440 bytes** |
 | Usable DRAM ceiling | **180,736 bytes** |
-| Headroom left | **34,004 bytes** |
+| Headroom left | **5,296 bytes** |
 | Sockets | **16**, which is lwIP's hard maximum in IDF 5.3.1 |
 
 That ceiling is in the linker script, not on a datasheet:
@@ -84,7 +88,8 @@ figure to measure is `_bss_end - 0x3FFB0000`.
 **PlatformIO's RAM percentage is measured against 327,680 and is therefore
 wrong by a factor of 1.81.** It reported 54.9% for a build that would not
 link. Multiply its number by 1.81 for the truth: 55% on its scale is the
-wall. At 0.17.2 the board is at 81% of what it actually has.
+wall. At 0.21.8 the board is at 97% of what it actually has, which
+PlatformIO reports as 53.5%.
 
 **And the node count is bounded by sockets before it is bounded by RAM.**
 IDF 5.3.1 caps `CONFIG_LWIP_MAX_SOCKETS` at 16, the listener, mDNS and SNTP
@@ -95,11 +100,11 @@ check the generated `sdkconfig.esp32dev` rather than what the defaults file
 asks for: this project asked for 24 and silently ran on 10 for two builds.
 
 Everything else on the board, the buffers, the tables, the stacks, the
-plugins, comes to about 74 KB. That part does not grow with the node count,
+plugins, comes to about 90 KB. That part does not grow with the node count,
 so the arithmetic for any part is:
 
 ```
-nodes = (usable DRAM - 78 KB of fixed cost - headroom you want) / 5,716 - 2
+nodes = (usable DRAM - 90 KB of fixed cost - headroom you want) / 6,980 - 2
 ```
 
 subject to the socket ceiling, which on any ESP32 running IDF 5.3.1 is

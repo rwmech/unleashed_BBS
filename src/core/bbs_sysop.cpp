@@ -805,27 +805,43 @@ constexpr uint8_t kPageCount = sizeof(kPages) / sizeof(kPages[0]);
 // what keeps this table one line per plugin rather than a special case:
 //   - part 0 is what the record points at and part 1 is its human name, so
 //     the button's summary is the name, or the path when it has none.
-//   - the CK_LEVEL parts, in order, are the plugin's read, write and admin
-//     levels, so a part the file does not carry shows the level the record
-//     is actually running under rather than a blank or a guess.
+//   - each CK_LEVEL part names what it falls back to when the record does
+//     not set it, so a part the file does not carry shows the level the
+//     record is actually running under rather than a blank or a guess.
+//
+// That second one used to be "the level parts, in order, are read, write
+// and admin", which held for two parts and not for four. A forum's third
+// level part is Reply, which was seeded with the plugin's ADMIN level, and
+// its fourth got "nobody"; Save pinned both. Rob, after saving a forum:
+// "oddly it says I cant post in there but I can post I just cant reply".
+// Each plugin decides its own fallbacks, so the table has to say them.
 // ---------------------------------------------------------------------------
+enum : uint8_t {
+    IN_READ  = 0,         // the plugin's read level
+    IN_WRITE = 1,         // the plugin's write level
+    IN_ADMIN = 2,         // the plugin's admin level
+    IN_PART  = 0x10,      // IN_PART | k: whatever part k ends up as
+};
+
 struct CfgPart {
     const char* label;    // 9 characters, the form column
     uint8_t     kind;     // CK_TEXT or CK_LEVEL
     uint8_t     cap;
+    uint8_t     inherit;  // CK_LEVEL: what an unset part runs under
 };
 
 // The order here is the order on the wire, and Upload sits above Download
 // because it is where the old single "Write" level lived. Reordering them
 // to read nicely would silently reinterpret every area already configured,
 // turning its upload level into its download level.
-const CfgPart kAreaParts[] = {
-    { "Path",     CK_TEXT,  48 },      // files.cpp kPathMax
-    { "Name",     CK_TEXT,  24 },      // files.cpp kNameMax
-    { "Read",     CK_LEVEL,  6 },      // see the area and list it
-    { "Upload",   CK_LEVEL,  6 },      // put files in, and describe them
-    { "Download", CK_LEVEL,  6 },      // take files out
-    { "Delete",   CK_LEVEL,  6 },      // remove files, approve or reject
+constexpr CfgPart kAreaParts[] = {
+    { "Path",     CK_TEXT,  48, 0 },   // files.cpp kPathMax
+    { "Name",     CK_TEXT,  24, 0 },   // files.cpp kNameMax
+    // The fallbacks are files.cpp's mayRead, mayUp, mayDown and mayDel.
+    { "Read",     CK_LEVEL,  6, IN_READ },      // see the area and list it
+    { "Upload",   CK_LEVEL,  6, IN_WRITE },     // put files in, and describe them
+    { "Download", CK_LEVEL,  6, IN_PART | 2 },  // take files out; the area's Read
+    { "Delete",   CK_LEVEL,  6, IN_ADMIN },     // remove files, approve or reject
 };
 
 struct CfgComposite {
@@ -865,14 +881,15 @@ struct CfgComposite {
 // read-only announcements forum work BETTER than read-only:
 // read=all, start=co1, reply=users is "staff post the news, anybody may
 // answer it", which boards wanted and could not say.
-const CfgPart kTopicParts[] = {
-    { "Key",      CK_TEXT,  12 },      // folder on the card, forums.cpp kKeyMax
-    { "Name",     CK_TEXT,  24 },      // forums.cpp kNameMax
-    { "About",    CK_TEXT,  40 },      // one line, shown at 64 columns and up
-    { "Read",     CK_LEVEL,  6 },      // see the forum in the list
-    { "Start",    CK_LEVEL,  6 },      // open a NEW subject
-    { "Reply",    CK_LEVEL,  6 },      // add to an existing one
-    { "Moderate", CK_LEVEL,  6 },      // delete, pin, move
+constexpr CfgPart kTopicParts[] = {
+    { "Key",      CK_TEXT,  12, 0 },   // folder on the card, forums.cpp kKeyMax
+    { "Name",     CK_TEXT,  24, 0 },   // forums.cpp kNameMax
+    { "About",    CK_TEXT,  40, 0 },   // one line, shown at 64 columns and up
+    // The fallbacks are forums.cpp's mayRead, mayStart, mayReply and mayMod.
+    { "Read",     CK_LEVEL,  6, IN_READ },      // see the forum in the list
+    { "Start",    CK_LEVEL,  6, IN_PART | 5 },  // open a NEW subject; this forum's Reply
+    { "Reply",    CK_LEVEL,  6, IN_WRITE },     // add to an existing one
+    { "Moderate", CK_LEVEL,  6, IN_ADMIN },     // delete, pin, move
 };
 
 const CfgComposite kComposites[] = {
@@ -901,6 +918,17 @@ static_assert(sizeof(kAreaParts)  / sizeof(kAreaParts[0])  <= kMaxParts,
               "kAreaParts has more parts than kMaxParts holds: raise kMaxParts");
 static_assert(sizeof(kTopicParts) / sizeof(kTopicParts[0]) <= kMaxParts,
               "kTopicParts has more parts than kMaxParts holds: raise kMaxParts");
+
+// IN_PART | k is an index written beside a table, the shape that has cost
+// this file three bugs already. Pin each one to the part it means, so a
+// reordered table fails here rather than at a sysop's Save.
+constexpr bool sameLabel(const char* a, const char* b) {
+    return *a == *b && (*a == '\0' || sameLabel(a + 1, b + 1));
+}
+static_assert(sameLabel(kAreaParts[2].label, "Read"),
+              "an area's Download inherits IN_PART | 2, which must be Read");
+static_assert(sameLabel(kTopicParts[5].label, "Reply"),
+              "a forum's Start inherits IN_PART | 5, which must be Reply");
 
 // One settings editor at a time. The sysop is a single caller, and two
 // people writing the file at once is a good way to lose it.
@@ -1392,23 +1420,40 @@ void Bbs::configSubOpen(Session& s, uint8_t field, uint32_t now) {
     snprintf(g_subOrig, sizeof(g_subOrig), "%s", g_cfgBuf[field]);
 
     uint8_t pi = cfgSectionPlugin(g_cfgSection);
-    uint8_t n = 0;
-    uint8_t which = 0;                       // CK_LEVEL parts are read, write, admin
-    for (uint8_t i = 0; i < comp->count && i < kMaxParts && n < Form::kMaxFields; ++i) {
+    uint8_t cnt = comp->count < kMaxParts ? comp->count : kMaxParts;
+
+    // A level the record does not carry, or one the ladder does not know,
+    // shows the level the record is actually running under. A blank cycle
+    // field would step to "all" on the first space, which is the one wrong
+    // answer that opens an area to everybody.
+    //
+    // Two passes, because a part can inherit from a part after it (a
+    // forum's Start falls back to its Reply). The plugin's own levels first,
+    // then the parts that follow another part, from what that part became.
+    bool unset[kMaxParts] = {};
+    for (uint8_t i = 0; i < cnt; ++i) {
         const CfgPart& p = comp->parts[i];
         cfgPart(g_subOrig, i, g_subBuf[i], sizeof(g_subBuf[0]));
+        if (p.kind != CK_LEVEL) continue;
+        PlugLevel lv = PlugLevel::Nobody;
+        unset[i] = !plugins::levelFromText(g_subBuf[i], lv) || lv == PlugLevel::Nobody;
+        if (unset[i] && !(p.inherit & IN_PART))
+            snprintf(g_subBuf[i], sizeof(g_subBuf[0]), "%s",
+                     plugins::levelName(plugins::levelFor(pi, p.inherit)));
+    }
+    for (uint8_t i = 0; i < cnt; ++i) {
+        const CfgPart& p = comp->parts[i];
+        if (p.kind != CK_LEVEL || !unset[i] || !(p.inherit & IN_PART)) continue;
+        uint8_t from = static_cast<uint8_t>(p.inherit & 0x0F);
+        if (from < cnt) snprintf(g_subBuf[i], sizeof(g_subBuf[0]), "%s", g_subBuf[from]);
+    }
+
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < cnt && n < Form::kMaxFields; ++i) {
+        const CfgPart& p = comp->parts[i];
         uint8_t flags = FF_NONE;
         const char* choices = nullptr;
         if (p.kind == CK_LEVEL) {
-            // A level the record does not carry, or one the ladder does not
-            // know, shows the level the record is actually running under.
-            // A blank cycle field would step to "all" on the first space,
-            // which is the one wrong answer that opens an area to everybody.
-            PlugLevel lv = PlugLevel::Nobody;
-            if (!plugins::levelFromText(g_subBuf[i], lv) || lv == PlugLevel::Nobody)
-                snprintf(g_subBuf[i], sizeof(g_subBuf[0]), "%s",
-                         plugins::levelName(plugins::levelFor(pi, which)));
-            ++which;
             flags |= FF_CYCLE;
             choices = kLevels;
         }

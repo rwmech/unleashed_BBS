@@ -23,7 +23,7 @@
 
 The chat room is one room, the way DDial and Gtalk did it. Everybody who joins sees every line as it is said, each line carries who said it and which node they are on, and nothing scrolls past that a caller has not seen.
 
-`CHAT` joins. `/q` leaves. That is the whole thing.
+`CHAT` joins. `/q` leaves, and `/q+` leaves and logs off in one go. That is the whole thing.
 
 ## What a line looks like
 
@@ -63,13 +63,14 @@ A line that starts with `/` is a command, not something you said.
 | `/me text` | an action line: `#1:Daytona) * waves` |
 | `/a [note]` | away with a note, or back again when the note is left off |
 | `/sq n` | hide node n's lines for this call, or show them again |
-| `/t` | the time |
+| `/t` | the time, and how long you have left this call |
 | `/clear` | wipe your screen and start fresh |
 | `/email h text` | leave a message for a caller to read later |
 | `/e` | read the message waiting for you |
 | `/q` | leave the room |
+| `/q+` | leave the room and log off, the same send-off as `BYE`. The room sees `*** you logged off` |
 
-`/w` and `/who` also list the room, `/quit` also leaves, `/mail` also reads your message, `/history` also replays, `/bell` always means the bell, and `/wi` is short for `/whois`.
+`/w` and `/who` also list the room, `/quit` also leaves, `/quit+` also logs off, `/mail` also reads your message, `/history` also replays, `/bell` always means the bell, and `/wi` is short for `/whois`.
 
 ### Sticky private conversations
 

@@ -415,6 +415,11 @@ public:
     void notify(Session& to, const char* text);
     void cmdTimeAdjust(Session& s, const char* arg);
 
+    // logoff: end the call exactly as BYE does, send-off screen, linger and
+    // all, for a plugin that offers its own way out (the room's /q+). The
+    // session leaves SState::Plugin, so a release() after it draws no prompt.
+    void logoff(Session& s, uint32_t now) { goodbye(s, now); }
+
 private:
     Bbs() = default;
 

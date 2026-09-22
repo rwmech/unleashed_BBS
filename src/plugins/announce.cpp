@@ -30,7 +30,6 @@
  *
  *                 [plugin:announce]
  *                 enabled     = no
- *                 name        = The Rusty Modem
  *                 owner       = Daytona
  *                 description = A BBS on a chip in a shack in Illinois
  *                 servers     = http://unleashedbbs.net/announce

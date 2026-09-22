@@ -161,6 +161,65 @@ works: `/t` alone reports your own time remaining, `/t n +5` and `/t n -5`
 adjust somebody else's. Same permission as `TIME`, same re-arm, and no new
 concept for a sysop to learn.
 
+## 0.22.0 and 0.22.1: the next two builds (Rob, 2026-09-22)
+
+0.21.9 is on the board. **0.22.0** is one lot:
+
+- **Mail as a subsystem**, built from `reports/ux-message-boards.md` M0-M6,
+  with every one-column indent in that spec dropped for the column 0 rule.
+- **Inline codes** in forums, mail and chat (section below).
+- **`BELL`** at the main prompt, the partner of the room's `/b`.
+- **Long help**: `HELP <cmd>` and `/? <cmd>`.
+- **The information pages**, built from `reports/chat-commands-2026-09-22.md`
+  section 2 but under the settled names: `INFO` / `I` at the prompt
+  (`INFO`, `INFO 3`, `INFO 3 EDIT`, `INFO 3 CLEAR`) and `/i`, `/i3`,
+  `/i3=`, `/i3-` in the room. Pages in `<userdata>/info/`, titles and
+  levels in CONFIG, bodies written with `compose.h`, in the backup zip.
+  Phase 1 of the login link only: one line saying pages are waiting.
+- **The seeded screens fix** (queued below).
+- **Deferred:** the sysop page.
+
+**0.22.1 is Improv**: Wi-Fi credentials into `system.cfg`, then Improv
+Wi-Fi Serial.
+
+## Inline codes in messages: decided 2026-09-22 (0.22.0)
+
+Rob: "Add a screen for FX commands and expose the FX commands in messaging
+... Make it available inside the editor which works for forums, email, could
+even make this work in chat." Approved as proposed ("make it so"), built in
+0.22.0 together with mail as a subsystem.
+
+- **`@CODE@`, the screen syntax, not `{{FX1}}`.** A C64 has no `{`, `}` or
+  `|` and PETSCII has no braces at all, while `@` has its own key on every
+  machine that calls here. It is also the tradition: PCBoard and Synchronet
+  both used @-codes.
+- **What a caller may write**, and nothing else:
+  - colour: every palette name `colorByName` accepts except black, and
+    `@N@` for normal. Colour resets at the end of every line, so it cannot
+    bleed into the next message.
+  - effects on text: `@BLINK:text@`, `@SCRAMBLE:text@`, `@TYPE:text@`,
+    `@OOPS:text@` (types it, then rubs it out).
+  - drop-ins: `@SPIN@`, `@DOTS@`, `@NOISE@`, `@RULE@`, and `@BELL@` once.
+  - fill-ins: `@BOARD@`, `@DATE@`, `@TIME@`.
+- **Never from a caller:** `@CLS@`, `@DELAY@`, `@BAUD@`, because each reaches
+  into somebody else's screen or time; and **`@USER@`**, because showing the
+  reader their own handle is what makes "@USER@, sysop here, your password
+  expired" easy to write. Synchronet expands @-codes only in sysop-posted
+  messages for the same family of reasons. Anything not on the list prints
+  as typed, which is also what keeps `me@example.com` safe; `@@` is a
+  literal `@`.
+- **Limits set by the board, not the writer:** 8 codes a message, 40
+  characters of text in an effect, fixed durations, and effects shrink to
+  fit the output buffer (`fx::fitSteps`) so a long message never loses
+  words. Plain ASCII loses the colour and keeps the words.
+- **One renderer**, shared by forums, mail and chat, the way `compose.h` is
+  one editor. The real change underneath is the word wrap: it must measure
+  what is shown, not what was typed, or a coloured line wraps early.
+- **Docs:** `screens/codes.*` in all three flavours (copy by `explain`,
+  drawn by `screen-artist`), `CODES` on the `? account` menu, `/codes` in
+  the room, and a pointer to it in the editor's header.
+- Measured budget before building: no per-session state, a few KB of flash.
+
 ## Processes
 
 These are the standing rules about who does what. They are not preferences,
@@ -526,6 +585,42 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
 - **Staff access remembered for a week, bound to the address it was confirmed from.** The binding is the point, and it is specific to this board: **account passwords cross a telnet BBS in the clear on every login**, so remembering staff rights against the account alone would turn a sniffed account password into a week of staff access. The sysop level is never remembered. No valid clock fails closed.
 - **A deliberate deviation from the plan, and the reasoning is the useful part.** The plan had mail and bans moving to ids. `MailRec` is a fixed-size record with a static assert on its layout, so that means changing `sizeof` and converting every live mailbox, on the one board that exists, to fix a bug that has a cheaper fix. Following renames gets the same visible outcome with no format change. The forums will store ids natively, so mail ends up the only holdout and a far smaller job later. **Prefer the fix that does not migrate somebody's data when both fixes close the same hole.**
 - **The positional-descriptor trap caught me exactly as CLAUDE.md predicted.** `onRename` inserted before `onBytes` shifted every field after it, and the compiler said so. Append-only is not a style rule here, it is the only safe edit.
+
+### Fallbacks are named, not positioned (0.21.9)
+
+- **A meaning assigned by position held for the case it was written for
+  and broke at the next one.** CONFIG seeded an unset level part from the
+  plugin's read, write and admin "in order", which was true of a file area
+  with two level parts and false of one with four. A forum's Reply got the
+  admin level and its Moderate got "nobody", and Save pinned both. Rob
+  could post and not reply. Same family as a count written beside a table:
+  a fact about the table kept somewhere the table cannot correct it. Each
+  `CfgPart` names its fallback now (`IN_READ`, `IN_WRITE`, `IN_ADMIN`, or
+  `IN_PART | k` for "whatever part k is"), copied from the plugin's own
+  `may*()` functions, which is where the rule actually lives.
+- **`Timeline::setCps` is live, not queued**, and it is the caller's own
+  `BAUD` setting. A screen token that set it would slow output already
+  waiting and leave the caller at 300 baud afterwards. `@BAUD:n@` paces in
+  the screen player instead, one timed frame per character, cleared by
+  `open()` and `close()`. It stops pumping at 48 free frames, because a
+  `put()` with no frame to open is dropped rather than refused.
+- **Code review found the pacing's blind spot before it shipped: a guard
+  bounding the wrong quantity, again.** `showScreen` plays a plugin's
+  transition screen in one loop with nothing draining the line, bounded by
+  bytes free. Pacing stops at frames free. The two never meet, so a paced
+  `chatin` would have typed 48 characters and silently lost the rest.
+  `ScreenPlayer::fullSpeed()` turns pacing off there and on any keypress
+  (which otherwise hurried only the frames already queued). The same review
+  priced the other limits, now in SCREENS.md: goodbye's 20 s cap, and a
+  10 ms loop that makes 300 baud nearer 250.
+- **One check that raised an exception took every check after it down.**
+  `mine.index(b"[R]eply")` on the old build raised, and the forum test
+  stopped half way, so the first run against 0.21.8 proved less than it
+  appeared to. `find` in a check, never `index`.
+- **The card's seeded screens shadow every stock screen update.** `sd`
+  copies the stock set onto the card at mount, gaps only, and the card is
+  played in preference to flash, so a changed `welcome.*` never reaches a
+  board with a card until somebody deletes the card copy. Queued below.
 
 ### The input line survives what arrives (0.21.8)
 
@@ -1354,6 +1449,38 @@ Queued for the next build (Rob's plan, in order):
   sits in front of everything behind it. Build from `reports/ux-message-boards.md`
   sections M0 onward (the mailbox list, the reading screen, the composer),
   which were specified and not built, the same mistake as the forums.
+- **First S3: Waveshare ESP32-S3-LCD-1.47** (Rob, 2026-09-22, arriving
+  2026-09-23, "we'll likely try getting it to flash"). ESP32-S3R8: two
+  cores, Wi-Fi, 16 MB flash, 8 MB octal PSRAM, a TF slot on the board, a
+  172x320 ST7789 LCD and an RGB LED. The first run of anything but the
+  WROOM, so it is what turns "S3 should work" on the website's board table
+  into a measurement. What it needs, none of it built yet:
+  - a PlatformIO environment of its own (not a fork): `esp32-s3` target,
+    16 MB flash, octal PSRAM (`CONFIG_SPIRAM_MODE_OCT`), its own
+    `sdkconfig` defaults, and the same 4 MB partition layout to start with
+    so nothing else moves on the first flash.
+  - the TF slot's pins from Waveshare's own schematic, not from memory. The
+    `sd` plugin speaks SPI on configurable pins; if the slot is wired for
+    SDMMC, SPI mode still works on the same lines (CLK, CMD as MOSI, D0 as
+    MISO, D3 as CS), so it is a config change if the pins are free.
+  - the console: the S3's native USB is USB-Serial-JTAG, not a UART bridge,
+    so flashing and the monitor go through that and the serial bridge
+    plugin must not claim those pins.
+  - the RGB LED is the disk light's first real target, if it is a WS2812
+    on an RMT-capable pin.
+  - **Keep the WROOM the floor.** Same node count and same sizing to start;
+    PSRAM for the session pool (`CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY`)
+    is a separate, measured step afterwards, not part of getting it to boot.
+- **Seeded screens must not shadow newer stock ones** (found 0.21.9, when
+  the welcome changed and a board with a card would never have seen it).
+  `sd` seeds the stock screens onto the card, gaps only, and the card wins
+  at playback, so every later change to a stock screen is invisible on a
+  board with a card. A sysop's own edit must still win. The shape: record
+  a hash of each file as seeded (a small manifest beside them); at mount,
+  a card copy whose hash still matches the manifest is unmodified and gets
+  replaced when the flash copy differs, and one that does not match was
+  edited by the sysop and is left alone. Until then: delete the card's
+  copy after a flash that changes a screen.
 - **Firmware: show why the directory holds or bans a board.** The directory
   moderation design adds `X-Listing-Reason` (one ASCII line, at most 120
   characters, after `X-Listing-Token`). `announce.cpp` already reads
@@ -1582,6 +1709,11 @@ list.
 
 ## Build gotchas already hit
 
+- **`pgrep -f` matches the shell that runs it.** A wait loop written as
+  `wsl bash -lc "while pgrep -f bbs-r219 ..."` carries `bbs-r219` in its own
+  command line, so it waits on itself for ever; a 0.21.9 rerun queued
+  behind one never started. Wait on the harness's output file, or use a pattern
+  split so it cannot match itself (`pgrep -f 'bbs-[r]219'`).
 - **A paused screen eats the next command.** A multi-page screen stops at "Press SPACE to continue" and *any* key advances a page: it is the screen player's page break, not the list pager's `[More]`, and nothing stops it. A test that leaves a screen paused and then sends `sd unmount` feeds "s" and "d" to the screen as page keys and leaves `unmount` at the prompt as an unknown command. That cost three rounds of chasing a bug in working code today. Page to the end before doing anything else, and do not send the same screen command twice in a row.
 - Checking two things about one screen means playing it once and asserting twice on the captured output, not running the command twice.
 - On Xtensa, `uint32_t` is `unsigned long`. Cast to `unsigned` for `%u`; `plat::log` has a printf format attribute.

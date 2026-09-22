@@ -82,7 +82,8 @@ Work in every format, upper or lower case:
 
 | Code | Prints |
 |---|---|
-| `@BBS@` | the BBS name |
+| `@BBS@` | the software's name |
+| `@BOARD@` | this board's name, `board_name` in `system.cfg`, or the software's when that is empty |
 | `@VER@` | version |
 | `@NODE@` `@NODES@` | caller's node, number of nodes |
 | `@USER@` | caller's handle |
@@ -92,6 +93,7 @@ Work in every format, upper or lower case:
 | `@BELL@` | bell |
 | `@DELAY:ms@` | pause, e.g. `@DELAY:500@` |
 | `@SPIN:ms@` | spinner for that long |
+| `@BAUD:n@` | send what follows as if over an n baud line, `@BAUD:0@` for full speed again. `@BAUD:300@` is 33 ms a character. It slows this screen only, never the caller's own `BAUD` setting, and it ends with the screen even if the file forgets `@BAUD:0@`. A key pressed while it types finishes the screen at full speed. Screens a plugin shows on the way in (`chatin`, `files`) always play at full speed, because they are drawn in one go. `goodbye` has twenty seconds from its first byte to the hangup, so pace a line of it, not all of it. The board's loop turns every 10 ms, so `@BAUD:300@` comes out nearer 250 and anything above about 1,200 looks the same. Keep it to a line or two: each character is a timed frame, and a caller on a slow screen is a caller waiting |
 
 ## Limits (enforced on upload)
 

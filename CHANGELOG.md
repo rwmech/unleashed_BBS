@@ -24,6 +24,55 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.21.9, 2026-09-22
+
+Rob's batch from the 0.21.8 flash. Every new check was run against 0.21.8
+in a worktree and failed there.
+
+**Replying in a forum was refused while posting worked.** Rob: "oddly it
+says I cant post in there but I can post I just cant reply". A CONFIG
+sub-page filled every level the file did not set from the plugin's read,
+write and admin levels by position. That held for two level parts and not
+for a forum's four: Reply got the plugin's admin level (co1), Moderate got
+"nobody", and Save wrote both into the file. Each level part now names what
+it falls back to, taken from the plugin's own rules, so the page shows what
+the forum was already running under. File areas had the same fault with
+Download, which showed the admin level instead of the area's Read.
+**A forum already saved keeps the wrong level in `system.cfg`**: set Reply
+back to `users` in `CONFIG forums`.
+
+**Reading a message asks what to do with it**, the way mail does:
+`[R]eply  [Enter] Next  [P]ost  [Q] Back:`, with `[D]elete` for a moderator
+and a shorter form at 40 columns. The lists keep their footer and
+breadcrumb. Rob: "When reading, ask like email ... The prompt is fine
+elsewhere, just not when directly reading a post."
+
+**Column 0, everywhere.** Rob: "--> starts at the very begining. EVERYWHERE
+unless told otherwise" and "not sure why these all start indented, stop
+that." The forums drew their header, fields, body, notices and footer one
+column in; none of them do now, and neither do the two editors' headers.
+A blank line sits before `--> EOM <--` in forums and mail.
+
+**The welcome's last line** reads "Connecting you to" and the board's name
+from `board_name`, from column 0 after a blank line, typed at 300 baud, then
+the spinner. It said "Connecting you unleashed". The pacing is a new screen
+token, `@BAUD:n@`, which slows that screen only and never touches the
+caller's own `BAUD` setting. A key finishes it at full speed, and the
+screens a plugin shows on the way in (`chatin`, `files`) ignore it, because
+they are drawn in one go and a paced one lost everything after its first
+48 characters; code review found that before it shipped. **Boards with a card need the old copy
+removed**: the card holds a seeded `welcome.*` that is played in preference
+to the one in flash.
+
+**`/q+` leaves the room and logs off**, with the room told and the same
+send-off as `BYE`. The room's `/?` lists it, and its command column went
+from 11 to 14, which had cut `/whois handle` to `/whois hand`.
+
+Also: `system.cfg.example` shows `board_name` and no longer shows the
+announce `name` key the plugin ignores; COMMANDS.md no longer calls the
+forums "being built"; ESP32_BOARD_CHOICE.md carries today's figures rather
+than 0.17.1's; a host build warning about the subject number width is gone.
+
 ## 0.21.8, 2026-09-22
 
 The input line survives something arriving, in the room and at the main

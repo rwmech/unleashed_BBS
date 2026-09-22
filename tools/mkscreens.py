@@ -280,7 +280,10 @@ def make_welcome_ans():
           + sgr("0;36") + b" on a microcontroller\r\n")
     b += sgr("0;34") + b"  " + bytes([H_DOUBLE]) * 76 + b"\r\n"
     b += sgr("1;30") + b" " * ((80 - len(COPY80)) // 2) + COPY80.encode() + b"\r\n"
-    b += sgr("0;37") + b"    Connecting you @SPIN:900@" + sgr("1;32") + b"unleashed" + sgr("0") + b"\r\n"
+    # Rob: a line to itself, from column 0, typed at 300 baud, then the
+    # spinner. It names the board from CONFIG rather than the software.
+    b += (b"\r\n" + sgr("0;37") + b"@BAUD:300@Connecting you to " + sgr("1;32") + b"@BOARD@"
+          + sgr("0;37") + b" @BAUD:0@@SPIN:900@" + sgr("0") + b"\r\n")
     return bytes(b)
 
 
@@ -304,7 +307,8 @@ def make_welcome_seq():
     s += pet("white", " @BBS@", "grey", " v@VER@\n")
     s += pet("grey", " " + COPY40 + "\n")
     s += pet_rule("cyan")
-    s += pet("grey", " Connecting you @SPIN:900@", "lgreen", "unleashed\n")
+    s += pet("grey", "\n@BAUD:300@Connecting you to ", "lgreen", "@BOARD@",
+             "grey", " @BAUD:0@@SPIN:900@\n")
     return bytes(s)
 
 
@@ -325,7 +329,8 @@ def make_welcome_asc():
         " @BBS@ v@VER@",
         " " + COPY40,
         "-" * 38,
-        " Connecting you @SPIN:900@unleashed",
+        "",
+        "@BAUD:300@Connecting you to @BOARD@ @BAUD:0@@SPIN:900@",
         "",
     ]
     return "\n".join(out).encode("ascii")
