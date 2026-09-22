@@ -191,7 +191,11 @@ struct Forum {
     // The header read back "count=1" on a forum with four messages because
     // the post path incremented the caller's number and then saved it.
     uint32_t  total  = 0;                // live messages, from the header
-    uint32_t  unread = 0;                // for the caller on this session
+    // There was an `unread` here commented "for the caller on this session".
+    // It was in THIS array, which is board-wide, so the second caller into
+    // the forums overwrote the first caller's counts and the first then saw
+    // somebody else's numbers on every redraw. The fourth comment in this
+    // project to state what its code did not do. Per caller now: g_unread.
 };
 
 // The forums' colours. Deliberately the same shape as chat's: keys in the
@@ -850,6 +854,17 @@ uint8_t  g_at[BBS_MAX_NODES + 2]    = {};    // current forum, 0xFF = none
 uint32_t g_subj[BBS_MAX_NODES + 2]  = {};    // current subject hash, 0 = all
 uint32_t g_shown[BBS_MAX_NODES + 2] = {};    // message on screen right now
 
+// What each caller has not read, per forum. Per caller because it is a per
+// caller number: it used to live in the board-wide Forum table, where two
+// callers in the forums at once overwrote each other's. uint16_t because a
+// count is shown, not summed into anything that could overflow, and 65,535
+// unread in one forum is not a state a caller reads their way out of.
+uint16_t g_unread[BBS_MAX_NODES + 2][kMaxForums] = {};
+
+inline void setUnread(uint8_t sl, uint8_t i, uint32_t n) {
+    g_unread[sl][i] = static_cast<uint16_t>(n > 0xFFFFu ? 0xFFFFu : n);
+}
+
 // The subject tally a listing is built from. One slot per subject that has
 // something to say, capped: a forum with more distinct subjects than a
 // screen can hold is paged by the core's list machinery, not held whole.
@@ -1005,6 +1020,66 @@ uint32_t nextUnread(uint8_t i, const Ptr& p, uint32_t subject, uint32_t after) {
     return 0;
 }
 
+// liveUnread: what this caller has not read, removed messages not counted.
+//
+// unreadUpTo() is pure arithmetic over message numbers, which was exact
+// while nothing could be removed. Once a post can be taken down it is not:
+// a removed message the caller never read would count as new, the forum
+// list would say "1 new", and Enter would find nothing, which is the
+// numbers-that-do-not-add-up failure this subsystem was designed against.
+//
+// Free when nothing was ever removed: the header's live count equals the
+// highest message number, every message above the mark is live, and the
+// arithmetic is exact. Only a forum that has had a removal walks the
+// records, and then only the ones this caller has not seen.
+uint32_t liveUnread(uint8_t i, const Ptr& p) {
+    uint32_t newest = g_forum[i].newest;
+    if (g_forum[i].total >= newest) return unreadUpTo(p, newest);
+
+    char path[128];
+    indexPath(i, path, sizeof(path));
+    FILE* f = fopen(path, "rb");
+    if (!f) return unreadUpTo(p, newest);
+    uint32_t n0 = p.mark + 1;
+    if (newest > kScanMax && n0 < newest - kScanMax) n0 = newest - kScanMax;
+    uint32_t c = 0;
+    for (uint32_t n = n0; n <= newest; ++n) {
+        if (seen(p, n)) continue;
+        if (fseek(f, static_cast<long>(n) * kRec, SEEK_SET) != 0) break;
+        char rec[kRec];
+        if (fread(rec, 1, kRec, f) != kRec) break;
+        MsgRec m;
+        parseRec(rec, m);
+        if (m.num == n && m.live) ++c;
+    }
+    fclose(f);
+    return c;
+}
+
+// removeMessage: take message n out of forum i.
+//
+// One byte: the live flag at kOffFlags goes from '.' to 'X'. A single byte
+// cannot be half written, so there is no torn state to recover from, and
+// nothing moves: the index is never compacted, every other message keeps its
+// number, and every read pointer keeps meaning what it meant. The body stays
+// in its segment file, so a removal is recoverable from the card by hand.
+bool removeMessage(uint8_t i, uint32_t n) {
+    MsgRec m;
+    if (!readRec(i, n, m) || !m.live) return false;
+    char path[128];
+    indexPath(i, path, sizeof(path));
+    FILE* f = fopen(path, "r+b");
+    if (!f) return false;
+    bool ok = fseek(f, static_cast<long>(n) * kRec + kOffFlags, SEEK_SET) == 0 &&
+              fputc('X', f) != EOF;
+    fflush(f);
+    fclose(f);
+    if (!ok) return false;
+    if (g_forum[i].total) --g_forum[i].total;
+    writeHeader(i);        // the header's count is LIVE messages
+    return true;
+}
+
 // ===========================================================================
 // Drawing.
 // ===========================================================================
@@ -1056,7 +1131,9 @@ bool rows(Session& s) {
             // prompt() prints the footer itself: this used to print one as
             // well, so it was on screen twice every time the list was drawn.
             g_bbs->rowRule(s);
-            listStatus(s, g_forum[g_at[sl]].unread, "Nothing new in this forum.");
+            uint32_t here = 0;
+            for (uint8_t x = 0; x < g_subjRows; ++x) here += g_subjRow[x].unread;
+            listStatus(s, here, "Nothing new in this forum.");
             prompt(*g_bbs, s, false);
             ++s.listIdx;
             return true;
@@ -1112,7 +1189,7 @@ bool rows(Session& s) {
     // prompt out of it.
     if (k == n) {
         uint32_t newTotal = 0;
-        for (uint8_t x = 0; x < n; ++x) newTotal += g_forum[vis[x]].unread;
+        for (uint8_t x = 0; x < n; ++x) newTotal += g_unread[sl][vis[x]];
         g_bbs->rowRule(s);
         listStatus(s, newTotal, "Nothing new since your last call.");
         prompt(*g_bbs, s, false);
@@ -1145,8 +1222,8 @@ bool rows(Session& s) {
     // as a fault rather than as quiet, which is why Citadel printed its
     // arrival count only when it was non-zero.
     char cnt[20] = "";
-    if (f.unread) snprintf(cnt, sizeof(cnt), "%lu new",
-                          static_cast<unsigned long>(f.unread));
+    uint32_t fu = g_unread[sl][vis[k]];
+    if (fu) snprintf(cnt, sizeof(cnt), "%lu new", static_cast<unsigned long>(fu));
     uint8_t clen = static_cast<uint8_t>(strlen(cnt));
     if (clen && used + clen + 2 <= w) {
         for (uint8_t x = used; x + clen < w; ++x) s.term.ch(s.tl, ' ');
@@ -1254,8 +1331,11 @@ void prompt(Bbs& b, Session& s, bool gap) {
     if (g_view[sl] == View::Forums)
         say(s, Color::Grey, " --> Enter reads what is new. # - Open a forum. ? help. Q leaves.");
     else
-        say(s, Color::Grey, " --> Enter reads on. # - Jump to subject. P posts. ? help. Q back.");
+        say(s, Color::Grey, mayMod(s, g_at[sl]) && g_view[sl] == View::Reading
+                ? " --> Enter reads on. # - Jump to subject. P posts. D removes. ? help. Q back."
+                : " --> Enter reads on. # - Jump to subject. P posts. ? help. Q back.");
     s.term.nl(s.tl);
+    s.term.nl(s.tl);          // Rob: a blank line before the prompt
 
     // The breadcrumb (UX spec F2). Three levels, fixed words at both ends
     // and the place in the middle, so a caller always knows which of the
@@ -1303,7 +1383,7 @@ void drawForums(Bbs& b, Session& s) {
     uint8_t vis[kMaxForums];
     uint8_t n = visibleForums(s, vis, kMaxForums);
     uint32_t newTotal = 0;
-    for (uint8_t k = 0; k < n; ++k) newTotal += g_forum[vis[k]].unread;
+    for (uint8_t k = 0; k < n; ++k) newTotal += g_unread[sl][vis[k]];
     // One form for every count, zero included (Rob): "0 new messages" rather
     // than a lower-case "nothing new" that read like a fragment. Singular
     // only for exactly one.
@@ -1312,6 +1392,7 @@ void drawForums(Bbs& b, Session& s) {
 
     s.term.cls(s.tl);
     b.rowTitle(s, "Forums", right);
+    s.term.nl(s.tl);          // Rob: a line between the header and the list
     s.listIdx = 0;
     b.startPluginList(s, g_index);
 }
@@ -1329,16 +1410,13 @@ void drawSubjects(Bbs& b, Session& s, uint8_t forum) {
     char right[24];
     uint32_t unread = 0;
     for (uint8_t k = 0; k < g_subjRows; ++k) unread += g_subjRow[k].unread;
-    if (unread) snprintf(right, sizeof(right), "%lu new",
-                         static_cast<unsigned long>(unread));
-    // "1 subjects" is the kind of thing that makes software feel unfinished,
-    // and it costs one branch to get right.
-    else        snprintf(right, sizeof(right), "%u subject%s",
-                         static_cast<unsigned>(g_subjRows),
-                         g_subjRows == 1 ? "" : "s");
+    // The same form as the forum list's title, every count including zero.
+    snprintf(right, sizeof(right), "%lu new message%s",
+             static_cast<unsigned long>(unread), unread == 1 ? "" : "s");
 
     s.term.cls(s.tl);
     b.rowTitle(s, g_forum[forum].name, right);
+    s.term.nl(s.tl);          // Rob: a line between the header and the list
 
     if (!g_subjRows) {
         b.rowRule(s);
@@ -1482,12 +1560,20 @@ void showMessage(Bbs& b, Session& s, uint8_t forum, uint32_t n) {
         }
     }
 
+    // Rob: "at the end of messages (all) add --> EOM <--". The reading loop
+    // does not clear between messages, so a marker at the end of each one
+    // is what says where one stops and the next begins.
+    s.term.ch(s.tl, ' ');
+    s.term.color(s.tl, g_cTitle);
+    s.term.text(s.tl, "--> EOM <--");
+    s.term.nl(s.tl);
+
     markSeen(ptr, n);
     writePtr(callerId(s), forum, ptr);
 
     // The forum's unread count follows what this caller has actually read,
     // so the list they come back to agrees with what just happened.
-    g_forum[forum].unread = unreadUpTo(ptr, g_forum[forum].newest);
+    setUnread(sl, forum, liveUnread(forum, ptr));
     prompt(b, s);
 }
 
@@ -1559,7 +1645,7 @@ uint32_t g_replyHash[BBS_MAX_NODES + 2] = {};
 // session, so it drives the ordinary line editor and reads the result back
 // on Enter, which is how the caller keeps backspace and every terminal
 // behaviour they already know.
-enum : uint8_t { AskNone = 0, AskSubject, AskBody, AskJump };
+enum : uint8_t { AskNone = 0, AskSubject, AskBody, AskJump, AskRemove };
 uint8_t g_ask[BBS_MAX_NODES + 2] = {};
 
 // ---------------------------------------------------------------------------
@@ -1704,7 +1790,7 @@ void finishPost(Bbs& b, Session& s, const char* body) {
         readPtr(callerId(s), forum, p);
         markSeen(p, m.num);
         writePtr(callerId(s), forum, p);
-        g_forum[forum].unread = unreadUpTo(p, g_forum[forum].newest);
+        setUnread(sl, forum, liveUnread(forum, p));
 
         char msg[80];
         snprintf(msg, sizeof(msg), " --> Posted as message %lu.",
@@ -1788,9 +1874,10 @@ void showHelp(Bbs& b, Session& s) {
     b.rowTitle(s, "Forums: what the keys do");
     static const char* const kKeys[] = {
         "Enter   the next thing you have not read",
-        "1 2 3   a number opens that forum or subject",
+        "12 Ent  a number, then Enter, opens a forum or subject",
         "P       post a new subject here",
         "R       reply to the message on screen",
+        "D       remove the message on screen (moderators)",
         "L       back to the list",
         "?       this",
         "Q  ESC  back one level, again to leave",
@@ -1802,6 +1889,65 @@ void showHelp(Bbs& b, Session& s) {
         s.term.nl(s.tl);
     }
     b.rowRule(s);
+    prompt(b, s);
+}
+
+// askRemove: D, on the message on screen. Asks before doing anything.
+void askRemove(Bbs& b, Session& s) {
+    uint8_t sl = slotIdx(s);
+    uint8_t forum = g_at[sl];
+    if (g_view[sl] != View::Reading || !g_shown[sl] || forum == 0xFF) {
+        notice(s, g_cMark, "--> Read a message first, then D removes it.");
+        prompt(b, s);
+        return;
+    }
+    if (!mayMod(s, forum)) {
+        notice(s, g_cMark, "--> You cannot remove messages here.");
+        prompt(b, s);
+        return;
+    }
+    char q[64];
+    snprintf(q, sizeof(q), "--> Remove message #%lu? (y/N)",
+             static_cast<unsigned long>(g_shown[sl]));
+    notice(s, Color::Yellow, q);
+    s.term.ch(s.tl, ' ');
+    g_ask[sl] = AskRemove;
+}
+
+// removeShown: the answer was yes.
+//
+// The permission is checked again rather than trusted from the question: a
+// CONFIG save between the two can change the forum's levels, and a question
+// asked of somebody allowed is not a licence for somebody no longer allowed.
+//
+// Logged, because a moderation action nobody can audit is indistinguishable
+// from a bug (the directory design says the same about holds and bans).
+void removeShown(Bbs& b, Session& s) {
+    uint8_t sl = slotIdx(s);
+    uint8_t forum = g_at[sl];
+    uint32_t n = g_shown[sl];
+    if (forum == 0xFF || !n || !mayMod(s, forum)) {
+        notice(s, g_cMark, "--> You cannot remove messages here.");
+        prompt(b, s);
+        return;
+    }
+    if (!removeMessage(forum, n)) {
+        notice(s, Color::LightRed, "--> That did not save. Is the card still in?");
+        prompt(b, s);
+        return;
+    }
+    plat::log("forums: %s removed #%lu from %s", s.user,
+              static_cast<unsigned long>(n), g_forum[forum].key);
+
+    // The subject table describes the forum as it was: stale for everybody.
+    g_subjFor = 0xFF;
+    Ptr p;
+    readPtr(callerId(s), forum, p);
+    setUnread(sl, forum, liveUnread(forum, p));
+
+    char msg[48];
+    snprintf(msg, sizeof(msg), "--> Message #%lu removed.", static_cast<unsigned long>(n));
+    notice(s, Color::LightGreen, msg);
     prompt(b, s);
 }
 
@@ -1848,6 +1994,16 @@ void onKey(Session& s, int key, uint32_t) {
     // A number being typed at the prompt. Digits, Backspace, Enter and ESC
     // mean something; a letter is ignored rather than taken as a command,
     // because the caller is part way through a number.
+    // The removal question. Only y removes; anything else keeps it, because
+    // a mistyped key must never cost somebody their post.
+    if (g_ask[sl] == AskRemove) {
+        g_ask[sl] = AskNone;
+        if (key == 'y' || key == 'Y') { removeShown(b, s); return; }
+        notice(s, g_cMark, "--> Kept.");
+        prompt(b, s);
+        return;
+    }
+
     if (g_ask[sl] == AskJump) {
         if (key == KEY_ENTER) {
             jumpTo(b, s, static_cast<uint32_t>(strtoul(s.ed.text(), nullptr, 10)));
@@ -1994,6 +2150,7 @@ void onKey(Session& s, int key, uint32_t) {
     }
     if (key == 'p' || key == 'P') { startPost(b, s, false); return; }
     if (key == 'r' || key == 'R') { startPost(b, s, true);  return; }
+    if (key == 'd' || key == 'D') { askRemove(b, s);        return; }
     // KEY_ENTER, not '\r'. The terminal layer decodes Enter into a key
     // constant above 0xFF (term.h: KEY_ENTER = 0x100), so comparing against
     // a carriage return silently never matches and the key appears to do
@@ -2096,7 +2253,7 @@ void enter(Bbs& b, Session& s) {
         if (!g_forum[i].key[0]) continue;
         Ptr p;
         readPtr(callerId(s), i, p);
-        g_forum[i].unread = unreadUpTo(p, g_forum[i].newest);
+        setUnread(sl, i, liveUnread(i, p));
     }
 
     s.term.reset(s.tl);

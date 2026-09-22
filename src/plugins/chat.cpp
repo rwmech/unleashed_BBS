@@ -941,6 +941,11 @@ bool mailRead(Session& s, bool quiet) {
             if (!*p) break;
         }
     }
+    // The end of the message, marked the same way the forums mark theirs
+    // (Rob: "at the end of messages (all) add --> EOM <--").
+    s.term.color(s.tl, g_cMark);
+    s.term.text(s.tl, "--> EOM <--");
+    s.term.nl(s.tl);
     // Nothing has been decided yet, so nothing has been touched. That is
     // the whole difference between a mailbox and a message that evaporates
     // the moment somebody looks at it.

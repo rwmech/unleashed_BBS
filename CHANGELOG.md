@@ -24,6 +24,48 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.21.7, 2026-09-22
+
+Removing a post, spacing Rob asked for, and a count that belonged to the
+wrong person. Tests written first and run against 0.21.6, where every new
+one failed.
+
+**A moderator can remove a post.** Rob: "there is no way the sysop right
+now can remove a message". `D` on the message on screen, for callers with
+the forum's `mod` level, asks `Remove message #N? (y/N)` and only `y`
+removes it: a mistyped key must never cost somebody their post. The
+permission is checked again at the answer rather than trusted from the
+question, because a CONFIG save in between can change it. Every removal is
+logged with who did it.
+
+On the card it is one byte: the record's live flag goes from `.` to `X`. A
+byte cannot be half written, nothing moves, every other message keeps its
+number and every read pointer keeps its meaning. The body stays in its
+segment file, so a removal can be undone by hand. The header's count, which
+is live messages, goes down by one, which is what `forum_check.py` already
+checks it against.
+
+**Unread counts had to learn about removal first.** They were worked out
+from message numbers alone, which was exact while nothing could be removed.
+Once it can, a removed post the caller never read would still say "1 new"
+while Enter found nothing. `liveUnread()` walks the unread records only in a
+forum that has had a removal (its live count is below its highest number),
+so a board that never removes anything pays nothing.
+
+**And they belonged to the wrong person.** `Forum::unread` was commented
+"for the caller on this session", and it lived in the board-wide forum
+table. The second caller into the forums overwrote the first caller's
+counts, and the first saw somebody else's numbers on their next redraw. Per
+caller now, 384 bytes. The fourth comment in this project to describe
+something its code did not do.
+
+**Spacing and markers, from Rob's screenshots:** a blank line between each
+list's title bar and its first row; a blank line between the footer and the
+prompt on every screen; `--> EOM <--` at the end of every message, forum
+and mail alike ("at the end of messages (all)"). The subject list's title
+says "N new messages" too, the same form as the forum list's ("make it
+universal").
+
 ## 0.21.6, 2026-09-22
 
 The forums as Rob laid them out after flashing 0.21.5, plus three bugs his

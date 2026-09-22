@@ -230,6 +230,7 @@ lines and 512 characters, which is what the mail record has room for. The line c
 | Enter, Space | The next message you have not read, wherever it is. From the forum list it walks *into* the first forum with something new, so a caller who only ever presses Enter never has to navigate at all. Inside a subject it reads that conversation in order and then rolls on to the rest of the forum rather than dead-ending. |
 | a number, then Enter | On the forum list, opens that forum. Anywhere else, opens that subject and starts reading it. **A subject's number is the ID of the message that started it**, so the number in the list is the number the message shows when it opens, and it never changes. The number is typed on the prompt line; Backspace to nothing or ESC abandons it. |
 | `P` | Post a new subject here. Asks for the subject, then the message. |
+| `D` | **Remove the message on screen**, for callers holding the forum's `mod` level (the sysop by default). Asks `Remove message #N? (y/N)` first and only `y` removes it. The message disappears from the lists and from every caller's unread count; it is not erased from the card, and the removal is written to the log with who did it. Other callers see `D removes` in the footer only if they may. |
 | `R` | Reply to the message on screen. No subject is asked for: a reply carries its parent's, and grouping means the subject is drawn once as the screen's title rather than on every message. |
 | `L` | Back to the list you came from. |
 | `?` | The keys, on one screen. |

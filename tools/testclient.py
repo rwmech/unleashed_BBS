@@ -2738,6 +2738,58 @@ def subject_number(buf, name):
     return m.group(1).decode() if m else None
 
 
+def blank_above(buf, needle):
+    """Is the first line containing needle directly below a blank line?
+
+    For "a line between the header and the list" (Rob): on 0.21.6 the first
+    row sat directly under the title bar, so the line above it was the
+    title, not a blank.
+    """
+    lines = screen_lines(buf)
+    for i, ln in enumerate(lines):
+        if needle in ln:
+            return i >= 1 and lines[i - 1].strip() == b""
+    return False
+
+
+def blank_before_prompt(buf, marker=b"Forums>"):
+    """Is the prompt set off from the footer by a blank line?"""
+    lines = [ln for ln in screen_lines(buf)]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return (len(lines) >= 3 and lines[-1].strip().startswith(marker)
+            and lines[-2].strip() == b"" and b"Enter reads" in lines[-3])
+
+
+def forum_post(c, subject, lines):
+    """Post a new subject from the list the caller is standing on.
+
+    Module level, for tests other than test_forums. Returns the message
+    number the board reports, or None.
+    """
+    c.buf.clear()
+    c.send(b"p")
+    if not c.wait_for(b"Subject", 6):
+        return None
+    c.send(subject.encode() + b"\r")
+    if not c.wait_for(b" 1: ", 6):
+        return None
+    for line in lines:
+        c.send(line.encode() + b"\r")
+        c.pump(0.3)
+    c.send(b"/s\r")
+    if not c.wait_for(b"Posted as message", 8):
+        return None
+    m = re.search(rb"Posted as message (\d+)", plain(c.buf))
+    return m.group(1).decode() if m else None
+
+
+def new_count(buf):
+    """The "N new messages" figure in a title bar, or None."""
+    m = re.findall(rb"(\d+) new messages?", plain(buf))
+    return int(m[-1]) if m else None
+
+
 def ends_at_prompt(buf, marker):
     """Is the last line on screen a prompt a caller can type at?
 
@@ -2792,6 +2844,10 @@ def test_forums():
     # was on screen twice every time the list was drawn.
     ok &= check("the forum list shows its footer once",
                 count_lines(s.buf, b"Enter reads") == 1)
+    ok &= check("a blank line between the title bar and the first forum",
+                blank_above(s.buf, b"General"))
+    ok &= check("a blank line between the footer and the prompt",
+                blank_before_prompt(s.buf))
 
     # Open the first forum. A number is typed on the prompt line and
     # confirmed with Enter, so numbers above 9 can be reached at all.
@@ -2883,6 +2939,8 @@ def test_forums():
     # message that started it now, so the two agree.
     num = subject_number(s.buf, "20m antennas")
     ok &= check("the subject list numbers a subject", num is not None)
+    ok &= check("a blank line between the title bar and the first subject",
+                blank_above(s.buf, b"20m"))
     s.buf.clear()
     s.send(((num or "1") + "\r").encode())
     s.pump(1.5)
@@ -2899,6 +2957,12 @@ def test_forums():
                 b"Messages>" not in mine and ends_at_prompt(s.buf, b"Forums>"))
     ok &= check("the reading screen shows its footer once",
                 count_lines(s.buf, b"Enter reads") == 1)
+    ok &= check("a message ends with --> EOM <--",
+                b"--> EOM <--" in mine
+                and mine.index(b"--> EOM <--") > mine.index(b"Date:")
+                and mine.index(b"--> EOM <--") < mine.index(b"Enter reads"))
+    ok &= check("a blank line before the prompt when reading",
+                blank_before_prompt(s.buf))
     s.buf.clear()
     s.send(b"\r")
     s.pump(1.2)
@@ -2938,6 +3002,25 @@ def test_forums():
     t2.pump(1.0)
     ok &= check("a second caller sees the messages as new",
                 b"4 new messages" in plain(t2.buf))
+
+    # The poster, who has read everything, goes out and back in while the
+    # second caller is still inside. On 0.21.6 that rewrote the board-wide
+    # count to the poster's zero, and the second caller's next redraw of the
+    # forum list showed somebody else's numbers.
+    s.buf.clear()
+    s.send(b"q")
+    s.pump(0.8)
+    s.send(b"forums\r")
+    s.wait_for(b"Forums", 6)
+    s.pump(0.8)
+    t2.buf.clear()
+    t2.send(b"1\r")
+    t2.pump(1.2)
+    t2.buf.clear()
+    t2.send(b"q")
+    t2.pump(1.2)
+    ok &= check("another caller entering does not change your unread count",
+                new_count(t2.buf) == 4)
 
     t2.buf.clear()
     t2.send(b"1\r")
@@ -3047,6 +3130,131 @@ def test_handle_case():
         login(c, "mixedcasex")
         ok &= check("and the board greets the new case",
                     c.wait_for(b"MIXEDcaseX", 5))
+        c.close()
+    return ok
+
+
+
+
+def test_forums_remove():
+    """A moderator can take a post down, and nothing else can.
+
+    Rob: "there is no way the sysop right now can remove a message". The
+    storage always allowed it (a removed message keeps its slot and flips a
+    flag); the key, the permission and the question did not exist.
+
+    The count check matters as much as the removal. Unread was worked out
+    from message numbers alone, so a removed post the caller never read would
+    still say "1 new" while Enter found nothing.
+    """
+    print("Forums: removing a post")
+    if not os.environ.get("BBS_SD_DIR", ""):
+        print("  SKIP  the forums plugin needs a card")
+        return True
+    if not PASSWORD:
+        print("  SKIP  no sysop_password")
+        return True
+
+    # A reader who has read nothing, in and out before the removal, to get
+    # their count as it was.
+    v = ansi_login("Bystander")
+    drain(v)
+    v.buf.clear()
+    v.send(b"forums\r")
+    v.wait_for(b"Forums", 6)
+    v.pump(1.0)
+    v.send(b"q")
+    v.pump(0.6)
+
+    u = ansi_login("Spammer")
+    drain(u)
+    u.buf.clear()
+    u.send(b"forums\r")
+    u.wait_for(b"Forums", 6)
+    u.pump(1.0)
+    u.send(b"1\r")
+    u.pump(1.2)
+    n = forum_post(u, "Buy now cheap", ["Spam spam spam."])
+    ok = check("a post to be removed goes up", n is not None)
+    n = n or "0"
+
+    v.buf.clear()
+    v.send(b"forums\r")
+    v.wait_for(b"Forums", 6)
+    v.pump(1.0)
+    before = new_count(v.buf)
+    v.send(b"q")
+    v.pump(0.6)
+
+    # Somebody without the moderator level cannot, even on their own post.
+    u.buf.clear()
+    u.send(b"l")
+    u.pump(1.0)
+    u.buf.clear()
+    u.send((n + "\r").encode())
+    u.pump(1.2)
+    u.buf.clear()
+    u.send(b"d")
+    u.pump(0.8)
+    ok &= check("a caller without the moderator level cannot remove",
+                b"cannot remove" in plain(u.buf))
+
+    m = ansi_login("Moderator")
+    m.buf.clear()
+    m.send(f"bye {PASSWORD}\r".encode())
+    m.wait_for(b"SysOp node", 5)
+    m.pump(0.6)
+    m.send(b"forums\r")
+    m.wait_for(b"Forums", 6)
+    m.pump(1.0)
+    m.send(b"1\r")
+    m.pump(1.2)
+    m.buf.clear()
+    m.send((n + "\r").encode())
+    m.pump(1.2)
+    ok &= check("the moderator is offered D", b"D removes" in plain(m.buf))
+
+    # N keeps it.
+    m.buf.clear()
+    m.send(b"d")
+    ok &= check("D asks before removing", m.wait_for(b"Remove message #" + n.encode(), 4))
+    m.send(b"n")
+    ok &= check("anything but y keeps it", m.wait_for(b"Kept", 4))
+
+    # Y removes it.
+    m.buf.clear()
+    m.send(b"d")
+    m.wait_for(b"Remove message", 4)
+    m.send(b"y")
+    ok &= check("y removes it", m.wait_for(b"Message #" + n.encode() + b" removed", 5))
+
+    m.buf.clear()
+    m.send(b"l")
+    m.pump(1.2)
+    ok &= check("and it is gone from the subject list",
+                b"Buy now cheap" not in plain(m.buf))
+
+    # The reader who never saw it: one fewer new, and Enter never shows it.
+    v.buf.clear()
+    v.send(b"forums\r")
+    v.wait_for(b"Forums", 6)
+    v.pump(1.0)
+    after = new_count(v.buf)
+    ok &= check("a removed post no longer counts as new",
+                before is not None and after is not None and after == before - 1)
+    seen_it = False
+    for _ in range(12):
+        v.buf.clear()
+        v.send(b"\r")
+        v.pump(0.8)
+        if b"Buy now cheap" in plain(v.buf):
+            seen_it = True
+        if b"Nothing new" in plain(v.buf) or b"Nothing else new" in plain(v.buf):
+            break
+    ok &= check("and reading on never shows it", not seen_it)
+
+    for c in (u, v, m):
+        drain(c)
         c.close()
     return ok
 
@@ -5317,7 +5525,7 @@ ORDER_NAMES = [
     "test_upload_no_binary", "test_ymodem",
     "test_config_areas", "test_config_area_keeps_every_part",
     "test_mail_compose",
-    "test_forums", "test_partitions",
+    "test_forums", "test_forums_remove", "test_partitions",
     # Destructive, and therefore last whatever else is running:
     "test_backup", "test_ban",
 ]

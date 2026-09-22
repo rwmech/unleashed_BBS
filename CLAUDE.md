@@ -527,6 +527,28 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
 - **A deliberate deviation from the plan, and the reasoning is the useful part.** The plan had mail and bans moving to ids. `MailRec` is a fixed-size record with a static assert on its layout, so that means changing `sizeof` and converting every live mailbox, on the one board that exists, to fix a bug that has a cheaper fix. Following renames gets the same visible outcome with no format change. The forums will store ids natively, so mail ends up the only holdout and a far smaller job later. **Prefer the fix that does not migrate somebody's data when both fixes close the same hole.**
 - **The positional-descriptor trap caught me exactly as CLAUDE.md predicted.** `onRename` inserted before `onBytes` shifted every field after it, and the compiler said so. Append-only is not a style rule here, it is the only safe edit.
 
+### Removing a post, and a count that belonged to the wrong person (0.21.7)
+
+- **A per-caller number was living in a board-wide table, again.**
+  `Forum::unread` was commented "for the caller on this session" and sat in
+  `g_forum[]`, which every caller shares, so the second caller into the
+  forums overwrote the first caller's counts. Same shape as the subject
+  table before it was tagged, and as `count=1` being written into the forum
+  header in 0.21.0. The rule, now that it has happened three times in one
+  subsystem: **a quantity that differs per caller never lives in an array
+  indexed by anything but the caller.** `g_unread[slot][forum]` now.
+- **Removal made an exact calculation inexact, and the fix had to come first.**
+  Unread was pure arithmetic on message numbers, correct while every number
+  above a caller's mark was a live message. A removed post breaks that, so
+  the forum list said "1 new" and Enter found nothing. `liveUnread()` walks
+  the records only for a forum whose live count is below its highest number,
+  so the common case costs nothing. **A feature that makes a previously
+  exact shortcut inexact owns fixing the shortcut.**
+- **One byte is the whole removal.** The live flag goes `.` to `X`. Nothing
+  moves, so every number and every read pointer keeps its meaning, and the
+  body stays on the card. The index-is-never-compacted rule from 0.20.0 is
+  what makes a safe removal this small.
+
 ### The forums as Rob laid them out (0.21.6)
 
 - **The fix for one missing thing added a duplicated thing, and the check
@@ -1197,6 +1219,8 @@ Queued for the next build (Rob's plan, in order):
   - **A way back.** The door has to be able to say "I am finished, take them back", and the board has to be able to say "their time is up, give them back", without either trusting the caller's own keystrokes to mean it.
   - **One serial port is one caller at a time**, which is the genuine limit of this design and should be said out loud rather than discovered. Several doors means several ports, a mux, or a door box that multiplexes on its own side.
   - **Who owns terminal negotiation.** The board has already detected PETSCII or ANSI and the width; the door needs to be told rather than probing again.
+  - **ESP-NOW as a second transport, not instead of serial** (Rob, 2026-09-22: "instead of serial ... the possibility of using ESPNOW to just wirelessly handle the door"). Worth having, and it answers the one-serial-port-one-caller limit, because ESP-NOW addresses several peers. **The catch, confirmed rather than recalled:** a station joined to a router is forced onto the router's channel, and an ESP-NOW peer on any other channel is simply not heard, so a router that changes channel by itself cuts the door off until both ends rescan. Frames are 250 bytes on this IDF, with a MAC-layer acknowledgement but no stream underneath, so the door protocol needs its own sequencing either way. Unencrypted ESP-NOW frames can be sent by anything in range, so a door's handoff must never be able to grant a caller anything.
+    **The way through:** design the door protocol independent of how it travels (the handoff header, the "finished" signal, time running out), build it over serial first because a serial line can be watched with a USB adapter, then add ESP-NOW as a second transport with a channel-follow on the door's side and encryption on.
 
 - **`SHUTDOWN [n]`, a sysop macro** (Rob, 2026-09-21). Announce to every node that the board is going down in n seconds, count down, then hang up on everyone including the sysop, gracefully, and stop accepting logins. A physical reboot brings it back.
   Shape: a board-level state rather than a per-session one, the countdown driven from the existing tick, and each session taken out through `goodbye()` so the send-off screen and the 5 s linger still happen. It is a macro over things that already exist, which is why it is small.
