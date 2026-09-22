@@ -2706,6 +2706,22 @@ def test_mail_compose():
     return ok
 
 
+def ends_at_prompt(buf, marker):
+    """Is the last line on screen a prompt a caller can type at?
+
+    Asks what a caller asks, with nothing pressed: is the cursor somewhere I
+    can type? A list that ends in a bare cursor contains every string a
+    presence check looks for, which is how one shipped past 689 of them.
+    Callers must NOT send a key before this: the forum list only drew its
+    prompt after Enter, and a check that pressed something first passed.
+    """
+    text = plain(buf).replace(b"\r", b"").rstrip()
+    if not text:
+        return False
+    last = text.split(b"\n")[-1].strip()
+    return last.startswith(marker) and last.endswith(b">")
+
+
 def test_forums():
     """Forums: post, group by subject, and keep the unread counts honest.
 
@@ -2736,12 +2752,22 @@ def test_forums():
         return True
     s.pump(1.0)
     ok = check("the forum list opens", b"Forums" in plain(s.buf))
+    # Nothing pressed: the list must end somewhere a caller can type. It
+    # used to need an Enter before any prompt appeared.
+    ok &= check("the forum list ends at a prompt, with no key pressed",
+                ends_at_prompt(s.buf, b"Forums>"))
 
     # Open the first forum.
     s.buf.clear()
     s.send(b"1")
     s.pump(1.2)
-    ok &= check("a forum opens", b"F1" in plain(s.buf) or b"subject" in plain(s.buf).lower())
+    # The breadcrumb names the level. "F1" was the old "[F1] name>" prompt
+    # and is gone; this check only kept passing through its fallback.
+    ok &= check("a forum opens under a Forums>name> breadcrumb",
+                re.search(rb"Forums>[^>\r\n]+>", plain(s.buf)) is not None)
+    # And the subject list, which ended in a bare cursor, ends at one too.
+    ok &= check("the subject list ends at a prompt, with no key pressed",
+                ends_at_prompt(s.buf, b"Forums>"))
 
     def post(subject, body):
         """Write a message the way a caller does: a subject, then lines.

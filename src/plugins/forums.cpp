@@ -203,6 +203,11 @@ Color g_cHead   = Color::LightGreen;  // a subject, wherever it is shown
 Color g_cBody   = Color::White;       // the words of a message
 Color g_cMeta   = Color::Grey;        // who wrote it and when
 Color g_cMark   = Color::Cyan;        // the board's own voice, "--> "
+Color g_cTitle  = Color::Cyan;        // the breadcrumb's fixed words and '>'
+Color g_cSubj   = Color::White;       // the forum or subject name inside it
+Color g_cCount  = Color::Yellow;      // a number a caller can act on: #412
+Color g_cWho    = Color::LightGreen;  // who wrote it
+Color g_cWhen   = Color::Grey;        // when, and "2 of 5"
 
 Forum   g_forum[kMaxForums];
 uint8_t g_forums = 0;
@@ -832,6 +837,7 @@ void stop() {
 enum class View : uint8_t { Forums, Subjects, Reading };
 
 void prompt(Bbs& b, Session& s);
+void say(Session& s, Color c, const char* text);
 void answered(Session& s, const char* text);
 
 View     g_view[BBS_MAX_NODES + 2]  = {};
@@ -1012,7 +1018,21 @@ bool rows(Session& s) {
         // under this caller's title bar.
         if (!claims::holds(claims::Res::Subjects, sl) || g_subjFor != g_at[sl]) return false;
         uint8_t row = s.listIdx;
-        if (row >= g_subjRows) return false;
+
+        // The footer and the prompt are the last rows of the list, not
+        // something drawn after it. A plugin list that runs to the end gets
+        // no listDone (that fires only on an abort), so a list which does
+        // not draw its own prompt leaves the caller looking at a bare
+        // cursor with nothing saying what to press. That shipped.
+        if (row == g_subjRows) {
+            g_bbs->rowRule(s);
+            say(s, Color::Grey, " Enter reads. A number opens. P posts. ? help. Q back.");
+            s.term.nl(s.tl);
+            prompt(*g_bbs, s);
+            ++s.listIdx;
+            return true;
+        }
+        if (row > g_subjRows) return false;
         const SubjRow& r = g_subjRow[row];
 
         char num[6];
@@ -1071,7 +1091,21 @@ bool rows(Session& s) {
     }
 
     uint8_t k = static_cast<uint8_t>(row - 1);
-    if (k >= n) return false;
+
+    // The closing rule, the footer and the prompt are rows of this list, not
+    // something drawn after it. listDone fires only on an abort, so a list
+    // that runs to the end and draws no prompt leaves the caller looking at
+    // a bare cursor: Rob saw exactly that, and had to press Enter to get a
+    // prompt out of it.
+    if (k == n) {
+        g_bbs->rowRule(s);
+        say(s, Color::Grey, " Enter reads what is new. A number opens a forum. ? help. Q leaves.");
+        s.term.nl(s.tl);
+        prompt(*g_bbs, s);
+        ++s.listIdx;
+        return true;
+    }
+    if (k > n) return false;
     const Forum& f = g_forum[vis[k]];
 
     char num[6];
@@ -1164,16 +1198,38 @@ void prompt(Bbs& b, Session& s) {
         s.term.text(s.tl, " Enter reads on. A number opens a subject. P posts. ? help. Q back.");
     s.term.nl(s.tl);
 
-    // The tag names the place, the way a node number is shown everywhere
-    // else. Inside a subject it carries the path, so a caller always knows
-    // which of the three levels they are standing on.
-    char tag[40];
-    if (g_view[sl] == View::Forums) snprintf(tag, sizeof(tag), "Forums> ");
-    else snprintf(tag, sizeof(tag), "[F%u] %.20s> ",
-                  static_cast<unsigned>(g_at[sl] + 1), g_forum[g_at[sl]].name);
-    s.term.color(s.tl, Color::Cyan);
-    s.term.text(s.tl, tag);
-    (void)b;
+    // The breadcrumb (UX spec F2). Three levels, fixed words at both ends
+    // and the place in the middle, so a caller always knows which of the
+    // three they are standing on:
+    //
+    //   Forums>                 the forum list
+    //   Forums>C64>             the subject list
+    //   Forums>C64>Messages>    reading
+    //
+    // No number in it, deliberately: a message is #412 and a subject is 12,
+    // and a prompt carrying one of them next to the other in the post rule
+    // is a collision waiting to happen. Numbers belong in lists and headers,
+    // beside the thing they name. The old form was "[F1] <name}> ", which
+    // put a forum number in the prompt and never said what level it was.
+    //
+    // Every input inside FORUMS is a single keypress, so a long prompt costs
+    // no typing room. The same prompt at the main shell would not be
+    // affordable.
+    s.term.color(s.tl, g_cTitle);
+    s.term.text(s.tl, "Forums>");
+    if (g_view[sl] != View::Forums) {
+        // Cut to rowWidth - 17, which is 22 at 40 columns against a 24
+        // character maximum, so it is cut only for the two longest possible
+        // names and never at 80 or above.
+        uint8_t w = b.rowWidth(s);
+        uint8_t nameW = w > 17 ? static_cast<uint8_t>(w - 17) : 8;
+        s.term.color(s.tl, g_cSubj);
+        s.term.textCols(s.tl, g_forum[g_at[sl]].name, nameW);
+        s.term.color(s.tl, g_cTitle);
+        s.term.text(s.tl, ">");
+        if (g_view[sl] == View::Reading) s.term.text(s.tl, "Messages>");
+    }
+    s.term.ch(s.tl, ' ');
 }
 
 void drawForums(Bbs& b, Session& s) {
@@ -1220,6 +1276,20 @@ void drawSubjects(Bbs& b, Session& s, uint8_t forum) {
 
     s.term.cls(s.tl);
     b.rowTitle(s, g_forum[forum].name, right);
+
+    // The action row: what Enter will do, said once, above the list.
+    // Only when there IS something unread, because a row offering nothing is
+    // furniture and a caller learns to stop reading it.
+    if (g_subjRows && g_forum[forum].unread) {
+        char act[64];
+        snprintf(act, sizeof(act), " --> Read the %lu new here",
+                 static_cast<unsigned long>(g_forum[forum].unread));
+        s.term.nl(s.tl);
+        s.term.color(s.tl, g_cMark);
+        s.term.text(s.tl, act);
+        s.term.nl(s.tl);
+    }
+
     if (!g_subjRows) {
         s.term.nl(s.tl);
         say(s, Color::Grey, "   Nothing here yet. P starts the first subject.");
@@ -1230,6 +1300,100 @@ void drawSubjects(Bbs& b, Session& s, uint8_t forum) {
     }
     s.listIdx = 0;
     b.startPluginList(s, g_index);
+}
+
+// subjectPosition: where message n sits in its subject, and how many there
+// are. Both 0 when it cannot be worked out, and the post rule then omits the
+// "n of m" rather than printing a wrong one.
+//
+// Counted oldest first, so "1 of 5" is the message that started the
+// conversation. Read from the index rather than cached, because a cached
+// count is stale the moment anybody else posts, and the index is fixed
+// stride so walking it is a seek per record and nothing else.
+void subjectPosition(uint8_t forum, uint32_t hash, uint32_t n,
+                     uint32_t& idx, uint32_t& total) {
+    idx = total = 0;
+    if (forum >= g_forums || !hash) return;
+
+    uint32_t newest = g_forum[forum].newest;
+    if (!newest) return;
+
+    char path[128];
+    indexPath(forum, path, sizeof(path));
+    FILE* f = fopen(path, "rb");
+    if (!f) return;
+
+    uint32_t floor = newest > kScanMax ? newest - kScanMax : 1;
+    for (uint32_t k = floor; k <= newest; ++k) {
+        if (fseek(f, static_cast<long>(k) * kRec, SEEK_SET) != 0) break;
+        char rec[kRec];
+        if (fread(rec, 1, kRec, f) != kRec) break;
+        MsgRec m;
+        parseRec(rec, m);
+        if (m.num != k) continue;                 // a torn record, skipped
+        if (!m.live) continue;                    // deleted: not in the count
+        if (m.hash != hash) continue;
+        ++total;
+        if (k == n) idx = total;
+    }
+    fclose(f);
+    if (!idx) total = 0;                          // n is not in this subject
+}
+
+// postRule: the separator above every message.
+//
+//   ══ #412 ────────────────────── 2 of 5
+//
+// Two heavy glyphs, the number, then a light rule out to the width with the
+// position flush right. HLine2 against HLine is two line weights, which
+// reads as a rule with a heavy start on PETSCII and CP437 alike.
+//
+// Drawn per message rather than a reverse bar per message: the reading loop
+// does not clear, so a bar here would be a cyan stripe every eight rows.
+void postRule(Bbs& b, Session& s, uint32_t num, uint32_t idx, uint32_t total) {
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    uint8_t w = b.rowWidth(s);
+
+    char numTxt[16], posTxt[24];
+    snprintf(numTxt, sizeof(numTxt), " #%lu ", static_cast<unsigned long>(num));
+    if (total) snprintf(posTxt, sizeof(posTxt), " %lu of %lu ",
+                        static_cast<unsigned long>(idx),
+                        static_cast<unsigned long>(total));
+    else       posTxt[0] = '\0';
+
+    uint8_t used = 1;                         // the leading space
+    t.ch(tl, ' ');
+    t.color(tl, g_cTitle);
+    t.glyphs(tl, Glyph::HLine2, 2);  used = static_cast<uint8_t>(used + 2);
+    t.color(tl, g_cCount);
+    t.text(tl, numTxt);              used = static_cast<uint8_t>(used + strlen(numTxt));
+
+    uint8_t plen = static_cast<uint8_t>(strlen(posTxt));
+    // The rule fills whatever is left. If the number and position together
+    // are wider than the row, there is no rule rather than a wrapped one:
+    // a row that wraps leaves a tail on every redraw.
+    if (used + plen < w) {
+        t.color(tl, g_cTitle);
+        t.glyphs(tl, Glyph::HLine, static_cast<uint8_t>(w - used - plen));
+    }
+    if (plen) { t.color(tl, g_cWhen); t.text(tl, posTxt); }
+    t.nl(tl);
+}
+
+// byline: who and when, one indent in, in two colours.
+//
+// Left aligned with no flush right, because a single line with a fifty
+// column hole in it reads as a bug. Two colours so the eye separates the
+// person from the timestamp without a separator character.
+void byline(Session& s, const char* who, const char* when) {
+    s.term.ch(s.tl, ' ');
+    s.term.color(s.tl, g_cWho);
+    s.term.text(s.tl, who);
+    s.term.text(s.tl, "  ");
+    s.term.color(s.tl, g_cWhen);
+    s.term.text(s.tl, when);
+    s.term.nl(s.tl);
 }
 
 // ---------------------------------------------------------------------------
@@ -1261,17 +1425,16 @@ void showMessage(Bbs& b, Session& s, uint8_t forum, uint32_t n) {
     char when[24] = "";
     clk::fmtEpoch(when, sizeof(when), "%d %b %H:%M", m.epoch);
 
-    // The header is compact and left aligned at every width: a label above a
-    // paragraph, not a table row. A single line with a fifty column hole in
-    // it reads as a bug. Citadel assembled its header the same way and it
-    // reads as prose because of it.
+    // The post rule and the byline (UX spec F1). The rule carries the
+    // message number, which is the thing a caller types, and its position in
+    // the subject, which is the thing that says whether there is more.
     s.term.nl(s.tl);
-    char head[96];
-    snprintf(head, sizeof(head), "%lu  %s  %s",
-             static_cast<unsigned long>(m.num), m.handle, when);
-    s.term.color(s.tl, g_cMeta);
-    s.term.text(s.tl, head);
-    s.term.nl(s.tl);
+    {
+        uint32_t idx = 0, total = 0;
+        subjectPosition(forum, m.hash, n, idx, total);
+        postRule(b, s, m.num, idx, total);
+    }
+    byline(s, m.handle, when);
 
     s.term.color(s.tl, g_cHead);
     s.term.textCols(s.tl, m.subject, b.rowWidth(s));
@@ -1673,17 +1836,21 @@ void onKey(Session& s, int key, uint32_t) {
             s.compose[g_bodyLen[sl]] = '\0';
             --g_bodyRows[sl];
 
-            // Rub out the prompt the caller is standing on, then draw the
-            // recalled line in its place. Drawing it on a NEW line left the
-            // old numbers above it, so the screen read 4, 5, then 4 again,
-            // which is what "the line numbers seem dumb" was describing.
+            // Clear the prompt we are standing on, then go UP to the line
+            // being recalled and clear that, so the text appears where it
+            // was rather than a second time underneath. Without the move up,
+            // every recalled line showed twice: Rob's "5:" and "6:" each
+            // appeared with two different bodies.
             //
-            // Four characters: two digits, a colon and a space, which is
-            // what bodyPrompt writes.
-            // eraseBack, not a hand-rolled BS-space-BS: term.ch translates
-            // for the charset and maps anything under 0x20 to '?', so this
-            // used to PRINT the erase sequence instead of performing it.
+            // left() before eraseEol() is how column 0 is reached: there is
+            // no carriage-return primitive above the terminal layer, and
+            // Term::ch('\r') is deliberately a no-op. left() is a
+            // non-destructive move.
+            uint8_t w = Bbs::instance().rowWidth(s);
             s.term.eraseBack(s.tl, kBodyPromptCols);
+            s.term.up(s.tl, 1);
+            s.term.left(s.tl, w);
+            s.term.eraseEol(s.tl, w);
             bodyPrompt(s);
             for (const char* c = back; *c; ++c) s.ed.key(*c, s.term, s.tl);
             return;

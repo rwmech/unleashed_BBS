@@ -527,6 +527,58 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
 - **A deliberate deviation from the plan, and the reasoning is the useful part.** The plan had mail and bans moving to ids. `MailRec` is a fixed-size record with a static assert on its layout, so that means changing `sizeof` and converting every live mailbox, on the one board that exists, to fix a bug that has a cheaper fix. Following renames gets the same visible outcome with no format change. The forums will store ids natively, so mail ends up the only holdout and a far smaller job later. **Prefer the fix that does not migrate somebody's data when both fixes close the same hole.**
 - **The positional-descriptor trap caught me exactly as CLAUDE.md predicted.** `onRename` inserted before `onBytes` shifted every field after it, and the compiler said so. Append-only is not a style rule here, it is the only safe edit.
 
+### The forums get their layout, two versions late (0.21.5)
+
+- **A 4,345 line UX spec was commissioned for the forums and two versions
+  shipped without implementing it.** Rob, twice: "The requested headers and
+  additional graphics layout was not added", and "Missing prompt, no graphis,
+  crappy layout". `reports/ux-message-boards.md` existed the whole time. The
+  process rule meant to prevent exactly this, "the specialists advise the
+  builder, they do not build", was written down the same week and then not
+  followed. **A spec that is commissioned and not read is worse than no spec,
+  because it buys the belief that the design question is settled.**
+
+- **Neither forum list drew a prompt, and 689 tests passed over it.** The
+  subject list ended with a bare cursor; the forum list needed an Enter
+  press. The cause is a correct design used wrongly: `listDone` fires only on
+  an abort, because "a listing that ran to the end has already drawn its
+  prompt" (0.19.1), and neither list drew one. The footer and prompt are the
+  last rows of each list now.
+  **The testing lesson is the bigger one. Every check in the suite asserts
+  that a string is PRESENT; not one asserts that a screen is USABLE.** A list
+  with no prompt contains every string the tests look for. Nothing in 689
+  checks could have caught it, and nothing will catch the next one either
+  until some test reads a whole screen and asks whether a caller would know
+  what to press.
+
+- **The reading screen is three pieces at three rhythms**, and that is the
+  design rather than an implementation detail: the reading loop does not
+  clear the screen, so anything drawn per message is drawn forty times in a
+  session. A context bar per subject, a rule per message, a byline per
+  message. A full width reverse bar per message would be a cyan stripe every
+  eight rows.
+
+- **No number in the breadcrumb.** A message is `#412` and a subject is `12`.
+  A prompt carrying one of them next to the other in the post rule is a
+  collision waiting to happen, so numbers belong in lists and headers beside
+  the thing they name. `[F1] Unleashed BBS>` put a forum number in the prompt
+  and never said which of the three levels the caller was on.
+
+- **The backspace-pop redrew every recalled line one row too low**, so each
+  showed twice with different bodies. It erased the prompt on the current
+  line, but the text being recalled sits one screen line up: committed,
+  newline printed, next prompt drawn. Worth generalising: **an edit that
+  recalls committed output has to erase where that output actually is, not
+  where the cursor happens to be.**
+
+- **`BBS_COMPOSE_MAX` 1152 to 1536 and `BBS_COMPOSE_ROWS` 16 to 32.** Rows
+  are free; bytes are per session and cost twelve times, so headroom went
+  10,504 to 5,872. Nearly half the RAM reclaimed in 0.21.3 went straight back
+  out on this, deliberately: the reason to reclaim it was to make the board
+  better, and a message base whose messages cannot hold an argument is not
+  one. The next 1,000 characters want the form/composer pooling (~11,856
+  bytes), which is the remaining large win.
+
 ### RAM back, one claims table, and Term::ch is for text (0.21.3 / 0.21.4)
 
 - **Static DRAM headroom went 4,776 to 10,504 bytes**, measured off the ELF

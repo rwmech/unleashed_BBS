@@ -24,6 +24,90 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.21.5, 2026-09-22
+
+The forums get the layout that was specified for them in April and never
+built. Rob, after flashing 0.21.4: "The requested headers and additional
+graphics layout was not added", and then "Missing prompt, no graphis, crappy
+layout".
+
+He is right, and the failure is worth naming rather than glossing:
+`reports/ux-message-boards.md` is 4,345 lines, it was commissioned for
+exactly this, and two versions shipped without implementing it. The process
+rule that exists to prevent this ("the specialists advise the builder") was
+written down the same week and then not followed.
+
+**Neither list drew a prompt.** The subject list ended with three subjects
+and a bare cursor; the forum list needed an Enter press before a prompt
+appeared. Cause: `listDone` fires only on an **abort**, by design (0.19.1:
+"a listing that ran to the end has already drawn its prompt"), and neither
+forum list ever drew one. The footer and the prompt are the last rows of
+each list now, which is what that design always assumed.
+
+**689 tests passed over it**, which is the part worth keeping. Every check in
+the suite asserts that a **string is present**; not one asserts that a screen
+is **usable**. A list with no prompt contains every string the tests look for.
+
+**F2, the breadcrumb.** `[F1] Unleashed BBS>` is gone:
+
+```
+Forums>                 the forum list
+Forums>C64>             the subject list
+Forums>C64>Messages>    reading
+```
+
+No number in it, deliberately: a message is `#412` and a subject is `12`, and
+a prompt carrying one next to the other in the post rule is a collision
+waiting to happen. Fixed words and `>` in `color_title`, the forum's name in
+`color_subject`, name cut to `rowWidth - 17`. Every input inside FORUMS is a
+single keypress, so a long prompt costs no typing room.
+
+**F1, the reading screen: three pieces at three rhythms.**
+
+```
+ 12. 1541 alignment disk        5 msgs      context bar, once per subject
+ == #412 --------------------- 2 of 5      post rule, once per message
+ Daytona  19 Sep 21:14                      byline, two colours
+```
+
+The reading loop does not clear the screen, so anything drawn per message is
+drawn forty times in a session: a reverse bar per message would be a cyan
+stripe every eight rows. A rule per message is what a message separator is,
+and what Usenet and every mail digest printed. `Glyph::HLine2` against
+`HLine` is two line weights, which reads as a rule with a heavy start on
+PETSCII and CP437 alike.
+
+New `subjectPosition()` supplies the "2 of 5" by walking the index oldest
+first, so "1 of 5" is the message that started the conversation. Read rather
+than cached, because a cached count is stale the moment anybody else posts.
+
+**F4, the subject list** gets the action row (`--> Read the 4 new here`),
+drawn only when something is unread, because a row offering nothing is
+furniture a caller learns to skip. Both lists close with `rowRule`, which
+every other list on this board already did.
+
+**The backspace-pop showed every recalled line twice.** Rob's screenshot had
+`5:` and `6:` each appearing with two different bodies. The code erased the
+prompt on the current line and redrew the recalled text there, but the text
+being recalled is one screen line further up: it was committed, a newline
+printed, and the next prompt drawn. It goes up to that line and clears it
+now. `left(w)` before `eraseEol(w)` is how column 0 is reached, because there
+is no carriage-return primitive above the terminal layer and `Term::ch('\r')`
+is deliberately a no-op.
+
+**A forum post has room for paragraphs.** `BBS_COMPOSE_ROWS` 16 to 32, free
+(it is a counter). `BBS_COMPOSE_MAX` 1152 to 1536, which is per session and
+so costs 4,608 bytes of static DRAM across the twelve. Headroom goes 10,504
+to 5,872. Spending nearly half the reclaimed RAM on this is deliberate: the
+reason it was reclaimed was to make the board better, and a message base
+whose messages are too short to hold an argument is the thing the board is
+for. Rob: "I wanted to be able to have a few paragraphs."
+
+Agent models: `code-review`, `optimize`, `tty-ux` and `screen-artist` move to
+fable; `explain` stays on opus; sonnet is the floor everywhere else, no haiku
+(Rob). The A/B protocol, with the scoring rule fixed **before** the runs, is
+in `reports/model-ab-2026-09.md`.
+
 ## 0.21.4, 2026-09-22
 
 The room grows six commands, the claims table takes over the last two owner

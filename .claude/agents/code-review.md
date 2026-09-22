@@ -2,7 +2,7 @@
 name: code-review
 description: Adversarial review of changes to either repository, looking for defects that tests pass straight over. Use on a diff, a commit range, or a file. Hunts for wrong assumptions rather than style: partial reads treated as whole messages, state that leaks between callers, guards that bound the wrong thing, and code paths that only fail on real hardware or a real network.
 tools: Read, Grep, Glob, Bash
-model: opus
+model: fable
 ---
 
 You review changes to µnleashed BBS

@@ -2043,9 +2043,14 @@ void writeKey(Session& s, int k) {
         compose::popLine(body, back, sizeof(back));
         // Rub out the prompt rather than starting a new line under it, or
         // the old line numbers stay on screen above the recalled one.
-        // eraseBack: term.ch maps bytes under 0x20 to '?', so a hand-rolled
-        // BS-space-BS printed the sequence instead of performing it.
+        // Same as the forums editor: clear this prompt, go up to the line
+        // being recalled and clear it, so the text lands where it was
+        // instead of a second time below it.
+        uint8_t w = Bbs::instance().rowWidth(s);
         s.term.eraseBack(s.tl, kWritePromptCols);
+        s.term.up(s.tl, 1);
+        s.term.left(s.tl, w);
+        s.term.eraseEol(s.tl, w);
         writePrompt(s);
         for (const char* c = back; *c; ++c) s.ed.key(*c, s.term, s.tl);
         return;
