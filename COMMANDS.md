@@ -220,15 +220,15 @@ last space and carries the unfinished word down to the next one, rather than
 refusing further keystrokes. A word longer than the whole line is left whole,
 because there is nowhere to break it.
 
-A forum post holds 24 lines; a mail message holds 12, which is what the mail
-record has room for. The line counter on the left says where you are.
+A forum post holds 32 lines and 1,536 characters; a mail message holds 16
+lines and 512 characters, which is what the mail record has room for. The line counter on the left says where you are.
 
 **Inside `FORUMS`, keys rather than commands**, the same as the file areas.
 
 | Key | What it does |
 |---|---|
 | Enter, Space | The next message you have not read, wherever it is. From the forum list it walks *into* the first forum with something new, so a caller who only ever presses Enter never has to navigate at all. Inside a subject it reads that conversation in order and then rolls on to the rest of the forum rather than dead-ending. |
-| `1`..`9` | On the forum list, opens that forum. On a subject list, opens that conversation and starts reading it. |
+| a number, then Enter | On the forum list, opens that forum. Anywhere else, opens that subject and starts reading it. **A subject's number is the ID of the message that started it**, so the number in the list is the number the message shows when it opens, and it never changes. The number is typed on the prompt line; Backspace to nothing or ESC abandons it. |
 | `P` | Post a new subject here. Asks for the subject, then the message. |
 | `R` | Reply to the message on screen. No subject is asked for: a reply carries its parent's, and grouping means the subject is drawn once as the screen's title rather than on every message. |
 | `L` | Back to the list you came from. |

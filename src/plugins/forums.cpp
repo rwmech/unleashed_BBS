@@ -836,8 +836,13 @@ void stop() {
 
 enum class View : uint8_t { Forums, Subjects, Reading };
 
-void prompt(Bbs& b, Session& s);
+// gap: start with a newline. True after a body or a notice, where it gives
+// the blank line before the footer; false straight after a closing rule,
+// where a blank line would only separate the rule from what it closes.
+void prompt(Bbs& b, Session& s, bool gap = true);
 void say(Session& s, Color c, const char* text);
+void notice(Session& s, Color c, const char* text);
+void listStatus(Session& s, uint32_t unread, const char* none);
 void answered(Session& s, const char* text);
 
 View     g_view[BBS_MAX_NODES + 2]  = {};
@@ -852,6 +857,17 @@ constexpr uint8_t kMaxSubjects = 64;
 
 struct SubjRow {
     uint32_t hash   = 0;
+    // The subject's number: the ID of the oldest surviving message in it.
+    // Rob, looking at "1 Wrapping test" in the list and "#4" on the message:
+    // "It shows 1 above, but 4 below, which is it?" The list numbered ROWS,
+    // so a subject's number moved whenever another subject came or went and
+    // never matched anything on the message itself. The index is never
+    // compacted, so a message's ID is permanent, and numbering a subject by
+    // its first message means the number in the list is the number the
+    // message shows when it opens. If a sysop removes the opening post the
+    // subject takes the next one's ID, which still names a message a caller
+    // can open.
+    uint32_t first  = 0;
     uint32_t newest = 0;
     uint32_t unread = 0;
     uint32_t total  = 0;
@@ -892,8 +908,13 @@ uint8_t g_subjFor  = 0xFF;      // which forum the table describes
 // ---------------------------------------------------------------------------
 constexpr uint32_t kScanMax = 2000;         // records walked for a listing
 
+// Digits in the widest subject number in the table, so the list's number
+// column lines up however large the IDs get.
+uint8_t g_subjNumW = 1;
+
 void scanSubjects(uint8_t i, const Ptr& p, uint8_t who) {
     g_subjRows = 0;
+    g_subjNumW = 1;
     g_subjFor  = i;
     claims::seize(claims::Res::Subjects, who);   // a cache, not a lock: refill for whoever asks
     uint32_t newest = g_forum[i].newest;
@@ -928,10 +949,16 @@ void scanSubjects(uint8_t i, const Ptr& p, uint8_t who) {
             ++g_subjRows;
         }
         ++g_subjRow[k].total;
+        // Walking newest to oldest, so the last write is the oldest message.
+        g_subjRow[k].first = n;
         if (!seen(p, n)) ++g_subjRow[k].unread;
         if (n == 1) break;                        // uint32 would wrap below 1
     }
     fclose(f);
+    uint32_t hi = 0;
+    for (uint8_t k = 0; k < g_subjRows; ++k)
+        if (g_subjRow[k].first > hi) hi = g_subjRow[k].first;
+    while (hi >= 10) { hi /= 10; ++g_subjNumW; }
 }
 
 // nextUnread: the next message this caller has not read, or 0.
@@ -1025,26 +1052,30 @@ bool rows(Session& s) {
         // not draw its own prompt leaves the caller looking at a bare
         // cursor with nothing saying what to press. That shipped.
         if (row == g_subjRows) {
+            // Rule, then what Enter will do, then the footer and prompt.
+            // prompt() prints the footer itself: this used to print one as
+            // well, so it was on screen twice every time the list was drawn.
             g_bbs->rowRule(s);
-            say(s, Color::Grey, " Enter reads. A number opens. P posts. ? help. Q back.");
-            s.term.nl(s.tl);
-            prompt(*g_bbs, s);
+            listStatus(s, g_forum[g_at[sl]].unread, "Nothing new in this forum.");
+            prompt(*g_bbs, s, false);
             ++s.listIdx;
             return true;
         }
         if (row > g_subjRows) return false;
         const SubjRow& r = g_subjRow[row];
 
-        char num[6];
-        snprintf(num, sizeof(num), "%2u", static_cast<unsigned>(row + 1));
+        char num[12];
+        snprintf(num, sizeof(num), "%*lu", static_cast<int>(g_subjNumW),
+                 static_cast<unsigned long>(r.first));
         s.term.color(s.tl, Color::Yellow);
         s.term.text(s.tl, r.unread ? " *" : "  ");
         s.term.text(s.tl, num);
         s.term.ch(s.tl, ' ');
 
         s.term.color(s.tl, r.unread ? Color::White : Color::Grey);
+        uint8_t lead  = static_cast<uint8_t>(2 + strlen(num) + 1);
         uint8_t nameW = w > 56 ? 44 : static_cast<uint8_t>(w > 24 ? w - 18 : 6);
-        uint8_t used = static_cast<uint8_t>(5 + s.term.textCols(s.tl, r.subject, nameW));
+        uint8_t used  = static_cast<uint8_t>(lead + s.term.textCols(s.tl, r.subject, nameW));
 
         char tail[40];
         if (r.unread) snprintf(tail, sizeof(tail), "%lu of %lu new",
@@ -1069,28 +1100,10 @@ bool rows(Session& s) {
     uint8_t n = visibleForums(s, vis, kMaxForums);
     uint8_t row = s.listIdx;
 
-    if (row == 0) {
-        uint32_t newTotal = 0;
-        for (uint8_t k = 0; k < n; ++k) newTotal += g_forum[vis[k]].unread;
-        char line[80];
-        if (newTotal) snprintf(line, sizeof(line), "Read all %lu new message%s",
-                               static_cast<unsigned long>(newTotal),
-                               newTotal == 1 ? "" : "s");
-        else          snprintf(line, sizeof(line), "Nothing new since your last call.");
-        s.term.nl(s.tl);
-        s.term.color(s.tl, newTotal ? Color::LightGreen : Color::Grey);
-        s.term.text(s.tl, "     ");
-        // Plain ASCII has no colour and no reverse video, so the arrow is
-        // what says "this is the thing to press". Same marker the room
-        // speaks with, so a caller moving between the two sees one idiom.
-        if (!s.term.isAnsi() && !s.term.isPet()) s.term.text(s.tl, "--> ");
-        s.term.text(s.tl, line);
-        s.term.nl(s.tl);
-        ++s.listIdx;
-        return true;
-    }
-
-    uint8_t k = static_cast<uint8_t>(row - 1);
+    // The "what is new" line used to sit at the TOP of this list. Rob: it
+    // belongs under the rule, with a blank line either side, which is where
+    // the eye goes once it has read the list.
+    uint8_t k = row;
 
     // The closing rule, the footer and the prompt are rows of this list, not
     // something drawn after it. listDone fires only on an abort, so a list
@@ -1098,10 +1111,11 @@ bool rows(Session& s) {
     // a bare cursor: Rob saw exactly that, and had to press Enter to get a
     // prompt out of it.
     if (k == n) {
+        uint32_t newTotal = 0;
+        for (uint8_t x = 0; x < n; ++x) newTotal += g_forum[vis[x]].unread;
         g_bbs->rowRule(s);
-        say(s, Color::Grey, " Enter reads what is new. A number opens a forum. ? help. Q leaves.");
-        s.term.nl(s.tl);
-        prompt(*g_bbs, s);
+        listStatus(s, newTotal, "Nothing new since your last call.");
+        prompt(*g_bbs, s, false);
         ++s.listIdx;
         return true;
     }
@@ -1160,9 +1174,11 @@ void say(Session& s, Color c, const char* text) {
 
     uint8_t ind = 0;
     while (text[ind] == ' ' && ind < 8) ++ind;          // a deliberate indent
-    if (!ind && text[0] == '-' && text[1] == '-' && text[2] == '>') {
-        ind = 3;
-        while (text[ind] == ' ' && ind < 8) ++ind;      // the room's marker
+    // The marker counts as furniture after a margin too, so " --> text"
+    // wraps with its continuation lined up under "text".
+    if (text[ind] == '-' && text[ind + 1] == '-' && text[ind + 2] == '>') {
+        ind = static_cast<uint8_t>(ind + 3);
+        while (text[ind] == ' ' && ind < 12) ++ind;
     }
 
     uint8_t cols = Bbs::instance().rowWidth(s);
@@ -1189,13 +1205,56 @@ void say(Session& s, Color c, const char* text) {
     }
 }
 
-void prompt(Bbs& b, Session& s) {
-    uint8_t sl = slotIdx(s);
+// notice: the board answering a key pressed at the prompt.
+//
+// Rob, three times in one sitting: "Linefeed before --> That is the end",
+// "Linefeed before --> Nothing new", and the same for the message header.
+// An answer printed on the line straight under the prompt reads as part of
+// the prompt. The first newline ends the prompt line the key was pressed
+// on, the second sets the answer off from it, and one column of margin
+// lines it up with the footer.
+//
+// Only for a SINGLE KEY at the prompt, which prints no newline of its own.
+// A line finished with Enter in an editor has already moved down, so a
+// notice after one needs a single newline, not this.
+void notice(Session& s, Color c, const char* text) {
+    char line[128];
+    snprintf(line, sizeof(line), " %s", text);
     s.term.nl(s.tl);
-    if (g_view[sl] == View::Forums)
-        say(s, Color::Grey, " Enter reads what is new. A number opens a forum. ? help. Q leaves.");
+    s.term.nl(s.tl);
+    say(s, c, line);
+}
+
+// listStatus: what Enter will do, under a list's closing rule.
+//
+// Rob's wording and placement: under the rule, a blank line above and
+// below, "N new messages are ready to read. [Enter] to start reading
+// unread." when there is something and `none` when there is not. One line
+// or two as the width needs, never a cut one.
+void listStatus(Session& s, uint32_t unread, const char* none) {
+    char line[128];
+    if (unread)
+        snprintf(line, sizeof(line),
+                 " %lu new message%s ready to read. [Enter] to start reading unread.",
+                 static_cast<unsigned long>(unread), unread == 1 ? " is" : "s are");
     else
-        s.term.text(s.tl, " Enter reads on. A number opens a subject. P posts. ? help. Q back.");
+        snprintf(line, sizeof(line), " %s", none);
+    s.term.nl(s.tl);
+    say(s, unread ? Color::LightGreen : Color::Grey, line);
+    s.term.nl(s.tl);
+    s.term.nl(s.tl);
+}
+
+void prompt(Bbs& b, Session& s, bool gap) {
+    uint8_t sl = slotIdx(s);
+    if (gap) s.term.nl(s.tl);
+    // Both through say(), which sets its own colour. The second one was a
+    // bare text() and inherited whatever came before it, so after an
+    // end-of-subject notice the footer came out cyan.
+    if (g_view[sl] == View::Forums)
+        say(s, Color::Grey, " --> Enter reads what is new. # - Open a forum. ? help. Q leaves.");
+    else
+        say(s, Color::Grey, " --> Enter reads on. # - Jump to subject. P posts. ? help. Q back.");
     s.term.nl(s.tl);
 
     // The breadcrumb (UX spec F2). Three levels, fixed words at both ends
@@ -1203,8 +1262,11 @@ void prompt(Bbs& b, Session& s) {
     // three they are standing on:
     //
     //   Forums>                 the forum list
-    //   Forums>C64>             the subject list
-    //   Forums>C64>Messages>    reading
+    //   Forums>C64>             the subject list, and reading
+    //
+    // There was a third level, Forums>C64>Messages>, for reading. Rob: "why
+    // do we need messages, we're in the forum topic, messages is
+    // superfluous". The header over each message already says it is one.
     //
     // No number in it, deliberately: a message is #412 and a subject is 12,
     // and a prompt carrying one of them next to the other in the post rule
@@ -1227,7 +1289,6 @@ void prompt(Bbs& b, Session& s) {
         s.term.textCols(s.tl, g_forum[g_at[sl]].name, nameW);
         s.term.color(s.tl, g_cTitle);
         s.term.text(s.tl, ">");
-        if (g_view[sl] == View::Reading) s.term.text(s.tl, "Messages>");
     }
     s.term.ch(s.tl, ' ');
 }
@@ -1243,9 +1304,11 @@ void drawForums(Bbs& b, Session& s) {
     uint8_t n = visibleForums(s, vis, kMaxForums);
     uint32_t newTotal = 0;
     for (uint8_t k = 0; k < n; ++k) newTotal += g_forum[vis[k]].unread;
-    if (newTotal) snprintf(right, sizeof(right), "%lu new",
-                           static_cast<unsigned long>(newTotal));
-    else          snprintf(right, sizeof(right), "nothing new");
+    // One form for every count, zero included (Rob): "0 new messages" rather
+    // than a lower-case "nothing new" that read like a fragment. Singular
+    // only for exactly one.
+    snprintf(right, sizeof(right), "%lu new message%s",
+             static_cast<unsigned long>(newTotal), newTotal == 1 ? "" : "s");
 
     s.term.cls(s.tl);
     b.rowTitle(s, "Forums", right);
@@ -1277,122 +1340,67 @@ void drawSubjects(Bbs& b, Session& s, uint8_t forum) {
     s.term.cls(s.tl);
     b.rowTitle(s, g_forum[forum].name, right);
 
-    // The action row: what Enter will do, said once, above the list.
-    // Only when there IS something unread, because a row offering nothing is
-    // furniture and a caller learns to stop reading it.
-    if (g_subjRows && g_forum[forum].unread) {
-        char act[64];
-        snprintf(act, sizeof(act), " --> Read the %lu new here",
-                 static_cast<unsigned long>(g_forum[forum].unread));
-        s.term.nl(s.tl);
-        s.term.color(s.tl, g_cMark);
-        s.term.text(s.tl, act);
-        s.term.nl(s.tl);
-    }
-
     if (!g_subjRows) {
-        s.term.nl(s.tl);
-        say(s, Color::Grey, "   Nothing here yet. P starts the first subject.");
-        s.term.nl(s.tl);
         b.rowRule(s);
-        prompt(b, s);
+        listStatus(s, 0, "Nothing here yet. P starts the first subject.");
+        prompt(b, s, false);
         return;
     }
     s.listIdx = 0;
     b.startPluginList(s, g_index);
 }
 
-// subjectPosition: where message n sits in its subject, and how many there
-// are. Both 0 when it cannot be worked out, and the post rule then omits the
-// "n of m" rather than printing a wrong one.
+// headRule: " == New Message: ID #4 ----------" out to the width.
 //
-// Counted oldest first, so "1 of 5" is the message that started the
-// conversation. Read from the index rather than cached, because a cached
-// count is stale the moment anybody else posts, and the index is fixed
-// stride so walking it is a seek per record and nothing else.
-void subjectPosition(uint8_t forum, uint32_t hash, uint32_t n,
-                     uint32_t& idx, uint32_t& total) {
-    idx = total = 0;
-    if (forum >= g_forums || !hash) return;
-
-    uint32_t newest = g_forum[forum].newest;
-    if (!newest) return;
-
-    char path[128];
-    indexPath(forum, path, sizeof(path));
-    FILE* f = fopen(path, "rb");
-    if (!f) return;
-
-    uint32_t floor = newest > kScanMax ? newest - kScanMax : 1;
-    for (uint32_t k = floor; k <= newest; ++k) {
-        if (fseek(f, static_cast<long>(k) * kRec, SEEK_SET) != 0) break;
-        char rec[kRec];
-        if (fread(rec, 1, kRec, f) != kRec) break;
-        MsgRec m;
-        parseRec(rec, m);
-        if (m.num != k) continue;                 // a torn record, skipped
-        if (!m.live) continue;                    // deleted: not in the count
-        if (m.hash != hash) continue;
-        ++total;
-        if (k == n) idx = total;
-    }
-    fclose(f);
-    if (!idx) total = 0;                          // n is not in this subject
-}
-
-// postRule: the separator above every message.
-//
-//   ══ #412 ────────────────────── 2 of 5
-//
-// Two heavy glyphs, the number, then a light rule out to the width with the
-// position flush right. HLine2 against HLine is two line weights, which
-// reads as a rule with a heavy start on PETSCII and CP437 alike.
-//
-// Drawn per message rather than a reverse bar per message: the reading loop
-// does not clear, so a bar here would be a cyan stripe every eight rows.
-void postRule(Bbs& b, Session& s, uint32_t num, uint32_t idx, uint32_t total) {
+// Rob kept the rule ("#4 row is fine") and wanted the right words in it.
+// "New Message" when this caller has not read it, "Message" when they have,
+// because a label that says New on something already read is a small lie
+// the eye learns to skip.
+void headRule(Bbs& b, Session& s, bool fresh, uint32_t num) {
     Term& t = s.term;
     Timeline& tl = s.tl;
     uint8_t w = b.rowWidth(s);
+    const char* label = fresh ? "New Message: ID " : "Message: ID ";
+    char id[16];
+    snprintf(id, sizeof(id), "#%lu", static_cast<unsigned long>(num));
 
-    char numTxt[16], posTxt[24];
-    snprintf(numTxt, sizeof(numTxt), " #%lu ", static_cast<unsigned long>(num));
-    if (total) snprintf(posTxt, sizeof(posTxt), " %lu of %lu ",
-                        static_cast<unsigned long>(idx),
-                        static_cast<unsigned long>(total));
-    else       posTxt[0] = '\0';
-
-    uint8_t used = 1;                         // the leading space
     t.ch(tl, ' ');
     t.color(tl, g_cTitle);
-    t.glyphs(tl, Glyph::HLine2, 2);  used = static_cast<uint8_t>(used + 2);
+    t.glyphs(tl, Glyph::HLine2, 2);
+    t.ch(tl, ' ');
+    t.color(tl, g_cSubj);
+    t.text(tl, label);
     t.color(tl, g_cCount);
-    t.text(tl, numTxt);              used = static_cast<uint8_t>(used + strlen(numTxt));
-
-    uint8_t plen = static_cast<uint8_t>(strlen(posTxt));
-    // The rule fills whatever is left. If the number and position together
-    // are wider than the row, there is no rule rather than a wrapped one:
-    // a row that wraps leaves a tail on every redraw.
-    if (used + plen < w) {
+    t.text(tl, id);
+    t.ch(tl, ' ');
+    size_t used = 1 + 2 + 1 + strlen(label) + strlen(id) + 1;
+    if (used < w) {
         t.color(tl, g_cTitle);
-        t.glyphs(tl, Glyph::HLine, static_cast<uint8_t>(w - used - plen));
+        t.glyphs(tl, Glyph::HLine, static_cast<uint8_t>(w - used));
     }
-    if (plen) { t.color(tl, g_cWhen); t.text(tl, posTxt); }
     t.nl(tl);
 }
 
-// byline: who and when, one indent in, in two colours.
-//
-// Left aligned with no flush right, because a single line with a fifty
-// column hole in it reads as a bug. Two colours so the eye separates the
-// person from the timestamp without a separator character.
-void byline(Session& s, const char* who, const char* when) {
+// plainRule: the rule between the header and the body.
+void plainRule(Bbs& b, Session& s) {
+    uint8_t w = b.rowWidth(s);
     s.term.ch(s.tl, ' ');
-    s.term.color(s.tl, g_cWho);
-    s.term.text(s.tl, who);
-    s.term.text(s.tl, "  ");
-    s.term.color(s.tl, g_cWhen);
-    s.term.text(s.tl, when);
+    s.term.color(s.tl, g_cTitle);
+    s.term.glyphs(s.tl, Glyph::HLine, static_cast<uint8_t>(w > 1 ? w - 1 : 1));
+    s.term.nl(s.tl);
+}
+
+// field: one labelled header line. The labels are the rules' colour, so the
+// header reads as one block with them; the values are aligned under each
+// other, which is what makes three lines read as a header and not a list.
+void field(Bbs& b, Session& s, const char* label, Color c, const char* value) {
+    uint8_t w = b.rowWidth(s);
+    size_t lead = 1 + strlen(label);
+    s.term.ch(s.tl, ' ');
+    s.term.color(s.tl, g_cTitle);
+    s.term.text(s.tl, label);
+    s.term.color(s.tl, c);
+    s.term.textCols(s.tl, value, static_cast<uint8_t>(w > lead ? w - lead : 1));
     s.term.nl(s.tl);
 }
 
@@ -1410,9 +1418,7 @@ void byline(Session& s, const char* who, const char* when) {
 void showMessage(Bbs& b, Session& s, uint8_t forum, uint32_t n) {
     MsgRec m;
     if (!readRec(forum, n, m)) {
-        s.term.nl(s.tl);
-        s.term.color(s.tl, Color::Grey);
-        s.term.text(s.tl, "--> That message is not on the card.");
+        notice(s, g_cMark, "--> That message is not on the card.");
         prompt(b, s);
         return;
     }
@@ -1425,44 +1431,57 @@ void showMessage(Bbs& b, Session& s, uint8_t forum, uint32_t n) {
     char when[24] = "";
     clk::fmtEpoch(when, sizeof(when), "%d %b %H:%M", m.epoch);
 
-    // The post rule and the byline (UX spec F1). The rule carries the
-    // message number, which is the thing a caller types, and its position in
-    // the subject, which is the thing that says whether there is more.
-    s.term.nl(s.tl);
-    {
-        uint32_t idx = 0, total = 0;
-        subjectPosition(forum, m.hash, n, idx, total);
-        postRule(b, s, m.num, idx, total);
-    }
-    byline(s, m.handle, when);
+    // Read the pointer BEFORE marking, so the header can say whether this
+    // was new to this caller.
+    Ptr ptr;
+    readPtr(callerId(s), forum, ptr);
+    bool fresh = !seen(ptr, n);
 
-    s.term.color(s.tl, g_cHead);
-    s.term.textCols(s.tl, m.subject, b.rowWidth(s));
+    // Rob's layout:
+    //
+    //    == New Message: ID #4 ---------------
+    //    Subject: Wrapping test
+    //    By:      quantumrob
+    //    Date:    22 Sep 12:32
+    //    -------------------------------------
+    //    the body
+    //
+    //    --> Enter reads on. # - Jump to subject. P posts. ? help. Q back.
+    //   Forums>Unleashed BBS>
+    //
+    // Two newlines first: one ends the prompt line the key was pressed on,
+    // the second is the blank line he asked for above the header.
     s.term.nl(s.tl);
+    s.term.nl(s.tl);
+    headRule(b, s, fresh, m.num);
+    field(b, s, "Subject: ", g_cHead, m.subject);
+    field(b, s, "By:      ", g_cWho,  m.handle);
+    field(b, s, "Date:    ", g_cWhen, when);
+    plainRule(b, s);
 
     char body[kBodyMax + 1];
     if (!readBody(forum, m, body, sizeof(body))) {
-        say(s, Color::LightRed, "(the text of this message could not be read)");
+        say(s, Color::LightRed, " (the text of this message could not be read)");
         s.term.nl(s.tl);
     } else {
-        // Wrapped at THIS reader's width, not the writer's. A message typed
-        // at 72 columns has to read on a C64 and one typed at 35 should not
-        // sit in a stripe down an 80 column screen, and the reader's width
-        // is not knowable when the message is written.
+        // Wrapped at THIS reader's width, not the writer's, one column in
+        // like the header above it. The guard is generous: 1,536 characters
+        // at 35 columns is about 45 lines before any paragraph breaks, and
+        // the old limit of 40 would have cut the end off a full post on a C64.
         s.term.color(s.tl, g_cBody);
+        uint8_t w = b.rowWidth(s);
         char line[160];
         const char* p = body;
         uint8_t guard = 0;
-        while ((p = bbsu::wrap(p, line, sizeof(line), b.rowWidth(s))) != nullptr
-               && ++guard < 40) {
+        while ((p = bbsu::wrap(p, line, sizeof(line), static_cast<uint8_t>(w > 1 ? w - 1 : 1))) != nullptr
+               && ++guard < 96) {
+            s.term.ch(s.tl, ' ');
             s.term.text(s.tl, line);
             s.term.nl(s.tl);
             if (!*p) break;
         }
     }
 
-    Ptr ptr;
-    readPtr(callerId(s), forum, ptr);
     markSeen(ptr, n);
     writePtr(callerId(s), forum, ptr);
 
@@ -1489,8 +1508,7 @@ void readNext(Bbs& b, Session& s) {
             uint32_t next = nextUnread(vis[k], p, 0, 0);
             if (next) { showMessage(b, s, vis[k], next); return; }
         }
-        s.term.nl(s.tl);
-        say(s, Color::Grey, "--> Nothing new. A number opens a forum to browse it.");
+        notice(s, g_cMark, "--> Nothing new. # - Open a forum to browse it.");
         prompt(b, s);
         return;
     }
@@ -1508,11 +1526,9 @@ void readNext(Bbs& b, Session& s) {
         // the forum rather than dead-ending with nothing but Q.
         g_subj[sl] = 0;
         uint32_t on = nextUnread(forum, p, 0, 0);
-        s.term.nl(s.tl);
-        s.term.color(s.tl, g_cMark);
-        s.term.text(s.tl, on ? "--> That is the end of that subject."
-                             : "--> That is the end of that subject. Nothing else new here.");
-        if (on) { s.term.nl(s.tl); showMessage(b, s, forum, on); return; }
+        notice(s, g_cMark, on ? "--> That is the end of that subject."
+                              : "--> That is the end of that subject. Nothing else new here.");
+        if (on) { showMessage(b, s, forum, on); return; }
         prompt(b, s);
         return;
     }
@@ -1523,17 +1539,11 @@ void readNext(Bbs& b, Session& s) {
         // rather than dead-ending with no way onward but Q.
         g_subj[sl] = 0;
         next = nextUnread(forum, p, 0, 0);
-        if (next) {
-            s.term.nl(s.tl);
-            s.term.color(s.tl, Color::Grey);
-            s.term.text(s.tl, "--> That is the end of that subject.");
-            s.term.nl(s.tl);
-        }
+        if (next) notice(s, g_cMark, "--> That is the end of that subject.");
     }
     if (next) { showMessage(b, s, forum, next); return; }
 
-    s.term.nl(s.tl);
-    say(s, Color::Grey, "--> Nothing new here. L lists the subjects, a number opens one.");
+    notice(s, g_cMark, "--> Nothing new here. L lists the subjects, # - Jump to one.");
     prompt(b, s);
 }
 
@@ -1549,7 +1559,7 @@ uint32_t g_replyHash[BBS_MAX_NODES + 2] = {};
 // session, so it drives the ordinary line editor and reads the result back
 // on Enter, which is how the caller keeps backspace and every terminal
 // behaviour they already know.
-enum : uint8_t { AskNone = 0, AskSubject, AskBody };
+enum : uint8_t { AskNone = 0, AskSubject, AskBody, AskJump };
 uint8_t g_ask[BBS_MAX_NODES + 2] = {};
 
 // ---------------------------------------------------------------------------
@@ -1687,7 +1697,7 @@ void finishPost(Bbs& b, Session& s, const char* body) {
 
     s.term.nl(s.tl);
     if (!appendMessage(forum, m, body)) {
-        say(s, Color::LightRed, "--> That did not save. The card may be full.");
+        say(s, Color::LightRed, " --> That did not save. The card may be full.");
     } else {
         // The poster has read their own message by definition.
         Ptr p;
@@ -1697,10 +1707,9 @@ void finishPost(Bbs& b, Session& s, const char* body) {
         g_forum[forum].unread = unreadUpTo(p, g_forum[forum].newest);
 
         char msg[80];
-        snprintf(msg, sizeof(msg), "--> Posted as message %lu.",
+        snprintf(msg, sizeof(msg), " --> Posted as message %lu.",
                  static_cast<unsigned long>(m.num));
-        s.term.color(s.tl, Color::LightGreen);
-        s.term.text(s.tl, msg);
+        say(s, Color::LightGreen, msg);
         g_subjFor = 0xFF;                       // the tally is stale now
         claims::release(claims::Res::Subjects, slotOf(s));
     }
@@ -1713,24 +1722,19 @@ void startPost(Bbs& b, Session& s, bool reply) {
     uint8_t forum = g_at[sl];
 
     if (forum == 0xFF) {
-        s.term.nl(s.tl);
-        s.term.color(s.tl, Color::Grey);
-        s.term.text(s.tl, "--> Open a forum first.");
+        notice(s, g_cMark, "--> Open a forum first.");
         prompt(b, s);
         return;
     }
     bool allowed = reply ? mayReply(s, forum) : mayStart(s, forum);
     if (!allowed) {
-        s.term.nl(s.tl);
-        s.term.color(s.tl, Color::Grey);
-        s.term.text(s.tl, reply ? "--> You cannot post in here."
-                                : "--> You cannot start a subject in here.");
+        notice(s, g_cMark, reply ? "--> You cannot post in here."
+                                 : "--> You cannot start a subject in here.");
         prompt(b, s);
         return;
     }
     if (reply && !g_shown[sl]) {
-        s.term.nl(s.tl);
-        say(s, Color::Grey, "--> Read a message first, then R answers it.");
+        notice(s, g_cMark, "--> Read a message first, then R answers it.");
         prompt(b, s);
         return;
     }
@@ -1801,10 +1805,62 @@ void showHelp(Bbs& b, Session& s) {
     prompt(b, s);
 }
 
+// jumpTo: act on a number typed at the prompt.
+//
+// In the forum list it is the forum's row. Anywhere else it is a subject's
+// number, which is the ID of the message that started it, so the number a
+// caller types is the number the message shows.
+void jumpTo(Bbs& b, Session& s, uint32_t num) {
+    uint8_t sl = slotIdx(s);
+    g_ask[sl] = AskNone;
+    if (g_view[sl] == View::Forums) {
+        uint8_t vis[kMaxForums];
+        uint8_t n = visibleForums(s, vis, kMaxForums);
+        if (num >= 1 && num <= n) { drawSubjects(b, s, vis[num - 1]); return; }
+        notice(s, g_cMark, "--> No forum with that number.");
+        prompt(b, s);
+        return;
+    }
+    // The table may belong to another caller by now. Rescan rather than
+    // open whatever sits in somebody else's forum.
+    if (!claims::holds(claims::Res::Subjects, sl) || g_subjFor != g_at[sl]) {
+        Ptr rp;
+        readPtr(callerId(s), g_at[sl], rp);
+        scanSubjects(g_at[sl], rp, sl);
+    }
+    for (uint8_t k = 0; k < g_subjRows; ++k) {
+        if (g_subjRow[k].first == num) {
+            g_subj[sl]  = g_subjRow[k].hash;
+            g_shown[sl] = 0;          // from the top of the conversation
+            readNext(b, s);
+            return;
+        }
+    }
+    notice(s, g_cMark, "--> No subject with that number.");
+    prompt(b, s);
+}
+
 void onKey(Session& s, int key, uint32_t) {
     if (!g_bbs) return;
     Bbs& b = *g_bbs;
     uint8_t sl = slotIdx(s);
+
+    // A number being typed at the prompt. Digits, Backspace, Enter and ESC
+    // mean something; a letter is ignored rather than taken as a command,
+    // because the caller is part way through a number.
+    if (g_ask[sl] == AskJump) {
+        if (key == KEY_ENTER) {
+            jumpTo(b, s, static_cast<uint32_t>(strtoul(s.ed.text(), nullptr, 10)));
+            return;
+        }
+        if (key == KEY_ESC || (key == KEY_BACKSPACE && s.ed.len() <= 1)) {
+            s.term.eraseBack(s.tl, s.ed.shown());
+            g_ask[sl] = AskNone;
+            return;
+        }
+        if ((key >= '0' && key <= '9') || key == KEY_BACKSPACE) s.ed.key(key, s.term, s.tl);
+        return;
+    }
 
     // A question is open: the keys belong to the editor, not to the menu.
     // Without this a caller typing a subject containing the letter q would
@@ -1899,9 +1955,7 @@ void onKey(Session& s, int key, uint32_t) {
         if (key == KEY_ESC) {
             g_ask[sl] = AskNone;
             g_replying[sl] = false;
-            s.term.nl(s.tl);
-            s.term.color(s.tl, Color::Grey);
-            s.term.text(s.tl, "--> Nothing posted.");
+            notice(s, g_cMark, "--> Nothing posted.");
             prompt(b, s);
             return;
         }
@@ -1910,9 +1964,7 @@ void onKey(Session& s, int key, uint32_t) {
         if (r == LineEditor::Res::Abort) {
             g_ask[sl] = AskNone;
             g_replying[sl] = false;
-            s.term.nl(s.tl);
-            s.term.color(s.tl, Color::Grey);
-            s.term.text(s.tl, "--> Nothing posted.");
+            notice(s, g_cMark, "--> Nothing posted.");
             prompt(b, s);
             return;
         }
@@ -1952,36 +2004,16 @@ void onKey(Session& s, int key, uint32_t) {
     // Space reads on too, the way a pager's does.
     if (key == KEY_ENTER || key == ' ') { readNext(b, s); return; }
 
+    // A number is typed on the prompt line itself and confirmed with Enter.
+    // It used to be one keypress and act at once, which meant only 1 to 9
+    // could ever be reached: a forum list allows sixteen and a subject list
+    // sixty-four, and subjects are numbered by message ID now, so they run
+    // past 9 almost immediately.
     if (key >= '1' && key <= '9') {
-        uint8_t want = static_cast<uint8_t>(key - '1');
-        if (g_view[sl] == View::Forums) {
-            uint8_t vis[kMaxForums];
-            uint8_t n = visibleForums(s, vis, kMaxForums);
-            if (want < n) { drawSubjects(b, s, vis[want]); return; }
-            s.term.nl(s.tl);
-            s.term.color(s.tl, Color::Grey);
-            s.term.text(s.tl, "--> No forum with that number.");
-            prompt(b, s);
-            return;
-        }
-        // The table may belong to another caller by now. Rescan rather
-        // than open whatever subject happens to sit at that row in
-        // somebody else's forum.
-        if (!claims::holds(claims::Res::Subjects, sl) || g_subjFor != g_at[sl]) {
-            Ptr rp;
-            readPtr(callerId(s), g_at[sl], rp);
-            scanSubjects(g_at[sl], rp, sl);
-        }
-        if (want < g_subjRows) {
-            g_subj[sl]  = g_subjRow[want].hash;
-            g_shown[sl] = 0;          // from the top of the conversation
-            readNext(b, s);
-            return;
-        }
-        s.term.nl(s.tl);
-        s.term.color(s.tl, Color::Grey);
-        s.term.text(s.tl, "--> No subject with that number.");
-        prompt(b, s);
+        g_ask[sl] = AskJump;
+        s.ed.begin(6, LineEditor::F_STAY);
+        s.ed.key(key, s.term, s.tl);
+        return;
     }
 }
 
@@ -1996,8 +2028,7 @@ void answered(Session& s, const char* text) {
     if (what == AskSubject) {
         if (!text || !*text) {                    // no subject, no post
             s.term.nl(s.tl);
-            s.term.color(s.tl, g_cMark);
-            s.term.text(s.tl, "--> Nothing posted.");
+            say(s, g_cMark, " --> Nothing posted.");
             g_replying[sl] = false;
             prompt(b, s);
             return;
@@ -2012,8 +2043,7 @@ void answered(Session& s, const char* text) {
     // paragraphs and ending on one would make that impossible.
     if (compose::isAbort(text)) {
         s.term.nl(s.tl);
-        s.term.color(s.tl, g_cMark);
-        s.term.text(s.tl, "--> Nothing posted.");
+        say(s, g_cMark, " --> Nothing posted.");
         g_replying[sl] = false;
         prompt(b, s);
         return;
@@ -2056,6 +2086,7 @@ void enter(Bbs& b, Session& s) {
     g_shown[sl] = 0;
     g_subj[sl]  = 0;
     g_replying[sl] = false;
+    g_ask[sl]   = AskNone;         // see onLogoff
 
     // Unread counts are per caller, so they are computed on the way in
     // rather than held board-wide. A forum's count in the list and the sum
@@ -2085,6 +2116,11 @@ void onLogoff(Session& s) {
     g_subj[sl]     = 0;
     g_shown[sl]    = 0;
     g_replying[sl] = false;
+    // g_ask was the one field in this block that was never reset, so a
+    // caller who dropped part way through a subject, a post or a number left
+    // the next caller on that node with their keys going to an editor they
+    // could not see.
+    g_ask[sl]      = AskNone;
     g_draftSubject[sl][0] = '\0';
     s.compose[0] = '\0';
     g_bodyLen[sl]  = 0;

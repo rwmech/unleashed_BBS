@@ -2706,6 +2706,38 @@ def test_mail_compose():
     return ok
 
 
+def screen_lines(buf):
+    """The buffer as screen lines, escapes and carriage returns gone."""
+    return plain(buf).replace(b"\r", b"").split(b"\n")
+
+
+def count_lines(buf, needle):
+    """How many screen lines contain needle. A footer is on screen once."""
+    return sum(1 for ln in screen_lines(buf) if needle in ln)
+
+
+def blank_before(buf, needle):
+    """Is the line containing needle set off from the prompt by a blank line?
+
+    Needs the match at index 2 or later. The buffer is cleared just before
+    the key, so line 0 is always the tail of the prompt line, and on the old
+    code the answer sat on line 1 with nothing between. Checking only that
+    the line above is empty would pass on exactly that.
+    """
+    lines = screen_lines(buf)
+    for i, ln in enumerate(lines):
+        if needle in ln:
+            return i >= 2 and lines[i - 1].strip() == b""
+    return False
+
+
+def subject_number(buf, name):
+    """The number the subject list shows for a subject, or None."""
+    m = re.search(rb"(\d+) +" + re.escape(name.encode() if isinstance(name, str) else name),
+                  plain(buf))
+    return m.group(1).decode() if m else None
+
+
 def ends_at_prompt(buf, marker):
     """Is the last line on screen a prompt a caller can type at?
 
@@ -2756,10 +2788,15 @@ def test_forums():
     # used to need an Enter before any prompt appeared.
     ok &= check("the forum list ends at a prompt, with no key pressed",
                 ends_at_prompt(s.buf, b"Forums>"))
+    # prompt() prints the footer, and the list printed its own as well, so it
+    # was on screen twice every time the list was drawn.
+    ok &= check("the forum list shows its footer once",
+                count_lines(s.buf, b"Enter reads") == 1)
 
-    # Open the first forum.
+    # Open the first forum. A number is typed on the prompt line and
+    # confirmed with Enter, so numbers above 9 can be reached at all.
     s.buf.clear()
-    s.send(b"1")
+    s.send(b"1\r")
     s.pump(1.2)
     # The breadcrumb names the level. "F1" was the old "[F1] name>" prompt
     # and is gone; this check only kept passing through its fallback.
@@ -2768,6 +2805,8 @@ def test_forums():
     # And the subject list, which ended in a bare cursor, ends at one too.
     ok &= check("the subject list ends at a prompt, with no key pressed",
                 ends_at_prompt(s.buf, b"Forums>"))
+    ok &= check("the subject list shows its footer once",
+                count_lines(s.buf, b"Enter reads") == 1)
 
     def post(subject, body):
         """Write a message the way a caller does: a subject, then lines.
@@ -2839,12 +2878,27 @@ def test_forums():
     s.buf.clear()
     s.send(b"l")
     s.pump(1.2)
+    # Rob: "It shows 1 above, but 4 below, which is it?" The list numbered
+    # rows while the message showed its ID. A subject is numbered by the
+    # message that started it now, so the two agree.
+    num = subject_number(s.buf, "20m antennas")
+    ok &= check("the subject list numbers a subject", num is not None)
     s.buf.clear()
-    s.send(b"1")
+    s.send(((num or "1") + "\r").encode())
     s.pump(1.5)
     mine = plain(s.buf)
     ok &= check("the poster can re-read their own message",
                 b"20m" in mine and b"Nothing new" not in mine)
+    ok &= check("the subject's number is the ID its first message shows",
+                num is not None and ("ID #" + num).encode() in mine)
+    ok &= check("a message says Subject, By and Date",
+                b"Subject:" in mine and b"By:" in mine and b"Date:" in mine)
+    ok &= check("the message is set off from the prompt by a blank line",
+                blank_before(s.buf, b"Message: ID #"))
+    ok &= check("the breadcrumb has no Messages> level",
+                b"Messages>" not in mine and ends_at_prompt(s.buf, b"Forums>"))
+    ok &= check("the reading screen shows its footer once",
+                count_lines(s.buf, b"Enter reads") == 1)
     s.buf.clear()
     s.send(b"\r")
     s.pump(1.2)
@@ -2853,6 +2907,26 @@ def test_forums():
     s.buf.clear()
     s.send(b"q")
     s.pump(1.0)
+    # Q from reading is back ONE level, to the subject list. The first draft
+    # of these checks called this the forum list and looked for the forum
+    # list's title on it, which is a test asserting the wrong screen.
+    ok &= check("the subject list shows its footer once on a return",
+                count_lines(s.buf, b"Enter reads") == 1)
+    s.buf.clear()
+    s.send(b"q")
+    s.pump(1.0)
+    # Rob: "Duplicate exists always not just on entry".
+    ok &= check("the forum list shows its footer once on a return as well",
+                count_lines(s.buf, b"Enter reads") == 1)
+    # Rob: one form for every count, zero included, instead of "nothing new".
+    ok &= check("the title bar says 0 new messages, not 'nothing new'",
+                b"0 new messages" in plain(s.buf) and b"nothing new" not in plain(s.buf))
+    # Everything here is the poster's own, so Enter has nothing new to read.
+    s.buf.clear()
+    s.send(b"\r")
+    s.pump(1.0)
+    ok &= check("'nothing new' is set off from the prompt by a blank line",
+                blank_before(s.buf, b"Nothing new"))
 
     # Everything posted by this caller is already read by definition, so a
     # second caller is what makes the unread counts mean anything.
@@ -2863,20 +2937,22 @@ def test_forums():
     t2.wait_for(b"Forums", 6)
     t2.pump(1.0)
     ok &= check("a second caller sees the messages as new",
-                b"4 new" in plain(t2.buf))
+                b"4 new messages" in plain(t2.buf))
 
     t2.buf.clear()
-    t2.send(b"1")
+    t2.send(b"1\r")
     t2.pump(1.5)
     subs = plain(t2.buf)
     ok &= check("both subjects are listed for them",
                 b"20m antennas" in subs and b"20m tips" in subs)
 
     # Read ONE subject to its end. This is the whole point of the test.
-    which = 1 if subs.index(b"20m antennas") < subs.index(b"20m tips") else 2
+    which = subject_number(t2.buf, "20m antennas") or "1"
     t2.buf.clear()
-    t2.send(str(which).encode())
+    t2.send((which + "\r").encode())
     t2.pump(1.5)
+    ok &= check("an unread message is headed New Message",
+                b"New Message: ID #" in plain(t2.buf))
     ok &= check("opening a subject shows its first message",
                 b"20m antennas" in plain(t2.buf))
     # The line that used to be cut at 72 characters. Checking its TAIL, not
@@ -2897,6 +2973,8 @@ def test_forums():
     t2.buf.clear()
     t2.send(b"\r")                       # past the end: rolls to the rest
     t2.pump(1.5)
+    ok &= check("'end of that subject' is set off from the prompt by a blank line",
+                blank_before(t2.buf, b"That is the end"))
 
     # Back to the subject list and check the arithmetic.
     t2.buf.clear()
@@ -2920,6 +2998,59 @@ def test_forums():
     drain(s);  s.send(b"q");  s.pump(0.5)
     s.send(b"q"); s.pump(0.5); s.close()
     return ok
+
+
+def test_handle_case():
+    """A handle comes back in the case it was registered with.
+
+    Rob typed QuantumRob and was greeted as quantumrob. The login matches
+    case-insensitively and then shows the ACCOUNT's spelling, on purpose, so
+    this pins that registration keeps the case it was given: if it does, the
+    lower case is in the stored account and not in the code.
+    """
+    print("Handle case")
+    a = ansi_login("MixedCaseX")
+    a.close()
+    time.sleep(0.5)
+    b = Caller(ansi=True)
+    b.wait_for(b"Enter your handle", 10)
+    login(b, "mixedcasex")
+    ok = check("typed in lower case, greeted in the registered case",
+               b.wait_for(b"MixedCaseX", 5))
+    ok &= check("and never in the case that was typed",
+                b"Welcome back, mixedcasex" not in plain(b.buf))
+    b.close()
+    time.sleep(0.5)
+
+    # Re-casing an account that already exists. Rob's is stored lower case,
+    # and the fix for it is USER EDIT with the handle retyped. That only
+    # works if a case-only change is not refused as "That handle is taken",
+    # because the handle it collides with is the account's own. users::update
+    # skips the duplicate check when the names match ignoring case; this is
+    # the proof, rather than a reading of the code.
+    if PASSWORD:
+        s = ansi_login("Recaser")
+        s.buf.clear()
+        s.send(f"bye {PASSWORD}\r".encode())
+        s.wait_for(b"SysOp node", 5)
+        s.pump(0.6)
+        s.buf.clear()
+        s.send(b"user edit mixedcasex\r")
+        ok &= check("the account opens for a re-case", s.wait_for(b"EDIT ACCOUNT", 5))
+        s.send(b"\x08" * 24 + b"MIXEDcaseX" + F1)
+        ok &= check("a case-only rename saves", s.wait_for(b"saved.", 6))
+        drain(s)
+        s.close()
+        time.sleep(0.5)
+        c = Caller(ansi=True)
+        c.wait_for(b"Enter your handle", 10)
+        login(c, "mixedcasex")
+        ok &= check("and the board greets the new case",
+                    c.wait_for(b"MIXEDcaseX", 5))
+        c.close()
+    return ok
+
+
 
 
 def test_privacy():
@@ -5153,7 +5284,7 @@ GROUPS = {
     # The shell, its lists and the screens the core draws.
     "shell":     ["menus", "sysinfo", "page", "about", "config"],
     # Logging in, accounts, staff.
-    "login":     ["accounts", "guest", "sysop", "cosysop", "user_admin", "ban"],
+    "login":     ["accounts", "handle_case", "guest", "sysop", "cosysop", "user_admin", "ban"],
     # Terminal handling across the three flavours.
     "terminal":  ["ansi", "petscii", "ascii", "telnet_first"],
 }
@@ -5171,7 +5302,7 @@ GROUPS = {
 # picked, which is the right default for a test added and not yet placed.
 ORDER_NAMES = [
     "test_ansi", "test_telnet_first", "test_petscii", "test_ascii",
-    "test_page", "test_sysop", "test_cosysop", "test_accounts",
+    "test_page", "test_sysop", "test_cosysop", "test_accounts", "test_handle_case",
     "test_user_admin", "test_guest",
     "test_privacy", "test_plugins", "test_about", "test_announce",
     "test_chat", "test_room_commands", "test_room_new_commands",

@@ -527,6 +527,39 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
 - **A deliberate deviation from the plan, and the reasoning is the useful part.** The plan had mail and bans moving to ids. `MailRec` is a fixed-size record with a static assert on its layout, so that means changing `sizeof` and converting every live mailbox, on the one board that exists, to fix a bug that has a cheaper fix. Following renames gets the same visible outcome with no format change. The forums will store ids natively, so mail ends up the only holdout and a far smaller job later. **Prefer the fix that does not migrate somebody's data when both fixes close the same hole.**
 - **The positional-descriptor trap caught me exactly as CLAUDE.md predicted.** `onRename` inserted before `onBytes` shifted every field after it, and the compiler said so. Append-only is not a style rule here, it is the only safe edit.
 
+### The forums as Rob laid them out (0.21.6)
+
+- **The fix for one missing thing added a duplicated thing, and the check
+  written for the first could not see the second.** 0.21.5 made each list
+  print a footer before calling `prompt()`, which prints one. The
+  usability check added in the same version asked whether the screen ENDED
+  at a prompt, and a screen with the footer twice ends at a prompt. A
+  usability check has to ask about the whole screen, not its last line:
+  `count_lines()` now counts the footer.
+- **Numbering: one number per thing, and it is the permanent one.** A
+  subject is numbered by the ID of its first message, so the list and the
+  message agree. The spec's `SUBJ.TXT` would have given subjects their own
+  small numbers, which is precisely two numbers for one thing, the
+  complaint that started this. Rob: "It shows 1 above, but 4 below, which
+  is it?"
+- **Single-key input capped every number at 9**, against sixteen forums and
+  sixty-four subjects. A number is typed on the prompt line and confirmed
+  with Enter now. A limit that only bites past a count nobody tested at is
+  the same class as `max_users` at 100.
+- **`notice()` for every answer to a key**, because Rob asked for the blank
+  line three times, site by site. A rule enforced by one helper cannot be
+  forgotten at the next site; a rule remembered per site already was.
+- **Tests written first and run against the old code.** Every new check in
+  0.21.6 failed on 0.21.5 before the fix and passed after. That is the only
+  evidence a check can catch what it claims to.
+- **Rob's account is stored as `quantumrob`**, not a code bug: the board
+  shows the stored spelling on purpose. `USER EDIT quantumrob`, retype the
+  handle, F1. Proven by `test_handle_case`.
+- **Queued, first feature after this batch: removing a post** (Rob: "there
+  is no way the sysop right now can remove a message"). The index already
+  supports it: a deleted message keeps its slot and flips a flag. Missing
+  is the key, the `mod` level check, and a confirmation.
+
 ### The forums get their layout, two versions late (0.21.5)
 
 - **A 4,345 line UX spec was commissioned for the forums and two versions

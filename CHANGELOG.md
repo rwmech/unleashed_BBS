@@ -24,6 +24,85 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.21.6, 2026-09-22
+
+The forums as Rob laid them out after flashing 0.21.5, plus three bugs his
+screenshots found. Focused tests (forums, handle case, messaging, places,
+login); every new check was run against 0.21.5 first and failed there.
+
+**The footer printed twice, every time a list was drawn.** `prompt()` prints
+the footer; 0.21.5 made each list print one too before calling it. Rob:
+"Duplicate exists always not just on entry." Mine, from the fix for the
+missing prompt, and it passed because the check that fix added asked only
+whether the screen ENDED at a prompt. `count_lines()` now asks how many
+times the footer is on screen.
+
+**The footer came out cyan after an end-of-subject notice.** The second
+footer was a bare `text()` with no colour of its own, so it inherited the
+notice's. Both go through `say()`, which sets one.
+
+**A blank line before every answer to a key.** Rob, three times: "Linefeed
+before --> That is the end", "Linefeed before --> Nothing new", and the
+same above the message header. One `notice()` helper now carries every
+answer to a single key at the prompt, so the next one cannot be added
+without it. A line finished with Enter in an editor has already moved down
+and gets one newline, not two; the distinction is written into the helper.
+
+**The message header, as Rob wrote it out:**
+
+```
+ == New Message: ID #4 -------------------------
+ Subject: Wrapping test
+ By:      QuantumRob
+ Date:    22 Sep 12:32
+ -----------------------------------------------
+ the body, one column in
+
+ --> Enter reads on. # - Jump to subject. P posts. ? help. Q back.
+Forums>Unleashed BBS>
+```
+
+"New Message" only when this caller has not read it. `Messages>` is gone
+from the breadcrumb: "why do we need messages, we're in the forum topic".
+
+**Subjects are numbered by the message that started them.** Rob: "It shows
+1 above, but 4 below, which is it?" The list numbered rows, so a subject's
+number moved whenever another subject came or went and never matched
+anything on the message itself. The index is never compacted, so a message
+ID is permanent, and numbering a subject by its first message makes the
+number in the list the number the message shows. No new file: the spec's
+`SUBJ.TXT` would have given subjects their own small numbers, which is
+exactly the two-numbers-for-one-thing Rob was objecting to.
+
+**A number is typed on the prompt line and confirmed with Enter.** It used
+to be one keypress, so only 1 to 9 could ever be reached, against sixteen
+forums and sixty-four subjects allowed, and IDs run past 9 almost at once.
+
+**The status line moved under the rule** (Rob): a blank line either side,
+"N new messages are ready to read. [Enter] to start reading unread." when
+there is something, and "Nothing new since your last call." when not. Both
+lists do it the same way.
+
+**`g_ask` survived its caller.** `enter()` and `onLogoff()` reset every
+field around it and not it, so a caller who dropped part way through a
+subject, a post or a number left the next caller on that node typing into
+an editor they could not see. Same shape as `pendingLand` in 0.19.2.
+
+**A handle's case, checked rather than assumed.** Rob logged in as
+`QuantumRob` and was greeted as `quantumrob`. `test_handle_case` proves
+registration keeps case and that login greets with the stored spelling, so
+the lower case is in his account. It also proves the fix works: a
+case-only rename through `USER EDIT` is not refused as "taken" by the
+account's own name, and the board greets the new case.
+
+**The forum list's title bar says "N new messages" for every count**,
+zero included (Rob). It said a lower-case "nothing new" when there was
+nothing, which read as a fragment next to a title.
+
+Also: the message body guard went 40 to 96 lines, because 1,536 characters
+at 35 columns is about 45 lines and the old limit would have cut the end off
+a full post on a C64.
+
 ## 0.21.5, 2026-09-22
 
 The forums get the layout that was specified for them in April and never
