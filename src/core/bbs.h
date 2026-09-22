@@ -408,6 +408,11 @@ public:
     // session and wants to re-arm its own input afterwards.
     void cmdInfo(Session& s, const char* arg);
     void cmdPage(Session& s, const char* arg);
+
+    // notify: tell a caller something at their next prompt, the way PAGE
+    // does, rather than writing into whatever they are looking at. The core
+    // lifts the prompt, says it, and puts the prompt back.
+    void notify(Session& to, const char* text);
     void cmdTimeAdjust(Session& s, const char* arg);
 
 private:

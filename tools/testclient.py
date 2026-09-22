@@ -1899,6 +1899,7 @@ def test_room_new_commands():
     # of the login banner, and clearing first makes it return "?" so every
     # sticky check fails for a reason that has nothing to do with sticky.
     nb = b.node()
+    na = a.node()           # up front, for the same reason as nb
     for x in (a, b, c):
         x.send(b"chat\r")
         x.wait_for(b"here.", 4)
@@ -1932,10 +1933,42 @@ def test_room_new_commands():
     ok &= check("/pN* sticks the conversation", a.wait_for(b"ends it", 4))
     b.buf.clear()
     c.buf.clear()
+    a.buf.clear()
     a.send(b"only for you\r")
     ok &= check("a stuck line reaches the target", b.wait_for(b"only for you", 4))
     c.pump(0.8)
     ok &= check("and NOT the room", b"only for you" not in plain(c.buf))
+    # The sender sees what they sent, as a line of the conversation. It used
+    # to print "--> /p to #2:... sent." for every line and never the words,
+    # so a stuck conversation read as a column of identical confirmations.
+    a.pump(0.6)
+    shown = render_lines(a.buf)
+    ok &= check("the sender sees what they said, not a 'sent.' per line",
+                any(b"only for you" in ln.encode() for ln in shown)
+                and not any("sent." in ln for ln in shown))
+
+    # Something arrives while the sender is part way through a line. It
+    # must go above the input line, not onto it, and the [>n] marker and
+    # the half typed words must come back underneath. On 0.21.7 the marker
+    # was never lifted, so the arrival printed after it, and the redraw put
+    # the words back without it.
+    # No buffer clear here. The [>n] marker was drawn when the last line was
+    # sent, and clearing now would throw it away, which made the next check
+    # pass on the build that wrote "[>2] P#2:Daytona) hi" on Rob's screen.
+    a.send(b"half typed")
+    a.pump(0.5)
+    b.send(("/p" + na + " incoming\r").encode())
+    a.wait_for(b"incoming", 4)
+    a.pump(0.6)
+    shown = render_lines(a.buf)
+    arrived = [ln for ln in shown if "incoming" in ln]
+    ok &= check("an arrival does not land on the sticky marker",
+                bool(arrived) and not any("[>" in ln for ln in arrived))
+    last = [ln for ln in shown if ln.strip()][-1] if any(ln.strip() for ln in shown) else ""
+    ok &= check("and the marker and the half typed line come back under it",
+                last.strip().startswith("[>" + nb + "]") and "half typed" in last)
+    a.send(b"\x1b")
+    a.pump(0.3)
 
     # --- /p* releases it
     a.buf.clear()
@@ -2706,6 +2739,77 @@ def test_mail_compose():
     return ok
 
 
+def render_lines(buf, cols=80):
+    """The buffer played onto a scrolling grid the way a terminal draws it.
+
+    Honours what plain() cannot: backspace, cursor moves, erase to end of
+    line and clear screen, so an erase that did or did not happen shows up
+    as a difference in the lines. Written because three layout bugs in one
+    evening (a doubled footer, a prompt written over, a marker left behind)
+    each passed every check that read the plain buffer.
+    """
+    data = bytes(buf)
+    csi = re.compile(rb"\x1b\[([0-9;?]*)([A-Za-z])")
+    lines = [[" "] * cols]
+    x = y = 0
+    i, n = 0, len(data)
+
+    def row(k):
+        while len(lines) <= k:
+            lines.append([" "] * cols)
+        return lines[k]
+
+    while i < n:
+        b = data[i]
+        if b == 0x1B:
+            m = csi.match(data, i)
+            if m:
+                ps = [int(v) for v in m.group(1).decode().split(";") if v.isdigit()]
+                f = m.group(2).decode()
+                k = ps[0] if ps else 1
+                if f == "J" and ps and ps[0] == 2:
+                    lines = [[" "] * cols]
+                    x = y = 0
+                elif f in "Hf":
+                    y = (ps[0] - 1) if ps else 0
+                    x = (ps[1] - 1) if len(ps) > 1 else 0
+                elif f == "K":
+                    r = row(y)
+                    for c in range(x, cols):
+                        r[c] = " "
+                elif f == "A": y = max(0, y - k)
+                elif f == "B": y += k
+                elif f == "C": x = min(cols - 1, x + k)
+                elif f == "D": x = max(0, x - k)
+                i = m.end()
+                continue
+            i += 1
+            continue
+        if b == 0xFF:
+            i += 3
+            continue
+        if b == 0x0D:
+            x = 0
+        elif b == 0x0A:
+            y += 1
+        elif b == 0x08:
+            x = max(0, x - 1)
+        elif b >= 0x20:
+            ln = 4 if b >= 0xF0 else 3 if b >= 0xE0 else 2 if b >= 0xC0 else 1
+            try:
+                ch = data[i:i + ln].decode("utf-8")
+                i += ln - 1
+            except UnicodeDecodeError:
+                ch = bytes([b]).decode("cp437")
+            r = row(y)
+            if x < cols:
+                r[x] = ch
+            x += 1
+        i += 1
+    row(y)
+    return ["".join(r).rstrip() for r in lines]
+
+
 def screen_lines(buf):
     """The buffer as screen lines, escapes and carriage returns gone."""
     return plain(buf).replace(b"\r", b"").split(b"\n")
@@ -3259,6 +3363,57 @@ def test_forums_remove():
     return ok
 
 
+
+
+def test_prompt_survives_notice():
+    """Something arriving at the main prompt lifts it and puts it back.
+
+    Rob, twice: the mail notice "take[s] the message but never return[s] the
+    prompt", and "back up and send the message then put the prompt back and
+    use freaking LF before the prompt!" The chat plugin wrote the notice
+    straight onto the session, after "[1] Main:", and redrew the typed text
+    without the prompt. The core's own queue, which PAGE uses, moved down a
+    line and left the old prompt sitting above the notice.
+    """
+    print("A notice at the main prompt")
+    # Its own account, not Recipient: mail is read oldest first, so a line
+    # left there was what test_mail_compose read instead of its own message.
+    r = ansi_login("Notified")
+    s = ansi_login("Sender")
+    drain(r)
+    drain(s)
+    r.buf.clear()
+    r.send(b"wh")                            # part way through a command
+    r.pump(0.5)
+    s.send(b"mail Notified a line for you\r")
+    s.wait_for(b"Left for", 5)
+    r.wait_for(b"You have mail", 5)
+    r.pump(0.8)
+    shown = [ln for ln in render_lines(r.buf)]
+    idx = next((k for k, ln in enumerate(shown) if "You have mail" in ln), -1)
+    ok = check("the notice arrives", idx >= 0)
+    ok &= check("on its own line, not after the prompt",
+                idx >= 0 and "Main:" not in shown[idx])
+    ok &= check("with a blank line before the prompt",
+                idx >= 0 and idx + 2 < len(shown) and shown[idx + 1].strip() == "")
+    ok &= check("and the prompt comes back with what was typed",
+                idx >= 0 and idx + 2 < len(shown) and "Main: wh" in shown[idx + 2])
+    # Exactly once. The core's queue used to move down a line and leave the
+    # old prompt, typing and all, above the notice: "[1] Main: wh" twice. A
+    # check for a line ending in "Main:" cannot see that one, because the
+    # stale copy still has the typing on it.
+    ok &= check("and the prompt is on screen exactly once",
+                sum(1 for ln in shown if "Main: wh" in ln) == 1)
+    # Leave the mailbox as we found it: finish the command, read, delete.
+    r.send(b"o\r")
+    r.pump(0.8)
+    r.send(b"mail\r")
+    r.wait_for(b"[D]elete", 5)
+    r.send(b"d")
+    r.pump(0.8)
+    r.close()
+    s.close()
+    return ok
 
 
 def test_privacy():
@@ -5484,7 +5639,7 @@ def test_exit_screen():
 GROUPS = {
     # Anything that takes a message from a caller. The editor is shared, so
     # a change to it can break either end.
-    "messaging": ["mail", "forums", "chat", "room_commands"],
+    "messaging": ["mail", "forums", "chat", "room_commands", "room_new", "survives_notice"],
     # The subsystems that own a session and draw their own screens.
     "places":    ["forums", "files", "chat", "xfer"],
     # Anything that reads or writes the card.
@@ -5514,7 +5669,7 @@ ORDER_NAMES = [
     "test_user_admin", "test_guest",
     "test_privacy", "test_plugins", "test_about", "test_announce",
     "test_chat", "test_room_commands", "test_room_new_commands",
-    "test_mail", "test_menus", "test_sysinfo", "test_config", "test_serial",
+    "test_mail", "test_prompt_survives_notice", "test_menus", "test_sysinfo", "test_config", "test_serial",
     "test_motd", "test_idle_login", "test_busy",
     "test_screens", "test_exit_screen",
     "test_refresh_and_ctrl_l",

@@ -412,6 +412,8 @@ bool mailBusy(const Session& s);
 // Defined below, next to the rest of the composer. Declared here
 // because the [R]eply key is handled above it.
 bool writeBegin(Bbs& b, Session& s, const char* to, int16_t dropIdx);
+void wipeInput(Session& s);
+void restoreInput(Session& s);
 
 // joined: owns the keys AND is actually in the room. A caller who typed
 // MAIL at the shell has been handed to this plugin so it can read single
@@ -486,9 +488,9 @@ void mark(Session& s) {
 // interrupt: one line to a caller who might be part way through typing.
 // Their line is lifted, the message printed, and their line put back.
 void interrupt(Session& s, Color c, const char* text) {
-    s.term.eraseBack(s.tl, s.ed.shown());
+    wipeInput(s);
     tell(s, c, text);
-    s.ed.redraw(s.term, s.tl);
+    restoreInput(s);
 }
 
 
@@ -547,18 +549,34 @@ uint8_t stickyCols(const Session& s) {
     return static_cast<uint8_t>(4 + strlen(nodeNum(to).t));    // "[>" + n + "] "
 }
 
-void chatPrompt(Session& s) {
+// drawMarker: the [>n] in front of the input line while a conversation is
+// stuck to one node. Its width is stickyCols(), which wipeInput erases.
+void drawMarker(Session& s) {
     uint8_t to = g_sticky[slotOf(s)];
-    if (to != 0xFF) {
-        // Says where the next line is going, every line, because the whole
-        // risk of a sticky private is forgetting you are in one.
-        char tag_[12];
-        snprintf(tag_, sizeof(tag_), "[>%s] ", nodeNum(to).t);
-        s.term.color(s.tl, g_cPmark);
-        s.term.text(s.tl, tag_);
-    }
+    if (to == 0xFF) return;
+    // Says where the next line is going, every line, because the whole risk
+    // of a sticky private is forgetting you are in one.
+    char tag_[12];
+    snprintf(tag_, sizeof(tag_), "[>%s] ", nodeNum(to).t);
+    s.term.color(s.tl, g_cPmark);
+    s.term.text(s.tl, tag_);
+}
+
+void chatPrompt(Session& s) {
+    drawMarker(s);
     s.term.color(s.tl, g_cText);                             // you type in the room's text colour
     s.term.cursor(s.tl, true);
+}
+
+// restoreInput: put back exactly what wipeInput took away, the marker AND
+// the half typed line. Every place that lifted the input line used to put
+// back only the typed text, so after anything arrived the [>n] was gone and
+// the caller no longer knew where their next line was going. Rob: "the
+// prompt disappears because you print over it".
+void restoreInput(Session& s) {
+    drawMarker(s);
+    s.term.color(s.tl, g_cText);
+    s.ed.redraw(s.term, s.tl);
 }
 
 // armInput: take a line of chat from this caller. F_STAY keeps Enter on
@@ -629,7 +647,7 @@ void flush(Session& s) {
 void catchUp(Session& s) {
     wipeInput(s);
     flush(s);
-    s.ed.redraw(s.term, s.tl);
+    restoreInput(s);
 }
 
 // post: say it in the room. Callers sitting with an empty line see it now;
@@ -1038,9 +1056,14 @@ bool mailSend(Session& s, const char* handle, const char* text, int16_t dropIdx 
 
     Session* now = online(u.handle);                               // tell them if they are on
     if (now && now != &s) {
-        interrupt(*now, Color::Yellow,
-                  joined(*now) ? "You have mail. /e reads it."
-                               : "You have mail. MAIL reads it.");
+        // In the room, interrupt() lifts their line and puts it back. Anywhere
+        // else it goes through the core's queue, which delivers at the main
+        // prompt and knows how to lift THAT. interrupt() only knew the room's
+        // input line, so at the shell it wrote the notice after "[1] Main:"
+        // and put the typing back with no prompt in front of it; in the forums
+        // or the file areas it would have written straight across the screen.
+        if (joined(*now)) interrupt(*now, Color::Yellow, "You have mail. /e reads it.");
+        else              Bbs::instance().notify(*now, "You have mail. MAIL reads it.");
     }
     return true;
 }
@@ -1258,7 +1281,7 @@ uint8_t parseNode(const char* p, const char** rest) {
 void kickFromRoom(Session& target, const char* by, const char* why) {
     char line[96], who[32];
     tag(target, who, sizeof(who));
-    target.term.eraseBack(target.tl, target.ed.shown());
+    wipeInput(target);
     target.term.color(target.tl, Color::LightRed);
     snprintf(line, sizeof(line), "You were removed from the room by %.20s.", by);
     target.term.text(target.tl, line);
@@ -1555,25 +1578,38 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
         } else {
             tag(s, me, sizeof(me));
             snprintf(line, sizeof(line), "%.28s %.60s", me, rest);
-            to->term.eraseBack(to->tl, to->ed.shown());
+            wipeInput(*to);
             // P, not '>'. A letter says what it is without a key, and the
             // angle bracket was both dark on black and already used
             // elsewhere in the room.
             to->term.color(to->tl, g_cPmark);
             to->term.text(to->tl, "P");
             showLine(*to, line, false);
-            to->ed.redraw(to->term, to->tl);
+            restoreInput(*to);
             if (g_away[slotOf(*to)][0]) {
                 snprintf(buf, sizeof(buf), "%.20s is away: %.16s", to->user, g_away[slotOf(*to)]);
                 tell(s, Color::Grey, buf);
             }
-            // The board confirming to the sender, so it carries the room's
-            // own marker and names the person as well as the node. The
-            // message itself is not repeated: it is already on screen from
-            // the typing, and a 40 column room has better uses for a line.
-            snprintf(buf, sizeof(buf), "/p to #%s:%.20s sent.",
-                     nodeName(*to).t, to->user);
-            tell(s, g_cPriv, buf);
+            if (g_sticky[slotOf(s)] == id) {
+                // In a stuck conversation the sender sees what they said, as
+                // a line of the conversation: P> and who it went to, then the
+                // words. A receipt per line ("--> /p to #2 sent." four times
+                // running) told them nothing the [>n] marker had not already
+                // said, and never showed the words, because the typing that
+                // would have shown them was wiped to make room for the receipt.
+                char them[32];
+                tag(*to, them, sizeof(them));
+                snprintf(line, sizeof(line), "%.28s %.60s", them, rest);
+                s.term.color(s.tl, g_cPmark);
+                s.term.text(s.tl, "P>");
+                showLine(s, line, false);
+            } else {
+                // The board confirming to the sender, so it carries the
+                // room's own marker and names the person as well as the node.
+                snprintf(buf, sizeof(buf), "/p to #%s:%.20s sent.",
+                         nodeName(*to).t, to->user);
+                tell(s, g_cPriv, buf);
+            }
         }
         flush(s);
         armInput(s);

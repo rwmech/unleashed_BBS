@@ -46,6 +46,7 @@ enum class BusKind : uint8_t {
     Page,        // PAGE n msg from another node
     Notice,      // arrivals and departures
     Broadcast,   // sysop to everyone
+    Mail,        // "You have mail", from the chat plugin's mail
 };
 
 struct BusMsg {

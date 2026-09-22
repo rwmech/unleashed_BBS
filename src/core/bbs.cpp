@@ -2186,11 +2186,24 @@ void Bbs::post(Session& to, BusKind kind, const Session* from, const char* text)
 // ---------------------------------------------------------------------------
 // noticeAll: arrival/departure line to every other logged-in session
 // ---------------------------------------------------------------------------
+void Bbs::notify(Session& to, const char* text) {
+    post(to, BusKind::Mail, nullptr, text);
+}
+
 void Bbs::noticeAll(const Session& about, const char* text) {
     for (Session* o : all_) {
         if (o == &about || !o->loggedIn || o->role == Role::Busy) continue;
         post(*o, BusKind::Notice, &about, text);
     }
+}
+
+// promptCols: how wide "[n] Main: " or "[S] Sysop: " is on screen, so the
+// whole prompt can be lifted rather than only what was typed after it. Kept
+// beside deliverMail, the one place that needs it, and in step with
+// drawPrompt, which draws exactly these parts.
+static uint8_t promptCols(const Session& s) {
+    return static_cast<uint8_t>(1 + strlen(nodeName(s).t) + 2 +
+                                (s.role == Role::Sysop ? 5 : 4) + 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -2205,6 +2218,15 @@ void Bbs::deliverMail(Session& s) {
     BusMsg m;
     char line[BBS_USER_MAX + BBS_LINE_MAX + 32];
     bool any = false;
+
+    // Lift the prompt AND what was typed after it, so the notice goes where
+    // the prompt was rather than after it or under a stale copy of it. Rob:
+    // "back up and send the message then put the prompt back and use freaking
+    // LF before the prompt!" The editor has no cursor keys, so the cursor is
+    // always at the end of the typing and this lands exactly on column 0 on
+    // every terminal; on a C64 a DEL past column 0 would wrap to the line above.
+    t.reset(tl);
+    t.eraseBack(tl, static_cast<uint8_t>(promptCols(s) + s.ed.shown()));
 
     while (tl.freeBytes() > 768 && s.mb.pop(m)) {
         Color c = Color::Cyan;
@@ -2221,13 +2243,17 @@ void Bbs::deliverMail(Session& s) {
                 c = Color::Yellow;
                 alert = " SYSOP ";
                 break;
+            case BusKind::Mail:
+                snprintf(line, sizeof(line), "%s", m.text);
+                c = Color::Yellow;
+                break;
             case BusKind::Notice:
             default:
                 snprintf(line, sizeof(line), "%s", m.text);
                 break;
         }
         t.reset(tl);
-        t.nl(tl);
+        if (any) t.nl(tl);                           // each after the first on its own line
         if (alert) {                                 // bell, flashing tag, rub it out, message
             t.bell(tl);
             t.color(tl, Color::LightRed);
@@ -2240,6 +2266,7 @@ void Bbs::deliverMail(Session& s) {
         any = true;
     }
     if (any) {
+        t.nl(tl);                                    // the blank line before the prompt
         drawPrompt(s);
         s.ed.redraw(t, tl);
     }

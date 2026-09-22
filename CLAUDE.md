@@ -527,6 +527,38 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
 - **A deliberate deviation from the plan, and the reasoning is the useful part.** The plan had mail and bans moving to ids. `MailRec` is a fixed-size record with a static assert on its layout, so that means changing `sizeof` and converting every live mailbox, on the one board that exists, to fix a bug that has a cheaper fix. Following renames gets the same visible outcome with no format change. The forums will store ids natively, so mail ends up the only holdout and a far smaller job later. **Prefer the fix that does not migrate somebody's data when both fixes close the same hole.**
 - **The positional-descriptor trap caught me exactly as CLAUDE.md predicted.** `onRename` inserted before `onBytes` shifted every field after it, and the compiler said so. Append-only is not a style rule here, it is the only safe edit.
 
+### The input line survives what arrives (0.21.8)
+
+- **Lift the whole line and put the whole line back.** Five places in chat
+  lifted only the typed text and restored only the typed text, so the
+  `[>n]` marker was never lifted (arrivals printed after it) and never
+  restored. `wipeInput()` and `restoreInput()` are now the only way in and
+  out, and they agree on what "the line" is. At the shell the same idea
+  needed the prompt's own width: `promptCols()` sits beside `deliverMail`
+  and must change if `drawPrompt` ever does.
+- **A plugin must not write into a session it does not own.** The mail
+  notice used chat's `interrupt()` on callers who were not in the room: at
+  the shell it broke the prompt, and in forums or files it would have
+  written across their screen. `Bbs::notify()` queues it for the next
+  prompt, which is what the core's bus has always been for.
+- **A check has to be proven against the old code, and "it failed" is not
+  proof if it failed for the wrong reason.** Two first drafts failed on
+  0.21.7 for reasons that had nothing to do with the bug: one sent a private
+  to node "?" because it read the node number after clearing the buffer
+  that held it, and one cleared away the very `[>2]` marker it was meant to
+  find. Both would have passed on the broken build had they been written
+  correctly by accident. Each was fixed and re-run both ways in a worktree.
+- **Tests read the screen now, not the byte stream.** `render_lines()` in
+  `tools/testclient.py`. Anything about layout, erasing or what is left on
+  screen should use it: `plain()` strips escapes and so cannot see an erase.
+- **A failure that only shows in the group run is usually a leftover, not a
+  race.** `test_mail_compose` passed alone and failed after
+  `test_prompt_survives_notice`, which had left a message in the same
+  account's box; mail reads oldest first, so the compose test read the wrong
+  message. The notice test now has its own account and deletes what it
+  sent. Same rule as 0.21.3: a test seeds what it asserts on, and cleans up
+  what it leaves.
+
 ### Removing a post, and a count that belonged to the wrong person (0.21.7)
 
 - **A per-caller number was living in a board-wide table, again.**
@@ -1313,6 +1345,21 @@ Queued for the next build (Rob's plan, in order):
 - **Profile text should word wrap, with the effects** (Rob, stretch). The profile is four rows of 37 columns on a C64 and is currently stored and shown as typed. Wrapping it on output means wrapping on a column count that differs per terminal, which is why it is a stretch and not a line of code.
 - **MEM should show the SD card's free space when one is mounted** (Rob, 0.17.1). It reports flash today. `plat::sdInfo()` already returns the figures and the sd plugin already caches them.
 
+- **Mail as a subsystem, like FILES and FORUMS: 0.22.0, next** (Rob,
+  2026-09-22: "Mail is still not a subsystem like forums and chat. Need that
+  implemented." and "we cant read other mail without deleting, need that
+  full list of emails to be able to select and then reply."). Today `MAIL`
+  shows the oldest message and forces R, S or D before the next one can be
+  seen, so a box of five is read strictly in order and a kept message
+  sits in front of everything behind it. Build from `reports/ux-message-boards.md`
+  sections M0 onward (the mailbox list, the reading screen, the composer),
+  which were specified and not built, the same mistake as the forums.
+- **Firmware: show why the directory holds or bans a board.** The directory
+  moderation design adds `X-Listing-Reason` (one ASCII line, at most 120
+  characters, after `X-Listing-Token`). `announce.cpp` already reads
+  `X-Listing-State` into a 16 byte `g_state` and the whole reply into 768
+  bytes; read the reason into 121 bytes and show it under the state in
+  ANNOUNCE. Waits for the directory change.
 - **Phase: mail worth the name** (Rob, after message bases). Today chat owns mail: one message per account, 32 slots, 512 characters, readable only from inside the room. Wanted: read and **reply from the main prompt**, not just in chat. And with a card present, mail that is not rationed. Rob's framing is two tiers, a small one that works on any board and a larger one the card unlocks. Design note for whoever builds it: make that one plugin whose storage moves, not two plugins with two mailbox formats. Two would mean two file layouts, two sets of commands and a migration the day somebody adds a card, and the tier is a property of where the files live rather than of what the feature is.
 - **DASH at 80 columns: show the address** (Rob, 2026-09-21, part of the dashboard rework below). When DASH gets its width-aware layout, spend some of the new room on the caller's IP: on the last-calls block and on whoever is online now. `LAST` already shows the address to a sysop on a wide terminal and DASH does not, which is backwards, because DASH is the screen a sysop leaves open.
   Rob, in the same breath and worth keeping because it is a judgement on the design rather than a feature request: **"Nodes looks better than dash IMHO."** DASH is a refresh screen built as one fixed frame; NODES is a plain list that simply lays out well. Before adding anything to DASH, work out what NODES is doing right, because the answer may be that the dashboard should be built the way NODES is rather than given more fields.

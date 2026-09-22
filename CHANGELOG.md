@@ -24,6 +24,51 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.21.8, 2026-09-22
+
+The input line survives something arriving, in the room and at the main
+prompt. Every new check was run against 0.21.7 in a separate worktree and
+failed there; two of the first drafts did not, and were rewritten until they
+could see what they named.
+
+**In the room.** Rob: "when a message is received you print the message but
+then the prompt disappears because you print over it." Five places lifted
+the input line and put it back, and every one lifted and restored only the
+typed text, not the `[>n]` marker in front of it. So an arriving private
+line printed after the marker (`[>2] P#2:Daytona) hi`) and the typing came
+back without it. `wipeInput()` already erased the marker; `restoreInput()`
+now puts back the same whole: marker, then typing.
+
+**The sender sees what they said.** A stuck conversation printed `--> /p to
+#2:Daytona sent.` for every line and never the words, because the typing
+that would have shown them was wiped to make room for the receipt. Now it
+prints the line, `P>#2:Daytona) hi`, the mirror of the `P#1:...` the other
+side sees. A plain `/p` keeps the confirmation Rob specified.
+
+**At the main prompt.** Rob: "you take the message but never return the
+prompt, back up and send the message then put the prompt back and use
+freaking LF before the prompt!" Two faults, and both are fixed:
+
+- The chat plugin wrote "You have mail" straight onto the recipient's
+  session with the room's own interrupt, which only knows the room's input
+  line: it printed after `[1] Main:` and redrew the typing with no prompt in
+  front. In the forums or the file areas it would have written across the
+  screen. Mail notices now go through the core's queue unless the recipient
+  is in the room.
+- The core's queue, which PAGE, BROADCAST and arrivals already used, moved
+  down a line and left the old prompt, typing and all, above the notice.
+  It now erases the prompt and the typing (their width is known exactly and
+  the editor has no cursor keys, so this lands on column 0 on every
+  terminal), prints the notice there, leaves a blank line, and draws the
+  prompt with the typing back on it. **Pages, broadcasts and arrival notices
+  get the same fix**, because they are the same code.
+
+**Tests can now see a screen.** `render_lines()` plays the bytes onto a
+scrolling grid the way a terminal does, honouring backspace, cursor moves and
+erase. The plain-text buffer cannot see an erase at all, which is how a
+doubled footer, a prompt written over and a marker left behind each passed
+every check that read it.
+
 ## 0.21.7, 2026-09-22
 
 Removing a post, spacing Rob asked for, and a count that belonged to the
