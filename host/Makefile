@@ -67,12 +67,20 @@ test_wrap: test_wrap.cpp ../src/core/bbs_util.h
 test_forums_ptr: test_forums_ptr.cpp ../src/plugins/forums_ptr.h
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_forums_ptr.cpp
 
-test: test_xmodem test_wrap test_forums_ptr
+# The shared message composer. Every subsystem that takes a body runs this
+# code, so a bug here is a bug in all of them at once. That is the cost of
+# sharing it and the reason it is tested on its own rather than only through
+# whichever subsystem happened to be built first.
+test_compose: test_compose.cpp ../src/core/compose.h
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_compose.cpp
+
+test: test_xmodem test_wrap test_forums_ptr test_compose
 	./test_xmodem
 	./test_wrap
 	./test_forums_ptr
+	./test_compose
 
 clean:
-	rm -f bbs_host test_xmodem test_wrap test_forums_ptr
+	rm -f bbs_host test_xmodem test_wrap test_forums_ptr test_compose
 
 .PHONY: clean test

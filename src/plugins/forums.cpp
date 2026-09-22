@@ -57,6 +57,7 @@
 #include "../core/bbs_util.h"
 #include "../core/plugin.h"
 #include "../core/clock.h"
+#include "../core/compose.h"
 #include "../core/sysconfig.h"
 #include "../core/users.h"
 #include "../platform/platform.h"
@@ -155,25 +156,11 @@ static_assert(kRec % 4 == 0, "records must stay aligned within a sector");
 // FNV-1a: small, no table, and good enough for a space this size. It is not
 // a security hash and nothing here pretends otherwise.
 // ---------------------------------------------------------------------------
-uint32_t subjectHash(const char* s) {
-    uint32_t h = 2166136261u;
-    bool any = false;
-    const char* end = s + strlen(s);
-    while (end > s && end[-1] == ' ') --end;          // trailing space
-    while (s < end && *s == ' ') ++s;                 // leading space
-    for (const char* p = s; p < end; ++p) {
-        char c = *p;
-        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-        h ^= static_cast<uint8_t>(c);
-        h *= 16777619u;
-        any = true;
-    }
-    // 0 is the "no subject" sentinel, so a real subject must never hash to
-    // it. One bit is a cheaper fix than a second field saying whether the
-    // field is meaningful.
-    if (!any) return 0;
-    return h ? h : 1u;
-}
+// The hash moved to bbsu::foldHash so the forums, the users.txt validator
+// and the CONFIG page share one implementation. The stored format is
+// unchanged: same algorithm, same folding, same 0 sentinel, so every forum
+// already written still groups exactly as it did.
+uint32_t subjectHash(const char* s) { return bbsu::foldHash(s); }
 
 // ===========================================================================
 // Configuration: the topic areas.
@@ -205,6 +192,16 @@ struct Forum {
     uint32_t  total  = 0;                // live messages, from the header
     uint32_t  unread = 0;                // for the caller on this session
 };
+
+// The forums' colours. Deliberately the same shape as chat's: keys in the
+// plugin's own config section, parsed by colorByName, defaulted here so a
+// board that sets nothing still looks deliberate. A colour written as a
+// literal in twenty places is a colour nobody can change.
+Color g_cAsk    = Color::Yellow;      // a question waiting for an answer
+Color g_cHead   = Color::LightGreen;  // a subject, wherever it is shown
+Color g_cBody   = Color::White;       // the words of a message
+Color g_cMeta   = Color::Grey;        // who wrote it and when
+Color g_cMark   = Color::Cyan;        // the board's own voice, "--> "
 
 Forum   g_forum[kMaxForums];
 uint8_t g_forums = 0;
@@ -460,7 +457,10 @@ void parseRec(const char* rec, MsgRec& m) {
     m.live     = rec[kOffFlags] != 'X';
     m.pinned   = rec[kOffFlags + 1] == '!';
     m.authorId = strtoul(grab(kOffId, 8), nullptr, 16);
-    snprintf(m.handle, sizeof(m.handle), "%s", grab(kOffHandle, kHandle));
+    // %.*s, not %s: grab() returns a buffer sized for the widest field
+    // it serves, so the compiler cannot see that a handle is only 20 of
+    // it. Saying the bound here is free and keeps the build silent.
+    snprintf(m.handle, sizeof(m.handle), "%.*s", kHandle, grab(kOffHandle, kHandle));
     m.epoch    = strtoul(grab(kOffEpoch, 10), nullptr, 10);
     m.seg      = static_cast<uint16_t>(strtoul(grab(kOffSeg, 4), nullptr, 10));
     m.ofs      = strtoul(grab(kOffOfs, 6), nullptr, 10);
@@ -851,9 +851,20 @@ struct SubjRow {
     char     subject[kSubject + 1] = {};
 };
 
+// ONE table, shared by every caller, and that is a deliberate trade rather
+// than an oversight. Per-session tables would be 12 x 64 rows of about 66
+// bytes, roughly 53 KB of static DRAM that is empty almost always, on a
+// board that has already overflowed its DRAM once this week.
+//
+// The cost of sharing is that the table belongs to whoever filled it last,
+// so it is TAGGED with that caller and that forum. A caller who finds
+// somebody else's data rescans for their own. Without the tag, two callers
+// in two forums hand each other subject hashes and a number key silently
+// does nothing, which reads as a broken board rather than as a collision.
 SubjRow g_subjRow[kMaxSubjects];
 uint8_t g_subjRows = 0;
-uint8_t g_subjFor  = 0xFF;      // which forum g_subjRow currently describes
+uint8_t g_subjFor  = 0xFF;      // which forum the table describes
+uint8_t g_subjWho  = 0xFF;      // and which session filled it
 
 // ---------------------------------------------------------------------------
 // scanSubjects: one backward pass over INDEX.TXT, grouping by hash.
@@ -871,9 +882,10 @@ uint8_t g_subjFor  = 0xFF;      // which forum g_subjRow currently describes
 // ---------------------------------------------------------------------------
 constexpr uint32_t kScanMax = 2000;         // records walked for a listing
 
-void scanSubjects(uint8_t i, const Ptr& p) {
+void scanSubjects(uint8_t i, const Ptr& p, uint8_t who) {
     g_subjRows = 0;
     g_subjFor  = i;
+    g_subjWho  = who;
     uint32_t newest = g_forum[i].newest;
     if (!newest) return;
 
@@ -918,6 +930,31 @@ void scanSubjects(uint8_t i, const Ptr& p) {
 // conversation read newest-first is not a conversation. Honours the subject
 // filter when one is set, which is what makes "read this thread to the end"
 // mean what it says.
+// nextInSubject: the next message in a conversation, read or not.
+//
+// **Opening a subject must show it even when there is nothing new in it**,
+// and that is not a nicety. Rob posted the first message on the board, which
+// by definition he had read, then opened the subject and got nothing: Enter
+// found no unread message and neither did the number. A board where you
+// cannot re-read what you just wrote is broken, and so is one where you
+// cannot go back and look at a conversation you have already followed.
+//
+// So inside a subject, reading walks the conversation in order regardless of
+// what has been read. Unread still drives what Enter does from the FORUM
+// list, which is the fast path, and every message shown is still marked
+// read. The distinction is: at the top level Enter means "what is new", and
+// inside a conversation it means "what is next".
+uint32_t nextInSubject(uint8_t i, uint32_t subject, uint32_t after) {
+    uint32_t newest = g_forum[i].newest;
+    for (uint32_t n = after + 1; n <= newest; ++n) {
+        MsgRec m;
+        if (!readRec(i, n, m) || !m.live) continue;
+        if (subject && m.hash != subject) continue;
+        return n;
+    }
+    return 0;
+}
+
 uint32_t nextUnread(uint8_t i, const Ptr& p, uint32_t subject, uint32_t after) {
     uint32_t newest = g_forum[i].newest;
     uint32_t from = after ? after + 1 : p.mark + 1;
@@ -967,6 +1004,9 @@ bool rows(Session& s) {
     uint8_t w  = b.rowWidth(s);
 
     if (g_view[sl] == View::Subjects) {
+        // Drawing somebody else's table would print their forum's subjects
+        // under this caller's title bar.
+        if (g_subjWho != sl || g_subjFor != g_at[sl]) return false;
         uint8_t row = s.listIdx;
         if (row >= g_subjRows) return false;
         const SubjRow& r = g_subjRow[row];
@@ -986,8 +1026,9 @@ bool rows(Session& s) {
         if (r.unread) snprintf(tail, sizeof(tail), "%lu of %lu new",
                                static_cast<unsigned long>(r.unread),
                                static_cast<unsigned long>(r.total));
-        else          snprintf(tail, sizeof(tail), "%lu msgs",
-                               static_cast<unsigned long>(r.total));
+        else          snprintf(tail, sizeof(tail), "%lu msg%s",
+                               static_cast<unsigned long>(r.total),
+                               r.total == 1 ? "" : "s");
         uint8_t tlen = static_cast<uint8_t>(strlen(tail));
         if (used + tlen + 2 <= w) {
             for (uint8_t k = used; k + tlen < w; ++k) s.term.ch(s.tl, ' ');
@@ -1008,8 +1049,9 @@ bool rows(Session& s) {
         uint32_t newTotal = 0;
         for (uint8_t k = 0; k < n; ++k) newTotal += g_forum[vis[k]].unread;
         char line[80];
-        if (newTotal) snprintf(line, sizeof(line), "Read all %lu new messages",
-                               static_cast<unsigned long>(newTotal));
+        if (newTotal) snprintf(line, sizeof(line), "Read all %lu new message%s",
+                               static_cast<unsigned long>(newTotal),
+                               newTotal == 1 ? "" : "s");
         else          snprintf(line, sizeof(line), "Nothing new since your last call.");
         s.term.nl(s.tl);
         s.term.color(s.tl, newTotal ? Color::LightGreen : Color::Grey);
@@ -1064,12 +1106,56 @@ bool rows(Session& s) {
     return true;
 }
 
+// say: one system line, wrapped at the READER's width.
+//
+// These lines used to go out as single literals up to 67 characters wide,
+// which is fine on SyncTERM and wraps in the terminal on a C64. Shortening
+// them all to 39 would have fixed the C64 by making every wide terminal
+// worse, which is the habit the rowWidth rework already went through once.
+//
+// A leading "--> " marker or run of spaces is furniture rather than text: it
+// is printed on the first line, and continuations are indented to line up
+// under the words instead of under the arrow. Without that a wrapped notice
+// reads as two unrelated lines.
+void say(Session& s, Color c, const char* text) {
+    if (!text || !*text) return;
+
+    uint8_t ind = 0;
+    while (text[ind] == ' ' && ind < 8) ++ind;          // a deliberate indent
+    if (!ind && text[0] == '-' && text[1] == '-' && text[2] == '>') {
+        ind = 3;
+        while (text[ind] == ' ' && ind < 8) ++ind;      // the room's marker
+    }
+
+    uint8_t cols = Bbs::instance().rowWidth(s);
+    uint8_t body = (cols > static_cast<uint8_t>(ind + 8))
+                 ? static_cast<uint8_t>(cols - ind)
+                 : cols;
+
+    char line[160];
+    const char* rest  = text + ind;
+    uint8_t     guard = 0;
+    bool        first = true;
+    while ((rest = bbsu::wrap(rest, line, sizeof(line), body)) != nullptr
+           && ++guard < 12) {
+        s.term.color(s.tl, c);
+        if (first) {
+            for (uint8_t i = 0; i < ind; ++i) s.term.ch(s.tl, text[i]);
+        } else {
+            for (uint8_t i = 0; i < ind; ++i) s.term.ch(s.tl, ' ');
+        }
+        s.term.text(s.tl, line);
+        first = false;
+        if (!*rest) break;
+        s.term.nl(s.tl);
+    }
+}
+
 void prompt(Bbs& b, Session& s) {
     uint8_t sl = slotIdx(s);
     s.term.nl(s.tl);
-    s.term.color(s.tl, Color::Grey);
     if (g_view[sl] == View::Forums)
-        s.term.text(s.tl, " Enter reads what is new. A number opens a forum. ? help. Q leaves.");
+        say(s, Color::Grey, " Enter reads what is new. A number opens a forum. ? help. Q leaves.");
     else
         s.term.text(s.tl, " Enter reads on. A number opens a subject. P posts. ? help. Q back.");
     s.term.nl(s.tl);
@@ -1115,22 +1201,24 @@ void drawSubjects(Bbs& b, Session& s, uint8_t forum) {
 
     Ptr p;
     readPtr(callerId(s), forum, p);
-    scanSubjects(forum, p);
+    scanSubjects(forum, p, sl);
 
     char right[24];
     uint32_t unread = 0;
     for (uint8_t k = 0; k < g_subjRows; ++k) unread += g_subjRow[k].unread;
     if (unread) snprintf(right, sizeof(right), "%lu new",
                          static_cast<unsigned long>(unread));
-    else        snprintf(right, sizeof(right), "%u subjects",
-                         static_cast<unsigned>(g_subjRows));
+    // "1 subjects" is the kind of thing that makes software feel unfinished,
+    // and it costs one branch to get right.
+    else        snprintf(right, sizeof(right), "%u subject%s",
+                         static_cast<unsigned>(g_subjRows),
+                         g_subjRows == 1 ? "" : "s");
 
     s.term.cls(s.tl);
     b.rowTitle(s, g_forum[forum].name, right);
     if (!g_subjRows) {
         s.term.nl(s.tl);
-        s.term.color(s.tl, Color::Grey);
-        s.term.text(s.tl, "   Nothing here yet. P starts the first subject.");
+        say(s, Color::Grey, "   Nothing here yet. P starts the first subject.");
         s.term.nl(s.tl);
         b.rowRule(s);
         prompt(b, s);
@@ -1177,25 +1265,24 @@ void showMessage(Bbs& b, Session& s, uint8_t forum, uint32_t n) {
     char head[96];
     snprintf(head, sizeof(head), "%lu  %s  %s",
              static_cast<unsigned long>(m.num), m.handle, when);
-    s.term.color(s.tl, Color::Grey);
+    s.term.color(s.tl, g_cMeta);
     s.term.text(s.tl, head);
     s.term.nl(s.tl);
 
-    s.term.color(s.tl, Color::LightGreen);
+    s.term.color(s.tl, g_cHead);
     s.term.textCols(s.tl, m.subject, b.rowWidth(s));
     s.term.nl(s.tl);
 
     char body[kBodyMax + 1];
     if (!readBody(forum, m, body, sizeof(body))) {
-        s.term.color(s.tl, Color::LightRed);
-        s.term.text(s.tl, "(the text of this message could not be read)");
+        say(s, Color::LightRed, "(the text of this message could not be read)");
         s.term.nl(s.tl);
     } else {
         // Wrapped at THIS reader's width, not the writer's. A message typed
         // at 72 columns has to read on a C64 and one typed at 35 should not
         // sit in a stripe down an 80 column screen, and the reader's width
         // is not knowable when the message is written.
-        s.term.color(s.tl, Color::White);
+        s.term.color(s.tl, g_cBody);
         char line[160];
         const char* p = body;
         uint8_t guard = 0;
@@ -1236,8 +1323,7 @@ void readNext(Bbs& b, Session& s) {
             if (next) { showMessage(b, s, vis[k], next); return; }
         }
         s.term.nl(s.tl);
-        s.term.color(s.tl, Color::Grey);
-        s.term.text(s.tl, "--> Nothing new anywhere. Q leaves.");
+        say(s, Color::Grey, "--> Nothing new. A number opens a forum to browse it.");
         prompt(b, s);
         return;
     }
@@ -1245,6 +1331,25 @@ void readNext(Bbs& b, Session& s) {
     Ptr p;
     readPtr(callerId(s), forum, p);
     uint32_t from = (g_view[sl] == View::Reading) ? g_shown[sl] : 0;
+
+    // Inside a conversation, walk it in order whether or not it has been
+    // read. Only the forum-level Enter is about what is new.
+    if (g_subj[sl]) {
+        uint32_t next = nextInSubject(forum, g_subj[sl], from);
+        if (next) { showMessage(b, s, forum, next); return; }
+        // The end of the conversation. Roll on to whatever else is unread in
+        // the forum rather than dead-ending with nothing but Q.
+        g_subj[sl] = 0;
+        uint32_t on = nextUnread(forum, p, 0, 0);
+        s.term.nl(s.tl);
+        s.term.color(s.tl, g_cMark);
+        s.term.text(s.tl, on ? "--> That is the end of that subject."
+                             : "--> That is the end of that subject. Nothing else new here.");
+        if (on) { s.term.nl(s.tl); showMessage(b, s, forum, on); return; }
+        prompt(b, s);
+        return;
+    }
+
     uint32_t next = nextUnread(forum, p, g_subj[sl], from);
     if (!next && g_subj[sl]) {
         // A subject read to its end rolls on to the rest of the forum,
@@ -1261,8 +1366,7 @@ void readNext(Bbs& b, Session& s) {
     if (next) { showMessage(b, s, forum, next); return; }
 
     s.term.nl(s.tl);
-    s.term.color(s.tl, Color::Grey);
-    s.term.text(s.tl, "--> Nothing new in here. Q goes back.");
+    say(s, Color::Grey, "--> Nothing new here. L lists the subjects, a number opens one.");
     prompt(b, s);
 }
 
@@ -1281,13 +1385,123 @@ uint32_t g_replyHash[BBS_MAX_NODES + 2] = {};
 enum : uint8_t { AskNone = 0, AskSubject, AskBody };
 uint8_t g_ask[BBS_MAX_NODES + 2] = {};
 
+// ---------------------------------------------------------------------------
+// The body, gathered a line at a time.
+//
+// **It cannot use s.ed for the whole message and that is not a tuning
+// problem.** LineEditor holds `char buf_[BBS_LINE_MAX + 1]`, 73 bytes, and
+// `begin()` takes a uint8_t. Asking it for a 1,728 byte body did not fail or
+// warn: it gave back 72 characters and the caller found out by running out
+// of room mid-sentence. FF_TEXTAREA is no better, being four 37 column rows.
+//
+// So the body is collected the way every real board collected one: line by
+// line, each through the ordinary editor, ended with a command on its own
+// line. That is not nostalgia. It gives the caller backspace and every
+// terminal behaviour they already know on each line, it works identically at
+// 40 and 132 columns, and it needs no cursor addressing, so it behaves the
+// same on a C64 and a VT220.
+// ---------------------------------------------------------------------------
+// The body lives on the Session, shared with mail and with whatever takes a
+// message next. Only the lengths are per-slot here, which is a few bytes.
+constexpr uint8_t kBodyLines = BBS_COMPOSE_ROWS;
+
+uint16_t g_bodyLen[BBS_MAX_NODES + 2]  = {};
+uint8_t  g_bodyRows[BBS_MAX_NODES + 2] = {};
+
 void askLine(Session& s, uint8_t what, const char* q, uint16_t cap) {
     g_ask[slotOf(s)] = what;
-    s.term.nl(s.tl);
-    s.term.color(s.tl, Color::Cyan);
+    s.term.color(s.tl, g_cAsk);
     s.term.text(s.tl, q);
-    s.term.color(s.tl, Color::White);
-    s.ed.begin(cap, 0);
+    s.term.color(s.tl, g_cBody);
+    // The editor's real capacity, never a number larger than it can hold.
+    // A cap it silently clamps is how the 72 character body happened.
+    uint8_t room = cap > BBS_LINE_MAX ? BBS_LINE_MAX : static_cast<uint8_t>(cap);
+    s.ed.begin(room, 0);
+}
+
+// bodyWidth: how wide a body line is for THIS caller.
+//
+// The editor capacity and the wrap trigger must be the same number or the
+// board wraps at a width the editor cannot hold, so it is computed once
+// here and never written out as a constant. kBodyPromptCols is the "16: "
+// that bodyPrompt draws, and the rub-out loops below count the same four.
+constexpr uint8_t kBodyPromptCols = 4;
+uint8_t bodyWidth(Session& s) {
+    return compose::lineWidth(s.term.cols(), kBodyPromptCols, BBS_LINE_MAX);
+}
+
+// bodyPrompt: the line number, so a caller can see how much room is left.
+void bodyPrompt(Session& s) {
+    uint8_t sl = slotOf(s);
+    char q[12];
+    snprintf(q, sizeof(q), "%2u: ", static_cast<unsigned>(g_bodyRows[sl] + 1));
+    g_ask[sl] = AskBody;
+    s.term.color(s.tl, g_cMeta);
+    s.term.text(s.tl, q);
+    s.term.color(s.tl, g_cBody);
+    // The line follows the terminal, not a constant. Four columns for
+    // the "16: " the prompt just wrote.
+    s.ed.begin(bodyWidth(s), 0);
+}
+
+// bodyStart: clear the screen, say what is being written, and open the editor.
+//
+// Without the clear, the subject prompt appeared under whatever was already
+// on screen, which on the way in from `?` is the help text. A caller cannot
+// tell a prompt from the wreckage of the last screen.
+void bodyBegin(Bbs& b, Session& s, const char* forumName, const char* subject) {
+    uint8_t sl = slotOf(s);
+    s.compose[0] = '\0';
+    g_bodyLen[sl]  = 0;
+    g_bodyRows[sl] = 0;
+
+    s.term.cls(s.tl);
+    char bar[80];
+    snprintf(bar, sizeof(bar), "Posting in %.30s", forumName);
+    b.rowBar(s, g_cAsk, bar);
+
+    s.term.nl(s.tl);
+    s.term.color(s.tl, g_cMeta);
+    s.term.text(s.tl, " Subject: ");
+    s.term.color(s.tl, g_cHead);
+    s.term.textCols(s.tl, subject, b.rowWidth(s));
+    s.term.nl(s.tl);
+    s.term.nl(s.tl);
+
+    s.term.color(s.tl, g_cMeta);
+    char how[140];
+    snprintf(how, sizeof(how),
+             " Up to %u lines, %u characters. Long lines wrap by themselves.",
+             static_cast<unsigned>(kBodyLines),
+             static_cast<unsigned>(BBS_COMPOSE_MAX));
+    s.term.text(s.tl, how);
+    s.term.nl(s.tl);
+    // The way out, in its own colour, because a caller who cannot find it is
+    // stuck inside the editor with no way forward.
+    s.term.color(s.tl, g_cAsk);
+    s.term.text(s.tl, " /s");
+    s.term.color(s.tl, g_cMeta);
+    s.term.text(s.tl, compose::kHowToEnd);
+    s.term.color(s.tl, g_cAsk);
+    s.term.text(s.tl, "/a");
+    s.term.color(s.tl, g_cMeta);
+    s.term.text(s.tl, compose::kHowToDrop);
+    s.term.nl(s.tl);
+    b.rowRule(s);
+    bodyPrompt(s);
+}
+
+// bodyAdd: one finished line. Returns false when there is no room left.
+bool bodyAdd(Session& s, const char* line) {
+    uint8_t sl = slotOf(s);
+    size_t n = strlen(line);
+    if (g_bodyLen[sl] + n + 1 >= BBS_COMPOSE_MAX) return false;
+    if (g_bodyLen[sl]) s.compose[g_bodyLen[sl]++] = '\n';
+    memcpy(s.compose + g_bodyLen[sl], line, n);
+    g_bodyLen[sl] = static_cast<uint16_t>(g_bodyLen[sl] + n);
+    s.compose[g_bodyLen[sl]] = '\0';
+    ++g_bodyRows[sl];
+    return true;
 }
 
 void finishPost(Bbs& b, Session& s, const char* body) {
@@ -1306,8 +1520,7 @@ void finishPost(Bbs& b, Session& s, const char* body) {
 
     s.term.nl(s.tl);
     if (!appendMessage(forum, m, body)) {
-        s.term.color(s.tl, Color::LightRed);
-        s.term.text(s.tl, "--> That did not save. The card may be full.");
+        say(s, Color::LightRed, "--> That did not save. The card may be full.");
     } else {
         // The poster has read their own message by definition.
         Ptr p;
@@ -1322,6 +1535,7 @@ void finishPost(Bbs& b, Session& s, const char* body) {
         s.term.color(s.tl, Color::LightGreen);
         s.term.text(s.tl, msg);
         g_subjFor = 0xFF;                       // the tally is stale now
+        g_subjWho = 0xFF;
     }
     g_replying[sl] = false;
     prompt(b, s);
@@ -1349,8 +1563,7 @@ void startPost(Bbs& b, Session& s, bool reply) {
     }
     if (reply && !g_shown[sl]) {
         s.term.nl(s.tl);
-        s.term.color(s.tl, Color::Grey);
-        s.term.text(s.tl, "--> Read a message first, then R answers it.");
+        say(s, Color::Grey, "--> Read a message first, then R answers it.");
         prompt(b, s);
         return;
     }
@@ -1365,17 +1578,18 @@ void startPost(Bbs& b, Session& s, bool reply) {
         // A reply needs no subject prompt at all: grouping means the subject
         // is drawn once as the screen's title rather than on every message,
         // so there is nothing for the caller to retype.
-        s.term.nl(s.tl);
-        s.term.color(s.tl, Color::Grey);
-        s.term.text(s.tl, "Answering: ");
-        s.term.color(s.tl, Color::LightGreen);
-        s.term.text(s.tl, g_draftSubject[sl]);
-        s.term.nl(s.tl);
-        askLine(s, AskBody, "Your message: ", kBodyMax);
+        bodyBegin(b, s, g_forum[forum].name, g_draftSubject[sl]);
         return;
     }
     g_draftSubject[sl][0] = '\0';
-    askLine(s, AskSubject, "Subject: ", kSubject);
+    s.term.cls(s.tl);
+    b.rowBar(s, g_cAsk, "New subject");
+    s.term.nl(s.tl);
+    {
+        char q[40];
+        snprintf(q, sizeof(q), " Subject (%u max): ", static_cast<unsigned>(kSubject));
+        askLine(s, AskSubject, q, kSubject);
+    }
 }
 
 // ===========================================================================
@@ -1394,8 +1608,7 @@ void leave(Bbs& b, Session& s) {
     g_view[sl] = View::Forums;
     g_at[sl]   = 0xFF;
     s.term.nl(s.tl);
-    s.term.color(s.tl, Color::Grey);
-    s.term.text(s.tl, "Leaving the forums. Returning to the BBS...");
+    say(s, Color::Grey, "Leaving the forums. Returning to the BBS...");
     b.release(s);
 }
 
@@ -1430,6 +1643,91 @@ void onKey(Session& s, int key, uint32_t) {
     // Without this a caller typing a subject containing the letter q would
     // be thrown out of the forums mid-sentence.
     if (g_ask[sl] != AskNone) {
+        // Word wrap while they type. The editor's buffer is BBS_LINE_MAX and
+        // cannot grow, so without this a caller simply stops being echoed
+        // mid-sentence, which reads as the board having frozen rather than
+        // as a limit. Only for the body: a subject that does not fit is a
+        // subject that needs shortening, and silently continuing it onto a
+        // second line nobody asked for would be worse.
+        // Backspace on an empty line takes the previous line back out of
+        // the message and puts it in the editor, so a typo three lines up
+        // can be fixed. Without it a committed line is unreachable and the
+        // only way back is throwing the whole message away.
+        if (g_ask[sl] == AskBody && key == KEY_BACKSPACE && s.ed.len() == 0 &&
+            g_bodyRows[sl] > 0) {
+            // Find the start of the last line; the newline before it is the
+            // boundary, and with no newline the whole body is that line.
+            uint16_t start = 0;
+            for (uint16_t i = g_bodyLen[sl]; i > 0; --i)
+                if (s.compose[i - 1] == '\n') { start = i; break; }
+
+            char back[BBS_LINE_MAX + 1];
+            snprintf(back, sizeof(back), "%.*s",
+                     static_cast<int>(g_bodyLen[sl] - start), s.compose + start);
+
+            g_bodyLen[sl] = start ? static_cast<uint16_t>(start - 1) : 0;
+            s.compose[g_bodyLen[sl]] = '\0';
+            --g_bodyRows[sl];
+
+            // Rub out the prompt the caller is standing on, then draw the
+            // recalled line in its place. Drawing it on a NEW line left the
+            // old numbers above it, so the screen read 4, 5, then 4 again,
+            // which is what "the line numbers seem dumb" was describing.
+            //
+            // Four characters: two digits, a colon and a space, which is
+            // what bodyPrompt writes.
+            for (uint8_t i = 0; i < 4; ++i) {
+                s.term.ch(s.tl, '\b');
+                s.term.ch(s.tl, ' ');
+                s.term.ch(s.tl, '\b');
+            }
+            bodyPrompt(s);
+            for (const char* c = back; *c; ++c) s.ed.key(*c, s.term, s.tl);
+            return;
+        }
+
+        if (g_ask[sl] == AskBody && s.ed.len() >= bodyWidth(s) &&
+            key >= ' ' && key < 0x7F) {
+            char full[BBS_LINE_MAX + 1];
+            snprintf(full, sizeof(full), "%s", s.ed.text());
+
+            // compose::wrapPoint is shared with mail, so both subsystems
+            // break a line the same way. It is tested on its own in
+            // host/test_compose.cpp, including the word too long to break.
+            char carry[BBS_LINE_MAX + 1] = {};
+            uint8_t keep = compose::wrapPoint(full, s.ed.len(), carry, sizeof(carry));
+            full[keep] = '\0';
+
+            // Rub the carried word off THIS line before it moves down.
+            // Those characters were echoed as the caller typed them, so
+            // without this the screen shows them twice: Rob's post read
+            // "...properly handl" and then "handled" on the next line. The
+            // stored text was right and the screen was wrong, which is the
+            // worse way round, because the screen is all a caller has.
+            //
+            // One backspace per character carried, plus the space at the
+            // break, which was echoed too and is not carried.
+            uint8_t rub = static_cast<uint8_t>(s.ed.len() - keep);
+            for (uint8_t i = 0; i < rub; ++i) {
+                s.term.ch(s.tl, '\b');
+                s.term.ch(s.tl, ' ');
+                s.term.ch(s.tl, '\b');
+            }
+
+            if (!bodyAdd(s, full)) {
+                s.term.nl(s.tl);
+                say(s, g_cMark, "--> That is as much as one message holds. /s saves it.");
+                bodyPrompt(s);
+                return;
+            }
+            s.term.nl(s.tl);
+            bodyPrompt(s);
+            // Put the carried word back, then let the keystroke that caused
+            // the wrap land on the end of it, so nothing the caller typed is
+            // lost and nothing is typed twice.
+            for (const char* c = carry; *c; ++c)
+                s.ed.key(*c, s.term, s.tl);
+        }
         if (key == KEY_ESC) {
             g_ask[sl] = AskNone;
             g_replying[sl] = false;
@@ -1498,9 +1796,17 @@ void onKey(Session& s, int key, uint32_t) {
             prompt(b, s);
             return;
         }
+        // The table may belong to another caller by now. Rescan rather
+        // than open whatever subject happens to sit at that row in
+        // somebody else's forum.
+        if (g_subjWho != sl || g_subjFor != g_at[sl]) {
+            Ptr rp;
+            readPtr(callerId(s), g_at[sl], rp);
+            scanSubjects(g_at[sl], rp, sl);
+        }
         if (want < g_subjRows) {
             g_subj[sl]  = g_subjRow[want].hash;
-            g_shown[sl] = 0;
+            g_shown[sl] = 0;          // from the top of the conversation
             readNext(b, s);
             return;
         }
@@ -1519,20 +1825,54 @@ void answered(Session& s, const char* text) {
     uint8_t what = g_ask[sl];
     g_ask[sl] = AskNone;
 
-    if (!text || !*text) {                        // empty answer cancels
+    if (what == AskSubject) {
+        if (!text || !*text) {                    // no subject, no post
+            s.term.nl(s.tl);
+            s.term.color(s.tl, g_cMark);
+            s.term.text(s.tl, "--> Nothing posted.");
+            g_replying[sl] = false;
+            prompt(b, s);
+            return;
+        }
+        snprintf(g_draftSubject[sl], sizeof(g_draftSubject[0]), "%.*s", kSubject, text);
+        bodyBegin(b, s, g_forum[g_at[sl]].name, g_draftSubject[sl]);
+        return;
+    }
+
+    // A body line. /s and /a are commands; everything else is text, blank
+    // lines included, because a blank line is how somebody separates
+    // paragraphs and ending on one would make that impossible.
+    if (compose::isAbort(text)) {
         s.term.nl(s.tl);
-        s.term.color(s.tl, Color::Grey);
+        s.term.color(s.tl, g_cMark);
         s.term.text(s.tl, "--> Nothing posted.");
         g_replying[sl] = false;
         prompt(b, s);
         return;
     }
-    if (what == AskSubject) {
-        snprintf(g_draftSubject[sl], sizeof(g_draftSubject[0]), "%.*s", kSubject, text);
-        askLine(s, AskBody, "Your message: ", kBodyMax);
+    if (compose::isSave(text)) {
+        if (!g_bodyLen[sl]) {
+            s.term.nl(s.tl);
+            say(s, g_cMark, "--> Nothing written yet. /a throws it away.");
+            bodyPrompt(s);
+            return;
+        }
+        finishPost(b, s, s.compose);
         return;
     }
-    finishPost(b, s, text);
+
+    if (!bodyAdd(s, text ? text : "")) {
+        s.term.nl(s.tl);
+        say(s, g_cMark, "--> That is as much as one message holds. /s saves it.");
+        bodyPrompt(s);
+        return;
+    }
+    if (g_bodyRows[sl] >= kBodyLines) {
+        s.term.color(s.tl, g_cMark);
+        s.term.text(s.tl, "--> That is the last line. /s saves it.");
+        s.term.nl(s.tl);
+    }
+    bodyPrompt(s);
 }
 
 void enter(Bbs& b, Session& s) {
@@ -1578,6 +1918,9 @@ void onLogoff(Session& s) {
     g_shown[sl]    = 0;
     g_replying[sl] = false;
     g_draftSubject[sl][0] = '\0';
+    s.compose[0] = '\0';
+    g_bodyLen[sl]  = 0;
+    g_bodyRows[sl] = 0;
 }
 
 // FORUMS SCAN: what the board thinks is on the card.
@@ -1598,8 +1941,7 @@ void cmdScan(Bbs& b, Session& s) {
         s.term.nl(s.tl);
     }
     if (!g_forums) {
-        s.term.color(s.tl, Color::Grey);
-        s.term.text(s.tl, " None configured. CONFIG FORUMS TOPICS sets them up.");
+        say(s, Color::Grey, " None configured. CONFIG FORUMS TOPICS sets them up.");
         s.term.nl(s.tl);
     }
     b.rowRule(s);

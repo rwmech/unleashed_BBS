@@ -144,9 +144,14 @@ struct UserRec {
 //
 // "Forums" rather than "bulletin": on this system "board" already means the
 // BBS itself, and "messages" would blur into MAIL. Forums is the word a
-// caller who has never used a BBS already knows. It also settles a genuine
-// collision, because screens/bulletin.* is the notice screen that plays at
-// login and is something else entirely.
+// caller who has never used a BBS already knows.
+//
+// "bulletin" is retired entirely (Rob, 2026-09-22). It had been used for
+// the message boards, for the screen that plays at login, and was about to
+// be used for the /i information pages as well. The login screen is
+// screens/motd.* and the information pages are NEWS. The only survivals
+// are back-compat for data already written: the hidden FORUMS alias and
+// landFromKey accepting land=bulletin.
 enum : uint8_t { LAND_DEFAULT = 0, LAND_MAIN = 1, LAND_CHAT = 2, LAND_FORUMS = 3 };
 
 namespace users {

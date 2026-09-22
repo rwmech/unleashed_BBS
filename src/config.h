@@ -51,7 +51,7 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "0.21.0"
+#define BBS_VERSION         "0.21.3"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // ---------------------------------------------------------------------------
@@ -107,6 +107,18 @@
 #define BBS_TL_FRAMES       96       // per-session timed output frames
 #define BBS_RX_CHUNK        64       // bytes read per select pass
 #define BBS_LINE_MAX        72       // line editor capacity
+
+// A message being written: a forum post, a mail message, and whatever wants
+// the same editor next. ONE buffer per session, shared by every subsystem,
+// because a caller can only be writing one thing at a time and two buffers
+// per caller was always one too many.
+//
+// This was learned the expensive way: forums and mail each kept their own,
+// 12 x 1729 plus 12 x 513, and the link failed with dram0_0_seg overflowed
+// by 8,200 bytes. 16 lines of 72 is a long message for a board whose house
+// style is a screenful, and mail's record only ever held 512 characters.
+#define BBS_COMPOSE_MAX     1152     // 16 lines x 72
+#define BBS_COMPOSE_ROWS    16
 #define BBS_USER_MAX        20       // handle length
 #define BBS_SCREEN_CHUNK    96       // screen file read chunk
 #define BBS_HISTORY         4        // command lines kept for up-arrow recall

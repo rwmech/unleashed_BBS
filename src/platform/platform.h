@@ -102,6 +102,15 @@ HeapStats heap();
 // anything on the loop's own path. This is a counter read.
 uint32_t heapFree();
 
+// powerSave: what mode the radio is really in, as a word.
+//
+// "none", "min" or "max", or "" on a build with no radio. Not what the
+// application asked for: what esp_wifi_get_ps() reports back. The lag this
+// exists for was diagnosed twice from the outside and got the wrong answer
+// once, and the whole reason it was hard is that nothing on the board would
+// say.
+const char* powerSave();
+
 // ---------------------------------------------------------------------------
 // wifiRssi: signal strength of the joined access point in dBm, 0 when not
 // connected or not available (host)

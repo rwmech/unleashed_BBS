@@ -15,6 +15,11 @@
 
  Audience:     Rob, and whoever builds the forums plugin.
 
+ Scope note 2: As of revision 3 (2026-09-22) this document also owns MAIL,
+               because Rob asked for the same subsystem treatment there and
+               a caller who has learned one has to have learned both. See
+               "Revision 3" at the top of the body.
+
  Scope note:   PLAN-FORUMS.md owns the data model, the file formats, the
                RAM budget and the phasing. This document owns what a caller
                sees and what the keys do. Where the two touch, this one says
@@ -29,6 +34,1163 @@
 -->
 
 # Forums: the caller-facing design
+
+---
+
+# Revision 3, 2026-09-22: the reading screen, the breadcrumb, and mail
+
+Rob, on the shipped reading screen: *"Come on this formatting is terrible...
+The actual reading of the messages should look like a regular post/email.
+This is weak sauce. Use graphics, make it spiffy this looks just so
+unpolished where is the UX tty agent?"*
+
+He is right to ask, and the honest answer is that this document already
+specified most of it and the build did not follow it. **The section below
+that matters most is not the new mock-ups, it is "What the implementation
+ignored".** Seventeen caller-facing strings in `src/plugins/forums.cpp`
+overflow a 40 column row, the reading screen has no header although S3
+specified one, the subject list numbers rows instead of subjects although S2
+argued that point at length, and the composing width is frozen at 72
+characters on every terminal although S6 gave the formula.
+
+## What this revision changes
+
+- **The reading screen gets a frame.** The old spec said the message header
+  was "compact and left-aligned at every width... a label above a paragraph,
+  not a table row". That was right about the byline and wrong about
+  everything around it: a byline with nothing above or below it is not a
+  post, it is a line of grey text. The byline stays exactly as specified. A
+  **post rule** goes above it and a **context bar** goes above the first
+  message of each subject. That is the whole correction.
+- **The subject stops being printed under every message.** S3 already said
+  so. The implementation prints it, in green, unlabelled, immediately above
+  the body, which is why it reads as the first line of the message.
+- **The prompt becomes a breadcrumb**, `Forums>C64>Messages>`, replacing
+  `[F2] C64>`. Rob's own words: *"it should be Forums>Messages and then we
+  need a header that has the # topic, etc."* The tag device failed in the
+  field for a reason worth writing down: **it put the forum's name where a
+  caller expected the place, and Rob's first forum is called "Unleashed
+  BBS", so the prompt read as the name of the board.** A path cannot do
+  that.
+- **MAIL becomes a place**, with a mailbox list, in the same grammar. Rob:
+  *"for the SD card mail software, can we get a list of messages... Can we
+  also apply the subsystem treatment to this as well."*
+- **The tier is one number, not a second design.** Rob: *"SD -> Full mail
+  software / Without SD -> limited DDIAL style emails. The interface can
+  largely remain the same."* The mailbox header reads `2 new, 4 of 12` with a
+  card and `2 new, 3 of 3` without. Nothing else on any mail screen differs,
+  and no control appears that cannot work.
+- **Limits are printed on screen, from the constants.** Rob: *"note in there
+  to the sysop and the user the max message lengths."* They go in exactly
+  three places: the composer's title bar, the subject prompt, and the help
+  screen's title bar. Nowhere else, or they become noise.
+- **A format=flowed rule for message bodies**, which is the real answer to
+  "the word wrap is not working properly". Detailed under F7 below.
+- Every grid in this revision was rendered to a character grid with a ruler
+  and checked against `rowWidth`, at 40, 80 and 132, in ANSI/PETSCII and
+  plain ASCII. No row exceeds its width.
+
+## What the implementation ignored
+
+Plainly, because this is the fix list. Each one is: the file, what the spec
+said, what the code does.
+
+### I1. Seventeen caller-facing strings overflow a C64 row
+
+`src/plugins/forums.cpp`, measured rather than eyeballed. `rowWidth` is 39 at
+40 columns. These are the literals that exceed it, with their length:
+
+```
+  67   Enter reads what is new. A number opens a forum. ? help. Q leaves.
+  67   Enter reads on. A number opens a subject. P posts. ? help. Q back.
+  66   Type your message, up to 16 lines. Long lines wrap by themselves.
+  63  --> Nothing new here. L lists the subjects, a number opens one.
+  59  --> That is the end of that subject. Nothing else new here.
+  54  --> That is as much as one message holds. /s saves it.
+  53  --> Nothing new. A number opens a forum to browse it.
+  52   None configured. CONFIG FORUMS TOPICS sets them up.
+  48     Nothing here yet. P starts the first subject.
+  44  1 2 3   a number opens that forum or subject
+  44  --> That did not save. The card may be full.
+  44  --> Read a message first, then R answers it.
+  44  (the text of this message could not be read)
+  44   on a line by itself sends it (or Ctrl-D).
+  43  Leaving the forums. Returning to the BBS...
+  43  --> Nothing written yet. /a throws it away.
+  40  Enter   the next thing you have not read
+```
+
+The spec gave the rule and named the precedent: a short form under 60
+columns and a long one at 60 and up, *"the same `cols >= 60` test `files`
+already uses (`files.cpp:801`)"*. Not one of these has a short form. The two
+prompt hint lines at 67 characters wrap on every single prompt a C64 caller
+sees, mid-word.
+
+The last one, `" on a line by itself sends it (or Ctrl-D)."`, is also stale:
+Ctrl-D was removed because SyncTERM eats it, so the composing screen still
+names a key that does nothing.
+
+### I2. The reading screen has no header
+
+`forums.cpp:showMessage`. S3 specified `rowTitle(subject, "1 of 3")` as a
+reverse cyan bar, and said in as many words that *"the subject is drawn once,
+as the screen's title, not once per message"*.
+
+The code draws no bar at all. It draws the subject, in `g_cHead`
+(LightGreen), on its own line under the byline, once per message. That is
+both halves of Rob's complaint in one place: no header, and a green
+unlabelled line that reads as the first line of the body.
+
+### I3. The whole byline is one colour
+
+S3 specified `412` Yellow, `Daytona` LightGreen, `19 Sep 21:14` Grey.
+`showMessage` builds the whole thing with one `snprintf` and one
+`s.term.color(s.tl, g_cMeta)`, so it is entirely Grey. That is why it reads
+as a log line.
+
+### I4. The body is not paged and can scroll off a C64
+
+S3 and the byte budget both said the body *"must go through
+`startPluginList` and `rows()`, one output row per call"*, and gave the
+reason twice.
+
+`showMessage` writes the body straight into the timeline with a guard of 40
+lines. A 1,728 character message at 40 columns is 45 rows. **A C64 has 25.**
+There is no `[More]`, so the top of a long message scrolls away and cannot be
+recovered. The abort keys and the backpressure that `rows()` would have
+brought are also absent.
+
+### I5. The subject list numbers rows, not subjects
+
+S2 spent a section on this: *"The number in the left column is the subject's
+permanent number, not its position in the list"*, and the whole
+duplicate-name argument rests on it.
+
+`rows()` prints `snprintf(num, sizeof(num), "%2u", row + 1)` and `onKey`
+indexes `g_subjRow[key - '1']`. So the number is the row, two subjects called
+`Help` are `1 Help` and `2 Help` today and `2 Help` and `5 Help` next week,
+and a caller cannot learn a number. `SUBJ.TXT`, which was the thing that held
+the permanent number, is not built at all.
+
+### I6. The subject list has no action row, no description, no last-post column
+
+S2's grid has a `--> Read the 4 new here` action row at the top, the forum's
+description in the title bar at 60 and up, and a `handle date` column at 80.
+`rows()` builds the action row for the forum list only (`row == 0` in the
+`View::Forums` branch); the `View::Subjects` branch starts at the first
+subject. `drawSubjects` passes `g_forum[forum].name` to `rowTitle` with no
+description at any width. There is no last-post column.
+
+So the subject list is the forum list with its two best features removed, on
+the screen where a caller spends most of their browsing time.
+
+### I7. The composing width is 72 characters on every terminal
+
+S6: *"the gutter is 4 columns (`NN> `), so typed width is
+`min(BBS_LINE_MAX, rowWidth - 4)`: 35 on a C64 and 72 from 76 columns up."*
+
+`bodyPrompt` calls `s.ed.begin(BBS_LINE_MAX, 0)` and the auto-wrap in `onKey`
+triggers at `s.ed.len() >= BBS_LINE_MAX`. Both are 72, at every width. On a
+C64 that is a typed line running to 76 columns on a 40 column screen, which
+wraps on screen while the editor believes it is one line, **and backspace
+cannot cross a row boundary on any of these terminals**, so the first half of
+a wrapped line is unreachable. That is not a cosmetic miss, it is an editor
+that cannot be used at 40 columns.
+
+### I8. `g_subjRow` is board-wide and is not tagged by session
+
+Not in the spec, and a live bug rather than a layout one, but it is the exact
+shape the spec warned about under `visibleAreas`.
+
+`g_subjRow[]`, `g_subjRows` and `g_subjFor` are one shared table.
+`scanSubjects` fills it for one forum, **using one caller's read pointer to
+compute `unread`**. Two callers in two different forums overwrite each
+other's table, and `onKey`'s digit path never checks that `g_subjFor ==
+g_at[sl]`. Caller A lists forum 1, caller B lists forum 2, caller A presses
+`2` and gets forum 2's subject hash looked up inside forum 1, which finds
+nothing and prints "the end of that subject". The symptom is that a number
+stops working, which points nowhere near the cause.
+
+### I9. Small ones, listed so they are not lost
+
+- `showMessage` prints `"--> That message is not on the card."` and then
+  `prompt()`, with no `nl` between the message and the prompt on the
+  not-found path. Cosmetic.
+- The posting bar is `rowBar(s, g_cAsk, ...)` where `g_cAsk` is Yellow. The
+  colour vocabulary says Yellow means a number or an event; a title bar is
+  structure and is Cyan. A reverse Yellow bar is the loudest thing on the
+  board and it is being used for a routine screen.
+- `showHelp` draws every row in Grey including the key column. S5 specified
+  the key column White and the description Grey, which is what makes a
+  two-column table readable.
+- The body colour is `Color::White` (`g_cBody`); the theme table says
+  `color_body = ltgrey`. White is the subject's colour in the list, so the
+  same colour now means two things.
+
+---
+
+## F1. The reading screen, redrawn
+
+Three pieces, drawn at three different rhythms. That is the whole design and
+it exists because **the reading loop does not clear the screen**, so anything
+drawn per message is drawn forty times in a session.
+
+| Piece | Drawn | Device |
+|---|---|---|
+| context bar | once on arriving in a subject, and at every subject change | `rowBar(s, color_title, path, right)` |
+| post rule | once per message | `Glyph::HLine2` x2, the number, then `Glyph::HLine` to the width |
+| byline | once per message | left aligned, no flush right, two colours |
+
+A full width reverse bar per message would be a cyan stripe every eight rows.
+A rule per message is what a message separator is, and it is what Usenet and
+every mail digest ever printed.
+
+### ANSI and PETSCII, 40 columns, arriving in a subject
+
+```
+         111111111122222222223333333333
+123456789012345678901234567890123456789
+ 12. 1541 alignment disk        5 msgs 
+ ══ #412 ────────────────────── 2 of 5 
+ Daytona  19 Sep 21:14
+ Anybody got a working 1541 alignment
+ disk? Mine died last week and the
+ local shop wants 40 quid for a
+ service. Happy to pay postage both
+ ways.
+Forums>C64>Messages> 
+```
+
+| Region | Colour | Call |
+|---|---|---|
+| the context bar | reverse `color_title` (Cyan) | `b.rowBar(s, cTitle, bar, right)` |
+| `══` and `────` | `color_title` | `t.glyph(tl, Glyph::HLine2)` / `HLine` |
+| `#412` | `color_count` (Yellow) | `rowSeg` |
+| `2 of 5` | `color_when` (Grey) | `rowSeg` |
+| `Daytona` | `color_who` (LightGreen) | `rowSeg` |
+| `19 Sep 21:14` | `color_when` (Grey) | `rowSeg` |
+| the body | `color_body` (LightGrey) | one `color()`, then one row per `rows()` call |
+| `Forums>` `>Messages>` | `color_title` (Cyan) | |
+| `C64` | `color_subject` (White) | |
+
+PETSCII differences: none in the grid. `Glyph::HLine2` is `0xE3` and `HLine`
+is `0xC0`, two line heights, which reads as a rule with a heavy start. The
+colour bytes are one each.
+
+### Plain ASCII, 40 columns
+
+```
+         111111111122222222223333333333
+123456789012345678901234567890123456789
+12. 1541 alignment disk -------- 5 msgs
+ == #412 ---------------------- 2 of 5 
+ Daytona  19 Sep 21:14
+ Anybody got a working 1541 alignment
+ disk? Mine died last week and the
+ local shop wants 40 quid for a
+ service. Happy to pay postage both
+ ways.
+Forums>C64>Messages> 
+```
+
+Three things, and they are the argument for this being designed rather than
+stripped:
+
+- **The context bar is `rowTitle`'s existing dashed form.** It starts at
+  column 1 with no leading space, which is what `rowBar` already does on
+  ASCII and what the rest of the board looks like.
+- **The post block is indented one column inside it.** The bar is the
+  container, the post sits in it. That is what the indent is for and it is
+  why the body is indented too.
+- **`-- ` in front of the header is dropped.** The old spec used it to mean
+  "this line is the board, the next is the person". The rule with `#412` in
+  it does that job better and does it identically on all three terminals, so
+  the special case is gone. Nothing else on this screen is ambiguous without
+  colour, which is the test.
+
+### The second and every later message in the same subject
+
+No context bar. Two rows of furniture, which is what the old design spent on
+a blank line and an unlabelled header.
+
+```
+         111111111122222222223333333333
+123456789012345678901234567890123456789
+ ══ #412 ────────────────────── 2 of 5 
+ Daytona  19 Sep 21:14
+ Anybody got a working 1541 alignment
+ disk? Mine died last week and the
+ local shop wants 40 quid for a
+ service. Happy to pay postage both
+ ways.
+Forums>C64>Messages> 
+```
+
+### ANSI, 80 columns
+
+```
+         1111111111222222222233333333334444444444555555555566666666667777777777
+1234567890123456789012345678901234567890123456789012345678901234567890123456789
+ C64  >  12. 1541 alignment disk                                        5 msgs 
+ ══ #412 ────────────────────────────────────────────────────────────── 2 of 5 
+ Daytona  Fri 19 Sep 2026  21:14
+ Anybody got a working 1541 alignment disk? Mine died last week and the local
+ shop wants 40 quid for a service. Happy to pay postage both ways.
+Forums>C64>Messages> 
+```
+
+What the width buys, and it is deliberately not padding:
+
+- the forum's name joins the subject on the context bar, so the bar is the
+  whole path
+- the date gains its weekday and year, which is what a wide terminal is for
+- the body wraps later and nothing else moves
+
+### ANSI, 132 columns
+
+```
+         11111111112222222222333333333344444444445555555555666666666677777777778888888888999999999900000000001111111111222222222233
+12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901
+ C64  >  12. 1541 alignment disk                                                                                            5 msgs 
+ ══ #412 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 2 of 5 
+ Daytona  Fri 19 Sep 2026  21:14
+ Anybody got a working 1541 alignment disk? Mine died last week and the local shop wants 40 quid for a service. Happy to pay
+ postage both ways.
+Forums>C64>Messages> 
+```
+
+**The byline is left aligned at every width and never flush right.** At 132 it
+is 31 columns of 131 and that is correct: a short left-aligned line reads as a
+label, and only something pushed against the right margin with a hole behind
+it reads as a bug. The rule above it is what fills the width.
+
+### The exact geometry, so it can be built without guessing
+
+```
+ context bar  rowBar(s, color_title, bar, right)
+              bar at cols < 60 : "<n>. <subject>"
+              bar at cols >= 60: "<forum>  >  <n>. <subject>"
+              right            : "<k> msgs", or "<k> new" when k unread
+              rowBar truncates the title itself, so no plugin-side guard
+
+ post rule    col 1        : space
+              col 2..3     : Glyph::HLine2 x2
+              col 4..      : " #<num> "
+              then         : Glyph::HLine to fill
+              last 8..     : " <i> of <m> "     (always, at every width)
+
+ byline       col 1        : space
+              then         : handle, up to BBS_USER_MAX (20)
+              then         : two spaces
+              then         : date, "%d %b %H:%M" under 60 columns
+                             "%a %d %b %Y  %H:%M" at 60 and up
+
+ body         col 1        : space
+              wrapped at   : rowWidth(s) - 1
+              one row per rows() call
+```
+
+## F2. The breadcrumb
+
+```
+Forums>                 the forum list
+Forums>C64>             the subject list
+Forums>C64>Messages>    reading
+```
+
+- **Fixed words at both ends, the place in the middle.** Rob asked for
+  `Forums>Messages` and this is that with the forum inserted, which is the
+  one piece of information the reading screen otherwise loses once the
+  context bar scrolls away.
+- **No numbers in the prompt.** `#412` is a message and `12` is a subject,
+  and a prompt carrying one of them next to the other in the post rule is a
+  collision waiting to happen. Numbers belong in lists and in headers, next
+  to the thing they name.
+- **The forum's name is cut to `rowWidth - 17`**, which is 22 at 40 columns
+  against a 24 character maximum. So it is cut only for the two longest
+  possible forum names and never at 80 or above.
+- **No spaces around the separators, at any width.** One form, no branch, and
+  it is how Rob wrote it.
+- Colour: the fixed words and the `>` in `color_title`, the forum's name in
+  `color_subject`. Two colours, three changes, about 30 bytes.
+
+**Every input inside FORUMS is a single keypress**, so a long prompt costs no
+typing room. That is what makes the full path affordable here and it is worth
+stating, because the same prompt at the main shell would not be.
+
+## F3. Crossing a boundary
+
+Same subject, next subject:
+
+```
+         111111111122222222223333333333
+123456789012345678901234567890123456789
+Forums>C64>Messages> 
+
+ *** End of 1541 alignment disk.
+ 14. JiffyDOS on a breadbin     9 msgs 
+ ══ #420 ────────────────────── 1 of 9 
+ Rob  20 Sep 08:30
+ Worth it? I keep going back and forth
+ on this one.
+Forums>C64>Messages> 
+```
+
+Next forum, which pauses:
+
+```
+         111111111122222222223333333333
+123456789012345678901234567890123456789
+Forums>C64>Messages> 
+
+ *** End of C64.
+ --> Next: Swap Shop, 3 new. Enter.
+Forums>C64>Messages> 
+```
+
+`***` is `color_notice` (Yellow) and is an event. `-->` is `color_marker`
+(Cyan) and is the board offering something. Both are one column in from the
+margin, like everything else in the subsystem.
+
+## F4. The subject list, with the two missing columns put back
+
+### ANSI and PETSCII, 40 columns
+
+```
+         111111111122222222223333333333
+123456789012345678901234567890123456789
+ C64                             4 new 
+
+ --> Read the 4 new here         4 new 
+
+*12 1541 alignment disk           3 new
+*14 JiffyDOS on a breadbin        1 new
+  9 Anyone want a spare 1571?    5 msgs
+ 11 Help                         2 msgs
+  3 Help                         4 msgs
+
+ Enter reads. A number opens. P posts.
+Forums>C64> 
+```
+
+The numbers are the subjects' own, permanently. `11 Help` and `3 Help` need
+no other device to tell them apart, which is the whole of S2's argument and
+is not what the code does today.
+
+### Plain ASCII, 40 columns
+
+```
+         111111111122222222223333333333
+123456789012345678901234567890123456789
+C64 ----------------------------- 4 new
+=======================================
+ --> Read the 4 new here         4 new 
+=======================================
+*12 1541 alignment disk           3 new
+*14 JiffyDOS on a breadbin        1 new
+  9 Anyone want a spare 1571?    5 msgs
+ 11 Help                         2 msgs
+  3 Help                         4 msgs
+---------------------------------------
+ Enter reads. A number opens. P posts.
+Forums>C64> 
+```
+
+**Between the `===` rules the action row is a plain padded row, not a dashed
+bar.** Drawing `rowBar`'s ASCII form there would give it a dashed fill and
+then sandwich that between two rules, which is three rules where one thing is
+being said. Same geometry as the ANSI bar, spaces instead of colour.
+
+The `===` pair is drawn **only when there is something unread**. With nothing
+new there is no action row, so there are no action rules, which is how plain
+ASCII says the same thing the missing reverse video says elsewhere.
+
+### ANSI, 80 columns
+
+```
+         1111111111222222222233333333334444444444555555555566666666667777777777
+1234567890123456789012345678901234567890123456789012345678901234567890123456789
+ C64   (The machine this board is for)                                   4 new 
+
+ --> Read the 4 new here                                                 4 new 
+
+*12 1541 alignment disk                                 3 new  Daytona   19 Sep
+*14 JiffyDOS on a breadbin                              1 new  Daytona   20 Sep
+  9 Anyone want a spare 1571?                          5 msgs  Mindcrime 18 Sep
+ 11 Help                                               2 msgs  Rob       18 Sep
+  3 Help                                               4 msgs  Daytona   02 Sep
+
+ Enter reads them.  A number opens one.  P posts a new subject.  ? help.
+Forums>C64> 
+```
+
+## F5. The composer
+
+### ANSI and PETSCII, 40 columns, a new subject
+
+```
+         111111111122222222223333333333
+123456789012345678901234567890123456789
+ New subject in C64           16 lines 
+
+ Subject, up to 37 characters:
+ > 1541 alignment disk
+
+ /s send    /a cancel    BS back up
+══─────────────────────────────────────
+  1: Anybody got a working 1541
+  2: 
+```
+
+### 40 columns, a reply
+
+No subject prompt at all, because the subject is the container.
+
+```
+         111111111122222222223333333333
+123456789012345678901234567890123456789
+ Reply in 1541 alignment disk 16 lines 
+
+ /s send    /a cancel    BS back up
+══─────────────────────────────────────
+  1: Anybody got a working 1541
+  2: 
+```
+
+### Plain ASCII, 40 columns
+
+```
+         111111111122222222223333333333
+123456789012345678901234567890123456789
+New subject in C64 ----------- 16 lines
+
+ Subject, up to 37 characters:
+ > 1541 alignment disk
+
+ /s send    /a cancel    BS back up
+==-------------------------------------
+  1: Anybody got a working 1541
+  2: 
+```
+
+### ANSI, 80 columns
+
+```
+         1111111111222222222233333333334444444444555555555566666666667777777777
+1234567890123456789012345678901234567890123456789012345678901234567890123456789
+ New subject in C64                                                   16 lines 
+
+ Subject, up to 49 characters:
+ > 1541 alignment disk
+
+ /s  sends it     /a  throws it away     Backspace backs up a line
+══─────────────────────────────────────────────────────────────────────────────
+  1: Anybody got a working 1541
+  2: 
+```
+
+The rules, and four of them are fixes rather than dressing:
+
+- **The bar is `color_title`, not `color_ask`.** A reverse Yellow bar is the
+  loudest thing the board can draw and this is a routine screen.
+- **The line cap is the bar's right text**, printed from `BBS_COMPOSE_ROWS`
+  so the words cannot drift from the number. That is Rob's "note the max
+  message lengths", in the one place a caller is about to hit it.
+- **The subject cap is on its own row and is per terminal.** It is
+  `min(kSubject, rowWidth - 2)`, which is 37 at 40 columns and the full 49 at
+  80. A 49 character subject typed at 40 columns wraps, and **backspace
+  cannot cross a row on any of these terminals**, so the first half of it
+  would be unreachable. Capping to what fits is the only version that can be
+  edited.
+- **The subject gets a `> ` gutter on its own line**, not an inline
+  `Subject: ` prompt. Today ` Subject: ` is 10 columns and the field is 49,
+  so the line runs to 59 on a 39 column row.
+- **The two hint lines have a short form under 60 columns.** Both current
+  ones are 65 characters and wrap on a C64, and one of them still names
+  Ctrl-D, which was removed because SyncTERM eats it.
+- **The typed width is `min(BBS_LINE_MAX, rowWidth - 5)`**, 34 at 40 columns
+  and 72 at 80 and up. Five, not four, because the gutter is `  1: ` with the
+  block's leading space.
+- **The editor body rule is `══` then `─` to the width**, the same device as
+  the post rule, so a caller sees one idiom for "a block starts here".
+
+## F6. Help
+
+One page, and the cap on the title bar rather than in a row.
+
+```
+         111111111122222222223333333333
+123456789012345678901234567890123456789
+ Forums: the keys             16 lines 
+ Enter   the next thing, unread first
+ SPACE   the same
+ B       back up one message
+ L       the list you came from
+ 1 2 3   a number opens one
+ P       start a subject here
+ R       reply to what is on screen
+ ?       this
+ Q  ESC  back one level
+---------------------------------------
+```
+
+Eleven rows including the bar and the rule, so it fits a 24 row terminal with
+room and never pages. The key column is `color_subject` (White) and the
+description column is `color_when` (Grey), which is what makes it read as a
+table. It is all Grey today.
+
+## F7. "The word wrap is not working properly", and what it actually is
+
+Rob typed that sentence into his own test post, so it is a report from inside
+the composer. There are two separate faults behind it and they need different
+fixes.
+
+**The first is I7**, the composing width frozen at 72. That one is a
+one-line formula.
+
+**The second is the one worth designing.** A body is composed at the writer's
+width and read at the reader's, and `bbsu::wrap` wraps but never joins, which
+the old spec defended correctly: *"Re-flowing would mangle ASCII art and
+code, and this board's callers write both."* The consequence is that a
+message composed at 34 columns on a C64 is a 34 column stripe down a 132
+column screen, and one composed at 72 has a ragged right edge at 79. That is
+the wide-terminal complaint this whole project has been fixing everywhere
+else, arriving one layer down.
+
+**The fix is the format=flowed rule and it costs one byte per line.** A line
+the *wrapper* broke because the caller kept typing is a **soft** break and
+may be rejoined. A line the *caller* ended with Enter is a **hard** break and
+may not. **The board already knows which is which at compose time**, and it
+costs nothing to find out: the auto-wrap path and the Enter path are already
+two separate call sites. In `forums.cpp` they are `bodyAdd` at :1660, reached
+from the wrap in `onKey`, and `bodyAdd` at :1801, reached from `answered()`
+when the caller pressed Enter. One is soft, the other is hard, and nothing
+has to be inferred.
+
+- Encode a soft break as **a trailing space on the stored line**. No format
+  change, nothing new on disk, and it stays readable on a laptop.
+- **Trim a trailing space off a hard line** at compose time, so the marker is
+  never ambiguous.
+- On output, join a line to the next when it ends with a space, then wrap the
+  joined paragraph at the reader's width.
+
+ASCII art survives untouched, because every line of art is ended with Enter
+and is therefore hard. Prose reflows. This is RFC 3676's rule and it was
+invented for exactly this problem.
+
+Worth saying plainly: **without this, a C64 caller's posts are unreadable on
+an 80 column terminal and vice versa, and no amount of header design fixes
+it.**
+
+---
+
+# Mail: the same subsystem, one level shallower
+
+Rob: *"for the SD card mail software, can we get a list of messages... Can we
+also apply the subsystem treatment to this as well."* And: *"SD -> Full mail
+software / Without SD -> limited DDIAL style emails. The interface can
+largely remain the same."*
+
+## M0. What mail is allowed to be, from the source
+
+Checked against `src/plugins/chat.cpp` rather than assumed, because the
+record's shape decides most of this.
+
+| | |
+|---|---|
+| `MailRec` | `to`, `from`, `flags`, `at`, `len`, `text[512]` |
+| a subject field | **there is none, and adding one is a format change** |
+| body | `kMailChars` = 512, both tiers |
+| box | `kMailBoxSd` 12 with a card, `kMailBoxFs` 3 without |
+| board total | `kMailSlots` 64 |
+| states a message can be in | exactly two: unread, or `MF_KEPT` |
+| composer | `compose::Body` over `s.compose`, so it needs no card |
+
+**So the only thing the card changes is the box size.** The body is 512 either
+way, the composer works either way, and there is no card-only control to
+hide. Rob's "the interface can largely remain the same" is not a compromise
+here, it is the literal truth, and the tier shows up as **one number in the
+header**.
+
+**There are only two states, so `*` in column 1 carries all of them.** A
+message is unread, or it was read and kept. Deleting and replying both remove
+it. That is why the list needs no second marker and no status column.
+
+## M1. The mailbox
+
+### ANSI and PETSCII, 40 columns, card fitted
+
+```
+         111111111122222222223333333333
+123456789012345678901234567890123456789
+ Mailbox                2 new, 4 of 12 
+
+ --> Read the 2 new              2 new 
+
+* 1 Daytona   19 Sep  Did you ever get 
+* 2 Mindcrime 20 Sep  yes please, posta
+  3 Rob       18 Sep  try the reset lin
+  4 Daytona   02 Sep  never mind, sorte
+
+ A number reads. W writes. ? help. Q.
+Mail> 
+```
+
+### The same screen with no card
+
+One number changes. Nothing else.
+
+```
+         111111111122222222223333333333
+123456789012345678901234567890123456789
+ Mailbox                 2 new, 3 of 3 
+
+ --> Read the 2 new              2 new 
+
+* 1 Daytona   19 Sep  Did you ever get 
+* 2 Mindcrime 20 Sep  yes please, posta
+  3 Rob       18 Sep  try the reset lin
+
+ A number reads. W writes. ? help. Q.
+Mail> 
+```
+
+`2 new, 3 of 3` tells a caller they are full without a word of explanation,
+and it is the same field that reads `4 of 12` on a board with a card. **That
+is the entire tier.**
+
+### The from column is sized to the box, which is what makes the preview possible
+
+There is no subject, so the only thing on a row that distinguishes one
+message from another is who sent it and what it says. The preview is
+therefore not a wide-terminal luxury here, it is the content.
+
+```
+ fromW    = min(20, the longest handle in THIS box)
+ dateW    = 6
+ previewW = rowWidth - 1 - 2 - 1 - fromW - 1 - dateW - 2
+ preview drawn only when previewW >= 12
+```
+
+Sizing the column to what is actually in the box, rather than freezing it at
+`BBS_USER_MAX`, is what buys 17 columns of preview at 40. With one long
+handle in the box the preview drops out by itself and the row is still
+straight:
+
+```
+         111111111122222222223333333333
+123456789012345678901234567890123456789
+ Mailbox                1 new, 2 of 12 
+
+ --> Read the 1 new              1 new 
+
+* 1 Mindcrime_the_Ripper 20 Sep
+  2 Rob                  18 Sep
+
+ A number reads. W writes. ? help. Q.
+Mail> 
+```
+
+### Empty
+
+No action row, so on plain ASCII no `===` rules either. It answers rather than
+offering.
+
+```
+         111111111122222222223333333333
+123456789012345678901234567890123456789
+ Mailbox                0 new, 0 of 12 
+
+ --> Nothing in your mailbox.
+ --> W writes to somebody.
+
+ A number reads. W writes. ? help. Q.
+Mail> 
+```
+
+### Plain ASCII, 40 columns
+
+```
+         111111111122222222223333333333
+123456789012345678901234567890123456789
+Mailbox ---------------- 2 new, 4 of 12
+=======================================
+ --> Read the 2 new              2 new 
+=======================================
+* 1 Daytona   19 Sep  Did you ever get 
+* 2 Mindcrime 20 Sep  yes please, posta
+  3 Rob       18 Sep  try the reset lin
+  4 Daytona   02 Sep  never mind, sorte
+---------------------------------------
+ A number reads. W writes. ? help. Q.
+Mail> 
+```
+
+### ANSI, 80 columns
+
+```
+         1111111111222222222233333333334444444444555555555566666666667777777777
+1234567890123456789012345678901234567890123456789012345678901234567890123456789
+ Mailbox                                                        2 new, 4 of 12 
+
+ --> Read the 2 new                                                      2 new 
+
+* 1 Daytona   19 Sep  Did you ever get that 1541 sorted? I have
+* 2 Mindcrime 20 Sep  yes please, postage paid, send me your
+  3 Rob       18 Sep  try the reset line first, it is usually
+  4 Daytona   02 Sep  never mind, sorted it. Thanks anyway.
+
+ A number reads one.  W writes a new message.  ? help.  Q/ESC leaves.
+Mail> 
+```
+
+At 132 the preview simply runs longer and nothing else moves. **The preview is
+not padded out to the margin**, because it is a fragment of a sentence and a
+fragment padded to 109 columns looks like a field that failed to fill.
+
+### Where the rows come from
+
+One sequential pass over `mail.dat` on entering the mailbox, into a table
+tagged with whose box it describes, exactly the shape `g_subjRow` /
+`g_subjFor` has in the forums. Per row: the record index, `from` (21), `at`
+(4), `flags` (1) and a preview (41). **At `kMailBoxSd` = 12 rows that is 804
+bytes, one table, board-wide.**
+
+And it must be **tagged by handle and rebuilt when another caller opens
+theirs**, which is the bug the forums already have (I8) and which must not be
+copied across. Reading the table without checking the tag is how caller A
+opens caller B's message.
+
+## M2. Reading one message
+
+The forums' post block with no context bar, because mail has no grouping and
+each message ends in a decision rather than scrolling on.
+
+```
+         111111111122222222223333333333
+123456789012345678901234567890123456789
+ ══ #2 of 4 ───────────────────────────
+ Daytona  19 Sep 21:14
+ Did you ever get that 1541 sorted? I
+ have a spare head alignment disk if
+ you still need one, it is yours for
+ the postage.
+[R]eply  [S]ave  [D]elete: 
+```
+
+Plain ASCII, 40:
+
+```
+         111111111122222222223333333333
+123456789012345678901234567890123456789
+ == #2 of 4 ---------------------------
+ Daytona  19 Sep 21:14
+ Did you ever get that 1541 sorted? I
+ have a spare head alignment disk if
+ you still need one, it is yours for
+ the postage.
+[R]eply  [S]ave  [D]elete: 
+```
+
+ANSI, 80, where the state fits on the rule:
+
+```
+         1111111111222222222233333333334444444444555555555566666666667777777777
+1234567890123456789012345678901234567890123456789012345678901234567890123456789
+ ══ #2 of 4 ─────────────────────────────────────────────────────────── unread 
+ Daytona  Fri 19 Sep 2026  21:14
+ Did you ever get that 1541 sorted? I have a spare head alignment disk if you
+ still need one, it is yours for the postage.
+[R]eply  [S]ave  [D]elete: 
+```
+
+- **`[R]eply [S]ave [D]elete:` is unchanged.** Rob: "Keep seems to work
+  great." Nothing here touches it.
+- **`#2 of 4` is the position in the box**, which is the number the caller
+  just typed. There is no board-wide message number in mail and inventing one
+  would be a format change.
+- **The body must be word wrapped**, and today it is not:
+  `chat.cpp:mailRead` does `s.term.text(s.tl, r.text)` with 512 raw
+  characters into a 39 column terminal. The forums already wrap; mail does
+  not. Same `bbsu::wrap` at `rowWidth(s) - 1`, same one column indent.
+
+## M3. Writing and replying
+
+```
+         111111111122222222223333333333
+123456789012345678901234567890123456789
+ New message to Daytona      512 chars 
+
+ /s send    /a cancel    BS back up
+══─────────────────────────────────────
+  1: yes please, postage paid, send
+  2: 
+```
+
+```
+         111111111122222222223333333333
+123456789012345678901234567890123456789
+ Reply to Daytona            512 chars 
+
+ /s send    /a cancel    BS back up
+══─────────────────────────────────────
+  1: yes please, postage paid, send
+  2: 
+```
+
+Plain ASCII, 40:
+
+```
+         111111111122222222223333333333
+123456789012345678901234567890123456789
+New message to Daytona ------ 512 chars
+
+ /s send    /a cancel    BS back up
+==-------------------------------------
+  1: yes please, postage paid, send
+  2: 
+```
+
+ANSI, 80:
+
+```
+         1111111111222222222233333333334444444444555555555566666666667777777777
+1234567890123456789012345678901234567890123456789012345678901234567890123456789
+ New message to Daytona                                              512 chars 
+
+ /s  sends it     /a  throws it away     Backspace backs up a line
+══─────────────────────────────────────────────────────────────────────────────
+  1: yes please, postage paid, send
+  2: 
+```
+
+**`512 chars` is printed from `g_mailChars`**, and the forums' composer prints
+`16 lines` from `BBS_COMPOSE_ROWS`, in the same position on the same bar. The
+two subsystems say the same thing in the same place in different units
+because the two limits genuinely are different units: mail is bounded by a
+fixed record, a forum post by the compose buffer.
+
+## M4. Mail help
+
+```
+         111111111122222222223333333333
+123456789012345678901234567890123456789
+ Mail: the keys              512 chars 
+ Enter   the oldest one not yet read
+ 1 2 3   a number reads that one
+ W       write to somebody
+ R S D   reply, keep, bin, when reading
+ ?       this
+ Q  ESC  leave the mailbox
+---------------------------------------
+```
+
+## M5. The keys, and what they share with the forums
+
+| Key | Mailbox | Why it is that key |
+|---|---|---|
+| `Enter` `SPACE` | the oldest unread | the same key as everywhere else on this board |
+| a digit | read that one | `files`, the forums |
+| `W` | write a new message | not `P`, because mail is written to a person and not posted to a place |
+| `R` `S` `D` | only while reading | already shipped, already right |
+| `?` | the keys | `files`, the forums |
+| `Q` `ESC` | leave the mailbox | one level, and there is only one |
+
+Deliberately not used, and the reasons matter:
+
+- **`P`.** It means post in the forums and would mean send here. One letter,
+  two subsystems, two meanings is how a caller learns to distrust the board.
+- **`L`.** It means "the list you came from" in the forums, and in a
+  two-level subsystem `Q` already does that. A second key for the same
+  journey is a second thing to get wrong.
+- **`N`.** Still forbidden board-wide. At `[More]` it means stop.
+
+## M6. Where the limits are printed, and where they are not
+
+Three places. This is the whole of Rob's "note in there to the sysop and the
+user the max message lengths".
+
+| Where | What | From |
+|---|---|---|
+| the composer's title bar | `512 chars` / `16 lines` | `g_mailChars` / `BBS_COMPOSE_ROWS` |
+| the subject prompt, forums only | `Subject, up to 37 characters:` | `min(kSubject, rowWidth - 2)` |
+| the help screen's title bar | `512 chars` / `16 lines` | the same constants |
+
+And the mailbox header carries the box size as `4 of 12`, which is a limit
+too and is the one the sysop tunes.
+
+**Not on the line prompt.** ` 1: ` stays four characters. A cap repeated above
+every line of a sixteen line message is the definition of noise, and the
+caller has just read it on the bar two rows up.
+
+**Always `%u` against the constant, never a number typed into a sentence.**
+Checked rather than assumed: `forums.cpp:1421` already does this correctly,
+printing `kBodyLines`, which is `BBS_COMPOSE_ROWS`. The rule is written down
+so the next screen does the same, because a cap in prose is a cap that is
+wrong the first time somebody tunes the constant.
+
+The only reason that line needs touching at all is that at 66 characters it
+wraps on a C64, which is I1.
+
+---
+
+# The byte budget, re-measured for the new frame
+
+`BBS_TL_BYTES` is 3,072 and `Timeline::put` is all or nothing, so a frame
+that does not fit does not error, it loses characters out of the middle of a
+row.
+
+Costs taken from `Term` rather than recalled. ANSI `color()` is
+`"\x1b[0;NN[;1][;7]m"`: 7 bytes for a non-bold entry, 9 for a bold one, plus
+2 while reverse is on. `reverse(on)` is 4 and `reverse(off)` is a `color()`.
+`nl()` is 2 on ANSI and ASCII, 1 on PETSCII. **A `Glyph` on an ANSI terminal
+is 1 byte on a CP437 client and 3 on a UTF-8 one**, because `Term::cp437`
+re-encodes, and that is what makes a full width rule the expensive item.
+
+The richest single frame is one message with its context bar, a full 1,728
+character body and the prompt:
+
+| Case | with the bar | without it | % of 3,072 |
+|---|---:|---:|---:|
+| PETSCII 40 | 1,981 | 1,935 | 64% |
+| plain ASCII 40 | 2,018 | 1,977 | 66% |
+| ANSI 40, CP437 | 2,112 | 2,038 | 69% |
+| ANSI 40, UTF-8 | 2,160 | 2,086 | 70% |
+| ANSI 80, CP437 | 2,123 | 2,009 | 69% |
+| ANSI 80, UTF-8 | 2,251 | 2,137 | 73% |
+| ANSI 132, CP437 | 2,200 | 2,034 | 72% |
+| **ANSI 132, UTF-8** | **2,432** | 2,266 | **79%** |
+
+The worst case, broken out:
+
+```
+ context bar    colour 9 + reverse 4 + colour-with-reverse 11
+                + 131 columns + reverse-off 9 + nl 2            =    166
+ post rule      colour 9 + 1 + 2 glyphs at 3 + " #412 " 6
+                + 113 glyphs at 3 + " 2 of 5 " 8 + nl 2         =    374
+ byline         colour 9 + 1 + handle 20 + 2 + colour 7
+                + date 22 + nl 2                                =     63
+ body           colour 9 + 1,728 characters
+                + 14 rows x (1 indent + nl 2)                   =  1,779
+ prompt         nl 2 + 3 colours 27 + 21 characters             =     50
+ ----------------------------------------------------------------------
+ TOTAL                                                             2,432   79%
+```
+
+**It fits, and it must not be built that way anyway.** The body has to go
+through `rows()`, one output row per call, for the reason S3 already gave and
+the implementation ignored: at 40 columns the body is 45 rows against a C64's
+25, so without `[More]` the top of a long message is gone. Paced through
+`rows()` the largest single `put` is one body row, under 150 bytes at any
+width, and the frame cannot overflow by construction.
+
+**The furniture this revision adds** is 160 bytes at 40 columns on PETSCII,
+237 on ANSI CP437, and 653 at 132 on a UTF-8 client. The expensive item is
+the rule, and it is expensive only because a UTF-8 terminal spends three
+bytes on a box-drawing character. That is worth knowing and is not worth
+avoiding: 653 bytes buys the one thing Rob said was missing, on the terminal
+that has the most bandwidth.
+
+---
+
+# What has to change in the source
+
+Ordered cheapest and most visible first. Nothing here is large.
+
+## `src/plugins/forums.cpp`
+
+1. **Short forms for all 17 overflowing strings**, at the `cols >= 60` test
+   `files.cpp:801` already uses. This alone is most of what a C64 caller
+   would notice, and it touches no logic. Drop "or Ctrl-D" while in there.
+2. **`prompt()` draws the breadcrumb**, `Forums>` / `Forums>C64>` /
+   `Forums>C64>Messages>`, with the forum name cut to `rowWidth - 17`.
+   Replaces the `[F%u] %.20s> ` tag.
+3. **`showMessage` draws the post rule and the coloured byline**, and stops
+   drawing the subject per message. Three `rowSeg` calls and a glyph loop.
+4. **A context bar**, drawn from `drawSubjects`' open path and from the
+   subject-boundary path in `readNext`, not from `showMessage`. Putting it in
+   `showMessage` would draw it forty times.
+5. **The body through `startPluginList` and `rows()`**, wrapped at
+   `rowWidth(s) - 1` with a one column indent. This is the one item with real
+   structure to it, because `rows()` already serves two views and now serves
+   three.
+6. **`bodyPrompt` uses `min(BBS_LINE_MAX, rowWidth(s) - 5)`**, and the
+   auto-wrap trigger in `onKey` uses the same number rather than
+   `BBS_LINE_MAX`.
+7. **The composer screen**: bar in `color_title` with the row cap as its right
+   text, the subject on its own row with a per-terminal cap and a `> ` gutter,
+   two hint lines with short forms.
+8. **The subject list gets its action row**, the description in the bar at 60
+   and up, and the last-post column at 80 and up. Same `rows()` branch.
+9. **The subject number becomes the subject's own**, which needs `SUBJ.TXT` or
+   an equivalent and is the only item here that touches the formats. Until it
+   exists, a caller cannot learn a number.
+10. **`g_subjRow` gets a session tag** and every reader checks it. Live bug.
+11. **`showHelp`**: two colours, one page, the cap on the bar.
+
+## `src/plugins/chat.cpp`, for mail
+
+1. **`MAIL` becomes a place**: `own()` the session, `Mail>` prompt, `?`, `Q`.
+2. **The mailbox list through `startPluginList` and `rows()`**, off a
+   per-caller table built in one pass and tagged by handle.
+3. **`mailRead` wraps the body** at `rowWidth(s) - 1` and draws the post rule
+   and byline. It prints 512 raw characters today.
+4. **The composer screens** get the same bar, the same rule and the same hint
+   lines, with `512 chars` printed from `g_mailChars`.
+5. Nothing touches `MailRec`, `[R]eply [S]ave [D]elete`, the box limits or the
+   tier logic. The tier is already correct; it simply has nowhere to show.
+
+## `src/core`
+
+- **`bbsu::wrap` learns the soft-break rule** (F7): join a stored line to the
+  next when it ends with a space, then wrap the joined paragraph at the
+  reader's width. `compose::addLine` marks soft lines with a trailing space
+  and trims one off a hard line.
+- Everything else this design needs already exists. `rowBar` takes a colour
+  and truncates its title, `Glyph::HLine2` is in the enum with all three
+  mappings, `rowSeg`/`rowEnd`/`rowRule`/`rowTitle` are public, and
+  `startPluginList`/`rows`/`listDone` are wired. **Those were the four core
+  asks from the last revision and all four landed.**
+
+## What stays exactly as it is
+
+- **The byline, left aligned, never flush right.** The old spec was right and
+  the complaint was about what was missing around it.
+- **The reading loop does not clear the screen.** Views clear, scrolls do
+  not, and this is the reason the context bar is per subject rather than per
+  message.
+- **`[R]eply [S]ave [D]elete`.** Settled by the owner and working.
+- **`*` in column 1 for unread**, in the forums and in mail, because the
+  board already means that everywhere.
+- **`-->` and `***` on every terminal**, coloured where there is colour.
+- **The box limits, 12 and 3.** The tier is right; it was invisible.
+
+## Considered and rejected in this revision
+
+- **A `│` gutter down the left of a message body.** It is the most obviously
+  "spiffy" option and it costs two of 39 columns on a C64, on the screen
+  where columns are scarcest, to say something the rule above the message
+  already says.
+- **A shaded accent run at the start of the post rule**, `▓▓▒░───`. It reads
+  as `##::---` on plain ASCII, which is noise. Two `Glyph::HLine2` and then
+  `HLine` gives the same heavy-to-light lead-in and renders deliberately on
+  all three terminals.
+- **Labelled `From:` and `Date:` rows at 80 columns.** Two rows of furniture
+  per message to label two fields that label themselves, on a screen that
+  does not clear.
+- **The subject on every message header.** It is the same string on every
+  message in a grouped reader. The context bar carries it and the boundary
+  announcement redraws it.
+- **A number in the breadcrumb.** `#412` is a message and `12` is a subject;
+  a prompt carrying one while the rule two rows up carries the other is a
+  collision.
+- **A second marker in the mailbox for "kept".** There are exactly two
+  states, so the absence of `*` is the second one.
+- **A separate cardless mail design.** Rob asked for the interface to stay
+  the same and the source agrees: the only thing the card changes is the box
+  size, so the tier is one number in one field.
+
+---
 
 ## What changed in this revision, 2026-09-21
 
@@ -1019,6 +2181,11 @@ screen is not stretched, it is given something more to say.
 
 ### S2. The subject list
 
+> **Grids superseded by "F4. The subject list, with the two missing columns
+> put back" (revision 3, 2026-09-22).** The argument below, especially the
+> permanent subject number and the rejection of a date prefix, is unchanged
+> and is one of the things the build ignored. See I5 and I6.
+
 **New screen. The old document had no equivalent.** This is the level Rob's
 example lives at: a `HAM RADIO` forum carrying both "20m tips and tricks" and
 "20m antennas", where following one must not mean reading the other.
@@ -1197,6 +2364,13 @@ Item 1 over there has the mechanism and what it costs.
 ---
 
 ### S3. Reading
+
+> **Superseded by "F1. The reading screen, redrawn" at the top of this
+> document (revision 3, 2026-09-22).** The principles below all stand, in
+> particular the no-clear rule and the left-aligned byline. What changed is
+> that the header was specified as a bare byline with nothing around it, and
+> shipped that way, and it reads as a log line rather than as a post. Build
+> from F1's grids, not from the ones here.
 
 The reading loop is a **scroll, not a view**. The screen is never cleared
 between messages: the previous message is the context for this one. This is
@@ -1600,6 +2774,13 @@ rn spelled it out by flipping `[npq]` to `[qnp]`.
 ---
 
 ### S6. The editor
+
+> **Superseded in part by "F5. The composer" (revision 3, 2026-09-22).** The
+> `[S]ave [C]ont [L]ist [E]dit [A]bort` prompt below was replaced by the
+> shared `compose::` terminators, `/s` and `/a`, which is a deliberate change
+> and the right one. The gutter, the caps on screen and the per-terminal
+> typed width are specified in F5. The rules at the end of this section still
+> stand.
 
 The numbered line editor with single-letter commands is the universal BBS
 shape. Renegade's `MAIL1.PAS` line editor took `A C D F I L M O P Q R S T U Z

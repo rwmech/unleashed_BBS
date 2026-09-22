@@ -88,6 +88,7 @@
  * ===========================================================================
  */
 #include "../core/bbs.h"
+#include "../core/compose.h"
 #include "../core/bbs_util.h"
 #include "../core/clock.h"
 #include "../core/users.h"
@@ -200,6 +201,25 @@ Color    g_cOld    = Color::DarkGrey;      // history, on the way in
 Color    g_cNotice = Color::Yellow;        // *** joined, left, kicked
 Color    g_cRoom   = Color::Cyan;          // banner, /s and the like
 Color    g_cPriv   = Color::Purple;        // a line meant for one caller
+// The P in front of a private line. Bright and separate from g_cPriv on
+// purpose: the marker has to catch the eye in a scrolling room even when
+// the line itself is in a quiet colour, and the two jobs are not the same.
+Color    g_cPmark  = Color::LightRed;
+// An action line, whole. Rob wants one colour across the lot rather than
+// the node/handle/text split a said line gets, because an action is one
+// sentence about somebody rather than a thing they typed.
+Color    g_cAction = Color::Yellow;
+
+// Actions are rate limited separately from ordinary lines. The room's token
+// bucket is about flooding it with text; this is about the thing people
+// repeat for effect. Five in thirty seconds is generous for anything meant
+// seriously, and only the person doing it is told, which is the rule the
+// line limit already follows.
+constexpr uint8_t  kActMax    = 5;
+constexpr uint32_t kActWindow = 30000;      // ms
+uint8_t  g_actCount[BBS_MAX_NODES + 2] = {};
+uint32_t g_actSince[BBS_MAX_NODES + 2] = {};
+
 Color    g_cMark   = Color::Cyan;          // the --> on a line from the board
 
 // kMark: what the board says, versus what a person said.
@@ -232,13 +252,34 @@ uint8_t  g_mailFl[kMailSlots] = {};                     // MF_KEPT once read and
 // What a caller is doing with the message they were just shown. The plugin
 // owns the session while this is set, which is how a shell command gets to
 // read single keys.
-enum : uint8_t { MM_NONE = 0, MM_CHOOSE, MM_REPLY };
+// MM_WRITE is the unified composer: the same screen, keys and terminators a
+// forum post uses, because a caller who has learned one has learned both.
+enum : uint8_t { MM_NONE = 0, MM_CHOOSE, MM_REPLY, MM_WRITE };
 uint8_t  g_mailMode[BBS_MAX_NODES + 2] = {};
 int16_t  g_mailIdx [BBS_MAX_NODES + 2] = {};            // the record in hand
 bool     g_mailRoom[BBS_MAX_NODES + 2] = {};            // read from inside the room
 char     g_mailWho [BBS_MAX_NODES + 2][BBS_USER_MAX + 1] = {};   // who to reply to
 uint8_t  g_mailSlots = kMailSlots;                      // the board's own limit
 uint16_t g_mailChars = kMailChars;
+
+// A message being composed. The body is the only per-session buffer here and
+// it is mail-sized (512) rather than forum-sized, because that is what
+// MailRec holds; a bigger one would be RAM spent on something the record
+// cannot store.
+// The body lives on the Session, shared with the forums. Only the
+// recipient is kept here, which is 21 bytes a slot.
+char     g_writeTo[BBS_MAX_NODES + 2][BBS_USER_MAX + 1] = {};
+compose::Body g_writeCo[BBS_MAX_NODES + 2] = {};
+// Whether chat already owned this session when the editor opened. A caller
+// writing from the room goes back to the room; one writing from the shell
+// gets the session handed back.
+bool     g_writeRoom[BBS_MAX_NODES + 2] = {};
+
+// When the composed message is a reply, the slot of the message it answers,
+// or -1. Carried through the editor so that sending the reply and retiring
+// the original stay ONE rewrite of the mailbox. Two steps would mean
+// choosing which way to fail, and both ways lose something.
+int16_t  g_writeDrop[BBS_MAX_NODES + 2] = {};
 uint8_t  g_mailDays  = kMailDays;
 
 void readKey(void* ctx, const char* key, const char* value) {
@@ -261,6 +302,8 @@ void readKey(void* ctx, const char* key, const char* value) {
     else if (!strcmp(key, "color_room"))   g_cRoom   = colorByName(value, g_cRoom);
     else if (!strcmp(key, "color_marker")) g_cMark   = colorByName(value, g_cMark);
     else if (!strcmp(key, "color_private")) g_cPriv  = colorByName(value, g_cPriv);
+    else if (!strcmp(key, "color_pmark"))   g_cPmark = colorByName(value, g_cPmark);
+    else if (!strcmp(key, "color_action"))  g_cAction = colorByName(value, g_cAction);
     else if (!strcmp(key, "mail_slots")) {
         long v = strtol(value, nullptr, 10);
         if (v >= 0 && v <= kMailSlots) g_mailSlots = static_cast<uint8_t>(v);
@@ -352,6 +395,9 @@ struct Finder { uint8_t id; Session* found; char name[BBS_USER_MAX + 1]; };
 // mailBusy: sitting on the [R]eply [S]ave [D]elete prompt, or typing a
 // reply. The plugin owns the keys either way.
 bool mailBusy(const Session& s);
+// Defined below, next to the rest of the composer. Declared here
+// because the [R]eply key is handled above it.
+bool writeBegin(Bbs& b, Session& s, const char* to, int16_t dropIdx);
 
 // joined: owns the keys AND is actually in the room. A caller who typed
 // MAIL at the shell has been handed to this plugin so it can read single
@@ -456,6 +502,20 @@ char rankBracket(const Session& s) {
     return m == ' ' ? ')' : m;
 }
 
+// actAllowed: a fixed window rather than a token bucket, because the limit
+// is meant to be explainable. "Five every thirty seconds" is a sentence a
+// caller can hold; a refill rate is not.
+bool actAllowed(Session& s, uint32_t now) {
+    uint8_t slot = slotOf(s);
+    if (!g_actSince[slot] || now - g_actSince[slot] >= kActWindow) {
+        g_actSince[slot] = now ? now : 1;
+        g_actCount[slot] = 0;
+    }
+    if (g_actCount[slot] >= kActMax) return false;
+    ++g_actCount[slot];
+    return true;
+}
+
 void tag(const Session& s, char* out, size_t n) {
     snprintf(out, n, "#%s:%.20s%c", nodeName(s).t, s.user, rankBracket(s));
 }
@@ -491,8 +551,16 @@ void showLine(Session& s, const char* line, bool old) {
     Timeline& tl = s.tl;
     const char* colon = line[0] == '#' ? strchr(line, ':') : nullptr;
     const char* mark  = colon ? strpbrk(colon + 1, ")*>]") : nullptr;
+    // An action line is "** Handle does something **": it does not match the
+    // #node:handle<mark> shape, so it lands here and is drawn whole. That is
+    // what Rob asked for, and it gets its own colour rather than borrowing
+    // the board's notice colour, because a notice and somebody waving are
+    // not the same kind of line.
+    bool action = line[0] == '*' && line[1] == '*';
     if (old || !mark) {                                      // history, or a notice
-        t.color(tl, old ? g_cOld : (line[0] == '#' ? g_cText : g_cNotice));
+        t.color(tl, old ? g_cOld
+                        : (action ? g_cAction
+                                  : (line[0] == '#' ? g_cText : g_cNotice)));
         t.text(tl, line);
         t.nl(tl);
         return;
@@ -719,6 +787,13 @@ bool mailRewrite(int16_t dropIdx, const MailRec* add, uint32_t nowEpoch,
 void mailForget(uint8_t slot) {
     if (slot >= kSlots) return;
     g_mailMode[slot]    = MM_NONE;
+    g_actCount[slot]    = 0;
+    g_actSince[slot]    = 0;
+    // The body itself lives on the Session and is cleared by openSession, so
+    // there is nothing to wipe here and no Session in hand to wipe it with.
+    // Forgetting the recipient is what stops a half-written message being
+    // sent to the wrong person if the slot is reused.
+    g_writeTo[slot][0]   = '\0';
     g_mailIdx [slot]    = -1;
     g_mailRoom[slot]    = false;
     g_mailWho [slot][0] = '\0';
@@ -808,9 +883,30 @@ bool mailRead(Session& s, bool quiet) {
     s.term.text(s.tl, buf);
     s.term.nl(s.tl);
     r.text[kMailChars] = '\0';
+
+    // Wrapped at the READER's width, the same way forums draws a body and
+    // through the same function. Before this the whole message went out as
+    // one run of up to 512 characters and the terminal broke it wherever it
+    // happened to land, which on a 40 column screen means mid-word every
+    // third line. Wrapping on output rather than on input is deliberate: a
+    // message typed at 72 columns has to be readable on a C64, and one typed
+    // at 35 should not sit in a stripe down an 80 column screen.
+    //
+    // The guard is the same shape as the forums one. kMailChars over the
+    // narrowest useful width is about 15 lines, so 40 is slack rather than a
+    // limit, and it means a corrupt record cannot spin here.
     s.term.color(s.tl, g_cText);
-    s.term.text(s.tl, r.text);
-    s.term.nl(s.tl);
+    {
+        char line[160];
+        const char* p = r.text;
+        uint8_t guard = 0;
+        uint8_t cols = Bbs::instance().rowWidth(s);
+        while ((p = bbsu::wrap(p, line, sizeof(line), cols)) != nullptr && ++guard < 40) {
+            s.term.text(s.tl, line);
+            s.term.nl(s.tl);
+            if (!*p) break;
+        }
+    }
     // Nothing has been decided yet, so nothing has been touched. That is
     // the whole difference between a mailbox and a message that evaporates
     // the moment somebody looks at it.
@@ -1221,8 +1317,17 @@ void voteKick(Session& s, const char* arg, uint32_t now) {
 // ---------------------------------------------------------------------------
 bool roomCommand(Session& s, const char* p, uint32_t now) {
     char line[96], me[32], buf[64];
+    // The verb ends at a space OR at the first digit, so "/p1 hello" and
+    // "/p 1 hello" are the same command. Rob: "We should not need a space
+    // there, that applies to all / commands in chat." Every room command
+    // that takes a node number gets this for free, because the split is
+    // here rather than in each one.
+    //
+    // Only a digit breaks the verb, never a letter: "/welcome" and "/quit"
+    // have to keep working, and a rule that split on any non-letter would
+    // turn "/?" into "/" plus something.
     const char* arg = p;
-    while (*arg && *arg != ' ') ++arg;                 // the verb ends here
+    while (*arg && *arg != ' ' && !(*arg >= '0' && *arg <= '9')) ++arg;
     size_t vlen = static_cast<size_t>(arg - p);
     while (*arg == ' ') ++arg;
 
@@ -1244,10 +1349,22 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
     }
 
     if (is("/t") || is("/time")) {
-        char when[24] = "no clock";
+        // The clock and the caller's own clock. Somebody asking the time in
+        // a chat room is usually asking how long they have got, and having
+        // to leave the room to find out is the wrong answer.
+        char when[64] = "no clock";
         if (clk::valid()) clk::fmt(when, sizeof(when), "%a %d %b %H:%M");
+
+        int32_t mins = Bbs::instance().minutesLeft(s, now);
+        char full[128];
+        if (mins < 0)
+            snprintf(full, sizeof(full), "%s, no time limit", when);
+        else
+            snprintf(full, sizeof(full), "%s, %ld minute%s left this call",
+                     when, static_cast<long>(mins), mins == 1 ? "" : "s");
+
         wipeInput(s);
-        tell(s, g_cRoom, when);
+        tell(s, g_cRoom, full);
         flush(s);
         armInput(s);
         return true;
@@ -1269,9 +1386,22 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
             armInput(s);
             return true;
         }
+        if (!actAllowed(s, now)) {
+            char lim[64];
+            snprintf(lim, sizeof(lim), "%u actions every %u seconds. Say it instead.",
+                     static_cast<unsigned>(kActMax),
+                     static_cast<unsigned>(kActWindow / 1000u));
+            tell(s, Color::LightRed, lim);
+            armInput(s);
+            return true;
+        }
         flush(s);
         tag(s, me, sizeof(me));
-        snprintf(line, sizeof(line), "%.28s * %.48s", me, arg);
+        // ** Handle does something **, the whole line in one colour.
+        // The node tag and rank bracket come off: an action is prose about
+        // somebody, not a line they said, and the asterisks are what every
+        // board has used to mark one since before IRC borrowed it.
+        snprintf(line, sizeof(line), "** %.20s %.44s **", s.user, arg);
         showLine(s, line, false);
         post(line, &s);
         armInput(s);
@@ -1328,18 +1458,24 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
             tag(s, me, sizeof(me));
             snprintf(line, sizeof(line), "%.28s %.60s", me, rest);
             to->term.eraseBack(to->tl, to->ed.shown());
-            to->term.color(to->tl, g_cPriv);
-            to->term.text(to->tl, ">");
+            // P, not '>'. A letter says what it is without a key, and the
+            // angle bracket was both dark on black and already used
+            // elsewhere in the room.
+            to->term.color(to->tl, g_cPmark);
+            to->term.text(to->tl, "P");
             showLine(*to, line, false);
             to->ed.redraw(to->term, to->tl);
             if (g_away[slotOf(*to)][0]) {
                 snprintf(buf, sizeof(buf), "%.20s is away: %.16s", to->user, g_away[slotOf(*to)]);
                 tell(s, Color::Grey, buf);
             }
-            s.term.color(s.tl, g_cPriv);
-            snprintf(buf, sizeof(buf), ">to #%s %.40s", nodeName(*to).t, rest);
-            s.term.text(s.tl, buf);
-            s.term.nl(s.tl);
+            // The board confirming to the sender, so it carries the room's
+            // own marker and names the person as well as the node. The
+            // message itself is not repeated: it is already on screen from
+            // the typing, and a 40 column room has better uses for a line.
+            snprintf(buf, sizeof(buf), "/p to #%s:%.20s sent.",
+                     nodeName(*to).t, to->user);
+            tell(s, g_cPriv, buf);
         }
         flush(s);
         armInput(s);
@@ -1505,16 +1641,16 @@ void mailChoose(Session& s, int k) {
     uint32_t nowEpoch = clk::epoch();
 
     if (k == 'r' || k == 'R') {
-        char buf[80];
         s.term.text(s.tl, "R");
         s.term.nl(s.tl);
-        snprintf(buf, sizeof(buf), "Reply to %.20s:", g_mailWho[slot]);
-        tell(s, Color::Cyan, buf);
-        g_mailMode[slot] = MM_REPLY;
-        uint8_t room = static_cast<uint8_t>(s.term.cols() > 4 ? s.term.cols() - 2 : 32);
-        s.ed.begin(room < kLineMax ? room : kLineMax, 0);
-        s.term.color(s.tl, Color::White);
-        s.term.cursor(s.tl, true);
+        // The same editor a new message and a forum post use. This opened
+        // the single-line editor before, so a reply was capped at one line
+        // while everything around it was not: exactly the inconsistency the
+        // shared composer exists to remove.
+        //
+        // idx is the slot of the message being answered, and it goes with
+        // the reply so the send and the retirement stay one rewrite.
+        writeBegin(Bbs::instance(), s, g_mailWho[slot], idx);
         return;
     }
 
@@ -1592,6 +1728,213 @@ void mailReplyKey(Session& s, int k) {
 // ---------------------------------------------------------------------------
 // onKey: the caller is in the room. Lines go to everyone; /q leaves.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Writing a message: the same screen the forums draw.
+//
+// Clear, say who it is to, then take it a line at a time. The instruction
+// line names /s first and the control keys second, deliberately: /s works on
+// every keyboard ever built, and a telnet client that swallows Ctrl-D would
+// otherwise leave a caller with no way out of the editor.
+// ---------------------------------------------------------------------------
+// 16 rows, not 12. A line follows the terminal now (compose::lineWidth),
+// so on a 40 column C64 a row holds about 35 characters and 12 rows would
+// have capped that caller at ~420 against a 512 character allowance: the
+// narrow terminal would have had a smaller mailbox than the wide one for
+// no stated reason. 16 x 72 is exactly BBS_COMPOSE_MAX, so the buffer
+// still cannot be overrun at the widest line.
+constexpr uint8_t kWriteRows = 16;
+
+// The "16: " the prompt draws. The rub-out loops below count the same four.
+constexpr uint8_t kWritePromptCols = 4;
+
+// writeWidth: the editor capacity and the wrap trigger, from one place, so
+// they cannot drift into wrapping at a width the editor cannot hold.
+inline uint8_t writeWidth(Session& s) {
+    return compose::lineWidth(s.term.cols(), kWritePromptCols, BBS_LINE_MAX);
+}
+
+void writePrompt(Session& s) {
+    uint8_t slot = slotOf(s);
+    char q[12];
+    snprintf(q, sizeof(q), "%2u: ", static_cast<unsigned>(g_writeCo[slot].rows + 1));
+    s.term.color(s.tl, Color::Grey);
+    s.term.text(s.tl, q);
+    s.term.color(s.tl, Color::White);
+    s.ed.begin(writeWidth(s), 0);
+}
+
+// writeBegin: open the editor, and TAKE the session so the keys arrive.
+//
+// Borrowing the session is not optional and is easy to forget, because
+// everything else about the editor works without it: the header prints,
+// the prompt appears, and then every line the caller types goes to the
+// shell, which answers "Unknown command". That is exactly what happened,
+// and the test only caught it once it printed what the caller saw.
+//
+// `room` is the case where chat already owns the session because the caller
+// is in the room; then there is nothing to take and nothing to give back.
+bool writeBegin(Bbs& b, Session& s, const char* to, int16_t dropIdx) {
+    uint8_t slot = slotOf(s);
+    // Whether the caller was in the ROOM, which is not the same question as
+    // whether chat owns the session right now: reading mail from the shell
+    // borrows the session, so owns() is true for somebody who was never in
+    // the room. mailRead recorded the real answer, so a reply uses that.
+    bool room = (dropIdx >= 0) ? g_mailRoom[slot] : b.owns(s, g_index);
+    if (!b.owns(s, g_index) && !b.own(s, g_index)) {
+        s.term.color(s.tl, Color::LightRed);
+        s.term.text(s.tl, "Cannot open the editor just now.");
+        b.prompt(s);
+        return false;
+    }
+    g_writeRoom[slot] = room;
+    g_writeDrop[slot] = dropIdx;
+    snprintf(g_writeTo[slot], sizeof(g_writeTo[0]), "%s", to);
+    compose::begin(g_writeCo[slot], s.compose, kMailChars, kWriteRows);
+    g_mailMode[slot] = MM_WRITE;
+
+    s.term.cls(s.tl);
+    char bar[80];
+    snprintf(bar, sizeof(bar), dropIdx >= 0 ? "Reply to %.30s" : "Mail to %.30s", to);
+    b.rowBar(s, Color::Yellow, bar);
+
+    s.term.nl(s.tl);
+    s.term.color(s.tl, Color::Grey);
+    char how[140];
+    snprintf(how, sizeof(how),
+             " Up to %u lines, %u characters. Long lines wrap by themselves.",
+             static_cast<unsigned>(kWriteRows),
+             static_cast<unsigned>(g_mailChars));
+    s.term.text(s.tl, how);
+    s.term.nl(s.tl);
+    s.term.color(s.tl, Color::Yellow);
+    s.term.text(s.tl, compose::kSaveWord);
+    s.term.color(s.tl, Color::Grey);
+    s.term.text(s.tl, compose::kHowToEnd);
+    s.term.color(s.tl, Color::Yellow);
+    s.term.text(s.tl, compose::kDropWord);
+    s.term.color(s.tl, Color::Grey);
+    s.term.text(s.tl, compose::kHowToDrop);
+    s.term.nl(s.tl);
+    b.rowRule(s);
+    writePrompt(s);
+    return true;
+}
+
+void writeFinish(Session& s, bool send) {
+    uint8_t slot = slotOf(s);
+    int16_t drop = g_writeDrop[slot];
+
+    // Abandoning a REPLY goes back to the decision, not out of mail. The
+    // message being answered is still sitting there undecided, and the
+    // whole point of [R]eply [S]ave [D]elete is that nothing is touched
+    // until a key answers it. Dropping the caller at the shell here would
+    // leave the message neither kept nor read.
+    if (!send && drop >= 0) {
+        g_mailMode[slot] = MM_CHOOSE;
+        s.compose[0]     = '\0';
+        g_writeDrop[slot] = -1;
+        s.term.nl(s.tl);
+        tell(s, Color::Grey, "Reply dropped.");
+        mailChoosePrompt(s);
+        return;
+    }
+
+    g_mailMode[slot] = MM_NONE;
+    s.term.nl(s.tl);
+    if (!send || !g_writeCo[slot].len) {
+        tell(s, Color::Grey, "Nothing sent.");
+    } else if (mailSend(s, g_writeTo[slot], s.compose, drop)) {
+        // mailSend says what happened, including a refusal a sender can act
+        // on, so nothing is printed here on success.
+    }
+    s.compose[0] = '\0';
+    g_writeTo[slot][0]   = '\0';
+    g_writeDrop[slot]    = -1;
+    if (g_writeRoom[slot]) {
+        armInput(s);                       // they were in the room already
+    } else {
+        Bbs::instance().release(s);        // borrowed for the editor only
+        Bbs::instance().prompt(s);
+    }
+}
+
+void writeKey(Session& s, int k) {
+    uint8_t slot = slotOf(s);
+    compose::Body& body = g_writeCo[slot];
+
+    // Backspace on an empty line takes the previous line back for editing,
+    // so a committed line is not unreachable. Repeating it walks all the way
+    // back to an empty message, which is what "up to and including the
+    // entire message" asks for.
+    if (k == KEY_BACKSPACE && s.ed.len() == 0 && body.rows > 0) {
+        char back[BBS_LINE_MAX + 1];
+        compose::popLine(body, back, sizeof(back));
+        // Rub out the prompt rather than starting a new line under it, or
+        // the old line numbers stay on screen above the recalled one.
+        for (uint8_t i = 0; i < 4; ++i) {
+            s.term.ch(s.tl, '\b');
+            s.term.ch(s.tl, ' ');
+            s.term.ch(s.tl, '\b');
+        }
+        writePrompt(s);
+        for (const char* c = back; *c; ++c) s.ed.key(*c, s.term, s.tl);
+        return;
+    }
+
+    // Wrap while they type rather than stopping the echo dead.
+    if (s.ed.len() >= writeWidth(s) && k >= ' ' && k < 0x7F) {
+        char full[BBS_LINE_MAX + 1];
+        snprintf(full, sizeof(full), "%s", s.ed.text());
+        char carry[BBS_LINE_MAX + 1] = {};
+        uint8_t keep = compose::wrapPoint(full, s.ed.len(), carry, sizeof(carry));
+        full[keep] = '\0';
+
+        // Rub the carried word off this line before it moves down; it was
+        // echoed as the caller typed it and would otherwise appear twice.
+        uint8_t rub = static_cast<uint8_t>(s.ed.len() - keep);
+        for (uint8_t i = 0; i < rub; ++i) {
+            s.term.ch(s.tl, '\b');
+            s.term.ch(s.tl, ' ');
+            s.term.ch(s.tl, '\b');
+        }
+        if (!compose::addLine(body, full)) {
+            s.term.nl(s.tl);
+            tell(s, Color::Grey, "That is as much as one message holds. /s sends it.");
+            writePrompt(s);
+            return;
+        }
+        s.term.nl(s.tl);
+        writePrompt(s);
+        for (const char* c = carry; *c; ++c) s.ed.key(*c, s.term, s.tl);
+    }
+
+    LineEditor::Res r = s.ed.key(k, s.term, s.tl);
+    if (r == LineEditor::Res::Editing) return;
+    if (r == LineEditor::Res::Abort)   { writeFinish(s, false); return; }
+
+    const char* line = s.ed.text();
+    if (compose::isAbort(line)) { writeFinish(s, false); return; }
+    if (compose::isSave(line))  {
+        if (!body.len) {
+            tell(s, Color::Grey, "Nothing written yet. /a throws it away.");
+            writePrompt(s);
+            return;
+        }
+        writeFinish(s, true);
+        return;
+    }
+
+    if (!compose::addLine(body, line)) {
+        tell(s, Color::Grey, "That is as much as one message holds. /s sends it.");
+        writePrompt(s);
+        return;
+    }
+    if (compose::full(body)) {
+        tell(s, Color::Grey, "That is the last line. /s sends it.");
+    }
+    writePrompt(s);
+}
+
 void onKey(Session& s, int k, uint32_t now) {
     // A message is in hand. These keys are not chat: they decide what
     // happens to it, and they are read before the editor sees them because
@@ -1599,9 +1942,21 @@ void onKey(Session& s, int k, uint32_t now) {
     uint8_t slot = slotOf(s);
     if (g_mailMode[slot] == MM_CHOOSE) { mailChoose(s, k);   return; }
     if (g_mailMode[slot] == MM_REPLY)  { mailReplyKey(s, k); return; }
+    if (g_mailMode[slot] == MM_WRITE)  { writeKey(s, k);     return; }
 
     LineEditor::Res r = s.ed.key(k, s.term, s.tl);
-    if (r == LineEditor::Res::Abort) { leave(s, "left the room"); return; }
+    if (r == LineEditor::Res::Abort) {
+        // ESC rubs out the half-typed line; it does NOT leave the room.
+        // Rob: "The escape key exits chat, that should not do that. If
+        // anything esc would clear the typed line/command." He is right, and
+        // it is the same rule the shell already follows, where ESC clears
+        // the command line rather than hanging up. /q leaves, and the room
+        // help says so.
+        wipeInput(s);
+        flush(s);
+        armInput(s);
+        return;
+    }
     if (r != LineEditor::Res::Done) {
         if (!s.ed.len()) flush(s);                           // nothing typed: catch up
         return;
@@ -1765,13 +2120,28 @@ const Command kCommands[] = {
           while (*text && *text != ' ') ++text;
           size_t hlen = static_cast<size_t>(text - a);
           while (*text == ' ') ++text;
-          if (!hlen || !*text) {
+          if (!hlen) {
               s.term.color(s.tl, Color::LightRed);
-              s.term.text(s.tl, "MAIL handle your message");
-          } else {
-              snprintf(handle, sizeof(handle), "%.*s", static_cast<int>(hlen), a);
-              mailSend(s, handle, text);
+              s.term.text(s.tl, "MAIL handle, or MAIL handle your message");
+              b.prompt(s);
+              return;
           }
+          snprintf(handle, sizeof(handle), "%.*s", static_cast<int>(hlen), a);
+          if (!*text) {
+              // No message on the line, so open the full editor. This is
+              // the shape Rob asked for: one message entry everywhere, with
+              // the one-line form kept because it is quick.
+              UserRec u;
+              if (users::lookup(handle, u) != users::Lookup::Found) {
+                  s.term.color(s.tl, Color::LightRed);
+                  s.term.text(s.tl, "No account by that name.");
+                  b.prompt(s);
+                  return;
+              }
+              writeBegin(b, s, u.handle, -1);
+              return;
+          }
+          mailSend(s, handle, text);
           b.prompt(s);
       },
       Menu::Chat, 1 },

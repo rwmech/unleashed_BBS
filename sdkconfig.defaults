@@ -130,3 +130,18 @@ CONFIG_LWIP_TCP_WND_DEFAULT=2880
 # the radio from dropping frames under burst.
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
 CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+
+# The radio never sleeps on this board.
+#
+# CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE defaults ON and lets the IDF put
+# the radio into power management on its own. On a mains powered BBS the
+# saving buys nothing and the cost is real: a dozing station waits for the
+# next DTIM beacon before it hears anything, which on this AP measured as
+# about a second. Seen twice on the live board as a tight cluster of pings
+# at 1.02 s while the gateway stayed flat at 0 ms, and a tight cluster on a
+# round number is a timer rather than interference.
+#
+# The application still calls esp_wifi_set_ps(WIFI_PS_NONE) and that remains
+# the primary mechanism. This is belt and braces, so that a path which does
+# not run it cannot leave the radio asleep.
+CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=n

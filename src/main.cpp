@@ -71,12 +71,35 @@ static const char* TAG = "main";
 static EventGroupHandle_t s_wifi = nullptr;
 static const EventBits_t WIFI_UP = BIT0;
 
+// noSleep: keep the radio awake, and complain if it will not.
+//
+// Called on STA_CONNECTED and again on GOT_IP, because neither alone is
+// enough. A first association raises both; a reconnect that keeps the same
+// lease raises only the first, and the 0.18.0 fix hung on the second. A
+// radio left dozing waits for the next DTIM beacon before it hears
+// anything, measured on this AP as about a second.
+static esp_err_t noSleep() {
+    esp_err_t e = esp_wifi_set_ps(WIFI_PS_NONE);
+    if (e != ESP_OK) {
+        ESP_LOGW(TAG, "could not turn Wi-Fi power save off (%s); "
+                      "expect about a second of delay on an idle link",
+                 esp_err_to_name(e));
+    }
+    return e;
+}
+
 // ---------------------------------------------------------------------------
 // onNet: Wi-Fi / IP events. Reconnects forever on drop.
 // ---------------------------------------------------------------------------
 static void onNet(void*, esp_event_base_t base, int32_t id, void* data) {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_CONNECTED) {
+        // Associated, which is the earliest point the setting can be made to
+        // stick. A reconnect that keeps the same lease never reaches the
+        // GOT_IP branch below, and that is the hole the lag came back
+        // through.
+        noSleep();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         auto* e = static_cast<wifi_event_sta_disconnected_t*>(data);
         xEventGroupClearBits(s_wifi, WIFI_UP);
@@ -109,12 +132,8 @@ static void onNet(void*, esp_event_base_t base, int32_t id, void* data) {
         // lands on whoever pauses to read and then types, and DASH 1 sends a
         // frame and then goes deliberately quiet for a second, which is
         // precisely the gap that lets the radio doze.
-        esp_err_t ps = esp_wifi_set_ps(WIFI_PS_NONE);
-        if (ps != ESP_OK) {
-            ESP_LOGW(TAG, "could not turn Wi-Fi power save off (%s); "
-                          "expect about a second of delay on an idle link",
-                     esp_err_to_name(ps));
-        }
+        esp_err_t ps = noSleep();
+        (void)ps;
         ESP_LOGI(TAG, "online " IPSTR "  dial in: telnet " IPSTR " %u",
                  IP2STR(&e->ip_info.ip), IP2STR(&e->ip_info.ip), BBS_PORT);
         xEventGroupSetBits(s_wifi, WIFI_UP);

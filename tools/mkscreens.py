@@ -12,8 +12,8 @@ Module:       Tools / stock screen generator
 Purpose:      Generates the stock µnleashed BBS display files in data/screens/:
                  welcome.seq/.ans/.asc, busy.seq/.ans/.asc,
                  goodbye.seq/.ans/.asc, about.seq/.ans/.asc,
-                 files.seq/.ans/.asc. No bulletin ships: add
-                 bulletin.asc/.ans/.seq to show one after login.
+                 files.seq/.ans/.asc. No motd ships: add
+                 motd.asc/.ans/.seq to show one after login.
                  Hand-drawn art from PETSCII/ANSI editors can replace any of
                  these; the BBS only cares about the file name and extension.
                  HELP is generated from the command table, so no help screen ships.

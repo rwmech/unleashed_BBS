@@ -24,6 +24,278 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.21.3, 2026-09-22
+
+Static RAM, and the start of one mechanism where there were three. Smoke
+tested (shell, login, messaging); 0.21.2 underneath it passed the full card
+suite at 676 checks.
+
+**Headroom went from 4,776 bytes to 10,504.** Measured off the ELF, not off
+PlatformIO, which called the same build 53.7% while it was at 97.4% of the
+real ceiling. Two tables stopped storing text they only ever compared:
+
+- **`users::validateFile`'s `seen` table: 5,250 bytes to 1,000.** It holds
+  every handle read so far, purely to answer "have I met this one already".
+  That is an equality question, so it holds 250 hashes now. Stated rather
+  than buried: two handles that hash alike would be reported as duplicates
+  and the upload refused, about one in 137,000 uploads, and it fails toward
+  refusing a good backup rather than accepting a bad one.
+- **CONFIG's `g_cfgWas`: 1,536 bytes to 64.** It held what each field looked
+  like when the page opened, for one `strcmp` deciding whether to write it.
+  This also permanently removes a bug that was live once: the old table held
+  a **truncated** copy (`"%.47s"` into 96 bytes), so any value longer than 47
+  characters always compared unequal to itself and was rewritten on every
+  save whether or not it had been touched. A hash covers the whole string, so
+  there is no length left to get wrong.
+
+**One FNV-1a in the tree.** The forums had their own; `bbsu::hash` and
+`bbsu::foldHash` are now shared by the forums, the users.txt validator and
+the CONFIG page. `subjectHash` forwards to `foldHash` with the same folding
+and the same 0 sentinel, so every forum already written groups exactly as it
+did.
+
+**`claims.h`: one owner table where there were three.** Rob, on being shown
+them: "why would we have 3 versions and not one ... we should be combining
+into something reusable right?" He is right, and they were three separate
+inventions of one idea rather than one used three ways:
+
+| Was | Type | Scope |
+|---|---|---|
+| `g_cfgOwner` | `const Session*` | who is editing CONFIG |
+| `g_subjWho` / `g_subjFor` | two `uint8_t` | who filled the subject table, for which forum |
+| the transfer engine | `bool` | somebody is transferring |
+
+Three types, three scopes, and three release paths that each had to remember
+to clear themselves. `claims::take/holds/release/releaseAll` replaces them,
+keyed by **node and never by handle**, because the same person can be on two
+lines at once and they are two callers as far as a resource is concerned.
+
+**The half that actually prevents the bug is `releaseAll` in `openSession`,
+not just `closeSession`.** Sessions come from a static pool, so a claim left
+behind by a dropped caller is inherited by whoever dials in next, and every
+bug of this shape here has been exactly that: `pendingLand` dropping the next
+caller into the chat room, the squelch and away masks leaking between
+callers, the subject table serving one caller's forum to another. Clearing on
+arrival cannot be skipped by an exit path that did not run.
+
+**CONFIG is migrated; the subject table and the transfer engine follow in
+0.21.4.** Deliberately not all three at once: if the mechanism is wrong,
+moving one subsystem means one subsystem is wrong, and this gets a flash on
+real hardware before the other two lean on it. `g_cfgOwner` survives as a
+pointer read only for the "X is editing the settings" message and is never
+branched on, because a `Session*` from a static pool is precisely the thing
+that goes stale.
+
+**Not done, and why.** Unioning the backup's `ZipExport` and `ZipImport`
+(3,872 bytes) was approved and then withdrawn on reading the code: both own
+open `FILE*` handles and the cleanup path calls `exp_.abort()`
+unconditionally, so sharing storage means hand-managing two object lifetimes
+inside the rescue path a sysop uses when something has already gone wrong.
+Moving the whole backup window to the heap (about 10,800 more) was rejected
+for the same reason in stronger form: it would turn "the backup window always
+opens" into "it opens if there is heap", and the moment it would fail is the
+moment it is needed.
+
+## 0.21.2, 2026-09-22
+
+Naming, and the things a 40 column terminal made unreadable. Host tested,
+not yet flashed.
+
+**"Bulletin" is retired.** It was doing three jobs and about to be asked for
+a fourth, which is why the word kept coming back in conversation after
+conversation. Rob: "im so tired of dealing with this BS on the word
+bulletin."
+
+- `screens/bulletin.*` is **`screens/motd.*`**. It is the screen shown after
+  login, which is what a motd is everywhere else. Deliberately not
+  `welcome_anything`, because `screens/welcome` is the pre-login banner and
+  sharing that word rebuilds the confusion. No board ships one, so nothing
+  on disk moved and nothing needs migrating.
+- The sysop's information pages are **`INFO` / `I`** at the prompt and
+  **`/i0`-`/i9`** in the room, so the letter matches the word in both
+  places. Rob's reasoning: these are information pages generally, and news
+  is a thing you put on one rather than the name of the rack.
+- **`INFO [handle]` became `WHOIS [handle]`** to free that word, and it
+  should always have been WHOIS: it answers "who is this" and sits beside
+  WHO, which answers "who is on". No hidden INFO alias was kept, which is a
+  deliberate break with the usual courtesy, because the verb is being reused
+  and an alias would send an old habit somewhere wrong.
+- The word survives in exactly two places, both back-compat for data already
+  written: the hidden `BULLETIN` alias for FORUMS, and `landFromKey()`
+  reading `land = bulletin` as forums.
+
+**A composed line follows the terminal instead of a constant.** Forums and
+mail both opened the editor at `BBS_LINE_MAX` (72) and triggered their wrap
+at the same number whatever the caller was sitting at. On a C64 that is a
+four character line number plus 72 characters against a 40 column screen, so
+the terminal wrapped every line, the board's own wrap never fired, and the
+numbers down the left went out of step with the text beside them.
+
+- New `compose::lineWidth(cols, prompt, hardMax)`, shared by both, so the
+  editor's capacity and the wrap trigger cannot drift apart. They were two
+  copies of one constant in two files, which is how they would have.
+- Mail's row cap went 12 to 16. A narrower line means fewer characters per
+  row, and 12 rows at ~35 columns would have capped a C64 caller at about
+  420 characters against a 512 character allowance: a smaller mailbox on a
+  narrow terminal for no stated reason. 16 x 72 is exactly
+  `BBS_COMPOSE_MAX`, so the buffer still cannot be overrun.
+
+**Mail wraps at the reader's width.** `mailRead` printed up to 512
+characters as one run and let the terminal break it wherever it landed,
+which on 40 columns is mid-word every third line. It goes through
+`bbsu::wrap` now, the same function and the same argument as forums: a
+message typed at 72 columns has to be readable on a C64, and one typed at 35
+should not sit in a stripe down an 80 column screen.
+
+**Fourteen system lines in the forums were wider than a 40 column screen**,
+the worst at 67 characters. They go through one `say()` that wraps at the
+reader's width, with a leading `-->` or indent treated as furniture so
+continuations line up under the words rather than under the arrow.
+Shortening them all to 39 was the obvious fix and the wrong one: it would
+have made every wide terminal worse, which is the habit the `rowWidth`
+rework already corrected once.
+
+**Ctrl-D is no longer advertised, and that was live.** The body editor's
+help line still offered it as a way to send, two sittings after Rob asked
+for it to go and with `compose.h` already recording that it never reaches
+the board because SyncTERM eats it. The wording now comes from
+`compose::kHowToEnd`, which mail already used, so the two cannot drift.
+
+**`announce` read past the end of its own buffer and put it on the wire.**
+Found by the memory review and verified before fixing. `snprintf` returns
+the length it *would* have written, and both `g_bodyLen` and `g_reqLen` were
+assigned straight from it, so on truncation each was larger than the array it
+described. Two consequences, and the second is the bad one: `Content-Length`
+announced more bytes than followed it, so the directory read invalid JSON and
+the board was quietly not listed; and the send loop, `send(g_fd, g_request +
+g_sent, g_reqLen - g_sent, 0)`, read past the end of a 768 byte buffer.
+
+Reachable through ordinary use rather than as a worst case. `name`, `owner`,
+`description`, `host` and `token` are all CONFIG values and a CONFIG value
+buffer is 96 bytes, so five of them is 475 characters before a byte of JSON
+skeleton, against a 512 byte body. A board with its description filled in
+trips it.
+
+Both lengths are clamped to what was really written, and a payload that did
+not fit is now **refused rather than sent**: a truncated body is invalid JSON,
+so sending it means being delisted for a reason nobody can see, which is the
+same argument as "held must never be silent" in the directory notes. The
+console says which field to shorten.
+
+The comment on `kBodyMax` read "the payload never gets near this". **Third
+time in this project a comment has been believed over the arithmetic**, after
+the `heapWatch` comment that described a call it was making and the `rowEnd`
+comment that stated an invented mechanism as fact.
+
+**`kMaxParts` is checked rather than asserted in prose.** It is 8, over
+`kAreaParts` (6) and `kTopicParts` (7), and the loops read
+`i < comp->count && i < kMaxParts`, so an eighth part would not overflow
+anything: it would be silently dropped on save. That is precisely the file
+area bug that shipped in 0.20.0, where a count of 4 over six parts took
+Download and Delete off every area a sysop edited. Two `static_assert`s now
+fail the build when a part is added. **Fourth instance of a bound written
+beside a table instead of computed from it.**
+
+Also recorded rather than built: the chat command decisions from
+`reports/chat-commands-2026-09-22.md` (six approved, three rejected, plus
+`/t n +m` to give a caller more time), and the DDial roster finding, which
+is that the five minute timer was the rotator's and carried the *network*
+roster across a link rather than reprinting the local one.
+
+## 0.21.1, 2026-09-22
+
+One way to write a message, and the radio stops sleeping.
+
+### Message entry, everywhere
+
+Rob, on finding a forum post cut off mid-sentence: "the message length ended
+where the t did in the screen shot, cant enter more this was supposed to have
+a lot of space for a message, how did this truncate." And on the shape of the
+fix: "I dont see why mail, the system feedback systems, forums all dont use a
+unified message entry system."
+
+- **A body could never have been longer than 72 characters.** `s.ed` is the
+  single-line editor: its buffer is `char buf_[BBS_LINE_MAX + 1]`, 73 bytes,
+  and `begin()` takes a `uint8_t`. Asking it for 1,728 did not fail or warn,
+  it silently gave back 72. `FF_TEXTAREA` is no better at four 37 column
+  rows.
+- **New `src/core/compose.h`, shared by everything that takes a body.** Forum
+  posts and mail use it today and the feedback plugin gets it free. A second
+  copy would drift from the first, which is a shape this project has already
+  paid for. 36 checks in `host/test_compose.cpp`.
+- **A message is written a line at a time**, up to 24 lines for a forum post
+  and 12 for mail, which is what `MailRec` holds. `/s` on a line of its own
+  sends it, `/a` throws it away, and Ctrl-D or Ctrl-Z also send. **`/s` is
+  the one the screen names**, because it is typeable on every keyboard ever
+  built: telnet clients swallow some control keys and a C64's Ctrl
+  combinations are not a PC's. Naming only the control key would strand
+  exactly the callers this board is for.
+- **Long lines wrap while you type** rather than refusing keystrokes. The
+  break goes at the last space and the unfinished word carries to the next
+  line. A caller who stops being echoed mid-sentence reads that as the board
+  having frozen, which is how it was reported.
+- **Backspace on an empty line takes the previous line back for editing**, as
+  many times as you like, down to an empty message. Line-at-a-time entry
+  commits a line the moment Enter is pressed, and without this a typo three
+  lines back could only be fixed by abandoning the whole message: worse than
+  the fixed line length it replaced, because that wall was at least visible.
+- **`MAIL <handle>` with no text opens the same screen**: cleared, with a
+  header naming the recipient. `MAIL handle your message` on one line still
+  works, because it is quick. Mail's body stays at 512 characters, which is
+  what the record holds; giving mail a forum-sized body means moving the text
+  out of `MailRec` into its own file, and that is a format change rather than
+  something to smuggle in here.
+- Posting a forum message clears the screen and draws a header with the forum
+  and the subject. Before this the subject prompt appeared under whatever was
+  on screen, which arriving from `?` is the help text.
+- The prompts are theme keys rather than literals, in the plugin's own
+  config section the way chat's are.
+
+### Reading, which was unreachable
+
+- **A poster could not read their own message.** Rob posted the first message
+  on the board and then could not open it: a poster has read their own post
+  by definition, `Enter` means "the next thing you have not read", so the
+  only message on the board was unreachable. Correct on its own terms and
+  useless in practice.
+  Inside a subject, reading now walks the conversation in order whether or
+  not it has been read. `Enter` from the forum list still means what is new;
+  that distinction is the fix rather than a loosening of it. Pinned by a
+  regression check.
+- `1 subjects` is `1 subject`, and the same for messages.
+
+### The radio was sleeping again
+
+Measured on the live board while Rob reported lag, 116 pings: median 27 ms
+and **nine samples clustered at 1011 to 1066 ms**, against a gateway flat at
+0 ms over 20. A tight cluster on a round number is a timer, not
+interference, and Rob's own hypothesis named the trigger: DASH sends a frame
+and then goes deliberately quiet for a second, which is the gap that lets a
+station doze.
+
+- **`CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE` was on**, which lets the
+  IDF put the radio into power management by itself. Off now: this board is
+  mains powered and the saving buys nothing.
+- **The 0.18.0 fix only re-asserted `WIFI_PS_NONE` at `IP_EVENT_STA_GOT_IP`**,
+  and a reconnect that keeps the same lease never raises it. Now asserted on
+  `WIFI_EVENT_STA_CONNECTED` as well, through one `noSleep()` so the two
+  cannot drift.
+- **`SYS` has a Radio row**, read back from `esp_wifi_get_ps()` rather than
+  assumed: `awake`, or `SLEEPING, expect ~1s lag` in red. This has been
+  chased from the outside twice and got the wrong answer once. A board that
+  says which mode it is in turns the next one into a reading.
+
+### And the stall that is not the radio
+
+- `SYS` showed `Loop worst 193,833 us in session, node 1` with **9 slow
+  passes in 31 minutes**, which settles a question a high-water mark could
+  not: it recurs, and it is on a caller's own path. 193 ms is not 1,020 ms,
+  so this is a second and separate fault, still open.
+- The worst pass now records **what that caller was doing**, from
+  `Session::doing`, so the next reading names a command rather than a phase.
+  "in session" leaves a screen off the card, a directory walk and a
+  `users.txt` rewrite all equally likely; a verb does not.
+
 ## 0.21.0, 2026-09-21
 
 Forums, phase 2: posting, reading, and conversations that stay together.
@@ -70,7 +342,8 @@ Forums, phase 2: posting, reading, and conversations that stay together.
   found an XMODEM bug precisely by being somebody else's implementation.
   **It immediately earned its place**, see below.
 - **Two bugs, both found by tests rather than by reading the code:**
-  - `Enter` did nothing. The comparison was against `''` and the terminal
+  - `Enter` did nothing. The comparison was against `'
+'` and the terminal
     layer decodes Enter to `KEY_ENTER`, which is `0x100`. So the key that is
     the entire fast path silently never matched. The test reported it as "the
     subject that was read is no longer marked new", which points nowhere near

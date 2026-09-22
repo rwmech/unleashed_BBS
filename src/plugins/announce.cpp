@@ -111,7 +111,14 @@ constexpr uint16_t   kNudgeDef    = 60;     // seconds: shortest gap a caller ch
 constexpr uint16_t   kReplyMax    = 768;    // enough for the status line, headers and a small body
 constexpr size_t     kTokenMin    = 16;     // shortest token worth believing
 constexpr uint8_t    kDescMax     = 120;
-constexpr uint16_t   kBodyMax     = 512;    // the payload never gets near this
+// 512 is NOT comfortably above the worst case, whatever the comment here
+// used to say. name, owner, description, host and token are CONFIG values
+// and a CONFIG value buffer is 96 bytes, so five of them is 475 characters
+// before any JSON skeleton: a fully described board needs roughly 700. The
+// buffer stays 512 because that is the size the protocol documents and a
+// board does not need a 700 character description; what changed is that
+// overflowing it is now detected and refused rather than silently sent.
+constexpr uint16_t   kBodyMax     = 512;
 constexpr uint32_t   kTimeoutMs   = 10000;  // a directory has this long to answer
 constexpr uint16_t   kIntervalDef = 10;     // minutes
 
@@ -285,7 +292,24 @@ void activity(uint16_t& calls, uint32_t& minutes) {
 // own name, who runs it, how to reach it, and how busy it is. No handles,
 // no addresses, no counts of who did what.
 // ---------------------------------------------------------------------------
-void buildBody() {
+// took: snprintf returns what it WOULD have written, so its return is a
+// length only when it is smaller than the buffer. Everywhere else in this
+// file it was being stored as one, which is how a truncated payload came to
+// advertise a Content-Length past the end of its own array.
+//
+// Returns the bytes actually in the buffer, and says separately whether
+// anything was lost, because those are two different questions and the
+// caller needs both.
+uint16_t took(int r, size_t cap, bool& cut) {
+    if (r < 0) { cut = true; return 0; }
+    if (static_cast<size_t>(r) >= cap) { cut = true; return static_cast<uint16_t>(cap - 1); }
+    cut = false;
+    return static_cast<uint16_t>(r);
+}
+
+// buildBody: false when the payload did not fit, and then g_body holds a
+// truncated fragment that must not be sent.
+bool buildBody() {
     char name[kNameMax * 2 + 2], owner[kNameMax * 2 + 2], desc[kDescMax * 2 + 2];
     char host[kUrlMax * 2], token[84];
     jsonEscape(g_bbsName[0] ? g_bbsName : syscfg::get().hostname, name, sizeof(name));
@@ -303,7 +327,8 @@ void buildBody() {
         snprintf(extra, sizeof(extra), ",\"calls24\":%u,\"minutes24\":%u",
                  static_cast<unsigned>(calls), static_cast<unsigned>(minutes));
     }
-    g_bodyLen = static_cast<uint16_t>(snprintf(g_body, sizeof(g_body),
+    bool cut = false;
+    g_bodyLen = took(snprintf(g_body, sizeof(g_body),
         "{\"software\":\"unleashed\",\"version\":\"%s\","
         "\"name\":\"%s\",\"owner\":\"%s\",\"description\":\"%s\","
         "\"host\":\"%s\",\"port\":%u,\"nodes\":%u,\"busy\":%u,"
@@ -315,12 +340,19 @@ void buildBody() {
         static_cast<unsigned>(plat::millis() / 1000u),
         static_cast<unsigned>(g_interval),
         static_cast<int>(clk::utcOffset()),
-        token, extra));
+        token, extra), sizeof(g_body), cut);
+    if (cut) {
+        plat::log("announce: payload is longer than %u bytes, not sending. "
+                  "Shorten name, owner, description or host in CONFIG.",
+                  static_cast<unsigned>(sizeof(g_body) - 1));
+    }
+    return !cut;
 }
 
-void buildRequest(const Server& s) {
-    buildBody();
-    g_reqLen = static_cast<uint16_t>(snprintf(g_request, sizeof(g_request),
+bool buildRequest(const Server& s) {
+    if (!buildBody()) { g_reqLen = 0; return false; }
+    bool cut = false;
+    g_reqLen = took(snprintf(g_request, sizeof(g_request),
         "POST %s HTTP/1.1\r\n"
         "Host: %s\r\n"
         "User-Agent: unleashed/%s\r\n"
@@ -328,7 +360,16 @@ void buildRequest(const Server& s) {
         "Content-Length: %u\r\n"
         "Connection: close\r\n"
         "\r\n%s",
-        s.path, s.host, BBS_VERSION, static_cast<unsigned>(g_bodyLen), g_body));
+        s.path, s.host, BBS_VERSION, static_cast<unsigned>(g_bodyLen), g_body),
+        sizeof(g_request), cut);
+    if (cut) {
+        plat::log("announce: request did not fit %u bytes, not sending. "
+                  "The directory path or host is very long.",
+                  static_cast<unsigned>(sizeof(g_request) - 1));
+        g_reqLen = 0;
+        return false;
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -455,7 +496,13 @@ void startPost(uint32_t now) {
         finish("no route", false);
         return;
     }
-    buildRequest(s);
+    // A payload that did not fit is not sent at all. Sending the truncated
+    // half means invalid JSON at the far end and a board that is quietly not
+    // listed, which is worse than an announce that plainly did not happen.
+    if (!buildRequest(s)) {
+        finish("payload too long", false);
+        return;
+    }
     g_sent    = 0;
     g_started = now;
     g_stage   = Stage::Connecting;

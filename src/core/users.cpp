@@ -36,6 +36,7 @@
 #include "users.h"
 #include "sha256.h"
 #include "sysconfig.h"
+#include "bbs_util.h"                  // bbsu::foldHash, for the duplicate check
 #include "../platform/platform.h"
 
 #include <cstdio>
@@ -622,7 +623,20 @@ int validateFile(const char* p, Issues& iss) {
         return ++iss.problems;
     }
     static UserRec u;
-    static char seen[BBS_MAX_USERS][BBS_USER_MAX + 1];
+    // Hashes, not handles: this table is only ever asked "have I seen this
+    // one already", which is an equality question, and 250 handles at 21
+    // bytes was 5,250 bytes of static DRAM held for a check that runs when
+    // somebody uploads a backup. 250 hashes is 1,000.
+    //
+    // Folded, because duplicate detection here has always been
+    // case-insensitive (it used ieq).
+    //
+    // The trade, stated rather than buried: two different handles that hash
+    // alike would be reported as duplicates and the upload refused. With 250
+    // entries in a 32-bit space that is about one in 137,000 uploads, it
+    // fails toward refusing a good backup rather than accepting a bad one,
+    // and the sysop can rename and retry.
+    static uint32_t seen[BBS_MAX_USERS];
     uint16_t n = 0;
     Reader r(f);
     while (r.next(u, &iss)) {
@@ -635,8 +649,10 @@ int validateFile(const char* p, Issues& iss) {
         };
         if (!validHandle(u.handle))                     fail("invalid handle");
         if (u.pass[0] && !validHash(u.pass))            fail("pass is not a salt$hash (set passwords on the BBS)");
-        for (uint16_t k = 0; k < n && k < BBS_MAX_USERS; ++k) if (ieq(seen[k], u.handle)) fail("duplicate handle");
-        if (n < BBS_MAX_USERS) strncpy(seen[n], u.handle, BBS_USER_MAX);
+        uint32_t hh = bbsu::foldHash(u.handle);
+        for (uint16_t k = 0; k < n && k < BBS_MAX_USERS; ++k)
+            if (seen[k] == hh) fail("duplicate handle");
+        if (n < BBS_MAX_USERS) seen[n] = hh;
         uint8_t maxUsers = iss.maxUsers ? iss.maxUsers : syscfg::get().maxUsers;
         if (++n > maxUsers) fail("more accounts than max_users");
     }

@@ -13,7 +13,7 @@ source. See the LICENSE file for terms.
 
 # µnleashed BBS: command reference
 
-Version 0.21.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
+Version 0.21.1. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
 
 ## Calling in
 
@@ -42,7 +42,7 @@ Full guide to accounts: [USERS.md](USERS.md).
 - With sign-ups and guests both off, an unknown handle is refused in place (`No account. The sysop creates accounts here.`).
 - A locked account is refused before the password.
 - If nothing is typed at the handle prompt, a warning appears at 30 s, followed by your partial input redrawn. The line hangs up at 60 s.
-- After login you see your node, the date and time, your call count and your remaining time. If `screens/bulletin.*` exists, it plays next.
+- After login you see your node, the date and time, your call count and your remaining time. If `screens/motd.*` exists, it plays next.
 - Then you land wherever your account's `Start` says: the main prompt, the chat room, or the forums (the message boards, being built now). `Start` is `Default` on a new account, which follows the board's `landing` setting. `[H]ELP for commands.` is printed only when the main prompt is where you actually end up, because it is advice about that prompt and nowhere else. A landing this board cannot do falls back to the main prompt without complaint.
 
 ### Guests
@@ -52,7 +52,7 @@ Full guide to accounts: [USERS.md](USERS.md).
 - Nothing is saved: no account, no profile, no call count. The call still appears in `LAST`, like every call, marked `*`.
 - Nobody else can take a guest's handle while the guest is on. Once they leave, the handle is free again (and anyone may register it).
 - 15 minutes per call (`guest_minutes`), with the usual warnings at 5 and 1 minute. No daily limit.
-- `PROFILE` and `PASSWORD` don't exist for guests (not in HELP, answered as unknown). `INFO` without a handle says `Guests have no account.`
+- `PROFILE` and `PASSWORD` don't exist for guests (not in HELP, answered as unknown). `WHOIS` without a handle says `Guests have no account.`
 - Everything else works, including `PAGE`.
 - Guests can't become staff. `BYE <anything>` from a guest is a plain logoff; the password isn't checked and doesn't count toward a ban.
 
@@ -92,7 +92,7 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | `? staff` | | Staff tools (staff only). |
 | `? sysop` | | Sysop tools (sysop only). |
 | `? all` | | Every menu in turn, each with its own heading. |
-| `MAIL` | | Read the message waiting for you, then `[R]eply`, `[S]ave` or `[D]elete` it. Reading alone changes nothing. `MAIL handle your message` leaves one. See [CHAT.md](CHAT.md). |
+| `MAIL` | | Read the message waiting for you, then `[R]eply`, `[S]ave` or `[D]elete` it. Reading alone changes nothing. **`MAIL handle` opens the message editor** described below, the same one a forum post uses; `MAIL handle your message` still puts a short one on a single line. See [CHAT.md](CHAT.md). |
 | `WHO` | `W` | Who is on each node: a marker, handle, terminal, minutes on, idle time (mm:ss). The busy line is never listed, and a hidden sysop or co-sysop looks like a free line to callers. Staff see hidden and lurking sessions, marked `hidden` or `lurking`, and with `NODES` get a Doing column (the last command each caller ran, verb only, never arguments) instead of the terminal. |
 | `WHO n` | `W n` | The same list redrawn in place every n seconds (`who_refresh_min`..`who_refresh_max`, default 1..30) until you press a key. The footer shows the idle clock: refreshing is not input, so the idle hangup still counts down. |
 | `MEM` | `M` | Heap statistics and session sizing. |
@@ -104,7 +104,7 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | `ABOUT` | | What this BBS is, its version and its license. Plays `screens/about.*`, so a sysop can rewrite it. |
 | `CHAT` | | Join the chat room (the `chat` plugin). Everything you type goes to everyone in the room, tagged DDial style: `#2:Daytona) hi`. The bracket is the rank: `)` a caller, `*` a guest, `>` a co-sysop, `]` the sysop. There is no prompt character: the cursor waits at the start of the line. While you are typing, nothing from the room lands on your screen; the lines wait and print in order when you press Enter. The room buffers 48 lines, and one caller may send 80 lines a minute (`rate =`), with 8 in a burst; going over tells that caller alone, and the room never sees it. `/s` lists who is there, `/?` lists every room command, `/q` or ESC leaves. Private lines, away notes, squelch, kicks, the vote to kick and messages are all in [CHAT.md](CHAT.md). |
 | `SERIAL` | | Watch the serial device (the `serial` plugin). `T` takes the keyboard if you are allowed and it is free, ESC leaves. `SERIAL STATUS` prints the port, `SERIAL SET 9600 8N1` changes the line. |
-| `INFO [handle]` | `I` | An account: name, member since, last call, calls, profile. Email, address and phone only on your own account (or with `USERS`). |
+| `WHOIS [handle]` | | An account: name, member since, last call, calls, profile. Email, address and phone only on your own account (or with `USERS`). |
 | `PRIVACY` | | What the board knows about you: that telnet is not encrypted, how your password is stored, what the sysop can see, and the one rule that matters. Plays `screens/privacy.*`, so a sysop can rewrite it. The same screen is offered during sign-up. |
 | `PROFILE` | | Form to change your name, email, address, phone and profile. Not for guests. |
 | `PASSWORD` | | Form: current password, then the new one twice. Not for guests. |
@@ -197,6 +197,32 @@ All caller commands still work. Node arguments are `1`-`6`, `S` (sysop node) or 
 | `FILES` / `F` | all | **Goes into the file area**, the way `CHAT` goes into the room, rather than printing a list and returning. A screen plays on the way in if the board has `screens/files`, then the areas appear as a numbered menu laid out in as many columns as the terminal has room for. A digit opens an area, `Q` goes back one level and `Q` again leaves. `FILES n` enters and opens that area in one go. Only on a board with a card: the plugin does not start without one, so on a cardless board the command does not exist rather than offering an empty file area. |
 
 | `FORUMS` | **Goes into the message boards**, the way `FILES` and `CHAT` go into theirs. Three levels: topic areas the sysop sets up (`CONFIG FORUMS TOPICS`), subjects that callers start inside them, and the messages in each subject. A screen plays on the way in if the board has `screens/forums`. Only on a board with a card, the same as `FILES`: the plugin does not start without one, so on a cardless board the command does not exist rather than offering empty boards. `FORUMS SCAN` is staff only and prints what the board thinks is on the card. |
+### Writing a message
+
+**One editor, everywhere.** A forum post, a reply and a mail message are all
+written the same way, so learning it once is enough. The feedback system will
+use it too when it is built. The only thing that does not is a line of chat,
+which is one line by nature.
+
+The screen clears, a header says what is being written and who it is for, and
+then you type. Lines are entered one at a time.
+
+| Key | What it does |
+|---|---|
+| Enter | Finishes the line and starts the next one. A blank line is a blank line: it separates paragraphs and does not end the message. |
+| `/s` | On a line of its own, sends it. **This is the one to remember**: it works on every keyboard, including a C64. |
+| Ctrl-D, Ctrl-Z | Also send. Shortcuts for people who expect them, and not a substitute for `/s`: some telnet clients swallow control keys, and a C64's Ctrl combinations are not a PC's. |
+| `/a` | On a line of its own, throws the message away. ESC does the same. |
+| Backspace on an empty line | **Takes the previous line back for editing**, with the cursor at its end. Repeat it to walk back through the whole message, down to nothing. |
+
+**Long lines wrap as you type.** Fill a line and the board breaks it at the
+last space and carries the unfinished word down to the next one, rather than
+refusing further keystrokes. A word longer than the whole line is left whole,
+because there is nowhere to break it.
+
+A forum post holds 24 lines; a mail message holds 12, which is what the mail
+record has room for. The line counter on the left says where you are.
+
 **Inside `FORUMS`, keys rather than commands**, the same as the file areas.
 
 | Key | What it does |
@@ -297,7 +323,7 @@ Files in `screens/`, chosen by terminal type. Names, formats and upload limits: 
 |---|---|
 | `welcome` | after detection |
 | `about` | the `ABOUT` command |
-| `bulletin` | after login (optional, none ships) |
+| `motd` | after login (optional, none ships) |
 | `busy` | busy line |
 | `goodbye` | logoff |
 
@@ -508,7 +534,7 @@ USERS          X      X    -
 | `HIDE` | `SHOW`, `HIDE`, `LURK` |
 | `NOLIMITS` | no idle hangup, no per-call or per-day limit |
 | `DASH` | `DASH`, `DASH n` |
-| `USERS` | `USERS`, `USER ADD/EDIT/DEL`, private fields in `INFO` |
+| `USERS` | `USERS`, `USER ADD/EDIT/DEL`, private fields in `WHOIS` |
 
 The boot log prints each level's permission bits (`cfg: sysop on co1 off perms 0x1bf ...`) so you can confirm what loaded. Bad rows are logged and skipped.
 

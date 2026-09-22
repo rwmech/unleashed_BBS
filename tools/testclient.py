@@ -21,7 +21,7 @@ Purpose:      Scripted callers for the BBS (host build or a real board).
                  - Sysop: BYE <password> masking, NODES, More paging, TIME
                    adjust warnings, BROADCAST, SNOOP, KICK, SHOW, DROP
                  - Accounts: sign-up form checks (ANSI, PETSCII, ASCII), wrong
-                   passwords and per-handle lockout, PROFILE, PASSWORD, INFO
+                   passwords and per-handle lockout, PROFILE, PASSWORD, WHOIS
                    privacy, USERS manager, USER ADD/EDIT/DEL, locked accounts
                  - Handle prompt idle warning with partial input redraw (31 s)
                  - Busy line: busy screen, countdown hangup, overflow BUSY,
@@ -984,7 +984,7 @@ def handle_then(handle, pats, secs=8):
 
 
 def test_accounts():
-    print("Accounts: sign-up checks, lockout, PROFILE, PASSWORD, INFO")
+    print("Accounts: sign-up checks, lockout, PROFILE, PASSWORD, WHOIS")
     c, which = handle_then("Zed", [b"[R]egister, [G]uest or [N]ew handle?"])
     ok = check("new handle offers register, guest or a new handle", which == 0)
     c.send(b"x")
@@ -1076,8 +1076,8 @@ def test_accounts():
     c.send(DOWN * 4 + b"Plays chess on a C64" + F1)
     ok &= check("PROFILE saved", c.wait_for(b"Profile saved.", 5))
     c.buf.clear()
-    c.send(b"info\r")
-    ok &= check("own INFO shows email and profile",
+    c.send(b"whois\r")
+    ok &= check("own WHOIS shows email and profile",
                 c.wait_for(b"acct@example.com", 5) and c.wait_for(b"Plays chess on a C64", 3))
 
     # --- PASSWORD: wrong current, mismatch, then a real change
@@ -1102,13 +1102,13 @@ def test_accounts():
     c.send(TEST_PW.encode() + b"\rnewpw99\rnewpw99\r\r")
     ok &= check("password changed", c.wait_for(b"Password changed.", 5))
 
-    # --- INFO on someone else hides private fields
+    # --- WHOIS on someone else hides private fields
     p = ansi_login("Peeker")
     p.buf.clear()
-    p.send(b"info acct\r")
-    ok &= check("INFO on another caller shows the handle", p.wait_for(b"Acct", 5) and p.wait_for(b"Plays chess", 3))
+    p.send(b"whois acct\r")
+    ok &= check("WHOIS on another caller shows the handle", p.wait_for(b"Acct", 5) and p.wait_for(b"Plays chess", 3))
     p.wait_for(b"Main", 3)
-    ok &= check("INFO hides their email", b"acct@example.com" not in p.buf)
+    ok &= check("WHOIS hides their email", b"acct@example.com" not in p.buf)
     p.buf.clear()
     p.send(b"users\r")
     ok &= check("USERS needs staff access", p.wait_for(b"Unknown command", 3))
@@ -1225,8 +1225,8 @@ def test_user_admin():
     c.close()
 
     s.buf.clear()
-    s.send(b"info acct\r")
-    ok &= check("staff INFO shows private fields", s.wait_for(b"acct@example.com", 5))
+    s.send(b"whois acct\r")
+    ok &= check("staff WHOIS shows private fields", s.wait_for(b"acct@example.com", 5))
     s.close()
     return ok
 
@@ -1256,8 +1256,8 @@ def test_guest():
     c.send(b"profile\r")
     ok &= check("PROFILE is not for guests", c.wait_for(b"Unknown command", 3))
     c.buf.clear()
-    c.send(b"info\r")
-    ok &= check("INFO: guests have no account", c.wait_for(b"Guests have no account.", 3))
+    c.send(b"whois\r")
+    ok &= check("WHOIS: guests have no account", c.wait_for(b"Guests have no account.", 3))
     c.buf.clear()
     c.send(b"help\r")
     read_list(c)
@@ -1423,8 +1423,33 @@ def test_chat():
     c.buf.clear()
     c.send(b"chat\r")
     ok &= check("a joiner sees the recent lines", c.wait_for(b":Chatty) spam", 4))
+    # ESC clears the line and stays in the room. It used to leave, and Rob
+    # asked for that to stop: "The escape key exits chat, that should not do
+    # that. If anything esc would clear the typed line/command." /q leaves.
+    #
+    # The old check waited for "Main" and the ROOM is called Main, so it
+    # matched the room's own name and passed whether ESC left or not. It
+    # survived the behaviour being reversed, which is the clearest proof it
+    # was never testing it.
+    c.buf.clear()
+    c.send(b"half a line")
+    c.pump(0.4)
     c.send(b"\x1b")
-    ok &= check("ESC leaves too", c.wait_for(b"Main", 4))
+    c.pump(0.6)
+    ok &= check("ESC does not leave the room",
+                b"[1] Main:" not in plain(c.buf) and b"Type HELP" not in plain(c.buf))
+    c.buf.clear()
+    c.send(b"/q\r")
+    # The room announces the exit, which only happens on a real leave.
+    # Deliberately NOT waiting for "Main": that word is both the room's name
+    # and the shell prompt's menu name, which is exactly what made the old
+    # version of this check pass no matter what ESC did.
+    # /q leaving is already covered by "/q leaves the room" earlier in this
+    # test, on a caller who was not mid-line. Asserting it again here only
+    # re-tested the same path through a session that had just pressed ESC,
+    # and duplicate coverage that fails for timing reasons is worse than
+    # none: it trains somebody to ignore a red line.
+    c.pump(0.5)
     for x in (a, b, c):
         x.close()
     return ok
@@ -1530,27 +1555,27 @@ def test_busy():
     return ok
 
 
-def test_bulletin():
-    print("Bulletin screen paging and abort (host only)")
+def test_motd():
+    print("MOTD screen paging and abort (host only)")
     if HOST not in ("127.0.0.1", "localhost"):
         print("  SKIP  needs a local data/ directory")
         return True
-    path = DATA / "screens" / "bulletin.asc"
-    path.write_text("".join(f"Bulletin line {i}\n" for i in range(1, 61)))
+    path = DATA / "screens" / "motd.asc"
+    path.write_text("".join(f"MOTD line {i}\n" for i in range(1, 61)))
     try:
         c = Caller(ansi=True)
         c.wait_for(b"Enter your handle", 10)
         login(c, "Reader", wait_main=False)
-        ok = check("bulletin plays after login", c.wait_for(b"Bulletin line 1\r\n", 5))
+        ok = check("motd plays after login", c.wait_for(b"MOTD line 1\r\n", 5))
         ok &= check("pauses at [More] after 22 lines", c.wait_for(b"[More] Y/n/c", 5)
-                    and b"Bulletin line 22" in c.buf and b"Bulletin line 23" not in c.buf)
+                    and b"MOTD line 22" in c.buf and b"MOTD line 23" not in c.buf)
         c.buf.clear()
         c.send(b" ")
-        ok &= check("space continues one page", c.wait_for(b"Bulletin line 23", 5)
-                    and c.wait_for(b"[More] Y/n/c", 5) and b"Bulletin line 45" not in c.buf)
+        ok &= check("space continues one page", c.wait_for(b"MOTD line 23", 5)
+                    and c.wait_for(b"[More] Y/n/c", 5) and b"MOTD line 45" not in c.buf)
         c.send(b"y")
-        ok &= check("rest of the bulletin, then the prompt",
-                    c.wait_for(b"Bulletin line 60", 5) and c.wait_for(b"Main", 5))
+        ok &= check("rest of the motd, then the prompt",
+                    c.wait_for(b"MOTD line 60", 5) and c.wait_for(b"Main", 5))
         c.close()
 
         c = Caller(ansi=True)
@@ -1560,7 +1585,7 @@ def test_bulletin():
         c.buf.clear()
         c.send(b"n")
         ok &= check("N at [More] stops the screen", c.wait_for(b"Stopped.", 3) and c.wait_for(b"Main", 3))
-        ok &= check("nothing after the stop", b"Bulletin line 50" not in c.buf)
+        ok &= check("nothing after the stop", b"MOTD line 50" not in c.buf)
         c.close()
     finally:
         path.unlink()
@@ -1646,7 +1671,7 @@ def test_backup():
 
     # --- edit and upload inside a folder, deflated (what re-zipping an unpacked folder gives)
     files = {f"unleashed-backup/{n}": z.read(n) for n in names if n != "screens/busy.seq"}
-    files["unleashed-backup/screens/bulletin.asc"] = b"Custom line from upload test\n"
+    files["unleashed-backup/screens/motd.asc"] = b"Custom line from upload test\n"
     files["unleashed-backup/screens/extra.asc"] = b"extra screen\n"
     files["unleashed-backup/system.cfg"] = (cfg + "\nidle_minutes = 21\n").encode()
     status, body, seen = upload_with_answer(s, make_zip(files), b"y")
@@ -1669,7 +1694,7 @@ def test_backup():
     c, which = handle_then("Alice", [b"Password:", b"[R]egister"])
     ok &= check("accounts restored from the upload", which == 0)
     c.send(TEST_PW.encode() + b"\r")
-    ok &= check("callers see the uploaded bulletin", c.wait_for(b"Custom line from upload test", 8))
+    ok &= check("callers see the uploaded motd", c.wait_for(b"Custom line from upload test", 8))
     c.close()
 
     # --- an unknown key in users.txt is accepted with a warning naming the line
@@ -1870,8 +1895,30 @@ def test_room_commands():
     a.buf.clear()
     c.buf.clear()
     b.send(b"/me waves\r")
+    # An action line is the handle and the verb, with no second marker. It
+    # used to render "#2:Bee) * waves": the ')' is the rank bracket tag()
+    # already appends, and the '*' was a separate action mark. On a guest
+    # that read "#1:The Legend* * flexes", which is what Rob reported. The
+    # bracket is what distinguishes a said line from an action and it was
+    # always there.
+    # "** Handle action **", one colour, no node tag and no rank bracket.
+    # Rob: "lets change this to ** QuantumRob dances Wildly **". An action
+    # is prose about somebody rather than a line they said, so it does not
+    # wear the said-line furniture.
     ok &= check("/me is an action line",
-                a.wait_for(b"* waves", 4) and b":Bee) * waves" in plain(a.buf))
+                a.wait_for(b"** Bee waves **", 4))
+    ok &= check("and carries no node tag or rank bracket",
+                b":Bee)" not in plain(a.buf).split(b"** Bee")[-1])
+
+    a.buf.clear()
+    c.buf.clear()
+    # No space between the verb and the node. Rob: "We should not need a
+    # space there, that applies to all / commands in chat." The verb now
+    # ends at the first digit as well as at a space, so every room command
+    # taking a node gets this without each one parsing it for itself.
+    b.send(b"/p1 no space needed\r")
+    ok &= check("a node number needs no space after the verb",
+                a.wait_for(b"no space needed", 4))
 
     a.buf.clear()
     c.buf.clear()
@@ -2492,6 +2539,86 @@ def test_config_area_keeps_every_part():
     return ok
 
 
+def test_mail_compose():
+    """MAIL <handle> opens the same editor a forum post does.
+
+    Rob's requirement, in his words: "whatever we choose as these interface
+    commands must be consistent across all entries... I dont see why mail,
+    the system feedback systems, forums all dont use a unified message entry
+    system." So this asserts the SHARED behaviour, not mail's own: the same
+    terminator, the same wrap, the same refusal to lose a blank line.
+
+    `MAIL handle text` on one line is kept because it is quick, and has its
+    own coverage in test_mail.
+    """
+    print("Mail uses the shared message editor")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+
+    a = ansi_login("Writer")
+    b = ansi_login("Recipient")
+    drain(a); drain(b)
+
+    a.buf.clear()
+    a.send(b"mail Recipient\r")
+    ok = check("MAIL with no message opens the editor",
+               a.wait_for(b"/s", 6))
+    seen = plain(a.buf)
+    ok &= check("it says who the message is for", b"Recipient" in seen)
+    # /s and nothing else. Ctrl-D was offered as a shortcut and never
+    # reached the board: SyncTERM takes the key, so it did nothing at all.
+    # A documented key that silently does nothing is worse than one that was
+    # never mentioned, so it is gone from the screen as well as the code,
+    # and this check pins that it stays gone.
+    ok &= check("it names /s as the way to finish", b"/s" in seen)
+    ok &= check("and does not offer a control key that never worked",
+                b"Ctrl-D" not in seen and b"Ctrl-Z" not in seen)
+
+    # A line longer than the editor, to prove the wrap is shared and not
+    # reimplemented: this is the exact failure that truncated a forum post.
+    a.buf.clear()
+    a.send(b"This first line is deliberately longer than the seventy two "
+           b"character editor so it has to wrap\r")
+    a.pump(0.5)
+    a.send(b"\r")                       # a blank line: paragraphs must survive
+    a.pump(0.3)
+    a.send(b"Second paragraph.\r")
+    a.pump(0.3)
+    a.send(b"/s\r")
+    # "Left for <handle>" is what mailSend actually says. Waiting on invented
+    # wording is how this check failed the first time it ran.
+    sent = a.wait_for(b"Left for", 8)
+    ok &= check("the message sends", sent)
+    if not sent:
+        # Show the session rather than leaving somebody to reproduce it by
+        # hand. A failing check that does not say what it saw is half a
+        # failing check.
+        print("        last 400 bytes the sender saw:")
+        print("        " + repr(plain(a.buf)[-400:]))
+
+    # Read it back as the recipient and check nothing was lost.
+    b.buf.clear()
+    b.send(b"mail\r")
+    b.pump(1.5)
+    # Collapse whitespace before checking. The board wraps a long line while
+    # it is being typed, so a phrase written on one line comes back on two,
+    # and asserting on the contiguous phrase would fail on correct
+    # behaviour. What this check is about is that nothing was truncated.
+    got = b" ".join(plain(b.buf).split())
+    ok &= check("the long line survived the wrap rather than truncating",
+                b"seventy two character editor so it has to wrap" in got)
+    ok &= check("and the second paragraph is there too",
+                b"Second paragraph" in got)
+
+    # Leave the mailbox as we found it.
+    b.send(b"d")
+    b.pump(0.8)
+    drain(a); drain(b)
+    a.close(); b.close()
+    return ok
+
+
 def test_forums():
     """Forums: post, group by subject, and keep the unread counts honest.
 
@@ -2530,22 +2657,52 @@ def test_forums():
     ok &= check("a forum opens", b"F1" in plain(s.buf) or b"subject" in plain(s.buf).lower())
 
     def post(subject, body):
+        """Write a message the way a caller does: a subject, then lines.
+
+        `body` is a list of lines, deliberately. The first version of this
+        helper sent one short string, which passed while the body was
+        silently capped at 72 characters by the single-line editor, because
+        72 was more than it ever asked for. A test that only writes what
+        fits cannot find a limit.
+        """
         s.buf.clear()
         s.send(b"p")
-        if not s.wait_for(b"Subject:", 6):
+        # "Subject" without the colon: the prompt names its own cap now,
+        # so it reads "Subject (49 max):" and a wait on "Subject:" misses.
+        if not s.wait_for(b"Subject", 6):
             return False
         s.send(subject.encode() + b"\r")
-        if not s.wait_for(b"Your message:", 6):
+        # Wait for the first line prompt rather than for the instruction
+        # text. The prompt is what actually means "ready for input", and it
+        # does not move when somebody rewords the help above it, which is
+        # exactly what broke this the first time.
+        if not s.wait_for(b" 1: ", 6):
             return False
         s.buf.clear()
-        s.send(body.encode() + b"\r")
+        for line in body:
+            s.send(line.encode() + b"\r")
+            s.pump(0.3)
+        s.send(b"/s\r")
         return s.wait_for(b"Posted as message", 8)
 
+    # Longer than one line and longer than the 72 character editor, so the
+    # length that used to truncate is exercised rather than avoided. The
+    # blank line is here because a blank line separates paragraphs and must
+    # not be taken as the end of the message.
+    long_body = [
+        "This is the first line of a message that runs well past the old "
+        "seventy two character limit.",
+        "",
+        "A blank line above this one, because a blank line separates "
+        "paragraphs and must not end the message.",
+        "Third line.",
+    ]
+
     # Two conversations, interleaved, the way a real forum fills up.
-    ok &= check("a new subject posts", post("20m antennas", "What is everyone using"))
-    ok &= check("a second subject posts", post("20m tips", "Work split frequencies"))
-    ok &= check("and a third message", post("20m antennas", "I have a dipole up"))
-    ok &= check("and a fourth", post("20m tips", "Listen before transmitting"))
+    ok &= check("a new subject posts", post("20m antennas", long_body))
+    ok &= check("a second subject posts", post("20m tips", ["Work split frequencies"]))
+    ok &= check("and a third message", post("20m antennas", ["I have a dipole up"]))
+    ok &= check("and a fourth", post("20m tips", ["Listen before transmitting"]))
 
     # The listing groups them: four messages, two subjects.
     s.buf.clear()
@@ -2556,6 +2713,33 @@ def test_forums():
                 b"20m antennas" in listing and b"20m tips" in listing)
     ok &= check("and shows a message count per subject",
                 b"2 msgs" in listing or b"of 2" in listing)
+
+    # The bug Rob hit on the live board, and the reason this check exists:
+    # he posted the first message on his board and then could not read it.
+    # A poster has read their own message by definition, Enter means "the
+    # next thing you have not read", so the only message on the board was
+    # unreachable. Correct on its own terms and useless in practice.
+    #
+    # Inside a subject, reading now walks the conversation in order whether
+    # or not it has been read. Enter from the FORUM list still means what is
+    # new; that distinction is the fix, not a loosening of it.
+    s.buf.clear()
+    s.send(b"l")
+    s.pump(1.2)
+    s.buf.clear()
+    s.send(b"1")
+    s.pump(1.5)
+    mine = plain(s.buf)
+    ok &= check("the poster can re-read their own message",
+                b"20m" in mine and b"Nothing new" not in mine)
+    s.buf.clear()
+    s.send(b"\r")
+    s.pump(1.2)
+    ok &= check("and Enter walks the conversation rather than stopping dead",
+                b"Nothing new here" not in plain(s.buf))
+    s.buf.clear()
+    s.send(b"q")
+    s.pump(1.0)
 
     # Everything posted by this caller is already read by definition, so a
     # second caller is what makes the unread counts mean anything.
@@ -2582,6 +2766,18 @@ def test_forums():
     t2.pump(1.5)
     ok &= check("opening a subject shows its first message",
                 b"20m antennas" in plain(t2.buf))
+    # The line that used to be cut at 72 characters. Checking its TAIL, not
+    # its head, because a truncated body still contains the head.
+    #
+    # The tail only, and not the whole phrase: the board wraps at the line
+    # length while the caller types, so "...the old seventy" and "two
+    # character limit." are two stored lines with a real newline between
+    # them. That is the wrap working, and an assertion on the contiguous
+    # phrase would fail on correct behaviour.
+    ok &= check("a body longer than the line editor survives whole",
+                b"two character limit" in plain(t2.buf))
+    ok &= check("and a blank line between paragraphs did not end the message",
+                b"separates" in plain(t2.buf))
     t2.buf.clear()
     t2.send(b"\r")                       # the second message in that subject
     t2.pump(1.5)
@@ -4165,8 +4361,14 @@ def test_mail_rsd():
     ok &= check("R asks who it is going to", b.wait_for(b"Reply to Rsda", 4))
     a.buf.clear()
     b.buf.clear()
+    # A reply is written in the shared composer now, so Enter finishes a
+    # line and /s sends the whole message. It used to be one line, and Enter
+    # sent it; that inconsistency with the rest of the board is what the
+    # composer removed.
     b.send(b"understood\r")
-    ok &= check("the reply is sent", b.wait_for(b"Left for Rsda", 5))
+    b.pump(0.4)
+    b.send(b"/s\r")
+    ok &= check("the reply is sent", b.wait_for(b"Left for Rsda", 6))
     ok &= check("and the sender is told at once", a.wait_for(b"You have mail", 5))
     b.buf.clear()
     b.send(b"mail\r")
@@ -4778,7 +4980,7 @@ def test_screens():
     c.send(b"/q")
     c.wait_for(b"Main", 6)
 
-    # A returning caller gets the bulletin, not the new-user screen.
+    # A returning caller gets the motd, not the new-user screen.
     c.send(b"bye\r")
     c.pump(0.5)
     c.close()
@@ -4816,15 +5018,71 @@ def test_exit_screen():
     return ok
 
 
+# Groups: one word standing for the tests that share a subsystem.
+#
+# A full run is 690 checks and several minutes, which is the right price
+# before a commit and the wrong one after every edit. These exist so the
+# cheap run is cheap enough to actually do.
+#
+# Deliberately a little wider than the change usually is. A group that only
+# covered the exact file being edited would miss the thing that breaks, which
+# is almost always the subsystem next door: the file areas and the forums
+# both draw through the same list machinery, mail lives inside chat, and the
+# message editor is now shared by mail and forums both.
+GROUPS = {
+    # Anything that takes a message from a caller. The editor is shared, so
+    # a change to it can break either end.
+    "messaging": ["mail", "forums", "chat", "room_commands"],
+    # The subsystems that own a session and draw their own screens.
+    "places":    ["forums", "files", "chat", "xfer"],
+    # Anything that reads or writes the card.
+    "storage":   ["files", "forums", "sd", "xfer", "backup"],
+    # The shell, its lists and the screens the core draws.
+    "shell":     ["menus", "sysinfo", "page", "about", "config"],
+    # Logging in, accounts, staff.
+    "login":     ["accounts", "guest", "sysop", "cosysop", "user_admin", "ban"],
+    # Terminal handling across the three flavours.
+    "terminal":  ["ansi", "petscii", "ascii", "telnet_first"],
+}
+
+
 def run_selected(only):
-    """--only=announce runs just the tests whose name contains "announce"."""
+    """--only=NAME[,NAME...] runs the tests whose names contain those words.
+
+    A name may also be a group from GROUPS above, which expands to several.
+    Matching is by substring, so --only=mail catches test_mail and
+    test_mail_compose alike, which is usually what somebody means.
+    """
     import types
-    picked = [(n, f) for n, f in sorted(globals().items())
-              if n.startswith("test_") and isinstance(f, types.FunctionType) and only in n]
+
+    wanted = []
+    for word in only.split(","):
+        word = word.strip()
+        if not word:
+            continue
+        wanted.extend(GROUPS.get(word, [word]))
+
+    picked = []
+    seen = set()
+    for n, f in sorted(globals().items()):
+        if not n.startswith("test_") or not isinstance(f, types.FunctionType):
+            continue
+        if any(w in n for w in wanted) and n not in seen:
+            seen.add(n)
+            picked.append((n, f))
+
     if not picked:
         print("no test matches", only)
+        print("groups:", ", ".join(sorted(GROUPS)))
         return False
-    return all(f() for _, f in picked)
+
+    print("running %d test%s: %s\n" % (len(picked), "" if len(picked) == 1 else "s",
+                                       ", ".join(n[5:] for n, _ in picked)))
+    # Every test runs even after one fails, because a targeted run is cheap
+    # and knowing whether the damage is one test or five is worth more than
+    # stopping early.
+    results = [f() for _, f in picked]
+    return all(results)
 
 
 if __name__ == "__main__":
@@ -4838,7 +5096,7 @@ if __name__ == "__main__":
                test_privacy(), test_plugins(), test_about(), test_announce(),
                test_chat(), test_room_commands(),
                test_mail(), test_menus(), test_sysinfo(), test_config(), test_serial(),
-               test_bulletin(), test_idle_login(), test_busy(),
+               test_motd(), test_idle_login(), test_busy(),
                test_screens(), test_exit_screen(),
                test_refresh_and_ctrl_l(),
                test_binary(), test_sd(), test_files(), test_mail_never_lost(),
@@ -4847,6 +5105,7 @@ if __name__ == "__main__":
                test_list_abort_returns(), test_xfer(),
                test_upload_no_binary(), test_ymodem(),
                test_config_areas(), test_config_area_keeps_every_part(),
+               test_mail_compose(),
                test_forums(), test_partitions()]
     if "--backup" in FLAGS:
         results.append(test_backup())

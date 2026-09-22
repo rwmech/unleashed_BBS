@@ -9,7 +9,7 @@
  *
  * Purpose:      BBS core loop: listener, 6 caller nodes, the busy line,
  *                  the hidden sysop node, connect-time detection, welcome and
- *                  bulletin screens, handle prompt, idle and time-limit timers,
+ *                  motd screens, handle prompt, idle and time-limit timers,
  *                  message delivery, and paged output. Commands live in
  *                  bbs_shell.cpp and bbs_sysop.cpp.
  *
@@ -38,6 +38,7 @@
  */
 
 #include "bbs.h"
+#include "claims.h"
 #include "bbs_util.h"
 #include "fx.h"
 #include "clock.h"
@@ -369,6 +370,7 @@ void Bbs::tick() {
     uint32_t mark    = work0;
     uint32_t usAcc   = 0, usSess = 0, usBack = 0, usPlug = 0, usTail = 0;
     uint8_t  slowest = 0;                         // node whose service took longest
+    const char* slowDoing = "";                   // and the verb it was running
 
     if (FD_ISSET(lfd_, &rfds)) acceptAll(now);
     usAcc = plat::micros() - mark; mark += usAcc;
@@ -381,10 +383,11 @@ void Bbs::tick() {
             else if (s->fd >= 0 && FD_ISSET(s->fd, &rfds)) readSession(*s, now);
             if (s->st != SState::Free) serviceSession(*s, now);
             uint32_t sd = plat::micros() - s0;
-            // Which caller, not just how long. A stall inside one session is
-            // a different bug from one spread across all of them, and the
-            // node number is what makes it reproducible.
-            if (sd > worstSess) { worstSess = sd; slowest = s->id; }
+            // Which caller, and what they were doing. A stall inside one
+            // session is a different bug from one spread across all of
+            // them, and the verb is what turns "in session" into something
+            // worth opening a file over.
+            if (sd > worstSess) { worstSess = sd; slowest = s->id; slowDoing = s->doing; }
         }
     }
     usSess = plat::micros() - mark; mark += usSess;
@@ -416,6 +419,10 @@ void Bbs::tick() {
         loopMaxUs_  = dt;
         worstPhase_ = phase;
         worstNode_  = (phase[0] == 's' && phase[1] == 'e') ? slowest : 0;
+        if (worstNode_ && slowDoing)
+            snprintf(worstDoing_, sizeof(worstDoing_), "%s", slowDoing);
+        else
+            worstDoing_[0] = '\0';
     }
 
     // A slow pass says so on the console, with the split, so the next one of
@@ -426,10 +433,11 @@ void Bbs::tick() {
         ++slowCount_;
         if (!slowLogAt_ || now - slowLogAt_ >= 1000) {
             slowLogAt_ = now ? now : 1;
-            plat::log("bbs: slow pass %luus in %s (node %u): accept %lu session %lu "
+            plat::log("bbs: slow pass %luus in %s (node %u %s): accept %lu session %lu "
                       "backup %lu plugins %lu tail %lu, %lu slow since boot",
                       static_cast<unsigned long>(dt), phase,
                       static_cast<unsigned>(slowest),
+                      slowDoing && *slowDoing ? slowDoing : "-",
                       static_cast<unsigned long>(usAcc),
                       static_cast<unsigned long>(usSess),
                       static_cast<unsigned long>(usBack),
@@ -590,6 +598,12 @@ void Bbs::acceptAll(uint32_t now) {
 // openSession: reset every per-call field and start detection
 // ---------------------------------------------------------------------------
 void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role role, uint32_t now) {
+    // Sessions come from a static pool, so this node may still be holding
+    // something the last caller on it claimed and never released. Clearing
+    // on the way IN is what makes the table safe: an exit path that did not
+    // run cannot be relied on, and a stale claim hands the next caller a
+    // hard refusal for something they never did.
+    claims::releaseAll(s.id);
     s.fd            = fd;
     s.st            = SState::Detect;
     s.role          = role;
@@ -617,14 +631,18 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
     s.newAccount      = false;
     // Both of these were added in 0.18.0 and neither was reset here, which
     // matters because sessions come from a static pool. A caller who drops
-    // the line while the bulletin is playing leaves pendingLand set, and the
+    // the line while the motd is playing leaves pendingLand set, and the
     // next caller on that node is dropped into the chat room by the first
     // screen they play. The same caller can reach it without disconnecting:
     // abortOutput clears pendingPrompt and pendingForm and not these, so a
-    // Ctrl-C out of the bulletin followed by ABOUT lands them somewhere they
+    // Ctrl-C out of the motd followed by ABOUT lands them somewhere they
     // did not ask to go.
     s.pendingLand   = false;
     s.landing       = false;
+    // A half-written message must not survive into the next caller on this
+    // node. Sessions come from a static pool, and this buffer is the largest
+    // thing in one.
+    s.compose[0]    = '\0';
     s.user[0]       = '\0';
 
     s.loggedIn      = false;
@@ -701,6 +719,7 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
 // closeSession: log the call, bank the minutes, tell the others, release
 // ---------------------------------------------------------------------------
 void Bbs::closeSession(Session& s, const char* why, uint32_t now) {
+    claims::releaseAll(s.id);          // and again on the way out, promptly
     configRelease(s);                        // a dropped line must not lock CONFIG out
 
     // snoop links in both directions
@@ -769,6 +788,12 @@ void Bbs::closeSession(Session& s, const char* why, uint32_t now) {
 // source slot is released without closing anything.
 // ---------------------------------------------------------------------------
 void Bbs::moveSession(Session& from, Session& to, uint8_t newId, Role role) {
+    // Anything this caller is holding moves with them. Their node id is
+    // about to change, and a claim filed under the id they left can never be
+    // released afterwards, because the owner no longer matches: the resource
+    // would be locked until a reboot.
+    claims::transfer(from.id, newId);
+
     to      = from;
     to.id   = newId;
     to.role = role;
@@ -1519,7 +1544,7 @@ void Bbs::onPassword(Session& s, uint32_t now) {
 }
 
 // ---------------------------------------------------------------------------
-// completeLogin: daily limit, greeting, arrival notice, bulletin, prompt.
+// completeLogin: daily limit, greeting, arrival notice, motd, prompt.
 // s.edit holds the account.
 // ---------------------------------------------------------------------------
 void Bbs::completeLogin(Session& s, uint32_t now) {
@@ -1631,7 +1656,7 @@ void Bbs::completeLogin(Session& s, uint32_t now) {
 
     // A caller who just registered gets the short rules; everybody else
     // gets whatever the board has to say today.
-    const char* first = s.newAccount ? "newuser" : "bulletin";
+    const char* first = s.newAccount ? "newuser" : "motd";
     s.newAccount = false;
     if (!playScreen(s, first)) landAfterLogin(s);
     else s.pendingLand = true;       // the screen finishes, then they land
@@ -2328,7 +2353,7 @@ void Bbs::abortOutput(Session& s) {
     s.list          = ListKind::None;
     s.pendingPrompt = false;
     s.pendingForm   = FormKind::None;
-    // Stopping the bulletin means stopping what it was leading to. Without
+    // Stopping the motd means stopping what it was leading to. Without
     // this, the landing survives the abort and fires on the next screen the
     // caller plays, which reads as the board moving them at random.
     s.pendingLand   = false;

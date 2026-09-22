@@ -33,6 +33,7 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
 - C++ for core and hardware. Lua only for doors later. Static allocation, no heap in the BBS loop (exceptions: temporary inflate buffers during a backup upload).
 - 10 caller nodes (6 until 0.17.0, briefly 16), a busy line session (the caller past the last node: detection, busy screen, 10 s countdown), a hidden sysop node. Overflow callers get `BUSY` and a drop. Socket budget 24.
 - **The real static RAM ceiling is 180,736 bytes**, and it is in the linker script, not on any datasheet: `memory.ld` sets `dram0_0_seg` to `org = 0x3FFB0000, len = 0x2c200`, and `sections.ld` asserts `_bss_end` stays inside it. Measure with `_bss_end - 0x3FFB0000`. **PlatformIO's RAM percentage is against 327,680, so multiply it by 1.81 to get the truth: 55% on its scale is the wall.** At 0.17.2 the board is at 146,732, which is 81% of what it actually has and 44.8% of what PlatformIO claims.
+  **At 0.21.1 it is 175,856, which leaves 4,880 bytes.** Measured off the ELF on 2026-09-22 (`_bss_end` = `0x3ffdaef0`), not read off PlatformIO, which calls the same build 53.7% and looks like half a board of room. The headroom was 34,360 two days earlier: forums, the composer and the per-session buffers spent 29 KB of it. **4,880 bytes is 406 bytes per session across the twelve slots**, so anything new that wants per-session state is now an arithmetic question before it is a design question, and the answer is usually to put it in `s.compose` or in one static guard rather than in an array of twelve. This figure is the reason to re-measure at every milestone rather than at every crisis: the 8,200 byte overflow that cost a build cycle was predicted and shipped anyway because nobody had the current number to hand.
 - **A `Session` is 5,716 bytes, not 6,000** (measured from DWARF, confirmed against `nodes_[10]` at 57,160). Earlier figures in this file and in the commit history say 6,000 and are 5% pessimistic; the shape of the arithmetic is unchanged.
 - **`CONFIG_LWIP_MAX_SOCKETS` was silently 10, and that was self-inflicted.** IDF 5.3.1's Kconfig is `range 1 16, default 10`, and a value outside the range in a defaults file is **discarded rather than clamped**. Block A "raised" it from a working 16 to 24, so the board got 10. The listener, mDNS and SNTP take three, so seven callers filled a board advertising sixteen and the eighth `accept()` failed. Now 16, which is the hard maximum. **The node count was never really RAM-bound, it was socket-bound**, and sixteen sockets is what makes ten caller lines the honest number.
   The lesson generalises: a setting that is out of range does not warn, it reverts, and the generated `sdkconfig.esp32dev` is the only place the truth appears. Check it after changing a default.
@@ -54,6 +55,111 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
 - Staff Doing column (0.7.0): `Session::doing` holds the verb of the last dispatched command (never arguments, never BYE, never unknown input, so a mistyped password can't show). WHO shows it instead of Terminal for staff with `NODES`; DASH always. Plugins can set it later for doors.
 - Input backpressure: a session's socket is only read, and held keys only fed, while its timeline has `BBS_RX_ROOM` (1 KB) free. Form redraws (~1.2 KB on PETSCII) overflowed the old 2 KB timeline when keys were typed ahead; `BBS_TL_BYTES` is now 3 KB.
 - Workflow: commit and push after every flashed build. COMMANDS.md, README.md, CHANGELOG.md and this file are updated in the same change. CLIENTS.md holds the full list of machines that can call in and README.md carries the short version of the same list: change one, change the other. Code review at phase checkpoints; a robustness/pen test of the live board before any internet exposure (tabled for now).
+
+## What things are called (settled 2026-09-22, stop relitigating)
+
+"Bulletin" was doing three jobs and getting in the way of a fourth. It is
+retired. The names below are settled; if one of them turns out to be wrong,
+change it here in the same commit that changes the code, rather than leaving
+two names alive.
+
+| Thing | Name | Reached by |
+|---|---|---|
+| The message boards | **forums** | `FORUMS` |
+| The screen played after login | **motd** | `screens/motd.*` |
+| The sysop's information pages | **information** | `INFO` / `I`, and `/i0`-`/i9` in the room |
+| A caller's account details | **whois** | `WHOIS [handle]` |
+| The pre-login banner | **welcome** | `screens/welcome.*` |
+
+- **`screens/bulletin.*` is `screens/motd.*`.** It is the screen shown at
+  login, which is what a motd is everywhere else. Deliberately not
+  `welcome_anything`: `screens/welcome` is the PRE-login banner and any name
+  sharing that word rebuilds the confusion being removed. No board ships a
+  motd and none shipped a bulletin, so nothing on disk moved and no board
+  needs migrating.
+- **The information pages are `INFO` at the prompt and `/i0`-`/i9` in the
+  room**, and the letter matches the word in both places. Rob's reasoning,
+  which is the right one: "these are information pages, pretty generic based
+  on how I see them used so information (which contains news) I think makes
+  more sense". News is a thing you put ON an information page, not the name
+  of the rack.
+- **`INFO [handle]` became `WHOIS [handle]` to free that word**, and it
+  should have been WHOIS from the start: it answers "who is this" and sits
+  beside WHO, which answers "who is on". Its shortcut `I` went with the
+  verb. **No hidden INFO alias was kept**, which is a deliberate break with
+  the usual courtesy: the verb is being reused for a different feature, so
+  an alias would quietly send an old habit to the wrong place. That is worse
+  than an unknown command.
+- **"Bulletin" now survives in exactly two places, both back-compat for data
+  already written**: `FORUMS` keeps a hidden `BULLETIN` alias, and
+  `landFromKey()` still reads `land = bulletin` as forums for accounts saved
+  before the rename. Neither is a name, both are compatibility, and nothing
+  new should use the word.
+
+**The general lesson, because this cost several sittings.** A word that
+means two things in one codebase will be asked to mean a third, and each
+time it is cheaper to overload it than to rename it. The cost is not
+confusion in the code, which is usually obvious from context: it is that
+every conversation about the feature has to start by establishing which
+meaning is in play. Rename at the second meaning, not the fourth.
+
+## Chat commands: decided 2026-09-22
+
+Candidates researched in `reports/chat-commands-2026-09-22.md` against the
+Diversi-DIAL and GTalk manuals. Rob's verdicts below. The report is the
+proposal; this is the decision.
+
+**Approved, and the whole set costs about 14 bytes of static DRAM** because
+every one of them reuses machinery that already exists:
+
+| Command | In the room | Main prompt | Note |
+|---|---|---|---|
+| Sticky private | `/p3*`, `/p*` ends | none | 12 bytes. `/p 3 ` retyped per line is nine keystrokes on a C64, which is why DDial had `/Pn*`. Needs a visible `[>3]` on the input line so nobody sends the room something meant for one person |
+| Replay history | `/sh` | none | the ring already exists |
+| Long help | `/? <cmd>` | `HELP <cmd>` | eleven columns of description is not enough for anything with an argument |
+| Who is that | `/whois <handle>` | `WHOIS <handle>` | **not `/info`**, see below |
+| Bell toggle | `/b` | `BELL` | 2 bytes. DDial had `/B` |
+| Page a node | `/page n <why>` | `PAGE n <msg>` (exists) | distinct from talking to them |
+
+- **`/whois`, not `/info`, and this is a direct consequence of the naming
+  settled the same day.** Rob approved the feature as `/info <handle>`, which
+  was the report's name for it, but `INFO` now means the information pages
+  and `/i0`-`/i9` is how the room reaches them. `/info` and `/i3` would
+  mechanically coexist, because the verb-ends-at-a-digit rule splits them and
+  `f` is a letter, but a caller would have to know that rule to predict which
+  one they were about to get. `/whois` matches `WHOIS` at the prompt and the
+  room keeps one meaning for `i`.
+- **`/whois` shows exactly the public half of a profile**, Rob's condition:
+  "should use the same info that profile has for public elements". That is
+  already what `cmdInfo` does with `UF_PRIVATE`, so the room command should
+  call the same path rather than format its own, or the two will drift and
+  one of them will leak a phone number.
+
+**Rejected, with the reasoning, so they are not proposed again:**
+
+- **`/cp`, page the sysop.** Rob: "they can do that from the main menu
+  right? If not it should be a main BBS function as you indicated." Correct,
+  and it does **not** exist yet: `PAGE` is caller to caller, and the sysop
+  page is still a queued item further down this file. So the answer is not a
+  chat command, it is to build the queued main-BBS sysop page, which the room
+  then reaches like any other command.
+- **`/M` message slots and the rotator.** Rob: "not sure why we need this
+  when we have /i". Right: the information pages are the same content, and
+  DDial only had both because its message slots predated any index. One
+  mechanism, not two.
+- **`/w 80 24`, tell the board your width.** Rob: "This seems unecessary with
+  autodetect", and connect-time detection plus NAWS already answers it. Worth
+  keeping only as a manual override if autodetect is ever found wrong on a
+  real terminal, and not before.
+
+**Added by Rob: give a caller more time, from inside the room.**
+"Another feature to add ... it was to add time for the user. We can use the
+same -1 convetion the main bbs uses." That convention is `TIME n +m` /
+`TIME n -m`, staff only, which adds or removes minutes for node n and re-arms
+that caller's time warnings. So `/t` extends exactly the way `TIME` already
+works: `/t` alone reports your own time remaining, `/t n +5` and `/t n -5`
+adjust somebody else's. Same permission as `TIME`, same re-arm, and no new
+concept for a sysop to learn.
 
 ## Processes
 
@@ -120,6 +226,60 @@ they are the process, and getting them wrong wastes Rob's time.
   its own data directory, card and directory port, and matches its `pkill` on
   the data directory rather than the process name. Anything that binds a
   socket gets a tag; a web agent gets an explicit port in its prompt.
+- **Targeted runs while working, the full suite once before a commit** (Rob,
+  2026-09-22: "Can we maybe make some of these regression tests more targeted
+  waiting and burning time on full regressions on every change is stupid").
+  He is right, and the cost was not only the waiting. A full run is several
+  minutes, so starting one and then continuing to edit produces a result for
+  a tree that no longer exists, and that happened three times in one session:
+  each run finished, each was discarded, and one of them reported failures
+  that had already been fixed.
+  `--only=` takes a comma separated list and a set of group names that stand
+  for the tests sharing a subsystem: `messaging`, `places`, `storage`,
+  `shell`, `login`, `terminal`, listed in `tools/harness.sh`. A targeted run
+  is well under a minute against six for the full one.
+  **The groups are deliberately wider than the file being edited**, because
+  what breaks is almost always the subsystem next door: file areas and
+  forums draw through the same list machinery, mail lives inside chat, and
+  the message editor is shared by mail and forums both.
+  The first targeted run written found a real break the full run had not
+  reached yet, because the forums tests sit late in the suite. That is the
+  argument in one line.
+  **Stop editing once the full run starts.** A run against a tree that has
+  moved is worse than no run, because it is reported as evidence.
+
+## How work gets done (Rob, 2026-09-22)
+
+These five rules replace the ad hoc pattern this project had drifted into,
+where a bug reported mid-task was fixed immediately, built immediately and
+tested immediately, and a full regression was started and then invalidated
+by the next edit before it could finish. Rob: "Be more diciplined in the
+approach everything seems to be haphazard as to how it gets fixed/done."
+
+1. **Bugs are batched, not chased.** A bug found or reported goes on the
+   list. The list is worked in a build cycle, together, with one build and
+   one focused test run at the end of it. Fixing each one as it arrives
+   costs a build and a test run per bug and leaves the tree in an
+   unreportable state in between.
+2. **New features are asked for, not assumed, and they wait for the bugs.**
+   When the batch is clear, propose the next feature and get a go-ahead
+   before writing it. This is the existing "proposal before new code" rule
+   with an ordering attached.
+3. **Two working agents: one for the BBS, one for the website.** They do
+   not share a tree and must not share a turn. Website work has always been
+   delegated; the firmware side now is too.
+4. **The specialists advise the builder, they do not build.** `tty-ux` and
+   the technical reviewers consult with the dev agent so the thing is built
+   right the first time, rather than reviewing it afterwards. `explain`
+   owns copy and writes it against the historical references, not from
+   memory of how BBSes sounded.
+5. **Full regressions are for checkpoints only.** A minor build gets a
+   focused run of the areas it touched (`--only=` with a group name, see
+   `tools/regress.sh --list`). The whole suite runs at a version boundary
+   or before a flash that matters. It is minutes long, so starting one and
+   then continuing to edit produces a result for a tree that no longer
+   exists, which happened three times in one afternoon.
+
 - **Every milestone gets a fresh optimization report** (Rob). When a block or a version reaches its regression run, send the `optimize` agent off as part of that run and put its report in `reports/`. Dated, one per milestone, kept. The point is the trend as much as the findings: a figure that has quietly grown by 2 KB a milestone is invisible in any single report and obvious across four, and the cheapest time to notice something is eating the budget is before it matters. The report is also what makes a size decision reviewable rather than remembered.
 - **Verify before asserting.** Claims get checked against the source or a
   primary reference first. Stale warnings and confident wrong answers cost
@@ -367,6 +527,49 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
 - **A deliberate deviation from the plan, and the reasoning is the useful part.** The plan had mail and bans moving to ids. `MailRec` is a fixed-size record with a static assert on its layout, so that means changing `sizeof` and converting every live mailbox, on the one board that exists, to fix a bug that has a cheaper fix. Following renames gets the same visible outcome with no format change. The forums will store ids natively, so mail ends up the only holdout and a far smaller job later. **Prefer the fix that does not migrate somebody's data when both fixes close the same hole.**
 - **The positional-descriptor trap caught me exactly as CLAUDE.md predicted.** `onRename` inserted before `onBytes` shifted every field after it, and the compiler said so. Append-only is not a style rule here, it is the only safe edit.
 
+### One message editor, and the radio asleep again (0.21.1)
+
+- **A message body could never have exceeded 72 characters, and nothing
+  said so.** `s.ed` is the single-line editor: `char buf_[BBS_LINE_MAX + 1]`
+  is 73 bytes and `begin()` takes a `uint8_t`. Asking for 1,728 returned 72
+  silently. **The general shape: an API that clamps rather than refuses is
+  one whose limit you discover from a user.** `FF_TEXTAREA` at four 37
+  column rows is no better, so neither existing mechanism could do it.
+- **`src/core/compose.h` is the one message editor**, used by forum posts
+  and mail now and by the feedback plugin when it exists. Rob asked for it in
+  those terms and it is also the right shape: two copies drift. 36 checks,
+  with no board in them.
+- **`/s` is named on screen and the control keys are only shortcuts.** A
+  terminal that swallows Ctrl-D would otherwise leave a caller with no way
+  out of the editor, and a C64's Ctrl combinations are not a PC's. This is
+  the same reasoning that keeps numbers working alongside cursor keys
+  everywhere else.
+- **Backspace on an empty line pops the previous line back.** Line-at-a-time
+  entry makes a committed line unreachable, so without this the only way to
+  fix a typo three lines up is to throw the message away. Worse than the
+  wall it replaced, because the wall was visible.
+- **A poster could not read their own message**, which is the bug that found
+  the reading design's blind spot. `Enter` means "next unread" and a poster
+  has read their own post, so a board with one message had nothing readable
+  on it. Inside a subject, reading now walks in order regardless; at the
+  forum list `Enter` still means what is new. **Worth generalising: a
+  "what's new" affordance needs a "show me anyway" path beside it, or the
+  first user of a fresh system sees an empty room.**
+- **The radio was asleep again, and the 0.18.0 fix had a hole.** It
+  re-asserted `WIFI_PS_NONE` only at `IP_EVENT_STA_GOT_IP`, which a
+  reconnect keeping the same lease never raises, while
+  `CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE` was on and let the IDF manage
+  the radio by itself. Both fixed. Measured: nine of 116 pings clustered at
+  1011-1066 ms against a gateway flat at 0 ms.
+  **`SYS` now reports `esp_wifi_get_ps()` directly.** Two investigations
+  reasoned about power save from the outside and one wrote a confident wrong
+  mechanism into a code comment as fact. The cure for that is not more care,
+  it is making the board say.
+- **Two faults were being reported as one lag.** 193 ms in a session nine
+  times in 31 minutes is not the same thing as a 1,020 ms ping spike, and
+  chasing them together is how the first investigation went wrong. The worst
+  pass now records `Session::doing`, so the next reading names a command.
+
 ### Forums, phase 2: reading, posting, and two bugs the tests found (0.21.0)
 
 - **Three levels with a fast path over the top.** Forum, subject, message
@@ -382,7 +585,8 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
   rather than hiding something unread. Lives in `forums_ptr.h` with no board
   in it and is tested in `host/test_forums_ptr.cpp`, 22 checks.
 - **`Enter` did nothing, and the test that caught it pointed somewhere
-  else.** The comparison was `key == ''`; the terminal layer decodes Enter
+  else.** The comparison was `key == '
+'`; the terminal layer decodes Enter
   to `KEY_ENTER`, which is `0x100`, so the single most important key in the
   subsystem silently never matched. The failing check read "the subject that
   was read is no longer marked new", which is three steps from the cause.
@@ -467,7 +671,7 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
   cost a round.
 - **I baked a literal NUL byte into the source again**, through a shell
   heredoc, in the same session in which CLAUDE.md already warned about it.
-  `' '` became a real 0x00 in the file. Use the Write tool or the Edit tool
+  the backslash-zero escape became a real 0x00 in the file. Use the Write tool or the Edit tool
   for anything containing a backslash escape. The compiler caught it as a
   warning, which is luck rather than a safety net.
 
@@ -767,6 +971,8 @@ Queued for the next build (Rob's plan, in order):
 - **`privacy.ans` is 40 column art on an 80 column screen** (found by the ordinary-caller QA pass, 0.19.0). Measured: `privacy.ans` is 41 columns over 77 lines and four pages, while `rules.ans`, `newuser.ans` and `chatin.ans` are all 78. So the one screen a cautious newcomer reads immediately before typing a password is half width and takes twice the pages, while everything around it fills the terminal.
   Not a bug in the player: `PRIVACY_PAGES` in `tools/mkscreens.py` is hard-wrapped to 39 columns on purpose, with a comment saying so, and the ANSI build shares that text. Fixing it means re-flowing the copy at about 72 columns for the ANSI variant only, which moves every page break, so it is a job for `explain` and `screen-artist` rather than a patch. The PETSCII and ASCII versions stay exactly as they are.
 
+- **`FX` and `FILES` both claim `F`, and `FILES` has never had it** (found by the DDial command research, 2026-09-22, while surveying what the shell already answers to). `findCommand` returns the first table match and the core table registers before any plugin's, so `F` runs the effects demo. COMMANDS.md documents `F` as the shortcut for FILES, so the documentation and the board disagree and the board wins. The fix is a decision rather than a patch: `FX` is a demo and `FILES` is a subsystem on the main menu, so `FX` should give the letter up. Worth a sweep for other collisions at the same time, because nothing detects one today: a duplicate shortcut is silently the first one registered.
+
 - **A digit in an empty file area opens a file-number prompt** (same QA pass). Area says "Nothing in here yet", then pressing `5` asks `File number:` and answers "No file with that number." It should say the area is empty. Cosmetic, and the cheap fix is to answer from the area's own emptiness rather than opening a question whose answer is already known.
 
 - **An encrypted option, as well as plaintext, not instead of it** (Rob, 2026-09-21). Not "telnet is plaintext, live with it", but "plaintext for the machines that need it, SSH for the machines that can". That is a far better answer to the privacy argument the site and the `privacy` screen both have to make, and it costs one port.
@@ -898,7 +1104,24 @@ Queued for the next build (Rob's plan, in order):
 
 - Wi-Fi credentials move out of `include/secrets.h` and into `system.cfg` on the `userdata` partition, then Improv Wi-Fi Serial so a browser can provision a board over the same connection it flashed it with. This is the prerequisite for a web installer: today the SSID and passphrase are compiled in, so any published binary carries whoever built it's home network password, and a shared binary could never join anybody else's network anyway.
 - A web installer page in the style of WLED, once the above lands: an ESP Web Tools manifest, the binaries in a `releases/` directory with the third-party licences, and the directory server hosting a copy while the firmware repo is private.
-- Chat shows the room list by itself every so often (Rob, "see what DDial did"). Worth noting: DDial's exact behaviour is not in any documentation I could find, only descriptions of it as a 7-line Apple II chat server, so this is a design rather than a reconstruction. Proposed: a `roster` interval setting in minutes, 0 to switch it off, printed through the same held-line path chat already uses so it never lands in the middle of somebody typing; and only when the room has actually changed since the last one, because a list that repeats itself unchanged is noise and people stop reading it.
+- **Chat shows the room list by itself every so often, and DDial's answer is five minutes** (Rob, "see what DDial did"; asked again 2026-09-22 and this time the source turned up). An earlier note here said the behaviour was undocumented. It is not: the **original Diversi-DIAL installation manual** is reproduced on <https://www.ddial.com/archives.php> and says it in one line.
+
+  > THE /SP LISTS: Every 5 minutes during a link, each station sends an abbreviated form of its /S list to the entire network. This way, people on remote stations can tell who is on the other stations which our linked.
+
+  **So the thing that auto-populated was the network roster, not the local one.** Nothing in the manual reprints your own station's `/S` to your own callers on a timer; `/S` is on demand, and the 5 minute timer exists because a linked station cannot see who is on the other end any other way. Rob's memory of the cadence is right and the mechanism is worth knowing, because it lands directly on the board-linking item further down: **the periodic roster is how presence crosses a link**, and building it as a local timer now means building the wrong half of it.
+
+  Three details from the manual that are better than anything I would have designed, and all three are free:
+  - **A caller can switch it off for themselves.** `/CS` (also `/CL`, `/CM`) mutes the `/SP` traffic, "if you get tired of watching all the /SP messages go by", and `/CS` again brings it back. A board-wide interval alone is the wrong shape: the person who finds it noisy is not always the sysop.
+  - **It lists account holders only.** "The /SP list shows only the people with PASSWORDS (it skips the 'Twits')." That maps exactly onto this board's accounts-and-guests split, and it is also the honest list, because the point of the roster is who you can `/P`.
+  - **It is explicitly a no-op when there is nothing to report**: "/SP never does anything unless there is a remote station on your channel." The same instinct as only printing when the room has changed, which was already the proposal here.
+
+  **Five minutes is a default, not a constant, and it is the rotator's interval rather than the roster's own.** The 1989-90 VZ/Ff mods documentation is explicit that `/SP` "only works during links, and usually is timed like rotating messages", and the rotating messages are the thing with the setting: Basham's manual gives `/Ann` where nn is 01 to 99 minutes, with "One advertising message appears every 5 minutes (or set interval with /A)". So DDial had **one timer with two kinds of payload on it**, not a roster timer and an advert timer.
+
+  **GTalk agrees, checked in its source rather than its docs**: `cmd_system_list` is reachable only from the `/S` command table entry and nothing calls it on a timer, while the one timed printer is the rotator, again with a sysop-set interval in minutes.
+
+  **So the thing to build is the rotator, with the roster as one of the things it can rotate**, default 5 minutes because that is DDial's own default, rather than a `roster` timer that would be the wrong shape twice over. Through the existing held-line path so it never lands mid-sentence; accounts only; a per-caller mute; and one check DDial did not have, **only print it when the room has actually changed**. DDial was pushing a whole network's worth of names that differed every time; ten local names that have not moved in five minutes is noise, and this board is the standalone station DDial had no reason to print at.
+
+  That also puts the `/I0`-`/I9` information pages on the same mechanism rather than beside it, which is what DDial actually had: the message slots joined the rotation by starting with a semicolon.
 - Node lists should say what a caller is doing before they have a handle (Rob). Checked on the host: WHO says "(connecting)", DASH says "(logging in)", NODES says neither, so the gap is real but narrower than it looked. Make all three agree, and prefer "logging in" once detection is done.
 - A sysop page (Rob): a caller can ring for the sysop and the sysop can answer, the way every board had. PAGE exists caller to caller; this is the one that gets the operator's attention wherever they are, and needs a way to be away, a way to decline, and something that does not let one caller ring a bell forever.
 - A bell when somebody logs in and when somebody joins the chat room (Rob). Neither rings today: the only bells are pages, broadcasts and form errors, so a caller arriving is silent. Wants the same treatment as a page: bell, then the notice.

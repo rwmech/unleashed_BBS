@@ -152,9 +152,15 @@ struct Session {
     AfterKey     afterKey    = AfterKey::Prompt; // what a pause leads to
     bool         pendingTail   = false;  // hangup tail after goodbye screen
     bool         pendingKnowMore = false; // rules screen leads to the warning
-    bool         newAccount      = false; // first call: show newuser, not bulletin
+    bool         newAccount      = false; // first call: show newuser, not motd
     uint32_t     heapAtOpen  = 0;
     char         user[BBS_USER_MAX + 1] = {};
+
+    // A message being written, whichever subsystem is taking it. One per
+    // session rather than one per subsystem: a caller writes one thing at a
+    // time, and forums and mail each keeping their own is what overflowed
+    // DRAM by 8,200 bytes.
+    char         compose[BBS_COMPOSE_MAX + 1] = {};
 
     // login, idle, time limits
     bool         loggedIn    = false;
@@ -377,6 +383,17 @@ public:
     // to the row rather than allowed to wrap.
     void rowBar(Session& s, Color c, const char* title, const char* right = nullptr);
     uint8_t rowWidth(const Session& s) const;
+
+    // minutesLeft: how long this call has, for a plugin that wants to say.
+    //
+    // -1 means no limit, which is a guest with none, a caller the sysop has
+    // taken off the clock, or staff. A plugin asking this is usually
+    // answering somebody who wants to know whether to start something, so
+    // rounding up is right: 30 seconds left is "1 minute", never "0".
+    //
+    // Public because secondsLeft and unlimited are not, and a plugin has no
+    // business reaching for either: this is the question they actually have.
+    int32_t minutesLeft(const Session& s, uint32_t now) const;
 
 private:
     Bbs() = default;
@@ -604,6 +621,11 @@ private:
     uint32_t  slowCount_   = 0;      // passes over BBS_SLOW_PASS_US since boot
     const char* worstPhase_ = nullptr;   // which phase owned the worst pass
     uint8_t   worstNode_   = 0;      // and which node, when it was a session
+    // And what that caller was doing. "in session" narrows a stall to the
+    // caller's own path and no further, which still leaves a screen coming
+    // off the card, a listing walking a directory and a users.txt rewrite
+    // all equally likely. Session::doing already names the verb for humans.
+    char      worstDoing_[BBS_DOING_MAX + 1] = {};
 
     // Heap watch. A board that ran out of heap rebooted with nothing said,
     // and the only evidence afterwards was MEM's "heap low since boot"

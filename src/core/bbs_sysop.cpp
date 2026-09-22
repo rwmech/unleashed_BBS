@@ -43,6 +43,7 @@
  */
 
 #include "bbs.h"
+#include "claims.h"
 #include "bbs_util.h"
 #include "clock.h"
 #include "plugin.h"
@@ -885,13 +886,44 @@ constexpr uint8_t kCompositeCount = sizeof(kComposites) / sizeof(kComposites[0])
 // again when they land. 8 x 64 is 512 bytes of static RAM, up from 256.
 constexpr uint8_t kMaxParts       = 8;
 
+// And it is checked, because a bound written beside a table is the single
+// shape that has shipped here most often: the CONFIG Board page showing 5 of
+// 7 fields, max_users at 100, and kAreaParts registered with a count of 4,
+// which silently dropped Download and Delete off every file area a sysop
+// saved. Three of those were live.
+//
+// The loops in configSub* all read `i < comp->count && i < kMaxParts`, so an
+// eighth part would not overflow anything, it would be quietly discarded on
+// save: exactly the file-area bug again, and just as invisible. These fail
+// the build instead, at the moment the part is added rather than the moment
+// somebody notices a permission went missing.
+static_assert(sizeof(kAreaParts)  / sizeof(kAreaParts[0])  <= kMaxParts,
+              "kAreaParts has more parts than kMaxParts holds: raise kMaxParts");
+static_assert(sizeof(kTopicParts) / sizeof(kTopicParts[0]) <= kMaxParts,
+              "kTopicParts has more parts than kMaxParts holds: raise kMaxParts");
+
 // One settings editor at a time. The sysop is a single caller, and two
 // people writing the file at once is a good way to lose it.
+//
+// The truth is claims::Res::Config, keyed by node. This pointer survives
+// only so the refusal can name who is in there, and it is never branched on:
+// a Session* from a static pool is exactly the thing that goes stale when a
+// caller drops, which is why the ownership itself is a node id now and is
+// cleared from openSession as well as closeSession.
 const Session*  g_cfgOwner = nullptr;
 const CfgPage*  g_cfgPage  = nullptr;
 char            g_cfgSection[24] = "";                  // plugin section, empty for the board
 char            g_cfgBuf[Form::kMaxFields][96] = {};
-char            g_cfgWas[Form::kMaxFields][96] = {};     // to write only what changed
+// What each field held when the page opened, as a hash. The text itself was
+// never read back: its only use is a strcmp deciding whether to write the
+// field, which is an equality question.
+//
+// This also permanently removes a bug that was live once. The old table held
+// a TRUNCATED copy (it was filled with "%.47s" into 96 bytes), so any value
+// longer than 47 characters always compared unequal to itself and was
+// rewritten on every save whether or not it had been touched. A hash is
+// taken over the whole string, so there is no length left to get wrong.
+uint32_t        g_cfgWas[Form::kMaxFields] = {};
 char            g_cfgSum[Form::kMaxFields][28] = {};     // CK_SUB: the button's summary
 char            g_cfgKeys[Form::kMaxFields][24] = {};   // plugin pages build their keys here
 CfgField        g_cfgPlugin[Form::kMaxFields] = {};     // and their field table
@@ -1097,7 +1129,8 @@ void collectKey(void* ctx, const char* key, const char* value) {
 // and whenever a session closes, so a dropped line cannot lock CONFIG out.
 // ---------------------------------------------------------------------------
 void Bbs::configRelease(const Session& s) {
-    if (g_cfgOwner == &s) {
+    if (claims::holds(claims::Res::Config, s.id)) {
+        claims::release(claims::Res::Config, s.id);
         g_cfgOwner = nullptr;
         g_cfgPage  = nullptr;
         // The nesting goes with it. A line dropped two levels in is still
@@ -1145,8 +1178,9 @@ void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now) {
     while (*arg == ' ') ++arg;
     if (!*arg) { configPages(s); return; }
 
-    if (g_cfgOwner && g_cfgOwner != &s) {
-        snprintf(buf, sizeof(buf), "%.20s is editing the settings.", g_cfgOwner->user);
+    if (claims::held(claims::Res::Config) && !claims::holds(claims::Res::Config, s.id)) {
+        snprintf(buf, sizeof(buf), "%.20s is editing the settings.",
+                 g_cfgOwner ? g_cfgOwner->user : "Somebody");
         say(s.term, s.tl, Color::LightRed, buf);
         prompt(s);
         return;
@@ -1201,6 +1235,7 @@ void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now) {
         page = &g_cfgPluginPage;
     }
 
+    claims::take(claims::Res::Config, s.id);
     g_cfgOwner = &s;
     g_cfgPage  = page;
     g_subComp  = nullptr;                                  // a fresh page is never nested
@@ -1215,8 +1250,7 @@ void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now) {
         // What it was when the page opened, at full width. Truncating this
         // meant any value longer than the truncation always compared
         // different and so was rewritten on every save, touched or not.
-        snprintf(g_cfgWas[i], sizeof(g_cfgWas[0]), "%.*s",
-                 static_cast<int>(sizeof(g_cfgWas[0])) - 1, buf2);
+        g_cfgWas[i] = bbsu::hash(buf2);
     }
     configOpenPage(s, 0, now);
 }
@@ -1273,7 +1307,7 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
         if (f.kind == CK_SUB) continue;                              // its own page writes it
         if (f.kind == CK_INFO) continue;                             // somebody else owns it
         if (f.kind == CK_PASS && !strcmp(v, kMasked)) continue;      // untouched
-        if (!strcmp(v, g_cfgWas[i])) continue;                       // nothing to write
+        if (bbsu::hash(v) == g_cfgWas[i]) continue;                  // nothing to write
         if (!*v && (f.kind == CK_YESNO || f.kind == CK_LEVEL)) continue;
         if (f.kind == CK_NUM) {
             if (!digitsOnly(v)) {
@@ -1346,7 +1380,7 @@ bool Bbs::configReloadAll(char* err, size_t errLen) {
 // are, so anything typed on it before the button was pressed survives.
 // ---------------------------------------------------------------------------
 void Bbs::configSubOpen(Session& s, uint8_t field, uint32_t now) {
-    if (g_cfgOwner != &s || !g_cfgPage) return;
+    if (!claims::holds(claims::Res::Config, s.id) || !g_cfgPage) return;
     if (field >= g_cfgPage->count || field >= Form::kMaxFields) return;
     const CfgField& f = g_cfgPage->fields[field];
     const CfgComposite* comp = compositeFor(g_cfgSection, f.key);
@@ -1453,7 +1487,7 @@ bool Bbs::configSubSave(Session& s, char* err, size_t errLen) {
 void Bbs::configSubBack(Session& s, Color c, const char* msg, uint32_t now) {
     uint8_t field = g_subField;
     g_subComp = nullptr;
-    if (!g_cfgPage || g_cfgOwner != &s) {         // the page went away under us
+    if (!g_cfgPage || !claims::holds(claims::Res::Config, s.id)) {  // page went away
         configRelease(s);
         formDone(s, c, msg);                      // which ends the form properly
         return;
@@ -1464,7 +1498,7 @@ void Bbs::configSubBack(Session& s, Color c, const char* msg, uint32_t now) {
         if (!cfgFileValue(g_cfgSection, f.key, buf, sizeof(g_cfgBuf[0])) &&
             cfgSectionPlugin(g_cfgSection) != 0xFF)
             cfgPluginValue(g_cfgSection + 7, f.key, buf, sizeof(g_cfgBuf[0]));
-        snprintf(g_cfgWas[field], sizeof(g_cfgWas[0]), "%s", buf);
+        g_cfgWas[field] = bbsu::hash(buf);
     }
     // Plain ASCII has no cursor to put back on the button, so the page is
     // asked again from the row after it: re-asking the row just dealt with

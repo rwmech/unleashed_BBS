@@ -90,6 +90,17 @@ const char* logsBase() {
     return BBS_LOGS_MOUNT;
 }
 
+const char* powerSave() {
+    wifi_ps_type_t ps = WIFI_PS_NONE;
+    if (esp_wifi_get_ps(&ps) != ESP_OK) return "?";
+    switch (ps) {
+        case WIFI_PS_NONE:       return "none";
+        case WIFI_PS_MIN_MODEM:  return "min";
+        case WIFI_PS_MAX_MODEM:  return "max";
+        default:                 return "?";
+    }
+}
+
 uint32_t heapFree() {
     // heap_caps_get_free_size sums a per-heap counter. No walk, no lock held
     // across a traversal, which is the whole reason this exists separately.

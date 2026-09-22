@@ -147,7 +147,7 @@ const Command* Bbs::coreCommands(uint8_t& count) {
         { "HELP", "H?", 0, CF_NONE, "?|[H]ELP [x]", "these menus",
           [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdHelp(s, a); },
           Menu::Account, 90 },
-        { "INFO", "I", 0, CF_NONE, "[I]NFO [handle]", "a caller's profile",
+        { "WHOIS", "", 0, CF_NONE, "WHOIS [handle]", "a caller's profile",
           [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdInfo(s, a); },
           Menu::Account, 91 },
         { "TIME", "", 0, CF_NONE, "TIME", "the clock and your time left",
@@ -1542,33 +1542,49 @@ bool Bbs::rowSys(Session& s) {
             else             snprintf(num, sizeof(num), "-");
             statRow(s, "Channel", num, Color::LightGreen);
             return true;
+        case 7: {
+            // What the radio is ACTUALLY doing, read back rather than
+            // assumed. A station in a power-save mode sleeps between DTIM
+            // beacons and the access point buffers for it, so a packet
+            // arriving in a quiet moment waits about a second. That has now
+            // been chased twice from the outside, and once it was diagnosed
+            // wrongly with confident arithmetic. A board that says which
+            // mode it is in turns the next one into a reading.
+            const char* ps = plat::powerSave();
+            if (!ps || !*ps) { statRow(s, "Radio", "-", Color::Grey); return true; }
+            bool awake = ps[0] == 'n';          // "none"
+            statRow(s, "Radio", awake ? "awake" : ps,
+                    awake ? Color::LightGreen : Color::LightRed,
+                    awake ? "power save off" : "SLEEPING, expect ~1s lag");
+            return true;
+        }
         case 5:  statRow(s, "Address", net.ip[0] ? net.ip : "-", Color::White); return true;
         case 6:
             snprintf(num, sizeof(num), "%u", static_cast<unsigned>(BBS_PORT));
             statRow(s, "Port", num, Color::LightGreen, syscfg::get().hostname);
             return true;
 
-        case 7:  rowSection(s, "memory"); return true;
-        case 8:
+        case 8:  rowSection(s, "memory"); return true;
+        case 9:
             if (h.valid) statNum(s, "Heap free", h.freeBytes, "bytes");
             else         statRow(s, "Heap free", "-", Color::DarkGrey, "host build");
             return true;
-        case 9:
+        case 10:
             if (h.valid) statNum(s, "Heap low", h.minFree, "since boot");
             else         statRow(s, "Heap low", "-", Color::DarkGrey);
             return true;
-        case 10:
+        case 11:
             if (h.valid) statNum(s, "Biggest blk", h.largestBlock, "bytes");
             else         statRow(s, "Biggest blk", "-", Color::DarkGrey);
             return true;
-        case 11:
+        case 12:
             fmtCommas(static_cast<uint32_t>(sizeof(Session)), num, sizeof(num));
             snprintf(buf, sizeof(buf), "x %u sessions", static_cast<unsigned>(kSessions));
             statRow(s, "Session", num, Color::LightGreen, buf);
             return true;
 
-        case 12: rowSection(s, "storage"); return true;
-        case 13: {
+        case 13: rowSection(s, "storage"); return true;
+        case 14: {
             uint32_t total = 0, used = 0;
             if (plat::fsInfo(total, used)) {
                 fmtCommas(used, num, sizeof(num));
@@ -1581,58 +1597,63 @@ bool Bbs::rowSys(Session& s) {
             }
             return true;
         }
-        case 14: statNum(s, "Data free", plugins::freeBytes(), "bytes"); return true;
-        case 15: statNum(s, "Held back", plugins::reserveBytes(), "for the board"); return true;
+        case 15: statNum(s, "Data free", plugins::freeBytes(), "bytes"); return true;
+        case 16: statNum(s, "Held back", plugins::reserveBytes(), "for the board"); return true;
 
-        case 16: rowSection(s, "load"); return true;
-        case 17:
+        case 17: rowSection(s, "load"); return true;
+        case 18:
             fmtUptime(buf, sizeof(buf), plat::millis());
             // An uptime that keeps starting over is the only symptom of a
             // board that restarts on its own, so say why it started.
             statRow(s, "Uptime", buf, Color::White,
                     bootWasCrash() ? bootReason() : nullptr);
             return true;
-        case 18: {
+        case 19: {
             char when[24] = "-";
             if (clk::valid()) clk::fmt(when, sizeof(when), "%H:%M:%S");
             statRow(s, "Clock", when, Color::White, clk::valid() ? nullptr : "not set");
             return true;
         }
-        case 19: statNum(s, "Loop avg", loopAvgUs_, "us of work"); return true;
-        case 20: {
+        case 20: statNum(s, "Loop avg", loopAvgUs_, "us of work"); return true;
+        case 21: {
             // The worst pass says which phase owned it. Without that a stall
             // is a bare number and the investigation starts with a guess,
             // which is exactly how the last one was got wrong.
-            char note[40] = "us";
+            char note[64] = "us";
             if (worstPhase_) {
-                if (worstNode_) snprintf(note, sizeof(note), "us in %s, node %u",
-                                         worstPhase_, static_cast<unsigned>(worstNode_));
-                else            snprintf(note, sizeof(note), "us in %s", worstPhase_);
+                if (worstNode_ && worstDoing_[0])
+                    snprintf(note, sizeof(note), "us in %s, node %u, %s",
+                             worstPhase_, static_cast<unsigned>(worstNode_), worstDoing_);
+                else if (worstNode_)
+                    snprintf(note, sizeof(note), "us in %s, node %u",
+                             worstPhase_, static_cast<unsigned>(worstNode_));
+                else
+                    snprintf(note, sizeof(note), "us in %s", worstPhase_);
             }
             statNum(s, "Loop worst", loopMaxUs_, note);
             return true;
         }
-        case 21: statNum(s, "Loop passes", loopPasses_, nullptr); return true;
-        case 22:
+        case 22: statNum(s, "Loop passes", loopPasses_, nullptr); return true;
+        case 23:
             // How many, not just how bad. One stall at boot and a stall every
             // minute look identical on a high-water mark.
             statNum(s, "Slow passes", slowCount_, "over 50ms");
             return true;
 
-        case 23: rowSection(s, "traffic"); return true;
-        case 24:
+        case 24: rowSection(s, "traffic"); return true;
+        case 25:
             snprintf(num, sizeof(num), "%u", static_cast<unsigned>(activeNodes()));
             snprintf(buf, sizeof(buf), "of %u, peak %u", static_cast<unsigned>(BBS_MAX_NODES),
                      static_cast<unsigned>(peakNodes_));
             statRow(s, "Nodes busy", num, Color::LightGreen, buf);
             return true;
-        case 25: statNum(s, "Calls", callsBoot_, "since boot"); return true;
-        case 26:
+        case 26: statNum(s, "Calls", callsBoot_, "since boot"); return true;
+        case 27:
             snprintf(num, sizeof(num), "%u", static_cast<unsigned>(calllog::count()));
             snprintf(buf, sizeof(buf), "of %u kept", static_cast<unsigned>(BBS_CALLLOG_SIZE));
             statRow(s, "Log", num, Color::LightGreen, buf);
             return true;
-        case 27: {
+        case 28: {
             uint8_t run = 0;
             for (uint8_t k = 0; k < plugins::count(); ++k) if (plugins::running(k)) ++run;
             snprintf(num, sizeof(num), "%u", static_cast<unsigned>(run));
@@ -1640,7 +1661,7 @@ bool Bbs::rowSys(Session& s) {
             statRow(s, "Plugins", num, Color::LightGreen, buf);
             return true;
         }
-        case 28: {
+        case 29: {
             uint8_t live = 0;                                  // only the bans still running
             BanList::Entry e;
             for (uint8_t k = 0; k < BBS_BAN_SLOTS; ++k) if (bans_.at(k, plat::millis(), e)) ++live;
@@ -1648,8 +1669,8 @@ bool Bbs::rowSys(Session& s) {
             return true;
         }
 
-        case 29: rowRule(s); return true;
-        case 30: rowText(s, Color::DarkGrey, "CALLS shows the board hour by hour"); return true;
+        case 30: rowRule(s); return true;
+        case 31: rowText(s, Color::DarkGrey, "CALLS shows the board hour by hour"); return true;
         default: return false;
     }
 }
@@ -1852,6 +1873,20 @@ void Bbs::cmdTime(Session& s, const char* arg, uint32_t now) {
     else                   snprintf(buf, sizeof(buf), "Left     %ld min", static_cast<long>((left + 59) / 60));
     t.text(tl, buf);
     prompt(s);
+}
+
+// ---------------------------------------------------------------------------
+// minutesLeft: the plugin-facing form of secondsLeft.
+//
+// Rounded up, because somebody asking is deciding whether to start
+// something and "0 minutes" with thirty seconds to go is the wrong answer.
+// -1 for a call that is not on the clock at all.
+// ---------------------------------------------------------------------------
+int32_t Bbs::minutesLeft(const Session& s, uint32_t now) const {
+    if (s.role != Role::Caller || !s.loggedIn || unlimited(s)) return -1;
+    int32_t secs = secondsLeft(s, now);
+    if (secs < 0) secs = 0;
+    return (secs + 59) / 60;
 }
 
 // ---------------------------------------------------------------------------

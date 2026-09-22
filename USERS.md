@@ -78,7 +78,7 @@ Handles match without regard to case, so `rob` and `ROB` are the same account. T
 
 This matters more than a column in a table, so it is spelled out.
 
-**Other callers cannot see your email, address or phone.** `INFO handle` shows
+**Other callers cannot see your email, address or phone.** `WHOIS handle` shows
 another caller their name, profile, when they joined, their last call and their
 staff level, and nothing else. The three private fields are skipped unless you
 are looking at your own account or you hold the `USERS` permission.
@@ -198,8 +198,8 @@ Staff may only manage accounts at their own rank or below:
 |---|---|
 | `PROFILE` | Form with your name, email, address, phone, profile and `Start`. The handle can't be changed here. |
 | `PASSWORD` | Form: current password, new password twice. A wrong current password counts toward the handle lock. |
-| `INFO` or `I` | Your account: all fields, member since, last call, number of calls, profile. |
-| `INFO handle` | Another caller's account. Email, address and phone are hidden unless you hold `USERS`. |
+| `WHOIS` | Your account: all fields, member since, last call, number of calls, profile. |
+| `WHOIS handle` | Another caller's account. Email, address and phone are hidden unless you hold `USERS`. |
 
 ## Staff
 

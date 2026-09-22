@@ -173,6 +173,48 @@ inline void listHandle(char* out, size_t n, const char* user, int width) {
     snprintf(out, n, "%.*s", width, user);
 }
 
+// hash / foldHash: FNV-1a over a string.
+//
+// Small, no table, and good enough for the spaces it is used on: subject
+// grouping in the forums, duplicate handles inside one users.txt, and "did
+// this CONFIG field change". **Not a security hash and nothing here pretends
+// otherwise.**
+//
+// `hash` is exact. `foldHash` folds case and strips surrounding space,
+// because "20m Antennas" and "20m antennas " are the same conversation to
+// everybody except a computer, and handles compare case-insensitively.
+//
+// 0 is reserved as "nothing here", so a non-empty string never returns it.
+// An empty string returns 0, which is what every caller wants to mean
+// "unset".
+inline uint32_t hash(const char* s) {
+    if (!s || !*s) return 0;
+    uint32_t h = 2166136261u;
+    for (const char* p = s; *p; ++p) {
+        h ^= static_cast<uint8_t>(*p);
+        h *= 16777619u;
+    }
+    return h ? h : 1u;
+}
+
+inline uint32_t foldHash(const char* s) {
+    if (!s) return 0;
+    uint32_t h = 2166136261u;
+    bool any = false;
+    const char* end = s + strlen(s);
+    while (end > s && end[-1] == ' ') --end;          // trailing space
+    while (s < end && *s == ' ') ++s;                 // leading space
+    for (const char* p = s; p < end; ++p) {
+        char c = *p;
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        h ^= static_cast<uint8_t>(c);
+        h *= 16777619u;
+        any = true;
+    }
+    if (!any) return 0;
+    return h ? h : 1u;
+}
+
 // wrap: one line of word-wrapped text, returning where the next line starts.
 //
 // Wrapping happens on OUTPUT, at the reader's width, not on input at the

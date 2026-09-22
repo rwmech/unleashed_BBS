@@ -47,7 +47,7 @@ rewrite that screen, write your own numbers, or leave them out.
 
 `tools/mkscreens.py` generates it, and is the easiest place to start from
 if you want to write your own version for your board.
-| `bulletin` | after login (optional) |
+| `motd` | after login (optional) |
 | `busy` | when every node is in use |
 | `goodbye` | at logoff |
 
@@ -119,7 +119,7 @@ absent:
 | Screen | When it plays |
 |---|---|
 | `rules` | pressing R to register, before anything is typed. Two pages. |
-| `newuser` | once a registration succeeds, in place of the bulletin |
+| `newuser` | once a registration succeeds, in place of the motd |
 | `chatin` | joining the chat room |
 | `files` | entering the file subsystem, above the area menu |
 | `goodbye` | every ending: BYE, idle, out of time, kicked or banned |

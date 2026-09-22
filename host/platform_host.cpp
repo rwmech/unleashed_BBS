@@ -101,6 +101,12 @@ HeapStats heap() {
 
 // The host has no heap worth reporting, and 0 is what heapWatch reads as
 // "say nothing", which is the same answer heap() already gives it.
+// The host has no radio, and an empty string is what the system screen
+// shows as a dash rather than as a fault.
+const char* powerSave() {
+    return "";
+}
+
 uint32_t heapFree() {
     return 0;
 }

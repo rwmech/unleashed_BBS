@@ -31,6 +31,23 @@
 #                 tools/harness.sh --backup
 #                 tools/harness.sh --tag files --card --only=files
 #
+#                 --only takes a comma separated list, and a few words stand
+#                 for groups of tests that share a subsystem:
+#
+#                   messaging  mail, forums, chat        (the shared editor)
+#                   places     forums, files, chat, xfer (session owners)
+#                   storage    files, forums, sd, backup (anything on the card)
+#                   shell      menus, sysinfo, config    (the core's screens)
+#                   login      accounts, guest, sysop    (getting in)
+#                   terminal   ansi, petscii, ascii      (the three flavours)
+#
+#                 tools/harness.sh --tag m --card --only=messaging
+#                 tools/harness.sh --tag m --card --only=forums,sysinfo
+#
+#                 A full run is the gate before a commit or a flash. These
+#                 are for the twenty runs in between, and a change that is
+#                 cheap to verify gets verified far more often.
+#
 #               Results land in /tmp/bbs-<tag>/out.txt and the board's log
 #               in /tmp/bbs-<tag>/host.log.
 #

@@ -332,7 +332,7 @@ void Bbs::formSave(Session& s, uint32_t now) {
             fx::scramble(t, tl, "WELCOME ABOARD", 10, 55);
             t.nl(tl);
             strncpy(s.user, s.edit.handle, BBS_USER_MAX);
-            s.newAccount = true;          // first call: the short rules, not the bulletin
+            s.newAccount = true;          // first call: the short rules, not the motd
             completeLogin(s, now);
             return;
         }
@@ -513,7 +513,9 @@ void Bbs::cmdPassword(Session& s, uint32_t now) {
 }
 
 // ---------------------------------------------------------------------------
-// cmdInfo: INFO [handle]. Private fields only for the owner or USERS staff.
+// cmdInfo: WHOIS [handle]. Private fields only for the owner or USERS staff.
+// Named INFO until 2026-09-22; the verb moved to the information pages and
+// WHOIS is what this always was, sitting beside WHO.
 // ---------------------------------------------------------------------------
 void Bbs::cmdInfo(Session& s, const char* arg) {
     Term& t = s.term;
