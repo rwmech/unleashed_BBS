@@ -36,7 +36,7 @@ The chat room is one room, the way DDial and Gtalk did it. Everybody who joins s
 - `Daytona` is the handle.
 - The bracket says the rank: `)` a caller, `*` a guest, `>` a co-sysop, `]` the sysop.
 
-Room notices (`*** #2:Daytona) joined`) are in their own colour and are never hidden by anything. A private line arrives with a `>` in front of it.
+Room notices (`*** #2:Daytona) joined`) are in their own colour and are never hidden by anything, and a bell rings for everyone currently watching the room when one is a join (unless they have `/b` off). A private line arrives marked `P`, not `>`, because `>` is already the co-sysop bracket, and it rings your bell too.
 
 ## Typing
 
@@ -53,20 +53,23 @@ A line that starts with `/` is a command, not something you said.
 | Command | What it does |
 |---|---|
 | `/?` | this list, with the staff lines when you are staff |
+| `/? cmd` | one command in full, the same text `HELP cmd` gives at the main prompt. `/? staff` shows the moderation commands to staff |
 | `/s` | who is in the room, with any away notes |
 | `/p n text` | one line to node n only |
 | `/p n*` | **stick** the conversation to node n: every line you type goes to them alone, and the input line shows `[>n]` so you always know. `/p*` ends it. From DDial, where it existed because retyping `/p 3 ` in front of every line is nine keystrokes on a C64 |
 | `/sh [n]` | replay the last n lines the room said, 20 by default |
 | `/whois handle` | a caller's profile, the same public fields `WHOIS` shows at the main prompt. Email, address and phone stay hidden unless it is your own account or you hold `USERS` |
-| `/page n why` | ring node n, as distinct from talking to them. A private line is part of a conversation; a page is "look at your screen" |
-| `/b` | bell on or off, for your call only. On its own: `/b handle` is the staff bar |
-| `/me text` | an action line: `#1:Daytona) * waves` |
+| `/page n why` | ring node n, as distinct from talking to them. A private line is part of a conversation; a page is "look at your screen". Like a page from the main prompt, it is only delivered once the target is back at their own main prompt: it will not interrupt them mid-line in the room, in FILES, in FORUMS or in their mailbox |
+| `/i [n]` | the information pages: `/i` lists them, `/in` reads page n. `/in-` clears page n for whoever may write them |
+| `/codes` | the colour and effect codes you can put in a message, the same list `CODES` shows at the main prompt |
+| `/b` | on its own, bell on or off for this call: pages, broadcasts, somebody joining or logging in, a private line, `@BELL@` in a message. `/b handle` (with a handle) is the staff bar instead |
+| `/me text` | an action line, printed as `** Handle text **` with no node tag or bracket, because it is prose about you rather than something you said. Five every 30 seconds; past that, say it instead |
 | `/a [note]` | away with a note, or back again when the note is left off |
-| `/sq n` | hide node n's lines for this call, or show them again |
+| `/sq n` | hide node n's lines until you leave the room or type `/sq n` again |
 | `/t` | the time, and how long you have left this call |
 | `/clear` | wipe your screen and start fresh |
 | `/email h text` | leave a message for a caller to read later |
-| `/e` | read the message waiting for you |
+| `/e` | read the oldest message waiting for you, inline, the same as `/whois` and `/i`: no need to leave the room for one message. Reading gives the same `[R]eply [S]ave [D]elete` choice `MAIL` does; the full mailbox is `MAIL` at the main prompt |
 | `/q` | leave the room |
 | `/q+` | leave the room and log off, the same send-off as `BYE`. The room sees `*** you logged off` |
 
@@ -82,11 +85,11 @@ A stuck line is the same code as a typed `/p`: the same `P` marker on their scre
 
 ### Squelch
 
-`/sq 3` hides everything node 3 says, until you hang up or type `/sq 3` again. Joining, leaving, kicks and the room's own notices are never hidden, so a squelch cannot be used to miss what is going on. A squelch belongs to your call: it is dropped when you log off, and nobody inherits it when a new caller takes the node.
+`/sq 3` hides everything node 3 says, until you leave the room or type `/sq 3` again. Joining, leaving, kicks and the room's own notices are never hidden, so a squelch cannot be used to miss what is going on. A squelch belongs to this visit to the room, not the whole call: walking back in with `CHAT` clears it, and of course logging off does too. Nobody inherits a squelch when a new caller takes the node.
 
 ## Moderation
 
-Staff in the room get four more commands:
+Staff in the room get five more commands:
 
 | Command | What it does |
 |---|---|
@@ -118,11 +121,12 @@ The message system is small, but **nothing you are sent is ever thrown away
 to make room for something else**. It is a small mailbox, not a note left on
 the door.
 
-- `MAIL handle your message` at the command prompt, or `/email handle your message` in the room.
-- Up to 512 characters, which is enough to say something real.
+- `MAIL handle your message` at the command prompt, or `/email handle your message` in the room, for a short one on a single line. `MAIL handle` with nothing after it opens the same message editor a forum post uses, for something longer.
+- Up to 512 characters over 16 lines, which is enough to say something real.
 - The recipient is told `You have mail.` when they log in, when they enter the room, and straight away if they are already on.
-- `MAIL` on its own, or `/e` in the room, reads the oldest message. **Reading it does not dispose of it**: the board then asks `[R]eply  [S]ave  [D]elete:` and nothing is touched until you answer. If more are waiting it says how many once you have, so nobody walks away from a full box thinking they have seen everything.
-- **`R` replies**, on one line, and the message you answered goes with it. That is one action rather than two on purpose: doing it in two steps would mean either deleting before the reply is stored, which loses the original if your reply is refused, or sending first and leaving you answering the same message again if the delete fails. If the reply cannot be stored, nothing moved and the original is still there.
+- **`MAIL` on its own is a place**, the way `FILES` and `FORUMS` are: a numbered list with `*` marking what is new. A number reads that message, Enter reads the oldest new one, `W` writes to somebody, `?` the keys, `Q` or ESC leaves. `/e` in the room reads the oldest new message inline, without leaving the room, for when one message is all you want.
+- Reading shows a header (`#n of m`, who it is from, when), the body with its `@-codes` acted on, and `--> EOM <--`. **Reading it does not dispose of it**: the board then asks `[R]eply  [S]ave  [D]elete`, plus `Enter` for the next new message and `Q` back to the list when you got there through `MAIL`. Nothing is touched until you answer.
+- **`R` replies**, opening the same message editor a fresh `MAIL handle` does, and the message you answered goes with it. That is one action rather than two on purpose: doing it in two steps would mean either deleting before the reply is stored, which loses the original if your reply is refused, or sending first and leaving you answering the same message again if the delete fails. If the reply cannot be stored, nothing moved and the original is still there.
 - **`S` keeps it.** It stays in your box and can be read again, but it stops ringing `You have mail`, because something you decided to keep is not news. It still counts against your limit: it is still taking up room.
 - **`D` deletes it**, and that is the only thing that does.
 - ESC, or Enter, leaves the message unread and changes nothing. Any other key is ignored rather than guessed at, because two of the three choices cannot be undone.
@@ -155,7 +159,7 @@ room  = Main        ; the room's name in the banner
 rate  = 80          ; lines a minute one caller may send, 8 in a burst
 history = 48        ; lines the room remembers
 
-mail_slots = 32     ; messages the board holds at once, 0 switches mail off
+mail_slots = 64     ; messages the board holds at once, 0 switches mail off
 mail_chars = 512    ; longest a message may be
 mail_days  = 14     ; how long one waits before it expires
 

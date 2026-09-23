@@ -291,6 +291,14 @@ bool mayUse(const Session& s, PlugLevel level);
 // not use onboard storage or the reserve is gone.
 bool path(uint8_t index, const char* file, char* out, size_t n);
 
+// readPath: the same name, for READING. No reserve check and no folders made.
+// path() is a write guard: it measures the partition's free space, which on
+// LittleFS walks the whole filesystem's metadata, and makes two directories.
+// Paying that on every read put a full traversal behind every mailbox row and
+// every information page lookup, on the BBS task. A read of a file that is
+// not there simply fails to open.
+bool readPath(uint8_t index, const char* file, char* out, size_t n);
+
 // forEachKey: stream this plugin's own config keys (not enabled/read/write/
 // admin, which the core handles). Called at start() and on reload.
 using KeyFn = void (*)(void* ctx, const char* key, const char* value);

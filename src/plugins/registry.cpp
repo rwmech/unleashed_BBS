@@ -43,6 +43,7 @@ extern const Plugin kAnnouncePlugin;
 extern const Plugin kSdPlugin;
 extern const Plugin kFilesPlugin;
 extern const Plugin kForumsPlugin;
+extern const Plugin kInfoPlugin;
 
 // Order here is display order, not start order: the sd plugin is PF_EARLY
 // and plugins::begin() runs those first whatever position they hold, so this
@@ -51,6 +52,7 @@ const Plugin* const kPlugins[] = {
     &kSdPlugin,
     &kFilesPlugin,
     &kForumsPlugin,
+    &kInfoPlugin,
     &kExamplePlugin,
     &kChatPlugin,
     &kSerialPlugin,
@@ -58,3 +60,10 @@ const Plugin* const kPlugins[] = {
 };
 
 const uint8_t kPluginCount = sizeof(kPlugins) / sizeof(kPlugins[0]);
+
+// plugins::count() takes the smaller of this and BBS_MAX_PLUGINS, so a ninth
+// plugin past a limit of eight would compile, link, and simply never start,
+// with nothing anywhere saying why. Adding the info plugin made the list
+// exactly eight; the next one should fail here instead.
+static_assert(sizeof(kPlugins) / sizeof(kPlugins[0]) <= BBS_MAX_PLUGINS,
+              "more plugins than BBS_MAX_PLUGINS: raise it in config.h");

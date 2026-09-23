@@ -64,7 +64,7 @@ Rob is new here.
 | Password, Again | 4 to 32 characters, typed twice, shown as `*` | nobody |
 | Name | required, up to 32 | everyone |
 | Email | required, must look like `a@b.c`, up to 64 | you and staff with `USERS` |
-| Address | optional, up to 64 | you and staff with `USERS` |
+| From | optional, up to 64, a town and a country rather than a postal address | you and staff with `USERS` |
 | Phone | optional, up to 20 | you and staff with `USERS` |
 | Profile | optional, 4 rows of 37 (148 characters) | everyone |
 
@@ -196,7 +196,7 @@ Staff may only manage accounts at their own rank or below:
 
 | Command | What it does |
 |---|---|
-| `PROFILE` | Form with your name, email, address, phone, profile and `Start`. The handle can't be changed here. |
+| `PROFILE` | Form with your name, email, From, phone, profile and `Start`. The handle can't be changed here. |
 | `PASSWORD` | Form: current password, new password twice. A wrong current password counts toward the handle lock. |
 | `WHOIS` | Your account: all fields, member since, last call, number of calls, profile. |
 | `WHOIS handle` | Another caller's account. Email, address and phone are hidden unless you hold `USERS`. |
@@ -259,7 +259,7 @@ In `system.cfg`:
 | Key | Default | Meaning |
 |---|---|---|
 | `self_register` | `yes` | `no`: only staff can add accounts |
-| `max_users` | `100` | account limit, 1..100 |
+| `max_users` | `250` | account limit, 1..250. Not a space limit: see Limits above |
 | `guest` | `yes` | `no`: unknown handles are not offered `[G]uest` |
 | `guest_minutes` | `15` | per guest call, 0 = unlimited, no daily limit |
 

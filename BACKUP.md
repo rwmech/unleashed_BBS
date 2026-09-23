@@ -27,7 +27,10 @@ No USB cable, no web browser, no reflashing. Just the BOOT button and `curl`.
 
 ```
 *** Backup open 5 min: http://192.168.1.50:8080/backup.zip
+*** It holds the Wi-Fi password. Never forward this port.
 ```
+
+The port answers only local addresses: `10/8`, `172.16/12`, `192.168/16`, `127/8`, link-local `169.254/16`, and `100.64/10`, which is where Tailscale and carrier NAT put you. Anything else gets a 403 and the sysop console shows `*** Backup refused <ip>: not a local address`. A VPN still works. The check looks at the source address, so it is a guard rather than a wall: a router that rewrites the source of forwarded traffic to its own LAN address gets past it. Never forward the backup port.
 
 The window stays open for `backup_window_minutes` (default 5), then closes by itself. It also closes if the sysop logs off. Outside the window the port is not listening at all.
 
@@ -68,7 +71,7 @@ What is inside:
 
 | Path | What it is |
 |---|---|
-| `system.cfg` | all settings, the staff passwords show as `***` |
+| `system.cfg` | all settings, the staff passwords show as `***`; the Wi-Fi password is in it as typed, so a restore onto a fresh board brings the network with it |
 | `users.txt` | user accounts, passwords as salted hashes, see [USERS.md](USERS.md#userstxt). The download is taken from a snapshot, so accounts may change while it streams without spoiling the zip. |
 | `screens/*.asc .ans .seq .p40 .p80` | display files, see [SCREENS.md](SCREENS.md) |
 | `MANIFEST.txt` | version, date, file list (ignored on upload) |
@@ -157,6 +160,7 @@ backup_button_gpio = 0
 ## Security notes
 
 - The window only opens with a physical button press while the sysop is logged in, and closes by itself.
-- Downloads are not confirmed. The zip never contains staff passwords, only `***`. Account passwords are in it as salted hashes, so keep backups private.
+- Downloads are not confirmed. The zip never contains staff passwords, only `***`. Account passwords are in it as salted hashes. **The Wi-Fi password is in it in the clear**, on purpose, so keep backups private.
+- Only local addresses can connect. Never forward the backup port.
 - Uploads always need the sysop's Y.
 - Plain HTTP, like the BBS itself is plain telnet. Use it on your own network.

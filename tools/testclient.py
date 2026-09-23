@@ -1663,6 +1663,8 @@ def test_backup():
     s.send(f"bye {PASSWORD}\r".encode())
     ok = check("sysop node", s.wait_for(b"SysOp node", 5))
     ok &= check("window-open notice on the sysop console", s.wait_for(b"*** Backup open", 8))
+    ok &= check("and it says the zip holds the Wi-Fi password",
+                s.wait_for(b"Never forward this port", 5))
 
     status, _ = http_call("GET", "/")
     ok &= check("GET / answers", status == 200)
@@ -1682,6 +1684,11 @@ def test_backup():
                 "system.cfg" in names and "MANIFEST.txt" in names and "screens/welcome.ans" in names)
     cfg = z.read("system.cfg").decode() if z else ""
     ok &= check("passwords redacted as ***", "sysop_password = ***" in cfg and PASSWORD not in cfg)
+    # The Wi-Fi passphrase is carried, not redacted (NEXT.md 3.2): a restore
+    # onto a fresh board has to bring the network with it. Both values carry
+    # a '#', which used to start a comment anywhere on a line.
+    ok &= check("Wi-Fi password carried whole", "wifi_password = pa#ss word1" in cfg)
+    ok &= check("Wi-Fi network name kept whole", "wifi_ssid = Test#Net" in cfg)
     users = z.read("users.txt").decode() if z and "users.txt" in names else ""
     ok &= check("zip carries users.txt, hashes only", "Alice" in users and TEST_PW not in users)
     ok &= check("download notice on the sysop console", s.wait_for(b"*** Backup downloaded by", 5))
@@ -1700,6 +1707,8 @@ def test_backup():
     if local:
         live_cfg = (USERDATA / "system.cfg").read_text()
         ok &= check("*** kept the real password on disk", f"sysop_password = {PASSWORD}" in live_cfg)
+        ok &= check("upload kept the Wi-Fi password whole, # and all",
+                    "wifi_password = pa#ss word1" in live_cfg)
     status, again = http_call("GET", "/backup.zip")
     z2 = zipfile.ZipFile(io.BytesIO(again)) if status == 200 else None
     names2 = z2.namelist() if z2 else []
@@ -2111,6 +2120,15 @@ def test_room_commands():
     return ok
 
 
+def mail_box(c):
+    """MAIL: into the mailbox, which is a place now (0.22.0): the list, then
+    a Mail> prompt. Reading is a key from there, and every decision comes
+    back to the list, not to the shell."""
+    c.buf.clear()
+    c.send(b"mail\r")
+    return c.wait_for(b"Mail>", 5)
+
+
 def test_mail():
     """One message per caller, read once, replaced rather than doubled."""
     print("Messages")
@@ -2123,19 +2141,22 @@ def test_mail():
     ok = check("a message is left", a.wait_for(b"Left for Reader", 4))
     ok &= check("somebody online is told at once", b.wait_for(b"You have mail", 4))
 
+    ok &= check("MAIL opens the mailbox with it listed",
+                mail_box(b) and b"Sender" in plain(b.buf) and b"1 new" in plain(b.buf))
     b.buf.clear()
-    b.send(b"mail\r")
-    ok &= check("MAIL reads it", b.wait_for(b"the eagle lands at nine", 4) and
-                b"Message from Sender" in plain(b.buf))
+    b.send(b"\r")
+    ok &= check("Enter reads it", b.wait_for(b"the eagle lands at nine", 4) and
+                b"From: Sender" in plain(b.buf))
     # Reading is not disposing. The message stays exactly where it is until
     # one of three keys says what should happen to it.
     ok &= check("and asks what to do with it", b.wait_for(b"[D]elete", 4))
     b.buf.clear()
     b.send(b"d")
     ok &= check("D deletes it", b.wait_for(b"Deleted", 4))
-    b.buf.clear()
-    b.send(b"mail\r")
-    ok &= check("and then the box is empty", b.wait_for(b"No mail", 4))
+    ok &= check("and puts them back on the list, now empty",
+                b.wait_for(b"Nothing in your mailbox", 4))
+    b.send(b"q")
+    b.wait_for(b"Main", 4)
 
     # This used to assert that a second message REPLACED the first and
     # that the board said so. That was the bad design written into the
@@ -2158,19 +2179,24 @@ def test_mail():
     b.close()
     b = ansi_login("Reader", pw=TEST_PW)
     ok &= check("mail is announced at login", b.wait_for(b"You have mail", 6))
-    b.send(b"mail\r")
+    mail_box(b)
+    listing = plain(b.buf)
     # Oldest first, because that is the order they were sent in and the
     # order somebody would expect to read them.
-    ok &= check("the oldest message is read first", b.wait_for(b"first one", 4))
-    b.send(b"d")
-    # What is still waiting is said after the decision, not before it: until
-    # D was pressed the count would have included the one on screen.
-    ok &= check("and the newer one is still waiting", b.wait_for(b"more waiting", 4))
+    ok &= check("the list shows both, oldest first",
+                b"first one" in listing and b"second one" in listing
+                and listing.index(b"first one") < listing.index(b"second one"))
     b.buf.clear()
-    b.send(b"mail\r")
-    ok &= check("which reads next", b.wait_for(b"second one", 4))
+    b.send(b"\r")
+    ok &= check("Enter reads the oldest", b.wait_for(b"first one", 4))
+    b.send(b"d")
+    ok &= check("and the list says the newer one is still new", b.wait_for(b"1 new", 4))
+    b.buf.clear()
+    b.send(b"\r")
+    ok &= check("which Enter reads next", b.wait_for(b"second one", 4))
     b.send(b"d")
     b.wait_for(b"Deleted", 4)
+    b.send(b"q")
     a.close()
     b.close()
     return ok
@@ -2195,11 +2221,15 @@ def test_config():
     ok &= check("a page opens as a form", s.wait_for(b"Per call", 5))
 
     s.buf.clear()
-    s.send(DOWN * 4 + b"\x08" * 4 + b"77" + F1)         # Accounts -> 77
+    # 200, not a small number: the cap stays for the rest of the run, and a
+    # full no-card run registers 77 accounts by the time the backup test asks
+    # whether sign-up is offered. At 77 the board rightly said no, and the
+    # failure was reported against the backup.
+    s.send(DOWN * 4 + b"\x08" * 4 + b"200" + F1)        # Accounts -> 200
     ok &= check("the page saves", s.wait_for(b"Saved and live", 5))
     if HOST in ("127.0.0.1", "localhost"):
         cfg = (USERDATA / "system.cfg").read_text()
-        ok &= check("the new value is in system.cfg", "max_users = 77" in cfg)
+        ok &= check("the new value is in system.cfg", "max_users = 200" in cfg)
         ok &= check("the rest of the file is untouched",
                     "sysop_password = testsysop" in cfg and "[plugin:chat]" in cfg)
 
@@ -2236,6 +2266,19 @@ def test_config():
     s.send(DOWN * 4 + b"\x08" * 4 + b"9999" + F1)
     ok &= check("a value out of range is refused", s.wait_for(b"Between", 5))
     s.send(b"\x1b")                                     # cancel
+    s.pump(0.5)
+
+    # The network page: shows the stored name whole, '#' included, and
+    # refuses a passphrase WPA2 would refuse, while it can still be retyped.
+    s.buf.clear()
+    s.send(b"config wifi\r")
+    ok &= check("CONFIG wifi opens on the stored network",
+                s.wait_for(b"Test#Net", 5) and b"WI-FI" in plain(s.buf))
+    s.buf.clear()
+    s.send(DOWN + b"\x08" * 12 + b"short" + F1)
+    ok &= check("a passphrase under 8 characters is refused",
+                s.wait_for(b"8 to 64 characters", 5))
+    s.send(b"\x1b")
     s.pump(0.5)
 
     n = ansi_login("NotSysop")
@@ -2868,6 +2911,540 @@ def test_paced_chatin():
     return ok
 
 
+def test_room_time_staff_only():
+    """/t n +m and /t -1 in the room are staff tools, as TIME is.
+
+    From 0.21.4 until 0.22.0 any caller could type /t -1 and be off the
+    clock, or /t 3 +600 and give a node ten hours: the shell's TIME checked
+    PERM_TIME before calling the handler, and the room called the same
+    handler directly. Found while writing the long help, not by a test,
+    because the existing test only ever tried it as staff.
+    """
+    print("Chat room: /t cannot change time for a caller")
+    a = ansi_login("NoClock")
+    b = ansi_login("Clocked")
+    nb = b.node()
+    for x in (a, b):
+        x.send(b"chat\r")
+        x.wait_for(b"here.", 4)
+    a.buf.clear()
+    a.send(b"/t -1\r")
+    a.pump(1.0)
+    ok = check("an ordinary caller cannot take themselves off the clock",
+               b"off the clock" not in plain(a.buf) and b"Only staff" in plain(a.buf))
+    a.buf.clear()
+    b.buf.clear()          # its login banner says "60 minutes" already
+    a.send(f"/t {nb} +600\r".encode())
+    a.pump(1.0)
+    ok &= check("nor give another node minutes",
+                b"Only staff" in plain(a.buf) and b"minutes" not in plain(b.buf))
+    a.buf.clear()
+    a.send(b"/t\r")
+    a.pump(1.0)
+    ok &= check("bare /t still tells them the time",
+                b"left this call" in plain(a.buf) or b"no time limit" in plain(a.buf))
+    a.close()
+    b.close()
+    return ok
+
+
+def test_bell():
+    """BELL and /b are one setting, and bells actually ring.
+
+    The room's /b toggled a flag that nothing read from 0.21.4 until 0.22.0:
+    it answered "Bell off." and the room never rang at all. Its test checked
+    the answer. These check the byte, 0x07, which is what a bell is.
+    """
+    print("Bells: arrivals, the room, privates, and BELL")
+    a = ansi_login("Ringer")
+    na = a.node()          # before any clear: node() reads the login banner
+    drain(a)
+    a.buf.clear()
+    b = ansi_login("Arriver")
+    ok = check("an arrival rings for somebody at the prompt",
+               a.wait_for(b"is on node", 6) and b"\x07" in a.buf)
+    a.buf.clear()
+    a.send(b"bell\r")
+    ok &= check("BELL turns it off", a.wait_for(b"Bell off.", 4))
+    b.close()
+    a.pump(1.0)
+    a.buf.clear()
+    c = ansi_login("Arriver")
+    a.wait_for(b"is on node", 6)
+    ok &= check("and an arrival no longer rings", b"\x07" not in a.buf)
+    a.send(b"bell\r")
+    a.wait_for(b"Bell on.", 4)
+
+    # The room: somebody joining, and a private.
+    nb = c.node()
+    for x in (a, c):
+        drain(x)
+        x.buf.clear()
+    a.send(b"chat\r")
+    a.wait_for(b"here.", 4)
+    a.pump(0.5)
+    a.buf.clear()
+    c.send(b"chat\r")
+    c.wait_for(b"here.", 4)
+    a.pump(1.0)
+    ok &= check("somebody joining the room rings", b"\x07" in a.buf)
+    a.buf.clear()
+    c.send(f"/p {na} psst\r".encode())
+    a.wait_for(b"psst", 4)
+    ok &= check("a private rings", b"\x07" in a.buf)
+    a.buf.clear()
+    a.send(b"/b\r")
+    a.wait_for(b"Bell off.", 4)
+    a.buf.clear()
+    c.send(f"/p {na} again\r".encode())
+    a.wait_for(b"again", 4)
+    ok &= check("and /b stops it", b"\x07" not in a.buf)
+    # One setting, not a room setting reset on every visit.
+    a.send(b"/q\r")
+    a.pump(0.8)
+    a.buf.clear()
+    a.send(b"bell\r")
+    ok &= check("/b and BELL are the same setting", a.wait_for(b"Bell on.", 4))
+    a.close()
+    c.close()
+    return ok
+
+
+def test_codes_in_messages():
+    """Callers' @-codes act in the room and in the forums; the board's own
+    restricted codes print as typed; CODES and /codes explain them."""
+    print("Inline @-codes in messages")
+    a = ansi_login("Painter")
+    b = ansi_login("Viewer")
+    for x in (a, b):
+        x.send(b"chat\r")
+        x.wait_for(b"here.", 4)
+        x.buf.clear()
+    a.send(b"@YELLOW@shine @TYPE:slowly@ @CLS@ me@example.com\r")
+    b.wait_for(b"example.com", 6)
+    b.pump(1.5)
+    seen = plain(b.buf)
+    ok = check("a colour code acts rather than printing",
+               b"shine" in seen and b"@YELLOW@" not in seen)
+    ok &= check("an effect prints its words", b"slowly" in seen and b"@TYPE" not in seen)
+    ok &= check("@CLS@ is not a caller's code and prints as typed",
+                b"@CLS@" in seen and b"\x1b[2J" not in bytes(b.buf))
+    ok &= check("an email address is left alone", b"me@example.com" in seen)
+    b.buf.clear()
+    b.send(b"/codes\r")
+    ok &= check("/codes lists them in the room",
+                b.wait_for(b"Codes in messages", 4) and b"@BLINK" in plain(b.buf))
+    ok &= check("and shows @BELL@ without ringing it", b"\x07" not in b.buf)
+    a.send(b"/q\r")
+    b.send(b"/q\r")
+    a.pump(0.5)
+    b.pump(0.5)
+    b.buf.clear()
+    b.send(b"codes\r")
+    b.pump(1.5)
+    if b"[More]" in b.buf or b"continue" in plain(b.buf).lower():
+        drain(b)
+    ok &= check("CODES at the prompt explains them",
+                b"@BLINK" in plain(b.buf) or b"BLINK" in plain(b.buf))
+    ok &= check("without ringing the bell it describes", b"\x07" not in b.buf)
+
+    if os.environ.get("BBS_SD_DIR", ""):
+        drain(a)
+        a.buf.clear()
+        a.send(b"forums\r")
+        a.wait_for(b"Forums", 6)
+        a.pump(0.8)
+        a.send(b"1\r")
+        a.pump(1.0)
+        num = forum_post(a, "Painted", ["@LTGREEN@glowing words@N@ and @BLINK:flashing@"])
+        ok &= check("a post with codes goes up", num is not None)
+        drain(b)
+        b.buf.clear()
+        b.send(b"forums\r")
+        b.wait_for(b"Forums", 6)
+        b.pump(0.8)
+        b.send(b"1\r")
+        b.pump(1.0)
+        b.buf.clear()
+        b.send(((num or "1") + "\r").encode())
+        b.pump(2.5)
+        seen = plain(b.buf)
+        ok &= check("a forum post's codes act for the reader",
+                    b"glowing words" in seen and b"@LTGREEN@" not in seen
+                    and b"flashing" in seen and b"@BLINK" not in seen)
+        # Take the post down again. The forums tests after this one count
+        # unread messages in this forum and expect only their own posts; the
+        # first full card run of 0.22.1 reported the board's correct count
+        # as four failures because this one was still there.
+        if num:
+            m = ansi_login("CodesMod")
+            m.send(f"bye {PASSWORD}\r".encode())
+            m.wait_for(b"SysOp node", 5)
+            m.pump(0.6)
+            m.send(b"forums\r")
+            m.wait_for(b"Forums", 6)
+            m.pump(1.0)
+            m.send(b"1\r")
+            m.pump(1.2)
+            m.send((num + "\r").encode())
+            m.pump(1.2)
+            m.send(b"d")
+            m.wait_for(b"Remove message", 4)
+            m.send(b"y")
+            ok &= check("and the test takes its post down again",
+                        m.wait_for(b"Message #" + num.encode() + b" removed", 5))
+            m.close()
+    a.close()
+    b.close()
+    return ok
+
+
+def test_room_narrow_effects():
+    """An effect past a 40 column reader's margin still prints its words.
+
+    Code review, 0.22.0: the room let the terminal wrap its lines, and the
+    renderer cut every effect to a margin it believed in, so a C64 reader
+    lost the words inside an effect that crossed column 39 while an 80
+    column reader saw them. The room wraps its own lines now.
+    """
+    print("Chat room: effects at 40 columns")
+    a = ansi_login("Widecaller")
+    n = Caller(ansi=False)
+    n.wait_for(b"HIT DEL OR BACKSPACE", 6)
+    n.send(b"\x08")
+    n.wait_for(b"Enter your handle", 10)
+    ok = check("a 40 column caller gets on", login(n, "Narrowcaller"))
+    for x in (a, n):
+        x.send(b"chat\r")
+        x.wait_for(b"here.", 4)
+        x.buf.clear()
+    a.send(b"hello there my friend how are @TYPE:yourself@ today\r")
+    n.wait_for(b"today", 6)
+    n.pump(1.0)
+    ok &= check("the words inside the effect arrive", b"yourself" in plain(n.buf))
+    a.close()
+    n.close()
+    return ok
+
+
+def test_long_help():
+    """HELP <command> and /? <command>: one command in full."""
+    print("Long help")
+    c = ansi_login("Asker")
+    drain(c)
+    c.buf.clear()
+    c.send(b"help who\r")
+    ok = check("HELP WHO explains WHO", c.wait_for(b"usage: WHO", 4))
+    c.buf.clear()
+    c.send(b"help w\r")
+    ok &= check("HELP W finds it by its shortcut", c.wait_for(b"usage: WHO", 4))
+    c.buf.clear()
+    c.send(b"help kick\r")
+    c.pump(1.0)
+    ok &= check("HELP KICK is unknown to somebody who cannot kick",
+                b"No command or menu" in plain(c.buf) and b"usage: KICK" not in plain(c.buf))
+    c.buf.clear()
+    c.send(b"help bell\r")
+    c.pump(1.0)
+    ok &= check("the entry that mentions @BELL@ does not ring it",
+                b"usage: BELL" in plain(c.buf) and b"\x07" not in c.buf)
+    c.buf.clear()
+    c.send(b"help off\r")
+    c.pump(1.0)
+    ok &= check("a hidden alias with nothing written for it is unknown, not an empty box",
+                b"No command or menu" in plain(c.buf))
+    c.buf.clear()
+    c.send(b"?\r")
+    c.pump(1.2)
+    ok &= check("? says HELP <command> exists", b"HELP <command>" in plain(c.buf))
+    ok &= check("and still fits one screen", b"[More]" not in c.buf)
+    c.send(b"chat\r")
+    c.wait_for(b"here.", 4)
+    c.buf.clear()
+    c.send(b"/? p\r")
+    ok &= check("/? p explains /p", c.wait_for(b"usage: /p", 4))
+    c.buf.clear()
+    c.send(b"/? /whois\r")
+    ok &= check("/? /whois, slash and all", c.wait_for(b"usage: /whois", 4))
+    c.buf.clear()
+    c.send(b"/? w\r")
+    ok &= check("/? w is the room's /w, not WHO at the prompt", c.wait_for(b"usage: /s", 4))
+    c.buf.clear()
+    c.send(b"/? k\r")
+    c.pump(1.0)
+    ok &= check("/? k is unknown to a caller", b"No such command" in plain(c.buf))
+    c.buf.clear()
+    c.send(b"/?\r")
+    c.pump(1.0)
+    ok &= check("the room's /? lists /codes and /? cmd",
+                b"/codes" in plain(c.buf) and b"/? cmd" in plain(c.buf))
+    c.close()
+    return ok
+
+
+def test_info_pages():
+    """INFO and /i: the sysop's ten pages.
+
+    The harness sets page0 (a title, no text yet) and page1 (staff only).
+    A caller must get the same words for page 1 as for a page that does not
+    exist, or the numbers can be probed for what they hide: the file areas'
+    rule, applied here too.
+    """
+    print("Information pages")
+    if not PASSWORD:
+        print("  SKIP  writing a page needs the sysop")
+        return True
+    c = ansi_login("InfoReader")
+    ok = check("login says there is something to read",
+               b"information page" in plain(c.buf) and b"INFO reads" in plain(c.buf))
+    drain(c)
+    c.buf.clear()
+    c.send(b"info\r")
+    c.pump(1.0)
+    seen = plain(c.buf)
+    ok &= check("INFO lists the pages a caller may read",
+                b"House rules" in seen and b"Staff notes" not in seen)
+    c.buf.clear()
+    c.send(b"info 1\r")
+    c.pump(1.0)
+    staff_page = plain(c.buf)
+    c.buf.clear()
+    c.send(b"info 7\r")
+    c.pump(1.0)
+    no_page = plain(c.buf)
+    ok &= check("a staff page and a missing page answer the same way",
+                b"There is no page 1." in staff_page and b"There is no page 7." in no_page)
+    c.buf.clear()
+    c.send(b"info 0\r")
+    c.pump(1.2)
+    ok &= check("a titled page with no text says so", b"(this page is empty)" in plain(c.buf))
+    c.buf.clear()
+    c.send(b"info 2 edit\r")
+    c.pump(1.0)
+    ok &= check("only the sysop writes pages", b"Only the sysop" in plain(c.buf))
+
+    s = ansi_login("InfoWriter")
+    s.buf.clear()
+    s.send(f"bye {PASSWORD}\r".encode())
+    s.wait_for(b"SysOp node", 6)
+    s.pump(0.6)
+    s.buf.clear()
+    s.send(b"info 2 edit\r")
+    ok &= check("INFO 2 EDIT opens the editor", s.wait_for(b" 1: ", 5))
+    s.send(b"Opening @YELLOW@hours@N@ are evenings.\r")
+    s.pump(0.4)
+    s.send(b"Second line.\r")
+    s.pump(0.4)
+    s.send(b"/s\r")
+    ok &= check("and /s saves it", s.wait_for(b"Page 2 saved.", 5))
+    s.buf.clear()
+    s.send(b"info 2 edit\r")
+    s.wait_for(b" 3: ", 5)
+    ok &= check("editing again starts from what the page says",
+                b"Opening" in plain(s.buf) and b"Second line." in plain(s.buf))
+    s.send(b"/a\r")
+    ok &= check("and /a leaves it as it was", s.wait_for(b"left as it was", 5))
+
+    c.buf.clear()
+    c.send(b"info 2\r")
+    c.pump(1.5)
+    seen = plain(c.buf)
+    ok &= check("a caller reads it, codes acting",
+                b"Opening" in seen and b"hours" in seen and b"@YELLOW@" not in seen
+                and b"Second line." in seen)
+    ok &= check("and is back at the prompt after it", b"Main" in seen.split(b"Second line.")[-1])
+
+    c.send(b"chat\r")
+    c.wait_for(b"here.", 4)
+    c.buf.clear()
+    c.send(b"/i\r")
+    c.pump(1.0)
+    ok &= check("/i lists them in the room", b"/i2" in plain(c.buf) and b"/i1" not in plain(c.buf))
+    c.buf.clear()
+    c.send(b"/i2\r")
+    c.pump(1.2)
+    ok &= check("/i2 reads one in the room", b"Second line." in plain(c.buf))
+    c.buf.clear()
+    c.send(b"/i2-\r")
+    c.pump(1.0)
+    ok &= check("/i2- is the sysop's alone", b"Only the sysop" in plain(c.buf))
+    c.send(b"/q\r")
+    c.pump(0.5)
+
+    s.buf.clear()
+    s.send(b"info 2 clear\r")
+    ok &= check("INFO 2 CLEAR empties it", s.wait_for(b"Page 2 cleared.", 5))
+    c.buf.clear()
+    c.send(b"info 2\r")
+    c.pump(1.0)
+    ok &= check("and a page with no title and no text is gone",
+                b"There is no page 2." in plain(c.buf))
+    c.close()
+    s.close()
+    return ok
+
+
+def test_mailbox():
+    """MAIL as a place: a list, numbers, W, Enter for the next, Q back.
+
+    Rob: "Mail is still not a subsystem like forums and chat" and "we cant
+    read other mail without deleting, need that full list of emails to be
+    able to select and then reply."
+    """
+    print("The mailbox")
+    a = ansi_login("Boxwriter")
+    b = ansi_login("Boxreader")
+    for text in (b"one @LTGREEN@green@N@ thing", b"two", b"three"):
+        a.buf.clear()
+        a.send(b"mail Boxreader " + text + b"\r")
+        a.wait_for(b"Left for", 5)
+    ok = check("MAIL opens a list rather than a message",
+               mail_box(b) and b"3 new" in plain(b.buf) and b"[D]elete" not in plain(b.buf))
+    shown = render_lines(b.buf)
+    ok &= check("the list sits at column 0, * for new",
+                any(ln.startswith("* 1 Boxwriter") for ln in shown))
+    ok &= check("and a preview drops the codes",
+                b"@LTGREEN@" not in plain(b.buf) and b"green" in plain(b.buf))
+    b.buf.clear()
+    b.send(b"3\r")
+    ok &= check("a number reads that one", b.wait_for(b"#3 of 3", 4) and b"three" in plain(b.buf))
+    b.buf.clear()
+    b.send(b"\r")
+    ok &= check("Enter when it is the last says so and goes back",
+                b.wait_for(b"That was the last one", 4) and b.wait_for(b"Mail>", 4))
+    b.buf.clear()
+    b.send(b"1\r")
+    b.pump(1.2)
+    ok &= check("a message's codes act for the reader",
+                b"green" in plain(b.buf) and b"@LTGREEN@" not in plain(b.buf))
+    b.buf.clear()
+    b.send(b"\r")
+    ok &= check("Enter reads the next without deciding this one", b.wait_for(b"#2 of 3", 4))
+    b.buf.clear()
+    b.send(b"q")
+    ok &= check("Q goes back to the list, all still new", b.wait_for(b"3 new", 4))
+    b.buf.clear()
+    b.send(b"?")
+    ok &= check("? lists the keys", b.wait_for(b"Mail: the keys", 4) and b.wait_for(b"Mail>", 4))
+    b.buf.clear()
+    b.send(b"w")
+    ok &= check("W asks who it is for", b.wait_for(b"To: ", 4))
+    b.send(b"Nosuchperson\r")
+    ok &= check("a name with no account is refused", b.wait_for(b"No account called", 4))
+    b.buf.clear()
+    b.send(b"w")
+    b.wait_for(b"To: ", 4)
+    b.send(b"Boxwriter\r")
+    ok &= check("and a real one opens the editor", b.wait_for(b"Mail to Boxwriter", 4))
+    b.send(b"written from the box\r")
+    b.pump(0.3)
+    b.send(b"/s\r")
+    ok &= check("sending puts them back on the list",
+                b.wait_for(b"Left for Boxwriter", 5) and b.wait_for(b"Mail>", 4))
+    b.buf.clear()
+    b.send(b"q")
+    ok &= check("Q on the list leaves the mailbox", b.wait_for(b"Main", 4))
+    # Leave both boxes empty for whoever comes next.
+    for c in (a, b):
+        mail_box(c)
+        for _ in range(4):
+            c.buf.clear()
+            c.send(b"\r")
+            if not c.wait_for(b"[D]elete", 3):
+                break
+            c.send(b"d")
+            c.wait_for(b"Mail>", 4)
+        c.send(b"q")
+        c.pump(0.5)
+    a.close()
+    b.close()
+    return ok
+
+
+def test_seeded_screens_follow():
+    """A screen the board put on the card follows the stock one; one the
+    sysop edited, or one the board has no record of, is never touched.
+
+    Found when the welcome changed in 0.21.9: the card held the copy seeded
+    the day it was first mounted, the card is played before flash, so the
+    new screen never reached a board with a card.
+    """
+    print("Seeded screens follow the stock set")
+    sd = os.environ.get("BBS_SD_DIR", "")
+    if not sd or not PASSWORD:
+        print("  SKIP  needs a card and the sysop")
+        return True
+    stock = DATA / "screens"
+    card = pathlib.Path(sd) / "screens"
+    ours, theirs = "zzseed.asc", "zzown.asc"
+
+    s = ansi_login("Seeder")
+    s.buf.clear()
+    s.send(f"bye {PASSWORD}\r".encode())
+    s.wait_for(b"SysOp node", 6)
+    s.pump(0.6)
+
+    def remount():
+        s.buf.clear()
+        s.send(b"sd unmount\r")
+        s.wait_for(b"safe to pull", 6)
+        s.buf.clear()
+        s.send(b"sd mount\r")
+        return s.wait_for(b"Mounted", 8)
+
+    try:
+        (stock / ours).write_text("stock one\n")
+        (card / theirs).write_text("the sysop's own\n")        # no record of it
+        (stock / theirs).write_text("stock for zzown\n")
+        ok = check("the card remounts", remount())
+        ok &= check("a new stock screen is seeded",
+                    (card / ours).read_text() == "stock one\n")
+        (stock / ours).write_text("stock two\n")
+        remount()
+        ok &= check("and an untouched seeded copy follows a new stock one",
+                    (card / ours).read_text() == "stock two\n")
+        (card / ours).write_text("edited on the board\n")
+        (stock / ours).write_text("stock three\n")
+        remount()
+        ok &= check("but a copy the sysop edited is theirs from then on",
+                    (card / ours).read_text() == "edited on the board\n")
+        ok &= check("and a card file the board has no record of is left alone",
+                    (card / theirs).read_text() == "the sysop's own\n")
+    finally:
+        for f in (stock / ours, stock / theirs, card / ours, card / theirs):
+            try:
+                f.unlink()
+            except FileNotFoundError:
+                pass
+        remount()
+        s.close()
+    return ok
+
+
+def test_forums_scan_staff():
+    """FORUMS SCAN lists every forum on the card, the ones a caller may not
+    read included, so it is staff only. Nothing checked until 0.22.0."""
+    print("FORUMS SCAN is for staff")
+    if not os.environ.get("BBS_SD_DIR", ""):
+        print("  SKIP  the forums need a card")
+        return True
+    c = ansi_login("Scanner")
+    drain(c)
+    c.buf.clear()
+    c.send(b"forums scan\r")
+    c.pump(1.2)
+    ok = check("a caller is refused", b"for staff" in plain(c.buf)
+               and b"Forums on the card" not in plain(c.buf))
+    c.buf.clear()
+    c.send(b"bulletin\r")
+    ok &= check("and BULLETIN still opens the forums, for old habits",
+                c.wait_for(b"Forums", 6))
+    c.send(b"q")
+    c.pump(0.5)
+    c.close()
+    return ok
+
+
 def test_mail_compose():
     """MAIL <handle> opens the same editor a forum post does.
 
@@ -2927,8 +3504,9 @@ def test_mail_compose():
         print("        " + repr(plain(a.buf)[-400:]))
 
     # Read it back as the recipient and check nothing was lost.
+    mail_box(b)
     b.buf.clear()
-    b.send(b"mail\r")
+    b.send(b"\r")
     b.pump(1.5)
     # Collapse whitespace before checking. The board wraps a long line while
     # it is being typed, so a phrase written on one line comes back on two,
@@ -2943,6 +3521,8 @@ def test_mail_compose():
     # Leave the mailbox as we found it.
     b.send(b"d")
     b.pump(0.8)
+    b.send(b"q")
+    b.pump(0.5)
     drain(a); drain(b)
     a.close(); b.close()
     return ok
@@ -3663,10 +4243,13 @@ def test_prompt_survives_notice():
     # Leave the mailbox as we found it: finish the command, read, delete.
     r.send(b"o\r")
     r.pump(0.8)
-    r.send(b"mail\r")
+    mail_box(r)
+    r.send(b"\r")
     r.wait_for(b"[D]elete", 5)
     r.send(b"d")
     r.pump(0.8)
+    r.send(b"q")
+    r.pump(0.5)
     r.close()
     s.close()
     return ok
@@ -5114,22 +5697,22 @@ def test_mail_never_lost():
                 b"replacing" not in plain(b.buf))
 
     # Both survive, oldest first, and the caller is told what is left.
+    mail_box(rx)
     rx.buf.clear()
-    rx.send(b"mail\r")
+    rx.send(b"\r")
     ok &= check("the first message is still there",
                 rx.wait_for(b"first message from A", 5))
     rx.send(b"d")
-    ok &= check("and the caller is told one more is waiting",
-                rx.wait_for(b"1 more waiting", 4))
+    ok &= check("and the list says one more is new", rx.wait_for(b"1 new", 4))
     rx.buf.clear()
-    rx.send(b"mail\r")
+    rx.send(b"\r")
     ok &= check("the second message survived too",
                 rx.wait_for(b"second message from B", 5))
     rx.send(b"d")
     rx.wait_for(b"Deleted", 4)
-    rx.buf.clear()
-    rx.send(b"mail\r")
-    ok &= check("and then the box is empty", rx.wait_for(b"No mail", 4))
+    ok &= check("and then the box is empty", rx.wait_for(b"Nothing in your mailbox", 4))
+    rx.send(b"q")
+    rx.wait_for(b"Main", 4)
 
     # A full box is refused, not emptied to make room. The limit depends
     # on where the mail lives, three on internal flash and twelve with a
@@ -5146,12 +5729,14 @@ def test_mail_never_lost():
     ok &= check("and says plainly that nothing was replaced",
                 b"Nothing was replaced" in plain(a.buf))
 
+    mail_box(rx)
     rx.buf.clear()
-    rx.send(b"mail\r")
+    rx.send(b"\r")
     ok &= check("the refused message displaced nothing",
                 rx.wait_for(b"filler 0", 5))
     rx.send(b"d")
     rx.wait_for(b"Deleted", 4)
+    rx.send(b"q")
 
     for c in (rx, a, b):
         drain(c)
@@ -5187,18 +5772,22 @@ def test_mail_rsd():
     a.send(b"mail Rsdb keep this one\r")
     ok = check("a message to save is left", a.wait_for(b"Left for Rsdb", 5))
 
+    mail_box(b)
     b.buf.clear()
-    b.send(b"mail\r")
+    b.send(b"\r")
     ok &= check("reading offers the three choices", b.wait_for(b"[D]elete", 5))
     b.buf.clear()
     b.send(b"s")
     ok &= check("S keeps it", b.wait_for(b"Kept", 4))
+    ok &= check("and it stays on the list, no longer new", b.wait_for(b"0 new, 1 of", 4))
     b.buf.clear()
-    b.send(b"mail\r")
-    ok &= check("a kept message is still readable",
+    b.send(b"1\r")
+    ok &= check("a kept message is still readable, by its number",
                 b.wait_for(b"keep this one", 5))
     b.send(b"d")
     ok &= check("and can then be deleted", b.wait_for(b"Deleted", 4))
+    b.send(b"q")
+    b.wait_for(b"Main", 4)
 
     # -- Something deliberately kept is not news ---------------------------
     # If it still rang "You have mail" at every login, S would be the wrong
@@ -5206,19 +5795,22 @@ def test_mail_rsd():
     a.buf.clear()
     a.send(b"mail Rsdb quiet please\r")
     a.wait_for(b"Left for", 5)
-    b.buf.clear()
-    b.send(b"mail\r")
+    mail_box(b)
+    b.send(b"\r")
     b.wait_for(b"[D]elete", 5)
     b.send(b"s")
     ok &= check("the second one is kept too", b.wait_for(b"Kept", 4))
+    b.send(b"q")
+    b.pump(0.5)
     b.close()
     b = ansi_login("Rsdb", pw=TEST_PW)
     ok &= check("a kept message does not ring at login",
                 b"You have mail" not in plain(b.buf))
 
     # -- Reply goes back, and retires what it answers ----------------------
+    mail_box(b)
     b.buf.clear()
-    b.send(b"mail\r")
+    b.send(b"1\r")
     ok &= check("the kept message is still there", b.wait_for(b"quiet please", 5))
     b.send(b"r")
     ok &= check("R asks who it is going to", b.wait_for(b"Reply to Rsda", 4))
@@ -5233,16 +5825,19 @@ def test_mail_rsd():
     b.send(b"/s\r")
     ok &= check("the reply is sent", b.wait_for(b"Left for Rsda", 6))
     ok &= check("and the sender is told at once", a.wait_for(b"You have mail", 5))
-    b.buf.clear()
-    b.send(b"mail\r")
     ok &= check("replying retired the message it answered",
-                b.wait_for(b"No mail", 5))
+                b.wait_for(b"Nothing in your mailbox", 5))
+    b.send(b"q")
+    b.wait_for(b"Main", 4)
 
+    mail_box(a)
     a.buf.clear()
-    a.send(b"mail\r")
+    a.send(b"\r")
     ok &= check("the reply reads back", a.wait_for(b"understood", 5))
     a.send(b"d")
     a.wait_for(b"Deleted", 4)
+    a.send(b"q")
+    a.wait_for(b"Main", 4)
 
     # -- Backing out changes nothing ---------------------------------------
     # Two of the three choices cannot be undone, so the key that is easiest
@@ -5250,18 +5845,19 @@ def test_mail_rsd():
     a.buf.clear()
     a.send(b"mail Rsdb still here\r")
     a.wait_for(b"Left for", 5)
-    b.buf.clear()
-    b.send(b"mail\r")
+    mail_box(b)
+    b.send(b"\r")
     b.wait_for(b"[D]elete", 5)
     b.buf.clear()
     b.send(b"\x1b")
-    ok &= check("ESC leaves it unread", b.wait_for(b"Left unread", 4))
+    ok &= check("ESC goes back to the list and leaves it unread", b.wait_for(b"1 new", 4))
     b.buf.clear()
-    b.send(b"mail\r")
+    b.send(b"\r")
     ok &= check("and it is still waiting to be read",
                 b.wait_for(b"still here", 5))
     b.send(b"d")
     b.wait_for(b"Deleted", 4)
+    b.send(b"q")
 
     for c in (a, b):
         drain(c)
@@ -5515,12 +6111,14 @@ def test_rename_follows():
     n = ansi_login("Newname", pw=TEST_PW)
     ok &= check("the new handle is told it has mail",
                 b"You have mail" in plain(n.buf))
+    mail_box(n)
     n.buf.clear()
-    n.send(b"mail\r")
+    n.send(b"\r")
     ok &= check("and the message followed the rename",
                 n.wait_for(b"this should follow you", 5))
     n.send(b"d")
     n.wait_for(b"Deleted", 4)
+    n.send(b"q")
 
     for c in (a, s, n):
         drain(c)
@@ -5896,13 +6494,15 @@ GROUPS = {
     # Anything that takes a message from a caller. The editor is shared, so
     # a change to it can break either end.
     "messaging": ["mail", "forums", "chat", "room_commands", "room_new", "room_quit",
-                  "survives_notice", "config_forum"],
+                  "survives_notice", "config_forum", "room_time", "bell", "codes_in",
+                  "room_narrow",
+                  "long_help", "info_pages"],
     # The subsystems that own a session and draw their own screens.
     "places":    ["forums", "files", "chat", "xfer"],
     # Anything that reads or writes the card.
     "storage":   ["files", "forums", "sd", "xfer", "backup"],
     # The shell, its lists and the screens the core draws.
-    "shell":     ["menus", "sysinfo", "page", "about", "config", "welcome", "paced"],
+    "shell":     ["menus", "sysinfo", "page", "about", "config", "welcome", "paced", "seeded"],
     # Logging in, accounts, staff.
     "login":     ["accounts", "handle_case", "guest", "sysop", "cosysop", "user_admin", "ban"],
     # Terminal handling across the three flavours.
@@ -5926,18 +6526,22 @@ ORDER_NAMES = [
     "test_user_admin", "test_guest",
     "test_privacy", "test_plugins", "test_about", "test_announce",
     "test_chat", "test_room_commands", "test_room_new_commands", "test_room_quit_logoff",
+    "test_room_time_staff_only", "test_bell", "test_codes_in_messages", "test_room_narrow_effects",
+    "test_long_help",
+    "test_info_pages",
     "test_mail", "test_prompt_survives_notice", "test_menus", "test_sysinfo", "test_config", "test_serial",
     "test_motd", "test_idle_login", "test_busy",
     "test_screens", "test_exit_screen", "test_welcome_connecting", "test_paced_chatin",
+    "test_seeded_screens_follow",
     "test_refresh_and_ctrl_l",
     "test_binary", "test_sd", "test_files", "test_mail_never_lost",
-    "test_mail_rsd", "test_rename_follows",
+    "test_mail_rsd", "test_mailbox", "test_rename_follows",
     "test_staff_remembered", "test_shutdown",
     "test_list_abort_returns", "test_xfer",
     "test_upload_no_binary", "test_ymodem",
     "test_config_areas", "test_config_area_keeps_every_part",
     "test_mail_compose",
-    "test_forums", "test_forums_remove", "test_config_forum_levels", "test_partitions",
+    "test_forums", "test_forums_remove", "test_forums_scan_staff", "test_config_forum_levels", "test_partitions",
     # Destructive, and therefore last whatever else is running:
     "test_backup", "test_ban",
 ]

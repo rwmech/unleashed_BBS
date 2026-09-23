@@ -40,6 +40,7 @@
 
 #include "bbs.h"
 #include "bbs_util.h"
+#include "helptext.h"
 #include "fx.h"
 #include "clock.h"
 #include "sysconfig.h"
@@ -173,6 +174,12 @@ const Command* Bbs::coreCommands(uint8_t& count) {
         { "DND", "", 0, CF_NONE, "DND", "pages off / on",
           [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdDnd(s); b.prompt(s); },
           Menu::Account, 2 },
+        { "BELL", "", 0, CF_NONE, "BELL", "bells from others on / off",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdBell(s); b.prompt(s); },
+          Menu::Account, 2 },
+        { "CODES", "", 0, CF_NONE, "CODES", "colour and effects in messages",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdCodes(s); },
+          Menu::Account, 8 },
         { "PRIVACY", "", 0, CF_NONE, "PRIVACY", "what this board knows about you",
           [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdPrivacy(s); },
           Menu::Account, 7 },
@@ -705,8 +712,28 @@ Menu menuFromText(const char* arg) {
 void Bbs::cmdHelp(Session& s, const char* arg) {
     Menu m = menuFromText(arg);
     if (m == Menu::None) {
+        // Not a menu, so a command, in full: HELP WHO, HELP W. A menu name
+        // wins where the two collide (HELP CHAT is the chat menu, as it has
+        // always been). Asked of findCommand, so a command this caller may
+        // not use is as unknown here as it is at the prompt: HELP KICK does
+        // not describe staff tools to somebody who cannot use them.
+        char verb[16];
+        size_t n = 0;
+        while (arg[n] && arg[n] != ' ' && n < sizeof(verb) - 1) { verb[n] = arg[n]; ++n; }
+        verb[n] = '\0';
+        const Command* c = findCommand(verb, s);
+        // A hidden alias with nothing written for it (OFF, QUIT, BULLETIN)
+        // printed an empty box. It answers as unknown, the way the menus
+        // treat it as not there.
+        if (c && (c->flags & CF_HIDDEN || c->menu == Menu::Hidden) && !helptext::find(c->verb))
+            c = nullptr;
+        if (c) {
+            longHelp(s, *c);
+            prompt(s);
+            return;
+        }
         char buf[72];
-        snprintf(buf, sizeof(buf), "No menu called %.20s. ? on its own lists them.", arg);
+        snprintf(buf, sizeof(buf), "No command or menu called %.20s. ? lists them.", arg);
         s.term.color(s.tl, Color::LightRed);
         s.term.text(s.tl, buf);
         prompt(s);
@@ -728,6 +755,41 @@ void Bbs::cmdHelp(Session& s, const char* arg) {
         return;
     }
     startList(s, ListKind::Help);
+}
+
+// ---------------------------------------------------------------------------
+// longHelp: one command in full. The usage line stands out and the rest is
+// quieter, the same two voices the menus use. Printed as plain text: the
+// entry for BELL mentions @BELL@, and running that through the @-code
+// renderer would ring the reader's bell while telling them how to.
+// ---------------------------------------------------------------------------
+void Bbs::longHelp(Session& s, const Command& c) {
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    rowTitle(s, c.verb);
+    const char* text = helptext::find(c.verb);
+    if (!text) {                                   // a plugin nobody has written up
+        t.color(tl, Color::LightBlue);
+        t.text(tl, c.usage);
+        t.nl(tl);
+        t.color(tl, Color::Grey);
+        t.text(tl, c.help);
+        t.nl(tl);
+        rowRule(s);
+        return;
+    }
+    bool first = true;
+    for (const char* p = text; *p;) {
+        const char* e = strchr(p, '\n');
+        size_t len = e ? static_cast<size_t>(e - p) : strlen(p);
+        t.color(tl, first ? Color::LightBlue : Color::Grey);
+        t.textN(tl, p, len);
+        t.nl(tl);
+        first = false;
+        p += len;
+        if (*p == '\n') ++p;
+    }
+    rowRule(s);
 }
 
 // ---------------------------------------------------------------------------
@@ -894,6 +956,13 @@ bool Bbs::rowHelp(Session& s) {
             snprintf(line, sizeof(line), "?|H|HELP [%s|%s|ALL]", a, b2);
         }
         rowText(s, Color::LightGreen, line);
+        return true;
+    }
+    // The main menu only, and one row: ? still fits one screen.
+    if (s.listIdx == static_cast<uint8_t>(total + 3) && !s.helpAll &&
+        s.helpMenu == Menu::Main) {
+        ++s.listIdx;
+        rowText(s, Color::DarkGrey, "HELP <command> explains one in full");
         return true;
     }
     return false;
@@ -1989,6 +2058,55 @@ void Bbs::cmdDnd(Session& s) {
     s.dnd = !s.dnd;
     s.term.color(s.tl, Color::Cyan);
     s.term.text(s.tl, s.dnd ? "Pages are off." : "Pages are on.");
+}
+
+// ---------------------------------------------------------------------------
+// cmdBell: BELL, the same setting as the room's /b. Bells other callers
+// cause: pages, broadcasts, arrivals, the room, @BELL@ in a message. A
+// caller's own mistakes still beep, because that bell is an answer to
+// something they did, not somebody else reaching into their speaker.
+// ---------------------------------------------------------------------------
+void Bbs::cmdBell(Session& s) {
+    s.bellOff = !s.bellOff;
+    s.term.color(s.tl, Color::Cyan);
+    s.term.text(s.tl, s.bellOff ? "Bell off." : "Bell on.");
+}
+
+// ---------------------------------------------------------------------------
+// cmdCodes: screens/codes if the board has one, the short list if not.
+// The same shape as ABOUT: a screen a sysop can redraw, and words that are
+// always there when nobody has.
+// ---------------------------------------------------------------------------
+void Bbs::cmdCodes(Session& s) {
+    if (playScreen(s, "codes")) return;
+    codesSummary(s);
+    prompt(s);
+}
+
+void Bbs::codesSummary(Session& s) {
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    // Every line inside 39 columns, and printed with Term::text, which
+    // knows nothing of @-codes: the list shows the codes, it does not act
+    // on them, or @BELL@ here would ring.
+    static const char* const kLines[] = {
+        "Colour  @RED@ @YELLOW@ @LTBLUE@ ...",
+        "        @N@ goes back to normal",
+        "Effects @BLINK:hi@ @SCRAMBLE:hi@",
+        "        @TYPE:hi@ @OOPS:hi@",
+        "Extras  @SPIN@ @DOTS@ @NOISE@ @RULE@",
+        "        @BELL@ rings once a message",
+        "Fill-in @BOARD@ @DATE@ @TIME@",
+        "@@ is a plain @. 8 codes a message.",
+        "Works in forums, mail and the room.",
+    };
+    rowTitle(s, "Codes in messages");
+    for (const char* l : kLines) {
+        t.color(tl, Color::Grey);
+        t.text(tl, l);
+        t.nl(tl);
+    }
+    rowRule(s);
 }
 
 // ---------------------------------------------------------------------------

@@ -62,7 +62,47 @@ namespace {
 
 SysConfig g_cfg;   // static storage, the live configuration
 
+// Redacted as *** in a backup download and restored from the live value on
+// upload. The count is taken from the table, never written beside it.
+//
+// wifi_password is deliberately NOT here (Rob, NEXT.md 3.2): a backup that
+// restores onto a fresh board has to carry the network with it. The backup
+// port refuses anything that is not a local address instead, and says so
+// when it opens.
 const char* const kPasswordKeys[] = { "sysop_password", "cosysop1_password", "cosysop2_password" };
+constexpr int kPasswordCount = sizeof(kPasswordKeys) / sizeof(kPasswordKeys[0]);
+
+// verbatim: a key whose value is the rest of the line, '#' and all. A
+// passphrase may contain a '#', and cutting it there would store a
+// different password from the one that was typed, with nothing said.
+bool verbatim(const char* key) {
+    if (!strcmp(key, "wifi_ssid") || !strcmp(key, "wifi_password")) return true;
+    for (int i = 0; i < kPasswordCount; ++i)
+        if (!strcmp(key, kPasswordKeys[i])) return true;
+    return false;
+}
+
+// stripComment: cut a '#' comment off a line, unless the line sets a
+// verbatim key. A '#' at the start of the line is always a comment.
+void stripComment(char* line) {
+    const char* p = line;
+    while (*p == ' ' || *p == '\t') ++p;
+    if (*p != '#') {
+        const char* eq = strchr(p, '=');
+        if (eq) {
+            char key[24];
+            size_t n = static_cast<size_t>(eq - p);
+            while (n && (p[n - 1] == ' ' || p[n - 1] == '\t')) --n;
+            if (n < sizeof(key)) {
+                memcpy(key, p, n);
+                key[n] = '\0';
+                if (verbatim(key)) return;
+            }
+        }
+    }
+    char* hash = strchr(line, '#');
+    if (hash) *hash = '\0';
+}
 
 // ---------------------------------------------------------------------------
 // Parse context: where problems are counted and the first one kept
@@ -185,6 +225,18 @@ void keyValue(Ctx& c, char* key, char* val) {
     else if (!strcmp(key, "sysop_password"))         copyStr(g.sysopPass, sizeof(g.sysopPass), val);
     else if (!strcmp(key, "cosysop1_password"))      copyStr(g.coPass[0], sizeof(g.coPass[0]), val);
     else if (!strcmp(key, "cosysop2_password"))      copyStr(g.coPass[1], sizeof(g.coPass[1]), val);
+    else if (!strcmp(key, "wifi_ssid")) {
+        if (strlen(val) >= sizeof(g.wifiSsid)) problem(c, "wifi_ssid is longer than 32", "");
+        else copyStr(g.wifiSsid, sizeof(g.wifiSsid), val);
+    }
+    else if (!strcmp(key, "wifi_password")) {
+        // WPA2 wants 8 to 63 characters, or 64 hex digits for a raw key;
+        // empty is an open network. Anything else would be refused by the
+        // radio with a reason code nobody would trace back to this line.
+        size_t n = strlen(val);
+        if (n && (n < 8 || n >= sizeof(g.wifiPass))) problem(c, "wifi_password must be 8 to 64 characters", "");
+        else copyStr(g.wifiPass, sizeof(g.wifiPass), val);
+    }
     else if (!strcmp(key, "idle_minutes"))          { if (number(c, key, val, 0, 1440, n)) g.idleMinutes = static_cast<uint16_t>(n); }
     else if (!strcmp(key, "landing")) {
         // "default" is not a board default, so it is refused rather than
@@ -235,13 +287,12 @@ bool ctEqual(const char* pw, size_t cap, const char* candidate) {
 // ---------------------------------------------------------------------------
 bool passwordAssignment(const char* line, char* tmp, size_t tmpLen, int& keyIdx, char*& value) {
     copyStr(tmp, tmpLen, line);
-    char* hash = strchr(tmp, '#');
-    if (hash) *hash = '\0';
+    stripComment(tmp);
     char* eq = strchr(tmp, '=');
     if (!eq) return false;
     *eq = '\0';
     char* key = trim(tmp);
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < kPasswordCount; ++i) {
         if (!strcmp(key, kPasswordKeys[i])) {
             keyIdx = i;
             value  = trim(eq + 1);
@@ -269,6 +320,19 @@ void logSummary() {
     plat::log("cfg: who refresh %u..%u s  activity led gpio %d  self_register %s  max_users %u  guest %s %u min",
               g_cfg.whoMin, g_cfg.whoMax, g_cfg.ledGpio, g_cfg.selfRegister ? "yes" : "no", g_cfg.maxUsers,
               g_cfg.guestEnabled ? "yes" : "no", g_cfg.guestMinutes);
+    plat::log("cfg: wifi %s", g_cfg.wifiSsid[0] ? g_cfg.wifiSsid : "not set in the file");
+    // Before 0.22.1 a '#' anywhere began a comment, so a hand-edited
+    // "sysop_password = x   # note" meant x. It now means the whole line,
+    // and BYE x becomes a plain logoff that counts toward a ban with
+    // nothing saying why. Say it here, by key and never by value.
+    const char* const keys[] = { "sysop_password", "cosysop1_password", "cosysop2_password",
+                                 "wifi_ssid", "wifi_password" };
+    const char* const vals[] = { g_cfg.sysopPass, g_cfg.coPass[0], g_cfg.coPass[1],
+                                 g_cfg.wifiSsid, g_cfg.wifiPass };
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i)
+        if (strstr(vals[i], " #") || strstr(vals[i], "\t#"))
+            plat::log("cfg: %s has a ' #' in it; since 0.22.1 that is part of the value, not a comment",
+                      keys[i]);
     plat::log("cfg: sysop %s  co1 %s perms 0x%03x  co2 %s perms 0x%03x",     // never the passwords
               g_cfg.sysopPass[0] ? "on" : "off",
               g_cfg.coPass[0][0] ? "on" : "off", g_cfg.coPerms[0],
@@ -299,8 +363,7 @@ int parseFile(const char* path, SysConfig& out, char* err, size_t errLen) {
             problem(c, "line too long", "");
             continue;
         }
-        char* hash = strchr(line, '#');
-        if (hash) *hash = '\0';
+        stripComment(line);
         char* l = trim(line);
         if (!*l) continue;
 

@@ -117,6 +117,12 @@ bool BackupService::open(uint32_t now, const char* localIp) {
     lfd_      = fd;
     closesAt_ = now + static_cast<uint32_t>(cfg.backupMinutes) * 60000u;
     note("*** Backup open %u min: http://%s:%u/backup.zip", cfg.backupMinutes, localIp, cfg.backupPort);
+    // Said where it is used rather than in a document: the zip carries the
+    // Wi-Fi password. The port refuses outside addresses, but that is a
+    // check on the source address, and a router that rewrites the source of
+    // forwarded traffic gets past it. So the notice asks for the thing that
+    // actually protects it, rather than promising a boundary it cannot see.
+    note("*** It holds the Wi-Fi password. Never forward this port.");
     return true;
 }
 
@@ -197,12 +203,38 @@ void BackupService::service(const fd_set& r, const fd_set& w, uint32_t now) {
 // Client
 // ===========================================================================
 
+// localAddr: 10/8, 172.16/12, 192.168/16, 127/8, 169.254/16 link-local and
+// 100.64/10, the shared space Tailscale and carrier NAT use, so a sysop on a
+// VPN is let in as the docs promise. The address is in network order, so
+// the first byte is the first octet on either endianness.
+static bool localAddr(uint32_t netOrder) {
+    const uint8_t* o = reinterpret_cast<const uint8_t*>(&netOrder);
+    return o[0] == 10 || o[0] == 127 ||
+           (o[0] == 172 && (o[1] & 0xF0) == 16) ||
+           (o[0] == 192 && o[1] == 168) ||
+           (o[0] == 169 && o[1] == 254) ||
+           (o[0] == 100 && (o[1] & 0xC0) == 64);
+}
+
 void BackupService::acceptClient(uint32_t now) {
     for (;;) {
         sockaddr_in a;
         socklen_t al = sizeof(a);
         int fd = accept(lfd_, reinterpret_cast<sockaddr*>(&a), &al);
         if (fd < 0) return;
+        if (!localAddr(a.sin_addr.s_addr)) {
+            // A forwarded port, or one UPnP opened without anybody asking,
+            // must not hand the accounts and the Wi-Fi password to the
+            // internet. A VPN still works: it puts the caller on a private
+            // address.
+            static const char no[] = "HTTP/1.1 403 Forbidden\r\nContent-Length: 20\r\nConnection: close\r\n\r\nlocal network only.\n";
+            send(fd, no, sizeof(no) - 1, MSG_DONTWAIT | MSG_NOSIGNAL);
+            ::close(fd);
+            char ip[16];
+            ipToText(a.sin_addr.s_addr, ip, sizeof(ip));
+            note("*** Backup refused %s: not a local address", ip);
+            continue;
+        }
         if (cfd_ >= 0) {                                   // one client at a time
             static const char busy[] = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 5\r\nConnection: close\r\n\r\nbusy\n";
             send(fd, busy, sizeof(busy) - 1, MSG_DONTWAIT | MSG_NOSIGNAL);

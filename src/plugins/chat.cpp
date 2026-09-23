@@ -89,6 +89,9 @@
  */
 #include "../core/bbs.h"
 #include "../core/compose.h"
+#include "../core/codes.h"
+#include "../core/helptext.h"
+#include "info.h"
 #include "../core/bbs_util.h"
 #include "../core/clock.h"
 #include "../core/users.h"
@@ -254,10 +257,15 @@ uint8_t  g_mailFl[kMailSlots] = {};                     // MF_KEPT once read and
 // read single keys.
 // MM_WRITE is the unified composer: the same screen, keys and terminators a
 // forum post uses, because a caller who has learned one has learned both.
-enum : uint8_t { MM_NONE = 0, MM_CHOOSE, MM_REPLY, MM_WRITE };
+// MM_BOX is the mailbox list, a place like the forums (0.22.0), and MM_TO
+// is asking who a new message is for. g_inBox says the caller came in
+// through MAIL, so every decision puts them back on the list rather than at
+// the shell or in the room.
+enum : uint8_t { MM_NONE = 0, MM_CHOOSE, MM_REPLY, MM_WRITE, MM_BOX, MM_TO };
 uint8_t  g_mailMode[BBS_MAX_NODES + 2] = {};
 int16_t  g_mailIdx [BBS_MAX_NODES + 2] = {};            // the record in hand
 bool     g_mailRoom[BBS_MAX_NODES + 2] = {};            // read from inside the room
+bool     g_inBox   [BBS_MAX_NODES + 2] = {};            // came in through MAIL
 char     g_mailWho [BBS_MAX_NODES + 2][BBS_USER_MAX + 1] = {};   // who to reply to
 uint8_t  g_mailSlots = kMailSlots;                      // the board's own limit
 uint16_t g_mailChars = kMailChars;
@@ -342,9 +350,10 @@ char     g_away[kSlots][kAwayMax + 1] = {};    // away note, empty when here
 // while it is on, and leaving the room or the target leaving clears it.
 uint8_t  g_sticky[kSlots];
 
-// Bell on arrival and on a private. On by default, because a caller who
-// wants quiet can ask for it and a caller who misses a page cannot.
-bool     g_bell[kSlots];
+// The bell is Session::bellOff now, shared with BELL at the main prompt.
+// It lived here as g_bell and NOTHING READ IT: /b answered "Bell off." and
+// changed nothing, because no line in the room ever rang. The test checked
+// the answer and not the bell, which is how it lasted from 0.21.4.
 
 // The room ban list, kept in the plugin folder so it survives a reboot.
 char     g_bans[kBanMax][BBS_USER_MAX + 1] = {};
@@ -598,6 +607,25 @@ void wipeInput(Session& s) {
 // handle, then the text. Anything else is a room notice. old = true dims
 // the whole line, which is how history is replayed to somebody joining.
 // ---------------------------------------------------------------------------
+// roomRows: a room line's text, wrapped at this reader's width by the
+// @-code wrap, so a code is never split and an effect is never cut short.
+// `first` is what the first row has left after anything already on it.
+void roomRows(Session& s, const char* text, uint8_t first, uint8_t rest, codes::Painter& pt) {
+    char row[160];
+    const char* p = text;
+    uint8_t cols = first ? first : 1;
+    uint8_t guard = 0;
+    bool any = false;
+    while ((p = codes::wrap(p, row, sizeof(row), cols, pt)) != nullptr && ++guard < 8) {
+        codes::row(s.term, s.tl, row, cols, pt);
+        s.term.nl(s.tl);
+        any = true;
+        cols = rest ? rest : 1;
+        if (!*p) break;
+    }
+    if (!any) s.term.nl(s.tl);
+}
+
 void showLine(Session& s, const char* line, bool old) {
     Term& t = s.term;
     Timeline& tl = s.tl;
@@ -609,11 +637,28 @@ void showLine(Session& s, const char* line, bool old) {
     // the board's notice colour, because a notice and somebody waving are
     // not the same kind of line.
     bool action = line[0] == '*' && line[1] == '*';
-    if (old || !mark) {                                      // history, or a notice
-        t.color(tl, old ? g_cOld
-                        : (action ? g_cAction
-                                  : (line[0] == '#' ? g_cText : g_cNotice)));
-        t.text(tl, line);
+    // What a caller typed carries @-codes; what the board says does not.
+    // History is shown plain: replaying the room's last lines to somebody
+    // walking in should not replay every flourish and every bell in them.
+    uint8_t w = Bbs::instance().rowWidth(s);
+    if (old) {
+        char plainText[160];
+        codes::plain(line, plainText, sizeof(plainText));
+        t.color(tl, g_cOld);
+        t.text(tl, plainText);
+        t.nl(tl);
+        return;
+    }
+    if (!mark) {                                             // a notice, or an action
+        if (action) {
+            codes::Painter pt;
+            pt.begin(g_cAction, !s.bellOff);
+            roomRows(s, line, w, w, pt);
+            return;
+        } else {
+            t.color(tl, line[0] == '#' ? g_cText : g_cNotice);
+            t.text(tl, line);
+        }
         t.nl(tl);
         return;
     }
@@ -621,8 +666,25 @@ void showLine(Session& s, const char* line, bool old) {
     t.color(tl, g_cPunct);  t.ch(tl, ':');
     t.color(tl, g_cHandle); t.textN(tl, colon + 1, static_cast<size_t>(mark - colon - 1));
     t.color(tl, g_cPunct);  t.ch(tl, *mark);
-    t.color(tl, g_cText);   t.text(tl, mark + 1);
-    t.nl(tl);
+    // The first row has what is left after the tag; the rows after it the
+    // whole width. The room used to let the terminal wrap its lines, and the
+    // renderer then cut effects to a margin it believed in: a 40 column
+    // reader lost the words inside an effect that crossed it, while an 80
+    // column reader saw them (code review, 0.22.0).
+    uint8_t used = static_cast<uint8_t>(mark + 1 - line);
+    const char* text = mark + 1;
+    // The space after the tag is printed here: the wrap skips leading
+    // spaces, which is right for a continuation row and would have joined
+    // "Daytona)" to the first word.
+    if (*text == ' ') { t.color(tl, g_cText); t.ch(tl, ' '); ++text; ++used; }
+    codes::Painter pt;
+    pt.begin(g_cText, !s.bellOff);
+    if (w > used + 8) {
+        roomRows(s, text, static_cast<uint8_t>(w - used), w, pt);
+    } else {                                   // a tag that leaves no room: start below it
+        t.nl(tl);
+        roomRows(s, text, w, w, pt);
+    }
 }
 
 // flush: hand a caller everything said since they last saw the room. Only
@@ -712,9 +774,16 @@ bool isBanned(const char* handle) {
     return false;
 }
 
-// mailPath: the message file, or false when the plugin has no storage
+// mailPath: the message file, or false when the plugin has no storage.
+// For writing: it checks the reserve and makes the folder.
 bool mailPath(char* out, size_t n) {
     return plugins::path(g_index, "mail.dat", out, n);
+}
+
+// mailReadPath: the same file, for reading. See plugins::readPath for why
+// the two are different.
+bool mailReadPath(char* out, size_t n) {
+    return plugins::readPath(g_index, "mail.dat", out, n);
 }
 
 // mailExpired: older than the board keeps them
@@ -730,7 +799,7 @@ void mailIndex() {
     memset(g_mailAt, 0, sizeof(g_mailAt));
     memset(g_mailFl, 0, sizeof(g_mailFl));
     char path[96];
-    if (!mailPath(path, sizeof(path))) return;
+    if (!mailReadPath(path, sizeof(path))) return;
     FILE* f = fopen(path, "rb");
     if (!f) return;
     MailRec r;
@@ -848,6 +917,7 @@ void mailForget(uint8_t slot) {
     g_writeTo[slot][0]   = '\0';
     g_mailIdx [slot]    = -1;
     g_mailRoom[slot]    = false;
+    g_inBox   [slot]    = false;
     g_mailWho [slot][0] = '\0';
 }
 
@@ -859,7 +929,15 @@ bool mailBusy(const Session& s) {
 // of these three keys is pressed the message has not been touched.
 void mailChoosePrompt(Session& s) {
     s.term.color(s.tl, Color::Cyan);
-    s.term.text(s.tl, "[R]eply  [S]ave  [D]elete: ");
+    // In the mailbox the question has two more answers: Enter for the next
+    // message and Q back to the list, both leaving this one as it is. The
+    // short form at 40 columns drops the words, not the keys; ? says so.
+    if (g_inBox[slotOf(s)])
+        s.term.text(s.tl, Bbs::instance().rowWidth(s) >= 59
+                              ? "[R]eply  [S]ave  [D]elete  [Enter] Next  [Q] Back: "
+                              : "[R]eply [S]ave [D]elete [Q]Back: ");
+    else
+        s.term.text(s.tl, "[R]eply  [S]ave  [D]elete: ");
     s.term.color(s.tl, Color::White);
     s.term.cursor(s.tl, true);
 }
@@ -867,8 +945,20 @@ void mailChoosePrompt(Session& s) {
 // mailDone: the decision is made. Say what is still waiting, then put the
 // caller back exactly where reading found them, which is the room if that
 // is where they were and the shell prompt if it is not.
+void mailBoxDraw(Session& s, bool clear);
+
 void mailDone(Session& s) {
     uint8_t slot = slotOf(s);
+    // In the mailbox, a decision puts them back on the list, under whatever
+    // was just said ("Kept.", "Left for Daytona"), which is why the list is
+    // not redrawn on a cleared screen here.
+    if (g_inBox[slot]) {
+        g_mailMode[slot]    = MM_BOX;
+        g_mailIdx [slot]    = -1;
+        g_mailWho [slot][0] = '\0';
+        mailBoxDraw(s, false);
+        return;
+    }
     bool    room = g_mailRoom[slot];
     mailForget(slot);
 
@@ -890,35 +980,14 @@ void mailDone(Session& s) {
 // should happen to it. False when there was nothing, or when it had sat
 // there too long, in which case they are told rather than left wondering.
 // ---------------------------------------------------------------------------
-bool mailRead(Session& s, bool quiet) {
-    char path[96], buf[80];
-    uint32_t nowEpoch = clk::epoch();
-    uint8_t slot = mailSlotFor(s.user);
-    if (slot == 0xFF) {
-        if (!quiet) {
-            s.term.color(s.tl, Color::Grey);
-            s.term.text(s.tl, "No mail.");
-            s.term.nl(s.tl);
-        }
-        return false;
-    }
-    if (mailExpired(g_mailAt[slot], nowEpoch)) {                   // gone stale
-        mailRewrite(static_cast<int16_t>(slot), nullptr, nowEpoch);
-        s.term.color(s.tl, Color::Yellow);
-        snprintf(buf, sizeof(buf), "A message for you expired after %u days.",
-                 static_cast<unsigned>(g_mailDays));
-        s.term.text(s.tl, buf);
-        s.term.nl(s.tl);
-        return false;
-    }
-    if (!mailPath(path, sizeof(path))) return false;
+// mailRecordAt: the record mailIndex() calls slot n: the nth non-empty
+// record in the file, the same walk, so the two cannot disagree about which
+// message a number means.
+bool mailRecordAt(uint8_t slot, MailRec& r) {
+    char path[96];
+    if (!mailReadPath(path, sizeof(path))) return false;
     FILE* f = fopen(path, "rb");
     if (!f) return false;
-    // The slot mailIndex() found, read by position rather than by searching
-    // for the handle again: with more than one message waiting those are
-    // different records, and taking the first match would read the same one
-    // for ever while the rest piled up behind it.
-    MailRec r;
     bool found = false;
     int16_t seen = 0;
     while (fread(&r, sizeof(r), 1, f) == 1) {
@@ -926,65 +995,403 @@ bool mailRead(Session& s, bool quiet) {
         if (seen++ == static_cast<int16_t>(slot)) { found = true; break; }
     }
     fclose(f);
-    if (!found) return false;
+    if (found) r.text[kMailChars] = '\0';
+    return found;
+}
+
+// boxList: this caller's messages, oldest first, as slots. The position in
+// this list is the number the mailbox shows and the number they type.
+uint8_t boxList(const char* handle, uint8_t* out, uint8_t max) {
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < kMailSlots && n < max; ++i)
+        if (g_mailTo[i][0] && ieq(g_mailTo[i], handle)) out[n++] = i;
+    return n;
+}
+
+// mailSay: a line from the mailbox, at column 0 like every other line the
+// board says, whether or not the caller is in the room.
+void mailSay(Session& s, Color c, const char* text) {
+    s.term.color(s.tl, c);
+    s.term.text(s.tl, text);
+    s.term.nl(s.tl);
+}
+
+// ---------------------------------------------------------------------------
+// mailOpen: one message, and the question of what to do with it.
+//
+// The forums' post header, because mail is a message too and a caller who
+// has read one has learned both: a rule with the position in it, who it is
+// from, when, a rule, the body wrapped at THIS reader's width with its
+// @-codes acting, and EOM. Nothing is touched until a key answers.
+// ---------------------------------------------------------------------------
+bool mailOpen(Session& s, uint8_t slot) {
+    char buf[80];
+    uint32_t nowEpoch = clk::epoch();
+    if (mailExpired(g_mailAt[slot], nowEpoch)) {                   // gone stale
+        mailRewrite(static_cast<int16_t>(slot), nullptr, nowEpoch);
+        snprintf(buf, sizeof(buf), "A message for you expired after %u days.",
+                 static_cast<unsigned>(g_mailDays));
+        mailSay(s, Color::Yellow, buf);
+        return false;
+    }
+    MailRec r;
+    if (!mailRecordAt(slot, r)) return false;
+
+    uint8_t list[kMailSlots];
+    uint8_t total = boxList(s.user, list, kMailSlots);
+    uint8_t pos = 0;
+    for (uint8_t i = 0; i < total; ++i) if (list[i] == slot) pos = static_cast<uint8_t>(i + 1);
+    bool fresh = !(g_mailFl[slot] & MF_KEPT);
+
+    Bbs& b = Bbs::instance();
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    uint8_t w = b.rowWidth(s);
+    if (!w) w = 1;
+
+    // == #2 of 4 --------------------------------- unread
+    t.nl(tl);
+    char id[20];
+    snprintf(id, sizeof(id), "#%u of %u", static_cast<unsigned>(pos), static_cast<unsigned>(total));
+    const char* state = fresh ? " unread" : "";
+    t.color(tl, Color::Cyan);
+    t.glyphs(tl, Glyph::HLine2, 2);
+    t.ch(tl, ' ');
+    t.color(tl, Color::Yellow);
+    t.text(tl, id);
+    t.ch(tl, ' ');
+    size_t used = 2 + 1 + strlen(id) + 1;
+    size_t tail = strlen(state);
+    if (used + tail < w) {
+        t.color(tl, Color::Cyan);
+        t.glyphs(tl, Glyph::HLine, static_cast<uint8_t>(w - used - tail));
+        t.color(tl, Color::LightGreen);
+        t.text(tl, state);
+    }
+    t.nl(tl);
 
     char when[24] = "";
     if (r.at) clk::fmtEpoch(when, sizeof(when), "%d %b %H:%M", r.at);
-    snprintf(buf, sizeof(buf), "Message from %.20s%s%s", r.from, when[0] ? ", " : "", when);
-    s.term.color(s.tl, g_cRoom);
-    s.term.text(s.tl, buf);
-    s.term.nl(s.tl);
-    r.text[kMailChars] = '\0';
+    t.color(tl, Color::Cyan);  t.text(tl, "From: ");
+    t.color(tl, Color::Yellow); t.text(tl, r.from);
+    t.nl(tl);
+    t.color(tl, Color::Cyan);  t.text(tl, "Date: ");
+    t.color(tl, Color::Grey);  t.text(tl, when[0] ? when : "--");
+    t.nl(tl);
+    t.color(tl, Color::Cyan);
+    t.glyphs(tl, Glyph::HLine, w);
+    t.nl(tl);
 
-    // Wrapped at the READER's width, the same way forums draws a body and
-    // through the same function. Before this the whole message went out as
-    // one run of up to 512 characters and the terminal broke it wherever it
-    // happened to land, which on a 40 column screen means mid-word every
-    // third line. Wrapping on output rather than on input is deliberate: a
-    // message typed at 72 columns has to be readable on a C64, and one typed
-    // at 35 should not sit in a stripe down an 80 column screen.
-    //
-    // The guard is the same shape as the forums one. kMailChars over the
-    // narrowest useful width is about 15 lines, so 40 is slack rather than a
-    // limit, and it means a corrupt record cannot spin here.
-    s.term.color(s.tl, g_cText);
+    // Wrapped at the READER's width and through the @-code renderer, the
+    // same as a forum post. A message typed at 72 columns has to read on a
+    // C64, and one typed at 35 should not sit in a stripe down an 80 column
+    // screen.
     {
         char line[160];
         const char* p = r.text;
         uint8_t guard = 0;
-        uint8_t cols = Bbs::instance().rowWidth(s);
-        while ((p = bbsu::wrap(p, line, sizeof(line), cols)) != nullptr && ++guard < 40) {
-            s.term.text(s.tl, line);
-            s.term.nl(s.tl);
+        codes::Painter pt;
+        pt.begin(g_cText, !s.bellOff);
+        while ((p = codes::wrap(p, line, sizeof(line), w, pt)) != nullptr && ++guard < 40) {
+            pt.reserve = strlen(p) + 96;
+            codes::row(t, tl, line, w, pt);
+            t.nl(tl);
+            if (p[-1] == '\n') codes::endParagraph(pt);
             if (!*p) break;
         }
     }
-    // The end of the message, marked the same way the forums mark theirs
-    // (Rob: "at the end of messages (all) add --> EOM <--"), with a blank
-    // line between it and the text (Rob: "Need a linefeed before EOM").
-    s.term.nl(s.tl);
-    s.term.color(s.tl, g_cMark);
-    s.term.text(s.tl, "--> EOM <--");
-    s.term.nl(s.tl);
+    // Rob: "at the end of messages (all) add --> EOM <--", and "Need a
+    // linefeed before EOM".
+    t.nl(tl);
+    t.color(tl, g_cMark);
+    t.text(tl, "--> EOM <--");
+    t.nl(tl);
+    t.nl(tl);
+
     // Nothing has been decided yet, so nothing has been touched. That is
     // the whole difference between a mailbox and a message that evaporates
     // the moment somebody looks at it.
-    uint8_t id   = slotOf(s);
-    bool    room = Bbs::instance().owns(s, g_index);
-    if (!room && !Bbs::instance().own(s, g_index)) {
+    uint8_t sl   = slotOf(s);
+    bool    room = b.owns(s, g_index) && !g_inBox[sl];
+    if (!b.owns(s, g_index) && !b.own(s, g_index)) {
         // No way to read single keys, so there is no decision to offer.
         // Mark it kept rather than leaving it unread: unread would show
         // this same message again on the next MAIL, for ever.
         mailRewrite(-1, nullptr, nowEpoch, static_cast<int16_t>(slot));
         return true;
     }
-
-    g_mailIdx [id] = static_cast<int16_t>(slot);
-    g_mailRoom[id] = room;
-    g_mailMode[id] = MM_CHOOSE;
-    snprintf(g_mailWho[id], BBS_USER_MAX + 1, "%.*s", BBS_USER_MAX, r.from);
+    g_mailIdx [sl] = static_cast<int16_t>(slot);
+    g_mailRoom[sl] = room;
+    g_mailMode[sl] = MM_CHOOSE;
+    snprintf(g_mailWho[sl], BBS_USER_MAX + 1, "%.*s", BBS_USER_MAX, r.from);
     mailChoosePrompt(s);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// mailRead: the room's /e, and anything else that wants "the next one":
+// the oldest not yet read, or the oldest kept when nothing is new.
+// ---------------------------------------------------------------------------
+bool mailRead(Session& s, bool quiet) {
+    uint8_t slot = mailSlotFor(s.user);
+    if (slot == 0xFF) {
+        if (!quiet) mailSay(s, Color::Grey, "No mail.");
+        return false;
+    }
+    return mailOpen(s, slot);
+}
+
+// ===========================================================================
+// The mailbox: MAIL as a place (0.22.0)
+//
+// Rob: "Mail is still not a subsystem like forums and chat" and "we cant
+// read other mail without deleting, need that full list of emails to be
+// able to select and then reply." Built from the UX spec's M1 to M5
+// (reports/ux-message-boards.md), with its one-column margins dropped for
+// the column 0 rule.
+// ===========================================================================
+
+void mailBoxPrompt(Session& s) {
+    s.term.color(s.tl, Color::Cyan);
+    s.term.text(s.tl, "Mail> ");
+    s.term.color(s.tl, Color::White);
+    s.ed.begin(2, 0);
+}
+
+// mailBoxDraw: the list. `clear` on the way in; not after an action, so what
+// the action said ("Kept.", "Left for Daytona") stays on screen above it.
+void mailBoxDraw(Session& s, bool clear) {
+    Bbs& b = Bbs::instance();
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    uint8_t list[kMailSlots];
+    uint8_t n = boxList(s.user, list, kMailSlots);
+    uint8_t fresh = 0;
+    for (uint8_t i = 0; i < n; ++i) if (!(g_mailFl[list[i]] & MF_KEPT)) ++fresh;
+
+    if (clear) t.cls(tl);
+    else       t.nl(tl);
+    // "4 of 12" is the whole of the storage tier: 12 with a card, 3 without,
+    // the same field on both, and a full box needs no other explanation.
+    char right[32], msg[64];
+    snprintf(right, sizeof(right), "%u new, %u of %u", static_cast<unsigned>(fresh),
+             static_cast<unsigned>(n), static_cast<unsigned>(mailBoxLimit()));
+    b.rowTitle(s, "Mailbox", right);
+    t.nl(tl);
+
+    if (!n) {
+        mailSay(s, Color::Cyan, "--> Nothing in your mailbox.");
+        mailSay(s, Color::Cyan, "--> W writes to somebody.");
+    } else {
+        if (fresh) {
+            snprintf(msg, sizeof(msg), "--> %u new. Enter reads the oldest.", static_cast<unsigned>(fresh));
+            mailSay(s, Color::LightGreen, msg);
+        } else {
+            mailSay(s, Color::Grey, "--> Nothing new.");
+        }
+        t.nl(tl);
+
+        // Two sequential passes over mail.dat, one open each and one record
+        // buffer: the first for how wide the sender column has to be, the
+        // second to draw. Holding every row at once would be a table; asking
+        // for each record by position, as the first cut did, reopened the
+        // file and walked it from the top for every row, twice, each open
+        // paying a whole-partition space check. On a full box that was dozens
+        // of filesystem traversals per keypress on the BBS task. The from
+        // column is as wide as the widest sender in THIS box rather than a
+        // frozen 20, because that is what buys a preview at 40 columns.
+        char path[96];
+        bool have = mailReadPath(path, sizeof(path));
+        uint8_t fromW = 1;
+        if (have) {
+            FILE* f = fopen(path, "rb");
+            MailRec r;
+            for (int16_t seen = 0, got = 0; f && got < n && fread(&r, sizeof(r), 1, f) == 1;) {
+                if (!r.to[0]) continue;
+                if (seen++ != list[got]) continue;
+                ++got;
+                uint8_t fl = static_cast<uint8_t>(strnlen(r.from, BBS_USER_MAX));
+                if (fl > fromW) fromW = fl;
+            }
+            if (f) fclose(f);
+        }
+        uint8_t w = b.rowWidth(s);
+        int previewW = static_cast<int>(w) - 1 - 2 - 1 - fromW - 1 - 6 - 2;
+        FILE* f = have ? fopen(path, "rb") : nullptr;
+        int16_t seen = 0;
+        for (uint8_t i = 0; i < n; ++i) {
+            MailRec r;
+            char from[BBS_USER_MAX + 1] = "?";
+            char prev[44] = "";
+            // Forward from where the last row left off: the slots are in
+            // file order, so this is one walk down the file in total.
+            bool found = false;
+            while (f && fread(&r, sizeof(r), 1, f) == 1) {
+                if (!r.to[0]) continue;
+                if (seen++ == list[i]) { found = true; break; }
+            }
+            if (found) {
+                r.text[kMailChars] = '\0';
+                snprintf(from, sizeof(from), "%.*s", BBS_USER_MAX, r.from);
+                codes::plain(r.text, prev, sizeof(prev));
+                for (char* c = prev; *c; ++c) if (*c == '\n' || *c == '\r') *c = ' ';
+            }
+            bool isNew = !(g_mailFl[list[i]] & MF_KEPT);
+            char num[8], date[12] = "";
+            snprintf(num, sizeof(num), "%2u ", static_cast<unsigned>(i + 1));
+            if (g_mailAt[list[i]]) clk::fmtEpoch(date, sizeof(date), "%d %b", g_mailAt[list[i]]);
+            t.color(tl, Color::Yellow);
+            t.ch(tl, isNew ? '*' : ' ');
+            t.text(tl, num);
+            t.color(tl, isNew ? Color::White : Color::Grey);
+            t.text(tl, from);
+            for (size_t k = strlen(from); k < fromW; ++k) t.ch(tl, ' ');
+            t.ch(tl, ' ');
+            t.color(tl, Color::Grey);
+            t.text(tl, date);
+            if (previewW >= 12 && prev[0]) {
+                t.text(tl, "  ");
+                t.color(tl, Color::DarkGrey);
+                t.textCols(tl, prev, static_cast<uint8_t>(previewW > 40 ? 40 : previewW));
+            }
+            t.nl(tl);
+        }
+        if (f) fclose(f);
+    }
+    b.rowRule(s);
+    mailSay(s, Color::Grey, b.rowWidth(s) >= 60
+            ? "--> A number reads it. Enter reads what is new. W writes. ? help. Q leaves."
+            : "--> # reads, W writes, ? help, Q leaves");
+    t.nl(tl);
+    mailBoxPrompt(s);
+}
+
+void mailBoxHelp(Session& s) {
+    Bbs& b = Bbs::instance();
+    char right[16];
+    snprintf(right, sizeof(right), "%u chars", static_cast<unsigned>(g_mailChars));
+    s.term.nl(s.tl);
+    b.rowTitle(s, "Mail: the keys", right);
+    static const char* const kKeys[] = {
+        "Enter   the oldest one not yet read",
+        "1 2 3   a number reads that one",
+        "W       write to somebody",
+        "R S D   reply, keep, delete: reading",
+        "Enter   the next one, when reading",
+        "?       this",
+        "Q  ESC  back, and again to leave",
+    };
+    for (const char* k : kKeys) mailSay(s, Color::Grey, k);
+    b.rowRule(s);
+    s.term.nl(s.tl);
+}
+
+// mailBoxEnter: MAIL. The plugin takes the session, the way FORUMS does.
+void mailBoxEnter(Bbs& b, Session& s) {
+    if (!b.owns(s, g_index) && !b.own(s, g_index)) {
+        mailSay(s, Color::LightRed, "Cannot open your mailbox just now.");
+        b.prompt(s);
+        return;
+    }
+    uint8_t slot = slotOf(s);
+    mailForget(slot);
+    g_inBox[slot]    = true;
+    g_mailMode[slot] = MM_BOX;
+    b.setDoing(s, "MAIL");
+    mailBoxDraw(s, true);
+}
+
+void mailBoxLeave(Session& s) {
+    mailForget(slotOf(s));
+    mailSay(s, Color::Grey, "Leaving your mailbox.");
+    Bbs::instance().release(s);                     // release draws the prompt
+}
+
+// mailNextAfter: the next message in the box after this slot, 0xFF for none
+uint8_t mailNextAfter(const char* handle, int16_t slot) {
+    for (int16_t i = static_cast<int16_t>(slot + 1); i < kMailSlots; ++i)
+        if (g_mailTo[i][0] && ieq(g_mailTo[i], handle)) return static_cast<uint8_t>(i);
+    return 0xFF;
+}
+
+void mailAskTo(Session& s) {
+    g_mailMode[slotOf(s)] = MM_TO;
+    s.term.color(s.tl, Color::Cyan);
+    s.term.text(s.tl, "To: ");
+    s.term.color(s.tl, Color::White);
+    s.ed.begin(BBS_USER_MAX, 0);
+}
+
+void mailBoxKey(Session& s, int k) {
+    uint8_t slot = slotOf(s);
+    if (s.ed.len() == 0) {
+        if (k == 'w' || k == 'W') { s.term.text(s.tl, "W"); s.term.nl(s.tl); mailAskTo(s); return; }
+        if (k == '?') { s.term.text(s.tl, "?"); mailBoxHelp(s); mailBoxPrompt(s); return; }
+        if (k == 'q' || k == 'Q' || k == KEY_ESC || k == KEY_BREAK) {
+            s.term.nl(s.tl);
+            mailBoxLeave(s);
+            return;
+        }
+        if (k == KEY_ENTER || k == ' ') {
+            s.term.nl(s.tl);
+            uint8_t first = 0xFF;
+            for (uint8_t i = 0; i < kMailSlots; ++i)
+                if (g_mailTo[i][0] && ieq(g_mailTo[i], s.user) && !(g_mailFl[i] & MF_KEPT)) { first = i; break; }
+            if (first == 0xFF) {
+                mailSay(s, Color::Grey, "--> Nothing new. A number reads one.");
+                s.term.nl(s.tl);
+                mailBoxPrompt(s);
+                return;
+            }
+            g_mailMode[slot] = MM_NONE;
+            if (!mailOpen(s, first)) { g_mailMode[slot] = MM_BOX; mailBoxDraw(s, false); }
+            return;
+        }
+        if (k < '0' || k > '9') return;             // not a key the mailbox has
+    }
+    LineEditor::Res r = s.ed.key(k, s.term, s.tl);
+    if (r == LineEditor::Res::Editing) return;
+    if (r == LineEditor::Res::Abort) { s.term.nl(s.tl); mailBoxPrompt(s); return; }
+    uint8_t list[kMailSlots];
+    uint8_t n = boxList(s.user, list, kMailSlots);
+    long want = strtol(s.ed.text(), nullptr, 10);
+    if (want < 1 || want > n) {
+        char msg[48];
+        snprintf(msg, sizeof(msg), "--> No message %ld.", want);
+        mailSay(s, Color::LightRed, msg);
+        s.term.nl(s.tl);
+        mailBoxPrompt(s);
+        return;
+    }
+    g_mailMode[slot] = MM_NONE;
+    if (!mailOpen(s, list[want - 1])) { g_mailMode[slot] = MM_BOX; mailBoxDraw(s, false); }
+}
+
+void mailToKey(Session& s, int k) {
+    uint8_t slot = slotOf(s);
+    LineEditor::Res r = s.ed.key(k, s.term, s.tl);
+    if (r == LineEditor::Res::Editing) return;
+    char who[BBS_USER_MAX + 1];
+    snprintf(who, sizeof(who), "%s", r == LineEditor::Res::Done ? s.ed.text() : "");
+    char* w = who;
+    while (*w == ' ') ++w;
+    if (!*w) {                                          // ESC, or Enter on nothing
+        if (r == LineEditor::Res::Abort) s.term.nl(s.tl);
+        g_mailMode[slot] = MM_BOX;
+        mailBoxPrompt(s);
+        return;
+    }
+    UserRec u;
+    if (users::lookup(w, u) != users::Lookup::Found) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "--> No account called %.20s.", w);
+        mailSay(s, Color::LightRed, msg);
+        s.term.nl(s.tl);
+        g_mailMode[slot] = MM_BOX;
+        mailBoxPrompt(s);
+        return;
+    }
+    writeBegin(Bbs::instance(), s, u.handle, -1);
 }
 
 // ---------------------------------------------------------------------------
@@ -1102,7 +1509,6 @@ void join(Bbs& bbs, Session& s) {
     g_squelch[slotOf(s)] = 0;                                // a fresh visit hides nobody
     g_away[slotOf(s)][0] = '\0';
     g_sticky[slotOf(s)]  = 0xFF;                             // and talks to the room
-    g_bell[slotOf(s)]    = true;
     bbs.setDoing(s, "CHAT");
 
     Term& t = s.term;
@@ -1146,6 +1552,14 @@ void join(Bbs& bbs, Session& s) {
     tag(s, me, sizeof(me));
     snprintf(line, sizeof(line), "*** %.28s joined", me);
     post(line, &s);
+    // Rob: "A bell when somebody ... joins the chat room". Straight away,
+    // even for somebody part way through a line whose copy of the notice
+    // is being held: a bell lands between keystrokes without disturbing
+    // the line, and it is the thing that makes them look up.
+    Bbs::instance().eachSession([](void* ctx, Session& o) {
+        if (&o == static_cast<Session*>(ctx) || !listening(o) || o.bellOff) return;
+        o.term.bell(o.tl);
+    }, &s);
 }
 
 // roster: the rows and the count, with nothing around them. Shared so that
@@ -1209,12 +1623,74 @@ void helpLine(Session& s, const char* cmd, const char* what) {
 // roomHelp: /? . Staff see the moderation lines; everybody sees the vote
 // only when it is the thing that would actually work.
 // ---------------------------------------------------------------------------
-void roomHelp(Session& s) {
+// roomLongHelp: /? <command>. "/? p" and "/? /p" both find /p, and a word
+// that is not a room command is looked up as a main prompt command, so
+// "/? mail" answers too. Staff tools stay unknown to everybody else, the
+// way HELP KICK does at the prompt.
+bool roomLongHelp(Session& s, const char* arg) {
+    char verb[16];
+    size_t n = 0;
+    if (arg[0] != '/') verb[n++] = '/';
+    for (size_t i = 0; arg[i] && arg[i] != ' ' && n < sizeof(verb) - 1; ++i) verb[n++] = arg[i];
+    verb[n] = '\0';
+    // The room's own aliases first, so "/? w" explains the room's /w and
+    // not WHO at the prompt, which is what the fall-through below would find.
+    static const char* const kAlias[][2] = {
+        { "/w", "/s" }, { "/who", "/s" }, { "/mail", "/e" }, { "/time", "/t" },
+        { "/help", "/?" }, { "/h", "/?" }, { "/cls", "/clear" }, { "/info", "/i" },
+        { "/intro", "/welcome" }, { "/quit", "/q" }, { "/quit+", "/q+" },
+        { "/bell", "/b" }, { "/history", "/sh" }, { "/scroll", "/sh" },
+        { "/pm", "/p" }, { "/msg", "/p" }, { "/em", "/email" }, { "/wi", "/whois" },
+    };
+    for (const auto& a : kAlias)
+        if (ieq(a[0], verb)) { snprintf(verb, sizeof(verb), "%s", a[1]); break; }
+    static const char* const kStaffOnly[] = { "/k", "/unb", "/bans" };
+    bool staffOnly = false;
+    for (const char* v : kStaffOnly) if (ieq(v, verb)) staffOnly = true;
+    const char* text = (staffOnly && !s.perms) ? nullptr : helptext::find(verb);
+    if (!text && !staffOnly) {
+        const Command* c = Bbs::instance().findCommand(verb + 1, s);
+        if (c) text = helptext::find(c->verb);
+    }
+    if (!text) return false;
+    bool first = true;
+    for (const char* p = text; *p;) {
+        const char* e = strchr(p, '\n');
+        size_t len = e ? static_cast<size_t>(e - p) : strlen(p);
+        if (first) mark(s);
+        s.term.color(s.tl, first ? Color::LightBlue : Color::Grey);
+        s.term.textN(s.tl, p, len);
+        s.term.nl(s.tl);
+        first = false;
+        p += len;
+        if (*p == '\n') ++p;
+    }
+    return true;
+}
+
+void roomHelp(Session& s, const char* arg) {
     wipeInput(s);
+    bool staff = arg && ieq(arg, "staff") && s.perms;
+    if (arg && *arg && !staff) {
+        if (!roomLongHelp(s, arg)) tell(s, Color::LightRed, "No such command.");
+        flush(s);
+        armInput(s);
+        return;
+    }
     mark(s);
     s.term.color(s.tl, g_cRoom);
-    s.term.text(s.tl, "Room Commands");
+    s.term.text(s.tl, staff ? "Staff Commands" : "Room Commands");
     s.term.nl(s.tl);
+    if (staff) {
+        helpLine(s, "/k n [why]", "kick a node out");
+        helpLine(s, "/b handle", "bar from the room");
+        helpLine(s, "/unb handle", "let them back");
+        helpLine(s, "/bans", "who is barred");
+        helpLine(s, "/t n +m", "give a caller minutes");
+        flush(s);
+        armInput(s);
+        return;
+    }
     helpLine(s, "/s", "who is here");
     helpLine(s, "/p n text", "one line to node n");
     helpLine(s, "/p n*", "talk to n; /p* ends it");
@@ -1230,17 +1706,15 @@ void roomHelp(Session& s) {
     helpLine(s, "/b", "bell on or off");
     helpLine(s, "/clear", "wipe the screen");
     helpLine(s, "/welcome", "the screen you came in on");
+    helpLine(s, "/i [n]", "information pages");
+    helpLine(s, "/codes", "colour and effects");
     helpLine(s, "/q", "leave the room");
     helpLine(s, "/q+", "leave and log off");
-    if (s.perms) {
-        helpLine(s, "/k n [why]", "kick a node out");
-        helpLine(s, "/b handle", "bar from the room");
-        helpLine(s, "/unb handle", "let them back");
-        helpLine(s, "/bans", "who is barred");
-        helpLine(s, "/t n +m", "give a caller minutes");
-    } else {
-        helpLine(s, "/vk n", "vote to kick (no staff)");
-    }
+    if (!s.perms) helpLine(s, "/vk n", "vote to kick (no staff)");
+    helpLine(s, "/? cmd", "one command in full");
+    // The staff rows on a page of their own, or a staff member's /? ran to
+    // 25 lines and scrolled its own heading off a 24 line screen.
+    if (s.perms) helpLine(s, "/? staff", "the staff commands");
     flush(s);
     armInput(s);
 }
@@ -1415,7 +1889,33 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
         return strlen(word) == vlen && !strncasecmp(p, word, vlen);
     };
 
-    if (is("/?") || is("/help") || is("/h")) { roomHelp(s); return true; }
+    if (is("/?") || is("/help") || is("/h")) { roomHelp(s, arg); return true; }
+    // /i, /i3, /i3- : the information pages, the same store INFO reads at
+    // the main prompt. Writing one is INFO 3 EDIT at the prompt: the room
+    // owns the keys here and the page editor needs them.
+    if (is("/i") || is("/info")) {
+        wipeInput(s);
+        if (!*arg) {
+            info::roomIndex(s);
+        } else if (arg[0] >= '0' && arg[0] <= '9' && (!arg[1] || arg[1] == '-' || arg[1] == '=')) {
+            uint8_t n = static_cast<uint8_t>(arg[0] - '0');
+            if (arg[1] == '-')      info::roomClear(s, n);
+            else if (arg[1] == '=') tell(s, Color::Grey, "INFO n EDIT at the main prompt writes a page.");
+            else                    info::roomShow(s, n);
+        } else {
+            tell(s, Color::LightRed, "/i lists the pages, /i3 reads page 3.");
+        }
+        flush(s);
+        armInput(s);
+        return true;
+    }
+    if (is("/codes")) {
+        wipeInput(s);
+        Bbs::instance().codesSummary(s);
+        flush(s);
+        armInput(s);
+        return true;
+    }
     if (is("/q") || is("/quit"))             { leave(s, "left the room"); return true; }
 
     // /q+ : out of the room and off the board in one go (Rob). '+' does not
@@ -1602,6 +2102,7 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
             tag(s, me, sizeof(me));
             snprintf(line, sizeof(line), "%.28s %.60s", me, rest);
             wipeInput(*to);
+            if (!to->bellOff) to->term.bell(to->tl);
             // P, not '>'. A letter says what it is without a key, and the
             // angle bracket was both dark on black and already used
             // elsewhere in the room.
@@ -1649,9 +2150,8 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
     // "/t n +m" grants minutes. /bell always means the bell.
     if (is("/bell") || (is("/b") && (!arg || !*arg))) {
         wipeInput(s);
-        bool& on = g_bell[slotOf(s)];
-        on = !on;
-        tell(s, g_cRoom, on ? "Bell on." : "Bell off.");
+        s.bellOff = !s.bellOff;
+        tell(s, g_cRoom, s.bellOff ? "Bell off." : "Bell on.");
         flush(s);
         armInput(s);
         return true;
@@ -1915,6 +2415,24 @@ void mailChoose(Session& s, int k) {
         return;
     }
 
+    // In the mailbox: Enter is the next message and Q is the list, both
+    // leaving this one exactly as it is.
+    if (g_inBox[slotOf(s)]) {
+        if (k == KEY_ENTER || k == ' ') {
+            s.term.nl(s.tl);
+            uint8_t nx = mailNextAfter(s.user, idx);
+            if (nx == 0xFF) { mailSay(s, Color::Grey, "--> That was the last one."); mailDone(s); return; }
+            g_mailMode[slotOf(s)] = MM_NONE;
+            if (!mailOpen(s, nx)) mailDone(s);
+            return;
+        }
+        if (k == KEY_ESC || k == KEY_BREAK || k == 'q' || k == 'Q') {
+            s.term.nl(s.tl);
+            mailDone(s);
+            return;
+        }
+    }
+
     // The abort keys and Enter leave the message alone and unread, which is
     // the outcome that loses nothing. Any other key is ignored rather than
     // guessed at, because two of the three choices here are irreversible.
@@ -2015,7 +2533,8 @@ bool writeBegin(Bbs& b, Session& s, const char* to, int16_t dropIdx) {
     // whether chat owns the session right now: reading mail from the shell
     // borrows the session, so owns() is true for somebody who was never in
     // the room. mailRead recorded the real answer, so a reply uses that.
-    bool room = (dropIdx >= 0) ? g_mailRoom[slot] : b.owns(s, g_index);
+    bool room = (dropIdx >= 0) ? g_mailRoom[slot]
+                               : (b.owns(s, g_index) && !g_inBox[slot]);
     if (!b.owns(s, g_index) && !b.own(s, g_index)) {
         s.term.color(s.tl, Color::LightRed);
         s.term.text(s.tl, "Cannot open the editor just now.");
@@ -2086,6 +2605,11 @@ void writeFinish(Session& s, bool send) {
     s.compose[0] = '\0';
     g_writeTo[slot][0]   = '\0';
     g_writeDrop[slot]    = -1;
+    if (g_inBox[slot]) {                   // back to the list they wrote from
+        g_mailMode[slot] = MM_BOX;
+        mailBoxDraw(s, false);
+        return;
+    }
     if (g_writeRoom[slot]) {
         armInput(s);                       // they were in the room already
     } else {
@@ -2178,6 +2702,8 @@ void onKey(Session& s, int k, uint32_t now) {
     if (g_mailMode[slot] == MM_CHOOSE) { mailChoose(s, k);   return; }
     if (g_mailMode[slot] == MM_REPLY)  { mailReplyKey(s, k); return; }
     if (g_mailMode[slot] == MM_WRITE)  { writeKey(s, k);     return; }
+    if (g_mailMode[slot] == MM_BOX)    { mailBoxKey(s, k);   return; }
+    if (g_mailMode[slot] == MM_TO)     { mailToKey(s, k);    return; }
 
     LineEditor::Res r = s.ed.key(k, s.term, s.tl);
     if (r == LineEditor::Res::Abort) {
@@ -2372,11 +2898,7 @@ const Command kCommands[] = {
       Menu::Chat, 0 },
     { "MAIL", "", 0, CF_WRITE | CF_ACCOUNT, "MAIL [h] [m]", "read or leave a message",
       [](Bbs& b, Session& s, const char* a, uint32_t) {
-          if (!*a) {
-              mailRead(s, false);
-              if (!mailBusy(s)) b.prompt(s);    // else the R/S/D prompt has the keys
-              return;
-          }
+          if (!*a) { mailBoxEnter(b, s); return; }
           char handle[BBS_USER_MAX + 1];
           const char* text = a;
           while (*text && *text != ' ') ++text;

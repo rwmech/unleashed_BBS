@@ -59,6 +59,7 @@
 #include "../core/plugin.h"
 #include "../core/clock.h"
 #include "../core/compose.h"
+#include "../core/codes.h"
 #include "../core/sysconfig.h"
 #include "../core/users.h"
 #include "../platform/platform.h"
@@ -1576,15 +1577,25 @@ void showMessage(Bbs& b, Session& s, uint8_t forum, uint32_t n) {
         // generous: 1,536 characters
         // at 35 columns is about 45 lines before any paragraph breaks, and
         // the old limit of 40 would have cut the end off a full post on a C64.
-        s.term.color(s.tl, g_cBody);
+        // Through the @-code renderer, whose wrap measures what is shown
+        // rather than what was typed. A colour lasts to the end of the
+        // writer's own line, across however many rows this reader's width
+        // turns it into, and not into the next paragraph. The reserve is
+        // what the rest of the body still needs, so an effect near the top
+        // cannot eat the room the words below it have to print in.
         uint8_t w = b.rowWidth(s);
+        if (!w) w = 1;
         char line[160];
         const char* p = body;
         uint8_t guard = 0;
-        while ((p = bbsu::wrap(p, line, sizeof(line), w ? w : 1)) != nullptr
+        codes::Painter pt;
+        pt.begin(g_cBody, !s.bellOff);
+        while ((p = codes::wrap(p, line, sizeof(line), w, pt)) != nullptr
                && ++guard < 96) {
-            s.term.text(s.tl, line);
+            pt.reserve = strlen(p) + 96;          // the rest, the EOM and the prompt
+            codes::row(s.term, s.tl, line, w, pt);
             s.term.nl(s.tl);
+            if (p[-1] == '\n') codes::endParagraph(pt);
             if (!*p) break;
         }
     }
@@ -2318,11 +2329,21 @@ void onLogoff(Session& s) {
 // Sysop only, and it exists for phase 1 specifically: the formats are frozen
 // here and nothing a caller can see would reveal a header written wrong.
 void cmdScan(Bbs& b, Session& s) {
+    // Staff only, and checked here. It lists every forum on the card with
+    // its message count, including the ones a caller may not read, and
+    // nothing checked: COMMANDS.md called it staff only and a comment
+    // called it sysop only while anybody who could open the forums could
+    // run it. Found writing the 0.22.0 long help.
+    if (!plugins::mayUse(s, plugins::levelFor(g_index, 2))) {
+        say(s, Color::LightRed, "FORUMS SCAN is for staff.");
+        b.prompt(s);
+        return;
+    }
     b.rowTitle(s, "Forums on the card");
     char line[96];
     for (uint8_t i = 0; i < g_forums; ++i) {
         if (!g_forum[i].key[0]) continue;
-        snprintf(line, sizeof(line), " %-12s %6lu msgs  newest %lu",
+        snprintf(line, sizeof(line), "%-12s %6lu msgs  newest %lu",
                  g_forum[i].key,
                  static_cast<unsigned long>(g_forum[i].total),
                  static_cast<unsigned long>(g_forum[i].newest));
@@ -2331,7 +2352,7 @@ void cmdScan(Bbs& b, Session& s) {
         s.term.nl(s.tl);
     }
     if (!g_forums) {
-        say(s, Color::Grey, "None configured. CONFIG FORUMS TOPICS sets them up.");
+        say(s, Color::Grey, "None configured. CONFIG forums sets them up.");
         s.term.nl(s.tl);
     }
     b.rowRule(s);
@@ -2345,6 +2366,12 @@ const Command kCommands[] = {
           enter(b, s);
       },
       Menu::Main, 4 },
+    // The word the message boards were called before 0.21.x, kept so an old
+    // habit still lands. Hidden: it is compatibility, not a name, and nothing
+    // new should use it (CLAUDE.md, "What things are called").
+    { "BULLETIN", "", 0, CF_READ | CF_HIDDEN, "", "",
+      [](Bbs& b, Session& s, const char*, uint32_t) { enter(b, s); },
+      Menu::Hidden, 99 },
 };
 
 const PluginSetting kSettings[] = {

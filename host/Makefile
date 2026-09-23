@@ -74,13 +74,28 @@ test_forums_ptr: test_forums_ptr.cpp ../src/plugins/forums_ptr.h
 test_compose: test_compose.cpp ../src/core/compose.h
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_compose.cpp
 
-test: test_xmodem test_wrap test_forums_ptr test_compose
+# The inline @-codes. The wrap has to measure what is shown rather than what
+# was typed, never split a code, and count the per-message limit exactly as
+# the row does; each of those is invisible to a reading of the code and
+# shows up only as a row that overflows somebody's C64.
+test_codes: test_codes.cpp ../src/core/codes.cpp ../src/core/codes.h ../src/core/fx.cpp ../src/core/term.cpp ../src/core/timeline.cpp
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_codes.cpp ../src/core/codes.cpp ../src/core/fx.cpp ../src/core/term.cpp ../src/core/timeline.cpp
+
+# Improv Wi-Fi Serial. The expected bytes are worked by hand in the test,
+# not produced by the codec, because a board that only ever talks to itself
+# would agree with any mistake it made.
+test_improv: test_improv.cpp ../src/core/improv.cpp ../src/core/improv.h
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_improv.cpp ../src/core/improv.cpp
+
+test: test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv
 	./test_xmodem
 	./test_wrap
 	./test_forums_ptr
 	./test_compose
+	./test_codes
+	./test_improv
 
 clean:
-	rm -f bbs_host test_xmodem test_wrap test_forums_ptr test_compose
+	rm -f bbs_host test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv
 
 .PHONY: clean test

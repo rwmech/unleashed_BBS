@@ -179,8 +179,55 @@ concept for a sysop to learn.
 - **The seeded screens fix** (queued below).
 - **Deferred:** the sysop page.
 
-**0.22.1 is Improv**: Wi-Fi credentials into `system.cfg`, then Improv
-Wi-Fi Serial.
+**0.22.1 is Improv**, built to NEXT.md part 3 and committed together with
+0.22.0. Host-tested, not flashed.
+
+## Improv and the network in system.cfg (0.22.1)
+
+- **`wifi_ssid` / `wifi_password` in `system.cfg`**, `secrets.h` a fallback
+  only. Key is `wifi_password`, not NEXT.md's `wifi_pass`, to match the
+  three staff keys. Rob's board has no Wi-Fi keys in its config yet and
+  keeps joining through `secrets.h` until Improv or `CONFIG wifi` writes
+  them.
+- **Our own Improv, not the SDK**: Apache-2.0 against GPLv2. Codec in
+  `src/core/improv.*`, host-tested; the UART and radio glue is `imp::` in
+  `main.cpp`, ESP only. Polled from the BBS task before the network is up
+  and every pass after.
+- **Checked against `sdk-serial-js` and ESP Web Tools, not recalled**:
+  packets are found only at the start of a line (so each goes out after a
+  newline), a 0x0A in the first nine bytes resets the reader, post-flash
+  wait is 10 s, provision timeout 45 s. The board tries a network for 30 s.
+- **A packet holds stdout's lock but is written with `uart_write_bytes`.**
+  The lock stops a log line splicing into it; stdout itself would turn a
+  length or checksum byte of 0x0A into CR LF. `flockfile` does not exist in
+  the IDF's newlib and `_flockfile` is C only: `__lock_acquire_recursive
+  (stdout->_lock)` is what it expands to.
+- **`#` is a comment only where it cannot be a value.** It used to cut any
+  line anywhere, which would have silently stored half a passphrase. Staff
+  passwords and both Wi-Fi keys take the rest of the line; a `#` opening a
+  line is still a comment.
+- **The Wi-Fi password is not redacted in a backup** (Rob, NEXT.md 3.2),
+  so the backup port refuses non-private addresses and the open notice
+  says it holds the password. I built redaction first from habit and
+  reverted it on re-reading the spec: a recorded decision beats a default.
+- **`CONFIG wifi` is used from the next restart, never live**: changing
+  the network under a telnet session drops the sysop, and a typo leaves
+  nobody on the board to fix it. The cable and Improv are the repair path.
+- Not done from NEXT.md 3.3: the LED double blink with no network. The
+  activity LED is only set up inside `bbs.begin()`, after the network is
+  up. The console line repeats every 30 s instead.
+- DRAM 3,880 free after this, measured off the ELF.
+- **No captive portal** (Rob, 2026-09-22). The phone "sign in to network"
+  flow (softAP, DNS that answers everything, a form) was offered beside
+  Improv and declined: "no need for captive because we can plug back in
+  and reconnect to reset or change wifi". The USB cable is the repair
+  path, and Improv listens for as long as the board runs. Improv over BLE
+  is out for the same reason and because Bluetooth is off (NimBLE is on
+  the order of 100 KB of flash). Do not propose either again.
+- **A release binary must be built without `include/secrets.h`**, or the
+  fallback network is compiled into the image as plain text whatever
+  `system.cfg` says. Nothing enforces it yet; the web installer's release
+  build has to.
 
 ## Inline codes in messages: decided 2026-09-22 (0.22.0)
 
@@ -585,6 +632,58 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
 - **Staff access remembered for a week, bound to the address it was confirmed from.** The binding is the point, and it is specific to this board: **account passwords cross a telnet BBS in the clear on every login**, so remembering staff rights against the account alone would turn a sniffed account password into a week of staff access. The sysop level is never remembered. No valid clock fails closed.
 - **A deliberate deviation from the plan, and the reasoning is the useful part.** The plan had mail and bans moving to ids. `MailRec` is a fixed-size record with a static assert on its layout, so that means changing `sizeof` and converting every live mailbox, on the one board that exists, to fix a bug that has a cheaper fix. Following renames gets the same visible outcome with no format change. The forums will store ids natively, so mail ends up the only holdout and a far smaller job later. **Prefer the fix that does not migrate somebody's data when both fixes close the same hole.**
 - **The positional-descriptor trap caught me exactly as CLAUDE.md predicted.** `onRename` inserted before `onBytes` shifted every field after it, and the compiler said so. Append-only is not a style rule here, it is the only safe edit.
+
+### 0.22.0: mail as a place, inline codes, and three bugs found by writing help
+
+- **Writing the long help from the source was a code review, and a better
+  one than several deliberate ones.** Describing what each command does,
+  by reading it, found a caller able to change anybody's time from the
+  room, `FORUMS SCAN` showing unreadable forums to anybody, a `/b` that
+  toggled a flag nothing read, pages that never reach a caller in chat or
+  the forums, and a dozen places the docs disagreed with the code. None
+  of them was found by a test, because every test was written by somebody
+  who already believed the thing worked.
+- **A permission check belongs to the thing it guards, not to the door.**
+  `TIME` checked `PERM_TIME` before calling `cmdTimeAdjust`; the room's
+  `/t` called `cmdTimeAdjust` directly, and bbs.h said the function "does
+  its own permission check". The second door skipped the check, and the
+  comment was believed. Fourth time here a comment was trusted over code.
+- **A setting nothing reads is worse than no setting.** `/b` answered
+  "Bell off." from 0.21.4 and changed nothing; its test asserted the
+  answer. A behaviour test looks for the 0x07, which is what a bell is.
+- **One escape, two grammars.** The screen player ran `@BOARD@` and
+  `@BELL@` on the page written to explain them, and in callers' text the
+  closing `@` of an unknown code next to an opening `@` read as the `@@`
+  escape. Fixed by giving both the same rule: `@@` is a literal `@`
+  everywhere, and anything shaped like a code that is not one prints
+  whole.
+- **Stack is a budget too.** The first mailbox list sized two scratch
+  tables by the board's 64 mail slots instead of one box's 12: about 4 KB
+  of stack, caught by reading, not by a test. And the page editor's first
+  cut held two copies of a 1.5 KB page on the stack; it re-adds lines in
+  place now, computing each next line before the write that terminates
+  the current one lands on its newline.
+- **The information pages are a plugin because CONFIG knows plugins.** The
+  composite sub-page machinery hangs off `[plugin:*]` sections; a core
+  section would have meant teaching it a second shape. A composite now
+  names which part is its button label (`namePart`), because "part 1"
+  would have labelled every page with its read level.
+- **The key driver is shared once, not three times.** `composer.*` is the
+  editor's key handling; the info pages use it. Forums and mail still have
+  their own copies and move onto it after 0.22.0 (queued), rather than
+  being re-plumbed in the middle of this batch.
+- **Code review found what 800 checks did not, again.** A room line's
+  effect was cut for a C64 reader and not for an 80 column one, because
+  the renderer believed in a margin the room never drew; every test ran at
+  80 columns. And the mailbox re-read the mail file per row, each read
+  paying `plugins::path`'s free-space check, which on LittleFS walks the
+  whole partition: a write guard paid on every read. **The host build is
+  a filesystem that costs nothing**, so this class is invisible to every
+  host test; `plugins::readPath` is for reads now.
+- **Static DRAM 176,000 of 180,736 (4,736 free)**, 512 bytes spent across
+  the batch, measured symbol by symbol in
+  `reports/memory-2026-09-22-0.22.0.md`; mail as a subsystem cost 12 of
+  them. Flash 74.1%.
 
 ### Fallbacks are named, not positioned (0.21.9)
 
@@ -1325,7 +1424,7 @@ Queued for the next build (Rob's plan, in order):
 - **`privacy.ans` is 40 column art on an 80 column screen** (found by the ordinary-caller QA pass, 0.19.0). Measured: `privacy.ans` is 41 columns over 77 lines and four pages, while `rules.ans`, `newuser.ans` and `chatin.ans` are all 78. So the one screen a cautious newcomer reads immediately before typing a password is half width and takes twice the pages, while everything around it fills the terminal.
   Not a bug in the player: `PRIVACY_PAGES` in `tools/mkscreens.py` is hard-wrapped to 39 columns on purpose, with a comment saying so, and the ANSI build shares that text. Fixing it means re-flowing the copy at about 72 columns for the ANSI variant only, which moves every page break, so it is a job for `explain` and `screen-artist` rather than a patch. The PETSCII and ASCII versions stay exactly as they are.
 
-- **`FX` and `FILES` both claim `F`, and `FILES` has never had it** (found by the DDial command research, 2026-09-22, while surveying what the shell already answers to). `findCommand` returns the first table match and the core table registers before any plugin's, so `F` runs the effects demo. COMMANDS.md documents `F` as the shortcut for FILES, so the documentation and the board disagree and the board wins. The fix is a decision rather than a patch: `FX` is a demo and `FILES` is a subsystem on the main menu, so `FX` should give the letter up. Worth a sweep for other collisions at the same time, because nothing detects one today: a duplicate shortcut is silently the first one registered.
+- **DONE in 0.21.4** (FX gave up `F`; kept for the reasoning). **`FX` and `FILES` both claim `F`, and `FILES` has never had it** (found by the DDial command research, 2026-09-22, while surveying what the shell already answers to). `findCommand` returns the first table match and the core table registers before any plugin's, so `F` runs the effects demo. COMMANDS.md documents `F` as the shortcut for FILES, so the documentation and the board disagree and the board wins. The fix is a decision rather than a patch: `FX` is a demo and `FILES` is a subsystem on the main menu, so `FX` should give the letter up. Worth a sweep for other collisions at the same time, because nothing detects one today: a duplicate shortcut is silently the first one registered.
 
 - **A digit in an empty file area opens a file-number prompt** (same QA pass). Area says "Nothing in here yet", then pressing `5` asks `File number:` and answers "No file with that number." It should say the area is empty. Cosmetic, and the cheap fix is to answer from the area's own emptiness rather than opening a question whose answer is already known.
 
@@ -1449,6 +1548,36 @@ Queued for the next build (Rob's plan, in order):
   sits in front of everything behind it. Build from `reports/ux-message-boards.md`
   sections M0 onward (the mailbox list, the reading screen, the composer),
   which were specified and not built, the same mistake as the forums.
+- **Pages, broadcasts and SHUTDOWN warnings only reach a caller at the
+  main prompt** (found writing the 0.22.0 long help). `deliverMail` needs
+  `SState::Shell`, so somebody in chat, files, forums or the mailbox gets
+  nothing until they come out, and a caller in the room through a
+  SHUTDOWN countdown is hung up with no warning, which `serviceShutdown`'s
+  comment says cannot happen. Wants a plugin hook to take a notice at a
+  moment the plugin chooses (the room already has `interrupt()`); a real
+  bug, first thing after 0.22.1.
+- **The backup zip may be bigger than the partition it stages on** (the
+  docs agent, 0.22.0): `BBS_ZIP_TOTAL_MAX` is 360,000 and staging goes to
+  `storage/.staging`, which has been 256 KB since the 0.17.0 rebalance.
+  SCREENS.md used to explain the cap as "room for a second copy" of a
+  768 KB partition. Measure a real upload before deciding which moves.
+- **COMMANDS.md's staff section is one table broken by prose**, so GitHub
+  renders most of it as text with stray bars, and **PLUGINS.md's hook
+  table** is missing rows, listDone, onPresence, onBytes, onRename, setting
+  and status. A docs pass of its own.
+- **RAM, from the 0.22.0 report**: the backup `exp_`/`imp_` union (3,872,
+  third time recommended), static `UserRec` scratch to locals (10,824, read
+  SYS stack free first), compose/form pooling (11,856), Session and UserRec
+  field reordering (~600 for nothing), the serial bridge's 1 KB buffer
+  allocated at start like chat's history.
+- **Forums and mail onto `composer`** (0.22.0 left two copies of the key
+  driver standing so as not to re-plumb both in the same batch).
+- **Information pages in the backup zip.** Their titles and levels are in
+  system.cfg and so are backed up; the text in `p/info/` is not, and the
+  zip validator refuses other folders, the same as mail today.
+- **Writing an information page from the room** (`/i3=`): it answers with
+  the INFO command for now, because the room owns the keys the editor
+  needs. And phase 2 of the login link: playing pages marked for login.
 - **First S3: Waveshare ESP32-S3-LCD-1.47** (Rob, 2026-09-22, arriving
   2026-09-23, "we'll likely try getting it to flash"). ESP32-S3R8: two
   cores, Wi-Fi, 16 MB flash, 8 MB octal PSRAM, a TF slot on the board, a
@@ -1505,8 +1634,8 @@ Queued for the next build (Rob's plan, in order):
 - ~~**The ANSI form leaves highlight behind and hides typed password characters**~~ (Rob, seen on SyncTERM at 0.17.0 Block A while re-registering on the freshly erased board). Two symptoms in one screenshot of NEW ACCOUNT: moving between rows leaves a filled orange block sitting across the Name, Email and Address labels, so the reverse-video attribute from the selected row is not being cleared off the rows it left; and the `Again` field draws as a solid filled box with no stars while `Password` above it shows its stars correctly. Rob's instruction: fix it in QA when Block B is under way, with `bbs-qa` driving a real ANSI session rather than by reading the code. Worth checking on PETSCII and plain ASCII in the same pass, and worth checking whether it predates Block A: the form renderer was not touched by it, and accounts surviving a reflash is exactly why nobody had opened this form in a while.
 - The window title reaches SyncTERM with the micro sign mangled ("SyncTERM - \u25c6nleashed"). Low priority, but it is the same class as the `??nleashed` bug: a µ crossing a layer that does not know its encoding.
 
-- Wi-Fi credentials move out of `include/secrets.h` and into `system.cfg` on the `userdata` partition, then Improv Wi-Fi Serial so a browser can provision a board over the same connection it flashed it with. This is the prerequisite for a web installer: today the SSID and passphrase are compiled in, so any published binary carries whoever built it's home network password, and a shared binary could never join anybody else's network anyway.
-- A web installer page in the style of WLED, once the above lands: an ESP Web Tools manifest, the binaries in a `releases/` directory with the third-party licences, and the directory server hosting a copy while the firmware repo is private.
+- **DONE in 0.22.1.** Wi-Fi credentials move out of `include/secrets.h` and into `system.cfg` on the `userdata` partition, then Improv Wi-Fi Serial so a browser can provision a board over the same connection it flashed it with. This is the prerequisite for a web installer: today the SSID and passphrase are compiled in, so any published binary carries whoever built it's home network password, and a shared binary could never join anybody else's network anyway.
+- A web installer page in the style of WLED, once the above lands: an ESP Web Tools manifest, the binaries in a `releases/` directory with the third-party licences, and the directory server hosting a copy while the firmware repo is private. Two things it must get right: build the release **without `include/secrets.h`** (enforce it, e.g. a release environment that errors if the file exists), and set the manifest's `new_install_improv_wait_time` above the default 10 s, because a first boot after an erase formats three LittleFS partitions before Improv starts listening.
 - **Chat shows the room list by itself every so often, and DDial's answer is five minutes** (Rob, "see what DDial did"; asked again 2026-09-22 and this time the source turned up). An earlier note here said the behaviour was undocumented. It is not: the **original Diversi-DIAL installation manual** is reproduced on <https://www.ddial.com/archives.php> and says it in one line.
 
   > THE /SP LISTS: Every 5 minutes during a link, each station sends an abbreviated form of its /S list to the entire network. This way, people on remote stations can tell who is on the other stations which our linked.

@@ -30,6 +30,12 @@ The names the BBS looks for:
 | `welcome` | after terminal detection |
 | `about` | the `ABOUT` command |
 | `privacy` | the disclosure offered at sign-up and shown by `PRIVACY`. Rewrite it to match your board, but keep it honest: callers are deciding what password to type |
+| `motd` | after login (optional) |
+| `busy` | when every node is in use |
+| `goodbye` | at logoff |
+| `codes` | the `CODES` command and `/codes` in the chat room, listing the colour and effect codes a caller can put in a message |
+
+There is no help screen: `HELP` is generated from the command table so it always matches the commands a caller can use.
 
 ## Page breaks
 
@@ -47,11 +53,6 @@ rewrite that screen, write your own numbers, or leave them out.
 
 `tools/mkscreens.py` generates it, and is the easiest place to start from
 if you want to write your own version for your board.
-| `motd` | after login (optional) |
-| `busy` | when every node is in use |
-| `goodbye` | at logoff |
-
-There is no help screen: `HELP` is generated from the command table so it always matches the commands a caller can use.
 
 ## Formats
 
@@ -94,6 +95,7 @@ Work in every format, upper or lower case:
 | `@DELAY:ms@` | pause, e.g. `@DELAY:500@` |
 | `@SPIN:ms@` | spinner for that long |
 | `@BAUD:n@` | send what follows as if over an n baud line, `@BAUD:0@` for full speed again. `@BAUD:300@` is 33 ms a character. It slows this screen only, never the caller's own `BAUD` setting, and it ends with the screen even if the file forgets `@BAUD:0@`. A key pressed while it types finishes the screen at full speed. Screens a plugin shows on the way in (`chatin`, `files`) always play at full speed, because they are drawn in one go. `goodbye` has twenty seconds from its first byte to the hangup, so pace a line of it, not all of it. The board's loop turns every 10 ms, so `@BAUD:300@` comes out nearer 250 and anything above about 1,200 looks the same. Keep it to a line or two: each character is a timed frame, and a caller on a slow screen is a caller waiting |
+| `@@` | a literal `@`, only right after an `@` that just opened a token (so `@TIME@@DELAY:400@` is still a close and an open, as always). This is how `screens/codes` shows `@BELL@` as text instead of ringing it |
 
 ## Limits (enforced on upload)
 
@@ -105,7 +107,7 @@ Work in every format, upper or lower case:
 | The `.zip` itself | 400 KB | same reason |
 | `system.cfg` | must pass the config checks | a bad config never replaces a working one |
 
-Storage on the board is 768 KB. Staging needs room for a second copy, which is why the total is about half of that.
+Storage on the board (the `storage` partition) is 256 KB, of which the stock screens use about 18.5 KB; an upload is staged in `.staging` on that same partition before it replaces what is live.
 
 A file over a limit is rejected with the reason and the rest of the upload still goes through. The sysop sees the count of rejected files before answering Y/N.
 

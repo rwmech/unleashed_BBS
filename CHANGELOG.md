@@ -24,6 +24,149 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.22.1, 2026-09-22
+
+Improv, and the Wi-Fi network out of the source. Committed together with
+0.22.0, which was built and tested but never committed on its own. Built to
+NEXT.md part 3.
+
+- **The network lives in `system.cfg`** as `wifi_ssid` and `wifi_password`,
+  on `userdata`, so it survives a reflash. `include/secrets.h` is optional
+  now and only a fallback when the config has none, so a published binary
+  carries nobody's home network. Rob's board keeps working unchanged: its
+  config has no Wi-Fi keys yet, so it falls back to `secrets.h`.
+- **Improv Wi-Fi Serial** on the console UART: current state, device info,
+  scan, and set network. A new network is tried for 30 seconds and saved
+  only if it joins; if it does not, the board goes back to the one it had.
+  Improv listens for as long as the board runs, not just at first boot. A
+  board with no network says so on the console every 30 seconds.
+- Written here, not taken from the official SDK: that SDK is Apache-2.0,
+  which the FSF lists as incompatible with GPLv2. `src/core/improv.*` is
+  the packets only and has 24 unit checks (`host/test_improv.cpp`), with
+  the expected bytes worked by hand rather than produced by the codec.
+- Checked against the browser side before writing the glue:
+  `sdk-serial-js` only looks for a packet at the start of a line, so every
+  packet goes out with a newline in front. It also resets on a 0x0A in the
+  first nine bytes, which no packet this board sends can contain. ESP Web
+  Tools waits 10 s for Improv after a flash and 45 s for a join.
+- **Packets hold stdout's lock and do not go through stdout.** A log line
+  from another task spliced into a packet fails its checksum and is never
+  seen, so the write takes the same lock ESP_LOG does. And stdout turns
+  0x0A into CR LF, which would corrupt any length or checksum byte that
+  happens to be 10, so the bytes go out through `uart_write_bytes`. The
+  IDF's newlib has no `flockfile`, and its `_flockfile` macro does not
+  compile as C++, so the lock is taken with `__lock_acquire_recursive`.
+- **`#` no longer starts a comment on a password or network line.** It did
+  anywhere on any line, so `pa#ss` was stored as `pa` with nothing said. The
+  three staff passwords, `wifi_ssid` and `wifi_password` now take the rest
+  of the line as typed. A `#` at the start of a line is still a comment.
+- **The backup carries the Wi-Fi password, and the port answers only
+  local addresses** (Rob's call in NEXT.md 3.2). A restore onto a fresh
+  board brings its network with it. A non-private source gets a 403 and a
+  line on the sysop console; `100.64/10` counts as local so Tailscale
+  works. The open notice says the zip holds the Wi-Fi password and never
+  to forward the port, rather than promising "local network only": the
+  check reads the source address, and a router that rewrites it on
+  forwarded traffic gets past it.
+- **Code review of the Improv glue**, all fixed: a trial now succeeds only
+  when the board is on the network being tried, checked by SSID, not on
+  any `WIFI_UP` (a stray reconnect to the old network could have saved
+  untested credentials); the reconnect handler asks again whether Improv
+  has the radio after its log line; a scan that never finishes gives up
+  after 15 s and releases the radio; a name or passphrase with control
+  bytes or an outer space is refused, since the config would trim it and
+  the board would fail after the reboot; a failed UART install turns
+  Improv off rather than logging an error every pass. And a hand-edited
+  `password = x # note` now logs a warning at boot, by key and never by
+  value, since that `#` is part of the value now.
+- **A test left `max_users = 77` behind** for the rest of the run, and the
+  0.22.0 tests pushed a full no-card run to exactly 77 accounts by the
+  backup test, which then failed on sign-up not being offered. The board
+  was right. Earlier full runs had hit the old 1200 s limit before
+  reaching it. The same first full run found a second leftover: the 0.22.0
+  inline-codes test left its forum post up, and the forums test that
+  follows it counts unread messages expecting only its own. It takes the
+  post down now. Neither was a board bug; both were a test not cleaning up
+  what it left, which is the rule 0.21.8 already wrote down.
+- `CONFIG wifi`: network and passphrase, used from the next restart and
+  never live. Changing the network under a telnet session would drop the
+  sysop who changed it. A passphrase under 8 characters is refused before
+  it is written.
+- Static DRAM: 176,856 of 180,736, leaving **3,880** (was 4,736). Improv's
+  parser, the saved and trial credentials, and the two new config fields,
+  which exist twice because `reload` parses into a second `SysConfig`.
+  Flash 74.7%.
+- Not on hardware. Improv needs one manual check by Rob with a real browser.
+  The local-address refusal cannot be exercised by the host suite, which
+  only ever connects from 127.0.0.1.
+
+## 0.22.0, 2026-09-22
+
+One lot, as Rob set it: mail as a place, inline codes, BELL, long help, the
+information pages, and the bugs found on the way. Every new check was run
+against 0.21.9 in a worktree and failed there.
+
+**Mail is a place.** `MAIL` opens your mailbox: a list with `*` for new, the
+sender, the date and a preview, and the box's size ("2 new, 4 of 12", where
+12 is with a card and 3 without). A number reads one, Enter reads the
+oldest new one, W writes and asks who to, `?` lists the keys, Q leaves.
+Reading shows the forums' header, the body with its codes, and EOM, and
+asks `[R]eply [S]ave [D]elete` with Enter for the next and Q back to the
+list; nothing is touched until one of those is pressed. Every decision
+comes back to the list. `MAIL handle` and the room's `/e` work as before.
+Rob: "we cant read other mail without deleting, need that full list".
+
+**Inline codes** in forum posts, mail and chat lines: `@RED@` and the rest
+of the palette, `@N@`, `@BLINK:text@`, `@SCRAMBLE:text@`, `@TYPE:text@`,
+`@OOPS:text@`, `@SPIN@`, `@DOTS@`, `@NOISE@`, `@RULE@`, `@BELL@`, `@BOARD@`,
+`@DATE@`, `@TIME@`, and `@@` for an @. `@`, not `{{ }}`, because a C64 has
+no braces. Callers cannot clear, pause or slow somebody else's screen, and
+cannot use `@USER@`. Eight codes a message; the rest print as typed, and so
+does anything that is not a code, so an email address is safe. `CODES`
+shows a new screen, `/codes` a short list.
+
+**BELL**, the same setting as the room's `/b`, and bells now ring: pages,
+broadcasts, somebody logging on, somebody joining the room, a private, and
+`@BELL@`. The room's `/b` had toggled a flag nothing read since 0.21.4.
+
+**HELP WHO**, **HELP W**, **/? p**: one command in full, 75 entries written
+from the source, a command a caller cannot use is as unknown to HELP as to
+the prompt. The room's `/?` moves staff commands to `/? staff` so it fits a
+24 line screen.
+
+**Information pages**: `INFO` (or `I`) lists them, `INFO 3` reads one with
+paging, `INFO 3 EDIT` writes one in the message editor, `INFO 3 CLEAR`
+empties it; `/i`, `/i3`, `/i3-` in the room. Titles and who may read each
+page are set in `CONFIG info`. A page a caller may not read answers exactly
+like a page that does not exist.
+
+**Fixed, and two of these were live on the board:**
+- **Any caller in the room could change time.** `/t -1` took them off the
+  clock and `/t 3 +600` gave a node ten hours: the shell checked the
+  permission before calling the handler, the room did not. The check is in
+  the handler now.
+- **`FORUMS SCAN` showed anybody every forum**, including ones they may not
+  read. Staff only now.
+- **A card's screens never followed a new build.** The card is played
+  before flash and held the copy seeded when it was first mounted. The
+  board now records what it put there and refreshes its own copies; a
+  screen the sysop edited, or one it has no record of, is never touched.
+  **Delete the old `welcome.*` from the card once**: it was seeded before
+  the record existed.
+- The screen player takes `@@` as a literal `@`, so a screen can show a
+  code instead of running it.
+- `FORUMS` answers to `BULLETIN` again, as CLAUDE.md said it did.
+- `CONFIG FORUMS TOPICS`, which the board told sysops to type, was not a
+  page; the hint says `CONFIG forums`.
+
+**Found by code review before it shipped:** a room line's effect lost its
+words for a 40 column reader once it crossed the margin (the room wraps its
+own lines now); drawing the mailbox re-read the mail file per message with a
+whole-partition space check on every read, a stall with a full box (reads no
+longer pay the write guard, `plugins::readPath`); the information pages
+asked the filesystem ten times at every login (a bit mask now); `HELP OFF`
+printed an empty box; `/? w` explained WHO instead of `/w`.
+
 ## 0.21.9, 2026-09-22
 
 Rob's batch from the 0.21.8 flash. Every new check was run against 0.21.8

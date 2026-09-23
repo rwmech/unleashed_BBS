@@ -273,6 +273,18 @@ bool path(uint8_t index, const char* file, char* out, size_t n) {
     return true;
 }
 
+bool readPath(uint8_t index, const char* file, char* out, size_t n) {
+    const Plugin* p = at(index);
+    if (!p || !file || !*file) return false;
+    if (!(p->info.flags & PF_CORE)) return false;
+    if (strchr(file, '/') || strstr(file, "..")) return false;
+    const bool sd = (p->info.flags & PF_SD) != 0;
+    const char* base = sd ? plat::sdBase() : plat::userBase();
+    if (sd && !base[0]) return false;
+    snprintf(out, n, "%s/%s/%s/%.16s", base, BBS_PLUGIN_DIR, p->info.name, file);
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // begin: every plugin that is switched on and fits gets started.
 //

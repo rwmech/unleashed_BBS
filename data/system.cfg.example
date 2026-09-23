@@ -29,6 +29,14 @@ tz = UTC0
 
 ntp_server = pool.ntp.org
 
+# The Wi-Fi network, applies at boot. Easiest set with Improv over USB (see
+# README.md), which writes these two lines for you. Taken exactly as typed:
+# a '#' here is part of the value, not a comment. The password is 8 to 64
+# characters, or empty for an open network. It is NOT redacted in a backup,
+# which only a local address can download.
+wifi_ssid =
+wifi_password =
+
 # Staff passwords, entered at any prompt as: BYE <password>
 # A wrong password is a normal logoff; 3 wrong from one IP in 15 min = 15 min ban.
 # Empty disables that level. Max 32 characters, case-sensitive.

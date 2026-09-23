@@ -262,7 +262,17 @@ void ScreenPlayer::byteIn(Term& t, Timeline& tl, const Vars& v, uint8_t b) {
         emitByte(t, tl, b);
         return;
     }
-    if (b == '@') { runToken(t, tl, v); return; }
+    if (b == '@') {
+        // "@@" is a literal @, the same escape a caller's message uses, so
+        // a screen can show a code instead of running it: the CODES screen
+        // writes @@BELL@@ to print @BELL@ rather than ringing every
+        // reader's bell. Only when the @ has just opened a token, so two
+        // tokens side by side ("@TIME@@DELAY:400@") still read as a close
+        // and an open, as they always have.
+        if (tokLen_ == 0) { emitByte(t, tl, '@'); inTok_ = false; return; }
+        runToken(t, tl, v);
+        return;
+    }
 
     char c = tokChar(b, mode_ == Mode::Pet);
     if (!c || tokLen_ >= sizeof(tok_) - 1) {

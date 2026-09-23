@@ -60,6 +60,7 @@ enum class Res : uint8_t {
     Config = 0,        // the settings editor: one sysop at a time
     Transfer,          // the XMODEM/YMODEM engine: one board-wide
     Subjects,          // the forums' shared subject table
+    Info,              // writing an information page: one at a time
     Count
 };
 

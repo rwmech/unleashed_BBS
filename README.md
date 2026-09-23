@@ -64,9 +64,9 @@ A board the size of a stick of gum, 40 columns of text, and a port anyone can re
 
 - **Run a BBS again.** Nodes, handles, a user list, a chat room, file areas with XMODEM and YMODEM transfer, mail, a caller log, a sysop who can page you. All of it on hardware that costs less than lunch and draws less power than a night light. Leave it on a shelf for a year and forget it is there.
 - **Retrocomputing with a point.** A C64, an Atari 800, a VT220 on a desk: machines with no browser and no future on the modern web get a live system to call, tonight, over the same serial port they always used. No emulator, no cloud account, no subscription. The board speaks their language, right down to PETSCII at 40 columns and an emulated 300 baud if you want to watch the text crawl.
-- **Entertainment.** Games, trivia, message bases, and the whole business of dialling in to see what is new. Message bases are being designed now. Text is a format, not a limitation: people played MUDs on less.
+- **Entertainment.** Games, trivia, message bases, and the whole business of dialling in to see what is new. `FORUMS` is topic boards on the SD card, with subjects, replies and unread counts. Text is a format, not a limitation: people played MUDs on less.
 - **Somewhere to hang out.** The chat room is DDial and Gtalk in spirit: everybody in one room, one line at a time, handles and ranks in the margin, nothing threaded, nothing archived, nobody suggesting content. Small, fast, and with a personality that group chat lost somewhere around 2010.
-- **A private board for a club, a family or a team.** Handles you hand out, a room, one message each, a file area when the SD card lands. Nobody signs up for a service, nobody agrees to terms, and the member list is a text file you can read.
+- **A private board for a club, a family or a team.** Handles you hand out, a room, mail, and a file area with real XMODEM and YMODEM transfer once an SD card is fitted. Nobody signs up for a service, nobody agrees to terms, and the member list is a text file you can read.
 - **Teach the whole stack.** One repository shows a TCP listener, a cooperative scheduler, terminal detection, a line editor, a permission model, a plugin API and a backup format, in a few thousand lines of C++ you can read on a rainy afternoon. Nothing is hidden behind a framework, and the whole thing fits in a microcontroller a student can hold.
 - **Reach into the physical world.** The board has GPIO, and a plugin turns a pin into a command with its own permission level. That is a greenhouse you water from a Kaypro, a garage door, a ham shack antenna switch or rotator, a sprinkler zone, a 3D print farm, a brew rig, a generator that needs starting before you drive home, the block heater on the car on a cold morning, a model rocket launch controller, a lab bench you poke at from the far side of the building, or a deployment you kick off from a terminal on a boat. Anything that can be a relay closure or a sensor read can be a command somebody types. Interlocks and safety belong in the hardware, not in a text command: put the relay behind something that fails safe.
 - **A front panel for a thing that has none.** Plenty of equipment has a serial port and nothing else. The serial bridge hands that port to a caller: one operator drives, everyone else watches. A PLC, a radio, a piece of test gear, a label printer, a headless server's console, a homelab status board. It is the cheapest remote console you will ever build, and it keeps working when the machine it is attached to does not.
@@ -102,7 +102,10 @@ A carrier PCB with the module, a level shifter and screw terminals is the obviou
 
 ### Getting it on Wi-Fi
 
-- Credentials live in `include/secrets.h`, which is never committed. Copy the example, put the SSID and the passphrase in, and build. SSIDs are case sensitive.
+- The network lives in `system.cfg` on the `userdata` partition as `wifi_ssid` and `wifi_password`, so it survives a reflash. SSIDs are case sensitive. The values are taken as typed, so a `#` in a passphrase is part of it rather than a comment.
+- The easy way to set it is Improv Wi-Fi Serial: with the board on USB, open a page that speaks Improv (ESP Web Tools after a flash, or the tester at <https://www.improv-wifi.com>) in Chrome or Edge on a desktop, pick the network, type the passphrase. The board tries it for 30 seconds and saves it only if it joins; otherwise it goes back to the network it had. Improv listens on the console port for as long as the board runs, so a board that has moved house is fixed with the same cable.
+- `CONFIG wifi` changes it from the board, used from the next restart. Never live: changing the network under a telnet session would drop the sysop who changed it, and a typo would leave nobody on the board to fix it.
+- A board with no network set says so on the console every 30 seconds and waits for Improv. `include/secrets.h` is now optional: a developer's build can still carry a network there as a fallback, used only when `system.cfg` has none, and a published binary carries nobody's.
 - The board scans every channel and joins the strongest access point with that name, so a mesh or a pair of repeaters needs no extra configuration.
 - `hostname` in `system.cfg` sets both the DHCP hostname and the mDNS name, so `unleashed.local` finds the board on a normal home network without hunting for its address.
 - The clock comes from NTP at boot, and the time zone is a `system.cfg` setting. The board runs fine without either; only the log timestamps and time limits care.
@@ -134,33 +137,20 @@ Old hardware reaches the board in one of three ways:
 - A serial-to-telnet bridge on the network, with a null modem cable to the machine's RS-232 port. An ESP-Link board, a Lantronix, or a small Linux box all work.
 - The serial bridge plugin on this board, going the other way, for a terminal that has nothing but a serial port.
 
-## Status (0.11.0)
+## Status
 
-- Host build: the scripted suite (`tools/testclient.py --backup`) passes, also under ASan/UBSan.
-- 0.11.0 adds: HELP as menus sorted by use, with headings, colour and the shortcut letter picked out; a colour pass over WHO and MEM; `SYS` and `CALLS` for staff; the chat room's command set (`/?`, `/p`, `/me`, `/a`, `/sq`, `/t`, `/clear`), moderation (`/k`, `/b`, `/unb`, `/bans`) and a vote to kick when no staff are in the room; messages (`MAIL`, `/email`, `/e`) with expiry and a fixed number of slots; configurable chat colours and history depth; `CONFIG`, the sysop's settings manager, as the same forms the user manager uses.
-- 0.10.0 (on hardware): chat room and serial bridge plugins.
-- 0.9.0: the plugin API, an example plugin, the ABOUT screen.
-- 0.8.0 (on hardware): staff ranks on accounts, markers in every list, staff see hidden callers.
-- 0.7.0 (on hardware): guest logins, input effects in place, page alerts, title bars on lists, a staff Doing column, Wi-Fi signal on DASH.
-- 0.6.0: user accounts with fill-in forms, salted SHA-256, lockout, the user manager.
-- Commands come from a registry (`Command` tables); the menus, dispatch and permissions are generated from it, and plugins register into it.
-- On hardware:
-  - PuTTY and a C64 through TeensyROM have both called in.
-  - Every PETSCII glyph (spinner, lines, shade, underscore) is verified on the C64.
-  - NTP and mDNS come up on boot; the backup window works on the board.
-  - Measured with six callers on: heap free 136,424, lowest 119,764, largest block 110,592, session 5,600 bytes each.
+Commands come from a registry (`Command` tables); the menus, dispatch and permissions are generated from it, and plugins register into it. On hardware: PuTTY and a C64 through TeensyROM have both called in, every PETSCII glyph is verified on the C64, and NTP, mDNS and the backup window all come up on boot.
 
-Full history: [CHANGELOG.md](CHANGELOG.md).
+This section used to carry a per-version snapshot (host test counts, image size, heap free) and it went eleven versions without being touched, which is exactly the kind of number nobody should trust on sight. That detail belongs in [CHANGELOG.md](CHANGELOG.md), which is kept current with every build, and in the size reports under `reports/` for whoever wants the measured RAM and flash figures rather than a stale one.
 
 ## Build and flash (PlatformIO)
 
 First time on a board:
 
 ```bash
-cp include/secrets.h.example include/secrets.h   # Wi-Fi SSID (case-sensitive) and password
 cp data/system.cfg.example data/system.cfg       # timezone, passwords, limits
 pio run -t flashall                              # firmware + partition table + data/
-pio device monitor
+pio device monitor                               # then set Wi-Fi with Improv, see above
 ```
 
 After that:
@@ -176,7 +166,7 @@ Flash layout (4 MB): two 1.5 MB OTA app slots and three data partitions.
 | `logs` | 32 KB | the caller log | no |
 | `userdata` | 608 KB | `users.txt`, `system.cfg`, plugin files | no |
 | `storage` | 256 KB | screens | **yes** |
-| SD card | optional | file areas, your own screens, a long caller log; message bases later | no |
+| SD card | optional | file areas, message boards, your own screens, a long caller log | no |
 
 `storage` is deliberately last, because PlatformIO's `uploadfs` writes the last
 spiffs partition. That is what makes flashing safe: a filesystem upload can only
@@ -241,7 +231,7 @@ src/core/crc32.h          CRC-32 for the zip
 src/core/bbs.*            listener, sessions, flow, timers, paging
 src/core/bbs_shell.cpp    caller commands
 src/core/bbs_sysop.cpp    sysop node and commands
-src/core/bbs_users.cpp    sign-up, PROFILE, PASSWORD, INFO, USERS manager, USER ADD/EDIT/DEL
+src/core/bbs_users.cpp    sign-up, PROFILE, PASSWORD, WHOIS, USERS manager, USER ADD/EDIT/DEL
 src/core/plugin.*         plugin API: registry, config sections, levels, storage
 src/plugins/              the plugins compiled into this firmware
 data/screens/             stock welcome, busy, goodbye (.seq/.ans/.asc) for a fresh board
@@ -308,5 +298,6 @@ notices along: they are collected in
 
 ## Next
 
-- C5: plugin API. The first plugins will be GPIO and chat.
-- SD card: file areas and message bases on the card, and logs redirected to it. Mounting works; the file manager is next.
+- An encrypted option alongside plaintext telnet, so a caller who can do better than a C64 can (SSH, not TLS: no certificate to renew on a board meant to sit on a shelf for a year).
+- Doors on a second ESP32 over the serial port, rather than a scripting runtime in the core.
+- OTA updates and browser flashing with ESP Web Tools.

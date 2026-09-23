@@ -13,7 +13,7 @@ source. See the LICENSE file for terms.
 
 # µnleashed BBS: command reference
 
-Version 0.21.1. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
+Version 0.22.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
 
 ## Calling in
 
@@ -35,7 +35,7 @@ Full guide to accounts: [USERS.md](USERS.md).
 - A handle that isn't accepted rubs out in place, the reason flashes on the same line and rubs out too, and you type again on that line. 40-column screens get a short reason (`Reserved handle`), wider ones the full sentence.
 - A known handle asks `Password:`. After Enter the stars spin, rub out and turn into `ACCESS GRANTED` on the same line. A wrong password flashes `ACCESS DENIED` there and clears for another try. 3 wrong passwords hang up the call; 5 for one handle within 15 minutes lock that handle for 15 minutes. ESC goes back to the handle prompt.
 - An unknown handle shows `<handle> is new here.` and asks `[R]egister, [G]uest or [N]ew handle?`, offering only what `self_register` and `guest` allow (no `[R]egister` once `max_users` is reached).
-  - `R` opens the sign-up form: password twice, name, email, and optional address, phone and profile.
+  - `R` opens the sign-up form: password twice, name, email, and optional From (town and country), phone and profile.
   - `G` logs in as a guest under that handle (see Guests below).
   - `N`, ESC or Ctrl-C go back to the handle prompt. Other keys are ignored.
 - A handle a guest is using right now is refused in place (`That handle is online right now.`).
@@ -92,7 +92,10 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | `? staff` | | Staff tools (staff only). |
 | `? sysop` | | Sysop tools (sysop only). |
 | `? all` | | Every menu in turn, each with its own heading. |
-| `MAIL` | | Read the message waiting for you, then `[R]eply`, `[S]ave` or `[D]elete` it. Reading alone changes nothing. **`MAIL handle` opens the message editor** described below, the same one a forum post uses; `MAIL handle your message` still puts a short one on a single line. See [CHAT.md](CHAT.md). |
+| `MAIL` | | **Goes into your mailbox**, a numbered list with `*` marking what is new: a number reads that message, Enter reads the oldest new one, `W` writes to somebody, `?` the keys, `Q` or ESC leaves. Reading shows a header (`#n of m`, who it is from, when) and the body, then asks `[R]eply  [S]ave  [D]elete`, plus `Enter` for the next new message and `Q` back to the list. Nothing is touched until you answer. **`MAIL handle` opens the message editor** described below, the same one a forum post uses; `MAIL handle your message` still puts a short one on a single line. See [CHAT.md](CHAT.md). |
+| `BELL` | | Toggle whether other callers' bells reach you this call: pages, broadcasts, somebody logging in or joining the room, a private line, `@BELL@` in a message. Your own mistakes still beep. The same setting as `/b` in the room. |
+| `CODES` | | The colour and effect codes you can put in a forum post, a mail message or a chat line. Plays `screens/codes` if the board has one, or a short summary if not. |
+| `INFO [n]` | `I` | The board's information pages: `INFO` lists them, `INFO n` reads one with `[More]`. Staff with the write level get `INFO n EDIT` and `INFO n CLEAR`. In the room: `/i`, `/in`, `/in-`. |
 | `WHO` | `W` | Who is on each node: a marker, handle, terminal, minutes on, idle time (mm:ss). The busy line is never listed, and a hidden sysop or co-sysop looks like a free line to callers. Staff see hidden and lurking sessions, marked `hidden` or `lurking`, and with `NODES` get a Doing column (the last command each caller ran, verb only, never arguments) instead of the terminal. |
 | `WHO n` | `W n` | The same list redrawn in place every n seconds (`who_refresh_min`..`who_refresh_max`, default 1..30) until you press a key. The footer shows the idle clock: refreshing is not input, so the idle hangup still counts down. |
 | `MEM` | `M` | Heap statistics and session sizing. |
@@ -106,7 +109,7 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | `SERIAL` | | Watch the serial device (the `serial` plugin). `T` takes the keyboard if you are allowed and it is free, ESC leaves. `SERIAL STATUS` prints the port, `SERIAL SET 9600 8N1` changes the line. |
 | `WHOIS [handle]` | | An account: name, member since, last call, calls, profile. Email, address and phone only on your own account (or with `USERS`). |
 | `PRIVACY` | | What the board knows about you: that telnet is not encrypted, how your password is stored, what the sysop can see, and the one rule that matters. Plays `screens/privacy.*`, so a sysop can rewrite it. The same screen is offered during sign-up. |
-| `PROFILE` | | Form to change your name, email, address, phone and profile. Not for guests. |
+| `PROFILE` | | Form to change your name, email, From, phone and profile. Not for guests. |
 | `PASSWORD` | | Form: current password, then the new one twice. Not for guests. |
 | `PAGE n message` | | Send a one-line message to node n. It arrives when that caller is back at the prompt: a bell, a flashing ` PAGE ` tag that rubs out, then the message. |
 | `DND` | | Toggle do-not-disturb: pages to you are refused. |
@@ -129,6 +132,22 @@ The marker follows the account, so staff are marked even before they type `BYE <
 
 Other nodes see `*** handle is on node n` and `*** handle left node n` when callers come and go.
 
+## Codes in messages
+
+A forum post, a mail message and a chat line can all carry `@-codes`: colour, a few effects, and a few fill-ins. `CODES` at the prompt (or `/codes` in the room) shows the list. Up to 8 codes act in one message; past that, and anything not on the list, prints as typed, so `me@example.com` stays a plain email address.
+
+| Code | Does |
+|---|---|
+| `@RED@ @YELLOW@ @LTGREEN@ ...` | switch colour (the C64 palette, no black) |
+| `@N@` | back to normal |
+| `@BLINK:text@` `@SCRAMBLE:text@` `@TYPE:text@` `@OOPS:text@` | flash it, scramble it in, type it, or type it and rub it out, up to 40 characters |
+| `@SPIN@` `@DOTS@` `@NOISE@` `@RULE@` | a spinner, three dots, a burst of line noise, a rule to the edge |
+| `@BELL@` | rings once a message, only if the reader has `BELL` on |
+| `@BOARD@` `@DATE@` `@TIME@` | this board's name, today's date, the time |
+| `@@` | a literal `@` |
+
+Deliberately left out: `@CLS@`, `@DELAY@` and `@BAUD@`, which reach into somebody else's screen or timing, and `@USER@`, which would let a message greet its reader by name and make "sysop here, your password expired" easy to write. Screens (see below) keep all of those; they are the sysop's words, not a caller's.
+
 ## Timeouts and limits
 
 | Limit | Default | Behavior |
@@ -144,7 +163,7 @@ Staff holding `NOLIMITS` (the sysop always does) are exempt from idle and time l
 
 ## Busy line
 
-When all 6 nodes are in use:
+When all 10 nodes are in use:
 
 1. The caller is detected like anyone else and shown `screens/busy.*`.
 2. `Disconnecting in 10` counts down, then the line hangs up.
@@ -178,7 +197,7 @@ Log in with your account as usual, then type `BYE <password>` at the command pro
 
 ### Staff commands
 
-All caller commands still work. Node arguments are `1`-`6`, `S` (sysop node) or `B` (busy line). A command that isn't granted answers like an unknown command, and HELP lists only the commands you hold.
+All caller commands still work. Node arguments are `1`-`10`, `S` (sysop node) or `B` (busy line). A command that isn't granted answers like an unknown command, and HELP lists only the commands you hold.
 
 | Command | Permission | What it does |
 |---|---|---|
@@ -186,17 +205,18 @@ All caller commands still work. Node arguments are `1`-`6`, `S` (sysop node) or 
 | `DASH n` | `DASH` | The dashboard redrawn every n seconds (same limits as `WHO n`) until a key. |
 | `NODES` | `NODES [n]` | Every session: handle, IP, minutes left, idle (plus terminal type on wide screens). `NODES n` redraws every n seconds until you press a key, the same bounds as `WHO n`. |
 | `KICK n [message]` | `KICK` | Disconnect node n. The caller sees `Disconnected by sysop: message`. |
-| `BROADCAST message` | `BROADCAST` | Send `*** Sysop: message` to every logged-in node, announced like a page with a bell and a flashing ` SYSOP ` tag. |
+| `BROADCAST message` | `BROADCAST` | Send `*** Sysop: message` to every logged-in node, announced like a page with a bell and a flashing ` SYSOP ` tag. Delivered the same way a page is: once each caller is back at their own main prompt, not mid-line in the room, in FILES, in FORUMS or in their mailbox. |
 | `SNOOP n` | `SNOOP` | Mirror node n's output to your screen. `Q`, ESC or Ctrl-C stops. Both terminals must be the same type, and only one watcher per node. |
 | `TIME n +m` / `TIME n -m` | `TIME` | Add or remove minutes for node n. The caller's time warnings re-arm. |
 | `SHOW` | `HIDE` | List yourself in WHO (pages on). |
-| `HIDE` | `HIDE` | Remove yourself from WHO. The sysop starts hidden; co-sysops start visible. |
+| `HIDE` | `HIDE` | Remove yourself from WHO. The sysop and co-sysops both start visible; `LURK` is how you go invisible. |
 | `LURK` | `HIDE` | Toggle lurking: hidden from WHO and pages refused. |
 | `BANS` | `BANS` | Active IP bans and minutes remaining. |
 | `PLUGINS` | any staff | Every plugin compiled in: version, whether it is running, and why not. Also free disk space and the reserve. |
+| `SYS` | any staff | The whole board on one screen, in groups: network (SSID, signal in dBm with a word for what it means, channel, address, port), memory (heap free, the lowest it has been, the biggest block, session size), storage (used, free, what is held back for the board), load (uptime, clock, scheduler work per pass in microseconds, worst pass **and which phase of the loop it happened in**, how many passes have run over 50 ms since boot, passes since boot) and traffic (nodes busy and the peak, calls answered since boot, records in the caller log, plugins running, active IP bans). Any staff level can run it, though it is grouped with the sysop tools below. |
 | `FILES` / `F` | all | **Goes into the file area**, the way `CHAT` goes into the room, rather than printing a list and returning. A screen plays on the way in if the board has `screens/files`, then the areas appear as a numbered menu laid out in as many columns as the terminal has room for. A digit opens an area, `Q` goes back one level and `Q` again leaves. `FILES n` enters and opens that area in one go. Only on a board with a card: the plugin does not start without one, so on a cardless board the command does not exist rather than offering an empty file area. |
+| `FORUMS` | all | **Goes into the message boards**, the way `FILES` and `CHAT` go into theirs. Three levels: topic areas the sysop sets up (`CONFIG forums`), subjects that callers start inside them, and the messages in each subject. A screen plays on the way in if the board has `screens/forums`. Only on a board with a card, the same as `FILES`: the plugin does not start without one, so on a cardless board the command does not exist rather than offering empty boards. `FORUMS SCAN` needs the forums plugin's admin level (`co1` by default) and prints what the board thinks is on the card. |
 
-| `FORUMS` | **Goes into the message boards**, the way `FILES` and `CHAT` go into theirs. Three levels: topic areas the sysop sets up (`CONFIG FORUMS TOPICS`), subjects that callers start inside them, and the messages in each subject. A screen plays on the way in if the board has `screens/forums`. Only on a board with a card, the same as `FILES`: the plugin does not start without one, so on a cardless board the command does not exist rather than offering empty boards. `FORUMS SCAN` is staff only and prints what the board thinks is on the card. |
 ### Writing a message
 
 **One editor, everywhere.** A forum post, a reply and a mail message are all
@@ -268,7 +288,6 @@ Nothing here takes a typed filename. A number can only ever mean a file the
 section has just shown you, which is why there is no way to name something
 outside it and no way to approve a file that is waiting somewhere else.
 
-| `DESC file text` | staff | Set a file's description in the area you last opened. Empty text clears it. Typed at the command prompt, not inside the file area, because the file area takes keys rather than lines; the area you opened is remembered after you leave it. Written to `FILES.BBS` in that folder, which is plain text you can edit on a laptop with the card in hand. |
 | `SD` | sysop | SD card status: type, mount point, free space, and where screens are coming from. With no card it says which pins it tried, because "no card found" without them sends you to re-seat a card that was never the problem. |
 | `SD MOUNT` | sysop | Mount the card without rebooting. **Pauses the whole board** for a few hundred milliseconds while it negotiates over SPI, which is why it is typed rather than retried on a timer. |
 | `SD UNMOUNT` | sysop | Flush and release, so the card can be pulled safely. Screens fall back to the stock set. |
@@ -288,12 +307,13 @@ Rank rules:
 
 ### Sysop screens
 
+`SYS` and `PLUGINS` also live here in spirit, but any staff level can run them: see the staff commands table above.
+
 | Command | What it does |
 |---|---|
-| `SYS` | The whole board on one screen, in groups: network (SSID, signal in dBm with a word for what it means, channel, address, port), memory (heap free, the lowest it has been, the biggest block, session size), storage (used, free, what is held back for the board), load (uptime, clock, scheduler work per pass in microseconds, worst pass **and which phase of the loop it happened in**, how many passes have run over 50 ms since boot, passes since boot) and traffic (nodes busy and the peak, calls answered since boot, records in the caller log, plugins running, active IP bans). |
 | `ANNOUNCE` | Whether this board is listed in a directory, when each one last answered, and the public address the directory sees. `ANNOUNCE TEST` prints the exact payload and sends nothing; `ANNOUNCE NOW` sends a heartbeat immediately. Off until switched on: see [ANNOUNCE.md](ANNOUNCE.md). |
 | `SHUTDOWN [n]` | Take the board off the air on purpose. Announces to every node, counts down n seconds (5 to 3600, default 60), then hangs up on everyone including you, each with the ordinary send-off. `SHUTDOWN CANCEL` stops a countdown and says so. Afterwards the board keeps answering and tells callers it has been shut down, rather than refusing connections in a way that looks like a crash. A physical reboot brings it back. Any transfer running when the countdown ends is lost, and the warning says so. |
-| `CONFIG` | The settings, page by page. On its own it lists the pages: `board`, `limits`, `accounts`, `backup`, `staff`, and one per plugin. `CONFIG limits` opens that page as the same kind of form the user manager uses: Up and Down move, F1 saves, ESC cancels. Only what you changed is written, the rest of `system.cfg` is left exactly as it was, comments included, and the board reloads the new settings straight away. Passwords show as `********` and are only written when you type a new one. One sysop edits at a time. |
+| `CONFIG` | The settings, page by page. On its own it lists the pages: `board`, `limits`, `accounts`, `backup`, `staff`, `wifi`, and one per plugin. `wifi` is the one page that is not live: the network is used from the next restart, and a passphrase under 8 characters is refused before it is written. `CONFIG limits` opens that page as the same kind of form the user manager uses: Up and Down move, F1 saves, ESC cancels. Only what you changed is written, the rest of `system.cfg` is left exactly as it was, comments included, and the board reloads the new settings straight away. Passwords show as `********` and are only written when you type a new one. One sysop edits at a time. |
 
 `CONFIG` is the sysop's own command: co-sysops do not get it whatever the `[access]` matrix says, because it can change the staff passwords.
 
@@ -312,7 +332,7 @@ becomes `Area 1 [C64 Downloads] open (y/N)?` instead.
 The sysop can download and upload everything that matters (`system.cfg`, `users.txt` and the screens) as one `.zip`, without reflashing. Full steps: [BACKUP.md](BACKUP.md).
 
 - Log in as sysop, then press BOOT on the board. The console shows `*** Backup open 5 min: http://<ip>:8080/backup.zip`.
-- Download: `curl.exe -o backup.zip http://<ip>:8080/backup.zip`. No confirmation; staff passwords come out as `***`, account passwords only as salted hashes.
+- Download: `curl.exe -o backup.zip http://<ip>:8080/backup.zip`. No confirmation; staff passwords come out as `***`, account passwords only as salted hashes, and the Wi-Fi password as typed. Local addresses only.
 - Upload: `curl.exe -T backup.zip http://<ip>:8080/restore`. The sysop console shows what arrived and asks `Accept upload (Y/N)?`.
   - `Y` applies it at once, `N` discards it. No answer in 2 minutes counts as `N`.
   - While the question is on screen, only `Y`, `N`, ESC or Ctrl-C are accepted.
@@ -329,8 +349,9 @@ Files in `screens/`, chosen by terminal type. Names, formats and upload limits: 
 | `motd` | after login (optional, none ships) |
 | `busy` | busy line |
 | `goodbye` | logoff |
+| `codes` | the `CODES` command and `/codes` in the room |
 
-@-codes: `@BBS@ @VER@ @NODE@ @NODES@ @USER@ @TERM@ @COLS@ @DATE@ @TIME@ @CLS@ @BELL@ @DELAY:ms@ @SPIN:ms@`
+@-codes: `@BBS@ @BOARD@ @VER@ @NODE@ @NODES@ @USER@ @TERM@ @COLS@ @DATE@ @TIME@ @CLS@ @BELL@ @DELAY:ms@ @SPIN:ms@ @BAUD:n@`. Full list, rules and `@@` as a literal `@`: [SCREENS.md](SCREENS.md#-codes). These are the screen player's own codes, not the message codes above: a screen is the sysop's words and can do more with them.
 
 ## system.cfg
 
@@ -363,7 +384,8 @@ Keys must appear above the first `[section]` line. Sections are `[access]` for t
 
 ### Plugins
 
-Four plugins ship with the firmware:
+Seven plugins ship with the firmware for callers to use, plus an `example`
+plugin that is the template for writing your own ([PLUGINS.md](PLUGINS.md)):
 
 | Plugin | What it does | Defaults |
 |---|---|---|
@@ -372,16 +394,19 @@ Four plugins ship with the firmware:
 | `announce` | posts a small heartbeat to a directory so the board can be found | `sysop` throughout |
 | `sd` | mounts an optional SD card and lets its screens override the stock ones | `sysop` throughout |
 | `files` | publishes folders on the card as file areas callers can browse | `read = all`, `write = staff` |
+| `forums` | topic message boards on the card | `read = all`, `write = users`, `admin = co1` |
+| `info` | the ten information pages, `INFO` / `/i` | `read = all`, `write = sysop` |
 
-Chat and `sd` are on by default, even with no section in `system.cfg`; `enabled = no` turns either off. `sd` on a board with no card costs one failed mount at boot and then nothing. The serial bridge waits to be switched on, since it needs wiring, and so does `announce`, since it is the one thing that talks out. Turning either off costs nothing: no commands, no hooks, no memory. The `example` plugin is the template for writing your own ([PLUGINS.md](PLUGINS.md)).
+Chat, `sd` and `info` are on by default, even with no section in `system.cfg`; `enabled = no` turns any of them off. `files` is also on by default once a card is mounted and an area is configured. `sd` on a board with no card costs one failed mount at boot and then nothing. `forums`, the serial bridge and `announce` wait to be switched on: `forums` because a sysop sets the topic areas up first, the serial bridge because it needs wiring, and `announce` because it is the one thing that talks out. Turning any of them off costs nothing: no commands, no hooks, no memory.
 
 The SD card is optional and the board is complete without one. What goes on
-it is the things that grow without limit and can be lost: file areas, a
-sysop's own screens, and the message bases that are being designed now. What stays on internal flash is everything that
-has to survive the card failing, which is the accounts, the configuration and
-the caller log. FAT32 rather than LittleFS so the card can be pulled and read
-on any laptop, and the price of that is that FAT is not safe against losing
-power mid-write, which is why nothing that matters lives there.
+it is the things that grow without limit and can be lost: file areas, message
+boards (`FORUMS`), and a sysop's own screens. What stays on internal flash is
+everything that has to survive the card failing, which is the accounts, the
+configuration and the caller log. FAT32 rather than LittleFS so the card can
+be pulled and read on any laptop, and the price of that is that FAT is not
+safe against losing power mid-write, which is why nothing that matters lives
+there.
 
 ```
 [plugin:sd]
@@ -396,6 +421,11 @@ screens = yes       ; screens on the card override the stock set, per file
 Wiring: `3V3` (**not VIN**), `GND`, `CS` to D5, `MOSI` to D23, `CLK` to D18,
 `MISO` to D19. GPIO5 is a strapping pin, so if the board will not start with
 the card attached, move `CS` to D4 and set `cs = 4`.
+
+A fresh card is seeded with the stock screens at mount, so the Screens file
+area is never empty. A later firmware update that changes a stock screen
+updates the card's copy too the next time it mounts, unless the sysop edited
+that file: a screen you touched is yours and is never overwritten.
 
 A file area is a folder on the card that the sysop mounts under a name. The
 path is never shown to callers, so an area can point at a folder you already
@@ -467,8 +497,10 @@ Descriptions live in `FILES.BBS` inside each folder, one line per file,
 through a temp file and a rename, because FAT is not safe against losing
 power mid-write.
 
-There is no file transfer yet, so an area is for browsing and for files you
-put there yourself. Uploads and moving files between areas wait for XMODEM.
+Downloading and uploading are XMODEM and YMODEM, both driven from inside
+`FILES` with the keys in the table further up this page: a number downloads,
+`U` uploads. An upload lands in a staging folder and is invisible to
+everyone but staff until it is approved.
 
 Each plugin reads its own section:
 

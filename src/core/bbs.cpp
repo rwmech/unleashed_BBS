@@ -682,6 +682,7 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
     s.level         = Access::None;
     s.perms         = 0;
     s.dnd           = false;
+    s.bellOff       = false;
     s.visible       = true;
     s.lurk          = false;
     s.histPos       = -1;
@@ -1652,7 +1653,7 @@ void Bbs::completeLogin(Session& s, uint32_t now) {
     }
 
     snprintf(buf, sizeof(buf), "*** %s is on node %u", s.user, s.id);
-    noticeAll(s, buf);
+    noticeAll(s, buf, BusKind::Arrival);
 
     // A caller who just registered gets the short rules; everybody else
     // gets whatever the board has to say today.
@@ -2194,10 +2195,10 @@ void Bbs::notify(Session& to, const char* text) {
     post(to, BusKind::Mail, nullptr, text);
 }
 
-void Bbs::noticeAll(const Session& about, const char* text) {
+void Bbs::noticeAll(const Session& about, const char* text, BusKind kind) {
     for (Session* o : all_) {
         if (o == &about || !o->loggedIn || o->role == Role::Busy) continue;
-        post(*o, BusKind::Notice, &about, text);
+        post(*o, kind, &about, text);
     }
 }
 
@@ -2235,6 +2236,7 @@ void Bbs::deliverMail(Session& s) {
     while (tl.freeBytes() > 768 && s.mb.pop(m)) {
         Color c = Color::Cyan;
         const char* alert = nullptr;                 // pages and broadcasts flash first
+        bool ring = false;                           // an arrival: a bell, no fanfare
         switch (m.kind) {
             case BusKind::Page:
                 if (m.fromNode) snprintf(line, sizeof(line), "Page from %s (%u): %s", m.from, m.fromNode, m.text);
@@ -2251,6 +2253,10 @@ void Bbs::deliverMail(Session& s) {
                 snprintf(line, sizeof(line), "%s", m.text);
                 c = Color::Yellow;
                 break;
+            case BusKind::Arrival:
+                snprintf(line, sizeof(line), "%s", m.text);
+                ring = true;
+                break;
             case BusKind::Notice:
             default:
                 snprintf(line, sizeof(line), "%s", m.text);
@@ -2258,8 +2264,8 @@ void Bbs::deliverMail(Session& s) {
         }
         t.reset(tl);
         if (any) t.nl(tl);                           // each after the first on its own line
-        if (alert) {                                 // bell, flashing tag, rub it out, message
-            t.bell(tl);
+        if ((alert || ring) && !s.bellOff) t.bell(tl);
+        if (alert) {                                 // flashing tag, rub it out, message
             t.color(tl, Color::LightRed);
             fx::blink(t, tl, alert, 3, 150);
             fx::pause(tl, 250);

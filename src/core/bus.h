@@ -47,6 +47,11 @@ enum class BusKind : uint8_t {
     Notice,      // arrivals and departures
     Broadcast,   // sysop to everyone
     Mail,        // "You have mail", from the chat plugin's mail
+    // Appended, like Mail. Somebody logging on, which rings the bell for
+    // callers who have it on (Rob: "A bell when somebody logs in"). A
+    // departure is still a Notice: nobody needs a bell to learn that
+    // somebody left.
+    Arrival,
 };
 
 struct BusMsg {

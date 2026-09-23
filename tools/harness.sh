@@ -118,6 +118,11 @@ cosysop2_password = testco2
 call_minutes = 60
 day_minutes = 480
 backup_port = $((PORT + 1000))
+# The host has no radio, so these only exercise the parser and the backup:
+# a '#' and a space inside both, which must survive a download and an
+# upload whole.
+wifi_ssid = Test#Net
+wifi_password = pa#ss word1
 
 [plugin:example]
 enabled = yes
@@ -173,6 +178,12 @@ topic1 = general | General | Anything at all
 # may reply to one. That split is the reason there are four levels and not
 # two, so it gets a test rather than only a comment.
 topic2 = news | Board News | What the sysop is up to | all | sysop | users | sysop
+
+[plugin:info]
+# page0 has a title and no text yet; page1 is staff only, and a caller must
+# get the same answer for it as for a page that does not exist.
+page0 = House rules | all
+page1 = Staff notes | staff
 CFG
 
 if [ "$CARD" = yes ]; then
@@ -189,7 +200,10 @@ sleep 1
 
 cd "$PROJ"
 set +e
-BBS_DATA="$DATA" timeout 1200 python3 -u tools/testclient.py 127.0.0.1 "$PORT" $ARGS > "$OUT" 2>&1
+# 3600, not 1200. The full suite passed twenty minutes in 0.22.0 and the
+# limit killed it mid-test with no summary line, which reads like a hang
+# rather than a clock running out.
+BBS_DATA="$DATA" timeout 3600 python3 -u tools/testclient.py 127.0.0.1 "$PORT" $ARGS > "$OUT" 2>&1
 RC=$?
 set -e
 kill $PID 2>/dev/null || true

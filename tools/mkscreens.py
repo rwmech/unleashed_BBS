@@ -12,8 +12,8 @@ Module:       Tools / stock screen generator
 Purpose:      Generates the stock µnleashed BBS display files in data/screens/:
                  welcome.seq/.ans/.asc, busy.seq/.ans/.asc,
                  goodbye.seq/.ans/.asc, about.seq/.ans/.asc,
-                 files.seq/.ans/.asc. No motd ships: add
-                 motd.asc/.ans/.seq to show one after login.
+                 files.seq/.ans/.asc, codes.seq/.ans/.asc. No motd ships:
+                 add motd.asc/.ans/.seq to show one after login.
                  Hand-drawn art from PETSCII/ANSI editors can replace any of
                  these; the BBS only cares about the file name and extension.
                  HELP is generated from the command table, so no help screen ships.
@@ -50,6 +50,7 @@ text is in the LICENSE file at the top of this repository.
 ===========================================================================
 """
 
+import re
 from pathlib import Path
 
 OUT = Path(__file__).resolve().parent.parent / "data" / "screens"
@@ -898,6 +899,268 @@ def make_files_asc():
     return ("\n".join(out) + "\n").encode("ascii")
 
 
+# ==========================================================================
+# codes: the @-codes a caller can put in a forum post, a mail or a chat
+# line. CODES at the prompt and /codes in the room play it. The words are
+# reports/codes-screen-copy-2026-09-22.md, measured there and again here.
+#
+# Every literal @ on this screen is stored as @@, and that is a firmware
+# rule rather than a style choice. The screen player runs its own @-codes in
+# every file it plays, and four of the message codes share a name with one
+# of them: drawn as written, @BOARD@ would print the board's name, @DATE@
+# and @TIME@ the clock, and @BELL@ would ring every reader's bell. The
+# player reads @@ as one literal @, the same escape a caller's message uses
+# (ScreenPlayer::byteIn), so at_escape() doubles every @ at the moment a
+# line is written and nothing in the tables below is escaped by hand. The
+# copy's own "@@ prints one @" is therefore stored as "@@@@ prints one @@".
+#
+# Line kinds: 't' title, 'r' rule, 'h' heading, 'l' a label column followed
+# by codes (80 columns only), 'x' the example line, 'p' prose with codes
+# picked out, 'd' page marker, '' blank. Codes are drawn in one colour so
+# the reader learns "this colour is something you type"; the one exception
+# is the colour names, each in its own colour, taken from the same table
+# term.cpp uses so the sample is what the reader will actually get.
+# ==========================================================================
+CODES40 = [
+    [   ("t", "CODES IN YOUR MESSAGES"),
+        ("r", ""),
+        ("p", "Type a code between two @ signs in a"),
+        ("p", "forum post, in mail or in chat, and"),
+        ("p", "everyone who reads it sees the effect."),
+        ("", ""),
+        ("x", "  @YELLOW@Hello@N@ @OOPS:nerds@friends"),
+        ("", ""),
+        ("p", "Readers see \"Hello\" in yellow, then"),
+        ("p", "\"nerds\" typed out and rubbed away,"),
+        ("p", "and \"friends\" in its place."),
+        ("", ""),
+        ("h", "COLOUR"),
+        ("p", "@RED@ @GREEN@ @BLUE@ @YELLOW@ @CYAN@"),
+        ("p", "@PURPLE@ @ORANGE@ @BROWN@ @WHITE@"),
+        ("p", "@LTRED@ @LTGREEN@ @LTBLUE@"),
+        ("p", "@GREY@ @LTGREY@ @DARKGREY@"),
+        ("", ""),
+        ("p", "Colour lasts until @N@ or the end of"),
+        ("p", "the line."),
+        ("", ""),
+        ("d", "Page 1 of 3") ],
+
+    [   ("h", "EFFECTS, on up to 40 characters"),
+        ("p", "@BLINK:text@     flashes a few times"),
+        ("p", "@SCRAMBLE:text@  unscrambles into place"),
+        ("p", "@TYPE:text@      types letter by letter"),
+        ("p", "@OOPS:text@      types, then rubs out"),
+        ("", ""),
+        ("h", "DROP-INS"),
+        ("p", "@SPIN@   a short spinner"),
+        ("p", "@DOTS@   dots, one at a time"),
+        ("p", "@NOISE@  a burst of modem line noise"),
+        ("p", "@RULE@   a line to the end of the row"),
+        ("p", "@BELL@   rings the bell, once a message"),
+        ("", ""),
+        ("h", "FILL-INS"),
+        ("p", "@BOARD@        this board's name"),
+        ("p", "@DATE@ @TIME@  the moment it is read"),
+        ("", ""),
+        ("p", "@@ prints one @. Anything that is not"),
+        ("p", "a code prints as typed, so an email"),
+        ("p", "address is fine."),
+        ("", ""),
+        ("d", "Page 2 of 3") ],
+
+    [   ("t", "THE FINE PRINT"),
+        ("r", ""),
+        ("p", "Up to 8 codes work in a message, and"),
+        ("p", "an effect holds up to 40 characters."),
+        ("p", "Past that, codes print as typed."),
+        ("p", "Codes work in lower case too."),
+        ("", ""),
+        ("p", "A plain text terminal drops the colour"),
+        ("p", "and keeps the words. Except on a"),
+        ("p", "Commodore, ORANGE and BROWN look"),
+        ("p", "alike, and so do GREY and LTGREY."),
+        ("", ""),
+        ("p", "OOPS is a joke, not a delete: every"),
+        ("p", "reader sees the words go by."),
+        ("", ""),
+        ("p", "No code can clear a reader's screen,"),
+        ("p", "pause it or slow it down. Those reach"),
+        ("p", "into somebody else's screen and time,"),
+        ("p", "so they are not on offer."),
+        ("", ""),
+        ("p", "Old BBSes like PCBoard had @-codes too."),
+        ("d", "Page 3 of 3") ],
+]
+
+# One page for 80 columns. The Commodore line is the copy's own optional
+# one, taken up because the page had the row for it: an ANSI reader is the
+# one who types @GREY@ and sees no change.
+CODES80 = [
+    ("t", "CODES IN YOUR MESSAGES"),
+    ("r", ""),
+    ("p", "Type a code between two @ signs in a forum post, in mail or in chat, and"),
+    ("p", "everyone who reads it sees the effect. This line"),
+    ("x", "    @YELLOW@Hello@N@ @OOPS:nerds@friends"),
+    ("p", "shows \"Hello\" in yellow, types \"nerds\" and rubs it out, then \"friends\"."),
+    ("", ""),
+    ("l", "COLOUR   @RED@ @GREEN@ @BLUE@ @YELLOW@ @CYAN@ @PURPLE@ @ORANGE@ @BROWN@"),
+    ("p", "         @WHITE@ @LTRED@ @LTGREEN@ @LTBLUE@ @GREY@ @LTGREY@ @DARKGREY@"),
+    ("p", "         Colour lasts until @N@ or the end of the line."),
+    ("p", "         Except on a Commodore, ORANGE looks like BROWN and GREY like LTGREY."),
+    ("l", "EFFECTS  @BLINK:text@    flashes a few times  @TYPE:text@ a letter at a time"),
+    ("p", "         @SCRAMBLE:text@ unscrambles in place @OOPS:text@ types, then rubs out"),
+    ("l", "DROP-INS @SPIN@ a short spinner    @DOTS@ dots, one by one  @NOISE@ line noise"),
+    ("p", "         @RULE@ a line to the edge @BELL@ rings the bell, once a message"),
+    ("l", "FILL-INS @BOARD@ this board's name @DATE@ @TIME@ the moment it is read"),
+    ("", ""),
+    ("p", "@@ prints one @. Anything that is not a code prints as typed, so an email"),
+    ("p", "address is fine. Codes past 8 in a message, and effects over 40 characters,"),
+    ("p", "print as typed too. A plain text terminal drops the colour. OOPS is a joke,"),
+    ("p", "not a delete: everyone saw it. No code can clear a reader's screen, pause it"),
+    ("p", "or slow it down: those reach into somebody else's screen and time."),
+]
+
+# The fifteen colour names a message may use, as term.cpp draws them: the
+# PETSCII control byte and the SGR from kPetColor / kAnsiColor in Color
+# enum order. ORANGE and BROWN share an SGR and so do GREY and LTGREY, which
+# is accurate and is what the Commodore line on the screen is about.
+CODES_COLOUR_PET = {
+    "RED": "red", "GREEN": "green", "BLUE": "blue", "YELLOW": "yellow",
+    "CYAN": "cyan", "PURPLE": "purple", "ORANGE": "orange", "BROWN": "brown",
+    "WHITE": "white", "LTRED": "lred", "LTGREEN": "lgreen", "LTBLUE": "lblue",
+    "GREY": "grey", "LTGREY": "lgrey", "DARKGREY": "dgrey",
+}
+CODES_COLOUR_ANSI = {
+    "RED": "0;31", "GREEN": "0;32", "BLUE": "0;34", "YELLOW": "1;33",
+    "CYAN": "1;36", "PURPLE": "0;35", "ORANGE": "0;33", "BROWN": "0;33",
+    "WHITE": "1;37", "LTRED": "1;31", "LTGREEN": "1;32", "LTBLUE": "1;34",
+    "GREY": "0;37", "LTGREY": "0;37", "DARKGREY": "1;30",
+}
+
+# Roles. Title white, headings the note colour, prose grey, the example's
+# words white so they read as something typed, codes light green.
+CODES_ANSI = {"t": "1;37", "h": "1;36", "p": "0;37", "x": "1;37",
+              "d": "1;30", "rule": "0;34", "code": "1;32"}
+CODES_PET = {"t": "white", "h": "yellow", "p": "lgrey", "x": "white",
+             "d": "dgrey", "rule": "cyan", "code": "lgreen"}
+
+# A code runs from an opening @ to its closing @, with an optional :argument.
+# "@@" on its own counts as one, because it is the thing the reader types.
+CODE_RE = re.compile(r"@[A-Za-z]+(?::[^@\s]+)?@|@@")
+LABEL_RE = re.compile(r"^([A-Z-]+)(\s+)(.*)$")
+
+
+def at_escape(text):
+    """Every literal @ becomes @@ so the screen player prints it instead of
+    running it. Applied once, here, to every piece of text written."""
+    return text.replace("@", "@@")
+
+
+def code_segments(text):
+    """A copy line as (is_code, text) pieces."""
+    out, pos = [], 0
+    for m in CODE_RE.finditer(text):
+        if m.start() > pos:
+            out.append((False, text[pos:m.start()]))
+        out.append((True, m.group(0)))
+        pos = m.end()
+    if pos < len(text):
+        out.append((False, text[pos:]))
+    return out
+
+
+def code_name(code):
+    """@LTRED@ -> LTRED, @BLINK:text@ -> BLINK, @@ -> ''."""
+    return code.strip("@").split(":")[0].upper()
+
+
+def codes_check_widths(pages, limit):
+    for page in pages:
+        for _, text in page:
+            assert len(text) <= limit, f"{len(text)} > {limit}: {text!r}"
+
+
+def codes_ansi_line(kind, text):
+    if kind == "":
+        return b"\r\n"
+    if kind == "r":
+        return sgr(CODES_ANSI["rule"]) + bytes([H_LINE]) * 78 + b"\r\n"
+    if kind in ("t", "h", "d"):
+        return sgr(CODES_ANSI[kind]) + at_escape(text).encode("ascii") + b"\r\n"
+    base = CODES_ANSI["x" if kind == "x" else "p"]
+    out = bytearray()
+    cur = None
+    if kind == "l":
+        label, gap, text = LABEL_RE.match(text).groups()
+        out += sgr(CODES_ANSI["h"]) + label.encode("ascii") + gap.encode("ascii")
+        cur = CODES_ANSI["h"]
+    for is_code, piece in code_segments(text):
+        want = base
+        if is_code:
+            want = CODES_COLOUR_ANSI.get(code_name(piece), CODES_ANSI["code"])
+        if want != cur:
+            out += sgr(want)
+            cur = want
+        out += at_escape(piece).encode("ascii")
+    return bytes(out) + b"\r\n"
+
+
+def make_codes_ans():
+    codes_check_widths([CODES80], 78)
+    out = bytearray(b"@CLS@")
+    for kind, text in CODES80:
+        out += codes_ansi_line(kind, text)
+    out += sgr("0")
+    return bytes(out)
+
+
+def codes_pet_line(kind, text):
+    if kind == "":
+        return pet("cr")
+    if kind == "r":
+        return pet_rule(CODES_PET["rule"])
+    if kind in ("t", "h", "d"):
+        return pet(CODES_PET[kind]) + pet_text(at_escape(text)) + pet("cr")
+    base = CODES_PET["x" if kind == "x" else "p"]
+    out = bytearray()
+    cur = None
+    for is_code, piece in code_segments(text):
+        want = base
+        if is_code:
+            want = CODES_COLOUR_PET.get(code_name(piece), CODES_PET["code"])
+            # A stock C64 screen is blue. Blue on blue is not a sample of
+            # anything, so that one name stays in the code colour.
+            if want == "blue":
+                want = CODES_PET["code"]
+        if want != cur:
+            out += pet(want)
+            cur = want
+        out += pet_text(at_escape(piece))
+    return bytes(out) + pet("cr")
+
+
+def make_codes_seq():
+    codes_check_widths(CODES40, 39)
+    out = bytearray()
+    for n, page in enumerate(CODES40):
+        out += FF if n else pet("clr", "lower")
+        for kind, text in page:
+            out += codes_pet_line(kind, text)
+    return bytes(out)
+
+
+def make_codes_asc():
+    codes_check_widths(CODES40, 39)
+    out = bytearray()
+    for n, page in enumerate(CODES40):
+        if n:
+            out += FF
+        for kind, text in page:
+            line = "-" * 38 if kind == "r" else at_escape(text)
+            out += line.encode("ascii") + b"\n"
+    return bytes(out)
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     files = {
@@ -925,6 +1188,9 @@ def main():
         "privacy.seq": make_privacy_seq(),
         "privacy.ans": make_privacy_ans(),
         "privacy.asc": make_privacy_asc(),
+        "codes.seq": make_codes_seq(),
+        "codes.ans": make_codes_ans(),
+        "codes.asc": make_codes_asc(),
     }
     for name, data in files.items():
         (OUT / name).write_bytes(data)

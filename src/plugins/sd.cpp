@@ -212,14 +212,67 @@ bool copyOne(const char* from, const char* to) {
 // possible. Logs looked fine next to it only because the caller log is
 // actively mirrored there.
 //
-// Copy only what the card does not already have. A file on the card is
-// somebody's edit and the whole point of the override is that it wins, so
-// this never overwrites: it fills gaps. Flash is never written, which is
-// what keeps the card optional. Pull it and the board falls back to the set
-// it shipped with, exactly as before.
+// A file the sysop edited always wins; that is the whole point of the
+// override. Until 0.22.0 this only ever filled gaps, which also meant a
+// seeded copy nobody touched could never be updated: see seedScreens below
+// for how the board now tells its own copy from the sysop's. Flash is never
+// written, which is what keeps the card optional. Pull it and the board
+// falls back to the set it shipped with, exactly as before.
 //
 // ~21 KB across 24 files, done once at mount while no caller is waiting.
 // ---------------------------------------------------------------------------
+
+// fileHash: FNV-1a over a file's bytes, 0 when it cannot be read. Only ever
+// compared for equality, so the cost of a collision is one screen not
+// refreshed, never one overwritten.
+uint32_t fileHash(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return 0;
+    uint32_t h = 2166136261u;
+    uint8_t  buf[64];
+    size_t   n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+        for (size_t i = 0; i < n; ++i) { h ^= buf[i]; h *= 16777619u; }
+    fclose(f);
+    return h ? h : 1u;
+}
+
+// seededHash: what the manifest says this screen was when the board put it
+// on the card, 0 when it has no entry.
+uint32_t seededHash(const char* manifest, const char* name) {
+    FILE* f = fopen(manifest, "r");
+    if (!f) return 0;
+    char line[96];
+    uint32_t found = 0;
+    while (fgets(line, sizeof(line), f)) {
+        char* sp = strchr(line, ' ');
+        if (!sp) continue;
+        *sp = '\0';
+        if (!strcmp(line, name)) found = static_cast<uint32_t>(strtoul(sp + 1, nullptr, 16));
+    }
+    fclose(f);
+    return found;
+}
+
+// seedScreens: the stock screens on the card, and kept current.
+//
+// Seeding gave the Screens file area something in it, and the card is
+// played before flash, so a card copy is what callers see. That had a cost
+// nobody noticed until the welcome screen changed in 0.21.9: a stock screen
+// improved in a new build never reached a board with a card, because the
+// card still held the copy seeded the day it was first mounted.
+//
+// So the board remembers what it put there. .seeded in the card's screens
+// folder holds a hash of each screen as seeded. At mount:
+//   - not on the card            seed it, and record it
+//   - on the card, unchanged     still the board's copy: refresh it if the
+//     since it was seeded        stock one has changed, and record that
+//   - on the card, changed       the sysop edited it. It is theirs now, and
+//                                it is never touched or recorded again
+//   - on the card, no record     the sysop's own, or seeded by a build older
+//                                than the manifest. Left alone, because a
+//                                sysop's work overwritten is far worse than
+//                                a stale screen, which they can delete.
 void seedScreens() {
     constexpr size_t kNameCap = 64;        // longest screen filename copied
     const char* base = plat::sdBase();
@@ -234,7 +287,12 @@ void seedScreens() {
     DIR* d = opendir(src);
     if (!d) return;                        // nothing shipped to seed from
 
-    uint8_t made = 0, failed = 0;
+    char manifest[112], tmp[120];
+    snprintf(manifest, sizeof(manifest), "%s/.seeded", dst);
+    snprintf(tmp, sizeof(tmp), "%s.tmp", manifest);
+    FILE* out = fopen(tmp, "w");
+
+    uint8_t made = 0, fresh = 0, failed = 0;
     char    from[208], to[208];
     for (struct dirent* e = readdir(d); e; e = readdir(d)) {
         if (e->d_name[0] == '.') continue; // . .. and anything hidden
@@ -247,19 +305,52 @@ void seedScreens() {
         if (!len || len > kNameCap) continue;
 
         snprintf(to, sizeof(to), "%s/%.*s", dst, static_cast<int>(kNameCap), e->d_name);
-        struct stat st;
-        if (stat(to, &st) == 0) continue;  // the card's own copy always wins
         snprintf(from, sizeof(from), "%s/%.*s", src, static_cast<int>(kNameCap), e->d_name);
-        if (copyOne(from, to)) ++made; else ++failed;
+        uint32_t stock  = fileHash(from);
+        uint32_t record = 0;
+        struct stat st;
+        if (stat(to, &st) != 0) {
+            if (copyOne(from, to)) { ++made; record = stock; } else ++failed;
+        } else {
+            uint32_t was = seededHash(manifest, e->d_name);
+            uint32_t now = fileHash(to);
+            // No record, but byte for byte the stock screen: provably the
+            // board's own copy (or one indistinguishable from it), so it
+            // joins the record and follows future stock changes. This is
+            // how copies seeded before the manifest existed get picked up
+            // wherever they were never edited.
+            if (!was && now == stock) was = stock;
+            if (was && now == was) {                   // still the board's copy
+                if (was == stock) {
+                    record = was;
+                } else if (copyOne(from, to)) {        // the stock one moved on
+                    ++fresh;
+                    record = stock;
+                } else {
+                    // copyOne removes a half-written copy, so a failed refresh
+                    // falls back to the flash screen rather than a broken one.
+                    ++failed;
+                }
+            }
+        }
+        if (record && out)
+            fprintf(out, "%.*s %08lx\n", static_cast<int>(kNameCap), e->d_name,
+                    static_cast<unsigned long>(record));
     }
     closedir(d);
+    if (out) {
+        fclose(out);
+        remove(manifest);
+        rename(tmp, manifest);
+    }
 
     if (failed)
-        plat::log("sd: seeded %u screens to the card, %u could not be written",
-                  static_cast<unsigned>(made), static_cast<unsigned>(failed));
-    else if (made)
-        plat::log("sd: seeded %u screens to the card",
-                  static_cast<unsigned>(made));
+        plat::log("sd: seeded %u, refreshed %u screens, %u could not be written",
+                  static_cast<unsigned>(made), static_cast<unsigned>(fresh),
+                  static_cast<unsigned>(failed));
+    else if (made || fresh)
+        plat::log("sd: seeded %u, refreshed %u screens on the card",
+                  static_cast<unsigned>(made), static_cast<unsigned>(fresh));
 }
 
 bool start(Bbs& bbs) {

@@ -56,6 +56,10 @@ Disk free 612K, reserve 32K
 | `chat` | one chat room, DDial style (`#2:Daytona) hi`), room commands, moderation and the message system. On by default. Its own doc: [CHAT.md](CHAT.md). |
 | `announce` | tells a directory server the board exists, so callers can find it, and learns the board's public address back. Off by default, sends nothing about callers. Its own doc: [ANNOUNCE.md](ANNOUNCE.md). |
 | `serial` | shares a serial device: one operator with `write`, any number of watchers with `read` |
+| `sd` | mounts an optional SD card over SPI and lets its `screens` folder override the stock screens, per file. On by default; costs one failed mount at boot on a board with no card. |
+| `files` | publishes folders on the card as file areas, with XMODEM/YMODEM download and upload. Needs a card, so it does not start on a cardless board. |
+| `forums` | topic message boards on the card: forums, subjects, replies. Needs a card; a sysop switches it on once the topic areas are set up. |
+| `info` | the ten information pages a sysop writes (`INFO` / `I`, `/i` in the room). On by default, no card needed. |
 | `example` | the template, and what the tests drive |
 
 ## Writing one

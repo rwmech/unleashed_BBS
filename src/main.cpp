@@ -42,19 +42,29 @@
 
 #include "config.h"
 #include "core/bbs.h"
+#include "core/bbs_util.h"
+#include "core/improv.h"
 #include "core/sysconfig.h"
 #include "core/plugin.h"
 #include "platform/platform.h"
 
+// secrets.h is optional now. A developer's build may carry a network in it
+// as a fallback; a published binary has none, and is told where to go by
+// Improv over the cable it was flashed with. system.cfg wins over both.
 #if __has_include("secrets.h")
 #include "secrets.h"
-#else
-#error "Copy include/secrets.h.example to include/secrets.h and set Wi-Fi credentials"
+#endif
+#ifndef WIFI_SSID
+#define WIFI_SSID ""
+#endif
+#ifndef WIFI_PASS
+#define WIFI_PASS ""
 #endif
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+#include "driver/uart.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_netif.h"
@@ -69,7 +79,17 @@
 
 static const char* TAG = "main";
 static EventGroupHandle_t s_wifi = nullptr;
-static const EventBits_t WIFI_UP = BIT0;
+static const EventBits_t WIFI_UP   = BIT0;
+static const EventBits_t SCAN_DONE = BIT1;
+
+// What the radio is set to right now, and whether to keep dialling it.
+// s_hold stops the disconnect handler reconnecting while Improv swaps the
+// network over or scans: esp_wifi_set_config refuses while the station is
+// connecting, and the handler would otherwise start a connect in the gap.
+static char          s_ssid[33] = "";
+static char          s_pass[65] = "";
+static volatile bool s_hold     = false;
+static esp_ip4_addr_t s_ip      = {};
 
 // noSleep: keep the radio awake, and complain if it will not.
 //
@@ -93,7 +113,11 @@ static esp_err_t noSleep() {
 // ---------------------------------------------------------------------------
 static void onNet(void*, esp_event_base_t base, int32_t id, void* data) {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+        // No network set is a board waiting for Improv, not one to dial
+        // nothing in a tight loop.
+        if (s_ssid[0]) esp_wifi_connect();
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_SCAN_DONE) {
+        xEventGroupSetBits(s_wifi, SCAN_DONE);
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_CONNECTED) {
         // Associated, which is the earliest point the setting can be made to
         // stick. A reconnect that keeps the same lease never reaches the
@@ -103,9 +127,13 @@ static void onNet(void*, esp_event_base_t base, int32_t id, void* data) {
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         auto* e = static_cast<wifi_event_sta_disconnected_t*>(data);
         xEventGroupClearBits(s_wifi, WIFI_UP);
+        if (s_hold || !s_ssid[0]) return;       // Improv has the radio
         ESP_LOGW(TAG, "wifi down (reason %u, rssi %d), reconnecting",
                  static_cast<unsigned>(e->reason), static_cast<int>(e->rssi));
-        esp_wifi_connect();
+        // Asked again after the log line, which holds the console for a few
+        // milliseconds: Improv may have taken the radio in between, and a
+        // connect started now would dial the network it is replacing.
+        if (!s_hold) esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         auto* e = static_cast<ip_event_got_ip_t*>(data);
         // Power save off, here, every time we come up.
@@ -134,6 +162,7 @@ static void onNet(void*, esp_event_base_t base, int32_t id, void* data) {
         // precisely the gap that lets the radio doze.
         esp_err_t ps = noSleep();
         (void)ps;
+        s_ip = e->ip_info.ip;
         ESP_LOGI(TAG, "online " IPSTR "  dial in: telnet " IPSTR " %u",
                  IP2STR(&e->ip_info.ip), IP2STR(&e->ip_info.ip), BBS_PORT);
         xEventGroupSetBits(s_wifi, WIFI_UP);
@@ -150,7 +179,30 @@ static void copyField(uint8_t* dst, size_t cap, const char* src) {
 }
 
 // ---------------------------------------------------------------------------
-// wifiStart: station mode, credentials from secrets.h
+// wifiUse: point the station at a network. Remembers it in s_ssid/s_pass so
+// the reconnect handler and Improv both know what the radio is set to.
+// ---------------------------------------------------------------------------
+static esp_err_t wifiUse(const char* ssid, const char* pass) {
+    wifi_config_t wc;
+    memset(&wc, 0, sizeof(wc));
+    copyField(wc.sta.ssid, sizeof(wc.sta.ssid), ssid);
+    copyField(wc.sta.password, sizeof(wc.sta.password), pass);
+    wc.sta.threshold.authmode = *pass ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+    // several APs share one SSID: scan every channel, join the strongest
+    wc.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    wc.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    esp_err_t e = esp_wifi_set_config(WIFI_IF_STA, &wc);
+    if (e == ESP_OK) {
+        snprintf(s_ssid, sizeof(s_ssid), "%s", ssid);
+        snprintf(s_pass, sizeof(s_pass), "%s", pass);
+    }
+    return e;
+}
+
+// ---------------------------------------------------------------------------
+// wifiStart: station mode. The network comes from system.cfg, then from
+// secrets.h if this build has one, and otherwise from nobody yet: the board
+// waits for Improv and says so on the console.
 // ---------------------------------------------------------------------------
 static void wifiStart() {
     s_wifi = xEventGroupCreate();
@@ -164,18 +216,20 @@ static void wifiStart() {
     esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &onNet, nullptr);
     esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &onNet, nullptr);
 
-    wifi_config_t wc;
-    memset(&wc, 0, sizeof(wc));
-    copyField(wc.sta.ssid, sizeof(wc.sta.ssid), WIFI_SSID);
-    copyField(wc.sta.password, sizeof(wc.sta.password), WIFI_PASS);
-    wc.sta.threshold.authmode = strlen(WIFI_PASS) ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
-    // several APs share one SSID: scan every channel, join the strongest
-    wc.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
-    wc.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    const SysConfig& sc = syscfg::get();
+    const char* ssid = sc.wifiSsid[0] ? sc.wifiSsid : WIFI_SSID;
+    const char* pass = sc.wifiSsid[0] ? sc.wifiPass : WIFI_PASS;
 
     esp_wifi_set_storage(WIFI_STORAGE_RAM);
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
+    if (wifiUse(ssid, pass) != ESP_OK) ESP_LOGE(TAG, "the Wi-Fi settings were refused by the radio");
+    if (!s_ssid[0]) {
+        ESP_LOGW(TAG, "no Wi-Fi network set. Send one over USB with Improv "
+                      "(https://www.improv-wifi.com), or set wifi_ssid in system.cfg");
+    } else {
+        ESP_LOGI(TAG, "wifi: joining \"%s\" (from %s)", s_ssid,
+                 sc.wifiSsid[0] ? "system.cfg" : "secrets.h");
+    }
     ESP_ERROR_CHECK(esp_wifi_start());
     // Power save is NOT set here. esp_wifi_start() raises STA_START, whose
     // handler connects immediately, so anything on this line races the
@@ -242,11 +296,296 @@ static void netServicesStart() {
     ESP_LOGI(TAG, "mdns: %s.local, _telnet._tcp port %u", cfg.hostname, BBS_PORT);
 }
 
+// ===========================================================================
+// Improv Wi-Fi Serial on the console UART. The packets are core/improv; this
+// is the radio and the wire. Polled from the BBS task, before the network is
+// up and for as long as the board runs, so a board that has moved house can
+// be told its new network over the same cable.
+// ===========================================================================
+namespace imp {
+
+constexpr uint32_t kTrialMs  = 30000;   // ESP Web Tools waits 45 s and says ~30
+constexpr uint32_t kScanMs   = 15000;   // an all-channel scan takes 2-3 s; this is the backstop
+constexpr uint8_t  kScanMax  = 20;      // networks listed; the page scrolls, a C64 does not care
+
+improv::Parser g_parser;
+bool     g_uartOk = false;              // set by app_main once the driver is in
+bool     g_trial = false;               // a new network is being tried
+uint32_t g_trialAt = 0;
+bool     g_scanning = false;
+uint32_t g_scanAt = 0;
+char     g_oldSsid[33], g_oldPass[65];  // to go back to if the new one fails
+char     g_newSsid[33], g_newPass[65];
+
+bool up() { return xEventGroupGetBits(s_wifi) & WIFI_UP; }
+
+// send: one frame, with a newline in front of it. The browser only looks
+// for a packet at the start of a line, and the console may be part way
+// through one. stdout's lock is held so a log line from another task cannot
+// land in the middle of a packet: ESP_LOG takes the same lock, and a packet
+// with a log line spliced into it fails its checksum and is never seen.
+// uart_write_bytes rather than stdout itself, because stdout turns every
+// 0x0A into CR LF and a length or checksum byte can be 0x0A.
+// The IDF's newlib has no flockfile(), and its _flockfile macro does not
+// compile as C++. __lock_acquire_recursive on the stream's own lock is what
+// that macro expands to for a stream that is not a string, so this is the
+// lock vfprintf takes and not a copy of it.
+void send(const uint8_t* b, size_t n) {
+    if (!n) return;
+    __lock_acquire_recursive(stdout->_lock);
+    fflush(stdout);
+    uart_write_bytes(UART_NUM_0, "\n", 1);
+    uart_write_bytes(UART_NUM_0, b, n);
+    __lock_release_recursive(stdout->_lock);
+}
+void sendState(uint8_t st) { uint8_t b[16]; send(b, improv::stateFrame(b, sizeof(b), st)); }
+void sendError(uint8_t e)  { uint8_t b[16]; send(b, improv::errorFrame(b, sizeof(b), e)); }
+void sendResult(uint8_t cmd, const char* const* s, uint8_t n) {
+    uint8_t b[improv::kDataMax + 16];
+    send(b, improv::resultFrame(b, sizeof(b), cmd, s, n));
+}
+
+// sendUrl: where to go once the board is on the network. A telnet: link,
+// because that is what this board is; a browser with a telnet handler
+// opens it, and one without shows the address to type.
+void sendUrl(uint8_t cmd) {
+    char url[48];
+    snprintf(url, sizeof(url), "telnet://" IPSTR ":%u", IP2STR(&s_ip), BBS_PORT);
+    const char* s[] = { url };
+    sendResult(cmd, s, 1);
+}
+
+// switchTo: move the radio to another network and start dialling it. The
+// set_config retries cover a connect already in flight, which refuses the
+// change until it gives up; an all-channel scan can take a few seconds.
+//
+// That spin blocks the BBS loop, and it is only reached while the station
+// is part way through a connect, which is to say off the network, which is
+// to say with no callers on it to stall. A board that is up disconnects at
+// once and set_config takes the first time.
+bool switchTo(const char* ssid, const char* pass) {
+    s_hold = true;
+    esp_wifi_disconnect();
+    xEventGroupClearBits(s_wifi, WIFI_UP);
+    esp_err_t e = ESP_FAIL;
+    for (int i = 0; i < 100; ++i) {
+        e = wifiUse(ssid, pass);
+        if (e != ESP_ERR_WIFI_STATE) break;
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    s_hold = false;
+    if (e != ESP_OK) {
+        ESP_LOGW(TAG, "improv: the radio refused \"%s\" (%s)", ssid, esp_err_to_name(e));
+        return false;
+    }
+    return !s_ssid[0] || esp_wifi_connect() == ESP_OK;
+}
+
+void startScan() {
+    if (g_scanning) return;
+    if (g_trial) { sendError(improv::E_UNKNOWN); return; }
+    // A board failing to join its network is dialling in a loop, and the
+    // radio will not scan while it does. Stop dialling for the scan.
+    s_hold = true;
+    if (!up()) esp_wifi_disconnect();
+    xEventGroupClearBits(s_wifi, SCAN_DONE);
+    esp_err_t e = ESP_FAIL;
+    for (int i = 0; i < 100; ++i) {
+        e = esp_wifi_scan_start(nullptr, false);
+        if (e != ESP_ERR_WIFI_STATE) break;
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    if (e != ESP_OK) {
+        s_hold = false;
+        if (!up() && s_ssid[0]) esp_wifi_connect();
+        ESP_LOGW(TAG, "improv: scan refused (%s)", esp_err_to_name(e));
+        sendError(improv::E_UNKNOWN);
+        return;
+    }
+    g_scanning = true;
+    g_scanAt   = plat::millis();
+}
+
+// endScan: give the radio back to the reconnect handler, whichever way the
+// scan ended. Without it a scan that never finished would hold s_hold for
+// ever: no reconnects, and every set-network refused as busy.
+void endScan() {
+    g_scanning = false;
+    s_hold = false;
+    if (!up() && s_ssid[0]) esp_wifi_connect();
+}
+
+// finishScan: one result per network, strongest first as the radio gives
+// them, each name once, then an empty result to say that is all.
+void finishScan() {
+    uint16_t n = 0;
+    esp_wifi_scan_get_ap_num(&n);
+    uint32_t seen[kScanMax];
+    uint8_t  sent = 0;
+    wifi_ap_record_t ap;
+    for (uint16_t i = 0; i < n && sent < kScanMax; ++i) {
+        if (esp_wifi_scan_get_ap_record(&ap) != ESP_OK) break;
+        const char* name = reinterpret_cast<const char*>(ap.ssid);
+        if (!name[0]) continue;                         // hidden network
+        uint32_t h = bbsu::hash(name);
+        bool dup = false;
+        for (uint8_t k = 0; k < sent; ++k) if (seen[k] == h) dup = true;
+        if (dup) continue;
+        seen[sent++] = h;
+        char rssi[8];
+        snprintf(rssi, sizeof(rssi), "%d", static_cast<int>(ap.rssi));
+        const char* s[] = { name, rssi, ap.authmode == WIFI_AUTH_OPEN ? "NO" : "YES" };
+        sendResult(improv::C_SCAN, s, 3);
+    }
+    esp_wifi_clear_ap_list();                           // whatever was not read
+    sendResult(improv::C_SCAN, nullptr, 0);
+    endScan();
+}
+
+// cleanText: what system.cfg can hold and give back unchanged. The parser
+// trims both ends and a line ends at a newline, so a value with a control
+// byte or an outer space would join during the trial and fail after the
+// reboot the save was for. An SSID may be UTF-8, so bytes above 0x7E are
+// allowed there; a WPA2 passphrase is printable ASCII by the standard.
+bool cleanText(const char* s, bool asciiOnly) {
+    size_t n = strlen(s);
+    if (n && (s[0] == ' ' || s[n - 1] == ' ')) return false;
+    for (size_t i = 0; i < n; ++i) {
+        uint8_t c = static_cast<uint8_t>(s[i]);
+        if (c < 0x20 || c == 0x7F) return false;
+        if (asciiOnly && c > 0x7E) return false;
+    }
+    return true;
+}
+
+void handle() {
+    if (g_parser.type() != improv::T_RPC) return;       // the board only answers questions
+    uint8_t cmd = 0, plen = 0;
+    const uint8_t* pay = nullptr;
+    if (!improv::parseRpc(g_parser.data(), g_parser.len(), cmd, pay, plen)) {
+        sendError(improv::E_INVALID);
+        return;
+    }
+    switch (cmd) {
+    case improv::C_STATE:
+        if (g_trial)   sendState(improv::S_PROVISIONING);
+        else if (up()) { sendState(improv::S_PROVISIONED); sendUrl(improv::C_STATE); }
+        else           sendState(improv::S_AUTHORIZED);
+        break;
+    case improv::C_INFO: {
+        const SysConfig& c = syscfg::get();
+        const char* s[] = { "unleashed BBS", BBS_VERSION, "ESP32",
+                            c.boardName[0] ? c.boardName : c.hostname };
+        sendResult(improv::C_INFO, s, 4);
+        break;
+    }
+    case improv::C_SCAN:
+        startScan();
+        break;
+    case improv::C_WIFI: {
+        if (g_trial || g_scanning) { sendError(improv::E_UNKNOWN); break; }
+        if (!improv::parseWifi(pay, plen, g_newSsid, sizeof(g_newSsid), g_newPass, sizeof(g_newPass)) ||
+            !cleanText(g_newSsid, false) || !cleanText(g_newPass, true)) {
+            sendError(improv::E_INVALID);
+            break;
+        }
+        snprintf(g_oldSsid, sizeof(g_oldSsid), "%s", s_ssid);
+        snprintf(g_oldPass, sizeof(g_oldPass), "%s", s_pass);
+        sendState(improv::S_PROVISIONING);
+        plat::log("improv: trying \"%s\"", g_newSsid);  // never the password
+        if (!switchTo(g_newSsid, g_newPass)) {
+            sendError(improv::E_CONNECT);
+            switchTo(g_oldSsid, g_oldPass);
+            sendState(improv::S_AUTHORIZED);
+            break;
+        }
+        g_trial   = true;
+        g_trialAt = plat::millis();
+        break;
+    }
+    default:
+        sendError(improv::E_UNKNOWN_RPC);
+        break;
+    }
+}
+
+// finishTrial: the new network answered. Keep it in system.cfg, where it
+// survives a reflash, and only then say so: a board that reported success
+// and forgot at the next power cut would be worse than one that failed.
+void finishTrial() {
+    g_trial = false;
+    syscfg::KeyVal kv[] = { { "wifi_ssid", g_newSsid }, { "wifi_password", g_newPass } };
+    char err[80] = "";
+    if (!syscfg::write(kv, 2, nullptr, err, sizeof(err))) {
+        plat::log("improv: joined \"%s\" but could not save it: %s", g_newSsid, err);
+        sendError(improv::E_UNKNOWN);
+        return;
+    }
+    char rerr[80] = "";
+    if (!syscfg::reload(rerr, sizeof(rerr))) plat::log("improv: saved, but %s", rerr);
+    plat::log("improv: joined \"%s\" and saved it", g_newSsid);
+    sendState(improv::S_PROVISIONED);
+    sendUrl(improv::C_WIFI);
+}
+
+// joinedNew: up, and on the network being tried. WIFI_UP alone is not
+// proof: a connect to the old network that slipped in as the radio changed
+// hands, or a GOT_IP already queued, raises it too, and saving on that
+// would write untested credentials and report success.
+bool joinedNew() {
+    if (!up()) return false;
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) return false;
+    return !strcmp(reinterpret_cast<const char*>(ap.ssid), g_newSsid);
+}
+
+// poll: whatever has arrived, then the trial and the scan.
+void poll() {
+    if (!g_uartOk) return;                  // the driver refused; say so once, at boot
+    uint8_t buf[64];
+    int n = uart_read_bytes(UART_NUM_0, buf, sizeof(buf), 0);
+    for (int i = 0; i < n; ++i)
+        if (g_parser.feed(buf[i]) == improv::Parser::Res::Packet) handle();
+
+    if (g_trial) {
+        if (joinedNew()) finishTrial();
+        else if (plat::millis() - g_trialAt >= kTrialMs) {
+            g_trial = false;
+            plat::log("improv: \"%s\" did not answer, going back", g_newSsid);
+            sendError(improv::E_CONNECT);
+            switchTo(g_oldSsid, g_oldPass);
+            sendState(improv::S_AUTHORIZED);
+        }
+    }
+    if (g_scanning) {
+        if (xEventGroupGetBits(s_wifi) & SCAN_DONE) finishScan();
+        else if (plat::millis() - g_scanAt >= kScanMs) {
+            esp_wifi_scan_stop();
+            esp_wifi_clear_ap_list();
+            sendError(improv::E_UNKNOWN);
+            endScan();
+        }
+    }
+}
+
+} // namespace imp
+
 // ---------------------------------------------------------------------------
-// bbsTask: waits for the network, then runs the scheduler forever
+// bbsTask: waits for the network, answering Improv meanwhile, then runs the
+// scheduler forever
 // ---------------------------------------------------------------------------
 static void bbsTask(void*) {
-    xEventGroupWaitBits(s_wifi, WIFI_UP, pdFALSE, pdTRUE, portMAX_DELAY);
+    uint32_t told = plat::millis();
+    while (!imp::up()) {
+        imp::poll();
+        // Somebody may open the monitor long after boot, so the one line
+        // that says what to do is repeated rather than scrolled away.
+        if (!s_ssid[0] && plat::millis() - told >= 30000) {
+            told = plat::millis();
+            plat::log("wifi: no network set; waiting for Improv on this port");
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
     netServicesStart();
     Bbs& bbs = Bbs::instance();
     while (!bbs.begin(BBS_PORT)) vTaskDelay(pdMS_TO_TICKS(1000));
@@ -259,6 +598,7 @@ static void bbsTask(void*) {
 
     for (;;) {
         bbs.tick();
+        imp::poll();     // one non-blocking UART read when nothing is arriving
         vTaskDelay(1);   // let lower-priority tasks on this core breathe
     }
 }
@@ -270,6 +610,15 @@ extern "C" void app_main(void) {
         err = nvs_flash_init();
     }
     ESP_ERROR_CHECK(err);
+
+    // The console UART gets a driver so Improv can read it without blocking.
+    // The log keeps writing the way it always has; only input changes hands,
+    // and nothing else here ever read the console.
+    // Without it every read would fail and the driver would log the failure
+    // on every pass, so Improv is simply off.
+    esp_err_t ue = uart_driver_install(UART_NUM_0, 256, 0, 0, nullptr, 0);
+    imp::g_uartOk = ue == ESP_OK;
+    if (!imp::g_uartOk) ESP_LOGE(TAG, "console UART driver: %s, Improv is off", esp_err_to_name(ue));
 
     plat::HeapStats h = plat::heap();
     plat::log("boot: %s %s  heap free %u  largest %u",

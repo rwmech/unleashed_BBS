@@ -170,9 +170,10 @@ bool fsInfo(uint32_t& total, uint32_t& used);
 // ---------------------------------------------------------------------------
 struct SdPins {
     int8_t   cs   = 5;   // the board Rob wired: CS D5, MOSI D23, CLK D18, MISO D19
-    int8_t   mosi = 23;  // GPIO5 is a strapping pin, so cs is the one to move
-    int8_t   clk  = 18;  // first if a board will not boot with a card attached
-    int8_t   miso = 19;
+    int8_t   mosi = 23;  // GPIO5 is a strapping pin, but it only sets the SDIO
+    int8_t   clk  = 18;  // slave timing, which this board never uses, so a card
+    int8_t   miso = 19;  // on it cannot stop a boot (ESP32 datasheet, strapping
+                         // pins). This said otherwise until 0.22.0.
     // Bus speed in kHz. A setting rather than a constant because it is the
     // first thing to change when a card enumerates and then fails its first
     // real read, which is what dupont jumpers to a breakout produce: the card

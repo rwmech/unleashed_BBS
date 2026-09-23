@@ -575,6 +575,18 @@ void Bbs::cmdTimeAdjust(Session& s, const char* arg) {
     Timeline& tl = s.tl;
     char buf2[64];
 
+    // The permission is checked HERE, not only by the caller. The shell's
+    // TIME checked PERM_TIME before calling this; the room's /t called it
+    // directly, and bbs.h said this function "does its own permission
+    // check" when it did not. So from 0.21.4 any caller in the room could
+    // type /t -1 and be off the clock, or /t 3 +600 and give a node ten
+    // hours. A check that lives with the thing it guards cannot be skipped
+    // by the next door somebody adds to it.
+    if (!can(s, PERM_TIME)) {
+        say(t, tl, Color::LightRed, "Only staff can change a caller's time.");
+        return;
+    }
+
     // TIME -1 with no node is about this line, which is how a sysop settling
     // in for a long evening will type it.
     if (offClock(arg)) {
@@ -761,6 +773,15 @@ const CfgField kStaff[] = {
     { "cosysop2_password", "Co-sysop 2", CK_PASS, 0, 0, 32 },
 };
 
+// The network. Used from the next restart, never live: changing it under a
+// telnet session drops the sysop who changed it, and a typo would take the
+// board off the network with nobody left on it to put it back. The cable
+// and Improv are the way to fix a board that cannot reach its network.
+const CfgField kWifi[] = {
+    { "wifi_ssid",     "Network",  CK_TEXT, 0, 0, 32 },
+    { "wifi_password", "Password", CK_PASS, 0, 0, 64 },
+};
+
 struct CfgPage {
     const char*     name;      // what a caller types after CONFIG
     const char*     title;     // the form's title bar
@@ -787,6 +808,7 @@ const CfgPage kPages[] = {
     CFG_PAGE("accounts", "ACCOUNTS",        "sign-ups and guest calls",        kAccounts),
     CFG_PAGE("backup",   "BACKUP WINDOW",   "port, how long it stays open",    kBackup),
     CFG_PAGE("staff",    "STAFF PASSWORDS", "sysop and co-sysop passwords",    kStaff),
+    CFG_PAGE("wifi",     "WI-FI",           "network, from the next restart",  kWifi),
 };
 constexpr uint8_t kPageCount = sizeof(kPages) / sizeof(kPages[0]);
 
@@ -851,6 +873,11 @@ struct CfgComposite {
     const char*    what;      // one word for the status line
     const CfgPart* parts;
     uint8_t        count;
+    // Which part the button shows. A file area and a forum put their name
+    // second, after the path or key; an information page has no key and
+    // its title comes first, so a fixed "part 1" would have labelled every
+    // page's button with its read level.
+    uint8_t        namePart;
 };
 
 // The count MUST come from the table, not be written out again beside it.
@@ -892,9 +919,18 @@ constexpr CfgPart kTopicParts[] = {
     { "Moderate", CK_LEVEL,  6, IN_ADMIN },     // delete, pin, move
 };
 
+// An information page: "page3 = House rules | all". The text is written
+// with INFO 3 EDIT; only what it is called and who may read it live here.
+constexpr CfgPart kInfoParts[] = {
+    // The fallback is info.cpp's mayRead.
+    { "Title", CK_TEXT,  24, 0 },               // info.cpp kTitleMax
+    { "Read",  CK_LEVEL,  6, IN_READ },         // who sees it in the list
+};
+
 const CfgComposite kComposites[] = {
-    { "plugin:files",  "area",  "FILE AREA", "area",  CFG_PARTS(kAreaParts)  },
-    { "plugin:forums", "topic", "FORUM",     "forum", CFG_PARTS(kTopicParts) },
+    { "plugin:files",  "area",  "FILE AREA", "area",  CFG_PARTS(kAreaParts),  1 },
+    { "plugin:forums", "topic", "FORUM",     "forum", CFG_PARTS(kTopicParts), 1 },
+    { "plugin:info",   "page",  "INFO PAGE", "page",  CFG_PARTS(kInfoParts),  0 },
 };
 constexpr uint8_t kCompositeCount = sizeof(kComposites) / sizeof(kComposites[0]);
 
@@ -918,6 +954,8 @@ static_assert(sizeof(kAreaParts)  / sizeof(kAreaParts[0])  <= kMaxParts,
               "kAreaParts has more parts than kMaxParts holds: raise kMaxParts");
 static_assert(sizeof(kTopicParts) / sizeof(kTopicParts[0]) <= kMaxParts,
               "kTopicParts has more parts than kMaxParts holds: raise kMaxParts");
+static_assert(sizeof(kInfoParts) / sizeof(kInfoParts[0]) <= kMaxParts,
+              "kInfoParts has more parts than kMaxParts holds: raise kMaxParts");
 
 // IN_PART | k is an index written beside a table, the shape that has cost
 // this file three bugs already. Pin each one to the part it means, so a
@@ -1034,6 +1072,8 @@ void cfgLiveValue(const char* key, char* out, size_t n) {
     else if (!strcmp(key, "sysop_password"))        snprintf(out, n, "%s", c.sysopPass[0] ? kMasked : "");
     else if (!strcmp(key, "cosysop1_password"))     snprintf(out, n, "%s", c.coPass[0][0] ? kMasked : "");
     else if (!strcmp(key, "cosysop2_password"))     snprintf(out, n, "%s", c.coPass[1][0] ? kMasked : "");
+    else if (!strcmp(key, "wifi_ssid"))             snprintf(out, n, "%s", c.wifiSsid);
+    else if (!strcmp(key, "wifi_password"))         snprintf(out, n, "%s", c.wifiPass[0] ? kMasked : "");
     else out[0] = '\0';
 }
 
@@ -1116,9 +1156,9 @@ uint8_t cfgSectionPlugin(const char* section) {
 // cfgSummary: what the button says. The name, or what it points at when it
 // has no name, or plainly nothing so an unused row reads as unused rather
 // than as a blank somebody forgot to fill in.
-void cfgSummary(const char* packed, char* out, size_t n) {
+void cfgSummary(const char* packed, uint8_t namePart, char* out, size_t n) {
     char part[64];
-    cfgPart(packed, 1, part, sizeof(part));
+    cfgPart(packed, namePart, part, sizeof(part));
     if (!part[0]) cfgPart(packed, 0, part, sizeof(part));
     snprintf(out, n, "%.*s", static_cast<int>(n) - 1, part[0] ? part : "not set");
 }
@@ -1308,7 +1348,8 @@ void Bbs::configOpenPage(Session& s, uint8_t focus, uint32_t now) {
         if (f.kind == CK_INFO)  flags |= FF_READONLY;
         if (f.kind == CK_SUB) {
             flags |= FF_ACTION;
-            cfgSummary(buf2, g_cfgSum[i], sizeof(g_cfgSum[0]));
+            const CfgComposite* comp = compositeFor(g_cfgSection, f.key);
+            cfgSummary(buf2, comp ? comp->namePart : 1, g_cfgSum[i], sizeof(g_cfgSum[0]));
             buf2 = g_cfgSum[i];                 // the button shows the summary
         }
         addField(s, n, f.label, buf2, f.kind == CK_SUB ? 0 : f.cap, flags, choices);
@@ -1337,6 +1378,12 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
         if (f.kind == CK_PASS && !strcmp(v, kMasked)) continue;      // untouched
         if (bbsu::hash(v) == g_cfgWas[i]) continue;                  // nothing to write
         if (!*v && (f.kind == CK_YESNO || f.kind == CK_LEVEL)) continue;
+        // WPA2's own rule. Caught here, where it can be retyped, rather than
+        // by the parser after it is on disk and the reload has refused it.
+        if (!strcmp(f.key, "wifi_password") && *v && strlen(v) < 8) {
+            s.form.fail(i, "8 to 64 characters", s.term, s.tl);
+            return false;
+        }
         if (f.kind == CK_NUM) {
             if (!digitsOnly(v)) {
                 s.form.fail(i, "Numbers only", s.term, s.tl);
@@ -1357,7 +1404,12 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
     }
     if (!n) { snprintf(err, errLen, "Nothing changed"); return true; }
     if (!syscfg::write(pairs, n, g_cfgSection[0] ? g_cfgSection : nullptr, err, errLen)) return false;
-    return configReloadAll(err, errLen);
+    bool ok = configReloadAll(err, errLen);
+    // The radio is not touched until a restart (see kWifi), so "live" would
+    // be a promise the board is not keeping.
+    if (ok && g_cfgPage->fields == kWifi && !strcmp(err, "Saved and live"))
+        snprintf(err, errLen, "Saved, used from the next restart");
+    return ok;
 }
 
 // ---------------------------------------------------------------------------

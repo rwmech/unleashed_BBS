@@ -232,6 +232,12 @@ struct Session {
 
     // presence
     bool         dnd         = false;  // refuse pages
+    // BELL and the room's /b: no bells caused by other callers (pages,
+    // broadcasts, arrivals, the room, @BELL@). One setting for the call,
+    // on the session rather than in the chat plugin, because the main
+    // prompt rings too and a setting the room reset on every visit was two
+    // settings pretending to be one.
+    bool         bellOff     = false;
     bool         visible     = true;   // listed in WHO (sysop default: hidden)
     bool         lurk        = false;  // staff: hidden and pages off
     int8_t       histPos     = -1;     // -1 = editing a fresh line
@@ -415,6 +421,16 @@ public:
     void notify(Session& to, const char* text);
     void cmdTimeAdjust(Session& s, const char* arg);
 
+    // findCommand: the command a verb or shortcut runs for this caller, or
+    // null. Public so the room's /? <command> can answer for main prompt
+    // words by the same rule: a command the caller may not use is unknown.
+    const Command* findCommand(const char* verb, const Session& s) const;
+
+    // codesSummary: the inline @-codes in a dozen lines, for CODES on a
+    // board with no screens/codes and for the room's /codes, where a paged
+    // screen cannot be played. Prints and draws no prompt.
+    void codesSummary(Session& s);
+
     // logoff: end the call exactly as BYE does, send-off screen, linger and
     // all, for a plugin that offers its own way out (the room's /q+). The
     // session leaves SState::Plugin, so a release() after it draws no prompt.
@@ -510,7 +526,8 @@ private:
     void redrawInput(Session& s);
     void deliverMail(Session& s);
     void post(Session& to, BusKind kind, const Session* from, const char* text);
-    void noticeAll(const Session& about, const char* text);
+    void noticeAll(const Session& about, const char* text,
+                   BusKind kind = BusKind::Notice);
     void startList(Session& s, ListKind kind);
     void serviceList(Session& s);
     // listEnded: the shell prompt, or back to the plugin that owns the
@@ -540,7 +557,6 @@ private:
     // -- shell (bbs_shell.cpp) -----------------------------------------------
     void runCommand(Session& s, const char* line, uint32_t now);
     void landAfterLogin(Session& s);
-    const Command* findCommand(const char* verb, const Session& s) const;
     const Command* commandAt(uint8_t index) const;
     static const Command* coreCommands(uint8_t& count);
     // list rows: each call emits exactly one line, false when finished
@@ -558,6 +574,8 @@ private:
     bool rowPlugins(Session& s);
     bool rowWatchFooter(Session& s);
     void cmdHelp(Session& s, const char* arg);
+    // longHelp: HELP <command>, one command in full, from helptext.
+    void longHelp(Session& s, const Command& c);
     bool helpRow(Session& s, uint8_t index, uint8_t plugin);
     void helpUsage(Session& s, const char* usage, bool dim);
     bool helpWanted(const Session& s, const Command& c) const;
@@ -574,6 +592,8 @@ private:
     void cmdTime(Session& s, const char* arg, uint32_t now);
     void cmdBaud(Session& s, const char* arg);
     void cmdDnd(Session& s);
+    void cmdBell(Session& s);
+    void cmdCodes(Session& s);
     void cmdBye(Session& s, const char* arg, uint32_t now);
     void fxNext(Session& s);
 

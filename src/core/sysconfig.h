@@ -28,6 +28,14 @@
  *                  who_refresh_min        WHO n / DASH n lowest refresh, seconds
  *                  who_refresh_max        WHO n / DASH n highest refresh, seconds
  *                  activity_led_gpio      LED blinked on network traffic, -1 = none
+ *                  wifi_ssid              the network to join, applies at boot
+ *                  wifi_password          its passphrase (kept in a backup, which
+ *                                         only a local address can download)
+ *
+ *                  The password keys and wifi_ssid take the rest of the line
+ *                  as it stands: a '#' there is part of the value, because a
+ *                  passphrase may contain one and Improv writes whatever the
+ *                  browser was given.
  *
  *                  [access] section: one row per permission, columns SYSOP CO1 CO2,
  *                  X = allowed, - = denied. The SYSOP column is informational; the
@@ -95,6 +103,11 @@ struct SysConfig {
     char     ntpServer[64] = BBS_DEFAULT_NTP;
     char     sysopPass[33] = "";
     char     coPass[2][33] = { "", "" };          // [0] level 1, [1] level 2
+    // Wi-Fi, set by Improv over USB or by hand. Empty falls back to
+    // include/secrets.h when a build has one, so a developer's board keeps
+    // working and a published binary carries nobody's network.
+    char     wifiSsid[33]  = "";
+    char     wifiPass[65]  = "";
     uint16_t coPerms[2]    = { static_cast<uint16_t>(PERM_ALL & ~PERM_UNBAN),
                                static_cast<uint16_t>(PERM_NODES | PERM_BROADCAST | PERM_TIME | PERM_BANS |
                                                      PERM_NOLIMITS | PERM_DASH) };

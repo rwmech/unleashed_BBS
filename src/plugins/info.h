@@ -4,21 +4,18 @@
  *  Electronic freedom on a microcontroller.
  * ===========================================================================
  *
- * File:         include/secrets.h.example
- * Module:       Build / local secrets template
+ * File:         src/plugins/info.h
+ * Module:       Plugins / information pages
  *
- * Purpose:      Optional. A developer's fallback Wi-Fi network, used only
- *                  when system.cfg has no wifi_ssid. The normal way is
- *                  Improv over USB or wifi_ssid / wifi_password in
- *                  system.cfg (README.md). A build without this file
- *                  carries no network and waits for Improv.
+ * Purpose:      The two doors into the information pages that are not the
+ *               INFO command itself: the chat room's /i, /i3 and /i3-.
+ *               One store, two doors, the same rules behind both.
  *
- * Notes:        include/secrets.h itself is git-ignored and never distributed.
- *               Never build a binary for somebody else with it present: the
- *               passphrase is compiled in as plain text.
+ * Interfaces:   info::roomIndex, info::roomShow, info::roomClear
  *
+ * Libraries:    none
  * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
- * See also:     README.md
+ * See also:     info.cpp
  *
  * Copyright 2026 - Robert Mech
  * License:      GNU General Public License v2 or later
@@ -41,5 +38,21 @@
  */
 
 #pragma once
-#define WIFI_SSID "your-ssid"      // case-sensitive
-#define WIFI_PASS "your-password"
+#include <cstdint>
+
+struct Session;
+
+namespace info {
+
+// roomIndex: the list, printed straight into the room with no paging. The
+// room has no pager, and ten short titles do not need one.
+void roomIndex(Session& s);
+
+// roomShow: one page, printed straight. A long page scrolls in the room;
+// INFO n at the main prompt pages it with [More].
+void roomShow(Session& s, uint8_t n);
+
+// roomClear: /i3-, for somebody with the plugin's write level.
+void roomClear(Session& s, uint8_t n);
+
+} // namespace info
