@@ -180,7 +180,9 @@ concept for a sysop to learn.
 - **Deferred:** the sysop page.
 
 **0.22.1 is Improv**, built to NEXT.md part 3 and committed together with
-0.22.0. Host-tested, not flashed.
+0.22.0 (`9f6d65d`). Flashed by Rob; **Improv verified on hardware
+2026-09-23**, provisioned from a browser first try. Nothing else in 0.22.x
+reported on the board yet.
 
 ## Improv and the network in system.cfg (0.22.1)
 
@@ -1420,6 +1422,84 @@ Still open on serial: autoprobe (listen at each common speed and score framing e
 **0.17.0 is specified in [NEXT.md](NEXT.md)**: the queued bugs, Wi-Fi at runtime plus Improv, and message bases, with measured size budgets and poker specified for the build after. Five questions in it are Rob's to answer before building starts.
 
 Queued for the next build (Rob's plan, in order):
+
+- **Bug batch after 0.22.1** (Rob, on the board, 2026-09-23; queued, not
+  worked). Collect here and fix together in one build:
+  - **No blank line between the end-of-subject notice and the reading
+    prompt.** Screenshot: `--> That is the end of that subject. Nothing
+    else new here.` followed directly by `[R]eply  [Enter] Next  [P]ost
+    [Q] Back:`. Rob wants a blank line after the notice. Source:
+    `forums.cpp` ~1656 and ~1669, the two `notice()` calls for the end of a
+    subject. **The existing check could not see it**: `testclient.py`
+    ~3997 asserts `blank_before(..., b"That is the end")`, a blank line
+    above the notice, and nothing about the gap below it. The fix wants a
+    check for the line after the notice, run against 0.22.1 first to prove
+    it fails.
+  - **An effect split across a line break prints as typed.** Screenshot,
+    forum message #14: `@BLINK:Special` ends one line and `Effects@` starts
+    the next, and both halves show raw. Colour codes on the same message
+    worked. Likely cause, **not yet confirmed**: the composer wraps as the
+    caller types and commits each line with a hard newline, and the codes
+    are parsed a line at a time, so a code whose text crosses the wrap is
+    two unmatched halves (which `Kind::Unknown` prints whole, by design).
+    Two candidate fixes to weigh when it is worked: the composer carries
+    an unclosed `@...` to the next line with the word it is in, or soft
+    wraps are stored as spaces so the reader's wrap (which already keeps
+    codes whole) does the breaking. The second also fixes reading at a
+    different width from the writer; check what mail and chat do before
+    choosing. Test: type an effect that crosses the composer's margin.
+    **Chat cannot hit this and mail can.** A room line is one line-editor
+    line (72 characters), stored whole and wrapped only at the reader, where
+    `codes::wrap` keeps a code intact (`test_room_narrow_effects`). Mail
+    uses the same composer as the forums, so it has the same bug. Fix it in
+    the composer or the storage, once, for both.
+  - **Sysop "slowdown after BYE" is the staff screens freezing the board**
+    (Rob, 2026-09-23: "Everything was smooth and awesome until I entered the
+    sysop password with bye"). **Cause found from Rob's serial log**: every
+    slow pass after the BYE was `node 0 SYS`, 169-170 ms each, four of four,
+    and nothing slow between them. BYE itself is innocent; what changed is
+    that a sysop runs SYS, MEM, DASH and PLUGINS, and those ask LittleFS how
+    full it is.
+    `plat::fsInfo` and `plat::userInfo` call `esp_littlefs_info`, which in
+    the shipped component (joltwallet 1.22.3, esp_littlefs.c:313) calls
+    `lfs_fs_size`, which is `lfs_fs_traverse` over every block of every
+    file. SYS does it twice (screens and user data), so ~170 ms with the
+    whole board stopped, because the loop is cooperative. **DASH calls
+    `plugins::freeBytes()` on every refresh**, so a sysop with DASH open
+    stalls every caller once a second, which is the "big time" feeling.
+    MEM and PLUGINS pay it once each, and **`plugins::path` pays it on every
+    plugin write** (the free-space guard, plugin.cpp:264).
+    **The host cannot show it**: `userInfo` on the host sums the file sizes
+    in a small directory on a Linux filesystem, which costs nothing.
+    Same family as the mailbox fix in 0.22.0 ("a write guard paid on every
+    read") and the `heapWatch` walk: an innocent-looking "how much is free"
+    call that costs a full scan on the target.
+    **Fix to build in the batch**: one cached figure per partition in the
+    platform layer. Computed once at mount; the screens partition only
+    changes on an upload or a backup restore, so it is recomputed only then;
+    user data refreshed at most once a minute and only when something asks,
+    so the stall is at most one per minute rather than one per refresh or
+    per write. The write guard reads the cache (608 KB with 23 KB used is
+    nowhere near the reserve, and a minute-old figure is fine for a guard
+    with a 32 KB margin). Say "as of" nowhere on screen; it is a free-space
+    figure, not a clock. Verify on the board with the slow pass log: SYS,
+    MEM and DASH must stop appearing in it.
+    **Also from the same log: login took 118 ms** (`node 1 -`, just after
+    the login line). Password hashing, users.txt, the caller log count and
+    the login hooks are the candidates; measure before guessing.
+  - **MAIL opening cost 186 ms on the board** (same SYS screen). The worst
+    pass since boot was node 1 running MAIL: the mailbox reads the mail
+    file, on the card when there is one. Measure before changing anything.
+  - **BBS task stack low-water 1,440 bytes** (same SYS screen). Not a bug
+    yet, but close: an overflow panics and reboots. The known 1,729 byte
+    frame in `forums.cpp` and the 0.22.0 additions are the first suspects.
+    Worth an `optimize` pass on stack before anything else lands on it.
+  - **FX should show the code for each effect it demonstrates** (Rob), so
+    the demo is also the reference: `@BLINK:text@` beside the blink, and so
+    on for scramble, type, oops, spin, dots, noise, rule.
+  - **The CODES screen should point at FX** to see the effects in action.
+    It does not today (checked: no "FX" in `data/screens/codes.*`). Screen
+    copy is `explain`'s and the art `screen-artist`'s, all three flavours.
 
 - **`privacy.ans` is 40 column art on an 80 column screen** (found by the ordinary-caller QA pass, 0.19.0). Measured: `privacy.ans` is 41 columns over 77 lines and four pages, while `rules.ans`, `newuser.ans` and `chatin.ans` are all 78. So the one screen a cautious newcomer reads immediately before typing a password is half width and takes twice the pages, while everything around it fills the terminal.
   Not a bug in the player: `PRIVACY_PAGES` in `tools/mkscreens.py` is hard-wrapped to 39 columns on purpose, with a comment saying so, and the ANSI build shares that text. Fixing it means re-flowing the copy at about 72 columns for the ANSI variant only, which moves every page break, so it is a job for `explain` and `screen-artist` rather than a patch. The PETSCII and ASCII versions stay exactly as they are.

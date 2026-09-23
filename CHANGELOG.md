@@ -24,6 +24,14 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.22.2, 2026-09-23
+
+No code change: the version moves because every commit gets one. Records
+Improv working on the board, and the bug batch found on it (CLAUDE.md, the
+queue), including the cause of the "slow after BYE" report: SYS, MEM, DASH
+and PLUGINS ask LittleFS how full it is, and that call walks every block of
+every file, about 170 ms with the whole board stopped each time.
+
 ## 0.22.1, 2026-09-22
 
 Improv, and the Wi-Fi network out of the source. Committed together with
@@ -96,9 +104,11 @@ NEXT.md part 3.
   parser, the saved and trial credentials, and the two new config fields,
   which exist twice because `reload` parses into a second `SysConfig`.
   Flash 74.7%.
-- Not on hardware. Improv needs one manual check by Rob with a real browser.
-  The local-address refusal cannot be exercised by the host suite, which
-  only ever connects from 127.0.0.1.
+- **On hardware (Improv):** Rob flashed it and provisioned the board over
+  Improv from a browser on 2026-09-23, first try. The rest of 0.22.0 and
+  0.22.1 has not been reported on the board yet. The local-address refusal
+  cannot be exercised by the host suite, which only ever connects from
+  127.0.0.1.
 
 ## 0.22.0, 2026-09-22
 
