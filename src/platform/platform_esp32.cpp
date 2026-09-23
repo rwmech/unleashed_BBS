@@ -40,6 +40,8 @@
 #include "esp_system.h"      // esp_reset_reason
 #include "esp_random.h"
 #include "esp_heap_caps.h"
+#include "esp_chip_info.h"   // hardware(): which chip
+#include "esp_flash.h"       // hardware(): how much flash it really has
 #include "driver/gpio.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
@@ -165,6 +167,42 @@ HeapStats heap() {
 
 bool fsInfo(uint32_t& total, uint32_t& used) {
     return lfsInfo(BBS_FS_LABEL, g_dataFig, 0, total, used);   // see userInfo
+}
+
+// ---------------------------------------------------------------------------
+// hardware: the chip, the flash this image can use and any PSRAM the
+// firmware can use, for the directory's system badge. Flash is the size in
+// the image header, which is what esp_flash_get_size returns in IDF 5.3.1
+// (esp_flash_spi_init.c sets the default chip's size from it), not what the
+// chip has: a 16 MB module running the 4 MB image says 4 MB. That is the
+// honest figure for what this build can use, and it is kept on purpose.
+// PSRAM is counted from the heap, so it too is named only when this build
+// actually uses it.
+// ---------------------------------------------------------------------------
+void hardware(char* out, size_t n) {
+    static constexpr char kDot[] = " \xC2\xB7 ";   // a middle dot, spaced
+    esp_chip_info_t chip = {};
+    esp_chip_info(&chip);
+    const char* model = "ESP32";
+    switch (chip.model) {
+        case CHIP_ESP32S2: model = "ESP32-S2"; break;
+        case CHIP_ESP32S3: model = "ESP32-S3"; break;
+        case CHIP_ESP32C3: model = "ESP32-C3"; break;
+        case CHIP_ESP32C2: model = "ESP32-C2"; break;
+        case CHIP_ESP32C6: model = "ESP32-C6"; break;
+        case CHIP_ESP32H2: model = "ESP32-H2"; break;
+        case CHIP_ESP32P4: model = "ESP32-P4"; break;
+        default:           break;                      // the ESP32 itself
+    }
+    uint32_t flash = 0;
+    if (esp_flash_get_size(nullptr, &flash) != ESP_OK) flash = 0;
+    char size[16] = "";
+    if (flash >= 1024u * 1024u)
+        snprintf(size, sizeof(size), "%s%u MB", kDot, static_cast<unsigned>(flash / (1024u * 1024u)));
+    else if (flash)
+        snprintf(size, sizeof(size), "%s%u KB", kDot, static_cast<unsigned>(flash / 1024u));
+    const bool psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0;
+    snprintf(out, n, "%s%s%s%s", model, size, psram ? kDot : "", psram ? "PSRAM" : "");
 }
 
 // ---------------------------------------------------------------------------

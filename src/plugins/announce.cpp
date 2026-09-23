@@ -38,6 +38,18 @@
  *                 interval    = 10               ; minutes between heartbeats
  *                 token       =                  ; issued by the directory, saved here
  *                 share_activity = no            ; send call counts for ranking
+ *                 support     = lgbtq, literacy  ; slugs from the directory's /badges
+ *                 interests   = c64, ham         ; the same, hobbies rather than causes
+ *
+ * Badges:       Six fields describe the board rather than its state (1.0.1).
+ *               system, terminals, guests and features are the board's own
+ *               facts and are never typed by anybody: the chip and the flash
+ *               its image can use, what this firmware speaks, the guest
+ *               setting, and which of chat, mail, forums and files work at
+ *               the moment of the heartbeat (the last two need a card).
+ *               support and interests are the sysop's, as slugs from the
+ *               directory's published list; anything it does not know it
+ *               ignores, so the board only tidies them, it never judges.
  *
  * Token:        The directory issues one on the first heartbeat and the
  *               board writes it back into its own config, so the listing
@@ -85,6 +97,7 @@
 #include "../core/clock.h"
 #include "../core/sysconfig.h"
 #include "../platform/platform.h"
+#include "chat.h"
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -107,19 +120,81 @@ constexpr uint8_t    kMaxServers  = 4;      // post to this many directories
 constexpr uint8_t    kUrlMax      = 96;
 constexpr uint8_t    kNameMax     = 40;
 constexpr uint16_t   kNudgeDef    = 60;     // seconds: shortest gap a caller change may force
-constexpr uint16_t   kReplyMax    = 768;    // enough for the status line, headers and a small body
 constexpr size_t     kTokenMin    = 16;     // shortest token worth believing
+constexpr uint8_t    kTokenMax    = 40;
 constexpr uint8_t    kDescMax     = 120;
-// 512 is NOT comfortably above the worst case, whatever the comment here
-// used to say. name, owner, description, host and token are CONFIG values
-// and a CONFIG value buffer is 96 bytes, so five of them is 475 characters
-// before any JSON skeleton: a fully described board needs roughly 700. The
-// buffer stays 512 because that is the size the protocol documents and a
-// board does not need a 700 character description; what changed is that
-// overflowing it is now detected and refused rather than silently sent.
-constexpr uint16_t   kBodyMax     = 512;
 constexpr uint32_t   kTimeoutMs   = 10000;  // a directory has this long to answer
 constexpr uint16_t   kIntervalDef = 10;     // minutes
+
+// The two badge lists a sysop types. A list is kept as typed-then-tidied,
+// "ham,lgbtq", and never longer than the CONFIG box it is typed into (95
+// characters, sizeof(g_cfgBuf[0]) - 1 in bbs_sysop.cpp), so whatever a sysop
+// can type is what the board sends. The directory reads 16 entries of a
+// list and no slug it publishes is longer than 24 characters (its self-test
+// holds every interest to that), so a longer "slug" is junk and is dropped.
+constexpr uint8_t    kListMax     = 95;
+constexpr uint8_t    kListEntries = 16;
+constexpr uint8_t    kSlugMax     = 24;
+constexpr uint8_t    kSystemMax   = 31;     // "ESP32-S3 · 16 MB · PSRAM" is 26 bytes
+
+// ---------------------------------------------------------------------------
+// The payload's room, and why it is what it is.
+//
+// A payload that does not fit is refused, never cut (0.21.4): half a JSON
+// object is invalid at the far end and the board is quietly delisted. So the
+// buffer is sized for the worst payload this code can build, not for a
+// typical one, and a refusal can only ever mean a bug.
+//
+// The worst case, every value at the longest the plugin keeps it and every
+// character of every text a '"' or a '\' (each is sent as two bytes):
+//
+//   keys, quotes, brackets, and the fixed terminals and
+//     features lists, with share_activity on                  314
+//   numbers at their widest (port 5, nodes 3, busy 3,
+//     uptime 7, interval 4, tz 4, calls24 5, minutes24 10)      41
+//   version 5 and system 31, never escaped                      36
+//   name 40, owner 40, description 120, host 95, token 40,
+//     each doubled by escaping                                 670
+//   support and interests, 16 entries in 95 characters,
+//     quoted and bracketed: 95 + 32 + 2 each                   258
+//                                                             -----
+//                                                             1,319
+//
+// Measured, not only added up: test_announce_badges gives the host board
+// exactly this and checks the heartbeat arrives whole. The spare 24 is for
+// a longer version string. 768, the figure first proposed, is short even
+// with no quote marks anywhere: every text at its longest and both lists
+// full is 984.
+// ---------------------------------------------------------------------------
+constexpr uint16_t   kBodyMax     = 1344;   // 1,319 and the terminator, with room to spare
+
+// The room buildBody writes into: kBodyMax, always, on a board. The host
+// build alone lets room_test in [plugin:announce] make it smaller, because
+// at kBodyMax nothing the plugin keeps can overflow, which is the point and
+// also leaves the refusal path with no way to be tested. Compiled out of
+// the firmware, so no system.cfg can shrink a real board's room.
+#ifdef BBS_HOST
+uint16_t g_room = kBodyMax;
+#else
+constexpr uint16_t g_room = kBodyMax;
+#endif
+
+// The request line and headers. kHeadRoom is computed from this string, so
+// the room kept for them cannot drift from what is written into it: four
+// conversions of two characters each, replaced by the longest thing each can
+// become (a path and a host at kUrlMax - 1, the version, a five digit
+// length). sizeof counts the terminator.
+#define ANNOUNCE_REQ_FMT                                                      \
+    "POST %s HTTP/1.1\r\n"                                                    \
+    "Host: %s\r\n"                                                            \
+    "User-Agent: unleashed/%s\r\n"                                            \
+    "Content-Type: application/json\r\n"                                      \
+    "Content-Length: %u\r\n"                                                  \
+    "Connection: close\r\n"                                                   \
+    "\r\n"
+constexpr size_t     kHeadRoom    = sizeof(ANNOUNCE_REQ_FMT) - 4 * 2
+                                  + 2 * (kUrlMax - 1) + (sizeof(BBS_VERSION) - 1) + 5;
+static_assert(kBodyMax < 10000, "Content-Length is budgeted at four digits and a spare");
 
 // One directory the board posts to, parsed once out of the servers list.
 struct Server {
@@ -139,16 +214,37 @@ char     g_bbsName[kNameMax + 1] = {};
 char     g_owner[kNameMax + 1]   = {};
 char     g_desc[kDescMax + 1]    = {};
 char     g_host[kUrlMax]         = {};     // what to advertise, empty = our address
-char     g_token[41]             = {};
+char     g_token[kTokenMax + 1]  = {};
+char     g_support[kListMax + 1]   = {};   // "ham,lgbtq": tidied, see slugList
+char     g_interests[kListMax + 1] = {};
+char     g_system[kSystemMax + 1]  = {};   // plat::hardware, once at start
 uint16_t g_public   = BBS_PORT;
 uint16_t g_interval = kIntervalDef;
 uint32_t g_lastRound = 0;                  // when the last round of posts began
 uint16_t g_nudgeSecs = kNudgeDef;          // 0 = never push on a caller change
 
+// ---------------------------------------------------------------------------
+// One buffer, three jobs in turn (1.0.1). It holds the payload while it is
+// built, then the whole request while it is sent, then the reply while it is
+// read. Never two at once: the body is built at kHeadRoom, the headers are
+// written in front of it and the body slid down to meet them, the request is
+// sent to its last byte before Reading starts, and Reading clears the buffer
+// before its first recv. It was three buffers (512 + 768 + 768, 2,048); one
+// of kHeadRoom + kBodyMax (1,664) holds a payload two and a half times the
+// old limit in less room than the three took.
+//
+// The clear at the start of Reading is load bearing. startPost used to clear
+// the reply before building the request, which was right while they were
+// separate buffers and is wrong now: Reading would start with the request in
+// the buffer, and the first "nothing yet" found the request's own blank line
+// and took it for a complete reply with no bytes in it.
+//
 // The reply is read across as many passes as it takes. A single recv is
 // not a message: TCP will happily hand over half a header, and parsing
 // that half gives you half a token, which is exactly what happened.
-char     g_reply[kReplyMax] = {};
+// ---------------------------------------------------------------------------
+char     g_io[kHeadRoom + kBodyMax] = {};
+constexpr char* kBody = g_io + kHeadRoom;      // where the payload is built
 uint16_t g_replyLen = 0;
 bool     g_activity = false;               // send call counts, off unless asked
 
@@ -161,9 +257,7 @@ uint8_t  g_at       = 0;               // which server is being posted to
 uint32_t g_started  = 0;
 uint32_t g_nextRun  = 0;
 uint16_t g_sent     = 0;
-char     g_body[kBodyMax] = {};
 uint16_t g_bodyLen  = 0;
-char     g_request[kBodyMax + 256] = {};
 uint16_t g_reqLen   = 0;
 char     g_seenIp[46] = {};            // what the directory says our address is
 char     g_state[16]  = {};            // pending, online, offline, queued
@@ -216,8 +310,79 @@ void readServers(const char* value) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// hasSlug: slug is already one of the entries of a comma list
+// ---------------------------------------------------------------------------
+bool hasSlug(const char* list, const char* slug, size_t len) {
+    for (const char* p = list; *p; ) {
+        const char* end = strchr(p, ',');
+        size_t n = end ? static_cast<size_t>(end - p) : strlen(p);
+        if (n == len && !memcmp(p, slug, len)) return true;
+        if (!end) break;
+        p = end + 1;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// slugList: what a sysop typed for support or interests, made into what the
+// board sends. Each entry is lower cased and keeps only a-z, 0-9 and '-'.
+// A run of spaces, underscores or dashes inside it is one '-', and none is
+// kept at either end, so " Mental Health " is mental-health, the slug the
+// directory publishes, rather than mentalhealth, which matches nothing.
+// Anything else is dropped: "<b>c64</b>" is bc64b, which the directory then
+// ignores as a word it does not know. Empty entries go, a repeat counts
+// once, an entry longer than any slug a directory publishes goes, and the
+// first 16 are kept, because 16 is all the directory reads. Whole entries
+// only: a list that would outgrow the buffer stops at the last entry that
+// fits rather than ending in half a word.
+//
+// Tidying, not judging. The directory holds the list of what it will show,
+// so the board has no list of its own to disagree with it.
+// ---------------------------------------------------------------------------
+void slugList(const char* in, char* out, size_t n) {
+    size_t  w     = 0;
+    uint8_t count = 0;
+    out[0] = '\0';
+    const char* p = in;
+    while (*p && count < kListEntries) {
+        char   slug[kSlugMax + 1];
+        size_t len   = 0;
+        bool   long_ = false;
+        bool   dash  = false;              // a separator is waiting for a letter
+        for (; *p && *p != ','; ++p) {
+            char c = *p;
+            if (c == ' ' || c == '\t' || c == '_' || c == '-') { dash = len > 0; continue; }
+            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))) continue;
+            if (dash) {                    // one dash for the whole run, never leading
+                if (len < kSlugMax) slug[len++] = '-';
+                else long_ = true;
+                dash = false;
+            }
+            if (len < kSlugMax) slug[len++] = c;
+            else long_ = true;
+        }
+        if (*p == ',') ++p;
+        if (!len || long_ || hasSlug(out, slug, len)) continue;
+        if (w + (w ? 1 : 0) + len + 1 > n) break;        // whole entries only
+        if (w) out[w++] = ',';
+        memcpy(out + w, slug, len);
+        w += len;
+        out[w] = '\0';
+        ++count;
+    }
+}
+
 void readKey(void* ctx, const char* key, const char* value) {
     (void)ctx;
+#ifdef BBS_HOST
+    if (!strcmp(key, "room_test")) {                  // see g_room
+        long v = strtol(value, nullptr, 10);
+        if (v >= 64 && v <= kBodyMax) g_room = static_cast<uint16_t>(v);
+        return;
+    }
+#endif
     // "name" used to be read here and would override the board's own. It
     // is gone on purpose: the board is not optional and already has a name,
     // so a second copy in this section could only ever disagree with it.
@@ -233,6 +398,8 @@ void readKey(void* ctx, const char* key, const char* value) {
         else if (value[0]) plat::log("announce: ignoring a short stored token, re-registering");
     }
     else if (!strcmp(key, "servers"))     readServers(value);
+    else if (!strcmp(key, "support"))     slugList(value, g_support, sizeof(g_support));
+    else if (!strcmp(key, "interests"))   slugList(value, g_interests, sizeof(g_interests));
     else if (!strcmp(key, "public_port")) {
         long p = strtol(value, nullptr, 10);
         if (p >= 1 && p <= 65535) g_public = static_cast<uint16_t>(p);
@@ -252,17 +419,85 @@ void readKey(void* ctx, const char* key, const char* value) {
 }
 
 // ---------------------------------------------------------------------------
-// jsonEscape: the payload is written by hand, so the few characters that
-// would break it are escaped here rather than trusted not to appear.
+// Json: the payload is written by hand, straight into the send buffer, one
+// piece at a time. Every write is bounded, and one flag says whether any of
+// it was lost, which is the only question the caller has.
+//
+// Writing in place rather than escaping each field into a stack copy and
+// then formatting the copies (the 1.0.0 shape) also took about 750 bytes of
+// arrays off the stack of whatever called it, on a task whose low water mark
+// was 1,440.
 // ---------------------------------------------------------------------------
-void jsonEscape(const char* in, char* out, size_t n) {
-    size_t w = 0;
-    for (const char* p = in; *p && w + 2 < n; ++p) {
-        if (*p == '"' || *p == '\\') { out[w++] = '\\'; out[w++] = *p; }
-        else if (static_cast<uint8_t>(*p) < 0x20) out[w++] = ' ';
-        else out[w++] = *p;
+struct Json {
+    char*  p;
+    size_t cap;                  // bytes, the terminator's included
+    size_t len = 0;
+    bool   cut = false;
+
+    Json(char* buf, size_t n) : p(buf), cap(n) { p[0] = '\0'; }
+
+    void ch(char c) {
+        if (len + 1 < cap) { p[len++] = c; p[len] = '\0'; }
+        else cut = true;
     }
-    out[w < n ? w : n - 1] = '\0';
+    void raw(const char* s) { while (*s) ch(*s++); }
+    void num(long v)          { char b[12]; snprintf(b, sizeof(b), "%ld", v); raw(b); }
+    void unum(unsigned long v) { char b[12]; snprintf(b, sizeof(b), "%lu", v); raw(b); }
+
+    // str: a JSON string. The two characters that would end it early are
+    // escaped, and a control character becomes a space rather than being
+    // trusted not to appear. Bytes above 0x7F pass as they are: the board's
+    // text is UTF-8, and so is JSON.
+    void str(const char* s) {
+        ch('"');
+        for (; *s; ++s) {
+            if (*s == '"' || *s == '\\') { ch('\\'); ch(*s); }
+            else if (static_cast<uint8_t>(*s) < 0x20) ch(' ');
+            else ch(*s);
+        }
+        ch('"');
+    }
+
+    // list: a comma list as a JSON array of strings. Only ever handed words
+    // that need no escaping: slugList's output, or the feature names.
+    void list(const char* csv) {
+        ch('[');
+        for (const char* q = csv; *q; ) {
+            if (q != csv) ch(',');
+            ch('"');
+            while (*q && *q != ',') ch(*q++);
+            ch('"');
+            if (*q == ',') ++q;
+        }
+        ch(']');
+    }
+};
+
+// features: what works at this moment, comma separated, in the order the
+// protocol lists them. Never what is merely configured.
+//
+// A plugin whose files live on the card (PF_SD: forums, files) counts only
+// while a card is mounted as well as running, because SD UNMOUNT stops no
+// plugin: FORUMS would still be a command, with nothing under it. So an SD
+// UNMOUNT takes "forums" and "files" off the next heartbeat. A card pulled
+// without SD UNMOUNT is not noticed at all (there is no card-detect line and
+// nothing polls the bus), so those two stay until the next boot finds no
+// card, the same as everything else on the board that uses it.
+void features(char* out, size_t n) {
+    auto on = [](const char* name) {
+        uint8_t i = plugins::indexOf(name);
+        const Plugin* p = plugins::at(i);
+        return plugins::running(i) && p &&
+               (!(p->info.flags & PF_SD) || plat::sdBase()[0]);
+    };
+    const bool chatOn = on("chat");
+    snprintf(out, n, "%s%s%s%s",
+             chatOn ? "chat," : "",
+             on("forums") ? "forums," : "",
+             on("files") ? "files," : "",
+             chatOn && chat::mailOn() ? "mail," : "");
+    size_t len = strlen(out);
+    if (len) out[len - 1] = '\0';                       // the last comma
 }
 
 // ---------------------------------------------------------------------------
@@ -306,68 +541,75 @@ uint16_t took(int r, size_t cap, bool& cut) {
     return static_cast<uint16_t>(r);
 }
 
-// buildBody: false when the payload did not fit, and then g_body holds a
-// truncated fragment that must not be sent.
+// buildBody: the payload, at kBody. False when it did not fit, and then
+// what is there is a fragment that must not be sent. Sized so that cannot
+// happen (see kBodyMax); the check stays because a size argument is only as
+// good as the day it was last redone.
 bool buildBody() {
-    char name[kNameMax * 2 + 2], owner[kNameMax * 2 + 2], desc[kDescMax * 2 + 2];
-    char host[kUrlMax * 2], token[84];
-    jsonEscape(g_bbsName[0] ? g_bbsName : syscfg::get().hostname, name, sizeof(name));
-    jsonEscape(g_owner, owner, sizeof(owner));
-    jsonEscape(g_desc, desc, sizeof(desc));
-    jsonEscape(g_host, host, sizeof(host));
-    jsonEscape(g_token, token, sizeof(token));
-
     Bbs& bbs = Bbs::instance();
-    char extra[64] = "";
+    char feats[32];
+    features(feats, sizeof(feats));
+
+    Json j(kBody, g_room);
+    j.raw("{\"software\":\"unleashed\",\"version\":"); j.str(BBS_VERSION);
+    j.raw(",\"name\":");        j.str(g_bbsName[0] ? g_bbsName : syscfg::get().hostname);
+    j.raw(",\"owner\":");       j.str(g_owner);
+    j.raw(",\"description\":"); j.str(g_desc);
+    j.raw(",\"host\":");        j.str(g_host);
+    j.raw(",\"port\":");        j.unum(g_public);
+    j.raw(",\"nodes\":");       j.unum(bbs.publicNodes());
+    j.raw(",\"busy\":");        j.unum(bbs.publicBusy());
+    j.raw(",\"uptime\":");      j.unum(plat::millis() / 1000u);
+    j.raw(",\"interval\":");    j.unum(g_interval);
+    j.raw(",\"tz\":");          j.num(clk::utcOffset());
+    j.raw(",\"token\":");       j.str(g_token);
     if (g_activity) {
         uint16_t calls = 0;
         uint32_t minutes = 0;
         activity(calls, minutes);
-        snprintf(extra, sizeof(extra), ",\"calls24\":%u,\"minutes24\":%u",
-                 static_cast<unsigned>(calls), static_cast<unsigned>(minutes));
+        j.raw(",\"calls24\":");   j.unum(calls);
+        j.raw(",\"minutes24\":"); j.unum(minutes);
     }
-    bool cut = false;
-    g_bodyLen = took(snprintf(g_body, sizeof(g_body),
-        "{\"software\":\"unleashed\",\"version\":\"%s\","
-        "\"name\":\"%s\",\"owner\":\"%s\",\"description\":\"%s\","
-        "\"host\":\"%s\",\"port\":%u,\"nodes\":%u,\"busy\":%u,"
-        "\"uptime\":%u,\"interval\":%u,\"tz\":%d,\"token\":\"%s\"%s}",
-        BBS_VERSION, name, owner, desc, host,
-        static_cast<unsigned>(g_public),
-        static_cast<unsigned>(bbs.publicNodes()),
-        static_cast<unsigned>(bbs.publicBusy()),
-        static_cast<unsigned>(plat::millis() / 1000u),
-        static_cast<unsigned>(g_interval),
-        static_cast<int>(clk::utcOffset()),
-        token, extra), sizeof(g_body), cut);
-    if (cut) {
+    // The badges (1.0.1). Every heartbeat carries all six, even an empty
+    // list: the directory replaces them on each one, so a field left out is
+    // a badge taken down.
+    j.raw(",\"system\":");      j.str(g_system);
+    j.raw(",\"terminals\":[\"ansi\",\"utf8\",\"petscii\",\"ascii\"]");
+    j.raw(",\"guests\":");      j.raw(syscfg::get().guestEnabled ? "true" : "false");
+    j.raw(",\"features\":");    j.list(feats);
+    j.raw(",\"support\":");     j.list(g_support);
+    j.raw(",\"interests\":");   j.list(g_interests);
+    j.ch('}');
+
+    g_bodyLen = static_cast<uint16_t>(j.len);
+    if (j.cut) {
         plat::log("announce: payload is longer than %u bytes, not sending. "
                   "Shorten name, owner, description or host in CONFIG.",
-                  static_cast<unsigned>(sizeof(g_body) - 1));
+                  static_cast<unsigned>(g_room - 1));
     }
-    return !cut;
+    return !j.cut;
 }
 
+// buildRequest: the headers in front of the body, in g_io. They are written
+// into the room kept for them at the front and the body slides down to meet
+// them. snprintf's terminator lands inside that room, never on the body.
 bool buildRequest(const Server& s) {
-    if (!buildBody()) { g_reqLen = 0; return false; }
+    g_reqLen = 0;
+    if (!buildBody()) return false;
     bool cut = false;
-    g_reqLen = took(snprintf(g_request, sizeof(g_request),
-        "POST %s HTTP/1.1\r\n"
-        "Host: %s\r\n"
-        "User-Agent: unleashed/%s\r\n"
-        "Content-Type: application/json\r\n"
-        "Content-Length: %u\r\n"
-        "Connection: close\r\n"
-        "\r\n%s",
-        s.path, s.host, BBS_VERSION, static_cast<unsigned>(g_bodyLen), g_body),
-        sizeof(g_request), cut);
+    uint16_t head = took(snprintf(g_io, kHeadRoom, ANNOUNCE_REQ_FMT,
+                                  s.path, s.host, BBS_VERSION,
+                                  static_cast<unsigned>(g_bodyLen)),
+                         kHeadRoom, cut);
     if (cut) {
-        plat::log("announce: request did not fit %u bytes, not sending. "
+        plat::log("announce: request headers did not fit %u bytes, not sending. "
                   "The directory path or host is very long.",
-                  static_cast<unsigned>(sizeof(g_request) - 1));
-        g_reqLen = 0;
+                  static_cast<unsigned>(kHeadRoom - 1));
         return false;
     }
+    memmove(g_io + head, kBody, g_bodyLen);
+    g_reqLen = static_cast<uint16_t>(head + g_bodyLen);
+    g_io[g_reqLen] = '\0';
     return true;
 }
 
@@ -477,7 +719,15 @@ void finish(const char* how, bool ok) {
 void startPost(uint32_t now) {
     Server& s = g_servers[g_at];
     g_replyLen = 0;                            // this exchange starts with nothing
-    g_reply[0] = '\0';
+    // A payload that did not fit is not sent at all. Sending the truncated
+    // half means invalid JSON at the far end and a board that is quietly not
+    // listed, which is worse than an announce that plainly did not happen.
+    // Built before connecting, so a refused one opens no connection either:
+    // it used to connect first and then close without a byte.
+    if (!buildRequest(s)) {
+        finish("payload too long", false);
+        return;
+    }
     if (!s.addr && !resolve(s)) { finish(s.result, false); return; }
 
     g_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -493,13 +743,6 @@ void startPost(uint32_t now) {
     if (r < 0 && errno != EINPROGRESS) {
         s.addr = 0;                                // look it up again next time
         finish("no route", false);
-        return;
-    }
-    // A payload that did not fit is not sent at all. Sending the truncated
-    // half means invalid JSON at the far end and a board that is quietly not
-    // listed, which is worse than an announce that plainly did not happen.
-    if (!buildRequest(s)) {
-        finish("payload too long", false);
         return;
     }
     g_sent    = 0;
@@ -539,12 +782,17 @@ void service(uint32_t now) {
 
     if (g_stage == Stage::Sending) {
         while (g_sent < g_reqLen) {
-            ssize_t n = send(g_fd, g_request + g_sent, g_reqLen - g_sent, 0);
+            ssize_t n = send(g_fd, g_io + g_sent, g_reqLen - g_sent, 0);
             if (n > 0) { g_sent = static_cast<uint16_t>(g_sent + n); continue; }
             if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
             finish("send failed", false);
             return;
         }
+        // The request has gone to its last byte, so the buffer is the
+        // reply's now. Cleared here and not earlier: the request is still in
+        // it, and it ends in the same blank line Reading looks for.
+        g_replyLen = 0;
+        g_io[0]    = '\0';
         g_stage = Stage::Reading;
     }
 
@@ -555,35 +803,37 @@ void service(uint32_t now) {
         // an error: a 32 character token arriving as "1e94" looks perfectly
         // valid, never matches again, and mints a fresh listing on every
         // heartbeat for ever.
-        while (g_replyLen + 1 < kReplyMax) {
-            ssize_t n = recv(g_fd, g_reply + g_replyLen,
+        constexpr size_t kReplyMax = sizeof(g_io);
+        while (static_cast<size_t>(g_replyLen) + 1 < kReplyMax) {
+            ssize_t n = recv(g_fd, g_io + g_replyLen,
                              static_cast<size_t>(kReplyMax - 1 - g_replyLen), 0);
             if (n > 0) {
                 g_replyLen = static_cast<uint16_t>(g_replyLen + n);
-                g_reply[g_replyLen] = '\0';
-                if (strstr(g_reply, "\r\n\r\n")) break;   // headers are all here
+                g_io[g_replyLen] = '\0';
+                if (strstr(g_io, "\r\n\r\n")) break;      // headers are all here
                 continue;
             }
             if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                 // Nothing more yet. Come back next tick unless what we have
                 // is already a complete set of headers.
-                if (strstr(g_reply, "\r\n\r\n")) break;
+                if (strstr(g_io, "\r\n\r\n")) break;
                 return;
             }
             break;                                  // closed, or an error
         }
 
         if (!g_replyLen) { finish("no reply", false); return; }
-        g_reply[g_replyLen] = '\0';
+        g_io[g_replyLen] = '\0';
 
+        const char* reply = g_io;
         int code = 0;                              // "HTTP/1.1 200 OK"
-        if (!strncmp(g_reply, "HTTP/1.", 7) && g_replyLen > 12) code = atoi(g_reply + 9);
+        if (!strncmp(reply, "HTTP/1.", 7) && g_replyLen > 12) code = atoi(reply + 9);
 
-        header(g_reply, "X-Seen-Address:", g_seenIp, sizeof(g_seenIp));
-        header(g_reply, "X-Listing-State:", g_state, sizeof(g_state));
+        header(reply, "X-Seen-Address:", g_seenIp, sizeof(g_seenIp));
+        header(reply, "X-Listing-State:", g_state, sizeof(g_state));
 
         char field[24];
-        if (header(g_reply, "X-Listing-Public-In:", field, sizeof(field)))
+        if (header(reply, "X-Listing-Public-In:", field, sizeof(field)))
             g_publicIn = static_cast<uint32_t>(strtoul(field, nullptr, 10));
 
         // The directory issues a token the first time and the board keeps it
@@ -591,7 +841,7 @@ void service(uint32_t now) {
         // Only a whole one: a short read must never overwrite a good token
         // with a fragment of a new one.
         char issued[sizeof(g_token)];
-        if (header(g_reply, "X-Listing-Token:", issued, sizeof(issued)) &&
+        if (header(reply, "X-Listing-Token:", issued, sizeof(issued)) &&
             strlen(issued) >= kTokenMin && strcmp(issued, g_token)) {
             snprintf(g_token, sizeof(g_token), "%.40s", issued);
             saveToken();
@@ -688,12 +938,33 @@ void showStatus(Bbs& b, Session& s) {
 }
 
 void showPayload(Bbs& b, Session& s) {
-    buildBody();
+    // The payload is built in the buffer a heartbeat is sent and answered
+    // from, so not while one is out. On a LAN that is well under a second;
+    // the longest it can be is kTimeoutMs.
+    if (g_stage != Stage::Idle) {
+        s.term.color(s.tl, Color::Yellow);
+        s.term.text(s.tl, "A heartbeat is going out. TEST again in a moment.");
+        b.prompt(s);
+        return;
+    }
+    if (!buildBody()) {
+        // What is in the buffer is a fragment, and printing it as "what
+        // leaves the board" would be a lie: nothing leaves at all.
+        s.term.color(s.tl, Color::LightRed);
+        s.term.text(s.tl, "The payload does not fit its room.");
+        s.term.nl(s.tl);
+        s.term.text(s.tl, "It would be refused, nothing sent.");
+        s.term.nl(s.tl);
+        s.term.color(s.tl, Color::Grey);
+        s.term.text(s.tl, "Shorten a field in CONFIG announce.");
+        b.prompt(s);
+        return;
+    }
     s.term.color(s.tl, Color::DarkGrey);
     s.term.text(s.tl, "This is everything that leaves the board:");
     s.term.nl(s.tl);
     s.term.color(s.tl, Color::White);
-    s.term.text(s.tl, g_body);
+    s.term.text(s.tl, kBody);
     s.term.nl(s.tl);
     s.term.color(s.tl, Color::DarkGrey);
     s.term.text(s.tl, "Nothing about callers is in it, ever.");
@@ -732,6 +1003,13 @@ bool start(Bbs& bbs) {
     g_at    = 0xFF;
     g_stage = Stage::Idle;
     g_bbsName[0] = g_owner[0] = g_desc[0] = g_host[0] = g_token[0] = '\0';
+    g_support[0] = g_interests[0] = '\0';
+#ifdef BBS_HOST
+    g_room = kBodyMax;                     // room_test lasts one config, not for ever
+#endif
+    // What the board is: the chip, and the flash this image can use. Once,
+    // here, because neither can change while the board is running.
+    plat::hardware(g_system, sizeof(g_system));
     g_seenIp[0]  = '\0';
     g_state[0]   = '\0';
     g_publicIn   = 0;
@@ -813,9 +1091,17 @@ const PluginSetting kSettings[] = {
     // 0 turns them off and leaves only the timed heartbeat.
     { "nudge_seconds",  "Push secs", PS_NUM,   0, 3600,  4 },
     { "share_activity", "Activity",  PS_YESNO, 0, 0,     4 },
+    // The sysop's badges (1.0.1): comma lists of slugs copied from the
+    // directory's /badges page. Tidied on the way out, see slugList.
+    { "support",        "Support",   PS_TEXT,  0, 0,     kListMax },
+    { "interests",      "Interests", PS_TEXT,  0, 0,     kListMax },
     // Issued by the directory and kept so a listing survives a reflash.
-    { "token",          "Token",     PS_TEXT,  0, 0,     40 },
+    { "token",          "Token",     PS_TEXT,  0, 0,     kTokenMax },
 };
+// Four rows the core puts first (enabled, read, write, admin) and these fill
+// a CONFIG page: one more and CONFIG drops the last silently.
+static_assert(4 + sizeof(kSettings) / sizeof(kSettings[0]) <= Form::kMaxFields,
+              "announce's CONFIG page is full");
 
 // ---------------------------------------------------------------------------
 // setting: what this plugin is running with, for a key system.cfg has not
@@ -828,6 +1114,8 @@ void setting(const char* key, char* out, size_t n) {
     else if (!strcmp(key, "description")) snprintf(out, n, "%s", g_desc);
     else if (!strcmp(key, "host"))        snprintf(out, n, "%s", g_host);
     else if (!strcmp(key, "token"))       snprintf(out, n, "%s", g_token);
+    else if (!strcmp(key, "support"))     snprintf(out, n, "%s", g_support);
+    else if (!strcmp(key, "interests"))   snprintf(out, n, "%s", g_interests);
     else if (!strcmp(key, "public_port")) snprintf(out, n, "%u", static_cast<unsigned>(g_public));
     else if (!strcmp(key, "interval"))    snprintf(out, n, "%u", static_cast<unsigned>(g_interval));
     else if (!strcmp(key, "nudge_seconds")) snprintf(out, n, "%u", static_cast<unsigned>(g_nudgeSecs));

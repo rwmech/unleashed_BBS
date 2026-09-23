@@ -54,7 +54,7 @@ Disk free 612K, reserve 32K
 | Plugin | Purpose |
 |---|---|
 | `chat` | one chat room, DDial style (`#2:Daytona) hi`), room commands, moderation and the message system. On by default. Its own doc: [CHAT.md](CHAT.md). |
-| `announce` | tells a directory server the board exists, so callers can find it, and learns the board's public address back. Off by default, sends nothing about callers. Its own doc: [ANNOUNCE.md](ANNOUNCE.md). |
+| `announce` | tells a directory server the board exists, so callers can find it, and learns the board's public address back. Also sends the directory's badges: the chip and the flash its image can use (`plat::hardware`), the terminals, the guest setting, which of chat, mail, forums and files work (the last two only with a card mounted), and the sysop's `support` and `interests`. Off by default, sends nothing about callers. Its own doc: [ANNOUNCE.md](ANNOUNCE.md). |
 | `serial` | shares a serial device: one operator with `write`, any number of watchers with `read` |
 | `sd` | mounts an optional SD card over SPI and lets its `screens` folder override the stock screens, per file. On by default; costs one failed mount at boot on a board with no card. |
 | `files` | publishes folders on the card as file areas, with XMODEM/YMODEM download and upload. Needs a card, so it does not start on a cardless board. |

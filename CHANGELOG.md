@@ -24,6 +24,54 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.0.1, 2026-09-23
+
+The directory's badges, sent by the board. From site 0.21 the directory
+shows small badges under each board's name; until now only the ones it
+works out itself could appear, because no firmware sent the rest.
+
+- The announce plugin sends:
+  - `system`: the machine the board runs on, read off the chip, e.g.
+    "ESP32 · 4 MB". The sysop never types it.
+  - `terminals`: ANSI, UTF-8, PETSCII and plain ASCII, always, for this
+    firmware.
+  - `guests`: the guest setting.
+  - `features`: whichever of chat, mail, forums and files are running at
+    that moment. A board without a card never claims forums or files.
+  - `support` and `interests`: two new rows on CONFIG's announce page. A
+    sysop types slugs from the directory's /badges page, separated by
+    commas. They are tidied before sending: lower case, letters, digits
+    and dashes only, 16 at most. The directory ignores any it does not
+    know.
+- The payload has room for all of it. The body, the request and the reply
+  now share one buffer, big enough for the worst case (1,319 bytes with
+  every value at full length and every character escaped). Static RAM
+  went down 160 bytes on the way.
+- `ANNOUNCE TEST` shows the new fields, and refuses while a heartbeat is
+  in flight, because they share the buffer. A payload too big to send is
+  reported as "It would be refused, nothing sent" rather than printed in
+  part.
+- A refused payload no longer opens a connection to the directory: the
+  request is built before connecting, so nothing touches the network
+  unless it can be sent whole.
+- Forums and files count as running features only while a card is
+  mounted, so `SD UNMOUNT` takes them off the next heartbeat. A card
+  pulled without `SD UNMOUNT` is still not noticed until the next boot.
+- A badge name typed with spaces, "Mental Health", is sent as
+  `mental-health`: runs of spaces, underscores and dashes become one dash.
+- Chat resets its mail settings when the configuration is reloaded, so
+  taking `mail_slots` out of system.cfg brings mail back without a reboot.
+- This release shipped on the code review plus targeted runs of
+  announce, config, plugins and messaging, with and without a card: 135
+  and 191, 172 and 244, no failures. The full regression runs after the
+  tag, and anything it finds goes into 1.0.2.
+- Tests: the suite's stand-in directory stops when told to, and a new
+  end-to-end test runs the real directory server on 127.0.0.1, then checks
+  that the badges are stored and shown.
+
+The rest of what was planned as 1.0.1 moved to 1.0.2, so the badges could
+ship on their own.
+
 ## 1.0.0, 2026-09-23
 
 The first public release. 0.23.0 passed the test that mattered: a new

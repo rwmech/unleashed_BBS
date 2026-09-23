@@ -38,6 +38,8 @@ FILE(GLOB_RECURSE app_sources ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp ${CMAKE_CURRENT_
 
 set(app_requires esp_wifi esp_netif esp_event nvs_flash esp_timer esp_hw_support heap lwip
                  esp_driver_gpio esp_driver_uart esp_rom
+                 # esp_flash_get_size, for the directory's system badge
+                 spi_flash
                  # The optional SD card: SPI host, card protocol, FAT and the
                  # VFS glue. fatfs is the one that costs image space, so it is
                  # worth remembering it is here if the build ever gets tight.

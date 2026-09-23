@@ -4963,84 +4963,110 @@ def test_privacy():
 DIRECTORY_TOKEN = "a1b2c3d4e5f60718293a4b5c6d7e8f90"    # 32 chars, like the real one
 
 
+def standin_directory(port, got, stop, split_first=False, hold_token=None, ready=None):
+    """A stand-in directory: answer every heartbeat 200, remember them all.
+
+    It used to accept exactly ONE connection and then close its
+    listener, so every heartbeat after the first got connection-refused.
+    The board recorded "refused" over the "listed" it had a moment
+    earlier, which is correct behaviour on its part, and the test then
+    raced the board's own retry: it passed when it read the status first
+    and failed when the retry won. That race was invisible until the
+    suite got slower and it started landing the other way.
+
+    A real directory does not stop listening, so neither does this one
+    until stop is set, or a minute passes with nothing arriving. The stop
+    is what lets the next test put a directory on the same port (1.0.1):
+    this one used to hold it for a full idle minute after its test ended.
+    It records every heartbeat in got as (head, body). It is not one
+    heartbeat per run: nudge_seconds pushes an update whenever the public
+    caller count moves, and the tests log callers in and out, so counting
+    them would be asserting on the nudge policy rather than on the thing
+    being tested.
+
+    While hold_token (an Event) is set, replies carry no X-Listing-Token,
+    so a board keeps whatever token it was given in system.cfg. The
+    worst-case payload needs that: its token is forty quote marks, and the
+    first reply would otherwise swap them for a 32 character one.
+
+    ready (an Event) is set once it is listening. A test asserting that
+    nothing arrived has to know something was there to receive it: a bind
+    that failed made "nothing was sent" pass on a board that sent plenty.
+    """
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", port))
+    srv.listen(4)
+    if ready is not None:
+        ready.set()
+    srv.settimeout(0.5)
+    first = split_first
+    idle_since = time.time()
+    try:
+        while not stop.is_set():
+            try:
+                c, _ = srv.accept()
+            except socket.timeout:
+                if time.time() - idle_since > 60:
+                    return
+                continue
+            idle_since = time.time()
+            c.settimeout(5)
+            try:
+                data = b""
+                while b"\r\n\r\n" not in data:
+                    more = c.recv(4096)
+                    if not more:
+                        break
+                    data += more
+                head, _, body = data.partition(b"\r\n\r\n")
+                need = 0
+                for line in head.split(b"\r\n"):
+                    if line.lower().startswith(b"content-length:"):
+                        need = int(line.split(b":")[1])
+                while len(body) < need:
+                    more = c.recv(4096)
+                    if not more:
+                        break
+                    body += more
+                got.append((head, body))
+                issued = b"" if hold_token is not None and hold_token.is_set() \
+                    else b"X-Listing-Token: " + DIRECTORY_TOKEN.encode() + b"\r\n"
+                reply = (b"HTTP/1.1 200 OK\r\n"
+                         b"X-Seen-Address: 203.0.113.9\r\n"
+                         b"X-Listing-State: pending\r\n"
+                         + issued +
+                         b"Content-Length: 2\r\nConnection: close\r\n\r\nok")
+                if first:
+                    # Split four characters into the token, on purpose:
+                    # the board has to cope with a header arriving in
+                    # two reads.
+                    cut = reply.index(DIRECTORY_TOKEN.encode()) + 4
+                    c.sendall(reply[:cut])
+                    time.sleep(0.3)
+                    c.sendall(reply[cut:])
+                    first = False
+                else:
+                    c.sendall(reply)
+            except OSError:
+                pass
+            finally:
+                c.close()
+    finally:
+        srv.close()
+
+
 def test_announce():
     """The board lists itself, sends nothing about callers, and can prove it."""
     print("Directory listing")
     import json as _json
-    import socket as _socket
     import threading as _threading
 
     got = []
+    stop = _threading.Event()
 
     def directory(port):
-        """A stand-in directory: answer every heartbeat 200, remember them all.
-
-        It used to accept exactly ONE connection and then close its
-        listener, so every heartbeat after the first got connection-refused.
-        The board recorded "refused" over the "listed" it had a moment
-        earlier, which is correct behaviour on its part, and the test then
-        raced the board's own retry: it passed when it read the status first
-        and failed when the retry won. That race was invisible until the
-        suite got slower and it started landing the other way.
-
-        A real directory does not stop listening, so neither does this one.
-        It records every heartbeat; the test reads the first. It is not one
-        heartbeat per run: nudge_seconds pushes an update whenever the
-        public caller count moves, and this test logs callers in and out, so
-        counting them would be asserting on the nudge policy rather than on
-        the thing being tested.
-        """
-        srv = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
-        srv.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
-        srv.bind(("127.0.0.1", port))
-        srv.listen(4)
-        srv.settimeout(60)
-        first = True
-        try:
-            while True:
-                try:
-                    c, _ = srv.accept()
-                except _socket.timeout:
-                    return
-                c.settimeout(5)
-                try:
-                    data = b""
-                    while b"\r\n\r\n" not in data:
-                        more = c.recv(4096)
-                        if not more:
-                            break
-                        data += more
-                    head, _, body = data.partition(b"\r\n\r\n")
-                    need = 0
-                    for line in head.split(b"\r\n"):
-                        if line.lower().startswith(b"content-length:"):
-                            need = int(line.split(b":")[1])
-                    while len(body) < need:
-                        more = c.recv(4096)
-                        if not more:
-                            break
-                        body += more
-                    got.append((head, body))
-                    reply = (b"HTTP/1.1 200 OK\r\n"
-                             b"X-Seen-Address: 203.0.113.9\r\n"
-                             b"X-Listing-State: pending\r\n"
-                             b"X-Listing-Token: " + DIRECTORY_TOKEN.encode() + b"\r\n"
-                             b"Content-Length: 2\r\nConnection: close\r\n\r\nok")
-                    if first:
-                        # Split four characters into the token, on purpose:
-                        # the board has to cope with a header arriving in
-                        # two reads.
-                        cut = reply.index(DIRECTORY_TOKEN.encode()) + 4
-                        c.sendall(reply[:cut])
-                        time.sleep(0.3)
-                        c.sendall(reply[cut:])
-                        first = False
-                    else:
-                        c.sendall(reply)
-                finally:
-                    c.close()
-        finally:
-            srv.close()
+        standin_directory(port, got, stop, split_first=True)
 
     if HOST not in ("127.0.0.1", "localhost"):
         print("  SKIP  announce needs the host build")
@@ -5143,6 +5169,503 @@ def test_announce():
     ok &= check("ANNOUNCE is staff only", b"Unknown" in n.buf)
     n.close()
     s.close()
+    stop.set()                         # the port is the next test's
+    th.join(3)
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# The directory badges (1.0.1)
+# ---------------------------------------------------------------------------
+
+# Typed into CONFIG the way a sysop might, junk and all. Support: upper
+# case, spaces round and inside an entry, an empty entry, markup, a repeat,
+# and the same slug again spelt with a dash and with underscores. A space
+# inside an entry is a dash (review, 1.0.1): "Mental Health" used to go as
+# mentalhealth, which no directory publishes. Interests: seventeen good
+# entries and one far longer than any slug a directory publishes.
+BADGE_SUPPORT_TYPED   = (b" HAM, lgbtq ,,Mental Health,<b>x</b>,ham,MENTAL-health,"
+                         b"Suicide__ _Prevention-")
+BADGE_SUPPORT_SENT    = ["ham", "lgbtq", "mental-health", "bxb", "suicide-prevention"]
+BADGE_INTERESTS_TYPED = (b"C64,this-slug-is-far-too-long-to-be-one,Amiga,"
+                         + b",".join(b"e%x" % i for i in range(1, 16)))
+BADGE_INTERESTS_SENT  = ["c64", "amiga"] + ["e%x" % i for i in range(1, 15)]
+
+# Enabled, Read, Write, Admin, then the plugin's own rows with Board (shown,
+# not editable) skipped: Sysop, About, DNS name, Port, Directory, Every min,
+# Push secs, Activity, Support.
+BADGE_TO_SUPPORT = DOWN * 12
+
+
+def cfg_with(text, edits):
+    """system.cfg text with {(section, key): value} set. Section "" is the
+    top of the file. A key already there is replaced in place; one that is
+    not is added at the end of its section, or above the first section for
+    a core key, which is where the parser wants those."""
+    out, cur, done = [], "", set()
+
+    def flush(section):
+        for (sec, key), val in edits.items():
+            if sec == section and (sec, key) not in done:
+                out.append(f"{key} = {val}")
+                done.add((sec, key))
+
+    for line in text.splitlines():
+        t = line.strip()
+        if t.startswith("["):
+            flush(cur)
+            cur = t[1:t.find("]")] if "]" in t else ""
+            out.append(line)
+            continue
+        if "=" in line and not t.startswith(("#", ";")):
+            k = line.split("=", 1)[0].strip()
+            if (cur, k) in edits:
+                out.append(f"{k} = {edits[(cur, k)]}")
+                done.add((cur, k))
+                continue
+        out.append(line)
+    flush(cur)
+    return "\n".join(out) + "\n"
+
+
+def announce_reload(s, text, interval):
+    """Put text in system.cfg and make the board live on it, by saving the
+    announce page's "Every min" as interval, the way a sysop would. text
+    should carry some other interval, so the save is a real change.
+
+    Not cfg_reload: that leaves max_users = 200 in the file, and test_config,
+    which runs later, sets exactly 200 and then expects "Saved and live". It
+    got "Nothing changed" and failed for a reason in somebody else's test."""
+    (USERDATA / "system.cfg").write_bytes(text.encode("utf-8"))
+    cfg_open(s, b"announce", b"Every min")
+    s.buf.clear()
+    s.send(DOWN * 9 + b"\x08" * 4 + str(interval).encode() + F1)
+    return cfg_verdict(s, [b"Saved and live", b"Nothing changed", b"saved, but"]) \
+        == b"Saved and live"
+
+
+def announce_restore(s, saved):
+    """system.cfg back to saved, byte for byte where the writer allows, and
+    the board living on it again."""
+    text = saved.decode("utf-8")
+    m = re.search(r"^\[plugin:announce\][^\[]*?^interval\s*=\s*(\d+)", text, re.M | re.S)
+    iv = int(m.group(1)) if m else 10
+    return announce_reload(s, cfg_with(text, {("plugin:announce", "interval"): str(iv + 1)}), iv)
+
+
+def announce_body_max():
+    """kBodyMax out of announce.cpp, so the check follows the build."""
+    src = (ROOT / "src" / "plugins" / "announce.cpp").read_text()
+    m = re.search(r"kBodyMax\s*=\s*(\d+)", src)
+    return int(m.group(1)) if m else 512
+
+
+def announce_heartbeat(s, got, secs=10):
+    """ANNOUNCE NOW, and the heartbeat it produced as (payload dict, body).
+
+    (None, b"") when nothing arrived, which is what a refused payload looks
+    like from the directory's side: nothing at all."""
+    import json as _json
+    s.pump(1.0)                        # let anything already out finish
+    got.clear()
+    s.buf.clear()
+    s.send(b"announce now\r")
+    s.wait_for(b"Sending now", 4)
+    for _ in range(int(secs * 4)):
+        if got:
+            break
+        time.sleep(0.25)
+    s.pump(0.8)                        # the reply lands on a later tick
+    if not got:
+        return None, b""
+    body = got[0][1]
+    try:
+        return _json.loads(body.decode("utf-8")), body
+    except Exception:
+        return {}, body
+
+
+def announce_features(s):
+    """The features list ANNOUNCE TEST prints right now, or None when it
+    printed none. The payload is built on the spot, so this is what the next
+    heartbeat would say, with no directory needed to find out.
+
+    A plugin restart posts at once, and TEST will not build a payload while
+    a heartbeat is out, so it waits for that and asks again."""
+    for _ in range(6):
+        s.pump(0.5)
+        s.buf.clear()
+        s.send(b"announce test\r")
+        i = wait_any(s, [b'"interests"', b"going out"], 5)
+        s.pump(0.3)
+        if i != 1:
+            break
+    m = re.search(rb'"features":\[([^\]]*)\]', plain(s.buf))
+    if not m:
+        return None
+    return [w.strip(b'"').decode() for w in m.group(1).split(b",") if w]
+
+
+def widest_slack(rec):
+    """Bytes this payload is short of the widest one the same text could
+    make: every number at its most digits, the longest system label, and
+    all four features running."""
+    import json as _json
+    widths = {"port": 5, "nodes": 3, "busy": 3, "uptime": 7, "interval": 4,
+              "tz": 4, "calls24": 5, "minutes24": 10}
+    slack = sum(w - len(str(rec.get(k, 0))) for k, w in widths.items())
+    slack += 31 - len(str(rec.get("system", "")).encode("utf-8"))
+    slack += (len('["chat","forums","files","mail"]')
+              - len(_json.dumps(rec.get("features", []), separators=(",", ":"))))
+    return slack
+
+
+def test_announce_badges():
+    """The directory badges (1.0.1): what the board says about itself.
+
+    system, terminals, guests and features are the board's own facts, and
+    features is what is running NOW: with no card, forums and files cannot
+    run, and the heartbeat must not claim them. support and interests are
+    the sysop's, typed into CONFIG and tidied on the way out.
+
+    And the room. A payload that does not fit is refused, never cut
+    (0.21.4), so a board whose sysop filled every field would drop off the
+    directory without a word. The worst case the plugin can build is built
+    here, from system.cfg, and has to arrive whole.
+    """
+    print("Directory badges")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  the badges need the host build")
+        return True
+    card = bool(os.environ.get("BBS_SD_DIR", ""))
+    port = int(os.environ.get("BBS_DIR_PORT", "8099"))
+    got, stop, hold, ready = [], threading.Event(), threading.Event(), threading.Event()
+    th = threading.Thread(target=standin_directory,
+                          args=(port, got, stop, False, hold, ready), daemon=True)
+    th.start()
+    cfg_path = USERDATA / "system.cfg"
+    saved = cfg_path.read_bytes()
+    s = cfg_sysop("Badger")
+    ok = check("the stand-in directory is listening", ready.wait(3))
+    try:
+        # --- what the board says about itself, on the harness's own config
+        rec, _ = announce_heartbeat(s, got)
+        ok &= check("a heartbeat carries all six badge fields",
+                    rec is not None and all(k in rec for k in (
+                        "system", "terminals", "guests", "features", "support", "interests")))
+        rec = rec or {}
+        ok &= check("system is read off the machine: the host build says host",
+                    rec.get("system") == "host")
+        ok &= check("terminals: the four this firmware speaks",
+                    rec.get("terminals") == ["ansi", "utf8", "petscii", "ascii"])
+        ok &= check("guests is a JSON true while guests are let in",
+                    rec.get("guests") is True)
+        want = ["chat", "forums", "files", "mail"] if card else ["chat", "mail"]
+        ok &= check("features: what is running, " +
+                    ("forums and files with a card" if card else "no forums or files without a card"),
+                    rec.get("features") == want)
+        ok &= check("support and interests go as empty lists, never left out",
+                    rec.get("support") == [] and rec.get("interests") == [])
+
+        s.buf.clear()
+        s.send(b"announce test\r")
+        s.wait_for(b'"interests"', 5)
+        s.pump(0.3)
+        shown = plain(s.buf)
+        ok &= check("ANNOUNCE TEST prints them",
+                    b'"system":"host"' in shown
+                    and b'"terminals":["ansi","utf8","petscii","ascii"]' in shown
+                    and b'"guests":true' in shown and b'"features":[' in shown
+                    and b'"support":[]' in shown and b'"interests":[]' in shown)
+
+        # --- SD UNMOUNT (review, 1.0.1). It stops no plugin, so FORUMS and
+        # FILES stay running with nothing under them, and the badges went on
+        # claiming both. They count only with a card mounted now.
+        if card:
+            s.buf.clear()
+            s.send(b"sd unmount\r")
+            unmounted = s.wait_for(b"safe to pull", 6)
+            s.pump(0.3)
+            feats = announce_features(s)
+            if feats != ["chat", "mail"]:
+                print("        features after SD UNMOUNT:", feats)
+            ok &= check("SD UNMOUNT takes forums and files off the next heartbeat",
+                        unmounted and feats == ["chat", "mail"])
+            s.buf.clear()
+            s.send(b"sd mount\r")
+            s.wait_for(b"Mounted", 10)
+            s.pump(0.5)
+            ok &= check("and SD MOUNT puts them back",
+                        announce_features(s) == ["chat", "forums", "files", "mail"])
+
+        # --- typed into CONFIG, junk and all. The rows have to be there: on
+        # a page without them the same keys save into some other field and
+        # "Saved and live" alone would pass.
+        opened = cfg_open(s, b"announce", b"Interests")
+        s.pump(0.6)
+        # Sixteen rows is Form::kMaxFields, the first CONFIG page to reach
+        # it: the buttons and the status line have to stay on a 24 row
+        # screen, and nothing may pass column 39 for a C64.
+        grid = render_lines(s.buf, 80)
+        drawn = [i for i, line in enumerate(grid) if line.strip()]
+        if not (drawn and drawn[-1] < 24):
+            print("        the page reached row", drawn[-1] + 1 if drawn else 0)
+        ok &= check("the announce page, sixteen rows now, fits 24 rows and 40 columns",
+                    opened and bool(drawn) and drawn[-1] < 24
+                    and any("Token" in line for line in grid)
+                    and max_column(s.buf) <= 39)
+        s.buf.clear()
+        s.send(BADGE_TO_SUPPORT + b"\x08" * 95 + BADGE_SUPPORT_TYPED
+               + DOWN + b"\x08" * 95 + BADGE_INTERESTS_TYPED + F1)
+        got_v = cfg_verdict(s, [b"Saved and live", b"No ; here", b"Nothing changed"])
+        ok &= check("Support and Interests are on the announce page, and save",
+                    opened and got_v == b"Saved and live")
+        ok &= check("the file keeps what was typed; the tidying is on the way out",
+                    (cfg_sec_line("plugin:announce", "support") or "").split("=", 1)[-1].strip()
+                    == BADGE_SUPPORT_TYPED.decode().strip())
+        rec, _ = announce_heartbeat(s, got)
+        rec = rec or {}
+        if rec.get("support") != BADGE_SUPPORT_SENT:
+            print("        support sent:", rec.get("support"))
+        ok &= check("support: lower case, a space or _ run inside an entry one -, "
+                    "junk, empties and repeats gone",
+                    rec.get("support") == BADGE_SUPPORT_SENT)
+        if rec.get("interests") != BADGE_INTERESTS_SENT:
+            print("        interests sent:", rec.get("interests"))
+        ok &= check("interests: the first 16 good ones, a slug longer than any "
+                    "directory's dropped", rec.get("interests") == BADGE_INTERESTS_SENT)
+
+        # --- mail_slots (review, 1.0.1). chat's start() never put its mail
+        # settings back to their defaults, so taking "mail_slots = 0" out of
+        # the file left mail off until a reboot, and the mail badge said so.
+        text = saved.decode("utf-8")
+        announce_reload(s, cfg_with(text, {("plugin:chat", "mail_slots"): "0",
+                                           ("plugin:announce", "interval"): "58"}), 59)
+        feats = announce_features(s)
+        ok &= check("mail_slots = 0: no mail badge",
+                    feats is not None and "chat" in feats and "mail" not in feats)
+        announce_reload(s, cfg_with(text, {("plugin:announce", "interval"): "57"}), 56)
+        feats = announce_features(s)
+        if not feats or "mail" not in feats:
+            print("        features with the line taken out:", feats)
+        ok &= check("the line taken out again: mail is back, without a reboot",
+                    feats is not None and "mail" in feats)
+
+        # --- a payload that does not fit (review, 1.0.1). ANNOUNCE TEST
+        # printed the fragment as "everything that leaves the board". The
+        # host shrinks the room with room_test, because at kBodyMax nothing
+        # can overflow it.
+        announce_reload(s, cfg_with(text, {("plugin:announce", "room_test"): "100",
+                                           ("plugin:announce", "interval"): "55"}), 54)
+        for _ in range(6):
+            s.pump(0.5)
+            s.buf.clear()
+            s.send(b"announce test\r")
+            if wait_any(s, [b"nothing sent", b'"software"', b"going out"], 5) != 2:
+                break
+        s.pump(0.3)
+        shown = plain(s.buf)
+        ok &= check("ANNOUNCE TEST says a payload too big would be refused, nothing sent",
+                    b"would be refused, nothing sent" in shown
+                    and b"everything that leaves" not in shown and b'"software"' not in shown)
+        rec, body = announce_heartbeat(s, got, secs=4)
+        if rec is not None:
+            print(f"        a {len(body)} byte heartbeat arrived: {body[:60]!r}")
+        ok &= check("and ANNOUNCE NOW sends nothing, not half of it", rec is None)
+        s.buf.clear()
+        s.send(b"announce\r")
+        s.wait_for(b"Announce", 4)
+        s.pump(0.6)
+        ok &= check("ANNOUNCE says payload too long", b"payload too long" in plain(s.buf))
+
+        # --- the worst payload the plugin can build
+        limit = announce_body_max()
+        slugs = ",".join(("%x" % i) * 5 for i in range(16))      # 16 in 95 characters
+        worst = cfg_with(saved.decode("utf-8"), {
+            ("", "board_name"): '"' * 40,
+            ("", "guest"): "no",
+            ("plugin:announce", "owner"): '"' * 40,
+            ("plugin:announce", "description"): '"' * 120,
+            ("plugin:announce", "host"): '"' * 95,
+            ("plugin:announce", "token"): '"' * 40,
+            ("plugin:announce", "public_port"): "65535",
+            ("plugin:announce", "interval"): "1439",      # saved as 1440 below
+            ("plugin:announce", "share_activity"): "yes",
+            ("plugin:announce", "support"): slugs,
+            ("plugin:announce", "interests"): slugs,
+        })
+        hold.set()                     # keep the forty-quote token
+        ok &= check("the board reloads the worst-case config",
+                    announce_reload(s, worst, 1440))
+        rec, body = announce_heartbeat(s, got)
+        whole = rec is not None and rec.get("name") == '"' * 40 \
+            and rec.get("description") == '"' * 120 and rec.get("host") == '"' * 95 \
+            and rec.get("token") == '"' * 40
+        ok &= check("every text at its longest, every character escaped: sent, not refused", whole)
+        rec = rec or {}
+        widest = len(body) + widest_slack(rec) if rec else 0
+        print(f"        worst payload {len(body)} bytes here, {widest} with the widest"
+              f" numbers and every feature; the room is {limit - 1}")
+        ok &= check("and it fits the room even with the widest numbers and every feature",
+                    bool(rec) and widest <= limit - 1)
+        ok &= check("16 support and 16 interests at 95 characters each",
+                    len(rec.get("support", [])) == 16 and len(rec.get("interests", [])) == 16)
+        ok &= check("guests off goes as a JSON false", rec.get("guests") is False)
+        s.buf.clear()
+        s.send(b"announce\r")
+        s.wait_for(b"Announce", 4)
+        s.pump(0.6)
+        status = plain(s.buf)
+        ok &= check("ANNOUNCE says listed, not payload too long",
+                    b"listed" in status and b"too long" not in status)
+    finally:
+        hold.clear()
+        announce_restore(s, saved)
+        s.close()
+        stop.set()
+        th.join(3)
+    return ok
+
+
+def test_announce_directory():
+    """End to end (1.0.1): the host board announces to the real directory
+    server, which stores the badges and draws them on its board list.
+
+    Needs the unleashed_directory repository beside this one, or its path in
+    BBS_DIRECTORY_REPO, and says SKIP without it. The directory runs on this
+    tag's own directory port with a two second pending window, the same
+    settings its own self-test uses. Nothing leaves 127.0.0.1.
+    """
+    print("Directory badges, end to end")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    repo = pathlib.Path(os.environ.get("BBS_DIRECTORY_REPO",
+                                       str(ROOT.parent.parent / "unleashed_directory")))
+    if not (repo / "server.py").is_file():
+        print("  SKIP  no directory repository at", repo)
+        return True
+    import html as _html
+    import json as _json
+    import subprocess
+    import tempfile
+    import urllib.request
+
+    card = bool(os.environ.get("BBS_SD_DIR", ""))
+    port = int(os.environ.get("BBS_DIR_PORT", "8099"))
+    db = pathlib.Path(tempfile.gettempdir()) / f"bbs-directory-{port}.db"
+    for p in (db, db.with_name(db.name + "-wal"), db.with_name(db.name + "-shm")):
+        if p.exists():
+            p.unlink()
+    env = dict(os.environ, DIRECTORY_DB=str(db), DIRECTORY_PORT=str(port),
+               DIRECTORY_HOST="127.0.0.1", DIRECTORY_PENDING_HOURS="0.0006",
+               DIRECTORY_MIN_SECONDS="0", DIRECTORY_PAGE_CACHE="0")
+    proc = subprocess.Popen([sys.executable, "server.py"], cwd=str(repo), env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    log = []
+    # Drain it: an undrained pipe fills and every handler thread blocks in
+    # its log line, which looks exactly like a server that has wedged.
+    threading.Thread(target=lambda: [log.append(l) for l in proc.stdout],
+                     daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+
+    def get(path):
+        with urllib.request.urlopen(base + path, timeout=5) as r:
+            return r.status, r.read().decode("utf-8", "replace")
+
+    up = False
+    for _ in range(80):
+        try:
+            up = get("/health")[0] == 200
+            break
+        except Exception:
+            if proc.poll() is not None:
+                break
+            time.sleep(0.1)
+    if not up:
+        proc.terminate()
+        print("        directory log:", b"".join(log[-10:]).decode("utf-8", "replace"))
+        return check("the directory server starts", False)
+
+    cfg_path = USERDATA / "system.cfg"
+    saved = cfg_path.read_bytes()
+    s = cfg_sysop("Listed")
+    ok = True
+    try:
+        # The lists in PROTOCOL.md's own example. The directory owns which
+        # slugs exist and which list each is in (it moved ham from support to
+        # interests in its 0.22.2), so these follow its example rather than
+        # guessing at its tables.
+        opened = cfg_open(s, b"announce", b"Interests")
+        s.buf.clear()
+        s.send(BADGE_TO_SUPPORT + b"\x08" * 95 + b"literacy, LGBTQ"
+               + DOWN + b"\x08" * 95 + b"c64, Electronics, ham, nonsense" + F1)
+        ok &= check("support and interests saved through CONFIG",
+                    opened and cfg_verdict(s, [b"Saved and live", b"Nothing changed"])
+                    == b"Saved and live")
+        # The save restarts the plugin and it announces at once: that is the
+        # first heartbeat, which makes a pending listing. The second, once
+        # the pending window has passed, puts it on the list.
+        s.pump(3.0)
+        s.buf.clear()
+        s.send(b"announce now\r")
+        s.wait_for(b"Sending now", 4)
+        s.pump(2.0)
+
+        boards = _json.loads(get("/api/boards.json")[1]).get("boards", [])
+        ok &= check("the directory lists the board", len(boards) == 1)
+        b = boards[0] if boards else {}
+        if b.get("support") != ["lgbtq", "literacy"] or b.get("interests") != ["c64", "electronics", "ham"]:
+            print("        board's support line:", cfg_sec_line("plugin:announce", "support"))
+            print("        board's interests line:", cfg_sec_line("plugin:announce", "interests"))
+            print("        directory has:", {k: b.get(k) for k in ("support", "interests", "name")})
+        ok &= check("it stored system as the board sent it", b.get("system") == "host")
+        ok &= check("and the four terminals", b.get("terminals") == ["ansi", "utf8", "petscii", "ascii"])
+        ok &= check("and guests as true", b.get("guests") is True)
+        want = ["chat", "forums", "files", "mail"] if card else ["chat", "mail"]
+        ok &= check("and the features that are running", b.get("features") == want)
+        ok &= check("and the support causes it knows, in its own order",
+                    b.get("support") == ["lgbtq", "literacy"])
+        ok &= check("and the interests it knows, nonsense dropped",
+                    b.get("interests") == ["c64", "electronics", "ham"])
+
+        page = get("/")[1]
+        name = _html.escape(b.get("name", "?"), quote=False)
+        at = page.find(f"<span class='bname'>{name}</span>")
+        row = page[at:page.find("</tr>", at)] if at >= 0 else ""
+        letters = re.findall(r'<span class="bd k-(\w+)"[^>]*>([^<]*)</span>', row)
+        # The row's filter keys: every badge it carries, by slug, which is
+        # the directory's own record of what it drew.
+        m = re.search(r'<tr data-b="([^"]*)"(?: hidden)?><td class=\'name\' data-label=\'Board\'>'
+                      r"<span class='bname'>" + re.escape(name) + r"</span>", page)
+        keys = m.group(1).split() if m else []
+        ok &= check("the board list draws its row", bool(row))
+        ok &= check("with the machine badge", ("sys", "host") in letters)
+        ok &= check("the PETSCII and guests badges", ("term", "P") in letters and ("guest", "G") in letters)
+        ok &= check("a badge for each feature running",
+                    ("feat", "C") in letters and ("feat", "M") in letters
+                    and (("feat", "Fi") in letters) == card and (("feat", "F") in letters) == card)
+        ok &= check("the two support symbols",
+                    row.count('class="bd k-sup"') == 2
+                    and "lgbtq" in keys and "literacy" in keys)
+        ok &= check("and the three interests",
+                    row.count('class="bd k-int"') == 3
+                    and all(k in keys for k in ("c64", "electronics", "ham")))
+        if not keys or row.count('class="bd k-int"') != 3:
+            print("        row keys:", keys)
+    finally:
+        # The directory goes first, or the restart after the restore would
+        # announce to it and have a fresh token written over the restored file.
+        proc.terminate()
+        try:
+            proc.wait(5)
+        except Exception:
+            proc.kill()
+        announce_restore(s, saved)
+        s.close()
+        for p in (db, db.with_name(db.name + "-wal"), db.with_name(db.name + "-shm")):
+            if p.exists():
+                p.unlink()
     return ok
 
 
@@ -7162,6 +7685,7 @@ ORDER_NAMES = [
     "test_page", "test_sysop", "test_cosysop", "test_accounts", "test_handle_case",
     "test_user_admin", "test_guest",
     "test_privacy", "test_plugins", "test_about", "test_announce",
+    "test_announce_badges", "test_announce_directory",
     "test_chat", "test_room_commands", "test_room_new_commands", "test_room_quit_logoff",
     "test_room_time_staff_only", "test_bell", "test_codes_in_messages", "test_fx_codes", "test_room_narrow_effects",
     "test_long_help",

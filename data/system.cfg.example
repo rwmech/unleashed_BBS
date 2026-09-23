@@ -182,6 +182,11 @@ USERS          X      X    -
 # servers is comma separated, up to four, and the default is replaceable:
 # the format is documented in ANNOUNCE.md so anybody can run a directory.
 # The name the directory shows is board_name at the top of this file.
+#
+# support and interests are badges: comma lists of the slugs the directory
+# publishes (unleashedbbs.com lists them at /badges), up to 16 each in 95
+# characters. The chip, the terminals, guests and what is running are sent
+# as badges too, worked out by the board itself.
 [plugin:announce]
 enabled     = no
 owner       = Somebody
@@ -191,3 +196,5 @@ host        =              ; a DNS name of your own, if you have one
 public_port = 6400         ; the port callers dial, if you forwarded another
 interval    = 10           ; minutes between heartbeats, 1 to 1440
 token       =              ; only if your directory issues them
+support     =              ; e.g. lgbtq, literacy
+interests   =              ; e.g. c64, electronics, ham

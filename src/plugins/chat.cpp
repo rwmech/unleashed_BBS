@@ -92,6 +92,7 @@
 #include "../core/codes.h"
 #include "../core/helptext.h"
 #include "info.h"
+#include "chat.h"
 #include "../core/bbs_util.h"
 #include "../core/clock.h"
 #include "../core/users.h"
@@ -2865,6 +2866,13 @@ bool start(Bbs& bbs) {
     g_histCount = g_histNext = 0;
     g_seq = 0;
     g_histMax = kHistDef;
+    // Back to the defaults before the file is read, like g_histMax: readKey
+    // only sets what the file says, so a line taken out of system.cfg left
+    // the old value running until a reboot. mail_slots = 0 removed kept mail
+    // off, and the directory's mail badge (chat::mailOn) published that.
+    g_mailSlots = kMailSlots;
+    g_mailChars = kMailChars;
+    g_mailDays  = kMailDays;
     plugins::forEachKey(g_index, readKey, nullptr);
 
     // One allocation, at start, for the whole room buffer. If the board
@@ -2953,6 +2961,15 @@ const Command kCommands[] = {
 };
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// chat::mailOn: for announce, which sends the directory a "mail" badge only
+// while mail works here. mail_slots = 0 is how a sysop switches it off, and
+// mailSend refuses on exactly this test, so the badge and the board agree.
+// ---------------------------------------------------------------------------
+namespace chat {
+bool mailOn() { return g_mailSlots > 0; }
+} // namespace chat
 
 extern const Plugin kChatPlugin = {
     // on unless switched off, and everyone may talk unless system.cfg says otherwise

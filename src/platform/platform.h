@@ -13,7 +13,7 @@
  *                  (host/platform_host.cpp). Sockets use the BSD API, which
  *                  lwIP provides on the ESP32.
  *
- * Interfaces:   millis, random32, fsBase, logsBase, heap, wifiRssi, log,
+ * Interfaces:   millis, random32, fsBase, logsBase, heap, hardware, wifiRssi, log,
  *               backupButton*, activityLed*, inflateRaw
  *
  * Libraries:    none
@@ -131,6 +131,18 @@ uint32_t stackFree();
 // once, and the whole reason it was hard is that nothing on the board would
 // say.
 const char* powerSave();
+
+// ---------------------------------------------------------------------------
+// hardware: what this board is, in a few words, for the directory's system
+// badge: "ESP32 · 4 MB" or "ESP32-S3 · 16 MB · PSRAM" (UTF-8 middle dots).
+// Read off the running firmware, never typed by the sysop. The chip model
+// is the chip's own; the flash is the flash this image can use (the size in
+// its header), which on a larger module running a smaller image is less
+// than the chip has. PSRAM is named only when the firmware can use it: a
+// WROVER running the WROOM build says nothing about the PSRAM it is not
+// using. "host" on the host build. Call it once, at start.
+// ---------------------------------------------------------------------------
+void hardware(char* out, size_t n);
 
 // ---------------------------------------------------------------------------
 // wifiRssi: signal strength of the joined access point in dBm, 0 when not

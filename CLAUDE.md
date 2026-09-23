@@ -308,6 +308,37 @@ which ships on every board. Queued for the firmware: a credits block on
 `screens/about.*` (tools/mkscreens.py) once there is a lifetime member to
 credit; none yet, so nothing to build until then.
 
+**The site's version goes to 1.0.0 on its next build** (Rob, 2026-09-23:
+"the website version should be at 1.0 now too to match the launch. We can
+increment them separately"). It was 0.22.2 when the firmware shipped 1.0.0.
+From 1.0.0 on the two version numbers move independently.
+The same build carries (Rob, 2026-09-23):
+- **Icons on the two install buttons**: a small line-art symbol on "Install
+  on a new board" (a fresh chip, or a sparkle on a board) and on "Update
+  my board" (an arrow cycling round a chip). Same stroke weight as the
+  site's other line art, inline SVG, and aria-hidden, since the words
+  carry the meaning.
+- The "Update my board" button starts at the very bottom edge of the first
+  screen at 1366x768. Tighten the card so both buttons sit fully on
+  screen.
+- **Always offer the board's address** (Rob, 2026-09-23, after the Update
+  button worked on The Rusty Antenna: "many people dont know their internal
+  IP"). Opening the dialog resets the board, and its Improv state is read
+  mid-boot, before Wi-Fi joins. The dashboard then shows "Connect to Wi-Fi"
+  and no address, even though the board joins seconds later.
+  - Site: in the vendored dialog, always show a "Telnet details" item. It
+    goes to /connected#ip:port when Improv gave a URL, and to /connected
+    with no fragment otherwise.
+  - Site: /connected with no fragment explains the three ways to find the
+    board: `<hostname>.local`, which the board already advertises over
+    mDNS; the address line the board prints in Logs & Console at boot; and
+    the router's device list.
+  - Firmware (1.0.2, with installer recognition): once Wi-Fi joins, the
+    board sends its provisioned state and telnet URL over Improv unprompted,
+    so an open dialog updates by itself. Check in the vendored
+    sdk-serial-js source that the client acts on an unsolicited state or
+    result packet before designing on it.
+
 **Queued for the next web round (Rob, 2026-09-23):**
 - A line at the very bottom of every page, small type: the site version,
   a copyright line, and the licence (GNU GPL v2 or later, linked). The
@@ -355,12 +386,64 @@ as 0.24.0, except the parts that need bench time.
   - The co-sysop labels are told apart.
   - The setup screen no longer says to backspace over the stars.
   - The docs pass, and `reports/` moved to `internal/`.
-- **Moved to 1.0.1**, because each needs Rob's hardware on the bench, not
-  a host test: the BOOT-hold reset (7 / 15 / 20 s, settled above), the
-  CONFIG wifi fallback to the last good network, the stack audit and
-  bigger task stack, and `CONFIG_ESP_TASK_WDT_PANIC`. /install gates its
-  reset section on a 1.0.1 release.
-- **Also 1.0.1, found while building 1.0.0:**
+- **Re-sequenced after 1.0.0 shipped (Rob, 2026-09-23: "I want the badges
+  to work asap").**
+  - 1.0.1 is the badge fields alone (below), with the announce buffer
+    sharing funding them.
+  - Everything else that was 1.0.1 is now **1.0.2**.
+  - What was 1.0.2 is **1.0.3**.
+  - /install's reset section is gated on 1.0.1 and must move to 1.0.2
+    with the BOOT reset: a web change to make before 1.0.1 is released.
+- **1.0.2, bench hardware**, because each needs Rob's hardware on the
+  bench, not a host test: the BOOT-hold reset (7 / 15 / 20 s, settled
+  above), the CONFIG wifi fallback to the last good network, the stack
+  audit and bigger task stack, and `CONFIG_ESP_TASK_WDT_PANIC`.
+- **1.0.2: the board's listening port becomes a setting** (Rob, 2026-09-23,
+  after setting up a second board: "some people may not have an advanced
+  router").
+  - Many home routers can only forward a port to the same port inside, so
+    a second board behind one address has to listen on a different port.
+    Today that is impossible: `BBS_PORT` is fixed at build time.
+  - CONFIG wifi page (Rob's placement: it is a network setting), under
+    Network and Password: "Port", default 6400, used from the next restart
+    like the other two. The page's menu name becomes "network"; `CONFIG
+    wifi` still reaches it.
+    It refuses a clash with `backup_port`. mDNS, the Improv telnet URL,
+    SYS and `/connected` all follow it.
+  - Announce's "Port" is relabelled "Outside port", defaults to the
+    board's own port when blank, and says it is what callers dial through
+    the router.
+  - Site: the go-public guide explains same-port forwarding and "one
+    board per port".
+- **1.0.2: short badge codes, firmware and site together** (Rob,
+  2026-09-23: "when you update .2 to do this, then tell the web agent to
+  fix it in another version"). Every support and interest slug becomes a
+  short code of 6 characters at most, in Rob's style ("MNTLH" for Mental
+  Health), shown in upper case and accepted in any case, with the old long
+  slugs kept as aliases. It is NOT in site 1.0.0: it ships as its own site
+  version alongside firmware 1.0.2, starting from the proposed mapping in
+  `internal/badge-codes-proposal-2026-09-23.md`. The firmware side:
+  ANNOUNCE.md, system.cfg.example and the tests use the codes; the CONFIG
+  rows point at /badges. If Rob wants it,
+  add the pick-list (a CONFIG sub-page to arrow through and tick with
+  Space), generated at build time from the directory's code table so the
+  two cannot drift.
+- **1.0.2 bug: 541 slow passes in 24 minutes on The Rusty Antenna**
+  (1.0.0, no card, one caller). SYS showed a 342 ms worst pass in the
+  session phase. Get the console's slow-pass lines (phase, node, doing)
+  before guessing. The suspects are a refreshing screen in the caller's
+  session, and the sd plugin retrying a mount on a cardless board.
+- **Also 1.0.2, found while building 1.0.0:**
+  - The installer does not recognise a board already running µnleashed
+    (seen on HQ): it offered Install, not Update. The likely cause is the
+    port open resetting the ESP32, so Improv answers after the
+    installer's query has timed out. Answer earlier at boot, or send
+    Improv state unprompted once it is up. Site 0.22.1 adds an "Update my
+    board" button that never erases, so nobody depends on recognition in
+    the meantime.
+  - Stock screens seeded onto the card before 0.22.0 still override new
+    stock screens (HQ after its 1.0.0 update). The manifest fix queued
+    below.
   - `SD MOUNT` does not start the card-only plugins that were waiting for
     a card; they start at the next CONFIG save or reboot. The CONFIG
     message says "needs an SD card" rather than promising they start on
@@ -372,9 +455,18 @@ as 0.24.0, except the parts that need bench time.
     DEL` already says "Retire". Make the key say the same.
   - `privacy.ans` is still 40-column art on an 80-column screen (queued
     below since 0.19.0).
-  - **The announce payload gains the directory's new badge fields** (Rob,
-    2026-09-23). The directory accepts them from site 0.21 on, and
-    PROTOCOL.md has the definitions.
+  - **CONFIG forums grows with the topics** (Rob, 2026-09-23: "why are we
+    limited to just 4 forum topics ... have the list auto expand"). The
+    board reads topic1 to topic16 (`kMaxForums`), but the forums plugin
+    declares only four setting rows, so CONFIG offers four empty ones.
+    Build the page from the topics that exist plus one empty row, up to
+    what a form holds (16 fields minus the four level rows, so 12). Past
+    that, move to a list page with a button per topic, the way file areas
+    work, to reach all 16. No RAM: the slots already exist.
+- **1.0.1: the announce payload gains the directory's new badge fields**
+    (Rob, 2026-09-23). The directory accepts them from site 0.21 on, and
+    PROTOCOL.md has the definitions. `interests` joined `support` in site
+    0.22.0 and is sent the same way.
     - `system`: filled by the firmware itself from `esp_chip_info` and the
       flash size, e.g. "ESP32 · 4 MB" or "ESP32-S3 · 16 MB · PSRAM". The
       sysop never picks it ("user shouldnt have to pick"). Third-party
@@ -389,7 +481,9 @@ as 0.24.0, except the parts that need bench time.
     than truncated when it does not fit, so new fields without the room
     would get a board delisted. That is 256 bytes of static DRAM, out of
     3,856 free.
-- **1.0.2:** notices reaching callers inside plugins. **1.1.0:** backup and
+- **1.0.3:** notices reaching callers inside plugins, the backup zip limit
+  against the staging partition, and information pages in the backup.
+  **1.1.0:** backup and
   restore via SD, the timezone picker, and the CONFIG help QR codes (both
   below).
 - **The history was rewritten once, before the repo went public**, with
@@ -704,6 +798,16 @@ approach everything seems to be haphazard as to how it gets fixed/done."
    then continuing to edit produces a result for a tree that no longer
    exists, which happened three times in one afternoon.
 
+- **Patch releases ship on review plus targeted runs** (Rob, 2026-09-23,
+  releasing 1.0.1: "if there is a regression fix it in .2 this should be
+  the way").
+  - A patch (x.y.Z) is tagged once the code review is clean and the
+    targeted groups for every area it touches pass, with and without a
+    card.
+  - The full regression runs straight after the tag, not before it.
+    Anything it finds goes into the next patch, not a re-tag.
+  - A minor or major release (x.Y.0) still waits for the full run before
+    its tag.
 - **Every milestone gets a fresh optimization report** (Rob). When a block or a version reaches its regression run, send the `optimize` agent off as part of that run and put its report in `internal/`. Dated, one per milestone, kept. The point is the trend as much as the findings: a figure that has quietly grown by 2 KB a milestone is invisible in any single report and obvious across four, and the cheapest time to notice something is eating the budget is before it matters. The report is also what makes a size decision reviewable rather than remembered.
 - **Verify before asserting.** Claims get checked against the source or a
   primary reference first. Stale warnings and confident wrong answers cost

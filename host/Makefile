@@ -36,6 +36,9 @@
 CXX      ?= g++
 CXXFLAGS ?= -std=c++17 -O1 -g -Wall -Wextra -Wno-unused-parameter
 CPPFLAGS += -I../src
+# BBS_HOST: the host build, for the few test hooks that must never reach a
+# board (announce's room_test). Nothing may change behaviour on it otherwise.
+CPPFLAGS += -DBBS_HOST
 LDLIBS   += -lz
 ifeq ($(SAN),1)
 CXXFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer

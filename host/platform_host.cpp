@@ -118,6 +118,12 @@ uint32_t stackFree() {
     return 0;
 }
 
+// hardware: no chip to describe. The directory shows it as the badge text,
+// which is the honest answer for a board running on a PC.
+void hardware(char* out, size_t n) {
+    snprintf(out, n, "host");
+}
+
 int8_t wifiRssi() {
     return 0;
 }
