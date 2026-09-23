@@ -188,6 +188,7 @@ def config_num(name, fallback):
 
 BBS_VERSION = bbs_version()
 MAX_NODES   = config_num("BBS_MAX_NODES", 6)
+BBS_PORT_NUM = config_num("BBS_PORT", 6400)     # the dial-in port, not this run's
 # The published default sysop password, read from the firmware so the suite
 # cannot drift from what the install page tells people.
 _dflt = re.search(r'#define\s+BBS_DEFAULT_SYSOP\s+"([^"]*)"',
@@ -2296,6 +2297,481 @@ def test_config():
     return ok
 
 
+def cfg_sysop(handle):
+    """An ANSI caller elevated to the sysop node, ready for CONFIG."""
+    s = ansi_login(handle)
+    s.send(b"bye testsysop\r")
+    s.wait_for(b"Sysop", 4)
+    s.pump(0.3)
+    return s
+
+
+def cfg_open(s, page, expect):
+    """CONFIG <page>, waiting for a field label so keys land in the form."""
+    s.buf.clear()
+    s.send(b"config " + page + b"\r")
+    ok = s.wait_for(expect, 5)
+    s.pump(0.4)                                   # the fields cascade in
+    return ok
+
+
+def cfg_verdict(s, pats, secs=6):
+    """Wait for one of pats after F1 and say which, or None for none of them.
+
+    "saved, but" is always looked for first. It is the board writing a value
+    and then refusing to read it back, and the parser's complaint is quoted
+    inside it, so a check looking for that complaint would otherwise take the
+    very bug it exists to catch as the refusal it wanted.
+    """
+    pats = [b"saved, but"] + [p for p in pats if p != b"saved, but"]
+    i = wait_any(s, pats, secs)
+    s.pump(0.4)                                   # let the line finish drawing
+    return pats[i] if i >= 0 else None
+
+
+def cfg_cancel(s):
+    s.send(b"\x1b")
+    s.pump(0.6)
+
+
+def cfg_line(key):
+    """The raw top-of-file line for key in the board's system.cfg, or None."""
+    for line in (USERDATA / "system.cfg").read_text().splitlines():
+        if line.strip().startswith("["):
+            break
+        k = line.split("=", 1)[0].strip()
+        if "=" in line and k == key:
+            return line
+    return None
+
+
+def cfg_reload(s):
+    """Make the board read system.cfg again, from CONFIG like a sysop would.
+
+    Two saves of the account cap, because a save that changes nothing
+    writes nothing and reloads nothing. Ends on 200, the value test_config
+    leaves behind for the rest of the run.
+    """
+    ok = True
+    for val in (b"201", b"200"):
+        cfg_open(s, b"limits", b"Per call")
+        s.buf.clear()
+        s.send(DOWN * 4 + b"\x08" * 4 + val + F1)
+        ok &= cfg_verdict(s, [b"Saved and live", b"Nothing changed"]) not in (None, b"saved, but")
+    return ok
+
+
+def row_reach(data, pat):
+    """The drawn screen row holding pat (see line_with), or "".
+
+    Its length is how far right the row reaches, which is the number that
+    matters on a 40 column screen: column 40 wraps on a C64.
+    """
+    return line_with(data, pat)[0] or ""
+
+
+def test_config_parser_rules():
+    """CONFIG writes only what the parser will read back (1.0.0-rc1).
+
+    Rob typed "therustyantenna.local" as the hostname. CONFIG wrote it, the
+    reload refused the file, and nothing else on the page went live: the
+    board said "saved, but system.cfg line 7: ...". CONFIG kept its own copy
+    of the parser's rules, and whatever the copy let through was written
+    anyway. It asks the parser now (syscfg::trial), so each check here is a
+    value one side took and the other did not.
+    """
+    print("CONFIG and the parser agree")
+    local = HOST in ("127.0.0.1", "localhost")
+    s = cfg_sysop("CfgRules")
+
+    # Rob's report, as he typed it: the name he sees the board by.
+    cfg_open(s, b"board", b"Hostname")
+    s.buf.clear()
+    s.send(DOWN + b"\x08" * 32 + b"TheRustyAntenna.local" + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"saved, but", b"hostname must"])
+    ok = check("a hostname typed as name.local saves and goes live", got == b"Saved and live")
+    if local:
+        ok &= check("stored as the bare name the parser takes",
+                    (cfg_line("hostname") or "").split("=", 1)[-1].strip() == "therustyantenna")
+
+    # Still invalid once normalised: refused on the form, nothing written.
+    before = cfg_line("hostname") if local else None
+    cfg_open(s, b"board", b"Hostname")
+    s.buf.clear()
+    s.send(DOWN + b"\x08" * 32 + b"bad_name!" + F1)
+    got = cfg_verdict(s, [b"hostname must be", b"Saved", b"saved, but"])
+    ok &= check("an invalid hostname is refused with the parser's rule", got == b"hostname must be")
+    cfg_cancel(s)
+    if local:
+        ok &= check("and nothing is written", cfg_line("hostname") == before)
+
+    cfg_open(s, b"board", b"Hostname")
+    s.send(DOWN + b"\x08" * 32 + b"unleashed" + F1)
+    cfg_verdict(s, [b"Saved and live", b"Nothing changed"])
+
+    # The backup window cannot share the dial-in port. CONFIG offered
+    # 1..65535 and wrote 6400; the reload then refused the whole file.
+    before = cfg_line("backup_port") if local else None
+    cfg_open(s, b"backup", b"Open for")
+    s.buf.clear()
+    s.send(b"\x08" * 6 + str(BBS_PORT_NUM).encode() + F1)
+    got = cfg_verdict(s, [b"cannot be the BBS port", b"Saved", b"saved, but"])
+    ok &= check("the backup port cannot be the dial-in port", got == b"cannot be the BBS port")
+    cfg_cancel(s)
+    if local:
+        ok &= check("and the port in the file is untouched", cfg_line("backup_port") == before)
+
+    # Two keys at once: the parser refuses a WHO minimum above the maximum.
+    before = cfg_line("who_refresh_min") if local else None
+    cfg_open(s, b"limits", b"Per call")
+    s.buf.clear()
+    s.send(DOWN * 2 + b"\x08" * 3 + b"50" + DOWN + b"\x08" * 3 + b"10" + F1)
+    got = cfg_verdict(s, [b"above the max", b"Saved", b"saved, but"])
+    ok &= check("a WHO minimum above the maximum is refused before writing", got == b"above the max")
+    cfg_cancel(s)
+    if local:
+        ok &= check("and neither is written", cfg_line("who_refresh_min") == before)
+
+    # A '#' starts a comment on every core line but the passwords and the
+    # network, so "Rob's #1 BBS" was written and read back as "Rob's".
+    cfg_open(s, b"board", b"Hostname")
+    s.buf.clear()
+    s.send(b"\x08" * 42 + b"Rob's #1 BBS" + F1)
+    got = cfg_verdict(s, [b"No # here", b"Saved", b"saved, but"])
+    ok &= check("a # in a board name is refused, not cut off", got == b"No # here")
+    cfg_cancel(s)
+
+    # "***" is how a backup writes a hidden password, and the parser reads
+    # it as "keep what is set", which on a reload is nothing: typing it as a
+    # co-sysop password switched that level off.
+    cfg_open(s, b"staff", b"Co-sysop")
+    s.buf.clear()
+    s.send(DOWN * 2 + b"***" + F1)
+    got = cfg_verdict(s, [b"hidden password", b"Saved", b"saved, but"])
+    ok &= check("*** is refused as a password", got == b"hidden password")
+    cfg_cancel(s)
+
+    # -1 is "no pin" to the parser and was "Numbers only" to CONFIG.
+    cfg_open(s, b"board", b"Hostname")
+    s.buf.clear()
+    s.send(DOWN * 5 + b"\x08" * 3 + b"-1" + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"Numbers only", b"Between", b"saved, but"])
+    ok &= check("the LED pin takes -1, no LED, as the parser does", got == b"Saved and live")
+    if local:
+        ok &= check("written as -1", (cfg_line("activity_led_gpio") or "").endswith("= -1"))
+    cfg_open(s, b"board", b"Hostname")
+    s.send(DOWN * 5 + b"\x08" * 3 + b"2" + F1)
+    cfg_verdict(s, [b"Saved and live", b"Nothing changed"])
+
+    # The staff page's two co-sysop rows, told apart inside the nine
+    # column label. They both read "Co-sysop " before.
+    cfg_open(s, b"staff", b"Co-sysop")
+    s.pump(0.6)
+    page = plain(s.buf)
+    ok &= check("the co-sysop rows are labelled 1 and 2",
+                b"Co-sysop1" in page and b"Co-sysop2" in page)
+    ok &= check("and the staff form fits 40 columns", max_column(s.buf) <= 39)
+    cfg_cancel(s)
+    s.close()
+    return ok
+
+
+def test_config_guards():
+    """Two settings CONFIG must never write (1.0.0).
+
+    An empty sysop password switches staff off, and one backspace on the
+    masked field empties it; with no BOOT reset until 1.0.1 the only way
+    back was a reflash. And GPIO 6 to 11 are the flash chip on a WROOM: a
+    pin setting there stops the board rather than failing.
+    """
+    print("CONFIG refuses what would lock out or stop the board")
+    local = HOST in ("127.0.0.1", "localhost")
+    s = cfg_sysop("CfgGuard")
+
+    before = cfg_line("sysop_password") if local else None
+    cfg_open(s, b"staff", b"Co-sysop")
+    s.buf.clear()
+    s.send(b"\x08" + F1)                           # one backspace clears the mask
+    got = cfg_verdict(s, [b"cannot be empty", b"Saved"])
+    ok = check("an empty sysop password is refused", got == b"cannot be empty")
+    ok &= check("in 40 columns", 0 < len(row_reach(s.buf, "cannot be empty")) <= 39)
+    cfg_cancel(s)
+    if local:
+        ok &= check("and the sysop password in the file is untouched",
+                    cfg_line("sysop_password") == before)
+
+    # A co-sysop level may still be switched off by emptying it.
+    cfg_open(s, b"staff", b"Co-sysop")
+    s.buf.clear()
+    s.send(DOWN * 2 + b"\x08" + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"cannot be empty"])
+    ok &= check("a co-sysop password may still be emptied", got == b"Saved and live")
+    if local:
+        ok &= check("which writes it empty",
+                    (cfg_line("cosysop2_password") or "x").strip().endswith("="))
+    cfg_open(s, b"staff", b"Co-sysop")
+    s.send(DOWN * 2 + (CO2 or "testco2").encode() + F1)
+    cfg_verdict(s, [b"Saved and live"])
+
+    # The flash pins, through the parser's rule: the LED and the button.
+    before = cfg_line("activity_led_gpio") if local else None
+    cfg_open(s, b"board", b"Hostname")
+    s.buf.clear()
+    s.send(DOWN * 5 + b"\x08" * 3 + b"6" + F1)
+    got = cfg_verdict(s, [b"flash chip", b"Saved"])
+    ok &= check("the LED cannot be put on a flash pin", got == b"flash chip")
+    cfg_cancel(s)
+    if local:
+        ok &= check("and nothing is written", cfg_line("activity_led_gpio") == before)
+    cfg_open(s, b"backup", b"Open for")
+    s.buf.clear()
+    s.send(DOWN * 2 + b"\x08" * 3 + b"11" + F1)
+    got = cfg_verdict(s, [b"flash chip", b"Saved"])
+    ok &= check("nor the backup button", got == b"flash chip")
+    cfg_cancel(s)
+
+    # And a plugin's pins, through the same rule: the SD card's CS.
+    cfg_open(s, b"sd", b"CS pin")
+    s.buf.clear()
+    s.send(DOWN * 4 + b"\x08" * 3 + b"7" + F1)
+    got = cfg_verdict(s, [b"flash chip", b"Saved", b"Between"])
+    ok &= check("nor an SD card pin", got == b"flash chip")
+    cfg_cancel(s)
+    s.close()
+    return ok
+
+
+def cfg_sec_line(section, key):
+    """The raw line for key inside [section] of the board's system.cfg, or None."""
+    cur = None
+    for line in (USERDATA / "system.cfg").read_text().splitlines():
+        t = line.strip()
+        if t.startswith("["):
+            cur = t[1:t.find("]")] if "]" in t else None
+            continue
+        if cur == section and "=" in line and line.split("=", 1)[0].strip() == key:
+            return line
+    return None
+
+
+def test_config_semicolon():
+    """A ';' in a plugin value is refused, not written and cut (1.0.0).
+
+    A plugin reads its values up to the first ';' (plugin.cpp), which it
+    takes as a comment. So "C64 fans; PETSCII welcome" was written whole and
+    read back as "C64 fans", and an area named "Games; Demos" lost the four
+    levels packed after its name: they fell back to the plugin's own, and a
+    staff-only area opened to everybody while CONFIG said "Saved and live".
+    The core's keys end at '#' instead, and their passwords at nothing.
+    """
+    print("CONFIG and the ';' that ends a plugin value")
+    local = HOST in ("127.0.0.1", "localhost")
+    s = cfg_sysop("CfgSemi")
+
+    # A plugin's own text setting: announce's description.
+    before = cfg_sec_line("plugin:announce", "description") if local else None
+    cfg_open(s, b"announce", b"About")
+    s.buf.clear()
+    s.send(DOWN * 5 + b"\x08" * 90 + b"C64 fans; PETSCII welcome" + F1)
+    got = cfg_verdict(s, [b"No ; here", b"Saved"])
+    ok = check("a ; in a plugin setting is refused", got == b"No ; here")
+    ok &= check("in 40 columns", 0 < len(row_reach(s.buf, "No ; here")) <= 39)
+    cfg_cancel(s)
+    if local:
+        ok &= check("and the plugin's section is untouched",
+                    cfg_sec_line("plugin:announce", "description") == before)
+
+    # A file area's name on its own page, a staff-only area (area4).
+    before = cfg_sec_line("plugin:files", "area4") if local else None
+    cfg_open(s, b"files", b"Area 1")
+    s.buf.clear()
+    s.send(DOWN * 7 + b"\r")
+    opened = s.wait_for(b"FILE AREA 4", 6)
+    s.pump(0.6)
+    s.buf.clear()
+    s.send(DOWN + b"\x08" * 30 + b"Games; Demos" + F1)
+    got = cfg_verdict(s, [b"No ; here", b"Saved", b"Nothing changed"])
+    ok &= check("a ; in a file area's name is refused", opened and got == b"No ; here")
+    s.send(b"\x1b")                                  # the area page
+    s.wait_for(b"Area 8", 6)
+    s.pump(0.6)
+    cfg_cancel(s)                                    # and the files page
+    if local:
+        ok &= check("and the area keeps its levels in the file",
+                    cfg_sec_line("plugin:files", "area4") == before)
+
+    # The core is not a plugin: a password may hold a ';', and so may the
+    # board's name, since the core's lines end at '#'.
+    cfg_open(s, b"staff", b"Co-sysop")
+    s.buf.clear()
+    s.send(DOWN * 2 + b"semi;colon1" + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"No ; here"])
+    ok &= check("a core password may hold a ;", got == b"Saved and live")
+    if local:
+        ok &= check("and is written whole",
+                    (cfg_line("cosysop2_password") or "").endswith("= semi;colon1"))
+    cfg_open(s, b"staff", b"Co-sysop")
+    s.send(DOWN * 2 + (CO2 or "testco2").encode() + F1)
+    cfg_verdict(s, [b"Saved and live"])
+
+    cfg_open(s, b"board", b"Hostname")
+    s.buf.clear()
+    s.send(b"\x08" * 42 + b"Games; Demos BBS" + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"No ; here", b"No # here"])
+    ok &= check("a core value may hold a ;", got == b"Saved and live")
+    if local:
+        ok &= check("and is written whole",
+                    (cfg_line("board_name") or "").endswith("= Games; Demos BBS"))
+    cfg_open(s, b"board", b"Hostname")
+    s.buf.clear()
+    s.send(b"\x08" * 42 + b"Rob's #1 BBS" + F1)
+    got = cfg_verdict(s, [b"No # here", b"Saved"])
+    ok &= check("while a # in one is still refused", got == b"No # here")
+    cfg_cancel(s)
+    cfg_open(s, b"board", b"Hostname")
+    s.send(b"\x08" * 42 + F1)                        # back to no name of its own
+    cfg_verdict(s, [b"Saved and live"])
+    s.close()
+    return ok
+
+
+def test_config_sd_plugin():
+    """A plugin that needs the card is not called live without one (1.0.0-rc1).
+
+    forums is PF_SD: with no card it does not start and FORUMS is not a
+    command. Saving its CONFIG page said "Saved and live" regardless.
+    """
+    print("CONFIG and a plugin that needs a card")
+    card = bool(os.environ.get("BBS_SD_DIR", ""))
+    s = cfg_sysop("CfgCard")
+    cfg_open(s, b"forums", b"Enabled")
+    s.buf.clear()
+    s.send(DOWN + b"u" + F1)                       # Read: all -> users, a real change
+    cfg_verdict(s, [b"aved"])
+    said = row_reach(s.buf, "aved")
+    if card:
+        ok = check("with a card, the forums page saves live", "Saved and live" in said)
+    else:
+        ok = check("with no card, the forums page is not called live",
+                   "Saved and live" not in said and "needs an SD card" in said)
+        ok &= check("and says so inside 40 columns", 0 < len(said) <= 39)
+    cfg_open(s, b"forums", b"Enabled")
+    s.send(DOWN + b"a" + F1)                       # back to all
+    cfg_verdict(s, [b"aved"])
+    s.close()
+    return ok
+
+
+def test_config_wifi_live():
+    """CONFIG wifi on a board that joined through secrets.h (1.0.0-rc1).
+
+    Such a board has no network in system.cfg, so the page showed two empty
+    boxes. And changing the network without retyping the password saved the
+    new name with no password, because an untouched mask is skipped: the
+    next boot tried it as an open network and the board fell off the air.
+    The host plays that board with BBS_HOST_SSID (tools/harness.sh).
+    """
+    print("CONFIG wifi and the live network")
+    live = os.environ.get("BBS_HOST_SSID", "")
+    if HOST not in ("127.0.0.1", "localhost") or not live:
+        print("  SKIP  needs the local harness and BBS_HOST_SSID")
+        return True
+    cfgp = USERDATA / "system.cfg"
+    orig = cfgp.read_text()
+    top, sep, rest = orig.partition("\n[")
+    kept = [l for l in top.splitlines()
+            if l.split("=", 1)[0].strip() not in ("wifi_ssid", "wifi_password")]
+    cfgp.write_text("\n".join(kept) + "\n" + sep.lstrip("\n") + rest)
+
+    s = cfg_sysop("CfgWifi")
+    ok = check("the board reads a config with no network in it", cfg_reload(s))
+
+    cfg_open(s, b"wifi", b"Network")
+    s.pump(0.6)
+    page = plain(s.buf)
+    ok &= check("CONFIG wifi shows the network the board is on", live.encode() in page)
+    ok &= check("and a mask for its password", b"********" in page)
+    s.buf.clear()
+    s.send(F1)
+    got = cfg_verdict(s, [b"Nothing changed", b"Saved", b"saved, but"])
+    ok &= check("saving it untouched writes nothing",
+                got == b"Nothing changed" and cfg_line("wifi_ssid") is None)
+
+    cfg_open(s, b"wifi", b"Network")
+    s.buf.clear()
+    s.send(b"\x08" * 34 + b"OtherNet" + F1)
+    got = cfg_verdict(s, [b"retype its password", b"Saved", b"saved, but"])
+    ok &= check("a new network under the old mask is refused", got == b"retype its password")
+    ok &= check("in 40 columns", 0 < len(row_reach(s.buf, "retype its password")) <= 39)
+    cfg_cancel(s)
+    ok &= check("and nothing is written", cfg_line("wifi_ssid") is None)
+
+    # The password alone is never read at boot: it goes in with the name.
+    cfg_open(s, b"wifi", b"Network")
+    s.buf.clear()
+    s.send(DOWN + b"newpass123" + F1)
+    got = cfg_verdict(s, [b"next restart", b"Saved and live", b"saved, but", b"Name the"])
+    ok &= check("a retyped password saves", got == b"next restart")
+    ok &= check("with the network it belongs to",
+                (cfg_line("wifi_ssid") or "").endswith("= " + live) and
+                (cfg_line("wifi_password") or "").endswith("= newpass123"))
+
+    cfg_open(s, b"wifi", b"Network")
+    s.buf.clear()
+    s.send(b"\x08" * 34 + b"OtherNet" + DOWN + b"otherpass1" + F1)
+    got = cfg_verdict(s, [b"next restart", b"retype", b"saved, but"])
+    ok &= check("a new network with its password retyped saves", got == b"next restart")
+    ok &= check("both written", (cfg_line("wifi_ssid") or "").endswith("= OtherNet") and
+                (cfg_line("wifi_password") or "").endswith("= otherpass1"))
+
+    # The same trap with the network in the file: the old password would
+    # have stayed beside the new name.
+    cfg_open(s, b"wifi", b"Network")
+    s.buf.clear()
+    s.send(b"\x08" * 34 + b"ThirdNet" + F1)
+    got = cfg_verdict(s, [b"retype its password", b"Saved", b"saved, but"])
+    ok &= check("a network from the file is not changed without its password",
+                got == b"retype its password")
+    cfg_cancel(s)
+
+    # Cleared on purpose is an open network, and that is allowed.
+    cfg_open(s, b"wifi", b"Network")
+    s.buf.clear()
+    s.send(b"\x08" * 34 + b"OpenNet" + DOWN + b"\x08" + F1)
+    got = cfg_verdict(s, [b"next restart", b"retype", b"saved, but"])
+    ok &= check("a cleared password means an open network", got == b"next restart" and
+                (cfg_line("wifi_ssid") or "").endswith("= OpenNet") and
+                (cfg_line("wifi_password") or "").strip().endswith("="))
+    ok &= check("a new network typed with it is not the accidental case",
+                b"OPEN network" not in s.buf)
+
+    # The accidental case: one backspace on the mask empties a set password
+    # on the network the board is already on. It still saves, since an open
+    # network is a real choice, but the verdict says OPEN in words (1.0.0).
+    cfg_open(s, b"wifi", b"Network")
+    s.buf.clear()
+    s.send(DOWN + b"openpass1" + F1)
+    got = cfg_verdict(s, [b"next restart", b"OPEN network"])
+    ok &= check("a retyped password is not called open",
+                got == b"next restart" and b"OPEN network" not in s.buf)
+    cfg_open(s, b"wifi", b"Network")
+    s.buf.clear()
+    s.send(DOWN + b"\x08" + F1)
+    got = cfg_verdict(s, [b"OPEN network", b"next restart"])
+    ok &= check("emptying the password on the same network says OPEN", got == b"OPEN network")
+    ok &= check("in 40 columns", 0 < len(row_reach(s.buf, "OPEN network")) <= 39)
+    ok &= check("and still saves the open network",
+                (cfg_line("wifi_ssid") or "").endswith("= OpenNet") and
+                (cfg_line("wifi_password") or "").strip().endswith("="))
+
+    cfgp.write_text(orig)
+    cfg_reload(s)
+    ok &= check("the test board's network is back",       # cfg_value would cut it at the #
+                (cfg_line("wifi_ssid") or "").endswith("= Test#Net"))
+    s.close()
+    return ok
+
+
 def max_column(data):
     """The rightmost screen column anything in this output lands on.
 
@@ -3118,15 +3594,28 @@ def test_first_setup():
     config sets a sysop password, the offer must never appear.
     """
     print("First-boot setup")
+    # The setup screen told a new sysop to backspace (DEL on a Commodore)
+    # over the stars before typing. Since FF_REPLACE (0.23.0) the first key
+    # does that itself, so it sent people looking for a step that does not
+    # exist. Checked in the files as shipped, all three flavours; the plain
+    # terminal never had it, since line mode has no stars to delete.
+    scr = ROOT / "data" / "screens"
+    ans = (scr / "setup.ans").read_bytes()
+    seq = (scr / "setup.seq").read_bytes()
+    asc = (scr / "setup.asc").read_bytes()
+    ok = check("the setup screen does not say to delete the stars first",
+               b"Backspace" not in ans and pet("DEL") not in seq and b"over them" not in asc)
+    ok &= check("it says to type straight over them",
+                b"straight over" in ans and pet("straight over") in seq)
     if not os.environ.get("BBS_FRESH"):
         c = ansi_login("NotFreshOne")
-        ok = check("a configured board offers no setup", b"not been set up" not in plain(c.buf))
+        ok &= check("a configured board offers no setup", b"not been set up" not in plain(c.buf))
         c.close()
         return ok
 
     c = Caller(ansi=True)
     c.wait_for(b"Enter your handle", 10)
-    ok = check("a new caller registers", login(c, "OwnerOne", wait_main=False))
+    ok &= check("a new caller registers", login(c, "OwnerOne", wait_main=False))
     ok &= check("a local caller on an unconfigured board is offered setup",
                 c.wait_for(b"has not been set up yet", 8) and c.wait_for(b"Sysop password", 4))
     c.buf.clear()
@@ -3136,15 +3625,20 @@ def test_first_setup():
     c.buf.clear()
     c.send(b"unleashed\r")
     ok &= check("the default makes them the sysop", c.wait_for(b"SysOp node", 6))
+    seen = bytearray()                               # every page of the setup screen
     for _ in range(6):                               # the setup screen, however many pages
         if b"STAFF PASSWORDS" in plain(c.buf):
             break
         if b"Press SPACE" in plain(c.buf) or b"PRESS SPACE" in plain(c.buf):
+            seen += plain(c.buf)
             c.buf.clear()
             c.send(b" ")
         c.pump(1.0)
     ok &= check("and the staff passwords form opens by itself",
                 c.wait_for(b"STAFF PASSWORDS", 10))
+    seen += plain(c.buf)
+    ok &= check("the setup screen a new sysop reads says to type over the stars",
+                b"YOU ARE THE SYSOP" in seen and b"straight over" in seen and b"Backspace" not in seen)
     c.buf.clear()
     # Typed straight over the stars, no backspace first: the first key has to
     # replace the mask. On 0.22.3 it appended, and this would have saved
@@ -3152,6 +3646,12 @@ def test_first_setup():
     c.send(BBS_DEFAULT.encode() + F1)
     ok &= check("the published default cannot be chosen, typed over the mask",
                 c.wait_for(b"is published", 5))
+    c.buf.clear()
+    # The same form, emptied: that would switch staff off on the board's
+    # very first save, with no way back short of a reflash (1.0.0).
+    c.send(b"\x08" * 12 + F1)
+    ok &= check("the setup form refuses an empty sysop password",
+                wait_any(c, [b"cannot be empty", b"Saved"], 5) == 0)
     c.buf.clear()
     c.send(b"\x08" * 12 + b"fresh1234" + F1)
     ok &= check("a password of their own saves", c.wait_for(b"Saved", 6))
@@ -6412,8 +6912,10 @@ def test_sd():
         s.send(b"about\r")
         s.pump(1.2)
         after = plain(s.buf)
+        # The stock ABOUT names the version. This read b"v0." until 1.0.0
+        # made it a claim about which major version was running.
         ok &= check("pulling the card falls back to the stock screen",
-                    b"CARD ABOUT OVERRIDE" not in after and b"v0." in after)
+                    b"CARD ABOUT OVERRIDE" not in after and BBS_VERSION.encode() in after)
         s.buf.clear()
         s.send(b"sd mount\r")
         ok &= check("and it mounts again", s.wait_for(b"Mounted", 5))
@@ -6664,7 +7166,10 @@ ORDER_NAMES = [
     "test_room_time_staff_only", "test_bell", "test_codes_in_messages", "test_fx_codes", "test_room_narrow_effects",
     "test_long_help",
     "test_info_pages",
-    "test_mail", "test_prompt_survives_notice", "test_menus", "test_sysinfo", "test_config", "test_serial",
+    "test_mail", "test_prompt_survives_notice", "test_menus", "test_sysinfo", "test_config",
+    "test_config_parser_rules", "test_config_guards", "test_config_semicolon",
+    "test_config_sd_plugin",
+    "test_config_wifi_live", "test_serial",
     "test_motd", "test_idle_login", "test_busy",
     "test_screens", "test_exit_screen", "test_welcome_connecting", "test_paced_chatin",
     "test_seeded_screens_follow",

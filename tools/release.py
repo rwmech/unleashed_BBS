@@ -182,6 +182,33 @@ def notices(fw):
     return "\n".join(out) + "\n"
 
 
+# A copyright, licence or author line that names anybody but the project's
+# author is a release blocker when the name is an AI tool or its maker. Rob,
+# 2026-09-23: the copyright is his, and that must never change by accident.
+NOTICE_LINE = re.compile(
+    r"^\W*(copyright|\(c\)|©|spdx-filecopyrighttext|spdx-license-identifier|"
+    r"licen[cs]ed?\s+(to|by)|authors?\s*:|maintainers?\s*:|co-authored-by\s*:|"
+    r"generated\s+(with|by))[^\n]*\b(anthropic|claude)\b",
+    re.I | re.M)
+
+
+def check_notices():
+    """Refuse to release if any tracked text file carries a copyright,
+    licence or author line naming Anthropic or Claude."""
+    bad = []
+    for rel in git("ls-files").splitlines():
+        p = ROOT / rel
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue                      # binary: screens, images
+        for m in NOTICE_LINE.finditer(text):
+            line = text.count("\n", 0, m.start()) + 1
+            bad.append(f"{rel}:{line}")
+    if bad:
+        die("copyright or licence lines name Anthropic or Claude: " + ", ".join(bad[:10]))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("Purpose:")[0])
     ap.add_argument("--allow-dirty", action="store_true",
@@ -196,6 +223,7 @@ def main():
     if dirty and not a.allow_dirty:
         die("the working tree has uncommitted changes; commit, or --allow-dirty to test")
     check_partitions()
+    check_notices()
 
     # The screens image, from data/screens only.
     stage = ROOT / ".pio" / "release-data"
@@ -229,6 +257,9 @@ def main():
             if needle in data:
                 die(f"{name} contains a password or network name from this machine; "
                     "refusing to release")
+    for name, data in blobs.items():
+        if re.search(rb"(?i)anthropic|claude", data):
+            die(f"{name} mentions Anthropic or Claude; the images carry no such credit")
     if b"sysop_password" in blobs["storage.bin"]:
         die("storage.bin carries a system.cfg; the screens image must be screens only")
 

@@ -123,12 +123,18 @@ struct PluginInfo {
 // it changed is changing it in one place. The alternative, two editable
 // fields both labelled "Board" on two pages, is a way of asking somebody to
 // keep two copies in step by hand.
-enum : uint8_t { PS_TEXT, PS_NUM, PS_YESNO, PS_INFO };
+//
+// PS_PIN: a GPIO number. A PS_NUM with lo and hi, and CONFIG also refuses
+// what syscfg::pinProblem refuses (the flash pins), so a pin the plugin's
+// own parser would decline is caught on the form rather than written, read,
+// declined, and shown to the sysop as "Saved and live". Appended, so every
+// existing value keeps its number.
+enum : uint8_t { PS_TEXT, PS_NUM, PS_YESNO, PS_INFO, PS_PIN };
 
 struct PluginSetting {
     const char* key;      // key inside the [plugin:<name>] section
     const char* label;    // 9 characters, the form's left column
-    uint8_t     kind;     // PS_TEXT, PS_NUM, PS_YESNO
+    uint8_t     kind;     // PS_TEXT, PS_NUM, PS_YESNO, PS_INFO, PS_PIN
     uint16_t    lo;       // PS_NUM: the range the plugin will accept
     uint16_t    hi;
     uint8_t     cap;      // characters, excluding the terminator. May exceed

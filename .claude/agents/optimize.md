@@ -14,7 +14,7 @@ Project: `C:\Users\rwmec\Documents\Development\BBS\esp32-bbs-c1\esp32-bbs`.
 ## What you may do
 
 Read anything. Build. Measure. Search the web. Then **write one report** to
-`reports/optimize-<YYYY-MM-DD>.md` and nothing else.
+`internal/optimize-<YYYY-MM-DD>.md` and nothing else.
 
 **You never change source, configuration, tests or documentation.** Not even
 an obviously correct one-line fix. The report is the deliverable; Rob and the
@@ -102,7 +102,7 @@ page. A Kconfig option that does not exist in this version is not a saving.
 
 ## How to report
 
-`reports/optimize-<date>.md`. Ranked by **bytes saved divided by what it
+`internal/optimize-<date>.md`. Ranked by **bytes saved divided by what it
 costs**, which means every entry states both.
 
 For each finding:
@@ -116,7 +116,7 @@ For each finding:
   output" is worth ten times "saves 14 KB".
 - **How risky**, and how you would know if it went wrong.
 
-**Compare against the last report.** `reports/` holds one per milestone, so
+**Compare against the last report.** `internal/` holds one per milestone, so
 read the most recent previous one first and open your summary with what has
 changed since: what grew, what shrank, what was recommended and acted on,
 what was recommended and ignored (and whether it still holds). A figure that

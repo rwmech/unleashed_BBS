@@ -106,7 +106,7 @@ void readKey(void* ctx, const char* key, const char* value) {
 // badPin: pins that are not ours to use
 bool badPin(int pin, bool output) {
     if (pin < 0 || pin > 39) return true;
-    if (pin >= 6 && pin <= 11) return true;                  // internal flash
+    if (syscfg::pinProblem(pin)) return true;                // internal flash
     if (output && pin >= 34) return true;                    // input only
     if (pin == 1 || pin == 3) return true;                   // the console UART
     return false;

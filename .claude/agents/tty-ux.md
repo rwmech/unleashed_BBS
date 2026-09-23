@@ -109,7 +109,7 @@ prove a stylesheet applied, and that mistake has already shipped here once.
 
 ## What you produce
 
-One Markdown file under `reports/`, named
+One Markdown file under `internal/`, named
 `tty-ux-<topic>-<YYYY-MM-DD>.md`. That is your only write. You never change
 source, never build for the board, never flash.
 

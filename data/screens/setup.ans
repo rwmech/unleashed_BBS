@@ -9,8 +9,8 @@
 [0;37m  passwords form.
 
 [0;32m      ù [1;32mUp[0;37m and [1;32mDown[0;37m move between fields. [1;32mF1[0;37m saves. [1;32mESC[0;37m leaves without saving.
-[0;32m      ù [0;37mStars mean a password is already set. [1;32mBackspace[0;37m over them, then type
-[0;37m        the new one. The default itself is refused.
+[0;32m      ù [0;37mStars mean a password is already set. Type the new one straight over
+[0;37m        them, no need to delete them first. The default itself is refused.
 [0;32m      ù [0;37mCo-sysop 1 and 2: leave them blank unless you want helpers. A blank
 [0;37m        level is one nobody can use.
 

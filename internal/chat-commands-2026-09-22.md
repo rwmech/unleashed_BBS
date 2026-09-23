@@ -4,7 +4,7 @@
   Electronic freedom on a microcontroller.
  ===========================================================================
 
- File:         reports/chat-commands-2026-09-22.md
+ File:         internal/chat-commands-2026-09-22.md
  Module:       Research report / chat and the information index
 
  Purpose:      What DDial and GTalk actually did, checked against primary
@@ -44,7 +44,7 @@ xtensa-esp32-elf-nm firmware.elf | grep _bss_end
 | ceiling (`LENGTH(dram0_0_seg)`) | 180,736 |
 | **headroom** | **4,880** |
 
-That is down from 34,360 in `reports/optimize-2026-09-20.md`, two days ago.
+That is down from 34,360 in `internal/optimize-2026-09-20.md`, two days ago.
 `BBS_COMPOSE_MAX` in `src/config.h` records why: forums and mail each kept
 their own per-session body and the link failed with `dram0_0_seg overflowed
 by 8,200 bytes`.

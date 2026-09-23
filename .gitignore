@@ -49,6 +49,11 @@ CLAUDE.local.md
 # public does not live in a tracked file, not even a private repo's:
 # git history is forever and "we were private then" is not a defence.
 *.local.md
+
+# Claude Code's per-machine settings: permission allowlists full of local
+# paths and commands. Was only ignored by a global excludes file, which a
+# fresh clone on another machine does not have.
+.claude/settings.local.json
 host/bbs_host
 # Every compiled test, by pattern rather than by name. Naming them one
 # at a time meant test_wrap's binary was committed the day it was

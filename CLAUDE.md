@@ -17,7 +17,7 @@ Read README.md for layout and build, COMMANDS.md for every command and setting, 
 
 ## What this is
 
-µnleashed BBS (ASCII: `unleashed`; repo github.com/rwmech/unleashed_BBS, private) is a telnet BBS framework hosted on an ESP32 that grows into an "IoT terminal server". The name is about electronic freedom: real hardware reachable without a web browser. Don't brand it to the ESP32, and remember that UCBBS/µCBBS clashes with the 1990 C64 program Ultra-Com BBS. A C64 dials in through TeensyROM (Swiftlink/Ethernet emulation at $DE00). PC callers use SyncTERM, PuTTY or telnet. The core is minimal; everything else bolts on as plugins.
+µnleashed BBS (ASCII: `unleashed`; repo github.com/rwmech/unleashed_BBS, public from 1.0.0) is a telnet BBS framework hosted on an ESP32 that grows into an "IoT terminal server". The name is about electronic freedom: real hardware reachable without a web browser. Don't brand it to the ESP32, and remember that UCBBS/µCBBS clashes with the 1990 C64 program Ultra-Com BBS. A C64 dials in through TeensyROM (Swiftlink/Ethernet emulation at $DE00). PC callers use SyncTERM, PuTTY or telnet. The core is minimal; everything else bolts on as plugins.
 
 Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up client-side (Zimodem, Meatloaf). No native Home Assistant client exists for the C64 (HomeTo64 needs an Ultimate 64 REST API). This is open ground.
 
@@ -105,7 +105,7 @@ meaning is in play. Rename at the second meaning, not the fourth.
 
 ## Chat commands: decided 2026-09-22
 
-Candidates researched in `reports/chat-commands-2026-09-22.md` against the
+Candidates researched in `internal/chat-commands-2026-09-22.md` against the
 Diversi-DIAL and GTalk manuals. Rob's verdicts below. The report is the
 proposal; this is the decision.
 
@@ -165,12 +165,12 @@ concept for a sysop to learn.
 
 0.21.9 is on the board. **0.22.0** is one lot:
 
-- **Mail as a subsystem**, built from `reports/ux-message-boards.md` M0-M6,
+- **Mail as a subsystem**, built from `internal/ux-message-boards.md` M0-M6,
   with every one-column indent in that spec dropped for the column 0 rule.
 - **Inline codes** in forums, mail and chat (section below).
 - **`BELL`** at the main prompt, the partner of the room's `/b`.
 - **Long help**: `HELP <cmd>` and `/? <cmd>`.
-- **The information pages**, built from `reports/chat-commands-2026-09-22.md`
+- **The information pages**, built from `internal/chat-commands-2026-09-22.md`
   section 2 but under the settled names: `INFO` / `I` at the prompt
   (`INFO`, `INFO 3`, `INFO 3 EDIT`, `INFO 3 CLEAR`) and `/i`, `/i3`,
   `/i3=`, `/i3-` in the room. Pages in `<userdata>/info/`, titles and
@@ -205,7 +205,8 @@ most of the new work I think can easily be done as a post 1.0.0 release."
   latest release into `firmware/<ver>/esp32/` -> `/install` serves it
   same-origin. `tools/release.py` does the same locally.
 - **Before public**: history checked, no password in any of 95 commits
-  (the SSID appears 4 times, in notes here); every commit carries Rob's old
+  (the home SSID appears 4 times in history, and was taken out of the
+  current tree on 2026-09-23); every commit carries Rob's old
   personal address as author, which is not to appear in any documented file
   (Rob: QuantumGithub@pm.me is the address to use).
 - **Before 1.0.0**: the first-boot flow and NEWSYSOP; the release pipeline;
@@ -215,6 +216,55 @@ most of the new work I think can easily be done as a post 1.0.0 release."
   backup zip limit against the 256 KB staging partition; the COMMANDS.md
   staff table and the PLUGINS.md hook table.
 - Everything else in the queue is post-1.0.
+- **Two small ones from the web agent's /setup capture of 0.23.0:** CONFIG
+  staff labels both co-sysop rows "Co-sysop" (the labels are cut to 9
+  characters, so "Co-sysop 1" and "Co-sysop 2" lose their digit; use
+  "Co-sysop1"/"Co-sysop2" or shorten the label column's promise); and
+  `screens/setup` still says to backspace over the stars first, which the
+  FF_REPLACE fix made unnecessary (it still works). Both screen and table
+  edits, next firmware batch.
+- **Recovery without reflashing** (Rob, 2026-09-23: "should someone bork a
+  wifi name or character and doesnt want to reflash"). Three pieces, next
+  firmware batch:
+  - **CONFIG wifi gets Improv's safety net.** Keep the last network that
+    worked; if a changed one has not connected within a minute of boot,
+    fall back to the last good one and log it. A typo then costs a minute.
+    Improv already trials and reverts; CONFIG wifi saved untested and used
+    it at the next restart, which is the one way to take a board offline.
+  - **BOOT held after power-up** (never during reset: GPIO0 low as reset
+    releases is the ROM download mode and the firmware never runs). Press
+    and release RESET, then hold BOOT within ~10 s, activity LED showing
+    the stage: 5 s puts the sysop password back to the published default
+    (accounts and everything else kept, setup offered again to a local
+    caller: the lockout case); 15 s is a factory reset of userdata and
+    logs (screens, firmware and the SD card untouched). Released early:
+    nothing. Logged. No separate "forget Wi-Fi" tier: a board with no
+    network needs USB for Improv anyway.
+    **Settled by Rob (2026-09-23), supersedes the 5 s / 15 s above:** the
+    action happens on RELEASE, by how long BOOT was held:
+    - under 7 s: nothing (the activity LED blinks slowly while counting,
+      so a press is seen to register)
+    - 7 to 15 s: sysop password back to the published default. The LED
+      flashes rapidly from 7 s on, which also reads as a warning.
+    - 15 to 20 s: factory reset. The LED goes SOLID at 15 s.
+    - held to 20 s: abort, the LED goes OFF, and releasing does nothing
+      (Rob: "if they make it to 20 then abort ... (safety)").
+    Rob on why not 5 s: somebody doing maintenance may hold it longer than
+    they mean to. Boards with no activity LED (-1) get the same timings,
+    and every stage is logged to the serial console.
+  - Already there and to say more loudly in the docs: USB plus /install
+    "Change Wi-Fi" fixes a bad network with no reflash, even while the
+    board is failing to join.
+- **CONFIG wifi shows empty boxes on a board joined through secrets.h**
+  (Rob, 2026-09-23, on his dev board). It shows only what system.cfg holds,
+  and a board that joined through the compiled-in fallback has no Wi-Fi
+  lines there. Fill the form from the live connection when the file has
+  none (network from `plat::netInfo`, password as the mask when connected).
+  **And a trap under it:** changing the Network field without retyping the
+  password saves the new SSID with no password (the untouched mask is
+  skipped), so the next boot tries it as an open network and fails. Refuse
+  a changed SSID unless the password field was retyped or deliberately
+  cleared. Next firmware batch.
 - **Found by the web agent capturing CONFIG screens (website 0.16.0), all
   small, fix in the 1.0.0 build:**
   - CONFIG accepts `backup_window_minutes` up to 120 and `who_refresh_max`
@@ -258,6 +308,155 @@ which ships on every board. Queued for the firmware: a credits block on
 `screens/about.*` (tools/mkscreens.py) once there is a lifetime member to
 credit; none yet, so nothing to build until then.
 
+**Queued for the next web round (Rob, 2026-09-23):**
+- A line at the very bottom of every page, small type: the site version,
+  a copyright line, and the licence (GNU GPL v2 or later, linked). The
+  version should come from the directory's own CHANGELOG heading at startup
+  rather than a second copy typed into server.py, so the two cannot drift.
+- The web agent's ranked suggestions from 0.17.0: re-capture the /setup
+  screens against the 0.23.0 first-boot flow, a dark ESP Web Tools dialog,
+  the footer split into two rows, and og:url plus a canonical link per page.
+
+**Queued after the installer test (Rob, 2026-09-23): testing across
+boards.** Rob has several, including one with a display built in (the
+Waveshare ESP32-S3-LCD-1.47 already in the queue: S3, 16 MB flash, 8 MB
+PSRAM, TF slot, ST7789). Each board gets its own PlatformIO environment and
+its own entry on the site's board table only once it has actually run,
+with the WROOM kept as the floor. A display is a natural status panel
+(address, callers on, last event) later, as a plugin, not a core feature.
+Rob sees the Waveshare S3 as **the premium board**: SD and display built
+in, no wiring. What the S3 buys, each a measured step after it boots on
+WROOM sizing: the session pool in PSRAM (more nodes), room for encrypted
+SSH sessions, the 16 MB flash for bigger partitions, and the display
+panel. Same firmware, a different build profile, never a fork.
+
+**Queued after the installer test (Rob, 2026-09-23): merch line art.** Same
+style as `brand/` in the directory repo (avatar, cover, tier cards, all
+generated from LOGO_ROWS and the site palette by scripts beside them).
+Not before the web installer and Improv are up and tested on a fresh board.
+
+## 1.0.0 (2026-09-23)
+
+**The installer test passed.** Rob flashed a new ESP32 from /install,
+set Wi-Fi through Improv, logged in, changed the passwords through the
+first-boot setup and had a working board. That was the 1.0.0 gate, and
+Rob's call was to cut 1.0.0 the same day and fold in what had been queued
+as 0.24.0, except the parts that need bench time.
+
+- **In 1.0.0:**
+  - CONFIG checks a hostname with the parser's own rule before writing,
+    and strips a typed `.local`. Rob typed `therustyantenna.local`; the
+    file took it, the reload refused the whole file, and nothing else on
+    that page went live.
+  - A card-only plugin enabled with no card says so, instead of "Saved
+    and live".
+  - CONFIG wifi shows the live network, and refuses a changed network name
+    unless the password is retyped.
+  - The co-sysop labels are told apart.
+  - The setup screen no longer says to backspace over the stars.
+  - The docs pass, and `reports/` moved to `internal/`.
+- **Moved to 1.0.1**, because each needs Rob's hardware on the bench, not
+  a host test: the BOOT-hold reset (7 / 15 / 20 s, settled above), the
+  CONFIG wifi fallback to the last good network, the stack audit and
+  bigger task stack, and `CONFIG_ESP_TASK_WDT_PANIC`. /install gates its
+  reset section on a 1.0.1 release.
+- **Also 1.0.1, found while building 1.0.0:**
+  - `SD MOUNT` does not start the card-only plugins that were waiting for
+    a card; they start at the next CONFIG save or reboot. The CONFIG
+    message says "needs an SD card" rather than promising they start on
+    mount, for that reason.
+  - Plain ASCII line mode has no way to clear a password field, so it
+    cannot choose an open network in CONFIG wifi.
+  - The user manager's `D` key asks "Delete handle (y/N)?", but the
+    account is retired, not deleted, as it has been since 0.19.0. `USER
+    DEL` already says "Retire". Make the key say the same.
+  - `privacy.ans` is still 40-column art on an 80-column screen (queued
+    below since 0.19.0).
+  - **The announce payload gains the directory's new badge fields** (Rob,
+    2026-09-23). The directory accepts them from site 0.21 on, and
+    PROTOCOL.md has the definitions.
+    - `system`: filled by the firmware itself from `esp_chip_info` and the
+      flash size, e.g. "ESP32 · 4 MB" or "ESP32-S3 · 16 MB · PSRAM". The
+      sysop never picks it ("user shouldnt have to pick"). Third-party
+      software sends its own ("Compaq 486").
+    - `terminals`: always ansi, utf8, petscii and ascii for this firmware.
+    - `guests`: the `guest` setting.
+    - `features`: only what is running at the moment of the announce, so
+      a board with no card never claims files or forums.
+    - `support`: a comma list the sysop types into the announce page of
+      CONFIG, using slugs from the directory's /badges page.
+    `kBodyMax` goes from 512 to 768 first: the payload is refused rather
+    than truncated when it does not fit, so new fields without the room
+    would get a board delisted. That is 256 bytes of static DRAM, out of
+    3,856 free.
+- **1.0.2:** notices reaching callers inside plugins. **1.1.0:** backup and
+  restore via SD, the timezone picker, and the CONFIG help QR codes (both
+  below).
+- **The history was rewritten once, before the repo went public**, with
+  `release-prep/rewrite-history.sh` (outside the repo, beside it):
+  - author and committer emails became QuantumGithub@pm.me;
+  - four private strings were replaced in every file and message;
+  - commit count and content were checked before and after;
+  - a verified bundle of every ref was kept first.
+  Commit hashes before 1.0.0 do not match anything written down earlier
+  in this file or in `internal/`. Rob's rule: "history and code is all I
+  care about". The DDNS name was left alone because Rob publishes it in
+  the directory.
+
+**Agents render pages with the Chrome command line only** (`--headless=new`,
+`--screenshot` or `--dump-dom`, a profile in the scratchpad). Never with
+playwright, selenium or puppeteer. Two automation sessions put windows
+on Rob's screen on 2026-09-23, one of them with a headless flag set.
+
+**Queued (Rob, 2026-09-23): a timezone picker.** The `tz` value is a POSIX
+TZ string (`CST6CDT,M3.2.0,M11.1.0`), which nobody types from memory.
+CONFIG's Timezone becomes a cycle through the standard zones (named, with
+the POSIX string behind each), then a blank entry to type your own. A
+note on the field says it is a POSIX TZ string and where to look one up.
+Rob would also like it preset from the browser's timezone at install,
+the way Wi-Fi is. Improv's Wi-Fi command carries only the SSID and
+password, so that needs another way in. Check the Improv spec before
+designing one.
+
+**Queued (Rob, 2026-09-23): QR codes, starting with CONFIG help.** In
+CONFIG, `?` plays a help screen for the page you are on, carrying a QR
+code that links to that page's section of the web setup guide. Checked for
+feasibility:
+- ANSI/CP437 and UTF-8 terminals use half blocks, two modules a cell,
+  and the modules come out square on 8x16 fonts. A version 3 code with its
+  quiet zone is 37x19.
+- PETSCII uses one reverse space a module (8x8 cells are square). Version
+  1 with a 2-module quiet zone is exactly 25x25, which holds about 25
+  upper-case characters.
+- Plain ASCII cannot do it reliably.
+- A fixed URL is baked into the screens by `tools/mkscreens.py`, so it
+  costs flash for screens and nothing in firmware. A dynamic code, such as
+  the board's own address, needs an encoder in the firmware; measure it
+  before promising it.
+
+**Queued for 1.1.0 (Rob, 2026-09-23): the board updates itself over the
+network.** Today an update is USB plus /install, which recognises a board
+on 0.22.1 or later and offers Update: firmware and screens are rewritten,
+and accounts, settings and mail are kept. Rob wants the board to fetch a
+new release by itself ("Would be sick if the BBS could just pull down
+something ota"). The partition table is already OTA-shaped (two 1.5 MB
+app slots and otadata), so rollback is available through
+`esp_ota_mark_app_valid_cancel_rollback`. Three constraints decide the
+design:
+- **A signature, not a checksum.** A board that runs what it downloads
+  must verify the image against a public key compiled into the firmware
+  (Ed25519 or ECDSA over the SHA-256), or anybody who can tamper with the
+  path can flash it.
+- **Not from GitHub directly.** GitHub is HTTPS only, and TLS on a WROOM
+  is roughly 40 KB of heap. The directory already mirrors releases, so it
+  serves them over plain HTTP, and the signature makes that safe.
+- **The sysop decides.** `UPDATE` shows what is available and applies it
+  on a Y, with callers warned the way SHUTDOWN warns them. The screens
+  partition needs its own path, because OTA replaces the app, not the
+  storage partition.
+Suggested as 1.1.0 rather than 1.0.1, because the signing design needs
+doing properly and 1.0.1 is already bench-hardware work.
+
 **Settled 2026-09-23 (Rob):**
 - Default sysop password **`unleashed`**, published on the flasher page with
   the plain statement that it must be changed promptly once the board is on
@@ -273,9 +472,10 @@ credit; none yet, so nothing to build until then.
 - A setup screen in front of `CONFIG staff`: first time here, change the
   password, some encouragement, and what happens next.
 - Announce does not list a board still on the default password.
-- `reports/` moves to `internal/` (working notes, public but labelled);
-  scrub sensitive details. Nothing documented carries the gmail address;
-  **QuantumGithub@pm.me** is the address (both repos' local git config set
+- The old reports folder moves to `internal/` (working notes, public but
+  labelled); scrub sensitive details. Done 2026-09-23, with
+  `internal/README.md` saying what the folder is. Nothing documented
+  carries the old personal address; **QuantumGithub@pm.me** is the address (both repos' local git config set
   2026-09-23). History is rewritten once, just before going public, to
   carry that address; Rob does not mind new hashes and wants no history
   lost, so it is a mailmap rewrite with a backup bundle first.
@@ -403,6 +603,16 @@ they are the process, and getting them wrong wastes Rob's time.
   CHANGELOG.md and this file are updated in the same change, not afterwards.
 - **Never commit** `include/secrets.h`, `data/system.cfg`, `CLAUDE.local.md` or
   `data/calls.log`. No passwords in git history, ever.
+- **The copyright is Robert Mech's, and only his** (Rob, 2026-09-23). Every
+  copyright, licence, SPDX or author line names him, apart from genuine
+  third-party notices for code he did not write. None ever names Anthropic
+  or Claude. `tools/release.py` refuses to release a tree with such a line,
+  or an image that mentions either name.
+- **Commits carry no AI line** (Rob, 2026-09-23: "I dont like
+  co-authored"). No `Co-Authored-By` trailer, no "Generated with". The
+  disclosure is written once, in each README's "How it was built" and on
+  the site's author page. The 1.0.0 history rewrite removed the trailer
+  from every earlier commit. Every agent that commits is told this.
 - **Proposal before new code.** Confirm the approach, get a go-ahead, then
   write it. A bug I introduced myself is still a proposal, just a short one.
 - **Batch board work, do not drift into it.** Rob asks for board features while other work is in flight. They go in the queue below, and they get built together as one version with one regression run and one flash. Wandering off to implement or investigate a queued item mid-task is how a session ends with six half-finished things and nothing flashed.
@@ -418,7 +628,7 @@ they are the process, and getting them wrong wastes Rob's time.
 | `web-qa` | a change a reader can see. grep on HTML proves a string is present, not that a stylesheet applied |
 | `code-review` | anything non-trivial, before the commit. It hunts the shapes that have actually shipped here: a partial thing treated as whole, a guard bounding the wrong quantity, a fix that closes the door on the legitimate case |
 | `docs` | **developer-facing writing.** README, COMMANDS, USERS, PLUGINS, BACKUP, SCREENS, CHANGELOG, PROTOCOL, the design history. Its rule is to check every claim against the source, not against other prose |
-| `optimize` | RAM or flash is tight, or before committing to a feature that needs room. Reads, measures and researches, then writes **one report** to `reports/` and changes nothing. Its first rule is not to trust PlatformIO's RAM percentage: this board read 54.9% while being over the DRAM limit |
+| `optimize` | RAM or flash is tight, or before committing to a feature that needs room. Reads, measures and researches, then writes **one report** to `internal/` and changes nothing. Its first rule is not to trust PlatformIO's RAM percentage: this board read 54.9% while being over the DRAM limit |
 | `explain` | **human-facing writing.** The website, and the board's screens: `welcome`, `rules`, `privacy`, `newuser`, `chatin`, `goodbye`. Researches current facts on the web first, because router menus and client software move. Writes for somebody who does not know what telnet is |
 | `tty-ux` | **design consultant**, terminal screens and the website both. Judges whether a layout reads as designed or accidental, and specifies the fix in real units: columns and characters, or px and ch. Measures at 40, 80 and 132, or at 1920, 1366 and 390. Writes **one report** and never code. Added 2026-09-20 because the board draws for 40 columns everywhere and never re-measures |
 | `screen-artist` | **draws the screens.** ANSI/CP437 at 80x24, PETSCII at 40x25, plain ASCII. Writes screen files and `tools/mkscreens.py`, never `src/`. Its rule is to render what it drew back to a character grid with a ruler and read it: an unterminated colour run and a frame one cell out both look perfect in a hex dump |
@@ -494,7 +704,7 @@ approach everything seems to be haphazard as to how it gets fixed/done."
    then continuing to edit produces a result for a tree that no longer
    exists, which happened three times in one afternoon.
 
-- **Every milestone gets a fresh optimization report** (Rob). When a block or a version reaches its regression run, send the `optimize` agent off as part of that run and put its report in `reports/`. Dated, one per milestone, kept. The point is the trend as much as the findings: a figure that has quietly grown by 2 KB a milestone is invisible in any single report and obvious across four, and the cheapest time to notice something is eating the budget is before it matters. The report is also what makes a size decision reviewable rather than remembered.
+- **Every milestone gets a fresh optimization report** (Rob). When a block or a version reaches its regression run, send the `optimize` agent off as part of that run and put its report in `internal/`. Dated, one per milestone, kept. The point is the trend as much as the findings: a figure that has quietly grown by 2 KB a milestone is invisible in any single report and obvious across four, and the cheapest time to notice something is eating the budget is before it matters. The report is also what makes a size decision reviewable rather than remembered.
 - **Verify before asserting.** Claims get checked against the source or a
   primary reference first. Stale warnings and confident wrong answers cost
   more than saying "I do not know yet".
@@ -790,7 +1000,7 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
   host test; `plugins::readPath` is for reads now.
 - **Static DRAM 176,000 of 180,736 (4,736 free)**, 512 bytes spent across
   the batch, measured symbol by symbol in
-  `reports/memory-2026-09-22-0.22.0.md`; mail as a subsystem cost 12 of
+  `internal/memory-2026-09-22-0.22.0.md`; mail as a subsystem cost 12 of
   them. Flash 74.1%.
 
 ### Fallbacks are named, not positioned (0.21.9)
@@ -921,7 +1131,7 @@ Also done: busy line, paging (`[More]`), abort keys, command history, time limit
 - **A 4,345 line UX spec was commissioned for the forums and two versions
   shipped without implementing it.** Rob, twice: "The requested headers and
   additional graphics layout was not added", and "Missing prompt, no graphis,
-  crappy layout". `reports/ux-message-boards.md` existed the whole time. The
+  crappy layout". `internal/ux-message-boards.md` existed the whole time. The
   process rule meant to prevent exactly this, "the specialists advise the
   builder, they do not build", was written down the same week and then not
   followed. **A spec that is commissioned and not read is worse than no spec,
@@ -1732,7 +1942,7 @@ Queued for the next build (Rob's plan, in order):
   full list of emails to be able to select and then reply."). Today `MAIL`
   shows the oldest message and forces R, S or D before the next one can be
   seen, so a box of five is read strictly in order and a kept message
-  sits in front of everything behind it. Build from `reports/ux-message-boards.md`
+  sits in front of everything behind it. Build from `internal/ux-message-boards.md`
   sections M0 onward (the mailbox list, the reading screen, the composer),
   which were specified and not built, the same mistake as the forums.
 - **Pages, broadcasts and SHUTDOWN warnings only reach a caller at the
@@ -1972,7 +2182,7 @@ specifies the layout before any of it is written**, and the wide-terminal
   Unclamping fixes several things for free, because they already derive from it: `descW = rowWidth(s) - kUsageCol` at :638 is the HELP description column in the screenshot and wraps at 40 *because of* the clamp; the CALLS histogram at :1431; the refresh-frame truncation at :878; every bar, rule and padded row at :418, :439, :478, :484, :496.
   The residual work is the screens that never call `rowWidth` and carry hand-built fixed columns: NODES is laid out at exactly 39 and WHO likewise, so they would sit 40 wide under an 80 wide title bar. Cosmetic mismatch rather than breakage, and it is the actual scope of the job.
   Keep the zero guard: a NAWS negotiation carrying zero reaches Telnet, and zero underflows to 255, which pads 255 reverse-video spaces and paints a bar down the screen.
-- **Website cleanup**, from `reports/website-copy-review-2026-09-20.md` and `reports/tty-ux-website-2026-09-20.md`. The copy plan is to be executed by `explain`, not `docs`: it is human-facing. Confirmed P1s include `article .warn` never having had a left margin (the shorthand `margin:14px 0` sets `margin-left:0`, and the earlier fix moved `article .pull` instead, which is why it never took), `md_render` having no ordered-list support so 53 numbered router steps render as run-on paragraphs, `/about` and `/data` returning 404 on a single-domain deployment, and the manifesto still saying six callers plus a sysop line when it is ten plus the hidden node.
+- **Website cleanup**, from `internal/website-copy-review-2026-09-20.md` and `internal/tty-ux-website-2026-09-20.md`. The copy plan is to be executed by `explain`, not `docs`: it is human-facing. Confirmed P1s include `article .warn` never having had a left margin (the shorthand `margin:14px 0` sets `margin-left:0`, and the earlier fix moved `article .pull` instead, which is why it never took), `md_render` having no ordered-list support so 53 numbered router steps render as run-on paragraphs, `/about` and `/data` returning 404 on a single-domain deployment, and the manifesto still saying six callers plus a sysop line when it is ten plus the hidden node.
 - **YMODEM: DONE in 0.17.5**, built before the menu rework rather than after, so Rob could test uploads in one flash. Kept here for the reasoning. (Rob asked why it mattered, and the
   earlier note did not say). XMODEM has no length field: the last block is
   padded with 0x1A, so every downloaded file arrives up to 127 bytes longer
@@ -2044,7 +2254,7 @@ list.
 - Git on this PC has `core.autocrlf`; `.gitattributes` keeps screens binary and text LF.
 - Windows PowerShell 5.1: `curl` is Invoke-WebRequest, use `curl.exe`; no `Set-Content -NoNewline`.
 - Tera Term only begins telnet option negotiation when the port is 23. On 6400 it opens the socket and says nothing, so the IAC-first path in connect-time detection never fires and the caller falls through to the CPR probe. Not a bug here, but it explains a Tera Term caller taking the slow route, and it is documented behaviour in Tera Term's own manual.
-- Wi-Fi: SSIDs are case-sensitive (`HOMENET`). The board scans all channels and joins the strongest AP. Auth timeouts (reason 2/15/39) turned out to be an unplugged AP, not firmware.
+- Wi-Fi: SSIDs are case-sensitive (an all-capitals network name typed in lower case will not join). The board scans all channels and joins the strongest AP. Auth timeouts (reason 2/15/39) turned out to be an unplugged AP, not firmware.
 - A non-interactive shell cannot push to GitHub the first time: Git Credential Manager needs one interactive browser sign-in (done on this PC).
 - **The IDF defaults FATFS to 8.3 names, and no host test can ever catch it.** `CONFIG_FATFS_LFN_NONE` is the default, and under it a path component of more than eight characters is not awkward, it is an *invalid name*: FatFs refuses to create it and refuses to open it. Rob typed `storage/textfiles` into CONFIG, the `mkdir` was refused because `textfiles` is nine characters, the area listed as configured, and the only symptom was "that folder is not on the card" with nothing in the log. Every file already on the card with an ordinary laptop-made name would also have been invisible, which would only have surfaced once downloads worked. Now `CONFIG_FATFS_LFN_HEAP=y` with `CONFIG_FATFS_MAX_LFN=128`, costing 3,452 bytes of flash and no static RAM, since the buffer is heap per open handle. **The host build uses the real Linux filesystem, so long names worked in every test ever run here.** This class of bug is target-only and the generated `sdkconfig.esp32dev` is the only place it is visible. Two lessons: check the generated config for filesystem behaviour rather than assuming the default is sane, and remember that the host build is not a filesystem simulator.
 - A file area path is relative to the **card root**, so `storage/textfiles` means `/sd/storage/textfiles`. `storage` is also the name of a flash partition, which makes it an easy thing to type by mistake. File areas are card-only on purpose: a sysop cannot point an area at the screens in flash and hand them out.

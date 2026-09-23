@@ -176,6 +176,43 @@ const char* levelName(Access level);
 struct KeyVal { const char* key; const char* value; };
 bool write(const KeyVal* pairs, uint8_t count, const char* section, char* err, size_t errLen);
 
+// ---------------------------------------------------------------------------
+// The parser's own rules, for anything that writes the file.
+//
+// CONFIG used to keep a second copy of them beside its field table, and the
+// copies drifted: it wrote "hostname = therustyantenna.local" and the reload
+// refused the whole file, it offered 1..120 for a key the parser took as
+// 1..60, and it wrote a backup port the parser then rejected. Nothing on the
+// page went live and the sysop was told "saved". A writer asks these now,
+// so there is one rule and it cannot be copied wrong.
+// ---------------------------------------------------------------------------
+
+// validHostname: a-z 0-9 -, 1..31, not starting or ending with '-'. Lower
+// cases v in place, as the parser does before it stores the name.
+bool validHostname(char* v);
+
+// normaliseHostname: what a person means by a hostname, as the parser wants
+// it. Trims, lower cases, and drops one trailing ".local" and any trailing
+// dot, because the name a sysop sees for their board is "name.local" and
+// that is what they will type. Does not validate: validHostname does that.
+void normaliseHostname(char* v);
+
+// pinProblem: why a GPIO number is not one this board may be given, or
+// nullptr when it is. GPIO 6 to 11 are wired to the flash chip the firmware
+// runs from on a WROOM: driving one does not produce an error, it stops the
+// board. The one rule for every pin setting, core and plugin alike, so an
+// LED, a button, an SD card and a serial port cannot disagree about it.
+// Whether a pin may be input only is the caller's business, not this rule's.
+const char* pinProblem(long pin);
+
+// trial: would the parser accept the live configuration with these pairs
+// applied on top? Every rule a line meets on its way in is applied: the '#'
+// that starts a comment, the "***" that stands for a redacted password, the
+// trimming, each key's own check, and the rules about two keys at once.
+// Returns nullptr when it would, or the key it objects to, with the parser's
+// own message (short, and without the line number) in why.
+const char* trial(const KeyVal* pairs, uint8_t count, char* why, size_t n);
+
 // redactLine: a password assignment with a value becomes "key = ***".
 // Returns true and fills out when the line was rewritten.
 bool redactLine(const char* line, char* out, size_t outLen);

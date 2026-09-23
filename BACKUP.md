@@ -117,7 +117,7 @@ curl -T backup.zip http://unleashed.local:8080/restore
 The board unpacks the zip into a staging area and checks every file. Nothing is live yet. The sysop console then asks:
 
 ```
-Upload from 192.168.0.20: 15 files, 60 KB, system.cfg, users, screens
+Upload from 192.168.1.20: 15 files, 60 KB, system.cfg, users, screens
 nothing rejected, 0 screens removed
 Accept upload (Y/N)?
 ```

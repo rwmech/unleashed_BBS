@@ -104,6 +104,7 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | `FX` | | TTY effects demo. |
 | `TIME` | | Date and time, minutes online, minutes left. |
 | `LAST` | | The last 50 calls, newest first. |
+| `CALLS` | | The caller log bucketed by hour of the day, as a bar chart, with the busiest hour named. Public: it names no handles and no addresses, and knowing when a board is busy is what tells somebody when to call. |
 | `ABOUT` | | What this BBS is, its version and its license. Plays `screens/about.*`, so a sysop can rewrite it. |
 | `CHAT` | | Join the chat room (the `chat` plugin). Everything you type goes to everyone in the room, tagged DDial style: `#2:Daytona) hi`. The bracket is the rank: `)` a caller, `*` a guest, `>` a co-sysop, `]` the sysop. There is no prompt character: the cursor waits at the start of the line. While you are typing, nothing from the room lands on your screen; the lines wait and print in order when you press Enter. The room buffers 48 lines, and one caller may send 80 lines a minute (`rate =`), with 8 in a burst; going over tells that caller alone, and the room never sees it. `/s` lists who is there, `/?` lists every room command, `/q` or ESC leaves, and `/q+` leaves and logs off. Private lines, away notes, squelch, kicks, the vote to kick and messages are all in [CHAT.md](CHAT.md). |
 | `SERIAL` | | Watch the serial device (the `serial` plugin). `T` takes the keyboard if you are allowed and it is free, ESC leaves. `SERIAL STATUS` prints the port, `SERIAL SET 9600 8N1` changes the line. |
@@ -179,7 +180,7 @@ When all 10 nodes are in use:
 | Co-sysop 1 | `cosysop1_password` | stays on its caller node | `CO1` column of `[access]` |
 | Co-sysop 2 | `cosysop2_password` | stays on its caller node | `CO2` column of `[access]` |
 
-There is one sysop node. A second sysop login while it is in use is a plain logoff. Any number of callers can hold co-sysop levels at once.
+There is one sysop node. A caller on the board's own network who enters the sysop password while it is in use gets full sysop rights in place on their own caller node instead, the same way a co-sysop does, and stays visible in WHO; from outside the local network, a second sysop login is a plain logoff. Any number of callers can hold co-sysop levels at once.
 
 Entering a staff password also marks that caller's account with the rank, which is what the `>` and `]` markers in the lists come from. The mark stays until staff change it in `USER EDIT`. Guests and the busy line have no account, so nothing is marked.
 
@@ -204,11 +205,11 @@ All caller commands still work. Node arguments are `1`-`10`, `S` (sysop node) or
 |---|---|---|
 | `DASH` | `DASH` | Dashboard on one 40-column screen: date and time, version, uptime, NTP state, heap (free, lowest, largest block), every node with what it is doing (last command, or connect / login / sign-up), idle and minutes left, calls today, active bans, busy line, Wi-Fi signal (dBm of the joined access point), backup window state, the last 5 calls. |
 | `DASH n` | `DASH` | The dashboard redrawn every n seconds (same limits as `WHO n`) until a key. |
-| `NODES` | `NODES [n]` | Every session: handle, IP, minutes left, idle (plus terminal type on wide screens). `NODES n` redraws every n seconds until you press a key, the same bounds as `WHO n`. |
+| `NODES` | `NODES` | Every session: handle, IP, minutes left, idle (plus terminal type on wide screens). `NODES n` redraws every n seconds until you press a key, the same bounds as `WHO n`. |
 | `KICK n [message]` | `KICK` | Disconnect node n. The caller sees `Disconnected by sysop: message`. |
 | `BROADCAST message` | `BROADCAST` | Send `*** Sysop: message` to every logged-in node, announced like a page with a bell and a flashing ` SYSOP ` tag. Delivered the same way a page is: once each caller is back at their own main prompt, not mid-line in the room, in FILES, in FORUMS or in their mailbox. |
 | `SNOOP n` | `SNOOP` | Mirror node n's output to your screen. `Q`, ESC or Ctrl-C stops. Both terminals must be the same type, and only one watcher per node. |
-| `TIME n +m` / `TIME n -m` | `TIME` | Add or remove minutes for node n. The caller's time warnings re-arm. |
+| `TIME n +m` / `TIME n -m` | `TIME` | Add or remove minutes for node n. `TIME n off` (also `-1`, `none`, `unlimited`, `nolimit`) takes that node off the clock entirely, no idle hangup either, until it hangs up; `TIME off` with no node does the same for your own line. Otherwise the caller's time warnings re-arm. |
 | `SHOW` | `HIDE` | List yourself in WHO (pages on). |
 | `HIDE` | `HIDE` | Remove yourself from WHO. The sysop and co-sysops both start visible; `LURK` is how you go invisible. |
 | `LURK` | `HIDE` | Toggle lurking: hidden from WHO and pages refused. |
@@ -217,6 +218,22 @@ All caller commands still work. Node arguments are `1`-`10`, `S` (sysop node) or
 | `SYS` | any staff | The whole board on one screen, in groups: network (SSID, signal in dBm with a word for what it means, channel, address, port), memory (heap free, the lowest it has been, the biggest block, session size), storage (used, free, what is held back for the board), load (uptime, clock, scheduler work per pass in microseconds, worst pass **and which phase of the loop it happened in**, how many passes have run over 50 ms since boot, passes since boot) and traffic (nodes busy and the peak, calls answered since boot, records in the caller log, plugins running, active IP bans). Any staff level can run it, though it is grouped with the sysop tools below. |
 | `FILES` / `F` | all | **Goes into the file area**, the way `CHAT` goes into the room, rather than printing a list and returning. A screen plays on the way in if the board has `screens/files`, then the areas appear as a numbered menu laid out in as many columns as the terminal has room for. A digit opens an area, `Q` goes back one level and `Q` again leaves. `FILES n` enters and opens that area in one go. Only on a board with a card: the plugin does not start without one, so on a cardless board the command does not exist rather than offering an empty file area. |
 | `FORUMS` | all | **Goes into the message boards**, the way `FILES` and `CHAT` go into theirs. Three levels: topic areas the sysop sets up (`CONFIG forums`), subjects that callers start inside them, and the messages in each subject. A screen plays on the way in if the board has `screens/forums`. Only on a board with a card, the same as `FILES`: the plugin does not start without one, so on a cardless board the command does not exist rather than offering empty boards. `FORUMS SCAN` needs the forums plugin's admin level (`co1` by default) and prints what the board thinks is on the card. |
+| `SD` | sysop | SD card status: type, mount point, free space, and where screens are coming from. With no card it says which pins it tried, because "no card found" without them sends you to re-seat a card that was never the problem. |
+| `SD MOUNT` | sysop | Mount the card without rebooting. **Pauses the whole board** for a few hundred milliseconds while it negotiates over SPI, which is why it is typed rather than retried on a timer. |
+| `SD UNMOUNT` | sysop | Flush and release, so the card can be pulled safely. Screens fall back to the stock set. |
+| `UNBAN a.b.c.d` | `UNBAN` | Lift a ban. |
+| `USERS` | `USERS` | User manager: cursor list of accounts with edit, add and delete (ANSI, PETSCII). A paged list on plain ASCII. |
+| `USER ADD` | `USERS` | Add-account form: handle, password, fields, Level, Locked. |
+| `USER EDIT handle` | `USERS` | Edit-account form. Empty `New pass` keeps the password. Renames follow callers who are online. |
+| `USER DEL handle` | `USERS` | **Retires** the account after `Retire handle? (y/N)`. They cannot log in and the handle stays reserved for ever, so nothing they left behind is orphaned and nobody else can register that name. Not your own account. |
+| `DROP` | any staff | Co-sysop: give up staff access. Sysop: leave the sysop node for a free caller node. Time limits apply again from now. |
+
+Staff may only add, edit, lock, rename or delete accounts at their own rank or below, and the `Level` field only offers their own rank and below. So a co-sysop cannot touch the sysop's account, and nobody can promote themselves. `Space` steps the `Level` field through the choices, or press the first letter (`u`, `2`, `1`, `s`).
+
+Rank rules:
+- `KICK` and `SNOOP` only work on callers and lower levels. Co-sysop 1 can act on co-sysop 2; nobody can act on the sysop.
+- A hidden co-sysop shows as a free line in WHO to ordinary callers. Staff running `NODES` see every session regardless of rank; a hidden one is dimmed, not masked.
+- Any staff level sees sysop-node calls in `LAST`. `NODES` permission also shows caller IPs there on wide screens.
 
 ### Writing a message
 
@@ -265,8 +282,6 @@ Message bodies are **word-wrapped at your terminal's width when they are read**,
 
 **Unread counts are per caller and they add up.** A forum's count is the sum of its subjects' counts, both computed the same way, because a forum claiming twelve whose subjects sum to nine reads as a broken board. Guests keep no read pointer, having no account for one to belong to.
 
-| `CALLS` | The caller log bucketed by hour of the day, as a bar chart, with the busiest hour named. Costs one pass over the log and no storage. Public: it names no handles and no addresses, and knowing when a board is busy is what tells somebody when to call. |
-
 **Everything else about files happens inside `FILES`, not here.** It is a
 place, not a set of commands: the section has its own `[S1] Files>` prompt
 and its own keys, and a caller who is standing in it should not have to
@@ -288,23 +303,6 @@ leave to use it.
 Nothing here takes a typed filename. A number can only ever mean a file the
 section has just shown you, which is why there is no way to name something
 outside it and no way to approve a file that is waiting somewhere else.
-
-| `SD` | sysop | SD card status: type, mount point, free space, and where screens are coming from. With no card it says which pins it tried, because "no card found" without them sends you to re-seat a card that was never the problem. |
-| `SD MOUNT` | sysop | Mount the card without rebooting. **Pauses the whole board** for a few hundred milliseconds while it negotiates over SPI, which is why it is typed rather than retried on a timer. |
-| `SD UNMOUNT` | sysop | Flush and release, so the card can be pulled safely. Screens fall back to the stock set. |
-| `UNBAN a.b.c.d` | `UNBAN` | Lift a ban. |
-| `USERS` | `USERS` | User manager: cursor list of accounts with edit, add and delete (ANSI, PETSCII). A paged list on plain ASCII. |
-| `USER ADD` | `USERS` | Add-account form: handle, password, fields, Level, Locked. |
-| `USER EDIT handle` | `USERS` | Edit-account form. Empty `New pass` keeps the password. Renames follow callers who are online. |
-| `USER DEL handle` | `USERS` | **Retires** the account after `Retire handle? (y/N)`. They cannot log in and the handle stays reserved for ever, so nothing they left behind is orphaned and nobody else can register that name. Not your own account. |
-
-Staff may only add, edit, lock, rename or delete accounts at their own rank or below, and the `Level` field only offers their own rank and below. So a co-sysop cannot touch the sysop's account, and nobody can promote themselves. `Space` steps the `Level` field through the choices, or press the first letter (`u`, `2`, `1`, `s`).
-| `DROP` | any staff | Co-sysop: give up staff access. Sysop: leave the sysop node for a free caller node. Time limits apply again from now. |
-
-Rank rules:
-- `KICK` and `SNOOP` only work on callers and lower levels. Co-sysop 1 can act on co-sysop 2; nobody can act on the sysop.
-- A hidden co-sysop shows as a free line in WHO, and hidden higher-level staff are masked in `NODES`.
-- Any staff level sees sysop-node calls in `LAST`. `NODES` permission also shows caller IPs there on wide screens.
 
 ### Sysop screens
 
@@ -360,12 +358,15 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 
 | Key | Default | Meaning |
 |---|---|---|
+| `board_name` | empty | this board's own name, shown instead of the software's; empty falls back to the software name |
 | `hostname` | `unleashed` | DHCP and mDNS name (`unleashed.local`), `a-z 0-9 -`, applies at reboot |
 | `tz` | `UTC0` | POSIX TZ string, e.g. `CST6CDT,M3.2.0,M11.1.0` |
 | `ntp_server` | `pool.ntp.org` | clock source |
-| `sysop_password` | empty | sysop level, empty = disabled |
+| `sysop_password` | none set | sysop level. No line at all means the published default `unleashed` stands in, honoured from the board's own network only (see "First boot" in README.md); a blank line disables the level outright |
 | `cosysop1_password` | empty | co-sysop 1 level, empty = disabled |
 | `cosysop2_password` | empty | co-sysop 2 level, empty = disabled |
+| `wifi_ssid` | empty | Wi-Fi network name, up to 32 characters; set by Improv, `CONFIG wifi` or by hand. Empty falls back to `include/secrets.h` on a build that has one |
+| `wifi_password` | empty | its passphrase, 8 to 64 characters, or empty for an open network. Used only from the next restart, never live |
 | `idle_minutes` | `20` | shell idle hangup, 0 = never |
 | `landing` | `main` | where a caller goes after login when their account has not said: `main`, `chat` or `forums` |
 | `call_minutes` | `60` | per-call limit, 0 = unlimited |

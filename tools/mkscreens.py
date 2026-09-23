@@ -903,7 +903,7 @@ def make_files_asc():
 # ==========================================================================
 # codes: the @-codes a caller can put in a forum post, a mail or a chat
 # line. CODES at the prompt and /codes in the room play it. The words are
-# reports/codes-screen-copy-2026-09-22.md, measured there and again here.
+# internal/codes-screen-copy-2026-09-22.md, measured there and again here.
 #
 # Every literal @ on this screen is stored as @@, and that is a firmware
 # rule rather than a style choice. The screen player runs its own @-codes in
@@ -1209,8 +1209,11 @@ SETUP80 = [
         ("d", "passwords form."),
         ("", ""),
         ("b", "`Up` and `Down` move between fields. `F1` saves. `ESC` leaves without saving."),
-        ("b", "Stars mean a password is already set. `Backspace` over them, then type"),
-        ("i", "the new one. The default itself is refused."),
+        # No backspacing first: the first key typed into a set password
+        # replaces the stars (FF_REPLACE, 0.23.0). Saying otherwise sends a
+        # new sysop hunting for a step that does not exist.
+        ("b", "Stars mean a password is already set. Type the new one straight over"),
+        ("i", "them, no need to delete them first. The default itself is refused."),
         ("b", "Co-sysop 1 and 2: leave them blank unless you want helpers. A blank"),
         ("i", "level is one nobody can use."),
         ("", ""),
@@ -1241,8 +1244,8 @@ SETUP40_HEAD = [
 SETUP40_FORM_PET = [
     ("i", "CRSR up and down move between fields."),
     ("i", "`F1` saves, `_` leaves without saving."),      # _ is the left arrow glyph
-    ("i", "Stars mean one is set: `DEL` over them,"),
-    ("i", "then type the new one."),
+    ("i", "Stars mean one is set. Type the new"),
+    ("i", "one straight over them."),
     ("i", "Co-sysop 1 and 2: blank unless you"),
     ("i", "want helpers. Blank means nobody can"),
     ("i", "use that level."),

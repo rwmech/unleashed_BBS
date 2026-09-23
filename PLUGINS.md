@@ -80,7 +80,12 @@ The descriptor says what the plugin needs: heap while running, bytes of storage,
 
 ### Hooks
 
-Each one is optional.
+Each one is optional; leave it null and the core skips it. This is the full
+list, in the order `Plugin` declares them, because the struct is filled
+positionally: a field inserted anywhere but the end silently shifts every
+one after it. A descriptor written before a hook existed still compiles and
+simply offers none of it, which is why new hooks are always appended, never
+inserted.
 
 | Hook | When |
 |---|---|
@@ -91,6 +96,35 @@ Each one is optional.
 | `onLogin(s)` | a caller logs in |
 | `onLogoff(s)` | a caller leaves |
 | `onKey(s, key, now)` | only while the plugin owns that session |
+| `status()` | one short line for `PLUGINS`/`SYS`, or null for none; return a pointer to storage that outlives the call, and do no real work: these screens redraw on a timer |
+| `setting(key, out, n)` | CONFIG wants this plugin's live value for one of its declared `settings` keys, used when `system.cfg` does not carry it yet; leave `out` empty for a key you do not recognise, so a blank on the form never quietly means something else |
+| `rows(s)` | once per line after `Bbs::startPluginList`, with the row number in `Session::listIdx`, until it returns false; the plugin gets the core's paging, `[More]` prompt, abort keys and output backpressure instead of reimplementing them |
+| `onPresence(s)` | what the outside can see about who is on has changed: `SHOW`, `HIDE` or `LURK`, not only `onLogin`/`onLogoff`, because `Bbs::publicBusy` counts a session only while it is visible |
+| `onBytes(s, b, n, now)` | raw input as it arrived, only while the plugin owns the session and has turned on `Bbs::setRawInput`; telnet has already been unescaped, so `IAC IAC` is one 0xFF here |
+| `onRename(old, new)` | a caller's handle changed; called after `users.txt` has been written and only when the write succeeded, so a plugin acting on it can trust the new name |
+| `listDone(s, aborted)` | a paged list this plugin started with `startPluginList` has finished; `aborted` is true when the caller stopped it at `[More]` rather than reading to the end. The core deliberately draws no prompt for a plugin-owned session, so this is the plugin's only signal to put something on the screen |
+
+### Settings
+
+`settings` and `settingCount` are a table, not a hook: the rows CONFIG offers
+on this plugin's page, in the order they should appear. Declaring one is what
+makes it editable at all; a key CONFIG has never heard of is invisible until
+somebody edits `system.cfg` by hand.
+
+```c
+const PluginSetting kSettings[] = {
+    { "greeting", "Greeting", PS_TEXT, 0, 0, 40 },   // key, label (9 chars), kind, lo, hi, cap
+};
+```
+
+`kind` is `PS_TEXT`, `PS_NUM`, `PS_YESNO`, `PS_INFO` or `PS_PIN`. `PS_PIN` is a
+GPIO number: numeric like `PS_NUM`, with -1 meaning none, and CONFIG refuses
+pins 6 to 11 because on the WROOM they are wired to the flash chip. `PS_INFO` is shown but
+never editable and never written back, for a value the plugin does not own:
+announce's `name` setting shows the board's name, which belongs to
+`board_name` on the core, rather than opening a second editable field that
+could drift from it. `setting()` supplies the running value for each key so a
+blank on the form means "not set", not "I cannot tell you".
 
 ### Commands
 
@@ -140,4 +174,4 @@ plugins::path(myIndex, "count", buf, sizeof(buf)); // <fs>/p/<name>/count
 
 ## Memory
 
-The board has roughly 143 KB of free heap with a caller on, and 110 KB of that is one contiguous block. Keep plugin state static and small, declare what you need in the descriptor, and let the core refuse the plugin rather than run the board out of memory at 2am.
+Memory is the tight resource. On the reference WROOM-32E, static RAM is within a few KB of the linker's ceiling (180,736 bytes), and the free heap is whatever the radio, lwIP and the card driver leave, which `MEM` and `SYS` report on a running board. Measure there rather than trusting a figure written here. Keep plugin state static and small, declare what you need in the descriptor, and let the core refuse the plugin rather than run the board out of memory at 2am.

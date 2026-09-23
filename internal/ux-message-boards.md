@@ -4,7 +4,7 @@
   Electronic freedom on a microcontroller.
  ===========================================================================
 
- File:         reports/ux-message-boards.md
+ File:         internal/ux-message-boards.md
  Module:       Design report / caller-facing UX for the message boards
 
  Purpose:      The flow, the keys, the colours and the screens for FORUMS:
@@ -4335,7 +4335,7 @@ reaches a screen.
 - Torn-write tests: kill the host build after a segment append, after a
   partial index record, after a partial header. Restart, prove the numbering
   has not moved and the log says what was repaired.
-- `optimize` report into `reports/`, per the milestone rule.
+- `optimize` report into `internal/`, per the milestone rule.
 - COMMANDS.md, README.md, CHANGELOG.md and CLAUDE.md in the same change.
   **The wire format goes into the docs in parser order**, and somebody checks
   it against `readKey` rather than against this report.

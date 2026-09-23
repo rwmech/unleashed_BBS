@@ -122,9 +122,20 @@ int8_t wifiRssi() {
     return 0;
 }
 
-// netInfo: the host has no radio. The system screen shows the dashes.
+// netInfo: the host has no radio, so the system screen shows the dashes.
+// BBS_HOST_SSID plays a board joined to that network, which is what a board
+// on the compiled-in secrets.h fallback looks like to CONFIG wifi: on a
+// network, with none named in system.cfg.
 NetInfo netInfo() {
-    return NetInfo{};
+    NetInfo n;
+    const char* ssid = getenv("BBS_HOST_SSID");
+    if (ssid && *ssid) {
+        snprintf(n.ssid, sizeof(n.ssid), "%.32s", ssid);
+        snprintf(n.ip, sizeof(n.ip), "127.0.0.1");
+        n.channel = 1;
+        n.valid   = true;
+    }
+    return n;
 }
 
 // ---------------------------------------------------------------------------

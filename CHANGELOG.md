@@ -24,6 +24,75 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.0.0, 2026-09-23
+
+The first public release. 0.23.0 passed the test that mattered: a new
+ESP32, flashed from the web installer by somebody following the page,
+joined Wi-Fi through the browser, took its first login, walked its sysop
+through changing the passwords, and ran as a board. 1.0.0 is that build
+with the problems the test turned up fixed, the documentation brought
+into line with the code, and the repository made fit to publish.
+
+**CONFIG checks what it writes.** Every core setting now goes through the
+parser's own rules before anything is saved, so the form refuses what
+the board would refuse, instead of writing it and then failing to reload.
+- A hostname typed as `name.local` is saved as `name`. Before, the file
+  took it, the reload refused the whole file, and nothing else on that
+  page went live.
+- Also caught now: a backup port that clashes with the BBS port; a WHO
+  minimum above its maximum; a `#` in a value where it would have started
+  a comment; `***` typed as a password, which switched that staff level
+  off; spaces at either end of a password or network name; and any text
+  at all for the landing place.
+- 0 is accepted for the idle, call, day and guest minute limits, meaning
+  never or unlimited, and -1 for the LED and button pins, meaning none.
+- The sysop password can no longer be cleared from CONFIG. An empty one
+  switched staff off, with no way back short of reflashing.
+- GPIO 6 to 11 are refused for every pin setting, because on the WROOM
+  they are wired to the flash chip.
+- A `;` is refused in a plugin's settings and in a file area's parts. A
+  plugin reads a value only up to the first `;`, so an area named "Games;
+  Demos" silently lost the permission levels written after its name and
+  fell open to everybody, while CONFIG said "Saved and live".
+- Emptying the Wi-Fi password on an unchanged network still saves, since
+  that is how an open network is chosen, but CONFIG now says "Saved: OPEN
+  network" rather than letting a stray keystroke pass unremarked.
+
+**CONFIG says what happened.**
+- Saving a plugin that needs an SD card, with no card mounted, now says
+  so instead of "Saved and live".
+- CONFIG wifi shows the network the board is actually on, even when it
+  joined through the compiled-in fallback. It refuses a new network name
+  unless the password is retyped, or cleared for an open network. Before,
+  a changed name was saved with no password and the board fell off the
+  network at the next boot.
+- The staff page labels the rows Co-sysop1 and Co-sysop2; both used to
+  read "Co-sysop".
+- The first-boot setup screen no longer says to delete the stars before
+  typing a new password.
+
+**Release safety.** `tools/release.py` refuses to build a release if any
+tracked file carries a copyright, licence or author line naming Anthropic
+or Claude, or if a firmware image mentions either. The copyright is the
+author's alone.
+
+**Documentation.** The staff table in COMMANDS.md was one table broken by
+prose, and GitHub rendered most of it as text; it is whole now. It was
+also checked row by row against the source. PLUGINS.md lists every hook
+in declaration order, and the settings table. A handful of stale figures
+and prompts were corrected in README.md, USERS.md and PLUGINS.md. The
+working notes moved from `reports/` to `internal/`, which says what they
+are.
+
+**The repository.** The history was rewritten once, before publication,
+so that no commit carries a private address or network detail. Content
+and order are unchanged; commit hashes before 1.0.0 are new.
+
+Not in 1.0.0, and next: the BOOT-hold reset and the Wi-Fi fallback to the
+last good network (1.0.1, both need bench time), the stack audit and the
+watchdog reboot (1.0.1), and notices reaching callers inside plugins
+(1.0.2).
+
 ## 0.23.0, 2026-09-23
 
 The web installer's firmware: a board flashed by somebody else can be set
@@ -491,7 +560,7 @@ graphics layout was not added", and then "Missing prompt, no graphis, crappy
 layout".
 
 He is right, and the failure is worth naming rather than glossing:
-`reports/ux-message-boards.md` is 4,345 lines, it was commissioned for
+`internal/ux-message-boards.md` is 4,345 lines, it was commissioned for
 exactly this, and two versions shipped without implementing it. The process
 rule that exists to prevent this ("the specialists advise the builder") was
 written down the same week and then not followed.
@@ -565,7 +634,7 @@ for. Rob: "I wanted to be able to have a few paragraphs."
 Agent models: `code-review`, `optimize`, `tty-ux` and `screen-artist` move to
 fable; `explain` stays on opus; sonnet is the floor everywhere else, no haiku
 (Rob). The A/B protocol, with the scoring rule fixed **before** the runs, is
-in `reports/model-ab-2026-09.md`.
+in `internal/model-ab-2026-09.md`.
 
 ## 0.21.4, 2026-09-22
 
@@ -586,7 +655,7 @@ the whole time. **`Term::ch` is for text**; anything that moves the cursor or
 erases goes through a Term primitive, because that is the layer that knows
 what the terminal is.
 
-**Six room commands, approved from `reports/chat-commands-2026-09-22.md`,
+**Six room commands, approved from `internal/chat-commands-2026-09-22.md`,
 plus one Rob added.** 24 bytes of static DRAM between them, because every one
 reuses machinery that already exists:
 
@@ -853,7 +922,7 @@ fail the build when a part is added. **Fourth instance of a bound written
 beside a table instead of computed from it.**
 
 Also recorded rather than built: the chat command decisions from
-`reports/chat-commands-2026-09-22.md` (six approved, three rejected, plus
+`internal/chat-commands-2026-09-22.md` (six approved, three rejected, plus
 `/t n +m` to give a caller more time), and the DDial roster finding, which
 is that the five minute timer was the rotator's and carried the *network*
 roster across a link rather than reprinting the local one.
@@ -1393,7 +1462,7 @@ The partition rebalance and sixteen nodes. Flashed 2026-09-19.
 Settings you can find, and a send-off everybody gets.
 
 - A plugin now declares what `CONFIG` should offer. Until now a plugin's settings page was built from whatever keys `system.cfg` already contained, which meant a setting nobody had written yet was invisible: the announce plugin could read a board name, owner, description, DNS name and directory list, but there was no way to set any of them short of editing the file by hand. All nine are on the form now, on a fresh board, with the running value already in them.
-- A board can advertise a name of its own (`quantum.dnsfor.me`, say) instead of whatever address the directory saw, and can list itself in several directories at once with a comma-separated list. Both were always in the protocol; neither was reachable.
+- A board can advertise a name of its own (`yourboard.example.net`, say) instead of whatever address the directory saw, and can list itself in several directories at once with a comma-separated list. Both were always in the protocol; neither was reachable.
 - The wordmark is redrawn with half-block characters, which carry two pixels per cell vertically and so allow a real stroke weight instead of chunky squares. The micro sign is set as a lowercase letter on the shared baseline with its stem below it, rather than a capital squashed to make room for a tail.
 - New screens: the house rules when you press R to register, a short welcome once you are in, and a transition into chat. All three are optional, and a board without the files behaves exactly as before.
 - The goodbye screen now plays however the call ended, not only when you typed BYE, and the line is held open for five seconds afterwards so it is not a screen that flashes past on its way to a closed socket. A caller who never logged in still gets the short version.

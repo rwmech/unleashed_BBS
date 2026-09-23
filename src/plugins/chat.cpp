@@ -1147,7 +1147,7 @@ bool mailRead(Session& s, bool quiet) {
 // Rob: "Mail is still not a subsystem like forums and chat" and "we cant
 // read other mail without deleting, need that full list of emails to be
 // able to select and then reply." Built from the UX spec's M1 to M5
-// (reports/ux-message-boards.md), with its one-column margins dropped for
+// (internal/ux-message-boards.md), with its one-column margins dropped for
 // the column 0 rule.
 // ===========================================================================
 

@@ -113,11 +113,21 @@ struct Ctx {
     char*      err;
     size_t     errLen;
     int        lineNo;
+    // A trial for a writer (syscfg::trial) rather than a file being read:
+    // the message is the rule alone, short enough for a form's status line,
+    // with no line number and no echo of the value the writer just typed.
+    bool       bare = false;
 };
 
 void problem(Ctx& c, const char* what, const char* detail) {
     if (!c.problems && c.err && c.errLen) {
-        snprintf(c.err, c.errLen, "system.cfg line %d: %s %s", c.lineNo, what, detail);
+        if (c.bare) {
+            snprintf(c.err, c.errLen, "%s", what);
+            size_t n = strlen(c.err);
+            while (n && (c.err[n - 1] == ':' || c.err[n - 1] == ' ')) c.err[--n] = '\0';
+        } else {
+            snprintf(c.err, c.errLen, "system.cfg line %d: %s %s", c.lineNo, what, detail);
+        }
     }
     ++c.problems;
 }
@@ -144,14 +154,48 @@ bool ieq(const char* a, const char* b) {
     return *a == *b;
 }
 
-// number: whole decimal in [lo, hi], else a problem and false
-bool number(Ctx& c, const char* key, const char* v, long lo, long hi, long& out) {
+// The numeric keys and what the parser takes for each. One table, read by
+// the parser below, which CONFIG reaches through syscfg::trial() before it
+// writes anything, because CONFIG kept its own copy of these ranges and it drifted three
+// ways: it offered 1..120 minutes for a window the parser caps at 60,
+// refused the 0 that means "never" for the idle and call limits, and could
+// not say -1, "no pin", for either GPIO at all.
+struct NumKey { const char* key; long lo; long hi; };
+const NumKey kNumKeys[] = {
+    { "idle_minutes",          0,  1440 },          // 0 = never
+    { "call_minutes",          0,  1440 },          // 0 = unlimited
+    { "day_minutes",           0,  1440 },          // 0 = unlimited
+    { "guest_minutes",         0,  1440 },          // 0 = unlimited (Bbs::secondsLeft)
+    { "backup_window_minutes", 1,  60 },
+    { "backup_button_gpio",   -1,  39 },            // -1 = no button
+    { "activity_led_gpio",    -1,  39 },            // -1 = no LED
+    { "max_users",             1,  BBS_MAX_USERS },
+    { "who_refresh_min",       1,  60 },
+    { "who_refresh_max",       1,  60 },
+    { "backup_port",           1,  65535 },
+};
+
+const NumKey* numKey(const char* key) {
+    for (const NumKey& k : kNumKeys)
+        if (!strcmp(k.key, key)) return &k;
+    return nullptr;
+}
+
+// number: whole decimal in the key's range, else a problem and false
+bool number(Ctx& c, const char* key, const char* v, long& out) {
+    const NumKey* k = numKey(key);
+    if (!k) { problem(c, key, "has no range"); return false; }   // a key missing from the table
     char* end = nullptr;
     long n = strtol(v, &end, 10);
-    if (!*v || (end && *end) || n < lo || n > hi) {
+    if (!*v || (end && *end) || n < k->lo || n > k->hi) {
         char d[48];
-        snprintf(d, sizeof(d), "(%ld..%ld)", lo, hi);
-        problem(c, key, d);
+        if (c.bare) {
+            snprintf(d, sizeof(d), "Between %ld and %ld", k->lo, k->hi);
+            problem(c, d, "");
+        } else {
+            snprintf(d, sizeof(d), "(%ld..%ld)", k->lo, k->hi);
+            problem(c, key, d);
+        }
         return false;
     }
     out = n;
@@ -189,13 +233,15 @@ void accessRow(Ctx& c, char* line) {
     }
 }
 
-// validHostname: a-z 0-9 -, 1..31, not starting or ending with '-'
-bool validHostname(char* v) {
-    size_t n = strlen(v);
-    if (!n || n >= 32 || v[0] == '-' || v[n - 1] == '-') return false;
-    for (size_t i = 0; i < n; ++i) {
-        v[i] = static_cast<char>(tolower(static_cast<unsigned char>(v[i])));
-        if (!isalnum(static_cast<unsigned char>(v[i])) && v[i] != '-') return false;
+// gpio: a pin number in the key's range that the board may use (see
+// syscfg::pinProblem); -1, "none", is in every pin key's range.
+bool gpio(Ctx& c, const char* key, const char* v, long& out) {
+    if (!number(c, key, v, out)) return false;
+    if (const char* why = syscfg::pinProblem(out)) {
+        char what[48];
+        snprintf(what, sizeof(what), "%s:", why);
+        problem(c, what, v);
+        return false;
     }
     return true;
 }
@@ -212,11 +258,11 @@ void yesNo(Ctx& c, const char* key, const char* val, bool& out) {
 }
 
 // keyValue: one "key = value" line
-void keyValue(Ctx& c, char* key, char* val) {
+void keyValue(Ctx& c, const char* key, char* val) {
     SysConfig& g = *c.cfg;
     long n = 0;
     if (!strcmp(key, "hostname")) {
-        if (validHostname(val)) copyStr(g.hostname, sizeof(g.hostname), val);
+        if (syscfg::validHostname(val)) copyStr(g.hostname, sizeof(g.hostname), val);
         else problem(c, "hostname must be a-z 0-9 - (1..31):", val);
     }
     else if (!strcmp(key, "board_name"))             copyStr(g.boardName, sizeof(g.boardName), val);
@@ -237,7 +283,7 @@ void keyValue(Ctx& c, char* key, char* val) {
         if (n && (n < 8 || n >= sizeof(g.wifiPass))) problem(c, "wifi_password must be 8 to 64 characters", "");
         else copyStr(g.wifiPass, sizeof(g.wifiPass), val);
     }
-    else if (!strcmp(key, "idle_minutes"))          { if (number(c, key, val, 0, 1440, n)) g.idleMinutes = static_cast<uint16_t>(n); }
+    else if (!strcmp(key, "idle_minutes"))          { if (number(c, key, val, n)) g.idleMinutes = static_cast<uint16_t>(n); }
     else if (!strcmp(key, "landing")) {
         // "default" is not a board default, so it is refused rather than
         // quietly meaning main: a board whose default is "whatever the
@@ -246,25 +292,43 @@ void keyValue(Ctx& c, char* key, char* val) {
         if (v == LAND_DEFAULT) problem(c, "landing must be main, chat or forums", val);
         else g.landing = v;
     }
-    else if (!strcmp(key, "call_minutes"))          { if (number(c, key, val, 0, 1440, n)) g.callMinutes = static_cast<uint16_t>(n); }
-    else if (!strcmp(key, "day_minutes"))           { if (number(c, key, val, 0, 1440, n)) g.dayMinutes  = static_cast<uint16_t>(n); }
-    else if (!strcmp(key, "backup_window_minutes")) { if (number(c, key, val, 1, 60, n)) g.backupMinutes = static_cast<uint16_t>(n); }
-    else if (!strcmp(key, "backup_button_gpio"))    { if (number(c, key, val, -1, 39, n)) g.backupGpio = static_cast<int8_t>(n); }
-    else if (!strcmp(key, "activity_led_gpio"))     { if (number(c, key, val, -1, 39, n)) g.ledGpio = static_cast<int8_t>(n); }
-    else if (!strcmp(key, "max_users"))             { if (number(c, key, val, 1, BBS_MAX_USERS, n)) g.maxUsers = static_cast<uint8_t>(n); }
+    else if (!strcmp(key, "call_minutes"))          { if (number(c, key, val, n)) g.callMinutes = static_cast<uint16_t>(n); }
+    else if (!strcmp(key, "day_minutes"))           { if (number(c, key, val, n)) g.dayMinutes  = static_cast<uint16_t>(n); }
+    else if (!strcmp(key, "backup_window_minutes")) { if (number(c, key, val, n)) g.backupMinutes = static_cast<uint16_t>(n); }
+    else if (!strcmp(key, "backup_button_gpio"))    { if (gpio(c, key, val, n)) g.backupGpio = static_cast<int8_t>(n); }
+    else if (!strcmp(key, "activity_led_gpio"))     { if (gpio(c, key, val, n)) g.ledGpio = static_cast<int8_t>(n); }
+    else if (!strcmp(key, "max_users"))             { if (number(c, key, val, n)) g.maxUsers = static_cast<uint8_t>(n); }
     else if (!strcmp(key, "self_register"))         yesNo(c, key, val, g.selfRegister);
     else if (!strcmp(key, "guest"))                 yesNo(c, key, val, g.guestEnabled);
-    else if (!strcmp(key, "guest_minutes"))         { if (number(c, key, val, 0, 1440, n)) g.guestMinutes = static_cast<uint16_t>(n); }
-    else if (!strcmp(key, "who_refresh_min"))       { if (number(c, key, val, 1, 60, n)) g.whoMin = static_cast<uint8_t>(n); }
-    else if (!strcmp(key, "who_refresh_max"))       { if (number(c, key, val, 1, 60, n)) g.whoMax = static_cast<uint8_t>(n); }
+    else if (!strcmp(key, "guest_minutes"))         { if (number(c, key, val, n)) g.guestMinutes = static_cast<uint16_t>(n); }
+    else if (!strcmp(key, "who_refresh_min"))       { if (number(c, key, val, n)) g.whoMin = static_cast<uint8_t>(n); }
+    else if (!strcmp(key, "who_refresh_max"))       { if (number(c, key, val, n)) g.whoMax = static_cast<uint8_t>(n); }
     else if (!strcmp(key, "backup_port")) {
-        if (number(c, key, val, 1, 65535, n)) {
+        if (number(c, key, val, n)) {
             if (n == BBS_PORT) problem(c, "backup_port cannot be the BBS port", val);
             else g.backupPort = static_cast<uint16_t>(n);
         }
     }
     else plat::log("cfg: line %d unknown key '%s' ignored", c.lineNo, key);
 }
+
+// crossCheck: the rules about two keys at once, which can only be judged
+// once every line is in. Returns the key it objects to, or nullptr.
+const char* crossCheck(Ctx& c, SysConfig& out) {
+    if (out.whoMin > out.whoMax) {
+        c.lineNo = 0;
+        problem(c, "who_refresh_min is above the max", "");
+        out.whoMin = out.whoMax;
+        return "who_refresh_min";
+    }
+    return nullptr;
+}
+
+// A scratch configuration, for a reload that may yet be refused and for a
+// writer's trial. Static because SysConfig is ~420 bytes and the BBS task's
+// stack is not the place for it; one is enough, since neither can be in
+// progress while the other is.
+SysConfig g_scratch;
 
 // ---------------------------------------------------------------------------
 // ctEqual: constant-time compare over the whole password field
@@ -399,11 +463,7 @@ int parseFile(const char* path, SysConfig& out, char* err, size_t errLen) {
     }
     fclose(f);
     if (!sawSysop) useDefaultSysop(out);
-    if (out.whoMin > out.whoMax) {
-        c.lineNo = 0;
-        problem(c, "who_refresh_min is above who_refresh_max", "");
-        out.whoMin = out.whoMax;
-    }
+    crossCheck(c, out);
     out.fromFile = true;
     return c.problems;
 }
@@ -450,10 +510,9 @@ bool load() {
 bool reload(char* err, size_t errLen) {
     char path[96];
     snprintf(path, sizeof(path), "%s/%s", plat::userBase(), BBS_CONFIG_FILE);
-    static SysConfig fresh;                         // static: SysConfig is ~300 bytes
-    fresh = SysConfig();
-    if (parseFile(path, fresh, err, errLen)) return false;
-    g_cfg = fresh;
+    g_scratch = SysConfig();
+    if (parseFile(path, g_scratch, err, errLen)) return false;
+    g_cfg = g_scratch;
     setenv("TZ", g_cfg.tz, 1);
     tzset();
     logSummary();
@@ -495,6 +554,75 @@ const char* levelName(Access level) {
         case Access::CoSysop2: return "Co-sysop 2";
         default:               return "";
     }
+}
+
+// ---------------------------------------------------------------------------
+// The parser's rules, for writers (see sysconfig.h)
+// ---------------------------------------------------------------------------
+
+bool validHostname(char* v) {
+    size_t n = strlen(v);
+    if (!n || n >= 32 || v[0] == '-' || v[n - 1] == '-') return false;
+    for (size_t i = 0; i < n; ++i) {
+        v[i] = static_cast<char>(tolower(static_cast<unsigned char>(v[i])));
+        if (!isalnum(static_cast<unsigned char>(v[i])) && v[i] != '-') return false;
+    }
+    return true;
+}
+
+void normaliseHostname(char* v) {
+    char* s = trim(v);
+    if (s != v) memmove(v, s, strlen(s) + 1);
+    size_t n = strlen(v);
+    for (size_t i = 0; i < n; ++i) v[i] = static_cast<char>(tolower(static_cast<unsigned char>(v[i])));
+    while (n && v[n - 1] == '.') v[--n] = '\0';
+    // One ".local", not every one: "a.local.local" is somebody's typo and
+    // the check that follows should see what is left of it.
+    const size_t kLocal = 6;                         // ".local"
+    if (n > kLocal && !strcmp(v + n - kLocal, ".local")) { n -= kLocal; v[n] = '\0'; }
+    while (n && v[n - 1] == '.') v[--n] = '\0';
+}
+
+const char* pinProblem(long pin) {
+    if (pin >= 6 && pin <= 11) return "pins 6-11 are the flash chip";
+    return nullptr;
+}
+
+const char* trial(const KeyVal* pairs, uint8_t count, char* why, size_t n) {
+    g_scratch = g_cfg;
+    Ctx c{ &g_scratch, 0, why, n, 0 };
+    c.bare = true;
+    if (why && n) why[0] = '\0';
+    char val[128];
+    for (uint8_t i = 0; i < count; ++i) {
+        const char* key = pairs[i].key;
+        const char* v   = pairs[i].value;
+        size_t len = strlen(v);
+        if (len >= sizeof(val)) {
+            problem(c, "Too long", "");
+            return key;
+        }
+        memcpy(val, v, len + 1);
+        char* t = trim(val);
+        // What parseFile does to a line before keyValue ever sees it. Each
+        // of these was a way to write a value the board then read back as
+        // something else, with nothing said.
+        if (!strcmp(t, "***")) {                     // read as "keep the redacted one"
+            problem(c, "*** stands for a hidden password", "");
+            return key;
+        }
+        if (!verbatim(key) && strchr(t, '#')) {      // read as the start of a comment
+            problem(c, "No # here: it starts a comment", "");
+            return key;
+        }
+        if (verbatim(key) && strlen(t) != len) {     // trimmed, so a different password
+            problem(c, "No spaces at either end", "");
+            return key;
+        }
+        keyValue(c, key, t);
+        if (c.problems) return key;
+    }
+    return crossCheck(c, g_scratch);
 }
 
 // ---------------------------------------------------------------------------

@@ -94,6 +94,10 @@ PORT=$((6500 + PORT % 400))
 # lands on the BBS socket looking like a board bug.
 DIRPORT=$((PORT + 2000))
 export BBS_DIR_PORT=$DIRPORT
+# The host has no radio. This makes it report being on a network, the way a
+# board that joined through include/secrets.h does, so CONFIG wifi's
+# fallback to the live network can be tested (test_config_wifi_live).
+export BBS_HOST_SSID=HostNet
 
 # Delete the previous result before building. A failed build exits here, and
 # leaving the last run's output behind means the next look at it shows a full

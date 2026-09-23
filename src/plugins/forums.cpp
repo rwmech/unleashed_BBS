@@ -15,7 +15,7 @@
  *               of them. Browsing is forum -> subject -> message; reading is
  *               one key that walks everything new wherever it lives, which is
  *               what a regular caller actually uses. See PLAN-FORUMS.md and
- *               reports/ux-message-boards.md.
+ *               internal/ux-message-boards.md.
  *
  * Notes:        PF_SD. No card, no plugin, and FORUMS is not a command at
  *               all, the same deal the file areas have. A board that offered
@@ -24,7 +24,7 @@
  *
  * Libraries:    none (libc)
  * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
- * See also:     PLAN-FORUMS.md, reports/ux-message-boards.md, COMMANDS.md
+ * See also:     PLAN-FORUMS.md, internal/ux-message-boards.md, COMMANDS.md
  *
  * Copyright 2026 - Robert Mech
  * License:      GNU General Public License v2 or later

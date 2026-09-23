@@ -726,13 +726,20 @@ namespace {
 // Field kinds. The form widget only knows about text, masks and cycles;
 // the kind is what CONFIG checks before anything reaches the file.
 // CK_SUB is the odd one: not a value at all, a button that opens a page.
-enum : uint8_t { CK_TEXT, CK_NUM, CK_YESNO, CK_LEVEL, CK_PASS, CK_SUB, CK_INFO };
+// CK_PIN is a plugin's PS_PIN: a CK_NUM that also meets syscfg::pinProblem.
+// The core's own pins are CK_NUM and meet the same rule inside the parser.
+enum : uint8_t { CK_TEXT, CK_NUM, CK_YESNO, CK_LEVEL, CK_PASS, CK_SUB, CK_INFO, CK_PIN };
 
 struct CfgField {
     const char* key;      // key in system.cfg
     const char* label;    // 9 characters, the form column
     uint8_t     kind;
-    uint16_t    lo;       // CK_NUM: the range the parser will accept
+    // CK_NUM on a plugin page: the range the plugin declared. A core page
+    // leaves these 0 and asks the parser (syscfg::trial), because a second
+    // copy of its ranges here is exactly what drifted: backup_window_minutes
+    // and who_refresh_max offered twice what the parser took, and the idle,
+    // call and GPIO fields refused the 0 and -1 the parser documents.
+    uint16_t    lo;
     uint16_t    hi;
     uint8_t     cap;      // characters, excluding the terminator
 };
@@ -741,13 +748,17 @@ constexpr const char kYesNo[]  = "yes|no";
 constexpr const char kLevels[] = "all|users|staff|co2|co1|sysop";
 constexpr const char kMasked[] = "********";       // shown for a password already set
 
+// The number fields' ranges are the parser's (see CfgField). The caps are
+// only how many characters the box takes, and leave room for a "-1".
 const CfgField kBoard[] = {
     { "board_name",        "Board",    CK_TEXT, 0, 0, 40 },
+    // A typed "name.local" is normalised before the parser's check, since
+    // that is the name a sysop sees their board by and so what they type.
     { "hostname",          "Hostname", CK_TEXT, 0, 0, 31 },
     { "tz",                "Timezone", CK_TEXT, 0, 0, 40 },
     { "ntp_server",        "NTP",      CK_TEXT, 0, 0, 40 },
-    { "idle_minutes",      "Idle min", CK_NUM,  1, 240, 4 },
-    { "activity_led_gpio", "LED gpio", CK_NUM,  0, 39, 2 },
+    { "idle_minutes",      "Idle min", CK_NUM,  0, 0, 4 },
+    { "activity_led_gpio", "LED gpio", CK_NUM,  0, 0, 2 },
     // Where a caller goes when their own account has not said. An account
     // set to anything other than Default overrides this, so changing it
     // moves exactly the people who never expressed a preference.
@@ -755,29 +766,32 @@ const CfgField kBoard[] = {
 };
 
 const CfgField kLimits[] = {
-    { "call_minutes",    "Per call", CK_NUM, 1, 1440, 4 },
-    { "day_minutes",     "Per day",  CK_NUM, 1, 1440, 4 },
-    { "who_refresh_min", "WHO min",  CK_NUM, 1, 60, 3 },
-    { "who_refresh_max", "WHO max",  CK_NUM, 1, 60, 3 },      // the parser's range: 1..60
-    { "max_users",       "Accounts", CK_NUM, 1, 250, 3 },
+    { "call_minutes",    "Per call", CK_NUM, 0, 0, 4 },
+    { "day_minutes",     "Per day",  CK_NUM, 0, 0, 4 },
+    { "who_refresh_min", "WHO min",  CK_NUM, 0, 0, 3 },
+    { "who_refresh_max", "WHO max",  CK_NUM, 0, 0, 3 },
+    { "max_users",       "Accounts", CK_NUM, 0, 0, 3 },
 };
 
 const CfgField kAccounts[] = {
     { "self_register", "Sign-ups", CK_YESNO, 0, 0, 4 },
     { "guest",         "Guests",   CK_YESNO, 0, 0, 4 },
-    { "guest_minutes", "Guest mn", CK_NUM,   1, 240, 4 },
+    { "guest_minutes", "Guest mn", CK_NUM,   0, 0, 4 },
 };
 
 const CfgField kBackup[] = {
-    { "backup_port",           "Port",     CK_NUM, 1, 65535, 5 },
-    { "backup_window_minutes", "Open for", CK_NUM, 1, 60, 4 },   // the parser's range: 1..60
-    { "backup_button_gpio",    "Button",   CK_NUM, 0, 39, 2 },
+    { "backup_port",           "Port",     CK_NUM, 0, 0, 5 },
+    { "backup_window_minutes", "Open for", CK_NUM, 0, 0, 4 },
+    { "backup_button_gpio",    "Button",   CK_NUM, 0, 0, 2 },
 };
 
+// The label column is nine characters (Form::drawField), and "Co-sysop 1"
+// is ten: both rows used to read "Co-sysop " and nobody could tell which
+// password they were changing. "Co-sysop1" is nine and keeps the digit.
 const CfgField kStaff[] = {
-    { "sysop_password",    "Sysop",    CK_PASS, 0, 0, 32 },
-    { "cosysop1_password", "Co-sysop 1", CK_PASS, 0, 0, 32 },
-    { "cosysop2_password", "Co-sysop 2", CK_PASS, 0, 0, 32 },
+    { "sysop_password",    "Sysop",     CK_PASS, 0, 0, 32 },
+    { "cosysop1_password", "Co-sysop1", CK_PASS, 0, 0, 32 },
+    { "cosysop2_password", "Co-sysop2", CK_PASS, 0, 0, 32 },
 };
 
 // The network. Used from the next restart, never live: changing it under a
@@ -1090,8 +1104,19 @@ void cfgLiveValue(const char* key, char* out, size_t n) {
     else if (!strcmp(key, "sysop_password"))        snprintf(out, n, "%s", c.sysopPass[0] ? kMasked : "");
     else if (!strcmp(key, "cosysop1_password"))     snprintf(out, n, "%s", c.coPass[0][0] ? kMasked : "");
     else if (!strcmp(key, "cosysop2_password"))     snprintf(out, n, "%s", c.coPass[1][0] ? kMasked : "");
-    else if (!strcmp(key, "wifi_ssid"))             snprintf(out, n, "%s", c.wifiSsid);
-    else if (!strcmp(key, "wifi_password"))         snprintf(out, n, "%s", c.wifiPass[0] ? kMasked : "");
+    // A board that joined through the compiled-in fallback (include/secrets.h)
+    // has no network in system.cfg, and the page showed two empty boxes on a
+    // board sitting happily on its network. Show the network it is on, and
+    // the mask for its password while it is connected: saving the page
+    // untouched still writes nothing, since both compare equal to this.
+    else if (!strcmp(key, "wifi_ssid")) {
+        if (c.wifiSsid[0]) snprintf(out, n, "%s", c.wifiSsid);
+        else               snprintf(out, n, "%s", plat::netInfo().ssid);
+    }
+    else if (!strcmp(key, "wifi_password")) {
+        bool set = c.wifiSsid[0] ? c.wifiPass[0] != '\0' : plat::netInfo().ssid[0] != '\0';
+        snprintf(out, n, "%s", set ? kMasked : "");
+    }
     else out[0] = '\0';
 }
 
@@ -1317,6 +1342,7 @@ void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now) {
         for (uint8_t i = 0; pl && i < pl->settingCount && n < Form::kMaxFields; ++i) {
             const PluginSetting& ps = pl->settings[i];
             uint8_t kind = ps.kind == PS_NUM   ? CK_NUM
+                         : ps.kind == PS_PIN   ? CK_PIN
                          : ps.kind == PS_YESNO ? CK_YESNO
                          : ps.kind == PS_INFO  ? CK_INFO
                                                : CK_TEXT;
@@ -1342,10 +1368,20 @@ void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now) {
     g_cfgOwner = &s;
     g_cfgPage  = page;
     g_subComp  = nullptr;                                  // a fresh page is never nested
+    // The network is one setting in two keys, and the board reads the file's
+    // password only alongside the file's network name (main.cpp). With no
+    // name in the file, both boxes show what the board is actually on.
+    bool wifiInFile = true;
+    if (page->fields == kWifi) {
+        char name[40];
+        wifiInFile = cfgFileValue(nullptr, "wifi_ssid", name, sizeof(name)) && name[0];
+    }
     for (uint8_t i = 0; i < page->count && i < Form::kMaxFields; ++i) {
         const CfgField& f = page->fields[i];
         char* buf2 = g_cfgBuf[i];
-        if (!cfgFileValue(g_cfgSection, f.key, buf2, sizeof(g_cfgBuf[0]))) {
+        bool inFile = cfgFileValue(g_cfgSection, f.key, buf2, sizeof(g_cfgBuf[0]));
+        if (page->fields == kWifi && !wifiInFile) inFile = false;
+        if (!inFile) {
             if (g_cfgSection[0]) cfgPluginValue(arg, f.key, buf2, sizeof(g_cfgBuf[0]));
             else                 cfgLiveValue(f.key, buf2, sizeof(g_cfgBuf[0]));
         }
@@ -1406,15 +1442,62 @@ void Bbs::configOpenPage(Session& s, uint8_t focus, uint32_t now) {
 bool Bbs::configSave(Session& s, char* err, size_t errLen) {
     if (!g_cfgPage) { snprintf(err, errLen, "nothing to save"); return false; }
     syscfg::KeyVal pairs[Form::kMaxFields];
+    uint8_t from[Form::kMaxFields];                 // which field each pair came from
     uint8_t n = 0;
+    const bool core = !g_cfgSection[0];
+    const uint8_t count = g_cfgPage->count < Form::kMaxFields ? g_cfgPage->count : Form::kMaxFields;
 
-    for (uint8_t i = 0; i < g_cfgPage->count && i < Form::kMaxFields; ++i) {
+    // The network is one setting in two keys (see kWifi), and the board only
+    // reads the file's password alongside the file's network name.
+    int ssidAt = -1, passAt = -1;
+    for (uint8_t i = 0; i < count; ++i) {
+        if (!strcmp(g_cfgPage->fields[i].key, "wifi_ssid"))     ssidAt = i;
+        if (!strcmp(g_cfgPage->fields[i].key, "wifi_password")) passAt = i;
+    }
+    // A password emptied under the same network name. Empty is the honest
+    // way to say "open network", so it is allowed, but a stray key replaces
+    // the mask and one backspace empties it, and the board would then offer
+    // no key to its WPA2 network at the next restart. The verdict says so
+    // in words, while there is still time to open the page and put it back.
+    bool nowOpen = false;
+    if (ssidAt >= 0 && passAt >= 0) {
+        const char* ssid = g_cfgBuf[ssidAt];
+        const char* pass = g_cfgBuf[passAt];
+        bool ssidChanged = bbsu::hash(ssid) != g_cfgWas[ssidAt];
+        nowOpen = !ssidChanged && ssid[0] && !pass[0] && g_cfgWas[passAt] != bbsu::hash("");
+        // A new network under the old mask used to save with no password at
+        // all, because an untouched mask is skipped: the next boot tried it
+        // as an open network and the board fell off the network with nobody
+        // on it to put it back. Retyped, or cleared on purpose for an open
+        // network, are the two answers that mean something.
+        if (ssidChanged && ssid[0] && !strcmp(pass, kMasked)) {
+            s.form.fail(static_cast<uint8_t>(passAt), "New network: retype its password", s.term, s.tl);
+            return false;
+        }
+        // A password with no network name beside it is never read.
+        if (strcmp(pass, kMasked) && bbsu::hash(pass) != g_cfgWas[passAt] && pass[0] && !ssid[0]) {
+            s.form.fail(static_cast<uint8_t>(ssidAt), "Name the network too", s.term, s.tl);
+            return false;
+        }
+    }
+    // A retyped password is written with its network name, even an unchanged
+    // one: on a board that joined through secrets.h the name on the page is
+    // not in the file yet, and the password alone would be ignored at boot.
+    const bool passWritten = passAt >= 0 && strcmp(g_cfgBuf[passAt], kMasked) &&
+                             bbsu::hash(g_cfgBuf[passAt]) != g_cfgWas[passAt];
+
+    for (uint8_t i = 0; i < count; ++i) {
         const CfgField& f = g_cfgPage->fields[i];
-        const char* v = g_cfgBuf[i];
+        char* v = g_cfgBuf[i];
         if (f.kind == CK_SUB) continue;                              // its own page writes it
         if (f.kind == CK_INFO) continue;                             // somebody else owns it
         if (f.kind == CK_PASS && !strcmp(v, kMasked)) continue;      // untouched
-        if (bbsu::hash(v) == g_cfgWas[i]) continue;                  // nothing to write
+        // What a sysop types as their board's name is what they see it by,
+        // "name.local", and the parser wants the bare name. Normalised
+        // before anything compares it, so a tidy-up alone writes nothing.
+        if (core && !strcmp(f.key, "hostname")) syscfg::normaliseHostname(v);
+        bool pairWith = static_cast<int>(i) == ssidAt && passWritten;
+        if (bbsu::hash(v) == g_cfgWas[i] && !pairWith) continue;     // nothing to write
         if (!*v && (f.kind == CK_YESNO || f.kind == CK_LEVEL)) continue;
         // WPA2's own rule. Caught here, where it can be retyped, rather than
         // by the parser after it is on disk and the reload has refused it.
@@ -1430,7 +1513,18 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
             s.form.fail(i, "That one is published. Pick your own", s.term, s.tl);
             return false;
         }
-        if (f.kind == CK_NUM) {
+        // Empty means "no staff at all" to the parser, which is a documented
+        // setting and a trap here: one backspace clears the mask, and a save
+        // after it switched the sysop off with no way back short of a
+        // reflash. The co-sysop levels may still be emptied, which only
+        // switches that level off.
+        if (!strcmp(f.key, "sysop_password") && !*v) {
+            s.form.fail(i, "The sysop password cannot be empty", s.term, s.tl);
+            return false;
+        }
+        // A plugin's number: the range it declared. The core's are the
+        // parser's, checked below with everything else about the page.
+        if (!core && (f.kind == CK_NUM || f.kind == CK_PIN)) {
             if (!digitsOnly(v)) {
                 s.form.fail(i, "Numbers only", s.term, s.tl);
                 return false;
@@ -1443,18 +1537,56 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
                 s.form.fail(i, msg, s.term, s.tl);
                 return false;
             }
+            // The same pin rule the core's parser applies to its own pins.
+            if (f.kind == CK_PIN) {
+                if (const char* why = syscfg::pinProblem(val)) {
+                    s.form.fail(i, why, s.term, s.tl);
+                    return false;
+                }
+            }
+        }
+        // A plugin reads its values up to the first ';' (plugin.cpp), so
+        // "C64 fans; PETSCII welcome" was saved whole and read back as "C64
+        // fans". Refused on the form, the way '#' is for the core keys.
+        if (!core && f.kind != CK_PASS && strchr(v, ';')) {
+            s.form.fail(i, "No ; here: it ends the value", s.term, s.tl);
+            return false;
         }
         pairs[n].key   = f.key;
         pairs[n].value = v;
+        from[n]        = i;
         ++n;
     }
     if (!n) { snprintf(err, errLen, "Nothing changed"); return true; }
+
+    // The core keys go through the parser itself before a byte is written:
+    // every rule it applies to a line, each key's own check, and the rules
+    // about two keys at once, against the live settings with this page on
+    // top. CONFIG used to keep its own copy of those rules, and whatever it
+    // let through that the parser did not was written anyway, the reload
+    // refused the whole file, and nothing on the page went live (Rob, a
+    // hostname typed as "therustyantenna.local").
+    //
+    // The message goes into err, which the caller ignores on a refusal (the
+    // form says why), rather than into another buffer on a stack already
+    // carrying this save's pairs. 39 bytes: the form's status line holds 38.
+    if (core) {
+        const char* bad = syscfg::trial(pairs, n, err, errLen < 39 ? errLen : 39);
+        if (bad) {
+            uint8_t at = from[0];
+            for (uint8_t k = 0; k < count; ++k)
+                if (!strcmp(g_cfgPage->fields[k].key, bad)) { at = k; break; }
+            s.form.fail(at, err[0] ? err : "The board would not read that", s.term, s.tl);
+            return false;
+        }
+    }
     if (!syscfg::write(pairs, n, g_cfgSection[0] ? g_cfgSection : nullptr, err, errLen)) return false;
     bool ok = configReloadAll(err, errLen);
     // The radio is not touched until a restart (see kWifi), so "live" would
     // be a promise the board is not keeping.
     if (ok && g_cfgPage->fields == kWifi && !strcmp(err, "Saved and live"))
-        snprintf(err, errLen, "Saved, used from the next restart");
+        snprintf(err, errLen, nowOpen ? "Saved: OPEN network, from restart"
+                                      : "Saved, used from the next restart");
     return ok;
 }
 
@@ -1493,6 +1625,20 @@ bool Bbs::configReloadAll(char* err, size_t errLen) {
     dropPluginCommands();        // or every reload registers them again
     plugins::begin(*this);
     snprintf(err, errLen, "Saved and live");
+
+    // "Live" is a claim about the plugin whose page this was, so check it.
+    // A PF_SD plugin switched on with no card mounted does not start, and
+    // its command does not exist; the page said "Saved and live" anyway and
+    // the sysop went looking for FORUMS. Say what is actually true, in one
+    // 40 column line.
+    uint8_t pi = cfgSectionPlugin(g_cfgSection);
+    if (pi != 0xFF && plugins::enabled(pi) && !plugins::running(pi)) {
+        const Plugin* p = plugins::at(pi);
+        if (p && (p->info.flags & PF_SD) && !plat::sdBase()[0])
+            snprintf(err, errLen, "Saved. %.12s needs an SD card.", p->info.name);
+        else
+            snprintf(err, errLen, "Saved, not running: %.18s", plugins::whyNot(pi));
+    }
     return true;
 }
 
@@ -1587,6 +1733,14 @@ bool Bbs::configSubSave(Session& s, char* err, size_t errLen) {
         // moving the name into the level column on the next reload.
         if (strchr(g_subBuf[i], '|')) {
             s.form.fail(i, "No | in a value", s.term, s.tl);
+            return false;
+        }
+        // And a ';' ends the whole value when the plugin reads it: an area
+        // named "Games; Demos" lost the four levels packed after its name,
+        // which fell back to the plugin's own and opened a staff-only area
+        // to everybody, while the form said "Saved and live".
+        if (strchr(g_subBuf[i], ';')) {
+            s.form.fail(i, "No ; here: it ends the value", s.term, s.tl);
             return false;
         }
         if (comp->parts[i].kind == CK_TEXT && strstr(g_subBuf[i], "..")) {

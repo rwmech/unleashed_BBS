@@ -96,7 +96,7 @@ Terminal type, character set and width are detected at connect time: ANSI with C
 
 The reference board is a bare ESP32-WROOM-32E: 520 KB of SRAM, 4 MB of flash, no PSRAM, Bluetooth switched off. Any ESP32 module with the same flash size will do. A dev board with a USB-serial chip needs nothing but the cable; a bare module needs 3V3, ground, EN pulled up, GPIO0 to ground for flashing, and a USB-serial adapter on the console pins.
 
-Power: it runs from the USB port of the machine you flash it with, from a phone charger, or from 3V3 on a bench supply. Draw is a few tens of milliamps idling with six callers on, with peaks when the radio transmits, so anything that can deliver 500 mA is comfortable.
+Power: it runs from the USB port of the machine you flash it with, from a phone charger, or from 3V3 on a bench supply. Draw is roughly 100 mA, because the board keeps the radio awake (Wi-Fi power save is off, so a caller never waits for it to wake), with short peaks of about 250 mA when it transmits. Anything that can deliver 500 mA is comfortable.
 
 A carrier PCB with the module, a level shifter and screw terminals is the obvious next step. Not today.
 
@@ -141,7 +141,7 @@ Old hardware reaches the board in one of three ways:
 
 Commands come from a registry (`Command` tables); the menus, dispatch and permissions are generated from it, and plugins register into it. On hardware: PuTTY and a C64 through TeensyROM have both called in, every PETSCII glyph is verified on the C64, and NTP, mDNS and the backup window all come up on boot.
 
-This section used to carry a per-version snapshot (host test counts, image size, heap free) and it went eleven versions without being touched, which is exactly the kind of number nobody should trust on sight. That detail belongs in [CHANGELOG.md](CHANGELOG.md), which is kept current with every build, and in the size reports under `reports/` for whoever wants the measured RAM and flash figures rather than a stale one.
+This section used to carry a per-version snapshot (host test counts, image size, heap free) and it went eleven versions without being touched, which is exactly the kind of number nobody should trust on sight. That detail belongs in [CHANGELOG.md](CHANGELOG.md), which is kept current with every build, and in the size reports under `internal/` for whoever wants the measured RAM and flash figures rather than a stale one.
 
 ### First boot: the sysop password
 
@@ -308,6 +308,12 @@ The firmware also contains Apache-2.0, MIT and BSD-licensed software from
 Espressif and others. Anyone handing out a compiled binary has to pass those
 notices along: they are collected in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## How it was built
+
+Parts of the code and the site were developed with the help of AI tools,
+including Claude and ChatGPT. The design, the decisions and the copyright
+are Robert Mech's.
 
 ## Next
 

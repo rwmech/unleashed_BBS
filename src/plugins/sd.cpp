@@ -114,7 +114,7 @@ const plat::SdInfo& cardInfo(bool force = false) {
 // ---------------------------------------------------------------------------
 bool usablePin(long p, bool inputOnlyOk) {
     if (p < 0 || p > 39) return false;
-    if (p >= 6 && p <= 11) return false;     // the flash the firmware runs from
+    if (syscfg::pinProblem(p)) return false;     // the flash the firmware runs from
     if (p >= 34 && !inputOnlyOk) return false;   // input only: no good for CS/MOSI/CLK
     return true;
 }
@@ -539,11 +539,13 @@ const Command kCommands[] = {
       Menu::Sysop, 6 },
 };
 
+// PS_PIN, so CONFIG refuses the flash pins on the form (syscfg::pinProblem)
+// instead of writing one that readKey then quietly declines.
 const PluginSetting kSettings[] = {
-    { "cs",      "CS pin",   PS_NUM,   0, 33, 2 },
-    { "mosi",    "MOSI pin", PS_NUM,   0, 33, 2 },
-    { "clk",     "CLK pin",  PS_NUM,   0, 33, 2 },
-    { "miso",    "MISO pin", PS_NUM,   0, 39, 2 },
+    { "cs",      "CS pin",   PS_PIN,   0, 33, 2 },
+    { "mosi",    "MOSI pin", PS_PIN,   0, 33, 2 },
+    { "clk",     "CLK pin",  PS_PIN,   0, 33, 2 },
+    { "miso",    "MISO pin", PS_PIN,   0, 39, 2 },
     { "speed",   "Bus kHz",  PS_NUM,   400, 40000, 5 },
     { "screens", "Screens",  PS_YESNO, 0, 0,  4 },
 };

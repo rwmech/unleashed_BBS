@@ -212,7 +212,7 @@ The `USERS` permission (sysop always, co-sysop 1 by default, not co-sysop 2) gra
 `USERS` opens a full-screen list on ANSI and PETSCII terminals:
 
 ```
-USER MANAGER                   3 of 100
+USER MANAGER                   3 of 250
 ───────────────────────────────────────
  Handle        Name             Calls
  Rob           Rob Mech           12
@@ -244,7 +244,7 @@ These work on every terminal.
 |---|---|
 | `USER ADD` | Add-account form: handle, password, the account fields, Start, Level, Locked. |
 | `USER EDIT handle` | Edit-account form. Leave `New pass` empty to keep the password. |
-| `USER DEL handle` | Delete after `Delete handle (y/N)?`. `N`, Enter or ESC keeps it. |
+| `USER DEL handle` | Retire the account after `Retire handle? They cannot log in and the handle stays reserved (y/N)?`. `N`, Enter or ESC keeps it. |
 
 - Staff can rename an account in the edit form. A caller who is online under the old handle keeps the session under the new one.
 - Setting `Locked` to `Y` refuses the next login. It does not drop a caller who is already on (use `KICK`).
