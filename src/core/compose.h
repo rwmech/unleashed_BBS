@@ -58,6 +58,7 @@
  */
 
 #pragma once
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -139,14 +140,41 @@ inline uint8_t lineWidth(uint8_t cols, uint8_t prompt, uint8_t hardMax) {
 // Returns how many characters stay on this line; `carry` receives the
 // unfinished word, empty when there is none. The space at the break is
 // dropped rather than carried, or every wrapped line would start with one.
+//
+// A space inside an effect code is not a place to break. "@BLINK:Special
+// Effects@" broken at its own space is stored as two lines, and codes are
+// read a line at a time, so both halves printed as typed (Rob, 0.22.2,
+// forum message #14). So an effect is carried whole, with the word it is
+// in. Any "@letters:" opens one until the next '@', and "@@" is a literal,
+// the same grammar the codes themselves use. Deliberately not the list of
+// effect names, which would be a second copy of codes.cpp to drift: the
+// only cost of the loose rule is that prose with an unclosed "@noon:" in it
+// wraps before that word rather than inside it.
 // ---------------------------------------------------------------------------
 inline uint8_t wrapPoint(const char* line, uint8_t len, char* carry, size_t carryN) {
     if (carry && carryN) carry[0] = '\0';
     if (!line || !len) return 0;
 
-    int cut = -1;
-    for (int i = static_cast<int>(len) - 1; i > 0; --i)
-        if (line[i] == ' ') { cut = i; break; }
+    int  cut      = -1;
+    bool inEffect = false;
+    for (int i = 0; i < static_cast<int>(len); ++i) {
+        char c = line[i];
+        if (inEffect) {
+            if (c == '@') inEffect = false;
+            continue;
+        }
+        if (c == '@') {
+            if (i + 1 < static_cast<int>(len) && line[i + 1] == '@') { ++i; continue; }   // @@
+            int j = i + 1;
+            while (j < static_cast<int>(len) && isalpha(static_cast<unsigned char>(line[j]))) ++j;
+            if (j > i + 1 && j < static_cast<int>(len) && line[j] == ':') {
+                inEffect = true;
+                i = j;
+            }
+            continue;
+        }
+        if (c == ' ' && i > 0) cut = i;
+    }
 
     if (cut <= 0) return len;                 // one long word: let it stand
 

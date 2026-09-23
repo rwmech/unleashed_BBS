@@ -484,6 +484,7 @@ void BackupService::decide(bool accept, const char* why) {
     char msg[160];
     if (accept) {
         bool ok = imp_.apply(msg, sizeof(msg));
+        plat::fsInfoStale();              // screens and accounts were rewritten wholesale
         note("*** %.60s", msg);
         char body[300];
         snprintf(body, sizeof(body), "%s\n%s\n", msg, detail_);

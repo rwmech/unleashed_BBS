@@ -72,6 +72,23 @@ void label(Term& t, Timeline& tl, const char* name) {
     t.color(tl, Color::Grey);
 }
 
+// fxCode: the message code for the effect just shown, so the demo is also
+// the reference (Rob, 0.22.2: "In the FX, you should put the codes for the
+// FX on that page too"). On a wide terminal it follows the effect; at 40
+// columns the effect has already used most of the row, so the code goes on
+// the line under it, lined up past the label, rather than wrapping.
+void fxCode(Term& t, Timeline& tl, const char* code) {
+    t.color(tl, Color::DarkGrey);
+    if (t.cols() >= 60) {
+        t.text(tl, "   ");
+    } else {
+        t.nl(tl);
+        t.text(tl, "           ");                       // the label's 11 columns
+    }
+    t.text(tl, code);
+    t.color(tl, Color::Grey);
+}
+
 // ---------------------------------------------------------------------------
 // wrapTake: how many characters of text fit in width, breaking at a space
 // ---------------------------------------------------------------------------
@@ -2163,32 +2180,35 @@ void Bbs::fxNext(Session& s) {
             t.nl(tl);
             if (t.rows() > 25) t.nl(tl);     // 25-row screens have no spare line
             break;
-        case 1:  label(t, tl, "Typewriter"); fx::typewriter(t, tl, "The quick brown fox jumps.", 45); t.nl(tl); break;
+        case 1:  label(t, tl, "Typewriter"); fx::typewriter(t, tl, "The quick brown fox jumps.", 45);
+                 fxCode(t, tl, "@TYPE:text@"); t.nl(tl); break;
         case 2:  label(t, tl, "Dots"); t.text(tl, "Dialing"); fx::dots(t, tl, 6, 250);
-                 t.text(tl, " CONNECT"); t.nl(tl); break;
+                 t.text(tl, " CONNECT"); fxCode(t, tl, "@DOTS@"); t.nl(tl); break;
         case 3:  label(t, tl, "Spin line");  fx::spinner(t, tl, fx::Spin::Line, 1800, 100);
-                 t.text(tl, "done"); t.nl(tl); break;
+                 t.text(tl, "done"); fxCode(t, tl, "@SPIN@"); t.nl(tl); break;
         case 4:  label(t, tl, "Spin dots");  fx::spinner(t, tl, fx::Spin::Dots, 1600, 150);
                  t.text(tl, "done"); t.nl(tl); break;
         case 5:  label(t, tl, "Spin arrow"); fx::spinner(t, tl, fx::Spin::Arrow, 1600, 120);
                  t.text(tl, "done"); t.nl(tl); break;
         case 6:  label(t, tl, "Rubout"); fx::typeRubout(t, tl, "Erasing to start", 35, 600, 45);
-                 t.text(tl, "gone"); t.nl(tl); break;
+                 t.text(tl, "gone"); fxCode(t, tl, "@OOPS:text@"); t.nl(tl); break;
         case 7:  label(t, tl, "Rewrite"); t.text(tl, "Checking mail"); fx::dots(t, tl, 3, 300);
                  fx::rewrite(t, tl, 16, "No new mail"); t.nl(tl); break;
         case 8:  label(t, tl, "Working"); fx::working(t, tl, "Scanning ", 1500, "OK"); break;
         case 9:  label(t, tl, "Progress"); fx::progressBar(t, tl, 16, 2000); t.nl(tl); break;
         case 10: label(t, tl, "Countdown"); fx::countdown(t, tl, 5, 450, "GO!"); t.nl(tl); break;
-        case 11: label(t, tl, "Scramble"); fx::scramble(t, tl, "ACCESS GRANTED", 14, 70); t.nl(tl); break;
+        case 11: label(t, tl, "Scramble"); fx::scramble(t, tl, "ACCESS GRANTED", 14, 70);
+                 fxCode(t, tl, "@SCRAMBLE:text@"); t.nl(tl); break;
         case 12: label(t, tl, "Line noise"); fx::lineNoise(t, tl, 18, 700);
-                 t.text(tl, "clean"); t.nl(tl); break;
+                 t.text(tl, "clean"); fxCode(t, tl, "@NOISE@"); t.nl(tl); break;
         case 13: label(t, tl, "Blink"); t.color(tl, Color::LightRed);
-                 fx::blink(t, tl, "ALERT", 4, 250); t.color(tl, Color::Grey); t.nl(tl); break;
+                 fx::blink(t, tl, "ALERT", 4, 250); t.color(tl, Color::Grey);
+                 fxCode(t, tl, "@BLINK:text@"); t.nl(tl); break;
         case 14: label(t, tl, "Marquee"); fx::marquee(t, tl, "** UNLEASHED BBS **", 16, 80, 1);
                  t.text(tl, "done"); t.nl(tl); break;
         case 15: label(t, tl, "Cursor"); fx::cursorBlink(t, tl, 5, 250);
                  t.text(tl, "ready"); t.nl(tl); break;
-        case 16: label(t, tl, "Bell"); fx::bell(t, tl); t.text(tl, "ding"); t.nl(tl); break;
+        case 16: label(t, tl, "Bell"); fx::bell(t, tl); t.text(tl, "ding"); fxCode(t, tl, "@BELL@"); t.nl(tl); break;
         case 17: label(t, tl, "300 baud"); fx::baud(tl, 300);
                  t.text(tl, "Slow like 1984."); t.nl(tl); break;
         case 18:
@@ -2199,6 +2219,7 @@ void Bbs::fxNext(Session& s) {
                 t.glyph(tl, Glyph::Block);
             }
             t.color(tl, Color::Grey);
+            fxCode(t, tl, "@RED@ @CYAN@ ... @N@");
             t.nl(tl);
             break;
         case 19:
@@ -2216,6 +2237,10 @@ void Bbs::fxNext(Session& s) {
             t.nl(tl);
             t.color(tl, Color::LightGreen);
             fx::typewriter(t, tl, "Demo complete.", 30);
+            // Back the other way too: CODES points here, this points there.
+            t.nl(tl);
+            t.color(tl, Color::Grey);
+            t.text(tl, "Grey codes work in messages. See CODES.");
             prompt(s);
             break;
         default:   // 0xFF: stopped by the caller

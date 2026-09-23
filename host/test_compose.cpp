@@ -63,6 +63,29 @@ int main() {
               !strcmp(carry, "world") && keep == 5);
     }
     {
+        // Rob, 0.22.2, forum message #14: the wrap broke at the space inside
+        // "@BLINK:Special Effects@", the two halves were stored as two lines,
+        // and both printed as typed. The effect goes down whole instead.
+        char carry[80];
+        const char* line = "for some @BLINK:Special Eff";
+        uint8_t keep = wrapPoint(line, static_cast<uint8_t>(strlen(line)), carry, sizeof(carry));
+        check("an effect is carried whole, not broken at its own space",
+              keep == 8 && !strcmp(carry, "@BLINK:Special Eff"));
+
+        line = "shine @TYPE:slowly@ and then more words";
+        keep = wrapPoint(line, static_cast<uint8_t>(strlen(line)), carry, sizeof(carry));
+        check("a closed effect does not stop a later break", !strcmp(carry, "words"));
+
+        line = "mail me@@home now @RED@red@N@ ok";
+        keep = wrapPoint(line, static_cast<uint8_t>(strlen(line)), carry, sizeof(carry));
+        check("@@ and colour codes do not open anything", !strcmp(carry, "ok"));
+
+        line = "@OOPS:one two three four five six";
+        keep = wrapPoint(line, static_cast<uint8_t>(strlen(line)), carry, sizeof(carry));
+        check("an effect wider than the line is let through whole",
+              keep == strlen(line) && carry[0] == '\0');
+    }
+    {
         // A carry buffer smaller than the tail must truncate, never overrun.
         char small[4];
         const char* line = "aa bbbbbbbbbb";

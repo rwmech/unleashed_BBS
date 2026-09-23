@@ -847,6 +847,7 @@ enum class View : uint8_t { Forums, Subjects, Reading };
 void prompt(Bbs& b, Session& s, bool gap = true);
 void say(Session& s, Color c, const char* text);
 void notice(Session& s, Color c, const char* text);
+void noticeDone(Bbs& b, Session& s);
 void listStatus(Session& s, uint32_t unread, const char* none);
 void answered(Session& s, const char* text);
 
@@ -1334,6 +1335,17 @@ void listStatus(Session& s, uint32_t unread, const char* none) {
 // question is what to do with what was just read, and that wants the verbs,
 // the way mail's [R]eply [S]ave [D]elete does, in the same colours. The
 // keys not named here (# to jump, ? for help) still work, and ? lists them.
+// noticeDone: the prompt after a notice. In the reading view the notice
+// is followed straight by the reading prompt, and say() leaves the cursor
+// at the end of the notice's line, so prompt()'s one newline put the two
+// on consecutive lines (Rob, 0.22.2: "Need LF after that message"). EOM
+// ends its own line, which is why the same prompt() left a gap there and
+// not here. The list views end with a footer that already stands apart.
+void noticeDone(Bbs& b, Session& s) {
+    if (g_view[slotIdx(s)] == View::Reading) s.term.nl(s.tl);
+    prompt(b, s);
+}
+
 void readPrompt(Bbs& b, Session& s) {
     uint8_t sl  = slotIdx(s);
     bool    mod = mayMod(s, g_at[sl]);
@@ -1524,7 +1536,7 @@ void showMessage(Bbs& b, Session& s, uint8_t forum, uint32_t n) {
     MsgRec m;
     if (!readRec(forum, n, m)) {
         notice(s, g_cMark, "--> That message is not on the card.");
-        prompt(b, s);
+        noticeDone(b, s);
         return;
     }
 
@@ -1636,7 +1648,7 @@ void readNext(Bbs& b, Session& s) {
             if (next) { showMessage(b, s, vis[k], next); return; }
         }
         notice(s, g_cMark, "--> Nothing new. # - Open a forum to browse it.");
-        prompt(b, s);
+        noticeDone(b, s);
         return;
     }
 
@@ -1656,7 +1668,7 @@ void readNext(Bbs& b, Session& s) {
         notice(s, g_cMark, on ? "--> That is the end of that subject."
                               : "--> That is the end of that subject. Nothing else new here.");
         if (on) { showMessage(b, s, forum, on); return; }
-        prompt(b, s);
+        noticeDone(b, s);
         return;
     }
 
@@ -1671,7 +1683,7 @@ void readNext(Bbs& b, Session& s) {
     if (next) { showMessage(b, s, forum, next); return; }
 
     notice(s, g_cMark, "--> Nothing new here. L lists the subjects, # - Jump to one.");
-    prompt(b, s);
+    noticeDone(b, s);
 }
 
 // ===========================================================================
@@ -1850,19 +1862,19 @@ void startPost(Bbs& b, Session& s, bool reply) {
 
     if (forum == 0xFF) {
         notice(s, g_cMark, "--> Open a forum first.");
-        prompt(b, s);
+        noticeDone(b, s);
         return;
     }
     bool allowed = reply ? mayReply(s, forum) : mayStart(s, forum);
     if (!allowed) {
         notice(s, g_cMark, reply ? "--> You cannot post in here."
                                  : "--> You cannot start a subject in here.");
-        prompt(b, s);
+        noticeDone(b, s);
         return;
     }
     if (reply && !g_shown[sl]) {
         notice(s, g_cMark, "--> Read a message first, then R answers it.");
-        prompt(b, s);
+        noticeDone(b, s);
         return;
     }
 
@@ -1938,12 +1950,12 @@ void askRemove(Bbs& b, Session& s) {
     uint8_t forum = g_at[sl];
     if (g_view[sl] != View::Reading || !g_shown[sl] || forum == 0xFF) {
         notice(s, g_cMark, "--> Read a message first, then D removes it.");
-        prompt(b, s);
+        noticeDone(b, s);
         return;
     }
     if (!mayMod(s, forum)) {
         notice(s, g_cMark, "--> You cannot remove messages here.");
-        prompt(b, s);
+        noticeDone(b, s);
         return;
     }
     char q[64];
@@ -1968,7 +1980,7 @@ void removeShown(Bbs& b, Session& s) {
     uint32_t n = g_shown[sl];
     if (forum == 0xFF || !n || !mayMod(s, forum)) {
         notice(s, g_cMark, "--> You cannot remove messages here.");
-        prompt(b, s);
+        noticeDone(b, s);
         return;
     }
     if (!removeMessage(forum, n)) {
@@ -2004,7 +2016,7 @@ void jumpTo(Bbs& b, Session& s, uint32_t num) {
         uint8_t n = visibleForums(s, vis, kMaxForums);
         if (num >= 1 && num <= n) { drawSubjects(b, s, vis[num - 1]); return; }
         notice(s, g_cMark, "--> No forum with that number.");
-        prompt(b, s);
+        noticeDone(b, s);
         return;
     }
     // The table may belong to another caller by now. Rescan rather than
@@ -2023,7 +2035,7 @@ void jumpTo(Bbs& b, Session& s, uint32_t num) {
         }
     }
     notice(s, g_cMark, "--> No subject with that number.");
-    prompt(b, s);
+    noticeDone(b, s);
 }
 
 void onKey(Session& s, int key, uint32_t) {
@@ -2040,7 +2052,7 @@ void onKey(Session& s, int key, uint32_t) {
         g_ask[sl] = AskNone;
         if (key == 'y' || key == 'Y') { removeShown(b, s); return; }
         notice(s, g_cMark, "--> Kept.");
-        prompt(b, s);
+        noticeDone(b, s);
         return;
     }
 

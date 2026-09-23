@@ -293,6 +293,10 @@ bool userInfo(uint32_t& total, uint32_t& used) {
     return true;
 }
 
+// Nothing kept on the host: summing a directory costs nothing here, which is
+// exactly why the board's cost never showed up in a host test.
+void fsInfoStale() {}
+
 void log(const char* fmt, ...) {
     timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);

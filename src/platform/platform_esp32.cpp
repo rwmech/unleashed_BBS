@@ -74,12 +74,51 @@ const char* userBase() {
     return BBS_USER_BASE;
 }
 
-bool userInfo(uint32_t& total, uint32_t& used) {
-    size_t t = 0, u = 0;
-    if (esp_littlefs_info(BBS_USER_LABEL, &t, &u) != ESP_OK) return false;
-    total = static_cast<uint32_t>(t);
-    used  = static_cast<uint32_t>(u);
+// ---------------------------------------------------------------------------
+// LittleFS free space, remembered.
+//
+// esp_littlefs_info calls lfs_fs_size, which walks every block of every file
+// (esp_littlefs.c:313 in the 1.22.3 component). On the board that is about
+// 85 ms a partition with the BBS loop stopped: SYS asked for two and froze
+// every caller for 170 ms, and DASH asked once a second. Rob felt it as "slow
+// after BYE", because the sysop is who opens those screens. The host sums a
+// few file sizes on Linux, so no host test could ever have shown it.
+//
+// So each figure is taken once and kept. The screens partition changes only
+// when a backup restore or a filesystem upload rewrites it, and a restore
+// calls fsInfoStale(). User data changes whenever anybody does anything, but
+// its figure only feeds free-space displays and the plugins' reserve guard,
+// and a figure up to a minute old serves both: the guard holds 32 KB back,
+// and nothing a caller writes in a minute comes near that.
+// ---------------------------------------------------------------------------
+struct LfsFigure { uint32_t total = 0, used = 0, at = 0; };
+static LfsFigure g_userFig, g_dataFig;
+static constexpr uint32_t kUserInfoMs = 60000;
+
+// lfsInfo: the kept figure, taken again when it is older than maxAgeMs
+// (0 means keep it until fsInfoStale says otherwise).
+static bool lfsInfo(const char* label, LfsFigure& f, uint32_t maxAgeMs,
+                    uint32_t& total, uint32_t& used) {
+    uint32_t now = millis();
+    if (!f.at || (maxAgeMs && now - f.at >= maxAgeMs)) {
+        size_t t = 0, u = 0;
+        if (esp_littlefs_info(label, &t, &u) != ESP_OK) return false;
+        f.total = static_cast<uint32_t>(t);
+        f.used  = static_cast<uint32_t>(u);
+        f.at    = now ? now : 1;
+    }
+    total = f.total;
+    used  = f.used;
     return true;
+}
+
+void fsInfoStale() {
+    g_dataFig.at = 0;
+    g_userFig.at = 0;
+}
+
+bool userInfo(uint32_t& total, uint32_t& used) {
+    return lfsInfo(BBS_USER_LABEL, g_userFig, kUserInfoMs, total, used);
 }
 
 const char* fsBase() {
@@ -125,11 +164,7 @@ HeapStats heap() {
 }
 
 bool fsInfo(uint32_t& total, uint32_t& used) {
-    size_t t = 0, u = 0;
-    if (esp_littlefs_info(BBS_FS_LABEL, &t, &u) != ESP_OK) return false;
-    total = static_cast<uint32_t>(t);
-    used  = static_cast<uint32_t>(u);
-    return true;
+    return lfsInfo(BBS_FS_LABEL, g_dataFig, 0, total, used);   // see userInfo
 }
 
 // ---------------------------------------------------------------------------

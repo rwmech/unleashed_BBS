@@ -628,6 +628,14 @@ extern "C" void app_main(void) {
     fsMount(BBS_FS_LABEL, BBS_FS_MOUNT);
     fsMount(BBS_USER_LABEL, BBS_USER_BASE);
     fsMount(BBS_LOGS_LABEL, BBS_LOGS_MOUNT);
+    // Take the free-space figures now, while there is nobody to stall. Each
+    // one walks its whole partition; after this the board keeps them, and a
+    // SYS or DASH reads the kept figure rather than paying the walk.
+    {
+        uint32_t t = 0, u = 0;
+        plat::fsInfo(t, u);
+        plat::userInfo(t, u);
+    }
     syscfg::load();          // hostname, TZ, NTP, staff passwords, limits, backup window
     wifiStart();
 

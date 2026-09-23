@@ -14,6 +14,7 @@
 [1;36mDROP-INS [1;32m@@SPIN@@[0;37m a short spinner    [1;32m@@DOTS@@[0;37m dots, one by one  [1;32m@@NOISE@@[0;37m line noise
 [0;37m         [1;32m@@RULE@@[0;37m a line to the edge [1;32m@@BELL@@[0;37m rings the bell, once a message
 [1;36mFILL-INS [1;32m@@BOARD@@[0;37m this board's name [1;32m@@DATE@@[0;37m [1;32m@@TIME@@[0;37m the moment it is read
+[0;37m         Type FX at the prompt to see each effect run, with its code.
 
 [1;32m@@@@[0;37m prints one @@. Anything that is not a code prints as typed, so an email
 [0;37maddress is fine. Codes past 8 in a message, and effects over 40 characters,

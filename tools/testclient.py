@@ -3046,6 +3046,8 @@ def test_codes_in_messages():
         drain(b)
     ok &= check("CODES at the prompt explains them",
                 b"@BLINK" in plain(b.buf) or b"BLINK" in plain(b.buf))
+    ok &= check("and points at FX to see them move (Rob, 0.22.2)",
+                b"Type FX at the prompt" in plain(b.buf))
     ok &= check("without ringing the bell it describes", b"\x07" not in b.buf)
 
     if os.environ.get("BBS_SD_DIR", ""):
@@ -3096,6 +3098,34 @@ def test_codes_in_messages():
             m.close()
     a.close()
     b.close()
+    return ok
+
+
+def test_fx_codes():
+    """FX shows the message code beside each effect it demonstrates.
+
+    Rob, 0.22.2: "In the FX, you should put the codes for the FX on that
+    page too". The demo is the one place a caller sees the effects move, so
+    it is also where they learn what to type. Checked at 80 columns, where
+    the code follows the effect, and that no row runs past the edge.
+    """
+    print("FX shows the codes")
+    c = ansi_login("FxWatcher")
+    drain(c)
+    c.buf.clear()
+    c.send(b"fx\r")
+    done = c.wait_for(b"Demo complete.", 60)
+    c.pump(1.0)
+    seen = plain(c.buf)
+    ok = check("the demo runs to the end", done)
+    ok &= check("each effect with a message code shows it",
+                all(code in seen for code in (b"@TYPE:text@", b"@DOTS@", b"@SPIN@",
+                                              b"@OOPS:text@", b"@SCRAMBLE:text@",
+                                              b"@NOISE@", b"@BLINK:text@", b"@BELL@")))
+    ok &= check("and it ends by pointing at CODES", b"See CODES" in seen)
+    ok &= check("nothing runs past the right edge at 80 columns",
+                max_column(bytes(c.buf)) <= 80)
+    c.close()
     return ok
 
 
@@ -3624,6 +3654,21 @@ def blank_before(buf, needle):
     return False
 
 
+def blank_after(buf, needle):
+    """Is the line containing needle followed by a blank line and then more?
+
+    The other half of blank_before. Rob, 0.22.2, a screenshot of the end of a
+    subject: the notice sat directly on the reading prompt, and the existing
+    check passed over it because it only ever looked above the notice.
+    """
+    lines = screen_lines(buf)
+    for i, ln in enumerate(lines):
+        if needle in ln:
+            return (i + 2 < len(lines) and lines[i + 1].strip() == b""
+                    and lines[i + 2].strip() != b"")
+    return False
+
+
 def subject_number(buf, name):
     """The number the subject list shows for a subject, or None."""
     m = re.search(rb"(\d+) +" + re.escape(name.encode() if isinstance(name, str) else name),
@@ -3906,6 +3951,17 @@ def test_forums():
     s.pump(1.2)
     ok &= check("and Enter walks the conversation rather than stopping dead",
                 b"Nothing new here" not in plain(s.buf))
+    # Rob, 0.22.2: past the last message, with nothing else new, the notice
+    # sat directly on the reading prompt. It has to be checked HERE, where the
+    # prompt follows the notice; where reading rolls on to another message
+    # the same check passes on the broken code, which is how the first draft
+    # of it proved nothing.
+    s.buf.clear()
+    s.send(b"\r")
+    s.pump(1.2)
+    ok &= check("'Nothing else new here' is set off from the reading prompt",
+                b"Nothing else new here" in plain(s.buf)
+                and blank_after(s.buf, b"Nothing else new here"))
     s.buf.clear()
     s.send(b"q")
     s.pump(1.0)
@@ -6502,7 +6558,7 @@ GROUPS = {
     # Anything that reads or writes the card.
     "storage":   ["files", "forums", "sd", "xfer", "backup"],
     # The shell, its lists and the screens the core draws.
-    "shell":     ["menus", "sysinfo", "page", "about", "config", "welcome", "paced", "seeded"],
+    "shell":     ["menus", "sysinfo", "page", "about", "config", "welcome", "paced", "seeded", "fx_codes"],
     # Logging in, accounts, staff.
     "login":     ["accounts", "handle_case", "guest", "sysop", "cosysop", "user_admin", "ban"],
     # Terminal handling across the three flavours.
@@ -6526,7 +6582,7 @@ ORDER_NAMES = [
     "test_user_admin", "test_guest",
     "test_privacy", "test_plugins", "test_about", "test_announce",
     "test_chat", "test_room_commands", "test_room_new_commands", "test_room_quit_logoff",
-    "test_room_time_staff_only", "test_bell", "test_codes_in_messages", "test_room_narrow_effects",
+    "test_room_time_staff_only", "test_bell", "test_codes_in_messages", "test_fx_codes", "test_room_narrow_effects",
     "test_long_help",
     "test_info_pages",
     "test_mail", "test_prompt_survives_notice", "test_menus", "test_sysinfo", "test_config", "test_serial",

@@ -1200,6 +1200,12 @@ void mailBoxDraw(Session& s, bool clear) {
         // of filesystem traversals per keypress on the BBS task. The from
         // column is as wide as the widest sender in THIS box rather than a
         // frozen 20, because that is what buys a preview at 40 columns.
+        // Timed, because opening the mailbox cost 186 ms on the board
+        // (0.22.1, SYS "Loop worst ... node 1, MAIL") and nothing in this
+        // code explains that much: two passes over a file of at most 64
+        // records. The host cannot show a flash cost, so the board says
+        // where it went, the way the loop's own slow-pass line does.
+        uint32_t t0 = plat::micros();
         char path[96];
         bool have = mailReadPath(path, sizeof(path));
         uint8_t fromW = 1;
@@ -1215,6 +1221,7 @@ void mailBoxDraw(Session& s, bool clear) {
             }
             if (f) fclose(f);
         }
+        uint32_t t1 = plat::micros();
         uint8_t w = b.rowWidth(s);
         int previewW = static_cast<int>(w) - 1 - 2 - 1 - fromW - 1 - 6 - 2;
         FILE* f = have ? fopen(path, "rb") : nullptr;
@@ -1257,6 +1264,12 @@ void mailBoxDraw(Session& s, bool clear) {
             t.nl(tl);
         }
         if (f) fclose(f);
+        uint32_t t2 = plat::micros();
+        if (t2 - t0 > 20000u)
+            plat::log("chat: mailbox for %s took %lu us: sizing pass %lu, drawing pass %lu, %u rows",
+                      s.user, static_cast<unsigned long>(t2 - t0),
+                      static_cast<unsigned long>(t1 - t0), static_cast<unsigned long>(t2 - t1),
+                      static_cast<unsigned>(n));
     }
     b.rowRule(s);
     mailSay(s, Color::Grey, b.rowWidth(s) >= 60

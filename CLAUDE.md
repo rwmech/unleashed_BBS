@@ -179,6 +179,43 @@ concept for a sysop to learn.
 - **The seeded screens fix** (queued below).
 - **Deferred:** the sysop page.
 
+## Road to 1.0.0 and a public repo (Rob, 2026-09-23)
+
+Rob: "we're at a release milestone and can make the main repo public ...
+most of the new work I think can easily be done as a post 1.0.0 release."
+
+- **First boot, Rob's design.** Wi-Fi by Improv. The board ships with ONE
+  published default password, the sysop's; co-sysops stay off until set.
+  The first account registered on a board still on the default, from a
+  local address, is asked for the sysop password "to continue configuring
+  this BBS"; the right one elevates and opens `CONFIG staff` to choose a
+  real one, then a paged `screens/newsysop.*` walks the rest of CONFIG.
+  **The default works only from a local address and only while it is the
+  default** (my addition, not objected to): from outside it is a wrong
+  password. The default lives in the firmware, used only when system.cfg
+  has no `sysop_password` line at all, so a present-but-empty line still
+  means staff disabled and `storage.bin` carries no password (the
+  directory's self-test fails a release that does).
+- **Web "Set up your BBS" section** (web agent): every CONFIG page, line
+  graphics, screenshots captured from the host build on 127.0.0.1 unless
+  Rob says his live board.
+- **Build pipeline**: tag `vX.Y.Z` -> GitHub Action (PlatformIO, fresh
+  checkout, so no secrets.h or data/system.cfg can exist) -> GitHub Release
+  with the five bins and notices -> `update.sh` on the droplet pulls the
+  latest release into `firmware/<ver>/esp32/` -> `/install` serves it
+  same-origin. `tools/release.py` does the same locally.
+- **Before public**: history checked, no password in any of 95 commits
+  (the SSID appears 4 times, in notes here); every commit carries
+  QuantumGithub@pm.me; CLAUDE.md, `reports/` and `.claude/agents/` would go
+  public as they are (Rob to decide).
+- **Before 1.0.0**: the first-boot flow and NEWSYSOP; the release pipeline;
+  a stack audit and a bigger BBS task stack (low-water 1,440 bytes, and an
+  overflow reboots); `CONFIG_ESP_TASK_WDT_PANIC` so a wedged board reboots;
+  pages, broadcasts and SHUTDOWN reaching callers inside plugins; the
+  backup zip limit against the 256 KB staging partition; the COMMANDS.md
+  staff table and the PLUGINS.md hook table.
+- Everything else in the queue is post-1.0.
+
 **0.22.1 is Improv**, built to NEXT.md part 3 and committed together with
 0.22.0 (`9f6d65d`). Flashed by Rob; **Improv verified on hardware
 2026-09-23**, provisioned from a browser first try. Nothing else in 0.22.x
@@ -1423,8 +1460,9 @@ Still open on serial: autoprobe (listen at each common speed and score framing e
 
 Queued for the next build (Rob's plan, in order):
 
-- **Bug batch after 0.22.1** (Rob, on the board, 2026-09-23; queued, not
-  worked). Collect here and fix together in one build:
+- **Bug batch after 0.22.1: DONE in 0.22.3**, except where an item says
+  otherwise (MAIL's 186 ms is instrumented, not fixed; the stack low-water
+  is open). Kept for the reasoning; CHANGELOG 0.22.3 has what changed.
   - **No blank line between the end-of-subject notice and the reading
     prompt.** Screenshot: `--> That is the end of that subject. Nothing
     else new here.` followed directly by `[R]eply  [Enter] Next  [P]ost

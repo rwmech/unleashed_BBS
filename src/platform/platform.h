@@ -87,8 +87,14 @@ const char* logsBase();
 const char* userBase();
 
 // userInfo: size and used bytes of that partition, for the space a plugin
-// is allowed to claim. False when the platform cannot tell.
+// is allowed to claim. False when the platform cannot tell. The figure may
+// be up to a minute old: measuring it on LittleFS walks the whole partition
+// with the loop stopped, so it is measured once and kept.
 bool userInfo(uint32_t& total, uint32_t& used);
+
+// fsInfoStale: forget the kept free-space figures, after something rewrote a
+// partition wholesale (a backup restore). The next ask measures again.
+void fsInfoStale();
 
 // ---------------------------------------------------------------------------
 // heap: heap statistics for MEM command and per-session measurement

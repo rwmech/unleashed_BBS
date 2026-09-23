@@ -24,6 +24,46 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.22.3, 2026-09-23
+
+The bug batch from Rob's first session on 0.22.1.
+
+- **Staff screens no longer freeze the board.** `esp_littlefs_info` walks
+  every block of every file (esp_littlefs.c:313 in the 1.22.3 component),
+  about 85 ms a partition with the loop stopped; SYS asked for two, DASH for
+  one every second, and every plugin write paid one in its reserve guard.
+  The platform keeps each figure now: taken at boot, the screens partition
+  kept until a backup restore says otherwise, user data refreshed at most
+  once a minute. Rob's serial log is what named it: every slow pass after
+  the BYE was `node 0 SYS`, 169-170 ms, four of four.
+- **An effect is never split by the editor's wrap.** The wrap broke at the
+  space inside `@BLINK:Special Effects@`, the halves were stored as two
+  lines, and both printed as typed. `compose::wrapPoint` carries an open
+  effect whole; forums, mail and the info pages all share it. Chat never
+  had the bug (one line, wrapped only at the reader). Four unit checks.
+- **A blank line between a notice and the reading prompt**, at every site
+  with that shape (13), not only the end-of-subject one in Rob's
+  screenshot. The check sits where the prompt follows the notice; the first
+  draft checked where reading rolls on to a message, passed on the broken
+  code, and was moved.
+- **FX shows the message code beside each effect it demonstrates**, on the
+  same line at 80 columns and under it at 40, and ends by pointing at
+  CODES; **the CODES screen points at FX** in all three flavours. New
+  `test_fx_codes`.
+- **MAIL logs its own timing** when the mailbox takes over 20 ms, split into
+  the sizing and drawing passes. It cost 186 ms on the board and nothing in
+  the code explains that much; the host cannot show a flash cost, so the
+  next serial log will say where it went. The 118 ms login in the same log
+  is the deliberate 1,000-round password hash (it started about 80 ms before
+  the login line), budgeted at under 100 ms; left alone.
+- A stale AddressSanitizer build of `test_codes` looped on the known WSL
+  DEADLYSIGNAL problem in 9 runs of 20 and looked like a hang. Its sources
+  had not changed, so make never rebuilt it. Rebuilt plainly; stable.
+- Targeted runs only this round, as Rob asked: messaging, shell and storage
+  with a card (499 passed), messaging without one (172 passed), unit tests
+  clean. Static DRAM 176,880 of 180,736 (3,856 free). Flash 74.8%.
+- Not on hardware.
+
 ## 0.22.2, 2026-09-23
 
 No code change: the version moves because every commit gets one. Records
