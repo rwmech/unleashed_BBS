@@ -2139,6 +2139,14 @@ void Bbs::cmdBye(Session& s, const char* arg, uint32_t now) {
         plat::log("bbs: node %s guest BYE with an argument: plain logoff", nodeName(s).t);
     } else if (*arg && s.role != Role::Sysop && syscfg::anyPassword()) {
         Access lv = syscfg::passwordLevel(arg);
+        // The published default is honoured from the board's own network
+        // only. From anywhere else it is a wrong password, ban count and
+        // all, because anybody can read it on the install page.
+        if (lv == Access::Sysop && syscfg::get().sysopDefault && !localAddr(s.ip)) {
+            plat::log("bbs: node %s default sysop password refused from %s (not local)",
+                      nodeName(s).t, s.ip);
+            lv = Access::None;
+        }
         if (lv != Access::None) {
             bans_.clear(s.ipAddr);
             if (lv == Access::Sysop) { elevate(s, now); return; }

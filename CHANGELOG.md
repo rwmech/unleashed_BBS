@@ -24,6 +24,57 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 0.23.0, 2026-09-23
+
+The web installer's firmware: a board flashed by somebody else can be set
+up by them. Rob's design, built to be flashed from /install and tested
+there before 1.0.0.
+
+- **One published default sysop password, `unleashed`**, used only while
+  `system.cfg` has no `sysop_password` line at all (a present-but-empty line
+  still means no sysop). Honoured only from the board's own network: from
+  anywhere else `BYE unleashed` is a wrong password, ban count and all.
+  Co-sysop passwords stay blank, and blank cannot be logged in with.
+- **The setup flow.** Any caller on the local network who logs in or
+  registers while the board is on the default is asked for the sysop
+  password, no BYE needed. The right one makes them sysop, plays
+  `screens/setup`, opens `CONFIG staff`, and after that form plays the
+  paged `screens/newsysop` tour, then the prompt. A wrong one asks again;
+  Enter on nothing asks again; only ESC (the left arrow on a Commodore)
+  skips. The first draft let an empty Enter skip, and a stray Enter left
+  over from the sign-up form threw the setup away; the second dropped keys
+  typed while the question printed, and ate the first letters of the
+  password. Both were found by the test, not by reading.
+- **CONFIG refuses the published default as anybody's chosen password**:
+  written to the file it would stop being "the default" and work from
+  anywhere while still being on the install page.
+- **Announce holds the directory listing** while the default is set, and
+  ANNOUNCE and DASH say so.
+- **A set password field no longer keeps its mask** (found by the screen
+  artist): the eight stars sat in the buffer and typing appended to them,
+  so a sysop who did not backspace first saved `********newpass`. The
+  first key now replaces the value (`FF_REPLACE`). The setup test types
+  over the mask without backspacing and fails on 0.22.3.
+- **Four small CONFIG bugs** found by the web agent capturing the setup
+  guide's screens: the backup window and WHO max accepted values the parser
+  then ignored (both 1..60 now, as the parser says); plugin pages showed
+  `; comment` text as part of a value; the page list wrapped two rows at
+  40 columns; and `system.cfg.example` had stale comments.
+- `localAddr` counts `100.64/10` as local, matching the backup port, so a
+  sysop on Tailscale is local to both.
+- **Releases.** `esp32dev_release` builds with `BBS_RELEASE`, which ignores
+  `include/secrets.h` even when it is there. `tools/release.py` builds the
+  five images from `data/screens` only (never `data/system.cfg`), checks the
+  partition offsets against `partitions.csv`, searches every image for any
+  password or network name the machine knows and refuses on a match, builds
+  the licence notices from the exact packages used, and writes both the
+  flat GitHub Release assets with `SHA256SUMS` and the directory server's
+  `firmware/<ver>/esp32/` layout. Verified: both Wi-Fi values are in the
+  developer build and in neither release image. `.github/workflows/release.yml`
+  runs it on a `v*` tag and publishes the release.
+- New `test_first_setup` (11 checks), run by `tools/harness.sh --fresh`, a
+  board with no staff passwords.
+
 ## 0.22.3, 2026-09-23
 
 The bug batch from Rob's first session on 0.22.1.

@@ -51,7 +51,7 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "0.22.3"
+#define BBS_VERSION         "0.23.0"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // ---------------------------------------------------------------------------
@@ -186,6 +186,12 @@
 #define BBS_PASS_MAX        32
 #define BBS_PASS_ROUNDS     1000     // salted SHA-256 repeated
 #define BBS_LOGIN_TRIES     3        // wrong passwords per call, then hang up
+// The sysop password a board has before anybody sets one (1.0.0, Rob). It
+// is published on the install page, so it is honoured only from the board's
+// own network and only while system.cfg has no sysop_password line at all:
+// a present-but-empty line still means "no sysop". Nothing on the board will
+// store this value as a chosen password.
+#define BBS_DEFAULT_SYSOP   "unleashed"
 #define BBS_LOCK_SLOTS      8        // handles tracked for lockout (RAM)
 #define BBS_LOCK_FAILS      5        // wrong passwords per handle in the window
 #define BBS_LOCK_WINDOW_MS  900000   // 15 minutes

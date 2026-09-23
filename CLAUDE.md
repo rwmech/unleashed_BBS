@@ -205,9 +205,9 @@ most of the new work I think can easily be done as a post 1.0.0 release."
   latest release into `firmware/<ver>/esp32/` -> `/install` serves it
   same-origin. `tools/release.py` does the same locally.
 - **Before public**: history checked, no password in any of 95 commits
-  (the SSID appears 4 times, in notes here); every commit carries
-  QuantumGithub@pm.me; CLAUDE.md, `reports/` and `.claude/agents/` would go
-  public as they are (Rob to decide).
+  (the SSID appears 4 times, in notes here); every commit carries Rob's old
+  personal address as author, which is not to appear in any documented file
+  (Rob: QuantumGithub@pm.me is the address to use).
 - **Before 1.0.0**: the first-boot flow and NEWSYSOP; the release pipeline;
   a stack audit and a bigger BBS task stack (low-water 1,440 bytes, and an
   overflow reboots); `CONFIG_ESP_TASK_WDT_PANIC` so a wedged board reboots;
@@ -215,6 +215,75 @@ most of the new work I think can easily be done as a post 1.0.0 release."
   backup zip limit against the 256 KB staging partition; the COMMANDS.md
   staff table and the PLUGINS.md hook table.
 - Everything else in the queue is post-1.0.
+- **Found by the web agent capturing CONFIG screens (website 0.16.0), all
+  small, fix in the 1.0.0 build:**
+  - CONFIG accepts `backup_window_minutes` up to 120 and `who_refresh_max`
+    up to 240, but the parser accepts only 1..60 for both and silently keeps
+    the default. A count written beside a table again; derive the CONFIG
+    range from the parser's or share one constant.
+  - CONFIG plugin pages show `; comment` text inside values (announce,
+    chat): `cfgFileValue` does not strip a trailing `;` comment the way the
+    plugin parser does.
+  - At 40 columns the CONFIG page list wraps its `board` and `forums` rows.
+  - `data/system.cfg.example` comments are stale: max_users "1..100", and
+    mail "travels in a backup zip".
+- **Found by the screen artist, pre-existing, fix in the 1.0.0 build:** in a
+  cursor-mode CONFIG form, a password field that is already set holds the
+  eight mask stars in its buffer, and typing appends after them, so a sysop
+  who types a new password without backspacing first saves
+  `********newpass`. `configSave` only skips the field when it equals the
+  mask exactly. Clear a masked field on its first keystroke. The setup
+  flow sends every new sysop straight into this form, so it is a blocker.
+
+**Built in 0.23.0 (2026-09-23)**: the default password and first-boot
+setup flow, the screens, the mask fix, the four small CONFIG bugs, the
+release environment, `tools/release.py` and the GitHub Action. Goal set by
+Rob: "web installer running", and he flashes a fresh board from /install
+and tests everything before the repo goes public. Until then the repo is
+private, so the site's fetcher cannot reach GitHub: the first release is
+copied to the droplet by hand from `release/<ver>/install/`.
+Two lessons from building the flow, both found by the test: an empty Enter
+must not skip (a stray Enter from the sign-up form did), and keys typed
+while a question prints must not be dropped (that ate the password's first
+letters). And `PLATFORMIO_DATA_DIR` must be the same for every pio run in
+a release, or PlatformIO sees a changed project and wipes the build.
+
+**Supporters (Rob, 2026-09-23).** Buy Me a Coffee at
+buymeacoffee.com/unleashed_bbs. Supporters get posts and development news
+there; support never buys features or priority, and nothing in the
+software is paywalled. Thank-yous: a thanks list on /donate (by consent),
+a mention in the release notes, a supporters information page on Unleashed
+HQ, and for **lifetime members only**, credits on the stock ABOUT screen,
+which ships on every board. Queued for the firmware: a credits block on
+`screens/about.*` (tools/mkscreens.py) once there is a lifetime member to
+credit; none yet, so nothing to build until then.
+
+**Settled 2026-09-23 (Rob):**
+- Default sysop password **`unleashed`**, published on the flasher page with
+  the plain statement that it must be changed promptly once the board is on
+  the network, and that the board must not be made public (port forwarded,
+  listed) until it is. Local is a guard, not a wall; the page says so.
+- The setup offer applies to **any caller on the local network while the
+  board is unconfigured**, at registration or login, not only the first
+  account. They are asked for the sysop password in the flow; nobody has
+  to know to type `BYE <password>`. Everyone else just registers.
+- Co-sysop passwords stay blank. Verified in the code that blank cannot be
+  logged in with: `passwordLevel` refuses an empty candidate and `ctEqual`
+  never matches an empty stored password.
+- A setup screen in front of `CONFIG staff`: first time here, change the
+  password, some encouragement, and what happens next.
+- Announce does not list a board still on the default password.
+- `reports/` moves to `internal/` (working notes, public but labelled);
+  scrub sensitive details. Nothing documented carries the gmail address;
+  **QuantumGithub@pm.me** is the address (both repos' local git config set
+  2026-09-23). History is rewritten once, just before going public, to
+  carry that address; Rob does not mind new hashes and wants no history
+  lost, so it is a mailmap rewrite with a backup bundle first.
+- Versions: the stack audit and the watchdog reboot in **1.0.1**; real bugs
+  such as notices not reaching callers inside plugins in **1.0.2** unless
+  critical; backup and restore via SD, with production boards recommended
+  to have a card, in **1.1.0**. The docs cleanup is part of **1.0.0**.
+  Report the blockers cleared at the promotion to 1.0.0.
 
 **0.22.1 is Improv**, built to NEXT.md part 3 and committed together with
 0.22.0 (`9f6d65d`). Flashed by Rob; **Improv verified on hardware

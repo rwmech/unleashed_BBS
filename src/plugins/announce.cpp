@@ -603,6 +603,11 @@ void service(uint32_t now) {
 
 void tick(uint32_t now) {
     if (g_stage != Stage::Idle) { service(now); return; }
+    // Held while the sysop password is still the published default (Rob,
+    // 1.0.0). A listed board is one strangers will call, and the default is
+    // on the install page; the board stays off the list until it is changed.
+    // A post already under way finishes above; nothing new starts.
+    if (syscfg::get().sysopDefault) return;
     if (g_at < g_count) { startPost(now); return; }          // more directories to do
     if (!g_count || !g_nextRun) return;
     if (static_cast<int32_t>(now - g_nextRun) < 0) return;
@@ -623,6 +628,13 @@ void showStatus(Bbs& b, Session& s) {
     t.color(tl, Color::Cyan);
     t.text(tl, "Announce");
     t.nl(tl);
+    if (syscfg::get().sysopDefault) {
+        t.color(tl, Color::Yellow);
+        t.text(tl, "Held: the sysop password is still the default.");
+        t.nl(tl);
+        t.text(tl, "CONFIG staff changes it; listing starts after.");
+        t.nl(tl);
+    }
     if (!g_count) {
         t.color(tl, Color::LightRed);
         t.text(tl, "No directory servers configured.");
@@ -751,6 +763,7 @@ bool start(Bbs& bbs) {
 const char* status() {
     static char line[64];
     if (!g_count) return nullptr;
+    if (syscfg::get().sysopDefault) return "Directory: held, the sysop password is the default";
     if (g_state[0] && g_publicIn) {
         snprintf(line, sizeof(line), "Directory: %.8s, public in %uh%02um  %u sent", g_state,
                  static_cast<unsigned>(g_publicIn / 3600u),

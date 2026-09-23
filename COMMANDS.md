@@ -194,6 +194,7 @@ Log in with your account as usual, then type `BYE <password>` at the command pro
 - A wrong password is an ordinary logoff. 3 wrong passwords from one IP within 15 minutes ban that IP for 15 minutes; banned connections are dropped silently.
 - Guests can't elevate: from a guest, `BYE <password>` is a plain logoff whatever the password. Staff log in with their account first.
 - An empty password in `system.cfg` disables that level.
+- **A new board** has no `sysop_password` line, so the published default `unleashed` stands in, and only from the board's own network. A caller on that network who logs in or signs up is asked for it right away and walked through `CONFIG staff` and a short tour; nobody needs to know about `BYE`. ESC (the left arrow on a Commodore) skips the question. `CONFIG staff` will not accept `unleashed` as a chosen password, and the directory listing waits until a real one is set. See README.md, "First boot".
 
 ### Staff commands
 

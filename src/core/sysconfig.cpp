@@ -334,7 +334,8 @@ void logSummary() {
             plat::log("cfg: %s has a ' #' in it; since 0.22.1 that is part of the value, not a comment",
                       keys[i]);
     plat::log("cfg: sysop %s  co1 %s perms 0x%03x  co2 %s perms 0x%03x",     // never the passwords
-              g_cfg.sysopPass[0] ? "on" : "off",
+              g_cfg.sysopDefault ? "on the published default, local network only"
+                                 : g_cfg.sysopPass[0] ? "on" : "off",
               g_cfg.coPass[0][0] ? "on" : "off", g_cfg.coPerms[0],
               g_cfg.coPass[1][0] ? "on" : "off", g_cfg.coPerms[1]);
 }
@@ -346,15 +347,26 @@ namespace syscfg {
 // ---------------------------------------------------------------------------
 // parseFile: key=value lines and the [access] section
 // ---------------------------------------------------------------------------
+// useDefaultSysop: no sysop_password line anywhere, so the board is fresh
+// and the published default stands in (see BBS_DEFAULT_SYSOP).
+static void useDefaultSysop(SysConfig& out) {
+    copyStr(out.sysopPass, sizeof(out.sysopPass), BBS_DEFAULT_SYSOP);
+    out.sysopDefault = true;
+}
+
 int parseFile(const char* path, SysConfig& out, char* err, size_t errLen) {
     Ctx c{ &out, 0, err, errLen, 0 };
     if (err && errLen) err[0] = '\0';
     FILE* f = fopen(path, "r");
-    if (!f) return 0;                               // no file: defaults, not a problem
+    if (!f) {                                       // no file: defaults, not a problem
+        useDefaultSysop(out);
+        return 0;
+    }
 
     char line[160];
     bool inAccess = false;
     bool inPlugin = false;
+    bool sawSysop = false;                          // any sysop_password line at all
     while (fgets(line, sizeof(line), f)) {
         ++c.lineNo;
         if (!strchr(line, '\n') && !feof(f)) {      // overlong line: skip the rest of it
@@ -381,10 +393,12 @@ int parseFile(const char* path, SysConfig& out, char* err, size_t errLen) {
         *eq = '\0';
         char* key = trim(l);
         char* val = trim(eq + 1);
+        if (!strcmp(key, "sysop_password")) sawSysop = true;   // even redacted, even empty
         if (!strcmp(val, "***")) continue;          // redacted password: keep what is set
         keyValue(c, key, val);
     }
     fclose(f);
+    if (!sawSysop) useDefaultSysop(out);
     if (out.whoMin > out.whoMax) {
         c.lineNo = 0;
         problem(c, "who_refresh_min is above who_refresh_max", "");

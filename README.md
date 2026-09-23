@@ -143,6 +143,19 @@ Commands come from a registry (`Command` tables); the menus, dispatch and permis
 
 This section used to carry a per-version snapshot (host test counts, image size, heap free) and it went eleven versions without being touched, which is exactly the kind of number nobody should trust on sight. That detail belongs in [CHANGELOG.md](CHANGELOG.md), which is kept current with every build, and in the size reports under `reports/` for whoever wants the measured RAM and flash figures rather than a stale one.
 
+### First boot: the sysop password
+
+- A new board has one published default password, the sysop's: `unleashed`. It is used only while `system.cfg` has no `sysop_password` line at all, and it works only from the board's own network (RFC 1918, link-local, loopback and `100.64/10`). From anywhere else it is a wrong password.
+- Log in or sign up from a computer on the same network and the board asks for it straight away: "This board has not been set up yet." The right password makes you the sysop, shows a short setup screen, opens `CONFIG staff` to choose your own, then gives a paged tour of the rest of CONFIG. ESC (the left arrow on a Commodore) skips, and `BYE <password>` from the same network does it later.
+- The board refuses the published default as anybody's chosen password, and it keeps itself out of the directory listing until the default is changed.
+- Do not forward the port or switch on the directory listing until you have set your own. "Local only" is a guard, not a wall: a router that rewrites the source of forwarded traffic can make an outside caller look local.
+
+## Releases
+
+- Tag `v<BBS_VERSION>` and `.github/workflows/release.yml` builds the release on a fresh checkout with `tools/release.py` and publishes it as a GitHub Release. The directory server's `deploy/update.sh` fetches the newest one, checks every file against `SHA256SUMS`, and `/install` offers it.
+- `python3 tools/release.py --allow-dirty` builds the same thing locally, to test before tagging. It writes `release/<version>/assets/` (the GitHub Release files) and `release/<version>/install/` (the directory server's `firmware/<version>/` layout, for copying across by hand).
+- A release never carries anybody's network or passwords: the `esp32dev_release` environment ignores `include/secrets.h`, the screens image is built from `data/screens` only, and `release.py` searches every image for any password or network name the machine knows and refuses on a match.
+
 ## Build and flash (PlatformIO)
 
 First time on a board:

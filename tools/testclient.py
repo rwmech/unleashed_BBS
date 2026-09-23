@@ -188,6 +188,11 @@ def config_num(name, fallback):
 
 BBS_VERSION = bbs_version()
 MAX_NODES   = config_num("BBS_MAX_NODES", 6)
+# The published default sysop password, read from the firmware so the suite
+# cannot drift from what the install page tells people.
+_dflt = re.search(r'#define\s+BBS_DEFAULT_SYSOP\s+"([^"]*)"',
+                  (ROOT / "src" / "config.h").read_text())
+BBS_DEFAULT = _dflt.group(1) if _dflt else "unleashed"
 PASSWORD = cfg_value("sysop_password")
 CO1 = cfg_value("cosysop1_password")
 CO2 = cfg_value("cosysop2_password")
@@ -3098,6 +3103,80 @@ def test_codes_in_messages():
             m.close()
     a.close()
     b.close()
+    return ok
+
+
+def test_first_setup():
+    """A fresh board sets itself up for a caller on its own network (1.0.0).
+
+    Rob's design: the board ships with the published default sysop password,
+    any caller on the local network is asked for it at the end of logging in
+    or registering, and the right one leads through a setup screen, the staff
+    passwords form and a tour, without anybody having to know about BYE.
+    Needs a board with no sysop_password line, which is what
+    tools/harness.sh --fresh stands up; on the ordinary test board, whose
+    config sets a sysop password, the offer must never appear.
+    """
+    print("First-boot setup")
+    if not os.environ.get("BBS_FRESH"):
+        c = ansi_login("NotFreshOne")
+        ok = check("a configured board offers no setup", b"not been set up" not in plain(c.buf))
+        c.close()
+        return ok
+
+    c = Caller(ansi=True)
+    c.wait_for(b"Enter your handle", 10)
+    ok = check("a new caller registers", login(c, "OwnerOne", wait_main=False))
+    ok &= check("a local caller on an unconfigured board is offered setup",
+                c.wait_for(b"has not been set up yet", 8) and c.wait_for(b"Sysop password", 4))
+    c.buf.clear()
+    c.send(b"nope\r")
+    ok &= check("a wrong password asks again rather than hanging up",
+                c.wait_for(b"That is not it", 5) and c.wait_for(b"Sysop password", 4))
+    c.buf.clear()
+    c.send(b"unleashed\r")
+    ok &= check("the default makes them the sysop", c.wait_for(b"SysOp node", 6))
+    for _ in range(6):                               # the setup screen, however many pages
+        if b"STAFF PASSWORDS" in plain(c.buf):
+            break
+        if b"Press SPACE" in plain(c.buf) or b"PRESS SPACE" in plain(c.buf):
+            c.buf.clear()
+            c.send(b" ")
+        c.pump(1.0)
+    ok &= check("and the staff passwords form opens by itself",
+                c.wait_for(b"STAFF PASSWORDS", 10))
+    c.buf.clear()
+    # Typed straight over the stars, no backspace first: the first key has to
+    # replace the mask. On 0.22.3 it appended, and this would have saved
+    # "********unleashed" and sailed past the check below.
+    c.send(BBS_DEFAULT.encode() + F1)
+    ok &= check("the published default cannot be chosen, typed over the mask",
+                c.wait_for(b"is published", 5))
+    c.buf.clear()
+    c.send(b"\x08" * 12 + b"fresh1234" + F1)
+    ok &= check("a password of their own saves", c.wait_for(b"Saved", 6))
+    for _ in range(12):                              # the tour, page by page
+        if b"Sysop:" in plain(c.buf):
+            break
+        if b"Press SPACE" in plain(c.buf) or b"PRESS SPACE" in plain(c.buf):
+            c.buf.clear()
+            c.send(b" ")
+        c.pump(1.0)
+    ok &= check("the tour ends at the sysop prompt", b"Sysop:" in plain(c.buf))
+    if HOST in ("127.0.0.1", "localhost"):
+        cfg = (USERDATA / "system.cfg").read_text()
+        ok &= check("the chosen password is written", "sysop_password = fresh1234" in cfg)
+    c.buf.clear()
+    c.send(b"announce\r")
+    c.pump(1.5)
+    ok &= check("and the directory listing is no longer held",
+                b"Held" not in plain(c.buf))
+    c.close()
+
+    d = ansi_login("LaterOne")
+    ok &= check("once set up, nobody is offered setup again",
+                b"not been set up" not in plain(d.buf))
+    d.close()
     return ok
 
 
@@ -6560,7 +6639,7 @@ GROUPS = {
     # The shell, its lists and the screens the core draws.
     "shell":     ["menus", "sysinfo", "page", "about", "config", "welcome", "paced", "seeded", "fx_codes"],
     # Logging in, accounts, staff.
-    "login":     ["accounts", "handle_case", "guest", "sysop", "cosysop", "user_admin", "ban"],
+    "login":     ["accounts", "handle_case", "guest", "sysop", "cosysop", "user_admin", "first_setup", "ban"],
     # Terminal handling across the three flavours.
     "terminal":  ["ansi", "petscii", "ascii", "telnet_first"],
 }
@@ -6599,7 +6678,7 @@ ORDER_NAMES = [
     "test_mail_compose",
     "test_forums", "test_forums_remove", "test_forums_scan_staff", "test_config_forum_levels", "test_partitions",
     # Destructive, and therefore last whatever else is running:
-    "test_backup", "test_ban",
+    "test_first_setup", "test_backup", "test_ban",
 ]
 
 

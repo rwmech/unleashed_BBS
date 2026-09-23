@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# ===========================================================================
+#  µnleashed BBS: release on a version tag
+#
+#  Push a tag v<BBS_VERSION> and this builds the release with
+#  tools/release.py on a fresh checkout and publishes it as a GitHub Release.
+#  The directory server's deploy/update.sh fetches the newest release from
+#  there, checks it against SHA256SUMS, and the web installer offers it.
+#
+#  A fresh checkout is the point: include/secrets.h and data/system.cfg are
+#  git-ignored, so they cannot exist here, and the release environment
+#  ignores secrets.h anyway. release.py still searches every image for
+#  anything that looks like a password before it lets the files out.
+# ===========================================================================
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write            # to create the release and upload its assets
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini', 'src/idf_component.yml') }}
+
+      - name: PlatformIO
+        run: pip install platformio
+
+      - name: Build and check the release
+        run: python3 tools/release.py --tag "${GITHUB_REF_NAME}"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          gh release create "${GITHUB_REF_NAME}" release/"${ver}"/assets/* \
+            --title "µnleashed BBS ${ver}" \
+            --notes "Flash it from https://unleashedbbs.com/install. SHA256SUMS lists every file."

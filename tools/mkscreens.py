@@ -12,8 +12,9 @@ Module:       Tools / stock screen generator
 Purpose:      Generates the stock µnleashed BBS display files in data/screens/:
                  welcome.seq/.ans/.asc, busy.seq/.ans/.asc,
                  goodbye.seq/.ans/.asc, about.seq/.ans/.asc,
-                 files.seq/.ans/.asc, codes.seq/.ans/.asc. No motd ships:
-                 add motd.asc/.ans/.seq to show one after login.
+                 files.seq/.ans/.asc, codes.seq/.ans/.asc, and the first
+                 boot pair setup.seq/.ans/.asc and newsysop.seq/.ans/.asc.
+                 No motd ships: add motd.asc/.ans/.seq to show one after login.
                  Hand-drawn art from PETSCII/ANSI editors can replace any of
                  these; the BBS only cares about the file name and extension.
                  HELP is generated from the command table, so no help screen ships.
@@ -1163,6 +1164,376 @@ def make_codes_asc():
     return bytes(out)
 
 
+# ==========================================================================
+# setup and newsysop: the first boot, for whoever just became the sysop.
+#
+# A board from the web installer starts on one published sysop password,
+# good only from its own network and only until changed. The first person
+# to give it is made sysop, sees `setup` (one page: the passwords form is
+# next, and why), gets the CONFIG staff form, then sees `newsysop` (paged: a
+# walk through the rest of CONFIG), then the prompt.
+#
+# Every page name, setting and key below was read from the source rather
+# than remembered: kPages and the k* tables in bbs_sysop.cpp, the plugin
+# kSettings tables, and Form::key for what the form actually answers to.
+# The three flavours say different things about the form on purpose. An
+# ANSI caller has ESC and Backspace, a Commodore has the left arrow and DEL,
+# and a plain terminal is asked one question a line and never sees a field.
+#
+# Line kinds: 't' title, 'r' rule, 'n' heading, 'd' body, 'i' indented
+# body, 'b' bullet (80 columns only), 'l' a label then two or more spaces
+# then text, 'c' the continuation of an 'l' line (80 columns only), 'm' the
+# page marker, '' blank. `backticks` pick out something the reader types
+# or presses, drawn in the code colour the CODES screen already taught them;
+# a plain terminal gets the words alone.
+#
+# Budgets, both asserted: 22 rows a page, because the player's page break
+# adds a blank row and "Press SPACE to continue" under the last row and a
+# 24 row terminal scrolls its title off at 23; 78 columns on ANSI and 38 on
+# 40 columns, one inside the limits in SCREENS.md. @USER@ is measured at
+# BBS_USER_MAX (20), the longest handle the board allows.
+# ==========================================================================
+DOC_KEY_RE   = re.compile(r"`([^`]+)`")
+DOC_LABEL_RE = re.compile(r"^([A-Za-z][A-Za-z0-9 ]*?)( {2,})(.*)$")
+DOC_TOKENS   = {"@USER@": "X" * 20, "@BBS@": "unleashed BBS", "@BOARD@": "unleashed BBS"}
+
+SETUP80 = [
+    [   ("t", "YOU ARE THE SYSOP"),
+        ("r", ""),
+        ("d", "Welcome, @USER@. This board is yours to run."),
+        ("d", "A real BBS on a chip. This used to take a whole PC and a bank of modems."),
+        ("", ""),
+        ("n", "FIRST, THE PASSWORDS"),
+        ("d", "You got in with the default password, and anybody can read that one on the"),
+        ("d", "install page. So the first job is your own: the next screen is the staff"),
+        ("d", "passwords form."),
+        ("", ""),
+        ("b", "`Up` and `Down` move between fields. `F1` saves. `ESC` leaves without saving."),
+        ("b", "Stars mean a password is already set. `Backspace` over them, then type"),
+        ("i", "the new one. The default itself is refused."),
+        ("b", "Co-sysop 1 and 2: leave them blank unless you want helpers. A blank"),
+        ("i", "level is one nobody can use."),
+        ("", ""),
+        ("n", "KEEP THE DOOR SHUT UNTIL THEN"),
+        ("d", "No port forward and no directory listing until this is done. Your own"),
+        ("d", "network is the only place the default works, and that is on purpose."),
+        ("", ""),
+        ("n", "WHAT HAPPENS NEXT"),
+        ("d", "The passwords form, then a short tour of the rest of the settings.") ],
+]
+
+# The 40 column page, with the form block chosen per flavour: a Commodore
+# has cursor keys, F1, the left arrow and DEL; a plain terminal is asked one
+# question a line and answers Y at the end.
+SETUP40_HEAD = [
+    ("t", "YOU ARE THE SYSOP"),
+    ("r", ""),
+    ("d", "Welcome, @USER@."),
+    ("d", "This board is yours to run: a real BBS"),
+    ("d", "on a chip, no PC, no bank of modems."),
+    ("", ""),
+    ("n", "FIRST, THE PASSWORDS"),
+    ("d", "You got in with the default password,"),
+    ("d", "and anybody can read that one on the"),
+    ("d", "install page. So the first job is"),
+    ("d", "yours: the staff passwords form, next."),
+]
+SETUP40_FORM_PET = [
+    ("i", "CRSR up and down move between fields."),
+    ("i", "`F1` saves, `_` leaves without saving."),      # _ is the left arrow glyph
+    ("i", "Stars mean one is set: `DEL` over them,"),
+    ("i", "then type the new one."),
+    ("i", "Co-sysop 1 and 2: blank unless you"),
+    ("i", "want helpers. Blank means nobody can"),
+    ("i", "use that level."),
+]
+SETUP40_FORM_ASC = [
+    ("i", "A plain terminal asks one question"),
+    ("i", "a line: type the new password and"),
+    ("i", "press Enter. Enter alone keeps what"),
+    ("i", "is set. Answer Y at the end to save."),
+    ("i", "Co-sysop 1 and 2: blank unless you"),
+    ("i", "want helpers. Blank means nobody can"),
+    ("i", "use that level."),
+]
+SETUP40_TAIL = [
+    ("", ""),
+    ("d", "Keep the door shut until then: no port"),
+    ("d", "forward, no directory. Next: the form,"),
+    ("d", "then a tour of the other settings."),
+]
+
+NEWSYSOP80 = [
+    [   ("t", "SETTING UP YOUR BOARD"),
+        ("r", ""),
+        ("d", "`CONFIG` on its own lists the pages. `CONFIG` and a page name opens one:"),
+        ("d", "`CONFIG board` is the first. `F1` saves a page and most changes apply at once."),
+        ("", ""),
+        ("n", "THE PAGES"),
+        ("l", "board     the board's name, its hostname on the network, the timezone"),
+        ("c", "and NTP server, idle minutes, the LED pin, where callers land"),
+        ("l", "limits    minutes per call and per day, the WHO refresh, the account cap"),
+        ("l", "accounts  whether callers may sign up, whether guests may call, and for"),
+        ("c", "how many minutes"),
+        ("l", "backup    the port, how long the window stays open, the button pin"),
+        ("l", "staff     the passwords you just set"),
+        ("l", "wifi      the network; a change is used from the next restart"),
+        ("", ""),
+        ("d", "And one page for each plugin: `chat`, `forums`, `files`, `info`, `announce`"),
+        ("d", "and `sd`. Each starts with whether it is on and who may use it."),
+        ("", ""),
+        ("m", "Page 1 of 2") ],
+
+    [   ("t", "SETTING UP YOUR BOARD"),
+        ("r", ""),
+        ("n", "THE CARD"),
+        ("d", "File areas and the forums live on an SD card, so neither exists without one."),
+        ("d", "A board meant to stay up should have a card. `CONFIG sd` has the pins."),
+        ("", ""),
+        ("n", "THE DIRECTORY"),
+        ("d", "`CONFIG announce` lists this board in the public directory. It is off until"),
+        ("d", "you switch it on. Port forwarding is the last step, after all of the above."),
+        ("", ""),
+        ("n", "STAFF COMMANDS"),
+        ("l", "SYS         the board's health: radio, memory, storage, load"),
+        ("l", "DASH        the live dashboard"),
+        ("l", "USERS       the accounts"),
+        ("l", "HELP STAFF  the staff commands, and `HELP SYSOP` the ones that are yours alone"),
+        ("", ""),
+        ("r", ""),
+        ("d", "More in the setup guide at unleashedbbs.com. Welcome aboard."),
+        ("m", "Page 2 of 2") ],
+]
+
+NEWSYSOP40 = [
+    [   ("t", "SETTING UP YOUR BOARD"),
+        ("r", ""),
+        ("d", "`CONFIG` on its own lists the pages."),
+        ("d", "`CONFIG` and a page name opens one, so"),
+        ("d", "`CONFIG board` is the first. `F1` saves a"),
+        ("d", "page; most changes apply at once."),
+        ("", ""),
+        ("n", "BOARD"),
+        ("d", "The board's name, its hostname on the"),
+        ("d", "network, the timezone and NTP server,"),
+        ("d", "idle minutes, the LED pin, and where"),
+        ("d", "callers land after login."),
+        ("", ""),
+        ("n", "LIMITS"),
+        ("d", "Minutes per call and per day, the WHO"),
+        ("d", "refresh, and the account cap."),
+        ("", ""),
+        ("n", "ACCOUNTS"),
+        ("d", "Whether callers may sign up, whether"),
+        ("d", "guests may call, and for how long."),
+        ("", ""),
+        ("m", "Page 1 of 3") ],
+
+    [   ("n", "BACKUP"),
+        ("d", "The port, how long the window stays"),
+        ("d", "open, and the button pin."),
+        ("", ""),
+        ("n", "STAFF"),
+        ("d", "The passwords you just set."),
+        ("", ""),
+        ("n", "WIFI"),
+        ("d", "The network. A change is used from"),
+        ("d", "the next restart, never live."),
+        ("", ""),
+        ("n", "THE PLUGINS"),
+        ("d", "One page each: `chat`, `forums`, `files`,"),
+        ("d", "`info`, `announce` and `sd`. Each starts"),
+        ("d", "with whether it is on and who may"),
+        ("d", "use it."),
+        ("", ""),
+        ("m", "Page 2 of 3") ],
+
+    [   ("n", "THE CARD"),
+        ("d", "File areas and the forums live on an"),
+        ("d", "SD card, so neither exists without"),
+        ("d", "one. A board meant to stay up should"),
+        ("d", "have a card. `CONFIG sd` has the pins."),
+        ("", ""),
+        ("n", "THE DIRECTORY"),
+        ("d", "`CONFIG announce` lists this board in"),
+        ("d", "the public directory. It is off until"),
+        ("d", "you switch it on. Port forwarding is"),
+        ("d", "the last step, after all of this."),
+        ("", ""),
+        ("n", "STAFF COMMANDS"),
+        ("l", "SYS         the board's health"),
+        ("l", "DASH        the live dashboard"),
+        ("l", "USERS       the accounts"),
+        ("l", "HELP STAFF  the staff commands"),
+        ("l", "HELP SYSOP  yours alone"),
+        ("", ""),
+        ("d", "The setup guide at unleashedbbs.com"),
+        ("d", "has the rest. Welcome aboard."),
+        ("m", "Page 3 of 3") ],
+]
+
+# Roles. The same family as CODES: title white, headings the note colour,
+# prose grey, keys and labels the code colour, the marker dark grey.
+DOC_ANSI = {"t": "1;37", "n": "1;36", "d": "0;37", "i": "0;37", "b": "0;37",
+            "l": "0;37", "c": "0;37", "m": "1;30",
+            "rule": "0;34", "key": "1;32", "dot": "0;32"}
+DOC_PET  = {"t": "white", "n": "yellow", "d": "lgrey", "i": "lgrey",
+            "l": "lgrey", "m": "dgrey", "rule": "cyan", "key": "lgreen"}
+
+DOC_ROWS = 22
+
+
+def doc_plain(text):
+    """The words alone: markup off, tokens at their widest."""
+    text = text.replace("`", "")
+    for tok, widest in DOC_TOKENS.items():
+        text = text.replace(tok, widest)
+    return text
+
+
+def doc_indent(kind, wide):
+    """Columns before the text. Titles are centred and handled by the caller."""
+    if wide:
+        return {"r": 2, "n": 2, "d": 2, "i": 8, "b": 8, "l": 2, "c": 12, "m": 2}.get(kind, 0)
+    return {"i": 1}.get(kind, 0)
+
+
+def doc_check(pages, wide):
+    limit = 78 if wide else 38
+    for page in pages:
+        assert len(page) <= DOC_ROWS, f"{len(page)} rows > {DOC_ROWS}: {page[0]!r}"
+        for kind, text in page:
+            assert "@" not in text.replace("@USER@", ""), f"stray @ in {text!r}"
+            w = doc_indent(kind, wide) + len(doc_plain(text))
+            assert w <= limit, f"{w} > {limit}: {text!r}"
+
+
+def doc_pieces(text):
+    """(is_key, text) pieces of a line, keys being what was in backticks."""
+    out, pos = [], 0
+    for m in DOC_KEY_RE.finditer(text):
+        if m.start() > pos:
+            out.append((False, text[pos:m.start()]))
+        out.append((True, m.group(1)))
+        pos = m.end()
+    if pos < len(text):
+        out.append((False, text[pos:]))
+    return out
+
+
+def doc_ansi_line(kind, text):
+    if kind == "":
+        return b"\r\n"
+    if kind == "r":
+        return sgr(DOC_ANSI["rule"]) + b"  " + bytes([H_LINE]) * 76 + b"\r\n"
+    if kind == "t":
+        pad = 2 + (76 - len(text)) // 2
+        return sgr(DOC_ANSI["t"]) + b" " * pad + text.encode("ascii") + b"\r\n"
+    # Colour leads the line, indent included, so no row inherits the one
+    # above it: the rule every colour in term.cpp follows since 0.17.1.
+    cur = DOC_ANSI[kind]
+    out = bytearray(sgr(cur)) + b" " * doc_indent(kind, True)
+    if kind == "b":
+        cur = DOC_ANSI["dot"]
+        out = bytearray(sgr(cur)) + b" " * 6 + bytes([BULLET]) + b" "
+    if kind == "l":
+        label, gap, text = DOC_LABEL_RE.match(text).groups()
+        cur = DOC_ANSI["key"]
+        out = bytearray(sgr(cur)) + b"  " + label.encode("ascii") + gap.encode("ascii")
+    for is_key, piece in doc_pieces(text):
+        want = DOC_ANSI["key"] if is_key else DOC_ANSI[kind]
+        if want != cur:
+            out += sgr(want)
+            cur = want
+        out += piece.encode("ascii")
+    return bytes(out) + b"\r\n"
+
+
+def doc_pet_line(kind, text):
+    if kind == "":
+        return pet("cr")
+    if kind == "r":
+        return pet_rule(DOC_PET["rule"])
+    if kind in ("t", "n", "m"):
+        return pet(DOC_PET[kind]) + pet_text(text) + pet("cr")
+    cur = DOC_PET[kind]
+    out = bytearray(pet(cur)) + b" " * doc_indent(kind, False)
+    if kind == "l":
+        label, gap, text = DOC_LABEL_RE.match(text).groups()
+        cur = DOC_PET["key"]
+        out = bytearray(pet(cur)) + pet_text(label + gap)
+    for is_key, piece in doc_pieces(text):
+        want = DOC_PET["key"] if is_key else DOC_PET[kind]
+        if want != cur:
+            out += pet(want)
+            cur = want
+        out += pet_text(piece)
+    return bytes(out) + pet("cr")
+
+
+def doc_asc_line(kind, text):
+    if kind == "r":
+        return b"-" * 38 + b"\n"
+    return (" " * doc_indent(kind, False) + text.replace("`", "")).encode("ascii") + b"\n"
+
+
+def doc_ans(pages):
+    doc_check(pages, True)
+    out = bytearray(b"@CLS@")
+    for n, page in enumerate(pages):
+        if n:
+            out += FF
+        for kind, text in page:
+            out += doc_ansi_line(kind, text)
+    out += sgr("0")
+    return bytes(out)
+
+
+def doc_seq(pages):
+    doc_check(pages, False)
+    out = bytearray()
+    for n, page in enumerate(pages):
+        out += FF if n else pet("clr", "lower")
+        for kind, text in page:
+            out += doc_pet_line(kind, text)
+    return bytes(out)
+
+
+def doc_asc(pages):
+    doc_check(pages, False)
+    out = bytearray(b"@CLS@")
+    for n, page in enumerate(pages):
+        if n:
+            out += FF
+        for kind, text in page:
+            out += doc_asc_line(kind, text)
+    return bytes(out)
+
+
+def make_setup_ans():
+    return doc_ans(SETUP80)
+
+
+def make_setup_seq():
+    return doc_seq([SETUP40_HEAD + SETUP40_FORM_PET + SETUP40_TAIL])
+
+
+def make_setup_asc():
+    return doc_asc([SETUP40_HEAD + SETUP40_FORM_ASC + SETUP40_TAIL])
+
+
+def make_newsysop_ans():
+    return doc_ans(NEWSYSOP80)
+
+
+def make_newsysop_seq():
+    return doc_seq(NEWSYSOP40)
+
+
+def make_newsysop_asc():
+    return doc_asc(NEWSYSOP40)
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     files = {
@@ -1193,6 +1564,12 @@ def main():
         "codes.seq": make_codes_seq(),
         "codes.ans": make_codes_ans(),
         "codes.asc": make_codes_asc(),
+        "setup.seq": make_setup_seq(),
+        "setup.ans": make_setup_ans(),
+        "setup.asc": make_setup_asc(),
+        "newsysop.seq": make_newsysop_seq(),
+        "newsysop.ans": make_newsysop_ans(),
+        "newsysop.asc": make_newsysop_asc(),
     }
     for name, data in files.items():
         (OUT / name).write_bytes(data)

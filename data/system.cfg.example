@@ -43,7 +43,12 @@ wifi_password =
 #   sysop     moves to the hidden sysop node, has every permission
 #   cosysop1  stays on its node, CO1 column below
 #   cosysop2  stays on its node, CO2 column below
-sysop_password =
+#
+# With no sysop_password line at all, the board uses the published default,
+# unleashed, from its own network only, and offers to set itself up to the
+# first local caller. Setting it (CONFIG staff) writes the line. Leave the
+# line out on a new board; an empty line means "no sysop", not "default".
+# sysop_password =
 cosysop1_password =
 cosysop2_password =
 
@@ -71,8 +76,7 @@ who_refresh_max = 30
 activity_led_gpio = 2
 
 # User accounts (USERS.md). self_register = no: unknown handles are refused
-# and staff add accounts with USERS / USER ADD. max_users is 1..100; more
-# than 100 accounts needs the SD card plugin.
+# and staff add accounts with USERS / USER ADD. max_users is 1..250.
 self_register = yes
 max_users = 100
 
@@ -107,8 +111,9 @@ room = Main
 rate = 80        ; lines a minute one caller may send, 8 in a burst
 history = 48     ; lines the room remembers, 8 to 2000
 
-; Messages: one per caller, waiting to be read. Not private: they are
-; plain text in the filesystem and they travel in a backup zip.
+; Mail: several per caller, 3 on the board's own flash and 12 with an SD
+; card, read and answered from MAIL. Not private: plain text on the board's
+; storage. Not in the backup zip.
 mail_slots = 32  ; messages the board holds at once, 0 switches mail off
 mail_chars = 512 ; longest a message may be
 mail_days  = 14  ; how long one waits before it expires

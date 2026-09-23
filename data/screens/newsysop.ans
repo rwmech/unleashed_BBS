@@ -1,0 +1,39 @@
+@CLS@[1;37m                             SETTING UP YOUR BOARD
+[0;34m  ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+[0;37m  [1;32mCONFIG[0;37m on its own lists the pages. [1;32mCONFIG[0;37m and a page name opens one:
+[0;37m  [1;32mCONFIG board[0;37m is the first. [1;32mF1[0;37m saves a page and most changes apply at once.
+
+[1;36m  THE PAGES
+[1;32m  board     [0;37mthe board's name, its hostname on the network, the timezone
+[0;37m            and NTP server, idle minutes, the LED pin, where callers land
+[1;32m  limits    [0;37mminutes per call and per day, the WHO refresh, the account cap
+[1;32m  accounts  [0;37mwhether callers may sign up, whether guests may call, and for
+[0;37m            how many minutes
+[1;32m  backup    [0;37mthe port, how long the window stays open, the button pin
+[1;32m  staff     [0;37mthe passwords you just set
+[1;32m  wifi      [0;37mthe network; a change is used from the next restart
+
+[0;37m  And one page for each plugin: [1;32mchat[0;37m, [1;32mforums[0;37m, [1;32mfiles[0;37m, [1;32minfo[0;37m, [1;32mannounce
+[0;37m  and [1;32msd[0;37m. Each starts with whether it is on and who may use it.
+
+[1;30m  Page 1 of 2
+[1;37m                             SETTING UP YOUR BOARD
+[0;34m  ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+[1;36m  THE CARD
+[0;37m  File areas and the forums live on an SD card, so neither exists without one.
+[0;37m  A board meant to stay up should have a card. [1;32mCONFIG sd[0;37m has the pins.
+
+[1;36m  THE DIRECTORY
+[0;37m  [1;32mCONFIG announce[0;37m lists this board in the public directory. It is off until
+[0;37m  you switch it on. Port forwarding is the last step, after all of the above.
+
+[1;36m  STAFF COMMANDS
+[1;32m  SYS         [0;37mthe board's health: radio, memory, storage, load
+[1;32m  DASH        [0;37mthe live dashboard
+[1;32m  USERS       [0;37mthe accounts
+[1;32m  HELP STAFF  [0;37mthe staff commands, and [1;32mHELP SYSOP[0;37m the ones that are yours alone
+
+[0;34m  ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+[0;37m  More in the setup guide at unleashedbbs.com. Welcome aboard.
+[1;30m  Page 2 of 2
+[0m

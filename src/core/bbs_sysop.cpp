@@ -182,6 +182,12 @@ bool Bbs::localAddr(const char* ip) {
         int n = atoi(ip + 4);
         if (n >= 16 && n <= 31) return true;
     }
+    // 100.64/10, the shared space Tailscale and carrier NAT use: the same
+    // answer the backup port gives, so a sysop on a VPN is local to both.
+    if (!strncmp(ip, "100.", 4)) {
+        int n = atoi(ip + 4);
+        if (n >= 64 && n <= 127) return true;
+    }
     return false;
 }
 
@@ -203,12 +209,12 @@ bool Bbs::localAddr(const char* ip) {
 // password still gets the old behaviour, so the board never has two sysop
 // sessions open to the outside world at once.
 // ---------------------------------------------------------------------------
-void Bbs::elevate(Session& s, uint32_t now) {
+void Bbs::elevate(Session& s, uint32_t now, bool setup) {
     if (sysop_.st != SState::Free) {
         if (s.role == Role::Caller && localAddr(s.ip)) {
             plat::log("bbs: sysop node in use, node %s takes sysop in place (%s)",
                       nodeName(s).t, s.ip);
-            coElevate(s, Access::Sysop, now);
+            coElevate(s, Access::Sysop, now, setup);
             return;
         }
         plat::log("bbs: sysop node in use, node %s logs off instead", nodeName(s).t);
@@ -262,6 +268,7 @@ void Bbs::elevate(Session& s, uint32_t now) {
     // and the directory should hear about it. Without this a board would
     // advertise one fewer caller than it has until the next login.
     presenceChanged(d);
+    if (setup) { beginSetup(d, now); return; }
     prompt(d);
 }
 
@@ -269,8 +276,7 @@ void Bbs::elevate(Session& s, uint32_t now) {
 // coElevate: grant a co-sysop level in place. No special line: the session
 // keeps its caller node and stays visible until it uses HIDE or LURK.
 // ---------------------------------------------------------------------------
-void Bbs::coElevate(Session& s, Access level, uint32_t now) {
-    (void)now;
+void Bbs::coElevate(Session& s, Access level, uint32_t now, bool setup) {
     s.level      = level;
     s.perms      = syscfg::permsFor(level);
     s.timeWarned = 0;
@@ -296,6 +302,7 @@ void Bbs::coElevate(Session& s, Access level, uint32_t now) {
                                                : "HELP for commands.");
     plat::log("bbs: node %u -> %s (%s, %s) perms 0x%03x", s.id, syscfg::levelName(level),
               s.user, s.ip, s.perms);
+    if (setup) { beginSetup(s, now); return; }
     prompt(s);
 }
 
@@ -751,7 +758,7 @@ const CfgField kLimits[] = {
     { "call_minutes",    "Per call", CK_NUM, 1, 1440, 4 },
     { "day_minutes",     "Per day",  CK_NUM, 1, 1440, 4 },
     { "who_refresh_min", "WHO min",  CK_NUM, 1, 60, 3 },
-    { "who_refresh_max", "WHO max",  CK_NUM, 1, 240, 3 },
+    { "who_refresh_max", "WHO max",  CK_NUM, 1, 60, 3 },      // the parser's range: 1..60
     { "max_users",       "Accounts", CK_NUM, 1, 250, 3 },
 };
 
@@ -763,7 +770,7 @@ const CfgField kAccounts[] = {
 
 const CfgField kBackup[] = {
     { "backup_port",           "Port",     CK_NUM, 1, 65535, 5 },
-    { "backup_window_minutes", "Open for", CK_NUM, 1, 120, 4 },
+    { "backup_window_minutes", "Open for", CK_NUM, 1, 60, 4 },   // the parser's range: 1..60
     { "backup_button_gpio",    "Button",   CK_NUM, 0, 39, 2 },
 };
 
@@ -1039,7 +1046,18 @@ bool cfgFileValue(const char* section, const char* key, char* out, size_t n) {
         while (*v == ' ' || *v == '\t') ++v;
         size_t w = 0;
         while (*v && *v != '\n' && *v != '\r' && w + 1 < n) out[w++] = *v++;
-        while (w && out[w - 1] == ' ') --w;
+        out[w] = '\0';
+        // Drop a trailing comment the way the parser that reads this line
+        // does, or CONFIG shows "cyan ; the #2 in ..." as the value and a
+        // save writes the comment back in as data. A plugin section's
+        // parser ends a value at ';'; the core's ends it at '#', except on
+        // the password and Wi-Fi lines, which it takes whole.
+        bool verbatim = strstr(key, "_password") || !strcasecmp(key, "wifi_ssid");
+        char* cut = nullptr;
+        if (section && *section)  cut = strchr(out, ';');
+        else if (!verbatim)       cut = strchr(out, '#');
+        if (cut) { *cut = '\0'; w = strlen(out); }
+        while (w && (out[w - 1] == ' ' || out[w - 1] == '\t')) --w;
         out[w] = '\0';
         found = true;                                   // a later line wins, as the parser does
     }
@@ -1214,13 +1232,30 @@ void Bbs::configRelease(const Session& s) {
 // configPages: what CONFIG on its own shows
 // ---------------------------------------------------------------------------
 void Bbs::configPages(Session& s) {
-    char buf[64];
+    char buf[64], fit[64];
+    // What is left of the row after the name column, cut at a word so a
+    // 40 column screen gets a shorter line rather than a wrapped one. The
+    // descriptions were written at 80 and "board" and "forums" wrapped on a
+    // C64 (found capturing the setup guide's screens, website 0.16.0).
+    auto clip = [&](const char* text, uint8_t col) {
+        size_t room = rowWidth(s) > col ? static_cast<size_t>(rowWidth(s) - col) : 0;
+        size_t len  = strlen(text);
+        if (room >= sizeof(fit)) room = sizeof(fit) - 1;
+        if (len > room) {
+            len = room;
+            while (len && text[len] != ' ') --len;       // back to a word break
+            while (len && (text[len - 1] == ',' || text[len - 1] == ' ')) --len;
+        }
+        memcpy(fit, text, len);
+        fit[len] = '\0';
+        return fit;
+    };
     rowTitle(s, "Settings", "CONFIG page");
     for (uint8_t i = 0; i < kPageCount; ++i) {
         uint8_t col = 0;
         snprintf(buf, sizeof(buf), "%-10.10s", kPages[i].name);
         rowSeg(s, Color::Yellow, buf, col);
-        rowSeg(s, Color::Grey, kPages[i].what, col);
+        rowSeg(s, Color::Grey, clip(kPages[i].what, col), col);
         rowEnd(s, col);
     }
     for (uint8_t i = 0; i < plugins::count(); ++i) {
@@ -1228,7 +1263,7 @@ void Bbs::configPages(Session& s) {
         snprintf(buf, sizeof(buf), "%-10.10s", plugins::at(i)->info.name);
         rowSeg(s, Color::Yellow, buf, col);
         snprintf(buf, sizeof(buf), "plugin: %.24s", plugins::at(i)->info.title);
-        rowSeg(s, Color::Grey, buf, col);
+        rowSeg(s, Color::Grey, clip(buf, col), col);
         rowEnd(s, col);
     }
     rowRule(s);
@@ -1343,6 +1378,9 @@ void Bbs::configOpenPage(Session& s, uint8_t focus, uint32_t now) {
         if (f.kind == CK_YESNO) { flags |= FF_CYCLE; choices = kYesNo; }
         if (f.kind == CK_LEVEL) { flags |= FF_CYCLE; choices = kLevels; }
         if (f.kind == CK_PASS)  flags |= FF_MASK;
+        // A set password shows as its mask, and the mask is in the buffer:
+        // the first key must start a new value rather than add to the stars.
+        if (f.kind == CK_PASS && !strcmp(buf2, kMasked)) flags |= FF_REPLACE;
         // Shown so a sysop can see what this plugin is working with, and
         // read-only because something else owns it.
         if (f.kind == CK_INFO)  flags |= FF_READONLY;
@@ -1382,6 +1420,14 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
         // by the parser after it is on disk and the reload has refused it.
         if (!strcmp(f.key, "wifi_password") && *v && strlen(v) < 8) {
             s.form.fail(i, "8 to 64 characters", s.term, s.tl);
+            return false;
+        }
+        // The published default must never become somebody's chosen staff
+        // password. Written to the file it would stop being "the default" and
+        // start working from anywhere, while still being on the install page.
+        if (f.kind == CK_PASS && strstr(f.key, "_password") && strcmp(f.key, "wifi_password") &&
+            !strcmp(v, BBS_DEFAULT_SYSOP)) {
+            s.form.fail(i, "That one is published. Pick your own", s.term, s.tl);
             return false;
         }
         if (f.kind == CK_NUM) {

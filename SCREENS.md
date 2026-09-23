@@ -34,6 +34,8 @@ The names the BBS looks for:
 | `busy` | when every node is in use |
 | `goodbye` | at logoff |
 | `codes` | the `CODES` command and `/codes` in the chat room, listing the colour and effect codes a caller can put in a message |
+| `setup` | first-boot setup: after a local caller gives the default sysop password, before `CONFIG staff` opens. What the job is and what comes next |
+| `newsysop` | first-boot setup: after the `CONFIG staff` form, a paged tour of the rest of CONFIG, then the prompt |
 
 There is no help screen: `HELP` is generated from the command table so it always matches the commands a caller can use.
 

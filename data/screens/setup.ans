@@ -1,0 +1,23 @@
+@CLS@[1;37m                               YOU ARE THE SYSOP
+[0;34m  ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+[0;37m  Welcome, @USER@. This board is yours to run.
+[0;37m  A real BBS on a chip. This used to take a whole PC and a bank of modems.
+
+[1;36m  FIRST, THE PASSWORDS
+[0;37m  You got in with the default password, and anybody can read that one on the
+[0;37m  install page. So the first job is your own: the next screen is the staff
+[0;37m  passwords form.
+
+[0;32m      ù [1;32mUp[0;37m and [1;32mDown[0;37m move between fields. [1;32mF1[0;37m saves. [1;32mESC[0;37m leaves without saving.
+[0;32m      ù [0;37mStars mean a password is already set. [1;32mBackspace[0;37m over them, then type
+[0;37m        the new one. The default itself is refused.
+[0;32m      ù [0;37mCo-sysop 1 and 2: leave them blank unless you want helpers. A blank
+[0;37m        level is one nobody can use.
+
+[1;36m  KEEP THE DOOR SHUT UNTIL THEN
+[0;37m  No port forward and no directory listing until this is done. Your own
+[0;37m  network is the only place the default works, and that is on purpose.
+
+[1;36m  WHAT HAPPENS NEXT
+[0;37m  The passwords form, then a short tour of the rest of the settings.
+[0m

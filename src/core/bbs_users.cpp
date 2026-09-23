@@ -265,6 +265,13 @@ void Bbs::formDone(Session& s, Color c, const char* msg) {
     }
     s.term.nl(s.tl);
     say(s.term, s.tl, c, msg);
+    // First-boot setup: the staff passwords form was its second step, and
+    // saved or cancelled, the tour of the rest comes before the prompt.
+    if (s.setupStage == 2) {
+        s.setupStage = 0;
+        s.term.nl(s.tl);
+        if (playScreen(s, "newsysop")) return;       // the screen ends at the prompt
+    }
     prompt(s);
 }
 

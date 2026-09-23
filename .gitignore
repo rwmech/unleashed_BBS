@@ -61,3 +61,7 @@ __pycache__/
 /backup/
 data/users.txt
 data/logs/
+
+# Release builds (tools/release.py). Published as GitHub Release assets,
+# never committed: binaries do not belong in the history.
+release/

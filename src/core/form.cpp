@@ -334,6 +334,17 @@ Form::Res Form::keyPositional(int k, Term& t, Timeline& tl) {
     bool area = f.flags & FF_TEXTAREA;
     uint16_t visible = area ? static_cast<uint16_t>(kAreaW) * kAreaRows : static_cast<uint16_t>(kBoxW - 1u);
 
+    // A mask standing in for a set password: the first key typed or rubbed
+    // out starts the value again, once. See FF_REPLACE.
+    if ((f.flags & FF_REPLACE) && (k == KEY_BACKSPACE || (k >= 0x20 && k <= 0x7E))) {
+        f.flags = static_cast<uint8_t>(f.flags & ~FF_REPLACE);
+        f.buf[0] = '\0';
+        len = 0;
+        drawField(focus_, t, tl);
+        placeCursor(t, tl);
+        if (k == KEY_BACKSPACE) return Res::Editing;
+    }
+
     if (k == KEY_BACKSPACE) {
         if (!len) return Res::Editing;
         f.buf[len - 1] = '\0';

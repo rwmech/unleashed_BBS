@@ -119,6 +119,13 @@ void setNonBlocking(int fd) {
     fcntl(fd, F_SETFL, fl | O_NONBLOCK);
 }
 
+// sayLine: one line in one colour, ended.
+void sayLine(Term& t, Timeline& tl, Color c, const char* text) {
+    t.color(tl, c);
+    t.text(tl, text);
+    t.nl(tl);
+}
+
 } // namespace
 
 // ===========================================================================
@@ -629,6 +636,7 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
     s.pendingTail   = false;
     s.pendingKnowMore = false;
     s.newAccount      = false;
+    s.setupStage      = 0;      // static pool: a half-finished setup is not inherited
     // Both of these were added in 0.18.0 and neither was reset here, which
     // matters because sessions come from a static pool. A caller who drops
     // the line while the motd is playing leaves pendingLand set, and the
@@ -927,6 +935,11 @@ void Bbs::serviceSession(Session& s, uint32_t now) {
                 } else if (!more && s.pendingKnowMore) {
                     s.pendingKnowMore = false;   // rules read, now the warning
                     pauseFor(s, AfterKey::KnowMore);
+                } else if (!more && s.setupStage == 1) {
+                    // First-boot setup: the setup screen has been read, so
+                    // the staff passwords form comes next, not the prompt.
+                    s.pendingPrompt = false;
+                    setupConfig(s, now);
                 } else if (!more && s.pendingLand) {
                     // Before pendingPrompt, because playScreen set that too
                     // and landing does its own finishing.
@@ -1655,12 +1668,121 @@ void Bbs::completeLogin(Session& s, uint32_t now) {
     snprintf(buf, sizeof(buf), "*** %s is on node %u", s.user, s.id);
     noticeAll(s, buf, BusKind::Arrival);
 
-    // A caller who just registered gets the short rules; everybody else
-    // gets whatever the board has to say today.
+    if (offerSetup(s)) return;       // asked first; arrive() follows if they skip
+    arrive(s);
+}
+
+// ---------------------------------------------------------------------------
+// arrive: the end of a login. A caller who just registered gets the short
+// rules; everybody else gets whatever the board has to say today.
+// ---------------------------------------------------------------------------
+void Bbs::arrive(Session& s) {
     const char* first = s.newAccount ? "newuser" : "motd";
     s.newAccount = false;
     if (!playScreen(s, first)) landAfterLogin(s);
     else s.pendingLand = true;       // the screen finishes, then they land
+}
+
+// ---------------------------------------------------------------------------
+// offerSetup: an unconfigured board asks a caller on its own network to set
+// it up (Rob, 1.0.0). "Unconfigured" is exactly "the sysop password is still
+// the published default". Any caller on the local network is asked, at login
+// or at the end of registration, not only the first account: whoever is
+// sitting at the owner's network is who should finish it. Nobody has to know
+// to type BYE. Callers from anywhere else are never asked and never told.
+// ---------------------------------------------------------------------------
+bool Bbs::offerSetup(Session& s) {
+    if (!syscfg::get().sysopDefault || s.guest || s.role != Role::Caller || !localAddr(s.ip))
+        return false;
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    sayLine(t, tl, Color::Yellow, "This board has not been set up yet.");
+    sayLine(t, tl, Color::Grey, t.cols() >= 60
+        ? "You are on its own network, so you can do it now."
+        : "You are on its network: do it now.");
+    sayLine(t, tl, Color::Grey, t.cols() >= 60
+        ? "The sysop password is on the install page."
+        : "The password is on the install page.");
+    askSetup(s);
+    return true;
+}
+
+void Bbs::askSetup(Session& s) {
+    Term& t = s.term;
+    t.reset(s.tl);
+    t.nl(s.tl);
+    t.color(s.tl, Color::Cyan);
+    const char* skip = t.isPet() ? "<-" : "ESC";
+    char q[48];
+    snprintf(q, sizeof(q), t.cols() >= 60 ? "Sysop password (%s skips): " : "Sysop pw (%s skips): ", skip);
+    t.text(s.tl, q);
+    t.color(s.tl, Color::White);
+    s.ed.begin(BBS_PASS_MAX, LineEditor::F_MASK | LineEditor::F_STAY);
+    s.st        = SState::AskSetup;
+    s.lastInput = plat::millis();
+}
+
+// ---------------------------------------------------------------------------
+// onSetupPassword: the default makes them sysop and starts the setup,
+// anything else asks again, and only ESC skips (skipSetup). Enter on nothing
+// used to skip, and a stray Enter, pressed to get past the sign-up's welcome
+// as the test suite did, threw the setup away for somebody who never read
+// the question. No ban count and no hangup:
+// only a local caller ever reaches this, the password it wants is published,
+// and a typo here should cost a retype, not the call.
+// ---------------------------------------------------------------------------
+void Bbs::onSetupPassword(Session& s, uint32_t now) {
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    bool empty = !s.ed.text()[0];
+    bool right = !empty && syscfg::get().sysopDefault &&
+                 syscfg::passwordLevel(s.ed.text()) == Access::Sysop;
+    s.ed = LineEditor();                             // wipe what was typed
+    t.nl(tl);
+    if (empty) {
+        askSetup(s);                                 // nothing typed: just ask again
+        return;
+    }
+    if (!right) {
+        sayLine(t, tl, Color::LightRed, t.isPet() ? "Not that one. Again, or <- skips."
+                                                  : "That is not it. Try again, or ESC skips.");
+        askSetup(s);
+        return;
+    }
+    plat::log("bbs: node %u setup started by '%s' from %s", s.id, s.user, s.ip);
+    s.newAccount = false;                            // setup replaces the newuser screen
+    elevate(s, now, true);
+}
+
+// skipSetup: ESC at the setup question. Said once, with how to do it later,
+// and the login carries on as if nothing had been asked.
+void Bbs::skipSetup(Session& s) {
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    s.ed = LineEditor();
+    t.nl(tl);
+    sayLine(t, tl, Color::Grey, t.cols() >= 60
+        ? "Skipped. BYE and the password, from this network, does it later."
+        : "Skipped. BYE <password> does it later.");
+    t.nl(tl);
+    arrive(s);
+}
+
+// beginSetup: newly the sysop, so the setup screen, then the form. A board
+// without the screen goes straight to the form rather than skipping a step.
+void Bbs::beginSetup(Session& s, uint32_t now) {
+    s.setupStage = 1;
+    if (!playScreen(s, "setup")) setupConfig(s, now);
+}
+
+// setupConfig: the staff passwords form, as the setup's second step. Saving
+// or cancelling it comes back through formDone, which plays the tour. If the
+// form cannot open (another sysop session is in CONFIG), cmdConfig has said
+// why and drawn the prompt, and the setup simply ends there.
+void Bbs::setupConfig(Session& s, uint32_t now) {
+    s.setupStage = 2;
+    cmdConfig(s, "staff", now);
+    if (s.st != SState::Form) s.setupStage = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -2505,6 +2627,19 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
             LineEditor::Res r = s.ed.key(k, t, tl);
             if (r == LineEditor::Res::Abort) { askName(s); return; }   // ESC: another handle
             if (r == LineEditor::Res::Done)  onPassword(s, now);
+            return;
+        }
+
+        case SState::AskSetup: {
+            // Keys typed while the question is still printing are kept, like
+            // at every other prompt. Only ESC skips (an Enter on nothing just
+            // asks again), so a stray Enter cannot throw the setup away and
+            // nothing needs dropping. Dropping them was tried first and ate
+            // the first letters of the password along with the stray Enter.
+            if (!tl.empty()) tl.skipDelays();
+            LineEditor::Res r = s.ed.key(k, t, tl);
+            if (r == LineEditor::Res::Abort) { skipSetup(s); return; }   // ESC, or <- on a C64
+            if (r == LineEditor::Res::Done) onSetupPassword(s, now);
             return;
         }
 

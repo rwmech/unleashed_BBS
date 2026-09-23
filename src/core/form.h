@@ -68,6 +68,12 @@ enum FormFlag : uint8_t {
     // the owner keeps the real thing somewhere of its own. This is what
     // lets one row of a form stand for a page of its own.
     FF_ACTION   = 64,
+    // The first key replaces the whole value rather than adding to it. For a
+    // password that is already set, which the owner shows as its mask: the
+    // stars sit in the buffer, and typing after them used to save
+    // "********newpass" (found by the screen artist, 0.23.0). Backspace
+    // clears the lot in one press, which is what deleting a mask means.
+    FF_REPLACE  = 128,
 };
 
 struct FormField {

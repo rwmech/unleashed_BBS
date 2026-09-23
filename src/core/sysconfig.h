@@ -108,6 +108,11 @@ struct SysConfig {
     // working and a published binary carries nobody's network.
     char     wifiSsid[33]  = "";
     char     wifiPass[65]  = "";
+    // True while the sysop password is the published default, which is the
+    // case exactly when system.cfg carries no sysop_password line. The board
+    // honours it only from its own network, offers setup to local callers,
+    // and keeps itself out of the directory until it goes false.
+    bool     sysopDefault  = false;
     uint16_t coPerms[2]    = { static_cast<uint16_t>(PERM_ALL & ~PERM_UNBAN),
                                static_cast<uint16_t>(PERM_NODES | PERM_BROADCAST | PERM_TIME | PERM_BANS |
                                                      PERM_NOLIMITS | PERM_DASH) };

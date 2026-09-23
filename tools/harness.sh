@@ -63,12 +63,18 @@ set -e
 
 TAG=main
 CARD=no
+FRESH=no
 ARGS=""
 while [ $# -gt 0 ]; do
     case "$1" in
-        --tag)  TAG="$2"; shift 2 ;;
-        --card) CARD=yes; shift ;;
-        *)      ARGS="$ARGS $1"; shift ;;
+        --tag)   TAG="$2"; shift 2 ;;
+        --card)  CARD=yes; shift ;;
+        # A board as it leaves the web installer: no staff passwords in its
+        # config, so it runs on the published default and offers setup.
+        # Pair it with --only=first_setup; the rest of the suite assumes a
+        # configured sysop.
+        --fresh) FRESH=yes; shift ;;
+        *)       ARGS="$ARGS $1"; shift ;;
     esac
 done
 
@@ -185,6 +191,11 @@ topic2 = news | Board News | What the sysop is up to | all | sysop | users | sys
 page0 = House rules | all
 page1 = Staff notes | staff
 CFG
+
+if [ "$FRESH" = yes ]; then
+    sed -i -E '/^(sysop|cosysop1|cosysop2)_password = /d' "$DATA/user/system.cfg"
+    export BBS_FRESH=1
+fi
 
 if [ "$CARD" = yes ]; then
     mkdir -p "$CARDDIR/pub/c64" "$CARDDIR/pub/empty" "$CARDDIR/pub/drop"

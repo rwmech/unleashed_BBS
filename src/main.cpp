@@ -51,7 +51,9 @@
 // secrets.h is optional now. A developer's build may carry a network in it
 // as a fallback; a published binary has none, and is told where to go by
 // Improv over the cable it was flashed with. system.cfg wins over both.
-#if __has_include("secrets.h")
+// Never in a release (BBS_RELEASE, the esp32dev_release environment): a
+// release built on a machine that has the file must still carry no network.
+#if !defined(BBS_RELEASE) && __has_include("secrets.h")
 #include "secrets.h"
 #endif
 #ifndef WIFI_SSID

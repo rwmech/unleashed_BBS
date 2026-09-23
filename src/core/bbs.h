@@ -84,6 +84,7 @@ enum class SState : uint8_t {
     Snoop,     // sysop watching another node
     Approve,   // sysop answering Y/N on a staged backup upload
     Closing,   // flushing goodbye, then hang up
+    AskSetup,  // an unconfigured board asks a local caller for the sysop password
 };
 
 enum class Role : uint8_t {
@@ -153,6 +154,7 @@ struct Session {
     bool         pendingTail   = false;  // hangup tail after goodbye screen
     bool         pendingKnowMore = false; // rules screen leads to the warning
     bool         newAccount      = false; // first call: show newuser, not motd
+    uint8_t      setupStage      = 0;     // first-boot setup: 1 CONFIG staff next, 2 newsysop next
     uint32_t     heapAtOpen  = 0;
     char         user[BBS_USER_MAX + 1] = {};
 
@@ -475,6 +477,13 @@ private:
     void askPassword(Session& s);
     void onPassword(Session& s, uint32_t now);
     void completeLogin(Session& s, uint32_t now);
+    void arrive(Session& s);                          // motd or newuser, then landing
+    bool offerSetup(Session& s);                      // unconfigured board, local caller
+    void askSetup(Session& s);
+    void onSetupPassword(Session& s, uint32_t now);
+    void skipSetup(Session& s);                       // ESC at the setup question
+    void beginSetup(Session& s, uint32_t now);        // setup screen, then setupConfig
+    void setupConfig(Session& s, uint32_t now);       // CONFIG staff, as part of setup
     void saveCallStats(Session& s, uint32_t now);
     uint16_t dayMinutesUsed(const char* handle, uint32_t now);
 
@@ -599,11 +608,11 @@ private:
 
     // -- sysop (bbs_sysop.cpp) -----------------------------------------------
     void markAccount(Session& s, Access level);
-    void elevate(Session& s, uint32_t now);
+    void elevate(Session& s, uint32_t now, bool setup = false);
     static bool localAddr(const char* ip);   // RFC1918, loopback, link-local
     void rememberStaff(const Session& s, Access level);
     void restoreStaff(Session& s);
-    void coElevate(Session& s, Access level, uint32_t now);
+    void coElevate(Session& s, Access level, uint32_t now, bool setup = false);
     bool rowNodes(Session& s);
     bool rowBans(Session& s);
     void cmdKick(Session& s, const char* arg, uint32_t now);
