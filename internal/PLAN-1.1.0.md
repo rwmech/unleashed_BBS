@@ -160,7 +160,10 @@ CLAUDE.md holds the history behind each item; this file is what to build.
     Amber for card access, cool white for internal flash, a slow red blink
     on a storage error, a dim idle glow. A minimum on-time makes a 2 ms
     read visible.
-  - Effect strip: 10 pixels, pin default -1 (off).
+  - Effect strip: 10 pixels, pin default -1 (off). **The count is a
+    setting** (Rob, 2026-09-24: "could be 8 could be 10, could be 1, so
+    variable would be better"), default 10, every mode scaled to it, the
+    maximum what the chip can send (DMA on the S3), in the S3 lane.
     - Modes: `nodes` (the default), `scanner` (a Larson sweep), `rainbow`
       and `off`.
     - In nodes mode each pixel is one caller line: off when free, a
@@ -242,6 +245,23 @@ CLAUDE.md holds the history behind each item; this file is what to build.
     heapFree plus the minimum, not plat::heap(), and one calllog pass a
     frame, not six opens; rowSys reads netInfo and heap once per listing.
     The dashboard rework takes the DASH half.
+- **At the S3 merge:** the lights plugin's `drive_pin` and `strip_pin`
+  rows (and sd's pin rows) have `hi = 33`, so CONFIG on the S3 refuses
+  re-typing GPIO 38, the onboard LED. Set them to the chip's highest
+  output pin (`BBS_GPIO_OUT_MAX` from the S3 branch). And CONFIG lights
+  should hide `led` rows past `strip_count`.
+- **`SCREENS` and `SCREENS VIEW name[.ext] [FLASH]`, staff and up** (Rob,
+  2026-09-24: "a screen pager where we can see the screens online, this
+  should be super low overhead"). The list shows each screen's flavours,
+  sizes, card or flash, and seeded or the sysop's own; VIEW plays one
+  through the normal player, refusing a flavour the terminal cannot show.
+  No caching, no per-session state. In the backups lane.
+- **A restore applies only when the board is quiet** (Rob, 2026-09-24,
+  after a window restore on The Rusty Antenna: "it hangs hard when doing
+  that update ... it should be restored only when the site is not
+  busy"). After Y it waits until no caller but the sysop is on, with F to
+  force it now, a bounded wait, a notice to anyone on when it applies,
+  and new callers held off meanwhile. In the backups lane.
 - From Phase 3b (SD backup, timezone):
   - The seeded-screens manifest already exists (`sd.cpp`, `.seeded`). What
     remains: `RESTORE SD SCREENS` takes the names it imports out of

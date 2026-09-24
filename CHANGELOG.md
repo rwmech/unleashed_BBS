@@ -179,6 +179,29 @@ entry when it is released.
   the Wi-Fi fallback, including the same network with a new password.
 - The user manager's D says Retire, as `USER DEL` does.
 
+**1.1.0-dev.8, a second board: the Waveshare ESP32-S3-LCD-1.47.**
+- A build profile of its own, `ws_s3_lcd147`, never a fork. Everything
+  specific to the board (the screen, its pins, PSRAM) is behind the
+  board's defines, so none of it is compiled into the ESP32 image, which
+  grew 1.3 KB of flash and 72 bytes of static RAM for the features below.
+- The board carries its own version beside the core's and shows both:
+  `1.1.0-dev.8 (S3 1.0.0)`. The directory still compares the core number.
+- The screen shows the board's name, callers on, the address, uptime, the
+  card and the last events, from the `panel` plugin, with a CONFIG page
+  for its pins. The RGB LED on the board is the drive light.
+- The TF slot is the SD card, with no wiring.
+- Wi-Fi and lwIP buffers live in PSRAM, which is what leaves the plugins
+  room on this chip; the plugin reserve is 16 KB on a board with PSRAM.
+- Pin settings refuse the S3's flash, PSRAM and USB pins.
+- Lights, on every board: the strip takes 1 to 16 pixels, each output has
+  a colour order, a `wifi` strip effect shows the signal as a meter, and
+  brightness goes to 100%.
+- Releases carry an image set for each chip, each with its own manifest,
+  and a tag with a `-` in it is published as a pre-release.
+- On hardware: flashed to the S3 from COM12 (flash #2): it boots, joins,
+  mounts the card, and the screen and LED work. The panel's redesign is
+  still to come.
+
 ## 1.0.2, 2026-09-23
 
 A security fix. Restoring a backup could turn the published default sysop

@@ -30,6 +30,23 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
   **Two cores and on-chip Wi-Fi are a requirement, not a preference** (Rob). The loop is pinned to core 1 because Wi-Fi and lwIP own core 0, and that split is what keeps the radio's work off callers' latency; a single core would run but not run well, and fixing it properly means restructuring the core rather than changing a setting. That rules out the C3, C6, S2 and H2 on cores and the P4 on having no radio at all, leaving the ESP32 and S3 families. See [ESP32_BOARD_CHOICE.md](ESP32_BOARD_CHOICE.md).
   An ESP32-S3 with PSRAM is the upgrade path if more RAM is ever wanted: same dual core split, and PSRAM can take large statics off internal DRAM.
   **Corrected 2026-09-24 from primary sources** (`internal/board-waveshare-s3-lcd147-2026-09-24.md`): `CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY` alone only moves lwIP's, Wi-Fi's and a few IDF libraries' zeroed statics; our session pool moves only with `EXT_RAM_BSS_ATTR` on its own declaration. And **more RAM does not raise the caller count**: `LWIP_MAX_SOCKETS` is capped at 16 in IDF 5.3.1 on every chip, so ten caller lines is the ceiling on an S3 too until the socket limit moves. The S3's static data limit is measured differently as well: `_bss_end - 0x3FC88000` against 341,760, with IRAM sharing the same memory. **Not the P4**, which has the most SRAM of the family at 768 KB and no integrated Wi-Fi at all: Espressif's own answer there is a second chip as a wireless companion, which is two chips and a host protocol for a board whose whole premise is telnet over Wi-Fi.
+- **A board profile has its own version beside the core's** (Rob,
+  2026-09-24: "version the S3 slightly different, like S3 board version
+  x.y.z since we have the core versions and s3 versions that compile
+  different"). `BBS_VERSION` is the core, shared by every build and bumped
+  as always; a board build adds `BBS_BOARD_TAG` and `BBS_BOARD_VERSION`
+  (the S3 starts at "S3 1.0.0") and shows both wherever a version shows,
+  as `1.1.0 (S3 1.0.0)`: ASCII, because a middle dot cannot be shown on a
+  C64 or a plain ASCII terminal. The reference ESP32 build shows the core
+  alone. The board version moves when board-only code changes. Announce
+  keeps `version` as the core for the directory's update arrow; the site
+  shows each board's current build on the installer and the tested-boards
+  page, read from each image set's `version.txt`.
+  **Releases:** a plain `vX.Y.Z` tag is a full GitHub release; a suffixed
+  tag (`v1.1.0-dev.8`) is a pre-release. The site serves each board from
+  the latest full release that carries it, and a board no full release
+  carries (the S3 until 1.1.0) from the newest pre-release, labelled
+  preview. Either tag still needs Rob's go.
 - **Screens are designed for 40 AND 80 columns, not pinned to the C64**
   (Rob, 2026-09-24: "we cant keep pinning every screen to the C64, it
   needs a 40/80 on most of these"). This overrules the 1.1.0 UX report's
@@ -355,6 +372,18 @@ https://link.amazon/B08MTidlU. The S3 goes on the tested-boards page only
 once a build has actually run on it, with a flashable image for the current
 version.
 
+**Board features on the site, one section per board** (Rob, 2026-09-24:
+"once this is finalized, the breakdown of the display gets linked with
+the 'Board Features' you'll need to write on the website for each board
+we break out like this"). On /hardware, each board gets a "Board
+features" section, linked from its row and from /install's picker. The
+S3's includes an annotated picture of the display: the image rendered
+from the host build of the FINAL panel (never a mock-up), with every
+element named (the status bar with name, uptime, Wi-Fi bar, card glyph
+and clock; the address row; Callers n/m; the caller lists; the square
+LEDs and what each strip mode means). Write it after the panel is final
+and on the glass, not before, so the page describes what ships.
+
 **Queued for the next web round (Rob, 2026-09-23):**
 - A line at the very bottom of every page, small type: the site version,
   a copyright line, and the licence (GNU GPL v2 or later, linked). The
@@ -449,8 +478,12 @@ this tree.
   a pin: a one-pixel drive light (pc, 1541, disk2, breathe) and a ten-pixel
   strip (nodes, hayes, blinken, scanner, c64, boing, vu, rainbow, manual,
   where manual gives each pixel its own effect and colour, random and
-  cycle included). Brightness 1-30% per output, 10 as shipped, and 30 is
-  a clamp in the firmware, not only the form's range.
+  cycle included). Brightness per output, 10% as shipped. It was clamped
+  at 30%; **from 2026-09-24 it goes to 100%** (Rob: "remove the limit
+  over 30% ... warn the user are you really sure before applying over 30%
+  but allow it"), with CONFIG asking before it saves anything above 30.
+  The question is a general setting feature (a warn threshold on a
+  PluginSetting), not a lights special case.
   - Each output's whole frame fits its RMT channel memory (1 block for the
     drive light, 4 for the strip), so a Wi-Fi interrupt can never land
     mid-frame and stretch a low into a latch. `rmt_transmit` is
@@ -507,6 +540,17 @@ this tree.
     state; one runs at a time.
   - The seeded-screens manifest already existed (`sd.cpp`, `.seeded`).
   - Static DRAM 161,800 after the merge (18,936 free).
+- **The Waveshare S3 is in (1.1.0-dev.8)**, fast-forwarded from its lane
+  (s3-1.1.0, c76b7e5).
+  - Board code sits behind `BBS_BOARD_WS_S3LCD147` / `BBS_HAS_LCD` in
+    `src/board.h`, which `config.h` includes. The ESP32 image grew
+    +1,300 flash and +72 static DRAM, all of it the lights features every
+    board gets.
+  - S3 static DRAM is 247,192 of 341,760, and 81,920 of that is IRAM.
+    Internal heap on the board: 77,739 free, 68,031 at its lowest.
+  - Host runs: 689/0 with no card, 967/0 with a card, S3 profile 55/0.
+  - Still owed on the S3: the panel's redesign (tty-ux revision 1, Rob
+    wants changes first), LIGHTS TEST with Rob watching, and flash #3.
 
 ## 1.0.0 (2026-09-23)
 
@@ -878,6 +922,16 @@ they are the process, and getting them wrong wastes Rob's time.
   `sudo /srv/unleashed_directory/deploy/update.sh` on the droplet. I have no
   SSH access to it and am not to go looking for a way in. "Get it on the
   website" means "get it into the repo", not "connect to the server".
+  **From 2026-09-24 the directory can autopublish** (Rob): while he has it
+  switched on (manually, when he is online), the droplet runs update.sh
+  every 30 seconds, so a push to its main is live within half a minute,
+  and a firmware release tag reaches /install the same way. Assume it is
+  on: a directory push or a release tag IS a deploy. Commit locally, tell
+  Rob what changed, and push or tag only on his go for that one.
+- **The Waveshare S3 on COM12 is the one board I may flash** (Rob,
+  2026-09-24), and only after he acknowledges each flash, the first and
+  every new build. Telnet to it needs no permission. UHQ and TRA are still
+  his to flash.
 - **Tests and subagents stay on 127.0.0.1.** Never send traffic at the live
   board or the live directory unless Rob asks for an on-board test. My
   "external" checks once ran over his own LAN and every result was hairpin
@@ -2132,6 +2186,7 @@ Queued for the next build (Rob's plan, in order):
   Shape: a second listener on its own port feeding the same session pool, with its own cap (`ssh_nodes = 2`). A caller is a caller once they are in.
   **The gotcha is plumbing, not memory.** SSH is not a socket that can be swapped in: it has a channel layer, a key exchange and window management above TCP. The seam exists, because output already goes through `ByteSink` and the telnet layer already sits between the socket and the session, but this is a genuine port and a phase of its own, not a config flag.
   An S3 with PSRAM moves the per-session buffers off internal DRAM and makes ten encrypted sessions plausible, the same argument that already governs the node count.
+  **Queued as an S3 option, not started** (Rob, 2026-09-24: "add an s3 ssh option but dont start that yet"). After 1.1.0, as its own phase, board-gated (`BBS_HAS_SSH`, S3 profiles only, the ESP32 image unchanged). It adds a way to connect, not lines: sockets stay capped at 16 on every chip, so it is still ten caller lines. SSH gives the terminal type and window size in its pty request, so SSH callers skip the detection probe. First step when it starts: a research pass on the library and its licence (wolfSSH may be GPLv3-only, which would move the combined firmware to GPLv3, and that is Rob's call; the libssh ESP32 ports are LGPL, which fits, but their ESP-IDF 5.3.1 build without Arduino is unconfirmed), RAM per session and flash cost.
 
 - **Doors go horizontal: a second ESP32 on the serial port, not Lua in the core** (Rob, 2026-09-21). **This replaces the Lua plan and takes it off the roadmap.**
   Rob's framing: "Id rather go horizontal on this and plug in another device to the existing one which FEELS more legit like adding BBS hardware." He is right on both counts, the feeling and the engineering.
