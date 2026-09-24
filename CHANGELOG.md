@@ -24,6 +24,48 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.0.3, 2026-09-24
+
+A data-loss fix. Restoring a backup that contained accounts deleted every
+account on the board.
+
+- **What went wrong.** A restore unpacks the zip into a staging folder on
+  the `storage` partition, then moves each file to where it lives. Since
+  0.14.0 the accounts, `users.txt`, live on a different partition,
+  `userdata`. On the ESP32 each partition is a filesystem of its own, and a
+  file cannot be renamed from one to another: the move of `users.txt`
+  always failed. The restore then deleted the live `users.txt`, to make
+  room, and tried the move again, which failed the same way. The accounts
+  were gone, and nothing had replaced them.
+  `system.cfg` and the screens were restored correctly; only the accounts
+  were lost.
+- **Who is affected.** Anyone who restored a backup containing
+  `users.txt` through the backup window, on any release from 0.14.0 to
+  1.0.2. curl printed `Applied: ... users.txt, ... with errors` and the
+  status was 500. Afterwards every caller was asked to register again. On a
+  freshly flashed board the accounts from the backup simply never
+  arrived. Staff passwords are in `system.cfg`, so `BYE <password>` still
+  worked.
+- **What to do.** Update to 1.0.3, then restore again from the same backup
+  zip. The zip was never changed and still holds every account. A restore
+  replaces all the accounts with the ones in the zip, so an account
+  somebody registered after the failed restore is not kept: note any such
+  handles first, and ask those callers to register again afterwards.
+- **The fix.** A file that lives on a different partition from staging is
+  copied into `users.txt.new` beside the live file, closed, and renamed
+  over it. That rename is inside one partition, where it replaces the old
+  file in one step. Nothing removes the live file first any more: if any
+  part fails, the accounts stay exactly as they were, the restore says
+  `with errors`, and the serial console names the file and the reason.
+  The same applies to a screen: a failed move no longer deletes the screen
+  it was replacing.
+- **Why the tests never saw it.** The host build kept all its data on one
+  Linux filesystem, where the rename worked. The test harness now puts the
+  host's user data on a different filesystem (`/dev/shm`), as the board
+  does. A new test restores a backup with accounts in it and checks every
+  account comes back, then makes the copy fail and checks the live
+  accounts are untouched. It fails on 1.0.2.
+
 ## 1.0.2, 2026-09-23
 
 A security fix. Restoring a backup could turn the published default sysop

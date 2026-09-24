@@ -127,6 +127,8 @@ Accept upload (Y/N)?
 Read the IP address before answering: anyone on your network can send an upload while the window is open, only the sysop can accept it.
 
 - `Y` swaps the files in, reloads `system.cfg` and the screens immediately (no reboot), and curl prints `Applied: ...`.
+  `system.cfg` and `users.txt` are written beside the live file on `userdata` as `<name>.new` and renamed over it, so each one is replaced whole or not at all. A file that cannot be put in place leaves the old one untouched, and curl's `Applied:` line says `with errors`.
+  Before 1.0.3 a restore with `users.txt` in it deleted every account instead; restore the same zip again after updating (see [CHANGELOG.md](CHANGELOG.md)).
 - `N` throws the upload away and curl prints `Upload discarded`.
 - No answer in 2 minutes counts as `N`.
 

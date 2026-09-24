@@ -42,6 +42,7 @@
 #include "clock.h"
 #include "../platform/platform.h"
 
+#include <cerrno>
 #include <cstring>
 #include <cstdlib>
 #include <cctype>
@@ -68,9 +69,12 @@ uint32_t get32(const uint8_t* p) { return get16(p) | (static_cast<uint32_t>(get1
 // two partitions now: the screens are on the one a filesystem upload can
 // replace, while the config and the accounts sit on the user partition that
 // survives a reflash. Restoring has to put each back where it lives.
+bool userOwned(const char* name) {
+    return !strcmp(name, BBS_CONFIG_FILE) || !strcmp(name, BBS_USERS_FILE);
+}
+
 void livePath(char* out, size_t n, const char* name) {
-    bool owned = !strcmp(name, BBS_CONFIG_FILE) || !strcmp(name, BBS_USERS_FILE);
-    snprintf(out, n, "%s/%s", owned ? plat::userBase() : plat::fsBase(), name);
+    snprintf(out, n, "%s/%s", userOwned(name) ? plat::userBase() : plat::fsBase(), name);
 }
 
 void stagePath(char* out, size_t n, const char* name) {
@@ -95,6 +99,44 @@ void removeDir(const char* dir) {
         closedir(d);
     }
     rmdir(dir);
+}
+
+// installCopy: put a staged file live on another partition. Staging is on
+// storage and the accounts are on userdata; on the board each LittleFS
+// partition is its own VFS, and a rename from one to the other fails with
+// EXDEV. So the file is copied to <dst>.new beside the live one, closed, and
+// renamed over it: a rename inside one partition, which LittleFS does
+// atomically. The live file is not touched until its replacement is whole,
+// so a failure anywhere leaves it as it was. Its buffers are static, not
+// locals: this runs under apply(), the deepest path on the BBS task's 8 KB
+// stack, and a frame called from there adds to that depth whether or not it
+// is inlined. It only ever runs on the BBS task, one restore at a time, so
+// 380 bytes of static RAM is the safer place for them.
+// users::rewrite uses the same users.txt.new name. Both run on the BBS task
+// and never interleave, and each opens it with truncation.
+bool installCopy(const char* src, const char* dst) {
+    static char tmp[124];
+    snprintf(tmp, sizeof(tmp), "%.110s.new", dst);
+    FILE* in = fopen(src, "rb");
+    FILE* out = in ? fopen(tmp, "wb") : nullptr;
+    if (!out) {
+        plat::log("backup: %.100s not restored (errno %d), the live file is kept", dst, errno);
+        if (in) fclose(in);
+        return false;
+    }
+    static uint8_t buf[256];
+    size_t n;
+    bool ok = true;
+    while (ok && (n = fread(buf, 1, sizeof(buf), in)) > 0) ok = fwrite(buf, 1, n, out) == n;
+    ok = !ferror(in) && ok;
+    fclose(in);
+    ok = (fclose(out) == 0) && ok;                // LittleFS commits the file on close
+    if (ok && rename(tmp, dst) == 0) { remove(src); return true; }
+    // Said on the console: a silent failure of exactly this move is what
+    // lost every account from 0.14.0 to 1.0.2.
+    plat::log("backup: %.100s not restored (errno %d), the live file is kept", dst, errno);
+    remove(tmp);                                  // the live file stays as it was
+    return false;
 }
 
 void dosStamp(uint16_t& t, uint16_t& d) {
@@ -794,11 +836,13 @@ bool ZipImport::apply(char* msg, size_t msgLen) {
             else { remove(tmp); ++failures; }
             continue;
         }
-        bool moved = rename(src, dst) == 0;
-        if (!moved) {
-            remove(dst);                             // some filesystems will not rename over a file
-            moved = rename(src, dst) == 0;
-        }
+        // users.txt crosses partitions and is copied; a screen is renamed
+        // within storage. Nothing removes the live file first. That was the
+        // fallback when a rename failed, and on the board the rename of
+        // users.txt always failed (EXDEV), so from 0.14.0 to 1.0.2 every
+        // restore with accounts in it deleted them. LittleFS renames over a
+        // file, and when it refuses (the file is open) it refuses a remove too.
+        bool moved = userOwned(it.name) ? installCopy(src, dst) : rename(src, dst) == 0;
         if (!moved)                                   ++failures;
         else if (strcmp(it.name, BBS_USERS_FILE) != 0) ++screens;
     }

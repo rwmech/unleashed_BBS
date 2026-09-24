@@ -1812,6 +1812,78 @@ def test_backup():
 
 
 # ---------------------------------------------------------------------------
+# A restore with accounts in it, across partitions (1.0.3)
+# ---------------------------------------------------------------------------
+def test_restore_cross_partition():
+    """Restoring users.txt keeps the accounts (1.0.3).
+
+    The board stages an upload on the storage partition and keeps the
+    accounts on userdata, and a rename between two LittleFS partitions fails
+    with EXDEV. From 0.14.0 to 1.0.2 the restore then removed the live
+    users.txt and tried the rename again, which failed the same way: every
+    account on the board was gone. The harness puts the host's user data on
+    another filesystem, so a rename between the two fails here as well.
+    """
+    print("Backup restore with accounts, across partitions")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  reads the board's users.txt, host only")
+        return True
+    if not PASSWORD:
+        print("  SKIP  no sysop_password")
+        return True
+    ok = check("user data is on another filesystem from staging, as on the board",
+               os.stat(DATA).st_dev != os.stat(USERDATA).st_dev)
+    ansi_login("Keeper").close()             # an account the backup must bring back
+    s = ansi_login("Rob")
+    s.buf.clear()
+    s.send(f"bye {PASSWORD}\r".encode())
+    ok &= check("sysop node", s.wait_for(b"SysOp node", 5))
+    s.wait_for(b"*** Backup open", 8)
+    status, data = http_call("GET", "/backup.zip")
+    z = zipfile.ZipFile(io.BytesIO(data)) if status == 200 else None
+    users = z.read("users.txt").decode() if z and "users.txt" in z.namelist() else ""
+    handles = re.findall(r"^\[([^\]\r\n]+)\]$", users, re.M)
+    ok &= check("the backup carries the accounts", "Keeper" in handles and "Rob" in handles)
+
+    ansi_login("AfterZip").close()           # made after the download: the restore drops it
+    time.sleep(0.5)
+    status, body, seen = upload_with_answer(s, data, b"y")
+    ok &= check("the sysop is asked", seen)
+    ok &= check("the restore applies without errors",
+                status == 200 and b"Applied" in body and b"with errors" not in body)
+    live_path = USERDATA / "users.txt"
+    live = live_path.read_text() if live_path.exists() else ""
+    live_handles = re.findall(r"^\[([^\]\r\n]+)\]$", live, re.M)
+    ok &= check("users.txt is still there", live_path.exists())
+    ok &= check("every account in the backup is back",
+                bool(handles) and all(h in live_handles for h in handles))
+    ok &= check("and the file really was replaced", "AfterZip" not in live_handles)
+    ok &= check("no copy left beside it", not (USERDATA / "users.txt.new").exists())
+    c, which = handle_then("Keeper", [b"Password:", b"[R]egister"])
+    ok &= check("an account from the backup can log in", which == 0)
+    c.close()
+
+    # A restore that cannot write its copy must leave the live accounts
+    # alone. A directory where users.txt.new goes makes the copy fail.
+    ansi_login("Survivor").close()           # only in the live file, not the zip
+    time.sleep(0.5)
+    blocker = USERDATA / "users.txt.new"
+    blocker.mkdir()
+    try:
+        status, body, seen = upload_with_answer(s, data, b"y")
+        ok &= check("a restore that cannot put users.txt in place says so",
+                    seen and b"with errors" in body)
+    finally:
+        blocker.rmdir()
+    live = live_path.read_text() if live_path.exists() else ""
+    live_handles = re.findall(r"^\[([^\]\r\n]+)\]$", live, re.M)
+    ok &= check("and keeps the live accounts as they were",
+                "Survivor" in live_handles and all(h in live_handles for h in handles))
+    s.close()
+    return ok
+
+
+# ---------------------------------------------------------------------------
 # A restore and the published sysop password (1.0.2)
 # ---------------------------------------------------------------------------
 STAFF_KEYS = ("sysop_password", "cosysop1_password", "cosysop2_password")
@@ -7854,7 +7926,7 @@ GROUPS = {
     # The subsystems that own a session and draw their own screens.
     "places":    ["forums", "files", "chat", "xfer"],
     # Anything that reads or writes the card.
-    "storage":   ["files", "forums", "sd", "xfer", "backup"],
+    "storage":   ["files", "forums", "sd", "xfer", "backup", "restore_cross_partition"],
     # The shell, its lists and the screens the core draws.
     "shell":     ["menus", "sysinfo", "page", "about", "config", "welcome", "paced", "seeded", "fx_codes"],
     # Logging in, accounts, staff.
@@ -7903,7 +7975,7 @@ ORDER_NAMES = [
     # Destructive, and therefore last whatever else is running. The published
     # default's restore test puts the board back as it found it, and on a
     # --fresh board it needs to run before first_setup gives it a password.
-    "test_backup_published_default",
+    "test_backup_published_default", "test_restore_cross_partition",
     "test_first_setup", "test_backup", "test_ban",
 ]
 

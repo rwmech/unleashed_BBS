@@ -49,7 +49,9 @@
 #                 cheap to verify gets verified far more often.
 #
 #               Results land in /tmp/bbs-<tag>/out.txt and the board's log
-#               in /tmp/bbs-<tag>/host.log.
+#               in /tmp/bbs-<tag>/host.log. The board's user data is in
+#               /dev/shm/bbs-<tag>-user, a different filesystem, as on the
+#               board (see below).
 #
 # Targets:      Linux host build (WSL)
 # See also:     CLAUDE.md
@@ -119,6 +121,20 @@ mkdir -p "$DATA/user" "$CARDDIR"
 cp -r "$PROJ/data/." "$DATA/"
 rm -f "$DATA/system.cfg" "$DATA/users.txt" "$DATA/calls.log"
 rm -rf "$DATA/logs"
+
+# The board keeps accounts and settings on a partition of their own, and each
+# LittleFS partition is a separate filesystem: a rename from storage to
+# userdata fails with EXDEV there. Put this board's user data on another
+# filesystem too (tmpfs), or that class of bug passes every test here. It
+# did: a restore deleted every account on a real board from 0.14.0 to 1.0.2.
+# data/user is a link to it, so every path into data/user still works.
+USERDIR=/dev/shm/bbs-$TAG-user
+rm -rf "$USERDIR"
+if mkdir -p "$USERDIR" 2>/dev/null; then
+    cp -a "$DATA/user/." "$USERDIR/"
+    rm -rf "$DATA/user"
+    ln -s "$USERDIR" "$DATA/user"
+fi
 
 cat > "$DATA/user/system.cfg" <<CFG
 tz = UTC0
