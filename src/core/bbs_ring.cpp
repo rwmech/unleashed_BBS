@@ -743,39 +743,37 @@ void Bbs::ringingKey(Session& s, uint32_t now) {
 // exist. Stored through the chat plugin's own writer (chat::leaveMail), so
 // the box limits and the notice to a sysop who is on are MAIL's own.
 //
-// "The sysop" for mail is every account the sysop password has marked
-// (level = sysop), each stored as users.txt's one pass meets it: at a ring's
-// end, never in a frame, and with no second lookup per account. Every one,
-// not the first few: a board where many accounts have typed the password
-// would otherwise send each ring to the oldest of them for ever, and tell
-// the sysop who was rung "It is in MAIL." about a box they never read. The
-// note file stays as the fallback, for a board with no such account yet,
-// mail switched off, or every sysop box full, because a ring that reached
-// nobody and was then lost would be worse than either.
+// "The sysop" for mail is one account (Rob, 1.1.0): the one CONFIG board
+// names, or the last to elevate to sysop (sysopAccount). It was every
+// account the sysop password had ever marked, and marks are never taken
+// off, so each ring cost a board with several such accounts several of its
+// 64 mail slots. The note file stays as the fallback, for a board with no
+// such account yet, mail switched off, or the box full, because a ring that
+// reached nobody and was then lost would be worse than either.
 //
 // The message: from the caller's handle, with a guest's marked * as it is
 // in every list (and said again in the text, since a guest has no account
 // to reply to), "Ring: <reason>" first, then where and when.
 // ---------------------------------------------------------------------------
 bool Bbs::ringLeave(const ring::Note& n) {
-    struct Leave { char from[BBS_USER_MAX + 1]; char text[ring::kReasonMax + 96]; bool mailed; };
-    Leave l{};
+    bool mailed = false;
     uint8_t room = plugins::indexOf("chat");
     if (room != 0xFF && plugins::running(room) && chat::mailOn()) {
-        if (n.guest) snprintf(l.from, sizeof(l.from), "%.*s*", BBS_USER_MAX - 1, n.handle);
-        else         snprintf(l.from, sizeof(l.from), "%s", n.handle);
-        char when[16] = "";
-        if (n.epoch) clk::fmtEpoch(when, sizeof(when), "%H:%M", n.epoch);
-        snprintf(l.text, sizeof(l.text), "Ring: %s\nRang from node %s%s%s%s.", n.reason,
-                 nodeNum(n.node).t, when[0] ? " at " : "", when, n.guest ? ", as a guest" : "");
-        users::range(0, 255, [](void* ctx, uint8_t, const UserRec& u) {
-            Leave& lv = *static_cast<Leave*>(ctx);
-            if (u.retired || u.level < static_cast<uint8_t>(Access::Sysop)) return;
-            if (chat::leaveMail(lv.from, u, lv.text)) lv.mailed = true;
-        }, &l);
+        UserRec to;
+        if (sysopAccount(to)) {
+            char from[BBS_USER_MAX + 1];
+            char text[ring::kReasonMax + 96];
+            if (n.guest) snprintf(from, sizeof(from), "%.*s*", BBS_USER_MAX - 1, n.handle);
+            else         snprintf(from, sizeof(from), "%s", n.handle);
+            char when[16] = "";
+            if (n.epoch) clk::fmtEpoch(when, sizeof(when), "%H:%M", n.epoch);
+            snprintf(text, sizeof(text), "Ring: %s\nRang from node %s%s%s%s.", n.reason,
+                     nodeNum(n.node).t, when[0] ? " at " : "", when, n.guest ? ", as a guest" : "");
+            mailed = chat::leaveMail(from, to, text);
+        }
     }
-    if (!l.mailed) ringSaveNote(n);
-    return l.mailed;
+    if (!mailed) ringSaveNote(n);
+    return mailed;
 }
 
 // sysopMail: see bbs.h

@@ -3025,29 +3025,39 @@ void Bbs::cmdBye(Session& s, const char* arg, uint32_t now) {
     if (*arg && s.guest) {
         plat::log("bbs: node %s guest BYE with an argument: plain logoff", nodeName(s).t);
     } else if (*arg && s.role != Role::Sysop && syscfg::anyPassword()) {
-        Access lv = syscfg::passwordLevel(arg);
-        // The published default is honoured from the board's own network
-        // only. From anywhere else it is a wrong password, ban count and
-        // all, because anybody can read it on the install page.
-        if (lv == Access::Sysop && syscfg::get().sysopDefault && !localAddr(s.ip)) {
-            plat::log("bbs: node %s default sysop password refused from %s (not local)",
-                      nodeName(s).t, s.ip);
-            lv = Access::None;
-        }
-        if (lv != Access::None) {
-            bans_.clear(s.ipAddr);
-            if (lv == Access::Sysop) { elevate(s, now); return; }
-            if (lv > s.level && s.role == Role::Caller) { coElevate(s, lv, now); return; }
-            goodbye(s, now);                     // busy line has no node to keep
-            return;
-        }
-        plat::log("bbs: node %s staff password failed from %s", nodeName(s).t, s.ip);
-        if (bans_.fail(s.ipAddr, now)) {
-            plat::log("bbs: %s banned for %u min (sysop password)", s.ip,
-                      static_cast<unsigned>(BBS_BAN_MS / 60000u));
-        }
+        Access lv = staffPassword(s, arg, now, nullptr);
+        if (lv == Access::Sysop) { elevate(s, now); return; }
+        if (lv != Access::None && lv > s.level && s.role == Role::Caller) { coElevate(s, lv, now); return; }
+        // A level not above this caller's, or the busy line, which has no
+        // node to keep: a plain logoff, as is a wrong one.
     }
     goodbye(s, now);
+}
+
+// staffPassword: see bbs.h. BYE's rules, taken out of cmdBye so the sysop
+// account's login question (onSysopPassword) cannot drift from them.
+Access Bbs::staffPassword(Session& s, const char* pw, uint32_t now, bool* banned) {
+    if (banned) *banned = false;
+    Access lv = syscfg::passwordLevel(pw);
+    // The published default is honoured from the board's own network only.
+    // From anywhere else it is a wrong password, ban count and all, because
+    // anybody can read it on the install page.
+    if (lv == Access::Sysop && syscfg::get().sysopDefault && !localAddr(s.ip)) {
+        plat::log("bbs: node %s default sysop password refused from %s (not local)",
+                  nodeName(s).t, s.ip);
+        lv = Access::None;
+    }
+    if (lv != Access::None) {
+        bans_.clear(s.ipAddr);
+        return lv;
+    }
+    plat::log("bbs: node %s staff password failed from %s", nodeName(s).t, s.ip);
+    if (bans_.fail(s.ipAddr, now)) {
+        plat::log("bbs: %s banned for %u min (sysop password)", s.ip,
+                  static_cast<unsigned>(BBS_BAN_MS / 60000u));
+        if (banned) *banned = true;
+    }
+    return Access::None;
 }
 
 // ---------------------------------------------------------------------------

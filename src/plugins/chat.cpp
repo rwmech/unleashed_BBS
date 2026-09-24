@@ -154,7 +154,7 @@ constexpr uint8_t    kMailDays   = 14;    // how long one waits to be read
 // A kept message does not ring "You have mail", is skipped when MAIL looks
 // for something new, and still counts against the box, because it is still
 // taking up room somebody else cannot use.
-// MF_SYSOP (1.1.0): addressed to an account the sysop password has marked.
+// MF_SYSOP (1.1.0): addressed to the sysop's account (Bbs::sysopAccount).
 // Set when the message is left, from the account as it is then, and on the
 // board's existing mail once at start (mailMarkSysops), then kept on the
 // record so an index read gives it back. It is what sysopUnread reads: the
@@ -907,20 +907,19 @@ void mailIndex() {
     noteSysopMail();
 }
 
-// mailMarkSysops: MF_SYSOP on the mail waiting for a sysop account, and off
-// the mail of one that no longer is (1.1.0). At start, and after a rename
-// rewrote the file: one pass over users.txt. Mail left from now on is marked
-// as it is stored, and the next rewrite writes these marks through, either
-// way. A rank that changes later, up or down, or a retired account, shows
-// on mail left after it, and on the rest at the next start, which a CONFIG
-// save also is.
+// mailMarkSysops: MF_SYSOP on the mail waiting for the sysop's account
+// (Bbs::sysopAccount: the one CONFIG names, or the last to elevate), and off
+// everybody else's (1.1.0). At start, after a rename rewrote the file, and
+// when the sysop's account changes: one pass over users.txt. Mail left from
+// now on is marked as it is stored, and the next rewrite writes these marks
+// through, either way. A CONFIG save restarts the plugins, so a new Sysop
+// on the board page lands here too.
 void mailMarkSysops() {
     for (uint8_t i = 0; i < kMailSlots; ++i) g_mailFl[i] = static_cast<uint8_t>(g_mailFl[i] & ~MF_SYSOP);
-    users::range(0, 255, [](void*, uint8_t, const UserRec& u) {
-        if (u.retired || u.level < static_cast<uint8_t>(Access::Sysop)) return;
+    UserRec u;
+    if (Bbs::instance().sysopAccount(u))
         for (uint8_t i = 0; i < kMailSlots; ++i)
             if (g_mailTo[i][0] && ieq(g_mailTo[i], u.handle)) g_mailFl[i] |= MF_SYSOP;
-    }, nullptr);
     noteSysopMail();
 }
 
@@ -1567,7 +1566,7 @@ MailStored mailStore(const char* from, const UserRec& u, const char* text, int16
     snprintf(r.to, sizeof(r.to), "%.*s", BBS_USER_MAX, u.handle);
     snprintf(r.from, sizeof(r.from), "%.*s", BBS_USER_MAX, from);
     r.at  = nowEpoch;
-    if (!u.retired && u.level >= static_cast<uint8_t>(Access::Sysop)) r.flags |= MF_SYSOP;
+    if (!u.retired && Bbs::instance().isSysopAccount(u.id)) r.flags |= MF_SYSOP;
     snprintf(r.text, sizeof(r.text), "%.*s", static_cast<int>(g_mailChars), text);
     r.len = static_cast<uint16_t>(strlen(r.text));
 
@@ -3216,6 +3215,11 @@ bool leaveMail(const char* from, const UserRec& to, const char* text) {
 bool sysopUnread() {
     if (g_index == 0xFF || !plugins::running(g_index)) return false;
     return sysopUnreadNow();
+}
+
+void sysopChanged() {
+    if (g_index == 0xFF || !plugins::running(g_index)) return;
+    mailMarkSysops();
 }
 
 bool inRoom(const Session& s) {

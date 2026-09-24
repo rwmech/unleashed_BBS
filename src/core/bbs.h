@@ -96,6 +96,7 @@ enum class SState : uint8_t {
     Ringing,   // a caller waiting on a ring: the spinner, any key stops it
     RingAsk,   // the sysop's one-key question: answer, decline, away, later
     CardJob,   // BACKUP SD / RESTORE SD working, or asking Y/N (1.1.0)
+    AskSysop,  // the sysop's account at login: "Sysop password:", Enter skips (1.1.0)
 };
 
 enum class Role : uint8_t {
@@ -510,6 +511,23 @@ public:
     // False when chat, and so mail, is not running.
     bool sysopMail() const;
 
+    // The sysop's own account (1.1.0, Rob): the one a missed ring is mailed
+    // to, whose unread mail sysopMail() means, and who is asked for the
+    // sysop password at login. CONFIG board's "Sysop" (sysop_id) while that
+    // account exists and is not retired; otherwise the last account to
+    // elevate to sysop (sysopLast_, kept in userdata so it outlives a
+    // restart). Matched by id, never by handle.
+    //
+    // sysopAccount: one pass over users.txt, filling out. False when there is
+    // no such account. At a ring's end or a plugin start, never in a frame.
+    bool sysopAccount(UserRec& out);
+    // isSysopAccount: is this id the sysop's account? For a caller who
+    // already has the account in hand (a login, a message being stored),
+    // so the common answers need no read: the configured id, or no id at
+    // all, answer at once, and only "the fallback, while an id is
+    // configured" reads users.txt to see whether the configured one is live.
+    bool isSysopAccount(uint32_t id);
+
 private:
     Bbs() = default;
 
@@ -556,6 +574,12 @@ private:
     void skipSetup(Session& s);                       // ESC at the setup question
     void beginSetup(Session& s, uint32_t now);        // setup screen, then setupConfig
     void setupConfig(Session& s, uint32_t now);       // CONFIG staff, as part of setup
+    // The sysop's account at login (1.1.0): "Sysop password:" there and
+    // then, Enter skips. Through staffPassword, so every rule BYE applies
+    // applies here. Never granted by the account password alone.
+    bool offerSysop(Session& s);
+    void askSysop(Session& s);
+    void onSysopPassword(Session& s, uint32_t now);
     void saveCallStats(Session& s, uint32_t now);
     uint16_t dayMinutesUsed(const char* handle, uint32_t now);
 
@@ -762,6 +786,13 @@ private:
     void cmdBell(Session& s);
     void cmdCodes(Session& s);
     void cmdBye(Session& s, const char* arg, uint32_t now);
+    // staffPassword: the one check a typed staff password meets, at BYE and
+    // at the sysop account's login question (1.1.0). The level it buys, with
+    // the published default honoured from the board's own network only; a
+    // right one clears the address's ban count. Access::None for a wrong
+    // one, which is logged and counted toward the address's ban, and
+    // *banned says whether that count just banned it.
+    Access staffPassword(Session& s, const char* pw, uint32_t now, bool* banned);
     void fxNext(Session& s);
 
     // -- sysop (bbs_sysop.cpp) -----------------------------------------------
@@ -838,9 +869,9 @@ private:
     void ringClosed(Session& s);
     void serviceRing(uint32_t now);
     // ringLeave: where a ring nobody answered goes (1.1.0, Rob). MAIL, from
-    // the caller, to every account the sysop password has marked; the note
-    // file when there is no such account, mail is off, or every box is
-    // full, so a ring is never lost. True when it went to mail.
+    // the caller, to the sysop's account (sysopAccount); the note file when
+    // there is no such account, mail is off, or the box is full, so a ring
+    // is never lost. True when it went to mail.
     bool ringLeave(const ring::Note& n);
     void ringSaveNote(const ring::Note& n);
     // ringNotes: at the sysop's login or elevation, and at a bare O with no
@@ -874,6 +905,16 @@ private:
     // ringSaveNote, cleared when ringNotes shows them. What the dashboard's
     // "Waiting on you" row says, without opening rings.txt per frame.
     uint16_t  ringNotesWaiting_ = 0;
+    // The last account to elevate to sysop (1.1.0): the fallback for where
+    // missed rings go when CONFIG names no sysop account, or names one that
+    // is gone. In <userdata>/sysop.last, read at boot, written only when it
+    // changes. 0 is nobody yet.
+    uint32_t  sysopLast_ = 0;
+    void      sysopLastLoad();
+    void      sysopLastSave(uint32_t id);
+    // linkSysop: CONFIG board's Sysop set to this caller's account, by the
+    // setup flow, for the account that set the board up.
+    void      linkSysop(const Session& s);
 
     // -- backups on the SD card (bbs_backup.cpp, 1.1.0) ------------------------
     void cmdBackup(Session& s, const char* arg, uint32_t now);

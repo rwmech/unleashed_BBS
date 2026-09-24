@@ -154,7 +154,7 @@ the door.
 - ESC, or Enter, leaves the message unread and changes nothing. Any other key is ignored rather than guessed at, because two of the three choices cannot be undone.
 - **How many you can have waiting depends on where the mail lives.** Three on a board with no SD card, because that storage is shared with the accounts and is the thing that has to survive. Twelve with a card, which has room and no reason to ration.
 - **A full mailbox is refused, never emptied.** The sender is told the box is full and that nothing was replaced, which is something they can act on: wait, or reach the person another way.
-- Messages need an account at both ends. Guests can neither send nor receive. The one exception is a ring for the sysop that nobody answered (1.1.0): the board leaves it in the MAIL of every sysop account, from the caller, a guest's handle marked `*`, first line `Ring:` and the reason. It follows the same rules, box limits included; see COMMANDS.md, "Missed rings go to MAIL".
+- Messages need an account at both ends. Guests can neither send nor receive. The one exception is a ring for the sysop that nobody answered (1.1.0): the board leaves it in the MAIL of the sysop's account (the one `CONFIG board` names, or the last to elevate), from the caller, a guest's handle marked `*`, first line `Ring:` and the reason. It follows the same rules, box limits included; see COMMANDS.md, "Missed rings go to MAIL".
 - The board holds 64 messages in total. When they are all spoken for a sender is told the board's mail is full.
 - A message that is not read within 14 days expires. The caller it was waiting for is told that a message expired, so they know they missed something.
 

@@ -584,7 +584,17 @@ def login(c, handle, pw=TEST_PW, as_pet=False, wait_main=True):
             return False
     else:
         return False
-    return c.wait_for(enc("Main"), 8) if wait_main else True
+    if not wait_main:
+        return True
+    # The sysop's own account is asked for the sysop password at login
+    # (1.1.0), and on the harness board that is whichever account elevated
+    # last. Enter skips, which is what every test that did not come here to
+    # answer it wants; test_sysop_account answers it.
+    got = wait_any(c, [enc("Main"), enc("Sysop password: ")], 8)
+    if got == 1:
+        c.send(b"\r")
+        return c.wait_for(enc("Main"), 8)
+    return got == 0
 
 
 def ansi_login(handle, pw=TEST_PW, port=None):
@@ -2494,8 +2504,9 @@ def test_config_cycle_numbers():
     c.buf.clear()
     c.send(b"config board\r")
     c.wait_for(b"Board", 5)
-    # Board, Hostname, Timezone, TZ string, NTP, Idle min, LED gpio, Land on
-    got, rows = ascii_form_seen(c, [b"", b"", b"8", b"", b"", b"", b"", b""])
+    # Board, Hostname, Timezone, TZ string, NTP, Idle min, LED gpio, Land on,
+    # Sysop
+    got, rows = ascii_form_seen(c, [b"", b"", b"8", b"", b"", b"", b"", b"", b""])
     txt = "\n".join(rows)
     ok &= check("the zones are listed by number", "8 US Central (Chicago)" in txt and "35 Custom" in txt)
     ok &= check("and the string follows the zone picked by number",
@@ -2504,7 +2515,7 @@ def test_config_cycle_numbers():
     c.buf.clear()
     c.send(b"config board\r")
     c.wait_for(b"Board", 5)
-    ascii_form(c, [b"", b"", b"1", b"", b"", b"", b"", b""])
+    ascii_form(c, [b"", b"", b"1", b"", b"", b"", b"", b"", b""])
     ok &= check("and back to UTC by number", (cfg_line("tz") or "").endswith("= UTC0"))
     c.close()
     return ok
@@ -3147,7 +3158,7 @@ def test_ring_mail():
 
     Rob: "the sysop page should drop to email and a letter icon can show in
     the header the sysop has mail". From the caller, a guest marked as one,
-    "Ring: <reason>" first; to every account the sysop password has marked;
+    "Ring: <reason>" first; to the sysop's account (test_sysop_account);
     the note file only when there is no such account, so a ring is never
     lost. The flag the display's letter icon reads is said on the console
     when it changes. Played on a copy of this board with every sysop mark
@@ -3166,6 +3177,8 @@ def test_ring_mail():
     for p in user.rglob("mail.dat"):
         p.unlink()
     for p in user.rglob("rings.txt"):
+        p.unlink()
+    for p in user.rglob("sysop.last"):               # the last sysop is the test's own too
         p.unlink()
     port = PORT + 3705
     proc = start_copy(tmp, (str(port),))
@@ -3274,6 +3287,214 @@ def test_ring_mail():
         ok &= check("a bare O with no ring says where missed rings go",
                     b"Nobody is ringing." in plain(s.buf) and b"Missed rings go to MAIL." in plain(s.buf))
         s.close()
+    finally:
+        stop_copy(proc, tmp)
+    return ok
+
+
+def user_ids(users_txt):
+    """{handle: id} from a users.txt, read the way the board writes it."""
+    ids, cur = {}, None
+    for line in users_txt.read_text(errors="replace").splitlines():
+        t = line.strip()
+        if t.startswith("[") and t.endswith("]"):
+            cur = t[1:-1]
+        elif cur and "=" in t and t.split("=", 1)[0].strip() == "id":
+            ids[cur] = int(t.split("=", 1)[1].strip() or 0)
+    return ids
+
+
+def test_sysop_account():
+    """Missed rings go to ONE account, and it is asked for the password (1.1.0).
+
+    Rob's design, "Missed sysop pages go to one account": not every account
+    the sysop password ever marked. CONFIG board's Sysop names it, checked
+    against the accounts and stored with its id (sysop_id), so the id is what
+    counts and not the name; unset or gone, the last account to elevate,
+    kept across a restart. When that account logs in it is asked "Sysop
+    password:", Enter skips, through BYE's own check and ban count, and the
+    account password alone never makes anybody staff. The setup flow names
+    the account that set the board up. Played on copies of this board.
+    """
+    print("The sysop's account: missed rings, and the password at login")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and a sysop password")
+        return True
+    tmp = copy_data()
+    user = tmp / "data" / "user"
+    users = user / "users.txt"
+    if users.exists():
+        users.write_text("".join(ln for ln in users.read_text().splitlines(True)
+                                 if ln.strip() != "level = sysop"))
+    for name in ("mail.dat", "rings.txt", "sysop.last"):
+        for p in user.rglob(name):
+            p.unlink()
+    cfgp = user / "system.cfg"
+    cfgp.write_text("".join(ln for ln in cfgp.read_text().splitlines(True)
+                            if ln.split("=", 1)[0].strip() not in ("sysop_handle", "sysop_id")))
+    port = PORT + 3708
+    proc = start_copy(tmp, (str(port),))
+    ok = True
+
+    def console():
+        p = tmp / "host.log"
+        return p.read_text(errors="replace") if p.exists() else ""
+
+    def raw_login(handle):
+        """Log in by hand, stopping short of whatever follows ACCESS GRANTED."""
+        c = caller_on(port)
+        c.wait_for(b"Enter your handle", 10)
+        c.send(handle.encode() + b"\r")
+        c.wait_for(b"Password:", 8)
+        c.send(TEST_PW.encode() + b"\r")
+        c.wait_for(b"ACCESS GRANTED", 6)
+        wait_any(c, [b"Main", b"Sysop password: "], 8)
+        c.pump(0.3)
+        return c
+
+    def elevate(handle):
+        c = caller_on(port)
+        c.wait_for(b"Enter your handle", 10)
+        login(c, handle)
+        drain(c)
+        c.send(f"bye {PASSWORD}\r".encode())
+        c.wait_for(b"HELP for commands", 6)
+        c.close()
+        time.sleep(0.6)
+
+    def ring(why):
+        r = caller_on(port)
+        r.wait_for(b"Enter your handle", 10)
+        login(r, "AcctRinger")
+        drain(r)
+        r.send(b"o " + why + b"\r")
+        got = r.wait_for(b"saved for them", 6)
+        r.close()
+        time.sleep(0.6)
+        return got
+
+    try:
+        copy_log(tmp, f"listening on {port},")
+        # Two accounts type the sysop password; the second is the last.
+        elevate("AcctOne")
+        elevate("AcctTwo")
+        ids = user_ids(users)
+        last = next(iter(user.rglob("sysop.last")), None)
+        ok &= check("the last account to elevate is kept on userdata",
+                    last is not None and last.read_text().strip() == str(ids.get("AcctTwo")))
+
+        # With no Sysop in CONFIG, a missed ring goes to that one account.
+        ok &= check("a ring nobody answers is kept", ring(b"first ring"))
+        c = raw_login("AcctOne")
+        ok &= check("an earlier sysop account does not get a copy", b"You have mail." not in plain(c.buf))
+        ok &= check("and is not asked for the sysop password", b"Sysop password: " not in plain(c.buf))
+        c.close()
+        c = raw_login("AcctTwo")
+        ok &= check("the last to elevate gets it", b"You have mail." in plain(c.buf))
+        ok &= check("and is asked for the sysop password at login", b"Sysop password: " in plain(c.buf))
+        c.buf.clear()
+        c.send(b"\r")
+        ok &= check("Enter skips it, and the login carries on", c.wait_for(b"Main", 8))
+        ok &= check("as an ordinary caller", b"SysOp node" not in plain(c.buf))
+        c.close()
+        time.sleep(0.4)
+
+        # CONFIG board names the account: checked against the accounts, and
+        # stored in the file's spelling with the id beside it.
+        s = caller_on(port)
+        s.wait_for(b"Enter your handle", 10)
+        login(s, "AcctAdmin")
+        drain(s)
+        s.send(f"bye {PASSWORD}\r".encode())
+        s.wait_for(b"HELP for commands", 6)
+        drain(s)
+        cfg_open(s, b"board", b"Hostname")
+        s.buf.clear()
+        s.send(DOWN * 8 + b"NoSuchAcct" + F1)
+        ok &= check("CONFIG board refuses a Sysop with no account",
+                    cfg_verdict(s, [b"No account by that name", b"Saved"]) == b"No account by that name")
+        cfg_cancel(s)
+        cfg_open(s, b"board", b"Hostname")
+        s.buf.clear()
+        s.send(DOWN * 8 + b"acctone" + F1)
+        ok &= check("and saves one that exists", cfg_verdict(s, [b"Saved and live", b"No account"]) == b"Saved and live")
+        text = cfgp.read_text()
+        ok &= check("in the file's spelling, with its id beside it",
+                    "sysop_handle = AcctOne" in text and f"sysop_id = {ids.get('AcctOne')}" in text)
+        s.close()
+        time.sleep(0.6)
+
+        ok &= check("a ring is kept", ring(b"second ring"))
+        c = raw_login("AcctTwo")
+        ok &= check("the last to elevate is no longer asked once CONFIG names another",
+                    b"Sysop password: " not in plain(c.buf))
+        c.close()
+        c = raw_login("AcctOne")
+        ok &= check("the named account gets the ring", b"You have mail." in plain(c.buf))
+        ok &= check("and is asked for the sysop password", b"Sysop password: " in plain(c.buf))
+        c.buf.clear()
+        c.send(b"nope\r")
+        ok &= check("a wrong one says so and the login carries on",
+                    c.wait_for(b"not the sysop password", 5) and c.wait_for(b"Main", 8))
+        ok &= check("counted as BYE counts it", "staff password failed" in console())
+        c.close()
+        c = raw_login("AcctOne")
+        c.buf.clear()
+        c.send(PASSWORD.encode() + b"\r")
+        ok &= check("the right one makes them the sysop", c.wait_for(b"SysOp node", 6))
+        c.close()
+        time.sleep(0.6)
+
+        # The id is what counts, and the fallback survives a restart.
+        proc.kill()
+        proc.wait(5)
+        text = cfgp.read_text()
+        text = text.replace(f"sysop_id = {ids.get('AcctOne')}", f"sysop_id = {ids.get('AcctTwo')}")
+        cfgp.write_text(text)
+        proc = start_copy(tmp, (str(port),))
+        copy_log(tmp, f"listening on {port},")
+        c = raw_login("AcctTwo")
+        ok &= check("the id decides, not the handle beside it", b"Sysop password: " in plain(c.buf))
+        c.close()
+        c = raw_login("AcctOne")
+        ok &= check("so the handle's own account is not asked", b"Sysop password: " not in plain(c.buf))
+        c.close()
+        proc.kill()
+        proc.wait(5)
+        cfgp.write_text(cfgp.read_text().replace(f"sysop_id = {ids.get('AcctTwo')}", "sysop_id = 999999"))
+        proc = start_copy(tmp, (str(port),))
+        copy_log(tmp, f"listening on {port},")
+        c = raw_login("AcctOne")
+        ok &= check("an id that matches no account falls back to the last to elevate, after a restart",
+                    b"Sysop password: " in plain(c.buf))
+        c.close()
+    finally:
+        stop_copy(proc, tmp)
+
+    # The setup flow names the account that set the board up.
+    tmp = copy_data()
+    cfgp = tmp / "data" / "user" / "system.cfg"
+    cfgp.write_text("".join(ln for ln in cfgp.read_text().splitlines(True)
+                            if ln.split("=", 1)[0].strip() not in ("sysop_password", "sysop_handle",
+                                                                     "sysop_id")))
+    port = PORT + 3709
+    proc = start_copy(tmp, (str(port),))
+    try:
+        copy_log(tmp, f"listening on {port},")
+        c = caller_on(port)
+        c.wait_for(b"Enter your handle", 10)
+        login(c, "SetupOwner", wait_main=False)
+        c.wait_for(b"has not been set up yet", 8)
+        c.wait_for(b"Sysop password", 4)
+        c.send(BBS_DEFAULT.encode() + b"\r")
+        c.wait_for(b"SysOp node", 6)
+        c.pump(0.8)
+        ids = user_ids(tmp / "data" / "user" / "users.txt")
+        text = cfgp.read_text()
+        ok &= check("the setup flow names the account that set the board up",
+                    "sysop_handle = SetupOwner" in text and
+                    f"sysop_id = {ids.get('SetupOwner')}" in text)
+        c.close()
     finally:
         stop_copy(proc, tmp)
     return ok
@@ -10528,12 +10749,12 @@ def ring_board(port):
     """A copy of this board for the sysop page's tests (1.1.0), started on
     port: every sysop mark taken off users.txt, and no mail or ring notes.
 
-    A ring nobody answers goes to the MAIL of every account the sysop
-    password has marked, and on the harness board that is every account any
-    earlier test elevated: a dozen or more, each taking a copy of every ring,
-    which fills the board's 64 messages within a few rings and turns the rest
-    into notes. A real board has one or two. The copy gives these tests the
-    board they are about, whatever ran before them. Returns (process, dir).
+    A ring nobody answers goes to the MAIL of the sysop's account: the one
+    CONFIG names, or the last to elevate, which on the harness board is
+    whichever test elevated last, with whatever mail earlier tests left it.
+    The copy gives these tests the board they are about, whatever ran before
+    them: no marks, no mail, no notes and no last sysop. Returns (process,
+    dir).
     """
     tmp = copy_data()
     user = tmp / "data" / "user"
@@ -10541,7 +10762,7 @@ def ring_board(port):
     if users.exists():                               # none yet on a board nobody has called
         users.write_text("".join(ln for ln in users.read_text().splitlines(True)
                                  if ln.strip() != "level = sysop"))
-    for name in ("mail.dat", "rings.txt"):
+    for name in ("mail.dat", "rings.txt", "sysop.last"):
         for p in user.rglob(name):
             p.unlink()
     proc = start_copy(tmp, (str(port),))
@@ -11097,7 +11318,8 @@ GROUPS = {
     "messaging": ["mail", "forums", "chat", "room_commands", "room_new", "room_quit",
                   "survives_notice", "config_forum", "room_time", "bell", "codes_in",
                   "room_narrow",
-                  "long_help", "info_pages", "operator", "notices_in", "ring_mail"],
+                  "long_help", "info_pages", "operator", "notices_in", "ring_mail",
+                  "sysop_account"],
     # The subsystems that own a session and draw their own screens.
     "places":    ["forums", "files", "chat", "xfer", "notices_in"],
     # Anything that reads or writes the card, and the backups (on the card
@@ -11144,7 +11366,7 @@ ORDER_NAMES = [
     # cfg_reload, which leaves the account cap at 200, and test_config's own
     # save of 200 then finds nothing changed.
     "test_operator", "test_operator_ends", "test_notices_in_places",
-    "test_operator_notes", "test_ring_mail",
+    "test_operator_notes", "test_ring_mail", "test_sysop_account",
     "test_config_parser_rules", "test_config_guards", "test_config_semicolon",
     "test_config_timezone", "test_config_cycle_numbers",
     "test_config_sd_plugin",

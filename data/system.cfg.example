@@ -58,6 +58,14 @@ port = 6400
 cosysop1_password =
 cosysop2_password =
 
+# The sysop's own account (CONFIG board, Sysop): missed rings are mailed
+# to it, and it is asked for the sysop password when it logs in. Both
+# lines are written together by CONFIG and by the first-boot setup; the
+# id is what counts, so a renamed account keeps its mail. Unset, the last
+# account to elevate to sysop stands in.
+# sysop_handle =
+# sysop_id = 0
+
 # Idle hangup at the command prompt, warning 1 minute before. 0 = never.
 # (The handle prompt always warns at 30 s and hangs up at 60 s.)
 idle_minutes = 20

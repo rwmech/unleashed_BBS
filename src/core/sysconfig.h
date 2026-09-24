@@ -114,6 +114,14 @@ struct SysConfig {
     // honours it only from its own network, offers setup to local callers,
     // and keeps itself out of the directory until it goes false.
     bool     sysopDefault  = false;
+    // The sysop's own account (1.1.0, CONFIG board "Sysop"): where a ring
+    // nobody answered is mailed, and the account asked for the sysop
+    // password at login. The handle is what the page shows; the id is what
+    // counts, so a rename, or a new account taking the old name, cannot
+    // catch the mail. Written together by CONFIG and by the setup flow,
+    // never one without the other. 0 is "not set".
+    char     sysopHandle[BBS_USER_MAX + 1] = "";
+    uint32_t sysopId       = 0;
     uint16_t coPerms[2]    = { static_cast<uint16_t>(PERM_ALL & ~PERM_UNBAN),
                                static_cast<uint16_t>(PERM_NODES | PERM_BROADCAST | PERM_TIME | PERM_BANS |
                                                      PERM_NOLIMITS | PERM_DASH) };

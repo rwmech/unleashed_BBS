@@ -298,6 +298,22 @@ void keyValue(Ctx& c, const char* key, char* val) {
     else if (!strcmp(key, "sysop_password"))         copyStr(g.sysopPass, sizeof(g.sysopPass), val);
     else if (!strcmp(key, "cosysop1_password"))      copyStr(g.coPass[0], sizeof(g.coPass[0]), val);
     else if (!strcmp(key, "cosysop2_password"))      copyStr(g.coPass[1], sizeof(g.coPass[1]), val);
+    // The sysop's account (1.1.0). Whether the account exists is CONFIG's
+    // question, asked when it is saved: this parser knows nothing of
+    // users.txt, and a restore checks the two files apart.
+    else if (!strcmp(key, "sysop_handle")) {
+        if (*val && !users::validHandle(val)) problem(c, "sysop_handle is not a handle:", val);
+        else copyStr(g.sysopHandle, sizeof(g.sysopHandle), val);
+    }
+    else if (!strcmp(key, "sysop_id")) {
+        // An account id: digits, 0 for none. Not number(), whose ranges are
+        // a long's, and an id is a uint32_t.
+        bool digits = *val != '\0' && strlen(val) <= 10;
+        for (const char* p = val; *p; ++p) if (*p < '0' || *p > '9') digits = false;
+        unsigned long long id = digits ? strtoull(val, nullptr, 10) : 0;
+        if (!digits || id > 0xFFFFFFFFull) problem(c, "sysop_id must be an account id:", val);
+        else g.sysopId = static_cast<uint32_t>(id);
+    }
     else if (!strcmp(key, "wifi_ssid")) {
         if (strlen(val) >= sizeof(g.wifiSsid)) problem(c, "wifi_ssid is longer than 32", "");
         else copyStr(g.wifiSsid, sizeof(g.wifiSsid), val);

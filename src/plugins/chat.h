@@ -62,12 +62,17 @@ bool mailOn();
 // stored, for any of those or when chat is not running.
 bool leaveMail(const char* from, const UserRec& to, const char* text);
 
-// sysopUnread (1.1.0): a message not yet read is waiting for an account the
-// sysop password has marked. From a flag kept in RAM as mail comes and
+// sysopUnread (1.1.0): a message not yet read is waiting for the sysop's
+// account (Bbs::sysopAccount). From a flag kept in RAM as mail comes and
 // goes, never a file read, because the display panel's letter icon asks for
 // it on every frame. False when chat is not running. Bbs::sysopMail is the
 // way in for anything outside the core.
 bool sysopUnread();
+
+// sysopChanged (1.1.0): the sysop's account may have moved (the setup named
+// one, or a new account elevated), so the marks sysopUnread reads are taken
+// again. One pass over users.txt; nothing when chat is not running.
+void sysopChanged();
 
 // The sysop page (1.1.0) reaches into the room through these three, the
 // same way the lights reach Bbs::takeTraffic: a named call, not a hook every

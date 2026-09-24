@@ -53,6 +53,7 @@
 // CONFIG draws the lights' pixel pages from the plugin's own word lists,
 // the way it already knows the file areas' and the forums' packed formats.
 #include "../plugins/lights.h"
+#include "../plugins/chat.h"
 
 #include <climits>
 #include <cstring>
@@ -105,11 +106,129 @@ void Bbs::markAccount(Session& s, Access level) {
     if (s.guest || !s.user[0]) return;
     UserRec u;                                     // on the stack since 1.1.0
     if (!users::find(s.user, u)) return;
+    // The last account to elevate to sysop, whichever way it did (1.1.0):
+    // where missed rings go while CONFIG names no sysop account.
+    if (level == Access::Sysop && u.id && u.id != sysopLast_) sysopLastSave(u.id);
     if (u.level >= static_cast<uint8_t>(level)) return;
     u.level = static_cast<uint8_t>(level);
     if (users::update(u.handle, u) == users::Result::Ok) {
         plat::log("bbs: account '%s' marked %s", u.handle, syscfg::levelName(level));
     }
+}
+
+// ===========================================================================
+// The sysop's account (1.1.0, Rob: "Missed sysop pages go to one account")
+//
+// Not every account the sysop password ever marked: marks are never taken
+// off, so a board where several people have typed it once would mail every
+// ring to all of them, each copy one of the board's 64 mail slots. One
+// account, named in CONFIG board by handle and held by id; the last account
+// to elevate to sysop when that is unset or gone.
+// ===========================================================================
+
+namespace {
+
+constexpr const char kSysopLastFile[] = "sysop.last";
+
+void sysopLastPath(char* out, size_t n) {
+    snprintf(out, n, "%s/%s", plat::userBase(), kSysopLastFile);
+}
+
+// One pass over users.txt for the configured id and the fallback id at once.
+// The configured one wins wherever it falls in the file.
+struct SysopFind {
+    uint32_t cfgId;
+    uint32_t lastId;
+    UserRec* out;
+    bool     gotCfg;
+    bool     gotLast;
+};
+
+void sysopFindRow(void* ctx, uint8_t, const UserRec& u) {
+    SysopFind& f = *static_cast<SysopFind*>(ctx);
+    if (u.retired || !u.id) return;
+    if (f.cfgId && u.id == f.cfgId) {
+        *f.out   = u;
+        f.gotCfg = true;
+    } else if (f.lastId && u.id == f.lastId && !f.gotCfg) {
+        *f.out    = u;
+        f.gotLast = true;
+    }
+}
+
+} // namespace
+
+// sysopLastLoad / sysopLastSave: the fallback's id in its own small file on
+// userdata. Not in system.cfg: it is the board's record of what happened,
+// not a setting, so it is not in CONFIG or a backup either (the way
+// wifi.last is kept). Written through a temp file and a rename, which on
+// LittleFS replaces the old one in a single step.
+void Bbs::sysopLastLoad() {
+    char path[96];
+    sysopLastPath(path, sizeof(path));
+    sysopLast_ = 0;
+    FILE* f = fopen(path, "r");
+    if (!f) return;
+    char line[16] = "";
+    if (fgets(line, sizeof(line), f)) sysopLast_ = static_cast<uint32_t>(strtoul(line, nullptr, 10));
+    fclose(f);
+}
+
+void Bbs::sysopLastSave(uint32_t id) {
+    char path[96], tmp[104];
+    sysopLastPath(path, sizeof(path));
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE* f = fopen(tmp, "w");
+    if (!f) return;
+    bool ok = fprintf(f, "%lu\n", static_cast<unsigned long>(id)) > 0;
+    if (fclose(f) != 0) ok = false;
+    if (!ok || rename(tmp, path) != 0) {
+        remove(tmp);
+        plat::log("bbs: could not record the last sysop account");
+        return;
+    }
+    sysopLast_ = id;
+    // Where the sysop's mail is may just have moved. Only when CONFIG names
+    // nobody, or names an account that is gone; asking costs a pass then.
+    chat::sysopChanged();
+}
+
+// sysopAccount: see bbs.h
+bool Bbs::sysopAccount(UserRec& out) {
+    SysopFind f{ syscfg::get().sysopId, sysopLast_, &out, false, false };
+    if (!f.cfgId && !f.lastId) return false;
+    users::range(0, 255, sysopFindRow, &f);
+    return f.gotCfg || f.gotLast;
+}
+
+// isSysopAccount: see bbs.h. Only the fallback while an id is configured
+// needs the file: the configured account may be retired or gone.
+bool Bbs::isSysopAccount(uint32_t id) {
+    if (!id) return false;
+    uint32_t cfgId = syscfg::get().sysopId;
+    if (cfgId && id == cfgId) return true;
+    if (id != sysopLast_) return false;
+    if (!cfgId) return true;
+    UserRec u;
+    return sysopAccount(u) && u.id == id;
+}
+
+// linkSysop: see bbs.h. Written the way CONFIG board writes it, handle and
+// id together, and read back at once so the rest of the setup sees it.
+void Bbs::linkSysop(const Session& s) {
+    if (s.guest || !s.user[0]) return;
+    UserRec u;
+    if (!users::find(s.user, u) || !u.id) return;
+    char id[12];
+    snprintf(id, sizeof(id), "%lu", static_cast<unsigned long>(u.id));
+    const syscfg::KeyVal kv[] = { { "sysop_handle", u.handle }, { "sysop_id", id } };
+    char err[80] = "";
+    if (!syscfg::write(kv, 2, nullptr, err, sizeof(err)) || !syscfg::reload(err, sizeof(err))) {
+        plat::log("bbs: could not name '%s' the sysop's account: %s", u.handle, err);
+        return;
+    }
+    plat::log("bbs: '%s' (id %lu) is the sysop's account", u.handle, static_cast<unsigned long>(u.id));
+    chat::sysopChanged();
 }
 
 // ---------------------------------------------------------------------------
@@ -762,6 +881,13 @@ const CfgField kBoard[] = {
     // set to anything other than Default overrides this, so changing it
     // moves exactly the people who never expressed a preference.
     { "landing",           "Land on",  CK_TEXT, 0, 0, 8 },
+    // The sysop's own account (1.1.0, Rob): missed rings are mailed to it,
+    // and it is asked for the sysop password when it logs in. An account
+    // that exists, checked on save, and written with its id (sysop_id)
+    // beside it, so a rename or a new account taking the name cannot catch
+    // the mail. Empty: the last account to elevate to sysop.
+    { "sysop_handle",      "Sysop",    CK_TEXT, 0, 0, BBS_USER_MAX,
+      "Missed pages are mailed to this one." },
 };
 
 const CfgField kLimits[] = {
@@ -1117,6 +1243,17 @@ bool cfgFileValue(const char* section, const char* key, char* out, size_t n) {
     return found;
 }
 
+// accountId: the id of the live account with this handle, 0 when there is
+// none or it is retired, with the handle as the file spells it copied to
+// out (which may be handle itself). Never inlined, so the record is off the
+// stack again before configSave goes on to write the file.
+__attribute__((noinline)) uint32_t accountId(const char* handle, char* out, size_t n) {
+    UserRec u;
+    if (!users::find(handle, u) || u.retired || !u.id) return 0;
+    snprintf(out, n, "%s", u.handle);
+    return u.id;
+}
+
 // cfgLiveValue: what the board is actually running with, for a key the
 // file does not mention. Keeps the form honest about defaults.
 void cfgLiveValue(const char* key, char* out, size_t n) {
@@ -1127,6 +1264,7 @@ void cfgLiveValue(const char* key, char* out, size_t n) {
     else if (!strcmp(key, "ntp_server"))            snprintf(out, n, "%.*s", static_cast<int>(n) - 1, c.ntpServer);
     else if (!strcmp(key, "idle_minutes"))          snprintf(out, n, "%u", c.idleMinutes);
     else if (!strcmp(key, "landing"))               snprintf(out, n, "%s", users::landKey(c.landing));
+    else if (!strcmp(key, "sysop_handle"))          snprintf(out, n, "%s", c.sysopHandle);
     else if (!strcmp(key, "activity_led_gpio"))     snprintf(out, n, "%d", c.ledGpio);
     else if (!strcmp(key, "call_minutes"))          snprintf(out, n, "%u", c.callMinutes);
     else if (!strcmp(key, "day_minutes"))           snprintf(out, n, "%u", c.dayMinutes);
@@ -1636,9 +1774,12 @@ void Bbs::configOpenPage(Session& s, uint8_t focus, uint32_t now) {
 // ---------------------------------------------------------------------------
 bool Bbs::configSave(Session& s, char* err, size_t errLen) {
     if (!g_cfgPage) { snprintf(err, errLen, "nothing to save"); return false; }
-    syscfg::KeyVal pairs[Form::kMaxFields];
-    uint8_t from[Form::kMaxFields];                 // which field each pair came from
+    // One more than a page has fields: the board page's Sysop writes two
+    // keys, the handle and the account id behind it.
+    syscfg::KeyVal pairs[Form::kMaxFields + 1];
+    uint8_t from[Form::kMaxFields + 1];             // which field each pair came from
     uint8_t n = 0;
+    char sysopId[12] = "";                          // sysop_id's value, while pairs points at it
     const bool core = !g_cfgSection[0];
     const uint8_t count = g_cfgPage->count < Form::kMaxFields ? g_cfgPage->count : Form::kMaxFields;
 
@@ -1764,6 +1905,26 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
         if (!core && f.kind != CK_PASS && strchr(v, ';')) {
             s.form.fail(i, "No ; here: it ends the value", s.term, s.tl);
             return false;
+        }
+        // The sysop's account (1.1.0): an account that exists and is not
+        // retired, written in the file's own spelling with its id beside it.
+        // Emptied, the id goes to 0 and the last account to elevate stands in.
+        if (core && !strcmp(f.key, "sysop_handle")) {
+            if (*v) {
+                uint32_t id = accountId(v, v, f.cap + 1u);
+                if (!id) {
+                    s.form.fail(i, "No account by that name", s.term, s.tl);
+                    return false;
+                }
+                snprintf(sysopId, sizeof(sysopId), "%lu", static_cast<unsigned long>(id));
+                pairs[n].key   = "sysop_id";
+                pairs[n].value = sysopId;
+            } else {
+                pairs[n].key   = "sysop_id";                         // 0 is "not set"
+                pairs[n].value = "0";
+            }
+            from[n] = i;
+            ++n;
         }
         pairs[n].key   = f.key;
         pairs[n].value = v;

@@ -166,6 +166,9 @@ bool Bbs::begin(uint16_t port) {
     // The ring notes waiting from before the restart, counted once so the
     // dashboard can say so without opening the file.
     ringNotesWaiting_ = ringNoteCount();
+    // And the last account to elevate to sysop, where missed rings go when
+    // CONFIG names no sysop account (sysopAccount).
+    sysopLastLoad();
 
     for (uint8_t i = 0; i < BBS_MAX_NODES; ++i) {
         nodes_[i].id   = static_cast<uint8_t>(i + 1);
@@ -1757,6 +1760,7 @@ void Bbs::completeLogin(Session& s, uint32_t now) {
     noticeAll(s, buf, BusKind::Arrival);
 
     if (offerSetup(s)) return;       // asked first; arrive() follows if they skip
+    if (offerSysop(s)) return;       // the sysop's account: the password, Enter skips
     arrive(s);
 }
 
@@ -1854,6 +1858,7 @@ void Bbs::onSetupPassword(Session& s, uint32_t now) {
         return;
     }
     plat::log("bbs: node %u setup started by '%s' from %s", s.id, s.user, s.ip);
+    linkSysop(s);                                    // whoever sets the board up is its sysop
     s.newAccount = false;                            // setup replaces the newuser screen
     elevate(s, now, true);
 }
@@ -1868,6 +1873,97 @@ void Bbs::skipSetup(Session& s) {
     sayLine(t, tl, Color::Grey, t.cols() >= 60
         ? "Skipped. BYE and the password, from this network, does it later."
         : "Skipped. BYE <password> does it later.");
+    t.nl(tl);
+    arrive(s);
+}
+
+// ---------------------------------------------------------------------------
+// offerSysop: the sysop's own account has just logged in (1.1.0, Rob), so
+// the board asks for the sysop password there and then rather than leaving
+// it to BYE. Enter, or ESC, skips, and the login carries on.
+//
+// Asked, never assumed. Rob proposed that the account alone should make its
+// owner the sysop, and agreed to this instead: account passwords cross
+// telnet in the clear on every login, so an account login must never grant
+// staff by itself, and the sysop's account is the one most worth sniffing.
+//
+// Not asked when the answer could not be used: a board still on the
+// published default (offerSetup asks a local caller; from outside it works
+// nowhere), and a sysop node already taken with this caller outside the
+// board's network, where BYE would log them off rather than elevate.
+// ---------------------------------------------------------------------------
+bool Bbs::offerSysop(Session& s) {
+    const SysConfig& c = syscfg::get();
+    if (s.guest || s.role != Role::Caller || s.level >= Access::Sysop) return false;
+    if (c.sysopDefault || !c.sysopPass[0]) return false;
+    if (!s.edit.id || !bbsu::ieq(s.edit.handle, s.user)) return false;
+    if (sysop_.st != SState::Free && !localAddr(s.ip)) return false;
+    if (!isSysopAccount(s.edit.id)) return false;
+    askSysop(s);
+    return true;
+}
+
+void Bbs::askSysop(Session& s) {
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    t.reset(tl);
+    const char* skip = t.isPet() ? "RETURN" : "Enter";
+    char buf[48];
+    snprintf(buf, sizeof(buf), t.cols() >= 60 ? "This is the sysop's account. %s skips."
+                                              : "The sysop's account. %s skips.", skip);
+    sayLine(t, tl, Color::Grey, buf);
+    t.color(tl, Color::Cyan);
+    t.text(tl, "Sysop password: ");       // 16 columns and 24 stars fit a C64's 40
+    t.color(tl, Color::White);
+    s.ed.begin(BBS_PASS_MAX, LineEditor::F_MASK | LineEditor::F_STAY);
+    s.st        = SState::AskSysop;
+    s.lastInput = plat::millis();
+}
+
+// ---------------------------------------------------------------------------
+// onSysopPassword: the answer, through staffPassword, which is BYE's own
+// check: the default only from the board's network, a right one clearing
+// the address's ban count, a wrong one counted toward the ban. One try: a
+// wrong one says so and the login carries on, and a count that bans the
+// address hangs up, the way a wrong BYE ends the call.
+// ---------------------------------------------------------------------------
+void Bbs::onSysopPassword(Session& s, uint32_t now) {
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    bool empty = !s.ed.text()[0];
+    bool banned = false;
+    Access lv = empty ? Access::None : staffPassword(s, s.ed.text(), now, &banned);
+    s.ed = LineEditor();                             // wipe what was typed
+    t.nl(tl);
+    if (empty) {                                     // Enter on nothing: skip
+        t.nl(tl);
+        arrive(s);
+        return;
+    }
+    if (lv == Access::Sysop) {
+        // Taken while the question was up, and this caller is outside: BYE
+        // would log them off here, which is no answer to a right password.
+        if (sysop_.st != SState::Free && !localAddr(s.ip)) {
+            sayLine(t, tl, Color::Yellow, "The sysop node is in use.");
+            t.nl(tl);
+            arrive(s);
+            return;
+        }
+        s.newAccount = false;
+        elevate(s, now);
+        return;
+    }
+    if (lv != Access::None) {                        // a co-sysop password: BYE takes it too
+        if (lv > s.level) { coElevate(s, lv, now); return; }
+        t.nl(tl);
+        arrive(s);
+        return;
+    }
+    if (banned) {
+        hangup(s, "Too many wrong staff passwords.", now);
+        return;
+    }
+    sayLine(t, tl, Color::LightRed, "That is not the sysop password.");
     t.nl(tl);
     arrive(s);
 }
@@ -3021,6 +3117,17 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
             LineEditor::Res r = s.ed.key(k, t, tl);
             if (r == LineEditor::Res::Abort) { skipSetup(s); return; }   // ESC, or <- on a C64
             if (r == LineEditor::Res::Done) onSetupPassword(s, now);
+            return;
+        }
+
+        case SState::AskSysop: {
+            // As at the setup question, keys typed while it prints are kept.
+            // Enter on nothing and ESC both skip: this one is a convenience,
+            // and a stray Enter costs only the BYE the sysop would type anyway.
+            if (!tl.empty()) tl.skipDelays();
+            LineEditor::Res r = s.ed.key(k, t, tl);
+            if (r == LineEditor::Res::Abort) { s.ed = LineEditor(); t.nl(tl); t.nl(tl); arrive(s); return; }
+            if (r == LineEditor::Res::Done) onSysopPassword(s, now);
             return;
         }
 
