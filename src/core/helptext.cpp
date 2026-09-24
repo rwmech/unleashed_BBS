@@ -76,6 +76,8 @@ const Entry kEntries[] = {
     { "PLUGINS", "usage: PLUGINS\nEvery plugin built into this board, its\nversion, and whether it is running or\nwhy not. Also free space on flash." },
     { "CONFIG", "usage: CONFIG [page]\nThe board's settings, page by page.\nCONFIG lists the pages and CONFIG with\na page name, such as CONFIG chat, opens\nit. F1 saves, and most changes apply\nat once. Sysop only, never co-sysops." },
     { "SHUTDOWN", "usage: SHUTDOWN [n or CANCEL]\nWarns everyone, counts down n seconds\n(5 to 3600, default 60), then hangs up\non all callers, you too, and any file\ntransfer is lost. SHUTDOWN CANCEL stops\nit. Only a restart brings it back." },
+    { "BACKUP", "usage: BACKUP SD [SCREENS]\nSaves the zip the backup window gives:\nsettings, accounts and screens, in the\ncard's backup folder. SCREENS saves the\nscreens alone. The full zip holds the\nWi-Fi password as typed." },
+    { "RESTORE", "usage: RESTORE SD [SCREENS] [n]\nLists the backups on the card. With n,\nshows what backup n would replace and\nasks first. SCREENS puts only screens\nback, onto the card, where deleting\nthem undoes it. Staff passwords stay." },
     { "SD", "usage: SD [MOUNT or UNMOUNT]\nThe SD card: type, free space and where\nscreens come from, or the pins tried if\nthere is no card. SD MOUNT pauses the\nboard while it mounts; SD UNMOUNT makes\nthe card safe to pull." },
     { "ANNOUNCE", "usage: ANNOUNCE [TEST or NOW]\nWhether the board is listed in a\ndirectory and what each one said last.\nANNOUNCE TEST prints exactly what would\nbe sent and sends nothing; ANNOUNCE NOW\nsends it straight away." },
     { "CHATCLEAR", "usage: CHATCLEAR\nEmpties the chat room's memory, so new\narrivals see no earlier lines and /sh\nhas nothing to replay." },

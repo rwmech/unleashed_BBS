@@ -29,6 +29,14 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
   The reverse never works. Build for an S3 and hope it squeezes onto a WROOM and you find out at link time, which is exactly what happened at sixteen nodes.
   **Two cores and on-chip Wi-Fi are a requirement, not a preference** (Rob). The loop is pinned to core 1 because Wi-Fi and lwIP own core 0, and that split is what keeps the radio's work off callers' latency; a single core would run but not run well, and fixing it properly means restructuring the core rather than changing a setting. That rules out the C3, C6, S2 and H2 on cores and the P4 on having no radio at all, leaving the ESP32 and S3 families. See [ESP32_BOARD_CHOICE.md](ESP32_BOARD_CHOICE.md).
   An ESP32-S3 with PSRAM is the upgrade path if more callers are ever wanted: same dual core split, and `CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY` puts the session pool in PSRAM so it stops competing for internal DRAM. **Not the P4**, which has the most SRAM of the family at 768 KB and no integrated Wi-Fi at all: Espressif's own answer there is a second chip as a wireless companion, which is two chips and a host protocol for a board whose whole premise is telnet over Wi-Fi.
+- **Screens are designed for 40 AND 80 columns, not pinned to the C64**
+  (Rob, 2026-09-24: "we cant keep pinning every screen to the C64, it
+  needs a 40/80 on most of these"). This overrules the 1.1.0 UX report's
+  "the form stays a 40-column card at 80 and 132". Forms, CONFIG pages,
+  DASH and lists get a layout per width: the 40-column one for PETSCII-40,
+  a wide one for everything else (ANSI, PETSCII-80 and plain ASCII are all
+  80 wide). A field has its 9-character label for 40 and a longer one for
+  80. New screens are specified at both widths from the start.
 - **Who calls in: the legacy serial community, not one machine** (Rob, and worth holding on to because it is easy to drift from). 8086 boxes, 6502 machines, a VT220 on a serial line, and everything in between. The C64 through TeensyROM is one caller among them and gets attention because PETSCII and 40 columns are the tightest constraints, not because it is the target. A design argument that rests on what a C64 can do is the wrong argument: the right question is whether a feature works across the range and degrades sensibly for the machines that cannot take all of it. File transfer is the live example, where the answer is to offer XMODEM, YMODEM and ZMODEM and let a caller use what their machine handles.
 - C++ for core and hardware. Lua only for doors later. Static allocation, no heap in the BBS loop (exceptions: temporary inflate buffers during a backup upload).
 - 10 caller nodes (6 until 0.17.0, briefly 16), a busy line session (the caller past the last node: detection, busy screen, 10 s countdown), a hidden sysop node. Overflow callers get `BUSY` and a drop. Socket budget 24.
@@ -468,6 +476,29 @@ this tree.
   - The core calls `chat::inRoom` to choose the room's two-line ring; a
     hook would be cleaner, but the spec fixed the hooks at two.
   - Static DRAM +176.
+- **Phase 3b is in (1.1.0-dev.6): SD backup and restore, the timezone
+  picker.** And the worst bug this project has shipped, found by it:
+  - **Restoring a backup through the backup window deleted every account,
+    from 0.14.0 to 1.0.2.** Staging was on `storage`, users.txt lives on
+    `userdata`, and IDF 5.3.1's `esp_vfs_rename` returns EXDEV between two
+    VFS mounts (vfs.c:718). The fallback was `remove(dst)` then rename
+    again: live accounts deleted, rename failed again. Shipped alone as
+    1.0.3 from v1.0.2.
+  - **Why no test ever saw it: the host build is one filesystem**, so a
+    rename between "partitions" always worked. The harness now puts
+    `data/user` on /dev/shm, a different filesystem, so the host refuses
+    the rename the way the board does. The general rule, again: the host
+    is not the board's filesystem, and any code that moves a file between
+    `plat::fsBase()`, `plat::userBase()`, `plat::logsBase()` and the card
+    must be tested with them on different filesystems.
+  - **Never remove a live file to make room for a rename.** LittleFS
+    renames over an existing file atomically; only FatFs refuses, and
+    only there is remove-then-rename correct.
+  - Staging moved to `<userdata>/.staging`, so restored files go live by
+    a rename within one partition. Card jobs and the window share the zip
+    state; one runs at a time.
+  - The seeded-screens manifest already existed (`sd.cpp`, `.seeded`).
+  - Static DRAM 161,800 after the merge (18,936 free).
 
 ## 1.0.0 (2026-09-23)
 

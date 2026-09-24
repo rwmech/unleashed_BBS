@@ -101,21 +101,46 @@ Work in every format, upper or lower case:
 
 ## Limits (enforced on upload)
 
+A KB here is the board's, 1,024 bytes, and the exact figure is beside it,
+because the board works the limits out in bytes and reports them in KB: a
+zip one byte over reads as over, never as the limit itself.
+
 | Limit | Value | Why |
 |---|---|---|
-| One file, unpacked | 64 KB | keeps one screen from eating the storage |
-| Files per upload | 64 | fixed table on the board |
-| All files together, unpacked | 360 KB | the board stages a full copy before swapping it in |
-| The `.zip` itself | 400 KB | same reason |
+| One file, unpacked | 64 KB (65,536 bytes) | keeps one screen from eating the storage |
+| `users.txt`, unpacked | 160 KB (163,840 bytes) | a full board's accounts, with room |
+| An information page, `info/n.txt` | 8 KB (8,192 bytes) | the editor writes 1.5 KB at most |
+| Files per upload | 64 | fixed table on the board, and a board's own backup never has more |
+| All files together, unpacked | 256 KB (262,144 bytes) | the board unpacks it all before any of it goes live |
+| The `.zip` itself | 256 KB (262,144 bytes) | it is kept beside what it unpacks until the sysop answers |
+| Room on the board | what is free when it arrives | see below |
 | `system.cfg` | must pass the config checks | a bad config never replaces a working one |
 
-Storage on the board (the `storage` partition) is 256 KB, of which the stock screens use about 18.5 KB; an upload is staged in `.staging` on that same partition before it replaces what is live.
+Until 1.1.0 the last two were 360,000 and 400,000 bytes, which is more than
+the partition the upload was unpacked on could ever hold: an upload inside
+them could run out of room part way. The upload is unpacked on `userdata`
+now (608 KB), and before anything is unpacked the board works out the room
+it needs in the flash filesystem's own 4 KB blocks (every screen of more
+than a few hundred bytes takes at least one) and compares it with what is
+free, less 32 KB kept back for the accounts. Short of room, it says so and
+takes nothing: `Board full: 180 KB needed, 120 KB free.`
+
+The screens themselves still live on the `storage` partition, 256 KB, which
+holds about 58 screens of up to 4 KB each (the stock set is 33, about
+34 KB). An upload whose screens would not all fit there has the ones past
+that point rejected as `no room for it on the board`, before anything is
+replaced.
 
 A file over a limit is rejected with the reason and the rest of the upload still goes through. The sysop sees the count of rejected files before answering Y/N.
 
+The same limits hold for a zip restored from the SD card (`RESTORE SD`,
+[BACKUP.md](BACKUP.md#backups-on-the-sd-card)). `RESTORE SD SCREENS` checks
+screens by these same rules and puts them on the card, where the room is
+the card's.
+
 ## Logs
 
-Logs (the caller log behind `LAST`) live on their own 128 KB partition. They are fixed-size rings that cannot grow, they are not in the zip, and a restore never touches them.
+Logs (the caller log behind `LAST`) live on their own 32 KB partition. They are fixed-size rings that cannot grow, they are not in the zip, and a restore never touches them.
 
 ## Regenerating the stock screens
 

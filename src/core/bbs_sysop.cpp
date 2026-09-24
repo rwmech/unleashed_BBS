@@ -48,6 +48,7 @@
 #include "clock.h"
 #include "plugin.h"
 #include "sysconfig.h"
+#include "tzones.h"
 #include "../platform/platform.h"
 // CONFIG draws the lights' pixel pages from the plugin's own word lists,
 // the way it already knows the file areas' and the forums' packed formats.
@@ -269,6 +270,7 @@ void Bbs::elevate(Session& s, uint32_t now, bool setup) {
     bootNotice(d);
     // Rings nobody answered while the sysop was off (1.1.0), once, then gone.
     ringNotes(d);
+    nightlyNotice(d);                 // last night's backup, if it did not happen (1.1.0)
     t.color(tl, Color::Grey);
     t.text(tl, "HELP for commands.");
     t.nl(tl);
@@ -306,6 +308,7 @@ void Bbs::coElevate(Session& s, Access level, uint32_t now, bool setup) {
     bootNotice(s);
     // A second sysop session, in place on a caller line, is the sysop too.
     if (level == Access::Sysop) ringNotes(s);
+    nightlyNotice(s);                 // last night's backup, if it did not happen (1.1.0)
     say(t, tl, Color::Grey, can(s, PERM_NOLIMITS) ? "No time limits. HELP for commands."
                                                : "HELP for commands.");
     plat::log("bbs: node %u -> %s (%s, %s) perms 0x%03x", s.id, syscfg::levelName(level),
@@ -740,8 +743,11 @@ namespace {
 // CK_CYCLE is a plugin's PS_CYCLE, its choices looked up from the plugin's
 // table when the page is drawn (cfgChoices). CK_PAGE is a plugin's PS_PAGE:
 // a button like CK_SUB, to a page of rows rather than a page of parts.
+// CK_ZONE is the board page's Timezone (1.1.0): a cycle over tzones.h's
+// names that is never written itself. It writes the TZ string row under it,
+// which is what goes in the file (cfgChanged).
 enum : uint8_t { CK_TEXT, CK_NUM, CK_YESNO, CK_LEVEL, CK_PASS, CK_SUB, CK_INFO, CK_PIN,
-                 CK_OPTNUM, CK_CYCLE, CK_PAGE };
+                 CK_OPTNUM, CK_CYCLE, CK_PAGE, CK_ZONE };
 
 struct CfgField {
     const char* key;      // key in system.cfg
@@ -773,7 +779,15 @@ const CfgField kBoard[] = {
     // A typed "name.local" is normalised before the parser's check, since
     // that is the name a sysop sees their board by and so what they type.
     { "hostname",          "Hostname", CK_TEXT, 0, 0, 31 },
-    { "tz",                "Timezone", CK_TEXT, 0, 0, 40 },
+    // The zone by name, and the POSIX string behind it, which is what the
+    // board keeps (1.1.0). Picking a zone writes the string; typing a string
+    // makes the zone Custom. A string in the file that is one of the table's
+    // opens as that zone's name, anything else as Custom. The key is never
+    // written: CK_ZONE is skipped on save, and only tz reaches the file.
+    { "tz_zone",           "Timezone",  CK_ZONE, 0, 0, tzones::kNameMax,
+      "Pick a zone, or Custom and type below." },                          // TZ-note-zone
+    { "tz",                "TZ string", CK_TEXT, 0, 0, tzones::kPosixMax,
+      "Find yours: unleashedbbs.com/setup" },                              // TZ-note-string
     { "ntp_server",        "NTP",      CK_TEXT, 0, 0, 40 },
     { "idle_minutes",      "Idle min", CK_NUM,  0, 0, 4 },
     { "activity_led_gpio", "LED gpio", CK_NUM,  0, 0, 2 },
@@ -1422,6 +1436,42 @@ void cfgLoadPlugin(const char* name) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// cfgChanged: the board page's Timezone and TZ string are one setting on two
+// rows (1.1.0, the tty-ux spec). Form::onChange, so it runs on every form on
+// the board, and does nothing unless the form is the CONFIG sysop's own on
+// the board page.
+//
+//   Timezone changed to a zone   TZ string becomes that zone's string
+//   Timezone changed to Custom   TZ string is left for the sysop to type
+//   TZ string typed into         Timezone becomes Custom
+//
+// Picking a zone and then typing the string it wrote is Custom from then on,
+// which is honest: it is no longer the table's string once it has been
+// edited, and if it happens to be again, the page opens on the zone's name
+// next time.
+// ---------------------------------------------------------------------------
+void cfgChanged(Form& f, uint8_t field, Term& t, Timeline& tl) {
+    if (!g_cfgOwner || &g_cfgOwner->form != &f) return;
+    if (!g_cfgPage || g_cfgPage->fields != kBoard || g_subComp) return;
+    int zone = -1, str = -1;
+    for (uint8_t i = 0; i < g_cfgPage->count && i < Form::kMaxFields; ++i) {
+        if (g_cfgPage->fields[i].kind == CK_ZONE)    zone = i;
+        if (!strcmp(g_cfgPage->fields[i].key, "tz")) str  = i;
+    }
+    if (zone < 0 || str < 0) return;
+    if (field == zone) {
+        const char* posix = tzones::posixFor(g_cfgBuf[zone]);
+        if (!posix) return;                                  // Custom
+        snprintf(g_cfgBuf[str], sizeof(g_cfgBuf[0]), "%s", posix);
+        f.redraw(static_cast<uint8_t>(str), t, tl);
+    } else if (field == str) {
+        if (!strcmp(g_cfgBuf[zone], tzones::kCustom)) return;
+        snprintf(g_cfgBuf[zone], sizeof(g_cfgBuf[0]), "%s", tzones::kCustom);
+        f.redraw(static_cast<uint8_t>(zone), t, tl);
+    }
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -1535,6 +1585,16 @@ void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now) {
     for (uint8_t i = 0; i < page->count && i < Form::kMaxFields; ++i) {
         const CfgField& f = page->fields[i];
         char* buf2 = g_cfgBuf[i];
+        if (f.kind == CK_ZONE) {
+            // The zone the TZ string is, by name, or Custom when it is none
+            // of the table's: the file's string first, then the running one.
+            char tzv[48];
+            if (!cfgFileValue(nullptr, "tz", tzv, sizeof(tzv))) cfgLiveValue("tz", tzv, sizeof(tzv));
+            const char* name = tzones::nameFor(tzv);
+            snprintf(buf2, sizeof(g_cfgBuf[0]), "%s", name ? name : tzones::kCustom);
+            g_cfgWas[i] = bbsu::hash(buf2);
+            continue;
+        }
         bool inFile = cfgFileValue(g_cfgSection, f.key, buf2, sizeof(g_cfgBuf[0]));
         if (page->fields == kNetwork && !wifiInFile && isWifiKey(f.key)) inFile = false;
         if (!inFile) {
@@ -1573,6 +1633,7 @@ void Bbs::configOpenPage(Session& s, uint8_t focus, uint32_t now) {
             choices = cfgChoices(f.key);
             if (choices) flags |= FF_CYCLE;
         }
+        if (f.kind == CK_ZONE)  { flags |= FF_CYCLE; choices = tzones::kZoneChoices; }
         // A PS_PAGE button: its text is the plugin's setting() for the key.
         if (f.kind == CK_PAGE)  flags |= FF_ACTION;
         if (f.kind == CK_PASS)  flags |= FF_MASK;
@@ -1598,6 +1659,7 @@ void Bbs::configOpenPage(Session& s, uint8_t focus, uint32_t now) {
     s.formKind  = FormKind::Config;
     s.st        = SState::Form;
     s.lastInput = now;
+    Form::onChange = cfgChanged;          // the Timezone and its string, kept together
     s.form.begin(g_cfgPage->title, s.fields, n, s.term, s.tl, focus);
 }
 
@@ -1657,6 +1719,7 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
         char* v = g_cfgBuf[i];
         if (f.kind == CK_SUB) continue;                              // its own page writes it
         if (f.kind == CK_PAGE) continue;                             // and its list's rows
+        if (f.kind == CK_ZONE) continue;                             // its TZ string is what is kept
         if (f.kind == CK_INFO) continue;                             // somebody else owns it
         if (f.kind == CK_PASS && !strcmp(v, kMasked)) continue;      // untouched
         // What a sysop types as their board's name is what they see it by,
@@ -1804,6 +1867,32 @@ bool Bbs::configReloadAll(char* err, size_t errLen) {
         snprintf(err, errLen, "saved, but %.48s", rerr);
         return true;
     }
+    restartPlugins();
+    snprintf(err, errLen, "Saved and live");
+
+    // "Live" is a claim about the plugin whose page this was, so check it.
+    // A PF_SD plugin switched on with no card mounted does not start, and
+    // its command does not exist; the page said "Saved and live" anyway and
+    // the sysop went looking for FORUMS. Say what is actually true, in one
+    // 40 column line.
+    uint8_t pi = cfgSectionPlugin(g_cfgSection);
+    if (pi != 0xFF && plugins::enabled(pi) && !plugins::running(pi)) {
+        const Plugin* p = plugins::at(pi);
+        if (p && (p->info.flags & PF_SD) && !plat::sdBase()[0])
+            snprintf(err, errLen, "Saved. %.12s needs an SD card.", p->info.name);
+        else
+            snprintf(err, errLen, "Saved, not running: %.18s", plugins::whyNot(pi));
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// restartPlugins: every plugin stopped and started again on the settings as
+// they now are, having first got every caller out of one. A CONFIG save and
+// a backup restore that put system.cfg or an information page live (1.1.0)
+// both come here, so "live" means the same thing after either.
+// ---------------------------------------------------------------------------
+void Bbs::restartPlugins() {
     // A plugin about to be stopped may have callers inside it. Hand them
     // back to the command prompt first: a session left owning a plugin
     // that has given its memory back is a session that never comes home.
@@ -1827,22 +1916,6 @@ bool Bbs::configReloadAll(char* err, size_t errLen) {
     plugins::stopAll();
     dropPluginCommands();        // or every reload registers them again
     plugins::begin(*this);
-    snprintf(err, errLen, "Saved and live");
-
-    // "Live" is a claim about the plugin whose page this was, so check it.
-    // A PF_SD plugin switched on with no card mounted does not start, and
-    // its command does not exist; the page said "Saved and live" anyway and
-    // the sysop went looking for FORUMS. Say what is actually true, in one
-    // 40 column line.
-    uint8_t pi = cfgSectionPlugin(g_cfgSection);
-    if (pi != 0xFF && plugins::enabled(pi) && !plugins::running(pi)) {
-        const Plugin* p = plugins::at(pi);
-        if (p && (p->info.flags & PF_SD) && !plat::sdBase()[0])
-            snprintf(err, errLen, "Saved. %.12s needs an SD card.", p->info.name);
-        else
-            snprintf(err, errLen, "Saved, not running: %.18s", plugins::whyNot(pi));
-    }
-    return true;
 }
 
 // ===========================================================================

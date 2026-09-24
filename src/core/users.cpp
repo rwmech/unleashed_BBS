@@ -671,6 +671,7 @@ int validateFile(const char* p, Issues& iss) {
         if (++n > maxUsers) fail("more accounts than max_users");
     }
     fclose(f);
+    iss.accounts = n;
     return iss.problems;
 }
 

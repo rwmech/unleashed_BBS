@@ -363,9 +363,11 @@ outside it and no way to approve a file that is waiting somewhere else.
 | `ANNOUNCE` | Whether this board is listed in a directory, when each one last answered, and the public address the directory sees. `ANNOUNCE TEST` prints the exact payload and sends nothing; `ANNOUNCE NOW` sends a heartbeat immediately. Off until switched on: see [ANNOUNCE.md](ANNOUNCE.md). |
 | `LIGHTS` | The lights plugin's two outputs: each one's pin, effect and brightness, and the colours it was last sent, in hex. `LIGHTS TEST` shows red, green, blue and then white on every pixel, a second each, for checking the wiring. Off until switched on: see `lights` under Plugins below. |
 | `SHUTDOWN [n]` | Take the board off the air on purpose. Announces to every node, counts down n seconds (5 to 3600, default 60), then hangs up on everyone including you, each with the ordinary send-off. `SHUTDOWN CANCEL` stops a countdown and says so. Afterwards the board keeps answering and tells callers it has been shut down, rather than refusing connections in a way that looks like a crash. A physical reboot brings it back. Any transfer running when the countdown ends is lost, and the warning says so. |
+| `BACKUP SD` | The zip the backup window gives, onto the SD card: `unleashed-YYYYMMDD-HHMM.zip` in the card's `backup` folder, with a dot a file while it writes and then `Saved: 14 files, 31 KB.` It holds the Wi-Fi password as typed, and says so. `BACKUP SD SCREENS` writes `screens-YYYYMMDD-HHMM.zip`, the screens alone. Two in one minute would share a name, so the second is refused. `BACKUP` on its own explains the difference from the backup window (1.1.0). |
+| `RESTORE SD [SCREENS] [n]` | On its own, the card's backups, newest first and numbered. With a number or a zip's name, checks it exactly as an upload through the backup window is checked, shows what it would replace (a full restore always shows `Replaces`, `Accounts`, `Removes` and `Staff`) and asks `Restore now? (y/N)`; N or 60 seconds is `Not restored.` `SCREENS` puts only the zip's screens back, onto the card's `screens` folder, and never removes anything; deleting them from the card undoes it (1.1.0). Details: [BACKUP.md](BACKUP.md#backups-on-the-sd-card). |
 | `CONFIG` | The settings, page by page. On its own it lists the pages: `board`, `limits`, `accounts`, `backup`, `staff`, `network`, and one per plugin. `network` is the one page that is not live: the Wi-Fi network and the listening port are used from the next restart, a passphrase under 8 characters is refused before it is written, and so is a port equal to the backup window's. A network saved here that has not joined within a minute of the restart is given up for the last one that did (1.1.0), so a typo costs a minute. `CONFIG wifi`, its name before 1.1.0, still opens it. `CONFIG limits` opens that page as the same kind of form the user manager uses: Up and Down move, F1 saves, ESC cancels. Only what you changed is written, the rest of `system.cfg` is left exactly as it was, comments included, and the board reloads the new settings straight away. Passwords show as `********` and are only written when you type a new one. One sysop edits at a time. |
 
-`CONFIG` is the sysop's own command: co-sysops do not get it whatever the `[access]` matrix says, because it can change the staff passwords.
+`CONFIG` is the sysop's own command: co-sysops do not get it whatever the `[access]` matrix says, because it can change the staff passwords. So are `BACKUP` and `RESTORE`, because a restore replaces the settings and the accounts and a backup holds the Wi-Fi password.
 
 A setting whose value is several values packed with bars, as a file area is,
 is not a text box on its page. It is a button showing the area's name, and
@@ -386,11 +388,15 @@ saved: F1 first.
 A field that steps through words (a level, yes or no, an effect) takes the
 word's first letter, and the same letter again steps to the next word that
 starts with it: `c` twice on a level is `co2` then `co1`. On a plain ASCII
-terminal the letter shows the word it picked and Enter keeps it.
+terminal the letter shows the word it picked and Enter keeps it. There the
+choices are also listed, numbered, above the question (`1 all  2 users  3
+staff ...`), and a number and Enter picks that one (1.1.0): a letter cannot
+reach every choice of a long list such as the timezones. A number that is
+not on the list is refused and the question asked again.
 
 ## Backup window (sysop)
 
-The sysop can download and upload everything that matters (`system.cfg`, `users.txt` and the screens) as one `.zip`, without reflashing. Full steps: [BACKUP.md](BACKUP.md).
+The sysop can download and upload everything that matters (`system.cfg`, `users.txt`, the information pages and the screens) as one `.zip`, without reflashing. Full steps: [BACKUP.md](BACKUP.md).
 
 - Log in as sysop, then press BOOT on the board. The console shows `*** Backup open 5 min: http://<ip>:8080/backup.zip`.
 - Download: `curl.exe -o backup.zip http://<ip>:8080/backup.zip`. No confirmation; staff passwords come out as `***`, account passwords only as salted hashes, and the Wi-Fi password as typed. Local addresses only.
@@ -398,6 +404,7 @@ The sysop can download and upload everything that matters (`system.cfg`, `users.
   - `Y` applies it at once, `N` discards it. No answer in 2 minutes counts as `N`.
   - While the question is on screen, only `Y`, `N`, ESC or Ctrl-C are accepted.
 - The window closes after `backup_window_minutes` or when the sysop logs off.
+- With an SD card, `BACKUP SD` and `RESTORE SD` do the same from the sysop's prompt, with the zip kept on the card (1.1.0). One zip job runs at a time: while the window has a client the card commands say `A backup or restore is already running.`, and while a card job runs the window answers `503 busy`.
 
 ## Screens
 
@@ -422,7 +429,7 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 |---|---|---|
 | `board_name` | empty | this board's own name, shown instead of the software's; empty falls back to the software name |
 | `hostname` | `unleashed` | DHCP and mDNS name (`unleashed.local`), `a-z 0-9 -`, applies at reboot |
-| `tz` | `UTC0` | POSIX TZ string, e.g. `CST6CDT,M3.2.0,M11.1.0` |
+| `tz` | `UTC0` | POSIX TZ string, e.g. `CST6CDT,M3.2.0,M11.1.0`. See the Timezone note under this table |
 | `ntp_server` | `pool.ntp.org` | clock source |
 | `sysop_password` | none set | sysop level. No line at all means the published default `unleashed` stands in, honoured from the board's own network only (see "First boot" in README.md); a blank line disables the level outright |
 | `cosysop1_password` | empty | co-sysop 1 level, empty = disabled |
@@ -446,6 +453,14 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `guest_minutes` | `15` | per guest call, 0 = unlimited; guests have no daily limit |
 
 Keys must appear above the first `[section]` line. Sections are `[access]` for the staff matrix and `[plugin:name]` for each plugin (see [PLUGINS.md](PLUGINS.md)).
+
+**Timezone** and **TZ string** (`tz`, on `CONFIG board` since 1.1.0): Timezone picks a zone by name from a list, and TZ string shows the rule behind it, which is what the board keeps. Pick **Custom** to type your own. As shipped, `UTC`.
+
+A TZ string is the POSIX form the board's C library reads. It starts with the zone's short name and its offset from UTC in hours, counted **west**, so US zones are positive and zones east of London are negative. A zone with daylight saving adds the summer name and when the clocks change: `EST5EDT,M3.2.0,M11.1.0` is US Eastern, changing on the second Sunday of March and the first Sunday of November.
+
+If your place is not in the list, a Linux computer can tell you its string: `tail -n 1 /usr/share/zoneinfo/Europe/Paris`, with your own area and city, prints it. The answer is only as current as that computer's time zone data, and the rules do change: British Columbia, Alberta and the Northwest Territories all stopped changing their clocks in 2026, and lists of these strings made before then give the old rules. If your government changes the rules, type the new string as Custom; the board does not update its list by itself.
+
+The list is 34 zones and Custom, in `src/core/tzones.h`. A `tz` in the file that is exactly one of their strings opens as that zone's name; anything else opens as Custom with the string. Picking a zone writes its string into the row below, and typing into the string makes the zone Custom.
 
 ### Plugins
 
@@ -482,7 +497,15 @@ mosi    = 23
 clk     = 18
 miso    = 19
 screens = yes       ; screens on the card override the stock set, per file
+nightly = no        ; yes: a full backup on the card at 03:00, the last 7 kept
 ```
+
+`nightly` (1.1.0, `Nightly` on `CONFIG sd`) makes a full backup into the
+card's `backup` folder every night at 03:00 local time, named
+`nightly-YYYYMMDD.zip`, and keeps the last seven. Only those names are ever
+pruned, never a backup made by hand with `BACKUP SD`. A night that could not
+be backed up (no card, a full card, no clock) is logged and told to staff at
+their next arrival. See [BACKUP.md](BACKUP.md#the-nightly-backup).
 
 Wiring: `3V3` (**not VIN**), `GND`, `CS` to D5, `MOSI` to D23, `CLK` to D18,
 `MISO` to D19. GPIO5 is a strapping pin, so if the board will not start with

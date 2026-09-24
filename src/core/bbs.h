@@ -59,6 +59,7 @@
 #include "guard.h"
 #include "sysconfig.h"
 #include "backup.h"
+#include "cardnames.h"
 #include "users.h"
 #include "form.h"
 #include "ring.h"
@@ -93,6 +94,7 @@ enum class SState : uint8_t {
     RingWhy,   // a caller typing what they want the sysop for
     Ringing,   // a caller waiting on a ring: the spinner, any key stops it
     RingAsk,   // the sysop's one-key question: answer, decline, away, later
+    CardJob,   // BACKUP SD / RESTORE SD working, or asking Y/N (1.1.0)
 };
 
 enum class Role : uint8_t {
@@ -338,8 +340,15 @@ public:
     // core's. Called before the plugins are restarted by a config reload.
     void dropPluginCommands();
     // closeCardScreens: end any screen being read from the SD card and hand
-    // those callers back to the prompt. Called before the card is unmounted.
-    void closeCardScreens();
+    // those callers back to the prompt. Called before the card is unmounted,
+    // and before RESTORE SD SCREENS replaces the card's screens, which says
+    // so in why (the default is the unmount's line).
+    void closeCardScreens(const char* why = nullptr);
+    // dropCardJob: a backup being written to the card, or a zip being
+    // checked off it, lets go of its files, for the same reason (1.1.0). The
+    // nightly one is the case that matters: it runs while the sysop is free
+    // to type SD UNMOUNT. A restore already being put live is not stopped.
+    void dropCardJob();
 
     // -- for plugins ---------------------------------------------------------
     // own: the plugin takes this session: keys go to its onKey hook and the
@@ -759,11 +768,44 @@ private:
     };
     RingState ring_;
 
+    // -- backups on the SD card (bbs_backup.cpp, 1.1.0) ------------------------
+    void cmdBackup(Session& s, const char* arg, uint32_t now);
+    void cmdRestore(Session& s, const char* arg, uint32_t now);
+    void serviceCard(uint32_t now);
+    void cardKey(Session& s, int k);
+    void cardAsk(Session& s, uint32_t now);
+    void cardRow(Session& s, const char* label, const char* value, Color c);
+    void cardDotsOut(Session& s, uint8_t n, uint8_t cap);
+    void cardDone(Session& s, BackupService::Job was, bool watching, uint32_t now);
+    void nightlyTick(uint32_t now);
+    void nightlyDone();
+    // nightlyNotice: last night's backup did not happen, to staff arriving
+    void nightlyNotice(Session& s);
+    // restartPlugins: hand anybody inside a plugin home, stop them all and
+    // start them again on the file as it is now. A CONFIG save and a
+    // restore both end here (bbs_sysop.cpp).
+    void restartPlugins();
+
     int       lfd_          = -1;
     uint16_t  port_         = 0;             // see port()
     BackupService backup_;
     bool      approvalShown_ = false;
     uint32_t  lastBtnLog_    = 0;
+
+    // The card job as the sysop sees it (bbs_backup.cpp). One of these at a
+    // time, board-wide, and only ever the sysop's line: CF_SYSOP commands.
+    char      cardName_[cardbak::kNameMax + 1] = {};
+    uint32_t  cardZipBytes_  = 0;       // RESTORE: the zip's size, for "In zip"
+    uint32_t  cardAskBy_     = 0;       // RESTORE: the question times out here
+    uint8_t   cardDots_      = 0;       // dots on the current line
+    bool      cardScreens_   = false;   // SCREENS
+    bool      cardNightly_   = false;   // the nightly backup: nobody watching
+    // The nightly backup's clock. nightlyDay_ is the clk::dayKey it last
+    // tried, nightlyFail_ why that did not happen (0 when it did).
+    uint32_t  nightlyDay_     = 0;
+    uint32_t  nightlyLookAt_  = 0;
+    uint32_t  nightlyNoClock_ = 0;
+    uint8_t   nightlyFail_    = 0;
     uint32_t  heapBaseline_ = 0;
 
     // Running figures for the sysop's system screen. All of them are a few

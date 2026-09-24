@@ -104,7 +104,20 @@ test_recovery: test_recovery.cpp ../src/core/recovery.h
 test_ring: test_ring.cpp ../src/core/ring.h ../src/core/bus.cpp ../src/core/bus.h ../src/config.h
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_ring.cpp ../src/core/bus.cpp
 
-test: test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring
+
+# The timezone picker's table (1.1.0): one list that is both the rows CONFIG
+# looks a TZ string up in and the choices its cycle steps through, so each
+# rule that keeps the two in step is checked here.
+test_tzones: test_tzones.cpp ../src/core/tzones.h
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_tzones.cpp
+
+# The names of the backups on the SD card, and the rule that prunes the
+# nightly ones (1.1.0): it must never take a backup the sysop made by hand.
+test_cardnames: test_cardnames.cpp ../src/core/cardnames.h
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_cardnames.cpp
+
+
+test: test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames
 	./test_xmodem
 	./test_wrap
 	./test_forums_ptr
@@ -113,8 +126,10 @@ test: test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv 
 	./test_improv
 	./test_recovery
 	./test_ring
+	./test_tzones
+	./test_cardnames
 
 clean:
-	rm -f bbs_host test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring
+	rm -f bbs_host test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames
 
 .PHONY: clean test

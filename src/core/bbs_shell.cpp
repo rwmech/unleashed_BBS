@@ -305,6 +305,15 @@ const Command* Bbs::coreCommands(uint8_t& count) {
         { "SHUTDOWN", "", 0, CF_SYSOP, "SHUTDOWN [n]", "warn everyone, then close the board",
           [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdShutdown(s, a, n); },
           Menu::Sysop, 40 },
+        // The zip the backup window gives, onto the SD card and back (1.1.0).
+        // Sysop only, like CONFIG: a restore replaces the settings and the
+        // accounts, and a backup holds the Wi-Fi password.
+        { "BACKUP", "", 0, CF_SYSOP, "BACKUP SD", "zip to card (or SCREENS)",
+          [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdBackup(s, a, n); },
+          Menu::Sysop, 41 },
+        { "RESTORE", "", 0, CF_SYSOP, "RESTORE SD n", "put a card zip back",
+          [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdRestore(s, a, n); },
+          Menu::Sysop, 42 },
         { "CONFIG", "", 0, CF_SYSOP, "CONFIG [p]", "board settings, page by page",
           [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdConfig(s, a, n); },
           Menu::Sysop, 3 },

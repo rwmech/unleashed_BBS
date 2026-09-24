@@ -133,7 +133,25 @@ public:
     // wipe: forget the line-mode input buffer (it can hold a password)
     void wipe();
 
+    // redraw: draw field i again from its buffer, for an owner that has just
+    // changed it because the caller changed another one (CONFIG's Timezone
+    // writes its TZ string, 1.1.0). The cursor goes back where it was. Plain
+    // ASCII has nothing drawn to redraw: it shows the value when it asks.
+    void redraw(uint8_t i, Term& t, Timeline& tl);
+
+    // onChange: called whenever a field's value changes, with the field, on
+    // every form, and before the next field is asked for in line mode, so an
+    // owner that ties two fields together can change the second while the
+    // caller is still looking at the first. One pointer for the whole board
+    // rather than one per form, because a form lives in every Session and a
+    // byte there costs twelve: the one owner that sets it (CONFIG, one sysop
+    // at a time) checks that the form is its own.
+    using ChangeFn = void (*)(Form& f, uint8_t field, Term& t, Timeline& tl);
+    static ChangeFn onChange;
+
 private:
+    void changed(uint8_t i, Term& t, Timeline& tl) { if (onChange) onChange(*this, i, t, tl); }
+    void listChoices(const FormField& f, Term& t, Timeline& tl);
     static constexpr uint8_t kLabelCol = 2;
     static constexpr uint8_t kBoxCol   = 12;
     static constexpr uint8_t kBoxW     = 27;

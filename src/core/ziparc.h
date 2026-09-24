@@ -11,23 +11,32 @@
  *                  storage filesystem and travels as one .zip:
  *                    system.cfg          passwords written as *** on download
  *                    users.txt           accounts (password hashes, not passwords)
+ *                    info/<n>.txt        the information pages, 0 to 9 (1.1.0)
  *                    screens/<name>.<ext>
  *                    MANIFEST.txt        informational, ignored on upload
  *                  Logs live on their own partition and never enter the zip.
  *
  *                  ZipExport  streams a stored (uncompressed) zip without buffering it:
  *                  scan() sizes every entry and computes CRCs, produce() is
- *                  called until it returns 0.
+ *                  called until it returns 0. Or, for a zip written to the SD
+ *                  card (BACKUP SD, 1.1.0), beginFile() then writeFile() a
+ *                  step at a time, patching each entry's header as it ends.
  *                  ZipImport  takes an uploaded zip (stored or deflated), validates it
  *                  against the allow-list and limits, extracts accepted files
- *                  into <fs>/.staging one per step(), then apply() swaps them
- *                  in (or discard() throws them away).
+ *                  into staging one per step(), then applyStep() puts them
+ *                  live one per call (or discard() throws them away).
  *
- *                  Upload rules (see SCREENS.md): system.cfg and screens/<a-z0-9_-, 1..8>
- *                  .asc .ans .seq .p40 .p80 only; one file <= BBS_ZIP_FILE_MAX; at most
- *                  BBS_ZIP_MAX_FILES files and BBS_ZIP_TOTAL_MAX bytes unpacked. A single
+ *                  Upload rules (see SCREENS.md): system.cfg, users.txt,
+ *                  info/<0-9>.txt and screens/<a-z0-9_-, 1..8> .asc .ans .seq
+ *                  .p40 .p80 only; one file <= BBS_ZIP_FILE_MAX; at most
+ *                  BBS_ZIP_MAX_FILES files and BBS_ZIP_TOTAL_MAX bytes unpacked,
+ *                  and only as much as the board has room for. A single
  *                  top-level folder (from re-zipping an unpacked folder) is stripped.
  *                  When the upload carries screens, the live screens directory mirrors it.
+ *
+ *                  Mode::Screens (RESTORE SD SCREENS) takes the screens and
+ *                  nothing else, and puts them in the card's screens folder,
+ *                  the override layer, where they only ever add or replace.
  *
  * Libraries:    none (libc stdio, dirent)
  * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
@@ -64,6 +73,9 @@ namespace ziparc {
 // validScreenName: "welcome.ans" style base.ext check (lowercase expected)
 bool validScreenName(const char* file);
 
+// validInfoName: "info/3.txt", a page 0 to 9 (1.1.0)
+bool validInfoName(const char* name);
+
 // ===========================================================================
 // ZipExport
 // ===========================================================================
@@ -82,6 +94,33 @@ public:
     // abort: close any open file (client went away)
     void abort();
 
+    // -- written to a file as it goes (BACKUP SD, 1.1.0) ----------------------
+    //
+    // No copy of users.txt and no measuring pass first, which is what scan()
+    // needs because an HTTP reply states its length before the first byte.
+    // A file can be gone back over: each entry's CRC and size are worked out
+    // as it is written and patched into its local header when it ends, and
+    // the central directory at the end is written from the real figures.
+    // That also means the zip is spread across as many loop passes as it
+    // takes, rather than reading every file twice in one of them.
+    //
+    // beginFile: pick the entries. screensOnly for BACKUP SD SCREENS.
+    // estimate gets roughly how big the zip will be, for "Card full".
+    void beginFile(bool screensOnly, uint32_t& estimate);
+
+    // writeFile: write up to budget bytes to out, through buf. Entry when an
+    // entry was finished (the caller prints a dot), Done when the zip is
+    // complete, Failed on a write that did not go.
+    enum class Wrote : uint8_t { More, Entry, Done, Failed };
+    Wrote writeFile(FILE* out, uint8_t* buf, size_t cap, size_t budget);
+
+    // files: entries in the zip, not counting MANIFEST.txt; screens: of them,
+    // how many are screens.
+    uint8_t files()   const { return count_ ? static_cast<uint8_t>(count_ - (manifestIn_ ? 1 : 0)) : 0; }
+    uint8_t screens() const { return screens_; }
+    // written: bytes of the zip written so far; the whole zip once Done
+    uint32_t written() const { return total_; }
+
 private:
     enum class Src   : uint8_t { File, Config, Manifest, Snapshot };
     enum class Phase : uint8_t { Local, Data, Central, End, Done };
@@ -94,6 +133,9 @@ private:
         uint32_t offset;       // local header offset
     };
 
+    // collect: the entries both ways of making a zip share, so the window's
+    // download and a card backup cannot come to hold different things.
+    void   collect(bool screensOnly, bool snapshot);
     bool   addEntry(const char* name, Src src);
     bool   snapshotUsers();
 public:
@@ -108,6 +150,8 @@ private:
 
     Entry    list_[BBS_ZIP_MAX_FILES + 2];
     uint8_t  count_ = 0;
+    uint8_t  screens_ = 0;
+    bool     manifestIn_ = false;
     uint32_t total_ = 0;
     uint32_t cdOffset_ = 0;
     uint32_t cdSize_   = 0;
@@ -138,26 +182,70 @@ struct ImportReport {
     uint8_t  accepted = 0;
     uint8_t  rejected = 0;
     uint8_t  removed  = 0;         // live screens the upload deletes
+    uint8_t  replaced = 0;         // Mode::Screens: accepted screens already on the card
+    uint8_t  screens  = 0;         // accepted screens
+    uint8_t  pages    = 0;         // accepted information pages
+    uint16_t accounts = 0;         // accounts in the zip's users.txt
+    uint8_t  staffChanged = 0;     // staff levels the zip's system.cfg would change
     uint32_t bytes    = 0;         // unpacked bytes accepted
     bool     hasCfg     = false;
     bool     hasUsers   = false;
     bool     hasScreens = false;
+    bool     wifiDiffers = false;  // the zip's network is not the board's
     char     firstReject[96] = {};
     char     note[72]        = {};   // accepted with a warning (unknown keys)
 };
 
+// What a restore did, once applyStep has finished.
+struct ApplyReport {
+    uint8_t  screens  = 0;         // screens put live
+    uint8_t  removed  = 0;         // live screens taken away (not in the zip)
+    uint8_t  pages    = 0;         // information pages put live
+    uint8_t  failures = 0;
+    bool     users    = false;     // users.txt put live
+    bool     cfgTried = false;     // the zip had a system.cfg
+    bool     cfgLive  = false;     // and the board is running it
+    bool     hostChanged = false;  // hostname differs: used from the next restart
+    bool     wifiChanged = false;  // network differs: used from the next restart
+    char     cfgErr[64] = {};      // why it is not running, when it is not
+};
+
 class ZipImport {
 public:
-    // open: parse the central directory of zipPath and classify every entry
-    bool open(const char* zipPath, char* err, size_t errLen);
+    // Full: everything the zip may carry, onto the board. Screens: its
+    // screens only, into destDir (the card's screens folder), never removing.
+    enum class Mode : uint8_t { Full, Screens };
+
+    // Why open() said no, beyond the words in err: the caller has its own
+    // sentence for each. needKB and freeKB are set for NoRoom.
+    enum class Fail : uint8_t { None, Unreadable, TooBig, NoRoom };
+
+    // open: parse the central directory of zipPath and classify every entry.
+    // stageDir: where to unpack before anything goes live, empty for
+    // <userdata>/.staging. destDir: Mode::Screens only, the card's screens.
+    bool open(const char* zipPath, char* err, size_t errLen, Mode mode = Mode::Full,
+              const char* stageDir = nullptr, const char* destDir = nullptr);
+    Fail     failed() const { return fail_; }
+    uint32_t needKB() const { return needKB_; }
+    uint32_t freeKB() const { return freeKB_; }
+    bool     roomOnCard() const { return mode_ == Mode::Screens; }
 
     // step: extract the next accepted entry into staging. False when done.
     bool step();
 
     const ImportReport& report() const { return rep_; }
 
-    // apply: move staged files live, mirror screens, reload system.cfg
-    bool apply(char* msg, size_t msgLen);
+    // applyStep: put one staged file live per call, removing a screen the
+    // zip leaves out first, and reload system.cfg at the end. False once the
+    // whole restore is done and staging is gone; applied() says how it went.
+    // One a call, so a restore of sixty-odd files is sixty-odd loop passes
+    // and never one long stall with every caller waiting on it.
+    bool applyStep();
+    const ApplyReport& applied() const { return applied_; }
+    bool applyOk() const { return applied_.failures == 0; }
+
+    // applyMessage: "Applied: ..." for curl and the console, as ever
+    void applyMessage(char* msg, size_t msgLen) const;
 
     // discard: delete staging and the uploaded zip
     void discard();
@@ -181,14 +269,29 @@ private:
     void reject(const char* name, const char* why);
     bool extract(Item& it);
     void countRemovals();
+    void inspectCfg(const char* staged);
+    bool roomCheck(char* err, size_t errLen);
+    void stagePath(char* out, size_t n, const char* name) const;
+    bool applyItem(Item& it);
+    bool removeOneStale();
+    void finishApply();
 
     char         zipPath_[96] = {};
+    char         stage_[80]   = {};
+    char         dest_[80]    = {};
     FILE*        zf_       = nullptr;
     uint32_t     cdOffset_ = 0;
     Item         items_[BBS_ZIP_MAX_FILES];
     uint8_t      itemCount_ = 0;
     uint8_t      next_      = 0;
+    Mode         mode_      = Mode::Full;
+    Fail         fail_      = Fail::None;
+    uint32_t     needKB_    = 0;
+    uint32_t     freeKB_    = 0;
+    uint8_t      applyPhase_ = 0;
+    uint8_t      applyIdx_   = 0;
     ImportReport rep_;
+    ApplyReport  applied_;
 };
 
 } // namespace ziparc

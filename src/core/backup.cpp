@@ -37,6 +37,7 @@
  */
 
 #include "backup.h"
+#include "cardnames.h"
 #include "sysconfig.h"
 #include "guard.h"
 #include "../platform/platform.h"
@@ -66,9 +67,21 @@ void nonBlocking(int fd) {
     fcntl(fd, F_SETFL, fl | O_NONBLOCK);
 }
 
-void uploadPath(char* out, size_t n) {
-    snprintf(out, n, "%s/%s/upload.zip", plat::fsBase(), BBS_BACKUP_STAGING);
+// The upload lands in staging on userdata (1.1.0), where it is unpacked too:
+// see BBS_BACKUP_STAGING in config.h for why it moved off the screens.
+void stagingDir(char* out, size_t n) {
+    snprintf(out, n, "%s/%s", plat::userBase(), BBS_BACKUP_STAGING);
 }
+
+void uploadPath(char* out, size_t n) {
+    snprintf(out, n, "%s/%s/upload.zip", plat::userBase(), BBS_BACKUP_STAGING);
+}
+
+// kbUp / kbDown: bytes in the board's KB of 1,024, rounded so a size just
+// over a limit reads as over it: the size up and the limit down, or a zip
+// one byte too big would be "257 KB, the limit is 257 KB".
+unsigned kbUp(unsigned long bytes)   { return static_cast<unsigned>((bytes + 1023) / 1024); }
+unsigned kbDown(unsigned long bytes) { return static_cast<unsigned>(bytes / 1024); }
 
 // headerValue: case-insensitive "name:" lookup in the header block
 const char* headerValue(const char* block, const char* name) {
@@ -216,7 +229,12 @@ void BackupService::service(const fd_set& r, const fd_set& w, uint32_t now) {
         decide(false, "no answer from the sysop in time");
     }
 
-    if (cfd_ >= 0 && st_ != St::Approve && st_ != St::Extract) {
+    // An accepted upload goes live a file a pass. It carries on if curl goes
+    // away: stopping half way through would leave a board with part of one
+    // backup and part of what it had.
+    if (st_ == St::Apply && !importer().applyStep()) finishApply();
+
+    if (cfd_ >= 0 && st_ != St::Approve && st_ != St::Extract && st_ != St::Apply) {
         if (now - lastIo_ > BBS_BACKUP_IDLE_MS)                  dropClient("idle timeout");
         else if (static_cast<int32_t>(now - deadline_) >= 0)     dropClient("too slow");
     }
@@ -264,9 +282,11 @@ void BackupService::acceptClient(uint32_t now) {
             note("*** Backup refused %s: not a local address", ip);
             continue;
         }
-        if (cfd_ >= 0) {                                   // one client at a time
-            static const char busy[] = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 5\r\nConnection: close\r\n\r\nbusy\n";
-            send(fd, busy, sizeof(busy) - 1, MSG_DONTWAIT | MSG_NOSIGNAL);
+        // One client at a time, and none while the zip storage is in use: a
+        // restore still going live after its client left, or a card job.
+        if (busy()) {
+            static const char kBusy[] = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 5\r\nConnection: close\r\n\r\nbusy\n";
+            send(fd, kBusy, sizeof(kBusy) - 1, MSG_DONTWAIT | MSG_NOSIGNAL);
             ::close(fd);
             continue;
         }
@@ -320,18 +340,32 @@ void BackupService::readClient(uint32_t now) {
     if (bodyLeft_ == 0) {
         fclose(upload_);
         upload_ = nullptr;
-        char path[96], err[96];
+        char path[96];
         uploadPath(path, sizeof(path));
-        if (!importer().open(path, err, sizeof(err))) {
-            importer().discard();
-            char body[128];
-            snprintf(body, sizeof(body), "rejected: %s\n", err);
-            note("*** Upload from %s refused: %s", clientIp_, err);
-            reply(400, "Bad Request", body);
-            return;
-        }
-        st_ = St::Extract;
+        openUpload(path);
     }
+}
+
+// ---------------------------------------------------------------------------
+// openUpload: the whole upload is in staging; read its directory and start
+// unpacking it, or say why not. No room on the board to unpack it is its
+// own answer, because it is not the zip's fault.
+// ---------------------------------------------------------------------------
+void BackupService::openUpload(const char* path) {
+    char err[96];
+    if (importer().open(path, err, sizeof(err))) {
+        st_ = St::Extract;
+        return;
+    }
+    bool room = importer().failed() == ziparc::ZipImport::Fail::NoRoom;
+    char body[128];
+    if (room) snprintf(body, sizeof(body), "Board full: %u KB needed, %u KB free.\n",
+                       static_cast<unsigned>(importer().needKB()), static_cast<unsigned>(importer().freeKB()));
+    else      snprintf(body, sizeof(body), "rejected: %s\n", err);
+    importer().discard();
+    note("*** Upload from %s refused: %.60s", clientIp_, room ? "no room on the board" : err);
+    if (room) reply(507, "Insufficient Storage", body);
+    else      reply(400, "Bad Request", body);
 }
 
 void BackupService::writeClient(uint32_t now) {
@@ -425,16 +459,39 @@ void BackupService::route(uint32_t now) {
         unsigned long len = strtoul(cl, &clEnd, 10);
         if (clEnd == cl || len == 0) { reply(400, "Bad Request", "empty upload\n"); return; }
         if (len > BBS_ZIP_MAX_BYTES) {
+            // The copy's words, the same as RESTORE SD says them (RS-toobig).
             char body[96];
-            snprintf(body, sizeof(body), "zip is %lu bytes, the limit is %u (see SCREENS.md)\n", len,
-                     static_cast<unsigned>(BBS_ZIP_MAX_BYTES));
+            snprintf(body, sizeof(body), "Too big: %u KB. The limit is %u KB.\n", kbUp(len),
+                     kbDown(BBS_ZIP_MAX_BYTES));
             reply(413, "Payload Too Large", body);
             return;
         }
 
         importer().discard();                              // any leftover staging goes
+
+        // Room for the zip itself, before a byte of it is taken. Unpacking
+        // it is measured again once it is here (ZipImport::open), but a zip
+        // that will not even land is better refused than half received.
+        {
+            uint32_t total = 0, used = 0;
+            plat::fsInfoStale();
+            if (plat::userInfo(total, used)) {
+                uint32_t free  = total > used ? total - used : 0;
+                uint32_t avail = free > BBS_FS_RESERVE ? free - BBS_FS_RESERVE : 0;
+                uint32_t need  = static_cast<uint32_t>((len + BBS_FS_BLOCK - 1) / BBS_FS_BLOCK) * BBS_FS_BLOCK;
+                if (need > avail) {
+                    char body[96];
+                    snprintf(body, sizeof(body), "Board full: %u KB needed, %u KB free.\n",
+                             kbUp(need), kbDown(avail));
+                    note("*** Upload from %s refused: no room on the board", clientIp_);
+                    reply(507, "Insufficient Storage", body);
+                    return;
+                }
+            }
+        }
+
         char dir[96], file[96];
-        snprintf(dir, sizeof(dir), "%s/%s", plat::fsBase(), BBS_BACKUP_STAGING);
+        stagingDir(dir, sizeof(dir));
         mkdir(dir, 0755);
         uploadPath(file, sizeof(file));
         upload_ = fopen(file, "wb");
@@ -459,13 +516,7 @@ void BackupService::route(uint32_t now) {
         if (bodyLeft_ == 0) {                              // whole zip arrived with the headers
             fclose(upload_);
             upload_ = nullptr;
-            char err[96];
-            if (!importer().open(file, err, sizeof(err))) {
-                importer().discard();
-                reply(400, "Bad Request", err);
-                return;
-            }
-            st_ = St::Extract;
+            openUpload(file);
         }
         return;
     }
@@ -496,6 +547,14 @@ void BackupService::dropClient(const char* why) {
     ::close(cfd_);
     cfd_ = -1;
     if (upload_) { fclose(upload_); upload_ = nullptr; }
+    // Half way through putting an upload live, the socket goes and the
+    // restore does not: see service(). finishApply() tells the console.
+    if (st_ == St::Apply) {
+        plat::log("backup: client %s done (%s), the restore carries on", clientIp_, why);
+        outLen_ = outPos_ = 0;
+        closeAfterOut_ = false;
+        return;
+    }
     // Tidy the half of the zip storage that is live and never the other
     // (backup.h). No accessor here: an accessor switches, and switching on
     // the way out would build a fresh half only to tidy nothing in it.
@@ -516,24 +575,173 @@ void BackupService::dropClient(const char* why) {
 // ---------------------------------------------------------------------------
 void BackupService::decide(bool accept, const char* why) {
     if (st_ != St::Approve) return;
-    char msg[160];
     if (accept) {
-        bool ok = importer().apply(msg, sizeof(msg));
-        plat::fsInfoStale();              // screens and accounts were rewritten wholesale
-        note("*** %.60s", msg);
-        // The same news as the end of msg, which the note above cuts off: a
-        // restore cannot bring a sysop password back, so a board on the
-        // published default is still on it (1.0.2).
-        if (importer().report().hasCfg && syscfg::get().sysopDefault)
-            note("*** Sysop password is the published default: local only");
-        char body[300];
-        snprintf(body, sizeof(body), "%s\n%s\n", msg, detail_);
-        reply(ok ? 200 : 500, ok ? "OK" : "Internal Server Error", body);
-    } else {
+        // A file a pass from here (service), and curl hears once it is done.
+        // Putting sixty-odd files live in this one call held every caller up
+        // for as long as it took, and since 1.1.0 each screen is a copy from
+        // the user partition rather than a rename.
+        st_       = St::Apply;
+        deadline_ = plat::millis() + BBS_BACKUP_TRANSFER_MS;
+        lastIo_   = plat::millis();
+        return;
+    }
+    char msg[160];
+    importer().discard();
+    note("*** Upload discarded: %.48s", why);
+    snprintf(msg, sizeof(msg), "Upload discarded: %s\n", why);
+    reply(403, "Forbidden", msg);
+}
+
+// ---------------------------------------------------------------------------
+// finishApply: an accepted upload is all in. Tell the console and curl.
+// ---------------------------------------------------------------------------
+void BackupService::finishApply() {
+    char msg[192];
+    importer().applyMessage(msg, sizeof(msg));
+    bool ok = importer().applyOk();
+    const ziparc::ImportReport& rep = importer().report();
+    if (rep.hasCfg || rep.pages) restart_ = true;
+    note("*** %.60s", msg);
+    // The same news as the end of msg, which the note above cuts off: a
+    // restore cannot bring a sysop password back, so a board on the
+    // published default is still on it (1.0.2).
+    if (rep.hasCfg && syscfg::get().sysopDefault)
+        note("*** Sysop password is the published default: local only");
+    if (cfd_ < 0) {                                  // curl went away: nobody to tell
+        st_ = St::Idle;
+        return;
+    }
+    char body[300];
+    snprintf(body, sizeof(body), "%.180s\n%.110s\n", msg, detail_);
+    reply(ok ? 200 : 500, ok ? "OK" : "Internal Server Error", body);
+}
+
+// ===========================================================================
+// The SD card (1.1.0)
+// ===========================================================================
+
+BackupService::Start BackupService::cardBackup(const char* dir, const char* name, bool screensOnly,
+                                               uint32_t& needKB, uint32_t& freeKB) {
+    needKB = freeKB = 0;
+    if (busy()) return Start::Busy;
+    jobOk_      = false;
+    jobBytes_   = 0;
+    jobFiles_   = 0;
+    jobScreens_ = screensOnly;
+
+    uint32_t estimate = 0;
+    exporter().beginFile(screensOnly, estimate);
+    plat::SdInfo card = plat::sdInfo();
+    needKB = (estimate + 1023) / 1024;
+    freeKB = card.freeKB;
+    if (!card.mounted || needKB > freeKB) {
+        exporter().abort();
+        return Start::Full;
+    }
+    snprintf(jobPath_, sizeof(jobPath_), "%s/%s", dir, name);
+    char tmp[124];
+    snprintf(tmp, sizeof(tmp), "%.112s.tmp", jobPath_);
+    jobOut_ = fopen(tmp, "wb");
+    if (!jobOut_) {
+        exporter().abort();
+        return Start::Failed;
+    }
+    job_ = Job::Write;
+    return Start::Ok;
+}
+
+// finishWrite: the zip is complete, or will not be. Only a whole one keeps
+// its name; anything else is removed, so "Nothing was saved" is true.
+void BackupService::finishWrite(bool ok) {
+    jobBytes_ = exporter().written();
+    jobFiles_ = jobScreens_ ? exporter().screens() : exporter().files();
+    exporter().abort();
+    bool closed = fclose(jobOut_) == 0;              // FAT says "full" here as often as not
+    jobOut_ = nullptr;
+    char tmp[124];
+    snprintf(tmp, sizeof(tmp), "%.112s.tmp", jobPath_);
+    ok = ok && closed && rename(tmp, jobPath_) == 0;
+    if (!ok) remove(tmp);
+    jobOk_ = ok;
+    job_   = Job::None;
+}
+
+bool BackupService::cardRestore(const char* zipPath, bool screensOnly, const char* screensDir,
+                                char* err, size_t errLen) {
+    if (busy()) { snprintf(err, errLen, "busy"); return false; }
+    jobScreens_ = screensOnly;
+    jobOk_      = false;
+    // A screens restore unpacks on the card, next to where the screens go,
+    // so putting them live is a rename there. A full one unpacks on userdata
+    // like an upload does, with the files it replaces.
+    char stage[96] = "";
+    if (screensOnly) snprintf(stage, sizeof(stage), "%s/%s/%s", plat::sdBase(), cardbak::kDir, BBS_BACKUP_STAGING);
+    ziparc::ZipImport::Mode mode = screensOnly ? ziparc::ZipImport::Mode::Screens
+                                               : ziparc::ZipImport::Mode::Full;
+    if (!importer().open(zipPath, err, errLen, mode, stage, screensDir)) {
         importer().discard();
-        note("*** Upload discarded: %.48s", why);
-        snprintf(msg, sizeof(msg), "Upload discarded: %s\n", why);
-        reply(403, "Forbidden", msg);
+        return false;
+    }
+    job_ = Job::Check;
+    return true;
+}
+
+uint8_t BackupService::cardStep() {
+    uint8_t dots = 0;
+    switch (job_) {
+        case Job::Write: {
+            // Up to BBS_CARD_STEP_BYTES of zip a pass, and a dot for every
+            // file that ends inside it.
+            uint32_t start = exporter().written();
+            for (;;) {
+                uint32_t used = exporter().written() - start;
+                if (used >= BBS_CARD_STEP_BYTES) break;
+                ziparc::ZipExport::Wrote w =
+                    exporter().writeFile(jobOut_, out_, sizeof(out_), BBS_CARD_STEP_BYTES - used);
+                if (w == ziparc::ZipExport::Wrote::Entry) { ++dots; continue; }
+                if (w == ziparc::ZipExport::Wrote::More) break;
+                finishWrite(w == ziparc::ZipExport::Wrote::Done);
+                break;
+            }
+            break;
+        }
+        case Job::Check:
+            // One file unpacked and checked a pass, the way an upload is.
+            if (importer().step()) { dots = 1; break; }
+            if (!importer().report().accepted) { importer().discard(); job_ = Job::None; }
+            else                               job_ = Job::Ask;
+            break;
+        case Job::Apply:
+            if (importer().applyStep()) { dots = 1; break; }
+            if (!jobScreens_ && (importer().report().hasCfg || importer().report().pages)) restart_ = true;
+            jobOk_ = importer().applyOk();
+            job_   = Job::None;
+            break;
+        default:
+            break;
+    }
+    return dots;
+}
+
+void BackupService::cardAnswer(bool yes) {
+    if (job_ != Job::Ask) return;
+    if (yes) { job_ = Job::Apply; return; }
+    importer().discard();
+    job_ = Job::None;
+}
+
+void BackupService::cardDrop() {
+    switch (job_) {
+        case Job::Write:
+            finishWrite(false);
+            break;
+        case Job::Check:
+        case Job::Ask:
+            importer().discard();
+            job_ = Job::None;
+            break;
+        default:                          // Apply finishes; None has nothing to drop
+            break;
     }
 }
 

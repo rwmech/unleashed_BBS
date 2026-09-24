@@ -128,6 +128,40 @@ entry when it is released.
   could be drawn twice. The sysop's node shows as `[>S]`, not `[>0]`.
   FILES no longer carries a half-answered question into the next visit.
 
+**1.1.0-dev.6, backups on the SD card, and the timezone by name.**
+- `BACKUP SD` writes the backup window's zip to the card
+  (`backup/unleashed-YYYYMMDD-HHMM.zip`), a step each loop pass with a dot
+  a file, so callers are not held up. `BACKUP SD SCREENS` writes the
+  screens alone.
+- `RESTORE SD` lists the card's backups, newest first. `RESTORE SD n`
+  checks one exactly as an upload through the backup window is checked,
+  shows what it replaces (accounts, screens, staff passwords, and the
+  Wi-Fi network when it differs) and restores on Y. `RESTORE SD SCREENS n`
+  puts screens into the card's screens folder, never touching the ones in
+  flash, and never removes anything.
+- Nightly backups: `nightly = yes` on `CONFIG sd` makes one at 03:00 and
+  keeps the last seven `nightly-YYYYMMDD.zip`. Backups made by hand are
+  never pruned. A missed night is logged and told to staff when they
+  arrive.
+- **Fixed: restoring a backup through the backup window deleted every
+  account on a real board**, from 0.14.0 on. The upload was unpacked on
+  the screens partition and moved to the accounts partition, which the
+  ESP32 refuses between partitions; the fallback then deleted the live
+  accounts file and failed the same way. Restores now unpack on the
+  accounts partition, and nothing removes a live file before its
+  replacement is whole. (Also shipped on its own as 1.0.3.)
+- Backup limits are 256 KB for the zip and 256 KB unpacked, checked
+  against the room actually free: "Too big" and "Board full" say which.
+- The information pages travel in the backup zip. A restore that brings
+  back system.cfg or a page restarts the plugins, so it is live at once.
+- The backup window's restore goes live a file a loop pass, not in one
+  stall.
+- `CONFIG board`: Timezone is picked by name from 34 zones, or Custom,
+  above the TZ string it sets.
+- Plain ASCII: every cycle field lists its choices numbered, and a number
+  picks one.
+- `SD UNMOUNT` and a pin change let go of a backup being written first.
+
 ## 1.0.2, 2026-09-23
 
 A security fix. Restoring a backup could turn the published default sysop

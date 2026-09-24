@@ -262,6 +262,7 @@ struct Issues {
     int    warnings = 0;
     char*  warn     = nullptr;
     size_t warnLen  = 0;
+    uint16_t accounts = 0;             // out: how many accounts the file holds
 };
 
 // validateFile: a users.txt from an upload parses cleanly (handles valid
