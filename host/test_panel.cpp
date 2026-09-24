@@ -11,6 +11,7 @@
 // License:      GNU General Public License v2 or later
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 #include "../src/plugins/panel_gfx.h"
@@ -116,6 +117,22 @@ int main() {
         bool leftEmpty = true;
         for (int y = 0; y < 40; ++y) for (int x = 0; x < 34; ++x) if (cen.at(x, y) != 0x0001) leftEmpty = false;
         check("centred: 32 pixels of text in 100 start at 34", leftEmpty);
+
+        // Two lines in a box tall enough, broken at a space: 21 glyphs in a
+        // 12-glyph box goes "12:34 logoff" over "Somebody".
+        Glass two(96, 32);
+        field(two.c, R(0, 0, 96, 32), "12:34 logoff Somebody", 0xFFFF, 0x0001, false, LEFT);
+        bool top = false, bottom = false;
+        for (int x = 0; x < 96; ++x) {
+            for (int y = 0; y < 16; ++y) if (two.at(x, y) == 0xFFFF) top = true;
+            for (int y = 16; y < 32; ++y) if (two.at(x, y) == 0xFFFF) bottom = true;
+        }
+        check("too wide for one line in a two-line box: two lines", top && bottom);
+        Glass one(96, 32);
+        field(one.c, R(0, 0, 96, 32), "short", 0xFFFF, 0x0001, false, LEFT);
+        bool second = false;
+        for (int x = 0; x < 96; ++x) for (int y = 26; y < 32; ++y) if (one.at(x, y) == 0xFFFF) second = true;
+        check("a string that fits stays one line, centred in the box", !second);
     }
 
     // --- the strip's lamps --------------------------------------------------
@@ -132,6 +149,30 @@ int main() {
             snprintf(what, sizeof(what), "%u lamp%s fit the strip without touching", n, n > 1 ? "s" : "");
             check(what, ok);
         }
+        // Portrait: the strip wraps into a grid of bigger lamps.
+        Rect port = R(0, 180, 172, 136);
+        uint8_t cols, rows;
+        int sz;
+        stripGrid(port, 10, cols, rows, sz);
+        check("portrait, ten lamps: two rows of five", cols == 5 && rows == 2 && sz >= 30);
+        stripGrid(port, 16, cols, rows, sz);
+        check("portrait, sixteen: four rows of four", cols == 4 && rows == 4);
+        stripGrid(strip, 10, cols, rows, sz);
+        check("landscape, ten: one row", cols == 10 && rows == 1);
+        stripGrid(port, 7, cols, rows, sz);
+        Rect a = stripCell(port, 0, 7), b = stripCell(port, 4, 7), l = stripCell(port, 6, 7);
+        check("seven: a short last row, centred under the full one",
+              rows == 2 && cols == 4 && b.y > a.y &&
+              abs((b.x - port.x) - ((port.x + port.w) - (l.x + l.w))) <= 1);
+        bool okGrid = true;
+        for (uint8_t n : { 1, 2, 7, 8, 10, 16 })
+            for (uint8_t i = 0; i < n; ++i) {
+                Rect cell = stripCell(port, i, n);
+                if (!contains(port, cell) || cell.w <= 0) okGrid = false;
+                for (uint8_t k = 0; k < i; ++k) if (overlap(cell, stripCell(port, k, n))) okGrid = false;
+            }
+        check("every portrait grid inside the strip, no two cells touching", okGrid);
+
         Glass g(320, 172, 0);
         Rect c = stripCell(strip, 3, 10);
         lamp(g.c, c, 0xF800, 0x3333, 0x0000);

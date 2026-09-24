@@ -10,20 +10,35 @@ File:         tools/release.py
 Module:       Tools / release build
 
 Purpose:      Builds a public release: the five flash images the web
-              installer writes, the third-party licence notices, and a
-              SHA256SUMS over all of it. Run by the GitHub Action on a
-              version tag, and by hand to test a release before tagging.
+              installer writes, for each chip family a release carries, the
+              third-party licence notices, and a SHA256SUMS over all of it.
+              Run by the GitHub Action on a version tag, and by hand to test
+              a release before tagging.
+
+              Two families since 1.1.0 (BUILDS below): the ESP32, the
+              reference WROOM-32E, and the ESP32-S3, built for the Waveshare
+              ESP32-S3-LCD-1.47 profile. A board profile is a build, so a
+              second S3 board would be a second row with its own directory.
 
 Output:       release/<version>/assets/    flat, for a GitHub Release, the
                                            shape deploy/fetch_release.py in
-                                           the directory repository fetches
+                                           the directory repository fetches.
+                                           The ESP32's parts keep their plain
+                                           names, as every earlier release had
+                                           them; another family's carry its
+                                           directory as a prefix:
+                                           esp32s3-firmware.bin
               release/<version>/install/   the directory server's own layout,
-                                           esp32/<parts>, for copying straight
-                                           into firmware/<version>/ by hand
+                                           <family>/<parts> (esp32/, esp32s3/),
+                                           for copying straight into
+                                           firmware/<version>/ by hand, and a
+                                           manifest.json naming both, for
+                                           trying the images in ESP Web Tools
+                                           before the directory serves them
 
-Design:       The release environment (esp32dev_release) defines BBS_RELEASE,
-              which makes main.cpp ignore include/secrets.h even when it is
-              present. The screens image is built from data/screens only,
+Design:       Each release environment (esp32dev_release, ws_s3_lcd147_release)
+              defines BBS_RELEASE, which makes main.cpp ignore include/secrets.h
+              even when it is present. The screens image is built from data/screens only,
               never from data/, because data/system.cfg on a developer's
               machine carries the staff passwords. And then, belt and braces,
               every output file is searched for any password or network name
@@ -59,11 +74,21 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-ENV = "esp32dev_release"
-BUILD = ROOT / ".pio" / "build" / ENV
 PARTS = ("bootloader.bin", "partitions.bin", "ota_data_initial.bin",
          "firmware.bin", "storage.bin")
 NOTICES = "THIRD_PARTY_NOTICES.md"
+
+# The builds a release carries: the directory a family's parts go in (the
+# name the directory server keys FLASH_FAMILIES by), the PlatformIO release
+# environment, the chipFamily ESP Web Tools matches against the chip it
+# reads out of the board, and where that family's bootloader goes. 0x1000
+# on the ESP32, 0x0 on the S3 (ESP-IDF's bootloader guide, per target; the
+# generated sdkconfig's CONFIG_BOOTLOADER_OFFSET_IN_FLASH is checked
+# against it below). The ESP32 is first: its assets keep their plain names.
+BUILDS = (
+    {"dir": "esp32",   "env": "esp32dev_release",     "family": "ESP32",    "boot": 0x1000},
+    {"dir": "esp32s3", "env": "ws_s3_lcd147_release", "family": "ESP32-S3", "boot": 0x0},
+)
 
 # Offsets the installer writes to, from partitions.csv. Checked here against
 # the table itself, so a partition move cannot ship with stale offsets.
@@ -162,6 +187,9 @@ def notices(fw):
         ("esp_littlefs (joltwallet)", "MIT", mc / "joltwallet__littlefs/LICENSE"),
         ("littlefs", "BSD-3-Clause", mc / "joltwallet__littlefs/src/littlefs/LICENSE.md"),
         ("mDNS (Espressif)", "Apache-2.0", mc / "espressif__mdns/LICENSE"),
+        # In the ESP32-S3 image only: the panel's bitmap font.
+        ("Spleen bitmap font 2.2.0 (Frederic Cambus), ESP32-S3 image", "BSD-2-Clause",
+         ROOT / "tools/fonts/SPLEEN-LICENSE"),
     ]
     out = ["# Third-party notices",
            "",
@@ -209,6 +237,35 @@ def check_notices():
         die("copyright or licence lines name Anthropic or Claude: " + ", ".join(bad[:10]))
 
 
+def check_boot_offset(b):
+    """The bootloader offset BUILDS names for a family is the one its build
+    was made for: CONFIG_BOOTLOADER_OFFSET_IN_FLASH in the generated
+    sdkconfig. A wrong offset here writes a bootloader where the chip will
+    never look for it, and the board simply never boots."""
+    cfg = ROOT / f"sdkconfig.{b['env']}"
+    if not cfg.exists():
+        die(f"no {cfg.name} after building {b['env']}")
+    m = re.search(r"^CONFIG_BOOTLOADER_OFFSET_IN_FLASH=(0x[0-9a-fA-F]+)$", cfg.read_text(), re.M)
+    if not m or int(m.group(1), 16) != b["boot"]:
+        die(f"{b['env']}: the build puts its bootloader at {m.group(1) if m else '?'}, "
+            f"not 0x{b['boot']:X} as BUILDS says")
+
+
+def manifest(ver, builds):
+    """An ESP Web Tools manifest for release/<ver>/install/, one build per
+    family, paths relative to it. The directory server makes its own from
+    what it finds on disk; this one is for trying a release by hand."""
+    offsets = {"partitions.bin": 0x8000, "ota_data_initial.bin": EXPECT["otadata"],
+               "firmware.bin": EXPECT["ota_0"], "storage.bin": EXPECT["storage"]}
+    m = {"name": "unleashed BBS", "version": ver, "new_install_prompt_erase": True,
+         "builds": [{"chipFamily": b["family"],
+                     "parts": [{"path": f"{b['dir']}/{name}",
+                                "offset": b["boot"] if name == "bootloader.bin" else offsets[name]}
+                               for name in PARTS]}
+                    for b in builds]}
+    return json.dumps(m, indent=2) + "\n"
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("Purpose:")[0])
     ap.add_argument("--allow-dirty", action="store_true",
@@ -236,47 +293,59 @@ def main():
     # so setting it for buildfs alone deleted the firmware images the first
     # run had just made.
     env = dict(os.environ, PLATFORMIO_DATA_DIR=str(stage))
-    pio("run", "-e", ENV, env=env)
-    pio("run", "-e", ENV, "-t", "buildfs", env=env)
 
-    src = {"bootloader.bin": BUILD / "bootloader.bin",
-           "partitions.bin": BUILD / "partitions.bin",
-           "ota_data_initial.bin": BUILD / "ota_data_initial.bin",
-           "firmware.bin": BUILD / "firmware.bin",
-           "storage.bin": BUILD / "littlefs.bin"}
-    for name, p in src.items():
-        if not p.exists():
-            die(f"build did not produce {p}")
-    if src["firmware.bin"].stat().st_size > SLOT_MAX:
-        die("firmware.bin does not fit the OTA slot")
+    # Every family's five parts, built and checked before anything is
+    # written: a release is all of its families or none of them.
+    families = []
+    for b in BUILDS:
+        pio("run", "-e", b["env"], env=env)
+        pio("run", "-e", b["env"], "-t", "buildfs", env=env)
+        build = ROOT / ".pio" / "build" / b["env"]
+        src = {"bootloader.bin": build / "bootloader.bin",
+               "partitions.bin": build / "partitions.bin",
+               "ota_data_initial.bin": build / "ota_data_initial.bin",
+               "firmware.bin": build / "firmware.bin",
+               "storage.bin": build / "littlefs.bin"}
+        for name, p in src.items():
+            if not p.exists():
+                die(f"{b['env']} did not produce {p}")
+        if src["firmware.bin"].stat().st_size > SLOT_MAX:
+            die(f"{b['env']}: firmware.bin does not fit the OTA slot")
+        check_boot_offset(b)
+        families.append((b, {name: p.read_bytes() for name, p in src.items()}))
 
-    blobs = {name: p.read_bytes() for name, p in src.items()}
-    for secret in secrets_known():
-        needle = secret.encode("utf-8", errors="replace")
+    for b, blobs in families:
+        for secret in secrets_known():
+            needle = secret.encode("utf-8", errors="replace")
+            for name, data in blobs.items():
+                if needle in data:
+                    die(f"{b['dir']}/{name} contains a password or network name from this "
+                        "machine; refusing to release")
         for name, data in blobs.items():
-            if needle in data:
-                die(f"{name} contains a password or network name from this machine; "
-                    "refusing to release")
-    for name, data in blobs.items():
-        if re.search(rb"(?i)anthropic|claude", data):
-            die(f"{name} mentions Anthropic or Claude; the images carry no such credit")
-    if b"sysop_password" in blobs["storage.bin"]:
-        die("storage.bin carries a system.cfg; the screens image must be screens only")
+            if re.search(rb"(?i)anthropic|claude", data):
+                die(f"{b['dir']}/{name} mentions Anthropic or Claude; the images carry no such credit")
+        if b"sysop_password" in blobs["storage.bin"]:
+            die(f"{b['dir']}/storage.bin carries a system.cfg; the screens image must be screens only")
 
     out = ROOT / "release" / ver
     if out.exists():
         shutil.rmtree(out)
     assets = out / "assets"
     install = out / "install"
-    (install / "esp32").mkdir(parents=True)
     assets.mkdir(parents=True)
 
     note = notices(framework_dir())
     sums = []
-    for name, data in blobs.items():
-        (assets / name).write_bytes(data)
-        (install / "esp32" / name).write_bytes(data)
-        sums.append(f"{hashlib.sha256(data).hexdigest()}  {name}")
+    for b, blobs in families:
+        (install / b["dir"]).mkdir(parents=True)
+        # The first family's assets keep their plain names, as the
+        # directory's fetcher has always read them; the rest are prefixed.
+        prefix = "" if b is BUILDS[0] else b["dir"] + "-"
+        for name, data in blobs.items():
+            (assets / (prefix + name)).write_bytes(data)
+            (install / b["dir"] / name).write_bytes(data)
+            sums.append(f"{hashlib.sha256(data).hexdigest()}  {prefix + name}")
+    write(install / "manifest.json", manifest(ver, [b for b, _ in families]))
     write(assets / NOTICES, note)
     write(install / NOTICES, note)
     sums.append(f"{hashlib.sha256(note.encode('utf-8')).hexdigest()}  {NOTICES}")

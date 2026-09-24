@@ -196,17 +196,45 @@ inline int text(Canvas& c, int x, int y, const char* s, uint16_t fg, uint16_t bg
 
 enum Align : uint8_t { LEFT, RIGHT, CENTRE };
 
-// field: a figure in its box. The box is cleared to bg first, so a shorter
-// string leaves nothing of a longer one behind.
-inline void field(Canvas& c, const Rect& r, const char* s, uint16_t fg, uint16_t bg, bool big, uint8_t align) {
-    fill(c, r, bg);
-    if (empty(r)) return;
-    const int gh = big ? kBigH : kSmallH;
+// line: one line of text in a box, aligned, cut at the box's width.
+inline void line(Canvas& c, const Rect& r, int y, const char* s, uint16_t fg, uint16_t bg, bool big,
+                 uint8_t align) {
     int w = textWidth(s, big);
     if (w > r.w) w = r.w - r.w % (big ? kBigW : kSmallW);
     int x = align == RIGHT ? r.x + r.w - w : align == CENTRE ? r.x + (r.w - w) / 2 : r.x;
-    int y = r.y + (r.h - gh) / 2;
     text(c, x, y, s, fg, bg, big, w);
+}
+
+// field: a figure in its box. The box is cleared to bg first, so a shorter
+// string leaves nothing of a longer one behind. A box tall enough for two
+// lines takes a string too wide for one on two, broken at the last space
+// that fits (a portrait panel's last event: "15:18 logoff", then the handle).
+inline void field(Canvas& c, const Rect& r, const char* s, uint16_t fg, uint16_t bg, bool big, uint8_t align) {
+    fill(c, r, bg);
+    if (empty(r)) return;
+    const int gw = big ? kBigW : kSmallW, gh = big ? kBigH : kSmallH;
+    const int fit = r.w / gw;
+    if (fit > 0 && r.h >= 2 * gh && glyphs(s) > fit) {
+        // The last space whose line before it still fits the box.
+        const char* p = s;
+        const char* cut = nullptr;
+        for (int g = 0; *p && g <= fit; ++g) {
+            if (*p == ' ') cut = p;
+            glyph(p);
+        }
+        if (cut) {
+            char first[64];
+            size_t n = static_cast<size_t>(cut - s);
+            if (n > sizeof(first) - 1) n = sizeof(first) - 1;
+            for (size_t i = 0; i < n; ++i) first[i] = s[i];
+            first[n] = '\0';
+            int y = r.y + (r.h - 2 * gh) / 2;
+            line(c, r, y, first, fg, bg, big, align);
+            line(c, r, y + gh, cut + 1, fg, bg, big, align);
+            return;
+        }
+    }
+    line(c, r, r.y + (r.h - gh) / 2, s, fg, bg, big, align);
 }
 
 // ---------------------------------------------------------------------------
@@ -221,13 +249,47 @@ inline void disc(Canvas& c, int cx, int cy, int r, uint16_t col) {
     }
 }
 
-// stripCell: pixel i of n's box in the strip, equal widths, the strip's
-// spare columns split either side.
+// stripGrid: how n lamps sit in the strip's box, as rows of cols square
+// cells of size pixels, for the biggest lamps. One row on a wide landscape
+// panel; on a portrait one the strip wraps, ten pixels as two rows of five
+// rather than ten slivers. A grid is scored by its lamps' size times the
+// square of how full it is, so empty places in a short last row count
+// against it: ten as 4, 4 and 2 lamps of 43 pixels loses to 5 and 5 of 34,
+// and seven comes out 4 over 3 rather than 3, 3 and a lone 1.
+inline void stripGrid(const Rect& s, uint8_t n, uint8_t& cols, uint8_t& rows, int& size) {
+    cols = rows = 0;
+    size = 0;
+    int best = -1;
+    for (int r = 1; r <= n; ++r) {
+        int k = (n + r - 1) / r;
+        if ((r - 1) * k >= n) continue;                     // an empty last row
+        int cw = s.w / k, ch = s.h / r;
+        int sz = cw < ch ? cw : ch;
+        const int places = r * k;
+        int score = sz * n * n * 64 / (places * places);
+        if (score > best) {
+            best = score;
+            cols = static_cast<uint8_t>(k);
+            rows = static_cast<uint8_t>(r);
+            size = sz;
+        }
+    }
+}
+
+// stripCell: lamp i of n's square cell: the grid centred in the strip's box
+// both ways, and a short last row centred under the others.
 inline Rect stripCell(const Rect& s, uint8_t i, uint8_t n) {
-    if (!n) return {};
-    int cw = s.w / n;
-    int x0 = s.x + (s.w - cw * n) / 2;
-    return { static_cast<int16_t>(x0 + i * cw), s.y, static_cast<int16_t>(cw), s.h };
+    if (!n || i >= n) return {};
+    uint8_t cols, rows;
+    int sz;
+    stripGrid(s, n, cols, rows, sz);
+    if (sz <= 0) return {};
+    const int row = i / cols, col = i % cols;
+    const int inRow = row + 1 < rows ? cols : n - row * cols;
+    const int x0 = s.x + (s.w - sz * inRow) / 2;
+    const int y0 = s.y + (s.h - sz * rows) / 2;
+    return { static_cast<int16_t>(x0 + col * sz), static_cast<int16_t>(y0 + row * sz),
+             static_cast<int16_t>(sz), static_cast<int16_t>(sz) };
 }
 
 // lamp: one strip pixel in its cell, lit in col, in a rim two pixels wide
@@ -248,8 +310,8 @@ inline void lamp(Canvas& c, const Rect& cell, uint16_t col, uint16_t rim, uint16
 }
 
 // ---------------------------------------------------------------------------
-// Layout: where each figure goes for a panel of w x h, landscape (the
-// Waveshare stick's 320 x 172 on its side) or portrait.
+// Layout: where each figure goes for a panel of w x h, portrait (the
+// Waveshare stick's 172 x 320, hanging from a port) or landscape.
 // ---------------------------------------------------------------------------
 enum Field : uint8_t { F_NAME, F_CLOCK, F_LABEL, F_CALLERS, F_ADDR, F_UPTIME, F_CARD, F_EVENT,
                        F_COUNT };
@@ -291,16 +353,16 @@ inline Layout layout(uint16_t w, uint16_t h) {
         L.field[F_EVENT]   = R(4, 102, w - 8, kSmallH);
         L.strip            = R(0, 122, w, h - 122);
     } else {
-        // Portrait: the label on a line of its own above the figure, then
-        // a line each.
-        L.field[F_LABEL]   = R(0, 24, w, kSmallH);
-        L.field[F_CALLERS] = R(0, 42, w, kBigH);
-        L.field[F_ADDR]    = R(4, 80, w - 8, kSmallH);
-        L.field[F_UPTIME]  = R(4, 100, w - 8, kSmallH);
-        L.field[F_CARD]    = R(4, 120, w - 8, kSmallH);
-        L.field[F_EVENT]   = R(4, 140, w - 8, kSmallH);
-        int sh = h - 164 < 48 ? h - 164 : 48;
-        L.strip            = R(0, h - sh, w, sh);
+        // Portrait (the Waveshare stick hanging from a port): the label on
+        // a line of its own above the figure, then a line each, the last
+        // event on two, and the strip filling the rest as a grid of lamps.
+        L.field[F_LABEL]   = R(0, 28, w, kSmallH);
+        L.field[F_CALLERS] = R(0, 46, w, kBigH);
+        L.field[F_ADDR]    = R(4, 88, w - 8, kSmallH);
+        L.field[F_UPTIME]  = R(4, 106, w - 8, kSmallH);
+        L.field[F_CARD]    = R(4, 124, w - 8, kSmallH);
+        L.field[F_EVENT]   = R(4, 142, w - 8, 2 * kSmallH);
+        L.strip            = R(0, 180, w, h - 184);
     }
     for (Rect& r : L.field) r = clip(r, w, h);
     L.bar   = clip(L.bar, w, h);

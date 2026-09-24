@@ -221,7 +221,12 @@
 #define BBS_PLUGIN_DIR      "p"      // <fs>/p/<name>/ holds a plugin's files
 #define BBS_PLUGIN_QUOTA    65536    // per plugin, onboard
 #define BBS_FS_RESERVE      32768    // free space the core keeps for accounts
-#define BBS_HEAP_RESERVE    40960    // heap kept free for callers and backups
+// Heap kept free for callers and backups, which a plugin may not take at its
+// start. A board profile may set less (board.h): with PSRAM, the callers'
+// socket buffers and the backup inflater are PSRAM's, not internal RAM's.
+#ifndef BBS_HEAP_RESERVE
+#define BBS_HEAP_RESERVE    40960
+#endif
 
 // ---------------------------------------------------------------------------
 // Scheduler / task

@@ -68,6 +68,14 @@ CONFIG_SPIRAM_SPEED_80M=y
 # offered a fresh install instead of Update (main.cpp, "Why during boot").
 # The test earns nothing a crash on a bad part would not also say.
 CONFIG_SPIRAM_MEMTEST=n
+# Wi-Fi's and lwIP's buffers in PSRAM first, internal RAM only when that
+# fails (Espressif's own option for exactly this). Measured on the first
+# flash without it: internal heap 35,707 free and 20,415 at its lowest, out
+# of 248,219, with nobody on, because with PSRAM enabled the IDF also
+# switches Wi-Fi to sixteen preallocated internal TX buffers. The lights and
+# the panel were both refused at start for want of internal heap while
+# eight megabytes of PSRAM sat idle.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 
 # The console on the S3's own USB (USB-Serial-JTAG), as the primary console.
 # The Waveshare stick has no USB-serial bridge: its USB-A plug goes straight

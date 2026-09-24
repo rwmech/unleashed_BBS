@@ -89,6 +89,14 @@
 #define BBS_HAS_LCD           1
 #define BBS_BOARD_PLUGINS     1       // the panel
 
+// The internal heap a plugin may not take at start (config.h). 16 KB, not
+// the WROOM's 40: with PSRAM, Wi-Fi's and lwIP's buffers go there
+// (sdkconfig.defaults.esp32s3, TRY_ALLOCATE_WIFI_LWIP), and so does the
+// backup inflater, which is above the IDF's always-internal threshold. The
+// IDF keeps its own 32 KB internal pool for stacks and DMA besides. At 40 on
+// the first flash, the lights and the panel were refused with 35 KB free.
+#define BBS_HEAP_RESERVE      16384
+
 // No plain LED on this board. GPIO38 is the WS2812B's data line, which a
 // plain on/off would read as noise; the lights plugin drives it instead.
 #define BBS_LED_GPIO          -1
@@ -115,10 +123,20 @@
 #define BBS_SERIAL_RX         44
 #define BBS_SERIAL_TX         43
 
-// The panel: ST7789, 172 x 320, driven landscape. SDA 45, SCL 40, CS 42,
+// The panel: ST7789, 172 x 320, driven portrait. SDA 45, SCL 40, CS 42,
 // D/C 41, RES 39, backlight 48 (active high through an N-MOSFET). The
 // 172-pixel axis sits 34 into the controller's 240 (Waveshare's demo and
-// espp agree). BGR and inverted, as the demo drives it. The demo's clock is
+// espp agree). BGR and inverted, as the demo drives it.
+//
+// Portrait because of how the stick is used (Rob): it hangs from a USB-A
+// port with the plug at the top and the screen facing the room, so the
+// glass is tall and narrow. Rotation 0 with the mirror is exactly what
+// Waveshare's demo does; if that reads upside down with the plug at the
+// top, 180 in CONFIG panel turns it, and that becomes the default here.
+// A board mounted on its side in a case wants 90 or 270 with the width and
+// height swapped and the offset moved to Y, all in CONFIG panel.
+//
+// The demo's clock is
 // 12 MHz and the panel's own limit 62.5 MHz (16 ns write cycle); the SPI
 // clock is 80 MHz divided by a whole number, so 12 would really be 11.4.
 // 10 is the proven side of the demo's figure, and the panel only ever
@@ -129,11 +147,11 @@
 #define BBS_LCD_DC            41
 #define BBS_LCD_RST           39
 #define BBS_LCD_BL            48
-#define BBS_LCD_WIDTH         320
-#define BBS_LCD_HEIGHT        172
-#define BBS_LCD_XOFF          0
-#define BBS_LCD_YOFF          34
-#define BBS_LCD_ROTATION      90      // 0 | 90 | 180 | 270
+#define BBS_LCD_WIDTH         172
+#define BBS_LCD_HEIGHT        320
+#define BBS_LCD_XOFF          34
+#define BBS_LCD_YOFF          0
+#define BBS_LCD_ROTATION      0       // 0 | 90 | 180 | 270
 #define BBS_LCD_INVERT        1
 #define BBS_LCD_BGR           1
 #define BBS_LCD_MIRROR        1       // the demo mirrors X to draw portrait upright

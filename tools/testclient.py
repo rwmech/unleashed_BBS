@@ -4151,6 +4151,29 @@ def test_lights_order():
     return ok
 
 
+def strip_centres(sx, sy, sw, sh, n):
+    """The centre of each of n lamps in the panel's strip box, worked the way
+    panel_gfx.h's stripGrid and stripCell work it, independently here."""
+    best, grid = -1, None
+    for r in range(1, n + 1):
+        k = (n + r - 1) // r
+        if (r - 1) * k >= n:
+            continue
+        sz = min(sw // k, sh // r)
+        score = sz * n * n * 64 // ((r * k) ** 2)
+        if score > best:
+            best, grid = score, (k, r, sz)
+    k, r, sz = grid
+    out = []
+    for i in range(n):
+        row, col = divmod(i, k)
+        in_row = k if row + 1 < r else n - row * k
+        x0 = sx + (sw - sz * in_row) // 2
+        y0 = sy + (sh - sz * r) // 2
+        out.append((x0 + col * sz + sz // 2, y0 + row * sz + sz // 2))
+    return out
+
+
 def panel_read(s):
     """PANEL, as plain text."""
     s.buf.clear()
@@ -4179,16 +4202,16 @@ def test_board_s3():
     ok &= check("and no strip wired", f.get("strip", {}).get("text") == "no pin, off")
 
     p = panel_read(s)
-    ok &= check("PANEL: lit, 320 x 172 turned 90, 34 into the controller's RAM",
-                b"lit" in p and b"ST7789 320x172 at 0,34, turned 90" in p)
+    ok &= check("PANEL: lit, portrait 172 x 320, 34 into the controller's RAM",
+                b"lit" in p and b"ST7789 172x320 at 34,0, turned 0" in p)
     ok &= check("on the schematic's pins", b"Pins 45 40 42 41 39 48, 10 MHz" in p)
-    m = re.search(rb"callers on (\d+) of (\d+)", p)
+    m = re.search(rb"(?m)^\s*(?:callers on )?(\d+) of (\d+)\s*$", p)
     ok &= check("callers on N of M, as the directory counts them", m is not None)
     ok &= check("the strip drawn with the lights' ten, no strip wired", b"strip: 10 lamps" in p)
     b = ansi_login("PanelCaller")
     time.sleep(1.2)
     p2 = panel_read(s)
-    m2 = re.search(rb"callers on (\d+) of (\d+)", p2)
+    m2 = re.search(rb"(?m)^\s*(?:callers on )?(\d+) of (\d+)\s*$", p2)
     ok &= check("a caller logging on moves it up one",
                 bool(m and m2) and int(m2.group(1)) == int(m.group(1)) + 1)
     ok &= check("and is the last event", b"login PanelCaller" in p2)
@@ -4202,18 +4225,20 @@ def test_board_s3():
     s.buf.clear()
     s.send(b"panel shot\r")
     s.wait_for(b"Written", 4)
-    head = b"P6\n320 172\n255\n"
+    W, H = 172, 320
+    head = f"P6\n{W} {H}\n255\n".encode()
     data = shot.read_bytes() if shot.exists() else b""
     ok &= check("PANEL SHOT writes the glass as it was sent",
-                data.startswith(head) and len(data) == len(head) + 320 * 172 * 3)
+                data.startswith(head) and len(data) == len(head) + W * H * 3)
     if data:
-        px = lambda x, y: tuple(data[len(head) + (y * 320 + x) * 3:len(head) + (y * 320 + x) * 3 + 3])
+        px = lambda x, y: tuple(data[len(head) + (y * W + x) * 3:len(head) + (y * W + x) * 3 + 3])
         ok &= check("the title bar in its blue, sent to the glass", px(1, 1) == (24, 44, 120))
         ok &= check("and the body black", px(1, 40) == (0, 0, 0))
 
     # The emulated strip: the lights' own frame, whatever its length, lit on
-    # glass with no strip wired. The strip is the bottom 50 rows, a lamp a
-    # cell, each lamp's centre its colour.
+    # glass with no strip wired. In portrait the strip is the box from row
+    # 180 down, wrapped into a grid (panel_gfx.h, stripGrid), and each lamp's
+    # centre is its colour.
     for n in (10, 16):
         lights_config(s, enabled="yes", strip_fx="rainbow", strip_count=n)
         time.sleep(0.8)                            # a frame, and the bands to carry it
@@ -4225,11 +4250,9 @@ def test_board_s3():
         s.send(b"panel shot\r")
         s.wait_for(b"Written", 4)
         data = shot.read_bytes() if shot.exists() else b""
-        if len(data) == len(head) + 320 * 172 * 3:
-            px = lambda x, y: tuple(data[len(head) + (y * 320 + x) * 3:len(head) + (y * 320 + x) * 3 + 3])
-            cw = 320 // n
-            x0 = (320 - cw * n) // 2
-            centres = [px(x0 + i * cw + cw // 2, 122 + 25) for i in range(n)]
+        if len(data) == len(head) + W * H * 3:
+            px = lambda x, y: tuple(data[len(head) + (y * W + x) * 3:len(head) + (y * W + x) * 3 + 3])
+            centres = [px(cx, cy) for cx, cy in strip_centres(0, 180, W, H - 184, n)]
             ok &= check(f"every one of the {n} lit, in more than one colour",
                         all(max(c) > 60 for c in centres) and len(set(centres)) > 2)
         else:
