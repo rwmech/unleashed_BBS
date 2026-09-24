@@ -584,6 +584,50 @@ doing properly and 1.0.1 is already bench-hardware work.
 2026-09-23**, provisioned from a browser first try. Nothing else in 0.22.x
 reported on the board yet.
 
+## 1.0.2 (2026-09-23): a restore could publish the sysop password
+
+A security hotfix on its own branch from v1.0.1. It took the number 1.0.2;
+the queue above that says 1.0.2 was written before it.
+
+- **The bug**, found by the copywriter writing about backups, not by a
+  test. `unredactLine` wrote a restored `sysop_password = ***` as the live
+  password, and on a board still on the published default the live
+  password IS the default. The restore wrote `sysop_password = unleashed`
+  explicitly, `sysopDefault` (which means "no line") went false, the
+  default worked from any address, and announce stopped holding the
+  listing. Reached by exactly the person most likely to do it: somebody
+  moving to a freshly flashed board and restoring their old backup before
+  choosing a password.
+- **The fix: a restore never writes the published password.** A staff line
+  whose value would be the default, from `***` or typed out, is left out.
+  For the sysop that is "no line, default applies": local only, listing
+  held, setup offered. For a co-sysop it is that level off. When the board
+  is still on the default, the restore says so twice: at the end of curl's
+  `Applied:` line, and as its own console notice, because the notice of the
+  result is cut at 60 characters, before that part (found by code review;
+  the first test only read the HTTP body).
+- **An explicit default is dropped, not refused.** Refusing rejects the
+  whole system.cfg (network, access matrix, plugin sections) over one line
+  whose safe meaning is unambiguous, and CONFIG's "pick your own" has no
+  equivalent inside a zip. Dropping gives the sysop the credential they
+  wrote, in the only form the board allows it.
+- **A board already bitten is not healed by 1.0.2 alone**: its explicit line
+  stays until the sysop sets a password in CONFIG staff, or restores any
+  backup on 1.0.2 (the `***` resolves to the live `unleashed` and is left
+  out). A parser rule treating an explicit default as the default would
+  heal it at boot. Not done: it would also take remote sysop access and the
+  listing away from any pre-0.23.0 board that chose `unleashed` itself, and
+  that is Rob's call. What 1.0.2 does do is name it: the boot summary says
+  `cfg: sysop on the PUBLISHED password, from anywhere` instead of `on`.
+- **The lesson.** The default's safety was a property of an absence, so
+  every writer of the file had to know about it. CONFIG knew; restore did
+  not. An invariant carried by "no line" is only as strong as the least
+  careful thing that writes lines.
+- **A caller from outside, on the host:** `Caller(source="127.0.0.2")`.
+  Loopback to the kernel and not local to `Bbs::localAddr`, which takes
+  127.0.0.1 exactly. The backup port's own check takes all of 127/8, so it
+  stands in for "outside" to the shell only.
+
 ## Improv and the network in system.cfg (0.22.1)
 
 - **`wifi_ssid` / `wifi_password` in `system.cfg`**, `secrets.h` a fallback

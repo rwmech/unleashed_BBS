@@ -24,6 +24,50 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.0.2, 2026-09-23
+
+A security fix. Restoring a backup could turn the published default sysop
+password into a real one.
+
+- **What went wrong.** A board fresh from the installer, or one whose sysop
+  has not chosen a password yet, runs on the published default,
+  `unleashed`. It accepts that password only from its own network, and it
+  keeps itself off the directory until the sysop chooses one. Both rules
+  rest on one thing: `system.cfg` having no `sysop_password` line.
+  A backup never carries a staff password. The download writes
+  `sysop_password = ***`, and a restore puts the board's current password
+  back in its place. On a board still on the default, the current password
+  is the default, so the restore wrote `sysop_password = unleashed` into
+  the file. From then on the board treated it as a password somebody had
+  chosen: it worked from any address, and the board listed itself on the
+  directory.
+- **How it happened in practice.** You flash a new board, log in from home
+  with the default, and restore the backup from your old board to bring
+  your settings and accounts across. The board is now listed, and anybody
+  who has read the install page can become its sysop from the internet.
+- **The fix.** A restore never writes the published password. A staff
+  password line that would carry it, whether it arrived as `***` or typed
+  out, is left out of the file. For the sysop that keeps the board on the
+  default: its own network only, off the directory, and setup offered to a
+  local caller again. For a co-sysop it leaves that level off. When the
+  board is still on the default afterwards, the restore says so, in curl's
+  `Applied:` line and on the sysop console.
+  A board with passwords of its own is unchanged: `***` keeps them, as
+  before.
+- **If you restored a backup on 1.0.0 or 1.0.1 before choosing a sysop
+  password**, your board may still be using the published password as a
+  real one, and updating to 1.0.2 does not change that by itself. Log in as
+  sysop and set your own in `CONFIG staff`. A board whose `ANNOUNCE` shows
+  no "Held" line although nobody ever chose a sysop password is one of
+  these, and from 1.0.2 its serial console says so at boot:
+  `cfg: sysop on the PUBLISHED password, from anywhere`. Restoring a backup
+  again on 1.0.2 also puts it back on the default.
+- Tests: a fresh board restores a backup with `***` staff passwords, and
+  afterwards a caller from outside its network cannot use the default,
+  the listing stays held and setup is offered again; a board with its own
+  passwords keeps them; a `system.cfg` that names the published password
+  is left without that line.
+
 ## 1.0.1, 2026-09-23
 
 The directory's badges, sent by the board. From site 0.21 the directory

@@ -217,8 +217,11 @@ const char* trial(const KeyVal* pairs, uint8_t count, char* why, size_t n);
 // Returns true and fills out when the line was rewritten.
 bool redactLine(const char* line, char* out, size_t outLen);
 
-// unredactLine: "key = ***" becomes "key = <live password>".
-// Returns true and fills out when the line was rewritten.
+// unredactLine: a staff password line from a restored system.cfg.
+// "key = ***" becomes "key = <live password>". A line whose value would be
+// the published default, from *** or typed out, comes back as "" and is to
+// be left out, so a restore never turns the default into a real password.
+// Returns true and fills out when the line was rewritten or is to be dropped.
 bool unredactLine(const char* line, char* out, size_t outLen);
 
 } // namespace syscfg

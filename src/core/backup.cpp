@@ -486,6 +486,11 @@ void BackupService::decide(bool accept, const char* why) {
         bool ok = imp_.apply(msg, sizeof(msg));
         plat::fsInfoStale();              // screens and accounts were rewritten wholesale
         note("*** %.60s", msg);
+        // The same news as the end of msg, which the note above cuts off: a
+        // restore cannot bring a sysop password back, so a board on the
+        // published default is still on it (1.0.2).
+        if (imp_.report().hasCfg && syscfg::get().sysopDefault)
+            note("*** Sysop password is the published default: local only");
         char body[300];
         snprintf(body, sizeof(body), "%s\n%s\n", msg, detail_);
         reply(ok ? 200 : 500, ok ? "OK" : "Internal Server Error", body);

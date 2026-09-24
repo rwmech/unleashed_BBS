@@ -71,8 +71,8 @@ while [ $# -gt 0 ]; do
         --card)  CARD=yes; shift ;;
         # A board as it leaves the web installer: no staff passwords in its
         # config, so it runs on the published default and offers setup.
-        # Pair it with --only=first_setup; the rest of the suite assumes a
-        # configured sysop.
+        # Pair it with --only=first_setup or --only=backup_published; the
+        # rest of the suite assumes a configured sysop.
         --fresh) FRESH=yes; shift ;;
         *)       ARGS="$ARGS $1"; shift ;;
     esac

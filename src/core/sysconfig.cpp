@@ -397,8 +397,14 @@ void logSummary() {
         if (strstr(vals[i], " #") || strstr(vals[i], "\t#"))
             plat::log("cfg: %s has a ' #' in it; since 0.22.1 that is part of the value, not a comment",
                       keys[i]);
+    // A sysop_password line that spells out the published default is a real
+    // password to the board and works from anywhere. Nothing writes one since
+    // 1.0.2, but a restore on 1.0.0 or 1.0.1 did, so a board can still carry
+    // it; say so, since the absence of "Held" is all it shows otherwise.
+    const bool spelled = !g_cfg.sysopDefault && !strcmp(g_cfg.sysopPass, BBS_DEFAULT_SYSOP);
     plat::log("cfg: sysop %s  co1 %s perms 0x%03x  co2 %s perms 0x%03x",     // never the passwords
               g_cfg.sysopDefault ? "on the published default, local network only"
+                                 : spelled ? "on the PUBLISHED password, from anywhere: set yours in CONFIG staff"
                                  : g_cfg.sysopPass[0] ? "on" : "off",
               g_cfg.coPass[0][0] ? "on" : "off", g_cfg.coPerms[0],
               g_cfg.coPass[1][0] ? "on" : "off", g_cfg.coPerms[1]);
@@ -731,12 +737,32 @@ bool redactLine(const char* line, char* out, size_t outLen) {
     return true;
 }
 
+// unredactLine: a staff password line from a restored system.cfg, as it is
+// written on this board. A download never carries a staff password, only
+// ***, so *** means "keep this board's own" and is written as the live one.
+//
+// The published default is never written, in either form (1.0.2). A board
+// on the default has no sysop_password line, and that absence is all that
+// keeps the default local-only and the directory listing held. 1.0.1 wrote
+// *** back as the live password, which on such a board IS the published
+// one, and the explicit line made it a real password that worked from
+// anywhere, on a board that then went on the directory. So a line whose
+// value would be the published password, restored from *** or typed out,
+// comes back empty and is left out: for the sysop that is the default, for
+// a co-sysop it is that level off.
 bool unredactLine(const char* line, char* out, size_t outLen) {
     char tmp[160];
     int idx = 0;
     char* value = nullptr;
-    if (!passwordAssignment(line, tmp, sizeof(tmp), idx, value) || strcmp(value, "***")) return false;
-    snprintf(out, outLen, "%s = %s\n", kPasswordKeys[idx], livePassword(idx));
+    if (!passwordAssignment(line, tmp, sizeof(tmp), idx, value)) return false;
+    const bool redacted = !strcmp(value, "***");
+    const char* pw = redacted ? livePassword(idx) : value;
+    if (!strcmp(pw, BBS_DEFAULT_SYSOP)) {           // published: leave the line out
+        if (outLen) out[0] = '\0';
+        return true;
+    }
+    if (!redacted) return false;                    // a password of its own: as typed
+    snprintf(out, outLen, "%s = %s\n", kPasswordKeys[idx], pw);
     return true;
 }
 
