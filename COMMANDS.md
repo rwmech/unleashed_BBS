@@ -364,7 +364,7 @@ outside it and no way to approve a file that is waiting somewhere else.
 |---|---|
 | `ANNOUNCE` | Whether this board is listed in a directory, when each one last answered, and the public address the directory sees. `ANNOUNCE TEST` prints the exact payload and sends nothing; `ANNOUNCE NOW` sends a heartbeat immediately. Off until switched on: see [ANNOUNCE.md](ANNOUNCE.md). |
 | `LIGHTS` | The lights plugin's two outputs: each one's pin, effect, brightness and colour order, and the colours it was last sent, in hex. `LIGHTS TEST` shows red, green, blue and then white on every pixel, a second each, for checking the wiring and the order. Off until switched on (on as shipped on the Waveshare S3): see `lights` under Plugins below. |
-| `PANEL` | Boards with a display only (the Waveshare ESP32-S3-LCD-1.47): what the panel is running on (controller, size, offsets, rotation, pins, SPI clock) and every line it is showing, as text, with the number of lamps in its strip. `Dark:` and why, when it is not lit. See `panel` under Plugins below. |
+| `PANEL` | Boards with a display only (the Waveshare ESP32-S3-LCD-1.47): what the panel is running on (controller, size and offsets as turned, where the USB plug is, pins, SPI clock) and everything it is showing, as text, top to bottom: the bar's current page, the band's glyphs in words, the antenna's fill, the clock, the heading, each list row (a recent row as `login`, `guest`, `logoff`, `page` or `ring`, then its time and handle), the system row, and the number of LEDs in its strip. `Dark:` and why, when it is not lit. See `panel` under Plugins below. |
 | `SHUTDOWN [n]` | Take the board off the air on purpose. Announces to every node, counts down n seconds (5 to 3600, default 60), then hangs up on everyone including you, each with the ordinary send-off. `SHUTDOWN CANCEL` stops a countdown and says so. Afterwards the board keeps answering and tells callers it has been shut down, rather than refusing connections in a way that looks like a crash. A physical reboot brings it back. Any transfer running when the countdown ends is lost, and the warning says so. |
 | `BACKUP SD` | The zip the backup window gives, onto the SD card: `unleashed-YYYYMMDD-HHMM.zip` in the card's `backup` folder, with a dot a file while it writes and then `Saved: 14 files, 31 KB.` It holds the Wi-Fi password as typed, and says so. `BACKUP SD SCREENS` writes `screens-YYYYMMDD-HHMM.zip`, the screens alone. Two in one minute would share a name, so the second is refused. `BACKUP` on its own explains the difference from the backup window (1.1.0). |
 | `RESTORE SD [SCREENS] [n]` | On its own, the card's backups, newest first and numbered. With a number or a zip's name, checks it exactly as an upload through the backup window is checked, shows what it would replace (a full restore always shows `Replaces`, `Accounts`, `Removes` and `Staff`) and asks `Restore now? (y/N)`; N or 60 seconds is `Not restored.` With anybody else on the board, Y waits for them to leave (`Waiting for 2 callers to leave. F applies it now, N gives up.`), `F` puts it back at once with a warning to them, and after `backup_window_minutes` it gives up: `Not restored: callers stayed on.` New callers get the busy line meanwhile. `SCREENS` puts only the zip's screens back, onto the card's `screens` folder, and never removes anything; deleting them from the card undoes it (1.1.0). The zips are also the sysop's Backups file area, `FILES` 11, to download and upload over the line. Details: [BACKUP.md](BACKUP.md#backups-on-the-sd-card). |
@@ -800,15 +800,44 @@ cut the power altogether. So wire the strip to stand on its own:
 
 Boards with a display only: the Waveshare ESP32-S3-LCD-1.47's 1.47" ST7789
 (1.1.0). On any other board there is no such plugin, no page and no
-command. On as shipped, portrait with the plug at the top, showing, top to
-bottom: the board's name and the time; how many callers are on out of how
-many lines, counted as the directory counts them (a hidden sysop is not
-on); the address and port to dial; how long the board has been up; the SD
-card's free space; the last login, logoff or page, with its time; and the
-lights plugin's strip drawn as lamps, the same effect and colours at the
-same length, whether or not a strip is wired. A dimmed strip is drawn
-brighter than its figures would make it, because 10% on glass is a black a
-person reads as off. Hidden and lurking staff never appear as an event.
+command. On as shipped, portrait with the plug at the top, laid out like a
+phone's status bar over two lists, top to bottom:
+
+- The bar: the board's name, the address and port to dial, and the uptime
+  with the SD card's free space, in turn, 3 s each with a fade between.
+  With no network the address reads `no network` in red. While a caller is
+  ringing the sysop it says `<handle> is ringing` instead, for as long as
+  the ring lasts.
+- The band: glyphs that show only while they are true, left to right: the
+  SD card (always: filled with a card, hollow without, red when a card will
+  not mount or a read failed), a bell while a caller rings (blinking), a
+  letter while the sysop has unread mail, uploads waiting for approval, an
+  open padlock while the backup window is open, a tower for the directory
+  listing (green listed, amber waiting or held, red failing), a person
+  while staff are on (red for the sysop, yellow for a co-sysop), a warning
+  after a restart that was not clean (until staff have been on), and an
+  hourglass after a slow pass in the last minute. Then the Wi-Fi antenna,
+  which fills from the bottom with the signal (-90 to -50 dBm; green, amber
+  and red on the same thresholds as SYS; all red when not joined), and the
+  clock.
+- A dot travelling along the rail under the band: the board is alive.
+- `Callers 4/11`, counted as the directory counts them (a hidden sysop is
+  not on), then who is on, the sysop's line first, with the rank mark and
+  how long each has been on; past ten, the tenth row reads `+N more`. The
+  rows the callers leave go to the recent logins, logoffs, pages and rings,
+  newest first.
+- The free heap and the calls today, and on a landscape panel the most
+  lines busy at once since boot.
+- The lights plugin's strip as a row of square LEDs, the same effect and
+  colours at the same length, whether or not a strip is wired. A dimmed
+  strip is drawn brighter than its figures would make it, because 10% on
+  glass is a black a person reads as off.
+
+Hidden and lurking staff never appear in the lists or as an event, and do
+not light the person glyph. The letter follows the sysop's account, which
+the panel learns when the sysop is first on after a boot. Everything shown
+is a figure the board already keeps in RAM; the card's free space is the sd
+plugin's figure, renewed once a minute.
 
 `CONFIG panel` holds everything a board with another panel, or a panel whose
 spec changes, would need to change, and every default is the board
@@ -823,11 +852,11 @@ pin3_cs   = 42     ; -1 for a panel with CS tied low
 pin4_dc   = 41
 pin5_rst  = 39     ; -1 resets it by command
 pin6_bl   = 48     ; -1 for a backlight that is always on
-width     = 172    ; as drawn, after the rotation
+width     = 172    ; the glass with the USB plug up
 height    = 320
-xoff      = 34     ; where that sits in the controller's RAM
+xoff      = 34     ; where that sits in the controller's RAM, plug up
 yoff      = 0
-rotation  = 0      ; 0 | 90 | 180 | 270
+orientation = up   ; up | left | right | down: where the USB plug is
 invert    = yes    ; an IPS panel is normally black
 mirror    = yes    ; text back to front: flip this
 colours   = BGR    ; RGB | BGR: red and blue swapped, flip this
@@ -836,14 +865,20 @@ backlight = 60     ; percent, 0 dark
 ```
 
 - **Driver** names the controller, ST7789, and is not a setting.
-- **Rotation** turns the picture a quarter at a time. Mounted on its side,
-  a panel wants 90 or 270 with Width and Height swapped and the offset
-  moved to the other axis (for the Waveshare stick, 320 by 172 at Y offset
-  34).
+- **USB plug** (`orientation`) turns the picture: where the USB plug is as
+  you face the screen. `up` is portrait as shipped; `left` and `right` draw
+  the landscape layout at 320 by 172 (the callers and the recent events in
+  two columns, three caller rows, and the most lines busy at once added to
+  the system row); `down` is portrait upside down. Width, Height and the
+  offsets stay the glass as it sits with the plug up, and the panel works
+  out the turn, the offsets on the other axis included, from them. A file
+  written before this setting, which says `rotation`, is read as the plug
+  position it meant (90 is right and 270 left on this glass).
 - A window that runs past the controller's own 240 by 320 is refused at
   start, and `PANEL` says so.
 - A save restarts the plugin like any other; a panel whose settings did not
-  change stays lit through it.
+  change stays lit through it. A new turn resets the panel and keeps it dark
+  until the whole new picture has been drawn.
 
 A value out of range is logged and the default is kept. An upload with a bad value is rejected, so it never replaces a working config.
 

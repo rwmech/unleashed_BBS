@@ -99,6 +99,7 @@
 #include "../core/sysconfig.h"
 #include "../platform/platform.h"
 #include "chat.h"
+#include "panel_feed.h"       // listing, on a board with a display
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -276,6 +277,12 @@ char     g_state[16]  = {};            // pending, online, offline, queued
 uint32_t g_publicIn   = 0;             // seconds until a pending listing shows
 uint32_t g_okCount  = 0;
 uint32_t g_failCount = 0;
+#ifdef BBS_HAS_LCD
+// Posts that failed in a row, for the board's display: g_state is the last
+// answer a directory gave and is never aged, so without this a board that
+// lost its route would show a listed tower all the while it was delisted.
+uint8_t  g_failRun  = 0;
+#endif
 
 // ---------------------------------------------------------------------------
 // parseServer: "http://host:port/path" into its parts. Anything missing
@@ -726,6 +733,9 @@ void finish(const char* how, bool ok) {
     g_stage = Stage::Idle;
     if (g_at < kMaxServers) snprintf(g_servers[g_at].result, sizeof(g_servers[g_at].result), "%.39s", how);
     if (ok) ++g_okCount; else ++g_failCount;
+#ifdef BBS_HAS_LCD
+    g_failRun = ok ? 0 : static_cast<uint8_t>(g_failRun < 255 ? g_failRun + 1 : 255);
+#endif
     ++g_at;                                        // next directory on the next tick
 }
 
@@ -1081,6 +1091,29 @@ const char* status() {
     }
     return line;
 }
+
+#ifdef BBS_HAS_LCD
+}   // namespace
+
+// The board's display's tower (panel_feed.h), from the same figures status()
+// says in words. "pending" and "queued" wait with "held": a new listing is
+// hours from public by design, and a red tower for all of them would teach a
+// sysop to ignore the red one that matters.
+uint8_t announce::listing() {
+    if (!g_count) return 0;
+    if (syscfg::get().sysopDefault) return 2;
+    // Two posts in a row that got nowhere: whatever the last answer said,
+    // the board is not being heard. Two, so one dropped post does not
+    // flicker the tower.
+    if (g_failRun >= 2) return 3;
+    if (!g_state[0]) return g_failCount ? 3 : 0;
+    if (!strcmp(g_state, "online")) return 1;
+    if (!strcmp(g_state, "held") || !strcmp(g_state, "pending") || !strcmp(g_state, "queued")) return 2;
+    return 3;
+}
+
+namespace {
+#endif
 
 void stop() {
     if (g_fd >= 0) { close(g_fd); g_fd = -1; }

@@ -187,9 +187,11 @@ recorded with their sources in
     slot, and the header's RXD and TXD (44 and 43) carry the chip's ROM boot
     banner at every reset;
   - the panel plugin (`CONFIG panel`, `PANEL`), portrait with the plug at
-    the top: the board's name and the clock, callers on out of how many
-    lines, the address and uptime, the card's free space, the last login,
-    logoff or page, and the lights' strip drawn as lamps.
+    the top, laid out like a phone's status bar: the name, the address and
+    the uptime with the card's free space turning in the bar; status
+    glyphs, the Wi-Fi antenna and the clock under it; who is on and the
+    recent logins, logoffs and pages; free heap and calls today; and the
+    lights' strip as a row of square LEDs.
 - **Pins it refuses.** 26 to 37 are the flash and the octal PSRAM, and 19
   and 20 are the USB; 22 to 25 do not exist on the S3. 6 to 11, the WROOM's
   flash, are ordinary pins here. `syscfg::pinProblem` applies whichever

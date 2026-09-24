@@ -549,8 +549,27 @@ this tree.
   - S3 static DRAM is 247,192 of 341,760, and 81,920 of that is IRAM.
     Internal heap on the board: 77,739 free, 68,031 at its lowest.
   - Host runs: 689/0 with no card, 967/0 with a card, S3 profile 55/0.
-  - Still owed on the S3: the panel's redesign (tty-ux revision 1, Rob
-    wants changes first), LIGHTS TEST with Rob watching, and flash #3.
+  - Still owed on the S3: LIGHTS TEST with Rob watching, and flash #3.
+- **The S3 panel redesign is in (1.1.0-dev.10, S3 1.1.0)**, from
+  s3-1.1.0 64cd0d5, built to internal/tty-ux-panel-2026-09-24.md
+  revisions 1 and 2. The ESP32 image is byte-identical in its sections;
+  the S3 grew +1,416 static DRAM and +8.5 KB of image. "USB plug"
+  replaced the Rotation row because the CONFIG page is at its 16-row
+  limit. Left/right is derived from Waveshare's MADCTL, not yet seen on
+  the glass. The mail envelope reads chat's unread index for the first
+  `]` account seen after boot until the DASH lane's `Bbs::sysopMail()`
+  replaces it at merge (one line in panel.cpp).
+- **Missed sysop pages go to one account** (Rob, 2026-09-24, approved).
+  Not to every account ever marked sysop: marks are never removed, and
+  each copy takes one of the 64 board-wide mail slots. CONFIG board gains
+  "Sysop handle", stored with the account's permanent id (`sysop_id`) so a
+  rename or a new account taking the name cannot catch the mail; the setup
+  flow fills it with the account that set the board up. Unset or stale:
+  the last account to elevate to sysop. When the linked account logs in,
+  the board asks "Sysop password:" there and then (Enter skips), through
+  the same check and ban counting as BYE. **No auto-escalation** (Rob
+  proposed it; declined with his agreement): account passwords cross
+  telnet in the clear, so an account login must never grant staff alone.
 - **The backups lane is in (1.1.0-dev.9)**, merged from bk-1.1.0 (94aa16e).
   - A restore holds until the board is quiet (Rob, after TRA hung hard
     taking 38 screens with callers on): it waits up to

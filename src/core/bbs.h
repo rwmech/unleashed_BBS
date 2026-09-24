@@ -329,6 +329,30 @@ public:
     uint8_t publicBusy() const;
     static size_t sessionSize() { return sizeof(Session); }
 
+#ifdef BBS_HAS_LCD
+    // ----------------------------------------------------------------------
+    // What the board's own display reads (BBS_HAS_LCD boards only: the
+    // panel plugin). Each is a member the core already keeps, read as it
+    // stands: never a file, never a walk of the heap, because the panel asks
+    // twice a second. None of them exists on a board without a panel.
+    //
+    // ringing:    the handle of the caller ringing the sysop right now, or
+    //             null. The ring's own limit ends it.
+    // backupOpen: the backup window is open (BOOT with the sysop on).
+    // slowPasses: passes over BBS_SLOW_PASS_US since boot, SYS's figure.
+    // crashBoot:  this boot followed a crash, a watchdog or a brownout.
+    // peakNodes:  most lines busy at once since boot.
+    // callsToday: the "nth caller today" the last login was told, 0 until
+    //             somebody logs in after a boot.
+    // ----------------------------------------------------------------------
+    const char* ringing() const { return ring_.from != 0xFF ? ring_.handle : nullptr; }
+    bool     backupOpen() const { return backup_.isOpen(); }
+    uint32_t slowPasses() const { return slowCount_; }
+    bool     crashBoot()  const { return bootCrash_; }
+    uint8_t  peakNodes()  const { return peakNodes_; }
+    uint16_t callsToday() const { return panelToday_; }
+#endif
+
     // key dispatch target (public for the Term callback trampoline)
     void onKey(Session& s, int k, uint32_t now);
 
@@ -890,6 +914,9 @@ private:
     char      bootReason_[32] = "";  // in words, for the sysop
     uint16_t  bootCrashes_ = 0;      // how many are in the reboot log
     uint8_t   peakNodes_   = 0;      // most nodes busy at once since boot
+#ifdef BBS_HAS_LCD
+    uint16_t  panelToday_  = 0;      // callsToday(), for the board's display
+#endif
     uint16_t  callHours_[24] = {};   // CALLS: calls per hour of the day
     uint16_t  callsCounted_ = 0;     // records that went into callHours_
     // Traffic, for takeTraffic and bytesIn/bytesOut. Twelve bytes, set where

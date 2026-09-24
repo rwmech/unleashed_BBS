@@ -233,6 +233,25 @@ entry when it is released.
 - Mail, information pages, FILES.BBS and the card's screen record are
   replaced by renaming over the old file, never by removing it first.
 
+**1.1.0-dev.10 (S3 1.1.0), the S3's status panel, redesigned.**
+- A phone-style status bar: the board's name, its address and its uptime
+  with the card's free space turn every 3 s with a fade, and a caller
+  ringing the sysop takes the slot. Beneath it, glyphs that appear only
+  while true: the card, a ringing bell, sysop mail, an upload awaiting
+  approval, the backup window, the directory listing, staff on, an
+  unclean restart and a slow pass. Then a Wi-Fi antenna that fills with
+  the signal, and the clock.
+- Callers on now, one row each up to all ten, with the recent logins,
+  logoffs and rings taking whatever rows are left; "+N more" past what
+  fits. A system row, and the strip's lamps as square LEDs.
+- CONFIG panel's "USB plug" setting turns the screen four ways: up (as
+  before), left, right, down. Left and right are landscape, with a
+  two-column layout. An old `rotation` line is still read.
+- The sd plugin reports a card that is present but will not mount, and a
+  recent failed read, for the panel's card glyph.
+- The ESP32 image is unchanged by this: all of it is behind the board's
+  defines.
+
 ## 1.0.2, 2026-09-23
 
 A security fix. Restoring a backup could turn the published default sysop

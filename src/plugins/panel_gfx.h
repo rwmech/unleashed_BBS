@@ -8,11 +8,13 @@
  * Module:       Plugins / panel (BBS_HAS_LCD boards only)
  *
  * Purpose:      Everything the panel plugin does to pixels that is not the
- *               panel: RGB565 colours, text in the Spleen faces, a disc for
- *               each pixel of the strip, where each figure goes on the glass
- *               at a given size, and which rectangles still need sending.
- *               No platform and no BBS in it, so host/test_panel.cpp can
- *               check every edge of it with no display attached.
+ *               panel: the site's palette in RGB565, text in the Spleen
+ *               faces, the icons and the status row's glyphs, the Wi-Fi
+ *               antenna, the square LEDs, where each figure goes on the
+ *               glass at a given size, how the two lists share their slots,
+ *               and which rectangles still need sending. No platform and no
+ *               BBS in it, so host/test_panel.cpp can check every edge of it
+ *               with no display attached.
  *
  * Design:       The framebuffer is native RGB565, one uint16_t a pixel, row
  *               after row. The panel is told its data is little-endian, so
@@ -22,6 +24,12 @@
  *               redrawn in the framebuffer and the box queued (Dirty); the
  *               plugin sends the queue one band at a time, a band being as
  *               many whole rows as the platform's DMA staging buffer holds.
+ *
+ *               The layout is revision 2 of internal/tty-ux-panel-2026-09-24.md:
+ *               a phone-style header (a rotating slot on the blue bar, a band
+ *               of status glyphs, the antenna and the clock), the track with
+ *               its dot, the callers on now and the recent events sharing ten
+ *               slots, a system row, and the strip as a row of square LEDs.
  *
  * Libraries:    none
  * Targets:      ESP32-S3 boards with BBS_HAS_LCD, and the Linux host tests
@@ -49,6 +57,7 @@
 #pragma once
 #include <cstdint>
 #include <cstddef>
+#include <cstdio>
 #include "panel_font.h"
 
 namespace panelgfx {
@@ -58,6 +67,57 @@ namespace panelgfx {
 // ---------------------------------------------------------------------------
 constexpr uint16_t rgb(uint8_t r, uint8_t g, uint8_t b) {
     return static_cast<uint16_t>(((r & 0xF8u) << 8) | ((g & 0xFCu) << 3) | (b >> 3));
+}
+
+// The site's tokens (the directory's server.py), packed. What each is for
+// is the site's meaning of it: ink for text, dim and faint for age, live
+// for "up", warm for "waiting", risk for "look at this", dial for things
+// you can act on, busy for somebody wanting you, struct for headings.
+namespace tok {
+constexpr uint16_t kBg      = rgb(0x00, 0x00, 0x00);
+constexpr uint16_t kSurface = rgb(0x14, 0x14, 0x1B);   // an LED that is off
+constexpr uint16_t kRule    = rgb(0x2C, 0x2C, 0x38);   // rules, the LED's off ring
+constexpr uint16_t kInk     = rgb(0xC8, 0xC8, 0xC8);
+constexpr uint16_t kDim     = rgb(0x8A, 0x8A, 0x8A);
+constexpr uint16_t kFaint   = rgb(0x6A, 0x6A, 0x72);
+constexpr uint16_t kLive    = rgb(0x5D, 0xDC, 0x7A);
+constexpr uint16_t kWarm    = rgb(0xE0, 0xA9, 0x4E);
+constexpr uint16_t kDial    = rgb(0x7F, 0xD4, 0xFF);
+constexpr uint16_t kBusy    = rgb(0xEF, 0x8B, 0x5A);
+constexpr uint16_t kRisk    = rgb(0xE0, 0x6C, 0x6C);
+constexpr uint16_t kYellow  = rgb(0xFF, 0xD3, 0x5C);
+constexpr uint16_t kStruct  = rgb(0x4C, 0xE0, 0xE0);
+constexpr uint16_t kBar     = rgb(0x18, 0x2C, 0x78);   // row 1 of the header
+constexpr uint16_t kBand    = rgb(0x0E, 0x1A, 0x48);   // row 2, the status glyphs
+constexpr uint16_t kTrack   = rgb(0x4C, 0x7F, 0x99);   // dial at 60%, the dot's rail
+constexpr uint16_t kWhite   = rgb(0xFF, 0xFF, 0xFF);
+} // namespace tok
+
+// unpack: a packed colour back to 8 bits a channel, the low bits filled from
+// the high ones, so white comes back as 255 and not 248.
+struct Rgb8 { uint8_t r, g, b; };
+inline Rgb8 unpack(uint16_t c) {
+    const uint8_t r = (c >> 11) & 0x1F, g = (c >> 5) & 0x3F, b = c & 0x1F;
+    return { static_cast<uint8_t>((r << 3) | (r >> 2)), static_cast<uint8_t>((g << 2) | (g >> 4)),
+             static_cast<uint8_t>((b << 3) | (b >> 2)) };
+}
+
+// mix: from a toward b, k of n of the way: a at k = 0, b at k = n. The
+// header's fade is mix(text, bar, k, 8).
+inline uint16_t mix(uint16_t a, uint16_t b, int k, int n) {
+    if (k <= 0) return a;
+    if (k >= n) return b;
+    const Rgb8 x = unpack(a), y = unpack(b);
+    auto ch = [&](int p, int q) { return static_cast<uint8_t>((p * (n - k) + q * k) / n); };
+    return rgb(ch(x.r, y.r), ch(x.g, y.g), ch(x.b, y.b));
+}
+
+// scale: a colour at num/den of its brightness (an LED's glow edge, the
+// dot's tail).
+inline uint16_t scale(uint16_t c, int num, int den) {
+    const Rgb8 x = unpack(c);
+    return rgb(static_cast<uint8_t>(x.r * num / den), static_cast<uint8_t>(x.g * num / den),
+               static_cast<uint8_t>(x.b * num / den));
 }
 
 // isqrt: the floor of the square root of v.
@@ -126,6 +186,11 @@ inline Rect clip(Rect r, uint16_t w, uint16_t h) {
     return r;
 }
 
+inline Rect R(int x, int y, int w, int h) {
+    return { static_cast<int16_t>(x), static_cast<int16_t>(y), static_cast<int16_t>(w < 0 ? 0 : w),
+             static_cast<int16_t>(h < 0 ? 0 : h) };
+}
+
 struct Canvas {
     uint16_t* px = nullptr;
     uint16_t  w  = 0;
@@ -138,6 +203,10 @@ inline void fill(Canvas& c, Rect r, uint16_t col) {
         uint16_t* row = c.px + static_cast<size_t>(y) * c.w;
         for (int x = r.x; x < r.x + r.w; ++x) row[x] = col;
     }
+}
+
+inline void dot(Canvas& c, int x, int y, uint16_t col) {
+    if (x >= 0 && y >= 0 && x < c.w && y < c.h) c.px[static_cast<size_t>(y) * c.w + x] = col;
 }
 
 // ---------------------------------------------------------------------------
@@ -213,7 +282,7 @@ inline void line(Canvas& c, const Rect& r, int y, const char* s, uint16_t fg, ui
 // field: a figure in its box. The box is cleared to bg first, so a shorter
 // string leaves nothing of a longer one behind. A box tall enough for two
 // lines takes a string too wide for one on two, broken at the last space
-// that fits (a portrait panel's last event: "15:18 logoff", then the handle).
+// that fits.
 inline void field(Canvas& c, const Rect& r, const char* s, uint16_t fg, uint16_t bg, bool big, uint8_t align) {
     fill(c, r, bg);
     if (empty(r)) return;
@@ -242,137 +311,532 @@ inline void field(Canvas& c, const Rect& r, const char* s, uint16_t fg, uint16_t
     line(c, r, r.y + (r.h - gh) / 2, s, fg, bg, big, align);
 }
 
+// cutWords: s cut to at most fit glyphs for a line that must not end
+// mid-word: at the last space at or past half of fit when there is one
+// ("The Rusty Antenna" in 11 is "The Rusty"), otherwise at fit glyphs.
+// A space right after the fit glyphs counts, since that cut is between two
+// words already. Trailing spaces go. out holds the result.
+inline void cutWords(const char* s, int fit, char* out, size_t n) {
+    if (!n) return;
+    out[0] = '\0';
+    if (fit <= 0) return;
+    const char* p = s;
+    const char* end = s;              // where fit glyphs end
+    const char* cut = nullptr;        // the last acceptable space
+    int g = 0;
+    while (*p && g < fit) {
+        if (*p == ' ' && g >= fit / 2) cut = p;
+        glyph(p);
+        ++g;
+        end = p;
+    }
+    if (*p) {                                          // it did not fit
+        if (*p == ' ') cut = p;
+        if (cut) end = cut;
+    }
+    size_t len = static_cast<size_t>(end - s);
+    while (len && s[len - 1] == ' ') --len;
+    if (len > n - 1) len = n - 1;
+    for (size_t i = 0; i < len; ++i) out[i] = s[i];
+    out[len] = '\0';
+}
+
 // ---------------------------------------------------------------------------
-// The strip's pixels: a lamp each, a disc with a rim, so a dark pixel still
-// shows where it is.
+// Figures as the panel writes them
 // ---------------------------------------------------------------------------
-inline void disc(Canvas& c, int cx, int cy, int r, uint16_t col) {
-    for (int dy = -r; dy <= r; ++dy) {
-        int dx = static_cast<int>(isqrt(static_cast<uint32_t>(r * r - dy * dy)));
-        fill(c, { static_cast<int16_t>(cx - dx), static_cast<int16_t>(cy + dy),
-                  static_cast<int16_t>(2 * dx + 1), 1 }, col);
+// fmtUptime: at most 7 glyphs. 14m under an hour, 3h 14m under a day,
+// 12d 3h under a hundred days, 123d after.
+inline void fmtUptime(uint32_t secs, char* out, size_t n) {
+    const unsigned m = secs / 60u, h = secs / 3600u, d = secs / 86400u;
+    if (secs < 3600u)       snprintf(out, n, "%um", m);
+    else if (secs < 86400u) snprintf(out, n, "%uh %um", h, m % 60u);
+    else if (d < 100u)      snprintf(out, n, "%ud %uh", d, h % 24u);
+    else                    snprintf(out, n, "%ud", d);
+}
+
+// fmtFree: a card's free space in at most 6 glyphs: 512 MB, 7.4 GB, 29 GB.
+inline void fmtFree(uint32_t freeKB, char* out, size_t n) {
+    const uint32_t mb = freeKB / 1024u;
+    if (mb >= 10u * 1024u) snprintf(out, n, "%u GB", static_cast<unsigned>(mb / 1024u));
+    else if (mb >= 1024u)  snprintf(out, n, "%u.%u GB", static_cast<unsigned>(mb / 1024u),
+                                    static_cast<unsigned>((mb % 1024u) * 10u / 1024u));
+    else                   snprintf(out, n, "%u MB", static_cast<unsigned>(mb));
+}
+
+// fmtOnFor: how long a caller has been on, at most 3 glyphs: 4m, 51m, 2h, 1d.
+inline void fmtOnFor(uint32_t ms, char* out, size_t n) {
+    const uint32_t m = ms / 60000u;
+    if (m < 60u) { snprintf(out, n, "%um", static_cast<unsigned>(m)); return; }
+    const uint32_t h = m / 60u;
+    if (h < 24u) { snprintf(out, n, "%uh", static_cast<unsigned>(h)); return; }
+    uint32_t d = h / 24u;
+    if (d > 99u) d = 99u;
+    snprintf(out, n, "%ud", static_cast<unsigned>(d));
+}
+
+// ---------------------------------------------------------------------------
+// Icons: 16 x 16, one bit a pixel, a 16-bit word a row with the leftmost
+// pixel in the top bit. Rasterised from geometry with a 2 px pen (the
+// report's icons.py), so they match the mock-ups pixel for pixel.
+// ---------------------------------------------------------------------------
+using Icon = uint16_t[16];
+constexpr Icon kIconCallers = { 0x0000, 0x0000, 0x03C0, 0x07E0, 0x07E0, 0x07E0, 0x07E0, 0x03C0,
+                                0x0180, 0x0FF0, 0x1E78, 0x381C, 0x700E, 0x6006, 0x6006, 0xC003 };
+constexpr Icon kIconLogin   = { 0x0038, 0x007C, 0x003C, 0x000C, 0x020C, 0x030C, 0x018C, 0x7FCC,
+                                0x7FCC, 0x018C, 0x030C, 0x020C, 0x000C, 0x003C, 0x007C, 0x0038 };
+constexpr Icon kIconLogoff  = { 0x1C00, 0x3E00, 0x3C00, 0x3000, 0x3010, 0x3018, 0x300C, 0x33FE,
+                                0x33FE, 0x300C, 0x3018, 0x3010, 0x3000, 0x3C00, 0x3E00, 0x1C00 };
+constexpr Icon kIconBell    = { 0x0000, 0x0000, 0x03C0, 0x0FF0, 0x1C38, 0x1818, 0x1818, 0x381C,
+                                0x381C, 0x381C, 0x300C, 0x3FFC, 0x7FFE, 0x0180, 0x0180, 0x0180 };
+constexpr Icon kIconQuiet   = { 0x0000, 0x0000, 0x07E0, 0x1FF8, 0x1818, 0x300C, 0x300C, 0x300C,
+                                0x300C, 0x300C, 0x300C, 0x1818, 0x1FF8, 0x07E0, 0x0000, 0x0000 };
+constexpr Icon kIconChip    = { 0x0000, 0x0660, 0x0660, 0x07E0, 0x0FF0, 0x7FFE, 0x7C3E, 0x1C38,
+                                0x1C38, 0x7C3E, 0x7FFE, 0x0FF0, 0x07E0, 0x0660, 0x0660, 0x0000 };
+constexpr Icon kIconHandset = { 0x0000, 0x0600, 0x0E00, 0x1C00, 0x3C00, 0x7E00, 0x6700, 0x0380,
+                                0x01C0, 0x00E6, 0x007E, 0x003C, 0x0038, 0x0070, 0x0060, 0x0000 };
+
+// bits: paint the set bits of w x h rows (top bit leftmost) in fg, leaving
+// the rest as the caller cleared it.
+inline void bits(Canvas& c, int x, int y, const uint16_t* rows, int w, int h, uint16_t fg) {
+    for (int r = 0; r < h; ++r)
+        for (int b = 0; b < w; ++b)
+            if ((rows[r] >> (15 - b)) & 1u) dot(c, x + b, y + r, fg);
+}
+
+inline void icon(Canvas& c, int x, int y, const Icon& ic, uint16_t fg) { bits(c, x, y, ic, 16, 16, fg); }
+
+// ---------------------------------------------------------------------------
+// The status row's glyphs: silhouettes, packed left on the band in this
+// order, each only while its condition holds (the SD card always).
+// ---------------------------------------------------------------------------
+struct Glyph {
+    uint8_t  w, h;
+    uint16_t rows[12];
+};
+constexpr int kGlyphGap = 3;
+
+constexpr Glyph kGlyphSd     = { 9, 12, { 0xFE00, 0xFF00, 0xD580, 0xD580, 0xD580, 0xFF80, 0xFF80, 0xFF80,
+                                          0xFF80, 0xFF80, 0xFF80, 0xFF80 } };   // filled, contacts cut
+constexpr Glyph kGlyphSdNone = { 9, 12, { 0xFE00, 0x8100, 0x8080, 0x8080, 0x8080, 0x8080, 0x8080, 0x8080,
+                                          0x8080, 0x8080, 0x8080, 0xFF80 } };   // hollow: no card
+constexpr Glyph kGlyphBell   = { 9, 11, { 0x0800, 0x1C00, 0x3E00, 0x3E00, 0x3E00, 0x7F00, 0x7F00, 0xFF80,
+                                          0xFF80, 0x0000, 0x1C00 } };
+constexpr Glyph kGlyphMail   = { 11, 8, { 0xFFE0, 0xBFA0, 0xDF60, 0xEEE0, 0xF5E0, 0xFFE0, 0xFFE0, 0xFFE0 } };
+constexpr Glyph kGlyphUpload = { 9, 10, { 0x0800, 0x1C00, 0x3E00, 0x7F00, 0x1C00, 0x1C00, 0x1C00, 0x8080,
+                                          0x8080, 0xFF80 } };
+constexpr Glyph kGlyphLock   = { 9, 11, { 0x1C00, 0x2200, 0x2200, 0x2000, 0x2000, 0xFF80, 0xFF80, 0xF780,
+                                          0xF780, 0xFF80, 0xFF80 } };           // open padlock
+constexpr Glyph kGlyphTower  = { 9, 10, { 0x0800, 0x2A00, 0x4900, 0x4900, 0x2A00, 0x0800, 0x0800, 0x1C00,
+                                          0x3E00, 0x7F00 } };
+constexpr Glyph kGlyphStaff  = { 8, 10, { 0x1800, 0x3C00, 0x3C00, 0x1800, 0x0000, 0x7E00, 0xFF00, 0xFF00,
+                                          0xFF00, 0xFF00 } };
+constexpr Glyph kGlyphWarn   = { 9, 9,  { 0x0800, 0x1C00, 0x1400, 0x3600, 0x3600, 0x7700, 0x7F00, 0xF780,
+                                          0xFF80 } };
+constexpr Glyph kGlyphSlow   = { 7, 9,  { 0xFE00, 0x4400, 0x6C00, 0x3800, 0x1000, 0x2800, 0x4400, 0x7C00,
+                                          0xFE00 } };
+
+// The status row's state: what the panel read this pass, in packing order.
+// Everything that decides a pixel of the row is in here, so two equal
+// states draw the same row.
+struct Status {
+    enum Card : uint8_t { CARD_NONE, CARD_IN, CARD_ERROR };
+    enum Listing : uint8_t { LIST_OFF, LIST_ONLINE, LIST_WAITING, LIST_TROUBLE };
+    enum Staff : uint8_t { STAFF_NONE, STAFF_CO, STAFF_SYSOP };
+    uint8_t card    = CARD_NONE;
+    bool    ring    = false;   // a caller is ringing the sysop
+    bool    mail    = false;   // the sysop has unread mail
+    bool    upload  = false;   // an upload waits for approval
+    bool    backup  = false;   // the backup window is open
+    uint8_t listing = LIST_OFF;
+    uint8_t staff   = STAFF_NONE;
+    bool    warn    = false;   // the last restart was not a clean one
+    bool    slow    = false;   // a slow pass in the last minute
+};
+
+enum Slot : uint8_t { G_SD, G_BELL, G_MAIL, G_UPLOAD, G_LOCK, G_TOWER, G_STAFF, G_WARN, G_SLOW, G_COUNT };
+
+struct Packed {
+    uint8_t         n = 0;
+    uint8_t         which[G_COUNT] = {};
+    const Glyph*    glyph[G_COUNT] = {};
+    uint16_t        colour[G_COUNT] = {};
+    int16_t         x[G_COUNT] = {};        // left edge, absolute
+    int16_t         end = 0;                // one past the last glyph's right edge
+};
+
+// pack: the glyphs a status shows, left to right from x0, with their
+// colours. The bell's slot is always one of them while ringing, whatever its
+// blink phase, so the row does not shuffle at 2 Hz: the blink is drawn over
+// it on its own.
+inline Packed pack(const Status& s, int x0) {
+    Packed p;
+    auto add = [&](uint8_t which, const Glyph& g, uint16_t col) {
+        p.which[p.n] = which;
+        p.glyph[p.n] = &g;
+        p.colour[p.n] = col;
+        p.x[p.n] = static_cast<int16_t>(x0);
+        x0 += g.w;
+        p.end = static_cast<int16_t>(x0);
+        x0 += kGlyphGap;
+        ++p.n;
+    };
+    add(G_SD, s.card == Status::CARD_NONE ? kGlyphSdNone : kGlyphSd,
+        s.card == Status::CARD_IN ? tok::kDial : s.card == Status::CARD_ERROR ? tok::kRisk : tok::kDim);
+    if (s.ring)   add(G_BELL, kGlyphBell, tok::kBusy);
+    if (s.mail)   add(G_MAIL, kGlyphMail, tok::kBusy);
+    if (s.upload) add(G_UPLOAD, kGlyphUpload, tok::kWarm);
+    if (s.backup) add(G_LOCK, kGlyphLock, tok::kWarm);
+    if (s.listing != Status::LIST_OFF)
+        add(G_TOWER, kGlyphTower, s.listing == Status::LIST_ONLINE ? tok::kLive
+                                : s.listing == Status::LIST_WAITING ? tok::kWarm : tok::kRisk);
+    if (s.staff != Status::STAFF_NONE)
+        add(G_STAFF, kGlyphStaff, s.staff == Status::STAFF_SYSOP ? tok::kRisk : tok::kYellow);
+    if (s.warn)   add(G_WARN, kGlyphWarn, tok::kRisk);
+    if (s.slow)   add(G_SLOW, kGlyphSlow, tok::kWarm);
+    return p;
+}
+
+// glyphBox: one packed glyph's box, vertically centred in a 16 px row at y.
+inline Rect glyphBox(const Packed& p, uint8_t i, int y) {
+    const Glyph& g = *p.glyph[i];
+    return R(p.x[i], y + (16 - g.h) / 2, g.w, g.h);
+}
+
+inline void drawGlyphAt(Canvas& c, const Packed& p, uint8_t i, int y) {
+    const Rect b = glyphBox(p, i, y);
+    bits(c, b.x, b.y, p.glyph[i]->rows, p.glyph[i]->w, p.glyph[i]->h, p.colour[i]);
+}
+
+// ---------------------------------------------------------------------------
+// The Wi-Fi antenna (revision 2): a ball 6 x 5 on a mast 2 x 11, 6 x 16 in
+// all, filling from the bottom. Six bits a row, bit 5 the leftmost pixel.
+// ---------------------------------------------------------------------------
+constexpr uint8_t kAntenna[16] = { 0x1E, 0x3F, 0x3F, 0x3F, 0x1E,                 // the ball
+                                   0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C,           // the mast
+                                   0x0C, 0x0C, 0x0C, 0x0C, 0x0C };
+constexpr int kAntennaW = 6, kAntennaH = 16;
+
+// signalFill: how many of the 16 rows are lit: 2.5 dB a row over -90 to
+// -50, 0 at -90 and below, 16 at -50 and above. 0 when not joined.
+inline int signalFill(int rssi) {
+    if (!rssi) return 0;
+    if (rssi < -90) rssi = -90;
+    if (rssi > -50) rssi = -50;
+    return (rssi + 90) * 16 / 40;
+}
+
+// signalColour: the fill's colour, SYS's and the strip's own thresholds:
+// live at -67 and up, warm to -75, risk below.
+inline uint16_t signalColour(int rssi) {
+    return rssi >= -67 ? tok::kLive : rssi >= -75 ? tok::kWarm : tok::kRisk;
+}
+
+// drawSignal: the antenna at x, y on bg. Joined: rows 16 - h to 15 of the
+// silhouette in colour and the rest in faint, the ghost of an empty gauge.
+// Not joined: the whole silhouette in risk.
+inline void drawSignal(Canvas& c, int x, int y, int h, uint16_t colour, bool joined, uint16_t bg) {
+    fill(c, R(x, y, kAntennaW, kAntennaH), bg);
+    for (int r = 0; r < kAntennaH; ++r) {
+        const uint16_t col = !joined ? tok::kRisk : r >= kAntennaH - h ? colour : tok::kFaint;
+        for (int b = 0; b < kAntennaW; ++b)
+            if ((kAntenna[r] >> (kAntennaW - 1 - b)) & 1u) dot(c, x + b, y + r, col);
     }
 }
 
-// stripGrid: how n lamps sit in the strip's box, as rows of cols square
-// cells of size pixels, for the biggest lamps. One row on a wide landscape
-// panel; on a portrait one the strip wraps, ten pixels as two rows of five
-// rather than ten slivers. A grid is scored by its lamps' size times the
-// square of how full it is, so empty places in a short last row count
-// against it: ten as 4, 4 and 2 lamps of 43 pixels loses to 5 and 5 of 34,
-// and seven comes out 4 over 3 rather than 3, 3 and a lone 1.
-inline void stripGrid(const Rect& s, uint8_t n, uint8_t& cols, uint8_t& rows, int& size) {
-    cols = rows = 0;
-    size = 0;
-    int best = -1;
-    for (int r = 1; r <= n; ++r) {
-        int k = (n + r - 1) / r;
-        if ((r - 1) * k >= n) continue;                     // an empty last row
-        int cw = s.w / k, ch = s.h / r;
-        int sz = cw < ch ? cw : ch;
-        const int places = r * k;
-        int score = sz * n * n * 64 / (places * places);
-        if (score > best) {
-            best = score;
-            cols = static_cast<uint8_t>(k);
-            rows = static_cast<uint8_t>(r);
-            size = sz;
-        }
-    }
+// ---------------------------------------------------------------------------
+// The strip as square LEDs in one row: a cell of min(16, w / n), the LED
+// max(6, cell - 4) square in it (never as big as its cell, so two never
+// touch), the row centred. Lit: the square in the colour at a third, the
+// glow edge, round a core one pixel in. Off: a ring in the rule's grey round
+// a near-black fill, one pixel further in, so a lit LED swells.
+// ---------------------------------------------------------------------------
+struct Led {
+    Rect cell;         // what is cleared and sent
+    Rect led;          // the LED itself, its glow edge included
+};
+
+inline Led ledAt(const Rect& box, uint8_t i, uint8_t n) {
+    Led out;
+    if (!n || i >= n || empty(box)) return out;
+    int cell = box.w / n;
+    if (cell > 16) cell = 16;
+    if (cell < 2) return out;
+    int side = cell - 4;
+    if (side < 6) side = 6;
+    if (side > cell - 1) side = cell - 1;
+    const int x0 = box.x + (box.w - cell * n) / 2;
+    const int cx = x0 + i * cell;
+    out.cell = R(cx, box.y, cell, box.h);
+    out.led  = R(cx + (cell - side) / 2, box.y + (box.h - side) / 2, side, side);
+    return out;
 }
 
-// stripCell: lamp i of n's square cell: the grid centred in the strip's box
-// both ways, and a short last row centred under the others.
-inline Rect stripCell(const Rect& s, uint8_t i, uint8_t n) {
-    if (!n || i >= n) return {};
-    uint8_t cols, rows;
-    int sz;
-    stripGrid(s, n, cols, rows, sz);
-    if (sz <= 0) return {};
-    const int row = i / cols, col = i % cols;
-    const int inRow = row + 1 < rows ? cols : n - row * cols;
-    const int x0 = s.x + (s.w - sz * inRow) / 2;
-    const int y0 = s.y + (s.h - sz * rows) / 2;
-    return { static_cast<int16_t>(x0 + col * sz), static_cast<int16_t>(y0 + row * sz),
-             static_cast<int16_t>(sz), static_cast<int16_t>(sz) };
-}
-
-// lamp: one strip pixel in its cell, lit in col, in a rim two pixels wide
-// (one pixel of rim on a disc reads as a dotted line where the circle's
-// steps fall). A lamp too small for a rim is all light.
-inline void lamp(Canvas& c, const Rect& cell, uint16_t col, uint16_t rim, uint16_t bg) {
-    fill(c, cell, bg);
-    int d = cell.w < cell.h ? cell.w : cell.h;
-    int r = d / 2 - 2;
-    if (r < 1) r = 1;
-    int cx = cell.x + cell.w / 2, cy = cell.y + cell.h / 2;
-    if (r > 4) {
-        disc(c, cx, cy, r, rim);
-        disc(c, cx, cy, r - 2, col);
+// drawLed: one LED in its cell, lit in col, or off when col is 0.
+inline void drawLed(Canvas& c, const Led& l, uint16_t col) {
+    fill(c, l.cell, tok::kBg);
+    const Rect& s = l.led;
+    if (col) {
+        fill(c, s, scale(col, 1, 3));
+        fill(c, R(s.x + 1, s.y + 1, s.w - 2, s.h - 2), col);
     } else {
-        disc(c, cx, cy, r, col);
+        fill(c, R(s.x + 1, s.y + 1, s.w - 2, s.h - 2), tok::kRule);
+        fill(c, R(s.x + 2, s.y + 2, s.w - 4, s.h - 4), tok::kSurface);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Orientation: which way the glass is turned, named by where the USB plug is
+// as a person faces the screen, because that is what somebody holding the
+// board can see. Up is portrait as Waveshare's demo draws it; left and right
+// are landscape; down is portrait upside down.
+//
+// The ST7789 turns the picture with MADCTL: MV exchanges rows and columns,
+// MX and MY run the columns and rows backwards. The platform takes a
+// rotation (0, 90, 180, 270) and the glass's mirror and sets the three bits
+// from them (platform_esp32.cpp, lcdBegin): rotation 0 is MV 0 MX 0 MY 0,
+// 90 is MV MX, 180 is MX MY, 270 is MV MY, and the mirror then turns over MX
+// without MV or MY with it. On this glass (mirror yes) that gives exactly
+// the four Waveshare's demo sets for LVGL's four rotations (its
+// LVGL_Driver.c, example_lvgl_port_update_callback: swap_xy false with
+// mirror (true, false); true with (true, true); false with (false, true);
+// true with (false, false)).
+//
+// Which rotation is which plug position follows from the demo's portrait
+// being upright with the plug at the top (MV 0 MX 1 MY 0): there a column
+// further into the controller's memory is further to the viewer's left and
+// a row further in is further from the plug. MV 1 with no mirror puts the
+// picture's x along the rows, away from the plug, and its y along the
+// columns, to the viewer's left of the plug-up view: upright with the plug
+// on the left. That is rotation 270 on a mirrored glass and 90 on one that
+// is not; the two landscape modes use no mirror or both, so the result does
+// not hang on which memory axis a mirror bit acts on once MV is set.
+//
+// The offsets. The 172-pixel glass sits in the middle of the controller's
+// 240 columns and fills its 320 rows: Waveshare's demo draws portrait at
+// Offset_X 34, Offset_Y 0 (its LCD_Driver/ST7789.h), and espp's board
+// support for this module draws landscape 320 x 172 at lcd_offset_x 0,
+// lcd_offset_y 34 (components/ws-s3-lcd-1-47, ws-s3-lcd-1-47.hpp). So the
+// offset follows the 172-pixel axis onto whichever axis the picture's x or
+// y is, and a mirror moves it to the other end of that axis, which for a
+// centred glass is the same 34 (240 - 172 - 34). The settings give the
+// offsets as they apply with the plug up, the demo's portrait, and every
+// other orientation is worked from those.
+// ---------------------------------------------------------------------------
+enum Orient : uint8_t { ORIENT_UP, ORIENT_LEFT, ORIENT_RIGHT, ORIENT_DOWN, ORIENTS };
+
+// The words, in Orient's order: CONFIG's choices and what system.cfg holds.
+constexpr char kOrientWords[] = "up|left|right|down";
+
+inline const char* orientWord(uint8_t o) {
+    static const char* const kWords[] = { "up", "left", "right", "down" };
+    return o < ORIENTS ? kWords[o] : "up";
+}
+
+// orientFromWord: one of the four words, in any case. False for anything
+// else, and out is left as it was.
+inline bool orientFromWord(const char* v, uint8_t& out) {
+    for (uint8_t o = 0; o < ORIENTS; ++o) {
+        const char* w = orientWord(o);
+        const char* p = v;
+        while (*w && *p && ((*p | 0x20) == *w)) { ++w; ++p; }
+        if (!*w && !*p) { out = o; return true; }
+    }
+    return false;
+}
+
+constexpr int kRamCols = 240, kRamRows = 320;   // the ST7789's memory, unturned
+
+// Scan: how the platform draws one orientation: the rotation it is given,
+// the MADCTL bits that makes, the picture's size and the gaps the window is
+// moved by (esp_lcd_panel_set_gap: the x gap is added to every column
+// address the picture's x makes, the y gap to every row address).
+struct Scan {
+    uint16_t rotation = 0;
+    bool     mv = false, mx = false, my = false;
+    uint16_t w = 0, h = 0;
+    uint16_t xgap = 0, ygap = 0;
+};
+
+// scanFor: one orientation of a glass w x h whose gaps with the plug up are
+// xoff, yoff, wired mirrored or not.
+inline Scan scanFor(uint8_t orient, bool mirror, uint16_t w, uint16_t h, uint16_t xoff, uint16_t yoff) {
+    Scan s;
+    switch (orient) {
+        case ORIENT_LEFT:  s.rotation = mirror ? 270 : 90;  break;
+        case ORIENT_RIGHT: s.rotation = mirror ? 90 : 270;  break;
+        case ORIENT_DOWN:  s.rotation = 180;                break;
+        default:           s.rotation = 0;                  break;
+    }
+    // The platform's table, then the mirror.
+    switch (s.rotation) {
+        case 90:  s.mv = true;  s.mx = true;  break;
+        case 180: s.mx = true;  s.my = true;  break;
+        case 270: s.mv = true;  s.my = true;  break;
+        default:  break;
+    }
+    if (mirror) {
+        if (s.mv) s.my = !s.my;
+        else      s.mx = !s.mx;
+    }
+    // Where the glass is in memory, from its gaps with the plug up (MV 0,
+    // MX the mirror, MY 0).
+    auto clamp0 = [](int v) { return static_cast<uint16_t>(v < 0 ? 0 : v); };
+    const int col = mirror ? kRamCols - w - xoff : xoff;
+    const int row = yoff;
+    // A gap along an axis run backwards is measured from its other end.
+    const uint16_t colGap = clamp0(s.mx ? kRamCols - w - col : col);
+    const uint16_t rowGap = clamp0(s.my ? kRamRows - h - row : row);
+    if (s.mv) { s.w = h; s.h = w; s.xgap = rowGap; s.ygap = colGap; }
+    else      { s.w = w; s.h = h; s.xgap = colGap; s.ygap = rowGap; }
+    return s;
 }
 
 // ---------------------------------------------------------------------------
 // Layout: where each figure goes for a panel of w x h, portrait (the
 // Waveshare stick's 172 x 320, hanging from a port) or landscape.
 // ---------------------------------------------------------------------------
-enum Field : uint8_t { F_NAME, F_CLOCK, F_LABEL, F_CALLERS, F_ADDR, F_UPTIME, F_CARD, F_EVENT,
-                       F_COUNT };
+constexpr uint8_t kListMax   = 10;    // list slots on a portrait panel
+constexpr int     kPitch     = 20;    // a list row: 16 of glyph, 4 of air
+
+enum Field : uint8_t { F_SLOT, F_CLOCK, F_GLYPHS, F_ANT, F_HEAD, F_SYS, F_LIST,
+                       F_COUNT = F_LIST + kListMax };
 
 struct Layout {
-    Rect    bar;                  // the title bar, behind name and clock
-    Rect    field[F_COUNT];
-    bool    big[F_COUNT] = {};
-    uint8_t align[F_COUNT] = {};
-    Rect    strip;
+    bool    land = false;
+    Rect    bar, band, track;         // the header's two rows and the rail
+    Rect    slot, glyphs, ant, clock; // what sits on them
+    Rect    headIcon, head;           // "Callers 4/11" and its icon
+    Rect    list[kListMax];           // each slot's 16 px row
+    uint8_t slots       = 0;          // how many there are
+    uint8_t callerSlots = 0;          // how many can hold callers: all in portrait,
+                                      // the left column's in landscape
+    bool    gaps = false;             // portrait: each slot owns the 4 px above it,
+                                      // where the rule under the callers goes
+    Rect    colRule;                  // landscape: between the two columns
+    Rect    rule1, rule2;             // above and below the system row
+    Rect    sys;                      // the system row
+    int16_t sysAt[3] = {};            // where its figures start: heap, calls, peak
+    uint8_t sysFigs = 0;              // 2 portrait, 3 landscape
+    Rect    leds;                     // the strip
 };
-
-inline Rect R(int x, int y, int w, int h) {
-    return { static_cast<int16_t>(x), static_cast<int16_t>(y), static_cast<int16_t>(w < 0 ? 0 : w),
-             static_cast<int16_t>(h < 0 ? 0 : h) };
-}
 
 inline Layout layout(uint16_t w, uint16_t h) {
     Layout L;
-    const int clockW = 5 * kSmallW;                       // "12:34"
-    L.bar = R(0, 0, w, 20);
-    L.field[F_NAME]  = R(4, 2, w - 8 - clockW - 8, kSmallH);
-    L.field[F_CLOCK] = R(w - 4 - clockW, 2, clockW, kSmallH);
-    L.align[F_CLOCK] = RIGHT;
-    L.big[F_CALLERS] = true;
-    L.align[F_CALLERS] = CENTRE;
-    L.align[F_LABEL] = CENTRE;
-    if (w >= h) {
-        // Landscape: "callers on 3 of 10" in one large line, the address
-        // and uptime sharing a line, then the card, then the last event,
-        // and the strip along the bottom.
-        L.field[F_LABEL]   = R(0, 0, 0, 0);
-        L.field[F_CALLERS] = R(0, 24, w, kBigH);
-        int half = (w - 8) * 3 / 5;
-        L.field[F_ADDR]    = R(4, 62, half, kSmallH);
-        L.field[F_UPTIME]  = R(4 + half, 62, w - 8 - half, kSmallH);
-        L.align[F_UPTIME]  = RIGHT;
-        L.field[F_CARD]    = R(4, 82, w - 8, kSmallH);
-        L.field[F_EVENT]   = R(4, 102, w - 8, kSmallH);
-        L.strip            = R(0, 122, w, h - 122);
+    L.land  = w >= h;
+    L.bar   = R(0, 0, w, 22);
+    L.band  = R(0, 22, w, 20);
+    L.track = R(0, 42, w, 1);
+    L.slot  = R(2, 3, (w - 4) / kSmallW * kSmallW, kSmallH);
+    L.clock = R(w - 44, 24, 5 * kSmallW, kSmallH);
+    L.ant   = R(L.clock.x - 10, 24, kAntennaW, kAntennaH);
+    int gw  = L.ant.x - 4 - 4;                                  // the glyphs end short of the antenna
+    L.glyphs = R(4, 24, gw < 110 ? gw : 110, 16);
+    L.headIcon = R(4, 48, 16, 16);
+    if (!L.land) {
+        // Portrait: the ten slots from 68, then the rules, the system row
+        // and the LEDs anchored to the foot of the glass.
+        L.rule2 = R(4, h - 28, w - 8, 1);
+        L.leds  = R(4, h - 22, w - 8, 16);
+        L.sys   = R(4, h - 52, w - 8, 16);
+        L.rule1 = R(4, h - 54, w - 8, 1);
+        L.head  = R(24, 48, w - 28, 16);
+        int n = 0;
+        while (n < kListMax && 68 + kPitch * n + 16 <= L.rule1.y) {
+            L.list[n] = R(4, 68 + kPitch * n, w - 8, 16);
+            ++n;
+        }
+        L.slots = L.callerSlots = static_cast<uint8_t>(n);
+        L.gaps  = true;
+        L.sysAt[0] = 4;
+        L.sysAt[1] = 76;
+        L.sysFigs  = 2;
     } else {
-        // Portrait (the Waveshare stick hanging from a port): the label on
-        // a line of its own above the figure, then a line each, the last
-        // event on two, and the strip filling the rest as a grid of lamps.
-        L.field[F_LABEL]   = R(0, 28, w, kSmallH);
-        L.field[F_CALLERS] = R(0, 46, w, kBigH);
-        L.field[F_ADDR]    = R(4, 88, w - 8, kSmallH);
-        L.field[F_UPTIME]  = R(4, 106, w - 8, kSmallH);
-        L.field[F_CARD]    = R(4, 124, w - 8, kSmallH);
-        L.field[F_EVENT]   = R(4, 142, w - 8, 2 * kSmallH);
-        L.strip            = R(0, 180, w, h - 184);
+        // Landscape: two columns under the heading, callers on the left
+        // and the recent events on the right, then a full-width system row
+        // and the LEDs.
+        L.rule1 = R(4, h - 46, w - 8, 1);
+        L.sys   = R(4, h - 42, w - 8, 16);
+        L.rule2 = R(4, h - 22, w - 8, 1);
+        L.leds  = R(10, h - 18, w - 20, 16);
+        const int mid = w / 2;
+        L.head    = R(24, 48, mid - 4 - 24, 16);
+        L.colRule = R(mid, 48, 1, L.rule1.y - 2 - 48);
+        int n = 0;
+        while (n < 3 && 68 + kPitch * n + 16 <= L.rule1.y - 2) {
+            L.list[n] = R(4, 68 + kPitch * n, mid - 8, 16);
+            ++n;
+        }
+        L.callerSlots = static_cast<uint8_t>(n);
+        for (int j = 0; j < 4 && n < kListMax && 48 + kPitch * j + 16 <= L.rule1.y - 2; ++j, ++n)
+            L.list[n] = R(mid + 6, 48 + kPitch * j, w - 4 - (mid + 6), 16);
+        L.slots = static_cast<uint8_t>(n);
+        L.sysAt[0] = 4;
+        L.sysAt[1] = 96;
+        L.sysAt[2] = 208;
+        L.sysFigs  = 3;
     }
-    for (Rect& r : L.field) r = clip(r, w, h);
-    L.bar   = clip(L.bar, w, h);
-    L.strip = clip(L.strip, w, h);
+    Rect* all[] = { &L.bar, &L.band, &L.track, &L.slot, &L.glyphs, &L.ant, &L.clock, &L.headIcon, &L.head,
+                    &L.colRule, &L.rule1, &L.rule2, &L.sys, &L.leds };
+    for (Rect* r : all) *r = clip(*r, w, h);
+    for (Rect& r : L.list) r = clip(r, w, h);
     return L;
+}
+
+// listBox: slot k as it is cleared and sent: its row, and in portrait the
+// four rows of air above it, where the rule under the callers is drawn.
+inline Rect listBox(const Layout& L, uint8_t k) {
+    const Rect& r = L.list[k];
+    if (empty(r) || !L.gaps) return r;
+    return R(r.x, r.y - 4, r.w, r.h + 4);
+}
+
+// fieldBox: what a field clears and sends.
+inline Rect fieldBox(const Layout& L, uint8_t f) {
+    switch (f) {
+        case F_SLOT:   return L.slot;
+        case F_CLOCK:  return L.clock;
+        case F_GLYPHS: return L.glyphs;
+        case F_ANT:    return L.ant;
+        case F_HEAD:   return unite(L.headIcon, L.head);
+        case F_SYS:    return L.sys;
+        default:       return f >= F_LIST && f < F_COUNT ? listBox(L, static_cast<uint8_t>(f - F_LIST)) : Rect();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The two lists and their slots (revision 2). The callers take min(on, the
+// slots that can hold them); past that the first all-but-one are named and
+// the last slot says "+N more". In portrait the recent events take the
+// slots the callers left, and a rule divides the two when both are there;
+// in landscape they have the right column to themselves.
+// ---------------------------------------------------------------------------
+struct Alloc {
+    uint8_t callers = 0;    // slots the callers take, the "+N more" one included
+    uint8_t names   = 0;    // callers named
+    uint8_t more    = 0;    // callers past the names, in slot `names`; 0 none
+    uint8_t recent0 = 0;    // the recent list's first slot
+    uint8_t recentN = 0;    // and how many it has
+    bool    rule    = false;// the rule above slot `callers` (portrait)
+};
+
+inline Alloc allocate(const Layout& L, uint8_t on) {
+    Alloc a;
+    const uint8_t cap = L.callerSlots;
+    a.callers = on < cap ? on : cap;
+    a.names   = a.callers;
+    if (on > cap && cap) {
+        a.names = static_cast<uint8_t>(cap - 1);
+        a.more  = static_cast<uint8_t>(on - a.names);
+    }
+    if (L.land) {
+        a.recent0 = cap;
+        a.recentN = static_cast<uint8_t>(L.slots - cap);
+    } else {
+        a.recent0 = a.callers;
+        a.recentN = static_cast<uint8_t>(L.slots - a.callers);
+        a.rule    = a.callers > 0 && a.callers < L.slots;
+    }
+    return a;
 }
 
 // ---------------------------------------------------------------------------

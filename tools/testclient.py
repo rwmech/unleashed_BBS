@@ -187,6 +187,11 @@ def config_num(name, fallback):
 
 
 BBS_VERSION = bbs_version()
+# The S3 profile's own version, read from src/board.h so a board bump does
+# not leave the suite asserting the last one.
+_s3v = re.search(r'#define\s+BBS_BOARD_VERSION\s+"([^"]*)"',
+                 (ROOT / "src" / "board.h").read_text())
+S3_VERSION = _s3v.group(1) if _s3v else "1.0.0"
 MAX_NODES   = config_num("BBS_MAX_NODES", 6)
 BBS_PORT_NUM = config_num("BBS_PORT", 6400)     # the dial-in port, not this run's
 # The published default sysop password, read from the firmware so the suite
@@ -1397,8 +1402,8 @@ def test_version_shown():
     core version; the profile's goes into the system badge."""
     print("The version as it is shown")
     s3 = os.environ.get("BBS_HOST_BOARD") == "s3"
-    shown = (BBS_VERSION + " (S3 1.0.0)") if s3 else BBS_VERSION
-    tail = b"(S3 1.0.0)"
+    shown = (BBS_VERSION + " (S3 " + S3_VERSION + ")") if s3 else BBS_VERSION
+    tail = ("(S3 " + S3_VERSION + ")").encode()
     if not PASSWORD:
         print("  SKIP  needs the sysop")
         return True
@@ -4279,27 +4284,19 @@ def test_lights_order():
     return ok
 
 
-def strip_centres(sx, sy, sw, sh, n):
-    """The centre of each of n lamps in the panel's strip box, worked the way
-    panel_gfx.h's stripGrid and stripCell work it, independently here."""
-    best, grid = -1, None
-    for r in range(1, n + 1):
-        k = (n + r - 1) // r
-        if (r - 1) * k >= n:
-            continue
-        sz = min(sw // k, sh // r)
-        score = sz * n * n * 64 // ((r * k) ** 2)
-        if score > best:
-            best, grid = score, (k, r, sz)
-    k, r, sz = grid
-    out = []
-    for i in range(n):
-        row, col = divmod(i, k)
-        in_row = k if row + 1 < r else n - row * k
-        x0 = sx + (sw - sz * in_row) // 2
-        y0 = sy + (sh - sz * r) // 2
-        out.append((x0 + col * sz + sz // 2, y0 + row * sz + sz // 2))
-    return out
+def led_centres(bx, by, bw, bh, n):
+    """The centre of each of n square LEDs in the panel's LED row, worked from
+    the report's rule (revision 1, "The LEDs") rather than from panel_gfx.h's
+    ledAt: a cell of min(16, w / n), the LED max(6, cell - 4) square in it,
+    the row centred in its box."""
+    cell = min(16, bw // n)
+    side = min(max(6, cell - 4), cell - 1)
+    x0 = bx + (bw - cell * n) // 2
+    return [(x0 + i * cell + (cell - side) // 2 + side // 2, by + (bh - side) // 2 + side // 2)
+            for i in range(n)]
+
+
+PANEL_EVENT = rb"(?m)^\s*(login|guest|logoff|page|ring) (\S+) (\S+)\s*$"
 
 
 def panel_read(s):
@@ -4329,23 +4326,89 @@ def test_board_s3():
                f.get("drive", {}).get("text", "").endswith("RGB"))
     ok &= check("and no strip wired", f.get("strip", {}).get("text") == "no pin, off")
 
+    # PANEL lists every field's words top to bottom (panel.cpp, cmdPanel):
+    # the header's slot, the band's glyphs, the antenna, the clock, the
+    # heading, the list slots, the system row, the LEDs.
+    def fields(p):
+        text = p.decode("latin-1").splitlines()
+        at = next((i for i, ln in enumerate(text) if "bands sent" in ln), None)
+        return [ln.strip() for ln in text[at + 1:]] if at is not None else []
+
     p = panel_read(s)
-    ok &= check("PANEL: lit, portrait 172 x 320, 34 into the controller's RAM",
-                b"lit" in p and b"ST7789 172x320 at 34,0, turned 0" in p)
+    ok &= check("PANEL: lit, portrait 172 x 320 with the USB plug up, 34 into the controller's RAM",
+                b"lit" in p and b"ST7789 172x320 at 34,0, USB up" in p)
     ok &= check("on the schematic's pins", b"Pins 45 40 42 41 39 48, 10 MHz" in p)
-    m = re.search(rb"(?m)^\s*(?:callers on )?(\d+) of (\d+)\s*$", p)
-    ok &= check("callers on N of M, as the directory counts them", m is not None)
-    ok &= check("the strip drawn with the lights' ten, no strip wired", b"strip: 10 lamps" in p)
+    m = re.search(rb"(?m)^\s*Callers (\d+)/(\d+)\s*$", p)
+    ok &= check("Callers N/M, as the directory counts them", m is not None)
+    f0 = fields(p)
+    band = f0[1] if len(f0) > 1 else ""
+    card = bool(os.environ.get("BBS_SD_DIR", ""))
+    ok &= check(f"the band: the card first ({'mounted' if card else 'none'} here), and the sysop on as the person",
+                band.startswith("card" if card else "no card") and not band.startswith("card error")
+                and " sysop" in band)
+    ok &= check("the antenna: not joined on a host with no radio", "wifi none" in f0)
+    ok &= check("the sysop's own line listed first, marked ]",
+                re.search(rb"(?m)^\s*S\] BoardS3 \d+m\s*$", p) is not None)
+    ok &= check("the strip drawn with the lights' ten, no strip wired", b"strip: 10 LEDs" in p)
+
+    # The header's slot turns through the name, the address and the uptime,
+    # 3.5 s a page with the fade: a full turn inside twelve seconds.
+    pages = set()
+    until = time.time() + 12
+    while time.time() < until and len(pages) < 3:
+        f = fields(panel_read(s))
+        if f:
+            slot = f[0]
+            pages.add("addr" if slot.startswith("127.0.0.1:") else "up" if slot.startswith("up ") else "name")
+        time.sleep(0.5)
+    ok &= check("the header turns through the name, the address and the uptime", pages == {"name", "addr", "up"})
+
     b = ansi_login("PanelCaller")
     time.sleep(1.2)
     p2 = panel_read(s)
-    m2 = re.search(rb"(?m)^\s*(?:callers on )?(\d+) of (\d+)\s*$", p2)
+    m2 = re.search(rb"(?m)^\s*Callers (\d+)/(\d+)\s*$", p2)
     ok &= check("a caller logging on moves it up one",
                 bool(m and m2) and int(m2.group(1)) == int(m.group(1)) + 1)
-    ok &= check("and is the last event", b"login PanelCaller" in p2)
+    row = re.search(rb"(?m)^\s*\d+\) PanelCaller \d+m\s*$", p2)
+    ok &= check("and lists them, with how long they have been on", row is not None)
+    ok &= check("after the sysop's line", row is not None and 0 <= p2.find(b"S] BoardS3") < row.start())
+    ev = re.findall(PANEL_EVENT, p2)
+    ok &= check("and their login is the newest event", bool(ev) and ev[0][0] == b"login" and ev[0][2] == b"PanelCaller")
+
+    # A ring holds the header on who is ringing, and the band shows the
+    # bell, for as long as the ring lasts. Q at the sysop's question sends the
+    # question away and leaves the ring ringing.
+    drain(b)
+    b.buf.clear()
+    s.buf.clear()
+    b.send(b"o panel test\r")
+    b.wait_for(b"Ringing the sysop", 4)
+    asked = s.wait_for(b"[Q] Later: ", 6)
+    s.pump(0.3)
+    s.send(b"q")
+    s.wait_for(b"Still ringing", 4)
+    s.pump(0.6)
+    pr = panel_read(s)
+    fr = fields(pr)
+    ok &= check("a ring: the header says who is ringing, the verb kept whole",
+                asked and bool(fr) and re.match(r"PanelCall\w* is ringing$", fr[0]) is not None)
+    ok &= check("and the band shows the bell", len(fr) > 1 and " ring" in fr[1])
+    ev = re.findall(PANEL_EVENT, pr)
+    ok &= check("and the ring is the newest event", bool(ev) and ev[0][0] == b"ring")
+    b.send(b" ")                                   # any key stops a ring
+    b.wait_for(b"Main", 4)
+    time.sleep(1.0)
+    fr = fields(panel_read(s))
+    ok &= check("when it ends the header goes back to its pages, and the bell goes",
+                bool(fr) and "is ringing" not in fr[0] and len(fr) > 1 and " ring" not in fr[1])
+
     b.close()
     time.sleep(1.5)
-    ok &= check("and so is leaving", b"logoff PanelCaller" in panel_read(s))
+    p3 = panel_read(s)
+    ev = re.findall(PANEL_EVENT, p3)
+    ok &= check("and so is leaving: the logoff is the newest event",
+                bool(ev) and ev[0][0] == b"logoff" and ev[0][2] == b"PanelCaller")
+    ok &= check("and they are off the list", re.search(rb"\d+\) PanelCaller", p3) is None)
 
     shot = DATA / "panel.ppm"
     if shot.exists():
@@ -4360,18 +4423,18 @@ def test_board_s3():
                 data.startswith(head) and len(data) == len(head) + W * H * 3)
     if data:
         px = lambda x, y: tuple(data[len(head) + (y * W + x) * 3:len(head) + (y * W + x) * 3 + 3])
-        ok &= check("the title bar in its blue, sent to the glass", px(1, 1) == (24, 44, 120))
-        ok &= check("and the body black", px(1, 40) == (0, 0, 0))
+        ok &= check("the header's bar in its blue, sent to the glass", px(1, 1) == (24, 44, 120))
+        ok &= check("its band darker under it", px(1, 30) == (8, 24, 72))
+        ok &= check("and the body black", px(1, 200) == (0, 0, 0))
 
     # The emulated strip: the lights' own frame, whatever its length, lit on
-    # glass with no strip wired. In portrait the strip is the box from row
-    # 180 down, wrapped into a grid (panel_gfx.h, stripGrid), and each lamp's
-    # centre is its colour.
+    # glass with no strip wired, as one row of square LEDs along the foot
+    # (the box from x 4, y 298, 164 x 16), each LED's centre its colour.
     for n in (10, 16):
         lights_config(s, enabled="yes", strip_fx="rainbow", strip_count=n)
         time.sleep(0.8)                            # a frame, and the bands to carry it
-        ok &= check(f"the panel's strip follows the lights to {n} lamps",
-                    f"strip: {n} lamps".encode() in panel_read(s))
+        ok &= check(f"the panel's strip follows the lights to {n} LEDs",
+                    f"strip: {n} LEDs".encode() in panel_read(s))
         if shot.exists():
             shot.unlink()
         s.buf.clear()
@@ -4380,11 +4443,11 @@ def test_board_s3():
         data = shot.read_bytes() if shot.exists() else b""
         if len(data) == len(head) + W * H * 3:
             px = lambda x, y: tuple(data[len(head) + (y * W + x) * 3:len(head) + (y * W + x) * 3 + 3])
-            centres = [px(cx, cy) for cx, cy in strip_centres(0, 180, W, H - 184, n)]
+            centres = [px(cx, cy) for cx, cy in led_centres(4, 298, 164, 16, n)]
             ok &= check(f"every one of the {n} lit, in more than one colour",
                         all(max(c) > 60 for c in centres) and len(set(centres)) > 2)
         else:
-            ok &= check(f"PANEL SHOT at {n} lamps", False)
+            ok &= check(f"PANEL SHOT at {n} LEDs", False)
     lights_config(s)
 
     # CONFIG panel: every row, in 40 columns.
@@ -4392,7 +4455,7 @@ def test_board_s3():
     s.pump(1.0)                                   # sixteen rows take a moment to cascade in
     page = plain(s.buf)
     missing = [w.decode() for w in (b"ST7789", b"Pins", b"Width", b"Height", b"X offset", b"Y offset",
-                                    b"Rotation", b"Invert", b"Mirror", b"Colours", b"SPI MHz",
+                                    b"USB plug", b"Invert", b"Mirror", b"Colours", b"SPI MHz",
                                     b"Bright %") if w not in page]
     ok &= check("naming the controller, with every row" + (f" (missing {missing})" if missing else ""),
                 not missing)
@@ -4453,6 +4516,75 @@ def test_board_s3():
     ok &= check("the backlight saves live", got == b"Saved and live" and
                 (cfg_sec_line("plugin:panel", "backlight") or "").endswith("= 80"))
     ok &= check("and the panel is still lit", b"lit" in panel_read(s))
+
+    # The USB plug (1.1.0): CONFIG's row 9, a cycle picked by its first
+    # letter. Left and right draw the landscape layout at 320 x 172 with the
+    # 34 on the y axis; the file holds the word.
+    def turn(key):
+        cfg_open(s, b"panel", b"Driver")
+        s.buf.clear()
+        s.send(DOWN * 9 + key + F1)
+        got = cfg_verdict(s, [b"Saved and live", b"Nothing changed", b"Between"])
+        s.pump(0.8)                                   # a reset and a whole frame
+        return got
+
+    def glass(w, h):
+        if shot.exists():
+            shot.unlink()
+        s.buf.clear()
+        s.send(b"panel shot\r")
+        s.wait_for(b"Written", 4)
+        hd = f"P6\n{w} {h}\n255\n".encode()
+        d = shot.read_bytes() if shot.exists() else b""
+        if not d.startswith(hd) or len(d) != len(hd) + w * h * 3:
+            return None
+        return lambda x, y: tuple(d[len(hd) + (y * w + x) * 3:len(hd) + (y * w + x) * 3 + 3])
+
+    ok &= check("USB plug left saves live", turn(b"l") == b"Saved and live" and
+                (cfg_sec_line("plugin:panel", "orientation") or "").endswith("= left"))
+    p = panel_read(s)
+    ok &= check("and turns the glass: 320 x 172, the 34 on the y axis", b"ST7789 320x172 at 0,34, USB left" in p)
+    px = glass(320, 172)
+    ok &= check("drawn landscape: the bar, the band, and the rule between the two columns",
+                px is not None and px(1, 1) == (24, 44, 120) and px(1, 30) == (8, 24, 72) and
+                px(160, 60) == (40, 44, 56))
+    ok &= check("with the heading on the left", re.search(rb"(?m)^\s*Callers \d+/\d+\s*$", p) is not None)
+    ok &= check("USB plug right", turn(b"r") == b"Saved and live" and
+                b"ST7789 320x172 at 0,34, USB right" in panel_read(s))
+    ok &= check("USB plug down: portrait again, upside down",
+                turn(b"d") == b"Saved and live" and b"ST7789 172x320 at 34,0, USB down" in panel_read(s))
+    px = glass(172, 320)
+    ok &= check("and drawn in the portrait layout", px is not None and px(1, 1) == (24, 44, 120) and
+                px(1, 200) == (0, 0, 0))
+
+    def panel_key(key, value):
+        """[plugin:panel] with key set to value (None: taken out), read again."""
+        path = USERDATA / "system.cfg"
+        out, cur = [], None
+        for line in path.read_text().splitlines():
+            t = line.strip()
+            if t.startswith("["):
+                cur = t.lower()
+            if cur == "[plugin:panel]" and "=" in t and t.split("=", 1)[0].strip() in ("orientation", "rotation",
+                                                                                       "width", "height",
+                                                                                       "xoff", "yoff"):
+                continue
+            out.append(line)
+            if t.lower() == "[plugin:panel]" and value:
+                out += [f"{k} = {v}" for k, v in value.items()]
+        path.write_text("\n".join(out) + "\n")
+        cfg_reload(s)
+        s.pump(0.8)
+
+    panel_key("orientation", {"orientation": "sideways"})
+    ok &= check("a word it does not know leaves the plug up",
+                b"ST7789 172x320 at 34,0, USB up" in panel_read(s))
+    # A file from before the setting: rotation, and the glass typed turned.
+    panel_key("rotation", {"rotation": "90", "width": "320", "height": "172", "xoff": "0", "yoff": "34"})
+    ok &= check("an old rotation = 90 reads as the plug on the right, the same glass",
+                b"ST7789 320x172 at 0,34, USB right" in panel_read(s))
+    panel_key("orientation", None)
+    ok &= check("and with neither, the plug is up", b"ST7789 172x320 at 34,0, USB up" in panel_read(s))
 
     # The TF slot's pins as the card's defaults.
     cfg_open(s, b"sd", b"CS pin")
