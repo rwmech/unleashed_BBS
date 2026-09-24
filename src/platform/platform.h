@@ -44,6 +44,7 @@
 #pragma once
 #include <cstdint>
 #include <cstddef>
+#include "../board.h"          // the pins a board profile ships with
 
 namespace plat {
 
@@ -210,11 +211,15 @@ bool fsInfo(uint32_t& total, uint32_t& used);
 // the sake of one status line.
 // ---------------------------------------------------------------------------
 struct SdPins {
-    int8_t   cs   = 5;   // the board Rob wired: CS D5, MOSI D23, CLK D18, MISO D19
-    int8_t   mosi = 23;  // GPIO5 is a strapping pin, but it only sets the SDIO
-    int8_t   clk  = 18;  // slave timing, which this board never uses, so a card
-    int8_t   miso = 19;  // on it cannot stop a boot (ESP32 datasheet, strapping
-                         // pins). This said otherwise until 0.22.0.
+    // The board profile's (board.h). On the WROOM, the board Rob wired: CS
+    // D5, MOSI D23, CLK D18, MISO D19. GPIO5 is a strapping pin, but it only
+    // sets the SDIO slave timing, which this board never uses, so a card on
+    // it cannot stop a boot (ESP32 datasheet, strapping pins). This said
+    // otherwise until 0.22.0. On the Waveshare S3 the TF slot, 21/15/14/16.
+    int8_t   cs   = BBS_SD_CS;
+    int8_t   mosi = BBS_SD_MOSI;
+    int8_t   clk  = BBS_SD_CLK;
+    int8_t   miso = BBS_SD_MISO;
     // Bus speed in kHz. A setting rather than a constant because it is the
     // first thing to change when a card enumerates and then fails its first
     // real read, which is what dupont jumpers to a breakout produce: the card
@@ -269,6 +274,28 @@ uint32_t serialFramingErrors();      // wrong speed shows up here (autoprobe)
 // log: printf-style line to the console (UART on ESP32, stdout on host)
 // ---------------------------------------------------------------------------
 void log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+
+// ---------------------------------------------------------------------------
+// The console as a byte pipe, for Improv Wi-Fi Serial (main.cpp): the port
+// the board was flashed through, which is the one the browser holds open.
+// On the ESP32 that is UART0, through the board's USB-serial bridge. On the
+// S3 boards it is the chip's own USB (USB-Serial-JTAG): the Waveshare stick
+// has no bridge at all, and UART0 goes only to two header pins that no
+// browser will ever hear.
+//
+// consoleBegin: give the console a driver so it can be read without
+//               blocking. Once, first thing at boot. False when the driver
+//               would not install, and then Improv is off.
+// consoleRead:  what has arrived, never waiting.
+// consoleWrite: bytes exactly as given: no newline translation, which
+//               stdout would do to a length or checksum byte of 0x0A. The
+//               caller holds stdout's lock so a log line cannot land inside.
+//               A port nobody is reading (a board on a charger) drops the
+//               bytes rather than holding the loop.
+// ---------------------------------------------------------------------------
+bool   consoleBegin();
+size_t consoleRead(uint8_t* buf, size_t cap);
+void   consoleWrite(const uint8_t* b, size_t n);
 
 // ---------------------------------------------------------------------------
 // backupButtonBegin / backupButtonPressed: the physical button that opens
@@ -327,13 +354,16 @@ DiskSeen diskSeen();
 // in hardware; pixelsShow never waits for it. On the host each output is a
 // record of the last frame shown, which is what the tests read back.
 //
-// Colours go in as RGB, three bytes a pixel. The wire order (GRB on a
-// WS2812B) is this layer's business, so a strip that wants another order is
-// a platform change and not a plugin one.
+// Colours go in as RGB, three bytes a pixel, and come back out of
+// pixelsFrame as RGB. The order they go out on the wire is each output's,
+// given at pixelsBegin: GRB on a WS2812B, but not on every strip sold as one,
+// and the Waveshare S3's onboard pixel appears to want RGB. This layer does
+// the reordering; the plugin only names the order (1.1.0).
 //
-// pixelsBegin: claim a pin for an output. False when the pin cannot drive
-//              one, or no RMT channel is free. Beginning an output that is
-//              already running ends it first.
+// pixelsBegin: claim a pin for an output of count pixels, in one of the
+//              PixOrder orders. False when the pin cannot drive one, or no
+//              RMT channel is free. Beginning an output that is already
+//              running ends it first.
 // pixelsEnd:   dark, then let the pin go. Waits up to a few milliseconds for
 //              a frame in flight, which is why only a plugin's stop calls it.
 // pixelsShow:  send a frame. False while the last one is still going out, in
@@ -345,12 +375,91 @@ DiskSeen diskSeen();
 //              tests read.
 // ---------------------------------------------------------------------------
 constexpr uint8_t kPixelOuts = 2;     // the drive light and the effect strip
-constexpr uint8_t kPixelMax  = 10;    // pixels an output may have
 
-bool    pixelsBegin(uint8_t out, int pin, uint8_t count);
+// kPixelMax: the most pixels an output may have, on every chip (1.1.0; ten
+// before the strip's length became a setting). Every buffer that holds a
+// frame is this long, statically.
+//
+// Sixteen, because that is what every link in the chain can carry, the
+// tightest first:
+//   - CONFIG's Pixels page, one row a pixel for manual mode, holds sixteen
+//     rows (Form::kMaxFields). A seventeenth pixel could never be given an
+//     effect. lights.cpp asserts it.
+//   - The ESP32 sends a whole frame out of the RMT channel's own memory with
+//     no refill, because a refill a Wi-Fi interrupt delays by one bit time
+//     stretches a low into a latch. 16 x 24 + 2 = 386 symbols is 7 of its
+//     eight 64-symbol blocks, and the drive light has the eighth. 18 would
+//     fit; 19 would not.
+//   - The S3's blocks are 48 symbols, so that way it holds 13 beside the
+//     drive light. Its strip goes on the one RMT channel with DMA instead
+//     (TX channel 3), where the whole frame sits in a DMA buffer: the same
+//     no-refill property, with room for far more than sixteen.
+constexpr uint8_t kPixelMax  = 16;
+
+// The orders a pixel's bytes can go out in. kPixWire[order][k] is the RGB
+// channel (0 red, 1 green, 2 blue) sent as the k-th byte. The words for
+// them, in the same order, are lights.h's kOrders.
+enum PixOrder : uint8_t { PIX_GRB, PIX_RGB, PIX_BRG, PIX_RBG, PIX_GBR, PIX_BGR, PIX_ORDERS };
+constexpr uint8_t kPixWire[PIX_ORDERS][3] = {
+    { 1, 0, 2 }, { 0, 1, 2 }, { 2, 0, 1 }, { 0, 2, 1 }, { 1, 2, 0 }, { 2, 1, 0 },
+};
+
+bool    pixelsBegin(uint8_t out, int pin, uint8_t count, uint8_t order = PIX_GRB);
 void    pixelsEnd(uint8_t out);
 bool    pixelsShow(uint8_t out, const uint8_t* rgb, uint8_t count);
 uint8_t pixelsFrame(uint8_t out, uint8_t* rgb, uint8_t cap);
+
+#ifdef BBS_HAS_LCD
+// ---------------------------------------------------------------------------
+// The panel (BBS_HAS_LCD boards only: the panel plugin). An ST7789 on SPI,
+// through the IDF's esp_lcd, colour data sent with DMA and never waited for.
+// On the host, a record of the glass the tests can read back.
+//
+// lcdBegin:      bring the panel up on these settings: the bus, the reset,
+//                the controller's init, the backlight. Blocking, about a
+//                third of a second, so a plugin's start only. False with a
+//                reason in err. Beginning again ends what was up first.
+// lcdSame:       up, on exactly these settings. A CONFIG save restarts every
+//                plugin, and a panel whose settings did not change has no
+//                reason to go dark and through its reset for it.
+// lcdEnd:        backlight off, the panel asleep, the bus given back.
+// lcdReady:      nothing is on the wire: lcdDraw may be called. Colour data
+//                goes out by DMA while the BBS loop gets on with everything
+//                else, and this is how the panel plugin knows it is done.
+// lcdBandPixels: the most pixels one lcdDraw can take (a staging buffer in
+//                internal DMA memory, allocated at lcdBegin: DMA cannot
+//                reach PSRAM without the SPI driver allocating a bounce
+//                buffer per transfer, which would be heap in the loop).
+// lcdDraw:       copy a w x h rectangle of fb (native RGB565, stride pixels
+//                a row) to the staging buffer and send it to x, y. False,
+//                sending nothing, when not ready or too big for one band.
+// lcdBacklight:  percent, 0 dark.
+// psramAlloc:    a block of the board's PSRAM, for a framebuffer (110 KB at
+//                320 x 172), or nullptr. At a plugin's start, never in the
+//                loop. psramFree gives it back.
+// ---------------------------------------------------------------------------
+struct LcdCfg {
+    int8_t   mosi = -1, sclk = -1, cs = -1, dc = -1, rst = -1, bl = -1;
+    uint16_t width = 0, height = 0;   // as drawn, after rotation
+    uint16_t xoff = 0, yoff = 0;      // where that window sits in the controller's RAM
+    uint16_t rotation = 0;            // 0, 90, 180 or 270
+    bool     invert = false;          // INVON: an IPS panel is normally black
+    bool     bgr = false;             // the panel's colour order
+    bool     mirror = false;          // glass wired mirrored against the controller's RAM
+    uint8_t  mhz = 10;                // the SPI clock
+    uint8_t  backlight = 100;         // percent
+};
+
+bool     lcdBegin(const LcdCfg& c, char* err, size_t errLen);
+bool     lcdSame(const LcdCfg& c);
+void     lcdEnd();
+bool     lcdReady();
+uint32_t lcdBandPixels();
+bool     lcdDraw(const uint16_t* fb, uint16_t stride, uint16_t x, uint16_t y, uint16_t w, uint16_t h);
+void     lcdBacklight(uint8_t pct);
+void*    psramAlloc(size_t n);
+void     psramFree(void* p);
+#endif  // BBS_HAS_LCD
 
 // ---------------------------------------------------------------------------
 // resetReason / resetWasCrash: why this boot happened, in words a sysop can

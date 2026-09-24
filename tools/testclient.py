@@ -3652,8 +3652,10 @@ def test_config_lights_ascii():
     c.send(b"config lights\r")
     c.wait_for(b"Enabled", 5)
     # Enabled, Read, Write, Admin, Drive pin, Drive fx, Drive %, Strip pin,
-    # Strip, Strip %, and Pixels, which asks "open (y/N)?".
-    got = ascii_form(c, [b"y", b"", b"", b"", b"13", b"", b"", b"14", b"bb", b"", b""])
+    # Strip, Strip %, and Pixels, which asks "open (y/N)?"; then, since
+    # 1.1.0, Strip len, Drive ord and Strip ord.
+    got = ascii_form(c, [b"y", b"", b"", b"", b"13", b"", b"", b"14", b"bb", b"", b"",
+                         b"", b"", b""])
     ok &= check("the lights page saves in line mode", got == 0)
     ok &= check("with blinken's b pressed twice reaching boing",
                 (cfg_sec_line("plugin:lights", "strip_fx") or "").endswith("= boing"))
@@ -3951,6 +3953,364 @@ def test_lights_manual():
     ok &= check("the rest dark", all(f[3:] == [(0, 0, 0)] * 7 for f in frames))
 
     lights_config(s)
+    s.close()
+    return ok
+
+
+def test_lights_count():
+    """The strip's length is a setting (1.1.0, Rob: "could be 8 could be 10,
+    could be 1, so variable would be better"): every effect drawn for the
+    pixels there are and nothing past them, and CONFIG refusing more than an
+    output can carry. On 1.1.0-dev.7 the strip was always ten."""
+    print("Lights: the strip's length")
+    if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    s = cfg_sysop("LightsCount")
+    on = {"enabled": "yes", "drive_pin": 13, "strip_pin": 14}
+    ok = True
+    for n in (1, 8, 10, 16):
+        lights_config(s, **on, strip_fx="rainbow", strip_count=n)
+        px = lights_px(s)
+        ok &= check(f"{n} pixel{'s' if n > 1 else ''}: that many sent, every one lit",
+                    len(px) == n and all(lit(p) for p in px))
+    lights_config(s, **on, strip_fx="rainbow", strip_count=40)
+    ok &= check("a hand-edited 40 is read as 16, the most an output carries", len(lights_px(s)) == 16)
+    lights_config(s, **on, strip_fx="rainbow", strip_count=0)
+    ok &= check("and 0 as 1", len(lights_px(s)) == 1)
+
+    lights_config(s, **on, strip_fx="hayes", strip_count=4)
+    px = lights_px(s)
+    ok &= check("hayes on four: HS, AA, CD and OH, and nothing after",
+                len(px) == 4 and px[0] == px[1] == (25, 0, 0))
+    lights_config(s, **on, strip_fx="hayes", strip_count=16)
+    px = lights_px(s)
+    ok &= check("hayes on sixteen: MR on pixel eight, dark after it",
+                len(px) == 16 and px[7] == px[6] == (25, 0, 0) and all(p == (0, 0, 0) for p in px[8:]))
+
+    lights_config(s, **on, strip_fx="scanner", strip_count=1)
+    frames = [lights_px(s) for _ in range(3)]
+    ok &= check("scanner on one pixel: the head, lit, going nowhere",
+                all(f == [(25, 0, 0)] for f in frames))
+    lights_config(s, **on, strip_fx="scanner", strip_count=16)
+    heads = set()
+    for _ in range(6):
+        px = lights_px(s)
+        top = max(p[0] for p in px)
+        heads.add(next(i for i, p in enumerate(px) if p[0] == top))
+        ok &= check("scanner on sixteen: one head, sixteen pixels",
+                    len(px) == 16 and sum(1 for p in px if p[0] == top) == 1)
+    ok &= check("and it sweeps", len(heads) > 1)
+
+    lights_config(s, **on, strip_fx="boing", strip_count=2)
+    px = lights_px(s)
+    ok &= check("boing on two: the ball fills the strip, red and white",
+                len(px) == 2 and set(px) == {(25, 0, 0), (25, 25, 25)})
+    lights_config(s, **on, strip_fx="boing", strip_count=16)
+    good = True
+    for _ in range(3):
+        px = lights_px(s)
+        on_at = [i for i, p in enumerate(px) if lit(p)]
+        good &= len(px) == 16 and len(on_at) == 3 and on_at[2] - on_at[0] == 2
+    ok &= check("boing on sixteen: three pixels together", good)
+
+    lights_config(s, **on, strip_fx="c64", strip_count=8)
+    px = lights_px(s)
+    ok &= check("c64 on eight: the five stripes, then three again", len(px) == 8 and px[:3] == px[5:8])
+
+    lights_config(s, **on, strip_fx="vu", strip_count=16)
+    bars = []
+    for _ in range(4):
+        px = lights_px(s)
+        k = sum(1 for p in px if lit(p))
+        bars.append(k)
+        ok &= check("vu on sixteen: a bar from the first pixel",
+                    len(px) == 16 and all(lit(p) for p in px[:k]) and not any(lit(p) for p in px[k:]))
+    ok &= check("which moves", max(bars) > 0)
+
+    lights_config(s, **on, strip_fx="blinken", strip_count=16)
+    frames = [lights_px(s) for _ in range(4)]
+    ok &= check("blinken on sixteen: red lamps across all of it",
+                all(len(f) == 16 and all(p[1] == p[2] == 0 for p in f) for f in frames))
+
+    # nodes: pixel i is node i + 1, whatever the length.
+    b = ansi_login("CountNode")
+    n = int(b.node())
+    b.pump(0.6)
+    lights_config(s, **on, strip_fx="nodes", strip_count=n)
+    b.pump(0.6)
+    px = lights_px(s)
+    ok &= check("nodes: a strip as long as the caller's node lights it last",
+                len(px) == n and grey(px[n - 1]))
+    lights_config(s, **on, strip_fx="nodes", strip_count=16)
+    b.pump(0.6)
+    px = lights_px(s)
+    ok &= check("and on sixteen, past the tenth line there is nobody",
+                len(px) == 16 and grey(px[n - 1]) and all(p == (0, 0, 0) for p in px[10:]))
+    b.close()
+
+    # manual: led1 to ledN, and nothing past N even with a setting of its own.
+    leds = {f"led{i}": "off" for i in range(1, 11)}
+    lights_config(s, **on, strip_fx="manual", strip_count=12, led11="solid | red",
+                  led12="solid | white", led13="solid | green", **leds)
+    px = lights_px(s)
+    ok &= check("manual on twelve: led11 and led12 drawn, led13 not sent",
+                len(px) == 12 and px[10] == (25, 0, 0) and px[11] == (25, 25, 25) and
+                all(p == (0, 0, 0) for p in px[:10]))
+
+    # CONFIG: the row, what it says, and the refusal past sixteen. Rows: 0
+    # Enabled, 1-3 levels, 4 Drive pin, 5 Drive fx, 6 Drive %, 7 Strip pin,
+    # 8 Strip, 9 Strip %, 10 Pixels, 11 Strip len, 12 Drive ord, 13 Strip ord.
+    lights_config(s, **on)
+    cfg_open(s, b"lights", b"Drive pin")
+    s.buf.clear()
+    s.send(DOWN * 11)
+    s.pump(0.5)
+    ok &= check("the length's row says what bounds it", b"one Pixels row for each" in plain(s.buf))
+    s.buf.clear()
+    s.send(b"\x08" * 3 + b"17" + F1)
+    got = cfg_verdict(s, [b"Between 1 and 16", b"Saved"])
+    ok &= check("CONFIG refuses 17 pixels", got == b"Between 1 and 16")
+    cfg_cancel(s)
+    cfg_open(s, b"lights", b"Drive pin")
+    s.buf.clear()
+    s.send(DOWN * 11 + b"\x08" * 3 + b"8" + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"Between", b"Saved"])
+    ok &= check("and takes 8, live", got == b"Saved and live" and len(lights_px(s)) == 8)
+    ok &= check("written as the plugin reads it",
+                (cfg_sec_line("plugin:lights", "strip_count") or "").endswith("= 8"))
+    cfg_open(s, b"lights", b"Drive pin")
+    ok &= check("the Pixels button counts the strip", b"8 pixels" in plain(s.buf))
+    s.buf.clear()
+    s.send(DOWN * 10 + b"\r")
+    s.wait_for(b"PIXELS", 6)
+    s.pump(0.8)
+    ok &= check("the Pixels page offers sixteen", b"Pixel 16" in plain(s.buf))
+    s.send(b"\x1b")
+    s.wait_for(b"Drive pin", 6)
+    s.pump(0.4)
+    cfg_cancel(s)
+
+    lights_config(s)
+    s.close()
+    return ok
+
+
+def test_lights_order():
+    """Each output's colour order on the wire (1.1.0). The onboard pixel of
+    the Waveshare S3 is not the WS2812B's usual GRB, and neither is every
+    strip sold as one. LIGHTS names the order; the colours it reports stay
+    red, green and blue whatever order they go out in."""
+    print("Lights: colour order")
+    if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    s = cfg_sysop("LightsOrder")
+    on = {"enabled": "yes", "drive_pin": 13, "strip_pin": 14}
+    lights_config(s, **on)
+    f = lights_read(s)
+    ok = check("GRB as shipped, on both outputs",
+               f.get("drive", {}).get("text", "").endswith("GRB") and
+               f.get("strip", {}).get("text", "").endswith("GRB"))
+    lights_config(s, **on, drive_order="RGB", strip_order="bgr")
+    f = lights_read(s)
+    ok &= check("each output its own, in any case",
+                f.get("drive", {}).get("text", "").endswith("RGB") and
+                f.get("strip", {}).get("text", "").endswith("BGR"))
+    s.buf.clear()
+    s.send(b"lights test\r")
+    s.wait_for(b"a second each", 4)
+    f = lights_read(s)
+    ok &= check("and LIGHTS TEST still reads red as red",
+                f.get("drive", {}).get("px") == [(25, 0, 0)] and
+                f.get("strip", {}).get("px") == [(25, 0, 0)] * 10)
+    lights_config(s, **on, drive_order="XYZ")
+    f = lights_read(s)
+    ok &= check("a word it does not know leaves GRB", f.get("drive", {}).get("text", "").endswith("GRB"))
+
+    # CONFIG: 12 Drive ord, 13 Strip ord, cycles picked by their letter.
+    cfg_open(s, b"lights", b"Drive pin")
+    s.buf.clear()
+    s.send(DOWN * 12)
+    s.pump(0.5)
+    ok &= check("the order's row says how to tell", b"try RGB" in plain(s.buf))
+    s.buf.clear()
+    s.send(b"r" + DOWN + b"bb" + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"Not one of", b"Saved"])
+    ok &= check("the orders save live", got == b"Saved and live")
+    ok &= check("r for RGB, b twice for BGR",
+                (cfg_sec_line("plugin:lights", "drive_order") or "").endswith("= RGB") and
+                (cfg_sec_line("plugin:lights", "strip_order") or "").endswith("= BGR"))
+    f = lights_read(s)
+    ok &= check("and running as saved",
+                f.get("drive", {}).get("text", "").endswith("RGB") and
+                f.get("strip", {}).get("text", "").endswith("BGR"))
+
+    lights_config(s)
+    s.close()
+    return ok
+
+
+def panel_read(s):
+    """PANEL, as plain text."""
+    s.buf.clear()
+    s.send(b"panel\r")
+    s.wait_for(b"bands sent", 4)
+    s.pump(0.4)
+    return plain(s.buf)
+
+
+def test_board_s3():
+    """The Waveshare ESP32-S3-LCD-1.47 board profile on the host (1.1.0):
+    its defaults, the S3's pin rules and the panel. SKIPs on the reference
+    board; tools/harness.sh --board s3 --only=board_s3 runs it. On
+    1.1.0-dev.7 built with the same define there was no such profile: no
+    panel, the lights off, GPIO 7 refused as a flash pin and the card on 5."""
+    print("Board profile: Waveshare ESP32-S3-LCD-1.47")
+    if os.environ.get("BBS_HOST_BOARD") != "s3" or not PASSWORD:
+        print("  SKIP  needs tools/harness.sh --board s3")
+        return True
+    s = cfg_sysop("BoardS3")
+
+    f = lights_read(s)
+    ok = check("the lights run as shipped, the drive light on GPIO 38 in RGB",
+               f.get("drive", {}).get("text", "").startswith("pin 38  pc  10%") and
+               f.get("drive", {}).get("text", "").endswith("RGB"))
+    ok &= check("and no strip wired", f.get("strip", {}).get("text") == "no pin, off")
+
+    p = panel_read(s)
+    ok &= check("PANEL: lit, 320 x 172 turned 90, 34 into the controller's RAM",
+                b"lit" in p and b"ST7789 320x172 at 0,34, turned 90" in p)
+    ok &= check("on the schematic's pins", b"Pins 45 40 42 41 39 48, 10 MHz" in p)
+    m = re.search(rb"callers on (\d+) of (\d+)", p)
+    ok &= check("callers on N of M, as the directory counts them", m is not None)
+    ok &= check("the strip drawn with the lights' ten, no strip wired", b"strip: 10 lamps" in p)
+    b = ansi_login("PanelCaller")
+    time.sleep(1.2)
+    p2 = panel_read(s)
+    m2 = re.search(rb"callers on (\d+) of (\d+)", p2)
+    ok &= check("a caller logging on moves it up one",
+                bool(m and m2) and int(m2.group(1)) == int(m.group(1)) + 1)
+    ok &= check("and is the last event", b"login PanelCaller" in p2)
+    b.close()
+    time.sleep(1.5)
+    ok &= check("and so is leaving", b"logoff PanelCaller" in panel_read(s))
+
+    shot = DATA / "panel.ppm"
+    if shot.exists():
+        shot.unlink()
+    s.buf.clear()
+    s.send(b"panel shot\r")
+    s.wait_for(b"Written", 4)
+    head = b"P6\n320 172\n255\n"
+    data = shot.read_bytes() if shot.exists() else b""
+    ok &= check("PANEL SHOT writes the glass as it was sent",
+                data.startswith(head) and len(data) == len(head) + 320 * 172 * 3)
+    if data:
+        px = lambda x, y: tuple(data[len(head) + (y * 320 + x) * 3:len(head) + (y * 320 + x) * 3 + 3])
+        ok &= check("the title bar in its blue, sent to the glass", px(1, 1) == (24, 44, 120))
+        ok &= check("and the body black", px(1, 40) == (0, 0, 0))
+
+    # The emulated strip: the lights' own frame, whatever its length, lit on
+    # glass with no strip wired. The strip is the bottom 50 rows, a lamp a
+    # cell, each lamp's centre its colour.
+    for n in (10, 16):
+        lights_config(s, enabled="yes", strip_fx="rainbow", strip_count=n)
+        time.sleep(0.8)                            # a frame, and the bands to carry it
+        ok &= check(f"the panel's strip follows the lights to {n} lamps",
+                    f"strip: {n} lamps".encode() in panel_read(s))
+        if shot.exists():
+            shot.unlink()
+        s.buf.clear()
+        s.send(b"panel shot\r")
+        s.wait_for(b"Written", 4)
+        data = shot.read_bytes() if shot.exists() else b""
+        if len(data) == len(head) + 320 * 172 * 3:
+            px = lambda x, y: tuple(data[len(head) + (y * 320 + x) * 3:len(head) + (y * 320 + x) * 3 + 3])
+            cw = 320 // n
+            x0 = (320 - cw * n) // 2
+            centres = [px(x0 + i * cw + cw // 2, 122 + 25) for i in range(n)]
+            ok &= check(f"every one of the {n} lit, in more than one colour",
+                        all(max(c) > 60 for c in centres) and len(set(centres)) > 2)
+        else:
+            ok &= check(f"PANEL SHOT at {n} lamps", False)
+    lights_config(s)
+
+    # CONFIG panel: every row, in 40 columns.
+    ok &= check("CONFIG has a panel page", cfg_open(s, b"panel", b"Driver"))
+    s.pump(1.0)                                   # sixteen rows take a moment to cascade in
+    page = plain(s.buf)
+    missing = [w.decode() for w in (b"ST7789", b"Pins", b"Width", b"Height", b"X offset", b"Y offset",
+                                    b"Rotation", b"Invert", b"Mirror", b"Colours", b"SPI MHz",
+                                    b"Bright %") if w not in page]
+    ok &= check("naming the controller, with every row" + (f" (missing {missing})" if missing else ""),
+                not missing)
+    ok &= check("in 40 columns", max_column(s.buf) <= 39)
+    cfg_cancel(s)
+
+    # The Pins page, and the S3's rules on it: 26 to 37 are the flash and
+    # PSRAM, 19 and 20 the USB, 22 to 25 do not exist, and 6 to 11, the
+    # WROOM's flash, are ordinary pins. Rows 0-3 core, then Pins: the cursor
+    # passes over Driver, which is information and nothing to edit.
+    cfg_open(s, b"panel", b"Driver")
+    s.buf.clear()
+    s.send(DOWN * 4 + b"\r")
+    ok &= check("Pins opens a page of its own", s.wait_for(b"PINS", 6))
+    s.pump(0.6)
+    page = plain(s.buf)
+    ok &= check("with the six",
+                all(w in page for w in (b"MOSI pin", b"SCLK pin", b"CS pin", b"D/C pin", b"RST pin",
+                                        b"Light pin")))
+    for pin, want in ((b"30", b"Pins 26 to 37 are flash and PSRAM."),
+                      (b"19", b"Pins 19 and 20 are the USB port."),
+                      (b"23", b"This chip has no such pin.")):
+        s.buf.clear()
+        s.send(b"\x08" * 3 + pin + F1)
+        got = cfg_verdict(s, [want, b"Saved", b"Between"])
+        ok &= check(f"MOSI on {pin.decode()} refused: {want.decode()}", got == want)
+    s.buf.clear()
+    s.send(b"\x08" * 3 + b"7" + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"flash chip", b"Between"])
+    ok &= check("GPIO 7, the WROOM's flash, is an ordinary pin here", got == b"Saved and live")
+    ok &= check("written as the plugin reads it",
+                (cfg_sec_line("plugin:panel", "pin1_mosi") or "").endswith("= 7"))
+    cfg_cancel(s)                                 # a saved list page returns to the panel's page
+    cfg_cancel(s)
+    ok &= check("and the panel follows it", b"Pins 7 40 42 41 39 48" in panel_read(s))
+
+    def pins_save(value):
+        cfg_open(s, b"panel", b"Driver")
+        s.buf.clear()
+        s.send(DOWN * 4 + b"\r")
+        s.wait_for(b"PINS", 6)
+        s.pump(0.6)
+        s.buf.clear()
+        s.send(b"\x08" * 3 + value + F1)
+        got = cfg_verdict(s, [b"Saved and live", b"Between", b"no such pin", b"flash"])
+        cfg_cancel(s)
+        cfg_cancel(s)
+        return got
+
+    ok &= check("a pin past the WROOM's 33 is in range on the S3", pins_save(b"47") == b"Saved and live")
+    ok &= check("and back on 45", pins_save(b"45") == b"Saved and live")
+
+    # Brightness on the main page: rows 4 Pins, 5 Width ... 14 Bright %.
+    cfg_open(s, b"panel", b"Driver")
+    s.buf.clear()
+    s.send(DOWN * 14 + b"\x08" * 3 + b"80" + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"Between", b"Saved"])
+    ok &= check("the backlight saves live", got == b"Saved and live" and
+                (cfg_sec_line("plugin:panel", "backlight") or "").endswith("= 80"))
+    ok &= check("and the panel is still lit", b"lit" in panel_read(s))
+
+    # The TF slot's pins as the card's defaults.
+    cfg_open(s, b"sd", b"CS pin")
+    rows = [ln for ln in render_lines(s.buf) if "pin" in ln]
+    have = {k: next((ln for ln in rows if k in ln), "") for k in ("CS pin", "MOSI pin", "CLK pin", "MISO pin")}
+    ok &= check("the card on the TF slot: CS 21, MOSI 15, CLK 14, MISO 16",
+                "21" in have["CS pin"] and "15" in have["MOSI pin"] and
+                "14" in have["CLK pin"] and "16" in have["MISO pin"])
+    cfg_cancel(s)
     s.close()
     return ok
 
@@ -10081,6 +10441,9 @@ ORDER_NAMES = [
     "test_config_timezone", "test_config_cycle_numbers",
     "test_config_sd_plugin",
     "test_config_lights", "test_config_lights_ascii", "test_lights_frames", "test_lights_manual",
+    "test_lights_count", "test_lights_order",
+    # SKIPs on the reference board: tools/harness.sh --board s3 runs it.
+    "test_board_s3",
     "test_config_wifi_live", "test_config_network", "test_config_announce_outside",
     "test_config_wifi_fallback", "test_boot_hold",
     "test_boot_hold_write_fails", "test_boot_hold_factory_fails", "test_sysop_spelled_default",

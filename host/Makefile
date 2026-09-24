@@ -48,8 +48,23 @@ LDFLAGS  += -fsanitize=address,undefined
 endif
 SRCS      = $(wildcard ../src/core/*.cpp) $(wildcard ../src/plugins/*.cpp) platform_host.cpp main_host.cpp
 
-bbs_host: $(SRCS) $(wildcard ../src/core/*.h) $(wildcard ../src/plugins/*.h) ../src/config.h ../src/platform/platform.h
+HDRS      = $(wildcard ../src/core/*.h) $(wildcard ../src/plugins/*.h) ../src/config.h ../src/board.h \
+            ../src/platform/platform.h
+
+bbs_host: $(SRCS) $(HDRS)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) $(LDLIBS)
+
+# The same host board built as the Waveshare ESP32-S3-LCD-1.47 profile
+# (1.1.0, src/board.h): the S3's pin rules, that board's defaults, and the
+# panel plugin with its glass in memory. tools/harness.sh --board s3 runs it;
+# the ordinary suite is written for the reference board and runs bbs_host.
+bbs_host_s3: $(SRCS) $(HDRS)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_WS_S3LCD147 $(LDFLAGS) -o $@ $(SRCS) $(LDLIBS)
+
+# The panel's drawing: glyphs, layout, lamps and the queue of what to send.
+# Pure code with no platform, checked pixel by pixel with no display.
+test_panel: test_panel.cpp ../src/plugins/panel_gfx.h ../src/plugins/panel_font.h
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_panel.cpp
 
 # The XMODEM engine has no session, socket or card in it, so it is tested on
 # its own: a sender wired to a receiver through a pipe that can corrupt and
@@ -117,7 +132,7 @@ test_cardnames: test_cardnames.cpp ../src/core/cardnames.h
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_cardnames.cpp
 
 
-test: test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames
+test: test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel
 	./test_xmodem
 	./test_wrap
 	./test_forums_ptr
@@ -128,8 +143,9 @@ test: test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv 
 	./test_ring
 	./test_tzones
 	./test_cardnames
+	./test_panel
 
 clean:
-	rm -f bbs_host test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames
+	rm -f bbs_host bbs_host_s3 test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel
 
 .PHONY: clean test

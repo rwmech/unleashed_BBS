@@ -35,10 +35,25 @@
 
 #include "bus.h"
 
+#ifdef BBS_HAS_LCD
+#include <cstring>
+namespace {
+bus::PageSeen g_page;
+}
+const bus::PageSeen& bus::lastPage() { return g_page; }
+#endif
+
 // ---------------------------------------------------------------------------
 // push: append at the tail, overwrite the oldest when full
 // ---------------------------------------------------------------------------
 bool Mailbox::push(const BusMsg& m) {
+#ifdef BBS_HAS_LCD
+    if (m.kind == BusKind::Page || m.kind == BusKind::Ring) {
+        ++g_page.count;
+        g_page.ring = m.kind == BusKind::Ring;
+        memcpy(g_page.from, m.from, sizeof(g_page.from));
+    }
+#endif
     bool kept = true;
     if (count_ == BBS_BUS_DEPTH) {
         // The oldest that is not a Ring, when there is one; take() closes

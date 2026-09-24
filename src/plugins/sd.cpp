@@ -127,14 +127,16 @@ void noMount(bool asked) {
 // here comes back as "no card found" and sends somebody to re-seat a card
 // that was never the problem.
 //
-// 34 to 39 are input-only on this part, so none of the four can live there;
+// On the ESP32, 34 to 39 are input-only, so none of the four can live there;
 // 6 to 11 are the SPI flash the firmware is running from, and driving one of
 // those does not produce an error message, it produces a board that stops.
+// The chip's ranges are board.h's and its flash pins are pinProblem's, so an
+// S3 (every pin to 48 an output, its flash at 26 to 37) is right too.
 // ---------------------------------------------------------------------------
 bool usablePin(long p, bool inputOnlyOk) {
-    if (p < 0 || p > 39) return false;
-    if (syscfg::pinProblem(p)) return false;     // the flash the firmware runs from
-    if (p >= 34 && !inputOnlyOk) return false;   // input only: no good for CS/MOSI/CLK
+    if (p < 0 || p > BBS_GPIO_MAX) return false;
+    if (syscfg::pinProblem(p)) return false;                    // the flash the firmware runs from
+    if (p > BBS_GPIO_OUT_MAX && !inputOnlyOk) return false;     // input only: no good for CS/MOSI/CLK
     return true;
 }
 

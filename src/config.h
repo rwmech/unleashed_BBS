@@ -45,6 +45,10 @@
 
 #pragma once
 
+// What differs between boards: the pins a profile ships with and the
+// capabilities it adds. The reference board's values are its defaults.
+#include "board.h"
+
 // ---------------------------------------------------------------------------
 // Identity
 // ---------------------------------------------------------------------------
@@ -83,8 +87,9 @@
 #define BBS_KEEPALIVE_INTVL_S  10
 #define BBS_KEEPALIVE_CNT      3
 
-// Activity LED (system.cfg activity_led_gpio overrides the pin)
-#define BBS_LED_GPIO        2        // blue LED on DOIT-style dev boards, -1 = none
+// Activity LED (system.cfg activity_led_gpio overrides the pin). The pin a
+// board ships with is BBS_LED_GPIO in board.h: 2 on the WROOM, none on a
+// board whose only lamp is a WS2812B.
 #define BBS_LED_PULSE_MS    40
 
 // How long the line is held open after the exit screen has been sent, so the
@@ -204,9 +209,11 @@
 // ---------------------------------------------------------------------------
 // Plugins (PLUGINS.md)
 // ---------------------------------------------------------------------------
-// Nine since 1.1.0, for lights. Exactly the table, so the tenth plugin fails
-// registry.cpp's static_assert rather than compiling and never starting.
-#define BBS_MAX_PLUGINS     9        // compiled-in plugin table
+// Nine since 1.1.0, for lights, plus whatever the board profile compiles in
+// (board.h: the panel on a board with a display). Exactly the table, so one
+// more plugin fails registry.cpp's static_assert rather than compiling and
+// never starting.
+#define BBS_MAX_PLUGINS     (9 + BBS_BOARD_PLUGINS)   // compiled-in plugin table
 #define BBS_PLUGIN_TICK_MS  250      // periodic hook cadence
 // A PF_FAST plugin's cadence: 50 frames a second for the lights, which is as
 // fast as a pixel is worth updating and two loop passes apart.
