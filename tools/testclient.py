@@ -202,9 +202,13 @@ UP = b"\x1b[A"
 
 
 class Caller:
-    def __init__(self, ansi=False, utf8=True, telnet=False):
+    def __init__(self, ansi=False, utf8=True, telnet=False, source=None):
         self.t0 = time.time()
-        self.s = socket.create_connection((HOST, PORT), timeout=5)
+        # source: the address to call from. 127.0.0.2 is loopback to the
+        # kernel but not local to Bbs::localAddr, which takes 127.0.0.1
+        # exactly, so it stands in for a caller from outside the network.
+        self.s = socket.create_connection((HOST, PORT), timeout=5,
+                                          source_address=(source, 0) if source else None)
         self.s.setblocking(False)
         self.buf = bytearray()
         self.ansi = ansi
@@ -1804,6 +1808,196 @@ def test_backup():
     ok &= check("sysop leaving discards the upload (403)", status == 403)
     if local:
         ok &= check("and changes nothing", (DATA / "screens" / "extra.asc").read_bytes() == b"extra screen\n")
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# A restore and the published sysop password (1.0.2)
+# ---------------------------------------------------------------------------
+STAFF_KEYS = ("sysop_password", "cosysop1_password", "cosysop2_password")
+
+
+def cfg_staff(cfg, lines):
+    """cfg with its staff password lines replaced by these, put above the
+    first section, where the parser reads them."""
+    rows = [l for l in cfg.splitlines() if l.split("=", 1)[0].strip() not in STAFF_KEYS]
+    cut = next((i for i, l in enumerate(rows) if l.strip().startswith("[")), len(rows))
+    rows[cut:cut] = lines
+    return ("\n".join(rows) + "\n").encode()
+
+
+def announce_held(s):
+    """Does ANNOUNCE say the listing is held for the default password?"""
+    s.buf.clear()
+    s.send(b"announce\r")
+    s.pump(1.5)
+    return b"Held: the sysop password" in plain(s.buf)
+
+
+def local_login(handle):
+    """Log in from 127.0.0.1 and reach the main prompt. An unconfigured board
+    offers setup to a local caller first; ESC skips it. Returns the caller
+    and whether setup was offered."""
+    c = Caller(ansi=True)
+    c.wait_for(b"Enter your handle", 10)
+    login(c, handle, wait_main=False)
+    offered = wait_any(c, [b"has not been set up yet", b"Main"], 10) == 0
+    if offered:
+        c.wait_for(b"Sysop password", 4)
+        c.buf.clear()
+        c.send(b"\x1b")
+        c.wait_for(b"Skipped", 5)
+    for _ in range(6):                   # a newuser or motd screen may page
+        if c.wait_for(b"Main", 1.5):
+            break
+        drain(c)
+    return c, offered
+
+
+def test_backup_published_default():
+    """A restore never makes the published sysop password a real one (1.0.2).
+
+    A board on the default has no sysop_password line, and that absence is
+    what keeps the default local-only and the directory listing held. 1.0.1
+    restored a backup's redacted "sysop_password = ***" as the live password,
+    which on such a board is the published one, so the line came back
+    explicit: the password on the install page then worked from anywhere and
+    the board went on the directory.
+
+    On the ordinary test board it checks the other half: the same restore
+    keeps a board's own passwords, as it always has. Host only, because it
+    reads the board's system.cfg; the backup window is always open there.
+    """
+    print("Backup restore and the published sysop password")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  reads the board's system.cfg, host only")
+        return True
+    if os.environ.get("BBS_FRESH"):
+        return published_default_fresh()
+    return published_default_configured()
+
+
+def published_default_fresh():
+    if cfg_line("sysop_password") is not None:
+        print("  SKIP  this board has been set up already (first_setup ran first?)")
+        return True
+    s, offered = local_login("FreshOwner")
+    ok = check("a fresh board offers setup to a local caller", offered)
+    s.buf.clear()
+    s.send(f"bye {BBS_DEFAULT}\r".encode())
+    ok &= check("the default makes a local caller the sysop", s.wait_for(b"SysOp node", 6))
+    ok &= check("and the backup window opens", s.wait_for(b"*** Backup open", 8))
+    status, data = http_call("GET", "/backup.zip")
+    z = zipfile.ZipFile(io.BytesIO(data)) if status == 200 else None
+    cfg = z.read("system.cfg").decode() if z else ""
+    ok &= check("the fresh board's own backup has no sysop_password line",
+                z is not None and "sysop_password" not in cfg)
+
+    # What a sysop brings from another board, or from before a reset: every
+    # staff password redacted.
+    redacted = cfg_staff(cfg, [f"{k} = ***" for k in STAFF_KEYS])
+    status, body, seen = upload_with_answer(s, make_zip({"system.cfg": redacted}), b"y")
+    ok &= check("a backup with *** staff passwords restores", seen and status == 200 and b"Applied" in body)
+    ok &= check("*** leaves the board with no sysop_password line", cfg_line("sysop_password") is None)
+    ok &= check("no staff line carries the published password",
+                all(cfg_value(k) != BBS_DEFAULT for k in STAFF_KEYS))
+    ok &= check("co-sysop levels that were off stay off",
+                cfg_value("cosysop1_password") == "" and cfg_value("cosysop2_password") == "")
+    ok &= check("the restore says the board is on the published default",
+                b"published default" in body)
+    # The console notice of the result is cut at 60 characters, which is
+    # before that part of it, so it has a line of its own.
+    ok &= check("and so does the sysop's console",
+                s.wait_for(b"Sysop password is the published default", 5))
+    ok &= check("and the directory listing stays held", announce_held(s))
+    s.close()
+    time.sleep(1.0)                      # let the board see the sysop node free
+
+    # From outside the board's own network the default is a wrong password.
+    far = Caller(ansi=True, source="127.0.0.2")
+    far.wait_for(b"Enter your handle", 10)
+    ok &= check("a caller from outside logs in and is not offered setup",
+                login(far, "FarCaller") and b"not been set up" not in plain(far.buf))
+    far.buf.clear()
+    far.send(f"bye {BBS_DEFAULT}\r".encode())
+    far.wait_closed(12)                  # the goodbye screen, then a 5 s linger
+    ok &= check("the default does not make a caller from outside the sysop",
+                b"SysOp node" not in far.buf)
+    far.close()
+    time.sleep(1.0)
+
+    # From its own network it still works, and the board still asks.
+    s, offered = local_login("FreshOwner")
+    ok &= check("setup is offered again to a local caller", offered)
+    s.buf.clear()
+    s.send(f"bye {BBS_DEFAULT}\r".encode())
+    ok &= check("the default still works from the board's own network", s.wait_for(b"SysOp node", 6))
+    s.wait_for(b"*** Backup open", 8)
+
+    # The same password typed out rather than redacted. A restore never
+    # writes the published password in any form: the line is left out.
+    literal = cfg_staff(cfg, [f"sysop_password = {BBS_DEFAULT}"])
+    status, body, seen = upload_with_answer(s, make_zip({"system.cfg": literal}), b"y")
+    ok &= check("a system.cfg naming the published password applies", seen and status == 200)
+    ok &= check("and leaves no sysop_password line", cfg_line("sysop_password") is None)
+    ok &= check("so the listing stays held", announce_held(s))
+    s.close()
+    return ok
+
+
+def published_default_configured():
+    if not PASSWORD:
+        print("  SKIP  no sysop_password")
+        return True
+    before = (USERDATA / "system.cfg").read_text()
+    s = ansi_login("KeepsOwn")
+    s.buf.clear()
+    s.send(f"bye {PASSWORD}\r".encode())
+    ok = check("sysop node", s.wait_for(b"SysOp node", 5))
+    s.wait_for(b"*** Backup open", 8)
+    status, data = http_call("GET", "/backup.zip")
+    z = zipfile.ZipFile(io.BytesIO(data)) if status == 200 else None
+    cfg = z.read("system.cfg").decode() if z else ""
+
+    try:
+        # The same backup the fresh board is given, onto a board with
+        # passwords of its own: *** keeps each of them. This is what a restore
+        # has always done and it must not move.
+        redacted = cfg_staff(cfg, [f"{k} = ***" for k in STAFF_KEYS])
+        status, body, seen = upload_with_answer(s, make_zip({"system.cfg": redacted}), b"y")
+        ok &= check("the same backup restores onto a board with its own passwords",
+                    seen and status == 200)
+        ok &= check("*** keeps the board's own sysop password", cfg_value("sysop_password") == PASSWORD)
+        ok &= check("and its co-sysop passwords",
+                    cfg_value("cosysop1_password") == CO1 and cfg_value("cosysop2_password") == CO2)
+        s.pump(1.0)                      # the console notices of the result
+        ok &= check("and says nothing about the default, in curl or on the console",
+                    b"published default" not in body and b"published default" not in plain(s.buf))
+        ok &= check("the listing is not held", not announce_held(s))
+
+        # Typed out in full, the published password is still never written: a
+        # sysop line naming it is left out, which puts the board on the
+        # default (local only, listing held), and a co-sysop line naming it is
+        # left out, which switches that level off.
+        literal = cfg_staff(cfg, [f"sysop_password = {BBS_DEFAULT}",
+                                  f"cosysop1_password = {BBS_DEFAULT}",
+                                  "cosysop2_password = ***"])
+        status, body, seen = upload_with_answer(s, make_zip({"system.cfg": literal}), b"y")
+        ok &= check("a system.cfg naming the published password applies", seen and status == 200)
+        ok &= check("its sysop line is left out, so the board is on the default",
+                    cfg_line("sysop_password") is None and b"published default" in body)
+        ok &= check("which holds the listing", announce_held(s))
+        ok &= check("its co-sysop line is left out, so that level is off",
+                    cfg_line("cosysop1_password") is None)
+        ok &= check("a co-sysop kept as *** keeps its own", cfg_value("cosysop2_password") == CO2)
+    finally:
+        # Put the board back the way the rest of the suite knows it, whatever
+        # happened above: test_backup and test_ban run on it next.
+        status, _, seen = upload_with_answer(s, make_zip({"system.cfg": before.encode()}), b"y")
+        ok &= check("the board's own passwords go back",
+                    seen and status == 200 and cfg_value("sysop_password") == PASSWORD
+                    and cfg_value("cosysop1_password") == CO1)
+        s.close()
     return ok
 
 
@@ -7998,7 +8192,10 @@ ORDER_NAMES = [
     "test_config_areas", "test_config_area_keeps_every_part",
     "test_mail_compose",
     "test_forums", "test_forums_remove", "test_forums_scan_staff", "test_config_forum_levels", "test_partitions",
-    # Destructive, and therefore last whatever else is running:
+    # Destructive, and therefore last whatever else is running. The published
+    # default's restore test puts the board back as it found it, and on a
+    # --fresh board it needs to run before first_setup gives it a password.
+    "test_backup_published_default",
     "test_first_setup", "test_backup", "test_ban",
 ]
 

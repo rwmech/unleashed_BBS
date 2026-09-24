@@ -78,6 +78,8 @@ What is inside:
 
 Passwords: leave `***` as it is to keep the current password. Type a real password in its place to change it. An empty value disables that staff level.
 
+A restore never writes the published default sysop password. A board still on the default has no `sysop_password` line, and that is what limits the default to your own network and keeps the board off the directory, so `***` on such a board leaves the line out rather than writing the default in. A line that names the default outright is left out too: for the sysop the board is then on the default, for a co-sysop that level is off. When the board is on the default after a restore, curl's `Applied:` line ends with `sysop password is the published default, local network only` and the sysop console shows `*** Sysop password is the published default: local only`; set your own in `CONFIG staff`.
+
 Screens: add, change or delete files in `screens/`. When your upload contains any screens, the board's screens become exactly that set, so a screen you delete from the folder is deleted on the board. An upload with no screens at all leaves the screens alone.
 
 Accounts: an upload with `users.txt` replaces every account with the file's contents; an upload without it leaves the accounts alone. Account passwords can't be typed into the file, only kept or cleared (see [USERS.md](USERS.md#userstxt)).
