@@ -99,3 +99,21 @@ private:
     uint8_t head_  = 0;
     uint8_t count_ = 0;
 };
+
+#ifdef BBS_HAS_LCD
+// ---------------------------------------------------------------------------
+// The last page on the board, for the panel's "last event" (BBS_HAS_LCD
+// boards only). Every page and every ring for the sysop goes through
+// Mailbox::push, so it is noted there: no hook in the paging code, and
+// nothing at all on a board without a panel. count wraps; only a change
+// means anything, and the panel keeps its own clock of when it saw one.
+// ---------------------------------------------------------------------------
+namespace bus {
+struct PageSeen {
+    uint16_t count = 0;
+    bool     ring  = false;                      // a ring for the sysop, not a caller's PAGE
+    char     from[BBS_USER_MAX + 1] = {};
+};
+const PageSeen& lastPage();
+} // namespace bus
+#endif

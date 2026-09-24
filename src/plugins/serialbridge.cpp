@@ -73,7 +73,10 @@ constexpr uint16_t   kScrollback  = 1024;     // bytes replayed to a joiner
 constexpr uint16_t   kReadChunk   = 128;      // bytes taken from the port per tick
 constexpr uint16_t   kRoomNeeded  = 512;      // output room a watcher must have
 
-int      g_rx = 16, g_tx = 17;                // UART2 defaults on a WROOM-32E
+// The board profile's (board.h): UART2's usual 16 and 17 on a WROOM-32E,
+// header IO2 and IO1 on the Waveshare S3, whose 16 and 17 are its TF slot
+// and whose RXD and TXD carry the ROM's boot banner.
+int      g_rx = BBS_SERIAL_RX, g_tx = BBS_SERIAL_TX;
 uint32_t g_baud   = 115200;
 uint8_t  g_bits   = 8, g_stop = 1;
 char     g_parity = 'N';
@@ -106,12 +109,16 @@ void readKey(void* ctx, const char* key, const char* value) {
     else if (!strcmp(key, "format")) parseFormat(value);
 }
 
-// badPin: pins that are not ours to use
+// badPin: pins that are not ours to use. The ranges are the chip's
+// (board.h); the console UART is the ESP32's 1 and 3, while an S3 build's
+// console is the chip's own USB and UART0 is free.
 bool badPin(int pin, bool output) {
-    if (pin < 0 || pin > 39) return true;
+    if (pin < 0 || pin > BBS_GPIO_MAX) return true;
     if (syscfg::pinProblem(pin)) return true;                // internal flash
-    if (output && pin >= 34) return true;                    // input only
+    if (output && pin > BBS_GPIO_OUT_MAX) return true;       // input only
+#ifndef BBS_CHIP_S3
     if (pin == 1 || pin == 3) return true;                   // the console UART
+#endif
     return false;
 }
 
@@ -351,10 +358,10 @@ constexpr char kBauds[]   = "300|1200|2400|4800|9600|19200|38400|57600|115200";
 constexpr char kFormats[] = "8N1|7E1|8E1|7O1|8N2";
 
 const PluginSetting kSettings[] = {
-    { "rx",     "RX pin", PS_PIN,   0, 39, 2, "The device's TX goes here.", nullptr, "RX GPIO",
-      "The device's TX goes here. 34 to 39 are fine: they can only listen." },
-    { "tx",     "TX pin", PS_PIN,   0, 33, 2, "The device's RX goes here.", nullptr, "TX GPIO",
-      "The device's RX goes here. Not 34 to 39, which cannot drive a line." },
+    { "rx",     "RX pin", PS_PIN,   0, BBS_GPIO_MAX, 2, "The device's TX goes here.", nullptr, "RX GPIO",
+      "The device's TX goes here. An input-only pin is fine: RX only listens." },
+    { "tx",     "TX pin", PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, "The device's RX goes here.", nullptr, "TX GPIO",
+      "The device's RX goes here. Not an input-only pin (34 to 39 on the ESP32)." },
     { "baud",   "Baud",   PS_CYCLE, 0, 0,  6, nullptr, kBauds,   "Baud rate" },
     { "format", "Format", PS_CYCLE, 0, 0,  3, "Data bits, parity, stop bits.", kFormats,
       "Bits, parity, stop" },

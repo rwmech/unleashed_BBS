@@ -361,7 +361,8 @@ outside it and no way to approve a file that is waiting somewhere else.
 | Command | What it does |
 |---|---|
 | `ANNOUNCE` | Whether this board is listed in a directory, when each one last answered, and the public address the directory sees. `ANNOUNCE TEST` prints the exact payload and sends nothing; `ANNOUNCE NOW` sends a heartbeat immediately. Off until switched on: see [ANNOUNCE.md](ANNOUNCE.md). |
-| `LIGHTS` | The lights plugin's two outputs: each one's pin, effect and brightness, and the colours it was last sent, in hex. `LIGHTS TEST` shows red, green, blue and then white on every pixel, a second each, for checking the wiring. Off until switched on: see `lights` under Plugins below. |
+| `LIGHTS` | The lights plugin's two outputs: each one's pin, effect, brightness and colour order, and the colours it was last sent, in hex. `LIGHTS TEST` shows red, green, blue and then white on every pixel, a second each, for checking the wiring and the order. Off until switched on (on as shipped on the Waveshare S3): see `lights` under Plugins below. |
+| `PANEL` | Boards with a display only (the Waveshare ESP32-S3-LCD-1.47): what the panel is running on (controller, size, offsets, rotation, pins, SPI clock) and every line it is showing, as text, with the number of lamps in its strip. `Dark:` and why, when it is not lit. See `panel` under Plugins below. |
 | `SHUTDOWN [n]` | Take the board off the air on purpose. Announces to every node, counts down n seconds (5 to 3600, default 60), then hangs up on everyone including you, each with the ordinary send-off. `SHUTDOWN CANCEL` stops a countdown and says so. Afterwards the board keeps answering and tells callers it has been shut down, rather than refusing connections in a way that looks like a crash. A physical reboot brings it back. Any transfer running when the countdown ends is lost, and the warning says so. |
 | `BACKUP SD` | The zip the backup window gives, onto the SD card: `unleashed-YYYYMMDD-HHMM.zip` in the card's `backup` folder, with a dot a file while it writes and then `Saved: 14 files, 31 KB.` It holds the Wi-Fi password as typed, and says so. `BACKUP SD SCREENS` writes `screens-YYYYMMDD-HHMM.zip`, the screens alone. Two in one minute would share a name, so the second is refused. `BACKUP` on its own explains the difference from the backup window (1.1.0). |
 | `RESTORE SD [SCREENS] [n]` | On its own, the card's backups, newest first and numbered. With a number or a zip's name, checks it exactly as an upload through the backup window is checked, shows what it would replace (a full restore always shows `Replaces`, `Accounts`, `Removes` and `Staff`) and asks `Restore now? (y/N)`; N or 60 seconds is `Not restored.` `SCREENS` puts only the zip's screens back, onto the card's `screens` folder, and never removes anything; deleting them from the card undoes it (1.1.0). Details: [BACKUP.md](BACKUP.md#backups-on-the-sd-card). |
@@ -389,10 +390,11 @@ columns, so its prompts use the long labels. The page list is the same single
 column at every width.
 
 A plugin with more settings than one page holds has a button to a page of
-them: `CONFIG lights` has Pixels, a list of ten pixels, each a button to its
-own two-row page, and `CONFIG chat` has Colours, the eleven colours of a room
-line. Escape on the list comes back to the plugin's page. The list takes the
-page's place, so it will not open over changes you have not saved: F1 first.
+them: `CONFIG lights` has Pixels, a list of sixteen pixels, each a button to
+its own two-row page, `CONFIG panel` has Pins, and `CONFIG chat` has Colours,
+the eleven colours of a room line. Escape on the list comes back to the
+plugin's page. The list takes the page's place, so it will not open over
+changes you have not saved: F1 first.
 Such a group is shown in place while it fits (1.1.0): `CONFIG forums` shows
 the topics that are set and one empty row to add the next, so the page grows
 a row at a time, and once that would pass the twelve rows a page has, the
@@ -415,8 +417,9 @@ every pin it has, since that is when it takes them.
 `CONFIG serial` (1.1.0) has the bridge's pins, speed and format: RX, TX, a
 baud rate from 300 to 115200 and a format of `8N1`, `7E1`, `8E1`, `7O1` or
 `8N2`. A fresh board shows what the bridge runs with: 16, 17, 115200, 8N1.
-TX cannot be 34 to 39, which can only listen. `CONFIG chat` has the room's
-name, its line rate and history, its mail limits and the Colours page.
+On the ESP32, TX cannot be 34 to 39, which can only listen. `CONFIG chat`
+has the room's name, its line rate and history, its mail limits and the
+Colours page.
 
 A field that steps through words (a level, yes or no, an effect) takes the
 word's first letter, and the same letter again steps to the next word that
@@ -509,9 +512,10 @@ template for writing your own ([PLUGINS.md](PLUGINS.md)):
 | `files` | publishes folders on the card as file areas callers can browse | `read = all`, `write = staff` |
 | `forums` | topic message boards on the card | `read = all`, `write = users`, `admin = co1` |
 | `info` | the ten information pages, `INFO` / `/i` | `read = all`, `write = sysop` |
-| `lights` | a disk light and a strip of ten pixels (WS2812B) for a board in a case | `sysop` throughout |
+| `lights` | a disk light and a strip of 1 to 16 pixels (WS2812B) for a board in a case | `sysop` throughout |
+| `panel` | the board's own display as a status panel (boards with one only) | `sysop` throughout |
 
-Chat, `sd` and `info` are on by default, even with no section in `system.cfg`; `enabled = no` turns any of them off. `files` is also on by default once a card is mounted and an area is configured. `sd` on a board with no card costs one failed mount at boot and then nothing. `forums`, the serial bridge, `announce` and `lights` wait to be switched on: `forums` because a sysop sets the topic areas up first, the serial bridge and the lights because they need wiring, and `announce` because it is the one thing that talks out. Turning any of them off costs nothing: no commands, no hooks, no memory.
+Chat, `sd` and `info` are on by default, even with no section in `system.cfg`; `enabled = no` turns any of them off. `files` is also on by default once a card is mounted and an area is configured. `sd` on a board with no card costs one failed mount at boot and then nothing. `forums`, the serial bridge, `announce` and `lights` wait to be switched on: `forums` because a sysop sets the topic areas up first, the serial bridge and the lights because they need wiring, and `announce` because it is the one thing that talks out. On a board whose pixel and display are part of the board (the Waveshare S3), `lights` and `panel` are on as shipped. Turning any of them off costs nothing: no commands, no hooks, no memory.
 
 The SD card is optional and the board is complete without one. What goes on
 it is the things that grow without limit and can be lost: file areas, message
@@ -669,11 +673,14 @@ all up with `CONFIG lights`, or in the file:
 enabled      = yes
 drive_pin    = 13       ; -1 is off, as shipped
 drive_fx     = pc       ; pc | 1541 | disk2 | breathe | off
-drive_bright = 10       ; percent, 1 to 30
+drive_bright = 10       ; percent, 1 to 100 (past 30: see Power, below)
 strip_pin    = 14       ; -1 is off, as shipped
-strip_fx     = nodes    ; nodes | hayes | blinken | scanner | c64 | boing | vu | rainbow | manual | off
-strip_bright = 10       ; percent, 1 to 30
-led3         = sparkle | random   ; manual mode: led1 to led10, effect | colour
+strip_fx     = nodes    ; nodes | hayes | blinken | scanner | c64 | boing | vu | rainbow | manual | off | wifi
+strip_bright = 10       ; percent, 1 to 100 (past 30: see Power, below)
+led3         = sparkle | random   ; manual mode: led1 to led16, effect | colour
+strip_count  = 10       ; pixels on the strip, 1 to 16
+drive_order  = GRB      ; the order the bytes go out in:
+strip_order  = GRB      ; GRB | RGB | BRG | RBG | GBR | BGR
 ```
 
 - **Drive pin**: one pixel that shows storage at work. Amber when the SD
@@ -690,54 +697,84 @@ led3         = sparkle | random   ; manual mode: led1 to led10, effect | colour
     Apple II Disk II, whose motor kept running.
   - `breathe`: a slow pulse at rest, with the access colour on top.
   - `off`.
-- **Strip pin**: a strip of ten pixels. `-1` is off, as shipped.
+- **Strip pin**: the strip. `-1` is off, as shipped.
+- **Strip len**: how many pixels the strip has, 1 to 16, 10 as shipped (1.1.0,
+  Rob: "could be 8 could be 10, could be 1"). Used when the plugin restarts,
+  which saving the page does. CONFIG refuses more than 16, and a bigger
+  number written into `system.cfg` is read as 16: sixteen is what the
+  Pixels page can list, one row a pixel, and what both chips can send
+  whole. Every effect is drawn for the length there is, and nothing past
+  the end is drawn or sent.
 - **Strip**: what the strip shows.
-  - `nodes`, as shipped: each pixel is one caller line. Dark while the line
-    is free, the caller's rank colour while somebody is on (the colours WHO
-    uses: grey for a caller, dark grey for a guest, yellow for a co-sysop),
-    and a flicker when that line has traffic. A hidden or lurking co-sysop
-    looks like a free line, as in WHO.
+  - `nodes`, as shipped: each pixel is one caller line, pixel 1 being node
+    1. Dark while the line is free, the caller's rank colour while somebody
+    is on (the colours WHO uses: grey for a caller, dark grey for a guest,
+    yellow for a co-sysop), and a flicker when that line has traffic. A
+    hidden or lurking co-sysop looks like a free line, as in WHO. A strip
+    shorter than the board's ten lines shows the first ones only: on eight
+    pixels, nodes 9 and 10 have none. A longer one leaves the pixels past
+    the tenth line dark.
   - `hayes`: a Hayes Smartmodem's front panel on the first eight pixels,
     left to right, from the board's real state. HS: a caller faster than
     2400 baud (`BAUD`), and on while nobody is on. AA: taking calls, off
     once a `SHUTDOWN` starts. CD: a caller connected. OH: a line in use,
     the busy line included. RD and SD: bytes received and sent, on any
-    line. TR: the board is listening. MR: power. The last two pixels stay
-    dark.
+    line. TR: the board is listening. MR: power. Pixels past the eighth stay
+    dark; a strip shorter than eight shows the first lamps only.
   - `blinken`: an IMSAI's front-panel lamps, changing faster the busier the
     board is.
-  - `scanner`: a light sweeping end to end with a fading tail.
+  - `scanner`: a light sweeping end to end with a fading tail (on one
+    pixel, it stays lit).
   - `c64`: the breadbin Commodore's badge stripes, red, orange, yellow,
     green and blue, in a slow chase.
-  - `boing`: the Amiga ball, red and white, bouncing end to end.
-  - `vu`: a bar of the board's traffic that falls back slowly.
+  - `boing`: the Amiga ball, red and white, bouncing end to end (on three
+    pixels or fewer it fills the strip and spins in place).
+  - `vu`: a bar of the board's traffic that falls back slowly, green for
+    the first six tenths of the strip, then yellow, then red.
   - `rainbow`: the colours, cycling along the strip.
   - `manual`: each pixel its own effect and colour; see below.
   - `off`.
-- **Drive %** and **Strip %**: brightness, as a percentage of full, each
-  output its own, 10 as shipped. CONFIG takes 1 to 100 (1.1.0) and asks
-  before it saves anything past 30, one question for the page naming the
-  rows: `Drive % over 30. Save anyway? (y/N)` on a 40 column screen, with
-  the reason after the name at 80 (`ten pixels can draw more than USB
-  gives.` for the strip). Only Y saves; anything else leaves the page open
-  with nothing saved. Plain ASCII asks the same, then asks the row again.
-  A dim colour never goes out at a low percentage: a lit channel stays at
-  least 1.
-- Neither pin can be 6 to 11, which the flash chip uses, or one the chip
-  does not have (20, 24, 28 to 31 on the WROOM), and the two cannot
-  be the same pin. A change applies when the plugin restarts, which saving
+  - `wifi` (1.1.0): the board's Wi-Fi signal as a meter, like the bars on a
+    phone. The lit length follows the signal the board reads once a second:
+    -90 dBm or weaker lights one pixel, -50 dBm or stronger lights them all,
+    and in between it is in proportion (on ten pixels, -70 dBm lights five).
+    The colour is `SYS`'s word for the signal: green from -67 dBm (good or
+    excellent), amber from -75 (fair), red below it (weak). The last lit
+    pixel breathes a little so the meter reads as live. Not joined to a
+    network, one red pixel breathes slowly.
+- **Drive %** and **Strip %**: brightness, as a percentage of full, 1 to
+  100, each output its own, 10 as shipped (1.1.0; it was capped at 30). Past
+  30 is allowed and is your call, and CONFIG asks you to confirm first,
+  because of what it draws (see Power, below): one question for the page
+  naming the rows, `Drive % over 30. Save anyway? (y/N)` on a 40 column
+  screen, with the reason after the name at 80 (`ten pixels can draw more
+  than USB gives.` for the strip). Only Y saves; anything else leaves the
+  page open with nothing saved. Plain ASCII asks the same, then asks the row
+  again. A number past 100 written into `system.cfg` is read as 100. A dim
+  colour never goes out at a low percentage: a lit channel stays at least 1.
+- **Drive ord** and **Strip ord**: the order each output's bytes go out in
+  (1.1.0). `GRB` as shipped, the WS2812B's own; some strips sold as WS2812
+  want `RGB` or `BRG`, and the Waveshare S3's onboard pixel ships as `RGB`.
+  Run `LIGHTS TEST`: if the first colour is not red, try another order.
+  `LIGHTS` shows the order at the end of each output's line, and the
+  colours it reports are always red, green and blue as meant, whatever
+  order they went out in.
+- Neither pin can be one the flash uses (6 to 11 on the WROOM; 26 to 37,
+  and USB's 19 and 20, on an S3) or one the chip does not have (20, 24, 28
+  to 31 on the WROOM; 22 to 25 on an S3), and the two cannot be the same
+  pin. A change applies when the plugin restarts, which saving
   the page does. GPIO13 is a good pin for either: it has no job at boot.
-  Nothing yet stops a lights pin taking one the board already uses, so
-  keep clear of the activity LED's (2 as shipped), the BOOT button (0) and
-  the SD card's four: a pixel there takes the pin from them.
+  CONFIG also refuses a pin the board already uses (1.1.0): the activity
+  LED's (2 as shipped), the BOOT button (0), the console's, and any other
+  switched-on plugin's, the SD card's four among them; see CONFIG above.
 - `LIGHTS` (sysop) shows each output, its setting and the colours it was
   last sent, in hex, with the Hayes panel's labels in `hayes`. `LIGHTS TEST`
   shows red, green, blue and then white on every pixel of both, a second
   each; a strip that shows green for red is not a GRB strip.
 
 **Manual mode.** `CONFIG lights` has a Pixels button. It opens a list of
-the ten pixels, and each of those opens a page of two rows (Escape goes
-back a page):
+sixteen pixels, and each of those opens a page of two rows (Escape goes
+back a page). Only the first Strip len of them are drawn:
 
 - **Effect**: `solid`, `blink`, `breathe`, `flicker` (a candle), `sparkle`
   (an occasional twinkle), `traffic` (flickers with the board's traffic),
@@ -757,9 +794,13 @@ again is pink.
 at full white, which the board's own 5 V pin handles from USB. Ten draw
 about 600 mA at full white, and the board itself needs up to about 400 mA
 when its radio transmits. The firmware ships the strip at 10%, roughly
-60 mA, and never drives it past 30%, roughly 180 mA; with the board's own
-draw on top, even that is close to what a USB 2 port supplies (500 mA on
-USB 2, 900 mA on USB 3), so wire the strip to stand on its own:
+60 mA. At 30% it is roughly 180 mA, and with the board's own draw on top
+even that is close to what a USB 2 port supplies (500 mA on USB 2, 900 mA
+on USB 3). Past 30% it is more than USB gives: 50% is about 300 mA for ten
+pixels at white, 100% about 600 mA, and sixteen pixels at 100% nearly a
+full ampere. A strip that bright must have its own 5 V supply; drawn from
+USB, the voltage sags, the board browns out and restarts, and the port may
+cut the power altogether. So wire the strip to stand on its own:
 
 - Give the strip its own 5 V supply, rated 1 A or more, and join its
   ground to the board's ground. Without the shared ground the data line
@@ -771,6 +812,55 @@ USB 2, 900 mA on USB 3), so wire the strip to stand on its own:
   across the same two points helps; Adafruit suggests 500 to 1000
   microfarads.
 - Connect ground first and disconnect it last.
+
+#### panel
+
+Boards with a display only: the Waveshare ESP32-S3-LCD-1.47's 1.47" ST7789
+(1.1.0). On any other board there is no such plugin, no page and no
+command. On as shipped, portrait with the plug at the top, showing, top to
+bottom: the board's name and the time; how many callers are on out of how
+many lines, counted as the directory counts them (a hidden sysop is not
+on); the address and port to dial; how long the board has been up; the SD
+card's free space; the last login, logoff or page, with its time; and the
+lights plugin's strip drawn as lamps, the same effect and colours at the
+same length, whether or not a strip is wired. A dimmed strip is drawn
+brighter than its figures would make it, because 10% on glass is a black a
+person reads as off. Hidden and lurking staff never appear as an event.
+
+`CONFIG panel` holds everything a board with another panel, or a panel whose
+spec changes, would need to change, and every default is the board
+profile's:
+
+```
+[plugin:panel]
+enabled   = yes
+pin1_mosi = 45     ; the Pins page: SDA
+pin2_sclk = 40     ; SCL
+pin3_cs   = 42     ; -1 for a panel with CS tied low
+pin4_dc   = 41
+pin5_rst  = 39     ; -1 resets it by command
+pin6_bl   = 48     ; -1 for a backlight that is always on
+width     = 172    ; as drawn, after the rotation
+height    = 320
+xoff      = 34     ; where that sits in the controller's RAM
+yoff      = 0
+rotation  = 0      ; 0 | 90 | 180 | 270
+invert    = yes    ; an IPS panel is normally black
+mirror    = yes    ; text back to front: flip this
+colours   = BGR    ; RGB | BGR: red and blue swapped, flip this
+spi_mhz   = 10     ; 10 | 20 | 40 (the panel's own limit is 62.5)
+backlight = 60     ; percent, 0 dark
+```
+
+- **Driver** names the controller, ST7789, and is not a setting.
+- **Rotation** turns the picture a quarter at a time. Mounted on its side,
+  a panel wants 90 or 270 with Width and Height swapped and the offset
+  moved to the other axis (for the Waveshare stick, 320 by 172 at Y offset
+  34).
+- A window that runs past the controller's own 240 by 320 is refused at
+  start, and `PANEL` says so.
+- A save restarts the plugin like any other; a panel whose settings did not
+  change stays lit through it.
 
 A value out of range is logged and the default is kept. An upload with a bad value is rejected, so it never replaces a working config.
 

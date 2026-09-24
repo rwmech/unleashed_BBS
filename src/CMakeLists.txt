@@ -52,6 +52,12 @@ set(app_requires esp_wifi esp_netif esp_event nvs_flash esp_timer esp_hw_support
 if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../components/esp_littlefs")
     list(APPEND app_requires esp_littlefs)     # vendored fallback
 endif()
+# The S3 boards (1.1.0): the console on the chip's own USB, and the panel
+# (esp_lcd, with the backlight on LEDC). Named for that target only, so the
+# WROOM's image does not take on a component it never calls.
+if(IDF_TARGET STREQUAL "esp32s3")
+    list(APPEND app_requires esp_driver_usb_serial_jtag esp_lcd esp_driver_ledc)
+endif()
 
 idf_component_register(SRCS ${app_sources}
                        INCLUDE_DIRS "." "../include"

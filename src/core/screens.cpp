@@ -217,7 +217,7 @@ void ScreenPlayer::runToken(Term& t, Timeline& tl, const Vars& v) {
         const char* n = syscfg::get().boardName;
         say(t, tl, n[0] ? n : BBS_NAME);
     }
-    else if (!strcmp(tok_, "VER"))   { say(t, tl, BBS_VERSION); }
+    else if (!strcmp(tok_, "VER"))   { say(t, tl, BBS_VERSION_SHOWN); }
     else if (!strcmp(tok_, "NODE"))  { snprintf(num, sizeof(num), "%u", v.node);  say(t, tl, num); }
     else if (!strcmp(tok_, "NODES")) { snprintf(num, sizeof(num), "%u", v.nodes); say(t, tl, num); }
     else if (!strcmp(tok_, "USER"))  { say(t, tl, (v.user && *v.user) ? v.user : "caller"); }

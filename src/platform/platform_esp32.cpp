@@ -59,9 +59,34 @@
 #include "esp_attr.h"            // RTC_NOINIT_ATTR: the restart note
 #include "esp_partition.h"       // factoryErase
 #include "esp_task_wdt.h"        // factoryErase feeds the watchdog between partitions
+#include "soc/soc_caps.h"        // the RMT's block size and DMA, per chip
+#if SOC_USB_SERIAL_JTAG_SUPPORTED && CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+#include "driver/usb_serial_jtag.h"      // the console on the S3's own USB
+#include "driver/usb_serial_jtag_vfs.h"
+#define BBS_CONSOLE_USJ 1
+#endif
+#ifdef BBS_HAS_LCD
+#include "esp_lcd_panel_io.h"            // the panel: esp_lcd over SPI
+#include "esp_lcd_io_spi.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_lcd_panel_st7789.h"
+#include "esp_lcd_panel_commands.h"
+#include "driver/ledc.h"                 // its backlight, dimmed by PWM
+#endif
 extern "C" {
 #include "miniz.h"
 }
+
+// The heap a sysop is shown and the loop watches. On a board with PSRAM the
+// 8-bit heap is eight megabytes of it plus the internal RAM, and the internal
+// RAM is what actually runs out (lwIP, Wi-Fi, a DMA buffer); a figure with
+// the PSRAM in it would say "plenty" to the last byte. Without PSRAM the two
+// are the same heap.
+#if CONFIG_SPIRAM
+#define BBS_HEAP_CAPS (MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL)
+#else
+#define BBS_HEAP_CAPS MALLOC_CAP_8BIT
+#endif
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -154,7 +179,7 @@ const char* powerSave() {
 uint32_t heapFree() {
     // heap_caps_get_free_size sums a per-heap counter. No walk, no lock held
     // across a traversal, which is the whole reason this exists separately.
-    return static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_8BIT));
+    return static_cast<uint32_t>(heap_caps_get_free_size(BBS_HEAP_CAPS));
 }
 
 uint32_t stackFree() {
@@ -195,10 +220,10 @@ uint32_t stackDeeper(uint32_t knownFree) {
 
 HeapStats heap() {
     HeapStats h;
-    h.freeBytes    = static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_8BIT));
-    h.minFree      = static_cast<uint32_t>(heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
-    h.largestBlock = static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-    h.totalBytes   = static_cast<uint32_t>(heap_caps_get_total_size(MALLOC_CAP_8BIT));
+    h.freeBytes    = static_cast<uint32_t>(heap_caps_get_free_size(BBS_HEAP_CAPS));
+    h.minFree      = static_cast<uint32_t>(heap_caps_get_minimum_free_size(BBS_HEAP_CAPS));
+    h.largestBlock = static_cast<uint32_t>(heap_caps_get_largest_free_block(BBS_HEAP_CAPS));
+    h.totalBytes   = static_cast<uint32_t>(heap_caps_get_total_size(BBS_HEAP_CAPS));
     h.valid        = true;
     return h;
 }
@@ -553,6 +578,57 @@ void log(const char* fmt, ...) {
 }
 
 // ===========================================================================
+// The console as a byte pipe, for Improv (main.cpp). See platform.h.
+// ===========================================================================
+#if BBS_CONSOLE_USJ
+// The chip's own USB. Installing the driver takes the port over from the
+// console's polling path, so the console is pointed at the driver too:
+// otherwise log lines would be written straight into the hardware FIFO
+// while the driver's interrupt fed it Improv packets from its own buffer,
+// and the two would interleave on the wire. Through the driver, a port
+// nobody is reading costs one 50 ms wait and then drops (the IDF's
+// usbjtag_tx_char_via_driver), so a board on a phone charger does not
+// stall on its own log.
+bool consoleBegin() {
+    usb_serial_jtag_driver_config_t c = {};
+    c.tx_buffer_size = 512;         // an Improv result is at most ~270 bytes
+    c.rx_buffer_size = 256;
+    if (usb_serial_jtag_driver_install(&c) != ESP_OK) return false;
+    usb_serial_jtag_vfs_use_driver();
+    return true;
+}
+
+size_t consoleRead(uint8_t* buf, size_t cap) {
+    int n = usb_serial_jtag_read_bytes(buf, static_cast<uint32_t>(cap), 0);
+    return n > 0 ? static_cast<size_t>(n) : 0;
+}
+
+// All or nothing: the driver's buffer is a byte ring that either takes the
+// whole packet or refuses it, so a packet is never half sent. 20 ms is room
+// for a host that is reading; a port nobody is reading refuses at once
+// after that, and the installer asks again.
+void consoleWrite(const uint8_t* b, size_t n) {
+    usb_serial_jtag_write_bytes(b, n, pdMS_TO_TICKS(20));
+}
+#else
+// UART0, through the board's USB-serial bridge. The log keeps writing the
+// way it always has; only input changes hands, and nothing else here ever
+// read the console.
+bool consoleBegin() {
+    return uart_driver_install(UART_NUM_0, 256, 0, 0, nullptr, 0) == ESP_OK;
+}
+
+size_t consoleRead(uint8_t* buf, size_t cap) {
+    int n = uart_read_bytes(UART_NUM_0, buf, static_cast<uint32_t>(cap), 0);
+    return n > 0 ? static_cast<size_t>(n) : 0;
+}
+
+void consoleWrite(const uint8_t* b, size_t n) {
+    uart_write_bytes(UART_NUM_0, b, n);
+}
+#endif
+
+// ===========================================================================
 // Backup button: active low with pull-up (BOOT is GPIO0 on dev boards)
 // ===========================================================================
 
@@ -844,10 +920,23 @@ struct PixOut {
     rmt_encoder_handle_t enc   = nullptr;
     int8_t               pin   = -1;
     uint8_t              count = 0;
+    uint8_t              order = PIX_GRB;           // kPixWire's row for this output
     bool                 sent  = false;             // grb holds a frame that went out
     volatile bool        busy  = false;             // set here, cleared by the done interrupt
-    uint8_t              grb[kPixelMax * 3] = {};   // the wire bytes, kept until sent
+    uint8_t              grb[kPixelMax * 3] = {};   // the wire bytes, in order, kept until sent
 };
+
+// The whole frame fits the channel's memory with nothing refilled part way,
+// on every chip, for the longest output there can be. The ESP32 has eight
+// 64-symbol blocks and the drive light takes one; the S3 sends its strip by
+// DMA and so is not bounded by its blocks at all (see pixelsBegin).
+static_assert(SOC_RMT_MEM_WORDS_PER_CHANNEL >= 1 * 24 + 2,
+              "the drive light's one pixel fits one block");
+#if !SOC_RMT_SUPPORT_DMA
+static_assert(static_cast<size_t>(kPixelMax) * 24u + 2u <=
+              (SOC_RMT_TX_CANDIDATES_PER_GROUP - 1u) * SOC_RMT_MEM_WORDS_PER_CHANNEL,
+              "the longest strip no longer fits the channel memory beside the drive light");
+#endif
 PixOut            g_pix[kPixelOuts];
 rmt_symbol_word_t g_bit0, g_bit1, g_latch;
 bool              g_symbols = false;
@@ -911,14 +1000,15 @@ void pixForget(PixOut& p) {
     p.enc   = nullptr;
     p.pin   = -1;
     p.count = 0;
+    p.order = PIX_GRB;
     p.sent  = false;
     p.busy  = false;
 }
 
 }   // namespace
 
-bool pixelsBegin(uint8_t out, int pin, uint8_t count) {
-    if (out >= kPixelOuts || !count || count > kPixelMax) return false;
+bool pixelsBegin(uint8_t out, int pin, uint8_t count, uint8_t order) {
+    if (out >= kPixelOuts || !count || count > kPixelMax || order >= PIX_ORDERS) return false;
     PixOut& p = g_pix[out];
     if (p.chan) pixelsEnd(out);
     if (pin < 0 || !GPIO_IS_VALID_OUTPUT_GPIO(pin)) return false;
@@ -932,11 +1022,27 @@ bool pixelsBegin(uint8_t out, int pin, uint8_t count) {
     // the interrupt refilling it part way. A refill late by more than a bit
     // time, which one Wi-Fi interrupt can manage, stretches a low into a
     // latch and the strip shows half a frame. 24 symbols a pixel, the latch
-    // and the driver's end marker, in 64-symbol blocks: one block for the
-    // drive light, four for ten pixels, five of the ESP32's eight.
+    // and the driver's end marker, in whole blocks of the chip's size: 64
+    // symbols on the ESP32, 48 on the S3 (1.1.0; this rounded to 64 on every
+    // chip, which the S3's driver then rounded up again to two of its
+    // blocks for a one-pixel drive light).
+    constexpr size_t kBlock = SOC_RMT_MEM_WORDS_PER_CHANNEL;
     size_t need = static_cast<size_t>(count) * 24u + 2u;
-    cc.mem_block_symbols = (need + 63u) / 64u * 64u;
+    cc.mem_block_symbols = (need + kBlock - 1u) / kBlock * kBlock;
     cc.trans_queue_depth = 2;
+#if SOC_RMT_SUPPORT_DMA
+    // The strip on a chip whose RMT has DMA (the S3, TX channel 3 only):
+    // the frame is encoded whole into a DMA buffer of its own size, the same
+    // no-refill property with the DMA feeding the channel, so the strip is
+    // not bounded by the eight small blocks. The drive light's one pixel
+    // stays in a block of channel memory, which leaves the DMA channel free.
+    // mem_block_symbols is the DMA buffer here: even, and at least a block.
+    const bool dma = out == 1;
+    if (dma) {
+        cc.flags.with_dma    = 1;
+        cc.mem_block_symbols = need < kBlock ? kBlock : (need + 1u) & ~static_cast<size_t>(1);
+    }
+#endif
 
     rmt_simple_encoder_config_t ec = {};
     ec.callback = pixEncode;
@@ -945,6 +1051,25 @@ bool pixelsBegin(uint8_t out, int pin, uint8_t count) {
     cb.on_trans_done = pixDone;
 
     esp_err_t e = rmt_new_tx_channel(&cc, &p.chan);
+#if SOC_RMT_SUPPORT_DMA
+    // No DMA to be had (another driver holds every GDMA channel): channel
+    // memory, if the frame fits the TX blocks the drive light leaves (three
+    // of the S3's four, 144 symbols: five pixels). A longer strip is said to
+    // be what it is, rather than sent off to check its wiring.
+    if (e != ESP_OK && dma) {
+        constexpr size_t kLeft = (SOC_RMT_TX_CANDIDATES_PER_GROUP - 1u) * kBlock;
+        if (need > kLeft) {
+            pixForget(p);
+            log("lights: no DMA channel free for the strip (%s), and %u pixels need it",
+                esp_err_to_name(e), static_cast<unsigned>(count));
+            return false;
+        }
+        cc.flags.with_dma    = 0;
+        cc.mem_block_symbols = (need + kBlock - 1u) / kBlock * kBlock;
+        log("lights: no DMA for the strip (%s), trying channel memory", esp_err_to_name(e));
+        e = rmt_new_tx_channel(&cc, &p.chan);
+    }
+#endif
     if (e != ESP_OK) {
         pixForget(p);
         log("lights: gpio %d would not take an RMT channel (%s)", pin, esp_err_to_name(e));
@@ -962,6 +1087,7 @@ bool pixelsBegin(uint8_t out, int pin, uint8_t count) {
     }
     p.pin   = static_cast<int8_t>(pin);
     p.count = count;
+    p.order = order;
     p.sent  = false;
     p.busy  = false;
     memset(p.grb, 0, sizeof(p.grb));
@@ -997,10 +1123,11 @@ bool pixelsShow(uint8_t out, const uint8_t* rgb, uint8_t count) {
     if (!p.chan) return false;
     if (count > p.count) count = p.count;
     uint8_t grb[kPixelMax * 3] = {};
+    const uint8_t* w = kPixWire[p.order];
     for (uint8_t i = 0; i < count; ++i) {
-        grb[i * 3]     = rgb[i * 3 + 1];
-        grb[i * 3 + 1] = rgb[i * 3];
-        grb[i * 3 + 2] = rgb[i * 3 + 2];
+        grb[i * 3]     = rgb[i * 3 + w[0]];
+        grb[i * 3 + 1] = rgb[i * 3 + w[1]];
+        grb[i * 3 + 2] = rgb[i * 3 + w[2]];
     }
     const size_t len = static_cast<size_t>(p.count) * 3u;
     if (p.sent && !memcmp(grb, p.grb, len)) return true;      // nothing new to say
@@ -1014,13 +1141,258 @@ uint8_t pixelsFrame(uint8_t out, uint8_t* rgb, uint8_t cap) {
     const PixOut& p = g_pix[out];
     if (!p.chan) return 0;
     uint8_t n = p.count < cap ? p.count : cap;
-    for (uint8_t i = 0; i < n; ++i) {
-        rgb[i * 3]     = p.grb[i * 3 + 1];
-        rgb[i * 3 + 1] = p.grb[i * 3];
-        rgb[i * 3 + 2] = p.grb[i * 3 + 2];
-    }
+    const uint8_t* w = kPixWire[p.order];
+    for (uint8_t i = 0; i < n; ++i)
+        for (uint8_t k = 0; k < 3; ++k) rgb[i * 3 + w[k]] = p.grb[i * 3 + k];
     return n;
 }
+
+#ifdef BBS_HAS_LCD
+// ===========================================================================
+// The panel (BBS_HAS_LCD): an ST7789 through the IDF's esp_lcd, on SPI3.
+//
+// SPI3 because the SD card's SPI mode takes SPI2 (SDSPI_DEFAULT_HOST), and
+// the S3 has exactly those two for general use; Waveshare's demo puts the
+// panel on SPI3 as well.
+//
+// Never waiting in the loop. esp_lcd sends colour data as a queued DMA
+// transaction and returns, but the address commands in front of it are
+// polled and first wait for anything still queued, so lcdDraw is only
+// accepted once the last one has finished: the done interrupt clears a
+// flag, lcdReady reads it. The colour data goes from a staging buffer in
+// internal DMA memory, allocated here at begin, because the SPI driver
+// copies anything it cannot DMA from (PSRAM, where the framebuffer is) into
+// a buffer it allocates per transaction, which would be heap in the loop.
+// ===========================================================================
+namespace {
+
+// A band: 16 rows of a 320-pixel line, 10 KB. About 8 ms on the wire at
+// 10 MHz and 2 ms at 40, one per plugin tick.
+constexpr uint32_t kBandPixels = 320u * 16u;
+
+struct Lcd {
+    esp_lcd_panel_io_handle_t io     = nullptr;
+    esp_lcd_panel_handle_t    panel  = nullptr;
+    uint16_t*                 stage  = nullptr;
+    bool                      busUp  = false;
+    bool                      blUp   = false;
+    volatile bool             busy   = false;   // a band is on the wire
+    LcdCfg                    cfg;
+};
+Lcd g_lcd;
+
+bool lcdDone(esp_lcd_panel_io_handle_t, esp_lcd_panel_io_event_data_t*, void*) {
+    g_lcd.busy = false;
+    return false;
+}
+
+// The panel's own settings after the controller's reset defaults, from
+// Waveshare's demo for this module (its Vernon_ST7789T driver's init table:
+// porch, gate and VCOM voltages, power, and the two gamma curves). The IDF's
+// generic ST7789 init sends only sleep-out, MADCTL, COLMOD and RAMCTRL, which
+// lights the panel with the controller's defaults; these are what the panel
+// maker tuned it to. Register values, sent as the demo sends them.
+struct LcdInit { uint8_t cmd; uint8_t n; uint8_t data[14]; };
+const LcdInit kLcdInit[] = {
+    { 0xB2, 5,  { 0x0C, 0x0C, 0x00, 0x33, 0x33 } },                   // porch
+    { 0xB7, 1,  { 0x75 } },                                           // gate voltages
+    { 0xBB, 1,  { 0x1A } },                                           // VCOM
+    { 0xC0, 1,  { 0x80 } },                                           // LCM control
+    { 0xC2, 2,  { 0x01, 0xFF } },                                     // VDV/VRH enable
+    { 0xC3, 1,  { 0x13 } },                                           // VRH
+    { 0xC4, 1,  { 0x20 } },                                           // VDV
+    { 0xC6, 1,  { 0x0F } },                                           // frame rate, 60 Hz
+    { 0xD0, 2,  { 0xA4, 0xA1 } },                                     // power control
+    { 0xE0, 14, { 0xD0, 0x0D, 0x14, 0x0D, 0x0D, 0x09, 0x38, 0x44, 0x4E, 0x3A, 0x17, 0x18, 0x2F, 0x30 } },
+    { 0xE1, 14, { 0xD0, 0x09, 0x0F, 0x08, 0x07, 0x14, 0x37, 0x44, 0x4D, 0x38, 0x15, 0x16, 0x2C, 0x2E } },
+};
+
+void lcdBlSet(uint8_t pct) {
+    if (!g_lcd.blUp) return;
+    uint32_t duty = pct >= 100 ? 8191u : static_cast<uint32_t>(pct) * 8191u / 100u;
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+}
+
+bool lcdFail(char* err, size_t n, const char* why, esp_err_t e) {
+    if (err && n) snprintf(err, n, "%s (%s)", why, esp_err_to_name(e));
+    log("panel: %s (%s)", why, esp_err_to_name(e));
+    lcdEnd();
+    return false;
+}
+
+}   // namespace
+
+bool lcdBegin(const LcdCfg& c, char* err, size_t errLen) {
+    lcdEnd();
+    if (err && errLen) err[0] = '\0';
+    esp_err_t e;
+
+    spi_bus_config_t bus = {};
+    bus.mosi_io_num     = c.mosi;
+    bus.miso_io_num     = -1;
+    bus.sclk_io_num     = c.sclk;
+    bus.quadwp_io_num   = -1;
+    bus.quadhd_io_num   = -1;
+    bus.max_transfer_sz = static_cast<int>(kBandPixels * 2u);
+    e = spi_bus_initialize(SPI3_HOST, &bus, SPI_DMA_CH_AUTO);
+    if (e != ESP_OK) return lcdFail(err, errLen, "the SPI bus would not start: check the pins", e);
+    g_lcd.busUp = true;
+
+    esp_lcd_panel_io_spi_config_t io = {};
+    io.cs_gpio_num       = c.cs;
+    io.dc_gpio_num       = c.dc;
+    io.spi_mode          = 0;
+    io.pclk_hz           = static_cast<unsigned>(c.mhz) * 1000u * 1000u;
+    io.trans_queue_depth = 2;
+    io.on_color_trans_done = lcdDone;
+    io.lcd_cmd_bits      = 8;
+    io.lcd_param_bits    = 8;
+    e = esp_lcd_new_panel_io_spi(static_cast<esp_lcd_spi_bus_handle_t>(SPI3_HOST), &io, &g_lcd.io);
+    if (e != ESP_OK) return lcdFail(err, errLen, "the panel would not take the SPI bus", e);
+
+    esp_lcd_panel_dev_config_t pc = {};
+    pc.reset_gpio_num = c.rst;
+    pc.rgb_ele_order  = c.bgr ? LCD_RGB_ELEMENT_ORDER_BGR : LCD_RGB_ELEMENT_ORDER_RGB;
+    // Little-endian colour data (RAMCTRL's ENDIAN bit, which the demo sets
+    // too): the framebuffer's uint16_t pixels go out exactly as they sit in
+    // memory, with no byte swap on the way.
+    pc.data_endian    = LCD_RGB_DATA_ENDIAN_LITTLE;
+    pc.bits_per_pixel = 16;
+    e = esp_lcd_new_panel_st7789(g_lcd.io, &pc, &g_lcd.panel);
+    if (e != ESP_OK) return lcdFail(err, errLen, "the ST7789 driver would not start", e);
+
+    // Reset and init block for their datasheet delays (10 ms low, 10 ms
+    // high, 100 ms after sleep-out). This is a plugin's start, never the loop.
+    e = esp_lcd_panel_reset(g_lcd.panel);
+    if (e == ESP_OK) e = esp_lcd_panel_init(g_lcd.panel);
+    if (e != ESP_OK) return lcdFail(err, errLen, "the panel did not answer its reset", e);
+    for (const LcdInit& in : kLcdInit) {
+        e = esp_lcd_panel_io_tx_param(g_lcd.io, in.cmd, in.data, in.n);
+        if (e != ESP_OK) return lcdFail(err, errLen, "the panel refused its settings", e);
+    }
+
+    // Rotation: the ST7789's usual four (MADCTL MV, MX, MY). Then the
+    // mirror, for glass wired mirrored against the controller's memory, as
+    // this module's is: Waveshare's demo mirrors X to draw portrait the
+    // right way round. The mirror is along the glass's long side, which is
+    // the controller's X until the axes are swapped and its Y after.
+    bool swap = false, mx = false, my = false;
+    switch (c.rotation) {
+        case 90:  swap = true;  mx = true;  break;
+        case 180: mx = true;    my = true;  break;
+        case 270: swap = true;  my = true;  break;
+        default:  break;                                           // 0
+    }
+    if (c.mirror) {
+        if (swap) my = !my;
+        else      mx = !mx;
+    }
+    esp_lcd_panel_invert_color(g_lcd.panel, c.invert);
+    esp_lcd_panel_swap_xy(g_lcd.panel, swap);
+    esp_lcd_panel_mirror(g_lcd.panel, mx, my);
+    esp_lcd_panel_set_gap(g_lcd.panel, c.xoff, c.yoff);
+
+    g_lcd.stage = static_cast<uint16_t*>(heap_caps_malloc(kBandPixels * 2u, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+    if (!g_lcd.stage) return lcdFail(err, errLen, "no DMA memory for the panel's band", ESP_ERR_NO_MEM);
+
+    // The backlight, on LEDC at 5 kHz as the demo runs it. Only once the
+    // panel is set up: the gate's pull-down holds it dark until then.
+    if (c.bl >= 0) {
+        ledc_timer_config_t t = {};
+        t.speed_mode      = LEDC_LOW_SPEED_MODE;
+        t.duty_resolution = LEDC_TIMER_13_BIT;
+        t.timer_num       = LEDC_TIMER_0;
+        t.freq_hz         = 5000;
+        t.clk_cfg         = LEDC_AUTO_CLK;
+        ledc_channel_config_t ch = {};
+        ch.gpio_num   = c.bl;
+        ch.speed_mode = LEDC_LOW_SPEED_MODE;
+        ch.channel    = LEDC_CHANNEL_0;
+        ch.timer_sel  = LEDC_TIMER_0;
+        ch.duty       = 0;
+        if (ledc_timer_config(&t) == ESP_OK && ledc_channel_config(&ch) == ESP_OK) g_lcd.blUp = true;
+        else log("panel: the backlight on gpio %d would not start", c.bl);
+    }
+    esp_lcd_panel_disp_on_off(g_lcd.panel, true);
+    g_lcd.cfg  = c;
+    g_lcd.busy = false;
+    lcdBlSet(c.backlight);
+    log("panel: ST7789 %ux%u, rotation %u, %u MHz, on SPI3", static_cast<unsigned>(c.width),
+        static_cast<unsigned>(c.height), static_cast<unsigned>(c.rotation), static_cast<unsigned>(c.mhz));
+    return true;
+}
+
+bool lcdSame(const LcdCfg& c) {
+    const LcdCfg& o = g_lcd.cfg;
+    return g_lcd.panel && o.mosi == c.mosi && o.sclk == c.sclk && o.cs == c.cs && o.dc == c.dc &&
+           o.rst == c.rst && o.bl == c.bl && o.width == c.width && o.height == c.height &&
+           o.xoff == c.xoff && o.yoff == c.yoff && o.rotation == c.rotation &&
+           o.invert == c.invert && o.bgr == c.bgr && o.mirror == c.mirror && o.mhz == c.mhz;
+}
+
+void lcdEnd() {
+    if (g_lcd.blUp) {
+        lcdBlSet(0);
+        ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+        g_lcd.blUp = false;
+    }
+    if (g_lcd.panel) {
+        esp_lcd_panel_disp_on_off(g_lcd.panel, false);   // waits out a band in flight
+        esp_lcd_panel_del(g_lcd.panel);
+        g_lcd.panel = nullptr;
+    }
+    if (g_lcd.io) {
+        esp_lcd_panel_io_del(g_lcd.io);
+        g_lcd.io = nullptr;
+    }
+    if (g_lcd.busUp) {
+        spi_bus_free(SPI3_HOST);
+        g_lcd.busUp = false;
+    }
+    heap_caps_free(g_lcd.stage);
+    g_lcd.stage = nullptr;
+    g_lcd.busy  = false;
+    g_lcd.cfg   = LcdCfg();
+}
+
+bool lcdReady() {
+    return g_lcd.panel && g_lcd.stage && !g_lcd.busy;
+}
+
+uint32_t lcdBandPixels() {
+    return kBandPixels;
+}
+
+bool lcdDraw(const uint16_t* fb, uint16_t stride, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+    if (!lcdReady() || !fb || !w || !h) return false;
+    if (static_cast<uint32_t>(w) * h > kBandPixels) return false;
+    uint16_t* out = g_lcd.stage;
+    for (uint16_t r = 0; r < h; ++r) {
+        memcpy(out, fb + static_cast<size_t>(y + r) * stride + x, static_cast<size_t>(w) * 2u);
+        out += w;
+    }
+    g_lcd.busy = true;
+    esp_err_t e = esp_lcd_panel_draw_bitmap(g_lcd.panel, x, y, x + w, y + h, g_lcd.stage);
+    if (e != ESP_OK) {
+        g_lcd.busy = false;
+        return false;
+    }
+    return true;
+}
+
+void lcdBacklight(uint8_t pct) {
+    lcdBlSet(pct);
+}
+
+void* psramAlloc(size_t n) {
+    return heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+}
+
+void psramFree(void* p) {
+    heap_caps_free(p);
+}
+#endif  // BBS_HAS_LCD
 
 // ===========================================================================
 // inflateRaw: ROM tinfl with a 32 KB circular dictionary

@@ -1333,7 +1333,7 @@ bool Bbs::rowDash(Session& s) {
         }
         case 1: {
             uint32_t up = now / 1000u;
-            snprintf(buf, sizeof(buf), "%s %s  up %ud %02u:%02u", BBS_NAME, BBS_VERSION,
+            snprintf(buf, sizeof(buf), "%s %s  up %ud %02u:%02u", BBS_NAME, BBS_VERSION_SHOWN,
                      static_cast<unsigned>(up / 86400u), static_cast<unsigned>(up / 3600u % 24u),
                      static_cast<unsigned>(up / 60u % 60u));
             rowText(s, Color::White, buf);
@@ -1549,7 +1549,7 @@ void Bbs::cmdMem(Session& s) {
     char buf[48];
     plat::HeapStats h = plat::heap();
 
-    rowTitle(s, "Memory", BBS_VERSION);
+    rowTitle(s, "Memory", BBS_VERSION_SHOWN);
     if (h.valid) {
         statNum(s, "Heap free", h.freeBytes, "bytes");
         statNum(s, "Heap low", h.minFree, "since boot");
@@ -1640,7 +1640,7 @@ bool Bbs::rowSys(Session& s) {
     plat::HeapStats h = plat::heap();
 
     switch (i) {
-        case 0:  rowTitle(s, "System", BBS_VERSION); return true;
+        case 0:  rowTitle(s, "System", BBS_VERSION_SHOWN); return true;
 
         case 1:  rowSection(s, "network"); return true;
         case 2:  statRow(s, "Wi-Fi", net.ssid[0] ? net.ssid : "-", Color::White); return true;
@@ -1914,7 +1914,7 @@ void Bbs::cmdAbout(Session& s) {
     Term& t = s.term;
     Timeline& tl = s.tl;
     char buf[64];
-    rowTitle(s, "About", BBS_VERSION);
+    rowTitle(s, "About", BBS_VERSION_SHOWN);
     t.color(tl, Color::White);
     t.text(tl, BBS_NAME);
     t.nl(tl);

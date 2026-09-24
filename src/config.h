@@ -45,14 +45,34 @@
 
 #pragma once
 
+// What differs between boards: the pins a profile ships with and the
+// capabilities it adds. The reference board's values are its defaults.
+#include "board.h"
+
 // ---------------------------------------------------------------------------
 // Identity
 // ---------------------------------------------------------------------------
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "1.1.0-dev.7"
+#define BBS_VERSION         "1.1.0-dev.8"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
+
+// BBS_VERSION_SHOWN: the version as every place a person reads one shows it
+// (1.1.0): the welcome screen's @VER@, ABOUT, SYS, MEM, DASH, the boot line
+// and Improv's device info. The core version alone on the reference board,
+// and the core version with the board profile's own after it on a board
+// that has one (board.h): "1.1.0 (S3 1.0.0)". Plain ASCII on purpose: the
+// terminal layer turns only the micro sign from UTF-8 into a glyph, so a
+// middle dot would reach a C64 or a plain ASCII terminal as "??". The one
+// definition, so the places cannot drift. The directory is still sent the
+// core version alone (announce), which is what it compares for its update
+// arrow; tools/release.py reads this format out of board.h for version.txt.
+#ifdef BBS_BOARD_VERSION
+#define BBS_VERSION_SHOWN   BBS_VERSION " (" BBS_BOARD_TAG " " BBS_BOARD_VERSION ")"
+#else
+#define BBS_VERSION_SHOWN   BBS_VERSION
+#endif
 
 // ---------------------------------------------------------------------------
 // Network: one dial-in port, 10 caller nodes, a busy line, a hidden sysop node
@@ -83,8 +103,9 @@
 #define BBS_KEEPALIVE_INTVL_S  10
 #define BBS_KEEPALIVE_CNT      3
 
-// Activity LED (system.cfg activity_led_gpio overrides the pin)
-#define BBS_LED_GPIO        2        // blue LED on DOIT-style dev boards, -1 = none
+// Activity LED (system.cfg activity_led_gpio overrides the pin). The pin a
+// board ships with is BBS_LED_GPIO in board.h: 2 on the WROOM, none on a
+// board whose only lamp is a WS2812B.
 #define BBS_LED_PULSE_MS    40
 
 // How long the line is held open after the exit screen has been sent, so the
@@ -106,8 +127,13 @@
 // Session sizing (fixed, preallocated at boot, no heap after boot)
 // ---------------------------------------------------------------------------
 #define BBS_TL_BYTES        3072     // per-session timed output buffer (a PETSCII form redraw is ~1.2 KB)
-#define BBS_RX_ROOM         1700     // a key is handled only with this much output room free
-                                     // (a full form or user-list redraw is ~1.4 KB)
+#define BBS_RX_ROOM         2600     // a key is handled only with this much output room free
+                                     // (the largest full redraw a key can cause: a 16 row
+                                     // form at 80 columns on ANSI, measured at 2,476 bytes
+                                     // for CONFIG announce, 1.1.0; it was 1,676 at 40 and
+                                     // this was 1,700. A redraw bigger than the room
+                                     // left drops its tail: the status line and the
+                                     // "Saved and live" after a sub-page save went first)
 #define BBS_TL_FRAMES       96       // per-session timed output frames
 #define BBS_RX_CHUNK        64       // bytes read per select pass
 #define BBS_LINE_MAX        72       // line editor capacity
@@ -204,9 +230,11 @@
 // ---------------------------------------------------------------------------
 // Plugins (PLUGINS.md)
 // ---------------------------------------------------------------------------
-// Nine since 1.1.0, for lights. Exactly the table, so the tenth plugin fails
-// registry.cpp's static_assert rather than compiling and never starting.
-#define BBS_MAX_PLUGINS     9        // compiled-in plugin table
+// Nine since 1.1.0, for lights, plus whatever the board profile compiles in
+// (board.h: the panel on a board with a display). Exactly the table, so one
+// more plugin fails registry.cpp's static_assert rather than compiling and
+// never starting.
+#define BBS_MAX_PLUGINS     (9 + BBS_BOARD_PLUGINS)   // compiled-in plugin table
 #define BBS_PLUGIN_TICK_MS  250      // periodic hook cadence
 // A PF_FAST plugin's cadence: 50 frames a second for the lights, which is as
 // fast as a pixel is worth updating and two loop passes apart.
@@ -214,7 +242,12 @@
 #define BBS_PLUGIN_DIR      "p"      // <fs>/p/<name>/ holds a plugin's files
 #define BBS_PLUGIN_QUOTA    65536    // per plugin, onboard
 #define BBS_FS_RESERVE      32768    // free space the core keeps for accounts
-#define BBS_HEAP_RESERVE    40960    // heap kept free for callers and backups
+// Heap kept free for callers and backups, which a plugin may not take at its
+// start. A board profile may set less (board.h): with PSRAM, the callers'
+// socket buffers and the backup inflater are PSRAM's, not internal RAM's.
+#ifndef BBS_HEAP_RESERVE
+#define BBS_HEAP_RESERVE    40960
+#endif
 
 // ---------------------------------------------------------------------------
 // Scheduler / task

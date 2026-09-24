@@ -24,22 +24,31 @@
  *               effect only changes on a restart, which resets the lot, so
  *               two effects never have to share them at once.
  *
- *               Brightness is a percentage per output, 1 to 30, and 30 is a
- *               ceiling in the code, not only on the form: ten pixels at full
- *               white draw about 600 mA, and nothing here is allowed past
- *               30% of that, whatever system.cfg says.
+ *               Brightness is a percentage per output, 1 to 100 (1.1.0, Rob:
+ *               "remove the limit over 30% ... but allow it"; it was capped
+ *               at 30 in the code). Above 30 is the sysop's call and CONFIG
+ *               asks first: ten pixels at full white draw about 600 mA, more
+ *               than a USB port gives, so a strip that bright wants its own
+ *               5 V supply (COMMANDS.md).
  *
  *                 [plugin:lights]
  *                 enabled      = yes
  *                 drive_pin    = 13         -1 is off, as shipped
  *                 drive_fx     = pc         pc | 1541 | disk2 | breathe | off
- *                 drive_bright = 10         percent, 1 to 30
+ *                 drive_bright = 10         percent, 1 to 100
  *                 strip_pin    = 14         -1 is off, as shipped
  *                 strip_fx     = nodes      nodes | hayes | blinken | scanner |
  *                                           c64 | boing | vu | rainbow |
  *                                           manual | off
- *                 strip_bright = 10         percent, 1 to 30
+ *                 strip_bright = 10         percent, 1 to 100
  *                 led1         = sparkle | random    manual mode, per pixel
+ *                 strip_count  = 10         pixels on the strip, 1 to 16
+ *                 drive_order  = GRB        the bytes' order on the wire:
+ *                 strip_order  = GRB        GRB | RGB | BRG | RBG | GBR | BGR
+ *
+ *               A board profile may ship other defaults (board.h): the
+ *               Waveshare S3 has the plugin on, its drive light on the
+ *               onboard pixel (GPIO38) in RGB order.
  *
  * Commands:     LIGHTS, LIGHTS TEST
  *
@@ -80,26 +89,39 @@
 
 using bbsu::ieq;
 
+#ifdef BBS_HOST
+// host/platform_host.cpp: the signal plat::wifiRssi reports on the host.
+void hostSetRssi(int8_t dbm);
+#endif
+
 namespace {
 
 constexpr const char kName[] = "lights";
 
 constexpr uint8_t kOutDrive = 0;
 constexpr uint8_t kOutStrip = 1;
-constexpr uint8_t kStrip    = lights::kPixels;
+// The longest the strip may be. Every per-pixel table below is this long;
+// g_count says how much of it is in use.
+constexpr uint8_t kStrip    = lights::kPixelsMax;
 static_assert(kStrip <= plat::kPixelMax, "the strip is longer than an output may be");
+static_assert(lights::kPixelsDefault >= 1 && lights::kPixelsDefault <= kStrip, "a default the strip can have");
 
-// Brightness, percent of full drive. The ceiling is the code's, not the
-// form's: a hand-edited 80 is read as 30.
-constexpr uint8_t kPctMax = 30;
-constexpr uint8_t kPctDef = 10;
+// Brightness, percent of full drive. kPctClamp is what the plugin will do,
+// whatever system.cfg says: 100 since 1.1.0 (Rob), when it had been 30. A
+// hand-edited 150 is read as 100. kPctMax is the CONFIG rows' range, the
+// same 100, and kPctWarn is where the form starts to ask "Save anyway?"
+// first (PluginSetting::warnAbove): past 30, ten pixels draw more than USB.
+constexpr uint8_t kPctMax   = 100;
+constexpr uint8_t kPctWarn  = 30;
+constexpr uint8_t kPctClamp = 100;
+constexpr uint8_t kPctDef   = 10;
 
 // ---------------------------------------------------------------------------
 // The lists, as numbers. The words are lights.h's, in the same order.
 // ---------------------------------------------------------------------------
 enum : uint8_t { DF_PC, DF_1541, DF_DISK2, DF_BREATHE, DF_OFF };
 enum : uint8_t { SF_NODES, SF_HAYES, SF_BLINKEN, SF_SCANNER, SF_C64, SF_BOING, SF_VU,
-                 SF_RAINBOW, SF_MANUAL, SF_OFF };
+                 SF_RAINBOW, SF_MANUAL, SF_OFF, SF_WIFI };
 enum : uint8_t { LF_SOLID, LF_BLINK, LF_BREATHE, LF_FLICKER, LF_SPARKLE, LF_TRAFFIC,
                  LF_NODE, LF_OFF };
 enum : uint8_t { LC_RANDOM = 10, LC_CYCLE = 11 };
@@ -118,13 +140,21 @@ constexpr int wordIndex(const char* list, const char* w, int at = 0) {
 }
 static_assert(wordIndex(lights::kDriveFx, "off") == DF_OFF, "kDriveFx and DF_ disagree");
 static_assert(wordIndex(lights::kStripFx, "manual") == SF_MANUAL &&
-              wordIndex(lights::kStripFx, "off") == SF_OFF, "kStripFx and SF_ disagree");
+              wordIndex(lights::kStripFx, "off") == SF_OFF &&
+              wordIndex(lights::kStripFx, "wifi") == SF_WIFI, "kStripFx and SF_ disagree");
 static_assert(wordIndex(lights::kLedFx, "node") == LF_NODE &&
               wordIndex(lights::kLedFx, "off") == LF_OFF, "kLedFx and LF_ disagree");
 static_assert(wordIndex(lights::kColours, "random") == LC_RANDOM &&
               wordIndex(lights::kColours, "cycle") == LC_CYCLE &&
               wordIndex(lights::kColours, "cycle") == lights::kColourDefault,
               "kColours and LC_ disagree");
+// The order words are plat::PixOrder's numbers, and the platform's wire
+// table is indexed by them.
+static_assert(wordIndex(lights::kOrders, "GRB") == plat::PIX_GRB &&
+              wordIndex(lights::kOrders, "RGB") == plat::PIX_RGB &&
+              wordIndex(lights::kOrders, "BGR") == plat::PIX_BGR &&
+              wordIndex(lights::kOrders, "BGR") + 1 == plat::PIX_ORDERS, "kOrders and PixOrder disagree");
+static_assert(BBS_LIGHTS_DRIVE_ORDER < plat::PIX_ORDERS, "a board's drive order is one of kOrders");
 
 // ---------------------------------------------------------------------------
 // Colours, at full scale. Every one goes through shade() on its way out.
@@ -188,10 +218,18 @@ uint8_t g_driveFx  = DF_PC;
 uint8_t g_stripFx  = SF_NODES;
 uint8_t g_drivePct = kPctDef;
 uint8_t g_stripPct = kPctDef;
+uint8_t g_count    = lights::kPixelsDefault;   // pixels on the strip, 1 to kStrip
+uint8_t g_driveOrd = BBS_LIGHTS_DRIVE_ORDER;   // plat::PixOrder
+uint8_t g_stripOrd = plat::PIX_GRB;
 uint8_t g_ledFx[kStrip];
 uint8_t g_ledCol[kStrip];
 bool    g_driveOn  = false;
 bool    g_stripOn  = false;
+#ifdef BBS_HAS_LCD
+bool    g_panel    = false;                    // the panel shows the strip
+uint8_t g_shown[kStrip * 3];                   // the strip's last frame, for it
+bool    g_running  = false;                    // between start and stop
+#endif
 
 // ---------------------------------------------------------------------------
 // What the effects remember. All of it reset by start().
@@ -218,6 +256,17 @@ uint8_t  g_vu    = 0;               // tenths of a pixel
 uint16_t g_bits  = 0;
 uint32_t g_stepAt = 0;
 uint8_t  g_rd = 0, g_sd = 0;        // hayes: the RD and SD blips
+int8_t   g_rssi   = 0;              // wifi: the signal in dBm, 0 when not joined
+uint32_t g_rssiAt = 0;              // when it was last asked for, 0 never
+
+// wifi: the meter's scale and colours. -90 dBm or weaker lights one pixel
+// and -50 or stronger all of them; the colours are SYS's words for the
+// signal: green from -67 (good), amber from -75 (fair), red below (weak).
+constexpr int      kRssiLow   = -90;
+constexpr int      kRssiHigh  = -50;
+constexpr int      kRssiGood  = -67;
+constexpr int      kRssiFair  = -75;
+constexpr uint32_t kRssiEvery = 1000;   // plat::wifiRssi asks the Wi-Fi driver: once a second
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -230,9 +279,10 @@ uint32_t rnd() {                    // xorshift32, seeded from the hardware at s
 }
 
 // shade: one channel at an effect's level (0 to 255) and an output's cap (1
-// to 30 percent), in one rounding. Down, so the cap is a ceiling nothing
-// crosses, 76 of 255 at 30%; then 1 for any channel that was lit, so a dim
-// colour at 1% stays a colour rather than going out.
+// to 100 percent), in one rounding. Down, so the cap is a ceiling nothing
+// crosses: 76 of 255 at 30%, 127 at 50%, 255 at 100%; then 1 for any
+// channel that was lit, so a dim colour at 1% stays a colour rather than
+// going out.
 uint8_t shade(uint8_t v, uint8_t level, uint8_t pct) {
     if (!v || !level) return 0;
     uint32_t o = static_cast<uint32_t>(v) * level * pct / (255u * 100u);
@@ -313,7 +363,9 @@ void pinKey(int8_t& out, const char* key, const char* v) {
     char* end = nullptr;
     long  p   = strtol(v, &end, 10);
     bool  num = end && end != v && !*end;
-    if (!num || p < -1 || p > 33 || syscfg::pinProblem(p)) {
+    // The chip's highest output pin (board.h): 33 on the ESP32, whose 34 to
+    // 39 are inputs only; 48 on the S3, whose drive light is on 38.
+    if (!num || p < -1 || p > BBS_GPIO_OUT_MAX || syscfg::pinProblem(p)) {
         plat::log("lights: %s = %s is not a pin it can use, that output stays off", key, v);
         out = -1;
         return;
@@ -328,13 +380,31 @@ void pctKey(uint8_t& out, const char* key, const char* v) {
         plat::log("lights: %s = %s is not a number, keeping %u%%", key, v, static_cast<unsigned>(out));
         return;
     }
-    if (p > kPctMax || p < 1) {
-        long got = p > kPctMax ? kPctMax : 1;
+    if (p > kPctClamp || p < 1) {
+        long got = p > kPctClamp ? kPctClamp : 1;
         plat::log("lights: %s = %ld is outside 1 to %u, using %ld", key, p,
-                  static_cast<unsigned>(kPctMax), got);
+                  static_cast<unsigned>(kPctClamp), got);
         p = got;
     }
     out = static_cast<uint8_t>(p);
+}
+
+// countKey: the strip's length. Past the most an output can carry is read
+// as that most, the way a brightness past the ceiling is, and said so.
+void countKey(const char* key, const char* v) {
+    char* end = nullptr;
+    long  n   = strtol(v, &end, 10);
+    if (!end || end == v || *end) {
+        plat::log("lights: %s = %s is not a number, keeping %u", key, v, static_cast<unsigned>(g_count));
+        return;
+    }
+    if (n < 1 || n > kStrip) {
+        long got = n > kStrip ? kStrip : 1;
+        plat::log("lights: %s = %ld is outside 1 to %u, using %ld", key, n,
+                  static_cast<unsigned>(kStrip), got);
+        n = got;
+    }
+    g_count = static_cast<uint8_t>(n);
 }
 
 void wordKey(uint8_t& out, const char* list, const char* key, const char* v) {
@@ -376,6 +446,9 @@ void readKey(void* ctx, const char* key, const char* value) {
     else if (!strcmp(key, "strip_fx"))     wordKey(g_stripFx, lights::kStripFx, key, value);
     else if (!strcmp(key, "drive_bright")) pctKey(g_drivePct, key, value);
     else if (!strcmp(key, "strip_bright")) pctKey(g_stripPct, key, value);
+    else if (!strcmp(key, "strip_count"))  countKey(key, value);
+    else if (!strcmp(key, "drive_order"))  wordKey(g_driveOrd, lights::kOrders, key, value);
+    else if (!strcmp(key, "strip_order"))  wordKey(g_stripOrd, lights::kOrders, key, value);
     else if (!strncmp(key, "led", 3) && key[3] >= '1' && key[3] <= '9') ledKey(key, value);
 }
 
@@ -398,7 +471,7 @@ void gather(Lines& l) {
         Ctx& c = *static_cast<Ctx*>(p);
         if (s.st == SState::Free) return;
         if (s.role == Role::Busy) { c.l->oh = true; return; }
-        if (s.role != Role::Caller || !s.id || s.id > kStrip) return;   // the sysop's line is not one
+        if (s.role != Role::Caller || !s.id) return;    // the sysop's line is not one
         c.l->oh = true;
         if (s.st != SState::Detect) {
             c.l->cd = true;
@@ -409,6 +482,9 @@ void gather(Lines& l) {
         // Hidden or lurking staff look like a free line in WHO, and so here:
         // the case is on a desk somebody else can see.
         if (!s.visible || s.lurk) return;
+        // A strip shorter than the board has lines shows the first of them
+        // (1.1.0): pixel i is node i + 1, and a node past the end has none.
+        if (s.id > g_count) return;
         c.l->mark[s.id - 1] = bbsu::markFor(s);
     }, &ctx);
     if (!anyone) l.slow = false;           // HS: on, with nobody to be slow for
@@ -475,21 +551,29 @@ void drawDrive(uint32_t now, uint8_t* f) {
 }
 
 // ---------------------------------------------------------------------------
-// The strip
+// The strip, g_count pixels of it (1.1.0: ten until the length became a
+// setting). Every effect is drawn for the length it has: nodes shows the
+// first g_count lines, hayes cuts or pads its eight lamps, the moving ones
+// sweep, bounce and spread over whatever is there, and nothing past the end
+// is drawn or sent. At ten, every frame is what it was before.
 // ---------------------------------------------------------------------------
 void drawStrip(uint32_t now, uint8_t* f, uint16_t rx, uint16_t tx, uint32_t bytes) {
     const uint8_t pct = g_stripPct;
+    const uint8_t n   = g_count;
     memset(f, 0, kStrip * 3u);
     Lines lines{};
     const bool needLines = g_stripFx == SF_NODES || g_stripFx == SF_HAYES || g_stripFx == SF_MANUAL;
     if (needLines) gather(lines);
     const uint16_t moved = static_cast<uint16_t>(rx | tx);
+    // A hue step that goes round the wheel once along the strip, near
+    // enough: 25 at ten pixels, as it always was.
+    const uint8_t hueStep = static_cast<uint8_t>(250u / n);
 
     switch (g_stripFx) {
         case SF_NODES:
             // One pixel a caller line, the colour of the caller's rank in
             // WHO, dipping for a moment whenever their line carries bytes.
-            for (uint8_t i = 0; i < kStrip; ++i) {
+            for (uint8_t i = 0; i < n; ++i) {
                 bool dip = blip(g_cell[i], (moved >> (i + 1)) & 1u);
                 if (!lines.mark[i]) continue;
                 Rgb c = kTermRgb[static_cast<uint8_t>(bbsu::markColor(lines.mark[i]))];
@@ -511,7 +595,9 @@ void drawStrip(uint32_t now, uint8_t* f, uint16_t rx, uint16_t tx, uint32_t byte
                 Bbs::instance().listening(),               // TR: the listener is up
                 true,                                      // MR: powered
             };
-            for (uint8_t i = 0; i < 8; ++i) if (lamp[i]) put(f, i, kRed, 255, pct);
+            // In their order, cut short on a shorter strip and dark past MR
+            // on a longer one.
+            for (uint8_t i = 0; i < 8 && i < n; ++i) if (lamp[i]) put(f, i, kRed, 255, pct);
             break;
         }
 
@@ -523,22 +609,24 @@ void drawStrip(uint32_t now, uint8_t* f, uint16_t rx, uint16_t tx, uint32_t byte
                 g_stepAt = now;
                 g_bits   = static_cast<uint16_t>(rnd());
             }
-            for (uint8_t i = 0; i < kStrip; ++i)
+            for (uint8_t i = 0; i < n; ++i)
                 if ((g_bits >> i) & 1u) put(f, i, kRed, 255, pct);
             break;
         }
 
         case SF_SCANNER:
-            // Larson: a head sweeping end to end with a tail that fades.
-            for (uint8_t i = 0; i < kStrip; ++i)
+            // Larson: a head sweeping end to end with a tail that fades. One
+            // pixel has nowhere to sweep, so its head simply stays lit.
+            for (uint8_t i = 0; i < n; ++i)
                 g_cell[i] = static_cast<uint8_t>(g_cell[i] * 5u / 8u);
-            if (now - g_stepAt >= 70u) {
+            if (now - g_stepAt >= 70u && n > 1) {
                 g_stepAt = now;
-                if ((g_dir > 0 && g_pos >= kStrip - 1) || (g_dir < 0 && g_pos == 0)) g_dir = static_cast<int8_t>(-g_dir);
+                if ((g_dir > 0 && g_pos >= n - 1) || (g_dir < 0 && g_pos == 0)) g_dir = static_cast<int8_t>(-g_dir);
                 g_pos = static_cast<uint8_t>(g_pos + g_dir);
             }
+            if (g_pos >= n) g_pos = 0;
             g_cell[g_pos] = 255;
-            for (uint8_t i = 0; i < kStrip; ++i) put(f, i, kRed, g_cell[i], pct);
+            for (uint8_t i = 0; i < n; ++i) put(f, i, kRed, g_cell[i], pct);
             break;
 
         case SF_C64:
@@ -547,43 +635,76 @@ void drawStrip(uint32_t now, uint8_t* f, uint16_t rx, uint16_t tx, uint32_t byte
                 g_stepAt = now;
                 g_phase  = static_cast<uint8_t>((g_phase + 1u) % 5u);
             }
-            for (uint8_t i = 0; i < kStrip; ++i) put(f, i, kStripe[(i + g_phase) % 5u], 255, pct);
+            for (uint8_t i = 0; i < n; ++i) put(f, i, kStripe[(i + g_phase) % 5u], 255, pct);
             break;
 
-        case SF_BOING:
+        case SF_BOING: {
             // The Amiga ball: three pixels of red and white, bouncing end to
             // end, the checks swapping as it goes so it looks like it spins.
+            // On a strip of three or fewer it fills the strip and spins in
+            // place.
+            const uint8_t ball = n < 3 ? n : 3;
             if (now - g_stepAt >= 90u) {
                 g_stepAt = now;
-                if ((g_dir > 0 && g_pos >= kStrip - 3) || (g_dir < 0 && g_pos == 0)) g_dir = static_cast<int8_t>(-g_dir);
-                g_pos   = static_cast<uint8_t>(g_pos + g_dir);
+                if (n > ball) {
+                    if ((g_dir > 0 && g_pos >= n - ball) || (g_dir < 0 && g_pos == 0)) g_dir = static_cast<int8_t>(-g_dir);
+                    g_pos = static_cast<uint8_t>(g_pos + g_dir);
+                }
                 g_phase = static_cast<uint8_t>(g_phase ^ 1u);
             }
-            for (uint8_t j = 0; j < 3; ++j)
+            if (g_pos + ball > n) g_pos = 0;
+            for (uint8_t j = 0; j < ball; ++j)
                 put(f, static_cast<uint8_t>(g_pos + j), ((j + g_phase) & 1u) ? kWhite : kRed, 255, pct);
             break;
+        }
 
         case SF_VU: {
             // A bar as long as the log of this frame's bytes, 1 to 512 and up,
-            // falling back a pixel every 100 ms. Green, then yellow, then red.
+            // as tenths of the strip, falling back a fiftieth every frame.
+            // Green for the first six tenths, then yellow, then red.
             uint8_t want = 0;
-            for (uint32_t d = bytes; d && want < kStrip; d >>= 1) ++want;
+            for (uint32_t d = bytes; d && want < 10; d >>= 1) ++want;
             uint8_t fell = g_vu > 2 ? static_cast<uint8_t>(g_vu - 2) : 0;
-            g_vu = static_cast<uint8_t>(want * 10u > fell ? want * 10u : fell);
-            uint8_t lit = static_cast<uint8_t>((g_vu + 9u) / 10u);
-            for (uint8_t i = 0; i < lit && i < kStrip; ++i)
-                put(f, i, i < 6 ? kTermRgb[static_cast<uint8_t>(Color::Green)]
-                        : i < 8 ? kTermRgb[static_cast<uint8_t>(Color::Yellow)] : kRed, 255, pct);
+            g_vu = static_cast<uint8_t>(want * 10u > fell ? want * 10u : fell);   // hundredths
+            uint8_t lit = static_cast<uint8_t>((g_vu * n + 99u) / 100u);
+            for (uint8_t i = 0; i < lit && i < n; ++i)
+                put(f, i, i * 10u < n * 6u ? kTermRgb[static_cast<uint8_t>(Color::Green)]
+                        : i * 10u < n * 8u ? kTermRgb[static_cast<uint8_t>(Color::Yellow)] : kRed, 255, pct);
             break;
         }
 
         case SF_RAINBOW:
-            for (uint8_t i = 0; i < kStrip; ++i)
-                put(f, i, wheel(static_cast<uint8_t>(now / 20u + i * 25u)), 255, pct);
+            for (uint8_t i = 0; i < n; ++i)
+                put(f, i, wheel(static_cast<uint8_t>(now / 20u + i * hueStep)), 255, pct);
             break;
 
+        case SF_WIFI: {
+            // The station's signal as a meter (1.1.0, Rob: "add a wifi
+            // signal to the light strip effects"). The reading is taken once
+            // a second, never a frame: it is a call into the Wi-Fi driver.
+            if (!g_rssiAt || now - g_rssiAt >= kRssiEvery) {
+                g_rssiAt = now ? now : 1;
+                g_rssi   = plat::wifiRssi();
+            }
+            if (!g_rssi) {
+                // Not joined: one red pixel, breathing slowly.
+                put(f, 0, kRed, static_cast<uint8_t>(40u + tri(now, 2000u) * 215u / 255u), pct);
+                break;
+            }
+            const int r = g_rssi < kRssiLow ? kRssiLow : g_rssi > kRssiHigh ? kRssiHigh : g_rssi;
+            const uint8_t lit = static_cast<uint8_t>(1 + (n - 1) * (r - kRssiLow) / (kRssiHigh - kRssiLow));
+            const Rgb c = g_rssi >= kRssiGood ? kTermRgb[static_cast<uint8_t>(Color::Green)]
+                        : g_rssi >= kRssiFair ? kAmber : kRed;
+            for (uint8_t i = 0; i + 1 < lit; ++i) put(f, i, c, 255, pct);
+            // The meter's tip breathes a little, so it reads as live.
+            put(f, static_cast<uint8_t>(lit - 1), c, static_cast<uint8_t>(190u + tri(now, 1500u) * 65u / 255u), pct);
+            break;
+        }
+
         case SF_MANUAL:
-            for (uint8_t i = 0; i < kStrip; ++i) {
+            // led1 to ledN; a pixel past the strip's end is not drawn, even
+            // with a setting of its own in the file.
+            for (uint8_t i = 0; i < n; ++i) {
                 uint8_t  level = 0;
                 uint32_t cyc   = now / 3000u;          // when a random colour moves on
                 bool     fresh = false;                // or now, for a twinkle
@@ -616,7 +737,7 @@ void drawStrip(uint32_t now, uint8_t* f, uint16_t rx, uint16_t tx, uint32_t byte
                 } else if (g_ledCol[i] == LC_CYCLE) {
                     // A slow turn of the wheel, each pixel a tenth of it
                     // ahead of the last, so the strip never changes in step.
-                    c = wheel(static_cast<uint8_t>(now / 80u + i * 25u));
+                    c = wheel(static_cast<uint8_t>(now / 80u + i * hueStep));
                 } else {
                     c = kPalette[g_ledCol[i] < LC_RANDOM ? g_ledCol[i] : 0];
                 }
@@ -636,7 +757,8 @@ bool drawTest(uint32_t now, uint8_t* drive, uint8_t* strip) {
     if (step >= 4) { g_testAt = 0; return false; }
     const Rgb seq[4] = { kRed, { 0, 255, 0 }, { 0, 0, 255 }, kWhite };
     put(drive, 0, seq[step], 255, g_drivePct);
-    for (uint8_t i = 0; i < kStrip; ++i) put(strip, i, seq[step], 255, g_stripPct);
+    memset(strip, 0, kStrip * 3u);
+    for (uint8_t i = 0; i < g_count; ++i) put(strip, i, seq[step], 255, g_stripPct);
     return true;
 }
 
@@ -656,7 +778,12 @@ void tick(uint32_t now) {
     uint8_t target = bytes >= 64u ? 255 : static_cast<uint8_t>(bytes * 4u);
     g_act = target > g_act ? target : (g_act > 4 ? static_cast<uint8_t>(g_act - 4) : 0);
     noteDisk();
+#ifdef BBS_HAS_LCD
+    // The panel's strip is drawn whether or not a strip is wired.
+    if (!g_driveOn && !g_stripOn && !g_panel) return;
+#else
     if (!g_driveOn && !g_stripOn) return;
+#endif
 
     uint8_t drive[3];
     uint8_t strip[kStrip * 3];
@@ -665,8 +792,32 @@ void tick(uint32_t now) {
         drawStrip(now, strip, rx, tx, bytes);
     }
     if (g_driveOn) plat::pixelsShow(kOutDrive, drive, 1);
-    if (g_stripOn) plat::pixelsShow(kOutStrip, strip, kStrip);
+    if (g_stripOn) plat::pixelsShow(kOutStrip, strip, g_count);
+#ifdef BBS_HAS_LCD
+    memcpy(g_shown, strip, sizeof(g_shown));
+#endif
 }
+
+#ifdef BBS_HAS_LCD
+}   // namespace
+
+// The panel's side of the strip (lights.h). Plain stores and a copy: the
+// panel reads it from its own tick, on the same task.
+void lights::wantPanel(bool on) {
+    g_panel = on;
+    if (!on) memset(g_shown, 0, sizeof(g_shown));
+}
+
+uint8_t lights::panelFrame(uint8_t* rgb, uint8_t cap, uint8_t& pct) {
+    pct = g_stripPct;
+    if (!g_running || !rgb) return 0;
+    uint8_t n = g_count < cap ? g_count : cap;
+    memcpy(rgb, g_shown, static_cast<size_t>(n) * 3u);
+    return n;
+}
+
+namespace {
+#endif
 
 // defaults: every setting as shipped. From start(), before the file is read,
 // and from setting() on a board that has never started the plugin, whose
@@ -674,10 +825,16 @@ void tick(uint32_t now) {
 bool g_defaulted = false;
 
 void defaults() {
-    g_drivePin = g_stripPin = -1;
+    // The drive pin and its order are the board profile's (board.h): -1 and
+    // GRB on the WROOM, the Waveshare S3's onboard pixel on 38 in RGB.
+    g_drivePin = BBS_LIGHTS_DRIVE_PIN;
+    g_stripPin = -1;
     g_driveFx  = DF_PC;
     g_stripFx  = SF_NODES;
     g_drivePct = g_stripPct = kPctDef;
+    g_count    = lights::kPixelsDefault;
+    g_driveOrd = BBS_LIGHTS_DRIVE_ORDER;
+    g_stripOrd = plat::PIX_GRB;
     for (uint8_t i = 0; i < kStrip; ++i) {
         g_ledFx[i]  = lights::kLedFxDefault;
         g_ledCol[i] = lights::kColourDefault;
@@ -696,8 +853,8 @@ bool start(Bbs& bbs) {
         plat::log("lights: strip_pin %d is the drive pin, the strip stays off", g_stripPin);
         g_stripPin = -1;
     }
-    g_driveOn = g_drivePin >= 0 && plat::pixelsBegin(kOutDrive, g_drivePin, 1);
-    g_stripOn = g_stripPin >= 0 && plat::pixelsBegin(kOutStrip, g_stripPin, kStrip);
+    g_driveOn = g_drivePin >= 0 && plat::pixelsBegin(kOutDrive, g_drivePin, 1, g_driveOrd);
+    g_stripOn = g_stripPin >= 0 && plat::pixelsBegin(kOutStrip, g_stripPin, g_count, g_stripOrd);
     if (g_drivePin >= 0 && !g_driveOn) plat::log("lights: drive light on gpio %d would not start", g_drivePin);
     if (g_stripPin >= 0 && !g_stripOn) plat::log("lights: strip on gpio %d would not start", g_stripPin);
 
@@ -723,13 +880,18 @@ bool start(Bbs& bbs) {
     memset(g_mark, 0xFF, sizeof(g_mark));
     for (uint8_t i = 0; i < kStrip; ++i) g_hue[i] = static_cast<uint8_t>(rnd());
     g_pos = 0; g_dir = 1; g_phase = 0; g_vu = 0; g_bits = 0; g_stepAt = 0; g_rd = g_sd = 0;
+    g_rssi = 0; g_rssiAt = 0;
 
     char a[10], b[10];
-    plat::log("lights: drive %s on gpio %d at %u%%, strip %s on gpio %d at %u%%",
+    plat::log("lights: drive %s on gpio %d at %u%%, strip %s on gpio %d at %u%%, %u pixels",
               wordOf(lights::kDriveFx, g_driveFx, a, sizeof(a)), g_drivePin,
               static_cast<unsigned>(g_drivePct),
               wordOf(lights::kStripFx, g_stripFx, b, sizeof(b)), g_stripPin,
-              static_cast<unsigned>(g_stripPct));
+              static_cast<unsigned>(g_stripPct), static_cast<unsigned>(g_count));
+#ifdef BBS_HAS_LCD
+    memset(g_shown, 0, sizeof(g_shown));
+    g_running = true;
+#endif
     return true;       // on with nothing wired is still on: LIGHTS says so
 }
 
@@ -738,6 +900,10 @@ void stop() {
     plat::pixelsEnd(kOutStrip);
     g_driveOn = g_stripOn = false;
     g_testAt  = 0;
+#ifdef BBS_HAS_LCD
+    g_running = false;
+    memset(g_shown, 0, sizeof(g_shown));
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -757,15 +923,18 @@ const char* status() {
 // hex. What a sysop at the bench compares with what the pixels are doing,
 // and what the tests read, since on the host these are the only pixels.
 // ---------------------------------------------------------------------------
+// The order the bytes go out in follows the percentage (1.1.0), so a bench
+// check of LIGHTS TEST can be read against it: red showing green on a GRB
+// output means the strip is RGB.
 void showOutput(Session& s, const char* name, int8_t pin, bool on, const char* fx, uint8_t pct,
-                uint8_t out, bool hayes) {
+                uint8_t out, bool hayes, uint8_t order) {
     Term& t = s.term;
     Timeline& tl = s.tl;
-    char buf[48];
+    char buf[48], ord[6];
     if (pin < 0)  snprintf(buf, sizeof(buf), "%-6s no pin, off", name);
     else if (!on) snprintf(buf, sizeof(buf), "%-6s pin %d would not start", name, pin);
-    else          snprintf(buf, sizeof(buf), "%-6s pin %d  %s  %u%%", name, pin, fx,
-                           static_cast<unsigned>(pct));
+    else          snprintf(buf, sizeof(buf), "%-6s pin %d  %s  %u%%  %s", name, pin, fx,
+                           static_cast<unsigned>(pct), wordOf(lights::kOrders, order, ord, sizeof(ord)));
     t.color(tl, on ? Color::Yellow : Color::Grey);
     t.text(tl, buf);
     t.nl(tl);
@@ -819,6 +988,19 @@ void cmdLights(Bbs& b, Session& s, const char* a, uint32_t now) {
         b.prompt(s);
         return;
     }
+    // Host only: the signal the host's radio reports (it has none), so a
+    // test can put the wifi meter through strong, weak and not joined.
+    // "rssi -70" sets it, "rssi off" is not joined; the meter reads it
+    // straight away rather than at its next second.
+    if (!strncmp(a, "rssi ", 5) || !strncmp(a, "RSSI ", 5)) {
+        const char* v = a + 5;
+        hostSetRssi(ieq(v, "off") ? 0 : static_cast<int8_t>(strtol(v, nullptr, 10)));
+        g_rssiAt = 0;
+        t.color(tl, Color::Grey);
+        t.text(tl, "Signal set.");
+        b.prompt(s);
+        return;
+    }
 #endif
     if (*a) {
         t.color(tl, Color::LightRed);
@@ -829,9 +1011,9 @@ void cmdLights(Bbs& b, Session& s, const char* a, uint32_t now) {
     char fa[10], fb[10];
     b.rowTitle(s, "Lights", g_testAt ? "testing" : nullptr);
     showOutput(s, "Drive", g_drivePin, g_driveOn, wordOf(lights::kDriveFx, g_driveFx, fa, sizeof(fa)),
-               g_drivePct, kOutDrive, false);
+               g_drivePct, kOutDrive, false, g_driveOrd);
     showOutput(s, "Strip", g_stripPin, g_stripOn, wordOf(lights::kStripFx, g_stripFx, fb, sizeof(fb)),
-               g_stripPct, kOutStrip, g_stripFx == SF_HAYES);
+               g_stripPct, kOutStrip, g_stripFx == SF_HAYES, g_stripOrd);
     b.prompt(s);
 }
 
@@ -845,11 +1027,14 @@ const Command kCommands[] = {
 // are the copy's (internal/copy-1.1.0-2026-09-23.md, section 4) where it had
 // them. At 80 columns the labels are twenty and some notes 78, from
 // internal/tty-ux-forms-80-2026-09-24.md (1.1.0). "Pixels" is a button to a
-// page of its own, which lists led1 to led10 as buttons in turn, each opening
-// its Effect and Colour: ten more rows than this page could hold.
+// page of its own, which lists led1 to led16 as buttons in turn, each opening
+// its Effect and Colour: sixteen more rows than this page could hold. The
+// rows are appended, never inserted: the table is filled positionally and
+// read in order (1.1.0 added the strip's length, the two outputs' colour
+// order, and led11 to led16).
 // ---------------------------------------------------------------------------
 constexpr PluginSetting kSettings[] = {
-    { "drive_pin",    "Drive pin", PS_PIN,  -1, 33, 2, "The disk light: one pixel. -1 is off.", nullptr,
+    { "drive_pin",    "Drive pin", PS_PIN,  -1, BBS_GPIO_OUT_MAX, 2, "The disk light: one pixel. -1 is off.", nullptr,
       "Drive light GPIO",
       "The disk light, one pixel on this GPIO. -1 is off. 330 ohm in series helps." },
     { "drive_fx",     "Drive fx",  PS_CYCLE, 0,  0, 7, "pc: a flicker on every disk access.",
@@ -858,20 +1043,20 @@ constexpr PluginSetting kSettings[] = {
     // 1 to 100 (1.1.0; Rob: "remove the limit over 30% on light brightness
     // and warn the user are you really sure before applying over 30% but
     // allow it"). CONFIG asks before it saves anything past 30.
-    { "drive_bright", "Drive %",   PS_NUM,   1, 100, 3, "1 to 100 percent; over 30 asks first.", nullptr,
+    { "drive_bright", "Drive %",   PS_NUM,   1, kPctMax, 3, "1 to 100 percent; over 30 asks first.", nullptr,
       "Drive brightness %",
       "1 to 100 percent, 10 as shipped. Over 30 asks first: a bright pixel runs hot.",
-      30, "a bright pixel runs hot." },
-    { "strip_pin",    "Strip pin", PS_PIN,  -1, 33, 2, "10 pixels need their own 5 V supply.", nullptr,
+      kPctWarn, "a bright pixel runs hot." },
+    { "strip_pin",    "Strip pin", PS_PIN,  -1, BBS_GPIO_OUT_MAX, 2, "10 pixels need their own 5 V supply.", nullptr,
       "Strip GPIO",
       "Ten pixels on this GPIO. Give them their own 5 V feed: 600 mA at full white." },
     { "strip_fx",     "Strip",     PS_CYCLE, 0,  0, 7, "nodes: one pixel for each caller line.",
       lights::kStripFx, "Strip effect",
       "nodes: one pixel per caller line, in the caller's rank colour. manual: Pixels." },
-    { "strip_bright", "Strip %",   PS_NUM,   1, 100, 3, "White at 10 is 60 mA; at 30, 180 mA.", nullptr,
+    { "strip_bright", "Strip %",   PS_NUM,   1, kPctMax, 3, "White at 10 is 60 mA; at 30, 180 mA.", nullptr,
       "Strip brightness %",
       "Ten pixels in white: 60 mA at 10, 180 mA at 30, 600 mA at 100. Over 30 asks.",
-      30, "ten pixels can draw more than USB gives." },
+      kPctWarn, "ten pixels can draw more than USB gives." },
     { "led",          "Pixels",    PS_PAGE,  0,  0, 0, "Manual: each pixel its own effect.", nullptr,
       "Pixels, by hand" },
     { "led1",  "Pixel 1",  PS_TEXT, 0, 0, 20 },
@@ -884,6 +1069,23 @@ constexpr PluginSetting kSettings[] = {
     { "led8",  "Pixel 8",  PS_TEXT, 0, 0, 20 },
     { "led9",  "Pixel 9",  PS_TEXT, 0, 0, 20 },
     { "led10", "Pixel 10", PS_TEXT, 0, 0, 20 },
+    // Appended in 1.1.0. The strip's length: sixteen at most, because the
+    // Pixels page holds sixteen rows and every pixel needs one (and both
+    // chips can send that many; platform.h, kPixelMax).
+    { "strip_count", "Strip len", PS_NUM,   1, kStrip, 2, "1 to 16, one Pixels row for each.", nullptr,
+      "Strip length, pixels" },
+    { "drive_order", "Drive ord", PS_CYCLE, 0, 0, 3, "If TEST shows red as green, try RGB.",
+      lights::kOrders, "Drive colour order",
+      "The drive pixel's byte order. If LIGHTS TEST shows red as green, try RGB." },
+    { "strip_order", "Strip ord", PS_CYCLE, 0, 0, 3, "If TEST shows red as green, try RGB.",
+      lights::kOrders, "Strip colour order",
+      "The strip's byte order. If LIGHTS TEST shows red as green, try RGB." },
+    { "led11", "Pixel 11", PS_TEXT, 0, 0, 20 },
+    { "led12", "Pixel 12", PS_TEXT, 0, 0, 20 },
+    { "led13", "Pixel 13", PS_TEXT, 0, 0, 20 },
+    { "led14", "Pixel 14", PS_TEXT, 0, 0, 20 },
+    { "led15", "Pixel 15", PS_TEXT, 0, 0, 20 },
+    { "led16", "Pixel 16", PS_TEXT, 0, 0, 20 },
 };
 constexpr size_t kSettingCount = sizeof(kSettings) / sizeof(kSettings[0]);
 
@@ -896,6 +1098,7 @@ constexpr size_t countLed(size_t i = 0) {
     return i == kSettingCount ? 0 : (ledRow(kSettings[i].key) ? 1 : 0) + countLed(i + 1);
 }
 static_assert(countLed() == kStrip, "one led row per pixel");
+static_assert(kStrip == 16, "strip_count's note says 1 to 16");
 static_assert(kCoreRows + (kSettingCount - countLed()) <= Form::kMaxFields, "the lights page is full");
 static_assert(countLed() <= Form::kMaxFields, "the Pixels page is full");
 
@@ -911,7 +1114,10 @@ void setting(const char* key, char* out, size_t n) {
     else if (!strcmp(key, "strip_fx"))     snprintf(out, n, "%s", wordOf(lights::kStripFx, g_stripFx, a, sizeof(a)));
     else if (!strcmp(key, "drive_bright")) snprintf(out, n, "%u", static_cast<unsigned>(g_drivePct));
     else if (!strcmp(key, "strip_bright")) snprintf(out, n, "%u", static_cast<unsigned>(g_stripPct));
-    else if (!strcmp(key, "led"))          snprintf(out, n, "%u pixels", static_cast<unsigned>(kStrip));
+    else if (!strcmp(key, "led"))          snprintf(out, n, "%u pixels", static_cast<unsigned>(g_count));
+    else if (!strcmp(key, "strip_count"))  snprintf(out, n, "%u", static_cast<unsigned>(g_count));
+    else if (!strcmp(key, "drive_order"))  snprintf(out, n, "%s", wordOf(lights::kOrders, g_driveOrd, a, sizeof(a)));
+    else if (!strcmp(key, "strip_order"))  snprintf(out, n, "%s", wordOf(lights::kOrders, g_stripOrd, a, sizeof(a)));
     else if (ledRow(key)) {
         long i = strtol(key + 3, nullptr, 10);
         if (i < 1 || i > kStrip) { out[0] = '\0'; return; }
@@ -923,11 +1129,19 @@ void setting(const char* key, char* out, size_t n) {
 
 } // namespace
 
+// On as shipped only on a board whose pixel is part of the board (board.h,
+// BBS_LIGHTS_ON: the Waveshare S3's onboard WS2812B).
+#if BBS_LIGHTS_ON
+constexpr uint8_t kLightsFlags = PF_CORE | PF_FAST | PF_ON;
+#else
+constexpr uint8_t kLightsFlags = PF_CORE | PF_FAST;
+#endif
+
 extern const Plugin kLightsPlugin = {
-    // PF_FAST: fifty frames a second. Not PF_ON: nothing is wired to a
-    // board that has just been flashed, and a pin driven blind is a pin
-    // somebody else may be using.
-    { kName, "Disk light and strip", "1.0", 2048, 0, PF_CORE | PF_FAST,
+    // PF_FAST: fifty frames a second. Not PF_ON on the reference board:
+    // nothing is wired to a board that has just been flashed, and a pin
+    // driven blind is a pin somebody else may be using.
+    { kName, "Disk light and strip", "1.0", 2048, 0, kLightsFlags,
       PlugLevel::Sysop, PlugLevel::Sysop, PlugLevel::Sysop },
     start,
     stop,

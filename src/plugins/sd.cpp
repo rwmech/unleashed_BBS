@@ -127,14 +127,16 @@ void noMount(bool asked) {
 // here comes back as "no card found" and sends somebody to re-seat a card
 // that was never the problem.
 //
-// 34 to 39 are input-only on this part, so none of the four can live there;
+// On the ESP32, 34 to 39 are input-only, so none of the four can live there;
 // 6 to 11 are the SPI flash the firmware is running from, and driving one of
 // those does not produce an error message, it produces a board that stops.
+// The chip's ranges are board.h's and its flash pins are pinProblem's, so an
+// S3 (every pin to 48 an output, its flash at 26 to 37) is right too.
 // ---------------------------------------------------------------------------
 bool usablePin(long p, bool inputOnlyOk) {
-    if (p < 0 || p > 39) return false;
-    if (syscfg::pinProblem(p)) return false;     // the flash the firmware runs from
-    if (p >= 34 && !inputOnlyOk) return false;   // input only: no good for CS/MOSI/CLK
+    if (p < 0 || p > BBS_GPIO_MAX) return false;
+    if (syscfg::pinProblem(p)) return false;                    // the flash the firmware runs from
+    if (p > BBS_GPIO_OUT_MAX && !inputOnlyOk) return false;     // input only: no good for CS/MOSI/CLK
     return true;
 }
 
@@ -576,10 +578,10 @@ const Command kCommands[] = {
 // instead of writing one that readKey then quietly declines, and a pin
 // another feature holds (1.1.0). The long labels are for 80 columns.
 const PluginSetting kSettings[] = {
-    { "cs",      "CS pin",   PS_PIN,   0, 33, 2, nullptr, nullptr, "Chip select GPIO" },
-    { "mosi",    "MOSI pin", PS_PIN,   0, 33, 2, nullptr, nullptr, "MOSI GPIO" },
-    { "clk",     "CLK pin",  PS_PIN,   0, 33, 2, nullptr, nullptr, "Clock GPIO" },
-    { "miso",    "MISO pin", PS_PIN,   0, 39, 2, nullptr, nullptr, "MISO GPIO" },
+    { "cs",      "CS pin",   PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, nullptr, nullptr, "Chip select GPIO" },
+    { "mosi",    "MOSI pin", PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, nullptr, nullptr, "MOSI GPIO" },
+    { "clk",     "CLK pin",  PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, nullptr, nullptr, "Clock GPIO" },
+    { "miso",    "MISO pin", PS_PIN,   0, BBS_GPIO_MAX, 2, nullptr, nullptr, "MISO GPIO" },
     { "speed",   "Bus kHz",  PS_NUM,   400, 40000, 5, nullptr, nullptr, "SPI bus speed, kHz" },
     { "screens", "Screens",  PS_YESNO, 0, 0,  4, nullptr, nullptr, "Screens from card" },
     // A full backup at 03:00 into the card's backup folder, the last seven

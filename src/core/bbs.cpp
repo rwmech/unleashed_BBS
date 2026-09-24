@@ -194,7 +194,7 @@ bool Bbs::begin(uint16_t port) {
     heapBaseline_ = h.freeBytes;
     plat::backupButtonBegin(syscfg::get().backupGpio);
     plat::activityLedBegin(syscfg::get().ledGpio);
-    plat::log("bbs: %s %s listening on %u, %u nodes", BBS_NAME, BBS_VERSION, port, BBS_MAX_NODES);
+    plat::log("bbs: %s %s listening on %u, %u nodes", BBS_NAME, BBS_VERSION_SHOWN, port, BBS_MAX_NODES);
     plat::log("bbs: session %u bytes, pool %u bytes (static), heap free %u",
               static_cast<unsigned>(sizeof(Session)),
               static_cast<unsigned>(sizeof(Session) * kSessions),

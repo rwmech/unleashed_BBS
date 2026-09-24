@@ -45,17 +45,28 @@
  */
 #pragma once
 #include <cstdint>
+#include "../platform/platform.h"
 
 namespace lights {
 
-// The strip is ten pixels, one per caller line in nodes mode.
-constexpr uint8_t kPixels = 10;
+// How many pixels the strip has is a setting (1.1.0, Rob: "could be 8 could
+// be 10, could be 1, so variable would be better"). Ten as shipped, one a
+// caller line in nodes mode; at most what an output can carry, which is
+// plat::kPixelMax (sixteen, and platform.h says why).
+constexpr uint8_t kPixelsMax     = plat::kPixelMax;
+constexpr uint8_t kPixelsDefault = 10;
+
+// The orders a pixel's bytes go out in, as plat::PixOrder numbers them. GRB
+// is the WS2812B's own; the rest are for the strips that are not, and for
+// the Waveshare S3's onboard pixel, which appears to want RGB.
+constexpr char kOrders[] = "GRB|RGB|BRG|RBG|GBR|BGR";
 
 // Drive light styles. pc is the default.
 constexpr char kDriveFx[] = "pc|1541|disk2|breathe|off";
 
-// Strip effects. nodes is the default.
-constexpr char kStripFx[] = "nodes|hayes|blinken|scanner|c64|boing|vu|rainbow|manual|off";
+// Strip effects. nodes is the default. wifi was appended in 1.1.0, after
+// off: a word's place is the number the plugin works with.
+constexpr char kStripFx[] = "nodes|hayes|blinken|scanner|c64|boing|vu|rainbow|manual|off|wifi";
 
 // Manual mode, one pixel: an effect and a colour. An unset pixel is solid
 // and cycling, which is what a strip switched to manual on a fresh board
@@ -64,5 +75,24 @@ constexpr char    kLedFx[]       = "solid|blink|breathe|flicker|sparkle|traffic|
 constexpr char    kColours[]     = "red|orange|amber|yellow|green|cyan|blue|purple|pink|white|random|cycle";
 constexpr uint8_t kLedFxDefault  = 0;     // solid
 constexpr uint8_t kColourDefault = 11;    // cycle
+
+#ifdef BBS_HAS_LCD
+// ---------------------------------------------------------------------------
+// The strip on a board's panel (BBS_HAS_LCD only). The panel plugin draws
+// the strip's frame beside its own figures, so a board with a display shows
+// the strip whether or not one is wired.
+//
+// wantPanel:  the panel is up (true) or gone (false). While it is up the
+//             strip's effect runs every frame even with no strip pin, the
+//             same effect at the same brightness a wired strip would show.
+// panelFrame: the strip's last frame as RGB, into room for cap pixels, and
+//             how many it has (the strip's count; 0 while the lights plugin
+//             is not running). pct is the strip's brightness, 1 to 30,
+//             which the panel needs to show a dimmed strip at a readable
+//             level rather than as the near-black a 10% frame is on glass.
+// ---------------------------------------------------------------------------
+void    wantPanel(bool on);
+uint8_t panelFrame(uint8_t* rgb, uint8_t cap, uint8_t& pct);
+#endif
 
 } // namespace lights
