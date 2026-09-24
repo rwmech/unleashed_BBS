@@ -513,7 +513,8 @@ The BBS loop is cooperative, so none of that runs on it.
 
 - Off until enabled; snap at `staff`; photos seen by `users` (accounts, not
   guests).
-- **Correction from Rob (2026-09-24): the board has an embedded NeoPixel**
+- **Settled by Rob's photo (2026-09-24): the Freenove has NO NeoPixel.** Its LEDs are IO2 (the card's D0), RX, TX and ON. The pixel Rob meant is on an ESP32-S3 DevKitC-style board (N16R8, an "RGB" LED, two USB-C) that has no profile yet. The paragraph below is superseded.
+- ~~Correction from Rob (2026-09-24): the board has an embedded NeoPixel~~
   (WS2812-class), which this plan missed. It is the default drive light
   (lights plugin on, drive pin = its GPIO, sysop may change it) and the
   snap indicator (white for the length of a snap). Its GPIO is not yet
