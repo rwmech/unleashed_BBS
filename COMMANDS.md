@@ -93,7 +93,7 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | `? sysop` | | Sysop tools (sysop only). |
 | `? all` | | Every menu in turn, each with its own heading. |
 | `MAIL` | | **Goes into your mailbox**, a numbered list with `*` marking what is new: a number reads that message, Enter reads the oldest new one, `W` writes to somebody, `?` the keys, `Q` or ESC leaves. Reading shows a header (`#n of m`, who it is from, when) and the body, then asks `[R]eply  [S]ave  [D]elete`, plus `Enter` for the next new message and `Q` back to the list. Nothing is touched until you answer. **`MAIL handle` opens the message editor** described below, the same one a forum post uses; `MAIL handle your message` still puts a short one on a single line. See [CHAT.md](CHAT.md). |
-| `BELL` | | Toggle whether other callers' bells reach you this call: pages, broadcasts, somebody logging in or joining the room, a private line, `@BELL@` in a message. Your own mistakes still beep. The same setting as `/b` in the room. |
+| `BELL` | | Toggle whether other callers' bells reach you this call: pages, broadcasts, somebody logging in (wherever you are: the prompt, the room, the forums, the file areas, your mailbox) or joining the room, a private line, a ring for the sysop, `@BELL@` in a message. The line itself still arrives; only the bell stops. Your own mistakes still beep. The same setting as `/b` in the room. |
 | `CODES` | | The colour and effect codes you can put in a forum post, a mail message or a chat line. Plays `screens/codes` if the board has one, or a short summary if not. |
 | `INFO [n]` | `I` | The board's information pages: `INFO` lists them, `INFO n` reads one with `[More]`. Staff with the write level get `INFO n EDIT` and `INFO n CLEAR`. In the room: `/i`, `/in`, `/in-`. |
 | `WHO` | `W` | Who is on each node: a marker, handle, terminal, minutes on, idle time (mm:ss). The busy line is never listed, and a hidden sysop or co-sysop looks like a free line to callers. Staff see hidden and lurking sessions, marked `hidden` or `lurking`, and with `NODES` get a Doing column (the last command each caller ran, verb only, never arguments) instead of the terminal. |
@@ -112,7 +112,8 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | `PRIVACY` | | What the board knows about you: that telnet is not encrypted, how your password is stored, what the sysop can see, and the one rule that matters. Plays `screens/privacy.*`, so a sysop can rewrite it. The same screen is offered during sign-up. |
 | `PROFILE` | | Form to change your name, email, From, phone and profile. Not for guests. |
 | `PASSWORD` | | Form: current password, then the new one twice. Not for guests. |
-| `PAGE n message` | | Send a one-line message to node n. It arrives when that caller is back at the prompt: a bell, a flashing ` PAGE ` tag that rubs out, then the message. |
+| `PAGE n message` | | Send a one-line message to node n: a bell, a flashing ` PAGE ` tag that rubs out, then the message. It reaches them wherever they are (see "Notices" below). |
+| `OPERATOR [reason]` | `O` | Ring for the sysop. Without a reason it asks `What do you need the sysop for?`, and nothing typed sends nothing. If the sysop can be asked, you see `Ringing the sysop` and a spinner for up to 45 seconds, and any key stops it; if they answer you are both put in the chat room, and what you type goes to the sysop only. Otherwise what you wrote is saved as a note for them. One ring every 3 minutes, three a call, one at a time on the whole board. See "Ringing for the sysop" below. |
 | `DND` | | Toggle do-not-disturb: pages to you are refused. |
 | `BAUD n` | | Emulate 300, 1200, 2400, 9600 or 19200 bps. `BAUD OFF` for full speed. |
 | `G` | | Log off after a `Log off (Y/N)?` confirm. |
@@ -131,7 +132,56 @@ A marker sits between the node number and the handle in WHO, NODES, LAST, DASH a
 
 The marker follows the account, so staff are marked even before they type `BYE <password>` on this call. Guests are always `*`.
 
-Other nodes see `*** handle is on node n` and `*** handle left node n` when callers come and go.
+Other nodes see `*** handle is on node n` and `*** handle left node n` when callers come and go. An arrival rings a bell for everyone who gets it, unless they have `BELL` off.
+
+### Notices
+
+Pages, broadcasts, `SHUTDOWN`'s countdown, "You have mail", arrivals and departures, and a ring for the sysop reach a caller wherever they are (1.1.0):
+
+- **At the main prompt**, the prompt and whatever was typed on it are lifted, the notice goes where they were, and they come back underneath.
+- **In the chat room, the forums, the file areas, the mailbox, or writing an information page**, the input line is lifted the same way, and whatever was being asked is asked again underneath with what had been typed. In the room that is the `[>n]` marker and the half-typed line.
+- **In a form** (sign-up, `PROFILE`, `PASSWORD`, `USER ADD`/`EDIT`, `CONFIG`) or at `[More]`, `Log off (Y/N)?` or the handle and password prompts, only a broadcast gets through, on the form's status line or above the question, because that is how `SHUTDOWN` warns. A ring for the sysop reaches a sysop in a form or the user manager on the status line too. Everything else waits, in order, until there is room to read it.
+- **Never during a file transfer**: the line is binary then. The notices wait for the transfer to end.
+
+A plugin that owns a session gets notices only if it offers the `liftInput` and `restoreInput` hooks (see PLUGINS.md); one that does not keeps the old behaviour and they wait for the prompt. The serial bridge is one.
+
+### Ringing for the sysop
+
+`OPERATOR` (`O`) at the prompt and `/o` in the chat room. "Ring" is the word throughout, so it is never confused with `PAGE`, which is caller to caller.
+
+**The caller.** `O can't upload to Drop Box` rings at once; a bare `O` asks `What do you need the sysop for?` first, and Enter on nothing, or ESC, answers `Nothing sent.` A reason is up to 60 characters. What happens next:
+
+| What happened | The caller is told |
+|---|---|
+| The sysop answers | `The sysop answered. You're in the chat room, and what you type goes to the sysop only. /q leaves.` Both are in the room with a sticky private (`/p n*`) already aimed at each other: `[>S]` on the caller's input line, `[>3]` on the sysop's. `/p*` ends it; `/q` leaves the room. |
+| The sysop declines | `The sysop can't talk right now. What you wrote is saved for them.` |
+| The sysop is on and has pages off (DND) | `The sysop is away. What you wrote is saved for them.`, at once |
+| No sysop is on, or the sysop is hidden (`HIDE`) or lurking | `The sysop isn't available. What you wrote is saved for them.`, at once |
+| 45 seconds pass | `No answer. What you wrote is saved for the sysop.` |
+| The caller presses a key | `You stopped ringing. What you wrote is saved for the sysop.` |
+
+A hidden or lurking sysop is never rung and gets exactly the answer, and the speed, of a sysop who is not on, so `OPERATOR` cannot be used to find out whether somebody is hiding.
+
+Limits, each refused in place of the question: `Three rings is the most for one call.`, `Already rung. Try again in n minutes.` (one ring every 3 minutes, counted from when the last one started), and `One ring at a time. Try in a minute.` (one ring on the whole board at once). A ring that reaches nobody still counts. Guests may ring; the sysop sees `(3, guest)`.
+
+**The sysop.** Any session with the sysop level can be rung: the sysop node, or a second sysop session on a caller line. A session at the prompt or in a subsystem is preferred to one sitting in a refreshing `DASH` or `WHO n`. Where the sysop is decides how the ring looks:
+
+- At the prompt, in the forums, the file areas, the mailbox or the page editor: a bell, a flashing ` RING ` tag, `quantumrob (3) is ringing: can't upload to Drop Box`, then `[A]nswer [D]ecline [X] Away [Q] Later:`. `A` answers. `D` declines. `X` turns DND on (the sysop is away, and rings are saved as notes) and declines. `Q`, or any other key, leaves it ringing: `Still ringing. O answers while it does.` Keys typed while the notice was still being drawn are not taken as an answer. Answering from inside the forums, the file areas or the page editor leaves it: a post or page being written there is not kept.
+- In the chat room: `--> quantumrob (3) is ringing: ...` and `--> /o answers, /o- declines.`, and no question, because the keys there are the room's.
+- In a form: `RING quantumrob (3). ESC, then O.` on the status line, or `RING from node 3. ESC, then O.` when the handle does not fit.
+- A bare `O` at the prompt asks the question again while the ring is still going; with no ring it says `Nobody is ringing.`
+- If the caller stops or the ring runs out: `quantumrob (3) stopped ringing. Their note is saved.`; if they hang up: `quantumrob (3) hung up. Their note is saved.` Said in place of the question if it is still up.
+
+**Notes.** Every ring that was not answered leaves a note, kept in `rings.txt` on the user data partition, so a restart does not lose it. The newest 8 are kept. They are shown to the sysop at the next elevation, or at login to an account the sysop password has marked (the `]` in WHO), and then cleared:
+
+```
+2 rings while you were off:
+22 Sep 22:14 quantumrob (3): can't
+upload to Drop Box
+Shown once. They are cleared now.
+```
+
+`Only the last 8 are kept.` appears above the last line when more than 8 rang.
 
 ## Codes in messages
 
@@ -207,7 +257,7 @@ All caller commands still work. Node arguments are `1`-`10`, `S` (sysop node) or
 | `DASH n` | `DASH` | The dashboard redrawn every n seconds (same limits as `WHO n`) until a key. |
 | `NODES` | `NODES` | Every session: handle, IP, minutes left, idle (plus terminal type on wide screens). `NODES n` redraws every n seconds until you press a key, the same bounds as `WHO n`. |
 | `KICK n [message]` | `KICK` | Disconnect node n. The caller sees `Disconnected by sysop: message`. |
-| `BROADCAST message` | `BROADCAST` | Send `*** Sysop: message` to every logged-in node, announced like a page with a bell and a flashing ` SYSOP ` tag. Delivered the same way a page is: once each caller is back at their own main prompt, not mid-line in the room, in FILES, in FORUMS or in their mailbox. |
+| `BROADCAST message` | `BROADCAST` | Send `*** Sysop: message` to every logged-in node, announced like a page with a bell and a flashing ` SYSOP ` tag. Delivered wherever each caller is, the way a page is, and also on the status line of a form (`Sysop: message`, cut to 38 columns), so nobody misses one by being in the middle of `PROFILE`. See "Notices". |
 | `SNOOP n` | `SNOOP` | Mirror node n's output to your screen. `Q`, ESC or Ctrl-C stops. Both terminals must be the same type, and only one watcher per node. |
 | `TIME n +m` / `TIME n -m` | `TIME` | Add or remove minutes for node n. `TIME n off` (also `-1`, `none`, `unlimited`, `nolimit`) takes that node off the clock entirely, no idle hangup either, until it hangs up; `TIME off` with no node does the same for your own line. Otherwise the caller's time warnings re-arm. |
 | `SHOW` | `HIDE` | List yourself in WHO (pages on). |

@@ -59,10 +59,11 @@ A line that starts with `/` is a command, not something you said.
 | `/p n*` | **stick** the conversation to node n: every line you type goes to them alone, and the input line shows `[>n]` so you always know. `/p*` ends it. From DDial, where it existed because retyping `/p 3 ` in front of every line is nine keystrokes on a C64 |
 | `/sh [n]` | replay the last n lines the room said, 20 by default |
 | `/whois handle` | a caller's profile, the same public fields `WHOIS` shows at the main prompt. Email, address and phone stay hidden unless it is your own account or you hold `USERS` |
-| `/page n why` | ring node n, as distinct from talking to them. A private line is part of a conversation; a page is "look at your screen". Like a page from the main prompt, it is only delivered once the target is back at their own main prompt: it will not interrupt them mid-line in the room, in FILES, in FORUMS or in their mailbox |
+| `/page n why` | page node n, as distinct from talking to them. A private line is part of a conversation; a page is "look at your screen". It reaches them wherever they are, the same as `PAGE` at the main prompt: in the room, part way through a line, it lifts their line, prints, and puts it back |
+| `/o [reason]` | ring for the sysop, the same as `OPERATOR` at the main prompt: `/o` alone asks what for. If the sysop answers, you are talking to them in the room with `[>S]` on your line. See "Ringing for the sysop" below |
 | `/i [n]` | the information pages: `/i` lists them, `/in` reads page n. `/in-` clears page n for whoever may write them |
 | `/codes` | the colour and effect codes you can put in a message, the same list `CODES` shows at the main prompt |
-| `/b` | on its own, bell on or off for this call: pages, broadcasts, somebody joining or logging in, a private line, `@BELL@` in a message. `/b handle` (with a handle) is the staff bar instead |
+| `/b` | on its own, bell on or off for this call: pages, broadcasts, somebody joining or logging in, a private line, a ring for the sysop, `@BELL@` in a message. `/b handle` (with a handle) is the staff bar instead |
 | `/me text` | an action line, printed as `** Handle text **` with no node tag or bracket, because it is prose about you rather than something you said. Five every 30 seconds; past that, say it instead |
 | `/a [note]` | away with a note, or back again when the note is left off |
 | `/sq n` | hide node n's lines until you leave the room or type `/sq n` again |
@@ -73,11 +74,32 @@ A line that starts with `/` is a command, not something you said.
 | `/q` | leave the room |
 | `/q+` | leave the room and log off, the same send-off as `BYE`. The room sees `*** you logged off` |
 
-`/w` and `/who` also list the room, `/quit` also leaves, `/quit+` also logs off, `/mail` also reads your message, `/history` also replays, `/bell` always means the bell, and `/wi` is short for `/whois`.
+`/w` and `/who` also list the room, `/quit` also leaves, `/quit+` also logs off, `/mail` also reads your message, `/history` also replays, `/bell` always means the bell, `/wi` is short for `/whois`, and `/operator` is `/o`.
+
+### Notices in the room
+
+A page, a broadcast, `SHUTDOWN`'s countdown, "You have mail" and somebody logging on all reach you in the room (1.1.0). If you are part way through a line it is lifted, the notice prints with its bell and tag, and your line, `[>n]` marker and all, comes back underneath. `/b` stops the bells, not the lines.
+
+### Ringing for the sysop
+
+`/o can't find the drop box` rings the sysop, exactly as `OPERATOR` does at the main prompt: the same limits (one ring every 3 minutes, three a call, one at a time on the board), the same answers, and a note left for the sysop when nobody answers. While it rings the spinner is on your line and any key stops it.
+
+If the sysop answers, you stay in the room with a sticky private aimed at the sysop, `[>S]` on your input line, so what you type goes to them alone. `/p*` puts you back to talking to the room.
+
+**For the sysop**, a ring that arrives in the room is two lines in the room's voice and no question, because the keys in the room are the room's:
+
+```
+--> quantumrob (3) is ringing: can't find the drop box
+--> /o answers, /o- declines.
+```
+
+`/o` answers: the caller is brought into the room if they rang from the main prompt, and the two of you are stuck to each other, `[>3]` on your line. `/o-` declines, and they are told. Anywhere else on the board the sysop gets a one-key question instead; see COMMANDS.md, "Ringing for the sysop".
 
 ### Sticky private conversations
 
-`/p3*` sends everything you type to node 3 until you stop. The input line carries `[>3]` the whole time, because the only real risk here is forgetting you are in it and saying something for one person that you meant for the room.
+`/p3*` sends everything you type to node 3 until you stop. The input line carries `[>3]` the whole time, because the only real risk here is forgetting you are in it and saying something for one person that you meant for the room. The sysop's node is `S`: `/pS*`, and `[>S]` on the line.
+
+A line said in the room while your line is empty prints above the marker, and the marker comes back under it (1.1.0: it used to print after the marker, and a re-armed line could carry the marker twice).
 
 If they leave while you are stuck to them, the mode ends and **the line you were typing is not sent anywhere**. Falling back to the room would be precisely the accident the marker exists to prevent.
 

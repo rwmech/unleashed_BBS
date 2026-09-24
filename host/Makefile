@@ -98,7 +98,13 @@ test_improv: test_improv.cpp ../src/core/improv.cpp ../src/core/improv.h
 test_recovery: test_recovery.cpp ../src/core/recovery.h
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_recovery.cpp
 
-test: test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery
+# The sysop page's rules (1.1.0): the rate limits at every boundary, the
+# notes file's lines read back or refused whole, and the bus queue keeping a
+# ring through a burst of other messages.
+test_ring: test_ring.cpp ../src/core/ring.h ../src/core/bus.cpp ../src/core/bus.h ../src/config.h
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_ring.cpp ../src/core/bus.cpp
+
+test: test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring
 	./test_xmodem
 	./test_wrap
 	./test_forums_ptr
@@ -106,8 +112,9 @@ test: test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv 
 	./test_codes
 	./test_improv
 	./test_recovery
+	./test_ring
 
 clean:
-	rm -f bbs_host test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery
+	rm -f bbs_host test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring
 
 .PHONY: clean test

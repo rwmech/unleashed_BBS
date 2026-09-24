@@ -62,6 +62,16 @@ void prompt(Session& s, const compose::Body& b) {
     s.ed.begin(width(s), 0);
 }
 
+void redraw(Session& s, const compose::Body& b) {
+    if (!s.ed.active()) { prompt(s, b); return; }
+    char q[12];
+    snprintf(q, sizeof(q), "%2u: ", static_cast<unsigned>(b.rows + 1));
+    s.term.color(s.tl, Color::Grey);
+    s.term.text(s.tl, q);
+    s.term.color(s.tl, Color::White);
+    s.ed.redraw(s.term, s.tl);
+}
+
 void echo(Session& s, uint8_t row, const char* line) {
     char q[12];
     snprintf(q, sizeof(q), "%2u: ", static_cast<unsigned>(row));

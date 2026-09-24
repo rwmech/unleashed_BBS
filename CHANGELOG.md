@@ -103,6 +103,31 @@ entry when it is released.
   so `c` twice on a level is co1. Plain ASCII line mode saved every such
   pick as a single space; it keeps the pick now.
 
+**1.1.0-dev.5, the sysop page, and notices wherever you are.**
+- **OPERATOR** (`O`, and `/o` in the chat room) rings for the sysop, with
+  a reason typed after it or asked for. A spinner runs for up to 45 s and
+  any key stops it. The sysop gets a bell and a flashing RING wherever
+  they are, then `[A]nswer [D]ecline [X] Away [Q] Later`; in the room it
+  is two lines with `/o` and `/o-`, and in a form it is the status line.
+  Answering puts both callers in the chat room talking only to each other.
+  An unanswered ring leaves a note, up to 8, kept through a restart and
+  shown once at the sysop's next login or elevation. One ring every 3
+  minutes, three a call, one at a time on the board. A hidden or lurking
+  sysop is answered exactly as an absent one, in words and in timing.
+- **Notices reach you wherever you are.** Pages, broadcasts, SHUTDOWN's
+  countdown, "You have mail" and arrivals now reach callers in the chat
+  room, the forums, the file areas, the mailbox and the page editor, with
+  the input line lifted and put back as typed. Broadcasts and rings also
+  reach a form's status line. Plugins get two new hooks for it,
+  `liftInput` and `restoreInput`.
+- **Bells:** an arrival rings a bell wherever it reaches you; `BELL` or
+  `/b` silences it.
+- Fixed: SHUTDOWN announced thresholds it had already passed
+  (`SHUTDOWN 20` said 120, 60 and 30 seconds first). In a sticky private
+  conversation, room lines landed after the `[>n]` marker and the marker
+  could be drawn twice. The sysop's node shows as `[>S]`, not `[>0]`.
+  FILES no longer carries a half-answered question into the next visit.
+
 ## 1.0.2, 2026-09-23
 
 A security fix. Restoring a backup could turn the published default sysop

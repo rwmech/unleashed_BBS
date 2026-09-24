@@ -307,6 +307,38 @@ struct Plugin {
     // plugin with no way for it to know, and the file manager only drew its
     // prompt as the last row of a listing that had just been abandoned.
     void (*listDone)(Session& s, bool aborted);
+
+    // ----------------------------------------------------------------------
+    // Notices inside a plugin (1.1.0). Appended, and defaulted to null here,
+    // so every descriptor written before them compiles, warns about nothing
+    // and keeps the old behaviour: a notice waits until the caller is back
+    // at the main prompt.
+    //
+    // Pages, broadcasts, SHUTDOWN's countdown, "you have mail" and a ring
+    // for the sysop used to reach a caller only at the main prompt, so
+    // somebody in the chat room, the forums, the file areas or their mailbox
+    // got none of them, and a caller in the room through a SHUTDOWN was hung
+    // up with no warning at all. A plugin that owns a session offers these
+    // two so the core can print into it:
+    //
+    //   liftInput      take the input line out of the way and leave the
+    //                  cursor at column 0 of an empty line. Return false for
+    //                  "not now" (a transfer, a screen half drawn): the core
+    //                  keeps the notice and asks again on a later pass.
+    //   restoreInput   the notice is out: put the prompt back, with what the
+    //                  caller had typed. Called once for each liftInput that
+    //                  returned true, possibly much later: a ring for the
+    //                  sysop is a question, and the core takes its one-key
+    //                  answer between the two. If s.ed is not active when it
+    //                  arrives, the core has used the line editor in between
+    //                  (a caller ringing from the chat room), so start a fresh
+    //                  line rather than redrawing the old one.
+    //
+    // The core only calls them while the session is SState::Plugin, owned by
+    // this plugin, not in raw mode, and with nothing waiting to be sent.
+    // ----------------------------------------------------------------------
+    bool (*liftInput)(Session& s) = nullptr;
+    void (*restoreInput)(Session& s) = nullptr;
 };
 
 namespace plugins {

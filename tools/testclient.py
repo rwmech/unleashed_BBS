@@ -8966,6 +8966,511 @@ def test_exit_screen():
     return ok
 
 
+def sysop_on(handle):
+    """A caller elevated to the sysop node. The buffer holds the whole of the
+    login and the elevation, so a test can read what was said on the way in:
+    ring notes are shown at login to an account the sysop password marked,
+    and at elevation to one it has not marked yet."""
+    s = ansi_login(handle)
+    drain(s)
+    s.send(f"bye {PASSWORD}\r".encode())
+    s.wait_for(b"SysOp node", 6)
+    s.wait_for(b"HELP for commands", 4)
+    s.pump(0.6)
+    return s
+
+
+def rang_in(c, pat, secs=4):
+    """Wait for pat, and say how long it took from now."""
+    t0 = time.time()
+    got = c.wait_for(pat, secs)
+    return got, time.time() - t0
+
+
+def test_operator():
+    """OPERATOR: a caller rings for the sysop (1.1.0).
+
+    The sysop page from the UX spec and the copy: the question when O has no
+    reason, the answer at once when nobody is there to ask, a hidden sysop
+    answered exactly as an absent one, the sysop's one-key question, and
+    what A, D, X and Q each do. Notes are shown at elevation, once.
+    """
+    print("OPERATOR: ringing for the sysop")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and a sysop password")
+        return True
+
+    a = ansi_login("Ringer1")
+    drain(a)
+    a.buf.clear()
+    a.send(b"?\r")
+    read_list(a)
+    menu = plain(a.buf)
+    ok = check("OPERATOR is on the main menu, after PAGE",
+               b"OPERATOR" in menu and 0 <= menu.find(b"PAGE") < menu.find(b"OPERATOR")
+               and b"ring for the sysop" in menu)
+    ok &= check("with O picked out as its shortcut",
+                ansi_color(33, bold=True) + b"O" in bytes(a.buf))
+
+    a.buf.clear()
+    a.send(b"o\r")
+    ok &= check("a bare O asks what for", a.wait_for(b"What do you need the sysop for?", 4))
+    a.send(b"\r")
+    ok &= check("and an empty answer sends nothing", a.wait_for(b"Nothing sent.", 4))
+    a.wait_for(b"Main", 3)
+
+    a.buf.clear()
+    a.send(b"o the drop box is full\r")
+    got, took = rang_in(a, b"The sysop isn't available.", 4)
+    ok &= check("with no sysop on, the answer comes at once", got and took < 3)
+    ok &= check("and says what was written is kept", b"saved for them" in plain(a.buf))
+    a.wait_for(b"Main", 3)
+    a.buf.clear()
+    a.send(b"o again\r")
+    ok &= check("a second ring straight after is refused, with the wait",
+                a.wait_for(b"Already rung. Try again in 3 minutes.", 4))
+
+    s = sysop_on("OpSysop")
+    seen = plain(s.buf)
+    ok &= check("the sysop is shown the note on the way in",
+                b"while you were off:" in seen and b"the drop box is full" in seen)
+    ok &= check("once: it says the notes are cleared",
+                b"Shown once. They are cleared now." in seen)
+
+    # Hidden is not there. Same words, same speed, and no ring.
+    drain(s)
+    s.buf.clear()
+    s.send(b"hide\r")
+    s.wait_for(b"hidden from WHO", 3)
+    s.buf.clear()
+    b = ansi_login("Ringer2")
+    drain(b)
+    b.buf.clear()
+    b.send(b"o hidden test\r")
+    got, took = rang_in(b, b"The sysop isn't available.", 4)
+    ok &= check("a hidden sysop is answered as one who is not on, and as fast",
+                got and took < 3)
+    s.pump(1.0)
+    ok &= check("and is not rung", b"is ringing" not in plain(s.buf))
+    s.send(b"show\r")
+    s.wait_for(b"listed in WHO", 3)
+    s.pump(0.3)
+
+    # D: declined.
+    c = ansi_login("Ringer3")
+    nc = c.node()
+    drain(c)
+    s.buf.clear()
+    c.buf.clear()
+    c.send(b"o please look at the drop box\r")
+    ok &= check("the caller hears it ringing", c.wait_for(b"Ringing the sysop", 4)
+                and b"(any key stops)" in plain(c.buf))
+    asked = s.wait_for(b"[A]nswer [D]ecline [X] Away [Q] Later: ", 6)
+    seen = plain(s.buf)
+    ok &= check("the sysop is asked, one key", asked)
+    ok &= check("after a bell and a flashing RING",
+                0 <= s.buf.find(b"\x07") < s.buf.find(b" RING "))
+    ok &= check("and told who and why",
+                f"Ringer3 ({nc}) is ringing: please look at the drop box".encode() in seen)
+    s.pump(0.3)
+    s.send(b"d")
+    ok &= check("D tells the sysop", s.wait_for(b"Declined. They have been told.", 4))
+    ok &= check("and the caller", c.wait_for(b"The sysop can't talk right now.", 4))
+    s.pump(0.6)
+    after = plain(s.buf)
+    ok &= check("and gives the sysop the prompt back",
+                after.rfind(b"Sysop") > after.find(b"Declined."))
+    c.wait_for(b"Main", 3)
+
+    # X: away, and the next caller is told so at once.
+    d = ansi_login("Ringer4")
+    drain(d)
+    s.buf.clear()
+    d.send(b"o away test\r")
+    s.wait_for(b"Later: ", 6)
+    s.pump(0.3)
+    s.send(b"x")
+    ok &= check("X says the sysop is away now", s.wait_for(b"You're away", 4))
+    ok &= check("and the caller hears it", d.wait_for(b"The sysop is away.", 4))
+    e = ansi_login("Ringer5")
+    drain(e)
+    e.buf.clear()
+    e.send(b"o while away\r")
+    got, took = rang_in(e, b"The sysop is away.", 4)
+    ok &= check("the next ring is answered 'away' at once", got and took < 3)
+    s.buf.clear()
+    s.send(b"dnd\r")
+    s.wait_for(b"Pages are on", 3)
+    s.pump(0.3)
+
+    # Q, then O asks again, then A: both in the room, talking to each other.
+    f = ansi_login("Ringer6")
+    nf = f.node()
+    drain(f)
+    s.buf.clear()
+    f.buf.clear()
+    f.send(b"o can we talk\r")
+    s.wait_for(b"Later: ", 6)
+    s.pump(0.3)
+    s.send(b"q")
+    ok &= check("Q leaves it ringing", s.wait_for(b"Still ringing. O answers while it does.", 4))
+    s.pump(0.5)
+    s.buf.clear()
+    s.send(b"o\r")
+    ok &= check("a bare O asks the sysop again",
+                s.wait_for(b"Later: ", 4) and b"can we talk" in plain(s.buf))
+    s.pump(0.3)
+    s.send(b"a")
+    ok &= check("A puts the caller in the room", f.wait_for(b"The sysop answered.", 5))
+    ok &= check("talking to the sysop only, [>S] on the line", f.wait_for(b"[>S]", 4))
+    ok &= check("and the sysop in the room too", s.wait_for(b"Answered.", 5))
+    ok &= check("talking to the caller only", s.wait_for(f"[>{nf}]".encode(), 4))
+    f.pump(0.5)
+    s.pump(0.5)
+    s.buf.clear()
+    f.send(b"hello sysop\r")
+    ok &= check("what the caller types reaches the sysop", s.wait_for(b"hello sysop", 4))
+    ok &= check("as a private, marked P", b"P#" + nf.encode() + b":Ringer6" in plain(s.buf))
+
+    for x in (a, b, c, d, e, f):
+        x.close()
+    s.close()
+
+    # Declined, away, away, and hidden: four notes. Answered leaves none.
+    s = sysop_on("OpSysop")
+    seen = plain(s.buf)
+    ok &= check("unanswered rings are notes at the next elevation",
+                b"rings while you were off:" in seen and b"please look at the drop box" in seen
+                and b"hidden test" in seen and b"while away" in seen)
+    ok &= check("an answered ring leaves no note", b"can we talk" not in seen)
+    s.close()
+    s = sysop_on("OpSysop")
+    ok &= check("and they are gone after one showing", b"while you were off" not in plain(s.buf))
+    s.close()
+    return ok
+
+
+def test_operator_ends():
+    """Every other way a ring ends, the room, and a form (1.1.0)."""
+    print("OPERATOR: no answer, stopped, hung up, the room, a form")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and a sysop password")
+        return True
+    s = sysop_on("OpSysop2")
+    drain(s)
+
+    # Both on before either rings: signing up takes longer than the host's
+    # ten second ring, and the second caller has to ring during the first.
+    a = ansi_login("Waiter1")
+    na = a.node()
+    drain(a)
+    b = ansi_login("Waiter2")
+    drain(b)
+    s.buf.clear()
+    a.buf.clear()
+    a.send(b"o waiting\r")
+    s.wait_for(b"Later: ", 6)
+    s.pump(0.3)
+    s.send(b"q")
+    s.wait_for(b"Still ringing", 4)
+
+    b.buf.clear()
+    b.send(b"o me too\r")
+    ok = check("one ring at a time on the whole board",
+               b.wait_for(b"One ring at a time. Try in a minute.", 4))
+    s.buf.clear()
+    ok &= check("a ring nobody answers runs out: No answer",
+                a.wait_for(b"No answer. What you wrote is saved for the sysop.", 20))
+    ok &= check("and the sysop is told it stopped",
+                s.wait_for(f"Waiter1 ({na}) stopped ringing. Their note is saved.".encode(), 6))
+
+    c = ansi_login("Waiter3")
+    drain(c)
+    s.buf.clear()
+    c.buf.clear()
+    c.send(b"o stop me\r")
+    c.wait_for(b"Ringing the sysop", 4)
+    s.wait_for(b"Later: ", 6)
+    time.sleep(0.8)
+    c.send(b"k")
+    ok &= check("any key stops a ring", c.wait_for(b"You stopped ringing.", 4))
+    ok &= check("and the question on the sysop's screen gives way to saying so",
+                s.wait_for(b"stopped ringing. Their note is saved.", 4))
+    s.pump(0.5)
+
+    d = ansi_login("Waiter4")
+    nd = d.node()
+    drain(d)
+    s.buf.clear()
+    d.send(b"o gone soon\r")
+    s.wait_for(b"Later: ", 6)
+    d.close()
+    ok &= check("a caller hanging up mid-ring is said",
+                s.wait_for(f"Waiter4 ({nd}) hung up. Their note is saved.".encode(), 6))
+    s.pump(0.5)
+
+    # The room: /o from a caller, and the sysop there gets two lines and /o-.
+    r = ansi_login("Roomer")
+    drain(r)
+    for x in (s, r):
+        x.buf.clear()
+        x.send(b"chat\r")
+        x.wait_for(b"here.", 4)
+        x.pump(0.4)
+    s.buf.clear()
+    r.buf.clear()
+    r.send(b"/o\r")
+    ok &= check("/o in the room asks what for",
+                r.wait_for(b"What do you need the sysop for?", 4))
+    r.send(b"from the room\r")
+    ok &= check("the sysop in the room is told in the room's voice",
+                s.wait_for(b"is ringing: from the room", 6) and
+                s.wait_for(b"/o answers, /o- declines.", 3))
+    ok &= check("with no one-key question in the room", b"[A]nswer" not in s.buf)
+    s.pump(0.3)
+    s.send(b"/o-\r")
+    ok &= check("/o- declines it", s.wait_for(b"Declined.", 4) and
+                r.wait_for(b"The sysop can't talk right now.", 4))
+    r.pump(0.5)
+    r.buf.clear()
+    r.send(b"back in the room\r")
+    ok &= check("and the caller is back in the room, talking",
+                s.wait_for(b"back in the room", 4))
+    s.send(b"/q\r")
+    s.wait_for(b"Sysop", 4)
+    s.pump(0.4)
+
+    # A form: the status line, then ESC and O.
+    s.buf.clear()
+    s.send(b"profile\r")
+    s.wait_for(b"YOUR PROFILE", 5)
+    s.pump(0.5)
+    f = ansi_login("Former")
+    nf = f.node()
+    drain(f)
+    s.buf.clear()
+    f.send(b"o in a form\r")
+    ok &= check("a ring reaches a sysop in a form, on its status line",
+                s.wait_for(f"RING Former ({nf}). ESC, then O.".encode(), 6))
+    s.send(b"\x1b")
+    s.pump(0.6)
+    s.buf.clear()
+    s.send(b"o\r")
+    ok &= check("and O at the prompt asks", s.wait_for(b"Later: ", 4)
+                and b"in a form" in plain(s.buf))
+    s.pump(0.3)
+    s.send(b"d")
+    ok &= check("which D answers", f.wait_for(b"The sysop can't talk right now.", 4))
+    s.pump(0.5)
+
+    # A refreshing DASH gives way to a ring rather than holding it unseen.
+    s.buf.clear()
+    s.send(b"dash 5\r")
+    s.wait_for(b"Refresh 5s", 6)
+    w = ansi_login("Waiter5")
+    drain(w)
+    w.send(b"o behind the dashboard\r")
+    ok &= check("a ring stops DASH n and asks",
+                s.wait_for(b"is ringing: behind the dashboard", 8) and s.wait_for(b"Later: ", 4))
+    s.pump(0.3)
+    s.send(b"d")
+    w.wait_for(b"can't talk right now", 4)
+    s.pump(0.5)
+
+    # A room shut to guests (write = users) still lets a guest the sysop
+    # answered talk to the sysop. The room itself stays shut to them.
+    cfg = USERDATA / "system.cfg"
+    before = cfg.read_text()
+    shut = re.sub(r"(\[plugin:chat\][^\[]*?\nwrite\s*=\s*)all", r"\1users", before, count=1)
+    if shut != before:
+        cfg.write_text(shut)
+        cfg_reload(s)
+        drain(s)
+        s.pump(0.5)
+        g = Caller(ansi=True)
+        g.wait_for(b"Enter your handle", 10)
+        g.send(b"Visitor9\r")
+        g.wait_for(b"[G]uest", 5)
+        g.send(b"g")
+        g.wait_for(b"Main", 8)
+        drain(g)
+        s.buf.clear()
+        g.send(b"o cannot sign up\r")
+        s.wait_for(b"Later: ", 8)
+        ok &= check("a guest's ring says so", b"guest) is ringing: cannot sign up" in plain(s.buf))
+        s.pump(0.3)
+        s.send(b"a")
+        g.wait_for(b"[>S]", 6)
+        s.wait_for(b"Answered.", 6)
+        g.pump(0.5)
+        s.pump(0.5)
+        g.buf.clear()
+        s.buf.clear()
+        g.send(b"hello from a guest\r")
+        ok &= check("a guest the sysop answered may talk to the sysop in a room shut to guests",
+                    s.wait_for(b"hello from a guest", 4) and b"not talk here" not in plain(g.buf))
+        g.send(b"/p*\r")
+        g.wait_for(b"Back to the room", 4)
+        g.buf.clear()
+        g.send(b"to the whole room\r")
+        ok &= check("but not to the room", g.wait_for(b"You can watch, but not talk here.", 4))
+        s.send(b"/q\r")
+        s.wait_for(b"Sysop", 4)
+        s.pump(0.5)
+        cfg.write_text(before)
+        cfg_reload(s)
+        g.close()
+
+    for x in (a, b, c, r, f, w):
+        x.close()
+    s.close()
+    # Clear the notes, so nothing after this finds them at its elevation.
+    s = sysop_on("OpSysop2")
+    s.close()
+    return ok
+
+
+def test_notices_in_places():
+    """Pages, broadcasts, SHUTDOWN and arrivals reach a caller who is not at
+    the main prompt (1.1.0). They used to wait for the prompt, so somebody in
+    the chat room, their mailbox, the forums or the file areas got none of
+    them, and a caller in the room through a SHUTDOWN was hung up unwarned."""
+    print("Notices inside the room, the mailbox, forms and the file areas")
+    a = ansi_login("Placed")
+    na = a.node()
+    b = ansi_login("Pager")
+    drain(a)
+    drain(b)
+
+    # The room, part way through a line.
+    a.send(b"chat\r")
+    a.wait_for(b"here.", 4)
+    a.pump(0.5)
+    a.send(b"half a line")
+    a.pump(0.4)
+    a.buf.clear()
+    b.send(f"page {na} into the room\r".encode())
+    ok = check("a page reaches a caller in the chat room",
+               a.wait_for(b"Page from Pager", 5))
+    ok &= check("with its bell and flashing tag",
+                0 <= a.buf.find(b"\x07") < a.buf.find(b" PAGE "))
+    a.pump(0.6)
+    lines = [ln for ln in render_lines(a.buf) if ln.strip()]
+    ok &= check("and what they were typing comes back under it",
+                bool(lines) and lines[-1].strip() == "half a line")
+
+    # An arrival rings for them there, and /b stops the bell but not the line.
+    a.buf.clear()
+    c = ansi_login("Arrives")
+    ok &= check("an arrival reaches the room, with a bell",
+                a.wait_for(b"Arrives is on node", 6) and b"\x07" in a.buf)
+    a.send(b"\x1b")
+    a.pump(0.3)
+    a.send(b"/b\r")
+    a.wait_for(b"Bell off.", 3)
+    a.pump(0.3)
+    a.buf.clear()
+    d = ansi_login("Arrives2")
+    ok &= check("with the bell off the arrival is still said",
+                a.wait_for(b"Arrives2 is on node", 6))
+    ok &= check("but does not ring", b"\x07" not in a.buf)
+    a.send(b"/b\r")
+    a.wait_for(b"Bell on.", 3)
+    a.send(b"/q\r")
+    a.wait_for(b"Main", 4)
+    a.pump(0.4)
+
+    # The mailbox.
+    a.buf.clear()
+    a.send(b"mail\r")
+    a.wait_for(b"Mail> ", 4)
+    a.pump(0.3)
+    a.buf.clear()
+    b.send(f"page {na} into the mailbox\r".encode())
+    ok &= check("a page reaches a caller in their mailbox",
+                a.wait_for(b"Page from Pager", 5))
+    a.pump(0.6)
+    seen = plain(a.buf)
+    ok &= check("and the mailbox prompt comes back under it",
+                seen.rfind(b"Mail> ") > seen.find(b"Page from Pager"))
+    a.send(b"q")
+    a.wait_for(b"Main", 4)
+    a.pump(0.3)
+
+    if PASSWORD and HOST in ("127.0.0.1", "localhost"):
+        s = sysop_on("NoticeOp")
+        drain(s)
+        # A form: a broadcast on its status line.
+        a.buf.clear()
+        a.send(b"profile\r")
+        a.wait_for(b"YOUR PROFILE", 5)
+        a.pump(0.5)
+        a.buf.clear()
+        s.send(b"broadcast hello the forms\r")
+        ok &= check("a broadcast reaches a caller in a form, on the status line",
+                    a.wait_for(b"Sysop: hello the forms", 5))
+        a.send(b"\x1b")
+        a.pump(0.5)
+        # SHUTDOWN reaches the room.
+        a.send(b"chat\r")
+        a.wait_for(b"here.", 4)
+        a.pump(0.4)
+        a.buf.clear()
+        b.pump(0.3)
+        b.buf.clear()
+        s.send(b"shutdown 60\r")
+        ok &= check("SHUTDOWN warns a caller in the chat room",
+                    a.wait_for(b"taking the board down in 60 seconds", 6))
+        # The countdown's own thresholds used to fire all at once on the
+        # first pass: "in 120 seconds" straight after "in 60 seconds".
+        b.wait_for(b"taking the board down", 4)
+        b.pump(1.5)
+        ok &= check("and does not announce a threshold it has already passed",
+                    b"in 120 seconds" not in plain(b.buf) and
+                    b"in 120 seconds" not in plain(a.buf))
+        s.send(b"shutdown cancel\r")
+        ok &= check("and so does its cancel", a.wait_for(b"shutdown is cancelled", 6))
+        a.send(b"/q\r")
+        a.wait_for(b"Main", 4)
+        s.close()
+
+    if os.environ.get("BBS_SD_DIR", ""):
+        a.pump(0.3)
+        a.buf.clear()
+        a.send(b"files\r")
+        a.wait_for(b"Files:", 5)
+        a.pump(0.5)
+        a.buf.clear()
+        b.send(f"page {na} into the files\r".encode())
+        ok &= check("a page reaches a caller in the file areas",
+                    a.wait_for(b"Page from Pager", 5))
+        a.pump(0.6)
+        seen = plain(a.buf)
+        ok &= check("and the file area menu is drawn again under it",
+                    seen.rfind(b"Files:") > seen.find(b"Page from Pager"))
+        leave_files(a)
+        a.wait_for(b"Main", 4)
+        a.pump(0.3)
+        a.buf.clear()
+        a.send(b"forums\r")
+        a.wait_for(b"Forums>", 5)
+        a.pump(0.5)
+        a.buf.clear()
+        b.send(f"page {na} into the forums\r".encode())
+        ok &= check("a page reaches a caller in the forums",
+                    a.wait_for(b"Page from Pager", 5))
+        a.pump(0.6)
+        seen = plain(a.buf)
+        ok &= check("and the forums prompt comes back under it",
+                    seen.rfind(b"Forums>") > seen.find(b"Page from Pager"))
+        a.send(b"q")
+        a.pump(0.5)
+
+    for x in (a, b, c, d):
+        x.close()
+    return ok
+
+
 # Groups: one word standing for the tests that share a subsystem.
 #
 # A full run is 690 checks and several minutes, which is the right price
@@ -8983,14 +9488,14 @@ GROUPS = {
     "messaging": ["mail", "forums", "chat", "room_commands", "room_new", "room_quit",
                   "survives_notice", "config_forum", "room_time", "bell", "codes_in",
                   "room_narrow",
-                  "long_help", "info_pages"],
+                  "long_help", "info_pages", "operator", "notices_in"],
     # The subsystems that own a session and draw their own screens.
-    "places":    ["forums", "files", "chat", "xfer"],
+    "places":    ["forums", "files", "chat", "xfer", "notices_in"],
     # Anything that reads or writes the card.
     "storage":   ["files", "forums", "sd", "xfer", "backup"],
     # The shell, its lists and the screens the core draws.
     "shell":     ["menus", "sysinfo", "page", "about", "config", "welcome", "paced", "seeded", "fx_codes",
-                  "lights"],
+                  "lights", "operator"],
     # Logging in, accounts, staff.
     "login":     ["accounts", "handle_case", "guest", "sysop", "cosysop", "user_admin", "first_setup", "ban",
                   "boot_hold"],
@@ -9021,6 +9526,10 @@ ORDER_NAMES = [
     "test_long_help",
     "test_info_pages",
     "test_mail", "test_prompt_survives_notice", "test_menus", "test_sysinfo", "test_config",
+    # After test_config: test_operator_ends reloads the config through
+    # cfg_reload, which leaves the account cap at 200, and test_config's own
+    # save of 200 then finds nothing changed.
+    "test_operator", "test_operator_ends", "test_notices_in_places",
     "test_config_parser_rules", "test_config_guards", "test_config_semicolon",
     "test_config_sd_plugin",
     "test_config_lights", "test_config_lights_ascii", "test_lights_frames", "test_lights_manual",

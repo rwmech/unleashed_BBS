@@ -66,6 +66,10 @@ uint8_t width(const Session& s);
 // prompt: " n: " for the next line, and the line editor armed behind it.
 void prompt(Session& s, const compose::Body& b);
 
+// redraw: the same " n: " again, with what was being typed on it, after a
+// notice interrupted the line (1.1.0). Arms a fresh line if there is none.
+void redraw(Session& s, const compose::Body& b);
+
 // echo: show a line that is already in the body as if it had just been
 // typed, so editing a page starts from what the page says.
 void echo(Session& s, uint8_t row, const char* line);

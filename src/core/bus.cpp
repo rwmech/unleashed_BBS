@@ -41,8 +41,13 @@
 bool Mailbox::push(const BusMsg& m) {
     bool kept = true;
     if (count_ == BBS_BUS_DEPTH) {
-        head_ = static_cast<uint8_t>((head_ + 1) % BBS_BUS_DEPTH);
-        --count_;
+        // The oldest that is not a Ring, when there is one; take() closes
+        // the gap and keeps the rest in order. Otherwise the oldest.
+        BusMsg gone;
+        if (!take(~bit(BusKind::Ring), gone)) {
+            head_ = static_cast<uint8_t>((head_ + 1) % BBS_BUS_DEPTH);
+            --count_;
+        }
         kept = false;
     }
     q_[(head_ + count_) % BBS_BUS_DEPTH] = m;
@@ -59,4 +64,28 @@ bool Mailbox::pop(BusMsg& out) {
     head_ = static_cast<uint8_t>((head_ + 1) % BBS_BUS_DEPTH);
     --count_;
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// take: remove the oldest message of a wanted kind, closing the gap behind it
+// so what is left keeps its order.
+// ---------------------------------------------------------------------------
+bool Mailbox::take(uint32_t mask, BusMsg& out) {
+    for (uint8_t i = 0; i < count_; ++i) {
+        uint8_t at = static_cast<uint8_t>((head_ + i) % BBS_BUS_DEPTH);
+        if (!(mask & bit(q_[at].kind))) continue;
+        out = q_[at];
+        for (uint8_t j = i; j + 1 < count_; ++j) {
+            q_[(head_ + j) % BBS_BUS_DEPTH] = q_[(head_ + j + 1) % BBS_BUS_DEPTH];
+        }
+        --count_;
+        return true;
+    }
+    return false;
+}
+
+bool Mailbox::has(uint32_t mask) const {
+    for (uint8_t i = 0; i < count_; ++i)
+        if (mask & bit(q_[(head_ + i) % BBS_BUS_DEPTH].kind)) return true;
+    return false;
 }

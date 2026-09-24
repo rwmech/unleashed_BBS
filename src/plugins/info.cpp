@@ -437,6 +437,20 @@ void finish(Session& s, bool save) {
     Bbs::instance().release(s);                     // draws the prompt
 }
 
+// liftInput / restoreInput: a page, a broadcast or a ring printed into the
+// page editor (1.1.0). The line is ended and " n: " drawn again underneath
+// with what was being typed; the page itself is untouched.
+bool hookLift(Session& s) {
+    if (g_editing == 0xFF || !claims::holds(claims::Res::Info, s.id)) return false;
+    s.term.reset(s.tl);
+    s.term.nl(s.tl);
+    return true;
+}
+
+void hookRestore(Session& s) {
+    composer::redraw(s, g_body);
+}
+
 void onKey(Session& s, int k, uint32_t) {
     if (g_editing == 0xFF || !claims::holds(claims::Res::Info, s.id)) return;
     composer::Res r = composer::key(s, g_body, k);
@@ -611,4 +625,6 @@ const Plugin kInfoPlugin = {
     nullptr,                    // onBytes
     nullptr,                    // onRename
     nullptr,                    // listDone
+    hookLift,                   // liftInput: notices reach the page editor (1.1.0)
+    hookRestore,                // restoreInput
 };

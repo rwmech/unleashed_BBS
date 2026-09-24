@@ -61,6 +61,7 @@
 #include "backup.h"
 #include "users.h"
 #include "form.h"
+#include "ring.h"
 
 enum class SState : uint8_t {
     Free,      // slot unused
@@ -85,6 +86,13 @@ enum class SState : uint8_t {
     Approve,   // sysop answering Y/N on a staged backup upload
     Closing,   // flushing goodbye, then hang up
     AskSetup,  // an unconfigured board asks a local caller for the sysop password
+    // OPERATOR (1.1.0). All three are the core's even when a plugin owns the
+    // session (a caller ringing from the chat room, a sysop answering in the
+    // forums): Session::owner stays set, and the session goes back to it,
+    // through its restoreInput, when the ring is dealt with.
+    RingWhy,   // a caller typing what they want the sysop for
+    Ringing,   // a caller waiting on a ring: the spinner, any key stops it
+    RingAsk,   // the sysop's one-key question: answer, decline, away, later
 };
 
 enum class Role : uint8_t {
@@ -423,6 +431,16 @@ public:
     void cmdInfo(Session& s, const char* arg);
     void cmdPage(Session& s, const char* arg);
 
+    // The sysop page (bbs_ring.cpp, 1.1.0). cmdOperator is OPERATOR, and the
+    // room's /o for anybody but the sysop; for the sysop a bare O asks again
+    // about a ring still waiting. ringAnswer and ringDecline are the room's
+    // /o and /o- for the sysop, who in the room gets no one-key question.
+    // Like cmdPage, none of them draws a prompt or re-arms a plugin's input,
+    // and every line they print is ended.
+    void cmdOperator(Session& s, const char* arg);
+    bool ringAnswer(Session& s);
+    bool ringDecline(Session& s);
+
     // notify: tell a caller something at their next prompt, the way PAGE
     // does, rather than writing into whatever they are looking at. The core
     // lifts the prompt, says it, and puts the prompt back.
@@ -566,6 +584,13 @@ private:
     void warnNow(Session& s, const char* msg);
     void redrawInput(Session& s);
     void deliverMail(Session& s);
+    // deliverMail's three shapes (1.1.0): at the prompt, inside a plugin
+    // through its liftInput/restoreInput, and the urgent kinds only on a
+    // form's status line or above an input that has no room for more.
+    void deliverShell(Session& s);
+    void deliverPlugin(Session& s);
+    void deliverUrgent(Session& s);
+    void busLine(Session& s, const BusMsg& m);
     void post(Session& to, BusKind kind, const Session* from, const char* text);
     void noticeAll(const Session& about, const char* text,
                    BusKind kind = BusKind::Notice);
@@ -689,6 +714,51 @@ private:
     void serviceBackup(uint32_t now);
     void showApproval(Session& s);
 
+    // -- the sysop page (bbs_ring.cpp) --------------------------------------
+    // How a ring ended. The order is the log's words in ringEnd.
+    enum class RingEnd : uint8_t { Answered, Declined, Away, NoAnswer, Stopped, HungUp, Gone };
+    Session* sessionById(uint8_t id);
+    Session* ringTarget(bool& away);
+    bool ringLive(const Session& s, const BusMsg& m) const;
+    void ringRefused(Session& s, uint8_t verdict, uint8_t minutes);
+    void ringWhyKey(Session& s, int k, uint32_t now);
+    bool ringStart(Session& s, const char* reason, uint32_t now);
+    void ringStopSpin(Session& c);
+    void ringBack(Session& s);
+    void ringNotice(Session& s, bool fanfare);
+    void ringAsk(Session& s, bool fanfare);
+    bool ringShow(Session& s, bool room);
+    void ringFormHint(Session& s);
+    void ringAskKey(Session& s, int k, uint32_t now);
+    void ringingKey(Session& s, uint32_t now);
+    void ringYank(Session& s);
+    void ringClear();
+    void ringEnd(RingEnd how);
+    void ringClosed(Session& s);
+    void serviceRing(uint32_t now);
+    void ringSaveNote(const ring::Note& n);
+    void ringNotes(Session& s);           // at the sysop's login or elevation
+
+    // One ring at a time on the whole board, so this is all the state there
+    // is: about a hundred bytes, and nothing on a Session. The caller and
+    // the sysop are Session::ids, looked up each time: sessions come from a
+    // static pool and moveSession changes an id, both of which make a held
+    // pointer the stale kind.
+    struct RingState {
+        uint32_t seq     = 0;          // numbers the rings, so a stale notice is dropped
+        uint8_t  from    = 0xFF;       // the caller ringing, 0xFF when nobody is
+        uint8_t  to      = 0xFF;       // the sysop session rung
+        bool     guest   = false;
+        bool     shown   = false;      // the sysop has seen it, one way or another
+        uint8_t  spin    = 0;          // spinner frame
+        uint32_t started = 0;          // millis it began
+        uint32_t ends    = 0;          // millis it runs out
+        uint32_t spinAt  = 0;          // millis of the next spinner frame
+        char     handle[BBS_USER_MAX + 1]     = {};
+        char     reason[ring::kReasonMax + 1] = {};
+    };
+    RingState ring_;
+
     int       lfd_          = -1;
     uint16_t  port_         = 0;             // see port()
     BackupService backup_;
@@ -763,6 +833,9 @@ private:
     Session   busy_;
     Session   sysop_;
     Session*  all_[kSessions] = {};
+    // Per Session::id: when each caller last rang and how often this call.
+    // Forgotten in openSession, like everything else a slot might inherit.
+    ring::Limiter<kSessions> ringLimits_;
     BanList   bans_;
     LoginGuard logins_;
 

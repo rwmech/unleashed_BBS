@@ -52,8 +52,13 @@ char pick(const char* set, size_t n) {
     return set[plat::random32() % n];
 }
 
+} // namespace
+
 // ---------------------------------------------------------------------------
-// spinFrame: emit frame i of a spinner style
+// spinFrame: emit frame i of a spinner style. Public since 1.1.0, for a
+// spinner that has to be driven one frame at a time from a clock rather than
+// queued whole: a ring for the sysop spins for up to 45 seconds and stops on
+// a key, and 45 seconds of frames does not fit in a timeline.
 // ---------------------------------------------------------------------------
 void spinFrame(Term& t, Timeline& tl, Spin style, uint8_t i) {
     static const char kLine[]  = "|/-\\";
@@ -69,8 +74,6 @@ void spinFrame(Term& t, Timeline& tl, Spin style, uint8_t i) {
         case Spin::Arrow: t.ch(tl, kArrow[i]); break;
     }
 }
-
-} // namespace
 
 // ---------------------------------------------------------------------------
 // fitSteps: clamp animation length to remaining Timeline capacity,

@@ -187,6 +187,13 @@ CLAUDE.md holds the history behind each item; this file is what to build.
   - The optional pick-list: a CONFIG sub-page per list, arrow and Space
     to toggle, generated at build time from the directory's code table by
     a tool script, so the board and the site cannot drift.
+- The directory side is built (site 1.1.0, `6b44a50`): the one code table
+  is `badges.json` at the directory repo's root (`badges[]` with `code`
+  lower case, `group`, `sub`, `name`, `means`, `aliases`), matching is
+  lower-cased with non-alphanumerics dropped, every old slug is an alias,
+  and `/api/boards.json` always answers in codes. Generate the pick-list
+  from that file. `test_announce_directory` runs the real directory from
+  the repo beside this one and still expects long slugs back: update it.
 - SD size: an `sd` announce field, the card size in GB rounded up to the
   printed size (1, 2, 4 ... 1024), sent only while a card is mounted.
 
@@ -219,6 +226,38 @@ CLAUDE.md holds the history behind each item; this file is what to build.
     because it would switch staff off; CONFIG already refuses that.
   - A co-sysop line dropped for being the default is reported in the
     restore result, not only in the serial log.
+- From Phase 5a (hand-backs into files 3a/3b held; exact changes are in
+  its report):
+  - bbs_sysop.cpp: CK_PIN uses `syscfg::pinSentence(val)` for the message
+    (5a added it), and CONFIG refuses a pin another feature holds.
+  - chat.cpp mail rewrite (two sites) and info.cpp: rename over first,
+    remove-and-retry only on failure (mail may be on FAT).
+  - bbs.cpp bootNotice: the BN-* lines keyed on restartNote() and
+    bootReason_, BN-count, and count this boot in noteBoot. offerSetup's
+    SU-reset lines after a password reset; the notice printed after the
+    setup screen, not before its @CLS@.
+  - SYS: a "Last restart" row after Uptime.
+  - Slow passes: sd.cpp start() does not re-probe a cardless bus on every
+    CONFIG save (a tried flag; SD MOUNT still retries); rowDash uses
+    heapFree plus the minimum, not plat::heap(), and one calllog pass a
+    frame, not six opens; rowSys reads netInfo and heap once per listing.
+    The dashboard rework takes the DASH half.
+- From Phase 3b (SD backup, timezone):
+  - The seeded-screens manifest already exists (`sd.cpp`, `.seeded`). What
+    remains: `RESTORE SD SCREENS` takes the names it imports out of
+    `.seeded`, so an imported screen is always the sysop's own. Check that
+    HQ's stale pre-0.22.0 card screens are handled by it; if not, say why.
+  - A full restore cannot replace a flash screen a caller has open
+    (esp_littlefs EBUSY): close every screen player before a full apply,
+    minding closeCardScreens' Intro-to-Shell path for callers not yet
+    logged in.
+  - The screens room check is one file short of the peak during apply.
+  - A digit is always a number in line-mode cycles now; fix `cycle()`'s
+    comment that says digits pick by first character.
+  - `sdInfo` called directly rather than through the sd plugin's cache;
+    a `.tmp` left by a power cut is never cleaned up.
+  - Strings 3b wrote without copy (listed in its report): to `explain`.
+  - TZ-bad (checking a typed POSIX string) is not built.
 - From the lights plugin (dev.4):
   - Wire `plat::diskPulse` into the storage paths not yet wired:
     users.cpp, calllog.cpp and its card mirror, sysconfig.cpp, ziparc.cpp

@@ -62,7 +62,7 @@ Docs:
 
 A board the size of a stick of gum, 40 columns of text, and a port anyone can reach. Ordinary reasons first, stranger ones after.
 
-- **Run a BBS again.** Nodes, handles, a user list, a chat room, file areas with XMODEM and YMODEM transfer, mail, a caller log, a sysop who can page you. All of it on hardware that costs less than lunch and draws less power than a night light. Leave it on a shelf for a year and forget it is there.
+- **Run a BBS again.** Nodes, handles, a user list, a chat room, file areas with XMODEM and YMODEM transfer, mail, a caller log, and a sysop you can ring for (`OPERATOR`), who answers in the chat room or finds your note at their next login. All of it on hardware that costs less than lunch and draws less power than a night light. Leave it on a shelf for a year and forget it is there.
 - **Retrocomputing with a point.** A C64, an Atari 800, a VT220 on a desk: machines with no browser and no future on the modern web get a live system to call, tonight, over the same serial port they always used. No emulator, no cloud account, no subscription. The board speaks their language, right down to PETSCII at 40 columns and an emulated 300 baud if you want to watch the text crawl.
 - **Entertainment.** Games, trivia, message bases, and the whole business of dialling in to see what is new. `FORUMS` is topic boards on the SD card, with subjects, replies and unread counts. Text is a format, not a limitation: people played MUDs on less.
 - **Somewhere to hang out.** The chat room is DDial and Gtalk in spirit: everybody in one room, one line at a time, handles and ranks in the margin, nothing threaded, nothing archived, nobody suggesting content. Small, fast, and with a personality that group chat lost somewhere around 2010.
@@ -256,7 +256,9 @@ src/core/telnet.*         RFC 854 filter, NAWS, CR LF / CR NUL collapse
 src/core/detect.*         connect-time terminal detection (settle, probe, key prompt)
 src/core/editor.*         line editor, BYE password mask, command history
 src/core/screens.*        streaming screen player with @-codes and paging
-src/core/bus.*            per-session message ring (PAGE, notices, broadcast)
+src/core/bus.*            per-session message ring (PAGE, notices, broadcast, a ring)
+src/core/ring.h           OPERATOR's rules: rate limits and the notes file format
+src/core/bbs_ring.cpp     OPERATOR: ringing for the sysop, answering, notes
 src/core/guard.*          IP ban list, per-handle login lockout
 src/core/users.*          accounts in users.txt: field table, lookup, rewrite, password hashing
 src/core/sha256.*         SHA-256 for password hashes

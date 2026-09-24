@@ -1747,7 +1747,8 @@ uint8_t bodyWidth(Session& s) {
 }
 
 // bodyPrompt: the line number, so a caller can see how much room is left.
-void bodyPrompt(Session& s) {
+// keep: after a notice (1.1.0), draw it again over what is being typed.
+void bodyPrompt(Session& s, bool keep = false) {
     uint8_t sl = slotOf(s);
     char q[12];
     snprintf(q, sizeof(q), "%2u: ", static_cast<unsigned>(g_bodyRows[sl] + 1));
@@ -1755,6 +1756,7 @@ void bodyPrompt(Session& s) {
     s.term.color(s.tl, g_cMeta);
     s.term.text(s.tl, q);
     s.term.color(s.tl, g_cBody);
+    if (keep && s.ed.active()) { s.ed.redraw(s.term, s.tl); return; }
     // The line follows the terminal, not a constant. Four columns for
     // the "16: " the prompt just wrote.
     s.ed.begin(bodyWidth(s), 0);
@@ -2036,6 +2038,56 @@ void jumpTo(Bbs& b, Session& s, uint32_t num) {
     }
     notice(s, g_cMark, "--> No subject with that number.");
     noticeDone(b, s);
+}
+
+// ---------------------------------------------------------------------------
+// liftInput / restoreInput: a page, a broadcast or a ring printed into the
+// forums (1.1.0). The line the caller is on is simply ended, and whatever
+// they were being asked is asked again underneath, with what they had typed:
+// the footer and breadcrumb, a number part typed, a subject, a line of a
+// post, or "remove this message?". Nothing they wrote is lost to a notice.
+// ---------------------------------------------------------------------------
+bool hookLift(Session& s) {
+    s.term.reset(s.tl);
+    s.term.nl(s.tl);
+    return true;
+}
+
+void hookRestore(Session& s) {
+    if (!g_bbs) return;
+    Bbs& b = *g_bbs;
+    uint8_t sl = slotIdx(s);
+    switch (g_ask[sl]) {
+        case AskSubject: {
+            char q[40];
+            snprintf(q, sizeof(q), "Subject (%u max): ", static_cast<unsigned>(kSubject));
+            s.term.color(s.tl, g_cAsk);
+            s.term.text(s.tl, q);
+            s.term.color(s.tl, g_cBody);
+            s.ed.redraw(s.term, s.tl);
+            return;
+        }
+        case AskBody:
+            bodyPrompt(s, true);
+            return;
+        case AskRemove: {
+            char q[64];
+            snprintf(q, sizeof(q), "--> Remove message #%lu? (y/N)",
+                     static_cast<unsigned long>(g_shown[sl]));
+            s.term.nl(s.tl);
+            say(s, Color::Yellow, q);
+            s.term.ch(s.tl, ' ');
+            return;
+        }
+        case AskJump:
+            prompt(b, s);
+            s.term.color(s.tl, g_cBody);
+            s.ed.redraw(s.term, s.tl);
+            return;
+        default:
+            prompt(b, s);
+            return;
+    }
 }
 
 void onKey(Session& s, int key, uint32_t) {
@@ -2457,4 +2509,6 @@ const Plugin kForumsPlugin = {
     nullptr,                  // onBytes
     nullptr,                  // onRename
     listDone,
+    hookLift,                 // liftInput: notices reach the forums (1.1.0)
+    hookRestore,              // restoreInput
 };

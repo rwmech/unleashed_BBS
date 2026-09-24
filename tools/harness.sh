@@ -98,6 +98,10 @@ export BBS_DIR_PORT=$DIRPORT
 # board that joined through include/secrets.h does, so CONFIG wifi's
 # fallback to the live network can be tested (test_config_wifi_live).
 export BBS_HOST_SSID=HostNet
+# A ring for the sysop rings for 45 s on a board. Ten here, so the suite can
+# watch one run out without sitting through the rest (host build only; see
+# ring::ringMs). Long enough that a scripted sysop always answers first.
+export BBS_RING_MS=10000
 
 # Delete the previous result before building. A failed build exits here, and
 # leaving the last run's output behind means the next look at it shows a full

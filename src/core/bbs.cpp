@@ -46,6 +46,7 @@
 #include "calllog.h"
 #include "plugin.h"
 #include "recovery.h"
+#include "../plugins/chat.h"
 #include "../platform/platform.h"
 
 #include <sys/types.h>
@@ -422,6 +423,7 @@ void Bbs::tick() {
     plat::activityTick(now);
     heapWatch(now);
     serviceShutdown(now);
+    serviceRing(now);
     stackWatch("tail", nullptr);
     if (!stackCheckAt_ || now - stackCheckAt_ >= 1000) {     // the full read, once a second
         stackCheckAt_ = now ? now : 1;
@@ -632,6 +634,9 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
     // run cannot be relied on, and a stale claim hands the next caller a
     // hard refusal for something they never did.
     claims::releaseAll(s.id);
+    // And a fresh allowance of rings for the sysop: three a call means this
+    // call, not whatever the last caller on this node left of theirs.
+    ringLimits_.forget(s.id);
     s.fd            = fd;
     s.st            = SState::Detect;
     s.role          = role;
@@ -751,6 +756,10 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
 void Bbs::closeSession(Session& s, const char* why, uint32_t now) {
     claims::releaseAll(s.id);          // and again on the way out, promptly
     configRelease(s);                        // a dropped line must not lock CONFIG out
+    // A caller who rang hung up, or the sysop who was rung went: the other
+    // one is told, and the note is written, while this session still says
+    // who it was.
+    ringClosed(s);
 
     // snoop links in both directions
     for (Session* o : all_) if (o->snooper == &s) o->snooper = nullptr;
@@ -823,6 +832,11 @@ void Bbs::moveSession(Session& from, Session& to, uint8_t newId, Role role) {
     // released afterwards, because the owner no longer matches: the resource
     // would be locked until a reboot.
     claims::transfer(from.id, newId);
+    // A ring names its caller and its sysop by id too, and a sysop who DROPs
+    // or elevates after pressing Q is still the one being rung.
+    if (ring_.from == from.id) ring_.from = newId;
+    if (ring_.to == from.id)   ring_.to   = newId;
+    ringLimits_.move(from.id, newId);
 
     to      = from;
     to.id   = newId;
@@ -1694,6 +1708,10 @@ void Bbs::completeLogin(Session& s, uint32_t now) {
         t.nl(tl);
         t.color(tl, Color::Grey);
     }
+    // Rings nobody answered, to the sysop's own account as it arrives
+    // (1.1.0): the account the sysop password marked, the ] in WHO. An
+    // elevation shows them too, for a sysop who never logs in as themselves.
+    if (!s.guest && s.rank >= static_cast<uint8_t>(Access::Sysop)) ringNotes(s);
     // The "[H]ELP for commands." line used to be printed here, to everybody.
     // It belongs to the main prompt and only to the main prompt: telling
     // somebody who is about to be put in the chat room to press H for
@@ -2466,16 +2484,92 @@ static uint8_t promptCols(const Session& s) {
 }
 
 // ---------------------------------------------------------------------------
-// deliverMail: print queued messages once the session is idle at its prompt
+// deliverMail: print queued messages wherever the caller can take them.
+//
+// At the main prompt, as it always did. Inside a plugin that offers
+// liftInput and restoreInput (1.1.0): the chat room, the forums, the file
+// areas, the mailbox and the page editor, which is what lets a page, a
+// broadcast, SHUTDOWN's countdown or a ring for the sysop reach somebody who
+// is not at the prompt. In a form, or at a question with no room for more,
+// only what cannot wait: a broadcast, which is how SHUTDOWN warns, and a
+// ring for the sysop, each on the status line the way a timer warning is.
+// Everything else waits in the queue, in order, for somewhere to go.
 // ---------------------------------------------------------------------------
 void Bbs::deliverMail(Session& s) {
     if (s.mb.empty() || s.role == Role::Busy) return;
-    if (!(s.st == SState::Shell && s.ed.active() && !s.scr.active() && s.tl.empty())) return;
+    if (s.st == SState::Shell) {
+        if (s.ed.active() && !s.scr.active() && s.tl.empty()) deliverShell(s);
+        return;
+    }
+    if (s.st == SState::Plugin) { deliverPlugin(s); return; }
+    // A ring stops a refreshing WHO n or DASH n, the way a key would: a
+    // sysop with the dashboard up is at the keyboard, and the frame would
+    // otherwise be redrawn over the question every few seconds. The ring is
+    // shown at the prompt this puts them back at.
+    if (s.st == SState::Watch && s.mb.has(Mailbox::bit(BusKind::Ring))) {
+        stopWatch(s);
+        return;
+    }
+    if (canNotify(s)) deliverUrgent(s);
+}
 
+// ---------------------------------------------------------------------------
+// busLine: one queued message, the way every caller has always seen them: a
+// bell for the kinds that ring, a flashing tag for a page or a broadcast,
+// then the line. No newline either side; the caller decides the spacing.
+// A Ring never comes here: it is a question, not a line.
+// ---------------------------------------------------------------------------
+void Bbs::busLine(Session& s, const BusMsg& m) {
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    char line[BBS_USER_MAX + BBS_LINE_MAX + 32];
+    Color c = Color::Cyan;
+    const char* alert = nullptr;                 // pages and broadcasts flash first
+    bool ring = false;                           // an arrival: a bell, no fanfare
+    switch (m.kind) {
+        case BusKind::Page:
+            if (m.fromNode) snprintf(line, sizeof(line), "Page from %s (%u): %s", m.from, m.fromNode, m.text);
+            else            snprintf(line, sizeof(line), "Page from Sysop: %s", m.text);
+            c = Color::LightGreen;
+            alert = " PAGE ";
+            break;
+        case BusKind::Broadcast:
+            snprintf(line, sizeof(line), "*** Sysop: %s", m.text);
+            c = Color::Yellow;
+            alert = " SYSOP ";
+            break;
+        case BusKind::Mail:
+            snprintf(line, sizeof(line), "%s", m.text);
+            c = Color::Yellow;
+            break;
+        case BusKind::Arrival:
+            snprintf(line, sizeof(line), "%s", m.text);
+            ring = true;
+            break;
+        case BusKind::Notice:
+        default:
+            snprintf(line, sizeof(line), "%s", m.text);
+            break;
+    }
+    t.reset(tl);
+    if ((alert || ring) && !s.bellOff) t.bell(tl);
+    if (alert) {                                 // flashing tag, rub it out, message
+        t.color(tl, Color::LightRed);
+        fx::blink(t, tl, alert, 3, 150);
+        fx::pause(tl, 250);
+        fx::rubout(t, tl, static_cast<uint8_t>(strlen(alert)), 25);
+    }
+    t.color(tl, c);
+    t.text(tl, line);
+}
+
+// ---------------------------------------------------------------------------
+// deliverShell: at the main prompt, idle.
+// ---------------------------------------------------------------------------
+void Bbs::deliverShell(Session& s) {
     Term& t = s.term;
     Timeline& tl = s.tl;
     BusMsg m;
-    char line[BBS_USER_MAX + BBS_LINE_MAX + 32];
     bool any = false;
 
     // Lift the prompt AND what was typed after it, so the notice goes where
@@ -2488,51 +2582,85 @@ void Bbs::deliverMail(Session& s) {
     t.eraseBack(tl, static_cast<uint8_t>(promptCols(s) + s.ed.shown()));
 
     while (tl.freeBytes() > 768 && s.mb.pop(m)) {
-        Color c = Color::Cyan;
-        const char* alert = nullptr;                 // pages and broadcasts flash first
-        bool ring = false;                           // an arrival: a bell, no fanfare
-        switch (m.kind) {
-            case BusKind::Page:
-                if (m.fromNode) snprintf(line, sizeof(line), "Page from %s (%u): %s", m.from, m.fromNode, m.text);
-                else            snprintf(line, sizeof(line), "Page from Sysop: %s", m.text);
-                c = Color::LightGreen;
-                alert = " PAGE ";
-                break;
-            case BusKind::Broadcast:
-                snprintf(line, sizeof(line), "*** Sysop: %s", m.text);
-                c = Color::Yellow;
-                alert = " SYSOP ";
-                break;
-            case BusKind::Mail:
-                snprintf(line, sizeof(line), "%s", m.text);
-                c = Color::Yellow;
-                break;
-            case BusKind::Arrival:
-                snprintf(line, sizeof(line), "%s", m.text);
-                ring = true;
-                break;
-            case BusKind::Notice:
-            default:
-                snprintf(line, sizeof(line), "%s", m.text);
-                break;
+        if (m.kind == BusKind::Ring) {
+            if (!ringLive(s, m)) continue;
+            if (any) t.nl(tl);                       // end the line before it
+            // The notice and the one-key question. The prompt, and what was
+            // typed on it, come back once the question is answered; anything
+            // still queued behind the ring waits for that.
+            ringShow(s, false);
+            return;
         }
-        t.reset(tl);
         if (any) t.nl(tl);                           // each after the first on its own line
-        if ((alert || ring) && !s.bellOff) t.bell(tl);
-        if (alert) {                                 // flashing tag, rub it out, message
-            t.color(tl, Color::LightRed);
-            fx::blink(t, tl, alert, 3, 150);
-            fx::pause(tl, 250);
-            fx::rubout(t, tl, static_cast<uint8_t>(strlen(alert)), 25);
-        }
-        t.color(tl, c);
-        t.text(tl, line);
+        busLine(s, m);
         any = true;
     }
-    if (any) {
-        t.nl(tl);                                    // the blank line before the prompt
-        drawPrompt(s);
-        s.ed.redraw(t, tl);
+    // Always put the prompt back, even when nothing turned out to be worth
+    // showing: it was lifted above.
+    if (any) t.nl(tl);                               // the blank line before the prompt
+    drawPrompt(s);
+    s.ed.redraw(t, tl);
+}
+
+// ---------------------------------------------------------------------------
+// deliverPlugin: inside a plugin that can lift its input line and put it
+// back. Nothing while a transfer has the line in raw mode, while the plugin
+// is still drawing, or when it has no hooks: those wait, as they always did.
+// ---------------------------------------------------------------------------
+void Bbs::deliverPlugin(Session& s) {
+    if (s.rawInput || !s.tl.empty() || s.scr.active()) return;
+    if (s.owner == 0xFF || !plugins::running(s.owner)) return;
+    const Plugin* p = plugins::at(s.owner);
+    if (!p || !p->liftInput || !p->restoreInput) return;
+    if (!p->liftInput(s)) return;                    // "not now"
+
+    Timeline& tl = s.tl;
+    bool room = chat::inRoom(s);
+    BusMsg m;
+    while (tl.freeBytes() > 768 && s.mb.pop(m)) {
+        if (m.kind == BusKind::Ring) {
+            if (!ringLive(s, m)) continue;
+            // In the room it is two lines and /o answers; anywhere else it is
+            // the question, and the input goes back after the answer.
+            if (ringShow(s, room)) return;
+            continue;
+        }
+        busLine(s, m);
+        s.term.nl(tl);
+    }
+    p->restoreInput(s);
+}
+
+// ---------------------------------------------------------------------------
+// deliverUrgent: a form, the user manager, a [More] or a yes/no question.
+// Only a broadcast (SHUTDOWN's countdown is one) and a ring for the sysop,
+// taken out of the queue from among the rest, which keep their order.
+// ---------------------------------------------------------------------------
+void Bbs::deliverUrgent(Session& s) {
+    bool form = s.st == SState::Form || s.st == SState::UserList;
+    // A ring as well where a sysop can be (a form, the user manager, [More],
+    // "Log off (Y/N)?"): a line saying who, and that ESC then O answers it.
+    // Not the handle and password prompts, where no sysop ever is.
+    bool sysopHere = form || s.st == SState::More || s.st == SState::Confirm;
+    uint32_t mask = Mailbox::bit(BusKind::Broadcast) |
+                    (sysopHere ? Mailbox::bit(BusKind::Ring) : 0u);
+    BusMsg m;
+    while (s.tl.freeBytes() > 512 && s.mb.take(mask, m)) {
+        if (m.kind == BusKind::Ring) {
+            if (ringLive(s, m)) ringFormHint(s);
+            continue;
+        }
+        if (!s.bellOff) s.term.bell(s.tl);
+        char line[BBS_LINE_MAX + 16];
+        if (form) {
+            // 38 columns of status line. The board's own lines already carry
+            // "*** " (SHUTDOWN's), so they lose it rather than their end.
+            if (!strncmp(m.text, "*** ", 4)) snprintf(line, sizeof(line), "%s", m.text + 4);
+            else                             snprintf(line, sizeof(line), "Sysop: %s", m.text);
+        } else {
+            snprintf(line, sizeof(line), "*** Sysop: %s", m.text);
+        }
+        warnNow(s, line);
     }
 }
 
@@ -2960,6 +3088,19 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
                 backup_.decide(false, "rejected by the sysop");
                 prompt(s);
             }
+            return;
+
+        // OPERATOR (bbs_ring.cpp). The core's, whoever owns the session.
+        case SState::RingWhy:
+            ringWhyKey(s, k, now);
+            return;
+
+        case SState::Ringing:
+            ringingKey(s, now);                      // any key stops it
+            return;
+
+        case SState::RingAsk:
+            ringAskKey(s, k, now);
             return;
 
         default:

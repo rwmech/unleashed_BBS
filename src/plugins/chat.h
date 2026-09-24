@@ -39,6 +39,10 @@
  */
 
 #pragma once
+#include <cstdint>
+#include "../core/term.h"
+
+struct Session;
 
 namespace chat {
 
@@ -46,5 +50,26 @@ namespace chat {
 // chat plugin is running, because mail lives inside it; the caller checks
 // plugins::running first.
 bool mailOn();
+
+// The sysop page (1.1.0) reaches into the room through these three, the
+// same way the lights reach Bbs::takeTraffic: a named call, not a hook every
+// plugin would carry. Each is safe to call when chat is not running.
+
+// inRoom: this caller is standing in the room with nothing in front of them
+// (not reading or writing mail). A ring for the sysop is two lines of the
+// room's voice there, not a one-key question, because /o answers in the room.
+bool inRoom(const Session& s);
+
+// roomSay: a line in the room's own voice, the --> marker and the text,
+// word wrapped at the reader's width. For a caller whose input line has
+// already been lifted.
+void roomSay(Session& s, Color c, const char* text);
+
+// converse: put a caller in the room talking to one node only: the sticky
+// private (/p n*) already aimed, [>n] on their input line, and `say` as the
+// last line before it. Walks them in if they are not there; a room ban does
+// not stop somebody the sysop answered. False when the room could not take
+// them, and then nothing has been drawn for them.
+bool converse(Session& s, uint8_t withNode, const char* say);
 
 } // namespace chat

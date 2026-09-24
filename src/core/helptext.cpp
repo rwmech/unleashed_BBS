@@ -33,7 +33,8 @@ struct Entry { const char* verb; const char* text; };
 // in .rodata, so this costs the board program space and no RAM.
 const Entry kEntries[] = {
     { "WHO", "usage: WHO [n]\nWho is on each node: rank mark, handle,\nterminal, minutes on and idle time.\nWHO n redraws the list every n seconds\nuntil you press a key. W also works." },
-    { "PAGE", "usage: PAGE n message\nSends one line to the caller on node n.\nIt arrives with a bell when they are\nnext at the main prompt, not while they\nare in chat, files or forums.\nCallers with DND on do not take pages." },
+    { "PAGE", "usage: PAGE n message\nSends one line to the caller on node n,\nwith a bell, wherever they are: the\nprompt, chat, forums, files or mail.\nA form or a transfer holds it until\nthey are done. DND refuses pages." },
+    { "OPERATOR", "usage: OPERATOR [reason]\nRings for the sysop. If they answer,\nyou talk in the chat room, the two of\nyou. If not, what you wrote is saved\nfor them. O also works; /o in the room.\nSysop: O answers a waiting ring." },
     { "G", "usage: G\nLogs off, asking Log off (Y/N)? first.\nBYE logs off without asking." },
     { "BYE", "usage: BYE [password]\nLogs off now. OFF, LOGOFF and QUIT too.\nBYE with a staff password raises your\naccess instead. A wrong password logs\nyou off; 3 wrong in 15 minutes lock\nyour address out for 15 minutes." },
     { "HELP", "usage: HELP [menu or command]\nThe menus. ? and H do the same.\nMenus: CHAT, ACCOUNT, STAFF, SYSOP,\nand ALL for every menu in turn.\nHELP with a command, such as HELP WHO,\nexplains that one command." },
@@ -62,7 +63,7 @@ const Entry kEntries[] = {
     { "NODES", "usage: NODES [n]\nEvery session, busy line and sysop node\nincluded, with handle, address, minutes\nleft and idle time. NODES n redraws it\nevery n seconds until you press a key." },
     { "KICK", "usage: KICK n [message]\nDisconnects the caller on node n. They\nsee Disconnected by sysop, with your\nmessage if you give one. Works on\ncallers and on staff below your rank." },
     { "SNOOP", "usage: SNOOP n\nShows you everything node n sees, as it\nhappens. Q, ESC or Ctrl-C stops.\nYour terminal type must match theirs,\none watcher per node, and only callers\nor staff below your rank." },
-    { "BROADCAST", "usage: BROADCAST message\nSends a line to every caller on the\nboard, with a bell and a flashing tag.\nEach caller sees it when they are next\nat the main prompt." },
+    { "BROADCAST", "usage: BROADCAST message\nSends a line to every caller on the\nboard, with a bell and a flashing tag,\nwherever they are: at the prompt, in\nchat, forums, files or mail, or on the\nstatus line of a form." },
     { "USERS", "usage: USERS\nThe account manager. Cursor keys move,\nEnter edits, A adds, D retires and Q\nquits. Plain ASCII gets a list instead;\nuse USER ADD, EDIT and DEL there.\nOnly accounts at your rank or below." },
     { "USER", "usage: USER ADD, EDIT h or DEL h\nADD opens a form for a new account.\nEDIT h opens account h; leave New pass\nblank to keep its password.\nDEL h retires it: no more logins, and\nthe handle is never given out again." },
     { "HIDE", "usage: HIDE\nTakes you out of WHO. To callers your\nline looks free. SHOW puts you back." },
@@ -89,7 +90,8 @@ const Entry kEntries[] = {
     { "/s", "usage: /s\nWho is in the room, with away notes.\n/w and /who also work." },
     { "/p", "usage: /p n text, or /p n*\nOne line to node n in the room, seen\nby them alone. /p n* sticks: all you\ntype goes to n, and [>n] shows on your\ninput line until /p* ends it.\n/pm and /msg also work." },
     { "/me", "usage: /me text\nAn action line: /me waves shows your\nhandle between asterisks, as in\n** Daytona waves **.\nUp to five every 30 seconds." },
-    { "/page", "usage: /page n why\nPages node n with a bell, the same as\nPAGE. They see it when they are next\nat the main prompt, so for somebody in\nthe room /p gets there sooner.\n/pg also works." },
+    { "/page", "usage: /page n why\nPages node n with a bell, the same as\nPAGE, wherever they are. /p is a line\nin the room; a page says look up.\n/pg also works." },
+    { "/o", "usage: /o [reason], or /o-\nRings for the sysop, as OPERATOR does\nat the main prompt. Sysop: /o answers a\nring and /o- declines it." },
     { "/whois", "usage: /whois handle\nA caller's profile, as WHOIS shows it,\nwithout leaving the room. Email, From\nand Phone show only on your own.\n/wi also works." },
     { "/a", "usage: /a [note]\nMarks you away, with a note of up to 16\ncharacters. The room is told. /a on its\nown marks you back. /away also works." },
     { "/sq", "usage: /sq n\nHides what node n says until you leave\nthe room or type /sq n again. Arrivals,\ndepartures and room notices still show.\n/squelch also works." },

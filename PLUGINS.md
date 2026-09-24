@@ -105,6 +105,8 @@ inserted.
 | `onBytes(s, b, n, now)` | raw input as it arrived, only while the plugin owns the session and has turned on `Bbs::setRawInput`; telnet has already been unescaped, so `IAC IAC` is one 0xFF here |
 | `onRename(old, new)` | a caller's handle changed; called after `users.txt` has been written and only when the write succeeded, so a plugin acting on it can trust the new name |
 | `listDone(s, aborted)` | a paged list this plugin started with `startPluginList` has finished; `aborted` is true when the caller stopped it at `[More]` rather than reading to the end. The core deliberately draws no prompt for a plugin-owned session, so this is the plugin's only signal to put something on the screen |
+| `liftInput(s)` | 1.1.0. A notice (a page, a broadcast, `SHUTDOWN`'s countdown, "you have mail", an arrival, a ring for the sysop) is about to be printed to a caller this plugin owns: take the input line out of the way and leave the cursor at column 0 of an empty line. Return false for "not now" and the notice waits for a later pass. Only called while the session is `SState::Plugin`, owned by this plugin, not in raw mode, with nothing waiting to be sent. Leave it null, as the serial bridge does, and notices wait for the main prompt as they always did |
+| `restoreInput(s)` | 1.1.0. The notice is out: put the prompt back, with what the caller had typed on it. Called once for each `liftInput` that returned true, possibly much later, because a ring for the sysop is a one-key question the core asks between the two. If `s.ed` is not active when it arrives, the core used the line editor in between (a caller ringing from the chat room), so start a fresh line rather than redrawing the old one |
 
 ### Settings
 
@@ -191,6 +193,10 @@ b.release(s);                      // back to the command prompt
 ```
 
 While a plugin owns a session the idle timeout pauses, because watching is not idling. The per-call and per-day time limits still apply, and staff with `NOLIMITS` are exempt as always. Output goes through the same terminal layer as the rest of the BBS, so PETSCII, ANSI and plain ASCII callers all work.
+
+A plugin that owns sessions should offer `liftInput` and `restoreInput`, or nobody inside it hears a page, a broadcast or `SHUTDOWN`'s warnings until they leave. The pattern the shipped plugins use: `liftInput` ends the line the caller is on (the chat room erases its input line instead, marker and all), and `restoreInput` draws the prompt or question they were at again, with `s.ed.redraw` rather than `s.ed.begin` so what they had typed survives. Return false from `liftInput` while anything binary is on the line.
+
+The core may also take a session away from its plugin: a sysop answering a ring from inside it goes to the chat room. It is let go the way a dropped line lets it go, with no hook called and every claim the node held released, so a plugin's own per-session state has to be reset on the way back in, never trusted from the last visit.
 
 ### Talking to callers
 

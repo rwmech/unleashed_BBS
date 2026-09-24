@@ -629,7 +629,7 @@ void startRecv(Bbs& b, Session& s, const char* arg, uint32_t now);
 void doApprove(Bbs& b, Session& s, const char* a);
 void doReject(Bbs& b, Session& s, const char* a);
 void doErase(Bbs& b, Session& s, const char* a);
-void askFor(Session& s, uint8_t what);
+void askFor(Session& s, uint8_t what, bool keep = false);
 void askYes(Session& s, uint8_t what, const char* name);
 void listPending(Bbs& b, Session& s, uint8_t area);
 void filesHelp(Bbs& b, Session& s, uint8_t area);
@@ -992,6 +992,11 @@ void enter(Bbs& b, Session& s) {
     }
     if (!b.own(s, g_index)) { b.prompt(s); return; }
     b.setDoing(s, "FILES");
+    // No question carried in from last time. A caller can leave the file
+    // areas without answering one: a config save hands them home, and a
+    // sysop answering a ring is taken straight to the room (1.1.0). Without
+    // this their next visit's keys went to a question nobody could see.
+    g_ask[slotOf(s)] = AskNone;
     s.term.reset(s.tl);
     // A board with screens/files gets a way in. Without one the caller lands
     // on the menu, the same deal the chat room has with chatin.
@@ -1894,7 +1899,7 @@ void startRecv(Bbs& b, Session& s, const char* arg, uint32_t now) {
 // leaves the file area: the answer comes back to onKey and the caller is
 // still standing in the same place afterwards, which is the whole point of
 // FILES being somewhere you are rather than a command you ran.
-void askFor(Session& s, uint8_t what) {
+void askFor(Session& s, uint8_t what, bool keep) {
     const char* q = "";
     switch (what) {
     case AskNum:     q = "File number: ";                  break;
@@ -1915,6 +1920,8 @@ void askFor(Session& s, uint8_t what) {
     s.term.color(s.tl, Color::Cyan);
     s.term.text(s.tl, q);
     s.term.color(s.tl, Color::White);
+    // keep: asked again after a notice (1.1.0), over what was being typed.
+    if (keep && s.ed.active()) { s.ed.redraw(s.term, s.tl); return; }
     s.ed.begin(kDescMax, 0);
 }
 
@@ -2225,6 +2232,37 @@ const Command kCommands[] = {
       Menu::Main, 8 },
 };
 
+// ---------------------------------------------------------------------------
+// liftInput / restoreInput: a page, a broadcast or a ring printed into the
+// file areas (1.1.0). Never during a transfer: the line is binary then, and
+// a notice would land in the middle of somebody's file. Otherwise the line is
+// ended and whatever the caller was at is drawn again underneath: the menu
+// with its bar (redrawn whole, because the bar moves by counting rows up and
+// the notice has just added some), the section prompt, or the question they
+// were answering, with what they had typed.
+// ---------------------------------------------------------------------------
+bool hookLift(Session& s) {
+    if (g_x.s == &s || s.rawInput) return false;
+    s.term.reset(s.tl);
+    s.term.nl(s.tl);
+    return true;
+}
+
+void hookRestore(Session& s) {
+    Bbs& b = Bbs::instance();
+    uint8_t slot = slotOf(s);
+    uint8_t a = g_ask[slot];
+    if (a == AskYesDown || a == AskYesDel) {
+        char name[kDescMax + 1];
+        snprintf(name, sizeof(name), "%s", g_pend[slot]);
+        askYes(s, a, name);
+        return;
+    }
+    if (a != AskNone) { askFor(s, a, true); return; }
+    if (g_where[slot] == Where::Menu) { showMenu(b, s, Draw::Keep); return; }
+    filesPrompt(s);
+}
+
 const PluginSetting kSettings[] = {
     // path + name + four level words, each at most 6, with " | " between.
     { "area1", "Area 1", PS_TEXT, 0, 0, kAreaValMax },
@@ -2293,4 +2331,6 @@ extern const Plugin kFilesPlugin = {
     onBytes,
     nullptr,                 // onRename
     listDone,
+    hookLift,                // liftInput: notices reach the file areas (1.1.0)
+    hookRestore,             // restoreInput
 };

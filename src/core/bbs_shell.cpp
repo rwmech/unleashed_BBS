@@ -138,6 +138,16 @@ const Command* Bbs::coreCommands(uint8_t& count) {
         { "PAGE", "", 0, CF_NONE, "PAGE <n> <msg>", "send a caller a message",
           [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdPage(s, a); b.prompt(s); },
           Menu::Main, 3 },
+        // The sysop page (1.1.0). O is PCBoard's letter for it. The command
+        // may leave the session asking why, ringing, or at the sysop's
+        // question, so the prompt is drawn only when it is still at the
+        // shell with the line finished.
+        { "OPERATOR", "O", 0, CF_NONE, "[O]PERATOR", "ring for the sysop",
+          [](Bbs& b, Session& s, const char* a, uint32_t) {
+              b.cmdOperator(s, a);
+              if (s.st == SState::Shell) b.prompt(s);
+          },
+          Menu::Main, 4 },
 
         // G and BYE are one line, not two. A caller does not need both
         // explained, only that it logs them off; G asks first and BYE does
@@ -1041,7 +1051,13 @@ void Bbs::cmdShutdown(Session& s, const char* arg, uint32_t now) {
 
     shutEnds_ = now + static_cast<uint32_t>(secs) * 1000u;
     if (!shutEnds_) shutEnds_ = 1;             // never the "no shutdown" value
-    shutSaid_ = 0xFFFFFFFFu;
+    // Every threshold at or above where the countdown starts counts as said:
+    // the line below says how long there is. It was 0xFFFFFFFF, and the first
+    // passes of serviceShutdown then announced each threshold the countdown
+    // had never reached, one a pass: SHUTDOWN 20 told everybody the board
+    // went down in 120 seconds, then 60, then 30 (found in 1.1.0, when these
+    // warnings started reaching callers outside the prompt too).
+    shutSaid_ = static_cast<uint32_t>(secs);
 
     snprintf(buf, sizeof(buf), "*** %s is taking the board down in %ld seconds.",
              s.user, secs);

@@ -82,6 +82,9 @@ void rewrite(Term& t, Timeline& tl, uint8_t oldLen, const char* newText);
 // --- activity indicators ---------------------------------------------------
 void dots(Term& t, Timeline& tl, uint8_t count, uint16_t msEach);
 void spinner(Term& t, Timeline& tl, Spin style, uint16_t totalMs, uint16_t msEach);
+// spinFrame: one frame of a spinner, at the cursor, for a caller that drives
+// the animation itself (a ring for the sysop: up to 45 s, stopped by a key)
+void spinFrame(Term& t, Timeline& tl, Spin style, uint8_t i);
 void cursorBlink(Term& t, Timeline& tl, uint8_t times, uint16_t ms);
 void working(Term& t, Timeline& tl, const char* label, uint16_t ms, const char* result);
 void progressBar(Term& t, Timeline& tl, uint8_t width, uint16_t totalMs);

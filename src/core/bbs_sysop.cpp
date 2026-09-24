@@ -267,6 +267,8 @@ void Bbs::elevate(Session& s, uint32_t now, bool setup) {
     // (1.1.0). After a BOOT reset of the password this is the very login it
     // is for, and it only ever reached coElevate before.
     bootNotice(d);
+    // Rings nobody answered while the sysop was off (1.1.0), once, then gone.
+    ringNotes(d);
     t.color(tl, Color::Grey);
     t.text(tl, "HELP for commands.");
     t.nl(tl);
@@ -302,6 +304,8 @@ void Bbs::coElevate(Session& s, Access level, uint32_t now, bool setup) {
     // together on one line, since say() ends none, and nothing tested it
     // because the host build never crashed its way into a boot.
     bootNotice(s);
+    // A second sysop session, in place on a caller line, is the sysop too.
+    if (level == Access::Sysop) ringNotes(s);
     say(t, tl, Color::Grey, can(s, PERM_NOLIMITS) ? "No time limits. HELP for commands."
                                                : "HELP for commands.");
     plat::log("bbs: node %u -> %s (%s, %s) perms 0x%03x", s.id, syscfg::levelName(level),

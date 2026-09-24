@@ -351,6 +351,14 @@ char     g_away[kSlots][kAwayMax + 1] = {};    // away note, empty when here
 // while it is on, and leaving the room or the target leaving clears it.
 uint8_t  g_sticky[kSlots];
 
+// The sysop who answered this caller's ring (1.1.0), 0xFF for none. A room
+// whose write level shuts a caller out (a guest, when write = users) still
+// lets them answer the sysop who chose to talk to them: without this they
+// were told "what you type goes to the sysop only" and then refused every
+// line. Only privates to that one node; the room itself stays shut. Set by
+// join, so walking in with CHAT clears it.
+uint8_t  g_answered[kSlots];
+
 // The bell is Session::bellOff now, shared with BELL at the main prompt.
 // It lived here as g_bell and NOTHING READ IT: /b answered "Bell off." and
 // changed nothing, because no line in the room ever rang. The test checked
@@ -495,6 +503,31 @@ void mark(Session& s) {
     s.term.text(s.tl, kMark);
 }
 
+// sayWrapped: tell() for a sentence longer than a line (1.1.0, the sysop
+// page's lines). Word wrapped at the reader's width, with the continuation
+// lined up under the words rather than under the marker, so a wrapped line
+// still reads as one thing the board said.
+void sayWrapped(Session& s, Color c, const char* text, bool withMark) {
+    uint8_t w   = Bbs::instance().rowWidth(s);
+    uint8_t ind = withMark ? static_cast<uint8_t>(sizeof(kMark) - 1) : 0;
+    uint8_t cols = w > ind + 8 ? static_cast<uint8_t>(w - ind) : w;
+    char line[160];
+    const char* p = text;
+    bool first = true;
+    uint8_t guard = 0;
+    while ((p = bbsu::wrap(p, line, sizeof(line), cols)) != nullptr && ++guard < 8) {
+        if (withMark) {
+            if (first) mark(s);
+            else for (uint8_t i = 0; i < ind; ++i) s.term.ch(s.tl, ' ');
+        }
+        s.term.color(s.tl, c);
+        s.term.text(s.tl, line);
+        s.term.nl(s.tl);
+        first = false;
+        if (!*p) break;
+    }
+}
+
 // interrupt: one line to a caller who might be part way through typing.
 // Their line is lifted, the message printed, and their line put back.
 void interrupt(Session& s, Color c, const char* text) {
@@ -553,10 +586,19 @@ void tag(const Session& s, char* out, size_t n) {
 // wipeInput has to erase these as well as the typed text, or every re-arm
 // leaves another marker on the line. Counted here so the two cannot
 // disagree.
+// stickyName: how the marker names the node. The sysop node is S, as it is
+// everywhere else a node is written for a person; nodeNum would say 0, and
+// a conversation with the sysop (an answered ring, 1.1.0) is the commonest
+// sticky there is.
+NodeStr stickyName(uint8_t to) {
+    if (to == 0) { NodeStr r{}; r.t[0] = 'S'; return r; }
+    return nodeNum(to);
+}
+
 uint8_t stickyCols(const Session& s) {
     uint8_t to = g_sticky[slotOf(s)];
     if (to == 0xFF) return 0;
-    return static_cast<uint8_t>(4 + strlen(nodeNum(to).t));    // "[>" + n + "] "
+    return static_cast<uint8_t>(4 + strlen(stickyName(to).t));  // "[>" + n + "] "
 }
 
 // drawMarker: the [>n] in front of the input line while a conversation is
@@ -567,7 +609,7 @@ void drawMarker(Session& s) {
     // Says where the next line is going, every line, because the whole risk
     // of a sticky private is forgetting you are in one.
     char tag_[12];
-    snprintf(tag_, sizeof(tag_), "[>%s] ", nodeNum(to).t);
+    snprintf(tag_, sizeof(tag_), "[>%s] ", stickyName(to).t);
     s.term.color(s.tl, g_cPmark);
     s.term.text(s.tl, tag_);
 }
@@ -689,8 +731,17 @@ void showLine(Session& s, const char* line, bool old) {
 }
 
 // flush: hand a caller everything said since they last saw the room. Only
-// called when their own line is empty, so nothing ever lands in the middle
-// of what somebody is typing.
+// called with their input line off the screen (empty, or lifted by
+// wipeInput), so nothing ever lands in the middle of what somebody is
+// typing.
+//
+// Lines only. Whoever calls it puts the input line back afterwards. It used
+// to end with chatPrompt, and nearly every caller then re-armed with
+// armInput, which draws it again: in a sticky conversation that put "[>3]
+// [>3]" on the line, and a room line arriving on an empty line was printed
+// after the marker rather than above it. Harmless-looking while stickies
+// were rare; a ring answered by the sysop (1.1.0) starts both callers in
+// one, so it is fixed here rather than at each site.
 void flush(Session& s) {
     if (s.ownerData >= g_seq) return;
     if (s.tl.freeBytes() < 256) return;                      // slow line: next time
@@ -701,6 +752,14 @@ void flush(Session& s) {
         if (squelched(s, line)) continue;                    // hidden by /sq
         showLine(s, line, false);
     }
+}
+
+// catchUpEmpty: somebody with nothing typed: take the marker off, print what
+// was said, put the marker back.
+void catchUpEmpty(Session& s) {
+    if (s.ownerData >= g_seq) return;
+    wipeInput(s);
+    flush(s);
     chatPrompt(s);
 }
 
@@ -711,6 +770,14 @@ void catchUp(Session& s) {
     wipeInput(s);
     flush(s);
     restoreInput(s);
+}
+
+// rearm: a fresh input line after something else had the screen: the core,
+// ringing the sysop from the room, or answering a ring into it (1.1.0).
+// Whatever the room said meanwhile comes first.
+void rearm(Session& s) {
+    flush(s);
+    armInput(s);
 }
 
 // post: say it in the room. Callers sitting with an empty line see it now;
@@ -726,7 +793,7 @@ void post(const char* text, const Session* from) {
             if (g_seq - s.ownerData + 4u >= g_histMax) catchUp(s);  // unless the buffer is filling
             return;
         }
-        flush(s);
+        catchUpEmpty(s);
     }, skip);
 }
 
@@ -1152,11 +1219,14 @@ bool mailRead(Session& s, bool quiet) {
 // the column 0 rule.
 // ===========================================================================
 
-void mailBoxPrompt(Session& s) {
+// keep: draw the prompt again over what is already being typed, after a
+// notice (1.1.0), rather than starting an empty line.
+void mailBoxPrompt(Session& s, bool keep = false) {
     s.term.color(s.tl, Color::Cyan);
     s.term.text(s.tl, "Mail> ");
     s.term.color(s.tl, Color::White);
-    s.ed.begin(2, 0);
+    if (keep && s.ed.active()) s.ed.redraw(s.term, s.tl);
+    else                       s.ed.begin(2, 0);
 }
 
 // mailBoxDraw: the list. `clear` on the way in; not after an action, so what
@@ -1328,12 +1398,13 @@ uint8_t mailNextAfter(const char* handle, int16_t slot) {
     return 0xFF;
 }
 
-void mailAskTo(Session& s) {
+void mailAskTo(Session& s, bool keep = false) {
     g_mailMode[slotOf(s)] = MM_TO;
     s.term.color(s.tl, Color::Cyan);
     s.term.text(s.tl, "To: ");
     s.term.color(s.tl, Color::White);
-    s.ed.begin(BBS_USER_MAX, 0);
+    if (keep && s.ed.active()) s.ed.redraw(s.term, s.tl);
+    else                       s.ed.begin(BBS_USER_MAX, 0);
 }
 
 void mailBoxKey(Session& s, int k) {
@@ -1511,9 +1582,14 @@ void leave(Session& s, const char* why) {
 
 void roster(Session& s);          // defined with /s, used on the way in
 
-void join(Bbs& bbs, Session& s) {
+// join: into the room. stick and say are the sysop page's (1.1.0): the node
+// this caller is put here to talk to, and the line that says so, printed
+// last before the input line so the room's banner and history cannot bury
+// it. A ring the sysop answered walks in past the room's ban list, because
+// the sysop chose to talk to them and the room is only where it happens.
+void join(Bbs& bbs, Session& s, uint8_t stick = 0xFF, const char* say = nullptr) {
     char line[80];
-    if (isBanned(s.user) && !s.perms) {                      // barred from this room
+    if (stick == 0xFF && isBanned(s.user) && !s.perms) {     // barred from this room
         s.term.color(s.tl, Color::LightRed);
         s.term.text(s.tl, "You are not welcome in the room.");
         bbs.prompt(s);
@@ -1522,7 +1598,8 @@ void join(Bbs& bbs, Session& s) {
     if (!bbs.own(s, g_index)) { bbs.prompt(s); return; }
     g_squelch[slotOf(s)] = 0;                                // a fresh visit hides nobody
     g_away[slotOf(s)][0] = '\0';
-    g_sticky[slotOf(s)]  = 0xFF;                             // and talks to the room
+    g_sticky[slotOf(s)]  = stick;                            // and talks to the room, or to one
+    g_answered[slotOf(s)] = stick;
     bbs.setDoing(s, "CHAT");
 
     Term& t = s.term;
@@ -1559,6 +1636,7 @@ void join(Bbs& bbs, Session& s) {
     // out of the login needs telling, because the room has no prompt
     // character and an empty line looks like a board that has stopped.
     if (s.landing) tell(s, g_cRoom, "Welcome to the chat.");
+    if (say) sayWrapped(s, Color::Yellow, say, true);
 
     armInput(s);
 
@@ -1655,6 +1733,7 @@ bool roomLongHelp(Session& s, const char* arg) {
         { "/intro", "/welcome" }, { "/quit", "/q" }, { "/quit+", "/q+" },
         { "/bell", "/b" }, { "/history", "/sh" }, { "/scroll", "/sh" },
         { "/pm", "/p" }, { "/msg", "/p" }, { "/em", "/email" }, { "/wi", "/whois" },
+        { "/o-", "/o" }, { "/operator", "/o" },
     };
     for (const auto& a : kAlias)
         if (ieq(a[0], verb)) { snprintf(verb, sizeof(verb), "%s", a[1]); break; }
@@ -1710,6 +1789,7 @@ void roomHelp(Session& s, const char* arg) {
     helpLine(s, "/p n*", "talk to n; /p* ends it");
     helpLine(s, "/me text", "an action line");
     helpLine(s, "/page n why", "get their attention");
+    helpLine(s, "/o [reason]", "ring for the sysop");
     helpLine(s, "/whois handle", "who is that");
     helpLine(s, "/a [note]", "away, or back again");
     helpLine(s, "/sq n", "hide or show a node");
@@ -2108,7 +2188,8 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
         wipeInput(s);
         if (!to || to == &s || !rest || !*rest) {
             tell(s, Color::LightRed, "/p n text, to somebody in the room.");
-        } else if (!plugins::mayUse(s, plugins::levelFor(g_index, 1))) {
+        } else if (!plugins::mayUse(s, plugins::levelFor(g_index, 1)) &&
+                   g_answered[slotOf(s)] != id) {
             tell(s, Color::LightRed, "You can watch, but not talk here.");
         } else if (!spendToken(s, now)) {
             tell(s, Color::LightRed, "Too fast.");
@@ -2229,6 +2310,33 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
         }
         flush(s);
         armInput(s);
+        return true;
+    }
+
+    // /o [reason] and /o- : the sysop page (1.1.0).
+    //
+    // For a caller /o rings, exactly as OPERATOR does at the main prompt: the
+    // core's code, not a second copy of it, so the rate limits and the
+    // hidden-sysop rule cannot drift apart. For the sysop it is the answer.
+    // In the room a ring arrives as two lines rather than a one-key question,
+    // because the keys here are the room's: /o answers and /o- declines.
+    //
+    // The core may keep the session (asking why, ringing), or put it into a
+    // conversation (an answer re-arms it). Only when it has done neither is
+    // the input line put back here.
+    if (is("/o") || is("/o-") || is("/operator")) {
+        Bbs& b = Bbs::instance();
+        bool no = is("/o-");
+        wipeInput(s);
+        if (s.level == Access::Sysop) {
+            if (no) b.ringDecline(s);
+            else    b.ringAnswer(s);
+        } else if (no) {
+            tell(s, Color::Grey, "Nobody is ringing.");
+        } else {
+            b.cmdOperator(s, arg);
+        }
+        if (b.owns(s, g_index) && !s.ed.active()) rearm(s);
         return true;
     }
 
@@ -2521,14 +2629,15 @@ inline uint8_t writeWidth(Session& s) {
     return compose::lineWidth(s.term.cols(), kWritePromptCols, BBS_LINE_MAX);
 }
 
-void writePrompt(Session& s) {
+void writePrompt(Session& s, bool keep = false) {
     uint8_t slot = slotOf(s);
     char q[12];
     snprintf(q, sizeof(q), "%2u: ", static_cast<unsigned>(g_writeCo[slot].rows + 1));
     s.term.color(s.tl, Color::Grey);
     s.term.text(s.tl, q);
     s.term.color(s.tl, Color::White);
-    s.ed.begin(writeWidth(s), 0);
+    if (keep && s.ed.active()) s.ed.redraw(s.term, s.tl);
+    else                       s.ed.begin(writeWidth(s), 0);
 }
 
 // writeBegin: open the editor, and TAKE the session so the keys arrive.
@@ -2708,6 +2817,39 @@ void writeKey(Session& s, int k) {
     writePrompt(s);
 }
 
+// ---------------------------------------------------------------------------
+// liftInput / restoreInput: a page, a broadcast or a ring printed into the
+// room or the mailbox (1.1.0). In the room the input line is lifted whole,
+// marker and all, exactly as interrupt() lifts it for "you have mail"; in
+// the mailbox the line it is on is finished and the prompt drawn again
+// underneath, the way a notice is answered everywhere else in mail.
+// ---------------------------------------------------------------------------
+bool hookLift(Session& s) {
+    if (g_mailMode[slotOf(s)] == MM_NONE && s.ed.active()) {
+        wipeInput(s);
+        return true;
+    }
+    s.term.reset(s.tl);
+    s.term.nl(s.tl);
+    return true;
+}
+
+void hookRestore(Session& s) {
+    switch (g_mailMode[slotOf(s)]) {
+        case MM_NONE:
+            // The core took the line editor in between (/o asking why, or
+            // ringing), so there is no line to put back: start one.
+            if (s.ed.active()) restoreInput(s);
+            else               rearm(s);
+            return;
+        case MM_BOX:    s.term.nl(s.tl); mailBoxPrompt(s, true); return;
+        case MM_CHOOSE: s.term.nl(s.tl); mailChoosePrompt(s);    return;
+        case MM_WRITE:  writePrompt(s, true);                    return;
+        case MM_TO:     mailAskTo(s, true);                      return;
+        default:        s.term.nl(s.tl);                         return;
+    }
+}
+
 void onKey(Session& s, int k, uint32_t now) {
     // A message is in hand. These keys are not chat: they decide what
     // happens to it, and they are read before the editor sees them because
@@ -2733,7 +2875,7 @@ void onKey(Session& s, int k, uint32_t now) {
         return;
     }
     if (r != LineEditor::Res::Done) {
-        if (!s.ed.len()) flush(s);                           // nothing typed: catch up
+        if (!s.ed.len()) catchUpEmpty(s);                    // nothing typed: catch up
         return;
     }
 
@@ -2850,6 +2992,7 @@ void onLogoff(Session& s) {
     mailForget(slot);
     g_squelch[slot] = 0;
     g_away[slot][0] = '\0';
+    g_answered[slot] = 0xFF;                // nobody inherits a way past the room's write level
     for (uint8_t i = 0; i < kSlots; ++i)                    // nobody inherits a squelch
         g_squelch[i] = static_cast<uint16_t>(g_squelch[i] & ~(1u << slot));
     if (g_voteTarget == s.id) voteClose("ended, they left");
@@ -2889,6 +3032,10 @@ bool start(Bbs& bbs) {
     primeBuckets();
     memset(g_squelch, 0, sizeof(g_squelch));
     memset(g_away, 0, sizeof(g_away));
+    // 0 is a node (the sysop's), so "none" has to be written, not left to
+    // zero-initialisation.
+    memset(g_sticky, 0xFF, sizeof(g_sticky));
+    memset(g_answered, 0xFF, sizeof(g_answered));
     g_voteTarget = 0xFF;
     g_voteMask   = 0;
     loadBans();
@@ -2969,6 +3116,38 @@ const Command kCommands[] = {
 // ---------------------------------------------------------------------------
 namespace chat {
 bool mailOn() { return g_mailSlots > 0; }
+
+bool inRoom(const Session& s) {
+    if (g_index == 0xFF || !plugins::running(g_index)) return false;
+    return joined(s) && !mailBusy(s);
+}
+
+// Always with the marker: this is the room's voice, and it is also said to
+// somebody the core has borrowed from the room (asking why, ringing), who is
+// not counted as joined while it has them.
+void roomSay(Session& s, Color c, const char* text) {
+    sayWrapped(s, c, text, true);
+}
+
+bool converse(Session& s, uint8_t withNode, const char* say) {
+    if (g_index == 0xFF || !plugins::running(g_index)) return false;
+    Bbs& b = Bbs::instance();
+    uint8_t slot = slotOf(s);
+    bool in = joined(s);
+    // Whatever mail decision was half made goes, and the message with it
+    // stays exactly as it was: nothing is touched until R, S or D, and none
+    // of those was pressed.
+    mailForget(slot);
+    if (!in) {
+        join(b, s, withNode, say);
+        return b.owns(s, g_index);
+    }
+    g_sticky[slot]   = withNode;
+    g_answered[slot] = withNode;
+    if (say) sayWrapped(s, Color::Yellow, say, true);
+    rearm(s);
+    return true;
+}
 } // namespace chat
 
 extern const Plugin kChatPlugin = {
@@ -2992,4 +3171,6 @@ extern const Plugin kChatPlugin = {
     nullptr,                 // onBytes
     onRename,
     nullptr,                 // listDone
+    hookLift,                // liftInput: notices reach the room and the mailbox
+    hookRestore,             // restoreInput
 };

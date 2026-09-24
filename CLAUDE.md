@@ -450,6 +450,24 @@ this tree.
     single space.
   - Static DRAM +1,176 at the merge base, about 400 of it the lights and
     the rest IDF data the RMT driver pulls in.
+- **Phase 3a is in (1.1.0-dev.5): OPERATOR, notices inside plugins, bells.**
+  - Two appended hooks, `liftInput` and `restoreInput`: the core lifts a
+    plugin's input line, prints the notice and has the plugin put it back.
+    Chat, forums, files, the mailbox and the page editor have them.
+    Forms take broadcasts and rings on the status line only, because a
+    38-column status line would cut a page short.
+  - Still holding notices until they end: a file transfer, the serial
+    bridge, SNOOP, FX, a paused screen and the backup Y/N. Time warnings
+    still do not reach a plugin-owned session.
+  - A hidden or lurking sysop is never rung: not on, hidden, lurking or
+    somewhere a ring cannot reach all answer "isn't available" at once,
+    and the note is written the same way, so neither the words nor the
+    timing tell HIDE apart from absent.
+  - Notes live in `<userdata>/rings.txt` (no static DRAM), up to 8,
+    written through a temp file and a rename.
+  - The core calls `chat::inRoom` to choose the room's two-line ring; a
+    hook would be cleaner, but the spec fixed the hooks at two.
+  - Static DRAM +176.
 
 ## 1.0.0 (2026-09-23)
 
@@ -2203,9 +2221,10 @@ Queued for the next build (Rob's plan, in order):
   SCREENS.md used to explain the cap as "room for a second copy" of a
   768 KB partition. Measure a real upload before deciding which moves.
 - **COMMANDS.md's staff section is one table broken by prose**, so GitHub
-  renders most of it as text with stray bars, and **PLUGINS.md's hook
-  table** is missing rows, listDone, onPresence, onBytes, onRename, setting
-  and status. A docs pass of its own.
+  renders most of it as text with stray bars. (PLUGINS.md's hook table was
+  checked in 1.1.0-dev.5: listDone, onPresence, onBytes, onRename, setting
+  and status were already there, and liftInput and restoreInput were
+  added.) A docs pass of its own.
 - **RAM, from the 0.22.0 report**: the backup `exp_`/`imp_` union (3,872,
   third time recommended), static `UserRec` scratch to locals (10,824, read
   SYS stack free first), compose/form pooling (11,856), Session and UserRec

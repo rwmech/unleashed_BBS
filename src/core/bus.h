@@ -52,6 +52,12 @@ enum class BusKind : uint8_t {
     // departure is still a Notice: nobody needs a bell to learn that
     // somebody left.
     Arrival,
+    // Appended (1.1.0). A caller ringing for the sysop (OPERATOR). Only the
+    // sysop session being rung ever gets one, and the text is the ring's
+    // sequence number rather than anything to print: the ring itself lives
+    // on the board, one at a time, and a notice that arrives after its ring
+    // has ended is dropped rather than asked about.
+    Ring,
 };
 
 struct BusMsg {
@@ -66,11 +72,27 @@ public:
     void clear() { head_ = count_ = 0; }
     bool empty() const { return count_ == 0; }
 
-    // push: queue a message; when full the oldest is dropped (returns false)
+    // push: queue a message; when full the oldest is dropped (returns false).
+    // Never a Ring while anything else can go instead: there is at most one,
+    // it is a question somebody is waiting on, and a burst of arrivals in
+    // front of a sysop who is busy must not quietly cost the caller their
+    // ring (1.1.0).
     bool push(const BusMsg& m);
 
     // pop: oldest message first
     bool pop(BusMsg& out);
+
+    // take: the oldest message whose kind is in mask (a bit per BusKind),
+    // leaving the rest where they were, in order. For a caller who can be
+    // told some things now and not others: somebody in a form gets a
+    // broadcast on its status line, while a page waits for the prompt,
+    // where there is room to read it.
+    bool take(uint32_t mask, BusMsg& out);
+
+    // has: is a message of a kind in mask waiting?
+    bool has(uint32_t mask) const;
+
+    static constexpr uint32_t bit(BusKind k) { return 1u << static_cast<uint8_t>(k); }
 
 private:
     BusMsg  q_[BBS_BUS_DEPTH];
