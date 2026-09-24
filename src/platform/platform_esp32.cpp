@@ -65,6 +65,9 @@
 #include "driver/usb_serial_jtag_vfs.h"
 #define BBS_CONSOLE_USJ 1
 #endif
+#ifdef BBS_SD_SDMMC1
+#include "driver/sdmmc_host.h"           // a card slot wired for SDMMC (board.h)
+#endif
 #ifdef BBS_HAS_LCD
 #include "esp_lcd_panel_io.h"            // the panel: esp_lcd over SPI
 #include "esp_lcd_io_spi.h"
@@ -310,13 +313,37 @@ bool sdMount(const SdPins& pins, char* err, size_t errLen) {
     // Whatever was cached describes a card that is not this one.
     sdInfoStale();
 #ifdef BBS_SD_SDMMC1
-    // A board whose slot is SDMMC has no SPI pins to probe, and every pin
-    // the WROOM's defaults name is somebody else's line there (board.h).
-    // The SDMMC mount is its own path; until it is, nothing is driven.
-    if (pins.cs < 0 || pins.mosi < 0 || pins.clk < 0 || pins.miso < 0)
-        return fail("no card found: this board's SDMMC slot is not supported yet");
+    // A slot wired for SDMMC (board.h, BBS_SD_SDMMC1): the SDMMC host, one
+    // data line, on the profile's pins. On the ESP32 the host's slot 1 is on
+    // the IO MUX and can only be CLK 14, CMD 15, D0 2, so the profile's pins
+    // are checked against that at compile time; on a chip that routes the
+    // host through the GPIO matrix (the S3) they are the pins it uses. One
+    // line, not four: on the Freenove D1 is a camera line and D2 is GPIO 12,
+    // the flash-voltage strap, which a card's pull-up would hold high at
+    // reset. Everything after the mount (FAT at /sd, sdInfo, unmount) is the
+    // SPI path's, unchanged: both end in the same VFS.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+    sdmmc_host_t        host = SDMMC_HOST_DEFAULT();
+    sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
+#pragma GCC diagnostic pop
+    host.max_freq_khz = pins.speedKHz ? pins.speedKHz : 20000;
+    slot.width        = 1;
+#if SOC_SDMMC_USE_GPIO_MATRIX
+    slot.clk = static_cast<gpio_num_t>(BBS_SDMMC_CLK);
+    slot.cmd = static_cast<gpio_num_t>(BBS_SDMMC_CMD);
+    slot.d0  = static_cast<gpio_num_t>(BBS_SDMMC_D0);
+    slot.d1  = GPIO_NUM_NC;
+    slot.d2  = GPIO_NUM_NC;
+    slot.d3  = GPIO_NUM_NC;
+#else
+    static_assert(BBS_SDMMC_CLK == 14 && BBS_SDMMC_CMD == 15 && BBS_SDMMC_D0 == 2,
+                  "the ESP32's SDMMC slot 1 is fixed: CLK 14, CMD 15, D0 2");
 #endif
-
+    // The chip's weak pull-ups on top of whatever the board fits. They are
+    // released at reset, so GPIO 2's does not reach the download-mode strap.
+    slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+#else
     // The bus is configured with MOSI, MISO and CLK, so a change to any of
     // them needs it rebuilt. CS is a device setting and does not.
     if (g_busUp && (g_busPins.mosi != pins.mosi || g_busPins.miso != pins.miso ||
@@ -358,6 +385,7 @@ bool sdMount(const SdPins& pins, char* err, size_t errLen) {
     sdspi_device_config_t dev = devDefaults;
     dev.gpio_cs = static_cast<gpio_num_t>(pins.cs);
     dev.host_id = static_cast<spi_host_device_t>(host.slot);
+#endif
 
     esp_vfs_fat_sdmmc_mount_config_t cfg = {};
     // format_if_mount_failed stays false, deliberately. A card that does not
@@ -369,7 +397,11 @@ bool sdMount(const SdPins& pins, char* err, size_t errLen) {
     cfg.max_files              = BBS_SD_MAX_FILES;
     cfg.allocation_unit_size   = 16 * 1024;
 
+#ifdef BBS_SD_SDMMC1
+    esp_err_t e = esp_vfs_fat_sdmmc_mount(BBS_SD_MOUNT, &host, &slot, &cfg, &g_card);
+#else
     esp_err_t e = esp_vfs_fat_sdspi_mount(BBS_SD_MOUNT, &host, &dev, &cfg, &g_card);
+#endif
     if (e != ESP_OK) {
         g_card = nullptr;
         // Put the bus back down. A failed mount that leaves the bus up holds
@@ -384,8 +416,13 @@ bool sdMount(const SdPins& pins, char* err, size_t errLen) {
         plat::log("sd: mount failed at %u kHz: %s (0x%x)",
                   static_cast<unsigned>(host.max_freq_khz), esp_err_to_name(e),
                   static_cast<unsigned>(e));
+#ifdef BBS_SD_SDMMC1
+        if (e == ESP_ERR_TIMEOUT || e == ESP_ERR_NOT_FOUND)
+            return fail("no card found: check it is seated");
+#else
         if (e == ESP_ERR_TIMEOUT || e == ESP_ERR_NOT_FOUND)
             return fail("no card found: check it is seated, and the CS pin");
+#endif
         if (e == ESP_FAIL)
             return fail("card found but no FAT filesystem: format it FAT32");
         // Out of memory is its own answer and must not be filed under

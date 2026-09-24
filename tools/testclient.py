@@ -11781,9 +11781,13 @@ def test_sd_no_reprobe():
         text = cfg.read_text()
         if "[plugin:sd]" not in text:
             text = text.rstrip("\n") + "\n\n[plugin:sd]\n"
-        cfg.write_text(cfg_with(text, {("plugin:sd", "cs"): "4"}))
+        # An SDMMC board's pins are its wiring, not settings (the Freenove
+        # CAM): the bus speed is what moves there.
+        sdmmc = HOST_BOARD == "fncam"
+        cfg.write_text(cfg_with(text, {("plugin:sd", "speed" if sdmmc else "cs"): "10000" if sdmmc else "4"}))
         cfg_reload(s)
-        ok &= check("and a save that moves a pin looks once, on the new pin", tries() == 2)
+        ok &= check("and a save that moves a pin looks once, on the new pin" if not sdmmc else
+                    "and a save that moves the bus speed looks once", tries() == 2)
         s.buf.clear()
         s.send(b"sd\r")
         s.wait_for(b"SD card", 4)
