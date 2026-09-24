@@ -932,3 +932,26 @@ day from the plugin's tick:
   is what keeps it safe.
 - CAMERA (status, staff) shows: photos stored (callers / timelapse), their
   space, the oldest date kept, and the free space against the floor.
+
+
+## Latest photo on the directory listing (Rob, 2026-09-24; after the camera works)
+
+Rob: with announce running, show "a small picture" of the last photo the
+board took on its directory row ("plenty of space to the right"),
+"a background send it along thing", updating at most about 4 times an hour.
+
+- **Opt-in, off by default**: CONFIG camera "Show latest photo on the
+  directory". It publishes a picture of somebody's room; the sysop chooses.
+- **Small**: a thumbnail about 160x120, about 5-10 KB of JPEG. Take it as a
+  second, small capture at snap time (the sensor can switch frame size)
+  rather than decoding and scaling the big one; measure both.
+- **Background, rate-limited**: at most 4 an hour, whatever the snap rate;
+  sent by announce's existing non-blocking socket from its tick, as its
+  own POST to a new endpoint beside /announce, never inside the heartbeat.
+  Rule no. 1 applies: no loop stalls, measured.
+- **Directory side** (a site version of its own, and PROTOCOL.md so any
+  directory can implement it): accepts only from a listed board with its
+  token; JPEG magic and a size cap checked; metadata stripped; one image
+  per board, replaced each time; shown to the right of the row; covered by
+  the report/moderation design already queued; dropped when the board is
+  delisted or stops sending.
