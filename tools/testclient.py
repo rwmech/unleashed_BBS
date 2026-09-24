@@ -1181,7 +1181,7 @@ def test_user_admin():
     s.buf.clear()
     s.send(b"users\r")
     ok &= check("USERS opens the manager", s.wait_for(b"USER MANAGER", 5) and s.wait_for(b"Rob", 3))
-    ok &= check("manager shows the key help", s.wait_for(b"Enter edit  A add  D delete  Q quit", 3))
+    ok &= check("manager shows the key help", s.wait_for(b"Enter edit  A add  D retire  Q quit", 3))
     s.buf.clear()
     s.send(b"a")
     ok &= check("A opens ADD ACCOUNT", s.wait_for(b"ADD ACCOUNT", 5))
@@ -3843,12 +3843,13 @@ def test_boot_hold():
                     "reset: 7 s. Let go now to put the sysop password back to the default." in log)
         ok &= check("the LED goes from a slow blink to rapid flashing at 7 s",
                     "led: slow at 500 ms" in log and "led: fast at 7500 ms" in log and "led: solid" not in log)
-        ok &= check("on release, the copy's four lines",
+        ok &= check("on release, the copy's five lines",
                     all(line in log for line in (
                         "reset: sysop password is back to the published default.",
                         "reset: it works from this network only, until it is changed.",
                         "reset: accounts, settings, mail and Wi-Fi are all kept.",
-                        "reset: the directory listing waits until the password changes.")))
+                        "reset: the directory listing waits until the password changes.",
+                        "reset: restarting. Log in from this network to choose a new password.")))
         after = cfg_lines(tmp)
         ok &= check("the sysop_password line is gone",
                     not any(l.strip().startswith("sysop_password") for l in after))
@@ -3897,7 +3898,9 @@ def test_boot_hold():
                     all(line in log for line in (
                         "reset: FACTORY RESET. Erasing userdata and logs.",
                         "reset: done. Screens, firmware and SD card were not touched.",
-                        "reset: restarting with no Wi-Fi. The web installer sets it up.")))
+                        # RB-fr-3: the host build has no include/secrets.h
+                        # on its path, so it is the release's line.
+                        "reset: restarting, Wi-Fi erased. The web installer sets it again.")))
         ok &= check("the accounts and the settings are gone",
                     not (user_of(tmp) / "users.txt").exists() and not (user_of(tmp) / "system.cfg").exists())
         ok &= check("so is the caller log", not (logs_of(tmp) / "calls.log").exists())
@@ -3970,11 +3973,15 @@ def test_config_wifi_fallback():
 
     # A network that never joins, with a different one that worked before.
     log, after = run("never", "OldNet\noldpass1\n")
+    # The console lines are the copy's (WF-*, section 6b.5), and "60 s" is
+    # the timer's, so a change to one without the other shows here.
     ok &= check("a network new to the board is said to be on trial",
-                f'wifi: "{ssid}" has not joined here yet; back to "OldNet" if it has not in 60 s' in log)
+                f'wifi: 60 s to join "{ssid}", or back to "OldNet", which worked' in log)
     ok &= check("not joined in 60 s: back to the last one that worked, at 60 s and not before",
                 "wifi (host): went back at 60000 ms" in log and
-                f'wifi: "{ssid}" has not joined in 60 s; going back to "OldNet", which has' in log)
+                f'wifi: could not join "{ssid}" in 60 s; going back to "OldNet"' in log)
+    ok &= check("and says the new one is tried again at every restart",
+                "wifi: each restart tries it for 60 s first; change it in CONFIG network" in log)
     ok &= check("which joins", 'wifi (host): joined "OldNet" at 61000 ms' in log)
     ok &= check("and is still the one kept", after == "OldNet\noldpass1\n")
 
@@ -3984,24 +3991,29 @@ def test_config_wifi_fallback():
                 "went back" not in log and f'wifi (host): joined "{ssid}" at 5000 ms' in log)
     ok &= check("and becomes the one to go back to",
                 after == f"{ssid}\n{pwd}\n" and
-                f'wifi: joined "{ssid}"; it is the network to go back to now' in log)
+                f'wifi: joined "{ssid}"; kept as the network to go back to' in log)
 
     # No record at all: keeps dialling, as before 1.1.0.
     log, after = run("never")
     ok &= check("with no last good network it keeps dialling the one it has",
-                "went back" not in log and "has not joined here yet" not in log and
+                "went back" not in log and "s to join" not in log and
                 f'wifi (host): still dialling "{ssid}" at 120000 ms' in log)
     ok &= check("and writes no record of a network that never joined", after is None)
 
     # The record is the network it is dialling: nothing to go back to.
     log, after = run("never", f"{ssid}\n{pwd}\n")
     ok &= check("the same network as the record is not second-guessed",
-                "went back" not in log and "has not joined here yet" not in log)
+                "went back" not in log and "s to join" not in log)
 
-    # A changed password on the same network is a different network to try.
+    # A changed password on the same network is a different network to try,
+    # and the console says it is the password, not the name twice over.
     log, after = run("never", f"{ssid}\nsomethingelse\n")
     ok &= check("the same name with another password is still on trial",
                 "wifi (host): went back at 60000 ms" in log)
+    ok &= check("said as a new password, not as the same name twice",
+                f'wifi: new password for "{ssid}": 60 s to join, or back to the old one' in log and
+                f'wifi: could not join "{ssid}" on the new password; back to the old one' in log and
+                f'back to "{ssid}"' not in log)
     return ok
 
 
@@ -9026,6 +9038,8 @@ ORDER_NAMES = [
     "test_config_lights", "test_config_lights_ascii", "test_lights_frames", "test_lights_manual",
     "test_config_wifi_live", "test_config_network", "test_config_announce_outside",
     "test_config_wifi_fallback", "test_boot_hold",
+    "test_boot_hold_write_fails", "test_boot_hold_factory_fails", "test_sysop_spelled_default",
+    "test_config_pin_exists", "test_user_admin_retire",
     "test_serial",
     "test_motd", "test_idle_login", "test_busy",
     "test_screens", "test_exit_screen", "test_welcome_connecting", "test_paced_chatin",
@@ -9045,6 +9059,262 @@ ORDER_NAMES = [
     "test_backup_published_default",
     "test_first_setup", "test_backup", "test_ban",
 ]
+
+
+# ---------------------------------------------------------------------------
+# 1.1.0 Phase 5a: known defects. Each runs on a copy of this board where it
+# restarts or breaks something, so the harness board is never touched.
+# ---------------------------------------------------------------------------
+
+# A rename() that refuses to put anything in place as system.cfg, preloaded
+# into a copy of the board. The only way to fail syscfg::write between its
+# temp file and the file it replaces, which is the case the fix is about.
+FAIL_RENAME_C = """
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <errno.h>
+#include <string.h>
+int rename(const char *from, const char *to) {
+    static const char tail[] = "/system.cfg";
+    size_t n = strlen(to), k = sizeof(tail) - 1;
+    if (n >= k && strcmp(to + n - k, tail) == 0) { errno = EIO; return -1; }
+    int (*real)(const char *, const char *) =
+        (int (*)(const char *, const char *))dlsym(RTLD_NEXT, "rename");
+    return real(from, to);
+}
+"""
+
+
+def test_boot_hold_write_fails():
+    """A failed system.cfg write leaves the old file exactly as it was (1.1.0).
+
+    syscfg::write removed system.cfg before renaming the new one in, so a
+    failure between the two left no settings at all: the next boot had no
+    network, no staff passwords, and the published default. The BOOT
+    password reset's "Nothing changed." was then false. LittleFS and POSIX
+    both rename over an existing file in one step, so the remove was only
+    ever a hole. Played here with a rename that refuses system.cfg.
+    """
+    print("A failed settings write keeps the old file")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the local harness")
+        return True
+    import shutil
+    import subprocess
+    cc = shutil.which("cc") or shutil.which("gcc")
+    if not cc:
+        print("  SKIP  no C compiler for the rename shim")
+        return True
+    tmp = copy_data()
+    (tmp / "failrename.c").write_text(FAIL_RENAME_C)
+    so = tmp / "failrename.so"
+    built = subprocess.run([cc, "-shared", "-fPIC", "-o", str(so), str(tmp / "failrename.c"), "-ldl"],
+                           capture_output=True)
+    if built.returncode != 0:
+        shutil.rmtree(tmp, ignore_errors=True)
+        print("  SKIP  the rename shim did not build")
+        return True
+    user = tmp / "data" / "user"
+    before = (user / "system.cfg").read_bytes()
+    port = PORT + 3700
+    proc = start_copy(tmp, (str(port),), {"BBS_BOOT_HOLD_MS": "8000", "LD_PRELOAD": str(so)})
+    try:
+        log = copy_log(tmp, f"listening on {port},")
+        ok = check("a BOOT password reset whose write is refused says so",
+                   "reset: could not write system.cfg (the new config file could not be put in place). "
+                   "Nothing changed." in log)
+        ok &= check("and nothing did: system.cfg is still there, byte for byte",
+                    (user / "system.cfg").exists() and (user / "system.cfg").read_bytes() == before)
+        ok &= check("with no half-written copy left beside it", not (user / "system.tmp").exists())
+        ok &= check("and no restart", "host: restarting" not in log)
+    finally:
+        stop_copy(proc, tmp)
+    return ok
+
+
+def test_boot_hold_factory_fails():
+    """A factory erase that fails is said after the restart (1.1.0).
+
+    The erase restarted with no note, so the next boot read as a plain
+    "software restart" and nothing anywhere said that the board had been
+    half erased. NOTE_FACTORY_FAILED carries it across, into the boot line,
+    reboots.log and the staff login. The erase is made to fail with a
+    folder in userdata the program may not empty.
+    """
+    print("A factory reset that could not erase says so after the restart")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the local harness")
+        return True
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        print("  SKIP  root ignores the permission that makes the erase fail")
+        return True
+    tmp = copy_data()
+    stuck = tmp / "data" / "user" / "stuck"
+    stuck.mkdir()
+    (stuck / "KEEP.TXT").write_text("cannot be removed\n")
+    os.chmod(stuck, 0o555)
+    port = PORT + 3701
+    proc = start_copy(tmp, (str(port),), {"BBS_BOOT_HOLD_MS": "16000"})
+    try:
+        log = copy_log(tmp, f"listening on {port},")
+        ok = check("the failed erase is said, with the repair",
+                   "reset: erasing userdata FAILED. Reinstall with Erase everything first." in log)
+        ok &= check("and not the lines of an erase that finished",
+                    "reset: done." not in log and "Wi-Fi erased" not in log)
+        ok &= check("the board restarts with a note of its own", "host: restarting (note 3)" in log)
+        ok &= check("so the next boot says what happened", "boot: factory reset FAILED" in log)
+        reb = tmp / "data" / "logs" / "reboots.log"
+        lines = reb.read_text().splitlines() if reb.exists() else []
+        ok &= check("reboots.log records it", bool(lines) and lines[-1].endswith("  factory reset FAILED"))
+    finally:
+        os.chmod(stuck, 0o755)
+        stop_copy(proc, tmp)
+    return ok
+
+
+def test_sysop_spelled_default():
+    """A sysop_password line that spells out the published default is the
+    default (1.1.0).
+
+    A restore on 1.0.0 or 1.0.1 wrote "sysop_password = unleashed" into
+    boards on the default, and the explicit line made the password printed
+    on the install page work from anywhere, with the board on the
+    directory. Read as the default, such a board heals at its next boot:
+    local only, the listing held, setup offered.
+    """
+    global PORT
+    print("A system.cfg naming the published password is on the default")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the local harness")
+        return True
+    c = ansi_login("SpelledOwner")
+    c.close()
+    time.sleep(1.0)                      # the logoff's account write, before the copy
+    port = PORT + 3702
+    proc, tmp = restart_copy((str(port),), edits={("", "sysop_password"): BBS_DEFAULT})
+    saved = PORT
+    try:
+        cfg = (tmp / "data" / "user" / "system.cfg").read_text()
+        ok = check("the copy's file spells the published password out",
+                   f"sysop_password = {BBS_DEFAULT}" in cfg.splitlines())
+        log = copy_log(tmp, f"listening on {port},")
+        ok &= check("the boot calls it the published default, local network only",
+                    "cfg: sysop on the published default, local network only" in log and
+                    "PUBLISHED" not in log)
+
+        PORT = port
+        far = Caller(ansi=True, source="127.0.0.2")
+        far.wait_for(b"Enter your handle", 10)
+        ok &= check("a caller from outside is not offered setup",
+                    login(far, "FarSpelled") and b"not been set up" not in plain(far.buf))
+        far.buf.clear()
+        far.send(f"bye {BBS_DEFAULT}\r".encode())
+        far.wait_closed(12)
+        ok &= check("and the published password does not make them the sysop",
+                    b"SysOp node" not in far.buf and
+                    "default sysop password refused from 127.0.0.2 (not local)" in
+                    (tmp / "host.log").read_text(errors="replace"))
+        far.close()
+        time.sleep(1.0)
+
+        s, offered = local_login("SpelledOwner")
+        ok &= check("a caller on the board's own network is offered setup", offered)
+        s.buf.clear()
+        s.send(f"bye {BBS_DEFAULT}\r".encode())
+        ok &= check("where the published password does work", s.wait_for(b"SysOp node", 6))
+        s.wait_for(b"HELP for commands", 4)
+        ok &= check("and the directory listing is held", announce_held(s))
+        s.close()
+    finally:
+        PORT = saved
+        stop_copy(proc, tmp)
+    return ok
+
+
+def test_config_pin_exists():
+    """CONFIG and the parser refuse a GPIO the chip does not have (1.1.0).
+
+    The WROOM's ESP32 has no GPIO 20, 24 or 28 to 31. CONFIG took them, the
+    file kept them, and the driver refused them at start, which a sysop saw
+    as a plugin that "would not start" with nothing saying why. One rule,
+    syscfg::pinProblem, for core and plugin pins alike.
+    """
+    print("CONFIG refuses a pin the chip does not have")
+    local = HOST in ("127.0.0.1", "localhost")
+    s = cfg_sysop("CfgPins")
+
+    before = cfg_line("activity_led_gpio") if local else None
+    cfg_open(s, b"board", b"Hostname")
+    s.buf.clear()
+    s.send(DOWN * 5 + b"\x08" * 3 + b"24" + F1)
+    got = cfg_verdict(s, [b"no such pin", b"Saved", b"flash chip"])
+    ok = check("the LED cannot be put on GPIO 24", got == b"no such pin")
+    cfg_cancel(s)
+    if local:
+        ok &= check("and nothing is written", cfg_line("activity_led_gpio") == before)
+
+    for pin in (b"20", b"28", b"31"):
+        cfg_open(s, b"backup", b"Open for")
+        s.buf.clear()
+        s.send(DOWN * 2 + b"\x08" * 3 + pin + F1)
+        got = cfg_verdict(s, [b"no such pin", b"Saved", b"flash chip"])
+        ok &= check(f"nor the backup button on GPIO {pin.decode()}", got == b"no such pin")
+        cfg_cancel(s)
+
+    # A plugin's pin goes through the same rule. What the form says is the
+    # CONFIG page's own sentence, so this asks only that it is refused.
+    cfg_open(s, b"lights", b"Drive pin")
+    s.buf.clear()
+    s.send(DOWN * 4 + b"\x08" * 3 + b"29" + F1)
+    got = cfg_verdict(s, [b"Saved", b"no such pin", b"flash chip", b"Between"])
+    ok &= check("nor a plugin's pin: the drive light on GPIO 29",
+                got in (b"no such pin", b"flash chip"))
+    cfg_cancel(s)
+    s.close()
+
+    # A hand-edited file at boot: the line is refused and says why.
+    if local:
+        port = PORT + 3703
+        proc, tmp = restart_copy((str(port),), edits={("", "activity_led_gpio"): "30"})
+        try:
+            log = copy_log(tmp, f"listening on {port},")
+            ok &= check("a hand-edited GPIO 30 is refused at boot, by line and reason",
+                        "this chip has no such pin: 30" in log and "activity led gpio 30" not in log)
+        finally:
+            stop_copy(proc, tmp)
+    return ok
+
+
+def test_user_admin_retire():
+    """The user manager's D says Retire, as USER DEL does (1.1.0).
+
+    D has retired accounts since 0.19.0: the block stays and the handle is
+    reserved for ever. The manager went on asking "Delete handle (y/N)?",
+    which is a different promise from the one Y keeps.
+    """
+    print("USERS: D retires, and says so")
+    v = ansi_login("RetireSubject")        # never the sysop's own row at the top
+    v.close()
+    time.sleep(1.0)
+    s = cfg_sysop("RetireBoss")
+    s.buf.clear()
+    s.send(b"users\r")
+    ok = check("the manager opens", s.wait_for(b"USER MANAGER", 5))
+    ok &= check("and its keys say D retires", s.wait_for(b"Enter edit  A add  D retire  Q quit", 3))
+    s.pump(0.3)
+    s.buf.clear()
+    s.send(b"d")                            # on the first account in the list
+    s.pump(1.0)
+    shown = plain(s.buf)
+    ok &= check("D asks to retire, in the words the confirm is redrawn with",
+                b"Retire " in shown and b"? The handle stays reserved (y/N)? " in shown)
+    ok &= check("and never says delete", b"Delete" not in shown and b"delete" not in shown)
+    s.send(b"n")
+    ok &= check("N keeps it", s.wait_for(b"USER MANAGER", 5))
+    s.send(b"q")
+    s.pump(0.5)
+    s.close()
+    return ok
 
 
 def run_order():

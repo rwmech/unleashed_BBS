@@ -195,7 +195,7 @@ Log in with your account as usual, then type `BYE <password>` at the command pro
 - A wrong password is an ordinary logoff. 3 wrong passwords from one IP within 15 minutes ban that IP for 15 minutes; banned connections are dropped silently.
 - Guests can't elevate: from a guest, `BYE <password>` is a plain logoff whatever the password. Staff log in with their account first.
 - An empty password in `system.cfg` disables that level.
-- **A new board** has no `sysop_password` line, so the published default `unleashed` stands in, and only from the board's own network. A caller on that network who logs in or signs up is asked for it right away and walked through `CONFIG staff` and a short tour; nobody needs to know about `BYE`. ESC (the left arrow on a Commodore) skips the question. `CONFIG staff` will not accept `unleashed` as a chosen password, and the directory listing waits until a real one is set. See README.md, "First boot".
+- **A new board** has no `sysop_password` line, so the published default `unleashed` stands in (a line that spells `unleashed` out counts as no line, 1.1.0), and only from the board's own network. A caller on that network who logs in or signs up is asked for it right away and walked through `CONFIG staff` and a short tour; nobody needs to know about `BYE`. ESC (the left arrow on a Commodore) skips the question. `CONFIG staff` will not accept `unleashed` as a chosen password, and the directory listing waits until a real one is set. See README.md, "First boot".
 
 ### Staff commands
 
@@ -222,7 +222,7 @@ All caller commands still work. Node arguments are `1`-`10`, `S` (sysop node) or
 | `SD MOUNT` | sysop | Mount the card without rebooting. **Pauses the whole board** for a few hundred milliseconds while it negotiates over SPI, which is why it is typed rather than retried on a timer. |
 | `SD UNMOUNT` | sysop | Flush and release, so the card can be pulled safely. Screens fall back to the stock set. |
 | `UNBAN a.b.c.d` | `UNBAN` | Lift a ban. |
-| `USERS` | `USERS` | User manager: cursor list of accounts with edit, add and delete (ANSI, PETSCII). A paged list on plain ASCII. |
+| `USERS` | `USERS` | User manager: cursor list of accounts with edit, add and retire (ANSI, PETSCII; `D` retires, as `USER DEL` does). A paged list on plain ASCII. |
 | `USER ADD` | `USERS` | Add-account form: handle, password, fields, Level, Locked. |
 | `USER EDIT handle` | `USERS` | Edit-account form. Empty `New pass` keeps the password. Renames follow callers who are online. |
 | `USER DEL handle` | `USERS` | **Retires** the account after `Retire handle? (y/N)`. They cannot log in and the handle stays reserved for ever, so nothing they left behind is orphaned and nobody else can register that name. Not your own account. |
@@ -374,7 +374,7 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `hostname` | `unleashed` | DHCP and mDNS name (`unleashed.local`), `a-z 0-9 -`, applies at reboot |
 | `tz` | `UTC0` | POSIX TZ string, e.g. `CST6CDT,M3.2.0,M11.1.0` |
 | `ntp_server` | `pool.ntp.org` | clock source |
-| `sysop_password` | none set | sysop level. No line at all means the published default `unleashed` stands in, honoured from the board's own network only (see "First boot" in README.md); a blank line disables the level outright |
+| `sysop_password` | none set | sysop level. No line at all, or a line that spells it out (1.1.0), means the published default `unleashed` stands in, honoured from the board's own network only (see "First boot" in README.md); a blank line disables the level outright |
 | `cosysop1_password` | empty | co-sysop 1 level, empty = disabled |
 | `cosysop2_password` | empty | co-sysop 2 level, empty = disabled |
 | `wifi_ssid` | empty | Wi-Fi network name, up to 32 characters; set by Improv, `CONFIG network` or by hand. Empty falls back to `include/secrets.h` on a build that has one. A network that has not joined within 60 s of boot is given up for the last one that did, kept by the board in `userdata/wifi.last` (1.1.0) |
@@ -386,10 +386,10 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `day_minutes` | `480` | per-day limit, 0 = unlimited |
 | `backup_port` | `8080` | HTTP port while the backup window is open; never the same as `port` |
 | `backup_window_minutes` | `5` | how long one button press keeps the window open (1..60) |
-| `backup_button_gpio` | `0` | button pin, active low (BOOT on dev boards), -1 = no window |
+| `backup_button_gpio` | `0` | button pin, active low (BOOT on dev boards), -1 = no window. Refused: 6 to 11 (flash) and pins the chip does not have (20, 24, 28 to 31 on the WROOM) |
 | `who_refresh_min` | `1` | lowest `WHO n` / `DASH n` refresh, seconds |
 | `who_refresh_max` | `30` | highest `WHO n` / `DASH n` refresh, seconds |
-| `activity_led_gpio` | `2` | LED that blinks on network traffic (the blue LED on DOIT-style boards), -1 = none |
+| `activity_led_gpio` | `2` | LED that blinks on network traffic (the blue LED on DOIT-style boards), -1 = none. Refused: 6 to 11 (flash) and pins the chip does not have (20, 24, 28 to 31 on the WROOM) |
 | `self_register` | `yes` | `no`: unknown handles can't sign up, staff add accounts |
 | `max_users` | `250` | account limit, 1..250. Not a space limit: `userdata` holds roughly 1,380 accounts. The cap is that the list indices are `uint8_t`, which reaches into every list on the board, so raising it is its own piece of work. The SD card does not help and is not meant to: accounts stay on internal flash so they survive the card failing. |
 | `guest` | `yes` | `no`: unknown handles are not offered `[G]uest` |
@@ -549,7 +549,7 @@ format = 8N1
 ```
 
 - It uses the second UART, never the console, so flashing and `pio device monitor` keep working.
-- Pins 6 to 11 (flash), 1 and 3 (console) are refused, and a transmit pin must not be 34 to 39, which are input only.
+- Pins 6 to 11 (flash), 1 and 3 (console), and pins the chip does not have (20, 24, 28 to 31 on the WROOM) are refused, and a transmit pin must not be 34 to 39, which are input only.
 - One operator at a time. Watchers see the same stream, and a terminal that cannot keep up is told how much it skipped instead of holding up the device.
 - While you are in the serial session or the chat room, the idle timeout pauses; your call time limit still counts.
 
@@ -613,7 +613,8 @@ led3         = sparkle | random   ; manual mode: led1 to led10, effect | colour
   not only on the form: CONFIG refuses more, and a bigger number written
   into `system.cfg` is read as 30. A dim colour never goes out at a low
   percentage: a lit channel stays at least 1.
-- Neither pin can be 6 to 11, which the flash chip uses, and the two cannot
+- Neither pin can be 6 to 11, which the flash chip uses, or one the chip
+  does not have (20, 24, 28 to 31 on the WROOM), and the two cannot
   be the same pin. A change applies when the plugin restarts, which saving
   the page does. GPIO13 is a good pin for either: it has no job at boot.
   Nothing yet stops a lights pin taking one the board already uses, so

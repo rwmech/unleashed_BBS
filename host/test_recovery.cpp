@@ -11,6 +11,8 @@
 // tools/testclient.py (test_boot_hold, test_config_wifi_fallback), through
 // the host build's simulated clock in main_host.cpp.
 #include <cstdio>
+#include <cstring>
+#include <initializer_list>
 #include "../src/core/recovery.h"
 
 using namespace recovery;
@@ -170,14 +172,28 @@ int main() {
     {
         const char* pw = noteText(NOTE_PASSWORD);
         const char* fr = noteText(NOTE_FACTORY);
+        const char* ff = noteText(NOTE_FACTORY_FAILED);
         check("each reset has words and a plain restart has none",
               pw && fr && !noteText(NOTE_NONE) && !noteText(99));
+        // A factory erase that did not finish says so, rather than passing
+        // for a plain software restart (1.1.0).
+        check("so does a factory erase that failed", ff && !strcmp(ff, "factory reset FAILED"));
+        check("and the notes keep their numbers", NOTE_PASSWORD == 1 && NOTE_FACTORY == 2 &&
+                                                  NOTE_FACTORY_FAILED == 3);
         // "Last restart: <text>." on one 40 column line, and inside the 32
         // byte boot reason it is copied into.
-        size_t a = 0, b = 0;
-        while (pw && pw[a]) ++a;
-        while (fr && fr[b]) ++b;
-        check("short enough for a C64 and for bootReason_", a + 15 <= 39 && b + 15 <= 39 && a < 32 && b < 32);
+        bool fits = true;
+        for (const char* w : { pw, fr, ff }) {
+            size_t n = w ? strlen(w) : 99;
+            fits = fits && n + 15 <= 39 && n < 32;
+        }
+        check("short enough for a C64 and for bootReason_", fits);
+        // reboots.log is counted by these words, and a reset somebody did
+        // on purpose, or one that went wrong, is not a crash.
+        bool quiet = true;
+        for (const char* w : { pw, fr, ff })
+            quiet = quiet && w && !strstr(w, "crash") && !strstr(w, "watchdog") && !strstr(w, "brownout");
+        check("none of them counts as a crash in reboots.log", quiet);
     }
 
     printf("Wi-Fi fallback\n");
