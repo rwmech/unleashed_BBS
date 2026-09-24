@@ -490,8 +490,9 @@ uint8_t Bbs::rowWidth(const Session& s) const {
     // An unknown width gets the narrow case, not the optimistic one. A
     // terminal that never said how wide it is has not promised 80, and a
     // row that wraps is worse on every terminal than a row that is short on
-    // some. Plain ASCII callers land here and stay at the 39 columns
-    // SCREENS.md has always specified for them.
+    // some. Plain ASCII callers do not land here: detection gives them 80x24
+    // (detect.cpp), so their rows are 79 wide like ANSI's. The 39 columns in
+    // SCREENS.md are for screen files, which a C64 has to be able to play.
     if (!cols) cols = 40;
     if (cols > 132) cols = 132;
     return static_cast<uint8_t>(cols - 1);
@@ -1115,38 +1116,191 @@ void Bbs::cmdWho(Session& s, const char* arg) {
     startWatch(s, ListKind::Who, secs);
 }
 
+// ===========================================================================
+// One node row, for DASH, NODES and WHO (1.1.0)
+// ===========================================================================
+
+// nodeAt: see bbs.h
+const Session* Bbs::nodeAt(uint8_t k) const {
+    if (k < BBS_MAX_NODES)      return &nodes_[k];
+    if (k == BBS_MAX_NODES)     return &sysop_;
+    if (k == BBS_MAX_NODES + 1) return &busy_;
+    return nullptr;
+}
+
 // ---------------------------------------------------------------------------
-// rowWho: title bar with the clock, header, the 6 caller nodes, the sysop
-// if shown, a closing rule. The busy line is never listed. A refresh
-// screen keeps a fixed height. Staff with NODES see what each caller last
-// ran (Doing) instead of the terminal type.
+// nodeHead: the heading for a plan, from the same widths nodeCells uses, so a
+// column and its heading cannot come apart the way WHO's did at 80 columns
+// (the header widened with the terminal and the rows stayed at 40). Leaves
+// the row open: the 132 column dashboard puts more on the same line.
+// ---------------------------------------------------------------------------
+uint8_t Bbs::nodeHead(Session& v, NodePlan plan) {
+    char buf[96];
+    const char* what = can(v, PERM_NODES) ? "Doing" : "Terminal";
+    switch (plan) {
+        case NodePlan::Wide:
+            snprintf(buf, sizeof(buf), "%s%c%-20.20s %-10.10s %5s %4s %-15.15s %-10.10s",
+                     " N", ' ', "Handle", "Doing", "Idle", "Left", "Address", "Terminal");
+            break;
+        case NodePlan::Wide132:
+            snprintf(buf, sizeof(buf), "%s%c%-20.20s %-10.10s %5s %4s %4s %-15.15s %-10.10s",
+                     " N", ' ', "Handle", "Doing", "Idle", "Left", "On", "Address", "Terminal");
+            break;
+        case NodePlan::Narrow:
+            snprintf(buf, sizeof(buf), "%s%c%-12.12s %-9.9s %5s %4s",
+                     " N", ' ', "Handle", "Doing", "Idle", "Left");
+            break;
+        case NodePlan::From:
+            snprintf(buf, sizeof(buf), "%s%c%-12.12s %-15.15s %-5.5s",
+                     " N", ' ', "Handle", "Address", "Term");
+            break;
+        case NodePlan::Who:
+            snprintf(buf, sizeof(buf), "%s%c%-20.20s %-12.12s %3s %5s",
+                     " N", ' ', "Handle", what, "Min", "Idle");
+            break;
+        case NodePlan::WhoNarrow:
+        default:
+            snprintf(buf, sizeof(buf), "%s%c%-12.12s %-10.10s %3s %5s",
+                     " N", ' ', "Handle", what, "Min", "Idle");
+            break;
+    }
+    uint8_t col = 0;
+    rowSeg(v, Color::LightBlue, buf, col);
+    return col;
+}
+
+// ---------------------------------------------------------------------------
+// nodeCells: one session's row in a plan, for viewer v, left open like
+// nodeHead. The colours are the same thing in the same colour on all three
+// screens: node LightBlue, rank marker by markColor, handle LightGreen (White
+// for your own line, DarkGrey when hidden), doing Cyan, idle Grey going
+// DarkGrey past five minutes, minutes left Grey going LightRed under five,
+// address Grey, terminal DarkGrey, a free line DarkGrey.
+//
+// WHO keeps its own rules, which are not the staff screens': a caller sees
+// terminals rather than what people are doing, and a hidden staff line looks
+// free to anybody who is not staff.
+// ---------------------------------------------------------------------------
+uint8_t Bbs::nodeCells(Session& v, const Session& o, NodePlan plan) {
+    uint32_t now = plat::millis();
+    uint8_t col = 0;
+    char buf[40];
+    NodeStr ns = nodeLabel(o);
+    bool who    = plan == NodePlan::Who || plan == NodePlan::WhoNarrow;
+    bool seeAll = v.perms != 0;                              // staff see hidden lines
+    bool hidden = &o != &v && (!o.visible || o.lurk);
+
+    if (o.st == SState::Free || (who && hidden && !seeAll)) {
+        rowSeg(v, Color::DarkGrey, ns.t, col);
+        rowSeg(v, Color::DarkGrey, who ? " -- waiting for caller --" : " -", col);
+        return col;
+    }
+
+    // cell: a column of fixed width with the space that follows it; the last
+    // column of a row leaves the space off.
+    auto cell = [&](Color c, const char* text, int w, bool last = false) {
+        snprintf(buf, sizeof(buf), last ? "%-*.*s" : "%-*.*s ", w, w, text);
+        rowSeg(v, c, buf, col);
+    };
+    // rcell: a figure, right aligned. Padded but never cut: a number too wide
+    // for its column pushes the row out by a character, where a cut one
+    // would be a different number (SYS's "%9.9s" lesson).
+    auto rcell = [&](Color c, const char* text, int w, bool last = false) {
+        snprintf(buf, sizeof(buf), last ? "%*s" : "%*s ", w, text);
+        rowSeg(v, c, buf, col);
+    };
+
+    const char* handle = o.user[0] ? o.user : preLoginName(o);
+    const char* doing  = hidden ? (o.lurk ? "lurking" : "hidden") : doingText(o);
+    Color handleC = &o == &v ? Color::White : (hidden ? Color::DarkGrey : Color::LightGreen);
+    Color doingC  = hidden ? Color::DarkGrey : Color::Cyan;
+
+    uint32_t idleMs = now - o.lastInput;
+    char idle[8];
+    fmtIdle(idle, sizeof(idle), idleMs);
+    Color idleC = idleMs > 300000u ? Color::DarkGrey : Color::Grey;
+
+    char left[12] = "--";
+    Color leftC = Color::Grey;
+    if (o.role == Role::Caller && o.loggedIn && !unlimited(o)) {
+        int32_t sec = secondsLeft(o, now);
+        if (sec != INT32_MAX) {
+            snprintf(left, sizeof(left), "%ld", static_cast<long>(sec > 0 ? (sec + 59) / 60 : 0));
+            if (sec < 300) leftC = Color::LightRed;
+        }
+    }
+    char on[12];
+    snprintf(on, sizeof(on), "%u", static_cast<unsigned>((now - o.connectedAt) / 60000u));
+
+    char mark[2] = { markFor(o), '\0' };
+    rowSeg(v, Color::LightBlue, ns.t, col);
+    rowSeg(v, markColor(mark[0]), mark, col);
+
+    switch (plan) {
+        case NodePlan::Wide:
+        case NodePlan::Wide132:
+            cell(handleC, handle, 20);
+            cell(doingC, doing, 10);
+            rcell(idleC, idle, 5);
+            rcell(leftC, left, 4);
+            if (plan == NodePlan::Wide132) rcell(Color::Grey, on, 4);
+            cell(Color::Grey, o.ip, 15);
+            cell(Color::DarkGrey, o.term.name(), 10, true);
+            break;
+        case NodePlan::Narrow:
+            cell(handleC, handle, 12);
+            cell(doingC, doing, 9);
+            rcell(idleC, idle, 5);
+            rcell(leftC, left, 4, true);
+            break;
+        case NodePlan::From:
+            cell(handleC, handle, 12);
+            cell(Color::Grey, o.ip, 15);
+            cell(Color::DarkGrey, o.term.shortName(), 5, true);
+            break;
+        case NodePlan::Who:
+        case NodePlan::WhoNarrow:
+        default: {
+            bool staff = can(v, PERM_NODES);
+            const char* what = staff ? doing : o.term.name();
+            bool wide = plan == NodePlan::Who;
+            cell(handleC, handle, wide ? 20 : 12);
+            cell(hidden ? Color::DarkGrey : (staff ? Color::Cyan : Color::Grey), what, wide ? 12 : 10);
+            rcell(Color::Grey, on, 3);
+            rcell(idleC, idle, 5, true);
+            break;
+        }
+    }
+    return col;
+}
+
+// ---------------------------------------------------------------------------
+// rowClose: see bbs.h. A highlighted row was drawn with reverse video on; it
+// is padded out in reverse so the bar is the width of the row, then turned
+// off before the newline, which a C64 would otherwise do for it and an ANSI
+// terminal would not.
+// ---------------------------------------------------------------------------
+void Bbs::rowClose(Session& s, uint8_t col, bool highlighted) {
+    if (highlighted) {
+        for (uint8_t w = rowWidth(s); col < w; ++col) s.term.ch(s.tl, ' ');
+        s.term.reverse(s.tl, false);
+    }
+    rowEnd(s, col);
+}
+
+// ---------------------------------------------------------------------------
+// rowWho: title bar with the clock, header, the caller nodes, the sysop if
+// shown, a closing rule and the marker key. The busy line is never listed. A
+// refresh screen keeps a fixed height. Staff with NODES see what each caller
+// last ran (Doing) instead of the terminal type.
+//
+// The handle column follows the terminal: 20 at 60 columns and up, where the
+// whole of BBS_USER_MAX fits and PAGE wants the whole handle, 12 below.
 // ---------------------------------------------------------------------------
 bool Bbs::rowWho(Session& s) {
-    char buf[96];
-    char on[8];
-    char idle[8];
-
-    // The handle column follows the terminal instead of being frozen at 12.
-    //
-    // BBS_USER_MAX is 20, so a 12 character column silently cut a handle
-    // short on a 132 column screen with sixty columns of nothing beside it.
-    // A truncated name is worse than a narrow one: WHO is where a caller
-    // goes to find out who to PAGE, and PAGE wants the whole handle.
-    //
-    // The row is " N" + mark + handle + doing/terminal + Min + Idle, which
-    // with its separators is 14 columns plus the two variable ones. 20 and
-    // 12 fit inside 46, so a wide terminal has room to spare and a 40
-    // column screen keeps exactly what it had.
-    bool wideRow = rowWidth(s) >= 60;
-    unsigned hw = wideRow ? BBS_USER_MAX : 12;
-    unsigned dw = wideRow ? 12 : 9;
-    char fmtBuf[40];
-    snprintf(fmtBuf, sizeof(fmtBuf), "%%s%%c%%-%u.%us %%-%u.%us %%3s %%5s", hw, hw, dw, dw);
-    const char* fmt = fmtBuf;
-    uint32_t now = plat::millis();
     bool refresh = s.watch != ListKind::None;
-    bool staff   = can(s, PERM_NODES);
     bool seeAll  = s.perms != 0;                     // staff also see hidden and lurking
+    NodePlan plan = rowWidth(s) >= 60 ? NodePlan::Who : NodePlan::WhoNarrow;
 
     for (;;) {
         uint8_t i = s.listIdx++;
@@ -1157,8 +1311,7 @@ bool Bbs::rowWho(Session& s) {
             return true;
         }
         if (i == 1) {
-            snprintf(buf, sizeof(buf), fmt, " N", ' ', "Handle", staff ? "Doing" : "Terminal", "Min", "Idle");
-            rowText(s, Color::LightBlue, buf);
+            rowClose(s, nodeHead(s, plan));
             return true;
         }
         uint8_t k = static_cast<uint8_t>(i - 2);
@@ -1187,35 +1340,7 @@ bool Bbs::rowWho(Session& s) {
         } else {
             return false;
         }
-
-        bool hidden = n != &s && (!n->visible || n->lurk);   // hidden co-sysop looks like a free line
-        uint8_t col = 0;
-        NodeStr nodeStr = nodeLabel(*n);
-        if (n->st == SState::Free || (hidden && !seeAll)) {
-            rowSeg(s, Color::DarkGrey, nodeStr.t, col);
-            rowSeg(s, Color::DarkGrey, " -- waiting for caller --", col);
-            rowEnd(s, col);
-            return true;
-        }
-        char h[16];
-        if (n->user[0]) listHandle(h, sizeof(h), n->user, 12);
-        else snprintf(h, sizeof(h), "%s", preLoginName(*n));
-        const char* what = staff ? (hidden ? (n->lurk ? "lurking" : "hidden") : doingText(*n)) : n->term.name();
-        snprintf(on, sizeof(on), "%u", static_cast<unsigned>((now - n->connectedAt) / 60000u));
-        fmtIdle(idle, sizeof(idle), now - n->lastInput);
-
-        char mark[2] = { markFor(*n), '\0' };
-        rowSeg(s, Color::LightBlue, nodeStr.t, col);            // node
-        rowSeg(s, markColor(mark[0]), mark, col);               // rank marker
-        snprintf(buf, sizeof(buf), "%-12.12s ", h);
-        rowSeg(s, n == &s ? Color::White : (hidden ? Color::DarkGrey : Color::LightGreen), buf, col);
-        snprintf(buf, sizeof(buf), "%-10.10s ", what);
-        rowSeg(s, hidden ? Color::DarkGrey : (staff ? Color::Cyan : Color::Grey), buf, col);
-        snprintf(buf, sizeof(buf), "%3s ", on);
-        rowSeg(s, Color::Grey, buf, col);
-        snprintf(buf, sizeof(buf), "%5s", idle);
-        rowSeg(s, (now - n->lastInput) > 300000u ? Color::DarkGrey : Color::Grey, buf, col);
-        rowEnd(s, col);
+        rowClose(s, nodeCells(s, *n, plan));
         return true;
     }
 }
@@ -1225,9 +1350,10 @@ bool Bbs::rowWho(Session& s) {
 // newline so a 24-row terminal never scrolls. listSub counts 1, 2, done.
 // ---------------------------------------------------------------------------
 bool Bbs::rowWatchFooter(Session& s) {
-    char buf[64];
+    char buf[96];
     if (s.listSub == 1) {
-        snprintf(buf, sizeof(buf), "Refresh %us, any key stops", s.watchSecs);
+        if (s.watch == ListKind::Dash) dashFooter(s, buf, sizeof(buf));
+        else snprintf(buf, sizeof(buf), "Refresh %us, any key stops", s.watchSecs);
         rowText(s, Color::Cyan, buf);
         s.listSub = 2;
         return true;
@@ -1255,20 +1381,103 @@ bool Bbs::rowWatchFooter(Session& s) {
 }
 
 // ===========================================================================
-// DASH
+// DASH (1.1.0, internal/tty-ux-dash-2026-09-24.md)
+//
+// Rebuilt the way NODES was already built: a row per session in node order,
+// widths from rowWidth, the address beside each caller. One page at 80
+// columns plus a second for the plugins, the bans and the calls; three at 40,
+// where the where-from columns get a page of their own; one at 132.
+//
+// Every page at a given width is a fixed height, blank rows included, and no
+// taller than the terminal, so a refresh that homes and redraws never
+// scrolls. The old frame was 24 fixed rows plus one per plugin, and so
+// scrolled on every 80x24 terminal a stock board had.
+//
+// A frame costs formatting and nothing else: snapFill at its first row takes
+// every figure that is not on a Session, and nothing after that opens a
+// file, walks the heap or a filesystem, or calls into the Wi-Fi task.
 // ===========================================================================
 
+namespace {
+
+// DashRow: what a page function did with the row it was asked for. Skip is
+// a row that is only there to keep a refreshing frame's height, left out of
+// a list that is read once (DASH, DASH ALL).
+enum DashRow : uint8_t { DR_DONE, DR_DREW, DR_SKIP };
+
+// Shared with SYS, further down.
+void fmtUptime(char* out, size_t n, uint32_t ms);
+const char* signalWord(int8_t rssi, Color& c);
+
+// Widths at which the dashboard changes layout. The 80 column page needs its
+// 74 column vitals rows, the 132 column one its right-hand block to column
+// 130; anything narrower than 74 gets the 40 column pages.
+constexpr uint8_t kDash80  = 74;
+constexpr uint8_t kDash132 = 131;
+constexpr uint8_t kDashAll = 0x80;          // Session::dashPage: DASH ALL
+
+// callNode: a call's node as a list shows it, right aligned in two
+NodeStr callNode(const CallRec& r) {
+    NodeStr n = nodeNum(r.node);
+    if (r.flags & CallRec::F_SYSOP) { n.t[0] = 'S'; n.t[1] = '\0'; }
+    if (n.t[1] == '\0') { n.t[1] = n.t[0]; n.t[0] = ' '; }
+    return n;
+}
+
+// statusOf: a running plugin's dashboard line, or nullptr
+const char* statusOf(const char* name) {
+    uint8_t k = plugins::indexOf(name);
+    if (k == 0xFF || !plugins::running(k)) return nullptr;
+    const Plugin* p = plugins::at(k);
+    if (!p || !p->status) return nullptr;
+    const char* line = p->status();
+    return line && *line ? line : nullptr;
+}
+
+// splitStatus: "Directory: online  12 sent" as "online" and "12 sent", for
+// the 132 column block, where a status line is a label, a value and a note.
+void splitStatus(const char* line, char* word, size_t wn, const char** rest) {
+    const char* p = strchr(line, ':');
+    p = p ? p + 1 : line;
+    while (*p == ' ') ++p;
+    size_t n = 0;
+    while (p[n] && p[n] != ' ' && p[n] != ',' && n + 1 < wn) { word[n] = p[n]; ++n; }
+    word[n] = '\0';
+    p += n;
+    while (*p == ',' || *p == ' ') ++p;
+    *rest = p;
+}
+
+} // namespace
+
+bool Bbs::dashWide132(const Session& s) const { return rowWidth(s) >= kDash132; }
+
+bool Bbs::dashCells(const Session& s) const { return s.term.isAnsi() || s.term.isPet(); }
+
+uint8_t Bbs::dashPages(const Session& s) const {
+    if (rowWidth(s) >= kDash132) return 1;
+    return rowWidth(s) >= kDash80 ? 2 : 3;
+}
+
 void Bbs::cmdDash(Session& s, const char* arg) {
-    if (!*arg) {                                     // one screen: no [More]
+    // DASH: page 1, once, as a list that fits one screen. DASH ALL: every
+    // page in turn through the ordinary pager, which is also how a plain
+    // terminal sees all of it at once. DASH n keeps meaning seconds, because
+    // WHO n and NODES n do.
+    if (!*arg || ieq(arg, "ALL")) {
         startList(s, ListKind::Dash);
-        s.nonstop = true;
+        s.dashPage  = *arg ? kDashAll : 0;
+        s.dashSel   = 0xFF;
+        s.watchSecs = 0;                     // not refreshing: the last DASH n's is not ours
+        s.nonstop   = !*arg;
         return;
     }
     const SysConfig& cfg = syscfg::get();
     uint8_t secs = 0;
     if (!parseSeconds(arg, cfg.whoMin, cfg.whoMax, secs)) {
-        char buf[48];
-        snprintf(buf, sizeof(buf), "DASH n: n is %u to %u seconds.", cfg.whoMin, cfg.whoMax);
+        char buf[64];
+        snprintf(buf, sizeof(buf), "DASH n: n is %u to %u seconds. DASH ALL: every page.",
+                 cfg.whoMin, cfg.whoMax);
         s.term.color(s.tl, Color::LightRed);
         s.term.text(s.tl, buf);
         prompt(s);
@@ -1278,197 +1487,818 @@ void Bbs::cmdDash(Session& s, const char* arg) {
 }
 
 // ---------------------------------------------------------------------------
-// dashNode: the session shown in DASH node row `slot`, or nullptr for none.
-//
-// Busy lines first in node order, then the sysop if it is up, then free lines
-// to fill whatever rows are left. A quiet board therefore looks the way it
-// always did, a row per waiting line, and a busy one spends its six rows on
-// the callers instead of on "waiting for caller" repeated sixteen times.
+// snapFill: see bbs.h. full is SYS, which also wants the biggest free block
+// and so walks the heap, once per listing; the dashboard never does.
 // ---------------------------------------------------------------------------
-const Session* Bbs::dashNode(uint8_t slot) const {
-    uint8_t seen = 0;
-    for (uint8_t pass = 0; pass < 2; ++pass) {           // 0 = in use, 1 = free
-        for (uint8_t k = 0; k <= BBS_MAX_NODES; ++k) {
-            const Session& n = k < BBS_MAX_NODES ? nodes_[k] : sysop_;
-            bool inUse = n.st != SState::Free;
-            if (inUse != (pass == 0)) continue;
-            if (&n == &sysop_ && !inUse) continue;       // an idle sysop line is not worth a row
-            if (seen++ == slot) return &n;
+void Bbs::snapFill(bool full) {
+    DashSnap& d = snap_;
+    uint32_t now = plat::millis();
+    d.net   = plat::netInfo();                               // the one Wi-Fi call
+    d.power = plat::powerSave();
+    if (!d.power) d.power = "";
+    if (full) {
+        plat::HeapStats h = plat::heap();
+        d.heapFull  = h.valid;
+        d.heapFree  = h.valid ? h.freeBytes : 0;
+        d.heapLow   = h.valid ? h.minFree : 0;
+        d.heapBig   = h.largestBlock;
+        d.heapTotal = h.totalBytes;
+    } else {
+        // Counters, not a walk: heapFree reads the allocator's own total,
+        // and heapLow_ is the floor heapWatch has kept since boot.
+        d.heapFree = plat::heapFree();
+        d.heapLow  = heapLow_ != 0xFFFFFFFFu && heapLow_ < d.heapFree ? heapLow_ : d.heapFree;
+    }
+    d.stackLeast = stackLow_;
+    d.dataFree   = plugins::freeBytes();                     // kept a minute on the board
+    d.card       = sdDashCard(d.cardFreeKB, d.cardTotalKB);  // kept a minute by the sd plugin
+    d.bans       = 0;
+    BanList::Entry e;
+    for (uint8_t k = 0; k < BBS_BAN_SLOTS; ++k) if (bans_.at(k, now, e)) ++d.bans;
+    d.today      = calllog::today();                         // kept by the caller log
+    d.dir[0]     = '\0';
+    if (const char* line = statusOf("announce")) {
+        const char* rest = nullptr;
+        splitStatus(line, d.dir, sizeof(d.dir), &rest);
+        if (!d.dir[0]) snprintf(d.dir, sizeof(d.dir), "on");
+    }
+}
+
+// dashTitle: the bar, with how many lines are in use and the clock
+void Bbs::dashTitle(Session& s) {
+    char when[32] = "";
+    char right[48];
+    bool wide = rowWidth(s) >= 59;
+    if (clk::valid()) clk::fmt(when, sizeof(when), wide ? "%a %d %b %H:%M:%S" : "%H:%M:%S");
+    snprintf(right, sizeof(right), wide ? "%u of %u on%s%s" : "%u of %u%s%s",
+             static_cast<unsigned>(activeNodes()), static_cast<unsigned>(BBS_MAX_NODES),
+             when[0] ? "  " : "", when);
+    rowTitle(s, "DASHBOARD", right);
+}
+
+// ---------------------------------------------------------------------------
+// dashWaiting: what is waiting on the staff member looking. Ring notes for
+// the sysop, then whatever each plugin's waiting hook says (uploads to
+// approve, unread mail), then a backup upload waiting for its Y. A live ring
+// never shows here: it stops the refresh and asks at the prompt.
+// ---------------------------------------------------------------------------
+void Bbs::dashWaiting(Session& s) {
+    bool wide = rowWidth(s) >= 59;
+    char buf[160];
+    size_t n = 0;
+    auto add = [&](const char* piece) {
+        if (n >= sizeof(buf)) return;
+        int w = snprintf(buf + n, sizeof(buf) - n, "%s%s", n ? "  " : "", piece);
+        if (w > 0) n += static_cast<size_t>(w);
+    };
+    char piece[48];
+    if (s.level == Access::Sysop && ringNotesWaiting_) {
+        snprintf(piece, sizeof(piece), wide ? "%u ring note%s" : "%u note%s",
+                 static_cast<unsigned>(ringNotesWaiting_), ringNotesWaiting_ == 1 ? "" : "s");
+        add(piece);
+    }
+    for (uint8_t k = 0; k < plugins::count(); ++k) {
+        const Plugin* p = plugins::at(k);
+        if (!p || !p->waiting || !plugins::running(k)) continue;
+        piece[0] = '\0';
+        if (p->waiting(s, piece, sizeof(piece)) && piece[0]) add(piece);
+    }
+    if (backup_.awaitingApproval()) add("backup Y/N");
+
+    uint8_t col = 0;
+    Term& t = s.term;
+    if (!n) {
+        t.color(s.tl, Color::DarkGrey);
+        col = t.textCols(s.tl, "Nothing waiting on you", rowWidth(s));
+    } else {
+        const char* head = wide ? "Waiting on you: " : "Waiting: ";
+        t.color(s.tl, Color::Yellow);
+        col = t.textCols(s.tl, head, rowWidth(s));
+        col = static_cast<uint8_t>(col + t.textCols(s.tl, buf, static_cast<uint8_t>(rowWidth(s) - col)));
+    }
+    rowEnd(s, col);
+}
+
+// ---------------------------------------------------------------------------
+// dashSeg: one "label figure" pair on a vitals row, gap spaces after what is
+// already there. Labels Grey, figures White, a figure in LightRed when it is
+// an alarm. A pair that would run past the row is left off rather than
+// wrapped: a refreshing frame that wraps scrolls.
+// ---------------------------------------------------------------------------
+void Bbs::dashSeg(Session& s, uint8_t& col, uint8_t gap, const char* label, const char* value,
+                  bool alarm) {
+    size_t need = (col ? gap : 0) + (label[0] ? strlen(label) + 1 : 0) + strlen(value);
+    if (col + need > rowWidth(s)) return;
+    if (col) {
+        char sp[4] = "   ";
+        sp[gap < 3 ? gap : 3] = '\0';
+        rowSeg(s, Color::Grey, sp, col);
+    }
+    if (label[0]) {
+        rowSeg(s, Color::Grey, label, col);
+        rowSeg(s, Color::Grey, " ", col);
+    }
+    rowSeg(s, alarm ? Color::LightRed : Color::White, value, col);
+}
+
+// ---------------------------------------------------------------------------
+// dashVitals: the board's own figures, two rows at 80 columns and four at 40,
+// every one of them from the snapshot or a counter the loop keeps.
+// ---------------------------------------------------------------------------
+void Bbs::dashVitals(Session& s, uint8_t which) {
+    const DashSnap& d = snap_;
+    uint32_t now = plat::millis();
+    bool wide = rowWidth(s) >= kDash80;
+    uint8_t col = 0;
+    char v[32];
+
+    // Each figure, formatted when a row asks for it.
+    auto up = [&]() { char u[24]; fmtUptime(u, sizeof(u), now); dashSeg(s, col, 2, "Up", u, false); };
+    auto heap = [&]() {
+        if (!d.heapFree) { dashSeg(s, col, 2, "Heap", "-", false); return; }
+        snprintf(v, sizeof(v), "%uK", static_cast<unsigned>(d.heapFree / 1024u));
+        dashSeg(s, col, 2, "Heap", v, d.heapFree < BBS_HEAP_RESERVE);
+        snprintf(v, sizeof(v), "%uK", static_cast<unsigned>(d.heapLow / 1024u));
+        dashSeg(s, col, 1, "low", v, d.heapLow < BBS_HEAP_RESERVE);
+    };
+    auto stack = [&]() {
+        if (d.stackLeast) fmtCommas(d.stackLeast, v, sizeof(v));
+        else              snprintf(v, sizeof(v), "-");
+        dashSeg(s, col, 2, "Stack", v, d.stackLeast && d.stackLeast < 1024u);
+    };
+    auto loop = [&]() {
+        snprintf(v, sizeof(v), "%luus", static_cast<unsigned long>(loopAvgUs_));
+        dashSeg(s, col, 2, "Loop", v, false);
+        snprintf(v, sizeof(v), "%lums", static_cast<unsigned long>((loopMaxUs_ + 500u) / 1000u));
+        dashSeg(s, col, 1, "worst", v, false);
+    };
+    auto slow = [&]() {
+        // Red while a slow pass is recent: within the refresh the viewer
+        // chose, so the frame after one says so, and the one after that
+        // does not unless there was another.
+        uint32_t window = (s.watchSecs ? s.watchSecs : 5u) * 1000u + 1000u;
+        snprintf(v, sizeof(v), "%lu", static_cast<unsigned long>(slowCount_));
+        dashSeg(s, col, 2, "Slow", v, slowAt_ && now - slowAt_ < window);
+    };
+    // The radio's mode, known only when the board could read it: "" on the
+    // host and "?" when the driver would not say are not a radio asleep.
+    bool known = d.power[0] && d.power[0] != '?';
+    bool awake = !known || d.power[0] == 'n';                 // "none"
+    auto wifi = [&](bool full) {
+        if (d.net.valid && d.net.rssi) snprintf(v, sizeof(v), "%d dBm", static_cast<int>(d.net.rssi));
+        else                           snprintf(v, sizeof(v), "-");
+        dashSeg(s, col, 2, "WiFi", v, !awake);
+        if (!full) return;
+        // The channel is the first thing given up for room: a radio asleep
+        // says SLEEPING, which is longer and matters more.
+        if (d.net.channel && d.net.rssi && awake) {           // no signal, no channel worth saying
+            snprintf(v, sizeof(v), "%u", static_cast<unsigned>(d.net.channel));
+            dashSeg(s, col, 1, "ch", v, false);
+        }
+        if (known) dashSeg(s, col, 1, "", awake ? "awake" : "SLEEPING", !awake);
+    };
+    auto data = [&]() {
+        snprintf(v, sizeof(v), "%uK", static_cast<unsigned>(d.dataFree / 1024u));
+        dashSeg(s, col, 2, "Data", v, false);
+    };
+    auto card = [&]() {
+        if (!d.card)                          snprintf(v, sizeof(v), "none");
+        else if (d.cardFreeKB >= 1048576u)    snprintf(v, sizeof(v), "%u GB",
+                                                       static_cast<unsigned>((d.cardFreeKB + 524288u) / 1048576u));
+        else                                  snprintf(v, sizeof(v), "%u MB",
+                                                       static_cast<unsigned>(d.cardFreeKB / 1024u));
+        dashSeg(s, col, 2, "Card", v, false);
+    };
+    auto dir = [&]() {
+        dashSeg(s, col, 2, "Dir", d.dir[0] ? d.dir : "off", !strcmp(d.dir, "held"));
+    };
+    auto backup = [&]() {
+        if (backup_.awaitingApproval()) {
+            snprintf(v, sizeof(v), "Y/N");
+        } else if (backup_.isOpen()) {
+            int32_t left = static_cast<int32_t>(backup_.closesAt() - now) / 1000;
+            if (left < 0) left = 0;
+            snprintf(v, sizeof(v), "open %ld:%02ld", static_cast<long>(left / 60),
+                     static_cast<long>(left % 60));
+        } else {
+            snprintf(v, sizeof(v), "closed");
+        }
+        dashSeg(s, col, 2, "Backup", v, false);
+    };
+    auto bans = [&]() {
+        snprintf(v, sizeof(v), "%u", static_cast<unsigned>(d.bans));
+        dashSeg(s, col, 2, "Bans", v, false);
+    };
+    auto busy = [&]() {
+        dashSeg(s, col, 2, "Busy", busy_.st == SState::Free ? "free" : "in use", false);
+    };
+
+    // which: 0 and 1 are the two rows at 80 columns, 0 to 3 the four at 40,
+    // and 4 the summary over the bans on the 40 column calls page.
+    // A pair that does not fit is left off from the end of its row, so each
+    // row ends on the figure that can best be spared: Dir after Backup at
+    // 80, because the directory's state is also on page 2 and an open
+    // backup window is on no other screen.
+    if (wide) {
+        if (which == 0) { up(); heap(); stack(); loop(); slow(); }
+        else            { wifi(true); data(); card(); backup(); dir(); }
+    } else {
+        switch (which) {
+            case 0:  up(); heap(); break;
+            case 1:  stack(); loop(); break;
+            case 2:  wifi(false); slow(); dir(); break;
+            case 3:  data(); card(); backup(); break;
+            default: bans(); busy(); backup(); break;
         }
     }
-    return nullptr;
-}
-
-// dashBusyCount: lines in use, sysop included, for the summary row
-uint8_t Bbs::dashBusyCount() const {
-    uint8_t n = 0;
-    for (uint8_t k = 0; k < BBS_MAX_NODES; ++k) if (nodes_[k].st != SState::Free) ++n;
-    if (sysop_.st != SState::Free) ++n;
-    return n;
+    rowEnd(s, col);
 }
 
 // ---------------------------------------------------------------------------
-// rowDash: 22 rows, 40 columns. Clock, uptime, NTP, memory, the busiest
-// nodes with what each is doing, the day's calls, bans, busy line, Wi-Fi
-// signal, backup window, the last 5 calls.
-//
-// The row map is fixed because DASH is a refresh screen: it redraws from
-// home, so a frame taller than the terminal scrolls and leaves its own tail
-// behind on every pass. That is why the node block is kDashNodeRows rows
-// plus one summary row rather than one row per node. At six nodes those were
-// the same thing; at sixteen they are not, and the frame is what has to give.
-// WHO is the paged list that still shows every line.
+// dashCall: one of the last calls, newest first, from the caller log's copy
+// of its newest five in RAM. Laid out on the node rows' grid: the handle,
+// the address and the terminal sit under their own headings.
 // ---------------------------------------------------------------------------
-bool Bbs::rowDash(Session& s) {
-    char buf[80];
-    uint32_t now = plat::millis();
-    uint8_t i = s.listIdx++;
-
-    switch (i) {
-        case 0: {
-            char when[24] = "clock not set";
-            if (clk::valid()) clk::fmt(when, sizeof(when), "%a %d %b %H:%M:%S");
-            rowTitle(s, "SYSOP DASHBOARD", when);
-            return true;
-        }
-        case 1: {
-            uint32_t up = now / 1000u;
-            snprintf(buf, sizeof(buf), "%s %s  up %ud %02u:%02u", BBS_NAME, BBS_VERSION,
-                     static_cast<unsigned>(up / 86400u), static_cast<unsigned>(up / 3600u % 24u),
-                     static_cast<unsigned>(up / 60u % 60u));
-            rowText(s, Color::White, buf);
-            return true;
-        }
-        case 2: {
-            plat::HeapStats h = plat::heap();
-            unsigned fs = static_cast<unsigned>(plugins::freeBytes() / 1024u);
-            if (h.valid) {
-                snprintf(buf, sizeof(buf), "NTP %s heap %uK min %uK  disk %uK", clk::valid() ? "ok" : "--",
-                         static_cast<unsigned>(h.freeBytes / 1024u), static_cast<unsigned>(h.minFree / 1024u), fs);
-            } else {
-                snprintf(buf, sizeof(buf), "NTP %s  heap n/a on host  disk %uK", clk::valid() ? "ok" : "--", fs);
-            }
-            rowText(s, Color::Grey, buf);
-            return true;
-        }
-        case 3:
-        case 12:
-        case 21:
-            rowRule(s);
-            return true;
-        case 4:
-            snprintf(buf, sizeof(buf), "%s%c%-12.12s %-9.9s %5s %4s", " N", ' ', "Handle", "Doing", "Idle", "Left");
-            rowText(s, Color::LightBlue, buf);
-            return true;
-        case 13: {
-            uint8_t bans = 0;
-            BanList::Entry e;
-            for (uint8_t k = 0; k < BBS_BAN_SLOTS; ++k) if (bans_.at(k, now, e)) ++bans;
-            char today[8] = "--";
-            uint32_t start = clk::todayStart();
-            if (start) snprintf(today, sizeof(today), "%u", calllog::countSince(start));
-            snprintf(buf, sizeof(buf), "Calls %s today  bans %u  busy %s", today, bans,
-                     busy_.st == SState::Free ? "free" : "in use");
-            rowText(s, Color::Grey, buf);
-            return true;
-        }
-        case 14: {
-            char wifi[16] = "WiFi --";
-            int8_t rssi = plat::wifiRssi();
-            if (rssi) snprintf(wifi, sizeof(wifi), "WiFi %d dBm", rssi);
-            if (backup_.awaitingApproval()) {
-                snprintf(buf, sizeof(buf), "%s  Backup: Y/N wait", wifi);
-            } else if (backup_.isOpen()) {
-                int32_t left = static_cast<int32_t>(backup_.closesAt() - now) / 1000;
-                if (left < 0) left = 0;
-                snprintf(buf, sizeof(buf), "%s  Backup open %ld:%02ld", wifi,
-                         static_cast<long>(left / 60), static_cast<long>(left % 60));
-            } else {
-                snprintf(buf, sizeof(buf), "%s  Backup closed", wifi);
-            }
-            rowText(s, backup_.isOpen() ? Color::LightGreen : Color::Grey, buf);
-            return true;
-        }
-        case 15:
-            snprintf(buf, sizeof(buf), "%-14s%s", "Last calls", kMarkKey);
-            rowText(s, Color::Yellow, buf);
-            return true;
-        default:
+void Bbs::dashCall(Session& s, uint8_t back, NodePlan plan) {
+    CallRec r;
+    uint8_t col = 0;
+    if (!calllog::get(back, r)) {
+        if (back == 0) rowSeg(s, Color::DarkGrey, "No calls logged yet.", col);
+        rowEnd(s, col);
+        return;
+    }
+    char buf[88];
+    char when[16];
+    clk::fmtEpoch(when, sizeof(when), plan == NodePlan::From ? "%H:%M" : "%m/%d %H:%M", r.start);
+    unsigned mins = static_cast<unsigned>((r.secs + 59u) / 60u);
+    char mark[2] = { markForFlags(r.flags), '\0' };
+    rowSeg(s, Color::LightBlue, callNode(r).t, col);
+    rowSeg(s, markColor(mark[0]), mark, col);
+    const char* term = Term::nameOf(static_cast<TermType>(r.term), static_cast<Charset>(r.charset));
+    switch (plan) {
+        case NodePlan::Wide:
+        case NodePlan::Wide132:
+            // The address starts where the node rows' address does: column
+            // 46 at 80, 51 at 132, where the On column sits between. The
+            // handle starts at 3 and the minutes end at 40.
+            snprintf(buf, sizeof(buf), "%-20.20s %-11s %4u%*s%-15.15s ", r.user, when, mins,
+                     plan == NodePlan::Wide ? 6 : 11, "", r.ip);
+            rowSeg(s, Color::Grey, buf, col);
+            snprintf(buf, sizeof(buf), "%-10.10s", term);
+            rowSeg(s, Color::DarkGrey, buf, col);
+            break;
+        case NodePlan::From:
+            snprintf(buf, sizeof(buf), "%-12.12s %5s ", r.user, when);
+            rowSeg(s, Color::Grey, buf, col);
+            snprintf(buf, sizeof(buf), "%-15.15s", r.ip);
+            rowSeg(s, Color::Grey, buf, col);
+            break;
+        default:                                            // Narrow
+            snprintf(buf, sizeof(buf), "%-12.12s %-11s %4u", r.user, when, mins);
+            rowSeg(s, Color::Grey, buf, col);
             break;
     }
+    rowEnd(s, col);
+}
 
-    if (i >= 5 && i < 5 + kDashNodeRows) {                      // the busiest lines
-        const Session* np = dashNode(static_cast<uint8_t>(i - 5));
-        if (!np) { rowText(s, Color::Grey, ""); return true; }  // blank, to keep the frame height
-        const Session& n = *np;
-        if (n.st == SState::Free) {
-            snprintf(buf, sizeof(buf), "%s -", nodeLabel(n).t);
-            rowText(s, Color::DarkGrey, buf);
-            return true;
-        }
-        char idle[8];
-        char left[12] = "--";
-        fmtIdle(idle, sizeof(idle), now - n.lastInput);
-        if (n.role == Role::Caller && n.loggedIn && !unlimited(n)) {
-            int32_t sec = secondsLeft(n, now);
-            if (sec != INT32_MAX) snprintf(left, sizeof(left), "%ld", static_cast<long>(sec > 0 ? (sec + 59) / 60 : 0));
-        }
-        char h[16];
-        if (n.user[0]) listHandle(h, sizeof(h), n.user, 12);
-        else           snprintf(h, sizeof(h), "%s", preLoginName(n));
-        bool hidden = &n != &s && (!n.visible || n.lurk);
-        snprintf(buf, sizeof(buf), "%s%c%-12.12s %-9.9s %5s %4s", nodeLabel(n).t, markFor(n), h,
-                 hidden ? (n.lurk ? "lurking" : "hidden") : doingText(n), idle, left);
-        rowText(s, &n == &s ? Color::White : Color::Grey, buf);
-        return true;
-    }
-
-    if (i == 5 + kDashNodeRows) {                               // what the rows could not hold
-        uint8_t used = dashBusyCount();
-        uint8_t free = static_cast<uint8_t>(BBS_MAX_NODES - (used > BBS_MAX_NODES ? BBS_MAX_NODES : used));
-        if (used > kDashNodeRows) {
-            snprintf(buf, sizeof(buf), "%u in use, %u not shown, %u free",
-                     used, static_cast<unsigned>(used - kDashNodeRows), free);
-        } else {
-            snprintf(buf, sizeof(buf), "%u of %u lines free", free, BBS_MAX_NODES);
-        }
-        rowText(s, used > kDashNodeRows ? Color::Yellow : Color::DarkGrey, buf);
-        return true;
-    }
-
-    if (i >= 22) {                                              // what the plugins say
-        uint8_t wanted = static_cast<uint8_t>(i - 22);
-        uint8_t seen = 0;
-        for (uint8_t k = 0; k < plugins::count(); ++k) {
-            const Plugin* p = plugins::at(k);
-            if (!plugins::running(k) || !p->status) continue;
-            const char* line = p->status();
-            if (!line || !*line) continue;
-            if (seen++ != wanted) continue;
-            rowText(s, Color::Cyan, line);
-            return true;
-        }
-        return false;
-    }
-
-    if (i >= 16 && i <= 20) {                                   // last 5 calls
-        CallRec r;
-        if (calllog::get(static_cast<uint8_t>(i - 16), r)) {
-            char when[16];
-            clk::fmtEpoch(when, sizeof(when), "%m/%d %H:%M", r.start);
-            NodeStr node = nodeNum(r.node);
-            if (r.flags & CallRec::F_SYSOP) { node.t[0] = 'S'; node.t[1] = '\0'; }
-            char h[16];
-            listHandle(h, sizeof(h), r.user, 12);
-            snprintf(buf, sizeof(buf), "%c%-10.10s %-2s %-11s %4u min", markForFlags(r.flags), h, node.t, when,
-                     static_cast<unsigned>((r.secs + 59u) / 60u));
-            rowText(s, Color::Grey, buf);
-        } else {
-            rowText(s, Color::Grey, "");
-        }
+// dashPluginRow: the which-th running plugin's own dashboard line, in Cyan
+// and cut to the row. False when there are not that many.
+bool Bbs::dashPluginRow(Session& s, uint8_t which) {
+    uint8_t seen = 0;
+    for (uint8_t k = 0; k < plugins::count(); ++k) {
+        const Plugin* p = plugins::at(k);
+        if (!p || !plugins::running(k) || !p->status) continue;
+        const char* line = p->status();
+        if (!line || !*line) continue;
+        if (seen++ != which) continue;
+        s.term.color(s.tl, Color::Cyan);
+        rowEnd(s, s.term.textCols(s.tl, line, rowWidth(s)));
         return true;
     }
     return false;
+}
+
+// dashBanRow: the which-th active ban, or "none" for the first when there
+// are none. False when there is nothing for this row.
+bool Bbs::dashBanRow(Session& s, uint8_t which) {
+    uint32_t now = plat::millis();
+    uint8_t seen = 0;
+    BanList::Entry e;
+    for (uint8_t k = 0; k < BBS_BAN_SLOTS; ++k) {
+        if (!bans_.at(k, now, e)) continue;
+        if (seen++ != which) continue;
+        char ip[16], buf[48];
+        ipToText(e.ip, ip, sizeof(ip));
+        snprintf(buf, sizeof(buf), "%-16s %u min left", ip,
+                 static_cast<unsigned>((e.until - now + 59999u) / 60000u));
+        uint8_t col = 0;
+        rowSeg(s, Color::Grey, buf, col);
+        rowEnd(s, col);
+        return true;
+    }
+    if (which == 0) {
+        uint8_t col = 0;
+        rowSeg(s, Color::DarkGrey, "none", col);
+        rowEnd(s, col);
+        return true;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// dashFooter: the first footer row, per width and page. Only what works on
+// this page and this terminal is offered: plain ASCII has no cursor keys and
+// picks pages by number, and a page with no node rows has nothing to pick.
+// ---------------------------------------------------------------------------
+void Bbs::dashFooter(Session& s, char* out, size_t n) {
+    unsigned pages = dashPages(s);
+    unsigned page  = (s.dashPage & 0x7F) + 1u;
+    unsigned secs  = s.watchSecs;
+    if (!dashCells(s)) {
+        if (pages > 1) snprintf(out, n, "Page %u/%u  %s pick a page  Q quits  refresh %us",
+                                page, pages, pages == 3 ? "1 2 3" : "1 2", secs);
+        else           snprintf(out, n, "Q quits  refresh %us", secs);
+        return;
+    }
+    if (pages == 1) {
+        snprintf(out, n, "Up Dn pick  K kick  S snoop  Q quits  refresh %us", secs);
+    } else if (pages == 2) {
+        if (page == 1) snprintf(out, n, "Page 1/2  < > page  Up Dn pick  K kick  S snoop  Q quits  refresh %us", secs);
+        else           snprintf(out, n, "Page %u/2  < > page  Q quits  refresh %us", page, secs);
+    } else {
+        if (page < 3)  snprintf(out, n, "Pg %u/3  < > page  Up Dn K S  Q quit %us", page, secs);
+        else           snprintf(out, n, "Pg %u/3  < > page  Q quit  %us", page, secs);
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// The pages. Each takes the row number within its page, draws that row and
+// says DR_DREW, or DR_DONE when the page is finished. i == 0 is the top of a
+// frame, which is where the snapshot is taken. A row that is there only to
+// keep a refreshing frame's height, an empty plugin or ban slot, is DR_SKIP
+// when nobody is refreshing, so DASH and DASH ALL do not print blanks.
+//
+// The height rule: a refreshing page is exactly the terminal's rows less the
+// two footer rows, blank rows included, so each redraw lands on the last
+// and nothing scrolls. Page 1's last calls take whatever rows are left, one
+// to five.
+// ---------------------------------------------------------------------------
+namespace {
+
+// callsFit: how many last calls page 1 has room for, one to five
+uint8_t callsFit(uint8_t rows, uint8_t fixed) {
+    int c = static_cast<int>(rows) - static_cast<int>(fixed);
+    return static_cast<uint8_t>(c < 1 ? 1 : (c > 5 ? 5 : c));
+}
+
+} // namespace
+
+// dashCallsHead: "-- last calls, 12 today ------", the day's count kept by
+// the caller log rather than counted here
+void Bbs::dashCallsHead(Session& s) {
+    char name[32];
+    if (clk::valid()) snprintf(name, sizeof(name), "last calls, %u today", static_cast<unsigned>(snap_.today));
+    else              snprintf(name, sizeof(name), "last calls");
+    rowSection(s, name);
+}
+
+// dashNode: node row k of a page, highlighted when it is the pick and the
+// frame is a refreshing one on a terminal that can show reverse video
+void Bbs::dashNode(Session& s, uint8_t k, NodePlan plan) {
+    bool sel = s.watch != ListKind::None && dashCells(s) && s.dashSel == k;
+    if (sel) s.term.reverse(s.tl, true);
+    rowClose(s, nodeCells(s, *nodeAt(k), plan), sel);
+}
+
+// 80 columns: page 1 the lines, what is waiting and the vitals; page 2 the
+// plugins, the bans and the last five calls.
+uint8_t Bbs::dashPage80(Session& s, uint8_t page, uint8_t i) {
+    constexpr uint8_t N = kNodeRows;
+    bool refresh = s.watch != ListKind::None;
+    uint8_t rows = s.term.rows();
+    uint8_t body = rows > 2 ? static_cast<uint8_t>(rows - 2) : 0;
+
+    if (i == 0) { snapFill(false); dashTitle(s); return DR_DREW; }
+    if (page == 0) {
+        if (i == 1)     { rowClose(s, nodeHead(s, NodePlan::Wide)); return DR_DREW; }
+        if (i < 2 + N)  { dashNode(s, static_cast<uint8_t>(i - 2), NodePlan::Wide); return DR_DREW; }
+        uint8_t k = static_cast<uint8_t>(i - 2 - N);
+        switch (k) {
+            case 0: rowRule(s);         return DR_DREW;
+            case 1: dashWaiting(s);     return DR_DREW;
+            case 2: dashVitals(s, 0);   return DR_DREW;
+            case 3: dashVitals(s, 1);   return DR_DREW;
+            case 4: dashCallsHead(s);   return DR_DREW;
+            default: break;
+        }
+        uint8_t c = static_cast<uint8_t>(k - 5);
+        if (c < callsFit(rows, N + 9)) { dashCall(s, c, NodePlan::Wide); return DR_DREW; }
+    } else {
+        if (i == 1)  { rowSection(s, "plugins"); return DR_DREW; }
+        if (i < 7) {
+            if (dashPluginRow(s, static_cast<uint8_t>(i - 2))) return DR_DREW;
+            if (!refresh) return DR_SKIP;
+            rowText(s, Color::Grey, "");
+            return DR_DREW;
+        }
+        if (i == 7)  { rowSection(s, "bans"); return DR_DREW; }
+        if (i < 8 + BBS_BAN_SLOTS) {
+            if (dashBanRow(s, static_cast<uint8_t>(i - 8))) return DR_DREW;
+            if (!refresh) return DR_SKIP;
+            rowText(s, Color::Grey, "");
+            return DR_DREW;
+        }
+        uint8_t k = static_cast<uint8_t>(i - 8 - BBS_BAN_SLOTS);
+        if (k == 0) { dashCallsHead(s); return DR_DREW; }
+        if (k < 6)  { dashCall(s, static_cast<uint8_t>(k - 1), NodePlan::Wide); return DR_DREW; }
+    }
+    if (refresh && i < body) { rowText(s, Color::Grey, ""); return DR_DREW; }
+    return DR_DONE;
+}
+
+// 40 columns: page 1 the lines and the vitals, page 2 where each line is
+// calling from and the plugins, page 3 the last calls with their addresses
+// and the bans. The handle is at column 3 on every page, so the grid does
+// not move under the eye when the page turns.
+uint8_t Bbs::dashPage40(Session& s, uint8_t page, uint8_t i) {
+    constexpr uint8_t N = kNodeRows;
+    bool refresh = s.watch != ListKind::None;
+    uint8_t rows = s.term.rows();
+    uint8_t body = rows > 2 ? static_cast<uint8_t>(rows - 2) : 0;
+
+    if (i == 0) { snapFill(false); dashTitle(s); return DR_DREW; }
+    if (page == 0) {
+        if (i == 1)     { rowClose(s, nodeHead(s, NodePlan::Narrow)); return DR_DREW; }
+        if (i < 2 + N)  { dashNode(s, static_cast<uint8_t>(i - 2), NodePlan::Narrow); return DR_DREW; }
+        uint8_t k = static_cast<uint8_t>(i - 2 - N);
+        if (k == 0) { rowRule(s); return DR_DREW; }
+        if (k == 1) { dashWaiting(s); return DR_DREW; }
+        if (k < 6)  { dashVitals(s, static_cast<uint8_t>(k - 2)); return DR_DREW; }
+        if (k == 6) { dashCallsHead(s); return DR_DREW; }
+        uint8_t c = static_cast<uint8_t>(k - 7);
+        if (c < callsFit(rows, N + 11)) { dashCall(s, c, NodePlan::Narrow); return DR_DREW; }
+    } else if (page == 1) {
+        if (i == 1)     { rowClose(s, nodeHead(s, NodePlan::From)); return DR_DREW; }
+        if (i < 2 + N)  { dashNode(s, static_cast<uint8_t>(i - 2), NodePlan::From); return DR_DREW; }
+        uint8_t k = static_cast<uint8_t>(i - 2 - N);
+        if (k == 0) { rowRule(s); return DR_DREW; }
+        if (k < 6) {
+            if (dashPluginRow(s, static_cast<uint8_t>(k - 1))) return DR_DREW;
+            if (!refresh) return DR_SKIP;
+            rowText(s, Color::Grey, "");
+            return DR_DREW;
+        }
+    } else {
+        if (i == 1) {
+            char buf[48];
+            snprintf(buf, sizeof(buf), "%s%c%-12.12s %5s %-15.15s", " N", ' ', "Handle", "Time", "Address");
+            uint8_t col = 0;
+            rowSeg(s, Color::LightBlue, buf, col);
+            rowEnd(s, col);
+            return DR_DREW;
+        }
+        if (i < 7)  { dashCall(s, static_cast<uint8_t>(i - 2), NodePlan::From); return DR_DREW; }
+        if (i == 7) { rowRule(s); return DR_DREW; }
+        if (i == 8) { dashVitals(s, 4); return DR_DREW; }
+        if (i < 9 + BBS_BAN_SLOTS) {
+            if (dashBanRow(s, static_cast<uint8_t>(i - 9))) return DR_DREW;
+            if (!refresh) return DR_SKIP;
+            rowText(s, Color::Grey, "");
+            return DR_DREW;
+        }
+    }
+    if (refresh && i < body) { rowText(s, Color::Grey, ""); return DR_DREW; }
+    return DR_DONE;
+}
+
+// 132 columns: one page. The 80 column node rows with the minutes each call
+// has been on, and beside them the board's figures in SYS's own grammar, so
+// the same figure reads the same on both screens.
+uint8_t Bbs::dashPage132(Session& s, uint8_t i) {
+    constexpr uint8_t N = kNodeRows;
+    constexpr uint8_t kLeft = 77;                        // the Wide132 row
+    bool refresh = s.watch != ListKind::None;
+    uint8_t rows = s.term.rows();
+    uint8_t body = rows > 2 ? static_cast<uint8_t>(rows - 2) : 0;
+
+    if (i == 0) { snapFill(false); dashTitle(s); return DR_DREW; }
+    if (i == 1) {
+        uint8_t col = nodeHead(s, NodePlan::Wide132);
+        dashRight(s, col, 0xFF);
+        rowEnd(s, col);
+        return DR_DREW;
+    }
+    if (i < 2 + N) {
+        uint8_t k = static_cast<uint8_t>(i - 2);
+        bool sel = refresh && dashCells(s) && s.dashSel == k;
+        if (sel) s.term.reverse(s.tl, true);
+        uint8_t col = nodeCells(s, *nodeAt(k), NodePlan::Wide132);
+        if (sel) {
+            while (col < kLeft) { s.term.ch(s.tl, ' '); ++col; }
+            s.term.reverse(s.tl, false);
+        }
+        dashRight(s, col, k);
+        rowEnd(s, col);
+        return DR_DREW;
+    }
+    uint8_t k = static_cast<uint8_t>(i - 2 - N);
+    if (k == 0) { rowRule(s); return DR_DREW; }
+    if (k == 1) { dashWaiting(s); return DR_DREW; }
+    if (k == 2) { dashCallsHead(s); return DR_DREW; }
+    if (k < 8)  { dashCall(s, static_cast<uint8_t>(k - 3), NodePlan::Wide132); return DR_DREW; }
+    if (refresh && i < body) { rowText(s, Color::Grey, ""); return DR_DREW; }
+    return DR_DONE;
+}
+
+// ---------------------------------------------------------------------------
+// dashRight: the 132 column page's right-hand block, from column 80, on the
+// row already begun: which 0xFF is its "-- board ---" heading, 0 to 11 its
+// rows. Label 13, value 9, then a quieter note: statRow's grammar, cut at
+// the edge of the row rather than wrapped.
+// ---------------------------------------------------------------------------
+void Bbs::dashRight(Session& s, uint8_t& col, uint8_t which) {
+    constexpr uint8_t kAt = 80;
+    const DashSnap& d = snap_;
+    Term& t = s.term;
+    uint8_t w = rowWidth(s);
+    uint32_t now = plat::millis();
+    while (col < kAt && col < w) { t.ch(s.tl, ' '); ++col; }
+    auto put = [&](Color c, const char* text) {
+        if (col >= w) return;
+        t.color(s.tl, c);
+        col = static_cast<uint8_t>(col + t.textCols(s.tl, text, static_cast<uint8_t>(w - col)));
+    };
+    if (which == 0xFF) {
+        put(Color::DarkGrey, "-- ");
+        put(Color::Cyan, "board");
+        put(Color::DarkGrey, " ");
+        t.color(s.tl, Color::DarkGrey);
+        while (col < w) { t.ch(s.tl, '-'); ++col; }
+        return;
+    }
+
+    const char* label = "";
+    char value[24] = "";
+    char note[48]  = "";
+    char a[16], b[16];
+    Color vc = Color::LightGreen;
+    switch (which) {
+        case 0:
+            label = "Uptime";
+            fmtUptime(value, sizeof(value), now);
+            vc = Color::White;
+            break;
+        case 1:
+            label = "Heap free";
+            if (d.heapFree) {
+                fmtCommas(d.heapFree, value, sizeof(value));
+                fmtCommas(d.heapLow, a, sizeof(a));
+                snprintf(note, sizeof(note), "low %s", a);
+                if (d.heapFree < BBS_HEAP_RESERVE) vc = Color::LightRed;
+            } else {
+                snprintf(value, sizeof(value), "-");
+                vc = Color::DarkGrey;
+            }
+            break;
+        case 2:
+            label = "Stack free";
+            if (d.stackLeast) {
+                fmtCommas(d.stackLeast, value, sizeof(value));
+                fmtCommas(plat::stackSize(), a, sizeof(a));
+                snprintf(note, sizeof(note), "least of %s", a);
+                if (d.stackLeast < 1024u) vc = Color::LightRed;
+            } else {
+                snprintf(value, sizeof(value), "-");
+                vc = Color::DarkGrey;
+            }
+            break;
+        case 3:
+            label = "Loop avg";
+            snprintf(value, sizeof(value), "%lu", static_cast<unsigned long>(loopAvgUs_));
+            fmtCommas(loopMaxUs_, a, sizeof(a));
+            if (worstPhase_) snprintf(note, sizeof(note), "us, worst %s in %s", a, worstPhase_);
+            else             snprintf(note, sizeof(note), "us, worst %s", a);
+            break;
+        case 4: {
+            label = "Slow passes";
+            uint32_t window = (s.watchSecs ? s.watchSecs : 5u) * 1000u + 1000u;
+            snprintf(value, sizeof(value), "%lu", static_cast<unsigned long>(slowCount_));
+            snprintf(note, sizeof(note), "over 50ms");
+            if (slowAt_ && now - slowAt_ < window) vc = Color::LightRed;
+            break;
+        }
+        case 5: {
+            label = "Signal";
+            int8_t rssi = d.net.valid ? d.net.rssi : 0;
+            const char* word = signalWord(rssi, vc);
+            if (rssi) snprintf(value, sizeof(value), "%d dBm", static_cast<int>(rssi));
+            else      snprintf(value, sizeof(value), "-");
+            bool known = d.power[0] && d.power[0] != '?';   // as dashVitals
+            bool awake = !known || d.power[0] == 'n';
+            int used = snprintf(note, sizeof(note), "%s", word);
+            if (d.net.channel && rssi && used > 0)
+                used += snprintf(note + used, sizeof(note) - static_cast<size_t>(used), ", ch %u",
+                                 static_cast<unsigned>(d.net.channel));
+            if (known && used > 0 && static_cast<size_t>(used) < sizeof(note))
+                snprintf(note + used, sizeof(note) - static_cast<size_t>(used), ", %s",
+                         awake ? "awake" : "SLEEPING");
+            if (!awake) vc = Color::LightRed;
+            break;
+        }
+        case 6:
+            label = "Data free";
+            fmtCommas(d.dataFree, value, sizeof(value));
+            snprintf(note, sizeof(note), "bytes");
+            break;
+        case 7:
+            label = "Card";
+            if (!d.card) {
+                snprintf(value, sizeof(value), "none");
+                vc = Color::DarkGrey;
+            } else if (d.cardFreeKB >= 1048576u) {
+                snprintf(value, sizeof(value), "%u GB",
+                         static_cast<unsigned>((d.cardFreeKB + 524288u) / 1048576u));
+                snprintf(note, sizeof(note), "free of %u",
+                         static_cast<unsigned>((d.cardTotalKB + 524288u) / 1048576u));
+            } else {
+                snprintf(value, sizeof(value), "%u MB", static_cast<unsigned>(d.cardFreeKB / 1024u));
+                snprintf(note, sizeof(note), "free of %u", static_cast<unsigned>(d.cardTotalKB / 1024u));
+            }
+            break;
+        case 8:
+        case 11: {
+            label = which == 8 ? "Directory" : "Lights";
+            const char* line = statusOf(which == 8 ? "announce" : "lights");
+            if (!line) {
+                snprintf(value, sizeof(value), "off");
+                vc = Color::DarkGrey;
+                break;
+            }
+            const char* rest = "";
+            splitStatus(line, value, sizeof(value), &rest);
+            snprintf(note, sizeof(note), "%s", rest);
+            if (which == 8 && !strcmp(value, "held")) vc = Color::LightRed;
+            break;
+        }
+        case 9:
+            label = "Backup";
+            if (backup_.awaitingApproval()) {
+                snprintf(value, sizeof(value), "Y/N");
+                snprintf(note, sizeof(note), "an upload waits for you");
+                vc = Color::Yellow;
+            } else if (backup_.isOpen()) {
+                int32_t left = static_cast<int32_t>(backup_.closesAt() - now) / 1000;
+                if (left < 0) left = 0;
+                snprintf(value, sizeof(value), "open %ld:%02ld", static_cast<long>(left / 60),
+                         static_cast<long>(left % 60));
+            } else {
+                snprintf(value, sizeof(value), "closed");
+                vc = Color::Grey;
+            }
+            break;
+        case 10: {
+            label = "Bans";
+            snprintf(value, sizeof(value), "%u", static_cast<unsigned>(d.bans));
+            BanList::Entry e;
+            for (uint8_t k = 0; k < BBS_BAN_SLOTS; ++k) {
+                if (!bans_.at(k, now, e)) continue;
+                ipToText(e.ip, b, sizeof(b));
+                snprintf(note, sizeof(note), "%s, %u min", b,
+                         static_cast<unsigned>((e.until - now + 59999u) / 60000u));
+                break;
+            }
+            break;
+        }
+        default:
+            return;
+    }
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%-13.13s", label);
+    put(Color::Grey, buf);
+    snprintf(buf, sizeof(buf), "%9s", value);
+    put(vc, buf);
+    if (note[0]) {
+        put(Color::DarkGrey, " ");
+        put(Color::DarkGrey, note);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// rowDash: one row of whichever page this caller is on, at whichever width.
+// DASH ALL walks the pages in turn as one list.
+// ---------------------------------------------------------------------------
+bool Bbs::rowDash(Session& s) {
+    for (;;) {
+        uint8_t pages = dashPages(s);
+        uint8_t page  = static_cast<uint8_t>(s.dashPage & 0x7F);
+        if (page >= pages) {                         // the terminal changed width under it
+            page = 0;
+            s.dashPage = static_cast<uint8_t>(s.dashPage & kDashAll);
+        }
+        uint8_t i = s.listIdx++;
+        // A refreshing frame stops at the terminal's height less its two
+        // footer rows, whatever the page has left. The pages are laid out for
+        // 24 and 25 rows; a window resized shorter would otherwise get the
+        // whole page redrawn from home and scroll on every frame, which is
+        // the thing a fixed height is for. What is cut is the bottom of the
+        // page: the last calls, the bans, and on a very short window the
+        // lines themselves.
+        if (s.watch != ListKind::None) {
+            uint8_t rows = s.term.rows();
+            if (i >= (rows > 2 ? rows - 2 : 0)) return false;
+        }
+        uint8_t r = rowWidth(s) >= kDash132 ? dashPage132(s, i)
+                  : rowWidth(s) >= kDash80  ? dashPage80(s, page, i)
+                  :                           dashPage40(s, page, i);
+        if (r == DR_DREW) return true;
+        if (r == DR_SKIP) continue;
+        if ((s.dashPage & kDashAll) && page + 1 < pages) {
+            s.dashPage = static_cast<uint8_t>(kDashAll | (page + 1));
+            s.listIdx  = 0;
+            continue;
+        }
+        return false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// dashKey: a key while DASH n is up.
+//
+//   Left Right < > - +   the page before or after, wrapping
+//   1 2 3                that page
+//   Enter                redraw now
+//   Q ESC Ctrl-C Space   back to the prompt
+//   Up Down              pick a node row (ANSI and PETSCII, pages with nodes)
+//   K S                  KICK or SNOOP the picked node, at the prompt
+//
+// Anything else is ignored, so a stray key no longer throws the dashboard
+// away. K and S go through the command table exactly as if typed there, so
+// the permission and rank rules that decide who may be kicked or watched
+// are KICK's and SNOOP's own; a command this caller may not run is not
+// offered by the key either.
+// ---------------------------------------------------------------------------
+void Bbs::dashKey(Session& s, int k, uint32_t now) {
+    uint8_t pages = dashPages(s);
+    uint8_t page  = static_cast<uint8_t>(s.dashPage & 0x7F);
+    if (page >= pages) page = 0;
+
+    // restart: the frame again from its first row, cleared first for a new
+    // page (a page of a different shape would leave its tail) and homed for
+    // the same page. A frame half drawn is simply not finished: every row
+    // is written whole, so nothing is left open mid-attribute.
+    auto restart = [&](bool clear) {
+        if (clear) s.term.cls(s.tl);
+        else {
+            s.term.home(s.tl);
+            if (!dashCells(s)) s.term.nl(s.tl);      // plain ASCII redraws below
+        }
+        s.listIdx   = 0;
+        s.listSub   = 0;
+        s.watchNext = 0;
+    };
+
+    if (k == 'q' || k == 'Q' || k == KEY_ESC || k == KEY_BREAK || k == ' ') {
+        stopWatch(s);
+        return;
+    }
+    int to = -1;
+    if (k == KEY_LEFT || k == '<' || k == '-')       to = (page + pages - 1) % pages;
+    else if (k == KEY_RIGHT || k == '>' || k == '+') to = (page + 1) % pages;
+    else if (k >= '1' && k <= '9') {
+        if (k - '1' >= pages) return;                // past the last page: nothing
+        to = k - '1';
+    }
+    if (to >= 0) {
+        if (to != page) {
+            s.dashPage = static_cast<uint8_t>(to);
+            restart(true);
+        }
+        return;
+    }
+    if (k == KEY_ENTER) { restart(false); return; }
+
+    // The pick: only where node rows are on screen, and only on a terminal
+    // that can show which row it is on.
+    if (!dashCells(s) || !(page == 0 || (pages == 3 && page == 1))) return;
+    if (k == KEY_UP || k == KEY_DOWN) {
+        if (s.dashSel >= kNodeRows)                        s.dashSel = k == KEY_DOWN ? 0 : kNodeRows - 1;
+        else if (k == KEY_DOWN && s.dashSel + 1 < kNodeRows) ++s.dashSel;
+        else if (k == KEY_UP && s.dashSel > 0)             --s.dashSel;
+        restart(false);
+        return;
+    }
+    bool kick  = k == 'k' || k == 'K';
+    bool snoop = k == 's' || k == 'S';
+    if ((!kick && !snoop) || s.dashSel >= kNodeRows) return;
+    const Session* o = nodeAt(s.dashSel);
+    const char* verb = kick ? "KICK" : "SNOOP";
+    if (!o || !findCommand(verb, s)) return;
+    char line[16];
+    snprintf(line, sizeof(line), "%s %s", verb, nodeName(*o).t);
+    stopWatch(s);                                    // back at the prompt
+    s.term.text(s.tl, line);                         // as though typed there
+    runCommand(s, line, now);
 }
 
 // ===========================================================================
@@ -1632,12 +2462,18 @@ const char* signalWord(int8_t rssi, Color& c) {
 // how hard the scheduler is working and how busy the lines have been. Every
 // figure here is already kept, so the screen costs a few hundred bytes of
 // formatting and nothing else.
+//
+// The radio and the heap come from the dashboard's snapshot, taken once at
+// the title (1.1.0). They were read at the top of this function, which runs
+// once per ROW: thirty calls into the Wi-Fi task and thirty heap walks under
+// a critical section for one listing, all but two of them thrown away.
 // ---------------------------------------------------------------------------
 bool Bbs::rowSys(Session& s) {
     char buf[48], num[16];
     uint8_t i = s.listIdx++;
-    plat::NetInfo net = plat::netInfo();
-    plat::HeapStats h = plat::heap();
+    if (i == 0) snapFill(true);                  // with the heap walk, for the biggest block
+    const plat::NetInfo& net = snap_.net;
+    const DashSnap& h = snap_;
 
     switch (i) {
         case 0:  rowTitle(s, "System", BBS_VERSION); return true;
@@ -1645,7 +2481,7 @@ bool Bbs::rowSys(Session& s) {
         case 1:  rowSection(s, "network"); return true;
         case 2:  statRow(s, "Wi-Fi", net.ssid[0] ? net.ssid : "-", Color::White); return true;
         case 3: {
-            int8_t rssi = net.valid ? net.rssi : plat::wifiRssi();
+            int8_t rssi = net.valid ? net.rssi : 0;
             Color c = Color::Grey;
             const char* word = signalWord(rssi, c);
             if (rssi) snprintf(num, sizeof(num), "%d dBm", static_cast<int>(rssi));
@@ -1666,8 +2502,9 @@ bool Bbs::rowSys(Session& s) {
             // been chased twice from the outside, and once it was diagnosed
             // wrongly with confident arithmetic. A board that says which
             // mode it is in turns the next one into a reading.
-            const char* ps = plat::powerSave();
-            if (!ps || !*ps) { statRow(s, "Radio", "-", Color::Grey); return true; }
+            const char* ps = snap_.power;
+            // "?" is the driver not saying, not a radio asleep
+            if (!ps || !*ps || *ps == '?') { statRow(s, "Radio", "-", Color::Grey); return true; }
             bool awake = ps[0] == 'n';          // "none"
             statRow(s, "Radio", awake ? "awake" : ps,
                     awake ? Color::LightGreen : Color::LightRed,
@@ -1685,16 +2522,16 @@ bool Bbs::rowSys(Session& s) {
 
         case 8:  rowSection(s, "memory"); return true;
         case 9:
-            if (h.valid) statNum(s, "Heap free", h.freeBytes, "bytes");
-            else         statRow(s, "Heap free", "-", Color::DarkGrey, "host build");
+            if (h.heapFree) statNum(s, "Heap free", h.heapFree, "bytes");
+            else            statRow(s, "Heap free", "-", Color::DarkGrey, "host build");
             return true;
         case 10:
-            if (h.valid) statNum(s, "Heap low", h.minFree, "since boot");
-            else         statRow(s, "Heap low", "-", Color::DarkGrey);
+            if (h.heapFree) statNum(s, "Heap low", h.heapLow, "since boot");
+            else            statRow(s, "Heap low", "-", Color::DarkGrey);
             return true;
         case 11:
-            if (h.valid) statNum(s, "Biggest blk", h.largestBlock, "bytes");
-            else         statRow(s, "Biggest blk", "-", Color::DarkGrey);
+            if (h.heapFull) statNum(s, "Biggest blk", h.heapBig, "bytes");
+            else            statRow(s, "Biggest blk", "-", Color::DarkGrey);
             return true;
         case 12:
             fmtCommas(static_cast<uint32_t>(sizeof(Session)), num, sizeof(num));
@@ -1716,26 +2553,34 @@ bool Bbs::rowSys(Session& s) {
             }
             return true;
         }
-        case 15: statNum(s, "Data free", plugins::freeBytes(), "bytes"); return true;
+        case 15: statNum(s, "Data free", h.dataFree, "bytes"); return true;
         case 16: statNum(s, "Held back", plugins::reserveBytes(), "for the board"); return true;
 
         case 17: rowSection(s, "load"); return true;
         case 18:
             fmtUptime(buf, sizeof(buf), plat::millis());
-            // An uptime that keeps starting over is the only symptom of a
-            // board that restarts on its own, so say why it started. A
-            // BOOT-hold reset too: a software restart says nothing useful.
-            statRow(s, "Uptime", buf, Color::White,
-                    bootWasCrash() || bootNoted_ ? bootReason() : nullptr);
+            statRow(s, "Uptime", buf, Color::White);
             return true;
-        case 19: {
+        case 19:
+            // An uptime that keeps starting over is the only symptom of a
+            // board that restarts on its own, so say why it started, every
+            // boot, power on included: that is the question a sysop brings
+            // here. A row of its own (1.1.0, copy SYS-l-restart) rather than
+            // Uptime's note, which at 40 columns has 16 characters and
+            // wrapped four of the words. statRow pads and never cuts, so the
+            // longest, "brownout (power dipped)", is a 36 column row.
+            statRow(s, "Last restart", bootReason(),
+                    bootWasCrash() ? Color::LightRed
+                                   : (bootNoted_ ? Color::Yellow : Color::White));
+            return true;
+        case 20: {
             char when[24] = "-";
             if (clk::valid()) clk::fmt(when, sizeof(when), "%H:%M:%S");
             statRow(s, "Clock", when, Color::White, clk::valid() ? nullptr : "not set");
             return true;
         }
-        case 20: statNum(s, "Loop avg", loopAvgUs_, "us of work"); return true;
-        case 21: {
+        case 21: statNum(s, "Loop avg", loopAvgUs_, "us of work"); return true;
+        case 22: {
             // The worst pass says which phase owned it. Without that a stall
             // is a bare number and the investigation starts with a guess,
             // which is exactly how the last one was got wrong.
@@ -1753,8 +2598,8 @@ bool Bbs::rowSys(Session& s) {
             statNum(s, "Loop worst", loopMaxUs_, note);
             return true;
         }
-        case 22: statNum(s, "Loop passes", loopPasses_, nullptr); return true;
-        case 23:
+        case 23: statNum(s, "Loop passes", loopPasses_, nullptr); return true;
+        case 24:
             // How many, not just how bad. One stall at boot and a stall every
             // minute look identical on a high-water mark.
             statNum(s, "Slow passes", slowCount_, "over 50ms");
@@ -1783,20 +2628,20 @@ bool Bbs::rowSys(Session& s) {
             }
             return true;
 
-        case 24: rowSection(s, "traffic"); return true;
-        case 25:
+        case 25: rowSection(s, "traffic"); return true;
+        case 26:
             snprintf(num, sizeof(num), "%u", static_cast<unsigned>(activeNodes()));
             snprintf(buf, sizeof(buf), "of %u, peak %u", static_cast<unsigned>(BBS_MAX_NODES),
                      static_cast<unsigned>(peakNodes_));
             statRow(s, "Nodes busy", num, Color::LightGreen, buf);
             return true;
-        case 26: statNum(s, "Calls", callsBoot_, "since boot"); return true;
-        case 27:
+        case 27: statNum(s, "Calls", callsBoot_, "since boot"); return true;
+        case 28:
             snprintf(num, sizeof(num), "%u", static_cast<unsigned>(calllog::count()));
             snprintf(buf, sizeof(buf), "of %u kept", static_cast<unsigned>(BBS_CALLLOG_SIZE));
             statRow(s, "Log", num, Color::LightGreen, buf);
             return true;
-        case 28: {
+        case 29: {
             uint8_t run = 0;
             for (uint8_t k = 0; k < plugins::count(); ++k) if (plugins::running(k)) ++run;
             snprintf(num, sizeof(num), "%u", static_cast<unsigned>(run));
@@ -1804,7 +2649,7 @@ bool Bbs::rowSys(Session& s) {
             statRow(s, "Plugins", num, Color::LightGreen, buf);
             return true;
         }
-        case 29: {
+        case 30: {
             uint8_t live = 0;                                  // only the bans still running
             BanList::Entry e;
             for (uint8_t k = 0; k < BBS_BAN_SLOTS; ++k) if (bans_.at(k, plat::millis(), e)) ++live;
@@ -1812,8 +2657,8 @@ bool Bbs::rowSys(Session& s) {
             return true;
         }
 
-        case 30: rowRule(s); return true;
-        case 31: rowText(s, Color::DarkGrey, "CALLS shows the board hour by hour"); return true;
+        case 31: rowRule(s); return true;
+        case 32: rowText(s, Color::DarkGrey, "CALLS shows the board hour by hour"); return true;
         default: return false;
     }
 }

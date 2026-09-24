@@ -54,18 +54,39 @@ struct Header {
 Header g_hdr;
 bool   g_loaded = false;
 
+// The newest calls, newest first, and today's count (1.1.0). 5 x 52 bytes
+// and a few more: what the dashboard shows every frame, held so that showing
+// it opens nothing. The file is still the record; these are only ever a
+// copy of what a successful append() put in it.
+CallRec  g_recent[calllog::kRecent];
+uint8_t  g_recentN    = 0;
+uint16_t g_today      = 0;
+uint32_t g_todayStart = 0;         // the midnight g_today counts from, 0 none yet
+
 void path(char* out, size_t n) {
     snprintf(out, n, "%s/%s", plat::logsBase(), BBS_CALLLOG_FILE);
 }
 
+long slotOffset(uint16_t slot) {
+    return static_cast<long>(sizeof(Header) + slot * sizeof(CallRec));
+}
+
+// endStrings: a record's strings ended, whatever the bytes said
+void endStrings(CallRec& r) {
+    r.user[BBS_USER_MAX] = '\0';
+    r.ip[sizeof(r.ip) - 1] = '\0';
+}
+
 // ---------------------------------------------------------------------------
-// loadHeader: read (or reset) the cached header once
+// loadHeader: read (or reset) the cached header once, and with it the newest
+// kRecent records. Once per boot, so these reads are on nobody's call.
 // ---------------------------------------------------------------------------
 void loadHeader() {
     if (g_loaded) return;
     g_loaded = true;
     memcpy(g_hdr.magic, kMagic, 4);
     g_hdr.next = g_hdr.count = 0;
+    g_recentN  = 0;
 
     char p[96];
     path(p, sizeof(p));
@@ -75,12 +96,18 @@ void loadHeader() {
     if (fread(&h, sizeof(h), 1, f) == 1 && !memcmp(h.magic, kMagic, 4) &&
         h.next < BBS_CALLLOG_SIZE && h.count <= BBS_CALLLOG_SIZE) {
         g_hdr = h;
+        uint8_t want = g_hdr.count < calllog::kRecent ? static_cast<uint8_t>(g_hdr.count)
+                                                      : calllog::kRecent;
+        for (uint8_t back = 0; back < want; ++back) {
+            uint16_t slot = static_cast<uint16_t>((g_hdr.next + BBS_CALLLOG_SIZE - 1 - back) %
+                                                  BBS_CALLLOG_SIZE);
+            if (fseek(f, slotOffset(slot), SEEK_SET) != 0 ||
+                fread(&g_recent[back], sizeof(CallRec), 1, f) != 1) break;
+            endStrings(g_recent[back]);
+            g_recentN = static_cast<uint8_t>(back + 1);
+        }
     }
     fclose(f);
-}
-
-long slotOffset(uint16_t slot) {
-    return static_cast<long>(sizeof(Header) + slot * sizeof(CallRec));
 }
 
 } // namespace
@@ -156,6 +183,7 @@ bool append(const CallRec& r) {
         f = fopen(p, "w+b");                      // first call ever
         if (!f) { plat::log("calllog: cannot create %s", p); return false; }
         g_hdr.next = g_hdr.count = 0;
+        g_recentN  = 0;                            // nothing on file, nothing to copy
     }
 
     bool ok = fseek(f, slotOffset(g_hdr.next), SEEK_SET) == 0 &&
@@ -166,7 +194,22 @@ bool append(const CallRec& r) {
         ok = fseek(f, 0, SEEK_SET) == 0 && fwrite(&g_hdr, sizeof(g_hdr), 1, f) == 1;
     }
     fclose(f);
-    if (!ok) plat::log("calllog: write failed");
+    if (ok) {
+        // The copy follows the file, and only a record the file took: a
+        // failed write must not show on the dashboard as a call LAST has
+        // never heard of.
+        memmove(&g_recent[1], &g_recent[0], sizeof(CallRec) * (kRecent - 1));
+        g_recent[0] = r;
+        endStrings(g_recent[0]);
+        if (g_recentN < kRecent) ++g_recentN;
+        if (g_recentN > g_hdr.count) g_recentN = static_cast<uint8_t>(g_hdr.count);
+        // Counted from the midnight today() last worked out. If the day has
+        // turned since, today() sees a new midnight and counts the file
+        // again, this record included, so a stale addition is never read.
+        if (g_todayStart && r.start >= g_todayStart && g_today < 0xFFFF) ++g_today;
+    } else {
+        plat::log("calllog: write failed");
+    }
     mirror(r);
     return ok;
 }
@@ -197,6 +240,10 @@ uint8_t countSince(uint32_t epoch) {
 bool get(uint8_t back, CallRec& out) {
     loadHeader();
     if (back >= g_hdr.count) return false;
+    if (back < g_recentN) {                        // the newest: no file
+        out = g_recent[back];
+        return true;
+    }
     uint16_t slot = static_cast<uint16_t>((g_hdr.next + BBS_CALLLOG_SIZE - 1 - back) % BBS_CALLLOG_SIZE);
     char p[96];
     path(p, sizeof(p));
@@ -204,9 +251,18 @@ bool get(uint8_t back, CallRec& out) {
     if (!f) return false;
     bool ok = fseek(f, slotOffset(slot), SEEK_SET) == 0 && fread(&out, sizeof(out), 1, f) == 1;
     fclose(f);
-    out.user[BBS_USER_MAX] = '\0';
-    out.ip[sizeof(out.ip) - 1] = '\0';
+    endStrings(out);
     return ok;
+}
+
+uint16_t today() {
+    uint32_t start = clk::todayStart();
+    if (!start) return 0;
+    if (start != g_todayStart) {                   // a new day, or a new timezone
+        g_todayStart = start;
+        g_today      = countSince(start);
+    }
+    return g_today;
 }
 
 } // namespace calllog

@@ -114,6 +114,11 @@ public:
     bool     isAnsi()  const { return type_ == TermType::Ansi; }
     const char* name() const { return nameOf(type_, cs_); }
     static const char* nameOf(TermType t, Charset cs);
+    // shortName: the same in five characters, for a column that has no room
+    // for ten (the dashboard's where-from page at 40 columns): CP437, UTF8,
+    // PET40, PET80, ASCII.
+    const char* shortName() const { return shortOf(type_, cs_); }
+    static const char* shortOf(TermType t, Charset cs);
 
     // init: put the remote terminal in a known state (charset, colors, cls)
     void init(ByteSink& o);

@@ -94,13 +94,22 @@ char           g_why[72] = "not mounted";  // why there is no card, for SD and D
 // sdInfo() reaches the filesystem, and status() is called from the DASH
 // refresh, once per running plugin per row per redraw. Cached so a card that
 // is slow to answer cannot turn a dashboard into a stall.
+//
+// A minute for the dashboard (1.1.0), not three seconds. On the board the
+// read is f_getfree: 15 to 25 ms typical and 160 ms on a card whose free
+// cluster hint is stale, which is what pulling a FAT card mid-write leaves.
+// At three seconds, DASH 1 put that into the loop every third frame. Free
+// space on a card moves by uploads and backups, and a dashboard a minute
+// behind on it is still right about whether there is room. SD asks with
+// force, and so do a mount and an unmount, so none of them waits.
 plat::SdInfo   g_info;
 uint32_t       g_infoAt  = 0;
 const uint32_t kInfoMs   = 3000;
+const uint32_t kDashMs   = 60000;
 
-const plat::SdInfo& cardInfo(bool force = false) {
+const plat::SdInfo& cardInfo(bool force = false, uint32_t maxAgeMs = kInfoMs) {
     uint32_t now = plat::millis();
-    if (force || !g_infoAt || now - g_infoAt >= kInfoMs) {
+    if (force || !g_infoAt || now - g_infoAt >= maxAgeMs) {
         g_info  = plat::sdInfo();
         g_infoAt = now ? now : 1;
         if (g_info.mounted) plat::diskPulse(plat::DISK_CARD);   // it read the FAT
@@ -441,11 +450,11 @@ const char* screensDir() {
 
 // ---------------------------------------------------------------------------
 // status: the DASH row. Static storage, no work worth mentioning, because
-// DASH redraws on a timer.
+// DASH redraws on a timer: the figure is up to a minute old (kDashMs).
 // ---------------------------------------------------------------------------
 const char* status() {
     static char line[64];
-    const plat::SdInfo& i = cardInfo();
+    const plat::SdInfo& i = cardInfo(false, kDashMs);
     if (!i.mounted) {
         snprintf(line, sizeof(line), "SD: no card");
         return line;
@@ -612,6 +621,18 @@ const char* sdScreensDir() {
 // the night passing without a word.
 bool sdNightly() {
     return g_running && g_nightly;
+}
+
+// sdDashCard: the card's space for the dashboard (bbs.h, 1.1.0), from the
+// same minute-old figure status() gives. False with no card, or with this
+// plugin switched off, which the dashboard says as none.
+bool sdDashCard(uint32_t& freeKB, uint32_t& totalKB) {
+    if (!g_running) return false;
+    const plat::SdInfo& i = cardInfo(false, kDashMs);
+    if (!i.mounted) return false;
+    freeKB  = i.freeKB;
+    totalKB = i.totalKB;
+    return true;
 }
 
 extern const Plugin kSdPlugin = {

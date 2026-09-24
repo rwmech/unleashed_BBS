@@ -116,8 +116,14 @@ test_tzones: test_tzones.cpp ../src/core/tzones.h
 test_cardnames: test_cardnames.cpp ../src/core/cardnames.h
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_cardnames.cpp
 
+# The caller log's copy of its newest calls and today's count in RAM (1.1.0),
+# which the dashboard reads every frame instead of the file. Checked against
+# the file, then with the file taken away.
+test_calllog: test_calllog.cpp ../src/core/calllog.cpp ../src/core/calllog.h
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_calllog.cpp ../src/core/calllog.cpp
 
-test: test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames
+
+test: test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_calllog
 	./test_xmodem
 	./test_wrap
 	./test_forums_ptr
@@ -128,8 +134,9 @@ test: test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv 
 	./test_ring
 	./test_tzones
 	./test_cardnames
+	./test_calllog
 
 clean:
-	rm -f bbs_host test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames
+	rm -f bbs_host test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_calllog
 
 .PHONY: clean test

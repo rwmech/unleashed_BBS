@@ -477,8 +477,30 @@ uint8_t pixelsFrame(uint8_t out, uint8_t* rgb, uint8_t cap) {
 }
 
 // The host build is started by a person, so it never crashed its way here.
-const char* resetReason()  { return "host start"; }
-bool        resetWasCrash() { return false; }
+// BBS_HOST_RESET plays one of the board's reset words instead ("task
+// watchdog", "crash (panic)", "brownout (power dipped)"), so the staff
+// notice for a restart the board did not choose can be tested (1.1.0). Read
+// once and forgotten, like the restart note: a restart of the host build is
+// a restart somebody asked for, not the same crash again.
+namespace {
+const char* hostReset() {
+    static const char* word = nullptr;
+    static char held[32];
+    if (!word) {
+        const char* v = getenv("BBS_HOST_RESET");
+        snprintf(held, sizeof(held), "%s", v && *v ? v : "host start");
+        word = held;
+        unsetenv("BBS_HOST_RESET");
+    }
+    return word;
+}
+}   // namespace
+
+const char* resetReason()  { return hostReset(); }
+bool        resetWasCrash() {
+    const char* w = hostReset();
+    return strstr(w, "crash") || strstr(w, "watchdog") || strstr(w, "brownout");
+}
 
 // ---------------------------------------------------------------------------
 // Recovery on the host (1.1.0). A test plays a BOOT hold of BBS_BOOT_HOLD_MS

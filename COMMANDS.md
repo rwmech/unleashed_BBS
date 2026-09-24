@@ -48,7 +48,7 @@ Full guide to accounts: [USERS.md](USERS.md).
 ### Guests
 
 - Type any handle that has no account, then `G`. On by default; `guest = no` turns it off.
-- Guests keep the handle they typed. WHO, LAST, NODES and DASH mark them with `*` (`Visitor*`) and explain it with a `* guest` footnote under the list.
+- Guests keep the handle they typed. WHO, LAST, NODES and DASH mark them with `*` (`Visitor*`), and WHO, LAST and NODES explain it with a `* guest` footnote under the list.
 - Nothing is saved: no account, no profile, no call count. The call still appears in `LAST`, like every call, marked `*`.
 - Nobody else can take a guest's handle while the guest is on. Once they leave, the handle is free again (and anyone may register it).
 - 15 minutes per call (`guest_minutes`), with the usual warnings at 5 and 1 minute. No daily limit.
@@ -66,7 +66,10 @@ Full guide to accounts: [USERS.md](USERS.md).
 | Y, Enter or Space | `[More] Y/n/c` | next page |
 | N, Q, ESC or Ctrl-C | `[More] Y/n/c` | stop; inside a subsystem such as FILES this returns you to that subsystem's prompt, not to the main one |
 | C | `[More] Y/n/c` | continue without pausing |
-| any key | `WHO n`, `DASH n` refresh | stop refreshing, back to the prompt |
+| any key | `WHO n`, `NODES n` refresh | stop refreshing, back to the prompt |
+| Left / Right, `<` `>` `-` `+`, `1`-`3` | `DASH n` | previous / next page, or that page; Enter redraws now |
+| Up / Down, then `K` or `S` | `DASH n` (ANSI and PETSCII) | pick a line, then `KICK` or `SNOOP` it at the prompt |
+| Q, ESC, Ctrl-C or Space | `DASH n` | stop refreshing, back to the prompt; other keys are ignored |
 | ESC or Ctrl-C | command prompt | clear the line |
 | Enter on an unknown command | command prompt | the line rubs out, `Unknown command. Type HELP.` (C64: `?SYNTAX  ERROR`) flashes in its place, then you type again on the same line |
 | Up / Down (C64: CRSR) | forms | previous / next field |
@@ -119,7 +122,7 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | `G` | | Log off after a `Log off (Y/N)?` confirm. |
 | `BYE` | | Log off now. `OFF`, `LOGOFF` and `QUIT` do the same. |
 
-A marker sits between the node number and the handle in WHO, NODES, LAST, DASH and the user manager, with a key line under the list:
+A marker sits between the node number and the handle in WHO, NODES, LAST, DASH and the user manager, with a key line under the list (not on DASH, which has no row to spare and shows the same markers as the lists that do):
 
 ```
 1 NormalUser
@@ -169,10 +172,12 @@ Limits, each refused in place of the question: `Three rings is the most for one 
 - At the prompt, in the forums, the file areas, the mailbox or the page editor: a bell, a flashing ` RING ` tag, `quantumrob (3) is ringing: can't upload to Drop Box`, then `[A]nswer [D]ecline [X] Away [Q] Later:`. `A` answers. `D` declines. `X` turns DND on (the sysop is away, and rings are saved as notes) and declines. `Q`, or any other key, leaves it ringing: `Still ringing. O answers while it does.` Keys typed while the notice was still being drawn are not taken as an answer. Answering from inside the forums, the file areas or the page editor leaves it: a post or page being written there is not kept.
 - In the chat room: `--> quantumrob (3) is ringing: ...` and `--> /o answers, /o- declines.`, and no question, because the keys there are the room's.
 - In a form: `RING quantumrob (3). ESC, then O.` on the status line, or `RING from node 3. ESC, then O.` when the handle does not fit.
-- A bare `O` at the prompt asks the question again while the ring is still going; with no ring it says `Nobody is ringing.`
-- If the caller stops or the ring runs out: `quantumrob (3) stopped ringing. Their note is saved.`; if they hang up: `quantumrob (3) hung up. Their note is saved.` Said in place of the question if it is still up.
+- A bare `O` at the prompt asks the question again while the ring is still going. With no ring it shows any notes rings have left (below), the same way as at login; with none it says `Nobody is ringing.` and, while mail is on, `Missed rings go to MAIL.`
+- If the caller stops or the ring runs out: `quantumrob (3) stopped ringing. It is in MAIL.`; if they hang up: `quantumrob (3) hung up. It is in MAIL.` (`Their note is saved.` instead when it became a note). Said in place of the question if it is still up.
 
-**Notes.** Every ring that was not answered leaves a note, kept in `rings.txt` on the user data partition, so a restart does not lose it. The newest 8 are kept. They are shown to the sysop at the next elevation, or at login to an account the sysop password has marked (the `]` in WHO), and then cleared:
+**Missed rings go to MAIL (1.1.0).** A ring nobody answered (no answer, declined, away, the sysop not available, the caller stopping or hanging up) becomes a MAIL message to every account the sysop password has marked (`level = sysop` in `users.txt`, the `]` in WHO). It comes from the caller's handle, a guest's marked `*` (`Visitor*`) and said to be a guest in the text, since a guest has no account to reply to. Its first line is `Ring:` and the reason, the second where it rang from and when: `Rang from node 3 at 22:14.` So the sysop's `You have mail.`, `DASH`'s waiting row and the display panel's letter icon all count missed rings without knowing rings exist. It is ordinary mail and follows MAIL's rules: a sysop's box that is full refuses it (3 messages without a card, 12 with one), and the sysop is told `You have mail.` if they are on. An answered ring leaves nothing. The rate limits and one ring at a time are unchanged.
+
+**Notes, the fallback.** A missed ring that MAIL cannot take leaves a note instead, so a ring is never lost: when no account has been marked sysop yet (a board before its first `BYE <password>`), when mail is switched off (`mail_slots = 0`), or when every sysop box is full. Notes are kept in `rings.txt` on the user data partition, so a restart does not lose them. The newest 8 are kept. They are shown to the sysop at the next elevation, at login to an account the sysop password has marked, or at a bare `O`, and then cleared. `DASH` says how many are waiting:
 
 ```
 2 rings while you were off:
@@ -253,9 +258,10 @@ All caller commands still work. Node arguments are `1`-`10`, `S` (sysop node) or
 
 | Command | Permission | What it does |
 |---|---|---|
-| `DASH` | `DASH` | Dashboard on one 40-column screen: date and time, version, uptime, NTP state, heap (free, lowest, largest block), every node with what it is doing (last command, or connect / login / sign-up), idle and minutes left, calls today, active bans, busy line, Wi-Fi signal (dBm of the joined access point), backup window state, the last 5 calls. |
-| `DASH n` | `DASH` | The dashboard redrawn every n seconds (same limits as `WHO n`) until a key. |
-| `NODES` | `NODES` | Every session: handle, IP, minutes left, idle (plus terminal type on wide screens). `NODES n` redraws every n seconds until you press a key, the same bounds as `WHO n`. |
+| `DASH` | `DASH` | The dashboard's first page, once. A row for every line in node order, 1 to 10, then `S` and `B`: handle, what each caller is doing (last command, or connect / login / sign-up), idle, minutes left, address and terminal. Then what is waiting on you (ring notes, uploads to approve, your unread mail, a backup upload waiting for its Y), two rows of vitals (uptime, heap free and lowest, stack least, loop average and worst, slow passes; Wi-Fi signal, channel and whether the radio is awake, free data space, free card space, the directory listing, the backup window) and as many of the last calls as the screen has room for, under a count of today's. At 40 columns the same first page, with the address and terminal on page 2. A figure worth worrying about is red: heap under the reserve, stack under 1 KB, the radio asleep, the listing held, a slow pass since the last frame. |
+| `DASH ALL` | `DASH` | Every page in turn as one paged list: page 2 at 80 columns is each plugin's own line, the bans and the last 5 calls with addresses; at 40, page 2 is where each line is calling from and the plugins, page 3 the last calls with addresses and the bans. How a plain terminal sees the whole dashboard at once. |
+| `DASH n` | `DASH` | The dashboard redrawn every n seconds (same limits as `WHO n`), each page exactly the height of the screen so it never scrolls. `<` `>` (or Left/Right, `-` `+`) turn pages, `1`-`3` go to one, Enter redraws now, Q, ESC, Ctrl-C or Space stop, and any other key is ignored. On ANSI and PETSCII, Up and Down pick a line (a reverse-video bar), `K` kicks it and `S` snoops it, through `KICK` and `SNOOP` and their own permission and rank rules. Plain ASCII picks pages by number and has no pick. At 132 columns it is one page, with the board's figures beside the lines. The frame opens no file: every figure is a count the board keeps, the card's free space is at most a minute old, and the day's calls and the last five are kept in memory by the caller log. |
+| `NODES` | `NODES` | Every line, the sysop and busy lines included, drawn exactly as the dashboard's node rows: handle, what each is doing, idle, minutes left, address and the whole terminal name at 80 columns; handle, address and a five-letter terminal at 40. `NODES n` redraws every n seconds until you press a key, the same bounds as `WHO n`. |
 | `KICK n [message]` | `KICK` | Disconnect node n. The caller sees `Disconnected by sysop: message`. |
 | `BROADCAST message` | `BROADCAST` | Send `*** Sysop: message` to every logged-in node, announced like a page with a bell and a flashing ` SYSOP ` tag. Delivered wherever each caller is, the way a page is, and also on the status line of a form (`Sysop: message`, cut to 38 columns), so nobody misses one by being in the middle of `PROFILE`. See "Notices". |
 | `SNOOP n` | `SNOOP` | Mirror node n's output to your screen. `Q`, ESC or Ctrl-C stops. Both terminals must be the same type, and only one watcher per node. |
@@ -265,7 +271,7 @@ All caller commands still work. Node arguments are `1`-`10`, `S` (sysop node) or
 | `LURK` | `HIDE` | Toggle lurking: hidden from WHO and pages refused. |
 | `BANS` | `BANS` | Active IP bans and minutes remaining. |
 | `PLUGINS` | any staff | Every plugin compiled in: version, whether it is running, and why not. Also free disk space and the reserve. |
-| `SYS` | any staff | The whole board on one screen, in groups: network (SSID, signal in dBm with a word for what it means, channel, address, port), memory (heap free, the lowest it has been, the biggest block, session size), storage (used, free, what is held back for the board), load (uptime, clock, scheduler work per pass in microseconds, worst pass **and which phase of the loop it happened in**, how many passes have run over 50 ms since boot, passes since boot) and traffic (nodes busy and the peak, calls answered since boot, records in the caller log, plugins running, active IP bans). Any staff level can run it, though it is grouped with the sysop tools below. |
+| `SYS` | any staff | The whole board on one screen, in groups: network (SSID, signal in dBm with a word for what it means, channel, address, port), memory (heap free, the lowest it has been, the biggest block, session size), storage (used, free, what is held back for the board), load (uptime, why the board last restarted, clock, scheduler work per pass in microseconds, worst pass **and which phase of the loop it happened in**, how many passes have run over 50 ms since boot, passes since boot) and traffic (nodes busy and the peak, calls answered since boot, records in the caller log, plugins running, active IP bans). Any staff level can run it, though it is grouped with the sysop tools below. |
 | `FILES` / `F` | all | **Goes into the file area**, the way `CHAT` goes into the room, rather than printing a list and returning. A screen plays on the way in if the board has `screens/files`, then the areas appear as a numbered menu laid out in as many columns as the terminal has room for. A digit opens an area, `Q` goes back one level and `Q` again leaves. `FILES n` enters and opens that area in one go. Only on a board with a card: the plugin does not start without one, so on a cardless board the command does not exist rather than offering an empty file area. |
 | `FORUMS` | all | **Goes into the message boards**, the way `FILES` and `CHAT` go into theirs. Three levels: topic areas the sysop sets up (`CONFIG forums`), subjects that callers start inside them, and the messages in each subject. A screen plays on the way in if the board has `screens/forums`. Only on a board with a card, the same as `FILES`: the plugin does not start without one, so on a cardless board the command does not exist rather than offering empty boards. `FORUMS SCAN` needs the forums plugin's admin level (`co1` by default) and prints what the board thinks is on the card. |
 | `SD` | sysop | SD card status: type, mount point, free space, and where screens are coming from. With no card it says which pins it tried, because "no card found" without them sends you to re-seat a card that was never the problem. |

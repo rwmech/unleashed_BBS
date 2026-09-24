@@ -43,6 +43,7 @@
 #include "../core/term.h"
 
 struct Session;
+struct UserRec;
 
 namespace chat {
 
@@ -50,6 +51,23 @@ namespace chat {
 // chat plugin is running, because mail lives inside it; the caller checks
 // plugins::running first.
 bool mailOn();
+
+// leaveMail (1.1.0): a message from `from` to the account `to`, stored by
+// the same writer MAIL uses, for a sender with no line of their own: the
+// sysop page leaving a ring nobody answered, whose caller may have hung up.
+// `to` is the account as users.txt has it, which the caller has in hand
+// from its own pass over the file, so nothing is looked up again. The same
+// rules as MAIL: nothing replaced, a full box or a full board refused, the
+// recipient told "You have mail" if they are on. False, with nothing
+// stored, for any of those or when chat is not running.
+bool leaveMail(const char* from, const UserRec& to, const char* text);
+
+// sysopUnread (1.1.0): a message not yet read is waiting for an account the
+// sysop password has marked. From a flag kept in RAM as mail comes and
+// goes, never a file read, because the display panel's letter icon asks for
+// it on every frame. False when chat is not running. Bbs::sysopMail is the
+// way in for anything outside the core.
+bool sysopUnread();
 
 // The sysop page (1.1.0) reaches into the room through these three, the
 // same way the lights reach Bbs::takeTraffic: a named call, not a hook every

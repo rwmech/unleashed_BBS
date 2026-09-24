@@ -205,6 +205,19 @@ const char* Term::nameOf(TermType t, Charset cs) {
     }
 }
 
+// shortOf: nameOf in five characters, for a narrow column. "?" while the
+// terminal is still being worked out, which is also what a line that is
+// still connecting shows everywhere else.
+const char* Term::shortOf(TermType t, Charset cs) {
+    switch (t) {
+        case TermType::Pet40: return "PET40";
+        case TermType::Pet80: return "PET80";
+        case TermType::Ansi:  return cs == Charset::Utf8 ? "UTF8" : "CP437";
+        case TermType::Ascii: return "ASCII";
+        default:              return "?";
+    }
+}
+
 // ---------------------------------------------------------------------------
 // init: known state on the remote side
 // ---------------------------------------------------------------------------

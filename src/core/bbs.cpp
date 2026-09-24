@@ -63,6 +63,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cctype>
+#if __has_include("sdkconfig.h")
+#include "sdkconfig.h"                 // CONFIG_ESP_TASK_WDT_TIMEOUT_S, on the board
+#endif
 
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
@@ -73,6 +76,15 @@ using namespace bbsu;
 namespace {
 
 constexpr uint32_t kEscIdleMs = 150;     // lone ESC resolves after this
+
+// The task watchdog's timeout, for the restart notice (BN-twdt-2). Filled in
+// from the build's own setting so the words cannot drift from the timer; the
+// host has no watchdog and says what sdkconfig.defaults sets.
+#ifdef CONFIG_ESP_TASK_WDT_TIMEOUT_S
+constexpr unsigned kWdtSecs = CONFIG_ESP_TASK_WDT_TIMEOUT_S;
+#else
+constexpr unsigned kWdtSecs = 30;
+#endif
 const char kBusyMsg[] = "\r\nBUSY\r\n";  // overflow beyond the busy line
 
 // ---------------------------------------------------------------------------
@@ -150,6 +162,10 @@ bool Bbs::begin(uint16_t port) {
     // that fixes them: it runs before the listener is up, so nobody can be
     // logging in while the file is being rewritten.
     users::assignIds();
+
+    // The ring notes waiting from before the restart, counted once so the
+    // dashboard can say so without opening the file.
+    ringNotesWaiting_ = ringNoteCount();
 
     for (uint8_t i = 0; i < BBS_MAX_NODES; ++i) {
         nodes_[i].id   = static_cast<uint8_t>(i + 1);
@@ -459,6 +475,7 @@ void Bbs::tick() {
     // its time describing it.
     if (dt > BBS_SLOW_PASS_US) {
         ++slowCount_;
+        slowAt_ = now ? now : 1;
         if (!slowLogAt_ || now - slowLogAt_ >= 1000) {
             slowLogAt_ = now ? now : 1;
             plat::log("bbs: slow pass %luus in %s (node %u %s): accept %lu session %lu "
@@ -700,8 +717,11 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
     s.moreFrom      = MoreFrom::List;
     s.watch         = ListKind::None;
     s.watchSecs     = 0;
+    s.dashPage      = 0;
+    s.dashSel       = 0xFF;
     s.watchNext     = 0;
     s.countdown     = 0;
+    if (noticeOwed_ == s.id) noticeOwed_ = 0xFF;   // owed to the last caller, not this one
     s.nextTick      = 0;
 
     s.passTries     = 0;
@@ -757,6 +777,7 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
 void Bbs::closeSession(Session& s, const char* why, uint32_t now) {
     claims::releaseAll(s.id);          // and again on the way out, promptly
     configRelease(s);                        // a dropped line must not lock CONFIG out
+    if (noticeOwed_ == s.id) noticeOwed_ = 0xFF;
     // A caller who rang hung up, or the sysop who was rung went: the other
     // one is told, and the note is written, while this session still says
     // who it was.
@@ -838,6 +859,7 @@ void Bbs::moveSession(Session& from, Session& to, uint8_t newId, Role role) {
     if (ring_.from == from.id) ring_.from = newId;
     if (ring_.to == from.id)   ring_.to   = newId;
     ringLimits_.move(from.id, newId);
+    if (noticeOwed_ == from.id) noticeOwed_ = newId;
 
     to      = from;
     to.id   = newId;
@@ -1682,10 +1704,11 @@ void Bbs::completeLogin(Session& s, uint32_t now) {
     if (left == INT32_MAX) snprintf(mins, sizeof(mins), "no time limit");
     else snprintf(mins, sizeof(mins), "%ld minutes", static_cast<long>((left + 59) / 60));
 
-    // Counted off the caller log rather than kept as state: one pass over at
-    // most BBS_CALLLOG_SIZE records, once per login, and it stays right
-    // across a reboot and across midnight without anything to maintain.
-    unsigned today = (clk::valid() ? calllog::countSince(clk::todayStart()) : 0u) + 1u;
+    // The caller log's own count of today (1.1.0): one pass over the file
+    // when the day starts, then kept as calls are logged, so a login opens
+    // nothing for it. It stays right across a reboot, which counts the file
+    // again, and across midnight, which does too.
+    unsigned today = static_cast<unsigned>(calllog::today()) + 1u;
     const char* ord = (today % 10 == 1 && today % 100 != 11) ? "st"
                     : (today % 10 == 2 && today % 100 != 12) ? "nd"
                     : (today % 10 == 3 && today % 100 != 13) ? "rd" : "th";
@@ -1761,11 +1784,27 @@ bool Bbs::offerSetup(Session& s) {
         return false;
     Term& t = s.term;
     Timeline& tl = s.tl;
+    bool wide = t.cols() >= 60;
+    if (bootNote_ == recovery::NOTE_PASSWORD) {
+        // The boot after a BOOT password reset (copy 6b.6). Whoever is here
+        // owns a board with accounts and history on it, and "not set up yet"
+        // was written for a fresh one. Fact, where to find it, what to do:
+        // the prompt that follows asks for the thing the last line names.
+        // Keyed on this boot's note, so a restart before anybody logs in
+        // goes back to the fresh-board words, which are still roughly true.
+        sayLine(t, tl, Color::Yellow, wide ? "The sysop password was reset with the BOOT button."
+                                           : "The sysop password was reset with BOOT.");
+        sayLine(t, tl, Color::Grey, wide ? "The published default is on the install page."
+                                         : "The default is on the install page.");
+        sayLine(t, tl, Color::Grey, "Enter it here, then choose a new one.");
+        askSetup(s);
+        return true;
+    }
     sayLine(t, tl, Color::Yellow, "This board has not been set up yet.");
-    sayLine(t, tl, Color::Grey, t.cols() >= 60
+    sayLine(t, tl, Color::Grey, wide
         ? "You are on its own network, so you can do it now."
         : "You are on its network: do it now.");
-    sayLine(t, tl, Color::Grey, t.cols() >= 60
+    sayLine(t, tl, Color::Grey, wide
         ? "The sysop password is on the install page."
         : "The password is on the install page.");
     askSetup(s);
@@ -1845,9 +1884,13 @@ void Bbs::beginSetup(Session& s, uint32_t now) {
 // form cannot open (another sysop session is in CONFIG), cmdConfig has said
 // why and drawn the prompt, and the setup simply ends there.
 void Bbs::setupConfig(Session& s, uint32_t now) {
-    s.setupStage = 2;
+    // Stage 2 only once the form is open. A form that could not open has
+    // drawn the prompt already, and at stage 0 that prompt is the one that
+    // carries the staff notices the setup screen held back (noticeOwed_);
+    // at stage 2 they waited for a command more.
+    s.setupStage = 0;
     cmdConfig(s, "staff", now);
-    if (s.st != SState::Form) s.setupStage = 0;
+    if (s.st == SState::Form) s.setupStage = 2;
 }
 
 // ---------------------------------------------------------------------------
@@ -2132,6 +2175,16 @@ void Bbs::drawPrompt(Session& s) {
 }
 
 void Bbs::prompt(Session& s) {
+    // Staff elevated on the setup path are told what the setup screen's
+    // @CLS@ would have wiped, at the first prompt once the setup is over.
+    if (noticeOwed_ == s.id && !s.setupStage && s.loggedIn) {
+        noticeOwed_ = 0xFF;
+        if (bootCrash_ || bootNoted_ || ringNotesWaiting_ || nightlyFail_) {
+            s.term.reset(s.tl);
+            s.term.nl(s.tl);
+            staffArrival(s);
+        }
+    }
     drawPrompt(s);
     armPrompt(s);
 }
@@ -2227,9 +2280,11 @@ void Bbs::exitScreen(Session& s, uint32_t now) {
 void Bbs::noteBoot() {
     // A BOOT-hold reset restarts the board, and the chip calls that a
     // software restart like any other. The note it left says what it was.
-    const char* noted = recovery::noteText(plat::restartNote());
+    uint8_t note = plat::restartNote();
+    const char* noted = recovery::noteText(note);
     snprintf(bootReason_, sizeof(bootReason_), "%s", noted ? noted : plat::resetReason());
     bootNoted_ = noted != nullptr;
+    bootNote_  = noted ? note : 0;
     bootCrash_ = !bootNoted_ && plat::resetWasCrash();
     plat::log("boot: %s", bootReason_);
 
@@ -2255,7 +2310,12 @@ void Bbs::noteBoot() {
 
     FILE* f = fopen(path, size > BBS_REBOOT_MAX ? "w" : "a");
     if (!f) return;
+    // This boot counts too (1.1.0), once its line is going in. The file
+    // above was read before this boot's line is written below, so under the
+    // cap the count was one short, and the login's "on record" figure left
+    // out the very restart it was reporting.
     if (size > BBS_REBOOT_MAX) bootCrashes_ = bootCrash_ ? 1 : 0;
+    else if (bootCrash_) ++bootCrashes_;
 
     char when[32];
     if (clk::valid()) clk::fmt(when, sizeof(when), "%Y-%m-%d %H:%M");
@@ -2270,21 +2330,75 @@ void Bbs::noteBoot() {
 // that restarted on its own lost everybody on it; a BOOT reset in yellow,
 // because somebody did it on purpose and the next sysop should know what
 // became of the password or the accounts.
+//
+// The words are the copy's (internal/copy-1.1.0-2026-09-23.md, 6b.1), every
+// line 39 columns or less so none wraps on a C64. The first says what a
+// person would say happened; the chip's own word stays in reboots.log and
+// SYS, where a bug report copies it from. The three watchdogs are one event
+// to a sysop: the board stopped answering and something restarted it. Keyed
+// on the note first, then on the chip's word, which the reboot counter also
+// matches ("crash", "watchdog", "brownout"), so the two cannot disagree.
 // ---------------------------------------------------------------------------
 void Bbs::bootNotice(Session& s) {
-    if (!bootCrash_ && !bootNoted_) return;
     Term& t = s.term;
     Timeline& tl = s.tl;
-    char why[64];
-    if (bootCrash_) {
-        snprintf(why, sizeof(why), "Last restart was not clean: %s.", bootReason_);
-        sayLine(t, tl, Color::LightRed, why);
-        sayLine(t, tl, Color::Grey, "SYS has the detail. The log is reboots.log.");
-    } else {
-        snprintf(why, sizeof(why), "Last restart: %s.", bootReason_);
-        sayLine(t, tl, Color::Yellow, why);
+    const char* first  = nullptr;
+    const char* second = nullptr;
+    Color c = Color::Yellow;
+    bool counted = false;
+    char buf[48];
+    switch (bootNote_) {
+        case recovery::NOTE_PASSWORD:                                  // BN-pw
+            first  = "Last restart: password reset by BOOT.";
+            second = "Sysop password only. Accounts are kept.";
+            break;
+        case recovery::NOTE_FACTORY:                                   // BN-fr
+            first  = "Last restart: factory reset by BOOT.";
+            second = "Accounts and settings were erased.";
+            break;
+        case recovery::NOTE_FACTORY_FAILED:                            // BN-ff
+            c      = Color::LightRed;
+            first  = "Last restart: factory reset FAILED.";
+            second = "Reinstall with Erase everything first.";
+            break;
+        default:
+            if (!bootCrash_) return;          // power on, a restart somebody asked for
+            c = Color::LightRed;
+            counted = true;
+            if (!strcmp(bootReason_, "task watchdog")) {                // BN-twdt
+                first = "Last restart: the board froze.";
+                snprintf(buf, sizeof(buf), "A watchdog restarted it after %u s.", kWdtSecs);
+                second = buf;
+            } else if (strstr(bootReason_, "watchdog")) {               // BN-wdt
+                first  = "Last restart: the board froze.";
+                second = "A watchdog restarted it.";
+            } else if (strstr(bootReason_, "brownout")) {               // BN-bo
+                first  = "Last restart: the power dipped.";
+                second = "Check the power supply and its cable.";
+            } else {                                                    // BN-panic
+                first  = "Last restart: the board crashed.";
+                second = "The firmware stopped on an error.";
+            }
+            break;
+    }
+    sayLine(t, tl, c, first);
+    sayLine(t, tl, Color::Grey, second);
+    if (counted) {                                                      // BN-count
+        snprintf(buf, sizeof(buf), "Unexpected restarts on record: %u.",
+                 static_cast<unsigned>(bootCrashes_));
+        sayLine(t, tl, Color::Grey, buf);
     }
     t.nl(tl);
+}
+
+// ---------------------------------------------------------------------------
+// staffArrival: see bbs.h. The order is the one elevate always used.
+// ---------------------------------------------------------------------------
+void Bbs::staffArrival(Session& s) {
+    bootNotice(s);
+    // Rings nobody answered while the sysop was off (1.1.0), once, then gone.
+    if (s.level == Access::Sysop) ringNotes(s);
+    nightlyNotice(s);                 // last night's backup, if it did not happen (1.1.0)
 }
 
 // ---------------------------------------------------------------------------
@@ -2804,6 +2918,8 @@ int32_t Bbs::idleSecondsLeft(const Session& s, uint32_t now) const {
 void Bbs::startWatch(Session& s, ListKind kind, uint8_t secs) {
     s.watch     = kind;
     s.watchSecs = secs;
+    s.dashPage  = 0;                                 // DASH opens on page 1, nothing picked
+    s.dashSel   = 0xFF;
     s.watchNext = 0;                                 // draw the first frame now
     s.list      = kind;
     s.listIdx   = 0;
@@ -2823,7 +2939,11 @@ void Bbs::serviceWatch(Session& s, uint32_t now) {
     if (s.watchNext == 0) {
         while (s.st == SState::Watch && tl.freeBytes() > 512 && tl.freeFrames() > 16) {
             if (s.listSub == 0) {                    // content rows
-                bool more = s.watch == ListKind::Dash ? rowDash(s) : rowWho(s);
+                // listRow, not "DASH or else WHO": NODES n drew WHO's rows
+                // under its own name until 1.1.0, because this line only
+                // knew the two refresh screens that existed when it was
+                // written.
+                bool more = listRow(s);
                 if (more) continue;
                 s.listSub = 1;
             }
@@ -3050,7 +3170,10 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
             return;
 
         case SState::Watch:
-            stopWatch(s);                            // any key ends a refresh screen
+            // DASH has pages and a pick (1.1.0), so its keys mean something;
+            // WHO n and NODES n still stop on any key.
+            if (s.watch == ListKind::Dash) dashKey(s, k, now);
+            else                           stopWatch(s);
             return;
 
         case SState::Plugin: {

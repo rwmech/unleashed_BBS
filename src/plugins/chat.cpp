@@ -154,7 +154,13 @@ constexpr uint8_t    kMailDays   = 14;    // how long one waits to be read
 // A kept message does not ring "You have mail", is skipped when MAIL looks
 // for something new, and still counts against the box, because it is still
 // taking up room somebody else cannot use.
-enum : uint8_t { MF_NONE = 0, MF_KEPT = 1 };
+// MF_SYSOP (1.1.0): addressed to an account the sysop password has marked.
+// Set when the message is left, from the account as it is then, and on the
+// board's existing mail once at start (mailMarkSysops), then kept on the
+// record so an index read gives it back. It is what sysopUnread reads: the
+// display panel's letter icon asks every frame, so the answer is a flag in
+// RAM rather than a pass over users.txt.
+enum : uint8_t { MF_NONE = 0, MF_KEPT = 1, MF_SYSOP = 2 };
 
 struct MailRec {
     char     to[BBS_USER_MAX + 1];
@@ -252,6 +258,7 @@ uint16_t g_rate      = kRateDef;       // lines a minute one caller may send
 char     g_mailTo[kMailSlots][BBS_USER_MAX + 1] = {};   // who has a message waiting
 uint32_t g_mailAt[kMailSlots] = {};                     // and when it was left
 uint8_t  g_mailFl[kMailSlots] = {};                     // MF_KEPT once read and kept
+bool     g_sysopMail = false;   // the last answer sysopUnread gave, to log a change once
 
 // What a caller is doing with the message they were just shown. The plugin
 // owns the session while this is set, which is how a shell command gets to
@@ -860,6 +867,23 @@ bool mailExpired(uint32_t at, uint32_t nowEpoch) {
     return (nowEpoch - at) > static_cast<uint32_t>(g_mailDays) * 86400u;
 }
 
+// sysopUnreadNow: a message waiting, not yet read, for an account the sysop
+// password has marked. From the index in RAM: no read.
+bool sysopUnreadNow() {
+    for (uint8_t i = 0; i < kMailSlots; ++i)
+        if (g_mailTo[i][0] && (g_mailFl[i] & MF_SYSOP) && !(g_mailFl[i] & MF_KEPT)) return true;
+    return false;
+}
+
+// noteSysopMail: say on the console when that changes, once each way. The
+// console is where a bench check reads it, and it costs a line per change.
+void noteSysopMail() {
+    bool now = sysopUnreadNow();
+    if (now == g_sysopMail) return;
+    g_sysopMail = now;
+    plat::log("%s", now ? "chat: the sysop has unread mail" : "chat: the sysop's mail is all read");
+}
+
 // mailIndex: read the addressees back into RAM. One pass, one record
 // buffer, so the whole mailbox never sits in memory at once.
 void mailIndex() {
@@ -880,6 +904,24 @@ void mailIndex() {
         ++n;
     }
     fclose(f);
+    noteSysopMail();
+}
+
+// mailMarkSysops: MF_SYSOP on the mail waiting for a sysop account, and off
+// the mail of one that no longer is (1.1.0). At start, and after a rename
+// rewrote the file: one pass over users.txt. Mail left from now on is marked
+// as it is stored, and the next rewrite writes these marks through, either
+// way. A rank that changes later, up or down, or a retired account, shows
+// on mail left after it, and on the rest at the next start, which a CONFIG
+// save also is.
+void mailMarkSysops() {
+    for (uint8_t i = 0; i < kMailSlots; ++i) g_mailFl[i] = static_cast<uint8_t>(g_mailFl[i] & ~MF_SYSOP);
+    users::range(0, 255, [](void*, uint8_t, const UserRec& u) {
+        if (u.retired || u.level < static_cast<uint8_t>(Access::Sysop)) return;
+        for (uint8_t i = 0; i < kMailSlots; ++i)
+            if (g_mailTo[i][0] && ieq(g_mailTo[i], u.handle)) g_mailFl[i] |= MF_SYSOP;
+    }, nullptr);
+    noteSysopMail();
 }
 
 // mailSlotFor: the oldest message for this handle that has not been read,
@@ -957,6 +999,10 @@ bool mailRewrite(int16_t dropIdx, const MailRec* add, uint32_t nowEpoch,
             if (mailExpired(r.at, nowEpoch)) continue;             // too old to keep
             if (kept >= g_mailSlots) continue;
             if (markIdx >= 0 && idx == markIdx) r.flags |= MF_KEPT;   // read and kept
+            // The index is this file's order, so its sysop marks (set or
+            // cleared at start) go through to the record, both ways.
+            if (idx < kMailSlots)
+                r.flags = static_cast<uint8_t>((r.flags & ~MF_SYSOP) | (g_mailFl[idx] & MF_SYSOP));
             if (fwrite(&r, sizeof(r), 1, out) != 1) { fclose(in); fclose(out); remove(tmp); return false; }
             ++kept;
         }
@@ -1497,6 +1543,52 @@ void mailToKey(Session& s, int k) {
 //
 // Returns false, having said why, when nothing was stored.
 // ---------------------------------------------------------------------------
+// mailStore: the writer itself, for MAIL and for the board leaving a message
+// on somebody's behalf (1.1.0: the sysop page, whose caller may already have
+// hung up). One writer, so a ring and a message follow the same rules: never
+// replace, a full box or a full board refused, the recipient told if on.
+// had is how many were already waiting for them. sender is not told of
+// their own message, and is nullptr when nobody sent it from a line.
+enum MailStored : uint8_t { MS_OK, MS_OFF, MS_BOX, MS_FULL, MS_IO };
+
+MailStored mailStore(const char* from, const UserRec& u, const char* text, int16_t dropIdx,
+                     const Session* sender, uint8_t& had) {
+    had = 0;
+    if (!g_mailSlots) return MS_OFF;
+    uint32_t nowEpoch = clk::epoch();
+    had = mailCountFor(u.handle);
+    if (had >= mailBoxLimit()) return MS_BOX;
+    // A reply takes the slot the message it answers gives back, so the
+    // board's total does not grow and a full board cannot block it.
+    if (dropIdx < 0 && mailUsed() >= g_mailSlots) return MS_FULL;
+
+    MailRec r;
+    memset(&r, 0, sizeof(r));
+    snprintf(r.to, sizeof(r.to), "%.*s", BBS_USER_MAX, u.handle);
+    snprintf(r.from, sizeof(r.from), "%.*s", BBS_USER_MAX, from);
+    r.at  = nowEpoch;
+    if (!u.retired && u.level >= static_cast<uint8_t>(Access::Sysop)) r.flags |= MF_SYSOP;
+    snprintf(r.text, sizeof(r.text), "%.*s", static_cast<int>(g_mailChars), text);
+    r.len = static_cast<uint16_t>(strlen(r.text));
+
+    if (!mailRewrite(dropIdx, &r, nowEpoch)) return MS_IO;
+
+    Session* now = online(u.handle);                               // tell them if they are on
+    if (now && now != sender) {
+        // In the room, interrupt() lifts their line and puts it back. Anywhere
+        // else it goes through the core's queue, which delivers at the main
+        // prompt and knows how to lift THAT. interrupt() only knew the room's
+        // input line, so at the shell it wrote the notice after "[1] Main:"
+        // and put the typing back with no prompt in front of it; in the forums
+        // or the file areas it would have written straight across the screen.
+        if (joined(*now)) interrupt(*now, Color::Yellow, "You have mail. /e reads it.");
+        else              Bbs::instance().notify(*now, "You have mail. MAIL reads it.");
+    }
+    return MS_OK;
+}
+
+// mailSend (see above): MAIL's way in. It checks who is sending, stores
+// through mailStore, and tells the sender what became of it.
 bool mailSend(Session& s, const char* handle, const char* text, int16_t dropIdx = -1) {
     char buf[96];
     UserRec u;
@@ -1513,33 +1605,25 @@ bool mailSend(Session& s, const char* handle, const char* text, int16_t dropIdx 
         tell(s, Color::LightRed, buf);
         return false;
     }
-    uint32_t nowEpoch = clk::epoch();
-    uint8_t mine = mailCountFor(u.handle);
-    if (mine >= mailBoxLimit()) {
-        snprintf(buf, sizeof(buf),
-                 "%.20s already has %u messages waiting. Nothing was replaced.",
-                 u.handle, static_cast<unsigned>(mine));
-        tell(s, Color::LightRed, buf);
-        return false;
-    }
-    // A reply takes the slot the message it answers gives back, so the
-    // board's total does not grow and a full board cannot block it.
-    if (dropIdx < 0 && mailUsed() >= g_mailSlots) {
-        tell(s, Color::LightRed, "The board's mail is full. Try again later.");
-        return false;
-    }
-
-    MailRec r;
-    memset(&r, 0, sizeof(r));
-    snprintf(r.to, sizeof(r.to), "%.*s", BBS_USER_MAX, u.handle);
-    snprintf(r.from, sizeof(r.from), "%.*s", BBS_USER_MAX, s.user);
-    r.at  = nowEpoch;
-    snprintf(r.text, sizeof(r.text), "%.*s", static_cast<int>(g_mailChars), text);
-    r.len = static_cast<uint16_t>(strlen(r.text));
-
-    if (!mailRewrite(dropIdx, &r, nowEpoch)) {
-        tell(s, Color::LightRed, "The message could not be stored.");
-        return false;
+    uint8_t mine = 0;
+    switch (mailStore(s.user, u, text, dropIdx, &s, mine)) {
+        case MS_OK:
+            break;
+        case MS_OFF:
+            tell(s, Color::LightRed, "Mail is switched off on this board.");
+            return false;
+        case MS_BOX:
+            snprintf(buf, sizeof(buf),
+                     "%.20s already has %u messages waiting. Nothing was replaced.",
+                     u.handle, static_cast<unsigned>(mine));
+            tell(s, Color::LightRed, buf);
+            return false;
+        case MS_FULL:
+            tell(s, Color::LightRed, "The board's mail is full. Try again later.");
+            return false;
+        default:
+            tell(s, Color::LightRed, "The message could not be stored.");
+            return false;
     }
     if (mine)
         snprintf(buf, sizeof(buf), "Left for %.20s, who now has %u waiting.",
@@ -1547,18 +1631,6 @@ bool mailSend(Session& s, const char* handle, const char* text, int16_t dropIdx 
     else
         snprintf(buf, sizeof(buf), "Left for %.20s", u.handle);
     tell(s, Color::LightGreen, buf);
-
-    Session* now = online(u.handle);                               // tell them if they are on
-    if (now && now != &s) {
-        // In the room, interrupt() lifts their line and puts it back. Anywhere
-        // else it goes through the core's queue, which delivers at the main
-        // prompt and knows how to lift THAT. interrupt() only knew the room's
-        // input line, so at the shell it wrote the notice after "[1] Main:"
-        // and put the typing back with no prompt in front of it; in the forums
-        // or the file areas it would have written straight across the screen.
-        if (joined(*now)) interrupt(*now, Color::Yellow, "You have mail. /e reads it.");
-        else              Bbs::instance().notify(*now, "You have mail. MAIL reads it.");
-    }
     return true;
 }
 
@@ -2977,6 +3049,7 @@ void onRename(const char* oldHandle, const char* newHandle) {
     remove(path);
     if (rename(tmp, path) != 0) return;
     mailIndex();                                      // the in-RAM index names them too
+    mailMarkSysops();       // this copy did not write the sysop marks through (1.1.0)
     if (moved) plat::log("chat: %u message%s follow%s %s to %s",
                          static_cast<unsigned>(moved), moved == 1 ? "" : "s",
                          moved == 1 ? "s" : "", oldHandle, newHandle);
@@ -3040,6 +3113,7 @@ bool start(Bbs& bbs) {
     g_voteMask   = 0;
     loadBans();
     mailIndex();
+    mailMarkSysops();                                        // mail left before MF_SYSOP existed
     return true;
 }
 
@@ -3107,6 +3181,20 @@ const Command kCommands[] = {
       Menu::Chat, 30 },
 };
 
+// ---------------------------------------------------------------------------
+// waiting: the dashboard's "Waiting on you" row (1.1.0). Unread mail for the
+// staff member looking, from the addressees already held in RAM for "you
+// have mail", so it costs no read. Kept mail is not news, as everywhere.
+// ---------------------------------------------------------------------------
+bool waiting(const Session& s, char* out, size_t n) {
+    if (s.guest || !s.user[0]) return false;
+    uint8_t unread = mailNewFor(s.user);
+    if (!unread) return false;
+    snprintf(out, n, s.term.cols() >= 60 ? "%u unread mail" : "%u mail",
+             static_cast<unsigned>(unread));
+    return true;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -3116,6 +3204,19 @@ const Command kCommands[] = {
 // ---------------------------------------------------------------------------
 namespace chat {
 bool mailOn() { return g_mailSlots > 0; }
+
+// leaveMail and sysopUnread: see chat.h. Both answer "no" rather than touch
+// anything when the plugin is not running.
+bool leaveMail(const char* from, const UserRec& to, const char* text) {
+    if (g_index == 0xFF || !plugins::running(g_index) || !g_mailSlots) return false;
+    uint8_t had = 0;
+    return mailStore(from, to, text, -1, nullptr, had) == MS_OK;
+}
+
+bool sysopUnread() {
+    if (g_index == 0xFF || !plugins::running(g_index)) return false;
+    return sysopUnreadNow();
+}
 
 bool inRoom(const Session& s) {
     if (g_index == 0xFF || !plugins::running(g_index)) return false;
@@ -3173,4 +3274,5 @@ extern const Plugin kChatPlugin = {
     nullptr,                 // listDone
     hookLift,                // liftInput: notices reach the room and the mailbox
     hookRestore,             // restoreInput
+    waiting,                 // waiting: unread mail, on the dashboard (1.1.0)
 };

@@ -107,6 +107,9 @@ constexpr const char kDidAway[]     = "You're away: rings are saved as notes and
                                       "DND brings you back.";                          // OP-did-away
 constexpr const char kDidLater[]    = "Still ringing. O answers while it does.";      // OP-did-later
 constexpr const char kNone[]        = "Nobody is ringing.";                            // OP-none
+// Not in the copy (1.1.0, Rob: missed rings go to MAIL): what a bare O says
+// after OP-none, so the sysop knows where the rings they missed are.
+constexpr const char kToMail[]      = "Missed rings go to MAIL.";
 constexpr const char kRoom2[]       = "/o answers, /o- declines.";                     // OP-room-2
 constexpr const char kOver[]        = "Only the last 8 are kept.";                     // OP-login-over
 constexpr const char kGone[]        = "Shown once. They are cleared now.";             // OP-login-gone
@@ -253,16 +256,29 @@ void Bbs::ringRefused(Session& s, uint8_t verdict, uint8_t minutes) {
 // cmdOperator: OPERATOR, O, and the room's /o for anybody but the sysop.
 //
 // For the sysop it is the other end: a bare O asks again about a ring that
-// is still waiting (they pressed Q, or it reached them in a form), and says
-// "Nobody is ringing." otherwise. Draws no prompt and re-arms nothing; the
-// shell's table and the room each finish in their own way, and every line
-// this prints is ended, so either can.
+// is still waiting (they pressed Q, or it reached them in a form). With no
+// ring live it shows the notes rings have left (1.1.0), which the sysop
+// could otherwise read only at the next login or elevation, however plainly
+// the dashboard said they were there; and "Nobody is ringing." when there
+// are none. Draws no prompt and re-arms nothing; the shell's table and the
+// room each finish in their own way, and every line this prints is ended,
+// so either can.
 // ---------------------------------------------------------------------------
 void Bbs::cmdOperator(Session& s, const char* arg) {
     uint32_t now = plat::millis();
     if (s.level == Access::Sysop) {
         if (ring_.from != 0xFF && ring_.to == s.id) { ringAsk(s, false); return; }
+        if (ringNotes(s)) return;
+        // Notes still counted were kept for want of room on the line, and
+        // "Nobody is ringing." would be the wrong sentence: the next O shows
+        // them. Reached only with output still queued, which a bare O at
+        // the prompt all but never has.
+        if (ringNotesWaiting_) return;
         sayLine(s, Color::Grey, kNone);
+        // And where the ones that were missed went, when that is MAIL.
+        uint8_t room = plugins::indexOf("chat");
+        if (room != 0xFF && plugins::running(room) && chat::mailOn())
+            sayLine(s, Color::Grey, kToMail);
         return;
     }
 
@@ -336,9 +352,9 @@ bool Bbs::ringStart(Session& s, const char* reason, uint32_t now) {
         n.guest = s.guest;
         snprintf(n.handle, sizeof(n.handle), "%s", s.user);
         ring::cleanCopy(n.reason, sizeof(n.reason), reason);
-        ringSaveNote(n);
-        plat::log("bbs: node %u rang for the sysop, %s: note left", s.id,
-                  away ? "away" : "not available");
+        bool mailed = ringLeave(n);
+        plat::log("bbs: node %u rang for the sysop, %s: %s", s.id,
+                  away ? "away" : "not available", mailed ? "mailed" : "note left");
         sayWrapped(s, Color::Yellow, away ? kAway : kUnavailable);
         return false;
     }
@@ -629,7 +645,7 @@ void Bbs::ringEnd(RingEnd how) {
     snprintf(n.handle, sizeof(n.handle), "%s", ring_.handle);
     snprintf(n.reason, sizeof(n.reason), "%s", ring_.reason);
     ringClear();                                   // over, before anything below looks
-    ringSaveNote(n);
+    bool mailed = ringLeave(n);
 
     if (c && c->st == SState::Ringing && how != RingEnd::HungUp) {
         const char* say = kNoAnswer;
@@ -652,7 +668,8 @@ void Bbs::ringEnd(RingEnd how) {
                       how == RingEnd::HungUp;
     if (callerLeft && sys && sys->st != SState::Free && sys->loggedIn && sys->fd >= 0) {
         char line[96];
-        snprintf(line, sizeof(line), "%s (%s) %s. Their note is saved.", n.handle,
+        snprintf(line, sizeof(line), mailed ? "%s (%s) %s. It is in MAIL."
+                                            : "%s (%s) %s. Their note is saved.", n.handle,
                  nodeNum(n.node).t, how == RingEnd::HungUp ? "hung up" : "stopped ringing");
         if (sys->st == SState::RingAsk) {          // the question is on their screen
             sys->term.nl(sys->tl);
@@ -664,8 +681,8 @@ void Bbs::ringEnd(RingEnd how) {
     }
     static const char* const kHow[] = { "answered", "declined", "away", "no answer",
                                         "stopped", "hung up", "sysop gone" };
-    plat::log("bbs: ring from node %u ended: %s", static_cast<unsigned>(n.node),
-              kHow[static_cast<uint8_t>(how)]);
+    plat::log("bbs: ring from node %u ended: %s, %s", static_cast<unsigned>(n.node),
+              kHow[static_cast<uint8_t>(how)], mailed ? "mailed" : "note left");
 }
 
 // ringClosed: a line is closing. A caller who rang hung up; a sysop who was
@@ -711,6 +728,59 @@ void Bbs::ringingKey(Session& s, uint32_t now) {
     if (ring_.from != s.id) return;
     if (now - ring_.started < kRingGraceMs) return;
     ringEnd(RingEnd::Stopped);
+}
+
+// ===========================================================================
+// Where a missed ring goes: MAIL, or a note
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// ringLeave: see bbs.h. Rob, 1.1.0: "the sysop page should drop to email".
+//
+// Mail rather than a file of its own, so a missed ring is in the one place
+// the sysop already reads: "You have mail" at login, the dashboard's waiting
+// row, and the display's letter icon all count it without knowing rings
+// exist. Stored through the chat plugin's own writer (chat::leaveMail), so
+// the box limits and the notice to a sysop who is on are MAIL's own.
+//
+// "The sysop" for mail is every account the sysop password has marked
+// (level = sysop), each stored as users.txt's one pass meets it: at a ring's
+// end, never in a frame, and with no second lookup per account. Every one,
+// not the first few: a board where many accounts have typed the password
+// would otherwise send each ring to the oldest of them for ever, and tell
+// the sysop who was rung "It is in MAIL." about a box they never read. The
+// note file stays as the fallback, for a board with no such account yet,
+// mail switched off, or every sysop box full, because a ring that reached
+// nobody and was then lost would be worse than either.
+//
+// The message: from the caller's handle, with a guest's marked * as it is
+// in every list (and said again in the text, since a guest has no account
+// to reply to), "Ring: <reason>" first, then where and when.
+// ---------------------------------------------------------------------------
+bool Bbs::ringLeave(const ring::Note& n) {
+    struct Leave { char from[BBS_USER_MAX + 1]; char text[ring::kReasonMax + 96]; bool mailed; };
+    Leave l{};
+    uint8_t room = plugins::indexOf("chat");
+    if (room != 0xFF && plugins::running(room) && chat::mailOn()) {
+        if (n.guest) snprintf(l.from, sizeof(l.from), "%.*s*", BBS_USER_MAX - 1, n.handle);
+        else         snprintf(l.from, sizeof(l.from), "%s", n.handle);
+        char when[16] = "";
+        if (n.epoch) clk::fmtEpoch(when, sizeof(when), "%H:%M", n.epoch);
+        snprintf(l.text, sizeof(l.text), "Ring: %s\nRang from node %s%s%s%s.", n.reason,
+                 nodeNum(n.node).t, when[0] ? " at " : "", when, n.guest ? ", as a guest" : "");
+        users::range(0, 255, [](void* ctx, uint8_t, const UserRec& u) {
+            Leave& lv = *static_cast<Leave*>(ctx);
+            if (u.retired || u.level < static_cast<uint8_t>(Access::Sysop)) return;
+            if (chat::leaveMail(lv.from, u, lv.text)) lv.mailed = true;
+        }, &l);
+    }
+    if (!l.mailed) ringSaveNote(n);
+    return l.mailed;
+}
+
+// sysopMail: see bbs.h
+bool Bbs::sysopMail() const {
+    return chat::sysopUnread();
 }
 
 // ===========================================================================
@@ -763,7 +833,32 @@ void Bbs::ringSaveNote(const ring::Note& n) {
     if (!ok || rename(tmp, path) != 0) {
         remove(tmp);
         plat::log("bbs: ring note not saved");
+        return;
     }
+    // What ringNotes will say "N rings while you were off" about, kept for
+    // the dashboard's "Waiting on you" row.
+    ringNotesWaiting_ = static_cast<uint16_t>(total < 65535 ? total + 1 : total);
+}
+
+// ---------------------------------------------------------------------------
+// ringNoteCount: the notes on file, as ringNotes would count them. Once, at
+// boot, so the dashboard knows about notes left from before a restart.
+// ---------------------------------------------------------------------------
+uint16_t Bbs::ringNoteCount() {
+    char path[96], line[160];
+    notesPath(path, sizeof(path));
+    FILE* f = fopen(path, "r");
+    if (!f) return 0;
+    uint16_t total = 0;
+    uint16_t count = 0;
+    ring::Note n;
+    while (fgets(line, sizeof(line), f)) {
+        if (ring::parseHeader(line, total)) continue;
+        if (ring::parseNote(line, n) && count < 65535) ++count;
+    }
+    fclose(f);
+    if (!count) return 0;
+    return total > count ? total : count;
 }
 
 // ---------------------------------------------------------------------------
@@ -774,11 +869,11 @@ void Bbs::ringSaveNote(const ring::Note& n) {
 //   upload to Drop Box
 //   Shown once. They are cleared now.
 // ---------------------------------------------------------------------------
-void Bbs::ringNotes(Session& s) {
+bool Bbs::ringNotes(Session& s) {
     char path[96], line[160];
     notesPath(path, sizeof(path));
     FILE* f = fopen(path, "r");
-    if (!f) return;
+    if (!f) { ringNotesWaiting_ = 0; return false; }
 
     uint16_t total = 0;
     uint8_t  count = 0;
@@ -790,7 +885,8 @@ void Bbs::ringNotes(Session& s) {
     if (!count) {
         fclose(f);
         remove(path);
-        return;
+        ringNotesWaiting_ = 0;
+        return false;
     }
     if (total < count) total = count;
     // Eight notes wrapped at 40 columns, with their colours, are about 1.3 KB,
@@ -803,7 +899,7 @@ void Bbs::ringNotes(Session& s) {
         fclose(f);
         plat::log("bbs: ring notes kept for later, %u bytes free on node %s",
                   static_cast<unsigned>(s.tl.freeBytes()), nodeName(s).t);
-        return;
+        return false;
     }
 
     Term& t = s.term;
@@ -830,6 +926,8 @@ void Bbs::ringNotes(Session& s) {
     sayLine(s, Color::Grey, kGone);
     t.nl(tl);
     remove(path);
+    ringNotesWaiting_ = 0;
     plat::log("bbs: %u ring note%s shown to %s", static_cast<unsigned>(count),
               count == 1 ? "" : "s", s.user);
+    return true;
 }

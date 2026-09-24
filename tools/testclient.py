@@ -808,21 +808,23 @@ def test_sysop():
 
     r.buf.clear()
     r.send(b"nodes\r")
-    ok &= check("NODES shows IPs", r.wait_for(b"IP", 3) and r.wait_for(b"Xavier", 3))
+    # The column is headed "Address" since 1.1.0, when NODES became the
+    # dashboard's node block; it said "IP".
+    ok &= check("NODES shows IPs", r.wait_for(b"Address", 3) and r.wait_for(b"Xavier", 3))
     r.wait_for(b"Sysop", 3)
     r.buf.clear()
     r.send(b"dash\r")
-    ok &= check("DASH shows the dashboard", r.wait_for(b"SYSOP DASHBOARD", 4) and r.wait_for(b"Calls", 4))
+    ok &= check("DASH shows the dashboard", r.wait_for(b"DASHBOARD", 4) and r.wait_for(b"last calls", 4))
     ok &= check("DASH shows Wi-Fi and a Doing column", r.wait_for(b"WiFi", 4) and b"Doing" in r.buf)
     if r.wait_for(b"[More] Y/n/c", 2):
         r.send(b"c")
-    ok &= check("DASH lists callers and last calls", r.wait_for(b"Last calls", 4) and b"Xavier" in r.buf)
+    ok &= check("DASH lists callers and last calls", r.wait_for(b"last calls", 4) and b"Xavier" in r.buf)
     r.wait_for(b"Sysop", 4)
     r.buf.clear()
     r.send(b"dash 1\r")
     time.sleep(2.6)
     r.pump(0.2)
-    ok &= check("DASH 1 refreshes", bytes(r.buf).count(b"SYSOP DASHBOARD") >= 2)
+    ok &= check("DASH 1 refreshes", bytes(r.buf).count(b"DASHBOARD") >= 2)
     ok &= check("sysop footer: no idle limit", b"No idle limit" in r.buf)
     r.buf.clear()
     r.send(b"q")
@@ -2582,6 +2584,11 @@ def test_sysinfo():
     ok &= check("SYS has memory and storage", b"Heap free" in sys_out and b"Data free" in sys_out)
     ok &= check("SYS reports the scheduler", b"Loop avg" in sys_out and b"Loop passes" in sys_out)
     ok &= check("SYS counts the lines", b"Nodes busy" in sys_out and b"Calls" in sys_out)
+    # Why the board last started, for every boot and on a row of its own
+    # (1.1.0). It was a note on Uptime's row, and only after a crash or a
+    # BOOT reset; the host build says it was started by hand.
+    ok &= check("SYS says why the board last started, on its own row",
+                re.search(rb"\nLast restart +host start", sys_out) is not None)
     # The port it is answering on (1.1.0). It printed BBS_PORT, 6400, what
     # ever the board listened on; the harness board listens on its tag's.
     ok &= check("SYS shows the port the board is listening on",
@@ -2625,6 +2632,915 @@ def test_sysinfo():
                 b"Calls by hour" in pub and b"Unknown" not in pub)
     g.close()
     s.close()
+    return ok
+
+
+def naws(c, cols, rows):
+    """Tell the board a new window size, the way a terminal does when it is
+    resized: IAC SB NAWS width height IAC SE. The board applies it on the next
+    read, so the next screen it draws is laid out for it."""
+    c.send(bytes([0xFF, 0xFA, 0x1F, cols >> 8, cols & 0xFF, rows >> 8, rows & 0xFF, 0xFF, 0xF0]))
+    c.pump(0.3)
+
+
+def wait_plain(c, pat, secs=4):
+    """wait_for on the text without its colours. The prompt is "[S] Sysop: "
+    with a colour change between the word and the colon, so the raw bytes
+    never hold "Sysop: " whole."""
+    end = time.time() + secs
+    while time.time() < end:
+        if pat in plain(c.buf):
+            return True
+        if not c.pump(0.1):
+            break
+    return pat in plain(c.buf)
+
+
+def since_clear(buf):
+    """The bytes from the last clear screen on: one refresh screen's frames,
+    each drawn from home over the last."""
+    data = bytes(buf)
+    at = data.rfind(b"\x1b[2J")
+    return data[at:] if at >= 0 else data
+
+
+def frame_rows(buf, cols=80):
+    """How many rows a refresh screen takes, drawn onto a grid that never
+    scrolls: every frame since the clear homes and redraws, so a frame no
+    taller than the terminal leaves the same number of rows each time, and
+    one taller than it shows here as more rows than the terminal has."""
+    return len(render_lines(since_clear(buf), cols))
+
+
+def widest(buf):
+    """The longest row drawn since the last clear, on a grid far wider than
+    any terminal, so a row that would have wrapped shows its whole length."""
+    return max((len(l) for l in render_lines(since_clear(buf), 250)), default=0)
+
+
+def dash_peek(buf, cols=80):
+    if os.environ.get("DASH_PEEK"):
+        print("  ---- screen ----")
+        for ln in render_lines(since_clear(buf), cols):
+            print("  |" + ln)
+
+
+def test_dash_frame():
+    """DASH at 80x24 (1.1.0): a row per line in node order, never scrolls.
+
+    The old frame was 24 fixed rows plus one per plugin, so on a stock board
+    DASH 1 scrolled a row on every redraw of an 80x24 terminal and corrupted
+    itself; it showed six of the twelve sessions, busiest first, so a caller
+    changed rows as others came and went; and any key threw it away.
+    """
+    print("DASH at 80 columns")
+    x = ansi_login("DashCaller")
+    nx = int(x.node())
+    drain(x)
+    s = ansi_login("DashSysop")
+    drain(s)
+    s.send(f"bye {PASSWORD}\r".encode())
+    s.wait_for(b"SysOp node", 6)
+    s.wait_for(b"HELP for commands", 4)
+    drain(s)
+    s.buf.clear()
+    s.send(b"dash 1\r")
+    s.wait_for(b"DASHBOARD", 5)
+    s.pump(2.6)                                      # three frames, the last two from home
+    dash_peek(s.buf)
+    lines = render_lines(since_clear(s.buf))
+    ok = check("the frame is no taller than the terminal, so it never scrolls",
+               bytes(s.buf).count(b"DASHBOARD") >= 2 and len(lines) <= 24)
+    labels = [l[:2] for l in lines[2:4 + MAX_NODES]]
+    want = [("%2d" % n) for n in range(1, MAX_NODES + 1)] + [" S", " B"]
+    ok &= check("every line has a row, in node order, the sysop and busy lines last",
+                labels == want)
+    row = next((l for l in lines if re.match(r"^ ?%d[ *>\]]DashCaller" % nx, l)), "")
+    ok &= check("a caller's row carries the address and the whole terminal name",
+                "127.0.0.1" in row and "ANSI-UTF8" in row)
+    head = next((l for l in lines if l.startswith(" N Handle")), "")
+    ok &= check("under headings that line up with the rows",
+                head.find("Address") == row.find("127.0.0.1") and
+                head.find("Terminal") == row.find("ANSI-UTF8") and head.find("Address") > 0)
+    ok &= check("with what is waiting on you, and the board's vitals",
+                any("aiting on you" in l for l in lines) and
+                any(l.startswith("Up ") and "Loop" in l for l in lines) and
+                any(l.startswith("WiFi") and "Dir" in l for l in lines))
+    ok &= check("and the last calls under a section with today's count",
+                any(re.search(r"-- last calls, \d+ today", l) for l in lines))
+
+    # Keys: a stray one no longer throws the dashboard away.
+    s.buf.clear()
+    s.send(b"x")
+    s.pump(1.5)
+    ok &= check("a key the dashboard does not use is ignored",
+                b"DASHBOARD" in s.buf and b"Sysop:" not in plain(s.buf))
+    s.buf.clear()
+    s.send(b">")
+    s.wait_for(b"-- bans", 4)
+    s.pump(1.4)
+    dash_peek(s.buf)
+    lines = render_lines(since_clear(s.buf))
+    ok &= check("> turns to page 2: the plugins, the bans and the last calls",
+                any(l.startswith("-- plugins") for l in lines) and
+                any(l.startswith("-- bans") for l in lines) and
+                any(l.startswith("-- last calls") for l in lines) and
+                any("Page 2/2" in l for l in lines))
+    ok &= check("which is no taller than the terminal either", len(lines) <= 24)
+    s.buf.clear()
+    s.send(b"9")
+    s.pump(1.2)
+    ok &= check("a page number past the last does nothing",
+                b"Page 2/2" in plain(s.buf) and b"Sysop:" not in plain(s.buf))
+    s.buf.clear()
+    s.send(b"1")
+    s.wait_for(b"Page 1/2", 4)
+    ok &= check("1 goes back to page 1, cleared first", b"\x1b[2J" in bytes(s.buf))
+
+    # A window resized shorter than the pages were laid out for (code
+    # review, 1.1.0): the frame stops at the window's height rather than
+    # redrawing a 24 row page from home into 20 rows on every refresh.
+    naws(s, 80, 20)
+    for page in (b"2", b"1"):
+        s.buf.clear()
+        s.send(page)
+        s.wait_for(b"DASHBOARD", 4)
+        s.pump(2.4)
+        ok &= check("page %s in an 80x20 window is no taller than the window" % page.decode(),
+                    bytes(s.buf).count(b"DASHBOARD") >= 2 and frame_rows(s.buf) <= 20)
+    naws(s, 80, 24)
+    s.buf.clear()
+    s.send(b"q")
+    ok &= check("Q gives the prompt back", wait_plain(s, b"Sysop: ", 4))
+    x.close()
+    s.close()
+    return ok
+
+
+def test_dash_pick():
+    """DASH n: Up and Down pick a node row, K kicks it and S snoops (1.1.0).
+
+    Through KICK and SNOOP themselves, so their permission and rank rules
+    are the ones that apply. The pick is a node, not a screen position: it
+    stays on the same line however the others come and go.
+    """
+    print("DASH: picking a line, K and S")
+    x = ansi_login("PickMe")
+    nx = int(x.node())
+    drain(x)
+    s = ansi_login("PickSysop")
+    drain(s)
+    s.send(f"bye {PASSWORD}\r".encode())
+    s.wait_for(b"SysOp node", 6)
+    s.wait_for(b"HELP for commands", 4)
+    drain(s)
+    s.buf.clear()
+    s.send(b"dash 2\r")
+    s.wait_for(b"DASHBOARD", 5)
+    s.pump(0.8)
+    for _ in range(nx):
+        s.send(DOWN)
+        s.pump(0.25)
+    s.pump(1.0)
+    scr = AttrScreen(80, 25)
+    scr.feed(since_clear(s.buf))
+    runs = scr.reverse_runs()
+    picked = [r for r in runs if r[1] == 1 and r[2] >= 79 and "PickMe" in scr.row(r[0])]
+    dash_peek(s.buf)
+    ok = check("Down moves a reverse-video bar onto the picked line, the width of the row",
+               len(picked) == 1)
+    s.buf.clear()
+    s.send(b"s")
+    ok &= check("S snoops the picked line, through SNOOP", s.wait_for(f"Snooping node {nx}".encode(), 4))
+    s.send(b"q")
+    s.wait_for(b"Snoop ended.", 4)
+    wait_plain(s, b"Sysop: ", 3)
+    drain(s)
+    s.buf.clear()
+    s.send(b"dash 2\r")
+    s.wait_for(b"DASHBOARD", 5)
+    s.pump(0.6)
+    for _ in range(nx):
+        s.send(DOWN)
+        s.pump(0.25)
+    s.buf.clear()
+    s.send(b"k")
+    ok &= check("K kicks it, through KICK, and says so", s.wait_for(f"Node {nx} disconnected.".encode(), 4))
+    ok &= check("the caller is told and hung up",
+                x.wait_for(b"Disconnected by sysop", 4) and x.wait_closed(8))
+    ok &= check("and the sysop is back at the prompt", wait_plain(s, b"Sysop: ", 3))
+    s.close()
+    return ok
+
+
+def test_dash_narrow():
+    """DASH at 40 columns: three pages, each no taller or wider than the
+    terminal (1.1.0). An ANSI terminal reporting 40x25 gets the C64's layout,
+    which is how the pages are checked without a PETSCII screen model."""
+    print("DASH at 40 columns")
+    s = ansi_login("NarrowSysop")
+    drain(s)
+    s.send(f"bye {PASSWORD}\r".encode())
+    s.wait_for(b"SysOp node", 6)
+    s.wait_for(b"HELP for commands", 4)
+    naws(s, 40, 25)
+    drain(s)
+    s.buf.clear()
+    s.send(b"dash 1\r")
+    s.wait_for(b"DASHBOARD", 5)
+    s.pump(2.4)
+    dash_peek(s.buf, 40)
+    lines = render_lines(since_clear(s.buf), 40)
+    ok = check("page 1 fits 40x25: no row wider than 39, no more than 25 rows",
+               widest(s.buf) <= 39 and len(lines) <= 25 and bytes(s.buf).count(b"DASHBOARD") >= 2)
+    ok &= check("with every line on it and the footer's page count",
+                [l[:2] for l in lines[2:4 + MAX_NODES]] ==
+                [("%2d" % n) for n in range(1, MAX_NODES + 1)] + [" S", " B"] and
+                any(l.startswith("Pg 1/3") for l in lines))
+    s.buf.clear()
+    s.send(b">")
+    s.wait_for(b"Pg 2/3", 4)
+    s.pump(1.2)
+    dash_peek(s.buf, 40)
+    lines = render_lines(since_clear(s.buf), 40)
+    me = next((l for l in lines if "NarrowSysop" in l), "")
+    ok &= check("page 2 is where each line calls from, with a five letter terminal",
+                any(l.startswith(" N Handle       Address") for l in lines) and
+                "127.0.0.1" in me and me.rstrip().endswith("UTF8"))
+    ok &= check("and fits too", widest(s.buf) <= 39 and len(lines) <= 25)
+    s.buf.clear()
+    s.send(b">")
+    s.wait_for(b"Pg 3/3", 4)
+    s.pump(1.2)
+    dash_peek(s.buf, 40)
+    lines = render_lines(since_clear(s.buf), 40)
+    ok &= check("page 3 is the last calls with their addresses, and the bans",
+                any(l.startswith(" N Handle        Time Address") for l in lines) and
+                any(l.startswith("Bans ") for l in lines))
+    ok &= check("and fits too", widest(s.buf) <= 39 and len(lines) <= 25)
+    s.buf.clear()
+    s.send(b">")
+    ok &= check("> past the last page comes round to the first", s.wait_for(b"Pg 1/3", 4))
+    s.send(b"q")
+    wait_plain(s, b"Sysop: ", 3)
+    s.close()
+    return ok
+
+
+def test_dash_all():
+    """DASH ALL: every page in turn as one paged list, which is also how a
+    plain terminal sees the whole dashboard at once (1.1.0)."""
+    print("DASH ALL")
+    s = ansi_login("AllSysop")
+    drain(s)
+    s.send(f"bye {PASSWORD}\r".encode())
+    s.wait_for(b"SysOp node", 6)
+    s.wait_for(b"HELP for commands", 4)
+    drain(s)
+    s.buf.clear()
+    s.send(b"dash all\r")
+    read_list(s)
+    text = plain(s.buf)
+    ok = check("DASH ALL draws page 1 and page 2",
+               text.count(b"DASHBOARD") == 2 and b"aiting on you" in text and
+               b"-- plugins" in text and b"-- bans" in text)
+    ok &= check("and ends at the prompt, with no refresh footer", text.rstrip().endswith(b"Sysop:") and
+                b"refresh" not in text)
+    s.buf.clear()
+    s.send(b"dash\r")
+    read_list(s)
+    text = plain(s.buf)
+    ok &= check("DASH alone is page 1, once", text.count(b"DASHBOARD") == 1 and b"-- plugins" not in text)
+    s.close()
+    return ok
+
+
+def test_dash_ascii():
+    """DASH n on a plain terminal: no cursor keys and no reverse video, so the
+    pages are picked by number and the footer says so (1.1.0)."""
+    print("DASH on a plain terminal")
+    c = Caller(ansi=False)
+    c.wait_for(b"HIT DEL OR BACKSPACE", 5)
+    c.send(b"\x08")
+    c.wait_for(b"Enter your handle", 8)
+    login(c, "PlainDash")
+    drain(c)
+    c.send(f"bye {PASSWORD}\r".encode())
+    c.wait_for(b"SysOp node", 6)
+    c.wait_for(b"HELP for commands", 4)
+    drain(c)
+    c.buf.clear()
+    c.send(b"dash 2\r")
+    ok = check("the footer names the number keys", c.wait_for(b"1 2 pick a page", 5))
+    ok &= check("and offers no pick or kick", b"K kick" not in c.buf)
+    c.buf.clear()
+    c.send(b"2")
+    ok &= check("2 is page 2", c.wait_for(b"-- plugins", 5) and c.wait_for(b"Page 2/2", 4))
+    c.send(b"q")
+    ok &= check("Q stops it", wait_plain(c, b"Sysop: ", 4))
+    c.close()
+    return ok
+
+
+def pet_rows(buf):
+    """A PETSCII stream played onto a C64 screen that never scrolls, from the
+    last clear: (rows used, widest row). CLR clears, HOME homes, RETURN is a
+    new line, the cursor keys move, colours and reverse take no cell, and a
+    row that reaches the 40th column wraps as a C64 wraps it, so a refresh
+    frame too tall or too wide for the screen shows as rows past 25."""
+    data = bytes(buf)
+    at = data.rfind(b"\x93")
+    data = data[at + 1:] if at >= 0 else data
+    x = y = 0
+    rows = 1
+    widest = 0
+    for b in data:
+        if b == 0x13:                     # HOME
+            x = y = 0
+        elif b == 0x0D:                   # RETURN
+            x = 0
+            y += 1
+        elif b == 0x11:                   # cursor down
+            y += 1
+        elif b == 0x91:                   # cursor up
+            y = max(0, y - 1)
+        elif b == 0x1D:                   # cursor right
+            x += 1
+        elif b == 0x9D:                   # cursor left
+            x = max(0, x - 1)
+        elif 0x20 <= b <= 0x7F or 0xA0 <= b <= 0xFF:
+            x += 1
+            widest = max(widest, x)
+            if x >= 40:                   # the C64 wraps at the 40th column
+                x = 0
+                y += 1
+        rows = max(rows, y + 1)
+    return rows, widest
+
+
+def test_dash_petscii():
+    """DASH n on a C64 (PETSCII-40, 25 rows): every page no taller than the
+    screen and no row reaching the 40th column, which a C64 would wrap
+    (1.1.0). Read off the PETSCII stream itself, not an ANSI stand-in."""
+    print("DASH on a C64")
+    p = Caller(ansi=False)
+    p.wait_for(b"HIT DEL OR BACKSPACE", 5)
+    p.send(b"\x14")
+    p.wait_for(b"40 OR 80 COLUMNS", 3)
+    p.send(b"4")
+    p.wait_for(pet("Enter your handle"), 10)
+    login(p, "PetDasher", as_pet=True)
+    drain(p)
+    p.send(pet("bye " + PASSWORD) + b"\r")
+    p.wait_for(pet("HELP for commands"), 6)
+    drain(p)
+    p.buf.clear()
+    p.send(pet("dash 1") + b"\r")
+    p.wait_for(pet("DASHBOARD"), 5)
+    p.pump(2.4)
+    rows, widest = pet_rows(p.buf)
+    ok = check("page 1 fits the C64's 40x25 and never scrolls",
+               bytes(p.buf).count(pet("DASHBOARD")) >= 2 and rows <= 25 and widest <= 39)
+    for page in (b"2", b"3"):
+        p.buf.clear()
+        p.send(page)
+        p.wait_for(pet("DASHBOARD"), 4)
+        p.pump(1.6)
+        rows, widest = pet_rows(p.buf)
+        ok &= check("page %s too" % page.decode(), rows <= 25 and widest <= 39 and
+                    pet("Pg %s/3" % page.decode()) in bytes(p.buf))
+    p.send(pet("q"))
+    ok &= check("and Q gives the prompt back", p.wait_for(pet("Sysop"), 4))
+    p.close()
+    return ok
+
+
+def test_nodes_columns():
+    """NODES and WHO drawn through the dashboard's row builder (1.1.0).
+
+    NODES cut PETSCII-40 to PETSCII-4 and ANSI-CP437 to ANSI-CP43 in a 9
+    column Terminal; WHO's header widened with the terminal while its rows
+    stayed at 40 column widths, so at 80 Min and Idle sat eleven columns
+    left of their headings; and NODES n drew WHO's rows, because the
+    refresh knew only DASH and WHO.
+    """
+    print("NODES and WHO columns")
+    p = Caller(ansi=False)
+    p.wait_for(b"HIT DEL OR BACKSPACE", 5)
+    p.send(b"\x14")
+    p.wait_for(b"40 OR 80 COLUMNS", 3)
+    p.send(b"4")
+    p.wait_for(pet("Enter your handle"), 10)
+    login(p, "PetColumns", as_pet=True)
+    s = ansi_login("ColumnSysop")
+    drain(s)
+    s.send(f"bye {PASSWORD}\r".encode())
+    s.wait_for(b"SysOp node", 6)
+    s.wait_for(b"HELP for commands", 4)
+    drain(s)
+    s.buf.clear()
+    s.send(b"nodes\r")
+    read_list(s)
+    text = plain(s.buf)
+    ok = check("NODES names a C64 caller's terminal in full", b"PETSCII-40" in text)
+    ok &= check("with a Doing column beside the address", b"Doing" in text and b"Address" in text)
+    s.buf.clear()
+    s.send(b"who\r")
+    read_list(s)
+    lines = [l.decode("latin-1") for l in screen_lines(s.buf)]
+    head = next((l for l in lines if l.startswith(" N Handle")), "")
+    row = next((l for l in lines if "PetColumns" in l), "")
+    # Idle is right-aligned under its heading, so the row ends where the
+    # heading does; on the old build the rows ended eleven columns short.
+    ok &= check("staff WHO at 80: Idle sits under its heading",
+                bool(head) and bool(row) and head.find("Idle") + 4 == len(row.rstrip()))
+    ok &= check("and so does the Doing column",
+                bool(head) and bool(row) and head.find("Doing") > 0 and
+                row[head.find("Doing"):head.find("Doing") + 1] not in ("", " "))
+    s.buf.clear()
+    s.send(b"nodes 2\r")
+    s.wait_for(b"Refresh 2s", 5)
+    ok &= check("NODES n refreshes NODES, not WHO",
+                b"Nodes" in plain(s.buf) and b"Who's online" not in plain(s.buf))
+    s.send(b"q")
+    wait_plain(s, b"Sysop: ", 3)
+    p.close()
+    s.close()
+    return ok
+
+
+def test_operator_notes():
+    """A bare O shows the sysop the rings that left notes (1.1.0).
+
+    Missed rings go to MAIL now; a note is what is left when they cannot:
+    mail switched off, no sysop account, or every sysop box full. Notes were
+    shown only at login or elevation, so a sysop already on had no way to
+    read one without logging in again. The dashboard's waiting row counts
+    them without opening the file. Played on a copy of this board with mail
+    switched off, so the note is certain and nothing here touches the
+    harness board's mail.
+    """
+    print("OPERATOR: notes for a sysop already on, with mail off")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and a sysop password")
+        return True
+    port = PORT + 3706
+    tmp = copy_data()
+    cfg = tmp / "data" / "user" / "system.cfg"
+    cfg.write_text(cfg_with(cfg.read_text(), {("plugin:chat", "mail_slots"): "0"}))
+    # A note the harness board kept from an earlier test (every sysop box
+    # full) would be counted with this one; this test's note is its own.
+    for p in (tmp / "data" / "user").rglob("rings.txt"):
+        p.unlink()
+    proc = start_copy(tmp, (str(port),))
+    ok = True
+    try:
+        copy_log(tmp, f"listening on {port},")
+        s = caller_on(port)
+        s.wait_for(b"Enter your handle", 10)
+        login(s, "NotesSysop")
+        drain(s)
+        s.send(f"bye {PASSWORD}\r".encode())
+        s.wait_for(b"HELP for commands", 6)
+        drain(s)
+        s.send(b"lurk\r")
+        s.pump(0.8)
+        r = caller_on(port)
+        r.wait_for(b"Enter your handle", 10)
+        login(r, "NoteRinger")
+        drain(r)
+        r.send(b"o a note for later\r")
+        ok &= check("a lurking sysop's ring leaves a note, with mail off",
+                    r.wait_for(b"saved for them", 6))
+        r.close()
+        drain(s)
+        s.buf.clear()
+        s.send(b"dash\r")
+        read_list(s)
+        ok &= check("the dashboard says a note is waiting", b"Waiting on you: 1 ring note" in plain(s.buf))
+        s.buf.clear()
+        s.send(b"o\r")
+        wait_plain(s, b"Sysop: ", 4)
+        s.pump(0.4)
+        seen = plain(s.buf)
+        ok &= check("a bare O shows it", b"1 ring while you were off:" in seen and b"a note for later" in seen)
+        ok &= check("instead of saying nobody is ringing", b"Nobody is ringing." not in seen)
+        s.buf.clear()
+        s.send(b"o\r")
+        wait_plain(s, b"Sysop: ", 4)
+        s.pump(0.3)
+        ok &= check("and once shown, O has nothing more to say", b"Nobody is ringing." in plain(s.buf))
+        ok &= check("and does not send the sysop to a MAIL that is off",
+                    b"Missed rings go to MAIL." not in plain(s.buf))
+        s.buf.clear()
+        s.send(b"dash\r")
+        read_list(s)
+        ok &= check("nor has the dashboard", b"Nothing waiting on you" in plain(s.buf))
+        s.close()
+    finally:
+        stop_copy(proc, tmp)
+    return ok
+
+
+def test_ring_mail():
+    """A ring nobody answers goes to the sysop's MAIL (1.1.0).
+
+    Rob: "the sysop page should drop to email and a letter icon can show in
+    the header the sysop has mail". From the caller, a guest marked as one,
+    "Ring: <reason>" first; to every account the sysop password has marked;
+    the note file only when there is no such account, so a ring is never
+    lost. The flag the display's letter icon reads is said on the console
+    when it changes. Played on a copy of this board with every sysop mark
+    taken off and no mail, so the accounts and boxes are the test's own.
+    """
+    print("OPERATOR: missed rings go to the sysop's mail")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and a sysop password")
+        return True
+    tmp = copy_data()
+    user = tmp / "data" / "user"
+    users = user / "users.txt"
+    if users.exists():                               # none yet on a board nobody has called
+        users.write_text("".join(ln for ln in users.read_text().splitlines(True)
+                                 if ln.strip() != "level = sysop"))
+    for p in user.rglob("mail.dat"):
+        p.unlink()
+    for p in user.rglob("rings.txt"):
+        p.unlink()
+    port = PORT + 3705
+    proc = start_copy(tmp, (str(port),))
+    ok = True
+
+    def notes():
+        found = list(user.rglob("rings.txt"))
+        return found[0].read_text(errors="replace") if found else ""
+
+    def console():
+        p = tmp / "host.log"
+        return p.read_text(errors="replace") if p.exists() else ""
+
+    try:
+        copy_log(tmp, f"listening on {port},")
+        # No sysop account yet: the note, as before.
+        a = caller_on(port)
+        a.wait_for(b"Enter your handle", 10)
+        login(a, "RingFirst")
+        drain(a)
+        a.send(b"o nobody to mail\r")
+        ok &= check("with no sysop account a ring is still kept", a.wait_for(b"saved for them", 6))
+        a.close()
+        time.sleep(0.5)
+        ok &= check("as a note, the fallback", "nobody to mail" in notes())
+
+        # A sysop account: the password marks it.
+        s = caller_on(port)
+        s.wait_for(b"Enter your handle", 10)
+        login(s, "RingBoss")
+        drain(s)
+        s.send(f"bye {PASSWORD}\r".encode())
+        s.wait_for(b"HELP for commands", 6)
+        s.close()
+        time.sleep(0.8)
+
+        # A caller and a guest ring while the sysop is off.
+        b = caller_on(port)
+        b.wait_for(b"Enter your handle", 10)
+        login(b, "RingCaller")
+        drain(b)
+        b.send(b"o the printer is on fire\r")
+        ok &= check("a ring with the sysop off is kept", b.wait_for(b"saved for them", 6))
+        b.close()
+        g = caller_on(port)
+        g.wait_for(b"Enter your handle", 10)
+        g.send(b"RingGuest\r")
+        g.wait_for(b"[G]uest", 6)
+        g.send(b"g")
+        g.wait_for(b"Main", 8)
+        drain(g)
+        g.send(b"o a guest asking\r")
+        ok &= check("and a guest's", g.wait_for(b"saved for them", 6))
+        g.close()
+        time.sleep(0.8)
+        log = console()
+        ok &= check("both went to mail, not to the note file",
+                    log.count("rang for the sysop, not available: mailed") == 2 and
+                    "printer" not in notes() and "guest asking" not in notes())
+        ok &= check("and the console says the sysop has unread mail",
+                    "chat: the sysop has unread mail" in log)
+
+        s = caller_on(port)
+        s.wait_for(b"Enter your handle", 10)
+        login(s, "RingBoss")
+        ok &= check("the sysop is told at login", b"You have mail." in plain(s.buf))
+        drain(s)
+        s.send(f"bye {PASSWORD}\r".encode())
+        s.wait_for(b"HELP for commands", 6)
+        drain(s)
+        s.buf.clear()
+        s.send(b"dash\r")
+        read_list(s)
+        ok &= check("the dashboard counts them as mail", b"2 unread mail" in plain(s.buf))
+        ok &= mail_box(s)
+        box = plain(s.buf)
+        ok &= check("MAIL has the caller's ring", b"RingCaller" in box)
+        ok &= check("and the guest's, marked as a guest", b"RingGuest*" in box)
+        s.buf.clear()
+        s.send(b"1\r")
+        s.wait_for(b"[D]elete", 5)
+        one = plain(s.buf)
+        s.send(b"d")
+        s.wait_for(b"Mail>", 5)
+        s.buf.clear()
+        s.send(b"1\r")
+        s.wait_for(b"[D]elete", 5)
+        two = plain(s.buf)
+        rings = one + two
+        ok &= check("each starts Ring: and the reason",
+                    b"Ring: the printer is on fire" in rings and b"Ring: a guest asking" in rings)
+        ok &= check("with where it rang from, and a guest said to be one",
+                    b"Rang from node" in rings and b"as a guest" in rings)
+        s.buf.clear()
+        s.send(b"d")
+        s.wait_for(b"Mail>", 5)
+        s.send(b"q")
+        s.pump(0.8)
+        ok &= check("read and gone, the console says the sysop's mail is all read",
+                    "chat: the sysop's mail is all read" in console())
+        drain(s)
+        s.buf.clear()
+        s.send(b"o\r")
+        wait_plain(s, b"Sysop: ", 4)
+        s.pump(0.3)
+        ok &= check("a bare O with no ring says where missed rings go",
+                    b"Nobody is ringing." in plain(s.buf) and b"Missed rings go to MAIL." in plain(s.buf))
+        s.close()
+    finally:
+        stop_copy(proc, tmp)
+    return ok
+
+
+def test_dash_waiting():
+    """The dashboard's waiting row asks the plugins (1.1.0): unread mail from
+    chat, through the waiting hook, with nothing in the core that knows
+    which plugin said it."""
+    print("DASH: what is waiting on you")
+    s = sysop_on("WaitSysop")
+    drain(s)
+    m = ansi_login("MailsTheSysop")
+    drain(m)
+    m.send(b"mail WaitSysop are you there\r")
+    ok = check("mail is left for the sysop", m.wait_for(b"Left for WaitSysop", 5))
+    m.close()
+    s.pump(1.0)
+    drain(s)
+    s.buf.clear()
+    s.send(b"dash\r")
+    read_list(s)
+    ok &= check("the waiting row says so", b"1 unread mail" in plain(s.buf))
+    s.close()
+    return ok
+
+
+def test_dash_card_age():
+    """The card's free space on the dashboard is up to a minute old (1.1.0).
+
+    On the board it is f_getfree: 15 to 25 ms, and 160 ms on a card pulled
+    mid-write. Kept for three seconds, DASH 1 put that into the loop every
+    third frame. A minute now, and SD, a mount and an unmount still measure
+    at once. Checked by filling the card and asking again.
+    """
+    print("DASH: the card's free space, a minute old")
+    card = card_dir()
+    if HOST not in ("127.0.0.1", "localhost") or not card:
+        print("  SKIP  needs the harness's card")
+        return True
+
+    def card_free(c):
+        # The sd plugin's line is on the second page since 1.1.0, which
+        # DASH ALL shows; before, DASH alone showed it. Asking both ways
+        # keeps this a test of the figure's age on either build, rather than
+        # of which command draws it.
+        for cmd in (b"dash all\r", b"dash\r"):
+            c.buf.clear()
+            c.send(cmd)
+            read_list(c)
+            m = re.search(rb"SD: [^\r\n]*? (\d+) MB free", plain(c.buf))
+            if m:
+                return int(m.group(1))
+        return None
+
+    s = sysop_on("CardAgeSysop")
+    drain(s)
+    s.send(b"sd\r")                          # measured now, so the minute starts here
+    s.wait_for(b"SD card", 4)
+    s.pump(0.5)
+    before = card_free(s)
+    blob = card / "dash-age.bin"
+    blob.write_bytes(b"\0" * (6 * 1024 * 1024))
+    try:
+        time.sleep(4.0)                      # past the old three seconds
+        after = card_free(s)
+        ok = check("the dashboard shows the card's free space", before is not None)
+        ok &= check("and a minute's figure, not a fresh read every few seconds",
+                    before is not None and after == before)
+        s.buf.clear()
+        s.send(b"sd\r")
+        s.wait_for(b"SD card", 4)
+        s.pump(0.5)
+        fresh = card_free(s)
+        ok &= check("SD measures at once, and the dashboard follows it",
+                    before is not None and fresh is not None and fresh <= before - 5)
+    finally:
+        blob.unlink()
+    s.close()
+    return ok
+
+
+def test_dash_wide():
+    """DASH at 132 columns: one page, the board's figures beside the lines in
+    SYS's grammar, no taller and no wider than the terminal (1.1.0)."""
+    print("DASH at 132 columns")
+    s = ansi_login("WideSysop")
+    drain(s)
+    s.send(f"bye {PASSWORD}\r".encode())
+    s.wait_for(b"SysOp node", 6)
+    s.wait_for(b"HELP for commands", 4)
+    naws(s, 132, 24)
+    drain(s)
+    s.buf.clear()
+    s.send(b"dash 1\r")
+    s.wait_for(b"DASHBOARD", 5)
+    s.pump(2.4)
+    dash_peek(s.buf, 132)
+    lines = render_lines(since_clear(s.buf), 132)
+    ok = check("one frame fits 132x24: no row past 131 columns, no more than 24 rows",
+               widest(s.buf) <= 131 and len(lines) <= 24 and bytes(s.buf).count(b"DASHBOARD") >= 2)
+    ok &= check("with the board block beside the lines",
+                any(l[80:].startswith("-- board") for l in lines) and
+                any(l[80:].startswith("Uptime") for l in lines) and
+                any(l[80:].startswith("Slow passes") for l in lines))
+    ok &= check("and minutes on for each call", any(l.startswith(" N Handle") and " On " in l for l in lines))
+    s.send(b"q")
+    wait_plain(s, b"Sysop: ", 3)
+    s.close()
+    return ok
+
+
+# A shim that notes every fopen() a board makes, preloaded into a copy. The
+# dashboard's rule is that a frame opens no file; this is how the rule is
+# checked rather than read. Directory walks are not counted: the host sums a
+# directory for free space on every ask, where the board keeps the figure a
+# minute, so on the host they say nothing about the board.
+FOPEN_LOG_C = """
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+static int logfd = -2;
+static void note(const char *path) {
+    if (logfd == -2) {
+        const char *p = getenv("FOPEN_LOG");
+        logfd = p ? open(p, O_WRONLY | O_CREAT | O_APPEND, 0644) : -1;
+    }
+    if (logfd < 0 || !path) return;
+    if (write(logfd, path, strlen(path)) < 0 || write(logfd, "\\n", 1) < 0) return;
+}
+FILE *fopen(const char *path, const char *mode) {
+    static FILE *(*real)(const char *, const char *);
+    if (!real) real = (FILE *(*)(const char *, const char *))dlsym(RTLD_NEXT, "fopen");
+    note(path);
+    return real(path, mode);
+}
+FILE *fopen64(const char *path, const char *mode) {
+    static FILE *(*real)(const char *, const char *);
+    if (!real) real = (FILE *(*)(const char *, const char *))dlsym(RTLD_NEXT, "fopen64");
+    note(path);
+    return real(path, mode);
+}
+"""
+
+
+def test_dash_opens_nothing():
+    """A dashboard frame opens no file (1.1.0, the spec's checkable rule).
+
+    The old DASH counted the caller log and read five records from it on
+    every frame: seven file opens a second for a sysop with DASH 1 up, all
+    in the loop that every caller waits on. Checked on a copy of this board
+    with every fopen() noted, over four seconds of DASH 1.
+    """
+    print("A dashboard frame opens no file")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the local harness")
+        return True
+    import shutil
+    import subprocess
+    cc = shutil.which("cc") or shutil.which("gcc")
+    if not cc:
+        print("  SKIP  no C compiler for the fopen shim")
+        return True
+    tmp = copy_data()
+    (tmp / "fopenlog.c").write_text(FOPEN_LOG_C)
+    so = tmp / "fopenlog.so"
+    built = subprocess.run([cc, "-shared", "-fPIC", "-o", str(so), str(tmp / "fopenlog.c"), "-ldl"],
+                           capture_output=True)
+    if built.returncode != 0:
+        shutil.rmtree(tmp, ignore_errors=True)
+        print("  SKIP  the fopen shim did not build")
+        return True
+    logf = tmp / "fopen.log"
+    port = PORT + 3703
+    proc = start_copy(tmp, (str(port),), {"LD_PRELOAD": str(so), "FOPEN_LOG": str(logf)})
+    try:
+        copy_log(tmp, f"listening on {port},")
+        c = caller_on(port)                          # a call on the log for the last calls
+        c.wait_for(b"Enter your handle", 10)
+        login(c, "FrameCaller")
+        c.send(b"bye\r")
+        c.wait_closed(8)
+        c.close()
+        s = caller_on(port)
+        s.wait_for(b"Enter your handle", 10)
+        login(s, "FrameSysop")
+        drain(s)
+        s.send(f"bye {PASSWORD}\r".encode())
+        s.wait_for(b"HELP for commands", 6)
+        drain(s)
+        s.send(b"dash 1\r")
+        s.wait_for(b"DASHBOARD", 5)
+        s.pump(1.5)
+        mark = logf.stat().st_size if logf.exists() else 0
+        s.buf.clear()
+        s.pump(4.5)
+        frames = bytes(s.buf).count(b"DASHBOARD")
+        opened = []
+        if logf.exists():
+            opened = [p for p in logf.read_bytes()[mark:].decode(errors="replace").splitlines()
+                      if str(tmp) in p]
+        ok = check("DASH 1 drew a frame a second", frames >= 3)
+        ok &= check("and opened no file doing it", not opened)
+        if opened:
+            print("        opened: " + ", ".join(sorted(set(p.replace(str(tmp), "") for p in opened))))
+        s.send(b"q")
+        s.close()
+    finally:
+        stop_copy(proc, tmp)
+    return ok
+
+
+def test_boot_notices():
+    """The staff notice for a restart the board did not choose (1.1.0).
+
+    "Last restart was not clean: task watchdog." was 42 to 52 columns and
+    wrapped on a C64, and "The log is reboots.log" pointed at a file nothing
+    on the board can read. Now the copy's words, 39 columns at most, the
+    count of unexpected restarts on record with this one in it, and a row of
+    its own on SYS. BBS_HOST_RESET plays the reason on a copy of this board.
+    """
+    print("The restart notice: the board froze")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the local harness and a sysop password")
+        return True
+    tmp = copy_data()
+    reb = tmp / "data" / "logs" / "reboots.log"
+    reb.parent.mkdir(parents=True, exist_ok=True)
+    with open(reb, "a") as f:                        # one already on record
+        f.write("2026-09-20 10:00  crash (panic)\n")
+    port = PORT + 3704
+    proc = start_copy(tmp, (str(port),), {"BBS_HOST_RESET": "task watchdog"})
+    try:
+        log = copy_log(tmp, f"listening on {port},")
+        ok = check("the copy starts on the reason it was given", "boot: task watchdog" in log)
+        c = caller_on(port)
+        c.wait_for(b"Enter your handle", 10)
+        login(c, "RestartSysop")
+        drain(c)
+        c.buf.clear()
+        c.send(f"bye {PASSWORD}\r".encode())
+        c.wait_for(b"HELP for commands", 6)
+        c.pump(0.4)
+        lines = [l.decode("latin-1") for l in screen_lines(c.buf)]
+        want = ["Last restart: the board froze.",
+                "A watchdog restarted it after 30 s.",
+                "Unexpected restarts on record: 2."]
+        at = lines.index(want[0]) if want[0] in lines else -1
+        ok &= check("staff are told the board froze and what restarted it",
+                    at >= 0 and lines[at:at + 2] == want[:2])
+        ok &= check("and how many are on record, this one counted",
+                    at >= 0 and lines[at + 2:at + 3] == want[2:])
+        ok &= check("every line inside 40 columns", all(len(w) <= 39 for w in want))
+        ok &= check("and not the words that wrapped on a C64",
+                    "not clean" not in "".join(lines) and "reboots.log" not in "".join(lines))
+        c.buf.clear()
+        c.send(b"sys\r")
+        read_list(c)
+        ok &= check("SYS says why the board last started, on a row of its own",
+                    re.search(rb"\nLast restart +task watchdog", plain(c.buf)) is not None)
+        c.close()
+    finally:
+        stop_copy(proc, tmp)
     return ok
 
 
@@ -2851,6 +3767,21 @@ def mail_box(c):
     c.buf.clear()
     c.send(b"mail\r")
     return c.wait_for(b"Mail>", 5)
+
+
+def mail_empty(c):
+    """From the Mail> prompt: read and delete everything in the box, then
+    leave it. A box on the internal partition holds three, and a test that
+    leaves its mail behind fills the box the next ring needs."""
+    for _ in range(14):
+        c.buf.clear()
+        c.send(b"1\r")
+        if not c.wait_for(b"[D]elete", 3):
+            break
+        c.send(b"d")
+        c.wait_for(b"Mail>", 4)
+    c.send(b"q")
+    c.pump(0.5)
 
 
 def test_mail():
@@ -4399,19 +5330,54 @@ def test_boot_hold():
         d = caller_on(port)
         d.wait_for(b"Enter your handle", 10)
         login(d, "BootKeeper", wait_main=False)
-        ok &= check("a local caller is offered setup again",
-                    d.wait_for(b"has not been set up yet", 8) and d.wait_for(b"Sysop password", 4))
+        # The owner of a board with accounts on it, not somebody setting up
+        # a fresh one (copy 6b.6): fact, where to find it, what to do.
+        ok &= check("a local caller is told the password was reset, and offered setup",
+                    d.wait_for(b"The sysop password was reset with the BOOT button.", 8) and
+                    d.wait_for(b"Sysop password", 4))
+        offer = plain(d.buf)
+        ok &= check("in the words for a board that was reset, not a fresh one",
+                    b"The published default is on the install page." in offer and
+                    b"Enter it here, then choose a new one." in offer and
+                    b"has not been set up yet" not in offer)
         d.buf.clear()
         d.send(BBS_DEFAULT.encode() + b"\r")
         ok &= check("the published default works from here",
                     d.wait_for(b"SysOp node", 6))
+        # Through the setup: its screen, the staff passwords form (left with
+        # ESC) and the tour. The setup screen opens with @CLS@, so the notice
+        # used to be printed and wiped in the same breath; it is told at the
+        # first prompt after the setup now.
+        seen = bytearray()
+        for _ in range(8):
+            if b"STAFF PASSWORDS" in plain(d.buf):
+                break
+            if b"PRESS SPACE" in plain(d.buf).upper():
+                seen += d.buf
+                d.buf.clear()
+                d.send(b" ")
+            d.pump(1.0)
+        d.wait_for(b"STAFF PASSWORDS", 6)
         d.pump(0.5)
-        ok &= check("and the sysop is told why the board restarted",
-                    b"Last restart: password reset by BOOT." in plain(d.buf))
-        # The raw stream, not the rendered screen: the setup screen that
-        # follows clears it. 37 characters, so inside 40 columns as well.
-        ok &= check("on a line of its own",
-                    re.search(rb"\nLast restart: password reset by BOOT\.\r?\n", plain(d.buf)) is not None)
+        d.send(b"\x1b")                              # leave the form: nothing changed
+        d.pump(0.6)
+        for _ in range(12):
+            if b"Sysop:" in plain(d.buf):
+                break
+            if b"PRESS SPACE" in plain(d.buf).upper():
+                seen += d.buf
+                d.buf.clear()
+                d.send(b" ")
+            d.pump(1.0)
+        d.pump(0.5)
+        seen += d.buf
+        screen = render_lines(seen)
+        at = [i for i, l in enumerate(screen) if l == "Last restart: password reset by BOOT."]
+        ok &= check("and the sysop is told why the board restarted, after the setup, on the screen left",
+                    bool(at))
+        ok &= check("with what it did and did not touch",
+                    bool(at) and at[-1] + 1 < len(screen) and
+                    screen[at[-1] + 1] == "Sysop password only. Accounts are kept.")
         d.close()
     finally:
         stop_copy(proc, tmp)
@@ -7014,12 +7980,10 @@ def test_announce():
                     "Announcer" not in body.decode() and "handle" not in rec)
 
     s.buf.clear()                      # the dashboard carries a line per plugin
-    s.send(b"dash\r")
-    s.wait_for(b"SYSOP DASHBOARD", 5)
-    s.pump(1.2)
+    s.send(b"dash all\r")             # on its second page since 1.1.0
+    s.wait_for(b"DASHBOARD", 5)
+    read_list(s)
     ok &= check("the dashboard reports the listing", b"Directory:" in plain(s.buf))
-    s.send(b"q")
-    s.pump(0.4)
 
     status = b""                       # the reply lands on the plugin's next tick
     for _ in range(10):
@@ -8690,6 +9654,31 @@ def test_ymodem():
     s.close()
     return ok
 
+def test_dash_uploads():
+    """The dashboard's waiting row counts uploads to approve (1.1.0), from
+    the file areas' own count through the waiting hook: no directory read,
+    and nothing in the core that knows the file areas exist."""
+    print("DASH: uploads to approve")
+    card = card_dir()
+    if HOST not in ("127.0.0.1", "localhost") or not card or not PASSWORD:
+        print("  SKIP  needs the harness's card and a sysop password")
+        return True
+    c = ansi_login("DashUploader")
+    ok = check("the drop box opens", enter_area(c, 5, b"Drop Box"))
+    ok &= check("an upload starts", area_key(c, b"u", "", b"Start your YMODEM send"))
+    ok &= check("and lands, waiting for approval",
+                ymodem_send(c, "DASHWAIT.BIN", b"waiting for the sysop\r\n" * 8))
+    c.close()
+    s = sysop_on("DashApprover")
+    drain(s)
+    s.buf.clear()
+    s.send(b"dash\r")
+    read_list(s)
+    m = re.search(rb"(\d+) uploads? to approve", plain(s.buf))
+    ok &= check("the waiting row says how many uploads wait", m is not None and int(m.group(1)) >= 1)
+    s.close()
+    return ok
+
 
 
 def test_mail_never_lost():
@@ -9398,12 +10387,14 @@ def test_refresh_and_ctrl_l():
     c.send(b"dash 2\r")
     c.pump(2.5)
     seen = plain(c.buf)
-    # The status line carries the micro sign. Walking it a byte at a time
+    # The status line carried the micro sign. Walking it a byte at a time
     # sent 0xC2 and 0xB5 through the charset map separately and each came
-    # back as '?', so a refresh screen said "??nleashed BBS".
+    # back as '?', so a refresh screen said "??nleashed BBS". The dashboard
+    # no longer names the board (1.1.0: SYS and ABOUT do), and every row of
+    # it still goes through the terminal layer's own counting.
     ok = check("the refresh header keeps the micro sign", b"?nleashed" not in seen)
-    ok &= check("and still names the board", b"nleashed BBS" in seen)
-    c.send(b"x")                          # any key stops the refresh
+    ok &= check("and the refresh is drawn", b"DASHBOARD" in seen)
+    c.send(b"q")                          # Q stops the dashboard; any key stops WHO n
     c.pump(1.0)
 
     c.buf.clear()
@@ -9533,18 +10524,74 @@ def rang_in(c, pat, secs=4):
     return got, time.time() - t0
 
 
+def ring_board(port):
+    """A copy of this board for the sysop page's tests (1.1.0), started on
+    port: every sysop mark taken off users.txt, and no mail or ring notes.
+
+    A ring nobody answers goes to the MAIL of every account the sysop
+    password has marked, and on the harness board that is every account any
+    earlier test elevated: a dozen or more, each taking a copy of every ring,
+    which fills the board's 64 messages within a few rings and turns the rest
+    into notes. A real board has one or two. The copy gives these tests the
+    board they are about, whatever ran before them. Returns (process, dir).
+    """
+    tmp = copy_data()
+    user = tmp / "data" / "user"
+    users = user / "users.txt"
+    if users.exists():                               # none yet on a board nobody has called
+        users.write_text("".join(ln for ln in users.read_text().splitlines(True)
+                                 if ln.strip() != "level = sysop"))
+    for name in ("mail.dat", "rings.txt"):
+        for p in user.rglob(name):
+            p.unlink()
+    proc = start_copy(tmp, (str(port),))
+    copy_log(tmp, f"listening on {port},")
+    return proc, tmp
+
+
+def on_ring_board(port, body):
+    """body(tmp) with every caller dialling a ring_board copy on port."""
+    global PORT
+    proc, tmp = ring_board(port)
+    saved = PORT
+    PORT = port
+    try:
+        return body(tmp)
+    finally:
+        PORT = saved
+        stop_copy(proc, tmp)
+
+
 def test_operator():
+    """OPERATOR on a copy of this board (see ring_board and operator_body)."""
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("OPERATOR: ringing for the sysop")
+        print("  SKIP  needs the host build and a sysop password")
+        return True
+    return on_ring_board(PORT + 3707, operator_body)
+
+
+def operator_body(tmp):
     """OPERATOR: a caller rings for the sysop (1.1.0).
 
     The sysop page from the UX spec and the copy: the question when O has no
     reason, the answer at once when nobody is there to ask, a hidden sysop
     answered exactly as an absent one, the sysop's one-key question, and
-    what A, D, X and Q each do. Notes are shown at elevation, once.
+    what A, D, X and Q each do. A ring nobody answered goes to the sysop's
+    MAIL (1.1.0); test_ring_mail has the whole of that, and
+    test_operator_notes the note file it falls back to.
     """
     print("OPERATOR: ringing for the sysop")
     if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
         print("  SKIP  needs the host build and a sysop password")
         return True
+
+    # A sysop account before anybody rings (1.1.0): a missed ring goes to
+    # the MAIL of every account the sysop password has marked, so this one
+    # has to exist first to be one of them.
+    s = sysop_on("OpSysop")
+    s.close()
+    time.sleep(0.5)
 
     a = ansi_login("Ringer1")
     drain(a)
@@ -9578,10 +10625,11 @@ def test_operator():
 
     s = sysop_on("OpSysop")
     seen = plain(s.buf)
-    ok &= check("the sysop is shown the note on the way in",
-                b"while you were off:" in seen and b"the drop box is full" in seen)
-    ok &= check("once: it says the notes are cleared",
-                b"Shown once. They are cleared now." in seen)
+    ok &= check("the sysop is told of mail on the way in", b"You have mail." in seen)
+    drain(s)
+    mail_box(s)
+    ok &= check("and the ring is in it", b"Ring: the drop box is full" in plain(s.buf))
+    mail_empty(s)
 
     # Hidden is not there. Same words, same speed, and no ring.
     drain(s)
@@ -9682,21 +10730,36 @@ def test_operator():
         x.close()
     s.close()
 
-    # Declined, away, away, and hidden: four notes. Answered leaves none.
+    # Hidden, declined, away and away: four rings nobody answered, each
+    # kept, in MAIL or, when every sysop box is full, as a note. The
+    # console says which. Answered leaves nothing.
     s = sysop_on("OpSysop")
-    seen = plain(s.buf)
-    ok &= check("unanswered rings are notes at the next elevation",
-                b"rings while you were off:" in seen and b"please look at the drop box" in seen
-                and b"hidden test" in seen and b"while away" in seen)
-    ok &= check("an answered ring leaves no note", b"can we talk" not in seen)
+    mail_box(s)
+    box = plain(s.buf)
+    ok &= check("the rings the sysop missed are in MAIL",
+                b"Ring: hidden test" in box and b"Ring: please look at the drop box" in box)
+    ok &= check("an answered ring leaves no mail", b"can we talk" not in box)
+    mail_empty(s)
     s.close()
-    s = sysop_on("OpSysop")
-    ok &= check("and they are gone after one showing", b"while you were off" not in plain(s.buf))
-    s.close()
+    host = tmp / "host.log"
+    log = host.read_text(errors="replace") if host.exists() else ""
+    ok &= check("and every missed ring was kept, the console says how",
+                all(re.search(r"ring from node \d+ ended: %s, (mailed|note left)" % how, log)
+                    for how in ("declined", "away")) and
+                len(re.findall(r"rang for the sysop, (away|not available): (mailed|note left)", log)) >= 3)
     return ok
 
 
 def test_operator_ends():
+    """OPERATOR's other endings, on a copy of this board (see ring_board)."""
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("OPERATOR: no answer, stopped, hung up, the room, a form")
+        print("  SKIP  needs the host build and a sysop password")
+        return True
+    return on_ring_board(PORT + 3708, operator_ends_body)
+
+
+def operator_ends_body(tmp):
     """Every other way a ring ends, the room, and a form (1.1.0)."""
     print("OPERATOR: no answer, stopped, hung up, the room, a form")
     if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
@@ -9728,7 +10791,7 @@ def test_operator_ends():
     ok &= check("a ring nobody answers runs out: No answer",
                 a.wait_for(b"No answer. What you wrote is saved for the sysop.", 20))
     ok &= check("and the sysop is told it stopped",
-                s.wait_for(f"Waiter1 ({na}) stopped ringing. Their note is saved.".encode(), 6))
+                s.wait_for(f"Waiter1 ({na}) stopped ringing. It is in MAIL.".encode(), 6))
 
     c = ansi_login("Waiter3")
     drain(c)
@@ -9741,7 +10804,7 @@ def test_operator_ends():
     c.send(b"k")
     ok &= check("any key stops a ring", c.wait_for(b"You stopped ringing.", 4))
     ok &= check("and the question on the sysop's screen gives way to saying so",
-                s.wait_for(b"stopped ringing. Their note is saved.", 4))
+                s.wait_for(b"stopped ringing. It is in MAIL.", 4))
     s.pump(0.5)
 
     d = ansi_login("Waiter4")
@@ -9752,7 +10815,7 @@ def test_operator_ends():
     s.wait_for(b"Later: ", 6)
     d.close()
     ok &= check("a caller hanging up mid-ring is said",
-                s.wait_for(f"Waiter4 ({nd}) hung up. Their note is saved.".encode(), 6))
+                s.wait_for(f"Waiter4 ({nd}) hung up. It is in MAIL.".encode(), 6))
     s.pump(0.5)
 
     # The room: /o from a caller, and the sysop there gets two lines and /o-.
@@ -9825,7 +10888,7 @@ def test_operator_ends():
 
     # A room shut to guests (write = users) still lets a guest the sysop
     # answered talk to the sysop. The room itself stays shut to them.
-    cfg = USERDATA / "system.cfg"
+    cfg = tmp / "data" / "user" / "system.cfg"           # the copy's, which it reloads
     before = cfg.read_text()
     shut = re.sub(r"(\[plugin:chat\][^\[]*?\nwrite\s*=\s*)all", r"\1users", before, count=1)
     if shut != before:
@@ -10034,7 +11097,7 @@ GROUPS = {
     "messaging": ["mail", "forums", "chat", "room_commands", "room_new", "room_quit",
                   "survives_notice", "config_forum", "room_time", "bell", "codes_in",
                   "room_narrow",
-                  "long_help", "info_pages", "operator", "notices_in"],
+                  "long_help", "info_pages", "operator", "notices_in", "ring_mail"],
     # The subsystems that own a session and draw their own screens.
     "places":    ["forums", "files", "chat", "xfer", "notices_in"],
     # Anything that reads or writes the card, and the backups (on the card
@@ -10042,10 +11105,10 @@ GROUPS = {
     "storage":   ["files", "forums", "sd", "xfer", "backup", "restore"],
     # The shell, its lists and the screens the core draws.
     "shell":     ["menus", "sysinfo", "page", "about", "config", "welcome", "paced", "seeded", "fx_codes",
-                  "lights", "operator"],
+                  "lights", "operator", "dash", "nodes_columns"],
     # Logging in, accounts, staff.
     "login":     ["accounts", "handle_case", "guest", "sysop", "cosysop", "user_admin", "first_setup", "ban",
-                  "boot_hold"],
+                  "boot_hold", "boot_notices"],
     # Terminal handling across the three flavours.
     "terminal":  ["ansi", "petscii", "ascii", "telnet_first"],
 }
@@ -10073,10 +11136,15 @@ ORDER_NAMES = [
     "test_long_help",
     "test_info_pages",
     "test_mail", "test_prompt_survives_notice", "test_menus", "test_sysinfo", "test_config",
+    # The dashboard (1.1.0). test_dash_pick kicks its own caller and nobody
+    # else's; test_dash_waiting leaves mail only for its own sysop account.
+    "test_dash_frame", "test_dash_pick", "test_dash_narrow", "test_dash_wide", "test_dash_all",
+    "test_dash_ascii", "test_dash_petscii", "test_dash_waiting", "test_dash_card_age", "test_nodes_columns",
     # After test_config: test_operator_ends reloads the config through
     # cfg_reload, which leaves the account cap at 200, and test_config's own
     # save of 200 then finds nothing changed.
     "test_operator", "test_operator_ends", "test_notices_in_places",
+    "test_operator_notes", "test_ring_mail",
     "test_config_parser_rules", "test_config_guards", "test_config_semicolon",
     "test_config_timezone", "test_config_cycle_numbers",
     "test_config_sd_plugin",
@@ -10084,6 +11152,7 @@ ORDER_NAMES = [
     "test_config_wifi_live", "test_config_network", "test_config_announce_outside",
     "test_config_wifi_fallback", "test_boot_hold",
     "test_boot_hold_write_fails", "test_boot_hold_factory_fails", "test_sysop_spelled_default",
+    "test_boot_notices", "test_dash_opens_nothing",
     "test_config_pin_exists", "test_user_admin_retire",
     "test_serial",
     "test_motd", "test_idle_login", "test_busy",
@@ -10095,6 +11164,7 @@ ORDER_NAMES = [
     "test_staff_remembered", "test_shutdown",
     "test_list_abort_returns", "test_xfer",
     "test_upload_no_binary", "test_ymodem",
+    "test_dash_uploads",                 # leaves its upload waiting, as test_ymodem does
     "test_config_areas", "test_config_area_keeps_every_part",
     "test_mail_compose",
     "test_forums", "test_forums_remove", "test_forums_scan_staff", "test_config_forum_levels", "test_partitions",

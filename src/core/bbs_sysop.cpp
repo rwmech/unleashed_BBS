@@ -266,11 +266,11 @@ void Bbs::elevate(Session& s, uint32_t now, bool setup) {
     t.nl(tl);
     // Why the board last started, here as well as on a co-sysop's line
     // (1.1.0). After a BOOT reset of the password this is the very login it
-    // is for, and it only ever reached coElevate before.
-    bootNotice(d);
-    // Rings nobody answered while the sysop was off (1.1.0), once, then gone.
-    ringNotes(d);
-    nightlyNotice(d);                 // last night's backup, if it did not happen (1.1.0)
+    // is for, and it only ever reached coElevate before. On the setup path
+    // the setup screen clears the screen first, so it waits for the first
+    // prompt after the setup instead (staffArrival, noticeOwed_).
+    if (setup) noticeOwed_ = d.id;
+    else       staffArrival(d);
     t.color(tl, Color::Grey);
     t.text(tl, "HELP for commands.");
     t.nl(tl);
@@ -304,11 +304,11 @@ void Bbs::coElevate(Session& s, Access level, uint32_t now, bool setup) {
     // Said to staff only, and said plainly. A board that restarted on its
     // own has lost every caller who was on it. The two sentences used to run
     // together on one line, since say() ends none, and nothing tested it
-    // because the host build never crashed its way into a boot.
-    bootNotice(s);
-    // A second sysop session, in place on a caller line, is the sysop too.
-    if (level == Access::Sysop) ringNotes(s);
-    nightlyNotice(s);                 // last night's backup, if it did not happen (1.1.0)
+    // because the host build never crashed its way into a boot. A second
+    // sysop session, in place on a caller line, is the sysop too, and gets
+    // the ring notes. Owed rather than said on the setup path, as above.
+    if (setup) noticeOwed_ = s.id;
+    else       staffArrival(s);
     say(t, tl, Color::Grey, can(s, PERM_NOLIMITS) ? "No time limits. HELP for commands."
                                                : "HELP for commands.");
     plat::log("bbs: node %u -> %s (%s, %s) perms 0x%03x", s.id, syscfg::levelName(level),
@@ -348,75 +348,42 @@ Session* Bbs::nodeByArg(const char* arg, const char** rest) {
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
-// rowNodes: every live session including the busy line and the sysop
+// rowNodes: every session, sysop and busy line included, in node order.
+//
+// Exactly the dashboard's node block (1.1.0): the same builder, the same
+// rows, with its own title and the marker key. At 80 columns that is the
+// handle, what each line is doing, idle, minutes left, the address and the
+// whole terminal name, which the old 9-wide column cut to "PETSCII-4". At 40
+// it is the where-from row: handle, address, a five-letter terminal, since
+// the address is what this list is for.
+//
+// Every line always has its row, the free ones as "-", so a refreshing
+// NODES n is the same height on every frame without special cases.
 // ---------------------------------------------------------------------------
 bool Bbs::rowNodes(Session& s) {
-    Term& t = s.term;
-    Timeline& tl = s.tl;
-    bool wide = t.cols() >= 60;
-    const char* fmt = wide ? "%s%c%-20.20s %-15.15s %-9.9s %4s %5s" : "%s%c%-9.9s %-15.15s %4s %5s";
-    char buf[96];
-    char left[12];
-    char idle[8];
-    uint32_t now = plat::millis();
-    // A refresh screen redraws from home, so the frame has to be the same
-    // height every time or the tail of a taller frame is left on the screen.
-    // The sysop and busy lines are skipped when free, which makes the height
-    // vary, so while refreshing they become blank rows instead. This is the
-    // same trap DASH hit when it grew a row per node.
-    bool refresh = s.watch != ListKind::None;
-
-    for (;;) {
-        uint8_t i = s.listIdx++;
-        if (i == 0) {
-            char count[16];
-            snprintf(count, sizeof(count), "%u of %u", activeNodes(), BBS_MAX_NODES);
-            rowTitle(s, "Nodes", count);
-            return true;
-        }
-        if (i == 1) {
-            if (wide) snprintf(buf, sizeof(buf), fmt, " N", ' ', "Handle", "IP", "Terminal", "Left", "Idle");
-            else      snprintf(buf, sizeof(buf), fmt, " N", ' ', "Handle", "IP", "Left", "Idle");
-            rowText(s, Color::LightBlue, buf);
-            return true;
-        }
-        uint8_t k = static_cast<uint8_t>(i - 2);
-        if (k == kSessions) { rowRule(s); return true; }
-        if (k == kSessions + 1) {
-            say(t, tl, Color::DarkGrey, kMarkKey);
-            t.nl(tl);
-            return true;
-        }
-        if (k > kSessions + 1) return false;
-        const Session* o = all_[k];
-        if (o->role != Role::Caller && o->st == SState::Free) {
-            if (refresh) { rowText(s, Color::DarkGrey, ""); return true; }  // keep the height
-            continue;
-        }
-
-        if (o->st == SState::Free) {
-            snprintf(buf, sizeof(buf), "%s -", nodeLabel(*o).t);
-            rowText(s, Color::DarkGrey, buf);
-            return true;
-        }
-
-        char h[24];
-        if (o->user[0]) listHandle(h, sizeof(h), o->user, wide ? 20 : 9);
-        else            snprintf(h, sizeof(h), "%s", preLoginName(*o));
-        bool hidden = o != &s && (!o->visible || o->lurk);
-        if (o->role == Role::Caller && o->loggedIn && !unlimited(*o)) {
-            int32_t sec = secondsLeft(*o, now);
-            if (sec == INT32_MAX) snprintf(left, sizeof(left), "--");
-            else                  snprintf(left, sizeof(left), "%ld", static_cast<long>((sec + 59) / 60));
-        } else {
-            snprintf(left, sizeof(left), "--");
-        }
-        fmtIdle(idle, sizeof(idle), now - o->lastInput);
-        if (wide) snprintf(buf, sizeof(buf), fmt, nodeLabel(*o).t, markFor(*o), h, o->ip, o->term.name(), left, idle);
-        else      snprintf(buf, sizeof(buf), fmt, nodeLabel(*o).t, markFor(*o), h, o->ip, left, idle);
-        rowText(s, o == &s ? Color::White : (hidden ? Color::DarkGrey : Color::Grey), buf);
+    NodePlan plan = rowWidth(s) >= 72 ? NodePlan::Wide : NodePlan::From;
+    uint8_t i = s.listIdx++;
+    if (i == 0) {
+        char count[16];
+        snprintf(count, sizeof(count), "%u of %u", activeNodes(), BBS_MAX_NODES);
+        rowTitle(s, "Nodes", count);
         return true;
     }
+    if (i == 1) {
+        rowClose(s, nodeHead(s, plan));
+        return true;
+    }
+    uint8_t k = static_cast<uint8_t>(i - 2);
+    if (k < kNodeRows) {
+        rowClose(s, nodeCells(s, *nodeAt(k), plan));
+        return true;
+    }
+    if (k == kNodeRows) { rowRule(s); return true; }
+    if (k == kNodeRows + 1) {
+        rowText(s, Color::DarkGrey, kMarkKey);
+        return true;
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
