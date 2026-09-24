@@ -80,14 +80,14 @@ void Form::begin(const char* title, FormField* fields, uint8_t count, Term& t, T
                  uint8_t focus) {
     f_          = fields;
     n_          = count > kMaxFields ? kMaxFields : count;
-    confirming_ = false;
+    ask_        = AskNone;
     inLen_      = 0;
     in_[0]      = '\0';
 
     uint8_t row = 4;
     for (uint8_t i = 0; i < n_; ++i) {
         row_[i] = row;
-        row = static_cast<uint8_t>(row + ((f_[i].flags & FF_TEXTAREA) ? 1 + kAreaRows : 1));
+        row = static_cast<uint8_t>(row + ((f_[i].flags & FF_TEXTAREA) ? 1 + areaRows(t) : 1));
     }
     buttonRow_ = static_cast<uint8_t>(row + 1);
     statusRow_ = static_cast<uint8_t>(row + 3);
@@ -105,7 +105,9 @@ void Form::begin(const char* title, FormField* fields, uint8_t count, Term& t, T
     fx::scramble(t, tl, title, 8, 45);
     t.nl(tl);
     t.color(tl, Color::Cyan);
-    fx::rule(t, tl, 39);
+    // 79 at 80 and at 132 alike: the form clears the screen and is 80 wide,
+    // so a 131 column rule would underline nothing.
+    fx::rule(t, tl, lineWidth(t));
     t.nl(tl);
 
     if (!positional(t)) {                        // plain ASCII: one prompt per line
@@ -134,8 +136,15 @@ void Form::drawField(uint8_t i, Term& t, Timeline& tl) {
     bool area    = f.flags & FF_TEXTAREA;
     bool mask    = f.flags & FF_MASK;
 
-    char label[16];
-    snprintf(label, sizeof(label), "%-9.9s", f.label);
+    // The label, padded to its column, and then one step right into the box.
+    // One cursor move a field rather than two: the label ends exactly one
+    // column short of the box, and on PETSCII a gotoXY is HOME plus a byte
+    // for every row and column, 41 bytes to reach column 23 on row 19 where
+    // the step is one (spec section 7).
+    const uint8_t lw  = labelWidth(t);
+    const uint8_t bw  = boxW(t);
+    char label[24];
+    snprintf(label, sizeof(label), "%-*.*s", lw, lw, f.label);
     t.reverse(tl, false);
     t.gotoXY(tl, kLabelCol, row_[i]);
     t.color(tl, focused ? Color::Yellow : (editable(f) ? Color::LightBlue : Color::DarkGrey));
@@ -147,13 +156,13 @@ void Form::drawField(uint8_t i, Term& t, Timeline& tl) {
     // column still lines up and a sysop can see at a glance which rows lead
     // somewhere. Green like [ Save ], reversed when it has the focus.
     if (f.flags & FF_ACTION) {
-        t.gotoXY(tl, kBoxCol, row_[i]);
+        t.right(tl, 1);
         if (focused) { t.reverse(tl, true); t.color(tl, Color::White); }
         else         t.color(tl, Color::LightGreen);
         t.text(tl, "[ ");
-        size_t k = 0;                         // 27 = "[ " + 23 + " ]"
-        for (; k < len && k + 4 < kBoxW; ++k) t.ch(tl, f.buf[k]);
-        for (; k + 4 < kBoxW; ++k) t.ch(tl, ' ');
+        size_t k = 0;                         // "[ " + 23 + " ]" at 40, 52 at 80
+        for (; k < len && k + 4 < bw; ++k) t.ch(tl, f.buf[k]);
+        for (; k + 4 < bw; ++k) t.ch(tl, ' ');
         t.text(tl, " ]");
         if (focused) t.reverse(tl, false);
         return;
@@ -162,33 +171,34 @@ void Form::drawField(uint8_t i, Term& t, Timeline& tl) {
     if (!area) {
         const char* shown = f.buf;
         size_t showLen = len;
-        if (showLen > kBoxW - 1u) { shown = f.buf + (len - (kBoxW - 1u)); showLen = kBoxW - 1u; }
-        t.gotoXY(tl, kBoxCol, row_[i]);
+        if (showLen > bw - 1u) { shown = f.buf + (len - (bw - 1u)); showLen = bw - 1u; }
+        t.right(tl, 1);
         if (focused) { t.reverse(tl, true); t.color(tl, Color::White); }
         else         t.color(tl, editable(f) ? Color::Grey : Color::DarkGrey);
         for (size_t k = 0; k < showLen; ++k) t.ch(tl, mask ? '*' : shown[k]);
         char fill = focused ? ' ' : (editable(f) ? '.' : ' ');
         if (!focused) t.color(tl, Color::DarkGrey);
-        for (size_t k = showLen; k < kBoxW; ++k) t.ch(tl, fill);
+        for (size_t k = showLen; k < bw; ++k) t.ch(tl, fill);
         if (focused) t.reverse(tl, false);
         return;
     }
 
-    for (uint8_t r = 0; r < kAreaRows; ++r) {
+    const uint8_t aw = areaW(t);
+    for (uint8_t r = 0; r < areaRows(t); ++r) {
         t.gotoXY(tl, kLabelCol, static_cast<uint8_t>(row_[i] + 1 + r));
         if (focused) { t.reverse(tl, true); t.color(tl, Color::White); }
         else         t.color(tl, Color::Grey);
-        size_t from = static_cast<size_t>(r) * kAreaW;
+        size_t from = static_cast<size_t>(r) * aw;
         size_t k = 0;
-        for (; k < kAreaW && from + k < len; ++k) t.ch(tl, f.buf[from + k]);
+        for (; k < aw && from + k < len; ++k) t.ch(tl, f.buf[from + k]);
         if (!focused) t.color(tl, Color::DarkGrey);
-        for (; k < kAreaW; ++k) t.ch(tl, focused ? ' ' : '.');
+        for (; k < aw; ++k) t.ch(tl, focused ? ' ' : '.');
         if (focused) t.reverse(tl, false);
     }
 }
 
 void Form::drawButtons(Term& t, Timeline& tl) {
-    t.gotoXY(tl, kBoxCol, buttonRow_);
+    t.gotoXY(tl, boxCol(t), buttonRow_);
     bool save = focus_ == n_;
     bool cancel = focus_ == n_ + 1;
     if (save) t.reverse(tl, true);
@@ -212,9 +222,15 @@ void Form::drawButtons(Term& t, Timeline& tl) {
 void Form::statusForFocus(Term& t, Timeline& tl) {
     const char* note = (focus_ < n_) ? f_[focus_].note : nullptr;
     if (note) { status(note, Color::Yellow, t, tl); return; }
-    status(t.isPet() ? "CRSR or TAB moves, F1 saves, <- quits"
-                     : "Tab or arrows move, F1 saves, ESC quits",
-           Color::DarkGrey, t, tl);
+    // The ANSI hint at 40 is 36 characters. It was 39 on a 38 column line,
+    // so an ANSI terminal at 40 read "ESC quit" (spec section 10). At 80
+    // there is room to say what Enter and Space do as well.
+    const char* hint;
+    if (wide(t)) hint = t.isPet() ? "CRSR or TAB moves, RETURN is next, SPACE steps a choice, F1 saves, <- quits"
+                                  : "Tab or arrows move, Enter is next, Space steps a choice, F1 saves, ESC quits";
+    else         hint = t.isPet() ? "CRSR or TAB moves, F1 saves, <- quits"
+                                  : "Tab/arrows move, F1 saves, ESC quits";
+    status(hint, Color::DarkGrey, t, tl);
 }
 
 void Form::status(const char* msg, Color c, Term& t, Timeline& tl) {
@@ -224,35 +240,39 @@ void Form::status(const char* msg, Color c, Term& t, Timeline& tl) {
         t.text(tl, msg);
         return;
     }
+    const size_t w = statusW(t);
     t.gotoXY(tl, kLabelCol, statusRow_);
     t.color(tl, c);
     size_t n = 0;
-    for (; msg[n] && n < 38; ++n) t.ch(tl, msg[n]);
-    for (; n < 38; ++n) t.ch(tl, ' ');
+    for (; msg[n] && n < w; ++n) t.ch(tl, msg[n]);
+    for (; n < w; ++n) t.ch(tl, ' ');
     placeCursor(t, tl);
 }
 
 // placeCursor: end of the focused value, or on the focused button
 void Form::placeCursor(Term& t, Timeline& tl) {
+    const uint8_t bc = boxCol(t);
     if (focus_ >= n_) {
-        uint8_t col = static_cast<uint8_t>(focus_ == n_ ? kBoxCol : kBoxCol + kSaveW + 2);
+        uint8_t col = static_cast<uint8_t>(focus_ == n_ ? bc : bc + kSaveW + 2);
         t.gotoXY(tl, col, buttonRow_);
         return;
     }
     const FormField& f = f_[focus_];
     if (f.flags & FF_ACTION) {              // on the button, not inside it
-        t.gotoXY(tl, kBoxCol, row_[focus_]);
+        t.gotoXY(tl, bc, row_[focus_]);
         return;
     }
     size_t len = strlen(f.buf);
     if (f.flags & FF_TEXTAREA) {
-        size_t pos = len < static_cast<size_t>(kAreaW) * kAreaRows ? len : static_cast<size_t>(kAreaW) * kAreaRows - 1;
-        t.gotoXY(tl, static_cast<uint8_t>(kLabelCol + pos % kAreaW),
-                 static_cast<uint8_t>(row_[focus_] + 1 + pos / kAreaW));
+        const size_t aw = areaW(t), cells = aw * areaRows(t);
+        size_t pos = len < cells ? len : cells - 1;
+        t.gotoXY(tl, static_cast<uint8_t>(kLabelCol + pos % aw),
+                 static_cast<uint8_t>(row_[focus_] + 1 + pos / aw));
         return;
     }
-    size_t shown = len < kBoxW - 1u ? len : kBoxW - 1u;
-    t.gotoXY(tl, static_cast<uint8_t>(kBoxCol + shown), row_[focus_]);
+    const size_t bw = boxW(t);
+    size_t shown = len < bw - 1u ? len : bw - 1u;
+    t.gotoXY(tl, static_cast<uint8_t>(bc + shown), row_[focus_]);
 }
 
 uint8_t Form::nextFocus(int dir) const {
@@ -286,6 +306,28 @@ void Form::setFocus(uint8_t next, Term& t, Timeline& tl) {
 // ===========================================================================
 
 Form::Res Form::key(int k, Term& t, Timeline& tl) {
+    // The owner's question (ask) takes the next key, whatever it is: Y is a
+    // yes, and anything else, Enter, ESC and a stray arrow included, is the
+    // no that leaves the page open with nothing saved.
+    if (ask_ == AskOwner) {
+        if (k == 'y' || k == 'Y') {
+            ask_ = AskYes;
+            if (!positional(t)) t.ch(tl, 'Y');
+            return Res::Save;
+        }
+        ask_ = AskNone;
+        if (!positional(t)) {
+            t.ch(tl, 'N');
+            t.nl(tl);
+            t.color(tl, Color::LightRed);
+            t.text(tl, "Not saved.");
+            wipe();
+            linePrompt(t, tl);                 // the row it was about, again
+        } else {
+            status("Not saved.", Color::LightRed, t, tl);
+        }
+        return Res::Editing;
+    }
     if (k == KEY_ESC || k == KEY_BREAK) return Res::Cancel;
     if (k == KEY_F1) return Res::Save;
     if (k == '\t') {                       // tab: on to the next field
@@ -356,7 +398,8 @@ Form::Res Form::keyPositional(int k, Term& t, Timeline& tl) {
     }
 
     bool area = f.flags & FF_TEXTAREA;
-    uint16_t visible = area ? static_cast<uint16_t>(kAreaW) * kAreaRows : static_cast<uint16_t>(kBoxW - 1u);
+    const uint8_t aw = areaW(t);
+    uint16_t visible = area ? static_cast<uint16_t>(aw * areaRows(t)) : static_cast<uint16_t>(boxW(t) - 1u);
 
     // A mask standing in for a set password: the first key typed or rubbed
     // out starts the value again, once. See FF_REPLACE.
@@ -377,7 +420,7 @@ Form::Res Form::keyPositional(int k, Term& t, Timeline& tl) {
         f.buf[len - 1] = '\0';
         // the cursor sits at position len; only step back in place when that
         // does not cross a row start or the scrolled/clamped end of the box
-        bool fast = area ? (len < visible && len % kAreaW != 0) : (len <= visible);
+        bool fast = area ? (len < visible && len % aw != 0) : (len <= visible);
         if (fast) {                                      // fast path: wipe one cell in place
             t.left(tl, 1);
             t.reverse(tl, true);
@@ -396,7 +439,7 @@ Form::Res Form::keyPositional(int k, Term& t, Timeline& tl) {
     if (k < 0x20 || k > 0x7E || len >= f.cap) return Res::Editing;
     f.buf[len]     = static_cast<char>(k);
     f.buf[len + 1] = '\0';
-    bool endsRow = area && ((len + 1) % kAreaW == 0);
+    bool endsRow = area && ((len + 1) % aw == 0);
     if (len + 1 < visible && !endsRow) {                 // fast path: echo in place
         t.reverse(tl, true);
         t.color(tl, Color::White);
@@ -422,8 +465,13 @@ void Form::redraw(uint8_t i, Term& t, Timeline& tl) {
 }
 
 // ---------------------------------------------------------------------------
-// cycle: space steps through the choices, a letter or digit picks the first
-// choice that starts with it ("u", "2", "1", "s"). False if the key is not ours.
+// cycle: space steps through the choices, and a key picks the first choice
+// that starts with it ("u", "s"). False if the key is not ours.
+//
+// Only a positional form hands it a digit, where "2" still picks co2 by its
+// first character. Plain ASCII line mode never does: a digit there is a
+// number, which picks that many down the list printed above the prompt
+// (keyLine), and it never reaches this function.
 //
 // The same letter again picks the next choice that starts with it, round to
 // the first (1.1.0). Before, a letter only ever reached the first match, so
@@ -479,11 +527,11 @@ bool Form::cycle(FormField& f, int k) {
 // ---------------------------------------------------------------------------
 void Form::fail(uint8_t field, const char* msg, Term& t, Timeline& tl) {
     t.bell(tl);
+    ask_ = AskNone;                          // a refusal answers any question
     if (!positional(t)) {
         t.nl(tl);
         t.color(tl, Color::LightRed);
         t.text(tl, msg);
-        confirming_ = false;
         wipe();
         focus_      = (field < n_ && editable(f_[field])) ? field : 0;
         linePrompt(t, tl);
@@ -492,7 +540,7 @@ void Form::fail(uint8_t field, const char* msg, Term& t, Timeline& tl) {
     t.cursor(tl, false);
     t.gotoXY(tl, kLabelCol, statusRow_);
     t.color(tl, Color::LightRed);
-    for (uint8_t k = 0; k < 38; ++k) t.ch(tl, ' ');
+    for (uint8_t k = 0; k < statusW(t); ++k) t.ch(tl, ' ');
     t.gotoXY(tl, kLabelCol, statusRow_);
     fx::blink(t, tl, msg, 3, 110);
     uint8_t prev = focus_;
@@ -505,6 +553,28 @@ void Form::fail(uint8_t field, const char* msg, Term& t, Timeline& tl) {
     drawButtons(t, tl);
     t.cursor(tl, true);
     placeCursor(t, tl);
+}
+
+// ---------------------------------------------------------------------------
+// ask: a yes-or-no question before a save (see form.h). On a positional form
+// the question takes the status line, with the focus on the field it is
+// about; in plain ASCII it is a line of its own, as "Save (Y/n)?" is.
+// ---------------------------------------------------------------------------
+void Form::ask(uint8_t field, const char* question, Term& t, Timeline& tl) {
+    t.bell(tl);
+    const bool here = field < n_ && editable(f_[field]);
+    ask_ = AskOwner;
+    if (!positional(t)) {
+        if (here) focus_ = field;            // a "no" asks this row again
+        t.nl(tl);
+        t.color(tl, Color::Yellow);
+        t.text(tl, question);
+        t.ch(tl, ' ');
+        t.color(tl, Color::White);
+        return;
+    }
+    if (here) setFocus(field, t, tl);
+    status(question, Color::Yellow, t, tl);
 }
 
 void Form::after(Term& t, Timeline& tl) {
@@ -535,7 +605,7 @@ void Form::linePrompt(Term& t, Timeline& tl) {
     }
     t.nl(tl);
     if (focus_ >= n_) {
-        confirming_ = true;
+        ask_ = AskSave;
         t.color(tl, Color::Yellow);
         t.text(tl, "Save (Y/n)? ");
         return;
@@ -570,9 +640,17 @@ void Form::linePrompt(Term& t, Timeline& tl) {
     if (f.buf[0]) {
         t.color(tl, Color::DarkGrey);
         t.text(tl, " [");
-        if (f.flags & FF_MASK) t.text(tl, "set");
-        else if (strlen(f.buf) > 20) { t.textN(tl, f.buf, 17); t.text(tl, "..."); }
-        else t.text(tl, f.buf);
+        // A set password says how to empty it: Enter keeps it and anything
+        // typed replaces it, so without a word for "none" a plain ASCII
+        // sysop could never choose an open network (1.1.0). A lone "-" is
+        // never a password anywhere on the board: WPA2 wants 8, an account
+        // 4, and nobody chooses a staff password of one hyphen.
+        if (f.flags & FF_MASK) t.text(tl, "set, - clears");
+        else {
+            const size_t cut = shownCut(t);        // 20 at 40, 60 at 80
+            if (strlen(f.buf) > cut) { t.textN(tl, f.buf, cut - 3); t.text(tl, "..."); }
+            else t.text(tl, f.buf);
+        }
         t.text(tl, "]");
     }
     t.color(tl, Color::Grey);
@@ -583,11 +661,11 @@ void Form::linePrompt(Term& t, Timeline& tl) {
 }
 
 // ---------------------------------------------------------------------------
-// listChoices: "1 all  2 users  3 staff ..." packed into 39 columns, the
-// form's card, or one to a line when they are long. Line mode only.
+// listChoices: "1 all  2 users  3 staff ..." packed into the form's line,
+// 39 columns or 79, or one to a line when they are long. Line mode only.
 // ---------------------------------------------------------------------------
 void Form::listChoices(const FormField& f, Term& t, Timeline& tl) {
-    constexpr uint8_t kWidth = 39;
+    const uint8_t kWidth = lineWidth(t);
     uint8_t col = 0;
     unsigned n = 0;
     for (const char* p = f.choices; p; ) {
@@ -609,7 +687,7 @@ void Form::listChoices(const FormField& f, Term& t, Timeline& tl) {
 }
 
 Form::Res Form::keyLine(int k, Term& t, Timeline& tl) {
-    if (confirming_) {
+    if (ask_ == AskSave) {
         if (k == 'y' || k == 'Y' || k == KEY_ENTER) { t.ch(tl, 'Y'); return Res::Save; }
         if (k == 'n' || k == 'N')                   { t.ch(tl, 'N'); return Res::Cancel; }
         return Res::Editing;
@@ -662,6 +740,12 @@ Form::Res Form::keyLine(int k, Term& t, Timeline& tl) {
         if (typed) {
             in_[inLen_] = '\0';
             if (f.flags & FF_YESNO) strcpy(f.buf, (in_[0] == 'y' || in_[0] == 'Y') ? "Y" : "N");
+            // "-" on a password empties it, as Backspace on a positional
+            // form's mask does (FF_REPLACE). See linePrompt.
+            else if ((f.flags & FF_MASK) && inLen_ == 1 && in_[0] == '-') {
+                f.buf[0] = '\0';
+                f.flags  = static_cast<uint8_t>(f.flags & ~FF_REPLACE);
+            }
             else { strncpy(f.buf, in_, f.cap); f.buf[f.cap] = '\0'; }
         }
         wipe();

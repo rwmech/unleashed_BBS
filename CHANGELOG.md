@@ -266,6 +266,30 @@ entry when it is released.
   so a file added later on an old header fails.
 - Nothing else changed; the firmware behaves exactly as dev.10.
 
+**1.1.0-dev.12, forms at 80 columns.**
+- Forms have two layouts. Under 80 columns it is the 40-column card. At 80
+  and up: long labels, a 56-column box, the profile as two rows of 74 and a
+  fuller hint. Plain ASCII uses the long labels and shows 60 characters of
+  a value.
+- CONFIG board: "Board LED" (Onboard LED GPIO at 80) and "Guest min". Plugin
+  page titles in capitals; the page list indented. The ANSI form hint at
+  40 fits its line.
+- CONFIG serial: RX, TX, baud and format. CONFIG chat: every setting, and
+  the colours on a Colours page.
+- CONFIG forums shows the topics set and one empty row, growing to twelve,
+  then a Topics button to all sixteen.
+- CONFIG refuses a pin anything else on the board holds and names the
+  holder.
+- Lights brightness is 1 to 100. Past 30 CONFIG asks first and says why:
+  "Strip % over 30 may brown out the board without a 5 V supply. Keep it?
+  (y/N)".
+- Plain ASCII: "-" empties a set password, so an open network can be chosen.
+- Fixed: announce's description was cut to 95 characters when saved in
+  CONFIG; a forum topic packed longer than 95 characters lost its Reply and
+  Moderate levels when saved from its page; WHOIS drew a 39-column card at
+  80; form refusals were cut at 60 characters; a full 80-column redraw
+  could lose its tail (keys now wait for 2,600 bytes of output room).
+
 ## 1.0.2, 2026-09-23
 
 A security fix. Restoring a backup could turn the published default sysop

@@ -59,6 +59,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cctype>
+#ifdef ESP_PLATFORM
+#include "soc/uart_pins.h"  // U0TXD_GPIO_NUM, U0RXD_GPIO_NUM: the console's pins, per chip
+#endif
 
 using namespace bbsu;
 
@@ -737,8 +740,10 @@ namespace {
 // Field kinds. The form widget only knows about text, masks and cycles;
 // the kind is what CONFIG checks before anything reaches the file.
 // CK_SUB is the odd one: not a value at all, a button that opens a page.
-// CK_PIN is a plugin's PS_PIN: a CK_NUM that also meets syscfg::pinProblem.
-// The core's own pins are CK_NUM and meet the same rule inside the parser.
+// CK_PIN is a GPIO. On a plugin page it is a PS_PIN, a CK_NUM that also
+// meets syscfg::pinProblem; on a core page (the LED, the backup button) the
+// parser checks the number and the rule. Either way CONFIG refuses a pin
+// something else on the board already holds (pinTaken, 1.1.0).
 // CK_OPTNUM is a plugin's PS_OPTNUM: a CK_NUM that may be saved empty.
 // CK_CYCLE is a plugin's PS_CYCLE, its choices looked up from the plugin's
 // table when the page is drawn (cfgChoices). CK_PAGE is a plugin's PS_PAGE:
@@ -751,7 +756,7 @@ enum : uint8_t { CK_TEXT, CK_NUM, CK_YESNO, CK_LEVEL, CK_PASS, CK_SUB, CK_INFO, 
 
 struct CfgField {
     const char* key;      // key in system.cfg
-    const char* label;    // 9 characters, the form column
+    const char* label;    // 9 characters, the form column at 40
     uint8_t     kind;
     // CK_NUM on a plugin page: the range the plugin declared. A core page
     // leaves these 0 and asks the parser (syscfg::trial), because a second
@@ -766,6 +771,13 @@ struct CfgField {
     // 38 characters at most. Defaulted so the tables that have none say
     // nothing about it.
     const char* note = nullptr;
+    // At 80 columns (1.1.0): the label, 20 characters, and the note, 78.
+    // Null means the short one reads fine there, padded. Appended, and C++17
+    // has no designated initialisers, so a row that sets one spells the
+    // members before it. Copied into g_cfgPlugin for plugin pages, which is
+    // the whole static RAM cost: 8 bytes a row, 128 in all.
+    const char* wide     = nullptr;
+    const char* wideNote = nullptr;
 };
 
 constexpr const char kYesNo[]  = "yes|no";
@@ -774,11 +786,16 @@ constexpr const char kMasked[] = "********";       // shown for a password alrea
 
 // The number fields' ranges are the parser's (see CfgField). The caps are
 // only how many characters the box takes, and leave room for a "-1".
+//
+// Each row carries its 40 column label and, where 20 columns say more, its
+// 80 column one (internal/tty-ux-forms-80-2026-09-24.md, section 3). The
+// notes are the same at both widths unless the spec gave a longer one.
 const CfgField kBoard[] = {
-    { "board_name",        "Board",    CK_TEXT, 0, 0, 40 },
+    { "board_name",        "Board",    CK_TEXT, 0, 0, 40, nullptr, "Board name" },
     // A typed "name.local" is normalised before the parser's check, since
     // that is the name a sysop sees their board by and so what they type.
-    { "hostname",          "Hostname", CK_TEXT, 0, 0, 31 },
+    { "hostname",          "Hostname", CK_TEXT, 0, 0, 31, nullptr, nullptr,
+      "Callers on your network reach <hostname>.local. Used from the next restart." },
     // The zone by name, and the POSIX string behind it, which is what the
     // board keeps (1.1.0). Picking a zone writes the string; typing a string
     // makes the zone Custom. A string in the file that is one of the table's
@@ -787,43 +804,52 @@ const CfgField kBoard[] = {
     { "tz_zone",           "Timezone",  CK_ZONE, 0, 0, tzones::kNameMax,
       "Pick a zone, or Custom and type below." },                          // TZ-note-zone
     { "tz",                "TZ string", CK_TEXT, 0, 0, tzones::kPosixMax,
-      "Find yours: unleashedbbs.com/setup" },                              // TZ-note-string
-    { "ntp_server",        "NTP",      CK_TEXT, 0, 0, 40 },
-    { "idle_minutes",      "Idle min", CK_NUM,  0, 0, 4 },
-    { "activity_led_gpio", "LED gpio", CK_NUM,  0, 0, 2 },
+      "Find yours: unleashedbbs.com/setup",                                // TZ-note-string
+      "POSIX TZ string",
+      "Find yours: unleashedbbs.com/setup. Hours WEST of UTC: US zones are positive." },
+    { "ntp_server",        "NTP",      CK_TEXT, 0, 0, 40, nullptr, "NTP server" },
+    { "idle_minutes",      "Idle min", CK_NUM,  0, 0, 4,  nullptr, "Idle minutes" },
+    // The board's own LED, which blinks with network traffic (Rob: "The LED
+    // gpio there should be the ONBOARD Led GPIO"). It was "LED gpio", which
+    // read as any LED at all, and the lights' pixels are rows of their own.
+    { "activity_led_gpio", "Board LED", CK_PIN, 0, 0, 2,
+      "Board's own LED: 2 on most dev boards",
+      "Onboard LED GPIO",
+      "The board's own LED, not a pixel: GPIO 2 on most dev boards, -1 for none." },
     // Where a caller goes when their own account has not said. An account
     // set to anything other than Default overrides this, so changing it
     // moves exactly the people who never expressed a preference.
-    { "landing",           "Land on",  CK_TEXT, 0, 0, 8 },
+    { "landing",           "Land on",  CK_TEXT, 0, 0, 8,  nullptr, "Land on after login" },
 };
 
 const CfgField kLimits[] = {
-    { "call_minutes",    "Per call", CK_NUM, 0, 0, 4 },
-    { "day_minutes",     "Per day",  CK_NUM, 0, 0, 4 },
-    { "who_refresh_min", "WHO min",  CK_NUM, 0, 0, 3 },
-    { "who_refresh_max", "WHO max",  CK_NUM, 0, 0, 3 },
-    { "max_users",       "Accounts", CK_NUM, 0, 0, 3 },
+    { "call_minutes",    "Per call", CK_NUM, 0, 0, 4, nullptr, "Minutes per call" },
+    { "day_minutes",     "Per day",  CK_NUM, 0, 0, 4, nullptr, "Minutes per day" },
+    { "who_refresh_min", "WHO min",  CK_NUM, 0, 0, 3, nullptr, "WHO refresh, min s" },
+    { "who_refresh_max", "WHO max",  CK_NUM, 0, 0, 3, nullptr, "WHO refresh, max s" },
+    { "max_users",       "Accounts", CK_NUM, 0, 0, 3, nullptr, "Account limit" },
 };
 
 const CfgField kAccounts[] = {
-    { "self_register", "Sign-ups", CK_YESNO, 0, 0, 4 },
-    { "guest",         "Guests",   CK_YESNO, 0, 0, 4 },
-    { "guest_minutes", "Guest mn", CK_NUM,   0, 0, 4 },
+    { "self_register", "Sign-ups",  CK_YESNO, 0, 0, 4, nullptr, "Callers may sign up" },
+    { "guest",         "Guests",    CK_YESNO, 0, 0, 4, nullptr, "Guest calls" },
+    { "guest_minutes", "Guest min", CK_NUM,   0, 0, 4, nullptr, "Guest call minutes" },
 };
 
 const CfgField kBackup[] = {
-    { "backup_port",           "Port",     CK_NUM, 0, 0, 5 },
-    { "backup_window_minutes", "Open for", CK_NUM, 0, 0, 4 },
-    { "backup_button_gpio",    "Button",   CK_NUM, 0, 0, 2 },
+    { "backup_port",           "Port",     CK_NUM, 0, 0, 5, nullptr, "Backup web port" },
+    { "backup_window_minutes", "Open for", CK_NUM, 0, 0, 4, nullptr, "Window open, minutes" },
+    { "backup_button_gpio",    "Button",   CK_PIN, 0, 0, 2, nullptr, "Button GPIO (BOOT)" },
 };
 
-// The label column is nine characters (Form::drawField), and "Co-sysop 1"
-// is ten: both rows used to read "Co-sysop " and nobody could tell which
-// password they were changing. "Co-sysop1" is nine and keeps the digit.
+// The label column is nine characters at 40 (Form::drawField), and
+// "Co-sysop 1" is ten: both rows used to read "Co-sysop " and nobody could
+// tell which password they were changing. "Co-sysop1" is nine and keeps the
+// digit; at 80 there is room for the space.
 const CfgField kStaff[] = {
-    { "sysop_password",    "Sysop",     CK_PASS, 0, 0, 32 },
-    { "cosysop1_password", "Co-sysop1", CK_PASS, 0, 0, 32 },
-    { "cosysop2_password", "Co-sysop2", CK_PASS, 0, 0, 32 },
+    { "sysop_password",    "Sysop",     CK_PASS, 0, 0, 32, nullptr, "Sysop password" },
+    { "cosysop1_password", "Co-sysop1", CK_PASS, 0, 0, 32, nullptr, "Co-sysop 1 password" },
+    { "cosysop2_password", "Co-sysop2", CK_PASS, 0, 0, 32, nullptr, "Co-sysop 2 password" },
 };
 
 // The network. Used from the next restart, never live: changing it under a
@@ -835,9 +861,11 @@ const CfgField kStaff[] = {
 // the board, and changing it under them would cut every line at once. Its
 // range and the clash with the backup port are the parser's (crossCheck).
 const CfgField kNetwork[] = {
-    { "wifi_ssid",     "Network",  CK_TEXT, 0, 0, 32 },
-    { "wifi_password", "Password", CK_PASS, 0, 0, 64 },
-    { "port",          "Port",     CK_NUM,  0, 0, 5, "Callers use it from the next restart." },
+    { "wifi_ssid",     "Network",  CK_TEXT, 0, 0, 32, nullptr, "Wi-Fi network" },
+    { "wifi_password", "Password", CK_PASS, 0, 0, 64, nullptr, "Wi-Fi password" },
+    { "port",          "Port",     CK_NUM,  0, 0, 5, "Callers use it from the next restart.",
+      "Telnet port",
+      "What callers dial. Changing it takes effect at the next restart, never live." },
 };
 
 // isWifiKey: one of the two keys that are one setting (see configSave)
@@ -912,7 +940,7 @@ enum : uint8_t {
 };
 
 struct CfgPart {
-    const char* label;    // 9 characters, the form column
+    const char* label;    // 9 characters, the form column at 40
     uint8_t     kind;     // CK_TEXT, CK_LEVEL or CK_CYCLE
     uint8_t     cap;
     uint8_t     inherit;  // CK_LEVEL: what an unset part runs under
@@ -920,6 +948,10 @@ struct CfgPart {
     // tables before it read nullptr here. An unset cycle part opens on
     // whatever the plugin's setting() said the record is running with.
     const char* choices = nullptr;
+    // The label at 80 columns, 20 characters, or null for the short one
+    // padded (1.1.0). Appended after choices, so a row that sets it spells
+    // choices first.
+    const char* wide    = nullptr;
 };
 
 // The order here is the order on the wire, and Upload sits above Download
@@ -927,13 +959,13 @@ struct CfgPart {
 // to read nicely would silently reinterpret every area already configured,
 // turning its upload level into its download level.
 constexpr CfgPart kAreaParts[] = {
-    { "Path",     CK_TEXT,  48, 0 },   // files.cpp kPathMax
-    { "Name",     CK_TEXT,  24, 0 },   // files.cpp kNameMax
+    { "Path",     CK_TEXT,  48, 0, nullptr, "Folder on the card" },   // files.cpp kPathMax
+    { "Name",     CK_TEXT,  24, 0, nullptr, "Area name" },            // files.cpp kNameMax
     // The fallbacks are files.cpp's mayRead, mayUp, mayDown and mayDel.
-    { "Read",     CK_LEVEL,  6, IN_READ },      // see the area and list it
-    { "Upload",   CK_LEVEL,  6, IN_WRITE },     // put files in, and describe them
-    { "Download", CK_LEVEL,  6, IN_PART | 2 },  // take files out; the area's Read
-    { "Delete",   CK_LEVEL,  6, IN_ADMIN },     // remove files, approve or reject
+    { "Read",     CK_LEVEL,  6, IN_READ,     nullptr, "Read: see and list" },  // see the area and list it
+    { "Upload",   CK_LEVEL,  6, IN_WRITE,    nullptr, "Upload files" },  // put files in, and describe them
+    { "Download", CK_LEVEL,  6, IN_PART | 2, nullptr, "Download files" },  // take files out; the area's Read
+    { "Delete",   CK_LEVEL,  6, IN_ADMIN,    nullptr, "Delete and approve" },  // remove files, approve or reject
 };
 
 struct CfgComposite {
@@ -979,22 +1011,22 @@ struct CfgComposite {
 // read=all, start=co1, reply=users is "staff post the news, anybody may
 // answer it", which boards wanted and could not say.
 constexpr CfgPart kTopicParts[] = {
-    { "Key",      CK_TEXT,  12, 0 },   // folder on the card, forums.cpp kKeyMax
-    { "Name",     CK_TEXT,  24, 0 },   // forums.cpp kNameMax
-    { "About",    CK_TEXT,  40, 0 },   // one line, shown at 64 columns and up
+    { "Key",      CK_TEXT,  12, 0, nullptr, "Folder key" },        // folder on the card, forums.cpp kKeyMax
+    { "Name",     CK_TEXT,  24, 0, nullptr, "Forum name" },        // forums.cpp kNameMax
+    { "About",    CK_TEXT,  40, 0, nullptr, "About, one line" },   // one line, shown at 64 columns and up
     // The fallbacks are forums.cpp's mayRead, mayStart, mayReply and mayMod.
-    { "Read",     CK_LEVEL,  6, IN_READ },      // see the forum in the list
-    { "Start",    CK_LEVEL,  6, IN_PART | 5 },  // open a NEW subject; this forum's Reply
-    { "Reply",    CK_LEVEL,  6, IN_WRITE },     // add to an existing one
-    { "Moderate", CK_LEVEL,  6, IN_ADMIN },     // delete, pin, move
+    { "Read",     CK_LEVEL,  6, IN_READ,     nullptr, "Read the forum" },      // see the forum in the list
+    { "Start",    CK_LEVEL,  6, IN_PART | 5, nullptr, "Start a subject" },     // open a NEW subject; this forum's Reply
+    { "Reply",    CK_LEVEL,  6, IN_WRITE,    nullptr, "Reply in a subject" },  // add to an existing one
+    { "Moderate", CK_LEVEL,  6, IN_ADMIN,    nullptr, "Moderate: remove" },    // delete, pin, move
 };
 
 // An information page: "page3 = House rules | all". The text is written
 // with INFO 3 EDIT; only what it is called and who may read it live here.
 constexpr CfgPart kInfoParts[] = {
     // The fallback is info.cpp's mayRead.
-    { "Title", CK_TEXT,  24, 0 },               // info.cpp kTitleMax
-    { "Read",  CK_LEVEL,  6, IN_READ },         // who sees it in the list
+    { "Title", CK_TEXT,  24, 0,       nullptr, "Page title" },       // info.cpp kTitleMax
+    { "Read",  CK_LEVEL,  6, IN_READ, nullptr, "Who may read it" },  // who sees it in the list
 };
 
 // A pixel in the lights' manual mode: "led3 = sparkle | random". The words
@@ -1053,6 +1085,18 @@ static_assert(sameLabel(kAreaParts[2].label, "Read"),
 static_assert(sameLabel(kTopicParts[5].label, "Reply"),
               "a forum's Start inherits IN_PART | 5, which must be Reply");
 
+// And a composite packed whole, every part at its cap with " | " between,
+// has to fit the row that holds it (kSettingMax) and the copy a sub-page
+// unpacks it from (g_subOrig). A topic packs to 118 against a copy that was
+// 96 until 1.1.0, which cut the levels off every long one.
+constexpr size_t packedMax(const CfgPart* p, size_t n) {
+    return n == 0 ? 0 : p[0].cap + (n > 1 ? 3u : 0u) + packedMax(p + 1, n - 1);
+}
+static_assert(packedMax(CFG_PARTS(kAreaParts))  <= kSettingMax, "a file area packs longer than CONFIG holds");
+static_assert(packedMax(CFG_PARTS(kTopicParts)) <= kSettingMax, "a forum topic packs longer than CONFIG holds");
+static_assert(packedMax(CFG_PARTS(kInfoParts))  <= kSettingMax, "an info page packs longer than CONFIG holds");
+static_assert(packedMax(CFG_PARTS(kLedParts))   <= kSettingMax, "a pixel packs longer than CONFIG holds");
+
 // One settings editor at a time. The sysop is a single caller, and two
 // people writing the file at once is a good way to lose it.
 //
@@ -1064,7 +1108,10 @@ static_assert(sameLabel(kTopicParts[5].label, "Reply"),
 const Session*  g_cfgOwner = nullptr;
 const CfgPage*  g_cfgPage  = nullptr;
 char            g_cfgSection[24] = "";                  // plugin section, empty for the board
-char            g_cfgBuf[Form::kMaxFields][96] = {};
+// 121 a row since 1.1.0 (kSettingMax), from 96: announce's description is
+// 120 in the plugin, the file and the directory's protocol, and CONFIG cut it
+// to 95 whenever that row was saved. 400 bytes of static RAM.
+char            g_cfgBuf[Form::kMaxFields][kSettingMax + 1] = {};
 // What each field held when the page opened, as a hash. The text itself was
 // never read back: its only use is a strcmp deciding whether to write the
 // field, which is an equality question.
@@ -1086,7 +1133,11 @@ CfgPage         g_cfgPluginPage = {};
 const CfgComposite* g_subComp  = nullptr;
 uint8_t             g_subField = 0;                      // row on the parent page
 char                g_subKey[24]  = "";                  // "area3"
-char                g_subOrig[96] = "";                  // packed value as it opened
+// The packed value as it opened, as long as the row that holds it (1.1.0).
+// It was 96 while a forum topic packs to 118 characters: the parts were
+// unpacked from a copy cut at 95, the levels past the cut came back as the
+// plugin's fallbacks, and Save wrote those over the real ones.
+char                g_subOrig[kSettingMax + 1] = "";
 char                g_subBuf[kMaxParts][64] = {};        // the parts, edited in place
 
 // The one open PS_PAGE list, if any: its button's key ("led"), that button's
@@ -1313,25 +1364,63 @@ bool digitsOnly(const char* v) {
 // with a long settings table asserts against, so the page and the assert
 // count the same thing.
 const CfgField kCoreFields[] = {
-    { "enabled", "Enabled", CK_YESNO, 0, 0, 4 },
-    { "read",    "Read",    CK_LEVEL, 0, 0, 6 },
-    { "write",   "Write",   CK_LEVEL, 0, 0, 6 },
-    { "admin",   "Admin",   CK_LEVEL, 0, 0, 6 },
+    { "enabled", "Enabled", CK_YESNO, 0, 0, 4, nullptr, "Plugin enabled" },
+    { "read",    "Read",    CK_LEVEL, 0, 0, 6, nullptr, "Read level" },
+    { "write",   "Write",   CK_LEVEL, 0, 0, 6, nullptr, "Write level" },
+    { "admin",   "Admin",   CK_LEVEL, 0, 0, 6, nullptr, "Admin level" },
 };
 static_assert(sizeof(kCoreFields) / sizeof(kCoreFields[0]) == kCoreRows,
               "kCoreRows must count the rows CONFIG puts on every plugin page");
 
-// collectKey: plugin pages are built from the keys the file already has,
-// which is every key that matters once system.cfg.example has been used.
-struct KeyGrab { uint8_t n; };
+// declaredIndex: where a key sits in the plugin's own table, or -1
+int declaredIndex(const Plugin* pl, const char* key) {
+    for (uint8_t i = 0; pl && i < pl->settingCount; ++i)
+        if (!strcmp(pl->settings[i].key, key)) return i;
+    return -1;
+}
+
+// collectKey: plugin pages are built from what the plugin declares and then
+// from the keys the file carries that it does not declare, so a key somebody
+// added by hand is never dropped on a save.
+//
+// Only the undeclared keys take a slot (1.1.0). The declared ones were
+// collected too and then skipped, and they used up the room: chat's page
+// held the first twelve keys of the file, so with system.cfg.example's
+// fourteen, color_room and color_private never reached it. For a declared
+// key the grab notes instead whether the file gives it a value, which is
+// what a PS_GROW group needs to decide whether its rows fit (groupInline).
+struct KeyGrab {
+    const Plugin* pl;
+    uint8_t  n;
+    uint32_t inFile;      // bit i: declared setting i has a line in the file
+    uint32_t hasValue;    // bit i: and the last such line is not empty
+};
 
 void collectKey(void* ctx, const char* key, const char* value) {
-    (void)value;
     KeyGrab* g = static_cast<KeyGrab*>(ctx);
+    int d = declaredIndex(g->pl, key);
+    if (d >= 0) {
+        if (d < 32) {                                      // a later line wins, as the parser's does
+            g->inFile |= 1u << d;
+            if (*value) g->hasValue |= 1u << d;
+            else        g->hasValue &= ~(1u << d);
+        }
+        return;
+    }
+    if (cfgDeclared(g->pl, key)) return;                   // enabled, read, write, admin
     if (g->n >= Form::kMaxFields - kCoreRows) return;      // the core rows come first
     for (uint8_t i = 0; i < g->n; ++i) if (!strcmp(g_cfgKeys[i], key)) return;
     snprintf(g_cfgKeys[g->n], sizeof(g_cfgKeys[0]), "%.23s", key);
     ++g->n;
+}
+
+// settingHasValue: does declared setting i have a value, from the file or,
+// where the file says nothing, from what the plugin is running with?
+bool settingHasValue(const Plugin* pl, uint8_t i, const KeyGrab& g) {
+    if (i < 32 && ((g.inFile >> i) & 1u)) return (g.hasValue >> i) & 1u;
+    char v[4] = "";
+    if (pl->setting) pl->setting(pl->settings[i].key, v, sizeof(v));
+    return v[0] != '\0';
 }
 
 // intOnly: what a plugin's number accepts, a minus sign first only where its
@@ -1364,16 +1453,59 @@ const char* cfgChoices(const char* key) {
     return nullptr;
 }
 
-// pageOwner: the PS_PAGE row whose page a key is listed on, or null. led7 is
-// on led's page: the button's key and then a number.
+// cfgSetting: the declared row behind a key of the open plugin page, or null.
+// Looked up when it is wanted, like cfgChoices, rather than copied into every
+// CfgField: a warn level is asked about on a save, not drawn.
+const PluginSetting* cfgSetting(const char* key) {
+    const Plugin* pl = plugins::at(cfgSectionPlugin(g_cfgSection));
+    int d = declaredIndex(pl, key);
+    return d >= 0 ? &pl->settings[d] : nullptr;
+}
+
+// isPage: a button to a page of rows, PS_PAGE or the PS_GROW that grows
+bool isPage(uint8_t kind) { return kind == PS_PAGE || kind == PS_GROW; }
+
+// pageOwner: the PS_PAGE or PS_GROW row whose page a key is listed on, or
+// null. led7 is on led's page: the button's key and then a number.
+// color_room is on chat's "color" page: the button's key and then an
+// underscore (1.1.0).
 const PluginSetting* pageOwner(const Plugin* pl, const char* key) {
     for (uint8_t i = 0; pl && i < pl->settingCount; ++i) {
         const PluginSetting& p = pl->settings[i];
-        if (p.kind != PS_PAGE) continue;
+        if (!isPage(p.kind)) continue;
         size_t len = strlen(p.key);
-        if (!strncmp(key, p.key, len) && key[len] >= '0' && key[len] <= '9') return &p;
+        if (strncmp(key, p.key, len)) continue;
+        if ((key[len] >= '0' && key[len] <= '9') || (key[len] == '_' && key[len + 1])) return &p;
     }
     return nullptr;
+}
+
+// groupInline: does PS_GROW row p show its rows in place on the plugin's
+// main page, rather than as a button? Yes while they fit: the rows with a
+// value, plus the first without one so there is always somewhere to add the
+// next, against the room left once every other row is placed (1.1.0). The
+// forums' topics grow this way up to twelve and then become a button to all
+// sixteen. A plain PS_PAGE is always its button.
+//
+// Another group on the same page counts as one row, its button, whatever it
+// ends up as. That is right for one growing group a plugin, which is all
+// there is; a second PS_GROW would need its own rows counted here, or the
+// two together could pass the page and CONFIG would drop the last rows.
+bool groupInline(const Plugin* pl, const PluginSetting& p, const KeyGrab& g) {
+    uint8_t others = 0, shown = 0;
+    bool empty = false;
+    for (uint8_t i = 0; i < pl->settingCount; ++i) {
+        const PluginSetting& ps = pl->settings[i];
+        if (&ps == &p) continue;
+        const PluginSetting* owner = pageOwner(pl, ps.key);
+        if (owner == &p) {
+            if (settingHasValue(pl, i, g))  ++shown;
+            else if (!empty)              { ++shown; empty = true; }
+        } else if (!owner) {
+            ++others;                     // another row, or another group's button
+        }
+    }
+    return shown <= Form::kMaxFields - kCoreRows - others;
 }
 
 // cfgPluginPage: build plugin pi's page into g_cfgPlugin and g_cfgPluginPage.
@@ -1383,9 +1515,17 @@ const PluginSetting* pageOwner(const Plugin* pl, const char* key) {
 void cfgPluginPage(uint8_t pi, const char* list) {
     const Plugin* pl   = plugins::at(pi);
     const bool    main = !list || !*list;
-    KeyGrab grab{ 0 };
+    KeyGrab grab{ pl, 0, 0, 0 };
     memset(g_cfgKeys, 0, sizeof(g_cfgKeys));
     if (main) plugins::forEachKey(pi, collectKey, &grab);
+
+    // Which PS_GROW rows stand aside for their rows on this page, and which
+    // of those groups has already shown its one empty row. Bits by index in
+    // the plugin's table; a table longer than 32 keeps its buttons past that.
+    uint32_t inlined = 0, emptied = 0;
+    for (uint8_t i = 0; main && pl && i < pl->settingCount && i < 32; ++i)
+        if (pl->settings[i].kind == PS_GROW && groupInline(pl, pl->settings[i], grab))
+            inlined |= 1u << i;
 
     uint8_t n = 0;
     if (main) for (const CfgField& f : kCoreFields) g_cfgPlugin[n++] = f;
@@ -1397,27 +1537,39 @@ void cfgPluginPage(uint8_t pi, const char* list) {
     for (uint8_t i = 0; pl && i < pl->settingCount && n < Form::kMaxFields; ++i) {
         const PluginSetting& ps = pl->settings[i];
         const PluginSetting* owner = pageOwner(pl, ps.key);
-        if (main ? owner != nullptr : (!owner || strcmp(owner->key, list))) continue;
+        if (main) {
+            if (i < 32 && ((inlined >> i) & 1u)) continue;           // its rows stand in for it
+            if (owner) {
+                const unsigned o = static_cast<unsigned>(owner - pl->settings);
+                if (o >= 32 || !((inlined >> o) & 1u)) continue;     // behind its button
+                if (!settingHasValue(pl, i, grab)) {                 // one empty row, the first
+                    if ((emptied >> o) & 1u) continue;
+                    emptied |= 1u << o;
+                }
+            }
+        } else if (!owner || strcmp(owner->key, list)) {
+            continue;
+        }
         uint8_t kind = ps.kind == PS_NUM    ? CK_NUM
                      : ps.kind == PS_PIN    ? CK_PIN
                      : ps.kind == PS_OPTNUM ? CK_OPTNUM
                      : ps.kind == PS_YESNO  ? CK_YESNO
                      : ps.kind == PS_INFO   ? CK_INFO
                      : ps.kind == PS_CYCLE  ? CK_CYCLE
-                     : ps.kind == PS_PAGE   ? CK_PAGE
+                     : isPage(ps.kind)      ? CK_PAGE
                                             : CK_TEXT;
         uint8_t cap = ps.cap < kValueMax ? ps.cap : kValueMax;
         // A packed setting is a button, not a box: the parts are a page
         // of their own and nothing is ever typed into the row itself.
         if (compositeFor(g_cfgSection, ps.key)) kind = CK_SUB;
-        g_cfgPlugin[n++] = { ps.key, ps.label, kind, ps.lo, ps.hi, cap, ps.note };
+        g_cfgPlugin[n++] = { ps.key, ps.label, kind, ps.lo, ps.hi, cap, ps.note, ps.wide, ps.wideNote };
     }
 
     // Anything else the file carries stays editable, so a key somebody
     // added by hand is never silently dropped on the next save.
     for (uint8_t i = 0; main && i < grab.n && n < Form::kMaxFields; ++i) {
         if (cfgDeclared(pl, g_cfgKeys[i])) continue;
-        g_cfgPlugin[n++] = { g_cfgKeys[i], g_cfgKeys[i], CK_TEXT, 0, 0, 40 };
+        g_cfgPlugin[n++] = { g_cfgKeys[i], g_cfgKeys[i], CK_TEXT, 0, 0, 40, nullptr, nullptr, nullptr };
     }
     g_cfgPluginPage = { pl->info.name, main ? pl->info.name : g_listTitle, "", g_cfgPlugin, n };
 }
@@ -1434,6 +1586,219 @@ void cfgLoadPlugin(const char* name) {
         if (f.kind == CK_PASS && *buf) snprintf(buf, sizeof(g_cfgBuf[0]), "%s", kMasked);
         g_cfgWas[i] = bbsu::hash(buf);
     }
+}
+
+// pageEdited: has anything on the open page been changed and not saved?
+// Buttons do not count: their own pages write them.
+bool pageEdited() {
+    for (uint8_t i = 0; g_cfgPage && i < g_cfgPage->count && i < Form::kMaxFields; ++i) {
+        uint8_t k = g_cfgPage->fields[i].kind;
+        if (k == CK_SUB || k == CK_PAGE || k == CK_INFO) continue;
+        if (bbsu::hash(g_cfgBuf[i]) != g_cfgWas[i]) return true;
+    }
+    return false;
+}
+
+// hasGroup: does this plugin have a PS_GROW group, whose rows may be shown in
+// place and so move when one of them is set?
+bool hasGroup(const Plugin* pl) {
+    for (uint8_t i = 0; pl && i < pl->settingCount; ++i)
+        if (pl->settings[i].kind == PS_GROW) return true;
+    return false;
+}
+
+// rowOf: the row on the open page for a key; or the button whose page now
+// holds it; or, when the row has gone from a group shown in place (a topic
+// cleared, and with it the empty row after it), the group's last row, which
+// is the empty one to add the next; or 0.
+uint8_t rowOf(const Plugin* pl, const char* key) {
+    const PluginSetting* owner = pageOwner(pl, key);
+    int button = -1, last = -1;
+    for (uint8_t i = 0; g_cfgPage && i < g_cfgPage->count && i < Form::kMaxFields; ++i) {
+        const char* k = g_cfgPage->fields[i].key;
+        if (!strcmp(k, key)) return i;
+        if (!owner) continue;
+        if (!strcmp(k, owner->key)) button = i;
+        else if (pageOwner(pl, k) == owner) last = i;
+    }
+    return static_cast<uint8_t>(button >= 0 ? button : last >= 0 ? last : 0);
+}
+
+// ---------------------------------------------------------------------------
+// cfgWarnQuestion: the question for the rows of the open page being saved
+// past their warn level (PluginSetting::warnAbove), or false when there are
+// none. One question for the page, naming every such row, with the first
+// one's warning after it (1.1.0). 38 columns at 40; at 80 the long labels
+// and the warning when they fit in 78, the short ones when only they do, and
+// the names alone past that. *row is the first such row, for the focus.
+// ---------------------------------------------------------------------------
+constexpr size_t kWarnQ = 192;      // the longest try below, 178, and its end
+
+bool cfgWarnQuestion(const Term& t, char* q, size_t qn, uint8_t* row) {
+    char shortNames[64] = "", longNames[96] = "";
+    const PluginSetting* first = nullptr;
+    const uint8_t count = g_cfgPage->count < Form::kMaxFields ? g_cfgPage->count : Form::kMaxFields;
+    for (uint8_t i = 0; i < count; ++i) {
+        const CfgField& f = g_cfgPage->fields[i];
+        if (f.kind != CK_NUM || bbsu::hash(g_cfgBuf[i]) == g_cfgWas[i]) continue;
+        const PluginSetting* ps = cfgSetting(f.key);
+        if (!ps || !ps->warn || !intOnly(g_cfgBuf[i], f.lo < 0)) continue;
+        if (strtol(g_cfgBuf[i], nullptr, 10) <= ps->warnAbove) continue;
+        const bool more = first != nullptr;
+        size_t at = strlen(shortNames);
+        snprintf(shortNames + at, sizeof(shortNames) - at, "%s%s", more ? ", " : "", f.label);
+        at = strlen(longNames);
+        snprintf(longNames + at, sizeof(longNames) - at, "%s%s", more ? ", " : "",
+                 f.wide ? f.wide : f.label);
+        if (!first) { first = ps; *row = i; }
+    }
+    if (!first) return false;
+    // Each try is written whole into q (sized for the longest, kWarnQ) and
+    // kept if it fits the line; the precisions only bound what a try can be.
+    const int over = first->warnAbove;
+    const char* brief = first->warnShort ? first->warnShort : "";
+    if (Form::wide(t)) {
+        const size_t w = 78;
+        snprintf(q, qn, "%.80s over %d %.60s Keep it? (y/N)", longNames, over, first->warn);
+        if (strlen(q) <= w) return true;
+        snprintf(q, qn, "%.63s over %d %.60s Keep it? (y/N)", shortNames, over, first->warn);
+        if (strlen(q) <= w) return true;
+        snprintf(q, qn, "Over %d %.60s Keep it? (y/N)", over, first->warn);
+        if (strlen(q) <= w) return true;
+    } else {
+        const size_t w = 38;
+        snprintf(q, qn, "%.63s>%d: %.30s (y/N)", shortNames, over, brief);
+        if (strlen(q) <= w) return true;
+        snprintf(q, qn, "Over %d: %.30s (y/N)", over, brief);
+        if (strlen(q) <= w) return true;
+    }
+    snprintf(q, qn, "Over %d. Keep it? (y/N)", over);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Pins another feature holds (1.1.0, PLAN-1.1.0 Phase 5).
+//
+// CONFIG refused two pins on one page ("That is the drive pin") and nothing
+// across pages: the LED, the SD card, the serial bridge and the lights could
+// all be given GPIO 18, every page said "Saved and live", and whichever
+// started last had the pin. The walk is generic on purpose: the core's CK_PIN
+// rows, then every PS_PIN row of every plugin compiled in, so a plugin that
+// only some boards build (a display panel) is covered by declaring its pins
+// and by nothing else. A plugin switched off holds nothing, and -1 holds
+// nothing.
+// ---------------------------------------------------------------------------
+
+// The console's pins: UART0, which flashing, the serial monitor and Improv
+// all use, on every chip this firmware builds for. The serial bridge refused
+// them for itself; a pixel or an LED on one breaks the same things. The host
+// has no chip and stands in for the WROOM.
+#ifdef ESP_PLATFORM
+constexpr long kConsoleTx = U0TXD_GPIO_NUM;
+constexpr long kConsoleRx = U0RXD_GPIO_NUM;
+#else
+constexpr long kConsoleTx = 1;
+constexpr long kConsoleRx = 3;
+#endif
+// BOOT is GPIO 0 on the ESP32 and the S3 alike. The BOOT-hold reset reads it
+// at start-up whatever backup_button_gpio says (recovery.h), and the backup
+// window's button is BOOT itself unless a sysop wires another, which is why
+// that one row may have it.
+constexpr long kBootPin = 0;
+
+// PinVals: one plugin's PS_PIN values as the file has them.
+struct PinVals {
+    const Plugin* pl;
+    uint32_t      seen;          // bit i: setting i has a line in the file
+    int16_t       val[32];
+};
+
+void pinValKey(void* ctx, const char* key, const char* value) {
+    PinVals* v = static_cast<PinVals*>(ctx);
+    int d = declaredIndex(v->pl, key);
+    if (d < 0 || d >= 32 || v->pl->settings[d].kind != PS_PIN) return;
+    v->seen |= 1u << d;
+    v->val[d] = intOnly(value, true) ? static_cast<int16_t>(strtol(value, nullptr, 10)) : -1;
+}
+
+// yesWord: a plugin's enabled value, read the way plugin.cpp reads it
+bool yesWord(const char* v) {
+    return !strcasecmp(v, "yes") || !strcasecmp(v, "on") || !strcmp(v, "1");
+}
+
+// pinTaken: whether something other than row `self` of the page being saved
+// holds pin, and if so the sentence that refuses it. It names the holder: 38
+// columns at 40, where the sysop has just typed the number, and with the
+// number and the CONFIG page to go to at 80.
+bool pinTaken(const Term& t, const CfgField& self, long pin, char* msg, size_t n) {
+    const bool wide = Form::wide(t);
+    if (pin == kBootPin && strcmp(self.key, "backup_button_gpio")) {
+        snprintf(msg, n, "%s", wide ? "GPIO 0 is the BOOT button, read at start-up. Pick another."
+                                    : "GPIO 0 is the BOOT button.");
+        return true;
+    }
+    if (pin == kConsoleTx || pin == kConsoleRx) {
+        if (wide) snprintf(msg, n, "GPIO %ld is the console port: flashing and Improv need it. Pick another.", pin);
+        else      snprintf(msg, n, "GPIO %ld is the console port.", pin);
+        return true;
+    }
+    auto held = [&](const char* page, const char* label, const char* wideLabel) {
+        if (wide) snprintf(msg, n, "GPIO %ld is taken: CONFIG %s, %s. Pick another.",
+                           pin, page, wideLabel ? wideLabel : label);
+        else      snprintf(msg, n, "Taken: %s, %s", page, label);
+        return true;
+    };
+
+    // The core's own: what the page being saved is about to write, where it
+    // is that page, and what the board is running with everywhere else.
+    for (uint8_t p = 0; p < kPageCount; ++p) {
+        const bool onPage = g_cfgPage == &kPages[p];
+        for (uint8_t i = 0; i < kPages[p].count && i < Form::kMaxFields; ++i) {
+            const CfgField& f = kPages[p].fields[i];
+            if (f.kind != CK_PIN || &f == &self) continue;
+            char v[12];
+            if (onPage) snprintf(v, sizeof(v), "%.11s", g_cfgBuf[i]);
+            else        cfgLiveValue(f.key, v, sizeof(v));
+            if (intOnly(v, true) && strtol(v, nullptr, 10) == pin)
+                return held(kPages[p].name, f.label, f.wide);
+        }
+    }
+
+    // Every plugin compiled in, switched on, with a PS_PIN row: the file's
+    // value where it has a line, the plugin's running one where it does not.
+    // Rows on the page being saved were compared with each other already.
+    const uint8_t here = cfgSectionPlugin(g_cfgSection);
+    for (uint8_t j = 0; j < plugins::count(); ++j) {
+        const Plugin* pl = plugins::at(j);
+        bool pins = false;
+        for (uint8_t k = 0; pl && k < pl->settingCount; ++k) pins |= pl->settings[k].kind == PS_PIN;
+        if (!pins) continue;
+        bool on = plugins::enabled(j);
+        if (j == here)                            // what its page is about to say
+            for (uint8_t i = 0; i < g_cfgPage->count && i < Form::kMaxFields; ++i)
+                if (!strcmp(g_cfgPage->fields[i].key, "enabled")) on = yesWord(g_cfgBuf[i]);
+        if (!on) continue;
+        PinVals vals{ pl, 0, {} };
+        plugins::forEachKey(j, pinValKey, &vals);
+        for (uint8_t k = 0; k < pl->settingCount && k < 32; ++k) {
+            const PluginSetting& ps = pl->settings[k];
+            if (ps.kind != PS_PIN) continue;
+            bool onPage = false;
+            for (uint8_t i = 0; j == here && i < g_cfgPage->count && i < Form::kMaxFields; ++i)
+                onPage |= !strcmp(g_cfgPage->fields[i].key, ps.key);
+            if (onPage) continue;
+            long v = -1;
+            if ((vals.seen >> k) & 1u) {
+                v = vals.val[k];
+            } else {
+                char b[12] = "";
+                if (pl->setting) pl->setting(ps.key, b, sizeof(b));
+                if (intOnly(b, true)) v = strtol(b, nullptr, 10);
+            }
+            if (v >= 0 && v == pin) return held(pl->info.name, ps.label, ps.wide);
+        }
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -1516,16 +1881,18 @@ void Bbs::configPages(Session& s) {
         return fit;
     };
     rowTitle(s, "Settings", "CONFIG page");
+    // One column in, so the names sit under the bar's title the way every
+    // other list's rows do; they started at column 1 under a title at 2.
     for (uint8_t i = 0; i < kPageCount; ++i) {
         uint8_t col = 0;
-        snprintf(buf, sizeof(buf), "%-10.10s", kPages[i].name);
+        snprintf(buf, sizeof(buf), " %-10.10s", kPages[i].name);
         rowSeg(s, Color::Yellow, buf, col);
         rowSeg(s, Color::Grey, clip(kPages[i].what, col), col);
         rowEnd(s, col);
     }
     for (uint8_t i = 0; i < plugins::count(); ++i) {
         uint8_t col = 0;
-        snprintf(buf, sizeof(buf), "%-10.10s", plugins::at(i)->info.name);
+        snprintf(buf, sizeof(buf), " %-10.10s", plugins::at(i)->info.name);
         rowSeg(s, Color::Yellow, buf, col);
         snprintf(buf, sizeof(buf), "plugin: %.24s", plugins::at(i)->info.title);
         rowSeg(s, Color::Grey, clip(buf, col), col);
@@ -1650,17 +2017,29 @@ void Bbs::configOpenPage(Session& s, uint8_t focus, uint32_t now) {
             buf2 = g_cfgSum[i];                 // the button shows the summary
         }
         uint8_t at = n;
-        addField(s, n, f.label, buf2, (f.kind == CK_SUB || f.kind == CK_PAGE) ? 0 : f.cap, flags, choices);
+        // The words for this caller's width: the 20 column label and the 78
+        // column note at 80, the short ones on a C64 (Form::pick).
+        addField(s, n, Form::pick(s.term, f.label, f.wide), buf2,
+                 (f.kind == CK_SUB || f.kind == CK_PAGE) ? 0 : f.cap, flags, choices);
         // On the session's own array, as addUserFields does: the Form's
         // pointer is not aimed at it until begin() below.
-        if (f.note && at < n) s.fields[at].note = f.note;
+        const char* note = Form::pick(s.term, f.note, f.wideNote);
+        if (note && at < n) s.fields[at].note = note;
     }
+    // Titles in capitals on every page. A plugin's page was titled with its
+    // name as the plugin spells it, "announce", under core pages called
+    // "BOARD" and list pages called "PIXELS" (spec section 10).
+    char title[32];
+    size_t w = 0;
+    for (const char* p = g_cfgPage->title; *p && w + 1 < sizeof(title); ++p)
+        title[w++] = static_cast<char>(toupper(static_cast<unsigned char>(*p)));
+    title[w] = '\0';
     s.ed        = LineEditor();
     s.formKind  = FormKind::Config;
     s.st        = SState::Form;
     s.lastInput = now;
     Form::onChange = cfgChanged;          // the Timezone and its string, kept together
-    s.form.begin(g_cfgPage->title, s.fields, n, s.term, s.tl, focus);
+    s.form.begin(title, s.fields, n, s.term, s.tl, focus);
 }
 
 // ---------------------------------------------------------------------------
@@ -1668,6 +2047,9 @@ void Bbs::configOpenPage(Session& s, uint8_t focus, uint32_t now) {
 // A password left showing its mask is left alone; an empty one clears it.
 // ---------------------------------------------------------------------------
 bool Bbs::configSave(Session& s, char* err, size_t errLen) {
+    // Is this the Y to "Save anyway?" (see the warn levels below)? Taken
+    // first, so the answer is spent whatever this save then finds.
+    const bool confirmed = s.form.takeConfirmed();
     if (!g_cfgPage) { snprintf(err, errLen, "nothing to save"); return false; }
     syscfg::KeyVal pairs[Form::kMaxFields];
     uint8_t from[Form::kMaxFields];                 // which field each pair came from
@@ -1815,13 +2197,55 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
         for (uint8_t k = 0; k < i; ++k) {
             if (g_cfgPage->fields[k].kind != CK_PIN || !intOnly(g_cfgBuf[k], true)) continue;
             if (strtol(g_cfgBuf[k], nullptr, 10) != pin) continue;
-            // "the drive pin" for "Drive pin", and "the CS pin" left alone
-            char name[12], msg[48];
-            snprintf(name, sizeof(name), "%s", g_cfgPage->fields[k].label);
+            // "the drive pin" for "Drive pin", and "the CS pin" left alone;
+            // at 80 the row's long label, "the drive light GPIO".
+            const CfgField& other = g_cfgPage->fields[k];
+            char name[24], msg[64];
+            snprintf(name, sizeof(name), "%s", Form::pick(s.term, other.label, other.wide));
             if (name[0] && name[1] >= 'a' && name[1] <= 'z')
                 name[0] = static_cast<char>(tolower(static_cast<unsigned char>(name[0])));
             snprintf(msg, sizeof(msg), "That is the %s. Pick another.", name);
             s.form.fail(i, msg, s.term, s.tl);
+            return false;
+        }
+    }
+
+    // Nor a pin something else on the board holds (1.1.0): BOOT, the console,
+    // a core pin on another page, or any switched-on plugin's (pinTaken). Only
+    // for a pin being given out: a row whose number changed, or every pin on a
+    // plugin page that switches the plugin on, which is when it takes them.
+    // A page whose plugin is off, or is being switched off, gives out nothing.
+    bool live = core, switchedOn = false;
+    if (!core) {
+        const uint8_t here = cfgSectionPlugin(g_cfgSection);
+        live = here != 0xFF && plugins::enabled(here);
+        for (uint8_t i = 0; i < count; ++i) {
+            if (strcmp(g_cfgPage->fields[i].key, "enabled")) continue;
+            live       = yesWord(g_cfgBuf[i]);
+            switchedOn = live && bbsu::hash(g_cfgBuf[i]) != g_cfgWas[i];
+        }
+    }
+    for (uint8_t i = 0; live && i < count; ++i) {
+        const CfgField& f = g_cfgPage->fields[i];
+        if (f.kind != CK_PIN || !intOnly(g_cfgBuf[i], true)) continue;
+        if (bbsu::hash(g_cfgBuf[i]) == g_cfgWas[i] && !switchedOn) continue;
+        long pin = strtol(g_cfgBuf[i], nullptr, 10);
+        if (pin < 0) continue;                                       // off holds nothing
+        char msg[80];
+        if (pinTaken(s.term, f, pin, msg, sizeof(msg))) {
+            s.form.fail(i, msg, s.term, s.tl);
+            return false;
+        }
+    }
+    // A value the row takes but wants said twice (PluginSetting::warnAbove,
+    // 1.1.0): the lights' brightness past 30, where ten pixels draw more than
+    // USB supplies. Asked once for the page, after every other check, so a
+    // Y is never followed by a refusal it could have been told about first.
+    if (!core && !confirmed) {
+        char q[kWarnQ];
+        uint8_t row = 0;
+        if (cfgWarnQuestion(s.term, q, sizeof(q), &row)) {
+            s.form.ask(row, q, s.term, s.tl);
             return false;
         }
     }
@@ -1986,7 +2410,7 @@ void Bbs::configSubOpen(Session& s, uint8_t field, uint32_t now) {
         }
         uint8_t cap = p.cap < sizeof(g_subBuf[0]) - 1 ? p.cap
                                                       : static_cast<uint8_t>(sizeof(g_subBuf[0]) - 1);
-        addField(s, n, p.label, g_subBuf[i], cap, flags, choices);
+        addField(s, n, Form::pick(s.term, p.label, p.wide), g_subBuf[i], cap, flags, choices);
     }
 
     char title[40];
@@ -2085,6 +2509,20 @@ void Bbs::configSubBack(Session& s, Color c, const char* msg, uint32_t now) {
             cfgSectionPlugin(g_cfgSection) != 0xFF)
             cfgPluginValue(g_cfgSection + 7, f.key, buf, sizeof(g_cfgBuf[0]));
         g_cfgWas[field] = bbsu::hash(buf);
+    }
+    // A plugin page whose rows follow what is set (a PS_GROW group shown in
+    // place, the forums' topics) is laid out again (1.1.0), so a topic just
+    // filled in brings the next empty row with it and the one that fills the
+    // page turns the rows into a button. Only while nothing else on the page
+    // is unsaved: this reads the page from the file again, and would throw
+    // away an edit made on it before the button was pressed.
+    const uint8_t pi = cfgSectionPlugin(g_cfgSection);
+    const Plugin* pl = plugins::at(pi);
+    if (pi != 0xFF && !g_listKey[0] && hasGroup(pl) && !pageEdited()) {
+        cfgPluginPage(pi, nullptr);
+        g_cfgPage = &g_cfgPluginPage;
+        cfgLoadPlugin(pl->info.name);
+        field = rowOf(pl, g_subKey);
     }
     // Plain ASCII has no cursor to put back on the button, so the page is
     // asked again from the row after it: re-asking the row just dealt with

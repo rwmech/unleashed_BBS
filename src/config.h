@@ -55,7 +55,7 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "1.1.0-dev.11"
+#define BBS_VERSION         "1.1.0-dev.12"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // BBS_VERSION_SHOWN: the version as every place a person reads one shows it
@@ -127,8 +127,13 @@
 // Session sizing (fixed, preallocated at boot, no heap after boot)
 // ---------------------------------------------------------------------------
 #define BBS_TL_BYTES        3072     // per-session timed output buffer (a PETSCII form redraw is ~1.2 KB)
-#define BBS_RX_ROOM         1700     // a key is handled only with this much output room free
-                                     // (a full form or user-list redraw is ~1.4 KB)
+#define BBS_RX_ROOM         2600     // a key is handled only with this much output room free
+                                     // (the largest full redraw a key can cause: a 16 row
+                                     // form at 80 columns on ANSI, measured at 2,476 bytes
+                                     // for CONFIG announce, 1.1.0; it was 1,676 at 40 and
+                                     // this was 1,700. A redraw bigger than the room
+                                     // left drops its tail: the status line and the
+                                     // "Saved and live" after a sub-page save went first)
 #define BBS_TL_FRAMES       96       // per-session timed output frames
 #define BBS_RX_CHUNK        64       // bytes read per select pass
 #define BBS_LINE_MAX        72       // line editor capacity
@@ -204,7 +209,7 @@
 // to do in the same build as a partition move. Raising this later costs no
 // erase and no reflash: the space is already allocated.
 #define BBS_MAX_USERS       250      // system.cfg max_users; see above
-#define BBS_PROFILE_MAX     148      // 4 rows of 37 columns on a C64
+#define BBS_PROFILE_MAX     148      // 4 x 37 at 40 columns, 2 x 74 at 80
 #define BBS_PASS_MIN        4
 #define BBS_PASS_MAX        32
 #define BBS_PASS_ROUNDS     1000     // salted SHA-256 repeated

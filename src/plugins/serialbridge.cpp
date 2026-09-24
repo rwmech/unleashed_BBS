@@ -344,6 +344,39 @@ void setLine(Bbs& b, Session& s, const char* arg) {
     b.prompt(s);
 }
 
+// ---------------------------------------------------------------------------
+// CONFIG (1.1.0). The bridge declared nothing, so its page showed the file's
+// raw keys and had no pin rows at all on a board whose file never named them
+// (Rob: "config serial needs pin assignments"). PS_PIN, so CONFIG refuses the
+// flash pins, a pin the chip does not have and a pin something else holds:
+// the console's 1 and 3 among them, which badPin refuses here too. RX may be
+// 34 to 39, which can only listen; TX may not. Baud is a cycle because a
+// PS_NUM tops out at 65535 and the common speed is 115200. SERIAL SET still
+// changes the line only until the plugin next starts.
+// ---------------------------------------------------------------------------
+constexpr char kBauds[]   = "300|1200|2400|4800|9600|19200|38400|57600|115200";
+constexpr char kFormats[] = "8N1|7E1|8E1|7O1|8N2";
+
+const PluginSetting kSettings[] = {
+    { "rx",     "RX pin", PS_PIN,   0, BBS_GPIO_MAX, 2, "The device's TX goes here.", nullptr, "RX GPIO",
+      "The device's TX goes here. An input-only pin is fine: RX only listens." },
+    { "tx",     "TX pin", PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, "The device's RX goes here.", nullptr, "TX GPIO",
+      "The device's RX goes here. Not an input-only pin (34 to 39 on the ESP32)." },
+    { "baud",   "Baud",   PS_CYCLE, 0, 0,  6, nullptr, kBauds,   "Baud rate" },
+    { "format", "Format", PS_CYCLE, 0, 0,  3, "Data bits, parity, stop bits.", kFormats,
+      "Bits, parity, stop" },
+};
+
+// setting: the running values, so a fresh board's page shows 16, 17, 115200
+// and 8N1 rather than four blanks.
+void setting(const char* key, char* out, size_t n) {
+    if      (!strcmp(key, "rx"))     snprintf(out, n, "%d", g_rx);
+    else if (!strcmp(key, "tx"))     snprintf(out, n, "%d", g_tx);
+    else if (!strcmp(key, "baud"))   snprintf(out, n, "%u", static_cast<unsigned>(g_baud));
+    else if (!strcmp(key, "format")) snprintf(out, n, "%u%c%u", g_bits, g_parity, g_stop);
+    else out[0] = '\0';
+}
+
 const Command kCommands[] = {
     { "SERIAL", "", 0, CF_READ, "SERIAL", "watch the serial device",
       [](Bbs& b, Session& s, const char* a, uint32_t) {
@@ -379,9 +412,9 @@ extern const Plugin kSerialPlugin = {
     nullptr,                 // status
     kCommands,
     sizeof(kCommands) / sizeof(kCommands[0]),
-    nullptr,                 // settings: nothing of its own in CONFIG yet
-    0,
-    nullptr,                 // setting
+    kSettings,               // settings: pins, speed and format (1.1.0)
+    sizeof(kSettings) / sizeof(kSettings[0]),
+    setting,
     nullptr,                 // rows: no paged list of its own
     nullptr,                 // onPresence
     nullptr,                 // onBytes

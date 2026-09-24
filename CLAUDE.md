@@ -19,9 +19,18 @@ Read README.md for layout and build, COMMANDS.md for every command and setting, 
 
 µnleashed BBS (ASCII: `unleashed`; repo github.com/rwmech/unleashed_BBS, public from 1.0.0) is a telnet BBS framework hosted on an ESP32 that grows into an "IoT terminal server". The name is about electronic freedom: real hardware reachable without a web browser. Don't brand it to the ESP32, and remember that UCBBS/µCBBS clashes with the 1990 C64 program Ultra-Com BBS. A C64 dials in through TeensyROM (Swiftlink/Ethernet emulation at $DE00). PC callers use SyncTERM, PuTTY or telnet. The core is minimal; everything else bolts on as plugins.
 
-Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up client-side (Zimodem, Meatloaf). No native Home Assistant client exists for the C64 (HomeTo64 needs an Ultimate 64 REST API). This is open ground.
+Prior art check (done, corrected 2026-09-24): no BBS software ran on an ESP32 that we found, but espbbs (github.com/snazzware/espbbs) runs a small telnet BBS on an ESP8266, about four callers. So never claim "the only BBS on a microcontroller"; the site's /different page says so openly and names it. ESP32 only shows up client-side (Zimodem, Meatloaf). No native Home Assistant client exists for the C64 (HomeTo64 needs an Ultimate 64 REST API). This is open ground.
 
 ## Settled decisions
+
+- **Rule no. 1: the online experience without lag is paramount** (Rob,
+  2026-09-24). Nothing a feature does may stall the callers who are not
+  using it. Slow work (a JPEG encode, a card scan, a restore, a network
+  call) runs outside the cooperative BBS loop or in slices small enough to
+  vanish, and a feature that makes somebody wait shows them it is working
+  (the fx spinner) rather than freezing the board. Every feature that can
+  take time is measured against SYS's loop worst and slow-pass count before
+  it ships; a regression there is a blocker, not a note.
 
 - PlatformIO on ESP-IDF 5.3.1, pinned `espressif32@6.9.0`. ESPHome dropped. The Espressif VS Code extension is disabled for this workspace (it fights PlatformIO).
 - Reference target: bare ESP32-WROOM-32E, Bluetooth off (520 KB SRAM, ~180 KB usable DRAM, 4 MB flash, no PSRAM). The core is sized for it; plugins declare their own needs.
@@ -88,7 +97,7 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
 - Input effects (0.7.0): the handle, password and command editors use `F_STAY` (Enter does not move to a new line). A rejected handle or unknown command rubs out, flashes the reason in place (`inputError`, short text on 40 columns) and re-arms on the same line; known commands print their own newline first. Passwords: spinner, rub out the stars, `ACCESS GRANTED` in place; denied flashes and clears for a retry on the line. Masked input shows at most 24 stars so it never wraps on a C64. Pages and broadcasts: bell, flashing tag, rub out, message. Lists and MEM/TERM/TIME open with `rowTitle` (reverse bar on ANSI/PETSCII, dashed on ASCII) and lists close with a rule.
 - Staff rank on accounts (0.8.0, Rob): entering a staff password marks the caller's account (`users.txt` `level = user|co2|co1|sysop`, `markAccount()`), which drives the DDial-style marker between node number and handle in WHO, NODES, LAST (CallRec rank flags), DASH and the user manager, with a `*GUEST  >CO-SYSOP  ]SYSOP` key under each list. Staff may only manage accounts at their own rank or below (`mayManage`), and the form's `Level` field (new `FF_CYCLE` field type) offers their rank and below, so nobody self-promotes. Staff also see hidden and lurking sessions (marked `hidden` / `lurking` in the Doing column); the old masking of senior staff in NODES is gone.
 - Staff Doing column (0.7.0): `Session::doing` holds the verb of the last dispatched command (never arguments, never BYE, never unknown input, so a mistyped password can't show). WHO shows it instead of Terminal for staff with `NODES`; DASH always. Plugins can set it later for doors.
-- Input backpressure: a session's socket is only read, and held keys only fed, while its timeline has `BBS_RX_ROOM` (1,700 bytes) free. Form redraws (~1.2 KB on PETSCII) overflowed the old 2 KB timeline when keys were typed ahead; `BBS_TL_BYTES` is now 3 KB.
+- Input backpressure: a session's socket is only read, and held keys only fed, while its timeline has `BBS_RX_ROOM` free: 1,700 bytes until 1.1.0-dev.12, 2,600 since, because a 16-row form at 80 on ANSI measures 2,476. Form redraws (~1.2 KB on PETSCII) overflowed the old 2 KB timeline when keys were typed ahead; `BBS_TL_BYTES` is now 3 KB.
 - Workflow: commit and push after every flashed build. COMMANDS.md, README.md, CHANGELOG.md and this file are updated in the same change. CLIENTS.md holds the full list of machines that can call in and README.md carries the short version of the same list: change one, change the other. Code review at phase checkpoints; a robustness/pen test of the live board before any internet exposure (tabled for now).
 
 ## What things are called (settled 2026-09-22, stop relitigating)
@@ -584,6 +593,44 @@ this tree.
   by the board's timezone; blank means none) alongside the switch. Needs a
   valid clock: with no NTP time the hours do nothing and only the switch
   applies.
+- **Forms at 80 columns are in (1.1.0-dev.12)**, merged from forms-1.1.0.
+  Geometry is worked out from the width on every draw and stored nowhere
+  (a terminal resized across 80 mid-form draws wrong until the next full
+  draw). New setting mechanics worth knowing: `PS_GROW` (a group of rows
+  that grows with what is set, used by forums' topics), `warnAbove`/`warn`/
+  `warnShort` on PluginSetting (a question before saving past a threshold,
+  asking in terms of what can go wrong: Rob rejected "Save anyway?"), the
+  generic pin-holder check across every switched-on plugin's PS_PIN rows,
+  and `kSettingMax` 120 for CONFIG values. Static DRAM +552.
+- **A board benchmark, once all three board types run** (Rob, 2026-09-24).
+  The site shows Fast / Faster / Fastest per board as *expected* (site
+  1.2.5) until measured. Then `tools/benchmark.py`: N callers on the LAN
+  doing ordinary things for five minutes, keypress echo latency p50/p95,
+  and the board's own SYS figures (loop avg/worst, slow passes, heap free
+  and low), run the same way on the WROOM, the Freenove and the S3 on the
+  bench, never on UHQ or TRA without Rob's say-so. Results go on /hardware,
+  dated and stamped with the firmware version, and set the tiers for real.
+- **Long term: push photos out to social media** (Rob, 2026-09-24, "a future
+  long term possibility"). Every snapshot, or a chosen few, sent onward so
+  a board can post to Bluesky, Mastodon, X or Discord, advertising the
+  board ("New snapshot from <board>, telnet <host> <port>"). Those services
+  all need HTTPS and usually OAuth, and TLS is ~40 KB of heap a WROOM
+  cannot spare, so the shape that works on every board is a webhook: the
+  board POSTs the JPEG and a caption over plain HTTP to a sysop-set URL on
+  their own network, and a relay there (n8n, Node-RED, Home Assistant, a
+  small script) holds the social credentials and posts it. The board never
+  holds a social password. Opt-in, rate-limited, Rule no. 1 applies. A
+  direct HTTPS path on PSRAM boards is a later option, not the first one.
+  **Rob's generalisation: routing middleware for BBSes.** Not a one-off
+  webhook but a separate program, its own repo like the directory (and
+  runnable by anyone), that boards send events to over plain HTTP: photos,
+  new forum posts, missed sysop pages, call counts. It routes each by rules
+  to its destination (social networks, Discord, email, RSS, a phone push)
+  and holds every outside credential, so the board speaks one small
+  protocol and never TLS or OAuth. It is also the natural carrier for the
+  board linking and "federation" already on the roadmap (FidoNet's idea,
+  modern): board-to-board messages are just another route. Design it with
+  those in mind when it starts, one protocol rather than three.
 - **Missed sysop pages go to one account** (Rob, 2026-09-24, approved).
   Not to every account ever marked sysop: marks are never removed, and
   each copy takes one of the 64 board-wide mail slots. CONFIG board gains
@@ -2638,6 +2685,15 @@ specifies the layout before any of it is written**, and the wide-terminal
   available to screens and the S3 panel. Measure each driver's flash before
   promising it on the WROOM, and prefer our own small driver over a library
   whose licence or size does not fit.
+  **Triggers, with the camera first** (Rob, 2026-09-24): a point can act,
+  not only be read. The first action is "take a snapshot": a PIR (or any
+  input point) seeing motion takes a system snapshot into Photos, named as
+  a system snap like the timelapse (`motion/MO-<date>-<time>.JPG`, its own
+  folder, max files and days), with a hold-off setting so one visitor is
+  not fifty photos. Wildlife and outdoor boards are the use case. Build it
+  on a small trigger table in the GPIO plugin (point, edge, action, hold-off)
+  that other actions can join later, not as a camera special case; the
+  camera plugin exposes "snap now, as the system" for it.
 - OTA updates, and browser flashing with ESP Web Tools.
 - **Watchdog.** Keep. The ESP32's task watchdog reboots the chip if the BBS loop ever wedges, instead of leaving a board that looks alive and answers nothing until somebody notices and pulls the plug. The machinery to explain it afterwards already exists: `reboots.log` records why the board started and the next staff member to log in is told. The cheapest of the three and the most valuable for a board left running unattended.
 - **Maintenance window, not maintenance mode** (Rob, and a better design than what it replaces). Maintenance mode was a board feature for a problem the board does not have: if a sysop is working on it, it is off. The actual pain is that the directory forgets a board while it is down. So the board declares a window before the sysop pulls the plug, and the directory keeps the listing up and marked through it rather than letting it go quiet, until heartbeats come back on their own.

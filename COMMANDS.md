@@ -108,7 +108,7 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | `ABOUT` | | What this BBS is, its version and its license. Plays `screens/about.*`, so a sysop can rewrite it. |
 | `CHAT` | | Join the chat room (the `chat` plugin). Everything you type goes to everyone in the room, tagged DDial style: `#2:Daytona) hi`. The bracket is the rank: `)` a caller, `*` a guest, `>` a co-sysop, `]` the sysop. There is no prompt character: the cursor waits at the start of the line. While you are typing, nothing from the room lands on your screen; the lines wait and print in order when you press Enter. The room buffers 48 lines, and one caller may send 80 lines a minute (`rate =`), with 8 in a burst; going over tells that caller alone, and the room never sees it. `/s` lists who is there, `/?` lists every room command, `/q` or ESC leaves, and `/q+` leaves and logs off. Private lines, away notes, squelch, kicks, the vote to kick and messages are all in [CHAT.md](CHAT.md). |
 | `SERIAL` | | Watch the serial device (the `serial` plugin). `T` takes the keyboard if you are allowed and it is free, ESC leaves. `SERIAL STATUS` prints the port, `SERIAL SET 9600 8N1` changes the line. |
-| `WHOIS [handle]` | | An account: name, member since, last call, calls, profile. Email, address and phone only on your own account (or with `USERS`). |
+| `WHOIS [handle]` | | An account: name, member since, last call, calls, profile. Email, address and phone only on your own account (or with `USERS`). Laid out like the forms: 9 column labels under a 39 column rule at 40 columns, the longer labels under a 79 column rule at 80 (1.1.0). |
 | `PRIVACY` | | What the board knows about you: that telnet is not encrypted, how your password is stored, what the sysop can see, and the one rule that matters. Plays `screens/privacy.*`, so a sysop can rewrite it. The same screen is offered during sign-up. |
 | `PROFILE` | | Form to change your name, email, From, phone and profile. Not for guests. |
 | `PASSWORD` | | Form: current password, then the new one twice. Not for guests. |
@@ -276,7 +276,7 @@ All caller commands still work. Node arguments are `1`-`10`, `S` (sysop node) or
 | `SCREENS VIEW name[.ext] [FLASH]` | any staff | Plays one screen. With no extension, the one your terminal would get; with one, exactly that file, if your terminal can show it (`.asc` anywhere, `.ans` on ANSI, `.seq` on PETSCII; otherwise it says which kind the file is and which your terminal is). `FLASH` plays the stock copy even where the card overrides it. A name is a screen's name only: no paths. |
 | `USERS` | `USERS` | User manager: cursor list of accounts with edit, add and retire (ANSI, PETSCII; `D` retires, as `USER DEL` does). A paged list on plain ASCII. |
 | `USER ADD` | `USERS` | Add-account form: handle, password, fields, Level, Locked. |
-| `USER EDIT handle` | `USERS` | Edit-account form. Empty `New pass` keeps the password. Renames follow callers who are online. |
+| `USER EDIT handle` | `USERS` | Edit-account form. Empty `New pass` (`New password` at 80 columns) keeps the password. Renames follow callers who are online. |
 | `USER DEL handle` | `USERS` | **Retires** the account after `Retire handle? (y/N)`. They cannot log in and the handle stays reserved for ever, so nothing they left behind is orphaned and nobody else can register that name. Not your own account. |
 | `DROP` | any staff | Co-sysop: give up staff access. Sysop: leave the sysop node for a free caller node. Time limits apply again from now. |
 
@@ -380,13 +380,48 @@ their first letter rather than spelled out. Save or ESC comes back to the
 page the button was on. The file still keeps the bar-separated form, so a
 `system.cfg` edited by hand on a laptop reads and parses exactly as before.
 On a plain ASCII terminal, which has no cursor to put a button under, the row
-becomes `Area 1 [C64 Downloads] open (y/N)?` instead.
+becomes `File area 1 [C64 Downloads] open (y/N)?` instead.
+
+Every page has two layouts (1.1.0), chosen by the width of the terminal. Under
+80 columns, and when the width is unknown, it is the 40 column card that fits
+a C64, with nine column labels (`Board LED`, `Guest min`). At 80 columns and
+wider the labels say more (`Onboard LED GPIO`, `Guest call minutes`), the box
+is 56 columns so a long value such as announce's Directory URLs shows whole,
+and some rows carry a longer note on the status line. Plain ASCII is 80
+columns, so its prompts use the long labels. The page list is the same single
+column at every width.
 
 A plugin with more settings than one page holds has a button to a page of
 them: `CONFIG lights` has Pixels, a list of sixteen pixels, each a button to
-its own two-row page, and `CONFIG panel` has Pins. Escape on the list comes back to the plugin's page. The
-list takes the page's place, so it will not open over changes you have not
-saved: F1 first.
+its own two-row page, `CONFIG panel` has Pins, and `CONFIG chat` has Colours,
+the eleven colours of a room line. Escape on the list comes back to the
+plugin's page. The list takes the page's place, so it will not open over
+changes you have not saved: F1 first.
+Such a group is shown in place while it fits (1.1.0): `CONFIG forums` shows
+the topics that are set and one empty row to add the next, so the page grows
+a row at a time, and once that would pass the twelve rows a page has, the
+topics become one button, Topics, to a page of all sixteen.
+
+A pin (`PS_PIN` on a plugin's page, the LED and the backup button on the
+core's) is refused when something else on the board already holds it (1.1.0):
+GPIO 0, which is BOOT (the backup button alone may be BOOT, since it usually
+is); the console's pins, 1 and 3 on the WROOM; the other core pin; and every
+pin of every plugin that is switched on, the SD card's four, the serial
+bridge's two and the lights' two among them. `sd` is on as shipped, card or
+no card, because it tries the card on those pins at every start: on a board
+with nothing wired to them, `enabled = no` on `CONFIG sd` frees them. The
+refusal names the holder,
+`Taken: sd, CLK pin` at 40 columns and
+`GPIO 18 is taken: CONFIG sd, Clock GPIO. Pick another.` at 80. A plugin that
+is off holds nothing, and a page that switches its plugin on is checked for
+every pin it has, since that is when it takes them.
+
+`CONFIG serial` (1.1.0) has the bridge's pins, speed and format: RX, TX, a
+baud rate from 300 to 115200 and a format of `8N1`, `7E1`, `8E1`, `7O1` or
+`8N2`. A fresh board shows what the bridge runs with: 16, 17, 115200, 8N1.
+On the ESP32, TX cannot be 34 to 39, which can only listen. `CONFIG chat`
+has the room's name, its line rate and history, its mail limits and the
+Colours page.
 
 A field that steps through words (a level, yes or no, an effect) takes the
 word's first letter, and the same letter again steps to the next word that
@@ -449,7 +484,7 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `backup_button_gpio` | `0` | button pin, active low (BOOT on dev boards), -1 = no window. Refused: 6 to 11 (flash) and pins the chip does not have (20, 24, 28 to 31 on the WROOM) |
 | `who_refresh_min` | `1` | lowest `WHO n` / `DASH n` refresh, seconds |
 | `who_refresh_max` | `30` | highest `WHO n` / `DASH n` refresh, seconds |
-| `activity_led_gpio` | `2` | LED that blinks on network traffic (the blue LED on DOIT-style boards), -1 = none. Refused: 6 to 11 (flash) and pins the chip does not have (20, 24, 28 to 31 on the WROOM) |
+| `activity_led_gpio` | `2` | The board's own LED, which blinks on network traffic (the blue LED on DOIT-style boards), not a pixel; -1 = none. `Onboard LED GPIO` on `CONFIG board`, `Board LED` at 40 columns. Refused: 6 to 11 (flash) and pins the chip does not have (20, 24, 28 to 31 on the WROOM), and on `CONFIG board` a pin something else holds |
 | `self_register` | `yes` | `no`: unknown handles can't sign up, staff add accounts |
 | `max_users` | `250` | account limit, 1..250. Not a space limit: `userdata` holds roughly 1,380 accounts. The cap is that the list indices are `uint8_t`, which reaches into every list on the board, so raising it is its own piece of work. The SD card does not help and is not meant to: accounts stay on internal flash so they survive the card failing. |
 | `guest` | `yes` | `no`: unknown handles are not offered `[G]uest` |
@@ -732,9 +767,14 @@ strip_order  = GRB      ; GRB | RGB | BRG | RBG | GBR | BGR
 - **Drive %** and **Strip %**: brightness, as a percentage of full, 1 to
   100, each output its own, 10 as shipped (1.1.0; it was capped at 30). Past
   30 is allowed and is your call, and CONFIG asks you to confirm first,
-  because of what it draws: see Power, below. A number past 100 written into
-  `system.cfg` is read as 100. A dim colour never goes out at a low
-  percentage: a lit channel stays at least 1.
+  because of what it draws (see Power, below): one question for the page
+  naming the rows, `Strip %>30: brownout risk. Keep? (y/N)` on a 40
+  column screen and `Strip % over 30 may brown out the board without a 5 V
+  supply. Keep it? (y/N)` at 80 (the drive light says it runs the pixel
+  hot). Only Y saves; anything else leaves the
+  page open with nothing saved. Plain ASCII asks the same, then asks the row
+  again. A number past 100 written into `system.cfg` is read as 100. A dim
+  colour never goes out at a low percentage: a lit channel stays at least 1.
 - **Drive ord** and **Strip ord**: the order each output's bytes go out in
   (1.1.0). `GRB` as shipped, the WS2812B's own; some strips sold as WS2812
   want `RGB` or `BRG`, and the Waveshare S3's onboard pixel ships as `RGB`.
@@ -747,9 +787,9 @@ strip_order  = GRB      ; GRB | RGB | BRG | RBG | GBR | BGR
   to 31 on the WROOM; 22 to 25 on an S3), and the two cannot be the same
   pin. A change applies when the plugin restarts, which saving
   the page does. GPIO13 is a good pin for either: it has no job at boot.
-  Nothing yet stops a lights pin taking one the board already uses, so
-  keep clear of the activity LED's (2 as shipped), the BOOT button (0) and
-  the SD card's four: a pixel there takes the pin from them.
+  CONFIG also refuses a pin the board already uses (1.1.0): the activity
+  LED's (2 as shipped), the BOOT button (0), the console's, and any other
+  switched-on plugin's, the SD card's four among them; see CONFIG above.
 - `LIGHTS` (sysop) shows each output, its setting and the colours it was
   last sent, in hex, with the Hayes panel's labels in `hayes`. `LIGHTS TEST`
   shows red, green, blue and then white on every pixel of both, a second

@@ -182,10 +182,13 @@ enum UserFieldFlag : uint8_t {
 
 struct UserField {
     const char* key;      // key in users.txt
-    const char* label;    // form label, 9 characters max
+    const char* label;    // form label, 9 characters max (the 40 column form)
     uint16_t    offset;   // offsetof(UserRec, field)
     uint8_t     size;     // buffer size including the terminator
     uint8_t     flags;    // UserFieldFlag
+    // The label at 80 columns, 20 characters, or null for the short one
+    // padded (1.1.0). Appended, so a row without one says nothing about it.
+    const char* wide = nullptr;
 };
 
 // Editable text fields after the handle, in form order

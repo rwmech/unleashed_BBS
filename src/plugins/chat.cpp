@@ -3180,6 +3180,88 @@ bool converse(Session& s, uint8_t withNode, const char* say) {
 }
 } // namespace chat
 
+namespace {
+
+// ---------------------------------------------------------------------------
+// CONFIG (1.1.0). The room declared nothing, so its page was built from the
+// file's keys: labels were the keys cut at nine ("color_han"), and only the
+// first twelve lines of the section reached the page, so with
+// system.cfg.example's fourteen, color_room and color_private could not be
+// set from the board at all. Declared, every setting is on the page with its
+// running value whether or not the file has a line for it.
+//
+// The eleven colours are a page of their own (PS_PAGE "color", holding every
+// color_ key): six room settings, four core rows and eleven colours are more
+// than one form holds. Each is a cycle over the C64 names colorByName reads,
+// the one spelling of each that colorName writes back.
+// ---------------------------------------------------------------------------
+constexpr char kColourPick[] =
+    "black|white|red|cyan|purple|green|blue|yellow|orange|brown|ltred|darkgrey|grey|ltgreen|ltblue|ltgrey";
+
+const PluginSetting kSettings[] = {
+    { "room",       "Room",      PS_TEXT, 0, 0, 19, nullptr, nullptr, "Room name" },
+    { "rate",       "Rate/min",  PS_NUM,  6, 600, 3, "Lines a minute one caller may send.", nullptr,
+      "Lines a minute, each" },
+    { "history",    "History",   PS_NUM,  kHistMin, kHistCeil, 4, "Lines the room remembers.", nullptr,
+      "Lines remembered" },
+    { "mail_slots", "Mail slot", PS_NUM,  0, kMailSlots, 2, "Messages held at once; 0 is no mail.", nullptr,
+      "Mail slots, board" },
+    { "mail_chars", "Mail chrs", PS_NUM,  16, kMailChars, 3, "The longest a message may be.", nullptr,
+      "Mail message chars" },
+    { "mail_days",  "Mail days", PS_NUM,  1, 365, 3, "How long a message waits for them.", nullptr,
+      "Mail kept, days" },
+    { "color",      "Colours",   PS_PAGE, 0, 0, 0, "Each part of a room line.", nullptr, "Room colours" },
+    { "color_node",    "Node",    PS_CYCLE, 0, 0, 8, "The #2 in #2:Daytona) hi",
+      kColourPick, "Node number" },
+    { "color_punct",   "Punct",   PS_CYCLE, 0, 0, 8, "The : and the rank bracket.",
+      kColourPick, "Colon and bracket" },
+    { "color_handle",  "Handle",  PS_CYCLE, 0, 0, 8, "The handle.", kColourPick },
+    { "color_text",    "Text",    PS_CYCLE, 0, 0, 8, "What was said.", kColourPick, "What was said" },
+    { "color_old",     "History", PS_CYCLE, 0, 0, 8, "History shown on the way in.",
+      kColourPick, "History on joining" },
+    { "color_notice",  "Notices", PS_CYCLE, 0, 0, 8, "*** joined, left, votes, kicks.",
+      kColourPick, "Notices (***)" },
+    { "color_room",    "Room",    PS_CYCLE, 0, 0, 8, "The banner and /s.",
+      kColourPick, "Room banner and /s" },
+    { "color_marker",  "Marker",  PS_CYCLE, 0, 0, 8, "The --> on a line from the board.",
+      kColourPick, "The board's marker" },
+    { "color_private", "Private", PS_CYCLE, 0, 0, 8, "A line meant for one caller.",
+      kColourPick, "Private lines" },
+    { "color_pmark",   "P mark",  PS_CYCLE, 0, 0, 8, "The P in front of a private line.",
+      kColourPick, "Private P marker" },
+    { "color_action",  "Actions", PS_CYCLE, 0, 0, 8, "An action line, whole.",
+      kColourPick, "Action lines" },
+};
+
+// Each colour key and the colour it sets, for setting() below. The same
+// eleven readKey reads; a key in one and not the other shows blank here.
+struct ColourKey { const char* key; const Color* c; };
+const ColourKey kColourKeys[] = {
+    { "color_node", &g_cNode },     { "color_punct", &g_cPunct },     { "color_handle", &g_cHandle },
+    { "color_text", &g_cText },     { "color_old", &g_cOld },         { "color_notice", &g_cNotice },
+    { "color_room", &g_cRoom },     { "color_marker", &g_cMark },     { "color_private", &g_cPriv },
+    { "color_pmark", &g_cPmark },   { "color_action", &g_cAction },
+};
+
+// setting: what the room is running with, for a key the file has no line
+// for, so a fresh board's page shows Main, 80, 48 and its colours.
+void setting(const char* key, char* out, size_t n) {
+    out[0] = '\0';
+    if      (!strcmp(key, "room"))       snprintf(out, n, "%s", g_room);
+    else if (!strcmp(key, "rate"))       snprintf(out, n, "%u", static_cast<unsigned>(g_rate));
+    else if (!strcmp(key, "history"))    snprintf(out, n, "%u", static_cast<unsigned>(g_histMax));
+    else if (!strcmp(key, "mail_slots")) snprintf(out, n, "%u", static_cast<unsigned>(g_mailSlots));
+    else if (!strcmp(key, "mail_chars")) snprintf(out, n, "%u", static_cast<unsigned>(g_mailChars));
+    else if (!strcmp(key, "mail_days"))  snprintf(out, n, "%u", static_cast<unsigned>(g_mailDays));
+    else if (!strcmp(key, "color"))
+        snprintf(out, n, "%u colours", static_cast<unsigned>(sizeof(kColourKeys) / sizeof(kColourKeys[0])));
+    else
+        for (const ColourKey& ck : kColourKeys)
+            if (!strcmp(key, ck.key)) snprintf(out, n, "%s", colorName(*ck.c));
+}
+
+} // namespace
+
 extern const Plugin kChatPlugin = {
     // on unless switched off, and everyone may talk unless system.cfg says otherwise
     { kName, "Chat room", "1.0", 0, 0, PF_CORE | PF_ON, PlugLevel::All, PlugLevel::All, PlugLevel::Sysop },
@@ -3193,9 +3275,9 @@ extern const Plugin kChatPlugin = {
     nullptr,                 // status
     kCommands,
     sizeof(kCommands) / sizeof(kCommands[0]),
-    nullptr,                 // settings: nothing of its own in CONFIG yet
-    0,
-    nullptr,                 // setting
+    kSettings,               // settings: the room, its mail and its colours (1.1.0)
+    sizeof(kSettings) / sizeof(kSettings[0]),
+    setting,
     nullptr,                 // rows: no paged list of its own
     nullptr,                 // onPresence
     nullptr,                 // onBytes
