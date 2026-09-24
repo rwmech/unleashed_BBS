@@ -187,11 +187,25 @@ def config_num(name, fallback):
 
 
 BBS_VERSION = bbs_version()
-# The S3 profile's own version, read from src/board.h so a board bump does
-# not leave the suite asserting the last one.
-_s3v = re.search(r'#define\s+BBS_BOARD_VERSION\s+"([^"]*)"',
-                 (ROOT / "src" / "board.h").read_text())
-S3_VERSION = _s3v.group(1) if _s3v else "1.0.0"
+# A board profile's tag and version, read from its own block in src/board.h
+# (the way tools/release.py reads them), so a board bump does not leave the
+# suite asserting the last one.
+BOARD_DEFINES = {"s3": "BBS_BOARD_WS_S3LCD147", "fncam": "BBS_BOARD_FN_WROVER_CAM"}
+
+
+def board_profile(name):
+    """(tag, version) of the profile harness.sh --board NAME builds."""
+    define = BOARD_DEFINES[name]
+    text = (ROOT / "src" / "board.h").read_text(encoding="utf-8")
+    m = re.search(r"^#if defined\(" + define + r"\)$(.*?)^#endif\s*//\s*" + define, text, re.S | re.M)
+    body = m.group(1) if m else ""
+    tag = re.search(r'#define\s+BBS_BOARD_TAG\s+"([^"]*)"', body)
+    ver = re.search(r'#define\s+BBS_BOARD_VERSION\s+"([^"]*)"', body)
+    return (tag.group(1) if tag else "?", ver.group(1) if ver else "?")
+
+
+S3_VERSION = board_profile("s3")[1]
+HOST_BOARD = os.environ.get("BBS_HOST_BOARD", "")
 MAX_NODES   = config_num("BBS_MAX_NODES", 6)
 BBS_PORT_NUM = config_num("BBS_PORT", 6400)     # the dial-in port, not this run's
 # The published default sysop password, read from the firmware so the suite
@@ -1408,9 +1422,11 @@ def test_version_shown():
     core version alone, and no trace of a profile. The directory is sent the
     core version; the profile's goes into the system badge."""
     print("The version as it is shown")
-    s3 = os.environ.get("BBS_HOST_BOARD") == "s3"
-    shown = (BBS_VERSION + " (S3 " + S3_VERSION + ")") if s3 else BBS_VERSION
-    tail = ("(S3 " + S3_VERSION + ")").encode()
+    # s3 here means "a board profile's build", whichever profile it is.
+    s3 = HOST_BOARD in BOARD_DEFINES
+    tag, ver = board_profile(HOST_BOARD if s3 else "s3")
+    shown = (BBS_VERSION + " (" + tag + " " + ver + ")") if s3 else BBS_VERSION
+    tail = ("(" + tag + " " + ver + ")").encode()
     if not PASSWORD:
         print("  SKIP  needs the sysop")
         return True
@@ -4389,6 +4405,91 @@ def panel_read(s):
     return plain(s.buf)
 
 
+def test_board_fncam():
+    """The Freenove ESP32-WROVER CAM board profile on the host (1.1.0): its
+    defaults and the pins it owns. SKIPs on the reference board;
+    tools/harness.sh --board fncam --only=board_fncam runs it. Every pin but
+    13, 32 and 33 is the camera's, the card's, the PSRAM's, the console's or
+    a strap, and each is refused by name, where the WROOM's build takes all
+    of them (GPIO 2 is its own LED)."""
+    print("Board profile: Freenove ESP32-WROVER CAM")
+    if HOST_BOARD != "fncam" or not PASSWORD:
+        print("  SKIP  needs tools/harness.sh --board fncam")
+        return True
+    s = cfg_sysop("BoardCam")
+
+    # The lights plugin is off as shipped, as on the WROOM, so LIGHTS is not
+    # a command until a sysop switches it on and gives it a pin.
+    s.buf.clear()
+    s.send(b"lights\r")
+    s.pump(1.0)
+    ok = check("the lights ship off: no NeoPixel is documented on this board",
+               b"Unknown command" in plain(s.buf) and b"Strip " not in s.buf)
+
+    log = (DATA.parent / "host.log").read_text(errors="replace")
+    ok &= check("the serial bridge on 33 and 32, not the PSRAM's 16 and 17",
+                "serial: rx 33 tx 32" in log)
+
+    # The board page's activity LED: each owned pin refused with its reason,
+    # the free ones taken, and -1 put back.
+    want = ((b"2", b"SD card slot"), (b"14", b"SD card slot"), (b"15", b"SD card slot"),
+            (b"18", b"camera's"), (b"36", b"camera's"), (b"21", b"camera's"),
+            (b"16", b"PSRAM"), (b"17", b"PSRAM"), (b"1", b"console"), (b"3", b"console"),
+            (b"12", b"strapping pin"), (b"7", b"flash chip"))
+    before = cfg_line("activity_led_gpio")
+    for pin, why in want:
+        cfg_open(s, b"board", b"Hostname")
+        s.buf.clear()
+        s.send(DOWN * BOARD_LED + b"\x08" * 3 + pin + F1)
+        got = cfg_verdict(s, [why, b"Saved", b"no such pin", b"flash chip", b"PSRAM", b"camera",
+                              b"card slot", b"console", b"strapping"])
+        ok &= check(f"the LED on GPIO {pin.decode()} refused: {why.decode()}", got == why)
+        cfg_cancel(s)
+    ok &= check("and nothing is written", cfg_line("activity_led_gpio") == before)
+
+    for pin in (b"0", b"13", b"32", b"33"):
+        cfg_open(s, b"board", b"Hostname")
+        s.buf.clear()
+        s.send(DOWN * BOARD_LED + b"\x08" * 3 + pin + F1)
+        got = cfg_verdict(s, [b"Saved", b"PSRAM", b"camera", b"card slot", b"console", b"strapping",
+                              b"no such pin"])
+        ok &= check(f"GPIO {pin.decode()} is free for a sysop" +
+                    (" (the BOOT button's, which stays usable)" if pin == b"0" else ""), got == b"Saved")
+        cfg_cancel(s)
+    cfg_open(s, b"board", b"Hostname")
+    s.buf.clear()
+    s.send(DOWN * BOARD_LED + b"\x08" * 3 + b"-1" + F1)
+    got = cfg_verdict(s, [b"Saved", b"Between"])
+    cfg_cancel(s)
+    ok &= check("and the LED goes back to none", got == b"Saved" and
+                (cfg_line("activity_led_gpio") or "").endswith("= -1"))
+
+    # A plugin's pin meets the same rule: the drive light on a camera line.
+    cfg_open(s, b"lights", b"Drive pin")
+    s.buf.clear()
+    s.send(DOWN * 4 + b"\x08" * 3 + b"22" + F1)
+    got = cfg_verdict(s, [b"Saved", b"camera's", b"no such pin", b"flash chip", b"Between"])
+    ok &= check("the drive light on GPIO 22, the camera's PCLK, refused", got == b"camera's")
+    cfg_cancel(s)
+    s.close()
+
+    # A WROOM's system.cfg brought here: its LED on GPIO 2 is this board's
+    # card. That one line is dropped and logged, and the rest of the file is
+    # read, rather than the whole file refused over it (the 1.0.2 rule).
+    port = PORT + 3711
+    proc, tmp = restart_copy((str(port),), edits={("", "activity_led_gpio"): "2",
+                                                  ("", "idle_minutes"): "17"})
+    try:
+        log = copy_log(tmp, f"listening on {port},")
+        ok &= check("a WROOM's LED on GPIO 2 is dropped at boot, by line and reason",
+                    "activity_led_gpio = 2: that pin is the SD card slot on this board, line ignored" in log)
+        ok &= check("and the rest of the file is read: no problem counted, idle 17",
+                    "problem(s)" not in log and "idle 17" in log)
+    finally:
+        stop_copy(proc, tmp)
+    return ok
+
+
 def test_board_s3():
     """The Waveshare ESP32-S3-LCD-1.47 board profile on the host (1.1.0):
     its defaults, the S3's pin rules and the panel. SKIPs on the reference
@@ -4858,7 +4959,10 @@ def start_copy(tmp, extra_args=(), env_extra=None):
     env = {k: v for k, v in os.environ.items() if k != "BBS_SD_DIR"}
     env.update(env_extra or {})
     log = open(tmp / "host.log", "wb")
-    return subprocess.Popen([str(ROOT / "host" / "bbs_host"), str(tmp / "data"), *extra_args],
+    # The same build as the board under test: a profile's copy restarts as
+    # that profile, with its pin rules and defaults.
+    binary = {"s3": "bbs_host_s3", "fncam": "bbs_host_fncam"}.get(HOST_BOARD, "bbs_host")
+    return subprocess.Popen([str(ROOT / "host" / binary), str(tmp / "data"), *extra_args],
                             stdout=log, stderr=subprocess.STDOUT, env=env)
 
 
@@ -10849,6 +10953,7 @@ ORDER_NAMES = [
     "test_lights_count", "test_lights_order", "test_lights_wifi", "test_version_shown",
     # SKIPs on the reference board: tools/harness.sh --board s3 runs it.
     "test_board_s3",
+    "test_board_fncam",
     "test_config_wifi_live", "test_config_network", "test_config_announce_outside",
     "test_config_wifi_fallback", "test_boot_hold",
     "test_boot_hold_write_fails", "test_boot_hold_factory_fails", "test_sysop_spelled_default",

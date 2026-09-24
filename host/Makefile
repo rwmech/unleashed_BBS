@@ -61,6 +61,12 @@ bbs_host: $(SRCS) $(HDRS)
 bbs_host_s3: $(SRCS) $(HDRS)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_WS_S3LCD147 $(LDFLAGS) -o $@ $(SRCS) $(LDLIBS)
 
+# The Freenove ESP32-WROVER CAM profile (1.1.0, src/board.h): its defaults
+# and the pins it owns, which syscfg::pinProblem refuses by name.
+# tools/harness.sh --board fncam runs it with --only=board_fncam.
+bbs_host_fncam: $(SRCS) $(HDRS)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_FN_WROVER_CAM $(LDFLAGS) -o $@ $(SRCS) $(LDLIBS)
+
 # The panel's drawing: glyphs, layout, lamps and the queue of what to send.
 # Pure code with no platform, checked pixel by pixel with no display.
 test_panel: test_panel.cpp ../src/plugins/panel_gfx.h ../src/plugins/panel_font.h
@@ -154,6 +160,6 @@ test: licence test_xmodem test_wrap test_forums_ptr test_compose test_codes test
 	./test_panel
 
 clean:
-	rm -f bbs_host bbs_host_s3 test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel
+	rm -f bbs_host bbs_host_s3 bbs_host_fncam test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel
 
 .PHONY: clean test licence

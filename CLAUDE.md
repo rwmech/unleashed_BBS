@@ -577,6 +577,22 @@ this tree.
   the glass. The mail envelope reads chat's unread index for the first
   `]` account seen after boot until the DASH lane's `Bbs::sysopMail()`
   replaces it at merge (one line in panel.cpp).
+- **The Freenove ESP32-WROVER CAM profile, phase 1** (branch cam-1.1.0,
+  `internal/PLAN-freenove-cam.md`). `BBS_BOARD_FN_WROVER_CAM`, envs
+  `freenove_wrover_cam` and `_release`, shown as `(FNCAM 1.0.0)`.
+  - PSRAM through its own sdkconfig layer, `sdkconfig.defaults.fncam`,
+    named by `SDKCONFIG_DEFAULTS` in `board_build.cmake_extra_args`, because
+    an `sdkconfig.defaults.esp32` would reach the WROOM too. Revision 3
+    minimum (33 KB saved), no memory test, IGNORE_NOTFOUND.
+  - **The pins a profile owns are refused by name**
+    (`BBS_PINS_PSRAM|CONSOLE|CARD|CAMERA|STRAP` in board.h, read by
+    `syscfg::pinProblem`): only 13, 32 and 33 are free on this board.
+  - **No NeoPixel is documented on the FNK0060**: the V3.0 pinout marks
+    IO2, TX, RX and ON, all plain, and the sketches and the C tutorial never
+    mention a WS2812. The lights ship off with no drive pin until the bench
+    says otherwise.
+  - Measured: 1,264,064 flash (308,800 free), static DRAM 162,168 (18,568
+    free). esp32dev unchanged to the byte.
 - **Silent mode, CONFIG board** (Rob, 2026-09-24, queued for the next
   firmware batch): "all LED's are OFF and do not flash ... Silent as in no
   lights anywhere". One board-level yes/no that overrides everything that

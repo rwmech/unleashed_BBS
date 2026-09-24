@@ -309,6 +309,13 @@ bool sdMount(const SdPins& pins, char* err, size_t errLen) {
     if (g_mount) return true;                      // already up, nothing to do
     // Whatever was cached describes a card that is not this one.
     sdInfoStale();
+#ifdef BBS_SD_SDMMC1
+    // A board whose slot is SDMMC has no SPI pins to probe, and every pin
+    // the WROOM's defaults name is somebody else's line there (board.h).
+    // The SDMMC mount is its own path; until it is, nothing is driven.
+    if (pins.cs < 0 || pins.mosi < 0 || pins.clk < 0 || pins.miso < 0)
+        return fail("no card found: this board's SDMMC slot is not supported yet");
+#endif
 
     // The bus is configured with MOSI, MISO and CLK, so a change to any of
     // them needs it rebuilt. CS is a device setting and does not.

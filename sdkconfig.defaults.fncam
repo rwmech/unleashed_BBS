@@ -1,0 +1,65 @@
+# ===========================================================================
+#  unleashed BBS
+#  Electronic freedom on a microcontroller.
+# ===========================================================================
+#
+# File:         sdkconfig.defaults.fncam
+# Module:       Build / ESP-IDF defaults, Freenove ESP32-WROVER CAM layer
+#
+# Purpose:      What the Freenove ESP32-WROVER CAM build changes from
+#               sdkconfig.defaults. Not an sdkconfig.defaults.esp32: that
+#               name would apply to every ESP32 build, the WROOM's included.
+#               platformio.ini names this file for the board's environments
+#               through SDKCONFIG_DEFAULTS (board_build.cmake_extra_args),
+#               which IDF 5.3.1's project.cmake takes in place of the
+#               default list, so sdkconfig.defaults is named first there.
+#
+#               PlatformIO only watches sdkconfig.defaults for changes:
+#               delete sdkconfig.freenove_wrover_cam* after editing here, and
+#               check the generated file. A value outside its Kconfig range
+#               is discarded, not clamped.
+#
+#               Every value is measured or sourced in
+#               internal/PLAN-freenove-cam.md, section 3.
+#
+# Targets:      ESP32-WROVER-E (ESP-IDF 5.3.1)
+# See also:     sdkconfig.defaults, platformio.ini, src/board.h
+#
+# Copyright 2026 - Robert Mech
+# License:      GNU General Public License v3 or later
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 3 of the License, or (at your
+# option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program. If not, see <https://www.gnu.org/licenses/>. The full
+# text is in the LICENSE file at the top of this repository.
+# ===========================================================================
+
+# PSRAM: the WROVER-E's 8 MB, quad, on GPIO 16 and 17, at the default 40 MHz
+# (80 needs the flash at 80 too). Only 4 MB of it is mappable by malloc on
+# the classic ESP32; the rest needs himem, and nothing here wants it.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_USE_MALLOC=y
+# No memory test at boot: the web installer's Improv deadline is measured
+# from the reset it causes (sdkconfig.defaults.esp32s3 has the reasoning).
+CONFIG_SPIRAM_MEMTEST=n
+# Wi-Fi's and lwIP's buffers in PSRAM first, as on the S3.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# This image on a board without PSRAM boots as a plain BBS rather than
+# panicking in a loop. Only possible while BSS stays internal.
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+
+# Revision 3 minimum. Below it the whole image is built with the PSRAM cache
+# workaround, which measured 33 KB of flash. The board read as v3.1, and no
+# WROVER-E carries an older chip; the price is that this image will not boot
+# on a pre-v3 ESP32.
+CONFIG_ESP32_REV_MIN_3=y

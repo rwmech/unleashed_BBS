@@ -15,10 +15,11 @@ Purpose:      Builds a public release: the five flash images the web
               Run by the GitHub Action on a version tag, and by hand to test
               a release before tagging.
 
-              Two families since 1.1.0 (BUILDS below): the ESP32, the
-              reference WROOM-32E, and the ESP32-S3, built for the Waveshare
-              ESP32-S3-LCD-1.47 profile. A board profile is a build, so a
-              second S3 board would be a second row with its own directory.
+              Three builds since 1.1.0 (BUILDS below): the ESP32, the
+              reference WROOM-32E; the ESP32-S3, built for the Waveshare
+              ESP32-S3-LCD-1.47 profile; and the Freenove ESP32-WROVER CAM,
+              a second ESP32 image. A board profile is a build, so another
+              board is another row with its own directory.
 
 Output:       release/<version>/assets/    flat, for a GitHub Release, the
                                            shape deploy/fetch_release.py in
@@ -105,6 +106,14 @@ BUILDS = (
      "board": None},
     {"dir": "esp32s3", "env": "ws_s3_lcd147_release", "family": "ESP32-S3", "boot": 0x0,
      "board": "BBS_BOARD_WS_S3LCD147"},
+    # The Freenove ESP32-WROVER CAM (1.1.0). The same chipFamily as the
+    # WROOM's, so ESP Web Tools cannot tell the two apart by reading the chip:
+    # the site's picker asks which board. Either image on the other board
+    # still boots (internal/PLAN-freenove-cam.md, section 8), but the WROOM's
+    # image here drives its SPI card pins (5, 18, 23) against the camera's
+    # data lines, so the picker must not guess.
+    {"dir": "esp32-fncam", "env": "freenove_wrover_cam_release", "family": "ESP32", "boot": 0x1000,
+     "board": "BBS_BOARD_FN_WROVER_CAM"},
 )
 
 # Offsets the installer writes to, from partitions.csv. Checked here against
@@ -140,8 +149,8 @@ def shown_version(core, board):
     if not board:
         return core
     text = (ROOT / "src" / "board.h").read_text(encoding="utf-8")
-    m = re.search(r"#if defined\(" + re.escape(board) + r"\)(.*?)#endif\s*//\s*" + re.escape(board),
-                  text, re.S)
+    m = re.search(r"^#if defined\(" + re.escape(board) + r"\)$(.*?)^#endif\s*//\s*" + re.escape(board),
+                  text, re.S | re.M)
     if not m:
         die(f"src/board.h has no block for {board}")
     tag = re.search(r'#define\s+BBS_BOARD_TAG\s+"([^"]+)"', m.group(1))

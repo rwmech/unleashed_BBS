@@ -31,6 +31,8 @@
 #                              defaults, the panel). Pair it with
 #                              --only=board_s3; the rest of the suite is
 #                              written for the reference board.
+#                 --board fncam  the Freenove ESP32-WROVER CAM profile
+#                              (bbs_host_fncam), with --only=board_fncam
 #
 #               Examples:
 #                 tools/harness.sh --backup
@@ -77,8 +79,9 @@ while [ $# -gt 0 ]; do
         --card)  CARD=yes; shift ;;
         --board)
             case "$2" in
-                s3) BIN=bbs_host_s3; export BBS_HOST_BOARD=s3 ;;
-                *)  echo "harness: no board profile called $2 (s3)"; exit 2 ;;
+                s3)    BIN=bbs_host_s3;    export BBS_HOST_BOARD=s3 ;;
+                fncam) BIN=bbs_host_fncam; export BBS_HOST_BOARD=fncam ;;
+                *)  echo "harness: no board profile called $2 (s3, fncam)"; exit 2 ;;
             esac
             shift 2 ;;
         # A board as it leaves the web installer: no staff passwords in its
