@@ -2675,6 +2675,554 @@ def test_config_sd_plugin():
     return ok
 
 
+# ---------------------------------------------------------------------------
+# The lights plugin (1.1.0). The host has no pixels, so platform_host.cpp
+# keeps the last frame each output was given and LIGHTS prints it as hex:
+# that is what these read. Colours are checked against the arithmetic in
+# lights.cpp's shade(), worked by hand here: a channel v at level l and p
+# percent is v * l * p / 25500, rounded down, and 1 if that comes to 0 for a
+# lit channel. So full white is 76 at 30%, 25 at 10% and 2 at 1%.
+# ---------------------------------------------------------------------------
+HEX6 = re.compile(r"^[0-9A-F]{6}$")
+
+
+def lights_read(s):
+    """LIGHTS, parsed: {"drive"|"strip": {"pin", "fx", "pct", "px": [(r, g, b)]}}."""
+    s.buf.clear()
+    s.send(b"lights\r")
+    s.wait_for(b"Strip ", 4)
+    s.pump(0.25)
+    out, cur = {}, None
+    for line in plain(s.buf).decode("latin-1").replace("\r", "").split("\n"):
+        t = line.strip()
+        m = re.match(r"(Drive|Strip)\s+(.*)$", t)
+        if m:
+            cur = m.group(1).lower()
+            pm = re.match(r"pin (-?\d+)\s+(\w+)\s+(\d+)%", m.group(2))
+            out[cur] = {"text": m.group(2), "px": [],
+                        "pin": int(pm.group(1)) if pm else None,
+                        "fx": pm.group(2) if pm else None,
+                        "pct": int(pm.group(3)) if pm else None}
+            continue
+        toks = t.split()
+        if cur and toks and all(HEX6.match(x) for x in toks):
+            out[cur]["px"] += [tuple(int(x[i:i + 2], 16) for i in (0, 2, 4)) for x in toks]
+    return out
+
+
+def lights_px(s, which="strip"):
+    return lights_read(s).get(which, {}).get("px", [])
+
+
+def lights_config(s, **keys):
+    """[plugin:lights] rewritten with exactly these keys (none: removed),
+    then the board made to read it, the way a sysop editing the file on a
+    laptop and saving any CONFIG page would."""
+    path = USERDATA / "system.cfg"
+    out, skip = [], False
+    for line in path.read_text().splitlines():
+        t = line.strip()
+        if t.startswith("["):
+            skip = t.lower() == "[plugin:lights]"
+        if not skip:
+            out.append(line)
+    if keys:
+        out.append("[plugin:lights]")
+        out += [f"{k} = {v}" for k, v in keys.items()]
+    path.write_text("\n".join(out) + "\n")
+    return cfg_reload(s)
+
+
+def lit(p):
+    return max(p) > 0
+
+
+def grey(p):
+    return p[0] == p[1] == p[2] and p[0] > 0
+
+
+def test_config_lights():
+    """CONFIG lights: the pins, the brightness ceiling and the round trip."""
+    print("CONFIG lights")
+    local = HOST in ("127.0.0.1", "localhost")
+    s = cfg_sysop("CfgLights")
+    ok = check("the lights page opens", cfg_open(s, b"lights", b"Drive pin"))
+    page = plain(s.buf)
+    ok &= check("with a row for each setting",
+                all(w in page for w in (b"Drive pin", b"Drive fx", b"Drive %", b"Strip pin",
+                                        b"Strip %", b"Pixels")))
+    ok &= check("and fits 40 columns", max_column(s.buf) <= 39)
+    # The note on the focused row: Down four times is Drive pin.
+    s.buf.clear()
+    s.send(DOWN * 4)
+    s.pump(0.5)
+    ok &= check("each row carries the copy's note",
+                b"The disk light: one pixel. -1 is off." in plain(s.buf))
+    s.buf.clear()
+    s.send(DOWN * 6 + b"\r")                       # on to Pixels, and open it
+    s.wait_for(b"PIXELS", 6)
+    s.pump(0.6)
+    ok &= check("a board that has never run the lights lists its pixels as shipped",
+                b"solid, cycle" in plain(s.buf) and b"red" not in plain(s.buf))
+    s.send(b"\x1b")
+    s.wait_for(b"Drive pin", 6)
+    s.pump(0.4)
+    cfg_cancel(s)
+
+    s.buf.clear()
+    s.send(b"lights\r")
+    s.pump(0.8)
+    ok &= check("off as shipped: LIGHTS is not a command", b"Unknown" in plain(s.buf))
+
+    # Rows: 0 Enabled, 1 Read, 2 Write, 3 Admin, 4 Drive pin, 5 Drive fx,
+    # 6 Drive %, 7 Strip pin, 8 Strip, 9 Strip %, 10 Pixels.
+    cfg_open(s, b"lights", b"Drive pin")
+    s.buf.clear()
+    s.send(DOWN * 4 + b"\x08" * 3 + b"7" + F1)
+    got = cfg_verdict(s, [b"flash chip", b"Saved", b"Between"])
+    ok &= check("a pin on the flash chip is refused", got == b"flash chip")
+    ok &= check("in the copy's words", b"Pins 6 to 11 are the flash chip." in plain(s.buf))
+    cfg_cancel(s)
+
+    cfg_open(s, b"lights", b"Drive pin")
+    s.buf.clear()
+    s.send(DOWN * 7 + b"\x08" * 3 + b"9" + F1)
+    got = cfg_verdict(s, [b"flash chip", b"Saved", b"Between"])
+    ok &= check("on either pin", got == b"flash chip")
+    cfg_cancel(s)
+
+    cfg_open(s, b"lights", b"Drive pin")
+    s.buf.clear()
+    s.send(DOWN * 4 + b"\x08" * 3 + b"34" + F1)
+    got = cfg_verdict(s, [b"Between -1 and 33", b"Saved", b"Numbers only"])
+    ok &= check("a pin that cannot drive a pixel is refused, -1 in the range",
+                got == b"Between -1 and 33")
+    cfg_cancel(s)
+
+    cfg_open(s, b"lights", b"Drive pin")
+    s.buf.clear()
+    s.send(DOWN * 4 + b"\x08" * 3 + b"13" + DOWN * 3 + b"\x08" * 3 + b"13" + F1)
+    got = cfg_verdict(s, [b"That is the drive pin", b"Saved", b"flash chip"])
+    ok &= check("the strip cannot share the drive light's pin", got == b"That is the drive pin")
+    ok &= check("said in the copy's words",
+                b"That is the drive pin. Pick another." in plain(s.buf))
+    cfg_cancel(s)
+
+    for row, name in ((6, "Drive"), (9, "Strip")):
+        cfg_open(s, b"lights", b"Drive pin")
+        s.buf.clear()
+        s.send(DOWN * row + b"\x08" * 3 + b"31" + F1)
+        got = cfg_verdict(s, [b"Between 1 and 30", b"Saved"])
+        ok &= check(f"{name} % stops at 30", got == b"Between 1 and 30")
+        cfg_cancel(s)
+
+    # The round trip: on, both pins, both effects, both brightnesses.
+    cfg_open(s, b"lights", b"Drive pin")
+    s.buf.clear()
+    s.send(b"y" + DOWN * 4 + b"\x08" * 3 + b"13" + DOWN + b"1" + DOWN + b"\x08" * 3 + b"25"
+           + DOWN + b"\x08" * 3 + b"14" + DOWN + b"h" + DOWN + b"\x08" * 3 + b"5" + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"Saved", b"Between", b"flash chip"])
+    ok &= check("the lights page saves live", got == b"Saved and live")
+    if local:
+        want = {"enabled": "yes", "drive_pin": "13", "drive_fx": "1541", "drive_bright": "25",
+                "strip_pin": "14", "strip_fx": "hayes", "strip_bright": "5"}
+        have = {k: (cfg_sec_line("plugin:lights", k) or "=").split("=", 1)[1].strip() for k in want}
+        ok &= check("every row written as the plugin reads it", have == want)
+    f = lights_read(s)
+    ok &= check("and running as saved",
+                f.get("drive", {}).get("text", "").startswith("pin 13  1541  25%") and
+                f.get("strip", {}).get("text", "").startswith("pin 14  hayes  5%"))
+    ok &= check("LIGHTS labels the Hayes panel", b"HS" in plain(s.buf) and b"MR" in plain(s.buf))
+
+    cfg_open(s, b"lights", b"Drive pin")
+    page = plain(s.buf)
+    ok &= check("the page opens on what was saved", b"1541" in page and b"hayes" in page)
+    s.buf.clear()
+    s.send(DOWN * 7 + b"\x08" * 3 + b"-1" + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"Numbers only", b"Between", b"Saved"])
+    ok &= check("-1 is taken, and means off", got == b"Saved and live")
+    if local:
+        ok &= check("written as -1",
+                    (cfg_sec_line("plugin:lights", "strip_pin") or "").endswith("= -1"))
+    f = lights_read(s)
+    ok &= check("the strip is off", f.get("strip", {}).get("text", "") == "no pin, off")
+
+    s.buf.clear()
+    s.send(b"plugins\r")
+    read_list(s)
+    ok &= check("PLUGINS lists it running", b"lights" in plain(s.buf) and b"running" in plain(s.buf))
+    if local:
+        lights_config(s)                               # off again for everything after
+    s.close()
+    return ok
+
+
+def ascii_sysop(handle):
+    """A plain ASCII caller elevated to the sysop node."""
+    c = Caller(ansi=False)
+    c.wait_for(b"HIT DEL OR BACKSPACE", 6)
+    c.send(b"\x08")
+    c.wait_for(b"Enter your handle", 8)
+    login(c, handle)
+    c.send(f"bye {PASSWORD}\r".encode())
+    c.wait_for(b"Sysop", 5)
+    c.pump(0.4)
+    return c
+
+
+def ascii_form(c, answers):
+    """Answer a line-mode form a row at a time, then say Y to saving."""
+    for a in answers:
+        c.send(a + b"\r")
+        c.pump(0.3)
+    c.wait_for(b"Save (Y/n)?", 4)
+    c.buf.clear()
+    c.send(b"y")
+    return wait_any(c, [b"Saved and live", b"Nothing changed", b"Saved", b"Not one of"], 6)
+
+
+def test_config_lights_ascii():
+    """Cycle fields in plain ASCII line mode (1.1.0).
+
+    A letter picked a value into the field and left a space in the input to
+    stand for it; Enter then copied the input over the value, so every pick
+    made in line mode saved a single space. A level written as " " is one
+    the plugin's parser refuses, so nothing changed and the form had said
+    "Saved and live". The sd page shows it on any build.
+    """
+    print("CONFIG in plain ASCII: cycle fields")
+    if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    c = ascii_sysop("CfgAscii")
+    c.buf.clear()
+    c.send(b"config sd\r")
+    c.wait_for(b"Enabled", 5)
+    # Enabled, Read, Write, Admin, CS, MOSI, CLK, MISO, Bus kHz, Screens
+    got = ascii_form(c, [b"", b"c"] + [b""] * 8)
+    ok = check("a level picked by letter saves", got == 0)
+    ok &= check("as the level picked, not as a space",
+                (cfg_sec_line("plugin:sd", "read") or "").endswith("= co2"))
+    c.buf.clear()
+    c.send(b"config sd\r")
+    c.wait_for(b"Enabled", 5)
+    got = ascii_form(c, [b"", b"ss"] + [b""] * 8)   # co2: s is staff, s again is sysop
+    ok &= check("the same letter twice steps to its next match",
+                got == 0 and (cfg_sec_line("plugin:sd", "read") or "").endswith("= sysop"))
+    c.buf.clear()
+    c.send(b"config sd\r")
+    c.wait_for(b"Enabled", 5)
+    got = ascii_form(c, [b"", b"c\x08"] + [b""] * 8)
+    ok &= check("Backspace after a pick puts the value back",
+                got == 1 and (cfg_sec_line("plugin:sd", "read") or "").endswith("= sysop"))
+
+    c.buf.clear()
+    c.send(b"config lights\r")
+    c.wait_for(b"Enabled", 5)
+    # Enabled, Read, Write, Admin, Drive pin, Drive fx, Drive %, Strip pin,
+    # Strip, Strip %, and Pixels, which asks "open (y/N)?".
+    got = ascii_form(c, [b"y", b"", b"", b"", b"13", b"", b"", b"14", b"bb", b"", b""])
+    ok &= check("the lights page saves in line mode", got == 0)
+    ok &= check("with blinken's b pressed twice reaching boing",
+                (cfg_sec_line("plugin:lights", "strip_fx") or "").endswith("= boing"))
+    ok &= check("and a typed pin", (cfg_sec_line("plugin:lights", "strip_pin") or "").endswith("= 14"))
+    lights_config(c)
+    c.close()
+    return ok
+
+
+def test_lights_frames():
+    """Every strip effect and the drive light, read back from the host's
+    record of the frames (1.1.0)."""
+    print("Lights: frames")
+    if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    card = bool(os.environ.get("BBS_SD_DIR", ""))
+    s = cfg_sysop("LightsFrames")
+    on = {"enabled": "yes", "drive_pin": 13, "strip_pin": 14}
+
+    # Brightness. White on both outputs from LIGHTS TEST, drive at 30% and
+    # the strip at 1%, so each output is plainly following its own setting.
+    ok = check("switched on", lights_config(s, **on, drive_bright=30, strip_bright=1))
+    f = lights_read(s)
+    if not check("LIGHTS reports both outputs",
+                 len(f.get("drive", {}).get("px", [])) == 1 and len(f.get("strip", {}).get("px", [])) == 10):
+        s.close()
+        return False
+    s.buf.clear()
+    s.send(b"lights test\r")
+    s.wait_for(b"a second each", 4)
+    t0 = time.time()
+    f = lights_read(s)
+    ok &= check("LIGHTS TEST opens on red", f["drive"]["px"] == [(76, 0, 0)])
+    time.sleep(max(0.0, t0 + 3.3 - time.time()))
+    f = lights_read(s)
+    ok &= check("white on the drive light at 30%: 76, and no further", f["drive"]["px"] == [(76, 76, 76)])
+    ok &= check("white on the strip at its own 1%", f["strip"]["px"] == [(2, 2, 2)] * 10)
+
+    lights_config(s, **on, strip_fx="rainbow", strip_bright=30)
+    px = lights_px(s)
+    ok &= check("rainbow lights every pixel", len(px) == 10 and all(lit(p) for p in px))
+    ok &= check("and reaches 30% without passing it", 25 < max(max(p) for p in px) <= 76)
+    lights_config(s, **on, strip_fx="rainbow", strip_bright=80)
+    f = lights_read(s)
+    ok &= check("a hand-edited 80% is read as 30",
+                f["strip"]["pct"] == 30 and max(max(p) for p in f["strip"]["px"]) <= 76)
+    lights_config(s, **on, strip_fx="rainbow", strip_bright=1)
+    px = lights_px(s)
+    ok &= check("at 1% every pixel stays lit", all(lit(p) for p in px) and max(max(p) for p in px) <= 2)
+    lights_config(s, **on, strip_fx="rainbow")
+    f = lights_read(s)
+    ok &= check("10% as shipped", f["strip"]["pct"] == 10 and f["drive"]["pct"] == 10
+                and max(max(p) for p in f["strip"]["px"]) <= 25)
+
+    lights_config(s, **on, strip_fx="off")
+    ok &= check("off is dark", lights_px(s) == [(0, 0, 0)] * 10)
+
+    lights_config(s, **on, strip_fx="c64")
+    px = lights_px(s)
+    ok &= check("c64: the five stripes, twice along the strip",
+                all(lit(p) for p in px) and px[:5] == px[5:] and len(set(px)) == 5)
+
+    lights_config(s, **on, strip_fx="scanner")
+    heads = set()
+    for _ in range(4):
+        px = lights_px(s)
+        top = max(p[0] for p in px)
+        ok &= check("scanner: red, one head at full, a fading tail",
+                    all(p[1] == p[2] == 0 for p in px) and top == 25 and
+                    sum(1 for p in px if p[0] == top) == 1)
+        heads.add(next(i for i, p in enumerate(px) if p[0] == top))
+    ok &= check("and the head moves", len(heads) > 1)
+
+    lights_config(s, **on, strip_fx="boing")
+    good = True
+    for _ in range(3):
+        px = lights_px(s)
+        on_at = [i for i, p in enumerate(px) if lit(p)]
+        good &= len(on_at) == 3 and on_at[2] - on_at[0] == 2
+        good &= all(px[i] in ((25, 0, 0), (25, 25, 25)) for i in on_at)
+        good &= len(on_at) == 3 and px[on_at[0]] != px[on_at[1]] and px[on_at[1]] != px[on_at[2]]
+    ok &= check("boing: three pixels, red and white by turns", good)
+
+    lights_config(s, **on, strip_fx="blinken")
+    frames = [lights_px(s) for _ in range(4)]
+    ok &= check("blinken: red lamps only",
+                all(p[1] == p[2] == 0 for px in frames for p in px))
+    ok &= check("changing as it goes", len({tuple(px) for px in frames}) > 1)
+
+    lights_config(s, **on, strip_fx="vu")
+    bars = []
+    for _ in range(4):
+        px = lights_px(s)
+        n = sum(1 for p in px if lit(p))
+        bars.append(n)
+        ok &= check("vu: a bar from the first pixel, green at the bottom",
+                    all(lit(p) for p in px[:n]) and not any(lit(p) for p in px[n:]) and
+                    (n == 0 or px[0] == (0, 20, 0)))
+    ok &= check("which LIGHTS' own traffic moves", max(bars) > 0)
+
+    # hayes: HS AA CD OH RD SD TR MR on pixels 0 to 7.
+    lights_config(s, **on, strip_fx="hayes")
+    for _ in range(20):                              # earlier callers' lines may be closing
+        px = lights_px(s)
+        if px and px[2] == (0, 0, 0):
+            break
+        time.sleep(0.5)
+    ok &= check("hayes: MR, TR and AA lit, pixels 8 and 9 dark",
+                px[7] == px[6] == px[1] == (25, 0, 0) and px[8] == px[9] == (0, 0, 0))
+    ok &= check("CD and OH dark with nobody on a caller line", px[2] == px[3] == (0, 0, 0))
+    ok &= check("HS lit with nobody to be slow for", px[0] == (25, 0, 0))
+    b = ansi_login("HayesCaller")
+    px = lights_px(s)
+    ok &= check("a caller connecting lights CD and OH", px[2] == px[3] == (25, 0, 0))
+    b.close()
+
+    # nodes: each line in the colour of its caller's WHO marker.
+    lights_config(s, **on, strip_fx="nodes")
+    b = ansi_login("NodeCaller")
+    n = int(b.node())
+    b.pump(0.8)
+    px = lights_px(s)
+    ok &= check("nodes: a caller's line lit grey, a caller's colour in WHO", grey(px[n - 1]))
+    if CO1:
+        b.buf.clear()
+        b.send(f"bye {CO1}\r".encode())
+        b.wait_for(f"Co-sysop 1 access on node {n}".encode(), 4)
+        b.pump(0.5)
+        p = lights_px(s)[n - 1]
+        ok &= check("a co-sysop's line turns yellow", p[0] >= p[1] > 0 and p[2] == 0)
+    g = Caller(ansi=True)
+    g.wait_for(b"Enter your handle", 10)
+    g.send(b"LightGuest\r")
+    g.wait_for(b"[G]uest", 4)
+    g.send(b"g")
+    g.wait_for(b"Main", 6)
+    gn = int(g.node())
+    g.pump(0.8)
+    px = lights_px(s)
+    ok &= check("a guest's is dark grey, dimmer than a caller's",
+                grey(px[gn - 1]) and px[gn - 1][0] < 13)
+    b.close()
+    g.close()
+
+    # The drive light: disk2 holds a second after the last access, which is
+    # long enough to read it back.
+    lights_config(s, **on, drive_fx="disk2", strip_fx="off")
+    time.sleep(1.2)
+    d = lights_px(s, "drive")[0]
+    ok &= check("at rest, a dim amber glow", d == (2, 1, 0))
+    s.buf.clear()
+    s.send(b"about\r")
+    s.wait_for(b"GNU General Public License", 6)
+    d = lights_px(s, "drive")[0]
+    if card:
+        ok &= check("a screen read off the card lights it amber", d == (25, 13, 0))
+        s.buf.clear()
+        s.send(b"sd unmount\r")
+        s.wait_for(b"safe to pull", 5)
+        time.sleep(1.2)
+        s.buf.clear()
+        s.send(b"about\r")
+        s.wait_for(b"GNU General Public License", 6)
+        d = lights_px(s, "drive")[0]
+        ok &= check("and read off the board's flash, cool white", d == (17, 20, 25))
+        s.buf.clear()
+        s.send(b"sd mount\r")
+        s.wait_for(b"Mounted", 8)
+    else:
+        ok &= check("a screen read off the board's flash lights it cool white", d == (17, 20, 25))
+        s.buf.clear()
+        s.send(b"lights pulse card\r")
+        s.wait_for(b"Pulsed", 4)
+        d = lights_px(s, "drive")[0]
+        ok &= check("and the card, amber", d == (25, 13, 0))
+
+    # 1541 blinks red on a storage error. With no card, a real one: SD MOUNT
+    # fails. With a card, the host's pulse stands in for a broken one.
+    lights_config(s, **on, drive_fx="1541", strip_fx="off")
+    s.buf.clear()
+    if card:
+        s.send(b"lights pulse error\r")
+        s.wait_for(b"Pulsed", 4)
+    else:
+        s.send(b"sd mount\r")
+        s.wait_for(b"no card", 6)
+    seen = []
+    for _ in range(8):
+        seen.append(lights_px(s, "drive")[0])
+    ok &= check("1541: a storage error blinks red",
+                (25, 0, 0) in seen and (0, 0, 0) in seen and
+                all(p in ((25, 0, 0), (0, 0, 0)) for p in seen))
+
+    lights_config(s)
+    s.close()
+    return ok
+
+
+def test_lights_manual():
+    """Manual mode: each pixel its own effect and colour (1.1.0)."""
+    print("Lights: manual mode")
+    if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    s = cfg_sysop("LightsManual")
+    on = {"enabled": "yes", "drive_pin": 13, "strip_pin": 14}
+    ok = check("switched on", lights_config(s, **on, strip_fx="manual"))
+    px = lights_px(s)
+    if not check("unset, every pixel is solid and cycling, out of step",
+                 len(px) == 10 and all(lit(p) for p in px) and len(set(px)) > 5):
+        s.close()
+        return False
+
+    # CONFIG: Pixels, then Pixel 3, then its Effect and Colour.
+    cfg_open(s, b"lights", b"Drive pin")
+    s.buf.clear()
+    s.send(DOWN * 10 + b"\r")
+    ok &= check("Pixels opens a page of its own", s.wait_for(b"PIXELS", 6))
+    s.pump(0.8)
+    page = plain(s.buf)
+    ok &= check("listing ten pixels, each with its effect and colour",
+                b"Pixel 10" in page and b"solid, cycle" in page)
+    ok &= check("and fits 40 columns", max_column(s.buf) <= 39)
+    s.buf.clear()
+    s.send(DOWN * 2 + b"\r")
+    ok &= check("a pixel opens its own page", s.wait_for(b"PIXEL 3", 6))
+    s.pump(0.6)
+    s.buf.clear()
+    s.send(b"b" + DOWN + b"pp" + F1)              # blink; p is purple, p again is pink
+    got = cfg_verdict(s, [b"Saved and live", b"Nothing changed", b"Not one of"])
+    ok &= check("the pixel saves live", got == b"Saved and live")
+    ok &= check("back on the Pixels page", b"PIXELS" in plain(s.buf))
+    ok &= check("written packed, as the plugin reads it",
+                (cfg_sec_line("plugin:lights", "led3") or "").endswith("= blink | pink"))
+    s.buf.clear()
+    s.send(b"\x1b")
+    ok &= check("Escape comes back to the lights page", s.wait_for(b"Drive pin", 6))
+    s.pump(0.5)
+    cfg_cancel(s)
+    seen = {lights_px(s)[2] for _ in range(6)}
+    ok &= check("and pixel 3 blinks pink", seen <= {(25, 3, 11), (0, 0, 0)} and len(seen) == 2)
+
+    # Which lines are busy, so one node pixel can be dark for certain.
+    lights_config(s, **on, strip_fx="nodes")
+    b = ansi_login("ManualNode")
+    n = int(b.node())
+    b.pump(0.6)
+    busy = {i for i, p in enumerate(lights_px(s)) if lit(p)}
+    free = next(i for i in range(10) if i not in busy)
+    effects = ["solid | white", "off | white", "blink | white", "breathe | white",
+               "flicker | white", "sparkle | white", "traffic | white", "solid | red"]
+    slots = [i for i in range(10) if i not in (n - 1, free)]
+    leds = {f"led{n}": "node | white", f"led{free + 1}": "node | white"}
+    for i, e in zip(slots, effects):
+        leds[f"led{i + 1}"] = e
+    lights_config(s, **on, strip_fx="manual", **leds)
+    where = {e: slots[k] for k, e in enumerate(effects)}
+    frames = []
+    end = time.time() + 5.0
+    while time.time() < end or len(frames) < 16:
+        frames.append(lights_px(s))
+    col = {e: [f[i] for f in frames] for e, i in where.items()}
+    ok &= check("solid: white, every frame", set(col["solid | white"]) == {(25, 25, 25)})
+    ok &= check("solid red", set(col["solid | red"]) == {(25, 0, 0)})
+    ok &= check("off: dark, every frame", set(col["off | white"]) == {(0, 0, 0)})
+    ok &= check("blink: on and off, nothing between",
+                set(col["blink | white"]) == {(25, 25, 25), (0, 0, 0)})
+    ok &= check("breathe: white at many levels",
+                all(p[0] == p[1] == p[2] <= 25 for p in col["breathe | white"]) and
+                len(set(col["breathe | white"])) >= 3)
+    ok &= check("flicker: never out, never steady",
+                all(grey(p) for p in col["flicker | white"]) and len(set(col["flicker | white"])) >= 2)
+    ok &= check("sparkle: twinkles out of the dark",
+                (0, 0, 0) in col["sparkle | white"] and any(lit(p) for p in col["sparkle | white"]))
+    ok &= check("traffic: lit or dark, with the board's bytes",
+                set(col["traffic | white"]) <= {(25, 25, 25), (0, 0, 0)})
+    ok &= check("node: lit for the line with a caller",
+                all(grey(f[n - 1]) for f in frames))
+    ok &= check("and dark for a line without one", all(f[free] == (0, 0, 0) for f in frames))
+    b.close()
+
+    # Colours: cycle turns each pixel a step ahead of the last; random moves on.
+    lights_config(s, **on, strip_fx="manual", led1="solid | cycle", led2="solid | cycle",
+                  led3="solid | random", led4="off", led5="off", led6="off", led7="off",
+                  led8="off", led9="off", led10="off")
+    frames = []
+    end = time.time() + 3.6                      # a random solid moves on every 3 s
+    while time.time() < end:
+        frames.append(lights_px(s))
+    ok &= check("cycle: two pixels, never the same colour at once",
+                all(lit(f[0]) and lit(f[1]) and f[0] != f[1] for f in frames))
+    ok &= check("and turning", len({f[0] for f in frames}) > 1)
+    ok &= check("random: a new colour as it goes", len({f[2] for f in frames}) > 1)
+    ok &= check("the rest dark", all(f[3:] == [(0, 0, 0)] * 7 for f in frames))
+
+    lights_config(s)
+    s.close()
+    return ok
+
+
 def test_config_wifi_live():
     """CONFIG wifi on a board that joined through secrets.h (1.0.0-rc1).
 
@@ -7675,7 +8223,8 @@ GROUPS = {
     # Anything that reads or writes the card.
     "storage":   ["files", "forums", "sd", "xfer", "backup"],
     # The shell, its lists and the screens the core draws.
-    "shell":     ["menus", "sysinfo", "page", "about", "config", "welcome", "paced", "seeded", "fx_codes"],
+    "shell":     ["menus", "sysinfo", "page", "about", "config", "welcome", "paced", "seeded", "fx_codes",
+                  "lights"],
     # Logging in, accounts, staff.
     "login":     ["accounts", "handle_case", "guest", "sysop", "cosysop", "user_admin", "first_setup", "ban"],
     # Terminal handling across the three flavours.
@@ -7706,6 +8255,7 @@ ORDER_NAMES = [
     "test_mail", "test_prompt_survives_notice", "test_menus", "test_sysinfo", "test_config",
     "test_config_parser_rules", "test_config_guards", "test_config_semicolon",
     "test_config_sd_plugin",
+    "test_config_lights", "test_config_lights_ascii", "test_lights_frames", "test_lights_manual",
     "test_config_wifi_live", "test_serial",
     "test_motd", "test_idle_login", "test_busy",
     "test_screens", "test_exit_screen", "test_welcome_connecting", "test_paced_chatin",

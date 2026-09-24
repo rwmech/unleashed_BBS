@@ -92,6 +92,14 @@ enum PluginFlag : uint8_t {
     // and would be invisible, which is the kind of dependency that survives
     // until somebody tidies the list alphabetically.
     PF_EARLY = 8,
+    // PF_FAST: tick every BBS_PLUGIN_FAST_MS (20 ms) instead of every
+    // BBS_PLUGIN_TICK_MS (250 ms). For a plugin that draws something that
+    // moves, which at four frames a second is a slide show: the lights
+    // plugin's pixels. A flag rather than a new hook, because a hook is a
+    // field appended to every descriptor in the tree, and this is the same
+    // hook called more often. The rule for tick() does not change: never
+    // block, and at this rate do even less.
+    PF_FAST  = 16,
 };
 
 struct PluginInfo {
@@ -129,16 +137,46 @@ struct PluginInfo {
 // own parser would decline is caught on the form rather than written, read,
 // declined, and shown to the sysop as "Saved and live". Appended, so every
 // existing value keeps its number.
-enum : uint8_t { PS_TEXT, PS_NUM, PS_YESNO, PS_INFO, PS_PIN };
+//
+// A PS_PIN whose lo is -1 takes -1 as "no pin, this output is off" (1.1.0).
+// The range says so rather than the kind, because the plugins differ: the
+// lights are off until given a pin and -1 is exactly that, while an SD card
+// has no "off" for its chip select, and a -1 CONFIG took would be a -1 the
+// sd plugin's parser declines, the "Saved and live" trap PS_PIN exists to
+// close.
+//
+// PS_CYCLE: one of a fixed list, stepped with Space or picked by its first
+// letter, as the level fields are. The list is `choices`, bar separated.
+//
+// PS_PAGE: a button to a page of its own. It holds every setting in this
+// table whose key is this one's followed by a number ("led" holds led1 to
+// led10), and those rows are left off the plugin's main page. For a plugin
+// with more rows than one form can hold: kMaxFields less the core's four is
+// twelve, and the lights want ten pixels on top of their own six. The
+// button's text is the plugin's setting() for this key. Escape on the page,
+// or saving it, comes back to the main page.
+enum : uint8_t { PS_TEXT, PS_NUM, PS_YESNO, PS_INFO, PS_PIN, PS_CYCLE, PS_PAGE };
 
 struct PluginSetting {
     const char* key;      // key inside the [plugin:<name>] section
     const char* label;    // 9 characters, the form's left column
-    uint8_t     kind;     // PS_TEXT, PS_NUM, PS_YESNO, PS_INFO, PS_PIN
-    uint16_t    lo;       // PS_NUM: the range the plugin will accept
+    uint8_t     kind;     // PS_TEXT, PS_NUM, PS_YESNO, PS_INFO, PS_PIN, PS_CYCLE, PS_PAGE
+    int16_t     lo;       // PS_NUM, PS_PIN: the range the plugin will accept.
+                          // Signed since 1.1.0, for a pin's -1.
     uint16_t    hi;
     uint8_t     cap;      // characters, excluding the terminator. May exceed
                           // the form's box: long values scroll while typed.
+    // Appended (1.1.0), with a default, so every table written before it
+    // still compiles, warns about nothing and reads nullptr here. Shown on
+    // the form's status line while the row has the focus: 38 characters,
+    // and anything longer is cut.
+    const char* note = nullptr;
+    // PS_CYCLE: what it steps through, bar separated ("nodes|hayes|off").
+    // Appended after note (1.1.0) and defaulted the same way. CONFIG looks
+    // it up from here when it draws the page rather than copying it into
+    // every row, which would be sixteen pointers of static RAM for the one
+    // page that has any.
+    const char* choices = nullptr;
 };
 
 // kCoreRows: the rows CONFIG puts at the top of every plugin's page before
@@ -160,7 +198,8 @@ struct Plugin {
     // stop: called when the plugin is switched off or the config reloads
     void (*stop)();
 
-    // tick: every BBS_PLUGIN_TICK_MS, from the BBS loop. Never block.
+    // tick: every BBS_PLUGIN_TICK_MS, from the BBS loop, or every
+    // BBS_PLUGIN_FAST_MS for a PF_FAST plugin. Never block.
     void (*tick)(uint32_t now);
 
     // caller lifecycle

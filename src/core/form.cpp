@@ -384,33 +384,52 @@ Form::Res Form::keyPositional(int k, Term& t, Timeline& tl) {
 // ---------------------------------------------------------------------------
 // cycle: space steps through the choices, a letter or digit picks the first
 // choice that starts with it ("u", "2", "1", "s"). False if the key is not ours.
+//
+// The same letter again picks the next choice that starts with it, round to
+// the first (1.1.0). Before, a letter only ever reached the first match, so
+// on a level field co1 and sysop could not be picked by letter at all, and
+// the lights' strip has both blinken and boing.
 // ---------------------------------------------------------------------------
 bool Form::cycle(FormField& f, int k) {
     if (!f.choices) return false;
     char want = static_cast<char>(k >= 'A' && k <= 'Z' ? k + 32 : k);
-    const char* p = f.choices;
-    const char* first = p;
+
+    // Where the value sits in the list now, if it is in it at all.
     const char* current = nullptr;
-    while (p) {
+    for (const char* p = f.choices; p; ) {
         const char* bar = strchr(p, '|');
         size_t len = bar ? static_cast<size_t>(bar - p) : strlen(p);
-        if (!strncmp(f.buf, p, len) && strlen(f.buf) == len) current = p;
-        if (want != ' ' && len && (p[0] | 0x20) == want) {        // direct pick
-            strncpy(f.buf, p, len);
-            f.buf[len] = 0;
-            return true;
-        }
+        if (strlen(f.buf) == len && !strncmp(f.buf, p, len)) current = p;
         p = bar ? bar + 1 : nullptr;
     }
-    if (want != ' ') return false;
-    const char* next = first;
-    if (current) {
-        const char* bar = strchr(current, '|');
-        next = bar ? bar + 1 : first;
+
+    const char* pick = nullptr;
+    if (want == ' ') {                                      // the next one along
+        pick = f.choices;
+        if (current) {
+            const char* bar = strchr(current, '|');
+            pick = bar ? bar + 1 : f.choices;
+        }
+    } else {                                                // a direct pick
+        const char* first = nullptr;
+        const char* after = nullptr;
+        bool        past  = false;
+        for (const char* p = f.choices; p; ) {
+            const char* bar = strchr(p, '|');
+            size_t len = bar ? static_cast<size_t>(bar - p) : strlen(p);
+            bool hit = len && (p[0] | 0x20) == want;
+            if (hit && !first) first = p;
+            if (hit && past && !after) after = p;
+            if (p == current) past = true;
+            p = bar ? bar + 1 : nullptr;
+        }
+        if (!first) return false;
+        pick = (current && (current[0] | 0x20) == want && after) ? after : first;
     }
-    const char* bar = strchr(next, '|');
-    size_t len = bar ? static_cast<size_t>(bar - next) : strlen(next);
-    strncpy(f.buf, next, len);
+    const char* bar = strchr(pick, '|');
+    size_t len = bar ? static_cast<size_t>(bar - pick) : strlen(pick);
+    if (len > f.cap) len = f.cap;
+    strncpy(f.buf, pick, len);
     f.buf[len] = 0;
     return true;
 }
@@ -533,25 +552,52 @@ Form::Res Form::keyLine(int k, Term& t, Timeline& tl) {
         }
         return Res::Editing;
     }
+    // A cycle pick is made in f.buf itself, and the single space left in the
+    // input only stands for it. The value from before the first pick is kept
+    // after that space, in the input's own buffer, so Backspace can put it
+    // back: in_[1] onward is never typed into while a pick stands.
+    const bool picked = (f.flags & FF_CYCLE) && inLen_ == 1 && in_[0] == ' ';
     if (k == KEY_ENTER) {
-        if (inLen_) {                                    // Enter on an empty line keeps the value
+        // Enter on an empty line keeps the value, and so does Enter after a
+        // pick. Copying the input over the value used to turn every pick made
+        // in plain ASCII into that one space, which the form then saved.
+        if (inLen_ && !picked) {
             in_[inLen_] = '\0';
             if (f.flags & FF_YESNO) strcpy(f.buf, (in_[0] == 'y' || in_[0] == 'Y') ? "Y" : "N");
             else { strncpy(f.buf, in_, f.cap); f.buf[f.cap] = '\0'; }
-            wipe();
         }
+        wipe();
         ++focus_;
         linePrompt(t, tl);
         return Res::Editing;
     }
     if (k == KEY_BACKSPACE) {
-        if (inLen_) { --inLen_; t.eraseBack(tl, 1); }
+        if (picked) {                                    // undo the pick, word and value
+            size_t shown = strlen(f.buf);
+            t.eraseBack(tl, static_cast<uint8_t>(shown < 255 ? shown : 255));
+            strncpy(f.buf, in_ + 1, f.cap);
+            f.buf[f.cap] = '\0';
+            wipe();
+        } else if (inLen_) {
+            --inLen_;
+            t.eraseBack(tl, 1);
+        }
         return Res::Editing;
     }
-    if ((f.flags & FF_CYCLE) && inLen_ == 0 && cycle(f, k)) {      // line mode: one letter picks
-        t.text(tl, f.buf);
-        in_[inLen_++] = ' ';                                       // Enter keeps what was picked
-        return Res::Editing;
+    // Line mode: a letter picks, and another letter picks again in place of
+    // the word shown, so the same letter twice steps through its matches as
+    // it does on a positional form.
+    if ((f.flags & FF_CYCLE) && (inLen_ == 0 || picked)) {
+        size_t shown = picked ? strlen(f.buf) : 0;
+        if (!picked) snprintf(in_ + 1, sizeof(in_) - 1, "%s", f.buf);   // what Backspace restores
+        if (cycle(f, k)) {
+            if (shown) t.eraseBack(tl, static_cast<uint8_t>(shown < 255 ? shown : 255));
+            t.text(tl, f.buf);
+            in_[0] = ' ';
+            inLen_ = 1;
+            return Res::Editing;
+        }
+        if (picked) return Res::Editing;                 // after a pick: a pick, Backspace or Enter
     }
     if (k < 0x20 || k > 0x7E || inLen_ >= f.cap || inLen_ >= BBS_PROFILE_MAX) return Res::Editing;
     in_[inLen_++] = static_cast<char>(k);

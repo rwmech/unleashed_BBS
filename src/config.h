@@ -201,18 +201,13 @@
 // ---------------------------------------------------------------------------
 // Plugins (PLUGINS.md)
 // ---------------------------------------------------------------------------
-#define BBS_MAX_PLUGINS     8        // compiled-in plugin table
+// Nine since 1.1.0, for lights. Exactly the table, so the tenth plugin fails
+// registry.cpp's static_assert rather than compiling and never starting.
+#define BBS_MAX_PLUGINS     9        // compiled-in plugin table
 #define BBS_PLUGIN_TICK_MS  250      // periodic hook cadence
-#define BBS_PLUGIN_DIR      "p"      // <fs>/p/<name>/ holds a plugin's files
-#define BBS_PLUGIN_QUOTA    65536    // per plugin, onboard
-#define BBS_FS_RESERVE      32768    // free space the core keeps for accounts
-#define BBS_HEAP_RESERVE    40960    // heap kept free for callers and backups
-
-// ---------------------------------------------------------------------------
-// Plugins (PLUGINS.md)
-// ---------------------------------------------------------------------------
-#define BBS_MAX_PLUGINS     8        // compiled-in plugin table
-#define BBS_PLUGIN_TICK_MS  250      // periodic hook cadence
+// A PF_FAST plugin's cadence: 50 frames a second for the lights, which is as
+// fast as a pixel is worth updating and two loop passes apart.
+#define BBS_PLUGIN_FAST_MS  20
 #define BBS_PLUGIN_DIR      "p"      // <fs>/p/<name>/ holds a plugin's files
 #define BBS_PLUGIN_QUOTA    65536    // per plugin, onboard
 #define BBS_FS_RESERVE      32768    // free space the core keeps for accounts

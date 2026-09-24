@@ -142,6 +142,23 @@ tx = 17
 baud = 115200
 format = 8N1
 
+# Two strings of WS2812B pixels for a board in a case: a drive light and a
+# strip of ten. Off until switched on and given pins; -1 is no pin. Pins
+# 6-11 (flash) are refused, and the two cannot share a pin. Brightness is a
+# percentage, 1 to 30: the firmware reads anything higher as 30. Ten pixels
+# at full white draw about 600 mA, so give the strip its own 5 V supply.
+# COMMANDS.md describes every effect.
+[plugin:lights]
+enabled      = no
+drive_pin    = -1          ; GPIO13 is a good choice
+drive_fx     = pc          ; pc, 1541, disk2, breathe, off
+drive_bright = 10
+strip_pin    = -1
+strip_fx     = nodes       ; nodes, hayes, blinken, scanner, c64, boing, vu, rainbow, manual, off
+strip_bright = 10
+# In manual mode, one line per pixel, led1 to led10: effect | colour
+# led1       = sparkle | random
+
 # Staff access matrix. X = allowed, - = denied.
 # SYSOP always has everything; its column is there for reference.
 # Keep this section last: every line after [access] is a matrix row.

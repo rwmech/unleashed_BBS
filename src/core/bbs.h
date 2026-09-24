@@ -438,6 +438,28 @@ public:
     // session leaves SState::Plugin, so a release() after it draws no prompt.
     void logoff(Session& s, uint32_t now) { goodbye(s, now); }
 
+    // ----------------------------------------------------------------------
+    // The lines, as something outside the shell would show them: the lights
+    // plugin's Hayes panel and node strip. Reads only, and cheap ones.
+    //
+    // listening: the dial-in port is open. answering: it is also taking
+    // calls, which a SHUTDOWN, counting down or done, stops.
+    // takeTraffic: which sessions moved bytes since the last ask, one bit
+    // per Session::id (0 the sysop, 1 to BBS_MAX_NODES the lines, then the
+    // busy line), and clears them. One reader: the lights.
+    // bytesIn / bytesOut: every byte read from and written to a caller's
+    // socket since boot, wrapping. Only a difference means anything.
+    // ----------------------------------------------------------------------
+    bool listening() const { return lfd_ >= 0; }
+    bool answering() const { return lfd_ >= 0 && !shutEnds_ && !shutDone_; }
+    void takeTraffic(uint16_t& rx, uint16_t& tx) {
+        rx = rxSeen_;
+        tx = txSeen_;
+        rxSeen_ = txSeen_ = 0;
+    }
+    uint32_t bytesIn()  const { return rxBytes_; }
+    uint32_t bytesOut() const { return txBytes_; }
+
 private:
     Bbs() = default;
 
@@ -637,6 +659,12 @@ private:
     void configSubOpen(Session& s, uint8_t field, uint32_t now);
     bool configSubSave(Session& s, char* err, size_t errLen);
     void configSubBack(Session& s, Color c, const char* msg, uint32_t now);
+    // A plugin's PS_PAGE button: its rows as a page of their own, whose
+    // buttons open sub-pages as above. configInList says one is open, and
+    // configListBack returns to the plugin's page, on the button.
+    void configListOpen(Session& s, uint8_t field, uint32_t now);
+    bool configInList() const;
+    void configListBack(Session& s, Color c, const char* msg, uint32_t now);
     // configReloadAll: reread system.cfg and restart the plugins, having
     // first handed home any caller sitting inside one. Shared by the page
     // and the sub-page so a save means the same thing from either.
@@ -712,6 +740,13 @@ private:
     uint8_t   peakNodes_   = 0;      // most nodes busy at once since boot
     uint16_t  callHours_[24] = {};   // CALLS: calls per hour of the day
     uint16_t  callsCounted_ = 0;     // records that went into callHours_
+    // Traffic, for takeTraffic and bytesIn/bytesOut. Twelve bytes, set where
+    // the activity LED is pulsed, so the lights see exactly what it sees.
+    uint16_t  rxSeen_  = 0;          // a bit per Session::id that read bytes
+    uint16_t  txSeen_  = 0;          // and that wrote them
+    uint32_t  rxBytes_ = 0;
+    uint32_t  txBytes_ = 0;
+    static_assert(BBS_MAX_NODES + 2 <= 16, "takeTraffic keeps a bit per session in 16");
     Session   nodes_[BBS_MAX_NODES];
     Session   busy_;
     Session   sysop_;

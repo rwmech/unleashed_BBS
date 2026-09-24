@@ -124,6 +124,11 @@ void Bbs::addField(Session& s, uint8_t& n, const char* label, char* buf, uint8_t
     f.cap     = cap;
     f.flags   = flags;
     f.choices = choices;
+    // Cleared here, because s.fields outlives the form it was filled for:
+    // a note set on row 2 of one form stayed on row 2 of the next, so a
+    // CONFIG page's "Callers use it from the next restart." would have come
+    // up under a field of USER EDIT. The caller sets it again after this.
+    f.note    = nullptr;
 }
 
 // addUserFields: the kUserFields table as form fields; returns the index of the first
@@ -287,6 +292,9 @@ void Bbs::formSave(Session& s, uint32_t now) {
         case FormKind::Config: {
             char err[80] = "";
             if (!configSave(s, err, sizeof(err))) return;          // the form said why
+            // A list page (a plugin's PS_PAGE) saves and goes back to the
+            // plugin's page, as a sub-page goes back to its row.
+            if (configInList()) { configListBack(s, Color::LightGreen, err, now); return; }
             configRelease(s);
             formDone(s, Color::LightGreen, err);
             return;
@@ -479,6 +487,11 @@ void Bbs::formCancel(Session& s, uint32_t now) {
     // holding the parent page.
     if (s.formKind == FormKind::ConfigArea) {
         configSubBack(s, Color::Grey, "Nothing changed", now);
+        return;
+    }
+    // Nor is cancelling a list page: back to the plugin's page, on its button.
+    if (s.formKind == FormKind::Config && configInList()) {
+        configListBack(s, Color::Grey, "Nothing changed", now);
         return;
     }
     configRelease(s);

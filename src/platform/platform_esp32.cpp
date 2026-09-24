@@ -10,7 +10,8 @@
  * Purpose:      ESP32 (ESP-IDF) implementation of the platform layer.
  *
  * Libraries:    ESP-IDF: esp_timer, esp_hw_support (esp_random), heap,
- *                  esp_driver_gpio, esp_rom (ROM miniz tinfl), esp_wifi
+ *                  esp_driver_gpio, esp_rom (ROM miniz tinfl), esp_wifi,
+ *                  esp_driver_rmt (the lights plugin's pixels)
  * Targets:      ESP32-WROOM-32E, ESP-IDF 5.3.1
  * See also:     README.md
  *
@@ -49,6 +50,7 @@
 #include "driver/uart.h"
 #include "driver/sdspi_host.h"
 #include "driver/spi_common.h"
+#include "driver/rmt_tx.h"       // pixels: WS2812B on the RMT peripheral
 #include "sdmmc_cmd.h"
 #include "esp_vfs_fat.h"
 #include "freertos/FreeRTOS.h"   // stackFree, stackDeeper: the task's stack
@@ -673,6 +675,238 @@ void activityTick(uint32_t now) {
         g_ledOn = false;
         gpio_set_level(static_cast<gpio_num_t>(g_ledGpio), 0);
     }
+}
+
+// ===========================================================================
+// diskPulse: storage was touched. A time and a count, nothing lit here: see
+// platform.h. Only ever called from the BBS task.
+// ===========================================================================
+
+namespace {
+uint32_t g_diskAt[DISK_KINDS]    = {};
+uint16_t g_diskCount[DISK_KINDS] = {};
+}
+
+void diskPulse(DiskKind kind) {
+    if (kind >= DISK_KINDS) return;
+    g_diskAt[kind] = millis();
+    ++g_diskCount[kind];
+}
+
+DiskSeen diskSeen() {
+    DiskSeen d;
+    for (uint8_t i = 0; i < DISK_KINDS; ++i) {
+        d.at[i]    = g_diskAt[i];
+        d.count[i] = g_diskCount[i];
+    }
+    return d;
+}
+
+// ===========================================================================
+// Pixels: WS2812B on the RMT peripheral (esp_driver_rmt, driver/rmt_tx.h).
+//
+// One TX channel and one simple encoder per output. rmt_transmit is called
+// with queue_nonblocking, and nothing here ever waits on it except
+// pixelsEnd: the done interrupt clears a flag, and a frame offered while the
+// last is still on the wire is refused rather than queued, because the
+// plugin draws a fresh one 20 ms later anyway and a queued frame is a stale
+// one.
+// ===========================================================================
+
+namespace {
+
+// 20 MHz: a tick is 50 ns and a bit is 25 ticks, 1.25 us, exactly the
+// 800 kHz the WS2812B datasheet asks for. Its timings, each +-150 ns: a 0 is
+// 0.40 us high then 0.85 us low, a 1 is 0.80 us high then 0.45 us low.
+constexpr uint32_t kPixHz = 20u * 1000u * 1000u;
+constexpr uint16_t kT0H = 8, kT0L = 17, kT1H = 16, kT1L = 9;
+// The latch that ends a frame: low for at least 50 us on the original part
+// and 280 us on the V5 revision sold since, and a strip does not say which
+// it is. 300 us serves both, as two halves of one symbol, since a duration
+// field holds at most 32,767 ticks.
+constexpr uint16_t kLatchHalf = 3000;
+
+struct PixOut {
+    rmt_channel_handle_t chan  = nullptr;
+    rmt_encoder_handle_t enc   = nullptr;
+    int8_t               pin   = -1;
+    uint8_t              count = 0;
+    bool                 sent  = false;             // grb holds a frame that went out
+    volatile bool        busy  = false;             // set here, cleared by the done interrupt
+    uint8_t              grb[kPixelMax * 3] = {};   // the wire bytes, kept until sent
+};
+PixOut            g_pix[kPixelOuts];
+rmt_symbol_word_t g_bit0, g_bit1, g_latch;
+bool              g_symbols = false;
+
+void pixSymbols() {
+    if (g_symbols) return;
+    g_bit0.level0  = 1; g_bit0.duration0  = kT0H; g_bit0.level1  = 0; g_bit0.duration1  = kT0L;
+    g_bit1.level0  = 1; g_bit1.duration0  = kT1H; g_bit1.level1  = 0; g_bit1.duration1  = kT1L;
+    g_latch.level0 = 0; g_latch.duration0 = kLatchHalf;
+    g_latch.level1 = 0; g_latch.duration1 = kLatchHalf;
+    g_symbols = true;
+}
+
+// pixEncode: bytes to symbols, most significant bit first, then the latch.
+// Whole bytes only, so symbols already written divided by 8 is exactly how
+// many bytes are done. The driver calls it again with more room, or with its
+// own overflow buffer, whenever it returns short.
+size_t pixEncode(const void* data, size_t size, size_t written, size_t room,
+                 rmt_symbol_word_t* out, bool* done, void* arg) {
+    (void)arg;
+    const uint8_t* b = static_cast<const uint8_t*>(data);
+    size_t at = written / 8u;
+    size_t n  = 0;
+    while (at < size && room - n >= 8u) {
+        for (uint8_t m = 0x80; m; m = static_cast<uint8_t>(m >> 1))
+            out[n++] = (b[at] & m) ? g_bit1 : g_bit0;
+        ++at;
+    }
+    if (at >= size && room - n >= 1u) {
+        out[n++] = g_latch;
+        *done = true;
+    }
+    return n;
+}
+
+// pixDone: the frame has left. The interrupt's only job here.
+bool pixDone(rmt_channel_handle_t chan, const rmt_tx_done_event_data_t* ev, void* ctx) {
+    (void)chan;
+    (void)ev;
+    static_cast<PixOut*>(ctx)->busy = false;
+    return false;
+}
+
+bool pixSend(PixOut& p) {
+    rmt_transmit_config_t tc = {};
+    tc.loop_count               = 0;
+    tc.flags.eot_level          = 0;       // the line rests low, which a pixel ignores
+    tc.flags.queue_nonblocking  = 1;
+    p.busy = true;
+    if (rmt_transmit(p.chan, p.enc, p.grb, static_cast<size_t>(p.count) * 3u, &tc) != ESP_OK) {
+        p.busy = false;
+        p.sent = false;          // grb holds a frame that never left: send it again
+        return false;
+    }
+    p.sent = true;
+    return true;
+}
+
+void pixForget(PixOut& p) {
+    p.chan  = nullptr;
+    p.enc   = nullptr;
+    p.pin   = -1;
+    p.count = 0;
+    p.sent  = false;
+    p.busy  = false;
+}
+
+}   // namespace
+
+bool pixelsBegin(uint8_t out, int pin, uint8_t count) {
+    if (out >= kPixelOuts || !count || count > kPixelMax) return false;
+    PixOut& p = g_pix[out];
+    if (p.chan) pixelsEnd(out);
+    if (pin < 0 || !GPIO_IS_VALID_OUTPUT_GPIO(pin)) return false;
+    pixSymbols();
+
+    rmt_tx_channel_config_t cc = {};
+    cc.gpio_num      = static_cast<gpio_num_t>(pin);
+    cc.clk_src       = RMT_CLK_SRC_DEFAULT;
+    cc.resolution_hz = kPixHz;
+    // The whole frame fits the channel's own memory, so it goes out without
+    // the interrupt refilling it part way. A refill late by more than a bit
+    // time, which one Wi-Fi interrupt can manage, stretches a low into a
+    // latch and the strip shows half a frame. 24 symbols a pixel, the latch
+    // and the driver's end marker, in 64-symbol blocks: one block for the
+    // drive light, four for ten pixels, five of the ESP32's eight.
+    size_t need = static_cast<size_t>(count) * 24u + 2u;
+    cc.mem_block_symbols = (need + 63u) / 64u * 64u;
+    cc.trans_queue_depth = 2;
+
+    rmt_simple_encoder_config_t ec = {};
+    ec.callback = pixEncode;
+
+    rmt_tx_event_callbacks_t cb = {};
+    cb.on_trans_done = pixDone;
+
+    esp_err_t e = rmt_new_tx_channel(&cc, &p.chan);
+    if (e != ESP_OK) {
+        pixForget(p);
+        log("lights: gpio %d would not take an RMT channel (%s)", pin, esp_err_to_name(e));
+        return false;
+    }
+    e = rmt_new_simple_encoder(&ec, &p.enc);
+    if (e == ESP_OK) e = rmt_tx_register_event_callbacks(p.chan, &cb, &p);
+    if (e == ESP_OK) e = rmt_enable(p.chan);
+    if (e != ESP_OK) {
+        if (p.enc) rmt_del_encoder(p.enc);
+        rmt_del_channel(p.chan);
+        pixForget(p);
+        log("lights: gpio %d would not start (%s)", pin, esp_err_to_name(e));
+        return false;
+    }
+    p.pin   = static_cast<int8_t>(pin);
+    p.count = count;
+    p.sent  = false;
+    p.busy  = false;
+    memset(p.grb, 0, sizeof(p.grb));
+    return true;
+}
+
+void pixelsEnd(uint8_t out) {
+    if (out >= kPixelOuts) return;
+    PixOut& p = g_pix[out];
+    if (!p.chan) return;
+    // Dark before the pin goes: a strip keeps the last frame it latched for
+    // as long as it has power, so leaving without one leaves it lit.
+    rmt_tx_wait_all_done(p.chan, 20);
+    memset(p.grb, 0, sizeof(p.grb));
+    if (pixSend(p)) rmt_tx_wait_all_done(p.chan, 20);
+    rmt_disable(p.chan);
+    rmt_del_channel(p.chan);                      // hands the pin back to plain GPIO
+    rmt_del_encoder(p.enc);
+    int pin = p.pin;
+    pixForget(p);
+    // And hold it low rather than floating, so noise on a long data wire is
+    // not read as the start of a frame.
+    gpio_config_t c = {};
+    c.pin_bit_mask = 1ULL << pin;
+    c.mode         = GPIO_MODE_OUTPUT;
+    c.intr_type    = GPIO_INTR_DISABLE;
+    if (gpio_config(&c) == ESP_OK) gpio_set_level(static_cast<gpio_num_t>(pin), 0);
+}
+
+bool pixelsShow(uint8_t out, const uint8_t* rgb, uint8_t count) {
+    if (out >= kPixelOuts || !rgb) return false;
+    PixOut& p = g_pix[out];
+    if (!p.chan) return false;
+    if (count > p.count) count = p.count;
+    uint8_t grb[kPixelMax * 3] = {};
+    for (uint8_t i = 0; i < count; ++i) {
+        grb[i * 3]     = rgb[i * 3 + 1];
+        grb[i * 3 + 1] = rgb[i * 3];
+        grb[i * 3 + 2] = rgb[i * 3 + 2];
+    }
+    const size_t len = static_cast<size_t>(p.count) * 3u;
+    if (p.sent && !memcmp(grb, p.grb, len)) return true;      // nothing new to say
+    if (p.busy) return false;
+    memcpy(p.grb, grb, len);
+    return pixSend(p);
+}
+
+uint8_t pixelsFrame(uint8_t out, uint8_t* rgb, uint8_t cap) {
+    if (out >= kPixelOuts || !rgb) return 0;
+    const PixOut& p = g_pix[out];
+    if (!p.chan) return 0;
+    uint8_t n = p.count < cap ? p.count : cap;
+    for (uint8_t i = 0; i < n; ++i) {
+        rgb[i * 3]     = p.grb[i * 3 + 1];
+        rgb[i * 3 + 1] = p.grb[i * 3];
+        rgb[i * 3 + 2] = p.grb[i * 3 + 2];
+    }
+    return n;
 }
 
 // ===========================================================================
