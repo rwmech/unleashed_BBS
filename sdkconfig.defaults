@@ -102,6 +102,34 @@ CONFIG_FREERTOS_HZ=1000
 # app_main only does setup
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
 
+# ---------------------------------------------------------------------------
+# The task watchdog reboots a wedged board (1.1.0)
+# ---------------------------------------------------------------------------
+# The IDF default only prints a warning, so a board whose loop wedged stayed
+# wedged, answering nothing, until somebody noticed and pulled the plug. With
+# PANIC the board restarts itself, and reboots.log and the next staff login
+# say "task watchdog", because the panic handler leaves that as the reset
+# reason (esp_reset_reason_set_hint in task_wdt.c).
+#
+# What is watched: the idle task on each core (IDF default, left on), which
+# catches a task that spins without yielding, and the BBS loop itself,
+# subscribed in main.cpp once the board is up and fed once a pass, which
+# also catches a loop that blocks for ever.
+#
+# 30 s rather than the default 5, because the timeout is the longest single
+# pass allowed and the right price is the one a real pass cannot reach. The
+# longest measured on a board is 342 ms; the longest known are seconds (a
+# restore unpacking its largest file onto a nearly full partition, a DNS
+# lookup when CONFIG restarts the plugins with the network down). A board
+# that has genuinely wedged loses nothing that matters in the extra 25 s.
+# Kconfig allows 1..60.
+#
+# sdkconfig.<env> is generated once and then kept, and a value it already
+# holds wins over this file: delete sdkconfig.esp32dev (and the release
+# one) for a change here to take, and check the generated file afterwards.
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+
 # Smaller image leaves OTA headroom
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 

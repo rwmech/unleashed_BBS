@@ -38,6 +38,7 @@
  */
 
 #include "core/bbs.h"
+#include "core/recovery.h"
 #include "core/sysconfig.h"
 #include "core/plugin.h"
 #include "platform/platform.h"
@@ -51,8 +52,73 @@
 
 void hostSetFsBase(const char* path);
 void hostSetStack(const uint8_t* lo, size_t len);
+void hostSetArgv(char* const* argv);
 
 namespace {
+
+// ---------------------------------------------------------------------------
+// bootWatch: the BOOT-hold watch the board runs in its first seconds, here on
+// a simulated clock ten milliseconds a step, so a 21 s hold costs a test no
+// time at all. The watch itself, the files it changes and the restart that
+// follows are the board's own code; only the clock and the button are not.
+// With no BBS_BOOT_HOLD_MS the button is never down and the window simply
+// closes. The LED's pattern is traced, since a PC has no LED to look at.
+// ---------------------------------------------------------------------------
+const char* ledName(recovery::Led l) {
+    switch (l) {
+        case recovery::Led::Slow:  return "slow";
+        case recovery::Led::Fast:  return "fast";
+        case recovery::Led::Solid: return "solid";
+        case recovery::Led::Off:   return "off";
+        default:                   return "free";
+    }
+}
+
+void bootWatch() {
+    recovery::Led was = recovery::Led::Free;
+    for (uint32_t t = 0; recovery::bootPoll(t); t += 10) {
+        recovery::Led now = recovery::bootLed();
+        if (now != was) {
+            plat::log("led: %s at %u ms (host)", ledName(now), static_cast<unsigned>(t));
+            was = now;
+        }
+    }
+    if (was != recovery::Led::Free) plat::log("led: free (host)");
+}
+
+// ---------------------------------------------------------------------------
+// wifiSim: the Wi-Fi side of a boot, for the last-good fallback, on a
+// simulated clock. BBS_HOST_WIFI=up=<ms> joins the network system.cfg names
+// at that time; BBS_HOST_WIFI=never never does. A network gone back to joins
+// a second after the switch, as a working one would. The decisions and the
+// file are the board's code (core/recovery); the radio is this loop.
+// ---------------------------------------------------------------------------
+void wifiSim(const char* spec) {
+    const SysConfig& c = syscfg::get();
+    char ssid[33], pass[65];
+    snprintf(ssid, sizeof(ssid), "%s", c.wifiSsid);
+    snprintf(pass, sizeof(pass), "%s", c.wifiPass);
+    const long upAt = !strncmp(spec, "up=", 3) ? atol(spec + 3) : -1;
+    long switchedAt = -1;
+    recovery::wifiBegin(0, ssid, pass);
+    for (uint32_t t = 0; t <= 120000; t += 100) {
+        const bool up = switchedAt >= 0 ? t >= static_cast<uint32_t>(switchedAt) + 1000
+                                        : upAt >= 0 && t >= static_cast<uint32_t>(upAt);
+        if (up) {
+            plat::log("wifi (host): joined \"%s\" at %u ms", ssid, static_cast<unsigned>(t));
+            recovery::wifiJoined(ssid, pass);
+            return;
+        }
+        char ts[33], tp[65];
+        if (recovery::wifiDue(t, false, false, ssid, ts, tp)) {
+            plat::log("wifi (host): went back at %u ms", static_cast<unsigned>(t));
+            snprintf(ssid, sizeof(ssid), "%s", ts);
+            snprintf(pass, sizeof(pass), "%s", tp);
+            switchedAt = static_cast<long>(t);
+        }
+    }
+    plat::log("wifi (host): still dialling \"%s\" at 120000 ms", ssid);
+}
 
 // The BBS thread's stack. Far bigger than the board's, because x86-64
 // frames under glibc are not Xtensa frames under newlib and the point here
@@ -79,8 +145,11 @@ void* bbsThread(void*) {
 int main(int argc, char** argv) {
     signal(SIGPIPE, SIG_IGN);
     srand(static_cast<unsigned>(time(nullptr)));
+    hostSetArgv(argv);
     hostSetFsBase(argc > 1 ? argv[1] : "../data");
     syscfg::load();          // the host clock is already set, no NTP here
+    bootWatch();             // may restart this program, as the board would restart
+    if (const char* w = getenv("BBS_HOST_WIFI")) wifiSim(w);
     // A port on the command line wins, because the harness gives every run
     // its own. Without one, the port in system.cfg, as the board reads it at
     // boot: which is how a test restarts a board on its own files and finds

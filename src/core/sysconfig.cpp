@@ -702,6 +702,10 @@ bool write(const KeyVal* pairs, uint8_t count, const char* section, char* err, s
         snprintf(err, errLen, "too many settings at once");
         return false;
     }
+    // A null value removes the key rather than setting it (1.1.0, the BOOT
+    // reset): every line in the section that sets it is left out, and it is
+    // never added at the end. Marked done up front for the second half.
+    for (uint8_t i = 0; i < count; ++i) if (!pairs[i].value) done[i] = true;
 
     FILE* out = fopen(tmp, "w");
     if (!out) {
@@ -726,7 +730,9 @@ bool write(const KeyVal* pairs, uint8_t count, const char* section, char* err, s
             } else if (inSection) {
                 bool replaced = false;
                 for (uint8_t i = 0; i < count; ++i) {
-                    if (done[i] || !sameKey(line, pairs[i].key)) continue;
+                    if (!sameKey(line, pairs[i].key)) continue;
+                    if (!pairs[i].value) { replaced = true; break; }   // removed: every such line
+                    if (done[i]) continue;
                     fprintf(out, "%s = %s\n", pairs[i].key, pairs[i].value);
                     done[i] = replaced = true;
                     break;

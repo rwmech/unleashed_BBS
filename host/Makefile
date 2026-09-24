@@ -10,6 +10,8 @@
 #               make && ./bbs_host ../data 6400
 #               make SAN=1   AddressSanitizer + UBSan build for pen testing
 #               BBS_BACKUP_TEST_OPEN=1 ./bbs_host ...  holds the backup button
+#               BBS_BOOT_HOLD_MS=8000 ./bbs_host ...   plays a BOOT hold (1.1.0)
+#               BBS_HOST_WIFI=never|up=<ms> ./bbs_host ...  plays the Wi-Fi fallback
 #
 # Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
 # See also:     README.md
@@ -90,15 +92,22 @@ test_codes: test_codes.cpp ../src/core/codes.cpp ../src/core/codes.h ../src/core
 test_improv: test_improv.cpp ../src/core/improv.cpp ../src/core/improv.h
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_improv.cpp ../src/core/improv.cpp
 
-test: test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv
+# The BOOT-hold reset's timing and the Wi-Fi fallback's (1.1.0). Every rule
+# is a boundary, and a boundary that is off by one poll resets somebody's
+# password when they meant nothing, so each is driven from both sides.
+test_recovery: test_recovery.cpp ../src/core/recovery.h
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_recovery.cpp
+
+test: test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery
 	./test_xmodem
 	./test_wrap
 	./test_forums_ptr
 	./test_compose
 	./test_codes
 	./test_improv
+	./test_recovery
 
 clean:
-	rm -f bbs_host test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv
+	rm -f bbs_host test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery
 
 .PHONY: clean test

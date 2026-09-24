@@ -10,7 +10,8 @@
  * Purpose:      ESP32 (ESP-IDF) implementation of the platform layer.
  *
  * Libraries:    ESP-IDF: esp_timer, esp_hw_support (esp_random), heap,
- *                  esp_driver_gpio, esp_rom (ROM miniz tinfl), esp_wifi
+ *                  esp_driver_gpio, esp_rom (ROM miniz tinfl), esp_wifi,
+ *                  esp_partition and esp_system (the BOOT-hold reset)
  * Targets:      ESP32-WROOM-32E, ESP-IDF 5.3.1
  * See also:     README.md
  *
@@ -53,6 +54,9 @@
 #include "esp_vfs_fat.h"
 #include "freertos/FreeRTOS.h"   // stackFree, stackDeeper: the task's stack
 #include "freertos/task.h"
+#include "esp_attr.h"            // RTC_NOINIT_ATTR: the restart note
+#include "esp_partition.h"       // factoryErase
+#include "esp_task_wdt.h"        // factoryErase feeds the watchdog between partitions
 extern "C" {
 #include "miniz.h"
 }
@@ -601,6 +605,7 @@ int      g_ledGpio  = -1;
 bool     g_ledOn    = false;
 uint32_t g_ledSince = 0;
 uint32_t g_ledHold  = BBS_LED_PULSE_MS;   // how long the current show lasts
+int8_t   g_ledForce = -1;                 // ledOverride: -1 traffic drives it, 0 off, 1 on
 }
 
 // ---------------------------------------------------------------------------
@@ -638,7 +643,14 @@ bool resetWasCrash() {
            g_reset == ESP_RST_BROWNOUT;
 }
 
+// activityLedBegin: once per pin. app_main brings the LED up straight after
+// the settings are read, before the network, because the BOOT-hold watch
+// shows its stages on it from the first seconds (1.1.0); Bbs::begin asks
+// again for the same pin later and that call is a no-op. Driving GPIO2 this
+// early is fine: it is a strapping pin only while reset is released, and by
+// the time any code runs the ROM has read it.
 void activityLedBegin(int gpio) {
+    if (gpio >= 0 && gpio == g_ledGpio) return;          // already up
     if (gpio < 0 || gpio >= GPIO_NUM_MAX) { log("led: activity LED off"); return; }
     gpio_config_t c = {};
     c.pin_bit_mask = 1ULL << gpio;
@@ -646,12 +658,19 @@ void activityLedBegin(int gpio) {
     c.intr_type    = GPIO_INTR_DISABLE;
     if (gpio_config(&c) != ESP_OK) { log("led: gpio %d config failed", gpio); return; }
     g_ledGpio = gpio;
-    gpio_set_level(static_cast<gpio_num_t>(gpio), 0);
+    gpio_set_level(static_cast<gpio_num_t>(gpio), g_ledForce > 0 ? 1 : 0);
     log("led: activity LED on gpio %d", gpio);
 }
 
-void activityPulse(uint32_t now) {
+void ledOverride(int8_t state) {
+    g_ledForce = state < 0 ? -1 : (state ? 1 : 0);
     if (g_ledGpio < 0) return;
+    if (g_ledForce < 0) g_ledOn = false;                  // handed back dark
+    gpio_set_level(static_cast<gpio_num_t>(g_ledGpio), g_ledForce > 0 ? 1 : 0);
+}
+
+void activityPulse(uint32_t now) {
+    if (g_ledGpio < 0 || g_ledForce >= 0) return;
     g_ledSince = now;
     g_ledHold  = BBS_LED_PULSE_MS;
     if (!g_ledOn) {
@@ -661,7 +680,7 @@ void activityPulse(uint32_t now) {
 }
 
 void ledSignal(uint32_t now, uint32_t ms) {
-    if (g_ledGpio < 0) return;
+    if (g_ledGpio < 0 || g_ledForce >= 0) return;
     g_ledSince = now;
     g_ledHold  = ms;
     g_ledOn    = true;
@@ -669,10 +688,96 @@ void ledSignal(uint32_t now, uint32_t ms) {
 }
 
 void activityTick(uint32_t now) {
+    if (g_ledForce >= 0) return;
     if (g_ledOn && now - g_ledSince >= g_ledHold) {
         g_ledOn = false;
         gpio_set_level(static_cast<gpio_num_t>(g_ledGpio), 0);
     }
+}
+
+// ===========================================================================
+// Recovery (1.1.0): the BOOT button, the factory erase, and a restart that
+// says why
+// ===========================================================================
+
+namespace {
+bool g_bootPinUp = false;
+}
+
+// bootButtonDown: GPIO0, active low. Pulled up here as well as on the board,
+// because a module on a carrier with no BOOT button has nothing else holding
+// the pin, and a floating GPIO0 read as a press for 7 s would reset the
+// sysop password.
+bool bootButtonDown(uint32_t) {
+    if (!g_bootPinUp) {
+        gpio_config_t c = {};
+        c.pin_bit_mask = 1ULL << BBS_BOOT_GPIO;
+        c.mode         = GPIO_MODE_INPUT;
+        c.pull_up_en   = GPIO_PULLUP_ENABLE;
+        c.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        c.intr_type    = GPIO_INTR_DISABLE;
+        if (gpio_config(&c) != ESP_OK) return false;
+        g_bootPinUp = true;
+    }
+    return gpio_get_level(static_cast<gpio_num_t>(BBS_BOOT_GPIO)) == 0;
+}
+
+// factoryErase: each partition taken out of the VFS first, so nothing can
+// read a filesystem being erased under it, then erased whole. Whole, not
+// formatted: a LittleFS format writes a new superblock and leaves every old
+// block readable on the chip, and a factory reset of somebody's accounts
+// should not leave their password hashes there. The watchdog is fed between
+// the two, because an erase of 608 KB is seconds of work; the erase itself
+// yields (CONFIG_SPI_FLASH_YIELD_DURING_ERASE), so the idle task still runs.
+// feedIfWatched: esp_task_wdt_reset from a task the watchdog is not watching
+// logs "task not found" as an error, and a release before the BBS loop
+// starts (a board still waiting for its network) is exactly that.
+static void feedIfWatched() {
+    if (esp_task_wdt_status(nullptr) == ESP_OK) esp_task_wdt_reset();
+}
+
+bool factoryErase(char* err, size_t errLen) {
+    const char* const labels[] = { BBS_USER_LABEL, BBS_LOGS_LABEL };
+    for (const char* label : labels) {
+        const esp_partition_t* p = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+                                                            ESP_PARTITION_SUBTYPE_ANY, label);
+        if (!p) { snprintf(err, errLen, "%s", label); return false; }
+        esp_vfs_littlefs_unregister(label);             // not mounted is fine too
+        feedIfWatched();
+        if (esp_partition_erase_range(p, 0, p->size) != ESP_OK) {
+            snprintf(err, errLen, "%s", label);
+            return false;
+        }
+        feedIfWatched();
+    }
+    return true;
+}
+
+// The note survives a software restart in RTC slow memory, which the startup
+// code leaves alone (RTC_NOINIT_ATTR) and which costs no DRAM. A magic word
+// beside it, because after a power cut that memory holds whatever it holds.
+namespace {
+constexpr uint32_t kNoteMagic = 0x55A7B007u;
+RTC_NOINIT_ATTR uint32_t g_noteMagic;
+RTC_NOINIT_ATTR uint32_t g_noteValue;
+int16_t g_noteRead = -1;                // what restartNote found, -1 not looked yet
+}
+
+void restart(uint8_t note) {
+    g_noteValue = note;
+    g_noteMagic = note ? kNoteMagic : 0;
+    fflush(stdout);
+    esp_restart();
+}
+
+uint8_t restartNote() {
+    if (g_noteRead < 0) {
+        readReset();
+        bool mine = g_reset == ESP_RST_SW && g_noteMagic == kNoteMagic && g_noteValue < 256;
+        g_noteRead = mine ? static_cast<int16_t>(g_noteValue) : 0;
+        g_noteMagic = 0;                // said once
+    }
+    return static_cast<uint8_t>(g_noteRead);
 }
 
 // ===========================================================================

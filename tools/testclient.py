@@ -2999,19 +2999,53 @@ def restart_copy(extra_args=(), edits=None):
     as for cfg_with, change the copy's system.cfg only. Returns (process,
     its directory); the caller kills it.
     """
-    import shutil
-    import subprocess
-    import tempfile
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="bbs-restart-"))
-    shutil.copytree(DATA, tmp / "data")
+    tmp = copy_data()
     if edits:
         cfg = tmp / "data" / "user" / "system.cfg"
         cfg.write_text(cfg_with(cfg.read_text(), edits))
+    return start_copy(tmp, extra_args), tmp
+
+
+def copy_data():
+    """This board's data directory copied somewhere of its own, not started.
+    restart_copy in two halves, for a test that has to look at or plant
+    files between the copy and the start."""
+    import shutil
+    import tempfile
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="bbs-restart-"))
+    shutil.copytree(DATA, tmp / "data")
+    return tmp
+
+
+def start_copy(tmp, extra_args=(), env_extra=None):
+    """Start a board on a copy_data() directory, its console in tmp/host.log.
+    No card unless env_extra gives it one (BBS_SD_DIR)."""
+    import subprocess
     env = {k: v for k, v in os.environ.items() if k != "BBS_SD_DIR"}
+    env.update(env_extra or {})
     log = open(tmp / "host.log", "wb")
-    proc = subprocess.Popen([str(ROOT / "host" / "bbs_host"), str(tmp / "data"), *extra_args],
+    return subprocess.Popen([str(ROOT / "host" / "bbs_host"), str(tmp / "data"), *extra_args],
                             stdout=log, stderr=subprocess.STDOUT, env=env)
-    return proc, tmp
+
+
+def copy_log(tmp, want, secs=8):
+    """The copy's console once want appears in it, or all of it at the end."""
+    log = ""
+    end = time.time() + secs
+    while time.time() < end:
+        p = tmp / "host.log"
+        log = p.read_text(errors="replace") if p.exists() else ""
+        if want in log:
+            break
+        time.sleep(0.1)
+    return log
+
+
+def stop_copy(proc, tmp):
+    import shutil
+    proc.kill()
+    proc.wait(5)
+    shutil.rmtree(tmp, ignore_errors=True)
 
 
 def port_answers(port, secs=4):
@@ -3159,6 +3193,267 @@ def test_config_network():
     cfg_verdict(s, [b"next restart", b"Nothing changed"])
     ok &= check("put back", (cfg_line("port") or "").split("=", 1)[-1].strip() == str(BBS_PORT_NUM))
     s.close()
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# Recovery without a reflash (1.1.0): the BOOT-hold reset and the last good
+# Wi-Fi network. Both run on copies of this board, started with the host
+# build's simulated button and radio, so the harness board is never reset.
+# ---------------------------------------------------------------------------
+
+def tree_digest(root, skip=()):
+    """A digest of every file under root, by relative path and contents,
+    leaving out the top-level directories named in skip."""
+    import hashlib
+    h = hashlib.sha256()
+    for p in sorted(root.rglob("*")):
+        rel = p.relative_to(root)
+        if rel.parts and rel.parts[0] in skip:
+            continue
+        if p.is_file():
+            h.update(str(rel).encode() + b"\0" + p.read_bytes() + b"\0")
+    return h.hexdigest()
+
+
+def caller_on(port):
+    """An ANSI caller on another board's port: Caller dials PORT."""
+    global PORT
+    saved = PORT
+    PORT = port
+    try:
+        return Caller(ansi=True)
+    finally:
+        PORT = saved
+
+
+def test_boot_hold():
+    """The BOOT-hold reset (Rob, settled 2026-09-23), one band per copy.
+
+    Released under 7 s nothing happens; 7 to 15 s the sysop password goes
+    back to the published default and nothing else changes; 15 to 20 s
+    userdata and logs are erased and the screens and the card are not; held
+    to 20 s the reset is abandoned. The action happens on release, and the
+    two that act restart the board, which says why at its next staff login.
+    The host build plays the hold on a simulated clock (BBS_BOOT_HOLD_MS), so
+    none of this waits in real time, and restarts itself as the board would.
+    """
+    print("BOOT-hold reset")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the local harness")
+        return True
+
+    # An account for the copies to keep, or to lose.
+    c = ansi_login("BootKeeper")
+    c.close()
+    time.sleep(1.0)                    # the logoff's account write, before the copy
+
+    ok = True
+    user_of = lambda tmp: tmp / "data" / "user"
+    logs_of = lambda tmp: tmp / "data" / "logs"
+
+    def cfg_lines(tmp):
+        p = user_of(tmp) / "system.cfg"
+        return p.read_text().splitlines() if p.exists() else []
+
+    def boot(hold_ms, port, card=None):
+        tmp = copy_data()
+        before = {
+            "cfg": cfg_lines(tmp),
+            "users": (user_of(tmp) / "users.txt").read_bytes(),
+            "screens": tree_digest(tmp / "data", skip=("user", "logs")),
+        }
+        env = {"BBS_BOOT_HOLD_MS": str(hold_ms)}
+        if card:
+            env["BBS_SD_DIR"] = str(card)
+        proc = start_copy(tmp, (str(port),), env)
+        log = copy_log(tmp, f"listening on {port},")
+        return proc, tmp, before, log
+
+    base = PORT + 3200
+
+    # ---- under 7 s: nothing ------------------------------------------------
+    proc, tmp, before, log = boot(6900, base)
+    try:
+        ok &= check("a hold is seen and said", "reset: BOOT held. Let go before 7 s and nothing happens." in log)
+        ok &= check("6.9 s: let go at 6 s, nothing changed",
+                    "reset: let go at 6 s. Nothing changed." in log and "reset: 7 s." not in log)
+        ok &= check("with a slow blink the whole time",
+                    "led: slow at 500 ms" in log and "led: fast" not in log and "led: free" in log)
+        ok &= check("and the settings and accounts untouched, without a restart",
+                    cfg_lines(tmp) == before["cfg"] and
+                    (user_of(tmp) / "users.txt").read_bytes() == before["users"] and
+                    "host: restarting" not in log and f"listening on {base}," in log)
+    finally:
+        stop_copy(proc, tmp)
+
+    # ---- 7 to 15 s: the sysop password back to the published default ------
+    port = base + 1
+    proc, tmp, before, log = boot(8000, port)
+    try:
+        ok &= check("8 s: the 7 s stage is said while held",
+                    "reset: 7 s. Let go now to put the sysop password back to the default." in log)
+        ok &= check("the LED goes from a slow blink to rapid flashing at 7 s",
+                    "led: slow at 500 ms" in log and "led: fast at 7500 ms" in log and "led: solid" not in log)
+        ok &= check("on release, the copy's four lines",
+                    all(line in log for line in (
+                        "reset: sysop password is back to the published default.",
+                        "reset: it works from this network only, until it is changed.",
+                        "reset: accounts, settings, mail and Wi-Fi are all kept.",
+                        "reset: the directory listing waits until the password changes.")))
+        after = cfg_lines(tmp)
+        ok &= check("the sysop_password line is gone",
+                    not any(l.strip().startswith("sysop_password") for l in after))
+        ok &= check("and every other line is as it was",
+                    after == [l for l in before["cfg"] if not l.strip().startswith("sysop_password")])
+        ok &= check("the accounts are kept", (user_of(tmp) / "users.txt").read_bytes() == before["users"])
+        ok &= check("the board restarted, on the published default",
+                    "host: restarting (note 1)" in log and "boot: password reset by BOOT" in log and
+                    "on the published default, local network only" in log)
+        reboots = (logs_of(tmp) / "reboots.log").read_text().splitlines()
+        ok &= check("reboots.log says what happened", bool(reboots) and
+                    reboots[-1].endswith("  password reset by BOOT"))
+        d = caller_on(port)
+        d.wait_for(b"Enter your handle", 10)
+        login(d, "BootKeeper", wait_main=False)
+        ok &= check("a local caller is offered setup again",
+                    d.wait_for(b"has not been set up yet", 8) and d.wait_for(b"Sysop password", 4))
+        d.buf.clear()
+        d.send(BBS_DEFAULT.encode() + b"\r")
+        ok &= check("the published default works from here",
+                    d.wait_for(b"SysOp node", 6))
+        d.pump(0.5)
+        ok &= check("and the sysop is told why the board restarted",
+                    b"Last restart: password reset by BOOT." in plain(d.buf))
+        # The raw stream, not the rendered screen: the setup screen that
+        # follows clears it. 37 characters, so inside 40 columns as well.
+        ok &= check("on a line of its own",
+                    re.search(rb"\nLast restart: password reset by BOOT\.\r?\n", plain(d.buf)) is not None)
+        d.close()
+    finally:
+        stop_copy(proc, tmp)
+
+    # ---- 15 to 20 s: a factory reset of userdata and logs -------------------
+    import tempfile
+    card = pathlib.Path(tempfile.mkdtemp(prefix="bbs-card-"))
+    (card / "KEEP.TXT").write_text("the card is never touched\n")
+    port = base + 2
+    proc, tmp, before, log = boot(16000, port, card)
+    try:
+        ok &= check("16 s: the 15 s stage is said while held",
+                    "reset: 15 s. Let go now for a FACTORY RESET of accounts and settings." in log)
+        ok &= check("slow, then rapid, then solid",
+                    "led: slow at 500 ms" in log and "led: fast at 7500 ms" in log and
+                    "led: solid at 15500 ms" in log and "led: off" not in log)
+        ok &= check("on release, the copy's lines",
+                    all(line in log for line in (
+                        "reset: FACTORY RESET. Erasing userdata and logs.",
+                        "reset: done. Screens, firmware and SD card were not touched.",
+                        "reset: restarting with no Wi-Fi. The web installer sets it up.")))
+        ok &= check("the accounts and the settings are gone",
+                    not (user_of(tmp) / "users.txt").exists() and not (user_of(tmp) / "system.cfg").exists())
+        ok &= check("so is the caller log", not (logs_of(tmp) / "calls.log").exists())
+        reboots = (logs_of(tmp) / "reboots.log").read_text().splitlines() \
+            if (logs_of(tmp) / "reboots.log").exists() else []
+        ok &= check("reboots.log starts again, with the reason",
+                    len(reboots) == 1 and reboots[0].endswith("  factory reset by BOOT"))
+        ok &= check("the screens are exactly as they were",
+                    tree_digest(tmp / "data", skip=("user", "logs")) == before["screens"])
+        ok &= check("and the card too", (card / "KEEP.TXT").read_text() == "the card is never touched\n")
+        ok &= check("the board came back on the published default",
+                    "boot: factory reset by BOOT" in log and "on the published default, local network only" in log)
+    finally:
+        stop_copy(proc, tmp)
+        import shutil
+        shutil.rmtree(card, ignore_errors=True)
+
+    # ---- held to 20 s: abandoned --------------------------------------------
+    port = base + 3
+    proc, tmp, before, log = boot(21000, port)
+    try:
+        ok &= check("21 s: the 20 s stage says it is cancelled",
+                    "reset: 20 s. Cancelled. Let go; nothing will change." in log)
+        ok &= check("and the LED goes off at 20 s",
+                    "led: solid at 15500 ms" in log and "led: off at 20500 ms" in log)
+        ok &= check("released after 20 s: nothing changed, no restart",
+                    "reset: let go after 20 s. Nothing changed." in log and
+                    "host: restarting" not in log and
+                    cfg_lines(tmp) == before["cfg"] and
+                    (user_of(tmp) / "users.txt").read_bytes() == before["users"])
+    finally:
+        stop_copy(proc, tmp)
+
+    # ---- no hold: the harness board itself says nothing about it ------------
+    ok &= check("with nobody on the button a boot says nothing about it",
+                "reset:" not in (DATA.parent / "host.log").read_text(errors="replace")
+                if (DATA.parent / "host.log").exists() else True)
+    return ok
+
+
+def test_config_wifi_fallback():
+    """The last network that worked (1.1.0).
+
+    A board keeps the last network it joined in userdata/wifi.last, and a
+    network changed in CONFIG that has not joined within 60 s of boot is
+    given up for it: a typo costs a minute rather than a trip with a cable.
+    No record, or the same network: it keeps dialling as before. The host
+    build plays the radio on a simulated clock (BBS_HOST_WIFI); the rule and
+    the file are the board's.
+    """
+    print("Wi-Fi: back to the last network that worked")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the local harness")
+        return True
+    ok = True
+    ssid = cfg_line("wifi_ssid").split("=", 1)[1].strip() if cfg_line("wifi_ssid") else ""
+    pwd = cfg_line("wifi_password").split("=", 1)[1].strip() if cfg_line("wifi_password") else ""
+    port = PORT + 3300
+
+    def run(spec, last=None):
+        tmp = copy_data()
+        rec = tmp / "data" / "user" / "wifi.last"
+        if last is not None:
+            rec.write_text(last)
+        proc = start_copy(tmp, (str(port),), {"BBS_HOST_WIFI": spec})
+        log = copy_log(tmp, f"listening on {port},")
+        after = rec.read_text() if rec.exists() else None
+        stop_copy(proc, tmp)
+        return log, after
+
+    # A network that never joins, with a different one that worked before.
+    log, after = run("never", "OldNet\noldpass1\n")
+    ok &= check("a network new to the board is said to be on trial",
+                f'wifi: "{ssid}" has not joined here yet; back to "OldNet" if it has not in 60 s' in log)
+    ok &= check("not joined in 60 s: back to the last one that worked, at 60 s and not before",
+                "wifi (host): went back at 60000 ms" in log and
+                f'wifi: "{ssid}" has not joined in 60 s; going back to "OldNet", which has' in log)
+    ok &= check("which joins", 'wifi (host): joined "OldNet" at 61000 ms' in log)
+    ok &= check("and is still the one kept", after == "OldNet\noldpass1\n")
+
+    # The same, but the new network answers at 5 s.
+    log, after = run("up=5000", "OldNet\noldpass1\n")
+    ok &= check("a new network that joins is not given up",
+                "went back" not in log and f'wifi (host): joined "{ssid}" at 5000 ms' in log)
+    ok &= check("and becomes the one to go back to",
+                after == f"{ssid}\n{pwd}\n" and
+                f'wifi: joined "{ssid}"; it is the network to go back to now' in log)
+
+    # No record at all: keeps dialling, as before 1.1.0.
+    log, after = run("never")
+    ok &= check("with no last good network it keeps dialling the one it has",
+                "went back" not in log and "has not joined here yet" not in log and
+                f'wifi (host): still dialling "{ssid}" at 120000 ms' in log)
+    ok &= check("and writes no record of a network that never joined", after is None)
+
+    # The record is the network it is dialling: nothing to go back to.
+    log, after = run("never", f"{ssid}\n{pwd}\n")
+    ok &= check("the same network as the record is not second-guessed",
+                "went back" not in log and "has not joined here yet" not in log)
+
+    # A changed password on the same network is a different network to try.
+    log, after = run("never", f"{ssid}\nsomethingelse\n")
+    ok &= check("the same name with another password is still on trial",
+                "wifi (host): went back at 60000 ms" in log)
     return ok
 
 
@@ -8148,7 +8443,8 @@ GROUPS = {
     # The shell, its lists and the screens the core draws.
     "shell":     ["menus", "sysinfo", "page", "about", "config", "welcome", "paced", "seeded", "fx_codes"],
     # Logging in, accounts, staff.
-    "login":     ["accounts", "handle_case", "guest", "sysop", "cosysop", "user_admin", "first_setup", "ban"],
+    "login":     ["accounts", "handle_case", "guest", "sysop", "cosysop", "user_admin", "first_setup", "ban",
+                  "boot_hold"],
     # Terminal handling across the three flavours.
     "terminal":  ["ansi", "petscii", "ascii", "telnet_first"],
 }
@@ -8179,6 +8475,7 @@ ORDER_NAMES = [
     "test_config_parser_rules", "test_config_guards", "test_config_semicolon",
     "test_config_sd_plugin",
     "test_config_wifi_live", "test_config_network", "test_config_announce_outside",
+    "test_config_wifi_fallback", "test_boot_hold",
     "test_serial",
     "test_motd", "test_idle_login", "test_busy",
     "test_screens", "test_exit_screen", "test_welcome_connecting", "test_paced_chatin",

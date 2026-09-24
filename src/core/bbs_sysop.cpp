@@ -260,6 +260,11 @@ void Bbs::elevate(Session& s, uint32_t now, bool setup) {
     }
     t.text(tl, "Shown in WHO. LURK makes you invisible.");
     t.nl(tl);
+    // Why the board last started, here as well as on a co-sysop's line
+    // (1.1.0). After a BOOT reset of the password this is the very login it
+    // is for, and it only ever reached coElevate before.
+    bootNotice(d);
+    t.color(tl, Color::Grey);
     t.text(tl, "HELP for commands.");
     t.nl(tl);
 
@@ -289,15 +294,11 @@ void Bbs::coElevate(Session& s, Access level, uint32_t now, bool setup) {
     snprintf(buf, sizeof(buf), "%s access on node %u.", syscfg::levelName(level), s.id);
     say(t, tl, Color::LightGreen, buf);
     t.nl(tl);
-    if (bootWasCrash()) {
-        // Said to staff only, and said plainly. A board that restarted on
-        // its own has lost every caller who was on it.
-        char why[64];
-        snprintf(why, sizeof(why), "Last restart was not clean: %s.", bootReason());
-        say(t, tl, Color::LightRed, why);
-        say(t, tl, Color::Grey, "SYS has the detail. The log is reboots.log.");
-        t.nl(tl);
-    }
+    // Said to staff only, and said plainly. A board that restarted on its
+    // own has lost every caller who was on it. The two sentences used to run
+    // together on one line, since say() ends none, and nothing tested it
+    // because the host build never crashed its way into a boot.
+    bootNotice(s);
     say(t, tl, Color::Grey, can(s, PERM_NOLIMITS) ? "No time limits. HELP for commands."
                                                : "HELP for commands.");
     plat::log("bbs: node %u -> %s (%s, %s) perms 0x%03x", s.id, syscfg::levelName(level),

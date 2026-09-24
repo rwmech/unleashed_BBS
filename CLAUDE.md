@@ -397,6 +397,37 @@ this tree.
   v1.0.1. Restoring a backup on a board still on the published default
   turned it into an explicit password that worked from anywhere. Main
   merges the fix.
+- **Phase 1 is done (1.1.0-dev.1).** The listening port is a setting
+  (`port`, CONFIG network), Improv answers in time for the installer to
+  offer Update, and privacy.ans is 80 columns. The installer's own client
+  was read before designing: it sends state RPC 2 at open and every
+  second, gives up 1.5 s after opening the port (which resets the board),
+  honours an unprompted state and drops an unprompted result.
+- **Phase 2 is done (1.1.0-dev.3), host-tested, waiting for the bench.**
+  - BOOT hold is watched only if it starts within 10 s of the firmware
+    starting; once started it is watched to release. The backup window
+    ignores BOOT during the watch. The LED comes up right after the
+    settings load so the stages show.
+  - The factory band **erases** userdata and logs whole rather than
+    formatting them, because a LittleFS format leaves the old blocks,
+    and so the old password hashes, readable on the chip.
+  - The last good network is `userdata/wifi.last`, the board's own
+    record: not in system.cfg, so not in CONFIG and not in a backup.
+  - Watchdog: PANIC, and a **30 s** timeout rather than 5. The timeout is
+    the longest single pass allowed; the longest measured is 342 ms and
+    the longest known legitimate ones are seconds (a restore's biggest
+    file, DNS when CONFIG restarts the plugins). The BBS loop is
+    subscribed once the board is up; everything before that may take as
+    long as it takes. `esp32dev_wdttest` is the bench build that wedges on
+    purpose.
+  - Open from it, for Phase 5: `syscfg::write` removes the old file
+    before renaming the new one in, so a failure between the two leaves
+    no system.cfg. `lfs_rename` replaces an existing file atomically, so
+    on LittleFS the remove is only a hole; FatFs's `f_rename` refuses an
+    existing destination, so a write to the card still needs it. Sweep
+    every temp-and-rename site for the same shape. And after a fallback
+    the changed network is not tried again until the next boot.
+  - Static DRAM 160,320 (20,416 free).
 
 ## 1.0.0 (2026-09-23)
 

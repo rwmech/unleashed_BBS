@@ -57,12 +57,18 @@ std::string g_userBase = "../data/user";
 std::string g_logsBase = "../data/logs";
 const uint8_t* g_stackLo  = nullptr;   // the BBS thread's painted stack
 size_t         g_stackLen = 0;
+char* const*   g_argv     = nullptr;   // how this program was started, for restart()
 }
 
 // host-only: set by main_host.cpp before the BBS thread starts
 void hostSetStack(const uint8_t* lo, size_t len) {
     g_stackLo  = lo;
     g_stackLen = len;
+}
+
+// host-only: set by main_host.cpp, so plat::restart can start it again
+void hostSetArgv(char* const* argv) {
+    g_argv = argv;
 }
 
 // host-only: set by main_host.cpp; logs live in <data>/logs
@@ -381,10 +387,85 @@ void activityLedBegin(int) {}
 void activityPulse(uint32_t) {}
 void activityTick(uint32_t) {}
 void ledSignal(uint32_t, uint32_t) {}   // no LED on a PC
+// No LED either. main_host traces the watch's pattern (recovery::bootLed)
+// instead, which is the part worth checking: what the LED was told.
+void ledOverride(int8_t) {}
 
 // The host build is started by a person, so it never crashed its way here.
 const char* resetReason()  { return "host start"; }
 bool        resetWasCrash() { return false; }
+
+// ---------------------------------------------------------------------------
+// Recovery on the host (1.1.0). A test plays a BOOT hold of BBS_BOOT_HOLD_MS
+// against main_host's simulated clock, and the restart that follows an
+// action is this program starting itself again on the same files, with the
+// note in the environment where the board keeps it in RTC memory. That is
+// what lets a test see the boot after a reset, not just the reset.
+// ---------------------------------------------------------------------------
+namespace {
+constexpr uint32_t kHostPressAt = 500;      // the simulated press, after reset
+}
+
+bool bootButtonDown(uint32_t now) {
+    static long hold = -1;
+    if (hold < 0) {
+        const char* v = getenv("BBS_BOOT_HOLD_MS");
+        hold = v && *v ? atol(v) : 0;
+    }
+    return hold > 0 && now >= kHostPressAt && now - kHostPressAt < static_cast<uint32_t>(hold);
+}
+
+namespace {
+// emptyDir: everything under dir, leaving dir itself, as an erased and
+// freshly formatted partition would be.
+bool emptyDir(const std::string& dir) {
+    DIR* d = opendir(dir.c_str());
+    if (!d) return errno == ENOENT;
+    bool ok = true;
+    struct dirent* e;
+    while ((e = readdir(d)) != nullptr) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        std::string path = dir + "/" + e->d_name;
+        struct stat st;
+        if (lstat(path.c_str(), &st) != 0) { ok = false; continue; }
+        if (S_ISDIR(st.st_mode)) ok = emptyDir(path) && rmdir(path.c_str()) == 0 && ok;
+        else                     ok = unlink(path.c_str()) == 0 && ok;
+    }
+    closedir(d);
+    return ok;
+}
+}   // namespace
+
+bool factoryErase(char* err, size_t errLen) {
+    if (!emptyDir(g_userBase)) { snprintf(err, errLen, "userdata"); return false; }
+    if (!emptyDir(g_logsBase)) { snprintf(err, errLen, "logs"); return false; }
+    return true;
+}
+
+void restart(uint8_t note) {
+    char n[8];
+    snprintf(n, sizeof(n), "%u", static_cast<unsigned>(note));
+    setenv("BBS_HOST_RESTART_NOTE", n, 1);
+    // One hold, one reset: the board's button is not still down after it
+    // restarts, and a simulated one must not be either.
+    unsetenv("BBS_BOOT_HOLD_MS");
+    unsetenv("BBS_HOST_WIFI");
+    log("host: restarting (note %u)", static_cast<unsigned>(note));
+    fflush(stdout);
+    if (g_argv) execv("/proc/self/exe", g_argv);
+    perror("execv");
+    _exit(3);
+}
+
+uint8_t restartNote() {
+    static int note = -1;
+    if (note < 0) {
+        const char* v = getenv("BBS_HOST_RESTART_NOTE");
+        note = v && *v ? atoi(v) & 0xFF : 0;
+        unsetenv("BBS_HOST_RESTART_NOTE");
+    }
+    return static_cast<uint8_t>(note);
+}
 
 // ---------------------------------------------------------------------------
 // inflateRaw: zlib in raw mode (windowBits -15)

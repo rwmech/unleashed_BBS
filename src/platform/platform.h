@@ -280,7 +280,9 @@ bool backupButtonPressed(uint32_t now);
 // ---------------------------------------------------------------------------
 // activityLedBegin / activityPulse / activityTick: blink an LED on network
 // traffic. Pulse turns it on, tick turns it off BBS_LED_PULSE_MS later.
-// gpio -1 disables it.
+// gpio -1 disables it. Begin may be called more than once: app_main brings
+// the LED up before the network for the BOOT-hold watch, and Bbs::begin's
+// call for the same pin then changes nothing.
 // ---------------------------------------------------------------------------
 void activityLedBegin(int gpio);
 void activityPulse(uint32_t now);
@@ -299,6 +301,39 @@ void ledSignal(uint32_t now, uint32_t ms);
 // ---------------------------------------------------------------------------
 const char* resetReason();
 bool        resetWasCrash();
+
+// ---------------------------------------------------------------------------
+// Recovery without a reflash (1.1.0, core/recovery). Additive: nothing above
+// changed to make room for these.
+// ---------------------------------------------------------------------------
+
+// bootButtonDown: is the BOOT button (BBS_BOOT_GPIO) pressed right now? now
+// is the caller's clock, which the host build plays a simulated hold against
+// (BBS_BOOT_HOLD_MS, pressed from 500 ms for that long). The board sets the
+// pin up on the first call, so it can be asked before anything else runs.
+bool bootButtonDown(uint32_t now);
+
+// ledOverride: take the activity LED away from traffic. 1 holds it on, 0
+// holds it off, -1 hands it back. While it is held, activityPulse,
+// activityTick and ledSignal leave it alone. Remembered if the LED is not
+// set up yet, and applied when activityLedBegin runs.
+void ledOverride(int8_t state);
+
+// factoryErase: erase the userdata and logs partitions, whole. Never the
+// screens partition, the firmware or the SD card. The board is to restart
+// straight after, and the mount at boot formats what it finds erased. False
+// with the partition's name in err when one could not be erased.
+bool factoryErase(char* err, size_t errLen);
+
+// restart: restart the board, leaving note for the next boot to read through
+// restartNote. Does not return on the board. The host build starts itself
+// again in place, which is what lets a test see the boot that follows.
+void restart(uint8_t note);
+
+// restartNote: the note the previous boot left with restart, or 0. Only a
+// software restart carries one: a power cut or a crash says nothing, however
+// the memory it lived in happens to read.
+uint8_t restartNote();
 
 // ---------------------------------------------------------------------------
 // inflateRaw: decode a raw DEFLATE stream (ZIP method 8). in() fills a

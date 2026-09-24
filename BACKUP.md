@@ -36,6 +36,8 @@ The window stays open for `backup_window_minutes` (default 5), then closes by it
 
 If nothing happens, check the serial log: `backup: button pressed, but the sysop is not on the sysop node` means you pressed it before becoming sysop.
 
+For its first 10 seconds after starting, the board reads BOOT as the reset button instead (1.1.0, see "Resetting the board" in [README.md](README.md)) and the backup window ignores it. Nobody can be sysop that soon after a restart, so in practice this only matters if you restart the board and press BOOT straight away: a short press there does nothing at all.
+
 ## 2. Download
 
 Windows (PowerShell or cmd, note `curl.exe`, not `curl`):

@@ -187,6 +187,10 @@ const char* levelName(Access level);
 // live under, or null for the top of the file; a section that is not there
 // yet is added at the end. The file is written through a temp file and a
 // rename, so an interrupted write cannot lose the settings.
+//
+// A value of nullptr removes the key instead: every line in that section
+// that sets it is left out (1.1.0, the BOOT-hold reset, which puts the sysop
+// password back to the default by taking its line away).
 // ---------------------------------------------------------------------------
 struct KeyVal { const char* key; const char* value; };
 bool write(const KeyVal* pairs, uint8_t count, const char* section, char* err, size_t errLen);

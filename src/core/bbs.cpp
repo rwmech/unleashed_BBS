@@ -45,6 +45,7 @@
 #include "sysconfig.h"
 #include "calllog.h"
 #include "plugin.h"
+#include "recovery.h"
 #include "../platform/platform.h"
 
 #include <sys/types.h>
@@ -485,7 +486,10 @@ void Bbs::tick() {
 void Bbs::serviceBackup(uint32_t now) {
     bool sysopOn = sysop_.st != SState::Free && sysop_.loggedIn && sysop_.fd >= 0;
 
-    if (plat::backupButtonPressed(now) && !backup_.isOpen()) {
+    // The BOOT-hold watch owns the same button for the first seconds after a
+    // start (1.1.0). A hold that is resetting the board is not a request for
+    // the backup window, and would otherwise log that the sysop is not on.
+    if (!recovery::bootWatching() && plat::backupButtonPressed(now) && !backup_.isOpen()) {
         if (sysopOn) {
             char ip[16] = "0.0.0.0";
             sockaddr_in a;
@@ -2196,8 +2200,12 @@ void Bbs::exitScreen(Session& s, uint32_t now) {
 // for ever.
 // ---------------------------------------------------------------------------
 void Bbs::noteBoot() {
-    snprintf(bootReason_, sizeof(bootReason_), "%s", plat::resetReason());
-    bootCrash_ = plat::resetWasCrash();
+    // A BOOT-hold reset restarts the board, and the chip calls that a
+    // software restart like any other. The note it left says what it was.
+    const char* noted = recovery::noteText(plat::restartNote());
+    snprintf(bootReason_, sizeof(bootReason_), "%s", noted ? noted : plat::resetReason());
+    bootNoted_ = noted != nullptr;
+    bootCrash_ = !bootNoted_ && plat::resetWasCrash();
     plat::log("boot: %s", bootReason_);
 
     char path[96];
@@ -2229,6 +2237,29 @@ void Bbs::noteBoot() {
     else              snprintf(when, sizeof(when), "clock not set yet");
     fprintf(f, "%s  %s\n", when, bootReason_);
     fclose(f);
+}
+
+// ---------------------------------------------------------------------------
+// bootNotice: the reason the board last started, to staff as they arrive,
+// on the sysop node or on their own line. A crash in red, because a board
+// that restarted on its own lost everybody on it; a BOOT reset in yellow,
+// because somebody did it on purpose and the next sysop should know what
+// became of the password or the accounts.
+// ---------------------------------------------------------------------------
+void Bbs::bootNotice(Session& s) {
+    if (!bootCrash_ && !bootNoted_) return;
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    char why[64];
+    if (bootCrash_) {
+        snprintf(why, sizeof(why), "Last restart was not clean: %s.", bootReason_);
+        sayLine(t, tl, Color::LightRed, why);
+        sayLine(t, tl, Color::Grey, "SYS has the detail. The log is reboots.log.");
+    } else {
+        snprintf(why, sizeof(why), "Last restart: %s.", bootReason_);
+        sayLine(t, tl, Color::Yellow, why);
+    }
+    t.nl(tl);
 }
 
 // ---------------------------------------------------------------------------

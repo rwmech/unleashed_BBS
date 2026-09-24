@@ -51,7 +51,7 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "1.1.0-dev.2"
+#define BBS_VERSION         "1.1.0-dev.3"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // ---------------------------------------------------------------------------
@@ -290,6 +290,14 @@
 #define BBS_CALLLOG_FILE    "calls.log"
 #define BBS_REBOOT_FILE     "reboots.log"  // why the board started, one line each
 #define BBS_REBOOT_MAX      4096           // bytes before it starts again
+// The last Wi-Fi network this board joined, on userdata (1.1.0). A record the
+// board keeps about its own radio, not a setting: not in system.cfg, not on
+// a CONFIG page, not in the backup zip. See core/recovery.h.
+#define BBS_WIFI_LAST_FILE  "wifi.last"
+// The BOOT button, for the BOOT-hold reset. GPIO0 on every ESP32 and ESP32-S3
+// board, because it is the strapping pin that selects download mode, which
+// is also why the hold only counts once the firmware is running.
+#define BBS_BOOT_GPIO       0
 #define BBS_CALLLOG_SIZE    50
 
 // ---------------------------------------------------------------------------

@@ -106,6 +106,7 @@ A carrier PCB with the module, a level shifter and screw terminals is the obviou
 - The easy way to set it is Improv Wi-Fi Serial: with the board on USB, open a page that speaks Improv (ESP Web Tools after a flash, or the tester at <https://www.improv-wifi.com>) in Chrome or Edge on a desktop, pick the network, type the passphrase. The board tries it for 30 seconds and saves it only if it joins; otherwise it goes back to the network it had. Improv listens on the console port for as long as the board runs, so a board that has moved house is fixed with the same cable.
 - Opening the port in ESP Web Tools resets the board, and the installer gives up on Improv 1.5 seconds after it first asks. The board answers from early in its boot (1.1.0), so an installer pointed at a board already running this firmware sees its name and version and offers Update. It answers "not on the network yet" at that point, because it is still joining; once it joins it says so unasked, and the dialog's Connect to Wi-Fi becomes Change Wi-Fi. The telnet link in that dialog needs the dialog opened again, because the installer drops a link it did not ask for.
 - `CONFIG network` changes it from the board (`CONFIG wifi` still works), used from the next restart. Never live: changing the network under a telnet session would drop the sysop who changed it, and a typo would leave nobody on the board to fix it.
+- A network that has never joined gets a minute (1.1.0). The board keeps the last network that did join in `userdata/wifi.last`, and when the one it dials at boot is a different one and has not joined within 60 seconds, it goes back to the one that worked and says so on the console. A typo in `CONFIG network` costs a minute rather than a trip with a cable. The new network is tried again at every boot until it is corrected, so fix it in `CONFIG network` once you are back on. The record is the board's own: not a setting, not in `system.cfg`, not in a backup. A board that has never joined anything keeps dialling what it has, as before, and Improv's own try-and-go-back is unchanged.
 - A board with no network set says so on the console every 30 seconds and waits for Improv. `include/secrets.h` is now optional: a developer's build can still carry a network there as a fallback, used only when `system.cfg` has none, and a published binary carries nobody's.
 - The board scans every channel and joins the strongest access point with that name, so a mesh or a pair of repeaters needs no extra configuration.
 - `hostname` in `system.cfg` sets both the DHCP hostname and the mDNS name, so `unleashed.local` finds the board on a normal home network without hunting for its address.
@@ -125,7 +126,7 @@ The second UART is wired to the serial bridge plugin, so a caller with permissio
 ### GPIO and the physical world
 
 - GPIO2 drives the activity LED by default, which is the LED already fitted to most dev boards. `activity_led_gpio` moves it.
-- GPIO0, the BOOT button on a dev board, opens the backup window while the sysop is logged in. Hold it, and `system.cfg`, the accounts and the screens can be downloaded or uploaded over HTTP for a few minutes.
+- GPIO0, the BOOT button on a dev board, opens the backup window while the sysop is logged in. Hold it, and `system.cfg`, the accounts and the screens can be downloaded or uploaded over HTTP for a few minutes. For the first 10 seconds after the board starts it is the reset button instead: see [Resetting the board](#resetting-the-board).
 - The remaining pins are free. The planned GPIO plugin exposes them to callers as commands with their own read, write and admin levels, so reading a sensor can be open to everyone while throwing a relay is staff only.
 - Reserved by the hardware, not by this firmware: 6 to 11 are the flash, 34 to 39 are input only and have no pull-ups, and the strapping pins (0, 2, 12, 15) decide how the chip boots and should be left alone unless you know what they do at reset.
 - Anything switching mains, motors or an inductive load belongs behind a relay module or an opto-isolated driver with its own supply, not on a board that also has to keep six telnet sessions alive.
@@ -150,6 +151,30 @@ This section used to carry a per-version snapshot (host test counts, image size,
 - Log in or sign up from a computer on the same network and the board asks for it straight away: "This board has not been set up yet." The right password makes you the sysop, shows a short setup screen, opens `CONFIG staff` to choose your own, then gives a paged tour of the rest of CONFIG. ESC (the left arrow on a Commodore) skips, and `BYE <password>` from the same network does it later.
 - The board refuses the published default as anybody's chosen password, and it keeps itself out of the directory listing until the default is changed.
 - Do not forward the port or switch on the directory listing until you have set your own. "Local only" is a guard, not a wall: a router that rewrites the source of forwarded traffic can make an outside caller look local.
+
+### Resetting the board
+
+The BOOT button can put a board right without a reflash. Press and let go of RESET, then press BOOT and hold it. What happens depends on how long you hold it, and happens when you let go:
+
+- under 7 seconds, nothing;
+- 7 to 15 seconds, the sysop password goes back to the published default, `unleashed`, which works only from your own network until you change it. Accounts, settings, mail and Wi-Fi are kept. While the password is the default, the board keeps itself off the directory;
+- 15 to 20 seconds, a factory reset: the accounts, the settings, the Wi-Fi, the mail kept on the board and the caller log are erased. The screens, the firmware and the SD card are not touched;
+- 20 seconds or more, nothing: the reset is abandoned.
+
+The activity LED shows the stage while you hold: a slow blink under 7 seconds, fast flashing from 7, solid from 15, and off at 20. A board with no LED keeps the same timings, and the serial console says each stage as it arrives.
+
+**A factory reset also costs the board its directory listing.** The listing is tied to a token the directory gave the board, and the token is kept in the settings, so after the reset the directory has no way to know it is the same board. Switched back on, it is listed as a new one: on unleashedbbs.com that means three hours before it appears, as the first time, while the old entry shows as offline and is dropped after a week of silence. Restoring a backup taken before the reset brings the token back with the settings. Back within four days, the listing carries on where it was; within a week it keeps its entry but waits the three hours again. A backup never holds the staff passwords, so set the sysop password again straight after restoring.
+
+For developers, what the copy above leaves out:
+
+- The press has to start within 10 seconds of the firmware starting, a little more than 10 seconds after RESET is let go, since the bootloader runs first. After that BOOT is the backup window's button again. Never hold BOOT while pressing or letting go of RESET: GPIO0 low at that moment is the chip's download mode, and the firmware never runs.
+- Both resets restart the board once they are done. The reason goes into `reboots.log` as the reason for that boot, `password reset by BOOT` or `factory reset by BOOT`, and the next staff login, on the sysop node or a co-sysop's own line, is told `Last restart: <reason>.` `SYS` shows it beside the uptime.
+- The password reset removes the `sysop_password` line from `system.cfg` rather than writing the default into it: a board on the default is exactly one with no such line (1.0.2). The factory reset erases the `userdata` and `logs` partitions whole, not just their directories, so no old account hashes stay readable on the chip; the next boot formats them. A dev build with `include/secrets.h` rejoins that network afterwards, whatever the console line says; a release has none and waits for Improv.
+- The timing is `recovery::BootHold` in `src/core/recovery.h`, tested at every boundary by `host/test_recovery.cpp`; `tools/testclient.py`'s `test_boot_hold` runs each band on a copy of a harness board, with `BBS_BOOT_HOLD_MS` playing the hold on the host build's simulated clock.
+
+### When the board wedges
+
+The task watchdog restarts a board whose BBS loop has stopped for 30 seconds, whether it is spinning or stuck waiting (1.1.0; before that the watchdog only printed a warning and a wedged board stayed wedged). `reboots.log` and the next staff login say `task watchdog`. `pio run -e esp32dev_wdttest -t upload` is a bench build that stops its own loop a minute after starting, to see it happen.
 
 ## Releases
 

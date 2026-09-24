@@ -61,6 +61,26 @@ entry when it is released.
   and welcome screens. The words are unchanged, and PETSCII and ASCII are
   byte-identical.
 - Carries the 1.0.2 security fix.
+
+**1.1.0-dev.3, recovery without a reflash.**
+- Hold BOOT after a restart (press RESET, let go, then hold BOOT within
+  10 s). What happens depends on how long it was held when you let go:
+  under 7 s, nothing (the activity LED blinks slowly while it counts); 7
+  to 15 s puts the sysop password back to the published default (the LED
+  flashes fast); 15 to 20 s is a factory reset of accounts, settings and
+  logs, leaving the screens, the firmware and the SD card alone (the LED
+  is solid); held to 20 s abandons it (the LED goes off). Both actions
+  restart the board, and the next staff login says why. A factory reset
+  also costs the directory listing unless a backup is restored afterwards.
+- The board remembers the last network it joined. A network changed in
+  CONFIG that has not joined within a minute of boot is given up, and the
+  board goes back to the last one that worked and logs it.
+- The task watchdog now restarts a board whose loop has wedged, instead
+  of leaving it answering nothing until somebody pulls the plug. The
+  restart shows as "task watchdog" in the restart log and at staff login.
+- Fixed: the crash notice at staff login ran its two sentences into one
+  line, and never showed on the sysop node.
+
 ## 1.0.2, 2026-09-23
 
 A security fix. Restoring a backup could turn the published default sysop

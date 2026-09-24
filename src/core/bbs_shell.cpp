@@ -1698,9 +1698,10 @@ bool Bbs::rowSys(Session& s) {
         case 18:
             fmtUptime(buf, sizeof(buf), plat::millis());
             // An uptime that keeps starting over is the only symptom of a
-            // board that restarts on its own, so say why it started.
+            // board that restarts on its own, so say why it started. A
+            // BOOT-hold reset too: a software restart says nothing useful.
             statRow(s, "Uptime", buf, Color::White,
-                    bootWasCrash() ? bootReason() : nullptr);
+                    bootWasCrash() || bootNoted_ ? bootReason() : nullptr);
             return true;
         case 19: {
             char when[24] = "-";

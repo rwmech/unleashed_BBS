@@ -9,11 +9,14 @@
  *
  * Purpose:      ESP32 entry point. NVS, LittleFS at /fs, system.cfg, Wi-Fi
  *                  station, then NTP + mDNS once online, then the BBS loop
- *                  pinned to core 1 (Wi-Fi runs on core 0).
+ *                  pinned to core 1 (Wi-Fi runs on core 0), under the task
+ *                  watchdog. The BOOT-hold watch and the last good network
+ *                  (core/recovery) are polled from here.
  *
  * Interfaces:   app_main()
  *
- * Depends on:   core/bbs, core/sysconfig, platform, include/secrets.h
+ * Depends on:   core/bbs, core/sysconfig, core/recovery, platform,
+ *                  include/secrets.h
  *
  * Libraries:    ESP-IDF (esp_wifi, esp_netif, esp_event, nvs_flash, lwip
  *                  esp_sntp), joltwallet/littlefs, espressif/mdns
@@ -44,6 +47,7 @@
 #include "core/bbs.h"
 #include "core/bbs_util.h"
 #include "core/improv.h"
+#include "core/recovery.h"
 #include "core/sysconfig.h"
 #include "core/plugin.h"
 #include "platform/platform.h"
@@ -74,6 +78,7 @@
 #include "nvs_flash.h"
 #include "esp_littlefs.h"
 #include "esp_sntp.h"
+#include "esp_task_wdt.h"
 #include "mdns.h"
 #include "sdkconfig.h"
 #include <cstring>
@@ -237,6 +242,11 @@ static void wifiStart() {
         ESP_LOGI(TAG, "wifi: joining \"%s\" (from %s)", s_ssid,
                  sc.wifiSsid[0] ? "system.cfg" : "secrets.h");
     }
+    // A network that has never joined here gets a minute, then the board
+    // goes back to the last one that did (1.1.0, core/recovery). CONFIG
+    // network saves untested, so a typo there used to take a board off the
+    // air until somebody came with a cable.
+    recovery::wifiBegin(plat::millis(), s_ssid, s_pass);
     ESP_ERROR_CHECK(esp_wifi_start());
     // Power save is NOT set here. esp_wifi_start() raises STA_START, whose
     // handler connects immediately, so anything on this line races the
@@ -610,6 +620,34 @@ void poll() {
 } // namespace imp
 
 // ---------------------------------------------------------------------------
+// wifiWatch: the last network that worked (1.1.0). On each join, the network
+// is kept as the one to go back to if it is not already; and a network that
+// has not joined within a minute of boot is given up for the kept one. The
+// rules and the file are core/recovery, where the host build can test them;
+// this is the radio. Nothing is decided while Improv has the radio: its own
+// trial already goes back to the old network when a new one fails.
+// ---------------------------------------------------------------------------
+static bool s_upSeen = false;
+
+static void wifiWatch() {
+    const bool up   = imp::up();
+    const bool busy = imp::g_trial || imp::g_scanning || s_hold;
+    if (!up) {
+        s_upSeen = false;
+    } else if (!s_upSeen && !busy) {
+        s_upSeen = true;
+        // On the network the radio was told to join, and no other: a join
+        // that raced a switch must not be kept under the wrong name.
+        wifi_ap_record_t ap;
+        if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK &&
+            !strcmp(reinterpret_cast<const char*>(ap.ssid), s_ssid))
+            recovery::wifiJoined(s_ssid, s_pass);
+    }
+    char ssid[33], pass[65];
+    if (recovery::wifiDue(plat::millis(), up, busy, s_ssid, ssid, pass)) imp::switchTo(ssid, pass);
+}
+
+// ---------------------------------------------------------------------------
 // bbsTask: waits for the network, answering Improv meanwhile, then runs the
 // scheduler forever
 // ---------------------------------------------------------------------------
@@ -617,6 +655,8 @@ static void bbsTask(void*) {
     uint32_t told = plat::millis();
     while (!imp::up()) {
         imp::poll();
+        wifiWatch();
+        recovery::bootPoll(plat::millis());
         // Somebody may open the monitor long after boot, so the one line
         // that says what to do is repeated rather than scrolled away.
         if (!s_ssid[0] && plat::millis() - told >= 30000) {
@@ -626,9 +666,12 @@ static void bbsTask(void*) {
         vTaskDelay(pdMS_TO_TICKS(20));
     }
     imp::poll();         // the join, said now rather than after the plugins start
+    wifiWatch();
+    recovery::bootPoll(plat::millis());
     netServicesStart();
     Bbs& bbs = Bbs::instance();
     while (!bbs.begin(s_port)) vTaskDelay(pdMS_TO_TICKS(1000));
+    recovery::bootPoll(plat::millis());
     plugins::begin(bbs);
 
     // A second on the LED once the line is genuinely open. Wi-Fi being up is
@@ -636,9 +679,43 @@ static void bbsTask(void*) {
     // to find out is to dial in and be refused.
     plat::ledSignal(plat::millis(), 1000);
 
+    // The task watchdog watches this loop from here on (1.1.0). The IDF
+    // already watches both idle tasks, which catches a loop that spins
+    // without yielding; subscribing the loop itself also catches one that
+    // blocks for ever and lets the idle task run, which the idle check
+    // cannot see. It is fed once a pass, so only a single pass longer than
+    // CONFIG_ESP_TASK_WDT_TIMEOUT_S (30 s, sdkconfig.defaults) trips it, and
+    // with CONFIG_ESP_TASK_WDT_PANIC that reboots the board, recorded in
+    // reboots.log as "task watchdog". The longest legitimate passes are
+    // seconds (a restore's biggest file, a DNS lookup when CONFIG restarts
+    // the plugins). Everything before this line is left out on purpose:
+    // waiting for Improv, the listener's retries and the plugins' start
+    // (an SD card that will not answer) may take as long as they take.
+    esp_err_t wd = esp_task_wdt_add(nullptr);
+    if (wd != ESP_OK)
+        ESP_LOGW(TAG, "task watchdog: could not watch the BBS loop (%s)", esp_err_to_name(wd));
+
+#ifdef BBS_WDT_TEST
+    // Bench build only (esp32dev_wdttest): stop the loop a minute after it
+    // starts, blocked rather than spinning, so the idle task still runs and
+    // only the loop's own subscription can notice. A board that restarts
+    // with "task watchdog" in reboots.log proves the whole chain.
+    const uint32_t wedgeAt = plat::millis() + 60000;
+#endif
+
     for (;;) {
         bbs.tick();
         imp::poll();     // one non-blocking UART read when nothing is arriving
+        wifiWatch();
+        recovery::bootPoll(plat::millis());   // one comparison once the watch is over
+        esp_task_wdt_reset();
+#ifdef BBS_WDT_TEST
+        if (static_cast<int32_t>(plat::millis() - wedgeAt) >= 0) {
+            plat::log("wdt test: the BBS loop stops here; the watchdog should restart "
+                      "the board within %d s", CONFIG_ESP_TASK_WDT_TIMEOUT_S);
+            for (;;) vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+#endif
         vTaskDelay(1);   // let lower-priority tasks on this core breathe
     }
 }
@@ -660,6 +737,13 @@ extern "C" void app_main(void) {
     imp::g_uartOk = ue == ESP_OK;
     if (!imp::g_uartOk) ESP_LOGE(TAG, "console UART driver: %s, Improv is off", esp_err_to_name(ue));
 
+    // The BOOT-hold watch (1.1.0, core/recovery) starts looking as early as
+    // anything, and is polled between the steps below and then from the BBS
+    // task. BOOT held while RESET is let go is the ROM's download mode and
+    // this code never runs, so the hold that counts is one that starts after
+    // the firmware does: within recovery::kWindowMs of now.
+    recovery::bootPoll(plat::millis());
+
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();
@@ -673,10 +757,16 @@ extern "C" void app_main(void) {
               static_cast<unsigned>(h.largestBlock));
 
     fsMount(BBS_FS_LABEL, BBS_FS_MOUNT);
+    recovery::bootPoll(plat::millis());
     fsMount(BBS_USER_LABEL, BBS_USER_BASE);
     fsMount(BBS_LOGS_LABEL, BBS_LOGS_MOUNT);
     syscfg::load();          // hostname, TZ, NTP, staff passwords, limits, backup window
     s_port = syscfg::get().port;     // this boot's port, before anything says it
+    // The activity LED, now rather than in Bbs::begin after the network: the
+    // BOOT-hold watch shows its stages on it from the first seconds. Bbs::begin
+    // asks for the same pin again later, and that changes nothing.
+    plat::activityLedBegin(syscfg::get().ledGpio);
+    recovery::bootPoll(plat::millis());
     // The first answer, as soon as there is a name to give (C_INFO reads
     // the settings). Everything before this line is quick on a board that
     // has booted before; the partition walks used to come first and now
@@ -689,12 +779,15 @@ extern "C" void app_main(void) {
         uint32_t t = 0, u = 0;
         plat::fsInfo(t, u);
         imp::poll();
+        recovery::bootPoll(plat::millis());
         plat::userInfo(t, u);
     }
     imp::poll();
+    recovery::bootPoll(plat::millis());
     wifiStart();
     imp::g_radio = true;
     imp::poll();
+    recovery::bootPoll(plat::millis());
 
 #if CONFIG_FREERTOS_UNICORE
     const BaseType_t core = 0;

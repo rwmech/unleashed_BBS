@@ -529,6 +529,10 @@ private:
     bool bootWasCrash() const { return bootCrash_; }
     const char* bootReason() const { return bootReason_; }
     uint16_t bootCrashCount() const { return bootCrashes_; }
+    // bootNotice: why the board last started, to a staff member arriving,
+    // when it is worth saying: a crash, or a reset somebody did with the BOOT
+    // button (1.1.0), which the chip alone reports as a software restart.
+    void bootNotice(Session& s);
     bool playScreen(Session& s, const char* name);
 
     // -- timers, notices, paging, refresh (bbs.cpp) --------------------------
@@ -714,6 +718,7 @@ private:
     bool      shutDone_  = false;          // the lines are closed, stay closed
     uint16_t  callsBoot_   = 0;      // calls answered since boot
     bool      bootCrash_   = false;  // this boot followed a crash or watchdog
+    bool      bootNoted_   = false;  // this boot followed a BOOT-hold reset (recovery::Note)
     char      bootReason_[32] = "";  // in words, for the sysop
     uint16_t  bootCrashes_ = 0;      // how many are in the reboot log
     uint8_t   peakNodes_   = 0;      // most nodes busy at once since boot
