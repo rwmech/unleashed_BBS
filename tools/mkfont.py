@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 ===========================================================================
  µnleashed BBS
@@ -16,7 +16,7 @@ Purpose:      Turns Spleen's BDF fonts into src/plugins/panel_font.h, the
               sign, because the board's own name starts with one.
 
               Spleen is Frederic Cambus's, under the BSD 2-Clause licence,
-              which is compatible with this project's GPL-2.0-or-later. The
+              which is compatible with this project's GPL-3.0-or-later. The
               licence travels in the generated header, in tools/fonts/, in
               THIRD_PARTY_NOTICES.md and in a release's notices, as its
               second clause asks.
@@ -33,8 +33,8 @@ Targets:      developer PC
 See also:     src/plugins/panel_gfx.h, tools/fonts/SPLEEN-LICENSE
 
 Copyright 2026 - Robert Mech
-License:      GNU General Public License v2 or later
-SPDX-License-Identifier: GPL-2.0-or-later
+License:      GNU General Public License v3 or later
+SPDX-License-Identifier: GPL-3.0-or-later
 ===========================================================================
 """
 
@@ -142,8 +142,8 @@ def main():
         " * part of µnleashed BBS:",
         " *",
         " * Copyright 2026 - Robert Mech",
-        " * License:      GNU General Public License v2 or later",
-        " * SPDX-License-Identifier: GPL-2.0-or-later AND BSD-2-Clause",
+        " * License:      GNU General Public License v3 or later",
+        " * SPDX-License-Identifier: GPL-3.0-or-later AND BSD-2-Clause",
         " * ===========================================================================",
         " */",
         "#pragma once",

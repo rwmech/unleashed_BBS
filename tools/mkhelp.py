@@ -22,8 +22,8 @@
 # Usage:        python3 tools/mkhelp.py
 #
 # Copyright 2026 - Robert Mech
-# License:      GNU General Public License v2 or later
-# SPDX-License-Identifier: GPL-2.0-or-later
+# License:      GNU General Public License v3 or later
+# SPDX-License-Identifier: GPL-3.0-or-later
 # ===========================================================================
 import pathlib
 import sys
@@ -102,8 +102,8 @@ def main():
         " * See also:     helptext.h\n"
         " *\n"
         " * Copyright 2026 - Robert Mech\n"
-        " * License:      GNU General Public License v2 or later\n"
-        " * SPDX-License-Identifier: GPL-2.0-or-later\n"
+        " * License:      GNU General Public License v3 or later\n"
+        " * SPDX-License-Identifier: GPL-3.0-or-later\n"
         " * ===========================================================================\n"
         " */\n\n"
         '#include "helptext.h"\n'

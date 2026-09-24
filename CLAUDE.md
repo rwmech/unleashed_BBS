@@ -4,8 +4,8 @@
 Design history and current state of the project, kept for contributors and AI assistants.
 
 Copyright 2026 - Robert Mech
-License: GNU General Public License v2 or later
-SPDX-License-Identifier: GPL-2.0-or-later
+License: GNU General Public License v3 or later
+SPDX-License-Identifier: GPL-3.0-or-later
 
 Documentation for µnleashed BBS, part of the same distribution as the
 source. See the LICENSE file for terms.
@@ -56,6 +56,15 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
   80 wide). A field has its 9-character label for 40 and a longer one for
   80. New screens are specified at both widths from the start.
 - **Who calls in: the legacy serial community, not one machine** (Rob, and worth holding on to because it is easy to drift from). 8086 boxes, 6502 machines, a VT220 on a serial line, and everything in between. The C64 through TeensyROM is one caller among them and gets attention because PETSCII and 40 columns are the tightest constraints, not because it is the target. A design argument that rests on what a C64 can do is the wrong argument: the right question is whether a feature works across the range and degrades sensibly for the machines that cannot take all of it. File transfer is the live example, where the answer is to offer XMODEM, YMODEM and ZMODEM and let a caller use what their machine handles.
+- **GPL v3 or later, both repositories, from 2026-09-24** (Rob: "make this
+  v3 now across the board ... no benefit to keep gpl v2+"). Firmware from
+  1.1.0-dev.11, the directory site from 1.2.2. Rob holds the whole
+  copyright, so it was his to change. The reason is the Apache-2.0 code
+  the firmware links (ESP-IDF, espressif/mdns, and esp32-camera to come):
+  Apache-2.0 combines cleanly with GPLv3 and not with GPLv2. Every SPDX
+  line is `GPL-3.0-or-later`; `tools/release.py` and `make test` in
+  `host/` refuse a GPL-2.0 SPDX line, so a file added on an old header
+  fails. Older entries in this file that say v2 are history and stay.
 - C++ for core and hardware. Lua only for doors later. Static allocation, no heap in the BBS loop (exceptions: temporary inflate buffers during a backup upload).
 - 10 caller nodes (6 until 0.17.0, briefly 16), a busy line session (the caller past the last node: detection, busy screen, 10 s countdown), a hidden sysop node. Overflow callers get `BUSY` and a drop. Socket budget 24.
 - **The real static RAM ceiling is 180,736 bytes**, and it is in the linker script, not on any datasheet: `memory.ld` sets `dram0_0_seg` to `org = 0x3FFB0000, len = 0x2c200`, and `sections.ld` asserts `_bss_end` stays inside it. Measure with `_bss_end - 0x3FFB0000`. **PlatformIO's RAM percentage is against 327,680, so multiply it by 1.81 to get the truth: 55% on its scale is the wall.** At 0.17.2 the board is at 146,732, which is 81% of what it actually has and 44.8% of what PlatformIO claims.
@@ -2221,7 +2230,7 @@ Queued for the next build (Rob's plan, in order):
   Shape: a second listener on its own port feeding the same session pool, with its own cap (`ssh_nodes = 2`). A caller is a caller once they are in.
   **The gotcha is plumbing, not memory.** SSH is not a socket that can be swapped in: it has a channel layer, a key exchange and window management above TCP. The seam exists, because output already goes through `ByteSink` and the telnet layer already sits between the socket and the session, but this is a genuine port and a phase of its own, not a config flag.
   An S3 with PSRAM moves the per-session buffers off internal DRAM and makes ten encrypted sessions plausible, the same argument that already governs the node count.
-  **Queued as an S3 option, not started** (Rob, 2026-09-24: "add an s3 ssh option but dont start that yet"). After 1.1.0, as its own phase, board-gated (`BBS_HAS_SSH`, S3 profiles only, the ESP32 image unchanged). It adds a way to connect, not lines: sockets stay capped at 16 on every chip, so it is still ten caller lines. SSH gives the terminal type and window size in its pty request, so SSH callers skip the detection probe. First step when it starts: a research pass on the library and its licence (wolfSSH may be GPLv3-only, which would move the combined firmware to GPLv3, and that is Rob's call; the libssh ESP32 ports are LGPL, which fits, but their ESP-IDF 5.3.1 build without Arduino is unconfirmed), RAM per session and flash cost.
+  **Queued as an S3 option, not started** (Rob, 2026-09-24: "add an s3 ssh option but dont start that yet"). After 1.1.0, as its own phase, board-gated (`BBS_HAS_SSH`, S3 profiles only, the ESP32 image unchanged). It adds a way to connect, not lines: sockets stay capped at 16 on every chip, so it is still ten caller lines. SSH gives the terminal type and window size in its pty request, so SSH callers skip the detection probe. First step when it starts: a research pass on the library and its licence (wolfSSH may be GPLv3-only, which would move the combined firmware to GPLv3, and that is Rob's call; moot since 2026-09-24, when the project went GPLv3 or later, so a GPLv3 library now fits; the libssh ESP32 ports are LGPL, which fits, but their ESP-IDF 5.3.1 build without Arduino is unconfirmed), RAM per session and flash cost.
 
 - **Doors go horizontal: a second ESP32 on the serial port, not Lua in the core** (Rob, 2026-09-21). **This replaces the Lua plan and takes it off the roadmap.**
   Rob's framing: "Id rather go horizontal on this and plug in another device to the existing one which FEELS more legit like adding BBS hardware." He is right on both counts, the feeling and the engineering.

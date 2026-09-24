@@ -4,8 +4,8 @@
 What the project is, how to build, flash and test it, and where the rest of the documentation lives.
 
 Copyright 2026 - Robert Mech
-License: GNU General Public License v2 or later
-SPDX-License-Identifier: GPL-2.0-or-later
+License: GNU General Public License v3 or later
+SPDX-License-Identifier: GPL-3.0-or-later
 
 Documentation for µnleashed BBS, part of the same distribution as the
 source. See the LICENSE file for terms.
@@ -336,7 +336,7 @@ These are codes in the mixed-case charset, confirmed on a C64 through TeensyROM:
 
 ## License
 
-µnleashed BBS is free software under the GNU General Public License, version 2
+µnleashed BBS is free software under the GNU General Public License, version 3
 or later. The full text is in [LICENSE](LICENSE), and every source file carries
 the notice.
 

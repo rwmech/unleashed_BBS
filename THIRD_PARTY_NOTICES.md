@@ -4,8 +4,8 @@
 Licenses of the third-party software linked into the firmware.
 
 Copyright 2026 - Robert Mech
-License: GNU General Public License v2 or later
-SPDX-License-Identifier: GPL-2.0-or-later
+License: GNU General Public License v3 or later
+SPDX-License-Identifier: GPL-3.0-or-later
 
 Documentation for µnleashed BBS, part of the same distribution as the
 source. See the LICENSE file for terms.
@@ -13,10 +13,12 @@ source. See the LICENSE file for terms.
 
 # Third-party notices
 
-µnleashed BBS itself is under the GNU General Public License, version 2 or later
-(see [LICENSE](LICENSE)). The firmware you flash also contains the software below.
-Anyone handing out a compiled binary must pass these notices along with it; the
-full license texts are reproduced at the end of this file.
+µnleashed BBS itself is under the GNU General Public License, version 3 or later
+(see [LICENSE](LICENSE)); the Apache-2.0 components below are compatible with
+GPLv3, which is why the project is GPLv3 or later rather than GPLv2. The
+firmware you flash also contains the software below. Anyone handing out a
+compiled binary must pass these notices along with it; the full license texts
+are reproduced at the end of this file.
 
 | Software | License | What it does |
 |---|---|---|

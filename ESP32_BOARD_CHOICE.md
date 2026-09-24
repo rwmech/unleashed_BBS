@@ -8,8 +8,8 @@
                nodes each one would carry.
 
  Copyright 2026 - Robert Mech
- License:      GNU General Public License v2 or later
- SPDX-License-Identifier: GPL-2.0-or-later
+ License:      GNU General Public License v3 or later
+ SPDX-License-Identifier: GPL-3.0-or-later
  ===========================================================================
 -->
 

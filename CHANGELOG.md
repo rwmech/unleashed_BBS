@@ -13,8 +13,8 @@
  Audience:     Anyone picking the project up, and the next build's planning.
 
  Copyright 2026 - Robert Mech
- License:      GNU General Public License v2 or later
- SPDX-License-Identifier: GPL-2.0-or-later
+ License:      GNU General Public License v3 or later
+ SPDX-License-Identifier: GPL-3.0-or-later
  ===========================================================================
 -->
 
@@ -251,6 +251,20 @@ entry when it is released.
   recent failed read, for the panel's card glyph.
 - The ESP32 image is unchanged by this: all of it is behind the board's
   defines.
+
+**1.1.0-dev.11, GPL v3 or later.**
+- µnleashed BBS is now under the GNU General Public License, version 3 or
+  later (was version 2 or later). Robert Mech holds the whole copyright
+  and made the change on 2026-09-24. The firmware links Apache-2.0 code
+  (ESP-IDF, espressif/mdns, and the camera driver to come), and Apache-2.0
+  combines cleanly with GPLv3 but not with GPLv2.
+- `LICENSE` is the GPLv3 text; every SPDX line is `GPL-3.0-or-later` and
+  every file notice says version 3. ABOUT, the welcome and goodbye screens
+  and THIRD_PARTY_NOTICES say v3.
+- `tools/release.py` refuses a release while any tracked file still
+  carries a GPL-2.0 SPDX line, and `make test` in `host/` checks the same,
+  so a file added later on an old header fails.
+- Nothing else changed; the firmware behaves exactly as dev.10.
 
 ## 1.0.2, 2026-09-23
 

@@ -17,12 +17,12 @@
 # See also:     README.md
 #
 # Copyright 2026 - Robert Mech
-# License:      GNU General Public License v2 or later
-# SPDX-License-Identifier: GPL-2.0-or-later
+# License:      GNU General Public License v3 or later
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by the
-# Free Software Foundation; either version 2 of the License, or (at your
+# Free Software Foundation; either version 3 of the License, or (at your
 # option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
@@ -31,7 +31,7 @@
 # General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License along
-# with this program; if not, see <https://www.gnu.org/licenses/>. The full
+# with this program. If not, see <https://www.gnu.org/licenses/>. The full
 # text is in the LICENSE file at the top of this repository.
 # ===========================================================================
 
@@ -132,7 +132,15 @@ test_cardnames: test_cardnames.cpp ../src/core/cardnames.h
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_cardnames.cpp
 
 
-test: test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel
+# The project is GPL-3.0-or-later (1.1.0-dev.11). A tracked file whose SPDX
+# line still says GPL-2.0 was added on an old header; release.py refuses it
+# too, and this catches it before a release is ever attempted.
+licence:
+	@if git -C .. grep -nE '^[^[:alnum:]]*SPDX-License-Identifier:.*GPL-2\.0'; then \
+	    echo "licence: GPL-2.0 SPDX line(s) above; the project is GPL-3.0-or-later"; exit 1; \
+	else echo "licence: no GPL-2.0 SPDX lines"; fi
+
+test: licence test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel
 	./test_xmodem
 	./test_wrap
 	./test_forums_ptr
@@ -148,4 +156,4 @@ test: test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv 
 clean:
 	rm -f bbs_host bbs_host_s3 test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel
 
-.PHONY: clean test
+.PHONY: clean test licence

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 ===========================================================================
  µnleashed BBS
@@ -68,8 +68,8 @@ Targets:      developer PC, GitHub Actions (ubuntu-latest)
 See also:     .github/workflows/release.yml, README.md "Releases"
 
 Copyright 2026 - Robert Mech
-License:      GNU General Public License v2 or later
-SPDX-License-Identifier: GPL-2.0-or-later
+License:      GNU General Public License v3 or later
+SPDX-License-Identifier: GPL-3.0-or-later
 ===========================================================================
 """
 
@@ -230,7 +230,7 @@ def notices(fw):
     out = ["# Third-party notices",
            "",
            "The µnleashed BBS firmware is free software under the GNU General Public",
-           "License, version 2 or later. The release images also contain the",
+           "License, version 3 or later. The release images also contain the",
            "following components, each under its own licence, reproduced below from",
            "the exact packages this release was built with.",
            ""]
@@ -255,10 +255,27 @@ NOTICE_LINE = re.compile(
     r"generated\s+(with|by))[^\n]*\b(anthropic|claude)\b",
     re.I | re.M)
 
+# The project is GPL-3.0-or-later from 1.1.0-dev.11 (Rob, 2026-09-24). A
+# file that still says GPL-2.0 in its SPDX line was added on an old header
+# and would ship a licence the project no longer grants. Anchored at the
+# start of a line so prose and this pattern itself do not match.
+OLD_SPDX = re.compile(r"^\W*SPDX-License-Identifier:[^\n]*\bGPL-2\.0", re.M)
+
 
 def check_notices():
     """Refuse to release if any tracked text file carries a copyright,
-    licence or author line naming Anthropic or Claude."""
+    licence or author line naming Anthropic or Claude, or a GPL-2.0 SPDX
+    line."""
+    old = []
+    for rel in git("ls-files").splitlines():
+        try:
+            text = (ROOT / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for m in OLD_SPDX.finditer(text):
+            old.append(f"{rel}:{text.count(chr(10), 0, m.start()) + 1}")
+    if old:
+        die("GPL-2.0 SPDX lines; the project is GPL-3.0-or-later: " + ", ".join(old[:10]))
     bad = []
     for rel in git("ls-files").splitlines():
         p = ROOT / rel

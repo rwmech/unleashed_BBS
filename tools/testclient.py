@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 ===========================================================================
  µnleashed BBS
@@ -36,12 +36,12 @@ Targets:      developer PC, Python 3
 See also:     README.md
 
 Copyright 2026 - Robert Mech
-License:      GNU General Public License v2 or later
-SPDX-License-Identifier: GPL-2.0-or-later
+License:      GNU General Public License v3 or later
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software; you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the
-Free Software Foundation; either version 2 of the License, or (at your
+Free Software Foundation; either version 3 of the License, or (at your
 option) any later version.
 
 This program is distributed in the hope that it will be useful, but
@@ -50,7 +50,7 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
 General Public License for more details.
 
 You should have received a copy of the GNU General Public License along
-with this program; if not, see <https://www.gnu.org/licenses/>. The full
+with this program. If not, see <https://www.gnu.org/licenses/>. The full
 text is in the LICENSE file at the top of this repository.
 ===========================================================================
 """
@@ -1387,7 +1387,7 @@ def test_about():
     c = ansi_login("Curious")
     c.buf.clear()
     c.send(b"about\r")
-    ok = check("ABOUT plays the screen", c.wait_for(b"GNU General Public License v2 or later", 6))
+    ok = check("ABOUT plays the screen", c.wait_for(b"GNU General Public License v3 or later", 6))
     ok &= check("with the version and handle", b"Curious" in c.buf and BBS_VERSION.encode() in c.buf)
     c.close()
     return ok

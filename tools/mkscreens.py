@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 ===========================================================================
  µnleashed BBS
@@ -32,12 +32,12 @@ Targets:      developer PC, Python 3
 See also:     SCREENS.md
 
 Copyright 2026 - Robert Mech
-License:      GNU General Public License v2 or later
-SPDX-License-Identifier: GPL-2.0-or-later
+License:      GNU General Public License v3 or later
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software; you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the
-Free Software Foundation; either version 2 of the License, or (at your
+Free Software Foundation; either version 3 of the License, or (at your
 option) any later version.
 
 This program is distributed in the hope that it will be useful, but
@@ -46,7 +46,7 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
 General Public License for more details.
 
 You should have received a copy of the GNU General Public License along
-with this program; if not, see <https://www.gnu.org/licenses/>. The full
+with this program. If not, see <https://www.gnu.org/licenses/>. The full
 text is in the LICENSE file at the top of this repository.
 ===========================================================================
 """
@@ -57,8 +57,8 @@ from pathlib import Path
 OUT = Path(__file__).resolve().parent.parent / "data" / "screens"
 
 TAGLINE = "No web. No cloud. No browser."
-COPY40 = "(C) 2026 Robert Mech  GPLv2+"          # fits a 40-column C64 line
-COPY80 = "(C) 2026 Robert Mech. Free software under the GPL, v2 or later."
+COPY40 = "(C) 2026 Robert Mech  GPLv3+"          # fits a 40-column C64 line
+COPY80 = "(C) 2026 Robert Mech. Free software under the GPL, v3 or later."
 MOTTO = "E L E C T R O N I C   F R E E D O M"
 
 # --------------------------------------------------------------------------
@@ -395,7 +395,7 @@ GOODBYE_ASC = """--------------------------------------
 Stay unleashed, @USER@.
 @BOARD@ node @NODE@ is free again.
 @DATE@ @TIME@@DELAY:400@
-(C) 2026 Robert Mech  GPLv2+
+(C) 2026 Robert Mech  GPLv3+
 """
 
 
@@ -429,7 +429,7 @@ ABOUT_ASC = """--------------------------------------
  Node @NODE@ of @NODES@, you are @USER@.
 
  (C) 2026 Robert Mech
- Free software: GNU GPL v2 or later.
+ Free software: GNU GPL v3 or later.
  Source and license: see the repo.
 
  Built on ESP-IDF, FreeRTOS, lwIP and
@@ -446,7 +446,7 @@ def make_about_seq():
     s += pet("lgreen", " A telnet BBS on a bare ESP32.\n")
     s += pet("grey", " Node @NODE@ of @NODES@, you are @USER@.\n")
     s += pet("white", " (C) 2026 Robert Mech\n")
-    s += pet("grey", " Free software: GNU GPL v2 or later.\n")
+    s += pet("grey", " Free software: GNU GPL v3 or later.\n")
     s += pet("grey", " Source and license: see the repo.\n")
     s += pet("cyan", " ESP-IDF, FreeRTOS, lwIP, littlefs.\n")
     s += pet_rule("cyan")
@@ -460,7 +460,7 @@ def make_about_ans():
     b += sgr("0;34") + bytes([H_DOUBLE]) * 60 + b"\r\n"
     b += sgr("0;37") + b" Node @NODE@ of @NODES@, you are " + sgr("1;33") + b"@USER@" + sgr("0;37") + b"\r\n\r\n"
     b += sgr("1;37") + b" (C) 2026 Robert Mech\r\n"
-    b += sgr("0;37") + b" Free software: GNU General Public License v2 or later.\r\n"
+    b += sgr("0;37") + b" Free software: GNU General Public License v3 or later.\r\n"
     b += sgr("0;37") + b" Source and license: see the repository.\r\n\r\n"
     b += sgr("0;36") + b" Built on ESP-IDF, FreeRTOS, lwIP and littlefs; their notices\r\n"
     b += sgr("0;36") + b" travel with the firmware.\r\n"
