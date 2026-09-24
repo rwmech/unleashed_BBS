@@ -1388,6 +1388,62 @@ def test_about():
     return ok
 
 
+def test_version_shown():
+    """The version everywhere a person reads one (1.1.0, Rob: "version the S3
+    slightly different ... since we have the core versions and s3 versions
+    that compile different"). On a board profile's build, the core version
+    and the profile's own: "1.1.0 (S3 1.0.0)". On the reference board, the
+    core version alone, and no trace of a profile. The directory is sent the
+    core version; the profile's goes into the system badge."""
+    print("The version as it is shown")
+    s3 = os.environ.get("BBS_HOST_BOARD") == "s3"
+    shown = (BBS_VERSION + " (S3 1.0.0)") if s3 else BBS_VERSION
+    tail = b"(S3 1.0.0)"
+    if not PASSWORD:
+        print("  SKIP  needs the sysop")
+        return True
+    c = Caller(ansi=True)
+    c.wait_for(b"Enter your handle", 10)
+    welcome = plain(c.buf)
+    ok = check(f"the welcome screen's @VER@ says {shown}",
+               shown.encode() in welcome and (s3 or tail not in welcome))
+    login(c, "VersionReader")
+    c.buf.clear()
+    c.send(f"bye {PASSWORD}\r".encode())
+    c.wait_for(b"Sysop", 5)
+    c.pump(0.3)
+    # ABOUT plays screens/about.*, whose @VER@ carries it; MEM and SYS carry
+    # it in their title bars. SYS is a paged list: its first page is enough.
+    for cmd in (b"about", b"mem", b"sys"):
+        c.buf.clear()
+        c.send(cmd + b"\r")
+        c.pump(1.5)
+        seen = plain(c.buf)
+        drain(c)
+        good = shown.encode() in seen and (s3 or tail not in seen)
+        ok &= check(f"{cmd.decode().upper()} says {shown}", good)
+        if not good:
+            print("        saw:", seen[:400])
+    if HOST in ("127.0.0.1", "localhost"):
+        log = DATA.parent / "host.log"
+        text = log.read_bytes() if log.exists() else b""
+        line = next((ln for ln in text.split(b"\n") if b"listening on" in ln), b"")
+        ok &= check("the boot line says it", shown.encode() in line and (s3 or tail not in line))
+        c.buf.clear()
+        c.send(b"announce test\r")
+        c.pump(1.5)
+        drain(c)
+        payload = plain(c.buf)
+        m = re.search(rb'"version":"([^"]*)"', payload)
+        ok &= check("announce sends the directory the core version alone",
+                    m is not None and m.group(1) == BBS_VERSION.encode())
+        sysm = re.search(rb'"system":"([^"]*)"', payload)
+        ok &= check("and the profile's version in the system badge, on a profile's build only",
+                    sysm is not None and ((tail[1:-1] in sysm.group(1)) == s3))
+    c.close()
+    return ok
+
+
 def test_chat():
     print("Chat room")
     a = ansi_login("Chatty")
@@ -3394,7 +3450,8 @@ def test_config_sd_plugin():
 # that is what these read. Colours are checked against the arithmetic in
 # lights.cpp's shade(), worked by hand here: a channel v at level l and p
 # percent is v * l * p / 25500, rounded down, and 1 if that comes to 0 for a
-# lit channel. So full white is 76 at 30%, 25 at 10% and 2 at 1%.
+# lit channel. So full white is 255 at 100%, 127 at 50%, 76 at 30%, 25 at
+# 10% and 2 at 1%. The firmware allows 1 to 100 since 1.1.0 (it was 30).
 # ---------------------------------------------------------------------------
 HEX6 = re.compile(r"^[0-9A-F]{6}$")
 
@@ -3699,10 +3756,24 @@ def test_lights_frames():
     px = lights_px(s)
     ok &= check("rainbow lights every pixel", len(px) == 10 and all(lit(p) for p in px))
     ok &= check("and reaches 30% without passing it", 25 < max(max(p) for p in px) <= 76)
-    lights_config(s, **on, strip_fx="rainbow", strip_bright=80)
+    # Past 30% is allowed since 1.1.0 (Rob: "remove the limit over 30% ...
+    # but allow it"); the firmware's ceiling is 100. White from LIGHTS TEST
+    # on the drive light scales exactly: 255 x p / 100, rounded down.
+    for pct, want in ((50, 127), (100, 255)):
+        lights_config(s, **on, drive_bright=pct)
+        s.buf.clear()
+        s.send(b"lights test\r")
+        s.wait_for(b"a second each", 4)
+        t0 = time.time()
+        time.sleep(max(0.0, t0 + 3.3 - time.time()))
+        f = lights_read(s)
+        ok &= check(f"white on the drive light at {pct}%: {want}",
+                    f["drive"]["pct"] == pct and f["drive"]["px"] == [(want, want, want)])
+    lights_config(s, **on, strip_fx="rainbow", strip_bright=150)
     f = lights_read(s)
-    ok &= check("a hand-edited 80% is read as 30",
-                f["strip"]["pct"] == 30 and max(max(p) for p in f["strip"]["px"]) <= 76)
+    ok &= check("a hand-edited 150% is read as 100, the firmware's ceiling",
+                f["strip"]["pct"] == 100 and max(max(p) for p in f["strip"]["px"]) <= 255 and
+                max(max(p) for p in f["strip"]["px"]) > 76)
     lights_config(s, **on, strip_fx="rainbow", strip_bright=1)
     px = lights_px(s)
     ok &= check("at 1% every pixel stays lit", all(lit(p) for p in px) and max(max(p) for p in px) <= 2)
@@ -4094,6 +4165,63 @@ def test_lights_count():
     lights_config(s)
     s.close()
     return ok
+
+
+def test_lights_wifi():
+    """The strip as a Wi-Fi signal meter (1.1.0, Rob: "add a wifi signal to
+    the light strip effects"). -90 dBm or weaker lights one pixel and -50 or
+    stronger all of them; green from -67, amber from -75, red below; not
+    joined, one red pixel. The host has no radio, so LIGHTS RSSI (host only)
+    plays the signal. On 1.1.0-dev.7 the mode did not exist."""
+    print("Lights: the Wi-Fi meter")
+    if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    s = cfg_sysop("LightsWifi")
+    on = {"enabled": "yes", "drive_pin": 13, "strip_pin": 14}
+    green, amber, red = (0, 20, 0), (25, 13, 0), (25, 0, 0)
+
+    def rssi(v):
+        s.buf.clear()
+        s.send(f"lights rssi {v}\r".encode())
+        s.wait_for(b"Signal set", 4)
+
+    ok = True
+    for n in (1, 8, 10):
+        lights_config(s, **on, strip_fx="wifi", strip_count=n)
+        ok &= check(f"{n}: LIGHTS names the mode", lights_read(s).get("strip", {}).get("fx") == "wifi")
+        for dbm, lit, colour, name in ((-45, n, green, "strong"),
+                                        (-70, 1 + (n - 1) * 20 // 40, amber, "fair"),
+                                        (-85, 1 + (n - 1) * 5 // 40, red, "weak")):
+            rssi(dbm)
+            px = lights_px(s)
+            body = px[:lit - 1]
+            tip = px[lit - 1] if len(px) >= lit else (0, 0, 0)
+            good = (len(px) == n and all(p == colour for p in body) and
+                    lit_hue(tip) == lit_hue(colour) and all(p == (0, 0, 0) for p in px[lit:]))
+            ok &= check(f"{n} pixels, {name} ({dbm} dBm): {lit} lit, "
+                        f"{'green' if colour == green else 'amber' if colour == amber else 'red'}", good)
+            if not good:
+                print("        saw:", px)
+        rssi("off")
+        frames = [lights_px(s) for _ in range(3)]
+        ok &= check(f"{n} pixels, not joined: one red pixel and the rest dark",
+                    all(len(f) == n and f[0][1] == f[0][2] == 0 and f[0][0] > 0 and
+                        all(p == (0, 0, 0) for p in f[1:]) for f in frames))
+    rssi(-40)
+    lights_config(s, **on, strip_fx="wifi", strip_count=10, strip_bright=100)
+    rssi(-40)
+    px = lights_px(s)
+    ok &= check("at 100% the meter is full green", px[:9] == [(0, 200, 0)] * 9)
+    rssi("off")
+    lights_config(s)
+    s.close()
+    return ok
+
+
+def lit_hue(p):
+    """Which channels are lit, for a pixel whose level breathes."""
+    return tuple(1 if c else 0 for c in p)
 
 
 def test_lights_order():
@@ -10425,7 +10553,7 @@ GROUPS = {
     "storage":   ["files", "forums", "sd", "xfer", "backup", "restore"],
     # The shell, its lists and the screens the core draws.
     "shell":     ["menus", "sysinfo", "page", "about", "config", "welcome", "paced", "seeded", "fx_codes",
-                  "lights", "operator"],
+                  "lights", "operator", "version_shown"],
     # Logging in, accounts, staff.
     "login":     ["accounts", "handle_case", "guest", "sysop", "cosysop", "user_admin", "first_setup", "ban",
                   "boot_hold"],
@@ -10464,7 +10592,7 @@ ORDER_NAMES = [
     "test_config_timezone", "test_config_cycle_numbers",
     "test_config_sd_plugin",
     "test_config_lights", "test_config_lights_ascii", "test_lights_frames", "test_lights_manual",
-    "test_lights_count", "test_lights_order",
+    "test_lights_count", "test_lights_order", "test_lights_wifi", "test_version_shown",
     # SKIPs on the reference board: tools/harness.sh --board s3 runs it.
     "test_board_s3",
     "test_config_wifi_live", "test_config_network", "test_config_announce_outside",

@@ -64,8 +64,9 @@ constexpr char kOrders[] = "GRB|RGB|BRG|RBG|GBR|BGR";
 // Drive light styles. pc is the default.
 constexpr char kDriveFx[] = "pc|1541|disk2|breathe|off";
 
-// Strip effects. nodes is the default.
-constexpr char kStripFx[] = "nodes|hayes|blinken|scanner|c64|boing|vu|rainbow|manual|off";
+// Strip effects. nodes is the default. wifi was appended in 1.1.0, after
+// off: a word's place is the number the plugin works with.
+constexpr char kStripFx[] = "nodes|hayes|blinken|scanner|c64|boing|vu|rainbow|manual|off|wifi";
 
 // Manual mode, one pixel: an effect and a colour. An unset pixel is solid
 // and cycling, which is what a strip switched to manual on a fresh board

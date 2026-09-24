@@ -638,10 +638,10 @@ all up with `CONFIG lights`, or in the file:
 enabled      = yes
 drive_pin    = 13       ; -1 is off, as shipped
 drive_fx     = pc       ; pc | 1541 | disk2 | breathe | off
-drive_bright = 10       ; percent, 1 to 30
+drive_bright = 10       ; percent, 1 to 100 (past 30: see Power, below)
 strip_pin    = 14       ; -1 is off, as shipped
-strip_fx     = nodes    ; nodes | hayes | blinken | scanner | c64 | boing | vu | rainbow | manual | off
-strip_bright = 10       ; percent, 1 to 30
+strip_fx     = nodes    ; nodes | hayes | blinken | scanner | c64 | boing | vu | rainbow | manual | off | wifi
+strip_bright = 10       ; percent, 1 to 100 (past 30: see Power, below)
 led3         = sparkle | random   ; manual mode: led1 to led16, effect | colour
 strip_count  = 10       ; pixels on the strip, 1 to 16
 drive_order  = GRB      ; the order the bytes go out in:
@@ -699,10 +699,19 @@ strip_order  = GRB      ; GRB | RGB | BRG | RBG | GBR | BGR
   - `rainbow`: the colours, cycling along the strip.
   - `manual`: each pixel its own effect and colour; see below.
   - `off`.
+  - `wifi` (1.1.0): the board's Wi-Fi signal as a meter, like the bars on a
+    phone. The lit length follows the signal the board reads once a second:
+    -90 dBm or weaker lights one pixel, -50 dBm or stronger lights them all,
+    and in between it is in proportion (on ten pixels, -70 dBm lights five).
+    The colour is `SYS`'s word for the signal: green from -67 dBm (good or
+    excellent), amber from -75 (fair), red below it (weak). The last lit
+    pixel breathes a little so the meter reads as live. Not joined to a
+    network, one red pixel breathes slowly.
 - **Drive %** and **Strip %**: brightness, as a percentage of full, 1 to
-  30, each output its own, 10 as shipped. 30 is a ceiling in the firmware,
-  not only on the form: CONFIG refuses more, and a bigger number written
-  into `system.cfg` is read as 30. A dim colour never goes out at a low
+  100, each output its own, 10 as shipped (1.1.0; it was capped at 30). Past
+  30 is allowed and is your call, and CONFIG asks you to confirm first,
+  because of what it draws: see Power, below. A number past 100 written into
+  `system.cfg` is read as 100. A dim colour never goes out at a low
   percentage: a lit channel stays at least 1.
 - **Drive ord** and **Strip ord**: the order each output's bytes go out in
   (1.1.0). `GRB` as shipped, the WS2812B's own; some strips sold as WS2812
@@ -746,9 +755,13 @@ again is pink.
 at full white, which the board's own 5 V pin handles from USB. Ten draw
 about 600 mA at full white, and the board itself needs up to about 400 mA
 when its radio transmits. The firmware ships the strip at 10%, roughly
-60 mA, and never drives it past 30%, roughly 180 mA; with the board's own
-draw on top, even that is close to what a USB 2 port supplies (500 mA on
-USB 2, 900 mA on USB 3), so wire the strip to stand on its own:
+60 mA. At 30% it is roughly 180 mA, and with the board's own draw on top
+even that is close to what a USB 2 port supplies (500 mA on USB 2, 900 mA
+on USB 3). Past 30% it is more than USB gives: 50% is about 300 mA for ten
+pixels at white, 100% about 600 mA, and sixteen pixels at 100% nearly a
+full ampere. A strip that bright must have its own 5 V supply; drawn from
+USB, the voltage sags, the board browns out and restarts, and the port may
+cut the power altogether. So wire the strip to stand on its own:
 
 - Give the strip its own 5 V supply, rated 1 A or more, and join its
   ground to the board's ground. Without the shared ground the data line

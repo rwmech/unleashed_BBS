@@ -136,7 +136,13 @@ constexpr uint16_t   kIntervalDef = 10;     // minutes
 constexpr uint8_t    kListMax     = 95;
 constexpr uint8_t    kListEntries = 16;
 constexpr uint8_t    kSlugMax     = 24;
+#ifdef BBS_BOARD_VERSION
+// A board profile adds its own version (1.1.0): "ESP32-S3 · 16 MB · PSRAM ·
+// S3 1.0.0" is 39 bytes and 35 characters, inside the directory's 40.
+constexpr uint8_t    kSystemMax   = 47;
+#else
 constexpr uint8_t    kSystemMax   = 31;     // "ESP32-S3 · 16 MB · PSRAM" is 26 bytes
+#endif
 
 // ---------------------------------------------------------------------------
 // The payload's room, and why it is what it is.
@@ -1017,6 +1023,15 @@ bool start(Bbs& bbs) {
     // What the board is: the chip, and the flash this image can use. Once,
     // here, because neither can change while the board is running.
     plat::hardware(g_system, sizeof(g_system));
+#ifdef BBS_BOARD_VERSION
+    // And a board profile's own version (1.1.0), as one more part of the
+    // same badge: `version` stays the core's, which is what the directory
+    // compares for its update arrow.
+    {
+        const size_t at = strlen(g_system);
+        snprintf(g_system + at, sizeof(g_system) - at, " \xC2\xB7 %s %s", BBS_BOARD_TAG, BBS_BOARD_VERSION);
+    }
+#endif
     g_seenIp[0]  = '\0';
     g_state[0]   = '\0';
     g_publicIn   = 0;

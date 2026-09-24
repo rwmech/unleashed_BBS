@@ -183,8 +183,9 @@ recorded with their sources in
   - no activity LED; the lights plugin is on as shipped, with its drive
     light on the onboard WS2812B (GPIO 38, RGB order);
   - the SD card on the TF slot in SPI mode: CS 21, MOSI 15, CLK 14, MISO 16;
-  - the serial bridge on the header's RXD and TXD (44 and 43), because 16
-    and 17 are the TF slot;
+  - the serial bridge on header IO2 (RX) and IO1 (TX): 16 and 17 are the TF
+    slot, and the header's RXD and TXD (44 and 43) carry the chip's ROM boot
+    banner at every reset;
   - the panel plugin (`CONFIG panel`, `PANEL`), portrait with the plug at
     the top: the board's name and the clock, callers on out of how many
     lines, the address and uptime, the card's free space, the last login,

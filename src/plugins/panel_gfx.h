@@ -72,16 +72,21 @@ inline uint32_t isqrt(uint32_t v) {
     return r;
 }
 
-// ledLevel: one channel of a strip pixel, as the lights plugin sent it, as
-// it should look on glass. A WS2812B's channel is capped at 30% (76 of 255)
-// and 10% is the shipped brightness, which drawn as it stands is a near
-// black a person reads as "off". The cap becomes full scale and the rest
-// follows a square root, which is roughly how a dimmed LED reads to the
-// eye: 76 is 255, 25 (10%) is 146, 2 (1%) is 41, and dark stays dark.
-inline uint8_t ledLevel(uint8_t v) {
-    // 856 is the least k with isqrt(76 k) = 255.
-    uint32_t o = isqrt(static_cast<uint32_t>(v) * 856u);
-    return static_cast<uint8_t>(o > 255u ? 255u : o);
+// glassLevel: one channel of a strip pixel, as the lights plugin sent it at
+// pct percent, as it should look on glass. Drawn as it stands, the shipped
+// 10% is a near black a person reads as "off". So the channel is first
+// taken back to the effect's own level (v x 100 / pct, which keeps a
+// colour's hue at any brightness: orange at 100% stays orange rather than
+// clipping to yellow), then drawn at a brightness that follows the square
+// root of pct up to 30% and is full from there, roughly how a dimmed LED
+// reads to the eye: 147 of 255 at 10%, 46 at 1%. Dark stays dark.
+inline uint8_t glassLevel(uint8_t v, uint8_t pct) {
+    if (!v || !pct) return 0;
+    uint32_t level = static_cast<uint32_t>(v) * 100u / pct;           // the effect's 0-255
+    if (level > 255u) level = 255u;                                   // shade()'s rounding up
+    // 2168 is the least k with isqrt(30 k) = 255.
+    uint32_t bright = pct >= 30 ? 255u : isqrt(static_cast<uint32_t>(pct) * 2168u);
+    return static_cast<uint8_t>(level * bright / 255u);
 }
 
 // ---------------------------------------------------------------------------

@@ -58,6 +58,22 @@
 #define BBS_VERSION         "1.1.0-dev.7"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
+// BBS_VERSION_SHOWN: the version as every place a person reads one shows it
+// (1.1.0): the welcome screen's @VER@, ABOUT, SYS, MEM, DASH, the boot line
+// and Improv's device info. The core version alone on the reference board,
+// and the core version with the board profile's own after it on a board
+// that has one (board.h): "1.1.0 (S3 1.0.0)". Plain ASCII on purpose: the
+// terminal layer turns only the micro sign from UTF-8 into a glyph, so a
+// middle dot would reach a C64 or a plain ASCII terminal as "??". The one
+// definition, so the places cannot drift. The directory is still sent the
+// core version alone (announce), which is what it compares for its update
+// arrow; tools/release.py reads this format out of board.h for version.txt.
+#ifdef BBS_BOARD_VERSION
+#define BBS_VERSION_SHOWN   BBS_VERSION " (" BBS_BOARD_TAG " " BBS_BOARD_VERSION ")"
+#else
+#define BBS_VERSION_SHOWN   BBS_VERSION
+#endif
+
 // ---------------------------------------------------------------------------
 // Network: one dial-in port, 10 caller nodes, a busy line, a hidden sysop node
 // ---------------------------------------------------------------------------

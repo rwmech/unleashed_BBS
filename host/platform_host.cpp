@@ -59,6 +59,13 @@ std::string g_logsBase = "../data/logs";
 const uint8_t* g_stackLo  = nullptr;   // the BBS thread's painted stack
 size_t         g_stackLen = 0;
 char* const*   g_argv     = nullptr;   // how this program was started, for restart()
+int16_t        g_hostRssi = -1000;     // plat::wifiRssi's answer; -1000 not read yet
+}
+
+// host-only: the signal plat::wifiRssi reports, set by the lights plugin's
+// host-only LIGHTS RSSI (1.1.0). 0 is "not joined".
+void hostSetRssi(int8_t dbm) {
+    g_hostRssi = dbm;
 }
 
 // host-only: set by main_host.cpp before the BBS thread starts
@@ -171,8 +178,15 @@ void hardware(char* out, size_t n) {
     snprintf(out, n, "host");
 }
 
+// The host has no radio: 0, "not joined", unless a test says otherwise, by
+// BBS_HOST_RSSI in the environment at start or LIGHTS RSSI (hostSetRssi)
+// while it runs, for the lights plugin's wifi meter (1.1.0).
 int8_t wifiRssi() {
-    return 0;
+    if (g_hostRssi == -1000) {
+        const char* v = getenv("BBS_HOST_RSSI");
+        g_hostRssi = static_cast<int16_t>(v && *v ? atoi(v) : 0);
+    }
+    return static_cast<int8_t>(g_hostRssi);
 }
 
 // netInfo: the host has no radio, so the system screen shows the dashes.

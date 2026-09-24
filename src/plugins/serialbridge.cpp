@@ -74,8 +74,8 @@ constexpr uint16_t   kReadChunk   = 128;      // bytes taken from the port per t
 constexpr uint16_t   kRoomNeeded  = 512;      // output room a watcher must have
 
 // The board profile's (board.h): UART2's usual 16 and 17 on a WROOM-32E,
-// the header's RXD and TXD (44, 43) on the Waveshare S3, whose 16 and 17
-// are its TF slot.
+// header IO2 and IO1 on the Waveshare S3, whose 16 and 17 are its TF slot
+// and whose RXD and TXD carry the ROM's boot banner.
 int      g_rx = BBS_SERIAL_RX, g_tx = BBS_SERIAL_TX;
 uint32_t g_baud   = 115200;
 uint8_t  g_bits   = 8, g_stop = 1;

@@ -27,14 +27,24 @@ Output:       release/<version>/assets/    flat, for a GitHub Release, the
                                            names, as every earlier release had
                                            them; another family's carry its
                                            directory as a prefix:
-                                           esp32s3-firmware.bin
+                                           esp32s3-firmware.bin. Each family
+                                           also has version.txt (the S3's as
+                                           esp32s3-version.txt): one line, the
+                                           version as that board shows it
               release/<version>/install/   the directory server's own layout,
-                                           <family>/<parts> (esp32/, esp32s3/),
-                                           for copying straight into
-                                           firmware/<version>/ by hand, and a
-                                           manifest.json naming both, for
-                                           trying the images in ESP Web Tools
-                                           before the directory serves them
+                                           <family>/<parts> (esp32/, esp32s3/)
+                                           with version.txt, for copying
+                                           straight into firmware/<version>/ by
+                                           hand, and in each family's folder a
+                                           manifest.json of its own, for trying
+                                           the images in ESP Web Tools before
+                                           the directory serves them
+
+Versions:     The core version is BBS_VERSION, shared by every board. A board
+              profile has its own beside it (src/board.h), and its images say
+              both: "1.1.0 (S3 1.0.0)". The ESP32's are the core version alone.
+              A tag names the core version; a tag with a suffix
+              (v1.1.0-dev.8) is published as a pre-release by the workflow.
 
 Design:       Each release environment (esp32dev_release, ws_s3_lcd147_release)
               defines BBS_RELEASE, which makes main.cpp ignore include/secrets.h
@@ -85,9 +95,16 @@ NOTICES = "THIRD_PARTY_NOTICES.md"
 # on the ESP32, 0x0 on the S3 (ESP-IDF's bootloader guide, per target; the
 # generated sdkconfig's CONFIG_BOOTLOADER_OFFSET_IN_FLASH is checked
 # against it below). The ESP32 is first: its assets keep their plain names.
+#
+# "board" is the board profile's define (src/board.h), or None for the
+# reference build. A profile has a version of its own beside the core's,
+# and a family's version string is what BBS_VERSION_SHOWN makes of the two:
+# "1.1.0" for the ESP32, "1.1.0 (S3 1.0.0)" for the Waveshare S3.
 BUILDS = (
-    {"dir": "esp32",   "env": "esp32dev_release",     "family": "ESP32",    "boot": 0x1000},
-    {"dir": "esp32s3", "env": "ws_s3_lcd147_release", "family": "ESP32-S3", "boot": 0x0},
+    {"dir": "esp32",   "env": "esp32dev_release",     "family": "ESP32",    "boot": 0x1000,
+     "board": None},
+    {"dir": "esp32s3", "env": "ws_s3_lcd147_release", "family": "ESP32-S3", "boot": 0x0,
+     "board": "BBS_BOARD_WS_S3LCD147"},
 )
 
 # Offsets the installer writes to, from partitions.csv. Checked here against
@@ -113,6 +130,25 @@ def version():
     if not m:
         die("no BBS_VERSION in src/config.h")
     return m.group(1)
+
+
+def shown_version(core, board):
+    """The version a family's images say they are, as BBS_VERSION_SHOWN in
+    src/config.h builds it: the core version, then the board profile's tag
+    and version in brackets when there is a profile. Read out of the
+    profile's own block in src/board.h, so there is one source for it."""
+    if not board:
+        return core
+    text = (ROOT / "src" / "board.h").read_text(encoding="utf-8")
+    m = re.search(r"#if defined\(" + re.escape(board) + r"\)(.*?)#endif\s*//\s*" + re.escape(board),
+                  text, re.S)
+    if not m:
+        die(f"src/board.h has no block for {board}")
+    tag = re.search(r'#define\s+BBS_BOARD_TAG\s+"([^"]+)"', m.group(1))
+    bver = re.search(r'#define\s+BBS_BOARD_VERSION\s+"([^"]+)"', m.group(1))
+    if not tag or not bver:
+        die(f"src/board.h: {board} has no BBS_BOARD_TAG and BBS_BOARD_VERSION")
+    return f"{core} ({tag.group(1)} {bver.group(1)})"
 
 
 def git(*args):
@@ -251,18 +287,21 @@ def check_boot_offset(b):
             f"not 0x{b['boot']:X} as BUILDS says")
 
 
-def manifest(ver, builds):
-    """An ESP Web Tools manifest for release/<ver>/install/, one build per
-    family, paths relative to it. The directory server makes its own from
-    what it finds on disk; this one is for trying a release by hand."""
+def manifest(b):
+    """An ESP Web Tools manifest for one family, in that family's folder,
+    part paths relative to it. The directory server makes its own from what
+    it finds on disk; this one is for trying a release by hand. One family a
+    manifest, because a manifest has one version and the families' differ:
+    ESP Web Tools compares it with what Improv reports ("unleashed BBS",
+    then the version as the board shows it) to decide whether to offer
+    Update."""
     offsets = {"partitions.bin": 0x8000, "ota_data_initial.bin": EXPECT["otadata"],
                "firmware.bin": EXPECT["ota_0"], "storage.bin": EXPECT["storage"]}
-    m = {"name": "unleashed BBS", "version": ver, "new_install_prompt_erase": True,
+    m = {"name": "unleashed BBS", "version": b["version"], "new_install_prompt_erase": True,
          "builds": [{"chipFamily": b["family"],
-                     "parts": [{"path": f"{b['dir']}/{name}",
+                     "parts": [{"path": name,
                                 "offset": b["boot"] if name == "bootloader.bin" else offsets[name]}
-                               for name in PARTS]}
-                    for b in builds]}
+                               for name in PARTS]}]}
     return json.dumps(m, indent=2) + "\n"
 
 
@@ -312,7 +351,13 @@ def main():
         if src["firmware.bin"].stat().st_size > SLOT_MAX:
             die(f"{b['env']}: firmware.bin does not fit the OTA slot")
         check_boot_offset(b)
-        families.append((b, {name: p.read_bytes() for name, p in src.items()}))
+        b["version"] = shown_version(ver, b["board"])
+        blobs = {name: p.read_bytes() for name, p in src.items()}
+        # The image says it is the version it is published as: the string
+        # the board shows (SYS, ABOUT, Improv) is in the firmware verbatim.
+        if b["version"].encode("ascii") not in blobs["firmware.bin"]:
+            die(f"{b['env']}: firmware.bin does not carry the version {b['version']!r}")
+        families.append((b, blobs))
 
     for b, blobs in families:
         for secret in secrets_known():
@@ -345,7 +390,14 @@ def main():
             (assets / (prefix + name)).write_bytes(data)
             (install / b["dir"] / name).write_bytes(data)
             sums.append(f"{hashlib.sha256(data).hexdigest()}  {prefix + name}")
-    write(install / "manifest.json", manifest(ver, [b for b, _ in families]))
+        # version.txt: one ASCII line, the family's version exactly as the
+        # board shows it. The directory's fetcher reads it; the ESP32's is
+        # the bare core version.
+        vtxt = (b["version"] + "\n").encode("ascii")
+        (assets / (prefix + "version.txt")).write_bytes(vtxt)
+        (install / b["dir"] / "version.txt").write_bytes(vtxt)
+        sums.append(f"{hashlib.sha256(vtxt).hexdigest()}  {prefix}version.txt")
+        write(install / b["dir"] / "manifest.json", manifest(b))
     write(assets / NOTICES, note)
     write(install / NOTICES, note)
     sums.append(f"{hashlib.sha256(note.encode('utf-8')).hexdigest()}  {NOTICES}")

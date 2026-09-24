@@ -509,7 +509,7 @@ void handle() {
     case improv::C_INFO: {
         const SysConfig& c = syscfg::get();
         // The chip family, as the installer names it: "ESP32" or "ESP32-S3".
-        const char* s[] = { "unleashed BBS", BBS_VERSION, kImprovChip,
+        const char* s[] = { "unleashed BBS", BBS_VERSION_SHOWN, kImprovChip,
                             c.boardName[0] ? c.boardName : c.hostname };
         sendResult(improv::C_INFO, s, 4);
         break;
@@ -754,7 +754,7 @@ extern "C" void app_main(void) {
 
     plat::HeapStats h = plat::heap();
     plat::log("boot: %s %s  heap free %u  largest %u",
-              BBS_NAME, BBS_VERSION, static_cast<unsigned>(h.freeBytes),
+              BBS_NAME, BBS_VERSION_SHOWN, static_cast<unsigned>(h.freeBytes),
               static_cast<unsigned>(h.largestBlock));
 
     fsMount(BBS_FS_LABEL, BBS_FS_MOUNT);

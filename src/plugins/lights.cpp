@@ -24,21 +24,23 @@
  *               effect only changes on a restart, which resets the lot, so
  *               two effects never have to share them at once.
  *
- *               Brightness is a percentage per output, 1 to 30, and 30 is a
- *               ceiling in the code, not only on the form: ten pixels at full
- *               white draw about 600 mA, and nothing here is allowed past
- *               30% of that, whatever system.cfg says.
+ *               Brightness is a percentage per output, 1 to 100 (1.1.0, Rob:
+ *               "remove the limit over 30% ... but allow it"; it was capped
+ *               at 30 in the code). Above 30 is the sysop's call and CONFIG
+ *               asks first: ten pixels at full white draw about 600 mA, more
+ *               than a USB port gives, so a strip that bright wants its own
+ *               5 V supply (COMMANDS.md).
  *
  *                 [plugin:lights]
  *                 enabled      = yes
  *                 drive_pin    = 13         -1 is off, as shipped
  *                 drive_fx     = pc         pc | 1541 | disk2 | breathe | off
- *                 drive_bright = 10         percent, 1 to 30
+ *                 drive_bright = 10         percent, 1 to 100
  *                 strip_pin    = 14         -1 is off, as shipped
  *                 strip_fx     = nodes      nodes | hayes | blinken | scanner |
  *                                           c64 | boing | vu | rainbow |
  *                                           manual | off
- *                 strip_bright = 10         percent, 1 to 30
+ *                 strip_bright = 10         percent, 1 to 100
  *                 led1         = sparkle | random    manual mode, per pixel
  *                 strip_count  = 10         pixels on the strip, 1 to 16
  *                 drive_order  = GRB        the bytes' order on the wire:
@@ -87,6 +89,11 @@
 
 using bbsu::ieq;
 
+#ifdef BBS_HOST
+// host/platform_host.cpp: the signal plat::wifiRssi reports on the host.
+void hostSetRssi(int8_t dbm);
+#endif
+
 namespace {
 
 constexpr const char kName[] = "lights";
@@ -99,17 +106,21 @@ constexpr uint8_t kStrip    = lights::kPixelsMax;
 static_assert(kStrip <= plat::kPixelMax, "the strip is longer than an output may be");
 static_assert(lights::kPixelsDefault >= 1 && lights::kPixelsDefault <= kStrip, "a default the strip can have");
 
-// Brightness, percent of full drive. The ceiling is the code's, not the
-// form's: a hand-edited 80 is read as 30.
-constexpr uint8_t kPctMax = 30;
-constexpr uint8_t kPctDef = 10;
+// Brightness, percent of full drive. kPctClamp is what the plugin will do,
+// whatever system.cfg says: 100 since 1.1.0 (Rob), when it had been 30. A
+// hand-edited 150 is read as 100. kPctMax is the CONFIG rows' range, and
+// whether the form asks before going past 30 is the form's business; those
+// rows are the CONFIG work's, left as they were here.
+constexpr uint8_t kPctMax   = 30;
+constexpr uint8_t kPctClamp = 100;
+constexpr uint8_t kPctDef   = 10;
 
 // ---------------------------------------------------------------------------
 // The lists, as numbers. The words are lights.h's, in the same order.
 // ---------------------------------------------------------------------------
 enum : uint8_t { DF_PC, DF_1541, DF_DISK2, DF_BREATHE, DF_OFF };
 enum : uint8_t { SF_NODES, SF_HAYES, SF_BLINKEN, SF_SCANNER, SF_C64, SF_BOING, SF_VU,
-                 SF_RAINBOW, SF_MANUAL, SF_OFF };
+                 SF_RAINBOW, SF_MANUAL, SF_OFF, SF_WIFI };
 enum : uint8_t { LF_SOLID, LF_BLINK, LF_BREATHE, LF_FLICKER, LF_SPARKLE, LF_TRAFFIC,
                  LF_NODE, LF_OFF };
 enum : uint8_t { LC_RANDOM = 10, LC_CYCLE = 11 };
@@ -128,7 +139,8 @@ constexpr int wordIndex(const char* list, const char* w, int at = 0) {
 }
 static_assert(wordIndex(lights::kDriveFx, "off") == DF_OFF, "kDriveFx and DF_ disagree");
 static_assert(wordIndex(lights::kStripFx, "manual") == SF_MANUAL &&
-              wordIndex(lights::kStripFx, "off") == SF_OFF, "kStripFx and SF_ disagree");
+              wordIndex(lights::kStripFx, "off") == SF_OFF &&
+              wordIndex(lights::kStripFx, "wifi") == SF_WIFI, "kStripFx and SF_ disagree");
 static_assert(wordIndex(lights::kLedFx, "node") == LF_NODE &&
               wordIndex(lights::kLedFx, "off") == LF_OFF, "kLedFx and LF_ disagree");
 static_assert(wordIndex(lights::kColours, "random") == LC_RANDOM &&
@@ -243,6 +255,17 @@ uint8_t  g_vu    = 0;               // tenths of a pixel
 uint16_t g_bits  = 0;
 uint32_t g_stepAt = 0;
 uint8_t  g_rd = 0, g_sd = 0;        // hayes: the RD and SD blips
+int8_t   g_rssi   = 0;              // wifi: the signal in dBm, 0 when not joined
+uint32_t g_rssiAt = 0;              // when it was last asked for, 0 never
+
+// wifi: the meter's scale and colours. -90 dBm or weaker lights one pixel
+// and -50 or stronger all of them; the colours are SYS's words for the
+// signal: green from -67 (good), amber from -75 (fair), red below (weak).
+constexpr int      kRssiLow   = -90;
+constexpr int      kRssiHigh  = -50;
+constexpr int      kRssiGood  = -67;
+constexpr int      kRssiFair  = -75;
+constexpr uint32_t kRssiEvery = 1000;   // plat::wifiRssi asks the Wi-Fi driver: once a second
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -255,9 +278,10 @@ uint32_t rnd() {                    // xorshift32, seeded from the hardware at s
 }
 
 // shade: one channel at an effect's level (0 to 255) and an output's cap (1
-// to 30 percent), in one rounding. Down, so the cap is a ceiling nothing
-// crosses, 76 of 255 at 30%; then 1 for any channel that was lit, so a dim
-// colour at 1% stays a colour rather than going out.
+// to 100 percent), in one rounding. Down, so the cap is a ceiling nothing
+// crosses: 76 of 255 at 30%, 127 at 50%, 255 at 100%; then 1 for any
+// channel that was lit, so a dim colour at 1% stays a colour rather than
+// going out.
 uint8_t shade(uint8_t v, uint8_t level, uint8_t pct) {
     if (!v || !level) return 0;
     uint32_t o = static_cast<uint32_t>(v) * level * pct / (255u * 100u);
@@ -355,10 +379,10 @@ void pctKey(uint8_t& out, const char* key, const char* v) {
         plat::log("lights: %s = %s is not a number, keeping %u%%", key, v, static_cast<unsigned>(out));
         return;
     }
-    if (p > kPctMax || p < 1) {
-        long got = p > kPctMax ? kPctMax : 1;
+    if (p > kPctClamp || p < 1) {
+        long got = p > kPctClamp ? kPctClamp : 1;
         plat::log("lights: %s = %ld is outside 1 to %u, using %ld", key, p,
-                  static_cast<unsigned>(kPctMax), got);
+                  static_cast<unsigned>(kPctClamp), got);
         p = got;
     }
     out = static_cast<uint8_t>(p);
@@ -653,6 +677,29 @@ void drawStrip(uint32_t now, uint8_t* f, uint16_t rx, uint16_t tx, uint32_t byte
                 put(f, i, wheel(static_cast<uint8_t>(now / 20u + i * hueStep)), 255, pct);
             break;
 
+        case SF_WIFI: {
+            // The station's signal as a meter (1.1.0, Rob: "add a wifi
+            // signal to the light strip effects"). The reading is taken once
+            // a second, never a frame: it is a call into the Wi-Fi driver.
+            if (!g_rssiAt || now - g_rssiAt >= kRssiEvery) {
+                g_rssiAt = now ? now : 1;
+                g_rssi   = plat::wifiRssi();
+            }
+            if (!g_rssi) {
+                // Not joined: one red pixel, breathing slowly.
+                put(f, 0, kRed, static_cast<uint8_t>(40u + tri(now, 2000u) * 215u / 255u), pct);
+                break;
+            }
+            const int r = g_rssi < kRssiLow ? kRssiLow : g_rssi > kRssiHigh ? kRssiHigh : g_rssi;
+            const uint8_t lit = static_cast<uint8_t>(1 + (n - 1) * (r - kRssiLow) / (kRssiHigh - kRssiLow));
+            const Rgb c = g_rssi >= kRssiGood ? kTermRgb[static_cast<uint8_t>(Color::Green)]
+                        : g_rssi >= kRssiFair ? kAmber : kRed;
+            for (uint8_t i = 0; i + 1 < lit; ++i) put(f, i, c, 255, pct);
+            // The meter's tip breathes a little, so it reads as live.
+            put(f, static_cast<uint8_t>(lit - 1), c, static_cast<uint8_t>(190u + tri(now, 1500u) * 65u / 255u), pct);
+            break;
+        }
+
         case SF_MANUAL:
             // led1 to ledN; a pixel past the strip's end is not drawn, even
             // with a setting of its own in the file.
@@ -832,6 +879,7 @@ bool start(Bbs& bbs) {
     memset(g_mark, 0xFF, sizeof(g_mark));
     for (uint8_t i = 0; i < kStrip; ++i) g_hue[i] = static_cast<uint8_t>(rnd());
     g_pos = 0; g_dir = 1; g_phase = 0; g_vu = 0; g_bits = 0; g_stepAt = 0; g_rd = g_sd = 0;
+    g_rssi = 0; g_rssiAt = 0;
 
     char a[10], b[10];
     plat::log("lights: drive %s on gpio %d at %u%%, strip %s on gpio %d at %u%%, %u pixels",
@@ -936,6 +984,19 @@ void cmdLights(Bbs& b, Session& s, const char* a, uint32_t now) {
                       : ieq(a, "pulse flash") ? plat::DISK_FLASH : plat::DISK_ERROR);
         t.color(tl, Color::Grey);
         t.text(tl, "Pulsed.");
+        b.prompt(s);
+        return;
+    }
+    // Host only: the signal the host's radio reports (it has none), so a
+    // test can put the wifi meter through strong, weak and not joined.
+    // "rssi -70" sets it, "rssi off" is not joined; the meter reads it
+    // straight away rather than at its next second.
+    if (!strncmp(a, "rssi ", 5) || !strncmp(a, "RSSI ", 5)) {
+        const char* v = a + 5;
+        hostSetRssi(ieq(v, "off") ? 0 : static_cast<int8_t>(strtol(v, nullptr, 10)));
+        g_rssiAt = 0;
+        t.color(tl, Color::Grey);
+        t.text(tl, "Signal set.");
         b.prompt(s);
         return;
     }

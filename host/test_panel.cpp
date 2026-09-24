@@ -52,13 +52,25 @@ int main() {
           rgb(255, 0, 0) == 0xF800 && rgb(0, 255, 0) == 0x07E0 && rgb(0, 0, 255) == 0x001F);
     check("isqrt at the edges", isqrt(0) == 0 && isqrt(1) == 1 && isqrt(15) == 3 && isqrt(16) == 4 &&
                                 isqrt(65535) == 255 && isqrt(0xFFFFFFFFu) == 65535);
-    check("a strip pixel at the lights' 30% ceiling is full on glass", ledLevel(76) == 255);
-    check("at the shipped 10%, a readable 146", ledLevel(25) == 146);
-    check("at 1%, still there", ledLevel(2) == 41);
-    check("dark stays dark", ledLevel(0) == 0);
+    // A strip pixel on glass: the lights' white is 255 x pct / 100 per channel.
+    // 76 is 255 x 30 / 100 rounded down, so going back loses a little.
+    check("white at 30% is full on glass, near enough", glassLevel(76, 30) >= 253);
+    check("and at 100%", glassLevel(255, 100) == 255);
+    check("at 50% too: past 30 the glass is already full", glassLevel(127, 50) >= 253);
+    check("at the shipped 10%, a readable 144", glassLevel(25, 10) == 144);
+    check("at 1%, still there", glassLevel(2, 1) == 36);
+    check("dark stays dark", glassLevel(0, 10) == 0 && glassLevel(25, 0) == 0);
+    // Orange at 100% (255, 128, 0) keeps its hue: it used to clip to yellow.
+    check("orange at 100% stays orange",
+          glassLevel(255, 100) == 255 && glassLevel(128, 100) == 128 && glassLevel(0, 100) == 0);
+    check("and the same orange at 10% is the same hue, dimmer",
+          glassLevel(25, 10) == 144 && glassLevel(12, 10) == 69);
     bool mono = true;
-    for (int v = 1; v < 256; ++v) if (ledLevel(static_cast<uint8_t>(v)) < ledLevel(static_cast<uint8_t>(v - 1))) mono = false;
-    check("brighter in is never dimmer out", mono);
+    for (int p = 1; p <= 100; ++p)
+        for (int v = 1; v < 256; ++v)
+            if (glassLevel(static_cast<uint8_t>(v), static_cast<uint8_t>(p)) <
+                glassLevel(static_cast<uint8_t>(v - 1), static_cast<uint8_t>(p))) mono = false;
+    check("brighter in is never dimmer out, at any brightness", mono);
 
     // --- glyphs -------------------------------------------------------------
     {

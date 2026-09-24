@@ -934,7 +934,7 @@ static_assert(SOC_RMT_MEM_WORDS_PER_CHANNEL >= 1 * 24 + 2,
               "the drive light's one pixel fits one block");
 #if !SOC_RMT_SUPPORT_DMA
 static_assert(static_cast<size_t>(kPixelMax) * 24u + 2u <=
-              (SOC_RMT_CHANNELS_PER_GROUP - 1u) * SOC_RMT_MEM_WORDS_PER_CHANNEL,
+              (SOC_RMT_TX_CANDIDATES_PER_GROUP - 1u) * SOC_RMT_MEM_WORDS_PER_CHANNEL,
               "the longest strip no longer fits the channel memory beside the drive light");
 #endif
 PixOut            g_pix[kPixelOuts];
@@ -1053,8 +1053,17 @@ bool pixelsBegin(uint8_t out, int pin, uint8_t count, uint8_t order) {
     esp_err_t e = rmt_new_tx_channel(&cc, &p.chan);
 #if SOC_RMT_SUPPORT_DMA
     // No DMA to be had (another driver holds every GDMA channel): channel
-    // memory, if the frame fits beside the drive light.
+    // memory, if the frame fits the TX blocks the drive light leaves (three
+    // of the S3's four, 144 symbols: five pixels). A longer strip is said to
+    // be what it is, rather than sent off to check its wiring.
     if (e != ESP_OK && dma) {
+        constexpr size_t kLeft = (SOC_RMT_TX_CANDIDATES_PER_GROUP - 1u) * kBlock;
+        if (need > kLeft) {
+            pixForget(p);
+            log("lights: no DMA channel free for the strip (%s), and %u pixels need it",
+                esp_err_to_name(e), static_cast<unsigned>(count));
+            return false;
+        }
         cc.flags.with_dma    = 0;
         cc.mem_block_symbols = (need + kBlock - 1u) / kBlock * kBlock;
         log("lights: no DMA for the strip (%s), trying channel memory", esp_err_to_name(e));

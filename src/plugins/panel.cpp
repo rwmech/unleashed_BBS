@@ -26,11 +26,12 @@
  *                 pin4_dc   = 41
  *                 pin5_rst  = 39         -1 to reset by command
  *                 pin6_bl   = 48         -1 for a backlight that is always on
- *                 width     = 320        as drawn, after the rotation
- *                 height    = 172
- *                 xoff      = 0          where that sits in the controller's RAM
- *                 yoff      = 34
- *                 rotation  = 90         0 | 90 | 180 | 270
+ *                 width     = 172        as drawn, after the rotation: portrait,
+ *                 height    = 320        the stick hanging with its plug up
+ *                 xoff      = 34         where that sits in the controller's RAM
+ *                 yoff      = 0
+ *                 rotation  = 0          0 | 90 | 180 | 270 (landscape: 90,
+ *                                        320 x 172 at yoff 34)
  *                 invert    = yes        an IPS panel is normally black
  *                 mirror    = yes        glass wired mirrored, as this one is
  *                 colours   = BGR        RGB | BGR
@@ -381,7 +382,8 @@ void refreshStrip() {
     uint8_t changed = 0;
     Rect cells[plat::kPixelMax];
     for (uint8_t i = 0; i < n; ++i) {
-        uint16_t col = rgb(ledLevel(rgbs[i * 3]), ledLevel(rgbs[i * 3 + 1]), ledLevel(rgbs[i * 3 + 2]));
+        uint16_t col = rgb(glassLevel(rgbs[i * 3], pct), glassLevel(rgbs[i * 3 + 1], pct),
+                           glassLevel(rgbs[i * 3 + 2], pct));
         if (!col) col = kUnlit;
         if (col == g_lampCol[i]) continue;
         g_lampCol[i] = col;

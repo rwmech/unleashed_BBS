@@ -89,6 +89,15 @@
 #define BBS_HAS_LCD           1
 #define BBS_BOARD_PLUGINS     1       // the panel
 
+// The profile's own version, beside the core's (Rob, 1.1.0: "version the S3
+// slightly different ... since we have the core versions and s3 versions
+// that compile different"). BBS_VERSION stays the core's, shared by every
+// board; this one moves when this profile's own code does. Shown wherever
+// the version is shown, as BBS_VERSION_SHOWN (config.h) puts it. The
+// reference board defines neither.
+#define BBS_BOARD_TAG         "S3"
+#define BBS_BOARD_VERSION     "1.0.0"
+
 // The internal heap a plugin may not take at start (config.h). 16 KB, not
 // the WROOM's 40: with PSRAM, Wi-Fi's and lwIP's buffers go there
 // (sdkconfig.defaults.esp32s3, TRY_ALLOCATE_WIFI_LWIP), and so does the
@@ -118,10 +127,12 @@
 #define BBS_SD_CLK            14
 #define BBS_SD_MISO           16
 
-// The serial bridge on the header's RXD and TXD, UART0's pins, which are
-// free: the console is on the native USB port. 16 and 17 are the TF slot.
-#define BBS_SERIAL_RX         44
-#define BBS_SERIAL_TX         43
+// The serial bridge on header IO2 (RX) and IO1 (TX). Not the header's RXD
+// and TXD (44 and 43): those are UART0's, and the chip's ROM prints its boot
+// banner on them at every reset, which a device wired there would read as
+// input. 16 and 17 are the TF slot; IO3 is a strapping pin.
+#define BBS_SERIAL_RX         2
+#define BBS_SERIAL_TX         1
 
 // The panel: ST7789, 172 x 320, driven portrait. SDA 45, SCL 40, CS 42,
 // D/C 41, RES 39, backlight 48 (active high through an N-MOSFET). The
