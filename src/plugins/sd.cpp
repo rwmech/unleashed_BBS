@@ -69,6 +69,7 @@
 #include "../core/bbs_util.h"
 #include "../platform/platform.h"
 #include "../config.h"
+#include "panel_feed.h"       // sdcard::panel, on a board with a display
 
 #include <cstdio>
 #include <cstring>
@@ -602,6 +603,26 @@ void setting(const char* key, char* out, size_t n) {
 }
 
 } // namespace
+
+#ifdef BBS_HAS_LCD
+// sdcard::panel: the card as the board's display shows it (panel_feed.h).
+// Mounted is the mount point being set, which is RAM. A card that would not
+// mount is g_why holding a mount's refusal: anything but "no card found",
+// which is an empty slot, and the three words this file writes when nothing
+// has failed.
+uint8_t sdcard::panel(uint32_t& freeKB, bool refresh) {
+    freeKB = 0;
+    if (plat::sdBase()[0]) {
+        const plat::SdInfo& i = refresh ? cardInfo() : g_info;
+        if (i.mounted) freeKB = i.freeKB;
+        return 1;
+    }
+    if (g_running && strncmp(g_why, "no card found", 13) && strcmp(g_why, "not mounted") &&
+        strcmp(g_why, "mounted") && strcmp(g_why, "unmounted by the sysop"))
+        return 2;
+    return 0;
+}
+#endif
 
 // sdScreensDir: the screen player asks this, so it does not have to know a
 // plugin exists. Null when there is no card or the override is switched off.

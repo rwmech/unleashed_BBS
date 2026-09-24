@@ -1686,6 +1686,9 @@ void Bbs::completeLogin(Session& s, uint32_t now) {
     // most BBS_CALLLOG_SIZE records, once per login, and it stays right
     // across a reboot and across midnight without anything to maintain.
     unsigned today = (clk::valid() ? calllog::countSince(clk::todayStart()) : 0u) + 1u;
+#ifdef BBS_HAS_LCD
+    panelToday_ = static_cast<uint16_t>(today);      // the display's "23 today", no read of its own
+#endif
     const char* ord = (today % 10 == 1 && today % 100 != 11) ? "st"
                     : (today % 10 == 2 && today % 100 != 12) ? "nd"
                     : (today % 10 == 3 && today % 100 != 13) ? "rd" : "th";

@@ -87,6 +87,7 @@
 #include "../core/xmodem.h"
 #include "../platform/platform.h"
 #include "../config.h"
+#include "panel_feed.h"       // pendingCount, on a board with a display
 
 #include <cstdio>
 #include <cstring>
@@ -1347,6 +1348,16 @@ char g_why[96] = {};
 // have mail". A card edited on a laptop goes stale until the next start,
 // which is the accepted trade for a login that does not touch the card.
 uint16_t g_pending = 0;
+
+#ifdef BBS_HAS_LCD
+}   // namespace
+
+// The board's display shows an upload glyph while this is above 0
+// (panel_feed.h). The same figure staff are told at login, so no read.
+uint16_t files::pendingCount() { return g_pending; }
+
+namespace {
+#endif
 
 // pendPath: an area's staging folder, or false when there is no card.
 bool pendPath(uint8_t i, char* out, size_t n) {

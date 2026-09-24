@@ -141,11 +141,12 @@
 //
 // Portrait because of how the stick is used (Rob): it hangs from a USB-A
 // port with the plug at the top and the screen facing the room, so the
-// glass is tall and narrow. Rotation 0 with the mirror is exactly what
-// Waveshare's demo does; if that reads upside down with the plug at the
-// top, 180 in CONFIG panel turns it, and that becomes the default here.
-// A board mounted on its side in a case wants 90 or 270 with the width and
-// height swapped and the offset moved to Y, all in CONFIG panel.
+// glass is tall and narrow. The width, height and offsets are the glass
+// with the plug up, which with the mirror is exactly what Waveshare's demo
+// draws. CONFIG panel's "USB plug" turns it (Rob, 1.1.0: on a cable, read
+// in landscape): left and right draw landscape at 320 x 172, down is
+// portrait upside down, and the panel works out the rest (panel_gfx.h,
+// scanFor).
 //
 // The demo's clock is
 // 12 MHz and the panel's own limit 62.5 MHz (16 ns write cycle); the SPI
@@ -162,7 +163,7 @@
 #define BBS_LCD_HEIGHT        320
 #define BBS_LCD_XOFF          34
 #define BBS_LCD_YOFF          0
-#define BBS_LCD_ROTATION      0       // 0 | 90 | 180 | 270
+#define BBS_LCD_ORIENT        0       // the USB plug: 0 up, 1 left, 2 right, 3 down
 #define BBS_LCD_INVERT        1
 #define BBS_LCD_BGR           1
 #define BBS_LCD_MIRROR        1       // the demo mirrors X to draw portrait upright

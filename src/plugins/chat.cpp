@@ -98,6 +98,7 @@
 #include "../core/users.h"
 #include "../core/plugin.h"
 #include "../platform/platform.h"
+#include "panel_feed.h"       // unreadFor, on a board with a display
 
 #include <cstddef>
 #include <cstdio>
@@ -922,6 +923,18 @@ uint8_t mailCountFor(const char* handle) {
         if (g_mailTo[i][0] && ieq(g_mailTo[i], handle)) ++n;
     return n;
 }
+
+#ifdef BBS_HAS_LCD
+}   // namespace
+
+// The board's display's envelope (panel_feed.h): unread mail for a handle,
+// off the same index "You have mail" reads, so no read of the file.
+uint8_t chat::unreadFor(const char* handle) {
+    return handle && *handle ? mailNewFor(handle) : 0;
+}
+
+namespace {
+#endif
 
 // ---------------------------------------------------------------------------
 // mailRewrite: copy the file across, keeping every record the filter says
