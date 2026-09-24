@@ -114,10 +114,21 @@ somebody edits `system.cfg` by hand.
 ```c
 const PluginSetting kSettings[] = {
     { "greeting", "Greeting", PS_TEXT, 0, 0, 40 },   // key, label (9 chars), kind, lo, hi, cap
+    { "port", "Outside", PS_OPTNUM, 1, 65535, 5,     // an optional seventh: the row's note
+      "What callers dial through your router." },
 };
 ```
 
-`kind` is `PS_TEXT`, `PS_NUM`, `PS_YESNO`, `PS_INFO` or `PS_PIN`. `PS_PIN` is a
+The seventh field, `note`, is optional and appended (1.1.0): the line CONFIG
+shows on the form's status line while that row has the focus, 38 characters
+at most. Leave it out and the row shows the usual movement hint.
+
+`kind` is `PS_TEXT`, `PS_NUM`, `PS_YESNO`, `PS_INFO`, `PS_PIN` or `PS_OPTNUM`.
+`PS_OPTNUM` is a `PS_NUM` that may also be saved empty, written as an empty
+value, which the plugin reads as its own default; `setting()` should return
+empty while the file does not set it, so the form shows the blank that means
+"default". It is its own kind because an empty value parses as 0, and on a
+`PS_NUM` whose range starts at 0 that would quietly mean something. `PS_PIN` is a
 GPIO number: numeric like `PS_NUM`, with -1 meaning none, and CONFIG refuses
 pins 6 to 11 because on the WROOM they are wired to the flash chip. `PS_INFO` is shown but
 never editable and never written back, for a value the plugin does not own:

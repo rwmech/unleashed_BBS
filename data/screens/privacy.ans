@@ -1,77 +1,69 @@
-[1;36m THE RISKS OF AN UNENCRYPTED BBS
-[0;36m and what it means for your privacy
-[0;37m 
-[0;37m Four short pages. They take a minute,
-[0;37m and they are the minute worth spending.
-[0;37m 
-[1;33m TELNET IS NOT ENCRYPTED
-[0;37m 
-[0;37m Telnet has no encryption. It never has,
-[0;37m and on this board it never will.
-[0;37m 
-[0;37m Everything you type crosses the network
-[0;37m as readable text. What you say, and the
-[0;37m password you type to get in.
-[0;37m 
-[0;37m That is not an oversight. It is the
-[0;37m price of letting a 1982 computer call,
-[0;37m and a C64 cannot do encryption. Better
-[0;37m to tell you than quietly pretend.
-[0;37m 
-[1;30m Page 1 of 4
-[1;33m WHAT THAT ACTUALLY RISKS
-[0;37m 
-[0;37m Reading your password needs two things:
-[0;37m a sniffer, which is any program that
-[0;37m records network traffic, and a position
-[0;37m on the path between you and this board.
-[0;37m 
-[0;37m Who has that? Whoever runs the wifi you
-[0;37m are on. Whoever runs the office
-[0;37m network. Your internet provider, and
-[0;37m the board's. Somebody who has put
-[0;37m themselves in the middle on purpose.
-[0;37m 
-[0;37m Not a stranger on the internet, then.
-[0;37m It takes access, and most people simply
-[0;37m do not have it.
-[0;37m 
-[0;37m Low risk. Not no risk. Worth one unique
-[0;37m password, not an afternoon of worry.
-[0;37m 
-[1;30m Page 2 of 4
-[1;33m YOUR PASSWORD ON THIS BOARD
-[0;37m 
-[0;37m It is never stored as you typed it. It
-[0;37m is salted and hashed with SHA-256, a
-[0;37m thousand rounds, and only the result is
-[0;37m written down. Nobody can read it back,
-[0;37m including the sysop.
-[0;37m 
-[0;37m That protects the file if the file is
-[0;37m stolen. It does nothing for the wire,
-[0;37m where you typed it in the clear.
-[0;37m 
-[0;37m And a hash is not magic. A common
-[0;37m password still falls to a lookup table.
-[0;37m 
-[1;30m Page 3 of 4
-[1;33m WHAT THIS BOARD KNOWS
-[0;37m 
-[0;37m The sysop sees your handle, the address
-[0;37m you called from, when you called and for
-[0;37m how long, and the last command you ran.
-[0;37m Staff can watch a node. Messages you
-[0;37m leave sit in a file until they are read.
-[0;37m 
-[0;37m Assume whoever owns the machine can read
-[0;37m what is on it. That is true everywhere.
-[0;37m Here you at least know who they are.
-[0;37m 
-[0;37m Honestly? It is a hobby board on a five
-[0;37m dollar chip, and it is conversation.
-[0;37m 
-[1;32m Use a password you use nowhere else.
-[0;37m 
-[1;30m Page 4 of 4
+@CLS@[1;37m                        THE RISKS OF AN UNENCRYPTED BBS
+[0;36m                       and what it means for your privacy
+[0;34m  ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+
+[0;37m  Four short pages. They take a minute,
+[0;37m  and they are the minute worth spending.
+
+[1;36m  TELNET IS NOT ENCRYPTED
+
+[0;37m  Telnet has no encryption. It never has,
+[0;37m  and on this board it never will.
+
+[0;37m  Everything you type crosses the network as readable text. What you say,
+[0;37m  and the password you type to get in.
+
+[0;37m  That is not an oversight. It is the price of letting a 1982
+[0;37m  computer call, and a C64 cannot do encryption.
+[0;37m  Better to tell you than quietly pretend.
+
+[1;30m                                                                   Page 1 of 4
+@CLS@[1;37m                            WHAT THAT ACTUALLY RISKS
+[0;34m  ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+
+[0;37m  Reading your password needs two things:
+[0;37m  a sniffer, which is any program that records network traffic,
+[0;37m  and a position on the path between you and this board.
+
+[0;37m  Who has that? Whoever runs the wifi you are on. Whoever runs the office
+[0;37m  network. Your internet provider, and the board's. Somebody who has put
+[0;37m  themselves in the middle on purpose.
+
+[0;37m  Not a stranger on the internet, then.
+[0;37m  It takes access, and most people simply do not have it.
+
+[0;37m  Low risk. Not no risk.
+[0;37m  Worth one unique password, not an afternoon of worry.
+
+[1;30m                                                                   Page 2 of 4
+@CLS@[1;37m                          YOUR PASSWORD ON THIS BOARD
+[0;34m  ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+
+[0;37m  It is never stored as you typed it. It is salted and hashed with
+[0;37m  SHA-256, a thousand rounds, and only the result is written down.
+[0;37m  Nobody can read it back, including the sysop.
+
+[0;37m  That protects the file if the file is stolen.
+[0;37m  It does nothing for the wire, where you typed it in the clear.
+
+[0;37m  And a hash is not magic.
+[0;37m  A common password still falls to a lookup table.
+
+[1;30m                                                                   Page 3 of 4
+@CLS@[1;37m                             WHAT THIS BOARD KNOWS
+[0;34m  ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+
+[0;37m  The sysop sees your handle, the address you called from, when you
+[0;37m  called and for how long, and the last command you ran. Staff can watch
+[0;37m  a node. Messages you leave sit in a file until they are read.
+
+[0;37m  Assume whoever owns the machine can read what is on it.
+[0;37m  That is true everywhere. Here you at least know who they are.
+
+[0;37m  Honestly? It is a hobby board on a five dollar chip,
+[0;37m  and it is conversation.
+
+[1;32m  Use a password you use nowhere else.
+
+[1;30m                                                                   Page 4 of 4
 [0m

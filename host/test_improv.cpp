@@ -31,6 +31,59 @@ static int feedAll(Parser& p, const uint8_t* b, size_t n, int* bad = nullptr) {
     return got;
 }
 
+// ---------------------------------------------------------------------------
+// ClientModel: the installer's reader, ported line for line from the
+// vendored ESP Web Tools 10.4.0 (install-dialog-im156JnI.js, _processInput
+// and _handleIncomingPacket), so the board's frames are read the way the
+// dialog reads them rather than by the board's own parser. Only the parts
+// that decide whether a packet is seen and what it does:
+//   - a packet is looked for only at the start of a line: a 0x0A anywhere in
+//     the first nine bytes starts the line again;
+//   - bytes 0..5 must be "IMPROV", the length is 9 + byte 8 + 1;
+//   - version must be 1 and the checksum the low byte of the sum;
+//   - CURRENT_STATE sets the state and fires "state-changed", whenever it
+//     arrives, asked for or not;
+//   - RPC_RESULT with no request waiting is logged and dropped.
+// ---------------------------------------------------------------------------
+struct ClientModel {
+    int  state = -1;              // this.state
+    int  stateEvents = 0;         // "state-changed" dispatched
+    int  droppedResults = 0;      // "Received result while not waiting for one"
+    bool waiting = false;         // this._rpcFeedback set
+    int  results = 0;
+
+    // e: undefined (-1), false (0: skip to the newline), true (1: in a packet)
+    int e = -1;
+    uint8_t t[300];
+    size_t  n = 0, want = 0;
+
+    void handle() {
+        const uint8_t* p = t + 6;
+        uint8_t ver = p[0], type = p[1], len = p[2];
+        if (ver != 1) return;
+        uint8_t sum = 0;
+        for (size_t i = 0; i + 1 < n; ++i) sum = static_cast<uint8_t>(sum + t[i]);
+        if (sum != p[3 + len]) return;
+        if (type == 1) { state = p[3]; ++stateEvents; }
+        else if (type == 4) { if (!waiting) ++droppedResults; else ++results; }
+    }
+    void feed(uint8_t s) {
+        if (e == 0) { if (s == 10) e = -1; return; }
+        if (e == 1) {
+            t[n++] = s;
+            if (n == want) { handle(); e = -1; n = 0; }
+            return;
+        }
+        if (s == 10) { n = 0; return; }
+        t[n++] = s;
+        if (n != 9) return;
+        e = !memcmp(t, "IMPROV", 6) ? 1 : 0;
+        if (e == 0) { n = 0; return; }
+        want = 9u + t[8] + 1u;
+    }
+    void feedAll(const uint8_t* b, size_t len) { for (size_t i = 0; i < len; ++i) feed(b[i]); }
+};
+
 int main() {
     printf("improv\n");
 
@@ -160,6 +213,81 @@ int main() {
         const char* l[] = { longS };
         check("a result too long for a packet is refused",
               improv::resultFrame(out, sizeof(out), improv::C_INFO, l, 1) == 0);
+    }
+
+    // ---- what the board says unasked (1.1.0) ----------------------------
+    {
+        check("state: a trial outranks being online",
+              improv::stateNow(true, true) == improv::S_PROVISIONING);
+        check("state: online is provisioned",
+              improv::stateNow(false, true) == improv::S_PROVISIONED);
+        check("state: still joining is authorized, not provisioned",
+              improv::stateNow(false, false) == improv::S_AUTHORIZED);
+    }
+    {
+        improv::JoinWatch w;
+        check("nothing is said to nobody: no client has spoken", !w.joined(true));
+        w.heard();
+        check("nothing while still joining", !w.joined(false));
+        check("once online, it is said", w.joined(true));
+        check("and only once", !w.joined(true));
+        check("not after a drop and a reconnect either", !w.joined(false) && !w.joined(true));
+    }
+    {
+        // Improv tried a new network before the board had joined its own.
+        // The trial's answer says it; a failed trial rejoins the old network,
+        // and that join must not be announced as though the new one worked.
+        improv::JoinWatch w;
+        w.heard();
+        w.trialStarted();
+        check("a trial silences it", !w.joined(true));
+    }
+    {
+        // A port open that does not reset the board: it is already online
+        // when asked, and the answer said so, with the link. Nothing to add.
+        improv::JoinWatch w;
+        w.heard();
+        w.answered(improv::S_AUTHORIZED);
+        check("an answer of 'still joining' leaves it to be said", w.joined(true));
+        improv::JoinWatch v;
+        v.heard();
+        v.answered(improv::S_PROVISIONED);
+        check("an answer that already said provisioned is not repeated", !v.joined(true));
+    }
+    {
+        // The frame it sends, byte for byte: 0x1DD + 1 + 1 + 1 + 4 = 0x1E4.
+        uint8_t out[16];
+        size_t n = improv::stateFrame(out, sizeof(out), improv::S_PROVISIONED);
+        const uint8_t want[] = { 'I','M','P','R','O','V', 0x01, 0x01, 0x01, 0x04, 0xE4, '\n' };
+        check("state provisioned, byte for byte", n == sizeof(want) && !memcmp(out, want, n));
+
+        // As the dialog reads it: after a log line cut off mid-way, which is
+        // why the board sends a newline first (imp::send).
+        ClientModel c;
+        const char log[] = "I (4210) main: online 192.168.0.40  dial";
+        c.feedAll(reinterpret_cast<const uint8_t*>(log), strlen(log));
+        const uint8_t nl = '\n';
+        c.feedAll(&nl, 1);
+        c.feedAll(out, n);
+        check("the installer's reader takes it unasked, and redraws",
+              c.state == improv::S_PROVISIONED && c.stateEvents == 1);
+
+        // Without the newline in front, the reader never sees it: the
+        // reason every frame goes out after one.
+        ClientModel d;
+        d.feedAll(reinterpret_cast<const uint8_t*>(log), strlen(log));
+        d.feedAll(out, n);
+        check("but not glued to the end of a log line", d.stateEvents == 0);
+
+        // Why the URL is not sent the same way: the reader drops a result
+        // nobody asked for, so it would only put an error in the console.
+        uint8_t r[80];
+        const char* s[] = { "telnet://192.168.0.40:6400" };
+        size_t rn = improv::resultFrame(r, sizeof(r), improv::C_STATE, s, 1);
+        ClientModel e;
+        e.feedAll(&nl, 1);
+        e.feedAll(r, rn);
+        check("an unasked result is dropped by the installer", e.droppedResults == 1 && e.results == 0);
     }
 
     printf("%d passed, %d failed\n", passes, fails);

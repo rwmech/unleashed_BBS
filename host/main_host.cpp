@@ -80,8 +80,12 @@ int main(int argc, char** argv) {
     signal(SIGPIPE, SIG_IGN);
     srand(static_cast<unsigned>(time(nullptr)));
     hostSetFsBase(argc > 1 ? argv[1] : "../data");
-    g_port = static_cast<uint16_t>(argc > 2 ? atoi(argv[2]) : BBS_PORT);
     syscfg::load();          // the host clock is already set, no NTP here
+    // A port on the command line wins, because the harness gives every run
+    // its own. Without one, the port in system.cfg, as the board reads it at
+    // boot: which is how a test restarts a board on its own files and finds
+    // it listening where CONFIG network said.
+    g_port = static_cast<uint16_t>(argc > 2 ? atoi(argv[2]) : syscfg::get().port);
 
     // A guard page under the stack, so running off the bottom faults at once
     // rather than scribbling on whatever the allocator put there.

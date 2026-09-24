@@ -172,6 +172,7 @@ const NumKey kNumKeys[] = {
     { "max_users",             1,  BBS_MAX_USERS },
     { "who_refresh_min",       1,  60 },
     { "who_refresh_max",       1,  60 },
+    { "port",                  1,  65535 },
     { "backup_port",           1,  65535 },
 };
 
@@ -303,23 +304,41 @@ void keyValue(Ctx& c, const char* key, char* val) {
     else if (!strcmp(key, "guest_minutes"))         { if (number(c, key, val, n)) g.guestMinutes = static_cast<uint16_t>(n); }
     else if (!strcmp(key, "who_refresh_min"))       { if (number(c, key, val, n)) g.whoMin = static_cast<uint8_t>(n); }
     else if (!strcmp(key, "who_refresh_max"))       { if (number(c, key, val, n)) g.whoMax = static_cast<uint8_t>(n); }
-    else if (!strcmp(key, "backup_port")) {
-        if (number(c, key, val, n)) {
-            if (n == BBS_PORT) problem(c, "backup_port cannot be the BBS port", val);
-            else g.backupPort = static_cast<uint16_t>(n);
-        }
-    }
+    // The two ports are only checked against each other in crossCheck: a
+    // file may set them in either order. backup_port used to be checked
+    // here against the constant 6400, which stopped being the rule the day
+    // the listening port became a setting.
+    else if (!strcmp(key, "port"))                  { if (number(c, key, val, n)) g.port = static_cast<uint16_t>(n); }
+    else if (!strcmp(key, "backup_port"))           { if (number(c, key, val, n)) g.backupPort = static_cast<uint16_t>(n); }
     else plat::log("cfg: line %d unknown key '%s' ignored", c.lineNo, key);
 }
 
 // crossCheck: the rules about two keys at once, which can only be judged
 // once every line is in. Returns the key it objects to, or nullptr.
-const char* crossCheck(Ctx& c, SysConfig& out) {
+// portWritten: a writer's trial that sets port, so a clash is said about
+// the port rather than about the backup window.
+const char* crossCheck(Ctx& c, SysConfig& out, bool portWritten = false) {
     if (out.whoMin > out.whoMax) {
         c.lineNo = 0;
         problem(c, "who_refresh_min is above the max", "");
         out.whoMin = out.whoMax;
         return "who_refresh_min";
+    }
+    // One port, two listeners: the backup window would fail to open, or
+    // worse, open over the callers' line. Said in the words of the page the
+    // sysop is on; a file gets the sentence the backup page always had.
+    if (out.port == out.backupPort) {
+        c.lineNo = 0;
+        char num[8];
+        snprintf(num, sizeof(num), "%u", static_cast<unsigned>(out.port));
+        if (portWritten) problem(c, "Same as the backup port. Pick another.", "");
+        else             problem(c, "backup_port cannot be the BBS port:", num);
+        // A file read at boot still has to come up somewhere. Keep the port
+        // callers dial and put the window back on its default, or, when the
+        // default is the port being dialled, the listener back on its own.
+        if (out.backupPort != BBS_BACKUP_PORT) out.backupPort = BBS_BACKUP_PORT;
+        else                                   out.port       = BBS_PORT;
+        return portWritten ? "port" : "backup_port";
     }
     return nullptr;
 }
@@ -379,8 +398,8 @@ void logSummary() {
     plat::log("cfg: %s  host %s  tz %s  ntp %s",
               g_cfg.fromFile ? BBS_CONFIG_FILE : "defaults (no " BBS_CONFIG_FILE ")",
               g_cfg.hostname, g_cfg.tz, g_cfg.ntpServer);
-    plat::log("cfg: idle %u  limits %u/call %u/day  backup port %u, %u min, gpio %d",
-              g_cfg.idleMinutes, g_cfg.callMinutes, g_cfg.dayMinutes,
+    plat::log("cfg: port %u  idle %u  limits %u/call %u/day  backup port %u, %u min, gpio %d",
+              g_cfg.port, g_cfg.idleMinutes, g_cfg.callMinutes, g_cfg.dayMinutes,
               g_cfg.backupPort, g_cfg.backupMinutes, g_cfg.backupGpio);
     plat::log("cfg: who refresh %u..%u s  activity led gpio %d  self_register %s  max_users %u  guest %s %u min",
               g_cfg.whoMin, g_cfg.whoMax, g_cfg.ledGpio, g_cfg.selfRegister ? "yes" : "no", g_cfg.maxUsers,
@@ -398,8 +417,14 @@ void logSummary() {
         if (strstr(vals[i], " #") || strstr(vals[i], "\t#"))
             plat::log("cfg: %s has a ' #' in it; since 0.22.1 that is part of the value, not a comment",
                       keys[i]);
+    // A sysop_password line that spells out the published default is a real
+    // password to the board and works from anywhere. Nothing writes one since
+    // 1.0.2, but a restore on 1.0.0 or 1.0.1 did, so a board can still carry
+    // it; say so, since the absence of "Held" is all it shows otherwise.
+    const bool spelled = !g_cfg.sysopDefault && !strcmp(g_cfg.sysopPass, BBS_DEFAULT_SYSOP);
     plat::log("cfg: sysop %s  co1 %s perms 0x%03x  co2 %s perms 0x%03x",     // never the passwords
               g_cfg.sysopDefault ? "on the published default, local network only"
+                                 : spelled ? "on the PUBLISHED password, from anywhere: set yours in CONFIG staff"
                                  : g_cfg.sysopPass[0] ? "on" : "off",
               g_cfg.coPass[0][0] ? "on" : "off", g_cfg.coPerms[0],
               g_cfg.coPass[1][0] ? "on" : "off", g_cfg.coPerms[1]);
@@ -606,9 +631,11 @@ const char* trial(const KeyVal* pairs, uint8_t count, char* why, size_t n) {
     c.bare = true;
     if (why && n) why[0] = '\0';
     char val[128];
+    bool portWritten = false;
     for (uint8_t i = 0; i < count; ++i) {
         const char* key = pairs[i].key;
         const char* v   = pairs[i].value;
+        if (!strcmp(key, "port")) portWritten = true;
         size_t len = strlen(v);
         if (len >= sizeof(val)) {
             problem(c, "Too long", "");
@@ -634,7 +661,7 @@ const char* trial(const KeyVal* pairs, uint8_t count, char* why, size_t n) {
         keyValue(c, key, t);
         if (c.problems) return key;
     }
-    return crossCheck(c, g_scratch);
+    return crossCheck(c, g_scratch, portWritten);
 }
 
 // ---------------------------------------------------------------------------
@@ -743,12 +770,32 @@ bool redactLine(const char* line, char* out, size_t outLen) {
     return true;
 }
 
+// unredactLine: a staff password line from a restored system.cfg, as it is
+// written on this board. A download never carries a staff password, only
+// ***, so *** means "keep this board's own" and is written as the live one.
+//
+// The published default is never written, in either form (1.0.2). A board
+// on the default has no sysop_password line, and that absence is all that
+// keeps the default local-only and the directory listing held. 1.0.1 wrote
+// *** back as the live password, which on such a board IS the published
+// one, and the explicit line made it a real password that worked from
+// anywhere, on a board that then went on the directory. So a line whose
+// value would be the published password, restored from *** or typed out,
+// comes back empty and is left out: for the sysop that is the default, for
+// a co-sysop it is that level off.
 bool unredactLine(const char* line, char* out, size_t outLen) {
     char tmp[160];
     int idx = 0;
     char* value = nullptr;
-    if (!passwordAssignment(line, tmp, sizeof(tmp), idx, value) || strcmp(value, "***")) return false;
-    snprintf(out, outLen, "%s = %s\n", kPasswordKeys[idx], livePassword(idx));
+    if (!passwordAssignment(line, tmp, sizeof(tmp), idx, value)) return false;
+    const bool redacted = !strcmp(value, "***");
+    const char* pw = redacted ? livePassword(idx) : value;
+    if (!strcmp(pw, BBS_DEFAULT_SYSOP)) {           // published: leave the line out
+        if (outLen) out[0] = '\0';
+        return true;
+    }
+    if (!redacted) return false;                    // a password of its own: as typed
+    snprintf(out, outLen, "%s = %s\n", kPasswordKeys[idx], pw);
     return true;
 }
 

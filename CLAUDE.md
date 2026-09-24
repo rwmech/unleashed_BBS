@@ -2141,6 +2141,15 @@ Queued for the next build (Rob's plan, in order):
     plugin must not claim those pins.
   - the RGB LED is the disk light's first real target, if it is a WS2812
     on an RMT-capable pin.
+  - **Pin rules per chip** (Rob, 2026-09-23: "The esp32s3 variants might use
+    the pins"). `syscfg::pinProblem` refuses GPIO 6-11, the classic
+    ESP32's flash pins. The S3's flash and PSRAM pins are different (about
+    26-32, more on octal-PSRAM parts), so the refuse list must come from
+    the target chip, not a constant. Every pin setting (LED, button, SD,
+    serial, both lights pins) goes through the one function, so this is
+    one change. A board profile may also default the lights' drive pin to
+    an onboard WS2812. Take the pin from the board's schematic, not from
+    memory.
   - **Keep the WROOM the floor.** Same node count and same sizing to start;
     PSRAM for the session pool (`CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY`)
     is a separate, measured step afterwards, not part of getting it to boot.

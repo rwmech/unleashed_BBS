@@ -294,6 +294,12 @@ public:
     // begin: open the listener. False if the port cannot be bound.
     bool begin(uint16_t port = BBS_PORT);
 
+    // port: the port the listener is bound to, 0 before begin(). What SYS,
+    // announce and anything else that tells somebody where to call should
+    // say. Not the configured one: that is used from the next restart, and
+    // until then the board is still answering here.
+    uint16_t port() const { return port_; }
+
     // tick: one scheduler pass (select + service every session)
     void tick();
 
@@ -652,6 +658,7 @@ private:
     void showApproval(Session& s);
 
     int       lfd_          = -1;
+    uint16_t  port_         = 0;             // see port()
     BackupService backup_;
     bool      approvalShown_ = false;
     uint32_t  lastBtnLog_    = 0;

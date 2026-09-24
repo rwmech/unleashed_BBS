@@ -31,7 +31,7 @@
  *               that decision.
  *
  * Interfaces:   improv::Parser, frame, stateFrame, errorFrame, resultFrame,
- *               parseRpc, parseWifi
+ *               parseRpc, parseWifi, stateNow, JoinWatch
  *
  * Libraries:    none
  * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
@@ -126,5 +126,55 @@ bool parseRpc(const uint8_t* data, uint8_t len, uint8_t& cmd,
 // empty.
 bool parseWifi(const uint8_t* payload, uint8_t plen, char* ssid, size_t ssidCap,
                char* pass, size_t passCap);
+
+// stateNow: what the board is, as a "request current state" answer. A trial
+// outranks being online, because for the whole trial the radio is between
+// networks and "provisioned" would describe the one being left.
+uint8_t stateNow(bool trial, bool online);
+
+// ---------------------------------------------------------------------------
+// JoinWatch: whether to tell the installer, unasked, that the board is on
+// its network. Yes exactly once: the first time it is seen online after a
+// boot, only when a client has spoken since that boot, and only when no
+// answer has told it already (a port open that did not reset the board
+// finds it online, and the answer then carries the state and the link).
+//
+// Why it exists. Opening the port in ESP Web Tools resets the board, and the
+// installer's first question arrives while the board is still joining, so
+// the answer is "not provisioned" and the dialog offers Connect to Wi-Fi.
+// The vendored client (sdk-serial-js inside ESP Web Tools 10.4.0) acts on a
+// current-state packet whenever it arrives: it sets the state and redraws,
+// and the button becomes Change Wi-Fi. What it does not take is a result
+// nobody asked for: one with no request waiting is logged as an error and
+// dropped, so the telnet URL is never sent this way.
+//
+// Why only once, and never after a trial. A trial's own answer carries the
+// state and the URL. A trial that fails puts the board back on its old
+// network, and saying "provisioned" as that one joins would turn the
+// dialog's "Unable to connect" into "Device connected to the network!",
+// about a network the person did not choose. Later reconnects say nothing,
+// because nothing ever said the board had gone.
+//
+// Why only when heard. Every boot would otherwise put a packet on the
+// console of a board nobody is provisioning.
+// ---------------------------------------------------------------------------
+class JoinWatch {
+public:
+    void heard()        { heard_ = true; }      // a client sent a packet
+    void trialStarted() { armed_ = false; }     // its answer will say it
+    void answered(uint8_t state) {              // a question was answered with this
+        if (state == S_PROVISIONED) armed_ = false;
+    }
+    // joined: true the one time this should be sent
+    bool joined(bool online) {
+        if (!armed_ || !heard_ || !online) return false;
+        armed_ = false;
+        return true;
+    }
+
+private:
+    bool armed_ = true;
+    bool heard_ = false;
+};
 
 } // namespace improv

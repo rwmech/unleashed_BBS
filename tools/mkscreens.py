@@ -476,7 +476,9 @@ def make_about_ans():
 # It is an ordinary screen file on purpose. A sysop should be able to say
 # this in their own words for their own board, without a compiler.
 #
-# 39 columns so a C64 sees the same shape as everything else.
+# 39 columns so a C64 sees the same shape as everything else. The ANSI file
+# is built from PRIVACY_PAGES_ANSI below: the same words re-broken for 72
+# columns, in the house style of rules.ans.
 # ---------------------------------------------------------------------------
 PRIVACY_PAGES = [
     [   ("h", "THE RISKS OF AN UNENCRYPTED BBS"),
@@ -560,23 +562,154 @@ PRIVACY_PAGES = [
         ("d", "Page 4 of 4") ],
 ]
 
-PRIV_ANSI = {"h": "1;36", "s": "0;36", "y": "1;33", "t": "0;37",
-             "g": "1;32", "d": "1;30", "": "0;37"}
+# ANSI only: the same words as PRIVACY_PAGES, broken for 72 columns.
+# make_privacy_ans() iterates this instead; PETSCII and ASCII keep
+# PRIVACY_PAGES. privacy_check_ansi() holds the two lists to the same
+# paragraphs and every page to a 24 row terminal, with the rule the builder
+# draws under the title block and the two rows pauseFor prints counted.
+PRIVACY_PAGES_ANSI = [
+    [   ("h", "THE RISKS OF AN UNENCRYPTED BBS"),
+        ("s", "and what it means for your privacy"),
+        ("", ""),
+        ("t", "Four short pages. They take a minute,"),
+        ("t", "and they are the minute worth spending."),
+        ("", ""),
+        ("y", "TELNET IS NOT ENCRYPTED"),
+        ("", ""),
+        ("t", "Telnet has no encryption. It never has,"),
+        ("t", "and on this board it never will."),
+        ("", ""),
+        ("t", "Everything you type crosses the network as readable text. What you say,"),
+        ("t", "and the password you type to get in."),
+        ("", ""),
+        ("t", "That is not an oversight. It is the price of letting a 1982"),
+        ("t", "computer call, and a C64 cannot do encryption."),
+        ("t", "Better to tell you than quietly pretend."),
+        ("", ""),
+        ("d", "Page 1 of 4") ],
+
+    [   ("y", "WHAT THAT ACTUALLY RISKS"),
+        ("", ""),
+        ("t", "Reading your password needs two things:"),
+        ("t", "a sniffer, which is any program that records network traffic,"),
+        ("t", "and a position on the path between you and this board."),
+        ("", ""),
+        ("t", "Who has that? Whoever runs the wifi you are on. Whoever runs the office"),
+        ("t", "network. Your internet provider, and the board's. Somebody who has put"),
+        ("t", "themselves in the middle on purpose."),
+        ("", ""),
+        ("t", "Not a stranger on the internet, then."),
+        ("t", "It takes access, and most people simply do not have it."),
+        ("", ""),
+        ("t", "Low risk. Not no risk."),
+        ("t", "Worth one unique password, not an afternoon of worry."),
+        ("", ""),
+        ("d", "Page 2 of 4") ],
+
+    [   ("y", "YOUR PASSWORD ON THIS BOARD"),
+        ("", ""),
+        ("t", "It is never stored as you typed it. It is salted and hashed with"),
+        ("t", "SHA-256, a thousand rounds, and only the result is written down."),
+        ("t", "Nobody can read it back, including the sysop."),
+        ("", ""),
+        ("t", "That protects the file if the file is stolen."),
+        ("t", "It does nothing for the wire, where you typed it in the clear."),
+        ("", ""),
+        ("t", "And a hash is not magic."),
+        ("t", "A common password still falls to a lookup table."),
+        ("", ""),
+        ("d", "Page 3 of 4") ],
+
+    [   ("y", "WHAT THIS BOARD KNOWS"),
+        ("", ""),
+        ("t", "The sysop sees your handle, the address you called from, when you"),
+        ("t", "called and for how long, and the last command you ran. Staff can watch"),
+        ("t", "a node. Messages you leave sit in a file until they are read."),
+        ("", ""),
+        ("t", "Assume whoever owns the machine can read what is on it."),
+        ("t", "That is true everywhere. Here you at least know who they are."),
+        ("", ""),
+        ("t", "Honestly? It is a hobby board on a five dollar chip,"),
+        ("t", "and it is conversation."),
+        ("", ""),
+        ("g", "Use a password you use nowhere else."),
+        ("", ""),
+        ("d", "Page 4 of 4") ],
+]
+
+# ANSI colours are the house palette of rules.ans: a bold white title over a
+# blue rule, cyan for a heading inside a page, white body, the one green
+# line for the sentence the whole screen exists to say, and a muted folio.
+PRIV_ANSI = {"h": "1;37", "s": "0;36", "y": "1;36", "t": "0;37",
+             "g": "1;32", "d": "1;30", "rule": "0;34", "": "0;37"}
 PRIV_PET  = {"h": "cyan", "s": "cyan", "y": "yellow", "t": "grey",
              "g": "lgreen", "d": "dgrey", "": "grey"}
 
 FF = b"\x0c"          # the player's page break
 
+PRIV_ANSI_WIDTH = 76  # the rule, and what the title is centred over
+PRIV_ANSI_TEXT = 71   # widest text line: two columns of indent keep it inside 78
+PRIV_ANSI_ROWS = 22   # a page's rows; pauseFor adds two, and 24 is the terminal
+
+
+def privacy_paras(page):
+    """(kind, text) per paragraph: consecutive lines of one kind joined by a
+    space, blank lines kept. The unit the two privacy lists must agree on,
+    since only the line breaks inside a paragraph are allowed to differ."""
+    out = []
+    for kind, text in page:
+        if kind and out and out[-1][0] == kind:
+            out[-1] = (kind, out[-1][1] + " " + text)
+        else:
+            out.append((kind, text))
+    return out
+
+
+def privacy_check_ansi():
+    """PRIVACY_PAGES_ANSI is PRIVACY_PAGES re-broken for 72 columns and
+    nothing else: same pages, same paragraphs in the same order, same words.
+    And every page fits a 24 row terminal with the pause under it."""
+    assert len(PRIVACY_PAGES_ANSI) == len(PRIVACY_PAGES), "page count differs"
+    for n, (narrow, wide) in enumerate(zip(PRIVACY_PAGES, PRIVACY_PAGES_ANSI), 1):
+        assert privacy_paras(narrow) == privacy_paras(wide), f"page {n} words differ"
+        for kind, text in wide:
+            assert len(text) <= PRIV_ANSI_TEXT, f"{len(text)} > {PRIV_ANSI_TEXT}: {text!r}"
+            assert "@" not in text, f"stray @ in {text!r}"
+        rows = len(wide) + 1                     # plus the rule under the title
+        assert rows <= PRIV_ANSI_ROWS, f"page {n}: {rows} rows > {PRIV_ANSI_ROWS}"
+
+
+def privacy_ansi_page(page):
+    """One page in the house style of rules.ans: the heading lines that open
+    the page are centred over a blue rule (the document title and its
+    subtitle on page 1, the section title on the others), the body sits two
+    columns in, a heading inside the body is cyan, and the page marker is a
+    folio on the rule's right edge. Every printed row leads with its own
+    colour so no row inherits the one above it."""
+    width = PRIV_ANSI_WIDTH
+    b = bytearray(b"@CLS@")
+    n = 0
+    while n < len(page) and page[n][0] in ("h", "s", "y"):   # the title block
+        kind, text = page[n]
+        colour = PRIV_ANSI["s"] if kind == "s" else PRIV_ANSI["h"]
+        pad = 2 + (width - len(text)) // 2
+        b += sgr(colour) + b" " * pad + text.encode("ascii") + b"\r\n"
+        n += 1
+    b += sgr(PRIV_ANSI["rule"]) + b"  " + bytes([H_LINE]) * width + b"\r\n"
+    for kind, text in page[n:]:
+        if kind == "":
+            b += b"\r\n"
+        elif kind == "d":
+            pad = 2 + width - len(text)
+            b += sgr(PRIV_ANSI[kind]) + b" " * pad + text.encode("ascii") + b"\r\n"
+        else:
+            b += sgr(PRIV_ANSI[kind]) + b"  " + text.encode("ascii") + b"\r\n"
+    return bytes(b)
+
 
 def make_privacy_ans():
-    out = bytearray()
-    for n, page in enumerate(PRIVACY_PAGES):
-        if n:
-            out += FF
-        for kind, line in page:
-            out += sgr(PRIV_ANSI[kind]) + b" " + line.encode("ascii") + b"\r\n"
-    out += sgr("0")
-    return bytes(out)
+    privacy_check_ansi()
+    return FF.join(privacy_ansi_page(p) for p in PRIVACY_PAGES_ANSI) + sgr("0")
 
 
 def make_privacy_seq():

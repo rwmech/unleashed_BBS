@@ -39,6 +39,29 @@ entry when it is released.
   ever had free out of 12,288, and every new low is logged to the console
   with what the board was doing at the time.
 
+**1.1.0-dev.1, network and installer.**
+- CONFIG's Wi-Fi page is now **network** (`CONFIG wifi` still opens it)
+  and adds **Port**, the port the board listens on. The default is 6400,
+  the range 1 to 65535, it is used from the next restart, and CONFIG
+  refuses it if it equals the backup port. A home router that can only
+  forward a port to the same port can now reach a second board. mDNS, the
+  console's dial-in line, Improv's telnet address, SYS and announce all
+  follow it.
+- Announce's "Port" is now **Outside**: the port callers dial through
+  your router. Left empty, it sends the listening port.
+- Improv answers from early in boot, so the web installer, which gives up
+  1.5 s after opening the port (and opening the port resets the board),
+  recognises a board already running µnleashed and offers Update. When
+  the board joins Wi-Fi it says so unprompted, and an open installer dialog
+  switches to Change Wi-Fi.
+- Fixed: a form's field note carried into the next form, so sign-up's
+  "Only you and staff" line showed under PROFILE.
+- The privacy screen is drawn at 80 columns for ANSI terminals (it was
+  40-column art on an 80-column screen), in the same frame as the rules
+  and welcome screens. The words are unchanged, and PETSCII and ASCII are
+  byte-identical.
+- Carries the 1.0.2 security fix.
+
 ## 1.0.1, 2026-09-23
 
 The directory's badges, sent by the board. From site 0.21 the directory

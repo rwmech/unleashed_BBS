@@ -92,6 +92,11 @@ static char          s_ssid[33] = "";
 static char          s_pass[65] = "";
 static volatile bool s_hold     = false;
 static esp_ip4_addr_t s_ip      = {};
+// The port callers dial, as this boot listens on it. Read from system.cfg
+// once, before anything announces it: the listener, mDNS, the console line
+// and Improv's telnet URL all say this number. CONFIG can change the file,
+// and the board moves at the next restart, never under a caller.
+static uint16_t      s_port     = BBS_PORT;
 
 // noSleep: keep the radio awake, and complain if it will not.
 //
@@ -166,7 +171,7 @@ static void onNet(void*, esp_event_base_t base, int32_t id, void* data) {
         (void)ps;
         s_ip = e->ip_info.ip;
         ESP_LOGI(TAG, "online " IPSTR "  dial in: telnet " IPSTR " %u",
-                 IP2STR(&e->ip_info.ip), IP2STR(&e->ip_info.ip), BBS_PORT);
+                 IP2STR(&e->ip_info.ip), IP2STR(&e->ip_info.ip), static_cast<unsigned>(s_port));
         xEventGroupSetBits(s_wifi, WIFI_UP);
     }
 }
@@ -204,10 +209,10 @@ static esp_err_t wifiUse(const char* ssid, const char* pass) {
 // ---------------------------------------------------------------------------
 // wifiStart: station mode. The network comes from system.cfg, then from
 // secrets.h if this build has one, and otherwise from nobody yet: the board
-// waits for Improv and says so on the console.
+// waits for Improv and says so on the console. s_wifi already exists:
+// app_main makes it first, because Improv reads it from the first poll.
 // ---------------------------------------------------------------------------
 static void wifiStart() {
-    s_wifi = xEventGroupCreate();
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     esp_netif_t* nif = esp_netif_create_default_wifi_sta();
@@ -294,15 +299,26 @@ static void netServicesStart() {
     }
     mdns_hostname_set(cfg.hostname);
     mdns_instance_name_set(BBS_NAME);
-    mdns_service_add(BBS_NAME, "_telnet", "_tcp", BBS_PORT, nullptr, 0);
-    ESP_LOGI(TAG, "mdns: %s.local, _telnet._tcp port %u", cfg.hostname, BBS_PORT);
+    mdns_service_add(BBS_NAME, "_telnet", "_tcp", s_port, nullptr, 0);
+    ESP_LOGI(TAG, "mdns: %s.local, _telnet._tcp port %u", cfg.hostname, static_cast<unsigned>(s_port));
 }
 
 // ===========================================================================
 // Improv Wi-Fi Serial on the console UART. The packets are core/improv; this
-// is the radio and the wire. Polled from the BBS task, before the network is
-// up and for as long as the board runs, so a board that has moved house can
-// be told its new network over the same cable.
+// is the radio and the wire. Polled from app_main between the steps of boot,
+// then from the BBS task, before the network is up and for as long as the
+// board runs, so a board that has moved house can be told its new network
+// over the same cable.
+//
+// Why during boot (1.1.0). Opening the port in ESP Web Tools resets the
+// board, and the installer's opening question has a deadline measured from
+// then. Its dialog fetches the manifest and calls initialize(1500): it sends
+// "request current state" at once, again every 1000 ms, and gives up at
+// 1500 ms with "Improv Wi-Fi Serial not detected". A dialog that gives up
+// has no firmware name or version to compare, so a board already running
+// this firmware was offered a plain install rather than Update. The first
+// poll used to wait for two partition walks and the radio's start; it now
+// comes as soon as the settings are read, and the walks come after it.
 // ===========================================================================
 namespace imp {
 
@@ -310,8 +326,10 @@ constexpr uint32_t kTrialMs  = 30000;   // ESP Web Tools waits 45 s and says ~30
 constexpr uint32_t kScanMs   = 15000;   // an all-channel scan takes 2-3 s; this is the backstop
 constexpr uint8_t  kScanMax  = 20;      // networks listed; the page scrolls, a C64 does not care
 
-improv::Parser g_parser;
+improv::Parser    g_parser;
+improv::JoinWatch g_join;               // the one unasked "provisioned" (see improv.h)
 bool     g_uartOk = false;              // set by app_main once the driver is in
+bool     g_radio  = false;              // wifiStart has run: scans and networks may start
 bool     g_trial = false;               // a new network is being tried
 uint32_t g_trialAt = 0;
 bool     g_scanning = false;
@@ -349,10 +367,11 @@ void sendResult(uint8_t cmd, const char* const* s, uint8_t n) {
 
 // sendUrl: where to go once the board is on the network. A telnet: link,
 // because that is what this board is; a browser with a telnet handler
-// opens it, and one without shows the address to type.
+// opens it, and one without shows the address to type. Only ever as the
+// answer to a question: the installer drops a result it did not ask for.
 void sendUrl(uint8_t cmd) {
     char url[48];
-    snprintf(url, sizeof(url), "telnet://" IPSTR ":%u", IP2STR(&s_ip), BBS_PORT);
+    snprintf(url, sizeof(url), "telnet://" IPSTR ":%u", IP2STR(&s_ip), static_cast<unsigned>(s_port));
     const char* s[] = { url };
     sendResult(cmd, s, 1);
 }
@@ -469,11 +488,13 @@ void handle() {
         return;
     }
     switch (cmd) {
-    case improv::C_STATE:
-        if (g_trial)   sendState(improv::S_PROVISIONING);
-        else if (up()) { sendState(improv::S_PROVISIONED); sendUrl(improv::C_STATE); }
-        else           sendState(improv::S_AUTHORIZED);
+    case improv::C_STATE: {
+        uint8_t st = improv::stateNow(g_trial, up());
+        sendState(st);
+        if (st == improv::S_PROVISIONED) sendUrl(improv::C_STATE);
+        g_join.answered(st);            // already said: nothing to repeat unasked
         break;
+    }
     case improv::C_INFO: {
         const SysConfig& c = syscfg::get();
         const char* s[] = { "unleashed BBS", BBS_VERSION, "ESP32",
@@ -481,11 +502,14 @@ void handle() {
         sendResult(improv::C_INFO, s, 4);
         break;
     }
+    // Before the radio is started (the one poll in app_main ahead of
+    // wifiStart), a scan or a network cannot be started: busy, try again.
     case improv::C_SCAN:
+        if (!g_radio) { sendError(improv::E_UNKNOWN); break; }
         startScan();
         break;
     case improv::C_WIFI: {
-        if (g_trial || g_scanning) { sendError(improv::E_UNKNOWN); break; }
+        if (!g_radio || g_trial || g_scanning) { sendError(improv::E_UNKNOWN); break; }
         if (!improv::parseWifi(pay, plen, g_newSsid, sizeof(g_newSsid), g_newPass, sizeof(g_newPass)) ||
             !cleanText(g_newSsid, false) || !cleanText(g_newPass, true)) {
             sendError(improv::E_INVALID);
@@ -493,6 +517,7 @@ void handle() {
         }
         snprintf(g_oldSsid, sizeof(g_oldSsid), "%s", s_ssid);
         snprintf(g_oldPass, sizeof(g_oldPass), "%s", s_pass);
+        g_join.trialStarted();                          // the trial's answer says it now
         sendState(improv::S_PROVISIONING);
         plat::log("improv: trying \"%s\"", g_newSsid);  // never the password
         if (!switchTo(g_newSsid, g_newPass)) {
@@ -541,13 +566,25 @@ bool joinedNew() {
     return !strcmp(reinterpret_cast<const char*>(ap.ssid), g_newSsid);
 }
 
-// poll: whatever has arrived, then the trial and the scan.
+// poll: whatever has arrived, then the join, the trial and the scan.
 void poll() {
     if (!g_uartOk) return;                  // the driver refused; say so once, at boot
     uint8_t buf[64];
     int n = uart_read_bytes(UART_NUM_0, buf, sizeof(buf), 0);
-    for (int i = 0; i < n; ++i)
-        if (g_parser.feed(buf[i]) == improv::Parser::Res::Packet) handle();
+    for (int i = 0; i < n; ++i) {
+        if (g_parser.feed(buf[i]) != improv::Parser::Res::Packet) continue;
+        g_join.heard();
+        handle();
+    }
+
+    // The installer asked while the board was still joining, heard "not
+    // provisioned", and is showing Connect to Wi-Fi. Say it once the board
+    // is on: the dialog redraws to Change Wi-Fi. The state only, because
+    // the installer drops a result it did not ask for (see improv.h).
+    if (g_join.joined(up())) {
+        plat::log("improv: on the network, telling the installer");
+        sendState(improv::S_PROVISIONED);
+    }
 
     if (g_trial) {
         if (joinedNew()) finishTrial();
@@ -588,9 +625,10 @@ static void bbsTask(void*) {
         }
         vTaskDelay(pdMS_TO_TICKS(20));
     }
+    imp::poll();         // the join, said now rather than after the plugins start
     netServicesStart();
     Bbs& bbs = Bbs::instance();
-    while (!bbs.begin(BBS_PORT)) vTaskDelay(pdMS_TO_TICKS(1000));
+    while (!bbs.begin(s_port)) vTaskDelay(pdMS_TO_TICKS(1000));
     plugins::begin(bbs);
 
     // A second on the LED once the line is genuinely open. Wi-Fi being up is
@@ -606,21 +644,28 @@ static void bbsTask(void*) {
 }
 
 extern "C" void app_main(void) {
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        nvs_flash_erase();
-        err = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(err);
+    // Improv reads the Wi-Fi bits from its first poll, which is before the
+    // radio starts, so the group exists before anything else.
+    s_wifi = xEventGroupCreate();
 
     // The console UART gets a driver so Improv can read it without blocking.
     // The log keeps writing the way it always has; only input changes hands,
     // and nothing else here ever read the console.
     // Without it every read would fail and the driver would log the failure
     // on every pass, so Improv is simply off.
+    //
+    // First thing, before NVS: from here a question the installer sends
+    // while the board boots waits in the driver's buffer for the first poll.
     esp_err_t ue = uart_driver_install(UART_NUM_0, 256, 0, 0, nullptr, 0);
     imp::g_uartOk = ue == ESP_OK;
     if (!imp::g_uartOk) ESP_LOGE(TAG, "console UART driver: %s, Improv is off", esp_err_to_name(ue));
+
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(err);
 
     plat::HeapStats h = plat::heap();
     plat::log("boot: %s %s  heap free %u  largest %u",
@@ -630,16 +675,26 @@ extern "C" void app_main(void) {
     fsMount(BBS_FS_LABEL, BBS_FS_MOUNT);
     fsMount(BBS_USER_LABEL, BBS_USER_BASE);
     fsMount(BBS_LOGS_LABEL, BBS_LOGS_MOUNT);
+    syscfg::load();          // hostname, TZ, NTP, staff passwords, limits, backup window
+    s_port = syscfg::get().port;     // this boot's port, before anything says it
+    // The first answer, as soon as there is a name to give (C_INFO reads
+    // the settings). Everything before this line is quick on a board that
+    // has booted before; the partition walks used to come first and now
+    // come after it, with a poll between each slow step.
+    imp::poll();
     // Take the free-space figures now, while there is nobody to stall. Each
     // one walks its whole partition; after this the board keeps them, and a
     // SYS or DASH reads the kept figure rather than paying the walk.
     {
         uint32_t t = 0, u = 0;
         plat::fsInfo(t, u);
+        imp::poll();
         plat::userInfo(t, u);
     }
-    syscfg::load();          // hostname, TZ, NTP, staff passwords, limits, backup window
+    imp::poll();
     wifiStart();
+    imp::g_radio = true;
+    imp::poll();
 
 #if CONFIG_FREERTOS_UNICORE
     const BaseType_t core = 0;

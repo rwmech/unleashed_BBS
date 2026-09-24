@@ -17,7 +17,7 @@ Version 0.22.0. This file tracks every command and key the BBS understands, and 
 
 ## Calling in
 
-- Port 6400, telnet or raw TCP. `unleashed.local` resolves on the LAN through mDNS.
+- Port 6400 as shipped, telnet or raw TCP; `port` in `system.cfg` (`CONFIG network`) moves it from the next restart. `unleashed.local` resolves on the LAN through mDNS, which advertises the port the board is listening on.
 - 10 caller nodes. When all ten are busy, the next caller gets the busy line (see below), and anyone beyond that gets `BUSY` and an immediate hangup.
 - The terminal type is detected on connect:
   - Telnet clients (PuTTY, SyncTERM) are switched to character mode and detected straight away.
@@ -312,7 +312,7 @@ outside it and no way to approve a file that is waiting somewhere else.
 |---|---|
 | `ANNOUNCE` | Whether this board is listed in a directory, when each one last answered, and the public address the directory sees. `ANNOUNCE TEST` prints the exact payload and sends nothing; `ANNOUNCE NOW` sends a heartbeat immediately. Off until switched on: see [ANNOUNCE.md](ANNOUNCE.md). |
 | `SHUTDOWN [n]` | Take the board off the air on purpose. Announces to every node, counts down n seconds (5 to 3600, default 60), then hangs up on everyone including you, each with the ordinary send-off. `SHUTDOWN CANCEL` stops a countdown and says so. Afterwards the board keeps answering and tells callers it has been shut down, rather than refusing connections in a way that looks like a crash. A physical reboot brings it back. Any transfer running when the countdown ends is lost, and the warning says so. |
-| `CONFIG` | The settings, page by page. On its own it lists the pages: `board`, `limits`, `accounts`, `backup`, `staff`, `wifi`, and one per plugin. `wifi` is the one page that is not live: the network is used from the next restart, and a passphrase under 8 characters is refused before it is written. `CONFIG limits` opens that page as the same kind of form the user manager uses: Up and Down move, F1 saves, ESC cancels. Only what you changed is written, the rest of `system.cfg` is left exactly as it was, comments included, and the board reloads the new settings straight away. Passwords show as `********` and are only written when you type a new one. One sysop edits at a time. |
+| `CONFIG` | The settings, page by page. On its own it lists the pages: `board`, `limits`, `accounts`, `backup`, `staff`, `network`, and one per plugin. `network` is the one page that is not live: the Wi-Fi network and the listening port are used from the next restart, a passphrase under 8 characters is refused before it is written, and so is a port equal to the backup window's. `CONFIG wifi`, its name before 1.1.0, still opens it. `CONFIG limits` opens that page as the same kind of form the user manager uses: Up and Down move, F1 saves, ESC cancels. Only what you changed is written, the rest of `system.cfg` is left exactly as it was, comments included, and the board reloads the new settings straight away. Passwords show as `********` and are only written when you type a new one. One sysop edits at a time. |
 
 `CONFIG` is the sysop's own command: co-sysops do not get it whatever the `[access]` matrix says, because it can change the staff passwords.
 
@@ -365,13 +365,14 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `sysop_password` | none set | sysop level. No line at all means the published default `unleashed` stands in, honoured from the board's own network only (see "First boot" in README.md); a blank line disables the level outright |
 | `cosysop1_password` | empty | co-sysop 1 level, empty = disabled |
 | `cosysop2_password` | empty | co-sysop 2 level, empty = disabled |
-| `wifi_ssid` | empty | Wi-Fi network name, up to 32 characters; set by Improv, `CONFIG wifi` or by hand. Empty falls back to `include/secrets.h` on a build that has one |
+| `wifi_ssid` | empty | Wi-Fi network name, up to 32 characters; set by Improv, `CONFIG network` or by hand. Empty falls back to `include/secrets.h` on a build that has one |
 | `wifi_password` | empty | its passphrase, 8 to 64 characters, or empty for an open network. Used only from the next restart, never live |
+| `port` | `6400` | The port callers dial. Used from the next restart. It cannot be the backup window's port. Takes 1 to 65535; as shipped, `6400`. If callers reach the board from the internet, the forward on your router has to point at the new number too. mDNS, SYS, the console's `dial in` line, Improv's telnet link and announce's default all follow it |
 | `idle_minutes` | `20` | shell idle hangup, 0 = never |
 | `landing` | `main` | where a caller goes after login when their account has not said: `main`, `chat` or `forums` |
 | `call_minutes` | `60` | per-call limit, 0 = unlimited |
 | `day_minutes` | `480` | per-day limit, 0 = unlimited |
-| `backup_port` | `8080` | HTTP port while the backup window is open (not 6400) |
+| `backup_port` | `8080` | HTTP port while the backup window is open; never the same as `port` |
 | `backup_window_minutes` | `5` | how long one button press keeps the window open (1..60) |
 | `backup_button_gpio` | `0` | button pin, active low (BOOT on dev boards), -1 = no window |
 | `who_refresh_min` | `1` | lowest `WHO n` / `DASH n` refresh, seconds |

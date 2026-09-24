@@ -181,6 +181,7 @@ bool Bbs::begin(uint16_t port) {
         return false;
     }
     setNonBlocking(lfd_);
+    port_ = port;
 
     uint8_t coreCount = 0;
     const Command* core = coreCommands(coreCount);

@@ -131,6 +131,10 @@ struct SysConfig {
     int8_t   ledGpio       = BBS_LED_GPIO;
     uint16_t callMinutes   = BBS_CALL_MINUTES;
     uint16_t dayMinutes    = BBS_DAY_MINUTES;
+    // The port callers dial (1.1.0). Read at boot and bound once: a change
+    // is used from the next restart, so what the listener holds right now
+    // is Bbs::port(), and that is what anything telling a caller should say.
+    uint16_t port          = BBS_PORT;
     uint16_t backupPort    = BBS_BACKUP_PORT;
     uint16_t backupMinutes = BBS_BACKUP_MINUTES;
     int8_t   backupGpio    = BBS_BACKUP_GPIO;
@@ -228,8 +232,11 @@ const char* trial(const KeyVal* pairs, uint8_t count, char* why, size_t n);
 // Returns true and fills out when the line was rewritten.
 bool redactLine(const char* line, char* out, size_t outLen);
 
-// unredactLine: "key = ***" becomes "key = <live password>".
-// Returns true and fills out when the line was rewritten.
+// unredactLine: a staff password line from a restored system.cfg.
+// "key = ***" becomes "key = <live password>". A line whose value would be
+// the published default, from *** or typed out, comes back as "" and is to
+// be left out, so a restore never turns the default into a real password.
+// Returns true and fills out when the line was rewritten or is to be dropped.
 bool unredactLine(const char* line, char* out, size_t outLen);
 
 } // namespace syscfg

@@ -1651,7 +1651,10 @@ bool Bbs::rowSys(Session& s) {
         }
         case 5:  statRow(s, "Address", net.ip[0] ? net.ip : "-", Color::White); return true;
         case 6:
-            snprintf(num, sizeof(num), "%u", static_cast<unsigned>(BBS_PORT));
+            // The port it is answering on, not the configured one: a port
+            // changed in CONFIG waits for a restart, and until then this is
+            // still where callers get through.
+            snprintf(num, sizeof(num), "%u", static_cast<unsigned>(port()));
             statRow(s, "Port", num, Color::LightGreen, syscfg::get().hostname);
             return true;
 

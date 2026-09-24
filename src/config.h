@@ -51,12 +51,14 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "1.1.0-dev.0"
+#define BBS_VERSION         "1.1.0-dev.1"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // ---------------------------------------------------------------------------
 // Network: one dial-in port, 10 caller nodes, a busy line, a hidden sysop node
 // ---------------------------------------------------------------------------
+// The dial-in port a board ships with. `port` in system.cfg moves it (1.1.0),
+// from the next restart; Bbs::port() is the one the listener actually holds.
 #define BBS_PORT            6400
 // Ten caller lines, plus the busy line and the hidden sysop node.
 //

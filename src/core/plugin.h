@@ -129,16 +129,28 @@ struct PluginInfo {
 // own parser would decline is caught on the form rather than written, read,
 // declined, and shown to the sysop as "Saved and live". Appended, so every
 // existing value keeps its number.
-enum : uint8_t { PS_TEXT, PS_NUM, PS_YESNO, PS_INFO, PS_PIN };
+//
+// PS_OPTNUM: a PS_NUM that may also be left empty, which the plugin reads as
+// "work it out" (1.1.0). An empty box is written as an empty value rather
+// than refused as "Numbers only", and the plugin's setting() hook returns
+// empty while the file does not set it, so the page shows what is true.
+// Kept apart from PS_NUM because an empty value parses as 0, and on a PS_NUM
+// whose range starts at 0 that would quietly mean something.
+enum : uint8_t { PS_TEXT, PS_NUM, PS_YESNO, PS_INFO, PS_PIN, PS_OPTNUM };
 
 struct PluginSetting {
     const char* key;      // key inside the [plugin:<name>] section
     const char* label;    // 9 characters, the form's left column
-    uint8_t     kind;     // PS_TEXT, PS_NUM, PS_YESNO, PS_INFO, PS_PIN
+    uint8_t     kind;     // PS_TEXT, PS_NUM, PS_YESNO, PS_INFO, PS_PIN, PS_OPTNUM
     uint16_t    lo;       // PS_NUM: the range the plugin will accept
     uint16_t    hi;
     uint8_t     cap;      // characters, excluding the terminator. May exceed
                           // the form's box: long values scroll while typed.
+    // Appended (1.1.0), with a default, so every table written before it
+    // still compiles, warns about nothing and reads nullptr here. Shown on
+    // the form's status line while the row has the focus: 38 characters,
+    // and anything longer is cut.
+    const char* note = nullptr;
 };
 
 // kCoreRows: the rows CONFIG puts at the top of every plugin's page before

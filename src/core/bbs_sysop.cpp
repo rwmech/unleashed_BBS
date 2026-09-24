@@ -728,7 +728,9 @@ namespace {
 // CK_SUB is the odd one: not a value at all, a button that opens a page.
 // CK_PIN is a plugin's PS_PIN: a CK_NUM that also meets syscfg::pinProblem.
 // The core's own pins are CK_NUM and meet the same rule inside the parser.
-enum : uint8_t { CK_TEXT, CK_NUM, CK_YESNO, CK_LEVEL, CK_PASS, CK_SUB, CK_INFO, CK_PIN };
+// CK_OPTNUM is a plugin's PS_OPTNUM: a CK_NUM that may be saved empty.
+enum : uint8_t { CK_TEXT, CK_NUM, CK_YESNO, CK_LEVEL, CK_PASS, CK_SUB, CK_INFO, CK_PIN,
+                 CK_OPTNUM };
 
 struct CfgField {
     const char* key;      // key in system.cfg
@@ -742,6 +744,10 @@ struct CfgField {
     uint16_t    lo;
     uint16_t    hi;
     uint8_t     cap;      // characters, excluding the terminator
+    // The status line while this row has the focus (Form::statusForFocus),
+    // 38 characters at most. Defaulted so the tables that have none say
+    // nothing about it.
+    const char* note = nullptr;
 };
 
 constexpr const char kYesNo[]  = "yes|no";
@@ -798,10 +804,20 @@ const CfgField kStaff[] = {
 // telnet session drops the sysop who changed it, and a typo would take the
 // board off the network with nobody left on it to put it back. The cable
 // and Improv are the way to fix a board that cannot reach its network.
-const CfgField kWifi[] = {
+//
+// The port (1.1.0) lives here for the same reason: it is where callers find
+// the board, and changing it under them would cut every line at once. Its
+// range and the clash with the backup port are the parser's (crossCheck).
+const CfgField kNetwork[] = {
     { "wifi_ssid",     "Network",  CK_TEXT, 0, 0, 32 },
     { "wifi_password", "Password", CK_PASS, 0, 0, 64 },
+    { "port",          "Port",     CK_NUM,  0, 0, 5, "Callers use it from the next restart." },
 };
+
+// isWifiKey: one of the two keys that are one setting (see configSave)
+bool isWifiKey(const char* key) {
+    return !strcmp(key, "wifi_ssid") || !strcmp(key, "wifi_password");
+}
 
 struct CfgPage {
     const char*     name;      // what a caller types after CONFIG
@@ -829,7 +845,10 @@ const CfgPage kPages[] = {
     CFG_PAGE("accounts", "ACCOUNTS",        "sign-ups and guest calls",        kAccounts),
     CFG_PAGE("backup",   "BACKUP WINDOW",   "port, how long it stays open",    kBackup),
     CFG_PAGE("staff",    "STAFF PASSWORDS", "sysop and co-sysop passwords",    kStaff),
-    CFG_PAGE("wifi",     "WI-FI",           "network, from the next restart",  kWifi),
+    // "network" since 1.1.0, when the port joined Wi-Fi here; "wifi" is
+    // still taken (see pageByName), because it is in every guide written
+    // before that and in a sysop's fingers.
+    CFG_PAGE("network",  "NETWORK",         "Wi-Fi and port, next restart",    kNetwork),
 };
 constexpr uint8_t kPageCount = sizeof(kPages) / sizeof(kPages[0]);
 
@@ -1098,6 +1117,7 @@ void cfgLiveValue(const char* key, char* out, size_t n) {
     else if (!strcmp(key, "self_register"))         snprintf(out, n, "%s", c.selfRegister ? "yes" : "no");
     else if (!strcmp(key, "guest"))                 snprintf(out, n, "%s", c.guestEnabled ? "yes" : "no");
     else if (!strcmp(key, "guest_minutes"))         snprintf(out, n, "%u", c.guestMinutes);
+    else if (!strcmp(key, "port"))                  snprintf(out, n, "%u", c.port);
     else if (!strcmp(key, "backup_port"))           snprintf(out, n, "%u", c.backupPort);
     else if (!strcmp(key, "backup_window_minutes")) snprintf(out, n, "%u", c.backupMinutes);
     else if (!strcmp(key, "backup_button_gpio"))    snprintf(out, n, "%d", c.backupGpio);
@@ -1206,8 +1226,11 @@ void cfgSummary(const char* packed, uint8_t namePart, char* out, size_t n) {
     snprintf(out, n, "%.*s", static_cast<int>(n) - 1, part[0] ? part : "not set");
 }
 
-// pageByName: "board", or a plugin's name
+// pageByName: "board", or a plugin's name. "wifi" is the network page's
+// name from before 1.1.0 and opens it still; it is not listed, so CONFIG
+// shows one name for one page.
 const CfgPage* pageByName(const char* name) {
+    if (!strcasecmp(name, "wifi")) name = "network";
     for (uint8_t i = 0; i < kPageCount; ++i)
         if (!strcasecmp(kPages[i].name, name)) return &kPages[i];
     return nullptr;
@@ -1351,16 +1374,17 @@ void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now) {
         const uint8_t kValueMax = static_cast<uint8_t>(sizeof(g_cfgBuf[0]) - 1);
         for (uint8_t i = 0; pl && i < pl->settingCount && n < Form::kMaxFields; ++i) {
             const PluginSetting& ps = pl->settings[i];
-            uint8_t kind = ps.kind == PS_NUM   ? CK_NUM
-                         : ps.kind == PS_PIN   ? CK_PIN
-                         : ps.kind == PS_YESNO ? CK_YESNO
-                         : ps.kind == PS_INFO  ? CK_INFO
-                                               : CK_TEXT;
+            uint8_t kind = ps.kind == PS_NUM    ? CK_NUM
+                         : ps.kind == PS_PIN    ? CK_PIN
+                         : ps.kind == PS_OPTNUM ? CK_OPTNUM
+                         : ps.kind == PS_YESNO  ? CK_YESNO
+                         : ps.kind == PS_INFO   ? CK_INFO
+                                                : CK_TEXT;
             uint8_t cap = ps.cap < kValueMax ? ps.cap : kValueMax;
             // A packed setting is a button, not a box: the parts are a page
             // of their own and nothing is ever typed into the row itself.
             if (compositeFor(g_cfgSection, ps.key)) kind = CK_SUB;
-            g_cfgPlugin[n++] = { ps.key, ps.label, kind, ps.lo, ps.hi, cap };
+            g_cfgPlugin[n++] = { ps.key, ps.label, kind, ps.lo, ps.hi, cap, ps.note };
         }
 
         // Anything else the file carries stays editable, so a key somebody
@@ -1380,9 +1404,10 @@ void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now) {
     g_subComp  = nullptr;                                  // a fresh page is never nested
     // The network is one setting in two keys, and the board reads the file's
     // password only alongside the file's network name (main.cpp). With no
-    // name in the file, both boxes show what the board is actually on.
+    // name in the file, both boxes show what the board is actually on. The
+    // port on the same page is its own key and reads the file as usual.
     bool wifiInFile = true;
-    if (page->fields == kWifi) {
+    if (page->fields == kNetwork) {
         char name[40];
         wifiInFile = cfgFileValue(nullptr, "wifi_ssid", name, sizeof(name)) && name[0];
     }
@@ -1390,7 +1415,7 @@ void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now) {
         const CfgField& f = page->fields[i];
         char* buf2 = g_cfgBuf[i];
         bool inFile = cfgFileValue(g_cfgSection, f.key, buf2, sizeof(g_cfgBuf[0]));
-        if (page->fields == kWifi && !wifiInFile) inFile = false;
+        if (page->fields == kNetwork && !wifiInFile && isWifiKey(f.key)) inFile = false;
         if (!inFile) {
             if (g_cfgSection[0]) cfgPluginValue(arg, f.key, buf2, sizeof(g_cfgBuf[0]));
             else                 cfgLiveValue(f.key, buf2, sizeof(g_cfgBuf[0]));
@@ -1436,7 +1461,11 @@ void Bbs::configOpenPage(Session& s, uint8_t focus, uint32_t now) {
             cfgSummary(buf2, comp ? comp->namePart : 1, g_cfgSum[i], sizeof(g_cfgSum[0]));
             buf2 = g_cfgSum[i];                 // the button shows the summary
         }
+        uint8_t at = n;
         addField(s, n, f.label, buf2, f.kind == CK_SUB ? 0 : f.cap, flags, choices);
+        // On the session's own array, as addUserFields does: the Form's
+        // pointer is not aimed at it until begin() below.
+        if (f.note && at < n) s.fields[at].note = f.note;
     }
     s.ed        = LineEditor();
     s.formKind  = FormKind::Config;
@@ -1457,8 +1486,8 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
     const bool core = !g_cfgSection[0];
     const uint8_t count = g_cfgPage->count < Form::kMaxFields ? g_cfgPage->count : Form::kMaxFields;
 
-    // The network is one setting in two keys (see kWifi), and the board only
-    // reads the file's password alongside the file's network name.
+    // The network is one setting in two keys (see kNetwork), and the board
+    // only reads the file's password alongside the file's network name.
     int ssidAt = -1, passAt = -1;
     for (uint8_t i = 0; i < count; ++i) {
         if (!strcmp(g_cfgPage->fields[i].key, "wifi_ssid"))     ssidAt = i;
@@ -1534,7 +1563,10 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
         }
         // A plugin's number: the range it declared. The core's are the
         // parser's, checked below with everything else about the page.
-        if (!core && (f.kind == CK_NUM || f.kind == CK_PIN)) {
+        // An optional one may be emptied: written as an empty value, which
+        // the plugin reads as its own default (PS_OPTNUM).
+        if (!core && (f.kind == CK_NUM || f.kind == CK_PIN || f.kind == CK_OPTNUM) &&
+            !(f.kind == CK_OPTNUM && !*v)) {
             if (!digitsOnly(v)) {
                 s.form.fail(i, "Numbers only", s.term, s.tl);
                 return false;
@@ -1592,9 +1624,9 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
     }
     if (!syscfg::write(pairs, n, g_cfgSection[0] ? g_cfgSection : nullptr, err, errLen)) return false;
     bool ok = configReloadAll(err, errLen);
-    // The radio is not touched until a restart (see kWifi), so "live" would
-    // be a promise the board is not keeping.
-    if (ok && g_cfgPage->fields == kWifi && !strcmp(err, "Saved and live"))
+    // Neither the radio nor the listener is touched until a restart (see
+    // kNetwork), so "live" would be a promise the board is not keeping.
+    if (ok && g_cfgPage->fields == kNetwork && !strcmp(err, "Saved and live"))
         snprintf(err, errLen, nowOpen ? "Saved: OPEN network, from restart"
                                       : "Saved, used from the next restart");
     return ok;

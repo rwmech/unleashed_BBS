@@ -778,12 +778,20 @@ bool ZipImport::apply(char* msg, size_t msgLen) {
             FILE* out = fopen(tmp, "w");
             bool ok = in && out;
             char line[176], merged[176];
+            unsigned dropped = 0;
             while (ok && fgets(line, sizeof(line), in)) {
-                const char* text = syscfg::unredactLine(line, merged, sizeof(merged)) ? merged : line;
+                const char* text = line;
+                if (syscfg::unredactLine(line, merged, sizeof(merged))) {
+                    if (!merged[0]) { ++dropped; continue; }   // the published password: left out
+                    text = merged;
+                }
                 ok = fputs(text, out) >= 0;
             }
             if (in)  fclose(in);
             if (out) fclose(out);
+            if (dropped)                                        // never the value, only that it happened
+                plat::log("backup: %u staff password line%s left out: the published password is never written",
+                          dropped, dropped == 1 ? "" : "s");
             if (ok && rename(tmp, dst) == 0) { remove(src); }
             else { remove(tmp); ++failures; }
             continue;
@@ -827,16 +835,22 @@ bool ZipImport::apply(char* msg, size_t msgLen) {
     }
 
     char cfgMsg[112] = "";
+    bool cfgLive = false;
     if (rep_.hasCfg) {
         char err[96];
-        if (syscfg::reload(err, sizeof(err))) snprintf(cfgMsg, sizeof(cfgMsg), "system.cfg reloaded, ");
+        if (syscfg::reload(err, sizeof(err))) { snprintf(cfgMsg, sizeof(cfgMsg), "system.cfg reloaded, "); cfgLive = true; }
         else { snprintf(cfgMsg, sizeof(cfgMsg), "system.cfg NOT reloaded (%.60s), ", err); ++failures; }
     }
     discard();
 
-    snprintf(msg, msgLen, "Applied: %s%s%u screen%s, %u removed%s", cfgMsg,
+    // A restore cannot bring a sysop password back (a download carries ***),
+    // so a board that was on the published default is still on it. Say so,
+    // or the sysop learns it from the listing that never appears.
+    snprintf(msg, msgLen, "Applied: %s%s%u screen%s, %u removed%s%s", cfgMsg,
              rep_.hasUsers ? "users.txt, " : "",
-             screens, screens == 1 ? "" : "s", removed, failures ? ", with errors" : "");
+             screens, screens == 1 ? "" : "s", removed, failures ? ", with errors" : "",
+             cfgLive && syscfg::get().sysopDefault
+                 ? "; sysop password is the published default, local network only" : "");
     plat::log("backup: %s", msg);
     return failures == 0;
 }

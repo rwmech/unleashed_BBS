@@ -34,7 +34,8 @@
  *                 description = A BBS on a chip in a shack in Illinois
  *                 servers     = http://unleashedbbs.net/announce
  *                 host        =                  ; a DNS name, if you have one
- *                 public_port = 6400             ; the port callers dial
+ *                 public_port =                  ; what callers dial through the router;
+ *                                                ; empty: the port the board listens on
  *                 interval    = 10               ; minutes between heartbeats
  *                 token       =                  ; issued by the directory, saved here
  *                 share_activity = no            ; send call counts for ranking
@@ -218,7 +219,12 @@ char     g_token[kTokenMax + 1]  = {};
 char     g_support[kListMax + 1]   = {};   // "ham,lgbtq": tidied, see slugList
 char     g_interests[kListMax + 1] = {};
 char     g_system[kSystemMax + 1]  = {};   // plat::hardware, once at start
+// The port the directory publishes. public_port when the sysop set one,
+// because a router may forward a different number to the board; otherwise
+// the port the board is listening on right now (Bbs::port), which follows
+// the port setting from the restart that makes it true.
 uint16_t g_public   = BBS_PORT;
+bool     g_publicSet = false;              // public_port is in the file
 uint16_t g_interval = kIntervalDef;
 uint32_t g_lastRound = 0;                  // when the last round of posts began
 uint16_t g_nudgeSecs = kNudgeDef;          // 0 = never push on a caller change
@@ -401,8 +407,10 @@ void readKey(void* ctx, const char* key, const char* value) {
     else if (!strcmp(key, "support"))     slugList(value, g_support, sizeof(g_support));
     else if (!strcmp(key, "interests"))   slugList(value, g_interests, sizeof(g_interests));
     else if (!strcmp(key, "public_port")) {
+        // Empty, which is how CONFIG writes a cleared box, leaves the
+        // listening port in place: strtol gives 0 and 0 is not a port.
         long p = strtol(value, nullptr, 10);
-        if (p >= 1 && p <= 65535) g_public = static_cast<uint16_t>(p);
+        if (p >= 1 && p <= 65535) { g_public = static_cast<uint16_t>(p); g_publicSet = true; }
     }
     else if (!strcmp(key, "nudge_seconds")) {
         long v = strtol(value, nullptr, 10);
@@ -997,7 +1005,6 @@ const Command kCommands[] = {
 };
 
 bool start(Bbs& bbs) {
-    (void)bbs;
     g_index = plugins::indexOf(kName);
     g_count = 0;
     g_at    = 0xFF;
@@ -1015,7 +1022,11 @@ bool start(Bbs& bbs) {
     g_publicIn   = 0;
     g_activity   = false;
     g_nudgeSecs  = kNudgeDef;
-    g_public     = BBS_PORT;
+    // The listener is up before any plugin starts (bbsTask, and a CONFIG
+    // save restarts the plugins with it still bound), so this is the port
+    // callers reach right now. BBS_PORT only if that ever stops being true.
+    g_public     = bbs.port() ? bbs.port() : BBS_PORT;
+    g_publicSet  = false;
     g_interval   = kIntervalDef;
     // The board's name, and the only place it comes from. This used to be
     // a seed that the plugin's own "name" key could then override, which
@@ -1082,7 +1093,12 @@ const PluginSetting kSettings[] = {
     // Empty means "advertise whatever address the directory saw". A board on
     // a name of its own puts it here: quantum.dnsfor.me, say.
     { "host",           "DNS name",  PS_TEXT,  0, 0,     kUrlMax - 1 },
-    { "public_port",    "Port",      PS_NUM,   1, 65535, 5 },
+    // The router's side of a port forward. "Outside port" is twelve
+    // characters against a nine character label column, so the note carries
+    // the word. Empty publishes the board's own port, which is right for
+    // every router that forwards the same number it receives.
+    { "public_port",    "Outside",   PS_OPTNUM, 1, 65535, 5,
+      "What callers dial through your router." },
     // Comma separated, so one board can be listed in several directories.
     { "servers",        "Directory", PS_TEXT,  0, 0,     90 },
     { "interval",       "Every min", PS_NUM,   1, 1440,  4 },
@@ -1116,7 +1132,13 @@ void setting(const char* key, char* out, size_t n) {
     else if (!strcmp(key, "token"))       snprintf(out, n, "%s", g_token);
     else if (!strcmp(key, "support"))     snprintf(out, n, "%s", g_support);
     else if (!strcmp(key, "interests"))   snprintf(out, n, "%s", g_interests);
-    else if (!strcmp(key, "public_port")) snprintf(out, n, "%u", static_cast<unsigned>(g_public));
+    // Blank until the sysop sets one: blank is the setting that follows the
+    // board's own port, and showing that number here would invite a save
+    // that pins it.
+    else if (!strcmp(key, "public_port")) {
+        if (g_publicSet) snprintf(out, n, "%u", static_cast<unsigned>(g_public));
+        else             out[0] = '\0';
+    }
     else if (!strcmp(key, "interval"))    snprintf(out, n, "%u", static_cast<unsigned>(g_interval));
     else if (!strcmp(key, "nudge_seconds")) snprintf(out, n, "%u", static_cast<unsigned>(g_nudgeSecs));
     else if (!strcmp(key, "share_activity")) snprintf(out, n, "%s", g_activity ? "yes" : "no");

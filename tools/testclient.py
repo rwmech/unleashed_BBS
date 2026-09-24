@@ -1881,6 +1881,10 @@ def test_sysinfo():
     ok &= check("SYS has memory and storage", b"Heap free" in sys_out and b"Data free" in sys_out)
     ok &= check("SYS reports the scheduler", b"Loop avg" in sys_out and b"Loop passes" in sys_out)
     ok &= check("SYS counts the lines", b"Nodes busy" in sys_out and b"Calls" in sys_out)
+    # The port it is answering on (1.1.0). It printed BBS_PORT, 6400, what
+    # ever the board listened on; the harness board listens on its tag's.
+    ok &= check("SYS shows the port the board is listening on",
+                re.search(rb"Port\s+%d\b" % PORT, sys_out) is not None)
     # Stack headroom (1.1.0). The host paints its BBS thread's stack the way
     # FreeRTOS paints a task's, so the figure is measured here too, and it
     # says what it is out of: "1,440 free" meant one thing against 8,192 and
@@ -2292,7 +2296,7 @@ def test_config():
     s.buf.clear()
     s.send(b"config wifi\r")
     ok &= check("CONFIG wifi opens on the stored network",
-                s.wait_for(b"Test#Net", 5) and b"WI-FI" in plain(s.buf))
+                s.wait_for(b"Test#Net", 5) and b"NETWORK" in plain(s.buf))
     s.buf.clear()
     s.send(DOWN + b"\x08" * 12 + b"short" + F1)
     ok &= check("a passphrase under 8 characters is refused",
@@ -2782,6 +2786,279 @@ def test_config_wifi_live():
     ok &= check("the test board's network is back",       # cfg_value would cut it at the #
                 (cfg_line("wifi_ssid") or "").endswith("= Test#Net"))
     s.close()
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# The listening port and the network page (1.1.0)
+# ---------------------------------------------------------------------------
+
+def restart_copy(extra_args=(), edits=None):
+    """A second board started on a copy of this one's data directory: what
+    this board would read if it restarted now.
+
+    The harness board cannot be restarted from inside the suite, and the
+    copy is what makes that not matter: the port setting is read at start,
+    so a board started on the same files IS the restart, and the harness
+    board carries on untouched for the tests after this one. No card for the
+    copy, so it cannot seed or write anything the real board reads. edits,
+    as for cfg_with, change the copy's system.cfg only. Returns (process,
+    its directory); the caller kills it.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="bbs-restart-"))
+    shutil.copytree(DATA, tmp / "data")
+    if edits:
+        cfg = tmp / "data" / "user" / "system.cfg"
+        cfg.write_text(cfg_with(cfg.read_text(), edits))
+    env = {k: v for k, v in os.environ.items() if k != "BBS_SD_DIR"}
+    log = open(tmp / "host.log", "wb")
+    proc = subprocess.Popen([str(ROOT / "host" / "bbs_host"), str(tmp / "data"), *extra_args],
+                            stdout=log, stderr=subprocess.STDOUT, env=env)
+    return proc, tmp
+
+
+def port_answers(port, secs=4):
+    """Does something accept a call on port and say anything within secs."""
+    try:
+        c = socket.create_connection((HOST, port), timeout=2)
+    except OSError:
+        return False
+    try:
+        c.settimeout(0.3)
+        end = time.time() + secs
+        while time.time() < end:
+            try:
+                if c.recv(256):
+                    return True
+            except socket.timeout:
+                continue
+            except OSError:
+                return False
+        return False
+    finally:
+        c.close()
+
+
+def test_config_network():
+    """CONFIG network (1.1.0): Wi-Fi and the listening port on one page.
+
+    The page was "wifi". The port joined it, so the menu calls it network,
+    and CONFIG wifi still opens it because every guide before 1.1.0 says so.
+    The port is used from the next restart, like the network beside it, and
+    it cannot be the backup window's port.
+    """
+    print("CONFIG network and the listening port")
+    local = HOST in ("127.0.0.1", "localhost")
+    s = cfg_sysop("CfgNet")
+
+    s.buf.clear()
+    s.send(b"config\r")
+    read_list(s)
+    menu = plain(s.buf)
+    ok = check("the CONFIG menu names the page network",
+               re.search(rb"network\s+Wi-Fi and port, next restart", menu) is not None)
+    ok &= check("and lists it once, not as wifi as well",
+                re.search(rb"^wifi\s", menu, re.M) is None and b"WI-FI" not in menu)
+
+    ok &= check("CONFIG network opens it", cfg_open(s, b"network", b"Password") and
+                b"NETWORK" in plain(s.buf))
+    page = render_lines(s.buf)
+    ok &= check("with Port under Network and Password",
+                any(ln.strip().startswith("Port") for ln in page))
+    cfg_cancel(s)
+    ok &= check("CONFIG wifi still opens the same page",
+                cfg_open(s, b"wifi", b"Password") and b"NETWORK" in plain(s.buf))
+
+    # The note, on the status line while Port has the focus.
+    s.buf.clear()
+    s.send(DOWN * 2)
+    s.pump(0.6)
+    ok &= check("Port's note says when it takes effect",
+                any("Callers use it from the next restart." in ln for ln in render_lines(s.buf)))
+    cfg_cancel(s)
+
+    if not local:
+        print("  SKIP  the file and the restart need the local harness")
+        s.close()
+        return ok
+
+    before = cfg_line("port")
+
+    # The backup window's port is taken. Refused on the form, nothing written.
+    backup = int(cfg_value("backup_port") or "8080")
+    cfg_open(s, b"network", b"Password")
+    s.buf.clear()
+    s.send(DOWN * 2 + b"\x08" * 6 + str(backup).encode() + F1)
+    got = cfg_verdict(s, [b"Same as the backup port", b"Saved", b"saved, but"])
+    ok &= check("the backup port is refused as the listening port",
+                got == b"Same as the backup port")
+    ok &= check("in the copy's words, inside 38 columns",
+                b"Same as the backup port. Pick another." in plain(s.buf))
+    cfg_cancel(s)
+    ok &= check("and nothing is written", cfg_line("port") == before)
+
+    cfg_open(s, b"network", b"Password")
+    s.buf.clear()
+    s.send(DOWN * 2 + b"\x08" * 6 + b"0" + F1)
+    got = cfg_verdict(s, [b"Between 1 and 65535", b"Saved", b"saved, but"])
+    ok &= check("0 is not a port", got == b"Between 1 and 65535")
+    cfg_cancel(s)
+
+    # A real change: written, and used from the next restart, not now.
+    moved = PORT + 3000
+    cfg_open(s, b"network", b"Password")
+    s.buf.clear()
+    s.send(DOWN * 2 + b"\x08" * 6 + str(moved).encode() + F1)
+    got = cfg_verdict(s, [b"next restart", b"Saved and live", b"saved, but"])
+    ok &= check("a new port saves, for the next restart", got == b"next restart")
+    ok &= check("into system.cfg", (cfg_line("port") or "").split("=", 1)[-1].strip() == str(moved))
+    ok &= check("and this board is not listening on it yet", not port_answers(moved, 1))
+
+    # The restart: a board started on these files listens on the new port.
+    import shutil
+
+    def boot_log(tmp, want):
+        """The copy's console once want appears in it, or all of it after 4 s."""
+        log = ""
+        for _ in range(40):
+            p = tmp / "host.log"
+            log = p.read_text(errors="replace") if p.exists() else ""
+            if want in log:
+                break
+            time.sleep(0.1)
+        return log
+
+    proc, tmp = restart_copy()
+    try:
+        ok &= check("after a restart the board listens on the new port",
+                    f"listening on {moved}," in boot_log(tmp, f"listening on {moved},"))
+        ok &= check("and answers a caller there", port_answers(moved))
+    finally:
+        proc.kill()
+        proc.wait(5)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # A file edited by hand to give both the same port still boots: callers
+    # keep theirs, the backup window goes back to its default, and the log
+    # says why. Not the harness's own backup port, which its board holds.
+    clash = PORT + 3001
+    proc, tmp = restart_copy(edits={("", "port"): str(clash), ("", "backup_port"): str(clash)})
+    try:
+        log = boot_log(tmp, f"listening on {clash},")
+        ok &= check("a hand-edited clash still boots, on the port callers dial",
+                    f"listening on {clash}," in log)
+        ok &= check("with the backup window moved back to its default, and said",
+                    "backup_port cannot be the BBS port" in log and "backup port 8080," in log)
+    finally:
+        proc.kill()
+        proc.wait(5)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # Back to the port the rest of the suite expects the parser to hold,
+    # because test_config_parser_rules checks the backup port against it.
+    cfg_open(s, b"network", b"Password")
+    s.buf.clear()
+    s.send(DOWN * 2 + b"\x08" * 6 + str(BBS_PORT_NUM).encode() + F1)
+    cfg_verdict(s, [b"next restart", b"Nothing changed"])
+    ok &= check("put back", (cfg_line("port") or "").split("=", 1)[-1].strip() == str(BBS_PORT_NUM))
+    s.close()
+    return ok
+
+
+def announce_port(s):
+    """The port ANNOUNCE TEST says the heartbeat would carry, or None.
+
+    TEST will not build a payload while a heartbeat is out, and a plugin
+    restart sends one at once, so it waits for that and asks again."""
+    for _ in range(8):
+        s.pump(0.5)
+        s.buf.clear()
+        s.send(b"announce test\r")
+        i = wait_any(s, [b'"interests"', b"going out"], 5)
+        s.pump(0.3)
+        if i != 1:
+            break
+    m = re.search(rb'"port":(\d+)', plain(s.buf))
+    return int(m.group(1)) if m else None
+
+
+def test_config_announce_outside():
+    """Announce's Outside port (1.1.0): blank sends the listening port.
+
+    The row was "Port", and a board that never set it published 6400
+    whatever it listened on. It is "Outside" now, the router's side of a
+    forward, and empty means the board's own port. The harness board
+    listens on its tag's port and never on 6400, which is what makes the
+    first check a test rather than a coincidence.
+    """
+    print("Announce: Outside, and the listening port")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the local harness")
+        return True
+    saved = (USERDATA / "system.cfg").read_bytes()
+    s = cfg_sysop("Outsider")
+
+    ok = check("with Outside blank, the heartbeat carries the port the board listens on",
+               announce_port(s) == PORT)
+
+    # Enabled, Read, Write, Admin, then Board (not editable, skipped),
+    # Sysop, About, DNS name: seven downs to Outside.
+    cfg_open(s, b"announce", b"Every min")
+    page = render_lines(s.buf)
+    row = next((ln for ln in page if ln.strip().startswith("Outside")), "")
+    ok &= check("the row is labelled Outside", bool(row))
+    # An empty box that is not focused is drawn as dots (Form::drawField).
+    ok &= check("and is empty while nothing is set",
+                bool(row) and row.strip()[len("Outside"):].strip(" .") == "")
+    s.buf.clear()
+    s.send(DOWN * 7)
+    s.pump(0.6)
+    ok &= check("its note says what it is",
+                any("What callers dial through your router." in ln for ln in render_lines(s.buf)))
+
+    s.send(b"2323" + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"saved, but", b"Numbers only"])
+    ok &= check("a router's port saves", got == b"Saved and live")
+    ok &= check("and is what the heartbeat carries", announce_port(s) == 2323)
+
+    cfg_open(s, b"announce", b"Every min")
+    s.buf.clear()
+    s.send(DOWN * 7 + b"\x08" * 6 + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"saved, but", b"Numbers only"])
+    ok &= check("emptying it is allowed", got == b"Saved and live")
+    ok &= check("and the listening port is sent again", announce_port(s) == PORT)
+
+    ok &= check("the file is put back", announce_restore(s, saved))
+    s.close()
+    return ok
+
+
+def test_accounts_form_notes():
+    """A form's field notes stay with that form (1.1.0, found in passing).
+
+    Bbs::addField never cleared FormField::note, and a session's field array
+    outlives every form drawn in it. Sign-up puts "Only you and staff can
+    see this." on Email, From and Phone, rows 4 to 6; PROFILE later in the
+    same call has Profile and Start on rows 5 and 6, and they inherited it.
+    CONFIG's per-field notes would have leaked into USER EDIT the same way.
+    """
+    print("Form notes stay with their form")
+    c = ansi_login("NoteLeak")                   # new: registers through the form
+    c.buf.clear()
+    c.send(b"profile\r")
+    ok = check("PROFILE opens", c.wait_for(b"YOUR PROFILE", 5))
+    c.pump(0.4)
+    c.buf.clear()
+    c.send(DOWN * 4)                             # Name, Email, From, Phone, Profile
+    c.pump(0.8)
+    ok &= check("the Profile row does not claim to be private",
+                not any("Only you and staff" in ln for ln in render_lines(c.buf)))
+    c.send(b"\x1b")
+    c.pump(0.4)
+    c.close()
     return ok
 
 
@@ -7695,7 +7972,8 @@ GROUPS = {
 # picked, which is the right default for a test added and not yet placed.
 ORDER_NAMES = [
     "test_ansi", "test_telnet_first", "test_petscii", "test_ascii",
-    "test_page", "test_sysop", "test_cosysop", "test_accounts", "test_handle_case",
+    "test_page", "test_sysop", "test_cosysop", "test_accounts", "test_accounts_form_notes",
+    "test_handle_case",
     "test_user_admin", "test_guest",
     "test_privacy", "test_plugins", "test_about", "test_announce",
     "test_announce_badges", "test_announce_directory",
@@ -7706,7 +7984,8 @@ ORDER_NAMES = [
     "test_mail", "test_prompt_survives_notice", "test_menus", "test_sysinfo", "test_config",
     "test_config_parser_rules", "test_config_guards", "test_config_semicolon",
     "test_config_sd_plugin",
-    "test_config_wifi_live", "test_serial",
+    "test_config_wifi_live", "test_config_network", "test_config_announce_outside",
+    "test_serial",
     "test_motd", "test_idle_login", "test_busy",
     "test_screens", "test_exit_screen", "test_welcome_connecting", "test_paced_chatin",
     "test_seeded_screens_follow",

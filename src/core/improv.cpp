@@ -139,4 +139,10 @@ bool parseWifi(const uint8_t* payload, uint8_t plen, char* ssid, size_t ssidCap,
     return true;
 }
 
+uint8_t stateNow(bool trial, bool online) {
+    if (trial)  return S_PROVISIONING;
+    if (online) return S_PROVISIONED;
+    return S_AUTHORIZED;
+}
+
 } // namespace improv

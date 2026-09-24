@@ -45,7 +45,7 @@ owner       = Daytona
 description = A BBS on a chip in a shack in Illinois
 servers     = http://unleashedbbs.net/announce
 host        =                     ; a DNS name of your own, if you have one
-public_port = 6400                ; the port callers dial, if you forwarded a different one
+public_port =                     ; what callers dial through the router; empty: the board's port
 interval    = 10                  ; minutes between heartbeats, 1 to 1440
 token       =                     ; left empty: the directory fills this in
 share_activity = no               ; send call counts so a directory can rank
@@ -64,7 +64,7 @@ with already filled in.
 | `description` | one line, up to 120 characters, in your own words |
 | `servers` | comma separated. Up to four directories, each `http://host[:port]/path`. The project's own directory answers on all three of its names; `.net` is the one meant for machines, and `.com` and `.org` are for people |
 | `host` | the name you want listed. Leave it empty and the directory uses the address your heartbeat came from |
-| `public_port` | the port on the outside. Set this if you forwarded an external port that is not 6400 |
+| `public_port` | **Outside** on the CONFIG page: the port callers dial from the internet, when your router forwards a different number to the board. Leave it empty if the router forwards the same number as the board's `port`, and the board sends that: the port it is listening on, which follows `port` from the restart that moves it |
 | `interval` | minutes between heartbeats. Ten is plenty; a directory usually considers a board gone after three missed |
 | `token` | leave it empty. The directory mints one on the first heartbeat and the board writes it back here itself |
 | `share_activity` | `yes` adds counts of calls and caller-minutes over the last day, so a directory can rank by how busy a board is. Counts only, never who |

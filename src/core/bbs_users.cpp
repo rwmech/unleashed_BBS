@@ -124,6 +124,11 @@ void Bbs::addField(Session& s, uint8_t& n, const char* label, char* buf, uint8_t
     f.cap     = cap;
     f.flags   = flags;
     f.choices = choices;
+    // Cleared here, because s.fields outlives the form it was filled for:
+    // a note set on row 2 of one form stayed on row 2 of the next, so a
+    // CONFIG page's "Callers use it from the next restart." would have come
+    // up under a field of USER EDIT. The caller sets it again after this.
+    f.note    = nullptr;
 }
 
 // addUserFields: the kUserFields table as form fields; returns the index of the first

@@ -104,13 +104,14 @@ A carrier PCB with the module, a level shifter and screw terminals is the obviou
 
 - The network lives in `system.cfg` on the `userdata` partition as `wifi_ssid` and `wifi_password`, so it survives a reflash. SSIDs are case sensitive. The values are taken as typed, so a `#` in a passphrase is part of it rather than a comment.
 - The easy way to set it is Improv Wi-Fi Serial: with the board on USB, open a page that speaks Improv (ESP Web Tools after a flash, or the tester at <https://www.improv-wifi.com>) in Chrome or Edge on a desktop, pick the network, type the passphrase. The board tries it for 30 seconds and saves it only if it joins; otherwise it goes back to the network it had. Improv listens on the console port for as long as the board runs, so a board that has moved house is fixed with the same cable.
-- `CONFIG wifi` changes it from the board, used from the next restart. Never live: changing the network under a telnet session would drop the sysop who changed it, and a typo would leave nobody on the board to fix it.
+- Opening the port in ESP Web Tools resets the board, and the installer gives up on Improv 1.5 seconds after it first asks. The board answers from early in its boot (1.1.0), so an installer pointed at a board already running this firmware sees its name and version and offers Update. It answers "not on the network yet" at that point, because it is still joining; once it joins it says so unasked, and the dialog's Connect to Wi-Fi becomes Change Wi-Fi. The telnet link in that dialog needs the dialog opened again, because the installer drops a link it did not ask for.
+- `CONFIG network` changes it from the board (`CONFIG wifi` still works), used from the next restart. Never live: changing the network under a telnet session would drop the sysop who changed it, and a typo would leave nobody on the board to fix it.
 - A board with no network set says so on the console every 30 seconds and waits for Improv. `include/secrets.h` is now optional: a developer's build can still carry a network there as a fallback, used only when `system.cfg` has none, and a published binary carries nobody's.
 - The board scans every channel and joins the strongest access point with that name, so a mesh or a pair of repeaters needs no extra configuration.
 - `hostname` in `system.cfg` sets both the DHCP hostname and the mDNS name, so `unleashed.local` finds the board on a normal home network without hunting for its address.
 - The clock comes from NTP at boot, and the time zone is a `system.cfg` setting. The board runs fine without either; only the log timestamps and time limits care.
 - `SYS` shows the SSID, the channel, the signal in dBm with a plain word for what that means, and the address the board answers on. If callers are dropping, look there first: anything past about -75 dBm is a marginal link, and a board in a metal case is a board with a bad antenna.
-- The dial-in port is 6400 by default. Forwarding it from a router is what puts the board on the internet, which is a decision to make deliberately: the protocol is plain telnet and the passwords cross the wire in the clear.
+- The dial-in port is 6400 by default, and `port` on the same `CONFIG network` page moves it, from the next restart (never to the backup window's port). mDNS, `SYS`, the console's dial-in line, Improv's telnet link and the directory listing follow it. Forwarding it from a router is what puts the board on the internet, which is a decision to make deliberately: the protocol is plain telnet and the passwords cross the wire in the clear. If the router forwards a different outside number, put that in announce's Outside so the directory lists what callers can actually dial.
 
 ### Serial
 
@@ -195,7 +196,7 @@ On a blank board, `system.cfg` is seeded once from the copy shipped with the
 screens, then belongs to the board. Changing `partitions.csv` itself moves the
 filesystems and needs a full erase, so back up first.
 
-The console prints `online <ip>  dial in: telnet <ip> 6400`. On the LAN the board answers as `<hostname>.local` (default `unleashed.local`, also its DHCP name) and advertises `_telnet._tcp`.
+The console prints `online <ip>  dial in: telnet <ip> <port>`, 6400 unless `port` says otherwise. On the LAN the board answers as `<hostname>.local` (default `unleashed.local`, also its DHCP name) and advertises `_telnet._tcp`.
 
 LittleFS and mDNS come from the ESP-IDF Component Manager (`src/idf_component.yml`). If the LittleFS fetch fails, vendor it instead:
 

@@ -210,6 +210,15 @@ CLAUDE.md holds the history behind each item; this file is what to build.
   the code and the slow-pass logging; suspect a cardless board retrying
   its mount. Fix it.
 - Everything the post-tag 1.0.1 regression and the 1.1.0 regression find.
+- From 1.0.2 (Rob: "keep going"; my recommendation stands):
+  - A system.cfg line that spells out the published default is treated
+    as the default at boot. That board is local-only with its listing
+    held, and is offered setup, until a real password is set. It fixes
+    boards an earlier restore already affected.
+  - A restore that would leave `sysop_password =` empty is refused,
+    because it would switch staff off; CONFIG already refuses that.
+  - A co-sysop line dropped for being the default is reported in the
+    restore result, not only in the serial log.
 
 ## Release gate
 

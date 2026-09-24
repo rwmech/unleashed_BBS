@@ -37,6 +37,11 @@ ntp_server = pool.ntp.org
 wifi_ssid =
 wifi_password =
 
+# The port callers dial, applies at boot like the network above (CONFIG
+# network sets it). 1 to 65535, never the same as backup_port. A router
+# forwarding to the board has to forward to this number.
+port = 6400
+
 # Staff passwords, entered at any prompt as: BYE <password>
 # A wrong password is a normal logoff; 3 wrong from one IP in 15 min = 15 min ban.
 # Empty disables that level. Max 32 characters, case-sensitive.
@@ -193,7 +198,7 @@ owner       = Somebody
 description = One line about this board, up to 120 characters
 servers     = http://unleashedbbs.net/announce
 host        =              ; a DNS name of your own, if you have one
-public_port = 6400         ; the port callers dial, if you forwarded another
+public_port =              ; what callers dial through your router; empty: the board's port
 interval    = 10           ; minutes between heartbeats, 1 to 1440
 token       =              ; only if your directory issues them
 support     =              ; e.g. lgbtq, literacy
