@@ -284,6 +284,11 @@ const Command* Bbs::coreCommands(uint8_t& count) {
         { "UNBAN", "", PERM_UNBAN, CF_NONE, "UNBAN ip", "lift a ban",
           [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdUnban(s, a); b.prompt(s); },
           Menu::Staff, 14 },
+        // Every screen and where callers get it from, and one played (1.1.0,
+        // bbs_screens.cpp). Any staff level, as SYS is.
+        { "SCREENS", "", 0, CF_STAFF, "SCREENS", "each screen; VIEW plays",
+          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdScreens(s, a); },
+          Menu::Staff, 15 },
         { "DROP", "", 0, CF_STAFF, "DROP", "give up staff access",
           [](Bbs& b, Session& s, const char*, uint32_t n) { b.cmdDrop(s, n); },
           Menu::Staff, 20 },
@@ -449,6 +454,7 @@ bool Bbs::listRow(Session& s) {
         case ListKind::Plugins: return rowPlugins(s);
         case ListKind::Sys:   return rowSys(s);
         case ListKind::Calls: return rowCalls(s);
+        case ListKind::Screens: return rowScreens(s);     // bbs_screens.cpp (1.1.0)
         case ListKind::PlugRows: {
             const Plugin* p = plugins::at(s.listPlugin);
             if (!p || !p->rows || !plugins::running(s.listPlugin)) return false;

@@ -127,16 +127,30 @@ takes nothing: `Board full: 180 KB needed, 120 KB free.`
 
 The screens themselves still live on the `storage` partition, 256 KB, which
 holds about 58 screens of up to 4 KB each (the stock set is 33, about
-34 KB). An upload whose screens would not all fit there has the ones past
-that point rejected as `no room for it on the board`, before anything is
-replaced.
+34 KB). What has to fit is the restore at its fullest, not the set it ends
+with (1.1.0): each screen is copied in beside the copy it replaces and only
+then swapped, so for a moment both are there. So each screen counts as the
+larger of its old and new copies, and the largest new one counts once more.
+A screen past that point is rejected as `no room for it on the board`, before
+anything is replaced.
 
 A file over a limit is rejected with the reason and the rest of the upload still goes through. The sysop sees the count of rejected files before answering Y/N.
 
 The same limits hold for a zip restored from the SD card (`RESTORE SD`,
 [BACKUP.md](BACKUP.md#backups-on-the-sd-card)). `RESTORE SD SCREENS` checks
 screens by these same rules and puts them on the card, where the room is
-the card's.
+the card's, and marks them as yours in the card's record of what it seeded
+(`screens/.seeded`), so a stock update never replaces them.
+
+## Seeing them on the board
+
+`SCREENS` (any staff level, 1.1.0) lists every screen by name, one row
+each: the size of its `.ans`, `.asc` and `.seq`, and where callers get each
+from: flash, or the card, and there whether it is still the stock copy the
+board seeded or one you edited or imported. `SCREENS VIEW name` plays one as
+your terminal would get it, `SCREENS VIEW name.seq` plays exactly that file
+if your terminal can show it, and `FLASH` on the end plays the stock copy
+even where the card overrides it. See [COMMANDS.md](COMMANDS.md).
 
 ## Logs
 

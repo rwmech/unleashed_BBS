@@ -266,12 +266,14 @@ All caller commands still work. Node arguments are `1`-`10`, `S` (sysop node) or
 | `BANS` | `BANS` | Active IP bans and minutes remaining. |
 | `PLUGINS` | any staff | Every plugin compiled in: version, whether it is running, and why not. Also free disk space and the reserve. |
 | `SYS` | any staff | The whole board on one screen, in groups: network (SSID, signal in dBm with a word for what it means, channel, address, port), memory (heap free, the lowest it has been, the biggest block, session size), storage (used, free, what is held back for the board), load (uptime, clock, scheduler work per pass in microseconds, worst pass **and which phase of the loop it happened in**, how many passes have run over 50 ms since boot, passes since boot) and traffic (nodes busy and the peak, calls answered since boot, records in the caller log, plugins running, active IP bans). Any staff level can run it, though it is grouped with the sysop tools below. |
-| `FILES` / `F` | all | **Goes into the file area**, the way `CHAT` goes into the room, rather than printing a list and returning. A screen plays on the way in if the board has `screens/files`, then the areas appear as a numbered menu laid out in as many columns as the terminal has room for. A digit opens an area, `Q` goes back one level and `Q` again leaves. `FILES n` enters and opens that area in one go. Only on a board with a card: the plugin does not start without one, so on a cardless board the command does not exist rather than offering an empty file area. |
+| `FILES` / `F` | all | **Goes into the file area**, the way `CHAT` goes into the room, rather than printing a list and returning. A screen plays on the way in if the board has `screens/files`, then the areas appear as a numbered menu laid out in as many columns as the terminal has room for. A digit opens an area (`0` is ten), `Q` goes back one level and `Q` again leaves. An area numbered past 10, which only the sysop's Backups is today, is `#`, the number and Enter at the menu (1.1.0), or the cursor keys. `FILES n` enters and opens that area in one go. Only on a board with a card: the plugin does not start without one, so on a cardless board the command does not exist rather than offering an empty file area. |
 | `FORUMS` | all | **Goes into the message boards**, the way `FILES` and `CHAT` go into theirs. Three levels: topic areas the sysop sets up (`CONFIG forums`), subjects that callers start inside them, and the messages in each subject. A screen plays on the way in if the board has `screens/forums`. Only on a board with a card, the same as `FILES`: the plugin does not start without one, so on a cardless board the command does not exist rather than offering empty boards. `FORUMS SCAN` needs the forums plugin's admin level (`co1` by default) and prints what the board thinks is on the card. |
 | `SD` | sysop | SD card status: type, mount point, free space, and where screens are coming from. With no card it says which pins it tried, because "no card found" without them sends you to re-seat a card that was never the problem. |
 | `SD MOUNT` | sysop | Mount the card without rebooting. **Pauses the whole board** for a few hundred milliseconds while it negotiates over SPI, which is why it is typed rather than retried on a timer. |
-| `SD UNMOUNT` | sysop | Flush and release, so the card can be pulled safely. Screens fall back to the stock set. |
+| `SD UNMOUNT` | sysop | Flush and release, so the card can be pulled safely. Screens fall back to the stock set. The card stays out until `SD MOUNT`, a change of its pins in `CONFIG sd`, or a restart: a `CONFIG` save does not put it back (1.1.0). |
 | `UNBAN a.b.c.d` | `UNBAN` | Lift a ban. |
+| `SCREENS` | any staff | Every screen by name, one row each: the size of each of `.ans`, `.asc` and `.seq`, and where callers get that copy from. At 80 columns that reads `flash`, `card, seeded` (the stock copy the board put on the card) or `card, own` (one the sysop edited or imported); at 40 it is `F`, `C` or `O`, with the key under the list. Read from the folders when asked; nothing is kept (1.1.0). |
+| `SCREENS VIEW name[.ext] [FLASH]` | any staff | Plays one screen. With no extension, the one your terminal would get; with one, exactly that file, if your terminal can show it (`.asc` anywhere, `.ans` on ANSI, `.seq` on PETSCII; otherwise it says which kind the file is and which your terminal is). `FLASH` plays the stock copy even where the card overrides it. A name is a screen's name only: no paths. |
 | `USERS` | `USERS` | User manager: cursor list of accounts with edit, add and retire (ANSI, PETSCII; `D` retires, as `USER DEL` does). A paged list on plain ASCII. |
 | `USER ADD` | `USERS` | Add-account form: handle, password, fields, Level, Locked. |
 | `USER EDIT handle` | `USERS` | Edit-account form. Empty `New pass` keeps the password. Renames follow callers who are online. |
@@ -341,7 +343,7 @@ leave to use it.
 |---|---|---|
 | `L` | area's read | Lists this section's files, numbered. |
 | a number | area's download | Picks that file, then asks: `Download NAME? [Y]es [X]modem [N]o`. Y is YMODEM, which carries the exact length so the file arrives byte for byte. X is plain XMODEM for terminals that only speak it, and pads the last block with `0x1A`. |
-| `U` | area's upload | Receives a file. Enter alone uses YMODEM and takes the name off the wire; type a name only if your terminal speaks XMODEM alone. **It waits for staff approval before anyone else sees it.** |
+| `U` | area's upload | Receives a file. Enter alone uses YMODEM and takes the name off the wire; type a name only if your terminal speaks XMODEM alone. **It waits for staff approval before anyone else sees it**, except in the sysop's Backups area, where a `.zip` of 27 characters or fewer goes straight in and `RESTORE SD` lists it (1.1.0). |
 | `D` | area's upload | Describes a file by number. Describing is part of putting one somewhere, so it follows the upload level. |
 | `P` | area's delete | Lists the uploads waiting for approval in this section, numbered. |
 | `A` | area's delete | Approves one by number, or `A` for all of them. |
@@ -364,7 +366,7 @@ outside it and no way to approve a file that is waiting somewhere else.
 | `LIGHTS` | The lights plugin's two outputs: each one's pin, effect and brightness, and the colours it was last sent, in hex. `LIGHTS TEST` shows red, green, blue and then white on every pixel, a second each, for checking the wiring. Off until switched on: see `lights` under Plugins below. |
 | `SHUTDOWN [n]` | Take the board off the air on purpose. Announces to every node, counts down n seconds (5 to 3600, default 60), then hangs up on everyone including you, each with the ordinary send-off. `SHUTDOWN CANCEL` stops a countdown and says so. Afterwards the board keeps answering and tells callers it has been shut down, rather than refusing connections in a way that looks like a crash. A physical reboot brings it back. Any transfer running when the countdown ends is lost, and the warning says so. |
 | `BACKUP SD` | The zip the backup window gives, onto the SD card: `unleashed-YYYYMMDD-HHMM.zip` in the card's `backup` folder, with a dot a file while it writes and then `Saved: 14 files, 31 KB.` It holds the Wi-Fi password as typed, and says so. `BACKUP SD SCREENS` writes `screens-YYYYMMDD-HHMM.zip`, the screens alone. Two in one minute would share a name, so the second is refused. `BACKUP` on its own explains the difference from the backup window (1.1.0). |
-| `RESTORE SD [SCREENS] [n]` | On its own, the card's backups, newest first and numbered. With a number or a zip's name, checks it exactly as an upload through the backup window is checked, shows what it would replace (a full restore always shows `Replaces`, `Accounts`, `Removes` and `Staff`) and asks `Restore now? (y/N)`; N or 60 seconds is `Not restored.` `SCREENS` puts only the zip's screens back, onto the card's `screens` folder, and never removes anything; deleting them from the card undoes it (1.1.0). Details: [BACKUP.md](BACKUP.md#backups-on-the-sd-card). |
+| `RESTORE SD [SCREENS] [n]` | On its own, the card's backups, newest first and numbered. With a number or a zip's name, checks it exactly as an upload through the backup window is checked, shows what it would replace (a full restore always shows `Replaces`, `Accounts`, `Removes` and `Staff`) and asks `Restore now? (y/N)`; N or 60 seconds is `Not restored.` With anybody else on the board, Y waits for them to leave (`Waiting for 2 callers to leave. F applies it now, N gives up.`), `F` puts it back at once with a warning to them, and after `backup_window_minutes` it gives up: `Not restored: callers stayed on.` New callers get the busy line meanwhile. `SCREENS` puts only the zip's screens back, onto the card's `screens` folder, and never removes anything; deleting them from the card undoes it (1.1.0). The zips are also the sysop's Backups file area, `FILES` 11, to download and upload over the line. Details: [BACKUP.md](BACKUP.md#backups-on-the-sd-card). |
 | `CONFIG` | The settings, page by page. On its own it lists the pages: `board`, `limits`, `accounts`, `backup`, `staff`, `network`, and one per plugin. `network` is the one page that is not live: the Wi-Fi network and the listening port are used from the next restart, a passphrase under 8 characters is refused before it is written, and so is a port equal to the backup window's. A network saved here that has not joined within a minute of the restart is given up for the last one that did (1.1.0), so a typo costs a minute. `CONFIG wifi`, its name before 1.1.0, still opens it. `CONFIG limits` opens that page as the same kind of form the user manager uses: Up and Down move, F1 saves, ESC cancels. Only what you changed is written, the rest of `system.cfg` is left exactly as it was, comments included, and the board reloads the new settings straight away. Passwords show as `********` and are only written when you type a new one. One sysop edits at a time. |
 
 `CONFIG` is the sysop's own command: co-sysops do not get it whatever the `[access]` matrix says, because it can change the staff passwords. So are `BACKUP` and `RESTORE`, because a restore replaces the settings and the accounts and a backup holds the Wi-Fi password.
@@ -514,7 +516,27 @@ the card attached, move `CS` to D4 and set `cs = 4`.
 A fresh card is seeded with the stock screens at mount, so the Screens file
 area is never empty. A later firmware update that changes a stock screen
 updates the card's copy too the next time it mounts, unless the sysop edited
-that file: a screen you touched is yours and is never overwritten.
+that file: a screen you touched is yours and is never overwritten. So is one
+put there by `RESTORE SD SCREENS`, even one identical to a stock screen: the
+card's record (`screens/.seeded`) marks it as yours. A copy seeded by a board
+older than that record (0.18.0 to 0.22.0) that nobody edited is recognised
+and refreshed too, from 1.1.0.
+
+A mount the board makes also clears away any zip `BACKUP SD` or the nightly
+backup left half written in the `backup` folder (`name.zip.tmp`, from a card
+pulled or power lost part way). Nothing else there is touched.
+
+On a board with no card, the board looks for one at boot, and again at
+`SD MOUNT` or when its pins change in `CONFIG sd`, but not at every `CONFIG`
+save: each look holds every caller up, and the answer does not change until
+somebody fits a card (1.1.0).
+
+The board provides three file areas of its own above the eight configured
+ones: 9 is `Screens` (the card's screens folder) and 10 is `Logs` (the caller
+log mirror), both staff to read and the sysop to change, and 11 is `Backups`
+(the card's `backup` folder), the sysop's alone. A backup can be downloaded
+there by YMODEM or XMODEM, and a `.zip` uploaded there goes in at once, with
+no approval, for `RESTORE SD` to restore (1.1.0).
 
 A file area is a folder on the card that the sysop mounts under a name. The
 path is never shown to callers, so an area can point at a folder you already

@@ -222,18 +222,45 @@ bool Bbs::registerCommands(const Command* list, uint8_t count, uint8_t plugin) {
 // drawn screen with no way on.
 // ---------------------------------------------------------------------------
 void Bbs::closeCardScreens(const char* why) {
+    endScreens(true, why ? why : "Screen ended: the card was removed.");
+}
+
+// ---------------------------------------------------------------------------
+// endScreens: closeCardScreens for either place a screen is read from. A
+// restore that replaces the board's own screens needs it too (1.1.0): on
+// the board esp_littlefs refuses to rename over or remove a file somebody
+// has open, so a caller paused at a page break of ABOUT held the restore of
+// that one screen up, and it ended "with errors".
+//
+// Where the caller goes depends on where they were, and before 1.1.0 every
+// one of them was put in the shell. A caller still on the welcome screen,
+// not logged in, landed at no prompt with no account, and nothing they typed
+// did anything until the line timed out. The welcome now ends as it would
+// have: on to the handle prompt. The goodbye screen ends on its line noise,
+// the busy line on its countdown, and a screen in the shell goes wherever it
+// was leading, as if it had played to the end.
+// ---------------------------------------------------------------------------
+void Bbs::endScreens(bool card, const char* why) {
+    uint32_t now = plat::millis();
     for (uint8_t i = 0; i < kSessions; ++i) {
         Session& s = *all_[i];
-        if (s.st == SState::Free || !s.scr.onCard()) continue;
+        if (s.st == SState::Free || !s.scr.active() || s.scr.onCard() != card) continue;
         s.scr.close();
-        s.pendingPrompt = false;
-        s.pendingForm   = FormKind::None;
-        if (s.st == SState::AnyKey || s.st == SState::More || s.st == SState::Intro)
-            s.st = SState::Shell;
+        if (s.st == SState::Intro || s.st == SState::BusyWait) continue;   // serviceSession moves on
+        if (s.st == SState::Closing) {
+            if (s.pendingTail) {
+                s.pendingTail = false;
+                fx::lineNoise(s.term, s.tl, 12, 300);
+                fx::hangup(s.term, s.tl);
+            }
+            continue;
+        }
+        if (s.st == SState::AnyKey || s.st == SState::More) s.st = SState::Shell;
         s.term.color(s.tl, Color::Grey);
         s.term.nl(s.tl);
-        s.term.text(s.tl, why ? why : "Screen ended: the card was removed.");
-        if (s.loggedIn) prompt(s);
+        s.term.text(s.tl, why);
+        if (s.st != SState::Shell) continue;
+        if (!screenEnded(s, now) && s.loggedIn) prompt(s);
     }
 }
 
@@ -607,9 +634,16 @@ void Bbs::acceptAll(uint32_t now) {
 #endif
         plat::activityPulse(now);
 
+        // A restore waiting for the board to go quiet, or being put live,
+        // takes no new callers: they get the busy line, as if every node
+        // were full, rather than a login to a board about to change under
+        // them, accounts and all (1.1.0). The busy line still lets the
+        // sysop in with BYE and the password.
         Session* slot = nullptr;
-        for (auto& s : nodes_) {
-            if (s.st == SState::Free) { slot = &s; break; }
+        if (!backup_.restoring()) {
+            for (auto& s : nodes_) {
+                if (s.st == SState::Free) { slot = &s; break; }
+            }
         }
         if (slot) {
             openSession(*slot, fd, ip, ipAddr, Role::Caller, now);
@@ -943,6 +977,39 @@ void Bbs::flush(Session& s, uint32_t now) {
 }
 
 // ---------------------------------------------------------------------------
+// screenEnded: a screen played in the shell is over, whether it ran to its
+// end or was cut short (endScreens). One chain of "what comes next" for both,
+// so a screen closed under a caller cannot strand them somewhere the screen
+// ending would never have left them.
+// ---------------------------------------------------------------------------
+bool Bbs::screenEnded(Session& s, uint32_t now) {
+    if (s.pendingForm != FormKind::None) {
+        s.pendingForm = FormKind::None;      // a screen that leads into a form
+        pauseFor(s, AfterKey::SignupForm);   // let them read it first
+    } else if (s.pendingKnowMore) {
+        s.pendingKnowMore = false;           // rules read, now the warning
+        pauseFor(s, AfterKey::KnowMore);
+    } else if (s.setupStage == 1) {
+        // First-boot setup: the setup screen has been read, so the staff
+        // passwords form comes next, not the prompt.
+        s.pendingPrompt = false;
+        setupConfig(s, now);
+    } else if (s.pendingLand) {
+        // Before pendingPrompt, because playScreen set that too and landing
+        // does its own finishing.
+        s.pendingLand   = false;
+        s.pendingPrompt = false;
+        landAfterLogin(s);
+    } else if (s.pendingPrompt) {
+        s.pendingPrompt = false;
+        prompt(s);
+    } else {
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // serviceSession: timers, screens, lists, effects, mail, output
 // ---------------------------------------------------------------------------
 void Bbs::serviceSession(Session& s, uint32_t now) {
@@ -971,26 +1038,8 @@ void Bbs::serviceSession(Session& s, uint32_t now) {
                     pauseFor(s, AfterKey::ScreenNext);
                 } else if (s.scr.paused()) {
                     showMore(s, MoreFrom::Screen);
-                } else if (!more && s.pendingForm != FormKind::None) {
-                    s.pendingForm = FormKind::None;  // a screen that leads into a form
-                    pauseFor(s, AfterKey::SignupForm);   // let them read it first
-                } else if (!more && s.pendingKnowMore) {
-                    s.pendingKnowMore = false;   // rules read, now the warning
-                    pauseFor(s, AfterKey::KnowMore);
-                } else if (!more && s.setupStage == 1) {
-                    // First-boot setup: the setup screen has been read, so
-                    // the staff passwords form comes next, not the prompt.
-                    s.pendingPrompt = false;
-                    setupConfig(s, now);
-                } else if (!more && s.pendingLand) {
-                    // Before pendingPrompt, because playScreen set that too
-                    // and landing does its own finishing.
-                    s.pendingLand   = false;
-                    s.pendingPrompt = false;
-                    landAfterLogin(s);
-                } else if (!more && s.pendingPrompt) {
-                    s.pendingPrompt = false;
-                    prompt(s);
+                } else if (!more) {
+                    screenEnded(s, now);
                 }
             }
             break;
@@ -3081,10 +3130,7 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
             if (k == 'y' || k == 'Y') {
                 t.ch(tl, 'Y');
                 t.nl(tl);
-                approvalShown_ = false;
-                s.st = SState::Shell;                    // before decide: notes queue for the prompt
-                backup_.decide(true, "");
-                prompt(s);
+                windowAccepted(s, now);                  // waits for a quiet board (1.1.0)
             } else if (k == 'n' || k == 'N' || k == KEY_ESC || k == KEY_BREAK) {
                 t.ch(tl, 'N');
                 t.nl(tl);

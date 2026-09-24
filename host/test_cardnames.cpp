@@ -74,6 +74,20 @@ int main() {
     check("but not one opening with a space, or with a control character",
           !listable(" backup.zip") && !listable("x\tz.zip"));
 
+    printf("A zip left half written\n");
+
+    check("a backup's own name with .tmp is a partial one",
+          partial("unleashed-20260923-2210.zip.tmp") && partial("nightly-20260923.zip.tmp") &&
+          partial("screens-20260922-0900.zip.tmp"));
+    check("so is any zip the list would show",
+          partial("theme.zip.tmp") && partial("a-name-just-long-enough.zip.tmp"));
+    check("but not the zip itself, nor any other .tmp",
+          !partial("unleashed-20260923-2210.zip") && !partial("notes.tmp") &&
+          !partial("FILES.BBS.tmp") && !partial(".seeded.tmp") && !partial("x.zip.TMP"));
+    check("nor a name whose zip part the list would refuse",
+          !partial(".staging.zip.tmp") && !partial("a-name-far-too-long-for-it-x.zip.tmp") &&
+          !partial("../u.zip.tmp") && !partial(".tmp") && !partial(nullptr));
+
     printf("Pruning the nightly backups\n");
 
     std::vector<std::string> folder;
