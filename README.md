@@ -100,6 +100,12 @@ Power: it runs from the USB port of the machine you flash it with, from a phone 
 
 A carrier PCB with the module, a level shifter and screw terminals is the obvious next step. Not today.
 
+### Other boards
+
+A board other than the reference is a profile, not a fork: a PlatformIO environment that defines the board, and its defaults in `src/board.h`. Whatever only that board has is compiled only into its image, so the WROOM's build carries none of it. One so far (1.1.0), described with its pins and its measured memory in [ESP32_BOARD_CHOICE.md](ESP32_BOARD_CHOICE.md):
+
+- **Waveshare ESP32-S3-LCD-1.47** (`pio run -e ws_s3_lcd147`), the USB-A stick with an ESP32-S3R8, 16 MB of flash, 8 MB of PSRAM, a TF slot, one RGB pixel and a 1.47" display. The pixel is the drive light, the TF slot is the SD card, and the display is a status panel: the board's name and the time, callers on out of how many lines, where to dial, uptime, the card's free space, the last login, logoff or page, and the lights' strip drawn as lamps. `CONFIG panel` has its pins and geometry, and `PANEL` says what it is showing. The console, flashing and Improv all go through the chip's own USB, because the stick has no USB-serial bridge.
+
 ### Getting it on Wi-Fi
 
 - The network lives in `system.cfg` on the `userdata` partition as `wifi_ssid` and `wifi_password`, so it survives a reflash. SSIDs are case sensitive. The values are taken as typed, so a `#` in a passphrase is part of it rather than a comment.
