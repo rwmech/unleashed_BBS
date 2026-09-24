@@ -68,16 +68,24 @@ namespace recovery {
 // writes it to reboots.log in place of "software restart", which is what the
 // chip alone would say, so the next staff login is told what really happened.
 // ===========================================================================
-enum Note : uint8_t { NOTE_NONE = 0, NOTE_PASSWORD = 1, NOTE_FACTORY = 2 };
+// NOTE_FACTORY_FAILED: the factory erase did not finish (1.1.0). Without it
+// the restart that follows read as a plain "software restart" and nothing
+// was said at login, and of everything a BOOT reset can end in, a half-
+// erased board is the one that most needs saying. Appended: a note is a
+// number carried across the restart, so the others keep theirs.
+enum Note : uint8_t { NOTE_NONE = 0, NOTE_PASSWORD = 1, NOTE_FACTORY = 2, NOTE_FACTORY_FAILED = 3 };
 
 // noteText: the words for reboots.log, SYS and the staff login, or nullptr
 // for no note. Short enough for "Last restart: <text>." in 39 columns, and
-// for the 32 byte boot reason they are kept in.
+// for the 32 byte boot reason they are kept in. None of them may contain
+// "crash", "watchdog" or "brownout": reboots.log is counted by those words
+// (Bbs::noteBoot), and a reset somebody did on purpose is not a crash.
 inline const char* noteText(uint8_t note) {
     switch (note) {
-        case NOTE_PASSWORD: return "password reset by BOOT";
-        case NOTE_FACTORY:  return "factory reset by BOOT";
-        default:            return nullptr;
+        case NOTE_PASSWORD:       return "password reset by BOOT";
+        case NOTE_FACTORY:        return "factory reset by BOOT";
+        case NOTE_FACTORY_FAILED: return "factory reset FAILED";
+        default:                  return nullptr;
     }
 }
 

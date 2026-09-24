@@ -38,6 +38,7 @@
  */
 
 #include "recovery.h"
+#include "netfallback.h"    // kBuiltinWifi: whether a factory reset leaves a network to rejoin
 #include "sysconfig.h"
 #include "../config.h"
 #include "../platform/platform.h"
@@ -81,6 +82,7 @@ void act(Stage stage, uint32_t heldMs) {
         plat::log("reset: it works from this network only, until it is changed.");
         plat::log("reset: accounts, settings, mail and Wi-Fi are all kept.");
         plat::log("reset: the directory listing waits until the password changes.");
+        plat::log("reset: restarting. Log in from this network to choose a new password.");
         plat::restart(NOTE_PASSWORD);
         return;
     }
@@ -93,12 +95,20 @@ void act(Stage stage, uint32_t heldMs) {
             // Restarted all the same. A half-erased partition is a state
             // nothing else expects, and the mount at boot formats one it
             // cannot read, which is the nearest thing to finishing the job.
-            // No note: it did not do what a note would claim.
-            plat::restart(NOTE_NONE);
+            // With a note of its own, so the next boot says what happened
+            // rather than "software restart", which says nothing.
+            plat::restart(NOTE_FACTORY_FAILED);
             return;
         }
         plat::log("reset: done. Screens, firmware and SD card were not touched.");
-        plat::log("reset: restarting with no Wi-Fi. The web installer sets it up.");
+        // "Wi-Fi erased" is true of every build: the network lives in
+        // system.cfg and wifi.last, both on userdata, and the radio keeps
+        // its own copy in RAM only. Whether the board then has somewhere to
+        // go is decided at compile time, by the same header main.cpp dials.
+        if (kBuiltinWifi)
+            plat::log("reset: restarting, Wi-Fi erased. This build falls back to secrets.h.");
+        else
+            plat::log("reset: restarting, Wi-Fi erased. The web installer sets it again.");
         plat::restart(NOTE_FACTORY);
         return;
     }
@@ -196,14 +206,22 @@ bool lastGood(char (&ssid)[33], char (&pass)[65]) {
     return ok;
 }
 
+// The trial's length, as the console says it: from the timer, so the words
+// cannot drift from what the board actually waits.
+constexpr unsigned kTrialS = static_cast<unsigned>(kWifiFallbackMs / 1000u);
+
 void wifiBegin(uint32_t now, const char* ssid, const char* pass) {
     char os[33], op[65];
     const bool differs = lastGood(os, op) && ssid && ssid[0] &&
                          (strcmp(os, ssid) != 0 || strcmp(op, pass ? pass : "") != 0);
     g_fb.begin(now, differs);
-    if (differs)
-        plat::log("wifi: \"%s\" has not joined here yet; back to \"%s\" if it has not in 60 s",
-                  ssid, os);
+    if (!differs) return;
+    // The same name with a new password is a different network to try, and
+    // naming it twice ("back to HomeNet" from HomeNet) says nothing.
+    if (!strcmp(os, ssid))
+        plat::log("wifi: new password for \"%s\": %u s to join, or back to the old one", ssid, kTrialS);
+    else
+        plat::log("wifi: %u s to join \"%s\", or back to \"%s\", which worked", kTrialS, ssid, os);
 }
 
 void wifiJoined(const char* ssid, const char* pass) {
@@ -230,15 +248,21 @@ void wifiJoined(const char* ssid, const char* pass) {
         plat::log("wifi: joined \"%s\" but could not keep it as the one to go back to", ssid);
         return;
     }
-    plat::log("wifi: joined \"%s\"; it is the network to go back to now", ssid);
+    plat::log("wifi: joined \"%s\"; kept as the network to go back to", ssid);
 }
 
 bool wifiDue(uint32_t now, bool up, bool busy, const char* from,
              char (&ssid)[33], char (&pass)[65]) {
     if (!g_fb.due(now, up, busy)) return false;
     if (!lastGood(ssid, pass)) return false;        // gone since boot: keep dialling as before
-    plat::log("wifi: \"%s\" has not joined in 60 s; going back to \"%s\", which has",
-              from ? from : "", ssid);
+    if (!from) from = "";
+    if (!strcmp(from, ssid))
+        plat::log("wifi: could not join \"%s\" on the new password; back to the old one", ssid);
+    else
+        plat::log("wifi: could not join \"%s\" in %u s; going back to \"%s\"", from, kTrialS, ssid);
+    // Only until the next restart: system.cfg still names the new one, so
+    // every boot spends the trial on it first. Said, or nothing does.
+    plat::log("wifi: each restart tries it for %u s first; change it in CONFIG network", kTrialS);
     return true;
 }
 

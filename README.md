@@ -119,7 +119,7 @@ A carrier PCB with the module, a level shifter and screw terminals is the obviou
 The second UART is wired to the serial bridge plugin, so a caller with permission can drive a device attached to the board and everyone else can watch. The console UART is never touched: flashing and the serial monitor keep working while somebody is using the bridge.
 
 - Pins, baud rate and line format are `[plugin:serial]` settings, not compiled in. `SERIAL SET 9600 8N1` changes the line while the board is running.
-- The plugin refuses the pins that would break the board: the flash pins (6 to 11), the console pins, and transmit on the input-only pins (34 to 39).
+- The plugin refuses the pins that would break the board: the flash pins (6 to 11), pins the chip does not have (20, 24 and 28 to 31 on the WROOM), the console pins, and transmit on the input-only pins (34 to 39).
 - The ESP32 speaks 3V3 logic. A 5 V device needs a level shifter, and anything with a real RS-232 port needs a transceiver such as a MAX3232. Wiring a bare RS-232 line to a GPIO pin destroys the pin.
 - This is what puts a glass terminal, a piece of test equipment, a radio, a PLC or a label printer on the board. It is also how the board itself can be reached from a terminal that has no network at all.
 
@@ -128,7 +128,7 @@ The second UART is wired to the serial bridge plugin, so a caller with permissio
 - GPIO2 drives the activity LED by default, which is the LED already fitted to most dev boards. `activity_led_gpio` moves it.
 - GPIO0, the BOOT button on a dev board, opens the backup window while the sysop is logged in. Hold it, and `system.cfg`, the accounts and the screens can be downloaded or uploaded over HTTP for a few minutes. For the first 10 seconds after the board starts it is the reset button instead: see [Resetting the board](#resetting-the-board).
 - The remaining pins are free. The planned GPIO plugin exposes them to callers as commands with their own read, write and admin levels, so reading a sensor can be open to everyone while throwing a relay is staff only.
-- Reserved by the hardware, not by this firmware: 6 to 11 are the flash, 34 to 39 are input only and have no pull-ups, and the strapping pins (0, 2, 12, 15) decide how the chip boots and should be left alone unless you know what they do at reset.
+- Reserved by the hardware, not by this firmware: 6 to 11 are the flash, 20, 24 and 28 to 31 do not exist on the WROOM's chip (every pin setting refuses both, 1.1.0), 34 to 39 are input only and have no pull-ups, and the strapping pins (0, 2, 12, 15) decide how the chip boots and should be left alone unless you know what they do at reset.
 - Anything switching mains, motors or an inductive load belongs behind a relay module or an opto-isolated driver with its own supply, not on a board that also has to keep six telnet sessions alive.
 
 ### Putting a retro machine on it
@@ -147,7 +147,7 @@ This section used to carry a per-version snapshot (host test counts, image size,
 
 ### First boot: the sysop password
 
-- A new board has one published default password, the sysop's: `unleashed`. It is used only while `system.cfg` has no `sysop_password` line at all, and it works only from the board's own network (RFC 1918, link-local, loopback and `100.64/10`). From anywhere else it is a wrong password.
+- A new board has one published default password, the sysop's: `unleashed`. It is used while `system.cfg` has no `sysop_password` line, or one that spells `unleashed` out, which since 1.1.0 reads as the same thing (a restore on 1.0.0 or 1.0.1 could write one, and such a board heals at its next boot). It works only from the board's own network (RFC 1918, link-local, loopback and `100.64/10`). From anywhere else it is a wrong password.
 - Log in or sign up from a computer on the same network and the board asks for it straight away: "This board has not been set up yet." The right password makes you the sysop, shows a short setup screen, opens `CONFIG staff` to choose your own, then gives a paged tour of the rest of CONFIG. ESC (the left arrow on a Commodore) skips, and `BYE <password>` from the same network does it later.
 - The board refuses the published default as anybody's chosen password, and it keeps itself out of the directory listing until the default is changed.
 - Do not forward the port or switch on the directory listing until you have set your own. "Local only" is a guard, not a wall: a router that rewrites the source of forwarded traffic can make an outside caller look local.
@@ -168,8 +168,8 @@ The activity LED shows the stage while you hold: a slow blink under 7 seconds, f
 For developers, what the copy above leaves out:
 
 - The press has to start within 10 seconds of the firmware starting, a little more than 10 seconds after RESET is let go, since the bootloader runs first. After that BOOT is the backup window's button again. Never hold BOOT while pressing or letting go of RESET: GPIO0 low at that moment is the chip's download mode, and the firmware never runs.
-- Both resets restart the board once they are done. The reason goes into `reboots.log` as the reason for that boot, `password reset by BOOT` or `factory reset by BOOT`, and the next staff login, on the sysop node or a co-sysop's own line, is told `Last restart: <reason>.` `SYS` shows it beside the uptime.
-- The password reset removes the `sysop_password` line from `system.cfg` rather than writing the default into it: a board on the default is exactly one with no such line (1.0.2). The factory reset erases the `userdata` and `logs` partitions whole, not just their directories, so no old account hashes stay readable on the chip; the next boot formats them. A dev build with `include/secrets.h` rejoins that network afterwards, whatever the console line says; a release has none and waits for Improv.
+- Both resets restart the board once they are done. The reason goes into `reboots.log` as the reason for that boot, `password reset by BOOT` or `factory reset by BOOT`, or `factory reset FAILED` when the erase did not finish (1.1.0; it used to read as a plain software restart), and the next staff login, on the sysop node or a co-sysop's own line, is told `Last restart: <reason>.` `SYS` shows it beside the uptime.
+- The password reset removes the `sysop_password` line from `system.cfg` rather than writing the default into it: a board on the default is exactly one with no such line (1.0.2). The factory reset erases the `userdata` and `logs` partitions whole, not just their directories, so no old account hashes stay readable on the chip; the next boot formats them. The console's last line before the restart says what comes next: a release has no network left and waits for Improv, and a dev build with `include/secrets.h` falls back to that network (the choice is made at compile time, in `src/core/netfallback.h`, the header that also supplies the network).
 - The timing is `recovery::BootHold` in `src/core/recovery.h`, tested at every boundary by `host/test_recovery.cpp`; `tools/testclient.py`'s `test_boot_hold` runs each band on a copy of a harness board, with `BBS_BOOT_HOLD_MS` playing the hold on the host build's simulated clock.
 
 ### When the board wedges

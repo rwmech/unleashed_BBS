@@ -621,11 +621,19 @@ void readReset() {
     if (!g_resetRead) { g_reset = esp_reset_reason(); g_resetRead = true; }
 }
 
+// No case for ESP_RST_EXT. The IDF documents it as not applicable to the
+// ESP32, the S3 does not return it either, and the RESET (EN) button reads
+// as a power on on both chips, as does the reset at the end of a flash over
+// a USB-serial bridge. Its old words, "reset pin", said otherwise; should a
+// chip ever return it, "unknown" is at least not a wrong answer.
+// ESP_RST_USB is the S3's reset through its own USB port, which is how it
+// comes back after every flash there. IDF 5.3.1 has it in the enum on every
+// target, so it needs no guard; the ESP32 simply never returns it.
 const char* resetReason() {
     readReset();
     switch (g_reset) {
         case ESP_RST_POWERON:  return "power on";
-        case ESP_RST_EXT:      return "reset pin";
+        case ESP_RST_USB:      return "USB reset";
         case ESP_RST_SW:       return "software restart";
         case ESP_RST_PANIC:    return "crash (panic)";
         case ESP_RST_INT_WDT:  return "interrupt watchdog";

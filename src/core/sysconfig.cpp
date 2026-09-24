@@ -42,6 +42,10 @@
 #include <cstring>
 #include <cctype>
 #include <ctime>
+#ifdef ESP_PLATFORM
+#include "driver/gpio.h"    // GPIO_IS_VALID_GPIO, GPIO_NUM_MAX: the target chip's own pin list
+#include "sdkconfig.h"
+#endif
 
 const PermName kPermNames[] = {
     { "NODES",     PERM_NODES },
@@ -234,6 +238,28 @@ void accessRow(Ctx& c, char* line) {
     }
 }
 
+// pinExists: does the chip this firmware was built for have a GPIO with this
+// number? A pin it does not have is not an error anywhere: the GPIO driver
+// refuses it, the plugin says it "would not start", and the sysop is left to
+// work out that CONFIG took a number the chip never had (the WROOM has no 20,
+// 24 or 28 to 31). On the board the IDF's soc caps answer, so the rule for
+// another chip arrives with its build target and nothing here changes. The
+// host has no chip, and stands in for the reference board, the WROOM.
+bool pinExists(long pin) {
+#ifdef ESP_PLATFORM
+    if (pin < 0 || pin >= GPIO_NUM_MAX) return false;
+    if (!GPIO_IS_VALID_GPIO(static_cast<int>(pin))) return false;
+#if CONFIG_IDF_TARGET_ESP32
+    // In the ESP32's list, but bonded out only on the PICO-V3 packages. The
+    // chip on a WROOM has no pad for it, and the WROOM is the floor.
+    if (pin == 20) return false;
+#endif
+    return true;
+#else
+    return pin >= 0 && pin <= 39 && pin != 20 && pin != 24 && !(pin >= 28 && pin <= 31);
+#endif
+}
+
 // gpio: a pin number in the key's range that the board may use (see
 // syscfg::pinProblem); -1, "none", is in every pin key's range.
 bool gpio(Ctx& c, const char* key, const char* v, long& out) {
@@ -417,14 +443,10 @@ void logSummary() {
         if (strstr(vals[i], " #") || strstr(vals[i], "\t#"))
             plat::log("cfg: %s has a ' #' in it; since 0.22.1 that is part of the value, not a comment",
                       keys[i]);
-    // A sysop_password line that spells out the published default is a real
-    // password to the board and works from anywhere. Nothing writes one since
-    // 1.0.2, but a restore on 1.0.0 or 1.0.1 did, so a board can still carry
-    // it; say so, since the absence of "Held" is all it shows otherwise.
-    const bool spelled = !g_cfg.sysopDefault && !strcmp(g_cfg.sysopPass, BBS_DEFAULT_SYSOP);
+    // A sysop_password line that spells out the published default reads as
+    // the default (parseFile), so it gets the default's line here too.
     plat::log("cfg: sysop %s  co1 %s perms 0x%03x  co2 %s perms 0x%03x",     // never the passwords
               g_cfg.sysopDefault ? "on the published default, local network only"
-                                 : spelled ? "on the PUBLISHED password, from anywhere: set yours in CONFIG staff"
                                  : g_cfg.sysopPass[0] ? "on" : "off",
               g_cfg.coPass[0][0] ? "on" : "off", g_cfg.coPerms[0],
               g_cfg.coPass[1][0] ? "on" : "off", g_cfg.coPerms[1]);
@@ -437,8 +459,9 @@ namespace syscfg {
 // ---------------------------------------------------------------------------
 // parseFile: key=value lines and the [access] section
 // ---------------------------------------------------------------------------
-// useDefaultSysop: no sysop_password line anywhere, so the board is fresh
-// and the published default stands in (see BBS_DEFAULT_SYSOP).
+// useDefaultSysop: no sysop_password line anywhere, or one that names the
+// published default, so the published default stands in, with the limits
+// that come with it (see BBS_DEFAULT_SYSOP).
 static void useDefaultSysop(SysConfig& out) {
     copyStr(out.sysopPass, sizeof(out.sysopPass), BBS_DEFAULT_SYSOP);
     out.sysopDefault = true;
@@ -488,7 +511,13 @@ int parseFile(const char* path, SysConfig& out, char* err, size_t errLen) {
         keyValue(c, key, val);
     }
     fclose(f);
-    if (!sawSysop) useDefaultSysop(out);
+    // A line that spells the published password out is the default too
+    // (1.1.0), exactly as if it were absent: local only, the listing held,
+    // setup offered. Nothing writes one since 1.0.2, but a restore on 1.0.0
+    // or 1.0.1 did, and on those boards the password printed on the install
+    // page worked from anywhere and the board went on the directory. Read
+    // this way, such a board heals at its next boot with nothing rewritten.
+    if (!sawSysop || !strcmp(out.sysopPass, BBS_DEFAULT_SYSOP)) useDefaultSysop(out);
     crossCheck(c, out);
     out.fromFile = true;
     return c.problems;
@@ -621,8 +650,19 @@ void normaliseHostname(char* v) {
 }
 
 const char* pinProblem(long pin) {
+    if (pin == -1) return nullptr;                   // "none", in every pin key's range
+    // The flash pins first: they are real pins, and why not to use them is
+    // more use to a sysop than "no such pin".
     if (pin >= 6 && pin <= 11) return "pins 6-11 are the flash chip";
+    if (!pinExists(pin)) return "this chip has no such pin";
     return nullptr;
+}
+
+const char* pinSentence(long pin) {
+    const char* why = pinProblem(pin);
+    if (!why) return nullptr;
+    return pin >= 6 && pin <= 11 ? "Pins 6 to 11 are the flash chip."   // the copy's LT-flash-pin
+                                 : "This chip has no such pin.";
 }
 
 const char* trial(const KeyVal* pairs, uint8_t count, char* why, size_t n) {
@@ -759,8 +799,17 @@ bool write(const KeyVal* pairs, uint8_t count, const char* section, char* err, s
         snprintf(err, errLen, "the config file could not be finished");
         return false;
     }
-    remove(path);
+    // Renamed over the old file, never removed first (1.1.0). system.cfg
+    // lives on userdata, which is LittleFS on the board: esp_littlefs's
+    // rename is lfs_rename, which replaces an existing file in one step, and
+    // so does POSIX on the host. Removing first opened a hole: a failure
+    // between the two left no system.cfg at all, and the next boot came up
+    // with no network, no staff passwords and the published default. Only
+    // FatFs refuses an existing destination, and this file is never on the
+    // card. So a failure here leaves the old file exactly as it was, which
+    // is what "Nothing changed." after a failed BOOT reset promises.
     if (rename(tmp, path) != 0) {
+        remove(tmp);
         snprintf(err, errLen, "the new config file could not be put in place");
         return false;
     }

@@ -219,7 +219,7 @@ USER MANAGER                   3 of 250
  Alice         Alice Liddell       3
  Mallory       M                   1 L
 ───────────────────────────────────────
-Enter edit  A add  D delete  Q quit
+Enter edit  A add  D retire  Q quit
 ```
 
 `L` marks a locked account.
@@ -229,10 +229,10 @@ Enter edit  A add  D delete  Q quit
 | Up / Down | move the highlight (the list scrolls) |
 | Enter or E | edit the highlighted account |
 | A | add an account |
-| D | delete the highlighted account, after `Delete handle (y/N)?` |
+| D | retire the highlighted account, after `Retire handle? The handle stays reserved (y/N)?`: it can no longer log in, and nobody can register the handle again |
 | Q, ESC or Ctrl-C | back to the prompt |
 
-After a save or delete, the list redraws with the result under it.
+After a save or a retire, the list redraws with the result under it.
 
 Plain ASCII terminals get a paged list and use the typed commands below.
 

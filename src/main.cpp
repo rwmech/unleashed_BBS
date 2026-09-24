@@ -57,15 +57,9 @@
 // Improv over the cable it was flashed with. system.cfg wins over both.
 // Never in a release (BBS_RELEASE, the esp32dev_release environment): a
 // release built on a machine that has the file must still carry no network.
-#if !defined(BBS_RELEASE) && __has_include("secrets.h")
-#include "secrets.h"
-#endif
-#ifndef WIFI_SSID
-#define WIFI_SSID ""
-#endif
-#ifndef WIFI_PASS
-#define WIFI_PASS ""
-#endif
+// The rule lives in core/netfallback.h, shared with core/recovery, so the
+// factory reset's console line and the network dialled here cannot disagree.
+#include "core/netfallback.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"

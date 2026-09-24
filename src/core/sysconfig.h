@@ -109,7 +109,8 @@ struct SysConfig {
     char     wifiSsid[33]  = "";
     char     wifiPass[65]  = "";
     // True while the sysop password is the published default, which is the
-    // case exactly when system.cfg carries no sysop_password line. The board
+    // case when system.cfg carries no sysop_password line, or one that spells
+    // the default out (read as if it were absent, 1.1.0). The board
     // honours it only from its own network, offers setup to local callers,
     // and keeps itself out of the directory until it goes false.
     bool     sysopDefault  = false;
@@ -185,8 +186,9 @@ const char* levelName(Access level);
 // write: change these keys in system.cfg and leave everything else exactly
 // as it was, comments and ordering included. section is the [name] the keys
 // live under, or null for the top of the file; a section that is not there
-// yet is added at the end. The file is written through a temp file and a
-// rename, so an interrupted write cannot lose the settings.
+// yet is added at the end. The file is written through a temp file renamed
+// over the old one, so an interrupted or failed write leaves the settings
+// exactly as they were.
 //
 // A value of nullptr removes the key instead: every line in that section
 // that sets it is left out (1.1.0, the BOOT-hold reset, which puts the sysop
@@ -217,12 +219,22 @@ bool validHostname(char* v);
 void normaliseHostname(char* v);
 
 // pinProblem: why a GPIO number is not one this board may be given, or
-// nullptr when it is. GPIO 6 to 11 are wired to the flash chip the firmware
-// runs from on a WROOM: driving one does not produce an error, it stops the
-// board. The one rule for every pin setting, core and plugin alike, so an
-// LED, a button, an SD card and a serial port cannot disagree about it.
-// Whether a pin may be input only is the caller's business, not this rule's.
+// nullptr when it is; -1, "none", always passes. GPIO 6 to 11 are wired to
+// the flash chip the firmware runs from on a WROOM: driving one does not
+// produce an error, it stops the board. And a number the chip has no GPIO
+// for (on the WROOM 20, 24, 28 to 31 and anything past 39) is refused, from
+// the target's own soc caps on the board (1.1.0). The one rule for every pin
+// setting, core and plugin alike, so an LED, a button, an SD card and a
+// serial port cannot disagree about it; a per-chip rule, such as the S3's
+// flash pins, belongs here too. Whether a pin may be input only is the
+// caller's business, not this rule's.
 const char* pinProblem(long pin);
+
+// pinSentence: the same rule as a form's status line says it, a sentence of
+// 38 columns or fewer, or nullptr when the pin is fine. For a page that
+// words its own refusals, so it never names the flash chip for a pin the
+// chip simply does not have.
+const char* pinSentence(long pin);
 
 // trial: would the parser accept the live configuration with these pairs
 // applied on top? Every rule a line meets on its way in is applied: the '#'

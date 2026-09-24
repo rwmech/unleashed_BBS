@@ -753,7 +753,7 @@ void Bbs::ulOpen(Session& s) {
     t.text(tl, kMarkKey);
     t.nl(tl);
     t.color(tl, Color::DarkGrey);
-    t.text(tl, t.isPet() ? "RETURN edit A add D delete Q quit" : "Enter edit  A add  D delete  Q quit");
+    t.text(tl, t.isPet() ? "RETURN edit A add D retire Q quit" : "Enter edit  A add  D retire  Q quit");
 }
 
 // ulStatus: one line under the manager list (result, warning)
@@ -823,9 +823,15 @@ void Bbs::ulKey(Session& s, int k, uint32_t now) {
             s.backToUsers = true;
             s.confirm = ConfirmKind::DeleteUser;
             s.st = SState::Confirm;
-            say(t, tl, Color::Yellow, "Delete ");
+            // Retire, as USER DEL says, because retiring is what Y does: the
+            // block stays and the handle is reserved for ever. It said
+            // "Delete" from 0.19.0 to 1.1.0. The words are the ones this
+            // confirm is redrawn with (Bbs::redrawInput): USER DEL's "They
+            // cannot log in" as well would take a long handle to three rows
+            // on 40 columns, from a status line one row off the bottom.
+            say(t, tl, Color::Yellow, "Retire ");
             say(t, tl, Color::White, s.origHandle);
-            say(t, tl, Color::Yellow, " (y/N)? ");
+            say(t, tl, Color::Yellow, "? The handle stays reserved (y/N)? ");
             return;
         }
         s.backToUsers = true;

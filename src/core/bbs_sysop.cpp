@@ -1784,9 +1784,11 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
             }
             // The same pin rule the core's parser applies to its own pins,
             // said as a sentence; the parser's wording stays in its log.
-            if (f.kind == CK_PIN && syscfg::pinProblem(val)) {
-                s.form.fail(i, "Pins 6 to 11 are the flash chip.", s.term, s.tl);
-                return false;
+            if (f.kind == CK_PIN) {
+                if (const char* why = syscfg::pinSentence(val)) {
+                    s.form.fail(i, why, s.term, s.tl);
+                    return false;
+                }
             }
         }
         // A plugin reads its values up to the first ';' (plugin.cpp), so

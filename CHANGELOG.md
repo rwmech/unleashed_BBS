@@ -162,6 +162,23 @@ entry when it is released.
   picks one.
 - `SD UNMOUNT` and a pin change let go of a backup being written first.
 
+**1.1.0-dev.7, fixes.**
+- Settings are written over system.cfg by a rename, never by removing
+  the old file first, so a failed write, a BOOT password reset's
+  included, leaves the old file whole.
+- A system.cfg that spells out the published sysop password is treated
+  as the default: local network only, the listing held, setup offered.
+  This heals boards a 1.0.0 or 1.0.1 restore wrote it into.
+- Every pin setting refuses GPIOs the chip does not have (on a WROOM:
+  20, 24 and 28 to 31), from the chip's own list, and says "This chip has
+  no such pin."
+- Restarts: "USB reset" is named (S3), nothing claims the RESET button is
+  "reset pin", and a factory reset whose erase failed restarts as
+  "factory reset FAILED" rather than a plain software restart. New
+  console lines for the password band's restart, the factory band, and
+  the Wi-Fi fallback, including the same network with a new password.
+- The user manager's D says Retire, as `USER DEL` does.
+
 ## 1.0.2, 2026-09-23
 
 A security fix. Restoring a backup could turn the published default sysop

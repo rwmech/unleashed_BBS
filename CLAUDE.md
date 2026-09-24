@@ -28,7 +28,8 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
 - **Build for the smallest part, run on the bigger ones** (Rob's framing: a VIC-20 design that also runs on a C64, a C128 and an Amiga). The WROOM is the floor, and sizing to it is what produced the 40 column layouts, the static allocation, the 6,000 byte session and the habit of measuring rather than assuming. Every one of those makes the board better on a larger part, not merely possible.
   The reverse never works. Build for an S3 and hope it squeezes onto a WROOM and you find out at link time, which is exactly what happened at sixteen nodes.
   **Two cores and on-chip Wi-Fi are a requirement, not a preference** (Rob). The loop is pinned to core 1 because Wi-Fi and lwIP own core 0, and that split is what keeps the radio's work off callers' latency; a single core would run but not run well, and fixing it properly means restructuring the core rather than changing a setting. That rules out the C3, C6, S2 and H2 on cores and the P4 on having no radio at all, leaving the ESP32 and S3 families. See [ESP32_BOARD_CHOICE.md](ESP32_BOARD_CHOICE.md).
-  An ESP32-S3 with PSRAM is the upgrade path if more callers are ever wanted: same dual core split, and `CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY` puts the session pool in PSRAM so it stops competing for internal DRAM. **Not the P4**, which has the most SRAM of the family at 768 KB and no integrated Wi-Fi at all: Espressif's own answer there is a second chip as a wireless companion, which is two chips and a host protocol for a board whose whole premise is telnet over Wi-Fi.
+  An ESP32-S3 with PSRAM is the upgrade path if more RAM is ever wanted: same dual core split, and PSRAM can take large statics off internal DRAM.
+  **Corrected 2026-09-24 from primary sources** (`internal/board-waveshare-s3-lcd147-2026-09-24.md`): `CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY` alone only moves lwIP's, Wi-Fi's and a few IDF libraries' zeroed statics; our session pool moves only with `EXT_RAM_BSS_ATTR` on its own declaration. And **more RAM does not raise the caller count**: `LWIP_MAX_SOCKETS` is capped at 16 in IDF 5.3.1 on every chip, so ten caller lines is the ceiling on an S3 too until the socket limit moves. The S3's static data limit is measured differently as well: `_bss_end - 0x3FC88000` against 341,760, with IRAM sharing the same memory. **Not the P4**, which has the most SRAM of the family at 768 KB and no integrated Wi-Fi at all: Espressif's own answer there is a second chip as a wireless companion, which is two chips and a host protocol for a board whose whole premise is telnet over Wi-Fi.
 - **Screens are designed for 40 AND 80 columns, not pinned to the C64**
   (Rob, 2026-09-24: "we cant keep pinning every screen to the C64, it
   needs a 40/80 on most of these"). This overrules the 1.1.0 UX report's
@@ -346,6 +347,13 @@ The same build carries (Rob, 2026-09-23):
     so an open dialog updates by itself. Check in the vendored
     sdk-serial-js source that the client acts on an unsolicited state or
     result packet before designing on it.
+
+**Buy links for the tested-boards page (Rob, 2026-09-24), on the next site
+update:** the Waveshare ESP32-S3-LCD-1.47 is https://link.amazon/B0bb1oJqt
+and the ESP32 (WROOM) board every release so far was tested on is
+https://link.amazon/B08MTidlU. The S3 goes on the tested-boards page only
+once a build has actually run on it, with a flashable image for the current
+version.
 
 **Queued for the next web round (Rob, 2026-09-23):**
 - A line at the very bottom of every page, small type: the site version,
