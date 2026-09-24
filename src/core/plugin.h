@@ -206,14 +206,17 @@ struct PluginSetting {
     const char* wide     = nullptr;
     const char* wideNote = nullptr;
     // A PS_NUM that CONFIG takes up to hi but asks about past warnAbove
-    // (1.1.0): saving a value above it puts "Drive % over 30: <warn> Save
-    // anyway? (y/N)" to the sysop first, one question for the page naming
+    // (1.1.0): saving a value above it puts "Strip % over 30 <warn> Keep
+    // it? (y/N)" to the sysop first, one question for the page naming
     // every such row, and anything but Y leaves the page open with nothing
-    // saved. warn is what goes after the colon, one short sentence; null, as
-    // shipped, means the row never asks. Only a row being changed asks, so
-    // a page saved again later does not ask about a value already set.
+    // saved. warn says what can go wrong, one short sentence (Rob: say the
+    // risk, not "Save anyway?"); warnShort is the same at 40 columns, a few
+    // words. Null warn, as shipped, means the row never asks. Only a row
+    // being changed asks, so a page saved again later does not ask about a
+    // value already set.
     int16_t     warnAbove = 0;
     const char* warn      = nullptr;
+    const char* warnShort = nullptr;
 };
 
 // kSettingMax: the longest value CONFIG can hold for one setting. A cap

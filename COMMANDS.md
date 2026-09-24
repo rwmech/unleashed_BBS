@@ -746,9 +746,10 @@ strip_order  = GRB      ; GRB | RGB | BRG | RBG | GBR | BGR
   100, each output its own, 10 as shipped (1.1.0; it was capped at 30). Past
   30 is allowed and is your call, and CONFIG asks you to confirm first,
   because of what it draws (see Power, below): one question for the page
-  naming the rows, `Drive % over 30. Save anyway? (y/N)` on a 40 column
-  screen, with the reason after the name at 80 (`ten pixels can draw more
-  than USB gives.` for the strip). Only Y saves; anything else leaves the
+  naming the rows, `Strip %>30: brownout risk. Keep? (y/N)` on a 40
+  column screen and `Strip % over 30 may brown out the board without a 5 V
+  supply. Keep it? (y/N)` at 80 (the drive light says it runs the pixel
+  hot). Only Y saves; anything else leaves the
   page open with nothing saved. Plain ASCII asks the same, then asks the row
   again. A number past 100 written into `system.cfg` is read as 100. A dim
   colour never goes out at a low percentage: a lit channel stays at least 1.

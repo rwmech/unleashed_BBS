@@ -11583,10 +11583,10 @@ def test_config_warn_levels():
     cfg_open(s, b"lights", b"Drive pin")
     s.buf.clear()
     s.send(DOWN * 6 + b"\x08" * 3 + b"31" + F1)
-    got = cfg_verdict(s, [b"Save anyway? (y/N)", b"Saved and live", b"Between"])
-    ok &= check("31 asks first", got == b"Save anyway? (y/N)")
+    got = cfg_verdict(s, [b"Keep it? (y/N)", b"Saved and live", b"Between"])
+    ok &= check("31 asks first", got == b"Keep it? (y/N)")
     ok &= check("naming the row and why, whole at 80",
-                b"Drive brightness % over 30: a bright pixel runs hot. Save anyway? (y/N)" in plain(s.buf))
+                b"Drive brightness % over 30 runs the pixel hot. Keep it? (y/N)" in plain(s.buf))
     s.buf.clear()
     s.send(b"n")
     ok &= check("N saves nothing and leaves the page open",
@@ -11626,8 +11626,8 @@ def test_config_warn_levels():
     t.wait_for(b"(y/N)", 5)
     t.pump(0.4)
     ok &= check("at 40 it asks inside 38 columns",
-                b"Drive % over 30. Save anyway? (y/N)" in plain(t.buf) and
-                0 < len(row_reach(t.buf, "Save anyway")) <= 39)
+                b"Drive %>30: hot on USB. Keep? (y/N)" in plain(t.buf) and
+                0 < len(row_reach(t.buf, "hot on USB")) <= 39)
     t.send(b"n")
     t.wait_for(b"Not saved.", 4)
     cfg_cancel(t)
@@ -11649,7 +11649,7 @@ def test_config_warn_levels():
         c.pump(0.3)
     c.buf.clear()
     c.send(b"y")
-    ok &= check("plain ASCII asks too", c.wait_for(b"Save anyway? (y/N)", 5))
+    ok &= check("plain ASCII asks too", c.wait_for(b"Keep it? (y/N)", 5))
     c.buf.clear()
     c.send(b"n")
     ok &= check("and N saves nothing, then asks the row again",

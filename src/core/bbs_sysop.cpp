@@ -1656,22 +1656,23 @@ bool cfgWarnQuestion(const Term& t, char* q, size_t qn, uint8_t* row) {
     // Each try is written whole into q (sized for the longest, kWarnQ) and
     // kept if it fits the line; the precisions only bound what a try can be.
     const int over = first->warnAbove;
+    const char* brief = first->warnShort ? first->warnShort : "";
     if (Form::wide(t)) {
         const size_t w = 78;
-        snprintf(q, qn, "%.80s over %d: %.60s Save anyway? (y/N)", longNames, over, first->warn);
+        snprintf(q, qn, "%.80s over %d %.60s Keep it? (y/N)", longNames, over, first->warn);
         if (strlen(q) <= w) return true;
-        snprintf(q, qn, "%.63s over %d: %.60s Save anyway? (y/N)", shortNames, over, first->warn);
+        snprintf(q, qn, "%.63s over %d %.60s Keep it? (y/N)", shortNames, over, first->warn);
         if (strlen(q) <= w) return true;
-        snprintf(q, qn, "%.63s over %d. Save anyway? (y/N)", shortNames, over);
+        snprintf(q, qn, "Over %d %.60s Keep it? (y/N)", over, first->warn);
         if (strlen(q) <= w) return true;
     } else {
         const size_t w = 38;
-        snprintf(q, qn, "%.63s over %d. Save anyway? (y/N)", shortNames, over);
+        snprintf(q, qn, "%.63s>%d: %.30s (y/N)", shortNames, over, brief);
         if (strlen(q) <= w) return true;
-        snprintf(q, qn, "%.63s over %d. Save? (y/N)", shortNames, over);
+        snprintf(q, qn, "Over %d: %.30s (y/N)", over, brief);
         if (strlen(q) <= w) return true;
     }
-    snprintf(q, qn, "Over %d. Save anyway? (y/N)", over);
+    snprintf(q, qn, "Over %d. Keep it? (y/N)", over);
     return true;
 }
 

@@ -109,8 +109,8 @@ static_assert(lights::kPixelsDefault >= 1 && lights::kPixelsDefault <= kStrip, "
 // Brightness, percent of full drive. kPctClamp is what the plugin will do,
 // whatever system.cfg says: 100 since 1.1.0 (Rob), when it had been 30. A
 // hand-edited 150 is read as 100. kPctMax is the CONFIG rows' range, the
-// same 100, and kPctWarn is where the form starts to ask "Save anyway?"
-// first (PluginSetting::warnAbove): past 30, ten pixels draw more than USB.
+// same 100, and kPctWarn is where the form starts to ask first
+// (PluginSetting::warnAbove): past 30, ten pixels can brown out a board on USB.
 constexpr uint8_t kPctMax   = 100;
 constexpr uint8_t kPctWarn  = 30;
 constexpr uint8_t kPctClamp = 100;
@@ -1046,7 +1046,8 @@ constexpr PluginSetting kSettings[] = {
     { "drive_bright", "Drive %",   PS_NUM,   1, kPctMax, 3, "1 to 100 percent; over 30 asks first.", nullptr,
       "Drive brightness %",
       "1 to 100 percent, 10 as shipped. Over 30 asks first: a bright pixel runs hot.",
-      kPctWarn, "a bright pixel runs hot." },
+      kPctWarn, "runs the pixel hot.",
+      "hot on USB. Keep?" },
     { "strip_pin",    "Strip pin", PS_PIN,  -1, BBS_GPIO_OUT_MAX, 2, "10 pixels need their own 5 V supply.", nullptr,
       "Strip GPIO",
       "Ten pixels on this GPIO. Give them their own 5 V feed: 600 mA at full white." },
@@ -1056,7 +1057,8 @@ constexpr PluginSetting kSettings[] = {
     { "strip_bright", "Strip %",   PS_NUM,   1, kPctMax, 3, "White at 10 is 60 mA; at 30, 180 mA.", nullptr,
       "Strip brightness %",
       "Ten pixels in white: 60 mA at 10, 180 mA at 30, 600 mA at 100. Over 30 asks.",
-      kPctWarn, "ten pixels can draw more than USB gives." },
+      kPctWarn, "may brown out the board without a 5 V supply.",
+      "brownout risk. Keep?" },
     { "led",          "Pixels",    PS_PAGE,  0,  0, 0, "Manual: each pixel its own effect.", nullptr,
       "Pixels, by hand" },
     { "led1",  "Pixel 1",  PS_TEXT, 0, 0, 20 },
