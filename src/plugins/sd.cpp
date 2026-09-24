@@ -32,6 +32,9 @@
  *                               page: CS 5, MOSI 23, CLK 18, MISO 19
  *                  screens      yes: screens on the card override the stock
  *                               set. A missing file falls back to internal.
+ *                  nightly      no: yes makes a full backup on the card at
+ *                               03:00 every night, keeping the last seven
+ *                               (1.1.0; the core does it, see sdNightly).
  *
  * Commands:     SD, SD MOUNT, SD UNMOUNT
  *
@@ -62,6 +65,7 @@
 #include "../core/plugin.h"
 #include "../core/bbs.h"
 #include "../core/screens.h"   // declares sdScreensDir, so it is checked against the definition
+#include "../core/backup.h"    // and sdNightly
 #include "../core/bbs_util.h"
 #include "../platform/platform.h"
 #include "../config.h"
@@ -83,6 +87,7 @@ uint8_t        g_index   = 0;
 Bbs*           g_bbs     = nullptr;        // to close card screens before an unmount
 plat::SdPins   g_pins;                     // defaults are the wiring page's pins
 bool           g_screens = true;           // a card's screens override the stock set
+bool           g_nightly = false;          // a backup on the card every night (1.1.0)
 bool           g_running = false;          // plugin enabled, not just card present
 char           g_why[72] = "not mounted";  // why there is no card, for SD and DASH
 
@@ -165,6 +170,10 @@ void readKey(void* ctx, const char* key, const char* value) {
     }
     else if (!strcmp(key, "screens")) {
         g_screens = !strcasecmp(value, "yes") || !strcasecmp(value, "on") ||
+                    !strcasecmp(value, "true") || !strcmp(value, "1");
+    }
+    else if (!strcmp(key, "nightly")) {
+        g_nightly = !strcasecmp(value, "yes") || !strcasecmp(value, "on") ||
                     !strcasecmp(value, "true") || !strcmp(value, "1");
     }
 }
@@ -377,6 +386,7 @@ bool start(Bbs& bbs) {
 
     g_pins    = plat::SdPins();
     g_screens = true;
+    g_nightly = false;
     if (!had) snprintf(g_why, sizeof(g_why), "%s", "not mounted");
     plugins::forEachKey(g_index, readKey, nullptr);
     g_running = true;
@@ -387,7 +397,7 @@ bool start(Bbs& bbs) {
     if (had && !moved) return true;              // already up on these pins
     if (had && moved) {
         plat::log("sd: pins changed, remounting");
-        if (g_bbs) g_bbs->closeCardScreens();
+        if (g_bbs) { g_bbs->closeCardScreens(); g_bbs->dropCardJob(); }
         plat::sdUnmount();
     }
 
@@ -540,8 +550,10 @@ const Command kCommands[] = {
                   b.prompt(s);
                   return;
               }
-              // Anyone mid-screen from the card has to be let go first.
+              // Anyone mid-screen from the card has to be let go first, and
+              // so does a backup being written to it (the nightly one).
               b.closeCardScreens();
+              b.dropCardJob();
               plat::diskPulse(plat::DISK_CARD);  // the flush
               plat::sdUnmount();
               cardInfo(true);
@@ -569,6 +581,11 @@ const PluginSetting kSettings[] = {
     { "miso",    "MISO pin", PS_PIN,   0, 39, 2 },
     { "speed",   "Bus kHz",  PS_NUM,   400, 40000, 5 },
     { "screens", "Screens",  PS_YESNO, 0, 0,  4 },
+    // A full backup at 03:00 into the card's backup folder, the last seven
+    // kept, named nightly-YYYYMMDD.zip so a backup the sysop made by hand is
+    // never counted among them (1.1.0). Off as shipped. The note avoids the
+    // hour on purpose (the copy): COMMANDS.md and the setup guide give it.
+    { "nightly", "Nightly",  PS_YESNO, 0, 0,  4, "A zip every night; the last 7 kept." },  // NB-note
 };
 
 // setting: the live value, for a key system.cfg does not carry yet
@@ -579,6 +596,7 @@ void setting(const char* key, char* out, size_t n) {
     else if (!strcmp(key, "miso"))    snprintf(out, n, "%d", g_pins.miso);
     else if (!strcmp(key, "speed"))   snprintf(out, n, "%u", static_cast<unsigned>(g_pins.speedKHz));
     else if (!strcmp(key, "screens")) snprintf(out, n, "%s", g_screens ? "yes" : "no");
+    else if (!strcmp(key, "nightly")) snprintf(out, n, "%s", g_nightly ? "yes" : "no");
 }
 
 } // namespace
@@ -587,6 +605,13 @@ void setting(const char* key, char* out, size_t n) {
 // plugin exists. Null when there is no card or the override is switched off.
 const char* sdScreensDir() {
     return screensDir();
+}
+
+// sdNightly: the core's nightly backup asks this (backup.h). Whether there is
+// a card is the core's question, so that "no card" can be said rather than
+// the night passing without a word.
+bool sdNightly() {
+    return g_running && g_nightly;
 }
 
 extern const Plugin kSdPlugin = {

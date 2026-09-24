@@ -202,12 +202,13 @@ UP = b"\x1b[A"
 
 
 class Caller:
-    def __init__(self, ansi=False, utf8=True, telnet=False, source=None):
+    def __init__(self, ansi=False, utf8=True, telnet=False, source=None, port=None):
         self.t0 = time.time()
         # source: the address to call from. 127.0.0.2 is loopback to the
         # kernel but not local to Bbs::localAddr, which takes 127.0.0.1
         # exactly, so it stands in for a caller from outside the network.
-        self.s = socket.create_connection((HOST, PORT), timeout=5,
+        # port: another board than the harness's, such as a start_copy one.
+        self.s = socket.create_connection((HOST, port or PORT), timeout=5,
                                           source_address=(source, 0) if source else None)
         self.s.setblocking(False)
         self.buf = bytearray()
@@ -586,8 +587,8 @@ def login(c, handle, pw=TEST_PW, as_pet=False, wait_main=True):
     return c.wait_for(enc("Main"), 8) if wait_main else True
 
 
-def ansi_login(handle, pw=TEST_PW):
-    c = Caller(ansi=True)
+def ansi_login(handle, pw=TEST_PW, port=None):
+    c = Caller(ansi=True, port=port)
     c.wait_for(b"Enter your handle", 10)
     login(c, handle, pw)
     return c
@@ -1616,8 +1617,8 @@ def test_motd():
 # Backup window (needs the button held: BBS_BACKUP_TEST_OPEN on host, or the
 # esp32dev_backuptest build on a board)
 # ---------------------------------------------------------------------------
-def http_call(method, path, body=None, timeout=60, headers=None):
-    conn = http.client.HTTPConnection(HOST, BACKUP_PORT, timeout=timeout)
+def http_call(method, path, body=None, timeout=60, headers=None, port=None):
+    conn = http.client.HTTPConnection(HOST, port or BACKUP_PORT, timeout=timeout)
     try:
         conn.request(method, path, body=body, headers=headers or {})
         r = conn.getresponse()
@@ -1636,12 +1637,12 @@ def make_zip(files, compress=zipfile.ZIP_DEFLATED):
     return buf.getvalue()
 
 
-def upload_with_answer(sysop, data, answer, expect_prompt=True):
+def upload_with_answer(sysop, data, answer, expect_prompt=True, port=None):
     """PUT the zip in a thread, answer the sysop prompt, return (status, body, prompt_seen)."""
     result = {}
 
     def worker():
-        result["r"] = http_call("PUT", "/restore", data, timeout=90)
+        result["r"] = http_call("PUT", "/restore", data, timeout=90, port=port)
 
     sysop.buf.clear()
     th = threading.Thread(target=worker)
@@ -1668,6 +1669,12 @@ def test_backup():
     # backups. A test that depends on another test reports somebody else's
     # absence as your bug.
     ansi_login("Alice").close()
+    local = HOST in ("127.0.0.1", "localhost")
+    # An information page with text (1.1.0): it travels in the zip now.
+    info_dir = USERDATA / "p" / "info"
+    if local:
+        info_dir.mkdir(parents=True, exist_ok=True)
+        (info_dir / "2.txt").write_bytes(b"Page two from the host\n")
     s = ansi_login("Rob")
     s.buf.clear()
     s.send(f"bye {PASSWORD}\r".encode())
@@ -1701,6 +1708,9 @@ def test_backup():
     ok &= check("Wi-Fi network name kept whole", "wifi_ssid = Test#Net" in cfg)
     users = z.read("users.txt").decode() if z and "users.txt" in names else ""
     ok &= check("zip carries users.txt, hashes only", "Alice" in users and TEST_PW not in users)
+    if local:
+        ok &= check("and the information pages (1.1.0)",
+                    "info/2.txt" in names and z.read("info/2.txt") == b"Page two from the host\n")
     ok &= check("download notice on the sysop console", s.wait_for(b"*** Backup downloaded by", 5))
 
     # --- edit and upload inside a folder, deflated (what re-zipping an unpacked folder gives)
@@ -1708,12 +1718,21 @@ def test_backup():
     files["unleashed-backup/screens/motd.asc"] = b"Custom line from upload test\n"
     files["unleashed-backup/screens/extra.asc"] = b"extra screen\n"
     files["unleashed-backup/system.cfg"] = (cfg + "\nidle_minutes = 21\n").encode()
+    files["unleashed-backup/info/3.txt"] = b"Page three from the upload\n"
     status, body, seen = upload_with_answer(s, make_zip(files), b"y")
     ok &= check("sysop asked Y/N for the upload", seen)
     summary = bytes(s.buf)
     ok &= check("summary names the files", b"system.cfg" in summary and b"screens" in summary and b"users" in summary)
     ok &= check("upload applied (200)", status == 200 and b"Applied" in body)
-    local = HOST in ("127.0.0.1", "localhost")
+    if local:
+        ok &= check("an information page in the zip goes back",
+                    (info_dir / "3.txt").exists() and
+                    (info_dir / "3.txt").read_bytes() == b"Page three from the upload\n")
+        pg = ansi_login("Alice")
+        pg.buf.clear()
+        pg.send(b"info 3\r")
+        ok &= check("and reads at once, without a restart", pg.wait_for(b"Page three from the upload", 6))
+        pg.close()
     if local:
         live_cfg = (USERDATA / "system.cfg").read_text()
         ok &= check("*** kept the real password on disk", f"sysop_password = {PASSWORD}" in live_cfg)
@@ -1794,6 +1813,8 @@ def test_backup():
     ok &= check("zip bomb (2 MB unpacked) rejected", status == 422)
     status, body = http_call("PUT", "/restore", b"x", headers={"Content-Length": "500000"}, timeout=10)
     ok &= check("oversize Content-Length: 413", status == 413)
+    ok &= check("in the copy's words, in the board's KB",
+                b"Too big: 489 KB. The limit is 256 KB." in body)
     ok &= check("server still serving after abuse", http_call("GET", "/")[0] == 200)
 
     # --- sysop hangs up while an upload waits: discarded
@@ -1808,6 +1829,8 @@ def test_backup():
     ok &= check("sysop leaving discards the upload (403)", status == 403)
     if local:
         ok &= check("and changes nothing", (DATA / "screens" / "extra.asc").read_bytes() == b"extra screen\n")
+        for p in ("2.txt", "3.txt"):
+            (info_dir / p).unlink(missing_ok=True)
     return ok
 
 
@@ -1998,6 +2021,490 @@ def published_default_configured():
                     seen and status == 200 and cfg_value("sysop_password") == PASSWORD
                     and cfg_value("cosysop1_password") == CO1)
         s.close()
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# Backups on the SD card (1.1.0): BACKUP SD, RESTORE SD, the nightly one
+# ---------------------------------------------------------------------------
+def card_dir():
+    """The harness's card, or None on a run without one."""
+    sd = os.environ.get("BBS_SD_DIR", "")
+    return pathlib.Path(sd) if sd else None
+
+
+def card_cmd(s, cmd, want, secs=15):
+    """Type a command, wait for one of want, and say which with the text."""
+    s.buf.clear()
+    s.send(cmd + b"\r")
+    i = wait_any(s, want, secs)
+    s.pump(0.4)
+    return i, plain(s.buf)
+
+
+def user_file():
+    p = USERDATA / "users.txt"
+    return p.read_bytes() if p.exists() else b""
+
+
+def bytes_of(p):
+    """A file's bytes, or None when it is not there: a check, not a crash."""
+    return p.read_bytes() if p.exists() else None
+
+
+def test_backup_card():
+    """BACKUP SD and RESTORE SD, and RESTORE SD SCREENS (1.1.0).
+
+    The zip on the card is the window's zip, checked back in by the window's
+    own validator: so the redaction, the Wi-Fi password as typed and the
+    1.0.2 rule about the published password are all asserted from this door
+    too, rather than assumed to follow.
+    """
+    print("BACKUP SD and RESTORE SD")
+    local = HOST in ("127.0.0.1", "localhost")
+    if not PASSWORD or not local:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    import shutil
+    card = card_dir()
+    s = cfg_sysop("CardKeeper")
+    if card is None:
+        i, txt = card_cmd(s, b"backup sd", [b"No card mounted"])
+        ok = check("with no card, BACKUP SD says to mount one",
+                   i == 0 and b"No card mounted. Try SD MOUNT first." in txt)
+        i, txt = card_cmd(s, b"restore sd", [b"No card mounted"])
+        ok &= check("and so does RESTORE SD", i == 0)
+        s.close()
+        return ok
+
+    bdir = card / "backup"
+    shutil.rmtree(bdir, ignore_errors=True)
+    i, txt = card_cmd(s, b"backup", [b"For the backup window, press BOOT."])
+    ok = check("BACKUP on its own says what BACKUP SD is",
+               i == 0 and b"BACKUP SD saves a zip on the card." in txt)
+    i, txt = card_cmd(s, b"restore sd", [b"No backups on the card yet.", b"Backups on the card"])
+    ok &= check("an empty card says so, and how to make one", i == 0 and b"BACKUP SD makes one." in txt)
+
+    # ---- BACKUP SD ---------------------------------------------------------
+    i, txt = card_cmd(s, b"backup sd", [b"Saved:", b"Card write failed", b"Card full", b"There is one"], 30)
+    ok &= check("BACKUP SD writes a zip and says so", i == 0)
+    m = re.search(rb"Writing (unleashed-\d{8}-\d{4}\.zip)", txt)
+    ok &= check("named unleashed-YYYYMMDD-HHMM.zip", m is not None)
+    lines = render_lines(s.buf)
+    ok &= check("with a dot a file on a line of their own",
+                any(re.fullmatch(r"\.{5,}", ln.strip() or "x") for ln in lines))
+    ok &= check("in the copy's words", re.search(rb"Saved: \d+ files, \d+ KB\.", txt) is not None)
+    ok &= check("and that it holds the Wi-Fi password", b"It holds your Wi-Fi password as typed." in txt)
+    name = m.group(1).decode() if m else "none.zip"
+    zpath = bdir / name
+    try:
+        z = zipfile.ZipFile(zpath)
+        bad = z.testzip()
+        names = z.namelist()
+    except (OSError, zipfile.BadZipFile):
+        z, bad, names = None, "no zip", []
+    ok &= check("the zip on the card is whole (every CRC good)", z is not None and bad is None)
+    ok &= check("and holds the window's files",
+                all(n in names for n in ("system.cfg", "users.txt", "MANIFEST.txt", "screens/welcome.ans")))
+    cfg = z.read("system.cfg").decode() if z else ""
+    ok &= check("staff passwords as ***, never the password itself",
+                "sysop_password = ***" in cfg and f"= {PASSWORD}" not in cfg)
+    ok &= check("the Wi-Fi password as typed, # and all", "wifi_password = pa#ss word1" in cfg)
+    sm = re.search(rb"Saved: (\d+) files", txt)
+    ok &= check("Saved counts the files in it, the manifest aside",
+                sm is not None and int(sm.group(1)) == len([n for n in names if n != "MANIFEST.txt"]))
+    ok &= check("and leaves no half file beside it", bdir.exists() and not list(bdir.glob("*.tmp")))
+    first = bytes_of(zpath)
+
+    # The same minute again: the first is kept, never written over.
+    i, txt = card_cmd(s, b"backup sd", [b"There is one from this minute already.", b"Saved:"], 30)
+    ok &= check("a second in the same minute is refused, or has a minute of its own",
+                first is not None and bytes_of(zpath) == first and
+                (i == 0 or len(list(bdir.glob("unleashed-*.zip"))) == 2))
+
+    # ---- BACKUP SD SCREENS -------------------------------------------------
+    i, txt = card_cmd(s, b"backup sd screens", [b"Saved:", b"Card write failed", b"There is one"], 30)
+    ok &= check("BACKUP SD SCREENS saves the screens alone",
+                i == 0 and re.search(rb"Saved: \d+ screens, \d+ KB\.", txt) is not None)
+    ok &= check("and says nothing of a Wi-Fi password it does not hold", b"Wi-Fi" not in txt)
+    ms = re.search(rb"Writing (screens-\d{8}-\d{4}\.zip)", txt)
+    sname = ms.group(1).decode() if ms else "none.zip"
+    try:
+        zs = zipfile.ZipFile(bdir / sname)
+        snames = zs.namelist() if zs.testzip() is None else []
+    except (OSError, zipfile.BadZipFile):
+        snames = []
+    ok &= check("which holds screens and the manifest, nothing else",
+                bool(snames) and all(n.startswith("screens/") or n == "MANIFEST.txt" for n in snames))
+
+    # ---- the list ------------------------------------------------------------
+    # The newest first, whatever the clock's second: set the times by hand.
+    bdir.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    for p in bdir.glob("unleashed-*.zip"):
+        os.utime(p, (now - 300, now - 300))
+    for p, age in ((zpath, 200), (bdir / sname, 100)):
+        if p.exists():
+            os.utime(p, (now - age, now - age))
+    i, txt = card_cmd(s, b"restore sd", [b"restores one."])
+    ok &= check("RESTORE SD lists the card's backups", i == 0 and b"Backups on the card" in txt)
+    ok &= check("newest first, numbered, with a size in KB",
+                re.search(rb" 1  " + sname.encode() + rb"\s+\d+ KB", txt) is not None and
+                re.search(rb" 2  " + name.encode() + rb"\s+\d+ KB", txt) is not None)
+    ok &= check("and how to restore one", b"RESTORE SD n restores one." in txt)
+    listed = [ln for ln in render_lines(s.buf) if re.match(r"\s*\d+  \S+\.zip", ln)]
+    ok &= check("each row inside 39 columns", bool(listed) and all(len(ln) <= 39 for ln in listed))
+    i, txt = card_cmd(s, b"restore sd screens", [b"restores one."])
+    ok &= check("RESTORE SD SCREENS offers the same list", b"RESTORE SD SCREENS n restores one." in txt)
+    i, txt = card_cmd(s, b"restore sd 9", [b"No backup with that number."])
+    ok &= check("a number the list did not show is refused", i == 0)
+    i, txt = card_cmd(s, b"restore sd nosuch.zip", [b"No backup by that name on the card."])
+    ok &= check("so is a name that is not on the card", i == 0)
+    i, txt = card_cmd(s, b"restore sd ../user/users.txt", [b"No backup by that name on the card."])
+    ok &= check("and a path is not a name at all", i == 0)
+
+    # ---- RESTORE SD n: the question, N, then Y -------------------------------
+    later = ansi_login("CardLater")                        # an account made after the backup
+    later.close()
+    time.sleep(0.6)
+    ok &= check("(an account made since the backup)", b"[CardLater]" in user_file())
+    i, txt = card_cmd(s, b"restore sd 2", [b"Restore now? (y/N)", b"Cannot read", b"Nothing in it"], 30)
+    ok &= check("RESTORE SD n checks the zip, then asks", i == 0 and (b"Checking " + name.encode()) in txt)
+    rows = render_lines(s.buf)
+    ok &= check("with its name on the title bar", any(("RESTORE " + name) in r for r in rows))
+    ok &= check("and every row a full restore always shows",
+                all(any(r.startswith(lab) for r in rows) for lab in ("In zip", "Replaces", "Accounts",
+                                                                      "Removes", "Staff")))
+    ok &= check("Accounts puts both numbers in front of the sysop",
+                re.search(rb"Accounts\s+\d+, replacing all \d+ here", txt) is not None)
+    ok &= check("Staff says the passwords stay", re.search(rb"Staff\s+passwords stay as they are", txt) is not None)
+    ok &= check("and changes since then will be lost", b"Changes made since then will be lost." in txt)
+    s.buf.clear()
+    s.send(b"n")
+    ok &= check("N: Not restored.", s.wait_for(b"Not restored.", 5))
+    ok &= check("and nothing changed", b"[CardLater]" in user_file())
+
+    i, txt = card_cmd(s, b"restore sd 2", [b"Restore now? (y/N)"], 30)
+    s.buf.clear()
+    s.send(b"y")
+    ok &= check("Y: Restored and live.", s.wait_for(b"Restored and live.", 30))
+    ok &= check("after Restoring and a dot a file", b"Restoring." in plain(s.buf))
+    ok &= check("the account made since the backup is gone", b"[CardLater]" not in user_file())
+    ok &= check("the board keeps its own sysop password", cfg_value("sysop_password") == PASSWORD)
+    ok &= check("and its Wi-Fi password whole", (cfg_line("wifi_password") or "").endswith("= pa#ss word1"))
+    ok &= check("and nothing is left in staging", not (USERDATA / ".staging").exists())
+
+    # ---- RESTORE SD SCREENS ---------------------------------------------------
+    theme = make_zip({"screens/motd.asc": b"Card motd line\n",
+                      "screens/about.asc": b"A card about screen\n",
+                      "system.cfg": b"idle_minutes = 7\n"})
+    bdir.mkdir(parents=True, exist_ok=True)
+    (bdir / "theme.zip").write_bytes(theme)
+    flash_about = bytes_of(DATA / "screens" / "about.asc")
+    card_about = (card / "screens" / "about.asc")
+    had_about = card_about.read_bytes() if card_about.exists() else None
+    i, txt = card_cmd(s, b"restore sd screens theme.zip", [b"Restore now? (y/N)", b"Cannot read"], 30)
+    ok &= check("RESTORE SD SCREENS asks too", i == 0)
+    ok &= check("what it replaces and adds on the card",
+                re.search(rb"Replaces\s+1 screen on the card", txt) is not None and
+                re.search(rb"Adds\s+1 screen to the card", txt) is not None)
+    ok &= check("a settings file in it is turned away, not quietly used",
+                re.search(rb"Rejected\s+1: system.cfg: not a screen", txt) is not None)
+    ok &= check("and never Removes: a screens restore only adds", b"Removes" not in txt)
+    ok &= check("flash is said to be left alone", b"Stock screens in flash are not touched." in txt)
+    s.buf.clear()
+    s.send(b"y")
+    ok &= check("Restored: 2 screens on the card.", s.wait_for(b"Restored: 2 screens on the card.", 30))
+    ok &= check("and how to undo it", s.wait_for(b"Deleting them from the card undoes it.", 5))
+    ok &= check("the screens are on the card", bytes_of(card / "screens" / "motd.asc") == b"Card motd line\n")
+    ok &= check("the stock ones in flash untouched", bytes_of(DATA / "screens" / "about.asc") == flash_about
+                and not (DATA / "screens" / "motd.asc").exists())
+    ok &= check("the settings untouched", cfg_value("idle_minutes") != "7")
+    ok &= check("and no staging left on the card", not (bdir / ".staging").exists())
+    (card / "screens" / "motd.asc").unlink(missing_ok=True)
+    if had_about is not None:
+        card_about.write_bytes(had_about)
+
+    # ---- what is refused ------------------------------------------------------
+    (bdir / "big.zip").write_bytes(b"\0" * 262145)
+    i, txt = card_cmd(s, b"restore sd big.zip", [b"Too big:"])
+    ok &= check("over the limit: Too big, in the board's KB",
+                i == 0 and b"Too big: 257 KB. The limit is 256 KB." in txt)
+    (bdir / "junk.zip").write_bytes(b"not a zip at all, only words")
+    i, txt = card_cmd(s, b"restore sd junk.zip", [b"Cannot read it:"])
+    ok &= check("not a zip: Cannot read it, with the reason", i == 0 and b"no end record" in txt)
+    (bdir / "notes.zip").write_bytes(make_zip({"notes.txt": b"x"}))
+    i, txt = card_cmd(s, b"restore sd notes.zip", [b"Nothing in it can be used."], 20)
+    ok &= check("nothing usable: said, with the first problem",
+                i == 0 and b"First problem: notes.txt" in txt)
+
+    # ---- who may --------------------------------------------------------------
+    i, txt = card_cmd(s, b"? sysop", [b"RESTORE SD n"], 6)
+    drain(s)
+    ok &= check("HELP lists both for the sysop", i == 0 and b"BACKUP SD" in txt)
+    n = ansi_login("NotCardSysop")
+    n.buf.clear()
+    n.send(b"backup sd\r")
+    n.pump(0.8)
+    ok &= check("and nobody else has either", b"Unknown" in n.buf)
+    n.close()
+    shutil.rmtree(bdir, ignore_errors=True)
+    s.close()
+    return ok
+
+
+def test_backup_card_nightly():
+    """The nightly backup (1.1.0): at its hour, keeping seven, and only ever
+    removing nightly zips. And, with no card, the sysop told at arrival."""
+    print("The nightly backup")
+    if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    import shutil
+    import tempfile
+    ansi_login("NightKeeper").close()                    # accounts for the backup to hold
+    time.sleep(1.0)
+    hour = str(int(time.strftime("%H", time.gmtime())))  # the harness board runs on UTC0
+    card = pathlib.Path(tempfile.mkdtemp(prefix="bbs-nightly-card-"))
+    b = card / "backup"
+    b.mkdir()
+    for d in range(1, 9):                                 # eight old ones
+        (b / f"nightly-202608{d:02d}.zip").write_bytes(b"old")
+    own = ["unleashed-20200101-0000.zip", "screens-20200101-0000.zip", "aaa.zip", "nightly-2020.zip"]
+    for n in own:
+        (b / n).write_bytes(b"mine")
+
+    def nightly_on(tmp):
+        cfg = tmp / "data" / "user" / "system.cfg"
+        text = cfg.read_text()
+        # cfg_with only adds to a section that is there, and the harness
+        # board runs sd on its defaults with no section at all.
+        if "[plugin:sd]" not in text:
+            text = text.rstrip("\n") + "\n\n[plugin:sd]\n"
+        cfg.write_text(cfg_with(text, {("plugin:sd", "nightly"): "yes"}))
+
+    tmp = copy_data()
+    nightly_on(tmp)
+    port = PORT + 3500
+    proc = start_copy(tmp, (str(port),), {"BBS_SD_DIR": str(card), "BBS_NIGHTLY_HOUR": hour})
+    ok = True
+    try:
+        log = copy_log(tmp, "7 on the card", 30)
+        today = time.strftime("%Y%m%d", time.gmtime())
+        made = b / f"nightly-{today}.zip"
+        ok &= check("at its hour a nightly zip is made", made.exists())
+        try:
+            zz = zipfile.ZipFile(made)
+            whole = zz.testzip() is None and "system.cfg" in zz.namelist() and "users.txt" in zz.namelist()
+        except (OSError, zipfile.BadZipFile):
+            whole = False
+        ok &= check("a full backup, whole", whole)
+        left = sorted(p.name for p in b.glob("nightly-????????.zip"))
+        ok &= check("seven nightly zips kept", len(left) == 7)
+        ok &= check("the two oldest went",
+                    "nightly-20260801.zip" not in left and "nightly-20260802.zip" not in left)
+        ok &= check("and every zip of the sysop's own stayed, the look-alike too",
+                    all((b / n).exists() for n in own))
+        ok &= check("the log names what it removed",
+                    "backup: removed the oldest nightly, nightly-20260801.zip" in log)
+        ok &= check("and what it made", re.search(r"backup: nightly nightly-\d{8}\.zip, \d+ KB, 7 on the card",
+                                                   log) is not None)
+    finally:
+        stop_copy(proc, tmp)
+        shutil.rmtree(card, ignore_errors=True)
+
+    # No card at the hour: skipped, logged, and the sysop told on arrival.
+    tmp = copy_data()
+    nightly_on(tmp)
+    port = PORT + 3501
+    proc = start_copy(tmp, (str(port),), {"BBS_NIGHTLY_HOUR": hour})
+    try:
+        log = copy_log(tmp, "nightly skipped", 15)
+        ok &= check("with no card the night is skipped and says why",
+                    "backup: nightly skipped: no card" in log)
+        c = ansi_login("NightOwl", port=port)
+        c.buf.clear()
+        c.send(f"bye {PASSWORD}\r".encode())
+        ok &= check("and the sysop is told when they arrive",
+                    c.wait_for(b"SysOp node", 6) and c.wait_for(b"Last night's backup failed: no card.", 4))
+        c.close()
+    finally:
+        stop_copy(proc, tmp)
+    return ok
+
+
+def test_restore_cross_partition():
+    """A restore on a board whose accounts are on another filesystem (1.1.0).
+
+    On the board, userdata and the screens are two LittleFS partitions, and a
+    rename from one to the other is refused (EXDEV). The restore staged on the
+    screens partition and renamed users.txt across: it failed, removed the
+    live users.txt, tried the rename again and failed again, so restoring a
+    backup deleted every account. The host has one filesystem and never saw
+    it. Here userdata is put on /dev/shm, which is tmpfs, so the host refuses
+    the same rename the same way.
+    """
+    print("A restore across two partitions")
+    if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    import shutil
+    import tempfile
+    if not pathlib.Path("/dev/shm").is_dir():
+        print("  SKIP  no /dev/shm to put userdata on")
+        return True
+    tmp = copy_data()
+    user = tmp / "data" / "user"
+    shm = pathlib.Path(tempfile.mkdtemp(prefix="bbs-userdata-", dir="/dev/shm"))
+    shutil.copytree(user, shm / "user")
+    shutil.rmtree(user)
+    user.symlink_to(shm / "user")
+    port = PORT + 3600
+    bport = PORT + 3601
+    cfg = user / "system.cfg"
+    cfg.write_text(cfg_with(cfg.read_text(), {("", "backup_port"): str(bport)}))
+    proc = start_copy(tmp, (str(port),), {"BBS_BACKUP_TEST_OPEN": "1"})
+    ok = True
+    s = None
+    try:
+        copy_log(tmp, f"listening on {port},", 8)
+        s = ansi_login("SplitKeeper", port=port)
+        s.buf.clear()
+        s.send(f"bye {PASSWORD}\r".encode())
+        ok &= check("sysop on a board split across two filesystems",
+                    s.wait_for(b"SysOp node", 6) and s.wait_for(b"*** Backup open", 8))
+        time.sleep(0.5)
+        status, data = http_call("GET", "/backup.zip", port=bport)
+        try:
+            users = zipfile.ZipFile(io.BytesIO(data)).read("users.txt")
+        except (zipfile.BadZipFile, KeyError):
+            users = b""
+        ok &= check("its backup carries the accounts", b"[SplitKeeper]" in users)
+        files = {"users.txt": users, "screens/motd.asc": b"Across the partitions\n"}
+        status, body, seen = upload_with_answer(s, make_zip(files), b"y", port=bport)
+        ok &= check("the restore is asked and applied without errors",
+                    seen and status == 200 and b"with errors" not in body)
+        live = user / "users.txt"
+        ok &= check("the accounts are there after it",
+                    live.exists() and b"[SplitKeeper]" in live.read_bytes())
+        motd = tmp / "data" / "screens" / "motd.asc"
+        ok &= check("and the screen reached the other filesystem",
+                    motd.exists() and motd.read_bytes() == b"Across the partitions\n")
+    finally:
+        if s:
+            s.close()
+        stop_copy(proc, tmp)
+        shutil.rmtree(shm, ignore_errors=True)
+    return ok
+
+
+def test_config_timezone():
+    """CONFIG board: the timezone by name, the TZ string under it (1.1.0)."""
+    print("CONFIG board: the timezone by name")
+    local = HOST in ("127.0.0.1", "localhost")
+    s = cfg_sysop("CfgZone")
+    opened = cfg_open(s, b"board", b"TZ string")
+    rows = render_lines(s.buf)
+    zone = next((r for r in rows if r.strip().startswith("Timezone")), "")
+    tzs = next((r for r in rows if r.strip().startswith("TZ string")), "")
+    ok = check("the board page has a Timezone row and a TZ string row", bool(opened and zone and tzs))
+    ok &= check("UTC0 in the file opens as UTC, by name", re.search(r"Timezone\s+UTC\b", zone) is not None
+                and "UTC0" in tzs)
+    ok &= check("and the page fits 40 columns", max_column(s.buf) <= 39)
+    s.buf.clear()
+    s.send(DOWN * BOARD_ZONE)
+    s.pump(0.5)
+    ok &= check("the Timezone row's note", b"Pick a zone, or Custom and type below." in plain(s.buf))
+    s.buf.clear()
+    s.send(b"u" * 5)                    # UTC, then Hawaii, Alaska, Pacific, Mountain, Central
+    s.pump(0.8)
+    rows = render_lines(s.buf)
+    ok &= check("a zone picked by letter writes its string in the row below",
+                any("US Central (Chicago)" in r for r in rows) and
+                any("CST6CDT,M3.2.0,M11.1.0" in r for r in rows))
+    s.send(F1)
+    got = cfg_verdict(s, [b"Saved and live", b"Nothing changed"])
+    ok &= check("and saves as that string",
+                got == b"Saved and live" and (not local or
+                                              (cfg_line("tz") or "").endswith("= CST6CDT,M3.2.0,M11.1.0")))
+    cfg_open(s, b"board", b"TZ string")
+    rows = render_lines(s.buf)
+    ok &= check("which opens as the zone's name",
+                any(re.search(r"Timezone\s+US Central \(Chicago\)", r) for r in rows))
+
+    s.buf.clear()
+    s.send(DOWN * BOARD_TZ)
+    s.pump(0.5)
+    ok &= check("the TZ string row's note", b"Find yours: unleashedbbs.com/setup" in plain(s.buf))
+    s.buf.clear()
+    s.send(b"\x08" * 40 + b"CET-1CEST,M3.5.0,M10.5.0/2")
+    s.pump(0.8)
+    ok &= check("typing a string turns the Timezone to Custom",
+                any(re.search(r"Timezone\s+Custom", r) for r in render_lines(s.buf)))
+    s.send(F1)
+    got = cfg_verdict(s, [b"Saved and live", b"Nothing changed"])
+    ok &= check("a typed string saves as typed",
+                got == b"Saved and live" and (not local or
+                                              (cfg_line("tz") or "").endswith("= CET-1CEST,M3.5.0,M10.5.0/2")))
+    cfg_open(s, b"board", b"TZ string")
+    rows = render_lines(s.buf)
+    ok &= check("and opens as Custom, with the string",
+                any(re.search(r"Timezone\s+Custom", r) for r in rows) and
+                any("CET-1CEST,M3.5.0,M10.5.0/2" in r for r in rows))
+
+    # Back to UTC by name: from Custom, u is the first zone starting with it.
+    s.send(DOWN * BOARD_ZONE + b"u" + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"Nothing changed"])
+    ok &= check("and back to UTC", got == b"Saved and live" and
+                (not local or (cfg_line("tz") or "").endswith("= UTC0")))
+    s.close()
+    return ok
+
+
+def test_config_cycle_numbers():
+    """Plain ASCII: a cycle's choices numbered, and a number picks (1.1.0)."""
+    print("CONFIG in plain ASCII: choices by number")
+    if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    c = ascii_sysop("CfgNumbers")
+    c.buf.clear()
+    c.send(b"config sd\r")
+    c.wait_for(b"Enabled", 5)
+    c.pump(0.4)
+    ok = check("a yes or no row lists its two, numbered", b"1 yes  2 no" in plain(c.buf))
+    got, rows = ascii_form_seen(c, [b"", b"99", b"5"] + [b""] * SD_ROWS_AFTER_READ)
+    txt = "\n".join(rows)
+    ok &= check("a level row lists the ladder, numbered",
+                "1 all  2 users  3 staff  4 co2  5 co1" in txt and "6 sysop" in txt)
+    ok &= check("in 39 columns", all(len(r) <= 39 for r in rows if re.match(r"\d+ ", r)))
+    ok &= check("a number that is not on the list is refused, and asked again",
+                "Not one of the choices" in txt)
+    ok &= check("a number picks that choice",
+                got == 0 and (cfg_sec_line("plugin:sd", "read") or "").endswith("= co1"))
+    c.buf.clear()
+    c.send(b"config sd\r")
+    c.wait_for(b"Enabled", 5)
+    ascii_form(c, [b"", b"6"] + [b""] * SD_ROWS_AFTER_READ)
+
+    # The Timezone: 35 choices, and a number writes its string before the
+    # TZ string row is asked for.
+    c.buf.clear()
+    c.send(b"config board\r")
+    c.wait_for(b"Board", 5)
+    # Board, Hostname, Timezone, TZ string, NTP, Idle min, LED gpio, Land on
+    got, rows = ascii_form_seen(c, [b"", b"", b"8", b"", b"", b"", b"", b""])
+    txt = "\n".join(rows)
+    ok &= check("the zones are listed by number", "8 US Central (Chicago)" in txt and "35 Custom" in txt)
+    ok &= check("and the string follows the zone picked by number",
+                "TZ string [CST6CDT,M3.2.0,M1...]" in txt)
+    ok &= check("which saves", got == 0 and (cfg_line("tz") or "").endswith("= CST6CDT,M3.2.0,M11.1.0"))
+    c.buf.clear()
+    c.send(b"config board\r")
+    c.wait_for(b"Board", 5)
+    ascii_form(c, [b"", b"", b"1", b"", b"", b"", b"", b""])
+    ok &= check("and back to UTC by number", (cfg_line("tz") or "").endswith("= UTC0"))
+    c.close()
     return ok
 
 
@@ -2508,6 +3015,13 @@ def test_config():
     return ok
 
 
+# Rows of CONFIG board, counted from 0 (Board). 1.1.0 made the timezone two
+# rows, Timezone and TZ string, which moved everything under it down one.
+BOARD_ZONE = 2
+BOARD_TZ   = 3
+BOARD_LED  = 6
+
+
 def cfg_sysop(handle):
     """An ANSI caller elevated to the sysop node, ready for CONFIG."""
     s = ansi_login(handle)
@@ -2662,16 +3176,17 @@ def test_config_parser_rules():
     ok &= check("*** is refused as a password", got == b"hidden password")
     cfg_cancel(s)
 
-    # -1 is "no pin" to the parser and was "Numbers only" to CONFIG.
+    # -1 is "no pin" to the parser and was "Numbers only" to CONFIG. The LED
+    # is the seventh row since 1.1.0, when the Timezone became two rows.
     cfg_open(s, b"board", b"Hostname")
     s.buf.clear()
-    s.send(DOWN * 5 + b"\x08" * 3 + b"-1" + F1)
+    s.send(DOWN * BOARD_LED + b"\x08" * 3 + b"-1" + F1)
     got = cfg_verdict(s, [b"Saved and live", b"Numbers only", b"Between", b"saved, but"])
     ok &= check("the LED pin takes -1, no LED, as the parser does", got == b"Saved and live")
     if local:
         ok &= check("written as -1", (cfg_line("activity_led_gpio") or "").endswith("= -1"))
     cfg_open(s, b"board", b"Hostname")
-    s.send(DOWN * 5 + b"\x08" * 3 + b"2" + F1)
+    s.send(DOWN * BOARD_LED + b"\x08" * 3 + b"2" + F1)
     cfg_verdict(s, [b"Saved and live", b"Nothing changed"])
 
     # The staff page's two co-sysop rows, told apart inside the nine
@@ -2728,7 +3243,7 @@ def test_config_guards():
     before = cfg_line("activity_led_gpio") if local else None
     cfg_open(s, b"board", b"Hostname")
     s.buf.clear()
-    s.send(DOWN * 5 + b"\x08" * 3 + b"6" + F1)
+    s.send(DOWN * BOARD_LED + b"\x08" * 3 + b"6" + F1)
     got = cfg_verdict(s, [b"flash chip", b"Saved"])
     ok &= check("the LED cannot be put on a flash pin", got == b"flash chip")
     cfg_cancel(s)
@@ -3068,6 +3583,24 @@ def ascii_sysop(handle):
     return c
 
 
+# CONFIG sd in line mode: the rows after Read (Write, Admin, four pins, the
+# bus speed, Screens and, from 1.1.0, Nightly).
+SD_ROWS_AFTER_READ = 9
+
+
+def ascii_form_seen(c, answers):
+    """ascii_form, and what the form printed on the way, which ascii_form
+    clears before the verdict: (verdict index, rendered lines)."""
+    for a in answers:
+        c.send(a + b"\r")
+        c.pump(0.3)
+    c.wait_for(b"Save (Y/n)?", 4)
+    seen = render_lines(c.buf)
+    c.buf.clear()
+    c.send(b"y")
+    return wait_any(c, [b"Saved and live", b"Nothing changed", b"Saved", b"Not one of"], 6), seen
+
+
 def ascii_form(c, answers):
     """Answer a line-mode form a row at a time, then say Y to saving."""
     for a in answers:
@@ -3096,21 +3629,22 @@ def test_config_lights_ascii():
     c.buf.clear()
     c.send(b"config sd\r")
     c.wait_for(b"Enabled", 5)
-    # Enabled, Read, Write, Admin, CS, MOSI, CLK, MISO, Bus kHz, Screens
-    got = ascii_form(c, [b"", b"c"] + [b""] * 8)
+    # Enabled, Read, Write, Admin, CS, MOSI, CLK, MISO, Bus kHz, Screens,
+    # and since 1.1.0 Nightly.
+    got = ascii_form(c, [b"", b"c"] + [b""] * SD_ROWS_AFTER_READ)
     ok = check("a level picked by letter saves", got == 0)
     ok &= check("as the level picked, not as a space",
                 (cfg_sec_line("plugin:sd", "read") or "").endswith("= co2"))
     c.buf.clear()
     c.send(b"config sd\r")
     c.wait_for(b"Enabled", 5)
-    got = ascii_form(c, [b"", b"ss"] + [b""] * 8)   # co2: s is staff, s again is sysop
+    got = ascii_form(c, [b"", b"ss"] + [b""] * SD_ROWS_AFTER_READ)   # co2: s is staff, s again is sysop
     ok &= check("the same letter twice steps to its next match",
                 got == 0 and (cfg_sec_line("plugin:sd", "read") or "").endswith("= sysop"))
     c.buf.clear()
     c.send(b"config sd\r")
     c.wait_for(b"Enabled", 5)
-    got = ascii_form(c, [b"", b"c\x08"] + [b""] * 8)
+    got = ascii_form(c, [b"", b"c\x08"] + [b""] * SD_ROWS_AFTER_READ)
     ok &= check("Backspace after a pick puts the value back",
                 got == 1 and (cfg_sec_line("plugin:sd", "read") or "").endswith("= sysop"))
 
@@ -8986,8 +9520,9 @@ GROUPS = {
                   "long_help", "info_pages"],
     # The subsystems that own a session and draw their own screens.
     "places":    ["forums", "files", "chat", "xfer"],
-    # Anything that reads or writes the card.
-    "storage":   ["files", "forums", "sd", "xfer", "backup"],
+    # Anything that reads or writes the card, and the backups (on the card
+    # since 1.1.0, and restores across the board's two partitions).
+    "storage":   ["files", "forums", "sd", "xfer", "backup", "restore"],
     # The shell, its lists and the screens the core draws.
     "shell":     ["menus", "sysinfo", "page", "about", "config", "welcome", "paced", "seeded", "fx_codes",
                   "lights"],
@@ -9022,6 +9557,7 @@ ORDER_NAMES = [
     "test_info_pages",
     "test_mail", "test_prompt_survives_notice", "test_menus", "test_sysinfo", "test_config",
     "test_config_parser_rules", "test_config_guards", "test_config_semicolon",
+    "test_config_timezone", "test_config_cycle_numbers",
     "test_config_sd_plugin",
     "test_config_lights", "test_config_lights_ascii", "test_lights_frames", "test_lights_manual",
     "test_config_wifi_live", "test_config_network", "test_config_announce_outside",
@@ -9039,6 +9575,10 @@ ORDER_NAMES = [
     "test_config_areas", "test_config_area_keeps_every_part",
     "test_mail_compose",
     "test_forums", "test_forums_remove", "test_forums_scan_staff", "test_config_forum_levels", "test_partitions",
+    # Backups on the card and restores across the partitions (1.1.0). The
+    # card one restores this board from a backup it has just taken, which is
+    # the board as it was a minute before, so it sits with the restores.
+    "test_backup_card", "test_backup_card_nightly", "test_restore_cross_partition",
     # Destructive, and therefore last whatever else is running. The published
     # default's restore test puts the board back as it found it, and on a
     # --fresh board it needs to run before first_setup gives it a password.

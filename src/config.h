@@ -305,12 +305,35 @@
 #define BBS_BACKUP_IDLE_MS      30000    // HTTP client silent this long: dropped
 #define BBS_BACKUP_HEADER_MS    10000    // whole request header must arrive in this
 #define BBS_BACKUP_TRANSFER_MS  180000   // whole upload body or download in this
+// Where a restore is unpacked and checked before anything goes live: on
+// userdata since 1.1.0 (<userdata>/.staging), the 608 KB partition, rather
+// than on storage, the 256 KB one the screens themselves fill a good part of.
+// It also puts system.cfg, users.txt and the information pages on the same
+// partition as the files they replace, so each one goes live with a rename;
+// a rename from storage to userdata is refused (EXDEV) on the board.
 #define BBS_BACKUP_STAGING      ".staging"
 
-// Upload limits (enforced, documented in SCREENS.md)
-#define BBS_ZIP_MAX_BYTES       400000   // the uploaded .zip itself
+// Upload limits (enforced, documented in SCREENS.md). 256 KiB each since
+// 1.1.0: 400,000 and 360,000 promised more than the partition the upload was
+// staged on could ever hold, and it failed part way instead of being refused.
+// A stored full backup of a board with 250 accounts is about 170 KiB. What
+// actually decides is the room on the board at the time, which a restore
+// measures before it unpacks anything (ziparc.cpp, roomCheck).
+#define BBS_ZIP_MAX_BYTES       262144   // the uploaded .zip itself
 #define BBS_ZIP_MAX_FILES       64       // accepted files per upload
 #define BBS_ZIP_FILE_MAX        65536    // one unpacked file
 #define BBS_ZIP_USERS_MAX       163840   // users.txt: 100 full accounts with escaping
-#define BBS_ZIP_TOTAL_MAX       360000   // all unpacked files together
+#define BBS_ZIP_TOTAL_MAX       262144   // all unpacked files together
 #define BBS_SCREEN_NAME_MAX     8        // screen base name, a-z 0-9 _ -
+// An information page in a backup (info/3.txt). The editor writes at most
+// BBS_COMPOSE_MAX; this leaves room for one written on a laptop.
+#define BBS_ZIP_INFO_MAX        8192
+// LittleFS gives every file of more than a few hundred bytes at least one
+// whole 4 KB block, so free space is counted in blocks when a restore asks
+// whether it fits: 33 stock screens of 1 to 3 KB each take 33 blocks, not 9.
+#define BBS_FS_BLOCK            4096
+
+// Backups on the SD card (1.1.0): BACKUP SD, RESTORE SD, the nightly one.
+#define BBS_CARD_STEP_BYTES     8192     // zip bytes written to the card per loop pass
+#define BBS_RESTORE_ASK_MS      60000    // the sysop has this long to answer Y/N
+#define BBS_NIGHTLY_HOUR        3        // local hour the nightly backup is made

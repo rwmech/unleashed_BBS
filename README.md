@@ -50,7 +50,7 @@ Docs:
 | [COMMANDS.md](COMMANDS.md) | every command, key, limit and `system.cfg` setting |
 | [USERS.md](USERS.md) | signing up, logging in, guests, managing accounts |
 | [PLUGINS.md](PLUGINS.md) | writing and running plugins |
-| [BACKUP.md](BACKUP.md) | downloading and uploading config, accounts and screens as a `.zip` |
+| [BACKUP.md](BACKUP.md) | downloading and uploading config, accounts and screens as a `.zip`, and `BACKUP SD` / `RESTORE SD` to keep it on the SD card |
 | [SCREENS.md](SCREENS.md) | screen formats, naming rules and upload limits |
 | [CHAT.md](CHAT.md) | the chat room, room commands and messages |
 | [CLIENTS.md](CLIENTS.md) | every machine that can call in, and what it needs |
@@ -195,7 +195,7 @@ pio device monitor                               # then set Wi-Fi with Improv, s
 After that:
 
 - `pio run -t upload` for new firmware. Config, screens and logs stay as they are.
-- Config and screens change through the backup window ([BACKUP.md](BACKUP.md)), not by reflashing.
+- Config and screens change through the backup window ([BACKUP.md](BACKUP.md)), not by reflashing. With an SD card, `BACKUP SD` and `RESTORE SD` keep the same zip on the card from the sysop's prompt, and `nightly = yes` on `CONFIG sd` makes one every night.
 - `flashall` / `uploadfs` rewrite the `storage` partition with `data/`, which is the screens. The accounts and the config are on `userdata` and stay put, so reflashing a board is no longer a reset.
 
 Flash layout (4 MB): two 1.5 MB OTA app slots and three data partitions.
@@ -264,8 +264,11 @@ src/core/form.*           fill-in form widget (positional on ANSI/PETSCII, line 
 src/core/calllog.*        caller log ring file on the logs partition (LAST)
 src/core/clock.*          wall clock formatting (NTP)
 src/core/sysconfig.*      system.cfg loader, validator, password redaction, access matrix
-src/core/backup.*         backup window: button, HTTP in the BBS loop, Y/N approval
+src/core/backup.*         backup window: button, HTTP in the BBS loop, Y/N approval; the card jobs
 src/core/ziparc.*         backup zip export (stored) and import (stored/deflate, staged)
+src/core/bbs_backup.cpp   BACKUP SD, RESTORE SD and the nightly backup, as the sysop sees them
+src/core/cardnames.h      the backups' names on the card, and which nightly one to prune
+src/core/tzones.h         the timezones CONFIG board offers by name
 src/core/crc32.h          CRC-32 for the zip
 src/core/bbs.*            listener, sessions, flow, timers, paging
 src/core/bbs_shell.cpp    caller commands

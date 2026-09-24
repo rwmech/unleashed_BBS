@@ -13,7 +13,8 @@ board_name = My Board
 # Network name for DHCP and mDNS (name.local). a-z 0-9 -, applies at boot.
 hostname = unleashed
 
-# Timezone as a POSIX TZ string: STDoffsetDST,start,end
+# Timezone as a POSIX TZ string: STDoffsetDST,start,end. CONFIG board picks
+# one by name from a list of 34 zones and writes the string here for you.
 #   offset is hours WEST of UTC (so US zones are positive)
 #   M3.2.0 = March, 2nd week, Sunday; M11.1.0 = November, 1st week, Sunday
 # Examples:
@@ -146,6 +147,20 @@ rx = 16
 tx = 17
 baud = 115200
 format = 8N1
+
+# An SD card over SPI. On even without this section; a board with no card
+# carries on without one. The pins are the wiring page's.
+[plugin:sd]
+enabled = yes
+cs      = 5         ; GPIO. Move to 4 if the board will not boot with a card
+mosi    = 23
+clk     = 18
+miso    = 19
+screens = yes       ; screens on the card override the stock set, per file
+; A full backup into the card's backup folder every night at 03:00, named
+; nightly-YYYYMMDD.zip, the last 7 kept. It holds the Wi-Fi password, as
+; every full backup does. BACKUP SD makes one by hand (BACKUP.md).
+nightly = no
 
 # Two strings of WS2812B pixels for a board in a case: a drive light and a
 # strip of ten. Off until switched on and given pins; -1 is no pin. Pins

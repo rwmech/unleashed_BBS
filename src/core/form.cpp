@@ -37,6 +37,7 @@
 #include "fx.h"
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 
 namespace {
 
@@ -45,7 +46,28 @@ constexpr uint8_t kCancelW = 10;   // "[ Cancel ]"
 
 bool editable(const FormField& f) { return !(f.flags & FF_READONLY); }
 
+// choiceAt: the nth (1-based) of a '|' separated list, and its length, or
+// nullptr when the list is shorter
+const char* choiceAt(const char* list, unsigned n, size_t& len) {
+    unsigned i = 1;
+    for (const char* p = list; p; ++i) {
+        const char* bar = strchr(p, '|');
+        len = bar ? static_cast<size_t>(bar - p) : strlen(p);
+        if (i == n) return len ? p : nullptr;
+        p = bar ? bar + 1 : nullptr;
+    }
+    return nullptr;
+}
+
+bool allDigits(const char* s, uint8_t n) {
+    if (!n) return false;
+    for (uint8_t i = 0; i < n; ++i) if (s[i] < '0' || s[i] > '9') return false;
+    return true;
+}
+
 } // namespace
+
+Form::ChangeFn Form::onChange = nullptr;
 
 // ===========================================================================
 // Setup
@@ -318,6 +340,7 @@ Form::Res Form::keyPositional(int k, Term& t, Timeline& tl) {
         if (!cycle(f, k)) return Res::Editing;
         drawField(focus_, t, tl);
         placeCursor(t, tl);
+        changed(focus_, t, tl);
         return Res::Editing;
     }
 
@@ -328,6 +351,7 @@ Form::Res Form::keyPositional(int k, Term& t, Timeline& tl) {
         else return Res::Editing;
         drawField(focus_, t, tl);
         placeCursor(t, tl);
+        changed(focus_, t, tl);
         return Res::Editing;
     }
 
@@ -342,9 +366,12 @@ Form::Res Form::keyPositional(int k, Term& t, Timeline& tl) {
         len = 0;
         drawField(focus_, t, tl);
         placeCursor(t, tl);
-        if (k == KEY_BACKSPACE) return Res::Editing;
+        if (k == KEY_BACKSPACE) { changed(focus_, t, tl); return Res::Editing; }
     }
 
+    // In both of these the owner hears of the change only once the field is
+    // drawn: it may draw another field (redraw), which moves the cursor away
+    // and back, and the fast paths below write where the cursor is.
     if (k == KEY_BACKSPACE) {
         if (!len) return Res::Editing;
         f.buf[len - 1] = '\0';
@@ -362,6 +389,7 @@ Form::Res Form::keyPositional(int k, Term& t, Timeline& tl) {
             drawField(focus_, t, tl);
             placeCursor(t, tl);
         }
+        changed(focus_, t, tl);
         return Res::Editing;
     }
 
@@ -378,7 +406,19 @@ Form::Res Form::keyPositional(int k, Term& t, Timeline& tl) {
         drawField(focus_, t, tl);
         placeCursor(t, tl);
     }
+    changed(focus_, t, tl);
     return Res::Editing;
+}
+
+// ---------------------------------------------------------------------------
+// redraw: one field again, from its buffer, the cursor put back after
+// ---------------------------------------------------------------------------
+void Form::redraw(uint8_t i, Term& t, Timeline& tl) {
+    if (!positional(t) || !f_ || i >= n_) return;
+    t.cursor(tl, false);
+    drawField(i, t, tl);
+    t.cursor(tl, true);
+    placeCursor(t, tl);
 }
 
 // ---------------------------------------------------------------------------
@@ -519,6 +559,12 @@ void Form::linePrompt(Term& t, Timeline& tl) {
         return;
     }
 
+    // A cycle's choices, numbered, and a number picks one (1.1.0). A letter
+    // still picks as it always did, but a letter cannot reach every choice
+    // of a long list, the thirty-odd timezones least of all, and a caller on
+    // plain ASCII has no other way to see what the choices are.
+    if ((f.flags & FF_CYCLE) && f.choices) listChoices(f, t, tl);
+
     t.color(tl, Color::LightBlue);
     t.text(tl, f.label);
     if (f.buf[0]) {
@@ -534,6 +580,32 @@ void Form::linePrompt(Term& t, Timeline& tl) {
     t.color(tl, Color::White);
     inLen_ = 0;
     in_[0] = '\0';
+}
+
+// ---------------------------------------------------------------------------
+// listChoices: "1 all  2 users  3 staff ..." packed into 39 columns, the
+// form's card, or one to a line when they are long. Line mode only.
+// ---------------------------------------------------------------------------
+void Form::listChoices(const FormField& f, Term& t, Timeline& tl) {
+    constexpr uint8_t kWidth = 39;
+    uint8_t col = 0;
+    unsigned n = 0;
+    for (const char* p = f.choices; p; ) {
+        const char* bar = strchr(p, '|');
+        size_t len = bar ? static_cast<size_t>(bar - p) : strlen(p);
+        char num[8];
+        snprintf(num, sizeof(num), "%u ", ++n);
+        size_t need = strlen(num) + len;
+        if (col && col + 2 + need > kWidth) { t.nl(tl); col = 0; }
+        if (col) { t.text(tl, "  "); col = static_cast<uint8_t>(col + 2); }
+        t.color(tl, Color::Yellow);
+        t.text(tl, num);
+        t.color(tl, Color::Grey);
+        t.textN(tl, p, static_cast<uint8_t>(len < 255 ? len : 255));
+        col = static_cast<uint8_t>(col + need);
+        p = bar ? bar + 1 : nullptr;
+    }
+    t.nl(tl);
 }
 
 Form::Res Form::keyLine(int k, Term& t, Timeline& tl) {
@@ -557,16 +629,43 @@ Form::Res Form::keyLine(int k, Term& t, Timeline& tl) {
     // after that space, in the input's own buffer, so Backspace can put it
     // back: in_[1] onward is never typed into while a pick stands.
     const bool picked = (f.flags & FF_CYCLE) && inLen_ == 1 && in_[0] == ' ';
+    // A number typed at a cycle: digits, and Enter picks that many down the
+    // list shown above the prompt.
+    const bool number = (f.flags & FF_CYCLE) && !picked && allDigits(in_, inLen_);
+    const bool digit  = k >= '0' && k <= '9';
     if (k == KEY_ENTER) {
+        if (number) {
+            in_[inLen_] = '\0';
+            size_t len = 0;
+            const char* c = choiceAt(f.choices, static_cast<unsigned>(atoi(in_)), len);
+            if (!c) {                                    // no such number: ask again
+                t.nl(tl);
+                t.color(tl, Color::LightRed);
+                t.text(tl, "Not one of the choices");
+                wipe();
+                linePrompt(t, tl);
+                return Res::Editing;
+            }
+            if (len > f.cap) len = f.cap;
+            memcpy(f.buf, c, len);
+            f.buf[len] = '\0';
+            wipe();
+            changed(focus_, t, tl);                      // before the next field is asked
+            ++focus_;
+            linePrompt(t, tl);
+            return Res::Editing;
+        }
         // Enter on an empty line keeps the value, and so does Enter after a
         // pick. Copying the input over the value used to turn every pick made
         // in plain ASCII into that one space, which the form then saved.
-        if (inLen_ && !picked) {
+        bool typed = inLen_ && !picked;
+        if (typed) {
             in_[inLen_] = '\0';
             if (f.flags & FF_YESNO) strcpy(f.buf, (in_[0] == 'y' || in_[0] == 'Y') ? "Y" : "N");
             else { strncpy(f.buf, in_, f.cap); f.buf[f.cap] = '\0'; }
         }
         wipe();
+        if (typed) changed(focus_, t, tl);               // before the next field is asked
         ++focus_;
         linePrompt(t, tl);
         return Res::Editing;
@@ -578,16 +677,22 @@ Form::Res Form::keyLine(int k, Term& t, Timeline& tl) {
             strncpy(f.buf, in_ + 1, f.cap);
             f.buf[f.cap] = '\0';
             wipe();
+            changed(focus_, t, tl);
         } else if (inLen_) {
             --inLen_;
             t.eraseBack(tl, 1);
         }
         return Res::Editing;
     }
+    if (f.flags & FF_CYCLE) {
+        if (picked && digit) return Res::Editing;        // a pick, then a number: one or the other
+        if (inLen_ && number && !digit) return Res::Editing;   // a number, then a letter
+        if (number && inLen_ >= 3) return Res::Editing;
+    }
     // Line mode: a letter picks, and another letter picks again in place of
     // the word shown, so the same letter twice steps through its matches as
-    // it does on a positional form.
-    if ((f.flags & FF_CYCLE) && (inLen_ == 0 || picked)) {
+    // it does on a positional form. A digit is a number, not a pick.
+    if ((f.flags & FF_CYCLE) && (inLen_ == 0 || picked) && !digit) {
         size_t shown = picked ? strlen(f.buf) : 0;
         if (!picked) snprintf(in_ + 1, sizeof(in_) - 1, "%s", f.buf);   // what Backspace restores
         if (cycle(f, k)) {
@@ -595,6 +700,7 @@ Form::Res Form::keyLine(int k, Term& t, Timeline& tl) {
             t.text(tl, f.buf);
             in_[0] = ' ';
             inLen_ = 1;
+            changed(focus_, t, tl);
             return Res::Editing;
         }
         if (picked) return Res::Editing;                 // after a pick: a pick, Backspace or Enter

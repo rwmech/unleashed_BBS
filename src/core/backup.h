@@ -22,6 +22,15 @@
  *                  Everything the sysop should see is queued as a Note; the BBS delivers
  *                  notes and runs the Y/N prompt.
  *
+ *               The SD card (1.1.0). BACKUP SD writes the same zip to the
+ *                  card, RESTORE SD takes one back through the same checks,
+ *                  and the nightly backup is the first of those on a timer.
+ *                  They share this class's zip storage with the window, so
+ *                  one of them runs at a time (busy()), and each is done a
+ *                  step per loop pass (cardStep) so a zip going to or coming
+ *                  off the card never holds every caller up. The Bbs draws
+ *                  them; this only does the work.
+ *
  * Libraries:    BSD sockets (lwIP on ESP32)
  * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
  * See also:     BACKUP.md
@@ -76,10 +85,66 @@ public:
     bool        awaitingApproval() const { return st_ == St::Approve; }
     const char* approvalSummary() const { return summary_; }
     const char* approvalDetail() const  { return detail_; }
+    // decide: Y starts putting the upload live, a file a pass (service),
+    // and the reply goes to curl once it is all in; N throws it away.
     void        decide(bool accept, const char* why);
 
+    // takeRestart: a restore put system.cfg or an information page live, so
+    // the plugins should start again on it. True once per such restore.
+    bool takeRestart() { bool r = restart_; restart_ = false; return r; }
+
+    // -- the SD card (1.1.0) ---------------------------------------------------
+    //
+    // Job: what the card is doing. Write is BACKUP SD or the nightly one,
+    // Check is RESTORE SD unpacking and checking, Ask is waiting for the
+    // sysop's Y, Apply is putting it live.
+    enum class Job : uint8_t { None, Write, Check, Ask, Apply };
+    Job  job() const { return job_; }
+
+    // busy: the zip storage is somebody's: a window client, an upload the
+    // window is still putting live, or a card job.
+    bool busy() const { return job_ != Job::None || cfd_ >= 0 || st_ == St::Apply; }
+
+    // cardBackup: start writing dir/name, through name.tmp so a card pulled
+    // half way leaves nothing a list would offer. needKB and freeKB are set
+    // when it would not fit.
+    enum class Start : uint8_t { Ok, Busy, Full, Failed };
+    Start cardBackup(const char* dir, const char* name, bool screensOnly,
+                     uint32_t& needKB, uint32_t& freeKB);
+
+    // cardRestore: open a zip on the card and start checking it, exactly as
+    // an upload is checked. screensDir: SCREENS only, where they go. False
+    // with the importer's reason in err, and cardFail() saying which kind.
+    bool cardRestore(const char* zipPath, bool screensOnly, const char* screensDir,
+                     char* err, size_t errLen);
+    ziparc::ZipImport::Fail cardFail() { return importer().failed(); }
+    uint32_t cardNeedKB() { return importer().needKB(); }    // Fail::NoRoom
+    uint32_t cardFreeKB() { return importer().freeKB(); }
+
+    // cardStep: one step of whatever job is running. Returns how many files
+    // it finished, for the progress dots.
+    uint8_t cardStep();
+
+    // cardAnswer: the sysop's answer while job() is Ask
+    void cardAnswer(bool yes);
+
+    // cardDrop: give up the job (the sysop left). A write takes its half
+    // file with it and a check its staging; a restore being applied is not
+    // stopped half way, and finishes on its own.
+    void cardDrop();
+
+    // What the last job did. cardOk: a write that finished whole.
+    bool     cardOk()      const { return jobOk_; }
+    uint32_t cardBytes()   const { return jobBytes_; }
+    uint8_t  cardFiles()   const { return jobFiles_; }
+    const ziparc::ImportReport& cardReport() { return importer().report(); }
+    const ziparc::ApplyReport&  cardApplied() { return importer().applied(); }
+
 private:
-    enum class St : uint8_t { Idle, Headers, Body, Extract, Approve, SendZip, Reply, Linger };
+    enum class St : uint8_t { Idle, Headers, Body, Extract, Approve, Apply, SendZip, Reply, Linger };
+    void openUpload(const char* path);
+    void finishApply();
+    void finishWrite(bool ok);
 
     void acceptClient(uint32_t now);
     void readClient(uint32_t now);
@@ -138,4 +203,23 @@ private:
     Note     notes_[6];
     uint8_t  noteHead_  = 0;
     uint8_t  noteCount_ = 0;
+
+    bool     restart_   = false;     // see takeRestart
+
+    // The card job. The zip goes through out_ above, which is free whenever
+    // a job can run: a job and a window client are never live together.
+    Job      job_      = Job::None;
+    FILE*    jobOut_   = nullptr;    // Write: <dir>/<name>.tmp
+    char     jobPath_[112] = {};     // Write: the finished name, <dir>/<name>
+    bool     jobScreens_ = false;
+    bool     jobOk_    = false;
+    uint32_t jobBytes_ = 0;
+    uint8_t  jobFiles_ = 0;
 };
+
+// sdNightly: whether the sd plugin is running with its "nightly" setting on
+// (1.1.0). Defined by the plugin, asked by the core, the way sdScreensDir is:
+// the core runs the backup without knowing plugins exist. True with no card
+// in, deliberately: a nightly backup that could not happen for want of one
+// is something the sysop is told about.
+bool sdNightly();

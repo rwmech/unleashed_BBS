@@ -343,15 +343,21 @@ size_t serialWrite(const uint8_t* data, size_t n) {
 
 uint32_t serialFramingErrors() { return 0; }
 
+// The partitions' sizes are the board's (partitions.csv), so a restore's room
+// check does the same arithmetic here as there. They were 768 KB and 128 KB,
+// the sizes before 0.17.0 moved the accounts to a partition of their own.
 bool fsInfo(uint32_t& total, uint32_t& used) {
-    total = 768u * 1024u;                            // the board's storage partition
-    used  = dirBytes(g_fsBase);
+    total = 256u * 1024u;                            // the board's storage partition
+    // The host keeps the user and logs "partitions" inside the data folder;
+    // on the board they are partitions of their own and not in this figure.
+    uint32_t all = dirBytes(g_fsBase), other = dirBytes(g_userBase) + dirBytes(g_logsBase);
+    used = all > other ? all - other : 0;
     return true;
 }
 // userInfo: the host has no partitions, so report the same notional size the
 // board gives its user partition, with what the directory actually holds.
 bool userInfo(uint32_t& total, uint32_t& used) {
-    total = 128u * 1024u;
+    total = 608u * 1024u;
     used  = dirBytes(g_userBase);
     return true;
 }

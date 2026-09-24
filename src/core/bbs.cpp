@@ -220,7 +220,7 @@ bool Bbs::registerCommands(const Command* list, uint8_t count, uint8_t plugin) {
 // The caller is put back at the prompt rather than left staring at a half
 // drawn screen with no way on.
 // ---------------------------------------------------------------------------
-void Bbs::closeCardScreens() {
+void Bbs::closeCardScreens(const char* why) {
     for (uint8_t i = 0; i < kSessions; ++i) {
         Session& s = *all_[i];
         if (s.st == SState::Free || !s.scr.onCard()) continue;
@@ -231,7 +231,7 @@ void Bbs::closeCardScreens() {
             s.st = SState::Shell;
         s.term.color(s.tl, Color::Grey);
         s.term.nl(s.tl);
-        s.term.text(s.tl, "Screen ended: the card was removed.");
+        s.term.text(s.tl, why ? why : "Screen ended: the card was removed.");
         if (s.loggedIn) prompt(s);
     }
 }
@@ -412,6 +412,7 @@ void Bbs::tick() {
 
     backup_.service(rfds, wfds, now);
     serviceBackup(now);
+    serviceCard(now);                 // BACKUP SD, RESTORE SD, the nightly one (1.1.0)
     stackWatch("backup", nullptr);
     usBack = plat::micros() - mark; mark += usBack;
 
@@ -2942,6 +2943,10 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
 
         case SState::Snoop:
             if (k == 'q' || k == 'Q' || k == KEY_ESC || k == KEY_BREAK) stopSnoop(s, nullptr);
+            return;
+
+        case SState::CardJob:
+            cardKey(s, k);
             return;
 
         case SState::Approve:
