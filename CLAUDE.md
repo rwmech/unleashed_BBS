@@ -568,6 +568,22 @@ this tree.
   the glass. The mail envelope reads chat's unread index for the first
   `]` account seen after boot until the DASH lane's `Bbs::sysopMail()`
   replaces it at merge (one line in panel.cpp).
+- **Silent mode, CONFIG board** (Rob, 2026-09-24, queued for the next
+  firmware batch): "all LED's are OFF and do not flash ... Silent as in no
+  lights anywhere". One board-level yes/no that overrides everything that
+  lights: the activity LED, both lights outputs (drive light and strip),
+  the camera's "Use flash LED?", and any board LED a profile drives. It is
+  a setting, not a mode anything else has to remember: each light's own
+  settings are kept and come back when silent is turned off. A board's
+  power LED is wired straight to 3V3 on the WROOM dev board, the Waveshare
+  S3 and the Freenove, so firmware cannot switch it off; the docs say so
+  and that a dab of tape or lifting the LED is the only way.
+  Rob settled both open points: silent blanks the S3's display backlight
+  too (the panel keeps its state and redraws when silent ends), and CONFIG
+  board also gets optional **silent hours** (a start and end time, local,
+  by the board's timezone; blank means none) alongside the switch. Needs a
+  valid clock: with no NTP time the hours do nothing and only the switch
+  applies.
 - **Missed sysop pages go to one account** (Rob, 2026-09-24, approved).
   Not to every account ever marked sysop: marks are never removed, and
   each copy takes one of the 64 board-wide mail slots. CONFIG board gains
@@ -2611,6 +2627,17 @@ specifies the layout before any of it is written**, and the wide-terminal
   The real limit is not RAM, it is the radio. Ten concurrent telnet sessions over Wi-Fi is comfortable and fifty is a different engineering problem; 20 to 30 on a WROVER looks right and anything past that wants measuring before it is promised.
 - XMODEM / YMODEM and the SD card file plugin.
 - GPIO plugin with a named point table and a dashboard (needs Rob's pin list).
+  **Standard sensors belong in it** (Rob, 2026-09-24: "some standard sensors
+  like temp, etc. save this for that implementation"). Not built now; when
+  the GPIO plugin is designed, it ships drivers for the common hobby parts
+  so a sysop names a point and picks its type rather than writing code:
+  temperature and humidity (DHT22, AHT20/AHT21, BME280 which adds pressure),
+  1-Wire temperature (DS18B20, several on one pin), light (a photoresistor
+  on an ADC pin, BH1750), motion (PIR), and switches (reed, button). Each
+  one a point in the table, read on a schedule, shown on the dashboard and
+  available to screens and the S3 panel. Measure each driver's flash before
+  promising it on the WROOM, and prefer our own small driver over a library
+  whose licence or size does not fit.
 - OTA updates, and browser flashing with ESP Web Tools.
 - **Watchdog.** Keep. The ESP32's task watchdog reboots the chip if the BBS loop ever wedges, instead of leaving a board that looks alive and answers nothing until somebody notices and pulls the plug. The machinery to explain it afterwards already exists: `reboots.log` records why the board started and the next staff member to log in is told. The cheapest of the three and the most valuable for a board left running unattended.
 - **Maintenance window, not maintenance mode** (Rob, and a better design than what it replaces). Maintenance mode was a board feature for a problem the board does not have: if a sysop is working on it, it is off. The actual pain is that the directory forgets a board while it is down. So the board declares a window before the sysop pulls the plug, and the directory keeps the listing up and marked through it rather than letting it go quiet, until heartbeats come back on their own.
