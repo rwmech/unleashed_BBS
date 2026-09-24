@@ -169,7 +169,7 @@ Say it plainly: **this is not private messaging.** The messages are stored as pl
 
 ## Settings
 
-Everything is in the `[plugin:chat]` section of `system.cfg`, and the sysop can edit it live with `CONFIG chat`.
+Everything is in the `[plugin:chat]` section of `system.cfg`, and the sysop can edit it live with `CONFIG chat`. Every setting below is on that page with the value the room is running with, whether or not the file has a line for it (1.1.0); the eleven colours are on a page of their own behind the Colours button, each stepped through the colour names with Space or picked by its first letter.
 
 ```
 [plugin:chat]

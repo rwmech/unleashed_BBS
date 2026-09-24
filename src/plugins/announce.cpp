@@ -1079,7 +1079,8 @@ void stop() {
 // so a board that had never written "description" had no way to set one
 // short of editing the file by hand.
 //
-// Labels are nine characters, the width of the form's left column.
+// Labels are nine characters, the width of the form's left column at 40,
+// and each has a twenty character one for 80 (1.1.0).
 // ---------------------------------------------------------------------------
 const PluginSetting kSettings[] = {
     // Shown, not editable. The board's name lives in board_name on the core
@@ -1087,37 +1088,43 @@ const PluginSetting kSettings[] = {
     // this is the value that gets published. Showing it here answers "what
     // will the directory call me" without creating a second copy that can
     // disagree with the first.
-    { "name",           "Board",     PS_INFO,  0, 0,     kNameMax },
-    { "owner",          "Sysop",     PS_TEXT,  0, 0,     kNameMax },
-    { "description",    "About",     PS_TEXT,  0, 0,     kDescMax },
+    { "name",           "Board",     PS_INFO,  0, 0,     kNameMax,    nullptr, nullptr, "Board name" },
+    { "owner",          "Sysop",     PS_TEXT,  0, 0,     kNameMax,    nullptr, nullptr, "Sysop name" },
+    { "description",    "About",     PS_TEXT,  0, 0,     kDescMax,    nullptr, nullptr, "Description" },
     // Empty means "advertise whatever address the directory saw". A board on
     // a name of its own puts it here: quantum.dnsfor.me, say.
-    { "host",           "DNS name",  PS_TEXT,  0, 0,     kUrlMax - 1 },
+    { "host",           "DNS name",  PS_TEXT,  0, 0,     kUrlMax - 1, nullptr, nullptr, "Public DNS name" },
     // The router's side of a port forward. "Outside port" is twelve
     // characters against a nine character label column, so the note carries
-    // the word. Empty publishes the board's own port, which is right for
-    // every router that forwards the same number it receives.
+    // the word at 40; at 80 the label says it. Empty publishes the board's
+    // own port, which is right for every router that forwards the same
+    // number it receives.
     { "public_port",    "Outside",   PS_OPTNUM, 1, 65535, 5,
-      "What callers dial through your router." },
+      "What callers dial through your router.", nullptr, "Outside port",
+      "The router's outside port, when it differs. Blank publishes the board's own." },
     // Comma separated, so one board can be listed in several directories.
-    { "servers",        "Directory", PS_TEXT,  0, 0,     90 },
-    { "interval",       "Every min", PS_NUM,   1, 1440,  4 },
+    { "servers",        "Directory", PS_TEXT,  0, 0,     90,          nullptr, nullptr, "Directory URLs" },
+    { "interval",       "Every min", PS_NUM,   1, 1440,  4,           nullptr, nullptr, "Heartbeat minutes" },
     // A caller arriving makes the directory's count wrong at once, so the
     // board pushes an update. This is the shortest gap between pushes;
     // 0 turns them off and leaves only the timed heartbeat.
-    { "nudge_seconds",  "Push secs", PS_NUM,   0, 3600,  4 },
-    { "share_activity", "Activity",  PS_YESNO, 0, 0,     4 },
+    { "nudge_seconds",  "Push secs", PS_NUM,   0, 3600,  4,           nullptr, nullptr, "Push gap, seconds" },
+    { "share_activity", "Activity",  PS_YESNO, 0, 0,     4,           nullptr, nullptr, "Share activity" },
     // The sysop's badges (1.0.1): comma lists of slugs copied from the
     // directory's /badges page. Tidied on the way out, see slugList.
-    { "support",        "Support",   PS_TEXT,  0, 0,     kListMax },
-    { "interests",      "Interests", PS_TEXT,  0, 0,     kListMax },
+    { "support",        "Support",   PS_TEXT,  0, 0,     kListMax,    nullptr, nullptr, "Support badges" },
+    { "interests",      "Interests", PS_TEXT,  0, 0,     kListMax,    nullptr, nullptr, "Interest badges" },
     // Issued by the directory and kept so a listing survives a reflash.
-    { "token",          "Token",     PS_TEXT,  0, 0,     kTokenMax },
+    { "token",          "Token",     PS_TEXT,  0, 0,     kTokenMax,   nullptr, nullptr, "Directory token" },
 };
 // The rows the core puts first (kCoreRows: enabled, read, write, admin) and
 // these fill a CONFIG page: one more and CONFIG drops the last silently.
 static_assert(kCoreRows + sizeof(kSettings) / sizeof(kSettings[0]) <= Form::kMaxFields,
               "announce's CONFIG page is full");
+// And CONFIG has to hold the longest value this plugin takes, or saving the
+// row cuts it: it held 95 of the description's 120 until 1.1.0.
+static_assert(kDescMax <= kSettingMax && kListMax <= kSettingMax && kUrlMax - 1 <= kSettingMax,
+              "a setting is longer than CONFIG can hold: raise kSettingMax");
 
 // ---------------------------------------------------------------------------
 // setting: what this plugin is running with, for a key system.cfg has not

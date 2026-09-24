@@ -843,20 +843,37 @@ const Command kCommands[] = {
 // ---------------------------------------------------------------------------
 // CONFIG. Labels are the form's nine columns and the notes its 38; the words
 // are the copy's (internal/copy-1.1.0-2026-09-23.md, section 4) where it had
-// them. "Pixels" is a button to a page of its own, which lists led1 to led10
-// as buttons in turn, each opening its Effect and Colour: ten more rows than
-// this page could hold.
+// them. At 80 columns the labels are twenty and some notes 78, from
+// internal/tty-ux-forms-80-2026-09-24.md (1.1.0). "Pixels" is a button to a
+// page of its own, which lists led1 to led10 as buttons in turn, each opening
+// its Effect and Colour: ten more rows than this page could hold.
 // ---------------------------------------------------------------------------
 constexpr PluginSetting kSettings[] = {
-    { "drive_pin",    "Drive pin", PS_PIN,  -1, 33, 2, "The disk light: one pixel. -1 is off." },
+    { "drive_pin",    "Drive pin", PS_PIN,  -1, 33, 2, "The disk light: one pixel. -1 is off.", nullptr,
+      "Drive light GPIO",
+      "The disk light, one pixel on this GPIO. -1 is off. 330 ohm in series helps." },
     { "drive_fx",     "Drive fx",  PS_CYCLE, 0,  0, 7, "pc: a flicker on every disk access.",
-      lights::kDriveFx },
-    { "drive_bright", "Drive %",   PS_NUM,   1, kPctMax, 2, "1 to 30 percent; 10 as shipped." },
-    { "strip_pin",    "Strip pin", PS_PIN,  -1, 33, 2, "10 pixels need their own 5 V supply." },
+      lights::kDriveFx, "Drive light effect",
+      "pc flickers per access, 1541 holds solid, disk2 lingers, breathe glows, off." },
+    // 1 to 100 (1.1.0; Rob: "remove the limit over 30% on light brightness
+    // and warn the user are you really sure before applying over 30% but
+    // allow it"). CONFIG asks before it saves anything past 30.
+    { "drive_bright", "Drive %",   PS_NUM,   1, 100, 3, "1 to 100 percent; over 30 asks first.", nullptr,
+      "Drive brightness %",
+      "1 to 100 percent, 10 as shipped. Over 30 asks first: a bright pixel runs hot.",
+      30, "a bright pixel runs hot." },
+    { "strip_pin",    "Strip pin", PS_PIN,  -1, 33, 2, "10 pixels need their own 5 V supply.", nullptr,
+      "Strip GPIO",
+      "Ten pixels on this GPIO. Give them their own 5 V feed: 600 mA at full white." },
     { "strip_fx",     "Strip",     PS_CYCLE, 0,  0, 7, "nodes: one pixel for each caller line.",
-      lights::kStripFx },
-    { "strip_bright", "Strip %",   PS_NUM,   1, kPctMax, 2, "White at 10 is 60 mA; at 30, 180 mA." },
-    { "led",          "Pixels",    PS_PAGE,  0,  0, 0, "Manual: each pixel its own effect." },
+      lights::kStripFx, "Strip effect",
+      "nodes: one pixel per caller line, in the caller's rank colour. manual: Pixels." },
+    { "strip_bright", "Strip %",   PS_NUM,   1, 100, 3, "White at 10 is 60 mA; at 30, 180 mA.", nullptr,
+      "Strip brightness %",
+      "Ten pixels in white: 60 mA at 10, 180 mA at 30, 600 mA at 100. Over 30 asks.",
+      30, "ten pixels can draw more than USB gives." },
+    { "led",          "Pixels",    PS_PAGE,  0,  0, 0, "Manual: each pixel its own effect.", nullptr,
+      "Pixels, by hand" },
     { "led1",  "Pixel 1",  PS_TEXT, 0, 0, 20 },
     { "led2",  "Pixel 2",  PS_TEXT, 0, 0, 20 },
     { "led3",  "Pixel 3",  PS_TEXT, 0, 0, 20 },

@@ -2265,14 +2265,15 @@ void hookRestore(Session& s) {
 
 const PluginSetting kSettings[] = {
     // path + name + four level words, each at most 6, with " | " between.
-    { "area1", "Area 1", PS_TEXT, 0, 0, kAreaValMax },
-    { "area2", "Area 2", PS_TEXT, 0, 0, kAreaValMax },
-    { "area3", "Area 3", PS_TEXT, 0, 0, kAreaValMax },
-    { "area4", "Area 4", PS_TEXT, 0, 0, kAreaValMax },
-    { "area5", "Area 5", PS_TEXT, 0, 0, kAreaValMax },
-    { "area6", "Area 6", PS_TEXT, 0, 0, kAreaValMax },
-    { "area7", "Area 7", PS_TEXT, 0, 0, kAreaValMax },
-    { "area8", "Area 8", PS_TEXT, 0, 0, kAreaValMax },
+    // The long labels are for 80 columns (1.1.0).
+    { "area1", "Area 1", PS_TEXT, 0, 0, kAreaValMax, nullptr, nullptr, "File area 1" },
+    { "area2", "Area 2", PS_TEXT, 0, 0, kAreaValMax, nullptr, nullptr, "File area 2" },
+    { "area3", "Area 3", PS_TEXT, 0, 0, kAreaValMax, nullptr, nullptr, "File area 3" },
+    { "area4", "Area 4", PS_TEXT, 0, 0, kAreaValMax, nullptr, nullptr, "File area 4" },
+    { "area5", "Area 5", PS_TEXT, 0, 0, kAreaValMax, nullptr, nullptr, "File area 5" },
+    { "area6", "Area 6", PS_TEXT, 0, 0, kAreaValMax, nullptr, nullptr, "File area 6" },
+    { "area7", "Area 7", PS_TEXT, 0, 0, kAreaValMax, nullptr, nullptr, "File area 7" },
+    { "area8", "Area 8", PS_TEXT, 0, 0, kAreaValMax, nullptr, nullptr, "File area 8" },
 };
 
 void setting(const char* key, char* out, size_t n) {

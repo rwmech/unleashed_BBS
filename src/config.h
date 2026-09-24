@@ -183,7 +183,7 @@
 // to do in the same build as a partition move. Raising this later costs no
 // erase and no reflash: the space is already allocated.
 #define BBS_MAX_USERS       250      // system.cfg max_users; see above
-#define BBS_PROFILE_MAX     148      // 4 rows of 37 columns on a C64
+#define BBS_PROFILE_MAX     148      // 4 x 37 at 40 columns, 2 x 74 at 80
 #define BBS_PASS_MIN        4
 #define BBS_PASS_MAX        32
 #define BBS_PASS_ROUNDS     1000     // salted SHA-256 repeated

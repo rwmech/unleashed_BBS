@@ -47,14 +47,17 @@
 
 const UserField kUserFields[] = {
     { "name",    "Name",    offsetof(UserRec, name),    sizeof(UserRec::name),    UF_REQUIRED },
-    { "email",   "Email",   offsetof(UserRec, email),   sizeof(UserRec::email),   UF_REQUIRED | UF_PRIVATE | UF_EMAIL },
+    { "email",   "Email",   offsetof(UserRec, email),   sizeof(UserRec::email),   UF_REQUIRED | UF_PRIVATE | UF_EMAIL,
+      "Email address" },
     // "From", not "Address" (Rob). A town and a country, not a postal
     // address: nobody should be typing their street into a board that says
     // in its own sign-up screen that nothing here is encrypted, and the
     // field has been asking for the wrong thing since it existed. The
     // stored key stays "address" so every users.txt already written keeps
     // working; only what a caller is asked for changes.
-    { "address", "From",    offsetof(UserRec, address), sizeof(UserRec::address), UF_PRIVATE },
+    // At 80 columns the label has room to say which of the two it means.
+    { "address", "From",    offsetof(UserRec, address), sizeof(UserRec::address), UF_PRIVATE,
+      "From (town, country)" },
     { "phone",   "Phone",   offsetof(UserRec, phone),   sizeof(UserRec::phone),   UF_PRIVATE },
     { "profile", "Profile", offsetof(UserRec, profile), sizeof(UserRec::profile), UF_TEXTAREA },
 };

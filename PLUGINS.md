@@ -127,6 +127,42 @@ The seventh field, `note`, is optional and appended (1.1.0): the line CONFIG
 shows on the form's status line while that row has the focus, 38 characters
 at most. Leave it out and the row shows the usual movement hint.
 
+The ninth and tenth, `wide` and `wideNote`, are the label and the note at 80
+columns (1.1.0): 20 and 78 characters. A form is the 40 column card on a
+terminal under 80 and a wider layout at 80 and up, plain ASCII included, and
+each row picks its words for the width. Either may be left null, and the row
+then shows its short one, padded. The fields are filled positionally and C++17
+has no designated initialisers, so a row that sets `wide` spells the two
+before it:
+
+```c
+{ "cs", "CS pin", PS_PIN, 0, 33, 2, nullptr, nullptr, "Chip select GPIO" },
+```
+
+CONFIG holds a value of up to `kSettingMax` characters (120, `plugin.h`); a
+`cap` above that is cut to it on the form. A plugin whose values can be longer
+should `static_assert` against it, as announce does for its description.
+
+The eleventh and twelfth, `warnAbove` and `warn` (1.1.0), are for a `PS_NUM`
+that CONFIG takes up to `hi` but asks about past a level. Saving a changed
+value above `warnAbove` puts one question to the sysop for the whole page,
+naming every such row with the first one's `warn` after it:
+`Strip % over 30: ten pixels can draw more than USB gives. Save anyway? (y/N)`
+at 80 columns, the names alone inside 38 at 40. Y saves; anything else leaves
+the page open with nothing saved, and plain ASCII asks the row again. `warn`
+null, as every row but two ships, means the row never asks. The lights'
+brightness rows are the example:
+
+```c
+{ "strip_bright", "Strip %", PS_NUM, 1, 100, 3, "White at 10 is 60 mA; at 30, 180 mA.", nullptr,
+  "Strip brightness %", "Ten pixels in white: 60 mA at 10, 180 mA at 30, 600 mA at 100. Over 30 asks.",
+  30, "ten pixels can draw more than USB gives." },
+```
+
+The question comes from `Form::ask`, which any form owner can use: it asks on
+the status line (or on a line of its own in plain ASCII) and the next Save is
+the answer, with `Form::takeConfirmed()` true once.
+
 `kind` is `PS_TEXT`, `PS_NUM`, `PS_YESNO`, `PS_INFO`, `PS_PIN` or `PS_OPTNUM`.
 `PS_OPTNUM` is a `PS_NUM` that may also be saved empty, written as an empty
 value, which the plugin reads as its own default; `setting()` should return
@@ -156,17 +192,35 @@ Three more, from the lights plugin (1.1.0):
   -1 CONFIG had written. The range says which, not the kind.
 - `CONFIG` refuses two `PS_PIN` rows on one page holding the same pin, on the
   later row: "That is the drive pin. Pick another."
+- And a pin anything else on the board holds (1.1.0): BOOT (GPIO 0), the
+  console's pins, the core's LED and backup button, and every `PS_PIN` row of
+  every other plugin compiled in that is switched on, read from the file or,
+  where it has no line, from that plugin's `setting()`. Declaring a pin as
+  `PS_PIN` is all a plugin does to be covered, in both directions: its pins
+  are checked, and nothing else may take them while it is on. So give
+  `setting()` an answer for every pin, or a pin left at its default is one
+  CONFIG cannot see.
 - `PS_CYCLE` steps through `choices`, the eighth field, bar separated, the way
   a level does: Space for the next, a letter for the first word starting with
   it, the same letter again for the next such word. CONFIG refuses a value
   that is not one of the words, since plain ASCII line mode types into the
   same buffer.
 - `PS_PAGE` is a button to a page of its own, holding every setting whose key
-  is this one's followed by a number (`led` holds `led1` to `led10`); those
-  rows are left off the plugin's main page. For a plugin with more rows than a
+  is this one's followed by a number or an underscore (`led` holds `led1` to
+  `led10`, chat's `color` holds `color_node` to `color_action`); those rows
+  are left off the plugin's main page. For a plugin with more rows than a
   form holds: sixteen, less the four the core puts first. The button's text is
   the plugin's `setting()` for the key. Escape on the page, or saving it, comes
   back to the main page, and the page will not open over unsaved changes.
+- `PS_GROW` is a `PS_PAGE` whose rows are slots, used or not (1.1.0). While
+  they fit on the main page they are shown there instead of the button: the
+  rows that have a value, in the file or from `setting()`, and the first that
+  has none, so the page grows a row at a time. The forums' sixteen topics
+  work this way, twelve in place and then the Topics button. It is its own
+  kind because an empty row means "unused" only for a slot: chat's colours
+  are a plain `PS_PAGE`, since an empty colour means the default and showing
+  only the first empty one would hide the rest. One `PS_GROW` a plugin: a
+  second would need `groupInline` to count its rows.
 - A row on a `PS_PAGE` page can itself be a packed composite with a sub-page
   (the lights' pixels are `kLedParts` in `bbs_sysop.cpp`: Effect and Colour,
   both cycles). A composite part may be `CK_CYCLE` with a `choices` list.

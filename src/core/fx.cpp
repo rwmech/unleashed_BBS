@@ -145,9 +145,13 @@ void scramble(Term& t, Timeline& tl, const char* s, uint8_t rounds, uint16_t ms)
 
 // ---------------------------------------------------------------------------
 // blink: flash text in reverse video (PETSCII has no blink attribute)
+//
+// Up to 78 characters, the status line of a form at 80 columns (1.1.0): a
+// form's refusal blinks there, and at 60 the end of a long one was cut off.
+// fitSteps still shortens the flashing to what the timeline has room for.
 // ---------------------------------------------------------------------------
 void blink(Term& t, Timeline& tl, const char* s, uint8_t times, uint16_t ms) {
-    uint8_t len = static_cast<uint8_t>(strnlen(s, 60));
+    uint8_t len = static_cast<uint8_t>(strnlen(s, 78));
     uint16_t n  = fitSteps(tl, static_cast<uint16_t>(times) * 2, len * 2 + 12);
     for (uint16_t i = 0; i + 1 < n; i += 2) {
         t.reverse(tl, true);

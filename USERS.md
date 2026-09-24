@@ -118,7 +118,14 @@ When `max_users` is reached, sign-ups are refused with `Sign-ups are closed: the
 
 ### Form keys
 
-On ANSI and PETSCII terminals the form is a full screen with boxes:
+On ANSI and PETSCII terminals the form is a full screen with boxes. It has
+two layouts, chosen by the width of the terminal (1.1.0). Under 80 columns,
+and when the terminal never said how wide it is, it is the 40 column card a
+C64 shows: short labels and a 27 column box. At 80 columns and wider (a
+PC terminal, a C128, plain ASCII) the labels are longer (`Email address`,
+`From (town, country)`, `Password again`) and the box is 56 columns, so a
+long value shows whole. The Profile box holds the same 148 characters either
+way: four rows of 37 at 40, two of 74 at 80.
 
 | Key | Effect |
 |---|---|
@@ -130,7 +137,7 @@ On ANSI and PETSCII terminals the form is a full screen with boxes:
 | ESC or Ctrl-C (C64: left-arrow, RUN/STOP) | cancel, nothing is saved |
 | Y / N / Space | set a yes/no field (Locked) |
 
-Plain ASCII terminals get one line per field instead. Enter on an empty line keeps the value shown in brackets, and the last question is `Save (Y/n)?`.
+Plain ASCII terminals get one line per field instead, with the 80 column labels. Enter on an empty line keeps the value shown in brackets (up to 60 characters of it), and the last question is `Save (Y/n)?`. A password that is already set shows as `[set, - clears]`: typing a single `-` empties it, which is how an open Wi-Fi network is chosen in `CONFIG network` (1.1.0).
 
 If a value is wrong, the form beeps, names the problem and puts you back on that field.
 
@@ -243,7 +250,7 @@ These work on every terminal.
 | Command | What it does |
 |---|---|
 | `USER ADD` | Add-account form: handle, password, the account fields, Start, Level, Locked. |
-| `USER EDIT handle` | Edit-account form. Leave `New pass` empty to keep the password. |
+| `USER EDIT handle` | Edit-account form. Leave `New pass` (`New password` at 80 columns) empty to keep the password. |
 | `USER DEL handle` | Retire the account after `Retire handle? They cannot log in and the handle stays reserved (y/N)?`. `N`, Enter or ESC keeps it. |
 
 - Staff can rename an account in the edit form. A caller who is online under the old handle keeps the session under the new one.

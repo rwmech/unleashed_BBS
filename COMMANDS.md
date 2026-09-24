@@ -108,7 +108,7 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | `ABOUT` | | What this BBS is, its version and its license. Plays `screens/about.*`, so a sysop can rewrite it. |
 | `CHAT` | | Join the chat room (the `chat` plugin). Everything you type goes to everyone in the room, tagged DDial style: `#2:Daytona) hi`. The bracket is the rank: `)` a caller, `*` a guest, `>` a co-sysop, `]` the sysop. There is no prompt character: the cursor waits at the start of the line. While you are typing, nothing from the room lands on your screen; the lines wait and print in order when you press Enter. The room buffers 48 lines, and one caller may send 80 lines a minute (`rate =`), with 8 in a burst; going over tells that caller alone, and the room never sees it. `/s` lists who is there, `/?` lists every room command, `/q` or ESC leaves, and `/q+` leaves and logs off. Private lines, away notes, squelch, kicks, the vote to kick and messages are all in [CHAT.md](CHAT.md). |
 | `SERIAL` | | Watch the serial device (the `serial` plugin). `T` takes the keyboard if you are allowed and it is free, ESC leaves. `SERIAL STATUS` prints the port, `SERIAL SET 9600 8N1` changes the line. |
-| `WHOIS [handle]` | | An account: name, member since, last call, calls, profile. Email, address and phone only on your own account (or with `USERS`). |
+| `WHOIS [handle]` | | An account: name, member since, last call, calls, profile. Email, address and phone only on your own account (or with `USERS`). Laid out like the forms: 9 column labels under a 39 column rule at 40 columns, the longer labels under a 79 column rule at 80 (1.1.0). |
 | `PRIVACY` | | What the board knows about you: that telnet is not encrypted, how your password is stored, what the sysop can see, and the one rule that matters. Plays `screens/privacy.*`, so a sysop can rewrite it. The same screen is offered during sign-up. |
 | `PROFILE` | | Form to change your name, email, From, phone and profile. Not for guests. |
 | `PASSWORD` | | Form: current password, then the new one twice. Not for guests. |
@@ -274,7 +274,7 @@ All caller commands still work. Node arguments are `1`-`10`, `S` (sysop node) or
 | `UNBAN a.b.c.d` | `UNBAN` | Lift a ban. |
 | `USERS` | `USERS` | User manager: cursor list of accounts with edit, add and retire (ANSI, PETSCII; `D` retires, as `USER DEL` does). A paged list on plain ASCII. |
 | `USER ADD` | `USERS` | Add-account form: handle, password, fields, Level, Locked. |
-| `USER EDIT handle` | `USERS` | Edit-account form. Empty `New pass` keeps the password. Renames follow callers who are online. |
+| `USER EDIT handle` | `USERS` | Edit-account form. Empty `New pass` (`New password` at 80 columns) keeps the password. Renames follow callers who are online. |
 | `USER DEL handle` | `USERS` | **Retires** the account after `Retire handle? (y/N)`. They cannot log in and the handle stays reserved for ever, so nothing they left behind is orphaned and nobody else can register that name. Not your own account. |
 | `DROP` | any staff | Co-sysop: give up staff access. Sysop: leave the sysop node for a free caller node. Time limits apply again from now. |
 
@@ -377,13 +377,46 @@ their first letter rather than spelled out. Save or ESC comes back to the
 page the button was on. The file still keeps the bar-separated form, so a
 `system.cfg` edited by hand on a laptop reads and parses exactly as before.
 On a plain ASCII terminal, which has no cursor to put a button under, the row
-becomes `Area 1 [C64 Downloads] open (y/N)?` instead.
+becomes `File area 1 [C64 Downloads] open (y/N)?` instead.
+
+Every page has two layouts (1.1.0), chosen by the width of the terminal. Under
+80 columns, and when the width is unknown, it is the 40 column card that fits
+a C64, with nine column labels (`Board LED`, `Guest min`). At 80 columns and
+wider the labels say more (`Onboard LED GPIO`, `Guest call minutes`), the box
+is 56 columns so a long value such as announce's Directory URLs shows whole,
+and some rows carry a longer note on the status line. Plain ASCII is 80
+columns, so its prompts use the long labels. The page list is the same single
+column at every width.
 
 A plugin with more settings than one page holds has a button to a page of
 them: `CONFIG lights` has Pixels, a list of ten pixels, each a button to its
-own two-row page. Escape on the list comes back to the plugin's page. The
-list takes the page's place, so it will not open over changes you have not
-saved: F1 first.
+own two-row page, and `CONFIG chat` has Colours, the eleven colours of a room
+line. Escape on the list comes back to the plugin's page. The list takes the
+page's place, so it will not open over changes you have not saved: F1 first.
+Such a group is shown in place while it fits (1.1.0): `CONFIG forums` shows
+the topics that are set and one empty row to add the next, so the page grows
+a row at a time, and once that would pass the twelve rows a page has, the
+topics become one button, Topics, to a page of all sixteen.
+
+A pin (`PS_PIN` on a plugin's page, the LED and the backup button on the
+core's) is refused when something else on the board already holds it (1.1.0):
+GPIO 0, which is BOOT (the backup button alone may be BOOT, since it usually
+is); the console's pins, 1 and 3 on the WROOM; the other core pin; and every
+pin of every plugin that is switched on, the SD card's four, the serial
+bridge's two and the lights' two among them. `sd` is on as shipped, card or
+no card, because it tries the card on those pins at every start: on a board
+with nothing wired to them, `enabled = no` on `CONFIG sd` frees them. The
+refusal names the holder,
+`Taken: sd, CLK pin` at 40 columns and
+`GPIO 18 is taken: CONFIG sd, Clock GPIO. Pick another.` at 80. A plugin that
+is off holds nothing, and a page that switches its plugin on is checked for
+every pin it has, since that is when it takes them.
+
+`CONFIG serial` (1.1.0) has the bridge's pins, speed and format: RX, TX, a
+baud rate from 300 to 115200 and a format of `8N1`, `7E1`, `8E1`, `7O1` or
+`8N2`. A fresh board shows what the bridge runs with: 16, 17, 115200, 8N1.
+TX cannot be 34 to 39, which can only listen. `CONFIG chat` has the room's
+name, its line rate and history, its mail limits and the Colours page.
 
 A field that steps through words (a level, yes or no, an effect) takes the
 word's first letter, and the same letter again steps to the next word that
@@ -446,7 +479,7 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `backup_button_gpio` | `0` | button pin, active low (BOOT on dev boards), -1 = no window. Refused: 6 to 11 (flash) and pins the chip does not have (20, 24, 28 to 31 on the WROOM) |
 | `who_refresh_min` | `1` | lowest `WHO n` / `DASH n` refresh, seconds |
 | `who_refresh_max` | `30` | highest `WHO n` / `DASH n` refresh, seconds |
-| `activity_led_gpio` | `2` | LED that blinks on network traffic (the blue LED on DOIT-style boards), -1 = none. Refused: 6 to 11 (flash) and pins the chip does not have (20, 24, 28 to 31 on the WROOM) |
+| `activity_led_gpio` | `2` | The board's own LED, which blinks on network traffic (the blue LED on DOIT-style boards), not a pixel; -1 = none. `Onboard LED GPIO` on `CONFIG board`, `Board LED` at 40 columns. Refused: 6 to 11 (flash) and pins the chip does not have (20, 24, 28 to 31 on the WROOM), and on `CONFIG board` a pin something else holds |
 | `self_register` | `yes` | `no`: unknown handles can't sign up, staff add accounts |
 | `max_users` | `250` | account limit, 1..250. Not a space limit: `userdata` holds roughly 1,380 accounts. The cap is that the list indices are `uint8_t`, which reaches into every list on the board, so raising it is its own piece of work. The SD card does not help and is not meant to: accounts stay on internal flash so they survive the card failing. |
 | `guest` | `yes` | `no`: unknown handles are not offered `[G]uest` |
@@ -681,11 +714,15 @@ led3         = sparkle | random   ; manual mode: led1 to led10, effect | colour
   - `rainbow`: the colours, cycling along the strip.
   - `manual`: each pixel its own effect and colour; see below.
   - `off`.
-- **Drive %** and **Strip %**: brightness, as a percentage of full, 1 to
-  30, each output its own, 10 as shipped. 30 is a ceiling in the firmware,
-  not only on the form: CONFIG refuses more, and a bigger number written
-  into `system.cfg` is read as 30. A dim colour never goes out at a low
-  percentage: a lit channel stays at least 1.
+- **Drive %** and **Strip %**: brightness, as a percentage of full, each
+  output its own, 10 as shipped. CONFIG takes 1 to 100 (1.1.0) and asks
+  before it saves anything past 30, one question for the page naming the
+  rows: `Drive % over 30. Save anyway? (y/N)` on a 40 column screen, with
+  the reason after the name at 80 (`ten pixels can draw more than USB
+  gives.` for the strip). Only Y saves; anything else leaves the page open
+  with nothing saved. Plain ASCII asks the same, then asks the row again.
+  A dim colour never goes out at a low percentage: a lit channel stays at
+  least 1.
 - Neither pin can be 6 to 11, which the flash chip uses, or one the chip
   does not have (20, 24, 28 to 31 on the WROOM), and the two cannot
   be the same pin. A change applies when the plugin restarts, which saving

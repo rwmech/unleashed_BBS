@@ -140,7 +140,8 @@ uint8_t Bbs::addUserFields(Session& s, uint8_t n) {
         if (uf.flags & UF_REQUIRED) flags |= FF_REQUIRED;
         if (uf.flags & UF_TEXTAREA) flags |= FF_TEXTAREA;
         uint8_t at = n;
-        addField(s, n, uf.label, users::fieldPtr(s.edit, uf), static_cast<uint8_t>(uf.size - 1), flags);
+        addField(s, n, Form::pick(s.term, uf.label, uf.wide), users::fieldPtr(s.edit, uf),
+                 static_cast<uint8_t>(uf.size - 1), flags);
         // Set on the session's own field array, NOT through the Form.
         // Form::f_ is a pointer that begin() aims at s.fields, so touching
         // it before begin() dereferences whatever the last form left there,
@@ -168,6 +169,9 @@ void Bbs::startForm(Session& s, FormKind kind, uint32_t now) {
     wipe(s.pwA, sizeof(s.pwA));
     wipe(s.pwB, sizeof(s.pwB));
     wipe(s.pwC, sizeof(s.pwC));
+    // The label for this caller's width: the short one on a C64, the long
+    // one at 80 where there is one (Form::pick, spec section 3).
+    auto L = [&](const char* narrow, const char* wideText) { return Form::pick(s.term, narrow, wideText); };
 
     switch (kind) {
         case FormKind::Signup: {
@@ -178,10 +182,10 @@ void Bbs::startForm(Session& s, FormKind kind, uint32_t now) {
             title = "NEW ACCOUNT";
             addField(s, n, "Handle", s.edit.handle, BBS_USER_MAX, FF_READONLY);
             addField(s, n, "Password", s.pwA, BBS_PASS_MAX, FF_MASK | FF_REQUIRED);
-            addField(s, n, "Again", s.pwB, BBS_PASS_MAX, FF_MASK | FF_REQUIRED);
+            addField(s, n, L("Again", "Password again"), s.pwB, BBS_PASS_MAX, FF_MASK | FF_REQUIRED);
             n = addUserFields(s, n);
             snprintf(s.landBuf, sizeof(s.landBuf), "%s", landText(s.edit.land));
-            addField(s, n, "Start", s.landBuf, 8, FF_CYCLE, kLandPick);
+            addField(s, n, L("Start", "Start after login"), s.landBuf, 8, FF_CYCLE, kLandPick);
             break;
         }
         case FormKind::Profile:
@@ -189,13 +193,13 @@ void Bbs::startForm(Session& s, FormKind kind, uint32_t now) {
             snprintf(s.landBuf, sizeof(s.landBuf), "%s", landText(s.edit.land));
             addField(s, n, "Handle", s.edit.handle, BBS_USER_MAX, FF_READONLY);
             n = addUserFields(s, n);
-            addField(s, n, "Start", s.landBuf, 8, FF_CYCLE, kLandPick);
+            addField(s, n, L("Start", "Start after login"), s.landBuf, 8, FF_CYCLE, kLandPick);
             break;
         case FormKind::Password:
             title = "CHANGE PASSWORD";
-            addField(s, n, "Current", s.pwA, BBS_PASS_MAX, FF_MASK | FF_REQUIRED);
-            addField(s, n, "New", s.pwB, BBS_PASS_MAX, FF_MASK | FF_REQUIRED);
-            addField(s, n, "Again", s.pwC, BBS_PASS_MAX, FF_MASK | FF_REQUIRED);
+            addField(s, n, L("Current", "Current password"), s.pwA, BBS_PASS_MAX, FF_MASK | FF_REQUIRED);
+            addField(s, n, L("New", "New password"), s.pwB, BBS_PASS_MAX, FF_MASK | FF_REQUIRED);
+            addField(s, n, L("Again", "New password again"), s.pwC, BBS_PASS_MAX, FF_MASK | FF_REQUIRED);
             break;
         case FormKind::UserAdd:
             title = "ADD ACCOUNT";
@@ -206,25 +210,25 @@ void Bbs::startForm(Session& s, FormKind kind, uint32_t now) {
             addField(s, n, "Password", s.pwA, BBS_PASS_MAX, FF_MASK | FF_REQUIRED);
             n = addUserFields(s, n);
             strcpy(s.landBuf, "Default");
-            addField(s, n, "Level", s.levelBuf, 5, FF_CYCLE, levelChoices(s.level));
-            addField(s, n, "Locked", s.yesno, 1, FF_YESNO);
+            addField(s, n, L("Level", "Staff level"), s.levelBuf, 5, FF_CYCLE, levelChoices(s.level));
+            addField(s, n, L("Locked", "Account locked"), s.yesno, 1, FF_YESNO);
             // Last, after the staff controls. Level and Locked are things
             // staff do TO an account; Start is the account holder's own
             // preference, and it reads better at the end than wedged
             // between the profile and the rank.
-            addField(s, n, "Start", s.landBuf, 8, FF_CYCLE, kLandPick);
+            addField(s, n, L("Start", "Start after login"), s.landBuf, 8, FF_CYCLE, kLandPick);
             break;
         case FormKind::UserEdit:
             title = "EDIT ACCOUNT";
             strcpy(s.yesno, s.edit.locked ? "Y" : "N");
             snprintf(s.levelBuf, sizeof(s.levelBuf), "%s", levelText(s.edit.level));
             addField(s, n, "Handle", s.edit.handle, BBS_USER_MAX, FF_REQUIRED);
-            addField(s, n, "New pass", s.pwA, BBS_PASS_MAX, FF_MASK);
+            addField(s, n, L("New pass", "New password"), s.pwA, BBS_PASS_MAX, FF_MASK);
             n = addUserFields(s, n);
             snprintf(s.landBuf, sizeof(s.landBuf), "%s", landText(s.edit.land));
-            addField(s, n, "Level", s.levelBuf, 5, FF_CYCLE, levelChoices(s.level));
-            addField(s, n, "Locked", s.yesno, 1, FF_YESNO);
-            addField(s, n, "Start", s.landBuf, 8, FF_CYCLE, kLandPick);
+            addField(s, n, L("Level", "Staff level"), s.levelBuf, 5, FF_CYCLE, levelChoices(s.level));
+            addField(s, n, L("Locked", "Account locked"), s.yesno, 1, FF_YESNO);
+            addField(s, n, L("Start", "Start after login"), s.landBuf, 8, FF_CYCLE, kLandPick);
             break;
         default:
             return;
@@ -242,7 +246,8 @@ bool Bbs::checkUserFields(Session& s, uint8_t firstField) {
         const UserField& uf = kUserFields[i];
         const char* v = users::fieldPtr(s.edit, uf);
         if ((uf.flags & UF_REQUIRED) && !*v) {
-            snprintf(msg, sizeof(msg), "%s is required", uf.label);
+            // Named as the form names it: "Email address is required" at 80.
+            snprintf(msg, sizeof(msg), "%s is required", Form::pick(s.term, uf.label, uf.wide));
             s.form.fail(static_cast<uint8_t>(firstField + i), msg, s.term, s.tl);
             return false;
         }
@@ -559,33 +564,44 @@ void Bbs::cmdInfo(Session& s, const char* arg) {
     char buf[64];
     char when[24];
 
+    // Laid out the way the forms are, per width (1.1.0). It drew a 39
+    // column rule, 9 column labels and values cut at 29 on every terminal,
+    // so at 80 it was a C64 card in the corner of the screen. At 80 the
+    // labels are the forms' long ones in a 21 column field and a value may
+    // run to column 78; at 40 every byte is what it was.
+    const bool   wide = Form::wide(t);
+    const int    lw   = wide ? Form::labelWidth(t) + 1 : 9;
+    const size_t valW = static_cast<size_t>(Form::lineWidth(t) - 1 - lw);   // 29, or 57
+    auto L = [&](const char* narrow, const char* wideText) { return Form::pick(t, narrow, wideText); };
+
     t.color(tl, Color::Yellow);
     fx::typewriter(t, tl, u.handle, 20);
     t.nl(tl);
     t.color(tl, Color::Cyan);
-    fx::rule(t, tl, 39);
+    fx::rule(t, tl, Form::lineWidth(t));
     t.nl(tl);
     for (uint8_t i = 0; i < kUserFieldCount; ++i) {
         const UserField& uf = kUserFields[i];
         if ((uf.flags & UF_TEXTAREA) || ((uf.flags & UF_PRIVATE) && !privateOk)) continue;
         const char* v = users::fieldPtr(u, uf);
         if (!*v) continue;
-        snprintf(buf, sizeof(buf), "%-9s", uf.label);
+        snprintf(buf, sizeof(buf), "%-*s", lw, L(uf.label, uf.wide));
         say(t, tl, Color::LightBlue, buf);
         t.color(tl, Color::White);
-        t.textN(tl, v, 29);
+        t.textN(tl, v, valW);
         t.nl(tl);
     }
     clk::fmtEpoch(when, sizeof(when), "%d %b %Y", u.created);
-    snprintf(buf, sizeof(buf), "%-9s%s", "Member", when);
+    snprintf(buf, sizeof(buf), "%-*s%s", lw, L("Member", "Member since"), when);
     say(t, tl, Color::Grey, buf);
     t.nl(tl);
     clk::fmtEpoch(when, sizeof(when), "%d %b %Y %H:%M", u.lastCall);
-    snprintf(buf, sizeof(buf), "%-9s%s, %u calls", "Last", when, u.calls);
+    snprintf(buf, sizeof(buf), "%-*s%s, %u calls", lw, L("Last", "Last call"), when, u.calls);
     say(t, tl, Color::Grey, buf);
     t.nl(tl);
     if (u.level) {
-        snprintf(buf, sizeof(buf), "%-9s%s", "Staff", syscfg::levelName(static_cast<Access>(u.level)));
+        snprintf(buf, sizeof(buf), "%-*s%s", lw, L("Staff", "Staff level"),
+                 syscfg::levelName(static_cast<Access>(u.level)));
         say(t, tl, Color::Yellow, buf);
         t.nl(tl);
     }
@@ -598,10 +614,11 @@ void Bbs::cmdInfo(Session& s, const char* arg) {
         if (!(uf.flags & UF_TEXTAREA)) continue;
         const char* v = users::fieldPtr(u, uf);
         size_t len = strlen(v);
-        for (size_t off = 0; off < len; off += 37) {
+        const size_t row = wide ? 74 : 37;            // the form's textarea rows
+        for (size_t off = 0; off < len; off += row) {
             t.color(tl, Color::Grey);
             t.text(tl, " ");
-            t.textN(tl, v + off, 37);
+            t.textN(tl, v + off, row);
             t.nl(tl);
         }
     }

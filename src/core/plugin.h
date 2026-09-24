@@ -156,25 +156,36 @@ struct PluginInfo {
 // letter, as the level fields are. The list is `choices`, bar separated.
 //
 // PS_PAGE: a button to a page of its own. It holds every setting in this
-// table whose key is this one's followed by a number ("led" holds led1 to
-// led10), and those rows are left off the plugin's main page. For a plugin
-// with more rows than one form can hold: kMaxFields less the core's four is
-// twelve, and the lights want ten pixels on top of their own six. The
-// button's text is the plugin's setting() for this key. Escape on the page,
-// or saving it, comes back to the main page.
+// table whose key is this one's followed by a number or an underscore
+// ("led" holds led1 to led10, chat's "color" holds color_node and the rest),
+// and those rows are left off the plugin's main page. For a plugin with more
+// rows than one form can hold: kMaxFields less the core's four is twelve,
+// and the lights want ten pixels on top of their own six. The button's text
+// is the plugin's setting() for this key. Escape on the page, or saving it,
+// comes back to the main page.
+//
+// PS_GROW: a PS_PAGE whose rows are slots, used or not (1.1.0). While they
+// fit on the main page they are shown there instead of the button: the rows
+// that have a value, and the first that has none, so the page grows a row at
+// a time as they are filled in. The forums' sixteen topics work this way, up
+// to twelve in place and then the button to all of them. Kept apart from
+// PS_PAGE because an empty row means "unused" only for slots: an empty colour
+// in chat means "the default", and showing only the first empty one would
+// hide the rest.
 enum : uint8_t { PS_TEXT, PS_NUM, PS_YESNO, PS_INFO, PS_PIN, PS_OPTNUM, PS_CYCLE,
-                 PS_PAGE };
+                 PS_PAGE, PS_GROW };
 
 struct PluginSetting {
     const char* key;      // key inside the [plugin:<name>] section
-    const char* label;    // 9 characters, the form's left column
+    const char* label;    // 9 characters, the form's left column at 40
     uint8_t     kind;     // PS_TEXT, PS_NUM, PS_YESNO, PS_INFO, PS_PIN, PS_OPTNUM,
-                          // PS_CYCLE, PS_PAGE
+                          // PS_CYCLE, PS_PAGE, PS_GROW
     int16_t     lo;       // PS_NUM, PS_PIN: the range the plugin will accept.
                           // Signed since 1.1.0, for a pin's -1.
     uint16_t    hi;
     uint8_t     cap;      // characters, excluding the terminator. May exceed
                           // the form's box: long values scroll while typed.
+                          // CONFIG holds kSettingMax at most.
     // Appended (1.1.0), with a default, so every table written before it
     // still compiles, warns about nothing and reads nullptr here. Shown on
     // the form's status line while the row has the focus: 38 characters,
@@ -186,7 +197,31 @@ struct PluginSetting {
     // every row, which would be sixteen pointers of static RAM for the one
     // page that has any.
     const char* choices = nullptr;
+    // At 80 columns (1.1.0): the label, 20 characters, and the note, 78.
+    // Null means the short one, padded, which reads fine for "Hostname" or
+    // "Pixel 3" and is the right fallback for a table that has none. Plain
+    // ASCII is 80 columns, so its prompts use these too. Appended after
+    // choices, so a row that sets one spells the members before it:
+    //   { "cs", "CS pin", PS_PIN, 0, 33, 2, nullptr, nullptr, "Chip select GPIO" }
+    const char* wide     = nullptr;
+    const char* wideNote = nullptr;
+    // A PS_NUM that CONFIG takes up to hi but asks about past warnAbove
+    // (1.1.0): saving a value above it puts "Drive % over 30: <warn> Save
+    // anyway? (y/N)" to the sysop first, one question for the page naming
+    // every such row, and anything but Y leaves the page open with nothing
+    // saved. warn is what goes after the colon, one short sentence; null, as
+    // shipped, means the row never asks. Only a row being changed asks, so
+    // a page saved again later does not ask about a value already set.
+    int16_t     warnAbove = 0;
+    const char* warn      = nullptr;
 };
+
+// kSettingMax: the longest value CONFIG can hold for one setting. A cap
+// above it is cut to it on the form. 120 because that is the longest the
+// directory takes for a description (ANNOUNCE.md), and CONFIG held 95 while
+// the plugin and the file took 120, so editing that row cut the tail off
+// (1.1.0). Every byte here is one of sixteen in CONFIG's value buffers.
+constexpr uint8_t kSettingMax = 120;
 
 // kCoreRows: the rows CONFIG puts at the top of every plugin's page before
 // any of the plugin's own (Enabled, Read, Write, Admin). A page holds
