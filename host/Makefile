@@ -39,7 +39,7 @@ CPPFLAGS += -I../src
 # BBS_HOST: the host build, for the few test hooks that must never reach a
 # board (announce's room_test). Nothing may change behaviour on it otherwise.
 CPPFLAGS += -DBBS_HOST
-LDLIBS   += -lz
+LDLIBS   += -lz -lpthread
 ifeq ($(SAN),1)
 CXXFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer
 LDFLAGS  += -fsanitize=address,undefined

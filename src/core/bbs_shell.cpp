@@ -1730,14 +1730,27 @@ bool Bbs::rowSys(Session& s) {
             // minute look identical on a high-water mark.
             statNum(s, "Slow passes", slowCount_, "over 50ms");
             // Stack headroom: the least this task's stack has ever had free.
-            // Not a decoration. It is what says whether the static UserRec
-            // scratch buffers can become ordinary locals, which is about
-            // 10 KB of static DRAM, and it is the only honest way to answer
-            // that question.
+            // Not a decoration. It is what said the UserRec scratch buffers
+            // could become ordinary locals (about 10 KB of static DRAM, in
+            // 1.1.0), and it is what says whether that is still true. The
+            // console names the call behind each new low (stackWatch).
             {
                 uint32_t sf = plat::stackFree();
-                if (sf) statNum(s, "Stack free", sf, "least ever");
-                else    statRow(s, "Stack free", "n/a", Color::Grey, "host build");
+                if (sf) {
+                    // Out of what, because the answer moved: 8,192 until
+                    // 1.1.0 and 12,288 since, and "1,440 free" means
+                    // something different against each.
+                    // The note starts at column 23 (label 13, value 9, a
+                    // space); the host's far larger stack would push it past
+                    // a 40 column row, so it falls back rather than wrap.
+                    char of[16], note[28];
+                    fmtCommas(plat::stackSize(), of, sizeof(of));
+                    snprintf(note, sizeof(note), "least of %s", of);
+                    if (23 + strlen(note) > rowWidth(s)) snprintf(note, sizeof(note), "least ever");
+                    statNum(s, "Stack free", sf, note);
+                } else {
+                    statRow(s, "Stack free", "n/a", Color::Grey, "not measured");
+                }
             }
             return true;
 

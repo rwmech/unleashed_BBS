@@ -162,6 +162,11 @@ public:
     // discard: delete staging and the uploaded zip
     void discard();
 
+    // close: let go of the uploaded zip and touch nothing on disk. For the
+    // backup window, which hands this object's storage to a download
+    // afterwards (backup.h) and must not leave a FILE* behind in it.
+    void close() { if (zf_) { fclose(zf_); zf_ = nullptr; } }
+
 private:
     struct Item {
         char     name[32];     // normalized: system.cfg or screens/x.ext

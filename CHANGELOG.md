@@ -24,6 +24,21 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.1.0, in progress
+
+Built in phases; this section grows with each one and becomes the 1.1.0
+entry when it is released.
+
+**1.1.0-dev.0, the foundation.**
+- Static RAM: 20,528 bytes free, up from 4,016. The backup's export and
+  import state share one buffer, the serial bridge allocates its buffer
+  when it starts, the zip code's config checks reuse the config parser's
+  scratch, and 22 account records that sat in static RAM for a moment's
+  use now live on the stack.
+- The BBS task stack is 12 KB (from 8 KB). SYS shows the least it has
+  ever had free out of 12,288, and every new low is logged to the console
+  with what the board was doing at the time.
+
 ## 1.0.1, 2026-09-23
 
 The directory's badges, sent by the board. From site 0.21 the directory

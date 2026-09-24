@@ -99,7 +99,7 @@ void Bbs::cmdLurk(Session& s) {
 void Bbs::markAccount(Session& s, Access level) {
     s.rank = static_cast<uint8_t>(level) > s.rank ? static_cast<uint8_t>(level) : s.rank;
     if (s.guest || !s.user[0]) return;
-    static UserRec u;
+    UserRec u;                                     // on the stack since 1.1.0
     if (!users::find(s.user, u)) return;
     if (u.level >= static_cast<uint8_t>(level)) return;
     u.level = static_cast<uint8_t>(level);
@@ -123,7 +123,7 @@ void Bbs::rememberStaff(const Session& s, Access level) {
     if (s.guest || !s.user[0]) return;
     if (level == Access::Sysop || level == Access::None) return;   // never the sysop
     if (!clk::valid()) return;                    // no clock, nothing to date it by
-    static UserRec u;
+    UserRec u;
     if (!users::find(s.user, u)) return;
     u.staffAt    = clk::epoch();
     u.staffLevel = static_cast<uint8_t>(level);
@@ -141,7 +141,7 @@ void Bbs::restoreStaff(Session& s) {
     // permanent.
     if (!clk::valid()) return;
 
-    static UserRec u;
+    UserRec u;
     if (!users::find(s.user, u)) return;
     if (!u.staffLevel || !u.staffAt || !u.staffIp[0]) return;
 
@@ -1220,6 +1220,19 @@ bool digitsOnly(const char* v) {
     return true;
 }
 
+// The rows every plugin page opens with, before the plugin's own settings.
+// How many there are is kCoreRows (plugin.h), which is also what a plugin
+// with a long settings table asserts against, so the page and the assert
+// count the same thing.
+const CfgField kCoreFields[] = {
+    { "enabled", "Enabled", CK_YESNO, 0, 0, 4 },
+    { "read",    "Read",    CK_LEVEL, 0, 0, 6 },
+    { "write",   "Write",   CK_LEVEL, 0, 0, 6 },
+    { "admin",   "Admin",   CK_LEVEL, 0, 0, 6 },
+};
+static_assert(sizeof(kCoreFields) / sizeof(kCoreFields[0]) == kCoreRows,
+              "kCoreRows must count the rows CONFIG puts on every plugin page");
+
 // collectKey: plugin pages are built from the keys the file already has,
 // which is every key that matters once system.cfg.example has been used.
 struct KeyGrab { uint8_t n; };
@@ -1227,7 +1240,7 @@ struct KeyGrab { uint8_t n; };
 void collectKey(void* ctx, const char* key, const char* value) {
     (void)value;
     KeyGrab* g = static_cast<KeyGrab*>(ctx);
-    if (g->n >= Form::kMaxFields - 4) return;             // enabled/read/write/admin first
+    if (g->n >= Form::kMaxFields - kCoreRows) return;      // the core rows come first
     for (uint8_t i = 0; i < g->n; ++i) if (!strcmp(g_cfgKeys[i], key)) return;
     snprintf(g_cfgKeys[g->n], sizeof(g_cfgKeys[0]), "%.23s", key);
     ++g->n;
@@ -1330,10 +1343,7 @@ void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now) {
 
         const Plugin* pl = plugins::at(pi);
         uint8_t n = 0;
-        g_cfgPlugin[n++] = { "enabled", "Enabled", CK_YESNO, 0, 0, 4 };
-        g_cfgPlugin[n++] = { "read",    "Read",    CK_LEVEL, 0, 0, 6 };
-        g_cfgPlugin[n++] = { "write",   "Write",   CK_LEVEL, 0, 0, 6 };
-        g_cfgPlugin[n++] = { "admin",   "Admin",   CK_LEVEL, 0, 0, 6 };
+        for (const CfgField& f : kCoreFields) g_cfgPlugin[n++] = f;
 
         // What the plugin says it has, in its own order, whether or not the
         // file has ever carried it. This is the whole point: a setting a

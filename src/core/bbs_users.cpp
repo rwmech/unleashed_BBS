@@ -346,7 +346,9 @@ void Bbs::formSave(Session& s, uint32_t now) {
 
         case FormKind::Profile: {
             if (!checkUserFields(s, 1)) return;
-            static UserRec cur;                      // re-read: a lock or password set
+            // On the stack since 1.1.0, as are the other two below; the three
+            // are in separate cases and share one slot of formSave's frame.
+            UserRec cur;                             // re-read: a lock or password set
             if (!users::find(s.user, cur)) {         // while this form was open must stand
                 formDone(s, Color::LightRed, "Your account is gone.");
                 return;
@@ -360,7 +362,7 @@ void Bbs::formSave(Session& s, uint32_t now) {
         }
 
         case FormKind::Password: {
-            static UserRec cur;
+            UserRec cur;
             if (!users::find(s.user, cur)) { formDone(s, Color::LightRed, "No account on this line."); return; }
             if (!users::checkPassword(cur, s.pwA)) {
                 bool lockedNow = logins_.fail(s.user, now);
@@ -401,7 +403,7 @@ void Bbs::formSave(Session& s, uint32_t now) {
                 s.form.fail(0, "That handle is online right now", t, tl);
                 return;
             }
-            static UserRec cur;
+            UserRec cur;
             if (!adding) {                           // write onto the record as it is now
                 if (!users::find(s.origHandle, cur)) { formDone(s, Color::LightRed, "That account no longer exists."); return; }
                 if (!mayManage(s, cur)) { formDone(s, Color::LightRed, "That account is above your level."); return; }
@@ -509,8 +511,7 @@ void Bbs::cmdProfile(Session& s, uint32_t now) {
 }
 
 void Bbs::cmdPassword(Session& s, uint32_t now) {
-    static UserRec probe;
-    if (s.role == Role::Busy || !users::find(s.user, probe)) {
+    if (s.role == Role::Busy || !users::exists(s.user)) {
         say(s.term, s.tl, Color::LightRed, "No account on this line.");
         prompt(s);
         return;
@@ -531,7 +532,7 @@ void Bbs::cmdInfo(Session& s, const char* arg) {
     // did not, and the room's /whois silently walked people out of chat.
     Term& t = s.term;
     Timeline& tl = s.tl;
-    static UserRec u;
+    UserRec u;
     const char* who = *arg ? arg : s.user;
     if (!*arg && s.guest) {
         say(t, tl, Color::Yellow, "Guests have no account.");
@@ -752,7 +753,7 @@ void Bbs::ulStatus(Session& s, Color c, const char* msg) {
 
 void Bbs::ulDrawRow(Session& s, uint8_t index) {
     if (index < s.ulTop || index >= s.ulTop + ulRows(s)) return;
-    static UserRec u;
+    UserRec u;
     if (!users::at(index, u)) return;
     s.term.gotoXY(s.tl, 1, static_cast<uint8_t>(kListTop + index - s.ulTop));
     drawUserLine(s.term, s.tl, u, index == s.ulSel);
@@ -838,7 +839,7 @@ bool Bbs::rowUsers(Session& s) {
         rowText(s, Color::DarkGrey, kMarkKey);
         return true;
     }
-    static UserRec u;
+    UserRec u;
     if (users::at(static_cast<uint8_t>(i - 3), u)) {
         char mark = u.level >= static_cast<uint8_t>(Access::Sysop) ? ']' : (u.level ? '>' : ' ');
         snprintf(buf, sizeof(buf), "%c%-13.13s %-16.16s %4u %c", mark, u.handle, u.name,

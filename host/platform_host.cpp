@@ -37,6 +37,7 @@
  */
 
 #include "platform/platform.h"
+#include "config.h"              // BBS_STACK_BAND
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -54,6 +55,14 @@ namespace {
 std::string g_fsBase   = "../data";
 std::string g_userBase = "../data/user";
 std::string g_logsBase = "../data/logs";
+const uint8_t* g_stackLo  = nullptr;   // the BBS thread's painted stack
+size_t         g_stackLen = 0;
+}
+
+// host-only: set by main_host.cpp before the BBS thread starts
+void hostSetStack(const uint8_t* lo, size_t len) {
+    g_stackLo  = lo;
+    g_stackLen = len;
 }
 
 // host-only: set by main_host.cpp; logs live in <data>/logs
@@ -111,10 +120,41 @@ uint32_t heapFree() {
     return 0;
 }
 
-// The host runs on a normal thread stack with no FreeRTOS behind it, so
-// there is no high water mark to read. 0 means "not measurable here", and
-// SYS says so rather than printing a confident zero.
+// The BBS runs on a thread whose stack main_host.cpp painted with 0xA5 before
+// starting it, the byte FreeRTOS paints a task's stack with, so the high
+// water mark is read here exactly the way the kernel reads it on the board:
+// count the untouched fill from the bottom up. Before hostSetStack (a tool
+// that never starts the thread) there is nothing to measure and it says 0,
+// which SYS shows as "n/a" rather than a confident zero.
+//
+// The figure is real and it is not the board's: x86-64 frames under glibc,
+// not Xtensa frames under newlib. It is for comparing host runs with each
+// other, before and after a change.
+//
+// Not instrumented under SAN=1: this reads stack below the live frames on
+// purpose, which is exactly what AddressSanitizer exists to object to.
+__attribute__((no_sanitize_address))
 uint32_t stackFree() {
+    if (!g_stackLo) return 0;
+    size_t n = 0;
+    while (n < g_stackLen && g_stackLo[n] == 0xA5) ++n;
+    return static_cast<uint32_t>(n);
+}
+
+uint32_t stackSize() {
+    return static_cast<uint32_t>(g_stackLen);
+}
+
+// stackDeeper: the band of fill just under the old mark, as on the board
+__attribute__((no_sanitize_address))
+uint32_t stackDeeper(uint32_t knownFree) {
+    constexpr uint32_t kBand = BBS_STACK_BAND;
+    if (!g_stackLo || knownFree < 4 || knownFree > g_stackLen) return 0;
+    uint32_t top  = knownFree & ~3u;
+    uint32_t base = top > kBand ? top - kBand : 0;
+    for (uint32_t at = base; at < top; ++at) {
+        if (g_stackLo[at] != 0xA5) return stackFree();
+    }
     return 0;
 }
 

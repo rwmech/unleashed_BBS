@@ -366,6 +366,38 @@ style as `brand/` in the directory repo (avatar, cover, tier cards, all
 generated from LOGO_ROWS and the site palette by scripts beside them).
 Not before the web installer and Improv are up and tested on a fresh board.
 
+## 1.1.0 (in progress, 2026-09-23)
+
+Built to `internal/PLAN-1.1.0.md`, in phases, one developer at a time on
+this tree.
+- **Phase 0 is done (1.1.0-dev.0): static DRAM 176,720 → 160,208, so
+  20,528 free** (was 4,016).
+  - The backup exp_/imp_ union saved 3,872.
+  - The serial bridge buffer, allocated at start, saved 1,016.
+  - ziparc's probes, now in syscfg's scratch, saved 816.
+  - The 22 static `UserRec` buffers, moved onto the stack in two
+    tranches, saved 10,824.
+  The per-session arithmetic that governed every feature decision since
+  0.21 is relaxed for a while. The rule "every byte of a Session costs
+  twelve" still stands.
+- **The BBS task stack is 12,288 bytes** (from 8,192; the heap pays, not
+  static DRAM). Each new low is logged with its phase, node and `doing`,
+  from a 512-byte band under the last low plus one full read a second,
+  because a full high-water read after every phase is too slow.
+  - The host measures the same way, on a 256 KB thread filled with 0xA5.
+  - Host frames run about twice the target's.
+  - The deepest host paths are backup restore 13,096, FORUMS 12,136 and
+    MAIL 11,400; the account-write chains grew about 1 KB with the
+    tranches.
+  - The real figure is the board's SYS "Stack free ... least of 12,288"
+    and the "bbs: stack low" console lines. Read them after the first
+    flash.
+- A security bug in the released firmware was found while the copy was
+  written, and shipped separately as 1.0.2, from a hotfix worktree on
+  v1.0.1. Restoring a backup on a board still on the published default
+  turned it into an explicit password that worked from anywhere. Main
+  merges the fix.
+
 ## 1.0.0 (2026-09-23)
 
 **The installer test passed.** Rob flashed a new ESP32 from /install,
@@ -428,6 +460,17 @@ as 0.24.0, except the parts that need bench time.
   add the pick-list (a CONFIG sub-page to arrow through and tick with
   Space), generated at build time from the directory's code table so the
   two cannot drift.
+- **1.0.2: an SD card size badge** (Rob, 2026-09-23: "the size of the SD
+  if enabled SD8, SD32, etc").
+  - Firmware: announce gains an optional `sd` field, the card's size in
+    GB, sent only while a card is mounted. Round up to the size printed
+    on the card: a "32 GB" card reports about 29.7 GB, so round to the
+    next of 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024. `plat::sdInfo()`
+    already has the total, and the sd plugin caches it.
+  - Site, in the same version as the short codes: an `SD32` badge in the
+    features group beside Fi and F; a filter chip; a row on /badges.
+    PROTOCOL.md documents `sd` as a number in GB, and the directory
+    ignores values outside 1 to 4096.
 - **1.0.2 bug: 541 slow passes in 24 minutes on The Rusty Antenna**
   (1.0.0, no card, one caller). SYS showed a 342 ms worst pass in the
   session phase. Get the console's slow-pass lines (phase, node, doing)
@@ -580,7 +623,7 @@ doing properly and 1.0.1 is already bench-hardware work.
   Report the blockers cleared at the promotion to 1.0.0.
 
 **0.22.1 is Improv**, built to NEXT.md part 3 and committed together with
-0.22.0 (`9f6d65d`). Flashed by Rob; **Improv verified on hardware
+0.22.0 (`e04f5ba`). Flashed by Rob; **Improv verified on hardware
 2026-09-23**, provisioned from a browser first try. Nothing else in 0.22.x
 reported on the board yet.
 
@@ -2128,7 +2171,7 @@ Queued for the next build (Rob's plan, in order):
 - **The ANSI form highlight bleed: DONE, and it was already fixed.** Investigated 2026-09-20 by driving a real ANSI session and rendering the attribute stream rather than reading the code.
   **Root cause, and it is a good lesson.** `Term::reverse(o,false)` used to emit `ESC[27m` and nothing else. **ANSI.SYS never implemented SGR 27 and SyncTERM does not act on it**, so reverse simply stayed on. Meanwhile `Term::color()` emitted `ESC[1;33m`, which sets bold and a foreground and clears *nothing*, so the stuck highlight survived every colour change. Only the non-bold palette entries happened to clear it, which is exactly why some rows looked fine and others were filled blocks.
   The orange came from one path: `Form::fail()` calls `fx::blink` (leaves reverse on), then `drawButtons()` whose LightGreen and LightRed clear nothing, then repaints the focused label in Yellow. Yellow under a stale reverse is orange.
-  **Fixed by `c7a0eec` in 0.17.1 Block B**, in the terminal layer rather than the form: every colour now leads with SGR 0, and `reverse(o,false)` re-asserts the colour instead of sending SGR 27. It was fixed as a side effect of the Block B reverse-video work and nobody connected it back to this report. All 23 `reverse()` call sites were checked and are balanced.
+  **Fixed by `2f928fa` in 0.17.1 Block B**, in the terminal layer rather than the form: every colour now leads with SGR 0, and `reverse(o,false)` re-asserts the colour instead of sending SGR 27. It was fixed as a side effect of the Block B reverse-video work and nobody connected it back to this report. All 23 `reverse()` call sites were checked and are balanced.
   **The method is the part worth keeping**: a screen model that *ignores SGR 27 the way a real terminal does*, run against both the Block A tree and the current one. A model that honours SGR 27 shows Block A as clean, which is precisely why this never showed up in testing and only ever appeared on Rob's terminal. The suite's `plain()` strips escapes, so nothing in it could ever have seen this: the bleed **is** the escape stream.
   Regression check added and verified to fail against the Block A tree: one reverse run per frame, it is the focused box and not a label, and every colour clears the attributes before it.
 - **The `Again` field's solid box is not a bug**, corrected from the original report. An empty *focused* field is 27 reversed spaces by design, and the unmasked `Name` field renders identically when focused and empty. Stars do echo into `Again`; the screenshot caught the form between the two password entries. **Worth a UX note rather than a fix:** a solid block is indistinguishable from "my typing is not echoing", which is why it was reported as a bug in the first place. Fold that into the menu and theme rework.

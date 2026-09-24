@@ -688,6 +688,16 @@ private:
     uint32_t  heapCheckAt_ = 0;            // millis of the last sample
     void      heapWatch(uint32_t now);
 
+    // Stack watch. SYS says how little stack has ever been left and never
+    // which call left it, so the 1,440 bytes Rob read off 0.22.1 could not be
+    // traced to anything. Every new low is logged with the phase and, in a
+    // session, the node and its Session::doing, the same way a slow pass is.
+    // stackWatch is a cheap look after each phase (plat::stackDeeper); the
+    // once-a-second full read in the tail catches whatever that missed.
+    uint32_t  stackLow_     = 0;           // least free seen by the watch, bytes
+    uint32_t  stackCheckAt_ = 0;           // millis of the last full read
+    void      stackWatch(const char* phase, const Session* s);
+
     // SHUTDOWN. The board going down on purpose, with everybody told first.
     // shutEnds_ is the millis the countdown reaches zero, and zero means no
     // shutdown is running, which is why it is never legitimately zero while

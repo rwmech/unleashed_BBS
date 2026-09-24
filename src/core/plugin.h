@@ -141,6 +141,15 @@ struct PluginSetting {
                           // the form's box: long values scroll while typed.
 };
 
+// kCoreRows: the rows CONFIG puts at the top of every plugin's page before
+// any of the plugin's own (Enabled, Read, Write, Admin). A page holds
+// Form::kMaxFields rows in all, so a plugin has kMaxFields - kCoreRows for
+// its settings, and CONFIG drops anything past that without a word. A plugin
+// with a long settings table asserts against this, and CONFIG builds its
+// page from it, so the two cannot disagree the way a 4 typed in each place
+// eventually would.
+constexpr uint8_t kCoreRows = 4;
+
 struct Plugin {
     PluginInfo info;
 

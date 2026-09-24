@@ -108,8 +108,30 @@ private:
     uint16_t outPos_    = 0;
     bool     closeAfterOut_ = false;
 
-    ziparc::ZipExport exp_;
-    ziparc::ZipImport imp_;
+    // The zip going out and the zip coming in share one block of storage,
+    // which is 3,872 bytes of static DRAM back. They are never live
+    // together, and the state machine is what guarantees it rather than a
+    // convention: one client at a time, a request is only routed from
+    // St::Headers, the download lives from route() through SendZip, and the
+    // upload from Body through Extract and Approve to decide(). Each of
+    // those ends in dropClient() before the next request can be routed.
+    //
+    // exporter() and importer() make their half the live one and are the
+    // only way in, except in dropClient(), which must never switch: it
+    // tidies whichever half is live and nothing else, because calling the
+    // other half's abort() would run it over bytes that are the wrong type.
+    enum class ZipUse : uint8_t { Export, Import };
+    union ZipArea {
+        ZipArea() : exp() {}
+        ~ZipArea() {}
+        ziparc::ZipExport exp;
+        ziparc::ZipImport imp;
+    };
+    ziparc::ZipExport& exporter();
+    ziparc::ZipImport& importer();
+
+    ZipArea  zip_;
+    ZipUse   zipUse_ = ZipUse::Export;
     char     summary_[128] = {};
     char     detail_[112] = {};
 

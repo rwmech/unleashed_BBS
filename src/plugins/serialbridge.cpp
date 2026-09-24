@@ -80,7 +80,10 @@ char     g_parity = 'N';
 uint8_t  g_index  = 0xFF;
 Session* g_operator = nullptr;
 
-char     g_back[kScrollback];
+// Allocated in start() and freed in stop(), the way chat's room history is.
+// The plugin is off on most boards, and a static buffer made every one of
+// them pay 1,024 bytes of DRAM for a serial device they do not have.
+char*    g_back    = nullptr;
 uint16_t g_backLen = 0;
 uint32_t g_rxBytes = 0, g_txBytes = 0;
 
@@ -116,6 +119,7 @@ bool badPin(int pin, bool output) {
 // scrollback
 // ---------------------------------------------------------------------------
 void keep(const uint8_t* data, size_t n) {
+    if (!g_back) return;                          // not started: nothing to keep it in
     if (n >= kScrollback) { data += n - kScrollback; n = kScrollback; }
     if (g_backLen + n > kScrollback) {
         uint16_t drop = static_cast<uint16_t>(g_backLen + n - kScrollback);
@@ -202,7 +206,7 @@ void join(Bbs& bbs, Session& s) {
     t.reset(s.tl);
     t.nl(s.tl);
     status(s, "");
-    if (g_backLen) {                                   // what the device said just now
+    if (g_back && g_backLen) {                         // what the device said just now
         t.color(s.tl, Color::DarkGrey);
         t.text(s.tl, "--- recent ---");
         t.nl(s.tl);
@@ -279,8 +283,18 @@ bool start(Bbs& bbs) {
         plat::log("serial: pins rx %d tx %d are not usable", g_rx, g_tx);
         return false;
     }
+    // One allocation, at start, before the port is touched, so a board that
+    // cannot spare it refuses the plugin without having opened anything.
+    // A refused start is never followed by stop(), so nothing leaks here.
+    if (!g_back) g_back = static_cast<char*>(malloc(kScrollback));
+    if (!g_back) {
+        plat::log("serial: no room for the %u byte scrollback", static_cast<unsigned>(kScrollback));
+        return false;
+    }
     if (!plat::serialOpen(g_rx, g_tx, g_baud, g_bits, g_parity, g_stop)) {
         plat::log("serial: could not open the port on rx %d tx %d", g_rx, g_tx);
+        free(g_back);
+        g_back = nullptr;
         return false;
     }
     plat::log("serial: rx %d tx %d at %u %u%c%u", g_rx, g_tx, static_cast<unsigned>(g_baud),
@@ -291,6 +305,9 @@ bool start(Bbs& bbs) {
 void stop() {
     g_operator = nullptr;
     plat::serialClose();
+    free(g_back);
+    g_back    = nullptr;
+    g_backLen = 0;
 }
 
 // setLine: "SERIAL SET 9600 8N1"

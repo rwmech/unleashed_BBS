@@ -51,7 +51,7 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "1.0.1"
+#define BBS_VERSION         "1.1.0-dev.0"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // ---------------------------------------------------------------------------
@@ -223,8 +223,23 @@
 // ---------------------------------------------------------------------------
 #define BBS_SELECT_MS       10       // loop cadence, also effect resolution
 #define BBS_TASK_CORE       1        // Wi-Fi lives on core 0
-#define BBS_TASK_STACK      8192
+// Bytes, not words: StackType_t is uint8_t in the IDF's Xtensa port, and
+// xTaskCreatePinnedToCore takes the depth in StackType_t units. It comes out
+// of the heap when the task is created (pvPortMallocStack), not out of static
+// DRAM, so raising it costs heap one for one and nothing against the 180,736.
+// 12,288 since 1.1.0: 8,192 had reached 1,440 free on 0.22.1 by a path SYS
+// could not name, and the UserRec scratch buffers moving onto it as locals
+// add up to three records (1,476 bytes) on an account write.
+#define BBS_TASK_STACK      12288
 #define BBS_TASK_PRIO       5
+
+// The band of the task's stack that stackWatch reads just under the low mark
+// after each phase (plat::stackDeeper), in bytes. 512 because a UserRec is
+// 492: on the first host run a sign-up went 1,296 bytes deeper in one step
+// through a frame holding a record that path never touches, stepped clean
+// over a 256 byte band, and was only caught by the once-a-second full read,
+// without its phase. 128 word reads, a few microseconds a check.
+#define BBS_STACK_BAND      512
 
 // A pass slower than this gets a line on the console naming which phase ate
 // it. SYS has always shown "Loop worst" as a bare number, which says a stall

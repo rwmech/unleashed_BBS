@@ -324,10 +324,11 @@ const char* crossCheck(Ctx& c, SysConfig& out) {
     return nullptr;
 }
 
-// A scratch configuration, for a reload that may yet be refused and for a
-// writer's trial. Static because SysConfig is ~420 bytes and the BBS task's
-// stack is not the place for it; one is enough, since neither can be in
-// progress while the other is.
+// A scratch configuration, for a reload that may yet be refused, for a
+// writer's trial, and for check()ing a restore's uploaded file. Static
+// because SysConfig is ~410 bytes and the BBS task's stack is not the place
+// for it; one is enough, since all three run to completion on the BBS task
+// and none of them calls another.
 SysConfig g_scratch;
 
 // ---------------------------------------------------------------------------
@@ -517,6 +518,17 @@ bool reload(char* err, size_t errLen) {
     tzset();
     logSummary();
     return true;
+}
+
+int check(const char* path, char* err, size_t errLen, uint8_t* maxUsers) {
+    g_scratch = SysConfig();
+    int problems = parseFile(path, g_scratch, err, errLen);
+    if (maxUsers) *maxUsers = g_scratch.maxUsers;
+    // Forgotten at once: the file came from outside and carries passwords,
+    // and nothing is ever run on it. The next reload or trial starts over
+    // anyway, so this costs one struct assignment and hides nothing.
+    g_scratch = SysConfig();
+    return problems;
 }
 
 const SysConfig& get() {

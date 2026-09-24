@@ -52,6 +52,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <cctype>
+#include <new>
 #include <sys/stat.h>
 
 #ifndef MSG_NOSIGNAL
@@ -90,6 +91,34 @@ const char* headerValue(const char* block, const char* name) {
 }
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// exporter / importer: make one half of the shared zip storage live.
+//
+// Switching constructs the new half in place over the old one. Neither class
+// has a destructor to run, but the half being given up may still hold a FILE*,
+// so it is closed first; neither close touches anything on disk, which keeps
+// staging and the download snapshot exactly where the state machine left
+// them. In practice both are already closed by then, because every request
+// ends in dropClient() before the next one is routed.
+// ---------------------------------------------------------------------------
+ziparc::ZipExport& BackupService::exporter() {
+    if (zipUse_ != ZipUse::Export) {
+        zip_.imp.close();
+        new (&zip_.exp) ziparc::ZipExport();
+        zipUse_ = ZipUse::Export;
+    }
+    return zip_.exp;
+}
+
+ziparc::ZipImport& BackupService::importer() {
+    if (zipUse_ != ZipUse::Import) {
+        zip_.exp.abort();
+        new (&zip_.imp) ziparc::ZipImport();
+        zipUse_ = ZipUse::Import;
+    }
+    return zip_.imp;
+}
 
 // ===========================================================================
 // Window
@@ -155,14 +184,14 @@ void BackupService::service(const fd_set& r, const fd_set& w, uint32_t now) {
     if (cfd_ >= 0 && FD_ISSET(cfd_, &r)) readClient(now);
     if (cfd_ >= 0 && (FD_ISSET(cfd_, &w) || outPos_ < outLen_ || st_ == St::SendZip)) writeClient(now);
 
-    if (st_ == St::Extract && !imp_.step()) {
-        const ziparc::ImportReport& rep = imp_.report();
+    if (st_ == St::Extract && !importer().step()) {
+        const ziparc::ImportReport& rep = importer().report();
         if (!rep.accepted) {
             char body[160];
             snprintf(body, sizeof(body), "Nothing to apply. %u rejected%s%s\n", rep.rejected,
                      rep.rejected ? ", first: " : "", rep.firstReject);
             note("*** Upload from %s refused: nothing usable", clientIp_);
-            imp_.discard();
+            importer().discard();
             reply(422, "Unprocessable Entity", body);
         } else {
             snprintf(summary_, sizeof(summary_), "Upload from %s: %u file%s, %u KB%s%s%s",
@@ -283,7 +312,7 @@ void BackupService::readClient(uint32_t now) {
     if (fwrite(buf, 1, take, upload_) != take) {
         fclose(upload_);
         upload_ = nullptr;
-        imp_.discard();
+        importer().discard();
         reply(507, "Insufficient Storage", "storage full while receiving the upload\n");
         return;
     }
@@ -293,8 +322,8 @@ void BackupService::readClient(uint32_t now) {
         upload_ = nullptr;
         char path[96], err[96];
         uploadPath(path, sizeof(path));
-        if (!imp_.open(path, err, sizeof(err))) {
-            imp_.discard();
+        if (!importer().open(path, err, sizeof(err))) {
+            importer().discard();
             char body[128];
             snprintf(body, sizeof(body), "rejected: %s\n", err);
             note("*** Upload from %s refused: %s", clientIp_, err);
@@ -319,10 +348,10 @@ void BackupService::writeClient(uint32_t now) {
         }
         outPos_ = outLen_ = 0;
         if (st_ == St::SendZip) {
-            size_t n = exp_.produce(out_, sizeof(out_));
+            size_t n = exporter().produce(out_, sizeof(out_));
             if (n == 0) {
-                note("*** Backup downloaded by %s: %u files, %u KB", clientIp_, exp_.entries(),
-                     static_cast<unsigned>((exp_.totalBytes() + 1023) / 1024));
+                note("*** Backup downloaded by %s: %u files, %u KB", clientIp_, exporter().entries(),
+                     static_cast<unsigned>((exporter().totalBytes() + 1023) / 1024));
                 dropClient("download done");
                 return;
             }
@@ -374,14 +403,14 @@ void BackupService::route(uint32_t now) {
 
     if (get && !strcmp(path, "/backup.zip")) {
         char err[64];
-        if (!exp_.scan(cfg.hostname, err, sizeof(err))) { reply(500, "Internal Server Error", err); return; }
+        if (!exporter().scan(cfg.hostname, err, sizeof(err))) { reply(500, "Internal Server Error", err); return; }
         int w = snprintf(reinterpret_cast<char*>(out_), sizeof(out_),
                          "HTTP/1.1 200 OK\r\n"
                          "Content-Type: application/zip\r\n"
                          "Content-Length: %u\r\n"
                          "Content-Disposition: attachment; filename=\"%s-backup.zip\"\r\n"
                          "Connection: close\r\n\r\n",
-                         static_cast<unsigned>(exp_.totalBytes()), cfg.hostname);
+                         static_cast<unsigned>(exporter().totalBytes()), cfg.hostname);
         outLen_ = static_cast<uint16_t>(w);
         outPos_ = 0;
         st_     = St::SendZip;
@@ -403,7 +432,7 @@ void BackupService::route(uint32_t now) {
             return;
         }
 
-        imp_.discard();                                    // any leftover staging goes
+        importer().discard();                              // any leftover staging goes
         char dir[96], file[96];
         snprintf(dir, sizeof(dir), "%s/%s", plat::fsBase(), BBS_BACKUP_STAGING);
         mkdir(dir, 0755);
@@ -431,8 +460,8 @@ void BackupService::route(uint32_t now) {
             fclose(upload_);
             upload_ = nullptr;
             char err[96];
-            if (!imp_.open(file, err, sizeof(err))) {
-                imp_.discard();
+            if (!importer().open(file, err, sizeof(err))) {
+                importer().discard();
                 reply(400, "Bad Request", err);
                 return;
             }
@@ -467,9 +496,15 @@ void BackupService::dropClient(const char* why) {
     ::close(cfd_);
     cfd_ = -1;
     if (upload_) { fclose(upload_); upload_ = nullptr; }
-    if (st_ == St::Body || st_ == St::Extract || st_ == St::Approve) imp_.discard();
-    exp_.abort();
-    exp_.dropSnapshot();                             // the users.txt copy taken for a download
+    // Tidy the half of the zip storage that is live and never the other
+    // (backup.h). No accessor here: an accessor switches, and switching on
+    // the way out would build a fresh half only to tidy nothing in it.
+    if (zipUse_ == ZipUse::Import) {
+        if (st_ == St::Body || st_ == St::Extract || st_ == St::Approve) zip_.imp.discard();
+    } else {
+        zip_.exp.abort();
+        zip_.exp.dropSnapshot();                     // the users.txt copy taken for a download
+    }
     plat::log("backup: client %s done (%s)", clientIp_, why);
     st_ = St::Idle;
     outLen_ = outPos_ = 0;
@@ -483,14 +518,14 @@ void BackupService::decide(bool accept, const char* why) {
     if (st_ != St::Approve) return;
     char msg[160];
     if (accept) {
-        bool ok = imp_.apply(msg, sizeof(msg));
+        bool ok = importer().apply(msg, sizeof(msg));
         plat::fsInfoStale();              // screens and accounts were rewritten wholesale
         note("*** %.60s", msg);
         char body[300];
         snprintf(body, sizeof(body), "%s\n%s\n", msg, detail_);
         reply(ok ? 200 : 500, ok ? "OK" : "Internal Server Error", body);
     } else {
-        imp_.discard();
+        importer().discard();
         note("*** Upload discarded: %.48s", why);
         snprintf(msg, sizeof(msg), "Upload discarded: %s\n", why);
         reply(403, "Forbidden", msg);

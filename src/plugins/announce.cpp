@@ -1098,9 +1098,9 @@ const PluginSetting kSettings[] = {
     // Issued by the directory and kept so a listing survives a reflash.
     { "token",          "Token",     PS_TEXT,  0, 0,     kTokenMax },
 };
-// Four rows the core puts first (enabled, read, write, admin) and these fill
-// a CONFIG page: one more and CONFIG drops the last silently.
-static_assert(4 + sizeof(kSettings) / sizeof(kSettings[0]) <= Form::kMaxFields,
+// The rows the core puts first (kCoreRows: enabled, read, write, admin) and
+// these fill a CONFIG page: one more and CONFIG drops the last silently.
+static_assert(kCoreRows + sizeof(kSettings) / sizeof(kSettings[0]) <= Form::kMaxFields,
               "announce's CONFIG page is full");
 
 // ---------------------------------------------------------------------------

@@ -51,12 +51,15 @@
 #include "driver/spi_common.h"
 #include "sdmmc_cmd.h"
 #include "esp_vfs_fat.h"
+#include "freertos/FreeRTOS.h"   // stackFree, stackDeeper: the task's stack
+#include "freertos/task.h"
 extern "C" {
 #include "miniz.h"
 }
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace plat {
 
@@ -149,10 +152,39 @@ uint32_t heapFree() {
 }
 
 uint32_t stackFree() {
-    // uxTaskGetStackHighWaterMark reports in WORDS on Xtensa, not bytes.
-    // Getting that wrong would under-report by 4x and make a tight stack
-    // look comfortable, which is the failure direction that matters.
+    // Bytes. The kernel reports in StackType_t units, and in the IDF's
+    // Xtensa port StackType_t is uint8_t (portSTACK_TYPE, portmacro.h), so
+    // the unit is already a byte and the multiply is by one. It stays so the
+    // figure is right on a port where it is not. This comment used to say
+    // the mark was in words, which was never true here; believing it and
+    // "fixing" the code to match would have made a tight stack read four
+    // times roomier than it is, which is the failure direction that matters.
     return static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr)) * sizeof(StackType_t);
+}
+
+uint32_t stackSize() {
+    return BBS_TASK_STACK;
+}
+
+// stackDeeper: read the band of fill just under the old mark, a word at a
+// time. The kernel paints a new task's stack with 0xA5 (tskSTACK_FILL_BYTE)
+// from pxTaskGetStackStart, the lowest address, upwards, and knownFree bytes
+// of that were untouched when last measured, so the first written byte sat
+// at lo + knownFree. BBS_STACK_BAND (512) is 128 word reads, a few
+// microseconds, against the 100 or so a full stackFree costs reading
+// several KB a byte at a time.
+uint32_t stackDeeper(uint32_t knownFree) {
+    constexpr uint32_t kBand = BBS_STACK_BAND;
+    const uint8_t* lo = pxTaskGetStackStart(nullptr);
+    if (!lo || knownFree < 4) return 0;
+    uint32_t top  = knownFree & ~3u;                        // word aligned, inside the fill
+    uint32_t base = top > kBand ? top - kBand : 0;
+    for (uint32_t at = base; at < top; at += 4) {
+        uint32_t v;
+        memcpy(&v, lo + at, sizeof(v));                     // one aligned load
+        if (v != 0xA5A5A5A5u) return stackFree();
+    }
+    return 0;
 }
 
 HeapStats heap() {

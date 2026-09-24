@@ -109,7 +109,7 @@ HeapStats heap();
 uint32_t heapFree();
 
 // stackFree: the least free space the BBS task's stack has EVER had, in
-// bytes, or 0 where there is no such thing (the host).
+// bytes, or 0 where it cannot be measured.
 //
 // Not "free right now": the high water mark, which is the only version of
 // this number worth having. A reading taken at the prompt says nothing
@@ -117,11 +117,33 @@ uint32_t heapFree();
 // call is the one that overflows.
 //
 // It exists to settle an argument rather than to decorate a screen. Twenty
-// two UserRec scratch buffers are static, each with a comment saying that
-// keeps them "off the task stack", and making them ordinary locals would
-// return about 10 KB of static DRAM. Whether that is safe is a measurement,
-// and this is the measurement.
+// two UserRec scratch buffers were static, each with a comment saying that
+// kept them "off the task stack", and making them ordinary locals returned
+// about 10 KB of static DRAM in 1.1.0, once the stack had grown to take
+// them. Whether that stays safe is a measurement, and this is it.
+//
+// On the host it is the same measurement of a different stack: the BBS runs
+// on a thread whose stack is painted the way FreeRTOS paints a task's, so the
+// figure is real, but it is x86-64 frames under glibc rather than Xtensa
+// frames under newlib. Compare host figures with each other, never with the
+// board's.
 uint32_t stackFree();
+
+// stackSize: the BBS task's whole stack in bytes, what stackFree is out of.
+// 0 where it is not known.
+uint32_t stackSize();
+
+// stackDeeper: has the stack been used below the mark stackFree last gave?
+// knownFree is that figure. Returns the new, lower stackFree when it has,
+// and 0 when it has not, which is nearly always.
+//
+// stackFree reads every free byte from the bottom up and is too dear to call
+// several times a pass. This reads only a band just under the old mark,
+// which is where a deeper call almost always writes first. Almost: a frame
+// that reserves a large buffer and leaves the far end of it untouched can
+// step over the band, so the loop also calls stackFree once a second and
+// catches what this missed, only without knowing which phase did it.
+uint32_t stackDeeper(uint32_t knownFree);
 
 // powerSave: what mode the radio is really in, as a word.
 //

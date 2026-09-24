@@ -1881,6 +1881,19 @@ def test_sysinfo():
     ok &= check("SYS has memory and storage", b"Heap free" in sys_out and b"Data free" in sys_out)
     ok &= check("SYS reports the scheduler", b"Loop avg" in sys_out and b"Loop passes" in sys_out)
     ok &= check("SYS counts the lines", b"Nodes busy" in sys_out and b"Calls" in sys_out)
+    # Stack headroom (1.1.0). The host paints its BBS thread's stack the way
+    # FreeRTOS paints a task's, so the figure is measured here too, and it
+    # says what it is out of: "1,440 free" meant one thing against 8,192 and
+    # means another against 12,288. The host said "n/a" before this.
+    ok &= check("SYS says how much stack has been free, and out of what",
+                re.search(rb"Stack free\s+[\d,]+ least of [\d,]+", sys_out) is not None)
+    # And the board logs every new low with where it happened, which is what
+    # SYS alone could never say.
+    host_log = DATA.parent / "host.log"
+    if host_log.exists():
+        text = host_log.read_text(errors="replace")
+        ok &= check("the stack's headroom is logged from the first pass",
+                    re.search(r"bbs: stack \d+ of \d+ free after start-up", text) is not None)
 
     s.buf.clear()
     s.send(b"calls\r")

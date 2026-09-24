@@ -150,6 +150,17 @@ bool reload(char* err, size_t errLen);
 // problems (bad value, bad [access] row); the first is copied to err.
 int parseFile(const char* path, SysConfig& out, char* err, size_t errLen);
 
+// check: parse a config file that is not the live one (a restore's uploaded
+// system.cfg) into the scratch that reload and trial use, and forget it
+// again. Returns the number of hard problems, the first in err, exactly as
+// parseFile does. maxUsers, when not null, gets the file's max_users, which
+// is the one value a restore reads out of the file it is validating.
+//
+// It exists so the backup restore does not keep two SysConfig copies of its
+// own: every byte added to SysConfig used to cost four, one of them each for
+// two probes that were only ever used for the length of one call.
+int check(const char* path, char* err, size_t errLen, uint8_t* maxUsers = nullptr);
+
 // get: the active configuration
 const SysConfig& get();
 

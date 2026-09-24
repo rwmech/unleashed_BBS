@@ -673,10 +673,11 @@ bool ZipImport::extract(Item& it) {
     else if (p.crc != it.crc)          why = "CRC mismatch";
 
     if (!why && !strcmp(it.name, BBS_CONFIG_FILE)) {
-        static SysConfig probe;
+        // Parsed into syscfg's own scratch rather than a SysConfig of ours:
+        // two static probes here were 820 bytes of DRAM held for the length
+        // of one call each (syscfg::check).
         static char cfgErr[96];
-        probe = SysConfig();
-        if (syscfg::parseFile(path, probe, cfgErr, sizeof(cfgErr))) why = cfgErr;
+        if (syscfg::check(path, cfgErr, sizeof(cfgErr))) why = cfgErr;
     }
     if (!why && !strcmp(it.name, BBS_USERS_FILE)) {
         static char usersErr[96];
@@ -684,14 +685,15 @@ bool ZipImport::extract(Item& it) {
         users::Issues iss;
         iss.err = usersErr;   iss.errLen = sizeof(usersErr);
         iss.warn = usersWarn; iss.warnLen = sizeof(usersWarn);
-        static SysConfig cfgProbe;                   // limits from the uploaded config
+        // Limits from the uploaded config, when the zip carries one and it
+        // parses cleanly; otherwise validateFile falls back to the live one.
         char cfgPath[96];
         stagePath(cfgPath, sizeof(cfgPath), BBS_CONFIG_FILE);
-        cfgProbe = SysConfig();
         struct stat cst;
         char ignore[8];
-        if (stat(cfgPath, &cst) == 0 && !syscfg::parseFile(cfgPath, cfgProbe, ignore, 0)) {
-            iss.maxUsers = cfgProbe.maxUsers;
+        uint8_t upMax = 0;
+        if (stat(cfgPath, &cst) == 0 && !syscfg::check(cfgPath, ignore, 0, &upMax)) {
+            iss.maxUsers = upMax;
         }
         if (users::validateFile(path, iss)) {
             why = usersErr;

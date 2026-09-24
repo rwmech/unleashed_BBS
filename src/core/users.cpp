@@ -374,7 +374,13 @@ users::Result rewrite(const char* replaceHandle, const UserRec* replacement, con
         return users::Result::IoError;
     }
     if (in) {
-        static UserRec u;
+        // On the stack since 1.1.0, like every UserRec scratch here: they
+        // were static "to keep them off the task stack", which cost 492
+        // bytes of static DRAM apiece on a board with 4 KB of it left. This
+        // one is on the deepest path the accounts have (a caller's record,
+        // then this, then the fprintf into LittleFS), which is why the task
+        // stack went to 12,288 first.
+        UserRec u;
         Reader r(in);
         while (r.next(u)) {
             if (replaceHandle && ieq(u.handle, replaceHandle)) {
@@ -453,12 +459,22 @@ bool find(const char* handle, UserRec& out) {
     return lookup(handle, out) == Lookup::Found;
 }
 
+// exists: never inlined, so the record lives only for the length of the
+// question. add() and update() ask it and then rewrite the whole file;
+// inlined, the record would sit on the stack under rewrite()'s own for the
+// entire write, 492 bytes doing nothing on the deepest path the accounts
+// have.
+__attribute__((noinline)) bool exists(const char* handle) {
+    UserRec probe;
+    return find(handle, probe);
+}
+
 uint8_t count() {
     char p[96];
     path(p, sizeof(p), "");
     FILE* f = fopen(p, "r");
     if (!f) return 0;
-    static UserRec u;
+    UserRec u;
     Reader r(f);
     uint16_t n = 0;
     while (r.next(u)) ++n;
@@ -486,7 +502,7 @@ uint8_t range(uint8_t start, uint8_t n, RangeFn fn, void* ctx) {
     path(p, sizeof(p), "");
     FILE* f = fopen(p, "r");
     if (!f) return 0;
-    static UserRec u;
+    UserRec u;                           // fn gets a reference for the call only
     Reader r(f);
     uint16_t i = 0;
     uint8_t done = 0;
@@ -499,8 +515,7 @@ uint8_t range(uint8_t start, uint8_t n, RangeFn fn, void* ctx) {
 }
 
 Result add(const UserRec& u) {
-    static UserRec probe;
-    if (find(u.handle, probe)) return Result::Exists;
+    if (exists(u.handle)) return Result::Exists;
     if (count() >= syscfg::get().maxUsers) return Result::Full;
 
     // An account is never written without an id. The caller may already
@@ -521,7 +536,7 @@ uint32_t maxId() {
     path(p, sizeof(p), "");
     FILE* f = fopen(p, "r");
     if (!f) return 0;
-    static UserRec u;
+    UserRec u;
     Reader r(f);
     uint32_t hi = 0;
     while (r.next(u)) if (u.id > hi) hi = u.id;
@@ -549,9 +564,8 @@ uint8_t assignIds() {
 }
 
 Result update(const char* originalHandle, const UserRec& u) {
-    if (!ieq(originalHandle, u.handle)) {                  // renamed: the new name must be free
-        static UserRec probe;
-        if (find(u.handle, probe)) return Result::Exists;
+    if (!ieq(originalHandle, u.handle) && exists(u.handle)) {  // renamed: the new name must be free
+        return Result::Exists;
     }
     return rewrite(originalHandle, &u, nullptr);
 }
@@ -562,7 +576,7 @@ Result update(const char* originalHandle, const UserRec& u) {
 // that genuinely wants the block gone, and it is deliberately not reachable
 // from a caller-facing command.
 Result retire(const char* handle) {
-    static UserRec u;
+    UserRec u;
     if (!find(handle, u)) return Result::NotFound;
     if (u.retired) return Result::Ok;                 // already, and that is fine
     u.retired = true;
@@ -576,7 +590,7 @@ Result retire(const char* handle) {
 // retired flag stay, so nothing anywhere is orphaned and the handle is
 // never reissued. Everything a person would recognise as theirs goes.
 Result purge(const char* handle) {
-    static UserRec u;
+    UserRec u;
     if (!find(handle, u)) return Result::NotFound;
     UserRec blank;
     blank.id      = u.id;                             // the identity survives
@@ -622,7 +636,7 @@ int validateFile(const char* p, Issues& iss) {
         if (iss.err && iss.errLen) snprintf(iss.err, iss.errLen, "cannot read users.txt");
         return ++iss.problems;
     }
-    static UserRec u;
+    UserRec u;
     // Hashes, not handles: this table is only ever asked "have I seen this
     // one already", which is an equality question, and 250 handles at 21
     // bytes was 5,250 bytes of static DRAM held for a check that runs when

@@ -379,16 +379,25 @@ void Bbs::tick() {
     uint8_t  slowest = 0;                         // node whose service took longest
     const char* slowDoing = "";                   // and the verb it was running
 
-    if (FD_ISSET(lfd_, &rfds)) acceptAll(now);
+    if (FD_ISSET(lfd_, &rfds)) {
+        acceptAll(now);
+        stackWatch("accept", nullptr);
+    }
     usAcc = plat::micros() - mark; mark += usAcc;
 
     {
         uint32_t worstSess = 0;
         for (Session* s : all_) {
             uint32_t s0 = plat::micros();
-            if (s->fd >= 0 && s->rxLen)                    processInput(*s, now);   // held from before
-            else if (s->fd >= 0 && FD_ISSET(s->fd, &rfds)) readSession(*s, now);
-            if (s->st != SState::Free) serviceSession(*s, now);
+            bool worked = false;
+            if (s->fd >= 0 && s->rxLen)                    { processInput(*s, now); worked = true; }  // held from before
+            else if (s->fd >= 0 && FD_ISSET(s->fd, &rfds)) { readSession(*s, now);  worked = true; }
+            if (s->st != SState::Free)                     { serviceSession(*s, now); worked = true; }
+            // After the session, not after the loop, so a new low names the
+            // caller and the verb. Only a session that ran anything can have
+            // gone deeper, and a line that closed in this pass still counts:
+            // the logoff's account write is one of the deep paths.
+            if (worked) stackWatch("session", s);
             uint32_t sd = plat::micros() - s0;
             // Which caller, and what they were doing. A stall inside one
             // session is a different bug from one spread across all of
@@ -401,14 +410,21 @@ void Bbs::tick() {
 
     backup_.service(rfds, wfds, now);
     serviceBackup(now);
+    stackWatch("backup", nullptr);
     usBack = plat::micros() - mark; mark += usBack;
 
     plugins::tick(now);
+    stackWatch("plugins", nullptr);
     usPlug = plat::micros() - mark; mark += usPlug;
 
     plat::activityTick(now);
     heapWatch(now);
     serviceShutdown(now);
+    stackWatch("tail", nullptr);
+    if (!stackCheckAt_ || now - stackCheckAt_ >= 1000) {     // the full read, once a second
+        stackCheckAt_ = now ? now : 1;
+        stackWatch(nullptr, nullptr);
+    }
     usTail = plat::micros() - mark;
 
     uint32_t dt = plat::micros() - work0;
@@ -1493,6 +1509,27 @@ void Bbs::askPassword(Session& s) {
 }
 
 // ---------------------------------------------------------------------------
+// readForLogin: the account read fresh, and whether typed is its password.
+// edit gets the record only when it was found; on Missing or Error it is
+// left alone, because a lookup that misses leaves whatever record it read
+// last in its buffer, and that is somebody else's account.
+//
+// A frame of its own, never inlined, so the record is off the stack before
+// onPassword goes on to completeLogin, which plays the motd and runs the
+// caller's landing command. Held in onPassword's frame it would sit under
+// all of that for nothing. It used to be a static, which cost 492 bytes of
+// DRAM for the same reason in the other direction.
+// ---------------------------------------------------------------------------
+__attribute__((noinline))
+static users::Lookup readForLogin(const char* handle, const char* typed, UserRec& edit, bool& ok) {
+    UserRec fresh;
+    users::Lookup found = users::lookup(handle, fresh);
+    ok = found == users::Lookup::Found && users::checkPassword(fresh, typed);
+    if (found == users::Lookup::Found) edit = fresh;
+    return found;
+}
+
+// ---------------------------------------------------------------------------
 // onPassword: verify in place. The stars spin, rub out and turn into
 // ACCESS GRANTED, or ACCESS DENIED flashes and clears for another try on
 // the same line. Three misses per call hang up, five per handle in
@@ -1506,16 +1543,14 @@ void Bbs::onPassword(Session& s, uint32_t now) {
     uint8_t stars = s.ed.shown();
     t.color(tl, Color::Grey);
     fx::spinner(t, tl, fx::Spin::Line, 650, 90);
-    static UserRec fresh;                            // static: off the task stack
-    users::Lookup found = users::lookup(s.user, fresh);
-    bool ok = found == users::Lookup::Found && users::checkPassword(fresh, s.ed.text());
+    bool ok = false;
+    users::Lookup found = readForLogin(s.user, s.ed.text(), s.edit, ok);
     s.ed = LineEditor();                             // wipe the typed password
     fx::rubout(t, tl, stars, 20);
 
-    if (found == users::Lookup::Found && (fresh.locked || logins_.locked(s.user, now))) {
-        s.edit = fresh;
-        hangup(s, fresh.locked ? "This account is locked. Ask the sysop."
-                               : "Too many wrong passwords. Try again later.", now);
+    if (found == users::Lookup::Found && (s.edit.locked || logins_.locked(s.user, now))) {
+        hangup(s, s.edit.locked ? "This account is locked. Ask the sysop."
+                                : "Too many wrong passwords. Try again later.", now);
         return;
     }
     if (found == users::Lookup::Missing) {           // deleted while typing
@@ -1526,7 +1561,7 @@ void Bbs::onPassword(Session& s, uint32_t now) {
         hangup(s, "Accounts are unavailable. Try again shortly.", now);
         return;
     }
-    s.edit = fresh;
+    // s.edit already holds the account: readForLogin copied it there.
 
     if (ok) {
         logins_.clear(s.user);
@@ -1786,6 +1821,17 @@ void Bbs::setupConfig(Session& s, uint32_t now) {
 }
 
 // ---------------------------------------------------------------------------
+// accountLanding: where this account asked to land, LAND_DEFAULT when it has
+// not said or is not on file. Never inlined, so the record is off the stack
+// before the landing command runs: landing in the forums or the chat room is
+// a whole command dispatch, and a record held here would sit under it.
+// ---------------------------------------------------------------------------
+__attribute__((noinline)) static uint8_t accountLanding(const char* handle) {
+    UserRec u;
+    return users::find(handle, u) ? u.land : static_cast<uint8_t>(LAND_DEFAULT);
+}
+
+// ---------------------------------------------------------------------------
 // landAfterLogin: put the caller where they asked to be put.
 //
 // The account decides; LAND_DEFAULT means it has not said, and the board's
@@ -1801,8 +1847,8 @@ void Bbs::setupConfig(Session& s, uint32_t now) {
 void Bbs::landAfterLogin(Session& s) {
     uint8_t want = syscfg::get().landing;
     if (!s.guest) {
-        static UserRec u;                       // static: off the task stack
-        if (users::find(s.user, u) && u.land != LAND_DEFAULT) want = u.land;
+        uint8_t mine = accountLanding(s.user);
+        if (mine != LAND_DEFAULT) want = mine;
     }
 
     const char* verb = users::landVerb(want);
@@ -1875,6 +1921,52 @@ void Bbs::heapWatch(uint32_t now) {
 }
 
 // ---------------------------------------------------------------------------
+// stackWatch: log each new low in the BBS task's stack, and who set it.
+//
+// SYS has shown the least stack ever free since 0.21.3, and on 0.22.1 it said
+// 1,440 of 8,192 with nothing to say which call got there. Reading frame sizes
+// out of the ELF undercounts by 2 to 3 KB, because an interrupt's exception
+// frame and the flash write under every fprintf land on this stack too, so
+// the board has to name the path itself. This is the same few lines the slow
+// pass log is, pointed at the stack.
+//
+// phase is the part of the pass that just ran and s the session it ran for,
+// when there was one. Those calls take the cheap look (plat::stackDeeper,
+// a band of BBS_STACK_BAND bytes). The tail's once-a-second call passes no
+// phase and takes the full read, which catches a low the cheap look stepped
+// over and one set between passes (Improv's poll on the board); that is
+// logged as found late, because which phase did it is genuinely not known.
+//
+// Not rate limited like the slow pass: a new low can only happen so many
+// times before there is no stack left to be low in.
+// ---------------------------------------------------------------------------
+void Bbs::stackWatch(const char* phase, const Session* s) {
+    uint32_t f = (stackLow_ && phase) ? plat::stackDeeper(stackLow_) : plat::stackFree();
+    if (!f) return;                                           // not deeper, or not measurable
+    if (stackLow_ && f >= stackLow_) return;
+    bool first = !stackLow_;
+    stackLow_ = f;
+
+    unsigned long size = plat::stackSize();
+    unsigned long used = size > f ? size - f : 0;
+    if (first) {
+        plat::log("bbs: stack %lu of %lu free after start-up (%lu used)",
+                  static_cast<unsigned long>(f), size, used);
+    } else if (!phase) {
+        plat::log("bbs: stack low %lu of %lu free (%lu used), found by the once-a-second read",
+                  static_cast<unsigned long>(f), size, used);
+    } else if (s) {
+        plat::log("bbs: stack low %lu of %lu free (%lu used) in %s (node %u %s%s)",
+                  static_cast<unsigned long>(f), size, used, phase,
+                  static_cast<unsigned>(s->id), s->doing[0] ? s->doing : "-",
+                  s->st == SState::Free ? ", line closed" : "");
+    } else {
+        plat::log("bbs: stack low %lu of %lu free (%lu used) in %s",
+                  static_cast<unsigned long>(f), size, used, phase);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // serviceShutdown: the countdown, and the end of it.
 //
 // Announcements go out on a cadence rather than once a second. A line a
@@ -1930,7 +2022,9 @@ void Bbs::serviceShutdown(uint32_t now) {
 // saveCallStats: at logoff, count the call and the day's minutes
 // ---------------------------------------------------------------------------
 void Bbs::saveCallStats(Session& s, uint32_t now) {
-    static UserRec u;                                // static: keeps it off the task stack
+    // On the stack since 1.1.0, under users::update and rewrite's own record:
+    // this is one of the account writes the task stack was raised for.
+    UserRec u;
     if (s.guest || s.role == Role::Busy || !users::find(s.user, u)) return;
     uint32_t mins = ((now - s.loginAt) / 1000u + 59u) / 60u;
     uint32_t day  = clk::dayKey(now);
@@ -1945,7 +2039,7 @@ void Bbs::saveCallStats(Session& s, uint32_t now) {
 }
 
 uint16_t Bbs::dayMinutesUsed(const char* handle, uint32_t now) {
-    static UserRec u;
+    UserRec u;
     if (!users::find(handle, u)) return 0;
     return u.dayKey == clk::dayKey(now) ? u.dayMinutes : 0;
 }

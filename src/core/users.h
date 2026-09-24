@@ -207,6 +207,11 @@ const char* fieldPtr(const UserRec& u, const UserField& f);
 // find: case-insensitive handle lookup
 bool find(const char* handle, UserRec& out);
 
+// exists: find, for a caller that only wants the yes or no. The record it
+// reads into lives in exists()'s own frame and is gone when it returns,
+// rather than sitting on the task stack under whatever the caller does next.
+bool exists(const char* handle);
+
 // lookup: like find, but says whether users.txt could be read at all, so a
 // caller never treats a filesystem problem as "no such account"
 enum class Lookup : uint8_t { Found, Missing, Error };
