@@ -255,7 +255,10 @@ bool path(uint8_t index, const char* file, char* out, size_t n) {
     const char* base = sd ? plat::sdBase() : plat::userBase();
     if (sd) {
         if (!base[0]) return false;                           // no card, so no files
-        plat::SdInfo i = plat::sdInfo();
+        // The sd plugin's kept figure (1.1.0): this runs on every file a
+        // plugin opens on the card, and asking the card each time is a trip
+        // to its FAT whenever the platform's own figure has run out.
+        const plat::SdInfo& i = sdCardInfo();
         // The reserve is a flash rule: LittleFS needs room to garbage collect
         // and the core has to be able to write users.txt whatever a plugin is
         // doing. A card has neither problem, so the only question is whether
@@ -338,7 +341,7 @@ void begin(Bbs& bbs) {
         uint32_t freeFs  = 0;
         uint32_t reserve = 0;
         if (p->info.flags & PF_SD) {
-            plat::SdInfo si = plat::sdInfo();
+            const plat::SdInfo& si = sdCardInfo();
             freeFs = si.freeKB > (0xFFFFFFFFu / 1024u) ? 0xFFFFFFFFu : si.freeKB * 1024u;
         } else {
             freeFs  = freeBytes();

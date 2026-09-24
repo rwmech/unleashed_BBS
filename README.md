@@ -201,7 +201,7 @@ pio device monitor                               # then set Wi-Fi with Improv, s
 After that:
 
 - `pio run -t upload` for new firmware. Config, screens and logs stay as they are.
-- Config and screens change through the backup window ([BACKUP.md](BACKUP.md)), not by reflashing. With an SD card, `BACKUP SD` and `RESTORE SD` keep the same zip on the card from the sysop's prompt, and `nightly = yes` on `CONFIG sd` makes one every night.
+- Config and screens change through the backup window ([BACKUP.md](BACKUP.md)), not by reflashing. With an SD card, `BACKUP SD` and `RESTORE SD` keep the same zip on the card from the sysop's prompt, `nightly = yes` on `CONFIG sd` makes one every night, and the sysop's `Backups` file area (`FILES 11`) downloads and uploads them over the line. A restore waits until nobody else is on. `SCREENS` lists every screen and where callers get it from.
 - `flashall` / `uploadfs` rewrite the `storage` partition with `data/`, which is the screens. The accounts and the config are on `userdata` and stay put, so reflashing a board is no longer a reset.
 
 Flash layout (4 MB): two 1.5 MB OTA app slots and three data partitions.
@@ -274,7 +274,8 @@ src/core/clock.*          wall clock formatting (NTP)
 src/core/sysconfig.*      system.cfg loader, validator, password redaction, access matrix
 src/core/backup.*         backup window: button, HTTP in the BBS loop, Y/N approval; the card jobs
 src/core/ziparc.*         backup zip export (stored) and import (stored/deflate, staged)
-src/core/bbs_backup.cpp   BACKUP SD, RESTORE SD and the nightly backup, as the sysop sees them
+src/core/bbs_backup.cpp   BACKUP SD, RESTORE SD and the nightly backup, as the sysop sees them; a restore waiting for a quiet board
+src/core/bbs_screens.cpp  SCREENS and SCREENS VIEW: every screen and where callers get it from
 src/core/cardnames.h      the backups' names on the card, and which nightly one to prune
 src/core/tzones.h         the timezones CONFIG board offers by name
 src/core/crc32.h          CRC-32 for the zip

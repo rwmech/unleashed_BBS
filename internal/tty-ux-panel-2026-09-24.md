@@ -15,6 +15,21 @@ and reads as a stroke. Everything drawn here is 2 px.
 
 ## Revision 1: Rob's changes (2026-09-24)
 
+Revision 2 (2026-09-24, later the same day): two changes from Rob, and
+nothing else moved.
+
+- The Wi-Fi gauge is an antenna, not a box. Rob: "instead of a box, can
+  we have an antenna that fills up, should take same space, just a line
+  with a ball on top that fills up." Same 6 x 16 cell in the same place,
+  same dB mapping, colours, not-joined state and sampling. "The Wi-Fi
+  antenna" below replaces "The Wi-Fi bar", and every mock-up that shows
+  the header is re-rendered with it under the same filenames.
+- The callers list grows to fit everyone on, and the recent log gives up
+  its rows for them. Rob: "presuming you'll sacrafice the last log for
+  the callers online that makes sense and fits all 10 nodes". Portrait
+  holds ten; past ten the last slot reads `+N more`. "The lists" below
+  carries the rule, and `p2_full.png` shows all eleven on.
+
 Rob, on the revision 0 busy mock-up: the uptime, the address and the card
 belong in the header, like a phone's status bar, with the Wi-Fi signal as
 a vertical bar that "should visibly move"; callers as one small line, not
@@ -40,6 +55,8 @@ the files Rob has open, overwritten; the revision 0 renders are kept as
 - `p2_ring.png`: a caller ringing for the sysop.
 - `p2_offline.png`: no network, card error, held listing, restart warning.
 - `p2_landscape.png`, `p2_landscape_quiet.png`: 320 x 172.
+- `p2_full.png`: all eleven on, portrait: nine names, `+2 more`, no
+  recent rows (revision 2).
 
 ### The verdict on revision 1
 
@@ -56,7 +73,7 @@ measured; stated below so nobody discovers it as a mystery.
 Row 1, the bar, `R(0,0,w,22)` in 0x196F: one slot, `R(2,3,168,16)`
 portrait (21 glyphs), `R(2,3,312,16)` landscape (39). Row 2, the band,
 `R(0,22,w,20)` in #0e1a48 (0x08C9): the status glyphs packed from x=4,
-then the Wi-Fi bar, then the clock at the right. The track `R(0,42,w,1)`
+then the Wi-Fi antenna, then the clock at the right. The track `R(0,42,w,1)`
 in 0x4BF3 with the dot on it, as revision 0.
 
 The slot rotates through three pages, 3 s each, with a fade between:
@@ -108,7 +125,7 @@ file or walks the heap.
 | 9 | hourglass | 7x9 | a slow pass in the last 60 s | warm | the slow-pass counter SYS reports, compared with its value a minute ago |
 
 The nine glyphs and their eight 3 px gaps are 104 px; the row has 114
-before the Wi-Fi bar. The set cannot overflow.
+before the antenna. The set cannot overflow.
 
 ```
 sd (9x12) filled     sd hollow            mail (11x8)          bell (9x11)
@@ -159,21 +176,80 @@ is ringing, for the ring's duration and not a second longer. Not the bar
 changing colour: that is a 7,224 px redraw per blink and it would fight
 the fade.
 
-### The Wi-Fi bar
+### The Wi-Fi antenna
 
-`R(clockX - 10, 24, 6, 16)`: a 1 px outline, an inner well of 4 x 14. It
-fills from the bottom, `h = (rssi + 90) * 14 / 40` clamped to 0..14, so
-one pixel is 2.9 dB and the whole -90..-50 range is the well's height. No
-hysteresis: Rob wants it to move, and at this size a pixel flickering is
-the signal breathing, not a fault.
+Revision 2. Rob: "instead of a box, can we have an antenna that fills
+up, should take same space, just a line with a ball on top that fills
+up." The same cell the bar had, `R(118,24,6,16)` portrait and
+`R(266,24,6,16)` landscape, at the clock's left: a ball 6 x 5 on a mast
+2 x 11, and the whole silhouette is the gauge. It fills from the bottom,
+the mast first and the ball last, so a full ball is a strong signal.
 
-- Fill colour: live at -67 dBm and up, warm from -75 to -68, risk below.
-  The same numbers as SYS's words and the strip's `wifi` effect.
-- Outline: dim when joined. Not joined: outline in risk and no fill.
+```
+silhouette   full -50    -62 h=11    -70 h=8     -80 h=4     -89 h=0     not joined
+.XXXX.       .GGGG.      .ffff.      .ffff.      .ffff.      .ffff.      .RRRR.     r0  ball
+XXXXXX       GGGGGG      ffffff      ffffff      ffffff      ffffff      RRRRRR     r1
+XXXXXX       GGGGGG      ffffff      ffffff      ffffff      ffffff      RRRRRR     r2
+XXXXXX       GGGGGG      ffffff      ffffff      ffffff      ffffff      RRRRRR     r3
+.XXXX.       .GGGG.      .ffff.      .ffff.      .ffff.      .ffff.      .RRRR.     r4  ball, h 12..16
+..XX..       ..GG..      ..GG..      ..ff..      ..ff..      ..ff..      ..RR..     r5  mast top, h 11
+..XX..       ..GG..      ..GG..      ..ff..      ..ff..      ..ff..      ..RR..     r6
+..XX..       ..GG..      ..GG..      ..ff..      ..ff..      ..ff..      ..RR..     r7
+..XX..       ..GG..      ..GG..      ..WW..      ..ff..      ..ff..      ..RR..     r8  h 8
+..XX..       ..GG..      ..GG..      ..WW..      ..ff..      ..ff..      ..RR..     r9
+..XX..       ..GG..      ..GG..      ..WW..      ..ff..      ..ff..      ..RR..     r10
+..XX..       ..GG..      ..GG..      ..WW..      ..ff..      ..ff..      ..RR..     r11
+..XX..       ..GG..      ..GG..      ..WW..      ..RR..      ..ff..      ..RR..     r12 h 4
+..XX..       ..GG..      ..GG..      ..WW..      ..RR..      ..ff..      ..RR..     r13
+..XX..       ..GG..      ..GG..      ..WW..      ..RR..      ..ff..      ..RR..     r14
+..XX..       ..GG..      ..GG..      ..WW..      ..RR..      ..ff..      ..RR..     r15 h 1
+G live, W warm, R risk, f the faint ghost, . the band
+```
+
+- Fill: `h = (rssi + 90) * 16 / 40`, rssi clamped to -90..-50, h 0..16,
+  2.5 dB a pixel (the bar's well was 14 rows at 2.9). Rows `16 - h` to 15
+  in the fill colour, the rest in `--faint`. h reaches 1 at -87, 6 at
+  -75, 9 at -67, 11 at -62 (the mast full), 12 at -60 (the ball begins),
+  16 at -50. No hysteresis: Rob wants it to move, and at this size a
+  pixel flickering is the signal breathing, not a fault.
+- Fill colour: live at -67 dBm and up, warm from -75 to -68, risk below,
+  the same numbers as SYS's words and the strip's `wifi` effect. The
+  colour steps land on pixel rows: risk is h 0..5, warm 6..8, live 9..16.
+  The ball is h 12 to 16, so it is only ever green or ghost: a coloured
+  ball means one thing.
+- Outline: none. At 2 px the mast is its own stroke, so an outline round
+  it would be the mast, and a 1 px ring round a 6 px ball is 0.1 mm and
+  disappears, the rule at the top of this report. The empty part of the
+  gauge is the silhouette in `--faint` instead, the way a phone draws the
+  empty bars of its signal icon. `--faint` and not `--dim`: the ghost has
+  to sit behind the fill, not beside it, and the hollow SD card next door
+  is `--dim` and means absent, which unfilled is not.
+- Not joined: the whole silhouette in `--risk`, no ghost. Unambiguous: a
+  reading never has a red ball and never has red above row 10.
+- Steps: 17 heights plus not joined, 18 states, three fill colours.
 - Sampling: `plat::wifiRssi()` four times a second from the panel's tick,
   gated at 250 ms. One `esp_wifi_sta_get_ap_info` call each, a record
-  copy, tens of microseconds. Redraw when `h` or the colour changes: 96
-  px, 192 B, at most four times a second, 768 B/s worst case.
+  copy, tens of microseconds. Redraw the whole cell as one rect when `h`,
+  the colour or the joined state changes: 96 px, 192 B, at most four
+  times a second, 768 B/s worst case, the same as the bar. One
+  transaction, one band, only on change: it fits the 250 ms dirty-only
+  redraw exactly as the bar did.
+- Data: one 16-row bitmap, a byte a row, 16 B of flash, drawn the way the
+  status glyphs are drawn, with the colour chosen per row.
+
+Draw rules, `x = 118` (266 landscape), `y = 24`, the band under it:
+
+```
+kAntenna[16] = { 0x1E, 0x3F, 0x3F, 0x3F, 0x1E,      // ball: .XXXX. XXXXXX x3 .XXXX.
+                 0x0C x 11 };                         // mast: ..XX..  (bit 5 is x = 0)
+fill(x, y, 6, 16, band)
+for r in 0..15: paint row r of kAntenna at (x, y + r) in
+    joined ? (r >= 16 - h ? fillColour : faint) : risk
+```
+
+As rects, for a path with no bitmap: ghost `R(x+1,y,4,1)`, `R(x,y+1,6,3)`,
+`R(x+1,y+4,4,1)`, `R(x+2,y+5,2,11)` in faint, then the same four clipped
+to rows `>= y + 16 - h` in the fill colour.
 
 ### Layout, portrait 172 x 320
 
@@ -186,7 +262,7 @@ margin 4, right edge 168, row pitch 20 (16 of glyph, 4 of air).
   0  ####################################################################################  bar
   3  # S3 Demo  /  192.168.0.86:6400  /  up 12d 3h  7.4 GB                             #  slot 2..169, rotating
  22  ====================================================================================  band
- 24  = [sd][mail][up][lock][tower][staff][slow]                            [bar]  16:16 =  glyphs from 4; bar 118..123; clock 128..167
+ 24  = [sd][mail][up][lock][tower][staff][slow]                            [ant]  16:16 =  glyphs from 4; antenna 118..123; clock 128..167
  42  ---------------------------------------o--------------------------------------------  track, dot
  48      [callers] Callers 4/11                                                            heading, struct
  68       1] quantumrob                                                     2h            callers on, up to 4
@@ -213,13 +289,13 @@ margin 4, right edge 168, row pitch 20 (16 of glyph, 4 of air).
 | slot | 2 | 3 | 168 | 16 | 8x16 | by page |
 | band | 0 | 22 | 172 | 20 | | band 0x08C9 |
 | glyph strip | 4 | 24 | 110 | 16 | bitmaps | by flag |
-| Wi-Fi bar | 118 | 24 | 6 | 16 | | by RSSI |
+| Wi-Fi antenna | 118 | 24 | 6 | 16 | bitmap | by RSSI; faint ghost |
 | clock | 128 | 24 | 40 | 16 | 8x16 right | yellow; dim `--:--` |
 | track | 0 | 42 | 172 | 1 | | track |
 | heading icon | 4 | 48 | 16 | 16 | callers | struct; dim at 0 |
 | heading | 24 | 48 | 144 | 16 | `Callers 4/11` | struct; dim at 0 |
 | slot k, k = 0..9 | 4 | 68 + 20k | 164 | 16 | | lists |
-| separator rule | 4 | 68 + 20a - 2 | 164 | 1 | | rule; only when a > 0 |
+| separator rule | 4 | 68 + 20a - 2 | 164 | 1 | | rule; only when 0 < a < 10 |
 | rule | 4 | 266 | 164 | 1 | | rule |
 | system row | 4 | 268 | 164 | 16 | | below |
 | rule | 4 | 292 | 164 | 1 | | rule |
@@ -239,7 +315,7 @@ LEDs.
 |---|---|---|---|---|
 | slot | 2 | 3 | 312 | 16 |
 | glyph strip | 4 | 24 | 110 | 16 |
-| Wi-Fi bar | 266 | 24 | 6 | 16 |
+| Wi-Fi antenna | 266 | 24 | 6 | 16 |
 | clock | 276 | 24 | 40 | 16 |
 | heading | 4 (icon), 24 (text) | 48 | 152 | 16 |
 | callers rows 1..3 | 4 | 68, 88, 108 | 152 | 16 |
@@ -250,30 +326,45 @@ LEDs.
 | rule | 4 | 150 | 312 | 1 |
 | LED row | 10 | 154 | 300 | 16 |
 
-Landscape rows: 3 callers, 4 recent. The system row has room for a
+Landscape rows: 3 callers (past three on, two names and `+N more`), 4
+recent. The system row has room for a
 third figure there: `peak 6` (most lines busy at once since boot,
 `peakNodes_`, RAM).
 
 ### The lists
 
 Callers on now, then the recent events, in one run of slots. `a` is the
-number of callers shown, `min(on, 4)` in portrait and `min(on, 3)` in
-landscape, where "on" is what `shown()` already admits: visible, not
-lurking, with a handle. The recent list takes the rest: `10 - a` slots in
-portrait, 4 in landscape. A rule sits in the air gap under the last
-caller row when `a > 0`. When `a` changes, every slot below the change is
-redrawn: up to ten rows of 2,624 px, ten bands, 200 ms, on a login or a
-logoff, which is the right moment to spend it.
+number of slots the callers take, `min(on, 10)` in portrait (revision 2;
+it was `min(on, 4)`), where "on" is what `shown()` already admits:
+visible, not lurking, with a handle. The recent list takes the rest,
+`10 - a` slots, and at ten on it has none: ten names, no rule, no recent
+block. Past ten (the sysop line plus ten callers is eleven) the first
+nine callers get rows and slot 10 reads `+N more` in dim at the handle
+column, `N = on - 9`: eleven on is nine names and `+2 more`, and the
+heading keeps the true count, `Callers 11/11`. Landscape's caller column
+holds 3 rows (68, 88, 108, between the heading at 48 and the rule at
+126) and follows the same rule inside them: `a = min(on, 3)`, and past
+three, two names and `+N more` with `N = on - 2`; the recent column
+keeps its 4 rows. If landscape should follow the portrait trade all the
+way, the recent column's four rows take callers 4 to 7 the same way and
+the run is seven long; not specified here, because Rob's rule named the
+caller column. A rule sits in the air gap under the last caller row when
+`0 < a < 10`; at `a = 10` its row is the fixed rule at 266. When `a`
+changes, every slot below the change is redrawn: still up to ten rows of
+2,624 px, ten bands, 200 ms, on a login or a logoff, which is the right
+moment to spend it. The `+N more` slot is one of the ten and costs
+nothing on top.
 
-A caller row, `x=4`: the node as `%2u` in the rank colour, the rank mark
+A caller row, `x=4`: the node as `nodeLabel()` (`%2u`, ` S` for the sysop
+line) in the rank colour, the rank mark
 in the rank colour, the handle in ink from x=36, and the time on right
 aligned to 168 in dim. Rank colours are `markColor()`'s mapped to the
 site: `]` sysop risk, `>` co-sysop yellow, `*` guest dim, `)` user ink.
 Time on is `now - Session::loginAt` as `4m`, `51m`, `2h`, `1d`: at most
 3 glyphs, so the handle has 12 glyphs (`(168 - 24 - 8 - 36) / 8`) and is
 cut there; `BBS_USER_MAX` is 20. In landscape's 152 px column the handle
-has 11. Callers are listed by node number, the first `a` of them; the
-heading carries the true count.
+has 11. Callers are listed by node number, the first `a` of them (the first nine
+past ten on); the heading carries the true count.
 
 A recent row: the event's icon at x=4 (login live, guest warm, logoff dim,
 bell busy), `HH:MM handle` from x=24 in ink, dim, faint by age, with the
@@ -296,7 +387,7 @@ would say.
 | 1 | somebody needs me: a ring now, mail or a missed ring, an upload waiting | bell, envelope, upload glyphs; the ring line in the slot | the bus's ring, the mail flag, `files` `g_pending` | RAM |
 | 2 | who is on, and how long they have been on | the callers list with time on | the session pool, `Session::loginAt` | RAM |
 | 3 | what happened | the recent list | the panel's own ring, fed by `onLogin`, `onLogoff`, `bus::lastPage` | RAM |
-| 4 | am I on the air, and listed | the Wi-Fi bar, page B, the tower glyph | `wifiRssi`, `netInfo` (5 s), announce `g_state` | one driver call a quarter second; RAM |
+| 4 | am I on the air, and listed | the Wi-Fi antenna, page B, the tower glyph | `wifiRssi`, `netInfo` (5 s), announce `g_state` | one driver call a quarter second; RAM |
 | 5 | is the board healthy | the heap figure, the hourglass, the triangle, the red card | `plat::heapFree()` (a counter, not the walk), the slow-pass counter, `resetReason()`, the sd flag | RAM |
 | 6 | is it exposed | the open padlock | the backup window's flag | RAM |
 | 7 | how busy today | `23 today`; landscape adds `peak 6` | the count the core computes at each login (`bbs.cpp:1688`), captured in the panel's `onLogin`; `peakNodes_` | zero file reads by the panel; stale only across midnight until the next login, which the row's word "today" tolerates |
@@ -316,7 +407,7 @@ Left out, and why:
 - The last restart reason as text: the triangle says "look", `reboots.log`
   and SYS say why.
 - The strip's mode: the LEDs show it.
-- DASH's RSSI number: the bar shows it, with more resolution than a number
+- DASH's RSSI number: the antenna shows it, with more resolution than a number
   a sysop can read at 8 px.
 
 ### The system row
@@ -368,20 +459,21 @@ design. `stripCell()` becomes the cell arithmetic above.
 
 - The rotation's fade: 24 KB/s averaged, one band a step, 16 steps in
   each 3.48 s page.
-- The Wi-Fi bar: up to 768 B/s, at most four transactions a second.
+- The Wi-Fi antenna: up to 768 B/s, at most four transactions a second.
 - The bell: 792 B/s during a ring only.
 - The dot on the track: 1.2 KB/s, 25 transactions a second, yielding on
   any pass where the LED row queued (revision 0's rule).
 - The clock: 128 px a minute.
-- Nothing else moves. In the header the fade and the bar share the
+- Nothing else moves. In the header the fade and the antenna share the
   budget with room to spare: the panel can send 500 KB/s.
 
 ### What it costs
 
 - Flash, data: nine status glyphs, 9 to 12 rows of 2 bytes each, 190 B;
   the two new 16 x 16 icons (chip, handset) 64 B on top of revision 0's
-  256 B; no wordmark. Under 600 B of data in total. Code: the rotation
-  and its fade, the status row, the bar, the two lists, the system row,
+  256 B; the antenna bitmap 16 B; no wordmark. Under 600 B of data in
+  total. Code: the rotation and its fade, the status row, the antenna,
+  the two lists, the system row,
   the LED row: about 3 KB. No new font.
 - Static RAM, all inside the S3-only plugin: the event ring 410 B; the
   slot's page, step and timer 8 B; nine flag bytes and their last-drawn
@@ -391,7 +483,7 @@ design. `stripCell()` becomes the cell arithmetic above.
   slots, the system row's two figures, the glyph strip's packed state)
   at 48 B each, about 500 B more. Roughly 1 KB net.
 - Redraw at rest, quiet board: the fade 24 KB/s, the dot 1.2 KB/s, the
-  bar under 1 KB/s. About 26 KB/s and 35 transactions a second, against
+  antenna under 1 KB/s. About 26 KB/s and 35 transactions a second, against
   a ceiling of one band (10 KB) per 20 ms tick, 500 KB/s.
 
 ### Hand-backs for the builder
@@ -418,16 +510,18 @@ design. `stripCell()` becomes the cell arithmetic above.
   background by field.
 - `test_panel.cpp`: assert the slot holds 21 glyphs; the word-boundary
   cut; the fade's colour at k=0 is the text and at k=8 is the bar; the
-  bar's fill height at -90, -89, -70, -50, -49 and 0; the glyph row's
-  width with all nine flags set is under 114; the slot allocation for
-  `on` = 0, 1, 4, 5 and 11; no LED cell overlaps another for n = 1..16
+  antenna's fill height at -90, -89, -87, -75, -67, -62, -60, -50 and
+  -49 (0, 0, 1, 6, 9, 11, 12, 16, 16) and not joined at 0; the glyph
+  row's width with all nine flags set is under 114; the slot allocation
+  for `on` = 0, 1, 4, 10 and 11 (a = 0, 1, 4, 10, 10; the last with nine
+  names and `+2 more`); no LED cell overlaps another for n = 1..16
   in both boxes.
 
 ### Revision 1 implementation order
 
 - Palette tokens and the LED row (replaces the disc lamps): visible in one
   sitting.
-- The two-row header with the clock, the Wi-Fi bar and the SD glyph; the
+- The two-row header with the clock, the Wi-Fi antenna and the SD glyph; the
   slot showing the name only.
 - The heading and the two lists with the slot allocation; the system row.
 - The rotation and its fade; the ring override.

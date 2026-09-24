@@ -70,6 +70,7 @@
 #include "../platform/platform.h"
 #include "../config.h"
 
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -90,6 +91,14 @@ bool           g_screens = true;           // a card's screens override the stoc
 bool           g_nightly = false;          // a backup on the card every night (1.1.0)
 bool           g_running = false;          // plugin enabled, not just card present
 char           g_why[72] = "not mounted";  // why there is no card, for SD and DASH
+
+// A mount has been tried on g_pins since boot and found no card, or the
+// sysop unmounted the card (1.1.0). start() runs at every CONFIG save, and it
+// used to probe the bus again every time on a board with no card: a stall
+// in the loop for nothing, since the answer cannot change until somebody
+// puts a card in, and then they type SD MOUNT. SD MOUNT and new pins still
+// try; a reboot starts over.
+bool           g_tried   = false;
 
 // sdInfo() reaches the filesystem, and status() is called from the DASH
 // refresh, once per running plugin per row per redraw. Cached so a card that
@@ -265,8 +274,10 @@ uint32_t fileHash(const char* path) {
 }
 
 // seededHash: what the manifest says this screen was when the board put it
-// on the card, 0 when it has no entry.
-uint32_t seededHash(const char* manifest, const char* name) {
+// on the card, 0 when it has no entry. known says whether it has one at all,
+// because an entry of 0 is a mark of its own (kMine).
+uint32_t seededHash(const char* manifest, const char* name, bool& known) {
+    known = false;
     FILE* f = fopen(manifest, "r");
     if (!f) return 0;
     char line[96];
@@ -275,10 +286,58 @@ uint32_t seededHash(const char* manifest, const char* name) {
         char* sp = strchr(line, ' ');
         if (!sp) continue;
         *sp = '\0';
-        if (!strcmp(line, name)) found = static_cast<uint32_t>(strtoul(sp + 1, nullptr, 16));
+        if (strcmp(line, name)) continue;
+        found = static_cast<uint32_t>(strtoul(sp + 1, nullptr, 16));
+        known = true;
     }
     fclose(f);
     return found;
+}
+
+// kMine: the manifest's word for "the sysop's own", 0, which fileHash never
+// gives. RESTORE SD SCREENS writes it for every screen it puts on the card
+// (sdSeededMark, 1.1.0): an imported screen is the sysop's even where it
+// matches a stock screen byte for byte, which is exactly the case the "no
+// record, but the same as stock" rule below would otherwise take back.
+constexpr uint32_t kMine = 0;
+
+// kPastStock: stock screens as the board shipped them while it seeded cards
+// and kept no record of doing so, 0.18.0 to 0.22.0, in every version that is
+// not the stock screen now. A card copy with no record that is byte for byte
+// one of these was put there by the board, not by the sysop, and is the
+// board's to refresh. Without this such a copy is indistinguishable from a
+// sysop's edit, and stays stale for ever: Unleashed HQ's welcome after its
+// 1.0.0 update.
+//
+// A closed set: every board since 0.22.1 keeps the manifest, so nothing is
+// ever added here. Worked from git with the FNV-1a fileHash() uses, over the
+// blobs at 0.18.0 (a9eb971) and 0.21.9 (c1c225d), the only two screen sets
+// the board seeded without recording it, less those still shipped as they
+// were. A later stock change needs no entry: the manifest records it.
+struct PastStock { const char* name; uint32_t hash; };
+constexpr PastStock kPastStock[] = {
+    { "privacy.ans", 0xfc9b7644u },   // 40 columns, reflowed in 1.1.0
+    { "welcome.ans", 0x61fc8115u },   // before the 300 baud welcome, 0.21.9
+    { "welcome.asc", 0x62b7208fu },
+    { "welcome.seq", 0x2d7a6a99u },
+};
+
+bool pastStock(const char* name, uint32_t hash) {
+    for (const PastStock& p : kPastStock)
+        if (p.hash == hash && !strcmp(p.name, name)) return true;
+    return false;
+}
+
+// replaceFile: tmp over path. Renamed over first, which on LittleFS and in
+// POSIX replaces the old file in one step. FatFs refuses a name that is
+// there (EEXIST), and only then, with the new file whole beside it, does the
+// old one go first. Any other failure leaves the old file as it was: a live
+// file is never removed to make room for a rename that may still fail.
+bool replaceFile(const char* tmp, const char* path) {
+    if (rename(tmp, path) == 0) return true;
+    if (errno != EEXIST) { remove(tmp); return false; }
+    remove(path);
+    return rename(tmp, path) == 0;
 }
 
 // seedScreens: the stock screens on the card, and kept current.
@@ -299,7 +358,13 @@ uint32_t seededHash(const char* manifest, const char* name) {
 //   - on the card, no record     the sysop's own, or seeded by a build older
 //                                than the manifest. Left alone, because a
 //                                sysop's work overwritten is far worse than
-//                                a stale screen, which they can delete.
+//                                a stale screen, which they can delete,
+//                                unless it is byte for byte the stock screen
+//                                or one the board shipped before it kept the
+//                                manifest (kPastStock): then it is the
+//                                board's own copy, recorded and followed.
+//   - marked as the sysop's      imported by RESTORE SD SCREENS (kMine):
+//                                never touched, and the mark is kept.
 void seedScreens() {
     constexpr size_t kNameCap = 64;        // longest screen filename copied
     const char* base = plat::sdBase();
@@ -335,41 +400,47 @@ void seedScreens() {
         snprintf(from, sizeof(from), "%s/%.*s", src, static_cast<int>(kNameCap), e->d_name);
         uint32_t stock  = fileHash(from);
         uint32_t record = 0;
+        bool     mine   = false;
         struct stat st;
         if (stat(to, &st) != 0) {
             if (copyOne(from, to)) { ++made; record = stock; } else ++failed;
         } else {
-            uint32_t was = seededHash(manifest, e->d_name);
-            uint32_t now = fileHash(to);
-            // No record, but byte for byte the stock screen: provably the
-            // board's own copy (or one indistinguishable from it), so it
-            // joins the record and follows future stock changes. This is
-            // how copies seeded before the manifest existed get picked up
-            // wherever they were never edited.
-            if (!was && now == stock) was = stock;
-            if (was && now == was) {                   // still the board's copy
-                if (was == stock) {
-                    record = was;
-                } else if (copyOne(from, to)) {        // the stock one moved on
-                    ++fresh;
-                    record = stock;
-                } else {
-                    // copyOne removes a half-written copy, so a failed refresh
-                    // falls back to the flash screen rather than a broken one.
-                    ++failed;
+            bool     known = false;
+            uint32_t was   = seededHash(manifest, e->d_name, known);
+            if (known && was == kMine) {
+                mine = true;                           // imported: the sysop's
+            } else {
+                uint32_t now = fileHash(to);
+                // No record, but byte for byte the stock screen, or a stock
+                // screen as the board shipped it before it kept a record:
+                // provably the board's own copy (or one indistinguishable
+                // from it), so it joins the record and follows the stock
+                // one from here. This is how copies seeded before the
+                // manifest existed get picked up wherever they were never
+                // edited, including ones already out of date.
+                if (!was && (now == stock || pastStock(e->d_name, now))) was = now;
+                if (was && now == was) {               // still the board's copy
+                    if (was == stock) {
+                        record = was;
+                    } else if (copyOne(from, to)) {    // the stock one moved on
+                        ++fresh;
+                        record = stock;
+                    } else {
+                        // copyOne removes a half-written copy, so a failed
+                        // refresh falls back to the flash screen rather than
+                        // a broken one.
+                        ++failed;
+                    }
                 }
             }
         }
-        if (record && out)
+        if ((record || mine) && out)
             fprintf(out, "%.*s %08lx\n", static_cast<int>(kNameCap), e->d_name,
-                    static_cast<unsigned long>(record));
+                    static_cast<unsigned long>(mine ? kMine : record));
     }
     closedir(d);
-    if (out) {
-        fclose(out);
-        remove(manifest);
-        rename(tmp, manifest);
-    }
+    if (out && fclose(out) == 0) replaceFile(tmp, manifest);
+    else if (out)                remove(tmp);
 
     if (failed)
         plat::log("sd: seeded %u, refreshed %u screens, %u could not be written",
@@ -385,6 +456,8 @@ bool start(Bbs& bbs) {
     g_index = plugins::indexOf(kName);
     plat::SdPins before = g_pins;
     bool         had    = plat::sdBase()[0] != '\0';
+    char         was[sizeof(g_why)];
+    snprintf(was, sizeof(was), "%s", g_why);
 
     g_pins    = plat::SdPins();
     g_screens = true;
@@ -397,18 +470,27 @@ bool start(Bbs& bbs) {
                  before.clk != g_pins.clk || before.miso != g_pins.miso ||
                  before.speedKHz != g_pins.speedKHz;
     if (had && !moved) return true;              // already up on these pins
+    // No card on these pins last time, or the sysop took it out: asking the
+    // bus again at a CONFIG save only stalls every caller. SD says why as it
+    // did, unless a pin in the file has just been refused.
+    if (!had && !moved && g_tried) {
+        if (!strcmp(g_why, "not mounted")) snprintf(g_why, sizeof(g_why), "%s", was);
+        return true;
+    }
     if (had && moved) {
         plat::log("sd: pins changed, remounting");
         if (g_bbs) { g_bbs->closeCardScreens(); g_bbs->dropCardJob(); }
         plat::sdUnmount();
     }
 
+    g_tried = true;
     if (plat::sdMount(g_pins, g_why, sizeof(g_why))) {
         plat::diskPulse(plat::DISK_CARD);
         snprintf(g_why, sizeof(g_why), "%s", "mounted");
         // Only on a mount we actually performed. The early return above
         // means a CONFIG save does not come through here, so saving an
         // unrelated setting never walks the screens folder.
+        tidyCardBackups();
         seedScreens();
     } else {
         noMount(false);
@@ -527,9 +609,14 @@ const Command kCommands[] = {
               t.color(tl, Color::Grey);
               t.text(tl, "Mounting, the board pauses.");
               t.nl(tl);
+              bool fresh = !plat::sdBase()[0];     // not already up: a mount of our own
+              g_tried = true;
               if (plat::sdMount(g_pins, g_why, sizeof(g_why))) {
                   plat::diskPulse(plat::DISK_CARD);
                   snprintf(g_why, sizeof(g_why), "%s", "mounted");
+                  // Only on a card this has just mounted: on one already up,
+                  // a backup may be writing its .tmp right now.
+                  if (fresh) tidyCardBackups();
                   seedScreens();          // a fresh card gets the stock set
                   const plat::SdInfo& i = cardInfo(true);
                   t.color(tl, Color::LightGreen);
@@ -558,6 +645,7 @@ const Command kCommands[] = {
               b.dropCardJob();
               plat::diskPulse(plat::DISK_CARD);  // the flush
               plat::sdUnmount();
+              g_tried = true;                    // a CONFIG save must not put it back
               cardInfo(true);
               snprintf(g_why, sizeof(g_why), "%s", "unmounted by the sysop");
               t.color(tl, Color::LightGreen);
@@ -614,6 +702,82 @@ const char* sdScreensDir() {
 // the night passing without a word.
 bool sdNightly() {
     return g_running && g_nightly;
+}
+
+// sdCardInfo: the kept figures (cardInfo), for the core (backup.h).
+const plat::SdInfo& sdCardInfo() {
+    return cardInfo();
+}
+
+// sdSeededStock: the manifest has this card screen as the board's copy and
+// the file still is it (screens.h). Read when asked, for SCREENS: nothing is
+// kept.
+bool sdSeededStock(const char* file) {
+    const char* base = plat::sdBase();
+    if (!file || !base[0]) return false;
+    char manifest[112], path[160];
+    snprintf(manifest, sizeof(manifest), "%s/%s/.seeded", base, BBS_SD_SCREEN_DIR);
+    bool     known = false;
+    uint32_t was   = seededHash(manifest, file, known);
+    if (!known || was == kMine) return false;
+    snprintf(path, sizeof(path), "%s/%s/%.64s", base, BBS_SD_SCREEN_DIR, file);
+    return fileHash(path) == was;
+}
+
+// ---------------------------------------------------------------------------
+// sdSeededMark: RESTORE SD SCREENS has put these screens on the card, and
+// they are the sysop's own from now on (ziparc.h). The manifest is written
+// again with each of them marked kMine and every other line as it was, in
+// one pass, through a temp file.
+// ---------------------------------------------------------------------------
+void sdSeededMark(const char* (*nth)(void* ctx, uint8_t i), void* ctx) {
+    const char* base = plat::sdBase();
+    if (!nth || !base[0]) return;
+    char manifest[112], tmp[120];
+    snprintf(manifest, sizeof(manifest), "%s/%s/.seeded", base, BBS_SD_SCREEN_DIR);
+    snprintf(tmp, sizeof(tmp), "%s.tmp", manifest);
+    FILE* out = fopen(tmp, "w");
+    if (!out) return;
+    auto imported = [&](const char* name) {
+        for (uint8_t i = 0; ; ++i) {
+            const char* n = nth(ctx, i);
+            if (!n) return false;
+            if (!strcmp(n, name)) return true;
+        }
+    };
+    bool ok = true;
+    FILE* in = fopen(manifest, "r");
+    if (in) {
+        char line[96];
+        while (ok && fgets(line, sizeof(line), in)) {
+            char name[72];
+            const char* sp = strchr(line, ' ');
+            size_t n = sp ? static_cast<size_t>(sp - line) : 0;
+            if (!n || n >= sizeof(name)) continue;       // not a line of ours: dropped
+            memcpy(name, line, n);
+            name[n] = '\0';
+            if (imported(name)) continue;                // written below, marked
+            ok = fputs(line, out) >= 0;
+        }
+        fclose(in);
+    }
+    uint8_t marked = 0;
+    for (uint8_t i = 0; ok; ++i) {
+        const char* n = nth(ctx, i);
+        if (!n) break;
+        ok = fprintf(out, "%.64s %08lx\n", n, static_cast<unsigned long>(kMine)) > 0;
+        ++marked;
+    }
+    if (fclose(out) != 0) ok = false;
+    if (ok && replaceFile(tmp, manifest)) {
+        plat::diskPulse(plat::DISK_CARD);
+        plat::log("sd: %u imported screen%s marked as the sysop's", static_cast<unsigned>(marked),
+                  marked == 1 ? "" : "s");
+    } else {
+        remove(tmp);
+        plat::diskPulse(plat::DISK_ERROR);
+        plat::log("sd: could not mark the imported screens in %s", manifest);
+    }
 }
 
 extern const Plugin kSdPlugin = {

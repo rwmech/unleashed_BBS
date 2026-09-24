@@ -202,6 +202,37 @@ entry when it is released.
   mounts the card, and the screen and LED work. The panel's redesign is
   still to come.
 
+**1.1.0-dev.9, backups you can reach, and a restore that waits.**
+- A Backups file area, number 11 in FILES, the sysop's alone: the card's
+  backup folder. Download a backup by YMODEM or XMODEM; a .zip sent there
+  goes straight in, with no approval, ready for `RESTORE SD`. At the area
+  menu, `#`, a number and Enter reaches an area past 10. A zip with
+  XMODEM's 0x1A padding after its end still restores.
+- A restore waits until nobody else is on. After the sysop's Y, at either
+  door, it says how many callers it is waiting for; F puts it live with a
+  warning to them, N gives it up, and it gives up by itself after
+  `backup_window_minutes`. New callers get the busy line meanwhile, and
+  curl is told the same as the sysop.
+- `SCREENS` lists every screen with the size of its .ans, .asc and .seq,
+  and whether callers get it from flash, the card's seeded copy or the
+  sysop's own. `SCREENS VIEW name[.ext] [FLASH]` plays one. Staff only.
+- A restore refuses a system.cfg that empties the sysop password, reports
+  a co-sysop left off because their line named the published password,
+  checks that restored screens fit while they are being swapped in, and
+  lets go of every screen it replaces first.
+- A caller on the welcome screen when the card is unmounted goes on to log
+  in, rather than being stranded with no prompt.
+- `RESTORE SD SCREENS` marks what it imports as the sysop's own, so a
+  stock update never replaces it. Card screens seeded before 0.22.1 that
+  nobody edited now follow the stock set.
+- A backup left half written on the card is removed at the next mount, and
+  a half-uploaded one no longer counts as an upload awaiting approval.
+- A board with no card no longer probes for one at every CONFIG save;
+  `SD MOUNT`, a pin change and a restart still look. `SD UNMOUNT` keeps the
+  card out through CONFIG saves.
+- Mail, information pages, FILES.BBS and the card's screen record are
+  replaced by renaming over the old file, never by removing it first.
+
 ## 1.0.2, 2026-09-23
 
 A security fix. Restoring a backup could turn the published default sysop

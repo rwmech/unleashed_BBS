@@ -73,6 +73,7 @@
 #include "../core/plugin.h"
 #include "../platform/platform.h"
 
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -416,9 +417,17 @@ void finish(Session& s, bool save) {
             snprintf(tmp, sizeof(tmp), "%s.tmp", path);
             FILE* f = fopen(tmp, "wb");
             ok = f && fwrite(s.compose, 1, g_body.len, f) == g_body.len;
-            if (f) fclose(f);
-            if (ok) { remove(path); ok = rename(tmp, path) == 0; }
-            else remove(tmp);
+            if (f && fclose(f) != 0) ok = false;
+            // Renamed over the old page first (1.1.0): userdata is LittleFS,
+            // where that replaces it in one step. Only a filesystem that
+            // refuses a name that is there (FatFs, EEXIST) has the old page
+            // go first, once the new one is whole. Removing it first on
+            // every path lost the page whenever the rename then failed.
+            if (ok && rename(tmp, path) != 0) {
+                if (errno == EEXIST) { remove(path); ok = rename(tmp, path) == 0; }
+                else ok = false;
+            }
+            if (!ok) remove(tmp);
         }
         snprintf(msg, sizeof(msg), ok ? "Page %u saved." : "Page %u did not save.",
                  static_cast<unsigned>(n));

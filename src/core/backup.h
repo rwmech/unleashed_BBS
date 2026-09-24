@@ -60,6 +60,7 @@
 #include <cstddef>
 #include <sys/select.h>
 #include "../config.h"
+#include "../platform/platform.h"
 #include "ziparc.h"
 
 class BackupService {
@@ -85,25 +86,64 @@ public:
     bool        awaitingApproval() const { return st_ == St::Approve; }
     const char* approvalSummary() const { return summary_; }
     const char* approvalDetail() const  { return detail_; }
-    // decide: Y starts putting the upload live, a file a pass (service),
-    // and the reply goes to curl once it is all in; N throws it away.
+    // decide: Y holds the upload until the Bbs releases it (holding, below),
+    // then it goes live a file a pass (applyTick) and the reply goes to curl
+    // once it is all in; N throws it away.
     void        decide(bool accept, const char* why);
 
     // takeRestart: a restore put system.cfg or an information page live, so
     // the plugins should start again on it. True once per such restore.
     bool takeRestart() { bool r = restart_; restart_ = false; return r; }
 
+    // applyTick: one more file of an upload the sysop accepted through the
+    // window put live. Out of service() since 1.1.0, so that the Bbs can
+    // close the screens it replaces first, in the same pass (serviceCard).
+    void applyTick();
+
+    // applyingScreens: a restore carrying screens is being put live, from
+    // the window or a card job. card: into the card's screens folder
+    // (RESTORE SD SCREENS) rather than the board's own. Callers still
+    // reading one of those screens have to let go of it first: esp_littlefs
+    // refuses to replace or remove a file somebody has open (EBUSY).
+    bool applyingScreens(bool& card) const;
+
     // -- the SD card (1.1.0) ---------------------------------------------------
     //
     // Job: what the card is doing. Write is BACKUP SD or the nightly one,
     // Check is RESTORE SD unpacking and checking, Ask is waiting for the
-    // sysop's Y, Apply is putting it live.
-    enum class Job : uint8_t { None, Write, Check, Ask, Apply };
+    // sysop's Y, Hold is a Y waiting for the board to go quiet (1.1.0),
+    // Apply is putting it live.
+    enum class Job : uint8_t { None, Write, Check, Ask, Apply, Hold };
     Job  job() const { return job_; }
 
     // busy: the zip storage is somebody's: a window client, an upload the
-    // window is still putting live, or a card job.
-    bool busy() const { return job_ != Job::None || cfd_ >= 0 || st_ == St::Apply; }
+    // window is still holding or putting live, or a card job.
+    bool busy() const {
+        return job_ != Job::None || cfd_ >= 0 || st_ == St::Apply || st_ == St::Hold;
+    }
+
+    // -- a restore waits for the board to go quiet (1.1.0) -------------------
+    //
+    // The sysop's Y, at either door, does not put a restore live while
+    // anybody else is on: it holds, and the Bbs releases it once they have
+    // gone, or when the sysop presses F, or gives up after a while. Rob
+    // watched a live board "hang hard" through one; a file a pass took the
+    // single stall away, but callers were still on a board changing under
+    // them, accounts and all.
+    //
+    // holding: a restore the sysop said Y to is waiting. restoring: one is
+    // waiting or being put live, which is when a new caller gets the busy
+    // line rather than a login to a board about to change.
+    bool holding()   const { return st_ == St::Hold || job_ == Job::Hold; }
+    bool restoring() const { return holding() || st_ == St::Apply || job_ == Job::Apply; }
+    // holdTell: the window's client is told it waits, how many for, and
+    // that the sysop can apply it now. The reply goes out in chunks from
+    // here, so what it finally says follows on the same connection.
+    void holdTell(uint8_t callers);
+    // holdRelease: put it live now. holdGiveUp: throw it away, as a Y that
+    // never came would, and tell the client why.
+    void holdRelease();
+    void holdGiveUp(const char* why);
 
     // cardBackup: start writing dir/name, through name.tmp so a card pulled
     // half way leaves nothing a list would offer. needKB and freeKB are set
@@ -125,7 +165,8 @@ public:
     // it finished, for the progress dots.
     uint8_t cardStep();
 
-    // cardAnswer: the sysop's answer while job() is Ask
+    // cardAnswer: the sysop's answer while job() is Ask. Y is Hold, until the
+    // Bbs releases it.
     void cardAnswer(bool yes);
 
     // cardDrop: give up the job (the sysop left). A write takes its half
@@ -141,10 +182,13 @@ public:
     const ziparc::ApplyReport&  cardApplied() { return importer().applied(); }
 
 private:
-    enum class St : uint8_t { Idle, Headers, Body, Extract, Approve, Apply, SendZip, Reply, Linger };
+    enum class St : uint8_t { Idle, Headers, Body, Extract, Approve, Apply, SendZip, Reply, Linger, Hold };
     void openUpload(const char* path);
     void finishApply();
     void finishWrite(bool ok);
+    // chunk: one chunk of a chunked reply onto out_, after whatever of the
+    // last one has not gone yet; last ends the reply and closes after it.
+    void chunk(const char* text, bool last);
 
     void acceptClient(uint32_t now);
     void readClient(uint32_t now);
@@ -172,6 +216,7 @@ private:
     uint16_t outLen_    = 0;
     uint16_t outPos_    = 0;
     bool     closeAfterOut_ = false;
+    bool     chunked_   = false;     // the reply went out as chunks (a held restore)
 
     // The zip going out and the zip coming in share one block of storage,
     // which is 3,872 bytes of static DRAM back. They are never live
@@ -223,3 +268,16 @@ private:
 // in, deliberately: a nightly backup that could not happen for want of one
 // is something the sysop is told about.
 bool sdNightly();
+
+// sdCardInfo: the card's figures as the sd plugin keeps them, refreshed at
+// most every few seconds (1.1.0). Asking the platform directly is a trip to
+// the card's FAT each time on a board whose cache has run out; everything
+// that wants to know how full the card is asks here instead. Also defined by
+// the plugin, and answers "not mounted" with no card in.
+const plat::SdInfo& sdCardInfo();
+
+// tidyCardBackups: remove what a BACKUP SD or nightly zip left half written
+// in the card's backup folder (cardbak::partial) when the power went or the
+// card was pulled (1.1.0). The sd plugin calls it on a mount it has just
+// made, when no backup can be writing to that card.
+void tidyCardBackups();

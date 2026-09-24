@@ -551,6 +551,22 @@ this tree.
   - Host runs: 689/0 with no card, 967/0 with a card, S3 profile 55/0.
   - Still owed on the S3: the panel's redesign (tty-ux revision 1, Rob
     wants changes first), LIGHTS TEST with Rob watching, and flash #3.
+- **The backups lane is in (1.1.0-dev.9)**, merged from bk-1.1.0 (94aa16e).
+  - A restore holds until the board is quiet (Rob, after TRA hung hard
+    taking 38 screens with callers on): it waits up to
+    `backup_window_minutes` from the Y, F forces it with a warning, and new
+    callers get the busy line. curl hears the hold through a chunked 200.
+  - `.seeded` marks imported screens with 00000000, because removing their
+    names alone let the "byte-for-byte stock" rule take them back.
+    `kPastStock` in sd.cpp recognises stock screens seeded before the
+    manifest existed, which the manifest alone cannot tell from an edit.
+  - A cardless board no longer re-probes at every CONFIG save: a likely
+    part of TRA's slow passes.
+  - Open, bench only: whether one screen sweep per pass always beats
+    esp_littlefs refusing (EBUSY) to replace a file a caller holds open.
+  - Merged tree: 774/0 without a card, 1,106/0 with one, S3 host profile
+    56/0, unit tests pass. esp32dev static DRAM 161,960 (18,776 free),
+    flash 1,255,204.
 
 ## 1.0.0 (2026-09-23)
 
