@@ -81,6 +81,28 @@ entry when it is released.
 - Fixed: the crash notice at staff login ran its two sentences into one
   line, and never showed on the sysop node.
 
+**1.1.0-dev.4, lights.**
+- A new plugin, `lights`: two WS2812B outputs driven by the RMT peripheral,
+  off until switched on and given pins (`CONFIG lights`).
+- A drive light: amber for the card, cool white for the board's flash, a
+  slow red blink after a storage error, a dim glow at rest, in the styles
+  `pc`, `1541`, `disk2` and `breathe`.
+- A strip of ten: `nodes` (one pixel per caller line, in its WHO rank
+  colour), `hayes` (a Smartmodem's front panel from the board's real
+  state), `blinken`, `scanner`, `c64`, `boing`, `vu`, `rainbow`, and
+  `manual`, where each pixel has its own effect and colour.
+- Brightness is a percentage per output, 1 to 30, 10 as shipped. 30 is a
+  ceiling in the firmware, not only on the form.
+- `LIGHTS` shows what each output was last sent; `LIGHTS TEST` shows red,
+  green, blue and white for checking the wiring.
+- CONFIG: a plugin pin whose range starts at -1 takes -1 as off, and two
+  pins on one page cannot be the same pin. Two new setting kinds for
+  plugins: a cycle field, and a button to a page of rows, which the lights
+  use for their ten pixels.
+- Forms: the same letter twice steps to the next choice starting with it,
+  so `c` twice on a level is co1. Plain ASCII line mode saved every such
+  pick as a single space; it keeps the pick now.
+
 ## 1.0.2, 2026-09-23
 
 A security fix. Restoring a backup could turn the published default sysop

@@ -391,6 +391,85 @@ void ledSignal(uint32_t, uint32_t) {}   // no LED on a PC
 // instead, which is the part worth checking: what the LED was told.
 void ledOverride(int8_t) {}
 
+// ---------------------------------------------------------------------------
+// diskPulse: a time and a count, exactly as on the board.
+// ---------------------------------------------------------------------------
+namespace {
+uint32_t g_diskAt[DISK_KINDS]    = {};
+uint16_t g_diskCount[DISK_KINDS] = {};
+}   // namespace
+
+void diskPulse(DiskKind kind) {
+    if (kind >= DISK_KINDS) return;
+    g_diskAt[kind] = millis();
+    ++g_diskCount[kind];
+}
+
+DiskSeen diskSeen() {
+    DiskSeen d;
+    for (uint8_t i = 0; i < DISK_KINDS; ++i) {
+        d.at[i]    = g_diskAt[i];
+        d.count[i] = g_diskCount[i];
+    }
+    return d;
+}
+
+// ---------------------------------------------------------------------------
+// Pixels on the host: no strip, a record. Each output keeps its pin and the
+// last frame it was given, and pixelsFrame hands that back, so LIGHTS, and
+// the tests through it, read the colours a board would have sent.
+//
+// The pins are the ESP32's output pins, so a pin the board's RMT driver
+// would refuse is refused here too: 0 to 33, less 20, 24 and 28 to 31,
+// which the chip does not have. A frame is never still going out on the
+// host, so pixelsShow always takes it; the board's refusal while the wire
+// is busy has no host equivalent, and the plugin treats one as nothing more
+// than "draw again next frame".
+// ---------------------------------------------------------------------------
+namespace {
+struct HostPix {
+    int     pin   = -1;
+    uint8_t count = 0;
+    uint8_t rgb[kPixelMax * 3] = {};
+};
+HostPix g_hostPix[kPixelOuts];
+
+bool outputPin(int p) {
+    return p >= 0 && p <= 33 && p != 20 && p != 24 && !(p >= 28 && p <= 31);
+}
+}   // namespace
+
+bool pixelsBegin(uint8_t out, int pin, uint8_t count) {
+    if (out >= kPixelOuts || !count || count > kPixelMax) return false;
+    g_hostPix[out] = HostPix();
+    if (!outputPin(pin)) return false;
+    g_hostPix[out].pin   = pin;
+    g_hostPix[out].count = count;
+    log("pixels: output %u on gpio %d, %u pixel%s (host record)", static_cast<unsigned>(out), pin,
+        static_cast<unsigned>(count), count == 1 ? "" : "s");
+    return true;
+}
+
+void pixelsEnd(uint8_t out) {
+    if (out < kPixelOuts) g_hostPix[out] = HostPix();
+}
+
+bool pixelsShow(uint8_t out, const uint8_t* rgb, uint8_t count) {
+    if (out >= kPixelOuts || !rgb || g_hostPix[out].pin < 0) return false;
+    HostPix& p = g_hostPix[out];
+    if (count > p.count) count = p.count;
+    memcpy(p.rgb, rgb, static_cast<size_t>(count) * 3u);
+    return true;
+}
+
+uint8_t pixelsFrame(uint8_t out, uint8_t* rgb, uint8_t cap) {
+    if (out >= kPixelOuts || !rgb || g_hostPix[out].pin < 0) return 0;
+    const HostPix& p = g_hostPix[out];
+    uint8_t n = p.count < cap ? p.count : cap;
+    memcpy(rgb, p.rgb, static_cast<size_t>(n) * 3u);
+    return n;
+}
+
 // The host build is started by a person, so it never crashed its way here.
 const char* resetReason()  { return "host start"; }
 bool        resetWasCrash() { return false; }

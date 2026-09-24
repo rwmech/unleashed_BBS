@@ -428,6 +428,28 @@ this tree.
     every temp-and-rename site for the same shape. And after a fallback
     the changed network is not tried again until the next boot.
   - Static DRAM 160,320 (20,416 free).
+- **The lights plugin is in (1.1.0-dev.4)**, built in its own worktree
+  from dev.0 and merged. Two WS2812B outputs on RMT, both off until given
+  a pin: a one-pixel drive light (pc, 1541, disk2, breathe) and a ten-pixel
+  strip (nodes, hayes, blinken, scanner, c64, boing, vu, rainbow, manual,
+  where manual gives each pixel its own effect and colour, random and
+  cycle included). Brightness 1-30% per output, 10 as shipped, and 30 is
+  a clamp in the firmware, not only the form's range.
+  - Each output's whole frame fits its RMT channel memory (1 block for the
+    drive light, 4 for the strip), so a Wi-Fi interrupt can never land
+    mid-frame and stretch a low into a latch. `rmt_transmit` is
+    non-blocking; a frame offered while the last is on the wire is
+    skipped, because the next one is 20 ms away and a queued frame is a
+    stale one.
+  - 300 us latch, because the WS2812B V5 revision needs 280 us and a strip
+    does not say which revision it is.
+  - New CONFIG kinds: `PS_CYCLE` (with appended `choices`) and `PS_PAGE`, a
+    button to a page of rows (led1-led10). Plugin pins whose range starts
+    at -1 take -1 as off. The Phase 5 forums page can reuse `PS_PAGE`.
+  - Fixed on the way: plain ASCII line mode saved a cycle pick as a
+    single space.
+  - Static DRAM +1,176 at the merge base, about 400 of it the lights and
+    the rest IDF data the RMT driver pulls in.
 
 ## 1.0.0 (2026-09-23)
 

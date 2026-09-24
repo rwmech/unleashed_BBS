@@ -98,8 +98,22 @@ const plat::SdInfo& cardInfo(bool force = false) {
     if (force || !g_infoAt || now - g_infoAt >= kInfoMs) {
         g_info  = plat::sdInfo();
         g_infoAt = now ? now : 1;
+        if (g_info.mounted) plat::diskPulse(plat::DISK_CARD);   // it read the FAT
     }
     return g_info;
+}
+
+// noMount: say on the drive light that a mount failed, when it matters.
+//
+// A sysop who typed SD MOUNT asked for a card, so any failure is an error.
+// The mount at start is different: it runs on every board at boot and at
+// every CONFIG save, and a board with no card is a complete board, so "no
+// card found" there is not an error and must not blink red after every
+// save. A card that is there and will not mount (not FAT, or answering and
+// failing) is, on every path. "no card found" opens the platform's message
+// for exactly the absent case, on the board and on the host.
+void noMount(bool asked) {
+    if (asked || strncmp(g_why, "no card found", 13)) plat::diskPulse(plat::DISK_ERROR);
 }
 
 // ---------------------------------------------------------------------------
@@ -186,9 +200,11 @@ void readKey(void* ctx, const char* key, const char* value) {
 // ---------------------------------------------------------------------------
 bool copyOne(const char* from, const char* to) {
     FILE* in = fopen(from, "rb");
-    if (!in) return false;
+    if (!in) { plat::diskPulse(plat::DISK_ERROR); return false; }
     FILE* out = fopen(to, "wb");
-    if (!out) { fclose(in); return false; }
+    if (!out) { fclose(in); plat::diskPulse(plat::DISK_ERROR); return false; }
+    plat::diskPulse(plat::DISK_FLASH);                 // the drive light: read here
+    plat::diskPulse(plat::DISK_CARD);                  // and written there
 
     char   buf[256];
     size_t n;
@@ -199,7 +215,7 @@ bool copyOne(const char* from, const char* to) {
     if (ferror(in)) ok = false;
     fclose(in);
     if (fclose(out) != 0) ok = false;      // FAT reports a full card here
-    if (!ok) remove(to);
+    if (!ok) { remove(to); plat::diskPulse(plat::DISK_ERROR); }
     return ok;
 }
 
@@ -376,12 +392,14 @@ bool start(Bbs& bbs) {
     }
 
     if (plat::sdMount(g_pins, g_why, sizeof(g_why))) {
+        plat::diskPulse(plat::DISK_CARD);
         snprintf(g_why, sizeof(g_why), "%s", "mounted");
         // Only on a mount we actually performed. The early return above
         // means a CONFIG save does not come through here, so saving an
         // unrelated setting never walks the screens folder.
         seedScreens();
     } else {
+        noMount(false);
         plat::log("sd: no card: %s", g_why);
     }
     cardInfo(true);
@@ -498,6 +516,7 @@ const Command kCommands[] = {
               t.text(tl, "Mounting, the board pauses.");
               t.nl(tl);
               if (plat::sdMount(g_pins, g_why, sizeof(g_why))) {
+                  plat::diskPulse(plat::DISK_CARD);
                   snprintf(g_why, sizeof(g_why), "%s", "mounted");
                   seedScreens();          // a fresh card gets the stock set
                   const plat::SdInfo& i = cardInfo(true);
@@ -506,6 +525,7 @@ const Command kCommands[] = {
                            static_cast<unsigned>(i.freeKB / 1024u));
                   t.text(tl, buf);
               } else {
+                  noMount(true);          // the sysop asked, so no card is an error
                   t.color(tl, Color::LightRed);
                   snprintf(buf, sizeof(buf), "%.70s", g_why);
                   t.text(tl, buf);
@@ -522,6 +542,7 @@ const Command kCommands[] = {
               }
               // Anyone mid-screen from the card has to be let go first.
               b.closeCardScreens();
+              plat::diskPulse(plat::DISK_CARD);  // the flush
               plat::sdUnmount();
               cardInfo(true);
               snprintf(g_why, sizeof(g_why), "%s", "unmounted by the sysop");

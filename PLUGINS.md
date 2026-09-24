@@ -39,11 +39,12 @@ greeting = howdy     ; the plugin's own keys
 - A plugin that isn't `enabled` never starts, and its commands don't exist.
 - A plugin marked `PF_ON` in its descriptor is on without a section at all, and `enabled = no` turns it off. Chat and `sd` ship that way; everything else waits to be switched on.
 - `PF_EARLY` starts a plugin before the ones without it. It exists for a plugin that provides something another plugin's requirements are checked against: `sd` mounts the card, and whether a `PF_SD` plugin may start is decided by whether a card is mounted. Leaving that to the order of the registry table would work and would be invisible, which is the kind of dependency that survives until somebody tidies the list alphabetically.
+- `PF_FAST` (1.1.0) calls the plugin's `tick` every 20 ms (`BBS_PLUGIN_FAST_MS`) instead of every 250, for a plugin that draws something that moves: the lights, at fifty frames a second. A flag rather than a new hook, because a hook is a field appended to every descriptor in the tree and this is the same hook called more often. `tick` still must never block.
 
 Staff can see the state of every plugin with `PLUGINS`:
 
 ```
- Plugins                          1 of 8
+ Plugins                          1 of 9
  Name      Ver   State
  example   1.0   running
 Disk free 612K, reserve 32K
@@ -60,6 +61,7 @@ Disk free 612K, reserve 32K
 | `files` | publishes folders on the card as file areas, with XMODEM/YMODEM download and upload. Needs a card, so it does not start on a cardless board. |
 | `forums` | topic message boards on the card: forums, subjects, replies. Needs a card; a sysop switches it on once the topic areas are set up. |
 | `info` | the ten information pages a sysop writes (`INFO` / `I`, `/i` in the room). On by default, no card needed. |
+| `lights` | two WS2812B outputs on the RMT peripheral (`plat::pixels*`): a drive light fed by `plat::diskPulse`, with PC, 1541, Disk II and breathing styles, and a strip of ten showing the caller lines, a Hayes front panel, several retro effects, or a colour and effect per pixel. Brightness is a percentage per output with a hard ceiling of 30. `PF_FAST`; off until switched on and given pins. `LIGHTS` shows what each output was last sent, which is also how the host tests read the pixels. |
 | `example` | the template, and what the tests drive |
 
 ## Writing one
@@ -91,7 +93,7 @@ inserted.
 |---|---|
 | `start(bbs)` | after config load; return false to refuse |
 | `stop()` | switched off, or a config reload |
-| `tick(now)` | every 250 ms from the BBS loop; never block |
+| `tick(now)` | every 250 ms from the BBS loop, every 20 ms for a `PF_FAST` plugin; never block |
 | `onConnect(s)` | a caller arrives, after terminal detection |
 | `onLogin(s)` | a caller logs in |
 | `onLogoff(s)` | a caller leaves |
@@ -136,6 +138,36 @@ announce's `name` setting shows the board's name, which belongs to
 `board_name` on the core, rather than opening a second editable field that
 could drift from it. `setting()` supplies the running value for each key so a
 blank on the form means "not set", not "I cannot tell you".
+
+Three more, from the lights plugin (1.1.0):
+
+```c
+{ "drive_pin", "Drive pin", PS_PIN,  -1, 33, 2, "The disk light: one pixel. -1 is off." },
+{ "strip_fx",  "Strip",     PS_CYCLE, 0,  0, 7, "nodes: one pixel for each caller line.",
+  "nodes|hayes|blinken|scanner|c64|boing|vu|rainbow|manual|off" },
+{ "led",       "Pixels",    PS_PAGE,  0,  0, 0, "Manual: each pixel its own effect." },
+```
+
+- `lo` is signed. A `PS_PIN` whose range starts at -1 takes -1, and it means
+  the plugin's "off"; one whose range starts at 0 refuses it, because a
+  plugin such as `sd` has no "off" for a pin and its parser would decline a
+  -1 CONFIG had written. The range says which, not the kind.
+- `CONFIG` refuses two `PS_PIN` rows on one page holding the same pin, on the
+  later row: "That is the drive pin. Pick another."
+- `PS_CYCLE` steps through `choices`, the eighth field, bar separated, the way
+  a level does: Space for the next, a letter for the first word starting with
+  it, the same letter again for the next such word. CONFIG refuses a value
+  that is not one of the words, since plain ASCII line mode types into the
+  same buffer.
+- `PS_PAGE` is a button to a page of its own, holding every setting whose key
+  is this one's followed by a number (`led` holds `led1` to `led10`); those
+  rows are left off the plugin's main page. For a plugin with more rows than a
+  form holds: sixteen, less the four the core puts first. The button's text is
+  the plugin's `setting()` for the key. Escape on the page, or saving it, comes
+  back to the main page, and the page will not open over unsaved changes.
+- A row on a `PS_PAGE` page can itself be a packed composite with a sub-page
+  (the lights' pixels are `kLedParts` in `bbs_sysop.cpp`: Effect and Colour,
+  both cycles). A composite part may be `CK_CYCLE` with a `choices` list.
 
 ### Commands
 

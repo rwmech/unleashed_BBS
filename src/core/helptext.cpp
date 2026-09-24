@@ -79,6 +79,7 @@ const Entry kEntries[] = {
     { "ANNOUNCE", "usage: ANNOUNCE [TEST or NOW]\nWhether the board is listed in a\ndirectory and what each one said last.\nANNOUNCE TEST prints exactly what would\nbe sent and sends nothing; ANNOUNCE NOW\nsends it straight away." },
     { "CHATCLEAR", "usage: CHATCLEAR\nEmpties the chat room's memory, so new\narrivals see no earlier lines and /sh\nhas nothing to replay." },
     { "SERIAL", "usage: SERIAL [STATUS or SET]\nWatches the device on the serial port.\nT takes the keyboard when it is free,\nif you are allowed; ESC leaves.\nSERIAL STATUS shows the port settings;\nSERIAL SET 9600 8N1 changes them." },
+    { "LIGHTS", "usage: LIGHTS [TEST]\nThe lights plugin's two outputs: each\none's pin, effect and brightness, and\nthe colours it was last sent, in hex.\nLIGHTS TEST shows red, green, blue and\nwhite on every pixel, a second each." },
     { "PING", "usage: PING\nExample plugin: a greeting, with its\ntick and poke counts." },
     { "POKE", "usage: POKE\nExample plugin: adds one to a count it\nkeeps in its own file, and shows it." },
     { "ECHO", "usage: ECHO\nExample plugin: what you type comes\nstraight back, in green. Q, ESC or\nCtrl-C ends it." },

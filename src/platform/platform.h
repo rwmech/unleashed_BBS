@@ -14,7 +14,8 @@
  *                  lwIP provides on the ESP32.
  *
  * Interfaces:   millis, random32, fsBase, logsBase, heap, hardware, wifiRssi, log,
- *               backupButton*, activityLed*, inflateRaw
+ *               backupButton*, activityLed*, diskPulse, diskSeen, pixels*,
+ *               inflateRaw
  *
  * Libraries:    none
  * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
@@ -292,6 +293,64 @@ void activityTick(uint32_t now);
 // rather than ordinary traffic. Used once at boot so a sysop can see the
 // board is listening instead of guessing and dialling in too early.
 void ledSignal(uint32_t now, uint32_t ms);
+
+// ---------------------------------------------------------------------------
+// diskPulse / diskSeen: storage was touched, for the lights plugin's drive
+// light.
+//
+// Called from the storage paths themselves, so it has to cost nothing worth
+// measuring: it records the time and bumps a count, and lights nothing. The
+// plugin reads diskSeen() at its own frame rate and decides what that looks
+// like, so a board with no lights pays two stores per call and no more.
+// Counts rather than a flag, because two readers (or a reader that missed a
+// frame) must each see "something happened since I last looked" without
+// clearing it for the other. They wrap; only a change means anything.
+//
+// DISK_CARD is the SD card, DISK_FLASH the board's own LittleFS partitions,
+// DISK_ERROR a read or write that failed on either.
+// ---------------------------------------------------------------------------
+enum DiskKind : uint8_t { DISK_CARD, DISK_FLASH, DISK_ERROR, DISK_KINDS };
+void diskPulse(DiskKind kind);
+
+struct DiskSeen {
+    uint32_t at[DISK_KINDS]    = {};   // millis of the last pulse of each kind
+    uint16_t count[DISK_KINDS] = {};   // pulses of each kind, wrapping
+};
+DiskSeen diskSeen();
+
+// ---------------------------------------------------------------------------
+// Addressable pixels: WS2812B, for the lights plugin's two outputs.
+//
+// On the board each output is an RMT transmit channel, the peripheral that
+// exists so nobody has to bit-bang a 150 ns tolerance in a critical section
+// on a chip that is also running Wi-Fi. A frame is handed over and goes out
+// in hardware; pixelsShow never waits for it. On the host each output is a
+// record of the last frame shown, which is what the tests read back.
+//
+// Colours go in as RGB, three bytes a pixel. The wire order (GRB on a
+// WS2812B) is this layer's business, so a strip that wants another order is
+// a platform change and not a plugin one.
+//
+// pixelsBegin: claim a pin for an output. False when the pin cannot drive
+//              one, or no RMT channel is free. Beginning an output that is
+//              already running ends it first.
+// pixelsEnd:   dark, then let the pin go. Waits up to a few milliseconds for
+//              a frame in flight, which is why only a plugin's stop calls it.
+// pixelsShow:  send a frame. False while the last one is still going out, in
+//              which case the caller simply draws a fresh one next time. A
+//              frame identical to the last one sent is not sent again.
+// pixelsFrame: the last frame this output was given, as RGB, into room for
+//              cap pixels (cap * 3 bytes), and how many it wrote. 0 for an
+//              output that is not running. What LIGHTS shows, and what the
+//              tests read.
+// ---------------------------------------------------------------------------
+constexpr uint8_t kPixelOuts = 2;     // the drive light and the effect strip
+constexpr uint8_t kPixelMax  = 10;    // pixels an output may have
+
+bool    pixelsBegin(uint8_t out, int pin, uint8_t count);
+void    pixelsEnd(uint8_t out);
+bool    pixelsShow(uint8_t out, const uint8_t* rgb, uint8_t count);
+uint8_t pixelsFrame(uint8_t out, uint8_t* rgb, uint8_t cap);
 
 // ---------------------------------------------------------------------------
 // resetReason / resetWasCrash: why this boot happened, in words a sysop can

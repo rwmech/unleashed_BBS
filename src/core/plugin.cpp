@@ -59,6 +59,7 @@ struct State {
 
 State    g_state[BBS_MAX_PLUGINS];
 uint32_t g_nextTick = 0;
+uint32_t g_nextFast = 0;            // PF_FAST plugins, see tick()
 
 // section: "[plugin:name]" for this plugin
 void sectionName(const char* name, char* out, size_t n) {
@@ -392,11 +393,18 @@ void listDone(uint8_t index, Session& s, bool aborted) {
     if (p->listDone) p->listDone(s, aborted);
 }
 
+// tick: two cadences. Most plugins every BBS_PLUGIN_TICK_MS; a PF_FAST one
+// every BBS_PLUGIN_FAST_MS, and only then, so it is not called twice on a
+// pass where both come due.
 void tick(uint32_t now) {
-    if (static_cast<int32_t>(now - g_nextTick) < 0) return;
-    g_nextTick = now + BBS_PLUGIN_TICK_MS;
+    const bool slow = static_cast<int32_t>(now - g_nextTick) >= 0;
+    const bool fast = static_cast<int32_t>(now - g_nextFast) >= 0;
+    if (!slow && !fast) return;
+    if (slow) g_nextTick = now + BBS_PLUGIN_TICK_MS;
+    if (fast) g_nextFast = now + BBS_PLUGIN_FAST_MS;
     for (uint8_t i = 0; i < count(); ++i) {
-        if (g_state[i].running && kPlugins[i]->tick) kPlugins[i]->tick(now);
+        if (!g_state[i].running || !kPlugins[i]->tick) continue;
+        if ((kPlugins[i]->info.flags & PF_FAST) ? fast : slow) kPlugins[i]->tick(now);
     }
 }
 

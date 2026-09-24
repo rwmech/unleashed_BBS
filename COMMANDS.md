@@ -311,6 +311,7 @@ outside it and no way to approve a file that is waiting somewhere else.
 | Command | What it does |
 |---|---|
 | `ANNOUNCE` | Whether this board is listed in a directory, when each one last answered, and the public address the directory sees. `ANNOUNCE TEST` prints the exact payload and sends nothing; `ANNOUNCE NOW` sends a heartbeat immediately. Off until switched on: see [ANNOUNCE.md](ANNOUNCE.md). |
+| `LIGHTS` | The lights plugin's two outputs: each one's pin, effect and brightness, and the colours it was last sent, in hex. `LIGHTS TEST` shows red, green, blue and then white on every pixel, a second each, for checking the wiring. Off until switched on: see `lights` under Plugins below. |
 | `SHUTDOWN [n]` | Take the board off the air on purpose. Announces to every node, counts down n seconds (5 to 3600, default 60), then hangs up on everyone including you, each with the ordinary send-off. `SHUTDOWN CANCEL` stops a countdown and says so. Afterwards the board keeps answering and tells callers it has been shut down, rather than refusing connections in a way that looks like a crash. A physical reboot brings it back. Any transfer running when the countdown ends is lost, and the warning says so. |
 | `CONFIG` | The settings, page by page. On its own it lists the pages: `board`, `limits`, `accounts`, `backup`, `staff`, `network`, and one per plugin. `network` is the one page that is not live: the Wi-Fi network and the listening port are used from the next restart, a passphrase under 8 characters is refused before it is written, and so is a port equal to the backup window's. A network saved here that has not joined within a minute of the restart is given up for the last one that did (1.1.0), so a typo costs a minute. `CONFIG wifi`, its name before 1.1.0, still opens it. `CONFIG limits` opens that page as the same kind of form the user manager uses: Up and Down move, F1 saves, ESC cancels. Only what you changed is written, the rest of `system.cfg` is left exactly as it was, comments included, and the board reloads the new settings straight away. Passwords show as `********` and are only written when you type a new one. One sysop edits at a time. |
 
@@ -325,6 +326,17 @@ page the button was on. The file still keeps the bar-separated form, so a
 `system.cfg` edited by hand on a laptop reads and parses exactly as before.
 On a plain ASCII terminal, which has no cursor to put a button under, the row
 becomes `Area 1 [C64 Downloads] open (y/N)?` instead.
+
+A plugin with more settings than one page holds has a button to a page of
+them: `CONFIG lights` has Pixels, a list of ten pixels, each a button to its
+own two-row page. Escape on the list comes back to the plugin's page. The
+list takes the page's place, so it will not open over changes you have not
+saved: F1 first.
+
+A field that steps through words (a level, yes or no, an effect) takes the
+word's first letter, and the same letter again steps to the next word that
+starts with it: `c` twice on a level is `co2` then `co1`. On a plain ASCII
+terminal the letter shows the word it picked and Enter keeps it.
 
 ## Backup window (sysop)
 
@@ -387,8 +399,8 @@ Keys must appear above the first `[section]` line. Sections are `[access]` for t
 
 ### Plugins
 
-Seven plugins ship with the firmware for callers to use, plus an `example`
-plugin that is the template for writing your own ([PLUGINS.md](PLUGINS.md)):
+Eight plugins ship with the firmware, plus an `example` plugin that is the
+template for writing your own ([PLUGINS.md](PLUGINS.md)):
 
 | Plugin | What it does | Defaults |
 |---|---|---|
@@ -399,8 +411,9 @@ plugin that is the template for writing your own ([PLUGINS.md](PLUGINS.md)):
 | `files` | publishes folders on the card as file areas callers can browse | `read = all`, `write = staff` |
 | `forums` | topic message boards on the card | `read = all`, `write = users`, `admin = co1` |
 | `info` | the ten information pages, `INFO` / `/i` | `read = all`, `write = sysop` |
+| `lights` | a disk light and a strip of ten pixels (WS2812B) for a board in a case | `sysop` throughout |
 
-Chat, `sd` and `info` are on by default, even with no section in `system.cfg`; `enabled = no` turns any of them off. `files` is also on by default once a card is mounted and an area is configured. `sd` on a board with no card costs one failed mount at boot and then nothing. `forums`, the serial bridge and `announce` wait to be switched on: `forums` because a sysop sets the topic areas up first, the serial bridge because it needs wiring, and `announce` because it is the one thing that talks out. Turning any of them off costs nothing: no commands, no hooks, no memory.
+Chat, `sd` and `info` are on by default, even with no section in `system.cfg`; `enabled = no` turns any of them off. `files` is also on by default once a card is mounted and an area is configured. `sd` on a board with no card costs one failed mount at boot and then nothing. `forums`, the serial bridge, `announce` and `lights` wait to be switched on: `forums` because a sysop sets the topic areas up first, the serial bridge and the lights because they need wiring, and `announce` because it is the one thing that talks out. Turning any of them off costs nothing: no commands, no hooks, no memory.
 
 The SD card is optional and the board is complete without one. What goes on
 it is the things that grow without limit and can be lost: file areas, message
@@ -539,6 +552,114 @@ format = 8N1
 - Pins 6 to 11 (flash), 1 and 3 (console) are refused, and a transmit pin must not be 34 to 39, which are input only.
 - One operator at a time. Watchers see the same stream, and a terminal that cannot keep up is told how much it skipped instead of holding up the device.
 - While you are in the serial session or the chat room, the idle timeout pauses; your call time limit still counts.
+
+#### lights
+
+Two NeoPixel (WS2812B) outputs, both off until you give them a pin. Set it
+all up with `CONFIG lights`, or in the file:
+
+```
+[plugin:lights]
+enabled      = yes
+drive_pin    = 13       ; -1 is off, as shipped
+drive_fx     = pc       ; pc | 1541 | disk2 | breathe | off
+drive_bright = 10       ; percent, 1 to 30
+strip_pin    = 14       ; -1 is off, as shipped
+strip_fx     = nodes    ; nodes | hayes | blinken | scanner | c64 | boing | vu | rainbow | manual | off
+strip_bright = 10       ; percent, 1 to 30
+led3         = sparkle | random   ; manual mode: led1 to led10, effect | colour
+```
+
+- **Drive pin**: one pixel that shows storage at work. Amber when the SD
+  card is read or written, cool white for the board's own flash, a slow red
+  blink after a storage error, and a dim glow in between. Every flash is
+  held long enough to see, so a read that takes two milliseconds still
+  shows. `-1` is off, as shipped.
+- **Drive fx**: how the drive light behaves. The colours are the same in
+  every style.
+  - `pc`, as shipped: a short flash on each access, and a flicker through a
+    long one, like an IBM PC/XT.
+  - `1541`: solid for the whole access, like the Commodore drive.
+  - `disk2`: stays lit about a second after the last access, like the
+    Apple II Disk II, whose motor kept running.
+  - `breathe`: a slow pulse at rest, with the access colour on top.
+  - `off`.
+- **Strip pin**: a strip of ten pixels. `-1` is off, as shipped.
+- **Strip**: what the strip shows.
+  - `nodes`, as shipped: each pixel is one caller line. Dark while the line
+    is free, the caller's rank colour while somebody is on (the colours WHO
+    uses: grey for a caller, dark grey for a guest, yellow for a co-sysop),
+    and a flicker when that line has traffic. A hidden or lurking co-sysop
+    looks like a free line, as in WHO.
+  - `hayes`: a Hayes Smartmodem's front panel on the first eight pixels,
+    left to right, from the board's real state. HS: a caller faster than
+    2400 baud (`BAUD`), and on while nobody is on. AA: taking calls, off
+    once a `SHUTDOWN` starts. CD: a caller connected. OH: a line in use,
+    the busy line included. RD and SD: bytes received and sent, on any
+    line. TR: the board is listening. MR: power. The last two pixels stay
+    dark.
+  - `blinken`: an IMSAI's front-panel lamps, changing faster the busier the
+    board is.
+  - `scanner`: a light sweeping end to end with a fading tail.
+  - `c64`: the breadbin Commodore's badge stripes, red, orange, yellow,
+    green and blue, in a slow chase.
+  - `boing`: the Amiga ball, red and white, bouncing end to end.
+  - `vu`: a bar of the board's traffic that falls back slowly.
+  - `rainbow`: the colours, cycling along the strip.
+  - `manual`: each pixel its own effect and colour; see below.
+  - `off`.
+- **Drive %** and **Strip %**: brightness, as a percentage of full, 1 to
+  30, each output its own, 10 as shipped. 30 is a ceiling in the firmware,
+  not only on the form: CONFIG refuses more, and a bigger number written
+  into `system.cfg` is read as 30. A dim colour never goes out at a low
+  percentage: a lit channel stays at least 1.
+- Neither pin can be 6 to 11, which the flash chip uses, and the two cannot
+  be the same pin. A change applies when the plugin restarts, which saving
+  the page does. GPIO13 is a good pin for either: it has no job at boot.
+  Nothing yet stops a lights pin taking one the board already uses, so
+  keep clear of the activity LED's (2 as shipped), the BOOT button (0) and
+  the SD card's four: a pixel there takes the pin from them.
+- `LIGHTS` (sysop) shows each output, its setting and the colours it was
+  last sent, in hex, with the Hayes panel's labels in `hayes`. `LIGHTS TEST`
+  shows red, green, blue and then white on every pixel of both, a second
+  each; a strip that shows green for red is not a GRB strip.
+
+**Manual mode.** `CONFIG lights` has a Pixels button. It opens a list of
+the ten pixels, and each of those opens a page of two rows (Escape goes
+back a page):
+
+- **Effect**: `solid`, `blink`, `breathe`, `flicker` (a candle), `sparkle`
+  (an occasional twinkle), `traffic` (flickers with the board's traffic),
+  `node` (lit while that pixel's caller line is in use, as in `nodes`) or
+  `off`.
+- **Colour**: `red`, `orange`, `amber`, `yellow`, `green`, `cyan`, `blue`,
+  `purple`, `pink`, `white`, `random` or `cycle`. `random` is a new colour
+  at each blink, breath or twinkle, and every few seconds for the others. `cycle`
+  turns slowly through the colours, each pixel a step ahead of the one
+  before, so the strip never changes in step.
+
+A pixel nobody has set is `solid` and `cycle`. On a form, the same letter
+twice steps to the next choice that starts with it: `p` is purple, `p`
+again is pink.
+
+**Power, before you wire the strip.** One pixel draws at most about 60 mA
+at full white, which the board's own 5 V pin handles from USB. Ten draw
+about 600 mA at full white, and the board itself needs up to about 400 mA
+when its radio transmits. The firmware ships the strip at 10%, roughly
+60 mA, and never drives it past 30%, roughly 180 mA; with the board's own
+draw on top, even that is close to what a USB 2 port supplies (500 mA on
+USB 2, 900 mA on USB 3), so wire the strip to stand on its own:
+
+- Give the strip its own 5 V supply, rated 1 A or more, and join its
+  ground to the board's ground. Without the shared ground the data line
+  has nothing to be measured against, and the pixels show nonsense.
+- Put a 330 to 470 ohm resistor in the data line, close to the first
+  pixel.
+- Put a 100 nF capacitor across the strip's 5 V and ground, at the strip.
+  If the strip flickers when it changes colour, a larger electrolytic
+  across the same two points helps; Adafruit suggests 500 to 1000
+  microfarads.
+- Connect ground first and disconnect it last.
 
 A value out of range is logged and the default is kept. An upload with a bad value is rejected, so it never replaces a working config.
 

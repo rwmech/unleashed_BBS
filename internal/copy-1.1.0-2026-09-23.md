@@ -983,3 +983,308 @@ For `screen-artist`: the colours per kind are `PRIV_ANSI` as today. The
 one thing worth a look once it is drawn is page 1, the fullest at 21 rows:
 on a terminal that reports 25 rows it has four to spare, on 24 it has
 three.
+
+## 6b. Phase 2 hand-backs
+
+Written 2026-09-23 against 1.1.0-dev.3 (`05c7599`), from the code rather
+than from section 6: `src/core/recovery.cpp` and `recovery.h`,
+`Bbs::noteBoot` and `Bbs::bootNotice` in `bbs.cpp`, `plat::resetReason`
+in `platform_esp32.cpp`, and the Wi-Fi code in `main.cpp`. Lengths are
+measured by script: login lines with a three-digit count, console lines
+with 8-character network names. A 32-character name adds 24 per name;
+console lines have no hard limit.
+
+### 6b.1 The staff login notice: why the board last restarted
+
+`Bbs::bootNotice` prints it when staff arrive at the sysop node
+(`sysElevate`) or on a co-sysop's own line (`coElevate`). Every staff
+login sees it until the board restarts again. `sayLine` does not wrap, so
+a line over 39 characters wraps mid-word on a C64.
+
+What the board can report. The chip reasons are the ones IDF 5.3.1
+actually returns on the ESP32 and the S3, not the whole enum.
+
+| Reason | Word in reboots.log and SYS | Said at login | Lines |
+|---|---|---|---|
+| BOOT held 7 to 15 s (`NOTE_PASSWORD`) | `password reset by BOOT` | yes, Yellow | BN-pw-1, BN-pw-2 |
+| BOOT held 15 to 20 s (`NOTE_FACTORY`) | `factory reset by BOOT` | yes, Yellow | BN-fr-1, BN-fr-2 |
+| the factory erase failed (proposed `NOTE_FACTORY_FAILED`) | `factory reset FAILED` | yes, LightRed | BN-ff-1, BN-ff-2 |
+| `ESP_RST_PANIC` | `crash (panic)` | yes, LightRed | BN-panic-1, BN-panic-2, BN-count |
+| `ESP_RST_TASK_WDT` | `task watchdog` | yes, LightRed | BN-twdt-1, BN-twdt-2, BN-count |
+| `ESP_RST_INT_WDT` | `interrupt watchdog` | yes, LightRed | BN-wdt-1, BN-wdt-2, BN-count |
+| `ESP_RST_WDT` | `watchdog` | yes, LightRed | BN-wdt-1, BN-wdt-2, BN-count |
+| `ESP_RST_BROWNOUT` | `brownout (power dipped)` | yes, LightRed | BN-bo-1, BN-bo-2, BN-count |
+| `ESP_RST_POWERON` | `power on` | no | none |
+| `ESP_RST_SW` with no note | `software restart` | no | none |
+| `ESP_RST_USB`, S3 only | `unknown` today; propose `USB reset` | no | none |
+| `ESP_RST_DEEPSLEEP`, `ESP_RST_SDIO` | as now | no; this firmware never causes them | none |
+| `ESP_RST_EXT` | `reset pin` | never returned on the ESP32 or S3 | none |
+| anything else | `unknown` | no | none |
+
+| Id | Max | Len | Text |
+|---|---|---|---|
+| BN-pw-1 | 39 | 37 | `Last restart: password reset by BOOT.` |
+| BN-pw-2 | 39 | 39 | `Sysop password only. Accounts are kept.` |
+| BN-fr-1 | 39 | 36 | `Last restart: factory reset by BOOT.` |
+| BN-fr-2 | 39 | 34 | `Accounts and settings were erased.` |
+| BN-ff-1 | 39 | 35 | `Last restart: factory reset FAILED.` |
+| BN-ff-2 | 39 | 38 | `Reinstall with Erase everything first.` |
+| BN-panic-1 | 39 | 32 | `Last restart: the board crashed.` |
+| BN-panic-2 | 39 | 33 | `The firmware stopped on an error.` |
+| BN-twdt-1 | 39 | 30 | `Last restart: the board froze.` |
+| BN-twdt-2 | 39 | 35 | `A watchdog restarted it after <s> s.` |
+| BN-wdt-1 | 39 | 30 | `Last restart: the board froze.` |
+| BN-wdt-2 | 39 | 24 | `A watchdog restarted it.` |
+| BN-bo-1 | 39 | 31 | `Last restart: the power dipped.` |
+| BN-bo-2 | 39 | 37 | `Check the power supply and its cable.` |
+| BN-count | 39 | 35 | `Unexpected restarts on record: <n>.` |
+
+- The first line takes the colour in the reason table and the rest are
+  Grey. BN-count follows the second line for the five unexpected reasons,
+  not for a BOOT reset. Then the blank line `bootNotice` already ends
+  with.
+- The first line says what a person would say happened. The chip's own
+  word stays in reboots.log and SYS, where a bug report copies it from.
+  To a sysop, the three watchdogs are one event: the board stopped
+  answering and something restarted it.
+- These replace two lines that both wrapped at 40 columns.
+  `Last restart was not clean: <reason>.` is 42 to 52 characters for four
+  of the five reasons (37 only for `watchdog`), and
+  `SYS has the detail. The log is reboots.log.` is 43. The second line
+  also pointed at nothing useful. SYS shows the same word, and nothing
+  reads reboots.log back: it is on the logs partition, which no file
+  area, command or backup reaches, so no sysop can open it from the board.
+- BN-pw-1 and BN-fr-1 are unchanged. README.md quotes them, and
+  `test_boot_hold` asserts BN-pw-1 on a line of its own, which it still
+  is.
+- BN-pw-2 is for a co-sysop, who would otherwise read "password reset"
+  and wonder whether it was theirs. It stays true for as long as the
+  notice runs, because the reset only ever removes `sysop_password`.
+- BN-twdt-2: `<s>` is `CONFIG_ESP_TASK_WDT_TIMEOUT_S` (30), filled in by
+  the code, not typed into the string.
+- BN-count is `bootCrashCount()`, which is counted today and shown
+  nowhere. Two things for the builder:
+  - It has to include this boot, and today it only does when reboots.log
+    has passed its cap. Under the cap the file is counted before this
+    boot's line is appended.
+  - The counter looks for `crash`, `watchdog` and `brownout` in each
+    line. Any rewording of the chip words has to keep them, because lines
+    written by older builds keep the old words.
+- Why power on and the rest stay silent: a power on is also the sysop
+  pulling the plug, and the notice repeats to every staff login until the
+  next restart. On both chips the RESET (EN) button reads as power on, and
+  so does the reset after a flash over a USB-serial bridge, so
+  `reset pin` never appears. SYS is the place for those (6b.1a).
+- BN-ff-*: `act()` restarts with `NOTE_NONE` when the erase fails, so the
+  next boot reads as `software restart` and nothing is said at login. Of
+  everything a BOOT reset can end in, a failed erase is the result that
+  most needs saying. A third note claims only what happened. Whether to
+  add it is the builder's call; the strings are here if it goes in.
+  BN-ff-2 names the install page's checkbox, as RB-fr-fail does.
+- `USB reset`: the S3 reports `ESP_RST_USB` for a reset through its own
+  USB port, and `plat::resetReason` has no case for it. The queued S3
+  board would log `unknown` after every flash over its USB port. Not
+  said at login.
+- Colour: LightRed for the unexpected ones is the code's own choice (a
+  board that restarted on its own cut off everybody on it). It is an
+  exception to this file's rule of LightRed for a refusal only.
+- On the setup path the notice is printed and then cleared at once.
+  `sysElevate` prints it, `beginSetup` plays `screens/setup`, and that
+  screen opens with `@CLS@`. `test_boot_hold` reads the raw stream for
+  that reason. After a BOOT reset that is the path the sysop takes, so
+  the login the notice was written for never shows it. Printing it at the
+  first prompt after setup is a builder or `tty-ux` call.
+- README.md line 177 says the next staff login says `task watchdog`.
+  With these lines it says `the board froze`. That is for `docs`.
+
+Sources: the reason mapping, including the RESET (EN) button giving
+power on and `ESP_RST_USB` on the S3 only, is from
+`components/esp_system/port/soc/esp32/reset_reason.c` and
+`.../esp32s3/reset_reason.c` at v5.3.1
+(https://github.com/espressif/esp-idf/tree/v5.3.1/components/esp_system/port/soc).
+`ESP_RST_EXT` is "not applicable for ESP32" in the IDF 5.3.1 API
+reference
+(https://docs.espressif.com/projects/esp-idf/en/v5.3.1/esp32/api-reference/system/misc_system_api.html).
+With `CONFIG_ESP_TASK_WDT_PANIC`, a task watchdog timeout sets
+`ESP_RST_TASK_WDT` (`task_wdt_timeout_abort` in
+`components/esp_system/task_wdt/task_wdt.c` at v5.3.1).
+
+#### 6b.1a SYS
+
+At 40 columns the Uptime row's note has 16 columns: the label takes 13,
+the value 9 and a space 1. Four of the words overflow and wrap:
+`password reset by BOOT` (45 characters on the row),
+`factory reset by BOOT` (44), `interrupt watchdog` (41) and
+`brownout (power dipped)` (46).
+
+Recommended: a row of its own under Uptime, with `Last restart` as the
+label and the word as the value. Show it for every boot, not only the
+unexpected ones. `statRow` pads the value but never cuts it, so the
+longest row, with `brownout (power dipped)`, is 36 characters. SYS then
+also says why the board started after a power on, which is the question a
+sysop brings to it.
+
+| Id | Max | Len | Text |
+|---|---|---|---|
+| SYS-l-restart | 12 | 12 | `Last restart` |
+
+If the note stays on the Uptime row instead, these fit its 16 columns:
+
+| Id | Max | Len | Text |
+|---|---|---|---|
+| SYS-n-pw | 16 | 14 | `password reset` |
+| SYS-n-fr | 16 | 13 | `factory reset` |
+| SYS-n-ff | 16 | 12 | `reset FAILED` |
+| SYS-n-iwdt | 16 | 12 | `irq watchdog` |
+| SYS-n-bo | 16 | 8 | `brownout` |
+
+`crash (panic)`, `task watchdog` and `watchdog` fit as they are.
+
+### 6b.2 The password band's restart line
+
+| Id | Max | Len | Text |
+|---|---|---|---|
+| RB-pw-5 | console | 69 | `reset: restarting. Log in from this network to choose a new password.` |
+
+- It goes after RB-pw-4 and before `plat::restart(NOTE_PASSWORD)`, the
+  same place RB-fr-3 has in the factory band.
+- True from the next boot: a caller on the local network who logs in or
+  registers while the password is the default is offered setup
+  (`offerSetup`). Setup asks for the default and then opens CONFIG staff.
+  "This network" means the same as in RB-pw-2: the board's own network.
+- It does not print the default itself. The setup offer sends people to
+  the install page for it, and the two should agree.
+- `test_boot_hold`'s check for the copy's four lines becomes five.
+
+### 6b.3 The factory band's restart line
+
+RB-fr-3 says "restarting with no Wi-Fi", which is untrue on a
+developer's build with `include/secrets.h`: after the restart it joins
+the compiled-in network again. The fix is a pair of lines, chosen at
+compile time:
+
+| Id | Max | Len | Text |
+|---|---|---|---|
+| RB-fr-3 | console | 65 | `reset: restarting, Wi-Fi erased. The web installer sets it again.` |
+| RB-fr-3d | console | 68 | `reset: restarting, Wi-Fi erased. This build falls back to secrets.h.` |
+
+- "Wi-Fi erased" is true on every build. The network is kept in
+  system.cfg and wifi.last, both on userdata, and the radio's own copy is
+  held in RAM only (`WIFI_STORAGE_RAM`), so nothing survives in NVS.
+- RB-fr-3 is for every build with no network compiled in, which is every
+  release. A release reaches a board with no network at all: no
+  secrets.h (`BBS_RELEASE`), and `tools/release.py` refuses a storage.bin
+  with a system.cfg in it, so `seed()` has nothing to copy back.
+- RB-fr-3d is for a build where `WIFI_SSID` is not empty. It says "falls
+  back to" rather than "rejoins", because system.cfg still wins over
+  secrets.h if one comes back (next bullet).
+- One case neither line covers exactly: a developer's board with its own
+  data/system.cfg uploaded to the screens partition. `seed()` copies that
+  file back at the next boot, Wi-Fi lines and all. RB-fr-3's advice is
+  then unneeded but not wrong, and the boot's own
+  `wifi: joining "..." (from system.cfg)` line says so seconds later. It
+  is only knowable at run time and only happens on developer boards, so
+  it is not worth code.
+- Plumbing: the `#if` that decides this
+  (`!defined(BBS_RELEASE) && __has_include("secrets.h")`) and `WIFI_SSID`
+  live in main.cpp, where recovery.cpp cannot see them. Move that block
+  to a header both files include, and key on `sizeof(WIFI_SSID) > 1`, so
+  the two cannot disagree. A secrets.h with an empty name is not a
+  fallback.
+- `test_boot_hold` asserts the old RB-fr-3 text.
+
+### 6b.4 RB-pw-fail after the Phase 5 fix
+
+The string does not need to change. `syscfg::write` can fail here in
+three ways:
+
+- `cannot write the config file` and `the config file could not be
+  finished` both happen before the old file is touched, so
+  "Nothing changed." is already true for them.
+- `the new config file could not be put in place` happens after
+  `remove(path)`. system.cfg is gone, the new copy is left behind as
+  system.tmp, and "Nothing changed." is false.
+
+Phase 5 renames the new file over the old one, which removes the third
+case, and after that every failure leaves the old file in place. The
+condition is that Phase 5 lands before 1.1.0 is tagged. If it does not,
+the fix for the third case is in the code, not in a sentence. While
+there: write() leaves system.tmp behind on that path and should remove
+it, as it does on the other two. With the longest `<err>` the line is 99
+characters, which is fine for the console.
+
+### 6b.5 The Wi-Fi fallback console lines
+
+Three of the four lines need replacing, two new ones cover a case the
+code handles and the lines do not, and one more is new.
+
+| Id | Max | Len | Text |
+|---|---|---|---|
+| WF-trial | console | 66 | `wifi: 60 s to join "<new>", or back to "<last>", which worked` |
+| WF-trial-pw | console | 71 | `wifi: new password for "<net>": 60 s to join, or back to the old one` |
+| WF-back | console | 65 | `wifi: could not join "<new>" in 60 s; going back to "<last>"` |
+| WF-back-pw | console | 72 | `wifi: could not join "<net>" on the new password; back to the old one` |
+| WF-back-2 | console | 71 | `wifi: each restart tries it for 60 s first; change it in CONFIG network` |
+| WF-kept | console | 58 | `wifi: joined "<net>"; kept as the network to go back to` |
+| WF-kept-fail | console | 70 | `wifi: joined "<net>" but could not keep it as the one to go back to` |
+
+- WF-trial replaces
+  `wifi: "<new>" has not joined here yet; back to "<last>" if it has not in 60 s`
+  (82). Networks do not join; the board does. "Here yet" is false for a
+  network this board has used before but not most recently. And "if it
+  has not" leaves the reader to work out what "it" is. `wifiStart` prints
+  WF-trial straight after `wifi: joining "<new>" (from system.cfg)`, so
+  the two read as one thought.
+- WF-trial-pw and WF-back-pw are new. They cover a case the code already
+  handles and `test_config_wifi_fallback` already tests: the same network
+  with a different password. Today both lines print one name twice,
+  `"HomeNet" has not joined here yet; back to "HomeNet"`, which makes no
+  sense to the reader. The builder branches on `strcmp(os, ssid) == 0`.
+- WF-back replaces
+  `wifi: "<new>" has not joined in 60 s; going back to "<last>", which has`
+  (76). It had the same "networks do not join" problem, and "which has"
+  left the reader to supply "joined before".
+- WF-back-2 is new and follows either WF-back line. Without it, nothing
+  says the fallback only lasts until the next restart: system.cfg still
+  names the new network, so every restart spends a minute on it first.
+  The page has been called CONFIG network since 1.1.0-dev.1.
+- WF-kept replaces `...; it is the network to go back to now`, where "go
+  back to now" can be read as "going back right now". Every board prints
+  it at its first join on 1.1.0, so it is the one most people see.
+- WF-kept-fail is the current text, unchanged. It reads fine.
+- "60 s" in all of these comes from `kWifiFallbackMs / 1000`, filled in
+  by the code, so the lines cannot drift from the timer.
+- `test_config_wifi_fallback` asserts the old WF-trial, WF-back and
+  WF-kept text, and uses the substring "has not joined here yet" in two
+  negative checks.
+
+### 6b.6 Found on the way: the setup offer after a password reset
+
+After a BOOT password reset, the sysop logs in from the local network and
+`offerSetup` tells them `This board has not been set up yet.`. They are
+the owner of a board that has accounts and history on it. The
+password-band test asserts that text, so the behaviour is known and works
+as written; the text was written for a fresh board. Here is a variant for
+the boot that follows `NOTE_PASSWORD`. The prompt after it stays as it
+is:
+
+| Id | Max | Len | Text |
+|---|---|---|---|
+| SU-reset-1 | 39 | 39 | `The sysop password was reset with BOOT.` |
+| SU-reset-1w | 59 | 50 | `The sysop password was reset with the BOOT button.` |
+| SU-reset-2 | 39 | 35 | `The default is on the install page.` |
+| SU-reset-2w | 59 | 45 | `The published default is on the install page.` |
+| SU-reset-3 | 39 | 37 | `Enter it here, then choose a new one.` |
+
+- Yellow, Grey, Grey, like the lines they replace. The `w` forms are for
+  60 columns and wider, where the offer already switches wording.
+- The order is fact, then where to find it, then what to do, so the
+  prompt that follows asks for the thing the last line named. Putting
+  "choose a new one" straight before a prompt that wants the old default
+  would invite typing the new password into it.
+- It is keyed on this boot's note. If the board restarts again before
+  anybody logs in, it goes back to the fresh-board wording, which is
+  still roughly true (the password is the default) and is what the test
+  covers.
+- `screens/setup` reads correctly for this case as it is ("You got in
+  with the default password").

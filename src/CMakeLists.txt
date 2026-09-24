@@ -45,7 +45,10 @@ set(app_requires esp_wifi esp_netif esp_event nvs_flash esp_timer esp_hw_support
                  # The optional SD card: SPI host, card protocol, FAT and the
                  # VFS glue. fatfs is the one that costs image space, so it is
                  # worth remembering it is here if the build ever gets tight.
-                 esp_driver_spi esp_driver_sdspi sdmmc fatfs vfs)
+                 esp_driver_spi esp_driver_sdspi sdmmc fatfs vfs
+                 # The lights plugin's two WS2812B outputs: the RMT
+                 # peripheral, hardware-timed, so nothing is bit-banged.
+                 esp_driver_rmt)
 if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../components/esp_littlefs")
     list(APPEND app_requires esp_littlefs)     # vendored fallback
 endif()

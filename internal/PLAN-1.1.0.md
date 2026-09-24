@@ -219,6 +219,48 @@ CLAUDE.md holds the history behind each item; this file is what to build.
     because it would switch staff off; CONFIG already refuses that.
   - A co-sysop line dropped for being the default is reported in the
     restore result, not only in the serial log.
+- From the lights plugin (dev.4):
+  - Wire `plat::diskPulse` into the storage paths not yet wired:
+    users.cpp, calllog.cpp and its card mirror, sysconfig.cpp, ziparc.cpp
+    and backup.cpp staging, chat.cpp mail, forums.cpp, files.cpp listings
+    and transfers, info.cpp, reboots.log in bbs.cpp, and plugins' own
+    paths. Done after 3a and 3b merge, so it collides with neither.
+  - `syscfg::pinProblem` refuses pins the chip does not have (the WROOM
+    has no 20, 24 or 28-31; CONFIG takes them and LIGHTS then says
+    "would not start"), and CONFIG refuses a pin another feature holds:
+    the activity LED, BOOT (0), the SD pins, the serial bridge, the other
+    lights output. One function, so the S3 per-chip rule lands in the
+    same place later.
+- From Phase 2 (dev.3), copy in `internal/copy-1.1.0-2026-09-23.md`
+  section 6b:
+  - `syscfg::write` renames over the old file on LittleFS instead of
+    removing it first (`lfs_rename` replaces atomically); FatFs still
+    needs the remove. Sweep every temp-and-rename site. Must land before
+    the tag, because RB-pw-fail's "Nothing changed." depends on it.
+  - The staff restart notice: BN-* lines, both at 39 columns or under,
+    replacing "Last restart was not clean" (42 to 52 columns, wraps on a
+    C64) and the pointer to reboots.log that nothing reads back. BN-count
+    shows `bootCrashCount()` (+1 for this boot while the log is under its
+    cap). Keep "crash", "watchdog" and "brownout" in the logged words,
+    because the counter matches them.
+  - The notice is cleared by `screens/setup`'s @CLS@ on the path a BOOT
+    password reset sends the sysop down, so it is never seen. Show it
+    after the setup screen or in it; ask tty-ux if the placement is not
+    obvious. SU-reset-* is the setup wording for that boot.
+  - `plat::resetReason` has no case for `ESP_RST_USB` (S3 only): "USB
+    reset". Pressing RESET reads as power-on on both chips; say nothing
+    that claims otherwise.
+  - Optional: `NOTE_FACTORY_FAILED` so a failed factory erase is not a
+    silent "software restart" (BN-ff-*).
+  - SYS gets a "Last restart" row (SYS-l-restart) instead of squeezing
+    the reason into Uptime's 16-column note at 40 columns.
+  - Console: RB-pw-5 (the password band's restarting line), RB-fr-3 and
+    RB-fr-3d (move `WIFI_SSID` and its `#if` from main.cpp to a shared
+    header, key on `sizeof(WIFI_SSID) > 1`), and WF-* with the
+    same-network variants (`strcmp(os, ssid) == 0`) and the 60 s from
+    `kWifiFallbackMs`.
+  - Update `test_boot_hold` (five lines, new RB-fr-3),
+    `test_config_wifi_fallback` (WF text), and README's restart wording.
 
 ## Release gate
 

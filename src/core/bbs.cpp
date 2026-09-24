@@ -854,6 +854,8 @@ void Bbs::readSession(Session& s, uint32_t now) {
     }
 
     plat::activityPulse(now);
+    rxSeen_  = static_cast<uint16_t>(rxSeen_ | (1u << s.id));   // for the lights
+    rxBytes_ += static_cast<uint32_t>(n);
     DirectSink ds(s.fd);
     size_t m = s.tn.filter(raw, static_cast<size_t>(n), data, ds);
     s.lastRx = now;
@@ -918,7 +920,11 @@ void Bbs::flush(Session& s, uint32_t now) {
     s.wantWrite = false;
     int sent = s.tl.pump(now, sessSend, &s);
     if (sent < 0) closeSession(s, "write error", now);
-    else if (sent > 0) plat::activityPulse(now);
+    else if (sent > 0) {
+        plat::activityPulse(now);
+        txSeen_  = static_cast<uint16_t>(txSeen_ | (1u << s.id));   // for the lights
+        txBytes_ += static_cast<uint32_t>(sent);
+    }
 }
 
 // ---------------------------------------------------------------------------

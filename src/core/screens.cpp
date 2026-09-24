@@ -119,6 +119,7 @@ bool ScreenPlayer::open(const char* name, const Term& t) {
         FILE* f = fopen(path, "rb");
         if (f) {
             fromCard_ = (r == 0);
+            plat::diskPulse(fromCard_ ? plat::DISK_CARD : plat::DISK_FLASH);   // the drive light
             f_        = f;
             mode_     = static_cast<Mode>(list[i].mode);
             inTok_    = false;
@@ -292,6 +293,10 @@ bool ScreenPlayer::pump(Term& t, Timeline& tl, const Vars& v) {
     while (f_ && !paused_ && tl.freeBytes() > (BBS_SCREEN_CHUNK * 4u + 256u) && tl.freeFrames() > 32) {
         if (bufPos_ >= bufLen_) {
             size_t n = sauce_ ? 0 : fread(buf_, 1, sizeof(buf_), f_);
+            // The drive light: every chunk is an access, and a read that
+            // failed rather than ran out is a storage error.
+            if (n) plat::diskPulse(fromCard_ ? plat::DISK_CARD : plat::DISK_FLASH);
+            else if (!sauce_ && ferror(f_)) plat::diskPulse(plat::DISK_ERROR);
             if (n == 0) {
                 if (inTok_) flushToken(t, tl);
                 close();
