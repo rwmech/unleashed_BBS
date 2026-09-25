@@ -63,3 +63,25 @@ CONFIG_SPIRAM_IGNORE_NOTFOUND=y
 # WROVER-E carries an older chip; the price is that this image will not boot
 # on a pre-v3 ESP32.
 CONFIG_ESP32_REV_MIN_3=y
+
+# The camera driver (espressif/esp32-camera, src/idf_component.yml) with the
+# one sensor this board carries. Every sensor is on by default, and their
+# register tables are initialised data: all seventeen measured 9,800 bytes
+# of static DRAM against 1,768 for the OV2640 alone (the plan, section 4).
+CONFIG_OV7670_SUPPORT=n
+CONFIG_OV7725_SUPPORT=n
+CONFIG_NT99141_SUPPORT=n
+CONFIG_OV2640_SUPPORT=y
+CONFIG_OV3660_SUPPORT=n
+CONFIG_OV5640_SUPPORT=n
+CONFIG_GC2145_SUPPORT=n
+CONFIG_GC032A_SUPPORT=n
+CONFIG_GC0308_SUPPORT=n
+CONFIG_BF3005_SUPPORT=n
+CONFIG_BF20A6_SUPPORT=n
+CONFIG_SC101IOT_SUPPORT=n
+CONFIG_SC030IOT_SUPPORT=n
+CONFIG_SC031GS_SUPPORT=n
+CONFIG_HM1055_SUPPORT=n
+CONFIG_HM0360_SUPPORT=n
+CONFIG_MEGA_CCM_SUPPORT=n

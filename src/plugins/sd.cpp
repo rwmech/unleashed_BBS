@@ -68,6 +68,9 @@
 #include "../core/backup.h"    // and sdNightly
 #include "../core/bbs_util.h"
 #include "../platform/platform.h"
+#ifdef BBS_HAS_CAMERA
+#include "camera.h"             // camera::busy: the card is in use by its worker
+#endif
 #include "../config.h"
 #include "panel_feed.h"       // sdcard::panel, on a board with a display
 
@@ -488,6 +491,13 @@ bool start(Bbs& bbs) {
         if (!strcmp(g_why, "not mounted")) snprintf(g_why, sizeof(g_why), "%s", was);
         return true;
     }
+#ifdef BBS_HAS_CAMERA
+    if (had && moved && camera::busy()) {
+        plat::log("sd: the camera is writing the card; the new bus speed waits for the next save");
+        g_pins = before;
+        return true;
+    }
+#endif
     if (had && moved) {
         plat::log("sd: pins changed, remounting");
         if (g_bbs) { g_bbs->closeCardScreens(); g_bbs->dropCardJob(); }
@@ -655,6 +665,16 @@ const Command kCommands[] = {
                   b.prompt(s);
                   return;
               }
+#ifdef BBS_HAS_CAMERA
+              // The camera writes a photo on a task of its own: the card
+              // stays until it has finished, a few seconds at most.
+              if (camera::busy()) {
+                  t.color(tl, Color::Grey);
+                  t.text(tl, "The camera is saving a photo. Try again in a moment.");
+                  b.prompt(s);
+                  return;
+              }
+#endif
               // Anyone mid-screen from the card has to be let go first, and
               // so does a backup being written to it (the nightly one).
               b.closeCardScreens();

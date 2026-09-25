@@ -30,7 +30,9 @@ are reproduced at the end of this file.
 | [littlefs](https://github.com/littlefs-project/littlefs) | BSD-3-Clause | Power-fail-safe filesystem for the storage and logs partitions. |
 | [joltwallet/esp_littlefs](https://github.com/joltwallet/esp_littlefs) | MIT | ESP-IDF VFS driver for littlefs. |
 | [miniz (tinfl) in the ESP32 ROM](https://github.com/richgel999/miniz) | MIT | Used to decompress uploaded backup zips. It lives in the chip's ROM and is not part of any file we ship. |
-| [Spleen](https://github.com/fcambus/spleen) 2.2.0, by Frederic Cambus | BSD-2-Clause | The bitmap font on the display of a board that has one (the Waveshare ESP32-S3-LCD-1.47 image only). Converted to C arrays by `tools/mkfont.py`; the glyphs are unchanged. |
+| [espressif/esp32-camera](https://github.com/espressif/esp32-camera) 2.1.7 | Apache-2.0 | The OV2640 driver and its own JPEG encoder (`conversions/jpge`), used to draw the watermark on a photo. Fetched for every ESP32 and S3 build (`src/idf_component.yml`) but linked only into a camera board's image (the Freenove ESP32-WROVER CAM); the reference WROOM and the Waveshare S3 carry none of it. |
+| [TJpgDec in the ESP32 and ESP32-S3 ROM, by ChaN](http://elm-chan.org/fsw/tjpgd/00index.html) | ChaN's own licence (BSD-style, permissive; the same terms as his FatFs) | Decodes a photo so the watermark can be drawn on it. Reached directly through the IDF's own ROM headers (`esp32/rom/tjpgd.h`, `esp32s3/rom/tjpgd.h`) on a camera board only; like miniz, it lives in the chip's ROM and is not part of any file we ship. |
+| [Spleen](https://github.com/fcambus/spleen) 2.2.0, by Frederic Cambus | BSD-2-Clause | The bitmap font on the display of a board that has one (the Waveshare ESP32-S3-LCD-1.47 image only). Converted to C arrays by `tools/mkfont.py`; the glyphs are unchanged. A camera board's watermark draws its text with the same font's 8x16 glyphs, compiled into every camera build; the two never share an image. |
 | [zlib](https://zlib.net/) | zlib license | Same decompression job in the Linux host test build only. Not in the firmware. |
 
 None of this software has been modified.

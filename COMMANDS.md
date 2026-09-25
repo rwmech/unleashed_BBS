@@ -112,6 +112,7 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | `PRIVACY` | | What the board knows about you: that telnet is not encrypted, how your password is stored, what the sysop can see, and the one rule that matters. Plays `screens/privacy.*`, so a sysop can rewrite it. The same screen is offered during sign-up. |
 | `PROFILE` | | Form to change your name, email, From, phone and profile. Not for guests. |
 | `PASSWORD` | | Form: current password, then the new one twice. Not for guests. |
+| `SNAPSHOT` | | Camera boards only. Takes a photo with the board's camera; refused with no SD card in, before the clock is set, over your limit (10 an hour, 20 a day, rolling; the sysop is exempt), or while the card is under its space floor. As shipped only staff may actually take one (the Snap setting); anyone else is told it isn't open to them. Offers `Download it now? [Y]es [X]modem [N]o` afterwards when you may download from Photos and nothing else is transferring. Hidden alias `SNAP`. Settings, naming and retention: see `camera` under Plugins below. |
 | `PAGE n message` | | Send a one-line message to node n: a bell, a flashing ` PAGE ` tag that rubs out, then the message. It reaches them wherever they are (see "Notices" below). |
 | `OPERATOR [reason]` | `O` | Ring for the sysop. Without a reason it asks `What do you need the sysop for?`, and nothing typed sends nothing. If the sysop can be asked, you see `Ringing the sysop` and a spinner for up to 45 seconds, and any key stops it; if they answer you are both put in the chat room, and what you type goes to the sysop only. Otherwise what you wrote is saved as a note for them. One ring every 3 minutes, three a call, one at a time on the whole board. See "Ringing for the sysop" below. |
 | `DND` | | Toggle do-not-disturb: pages to you are refused. |
@@ -266,7 +267,8 @@ All caller commands still work. Node arguments are `1`-`10`, `S` (sysop node) or
 | `BANS` | `BANS` | Active IP bans and minutes remaining. |
 | `PLUGINS` | any staff | Every plugin compiled in: version, whether it is running, and why not. Also free disk space and the reserve. |
 | `SYS` | any staff | The whole board on one screen, in groups: network (SSID, signal in dBm with a word for what it means, channel, address, port), memory (heap free, the lowest it has been, the biggest block, session size), storage (used, free, what is held back for the board), load (uptime, clock, scheduler work per pass in microseconds, worst pass **and which phase of the loop it happened in**, how many passes have run over 50 ms since boot, passes since boot) and traffic (nodes busy and the peak, calls answered since boot, records in the caller log, plugins running, active IP bans). Any staff level can run it, though it is grouped with the sysop tools below. |
-| `FILES` / `F` | all | **Goes into the file area**, the way `CHAT` goes into the room, rather than printing a list and returning. A screen plays on the way in if the board has `screens/files`, then the areas appear as a numbered menu laid out in as many columns as the terminal has room for. A digit opens an area (`0` is ten), `Q` goes back one level and `Q` again leaves. An area numbered past 10, which only the sysop's Backups is today, is `#`, the number and Enter at the menu (1.1.0), or the cursor keys. `FILES n` enters and opens that area in one go. Only on a board with a card: the plugin does not start without one, so on a cardless board the command does not exist rather than offering an empty file area. |
+| `CAMERA` | any staff | Camera boards only. What is stored (callers' photos and timed ones counted separately, with their card space), the card's free space against its floor, the last photo taken and who took it, and (for anybody but the sysop) your own limits used this hour and today. `CAMERA SET key value` (sysop only) changes a camera setting live, written to `system.cfg`, the same keys as `CONFIG camera`. Hidden alias `CAM`. |
+| `FILES` / `F` | all | **Goes into the file area**, the way `CHAT` goes into the room, rather than printing a list and returning. A screen plays on the way in if the board has `screens/files`, then the areas appear as a numbered menu laid out in as many columns as the terminal has room for. A digit opens an area (`0` is ten), `Q` goes back one level and `Q` again leaves. An area numbered past 10 (the sysop's Backups, and on a camera board Photos and Timelapse too) is `#`, the number and Enter at the menu (1.1.0), or the cursor keys. `FILES n` enters and opens that area in one go. Only on a board with a card: the plugin does not start without one, so on a cardless board the command does not exist rather than offering an empty file area. |
 | `FORUMS` | all | **Goes into the message boards**, the way `FILES` and `CHAT` go into theirs. Three levels: topic areas the sysop sets up (`CONFIG forums`), subjects that callers start inside them, and the messages in each subject. A screen plays on the way in if the board has `screens/forums`. Only on a board with a card, the same as `FILES`: the plugin does not start without one, so on a cardless board the command does not exist rather than offering empty boards. `FORUMS SCAN` needs the forums plugin's admin level (`co1` by default) and prints what the board thinks is on the card. |
 | `SD` | sysop | SD card status: type, mount point, free space, and where screens are coming from. With no card it says which pins it tried, because "no card found" without them sends you to re-seat a card that was never the problem. |
 | `SD MOUNT` | sysop | Mount the card without rebooting. **Pauses the whole board** for a few hundred milliseconds while it negotiates over SPI, which is why it is typed rather than retried on a timer. |
@@ -516,8 +518,9 @@ template for writing your own ([PLUGINS.md](PLUGINS.md)):
 | `info` | the ten information pages, `INFO` / `/i` | `read = all`, `write = sysop` |
 | `lights` | a disk light and a strip of 1 to 16 pixels (WS2812B) for a board in a case | `sysop` throughout |
 | `panel` | the board's own display as a status panel (boards with one only) | `sysop` throughout |
+| `camera` | photos from the board's own camera, into their own file areas (camera boards only) | `read = all`, `write = staff`, `admin = sysop` |
 
-Chat, `sd` and `info` are on by default, even with no section in `system.cfg`; `enabled = no` turns any of them off. `files` is also on by default once a card is mounted and an area is configured. `sd` on a board with no card costs one failed mount at boot and then nothing. `forums`, the serial bridge, `announce` and `lights` wait to be switched on: `forums` because a sysop sets the topic areas up first, the serial bridge and the lights because they need wiring, and `announce` because it is the one thing that talks out. On a board whose pixel and display are part of the board (the Waveshare S3), `lights` and `panel` are on as shipped. Turning any of them off costs nothing: no commands, no hooks, no memory.
+Chat, `sd` and `info` are on by default, even with no section in `system.cfg`; `enabled = no` turns any of them off. `files` is also on by default once a card is mounted and an area is configured. `sd` on a board with no card costs one failed mount at boot and then nothing. `forums`, the serial bridge, `announce`, `lights` and `camera` wait to be switched on: `forums` because a sysop sets the topic areas up first, the serial bridge and the lights because they need wiring, `announce` because it is the one thing that talks out, and `camera` because even a board built with one should have a sysop's say before it starts taking photos. On a board whose pixel and display are part of the board (the Waveshare S3), `lights` and `panel` are on as shipped. Turning any of them off costs nothing: no commands, no hooks, no memory.
 
 The SD card is optional and the board is complete without one. What goes on
 it is the things that grow without limit and can be lost: file areas, message
@@ -573,7 +576,8 @@ ones: 9 is `Screens` (the card's screens folder) and 10 is `Logs` (the caller
 log mirror), both staff to read and the sysop to change, and 11 is `Backups`
 (the card's `backup` folder), the sysop's alone. A backup can be downloaded
 there by YMODEM or XMODEM, and a `.zip` uploaded there goes in at once, with
-no approval, for `RESTORE SD` to restore (1.1.0).
+no approval, for `RESTORE SD` to restore (1.1.0). A camera board adds two
+more, 12 (`Photos`) and 13 (`Timelapse`): see `camera` under Plugins below.
 
 A file area is a folder on the card that the sysop mounts under a name. The
 path is never shown to callers, so an area can point at a folder you already
@@ -921,6 +925,161 @@ backlight = 60     ; percent, 0 dark
   until the whole new picture has been drawn.
 
 A value out of range is logged and the default is kept. An upload with a bad value is rejected, so it never replaces a working config.
+
+#### camera
+
+Camera boards only (the Freenove ESP32-WROVER CAM, as shipped). `SNAPSHOT`
+takes a photo for a caller; the board can also take one of its own on a
+timer (the timelapse), or on request from another plugin later (a motion
+sensor). Bringing the sensor up, taking the frame, drawing the watermark and
+writing the card all run on a worker task off the BBS loop, so a photo never
+adds lag for anyone else on the board.
+
+```
+[plugin:camera]
+enabled    = yes
+snap       = staff      ; who may take a photo, as shipped
+photos     = all        ; who may see and download photos, as shipped
+size       = svga       ; the sensor's own sizes (BBS_CAM_SIZES)
+quality    = 12         ; 4 to 40, lower is better
+names      = date       ; date | date+handle | by handle
+watermark  = yes
+keep       = 30         ; days callers' photos are kept; 0 keeps them forever
+max        = 200        ; callers' photos kept; 0 no limit
+floor      =            ; MB kept free on the card; empty: a tenth of it, 512 MB at most
+flash_mode = off        ; off | pixel | pin, as shipped on the Freenove board
+flash_pin  = 13
+flash_lead = 0          ; ms the flash is on before the shot
+tl_min     = 0          ; minutes between the board's own photos, 0 to 1440
+tl_sec     = 0          ; and seconds, 0 to 59; both 0 is off, under 10 s is 10
+tl_keep    = 7          ; days
+tl_max     = 200
+pic_flip   = no
+pic_mirror = no
+pic_bright = 0          ; -2 to 2
+pic_contrast = 0
+pic_sat    = 0          ; saturation
+pic_exposure = 0
+pic_wb     = auto       ; auto | sunny | cloudy | office | home
+pic_effect = none       ; none | negative | grey | red | green | blue | sepia
+```
+
+- **Snap** and **Photos**: who may take a picture, and who may see and
+  download what has been taken, `all | users | staff | co2 | co1 | sysop`.
+  Staff and everyone, as shipped: a fresh board lets a photo be taken by
+  staff only and seen by anybody. A caller told at login that the board has
+  a camera, and that it also shoots on a timer, only when Snap is open below
+  staff and Timelapse is running: nobody is invited to a feature closed to
+  them.
+- **Size**: the sensor's own resolutions; `svga` (800x600) as shipped.
+- **Quality**: JPEG quality, 4 to 40, lower is better (the sensor's own
+  scale). 12 as shipped.
+- **Names**: how a caller's photo is filed.
+  - `date`, as shipped: `SNAP-20260924-171204.JPG`.
+  - `date+handle`: `SNAP-20260924-171204-quantumrob.JPG`.
+  - `by handle`: `quantumrob/SNAP-20260924-171204.JPG`, one folder a caller.
+  A guest's folder or file name is prefixed `guest-`. The board's own shots
+  (the timelapse) are always `timelapse/TL-20260924-171200.JPG`, whatever
+  Names says. A handle is cut to 19 characters and stripped of anything FAT
+  cannot hold; an empty one becomes `caller`.
+- **Watermark**: board name, date and who, in a corner. On by default; when
+  it cannot be drawn (no codec, or a bad frame) the photo is saved unmarked
+  rather than not saved at all.
+- **Keep days** and **Max snaps**: retention for callers' own photos (the
+  Photos folder and its handle folders, counted as one group); 0 is
+  forever / no limit. 30 days and 200 photos as shipped: a file area lists
+  254 rows at most, so a folder kept under that stays listable whole.
+- **Floor MB**: space the camera keeps free on the card. Empty, as shipped,
+  is a tenth of the card, 512 MB at most; a number is exact. While the card
+  is under it, the oldest photos are removed to make room, the timelapse's
+  before the callers'. **Nothing that is not exactly a photo the camera
+  wrote** (`PREFIX-YYYYMMDD-HHMMSS.JPG`, its own prefix or a system
+  folder's) is ever counted or touched, so a sysop's own files on the card
+  are never at risk. If removing every photo the camera owns still would not
+  reach the floor, none of them is removed for it: `SNAPSHOT` is refused
+  instead (`The card is too full for another photo.`) until space is freed
+  some other way.
+- **Flash**, **Timelapse** and **Picture** are pages of their own: a plugin
+  page holds twelve rows and the camera has more settings than that.
+
+**Flash** (its own page):
+- **Mode**: `off`, as shipped (the Freenove board has no pixel of its own);
+  `pixel`, where the shot borrows the lights plugin's drive light (or, with
+  no drive light running, the camera's own pixel on Flash pin) and drives it
+  full white; or `pin`, where Flash pin is driven high for the exposure, for
+  an LED, a relay or a flash unit.
+- **Pin**: the GPIO for `pin` mode, or for the camera's own pixel in `pixel`
+  mode when there is no drive light to borrow. -1 is none. **It may share
+  its GPIO with the lights plugin's drive pin, and only in `pixel` mode**:
+  the flash then *is* that pixel going white, so nothing is really
+  contending for the wire. In `pin` mode the two cannot share (Rob: "In pin
+  mode they can't share"), and `CONFIG` refuses the pin the ordinary way,
+  held by whichever plugin claimed it first.
+- **Lead ms**: how long the flash is on before the shutter, 0 to 1000. A
+  pixel flash adds about 40 ms of its own on top, one more frame reaching
+  the strip.
+
+**Timelapse** (its own page): the board's own photos, on a timer.
+- **Every min** and **and sec**: the time between shots, up to 1440 minutes
+  (a day). Both 0, as shipped, is off. Minutes and seconds rather than one
+  figure because a form's number stops at 65,535 and a day is 86,400
+  seconds. Anything under 10 seconds in all is taken as 10: the sensor has
+  to come up and take a frame each time, which is a second or two by itself.
+- **Keep days** and **Max shots**: retention for the timelapse's own group,
+  separate from callers' photos, so a fast series can never crowd out what
+  callers took. 7 days and 200 shots as shipped.
+Timed photos go in `Photos/timelapse/`, area 13 below, never inside Photos
+itself.
+
+**Picture** (its own page): the sensor's own adjustments, `0`/`no`/`auto`/
+`none` as shipped throughout.
+- **Flip** and **Mirror**: upside down, and left-right mirrored.
+- **Bright**, **Contrast**, **Colour** (saturation) and **Exposure**: -2 to
+  2 each.
+- **White**: `auto | sunny | cloudy | office | home`.
+- **Effect**: `none | negative | grey | red | green | blue | sepia`.
+
+**Per-caller limits.** Ten photos an hour and twenty a day, each a rolling
+window (the oldest one ages out rather than the count resetting on the
+clock's hour or day), so a refusal names the real time the next one is
+allowed rather than "wait until midnight". The sysop is exempt. Kept in RAM
+only, so a reboot forgets them; a `CONFIG` save does not, since only a
+restart of the board clears the count. An account is counted by its handle,
+and a rename carries the count to the new one so it cannot be used to start
+again. A guest is counted by address **and** by the handle they typed,
+whichever is tighter, so a guest cannot get around the limit by reconnecting
+under another name or from another address alone.
+
+**The download offer.** After a caller's own snapshot, if they are still on
+the line, may download from Photos (the Photos area's own level, not just
+Snap), and the transfer engine is free, they are asked `Download it now?
+[Y]es [X]modem [N]o`: `Y` is YMODEM, `X` plain XMODEM, anything else leaves
+it where it is. If somebody else is already transferring, they are told so
+and where to find it instead. The board's own shots are never offered:
+nobody is waiting on those.
+
+**Photos (area 12)** and **Timelapse (area 13)**, camera boards only, above
+the eight configured file areas and the board's own three (Screens 9, Logs
+10, Backups 11). Their levels are the camera's own settings (Snap, Photos
+and the plugin's admin level), never a `files` area's `read | up | down |
+del` line, and `CONFIG files` does not offer them. Seeing and downloading
+follow **Photos**; uploading is the sysop alone, always (a caller adds a
+photo only through `SNAPSHOT`, never by uploading one); removing follows the
+camera plugin's `admin` level, `sysop` as shipped and set the same way as
+any other plugin's. A caller's `by handle` folder lists one level down, as
+`handle/name`, the same as any listing walks a folder.
+
+**On the Freenove ESP32-WROVER CAM**, `CONFIG` refuses a pin the board has
+already wired to something, the same way it refuses one another switched-on
+plugin already holds: the PSRAM chip select and clock (16, 17), the
+console/CH340 that flashes the board and carries Improv (1, 3), the SD
+card's SDMMC lines (2, 14, 15), every wired camera data and control line
+(4, 5, 18, 19, 21, 22, 23, 25, 26, 27, 34, 35, 36, 39), and GPIO12, a
+strapping pin that stops the board booting if it is pulled high at reset.
+What is left for a sysop to wire up is **13, 32 and 33**: 13 is the flash
+pin as shipped (with Flash mode off), and 32 and 33 are the serial bridge's
+default RX and TX, free for the flash or anything else while that plugin is
+off.
 
 ### [access] matrix
 

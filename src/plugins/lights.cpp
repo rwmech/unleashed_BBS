@@ -213,6 +213,9 @@ constexpr uint32_t kTestStep    = 1000;    // LIGHTS TEST: a second a colour
 // ---------------------------------------------------------------------------
 uint8_t g_index    = 0xFF;
 int8_t  g_drivePin = -1;
+#ifdef BBS_HAS_CAMERA
+bool    g_flash    = false;     // the camera is taking a picture (lights::flash)
+#endif
 int8_t  g_stripPin = -1;
 uint8_t g_driveFx  = DF_PC;
 uint8_t g_stripFx  = SF_NODES;
@@ -791,12 +794,28 @@ void tick(uint32_t now) {
         drawDrive(now, drive);
         drawStrip(now, strip, rx, tx, bytes);
     }
+#ifdef BBS_HAS_CAMERA
+    if (g_flash) memset(drive, 255, sizeof(drive));   // the camera's flash: full white
+#endif
     if (g_driveOn) plat::pixelsShow(kOutDrive, drive, 1);
     if (g_stripOn) plat::pixelsShow(kOutStrip, strip, g_count);
 #ifdef BBS_HAS_LCD
     memcpy(g_shown, strip, sizeof(g_shown));
 #endif
 }
+
+#ifdef BBS_HAS_CAMERA
+}   // namespace
+
+// The camera's flash (lights.h). A plain store: the camera sets it from its
+// tick, on the same task as this plugin's.
+bool lights::flash(bool on) {
+    g_flash = on && g_driveOn;
+    return g_driveOn;
+}
+
+namespace {
+#endif
 
 #ifdef BBS_HAS_LCD
 }   // namespace
@@ -900,6 +919,9 @@ void stop() {
     plat::pixelsEnd(kOutStrip);
     g_driveOn = g_stripOn = false;
     g_testAt  = 0;
+#ifdef BBS_HAS_CAMERA
+    g_flash   = false;
+#endif
 #ifdef BBS_HAS_LCD
     g_running = false;
     memset(g_shown, 0, sizeof(g_shown));

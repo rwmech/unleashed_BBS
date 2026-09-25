@@ -63,6 +63,7 @@ Disk free 612K, reserve 32K
 | `info` | the ten information pages a sysop writes (`INFO` / `I`, `/i` in the room). On by default, no card needed. |
 | `lights` | two WS2812B outputs on the RMT peripheral (`plat::pixels*`): a drive light fed by `plat::diskPulse`, with PC, 1541, Disk II and breathing styles, and a strip of ten showing the caller lines, a Hayes front panel, several retro effects, or a colour and effect per pixel. Brightness is a percentage per output with a hard ceiling of 30. `PF_FAST`; off until switched on and given pins. `LIGHTS` shows what each output was last sent, which is also how the host tests read the pixels. |
 | `example` | the template, and what the tests drive |
+| `camera` | photos from the board's own camera (camera boards only, `BBS_HAS_CAMERA`): `SNAPSHOT` for a caller, a timelapse of its own, into the Photos and Timelapse file areas. Needs a card and a board wired for a sensor, so it neither starts nor exists in the binary on any other board. Its own doc: COMMANDS.md, `camera` under Plugins. |
 
 ## Writing one
 
@@ -107,6 +108,7 @@ inserted.
 | `listDone(s, aborted)` | a paged list this plugin started with `startPluginList` has finished; `aborted` is true when the caller stopped it at `[More]` rather than reading to the end. The core deliberately draws no prompt for a plugin-owned session, so this is the plugin's only signal to put something on the screen |
 | `liftInput(s)` | 1.1.0. A notice (a page, a broadcast, `SHUTDOWN`'s countdown, "you have mail", an arrival, a ring for the sysop) is about to be printed to a caller this plugin owns: take the input line out of the way and leave the cursor at column 0 of an empty line. Return false for "not now" and the notice waits for a later pass. Only called while the session is `SState::Plugin`, owned by this plugin, not in raw mode, with nothing waiting to be sent. Leave it null, as the serial bridge does, and notices wait for the main prompt as they always did |
 | `restoreInput(s)` | 1.1.0. The notice is out: put the prompt back, with what the caller had typed on it. Called once for each `liftInput` that returned true, possibly much later, because a ring for the sysop is a one-key question the core asks between the two. If `s.ed` is not active when it arrives, the core used the line editor in between (a caller ringing from the chat room), so start a fresh line rather than redrawing the old one |
+| `pinShares(key, otherPlugin, otherKey, onPage)` | 1.1.0, camera boards only, appended after `restoreInput`. `CONFIG` refuses a `PS_PIN` row a switched-on plugin already holds; this is the one way round that, asked of both plugins in turn. Whether this plugin's `PS_PIN` row `key` may share its GPIO with `otherPlugin`'s row `otherKey`. `onPage` gives another key's value as the CONFIG page being saved currently has it, or null when that page belongs to a different plugin, so the plugin answers from what it is actually running with instead. The camera's flash pin shares with the lights plugin's drive pin only in `pixel` mode, where the flash *is* that pixel; in `pin` mode nothing shares |
 
 ### Settings
 
@@ -251,6 +253,10 @@ While a plugin owns a session the idle timeout pauses, because watching is not i
 A plugin that owns sessions should offer `liftInput` and `restoreInput`, or nobody inside it hears a page, a broadcast or `SHUTDOWN`'s warnings until they leave. The pattern the shipped plugins use: `liftInput` ends the line the caller is on (the chat room erases its input line instead, marker and all), and `restoreInput` draws the prompt or question they were at again, with `s.ed.redraw` rather than `s.ed.begin` so what they had typed survives. Return false from `liftInput` while anything binary is on the line.
 
 The core may also take a session away from its plugin: a sysop answering a ring from inside it goes to the chat room. It is let go the way a dropped line lets it go, with no hook called and every claim the node held released, so a plugin's own per-session state has to be reset on the way back in, never trusted from the last visit.
+
+### Slow work stays off the loop
+
+The BBS loop is cooperative: a `tick` or a command handler that blocks stalls every caller on the board, not only the one that asked for it. The camera plugin (`BBS_HAS_CAMERA`) is the first one whose job genuinely cannot fit inside a tick: bringing a sensor up, taking a frame, decoding and re-encoding a JPEG for the watermark and writing it to the card all take real time, seconds at the worst of it. Its pattern is the one to copy for anything else this slow: run the work on a task of its own with `plat::taskStart` (pinned to the BBS task's own core, below its priority, so it only ever runs in the loop's idle time and never competes with it), and let `tick` do nothing more than move a job between phases (`Idle -> Working -> Ready -> Go -> Exposed -> Writing -> Done`) and drive whatever the caller sees changing meanwhile, a spinner, a flash pin, an LED. The worker sets the phase last, once everything it touched for that phase is settled, so the loop never reads a result that is still being written.
 
 ### Talking to callers
 

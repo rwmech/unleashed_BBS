@@ -290,6 +290,34 @@ entry when it is released.
   80; form refusals were cut at 60 characters; a full 80-column redraw
   could lose its tail (keys now wait for 2,600 bytes of output room).
 
+**Freenove ESP32-WROVER CAM (FNCAM 1.0.0).**
+- Phase 1: a new board profile, `BBS_BOARD_FN_WROVER_CAM` (environments
+  `freenove_wrover_cam` / `freenove_wrover_cam_release`), on the
+  ESP32-WROVER-E's 8 MB quad PSRAM (`sdkconfig.defaults.fncam`, ESP32
+  revision 3 minimum). `CONFIG` refuses a pin the board has already wired
+  to its PSRAM, its console, the card slot or the camera, the same way it
+  refuses one another switched-on plugin holds. No NeoPixel is documented
+  on the FNK0060 (checked against Freenove's own pinout drawing and
+  sketches, 2026-09-24), so the lights plugin ships off with no drive pin,
+  as on the WROOM.
+- Phase 2: the card slot is SDMMC 1-bit (CLK 14, CMD 15, D0 2) rather than
+  SPI, because the WROOM's four default SPI pins are this board's camera
+  data lines. The `sd` plugin's SPI pin settings are read and ignored,
+  logged once, instead of being refused.
+- The camera plugin (`BBS_HAS_CAMERA`): `SNAPSHOT` for a caller and a
+  timelapse of the board's own, into two new file areas, Photos (12) and
+  Timelapse (13). Ten photos an hour and twenty a day per caller, rolling
+  and sysop-exempt. Retention by age, by count and by a card space floor,
+  touching only files shaped exactly like the camera's own. A watermark
+  drawn with the camera driver's own JPEG encoder (`espressif/esp32-camera`
+  2.1.7, Apache-2.0) and decoded with the chip's own ROM TJpgDec. Bringing
+  the sensor up, taking the frame and writing the card all run on a worker
+  task off the BBS loop, so a photo adds no lag for anyone else on the
+  board. Full detail: COMMANDS.md, `camera` under Plugins.
+- Host-tested only so far. Of the three phases, only phase 1 (the board
+  profile and PSRAM) has actually been flashed and run on the physical
+  board; the SD card and the camera plugin have not yet had bench time.
+
 ## 1.0.2, 2026-09-23
 
 A security fix. Restoring a backup could turn the published default sysop

@@ -95,4 +95,15 @@ void    wantPanel(bool on);
 uint8_t panelFrame(uint8_t* rgb, uint8_t cap, uint8_t& pct);
 #endif
 
+#ifdef BBS_HAS_CAMERA
+// ---------------------------------------------------------------------------
+// The camera's flash on the drive light (BBS_HAS_CAMERA only). flash(true)
+// holds the drive light at full white until flash(false), whatever its
+// style, and the next frame after puts the style back. Returns whether there
+// is a drive light to do it with: false while the plugin is not running or
+// has no drive pin, and then the camera uses a pixel of its own.
+// ---------------------------------------------------------------------------
+bool flash(bool on);
+#endif
+
 } // namespace lights

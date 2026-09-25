@@ -377,6 +377,20 @@ struct Plugin {
     // ----------------------------------------------------------------------
     bool (*liftInput)(Session& s) = nullptr;
     void (*restoreInput)(Session& s) = nullptr;
+
+#ifdef BBS_HAS_CAMERA
+    // pinShares: whether this plugin's PS_PIN row `key` may share its GPIO
+    // with another plugin's row (1.1.0, camera boards only). CONFIG refuses
+    // a pin another switched-on plugin holds; this is the one exception it
+    // asks about, and it is asked from both sides. The camera's flash pin in
+    // "pixel" mode shares with the lights' drive light, which is the pixel
+    // it flashes; in "pin" mode it shares with nothing (Rob: "In pin mode
+    // they can't share"). onPage gives another key's value as the CONFIG
+    // page being saved has it, or is null when that page is not this
+    // plugin's, and then the plugin answers from what it is running with.
+    bool (*pinShares)(const char* key, const char* otherPlugin, const char* otherKey,
+                      const char* (*onPage)(const char* key)) = nullptr;
+#endif
 };
 
 namespace plugins {

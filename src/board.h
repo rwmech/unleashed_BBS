@@ -210,7 +210,7 @@
 #endif
 
 #define BBS_BOARD_NAME        "Freenove ESP32-WROVER CAM"
-#define BBS_BOARD_PLUGINS     0       // the camera plugin joins in phase 4
+#define BBS_BOARD_PLUGINS     1       // the camera
 
 #define BBS_BOARD_TAG         "FNCAM"
 #define BBS_BOARD_VERSION     "1.0.0"
@@ -249,6 +249,21 @@
 // The camera, an OV2640 (Freenove's CAMERA_MODEL_WROVER_KIT). PWDN and RESET
 // are not wired. The camera plugin reads these and nothing else, so another
 // camera board is another block here, not another plugin.
+//   BBS_CAM_SENSOR      the sensor the build carries a driver for (only
+//                       that one: sdkconfig.defaults.fncam)
+//   BBS_CAM_SIZES       what CONFIG camera offers, the sensor's own sizes
+//   BBS_CAM_SIZE        the size as shipped, one of them
+//   BBS_CAM_FLASH_PIN   the flash output as shipped (Rob: "leave a single
+//                       pin, just make it neopixel or ... relay high on the
+//                       pin"): the first free pin that is no strap
+//   BBS_CAM_FLASH       its mode as shipped: 0 off, 1 pixel, 2 pin. Off
+//                       here: this board has no pixel of its own
+#define BBS_HAS_CAMERA        1
+#define BBS_CAM_SENSOR        "OV2640"
+#define BBS_CAM_SIZES         "qvga|vga|svga|xga|sxga|uxga"
+#define BBS_CAM_SIZE          2       // svga
+#define BBS_CAM_FLASH_PIN     13
+#define BBS_CAM_FLASH         0
 #define BBS_CAM_PWDN          -1
 #define BBS_CAM_RESET         -1
 #define BBS_CAM_XCLK          21

@@ -138,6 +138,12 @@ test_cardnames: test_cardnames.cpp ../src/core/cardnames.h
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_cardnames.cpp
 
 
+# The camera's rules and its watermark (1.1.0): names, limits, retention,
+# the timelapse's schedule, the download offer, the JPEG comment, and the
+# watermark drawn a strip at a time, all with no sensor and no card.
+test_camera: test_camera.cpp ../src/plugins/camera_rules.h ../src/plugins/camera_mark.h ../src/plugins/panel_font.h
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_camera.cpp
+
 # The project is GPL-3.0-or-later (1.1.0-dev.11). A tracked file whose SPDX
 # line still says GPL-2.0 was added on an old header; release.py refuses it
 # too, and this catches it before a release is ever attempted.
@@ -146,7 +152,7 @@ licence:
 	    echo "licence: GPL-2.0 SPDX line(s) above; the project is GPL-3.0-or-later"; exit 1; \
 	else echo "licence: no GPL-2.0 SPDX lines"; fi
 
-test: licence test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel
+test: licence test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_camera
 	./test_xmodem
 	./test_wrap
 	./test_forums_ptr
@@ -158,8 +164,9 @@ test: licence test_xmodem test_wrap test_forums_ptr test_compose test_codes test
 	./test_tzones
 	./test_cardnames
 	./test_panel
+	./test_camera
 
 clean:
-	rm -f bbs_host bbs_host_s3 bbs_host_fncam test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel
+	rm -f bbs_host bbs_host_s3 bbs_host_fncam test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_camera
 
 .PHONY: clean test licence

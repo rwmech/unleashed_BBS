@@ -461,6 +461,78 @@ void*    psramAlloc(size_t n);
 void     psramFree(void* p);
 #endif  // BBS_HAS_LCD
 
+#ifdef BBS_HAS_CAMERA
+// ---------------------------------------------------------------------------
+// The camera (BBS_HAS_CAMERA boards only: the camera plugin). Everything here
+// but pinOut and camDmaLargest BLOCKS, for up to seconds, and is called only
+// from the camera's worker task (taskStart), never from the BBS loop: the
+// loop is cooperative, and a sensor's bring-up stalling it would stall every
+// caller (Rob's rule no. 1: the online experience without lag is paramount).
+//
+// camOpen:       bring the sensor up with these settings (pins from board.h).
+//                err says why not; the sensor found is named in the log.
+// camGrab:       one frame, JPEG from the sensor; the pointer is good until
+//                camRelease. False after a second with no frame.
+// camClose:      the sensor down and its memory back: the 32 KB DMA block and
+//                the frame buffer. The camera is never left running.
+// camDmaLargest: the largest internal DMA-capable block free now, which a
+//                bring-up needs 32 KB of. Cheap: no I/O.
+// camAlloc:      a block for a copy of a frame or the re-encoder's buffers,
+//                PSRAM first. camFree gives it back.
+// taskStart:     run fn(arg) once on a task of its own, on the BBS task's
+//                core below its priority, so it only ever gets the loop's
+//                idle time: that is the throttle. The task ends when fn does.
+// taskSleep:     give the processor away for ms (0: to anything waiting).
+// taskStackFree: the least free stack the calling task has had, in bytes.
+// sdSpace:       the card's size and free space in bytes, read now (FAT's
+//                own figure, which can mean a scan: the worker's, never the
+//                loop's), not sdInfo's kept one. False with no card.
+// sdList:        every entry of a folder on the card (path under sdBase(),
+//                "photos/timelapse"), with whether it is a folder and its
+//                size, in the order the card holds them, until fn returns
+//                false. One read of the folder: FatFs's own directory entry
+//                carries the size, so no entry is looked up again (a stat on
+//                FAT searches the folder from the top, which made a walk of
+//                a thousand photos a million entry reads). Dot entries are
+//                left out. False when the folder cannot be opened.
+// pinOut:        a GPIO as an output, driven high or low (the flash pin).
+// jpegMark:      re-encode a JPEG a strip of rows at a time, calling draw on
+//                each strip (RGB888) before it is encoded, and out with the
+//                result as it is made. quality 1 to 100, higher is better.
+//                False when this build cannot (the host) or the picture did
+//                not decode; out may then have had a part, to discard.
+// ---------------------------------------------------------------------------
+struct CamCfg {
+    const char* size    = "svga";     // one of BBS_CAM_SIZES
+    uint8_t     quality = 12;         // the sensor's, 0-63, lower is better
+    bool        flip    = false;
+    bool        mirror  = false;
+    int8_t      bright = 0, contrast = 0, saturation = 0, exposure = 0;   // -2..2
+    uint8_t     wb      = 0;          // auto|sunny|cloudy|office|home
+    uint8_t     effect  = 0;          // none|negative|grey|red|green|blue|sepia
+};
+
+using MarkRowsFn = void (*)(void* ctx, uint8_t* rgb, uint16_t width, uint16_t y0, uint16_t rows);
+using MarkOutFn  = bool (*)(void* ctx, const uint8_t* p, size_t n);
+
+bool     camOpen(const CamCfg& c, char* err, size_t errLen);
+bool     camGrab(const uint8_t*& buf, size_t& len, uint16_t& w, uint16_t& h);
+void     camRelease();
+void     camClose();
+uint32_t camDmaLargest();
+void*    camAlloc(size_t n);
+void     camFree(void* p);
+bool     taskStart(void (*fn)(void*), void* arg, uint32_t stackBytes, const char* name);
+void     taskSleep(uint32_t ms);
+uint32_t taskStackFree();
+bool     sdSpace(uint64_t& total, uint64_t& freeBytes);
+using SdListFn = bool (*)(void* ctx, const char* name, bool dir, uint32_t size);
+bool     sdList(const char* rel, SdListFn fn, void* ctx);
+void     pinOut(int pin, bool high);
+bool     jpegMark(const uint8_t* jpg, size_t len, uint8_t quality, MarkRowsFn draw, void* dctx,
+                  MarkOutFn out, void* octx, uint16_t& width, uint16_t& height);
+#endif  // BBS_HAS_CAMERA
+
 // ---------------------------------------------------------------------------
 // resetReason / resetWasCrash: why this boot happened, in words a sysop can
 // read. A crash that reboots cleanly is invisible, so the board has to say

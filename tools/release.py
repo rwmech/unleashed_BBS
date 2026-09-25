@@ -232,9 +232,17 @@ def notices(fw):
         ("esp_littlefs (joltwallet)", "MIT", mc / "joltwallet__littlefs/LICENSE"),
         ("littlefs", "BSD-3-Clause", mc / "joltwallet__littlefs/src/littlefs/LICENSE.md"),
         ("mDNS (Espressif)", "Apache-2.0", mc / "espressif__mdns/LICENSE"),
-        # In the ESP32-S3 image only: the panel's bitmap font.
-        ("Spleen bitmap font 2.2.0 (Frederic Cambus), ESP32-S3 image", "BSD-2-Clause",
+        # In the ESP32-S3 image (the panel) and the camera image (the
+        # watermark): the bitmap font.
+        ("Spleen bitmap font 2.2.0 (Frederic Cambus), ESP32-S3 and camera images", "BSD-2-Clause",
          ROOT / "tools/fonts/SPLEEN-LICENSE"),
+        # In the Freenove camera image only: the camera driver and its JPEG
+        # encoder, and the decoder the watermark uses, which is in the chip's
+        # ROM (its notice is the header of the same code in esp_jpeg).
+        ("esp32-camera 2.1.7 (Espressif), camera image", "Apache-2.0",
+         mc / "espressif__esp32-camera/LICENSE"),
+        ("TJpgDec (ChaN), in the chip's ROM, camera image", "TJpgDec licence (BSD-style)",
+         mc / "espressif__esp_jpeg/tjpgd/tjpgd.c"),
     ]
     out = ["# Third-party notices",
            "",
@@ -249,7 +257,7 @@ def notices(fw):
         if not path.exists():
             die(f"licence file missing: {path}")
         text = path.read_text(encoding="utf-8", errors="replace")
-        if path.name == "ff.c":                       # the notice is the file header
+        if path.name in ("ff.c", "tjpgd.c"):           # the notice is the file header
             text = text.split("*/", 1)[0] if "*/" in text else "\n".join(text.splitlines()[:25])
         out += ["", "---", "", f"## {name}", "", "```", text.rstrip(), "```"]
     return "\n".join(out) + "\n"
