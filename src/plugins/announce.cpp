@@ -579,19 +579,6 @@ uint16_t took(int r, size_t cap, bool& cut) {
     return static_cast<uint16_t>(r);
 }
 
-// cardGB: a card's size as printed on it, in GB, or 0 with no card. FAT
-// reports what is usable, about 29.7 GiB of a "32 GB" card, so the bytes
-// are counted in decimal GB, rounded up, and then up again to the next of
-// 1, 2, 4 ... 1024, which is how cards are sold.
-uint16_t cardGB(const plat::SdInfo& i) {
-    if (!i.mounted || !i.totalKB) return 0;
-    uint64_t bytes = static_cast<uint64_t>(i.totalKB) * 1024u;
-    uint64_t gb = (bytes + 999999999u) / 1000000000u;
-    uint16_t size = 1;
-    while (size < gb && size < 1024) size = static_cast<uint16_t>(size * 2);
-    return size;
-}
-
 // buildBody: the payload, at kBody. False when it did not fit, and then
 // what is there is a fragment that must not be sent. Sized so that cannot
 // happen (see kBodyMax); the check stays because a size argument is only as
@@ -633,7 +620,7 @@ bool buildBody() {
     // The card's size (1.1.0, PROTOCOL.md "sd"), only while one is mounted:
     // a board whose card is out claims no card. The sd plugin's kept figures,
     // so a heartbeat never touches the card.
-    if (uint16_t gb = cardGB(sdCardKept())) {
+    if (uint16_t gb = sdCardGB(sdCardKept())) {       // backup.h
         j.raw(",\"sd\":");      j.unum(gb);
     }
     j.ch('}');

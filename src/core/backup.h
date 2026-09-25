@@ -280,6 +280,20 @@ const plat::SdInfo& sdCardInfo();
 // size: announce's heartbeat, which must not reach the card's FAT.
 const plat::SdInfo& sdCardKept();
 
+// sdCardGB: a card's size as printed on it, in GB, or 0 with no card (1.1.0,
+// announce's "sd"; HARDWARE's card since 1.1.1). FAT reports what is usable,
+// about 29.7 GiB of a "32 GB" card, so the bytes are counted in decimal GB,
+// rounded up, and then up again to the next of 1, 2, 4 ... 1024, which is
+// how cards are sold.
+inline uint16_t sdCardGB(const plat::SdInfo& i) {
+    if (!i.mounted || !i.totalKB) return 0;
+    uint64_t bytes = static_cast<uint64_t>(i.totalKB) * 1024u;
+    uint64_t gb = (bytes + 999999999u) / 1000000000u;
+    uint16_t size = 1;
+    while (size < gb && size < 1024) size = static_cast<uint16_t>(size * 2);
+    return size;
+}
+
 // tidyCardBackups: remove what a BACKUP SD or nightly zip left half written
 // in the card's backup folder (cardbak::partial) when the power went or the
 // card was pulled (1.1.0). The sd plugin calls it on a mount it has just

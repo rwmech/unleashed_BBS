@@ -1174,6 +1174,12 @@ void setting(const char* key, char* out, size_t n) {
 
 } // namespace
 
+// wired: an output has a pin and is drawing (lights.h, 1.1.1, for HARDWARE).
+// The plugin runs with nothing wired, which is not having lights.
+bool lights::wired() {
+    return g_driveOn || g_stripOn;
+}
+
 // On as shipped only on a board whose pixel is part of the board (board.h,
 // BBS_LIGHTS_ON: the Waveshare S3's onboard WS2812B).
 #if BBS_LIGHTS_ON

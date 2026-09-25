@@ -47,6 +47,10 @@
  *                 BBS_CHIP_S3       the chip is an ESP32-S3 (pin rules,
  *                                   RMT sizing, the console on native USB)
  *                 BBS_HAS_PSRAM     the board has PSRAM its build turns on
+ *                 BBS_HAS_SD_SLOT   a card slot on the board itself, so
+ *                                   HARDWARE says "slot, empty" with no card
+ *                                   in (the reference board's card is
+ *                                   optional wiring, and says nothing)
  *                 BBS_SD_SDMMC1     the card slot is SDMMC 1-bit, on the
  *                                   BBS_SDMMC_* pins, not SPI
  *                 BBS_PINS_*        pins the board owns, which pinProblem
@@ -144,6 +148,7 @@
 
 // The TF slot in SPI mode, the schematic's own net names: SD_CS 21,
 // SD_MOSI 15, SD_SCLK 14, SD_MISO 16. D1 and D2 are pulled up on the board.
+#define BBS_HAS_SD_SLOT       1
 #define BBS_SD_CS             21
 #define BBS_SD_MOSI           15
 #define BBS_SD_CLK            14
@@ -243,6 +248,7 @@
 // modify it"). The ESP32's SDMMC slot 1 is on the IO MUX, so these are the
 // only pins it can be. The SPI pins are none: all four of the WROOM's
 // defaults (5, 23, 18, 19) are camera data lines here.
+#define BBS_HAS_SD_SLOT       1
 #define BBS_SD_SDMMC1         1
 #define BBS_SDMMC_CLK         14
 #define BBS_SDMMC_CMD         15
@@ -389,6 +395,7 @@
 // The card slot over SPI, on the slot's own lines: CS is its D3, MOSI its
 // CMD, CLK its CLK, MISO its D0. They are the sd plugin's settings, as on
 // the WROOM, so CONFIG says the sd plugin holds them.
+#define BBS_HAS_SD_SLOT       1
 #define BBS_SD_CS             13
 #define BBS_SD_MOSI           15
 #define BBS_SD_CLK            14

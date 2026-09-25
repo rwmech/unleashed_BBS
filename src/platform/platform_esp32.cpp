@@ -44,6 +44,11 @@
 #include "esp_heap_caps.h"
 #include "esp_chip_info.h"   // hardware(): which chip
 #include "esp_flash.h"       // hardware(): how much flash it really has
+#include "esp_efuse.h"       // chipInfo(): the ESP32's package, from its fuses
+#include "esp_private/esp_clk.h"   // chipInfo(): the CPU clock as it runs now
+#if CONFIG_SPIRAM
+#include "esp_psram.h"       // chipInfo(): the PSRAM chip's size
+#endif
 #include "driver/gpio.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
@@ -257,21 +262,24 @@ bool fsInfo(uint32_t& total, uint32_t& used) {
 // PSRAM is counted from the heap, so it too is named only when this build
 // actually uses it.
 // ---------------------------------------------------------------------------
+static const char* chipFamily(esp_chip_model_t m) {
+    switch (m) {
+        case CHIP_ESP32S2: return "ESP32-S2";
+        case CHIP_ESP32S3: return "ESP32-S3";
+        case CHIP_ESP32C3: return "ESP32-C3";
+        case CHIP_ESP32C2: return "ESP32-C2";
+        case CHIP_ESP32C6: return "ESP32-C6";
+        case CHIP_ESP32H2: return "ESP32-H2";
+        case CHIP_ESP32P4: return "ESP32-P4";
+        default:           return "ESP32";              // the ESP32 itself
+    }
+}
+
 void hardware(char* out, size_t n) {
     static constexpr char kDot[] = " \xC2\xB7 ";   // a middle dot, spaced
     esp_chip_info_t chip = {};
     esp_chip_info(&chip);
-    const char* model = "ESP32";
-    switch (chip.model) {
-        case CHIP_ESP32S2: model = "ESP32-S2"; break;
-        case CHIP_ESP32S3: model = "ESP32-S3"; break;
-        case CHIP_ESP32C3: model = "ESP32-C3"; break;
-        case CHIP_ESP32C2: model = "ESP32-C2"; break;
-        case CHIP_ESP32C6: model = "ESP32-C6"; break;
-        case CHIP_ESP32H2: model = "ESP32-H2"; break;
-        case CHIP_ESP32P4: model = "ESP32-P4"; break;
-        default:           break;                      // the ESP32 itself
-    }
+    const char* model = chipFamily(chip.model);
     uint32_t flash = 0;
     if (esp_flash_get_size(nullptr, &flash) != ESP_OK) flash = 0;
     char size[16] = "";
@@ -281,6 +289,64 @@ void hardware(char* out, size_t n) {
         snprintf(size, sizeof(size), "%s%u KB", kDot, static_cast<unsigned>(flash / 1024u));
     const bool psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0;
     snprintf(out, n, "%s%s%s%s", model, size, psram ? kDot : "", psram ? "PSRAM" : "");
+}
+
+// ---------------------------------------------------------------------------
+// chipInfo: see platform.h. On the ESP32 the package is in the fuses
+// (esp_efuse_get_pkg_ver, EFUSE_RD_CHIP_VER_PKG_* in soc/efuse_defs.h), so
+// the model says which die and package; other chips give their family. The
+// CPU clock is esp_clk_cpu_freq, which follows every switch of the clock, so
+// 240 here means the chip is running at 240, whatever the sdkconfig asked
+// for. Flash as hardware() gives it. PSRAM: the chip's size from esp_psram
+// (8 MB on a WROVER-E or an ESP32-CAM), and what the heap was given of it,
+// which on the ESP32 is at most the 4 MB it can map.
+// ---------------------------------------------------------------------------
+void chipInfo(ChipInfo& o) {
+    o = ChipInfo();
+    esp_chip_info_t chip = {};
+    esp_chip_info(&chip);
+    const char* model = chipFamily(chip.model);
+#if CONFIG_IDF_TARGET_ESP32
+    // The names esptool prints for the same fuse (esptool 4.5.1,
+    // targets/esp32.py get_chip_description), so HARDWARE agrees with the
+    // installer's log: a WROOM-32E is "ESP32-D0WD-V3", not the IDF
+    // constant's name (D0WDQ5, never a sold part). One core means the
+    // single-core S0 die; revision 3 adds "-V3" to a D0WD and makes a
+    // PICO-D4 a PICO-V3.
+    const bool single = chip.cores == 1;
+    const bool rev3   = chip.revision / 100 == 3;
+    const char* pkg   = nullptr;
+    switch (esp_efuse_get_pkg_ver()) {
+        case 0:  pkg = single ? "ESP32-S0WDQ6" : "ESP32-D0WDQ6";  break;
+        case 1:  pkg = single ? "ESP32-S0WD"   : "ESP32-D0WD";    break;
+        case 2:  pkg = "ESP32-D2WD";                              break;
+        case 4:  pkg = "ESP32-U4WDH";                             break;
+        case 5:  pkg = rev3 ? "ESP32-PICO-V3" : "ESP32-PICO-D4";  break;
+        case 6:  pkg = "ESP32-PICO-V3-02";                        break;
+        case 7:  pkg = "ESP32-D0WDR2-V3";                         break;
+        default: break;
+    }
+    if (pkg) {
+        const bool v3 = rev3 && !strncmp(pkg, "ESP32-D0WD", 10) && !strstr(pkg, "-V3");
+        snprintf(o.model, sizeof(o.model), "%s%s", pkg, v3 ? "-V3" : "");
+    } else {
+        snprintf(o.model, sizeof(o.model), "%s", model);
+    }
+#else
+    snprintf(o.model, sizeof(o.model), "%s", model);
+#endif
+    o.rev    = chip.revision;
+    o.cores  = chip.cores;
+    o.cpuMHz = static_cast<uint16_t>(esp_clk_cpu_freq() / 1000000);
+    uint32_t flash = 0;
+    if (esp_flash_get_size(nullptr, &flash) == ESP_OK) o.flash = flash;
+#if CONFIG_SPIRAM
+    o.psram = static_cast<uint32_t>(esp_psram_get_size());
+#endif
+    o.psramHeap = static_cast<uint32_t>(heap_caps_get_total_size(MALLOC_CAP_SPIRAM));
+    o.psramFree = static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    o.heapFree  = static_cast<uint32_t>(heap_caps_get_free_size(BBS_HEAP_CAPS));
+    o.heapLow   = static_cast<uint32_t>(heap_caps_get_minimum_free_size(BBS_HEAP_CAPS));
 }
 
 // ---------------------------------------------------------------------------

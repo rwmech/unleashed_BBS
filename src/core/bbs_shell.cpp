@@ -191,6 +191,15 @@ const Command* Bbs::coreCommands(uint8_t& count) {
         { "ABOUT", "", 0, CF_NONE, "ABOUT", "this BBS, its version and licence",
           [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdAbout(s); },
           Menu::Account, 95 },
+        // The board's spec sheet, for everybody (1.1.1, Rob: "so others can
+        // see how neat it is"). Staff see the live figures as well; nobody
+        // sees the network here, which stays in SYS.
+        { "HARDWARE", "", 0, CF_NONE, "HARDWARE|HW", "what this board runs on",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Hardware); },
+          Menu::Account, 96 },
+        { "HW", "", 0, CF_HIDDEN, "", "",
+          [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Hardware); },
+          Menu::Hidden, 99 },
 
         // -- your account and your terminal ---------------------------------
         { "PROFILE", "", 0, CF_ACCOUNT, "PROFILE", "edit your profile",
@@ -456,6 +465,7 @@ bool Bbs::listRow(Session& s) {
         case ListKind::Sys:   return rowSys(s);
         case ListKind::Calls: return rowCalls(s);
         case ListKind::Screens: return rowScreens(s);     // bbs_screens.cpp (1.1.0)
+        case ListKind::Hardware: return rowHardware(s);   // bbs_hardware.cpp (1.1.1)
         case ListKind::PlugRows: {
             const Plugin* p = plugins::at(s.listPlugin);
             if (!p || !p->rows || !plugins::running(s.listPlugin)) return false;
@@ -2481,6 +2491,16 @@ bool Bbs::rowSys(Session& s) {
     char buf[48], num[16];
     uint8_t i = s.listIdx++;
     if (i == 0) snapFill(true);                  // with the heap walk, for the biggest block
+    // The hardware section (1.1.1), last, before the rule: HARDWARE's own
+    // rows (bbs_hardware.cpp), as many lines as the width makes them, less
+    // the heap rows "memory" already has. When hwRow is done, i jumps to
+    // the rule and the footer.
+    constexpr uint8_t kSysHw = 33, kSysTail = 200;
+    if (i > kSysHw && i < kSysTail) {
+        if (hwRow(s, static_cast<uint8_t>(i - kSysHw - 1), true)) return true;
+        i = kSysTail;
+        s.listIdx = kSysTail + 1;
+    }
     const plat::NetInfo& net = snap_.net;
     const DashSnap& h = snap_;
 
@@ -2702,8 +2722,9 @@ bool Bbs::rowSys(Session& s) {
             return true;
         }
 
-        case 33: rowRule(s); return true;
-        case 34: rowText(s, Color::DarkGrey, "CALLS shows the board hour by hour"); return true;
+        case kSysHw: rowSection(s, "hardware"); return true;
+        case kSysTail: rowRule(s); return true;
+        case kSysTail + 1: rowText(s, Color::DarkGrey, "CALLS shows the board hour by hour"); return true;
         default: return false;
     }
 }
@@ -2815,6 +2836,10 @@ void Bbs::cmdAbout(Session& s) {
     t.text(tl, buf);
     t.nl(tl);
     t.text(tl, "Free software, GPL v3 or later.");
+    t.nl(tl);
+    // Rob's line is 45 columns; a 40 column screen gets it in 38.
+    t.text(tl, rowWidth(s) >= 45 ? "HARDWARE shows what this board is running on."
+                                 : "HARDWARE shows what this board runs on.");
     t.nl(tl);
     rowRule(s);
     prompt(s);

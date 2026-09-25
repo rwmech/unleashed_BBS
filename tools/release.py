@@ -15,11 +15,12 @@ Purpose:      Builds a public release: the five flash images the web
               Run by the GitHub Action on a version tag, and by hand to test
               a release before tagging.
 
-              Three builds since 1.1.0 (BUILDS below): the ESP32, the
-              reference WROOM-32E; the ESP32-S3, built for the Waveshare
-              ESP32-S3-LCD-1.47 profile; and the Freenove ESP32-WROVER CAM,
-              a second ESP32 image. A board profile is a build, so another
-              board is another row with its own directory.
+              Four builds (BUILDS below): the ESP32, the reference
+              WROOM-32E; the ESP32-S3, built for the Waveshare
+              ESP32-S3-LCD-1.47 profile; the Freenove ESP32-WROVER CAM, a
+              second ESP32 image (1.1.0); and the AI-Thinker ESP32-CAM, a
+              third (1.1.1). A board profile is a build, so another board is
+              another row with its own directory.
 
 Output:       release/<version>/assets/    flat, for a GitHub Release, the
                                            shape deploy/fetch_release.py in
@@ -33,7 +34,8 @@ Output:       release/<version>/assets/    flat, for a GitHub Release, the
                                            esp32s3-version.txt): one line, the
                                            version as that board shows it
               release/<version>/install/   the directory server's own layout,
-                                           <family>/<parts> (esp32/, esp32s3/)
+                                           <family>/<parts> (esp32/, esp32s3/,
+                                           esp32-fncam/, esp32-cam/)
                                            with version.txt, for copying
                                            straight into firmware/<version>/ by
                                            hand, and in each family's folder a
@@ -47,7 +49,8 @@ Versions:     The core version is BBS_VERSION, shared by every board. A board
               A tag names the core version; a tag with a suffix
               (v1.1.0-dev.8) is published as a pre-release by the workflow.
 
-Design:       Each release environment (esp32dev_release, ws_s3_lcd147_release)
+Design:       Each release environment (esp32dev_release, ws_s3_lcd147_release,
+              freenove_wrover_cam_release, esp32cam_aithinker_release)
               defines BBS_RELEASE, which makes main.cpp ignore include/secrets.h
               even when it is present. The screens image is built from data/screens only,
               never from data/, because data/system.cfg on a developer's
@@ -114,6 +117,12 @@ BUILDS = (
     # data lines, so the picker must not guess.
     {"dir": "esp32-fncam", "env": "freenove_wrover_cam_release", "family": "ESP32", "boot": 0x1000,
      "board": "BBS_BOARD_FN_WROVER_CAM"},
+    # The AI-Thinker ESP32-CAM (1.1.1). chipFamily ESP32 again, so the same
+    # rule as the Freenove's: the site's picker asks which board. Its SPI card
+    # (CS 13, MOSI 15, CLK 14, MISO 2) and XCLK on GPIO 0 are nothing like the
+    # WROOM's or the Freenove's, so no other set is a safe guess for it.
+    {"dir": "esp32-cam", "env": "esp32cam_aithinker_release", "family": "ESP32", "boot": 0x1000,
+     "board": "BBS_BOARD_AI_ESP32CAM"},
 )
 
 # Offsets the installer writes to, from partitions.csv. Checked here against
@@ -236,12 +245,13 @@ def notices(fw):
         # watermark): the bitmap font.
         ("Spleen bitmap font 2.2.0 (Frederic Cambus), ESP32-S3 and camera images", "BSD-2-Clause",
          ROOT / "tools/fonts/SPLEEN-LICENSE"),
-        # In the Freenove camera image only: the camera driver and its JPEG
-        # encoder, and the decoder the watermark uses, which is in the chip's
-        # ROM (its notice is the header of the same code in esp_jpeg).
-        ("esp32-camera 2.1.7 (Espressif), camera image", "Apache-2.0",
+        # In the camera images only (the Freenove and the ESP32-CAM): the
+        # camera driver and its JPEG encoder, and the decoder the watermark
+        # uses, which is in the chip's ROM (its notice is the header of the
+        # same code in esp_jpeg).
+        ("esp32-camera 2.1.7 (Espressif), camera images", "Apache-2.0",
          mc / "espressif__esp32-camera/LICENSE"),
-        ("TJpgDec (ChaN), in the chip's ROM, camera image", "TJpgDec licence (BSD-style)",
+        ("TJpgDec (ChaN), in the chip's ROM, camera images", "TJpgDec licence (BSD-style)",
          mc / "espressif__esp_jpeg/tjpgd/tjpgd.c"),
     ]
     out = ["# Third-party notices",

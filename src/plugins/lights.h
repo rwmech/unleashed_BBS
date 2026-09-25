@@ -76,6 +76,11 @@ constexpr char    kColours[]     = "red|orange|amber|yellow|green|cyan|blue|purp
 constexpr uint8_t kLedFxDefault  = 0;     // solid
 constexpr uint8_t kColourDefault = 11;    // cycle
 
+// wired: the drive light or the strip has a pin and is drawing (1.1.1).
+// HARDWARE claims "LED lights" on this, not on the plugin running, because
+// the plugin runs with nothing wired. False while the plugin is stopped.
+bool wired();
+
 #ifdef BBS_HAS_LCD
 // ---------------------------------------------------------------------------
 // The strip on a board's panel (BBS_HAS_LCD only). The panel plugin draws

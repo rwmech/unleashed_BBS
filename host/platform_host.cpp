@@ -179,6 +179,17 @@ void hardware(char* out, size_t n) {
     snprintf(out, n, "host");
 }
 
+// chipInfo: the PC's core count and nothing it cannot honestly say. Zeros
+// are what HARDWARE and SYS show as a dash, and no PSRAM is "none", on every
+// host profile: the host has no PSRAM of its own, whatever board it plays.
+void chipInfo(ChipInfo& o) {
+    o = ChipInfo();
+    snprintf(o.model, sizeof(o.model), "host");
+    o.rev = ChipInfo::kNoRev;
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    o.cores = static_cast<uint8_t>(n < 1 ? 1 : (n > 255 ? 255 : n));
+}
+
 // The host has no radio: 0, "not joined", unless a test says otherwise, by
 // BBS_HOST_RSSI in the environment at start or LIGHTS RSSI (hostSetRssi)
 // while it runs, for the lights plugin's wifi meter (1.1.0).

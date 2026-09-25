@@ -672,6 +672,31 @@ this tree.
     from a start-up constructor. It was lit on the bench by a diagnostic's
     four-bit SDMMC attempt (the IDF's internal pull-up on D1), not by the
     BBS.
+- **1.1.1-dev.0, the ESP32-CAM pre-release** (rel-1.1.1-dev0, 2026-09-25).
+  A suffixed tag, so a GitHub pre-release: the installer offers the
+  ESP32-CAM as a preview while the other three boards stay on v1.1.0.
+  - `tools/release.py` builds four sets; the new one is `esp32-cam-*`
+    (`esp32-cam/` in the install layout), chipFamily ESP32, bootloader at
+    0x1000, like the Freenove's.
+  - **240 MHz on every board** (Rob): `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240`
+    in `sdkconfig.defaults`, the IDF default being 160. All four generated
+    `sdkconfig.*_release` say 240. It changed neither static DRAM nor IRAM.
+    Snap time and SYS's loop figures at 240 are bench work, after a flash.
+  - **HARDWARE (HW), public** (Rob: "so others can see how neat it is"):
+    chip and revision, cores and the live clock, flash, PSRAM, board and
+    its version, capabilities (card and bus, camera and sensor, LCD,
+    lights). Staff also get PSRAM free, internal heap free and low, card
+    free. Never the network. SYS ends with the same section from the same
+    function (`hwRow`), less the heap rows it already has.
+    `plat::chipInfo` is counters and registers only; the card is
+    `sdCardKept`, never the FAT. Cost: +16 bytes static DRAM and about
+    3 KB of flash on the WROOM image.
+  - Static DRAM off the ELF: WROOM 163,008 (17,728 free), Freenove
+    174,368 (6,368 free), ESP32-CAM 175,824 (4,912 free), S3 249,712 of
+    341,760. Flash: 1,290,784 / 1,355,456 / 1,409,056 / 1,328,544.
+  - Owed to screen-artist: the stock `screens/about.*` should gain the line
+    "HARDWARE shows what this board is running on." (ABOUT's built-in card
+    already has it).
 - **1.1.1: software picture correction for the camera** (Rob, 2026-09-25,
   after the first real outdoor photo came out washed out on a cloudy day).
   The GC0308 ignores some of its own settings, and the board already

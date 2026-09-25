@@ -24,10 +24,51 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
-## ESPCAM 1.0.1 (AI-Thinker ESP32-CAM profile), 2026-09-25, not released
+## 1.1.1-dev.0 (ESPCAM 1.0.1), 2026-09-25, pre-release
+
+**Out early for testing.** A development build, published as a GitHub
+pre-release so the web installer can offer the AI-Thinker ESP32-CAM as a
+preview. It has not been through the full regression: it had targeted
+sanity runs only (login, shell and storage, with and without a card, and
+the ESP32-CAM host profile). The WROOM, the Waveshare S3 and the Freenove
+stay on the 1.1.0 release on the installer; their images in this
+pre-release carry the core changes below.
+
+`tools/release.py` builds the new board as a fourth set, `esp32-cam-*` in
+the release assets and `esp32-cam/` in the install layout, chipFamily
+ESP32 like the Freenove's, so the installer's picker has to ask which
+board rather than read it off the chip. The core changes, on every board:
+
+- **240 MHz on every board** (Rob). `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240`
+  in `sdkconfig.defaults`, the IDF default being 160; each generated
+  `sdkconfig.<env>` checked to say 240. Rule no. 1 is paid in CPU time as
+  well as design. The snap time, SYS's loop figures and slow passes are
+  measured on the bench after the flash.
+  A chip rated for 160 MHz (the D2WD and single-core parts) will not boot
+  it: the bootloader refuses. None of the supported boards carries one.
+- **`HARDWARE` (`HW`), for every caller** (Rob: "so others can see how
+  neat it is"): the chip and its revision, named as esptool names it
+  (`ESP32-D0WD-V3` on a WROOM-32E), the cores and the clock they run at
+  now (read from the clock, so 240 means 240), flash, PSRAM, the board and
+  its version, and what it has running (a card and its size and bus, a
+  camera and its sensor, the LCD panel, lights once a pin is wired). Staff also see
+  PSRAM free, internal heap free and lowest, and card free. Never the
+  network. On the `? account` menu after `ABOUT`, with long help.
+  `plat::chipInfo` reads it all from registers and counters; the card is
+  the sd plugin's kept figure, never its FAT.
+- **SYS gains a hardware section**, last, drawn by the same code, less the
+  heap rows its memory section already has.
+- ABOUT's built-in card (a board with no `screens/about.*`) says `HARDWARE`
+  shows what the board runs on. The stock about screens do not yet: that
+  line is the screen artist's to add.
+- A board profile with a card slot of its own says so (`BBS_HAS_SD_SLOT`),
+  and the card's rounding to its printed size moved from announce to
+  `backup.h` (`sdCardGB`) so HARDWARE and the directory badge agree.
+
+### ESPCAM 1.0.1 (AI-Thinker ESP32-CAM profile)
 
 A new board profile, `BBS_BOARD_AI_ESP32CAM` (envs `esp32cam_aithinker`
-and `esp32cam_aithinker_release`), on the core as 1.1.0. **On hardware**
+and `esp32cam_aithinker_release`). **On hardware**
 (an Aideepen ESP32-CAM on an ESP32-CAM-MB, COM15): ESP32-D0WDQ6 rev 1.0,
 4 MB flash, PSRAM (8 MB chip, 4 MB mapped), a genuine OV2640 (SCCB 0x30,
 PID 0x26, VER 0x42). SNAPSHOT at UXGA with the watermark and the flash on

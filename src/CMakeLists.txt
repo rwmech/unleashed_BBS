@@ -40,6 +40,9 @@ set(app_requires esp_wifi esp_netif esp_event nvs_flash esp_timer esp_hw_support
                  esp_driver_gpio esp_driver_uart esp_rom
                  # esp_flash_get_size, for the directory's system badge
                  spi_flash
+                 # HARDWARE and SYS (1.1.1): the package fuse, and the PSRAM
+                 # chip's size on a board that has one
+                 efuse esp_psram
                  # the BOOT-hold factory reset erases two partitions whole
                  esp_partition
                  # The optional SD card: SPI host, card protocol, FAT and the

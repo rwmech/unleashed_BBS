@@ -189,7 +189,8 @@ The task watchdog restarts a board whose BBS loop has stopped for 30 seconds, wh
 
 - Tag `v<BBS_VERSION>` and `.github/workflows/release.yml` builds the release on a fresh checkout with `tools/release.py` and publishes it as a GitHub Release. The directory server's `deploy/update.sh` fetches the newest one, checks every file against `SHA256SUMS`, and `/install` offers it.
 - `python3 tools/release.py --allow-dirty` builds the same thing locally, to test before tagging. It writes `release/<version>/assets/` (the GitHub Release files) and `release/<version>/install/` (the directory server's `firmware/<version>/` layout, for copying across by hand).
-- A release never carries anybody's network or passwords: the `esp32dev_release` environment ignores `include/secrets.h`, the screens image is built from `data/screens` only, and `release.py` searches every image for any password or network name the machine knows and refuses on a match.
+- A release carries four image sets, one per board: the reference ESP32 under plain names, then `esp32s3-*` (Waveshare ESP32-S3-LCD-1.47), `esp32-fncam-*` (Freenove ESP32-WROVER CAM) and `esp32-cam-*` (AI-Thinker ESP32-CAM, from 1.1.1-dev.0), each with its own `version.txt`. A tag with a suffix (`v1.1.1-dev.0`) is published as a pre-release.
+- A release never carries anybody's network or passwords: every `*_release` environment ignores `include/secrets.h`, the screens image is built from `data/screens` only, and `release.py` searches every image for any password or network name the machine knows and refuses on a match.
 
 ## Build and flash (PlatformIO)
 

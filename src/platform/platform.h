@@ -13,7 +13,7 @@
  *                  (host/platform_host.cpp). Sockets use the BSD API, which
  *                  lwIP provides on the ESP32.
  *
- * Interfaces:   millis, random32, fsBase, logsBase, heap, hardware, wifiRssi, log,
+ * Interfaces:   millis, random32, fsBase, logsBase, heap, hardware, chipInfo, wifiRssi, log,
  *               backupButton*, activityLed*, diskPulse, diskSeen, pixels*,
  *               inflateRaw
  *
@@ -167,6 +167,33 @@ const char* powerSave();
 // using. "host" on the host build. Call it once, at start.
 // ---------------------------------------------------------------------------
 void hardware(char* out, size_t n);
+
+// ---------------------------------------------------------------------------
+// chipInfo: the spec sheet HARDWARE and SYS show (1.1.1). Every field is a
+// register or a counter read, so it may be asked on the loop at every row:
+// esp_chip_info and the package fuse, the CPU clock as it is running now
+// (not the configured figure), the flash size from the image header (as
+// hardware() says), the PSRAM chip's size and what the heap was given of it,
+// and the heaps' free and lowest-free counters. Never the largest free
+// block, which walks the heap in a critical section.
+//
+// On the host: model "host", no revision, the PC's core count, and zeros
+// for what it does not have, which the screens show as a dash.
+// ---------------------------------------------------------------------------
+struct ChipInfo {
+    char     model[20] = {};   // "ESP32-D0WDQ6", "ESP32-S3", "host"
+    uint16_t rev       = 0;    // MXX (major * 100 + minor); kNoRev unknown
+    uint8_t  cores     = 0;
+    uint16_t cpuMHz    = 0;    // running now; 0 unknown
+    uint32_t flash     = 0;    // bytes this image can use; 0 unknown
+    uint32_t psram     = 0;    // the PSRAM chip, bytes; 0 none
+    uint32_t psramHeap = 0;    // of it, mapped and given to the heap
+    uint32_t psramFree = 0;
+    uint32_t heapFree  = 0;    // internal RAM, as heap() counts it; 0 unknown
+    uint32_t heapLow   = 0;    // its lowest since boot
+    static constexpr uint16_t kNoRev = 0xFFFF;
+};
+void chipInfo(ChipInfo& out);
 
 // ---------------------------------------------------------------------------
 // wifiRssi: signal strength of the joined access point in dBm, 0 when not

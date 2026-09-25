@@ -2745,6 +2745,148 @@ def test_sysinfo():
     return ok
 
 
+def board_name(board):
+    """A board profile's BBS_BOARD_NAME, from its own block in src/board.h,
+    or the reference board's default when board is not a profile."""
+    text = (ROOT / "src" / "board.h").read_text(encoding="utf-8")
+    define = BOARD_DEFINES.get(board)
+    if define:
+        m = re.search(r"^#if defined\(" + re.escape(define) + r"\)$(.*?)^#endif\s*//\s*" + re.escape(define),
+                      text, re.S | re.M)
+        block = m.group(1) if m else ""
+    else:
+        block = text
+    m = re.search(r'#define\s+BBS_BOARD_NAME\s+"([^"]+)"', block)
+    return m.group(1) if m else ""
+
+
+def test_hardware():
+    """HARDWARE and HW (1.1.1, Rob: callers should see it too, "so others can
+    see how neat it is"). The spec sheet for anybody, at 80 columns and 40;
+    the live figures for staff only; never the network. SYS draws the same
+    section, less the heap rows its own memory group already has."""
+    print("HARDWARE")
+    profile = HOST_BOARD in BOARD_DEFINES
+    card = card_dir() is not None
+    ok = True
+
+    # Drawn on a grid far wider than the terminal, so a row that would have
+    # wrapped shows its whole length rather than being cut at the edge.
+    def screen(c, cmd, cols):
+        c.buf.clear()
+        c.send(cmd + b"\r")
+        read_list(c)
+        drawn = render_lines(c.buf, cols=250)
+        if os.environ.get("HW_PEEK"):                     # HW_PEEK=1: show what was drawn
+            print("  ---- %s at %d ----" % (cmd.decode(), cols))
+            for ln in drawn:
+                print("  |" + ln)
+        return drawn
+
+    def row(rows, label):
+        return next((r for r in rows if r.startswith(label)), "")
+
+    c = ansi_login("SpecReader")
+    rows = screen(c, b"hardware", 80)
+    text = "\n".join(rows)
+    ok &= check("HARDWARE is a caller's command, with its title and version",
+                row(rows, " Hardware").strip().startswith("Hardware") and BBS_VERSION in row(rows, " Hardware"))
+    ok &= check("the chip, the CPU with its cores, the flash and the PSRAM",
+                row(rows, "Chip ").split()[1:2] == ["host"]
+                and re.search(r"^CPU\s+-\s+\d+ cores?$", row(rows, "CPU "), re.M) is not None
+                and row(rows, "Flash ") and re.search(r"^PSRAM\s+none$", row(rows, "PSRAM "), re.M) is not None)
+    if profile:
+        tag, ver = board_profile(HOST_BOARD)
+        ok &= check(f"the board is the profile, {tag} {ver}, with its name beside it at 80",
+                    re.search(r"^Board\s+" + re.escape(f"{tag} {ver}") + r" " + re.escape(board_name(HOST_BOARD)) + r"$",
+                              row(rows, "Board ")) is not None)
+    else:
+        ok &= check("the reference board says so",
+                    re.search(r"^Board\s+ESP32 \(reference\)$", row(rows, "Board ")) is not None)
+    caps = row(rows, "Capabilities ")
+    if card:
+        ok &= check("a card in is named with its size and its bus",
+                    re.search(r"\d+ GB SD card \((SPI|SDMMC)\)", caps) is not None)
+    elif profile:
+        ok &= check("a board with a slot and no card says the slot is empty",
+                    re.search(r"SD slot \((SPI|SDMMC)\), empty", caps) is not None)
+    else:
+        ok &= check("the reference board with no card claims none", "SD" not in caps and caps.strip() != "")
+    ok &= check("a caller never sees the live figures",
+                "Heap free" not in text and "Heap low" not in text and "PSRAM free" not in text
+                and "Card free" not in text)
+    ok &= check("nor anything about the network",
+                not any(w in text for w in ("Address", "Wi-Fi", "Signal", "Channel", "Port ")))
+    ok &= check("every row fits 79 columns", max(len(r.rstrip()) for r in rows) <= 79)
+
+    # HW is the same command.
+    alias = screen(c, b"hw", 80)
+    ok &= check("HW is the same screen", row(alias, "Chip ") == row(rows, "Chip ")
+                and row(alias, "Capabilities ") == caps)
+
+    # 40 columns: nothing wraps, and a profile's name goes under its row.
+    naws(c, 40, 25)
+    narrow = screen(c, b"hardware", 40)
+    ok &= check("at 40 columns every row fits 39",
+                row(narrow, "Chip ") != "" and max(len(r.rstrip()) for r in narrow) <= 39)
+    if profile:
+        at = next((i for i, r in enumerate(narrow) if r.startswith("Board ")), -1)
+        ok &= check("and the board's name goes on a line of its own under it",
+                    at >= 0 and at + 1 < len(narrow) and narrow[at + 1].strip() == board_name(HOST_BOARD)
+                    and narrow[at + 1].startswith(" "))
+    naws(c, 80, 24)
+
+    # It is on the account menu, next to ABOUT, and HELP knows it.
+    c.buf.clear()
+    c.send(b"? account\r")
+    read_list(c)
+    menu = plain(c.buf)
+    ok &= check("HARDWARE is on the account menu after ABOUT",
+                b"HARDWARE|HW" in menu and menu.find(b"ABOUT") < menu.find(b"HARDWARE|HW"))
+    c.buf.clear()
+    c.send(b"help hardware\r")
+    c.pump(0.8)
+    ok &= check("HELP HARDWARE explains it", b"What this board runs on" in plain(c.buf))
+    c.close()
+
+    if not PASSWORD:
+        print("  SKIP  the staff half needs the sysop")
+        return ok
+    s = ansi_login("SpecSysop")
+    s.send(f"bye {PASSWORD}\r".encode())
+    s.wait_for(b"Sysop", 5)
+    s.pump(0.3)
+    drain(s)
+    rows = screen(s, b"hardware", 80)
+    ok &= check("staff also get the heap, free and lowest",
+                row(rows, "Heap free ") != "" and row(rows, "Heap low ") != "")
+    if card:
+        ok &= check("and the card's free space", re.search(r"^Card free\s+[\d,]+ MB of \d+", row(rows, "Card free "), re.M)
+                    is not None)
+    ok &= check("and still nothing about the network",
+                not any(w in "\n".join(rows) for w in ("Address", "Wi-Fi", "Signal")))
+
+    # SYS draws the same section, last, without doubling the heap rows.
+    sysrows = screen(s, b"sys", 80)
+    systext = "\n".join(sysrows)
+    ok &= check("SYS has the hardware section",
+                any(r.startswith("-- hardware") for r in sysrows) and row(sysrows, "Chip ") == row(rows, "Chip ")
+                and row(sysrows, "Capabilities ") != "")
+    ok &= check("with the heap once, under memory", systext.count("Heap free") == 1)
+    ok &= check("and its footer still last", sysrows and any("CALLS shows the board hour by hour" in r for r in sysrows[-4:]))
+    naws(s, 40, 25)
+    narrow = screen(s, b"sys", 40)
+    # Only the section this test is about: the rest of SYS has its own.
+    at = next((i for i, r in enumerate(narrow) if r.startswith("-- hardware")), len(narrow))
+    section = narrow[at:at + 12]
+    ok &= check("SYS at 40 columns: the hardware section fits 39",
+                row(section, "Chip ") != "" and max(len(r.rstrip()) for r in section) <= 39)
+    naws(s, 80, 24)
+    drain(s)
+    s.close()
+    return ok
+
+
 def naws(c, cols, rows):
     """Tell the board a new window size, the way a terminal does when it is
     resized: IAC SB NAWS width height IAC SE. The board applies it on the next
@@ -13351,7 +13493,7 @@ GROUPS = {
     # since 1.1.0, and restores across the board's two partitions).
     "storage":   ["files", "forums", "sd", "xfer", "backup", "restore", "card_screens", "rewrites"],
     # The shell, its lists and the screens the core draws.
-    "shell":     ["menus", "sysinfo", "page", "about", "config", "welcome", "paced", "seeded", "fx_codes",
+    "shell":     ["menus", "sysinfo", "hardware", "page", "about", "config", "welcome", "paced", "seeded", "fx_codes",
                   "lights", "operator", "dash", "nodes_columns", "version_shown", "screens_command",
                   "forms", "whois"],
     # Logging in, accounts, staff.
@@ -13384,7 +13526,8 @@ ORDER_NAMES = [
     "test_room_time_staff_only", "test_bell", "test_codes_in_messages", "test_fx_codes", "test_room_narrow_effects",
     "test_long_help",
     "test_info_pages",
-    "test_mail", "test_prompt_survives_notice", "test_menus", "test_sysinfo", "test_config",
+    "test_mail", "test_prompt_survives_notice", "test_menus", "test_sysinfo", "test_hardware",
+    "test_config",
     # The dashboard (1.1.0). test_dash_pick kicks its own caller and nobody
     # else's; test_dash_waiting leaves mail only for its own sysop account.
     "test_dash_frame", "test_dash_pick", "test_dash_narrow", "test_dash_wide", "test_dash_all",

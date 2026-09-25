@@ -113,7 +113,7 @@ enum class Role : uint8_t {
 // PLUGINS command and is unrelated; the names are close because the two
 // things are not.
 enum class ListKind : uint8_t { None, Help, Who, Last, Nodes, Bans, Dash, Users, Plugins,
-                                Sys, Calls, PlugRows, Screens };
+                                Sys, Calls, PlugRows, Screens, Hardware };
 enum class MoreFrom : uint8_t { List, Screen };
 // ConfigArea is a CONFIG page opened from a button on another CONFIG page:
 // one level of nesting, which is what a row standing for several values
@@ -714,6 +714,12 @@ private:
     void statNum(Session& s, const char* label, uint32_t value, const char* note = nullptr);
     void rowSection(Session& s, const char* name);
     bool rowSys(Session& s);
+    // HARDWARE (bbs_hardware.cpp, 1.1.1): the board's spec sheet, for every
+    // caller, with the live figures for staff. hwRow is line k of the
+    // section, shared with SYS so the two cannot drift; false past the end.
+    // inSys leaves out the heap rows SYS already has under "memory".
+    bool rowHardware(Session& s);
+    bool hwRow(Session& s, uint8_t k, bool inSys);
     bool rowCalls(Session& s);
     void cmdCalls(Session& s);   // padded when refreshing
     // rowText, rowRule, rowTitle and rowWidth are public: a plugin drawing
