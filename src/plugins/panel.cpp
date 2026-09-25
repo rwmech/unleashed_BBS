@@ -113,6 +113,7 @@
 #include "../core/clock.h"
 #include "../core/form.h"
 #include "../core/plugin.h"
+#include "../core/silent.h"
 #include "../core/sysconfig.h"
 #include "../platform/platform.h"
 
@@ -130,6 +131,8 @@ using namespace panelgfx::tok;
 // Host only: the glass the platform keeps, written to a PPM file, so a
 // person can look at the layout without a panel (PANEL SHOT).
 bool hostPanelShot(const char* path);
+// And the backlight as the platform was last told it, percent.
+int hostLcdBacklight();
 #endif
 
 namespace {
@@ -167,6 +170,16 @@ plat::LcdCfg   g_run;                       // what the glass is driven with: g_
 char           g_why[64] = "not started";   // why the panel is dark, for PANEL and PLUGINS
 bool           g_up      = false;           // the glass is ours and being drawn
 bool           g_lightOwed = false;         // backlight on once the first full frame is out
+uint32_t       g_owedAt  = 0;               // g_bands when it was owed: only a band after counts
+// Silent mode (1.1.0, core/silent): the backlight off and nothing drawn, the
+// picture and every setting kept. When it ends the whole glass is drawn
+// again before it is lit, so nothing stale is ever shown.
+bool           g_dark    = false;
+// The glass holds a picture from before silent began: kept across a stop and
+// a start (a CONFIG save ending silent restarts every plugin), and cleared
+// only once a whole new frame has been sent and lit.
+bool           g_stale   = false;
+uint8_t        g_blNow   = 0;               // the backlight as this plugin last set it, for PANEL
 
 // A system.cfg from before orientation (1.1.0-dev.8) said rotation, with
 // width, height and offsets typed for the turned glass. Read once and put
@@ -958,16 +971,31 @@ void dotStep(uint8_t leds) {
     else { g_dirty.add(a); g_dirty.add(b); }                         // wrapped round
 }
 
+// light: the backlight, through one place, so PANEL can say what it was
+// last told.
+void light(uint8_t pct) {
+    g_blNow = pct;
+    plat::lcdBacklight(pct);
+}
+
+// oweLight: the backlight to come on once the whole glass queued by
+// redrawAll has been sent, and not a band before.
+void oweLight() {
+    g_lightOwed = true;
+    g_owedAt    = g_bands;
+}
+
 // flush: one band, if the last one has gone. After a reset the backlight
 // waits for the whole first frame: redrawAll queues the glass as one
 // rectangle ahead of anything else, and a rectangle is sent to its end
 // before the next is started, so the first time nothing is part-sent after a
-// band has gone, the glass holds a whole new picture.
+// band has gone since it was owed, the glass holds a whole new picture.
 void flush() {
     if (!plat::lcdReady()) return;
-    if (g_lightOwed && g_bands && empty(g_dirty.cur)) {
+    if (g_lightOwed && g_bands != g_owedAt && empty(g_dirty.cur)) {
         g_lightOwed = false;
-        plat::lcdBacklight(g_run.backlight);
+        g_stale     = false;
+        light(g_run.backlight);
     }
     Rect r;
     if (!g_dirty.next(plat::lcdBandPixels(), r)) return;
@@ -1027,7 +1055,10 @@ bool start(Bbs& bbs) {
     // the panel as it is, lit, rather than taking it through its reset. New
     // ones (a turn, above all) reset it, and its memory then holds whatever
     // it held, so the backlight waits until the first whole frame is out:
-    // nothing of the old picture, or of noise, is ever lit.
+    // nothing of the old picture, or of noise, is ever lit. A board that is
+    // silent (1.1.0) starts dark and is lit by tick() when silent ends.
+    const bool quiet = board::silent();
+    bool owe = false;
     if (!plat::lcdSame(g_run)) {
         char err[64] = "";
         plat::LcdCfg dark = g_run;
@@ -1036,10 +1067,15 @@ bool start(Bbs& bbs) {
             snprintf(g_why, sizeof(g_why), "%s", err);
             return true;
         }
-        g_lightOwed = true;
+        g_blNow = 0;
+        owe = !quiet;
+    } else if (quiet || g_stale) {
+        light(0);                                          // dark, or old glass: lit once drawn
+        owe = !quiet;
     } else {
-        plat::lcdBacklight(g_run.backlight);
+        light(g_run.backlight);
     }
+    if (quiet) g_stale = true;
     redrawAll();
     g_textAt = g_stripAt = g_netAt = g_cardAt = g_heapAt = g_rssiAt = 0;
     g_page = PAGE_NAME;
@@ -1051,6 +1087,8 @@ bool start(Bbs& bbs) {
     g_bellLit = true;
     g_errSeen = plat::diskSeen().count[plat::DISK_ERROR];   // only errors from here on
     g_bands = 0;
+    g_dark = quiet;
+    if (owe) oweLight();
     g_up = true;
     g_why[0] = '\0';
     lights::wantPanel(true);
@@ -1062,13 +1100,34 @@ bool start(Bbs& bbs) {
 // across it; a panel switched off stays dark.
 void stop() {
     lights::wantPanel(false);
-    if (g_up) plat::lcdBacklight(0);
+    if (g_up) light(0);
     g_up = false;
+    g_dark = false;
     g_dirty.clear();
 }
 
 void tick(uint32_t now) {
     if (!g_up) return;
+    // Silent mode (1.1.0): dark, and nothing drawn or sent while it lasts.
+    // What happens meanwhile (a login, a ring) is still kept by the hooks,
+    // so the picture that comes back is the board as it is then.
+    if (board::silent()) {
+        if (!g_dark) {
+            g_dark = true;
+            g_stale = true;
+            g_lightOwed = false;
+            light(0);
+        }
+        return;
+    }
+    if (g_dark) {
+        // The whole glass again, every field recomposed on this pass, and the
+        // light owed until all of it has been sent.
+        g_dark = false;
+        redrawAll();
+        g_textAt = g_stripAt = 0;
+        oweLight();
+    }
     if (!g_textAt || now - g_textAt >= kTextMs) {
         g_textAt = now ? now : 1;
         refreshText(now);
@@ -1133,7 +1192,7 @@ void cmdPanel(Bbs& b, Session& s, const char* a, uint32_t now) {
         return;
     }
     char buf[48];
-    b.rowTitle(s, "Panel", g_up ? "lit" : "dark");
+    b.rowTitle(s, "Panel", !g_up ? "dark" : g_dark ? "silent" : "lit");
     if (!g_up) {
         snprintf(buf, sizeof(buf), "Dark: %.40s", g_why);
         line(s, Color::LightRed, buf);
@@ -1146,6 +1205,18 @@ void cmdPanel(Bbs& b, Session& s, const char* a, uint32_t now) {
     snprintf(buf, sizeof(buf), "Pins %d %d %d %d %d %d, %u MHz",
              g_cfg.mosi, g_cfg.sclk, g_cfg.cs, g_cfg.dc, g_cfg.rst, g_cfg.bl,
              static_cast<unsigned>(g_cfg.mhz));
+    line(s, Color::Grey, buf);
+    // What the backlight was last told (silent mode, 1.1.0). On the host,
+    // what the platform holds rather than what this plugin meant, so a test
+    // reads the glass. Above "bands sent": the fields' words follow that
+    // line, and a reader takes them from there.
+#ifdef BBS_HOST
+    const int bl = hostLcdBacklight();
+#else
+    const int bl = g_blNow;
+#endif
+    if (g_up && g_dark) snprintf(buf, sizeof(buf), "Backlight %d%%, silent mode", bl);
+    else                snprintf(buf, sizeof(buf), "Backlight %d%%", bl);
     line(s, Color::Grey, buf);
     snprintf(buf, sizeof(buf), "%u bands sent", static_cast<unsigned>(g_bands));
     line(s, Color::Grey, buf);

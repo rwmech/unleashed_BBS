@@ -132,6 +132,7 @@ The second UART is wired to the serial bridge plugin, so a caller with permissio
 ### GPIO and the physical world
 
 - GPIO2 drives the activity LED by default, which is the LED already fitted to most dev boards. `activity_led_gpio` moves it.
+- Silent mode (1.1.0, `CONFIG board`) turns every light the firmware drives off and keeps it off: the activity LED, the lights plugin's drive light and strip, a display's backlight and the camera's flash, by a switch or every day between two times (silent hours, which wait for the NTP clock). Each light keeps its own settings and comes back as it was. The board's power LED is wired straight to 3V3 on every supported board, so no firmware can turn it off: tape over it, or lift it. See "Silent mode" in [COMMANDS.md](COMMANDS.md).
 - GPIO0, the BOOT button on a dev board, opens the backup window while the sysop is logged in. Hold it, and `system.cfg`, the accounts and the screens can be downloaded or uploaded over HTTP for a few minutes. For the first 10 seconds after the board starts it is the reset button instead: see [Resetting the board](#resetting-the-board).
 - The remaining pins are free. The planned GPIO plugin exposes them to callers as commands with their own read, write and admin levels, so reading a sensor can be open to everyone while throwing a relay is staff only.
 - Reserved by the hardware, not by this firmware: 6 to 11 are the flash, 20, 24 and 28 to 31 do not exist on the WROOM's chip (every pin setting refuses both, 1.1.0), 34 to 39 are input only and have no pull-ups, and the strapping pins (0, 2, 12, 15) decide how the chip boots and should be left alone unless you know what they do at reset.
@@ -279,6 +280,7 @@ src/core/bbs_backup.cpp   BACKUP SD, RESTORE SD and the nightly backup, as the s
 src/core/bbs_screens.cpp  SCREENS and SCREENS VIEW: every screen and where callers get it from
 src/core/cardnames.h      the backups' names on the card, and which nightly one to prune
 src/core/tzones.h         the timezones CONFIG board offers by name
+src/core/silent.*         silent mode: the switch and the silent hours, one byte every light asks
 src/core/crc32.h          CRC-32 for the zip
 src/core/bbs.*            listener, sessions, flow, timers, paging
 src/core/bbs_shell.cpp    caller commands

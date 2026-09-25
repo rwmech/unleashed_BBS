@@ -89,6 +89,15 @@ who_refresh_max = 30
 # ESP32 dev boards; set -1 if your board has none there.
 activity_led_gpio = 2
 
+# Silent mode (CONFIG board): every light the firmware drives off, the
+# activity LED, the lights, a display's backlight and the camera's flash.
+# silent_from / silent_until make it silent every day between two times,
+# HH:MM local by tz, both or neither; they need the NTP clock. The power LED
+# is wired to 3V3 and no setting can turn it off.
+silent = no
+silent_from =
+silent_until =
+
 # User accounts (USERS.md). self_register = no: unknown handles are refused
 # and staff add accounts with USERS / USER ADD. max_users is 1..250.
 self_register = yes

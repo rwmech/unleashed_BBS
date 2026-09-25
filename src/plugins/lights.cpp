@@ -76,6 +76,7 @@
  * ===========================================================================
  */
 #include "lights.h"
+#include "../core/silent.h"
 #include "../core/bbs.h"
 #include "../core/bbs_util.h"
 #include "../core/form.h"
@@ -225,6 +226,12 @@ uint8_t g_ledFx[kStrip];
 uint8_t g_ledCol[kStrip];
 bool    g_driveOn  = false;
 bool    g_stripOn  = false;
+// Silent mode (1.1.0, core/silent): each output's dark frame, once the wire
+// has taken it. Nothing else is sent while silent lasts, and every setting
+// and effect is left exactly as it was for when it ends.
+bool    g_darkDrive = false;
+bool    g_darkStrip = false;
+constexpr uint8_t kDark[kStrip * 3] = {};
 #ifdef BBS_HAS_LCD
 bool    g_panel    = false;                    // the panel shows the strip
 uint8_t g_shown[kStrip * 3];                   // the strip's last frame, for it
@@ -778,6 +785,16 @@ void tick(uint32_t now) {
     uint8_t target = bytes >= 64u ? 255 : static_cast<uint8_t>(bytes * 4u);
     g_act = target > g_act ? target : (g_act > 4 ? static_cast<uint8_t>(g_act - 4) : 0);
     noteDisk();
+    // Silent: every pixel dark, and kept dark. A dark frame is offered until
+    // the wire takes it (a frame offered mid-send is skipped), then nothing
+    // is drawn or sent. A LIGHTS TEST under way stops with it.
+    if (board::silent()) {
+        g_testAt = 0;
+        if (g_driveOn && !g_darkDrive) g_darkDrive = plat::pixelsShow(kOutDrive, kDark, 1);
+        if (g_stripOn && !g_darkStrip) g_darkStrip = plat::pixelsShow(kOutStrip, kDark, g_count);
+        return;
+    }
+    g_darkDrive = g_darkStrip = false;
 #ifdef BBS_HAS_LCD
     // The panel's strip is drawn whether or not a strip is wired.
     if (!g_driveOn && !g_stripOn && !g_panel) return;
@@ -881,6 +898,7 @@ bool start(Bbs& bbs) {
     for (uint8_t i = 0; i < kStrip; ++i) g_hue[i] = static_cast<uint8_t>(rnd());
     g_pos = 0; g_dir = 1; g_phase = 0; g_vu = 0; g_bits = 0; g_stepAt = 0; g_rd = g_sd = 0;
     g_rssi = 0; g_rssiAt = 0;
+    g_darkDrive = g_darkStrip = false;
 
     char a[10], b[10];
     plat::log("lights: drive %s on gpio %d at %u%%, strip %s on gpio %d at %u%%, %u pixels",
@@ -966,7 +984,10 @@ void cmdLights(Bbs& b, Session& s, const char* a, uint32_t now) {
     Term& t = s.term;
     Timeline& tl = s.tl;
     if (ieq(a, "test")) {
-        if (!g_driveOn && !g_stripOn) {
+        if (board::silent()) {
+            t.color(tl, Color::LightRed);
+            t.text(tl, "Silent mode is on. CONFIG board.");
+        } else if (!g_driveOn && !g_stripOn) {
             t.color(tl, Color::LightRed);
             t.text(tl, "No pixels to test. CONFIG lights sets a pin.");
         } else {
@@ -1009,7 +1030,7 @@ void cmdLights(Bbs& b, Session& s, const char* a, uint32_t now) {
         return;
     }
     char fa[10], fb[10];
-    b.rowTitle(s, "Lights", g_testAt ? "testing" : nullptr);
+    b.rowTitle(s, "Lights", board::silent() ? "silent" : g_testAt ? "testing" : nullptr);
     showOutput(s, "Drive", g_drivePin, g_driveOn, wordOf(lights::kDriveFx, g_driveFx, fa, sizeof(fa)),
                g_drivePct, kOutDrive, false, g_driveOrd);
     showOutput(s, "Strip", g_stripPin, g_stripOn, wordOf(lights::kStripFx, g_stripFx, fb, sizeof(fb)),

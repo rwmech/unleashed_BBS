@@ -137,6 +137,12 @@ test_cardnames: test_cardnames.cpp ../src/core/cardnames.h
 test_calllog: test_calllog.cpp ../src/core/calllog.cpp ../src/core/calllog.h
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_calllog.cpp ../src/core/calllog.cpp
 
+# Silent mode's rules (1.1.0): the switch, the hours at every edge and across
+# midnight, no clock, and the times as the file and CONFIG hold them. A rule a
+# minute out is a strip lighting up in somebody's bedroom.
+test_silent: test_silent.cpp ../src/core/silent.h
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_silent.cpp
+
 # The project is GPL-3.0-or-later (1.1.0-dev.11). A tracked file whose SPDX
 # line still says GPL-2.0 was added on an old header; release.py refuses it
 # too, and this catches it before a release is ever attempted.
@@ -145,7 +151,7 @@ licence:
 	    echo "licence: GPL-2.0 SPDX line(s) above; the project is GPL-3.0-or-later"; exit 1; \
 	else echo "licence: no GPL-2.0 SPDX lines"; fi
 
-test: licence test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog
+test: licence test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent
 	./test_xmodem
 	./test_wrap
 	./test_forums_ptr
@@ -158,8 +164,9 @@ test: licence test_xmodem test_wrap test_forums_ptr test_compose test_codes test
 	./test_cardnames
 	./test_panel
 	./test_calllog
+	./test_silent
 
 clean:
-	rm -f bbs_host bbs_host_s3 test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog
+	rm -f bbs_host bbs_host_s3 test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent
 
 .PHONY: clean test licence

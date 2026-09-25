@@ -103,6 +103,15 @@ uint32_t todayStart() {
     return mid > 0 ? static_cast<uint32_t>(mid) : 0;
 }
 
+int16_t minuteOfDay() {
+    uint32_t e = epoch();
+    if (!e) return -1;
+    time_t t = static_cast<time_t>(e);
+    struct tm lt;
+    localtime_r(&t, &lt);
+    return static_cast<int16_t>(lt.tm_hour * 60 + lt.tm_min);
+}
+
 uint32_t dayKey(uint32_t millisNow) {
     uint32_t e = epoch();
     if (!e) return millisNow / 86400000u + 1u;

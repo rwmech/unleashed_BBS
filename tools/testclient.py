@@ -2577,11 +2577,11 @@ def test_config_cycle_numbers():
     c.send(b"config board\r")
     c.wait_for(b"Board", 5)
     # Board, Hostname, Timezone, TZ string, NTP, Idle min, the LED, Land on,
-    # Sysop.
+    # Sysop, and silent mode's three (1.1.0).
     # Plain ASCII is 80 columns, so the prompts are the long labels and a
     # value shows whole up to 60 characters (1.1.0): "POSIX TZ string
     # [CST6CDT,M3.2.0,M11.1.0]" where it was "TZ string [CST6CDT,M3.2.0,M1...]".
-    got, rows = ascii_form_seen(c, [b"", b"", b"8", b"", b"", b"", b"", b"", b""])
+    got, rows = ascii_form_seen(c, [b"", b"", b"8", b"", b"", b"", b"", b"", b"", b"", b"", b""])
     txt = "\n".join(rows)
     ok &= check("the zones are listed by number", "8 US Central (Chicago)" in txt and "35 Custom" in txt)
     ok &= check("and the string follows the zone picked by number",
@@ -2590,7 +2590,7 @@ def test_config_cycle_numbers():
     c.buf.clear()
     c.send(b"config board\r")
     c.wait_for(b"Board", 5)
-    ascii_form(c, [b"", b"", b"1", b"", b"", b"", b"", b"", b""])
+    ascii_form(c, [b"", b"", b"1", b"", b"", b"", b"", b"", b"", b"", b"", b""])
     ok &= check("and back to UTC by number", (cfg_line("tz") or "").endswith("= UTC0"))
     c.close()
     return ok
@@ -4746,6 +4746,51 @@ def lights_config(s, **keys):
     return cfg_reload(s)
 
 
+def top_config(s, **keys):
+    """Keys at the top of system.cfg set to these values (None: the line
+    removed), everything else left alone, then the board made to read it."""
+    path = USERDATA / "system.cfg"
+    lines = path.read_text().splitlines()
+    cut = next((i for i, ln in enumerate(lines) if ln.strip().startswith("[")), len(lines))
+    head = [ln for ln in lines[:cut] if ln.split("=", 1)[0].strip() not in keys]
+    head += [f"{k} = {v}" for k, v in keys.items() if v is not None]
+    path.write_text("\n".join(head + lines[cut:]) + "\n")
+    return cfg_reload(s)
+
+
+def sys_silent(s):
+    """SYS's Silent row as (value, note): ("on", "switch"), ("off", "")."""
+    s.buf.clear()
+    s.send(b"sys\r")
+    read_list(s)
+    m = re.search(rb"\nSilent +(\S+) ?([^\r\n]*)", plain(s.buf))
+    if not m:
+        return None, None
+    return m.group(1).decode(), m.group(2).decode().strip()
+
+
+def board_clock(s):
+    """The board's own time of day as (minutes, seconds), off SYS's Clock
+    row, or (None, None) with no clock."""
+    s.buf.clear()
+    s.send(b"sys\r")
+    read_list(s)
+    m = re.search(rb"\nClock +(\d\d):(\d\d):(\d\d)", plain(s.buf))
+    if not m:
+        return None, None
+    return int(m.group(1)) * 60 + int(m.group(2)), int(m.group(3))
+
+
+def board_minute(s):
+    """The board's own time of day, in minutes."""
+    return board_clock(s)[0]
+
+
+def hhmm(minutes):
+    minutes %= 1440
+    return "%02d:%02d" % (minutes // 60, minutes % 60)
+
+
 def lit(p):
     return max(p) > 0
 
@@ -5277,6 +5322,199 @@ def test_lights_manual():
     return ok
 
 
+def wait_minute_turn(s, secs=75):
+    """Wait until the board's clock is into its next minute, and a second
+    more for silentTick to have looked. False if it never turned."""
+    start = board_minute(s)
+    if start is None:
+        return False
+    end = time.time() + secs
+    while time.time() < end:
+        time.sleep(2)
+        now = board_minute(s)
+        if now is not None and now != start:
+            time.sleep(1.2)
+            return True
+    return False
+
+
+def test_config_silent():
+    """Silent mode in CONFIG board (1.1.0): the switch, the silent hours, the
+    parser's rules on them, and SYS saying whether the board is silent and
+    why. The lights and the panel have tests of their own."""
+    print("Silent mode: CONFIG board and SYS")
+    if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    s = cfg_sysop("CfgSilent")
+    ok = check("SYS: not silent as shipped", sys_silent(s) == ("off", ""))
+
+    # The rows, at 80: 9 Silent, 10 Silent at, 11 Silent to.
+    ok &= check("the board page opens", cfg_open(s, b"board", b"Hostname"))
+    s.pump(0.8)
+    page = plain(s.buf)
+    ok &= check("with the three silent rows, their 80 column labels",
+                all(w in page for w in (b"Silent: lights off", b"Silent hours from", b"Silent hours until")))
+    ok &= check("inside 80 columns", max_column(s.buf) <= 79)
+    s.buf.clear()
+    s.send(DOWN * 9)
+    s.pump(0.5)
+    ok &= check("the switch's note says what firmware cannot turn off",
+                b"The power LED is on 3V3: tape it." in plain(s.buf))
+    s.buf.clear()
+    s.send(b" " + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"Nothing changed"])
+    ok &= check("switched on, saved and live", got == b"Saved and live")
+    ok &= check("written as the parser reads it", (cfg_line("silent") or "").split("=", 1)[-1].strip() == "yes")
+    ok &= check("SYS: on, by the switch", sys_silent(s) == ("on", "switch"))
+    log = (DATA.parent / "host.log")
+    if log.exists():
+        ok &= check("and the console says so", "silent: on, by the switch" in log.read_text(errors="replace"))
+
+    # One end of the hours, or a time that is not one: refused on the form.
+    cfg_open(s, b"board", b"Hostname")
+    s.buf.clear()
+    s.send(DOWN * 10 + b"22:00" + F1)
+    got = cfg_verdict(s, [b"Set both times, or neither", b"Saved"])
+    ok &= check("one end of the hours alone is refused", got == b"Set both times, or neither")
+    cfg_cancel(s)
+    cfg_open(s, b"board", b"Hostname")
+    s.buf.clear()
+    s.send(DOWN * 10 + b"25:00" + DOWN + b"07:00" + F1)
+    got = cfg_verdict(s, [b"HH:MM, 00:00 to 23:59", b"Saved"])
+    ok &= check("a time that is not one is refused, in the parser's words", got == b"HH:MM, 00:00 to 23:59")
+    cfg_cancel(s)
+    ok &= check("and neither was written", cfg_line("silent_from") is None and cfg_line("silent_until") is None)
+
+    # The switch off and hours round now that cross midnight: from two
+    # hours ahead, round the clock, to one hour ahead.
+    now = board_minute(s)
+    ok &= check("the board has a clock", now is not None)
+    now = now or 0
+    frm, until = hhmm(now + 120), hhmm(now + 60)
+    cfg_open(s, b"board", b"Hostname")
+    s.buf.clear()
+    s.send(DOWN * 9 + b" " + DOWN + frm.encode() + DOWN + until.encode() + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"Set both", b"HH:MM", b"Nothing changed"])
+    ok &= check(f"switch off, hours {frm} to {until}: saved", got == b"Saved and live")
+    ok &= check("all three written", (cfg_line("silent") or "").endswith("no") and
+                (cfg_line("silent_from") or "").endswith(frm) and (cfg_line("silent_until") or "").endswith(until))
+    ok &= check(f"SYS: on, hours until {until}", sys_silent(s) == ("on", f"hours until {until}"))
+
+    # Hours that do not hold now: off, and SYS says when they start.
+    frm2, until2 = hhmm(now + 60), hhmm(now + 120)
+    top_config(s, silent_from=frm2, silent_until=until2)
+    ok &= check(f"hours {frm2} to {until2}: SYS off, hours from {frm2}", sys_silent(s) == ("off", f"hours from {frm2}"))
+
+    # Half a range by hand in the file: read as none, the file still taken.
+    top_config(s, silent_from=frm, silent_until=None)
+    ok &= check("half a range in the file is read as none, and the rest of the file stands",
+                sys_silent(s) == ("off", "") and cfg_line("silent_from") is not None)
+    # And finished on the form by typing only the missing end: the From row
+    # shows the file's time, unchanged, and goes to the parser with it.
+    cfg_open(s, b"board", b"Hostname")
+    s.buf.clear()
+    s.send(DOWN * 11 + until.encode() + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"Set both", b"HH:MM"])
+    ok &= check("the missing end typed alone finishes the range", got == b"Saved and live")
+    ok &= check(f"SYS: on again, hours until {until}", sys_silent(s) == ("on", f"hours until {until}"))
+
+    # A time in the file that is not one: no hours, the file still read.
+    ok &= check("a file with silent_from = 10pm is still read", top_config(s, silent_from="10pm"))
+    ok &= check("as no hours", sys_silent(s) == ("off", ""))
+
+    # At 40 columns: the short labels, and the Hours note in what a C64 has.
+    top_config(s, silent_from=frm, silent_until=until)
+    s.close()
+    n = cfg_sysop40("CfgSilent40")
+    cfg_open(n, b"board", b"Hostname")
+    n.pump(0.8)
+    lines = render_lines(n.buf, 40)
+    ok &= check("at 40 columns: Silent, Silent at and Silent to",
+                all(form_row(lines, lab) for lab in ("Silent ", "Silent at", "Silent to")))
+    ok &= check("the page inside 40 columns", max_column(n.buf) <= 39)
+    cfg_cancel(n)
+    ok &= check(f"SYS at 40: on, hrs until {until}", sys_silent(n) == ("on", f"hrs until {until}"))
+
+    top_config(n, silent=None, silent_from=None, silent_until=None)
+    ok &= check("all gone: SYS off", sys_silent(n) == ("off", ""))
+    n.close()
+    return ok
+
+
+def test_lights_silent():
+    """Silent mode and the lights (1.1.0): both outputs dark and kept dark,
+    LIGHTS TEST refused, the plugin's settings untouched, and every pixel
+    exactly as it was once silent ends, by the switch and by the hours
+    running out (the second without the plugin restarting)."""
+    print("Silent mode: the lights")
+    if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    s = cfg_sysop("LightsSilent")
+    cols = ["red", "green", "blue", "amber", "cyan", "purple", "pink", "white", "yellow", "orange"]
+    leds = {f"led{i + 1}": f"solid | {c}" for i, c in enumerate(cols)}
+    on = dict(enabled="yes", drive_pin=13, strip_pin=14, drive_fx="disk2", strip_fx="manual", **leds)
+    ok = check("the lights on, the strip set by hand", lights_config(s, **on))
+    time.sleep(1.3)                                # the save's write, and disk2's hold after it
+    before = lights_read(s)
+    ok &= check("both outputs lit to begin with",
+                len(before.get("strip", {}).get("px", [])) == 10 and all(lit(p) for p in before["strip"]["px"])
+                and before.get("drive", {}).get("px") == [(2, 1, 0)])
+
+    def section():
+        text = (USERDATA / "system.cfg").read_text()
+        return text[text.find("[plugin:lights]"):]
+
+    kept = section()
+    ok &= check("silent on, by the switch", top_config(s, silent="yes"))
+    f = lights_read(s)
+    ok &= check("LIGHTS says silent", re.search(rb"Lights[^\n]*silent", plain(s.buf)) is not None)
+    ok &= check("every pixel dark, both outputs",
+                f["strip"]["px"] == [(0, 0, 0)] * 10 and f["drive"]["px"] == [(0, 0, 0)])
+    time.sleep(1.0)
+    s.buf.clear()
+    s.send(b"lights pulse card\r")                 # a card read, which lights the drive light
+    s.wait_for(b"Pulsed", 4)
+    f = lights_read(s)
+    ok &= check("and kept dark, a card read and a second later",
+                f["strip"]["px"] == [(0, 0, 0)] * 10 and f["drive"]["px"] == [(0, 0, 0)])
+    s.buf.clear()
+    s.send(b"lights test\r")
+    ok &= check("LIGHTS TEST refused while silent", s.wait_for(b"Silent mode is on", 4))
+    ok &= check("the lights' own settings untouched", section() == kept)
+    ok &= check("pins, effects and brightness as they were",
+                f["strip"]["text"] == before["strip"]["text"] and f["drive"]["text"] == before["drive"]["text"])
+
+    ok &= check("the switch off", top_config(s, silent=None))
+    time.sleep(1.3)                                # the card pulse's hold on disk2 has run out
+    after = lights_read(s)
+    ok &= check("every pixel back exactly as it was",
+                after["strip"]["px"] == before["strip"]["px"] and after["drive"]["px"] == before["drive"]["px"])
+
+    # The hours, ending on their own: silent to the next minute, then back
+    # with no CONFIG save between, so the plugin is not restarted.
+    now, sec = board_clock(s)
+    if now is not None and sec >= 40:              # room to set it up inside this minute
+        wait_minute_turn(s)
+        now, sec = board_clock(s)
+    if now is None:
+        ok &= check("the board has a clock", False)
+    else:
+        top_config(s, silent_from=hhmm(now - 30), silent_until=hhmm(now + 1))
+        f = lights_read(s)
+        ok &= check("silent hours: dark", f["strip"]["px"] == [(0, 0, 0)] * 10 and f["drive"]["px"] == [(0, 0, 0)])
+        ok &= check("the hours ran out", wait_minute_turn(s))
+        time.sleep(1.3)
+        after = lights_read(s)
+        ok &= check("and every pixel is back as it was, with no restart",
+                    after["strip"]["px"] == before["strip"]["px"] and after["drive"]["px"] == before["drive"]["px"])
+    top_config(s, silent_from=None, silent_until=None)
+    lights_config(s)
+    s.close()
+    return ok
+
+
 def test_lights_count():
     """The strip's length is a setting (1.1.0, Rob: "could be 8 could be 10,
     could be 1, so variable would be better"): every effect drawn for the
@@ -5550,6 +5788,93 @@ def panel_read(s):
     s.wait_for(b"bands sent", 4)
     s.pump(0.4)
     return plain(s.buf)
+
+
+def test_board_s3_silent():
+    """Silent mode on the Waveshare S3 (1.1.0): the panel's backlight off and
+    nothing sent to the glass while it lasts, the onboard pixel dark, and
+    when it ends the whole glass drawn again and lit at its own setting. The
+    end is tested twice: by the switch (the plugins restart on the save) and
+    by the silent hours running out (no restart, the panel's own tick).
+    SKIPs on the reference board; tools/harness.sh --board s3 runs it."""
+    print("Silent mode: the Waveshare S3's panel")
+    if os.environ.get("BBS_HOST_BOARD") != "s3" or not PASSWORD:
+        print("  SKIP  needs tools/harness.sh --board s3")
+        return True
+    s = cfg_sysop("S3Silent")
+
+    def bands(p):
+        m = re.search(rb"(\d+) bands sent", p)
+        return int(m.group(1)) if m else -1
+
+    def shot_bar():
+        """The header bar's colour on the glass, or None."""
+        shot = DATA / "panel.ppm"
+        if shot.exists():
+            shot.unlink()
+        s.buf.clear()
+        s.send(b"panel shot\r")
+        s.wait_for(b"Written", 4)
+        W, H = 172, 320
+        head = f"P6\n{W} {H}\n255\n".encode()
+        data = shot.read_bytes() if shot.exists() else b""
+        if len(data) != len(head) + W * H * 3:
+            return None
+        return tuple(data[len(head) + (1 * W + 1) * 3:len(head) + (1 * W + 1) * 3 + 3])
+
+    # Whatever the panel's own setting is (test_board_s3 leaves it at 80):
+    # silent must bring back exactly that.
+    p = panel_read(s)
+    m = re.search(rb"Backlight (\d+)%", p)
+    level = m.group(1) if m else b"?"
+    ok = check("the panel lit, its backlight on", b"lit" in p and m is not None and int(level) > 0)
+    want = b"Backlight " + level + b"%"
+
+    ok &= check("silent on, by the switch", top_config(s, silent="yes"))
+    time.sleep(0.5)
+    p = panel_read(s)
+    ok &= check("PANEL: silent, the backlight told 0", b"silent" in p and b"Backlight 0%, silent mode" in p)
+    b1 = bands(p)
+    time.sleep(1.2)
+    b2 = bands(panel_read(s))
+    ok &= check("nothing sent to the glass while it lasts", b1 == b2)
+    ok &= check("the onboard pixel dark as well", lights_px(s, "drive") == [(0, 0, 0)])
+
+    # Something happens while it is dark: it is on the glass afterwards.
+    c = ansi_login("QuietCaller")
+    time.sleep(0.5)
+    ok &= check("the switch off", top_config(s, silent=None))
+    time.sleep(1.5)
+    p = panel_read(s)
+    ok &= check("lit again, at its own setting", b"lit" in p and want in p)
+    ok &= check("the whole glass drawn again: the header's blue", shot_bar() == (24, 44, 120))
+    ok &= check("with what happened while it was dark", re.search(rb"\d+\) QuietCaller", p) is not None)
+    c.close()
+
+    # The hours running out, with no CONFIG save: the panel's tick draws the
+    # glass again and owes the light until all of it is sent.
+    now, sec = board_clock(s)
+    if now is not None and sec >= 40:
+        wait_minute_turn(s)
+        now, sec = board_clock(s)
+    if now is None:
+        ok &= check("the board has a clock", False)
+    else:
+        top_config(s, silent_from=hhmm(now - 30), silent_until=hhmm(now + 1))
+        time.sleep(0.5)
+        p = panel_read(s)
+        ok &= check("silent hours: dark", b"Backlight 0%, silent mode" in p)
+        b1 = bands(p)
+        ok &= check("the hours ran out", wait_minute_turn(s))
+        time.sleep(1.0)
+        p = panel_read(s)
+        ok &= check("lit again at its own setting, no restart", b"lit" in p and want in p)
+        # The glass is 172 x 320 and a band 5,120 pixels: eleven at least.
+        ok &= check("after the whole glass went out again", bands(p) - b1 >= 11)
+        ok &= check("and the header's blue is on it", shot_bar() == (24, 44, 120))
+    top_config(s, silent_from=None, silent_until=None)
+    s.close()
+    return ok
 
 
 def test_board_s3():
@@ -12144,12 +12469,12 @@ ORDER_NAMES = [
     "test_operator", "test_operator_ends", "test_notices_in_places",
     "test_operator_notes", "test_ring_mail", "test_sysop_account",
     "test_config_parser_rules", "test_config_guards", "test_config_semicolon",
-    "test_config_timezone", "test_config_cycle_numbers",
+    "test_config_timezone", "test_config_cycle_numbers", "test_config_silent",
     "test_config_sd_plugin",
     "test_config_lights", "test_config_lights_ascii", "test_lights_frames", "test_lights_manual",
-    "test_lights_count", "test_lights_order", "test_lights_wifi", "test_version_shown",
+    "test_lights_count", "test_lights_order", "test_lights_wifi", "test_lights_silent", "test_version_shown",
     # SKIPs on the reference board: tools/harness.sh --board s3 runs it.
-    "test_board_s3",
+    "test_board_s3", "test_board_s3_silent",
     "test_config_wifi_live", "test_config_network", "test_config_announce_outside",
     "test_config_wifi_fallback", "test_boot_hold",
     "test_boot_hold_write_fails", "test_boot_hold_factory_fails", "test_sysop_spelled_default",
@@ -13436,7 +13761,7 @@ def test_forms_wide():
     read_list(s)
     rows = [ln for ln in render_lines(s.buf) if "landing" in ln]
     ok &= check("the page list is indented under its title, and not clipped at 80",
-                bool(rows) and rows[0].startswith(" board ") and rows[0].rstrip().endswith("landing"))
+                bool(rows) and rows[0].startswith(" board ") and rows[0].rstrip().endswith("landing, silent"))
     s.close()
 
     # The sign-up form: its Profile is two rows of 74, so the form ends two

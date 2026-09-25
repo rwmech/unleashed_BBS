@@ -272,7 +272,7 @@ All caller commands still work. Node arguments are `1`-`10`, `S` (sysop node) or
 | `LURK` | `HIDE` | Toggle lurking: hidden from WHO and pages refused. |
 | `BANS` | `BANS` | Active IP bans and minutes remaining. |
 | `PLUGINS` | any staff | Every plugin compiled in: version, whether it is running, and why not. Also free disk space and the reserve. |
-| `SYS` | any staff | The whole board on one screen, in groups: network (SSID, signal in dBm with a word for what it means, channel, address, port), memory (heap free, the lowest it has been, the biggest block, session size), storage (used, free, what is held back for the board), load (uptime, why the board last restarted, clock, scheduler work per pass in microseconds, worst pass **and which phase of the loop it happened in**, how many passes have run over 50 ms since boot, passes since boot) and traffic (nodes busy and the peak, calls answered since boot, records in the caller log, plugins running, active IP bans). Any staff level can run it, though it is grouped with the sysop tools below. |
+| `SYS` | any staff | The whole board on one screen, in groups: network (SSID, signal in dBm with a word for what it means, channel, address, port), memory (heap free, the lowest it has been, the biggest block, session size), storage (used, free, what is held back for the board), load (uptime, why the board last restarted, clock, whether the board is in silent mode and why, scheduler work per pass in microseconds, worst pass **and which phase of the loop it happened in**, how many passes have run over 50 ms since boot, passes since boot) and traffic (nodes busy and the peak, calls answered since boot, records in the caller log, plugins running, active IP bans). Any staff level can run it, though it is grouped with the sysop tools below. |
 | `FILES` / `F` | all | **Goes into the file area**, the way `CHAT` goes into the room, rather than printing a list and returning. A screen plays on the way in if the board has `screens/files`, then the areas appear as a numbered menu laid out in as many columns as the terminal has room for. A digit opens an area (`0` is ten), `Q` goes back one level and `Q` again leaves. An area numbered past 10, which only the sysop's Backups is today, is `#`, the number and Enter at the menu (1.1.0), or the cursor keys. `FILES n` enters and opens that area in one go. Only on a board with a card: the plugin does not start without one, so on a cardless board the command does not exist rather than offering an empty file area. |
 | `FORUMS` | all | **Goes into the message boards**, the way `FILES` and `CHAT` go into theirs. Three levels: topic areas the sysop sets up (`CONFIG forums`), subjects that callers start inside them, and the messages in each subject. A screen plays on the way in if the board has `screens/forums`. Only on a board with a card, the same as `FILES`: the plugin does not start without one, so on a cardless board the command does not exist rather than offering empty boards. `FORUMS SCAN` needs the forums plugin's admin level (`co1` by default) and prints what the board thinks is on the card. |
 | `SD` | sysop | SD card status: type, mount point, free space, and where screens are coming from. With no card it says which pins it tried, because "no card found" without them sends you to re-seat a card that was never the problem. |
@@ -370,7 +370,7 @@ outside it and no way to approve a file that is waiting somewhere else.
 | Command | What it does |
 |---|---|
 | `ANNOUNCE` | Whether this board is listed in a directory, when each one last answered, and the public address the directory sees. `ANNOUNCE TEST` prints the exact payload and sends nothing; `ANNOUNCE NOW` sends a heartbeat immediately. Off until switched on: see [ANNOUNCE.md](ANNOUNCE.md). |
-| `LIGHTS` | The lights plugin's two outputs: each one's pin, effect, brightness and colour order, and the colours it was last sent, in hex. `LIGHTS TEST` shows red, green, blue and then white on every pixel, a second each, for checking the wiring and the order. Off until switched on (on as shipped on the Waveshare S3): see `lights` under Plugins below. |
+| `LIGHTS` | The lights plugin's two outputs: each one's pin, effect, brightness and colour order, and the colours it was last sent, in hex. `LIGHTS TEST` shows red, green, blue and then white on every pixel, a second each, for checking the wiring and the order. In silent mode every pixel is dark, the title says `silent` and `LIGHTS TEST` is refused. Off until switched on (on as shipped on the Waveshare S3): see `lights` under Plugins below. |
 | `PANEL` | Boards with a display only (the Waveshare ESP32-S3-LCD-1.47): what the panel is running on (controller, size and offsets as turned, where the USB plug is, pins, SPI clock) and everything it is showing, as text, top to bottom: the bar's current page, the band's glyphs in words, the antenna's fill, the clock, the heading, each list row (a recent row as `login`, `guest`, `logoff`, `page` or `ring`, then its time and handle), the system row, and the number of LEDs in its strip. `Dark:` and why, when it is not lit. See `panel` under Plugins below. |
 | `SHUTDOWN [n]` | Take the board off the air on purpose. Announces to every node, counts down n seconds (5 to 3600, default 60), then hangs up on everyone including you, each with the ordinary send-off. `SHUTDOWN CANCEL` stops a countdown and says so. Afterwards the board keeps answering and tells callers it has been shut down, rather than refusing connections in a way that looks like a crash. A physical reboot brings it back. Any transfer running when the countdown ends is lost, and the warning says so. |
 | `BACKUP SD` | The zip the backup window gives, onto the SD card: `unleashed-YYYYMMDD-HHMM.zip` in the card's `backup` folder, with a dot a file while it writes and then `Saved: 14 files, 31 KB.` It holds the Wi-Fi password as typed, and says so. `BACKUP SD SCREENS` writes `screens-YYYYMMDD-HHMM.zip`, the screens alone. Two in one minute would share a name, so the second is refused. `BACKUP` on its own explains the difference from the backup window (1.1.0). |
@@ -494,6 +494,9 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `who_refresh_min` | `1` | lowest `WHO n` / `DASH n` refresh, seconds |
 | `who_refresh_max` | `30` | highest `WHO n` / `DASH n` refresh, seconds |
 | `activity_led_gpio` | `2` | The board's own LED, which blinks on network traffic (the blue LED on DOIT-style boards), not a pixel; -1 = none. `Onboard LED GPIO` on `CONFIG board`, `Board LED` at 40 columns. Refused: 6 to 11 (flash) and pins the chip does not have (20, 24, 28 to 31 on the WROOM), and on `CONFIG board` a pin something else holds |
+| `silent` | `no` | `yes`: silent mode, every light the firmware drives off and kept off (1.1.0, `CONFIG board`, **Silent: lights off**, `Silent` at 40 columns). See "Silent mode" under this table |
+| `silent_from` | empty | silent hours start, `HH:MM` local by `tz`, 00:00 to 23:59; empty for none. `Silent hours from`, `Silent at` at 40 columns |
+| `silent_until` | empty | and end: the lights are back at this time. Both or neither: a file that sets one end, or the same time twice, is read as no hours and says so on the console, and `CONFIG` refuses it. May be earlier than `silent_from`, which crosses midnight (22:00 to 07:00) |
 | `self_register` | `yes` | `no`: unknown handles can't sign up, staff add accounts |
 | `max_users` | `250` | account limit, 1..250. Not a space limit: `userdata` holds roughly 1,380 accounts. The cap is that the list indices are `uint8_t`, which reaches into every list on the board, so raising it is its own piece of work. The SD card does not help and is not meant to: accounts stay on internal flash so they survive the card failing. |
 | `guest` | `yes` | `no`: unknown handles are not offered `[G]uest` |
@@ -508,6 +511,43 @@ A TZ string is the POSIX form the board's C library reads. It starts with the zo
 If your place is not in the list, a Linux computer can tell you its string: `tail -n 1 /usr/share/zoneinfo/Europe/Paris`, with your own area and city, prints it. The answer is only as current as that computer's time zone data, and the rules do change: British Columbia, Alberta and the Northwest Territories all stopped changing their clocks in 2026, and lists of these strings made before then give the old rules. If your government changes the rules, type the new string as Custom; the board does not update its list by itself.
 
 The list is 34 zones and Custom, in `src/core/tzones.h`. A `tz` in the file that is exactly one of their strings opens as that zone's name; anything else opens as Custom with the string. Picking a zone writes its string into the row below, and typing into the string makes the zone Custom.
+
+**Silent mode** (1.1.0, `CONFIG board`): every light the firmware drives goes
+off and stays off, with nothing flashing. That is the activity LED, both of
+the lights plugin's outputs (the drive light and the strip), the display
+panel's backlight on a board with one, the camera's flash, and any LED a
+board profile drives. It is an override, not a change to any of them: each
+keeps its own settings, and when silent ends each carries on as it was. The
+panel keeps its picture's state and draws the whole glass again before it
+lights. `LIGHTS` says `silent` in its title and `LIGHTS TEST` is refused;
+`PANEL` says `silent` and `Backlight 0%, silent mode`.
+
+- **Silent** (`silent`) is the switch.
+- **Silent hours** (`silent_from`, `silent_until`) make it silent every day
+  between two times, local by the Timezone above. The start is silent and
+  the end is lit again, so 22:00 to 07:00 is dark from 22:00 and lit at
+  07:00. They need the clock: until NTP has set it the hours do nothing and
+  only the switch applies. With both set, the switch wins.
+- `SYS` says whether the board is silent and why, on its own row under the
+  clock: `on switch`, `on hours until 07:00` (`hrs until` at 40 columns),
+  `off hours from 22:00`, or `off hours need clock`. The console logs each
+  change.
+- The switch takes effect as the page is saved; the hours are checked once
+  a second. After a restart inside silent hours the lights come on until
+  NTP has set the clock (seconds on a board with internet, and all night on
+  one without), because until then the board does not know it is night. The
+  switch has no such gap.
+- A time in the file that is not `HH:MM` is read as no time and the console
+  says so; `CONFIG` refuses it.
+- One exception: holding BOOT after a reset (see "Resetting the board" in
+  README.md) still shows its stages on the activity LED, because somebody
+  standing at the board holding the button asked to see them.
+
+**The power LED cannot be switched off.** On every board this firmware
+supports (the WROOM dev boards, the Waveshare S3, the Freenove) the red power
+LED is wired straight to 3V3, with no GPIO in its path, so no firmware and no
+setting can turn it off. A piece of tape over it, or lifting the LED off the
+board, is the only way.
 
 ### Plugins
 
@@ -803,6 +843,9 @@ strip_order  = GRB      ; GRB | RGB | BRG | RBG | GBR | BGR
   last sent, in hex, with the Hayes panel's labels in `hayes`. `LIGHTS TEST`
   shows red, green, blue and then white on every pixel of both, a second
   each; a strip that shows green for red is not a GRB strip.
+- Silent mode (`CONFIG board`, 1.1.0) puts both outputs out and keeps them
+  out, whatever their effects; their settings are untouched and they carry
+  on as they were when it ends. `LIGHTS TEST` is refused while it lasts.
 
 **Manual mode.** `CONFIG lights` has a Pixels button. It opens a list of
 sixteen pixels, and each of those opens a page of two rows (Escape goes
@@ -881,6 +924,10 @@ phone's status bar over two lists, top to bottom:
   colours at the same length, whether or not a strip is wired. A dimmed
   strip is drawn brighter than its figures would make it, because 10% on
   glass is a black a person reads as off.
+
+In silent mode (`CONFIG board`, 1.1.0) the backlight goes off and nothing is
+sent to the glass; when it ends the whole glass is drawn again, with what
+happened meanwhile, and lit at its own Bright % once all of it is out.
 
 Hidden and lurking staff never appear in the lists or as an event, and do
 not light the person glyph. The letter follows the sysop's account, which

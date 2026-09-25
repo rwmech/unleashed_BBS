@@ -46,6 +46,7 @@
 #include "sysconfig.h"
 #include "calllog.h"
 #include "plugin.h"
+#include "silent.h"
 #include "../platform/platform.h"
 
 #include <climits>
@@ -2587,8 +2588,38 @@ bool Bbs::rowSys(Session& s) {
             statRow(s, "Clock", when, Color::White, clk::valid() ? nullptr : "not set");
             return true;
         }
-        case 21: statNum(s, "Loop avg", loopAvgUs_, "us of work"); return true;
-        case 22: {
+        case 21: {
+            // Silent mode (1.1.0, core/silent), and why: the switch, or the
+            // hours and when they end. Off says when the hours start, or
+            // that they are waiting for the clock. The note starts at column
+            // 23, so at 40 columns it has 16: "hours until 07:00" is 17 and
+            // says "hrs" there rather than wrap.
+            const SysConfig& c = syscfg::get();
+            const bool hours = c.silentFrom >= 0 && c.silentUntil >= 0;
+            char at[6], note[24];
+            switch (board::silentWhy()) {
+                case board::Quiet::Switch:
+                    statRow(s, "Silent", "on", Color::Yellow, "switch");
+                    break;
+                case board::Quiet::Hours:
+                    board::fmtTime(c.silentUntil, at, sizeof(at));
+                    snprintf(note, sizeof(note), "%s until %s", rowWidth(s) >= 40 ? "hours" : "hrs", at);
+                    statRow(s, "Silent", "on", Color::Yellow, note);
+                    break;
+                default:
+                    if (hours && clk::valid()) {
+                        board::fmtTime(c.silentFrom, at, sizeof(at));
+                        snprintf(note, sizeof(note), "hours from %s", at);
+                        statRow(s, "Silent", "off", Color::LightGreen, note);
+                    } else {
+                        statRow(s, "Silent", "off", Color::LightGreen, hours ? "hours need clock" : nullptr);
+                    }
+                    break;
+            }
+            return true;
+        }
+        case 22: statNum(s, "Loop avg", loopAvgUs_, "us of work"); return true;
+        case 23: {
             // The worst pass says which phase owned it. Without that a stall
             // is a bare number and the investigation starts with a guess,
             // which is exactly how the last one was got wrong.
@@ -2606,8 +2637,8 @@ bool Bbs::rowSys(Session& s) {
             statNum(s, "Loop worst", loopMaxUs_, note);
             return true;
         }
-        case 23: statNum(s, "Loop passes", loopPasses_, nullptr); return true;
-        case 24:
+        case 24: statNum(s, "Loop passes", loopPasses_, nullptr); return true;
+        case 25:
             // How many, not just how bad. One stall at boot and a stall every
             // minute look identical on a high-water mark.
             statNum(s, "Slow passes", slowCount_, "over 50ms");
@@ -2636,20 +2667,20 @@ bool Bbs::rowSys(Session& s) {
             }
             return true;
 
-        case 25: rowSection(s, "traffic"); return true;
-        case 26:
+        case 26: rowSection(s, "traffic"); return true;
+        case 27:
             snprintf(num, sizeof(num), "%u", static_cast<unsigned>(activeNodes()));
             snprintf(buf, sizeof(buf), "of %u, peak %u", static_cast<unsigned>(BBS_MAX_NODES),
                      static_cast<unsigned>(peakNodes_));
             statRow(s, "Nodes busy", num, Color::LightGreen, buf);
             return true;
-        case 27: statNum(s, "Calls", callsBoot_, "since boot"); return true;
-        case 28:
+        case 28: statNum(s, "Calls", callsBoot_, "since boot"); return true;
+        case 29:
             snprintf(num, sizeof(num), "%u", static_cast<unsigned>(calllog::count()));
             snprintf(buf, sizeof(buf), "of %u kept", static_cast<unsigned>(BBS_CALLLOG_SIZE));
             statRow(s, "Log", num, Color::LightGreen, buf);
             return true;
-        case 29: {
+        case 30: {
             uint8_t run = 0;
             for (uint8_t k = 0; k < plugins::count(); ++k) if (plugins::running(k)) ++run;
             snprintf(num, sizeof(num), "%u", static_cast<unsigned>(run));
@@ -2657,7 +2688,7 @@ bool Bbs::rowSys(Session& s) {
             statRow(s, "Plugins", num, Color::LightGreen, buf);
             return true;
         }
-        case 30: {
+        case 31: {
             uint8_t live = 0;                                  // only the bans still running
             BanList::Entry e;
             for (uint8_t k = 0; k < BBS_BAN_SLOTS; ++k) if (bans_.at(k, plat::millis(), e)) ++live;
@@ -2665,8 +2696,8 @@ bool Bbs::rowSys(Session& s) {
             return true;
         }
 
-        case 31: rowRule(s); return true;
-        case 32: rowText(s, Color::DarkGrey, "CALLS shows the board hour by hour"); return true;
+        case 32: rowRule(s); return true;
+        case 33: rowText(s, Color::DarkGrey, "CALLS shows the board hour by hour"); return true;
         default: return false;
     }
 }

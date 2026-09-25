@@ -487,6 +487,13 @@ bool bootButtonDown(uint32_t now);
 // set up yet, and applied when activityLedBegin runs.
 void ledOverride(int8_t state);
 
+// ledSilent: silent mode (1.1.0, core/silent). While it is on, traffic and
+// ledSignal leave the activity LED dark, and it is put out at once. Off hands
+// it back to traffic, dark until the next pulse. ledOverride outranks it: the
+// BOOT-hold watch shows its stages to the person holding the button, who is
+// standing at the board and asked. Remembered if the LED is not set up yet.
+void ledSilent(bool on);
+
 // factoryErase: erase the userdata and logs partitions, whole. Never the
 // screens partition, the firmware or the SD card. The board is to restart
 // straight after, and the mount at boot formats what it finds erased. False

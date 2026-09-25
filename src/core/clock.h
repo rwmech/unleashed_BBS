@@ -61,6 +61,11 @@ int16_t utcOffset();
 
 uint32_t todayStart();
 
+// minuteOfDay: minutes since local midnight (0 to 1439), by the board's
+// timezone, or -1 when the clock has not been set. Silent hours ask it once
+// a second at most (core/silent).
+int16_t minuteOfDay();
+
 // dayKey: local calendar day (YYYYDDD). Before NTP sync, a day number
 // derived from uptime so daily limits still reset.
 uint32_t dayKey(uint32_t millisNow);

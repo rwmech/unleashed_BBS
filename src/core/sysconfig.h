@@ -31,6 +31,9 @@
  *                  wifi_ssid              the network to join, applies at boot
  *                  wifi_password          its passphrase (kept in a backup, which
  *                                         only a local address can download)
+ *                  silent                 yes: every light the firmware drives off
+ *                  silent_from            silent hours start, HH:MM local, blank none
+ *                  silent_until           and end; both or neither, needs NTP
  *
  *                  The password keys and wifi_ssid take the rest of the line
  *                  as it stands: a '#' there is part of the value, because a
@@ -147,6 +150,12 @@ struct SysConfig {
     uint16_t backupPort    = BBS_BACKUP_PORT;
     uint16_t backupMinutes = BBS_BACKUP_MINUTES;
     int8_t   backupGpio    = BBS_BACKUP_GPIO;
+    // Silent mode (1.1.0, core/silent): every light off. The switch, and the
+    // silent hours as minutes since local midnight, -1 for none. Both ends
+    // or neither: a file that sets one is read as none.
+    bool     silent        = false;
+    int16_t  silentFrom    = -1;
+    int16_t  silentUntil   = -1;
     bool     fromFile      = false;
 };
 

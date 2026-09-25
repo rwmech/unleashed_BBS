@@ -46,6 +46,7 @@
 #include "calllog.h"
 #include "plugin.h"
 #include "recovery.h"
+#include "silent.h"
 #include "../plugins/chat.h"
 #include "../platform/platform.h"
 
@@ -468,6 +469,7 @@ void Bbs::tick() {
     usPlug = plat::micros() - mark; mark += usPlug;
 
     plat::activityTick(now);
+    board::silentTick(now);          // the switch and the hours: a compare, and a look once a second
     heapWatch(now);
     serviceShutdown(now);
     serviceRing(now);

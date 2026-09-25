@@ -49,6 +49,7 @@
 #include "plugin.h"
 #include "sysconfig.h"
 #include "tzones.h"
+#include "silent.h"
 #include "../platform/platform.h"
 // CONFIG draws the lights' pixel pages from the plugin's own word lists,
 // the way it already knows the file areas' and the forums' packed formats.
@@ -941,6 +942,24 @@ const CfgField kBoard[] = {
       "Missed pages are mailed to this one.",
       "Sysop's account",
       "Missed pages are mailed here; it is asked for the sysop password at login." },
+    // Silent mode (1.1.0, Rob: "Silent as in no lights anywhere"): every
+    // light the firmware drives, off, overriding their own settings without
+    // touching them. The power LED is on 3V3 on every board this knows, so
+    // the note says what firmware cannot do. The hours are a time of day or
+    // blank, both or neither, by the Timezone above; the parser checks them
+    // (syscfg::trial), and they wait for the clock.
+    { "silent",            "Silent",    CK_YESNO, 0, 0, 4,
+      "Every light off. Not the power LED.",
+      "Silent: lights off",
+      "Every LED and pixel dark, the panel too. The power LED is on 3V3: tape it." },
+    { "silent_from",       "Silent at", CK_TEXT,  0, 0, 5,
+      "HH:MM, local. Blank: no silent hours.",
+      "Silent hours from",
+      "Silent every day from this time, HH:MM local. Blank for none. Needs the clock." },
+    { "silent_until",      "Silent to", CK_TEXT,  0, 0, 5,
+      "HH:MM local. Lights back at this time.",
+      "Silent hours until",
+      "Lights back at this time, HH:MM local. After midnight is fine: 22:00 to 07:00." },
 };
 
 const CfgField kLimits[] = {
@@ -1015,7 +1034,7 @@ struct CfgPage {
     { name, title, what, arr, static_cast<uint8_t>(sizeof(arr) / sizeof((arr)[0])) }
 
 const CfgPage kPages[] = {
-    CFG_PAGE("board",    "BOARD",           "name, clock, idle, LED, landing", kBoard),
+    CFG_PAGE("board",    "BOARD",           "name, clock, LED, landing, silent", kBoard),
     CFG_PAGE("limits",   "TIME LIMITS",     "minutes per call and per day",    kLimits),
     CFG_PAGE("accounts", "ACCOUNTS",        "sign-ups and guest calls",        kAccounts),
     CFG_PAGE("backup",   "BACKUP WINDOW",   "port, how long it stays open",    kBackup),
@@ -1334,6 +1353,9 @@ void cfgLiveValue(const char* key, char* out, size_t n) {
     else if (!strcmp(key, "landing"))               snprintf(out, n, "%s", users::landKey(c.landing));
     else if (!strcmp(key, "sysop_handle"))          snprintf(out, n, "%s", c.sysopHandle);
     else if (!strcmp(key, "activity_led_gpio"))     snprintf(out, n, "%d", c.ledGpio);
+    else if (!strcmp(key, "silent"))                snprintf(out, n, "%s", c.silent ? "yes" : "no");
+    else if (!strcmp(key, "silent_from"))           board::fmtTime(c.silentFrom, out, n);
+    else if (!strcmp(key, "silent_until"))          board::fmtTime(c.silentUntil, out, n);
     else if (!strcmp(key, "call_minutes"))          snprintf(out, n, "%u", c.callMinutes);
     else if (!strcmp(key, "day_minutes"))           snprintf(out, n, "%u", c.dayMinutes);
     else if (!strcmp(key, "who_refresh_min"))       snprintf(out, n, "%u", c.whoMin);
@@ -2195,6 +2217,14 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
     // no key to its WPA2 network at the next restart. The verdict says so
     // in words, while there is still time to open the page and put it back.
     bool nowOpen = false;
+    // Silent hours are one setting in two keys (1.1.0). A change to either
+    // sends both to the parser: a file holding only one end is read as no
+    // hours, and the form, which shows the file, would otherwise refuse the
+    // end being added with "set both" while the other end sits on screen.
+    bool hoursTouched = false;
+    for (uint8_t i = 0; core && i < count; ++i)
+        if (!strncmp(g_cfgPage->fields[i].key, "silent_", 7) && bbsu::hash(g_cfgBuf[i]) != g_cfgWas[i])
+            hoursTouched = true;
     if (ssidAt >= 0 && passAt >= 0) {
         const char* ssid = g_cfgBuf[ssidAt];
         const char* pass = g_cfgBuf[passAt];
@@ -2234,6 +2264,7 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
         // before anything compares it, so a tidy-up alone writes nothing.
         if (core && !strcmp(f.key, "hostname")) syscfg::normaliseHostname(v);
         bool pairWith = static_cast<int>(i) == ssidAt && passWritten;
+        if (hoursTouched && !strncmp(f.key, "silent_", 7)) pairWith = true;
         if (bbsu::hash(v) == g_cfgWas[i] && !pairWith) continue;     // nothing to write
         if (!*v && (f.kind == CK_YESNO || f.kind == CK_LEVEL || f.kind == CK_CYCLE)) continue;
         // A cycle holds one of its words, but plain ASCII line mode types

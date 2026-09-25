@@ -411,6 +411,9 @@ void ledSignal(uint32_t, uint32_t) {}   // no LED on a PC
 // No LED either. main_host traces the watch's pattern (recovery::bootLed)
 // instead, which is the part worth checking: what the LED was told.
 void ledOverride(int8_t) {}
+// Silent mode reaches the LED through here on the board. Nothing to put out
+// on a PC; SYS says whether the board is silent, which is what is tested.
+void ledSilent(bool) {}
 
 // ---------------------------------------------------------------------------
 // diskPulse: a time and a count, exactly as on the board.
@@ -514,6 +517,7 @@ uint8_t pixelsFrame(uint8_t out, uint8_t* rgb, uint8_t cap) {
 namespace {
 LcdCfg              g_lcdCfg;
 bool                g_lcdUp = false;
+uint8_t             g_lcdBl = 0;        // the backlight as last set, percent (hostLcdBacklight)
 std::vector<uint16_t> g_glass;
 }
 
@@ -525,6 +529,7 @@ bool lcdBegin(const LcdCfg& c, char* err, size_t errLen) {
     }
     g_lcdCfg = c;
     g_lcdUp  = true;
+    g_lcdBl  = c.backlight;
     g_glass.assign(static_cast<size_t>(c.width) * c.height, 0);
     log("panel: ST7789 %ux%u, rotation %u, %u MHz (host glass)", static_cast<unsigned>(c.width),
         static_cast<unsigned>(c.height), static_cast<unsigned>(c.rotation), static_cast<unsigned>(c.mhz));
@@ -541,6 +546,7 @@ bool lcdSame(const LcdCfg& c) {
 
 void lcdEnd() {
     g_lcdUp = false;
+    g_lcdBl = 0;
     g_lcdCfg = LcdCfg();
     g_glass.clear();
 }
@@ -558,7 +564,7 @@ bool lcdDraw(const uint16_t* fb, uint16_t stride, uint16_t x, uint16_t y, uint16
     return true;
 }
 
-void lcdBacklight(uint8_t) {}
+void lcdBacklight(uint8_t pct) { g_lcdBl = g_lcdUp ? pct : 0; }
 
 void* psramAlloc(size_t n) { return malloc(n); }
 void  psramFree(void* p)  { free(p); }
@@ -696,6 +702,13 @@ bool inflateRaw(InflateIn in, InflateOut out, void* ctx) {
 } // namespace plat
 
 #ifdef BBS_HAS_LCD
+// hostLcdBacklight: the backlight as the panel last set it, percent, 0 dark.
+// PANEL reports it on the host, so a test sees what the glass was told
+// rather than what the plugin meant to tell it (silent mode, 1.1.0).
+int hostLcdBacklight() {
+    return plat::g_lcdUp ? plat::g_lcdBl : 0;
+}
+
 // hostPanelShot: the host's glass as a binary PPM, 8 bits a channel, for a
 // person to look at (PANEL SHOT). Relative paths land in the data folder.
 bool hostPanelShot(const char* path) {
