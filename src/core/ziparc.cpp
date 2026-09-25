@@ -1352,7 +1352,24 @@ bool ZipImport::applyItem(Item& it) {
         bool ok = in && out;
         char line[176], merged[176];
         unsigned dropped = 0;
+        // The closed state (1.1.0) is the board's, like the passwords a
+        // redacted line keeps: a backup from before 1.1.0 has no closed line,
+        // and read without one a board with its own password is open. So a
+        // file that does not say is given the live state, above its first
+        // section, and a restore never opens or shuts a board by itself.
+        bool closedSaid = false, inTop = true;
+        const char* closedLine = syscfg::get().closed ? "closed = yes\n" : "closed = no\n";
         while (ok && fgets(line, sizeof(line), in)) {
+            const char* p = line;
+            while (*p == ' ' || *p == '\t') ++p;
+            if (inTop && *p == '[') {
+                inTop = false;
+                if (!closedSaid) { ok = fputs(closedLine, out) >= 0; closedSaid = true; }
+            } else if (inTop && !strncmp(p, "closed", 6)) {
+                const char* q = p + 6;
+                while (*q == ' ' || *q == '\t') ++q;
+                if (*q == '=') closedSaid = true;
+            }
             const char* text = line;
             if (syscfg::unredactLine(line, merged, sizeof(merged))) {
                 if (!merged[0]) {                      // the published password: left out
@@ -1370,6 +1387,7 @@ bool ZipImport::applyItem(Item& it) {
             }
             ok = fputs(text, out) >= 0;
         }
+        if (ok && !closedSaid) ok = fputs(closedLine, out) >= 0;
         if (in)  fclose(in);
         if (out && fclose(out) != 0) ok = false;
         if (dropped)                                        // never the value, only that it happened

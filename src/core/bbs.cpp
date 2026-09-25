@@ -1176,8 +1176,68 @@ void Bbs::onDetected(Session& s, uint32_t now) {
         const Plugin* p = plugins::at(i);
         if (plugins::running(i) && p->onConnect) p->onConnect(s);
     }
-    if (s.role == Role::Busy) startBusy(s, now);
-    else                      startIntro(s);
+    // A closed board (1.1.0) shows every caller the busy line's sign, in
+    // the closed wording, unless it has no accounts at all: then this is
+    // the first caller on a fresh board, who registers and runs it.
+    if (s.role == Role::Busy || (closedTo(s) && users::count() > 0)) startBusy(s, now);
+    else                                                              startIntro(s);
+}
+
+// ---------------------------------------------------------------------------
+// closedTo: this caller meets the closed board (1.1.0). A caller's line not
+// yet logged in, on a board CONFIG board has closed. The busy line is its
+// own thing and keeps its own rules, and a caller already on stays on.
+// ---------------------------------------------------------------------------
+bool Bbs::closedTo(const Session& s) const {
+    return s.role == Role::Caller && !s.loggedIn && syscfg::get().closed;
+}
+
+namespace {
+// The fallback's pass: the lowest live id, and whether the id asked about
+// is an account the sysop password marked. A restore can replace users.txt
+// and take sysop.last with it, and a backup from before 1.1.0 names no
+// sysop_id: the mark travels in users.txt, so it survives both.
+struct ClosedFind {
+    uint32_t id;
+    uint32_t first  = 0;
+    bool     marked = false;      // some live account carries the sysop mark
+    bool     idMarked = false;    // and the one asked about is one of them
+};
+void closedFindRow(void* ctx, uint8_t, const UserRec& u) {
+    ClosedFind& f = *static_cast<ClosedFind*>(ctx);
+    if (u.retired || !u.id) return;
+    if (!f.first || u.id < f.first) f.first = u.id;
+    if (u.level >= static_cast<uint8_t>(Access::Sysop)) {
+        f.marked = true;
+        if (u.id == f.id) f.idMarked = true;
+    }
+}
+} // namespace
+
+// ---------------------------------------------------------------------------
+// closedAdmits: the account a closed board lets log in (1.1.0, Rob).
+// The sysop's account, as CONFIG board names it or the last to elevate
+// names it (sysopAccount); with neither, an account the sysop password
+// marked; with none of those, the first account, the one that registered
+// on the fresh board and is on its way through setup. A pass or two over
+// users.txt, at a login on a closed board only.
+// ---------------------------------------------------------------------------
+bool Bbs::closedAdmits(uint32_t id) {
+    if (!id) return false;
+    UserRec u;
+    if (sysopAccount(u)) return u.id == id;
+    ClosedFind f;
+    f.id = id;
+    users::range(0, 255, closedFindRow, &f);
+    return f.marked ? f.idMarked : f.first == id;
+}
+
+// closedRefuse: the same words for a handle that exists and one that does
+// not, so a closed board says nothing about who has an account on it.
+void Bbs::closedRefuse(Session& s, uint32_t now) {
+    s.user[0] = '\0';
+    plat::log("bbs: node %u login refused, the board is closed", s.id);
+    hangup(s, "Closed by the sysop. Call again later.", now);
 }
 
 // ---------------------------------------------------------------------------
@@ -1226,6 +1286,26 @@ void Bbs::startBusy(Session& s, uint32_t now) {
     t.init(tl);
     s.st        = SState::BusyWait;
     s.countdown = 0xFF;                       // not started until the screen ends
+    if (closedTo(s)) {
+        // The closed board (1.1.0): the busy line's sign and countdown in the
+        // closed wording. screens/closed.* when a sysop has drawn one; the
+        // words below otherwise. The last line is for the sysop, who may not
+        // know their own board's closed sign has a door in it.
+        if (s.scr.open("closed", t)) return;
+        t.color(tl, Color::White);
+        t.text(tl, BBS_NAME);
+        t.nl(tl);
+        t.color(tl, Color::LightRed);
+        t.text(tl, "Closed by the sysop for now.");
+        t.nl(tl);
+        t.color(tl, Color::Grey);
+        t.text(tl, "Please try your call later.");
+        t.nl(tl);
+        t.color(tl, Color::DarkGrey);
+        t.text(tl, "The sysop's account: any key logs in.");
+        t.nl(tl);
+        return;
+    }
     if (!s.scr.open("busy", t)) {
         t.color(tl, Color::White);
         t.text(tl, BBS_NAME);
@@ -1267,7 +1347,10 @@ void Bbs::armName(Session& s) {
 void Bbs::loginHint(Session& s) {
     const SysConfig& cfg = syscfg::get();
     const char* hint = nullptr;
-    if (cfg.guestEnabled && cfg.selfRegister) hint = "New? Type a handle to join or visit.";
+    // A closed board only reaches here with no accounts (onDetected): its
+    // first caller, who registers and runs it. No guests on a closed board.
+    if (closedTo(s))                          hint = "New board: type a handle to set it up.";
+    else if (cfg.guestEnabled && cfg.selfRegister) hint = "New? Type a handle to join or visit.";
     else if (cfg.guestEnabled)                hint = "New? Type a handle to visit as a guest.";
     else if (cfg.selfRegister)                hint = "New? Type a handle to join.";
     if (!hint) return;
@@ -1353,6 +1436,8 @@ void Bbs::onHandle(Session& s, uint32_t now) {
     }
     if (found == users::Lookup::Found) {
         strncpy(s.user, s.edit.handle, BBS_USER_MAX);   // the account's own spelling
+        // Before the lock checks, which would say the handle exists.
+        if (closedTo(s) && !closedAdmits(s.edit.id)) { closedRefuse(s, now); return; }
         if (s.edit.locked) {
             plat::log("bbs: node %u locked account '%s'", s.id, s.user);
             hangup(s, "This account is locked. Ask the sysop.", now);
@@ -1368,14 +1453,19 @@ void Bbs::onHandle(Session& s, uint32_t now) {
 
     // unknown handle
     const SysConfig& cfg = syscfg::get();
+    // Closed (1.1.0): nobody new, except the first caller on a board with no
+    // accounts yet, who may register (sign-ups off or not) and never visit.
+    const bool closed = closedTo(s);
+    if (closed && users::count() > 0) { closedRefuse(s, now); return; }
+    const bool guestOk = cfg.guestEnabled && !closed;
     if (handleOnline(s, name)) {                     // a guest is already using it
         s.user[0] = '\0';
         inputError(s, kPromptLen, "That handle is online right now.", "Handle in use");
         armName(s);
         return;
     }
-    bool canRegister = cfg.selfRegister && users::count() < cfg.maxUsers;
-    if (!canRegister && !cfg.guestEnabled) {
+    bool canRegister = (cfg.selfRegister || closed) && users::count() < cfg.maxUsers;
+    if (!canRegister && !guestOk) {
         s.user[0] = '\0';
         if (cfg.selfRegister) inputError(s, kPromptLen, "Sign-ups are closed: the BBS is full.", "BBS is full");
         else                  inputError(s, kPromptLen, "No account. The sysop creates accounts here.", "No such account");
@@ -1393,7 +1483,7 @@ void Bbs::onHandle(Session& s, uint32_t now) {
     t.nl(tl);                                        // a beat before the question
     t.nl(tl);
     t.color(tl, Color::Yellow);
-    if (canRegister && cfg.guestEnabled) t.text(tl, "[R]egister, [G]uest or [N]ew handle? ");
+    if (canRegister && guestOk)          t.text(tl, "[R]egister, [G]uest or [N]ew handle? ");
     else if (canRegister)                t.text(tl, "[R]egister or [N]ew handle? ");
     else                                 t.text(tl, "[G]uest or [N]ew handle? ");
     t.color(tl, Color::White);
@@ -1408,9 +1498,14 @@ void Bbs::onNewHandle(Session& s, int k, uint32_t now) {
     Term& t = s.term;
     Timeline& tl = s.tl;
     const SysConfig& cfg = syscfg::get();
-    bool canRegister = cfg.selfRegister && users::count() < cfg.maxUsers;
+    const bool closed = closedTo(s);                 // the first caller on a closed board
+    if (closed && users::count() > 0 && (k == 'r' || k == 'R')) {   // somebody else got there first
+        closedRefuse(s, now);
+        return;
+    }
+    bool canRegister = (cfg.selfRegister || closed) && users::count() < cfg.maxUsers;
     bool reg   = (k == 'r' || k == 'R') && canRegister;
-    bool guest = (k == 'g' || k == 'G') && cfg.guestEnabled;
+    bool guest = (k == 'g' || k == 'G') && cfg.guestEnabled && !closed;
 
     if ((reg || guest) && handleOnline(s, s.user)) {  // taken while this caller chose
         t.ch(tl, reg ? 'R' : 'G');
@@ -1525,6 +1620,7 @@ void Bbs::onAnyKey(Session& s, uint32_t now) {
     }
     if (then == AfterKey::SignupForm) startForm(s, FormKind::Signup, now);
     else if (then == AfterKey::KnowMore) askKnowMore(s);   // rules read, now the warning
+    else if (then == AfterKey::ConfigClosed) configClosedRow(s, now);   // a closed board's sysop
     else                              prompt(s);
 }
 
@@ -1665,6 +1761,9 @@ void Bbs::onPassword(Session& s, uint32_t now) {
     }
     // s.edit already holds the account: readForLogin copied it there.
 
+    // Closed while this caller typed (1.1.0): the handle was let through
+    // before, and the account is asked again now, before anything is said.
+    if (ok && closedTo(s) && !closedAdmits(s.edit.id)) { closedRefuse(s, now); return; }
     if (ok) {
         logins_.clear(s.user);
         t.color(tl, Color::LightGreen);
@@ -1817,6 +1916,12 @@ void Bbs::completeLogin(Session& s, uint32_t now) {
     snprintf(buf, sizeof(buf), "*** %s is on node %u", s.user, s.id);
     noticeAll(s, buf, BusKind::Arrival);
 
+    // The one account a closed board lets in (closedAdmits) is told so. On
+    // the setup and sysop paths the words that follow say what to do.
+    if (syscfg::get().closed && !s.guest && s.role == Role::Caller) {
+        sayLine(t, tl, Color::Yellow, "This board is closed to callers.");
+        t.nl(tl);
+    }
     if (offerSetup(s)) return;       // asked first; arrive() follows if they skip
     if (offerSysop(s)) return;       // the sysop's account: the password, Enter skips
     arrive(s);
@@ -1869,6 +1974,12 @@ bool Bbs::offerSetup(Session& s) {
     sayLine(t, tl, Color::Grey, wide
         ? "The sysop password is on the install page."
         : "The password is on the install page.");
+    // Before the password step (1.1.0, Rob): the board stays shut to
+    // everybody else until its new sysop opens it, and says where.
+    if (syscfg::get().closed)
+        sayLine(t, tl, Color::Yellow, wide
+            ? "Closed to callers until you open it in CONFIG board."
+            : "Closed to callers till you open it.");
     askSetup(s);
     return true;
 }
@@ -2012,7 +2123,7 @@ void Bbs::onSysopPassword(Session& s, uint32_t now) {
             return;
         }
         s.newAccount = false;
-        elevate(s, now);
+        elevate(s, now, false, true);
         return;
     }
     if (lv != Access::None) {                        // a co-sysop password: BYE takes it too
@@ -2337,7 +2448,8 @@ void Bbs::prompt(Session& s) {
     // @CLS@ would have wiped, at the first prompt once the setup is over.
     if (noticeOwed_ == s.id && !s.setupStage && s.loggedIn) {
         noticeOwed_ = 0xFF;
-        if (bootCrash_ || bootNoted_ || ringNotesWaiting_ || nightlyFail_) {
+        if (bootCrash_ || bootNoted_ || ringNotesWaiting_ || nightlyFail_ ||
+            (syscfg::get().closed && s.level == Access::Sysop)) {
             s.term.reset(s.tl);
             s.term.nl(s.tl);
             staffArrival(s);
@@ -2557,6 +2669,16 @@ void Bbs::staffArrival(Session& s) {
     // Rings nobody answered while the sysop was off (1.1.0), once, then gone.
     if (s.level == Access::Sysop) ringNotes(s);
     nightlyNotice(s);                 // last night's backup, if it did not happen (1.1.0)
+    // A closed board (1.1.0), and how to open it, every time the sysop
+    // arrives: a board shut and forgotten is a board nobody can call.
+    if (s.level == Access::Sysop && syscfg::get().closed) {
+        Term& t = s.term;
+        bool wide = t.cols() >= 60;
+        sayLine(t, s.tl, Color::Yellow, wide ? "This board is closed: callers get a closed sign."
+                                             : "Closed: callers get a closed sign.");
+        sayLine(t, s.tl, Color::Grey, wide ? "To open it, CONFIG board and set Stop taking calls to no."
+                                           : "Open it: CONFIG board, Closed = no.");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3049,6 +3171,10 @@ void Bbs::abortOutput(Session& s) {
     // this, the landing survives the abort and fires on the next screen the
     // caller plays, which reads as the board moving them at random.
     s.pendingLand   = false;
+    // And the setup screen's (1.1.0). Left armed, the next screen the sysop
+    // played, ABOUT or anything, ended by opening CONFIG staff: the setup
+    // coming back at random, long after it was stopped.
+    s.setupStage    = 0;
     s.term.reset(s.tl);
     s.term.cursor(s.tl, true);
     s.term.nl(s.tl);
@@ -3363,7 +3489,9 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
         case SState::BusyWait:
             if (s.scr.active()) { tl.skipDelays(); return; }
             t.nl(tl);
-            s.busyLoginUntil = now + BBS_BUSY_LOGIN_MS;
+            // The busy line's login has a window of its own; a closed
+            // board's caller is on a node, and the login's own clock serves.
+            if (s.role == Role::Busy) s.busyLoginUntil = now + BBS_BUSY_LOGIN_MS;
             askName(s);
             return;
 

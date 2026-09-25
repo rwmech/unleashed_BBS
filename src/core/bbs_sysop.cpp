@@ -362,12 +362,12 @@ bool Bbs::localAddr(const char* ip) {
 // password still gets the old behaviour, so the board never has two sysop
 // sessions open to the outside world at once.
 // ---------------------------------------------------------------------------
-void Bbs::elevate(Session& s, uint32_t now, bool setup) {
+void Bbs::elevate(Session& s, uint32_t now, bool setup, bool atLogin) {
     if (sysop_.st != SState::Free) {
         if (s.role == Role::Caller && localAddr(s.ip)) {
             plat::log("bbs: sysop node in use, node %s takes sysop in place (%s)",
                       nodeName(s).t, s.ip);
-            coElevate(s, Access::Sysop, now, setup);
+            coElevate(s, Access::Sysop, now, setup, atLogin);
             return;
         }
         plat::log("bbs: sysop node in use, node %s logs off instead", nodeName(s).t);
@@ -430,14 +430,14 @@ void Bbs::elevate(Session& s, uint32_t now, bool setup) {
     // advertise one fewer caller than it has until the next login.
     presenceChanged(d);
     if (setup) { beginSetup(d, now); return; }
-    prompt(d);
+    staffLanding(d, now, atLogin);
 }
 
 // ---------------------------------------------------------------------------
 // coElevate: grant a co-sysop level in place. No special line: the session
 // keeps its caller node and stays visible until it uses HIDE or LURK.
 // ---------------------------------------------------------------------------
-void Bbs::coElevate(Session& s, Access level, uint32_t now, bool setup) {
+void Bbs::coElevate(Session& s, Access level, uint32_t now, bool setup, bool atLogin) {
     s.level      = level;
     s.perms      = syscfg::permsFor(level);
     s.timeWarned = 0;
@@ -463,7 +463,7 @@ void Bbs::coElevate(Session& s, Access level, uint32_t now, bool setup) {
     plat::log("bbs: node %u -> %s (%s, %s) perms 0x%03x", s.id, syscfg::levelName(level),
               s.user, s.ip, s.perms);
     if (setup) { beginSetup(s, now); return; }
-    prompt(s);
+    staffLanding(s, now, atLogin);
 }
 
 // ---------------------------------------------------------------------------
@@ -960,7 +960,19 @@ const CfgField kBoard[] = {
       "HH:MM local. Lights back at this time.",
       "Silent hours until",
       "Lights back at this time, HH:MM local. After midnight is fine: 22:00 to 07:00." },
+    // Closed to callers (1.1.0, Rob): "Temporarily stop taking calls". A
+    // fresh board starts closed and its sysop opens it here once the
+    // passwords and settings are done. Last on the page, so no row a guide
+    // or a test counts down to moves. The 80 column label is the whole
+    // question; the note says who still gets in.
+    { "closed",            "Closed",    CK_YESNO, 0, 0, 4,
+      "Yes: only your own account gets in.",
+      "Stop taking calls",
+      "Temporarily stop taking calls: callers get a closed sign, you still get in." },
 };
+
+// kClosedRow: where that row is, for an elevation that lands on it.
+constexpr uint8_t kClosedRow = static_cast<uint8_t>(sizeof(kBoard) / sizeof(kBoard[0]) - 1);
 
 const CfgField kLimits[] = {
     { "call_minutes",    "Per call", CK_NUM, 0, 0, 4, nullptr, "Minutes per call" },
@@ -1354,6 +1366,7 @@ void cfgLiveValue(const char* key, char* out, size_t n) {
     else if (!strcmp(key, "sysop_handle"))          snprintf(out, n, "%s", c.sysopHandle);
     else if (!strcmp(key, "activity_led_gpio"))     snprintf(out, n, "%d", c.ledGpio);
     else if (!strcmp(key, "silent"))                snprintf(out, n, "%s", c.silent ? "yes" : "no");
+    else if (!strcmp(key, "closed"))                snprintf(out, n, "%s", c.closed ? "yes" : "no");
     else if (!strcmp(key, "silent_from"))           board::fmtTime(c.silentFrom, out, n);
     else if (!strcmp(key, "silent_until"))          board::fmtTime(c.silentUntil, out, n);
     else if (!strcmp(key, "call_minutes"))          snprintf(out, n, "%u", c.callMinutes);
@@ -2073,7 +2086,7 @@ void Bbs::configPages(Session& s) {
 // Editing is one page at a time and one sysop at a time; saving writes only
 // that page's keys and reloads the running configuration.
 // ---------------------------------------------------------------------------
-void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now) {
+void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now, uint8_t focus) {
     char buf[80];
     while (*arg == ' ') ++arg;
     if (!*arg) { configPages(s); return; }
@@ -2139,7 +2152,30 @@ void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now) {
         // different and so was rewritten on every save, touched or not.
         g_cfgWas[i] = bbsu::hash(buf2);
     }
-    configOpenPage(s, 0, now);
+    configOpenPage(s, focus < page->count ? focus : 0, now);
+}
+
+// ---------------------------------------------------------------------------
+// staffLanding: where an elevation to sysop ends (1.1.0). The prompt, or,
+// for the sysop's account answering the login question on a closed board,
+// the setup's other half: staffArrival has just said the board is closed
+// and how to open it, so after a key to read that, CONFIG board opens on
+// the row that does it (Rob: that account "lands back in the setup/CONFIG
+// flow"). ESC leaves the page as ever. BYE typed at a prompt is somebody
+// who asked for a prompt, and gets one.
+// ---------------------------------------------------------------------------
+void Bbs::staffLanding(Session& s, uint32_t now, bool atLogin) {
+    (void)now;
+    if (atLogin && s.level == Access::Sysop && syscfg::get().closed) {
+        pauseFor(s, AfterKey::ConfigClosed);
+        return;
+    }
+    prompt(s);
+}
+
+// configClosedRow: CONFIG board, the focus on "Stop taking calls".
+void Bbs::configClosedRow(Session& s, uint32_t now) {
+    cmdConfig(s, "board", now, kClosedRow);
 }
 
 // ---------------------------------------------------------------------------
@@ -2189,6 +2225,12 @@ void Bbs::configOpenPage(Session& s, uint8_t focus, uint32_t now) {
         // On the session's own array, as addUserFields does: the Form's
         // pointer is not aimed at it until begin() below.
         const char* note = Form::pick(s.term, f.note, f.wideNote);
+        // The sysop row's stars on a board still on the published default
+        // are a real password, the one on the install page (1.1.0). Kept as
+        // stars, and said: it is not a password somebody chose.
+        if (!strcmp(f.key, "sysop_password") && syscfg::get().sysopDefault)
+            note = Form::pick(s.term, "The published default: change it now.",
+                              "These stars are the published default from the install page. Change it now.");
         if (note && at < n) s.fields[at].note = note;
     }
     // Titles in capitals on every page. A plugin's page was titled with its
@@ -2454,6 +2496,21 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
         }
     }
     if (!n) { snprintf(err, errLen, "Nothing changed"); return true; }
+
+    // A board on the published default is closed with no closed line (see
+    // SysConfig::closed), and that default goes the moment the sysop
+    // password stops being the published one. Pinned here, by the first
+    // core save that writes anything, so choosing a password never opens a
+    // fresh board by itself: only its sysop does that (1.1.0).
+    bool closedWritten = false;
+    for (uint8_t k = 0; k < n; ++k) if (!strcmp(pairs[k].key, "closed")) closedWritten = true;
+    if (core && !closedWritten && syscfg::get().closed && !syscfg::get().closedSet &&
+        n < sizeof(pairs) / sizeof(pairs[0])) {
+        pairs[n].key   = "closed";
+        pairs[n].value = "yes";
+        from[n]        = from[0];
+        ++n;
+    }
 
     // The core keys go through the parser itself before a byte is written:
     // every rule it applies to a line, each key's own check, and the rules

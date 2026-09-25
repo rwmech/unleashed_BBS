@@ -125,7 +125,7 @@ enum class FormKind : uint8_t { None, Signup, Profile, Password, UserAdd, UserEd
 enum class ConfirmKind : uint8_t { Logoff, DeleteUser };
 
 // What happens once the caller has pressed a key at a pause.
-enum class AfterKey : uint8_t { Prompt, SignupForm, ScreenNext, KnowMore };
+enum class AfterKey : uint8_t { Prompt, SignupForm, ScreenNext, KnowMore, ConfigClosed };
 
 // Which menu a command appears in. HELP with no argument shows Main, the
 // handful people use all the time, and names the other menus.
@@ -582,6 +582,15 @@ private:
     void onDetected(Session& s, uint32_t now);
     void startIntro(Session& s);
     void startBusy(Session& s, uint32_t now);
+    // Closed to callers (1.1.0, CONFIG board "Stop taking calls"). A caller
+    // gets the busy line's sign and countdown in the closed wording, and a
+    // key opens a login that only the sysop's own account gets past
+    // (closedAdmits). A board with no accounts at all skips the sign: its
+    // first caller registers, and that account is the one let in after.
+    bool closedTo(const Session& s) const;            // this caller meets the closed board
+    bool closedAdmits(uint32_t id);                   // the one account a closed board takes
+    void closedRefuse(Session& s, uint32_t now);      // said the same for every handle
+    void staffLanding(Session& s, uint32_t now, bool atLogin);   // after an elevation
     void askName(Session& s);
     void armName(Session& s);
     void loginHint(Session& s);
@@ -831,11 +840,13 @@ private:
 
     // -- sysop (bbs_sysop.cpp) -----------------------------------------------
     void markAccount(Session& s, Access level);
-    void elevate(Session& s, uint32_t now, bool setup = false);
+    // atLogin: through the sysop account's login question (offerSysop),
+    // which on a closed board goes on to CONFIG board (staffLanding).
+    void elevate(Session& s, uint32_t now, bool setup = false, bool atLogin = false);
     static bool localAddr(const char* ip);   // RFC1918, loopback, link-local
     void rememberStaff(const Session& s, Access level);
     void restoreStaff(Session& s);
-    void coElevate(Session& s, Access level, uint32_t now, bool setup = false);
+    void coElevate(Session& s, Access level, uint32_t now, bool setup = false, bool atLogin = false);
     bool rowNodes(Session& s);
     bool rowBans(Session& s);
     void cmdKick(Session& s, const char* arg, uint32_t now);
@@ -849,7 +860,8 @@ private:
     bool unlimited(const Session& s) const;
     void cmdUnban(Session& s, const char* arg);
     void cmdDrop(Session& s, uint32_t now);
-    void cmdConfig(Session& s, const char* arg, uint32_t now);
+    void cmdConfig(Session& s, const char* arg, uint32_t now, uint8_t focus = 0);
+    void configClosedRow(Session& s, uint32_t now);  // CONFIG board on "Stop taking calls"
     void configPages(Session& s);
     bool configSave(Session& s, char* err, size_t errLen);
     void configRelease(const Session& s);

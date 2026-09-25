@@ -736,6 +736,41 @@ this tree.
   opens it by turning the option off. The setup form's sysop password row
   says it is the published default and must be changed (it is a real
   password, so the stars stay).
+  - **Built in 1.1.0 (rel-1.1.0).** `SysConfig::closed`, key `closed`,
+    the last row of CONFIG board ("Stop taking calls" at 80, "Closed" at
+    40, last so no row a test or guide counts to moved). With no line it
+    equals `sysopDefault` (`closedSet` says the file had one), so **UHQ,
+    TRA and every board set up before 1.1.0 stay open on upgrade**; only a
+    board still on the published default starts closed. The first core
+    CONFIG save that writes anything pins `closed = yes` while the default
+    is in force, and so does the end of the setup, because the default
+    moves the moment the password stops being the published one. The BOOT
+    password reset writes the closed state it found.
+  - A closed caller is a caller's node (`closedTo`: Role::Caller, not
+    logged in, closed) run through `startBusy`'s machinery with its own
+    words or `screens/closed.*`; a key opens the login (no busy window;
+    the login's own clock). `closedAdmits` is `sysopAccount`, else an
+    account marked sysop (the mark travels in users.txt, so it survives a
+    restore that takes sysop.last), else the lowest live id; the password
+    step asks again. A restore gives a system.cfg with no closed line the
+    live state (ziparc applyItem), and an unreadable closed line leaves
+    the default standing. Every other handle gets the same refusal before any
+    lock or password check, so nothing says who has an account. A board
+    with no accounts shows no sign and lets its first caller register;
+    a second form saved in that window is refused (the race).
+  - The sysop's account elevating through the login question on a closed
+    board pauses, then opens CONFIG board on the closed row
+    (`AfterKey::ConfigClosed`, `staffLanding(atLogin)`). BYE typed at a
+    prompt does not: it broke the backup-window tests, and somebody
+    typing BYE asked for a prompt. `staffArrival` tells the sysop the
+    board is closed and how to open it, every arrival.
+  - announce holds while closed (tick, status, the panel's tower); SYS
+    has a `Callers` row in its traffic section.
+  - Tests: `test_closed_configured` (the harness board: open on upgrade,
+    then closed with one account kept), and `test_closed_fresh` and
+    `test_setup_abort`, each on a `--fresh` board of its own, like
+    `test_first_setup` and `test_backup_published_default`. `local_login`
+    passes the closed sign on a fresh board.
 - **Missed sysop pages go to one account** (Rob, 2026-09-24, approved).
   Not to every account ever marked sysop: marks are never removed, and
   each copy takes one of the 64 board-wide mail slots. CONFIG board gains
@@ -785,6 +820,26 @@ this tree.
   - Merged tree: 774/0 without a card, 1,106/0 with one, S3 host profile
     56/0, unit tests pass. esp32dev static DRAM 161,960 (18,776 free),
     flash 1,255,204.
+
+- **The 1.1.0 release candidate (2026-09-25, rel-1.1.0, not merged,
+  not tagged)**: closed until opened, bug A (abortOutput and setupStage),
+  bug B (the published default's note on the setup form), announce's
+  `sd`, the directory tests on short codes, S3 1.1.1 and FNCAM 1.0.3.
+  - Timeboxed and left for 1.1.1: diskPulse on the remaining storage
+    paths, TZ-bad, the badge pick-list (the CHANGELOG's 1.1.1 list).
+  - Sanity runs per the new release flow, each on its own tag: login,
+    shell, storage and plugins, with and without a card; the fresh
+    first_setup, closed_fresh, setup_abort and backup_published_default;
+    the S3 and Freenove profiles. 3,348 checks, 0 failures. `make test`
+    passes. The lights tests fail on both host profiles, as they did on
+    dev.15 (checked on bed0a62): they assume the reference board.
+  - Static DRAM off the ELF: esp32dev 162,992 (17,744 free), Freenove
+    174,360 (6,376 free), S3 249,712 of 341,760. Flash: 1,287,388,
+    1,351,812, 1,325,176. No warnings.
+  - COM13 runs it: open, CamTester snapped twice (about 3.7 s each), the
+    download offer, FILES area 12.
+  - The full regression and the optimize report come next, after the
+    website has the .0; 1.1.1 patches what they find.
 
 - **Where it stopped (2026-09-24, night)**:
   - main is 1.1.0-dev.14 (silent mode). The S3 runs dev.12; UHQ and TRA

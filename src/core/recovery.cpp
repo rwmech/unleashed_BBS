@@ -72,9 +72,15 @@ void act(Stage stage, uint32_t heldMs) {
         // and that absence is what keeps the default local-only, the listing
         // held and setup on offer (1.0.2). Writing the default out would
         // make it a real password that works from anywhere.
-        const syscfg::KeyVal drop[] = { { "sysop_password", nullptr } };
+        //
+        // The closed state is written out as it stands (1.1.0). With no
+        // closed line a board on the default starts closed, which is right
+        // for a fresh board and wrong for a running one whose sysop only lost
+        // the password: its callers would find it shut after the restart.
+        const syscfg::KeyVal drop[] = { { "sysop_password", nullptr },
+                                        { "closed", syscfg::get().closed ? "yes" : "no" } };
         char err[80] = "";
-        if (!syscfg::write(drop, 1, nullptr, err, sizeof(err))) {
+        if (!syscfg::write(drop, 2, nullptr, err, sizeof(err))) {
             plat::log("reset: could not write system.cfg (%s). Nothing changed.", err);
             return;
         }

@@ -23,7 +23,8 @@
 [0;37m  File areas and the forums live on an SD card, so neither exists without one.
 [0;37m  A board meant to stay up should have a card. [1;32mCONFIG sd[0;37m has the pins.
 
-[1;36m  THE DIRECTORY
+[1;36m  OPENING UP
+[0;37m  Callers get a closed sign until [1;32mCONFIG board[0;37m sets Stop taking calls to no.
 [0;37m  [1;32mCONFIG announce[0;37m lists this board in the public directory. It is off until
 [0;37m  you switch it on. Port forwarding is the last step, after all of the above.
 

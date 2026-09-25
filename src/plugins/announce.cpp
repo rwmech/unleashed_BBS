@@ -98,6 +98,7 @@
 #include "../core/calllog.h"
 #include "../core/clock.h"
 #include "../core/sysconfig.h"
+#include "../core/backup.h"          // sdCardKept: the card's size, for the sd badge
 #include "../platform/platform.h"
 #include "chat.h"
 #include "camera.h"            // the camera feature, on a camera board
@@ -168,9 +169,10 @@ constexpr uint8_t    kSystemMax   = 31;     // "ESP32-S3 · 16 MB · PSRAM" is 2
 //     each doubled by escaping                                 670
 //   support and interests, 16 entries in 95 characters,
 //     quoted and bracketed: 95 + 32 + 2 each                   258
+//   ,"sd":1024 while a card is mounted (1.1.0)                  10
 //                                                             -----
-//                                                             1,319
-//                                     (1,328 on a camera board)
+//                                                             1,329
+//                                     (1,338 on a camera board)
 //
 // Measured, not only added up: test_announce_badges gives the host board
 // exactly this and checks the heartbeat arrives whole. The spare 24 (15 on
@@ -178,7 +180,7 @@ constexpr uint8_t    kSystemMax   = 31;     // "ESP32-S3 · 16 MB · PSRAM" is 2
 // with no quote marks anywhere: every text at its longest and both lists
 // full is 984.
 // ---------------------------------------------------------------------------
-constexpr uint16_t   kBodyMax     = 1344;   // 1,319 and the terminator, with room to spare
+constexpr uint16_t   kBodyMax     = 1344;   // 1,329 and the terminator, with room to spare
 
 // The room buildBody writes into: kBodyMax, always, on a board. The host
 // build alone lets room_test in [plugin:announce] make it smaller, because
@@ -577,6 +579,19 @@ uint16_t took(int r, size_t cap, bool& cut) {
     return static_cast<uint16_t>(r);
 }
 
+// cardGB: a card's size as printed on it, in GB, or 0 with no card. FAT
+// reports what is usable, about 29.7 GiB of a "32 GB" card, so the bytes
+// are counted in decimal GB, rounded up, and then up again to the next of
+// 1, 2, 4 ... 1024, which is how cards are sold.
+uint16_t cardGB(const plat::SdInfo& i) {
+    if (!i.mounted || !i.totalKB) return 0;
+    uint64_t bytes = static_cast<uint64_t>(i.totalKB) * 1024u;
+    uint64_t gb = (bytes + 999999999u) / 1000000000u;
+    uint16_t size = 1;
+    while (size < gb && size < 1024) size = static_cast<uint16_t>(size * 2);
+    return size;
+}
+
 // buildBody: the payload, at kBody. False when it did not fit, and then
 // what is there is a fragment that must not be sent. Sized so that cannot
 // happen (see kBodyMax); the check stays because a size argument is only as
@@ -615,6 +630,12 @@ bool buildBody() {
     j.raw(",\"features\":");    j.list(feats);
     j.raw(",\"support\":");     j.list(g_support);
     j.raw(",\"interests\":");   j.list(g_interests);
+    // The card's size (1.1.0, PROTOCOL.md "sd"), only while one is mounted:
+    // a board whose card is out claims no card. The sd plugin's kept figures,
+    // so a heartbeat never touches the card.
+    if (uint16_t gb = cardGB(sdCardKept())) {
+        j.raw(",\"sd\":");      j.unum(gb);
+    }
     j.ch('}');
 
     g_bodyLen = static_cast<uint16_t>(j.len);
@@ -896,7 +917,9 @@ void tick(uint32_t now) {
     // 1.0.0). A listed board is one strangers will call, and the default is
     // on the install page; the board stays off the list until it is changed.
     // A post already under way finishes above; nothing new starts.
-    if (syscfg::get().sysopDefault) return;
+    // A board closed to callers (1.1.0) is held the same way: a listing
+    // sends strangers to a closed sign.
+    if (syscfg::get().sysopDefault || syscfg::get().closed) return;
     if (g_at < g_count) { startPost(now); return; }          // more directories to do
     if (!g_count || !g_nextRun) return;
     if (static_cast<int32_t>(now - g_nextRun) < 0) return;
@@ -922,6 +945,12 @@ void showStatus(Bbs& b, Session& s) {
         t.text(tl, "Held: the sysop password is still the default.");
         t.nl(tl);
         t.text(tl, "CONFIG staff changes it; listing starts after.");
+        t.nl(tl);
+    } else if (syscfg::get().closed) {
+        t.color(tl, Color::Yellow);
+        t.text(tl, "Held: the board is closed to callers.");
+        t.nl(tl);
+        t.text(tl, "CONFIG board opens it, then it lists.");
         t.nl(tl);
     }
     if (!g_count) {
@@ -1093,6 +1122,7 @@ const char* status() {
     static char line[64];
     if (!g_count) return nullptr;
     if (syscfg::get().sysopDefault) return "Directory: held, the sysop password is the default";
+    if (syscfg::get().closed)       return "Directory: held, the board is closed to callers";
     if (g_state[0] && g_publicIn) {
         snprintf(line, sizeof(line), "Directory: %.8s, public in %uh%02um  %u sent", g_state,
                  static_cast<unsigned>(g_publicIn / 3600u),
@@ -1116,7 +1146,7 @@ const char* status() {
 // sysop to ignore the red one that matters.
 uint8_t announce::listing() {
     if (!g_count) return 0;
-    if (syscfg::get().sysopDefault) return 2;
+    if (syscfg::get().sysopDefault || syscfg::get().closed) return 2;
     // Two posts in a row that got nowhere: whatever the last answer said,
     // the board is not being heard. Two, so one dropped post does not
     // flicker the tower.

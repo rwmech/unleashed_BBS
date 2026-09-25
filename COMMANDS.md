@@ -499,6 +499,7 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `silent` | `no` | `yes`: silent mode, every light the firmware drives off and kept off (1.1.0, `CONFIG board`, **Silent: lights off**, `Silent` at 40 columns). See "Silent mode" under this table |
 | `silent_from` | empty | silent hours start, `HH:MM` local by `tz`, 00:00 to 23:59; empty for none. `Silent hours from`, `Silent at` at 40 columns |
 | `silent_until` | empty | and end: the lights are back at this time. Both or neither: a file that sets one end, or the same time twice, is read as no hours and says so on the console, and `CONFIG` refuses it. May be earlier than `silent_from`, which crosses midnight (22:00 to 07:00) |
+| `closed` | see note | `yes`: closed to callers (1.1.0, `CONFIG board`, **Stop taking calls**, `Closed` at 40 columns, the page's last row). With no line it is `yes` exactly while the sysop password is the published default, so a fresh board starts closed and a board with its own sysop password stays open. See "Closed to callers" under this table |
 | `self_register` | `yes` | `no`: unknown handles can't sign up, staff add accounts |
 | `max_users` | `250` | account limit, 1..250. Not a space limit: `userdata` holds roughly 1,380 accounts. The cap is that the list indices are `uint8_t`, which reaches into every list on the board, so raising it is its own piece of work. The SD card does not help and is not meant to: accounts stay on internal flash so they survive the card failing. |
 | `guest` | `yes` | `no`: unknown handles are not offered `[G]uest` |
@@ -513,6 +514,27 @@ A TZ string is the POSIX form the board's C library reads. It starts with the zo
 If your place is not in the list, a Linux computer can tell you its string: `tail -n 1 /usr/share/zoneinfo/Europe/Paris`, with your own area and city, prints it. The answer is only as current as that computer's time zone data, and the rules do change: British Columbia, Alberta and the Northwest Territories all stopped changing their clocks in 2026, and lists of these strings made before then give the old rules. If your government changes the rules, type the new string as Custom; the board does not update its list by itself.
 
 The list is 34 zones and Custom, in `src/core/tzones.h`. A `tz` in the file that is exactly one of their strings opens as that zone's name; anything else opens as Custom with the string. Picking a zone writes its string into the row below, and typing into the string makes the zone Custom.
+
+**Closed to callers** (1.1.0, `CONFIG board`, **Stop taking calls**): a new
+board is closed until its sysop opens it. While it is:
+
+- every caller gets the busy line's sign and its countdown, worded "Closed
+  by the sysop for now" (or `screens/closed.*` when the board has one). A key
+  during the countdown opens a login that takes one account: the sysop's
+  (`sysop_handle`; else the last account to elevate; else the board's first
+  account). Any other handle, with an account or without, gets "Closed by
+  the sysop. Call again later." before any password, and the line drops;
+- no sign-ups and no guests. A board with no accounts at all shows its
+  first caller no sign: they register, and that is the account let in
+  afterwards;
+- `ANNOUNCE` holds the listing, and `SYS` says `Callers  closed`;
+- callers already on stay on, and the busy line keeps its own rules.
+
+The sysop's account, logging in on a closed board and answering "Sysop
+password:", goes on to `CONFIG board` with the cursor on the row that opens
+it. The setup writes `closed = yes` out when it ends, and so does the first
+`CONFIG` save of a fresh board, so choosing a password never opens a board by
+itself. The BOOT password reset writes out the state it found.
 
 **Silent mode** (1.1.0, `CONFIG board`): every light the firmware drives goes
 off and stays off, with nothing flashing. That is the activity LED, both of

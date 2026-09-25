@@ -24,10 +24,107 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
-## 1.1.0, in progress
+## 1.1.0, 2026-09-25
 
-Built in phases; this section grows with each one and becomes the 1.1.0
-entry when it is released.
+**Out early for testing.** 1.1.0 has not been through the full regression
+yet. It is released after targeted sanity runs so it can be tried on real
+boards now; the full regression and a memory report run next, and 1.1.1
+patches whatever they find.
+
+In short:
+- A new board is closed to callers until its sysop opens it.
+- Recovery without a reflash: hold BOOT to reset the sysop password or
+  the whole board, a new Wi-Fi network that fails falls back to the last
+  one that worked, and a frozen board restarts itself.
+- The listening port is a setting, and the web installer recognises a
+  board already running µnleashed.
+- The lights plugin (a drive light and a ten-pixel strip) and silent mode.
+- OPERATOR, the sysop page, and notices that reach callers inside chat,
+  the forums, files and mail.
+- Backups on the SD card, a restore that waits for a quiet board, and the
+  timezone picked by name.
+- Forms and CONFIG laid out for 80 columns as well as 40, the sysop's
+  dashboard reworked, and missed pages mailed to one account.
+- Two more boards: the Waveshare ESP32-S3-LCD-1.47 (S3 1.1.1) and the
+  Freenove ESP32-WROVER camera board (FNCAM 1.0.3).
+- GPL v3 or later.
+- The directory learns the SD card's size.
+
+**The release build.**
+- **Closed until opened** (Rob). CONFIG board gains "Stop taking calls"
+  (`closed`, "Closed" at 40 columns), the page's last row. While it is
+  yes:
+  - every caller gets the busy line's sign and countdown, worded "Closed
+    by the sysop for now", or `screens/closed.*` when a board has one;
+  - a key during the countdown opens a login that takes one account, the
+    sysop's (CONFIG board's Sysop, else the last to elevate, else an
+    account the sysop password marked, else the first account on the
+    board); any other handle, with an account or without, is told "Closed
+    by the sysop. Call again later." before any password, and the line
+    drops. A login already at its password when the board closed is
+    asked again before it is let in;
+  - no sign-ups and no guests, except that a board with no accounts at
+    all shows its first caller no sign: they register, and that account
+    is the one let in afterwards;
+  - announce holds the listing, as it does on the published default,
+    and SYS's traffic section says `Callers  closed`.
+- With no `closed` line the board is closed exactly while it is on the
+  published default password. **A board whose sysop already chose a
+  password, which is every board set up before 1.1.0, stays open when it
+  is upgraded.** The first CONFIG save that writes anything, and the end
+  of the setup, write `closed = yes` out, so choosing a password never
+  opens a fresh board by itself. The BOOT password reset writes out the
+  closed state it found, so a running board whose sysop lost the password
+  does not come back shut, and a restored system.cfg with no closed line
+  is given the board's live state, so a restore never opens or shuts a
+  board by itself. A `closed` line the parser cannot read is a problem and
+  leaves the default standing, never an open board.
+- A board whose system.cfg spells the published password out (a restore
+  on 1.0.0 or 1.0.1 could write one) reads as on the default since 1.1.0,
+  and so starts closed. Its sysop's account still gets in.
+- The setup says so before the password step ("It stays closed to callers
+  until you open it in CONFIG board"), the setup screen has a "Closed until
+  you open it" section, and the end of the setup, and every sysop arrival
+  while the board is closed, says how to open it. The sysop's account
+  answering its login question on a closed board goes on to CONFIG board,
+  on the row that opens it.
+- Fixed: stopping the setup screen (Space, ESC or BREAK) left the setup
+  armed, and the next screen the new sysop played ended by opening
+  CONFIG staff.
+- The setup form's Sysop row, on a board still on the published default,
+  says its stars are that default and must be changed now; the setup
+  screen says the same.
+- announce sends `sd`, the card's size in GB rounded up to what is
+  printed on it (1, 2, 4 ... 1024), only while a card is mounted.
+- The directory tests expect its short badge codes (`ltrcy`, `elctr`),
+  and a board profile's version in the system badge.
+- Board versions: S3 1.1.1 (silent mode reached the panel after 1.1.0),
+  FNCAM 1.0.3 (silent mode reached the camera's flash after 1.0.2).
+
+**Left for 1.1.1**, with what the full regression and the memory report
+find:
+- The drive light on every storage path: `plat::diskPulse` in users,
+  the caller log and its card mirror, system.cfg, the zip and backup
+  staging, chat's mail, forums, files, info and reboots.log (PLAN-1.1.0
+  Phase 5, lights).
+- CONFIG checks a typed custom POSIX TZ string and refuses a bad one
+  (TZ-bad).
+- The badge pick-list in CONFIG announce, generated from the directory's
+  badges.json.
+- The harness's one-hour limit, too short for six groups with a card.
+- On a fresh closed board the first account to register is the one let
+  in. If a stranger beats the owner to it (a port forwarded before setup),
+  the way back is the BOOT factory reset. Proposed: while the password is
+  still the published default, also let a caller on the board's own
+  network log in. Rob's call.
+- Closing stops the heartbeats, so a long close can let the directory
+  expire a listing and restart its waiting period: the maintenance window
+  problem, to be designed with it.
+- The lights tests assume the reference board's lights and fail on the S3
+  and Freenove host profiles (as they did on 1.1.0-dev.15): profile-aware
+  expectations.
+
+The dev builds, as they landed:
 
 **1.1.0-dev.0, the foundation.**
 - Static RAM: 20,528 bytes free, up from 4,016. The backup's export and
