@@ -656,6 +656,15 @@ this tree.
   and low), run the same way on the WROOM, the Freenove and the S3 on the
   bench, never on UHQ or TRA without Rob's say-so. Results go on /hardware,
   dated and stamped with the firmware version, and set the tiers for real.
+- **1.1.1: software picture correction for the camera** (Rob, 2026-09-25,
+  after the first real outdoor photo came out washed out on a cloudy day).
+  The GC0308 ignores some of its own settings, and the board already
+  encodes every frame itself, so correct it there: "Auto levels" (a
+  histogram stretch, on by default) and a gamma setting on CONFIG camera's
+  Picture page, applied on the worker before the JPEG encode. Works on any
+  sensor. Measure the added encode time (Rule no. 1 is about the loop, but
+  a snap should stay a few seconds) and the memory (it should need none
+  beyond a 256-entry table).
 - **1.1.1: `SCREENS INSTALL`** (Rob, 2026-09-25). Screens on the card are
   played from the card and never copied into flash, so pulling the card
   loses a sysop's own screens until it returns. `SCREENS INSTALL` (sysop)
