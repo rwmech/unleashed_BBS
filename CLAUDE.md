@@ -656,6 +656,20 @@ this tree.
   and low), run the same way on the WROOM, the Freenove and the S3 on the
   bench, never on UHQ or TRA without Rob's say-so. Results go on /hardware,
   dated and stamped with the firmware version, and set the tiers for real.
+- **1.2.0, first item: rotating information pages** (Rob, 2026-09-25;
+  the DDial rotator, rebuilt on /i). Per page in CONFIG info, beside the
+  title, levels and body: **Rotate** yes/no; **Where**, any of Logon (shown
+  once at login), Main (at the main prompt, never across a half-typed
+  line) and Chat (into the room through the held-line path); **Until** a
+  date (blank = no end; with no NTP clock it keeps rotating rather than
+  guess). A rotating page shows **whole: its title and its full message**,
+  and a rotating message is kept to **8 lines at most** (Rob: "a full
+  message ... 8 lines tops"), counted at the reader's width, so CONFIG
+  says so when a page set to rotate is longer. One board-wide interval, 5
+  minutes as DDial shipped it. **Nothing posts where nobody is**: a place
+  with no one in it is skipped. The example Rob gave: "We meet every
+  Tuesday at 10a". This reverses nothing: /M message slots stay rejected,
+  because /i now does the job.
 - **Long term: push photos out to social media** (Rob, 2026-09-24, "a future
   long term possibility"). Every snapshot, or a chosen few, sent onward so
   a board can post to Bluesky, Mastodon, X or Discord, advertising the
