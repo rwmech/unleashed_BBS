@@ -37,6 +37,7 @@
 #include "sysconfig.h"
 #include "users.h"          // LAND_* and the landing names, kept in one place
 #include "silent.h"         // silent hours: the time rule, and told when the file is read
+#include "tzones.h"         // valid: a TZ string newlib can read (1.1.1)
 #include "../platform/platform.h"
 #include <cstdio>
 #include <cstdlib>
@@ -366,7 +367,18 @@ void keyValue(Ctx& c, const char* key, char* val) {
         else problem(c, "hostname must be a-z 0-9 - (1..31):", val);
     }
     else if (!strcmp(key, "board_name"))             copyStr(g.boardName, sizeof(g.boardName), val);
-    else if (!strcmp(key, "tz"))                     copyStr(g.tz, sizeof(g.tz), val);
+    else if (!strcmp(key, "tz")) {
+        // A string the C library cannot read ran the board on unnamed UTC,
+        // silently (1.1.1, TZ-bad; tzones::valid has the rule). A writer
+        // is refused, with the reason on its status line. A file read at
+        // boot or restored loses the line, logged, and keeps the clock it
+        // had, the way a pin the board owns is dropped (gpio above): a
+        // restore is not refused whole over its timezone.
+        if (tzones::valid(val))  copyStr(g.tz, sizeof(g.tz), val);
+        else if (c.bare)         problem(c, "not a TZ string the board can read", "");
+        else plat::log("cfg: line %d tz = %.48s: not a TZ string the board can read, "
+                       "line ignored, the clock stays on %s", c.lineNo, val, g.tz);
+    }
     else if (!strcmp(key, "ntp_server"))             copyStr(g.ntpServer, sizeof(g.ntpServer), val);
     else if (!strcmp(key, "sysop_password"))         copyStr(g.sysopPass, sizeof(g.sysopPass), val);
     else if (!strcmp(key, "cosysop1_password"))      copyStr(g.coPass[0], sizeof(g.coPass[0]), val);

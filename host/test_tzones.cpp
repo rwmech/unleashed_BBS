@@ -89,6 +89,39 @@ int main() {
     check("Custom has no string behind it", posixFor(kCustom) == nullptr);
     check("nor does a name the table lacks", posixFor("Mars (Olympus Mons)") == nullptr);
 
+    // valid (1.1.1, TZ-bad): what newlib's tzset can read. Every string in
+    // the table first, since CONFIG writes them without asking.
+    printf("Timezone strings the board can read\n");
+    bool tableOk = true;
+    for (const Zone& z : kZones)
+        if (!valid(z.posix)) { tableOk = false; printf("        refused: %s\n", z.posix); }
+    check("every zone in the table", tableOk);
+    const char* const good[] = {
+        "UTC0", "UTC+0", "GMT0", "EST5", "EST5EDT", "EST5EDT,M3.2.0,M11.1.0",
+        "EST5EDT,M3.2.0/2,M11.1.0/2:00:00", "EST5EDT4,M3.2.0,M11.1.0",
+        "EST5EDT,M3.2.0",                     // newlib fills in the second rule
+        "CST6CDT,J60,J300", "CST6CDT,59,299", "NST3:30NDT,M3.2.0,M11.1.0",
+        "<+0530>-5:30", "<-03>3<-02>,M3.5.0/-2,M10.5.0/-1", "IST-5:30:00",
+        ":UTC0", "ABCDEFGHIJ5",               // ten letters, newlib's limit
+    };
+    bool goodOk = true;
+    for (const char* g : good)
+        if (!valid(g)) { goodOk = false; printf("        refused: %s\n", g); }
+    check("strings newlib reads, taken", goodOk);
+    const char* const bad[] = {
+        "", "UTC", "EST", "5", "EST+", "EST 5", "EST5EDT,M13.2.0,M11.1.0",
+        "EST5EDT,M3.6.0,M11.1.0", "EST5EDT,M3.2.7,M11.1.0", "EST5EDT,M3.2,M11.1.0",
+        "EST5EDT,J0,J300", "EST5EDT,366,1", "EST5EDT,M3.2.0/,M11.1.0",
+        "EST5EDT,M3.2.0,M11.1.0x", "EST5EDT,M3.2.0,M11.1.0,M1.1.0", "<+05", "<>5",
+        "<+0530-5:30", "ABCDEFGHIJK5", "EST25", "EST5:60", "EST5EDT,M3.2.0/168,M11.1.0",
+        "CST6CDT,M3.2.0,M11.1.0 ", "America/Chicago",
+    };
+    bool badOk = true;
+    for (const char* b : bad)
+        if (valid(b)) { badOk = false; printf("        taken: \"%s\"\n", b); }
+    check("strings it would run as unnamed UTC, and typos, refused", badOk);
+    check("no string at all is no TZ", !valid(nullptr));
+
     printf("%d passed, %d failed\n", passes, fails);
     return fails ? 1 : 0;
 }

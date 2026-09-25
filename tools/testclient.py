@@ -2630,6 +2630,47 @@ def test_config_timezone():
     return ok
 
 
+def test_config_tz_bad():
+    """A TZ string the board cannot read is refused (1.1.1, TZ-bad).
+
+    newlib's tzset gives up on a string it cannot read and leaves the board
+    on unnamed UTC, silently: a Custom string one character wrong and the
+    clock ran in UTC with nothing said. CONFIG refuses it on the row now,
+    and a file read at boot or restored loses that one line, logged, and
+    keeps the clock it had, rather than being refused whole.
+    """
+    print("CONFIG board: a TZ string the board cannot read")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the local harness and the sysop")
+        return True
+    before = cfg_line("tz")
+    s = cfg_sysop40("CfgTzBad")
+    ok = True
+    for bad in (b"EST", b"CST6CDT,M3.2.0,M13.1.0", b"America/Chicago"):
+        cfg_open(s, b"board", b"TZ string")
+        s.buf.clear()
+        s.send(DOWN * BOARD_TZ + b"\x08" * 40 + bad + F1)
+        got = cfg_verdict(s, [b"not a TZ string", b"Saved and live", b"Nothing changed"])
+        ok &= check(f"{bad.decode()} refused on its row", got == b"not a TZ string")
+        cfg_cancel(s)
+    ok &= check("and nothing written", cfg_line("tz") == before)
+    s.close()
+
+    port = PORT + 3713
+    proc, tmp = restart_copy((str(port),), edits={("", "tz"): "CST6CDT,M3.2.0,M13.1.0",
+                                                  ("", "idle_minutes"): "19"})
+    try:
+        log = copy_log(tmp, f"listening on {port},")
+        ok &= check("a file's bad string is dropped at boot, by line and reason",
+                    re.search(r"tz = CST6CDT,M3\.2\.0,M13\.1\.0: not a TZ string the board can read, "
+                              r"line ignored", log) is not None)
+        ok &= check("and the rest of the file is read: no problem counted, idle 19",
+                    "problem(s)" not in log and "idle 19" in log)
+    finally:
+        stop_copy(proc, tmp)
+    return ok
+
+
 def test_config_cycle_numbers():
     """Plain ASCII: a cycle's choices numbered, and a number picks (1.1.0)."""
     print("CONFIG in plain ASCII: choices by number")
@@ -2946,6 +2987,30 @@ def test_hardware():
                 row(section, "Chip ") != "" and max(len(r.rstrip()) for r in section) <= 39)
     naws(s, 80, 24)
     drain(s)
+
+    # 1.1.1: the capability line is taken once, when the list starts. A card
+    # going while the caller sits at [More] used to change it half way
+    # through the listing, and with it how many lines it wrapped to.
+    if card:
+        o = ansi_login("SpecOther")
+        o.send(f"bye {PASSWORD}\r".encode())
+        o.wait_for(b"access on node", 5)
+        drain(o)
+        s.buf.clear()
+        s.send(b"\x08" * 4 + b"sys\r")          # whatever drain() left on the line
+        at_more = s.wait_for(b"[More] Y/n/c", 8)
+        o.buf.clear()
+        o.send(b"sd unmount\r")
+        o.wait_for(b"safe to pull", 6)
+        s.send(b"c")
+        read_list(s)
+        later = render_lines(s.buf, cols=250)
+        ok &= check("SYS: a card pulled at [More] does not change the listing under way",
+                    at_more and re.search(r"\d+ GB SD card", row(later, "Capabilities ")) is not None)
+        o.buf.clear()
+        o.send(b"sd mount\r")
+        o.wait_for(b"Mounted", 8)
+        o.close()
     s.close()
     return ok
 
@@ -13898,7 +13963,7 @@ ORDER_NAMES = [
     "test_operator", "test_operator_ends", "test_notices_in_places",
     "test_operator_notes", "test_ring_mail", "test_sysop_account",
     "test_config_parser_rules", "test_config_guards", "test_config_semicolon",
-    "test_config_timezone", "test_config_cycle_numbers", "test_config_silent",
+    "test_config_timezone", "test_config_tz_bad", "test_config_cycle_numbers", "test_config_silent",
     "test_config_sd_plugin",
     "test_config_lights", "test_config_lights_ascii", "test_lights_frames", "test_lights_manual",
     "test_lights_count", "test_lights_order", "test_lights_wifi", "test_lights_silent", "test_version_shown",

@@ -2490,7 +2490,10 @@ const char* signalWord(int8_t rssi, Color& c) {
 bool Bbs::rowSys(Session& s) {
     char buf[48], num[16];
     uint8_t i = s.listIdx++;
-    if (i == 0) snapFill(true);                  // with the heap walk, for the biggest block
+    if (i == 0) {
+        snapFill(true);                          // with the heap walk, for the biggest block
+        hwSnap(s);                               // and what it has running, once a listing
+    }
     // The hardware section (1.1.1), last, before the rule: HARDWARE's own
     // rows (bbs_hardware.cpp), as many lines as the width makes them, less
     // the heap rows "memory" already has. When hwRow is done, i jumps to

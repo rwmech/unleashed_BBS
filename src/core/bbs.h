@@ -222,6 +222,11 @@ struct Session {
     // padding before watchNext, which is where the two DASH bytes went too,
     // so the pair costs no Session anything (every byte there costs twelve).
     uint8_t      countdown   = 0;
+    // HARDWARE and SYS (1.1.1): what the board had running when the list
+    // started (Bbs::hwSnap), so a card or camera arriving while a caller
+    // sits at [More] cannot make the capability line repeat or skip. The
+    // last two bytes of that padding: still no cost to a Session.
+    uint16_t     hwCaps      = 0;
     uint32_t     watchNext   = 0;      // next redraw; 0 = drawing now
 
     // busy line countdown: when the next second is due (countdown is above)
@@ -725,6 +730,9 @@ private:
     // inSys leaves out the heap rows SYS already has under "memory".
     bool rowHardware(Session& s);
     bool hwRow(Session& s, uint8_t k, bool inSys);
+    // hwSnap: what the board has running, kept in s.hwCaps as the list
+    // starts, so every line of one listing reads the same snapshot (1.1.1).
+    static void hwSnap(Session& s);
     bool rowCalls(Session& s);
     void cmdCalls(Session& s);   // padded when refreshing
     // rowText, rowRule, rowTitle and rowWidth are public: a plugin drawing
