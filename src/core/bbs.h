@@ -582,6 +582,11 @@ private:
     void onDetected(Session& s, uint32_t now);
     void startIntro(Session& s);
     void startBusy(Session& s, uint32_t now);
+    // linkLine: how this caller is connected and whether it is encrypted,
+    // said before any screen (1.1.1, Rob): "--> Connection via Telnet is
+    // not secure". Every caller who is detected sees it, on the welcome,
+    // the busy line and the closed sign alike.
+    void linkLine(Session& s);
     // Closed to callers (1.1.0, CONFIG board "Stop taking calls"). A caller
     // gets the busy line's sign and countdown in the closed wording, and a
     // key opens a login that only the sysop's own account gets past

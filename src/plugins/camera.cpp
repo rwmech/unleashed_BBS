@@ -1145,9 +1145,12 @@ void texts(Job& j, const struct tm& t, const char* who) {
     strftime(when, sizeof(when), "%Y-%m-%d %H:%M", &t);
     char full[24];
     strftime(full, sizeof(full), "%Y-%m-%d %H:%M:%S", &t);
-    snprintf(j.comment, sizeof(j.comment), "%s: %s, %s %s. unleashed BBS %s",
-             c.boardName[0] ? c.boardName : "unleashed BBS", full,
-             j.kind == K_CALLER ? "snapped by" : "taken by the board,", who, BBS_VERSION_SHOWN);
+    // UTF-8, micro sign and all (1.1.1): a JPEG comment is bytes, and every
+    // viewer that shows one reads UTF-8.
+    snprintf(j.comment, sizeof(j.comment), "%s: %s, %s %s. %s %s",
+             c.boardName[0] ? c.boardName : BBS_NAME, full,
+             j.kind == K_CALLER ? "snapped by" : "taken by the board,", who, BBS_NAME,
+             BBS_VERSION_SHOWN);
     if (j.kind == K_CALLER) snprintf(j.desc, sizeof(j.desc), "Taken by %s", who);
     else                    snprintf(j.desc, sizeof(j.desc), "Taken by the board (%s)", who);
     j.doMark = g_set.mark;

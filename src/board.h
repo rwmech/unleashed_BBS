@@ -38,7 +38,8 @@
  *                                      internal/PLAN-freenove-cam.md.
  *
  *               BBS_BOARD_AI_ESP32CAM  AI-Thinker ESP32-CAM: ESP32-D0WDQ6,
- *                                      4 MB flash, 4 MB PSRAM, an OV2640,
+ *                                      4 MB flash, PSRAM (8 MB chip, 4 MB
+ *                                      mapped), an OV2640,
  *                                      a micro SD slot (run over SPI)
  *                                      and a flash LED on GPIO 4.
  *
@@ -331,7 +332,8 @@
 // bench's is an Aideepen on an ESP32-CAM-MB programmer with a CH340G)
 //
 // ESP32-D0WDQ6 (read as revision v1.0 on the bench), 4 MB flash (d8/4016),
-// 4 MB PSRAM on GPIO 16 and 17, an OV2640 on the 24-pin ribbon (read over
+// PSRAM on GPIO 16 and 17 (an 8 MB chip, of which the ESP32 maps 4 MB),
+// an OV2640 on the 24-pin ribbon (read over
 // SCCB on 2026-09-25: one device at 0x30, PID 0x26, VER 0x42, MID 0x7FA2),
 // a micro SD slot on the SDMMC pins, a bright white flash LED on GPIO 4
 // (through a transistor), a small red LED on GPIO 33 (active low).

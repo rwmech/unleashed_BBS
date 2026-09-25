@@ -691,6 +691,66 @@ def test_ansi():
     return ok
 
 
+def test_link_line():
+    """Every caller is told how they are connected before any screen (1.1.1).
+
+    Rob: "--> Connection via Telnet is not secure", right after detection
+    and before the welcome, on all three kinds of terminal, 39 columns so a
+    C64 does not wrap it. The busy line and the closed sign carry it too;
+    test_busy and test_closed_configured check those.
+    """
+    print("The connection line before the welcome (1.1.1)")
+    line = b"--> Connection via Telnet is not secure"
+    ok = check("the line is 39 columns", len(line) == 39)
+
+    def seen(c, pat, secs):
+        # The line is coloured part by part, so it is looked for with the
+        # escapes taken out.
+        end = time.time() + secs
+        while time.time() < end:
+            if pat in plain(c.buf):
+                return True
+            if not c.pump(0.1):
+                break
+        return pat in plain(c.buf)
+
+    a = Caller(ansi=True)
+    ok &= check("ANSI: said", seen(a, line, 8))
+    a.wait_for(b"Enter your handle", 10)
+    shown = plain(a.buf)
+    ok &= check("ANSI: after the terminal was detected",
+                -1 < shown.find(b"DETECTED") < shown.find(line))
+    ok &= check("ANSI: before the welcome screen",
+                -1 < shown.find(line) < shown.find("µnleashed BBS".encode()))
+    a.close()
+
+    p = Caller(ansi=False)
+    p.wait_for(b"HIT DEL OR BACKSPACE", 5)
+    p.send(b"\x14")
+    p.wait_for(b"40 OR 80 COLUMNS", 3)
+    p.send(b"4")
+    # A colour code sits between the parts, so the words are found part by
+    # part, in order.
+    ok &= check("PETSCII-40: the same words, in PETSCII",
+                p.wait_for(pet("not secure"), 8) and
+                -1 < p.buf.find(pet("-->")) < p.buf.find(pet("Connection via Telnet is "))
+                   < p.buf.find(pet("not secure")))
+    ok &= check("PETSCII-40: before the welcome",
+                p.wait_for(pet("No web. No cloud."), 8) and
+                -1 < p.buf.find(pet("Connection via")) < p.buf.find(pet("No web. No cloud.")))
+    p.close()
+
+    t = Caller(ansi=False)
+    t.wait_for(b"HIT DEL OR BACKSPACE", 5)
+    t.send(b"\x08")
+    ok &= check("ASCII: said too", t.wait_for(line, 8))
+    ok &= check("ASCII: before the welcome",
+                t.wait_for(b"No web. No cloud.", 8) and
+                -1 < t.buf.find(line) < t.buf.find(b"No web. No cloud."))
+    t.close()
+    return ok
+
+
 def test_telnet_first():
     print("Telnet client speaks first (PuTTY)")
     c = Caller(ansi=True, telnet=True)
@@ -1636,6 +1696,9 @@ def test_busy():
     over = Caller(ansi=True)                 # the caller past the last node
     ok = check("the caller past the last node gets the busy screen",
                over.wait_for(b"lines are busy", 5))
+    ok &= check("told how they are connected first (1.1.1)",
+                -1 < plain(over.buf).find(b"--> Connection via Telnet is not secure")
+                   < plain(over.buf).find(b"lines are busy"))
     ok &= check("countdown shown", over.wait_for(b"Disconnecting in", 5))
     t0 = time.time()
     eighth = Caller()                        # and the one after that is refused
@@ -6052,6 +6115,49 @@ def test_board_fncam():
     return ok
 
 
+def test_board_espcam():
+    """The AI-Thinker ESP32-CAM profile on the host (1.1.1): a WROOM's LED
+    line restored here.
+
+    The ESP32-CAM's card runs over SPI on the slot's own lines, and those are
+    the sd plugin's settings, so the parser's board pins do not name them.
+    A WROOM backup restored here carried activity_led_gpio = 2, this board's
+    card MISO, and the red LED on 33 went dark. The line is dropped and
+    logged at boot now and the board's own LED kept; CONFIG still refuses 2
+    because the sd plugin holds it. SKIPs on the reference board;
+    tools/harness.sh --board espcam --only=board_espcam runs it.
+    """
+    print("Board profile: AI-Thinker ESP32-CAM")
+    if HOST_BOARD != "espcam" or not PASSWORD:
+        print("  SKIP  needs tools/harness.sh --board espcam")
+        return True
+    log = host_log()
+    ok = check("the board's own LED is the red one on 33", "activity led gpio 33" in log)
+
+    s = cfg_sysop("BoardEspcam")
+    cfg_open(s, b"board", b"Hostname")
+    s.buf.clear()
+    s.send(DOWN * BOARD_LED + b"\x08" * 3 + b"2" + F1)
+    got = cfg_verdict(s, [b"Saved", b"sd, ", b"card", b"SD"])
+    ok &= check("CONFIG refuses the LED on GPIO 2, the card's MISO", got not in (None, b"Saved"))
+    cfg_cancel(s)
+    s.close()
+
+    port = PORT + 3712
+    proc, tmp = restart_copy((str(port),), edits={("", "activity_led_gpio"): "2",
+                                                  ("", "idle_minutes"): "17"})
+    try:
+        log = copy_log(tmp, f"listening on {port},")
+        ok &= check("a WROOM's LED on GPIO 2 is dropped at boot, by line and reason",
+                    "activity_led_gpio = 2: that pin is the SD card slot on this board, line ignored" in log)
+        ok &= check("and the board's own LED is kept", "activity led gpio 33" in log)
+        ok &= check("and the rest of the file is read: no problem counted, idle 17",
+                    "problem(s)" not in log and "idle 17" in log)
+    finally:
+        stop_copy(proc, tmp)
+    return ok
+
+
 def section_config(s, section, **keys):
     """[section] rewritten with exactly these keys (none: removed), then the
     board made to read it, as lights_config does for the lights."""
@@ -6146,6 +6252,8 @@ def test_camera():
     ok &= check("the photo is on the card, a JPEG", jpg[:2] == b"\xff\xd8" and jpg[-2:] == b"\xff\xd9")
     ok &= check("carrying who took it in a COM segment after SOI",
                 jpg[2:4] == b"\xff\xfe" and b"snapped by CamCaller" in jpg[:300])
+    ok &= check("and the board's name as a person reads it, in UTF-8 (1.1.1)",
+                "µnleashed BBS".encode() in jpg[:300])
     desc = (card / "photos" / "FILES.BBS").read_text(errors="replace") if (card / "photos" / "FILES.BBS").exists() else ""
     ok &= check("and FILES.BBS says so", f"{name} Taken by CamCaller" in desc)
     log1 = host_log()[len(log0):]
@@ -7642,6 +7750,106 @@ def announce_port(s):
     return int(m.group(1)) if m else None
 
 
+def test_cgnat_local():
+    """100.64/10 is local only when CONFIG network says so (1.1.1, Rob).
+
+    Both local-address rules counted 100.64/10, the carrier's shared space
+    as much as Tailscale's, as the board's own network, always. Now it is a
+    row on CONFIG network, off as shipped, read by the one rule the shell
+    and the backup port both ask. The host has no carrier NAT, so a caller
+    from 127.0.0.3 stands for 100.64.0.3 (guard.cpp peerAddr); 127.0.0.2 is
+    outside, as everywhere in this suite.
+
+    Checked both ways on the two things local decides on a configured board:
+    the backup window's port, and a second sysop taking sysop in place.
+    """
+    print("CGNAT and Tailscale: local only when CONFIG network says so")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the local harness and the sysop")
+        return True
+
+    def backup_status(source):
+        """The backup port's first answer line, called from source."""
+        try:
+            k = socket.create_connection((HOST, BACKUP_PORT), timeout=5,
+                                         source_address=(source, 0))
+        except OSError as e:
+            return str(e).encode()
+        try:
+            k.sendall(b"GET / HTTP/1.0\r\nHost: board\r\n\r\n")
+            k.settimeout(5)
+            data = b""
+            while b"\r\n" not in data:
+                more = k.recv(512)
+                if not more:
+                    break
+                data += more
+            return data.split(b"\r\n", 1)[0]
+        except OSError as e:
+            return str(e).encode()
+        finally:
+            k.close()
+
+    def in_place(source, handle):
+        """A second sysop, from source, while the sysop node is taken."""
+        c = Caller(ansi=True, source=source)
+        c.wait_for(b"Enter your handle", 10)
+        login(c, handle)
+        c.buf.clear()
+        c.send(f"bye {PASSWORD}\r".encode())
+        got = c.wait_for(b"Sysop access on node", 5)
+        c.close()
+        time.sleep(0.5)
+        return got
+
+    cfgp = USERDATA / "system.cfg"
+    orig = cfgp.read_text()
+    s = cfg_sysop("CgnatSysop")          # holds the sysop node, and so the window
+    s.pump(1.0)
+    ok = check("CONFIG network has the row, off as shipped",
+               cfg_open(s, b"network", b"Password") and cfg_value("cgnat_local") in ("", "no"))
+    s.buf.clear()
+    s.send(DOWN * 3)
+    s.pump(0.6)
+    ok &= check("its note says it trusts everyone behind the carrier's NAT",
+                b"Trusts everyone behind the same carrier NAT" in plain(s.buf))
+    cfg_cancel(s)
+
+    ok &= check("off: the backup port refuses 100.64.0.3", b"403" in backup_status("127.0.0.3"))
+    ok &= check("and outside, as ever", b"403" in backup_status("127.0.0.2"))
+    ok &= check("and answers the board's own network", b"403" not in backup_status("127.0.0.1")
+                and b"HTTP/1." in backup_status("127.0.0.1"))
+    ok &= check("off: a sysop from 100.64.0.3 is not given sysop in place",
+                not in_place("127.0.0.3", "CgnatFar"))
+    try:
+        cfg_open(s, b"network", b"Password")
+        s.buf.clear()
+        s.send(DOWN * 3 + b" " + F1)
+        ok &= check("on: saved and live, not from the next restart",
+                    cfg_verdict(s, [b"Saved and live", b"next restart", b"Nothing"]) == b"Saved and live")
+        ok &= check("written as cgnat_local = yes", cfg_value("cgnat_local") == "yes")
+        ok &= check("on: the backup port answers 100.64.0.3",
+                    b"HTTP/1." in backup_status("127.0.0.3") and b"403" not in backup_status("127.0.0.3"))
+        ok &= check("but still refuses outside", b"403" in backup_status("127.0.0.2"))
+        ok &= check("on: a sysop from 100.64.0.3 gets sysop in place",
+                    in_place("127.0.0.3", "CgnatNear"))
+    finally:
+        cfgp.write_text(orig)
+        cfg_reload(s)
+    ok &= check("put back: off again", not syscfg_cgnat_on())
+    s.close()
+    time.sleep(0.5)
+    return ok
+
+
+def syscfg_cgnat_on():
+    """Whether the board is running with 100.64/10 as local, from its log's
+    most recent config summary."""
+    lines = [l for l in host_log().splitlines() if l.startswith("[") and "cfg: " in l]
+    last = max((i for i, l in enumerate(lines) if "cfg: wifi" in l), default=-1)
+    return last >= 0 and last + 1 < len(lines) and "counts as the local network" in lines[last + 1]
+
+
 def test_config_announce_outside():
     """Announce's Outside port (1.1.0): blank sends the listening port.
 
@@ -8800,7 +9008,9 @@ def test_closed_fresh():
     e.buf.clear()
     e.send(b"announce\r")
     e.pump(1.5)
-    ok &= check("ANNOUNCE: held while closed", b"Held: the board is closed to callers." in plain(e.buf))
+    # Still on its own password here, so listed as closed (1.1.1); the
+    # published default, never listed, is test_backup_published_default's.
+    ok &= check("ANNOUNCE: listed as temporarily closed", b"Closed: listed as temporarily closed." in plain(e.buf))
 
     f = Caller(ansi=True)
     ok &= check("with a password set it is still closed to others",
@@ -8872,6 +9082,19 @@ def test_closed_configured():
     if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
         print("  SKIP  needs the host build and the sysop")
         return True
+    # Seeded, not assumed (1.1.1): the board this test stands for has no
+    # closed line, and an earlier test may have left one. test_backup_card's
+    # restore writes closed = no, and this failed whenever it ran first.
+    # Taken out of the file and the file read again, the harness board is
+    # the pre-1.1.0 board the test is about, whatever ran before it.
+    if closed_value() is not None:
+        cfgp = USERDATA / "system.cfg"
+        cfgp.write_text("".join(l for l in cfgp.read_text().splitlines(keepends=True)
+                                if l.split("=", 1)[0].strip() != "closed" or "=" not in l))
+        r = cfg_sysop("ClosedSeeder")
+        cfg_reload(r)
+        r.close()
+        time.sleep(0.5)
     ok = check("the board has its own sysop password and no closed line",
                cfg_line("sysop_password") is not None and closed_value() is None)
     ins = ansi_login("InsideJob")
@@ -8895,12 +9118,22 @@ def test_closed_configured():
     s.buf.clear()
     s.send(b"announce\r")
     s.pump(1.5)
-    ok &= check("ANNOUNCE: held while closed", b"Held: the board is closed to callers." in plain(s.buf))
+    # 1.1.1 (Rob): a closed board stays listed and says it is closed, where
+    # 1.1.0 held it off the directory.
+    ok &= check("ANNOUNCE: listed as temporarily closed, not held",
+                b"Closed: listed as temporarily closed." in plain(s.buf) and b"Held" not in plain(s.buf))
+    s.buf.clear()
+    s.send(b"announce test\r")
+    s.pump(1.5)
+    ok &= check("ANNOUNCE TEST: the payload says closed", b'"closed":true' in plain(s.buf))
     s.close()
     time.sleep(1.0)
 
     o = Caller(ansi=True)
     ok &= check("a caller gets the closed sign", closed_sign(o))
+    ok &= check("told how they are connected before it (1.1.1)",
+                -1 < plain(o.buf).find(b"--> Connection via Telnet is not secure")
+                   < plain(o.buf).find(b"Closed by the sysop for now"))
     o.send(b"Outsider\r")
     ok &= check("a new handle is refused", o.wait_for(b"Closed by the sysop. Call again later.", 6))
     o.close()
@@ -8961,6 +9194,10 @@ def test_fx_codes():
                                               b"@OOPS:text@", b"@SCRAMBLE:text@",
                                               b"@NOISE@", b"@BLINK:text@", b"@BELL@")))
     ok &= check("and it ends by pointing at CODES", b"See CODES" in seen)
+    # 1.1.1: the marquee is the board's name as a person reads it, the
+    # micro sign one column and a real one on a UTF-8 terminal.
+    ok &= check("the marquee scrolls the name with a real micro sign",
+                "µnleashed BBS".encode() in seen and b"UNLEASHED BBS" not in seen)
     ok &= check("nothing runs past the right edge at 80 columns",
                 max_column(bytes(c.buf)) <= 80)
     c.close()
@@ -10427,6 +10664,77 @@ def test_announce():
     n.close()
     s.close()
     stop.set()                         # the port is the next test's
+    th.join(3)
+    return ok
+
+
+def test_announce_closed():
+    """A closed board goes on sending heartbeats, marked closed (1.1.1, Rob).
+
+    1.1.0 held a closed board off the directory, so a long close let the
+    listing go stale and start its waiting period over. Now every heartbeat
+    while closed carries "closed": true and the directory shows the board as
+    temporarily closed; open, the field is left out. The published default
+    is still never announced, closed or not: test_backup_published_default
+    and test_first_setup hold that.
+    """
+    print("Directory: a closed board stays listed, marked closed")
+    import json as _json
+    import threading as _threading
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    got = []
+    stop = _threading.Event()
+    ready = _threading.Event()
+    port = int(os.environ.get("BBS_DIR_PORT", "8099"))
+    th = _threading.Thread(target=standin_directory, args=(port, got, stop),
+                           kwargs={"ready": ready}, daemon=True)
+    th.start()
+    ready.wait(5)
+
+    def beat(s):
+        """One heartbeat sent now, as the directory received it."""
+        got.clear()
+        s.buf.clear()
+        s.send(b"announce now\r")
+        s.wait_for(b"Sending now", 4)
+        for _ in range(40):
+            if got:
+                break
+            time.sleep(0.25)
+        try:
+            return _json.loads(got[-1][1].decode()) if got else None
+        except Exception:
+            return None
+
+    # One sysop line throughout: a closed board lets in only the sysop's
+    # account, and a new login here would meet the closed sign.
+    cfgp = USERDATA / "system.cfg"
+    s = cfg_sysop("ClosedLister")
+    ok = True
+    rec = beat(s)
+    ok &= check("open: a heartbeat goes out", rec is not None)
+    ok &= check("with no closed field", rec is not None and "closed" not in rec)
+    time.sleep(0.8)                      # the token the reply carried, written
+    orig = cfgp.read_text()
+    try:
+        lines = [l for l in orig.splitlines(keepends=True)
+                 if not ("=" in l and l.split("=", 1)[0].strip() == "closed")]
+        cfgp.write_text("closed = yes\n" + "".join(lines))
+        cfg_reload(s)
+        time.sleep(1.0)                  # the restart's own first heartbeat
+        rec = beat(s)
+        ok &= check("closed: heartbeats still go out", rec is not None)
+        ok &= check("saying closed: true", rec is not None and rec.get("closed") is True)
+    finally:
+        cfgp.write_text(orig)
+        cfg_reload(s)
+        time.sleep(1.0)
+    rec = beat(s)
+    ok &= check("open again: the field is gone", rec is not None and "closed" not in rec)
+    s.close()
+    stop.set()
     th.join(3)
     return ok
 
@@ -13551,9 +13859,9 @@ GROUPS = {
     # Logging in, accounts, staff.
     "login":     ["accounts", "handle_case", "guest", "sysop", "cosysop", "user_admin", "first_setup", "ban",
                   "closed_configured", "closed_fresh", "setup_abort",
-                  "boot_hold", "boot_notices"],
+                  "boot_hold", "boot_notices", "cgnat"],
     # Terminal handling across the three flavours.
-    "terminal":  ["ansi", "petscii", "ascii", "telnet_first"],
+    "terminal":  ["ansi", "petscii", "ascii", "telnet_first", "link_line"],
 }
 
 
@@ -13568,11 +13876,11 @@ GROUPS = {
 # Anything not named here runs after everything that is, in the order it was
 # picked, which is the right default for a test added and not yet placed.
 ORDER_NAMES = [
-    "test_ansi", "test_telnet_first", "test_petscii", "test_ascii",
+    "test_ansi", "test_telnet_first", "test_petscii", "test_ascii", "test_link_line",
     "test_page", "test_sysop", "test_cosysop", "test_accounts", "test_accounts_form_notes",
     "test_handle_case",
     "test_user_admin", "test_guest",
-    "test_privacy", "test_plugins", "test_about", "test_announce",
+    "test_privacy", "test_plugins", "test_about", "test_announce", "test_announce_closed",
     "test_announce_badges", "test_announce_directory",
     "test_chat", "test_room_commands", "test_room_new_commands", "test_room_quit_logoff",
     "test_room_time_staff_only", "test_bell", "test_codes_in_messages", "test_fx_codes", "test_room_narrow_effects",
@@ -13596,12 +13904,12 @@ ORDER_NAMES = [
     "test_lights_count", "test_lights_order", "test_lights_wifi", "test_lights_silent", "test_version_shown",
     # SKIPs on the reference board: tools/harness.sh --board s3 runs it.
     "test_board_s3", "test_board_s3_silent",
-    "test_board_fncam",
+    "test_board_fncam", "test_board_espcam",
     "test_camera",
     "test_camera_failed_start",
     "test_camera_silent",
     "test_announce_camera",
-    "test_config_wifi_live", "test_config_network", "test_config_announce_outside",
+    "test_config_wifi_live", "test_config_network", "test_cgnat_local", "test_config_announce_outside",
     "test_config_wifi_fallback", "test_boot_hold",
     "test_boot_hold_write_fails", "test_boot_hold_factory_fails", "test_sysop_spelled_default",
     "test_boot_notices", "test_dash_opens_nothing",

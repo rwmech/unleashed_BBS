@@ -317,31 +317,17 @@ void Bbs::restoreStaff(Session& s) {
 // ---------------------------------------------------------------------------
 // localAddr: is this caller on the same network as the board?
 //
-// Text comparison on the dotted quad, because that is the form the session
-// carries and parsing it into an integer to compare ranges would be more
-// code for the same answer. IPv6 link-local and loopback are included for
-// completeness; a board reached over IPv6 from the LAN normally arrives on
-// a ULA or a global address, so this is deliberately conservative and will
-// say "not local" rather than guess.
+// The session carries the dotted quad (IPv4 only: the listener is AF_INET),
+// read back into an address and put to the board's one rule, localNet
+// (guard.h), which the backup port asks too (1.1.1). The published
+// default's local-only rule, the second sysop in place and the setup offer
+// all come through here, so 100.64/10 is local to all of them, or to none,
+// as CONFIG network says.
 // ---------------------------------------------------------------------------
 bool Bbs::localAddr(const char* ip) {
-    if (!ip || !*ip) return false;
-    if (!strcmp(ip, "127.0.0.1") || !strcmp(ip, "::1")) return true;
-    if (!strncmp(ip, "10.", 3))       return true;
-    if (!strncmp(ip, "192.168.", 8))  return true;
-    if (!strncmp(ip, "169.254.", 8))  return true;      // link local
-    if (!strncmp(ip, "fe80:", 5) || !strncmp(ip, "FE80:", 5)) return true;
-    if (!strncmp(ip, "172.", 4)) {                      // 172.16 .. 172.31
-        int n = atoi(ip + 4);
-        if (n >= 16 && n <= 31) return true;
-    }
-    // 100.64/10, the shared space Tailscale and carrier NAT use: the same
-    // answer the backup port gives, so a sysop on a VPN is local to both.
-    if (!strncmp(ip, "100.", 4)) {
-        int n = atoi(ip + 4);
-        if (n >= 64 && n <= 127) return true;
-    }
-    return false;
+    uint32_t a = 0;
+    if (!ip || !ipFromText(ip, a)) return false;
+    return localNet(a, syscfg::get().cgnatLocal);
 }
 
 // ---------------------------------------------------------------------------
@@ -1025,6 +1011,14 @@ const CfgField kNetwork[] = {
     { "port",          "Port",     CK_NUM,  0, 0, 5, "Callers use it from the next restart.",
       "Telnet port",
       "What callers dial. Changing it takes effect at the next restart, never live." },
+    // 100.64.0.0/10 as the board's own network (1.1.1, Rob): off as shipped.
+    // Last, so no row a test or guide counts down to moves. Live, unlike the
+    // rest of the page (configSave's verdict says so). The note is the
+    // warning: the range is the carrier's too.
+    { "cgnat_local",   "CGNAT",    CK_YESNO, 0, 0, 4,
+      "Yes trusts all behind your carrier NAT",
+      "CGNAT/Tailscale LAN",
+      "Yes: 100.64/10 is local. Trusts everyone behind the same carrier NAT too." },
 };
 
 // isWifiKey: one of the two keys that are one setting (see configSave)
@@ -1374,6 +1368,7 @@ void cfgLiveValue(const char* key, char* out, size_t n) {
     else if (!strcmp(key, "activity_led_gpio"))     snprintf(out, n, "%d", c.ledGpio);
     else if (!strcmp(key, "silent"))                snprintf(out, n, "%s", c.silent ? "yes" : "no");
     else if (!strcmp(key, "closed"))                snprintf(out, n, "%s", c.closed ? "yes" : "no");
+    else if (!strcmp(key, "cgnat_local"))           snprintf(out, n, "%s", c.cgnatLocal ? "yes" : "no");
     else if (!strcmp(key, "silent_from"))           board::fmtTime(c.silentFrom, out, n);
     else if (!strcmp(key, "silent_until"))          board::fmtTime(c.silentUntil, out, n);
     else if (!strcmp(key, "call_minutes"))          snprintf(out, n, "%u", c.callMinutes);
@@ -2544,7 +2539,12 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
     bool ok = configReloadAll(err, errLen);
     // Neither the radio nor the listener is touched until a restart (see
     // kNetwork), so "live" would be a promise the board is not keeping.
-    if (ok && g_cfgPage->fields == kNetwork && !strcmp(err, "Saved and live"))
+    // The CGNAT row (1.1.1) is the one exception: the local-address rule
+    // reads it on every question, so a save of that row alone is live.
+    bool restartOnly = false;
+    for (uint8_t k = 0; k < n; ++k)
+        if (strcmp(pairs[k].key, "cgnat_local")) restartOnly = true;
+    if (ok && g_cfgPage->fields == kNetwork && restartOnly && !strcmp(err, "Saved and live"))
         snprintf(err, errLen, nowOpen ? "Saved: OPEN network, from restart"
                                       : "Saved, used from the next restart");
     return ok;

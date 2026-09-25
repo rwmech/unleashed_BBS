@@ -267,17 +267,12 @@ bool BackupService::applyingScreens(bool& card) const {
 // Client
 // ===========================================================================
 
-// localAddr: 10/8, 172.16/12, 192.168/16, 127/8, 169.254/16 link-local and
-// 100.64/10, the shared space Tailscale and carrier NAT use, so a sysop on a
-// VPN is let in as the docs promise. The address is in network order, so
-// the first byte is the first octet on either endianness.
+// localAddr: the board's one rule for its own network (guard.h localNet,
+// 1.1.1), which the shell asks too: RFC 1918, link local, 127.0.0.1, and
+// 100.64/10 only when CONFIG network says so. It took all of 127/8 and
+// 100.64/10 always until then.
 static bool localAddr(uint32_t netOrder) {
-    const uint8_t* o = reinterpret_cast<const uint8_t*>(&netOrder);
-    return o[0] == 10 || o[0] == 127 ||
-           (o[0] == 172 && (o[1] & 0xF0) == 16) ||
-           (o[0] == 192 && o[1] == 168) ||
-           (o[0] == 169 && o[1] == 254) ||
-           (o[0] == 100 && (o[1] & 0xC0) == 64);
+    return localNet(netOrder, syscfg::get().cgnatLocal);
 }
 
 void BackupService::acceptClient(uint32_t now) {
@@ -286,6 +281,7 @@ void BackupService::acceptClient(uint32_t now) {
         socklen_t al = sizeof(a);
         int fd = accept(lfd_, reinterpret_cast<sockaddr*>(&a), &al);
         if (fd < 0) return;
+        a.sin_addr.s_addr = peerAddr(a.sin_addr.s_addr);   // the host's 127.0.0.3
         if (!localAddr(a.sin_addr.s_addr)) {
             // A forwarded port, or one UPnP opened without anybody asking,
             // must not hand the accounts and the Wi-Fi password to the

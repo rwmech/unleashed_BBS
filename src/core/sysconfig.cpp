@@ -415,7 +415,29 @@ void keyValue(Ctx& c, const char* key, char* val) {
     else if (!strcmp(key, "day_minutes"))           { if (number(c, key, val, n)) g.dayMinutes  = static_cast<uint16_t>(n); }
     else if (!strcmp(key, "backup_window_minutes")) { if (number(c, key, val, n)) g.backupMinutes = static_cast<uint16_t>(n); }
     else if (!strcmp(key, "backup_button_gpio"))    { if (gpio(c, key, val, n)) g.backupGpio = static_cast<int8_t>(n); }
-    else if (!strcmp(key, "activity_led_gpio"))     { if (gpio(c, key, val, n)) g.ledGpio = static_cast<int8_t>(n); }
+    else if (!strcmp(key, "activity_led_gpio")) {
+        if (!gpio(c, key, val, n)) return;
+#if defined(BBS_HAS_SD_SLOT) && !defined(BBS_SD_SDMMC1)
+        // A card slot on the board, over SPI (the ESP32-CAM, the S3): its
+        // four lines are the sd plugin's settings, so pinProblem does not
+        // refuse them and CONFIG's pin-holder check names the sd plugin
+        // instead. A file read at boot or restored is another matter: a
+        // WROOM's system.cfg carries its LED on GPIO 2, the ESP32-CAM's
+        // card MISO, and the red LED went dark (1.1.1). That line is
+        // dropped and logged, and the board's own LED stays, as a pin the
+        // board owns outright is (gpio above). The sd plugin's own pin
+        // settings are untouched: only the LED is compared, and only with
+        // the slot's wiring, not with whatever CONFIG sd says.
+        if (!c.bare && n >= 0 &&
+            (n == BBS_SD_CS || n == BBS_SD_MOSI || n == BBS_SD_CLK || n == BBS_SD_MISO)) {
+            plat::log("cfg: line %d activity_led_gpio = %ld: that pin is the SD card slot on this "
+                      "board, line ignored, the board's own LED (%d) kept",
+                      c.lineNo, n, static_cast<int>(BBS_LED_GPIO));
+            return;
+        }
+#endif
+        g.ledGpio = static_cast<int8_t>(n);
+    }
     else if (!strcmp(key, "max_users"))             { if (number(c, key, val, n)) g.maxUsers = static_cast<uint8_t>(n); }
     else if (!strcmp(key, "self_register"))         yesNo(c, key, val, g.selfRegister);
     else if (!strcmp(key, "guest"))                 yesNo(c, key, val, g.guestEnabled);
@@ -438,6 +460,7 @@ void keyValue(Ctx& c, const char* key, char* val) {
         yesNo(c, key, val, g.closed);
         if (c.problems == before) g.closedSet = true;
     }
+    else if (!strcmp(key, "cgnat_local"))           yesNo(c, key, val, g.cgnatLocal);
     else if (!strcmp(key, "silent_from") || !strcmp(key, "silent_until")) {
         // A form is told (a writer's trial); a file is read as no time and
         // the console says so, for the reason crossCheck gives below.
@@ -567,6 +590,8 @@ void logSummary() {
               g_cfg.whoMin, g_cfg.whoMax, g_cfg.ledGpio, g_cfg.selfRegister ? "yes" : "no", g_cfg.maxUsers,
               g_cfg.guestEnabled ? "yes" : "no", g_cfg.guestMinutes);
     plat::log("cfg: wifi %s", g_cfg.wifiSsid[0] ? g_cfg.wifiSsid : "not set in the file");
+    if (g_cfg.cgnatLocal)
+        plat::log("cfg: 100.64.0.0/10 (carrier NAT, Tailscale) counts as the local network");
     // Before 0.22.1 a '#' anywhere began a comment, so a hand-edited
     // "sysop_password = x   # note" meant x. It now means the whole line,
     // and BYE x becomes a plain logoff that counts toward a ban with

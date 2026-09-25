@@ -191,3 +191,42 @@ bool ipFromText(const char* s, uint32_t& out) {
     memcpy(&out, b, 4);
     return true;
 }
+
+// ---------------------------------------------------------------------------
+// localNet: the one rule for "on the board's own network" (1.1.1).
+//
+// There were two: the shell's (Bbs::localAddr, on the dotted quad, which
+// took 127.0.0.1 exactly) and the backup port's (on the raw address, which
+// took all of 127/8), and both counted 100.64/10 unconditionally. That range
+// is the carrier's shared space as much as Tailscale's, so since 1.1.1 it is
+// local only when CONFIG network says so (SysConfig::cgnatLocal).
+//
+// Loopback is 127.0.0.1 alone. A board is never called over loopback; the
+// host harness is, and it calls from 127.0.0.2 to stand for "from outside".
+// ---------------------------------------------------------------------------
+bool localNet(uint32_t netOrder, bool cgnat) {
+    const uint8_t* o = reinterpret_cast<const uint8_t*>(&netOrder);
+    if (o[0] == 127) return o[1] == 0 && o[2] == 0 && o[3] == 1;
+    return o[0] == 10 ||
+           (o[0] == 172 && (o[1] & 0xF0) == 16) ||
+           (o[0] == 192 && o[1] == 168) ||
+           (o[0] == 169 && o[1] == 254) ||                        // link local
+           (cgnat && o[0] == 100 && (o[1] & 0xC0) == 64);         // 100.64/10
+}
+
+// peerAddr: the address a caller is taken to have come from. The board's is
+// the socket's. The host build has no carrier NAT to call from, so there a
+// caller from 127.0.0.3 stands for one at 100.64.0.3 (test_cgnat_local),
+// and nothing else changes.
+uint32_t peerAddr(uint32_t netOrder) {
+#ifdef BBS_HOST
+    const uint8_t* o = reinterpret_cast<const uint8_t*>(&netOrder);
+    if (o[0] == 127 && o[1] == 0 && o[2] == 0 && o[3] == 3) {
+        const uint8_t cg[4] = { 100, 64, 0, 3 };
+        uint32_t v;
+        memcpy(&v, cg, 4);
+        return v;
+    }
+#endif
+    return netOrder;
+}

@@ -96,3 +96,13 @@ private:
 // ip helpers shared by the shell (dotted quad <-> raw s_addr bytes)
 void ipToText(uint32_t ip, char* out, size_t n);
 bool ipFromText(const char* s, uint32_t& out);
+
+// localNet: is this address (network order) on the board's own network?
+// RFC 1918, link local, 127.0.0.1, and 100.64/10 when cgnat is set (CONFIG
+// network, SysConfig::cgnatLocal). The one rule the shell and the backup
+// port both ask (1.1.1).
+bool localNet(uint32_t netOrder, bool cgnat);
+
+// peerAddr: a socket's peer as the board takes it. The same address on a
+// board; the host build maps 127.0.0.3 to 100.64.0.3 for its tests.
+uint32_t peerAddr(uint32_t netOrder);

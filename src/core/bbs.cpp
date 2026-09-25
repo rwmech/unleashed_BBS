@@ -615,7 +615,7 @@ void Bbs::acceptAll(uint32_t now) {
         int fd = accept(lfd_, reinterpret_cast<sockaddr*>(&a), &al);
         if (fd < 0) break;
 
-        uint32_t ipAddr = a.sin_addr.s_addr;
+        uint32_t ipAddr = peerAddr(a.sin_addr.s_addr);   // the host's 127.0.0.3 (guard.h)
         char ip[16];
         ipToText(ipAddr, ip, sizeof(ip));
 
@@ -1241,6 +1241,42 @@ void Bbs::closedRefuse(Session& s, uint32_t now) {
 }
 
 // ---------------------------------------------------------------------------
+// linkLine: "--> Connection via Telnet is not secure" (1.1.1, Rob).
+//
+// Said to every caller once the terminal is known, before any screen, so
+// nobody types a password without having been told. The wording is built
+// from what the link is rather than written out, so SSH (1.2.0) is a new
+// row in linkOf and nothing else: "--> Connection via SSH is Secure.",
+// with "Secure." in bright yellow. 39 columns, so it fits a C64.
+// ---------------------------------------------------------------------------
+namespace {
+struct Link { const char* name; bool secure; };
+// linkOf: how this session reached the board. Telnet is the only door
+// until the SSH listener (1.2.0) marks its sessions.
+Link linkOf(const Session&) { return Link{ "Telnet", false }; }
+} // namespace
+
+void Bbs::linkLine(Session& s) {
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    const Link l = linkOf(s);
+    t.color(tl, Color::Cyan);
+    t.text(tl, "--> ");
+    t.color(tl, Color::Grey);
+    t.text(tl, "Connection via ");
+    t.text(tl, l.name);
+    t.text(tl, " is ");
+    if (l.secure) {
+        t.color(tl, Color::Yellow);
+        t.text(tl, "Secure.");
+    } else {
+        t.color(tl, Color::LightRed);
+        t.text(tl, "not secure");
+    }
+    t.nl(tl);
+}
+
+// ---------------------------------------------------------------------------
 // startIntro: detected banner, then the welcome screen
 // ---------------------------------------------------------------------------
 void Bbs::startIntro(Session& s) {
@@ -1256,8 +1292,11 @@ void Bbs::startIntro(Session& s) {
     t.color(tl, Color::Grey);
     snprintf(line, sizeof(line), "Opening node %u ", s.id);
     fx::working(t, tl, line, 700, "OK");
+    linkLine(s);
     t.reset(tl);
-    fx::pause(tl, 300);
+    // 300 ms was a beat before the welcome cleared the screen; the line
+    // above is read, so it stays up long enough to be.
+    fx::pause(tl, 900);
 
     s.st = SState::Intro;
     if (!s.scr.open("welcome", t)) {
@@ -1284,6 +1323,12 @@ void Bbs::startBusy(Session& s, uint32_t now) {
     Timeline& tl = s.tl;
 
     t.init(tl);
+    // The busy line and the closed sign say how the line is connected too
+    // (1.1.1): the caller is about to be asked for nothing, but a sysop's
+    // account may type a password at either.
+    linkLine(s);
+    t.reset(tl);
+    fx::pause(tl, 900);
     s.st        = SState::BusyWait;
     s.countdown = 0xFF;                       // not started until the screen ends
     if (closedTo(s)) {

@@ -170,7 +170,21 @@ void blink(Term& t, Timeline& tl, const char* s, uint8_t times, uint16_t ms) {
 // marquee: scroll text through a fixed window, then clear the window
 // ---------------------------------------------------------------------------
 void marquee(Term& t, Timeline& tl, const char* s, uint8_t width, uint16_t ms, uint8_t loops) {
-    uint8_t len = static_cast<uint8_t>(strnlen(s, 60));
+    // One cell a column. The micro sign is two bytes of UTF-8 and one
+    // column, so it becomes a marker cell here and goes out as the Term's
+    // Glyph::Micro (1.1.1): a real µ on UTF-8, CP437's 0xE6 on ANSI, a u
+    // where there is none. Sent byte by byte it was two wrong characters.
+    constexpr char kMicro = '\x01';
+    char cell[61];
+    uint8_t len = 0;
+    for (const char* q = s; *q && len < sizeof(cell) - 1; ++q) {
+        if (static_cast<uint8_t>(q[0]) == 0xC2 && static_cast<uint8_t>(q[1]) == 0xB5) {
+            cell[len++] = kMicro;
+            ++q;
+        } else {
+            cell[len++] = *q;
+        }
+    }
     if (!len || !width) return;
     uint16_t total = static_cast<uint16_t>(len + width);
     uint16_t steps = fitSteps(tl, static_cast<uint16_t>(total * loops), width * 2 + 8);
@@ -178,7 +192,9 @@ void marquee(Term& t, Timeline& tl, const char* s, uint8_t width, uint16_t ms, u
     for (uint16_t k = 0; k < steps; ++k) {
         for (uint8_t w = 0; w < width; ++w) {
             uint16_t p = static_cast<uint16_t>((k + 1 + w) % total);
-            t.ch(tl, p < width ? ' ' : s[p - width]);
+            char c = p < width ? ' ' : cell[p - width];
+            if (c == kMicro) t.glyph(tl, Glyph::Micro);
+            else             t.ch(tl, c);
         }
         tl.delay(ms);
         t.left(tl, width);
