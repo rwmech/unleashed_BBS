@@ -187,11 +187,25 @@ def config_num(name, fallback):
 
 
 BBS_VERSION = bbs_version()
-# The S3 profile's own version, read from src/board.h so a board bump does
-# not leave the suite asserting the last one.
-_s3v = re.search(r'#define\s+BBS_BOARD_VERSION\s+"([^"]*)"',
-                 (ROOT / "src" / "board.h").read_text())
-S3_VERSION = _s3v.group(1) if _s3v else "1.0.0"
+# A board profile's tag and version, read from its own block in src/board.h
+# (the way tools/release.py reads them), so a board bump does not leave the
+# suite asserting the last one.
+BOARD_DEFINES = {"s3": "BBS_BOARD_WS_S3LCD147", "fncam": "BBS_BOARD_FN_WROVER_CAM"}
+
+
+def board_profile(name):
+    """(tag, version) of the profile harness.sh --board NAME builds."""
+    define = BOARD_DEFINES[name]
+    text = (ROOT / "src" / "board.h").read_text(encoding="utf-8")
+    m = re.search(r"^#if defined\(" + define + r"\)$(.*?)^#endif\s*//\s*" + define, text, re.S | re.M)
+    body = m.group(1) if m else ""
+    tag = re.search(r'#define\s+BBS_BOARD_TAG\s+"([^"]*)"', body)
+    ver = re.search(r'#define\s+BBS_BOARD_VERSION\s+"([^"]*)"', body)
+    return (tag.group(1) if tag else "?", ver.group(1) if ver else "?")
+
+
+S3_VERSION = board_profile("s3")[1]
+HOST_BOARD = os.environ.get("BBS_HOST_BOARD", "")
 MAX_NODES   = config_num("BBS_MAX_NODES", 6)
 BBS_PORT_NUM = config_num("BBS_PORT", 6400)     # the dial-in port, not this run's
 # The published default sysop password, read from the firmware so the suite
@@ -1420,9 +1434,11 @@ def test_version_shown():
     core version alone, and no trace of a profile. The directory is sent the
     core version; the profile's goes into the system badge."""
     print("The version as it is shown")
-    s3 = os.environ.get("BBS_HOST_BOARD") == "s3"
-    shown = (BBS_VERSION + " (S3 " + S3_VERSION + ")") if s3 else BBS_VERSION
-    tail = ("(S3 " + S3_VERSION + ")").encode()
+    # s3 here means "a board profile's build", whichever profile it is.
+    s3 = HOST_BOARD in BOARD_DEFINES
+    tag, ver = board_profile(HOST_BOARD if s3 else "s3")
+    shown = (BBS_VERSION + " (" + tag + " " + ver + ")") if s3 else BBS_VERSION
+    tail = ("(" + tag + " " + ver + ")").encode()
     if not PASSWORD:
         print("  SKIP  needs the sysop")
         return True
@@ -5790,6 +5806,374 @@ def panel_read(s):
     return plain(s.buf)
 
 
+def test_board_fncam():
+    """The Freenove ESP32-WROVER CAM board profile on the host (1.1.0): its
+    defaults and the pins it owns. SKIPs on the reference board;
+    tools/harness.sh --board fncam --only=board_fncam runs it. Every pin but
+    13, 32 and 33 is the camera's, the card's, the PSRAM's, the console's or
+    a strap, and each is refused by name, where the WROOM's build takes all
+    of them (GPIO 2 is its own LED)."""
+    print("Board profile: Freenove ESP32-WROVER CAM")
+    if HOST_BOARD != "fncam" or not PASSWORD:
+        print("  SKIP  needs tools/harness.sh --board fncam")
+        return True
+    s = cfg_sysop("BoardCam")
+
+    # The lights plugin is off as shipped, as on the WROOM, so LIGHTS is not
+    # a command until a sysop switches it on and gives it a pin.
+    s.buf.clear()
+    s.send(b"lights\r")
+    s.pump(1.0)
+    ok = check("the lights ship off: no NeoPixel is documented on this board",
+               b"Unknown command" in plain(s.buf) and b"Strip " not in s.buf)
+
+    log = (DATA.parent / "host.log").read_text(errors="replace")
+    ok &= check("the serial bridge on 33 and 32, not the PSRAM's 16 and 17",
+                "serial: rx 33 tx 32" in log)
+
+    # The board page's activity LED: each owned pin refused with its reason,
+    # the free ones taken, and -1 put back.
+    want = ((b"2", b"SD card slot"), (b"14", b"SD card slot"), (b"15", b"SD card slot"),
+            (b"18", b"camera's"), (b"36", b"camera's"), (b"21", b"camera's"),
+            (b"16", b"PSRAM"), (b"17", b"PSRAM"), (b"1", b"console"), (b"3", b"console"),
+            (b"12", b"strapping pin"), (b"7", b"flash chip"))
+    before = cfg_line("activity_led_gpio")
+    for pin, why in want:
+        cfg_open(s, b"board", b"Hostname")
+        s.buf.clear()
+        s.send(DOWN * BOARD_LED + b"\x08" * 3 + pin + F1)
+        got = cfg_verdict(s, [why, b"Saved", b"no such pin", b"flash chip", b"PSRAM", b"camera",
+                              b"card slot", b"console", b"strapping"])
+        ok &= check(f"the LED on GPIO {pin.decode()} refused: {why.decode()}", got == why)
+        cfg_cancel(s)
+    ok &= check("and nothing is written", cfg_line("activity_led_gpio") == before)
+
+    # 13 is free. 32 and 33 are free on the board but the harness has the
+    # serial bridge switched on, on its defaults 33 and 32, so CONFIG says
+    # who holds them; 0 is the BOOT button, which the backup window reads.
+    for pin, want in ((b"32", b"serial, "), (b"33", b"serial, "), (b"0", b"BOOT button")):
+        cfg_open(s, b"board", b"Hostname")
+        s.buf.clear()
+        s.send(DOWN * BOARD_LED + b"\x08" * 3 + pin + F1)
+        got = cfg_verdict(s, [want, b"Saved", b"PSRAM", b"camera", b"card slot", b"console"])
+        ok &= check(f"GPIO {pin.decode()} refused: {want.decode()}", got == want)
+        cfg_cancel(s)
+    for pin in (b"13",):
+        cfg_open(s, b"board", b"Hostname")
+        s.buf.clear()
+        s.send(DOWN * BOARD_LED + b"\x08" * 3 + pin + F1)
+        got = cfg_verdict(s, [b"Saved", b"PSRAM", b"camera", b"card slot", b"console", b"strapping",
+                              b"no such pin"])
+        ok &= check(f"GPIO {pin.decode()} is free for a sysop", got == b"Saved")
+        cfg_cancel(s)
+    cfg_open(s, b"board", b"Hostname")
+    s.buf.clear()
+    s.send(DOWN * BOARD_LED + b"\x08" * 3 + b"-1" + F1)
+    got = cfg_verdict(s, [b"Saved", b"Between"])
+    cfg_cancel(s)
+    ok &= check("and the LED goes back to none", got == b"Saved" and
+                (cfg_line("activity_led_gpio") or "").endswith("= -1"))
+
+    # A plugin's pin meets the same rule: the drive light on a camera line.
+    cfg_open(s, b"lights", b"Drive pin")
+    s.buf.clear()
+    s.send(DOWN * 4 + b"\x08" * 3 + b"22" + F1)
+    got = cfg_verdict(s, [b"Saved", b"camera's", b"no such pin", b"flash chip", b"Between"])
+    ok &= check("the drive light on GPIO 22, the camera's PCLK, refused", got == b"camera's")
+    cfg_cancel(s)
+    s.close()
+
+    # A WROOM's system.cfg brought here: its LED on GPIO 2 is this board's
+    # card. That one line is dropped and logged, and the rest of the file is
+    # read, rather than the whole file refused over it (the 1.0.2 rule).
+    port = PORT + 3711
+    proc, tmp = restart_copy((str(port),), edits={("", "activity_led_gpio"): "2",
+                                                  ("", "idle_minutes"): "17"})
+    try:
+        log = copy_log(tmp, f"listening on {port},")
+        ok &= check("a WROOM's LED on GPIO 2 is dropped at boot, by line and reason",
+                    "activity_led_gpio = 2: that pin is the SD card slot on this board, line ignored" in log)
+        ok &= check("and the rest of the file is read: no problem counted, idle 17",
+                    "problem(s)" not in log and "idle 17" in log)
+    finally:
+        stop_copy(proc, tmp)
+    return ok
+
+
+def section_config(s, section, **keys):
+    """[section] rewritten with exactly these keys (none: removed), then the
+    board made to read it, as lights_config does for the lights."""
+    path = USERDATA / "system.cfg"
+    out, skip = [], False
+    for line in path.read_text().splitlines():
+        t = line.strip()
+        if t.startswith("["):
+            skip = t.lower() == "[" + section + "]"
+        if not skip:
+            out.append(line)
+    if keys:
+        out.append("[" + section + "]")
+        out += [f"{k} = {v}" for k, v in keys.items()]
+    path.write_text("\n".join(out) + "\n")
+    return cfg_reload(s)
+
+
+def camera_config(s, **keys):
+    return section_config(s, "plugin:camera", **dict({"enabled": "yes"}, **keys))
+
+
+def host_log():
+    p = DATA.parent / "host.log"
+    return p.read_text(errors="replace") if p.exists() else ""
+
+
+def snap(c, secs=12):
+    """SNAPSHOT from caller c: the whole answer, up to the download question
+    or the refusal, as plain text."""
+    c.buf.clear()
+    c.send(b"snapshot\r")
+    wait_any(c, [b"Download it now?", b"kept in the Photos area", b"No photo:", b"not open to you",
+                 b"allowed at", b"busy", b"needs the SD card", b"too full", b"transferring"], secs)
+    c.pump(0.4)
+    return plain(c.buf)
+
+
+def photos(card):
+    """Every JPG under the card's photos folder, as paths relative to it."""
+    root = card / "photos"
+    return sorted(str(p.relative_to(root)).replace("\\", "/") for p in root.rglob("*.JPG")) if root.exists() else []
+
+
+def test_camera():
+    """The camera (1.1.0, the Freenove WROVER CAM's profile): SNAPSHOT, the
+    download offer, the flash pin, the limits, naming, retention and the
+    Photos area, against the host's stub camera. SKIPs off the profile or
+    with no card: the camera is PF_SD."""
+    print("The camera")
+    card = card_dir()
+    if HOST_BOARD != "fncam" or not PASSWORD or card is None:
+        print("  SKIP  needs tools/harness.sh --board fncam --card")
+        return True
+    s = cfg_sysop("CamSysop")
+    (card / "photos").mkdir(exist_ok=True)
+    (card / "photos" / ".snap.tmp").write_bytes(b"half a photo")
+    (card / "photos" / "garden.jpg").write_bytes(b"\xff\xd8the sysop's own\xff\xd9")
+
+    # Off as shipped: no SNAPSHOT at all.
+    c = ansi_login("CamCaller")
+    c.buf.clear()
+    c.send(b"snapshot\r")
+    ok = check("off as shipped: SNAPSHOT is not a command", c.wait_for(b"Unknown command", 4))
+
+    camera_config(s)
+    time.sleep(1.0)
+    ok &= check("switched on, the survey clears a photo a power cut left half written",
+                not (card / "photos" / ".snap.tmp").exists())
+    ok &= check("the flash pin is not driven with the flash off", "cam-pin" not in host_log())
+    got = snap(c)
+    ok &= check("snapping is for staff as shipped", b"not open to you" in got)
+
+    camera_config(s, snap="users", flash_mode="pin", flash_pin="13", flash_lead="300")
+    time.sleep(1.0)
+    log0 = host_log()
+    ok &= check("in pin mode the flash pin idles low from the start", "cam-pin 13 low" in log0)
+    s.buf.clear()
+    got = snap(c)
+    ok &= check("a snap tells the caller where they stand",
+                b"Snapshot 1 of 10 this hour, 1 of 20 today." in got)
+    ok &= check("no countdown and nothing to smile for: a caller is not in front of it",
+                b"Smile" not in got and b"Cheese" not in got)
+    ok &= check("then develops it", b"Developing..." in got)
+    m = re.search(rb"Photo saved: (SNAP-\d{8}-\d{6}\.JPG) \(FILES, area 12\)", got)
+    ok &= check("names it SNAP-date and points at area 12", m is not None)
+    ok &= check("and offers the download", b"Download it now?  [Y]es  [X]modem  [N]o" in got)
+    c.send(b"n")
+    c.wait_for(b"kept in the Photos area", 4)
+    name = m.group(1).decode() if m else ""
+    jpg = (card / "photos" / name).read_bytes() if name and (card / "photos" / name).exists() else b""
+    ok &= check("the photo is on the card, a JPEG", jpg[:2] == b"\xff\xd8" and jpg[-2:] == b"\xff\xd9")
+    ok &= check("carrying who took it in a COM segment after SOI",
+                jpg[2:4] == b"\xff\xfe" and b"snapped by CamCaller" in jpg[:300])
+    desc = (card / "photos" / "FILES.BBS").read_text(errors="replace") if (card / "photos" / "FILES.BBS").exists() else ""
+    ok &= check("and FILES.BBS says so", f"{name} Taken by CamCaller" in desc)
+    log1 = host_log()[len(log0):]
+    hi = re.search(r"\[\s*(\d+)\.(\d+)\] cam-pin 13 high", log1)
+    lo = re.search(r"\[\s*(\d+)\.(\d+)\] cam-pin 13 low", log1)
+    ok &= check("the flash pin went high, then low", hi is not None and lo is not None and hi.start() < lo.start())
+    if hi and lo:
+        ms = (int(lo.group(1)) - int(hi.group(1))) * 1000 + int(lo.group(2)) - int(hi.group(2))
+        ok &= check(f"and was high for the lead and the frame ({ms} ms, lead 300)", 300 <= ms < 2000)
+    ok &= check("staff are told", s.wait_for(b"Node", 3) and b"took a photo" in plain(s.buf))
+    ok &= check("the log line names the photo and the times", re.search(r"camera: " + re.escape(name) + r" .* up \d+ ms", host_log()) is not None)
+
+    # CAMERA, staff's view
+    s.buf.clear()
+    s.send(b"camera\r")
+    s.wait_for(b"Card free", 4)
+    s.pump(0.3)
+    cam = plain(s.buf)
+    ok &= check("CAMERA: the sensor, the count, the card, the last photo",
+                b"Sensor GC0308 at vga" in cam and b"Photos 1" in cam and b"Last " in cam and b"CamCaller" in cam)
+
+    # The Photos area: the caller finds it in FILES, area 12.
+    c.buf.clear()
+    c.send(b"files 12\r")
+    c.wait_for(b"Photos", 5)
+    c.pump(0.8)
+    area = plain(c.buf)
+    ok &= check("FILES 12 is the Photos area and lists it, with who took it",
+                name.encode() in area and b"Taken by CamCaller" in area)
+    ok &= check("never the sysop's own file as a photo count, but listed like any file", b"garden.jpg" in area)
+    c.send(b"q")
+    c.pump(0.3)
+    c.send(b"q")
+    c.pump(0.5)
+    drain(c)
+
+    # A second, in a handle folder, with the download: YMODEM starts.
+    camera_config(s, snap="users", names="by handle")
+    time.sleep(1.2)
+    got = snap(c)
+    m2 = re.search(rb"Photo saved: (CamCaller/SNAP-\d{8}-\d{6}\.JPG)", got)
+    ok &= check("by handle: a folder per caller", m2 is not None and b"2 of 10 this hour" in got)
+    c.buf.clear()
+    c.send(b"y")
+    ok &= check("Y starts the same YMODEM download the file areas use",
+                c.wait_for(b"Start your YMODEM receive now", 5))
+    c.send(b"\x18" * 8)                               # cancel it, the way a terminal does
+    ok &= check("and a cancelled transfer comes back to the prompt", c.wait_for(b"Download failed", 15))
+    drain(c)
+
+    # A caller allowed to snap but not to download is not offered it.
+    camera_config(s, snap="users", photos="staff")
+    time.sleep(1.2)
+    got = snap(c)
+    ok &= check("allowed to snap but not to see photos: saved, not offered",
+                b"Photo saved" in got and b"Download it now?" not in got and b"kept in the Photos area" in got)
+
+    # Hanging up in the middle does not lose the photo.
+    camera_config(s, snap="users")
+    time.sleep(1.2)
+    before = len(photos(card))
+    h = ansi_login("CamHangup")
+    h.send(b"snapshot\r")
+    h.wait_for(b"this hour", 4)
+    h.close()
+    time.sleep(3.0)
+    ok &= check("a caller who hangs up mid-snap still gets the photo saved", len(photos(card)) == before + 1)
+
+    # The limit: ten an hour.
+    for i in range(7):                                 # 3 so far for CamCaller
+        time.sleep(1.1)
+        got = snap(c)
+        if b"Download it now?" in got:
+            c.send(b"n")
+            c.wait_for(b"kept in the Photos area", 4)
+    time.sleep(1.1)
+    got = snap(c)
+    ok &= check("the eleventh this hour is refused, with the time the next is allowed",
+                re.search(rb"That is 10 this hour; the next one is allowed at \d\d:\d\d\.", got) is not None)
+    s.buf.clear()
+    got = snap(s)
+    ok &= check("the sysop is not limited", b"Photo saved" in got and b"this hour" not in got)
+    if b"Download it now?" in got:
+        s.send(b"n")
+        s.wait_for(b"kept in the Photos area", 4)
+
+    # Retention by count: the oldest go, never the sysop's own file.
+    camera_config(s, snap="users", max="2")
+    time.sleep(1.2)
+    time.sleep(1.1)
+    got = snap(s)
+    if b"Download it now?" in got:
+        s.send(b"n")
+        s.wait_for(b"kept in the Photos area", 4)
+    time.sleep(0.5)
+    kept = [p for p in photos(card) if not p.startswith("timelapse/")]
+    ok &= check(f"max 2: two callers' photos kept ({len(kept)})", len(kept) == 2)
+    ok &= check("the sysop's own garden.jpg is never removed", (card / "photos" / "garden.jpg").exists())
+    ok &= check("an emptied handle folder goes with its last photo", not (card / "photos" / "CamCaller").exists())
+    desc = (card / "photos" / "FILES.BBS").read_text(errors="replace") if (card / "photos" / "FILES.BBS").exists() else ""
+    ok &= check("and a removed photo's FILES.BBS line goes with it", name not in desc)
+
+    # The timelapse: the board's own, in its own folder, pruned on its own.
+    camera_config(s, snap="users", max="2", tl_sec="10", tl_max="1")
+    until = time.time() + 26
+    tl = []
+    while time.time() < until and len(tl) < 1:
+        time.sleep(1.0)
+        tl = [p for p in photos(card) if p.startswith("timelapse/TL-")]
+    ok &= check("a timed shot lands in timelapse/ as TL-date", len(tl) == 1)
+    time.sleep(11)
+    tl = [p for p in photos(card) if p.startswith("timelapse/TL-")]
+    kept2 = [p for p in photos(card) if not p.startswith("timelapse/")]
+    ok &= check("its own count keeps one, and the callers' photos are untouched",
+                len(tl) == 1 and len(kept2) == 2)
+    camera_config(s, snap="users")
+
+    # The flash pin and the lights: in pin mode the pin is held, in pixel
+    # mode it is shared with the drive light.
+    camera_config(s, snap="users", flash_mode="pin", flash_pin="13")
+    lights_config(s, enabled="yes")
+    cfg_open(s, b"lights", b"Drive pin")
+    s.buf.clear()
+    s.send(DOWN * 4 + b"\x08" * 3 + b"13" + F1)
+    got = cfg_verdict(s, [b"Taken: camera", b"Saved", b"Between", b"GPIO 13"])
+    ok &= check("in pin mode the camera holds its pin: the drive light may not have 13",
+                got in (b"Taken: camera", b"GPIO 13"))
+    cfg_cancel(s)
+    camera_config(s, snap="users", flash_mode="pixel", flash_pin="13", flash_lead="1000")
+    cfg_open(s, b"lights", b"Drive pin")
+    s.buf.clear()
+    s.send(DOWN * 4 + b"\x08" * 3 + b"13" + F1)
+    got = cfg_verdict(s, [b"Saved", b"Taken: camera", b"GPIO 13", b"Between"])
+    cfg_cancel(s)
+    ok &= check("in pixel mode the drive light may share it", got == b"Saved" and
+                lights_read(s).get("drive", {}).get("pin") == 13)
+    cfg_open(s, b"board", b"Hostname")
+    s.buf.clear()
+    s.send(DOWN * BOARD_LED + b"\x08" * 3 + b"13" + F1)
+    got = cfg_verdict(s, [b"Saved", b"Taken", b"GPIO 13", b"Between"])
+    cfg_cancel(s)
+    ok &= check("but nothing else may: the board LED on 13 is refused", got in (b"Taken", b"GPIO 13"))
+    p = ansi_login("CamPixel")                         # CamCaller is at the hour's limit
+    p.buf.clear()
+    p.send(b"snapshot\r")
+    white = False
+    until = time.time() + 6
+    while time.time() < until and not white:
+        px = lights_px(s, "drive")
+        white = bool(px) and px[0] == (255, 255, 255)
+    ok &= check("and goes white for the exposure", white)
+    wait_any(p, [b"Download it now?", b"kept in the Photos area", b"No photo:"], 8)
+    p.send(b"n")
+    time.sleep(0.5)
+    px = lights_px(s, "drive")
+    ok &= check("then back to its own effect", bool(px) and px[0] != (255, 255, 255))
+    p.close()
+    lights_config(s)
+    camera_config(s, snap="users")
+
+    # A guest may see the photos (Rob: everyone, guests included).
+    g = Caller(ansi=True)
+    g.wait_for(b"Enter your handle", 10)
+    g.send(b"CamGuest\r")
+    g.wait_for(b"[G]uest", 4)
+    g.send(b"g")
+    g.wait_for(b"Main", 6)
+    ok &= check("callers are told the board has a camera", b"This board has a camera callers can use." in plain(g.buf))
+    g.buf.clear()
+    g.send(b"files 12\r")
+    ok &= check("a guest sees the Photos area", g.wait_for(b"Photos", 5))
+    g.close()
+
+    camera_config(s)                                   # back to staff snaps for the rest
+    section_config(s, "plugin:camera")
+    c.close()
+    s.close()
+    return ok
+
+
 def test_board_s3_silent():
     """Silent mode on the Waveshare S3 (1.1.0): the panel's backlight off and
     nothing sent to the glass while it lasts, the onboard pixel dark, and
@@ -5873,6 +6257,206 @@ def test_board_s3_silent():
         ok &= check("after the whole glass went out again", bands(p) - b1 >= 11)
         ok &= check("and the header's blue is on it", shot_bar() == (24, 44, 120))
     top_config(s, silent_from=None, silent_until=None)
+    s.close()
+    return ok
+
+
+def test_camera_failed_start():
+    """A bring-up that fails part way gives back everything it took (FNCAM
+    1.0.1). On FNCAM 1.0.0 a failed start on the board was followed by "The
+    camera needs memory the board is using" for the next snap. The host
+    stub's BBS_CAM_FAIL=2 fails the second bring-up (the first is the look
+    for the sensor at start, 1.1.0-dev.15) and holds its DMA block until
+    camClose, as a partial esp_camera_init does, so a failure path that
+    forgets to close leaves the next snap refused for memory."""
+    print("The camera: a failed start gives everything back")
+    if HOST_BOARD != "fncam" or not PASSWORD:
+        print("  SKIP  needs tools/harness.sh --board fncam")
+        return True
+    import shutil
+    import tempfile
+    card = pathlib.Path(tempfile.mkdtemp(prefix="bbs-camcard-"))
+    tmp = copy_data()
+    cfg = tmp / "data" / "user" / "system.cfg"
+    text = cfg.read_text()
+    if "[plugin:camera]" not in text:
+        text = text.rstrip("\n") + "\n\n[plugin:camera]\n"
+    cfg.write_text(cfg_with(text, {("plugin:camera", "enabled"): "yes", ("plugin:camera", "snap"): "users"}))
+    port = PORT + 3720
+    proc = start_copy(tmp, (str(port),), {"BBS_SD_DIR": str(card), "BBS_CAM_FAIL": "2"})
+    ok = True
+    try:
+        copy_log(tmp, f"listening on {port},")
+        c = ansi_login("CamOnce", port=port)
+        time.sleep(1.0)                              # the survey at start is a job too
+        got = snap(c)
+        ok &= check("the first snap's bring-up fails and the caller is told why",
+                    b"No photo: the camera would not start." in got)
+        ok &= check("with no countdown or cheese on the way", b"Smile" not in got)
+        drain(c)
+        time.sleep(0.5)
+        got = snap(c)
+        ok &= check("the next snap is not refused for memory", b"needs memory" not in got)
+        ok &= check("and takes the photo", b"Photo saved" in got)
+        log = copy_log(tmp, "camera: SNAP-", 4)
+        ok &= check("the console names the failure",
+                    re.search(r"camera: SNAP-\S+ failed: the camera would not start", log) is not None)
+        c.close()
+    finally:
+        stop_copy(proc, tmp)
+        shutil.rmtree(card, ignore_errors=True)
+    return ok
+
+
+def test_announce_camera():
+    """The directory's camera badge (1.1.0): announce's features carry
+    "camera" only on a camera board, only while the camera plugin runs, and
+    only when a sensor answered. On the reference board it never appears.
+    On the Freenove profile: on with the stub camera, gone with the plugin
+    off, and never on a copy of the board whose sensor does not answer."""
+    print("Announce: the camera badge")
+    if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    s = cfg_sysop("CamBadge")
+    if HOST_BOARD != "fncam":
+        feats = announce_features(s)
+        ok = check("no camera board, no camera feature", feats is not None and "camera" not in feats)
+        s.close()
+        return ok
+    card = card_dir()
+    if card is None:
+        s.close()
+        print("  SKIP  needs tools/harness.sh --board fncam --card")
+        return True
+    camera_config(s)
+    time.sleep(1.5)                                     # the survey, and its look for the sensor
+    feats = announce_features(s) or []
+    ok = check("the camera running and a sensor found: the heartbeat says camera", "camera" in feats)
+    ok &= check("the console says the sensor was found",
+                re.search(r"camera: sensor \S+ found at start", host_log()) is not None
+                or "camera: SNAP-" in host_log())
+    section_config(s, "plugin:camera")
+    time.sleep(0.5)
+    feats = announce_features(s) or []
+    ok &= check("the camera switched off: no camera", feats and "camera" not in feats)
+    s.close()
+
+    # A board whose camera will not start does not claim the badge.
+    import shutil
+    import tempfile
+    card2 = pathlib.Path(tempfile.mkdtemp(prefix="bbs-camcard-"))
+    tmp = copy_data()
+    cfg = tmp / "data" / "user" / "system.cfg"
+    text = cfg.read_text()
+    if "[plugin:camera]" not in text:
+        text = text.rstrip("\n") + "\n\n[plugin:camera]\n"
+    cfg.write_text(cfg_with(text, {("plugin:camera", "enabled"): "yes"}))
+    port = PORT + 3740
+    proc = start_copy(tmp, (str(port),), {"BBS_SD_DIR": str(card2), "BBS_CAM_FAIL": "1"})
+    try:
+        copy_log(tmp, f"listening on {port},")
+        log = copy_log(tmp, "no sensor at start", 6)
+        ok &= check("no sensor: the console says so at start", "camera: no sensor at start" in log)
+        c = ansi_login("CamNoBadge", port=port)
+        c.send(b"bye testsysop\r")
+        c.wait_for(b"Sysop", 4)
+        feats = announce_features(c)
+        ok &= check("and the heartbeat claims no camera",
+                    feats is not None and "chat" in feats and "camera" not in feats)
+        c.close()
+    finally:
+        stop_copy(proc, tmp)
+        shutil.rmtree(card2, ignore_errors=True)
+    return ok
+
+
+def test_camera_silent():
+    """Silent mode and the camera's flash (1.1.0): in pin mode and in pixel
+    mode, the camera's own pixel and the lights' drive light both, a snap in
+    silence takes the photo and lights nothing. Then the same snap with
+    silent off does light the pin, so the silence above is the mode's doing
+    and not a flash that never worked."""
+    print("Silent mode: the camera's flash")
+    card = card_dir()
+    if HOST_BOARD != "fncam" or not PASSWORD or card is None:
+        print("  SKIP  needs tools/harness.sh --board fncam --card")
+        return True
+    s = cfg_sysop("CamSilent")
+
+    def sysop_snap():
+        got = snap(s)
+        if b"Download it now?" in got:
+            s.send(b"n")
+            s.wait_for(b"kept in the Photos area", 4)
+        return got
+
+    ok = check("silent on, by the switch", top_config(s, silent="yes"))
+
+    # Pin mode: the pin stays low.
+    camera_config(s, snap="users", flash_mode="pin", flash_pin="13", flash_lead="1000")
+    time.sleep(1.2)
+    at = len(host_log())
+    got = sysop_snap()
+    ok &= check("pin mode, silent: the photo is taken", b"Photo saved" in got)
+    log = host_log()[at:]
+    ok &= check("and the flash pin never went high", "cam-pin 13 high" not in log)
+
+    # Pixel mode, the lights off: the camera would drive the pixel itself.
+    camera_config(s, snap="users", flash_mode="pixel", flash_pin="13", flash_lead="1000")
+    time.sleep(1.2)
+    at = len(host_log())
+    got = sysop_snap()
+    ok &= check("pixel mode on its own pixel, silent: the photo is taken", b"Photo saved" in got)
+    log = host_log()[at:]
+    ok &= check("and the camera never started the pixel, nor lit it",
+                "pixels: output 0 on gpio 13" not in log and "pixels: output 0 white" not in log)
+
+    # Pixel mode on the lights' drive light: never white. The host logs a
+    # one-pixel output turning white ("pixels: output 0 white"), which sees
+    # a flash too short for two looks at LIGHTS to catch.
+    lights_config(s, enabled="yes", drive_pin=13)
+    time.sleep(0.5)
+    p = ansi_login("CamQuiet")
+
+    def drive_snap():
+        at = len(host_log())
+        p.buf.clear()
+        p.send(b"snapshot\r")
+        seen = []
+        until = time.time() + 8
+        while time.time() < until and not re.search(rb"Download it now\?|kept in the Photos area|No photo:", p.buf):
+            seen += lights_px(s, "drive")
+        wait_any(p, [b"Download it now?", b"kept in the Photos area", b"No photo:"], 8)
+        got = plain(p.buf)
+        p.send(b"n")
+        p.wait_for(b"kept in the Photos area", 4)
+        return got, seen, host_log()[at:]
+
+    got, seen, log = drive_snap()
+    ok &= check("pixel mode on the drive light, silent: the photo is taken", b"Photo saved" in got)
+    ok &= check("and the drive light never went white",
+                "pixels: output 0 white" not in log and all(px == (0, 0, 0) for px in seen))
+    top_config(s, silent=None)
+    camera_config(s, snap="users", flash_mode="pixel", flash_pin="13", flash_lead="300")
+    time.sleep(1.2)
+    got, seen, log = drive_snap()
+    ok &= check("silent off: the same snap turns the drive light white",
+                b"Photo saved" in got and "pixels: output 0 white" in log)
+    p.close()
+    lights_config(s)
+
+    # The control: silent off, the same pin mode snap lights the pin.
+    camera_config(s, snap="users", flash_mode="pin", flash_pin="13", flash_lead="300")
+    time.sleep(1.2)
+    at = len(host_log())
+    got = sysop_snap()
+    log = host_log()[at:]
+    ok &= check("silent off: the same snap lights the flash pin",
+                b"Photo saved" in got and "cam-pin 13 high" in log)
+
+    camera_config(s)
+    section_config(s, "plugin:camera")
     s.close()
     return ok
 
@@ -6346,7 +6930,10 @@ def start_copy(tmp, extra_args=(), env_extra=None):
     env = {k: v for k, v in os.environ.items() if k != "BBS_SD_DIR"}
     env.update(env_extra or {})
     log = open(tmp / "host.log", "wb")
-    return subprocess.Popen([str(ROOT / "host" / "bbs_host"), str(tmp / "data"), *extra_args],
+    # The same build as the board under test: a profile's copy restarts as
+    # that profile, with its pin rules and defaults.
+    binary = {"s3": "bbs_host_s3", "fncam": "bbs_host_fncam"}.get(HOST_BOARD, "bbs_host")
+    return subprocess.Popen([str(ROOT / "host" / binary), str(tmp / "data"), *extra_args],
                             stdout=log, stderr=subprocess.STDOUT, env=env)
 
 
@@ -12475,6 +13062,11 @@ ORDER_NAMES = [
     "test_lights_count", "test_lights_order", "test_lights_wifi", "test_lights_silent", "test_version_shown",
     # SKIPs on the reference board: tools/harness.sh --board s3 runs it.
     "test_board_s3", "test_board_s3_silent",
+    "test_board_fncam",
+    "test_camera",
+    "test_camera_failed_start",
+    "test_camera_silent",
+    "test_announce_camera",
     "test_config_wifi_live", "test_config_network", "test_config_announce_outside",
     "test_config_wifi_fallback", "test_boot_hold",
     "test_boot_hold_write_fails", "test_boot_hold_factory_fails", "test_sysop_spelled_default",
@@ -13304,9 +13896,13 @@ def test_sd_no_reprobe():
         text = cfg.read_text()
         if "[plugin:sd]" not in text:
             text = text.rstrip("\n") + "\n\n[plugin:sd]\n"
-        cfg.write_text(cfg_with(text, {("plugin:sd", "cs"): "4"}))
+        # An SDMMC board's pins are its wiring, not settings (the Freenove
+        # CAM): the bus speed is what moves there.
+        sdmmc = HOST_BOARD == "fncam"
+        cfg.write_text(cfg_with(text, {("plugin:sd", "speed" if sdmmc else "cs"): "10000" if sdmmc else "4"}))
         cfg_reload(s)
-        ok &= check("and a save that moves a pin looks once, on the new pin", tries() == 2)
+        ok &= check("and a save that moves a pin looks once, on the new pin" if not sdmmc else
+                    "and a save that moves the bus speed looks once", tries() == 2)
         s.buf.clear()
         s.send(b"sd\r")
         s.wait_for(b"SD card", 4)

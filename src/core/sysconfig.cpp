@@ -265,10 +265,78 @@ bool pinExists(long pin) {
 #endif
 }
 
+// The board's own pins (board.h, BBS_PINS_*): pins that exist and are not the
+// flash, but that this board has already wired to something, a camera, a
+// card slot, its PSRAM. Only a profile that names them has any, so the
+// reference board's rule is the chip's alone.
+#if defined(BBS_PINS_PSRAM) || defined(BBS_PINS_CONSOLE) || defined(BBS_PINS_CARD) || \
+    defined(BBS_PINS_CAMERA) || defined(BBS_PINS_STRAP)
+#define BBS_HAS_BOARD_PINS 1
+struct BoardPins { const int8_t* pins; uint8_t count; const char* problem; const char* sentence; };
+#ifdef BBS_PINS_PSRAM
+constexpr int8_t kPinsPsram[]   = { BBS_PINS_PSRAM };
+#endif
+#ifdef BBS_PINS_CONSOLE
+constexpr int8_t kPinsConsole[] = { BBS_PINS_CONSOLE };
+#endif
+#ifdef BBS_PINS_CARD
+constexpr int8_t kPinsCard[]    = { BBS_PINS_CARD };
+#endif
+#ifdef BBS_PINS_CAMERA
+constexpr int8_t kPinsCamera[]  = { BBS_PINS_CAMERA };
+#endif
+#ifdef BBS_PINS_STRAP
+constexpr int8_t kPinsStrap[]   = { BBS_PINS_STRAP };
+#endif
+#define BBS_PINROW(a, p, s) { a, static_cast<uint8_t>(sizeof(a)), p, s }
+// Both columns fit a form's status line: a core key shows the problem
+// (cut at 39 by trial), a plugin's page the sentence (38 or fewer).
+constexpr BoardPins kBoardPins[] = {
+#ifdef BBS_PINS_PSRAM
+    BBS_PINROW(kPinsPsram,   "that pin is the board's PSRAM",       "That pin is the board's PSRAM."),
+#endif
+#ifdef BBS_PINS_CONSOLE
+    BBS_PINROW(kPinsConsole, "that pin is the console and Improv",  "That pin is the console and Improv."),
+#endif
+#ifdef BBS_PINS_CARD
+    BBS_PINROW(kPinsCard,    "that pin is the SD card slot",        "That pin is the SD card slot."),
+#endif
+#ifdef BBS_PINS_CAMERA
+    BBS_PINROW(kPinsCamera,  "that pin is the camera's",            "That pin is the camera's."),
+#endif
+#ifdef BBS_PINS_STRAP
+    BBS_PINROW(kPinsStrap,   "a strapping pin, low at boot",        "That is a strapping pin."),
+#endif
+};
+#undef BBS_PINROW
+
+const BoardPins* boardPin(long pin) {
+    for (const BoardPins& b : kBoardPins)
+        for (uint8_t i = 0; i < b.count; ++i)
+            if (b.pins[i] == pin) return &b;
+    return nullptr;
+}
+#endif
+
 // gpio: a pin number in the key's range that the board may use (see
 // syscfg::pinProblem); -1, "none", is in every pin key's range.
 bool gpio(Ctx& c, const char* key, const char* v, long& out) {
     if (!number(c, key, v, out)) return false;
+#ifdef BBS_HAS_BOARD_PINS
+    // A file that names a pin this board has already wired to something (a
+    // WROOM's system.cfg restored here, whose LED is on 2, this board's card)
+    // loses that one line, logged, rather than the whole file: refusing it
+    // would throw away the network, the access matrix and every plugin
+    // section over a pin whose safe meaning is "leave it alone" (the 1.0.2
+    // rule: dropped, not refused). A writer (CONFIG) is still refused, below.
+    if (!c.bare) {
+        if (const BoardPins* b = boardPin(out)) {
+            plat::log("cfg: line %d %s = %ld: %s on this board, line ignored",
+                      c.lineNo, key, out, b->problem);
+            return false;
+        }
+    }
+#endif
     if (const char* why = syscfg::pinProblem(out)) {
         char what[48];
         snprintf(what, sizeof(what), "%s:", why);
@@ -728,7 +796,8 @@ void normaliseHostname(char* v) {
 //             vanish from the computer until it is put into download mode
 //             by hand (the IDF's USB-Serial-JTAG console guide)
 // The flash pins first, on either chip: they are real pins, and why not to
-// use them is more use to a sysop than "no such pin".
+// use them is more use to a sysop than "no such pin". Then the pins the
+// board itself owns (kBoardPins, above gpio()).
 const char* pinProblem(long pin) {
     if (pin == -1) return nullptr;                   // "none", in every pin key's range
 #ifdef BBS_CHIP_S3
@@ -738,12 +807,20 @@ const char* pinProblem(long pin) {
     if (pin >= 6 && pin <= 11) return "pins 6-11 are the flash chip";
 #endif
     if (!pinExists(pin)) return "this chip has no such pin";
+#ifdef BBS_HAS_BOARD_PINS
+    if (const BoardPins* b = boardPin(pin)) return b->problem;
+#endif
     return nullptr;
 }
 
 const char* pinSentence(long pin) {
     const char* why = pinProblem(pin);
     if (!why) return nullptr;
+#ifdef BBS_HAS_BOARD_PINS
+    if (pinExists(pin)) {
+        if (const BoardPins* b = boardPin(pin)) return b->sentence;
+    }
+#endif
 #ifdef BBS_CHIP_S3
     if (pin >= 26 && pin <= 37) return "Pins 26 to 37 are flash and PSRAM.";
     if (pin == 19 || pin == 20) return "Pins 19 and 20 are the USB port.";

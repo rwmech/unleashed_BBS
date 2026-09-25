@@ -89,6 +89,11 @@
 #include "../platform/platform.h"
 #include "../config.h"
 #include "panel_feed.h"       // pendingCount, on a board with a display
+#include "files.h"
+#ifdef BBS_HAS_CAMERA
+#include "camera.h"           // the Photos area's levels (1.1.0)
+#include "camera_rules.h"     // its folder
+#endif
 
 #include <cerrno>
 #include <cstdio>
@@ -116,8 +121,22 @@ const char* const kName = "files";
 // nightly backup write, so a sysop can take a backup home over the line they
 // are already on, and bring one back to restore. Sysop only for everything:
 // a full backup holds the Wi-Fi password as typed.
+//
+// Photos (1.1.0, camera boards only) is the camera's folder, at 12: seen and
+// downloaded at the camera's Photos level, removed at its admin level, and
+// uploaded into by the sysop alone. Its handle folders ("by handle" names)
+// list one level down inside it, as handle/name. The board's own shots are
+// an area of their own, Timelapse at 13, the same levels: a series of a few
+// hundred timed shots inside Photos would bury the callers' photos, and
+// every row of a listing walks its folder from the top.
 constexpr uint8_t kCfgAreas    = 8;
+#ifdef BBS_HAS_CAMERA
+constexpr uint8_t kMaxAreas    = kCfgAreas + 5;
+constexpr uint8_t kAreaPhotos  = kCfgAreas + 3;   // shows as 12
+constexpr uint8_t kAreaTimed   = kCfgAreas + 4;   // shows as 13
+#else
 constexpr uint8_t kMaxAreas    = kCfgAreas + 3;
+#endif
 constexpr uint8_t kAreaScreens = kCfgAreas;       // shows as 9
 constexpr uint8_t kAreaLogs    = kCfgAreas + 1;   // shows as 10
 constexpr uint8_t kAreaBackups = kCfgAreas + 2;   // shows as 11
@@ -266,8 +285,24 @@ uint8_t slotOf(const Session& s) { return s.id <= BBS_MAX_NODES + 1 ? s.id : 0; 
 //            the destructive one, so it fails shut: an area that says
 //            nothing about deletion does not quietly inherit permission to
 //            delete from permission to upload.
+#ifdef BBS_HAS_CAMERA
+// photoLevel: the Photos area's levels, from the camera, and none at all
+// while the camera is off. which: 0 read, 1 up, 2 down, 3 del.
+bool photoMay(const Session& s, uint8_t which) {
+    if (!camera::running()) return false;
+    PlugLevel see = PlugLevel::Nobody, rm = PlugLevel::Sysop;
+    camera::photosLevels(see, rm);
+    PlugLevel lv = which == 1 ? PlugLevel::Sysop : which == 3 ? rm : see;
+    return plugins::mayUse(s, lv);
+}
+#define BBS_PHOTO_MAY(which) if (i == kAreaPhotos || i == kAreaTimed) return photoMay(s, which)
+#else
+#define BBS_PHOTO_MAY(which) (void)0
+#endif
+
 bool mayRead(const Session& s, uint8_t i) {
     if (i >= g_areas || !g_area[i].path[0]) return false;
+    BBS_PHOTO_MAY(0);
     PlugLevel lv = g_area[i].read;
     if (lv == PlugLevel::Nobody) lv = plugins::levelFor(g_index, 0);
     return plugins::mayUse(s, lv);
@@ -275,6 +310,7 @@ bool mayRead(const Session& s, uint8_t i) {
 
 bool mayUp(const Session& s, uint8_t i) {
     if (i >= g_areas || !g_area[i].path[0]) return false;
+    BBS_PHOTO_MAY(1);
     PlugLevel lv = g_area[i].up;
     if (lv == PlugLevel::Nobody) lv = plugins::levelFor(g_index, 1);
     return plugins::mayUse(s, lv);
@@ -282,6 +318,7 @@ bool mayUp(const Session& s, uint8_t i) {
 
 bool mayDown(const Session& s, uint8_t i) {
     if (i >= g_areas || !g_area[i].path[0]) return false;
+    BBS_PHOTO_MAY(2);
     PlugLevel lv = g_area[i].down;
     if (lv == PlugLevel::Nobody) lv = g_area[i].read;              // the area's
     if (lv == PlugLevel::Nobody) lv = plugins::levelFor(g_index, 0);
@@ -290,6 +327,7 @@ bool mayDown(const Session& s, uint8_t i) {
 
 bool mayDel(const Session& s, uint8_t i) {
     if (i >= g_areas || !g_area[i].path[0]) return false;
+    BBS_PHOTO_MAY(3);
     PlugLevel lv = g_area[i].del;
     if (lv == PlugLevel::Nobody) lv = plugins::levelFor(g_index, 2);   // admin
     return plugins::mayUse(s, lv);
@@ -335,9 +373,63 @@ bool nthPending(uint8_t area, uint16_t want, char* out, size_t n) {
     return found;
 }
 
+#ifdef BBS_HAS_CAMERA
+// photoEntry: the Photos area's want-th entry (from 1), as a name or as
+// folder/name for a photo in a handle folder: the folder's photos in place
+// of the folder, in the order readdir gives both. seen says how many were
+// counted, for the listing's end. One level only, and the same walk for the
+// listing and for a number typed against it.
+struct PhotoWalk {
+    uint16_t    want, seen;
+    char*       out;
+    size_t      n;
+    bool        found;
+    const char* sub;
+};
+
+bool photoSubEntry(void* ctx, const char* name, bool dir, uint32_t) {
+    PhotoWalk* w = static_cast<PhotoWalk*>(ctx);
+    if (dir || ieq(name, BBS_FILES_DESC)) return true;
+    if (++w->seen != w->want) return true;
+    snprintf(w->out, w->n, "%.20s/%.27s", w->sub, name);
+    w->found = true;
+    return false;
+}
+
+bool photoTopEntry(void* ctx, const char* name, bool dir, uint32_t) {
+    PhotoWalk* w = static_cast<PhotoWalk*>(ctx);
+    if (ieq(name, BBS_FILES_DESC)) return true;
+    if (dir) {
+        if (camrules::isSystemFolder(name)) return true;       // its own area
+        char rel[96];
+        snprintf(rel, sizeof(rel), "%s/%.60s", camrules::kPhotosDir, name);
+        w->sub = name;
+        plat::sdList(rel, photoSubEntry, w);
+        return !w->found;
+    }
+    if (++w->seen != w->want) return true;
+    snprintf(w->out, w->n, "%.48s", name);
+    w->found = true;
+    return false;
+}
+
+// One read of each folder (plat::sdList: the card's own entries, so no
+// file is looked up by name), stopping at the one wanted.
+bool photoEntry(const char* dir, uint16_t want, char* out, size_t n, uint16_t& seen) {
+    (void)dir;
+    PhotoWalk w{ want, 0, out, n, false, "" };
+    plat::sdList(camrules::kPhotosDir, photoTopEntry, &w);
+    seen = w.seen;
+    return w.found;
+}
+#endif
+
 bool nthFile(uint8_t area, uint16_t want, char* out, size_t n) {
     char dir[128];
     if (!want || !areaPath(area, dir, sizeof(dir))) return false;
+#ifdef BBS_HAS_CAMERA
+    if (area == kAreaPhotos) { uint16_t seen = 0; return photoEntry(dir, want, out, n, seen); }
+#endif
     DIR* d = opendir(dir);
     if (!d) return false;
     uint16_t seen = 0;
@@ -417,6 +509,26 @@ bool safeName(const char* f) {
     return true;
 }
 
+// safeIn: safeName for an area. The Photos area (1.1.0) takes a longer name
+// (a photo named by date and handle is up to 44 characters) and one folder
+// level, handle/name, each side as safe as any name.
+#ifdef BBS_HAS_CAMERA
+bool safeIn(uint8_t area, const char* f) {
+    if (area == kAreaPhotos) {
+        if (!f || !*f || strlen(f) > kDescMax) return false;
+        if (strchr(f, '\\') || strstr(f, "..")) return false;
+        const char* slash = strchr(f, '/');
+        if (slash && (slash == f || !slash[1] || strchr(slash + 1, '/'))) return false;
+        for (const char* p = f; *p; ++p)
+            if (static_cast<unsigned char>(*p) < 0x20) return false;
+        return true;
+    }
+    return safeName(f);
+}
+#else
+#define safeIn(area, f) safeName(f)
+#endif
+
 // ---------------------------------------------------------------------------
 // findDesc: the description for one file, from FILES.BBS in its folder.
 //
@@ -456,10 +568,21 @@ void findDesc(const char* dir, const char* file, char* out, size_t n) {
 // the old one, flush it to the card, then rename over the top. A board that
 // loses power mid-write loses the temp file and keeps the descriptions.
 // ---------------------------------------------------------------------------
+#ifdef BBS_HAS_CAMERA
+// On a camera board (1.1.0) the camera's worker writes FILES.BBS too, so its
+// temp file has a name of its own, and it can drop the lines of every photo
+// a prune took in one rewrite (drop, file null).
+bool setDesc(const char* dir, const char* file, const char* text, const char* tmpExt = ".tmp",
+             bool (*drop)(void*, const char*) = nullptr, void* dropCtx = nullptr) {
+    char cur[160], tmp[176];
+    snprintf(cur, sizeof(cur), "%s/%s", dir, BBS_FILES_DESC);
+    snprintf(tmp, sizeof(tmp), "%s/%s%s", dir, BBS_FILES_DESC, tmpExt);
+#else
 bool setDesc(const char* dir, const char* file, const char* text) {
     char cur[160], tmp[176];
     snprintf(cur, sizeof(cur), "%s/%s", dir, BBS_FILES_DESC);
     snprintf(tmp, sizeof(tmp), "%s/%s.tmp", dir, BBS_FILES_DESC);
+#endif
 
     FILE* out = fopen(tmp, "w");
     if (!out) return false;
@@ -477,7 +600,12 @@ bool setDesc(const char* dir, const char* file, const char* text) {
             while (*sp && *sp != ' ' && *sp != '\t') ++sp;
             char had = *sp;
             *sp = '\0';
+#ifdef BBS_HAS_CAMERA
+            if (drop && drop(dropCtx, line)) continue;   // gone with its file (photoDescDrop)
+            if (file && ieq(line, file)) {           // replaced below
+#else
             if (ieq(line, file)) {                   // replaced below
+#endif
                 if (*text) { fprintf(out, "%s %s\n", file, text); wrote = true; }
                 else       { wrote = true; }          // empty text deletes the row
                 continue;
@@ -487,7 +615,11 @@ bool setDesc(const char* dir, const char* file, const char* text) {
         }
         fclose(in);
     }
+#ifdef BBS_HAS_CAMERA
+    if (!wrote && file && *text) fprintf(out, "%s %s\n", file, text);
+#else
     if (!wrote && *text) fprintf(out, "%s %s\n", file, text);
+#endif
 
     fflush(out);
     if (fclose(out) != 0) { remove(tmp); return false; }   // FAT says "full" here
@@ -645,6 +777,19 @@ bool start(Bbs& bbs) {
     bk.down  = PlugLevel::Sysop;
     bk.up    = PlugLevel::Sysop;
     bk.del   = PlugLevel::Sysop;
+
+#ifdef BBS_HAS_CAMERA
+    // The camera's photos (1.1.0). Its levels are the camera's, asked for
+    // each time (photoMay), so these stay the fallbacks and are never read.
+    Area& ph = g_area[kAreaPhotos];
+    snprintf(ph.path, sizeof(ph.path), "%s", camrules::kPhotosDir);
+    snprintf(ph.name, sizeof(ph.name), "%s", "Photos");
+    ph.read = ph.down = ph.up = ph.del = PlugLevel::Sysop;
+    Area& tl = g_area[kAreaTimed];
+    snprintf(tl.path, sizeof(tl.path), "%s/%s", camrules::kPhotosDir, camrules::kTlFolder);
+    snprintf(tl.name, sizeof(tl.name), "%s", "Timelapse");
+    tl.read = tl.down = tl.up = tl.del = PlugLevel::Sysop;
+#endif
 
     g_areas = kMaxAreas;
 
@@ -947,19 +1092,32 @@ bool rows(Session& s) {
         return false;
     }
     uint8_t want = static_cast<uint8_t>(i - 1);
+#ifdef BBS_HAS_CAMERA
+    uint16_t seen = 0;
+    bool    found = false;
+    char    fname[kDescMax + 1] = {};
+    if (at == kAreaPhotos) {
+        closedir(d);
+        found = photoEntry(dir, static_cast<uint16_t>(want + 1), fname, sizeof(fname), seen);
+        if (found) seen = want;
+    } else
+#else
     uint8_t seen = 0;
     bool    found = false;
     char    fname[40] = {};
-    struct dirent* e;
-    while ((e = readdir(d)) != nullptr) {
-        if (e->d_name[0] == '.') continue;
-        if (ieq(e->d_name, BBS_FILES_DESC)) continue;   // the descriptions are not a file area
-        if (seen++ != want) continue;
-        snprintf(fname, sizeof(fname), "%.39s", e->d_name);
-        found = true;
-        break;
+#endif
+    {
+        struct dirent* e;
+        while ((e = readdir(d)) != nullptr) {
+            if (e->d_name[0] == '.') continue;
+            if (ieq(e->d_name, BBS_FILES_DESC)) continue;   // the descriptions are not a file area
+            if (seen++ != want) continue;
+            snprintf(fname, sizeof(fname), "%.39s", e->d_name);
+            found = true;
+            break;
+        }
+        closedir(d);
     }
-    closedir(d);
 
     if (!found) {
         if (want == 0) {
@@ -982,7 +1140,22 @@ bool rows(Session& s) {
     if (stat(full, &st) == 0) kb = (static_cast<unsigned long>(st.st_size) + 1023u) / 1024u;
 
     char desc[kDescMax + 1];
+#ifdef BBS_HAS_CAMERA
+    {
+        // A photo in a handle folder has its description in that folder's
+        // FILES.BBS, like any file in any folder.
+        const char* slash = strrchr(fname, '/');
+        if (slash) {
+            char sub[192];
+            snprintf(sub, sizeof(sub), "%s/%.*s", dir, static_cast<int>(slash - fname), fname);
+            findDesc(sub, slash + 1, desc, sizeof(desc));
+        } else {
+            findDesc(dir, fname, desc, sizeof(desc));
+        }
+    }
+#else
     findDesc(dir, fname, desc, sizeof(desc));
+#endif
 
     // Name, size, then whatever width is left for the description. A 40
     // column terminal gets 18 characters of it and an 80 column one gets 58,
@@ -996,6 +1169,11 @@ bool rows(Session& s) {
     // and with the number and the size it is 37 columns, inside 40. What is
     // left over is the description, as elsewhere.
     unsigned nw   = at == kAreaBackups ? cardbak::kNameMax : 12;
+#ifdef BBS_HAS_CAMERA
+    // A photo's name is its date, and its handle when it has one: 24
+    // characters at 40 columns, the whole 44 at 80.
+    if (at == kAreaPhotos || at == kAreaTimed) nw = cols >= 80 ? 44u : 24u;
+#endif
     unsigned used = nw + 12;                    // "nn " + name + " " + "nnnnnK" + " ", and the margin
     unsigned dw   = cols > used + 1 ? cols - used : 1;
     if (dw > kDescMax) dw = kDescMax;
@@ -1873,7 +2051,7 @@ void startSend(Bbs& b, Session& s, const char* arg, uint32_t now) {
     size_t k = 0;
     while (*r && *r != ' ' && k + 1 < sizeof(name)) name[k++] = *r++;
     name[k] = '\0';
-    if (!safeName(name)) {
+    if (!safeIn(at, name)) {
         s.term.color(s.tl, Color::LightRed);
         s.term.text(s.tl, "DOWNLOAD <file>");
         backToArea(b, s);
@@ -1930,7 +2108,14 @@ void startSend(Bbs& b, Session& s, const char* arg, uint32_t now) {
 
     s.tn.setBinary(s.tl, true);  // and the far end stops padding CRs
     b.setRawInput(s, true);      // and 0x1B is data, not an escape
-    if (useY) g_eng.beginSendY(xferRead, &g_x, name, fsize, now, true);
+#ifdef BBS_HAS_CAMERA
+    // YMODEM names the file; a Photos name with its handle folder goes out
+    // as the photo's own name, since a receiver may not take a folder.
+    const char* wire = strrchr(name, '/') ? strrchr(name, '/') + 1 : name;
+#else
+    const char* wire = name;
+#endif
+    if (useY) g_eng.beginSendY(xferRead, &g_x, wire, fsize, now, true);
     else      g_eng.beginSend(xferRead, &g_x, now, true);
 }
 
@@ -2370,7 +2555,7 @@ void doErase(Bbs& b, Session& s, const char* a) {
           size_t k = 0;
           while (*r && *r != ' ' && k + 1 < sizeof(name)) name[k++] = *r++;
           name[k] = 0;
-          if (!safeName(name)) {
+          if (!safeIn(at, name)) {
               s.term.color(s.tl, Color::LightRed);
               s.term.text(s.tl, "ERASE <file>");
               backToArea(b, s);
@@ -2518,6 +2703,39 @@ bool waiting(const Session& s, char* out, size_t n) {
 }
 
 } // namespace
+
+#ifdef BBS_HAS_CAMERA
+// ---------------------------------------------------------------------------
+// files.h: the camera's ways in (1.1.0).
+// ---------------------------------------------------------------------------
+bool files::sendPhoto(Bbs& b, Session& s, const char* rel, bool xmodem, uint32_t now) {
+    uint8_t slot = slotOf(s);
+    if (!mayDown(s, kAreaPhotos)) {
+        s.term.color(s.tl, Color::LightRed);
+        s.term.text(s.tl, "Photos are not yours to download here.");
+        b.prompt(s);
+        return true;                    // said, and at the prompt
+    }
+    g_where[slot] = Where::Out;         // not in the file areas: back to the prompt after
+    g_at[slot]    = kAreaPhotos;
+    char arg[kDescMax + 4];
+    snprintf(arg, sizeof(arg), "%.48s%s", rel, xmodem ? " X" : "");
+    startSend(b, s, arg, now);
+    return true;
+}
+
+bool files::photoDesc(const char* dir, const char* name, const char* text) {
+    return setDesc(dir, name, text, ".ctmp");
+}
+
+bool files::photoDescDrop(const char* dir, bool (*gone)(void* ctx, const char* name), void* ctx) {
+    char cur[160];
+    snprintf(cur, sizeof(cur), "%s/%s", dir, BBS_FILES_DESC);
+    struct stat st;
+    if (stat(cur, &st) != 0) return true;            // no descriptions to tidy
+    return setDesc(dir, nullptr, "", ".ctmp", gone, ctx);
+}
+#endif
 
 extern const Plugin kFilesPlugin = {
     // PF_SD: the files are on the card, so this does not start without one.

@@ -30,10 +30,22 @@
  *                                      internal/board-waveshare-s3-lcd147-
  *                                      2026-09-24.md.
  *
+ *               BBS_BOARD_FN_WROVER_CAM  Freenove ESP32-WROVER CAM (FNK0060,
+ *                                      pinout 3.0): ESP32-WROVER-E, 4 MB
+ *                                      flash, 8 MB PSRAM, a camera (an
+ *                                      OV2640 documented, a GC0308 found)
+ *                                      and an SDMMC 1-bit card slot. Researched in
+ *                                      internal/PLAN-freenove-cam.md.
+ *
  *               Capabilities a profile may define:
  *                 BBS_HAS_LCD       a panel the panel plugin drives
  *                 BBS_CHIP_S3       the chip is an ESP32-S3 (pin rules,
  *                                   RMT sizing, the console on native USB)
+ *                 BBS_HAS_PSRAM     the board has PSRAM its build turns on
+ *                 BBS_SD_SDMMC1     the card slot is SDMMC 1-bit, on the
+ *                                   BBS_SDMMC_* pins, not SPI
+ *                 BBS_PINS_*        pins the board owns, which pinProblem
+ *                                   refuses with the reason
  *
  * Libraries:    none
  * Targets:      ESP32-WROOM-32E, ESP32-S3 (ESP-IDF 5.3.1) and the Linux host
@@ -171,6 +183,131 @@
 #define BBS_LCD_BACKLIGHT     60      // percent
 
 #endif  // BBS_BOARD_WS_S3LCD147
+
+// ===========================================================================
+// Freenove ESP32-WROVER CAM (the FNK0060 kit, pinout revision 3.0)
+//
+// ESP32-WROVER-E (ESP32-D0WD-V3, read as revision v3.1 on the bench), 4 MB
+// flash, 8 MB quad PSRAM on GPIO 16 and 17, an OV2640 on a 24-pin ribbon, a
+// micro SD slot wired for SDMMC 1-bit on 14, 15 and 2, USB-C through a
+// CH340. Every pin below is from Freenove's own pinout drawing and sketches,
+// cited in internal/PLAN-freenove-cam.md: ESP32_Pinout_V3.0.png, the
+// CAMERA_MODEL_WROVER_KIT block of Sketch_06.1's camera_pins.h, and
+// Sketch_03.1_SDMMC_Test.
+//
+// No NeoPixel is documented: the V3.0 drawing marks four on-board LEDs, IO2,
+// TX, RX and ON, all plain, and neither the drawing, the sketches nor the C
+// tutorial mention a WS2812 on the board (checked 2026-09-24). So the lights
+// plugin ships off with no drive pin, as on the WROOM, until the bench shows
+// otherwise. IO2's LED is the card's D0 and is never blinked.
+// ===========================================================================
+#if defined(BBS_BOARD_FN_WROVER_CAM)
+
+#if defined(ESP_PLATFORM) && !CONFIG_IDF_TARGET_ESP32
+#error "BBS_BOARD_FN_WROVER_CAM is an ESP32 board: build it for the esp32 target"
+#endif
+#if defined(BBS_BOARD_WS_S3LCD147)
+#error "one board profile at a time"
+#endif
+
+#define BBS_BOARD_NAME        "Freenove ESP32-WROVER CAM"
+#define BBS_BOARD_PLUGINS     1       // the camera
+
+#define BBS_BOARD_TAG         "FNCAM"
+#define BBS_BOARD_VERSION     "1.0.2"
+
+// PSRAM (sdkconfig.defaults.fncam). Wi-Fi's and lwIP's buffers go there.
+// The internal reserve stays the WROOM's 40 KB until the bench's MEM says
+// what it should be (the plan's phase 3): not guessed. A build that lost
+// the sdkconfig layer (a stale sdkconfig.freenove_wrover_cam, PlatformIO not
+// passing SDKCONFIG_DEFAULTS) would otherwise link quietly without PSRAM.
+#define BBS_HAS_PSRAM         1
+#if defined(ESP_PLATFORM) && !CONFIG_SPIRAM
+#error "BBS_BOARD_FN_WROVER_CAM needs PSRAM: sdkconfig.defaults.fncam was not applied (delete sdkconfig.freenove_wrover_cam*)"
+#endif
+
+// No activity LED: the only plain user LED is IO2, which is the card's D0.
+#define BBS_LED_GPIO          -1
+
+// The card slot: SDMMC 1-bit, CLK 14, CMD 15, D0 2 (Freenove: "Please do not
+// modify it"). The ESP32's SDMMC slot 1 is on the IO MUX, so these are the
+// only pins it can be. The SPI pins are none: all four of the WROOM's
+// defaults (5, 23, 18, 19) are camera data lines here.
+#define BBS_SD_SDMMC1         1
+#define BBS_SDMMC_CLK         14
+#define BBS_SDMMC_CMD         15
+#define BBS_SDMMC_D0          2
+#define BBS_SD_CS             -1
+#define BBS_SD_MOSI           -1
+#define BBS_SD_CLK            -1
+#define BBS_SD_MISO           -1
+
+// The serial bridge on header IO33 (RX) and IO32 (TX), off until enabled.
+// The WROOM's 16 and 17 are this board's PSRAM.
+#define BBS_SERIAL_RX         33
+#define BBS_SERIAL_TX         32
+
+// The camera, on Freenove's CAMERA_MODEL_WROVER_KIT pins. PWDN and RESET are
+// not wired. The camera plugin reads these and nothing else, so another
+// camera board is another block here, not another plugin.
+//
+// Freenove document an OV2640, and the kit on the bench carries a GalaxyCore
+// GC0308 (read over SCCB on 2026-09-25: one device, at 0x21, ID 0x9B at
+// register 0x00): 640x480 at most, and no JPEG encoder of its own, so the
+// platform takes RGB565 and encodes it (jpegRaw). Both drivers are built
+// (sdkconfig.defaults.fncam), and the bring-up finds out which is there.
+//   BBS_CAM_SENSOR      the sensor as shipped, named until a bring-up has
+//                       found the real one (plat::camSensor)
+//   BBS_CAM_SIZES       what CONFIG camera offers: the GC0308's own sizes,
+//                       which an OV2640 can also do
+//   BBS_CAM_SIZE        the size as shipped, one of them
+//   BBS_CAM_FLASH_PIN   the flash output as shipped (Rob: "leave a single
+//                       pin, just make it neopixel or ... relay high on the
+//                       pin"): the first free pin that is no strap
+//   BBS_CAM_FLASH       its mode as shipped: 0 off, 1 pixel, 2 pin. Off
+//                       here: this board has no pixel of its own
+#define BBS_HAS_CAMERA        1
+#define BBS_CAM_SENSOR        "GC0308"
+#define BBS_CAM_SIZES         "qvga|vga"
+#define BBS_CAM_SIZE          1       // vga
+#define BBS_CAM_FLASH_PIN     13
+#define BBS_CAM_FLASH         0
+#define BBS_CAM_PWDN          -1
+#define BBS_CAM_RESET         -1
+#define BBS_CAM_XCLK          21
+#define BBS_CAM_SIOD          26
+#define BBS_CAM_SIOC          27
+#define BBS_CAM_D7            35      // Y9
+#define BBS_CAM_D6            34      // Y8
+#define BBS_CAM_D5            39      // Y7
+#define BBS_CAM_D4            36      // Y6
+#define BBS_CAM_D3            19      // Y5
+#define BBS_CAM_D2            18      // Y4
+#define BBS_CAM_D1            5       // Y3
+#define BBS_CAM_D0            4       // Y2
+#define BBS_CAM_VSYNC         25
+#define BBS_CAM_HREF          23
+#define BBS_CAM_PCLK          22
+
+// Pins the board itself owns, which syscfg::pinProblem refuses for every
+// pin setting, with the reason. What is left for a sysop to wire is 13, 32
+// and 33, which is the truth about this board.
+//   PSRAM    16, 17: the WROVER's PSRAM chip select and clock
+//   CONSOLE  1, 3: UART0 to the CH340, which is the console, Improv and
+//            the flashing port
+//   CARD     the slot's three lines
+//   CAMERA   every wired camera line
+//   STRAP    12, MTDI, which sets the flash voltage at reset: anything that
+//            pulls it high at reset stops the board booting
+#define BBS_PINS_PSRAM        16, 17
+#define BBS_PINS_CONSOLE      1, 3
+#define BBS_PINS_CARD         BBS_SDMMC_CLK, BBS_SDMMC_CMD, BBS_SDMMC_D0
+#define BBS_PINS_CAMERA       BBS_CAM_XCLK, BBS_CAM_SIOD, BBS_CAM_SIOC, BBS_CAM_D7, \
+                              BBS_CAM_D6, BBS_CAM_D5, BBS_CAM_D4, BBS_CAM_D3, BBS_CAM_D2, \
+                              BBS_CAM_D1, BBS_CAM_D0, BBS_CAM_VSYNC, BBS_CAM_HREF, BBS_CAM_PCLK
+#define BBS_PINS_STRAP        12
+
+#endif  // BBS_BOARD_FN_WROVER_CAM
 
 // ===========================================================================
 // The reference board, the bare ESP32-WROOM-32E: every default a profile

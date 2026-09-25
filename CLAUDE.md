@@ -577,6 +577,52 @@ this tree.
   the glass. The mail envelope reads chat's unread index for the first
   `]` account seen after boot until the DASH lane's `Bbs::sysopMail()`
   replaces it at merge (one line in panel.cpp).
+- **The Freenove ESP32-WROVER CAM profile, phase 1** (branch cam-1.1.0,
+  `internal/PLAN-freenove-cam.md`). `BBS_BOARD_FN_WROVER_CAM`, envs
+  `freenove_wrover_cam` and `_release`, shown as `(FNCAM 1.0.0)`.
+  - PSRAM through its own sdkconfig layer, `sdkconfig.defaults.fncam`,
+    named by `SDKCONFIG_DEFAULTS` in `board_build.cmake_extra_args`, because
+    an `sdkconfig.defaults.esp32` would reach the WROOM too. Revision 3
+    minimum (33 KB saved), no memory test, IGNORE_NOTFOUND.
+  - **The pins a profile owns are refused by name**
+    (`BBS_PINS_PSRAM|CONSOLE|CARD|CAMERA|STRAP` in board.h, read by
+    `syscfg::pinProblem`): only 13, 32 and 33 are free on this board.
+  - **No NeoPixel on the FNK0060**, settled by Rob's photo: its LEDs are
+    IO2 (the card's D0), TX, RX and ON. Neither Freenove's
+    CAMERA_MODEL_WROVER_KIT block nor the Arduino core's defines an LED or
+    flash pin for it. The lights ship off with no drive pin.
+  - Phase 1 on the bench (flashed 2026-09-24 on COM13): 8 MB PSRAM found,
+    4 MB mapped; internal heap 146,715 free at the first log line and
+    **55,267 once the BBS was listening**, no plugin refused. Joined Wi-Fi
+    and answered telnet.
+- **The camera, phases 2 to 5** (cam-1.1.0, host-tested, not yet flashed).
+  - Phase 2: the card slot over SDMMC 1-bit (`BBS_SD_SDMMC1`), pins from the
+    profile, compile-time checked against the ESP32's fixed slot 1 and routed
+    through the GPIO matrix on an S3. The SPI card driver drops out of this
+    image (-17 KB).
+  - **esp32-camera 2.1.7 is in every ESP32 and S3 build's component list and
+    linked only by camera code.** A per-board manifest had the component
+    manager delete and refetch it on every switch of env, and PlatformIO then
+    built from a stale file list. The reference images: S3 identical in
+    size, esp32dev 48 bytes smaller (link order), static DRAM identical.
+  - **Nothing slow runs on the loop** (rule no. 1): bring-up, capture, the
+    watermark's re-encode, the card write, directory walks and pruning are
+    a worker task's (`plat::taskStart`, core 1, three below the BBS task).
+    The loop moves phases with compare-and-swap, drives the flash and the
+    spinner. The job is the lock, not a node claim, because it must outlive
+    a caller who hangs up. `plat::sdList` reads a folder once with FatFs's own
+    sizes: a stat per entry on FAT is a search of the folder, O(n²).
+  - Limits are keyed by handle, with `onRename` carrying a window to the new
+    name, not by the account id: the id would mean reading users.txt on the
+    loop for every snap.
+  - **The watermark costs 8 KB of static DRAM**: jpge keeps its Huffman
+    tables in statics. The camera image is at 173,744 of 180,736 (6,992
+    free), and the same 8 KB is internal heap the snap then does not have.
+    Options, for Rob: accept it, drop the watermark, or put .bss in PSRAM
+    (which rules out IGNORE_NOTFOUND).
+  - Photos is file area 12, Timelapse 13, both at the camera's levels.
+  - A `pinShares` hook (plugin.h, camera boards only) lets the flash pin
+    share the lights' drive pin in pixel mode and nothing else.
 - **Silent mode, CONFIG board** (Rob, 2026-09-24, queued for the next
   firmware batch): "all LED's are OFF and do not flash ... Silent as in no
   lights anywhere". One board-level yes/no that overrides everything that

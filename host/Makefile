@@ -61,6 +61,12 @@ bbs_host: $(SRCS) $(HDRS)
 bbs_host_s3: $(SRCS) $(HDRS)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_WS_S3LCD147 $(LDFLAGS) -o $@ $(SRCS) $(LDLIBS)
 
+# The Freenove ESP32-WROVER CAM profile (1.1.0, src/board.h): its defaults
+# and the pins it owns, which syscfg::pinProblem refuses by name.
+# tools/harness.sh --board fncam runs it with --only=board_fncam.
+bbs_host_fncam: $(SRCS) $(HDRS)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_FN_WROVER_CAM $(LDFLAGS) -o $@ $(SRCS) $(LDLIBS)
+
 # The panel's drawing: glyphs, layout, lamps and the queue of what to send.
 # Pure code with no platform, checked pixel by pixel with no display.
 test_panel: test_panel.cpp ../src/plugins/panel_gfx.h ../src/plugins/panel_font.h
@@ -143,6 +149,12 @@ test_calllog: test_calllog.cpp ../src/core/calllog.cpp ../src/core/calllog.h
 test_silent: test_silent.cpp ../src/core/silent.h
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_silent.cpp
 
+# The camera's rules and its watermark (1.1.0): names, limits, retention,
+# the timelapse's schedule, the download offer, the JPEG comment, and the
+# watermark drawn a strip at a time, all with no sensor and no card.
+test_camera: test_camera.cpp ../src/plugins/camera_rules.h ../src/plugins/camera_mark.h ../src/plugins/panel_font.h
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_camera.cpp
+
 # The project is GPL-3.0-or-later (1.1.0-dev.11). A tracked file whose SPDX
 # line still says GPL-2.0 was added on an old header; release.py refuses it
 # too, and this catches it before a release is ever attempted.
@@ -151,7 +163,7 @@ licence:
 	    echo "licence: GPL-2.0 SPDX line(s) above; the project is GPL-3.0-or-later"; exit 1; \
 	else echo "licence: no GPL-2.0 SPDX lines"; fi
 
-test: licence test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent
+test: licence test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera
 	./test_xmodem
 	./test_wrap
 	./test_forums_ptr
@@ -165,8 +177,9 @@ test: licence test_xmodem test_wrap test_forums_ptr test_compose test_codes test
 	./test_panel
 	./test_calllog
 	./test_silent
+	./test_camera
 
 clean:
-	rm -f bbs_host bbs_host_s3 test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent
+	rm -f bbs_host bbs_host_s3 bbs_host_fncam test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera
 
 .PHONY: clean test licence

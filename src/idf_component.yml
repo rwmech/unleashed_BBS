@@ -34,3 +34,14 @@ dependencies:
   idf: ">=5.1"
   joltwallet/littlefs: "^1.14"
   espressif/mdns: "^1.4.0"
+  # Espressif's camera driver (Apache-2.0), for the camera boards. Listed for
+  # every ESP32 and S3 build so the component manager keeps one solution for
+  # the whole project (a per-board list had it deleted and fetched again at
+  # every switch of board, and PlatformIO then built from a stale file
+  # list). Fetched and compiled everywhere, linked only where something
+  # calls it: nothing outside BBS_HAS_CAMERA does, so the WROOM's and the
+  # Waveshare S3's images carry none of it (checked byte for byte).
+  espressif/esp32-camera:
+    version: "2.1.7"
+    rules:
+      - if: "target in [esp32, esp32s3]"

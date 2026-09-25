@@ -461,6 +461,106 @@ void*    psramAlloc(size_t n);
 void     psramFree(void* p);
 #endif  // BBS_HAS_LCD
 
+#ifdef BBS_HAS_CAMERA
+// ---------------------------------------------------------------------------
+// The camera (BBS_HAS_CAMERA boards only: the camera plugin). Everything here
+// but pinOut and camDmaLargest BLOCKS, for up to seconds, and is called only
+// from the camera's worker task (taskStart), never from the BBS loop: the
+// loop is cooperative, and a sensor's bring-up stalling it would stall every
+// caller (Rob's rule no. 1: the online experience without lag is paramount).
+//
+// camOpen:       bring the sensor up with these settings (pins from board.h).
+//                err says why not; the sensor found is named in the log.
+// camGrab:       one frame; the pointer is good until camRelease. False
+//                after a second with no frame. JPEG from a sensor that
+//                encodes, RGB565 (w x h x 2, high byte first) from one that
+//                does not: camRaw says which.
+// camRaw:        the sensor up now gives RGB565, for jpegRaw to encode.
+// camSensor:     the name of the sensor the last bring-up found, "" before
+//                one has.
+// camClose:      the sensor down and its memory back: the 32 KB DMA block and
+//                the frame buffer. The camera is never left running.
+// camDmaLargest: the largest internal DMA-capable block free now, which a
+//                bring-up needs kCamDmaBlock of. No I/O, but it walks the
+//                heap: once a snap, never a tick.
+// camInternalFree: internal RAM free now, the DMA reserve pool included.
+//                A bring-up needs kCamInternal of it: the DMA block, the
+//                driver's own 4 KB task and its small change. The caller's
+//                own task stack is on top (the plugin adds its worker's).
+// camAlloc:      a block for a copy of a frame or the re-encoder's buffers,
+//                PSRAM first. camFree gives it back.
+// taskStart:     run fn(arg) once on a task of its own, on the BBS task's
+//                core below its priority, so it only ever gets the loop's
+//                idle time: that is the throttle. The task ends when fn does.
+// taskSleep:     give the processor away for ms (0: to anything waiting).
+// taskStackFree: the least free stack the calling task has had, in bytes.
+// sdSpace:       the card's size and free space in bytes, read now (FAT's
+//                own figure, which can mean a scan: the worker's, never the
+//                loop's), not sdInfo's kept one. False with no card.
+// sdList:        every entry of a folder on the card (path under sdBase(),
+//                "photos/timelapse"), with whether it is a folder and its
+//                size, in the order the card holds them, until fn returns
+//                false. One read of the folder: FatFs's own directory entry
+//                carries the size, so no entry is looked up again (a stat on
+//                FAT searches the folder from the top, which made a walk of
+//                a thousand photos a million entry reads). Dot entries are
+//                left out. False when the folder cannot be opened.
+// pinOut:        a GPIO as an output, driven high or low (the flash pin).
+// jpegMark:      re-encode a JPEG a strip of rows at a time, calling draw on
+//                each strip (RGB888) before it is encoded, and out with the
+//                result as it is made. quality 1 to 100, higher is better.
+//                False when this build cannot (the host) or the picture did
+//                not decode; out may then have had a part, to discard.
+// jpegRaw:       encode an RGB565 frame (camRaw) the same way, drawing on
+//                each strip first. False when this build cannot (the host).
+// ---------------------------------------------------------------------------
+struct CamCfg {
+    const char* size    = "svga";     // one of BBS_CAM_SIZES
+    uint8_t     quality = 12;         // the sensor's, 0-63, lower is better
+    bool        flip    = false;
+    bool        mirror  = false;
+    int8_t      bright = 0, contrast = 0, saturation = 0, exposure = 0;   // -2..2
+    uint8_t     wb      = 0;          // auto|sunny|cloudy|office|home
+    uint8_t     effect  = 0;          // none|negative|grey|red|green|blue|sepia
+};
+
+using MarkRowsFn = void (*)(void* ctx, uint8_t* rgb, uint16_t width, uint16_t y0, uint16_t rows);
+using MarkOutFn  = bool (*)(void* ctx, const uint8_t* p, size_t n);
+
+// What a bring-up of the ESP32's JPEG path takes from internal RAM
+// (esp32-camera 2.1.7, read from its source): one 32,768-byte DMA buffer,
+// eight half buffers of 4 KB that the ESP32's JPEG path fixes whatever
+// CAMERA_DMA_BUFFER_SIZE_MAX says (target/esp32/ll_cam.c ll_cam_dma_sizes),
+// in ONE piece (cam_hal.c cam_dma_config), with its sixteen descriptors and
+// the driver's object beside it; then cam_task's 4 KB stack, its queues,
+// the SCCB bus and the sensor's state. The block is rounded up to cover
+// the descriptors and the heap's own headers.
+constexpr uint32_t kCamDmaBlock = 32768u + 1024u;
+constexpr uint32_t kCamInternal = kCamDmaBlock + 4096u + 2048u;
+
+bool     camOpen(const CamCfg& c, char* err, size_t errLen);
+bool     camGrab(const uint8_t*& buf, size_t& len, uint16_t& w, uint16_t& h);
+void     camRelease();
+void     camClose();
+uint32_t camDmaLargest();
+uint32_t camInternalFree();
+bool     camRaw();
+const char* camSensor();
+void*    camAlloc(size_t n);
+void     camFree(void* p);
+bool     taskStart(void (*fn)(void*), void* arg, uint32_t stackBytes, const char* name);
+void     taskSleep(uint32_t ms);
+uint32_t taskStackFree();
+bool     sdSpace(uint64_t& total, uint64_t& freeBytes);
+using SdListFn = bool (*)(void* ctx, const char* name, bool dir, uint32_t size);
+bool     sdList(const char* rel, SdListFn fn, void* ctx);
+void     pinOut(int pin, bool high);
+bool     jpegMark(const uint8_t* jpg, size_t len, uint8_t quality, MarkRowsFn draw, void* dctx,
+                  MarkOutFn out, void* octx, uint16_t& width, uint16_t& height);
+bool     jpegRaw(const uint8_t* rgb565, uint16_t w, uint16_t h, uint8_t quality, MarkRowsFn draw, void* dctx,
+                 MarkOutFn out, void* octx);
+#endif  // BBS_HAS_CAMERA
+
 // ---------------------------------------------------------------------------
 // resetReason / resetWasCrash: why this boot happened, in words a sysop can
 // read. A crash that reboots cleanly is invisible, so the board has to say

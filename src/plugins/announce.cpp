@@ -46,8 +46,9 @@
  *               system, terminals, guests and features are the board's own
  *               facts and are never typed by anybody: the chip and the flash
  *               its image can use, what this firmware speaks, the guest
- *               setting, and which of chat, mail, forums and files work at
- *               the moment of the heartbeat (the last two need a card).
+ *               setting, and which of chat, mail, forums, files and camera
+ *               work at the moment of the heartbeat (files, forums and the
+ *               camera need a card, and the camera a sensor that answered).
  *               support and interests are the sysop's, as slugs from the
  *               directory's published list; anything it does not know it
  *               ignores, so the board only tidies them, it never judges.
@@ -99,6 +100,7 @@
 #include "../core/sysconfig.h"
 #include "../platform/platform.h"
 #include "chat.h"
+#include "camera.h"            // the camera feature, on a camera board
 #include "panel_feed.h"       // listing, on a board with a display
 
 #include <sys/types.h>
@@ -158,6 +160,7 @@ constexpr uint8_t    kSystemMax   = 31;     // "ESP32-S3 · 16 MB · PSRAM" is 2
 //
 //   keys, quotes, brackets, and the fixed terminals and
 //     features lists, with share_activity on                  314
+//     (323 on a camera board: ,"camera" is 9 more)
 //   numbers at their widest (port 5, nodes 3, busy 3,
 //     uptime 7, interval 4, tz 4, calls24 5, minutes24 10)      41
 //   version 5 and system 31, never escaped                      36
@@ -167,10 +170,11 @@ constexpr uint8_t    kSystemMax   = 31;     // "ESP32-S3 · 16 MB · PSRAM" is 2
 //     quoted and bracketed: 95 + 32 + 2 each                   258
 //                                                             -----
 //                                                             1,319
+//                                     (1,328 on a camera board)
 //
 // Measured, not only added up: test_announce_badges gives the host board
-// exactly this and checks the heartbeat arrives whole. The spare 24 is for
-// a longer version string. 768, the figure first proposed, is short even
+// exactly this and checks the heartbeat arrives whole. The spare 24 (15 on
+// a camera board) is for a longer version string. 768, the figure first proposed, is short even
 // with no quote marks anywhere: every text at its longest and both lists
 // full is 984.
 // ---------------------------------------------------------------------------
@@ -504,6 +508,11 @@ struct Json {
 // without SD UNMOUNT is not noticed at all (there is no card-detect line and
 // nothing polls the bus), so those two stay until the next boot finds no
 // card, the same as everything else on the board that uses it.
+//
+// "camera" (1.1.0, camera boards only): the camera plugin running with a
+// card, and a sensor that answered its latest bring-up this boot (the
+// survey's look at start, or a snap). A board whose camera will not start
+// does not claim the directory's "This BBS can take pictures" badge.
 void features(char* out, size_t n) {
     auto on = [](const char* name) {
         uint8_t i = plugins::indexOf(name);
@@ -512,11 +521,17 @@ void features(char* out, size_t n) {
                (!(p->info.flags & PF_SD) || plat::sdBase()[0]);
     };
     const bool chatOn = on("chat");
-    snprintf(out, n, "%s%s%s%s",
+#ifdef BBS_HAS_CAMERA
+    const bool cam = camera::running() && camera::found();
+#else
+    const bool cam = false;
+#endif
+    snprintf(out, n, "%s%s%s%s%s",
              chatOn ? "chat," : "",
              on("forums") ? "forums," : "",
              on("files") ? "files," : "",
-             chatOn && chat::mailOn() ? "mail," : "");
+             chatOn && chat::mailOn() ? "mail," : "",
+             cam ? "camera," : "");
     size_t len = strlen(out);
     if (len) out[len - 1] = '\0';                       // the last comma
 }
@@ -568,7 +583,7 @@ uint16_t took(int r, size_t cap, bool& cut) {
 // good as the day it was last redone.
 bool buildBody() {
     Bbs& bbs = Bbs::instance();
-    char feats[32];
+    char feats[40];                                    // "chat,forums,files,mail,camera" is 29
     features(feats, sizeof(feats));
 
     Json j(kBody, g_room);

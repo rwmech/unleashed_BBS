@@ -48,6 +48,9 @@ extern const Plugin kLightsPlugin;
 #ifdef BBS_HAS_LCD
 extern const Plugin kPanelPlugin;        // a board with a display (board.h)
 #endif
+#ifdef BBS_HAS_CAMERA
+extern const Plugin kCameraPlugin;       // a board with a camera (board.h)
+#endif
 
 // Order here is display order, not start order: the sd plugin is PF_EARLY
 // and plugins::begin() runs those first whatever position they hold, so this
@@ -64,6 +67,9 @@ const Plugin* const kPlugins[] = {
     &kLightsPlugin,
 #ifdef BBS_HAS_LCD
     &kPanelPlugin,
+#endif
+#ifdef BBS_HAS_CAMERA
+    &kCameraPlugin,
 #endif
 };
 

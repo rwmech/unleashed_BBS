@@ -62,3 +62,11 @@ endif()
 idf_component_register(SRCS ${app_sources}
                        INCLUDE_DIRS "." "../include"
                        REQUIRES ${app_requires})
+# The camera boards' watermark re-encodes with the camera driver's own JPEG
+# encoder (conversions/jpge), whose header the driver keeps private. The
+# driver is in every ESP32 and S3 build (src/idf_component.yml) and linked
+# only by a camera board's code.
+if(TARGET __idf_espressif__esp32-camera)
+    idf_component_get_property(bbs_cam_dir espressif__esp32-camera COMPONENT_DIR)
+    target_include_directories(${COMPONENT_LIB} PRIVATE "${bbs_cam_dir}/conversions/private_include")
+endif()

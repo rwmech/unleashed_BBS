@@ -51,6 +51,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <zlib.h>
+#include <pthread.h>
 
 namespace {
 std::string g_fsBase   = "../data";
@@ -384,6 +385,7 @@ void fsInfoStale() {}
 void log(const char* fmt, ...) {
     timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
+    flockfile(stdout);               // one line at a time: the camera's worker is a thread
     fprintf(stdout, "[%6lu.%03lu] ", static_cast<unsigned long>(ts.tv_sec),
             static_cast<unsigned long>(ts.tv_nsec / 1000000));
     va_list ap;
@@ -392,6 +394,7 @@ void log(const char* fmt, ...) {
     va_end(ap);
     fputc('\n', stdout);
     fflush(stdout);
+    funlockfile(stdout);
 }
 
 void backupButtonBegin(int gpio) {
@@ -494,6 +497,14 @@ bool pixelsShow(uint8_t out, const uint8_t* rgb, uint8_t count) {
     if (out >= kPixelOuts || !rgb || g_hostPix[out].pin < 0) return false;
     HostPix& p = g_hostPix[out];
     if (count > p.count) count = p.count;
+#ifdef BBS_HAS_CAMERA
+    // A one-pixel output going full white is the camera's flash (or a LIGHTS
+    // TEST). Logged once as it turns white, "pixels: output 0 white", so a
+    // test can see a flash that lasted between two looks at LIGHTS.
+    const bool white = count == 1 && rgb[0] == 255 && rgb[1] == 255 && rgb[2] == 255;
+    const bool was   = p.count == 1 && p.rgb[0] == 255 && p.rgb[1] == 255 && p.rgb[2] == 255;
+    if (white && !was) log("pixels: output %u white", static_cast<unsigned>(out));
+#endif
     memcpy(p.rgb, rgb, static_cast<size_t>(count) * 3u);
     return true;
 }
@@ -569,6 +580,147 @@ void lcdBacklight(uint8_t pct) { g_lcdBl = g_lcdUp ? pct : 0; }
 void* psramAlloc(size_t n) { return malloc(n); }
 void  psramFree(void* p)  { free(p); }
 #endif  // BBS_HAS_LCD
+
+#ifdef BBS_HAS_CAMERA
+// ---------------------------------------------------------------------------
+// The camera on the host (BBS_HAS_CAMERA profiles). No sensor: a "frame" is a
+// small fixed JPEG-shaped block, FF D8 to FF D9, which is all the plugin
+// checks before it writes one. The worker is a real thread, so the plugin's
+// hand-offs between the loop and the worker run as they do on the board.
+//
+//   BBS_CAM_MS=<ms>    how long a bring-up takes (default 200), so a test
+//                      can watch "Developing..." and hang up in the middle
+//   BBS_CAM_FAIL=1     no camera found
+//   BBS_CAM_FAIL=once  the first bring-up fails part way, the rest work.
+//   BBS_CAM_FAIL=<n>   (2 and up) the nth bring-up fails part way instead.
+//                      The first is the plugin's look for the sensor at
+//                      start, so 2 is the first snap's.
+//                      A bring-up holds the DMA block from the moment it
+//                      starts until camClose, failed or not, the way a
+//                      partial esp_camera_init does: a failure path that
+//                      forgets camClose leaves camDmaLargest short, and the
+//                      next snap is refused for memory.
+//   BBS_CAM_DMA=<n>    the largest DMA block free (default 65536)
+//   BBS_CAM_INTERNAL=<n> internal RAM free (default 98304)
+//
+// The flash pin is logged, "cam-pin 13 high", which is how the tests see it
+// go high and low around the exposure.
+// ---------------------------------------------------------------------------
+namespace {
+bool g_camUp   = false;
+bool g_camHeld = false;                    // the DMA block, from start to camClose
+int  g_camOpens = 0;
+const uint8_t kFakeJpeg[] = {
+    0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
+    0x00, 0x01, 0x00, 0x00, 'h', 'o', 's', 't', ' ', 'f', 'r', 'a', 'm', 'e', 0xFF, 0xD9,
+};
+uint32_t envMs(const char* name, uint32_t dflt) {
+    const char* v = getenv(name);
+    return v && *v ? static_cast<uint32_t>(strtoul(v, nullptr, 10)) : dflt;
+}
+}   // namespace
+
+bool camOpen(const CamCfg& c, char* err, size_t errLen) {
+    (void)c;
+    if (err && errLen) err[0] = '\0';
+    usleep(envMs("BBS_CAM_MS", 200) * 1000u);
+    const char* f = getenv("BBS_CAM_FAIL");
+    if (f && !strcmp(f, "1")) {
+        if (err && errLen) snprintf(err, errLen, "%s", "no camera found: check the ribbon");
+        return false;
+    }
+    g_camHeld = true;
+    // once is the first bring-up; a number from 2 up is that one.
+    const int failAt = !f ? 0 : !strcmp(f, "once") ? 1 : atoi(f);
+    if (failAt > 0 && ++g_camOpens == failAt) {
+        if (err && errLen) snprintf(err, errLen, "%s", "the camera would not start");
+        return false;                      // part way: still held until camClose
+    }
+    static bool said = false;
+    if (!said) { plat::log("camera: sensor %s (host)", BBS_CAM_SENSOR); said = true; }
+    g_camUp = true;
+    return true;
+}
+
+bool camGrab(const uint8_t*& buf, size_t& len, uint16_t& w, uint16_t& h) {
+    if (!g_camUp) return false;
+    usleep(20000);
+    buf = kFakeJpeg;
+    len = sizeof(kFakeJpeg);
+    w = 800;
+    h = 600;
+    return true;
+}
+
+void camRelease() {}
+void camClose() { g_camUp = false; g_camHeld = false; }
+uint32_t camDmaLargest() { return g_camHeld ? 0 : envMs("BBS_CAM_DMA", 65536); }
+uint32_t camInternalFree() { return envMs("BBS_CAM_INTERNAL", 98304) - (g_camHeld ? 40000u : 0u); }
+bool camRaw() { return false; }            // the host's frames are JPEG-shaped
+const char* camSensor() { return BBS_CAM_SENSOR; }
+void* camAlloc(size_t n) { return malloc(n); }
+void camFree(void* p) { free(p); }
+
+bool taskStart(void (*fn)(void*), void* arg, uint32_t stackBytes, const char* name) {
+    (void)stackBytes;
+    (void)name;
+    pthread_t t;
+    struct Tramp { void (*fn)(void*); void* arg; };
+    Tramp* tr = new Tramp{ fn, arg };
+    if (pthread_create(&t, nullptr, [](void* p) -> void* {
+            Tramp* x = static_cast<Tramp*>(p);
+            x->fn(x->arg);
+            delete x;
+            return nullptr;
+        }, tr) != 0) {
+        delete tr;
+        return false;
+    }
+    pthread_detach(t);
+    return true;
+}
+
+void taskSleep(uint32_t ms) { usleep((ms ? ms : 1) * 1000u); }
+uint32_t taskStackFree() { return 0; }
+
+// sdSpace: the notional card sdInfo describes, unless a test says how full
+// it is: BBS_CAM_CARD_MB and BBS_CAM_FREE_MB (the floor's tests).
+bool sdSpace(uint64_t& total, uint64_t& freeBytes) {
+    total = freeBytes = 0;
+    if (!g_sdMount) return false;
+    total     = static_cast<uint64_t>(envMs("BBS_CAM_CARD_MB", 2048)) * 1024u * 1024u;
+    freeBytes = static_cast<uint64_t>(envMs("BBS_CAM_FREE_MB", 1900)) * 1024u * 1024u;
+    return true;
+}
+
+bool sdList(const char* rel, SdListFn fn, void* ctx) {
+    if (!g_sdMount || !fn) return false;
+    std::string dir = g_sdBase + "/" + (rel ? rel : "");
+    DIR* d = opendir(dir.c_str());
+    if (!d) return false;
+    for (struct dirent* e = readdir(d); e; e = readdir(d)) {
+        if (e->d_name[0] == '.') continue;
+        struct stat st;
+        if (stat((dir + "/" + e->d_name).c_str(), &st) != 0) continue;
+        if (!fn(ctx, e->d_name, S_ISDIR(st.st_mode), static_cast<uint32_t>(st.st_size))) break;
+    }
+    closedir(d);
+    return true;
+}
+
+void pinOut(int pin, bool high) {
+    if (pin < 0) return;
+    plat::log("cam-pin %d %s", pin, high ? "high" : "low");
+}
+
+bool jpegMark(const uint8_t*, size_t, uint8_t, MarkRowsFn, void*, MarkOutFn, void*, uint16_t&, uint16_t&) {
+    return false;                          // no codec on the host: the photo goes out unmarked
+}
+
+bool jpegRaw(const uint8_t*, uint16_t, uint16_t, uint8_t, MarkRowsFn, void*, MarkOutFn, void*) {
+    return false;                          // no codec on the host, and camRaw never says raw
+}
+#endif  // BBS_HAS_CAMERA
 
 // The host build is started by a person, so it never crashed its way here.
 // BBS_HOST_RESET plays one of the board's reset words instead ("task

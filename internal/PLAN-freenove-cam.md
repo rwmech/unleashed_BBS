@@ -453,8 +453,9 @@ The BBS loop is cooperative, so none of that runs on it.
   the first frames while exposure settles (three by default, UNCONFIRMED
   how many the OV2640 needs), takes one, validates the JPEG, and hands the
   frame buffer to the loop.
-- The caller sees an `fx::` spinner and "Smile...". Their line is otherwise
-  unaffected, and so is everybody else's.
+- The caller sees an `fx::` spinner, then "Developing...", then the result:
+  no "Smile..." and no countdown (Rob: a caller is not in front of the
+  camera). Their line is otherwise unaffected, and so is everybody else's.
 - The loop writes the frame to the card in slices from `tick()`, a few KB a
   pass, the way a transfer is pumped, so no single pass stalls on a 100 KB
   write. Then it returns the buffer and calls `esp_camera_deinit`, which
@@ -717,7 +718,10 @@ Risks:
 - The camera stalls behind LittleFS writes (cache off); handled by
   validating each JPEG, not measured yet.
 - CH340 variant and the exact camera module are UNCONFIRMED; the boot log
-  names the sensor.
+  names the sensor. **Settled 2026-09-25: the kit on the bench carries a
+  GalaxyCore GC0308** (SCCB scan: one device at 0x21, ID 0x9B), 640x480 and
+  no JPEG encoder. FNCAM 1.0.2 captures RGB565 at 10 MHz XCLK and encodes
+  on the worker; the OV2640 driver stays built for kits that carry one.
 
 Questions:
 

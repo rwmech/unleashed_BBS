@@ -290,7 +290,6 @@ entry when it is released.
   80; form refusals were cut at 60 characters; a full 80-column redraw
   could lose its tail (keys now wait for 2,600 bytes of output room).
 
-
 **1.1.0-dev.13, the sysop's dashboard, and missed pages to one account.**
 - DASH is a real screen, laid out for 40, 80 and 132 columns, with pages
   to move between and K/S to pick; NODES and WHO share its node rows.
@@ -318,6 +317,76 @@ entry when it is released.
   flash included.
 - A half range or a bad time in system.cfg is read as no hours and
   logged, never a refusal of the whole file.
+
+**Freenove ESP32-WROVER CAM (FNCAM 1.0.0).**
+- Phase 1: a new board profile, `BBS_BOARD_FN_WROVER_CAM` (environments
+  `freenove_wrover_cam` / `freenove_wrover_cam_release`), on the
+  ESP32-WROVER-E's 8 MB quad PSRAM (`sdkconfig.defaults.fncam`, ESP32
+  revision 3 minimum). `CONFIG` refuses a pin the board has already wired
+  to its PSRAM, its console, the card slot or the camera, the same way it
+  refuses one another switched-on plugin holds. No NeoPixel is documented
+  on the FNK0060 (checked against Freenove's own pinout drawing and
+  sketches, 2026-09-24), so the lights plugin ships off with no drive pin,
+  as on the WROOM.
+- Phase 2: the card slot is SDMMC 1-bit (CLK 14, CMD 15, D0 2) rather than
+  SPI, because the WROOM's four default SPI pins are this board's camera
+  data lines. The `sd` plugin's SPI pin settings are read and ignored,
+  logged once, instead of being refused.
+- The camera plugin (`BBS_HAS_CAMERA`): `SNAPSHOT` for a caller and a
+  timelapse of the board's own, into two new file areas, Photos (12) and
+  Timelapse (13). Ten photos an hour and twenty a day per caller, rolling
+  and sysop-exempt. Retention by age, by count and by a card space floor,
+  touching only files shaped exactly like the camera's own. A watermark
+  drawn with the camera driver's own JPEG encoder (`espressif/esp32-camera`
+  2.1.7, Apache-2.0) and decoded with the chip's own ROM TJpgDec. Bringing
+  the sensor up, taking the frame and writing the card all run on a worker
+  task off the BBS loop, so a photo adds no lag for anyone else on the
+  board. Full detail: COMMANDS.md, `camera` under Plugins.
+- Host-tested only so far. Of the three phases, only phase 1 (the board
+  profile and PSRAM) has actually been flashed and run on the physical
+  board; the SD card and the camera plugin have not yet had bench time.
+
+**FNCAM 1.0.1: the camera could not start on the board.**
+- On the bench FNCAM 1.0.0 answered the first `SNAPSHOT` with "No photo:
+  the camera would not start" and the next with "The camera needs memory
+  the board is using". MEM showed 38,855 bytes of internal RAM free and a
+  largest block of 31,744, and the camera driver needs one 32,768-byte
+  internal DMA buffer. Enabling PSRAM had cost the internal RAM: the IDF
+  forces 16 static Wi-Fi TX buffers when `SPIRAM_USE_MALLOC` is on and
+  raises the static RX buffers from 10 to 16, about 35 KB more than the
+  WROOM holds, and the 32 KB reserve pool that ordinary `malloc()` never
+  takes is itself too small for the block once the heap's header is in
+  it. Now ten of each Wi-Fi buffer and a 40 KB pool
+  (`sdkconfig.defaults.fncam`).
+- The check before a snap counts the worker task's stack and the driver's
+  task as well as the DMA block, and is made again on the worker before
+  the driver is touched. A refusal, a failed start and a successful one
+  all log internal RAM free and the largest DMA block. A sensor that does
+  not answer is reported as "no camera found" (the driver says
+  `ESP_ERR_NOT_SUPPORTED`, which was reported as "would not start"), and a
+  partial start is torn down only when something of it is left.
+- No "Smile...": the caller sees the spinner, "Developing..." and the
+  result.
+
+**FNCAM 1.0.2: the camera is a GC0308, and it works.**
+- With the memory there, the driver still found no sensor. A raw SCCB scan
+  on the bench (a diagnostic build, not kept) found one device, at 0x21,
+  with 0x9B at register 0x00: a GalaxyCore GC0308, not the OV2640
+  Freenove's documents name. It is 640x480 at most and has no JPEG
+  encoder, which the whole capture path had assumed.
+- Both drivers are built (GC0308 and OV2640). The bring-up asks for JPEG
+  and, when the sensor cannot give it, asks again for RGB565 and remembers
+  that for the rest of the boot. A raw frame is copied off the sensor and
+  encoded on the worker, sixteen rows at a time, by the same encoder the
+  watermark already used, with the watermark drawn on the way.
+- Raw frames run the sensor clock at 10 MHz: at 20 every frame was lost
+  (the driver's `EV-EOF-OVF`).
+- Size is `qvga | vga`, `vga` as shipped. The watermark is fitted to the
+  frame the sensor actually gave, and CAMERA names the sensor found.
+- The worker's stack is 8 KB; encoding left 2,008 of 6 KB free.
+- On the board: 640x480, about 33 KB a photo, 3.6 to 3.9 s from SNAPSHOT
+  to saved, downloaded by YMODEM, listed in FILES 12, two in a row. With
+  the camera up, 14 KB of internal RAM is free.
 
 ## 1.0.2, 2026-09-23
 

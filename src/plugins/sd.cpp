@@ -68,6 +68,9 @@
 #include "../core/backup.h"    // and sdNightly
 #include "../core/bbs_util.h"
 #include "../platform/platform.h"
+#ifdef BBS_HAS_CAMERA
+#include "camera.h"             // camera::busy: the card is in use by its worker
+#endif
 #include "../config.h"
 #include "panel_feed.h"       // sdcard::panel, on a board with a display
 
@@ -179,10 +182,20 @@ void readKey(void* ctx, const char* key, const char* value) {
         plat::log("sd: %s = %s is not a pin this board can use, keeping %d",
                   key, value, static_cast<int>(out));
     };
+#ifdef BBS_SD_SDMMC1
+    // An SDMMC slot's pins are the board's wiring (board.h), not settings.
+    // A WROOM's system.cfg brought here names four SPI pins, and all four are
+    // this board's camera lines: said once and ignored, never refused, so
+    // the rest of the section still counts.
+    (void)pin;
+    if (!strcmp(key, "cs") || !strcmp(key, "mosi") || !strcmp(key, "clk") || !strcmp(key, "miso"))
+        plat::log("sd: %s = %s is an SPI pin; this board's slot is SDMMC, ignored", key, value);
+#else
     if      (!strcmp(key, "cs"))   pin(g_pins.cs,   false);
     else if (!strcmp(key, "mosi")) pin(g_pins.mosi, false);
     else if (!strcmp(key, "clk"))  pin(g_pins.clk,  false);
     else if (!strcmp(key, "miso")) pin(g_pins.miso, true);
+#endif
     else if (!strcmp(key, "speed")) {
         long k = strtol(value, nullptr, 10);
         if (k >= 400 && k <= 40000) g_pins.speedKHz = static_cast<uint16_t>(k);
@@ -487,6 +500,13 @@ bool start(Bbs& bbs) {
         if (!strcmp(g_why, "not mounted")) snprintf(g_why, sizeof(g_why), "%s", was);
         return true;
     }
+#ifdef BBS_HAS_CAMERA
+    if (had && moved && camera::busy()) {
+        plat::log("sd: the camera is writing the card; the new bus speed waits for the next save");
+        g_pins = before;
+        return true;
+    }
+#endif
     if (had && moved) {
         plat::log("sd: pins changed, remounting");
         if (g_bbs) { g_bbs->closeCardScreens(); g_bbs->dropCardJob(); }
@@ -568,8 +588,13 @@ void showStatus(Bbs& b, Session& s) {
         t.text(tl, buf);
         t.nl(tl);
         t.color(tl, Color::Grey);
+#ifdef BBS_SD_SDMMC1
+        snprintf(buf, sizeof(buf), "  slot SDMMC 1-bit, CLK %d CMD %d D0 %d",
+                 BBS_SDMMC_CLK, BBS_SDMMC_CMD, BBS_SDMMC_D0);
+#else
         snprintf(buf, sizeof(buf), "  wired CS %d MOSI %d CLK %d MISO %d",
                  g_pins.cs, g_pins.mosi, g_pins.clk, g_pins.miso);
+#endif
         t.text(tl, buf);
         t.nl(tl);
         snprintf(buf, sizeof(buf), "  bus %u kHz. CONFIG sd lowers it.",
@@ -649,6 +674,16 @@ const Command kCommands[] = {
                   b.prompt(s);
                   return;
               }
+#ifdef BBS_HAS_CAMERA
+              // The camera writes a photo on a task of its own: the card
+              // stays until it has finished, a few seconds at most.
+              if (camera::busy()) {
+                  t.color(tl, Color::Grey);
+                  t.text(tl, "The camera is saving a photo. Try again in a moment.");
+                  b.prompt(s);
+                  return;
+              }
+#endif
               // Anyone mid-screen from the card has to be let go first, and
               // so does a backup being written to it (the nightly one).
               b.closeCardScreens();
@@ -676,11 +711,18 @@ const Command kCommands[] = {
 // instead of writing one that readKey then quietly declines, and a pin
 // another feature holds (1.1.0). The long labels are for 80 columns.
 const PluginSetting kSettings[] = {
+#ifdef BBS_SD_SDMMC1
+    // The slot is SDMMC on the board's own wiring (board.h): nothing to set.
+    { "slot",    "Card slot", PS_INFO, 0, 0, 20, "Wired on the board; not a setting.",
+      nullptr, "Card slot (SDMMC)" },
+    { "speed",   "Bus kHz",  PS_NUM,   400, 40000, 5, nullptr, nullptr, "SDMMC bus speed, kHz" },
+#else
     { "cs",      "CS pin",   PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, nullptr, nullptr, "Chip select GPIO" },
     { "mosi",    "MOSI pin", PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, nullptr, nullptr, "MOSI GPIO" },
     { "clk",     "CLK pin",  PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, nullptr, nullptr, "Clock GPIO" },
     { "miso",    "MISO pin", PS_PIN,   0, BBS_GPIO_MAX, 2, nullptr, nullptr, "MISO GPIO" },
     { "speed",   "Bus kHz",  PS_NUM,   400, 40000, 5, nullptr, nullptr, "SPI bus speed, kHz" },
+#endif
     { "screens", "Screens",  PS_YESNO, 0, 0,  4, nullptr, nullptr, "Screens from card" },
     // A full backup at 03:00 into the card's backup folder, the last seven
     // kept, named nightly-YYYYMMDD.zip so a backup the sysop made by hand is
@@ -693,6 +735,12 @@ const PluginSetting kSettings[] = {
 
 // setting: the live value, for a key system.cfg does not carry yet
 void setting(const char* key, char* out, size_t n) {
+#ifdef BBS_SD_SDMMC1
+    if (!strcmp(key, "slot")) {
+        snprintf(out, n, "SDMMC 1-bit %d %d %d", BBS_SDMMC_CLK, BBS_SDMMC_CMD, BBS_SDMMC_D0);
+        return;
+    }
+#endif
     if      (!strcmp(key, "cs"))      snprintf(out, n, "%d", g_pins.cs);
     else if (!strcmp(key, "mosi"))    snprintf(out, n, "%d", g_pins.mosi);
     else if (!strcmp(key, "clk"))     snprintf(out, n, "%d", g_pins.clk);

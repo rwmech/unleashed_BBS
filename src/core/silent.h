@@ -14,9 +14,9 @@
  *
  *               It is an override, not a setting anything else has to
  *               remember. The activity LED, the lights plugin's two outputs,
- *               the panel's backlight, and the camera plugin's flash once it
- *               lands (branch cam-1.1.0 calls silent()), each keep their
- *               own settings untouched, ask silent() before they light
+ *               the panel's backlight, and the camera plugin's flash (a snap
+ *               in silence is taken without it), each keep their own
+ *               settings untouched, ask silent() before they light
  *               anything, and carry on exactly as they were when it ends.
  *
  *               What it cannot do: a dev board's power LED is wired straight

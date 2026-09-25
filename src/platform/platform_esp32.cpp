@@ -65,6 +65,21 @@
 #include "driver/usb_serial_jtag_vfs.h"
 #define BBS_CONSOLE_USJ 1
 #endif
+#ifdef BBS_SD_SDMMC1
+#include "driver/sdmmc_host.h"           // a card slot wired for SDMMC (board.h)
+#endif
+#ifdef BBS_HAS_CAMERA
+#include "ff.h"                          // sdList: FatFs's directory entries, sizes and all
+#include "diskio_sdmmc.h"                // the card's drive number
+#include "esp_camera.h"                  // Espressif's camera driver (Apache-2.0)
+#include "jpge.h"                        // its JPEG encoder, for the watermark
+#if CONFIG_IDF_TARGET_ESP32
+#include "esp32/rom/tjpgd.h"             // the ROM's JPEG decoder: no flash
+#elif CONFIG_IDF_TARGET_ESP32S3
+#include "esp32s3/rom/tjpgd.h"
+#endif
+#include <new>
+#endif
 #ifdef BBS_HAS_LCD
 #include "esp_lcd_panel_io.h"            // the panel: esp_lcd over SPI
 #include "esp_lcd_io_spi.h"
@@ -309,7 +324,38 @@ bool sdMount(const SdPins& pins, char* err, size_t errLen) {
     if (g_mount) return true;                      // already up, nothing to do
     // Whatever was cached describes a card that is not this one.
     sdInfoStale();
-
+#ifdef BBS_SD_SDMMC1
+    // A slot wired for SDMMC (board.h, BBS_SD_SDMMC1): the SDMMC host, one
+    // data line, on the profile's pins. On the ESP32 the host's slot 1 is on
+    // the IO MUX and can only be CLK 14, CMD 15, D0 2, so the profile's pins
+    // are checked against that at compile time; on a chip that routes the
+    // host through the GPIO matrix (the S3) they are the pins it uses. One
+    // line, not four: on the Freenove D1 is a camera line and D2 is GPIO 12,
+    // the flash-voltage strap, which a card's pull-up would hold high at
+    // reset. Everything after the mount (FAT at /sd, sdInfo, unmount) is the
+    // SPI path's, unchanged: both end in the same VFS.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+    sdmmc_host_t        host = SDMMC_HOST_DEFAULT();
+    sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
+#pragma GCC diagnostic pop
+    host.max_freq_khz = pins.speedKHz ? pins.speedKHz : 20000;
+    slot.width        = 1;
+#if SOC_SDMMC_USE_GPIO_MATRIX
+    slot.clk = static_cast<gpio_num_t>(BBS_SDMMC_CLK);
+    slot.cmd = static_cast<gpio_num_t>(BBS_SDMMC_CMD);
+    slot.d0  = static_cast<gpio_num_t>(BBS_SDMMC_D0);
+    slot.d1  = GPIO_NUM_NC;
+    slot.d2  = GPIO_NUM_NC;
+    slot.d3  = GPIO_NUM_NC;
+#else
+    static_assert(BBS_SDMMC_CLK == 14 && BBS_SDMMC_CMD == 15 && BBS_SDMMC_D0 == 2,
+                  "the ESP32's SDMMC slot 1 is fixed: CLK 14, CMD 15, D0 2");
+#endif
+    // The chip's weak pull-ups on top of whatever the board fits. They are
+    // released at reset, so GPIO 2's does not reach the download-mode strap.
+    slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+#else
     // The bus is configured with MOSI, MISO and CLK, so a change to any of
     // them needs it rebuilt. CS is a device setting and does not.
     if (g_busUp && (g_busPins.mosi != pins.mosi || g_busPins.miso != pins.miso ||
@@ -351,6 +397,7 @@ bool sdMount(const SdPins& pins, char* err, size_t errLen) {
     sdspi_device_config_t dev = devDefaults;
     dev.gpio_cs = static_cast<gpio_num_t>(pins.cs);
     dev.host_id = static_cast<spi_host_device_t>(host.slot);
+#endif
 
     esp_vfs_fat_sdmmc_mount_config_t cfg = {};
     // format_if_mount_failed stays false, deliberately. A card that does not
@@ -362,7 +409,11 @@ bool sdMount(const SdPins& pins, char* err, size_t errLen) {
     cfg.max_files              = BBS_SD_MAX_FILES;
     cfg.allocation_unit_size   = 16 * 1024;
 
+#ifdef BBS_SD_SDMMC1
+    esp_err_t e = esp_vfs_fat_sdmmc_mount(BBS_SD_MOUNT, &host, &slot, &cfg, &g_card);
+#else
     esp_err_t e = esp_vfs_fat_sdspi_mount(BBS_SD_MOUNT, &host, &dev, &cfg, &g_card);
+#endif
     if (e != ESP_OK) {
         g_card = nullptr;
         // Put the bus back down. A failed mount that leaves the bus up holds
@@ -377,8 +428,13 @@ bool sdMount(const SdPins& pins, char* err, size_t errLen) {
         plat::log("sd: mount failed at %u kHz: %s (0x%x)",
                   static_cast<unsigned>(host.max_freq_khz), esp_err_to_name(e),
                   static_cast<unsigned>(e));
+#ifdef BBS_SD_SDMMC1
+        if (e == ESP_ERR_TIMEOUT || e == ESP_ERR_NOT_FOUND)
+            return fail("no card found: check it is seated");
+#else
         if (e == ESP_ERR_TIMEOUT || e == ESP_ERR_NOT_FOUND)
             return fail("no card found: check it is seated, and the CS pin");
+#endif
         if (e == ESP_FAIL)
             return fail("card found but no FAT filesystem: format it FAT32");
         // Out of memory is its own answer and must not be filed under
@@ -1439,5 +1495,417 @@ bool inflateRaw(InflateIn in, InflateOut out, void* ctx) {
     free(d);
     return ok;
 }
+
+#ifdef BBS_HAS_CAMERA
+// ===========================================================================
+// The camera (BBS_HAS_CAMERA). Pins and the sensor are the board profile's
+// (board.h); nothing here knows which board it is on. Every function but
+// pinOut and camDmaLargest is the camera worker's, never the loop's.
+// ===========================================================================
+namespace {
+
+camera_fb_t* g_camFb = nullptr;
+bool         g_camUp = false;
+// A sensor with no JPEG encoder of its own (the GC0308 on the FNK0060 this
+// was written for): frames come as RGB565 and jpegRaw encodes them. Learnt
+// at the first bring-up and kept, so the JPEG attempt is paid once a boot.
+bool         g_camRaw = false;
+char         g_camName[12] = "";
+// Raw frames are two bytes a pixel through the ESP32's I2S camera DMA, and
+// cam_task copies each half buffer into the frame in PSRAM. At the JPEG
+// path's 20 MHz XCLK it fell behind (cam_hal "EV-EOF-OVF", every frame lost
+// on the bench, GC0308 at VGA), so a raw sensor runs slower.
+constexpr int kCamRawXclk = 10000000;
+// The frame sizes CONFIG camera offers, by the words it uses.
+framesize_t camSize(const char* name) {
+    struct Size { const char* word; framesize_t fs; };
+    static const Size kSizes[] = {
+        { "qvga", FRAMESIZE_QVGA }, { "vga", FRAMESIZE_VGA }, { "svga", FRAMESIZE_SVGA },
+        { "xga", FRAMESIZE_XGA },   { "hd", FRAMESIZE_HD },   { "sxga", FRAMESIZE_SXGA },
+        { "uxga", FRAMESIZE_UXGA }, { "qxga", FRAMESIZE_QXGA },
+    };
+    for (const Size& z : kSizes)
+        if (name && !strcmp(name, z.word)) return z.fs;
+    return FRAMESIZE_SVGA;
+}
+
+// The worker's task: one at a time, so one trampoline.
+struct Worker { void (*fn)(void*); void* arg; };
+Worker g_worker;
+
+void workerMain(void*) {
+    g_worker.fn(g_worker.arg);
+    vTaskDelete(nullptr);
+}
+
+// camMemLog: internal RAM as the camera sees it, on the console, so a
+// failed bring-up says which budget it met. The walks are the worker's.
+void camMemLog(const char* when) {
+    plat::log("camera: %s: internal free %u, largest %u, largest DMA %u", when,
+              static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+              static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+              static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL)));
+}
+
+}   // namespace
+
+bool camOpen(const CamCfg& c, char* err, size_t errLen) {
+    auto fail = [&](const char* why) {
+        if (err && errLen) snprintf(err, errLen, "%s", why);
+        return false;
+    };
+    if (err && errLen) err[0] = '\0';
+    if (g_camUp) camClose();
+    if (!heap_caps_get_total_size(MALLOC_CAP_SPIRAM)) return fail("no PSRAM on this board");
+    // Measured here, on the worker, with its own stack already taken: the
+    // driver's one 32 KB DMA buffer is its first large allocation and the
+    // one that fails, and a failure costs a sensor probe and a bus set up
+    // and torn down for nothing. The loop's check before the worker started
+    // could not see the worker's stack come out of the same memory.
+    if (camDmaLargest() < kCamDmaBlock || camInternalFree() < kCamInternal) {
+        camMemLog("not enough memory to start");
+        return fail("not enough memory for the camera");
+    }
+
+    camera_config_t cfg = {};
+    cfg.pin_pwdn     = BBS_CAM_PWDN;
+    cfg.pin_reset    = BBS_CAM_RESET;
+    cfg.pin_xclk     = BBS_CAM_XCLK;
+    cfg.pin_sccb_sda = BBS_CAM_SIOD;
+    cfg.pin_sccb_scl = BBS_CAM_SIOC;
+    cfg.pin_d7 = BBS_CAM_D7; cfg.pin_d6 = BBS_CAM_D6; cfg.pin_d5 = BBS_CAM_D5; cfg.pin_d4 = BBS_CAM_D4;
+    cfg.pin_d3 = BBS_CAM_D3; cfg.pin_d2 = BBS_CAM_D2; cfg.pin_d1 = BBS_CAM_D1; cfg.pin_d0 = BBS_CAM_D0;
+    cfg.pin_vsync    = BBS_CAM_VSYNC;
+    cfg.pin_href     = BBS_CAM_HREF;
+    cfg.pin_pclk     = BBS_CAM_PCLK;
+    cfg.xclk_freq_hz = g_camRaw ? kCamRawXclk : 20000000;
+    cfg.ledc_timer   = LEDC_TIMER_0;
+    cfg.ledc_channel = LEDC_CHANNEL_0;
+    // JPEG from the sensor when it can; RGB565 when it cannot, encoded on
+    // this task by jpegRaw. A size the sensor cannot do is brought down to
+    // its largest by the driver, and the frame says what it really is.
+    cfg.pixel_format = g_camRaw ? PIXFORMAT_RGB565 : PIXFORMAT_JPEG;
+    cfg.frame_size   = camSize(c.size);
+    cfg.jpeg_quality = c.quality;
+    cfg.fb_count     = 1;
+    cfg.fb_location  = CAMERA_FB_IN_PSRAM;
+    // A frame is only taken once the last was handed back, so the frame
+    // after a flash has come on is one that began after it (camGrab's caller
+    // throws one away first).
+    cfg.grab_mode    = CAMERA_GRAB_WHEN_EMPTY;
+    cfg.sccb_i2c_port = -1;
+
+    esp_err_t e = esp_camera_init(&cfg);
+    if (e == ESP_ERR_NOT_SUPPORTED && !g_camRaw) {
+        // Either nothing answered on the bus, or a sensor answered that
+        // cannot give JPEG ("JPEG format is not supported on this sensor"):
+        // the same code for both, so ask again for RGB565, which every
+        // sensor the driver knows gives. Only the second is then a camera.
+        if (esp_camera_sensor_get()) esp_camera_deinit();
+        cfg.pixel_format = PIXFORMAT_RGB565;
+        cfg.xclk_freq_hz = kCamRawXclk;
+        e = esp_camera_init(&cfg);
+        if (e == ESP_OK) {
+            g_camRaw = true;
+            plat::log("camera: the sensor gives no JPEG: raw frames, encoded on the worker");
+        }
+    }
+    if (e != ESP_OK) {
+        plat::log("camera: init failed: %s (0x%x)", esp_err_to_name(e), static_cast<unsigned>(e));
+        // esp_camera_init tears down what it built on every failing path
+        // but one (cam_init, which frees its own), so as a rule this finds
+        // nothing left. A sensor still registered is a partial start, and
+        // everything it holds goes back: the DMA block, cam_task, the SCCB
+        // bus and XCLK's LEDC channel.
+        if (esp_camera_sensor_get()) esp_camera_deinit();
+        camMemLog("after the failed start");
+        // No sensor on the bus is ESP_ERR_NOT_SUPPORTED in 2.1.7 (camera_
+        // probe: "Detected camera not supported"), not NOT_DETECTED. A DMA
+        // buffer the heap could not give is ESP_FAIL (cam_dma_config),
+        // which the largest DMA block left tells apart from the rest.
+        if (e == ESP_ERR_CAMERA_NOT_DETECTED || e == ESP_ERR_NOT_SUPPORTED || e == ESP_ERR_NOT_FOUND)
+            return fail("no camera found: check the ribbon");
+        if (e == ESP_ERR_NO_MEM || camDmaLargest() < kCamDmaBlock)
+            return fail("not enough memory for the camera");
+        return fail("the camera would not start");
+    }
+    g_camUp = true;
+    sensor_t* s = esp_camera_sensor_get();
+    if (s) {
+        camera_sensor_info_t* info = esp_camera_sensor_get_info(&s->id);
+        static bool said = false;
+        if (!said) {
+            plat::log("camera: sensor %s (PID 0x%04x), %s", info ? info->name : "unknown",
+                      static_cast<unsigned>(s->id.PID), g_camRaw ? "RGB565" : "JPEG");
+            said = true;
+        }
+        snprintf(g_camName, sizeof(g_camName), "%s", info ? info->name : "unknown");
+        // Each driver fills in what its sensor has; one that left a setting
+        // out is skipped rather than called through a null.
+        if (s->set_vflip)          s->set_vflip(s, c.flip ? 1 : 0);
+        if (s->set_hmirror)        s->set_hmirror(s, c.mirror ? 1 : 0);
+        if (s->set_brightness)     s->set_brightness(s, c.bright);
+        if (s->set_contrast)       s->set_contrast(s, c.contrast);
+        if (s->set_saturation)     s->set_saturation(s, c.saturation);
+        if (s->set_ae_level)       s->set_ae_level(s, c.exposure);
+        if (s->set_whitebal)       s->set_whitebal(s, 1);
+        if (s->set_awb_gain)       s->set_awb_gain(s, c.wb ? 1 : 0);
+        if (s->set_wb_mode)        s->set_wb_mode(s, c.wb);
+        if (s->set_special_effect) s->set_special_effect(s, c.effect);
+    }
+    return true;
+}
+
+bool camGrab(const uint8_t*& buf, size_t& len, uint16_t& w, uint16_t& h) {
+    if (!g_camUp) return false;
+    if (g_camFb) camRelease();
+    g_camFb = esp_camera_fb_get();
+    if (!g_camFb) return false;
+    buf = g_camFb->buf;
+    len = g_camFb->len;
+    w   = static_cast<uint16_t>(g_camFb->width);
+    h   = static_cast<uint16_t>(g_camFb->height);
+    return true;
+}
+
+void camRelease() {
+    if (g_camFb) esp_camera_fb_return(g_camFb);
+    g_camFb = nullptr;
+}
+
+void camClose() {
+    camRelease();
+    if (g_camUp) esp_camera_deinit();
+    g_camUp = false;
+}
+
+uint32_t camDmaLargest() {
+    return static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+}
+
+uint32_t camInternalFree() {
+    return static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+}
+
+bool camRaw() { return g_camRaw; }
+
+const char* camSensor() { return g_camName; }
+
+void* camAlloc(size_t n) {
+    void* p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    return p ? p : heap_caps_malloc(n, MALLOC_CAP_8BIT);
+}
+
+void camFree(void* p) {
+    heap_caps_free(p);
+}
+
+// taskStart: the worker, on the BBS task's core and three below its
+// priority, so whenever the loop has anything to do it runs and the worker
+// waits; the stack is internal, since the worker writes the card. One at a
+// time: the camera plugin's job is the lock.
+bool taskStart(void (*fn)(void*), void* arg, uint32_t stackBytes, const char* name) {
+    g_worker.fn  = fn;
+    g_worker.arg = arg;
+    BaseType_t ok = xTaskCreatePinnedToCore(workerMain, name, stackBytes, nullptr,
+                                            BBS_TASK_PRIO > 3 ? BBS_TASK_PRIO - 3 : 1, nullptr,
+                                            BBS_TASK_CORE);
+    return ok == pdPASS;
+}
+
+void taskSleep(uint32_t ms) {
+    vTaskDelay(ms ? pdMS_TO_TICKS(ms) : 1);
+}
+
+uint32_t taskStackFree() {
+    return static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr)) * sizeof(StackType_t);
+}
+
+bool sdSpace(uint64_t& total, uint64_t& freeBytes) {
+    total = freeBytes = 0;
+    if (!g_mount) return false;
+    return esp_vfs_fat_info(BBS_SD_MOUNT, &total, &freeBytes) == ESP_OK;
+}
+
+bool sdList(const char* rel, SdListFn fn, void* ctx) {
+    if (!g_mount || !g_card || !fn) return false;
+    char path[160];
+    snprintf(path, sizeof(path), "%u:/%s", static_cast<unsigned>(ff_diskio_get_pdrv_card(g_card)), rel ? rel : "");
+    FF_DIR d;
+    if (f_opendir(&d, path) != FR_OK) return false;
+    FILINFO fi;
+    while (f_readdir(&d, &fi) == FR_OK && fi.fname[0]) {
+        if (fi.fname[0] == '.') continue;
+        if (!fn(ctx, fi.fname, (fi.fattrib & AM_DIR) != 0, static_cast<uint32_t>(fi.fsize))) break;
+    }
+    f_closedir(&d);
+    return true;
+}
+
+// pinOut: the flash pin. Two register writes, safe from the loop.
+void pinOut(int pin, bool high) {
+    if (pin < 0 || !GPIO_IS_VALID_OUTPUT_GPIO(pin)) return;
+    gpio_set_direction(static_cast<gpio_num_t>(pin), GPIO_MODE_OUTPUT);
+    gpio_set_level(static_cast<gpio_num_t>(pin), high ? 1 : 0);
+}
+
+// ---------------------------------------------------------------------------
+// jpegMark: decode with the ROM's TJpgDec a block at a time into a strip of
+// whole rows (one MCU tall: 8 or 16 rows), let the caller draw on the strip,
+// and feed its rows to the camera driver's jpge encoder, which hands its
+// output on as it is made. Nothing the size of the picture is ever held:
+// at UXGA the strip is 1600 x 8 x 3 bytes, in PSRAM. Every strip yields,
+// so the idle task on this core runs and the watchdog is fed.
+// ---------------------------------------------------------------------------
+namespace {
+
+class MarkStream : public jpge::output_stream {
+public:
+    MarkStream(MarkOutFn out, void* ctx) : out_(out), ctx_(ctx) {}
+    bool put_buf(const void* p, int len) override {
+        if (!ok_) return false;
+        ok_ = out_(ctx_, static_cast<const uint8_t*>(p), static_cast<size_t>(len));
+        size_ += static_cast<uint>(len);
+        return ok_;
+    }
+    uint get_size() const override { return size_; }
+    bool ok() const { return ok_; }
+private:
+    MarkOutFn out_;
+    void*     ctx_;
+    uint      size_ = 0;
+    bool      ok_   = true;
+};
+
+struct MarkJob {
+    const uint8_t*       src;
+    size_t               len, pos;
+    uint8_t*             strip;
+    uint16_t             w, h, stripH, stripY;
+    jpge::jpeg_encoder*  enc;
+    MarkRowsFn           draw;
+    void*                dctx;
+    bool                 ok;
+};
+
+UINT markIn(JDEC* jd, BYTE* buf, UINT n) {
+    MarkJob* j = static_cast<MarkJob*>(jd->device);
+    size_t left = j->len - j->pos;
+    if (n > left) n = static_cast<UINT>(left);
+    if (buf) memcpy(buf, j->src + j->pos, n);
+    j->pos += n;
+    return n;
+}
+
+UINT markOut(JDEC* jd, void* bitmap, JRECT* r) {
+    MarkJob* j = static_cast<MarkJob*>(jd->device);
+    const uint8_t* px = static_cast<const uint8_t*>(bitmap);
+    const size_t bw = static_cast<size_t>(r->right - r->left + 1) * 3u;
+    for (uint16_t y = r->top; y <= r->bottom; ++y) {
+        uint8_t* dst = j->strip + (static_cast<size_t>(y - j->stripY) * j->w + r->left) * 3u;
+        memcpy(dst, px, bw);
+        px += bw;
+    }
+    if (r->right + 1u < j->w) return 1;                  // the strip is not whole yet
+    const uint16_t rows = static_cast<uint16_t>(r->bottom - j->stripY + 1);
+    if (j->draw) j->draw(j->dctx, j->strip, j->w, j->stripY, rows);
+    for (uint16_t i = 0; i < rows; ++i) {
+        if (!j->enc->process_scanline(j->strip + static_cast<size_t>(i) * j->w * 3u)) { j->ok = false; return 0; }
+    }
+    j->stripY = static_cast<uint16_t>(j->stripY + rows);
+    vTaskDelay(1);                                       // the loop and the idle task first
+    return 1;
+}
+
+}   // namespace
+
+bool jpegMark(const uint8_t* jpg, size_t len, uint8_t quality, MarkRowsFn draw, void* dctx,
+              MarkOutFn out, void* octx, uint16_t& width, uint16_t& height) {
+    constexpr size_t kPool = 3100;                       // TJpgDec's work area (its own figure)
+    void* pool = camAlloc(kPool);
+    JDEC* jd   = static_cast<JDEC*>(camAlloc(sizeof(JDEC)));
+    MarkJob job = {};
+    job.src = jpg; job.len = len; job.ok = true; job.draw = draw; job.dctx = dctx;
+    bool done = false;
+    uint8_t* strip = nullptr;
+    void* encMem = nullptr;
+    jpge::jpeg_encoder* enc = nullptr;
+    MarkStream stream(out, octx);
+    if (pool && jd && jd_prepare(jd, markIn, pool, kPool, &job) == JDR_OK) {
+        job.w = static_cast<uint16_t>(jd->width);
+        job.h = static_cast<uint16_t>(jd->height);
+        job.stripH = static_cast<uint16_t>(jd->msy * 8);
+        width = job.w;
+        height = job.h;
+        strip  = static_cast<uint8_t*>(camAlloc(static_cast<size_t>(job.w) * job.stripH * 3u));
+        encMem = camAlloc(sizeof(jpge::jpeg_encoder));
+        if (strip && encMem) {
+            enc = new (encMem) jpge::jpeg_encoder();
+            jpge::params p;
+            p.m_quality     = quality < 1 ? 1 : quality > 100 ? 100 : quality;
+            p.m_subsampling = jpge::H2V1;                // the sensor's own 4:2:2
+            job.enc = enc;
+            job.strip = strip;
+            if (enc->init(&stream, job.w, job.h, 3, p)) {
+                JRESULT r = jd_decomp(jd, markOut, 0);
+                done = r == JDR_OK && job.ok && job.stripY == job.h && enc->process_scanline(nullptr) &&
+                       stream.ok();
+            }
+            enc->deinit();
+            enc->~jpeg_encoder();
+        }
+    }
+    camFree(encMem);
+    camFree(strip);
+    camFree(jd);
+    camFree(pool);
+    return done;
+}
+
+// ---------------------------------------------------------------------------
+// jpegRaw: a sensor with no JPEG encoder gives RGB565, two bytes a pixel,
+// high byte first (the driver's own order: conversions/to_jpg.cpp,
+// rgb565_big_endian). A strip of 16 rows at a time goes to RGB888, gets the
+// caller's drawing, and is fed to the same jpge encoder jpegMark uses. The
+// frame itself is read, never written. Every strip yields, as jpegMark's do.
+// ---------------------------------------------------------------------------
+bool jpegRaw(const uint8_t* rgb565, uint16_t w, uint16_t h, uint8_t quality, MarkRowsFn draw, void* dctx,
+             MarkOutFn out, void* octx) {
+    if (!rgb565 || !w || !h) return false;
+    constexpr uint16_t kStripH = 16;
+    uint8_t* strip = static_cast<uint8_t*>(camAlloc(static_cast<size_t>(w) * kStripH * 3u));
+    void* encMem   = camAlloc(sizeof(jpge::jpeg_encoder));
+    bool done = false;
+    MarkStream stream(out, octx);
+    if (strip && encMem) {
+        jpge::jpeg_encoder* enc = new (encMem) jpge::jpeg_encoder();
+        jpge::params p;
+        p.m_quality     = quality < 1 ? 1 : quality > 100 ? 100 : quality;
+        p.m_subsampling = jpge::H2V1;
+        bool ok = enc->init(&stream, w, h, 3, p);
+        for (uint16_t y0 = 0; ok && y0 < h; y0 = static_cast<uint16_t>(y0 + kStripH)) {
+            const uint16_t rows = static_cast<uint16_t>(h - y0 < kStripH ? h - y0 : kStripH);
+            const uint8_t* src = rgb565 + static_cast<size_t>(y0) * w * 2u;
+            uint8_t* dst = strip;
+            for (size_t i = 0, n = static_cast<size_t>(rows) * w; i < n; ++i, src += 2) {
+                const uint8_t hi = src[0], lo = src[1];
+                *dst++ = static_cast<uint8_t>(hi & 0xF8);
+                *dst++ = static_cast<uint8_t>(((hi & 0x07) << 5) | ((lo & 0xE0) >> 3));
+                *dst++ = static_cast<uint8_t>((lo & 0x1F) << 3);
+            }
+            if (draw) draw(dctx, strip, w, y0, rows);
+            for (uint16_t i = 0; ok && i < rows; ++i)
+                ok = enc->process_scanline(strip + static_cast<size_t>(i) * w * 3u);
+            vTaskDelay(1);                               // the loop and the idle task first
+        }
+        done = ok && enc->process_scanline(nullptr) && stream.ok();
+        enc->deinit();
+        enc->~jpeg_encoder();
+    }
+    camFree(encMem);
+    camFree(strip);
+    return done;
+}
+#endif  // BBS_HAS_CAMERA
 
 } // namespace plat

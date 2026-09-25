@@ -1874,8 +1874,19 @@ bool yesWord(const char* v) {
 // holds pin, and if so the sentence that refuses it. It names the holder: 38
 // columns at 40, where the sysop has just typed the number, and with the
 // number and the CONFIG page to go to at 80.
+#ifdef BBS_HAS_CAMERA
+// cfgPageValue: a key's value as the page being saved has it, for a plugin's
+// pinShares (plugin.h), or null when the page has no such row.
+const char* cfgPageValue(const char* key) {
+    for (uint8_t i = 0; g_cfgPage && i < g_cfgPage->count && i < Form::kMaxFields; ++i)
+        if (!strcmp(g_cfgPage->fields[i].key, key)) return g_cfgBuf[i];
+    return nullptr;
+}
+#endif
+
 bool pinTaken(const Term& t, const CfgField& self, long pin, char* msg, size_t n) {
     const bool wide = Form::wide(t);
+
     if (pin == kBootPin && strcmp(self.key, "backup_button_gpio")) {
         snprintf(msg, n, "%s", wide ? "GPIO 0 is the BOOT button, read at start-up. Pick another."
                                     : "GPIO 0 is the BOOT button.");
@@ -1939,6 +1950,16 @@ bool pinTaken(const Term& t, const CfgField& self, long pin, char* msg, size_t n
                 if (pl->setting) pl->setting(ps.key, b, sizeof(b));
                 if (intOnly(b, true)) v = strtol(b, nullptr, 10);
             }
+#ifdef BBS_HAS_CAMERA
+            // The one pair allowed to share, asked of both sides (pinShares):
+            // the row being saved, if it is a plugin's, and the holder.
+            if (v >= 0 && v == pin) {
+                const Plugin* mp = here != 0xFF ? plugins::at(here) : nullptr;
+                if (mp && mp->pinShares && mp->pinShares(self.key, pl->info.name, ps.key, cfgPageValue)) continue;
+                if (pl->pinShares && pl->pinShares(ps.key, mp ? mp->info.name : "", self.key,
+                                                   j == here ? cfgPageValue : nullptr)) continue;
+            }
+#endif
             if (v >= 0 && v == pin) return held(pl->info.name, ps.label, ps.wide);
         }
     }
@@ -2400,6 +2421,13 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
             live       = yesWord(g_cfgBuf[i]);
             switchedOn = live && bbsu::hash(g_cfgBuf[i]) != g_cfgWas[i];
         }
+#ifdef BBS_HAS_CAMERA
+        // A plugin whose pins depend on another row (pinShares) has every pin
+        // checked on every save: moving the camera's flash from "pixel" to
+        // "pin" gives a pin out without its number changing.
+        const Plugin* hp = here != 0xFF ? plugins::at(here) : nullptr;
+        if (hp && hp->pinShares) switchedOn = true;
+#endif
     }
     for (uint8_t i = 0; live && i < count; ++i) {
         const CfgField& f = g_cfgPage->fields[i];
