@@ -673,19 +673,22 @@ const Command kCommands[] = {
 };
 
 // PS_PIN, so CONFIG refuses the flash pins on the form (syscfg::pinProblem)
-// instead of writing one that readKey then quietly declines.
+// instead of writing one that readKey then quietly declines, and a pin
+// another feature holds (1.1.0). The long labels are for 80 columns.
 const PluginSetting kSettings[] = {
-    { "cs",      "CS pin",   PS_PIN,   0, 33, 2 },
-    { "mosi",    "MOSI pin", PS_PIN,   0, 33, 2 },
-    { "clk",     "CLK pin",  PS_PIN,   0, 33, 2 },
-    { "miso",    "MISO pin", PS_PIN,   0, 39, 2 },
-    { "speed",   "Bus kHz",  PS_NUM,   400, 40000, 5 },
-    { "screens", "Screens",  PS_YESNO, 0, 0,  4 },
+    { "cs",      "CS pin",   PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, nullptr, nullptr, "Chip select GPIO" },
+    { "mosi",    "MOSI pin", PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, nullptr, nullptr, "MOSI GPIO" },
+    { "clk",     "CLK pin",  PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, nullptr, nullptr, "Clock GPIO" },
+    { "miso",    "MISO pin", PS_PIN,   0, BBS_GPIO_MAX, 2, nullptr, nullptr, "MISO GPIO" },
+    { "speed",   "Bus kHz",  PS_NUM,   400, 40000, 5, nullptr, nullptr, "SPI bus speed, kHz" },
+    { "screens", "Screens",  PS_YESNO, 0, 0,  4, nullptr, nullptr, "Screens from card" },
     // A full backup at 03:00 into the card's backup folder, the last seven
     // kept, named nightly-YYYYMMDD.zip so a backup the sysop made by hand is
     // never counted among them (1.1.0). Off as shipped. The note avoids the
     // hour on purpose (the copy): COMMANDS.md and the setup guide give it.
-    { "nightly", "Nightly",  PS_YESNO, 0, 0,  4, "A zip every night; the last 7 kept." },  // NB-note
+    { "nightly", "Nightly",  PS_YESNO, 0, 0,  4, "A zip every night; the last 7 kept.",   // NB-note
+      nullptr, "Nightly backup",
+      "A full backup zip every night into the card's backup folder; the last 7 kept." },
 };
 
 // setting: the live value, for a key system.cfg does not carry yet

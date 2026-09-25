@@ -2438,14 +2438,41 @@ const Command kCommands[] = {
       Menu::Hidden, 99 },
 };
 
+// Every topic the board reads, topic1 to topic16, as one PS_GROW group
+// (1.1.0). CONFIG offered topic1 to topic4 and nothing else, against a
+// plugin that reads sixteen (Rob: "why are we limited to just 4 forum
+// topics ... have the list auto expand"). Now the page shows the topics that
+// are set and one empty row to add the next, growing a row at a time; once
+// that would pass the twelve rows a page has left, the rows become the
+// Topics button, which opens a page of all sixteen. The group is the table,
+// and the table is checked against kMaxForums, so they cannot drift apart.
 const PluginSetting kSettings[] = {
-    { "topic1", "Topic 1", PS_TEXT, 0, 0, 63 },
-    { "topic2", "Topic 2", PS_TEXT, 0, 0, 63 },
-    { "topic3", "Topic 3", PS_TEXT, 0, 0, 63 },
-    { "topic4", "Topic 4", PS_TEXT, 0, 0, 63 },
+    { "topic",   "Topics",   PS_GROW, 0, 0, 0,  "All sixteen, one row each.", nullptr,
+      "All forum topics", "More topics than this page holds: all sixteen, a row each, on their own page." },
+    { "topic1",  "Topic 1",  PS_TEXT, 0, 0, 63, nullptr, nullptr, "Forum topic 1" },
+    { "topic2",  "Topic 2",  PS_TEXT, 0, 0, 63, nullptr, nullptr, "Forum topic 2" },
+    { "topic3",  "Topic 3",  PS_TEXT, 0, 0, 63, nullptr, nullptr, "Forum topic 3" },
+    { "topic4",  "Topic 4",  PS_TEXT, 0, 0, 63, nullptr, nullptr, "Forum topic 4" },
+    { "topic5",  "Topic 5",  PS_TEXT, 0, 0, 63, nullptr, nullptr, "Forum topic 5" },
+    { "topic6",  "Topic 6",  PS_TEXT, 0, 0, 63, nullptr, nullptr, "Forum topic 6" },
+    { "topic7",  "Topic 7",  PS_TEXT, 0, 0, 63, nullptr, nullptr, "Forum topic 7" },
+    { "topic8",  "Topic 8",  PS_TEXT, 0, 0, 63, nullptr, nullptr, "Forum topic 8" },
+    { "topic9",  "Topic 9",  PS_TEXT, 0, 0, 63, nullptr, nullptr, "Forum topic 9" },
+    { "topic10", "Topic 10", PS_TEXT, 0, 0, 63, nullptr, nullptr, "Forum topic 10" },
+    { "topic11", "Topic 11", PS_TEXT, 0, 0, 63, nullptr, nullptr, "Forum topic 11" },
+    { "topic12", "Topic 12", PS_TEXT, 0, 0, 63, nullptr, nullptr, "Forum topic 12" },
+    { "topic13", "Topic 13", PS_TEXT, 0, 0, 63, nullptr, nullptr, "Forum topic 13" },
+    { "topic14", "Topic 14", PS_TEXT, 0, 0, 63, nullptr, nullptr, "Forum topic 14" },
+    { "topic15", "Topic 15", PS_TEXT, 0, 0, 63, nullptr, nullptr, "Forum topic 15" },
+    { "topic16", "Topic 16", PS_TEXT, 0, 0, 63, nullptr, nullptr, "Forum topic 16" },
 };
+static_assert(sizeof(kSettings) / sizeof(kSettings[0]) == 1u + kMaxForums,
+              "one CONFIG row for every topic the plugin reads, and the Topics button");
+static_assert(kMaxForums <= Form::kMaxFields, "all the topics fit the Topics page");
 
 void setting(const char* key, char* out, size_t n) {
+    // The Topics button's text: what its page holds.
+    if (!strcmp(key, "topic")) { snprintf(out, n, "topics 1 to %u", static_cast<unsigned>(kMaxForums)); return; }
     if (strncmp(key, "topic", 5) != 0) { out[0] = '\0'; return; }
     long k = strtol(key + 5, nullptr, 10);
     if (k < 1 || k > kMaxForums) { out[0] = '\0'; return; }

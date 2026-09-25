@@ -351,6 +351,12 @@ def form_const(name, fallback):
 
 BOX_COL = form_const("kBoxCol", 12)    # first column of a field's input box
 BOX_W = form_const("kBoxW", 27)        # how wide that box is
+# The same at 80 columns (1.1.0): the form has two layouts since then, and
+# the geometry is a function of the width in form.h rather than a constant
+# this can read, so both sets are the spec's numbers
+# (internal/tty-ux-forms-80-2026-09-24.md, section 1).
+BOX_COL_80 = 23
+BOX_W_80 = 56
 
 
 def colours_self_contained(data):
@@ -1061,14 +1067,15 @@ def test_accounts():
     scr = AttrScreen()
     scr.feed(form)
     runs = scr.reverse_runs()
-    one_box = len(runs) == 1 and runs[0][1] == BOX_COL and runs[0][2] == BOX_W
+    # This caller is an 80 column ANSI terminal, so the form is the wide one.
+    one_box = len(runs) == 1 and runs[0][1] == BOX_COL_80 and runs[0][2] == BOX_W_80
     if not one_box:
         for r in runs:
             print("        reverse at row %d col %d, %d wide: %r"
                   % (r[0], r[1], r[2], scr.row(r[0])))
     ok &= check("the form leaves exactly one run of reverse video", len(runs) == 1)
     ok &= check("and it is the focused field's box (col %d, %d wide), not a label"
-                % (BOX_COL, BOX_W), one_box)
+                % (BOX_COL_80, BOX_W_80), one_box)
     ok &= check("every colour the form sends clears the attributes before it",
                 colours_self_contained(form))
     c.send(b"\x1b")
@@ -2475,7 +2482,9 @@ def test_config_timezone():
     """CONFIG board: the timezone by name, the TZ string under it (1.1.0)."""
     print("CONFIG board: the timezone by name")
     local = HOST in ("127.0.0.1", "localhost")
-    s = cfg_sysop("CfgZone")
+    # The 40 column form, which is what this was written against and what
+    # "fits 40 columns" below means; test_forms_wide has the page at 80.
+    s = cfg_sysop40("CfgZone")
     opened = cfg_open(s, b"board", b"TZ string")
     rows = render_lines(s.buf)
     zone = next((r for r in rows if r.strip().startswith("Timezone")), "")
@@ -2543,21 +2552,23 @@ def test_config_cycle_numbers():
     c = ascii_sysop("CfgNumbers")
     c.buf.clear()
     c.send(b"config sd\r")
-    c.wait_for(b"Enabled", 5)
+    wait_label(c, b"Enabled", 5)
     c.pump(0.4)
     ok = check("a yes or no row lists its two, numbered", b"1 yes  2 no" in plain(c.buf))
     got, rows = ascii_form_seen(c, [b"", b"99", b"5"] + [b""] * SD_ROWS_AFTER_READ)
     txt = "\n".join(rows)
     ok &= check("a level row lists the ladder, numbered",
                 "1 all  2 users  3 staff  4 co2  5 co1" in txt and "6 sysop" in txt)
-    ok &= check("in 39 columns", all(len(r) <= 39 for r in rows if re.match(r"\d+ ", r)))
+    # Plain ASCII is 80 columns, and the list packs into the form's 79 since
+    # 1.1.0 (test_forms_ascii_wide checks it uses them).
+    ok &= check("in 79 columns", all(len(r) <= 79 for r in rows if re.match(r"\d+ ", r)))
     ok &= check("a number that is not on the list is refused, and asked again",
                 "Not one of the choices" in txt)
     ok &= check("a number picks that choice",
                 got == 0 and (cfg_sec_line("plugin:sd", "read") or "").endswith("= co1"))
     c.buf.clear()
     c.send(b"config sd\r")
-    c.wait_for(b"Enabled", 5)
+    wait_label(c, b"Enabled", 5)
     ascii_form(c, [b"", b"6"] + [b""] * SD_ROWS_AFTER_READ)
 
     # The Timezone: 35 choices, and a number writes its string before the
@@ -2565,13 +2576,16 @@ def test_config_cycle_numbers():
     c.buf.clear()
     c.send(b"config board\r")
     c.wait_for(b"Board", 5)
-    # Board, Hostname, Timezone, TZ string, NTP, Idle min, LED gpio, Land on,
-    # Sysop
+    # Board, Hostname, Timezone, TZ string, NTP, Idle min, the LED, Land on,
+    # Sysop.
+    # Plain ASCII is 80 columns, so the prompts are the long labels and a
+    # value shows whole up to 60 characters (1.1.0): "POSIX TZ string
+    # [CST6CDT,M3.2.0,M11.1.0]" where it was "TZ string [CST6CDT,M3.2.0,M1...]".
     got, rows = ascii_form_seen(c, [b"", b"", b"8", b"", b"", b"", b"", b"", b""])
     txt = "\n".join(rows)
     ok &= check("the zones are listed by number", "8 US Central (Chicago)" in txt and "35 Custom" in txt)
     ok &= check("and the string follows the zone picked by number",
-                "TZ string [CST6CDT,M3.2.0,M1...]" in txt)
+                "POSIX TZ string [CST6CDT,M3.2.0,M11.1.0]" in txt)
     ok &= check("which saves", got == 0 and (cfg_line("tz") or "").endswith("= CST6CDT,M3.2.0,M11.1.0"))
     c.buf.clear()
     c.send(b"config board\r")
@@ -4166,7 +4180,7 @@ def test_config():
 
     s.buf.clear()
     s.send(b"config limits\r")
-    ok &= check("a page opens as a form", s.wait_for(b"Per call", 5))
+    ok &= check("a page opens as a form", wait_label(s, b"Per call", 5))
 
     s.buf.clear()
     # 200, not a small number: the cap stays for the rest of the run, and a
@@ -4209,7 +4223,7 @@ def test_config():
 
     s.buf.clear()
     s.send(b"config limits\r")
-    s.wait_for(b"Per call", 5)
+    wait_label(s, b"Per call", 5)
     s.buf.clear()
     s.send(DOWN * 4 + b"\x08" * 4 + b"9999" + F1)
     ok &= check("a value out of range is refused", s.wait_for(b"Between", 5))
@@ -4255,11 +4269,62 @@ def cfg_sysop(handle):
     return s
 
 
+# A terminal that says, through telnet NAWS, that it is 40 columns wide:
+# IAC WILL NAWS, then IAC SB NAWS 0 40 0 24 IAC SE, sent before the board
+# says anything, the way Caller(telnet=True) sends 80. The board lays its
+# forms out for 40 when a terminal is under 80 (1.1.0), so this is how an
+# ANSI test sees what a C64 sees without speaking PETSCII.
+NAWS40 = b"\xff\xfb\x1f\xff\xfa\x1f\x00\x28\x00\x18\xff\xf0"
+
+
+def ansi40_login(handle, pw=TEST_PW):
+    """An ANSI caller on a 40 column terminal, logged in."""
+    c = Caller(ansi=True)
+    c.send(NAWS40)
+    c.wait_for(b"Enter your handle", 10)
+    login(c, handle, pw)
+    return c
+
+
+def cfg_sysop40(handle):
+    """cfg_sysop on a 40 column ANSI terminal: the forms' C64 layout."""
+    s = ansi40_login(handle)
+    s.send(b"bye testsysop\r")
+    s.wait_for(b"Sysop", 4)
+    s.pump(0.3)
+    return s
+
+
+# The label a CONFIG row carries at 80 columns, for the 40 column label a
+# test names (1.1.0). The ANSI test caller is 80 wide, so it sees these; a
+# 40 column one sees the short ones. cfg_open takes either, so a test that
+# only needs the page to be open does not care which width it is on.
+WIDE_LABEL = {
+    b"Per call": b"Minutes per call", b"Open for": b"Window open, minutes",
+    b"Drive pin": b"Drive light GPIO", b"CS pin": b"Chip select GPIO",
+    b"Every min": b"Heartbeat minutes", b"Interests": b"Interest badges",
+    b"Area 1": b"File area 1", b"Enabled": b"Plugin enabled",
+    b"Network": b"Wi-Fi network", b"About": b"Description",
+    b"Topic 1": b"Forum topic 1", b"Strip pin": b"Strip GPIO",
+    b"LED gpio": b"Onboard LED GPIO", b"Board LED": b"Onboard LED GPIO",
+    b"Password": b"Wi-Fi password", b"Driver": b"Controller chip",
+}
+
+
+def wait_label(c, label, secs=5):
+    """Wait for a CONFIG row's label at either width (WIDE_LABEL)."""
+    return wait_any(c, [label, WIDE_LABEL.get(label, label)], secs) >= 0
+
+
 def cfg_open(s, page, expect):
-    """CONFIG <page>, waiting for a field label so keys land in the form."""
+    """CONFIG <page>, waiting for a field label so keys land in the form.
+
+    The label at either width (WIDE_LABEL): a page opened at 80 columns
+    names its rows with the long labels.
+    """
     s.buf.clear()
     s.send(b"config " + page + b"\r")
-    ok = s.wait_for(expect, 5)
+    ok = wait_any(s, [expect, WIDE_LABEL.get(expect, expect)], 5) >= 0
     s.pump(0.4)                                   # the fields cascade in
     return ok
 
@@ -4414,11 +4479,21 @@ def test_config_parser_rules():
     cfg_verdict(s, [b"Saved and live", b"Nothing changed"])
 
     # The staff page's two co-sysop rows, told apart inside the nine
-    # column label. They both read "Co-sysop " before.
+    # column label. They both read "Co-sysop " before. At 80 (1.1.0) there
+    # is room for the space.
     cfg_open(s, b"staff", b"Co-sysop")
     s.pump(0.6)
     page = plain(s.buf)
-    ok &= check("the co-sysop rows are labelled 1 and 2",
+    ok &= check("at 80 the co-sysop rows are labelled 1 and 2",
+                b"Co-sysop 1 password" in page and b"Co-sysop 2 password" in page)
+    cfg_cancel(s)
+    s.close()
+    time.sleep(1.0)                                  # the sysop node holds one caller
+    s = cfg_sysop40("CfgRules40")
+    cfg_open(s, b"staff", b"Co-sysop")
+    s.pump(0.6)
+    page = plain(s.buf)
+    ok &= check("at 40 they are labelled 1 and 2 inside nine columns",
                 b"Co-sysop1" in page and b"Co-sysop2" in page)
     ok &= check("and the staff form fits 40 columns", max_column(s.buf) <= 39)
     cfg_cancel(s)
@@ -4686,16 +4761,19 @@ def test_config_lights():
     s = cfg_sysop("CfgLights")
     ok = check("the lights page opens", cfg_open(s, b"lights", b"Drive pin"))
     page = plain(s.buf)
+    # This caller is 80 columns: the rows' long labels and notes (1.1.0).
+    # test_forms_narrow has the page at 40, where the copy's short ones are.
     ok &= check("with a row for each setting",
-                all(w in page for w in (b"Drive pin", b"Drive fx", b"Drive %", b"Strip pin",
-                                        b"Strip %", b"Pixels")))
-    ok &= check("and fits 40 columns", max_column(s.buf) <= 39)
+                all(w in page for w in (b"Drive light GPIO", b"Drive light effect", b"Drive brightness %",
+                                        b"Strip GPIO", b"Strip brightness %", b"Pixels, by hand")))
+    ok &= check("and fits 80 columns", max_column(s.buf) <= 79)
     # The note on the focused row: Down four times is Drive pin.
     s.buf.clear()
     s.send(DOWN * 4)
     s.pump(0.5)
     ok &= check("each row carries the copy's note",
-                b"The disk light: one pixel. -1 is off." in plain(s.buf))
+                b"The disk light, one pixel on this GPIO. -1 is off. 330 ohm in series helps."
+                in plain(s.buf))
     s.buf.clear()
     s.send(DOWN * 6 + b"\r")                       # on to Pixels, and open it
     s.wait_for(b"PIXELS", 6)
@@ -4703,7 +4781,7 @@ def test_config_lights():
     ok &= check("a board that has never run the lights lists its pixels as shipped",
                 b"solid, cycle" in plain(s.buf) and b"red" not in plain(s.buf))
     s.send(b"\x1b")
-    s.wait_for(b"Drive pin", 6)
+    wait_label(s, b"Drive pin", 6)
     s.pump(0.4)
     cfg_cancel(s)
 
@@ -4740,18 +4818,20 @@ def test_config_lights():
     cfg_open(s, b"lights", b"Drive pin")
     s.buf.clear()
     s.send(DOWN * 4 + b"\x08" * 3 + b"13" + DOWN * 3 + b"\x08" * 3 + b"13" + F1)
-    got = cfg_verdict(s, [b"That is the drive pin", b"Saved", b"flash chip"])
-    ok &= check("the strip cannot share the drive light's pin", got == b"That is the drive pin")
+    # At 80 it names the row by its long label (1.1.0).
+    got = cfg_verdict(s, [b"That is the drive light GPIO", b"Saved", b"flash chip"])
+    ok &= check("the strip cannot share the drive light's pin", got == b"That is the drive light GPIO")
     ok &= check("said in the copy's words",
-                b"That is the drive pin. Pick another." in plain(s.buf))
+                b"That is the drive light GPIO. Pick another." in plain(s.buf))
     cfg_cancel(s)
 
+    # 1 to 100 since 1.1.0, past 30 asked about first (test_config_warn_levels).
     for row, name in ((6, "Drive"), (9, "Strip")):
         cfg_open(s, b"lights", b"Drive pin")
         s.buf.clear()
-        s.send(DOWN * row + b"\x08" * 3 + b"31" + F1)
-        got = cfg_verdict(s, [b"Between 1 and 30", b"Saved"])
-        ok &= check(f"{name} % stops at 30", got == b"Between 1 and 30")
+        s.send(DOWN * row + b"\x08" * 3 + b"101" + F1)
+        got = cfg_verdict(s, [b"Between 1 and 100", b"Saved", b"(y/N)"])
+        ok &= check(f"{name} % stops at 100", got == b"Between 1 and 100")
         cfg_cancel(s)
 
     # The round trip: on, both pins, both effects, both brightnesses.
@@ -4853,7 +4933,7 @@ def test_config_lights_ascii():
     c = ascii_sysop("CfgAscii")
     c.buf.clear()
     c.send(b"config sd\r")
-    c.wait_for(b"Enabled", 5)
+    wait_label(c, b"Enabled", 5)
     # Enabled, Read, Write, Admin, CS, MOSI, CLK, MISO, Bus kHz, Screens,
     # and since 1.1.0 Nightly.
     got = ascii_form(c, [b"", b"c"] + [b""] * SD_ROWS_AFTER_READ)
@@ -4862,20 +4942,20 @@ def test_config_lights_ascii():
                 (cfg_sec_line("plugin:sd", "read") or "").endswith("= co2"))
     c.buf.clear()
     c.send(b"config sd\r")
-    c.wait_for(b"Enabled", 5)
+    wait_label(c, b"Enabled", 5)
     got = ascii_form(c, [b"", b"ss"] + [b""] * SD_ROWS_AFTER_READ)   # co2: s is staff, s again is sysop
     ok &= check("the same letter twice steps to its next match",
                 got == 0 and (cfg_sec_line("plugin:sd", "read") or "").endswith("= sysop"))
     c.buf.clear()
     c.send(b"config sd\r")
-    c.wait_for(b"Enabled", 5)
+    wait_label(c, b"Enabled", 5)
     got = ascii_form(c, [b"", b"c\x08"] + [b""] * SD_ROWS_AFTER_READ)
     ok &= check("Backspace after a pick puts the value back",
                 got == 1 and (cfg_sec_line("plugin:sd", "read") or "").endswith("= sysop"))
 
     c.buf.clear()
     c.send(b"config lights\r")
-    c.wait_for(b"Enabled", 5)
+    wait_label(c, b"Enabled", 5)
     # Enabled, Read, Write, Admin, Drive pin, Drive fx, Drive %, Strip pin,
     # Strip, Strip %, and Pixels, which asks "open (y/N)?"; then, since
     # 1.1.0, Strip len, Drive ord and Strip ord.
@@ -5118,7 +5198,8 @@ def test_lights_manual():
     page = plain(s.buf)
     ok &= check("listing ten pixels, each with its effect and colour",
                 b"Pixel 10" in page and b"solid, cycle" in page)
-    ok &= check("and fits 40 columns", max_column(s.buf) <= 39)
+    # An 80 column caller: the list at 40 is test_forms_narrow's (1.1.0).
+    ok &= check("and fits 80 columns", max_column(s.buf) <= 79)
     s.buf.clear()
     s.send(DOWN * 2 + b"\r")
     ok &= check("a pixel opens its own page", s.wait_for(b"PIXEL 3", 6))
@@ -5132,7 +5213,7 @@ def test_lights_manual():
                 (cfg_sec_line("plugin:lights", "led3") or "").endswith("= blink | pink"))
     s.buf.clear()
     s.send(b"\x1b")
-    ok &= check("Escape comes back to the lights page", s.wait_for(b"Drive pin", 6))
+    ok &= check("Escape comes back to the lights page", wait_label(s, b"Drive pin", 6))
     s.pump(0.5)
     cfg_cancel(s)
     seen = {lights_px(s)[2] for _ in range(6)}
@@ -5613,16 +5694,19 @@ def test_board_s3():
             ok &= check(f"PANEL SHOT at {n} LEDs", False)
     lights_config(s)
 
-    # CONFIG panel: every row, in 40 columns.
+    # CONFIG panel: every row. This caller is 80 columns, so the rows carry
+    # their long labels (1.1.0, the forms at 80); the 40 column page is
+    # checked at the end of this test, on a caller that is 40 wide.
     ok &= check("CONFIG has a panel page", cfg_open(s, b"panel", b"Driver"))
     s.pump(1.0)                                   # sixteen rows take a moment to cascade in
     page = plain(s.buf)
-    missing = [w.decode() for w in (b"ST7789", b"Pins", b"Width", b"Height", b"X offset", b"Y offset",
-                                    b"USB plug", b"Invert", b"Mirror", b"Colours", b"SPI MHz",
-                                    b"Bright %") if w not in page]
+    missing = [w.decode() for w in (b"ST7789", b"Panel pins", b"Width, pixels", b"Height, pixels",
+                                    b"X offset in RAM", b"Y offset in RAM", b"USB plug points",
+                                    b"Invert colours", b"Mirror the picture", b"Colour order",
+                                    b"SPI clock, MHz", b"Backlight %") if w not in page]
     ok &= check("naming the controller, with every row" + (f" (missing {missing})" if missing else ""),
                 not missing)
-    ok &= check("in 40 columns", max_column(s.buf) <= 39)
+    ok &= check("in 80 columns", max_column(s.buf) <= 79)
     cfg_cancel(s)
 
     # The Pins page, and the S3's rules on it: 26 to 37 are the flash and
@@ -5636,8 +5720,8 @@ def test_board_s3():
     s.pump(0.6)
     page = plain(s.buf)
     ok &= check("with the six",
-                all(w in page for w in (b"MOSI pin", b"SCLK pin", b"CS pin", b"D/C pin", b"RST pin",
-                                        b"Light pin")))
+                all(w in page for w in (b"MOSI GPIO (SDA)", b"Clock GPIO (SCL)", b"Chip select GPIO",
+                                        b"Data/command GPIO", b"Reset GPIO", b"Backlight GPIO")))
     for pin, want in ((b"30", b"Pins 26 to 37 are flash and PSRAM."),
                       (b"19", b"Pins 19 and 20 are the USB port."),
                       (b"23", b"This chip has no such pin.")):
@@ -5749,15 +5833,40 @@ def test_board_s3():
     panel_key("orientation", None)
     ok &= check("and with neither, the plug is up", b"ST7789 172x320 at 34,0, USB up" in panel_read(s))
 
-    # The TF slot's pins as the card's defaults.
+    # The TF slot's pins as the card's defaults (the long labels at 80).
     cfg_open(s, b"sd", b"CS pin")
-    rows = [ln for ln in render_lines(s.buf) if "pin" in ln]
-    have = {k: next((ln for ln in rows if k in ln), "") for k in ("CS pin", "MOSI pin", "CLK pin", "MISO pin")}
+    rows = [ln for ln in render_lines(s.buf) if "GPIO" in ln]
+    have = {k: next((ln for ln in rows if k in ln), "")
+            for k in ("Chip select GPIO", "MOSI GPIO", "Clock GPIO", "MISO GPIO")}
     ok &= check("the card on the TF slot: CS 21, MOSI 15, CLK 14, MISO 16",
-                "21" in have["CS pin"] and "15" in have["MOSI pin"] and
-                "14" in have["CLK pin"] and "16" in have["MISO pin"])
+                "21" in have["Chip select GPIO"] and "15" in have["MOSI GPIO"] and
+                "14" in have["Clock GPIO"] and "16" in have["MISO GPIO"])
     cfg_cancel(s)
     s.close()
+    time.sleep(1.0)                                  # the sysop node holds one caller
+
+    # The panel's page as a C64 sees it: the nine column labels, inside 40
+    # columns, the Pins page too.
+    n = cfg_sysop40("BoardS3At40")
+    cfg_open(n, b"panel", b"Driver")
+    n.pump(1.0)
+    page = plain(n.buf)
+    missing = [w.decode() for w in (b"ST7789", b"Pins", b"Width", b"Height", b"X offset", b"Y offset",
+                                    b"USB plug", b"Invert", b"Mirror", b"Colours", b"SPI MHz",
+                                    b"Bright %") if w not in page]
+    ok &= check("at 40, every row by its short label" + (f" (missing {missing})" if missing else ""),
+                not missing)
+    ok &= check("in 40 columns", max_column(n.buf) <= 39)
+    n.buf.clear()
+    n.send(DOWN * 4 + b"\r")
+    n.wait_for(b"PINS", 6)
+    n.pump(0.6)
+    ok &= check("and the Pins page, with the six, inside 40 columns",
+                all(w in plain(n.buf) for w in (b"MOSI pin", b"SCLK pin", b"CS pin", b"D/C pin",
+                                                b"RST pin", b"Light pin")) and max_column(n.buf) <= 39)
+    cfg_cancel(n)
+    cfg_cancel(n)
+    n.close()
     return ok
 
 
@@ -5982,8 +6091,9 @@ def test_config_network():
     ok &= check("CONFIG network opens it", cfg_open(s, b"network", b"Password") and
                 b"NETWORK" in plain(s.buf))
     page = render_lines(s.buf)
+    # An 80 column caller: "Telnet port" and the long note (1.1.0).
     ok &= check("with Port under Network and Password",
-                any(ln.strip().startswith("Port") for ln in page))
+                any(ln.strip().startswith("Telnet port") for ln in page))
     cfg_cancel(s)
     ok &= check("CONFIG wifi still opens the same page",
                 cfg_open(s, b"wifi", b"Password") and b"NETWORK" in plain(s.buf))
@@ -5993,7 +6103,8 @@ def test_config_network():
     s.send(DOWN * 2)
     s.pump(0.6)
     ok &= check("Port's note says when it takes effect",
-                any("Callers use it from the next restart." in ln for ln in render_lines(s.buf)))
+                any("What callers dial. Changing it takes effect at the next restart, never live." in ln
+                    for ln in render_lines(s.buf)))
     cfg_cancel(s)
 
     if not local:
@@ -6432,16 +6543,19 @@ def test_config_announce_outside():
     # Sysop, About, DNS name: seven downs to Outside.
     cfg_open(s, b"announce", b"Every min")
     page = render_lines(s.buf)
-    row = next((ln for ln in page if ln.strip().startswith("Outside")), "")
+    # An 80 column caller: "Outside port" and its long note (1.1.0). At 40
+    # the label is "Outside" and the short note carries the word.
+    row = next((ln for ln in page if ln.strip().startswith("Outside port")), "")
     ok &= check("the row is labelled Outside", bool(row))
     # An empty box that is not focused is drawn as dots (Form::drawField).
     ok &= check("and is empty while nothing is set",
-                bool(row) and row.strip()[len("Outside"):].strip(" .") == "")
+                bool(row) and row.strip()[len("Outside port"):].strip(" .") == "")
     s.buf.clear()
     s.send(DOWN * 7)
     s.pump(0.6)
     ok &= check("its note says what it is",
-                any("What callers dial through your router." in ln for ln in render_lines(s.buf)))
+                any("The router's outside port, when it differs. Blank publishes the board's own." in ln
+                    for ln in render_lines(s.buf)))
 
     s.send(b"2323" + F1)
     got = cfg_verdict(s, [b"Saved and live", b"saved, but", b"Numbers only"])
@@ -6552,14 +6666,17 @@ def test_config_areas():
         return True
 
     cfg = USERDATA / "system.cfg"
-    s = ansi_login("Areas")
+    # A 40 column terminal: this checks the C64 layout of both pages, and
+    # the parts by their nine column labels (1.1.0 made the forms two
+    # layouts; test_forms_wide has the 80 column one).
+    s = ansi40_login("Areas")
     s.send(b"bye " + PASSWORD.encode() + b"\r")
     s.wait_for(b"Sysop", 4)
     s.buf.clear()
 
     # ---- the files page: rows that lead somewhere -------------------------
     s.send(b"config files\r")
-    ok = check("the files page opens", s.wait_for(b"Area 1", 6))
+    ok = check("the files page opens", wait_label(s, b"Area 1", 6))
     s.pump(1.0)
     page = plain(s.buf)
     ok &= check("an area row is a button showing its name",
@@ -6651,7 +6768,7 @@ def test_config_areas():
     # dropped and this reads as a failure that is not there.
     s.buf.clear()
     s.send(b"config files\r")
-    s.wait_for(b"Area 1", 6)
+    wait_label(s, b"Area 1", 6)
     s.send(DOWN * 4 + b"\r")
     ok &= check("a sysop can be two pages deep", s.wait_for(b"FILE AREA 1", 6))
     s.close()
@@ -6662,7 +6779,7 @@ def test_config_areas():
     t.wait_for(b"Sysop", 5)
     t.buf.clear()
     t.send(b"config files\r")
-    opened = t.wait_for(b"Area 1", 6)
+    opened = wait_label(t, b"Area 1", 6)
     ok &= check("dropping the line inside one does not lock CONFIG out",
                 opened and b"is editing the settings" not in plain(t.buf))
 
@@ -6722,7 +6839,7 @@ def test_config_areas():
     a.wait_for(b"Sysop", 6)
     a.buf.clear()
     a.send(b"config files\r")
-    a.wait_for(b"Enabled", 6)
+    wait_label(a, b"Enabled", 6)
     a.send(b"\r\r\r\r")                       # past enabled, read, write, admin
     a.pump(1.0)
     # No cursor to put a button under, so the row becomes a question.
@@ -6774,7 +6891,7 @@ def test_config_areas():
     z.send(b"bye " + PASSWORD.encode() + b"\r")
     z.wait_for(b"Sysop", 5)
     z.send(b"config files\r")
-    z.wait_for(b"Area 1", 6)
+    wait_label(z, b"Area 1", 6)
     z.send(DOWN * 4 + b"\r")
     z.wait_for(b"FILE AREA 1", 6)
     z.pump(0.6)
@@ -6847,7 +6964,7 @@ def test_config_area_keeps_every_part():
 
     s.buf.clear()
     s.send(b"config files\r")
-    ok &= check("the files page opens", s.wait_for(b"Area 1", 6))
+    ok &= check("the files page opens", wait_label(s, b"Area 1", 6))
     s.pump(0.8)
 
     # Four fields (enabled, read, write, admin) then the area buttons, so
@@ -6948,7 +7065,7 @@ def test_config_forum_levels():
 
     s.buf.clear()
     s.send(b"config forums\r")
-    ok = check("the forums page opens", s.wait_for(b"Topic 1", 6))
+    ok = check("the forums page opens", wait_label(s, b"Topic 1", 6))
     s.pump(0.8)
     # enabled, read, write, admin, then Topic 1: the fifth row.
     s.buf.clear()
@@ -6961,9 +7078,11 @@ def test_config_forum_levels():
     # unset Reply runs under users and an unset Moderate under co1.
     # [a-z0-9]+, not \S+: an unfocused box is padded with dots, so \S+
     # read "users....................." and failed a correct page.
+    # The rows at either width: "Reply in a subject" and "Moderate: remove"
+    # are the labels at 80 (1.1.0), which this caller is.
     shown = "\n".join(render_lines(s.buf))
-    reply = re.search(r"Reply\s+([a-z0-9]+)", shown)
-    mod   = re.search(r"Moderate\s+([a-z0-9]+)", shown)
+    reply = re.search(r"Reply(?: in a subject)?\s+([a-z0-9]+)", shown)
+    mod   = re.search(r"Moderate(?:: remove)?\s+([a-z0-9]+)", shown)
     ok &= check("an unset Reply shows what it runs under, users",
                 reply is not None and reply.group(1) == "users")
     ok &= check("an unset Moderate shows co1, not nobody",
@@ -9122,10 +9241,12 @@ def test_announce_badges():
         drawn = [i for i, line in enumerate(grid) if line.strip()]
         if not (drawn and drawn[-1] < 24):
             print("        the page reached row", drawn[-1] + 1 if drawn else 0)
-        ok &= check("the announce page, sixteen rows now, fits 24 rows and 40 columns",
+        # An 80 column caller, so the wide layout (1.1.0): the same sixteen
+        # rows, the long labels, 79 columns. test_forms_narrow has it at 40.
+        ok &= check("the announce page, sixteen rows now, fits 24 rows and 80 columns",
                     opened and bool(drawn) and drawn[-1] < 24
-                    and any("Token" in line for line in grid)
-                    and max_column(s.buf) <= 39)
+                    and any("Directory token" in line for line in grid)
+                    and max_column(s.buf) <= 79)
         s.buf.clear()
         s.send(BADGE_TO_SUPPORT + b"\x08" * 95 + BADGE_SUPPORT_TYPED
                + DOWN + b"\x08" * 95 + BADGE_INTERESTS_TYPED + F1)
@@ -11981,7 +12102,8 @@ GROUPS = {
     "storage":   ["files", "forums", "sd", "xfer", "backup", "restore", "card_screens", "rewrites"],
     # The shell, its lists and the screens the core draws.
     "shell":     ["menus", "sysinfo", "page", "about", "config", "welcome", "paced", "seeded", "fx_codes",
-                  "lights", "operator", "dash", "nodes_columns", "version_shown", "screens_command"],
+                  "lights", "operator", "dash", "nodes_columns", "version_shown", "screens_command",
+                  "forms", "whois"],
     # Logging in, accounts, staff.
     "login":     ["accounts", "handle_case", "guest", "sysop", "cosysop", "user_admin", "first_setup", "ban",
                   "boot_hold", "boot_notices"],
@@ -12033,6 +12155,10 @@ ORDER_NAMES = [
     "test_boot_hold_write_fails", "test_boot_hold_factory_fails", "test_sysop_spelled_default",
     "test_boot_notices", "test_dash_opens_nothing",
     "test_config_pin_exists", "test_user_admin_retire",
+    # The forms at 80 columns and CONFIG's rows (1.1.0, FORMS lane).
+    "test_forms_wide", "test_forms_narrow", "test_forms_ascii_wide", "test_whois_wide",
+    "test_config_serial_rows", "test_config_chat_colours", "test_config_announce_desc",
+    "test_config_pin_holders", "test_config_forums_grow", "test_config_warn_levels",
     "test_serial",
     "test_motd", "test_idle_login", "test_busy",
     "test_screens", "test_exit_screen", "test_welcome_connecting", "test_paced_chatin",
@@ -12533,11 +12659,11 @@ def test_card_screens_manifest():
 
         # ---- a screen seeded before the manifest ---------------------------
         # welcome.asc as 0.18.0 shipped it: today's, less the 300 baud line
-        # 0.21.9 added, and with the licence it named until 1.1.0-dev.11
-        # (GPLv2+): the two changes it has had since.
+        # 0.21.9 added and with the licence back at GPLv2+ (1.1.0-dev.11
+        # changed that one byte), the two changes it has had since.
         new_tail = b"\n@BAUD:300@Connecting you to @BOARD@ @BAUD:0@@SPIN:900@\n"
-        old = (cur[:-len(new_tail)].replace(b"GPLv3+", b"GPLv2+") +
-               b" Connecting you @SPIN:900@unleashed\n") if cur.endswith(new_tail) else b""
+        old = (cur[:-len(new_tail)] + b" Connecting you @SPIN:900@unleashed\n") if cur.endswith(new_tail) else b""
+        old = old.replace(b"Robert Mech  GPLv3+", b"Robert Mech  GPLv2+")
         ok &= check("(the 0.18.0 welcome.asc, rebuilt)", fnv1a(old) == 0x62b7208f)
         if old:
             (scr / "welcome.asc").write_bytes(old)
@@ -13234,6 +13360,679 @@ def test_screens_command():
             if aside is not None:
                 (scr / "busy.seq").write_bytes(aside)
         s.close()
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# 1.1.0: the forms at 80 columns (internal/tty-ux-forms-80-2026-09-24.md),
+# and CONFIG's rows for every plugin, pins and topics.
+# ---------------------------------------------------------------------------
+
+def form_row(lines, label):
+    """The rendered form row whose label (from column 2) starts with label."""
+    for ln in lines:
+        if ln[1:].startswith(label):
+            return ln
+    return ""
+
+
+def test_forms_wide():
+    """A form on an 80 column terminal is laid out for 80 (1.1.0).
+
+    Every form was a 40 column card at every width: 9 column labels, a box
+    27 wide at column 12 showing only the tail of a longer value, and a 39
+    column rule on an 80 column screen. At 80 the labels are 20 wide and say
+    more, the box starts at column 23 and is 56 wide, and the rule is 79.
+    """
+    print("Forms at 80 columns")
+    s = cfg_sysop("Wide80")
+    cfg_open(s, b"board", b"Hostname")
+    s.pump(0.4)
+    lines = render_lines(s.buf)
+    led = form_row(lines, "Onboard LED GPIO")
+    ok = check("the board page names the LED row as the board's own", bool(led))
+    ok &= check("the label is 20 columns and the value sits at column 23",
+                bool(led) and led[1:22].rstrip() == "Onboard LED GPIO" and led[22] != " ")
+    ok &= check("the other rows take their long labels too",
+                bool(form_row(lines, "Land on after login")) and bool(form_row(lines, "POSIX TZ string")))
+    ok &= check("the rule under the title is 79 columns", len(lines) > 1 and len(lines[1].strip()) == 79)
+    ok &= check("the hint says what Enter and Space do",
+                b"Tab or arrows move, Enter is next, Space steps a choice, F1 saves, ESC quits"
+                in plain(s.buf))
+    s.buf.clear()
+    s.send(DOWN * BOARD_LED)
+    s.pump(0.6)
+    ok &= check("and the LED row's note is the long one",
+                b"The board's own LED, not a pixel: GPIO 2 on most dev boards, -1 for none."
+                in plain(s.buf))
+    cfg_cancel(s)
+
+    # One cursor move a field (spec section 7): the label, then a step
+    # right into the box, rather than a second gotoXY to the box's column.
+    cfg_open(s, b"limits", b"Per call")
+    draw = bytes(s.buf)
+    moves = [len(re.findall(rb"\x1b\[%d;\d+H" % r, draw)) for r in range(5, 9)]
+    ok &= check("one cursor move for each row, not two", moves == [1, 1, 1, 1])
+    cfg_cancel(s)
+
+    # A plugin's page is titled in capitals, as the core's and the lists are.
+    cfg_open(s, b"announce", b"Every min")
+    s.pump(0.4)
+    lines = render_lines(s.buf)
+    ok &= check("a plugin page's title is in capitals", lines[0].strip() == "ANNOUNCE")
+    cfg_cancel(s)
+
+    # A button fills the wide box: "[ " + 52 + " ]" from column 23 to 78.
+    cfg_open(s, b"lights", b"Drive pin")
+    s.pump(0.4)
+    px = form_row(render_lines(s.buf), "Pixels, by hand")
+    ok &= check("a button fills the 56 column box",
+                bool(px) and px[22] == "[" and len(px.rstrip()) == 78 and px.rstrip().endswith("]"))
+    cfg_cancel(s)
+
+    # The page list: one column in, under the bar's title.
+    s.buf.clear()
+    s.send(b"config\r")
+    read_list(s)
+    rows = [ln for ln in render_lines(s.buf) if "landing" in ln]
+    ok &= check("the page list is indented under its title, and not clipped at 80",
+                bool(rows) and rows[0].startswith(" board ") and rows[0].rstrip().endswith("landing"))
+    s.close()
+
+    # The sign-up form: its Profile is two rows of 74, so the form ends two
+    # rows sooner, and its buttons sit under the wide box.
+    c = Caller(ansi=True)
+    c.wait_for(b"Enter your handle", 10)
+    c.send(b"WideSignup\r")
+    c.wait_for(b"[R]egister", 6)
+    c.send(b"r")
+    pass_rules(c)
+    c.send(b"n")
+    c.wait_for(b"NEW ACCOUNT", 6)
+    c.pump(1.2)
+    lines = render_lines(c.buf)
+    save = next((i for i, ln in enumerate(lines) if "[ Save ]" in ln), -1)
+    ok &= check("sign-up at 80: [ Save ] on row 16, at column 23",
+                save == 15 and lines[save].index("[ Save ]") == 22)
+    ok &= check("Password again, and Profile as two rows of 74",
+                bool(form_row(lines, "Password again")) and
+                sum(1 for ln in lines if ln[1:75] == "." * 74 and ln[75:].strip() == "") == 2)
+    c.send(b"\x1b")
+    c.wait_for(b"Enter your handle", 4)
+    c.close()
+    return ok
+
+
+def test_forms_narrow():
+    """Under 80 columns a form is the 40 column card it always was (1.1.0).
+
+    What a C64 sees changes in two labels only, "Board LED" (was "LED gpio",
+    Rob: "The LED gpio there should be the ONBOARD Led GPIO") and "Guest min"
+    (was "Guest mn"), and the ANSI hint, which was 39 characters on a 38
+    column status line and read "ESC quit" on an ANSI terminal at 40.
+    """
+    print("Forms at 40 columns")
+    s = cfg_sysop40("Narrow40")
+    cfg_open(s, b"board", b"Hostname")
+    s.pump(0.4)
+    lines = render_lines(s.buf)
+    led = form_row(lines, "Board LED ")
+    ok = check("the LED row is Board LED on a 40 column form", bool(led) and led[11] != " ")
+    ok &= check("the rest keep their 40 column labels",
+                bool(form_row(lines, "Idle min ")) and not form_row(lines, "Idle minutes"))
+    ok &= check("the ANSI hint fits its 38 columns",
+                b"Tab/arrows move, F1 saves, ESC quits" in plain(s.buf))
+    ok &= check("the page fits 40 columns", max_column(s.buf) <= 39)
+    s.buf.clear()
+    s.send(DOWN * BOARD_LED)
+    s.pump(0.6)
+    ok &= check("the LED row's note says which LED",
+                b"Board's own LED: 2 on most dev boards" in plain(s.buf))
+    cfg_cancel(s)
+    cfg_open(s, b"accounts", b"Sign-ups")
+    s.pump(0.4)
+    ok &= check("Guest min, spelled out in nine", bool(form_row(render_lines(s.buf), "Guest min ")))
+    cfg_cancel(s)
+
+    # The pages the 80 column tests open, as a C64 sees them: the copy's
+    # short labels and notes, and nothing past column 39.
+    cfg_open(s, b"lights", b"Drive pin")
+    page = plain(s.buf)
+    ok &= check("the lights page at 40: the copy's labels, inside 40 columns",
+                all(w in page for w in (b"Drive pin", b"Drive fx", b"Drive %", b"Strip pin",
+                                        b"Strip %", b"Pixels")) and max_column(s.buf) <= 39)
+    s.buf.clear()
+    s.send(DOWN * 4)
+    s.pump(0.5)
+    ok &= check("with its short notes", b"The disk light: one pixel. -1 is off." in plain(s.buf))
+    s.buf.clear()
+    s.send(DOWN * 6 + b"\r")                       # Pixels
+    s.wait_for(b"Pixel 10", 6)
+    s.pump(0.6)
+    ok &= check("its Pixels page inside 40 columns", max_column(s.buf) <= 39)
+    s.send(b"\x1b")
+    wait_label(s, b"Drive pin", 6)
+    s.pump(0.4)
+    cfg_cancel(s)
+    cfg_open(s, b"announce", b"Interests")
+    s.pump(0.6)
+    grid = render_lines(s.buf, 80)
+    drawn = [i for i, line in enumerate(grid) if line.strip()]
+    ok &= check("the announce page, sixteen rows, fits 24 rows and 40 columns",
+                bool(drawn) and drawn[-1] < 24 and any("Token" in line for line in grid)
+                and max_column(s.buf) <= 39)
+    cfg_cancel(s)
+    s.close()
+    return ok
+
+
+def test_forms_ascii_wide():
+    """Plain ASCII is 80 columns, so its prompts take the long labels (1.1.0).
+
+    The line-mode prompt used the 9 character label and cut a current value
+    at 20, so a sysop read "Directory [http://127.0.0...]" and
+    "LED gpio [2]". The choices of a cycle packed into 39 columns. And a set
+    password could not be emptied at all, so plain ASCII could never choose
+    an open network: Enter kept it and anything typed replaced it.
+    """
+    print("Forms in plain ASCII at 80 columns")
+    if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    def enter_until(pat, tries=20):
+        """Enter on each row, keeping its value, until pat is on screen."""
+        for _ in range(tries):
+            if pat in c.buf:
+                return True
+            c.send(b"\r")
+            c.pump(0.3)
+        return pat in c.buf
+
+    c = ascii_sysop("AsciiWide")
+    c.buf.clear()
+    c.send(b"config board\r")
+    c.wait_for(b"Board name", 5)
+    ok = check("the LED prompt has the long label", enter_until(b"Onboard LED GPIO ["))
+    zones = [ln for ln in render_lines(c.buf) if re.match(r"\d+ \S", ln)]
+    ok &= check("a cycle's choices pack into 79 columns, not 39",
+                bool(zones) and max(len(ln) for ln in zones) > 39 and
+                all(len(ln) <= 79 for ln in zones))
+    enter_until(b"Save (Y/n)?")
+    c.send(b"n")
+    c.pump(0.5)
+
+    c.buf.clear()
+    c.send(b"config announce\r")
+    c.wait_for(b"Plugin enabled", 5)
+    enter_until(b"Directory URLs [")
+    c.pump(0.3)
+    ok &= check("a value up to 60 characters shows whole",
+                re.search(rb"Directory URLs \[http://127\.0\.0\.1:\d+/announce\]: ", c.buf) is not None)
+    enter_until(b"Save (Y/n)?")
+    c.send(b"n")
+    c.pump(0.5)
+
+    # "-" empties a set password: the open network, chosen from plain ASCII.
+    cfgp = USERDATA / "system.cfg"
+    orig = cfgp.read_text()
+    c.buf.clear()
+    c.send(b"config network\r")
+    c.wait_for(b"Wi-Fi network", 5)
+    c.send(b"\r")
+    ok &= check("a set password says how to empty it",
+                c.wait_for(b"Wi-Fi password [set, - clears]: ", 4))
+    c.send(b"-\r")
+    c.pump(0.3)
+    c.send(b"\r")
+    c.wait_for(b"Save (Y/n)?", 4)
+    c.buf.clear()
+    c.send(b"y")
+    ok &= check("- saves an open network", c.wait_for(b"OPEN network", 6))
+    ok &= check("written empty beside the same network",
+                (cfg_line("wifi_ssid") or "").endswith("= Test#Net") and
+                (cfg_line("wifi_password") or "x").strip().endswith("="))
+    cfgp.write_text(orig)
+    c.close()                    # the sysop node holds one caller
+    time.sleep(1.0)
+    s = cfg_sysop("AsciiWideBack")
+    cfg_reload(s)
+    s.close()
+    time.sleep(0.5)
+    ok &= check("the test board's password is back",
+                (cfg_line("wifi_password") or "").endswith("= pa#ss word1"))
+    return ok
+
+
+def test_whois_wide():
+    """WHOIS is laid out for the terminal, as the forms are (1.1.0).
+
+    It drew a 39 column rule, 9 column labels and values cut at 29 on every
+    terminal. At 80 the rule is 79 and the labels are the forms' long ones;
+    at 40 it is what it was.
+    """
+    print("WHOIS at 80 and at 40 columns")
+    c = ansi_login("WhoWide")
+    c.buf.clear()
+    c.send(b"whois\r")
+    c.wait_for(b"calls", 5)
+    c.pump(0.4)
+    lines = render_lines(c.buf)
+    rule = next((ln for ln in lines if ln.strip() and set(ln.strip()) <= set("-─")), "")
+    mail = next((ln for ln in lines if ln.startswith("Email address")), "")
+    ok = check("at 80 the rule is 79 columns", len(rule.strip()) == 79)
+    ok &= check("and the labels are the forms' long ones, the value at column 22",
+                mail[21:].startswith("whowide@example.com"))
+    ok &= check("Member since and Last call",
+                any(ln.startswith("Member since ") for ln in lines) and
+                any(ln.startswith("Last call ") for ln in lines))
+    c.close()
+
+    n = ansi40_login("WhoNarrow")
+    n.buf.clear()
+    n.send(b"whois\r")
+    n.wait_for(b"calls", 5)
+    n.pump(0.4)
+    lines = render_lines(n.buf)
+    rule = next((ln for ln in lines if ln.strip() and set(ln.strip()) <= set("-─")), "")
+    ok &= check("at 40 the rule is 39", len(rule.strip()) == 39)
+    ok &= check("and the labels 9 columns, as they were",
+                any(ln.startswith("Email    whonarrow@") for ln in lines))
+    n.close()
+    return ok
+
+
+def test_config_serial_rows():
+    """CONFIG serial has its pins, speed and format (1.1.0).
+
+    The serial bridge declared no settings, so its page showed the file's raw
+    keys cut to nine, and had no pin rows at all on a board whose file never
+    named them (Rob: "config serial needs pin assignments"). The console's
+    pins, which the plugin refuses for itself, are refused on the form.
+    """
+    print("CONFIG serial: pins, baud and format")
+    s = cfg_sysop("SerialRows")
+    cfg_open(s, b"serial", b"Enabled")
+    s.pump(0.4)
+    lines = render_lines(s.buf)
+    rx, tx = form_row(lines, "RX GPIO"), form_row(lines, "TX GPIO")
+    baud, fmt = form_row(lines, "Baud rate"), form_row(lines, "Bits, parity, stop")
+    ok = check("the page has the pins, as the bridge runs them", rx[22:24] == "16" and tx[22:24] == "17")
+    ok &= check("and the speed and the format", baud[22:28] == "115200" and fmt[22:25] == "8N1")
+    # Rows: 0 Enabled, 1 Read, 2 Write, 3 Admin, 4 RX, 5 TX, 6 Baud, 7 Format.
+    s.buf.clear()
+    s.send(DOWN * 4 + b"\x08" * 3 + b"1" + F1)
+    got = cfg_verdict(s, [b"console port", b"Saved", b"Between"])
+    ok &= check("RX on the console's pin is refused", got == b"console port")
+    # Whole, at 80: the blink that shows a refusal used to stop at 60.
+    ok &= check("in a sentence the status line shows whole",
+                b"GPIO 1 is the console port: flashing and Improv need it. Pick another."
+                in plain(s.buf))
+    cfg_cancel(s)
+    cfg_open(s, b"serial", b"Enabled")
+    s.buf.clear()
+    s.send(DOWN * 6 + b"9" + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"Not one of", b"saved, but"])
+    ok &= check("the baud rate is picked from its list and saved", got == b"Saved and live" and
+                (cfg_sec_line("plugin:serial", "baud") or "").endswith("= 9600"))
+    cfg_open(s, b"serial", b"Enabled")
+    s.send(DOWN * 6 + b"1" + b"1" + b"1" + F1)   # 1200, 19200, 115200
+    cfg_verdict(s, [b"Saved and live", b"Nothing changed"])
+    ok &= check("and put back", (cfg_sec_line("plugin:serial", "baud") or "").endswith("= 115200"))
+    s.close()
+    return ok
+
+
+def test_config_chat_colours():
+    """CONFIG chat declares its settings, colours on a page of their own (1.1.0).
+
+    Chat declared none, so its page took the first twelve keys the file
+    carried: with system.cfg.example's fourteen, color_room and color_private
+    were never on it, and a sysop could not set them from the board.
+    """
+    print("CONFIG chat: the room, its mail and its colours")
+    s = cfg_sysop("ChatCols")
+    cfg_open(s, b"chat", b"Enabled")
+    s.pump(0.4)
+    lines = render_lines(s.buf)
+    ok = check("chat's rows are named", bool(form_row(lines, "Room name")) and
+               bool(form_row(lines, "Lines remembered")) and bool(form_row(lines, "Mail kept, days")))
+    ok &= check("with its running values", form_row(lines, "Lines a minute, each")[22:24] == "80")
+    ok &= check("and a button for the colours", "[ 11 colours" in form_row(lines, "Room colours"))
+    # 0-3 the core rows, 4 Room, 5 Rate, 6 History, 7-9 mail, 10 Colours.
+    s.buf.clear()
+    s.send(DOWN * 10 + b"\r")
+    ok &= check("which opens a page of every colour",
+                s.wait_for(b"Room banner and /s", 5) and s.wait_for(b"Private lines", 3))
+    s.pump(0.4)
+    s.buf.clear()
+    s.send(DOWN * 6 + b"y" + F1)                    # color_room: cyan to yellow
+    got = cfg_verdict(s, [b"Saved and live", b"Nothing changed", b"Not one of", b"saved, but"])
+    ok &= check("color_room can be set from the board", got == b"Saved and live" and
+                (cfg_sec_line("plugin:chat", "color_room") or "").endswith("= yellow"))
+    s.pump(0.4)
+    s.buf.clear()
+    s.send(b"\r")                                   # back on the button: open it again
+    s.wait_for(b"Room banner and /s", 5)
+    s.pump(0.4)
+    s.send(DOWN * 6 + b"c" + F1)
+    cfg_verdict(s, [b"Saved and live", b"Nothing changed"])
+    ok &= check("and put back", (cfg_sec_line("plugin:chat", "color_room") or "").endswith("= cyan"))
+    cfg_cancel(s)
+    s.close()
+    return ok
+
+
+def test_config_announce_desc():
+    """CONFIG holds announce's whole description (1.1.0).
+
+    The plugin, the file and the directory take 120 characters; CONFIG's
+    buffer held 95, so saving that row cut the rest off.
+    """
+    print("CONFIG announce: a description of 110 characters")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  reads the board's system.cfg")
+        return True
+    s = cfg_sysop("DescLong")
+    long_desc = ("A board with a long description " + "x" * 110)[:110]
+    cfg_open(s, b"announce", b"Every min")
+    s.buf.clear()
+    # Enabled, Read, Write, Admin, (Board is read-only), Sysop, Description.
+    s.send(DOWN * 5 + b"\x08" * 130 + long_desc.encode() + F1)
+    cfg_verdict(s, [b"Saved and live", b"Nothing changed", b"saved, but"])
+    got = (cfg_sec_line("plugin:announce", "description") or "").split("=", 1)[-1].strip()
+    ok = check("all 110 characters are written", got == long_desc)
+    cfg_open(s, b"announce", b"Every min")
+    s.send(DOWN * 5 + b"\x08" * 130 + b"A board under test" + F1)
+    cfg_verdict(s, [b"Saved and live", b"Nothing changed"])
+    ok &= check("and put back", (cfg_sec_line("plugin:announce", "description") or "")
+                .endswith("= A board under test"))
+    s.close()
+    return ok
+
+
+def test_config_pin_holders():
+    """CONFIG refuses a pin something else on the board holds (1.1.0).
+
+    One page refused two of its own rows sharing a pin, and nothing across
+    pages: the LED, the SD card, the serial bridge and the lights could all be
+    given one GPIO, each page said "Saved and live", and whichever started
+    last had it. The walk covers the core's pins and every plugin's PS_PIN
+    rows, BOOT and the console. The refusal names the holder: whole at 80,
+    inside 38 columns at 40.
+    """
+    print("CONFIG refuses a pin another feature holds")
+    local = HOST in ("127.0.0.1", "localhost")
+    s = cfg_sysop("PinHold")
+    before = cfg_line("activity_led_gpio") if local else None
+    cfg_open(s, b"board", b"Hostname")
+    s.buf.clear()
+    s.send(DOWN * BOARD_LED + b"\x08" * 3 + b"18" + F1)
+    got = cfg_verdict(s, [b"GPIO 18 is taken: CONFIG sd, Clock GPIO. Pick another.", b"Saved", b"no such pin"])
+    ok = check("the LED cannot take the SD card's clock, and says whose it is",
+               got == b"GPIO 18 is taken: CONFIG sd, Clock GPIO. Pick another.")
+    cfg_cancel(s)
+    if local:
+        ok &= check("and nothing is written", cfg_line("activity_led_gpio") == before)
+
+    cfg_open(s, b"board", b"Hostname")
+    s.buf.clear()
+    s.send(DOWN * BOARD_LED + b"\x08" * 3 + b"0" + F1)
+    got = cfg_verdict(s, [b"BOOT button", b"Saved"])
+    ok &= check("nor BOOT", got == b"BOOT button")
+    cfg_cancel(s)
+
+    # The backup button is BOOT itself unless another is wired, so it alone
+    # may have GPIO 0: moved off it and back again, both save.
+    cfg_open(s, b"backup", b"Open for")
+    s.buf.clear()
+    s.send(DOWN * 2 + b"\x08" * 3 + b"4" + F1)
+    first = cfg_verdict(s, [b"Saved and live", b"BOOT", b"taken", b"saved, but"])
+    cfg_open(s, b"backup", b"Open for")
+    s.buf.clear()
+    s.send(DOWN * 2 + b"\x08" * 3 + b"0" + F1)
+    back = cfg_verdict(s, [b"Saved and live", b"BOOT", b"taken", b"saved, but"])
+    ok &= check("the backup button may be BOOT", first == b"Saved and live" and back == b"Saved and live")
+
+    # The serial bridge is on in the test board, and holds 16 and 17.
+    cfg_open(s, b"sd", b"CS pin")
+    s.buf.clear()
+    s.send(DOWN * 6 + b"\x08" * 3 + b"17" + F1)          # the card's clock onto the bridge's TX
+    got = cfg_verdict(s, [b"GPIO 17 is taken: CONFIG serial, TX GPIO", b"Saved", b"Between"])
+    ok &= check("a plugin cannot take another plugin's pin",
+                got == b"GPIO 17 is taken: CONFIG serial, TX GPIO")
+    cfg_cancel(s)
+    s.close()
+    time.sleep(1.0)              # the sysop node holds one caller
+
+    # At 40 the same refusal, inside the 38 column status line. Switching the
+    # lights on with a pin the bridge holds is when the lights would take it.
+    t = cfg_sysop40("PinHold40")
+    cfg_open(t, b"lights", b"Drive pin")
+    t.buf.clear()
+    t.send(b"y" + DOWN * 4 + b"\x08" * 3 + b"16" + F1)
+    got = cfg_verdict(t, [b"Taken: serial, RX pin", b"Saved", b"That is the"])
+    ok &= check("switching a plugin on with a held pin is refused, at 40 too",
+                got == b"Taken: serial, RX pin")
+    ok &= check("inside 38 columns", 0 < len(row_reach(t.buf, "Taken: serial")) <= 39)
+    cfg_cancel(t)
+    t.close()
+    return ok
+
+
+def test_config_forums_grow():
+    """CONFIG forums grows a row at a time, then becomes a page (1.1.0).
+
+    It offered topic1 to topic4 against a plugin that reads sixteen (Rob:
+    "why are we limited to just 4 forum topics ... have the list auto
+    expand"). The page shows the topics set and one empty row; up to twelve
+    fit, and past that a Topics button opens all sixteen.
+    """
+    print("CONFIG forums: the topics grow with the board")
+    local = HOST in ("127.0.0.1", "localhost")
+    s = cfg_sysop("TopicGrow")
+    cfg_open(s, b"forums", b"Enabled")
+    s.pump(0.4)
+    lines = render_lines(s.buf)
+    ok = check("the page shows the two topics set", bool(form_row(lines, "Forum topic 1")) and
+               bool(form_row(lines, "Forum topic 2")))
+    ok &= check("and one empty row to add the next",
+                "not set" in form_row(lines, "Forum topic 3") and not form_row(lines, "Forum topic 4"))
+
+    # Set topic 3 from its row: the page comes back with a row for topic 4.
+    # Rows: 0-3 the core, 4 Topic 1, 5 Topic 2, 6 Topic 3.
+    s.buf.clear()
+    s.send(DOWN * 6 + b"\r")
+    s.wait_for(b"Folder key", 5)
+    s.pump(0.4)
+    s.buf.clear()
+    s.send(b"growing" + DOWN + b"Growing" + F1)
+    s.wait_for(b"Forum topic 4", 6)
+    s.pump(0.6)
+    lines = render_lines(s.buf)
+    ok &= check("setting topic 3 brings a row for topic 4",
+                "Growing" in form_row(lines, "Forum topic 3") and "not set" in form_row(lines, "Forum topic 4"))
+    # And clear it again, which takes topic 4's row away with it.
+    s.buf.clear()
+    s.send(b"\r")                                   # still on Topic 3: open it
+    s.wait_for(b"Folder key", 5)
+    s.pump(0.4)
+    s.send(b"\x08" * 16 + F1)                       # no key: the row is cleared
+    s.pump(1.5)
+    lines = render_lines(s.buf)
+    ok &= check("clearing it takes the extra row away",
+                "not set" in form_row(lines, "Forum topic 3") and not form_row(lines, "Forum topic 4"))
+    cfg_cancel(s)
+
+    if local:
+        cfgp = USERDATA / "system.cfg"
+        orig = cfgp.read_text()
+        # A topic packed longer than 95 characters keeps its levels through
+        # its page. The page unpacked a copy cut at 95, so the levels past the
+        # cut came back as the plugin's fallbacks and Save wrote those. These
+        # four are none of the fallbacks, so a cut shows.
+        long_topic = ("longtopic | A Name Twenty Four Chars | About text that runs to forty characters"
+                      " | all | sysop | staff | sysop")
+        cfgp.write_text(cfg_with(orig, {("plugin:forums", "topic3"): long_topic}))
+        try:
+            cfg_open(s, b"forums", b"Enabled")
+            s.buf.clear()
+            s.send(DOWN * 6 + b"\r")                    # Topic 3
+            s.wait_for(b"Folder key", 5)
+            s.pump(0.6)
+            s.buf.clear()
+            s.send(F1)
+            cfg_verdict(s, [b"Nothing changed", b"Saved and live", b"Saved", b"saved, but"])
+            ok &= check("a topic longer than 95 characters keeps its levels through its page",
+                        (cfg_sec_line("plugin:forums", "topic3") or "").endswith("| all | sysop | staff | sysop"))
+            cfg_cancel(s)
+        finally:
+            cfgp.write_text(orig)
+
+        # Twelve topics set: the rows would pass the page, so they are a button.
+        cfgp.write_text(cfg_with(orig, {("plugin:forums", f"topic{k}"): f"more{k} | More {k}"
+                                        for k in range(3, 13)}))
+        try:
+            cfg_open(s, b"forums", b"Enabled")
+            s.pump(0.4)
+            lines = render_lines(s.buf)
+            ok &= check("past twelve the topics are one button",
+                        "[ topics 1 to 16" in form_row(lines, "All forum topics") and
+                        not form_row(lines, "Forum topic 1"))
+            s.buf.clear()
+            s.send(DOWN * 4 + b"\r")
+            ok &= check("which opens all sixteen", s.wait_for(b"Forum topic 16", 6))
+            s.send(b"\x1b")
+            s.wait_for(b"All forum topics", 5)
+            cfg_cancel(s)
+        finally:
+            cfgp.write_text(orig)
+    s.close()
+    return ok
+
+
+def test_config_warn_levels():
+    """CONFIG asks before a value past a row's warn level, and takes it (1.1.0).
+
+    Rob: "remove the limit over 30% on light brightness and warn the user are
+    you really sure before applying over 30% but allow it". The lights'
+    brightness rows take 1 to 100 now, and past 30 CONFIG asks first, one
+    question for the page. Built on PluginSetting (warnAbove, warn), so any
+    plugin's number can ask. Cursor forms at 80 and 40, and plain ASCII.
+    """
+    print("CONFIG asks before a brightness past 30")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the local harness and the sysop")
+        return True
+    cfgp = USERDATA / "system.cfg"
+    orig = cfgp.read_text()
+
+    def bright():
+        return (cfg_sec_line("plugin:lights", "drive_bright") or "=").split("=", 1)[1].strip()
+
+    # Rows: 0-3 the core, 4 Drive pin, 5 Drive fx, 6 Drive %.
+    s = cfg_sysop("WarnLevel")
+    cfg_open(s, b"lights", b"Drive pin")
+    s.buf.clear()
+    s.send(DOWN * 6 + b"\x08" * 3 + b"30" + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"Nothing changed", b"(y/N)", b"Between"])
+    ok = check("30 saves with no question",
+               got in (b"Saved and live", b"Nothing changed") and b"(y/N)" not in plain(s.buf)
+               and bright() == "30")
+
+    cfg_open(s, b"lights", b"Drive pin")
+    s.buf.clear()
+    s.send(DOWN * 6 + b"\x08" * 3 + b"31" + F1)
+    got = cfg_verdict(s, [b"Keep it? (y/N)", b"Saved and live", b"Between"])
+    ok &= check("31 asks first", got == b"Keep it? (y/N)")
+    ok &= check("naming the row and why, whole at 80",
+                b"Drive brightness % over 30 runs the pixel hot. Keep it? (y/N)" in plain(s.buf))
+    s.buf.clear()
+    s.send(b"n")
+    ok &= check("N saves nothing and leaves the page open",
+                s.wait_for(b"Not saved.", 4) and bright() == "30" and b"Saved" not in plain(s.buf))
+    s.buf.clear()
+    s.send(F1)
+    s.wait_for(b"(y/N)", 4)
+    s.pump(0.3)
+    s.buf.clear()
+    s.send(b"y")
+    got = cfg_verdict(s, [b"Saved and live", b"Saved", b"Not saved"])
+    ok &= check("Y saves 31", got in (b"Saved and live", b"Saved") and bright() == "31")
+
+    cfg_open(s, b"lights", b"Drive pin")
+    s.buf.clear()
+    s.send(DOWN * 6 + b"\x08" * 3 + b"100" + F1)
+    s.wait_for(b"(y/N)", 5)
+    s.pump(0.3)
+    s.send(b"y")
+    cfg_verdict(s, [b"Saved and live", b"Saved", b"Between"])
+    ok &= check("100 is taken", bright() == "100")
+
+    cfg_open(s, b"lights", b"Drive pin")
+    s.buf.clear()
+    s.send(DOWN * 6 + b"\x08" * 3 + b"101" + F1)
+    got = cfg_verdict(s, [b"Between 1 and 100", b"(y/N)", b"Saved"])
+    ok &= check("101 is refused", got == b"Between 1 and 100" and bright() == "100")
+    cfg_cancel(s)
+    s.close()
+    time.sleep(1.0)                                  # the sysop node holds one caller
+
+    # At 40 the question fits the 38 column status line.
+    t = cfg_sysop40("WarnLevel40")
+    cfg_open(t, b"lights", b"Drive pin")
+    t.buf.clear()
+    t.send(DOWN * 6 + b"\x08" * 3 + b"45" + F1)
+    t.wait_for(b"(y/N)", 5)
+    t.pump(0.4)
+    ok &= check("at 40 it asks inside 38 columns",
+                b"Drive %>30: hot on USB. Keep? (y/N)" in plain(t.buf) and
+                0 < len(row_reach(t.buf, "hot on USB")) <= 39)
+    t.send(b"n")
+    t.wait_for(b"Not saved.", 4)
+    cfg_cancel(t)
+    t.close()
+    time.sleep(1.0)
+
+    # Plain ASCII asks the same question, and a no asks the row again.
+    c = ascii_sysop("WarnAscii")
+    c.buf.clear()
+    c.send(b"config lights\r")
+    wait_label(c, b"Enabled", 5)
+    for a in (b"", b"", b"", b"", b"", b"", b"45"):   # Enabled .. Drive fx, then Drive %
+        c.send(a + b"\r")
+        c.pump(0.3)
+    for _ in range(12):
+        if b"Save (Y/n)?" in c.buf:
+            break
+        c.send(b"\r")
+        c.pump(0.3)
+    c.buf.clear()
+    c.send(b"y")
+    ok &= check("plain ASCII asks too", c.wait_for(b"Keep it? (y/N)", 5))
+    c.buf.clear()
+    c.send(b"n")
+    ok &= check("and N saves nothing, then asks the row again",
+                c.wait_for(b"Not saved.", 4) and c.wait_for(b"Drive brightness % [45]", 4)
+                and bright() == "100")
+    for _ in range(12):
+        if b"Save (Y/n)?" in c.buf:
+            break
+        c.send(b"\r")
+        c.pump(0.3)
+    c.buf.clear()
+    c.send(b"y")
+    c.wait_for(b"(y/N)", 5)
+    c.send(b"y")
+    c.wait_for(b"Saved", 6)
+    ok &= check("where Y saves it", bright() == "45")
+    c.close()
+    time.sleep(1.0)
+
+    cfgp.write_text(orig)
+    r = cfg_sysop("WarnLevelBack")
+    cfg_reload(r)
+    r.close()
+    time.sleep(0.5)
     return ok
 
 

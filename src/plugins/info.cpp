@@ -225,17 +225,18 @@ void setting(const char* key, char* out, size_t n) {
     else snprintf(out, n, "%s | %s", pg.title, plugins::levelName(pg.read));
 }
 
+// The long labels are for 80 columns (1.1.0).
 const PluginSetting kSettings[] = {
-    { "page0", "Page 0", PS_TEXT, 0, 0, 63 },
-    { "page1", "Page 1", PS_TEXT, 0, 0, 63 },
-    { "page2", "Page 2", PS_TEXT, 0, 0, 63 },
-    { "page3", "Page 3", PS_TEXT, 0, 0, 63 },
-    { "page4", "Page 4", PS_TEXT, 0, 0, 63 },
-    { "page5", "Page 5", PS_TEXT, 0, 0, 63 },
-    { "page6", "Page 6", PS_TEXT, 0, 0, 63 },
-    { "page7", "Page 7", PS_TEXT, 0, 0, 63 },
-    { "page8", "Page 8", PS_TEXT, 0, 0, 63 },
-    { "page9", "Page 9", PS_TEXT, 0, 0, 63 },
+    { "page0", "Page 0", PS_TEXT, 0, 0, 63, nullptr, nullptr, "Info page 0" },
+    { "page1", "Page 1", PS_TEXT, 0, 0, 63, nullptr, nullptr, "Info page 1" },
+    { "page2", "Page 2", PS_TEXT, 0, 0, 63, nullptr, nullptr, "Info page 2" },
+    { "page3", "Page 3", PS_TEXT, 0, 0, 63, nullptr, nullptr, "Info page 3" },
+    { "page4", "Page 4", PS_TEXT, 0, 0, 63, nullptr, nullptr, "Info page 4" },
+    { "page5", "Page 5", PS_TEXT, 0, 0, 63, nullptr, nullptr, "Info page 5" },
+    { "page6", "Page 6", PS_TEXT, 0, 0, 63, nullptr, nullptr, "Info page 6" },
+    { "page7", "Page 7", PS_TEXT, 0, 0, 63, nullptr, nullptr, "Info page 7" },
+    { "page8", "Page 8", PS_TEXT, 0, 0, 63, nullptr, nullptr, "Info page 8" },
+    { "page9", "Page 9", PS_TEXT, 0, 0, 63, nullptr, nullptr, "Info page 9" },
 };
 
 // ---------------------------------------------------------------------------

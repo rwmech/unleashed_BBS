@@ -1177,29 +1177,48 @@ const Command kCommands[] = {
 // CONFIG: twelve rows, which is a full page (Form::kMaxFields less the
 // core's four), and a Pins page for the six pins, which are the settings a
 // board with another panel changes first and are checked together there
-// for two rows on one pin. Labels are nine columns and notes 38.
+// for two rows on one pin. Labels are nine columns and notes 38; at 80
+// columns each row has a twenty column label too (1.1.0, the forms at 80).
 // ---------------------------------------------------------------------------
 constexpr PluginSetting kSettings[] = {
-    { "driver",    "Driver",    PS_INFO,  0, 0,   8, "The panel's controller chip." },
-    { "pin",       "Pins",      PS_PAGE,  0, 0,   0, "The panel's SPI and control pins." },
-    { "width",     "Width",     PS_NUM,   1, kRamLong,     3, "Pixels across, with the USB plug up." },
-    { "height",    "Height",    PS_NUM,   1, kRamLong,     3, "Pixels down, with the USB plug up." },
-    { "xoff",      "X offset",  PS_NUM,   0, kRamLong - 1, 3, "Glass's first column in the chip's RAM" },
-    { "yoff",      "Y offset",  PS_NUM,   0, kRamLong - 1, 3, "Glass's first row in the chip's RAM." },
+    { "driver",    "Driver",    PS_INFO,  0, 0,   8, "The panel's controller chip.", nullptr,
+      "Controller chip" },
+    { "pin",       "Pins",      PS_PAGE,  0, 0,   0, "The panel's SPI and control pins.", nullptr,
+      "Panel pins" },
+    { "width",     "Width",     PS_NUM,   1, kRamLong,     3, "Pixels across, with the USB plug up.",
+      nullptr, "Width, pixels" },
+    { "height",    "Height",    PS_NUM,   1, kRamLong,     3, "Pixels down, with the USB plug up.",
+      nullptr, "Height, pixels" },
+    { "xoff",      "X offset",  PS_NUM,   0, kRamLong - 1, 3, "Glass's first column in the chip's RAM",
+      nullptr, "X offset in RAM" },
+    { "yoff",      "Y offset",  PS_NUM,   0, kRamLong - 1, 3, "Glass's first row in the chip's RAM.",
+      nullptr, "Y offset in RAM" },
     // In the row Rotation had (1.1.0-dev.8), which this replaces: the page is
     // full, and two ways to turn one picture would be one too many.
-    { "orientation", "USB plug", PS_CYCLE, 0, 0, 5, "Where the plug is, as you face it.", kOrientWords },
-    { "invert",    "Invert",    PS_YESNO, 0, 0,   3, "Yes for an IPS panel (normally black)." },
-    { "mirror",    "Mirror",    PS_YESNO, 0, 0,   3, "Yes if text shows back to front." },
-    { "colours",   "Colours",   PS_CYCLE, 0, 0,   3, "BGR if red and blue are swapped.", kColours },
-    { "spi_mhz",   "SPI MHz",   PS_CYCLE, 0, 0,   2, "10 is safe; the panel's limit is 62.5.", kClocks },
-    { "backlight", "Bright %",  PS_NUM,   0, 100, 3, "0 is dark; 60 as shipped." },
-    { "pin1_mosi", "MOSI pin",  PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, "Data to the panel: SDA." },
-    { "pin2_sclk", "SCLK pin",  PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, "The clock to the panel: SCL." },
-    { "pin3_cs",   "CS pin",    PS_PIN,  -1, BBS_GPIO_OUT_MAX, 2, "Chip select. -1 if it is tied low." },
-    { "pin4_dc",   "D/C pin",   PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, "Data or command select." },
-    { "pin5_rst",  "RST pin",   PS_PIN,  -1, BBS_GPIO_OUT_MAX, 2, "Reset. -1 resets it by command." },
-    { "pin6_bl",   "Light pin", PS_PIN,  -1, BBS_GPIO_OUT_MAX, 2, "Backlight. -1 if it is always on." },
+    { "orientation", "USB plug", PS_CYCLE, 0, 0, 5, "Where the plug is, as you face it.",
+      kOrientWords, "USB plug points" },
+    { "invert",    "Invert",    PS_YESNO, 0, 0,   3, "Yes for an IPS panel (normally black).", nullptr,
+      "Invert colours" },
+    { "mirror",    "Mirror",    PS_YESNO, 0, 0,   3, "Yes if text shows back to front.", nullptr,
+      "Mirror the picture" },
+    { "colours",   "Colours",   PS_CYCLE, 0, 0,   3, "BGR if red and blue are swapped.", kColours,
+      "Colour order" },
+    { "spi_mhz",   "SPI MHz",   PS_CYCLE, 0, 0,   2, "10 is safe; the panel's limit is 62.5.", kClocks,
+      "SPI clock, MHz" },
+    { "backlight", "Bright %",  PS_NUM,   0, 100, 3, "0 is dark; 60 as shipped.", nullptr,
+      "Backlight %" },
+    { "pin1_mosi", "MOSI pin",  PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, "Data to the panel: SDA.", nullptr,
+      "MOSI GPIO (SDA)" },
+    { "pin2_sclk", "SCLK pin",  PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, "The clock to the panel: SCL.", nullptr,
+      "Clock GPIO (SCL)" },
+    { "pin3_cs",   "CS pin",    PS_PIN,  -1, BBS_GPIO_OUT_MAX, 2, "Chip select. -1 if it is tied low.", nullptr,
+      "Chip select GPIO" },
+    { "pin4_dc",   "D/C pin",   PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, "Data or command select.", nullptr,
+      "Data/command GPIO" },
+    { "pin5_rst",  "RST pin",   PS_PIN,  -1, BBS_GPIO_OUT_MAX, 2, "Reset. -1 resets it by command.", nullptr,
+      "Reset GPIO" },
+    { "pin6_bl",   "Light pin", PS_PIN,  -1, BBS_GPIO_OUT_MAX, 2, "Backlight. -1 if it is always on.", nullptr,
+      "Backlight GPIO" },
 };
 constexpr size_t kSettingCount = sizeof(kSettings) / sizeof(kSettings[0]);
 

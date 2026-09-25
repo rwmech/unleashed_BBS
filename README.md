@@ -124,7 +124,7 @@ A board other than the reference is a profile, not a fork: a PlatformIO environm
 
 The second UART is wired to the serial bridge plugin, so a caller with permission can drive a device attached to the board and everyone else can watch. The console UART is never touched: flashing and the serial monitor keep working while somebody is using the bridge.
 
-- Pins, baud rate and line format are `[plugin:serial]` settings, not compiled in. `SERIAL SET 9600 8N1` changes the line while the board is running.
+- Pins, baud rate and line format are `[plugin:serial]` settings, not compiled in, and `CONFIG serial` sets all four from the board (1.1.0). A pin the console, the SD card or anything else already holds is refused there. `SERIAL SET 9600 8N1` changes the line while the board is running.
 - The plugin refuses the pins that would break the board: the flash pins (6 to 11), pins the chip does not have (20, 24 and 28 to 31 on the WROOM), the console pins, and transmit on the input-only pins (34 to 39).
 - The ESP32 speaks 3V3 logic. A 5 V device needs a level shifter, and anything with a real RS-232 port needs a transceiver such as a MAX3232. Wiring a bare RS-232 line to a GPIO pin destroys the pin.
 - This is what puts a glass terminal, a piece of test equipment, a radio, a PLC or a label printer on the board. It is also how the board itself can be reached from a terminal that has no network at all.
