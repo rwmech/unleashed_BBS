@@ -743,6 +743,28 @@ this tree.
   with no one in it is skipped. The example Rob gave: "We meet every
   Tuesday at 10a". This reverses nothing: /M message slots stay rejected,
   because /i now does the job.
+- **1.2.0: memory, from internal/memory-2026-09-25-1.1.1.md** (Rob,
+  2026-09-25):
+  - The small printf (newlib nano, about 69.5 KB of flash on every board,
+    printf frames 800 to 160 bytes), only after an audit of every `%f`
+    and `%ll` (nano drops floats; camera.cpp:1605 uses `%llu`). Silent
+    assertions only if release.py keeps the release ELFs to decode an
+    address.
+  - Camera boards: zero-filled statics into PSRAM (`EXT_RAM_BSS_ATTR`,
+    about 121 KB of internal RAM back on the ESP32-CAM), measured with
+    callers on against SYS's loop figures, plus a boot check that says
+    "this image needs PSRAM" instead of crash-looping on a board without
+    it (the installer cannot tell the three ESP32 boards apart).
+  - Wi-Fi TX buffers 10 to 6 on the camera boards (about 6.4 KB, estimate);
+    the RX window 16 to 6 to match the 10 RX buffers; the S3 from the 16/16
+    defaults to 10/10 (about 19 KB) before SSH wants heap.
+  - A heap dump on the ESP32-CAM's console to name the 32 KB the report
+    could not account for. The camera worker's stack 8,192 to 6,144 if the
+    console shows at least 3.5 KB free after UXGA and GC0308 snaps.
+  - Flash is the trend to watch now: the WROOM grew 103 KB in 1.1.0. The
+    ESP32-CAM has only 6,764 bytes of IRAM left (the rev 1 PSRAM
+    workaround).
+  - In 1.1.1 already: IPv6, SoftAP and Wi-Fi Enterprise off.
 - **1.2.0: BBS classics, Rob's picks (2026-09-25)**, beside rotating /i:
   - **Sysop chat without a split screen.** Rob: "I would just repurpose
     chat." When the sysop answers a page, both land in a private two-person
