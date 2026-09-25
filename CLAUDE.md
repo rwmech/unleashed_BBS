@@ -1406,6 +1406,10 @@ they are the process, and getting them wrong wastes Rob's time.
 - **The Freenove camera board on COM13 may be flashed without asking**
   (Rob, 2026-09-25: "just flash, whatever, make it work"), for as long as
   the camera work runs. Telnet to it needs no permission either.
+- **The ESP32-CAM on COM15 is a private test board** (Rob, 2026-09-25:
+  "You can use that esp32cam ... for testing and use. It's not public").
+  Flash, erase, configure and test freely. Each flash needs its SD card
+  out (GPIO2 strap), which is Rob's hands, so batch them.
 - **Bench boards on Rob's dedicated USB hub are a standing approval**
   (Rob, 2026-09-25: "so I can have you flash and update as needed"). Flash,
   erase and update them as the work needs, but only on the COM ports Rob
