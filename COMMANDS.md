@@ -1083,7 +1083,11 @@ pic_gamma  = 1.0        ; 0.6 | 0.7 | 0.8 | 0.9 | 1.0 | 1.1 | 1.2 | 1.4 | 1.6
   (the timelapse) are always `timelapse/TL-20260924-171200.JPG`, whatever
   Names says. A handle is cut to 19 characters and stripped of anything FAT
   cannot hold; an empty one becomes `caller`.
-- **Watermark**: board name, date and who, in a corner. On by default; when
+- **Watermark**: board name, date and who in the bottom right corner, and
+  the µnleashed wordmark in the bottom left (the site's own drawing, white
+  blended in at 37.5%, the text's height; left out when it would come near
+  the text, which at QVGA it usually does). On by default, both together;
+  when
   it cannot be drawn (no codec, or a bad frame) the photo is saved unmarked
   rather than not saved at all.
 - **Keep days** and **Max snaps**: retention for callers' own photos (the

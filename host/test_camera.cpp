@@ -237,6 +237,12 @@ int main() {
             const uint8_t* p = &rgb[(static_cast<size_t>(y) * W + x) * 3];
             if (p[0] == 128) continue;
             bool in = x >= b.x - b.scale && x < b.x + b.w + b.scale && y >= b.y - b.scale && y < b.y + b.h + b.scale;
+            // The wordmark's own corner (1.1.1), bottom left, is the other
+            // place the watermark may touch; its pixels are neither light nor
+            // dark, so they count towards neither.
+            const bool mark = b.brand && x >= b.bx && x < b.bx + cammark::kBrandW * b.bs && y >= b.by &&
+                              y < b.by + cammark::kBrandH * b.bs;
+            if (mark) continue;
             if (!in) ++outside;
             if (p[0] == cammark::kLight[0]) ++light;
             else if (p[0] == cammark::kDark[0]) ++dark;
@@ -246,6 +252,51 @@ int main() {
     ::check("and not one pixel outside the corner touched", outside == 0);
     long covered = light + dark;
     ::check("covering well under 1% of the picture", covered * 100 < static_cast<long>(W) * H);
+
+    printf("The wordmark\n");
+    ::check("the site's wordmark: 62 x 12", cammark::kBrandW == 62 && cammark::kBrandH == 12);
+    ::check("its micro sign has a descender (rows 10 and 11, column 0)",
+            cammark::brandLit(0, 10) && cammark::brandLit(0, 11) && !cammark::brandLit(3, 11));
+    {
+        struct Sz { int w, h; } sizes[] = { {320, 240}, {640, 480}, {800, 600}, {1024, 768},
+                                            {1280, 720}, {1280, 1024}, {1600, 1200}, {2048, 1536} };
+        const char* text = "PixelBBS \xB7 2026-09-25 14:34 \xB7 CamTester";
+        bool noOverlap = true, shownAbove = true, height = true;
+        for (const Sz& z : sizes) {
+            char fit[96];
+            int max = cammark::maxGlyphs(z.w, z.h);
+            cammark::fitText("PixelBBS", "2026-09-25 14:34", "CamTester", max, fit, sizeof(fit));
+            (void)text;
+            cammark::Box bx = cammark::layout(z.w, z.h, fit);
+            if (bx.brand && bx.bx + cammark::kBrandW * bx.bs > bx.x - bx.scale) noOverlap = false;
+            if (z.w >= 640 && !bx.brand) shownAbove = false;
+            int bh = cammark::kBrandH * bx.bs, th = bx.h;
+            if (bx.brand && (bh * 4 < th * 3 || bh * 3 > th * 4)) height = false;
+        }
+        ::check("never overlapping the text, at any size", noOverlap);
+        ::check("shown at VGA and every size above", shownAbove);
+        ::check("within a quarter of the text's height", height);
+        cammark::Box q = cammark::layout(320, 240, "PixelBBS \xB7 2026-09-25 14:34 \xB7 CamTester");
+        ::check("left out at QVGA when the text fills the width", !q.brand);
+        cammark::Box q2 = cammark::layout(320, 240, "2026-09-25 14:34");
+        ::check("kept at QVGA when there is room", q2.brand);
+
+        // Blended, white at kBrandAlpha: a lit pixel is lifted towards white,
+        // an unlit one untouched, and nothing outside the mark changes.
+        const int VW = 640, VH = 480;
+        cammark::Box v = cammark::layout(VW, VH, "2026-09-25 14:34");
+        std::vector<uint8_t> px(static_cast<size_t>(VW) * VH * 3, 100);
+        for (int y0 = 0; y0 < VH; y0 += 16)
+            cammark::drawRows(&px[static_cast<size_t>(y0) * VW * 3], VW, y0, 16, v, "2026-09-25 14:34");
+        long lifted = 0, other = 0;
+        for (int y = 0; y < VH; ++y)
+            for (int x = 0; x < VW / 2; ++x) {
+                uint8_t c = px[(static_cast<size_t>(y) * VW + x) * 3];
+                if (c == 100) continue;
+                if (c == 100 + ((155 * cammark::kBrandAlpha) >> 8)) ++lifted; else ++other;
+            }
+        ::check("the wordmark is drawn at VGA, blended, and nothing else on its side", lifted > 100 && other == 0);
+    }
 
     // ---------------------------------------------------------------------
     // The picture (1.1.1, camera_pic.h)

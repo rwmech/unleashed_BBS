@@ -1651,8 +1651,10 @@ const PluginSetting kSettings[] = {
     // The choices follow the sensor the last bring-up found (g_sizeChoices).
     { "size",      "Size",      PS_CYCLE, 0, 0, 5, "What this sensor gives; up to its largest.",
       g_sizeChoices, "Resolution" },
-    { "quality",   "Quality",   PS_NUM,   4, 40, 2, "4 to 40; lower is better.", nullptr,
-      "JPEG quality", "4 to 40. Lower is better: a sharper picture and a bigger file." },
+    // One direction on every sensor: the OV2640's own JPEG takes it as is,
+    // and every re-encode (the GC0308's, the watermark's) is 100 minus it.
+    { "quality",   "Quality",   PS_NUM,   4, 40, 2, "Lower: sharper, bigger. 10-12 is good.", nullptr,
+      "JPEG quality", "4 to 40, lower is sharper and bigger; 10-12 suggested. Same on every sensor." },
     { "names",     "Names",     PS_CYCLE, 0, 0, 12, "SNAP-date, with the handle, or by handle.",
       camrules::kSchemes, "Name snaps" },
     { "watermark", "Watermark", PS_YESNO, 0, 0, 3, "Board, date and who, in a corner.", nullptr,

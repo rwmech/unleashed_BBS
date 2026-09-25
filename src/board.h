@@ -229,7 +229,7 @@
 #define BBS_BOARD_PLUGINS     1       // the camera
 
 #define BBS_BOARD_TAG         "FNCAM"
-#define BBS_BOARD_VERSION     "1.0.4"
+#define BBS_BOARD_VERSION     "1.0.5"
 
 // PSRAM (sdkconfig.defaults.fncam). Wi-Fi's and lwIP's buffers go there.
 // The internal reserve stays the WROOM's 40 KB until the bench's MEM says
@@ -367,7 +367,7 @@
 #define BBS_BOARD_PLUGINS     1       // the camera
 
 #define BBS_BOARD_TAG         "ESPCAM"
-#define BBS_BOARD_VERSION     "1.0.1"
+#define BBS_BOARD_VERSION     "1.0.2"
 
 // PSRAM (sdkconfig.defaults.espcam). A build that lost the sdkconfig layer
 // would otherwise link quietly without it.

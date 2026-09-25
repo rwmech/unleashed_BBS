@@ -24,7 +24,7 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
-## 1.1.1-dev.1 (FNCAM 1.0.4, the picture), 2026-09-25
+## 1.1.1-dev.1 (FNCAM 1.0.5, ESPCAM 1.0.2: the picture), 2026-09-25
 
 The first outdoor photo on the Freenove came out white, median 247 of 255
 on every channel, and Brightness -2, Contrast 2 and Exposure -2 changed
@@ -59,6 +59,10 @@ nothing. Host-tested; waits for the board to be back on USB.
   on PixelBBS). The marker read the photo areas' placeholder level, which
   is Sysop and never used; access itself was right. The marker and the
   check now take the level from one helper (`areaRead`).
+- **The watermark carries the µnleashed wordmark** bottom left, the site's
+  own drawing (tools/mkbrand.py writes camera_brand.h from LOGO_ROWS),
+  white blended in at 37.5%, the stamp text's height; dropped when it
+  would come near the text. Watermark = no removes both.
 - JPEG quality 10 as shipped (12 before), with one step down logged if a
   frame will not come whole. XCLK stays per sensor: 20 MHz for a sensor
   that encodes (the OV2640), 10 MHz for a raw one (the GC0308).

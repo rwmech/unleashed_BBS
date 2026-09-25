@@ -54,6 +54,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include "camera_brand.h"
 #include "panel_font.h"
 
 namespace cammark {
@@ -72,7 +73,20 @@ struct Box {
     int x = 0, y = 0;        // the text's top left, in the picture
     int w = 0, h = 0;        // the text's size, outline not included
     int glyphs = 0;
+    // The wordmark, bottom left (1.1.1, Rob): the site's own drawing
+    // (camera_brand.h), white blended into the picture at kBrandAlpha, the
+    // same height as the text. Left out when it would come within a
+    // character of the text, which at QVGA it usually does.
+    bool brand = false;
+    int  bs = 1;             // each wordmark pixel is bs x bs
+    int  bx = 0, by = 0;     // its top left
 };
+
+// kBrandAlpha: how much white the wordmark puts on a pixel, out of 256.
+// 96 is 37.5%: on grass (a green around 110) it lifts the pixel by about
+// 54, which reads; on a bright sky (around 230) by about 9, which is a
+// studio watermark's faintness rather than a stamp.
+constexpr int kBrandAlpha = 96;
 
 // scaleFor: the whole-pixel scale that puts the line nearest 2.5% of the
 // picture's height, never below one.
@@ -149,7 +163,21 @@ inline Box layout(int width, int height, const char* text) {
     b.y = height - m - b.scale - b.h;
     if (b.x < 0) b.x = 0;
     if (b.y < 0) b.y = 0;
+    // The wordmark: the text's height, rounded (12 rows against 16), on
+    // the text's baseline, the margin in from the left.
+    b.bs = (kGlyphH * b.scale + kBrandH / 2) / kBrandH;
+    if (b.bs < 1) b.bs = 1;
+    b.bx = m;
+    b.by = b.y + b.h - kBrandH * b.bs;
+    if (b.by < 0) b.by = 0;
+    b.brand = b.bx + kBrandW * b.bs + kGlyphW * b.scale <= b.x - b.scale;
     return b;
+}
+
+// brandLit: the wordmark's pixel (px, py).
+inline bool brandLit(int px, int py) {
+    if (px < 0 || py < 0 || px >= kBrandW || py >= kBrandH) return false;
+    return (kBrand[py][px / 8] >> (7 - px % 8)) & 1;
 }
 
 // lit: the font pixel (fx, fy) of text, in font pixels from the box's top
@@ -169,6 +197,18 @@ inline bool lit(const char* text, int glyphs, int fx, int fy) {
 // y0 + rows - 1, held in rgb (RGB888, width pixels a row). Only the text and
 // its outline change; every other pixel is left as the camera saw it.
 inline void drawRows(uint8_t* rgb, int width, int y0, int rows, const Box& b, const char* text) {
+    if (b.brand) {                                           // the wordmark, blended
+        const int bt = b.by, bb = b.by + kBrandH * b.bs;
+        for (int y = y0 < bt ? bt : y0; y < y0 + rows && y < bb; ++y) {
+            uint8_t* row = rgb + static_cast<size_t>(y - y0) * static_cast<size_t>(width) * 3u;
+            const int py = (y - b.by) / b.bs;
+            for (int x = b.bx; x < b.bx + kBrandW * b.bs && x < width; ++x) {
+                if (!brandLit((x - b.bx) / b.bs, py)) continue;
+                uint8_t* p = row + static_cast<size_t>(x) * 3u;
+                for (int k = 0; k < 3; ++k) p[k] = static_cast<uint8_t>(p[k] + (((255 - p[k]) * kBrandAlpha) >> 8));
+            }
+        }
+    }
     const int s = b.scale;
     const int top = b.y - s, bottom = b.y + b.h + s;         // the outline's reach
     for (int y = y0 < top ? top : y0; y < y0 + rows && y < bottom; ++y) {
