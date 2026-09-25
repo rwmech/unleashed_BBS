@@ -340,6 +340,26 @@ entry when it is released.
 - No "Smile...": the caller sees the spinner, "Developing..." and the
   result.
 
+**FNCAM 1.0.2: the camera is a GC0308, and it works.**
+- With the memory there, the driver still found no sensor. A raw SCCB scan
+  on the bench (a diagnostic build, not kept) found one device, at 0x21,
+  with 0x9B at register 0x00: a GalaxyCore GC0308, not the OV2640
+  Freenove's documents name. It is 640x480 at most and has no JPEG
+  encoder, which the whole capture path had assumed.
+- Both drivers are built (GC0308 and OV2640). The bring-up asks for JPEG
+  and, when the sensor cannot give it, asks again for RGB565 and remembers
+  that for the rest of the boot. A raw frame is copied off the sensor and
+  encoded on the worker, sixteen rows at a time, by the same encoder the
+  watermark already used, with the watermark drawn on the way.
+- Raw frames run the sensor clock at 10 MHz: at 20 every frame was lost
+  (the driver's `EV-EOF-OVF`).
+- Size is `qvga | vga`, `vga` as shipped. The watermark is fitted to the
+  frame the sensor actually gave, and CAMERA names the sensor found.
+- The worker's stack is 8 KB; encoding left 2,008 of 6 KB free.
+- On the board: 640x480, about 33 KB a photo, 3.6 to 3.9 s from SNAPSHOT
+  to saved, downloaded by YMODEM, listed in FILES 12, two in a row. With
+  the camera up, 14 KB of internal RAM is free.
+
 ## 1.0.2, 2026-09-23
 
 A security fix. Restoring a backup could turn the published default sysop

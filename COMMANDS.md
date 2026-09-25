@@ -940,7 +940,7 @@ adds lag for anyone else on the board.
 enabled    = yes
 snap       = staff      ; who may take a photo, as shipped
 photos     = all        ; who may see and download photos, as shipped
-size       = svga       ; the sensor's own sizes (BBS_CAM_SIZES)
+size       = vga        ; qvga | vga, the sensor's own sizes (BBS_CAM_SIZES)
 quality    = 12         ; 4 to 40, lower is better
 names      = date       ; date | date+handle | by handle
 watermark  = yes
@@ -971,7 +971,10 @@ pic_effect = none       ; none | negative | grey | red | green | blue | sepia
   a camera, and that it also shoots on a timer, only when Snap is open below
   staff and Timelapse is running: nobody is invited to a feature closed to
   them.
-- **Size**: the sensor's own resolutions; `svga` (800x600) as shipped.
+- **Size**: the sensor's own resolutions, `qvga` (320x240) or `vga`
+  (640x480), `vga` as shipped. The FNK0060 on the bench carries a GC0308,
+  which goes no higher, though Freenove document an OV2640. CAMERA names
+  the sensor the board found.
 - **Quality**: JPEG quality, 4 to 40, lower is better (the sensor's own
   scale). 12 as shipped.
 - **Names**: how a caller's photo is filed.

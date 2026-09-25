@@ -32,8 +32,9 @@
  *
  *               BBS_BOARD_FN_WROVER_CAM  Freenove ESP32-WROVER CAM (FNK0060,
  *                                      pinout 3.0): ESP32-WROVER-E, 4 MB
- *                                      flash, 8 MB PSRAM, an OV2640 and an
- *                                      SDMMC 1-bit card slot. Researched in
+ *                                      flash, 8 MB PSRAM, a camera (an
+ *                                      OV2640 documented, a GC0308 found)
+ *                                      and an SDMMC 1-bit card slot. Researched in
  *                                      internal/PLAN-freenove-cam.md.
  *
  *               Capabilities a profile may define:
@@ -213,7 +214,7 @@
 #define BBS_BOARD_PLUGINS     1       // the camera
 
 #define BBS_BOARD_TAG         "FNCAM"
-#define BBS_BOARD_VERSION     "1.0.1"
+#define BBS_BOARD_VERSION     "1.0.2"
 
 // PSRAM (sdkconfig.defaults.fncam). Wi-Fi's and lwIP's buffers go there.
 // The internal reserve stays the WROOM's 40 KB until the bench's MEM says
@@ -246,12 +247,19 @@
 #define BBS_SERIAL_RX         33
 #define BBS_SERIAL_TX         32
 
-// The camera, an OV2640 (Freenove's CAMERA_MODEL_WROVER_KIT). PWDN and RESET
-// are not wired. The camera plugin reads these and nothing else, so another
+// The camera, on Freenove's CAMERA_MODEL_WROVER_KIT pins. PWDN and RESET are
+// not wired. The camera plugin reads these and nothing else, so another
 // camera board is another block here, not another plugin.
-//   BBS_CAM_SENSOR      the sensor the build carries a driver for (only
-//                       that one: sdkconfig.defaults.fncam)
-//   BBS_CAM_SIZES       what CONFIG camera offers, the sensor's own sizes
+//
+// Freenove document an OV2640, and the kit on the bench carries a GalaxyCore
+// GC0308 (read over SCCB on 2026-09-25: one device, at 0x21, ID 0x9B at
+// register 0x00): 640x480 at most, and no JPEG encoder of its own, so the
+// platform takes RGB565 and encodes it (jpegRaw). Both drivers are built
+// (sdkconfig.defaults.fncam), and the bring-up finds out which is there.
+//   BBS_CAM_SENSOR      the sensor as shipped, named until a bring-up has
+//                       found the real one (plat::camSensor)
+//   BBS_CAM_SIZES       what CONFIG camera offers: the GC0308's own sizes,
+//                       which an OV2640 can also do
 //   BBS_CAM_SIZE        the size as shipped, one of them
 //   BBS_CAM_FLASH_PIN   the flash output as shipped (Rob: "leave a single
 //                       pin, just make it neopixel or ... relay high on the
@@ -259,9 +267,9 @@
 //   BBS_CAM_FLASH       its mode as shipped: 0 off, 1 pixel, 2 pin. Off
 //                       here: this board has no pixel of its own
 #define BBS_HAS_CAMERA        1
-#define BBS_CAM_SENSOR        "OV2640"
-#define BBS_CAM_SIZES         "qvga|vga|svga|xga|sxga|uxga"
-#define BBS_CAM_SIZE          2       // svga
+#define BBS_CAM_SENSOR        "GC0308"
+#define BBS_CAM_SIZES         "qvga|vga"
+#define BBS_CAM_SIZE          1       // vga
 #define BBS_CAM_FLASH_PIN     13
 #define BBS_CAM_FLASH         0
 #define BBS_CAM_PWDN          -1

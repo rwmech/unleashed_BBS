@@ -4612,7 +4612,7 @@ def test_camera():
     s.pump(0.3)
     cam = plain(s.buf)
     ok &= check("CAMERA: the sensor, the count, the card, the last photo",
-                b"Sensor OV2640 at svga" in cam and b"Photos 1" in cam and b"Last " in cam and b"CamCaller" in cam)
+                b"Sensor GC0308 at vga" in cam and b"Photos 1" in cam and b"Last " in cam and b"CamCaller" in cam)
 
     # The Photos area: the caller finds it in FILES, area 12.
     c.buf.clear()

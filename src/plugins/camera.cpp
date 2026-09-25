@@ -378,7 +378,11 @@ struct Job {
     char      rel[112]    = {};            // under the Photos folder
     char      comment[200] = {};
     char      markText[96] = {};
+    char      markBoard[48] = {};          // the watermark's pieces, in the font's
+    char      markWhen[20]  = {};          // characters: fitted on the worker once
+    char      markWho[32]   = {};          // the frame says how wide it really is
     bool      doMark = false;
+    bool      raw = false;                 // RGB565 from the sensor, encoded in save
     uint8_t   jq = 80;                     // the re-encode's quality
     char      sizeWord[8] = {};
     plat::CamCfg cam;
@@ -732,7 +736,9 @@ uint8_t* shoot(Job& j, size_t& len) {
         if (plat::camGrab(buf, len, w, h)) plat::camRelease();
         if (!plat::camGrab(buf, len, w, h)) continue;
         size_t n = len;
-        if (camrules::jpegWhole(buf, n)) {
+        const bool raw = plat::camRaw();
+        if (raw ? (w && h && n == static_cast<size_t>(w) * h * 2u) : camrules::jpegWhole(buf, n)) {
+            j.raw = raw;
             copy = static_cast<uint8_t*>(plat::camAlloc(n));
             if (copy) { memcpy(copy, buf, n); len = n; j.w = w; j.h = h; }
         }
@@ -762,6 +768,17 @@ void save(Job& j, const char* photos, const uint8_t* jpg, size_t len) {
     FileOut fo{ fp, 0, true };
     bool ok = false;
     if (j.doMark) {
+        int max = cammark::maxGlyphs(j.w, j.h);
+        if (max > static_cast<int>(sizeof(j.markText)) - 1) max = static_cast<int>(sizeof(j.markText)) - 1;
+        cammark::fitText(j.markBoard, j.markWhen, j.markWho, max, j.markText, sizeof(j.markText));
+    }
+    if (j.raw) {
+        // No JPEG from the sensor: this is the encode, watermark or not.
+        MarkCtx mc{ {}, j.markText, false, j.w, j.h };
+        camrules::ComSink sink(fileOut, &fo, j.comment);
+        ok = plat::jpegRaw(jpg, j.w, j.h, j.jq, j.doMark ? markRows : nullptr, &mc, comOut, &sink) && fo.ok;
+        j.marked = ok && j.doMark;
+    } else if (j.doMark) {
         MarkCtx mc{ {}, j.markText, false, j.w, j.h };
         camrules::ComSink sink(fileOut, &fo, j.comment);
         uint16_t w = 0, h = 0;
@@ -776,7 +793,7 @@ void save(Job& j, const char* photos, const uint8_t* jpg, size_t len) {
             fo = FileOut{ fp, 0, fp != nullptr };
         }
     }
-    if (!ok && fp) {
+    if (!ok && fp && !j.raw) {
         camrules::ComSink sink(fileOut, &fo, j.comment);
         ok = sink.put(jpg, len) && fo.ok;
     }
@@ -846,7 +863,9 @@ void worker(void*) {
 // ---------------------------------------------------------------------------
 // The loop's side
 // ---------------------------------------------------------------------------
-constexpr uint32_t kWorkerStack = 6144;
+// 8 KB: encoding a raw frame (a GC0308's RGB565) and the survey after it
+// left 2,008 of 6,144 free on the bench, and an overflow reboots the board.
+constexpr uint32_t kWorkerStack = 8192;
 // What a snap takes from internal RAM, the worker's own stack and its task
 // block included: the loop's check before the worker is started, since the
 // stack comes out of the same memory the camera's DMA block has to.
@@ -905,7 +924,7 @@ bool startJob(uint8_t kind, uint32_t now) {
     Job& j = g_job;
     j.kind = kind;
     j.err[0] = '\0';
-    j.bytes = 0; j.w = j.h = 0; j.marked = false;
+    j.bytes = 0; j.w = j.h = 0; j.marked = false; j.raw = false;
     j.msUp = j.msShot = j.msSave = j.msAll = 0;
     j.freeUp = j.dmaUp = 0;
     j.removed = 0;
@@ -932,17 +951,6 @@ bool localNow(struct tm& t) {
     return true;
 }
 
-// dimsOf: a size word's width and height, for fitting the watermark.
-void dimsOf(const char* word, int& w, int& h) {
-    struct Dim { const char* word; int w, h; };
-    static const Dim kDims[] = {
-        { "qvga", 320, 240 },   { "vga", 640, 480 },    { "svga", 800, 600 },  { "xga", 1024, 768 },
-        { "hd", 1280, 720 },    { "sxga", 1280, 1024 }, { "uxga", 1600, 1200 }, { "qxga", 2048, 1536 },
-    };
-    w = 800; h = 600;
-    for (const Dim& d : kDims) if (!strcmp(word, d.word)) { w = d.w; h = d.h; }
-}
-
 void texts(Job& j, const struct tm& t, const char* who) {
     const SysConfig& c = syscfg::get();
     char when[20];
@@ -955,17 +963,13 @@ void texts(Job& j, const struct tm& t, const char* who) {
     if (j.kind == K_CALLER) snprintf(j.desc, sizeof(j.desc), "Taken by %s", who);
     else                    snprintf(j.desc, sizeof(j.desc), "Taken by the board (%s)", who);
     j.doMark = g_set.mark;
+    j.markText[0] = '\0';
     if (j.doMark) {
-        char word[8] = "svga";
-        wordAt(BBS_CAM_SIZES, g_set.size, word, sizeof(word));
-        int w = 0, h = 0;
-        dimsOf(word, w, h);
-        int max = cammark::maxGlyphs(w, h);
-        if (max > static_cast<int>(sizeof(j.markText)) - 1) max = static_cast<int>(sizeof(j.markText)) - 1;
-        char board[48], whoL[32];
-        cammark::toFont(c.boardName, board, sizeof(board));
-        cammark::toFont(who, whoL, sizeof(whoL));
-        cammark::fitText(board, when, whoL, max, j.markText, sizeof(j.markText));
+        // Fitted in save(), to the frame the sensor actually gave: a sensor
+        // brings a size it cannot do down to its largest.
+        cammark::toFont(c.boardName, j.markBoard, sizeof(j.markBoard));
+        cammark::toFont(who, j.markWho, sizeof(j.markWho));
+        snprintf(j.markWhen, sizeof(j.markWhen), "%s", when);
     }
 }
 
@@ -1046,15 +1050,19 @@ void finish(uint32_t now) {
             snprintf(g_last, sizeof(g_last), "%.111s", j.rel);
             snprintf(g_lastBy, sizeof(g_lastBy), "%.21s", j.kind == K_CALLER ? j.handle : "the board");
             g_lastAt = clk::epoch();
+            // Two lines: plat::log keeps 160 characters, and one line cut
+            // the memory figures off the end.
             plat::log("camera: %s %ux%u %u bytes%s, up %u ms, shot %u ms, saved %u ms, all %u ms, "
-                      "%u removed, worker stack %u free, internal %u free with it up, dma %u then %u now",
+                      "%u removed",
                       j.rel, static_cast<unsigned>(j.w), static_cast<unsigned>(j.h),
                       static_cast<unsigned>(j.bytes), j.marked ? " marked" : "",
                       static_cast<unsigned>(j.msUp), static_cast<unsigned>(j.msShot),
                       static_cast<unsigned>(j.msSave), static_cast<unsigned>(j.msAll),
-                      static_cast<unsigned>(j.removed), static_cast<unsigned>(j.stackFree),
-                      static_cast<unsigned>(j.freeUp), static_cast<unsigned>(j.dmaUp),
-                      static_cast<unsigned>(plat::camDmaLargest()));
+                      static_cast<unsigned>(j.removed));
+            plat::log("camera: worker stack %u free; internal %u free and largest DMA %u with the camera "
+                      "up, largest DMA %u now",
+                      static_cast<unsigned>(j.stackFree), static_cast<unsigned>(j.freeUp),
+                      static_cast<unsigned>(j.dmaUp), static_cast<unsigned>(plat::camDmaLargest()));
         } else if (j.removed) {
             plat::log("camera: %u old photos removed", static_cast<unsigned>(j.removed));
         }
@@ -1329,7 +1337,8 @@ void cmdCamera(Bbs& b, Session& s, const char* arg, uint32_t) {
     {
         char w[8] = "?";
         wordAt(BBS_CAM_SIZES, g_set.size, w, sizeof(w));
-        snprintf(buf, sizeof(buf), "Sensor %s at %s, quality %u%s", BBS_CAM_SENSOR, w,
+        snprintf(buf, sizeof(buf), "Sensor %s at %s, quality %u%s",
+                 plat::camSensor()[0] ? plat::camSensor() : BBS_CAM_SENSOR, w,
                  static_cast<unsigned>(g_set.quality), g_set.mark ? ", watermarked" : "");
     }
     b.rowText(s, Color::White, buf);

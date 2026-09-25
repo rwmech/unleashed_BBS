@@ -718,7 +718,10 @@ Risks:
 - The camera stalls behind LittleFS writes (cache off); handled by
   validating each JPEG, not measured yet.
 - CH340 variant and the exact camera module are UNCONFIRMED; the boot log
-  names the sensor.
+  names the sensor. **Settled 2026-09-25: the kit on the bench carries a
+  GalaxyCore GC0308** (SCCB scan: one device at 0x21, ID 0x9B), 640x480 and
+  no JPEG encoder. FNCAM 1.0.2 captures RGB565 at 10 MHz XCLK and encodes
+  on the worker; the OV2640 driver stays built for kits that carry one.
 
 Questions:
 

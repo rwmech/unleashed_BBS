@@ -471,8 +471,13 @@ void     psramFree(void* p);
 //
 // camOpen:       bring the sensor up with these settings (pins from board.h).
 //                err says why not; the sensor found is named in the log.
-// camGrab:       one frame, JPEG from the sensor; the pointer is good until
-//                camRelease. False after a second with no frame.
+// camGrab:       one frame; the pointer is good until camRelease. False
+//                after a second with no frame. JPEG from a sensor that
+//                encodes, RGB565 (w x h x 2, high byte first) from one that
+//                does not: camRaw says which.
+// camRaw:        the sensor up now gives RGB565, for jpegRaw to encode.
+// camSensor:     the name of the sensor the last bring-up found, "" before
+//                one has.
 // camClose:      the sensor down and its memory back: the 32 KB DMA block and
 //                the frame buffer. The camera is never left running.
 // camDmaLargest: the largest internal DMA-capable block free now, which a
@@ -506,6 +511,8 @@ void     psramFree(void* p);
 //                result as it is made. quality 1 to 100, higher is better.
 //                False when this build cannot (the host) or the picture did
 //                not decode; out may then have had a part, to discard.
+// jpegRaw:       encode an RGB565 frame (camRaw) the same way, drawing on
+//                each strip first. False when this build cannot (the host).
 // ---------------------------------------------------------------------------
 struct CamCfg {
     const char* size    = "svga";     // one of BBS_CAM_SIZES
@@ -537,6 +544,8 @@ void     camRelease();
 void     camClose();
 uint32_t camDmaLargest();
 uint32_t camInternalFree();
+bool     camRaw();
+const char* camSensor();
 void*    camAlloc(size_t n);
 void     camFree(void* p);
 bool     taskStart(void (*fn)(void*), void* arg, uint32_t stackBytes, const char* name);
@@ -548,6 +557,8 @@ bool     sdList(const char* rel, SdListFn fn, void* ctx);
 void     pinOut(int pin, bool high);
 bool     jpegMark(const uint8_t* jpg, size_t len, uint8_t quality, MarkRowsFn draw, void* dctx,
                   MarkOutFn out, void* octx, uint16_t& width, uint16_t& height);
+bool     jpegRaw(const uint8_t* rgb565, uint16_t w, uint16_t h, uint8_t quality, MarkRowsFn draw, void* dctx,
+                 MarkOutFn out, void* octx);
 #endif  // BBS_HAS_CAMERA
 
 // ---------------------------------------------------------------------------

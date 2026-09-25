@@ -1498,7 +1498,16 @@ namespace {
 
 camera_fb_t* g_camFb = nullptr;
 bool         g_camUp = false;
-
+// A sensor with no JPEG encoder of its own (the GC0308 on the FNK0060 this
+// was written for): frames come as RGB565 and jpegRaw encodes them. Learnt
+// at the first bring-up and kept, so the JPEG attempt is paid once a boot.
+bool         g_camRaw = false;
+char         g_camName[12] = "";
+// Raw frames are two bytes a pixel through the ESP32's I2S camera DMA, and
+// cam_task copies each half buffer into the frame in PSRAM. At the JPEG
+// path's 20 MHz XCLK it fell behind (cam_hal "EV-EOF-OVF", every frame lost
+// on the bench, GC0308 at VGA), so a raw sensor runs slower.
+constexpr int kCamRawXclk = 10000000;
 // The frame sizes CONFIG camera offers, by the words it uses.
 framesize_t camSize(const char* name) {
     struct Size { const char* word; framesize_t fs; };
@@ -1561,10 +1570,13 @@ bool camOpen(const CamCfg& c, char* err, size_t errLen) {
     cfg.pin_vsync    = BBS_CAM_VSYNC;
     cfg.pin_href     = BBS_CAM_HREF;
     cfg.pin_pclk     = BBS_CAM_PCLK;
-    cfg.xclk_freq_hz = 20000000;
+    cfg.xclk_freq_hz = g_camRaw ? kCamRawXclk : 20000000;
     cfg.ledc_timer   = LEDC_TIMER_0;
     cfg.ledc_channel = LEDC_CHANNEL_0;
-    cfg.pixel_format = PIXFORMAT_JPEG;          // the sensor encodes; nothing is linked for it
+    // JPEG from the sensor when it can; RGB565 when it cannot, encoded on
+    // this task by jpegRaw. A size the sensor cannot do is brought down to
+    // its largest by the driver, and the frame says what it really is.
+    cfg.pixel_format = g_camRaw ? PIXFORMAT_RGB565 : PIXFORMAT_JPEG;
     cfg.frame_size   = camSize(c.size);
     cfg.jpeg_quality = c.quality;
     cfg.fb_count     = 1;
@@ -1576,6 +1588,20 @@ bool camOpen(const CamCfg& c, char* err, size_t errLen) {
     cfg.sccb_i2c_port = -1;
 
     esp_err_t e = esp_camera_init(&cfg);
+    if (e == ESP_ERR_NOT_SUPPORTED && !g_camRaw) {
+        // Either nothing answered on the bus, or a sensor answered that
+        // cannot give JPEG ("JPEG format is not supported on this sensor"):
+        // the same code for both, so ask again for RGB565, which every
+        // sensor the driver knows gives. Only the second is then a camera.
+        if (esp_camera_sensor_get()) esp_camera_deinit();
+        cfg.pixel_format = PIXFORMAT_RGB565;
+        cfg.xclk_freq_hz = kCamRawXclk;
+        e = esp_camera_init(&cfg);
+        if (e == ESP_OK) {
+            g_camRaw = true;
+            plat::log("camera: the sensor gives no JPEG: raw frames, encoded on the worker");
+        }
+    }
     if (e != ESP_OK) {
         plat::log("camera: init failed: %s (0x%x)", esp_err_to_name(e), static_cast<unsigned>(e));
         // esp_camera_init tears down what it built on every failing path
@@ -1601,20 +1627,23 @@ bool camOpen(const CamCfg& c, char* err, size_t errLen) {
         camera_sensor_info_t* info = esp_camera_sensor_get_info(&s->id);
         static bool said = false;
         if (!said) {
-            plat::log("camera: sensor %s (PID 0x%04x)", info ? info->name : "unknown",
-                      static_cast<unsigned>(s->id.PID));
+            plat::log("camera: sensor %s (PID 0x%04x), %s", info ? info->name : "unknown",
+                      static_cast<unsigned>(s->id.PID), g_camRaw ? "RGB565" : "JPEG");
             said = true;
         }
-        s->set_vflip(s, c.flip ? 1 : 0);
-        s->set_hmirror(s, c.mirror ? 1 : 0);
-        s->set_brightness(s, c.bright);
-        s->set_contrast(s, c.contrast);
-        s->set_saturation(s, c.saturation);
-        s->set_ae_level(s, c.exposure);
-        s->set_whitebal(s, 1);
-        s->set_awb_gain(s, c.wb ? 1 : 0);
-        s->set_wb_mode(s, c.wb);
-        s->set_special_effect(s, c.effect);
+        snprintf(g_camName, sizeof(g_camName), "%s", info ? info->name : "unknown");
+        // Each driver fills in what its sensor has; one that left a setting
+        // out is skipped rather than called through a null.
+        if (s->set_vflip)          s->set_vflip(s, c.flip ? 1 : 0);
+        if (s->set_hmirror)        s->set_hmirror(s, c.mirror ? 1 : 0);
+        if (s->set_brightness)     s->set_brightness(s, c.bright);
+        if (s->set_contrast)       s->set_contrast(s, c.contrast);
+        if (s->set_saturation)     s->set_saturation(s, c.saturation);
+        if (s->set_ae_level)       s->set_ae_level(s, c.exposure);
+        if (s->set_whitebal)       s->set_whitebal(s, 1);
+        if (s->set_awb_gain)       s->set_awb_gain(s, c.wb ? 1 : 0);
+        if (s->set_wb_mode)        s->set_wb_mode(s, c.wb);
+        if (s->set_special_effect) s->set_special_effect(s, c.effect);
     }
     return true;
 }
@@ -1649,6 +1678,10 @@ uint32_t camDmaLargest() {
 uint32_t camInternalFree() {
     return static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
 }
+
+bool camRaw() { return g_camRaw; }
+
+const char* camSensor() { return g_camName; }
 
 void* camAlloc(size_t n) {
     void* p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -1818,6 +1851,51 @@ bool jpegMark(const uint8_t* jpg, size_t len, uint8_t quality, MarkRowsFn draw, 
     camFree(strip);
     camFree(jd);
     camFree(pool);
+    return done;
+}
+
+// ---------------------------------------------------------------------------
+// jpegRaw: a sensor with no JPEG encoder gives RGB565, two bytes a pixel,
+// high byte first (the driver's own order: conversions/to_jpg.cpp,
+// rgb565_big_endian). A strip of 16 rows at a time goes to RGB888, gets the
+// caller's drawing, and is fed to the same jpge encoder jpegMark uses. The
+// frame itself is read, never written. Every strip yields, as jpegMark's do.
+// ---------------------------------------------------------------------------
+bool jpegRaw(const uint8_t* rgb565, uint16_t w, uint16_t h, uint8_t quality, MarkRowsFn draw, void* dctx,
+             MarkOutFn out, void* octx) {
+    if (!rgb565 || !w || !h) return false;
+    constexpr uint16_t kStripH = 16;
+    uint8_t* strip = static_cast<uint8_t*>(camAlloc(static_cast<size_t>(w) * kStripH * 3u));
+    void* encMem   = camAlloc(sizeof(jpge::jpeg_encoder));
+    bool done = false;
+    MarkStream stream(out, octx);
+    if (strip && encMem) {
+        jpge::jpeg_encoder* enc = new (encMem) jpge::jpeg_encoder();
+        jpge::params p;
+        p.m_quality     = quality < 1 ? 1 : quality > 100 ? 100 : quality;
+        p.m_subsampling = jpge::H2V1;
+        bool ok = enc->init(&stream, w, h, 3, p);
+        for (uint16_t y0 = 0; ok && y0 < h; y0 = static_cast<uint16_t>(y0 + kStripH)) {
+            const uint16_t rows = static_cast<uint16_t>(h - y0 < kStripH ? h - y0 : kStripH);
+            const uint8_t* src = rgb565 + static_cast<size_t>(y0) * w * 2u;
+            uint8_t* dst = strip;
+            for (size_t i = 0, n = static_cast<size_t>(rows) * w; i < n; ++i, src += 2) {
+                const uint8_t hi = src[0], lo = src[1];
+                *dst++ = static_cast<uint8_t>(hi & 0xF8);
+                *dst++ = static_cast<uint8_t>(((hi & 0x07) << 5) | ((lo & 0xE0) >> 3));
+                *dst++ = static_cast<uint8_t>((lo & 0x1F) << 3);
+            }
+            if (draw) draw(dctx, strip, w, y0, rows);
+            for (uint16_t i = 0; ok && i < rows; ++i)
+                ok = enc->process_scanline(strip + static_cast<size_t>(i) * w * 3u);
+            vTaskDelay(1);                               // the loop and the idle task first
+        }
+        done = ok && enc->process_scanline(nullptr) && stream.ok();
+        enc->deinit();
+        enc->~jpeg_encoder();
+    }
+    camFree(encMem);
+    camFree(strip);
     return done;
 }
 #endif  // BBS_HAS_CAMERA

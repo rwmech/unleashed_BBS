@@ -637,6 +637,8 @@ void camRelease() {}
 void camClose() { g_camUp = false; g_camHeld = false; }
 uint32_t camDmaLargest() { return g_camHeld ? 0 : envMs("BBS_CAM_DMA", 65536); }
 uint32_t camInternalFree() { return envMs("BBS_CAM_INTERNAL", 98304) - (g_camHeld ? 40000u : 0u); }
+bool camRaw() { return false; }            // the host's frames are JPEG-shaped
+const char* camSensor() { return BBS_CAM_SENSOR; }
 void* camAlloc(size_t n) { return malloc(n); }
 void camFree(void* p) { free(p); }
 
@@ -694,6 +696,10 @@ void pinOut(int pin, bool high) {
 
 bool jpegMark(const uint8_t*, size_t, uint8_t, MarkRowsFn, void*, MarkOutFn, void*, uint16_t&, uint16_t&) {
     return false;                          // no codec on the host: the photo goes out unmarked
+}
+
+bool jpegRaw(const uint8_t*, uint16_t, uint16_t, uint8_t, MarkRowsFn, void*, MarkOutFn, void*) {
+    return false;                          // no codec on the host, and camRaw never says raw
 }
 #endif  // BBS_HAS_CAMERA
 
