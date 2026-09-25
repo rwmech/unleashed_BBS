@@ -973,3 +973,14 @@ SyncTERM's own docs and source, not memory: which formats it draws (JPEG or
 only PPM/PBM and Sixel), the cache and paste commands, size limits, and the
 cost on the board (a Sixel encode of 640x480 on an ESP32 must run on the
 camera's worker, Rule no. 1). Then a proposal before code.
+
+
+## Astronomy (Rob, 2026-09-25: "it might look awesome through a telescope")
+
+Queued idea, after 1.1.0: manual exposure and gain in CONFIG camera (auto
+exposure blows out the Moon), so a board on a telescope (eyepiece
+projection or prime focus, lens removed) can shoot the Moon, planets and
+daytime targets, and a timelapse can record a moonrise. The GC0308 is
+640x480 with no long exposure, so faint objects are out; the OV3660 on the
+S3-CAM does better. Only settings the sensor really has (check each
+driver). A "backyard astronomy" line belongs on /whofor when it ships.
