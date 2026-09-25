@@ -156,6 +156,16 @@ struct SysConfig {
     bool     silent        = false;
     int16_t  silentFrom    = -1;
     int16_t  silentUntil   = -1;
+    // Closed to callers (1.1.0, Rob: "A board is closed until its sysop
+    // opens it"). CONFIG board's "Stop taking calls". While it is on, every
+    // caller gets the closed sign, except the sysop's own account (and, on a
+    // board with no accounts yet, the first caller, who registers). With no
+    // closed line in the file it follows sysopDefault: a fresh board starts
+    // closed, and a board whose sysop already chose a password (every board
+    // upgrading from 1.0.x that was set up) stays open. closedSet says the
+    // file said so itself, so a writer can pin a default before it moves.
+    bool     closed        = false;
+    bool     closedSet     = false;
     bool     fromFile      = false;
 };
 

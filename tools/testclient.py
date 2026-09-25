@@ -1958,7 +1958,12 @@ def local_login(handle):
     offers setup to a local caller first; ESC skips it. Returns the caller
     and whether setup was offered."""
     c = Caller(ansi=True)
-    c.wait_for(b"Enter your handle", 10)
+    # A board on the default is closed (1.1.0): the one account it takes
+    # comes in under the closed sign, with a key.
+    if wait_any(c, [b"Enter your handle", b"Closed by the sysop for now"], 10) == 1:
+        c.wait_for(b"Disconnecting in", 6)
+        c.send(b"x")
+        c.wait_for(b"Enter your handle", 5)
     login(c, handle, wait_main=False)
     offered = wait_any(c, [b"has not been set up yet", b"Main"], 10) == 0
     if offered:
@@ -2033,10 +2038,12 @@ def published_default_fresh():
     time.sleep(1.0)                      # let the board see the sysop node free
 
     # From outside the board's own network the default is a wrong password.
+    # A board on the default is closed (1.1.0), so the caller from outside
+    # comes in under the closed sign on the one account it takes.
     far = Caller(ansi=True, source="127.0.0.2")
-    far.wait_for(b"Enter your handle", 10)
+    ok &= check("a caller from outside meets the closed sign", closed_sign(far))
     ok &= check("a caller from outside logs in and is not offered setup",
-                login(far, "FarCaller") and b"not been set up" not in plain(far.buf))
+                login(far, "FreshOwner") and b"not been set up" not in plain(far.buf))
     far.buf.clear()
     far.send(f"bye {BBS_DEFAULT}\r".encode())
     far.wait_closed(12)                  # the goodbye screen, then a 5 s linger
@@ -2593,11 +2600,11 @@ def test_config_cycle_numbers():
     c.send(b"config board\r")
     c.wait_for(b"Board", 5)
     # Board, Hostname, Timezone, TZ string, NTP, Idle min, the LED, Land on,
-    # Sysop, and silent mode's three (1.1.0).
+    # Sysop, silent mode's three, and Stop taking calls (1.1.0).
     # Plain ASCII is 80 columns, so the prompts are the long labels and a
     # value shows whole up to 60 characters (1.1.0): "POSIX TZ string
     # [CST6CDT,M3.2.0,M11.1.0]" where it was "TZ string [CST6CDT,M3.2.0,M1...]".
-    got, rows = ascii_form_seen(c, [b"", b"", b"8", b"", b"", b"", b"", b"", b"", b"", b"", b""])
+    got, rows = ascii_form_seen(c, [b"", b"", b"8", b"", b"", b"", b"", b"", b"", b"", b"", b"", b""])
     txt = "\n".join(rows)
     ok &= check("the zones are listed by number", "8 US Central (Chicago)" in txt and "35 Custom" in txt)
     ok &= check("and the string follows the zone picked by number",
@@ -2606,7 +2613,7 @@ def test_config_cycle_numbers():
     c.buf.clear()
     c.send(b"config board\r")
     c.wait_for(b"Board", 5)
-    ascii_form(c, [b"", b"", b"1", b"", b"", b"", b"", b"", b"", b"", b"", b""])
+    ascii_form(c, [b"", b"", b"1", b"", b"", b"", b"", b"", b"", b"", b"", b"", b""])
     ok &= check("and back to UTC by number", (cfg_line("tz") or "").endswith("= UTC0"))
     c.close()
     return ok
@@ -3576,7 +3583,9 @@ def test_sysop_account():
     # The setup flow names the account that set the board up.
     tmp = copy_data()
     cfgp = tmp / "data" / "user" / "system.cfg"
-    cfgp.write_text("".join(ln for ln in cfgp.read_text().splitlines(True)
+    # Open (1.1.0): on the default with no closed line the board would be
+    # closed, and this is about who the setup names, not about closed.
+    cfgp.write_text("closed = no\n" + "".join(ln for ln in cfgp.read_text().splitlines(True)
                             if ln.split("=", 1)[0].strip() not in ("sysop_password", "sysop_handle",
                                                                      "sysop_id")))
     port = PORT + 3709
@@ -7216,8 +7225,13 @@ def test_boot_hold():
         after = cfg_lines(tmp)
         ok &= check("the sysop_password line is gone",
                     not any(l.strip().startswith("sysop_password") for l in after))
+        # And the closed state written out as it was (1.1.0), so a running
+        # board that lost its password is not shut by the reset.
+        ok &= check("the board's closed state written out as it was: open",
+                    any(l.strip() == "closed = no" for l in after))
         ok &= check("and every other line is as it was",
-                    after == [l for l in before["cfg"] if not l.strip().startswith("sysop_password")])
+                    [l for l in after if not l.strip().startswith("closed")]
+                    == [l for l in before["cfg"] if not l.strip().startswith("sysop_password")])
         ok &= check("the accounts are kept", (user_of(tmp) / "users.txt").read_bytes() == before["users"])
         ok &= check("the board restarted, on the published default",
                     "host: restarting (note 1)" in log and "boot: password reset by BOOT" in log and
@@ -8411,6 +8425,13 @@ def test_first_setup():
     if HOST in ("127.0.0.1", "localhost"):
         cfg = (USERDATA / "system.cfg").read_text()
         ok &= check("the chosen password is written", "sysop_password = fresh1234" in cfg)
+        # A fresh board stays closed after the setup, until its sysop opens
+        # it (1.1.0): the setup writes that down, and CONFIG board opens it.
+        ok &= check("and the board is left closed", "closed = yes" in cfg)
+    cfg_open(c, b"board", b"Hostname")
+    c.buf.clear()
+    c.send(DOWN * 12 + b" " + F1)
+    ok &= check("CONFIG board opens it", cfg_verdict(c, [b"Saved and live", b"Nothing"]) == b"Saved and live")
     c.buf.clear()
     c.send(b"announce\r")
     c.pump(1.5)
@@ -8422,6 +8443,303 @@ def test_first_setup():
     ok &= check("once set up, nobody is offered setup again",
                 b"not been set up" not in plain(d.buf))
     d.close()
+    return ok
+
+
+def page_through(c, until, rounds=12):
+    """Press SPACE at each "Press SPACE" until `until` shows; return all seen."""
+    seen = bytearray()
+    for _ in range(rounds):
+        if until in plain(c.buf):
+            break
+        if b"Press SPACE" in plain(c.buf) or b"PRESS SPACE" in plain(c.buf):
+            seen += plain(c.buf)
+            c.buf.clear()
+            c.send(b" ")
+        c.pump(1.0)
+    seen += plain(c.buf)
+    return bytes(seen)
+
+
+def closed_value():
+    """closed from the board's system.cfg: "yes", "no", or None for no line."""
+    line = cfg_line("closed")
+    return None if line is None else line.split("=", 1)[1].strip()
+
+
+def sys_callers(s):
+    """SYS's Callers row: "open", "closed", or None."""
+    s.buf.clear()
+    s.send(b"sys\r")
+    read_list(s)
+    m = re.search(rb"\nCallers +(\S+)", plain(s.buf))
+    return m.group(1).decode() if m else None
+
+
+def closed_sign(c):
+    """A caller meets the closed sign; a key opens the login under it."""
+    got = c.wait_for(b"Closed by the sysop for now", 10)
+    c.wait_for(b"Disconnecting in", 6)
+    c.send(b"x")
+    return got and c.wait_for(b"Enter your handle", 5)
+
+
+def test_setup_abort():
+    """Stopping the setup screen stops the setup (1.1.0, bug A).
+
+    Space, ESC and BREAK stop a screen that is playing (abortOutput), which
+    cleared pendingLand and not setupStage. The setup stayed armed, and the
+    next screen the new sysop played ended by opening CONFIG staff: the
+    setup coming back at random. Needs a --fresh board of its own.
+    """
+    print("Setup screen stopped")
+    if not os.environ.get("BBS_FRESH"):
+        print("  SKIP  needs a --fresh board of its own")
+        return True
+    c = Caller(ansi=True)
+    c.wait_for(b"Enter your handle", 10)
+    ok = check("a new caller registers", login(c, "AbortOwner", wait_main=False))
+    ok &= check("and is offered setup",
+                c.wait_for(b"has not been set up yet", 8) and c.wait_for(b"Sysop password", 4))
+    c.buf.clear()
+    # The password and a space in one write: the space arrives while the
+    # setup screen is still playing, which is what stops it.
+    c.send(BBS_DEFAULT.encode() + b"\r ")
+    # Stopping throws away the output still queued, the elevation's own
+    # lines with it, so "Stopped." at the sysop prompt is the whole answer.
+    ok &= check("the space stops the setup screen", c.wait_for(b"Stopped.", 6))
+    c.pump(1.5)
+    ok &= check("at the sysop prompt", b"Sysop:" in plain(c.buf))
+    c.pump(1.0)
+    c.buf.clear()
+    c.send(b"about\r")
+    seen = page_through(c, b"STAFF PASSWORDS", rounds=8)
+    c.pump(1.0)
+    seen += plain(c.buf)
+    ok &= check("a screen played afterwards does not open CONFIG staff", b"STAFF PASSWORDS" not in seen)
+    ok &= check("it ends at the sysop prompt", b"Sysop:" in seen)
+    c.close()
+    return ok
+
+
+def test_closed_fresh():
+    """A fresh board is closed until its sysop opens it (1.1.0, Rob).
+
+    The first caller registers and is told, before the password step, that
+    the board stays closed; everybody else gets the closed sign; the first
+    account gets back in and finishes the setup; the setup writes the key;
+    SYS and ANNOUNCE say so; CONFIG board opens it; and the sysop's account
+    arriving on a closed board lands on the row that opens it. Needs a
+    --fresh board of its own.
+    """
+    print("Closed until opened: a fresh board")
+    if not os.environ.get("BBS_FRESH") or HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs a --fresh host board of its own")
+        return True
+    ok = check("a fresh board's config has no closed line", closed_value() is None)
+
+    # The first caller: no sign, a hint, and an account but never a visit.
+    c = Caller(ansi=True)
+    ok &= check("the first caller gets the handle prompt, not the sign",
+                c.wait_for(b"Enter your handle", 10) and b"Closed by the sysop" not in plain(c.buf))
+    ok &= check("with a hint that registering sets the board up",
+                b"New board: type a handle to set it up." in plain(c.buf))
+    c.buf.clear()
+    c.send(b"FirstOwner\r")
+    c.wait_for(b"handle? ", 6)
+    ok &= check("registering is offered and visiting is not",
+                b"[R]egister or [N]ew handle?" in plain(c.buf) and b"[G]uest" not in plain(c.buf))
+    c.send(b"n")                                     # back to the prompt, then the helper
+    c.wait_for(b"Enter your handle", 5)
+    ok &= check("and registers", login(c, "FirstOwner", wait_main=False))
+    ok &= check("setup is offered, saying the board stays closed until opened",
+                c.wait_for(b"has not been set up yet", 8)
+                and c.wait_for(b"Closed to callers until you open it in CONFIG board.", 4)
+                and c.wait_for(b"Sysop password", 4))
+    c.buf.clear()
+    c.send(b"\x1b")                                  # not now
+    c.wait_for(b"Skipped", 5)
+    page_through(c, b"Main", rounds=6)
+
+    # Everybody else meets the closed sign, and no handle gets past it.
+    d = Caller(ansi=True)
+    ok &= check("a second caller gets the closed sign and a key opens a login", closed_sign(d))
+    ok &= check("with no hint to join or visit", b"visit" not in plain(d.buf) and b"join" not in plain(d.buf))
+    d.send(b"Stranger\r")
+    ok &= check("a new handle is refused and the line dropped",
+                d.wait_for(b"Closed by the sysop. Call again later.", 6) and d.wait_closed(12))
+    d.close()
+    c.close()
+    time.sleep(1.0)
+
+    # The first account gets back in and finishes the setup.
+    e = Caller(ansi=True)
+    ok &= check("the first account's caller meets the sign too", closed_sign(e))
+    ok &= check("and logs in under it", login(e, "FirstOwner", wait_main=False))
+    ok &= check("told the board is closed", e.wait_for(b"This board is closed to callers.", 6))
+    ok &= check("and offered the setup again", e.wait_for(b"Sysop password", 6))
+    e.buf.clear()
+    e.send(BBS_DEFAULT.encode() + b"\r")
+    ok &= check("the default makes them the sysop", e.wait_for(b"SysOp node", 6))
+    seen = page_through(e, b"STAFF PASSWORDS", rounds=6)
+    ok &= check("the setup screen says the board is closed until they open it",
+                b"CLOSED UNTIL YOU OPEN IT" in seen)
+    ok &= check("the setup screen says the stars are the published default",
+                b"stars are the published default" in seen)
+    ok &= check("the staff passwords form opens", e.wait_for(b"STAFF PASSWORDS", 10))
+    e.pump(0.6)
+    ok &= check("its sysop row says the stars are the published default, to change now",
+                b"These stars are the published default" in plain(e.buf))
+    e.buf.clear()
+    e.send(b"closed123" + F1)
+    ok &= check("a password of their own saves", e.wait_for(b"Saved", 6))
+    seen = page_through(e, b"Sysop:", rounds=12)
+    e.pump(0.8)
+    seen += plain(e.buf)
+    ok &= check("the end of the setup says how to open the board",
+                b"To open it, CONFIG board and set Stop taking calls to no." in seen)
+    ok &= check("closed = yes is written out", closed_value() == "yes")
+    ok &= check("and the password is their own", cfg_value("sysop_password") == "closed123")
+    ok &= check("SYS: callers closed", sys_callers(e) == "closed")
+    e.buf.clear()
+    e.send(b"announce\r")
+    e.pump(1.5)
+    ok &= check("ANNOUNCE: held while closed", b"Held: the board is closed to callers." in plain(e.buf))
+
+    f = Caller(ansi=True)
+    ok &= check("with a password set it is still closed to others",
+                f.wait_for(b"Closed by the sysop for now", 10))
+    f.close()
+
+    # Opening it: the board page's last row.
+    ok &= check("CONFIG board opens", cfg_open(e, b"board", b"Hostname"))
+    e.buf.clear()
+    e.send(DOWN * 12)
+    e.pump(0.5)
+    ok &= check("its last row is Stop taking calls, and says what it does",
+                b"Stop taking calls" in plain(e.buf) and b"Temporarily stop taking calls" in plain(e.buf))
+    e.send(b" " + F1)
+    ok &= check("switched off, saved and live", cfg_verdict(e, [b"Saved and live", b"Nothing"]) == b"Saved and live")
+    ok &= check("closed = no is written", closed_value() == "no")
+    ok &= check("SYS: callers open", sys_callers(e) == "open")
+    e.buf.clear()
+    e.send(b"announce\r")
+    e.pump(1.5)
+    ok &= check("ANNOUNCE is no longer held", b"Held" not in plain(e.buf))
+
+    g = Caller(ansi=True)
+    g.wait_for(b"Enter your handle", 10)
+    ok &= check("once open, a new caller registers", login(g, "OpenedUp"))
+    ok &= check("and is offered no setup", b"not been set up" not in plain(g.buf))
+    ok &= check("and is told nothing about closed", b"closed to callers" not in plain(g.buf))
+    g.close()
+
+    # Closed again: the sysop's account lands on the row that opens it.
+    cfg_open(e, b"board", b"Hostname")
+    e.buf.clear()
+    e.send(DOWN * 12 + b" " + F1)
+    ok &= check("closed again from CONFIG", cfg_verdict(e, [b"Saved and live", b"Nothing"]) == b"Saved and live"
+                and closed_value() == "yes")
+    e.close()
+    time.sleep(1.0)
+    h = Caller(ansi=True)
+    closed_sign(h)
+    ok &= check("the sysop's account logs in on the closed board", login(h, "FirstOwner", wait_main=False))
+    ok &= check("and is asked for the sysop password", h.wait_for(b"Sysop password: ", 6))
+    h.buf.clear()
+    h.send(b"closed123\r")
+    ok &= check("elevated, it is told the board is closed",
+                h.wait_for(b"This board is closed: callers get a closed sign.", 6))
+    ok &= check("and asked for a key before CONFIG", h.wait_for(b"Press SPACE", 5))
+    h.buf.clear()
+    h.send(b" ")
+    ok &= check("CONFIG board opens by itself", h.wait_for(b"BOARD", 6) and h.wait_for(b"Stop taking calls", 4))
+    h.pump(0.6)
+    ok &= check("on the row that opens the board", b"Temporarily stop taking calls" in plain(h.buf))
+    h.send(b" " + F1)
+    ok &= check("one key and F1 open it", cfg_verdict(h, [b"Saved and live", b"Nothing"]) == b"Saved and live"
+                and closed_value() == "no")
+    h.close()
+    return ok
+
+
+def test_closed_configured():
+    """A configured board upgrading to 1.1.0 stays open; closed, it lets in
+    only the sysop's account (1.1.0, Rob).
+
+    The harness board is one set up before 1.1.0: its own sysop password
+    and no closed line, which is exactly UHQ and TRA upgrading. Then the
+    sysop closes it, names the account it keeps, and the rest are refused
+    with the same words whether they have an account or not.
+    """
+    print("Closed until opened: a configured board")
+    if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    ok = check("the board has its own sysop password and no closed line",
+               cfg_line("sysop_password") is not None and closed_value() is None)
+    ins = ansi_login("InsideJob")
+    ok &= check("an account exists to be refused later", b"Main" in ins.buf)
+    ins.close()
+    s = cfg_sysop("CloseKeeper")
+    ok &= check("SYS: an upgraded configured board is open", sys_callers(s) == "open")
+    s.buf.clear()
+    s.send(b"announce\r")
+    s.pump(1.5)
+    ok &= check("and its listing is not held for being closed", b"closed to callers" not in plain(s.buf))
+    was = cfg_value("sysop_handle")
+
+    # Closed, with CloseKeeper named as the sysop's account.
+    cfg_open(s, b"board", b"Hostname")
+    s.buf.clear()
+    s.send(DOWN * 8 + b"\x08" * 22 + b"CloseKeeper" + DOWN * 4 + b" " + F1)
+    ok &= check("closed from CONFIG board", cfg_verdict(s, [b"Saved and live", b"Nothing"]) == b"Saved and live")
+    ok &= check("written as closed = yes", closed_value() == "yes")
+    ok &= check("SYS: callers closed", sys_callers(s) == "closed")
+    s.buf.clear()
+    s.send(b"announce\r")
+    s.pump(1.5)
+    ok &= check("ANNOUNCE: held while closed", b"Held: the board is closed to callers." in plain(s.buf))
+    s.close()
+    time.sleep(1.0)
+
+    o = Caller(ansi=True)
+    ok &= check("a caller gets the closed sign", closed_sign(o))
+    o.send(b"Outsider\r")
+    ok &= check("a new handle is refused", o.wait_for(b"Closed by the sysop. Call again later.", 6))
+    o.close()
+    i = Caller(ansi=True)
+    closed_sign(i)
+    i.send(b"InsideJob\r")
+    ok &= check("an account that is not the sysop's is refused in the same words, before any password",
+                i.wait_for(b"Closed by the sysop. Call again later.", 6) and b"Password:" not in plain(i.buf))
+    i.close()
+
+    k = Caller(ansi=True)
+    closed_sign(k)
+    ok &= check("the sysop's account logs in", login(k, "CloseKeeper", wait_main=False))
+    ok &= check("told the board is closed", k.wait_for(b"This board is closed to callers.", 6))
+    ok &= check("asked for the sysop password", k.wait_for(b"Sysop password: ", 6))
+    k.buf.clear()
+    k.send(b"testsysop\r")
+    ok &= check("and lands on CONFIG board's closed row after a key",
+                k.wait_for(b"Press SPACE", 6))
+    k.buf.clear()
+    k.send(b" ")
+    k.wait_for(b"Stop taking calls", 6)
+    k.pump(0.6)
+    ok &= check("on the row that opens it", b"Temporarily stop taking calls" in plain(k.buf))
+    # Open, and put the Sysop row back as it was.
+    k.buf.clear()
+    k.send(b" " + UP * 4 + b"\x08" * 22 + was.encode() + F1)
+    ok &= check("opened again", cfg_verdict(k, [b"Saved and live", b"Nothing"]) == b"Saved and live"
+                and closed_value() == "no")
+    ok &= check("the Sysop row back as it was", cfg_value("sysop_handle") == was)
+    k.close()
+    time.sleep(0.5)
+    back = ansi_login("InsideJob")
+    ok &= check("open again, the other account gets in", b"Main" in back.buf)
+    back.close()
     return ok
 
 
@@ -10097,8 +10415,23 @@ def test_announce_badges():
                     rec is not None and all(k in rec for k in (
                         "system", "terminals", "guests", "features", "support", "interests")))
         rec = rec or {}
-        ok &= check("system is read off the machine: the host build says host",
-                    rec.get("system") == "host")
+        # A board profile's build adds its own version to the machine
+        # (1.1.0): "host \u00b7 S3 1.0.2" from the S3 host profile.
+        profile = HOST_BOARD in BOARD_DEFINES
+        sys_want = "host"
+        if profile:
+            tag, ver = board_profile(HOST_BOARD)
+            sys_want = "host \u00b7 " + tag + " " + ver
+        if rec.get("system") != sys_want:
+            print("        system sent:", rec.get("system"), "wanted:", sys_want)
+        ok &= check("system is read off the machine: the host build says " + sys_want,
+                    rec.get("system") == sys_want)
+        # The card's size (1.1.0): a power of two in GB while a card is
+        # mounted, and no sd field at all without one.
+        sd = rec.get("sd")
+        ok &= check("sd: the card's size in GB with a card, left out without one",
+                    (isinstance(sd, int) and sd in [2 ** k for k in range(11)]) if card
+                    else "sd" not in rec)
         ok &= check("terminals: the four this firmware speaks",
                     rec.get("terminals") == ["ansi", "utf8", "petscii", "ascii"])
         ok &= check("guests is a JSON true while guests are let in",
@@ -10116,7 +10449,7 @@ def test_announce_badges():
         s.pump(0.3)
         shown = plain(s.buf)
         ok &= check("ANNOUNCE TEST prints them",
-                    b'"system":"host"' in shown
+                    b'"system":"host' in shown
                     and b'"terminals":["ansi","utf8","petscii","ascii"]' in shown
                     and b'"guests":true' in shown and b'"features":[' in shown
                     and b'"support":[]' in shown and b'"interests":[]' in shown)
@@ -10360,7 +10693,10 @@ def test_announce_directory():
         boards = _json.loads(get("/api/boards.json")[1]).get("boards", [])
         ok &= check("the directory lists the board", len(boards) == 1)
         b = boards[0] if boards else {}
-        if b.get("support") != ["lgbtq", "literacy"] or b.get("interests") != ["c64", "electronics", "ham"]:
+        # The directory answers in its short badge codes (site 1.1.0 on,
+        # badges.json): "literacy" is stored as ltrcy and "Electronics" as
+        # elctr, the long slugs kept only as aliases it accepts.
+        if b.get("support") != ["lgbtq", "ltrcy"] or b.get("interests") != ["c64", "elctr", "ham"]:
             print("        board's support line:", cfg_sec_line("plugin:announce", "support"))
             print("        board's interests line:", cfg_sec_line("plugin:announce", "interests"))
             print("        directory has:", {k: b.get(k) for k in ("support", "interests", "name")})
@@ -10369,10 +10705,10 @@ def test_announce_directory():
         ok &= check("and guests as true", b.get("guests") is True)
         want = ["chat", "forums", "files", "mail"] if card else ["chat", "mail"]
         ok &= check("and the features that are running", b.get("features") == want)
-        ok &= check("and the support causes it knows, in its own order",
-                    b.get("support") == ["lgbtq", "literacy"])
-        ok &= check("and the interests it knows, nonsense dropped",
-                    b.get("interests") == ["c64", "electronics", "ham"])
+        ok &= check("and the support causes it knows, as codes, in its own order",
+                    b.get("support") == ["lgbtq", "ltrcy"])
+        ok &= check("and the interests it knows, as codes, nonsense dropped",
+                    b.get("interests") == ["c64", "elctr", "ham"])
 
         page = get("/")[1]
         name = _html.escape(b.get("name", "?"), quote=False)
@@ -10392,10 +10728,10 @@ def test_announce_directory():
                     and (("feat", "Fi") in letters) == card and (("feat", "F") in letters) == card)
         ok &= check("the two support symbols",
                     row.count('class="bd k-sup"') == 2
-                    and "lgbtq" in keys and "literacy" in keys)
+                    and "lgbtq" in keys and "ltrcy" in keys)
         ok &= check("and the three interests",
                     row.count('class="bd k-int"') == 3
-                    and all(k in keys for k in ("c64", "electronics", "ham")))
+                    and all(k in keys for k in ("c64", "elctr", "ham")))
         if not keys or row.count('class="bd k-int"') != 3:
             print("        row keys:", keys)
     finally:
@@ -13018,6 +13354,7 @@ GROUPS = {
                   "forms", "whois"],
     # Logging in, accounts, staff.
     "login":     ["accounts", "handle_case", "guest", "sysop", "cosysop", "user_admin", "first_setup", "ban",
+                  "closed_configured", "closed_fresh", "setup_abort",
                   "boot_hold", "boot_notices"],
     # Terminal handling across the three flavours.
     "terminal":  ["ansi", "petscii", "ascii", "telnet_first"],
@@ -13103,8 +13440,12 @@ ORDER_NAMES = [
     # Destructive, and therefore last whatever else is running. The published
     # default's restore test puts the board back as it found it, and on a
     # --fresh board it needs to run before first_setup gives it a password.
+    # Closed until opened (1.1.0): the configured board's half, which puts
+    # the board back open. The fresh halves each want a --fresh board of
+    # their own and SKIP on this one.
+    "test_closed_configured",
     "test_backup_published_default",
-    "test_first_setup", "test_backup", "test_ban",
+    "test_first_setup", "test_closed_fresh", "test_setup_abort", "test_backup", "test_ban",
 ]
 
 
@@ -13238,7 +13579,10 @@ def test_sysop_spelled_default():
     c.close()
     time.sleep(1.0)                      # the logoff's account write, before the copy
     port = PORT + 3702
-    proc, tmp = restart_copy((str(port),), edits={("", "sysop_password"): BBS_DEFAULT})
+    # closed = no: this is about the password, and on the default a board
+    # with no closed line is closed (1.1.0), which test_closed_* cover.
+    proc, tmp = restart_copy((str(port),), edits={("", "sysop_password"): BBS_DEFAULT,
+                                                  ("", "closed"): "no"})
     saved = PORT
     try:
         cfg = (tmp / "data" / "user" / "system.cfg").read_text()

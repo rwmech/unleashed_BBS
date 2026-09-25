@@ -431,6 +431,13 @@ void keyValue(Ctx& c, const char* key, char* val) {
     // Silent mode (1.1.0, core/silent). The hours are a time of day or blank;
     // whether both ends are set is crossCheck's, once every line is in.
     else if (!strcmp(key, "silent"))                yesNo(c, key, val, g.silent);
+    else if (!strcmp(key, "closed")) {
+        // Set only when the value was read: a bad line is a problem, and a
+        // board on the default must then stay closed, not fall open.
+        int before = c.problems;
+        yesNo(c, key, val, g.closed);
+        if (c.problems == before) g.closedSet = true;
+    }
     else if (!strcmp(key, "silent_from") || !strcmp(key, "silent_until")) {
         // A form is told (a writer's trial); a file is read as no time and
         // the console says so, for the reason crossCheck gives below.
@@ -574,6 +581,9 @@ void logSummary() {
                       keys[i]);
     // A sysop_password line that spells out the published default reads as
     // the default (parseFile), so it gets the default's line here too.
+    if (g_cfg.closed)
+        plat::log("cfg: CLOSED to callers%s; CONFIG board opens it",
+                  g_cfg.closedSet ? "" : " (a board on the default starts closed)");
     plat::log("cfg: sysop %s  co1 %s perms 0x%03x  co2 %s perms 0x%03x",     // never the passwords
               g_cfg.sysopDefault ? "on the published default, local network only"
                                  : g_cfg.sysopPass[0] ? "on" : "off",
@@ -596,12 +606,21 @@ static void useDefaultSysop(SysConfig& out) {
     out.sysopDefault = true;
 }
 
+// closedDefault: no closed line, so the board is closed exactly while it is
+// still on the published default (1.1.0). A fresh board starts closed; a
+// board whose sysop already chose a password, which is every board set up
+// before 1.1.0, stays open across the upgrade.
+static void closedDefault(SysConfig& out) {
+    if (!out.closedSet) out.closed = out.sysopDefault;
+}
+
 int parseFile(const char* path, SysConfig& out, char* err, size_t errLen) {
     Ctx c{ &out, 0, err, errLen, 0 };
     if (err && errLen) err[0] = '\0';
     FILE* f = fopen(path, "r");
     if (!f) {                                       // no file: defaults, not a problem
         useDefaultSysop(out);
+        closedDefault(out);
         return 0;
     }
 
@@ -647,6 +666,7 @@ int parseFile(const char* path, SysConfig& out, char* err, size_t errLen) {
     // page worked from anywhere and the board went on the directory. Read
     // this way, such a board heals at its next boot with nothing rewritten.
     if (!sawSysop || !strcmp(out.sysopPass, BBS_DEFAULT_SYSOP)) useDefaultSysop(out);
+    closedDefault(out);
     crossCheck(c, out);
     out.fromFile = true;
     return c.problems;

@@ -275,6 +275,10 @@ bool sdNightly();
 // that wants to know how full the card is asks here instead. Also defined by
 // the plugin, and answers "not mounted" with no card in.
 const plat::SdInfo& sdCardInfo();
+// sdCardKept: the same figures as last kept, never refreshed (1.1.0). For a
+// caller that wants only what cannot change while a card is mounted, its
+// size: announce's heartbeat, which must not reach the card's FAT.
+const plat::SdInfo& sdCardKept();
 
 // tidyCardBackups: remove what a BACKUP SD or nightly zip left half written
 // in the card's backup folder (cardbak::partial) when the power went or the

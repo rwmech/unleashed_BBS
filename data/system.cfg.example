@@ -98,6 +98,12 @@ silent = no
 silent_from =
 silent_until =
 
+# Closed to callers (CONFIG board, "Stop taking calls"): yes, and every
+# caller gets a closed sign except the sysop's own account. Left out, the
+# board is closed exactly while the sysop password is the published default,
+# so a fresh board starts closed and one with its own password is open.
+# closed = no
+
 # User accounts (USERS.md). self_register = no: unknown handles are refused
 # and staff add accounts with USERS / USER ADD. max_users is 1..250.
 self_register = yes

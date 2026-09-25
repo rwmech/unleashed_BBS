@@ -802,6 +802,11 @@ const plat::SdInfo& sdCardInfo() {
     return cardInfo();
 }
 
+// sdCardKept: see backup.h. g_info as it stands, no trip to the card.
+const plat::SdInfo& sdCardKept() {
+    return g_info;
+}
+
 // sdSeededStock: the manifest has this card screen as the board's copy and
 // the file still is it (screens.h). Read when asked, for SCREENS: nothing is
 // kept.

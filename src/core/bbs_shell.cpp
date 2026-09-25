@@ -2669,18 +2669,24 @@ bool Bbs::rowSys(Session& s) {
 
         case 26: rowSection(s, "traffic"); return true;
         case 27:
+            // Closed to callers (1.1.0, CONFIG board): the first thing to
+            // know about a board nobody seems to be calling.
+            if (syscfg::get().closed) statRow(s, "Callers", "closed", Color::Yellow, "CONFIG board");
+            else                      statRow(s, "Callers", "open", Color::LightGreen);
+            return true;
+        case 28:
             snprintf(num, sizeof(num), "%u", static_cast<unsigned>(activeNodes()));
             snprintf(buf, sizeof(buf), "of %u, peak %u", static_cast<unsigned>(BBS_MAX_NODES),
                      static_cast<unsigned>(peakNodes_));
             statRow(s, "Nodes busy", num, Color::LightGreen, buf);
             return true;
-        case 28: statNum(s, "Calls", callsBoot_, "since boot"); return true;
-        case 29:
+        case 29: statNum(s, "Calls", callsBoot_, "since boot"); return true;
+        case 30:
             snprintf(num, sizeof(num), "%u", static_cast<unsigned>(calllog::count()));
             snprintf(buf, sizeof(buf), "of %u kept", static_cast<unsigned>(BBS_CALLLOG_SIZE));
             statRow(s, "Log", num, Color::LightGreen, buf);
             return true;
-        case 30: {
+        case 31: {
             uint8_t run = 0;
             for (uint8_t k = 0; k < plugins::count(); ++k) if (plugins::running(k)) ++run;
             snprintf(num, sizeof(num), "%u", static_cast<unsigned>(run));
@@ -2688,7 +2694,7 @@ bool Bbs::rowSys(Session& s) {
             statRow(s, "Plugins", num, Color::LightGreen, buf);
             return true;
         }
-        case 31: {
+        case 32: {
             uint8_t live = 0;                                  // only the bans still running
             BanList::Entry e;
             for (uint8_t k = 0; k < BBS_BAN_SLOTS; ++k) if (bans_.at(k, plat::millis(), e)) ++live;
@@ -2696,8 +2702,8 @@ bool Bbs::rowSys(Session& s) {
             return true;
         }
 
-        case 32: rowRule(s); return true;
-        case 33: rowText(s, Color::DarkGrey, "CALLS shows the board hour by hour"); return true;
+        case 33: rowRule(s); return true;
+        case 34: rowText(s, Color::DarkGrey, "CALLS shows the board hour by hour"); return true;
         default: return false;
     }
 }

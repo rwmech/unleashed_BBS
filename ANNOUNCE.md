@@ -80,6 +80,7 @@ A directory can show a few badges beside a board's name. Four of them the board 
 - **system**: the chip, the flash this firmware image can use, and PSRAM when the firmware uses it, read at start: `ESP32 · 4 MB`, `ESP32-S3 · 16 MB · PSRAM`. The flash figure is the image's, not the chip's: a 16 MB module running the 4 MB image says 4 MB.
 - **terminals**: what this firmware speaks, which is always `ansi`, `utf8`, `petscii` and `ascii`.
 - **guests**: your `guest` setting.
+- **sd** (1.1.0): the SD card's size in GB, rounded up to the size printed on it (1, 2, 4 ... 1024: a "32 GB" card holds about 29.7 GiB and is sent as 32), and only while a card is mounted. Taken from the sd plugin's kept figures, so a heartbeat never touches the card.
 - **features**: what works at the moment of the heartbeat, from `chat`, `mail`, `forums`, `files` and `camera`. Mail counts while chat runs with `mail_slots` above 0. Forums and files count while their plugin runs and a card is mounted, so `SD UNMOUNT` takes them off the next heartbeat. A card pulled without `SD UNMOUNT` is not noticed (nothing watches for it), so they stay until the board next starts without it.
   `camera` (1.1.0, camera boards only: the Freenove ESP32-WROVER CAM) is the directory's "This BBS can take pictures" badge. It counts while the camera plugin runs with a card mounted **and a sensor answered** its latest bring-up this boot. The board looks for the sensor once, at the first count of the photos after it starts (brought up and straight down again, no picture, no flash), and every snap looks again. So a board whose camera will not start never claims the badge, and one whose sensor stops answering drops it at the next snap. A reference ESP32 or S3 build never sends it.
 
@@ -94,6 +95,8 @@ A directory can show a few badges beside a board's name. Four of them the board 
 | `ANNOUNCE NOW` | sends a heartbeat immediately instead of waiting |
 
 Sysop only by default, like everything else that changes how the board presents itself.
+
+The listing is held, nothing new sent, while the sysop password is still the published default and while the board is closed to callers (1.1.0, `CONFIG board`'s "Stop taking calls"): a listed board sends strangers somewhere, and neither is somewhere to send them. `ANNOUNCE` says which.
 
 ## Why plain HTTP and not HTTPS
 
@@ -151,10 +154,11 @@ Connection: close
 | `features` | array of strings | what works right now, from `chat`, `forums`, `files`, `mail` and `camera`: forums, files and camera only with a card mounted, and camera only on a board whose camera sensor answered |
 | `support` | array of strings | causes the sysop shows support for, as slugs from the directory's published list |
 | `interests` | array of strings | what the sysop is into, the same way |
+| `sd` | number | the SD card's size in GB, rounded up to the next of 1, 2, 4 ... 1024, sent only while a card is mounted (1.1.0). A directory ignores values outside 1 to 4096 |
 
-The last six are the badges, and every heartbeat carries all of them, empty lists included: a directory replaces them on each heartbeat, so a field left out is a badge taken down. A directory that does not know them ignores them.
+The six before `sd` are the badges, and every heartbeat carries all of them, empty lists included: a directory replaces them on each heartbeat, so a field left out is a badge taken down. A directory that does not know them ignores them.
 
-A plain payload is around 450 bytes. The largest this firmware can build is 1,319: every text field at its longest with every character one that JSON has to escape, both lists full, and every number at its widest. The board's buffer holds 1,343, so a payload is never refused for size; if one ever were, the board would log it and send nothing rather than a cut-off half. Nothing in it identifies a caller, and nothing ever should.
+A plain payload is around 450 bytes. The largest this firmware can build is 1,329 (1,338 on a camera board): every text field at its longest with every character one that JSON has to escape, both lists full, every number at its widest, and `sd`. The board's buffer holds 1,343, so a payload is never refused for size; if one ever were, the board would log it and send nothing rather than a cut-off half. Nothing in it identifies a caller, and nothing ever should.
 
 ### Response
 

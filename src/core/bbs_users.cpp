@@ -279,6 +279,17 @@ void Bbs::formDone(Session& s, Color c, const char* msg) {
     // saved or cancelled, the tour of the rest comes before the prompt.
     if (s.setupStage == 2) {
         s.setupStage = 0;
+        // Written out at the end of the setup (1.1.0), so the board stays
+        // closed however the password is changed later: its default only
+        // holds while the sysop password is the published one. A save of
+        // the form has usually pinned it already (configSave).
+        const SysConfig& c = syscfg::get();
+        if (c.closed && !c.closedSet) {
+            const syscfg::KeyVal kv[] = { { "closed", "yes" } };
+            char err[80] = "";
+            if (!syscfg::write(kv, 1, nullptr, err, sizeof(err)) || !syscfg::reload(err, sizeof(err)))
+                plat::log("bbs: could not write closed = yes: %s", err);
+        }
         s.term.nl(s.tl);
         if (playScreen(s, "newsysop")) return;       // the screen ends at the prompt
     }
@@ -330,6 +341,18 @@ void Bbs::formSave(Session& s, uint32_t now) {
             if (strlen(s.pwA) < BBS_PASS_MIN) { s.form.fail(1, "Password needs 4 or more characters", t, tl); return; }
             if (strcmp(s.pwA, s.pwB))          { s.form.fail(2, "The passwords do not match", t, tl); return; }
             if (!checkUserFields(s, 3)) return;
+            // Two callers on a fresh, closed board may both have reached the
+            // form (1.1.0). The first to save is the account the board takes;
+            // the second is refused here, where the file says so, rather
+            // than let in as a second "first" account.
+            if (closedTo(s) && users::count() > 0) {
+                s.form.after(t, tl);
+                s.formKind = FormKind::None;
+                wipe(s.pwA, sizeof(s.pwA));
+                wipe(s.pwB, sizeof(s.pwB));
+                closedRefuse(s, now);
+                return;
+            }
             users::setPassword(s.edit, s.pwA);
             s.edit.land    = landValue(s.landBuf);
             s.edit.created = clk::epoch();
