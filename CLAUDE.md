@@ -656,6 +656,17 @@ this tree.
   and low), run the same way on the WROOM, the Freenove and the S3 on the
   bench, never on UHQ or TRA without Rob's say-so. Results go on /hardware,
   dated and stamped with the firmware version, and set the tiers for real.
+- **1.1.1: `SCREENS INSTALL`** (Rob, 2026-09-25). Screens on the card are
+  played from the card and never copied into flash, so pulling the card
+  loses a sysop's own screens until it returns. `SCREENS INSTALL` (sysop)
+  copies the card's screens into the flash screens partition so they
+  survive without the card: validated like a restore, checked against the
+  256 KB partition before anything is written (refused whole if it will
+  not fit, never half-installed), each file written under a temp name and
+  renamed within the partition, callers' open screens released first as a
+  restore does, and the seeded-screens manifest updated so a stock update
+  does not undo it. A way back: `SCREENS INSTALL STOCK` or the next
+  firmware update restores the stock set. /sdcard documents it from 1.1.1.
 - **1.2.0, first item: rotating information pages** (Rob, 2026-09-25;
   the DDial rotator, rebuilt on /i). Per page in CONFIG info, beside the
   title, levels and body: **Rotate** yes/no; **Where**, any of Logon (shown
