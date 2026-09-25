@@ -44,6 +44,8 @@ sdkconfig.*
 !sdkconfig.defaults.esp32s3
 # The Freenove WROVER CAM's layer, named to it in platformio.ini (1.1.0).
 !sdkconfig.defaults.fncam
+# The AI-Thinker ESP32-CAM's layer, named to it in platformio.ini (1.1.1).
+!sdkconfig.defaults.espcam
 include/secrets.h
 data/system.cfg
 data/calls.log
@@ -62,6 +64,7 @@ CLAUDE.local.md
 host/bbs_host
 host/bbs_host_s3
 host/bbs_host_fncam
+host/bbs_host_espcam
 # Every compiled test, by pattern rather than by name. Naming them one
 # at a time meant test_wrap's binary was committed the day it was
 # written, 72 KB of build output in the tree, and nothing noticed

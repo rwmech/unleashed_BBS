@@ -190,7 +190,8 @@ BBS_VERSION = bbs_version()
 # A board profile's tag and version, read from its own block in src/board.h
 # (the way tools/release.py reads them), so a board bump does not leave the
 # suite asserting the last one.
-BOARD_DEFINES = {"s3": "BBS_BOARD_WS_S3LCD147", "fncam": "BBS_BOARD_FN_WROVER_CAM"}
+BOARD_DEFINES = {"s3": "BBS_BOARD_WS_S3LCD147", "fncam": "BBS_BOARD_FN_WROVER_CAM",
+                 "espcam": "BBS_BOARD_AI_ESP32CAM"}
 
 
 def board_profile(name):
@@ -6941,7 +6942,8 @@ def start_copy(tmp, extra_args=(), env_extra=None):
     log = open(tmp / "host.log", "wb")
     # The same build as the board under test: a profile's copy restarts as
     # that profile, with its pin rules and defaults.
-    binary = {"s3": "bbs_host_s3", "fncam": "bbs_host_fncam"}.get(HOST_BOARD, "bbs_host")
+    binary = {"s3": "bbs_host_s3", "fncam": "bbs_host_fncam",
+              "espcam": "bbs_host_espcam"}.get(HOST_BOARD, "bbs_host")
     return subprocess.Popen([str(ROOT / "host" / binary), str(tmp / "data"), *extra_args],
                             stdout=log, stderr=subprocess.STDOUT, env=env)
 

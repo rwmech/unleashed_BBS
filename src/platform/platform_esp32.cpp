@@ -741,6 +741,13 @@ uint32_t g_ledSince = 0;
 uint32_t g_ledHold  = BBS_LED_PULSE_MS;   // how long the current show lasts
 int8_t   g_ledForce = -1;                 // ledOverride: -1 traffic drives it, 0 off, 1 on
 bool     g_ledQuiet = false;              // ledSilent: silent mode, traffic shows nothing
+// ledLevel: the pin level for on or off. The board's own LED may light on a
+// low pin (board.h, BBS_LED_ACTIVE_LOW); an LED a sysop wired elsewhere is
+// taken to light on a high one. Folds to the plain level on every board
+// whose LED is active high.
+inline uint32_t ledLevel(bool on) {
+    return (on ? 1u : 0u) ^ ((BBS_LED_ACTIVE_LOW && g_ledGpio == BBS_LED_GPIO) ? 1u : 0u);
+}
 }
 
 // ---------------------------------------------------------------------------
@@ -801,7 +808,7 @@ void activityLedBegin(int gpio) {
     c.intr_type    = GPIO_INTR_DISABLE;
     if (gpio_config(&c) != ESP_OK) { log("led: gpio %d config failed", gpio); return; }
     g_ledGpio = gpio;
-    gpio_set_level(static_cast<gpio_num_t>(gpio), g_ledForce > 0 ? 1 : 0);
+    gpio_set_level(static_cast<gpio_num_t>(gpio), ledLevel(g_ledForce > 0));
     log("led: activity LED on gpio %d", gpio);
 }
 
@@ -809,14 +816,14 @@ void ledOverride(int8_t state) {
     g_ledForce = state < 0 ? -1 : (state ? 1 : 0);
     if (g_ledGpio < 0) return;
     if (g_ledForce < 0) g_ledOn = false;                  // handed back dark
-    gpio_set_level(static_cast<gpio_num_t>(g_ledGpio), g_ledForce > 0 ? 1 : 0);
+    gpio_set_level(static_cast<gpio_num_t>(g_ledGpio), ledLevel(g_ledForce > 0));
 }
 
 void ledSilent(bool on) {
     g_ledQuiet = on;
     if (!on || g_ledGpio < 0 || g_ledForce >= 0) return;   // the override keeps what it shows
     g_ledOn = false;
-    gpio_set_level(static_cast<gpio_num_t>(g_ledGpio), 0);
+    gpio_set_level(static_cast<gpio_num_t>(g_ledGpio), ledLevel(false));
 }
 
 void activityPulse(uint32_t now) {
@@ -825,7 +832,7 @@ void activityPulse(uint32_t now) {
     g_ledHold  = BBS_LED_PULSE_MS;
     if (!g_ledOn) {
         g_ledOn = true;
-        gpio_set_level(static_cast<gpio_num_t>(g_ledGpio), 1);
+        gpio_set_level(static_cast<gpio_num_t>(g_ledGpio), ledLevel(true));
     }
 }
 
@@ -834,14 +841,14 @@ void ledSignal(uint32_t now, uint32_t ms) {
     g_ledSince = now;
     g_ledHold  = ms;
     g_ledOn    = true;
-    gpio_set_level(static_cast<gpio_num_t>(g_ledGpio), 1);
+    gpio_set_level(static_cast<gpio_num_t>(g_ledGpio), ledLevel(true));
 }
 
 void activityTick(uint32_t now) {
     if (g_ledForce >= 0) return;
     if (g_ledOn && now - g_ledSince >= g_ledHold) {
         g_ledOn = false;
-        gpio_set_level(static_cast<gpio_num_t>(g_ledGpio), 0);
+        gpio_set_level(static_cast<gpio_num_t>(g_ledGpio), ledLevel(false));
     }
 }
 
@@ -850,15 +857,20 @@ void activityTick(uint32_t now) {
 // says why
 // ===========================================================================
 
+#if BBS_BOOT_GPIO >= 0
 namespace {
 bool g_bootPinUp = false;
 }
+#endif
 
 // bootButtonDown: GPIO0, active low. Pulled up here as well as on the board,
 // because a module on a carrier with no BOOT button has nothing else holding
 // the pin, and a floating GPIO0 read as a press for 7 s would reset the
 // sysop password.
 bool bootButtonDown(uint32_t) {
+#if BBS_BOOT_GPIO < 0
+    return false;                                 // no BOOT button on this board (board.h)
+#else
     if (!g_bootPinUp) {
         gpio_config_t c = {};
         c.pin_bit_mask = 1ULL << BBS_BOOT_GPIO;
@@ -870,6 +882,7 @@ bool bootButtonDown(uint32_t) {
         g_bootPinUp = true;
     }
     return gpio_get_level(static_cast<gpio_num_t>(BBS_BOOT_GPIO)) == 0;
+#endif
 }
 
 // factoryErase: each partition taken out of the VFS first, so nothing can
@@ -1909,3 +1922,24 @@ bool jpegRaw(const uint8_t* rgb565, uint16_t w, uint16_t h, uint8_t quality, Mar
 #endif  // BBS_HAS_CAMERA
 
 } // namespace plat
+
+#ifdef BBS_PINS_HOLD_LOW
+// ---------------------------------------------------------------------------
+// Pins the board needs held low from the start (board.h): the ESP32-CAM's
+// flash LED on GPIO 4, whose transistor lights on a floating pin. A
+// constructor, so it runs in the start-up code before app_main and before
+// anything that could touch the card or the camera. The GPIO calls it makes
+// need no task and no heap.
+// ---------------------------------------------------------------------------
+namespace {
+__attribute__((constructor)) void holdLowAtBoot() {
+    static const int kPins[] = { BBS_PINS_HOLD_LOW };
+    for (int pin : kPins) {
+        const gpio_num_t g = static_cast<gpio_num_t>(pin);
+        gpio_set_pull_mode(g, GPIO_FLOATING);
+        gpio_set_level(g, 0);
+        gpio_set_direction(g, GPIO_MODE_OUTPUT);
+    }
+}
+}   // namespace
+#endif

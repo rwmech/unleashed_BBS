@@ -67,6 +67,11 @@ bbs_host_s3: $(SRCS) $(HDRS)
 bbs_host_fncam: $(SRCS) $(HDRS)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_FN_WROVER_CAM $(LDFLAGS) -o $@ $(SRCS) $(LDLIBS)
 
+# The AI-Thinker ESP32-CAM profile (1.1.1, src/board.h).
+# tools/harness.sh --board espcam runs it with --only=board_espcam.
+bbs_host_espcam: $(SRCS) $(HDRS)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_AI_ESP32CAM $(LDFLAGS) -o $@ $(SRCS) $(LDLIBS)
+
 # The panel's drawing: glyphs, layout, lamps and the queue of what to send.
 # Pure code with no platform, checked pixel by pixel with no display.
 test_panel: test_panel.cpp ../src/plugins/panel_gfx.h ../src/plugins/panel_font.h
@@ -180,6 +185,6 @@ test: licence test_xmodem test_wrap test_forums_ptr test_compose test_codes test
 	./test_camera
 
 clean:
-	rm -f bbs_host bbs_host_s3 bbs_host_fncam test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera
+	rm -f bbs_host bbs_host_s3 bbs_host_fncam bbs_host_espcam test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera
 
 .PHONY: clean test licence

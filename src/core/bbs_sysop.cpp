@@ -991,7 +991,14 @@ const CfgField kAccounts[] = {
 const CfgField kBackup[] = {
     { "backup_port",           "Port",     CK_NUM, 0, 0, 5, nullptr, "Backup web port" },
     { "backup_window_minutes", "Open for", CK_NUM, 0, 0, 4, nullptr, "Window open, minutes" },
+#if BBS_BOOT_GPIO < 0
+    // GPIO 0 is not a button on this board (board.h): said while the row
+    // has the focus, since it is the one place a sysop looks for it.
+    { "backup_button_gpio",    "Button",   CK_PIN, 0, 0, 2, "No BOOT button: -1 or a free pin.",
+      "Button GPIO", "GPIO 0 is this board's camera clock: no BOOT button and no BOOT-hold reset." },
+#else
     { "backup_button_gpio",    "Button",   CK_PIN, 0, 0, 2, nullptr, "Button GPIO (BOOT)" },
+#endif
 };
 
 // The label column is nine characters at 40 (Form::drawField), and

@@ -33,6 +33,8 @@
 #                              written for the reference board.
 #                 --board fncam  the Freenove ESP32-WROVER CAM profile
 #                              (bbs_host_fncam), with --only=board_fncam
+#                 --board espcam the AI-Thinker ESP32-CAM profile
+#                              (bbs_host_espcam), with --only=board_espcam
 #
 #               Examples:
 #                 tools/harness.sh --backup
@@ -81,7 +83,8 @@ while [ $# -gt 0 ]; do
             case "$2" in
                 s3)    BIN=bbs_host_s3;    export BBS_HOST_BOARD=s3 ;;
                 fncam) BIN=bbs_host_fncam; export BBS_HOST_BOARD=fncam ;;
-                *)  echo "harness: no board profile called $2 (s3, fncam)"; exit 2 ;;
+                espcam) BIN=bbs_host_espcam; export BBS_HOST_BOARD=espcam ;;
+                *)  echo "harness: no board profile called $2 (s3, fncam, espcam)"; exit 2 ;;
             esac
             shift 2 ;;
         # A board as it leaves the web installer: no staff passwords in its

@@ -24,6 +24,39 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## ESPCAM 1.0.1 (AI-Thinker ESP32-CAM profile), 2026-09-25, not released
+
+A new board profile, `BBS_BOARD_AI_ESP32CAM` (envs `esp32cam_aithinker`
+and `esp32cam_aithinker_release`), on the core as 1.1.0. **On hardware**
+(an Aideepen ESP32-CAM on an ESP32-CAM-MB, COM15): ESP32-D0WDQ6 rev 1.0,
+4 MB flash, PSRAM (8 MB chip, 4 MB mapped), a genuine OV2640 (SCCB 0x30,
+PID 0x26, VER 0x42). SNAPSHOT at UXGA with the watermark and the flash on
+GPIO4, downloaded by YMODEM, and FILES area 12.
+
+- The card runs over **SPI**, not SDMMC. In one-bit mode IDF 5.3.1 leaves
+  D3 (GPIO13) floating at CMD0 (it drives D3 high only for four bits and
+  up, sdmmc_host.c 600-614), the card takes that as SPI mode, and ACMD41 is
+  never answered: two cards, every width and speed. SPI mounted at once.
+- **GPIO4 (the white flash LED) is held low from start-up** by a
+  constructor (`BBS_PINS_HOLD_LOW`). Nothing on the board holds the
+  transistor's base low, so a floating or pulled-up pin lights the LED.
+- The red LED on GPIO33 is the activity LED, which lights on a low pin
+  (`BBS_LED_ACTIVE_LOW`, new).
+- **No BOOT button**: GPIO0 is the camera clock, so the BOOT-hold resets
+  and the backup window's button are off (`BBS_BOOT_GPIO` and
+  `BBS_BACKUP_GPIO` -1), said on CONFIG backup's Button row.
+- No revision minimum in its sdkconfig layer (`sdkconfig.defaults.espcam`),
+  since ESP32-CAMs still carry revision 1 chips: the PSRAM cache workaround
+  is in, as on no other profile.
+- Flashing needs the SD card out: GPIO2 is the card's MISO and a
+  download-mode strap, and a seated card holds it high at reset.
+- Measured: a UXGA snap took 10.6 s (bring-up 854 ms, the frame 320 ms,
+  the watermark's decode and re-encode plus the card write 9,317 ms), with
+  no slow pass during it. Internal heap fell to 9,159 with the camera up.
+  XGA is the size as shipped.
+- The WROOM, S3 and Freenove images: the shared changes (BOOT and backup
+  button defines, the LED polarity) are compiled out on every other profile.
+
 ## 1.1.0, 2026-09-25
 
 **Out early for testing.** 1.1.0 has not been through the full regression

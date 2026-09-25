@@ -1,0 +1,116 @@
+# ===========================================================================
+#  unleashed BBS
+#  Electronic freedom on a microcontroller.
+# ===========================================================================
+#
+# File:         sdkconfig.defaults.espcam
+# Module:       Build / ESP-IDF defaults, AI-Thinker ESP32-CAM layer
+#
+# Purpose:      What the AI-Thinker ESP32-CAM build changes from
+#               sdkconfig.defaults. Not an sdkconfig.defaults.esp32: that
+#               name would apply to every ESP32 build, the WROOM's included.
+#               platformio.ini names this file for the board's environments
+#               through SDKCONFIG_DEFAULTS (board_build.cmake_extra_args),
+#               which IDF 5.3.1's project.cmake takes in place of the
+#               default list, so sdkconfig.defaults is named first there.
+#
+#               PlatformIO only watches sdkconfig.defaults for changes:
+#               delete sdkconfig.esp32cam_aithinker* after editing here, and
+#               check the generated file. A value outside its Kconfig range
+#               is discarded, not clamped.
+#
+#               The Freenove layer's values, which that board measured and
+#               sourced (internal/PLAN-freenove-cam.md, section 3), with two
+#               differences for this board: no revision minimum, and the
+#               sensors below.
+#
+# Targets:      AI-Thinker ESP32-CAM (ESP-IDF 5.3.1)
+# See also:     sdkconfig.defaults, platformio.ini, src/board.h
+#
+# Copyright 2026 - Robert Mech
+# License:      GNU General Public License v3 or later
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 3 of the License, or (at your
+# option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program. If not, see <https://www.gnu.org/licenses/>. The full
+# text is in the LICENSE file at the top of this repository.
+# ===========================================================================
+
+# PSRAM: the module's 4 MB, quad, on GPIO 16 and 17, at the default 40 MHz
+# (80 needs the flash at 80 too).
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_USE_MALLOC=y
+# No memory test at boot: the web installer's Improv deadline is measured
+# from the reset it causes (sdkconfig.defaults.esp32s3 has the reasoning).
+CONFIG_SPIRAM_MEMTEST=n
+# Wi-Fi's and lwIP's buffers in PSRAM first, as on the S3.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# This image on a board without PSRAM boots as a plain BBS rather than
+# panicking in a loop. Only possible while BSS stays internal.
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+
+# Internal RAM for the camera (FNCAM 1.0.1). A bring-up takes ONE
+# 32,768-byte internal DMA buffer (esp32-camera's ESP32 JPEG path), and on
+# FNCAM 1.0.0 the board had 38,855 bytes of internal RAM free, its largest
+# DMA block 31,744: the camera could never start. Measured with MEM on the
+# bench, 2026-09-25. Two things took the room, both side effects of PSRAM:
+#
+# SPIRAM_USE_MALLOC forces static Wi-Fi TX buffers (Dynamic "depends on
+# !SPIRAM_USE_MALLOC", esp_wifi/Kconfig), 16 of them at about 1.6 KB, all
+# internal, where the WROOM allocates TX buffers as it sends; and
+# TRY_ALLOCATE_WIFI_LWIP raises the static RX buffers' default from 10 to
+# 16. About 35 KB more than the WROOM holds for the radio. Ten of each is
+# the WROOM's RX figure and more TX than a telnet board keeps in flight
+# (sixteen sockets with 2,880-byte send buffers, two segments each; frames
+# beyond ten wait in the 32-deep cache TX queue rather than being dropped).
+# About 19 KB back.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=10
+# The reserve pool of internal memory ordinary malloc() never takes (only
+# task stacks, DMA and other internal-only requests), which is where the
+# camera's DMA block can stay whole while small mallocs fill the rest of
+# internal RAM. The default 32,768 is one region of that size, and with the
+# heap's own control block inside it that region cannot hold a 32,768-byte
+# block (MEM's largest, 31,744, fits the pool less about 1 KB of header).
+# 40 KB holds the block with room for a task stack that lands there.
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=40960
+
+# No revision minimum. The bench's chip is an ESP32-D0WDQ6 revision v1.0,
+# and ESP32-CAM boards still ship with them, so this image keeps the IDF's
+# default (revision 0) and with it the PSRAM cache workaround the older
+# silicon needs, which the Freenove measured at 33 KB of flash.
+
+# The camera driver (espressif/esp32-camera, src/idf_component.yml) with the
+# sensors a 24-pin module on this board is found with. Every sensor is on by
+# default, and their register tables are initialised data (all seventeen
+# measured 9,800 bytes of static DRAM on the Freenove, against 1,768 for the
+# OV2640 alone). The bench's came with an OV2640 (an SCCB scan on
+# 2026-09-25: 0x30, PID 0x26, VER 0x42); the GC0308 is the Freenove kit's,
+# and the two modules fit either board, so both, as there.
+CONFIG_OV7670_SUPPORT=n
+CONFIG_OV7725_SUPPORT=n
+CONFIG_NT99141_SUPPORT=n
+CONFIG_OV2640_SUPPORT=y
+CONFIG_OV3660_SUPPORT=n
+CONFIG_OV5640_SUPPORT=n
+CONFIG_GC2145_SUPPORT=n
+CONFIG_GC032A_SUPPORT=n
+CONFIG_GC0308_SUPPORT=y
+CONFIG_BF3005_SUPPORT=n
+CONFIG_BF20A6_SUPPORT=n
+CONFIG_SC101IOT_SUPPORT=n
+CONFIG_SC030IOT_SUPPORT=n
+CONFIG_SC031GS_SUPPORT=n
+CONFIG_HM1055_SUPPORT=n
+CONFIG_HM0360_SUPPORT=n
+CONFIG_MEGA_CCM_SUPPORT=n

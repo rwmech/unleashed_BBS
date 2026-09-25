@@ -656,6 +656,22 @@ this tree.
   and low), run the same way on the WROOM, the Freenove and the S3 on the
   bench, never on UHQ or TRA without Rob's say-so. Results go on /hardware,
   dated and stamped with the firmware version, and set the tiers for real.
+- **The AI-Thinker ESP32-CAM profile, ESPCAM 1.0.1** (espcam-1.1.1,
+  2026-09-25, on COM15; CHANGELOG has the detail). Three things this
+  board taught, each of which a later ESP32-CAM will hit again:
+  - **A profile carries its own pin table and nothing falls through from
+    another camera board.** GPIO0 is XCLK here, so the core's BOOT button
+    and backup button defaults had to become board defines; GPIO2 is the
+    card, so the core's activity LED default had to move (to the red LED
+    on 33, active low).
+  - **SDMMC one-bit does not work on this slot with IDF 5.3.1**: D3 is
+    only driven high for four bits and up, so the card wakes in SPI mode.
+    The card runs over SPI. And a seated card holds GPIO2 high at reset,
+    which blocks download mode: flash with the card out.
+  - **GPIO4 lights the flash LED on a pull-up alone.** It is held low
+    from a start-up constructor. It was lit on the bench by a diagnostic's
+    four-bit SDMMC attempt (the IDF's internal pull-up on D1), not by the
+    BBS.
 - **1.1.1: software picture correction for the camera** (Rob, 2026-09-25,
   after the first real outdoor photo came out washed out on a cloudy day).
   The GC0308 ignores some of its own settings, and the board already

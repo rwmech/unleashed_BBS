@@ -1006,7 +1006,8 @@ A value out of range is logged and the default is kept. An upload with a bad val
 
 #### camera
 
-Camera boards only (the Freenove ESP32-WROVER CAM, as shipped). `SNAPSHOT`
+Camera boards only (the Freenove ESP32-WROVER CAM and the AI-Thinker
+ESP32-CAM, as shipped). `SNAPSHOT`
 takes a photo for a caller; the board can also take one of its own on a
 timer (the timelapse), or on request from another plugin later (a motion
 sensor). Bringing the sensor up, taking the frame, drawing the watermark and
@@ -1169,6 +1170,26 @@ What is left for a sysop to wire up is **13, 32 and 33**: 13 is the flash
 pin as shipped (with Flash mode off), and 32 and 33 are the serial bridge's
 default RX and TX, free for the flash or anything else while that plugin is
 off.
+
+**On the AI-Thinker ESP32-CAM** (ESPCAM), the same rule refuses the PSRAM
+(16, 17), the console (1, 3), every camera line including its power-down
+pin (0, 5, 18, 19, 21, 22, 23, 25, 26, 27, 32, 34, 35, 36, 39) and GPIO12,
+the flash-voltage strap. The card runs over SPI on the slot's own lines
+(CS 13, MOSI 15, CLK 14, MISO 2), which are the `sd` plugin's settings, so
+CONFIG names the `sd` plugin as their holder. That leaves **4 and 33**: 4 is
+the board's bright white flash LED, the camera's flash pin as shipped with
+Flash mode off, held low from the first instruction so it never lights on
+its own; 33 is the small red LED (lit when the pin is low), which is the
+board's activity LED. The serial bridge ships with no pins on this board.
+
+GPIO 0 is the ESP32-CAM's camera clock, so this board has **no BOOT
+button** for the firmware: the BOOT-hold password and factory resets are
+off, and the backup window's `Button` is -1 (CONFIG backup says so on that
+row). A backup window button can still be wired to a free pin. To flash
+an ESP32-CAM, **take the SD card out first** and put it back after: GPIO2
+is both the card's MISO and a download-mode strap, and a seated card holds
+it high at reset, so the board boots its old firmware instead of taking
+the new one.
 
 ### [access] matrix
 

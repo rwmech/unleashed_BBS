@@ -37,6 +37,11 @@
  *                                      and an SDMMC 1-bit card slot. Researched in
  *                                      internal/PLAN-freenove-cam.md.
  *
+ *               BBS_BOARD_AI_ESP32CAM  AI-Thinker ESP32-CAM: ESP32-D0WDQ6,
+ *                                      4 MB flash, 4 MB PSRAM, an OV2640,
+ *                                      a micro SD slot (run over SPI)
+ *                                      and a flash LED on GPIO 4.
+ *
  *               Capabilities a profile may define:
  *                 BBS_HAS_LCD       a panel the panel plugin drives
  *                 BBS_CHIP_S3       the chip is an ESP32-S3 (pin rules,
@@ -46,6 +51,11 @@
  *                                   BBS_SDMMC_* pins, not SPI
  *                 BBS_PINS_*        pins the board owns, which pinProblem
  *                                   refuses with the reason
+ *                 BBS_PINS_HOLD_LOW pins driven low first thing at boot
+ *                                   (a transistor's base that must not
+ *                                   float: the ESP32-CAM's flash LED)
+ *                 BBS_LED_ACTIVE_LOW the board's own LED (BBS_LED_GPIO)
+ *                                   lights on a low pin
  *
  * Libraries:    none
  * Targets:      ESP32-WROOM-32E, ESP32-S3 (ESP-IDF 5.3.1) and the Linux host
@@ -310,6 +320,127 @@
 #endif  // BBS_BOARD_FN_WROVER_CAM
 
 // ===========================================================================
+// AI-Thinker ESP32-CAM (the original design, sold under many names: the
+// bench's is an Aideepen on an ESP32-CAM-MB programmer with a CH340G)
+//
+// ESP32-D0WDQ6 (read as revision v1.0 on the bench), 4 MB flash (d8/4016),
+// 4 MB PSRAM on GPIO 16 and 17, an OV2640 on the 24-pin ribbon (read over
+// SCCB on 2026-09-25: one device at 0x30, PID 0x26, VER 0x42, MID 0x7FA2),
+// a micro SD slot on the SDMMC pins, a bright white flash LED on GPIO 4
+// (through a transistor), a small red LED on GPIO 33 (active low).
+//
+// Camera pins: arduino-esp32's CameraWebServer example, camera_pins.h,
+// CAMERA_MODEL_AI_THINKER (PWDN 32, RESET -1, XCLK 0, SIOD 26, SIOC 27,
+// Y9..Y2 35 34 39 36 21 19 18 5, VSYNC 25, HREF 23, PCLK 22), and the same
+// map in the log of the ESPHome image the board shipped with. The camera
+// driver probed the OV2640 and took UXGA frames on exactly these pins.
+//
+// GPIO 0 is the camera's XCLK here, so it cannot also be a button: the
+// BOOT-hold reset and the backup window's button are off on this board
+// (the MB programmer's IO0 button still selects download mode at reset,
+// which is the ROM's and needs no firmware). The backup window can still be
+// given a button on a free pin in CONFIG.
+//
+// The card is run over SPI (CS 13, MOSI 15, CLK 14, MISO 2), not SDMMC.
+// On the bench SDMMC never got an answer to ACMD41, one bit or four, 20 MHz
+// or 400 kHz, with two different cards, while SPI on the same slot mounted
+// a 32 GB SDHC at once (2026-09-25). SPI also leaves GPIO 4 (the flash LED,
+// the slot's D1) and GPIO 12 (D2, the flash-voltage strap) alone.
+// ===========================================================================
+#if defined(BBS_BOARD_AI_ESP32CAM)
+
+#if defined(ESP_PLATFORM) && !CONFIG_IDF_TARGET_ESP32
+#error "BBS_BOARD_AI_ESP32CAM is an ESP32 board: build it for the esp32 target"
+#endif
+#if defined(BBS_BOARD_WS_S3LCD147) || defined(BBS_BOARD_FN_WROVER_CAM)
+#error "one board profile at a time"
+#endif
+
+#define BBS_BOARD_NAME        "AI-Thinker ESP32-CAM"
+#define BBS_BOARD_PLUGINS     1       // the camera
+
+#define BBS_BOARD_TAG         "ESPCAM"
+#define BBS_BOARD_VERSION     "1.0.1"
+
+// PSRAM (sdkconfig.defaults.espcam). A build that lost the sdkconfig layer
+// would otherwise link quietly without it.
+#define BBS_HAS_PSRAM         1
+#if defined(ESP_PLATFORM) && !CONFIG_SPIRAM
+#error "BBS_BOARD_AI_ESP32CAM needs PSRAM: sdkconfig.defaults.espcam was not applied (delete sdkconfig.esp32cam_aithinker*)"
+#endif
+
+// The activity LED is the small red one on GPIO 33, which is wired from
+// 3V3 through the LED to the pin: on when the pin is low.
+#define BBS_LED_GPIO          33
+#define BBS_LED_ACTIVE_LOW    1
+
+// GPIO 4 is the flash LED's transistor, through a resistor to its base,
+// with nothing on the board holding it low: a floating or pulled-up pin
+// lights it (a pull-up alone is enough, which is how an SDMMC card in
+// four-bit mode, with the IDF's internal pull-ups, turns it on). Driven
+// low in the start-up code, before app_main, the card or any plugin
+// and left to the camera's flash from then on (off as shipped).
+#define BBS_PINS_HOLD_LOW     4
+
+// GPIO 0 is XCLK (above): no BOOT button for the firmware.
+#define BBS_BOOT_GPIO         -1
+#define BBS_BACKUP_GPIO       -1
+
+// The card slot over SPI, on the slot's own lines: CS is its D3, MOSI its
+// CMD, CLK its CLK, MISO its D0. They are the sd plugin's settings, as on
+// the WROOM, so CONFIG says the sd plugin holds them.
+#define BBS_SD_CS             13
+#define BBS_SD_MOSI           15
+#define BBS_SD_CLK            14
+#define BBS_SD_MISO           2
+
+// The serial bridge: no pins as shipped. With the camera, the card and the
+// PSRAM wired, what is left is GPIO 33 (the red LED, active low) and GPIO 4
+// (the flash LED): a sysop who wants the bridge gives it those in CONFIG
+// serial, and the flash then has to be off. Not GPIO 12: a device's pull-up
+// there at reset sets the flash to 1.8 V and the board does not boot.
+#define BBS_SERIAL_RX         -1
+#define BBS_SERIAL_TX         -1
+
+// The camera. The OV2640 encodes JPEG itself, up to UXGA (1600x1200).
+// The flash is the board's own LED on GPIO 4, as a "pin" flash, off as
+// shipped: it is a very bright white LED, and it gets hot if left on.
+#define BBS_HAS_CAMERA        1
+#define BBS_CAM_SENSOR        "OV2640"
+#define BBS_CAM_SIZES         "qvga|vga|svga|xga|hd|sxga|uxga"
+#define BBS_CAM_SIZE          3       // xga
+#define BBS_CAM_FLASH_PIN     4
+#define BBS_CAM_FLASH         0
+#define BBS_CAM_PWDN          32
+#define BBS_CAM_RESET         -1
+#define BBS_CAM_XCLK          0
+#define BBS_CAM_SIOD          26
+#define BBS_CAM_SIOC          27
+#define BBS_CAM_D7            35      // Y9
+#define BBS_CAM_D6            34      // Y8
+#define BBS_CAM_D5            39      // Y7
+#define BBS_CAM_D4            36      // Y6
+#define BBS_CAM_D3            21      // Y5
+#define BBS_CAM_D2            19      // Y4
+#define BBS_CAM_D1            18      // Y3
+#define BBS_CAM_D0            5       // Y2
+#define BBS_CAM_VSYNC         25
+#define BBS_CAM_HREF          23
+#define BBS_CAM_PCLK          22
+
+// Pins the board owns (syscfg::pinProblem refuses them with the reason).
+// What is left for a sysop: 4 (the flash LED) and 33 (the red LED). The
+// card's four are the sd plugin's settings, held by it as on the WROOM.
+#define BBS_PINS_PSRAM        16, 17
+#define BBS_PINS_CONSOLE      1, 3
+#define BBS_PINS_CAMERA       BBS_CAM_PWDN, BBS_CAM_XCLK, BBS_CAM_SIOD, BBS_CAM_SIOC, BBS_CAM_D7, \
+                              BBS_CAM_D6, BBS_CAM_D5, BBS_CAM_D4, BBS_CAM_D3, BBS_CAM_D2, \
+                              BBS_CAM_D1, BBS_CAM_D0, BBS_CAM_VSYNC, BBS_CAM_HREF, BBS_CAM_PCLK
+#define BBS_PINS_STRAP        12
+
+#endif  // BBS_BOARD_AI_ESP32CAM
+
+// ===========================================================================
 // The reference board, the bare ESP32-WROOM-32E: every default a profile
 // did not set. These are the values the WROOM has always had, so a build
 // with no profile is byte for byte what it was.
@@ -322,6 +453,9 @@
 #endif
 #ifndef BBS_LED_GPIO
 #define BBS_LED_GPIO          2       // blue LED on DOIT-style dev boards, -1 = none
+#endif
+#ifndef BBS_LED_ACTIVE_LOW
+#define BBS_LED_ACTIVE_LOW    0       // the board's own LED lights on a high pin
 #endif
 #ifndef BBS_LIGHTS_ON
 #define BBS_LIGHTS_ON         0       // off until a sysop switches it on

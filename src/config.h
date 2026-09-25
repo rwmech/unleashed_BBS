@@ -328,8 +328,12 @@
 #define BBS_WIFI_LAST_FILE  "wifi.last"
 // The BOOT button, for the BOOT-hold reset. GPIO0 on every ESP32 and ESP32-S3
 // board, because it is the strapping pin that selects download mode, which
-// is also why the hold only counts once the firmware is running.
+// is also why the hold only counts once the firmware is running. A board
+// whose GPIO0 is something else (the ESP32-CAM's camera clock) sets -1 in
+// its profile, and the hold is never watched there.
+#ifndef BBS_BOOT_GPIO
 #define BBS_BOOT_GPIO       0
+#endif
 #define BBS_CALLLOG_SIZE    50
 
 // ---------------------------------------------------------------------------
@@ -337,7 +341,9 @@
 // ---------------------------------------------------------------------------
 #define BBS_BACKUP_PORT         8080
 #define BBS_BACKUP_MINUTES      5
-#define BBS_BACKUP_GPIO         0        // BOOT button on ESP32 dev boards
+#ifndef BBS_BACKUP_GPIO
+#define BBS_BACKUP_GPIO         0        // BOOT button on ESP32 dev boards; -1 none
+#endif
 #define BBS_BACKUP_APPROVE_MS   120000   // sysop has this long to answer Y/N
 #define BBS_BACKUP_IDLE_MS      30000    // HTTP client silent this long: dropped
 #define BBS_BACKUP_HEADER_MS    10000    // whole request header must arrive in this
