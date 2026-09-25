@@ -62,7 +62,7 @@ Docs:
 
 A board the size of a stick of gum, 40 columns of text, and a port anyone can reach. Ordinary reasons first, stranger ones after.
 
-- **Run a BBS again.** Nodes, handles, a user list, a chat room, file areas with XMODEM and YMODEM transfer, mail, a caller log, and a sysop you can ring for (`OPERATOR`), who answers in the chat room or finds your note at their next login. All of it on hardware that costs less than lunch and draws less power than a night light. Leave it on a shelf for a year and forget it is there.
+- **Run a BBS again.** Nodes, handles, a user list, a chat room, file areas with XMODEM and YMODEM transfer, mail, a caller log, and a sysop you can ring for (`OPERATOR`), who answers in the chat room or finds what you wrote in their mail. All of it on hardware that costs less than lunch and draws less power than a night light. Leave it on a shelf for a year and forget it is there.
 - **Retrocomputing with a point.** A C64, an Atari 800, a VT220 on a desk: machines with no browser and no future on the modern web get a live system to call, tonight, over the same serial port they always used. No emulator, no cloud account, no subscription. The board speaks their language, right down to PETSCII at 40 columns and an emulated 300 baud if you want to watch the text crawl.
 - **Entertainment.** Games, trivia, message bases, and the whole business of dialling in to see what is new. `FORUMS` is topic boards on the SD card, with subjects, replies and unread counts. Text is a format, not a limitation: people played MUDs on less.
 - **Somewhere to hang out.** The chat room is DDial and Gtalk in spirit: everybody in one room, one line at a time, handles and ranks in the margin, nothing threaded, nothing archived, nobody suggesting content. Small, fast, and with a personality that group chat lost somewhere around 2010.
@@ -132,6 +132,7 @@ The second UART is wired to the serial bridge plugin, so a caller with permissio
 ### GPIO and the physical world
 
 - GPIO2 drives the activity LED by default, which is the LED already fitted to most dev boards. `activity_led_gpio` moves it.
+- Silent mode (1.1.0, `CONFIG board`) turns every light the firmware drives off and keeps it off: the activity LED, the lights plugin's drive light and strip, a display's backlight and the camera's flash, by a switch or every day between two times (silent hours, which wait for the NTP clock). Each light keeps its own settings and comes back as it was. The board's power LED is wired straight to 3V3 on every supported board, so no firmware can turn it off: tape over it, or lift it. See "Silent mode" in [COMMANDS.md](COMMANDS.md).
 - GPIO0, the BOOT button on a dev board, opens the backup window while the sysop is logged in. Hold it, and `system.cfg`, the accounts and the screens can be downloaded or uploaded over HTTP for a few minutes. For the first 10 seconds after the board starts it is the reset button instead: see [Resetting the board](#resetting-the-board).
 - The remaining pins are free. The planned GPIO plugin exposes them to callers as commands with their own read, write and admin levels, so reading a sensor can be open to everyone while throwing a relay is staff only.
 - Reserved by the hardware, not by this firmware: 6 to 11 are the flash, 20, 24 and 28 to 31 do not exist on the WROOM's chip (every pin setting refuses both, 1.1.0), 34 to 39 are input only and have no pull-ups, and the strapping pins (0, 2, 12, 15) decide how the chip boots and should be left alone unless you know what they do at reset.
@@ -174,13 +175,14 @@ The activity LED shows the stage while you hold: a slow blink under 7 seconds, f
 For developers, what the copy above leaves out:
 
 - The press has to start within 10 seconds of the firmware starting, a little more than 10 seconds after RESET is let go, since the bootloader runs first. After that BOOT is the backup window's button again. Never hold BOOT while pressing or letting go of RESET: GPIO0 low at that moment is the chip's download mode, and the firmware never runs.
-- Both resets restart the board once they are done. The reason goes into `reboots.log` as the reason for that boot, `password reset by BOOT` or `factory reset by BOOT`, or `factory reset FAILED` when the erase did not finish (1.1.0; it used to read as a plain software restart), and the next staff login, on the sysop node or a co-sysop's own line, is told `Last restart: <reason>.` `SYS` shows it beside the uptime.
+- Both resets restart the board once they are done. The reason goes into `reboots.log` as the reason for that boot, `password reset by BOOT` or `factory reset by BOOT`, or `factory reset FAILED` when the erase did not finish (1.1.0; it used to read as a plain software restart), and every staff login until the next restart, on the sysop node or a co-sysop's own line, is told `Last restart: <reason>.` and a second line on what it touched (`Sysop password only. Accounts are kept.`). `SYS` has a `Last restart` row for every boot.
+- After a password reset, a caller on the board's own network is told `The sysop password was reset with the BOOT button.` rather than the new board's "not set up yet", then asked for the default. On that path the setup screen clears the screen, so the restart notice is given at the first prompt after the setup instead.
 - The password reset removes the `sysop_password` line from `system.cfg` rather than writing the default into it: a board on the default is exactly one with no such line (1.0.2). The factory reset erases the `userdata` and `logs` partitions whole, not just their directories, so no old account hashes stay readable on the chip; the next boot formats them. The console's last line before the restart says what comes next: a release has no network left and waits for Improv, and a dev build with `include/secrets.h` falls back to that network (the choice is made at compile time, in `src/core/netfallback.h`, the header that also supplies the network).
 - The timing is `recovery::BootHold` in `src/core/recovery.h`, tested at every boundary by `host/test_recovery.cpp`; `tools/testclient.py`'s `test_boot_hold` runs each band on a copy of a harness board, with `BBS_BOOT_HOLD_MS` playing the hold on the host build's simulated clock.
 
 ### When the board wedges
 
-The task watchdog restarts a board whose BBS loop has stopped for 30 seconds, whether it is spinning or stuck waiting (1.1.0; before that the watchdog only printed a warning and a wedged board stayed wedged). `reboots.log` and the next staff login say `task watchdog`. `pio run -e esp32dev_wdttest -t upload` is a bench build that stops its own loop a minute after starting, to see it happen.
+The task watchdog restarts a board whose BBS loop has stopped for 30 seconds, whether it is spinning or stuck waiting (1.1.0; before that the watchdog only printed a warning and a wedged board stayed wedged). `reboots.log` and `SYS` say `task watchdog`; staff logging in are told `Last restart: the board froze.`, `A watchdog restarted it after 30 s.` and how many unexpected restarts (crashes, watchdogs, brownouts) `reboots.log` holds, this one included. `pio run -e esp32dev_wdttest -t upload` is a bench build that stops its own loop a minute after starting, to see it happen.
 
 ## Releases
 
@@ -264,7 +266,7 @@ src/core/editor.*         line editor, BYE password mask, command history
 src/core/screens.*        streaming screen player with @-codes and paging
 src/core/bus.*            per-session message ring (PAGE, notices, broadcast, a ring)
 src/core/ring.h           OPERATOR's rules: rate limits and the notes file format
-src/core/bbs_ring.cpp     OPERATOR: ringing for the sysop, answering, notes
+src/core/bbs_ring.cpp     OPERATOR: ringing for the sysop, answering, missed rings to MAIL or notes
 src/core/guard.*          IP ban list, per-handle login lockout
 src/core/users.*          accounts in users.txt: field table, lookup, rewrite, password hashing
 src/core/sha256.*         SHA-256 for password hashes
@@ -278,6 +280,7 @@ src/core/bbs_backup.cpp   BACKUP SD, RESTORE SD and the nightly backup, as the s
 src/core/bbs_screens.cpp  SCREENS and SCREENS VIEW: every screen and where callers get it from
 src/core/cardnames.h      the backups' names on the card, and which nightly one to prune
 src/core/tzones.h         the timezones CONFIG board offers by name
+src/core/silent.*         silent mode: the switch and the silent hours, one byte every light asks
 src/core/crc32.h          CRC-32 for the zip
 src/core/bbs.*            listener, sessions, flow, timers, paging
 src/core/bbs_shell.cpp    caller commands

@@ -55,7 +55,7 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "1.1.0-dev.12"
+#define BBS_VERSION         "1.1.0-dev.14"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // BBS_VERSION_SHOWN: the version as every place a person reads one shows it
@@ -197,6 +197,10 @@
 // User accounts (users.txt on the storage partition, in the backup zip)
 // ---------------------------------------------------------------------------
 #define BBS_USERS_FILE      "users.txt"
+// The last account to elevate to sysop (1.1.0), on userdata: where missed
+// rings go while CONFIG names no sysop account. An id into users.txt, so a
+// restore that replaces users.txt removes it (ziparc).
+#define BBS_SYSOP_LAST_FILE "sysop.last"
 // Accounts never move to the SD card: they are the one thing that has to
 // survive a card failing, and LittleFS is power-fail safe in a way FAT is
 // not. userdata is 608 KB and a UserRec is about 450 bytes, so the space is

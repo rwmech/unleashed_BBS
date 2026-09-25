@@ -137,6 +137,17 @@ test_tzones: test_tzones.cpp ../src/core/tzones.h
 test_cardnames: test_cardnames.cpp ../src/core/cardnames.h
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_cardnames.cpp
 
+# The caller log's copy of its newest calls and today's count in RAM (1.1.0),
+# which the dashboard reads every frame instead of the file. Checked against
+# the file, then with the file taken away.
+test_calllog: test_calllog.cpp ../src/core/calllog.cpp ../src/core/calllog.h
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_calllog.cpp ../src/core/calllog.cpp
+
+# Silent mode's rules (1.1.0): the switch, the hours at every edge and across
+# midnight, no clock, and the times as the file and CONFIG hold them. A rule a
+# minute out is a strip lighting up in somebody's bedroom.
+test_silent: test_silent.cpp ../src/core/silent.h
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_silent.cpp
 
 # The camera's rules and its watermark (1.1.0): names, limits, retention,
 # the timelapse's schedule, the download offer, the JPEG comment, and the
@@ -152,7 +163,7 @@ licence:
 	    echo "licence: GPL-2.0 SPDX line(s) above; the project is GPL-3.0-or-later"; exit 1; \
 	else echo "licence: no GPL-2.0 SPDX lines"; fi
 
-test: licence test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_camera
+test: licence test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera
 	./test_xmodem
 	./test_wrap
 	./test_forums_ptr
@@ -164,9 +175,11 @@ test: licence test_xmodem test_wrap test_forums_ptr test_compose test_codes test
 	./test_tzones
 	./test_cardnames
 	./test_panel
+	./test_calllog
+	./test_silent
 	./test_camera
 
 clean:
-	rm -f bbs_host bbs_host_s3 bbs_host_fncam test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_camera
+	rm -f bbs_host bbs_host_s3 bbs_host_fncam test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera
 
 .PHONY: clean test licence

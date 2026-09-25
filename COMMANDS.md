@@ -48,7 +48,7 @@ Full guide to accounts: [USERS.md](USERS.md).
 ### Guests
 
 - Type any handle that has no account, then `G`. On by default; `guest = no` turns it off.
-- Guests keep the handle they typed. WHO, LAST, NODES and DASH mark them with `*` (`Visitor*`) and explain it with a `* guest` footnote under the list.
+- Guests keep the handle they typed. WHO, LAST, NODES and DASH mark them with `*` (`Visitor*`), and WHO, LAST and NODES explain it with a `* guest` footnote under the list.
 - Nothing is saved: no account, no profile, no call count. The call still appears in `LAST`, like every call, marked `*`.
 - Nobody else can take a guest's handle while the guest is on. Once they leave, the handle is free again (and anyone may register it).
 - 15 minutes per call (`guest_minutes`), with the usual warnings at 5 and 1 minute. No daily limit.
@@ -66,7 +66,10 @@ Full guide to accounts: [USERS.md](USERS.md).
 | Y, Enter or Space | `[More] Y/n/c` | next page |
 | N, Q, ESC or Ctrl-C | `[More] Y/n/c` | stop; inside a subsystem such as FILES this returns you to that subsystem's prompt, not to the main one |
 | C | `[More] Y/n/c` | continue without pausing |
-| any key | `WHO n`, `DASH n` refresh | stop refreshing, back to the prompt |
+| any key | `WHO n`, `NODES n` refresh | stop refreshing, back to the prompt |
+| Left / Right, `<` `>` `-` `+`, `1`-`3` | `DASH n` | previous / next page, or that page; Enter redraws now |
+| Up / Down, then `K` or `S` | `DASH n` (ANSI and PETSCII) | pick a line, then `KICK` or `SNOOP` it at the prompt |
+| Q, ESC, Ctrl-C or Space | `DASH n` | stop refreshing, back to the prompt; other keys are ignored |
 | ESC or Ctrl-C | command prompt | clear the line |
 | Enter on an unknown command | command prompt | the line rubs out, `Unknown command. Type HELP.` (C64: `?SYNTAX  ERROR`) flashes in its place, then you type again on the same line |
 | Up / Down (C64: CRSR) | forms | previous / next field |
@@ -120,7 +123,7 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | `G` | | Log off after a `Log off (Y/N)?` confirm. |
 | `BYE` | | Log off now. `OFF`, `LOGOFF` and `QUIT` do the same. |
 
-A marker sits between the node number and the handle in WHO, NODES, LAST, DASH and the user manager, with a key line under the list:
+A marker sits between the node number and the handle in WHO, NODES, LAST, DASH and the user manager, with a key line under the list (not on DASH, which has no row to spare and shows the same markers as the lists that do):
 
 ```
 1 NormalUser
@@ -170,10 +173,12 @@ Limits, each refused in place of the question: `Three rings is the most for one 
 - At the prompt, in the forums, the file areas, the mailbox or the page editor: a bell, a flashing ` RING ` tag, `quantumrob (3) is ringing: can't upload to Drop Box`, then `[A]nswer [D]ecline [X] Away [Q] Later:`. `A` answers. `D` declines. `X` turns DND on (the sysop is away, and rings are saved as notes) and declines. `Q`, or any other key, leaves it ringing: `Still ringing. O answers while it does.` Keys typed while the notice was still being drawn are not taken as an answer. Answering from inside the forums, the file areas or the page editor leaves it: a post or page being written there is not kept.
 - In the chat room: `--> quantumrob (3) is ringing: ...` and `--> /o answers, /o- declines.`, and no question, because the keys there are the room's.
 - In a form: `RING quantumrob (3). ESC, then O.` on the status line, or `RING from node 3. ESC, then O.` when the handle does not fit.
-- A bare `O` at the prompt asks the question again while the ring is still going; with no ring it says `Nobody is ringing.`
-- If the caller stops or the ring runs out: `quantumrob (3) stopped ringing. Their note is saved.`; if they hang up: `quantumrob (3) hung up. Their note is saved.` Said in place of the question if it is still up.
+- A bare `O` at the prompt asks the question again while the ring is still going. With no ring it shows any notes rings have left (below), the same way as at login; with none it says `Nobody is ringing.` and, while mail is on, `Missed rings go to MAIL.`
+- If the caller stops or the ring runs out: `quantumrob (3) stopped ringing. It is in MAIL.`; if they hang up: `quantumrob (3) hung up. It is in MAIL.` (`Their note is saved.` instead when it became a note). Said in place of the question if it is still up.
 
-**Notes.** Every ring that was not answered leaves a note, kept in `rings.txt` on the user data partition, so a restart does not lose it. The newest 8 are kept. They are shown to the sysop at the next elevation, or at login to an account the sysop password has marked (the `]` in WHO), and then cleared:
+**Missed rings go to MAIL (1.1.0).** A ring nobody answered (no answer, declined, away, the sysop not available, the caller stopping or hanging up) becomes a MAIL message to the sysop's account: the one `CONFIG board` names as **Sysop** (`sysop_handle`, below), or, while that is unset or names an account that is gone, the last account to elevate to sysop. One account, not every account the sysop password has ever marked: marks are never taken off, and each copy would take one of the board's 64 mail slots. It comes from the caller's handle, a guest's marked `*` (`Visitor*`) and said to be a guest in the text, since a guest has no account to reply to. Its first line is `Ring:` and the reason, the second where it rang from and when: `Rang from node 3 at 22:14.` So the sysop's `You have mail.`, `DASH`'s waiting row and the display panel's letter icon all count missed rings without knowing rings exist. It is ordinary mail and follows MAIL's rules: the sysop's box, when full, refuses it (3 messages without a card, 12 with one), and the sysop is told `You have mail.` if they are on. An answered ring leaves nothing. The rate limits and one ring at a time are unchanged.
+
+**Notes, the fallback.** A missed ring that MAIL cannot take leaves a note instead, so a ring is never lost: when the board has no sysop account yet (none named in `CONFIG board` and nobody has typed `BYE <password>`), when mail is switched off (`mail_slots = 0`), or when the sysop's box is full. Notes are kept in `rings.txt` on the user data partition, so a restart does not lose them. The newest 8 are kept. They are shown to the sysop at the next elevation, at login to the sysop's account, or at a bare `O`, and then cleared. `DASH` says how many are waiting:
 
 ```
 2 rings while you were off:
@@ -246,6 +251,7 @@ Log in with your account as usual, then type `BYE <password>` at the command pro
 - A wrong password is an ordinary logoff. 3 wrong passwords from one IP within 15 minutes ban that IP for 15 minutes; banned connections are dropped silently.
 - Guests can't elevate: from a guest, `BYE <password>` is a plain logoff whatever the password. Staff log in with their account first.
 - An empty password in `system.cfg` disables that level.
+- **The sysop's own account** (1.1.0) is asked for the sysop password as it logs in: `Sysop password:`, and Enter (RETURN on a Commodore) or ESC skips it. The account is the one `CONFIG board` names as **Sysop**, or the last account to elevate to sysop while that is unset. It is BYE's own check: the published default only from the board's own network, and a wrong password counted toward the same IP ban. One try: a wrong one says so and the login carries on; the right one moves the caller to the sysop node. Not asked while the board is on the published default (the setup offer below asks instead), or from outside the board's network while the sysop node is taken. The account password alone never makes anybody staff: account passwords cross telnet in the clear on every login.
 - **A new board** has no `sysop_password` line, so the published default `unleashed` stands in (a line that spells `unleashed` out counts as no line, 1.1.0), and only from the board's own network. A caller on that network who logs in or signs up is asked for it right away and walked through `CONFIG staff` and a short tour; nobody needs to know about `BYE`. ESC (the left arrow on a Commodore) skips the question. `CONFIG staff` will not accept `unleashed` as a chosen password, and the directory listing waits until a real one is set. See README.md, "First boot".
 
 ### Staff commands
@@ -254,9 +260,10 @@ All caller commands still work. Node arguments are `1`-`10`, `S` (sysop node) or
 
 | Command | Permission | What it does |
 |---|---|---|
-| `DASH` | `DASH` | Dashboard on one 40-column screen: date and time, version, uptime, NTP state, heap (free, lowest, largest block), every node with what it is doing (last command, or connect / login / sign-up), idle and minutes left, calls today, active bans, busy line, Wi-Fi signal (dBm of the joined access point), backup window state, the last 5 calls. |
-| `DASH n` | `DASH` | The dashboard redrawn every n seconds (same limits as `WHO n`) until a key. |
-| `NODES` | `NODES` | Every session: handle, IP, minutes left, idle (plus terminal type on wide screens). `NODES n` redraws every n seconds until you press a key, the same bounds as `WHO n`. |
+| `DASH` | `DASH` | The dashboard's first page, once. A row for every line in node order, 1 to 10, then `S` and `B`: handle, what each caller is doing (last command, or connect / login / sign-up), idle, minutes left, address and terminal. Then what is waiting on you (ring notes, uploads to approve, your unread mail, a backup upload waiting for its Y), two rows of vitals (uptime, heap free and lowest, stack least, loop average and worst, slow passes; Wi-Fi signal, channel and whether the radio is awake, free data space, free card space, the directory listing, the backup window) and as many of the last calls as the screen has room for, under a count of today's. At 40 columns the same first page, with the address and terminal on page 2. A figure worth worrying about is red: heap under the reserve, stack under 1 KB, the radio asleep, the listing held, a slow pass since the last frame. |
+| `DASH ALL` | `DASH` | Every page in turn as one paged list: page 2 at 80 columns is each plugin's own line, the bans and the last 5 calls with addresses; at 40, page 2 is where each line is calling from and the plugins, page 3 the last calls with addresses and the bans. How a plain terminal sees the whole dashboard at once. |
+| `DASH n` | `DASH` | The dashboard redrawn every n seconds (same limits as `WHO n`), each page exactly the height of the screen so it never scrolls. `<` `>` (or Left/Right, `-` `+`) turn pages, `1`-`3` go to one, Enter redraws now, Q, ESC, Ctrl-C or Space stop, and any other key is ignored. On ANSI and PETSCII, Up and Down pick a line (a reverse-video bar), `K` kicks it and `S` snoops it, through `KICK` and `SNOOP` and their own permission and rank rules. Plain ASCII picks pages by number and has no pick. At 132 columns it is one page, with the board's figures beside the lines. The frame opens no file: every figure is a count the board keeps, the card's free space is at most a minute old, and the day's calls and the last five are kept in memory by the caller log. |
+| `NODES` | `NODES` | Every line, the sysop and busy lines included, drawn exactly as the dashboard's node rows: handle, what each is doing, idle, minutes left, address and the whole terminal name at 80 columns; handle, address and a five-letter terminal at 40. `NODES n` redraws every n seconds until you press a key, the same bounds as `WHO n`. |
 | `KICK n [message]` | `KICK` | Disconnect node n. The caller sees `Disconnected by sysop: message`. |
 | `BROADCAST message` | `BROADCAST` | Send `*** Sysop: message` to every logged-in node, announced like a page with a bell and a flashing ` SYSOP ` tag. Delivered wherever each caller is, the way a page is, and also on the status line of a form (`Sysop: message`, cut to 38 columns), so nobody misses one by being in the middle of `PROFILE`. See "Notices". |
 | `SNOOP n` | `SNOOP` | Mirror node n's output to your screen. `Q`, ESC or Ctrl-C stops. Both terminals must be the same type, and only one watcher per node. |
@@ -266,7 +273,7 @@ All caller commands still work. Node arguments are `1`-`10`, `S` (sysop node) or
 | `LURK` | `HIDE` | Toggle lurking: hidden from WHO and pages refused. |
 | `BANS` | `BANS` | Active IP bans and minutes remaining. |
 | `PLUGINS` | any staff | Every plugin compiled in: version, whether it is running, and why not. Also free disk space and the reserve. |
-| `SYS` | any staff | The whole board on one screen, in groups: network (SSID, signal in dBm with a word for what it means, channel, address, port), memory (heap free, the lowest it has been, the biggest block, session size), storage (used, free, what is held back for the board), load (uptime, clock, scheduler work per pass in microseconds, worst pass **and which phase of the loop it happened in**, how many passes have run over 50 ms since boot, passes since boot) and traffic (nodes busy and the peak, calls answered since boot, records in the caller log, plugins running, active IP bans). Any staff level can run it, though it is grouped with the sysop tools below. |
+| `SYS` | any staff | The whole board on one screen, in groups: network (SSID, signal in dBm with a word for what it means, channel, address, port), memory (heap free, the lowest it has been, the biggest block, session size), storage (used, free, what is held back for the board), load (uptime, why the board last restarted, clock, whether the board is in silent mode and why, scheduler work per pass in microseconds, worst pass **and which phase of the loop it happened in**, how many passes have run over 50 ms since boot, passes since boot) and traffic (nodes busy and the peak, calls answered since boot, records in the caller log, plugins running, active IP bans). Any staff level can run it, though it is grouped with the sysop tools below. |
 | `CAMERA` | any staff | Camera boards only. What is stored (callers' photos and timed ones counted separately, with their card space), the card's free space against its floor, the last photo taken and who took it, and (for anybody but the sysop) your own limits used this hour and today. `CAMERA SET key value` (sysop only) changes a camera setting live, written to `system.cfg`, the same keys as `CONFIG camera`. Hidden alias `CAM`. |
 | `FILES` / `F` | all | **Goes into the file area**, the way `CHAT` goes into the room, rather than printing a list and returning. A screen plays on the way in if the board has `screens/files`, then the areas appear as a numbered menu laid out in as many columns as the terminal has room for. A digit opens an area (`0` is ten), `Q` goes back one level and `Q` again leaves. An area numbered past 10 (the sysop's Backups, and on a camera board Photos and Timelapse too) is `#`, the number and Enter at the menu (1.1.0), or the cursor keys. `FILES n` enters and opens that area in one go. Only on a board with a card: the plugin does not start without one, so on a cardless board the command does not exist rather than offering an empty file area. |
 | `FORUMS` | all | **Goes into the message boards**, the way `FILES` and `CHAT` go into theirs. Three levels: topic areas the sysop sets up (`CONFIG forums`), subjects that callers start inside them, and the messages in each subject. A screen plays on the way in if the board has `screens/forums`. Only on a board with a card, the same as `FILES`: the plugin does not start without one, so on a cardless board the command does not exist rather than offering empty boards. `FORUMS SCAN` needs the forums plugin's admin level (`co1` by default) and prints what the board thinks is on the card. |
@@ -365,7 +372,7 @@ outside it and no way to approve a file that is waiting somewhere else.
 | Command | What it does |
 |---|---|
 | `ANNOUNCE` | Whether this board is listed in a directory, when each one last answered, and the public address the directory sees. `ANNOUNCE TEST` prints the exact payload and sends nothing; `ANNOUNCE NOW` sends a heartbeat immediately. Off until switched on: see [ANNOUNCE.md](ANNOUNCE.md). |
-| `LIGHTS` | The lights plugin's two outputs: each one's pin, effect, brightness and colour order, and the colours it was last sent, in hex. `LIGHTS TEST` shows red, green, blue and then white on every pixel, a second each, for checking the wiring and the order. Off until switched on (on as shipped on the Waveshare S3): see `lights` under Plugins below. |
+| `LIGHTS` | The lights plugin's two outputs: each one's pin, effect, brightness and colour order, and the colours it was last sent, in hex. `LIGHTS TEST` shows red, green, blue and then white on every pixel, a second each, for checking the wiring and the order. In silent mode every pixel is dark, the title says `silent` and `LIGHTS TEST` is refused. Off until switched on (on as shipped on the Waveshare S3): see `lights` under Plugins below. |
 | `PANEL` | Boards with a display only (the Waveshare ESP32-S3-LCD-1.47): what the panel is running on (controller, size and offsets as turned, where the USB plug is, pins, SPI clock) and everything it is showing, as text, top to bottom: the bar's current page, the band's glyphs in words, the antenna's fill, the clock, the heading, each list row (a recent row as `login`, `guest`, `logoff`, `page` or `ring`, then its time and handle), the system row, and the number of LEDs in its strip. `Dark:` and why, when it is not lit. See `panel` under Plugins below. |
 | `SHUTDOWN [n]` | Take the board off the air on purpose. Announces to every node, counts down n seconds (5 to 3600, default 60), then hangs up on everyone including you, each with the ordinary send-off. `SHUTDOWN CANCEL` stops a countdown and says so. Afterwards the board keeps answering and tells callers it has been shut down, rather than refusing connections in a way that looks like a crash. A physical reboot brings it back. Any transfer running when the countdown ends is lost, and the warning says so. |
 | `BACKUP SD` | The zip the backup window gives, onto the SD card: `unleashed-YYYYMMDD-HHMM.zip` in the card's `backup` folder, with a dot a file while it writes and then `Saved: 14 files, 31 KB.` It holds the Wi-Fi password as typed, and says so. `BACKUP SD SCREENS` writes `screens-YYYYMMDD-HHMM.zip`, the screens alone. Two in one minute would share a name, so the second is refused. `BACKUP` on its own explains the difference from the backup window (1.1.0). |
@@ -479,6 +486,8 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `port` | `6400` | The port callers dial. Used from the next restart. It cannot be the backup window's port. Takes 1 to 65535; as shipped, `6400`. If callers reach the board from the internet, the forward on your router has to point at the new number too. mDNS, SYS, the console's `dial in` line, Improv's telnet link and announce's default all follow it |
 | `idle_minutes` | `20` | shell idle hangup, 0 = never |
 | `landing` | `main` | where a caller goes after login when their account has not said: `main`, `chat` or `forums` |
+| `sysop_handle` | empty | the sysop's own account (1.1.0, `CONFIG board`, **Sysop**): missed rings are mailed to it, and it is asked for the sysop password at login. `CONFIG` refuses a handle with no live account and writes it in `users.txt`'s spelling. Empty: the last account to elevate to sysop, which the board keeps in `userdata/sysop.last` across a restart (a restore that brings back `users.txt` clears it, since it is an id into that file) |
+| `sysop_id` | `0` | that account's permanent id, written by `CONFIG board` and the setup flow alongside `sysop_handle`. The id is what counts: a renamed account keeps the mail, and a new account taking the old handle does not get it. An id that matches no live account falls back to the last account to elevate. 0 is not set |
 | `call_minutes` | `60` | per-call limit, 0 = unlimited |
 | `day_minutes` | `480` | per-day limit, 0 = unlimited |
 | `backup_port` | `8080` | HTTP port while the backup window is open; never the same as `port` |
@@ -487,6 +496,9 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `who_refresh_min` | `1` | lowest `WHO n` / `DASH n` refresh, seconds |
 | `who_refresh_max` | `30` | highest `WHO n` / `DASH n` refresh, seconds |
 | `activity_led_gpio` | `2` | The board's own LED, which blinks on network traffic (the blue LED on DOIT-style boards), not a pixel; -1 = none. `Onboard LED GPIO` on `CONFIG board`, `Board LED` at 40 columns. Refused: 6 to 11 (flash) and pins the chip does not have (20, 24, 28 to 31 on the WROOM), and on `CONFIG board` a pin something else holds |
+| `silent` | `no` | `yes`: silent mode, every light the firmware drives off and kept off (1.1.0, `CONFIG board`, **Silent: lights off**, `Silent` at 40 columns). See "Silent mode" under this table |
+| `silent_from` | empty | silent hours start, `HH:MM` local by `tz`, 00:00 to 23:59; empty for none. `Silent hours from`, `Silent at` at 40 columns |
+| `silent_until` | empty | and end: the lights are back at this time. Both or neither: a file that sets one end, or the same time twice, is read as no hours and says so on the console, and `CONFIG` refuses it. May be earlier than `silent_from`, which crosses midnight (22:00 to 07:00) |
 | `self_register` | `yes` | `no`: unknown handles can't sign up, staff add accounts |
 | `max_users` | `250` | account limit, 1..250. Not a space limit: `userdata` holds roughly 1,380 accounts. The cap is that the list indices are `uint8_t`, which reaches into every list on the board, so raising it is its own piece of work. The SD card does not help and is not meant to: accounts stay on internal flash so they survive the card failing. |
 | `guest` | `yes` | `no`: unknown handles are not offered `[G]uest` |
@@ -501,6 +513,43 @@ A TZ string is the POSIX form the board's C library reads. It starts with the zo
 If your place is not in the list, a Linux computer can tell you its string: `tail -n 1 /usr/share/zoneinfo/Europe/Paris`, with your own area and city, prints it. The answer is only as current as that computer's time zone data, and the rules do change: British Columbia, Alberta and the Northwest Territories all stopped changing their clocks in 2026, and lists of these strings made before then give the old rules. If your government changes the rules, type the new string as Custom; the board does not update its list by itself.
 
 The list is 34 zones and Custom, in `src/core/tzones.h`. A `tz` in the file that is exactly one of their strings opens as that zone's name; anything else opens as Custom with the string. Picking a zone writes its string into the row below, and typing into the string makes the zone Custom.
+
+**Silent mode** (1.1.0, `CONFIG board`): every light the firmware drives goes
+off and stays off, with nothing flashing. That is the activity LED, both of
+the lights plugin's outputs (the drive light and the strip), the display
+panel's backlight on a board with one, the camera's flash, and any LED a
+board profile drives. It is an override, not a change to any of them: each
+keeps its own settings, and when silent ends each carries on as it was. The
+panel keeps its picture's state and draws the whole glass again before it
+lights. `LIGHTS` says `silent` in its title and `LIGHTS TEST` is refused;
+`PANEL` says `silent` and `Backlight 0%, silent mode`.
+
+- **Silent** (`silent`) is the switch.
+- **Silent hours** (`silent_from`, `silent_until`) make it silent every day
+  between two times, local by the Timezone above. The start is silent and
+  the end is lit again, so 22:00 to 07:00 is dark from 22:00 and lit at
+  07:00. They need the clock: until NTP has set it the hours do nothing and
+  only the switch applies. With both set, the switch wins.
+- `SYS` says whether the board is silent and why, on its own row under the
+  clock: `on switch`, `on hours until 07:00` (`hrs until` at 40 columns),
+  `off hours from 22:00`, or `off hours need clock`. The console logs each
+  change.
+- The switch takes effect as the page is saved; the hours are checked once
+  a second. After a restart inside silent hours the lights come on until
+  NTP has set the clock (seconds on a board with internet, and all night on
+  one without), because until then the board does not know it is night. The
+  switch has no such gap.
+- A time in the file that is not `HH:MM` is read as no time and the console
+  says so; `CONFIG` refuses it.
+- One exception: holding BOOT after a reset (see "Resetting the board" in
+  README.md) still shows its stages on the activity LED, because somebody
+  standing at the board holding the button asked to see them.
+
+**The power LED cannot be switched off.** On every board this firmware
+supports (the WROOM dev boards, the Waveshare S3, the Freenove) the red power
+LED is wired straight to 3V3, with no GPIO in its path, so no firmware and no
+setting can turn it off. A piece of tape over it, or lifting the LED off the
+board, is the only way.
 
 ### Plugins
 
@@ -798,6 +847,9 @@ strip_order  = GRB      ; GRB | RGB | BRG | RBG | GBR | BGR
   last sent, in hex, with the Hayes panel's labels in `hayes`. `LIGHTS TEST`
   shows red, green, blue and then white on every pixel of both, a second
   each; a strip that shows green for red is not a GRB strip.
+- Silent mode (`CONFIG board`, 1.1.0) puts both outputs out and keeps them
+  out, whatever their effects; their settings are untouched and they carry
+  on as they were when it ends. `LIGHTS TEST` is refused while it lasts.
 
 **Manual mode.** `CONFIG lights` has a Pixels button. It opens a list of
 sixteen pixels, and each of those opens a page of two rows (Escape goes
@@ -877,6 +929,10 @@ phone's status bar over two lists, top to bottom:
   strip is drawn brighter than its figures would make it, because 10% on
   glass is a black a person reads as off.
 
+In silent mode (`CONFIG board`, 1.1.0) the backlight goes off and nothing is
+sent to the glass; when it ends the whole glass is drawn again, with what
+happened meanwhile, and lit at its own Bright % once all of it is out.
+
 Hidden and lurking staff never appear in the lists or as an event, and do
 not light the person glyph. The letter follows the sysop's account, which
 the panel learns when the sysop is first on after a boot. Everything shown
@@ -934,6 +990,11 @@ timer (the timelapse), or on request from another plugin later (a motion
 sensor). Bringing the sensor up, taking the frame, drawing the watermark and
 writing the card all run on a worker task off the BBS loop, so a photo never
 adds lag for anyone else on the board.
+
+Once a boot, when the plugin first counts the photos on the card, it also
+brings the sensor up and straight down again (no picture, no flash) to see
+whether one answers; every snap looks again. The directory's camera badge
+(announce's `camera` feature, ANNOUNCE.md) is sent only while one did.
 
 ```
 [plugin:camera]
@@ -1021,6 +1082,9 @@ pic_effect = none       ; none | negative | grey | red | green | blue | sepia
 - **Lead ms**: how long the flash is on before the shutter, 0 to 1000. A
   pixel flash adds about 40 ms of its own on top, one more frame reaching
   the strip.
+- In silent mode (`CONFIG board`) the flash never lights, in either mode:
+  a snap still works and the photo is taken without it, with no lead. A
+  flash already lit when silent mode starts goes out at once.
 
 **Timelapse** (its own page): the board's own photos, on a timer.
 - **Every min** and **and sec**: the time between shots, up to 1440 minutes

@@ -49,10 +49,12 @@
 #include "plugin.h"
 #include "sysconfig.h"
 #include "tzones.h"
+#include "silent.h"
 #include "../platform/platform.h"
 // CONFIG draws the lights' pixel pages from the plugin's own word lists,
 // the way it already knows the file areas' and the forums' packed formats.
 #include "../plugins/lights.h"
+#include "../plugins/chat.h"
 
 #include <climits>
 #include <cstring>
@@ -103,16 +105,160 @@ void Bbs::cmdLurk(Session& s) {
 // markAccount: remember the rank on the account that just used a staff
 // password. Guests and the busy line have no account to mark.
 // ---------------------------------------------------------------------------
+namespace {
+// markRecord: the rank onto the account in users.txt, and its id back. Never
+// inlined, so the record is off the stack before markAccount goes on to
+// save the fallback, whose chat::sysopChanged reads users.txt again.
+__attribute__((noinline)) uint32_t markRecord(const char* handle, Access level) {
+    UserRec u;                                     // on the stack since 1.1.0
+    if (!users::find(handle, u)) return 0;
+    if (u.level < static_cast<uint8_t>(level)) {
+        u.level = static_cast<uint8_t>(level);
+        if (users::update(u.handle, u) == users::Result::Ok)
+            plat::log("bbs: account '%s' marked %s", u.handle, syscfg::levelName(level));
+    }
+    return u.id;
+}
+} // namespace
+
 void Bbs::markAccount(Session& s, Access level) {
     s.rank = static_cast<uint8_t>(level) > s.rank ? static_cast<uint8_t>(level) : s.rank;
     if (s.guest || !s.user[0]) return;
-    UserRec u;                                     // on the stack since 1.1.0
-    if (!users::find(s.user, u)) return;
-    if (u.level >= static_cast<uint8_t>(level)) return;
-    u.level = static_cast<uint8_t>(level);
-    if (users::update(u.handle, u) == users::Result::Ok) {
-        plat::log("bbs: account '%s' marked %s", u.handle, syscfg::levelName(level));
+    uint32_t id = markRecord(s.user, level);
+    // The last account to elevate to sysop, whichever way it did (1.1.0):
+    // where missed rings go while CONFIG names no sysop account.
+    if (level == Access::Sysop && id && id != sysopLast_) sysopLastSave(id);
+}
+
+// ===========================================================================
+// The sysop's account (1.1.0, Rob: "Missed sysop pages go to one account")
+//
+// Not every account the sysop password ever marked: marks are never taken
+// off, so a board where several people have typed it once would mail every
+// ring to all of them, each copy one of the board's 64 mail slots. One
+// account, named in CONFIG board by handle and held by id; the last account
+// to elevate to sysop when that is unset or gone.
+// ===========================================================================
+
+namespace {
+
+// accountId: the id of the live account with this handle, 0 when there is
+// none or it is retired, with the handle as the file spells it copied to
+// out (which may be handle itself). Never inlined, so the record is off the
+// stack again before configSave or linkSysop goes on to
+// write the file.
+__attribute__((noinline)) uint32_t accountId(const char* handle, char* out, size_t n) {
+    UserRec u;
+    if (!users::find(handle, u) || u.retired || !u.id) return 0;
+    snprintf(out, n, "%s", u.handle);
+    return u.id;
+}
+
+void sysopLastPath(char* out, size_t n) {
+    snprintf(out, n, "%s/%s", plat::userBase(), BBS_SYSOP_LAST_FILE);
+}
+
+// One pass over users.txt for the configured id and the fallback id at once.
+// The configured one wins wherever it falls in the file.
+struct SysopFind {
+    uint32_t cfgId;
+    uint32_t lastId;
+    UserRec* out;
+    bool     gotCfg;
+    bool     gotLast;
+};
+
+void sysopFindRow(void* ctx, uint8_t, const UserRec& u) {
+    SysopFind& f = *static_cast<SysopFind*>(ctx);
+    if (u.retired || !u.id) return;
+    if (f.cfgId && u.id == f.cfgId) {
+        *f.out   = u;
+        f.gotCfg = true;
+    } else if (f.lastId && u.id == f.lastId && !f.gotCfg &&
+               u.level >= static_cast<uint8_t>(Access::Sysop)) {
+        // The fallback only ever names an account the sysop password marked.
+        // sysop.last is an id into whatever users.txt is live, and a file
+        // brought back from elsewhere can give that id to a stranger.
+        *f.out    = u;
+        f.gotLast = true;
     }
+}
+
+} // namespace
+
+// sysopLastLoad / sysopLastSave: the fallback's id in its own small file on
+// userdata. Not in system.cfg: it is the board's record of what happened,
+// not a setting, so it is not in CONFIG or a backup either (the way
+// wifi.last is kept). Written through a temp file and a rename, which on
+// LittleFS replaces the old one in a single step.
+void Bbs::sysopLastLoad() {
+    char path[96];
+    sysopLastPath(path, sizeof(path));
+    sysopLast_ = 0;
+    FILE* f = fopen(path, "r");
+    if (!f) return;
+    char line[16] = "";
+    if (fgets(line, sizeof(line), f)) sysopLast_ = static_cast<uint32_t>(strtoul(line, nullptr, 10));
+    fclose(f);
+}
+
+void Bbs::sysopLastSave(uint32_t id) {
+    char path[96], tmp[104];
+    sysopLastPath(path, sizeof(path));
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE* f = fopen(tmp, "w");
+    if (!f) return;
+    bool ok = fprintf(f, "%lu\n", static_cast<unsigned long>(id)) > 0;
+    if (fclose(f) != 0) ok = false;
+    if (!ok || rename(tmp, path) != 0) {
+        remove(tmp);
+        plat::log("bbs: could not record the last sysop account");
+        return;
+    }
+    sysopLast_ = id;
+    // Where the sysop's mail is may just have moved. Only when CONFIG names
+    // nobody, or names an account that is gone; asking costs a pass then.
+    chat::sysopChanged();
+}
+
+// sysopAccount: see bbs.h
+bool Bbs::sysopAccount(UserRec& out) {
+    SysopFind f{ syscfg::get().sysopId, sysopLast_, &out, false, false };
+    if (!f.cfgId && !f.lastId) return false;
+    users::range(0, 255, sysopFindRow, &f);
+    return f.gotCfg || f.gotLast;
+}
+
+// isSysopAccount: see bbs.h. Only the fallback while an id is configured
+// needs the file: the configured account may be retired or gone.
+bool Bbs::isSysopAccount(uint32_t id) {
+    if (!id) return false;
+    uint32_t cfgId = syscfg::get().sysopId;
+    if (id != cfgId && id != sysopLast_) return false;
+    // Either may name an account that is retired, gone, or (the fallback)
+    // not marked sysop; sysopAccount is the one answer to all of that. Only
+    // the sysop's own account ever pays for the pass.
+    UserRec u;
+    return sysopAccount(u) && u.id == id;
+}
+
+// linkSysop: see bbs.h. Written the way CONFIG board writes it, handle and
+// id together, and read back at once so the rest of the setup sees it.
+void Bbs::linkSysop(const Session& s) {
+    if (s.guest || !s.user[0]) return;
+    char handle[BBS_USER_MAX + 1];
+    uint32_t n = accountId(s.user, handle, sizeof(handle));
+    if (!n) return;
+    char id[12];
+    snprintf(id, sizeof(id), "%lu", static_cast<unsigned long>(n));
+    const syscfg::KeyVal kv[] = { { "sysop_handle", handle }, { "sysop_id", id } };
+    char err[80] = "";
+    if (!syscfg::write(kv, 2, nullptr, err, sizeof(err)) || !syscfg::reload(err, sizeof(err))) {
+        plat::log("bbs: could not name '%s' the sysop's account: %s", handle, err);
+        return;
+    }
+    plat::log("bbs: '%s' (id %s) is the sysop's account", handle, id);
+    chat::sysopChanged();
 }
 
 // ---------------------------------------------------------------------------
@@ -269,11 +415,11 @@ void Bbs::elevate(Session& s, uint32_t now, bool setup) {
     t.nl(tl);
     // Why the board last started, here as well as on a co-sysop's line
     // (1.1.0). After a BOOT reset of the password this is the very login it
-    // is for, and it only ever reached coElevate before.
-    bootNotice(d);
-    // Rings nobody answered while the sysop was off (1.1.0), once, then gone.
-    ringNotes(d);
-    nightlyNotice(d);                 // last night's backup, if it did not happen (1.1.0)
+    // is for, and it only ever reached coElevate before. On the setup path
+    // the setup screen clears the screen first, so it waits for the first
+    // prompt after the setup instead (staffArrival, noticeOwed_).
+    if (setup) noticeOwed_ = d.id;
+    else       staffArrival(d);
     t.color(tl, Color::Grey);
     t.text(tl, "HELP for commands.");
     t.nl(tl);
@@ -307,11 +453,11 @@ void Bbs::coElevate(Session& s, Access level, uint32_t now, bool setup) {
     // Said to staff only, and said plainly. A board that restarted on its
     // own has lost every caller who was on it. The two sentences used to run
     // together on one line, since say() ends none, and nothing tested it
-    // because the host build never crashed its way into a boot.
-    bootNotice(s);
-    // A second sysop session, in place on a caller line, is the sysop too.
-    if (level == Access::Sysop) ringNotes(s);
-    nightlyNotice(s);                 // last night's backup, if it did not happen (1.1.0)
+    // because the host build never crashed its way into a boot. A second
+    // sysop session, in place on a caller line, is the sysop too, and gets
+    // the ring notes. Owed rather than said on the setup path, as above.
+    if (setup) noticeOwed_ = s.id;
+    else       staffArrival(s);
     say(t, tl, Color::Grey, can(s, PERM_NOLIMITS) ? "No time limits. HELP for commands."
                                                : "HELP for commands.");
     plat::log("bbs: node %u -> %s (%s, %s) perms 0x%03x", s.id, syscfg::levelName(level),
@@ -351,75 +497,42 @@ Session* Bbs::nodeByArg(const char* arg, const char** rest) {
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
-// rowNodes: every live session including the busy line and the sysop
+// rowNodes: every session, sysop and busy line included, in node order.
+//
+// Exactly the dashboard's node block (1.1.0): the same builder, the same
+// rows, with its own title and the marker key. At 80 columns that is the
+// handle, what each line is doing, idle, minutes left, the address and the
+// whole terminal name, which the old 9-wide column cut to "PETSCII-4". At 40
+// it is the where-from row: handle, address, a five-letter terminal, since
+// the address is what this list is for.
+//
+// Every line always has its row, the free ones as "-", so a refreshing
+// NODES n is the same height on every frame without special cases.
 // ---------------------------------------------------------------------------
 bool Bbs::rowNodes(Session& s) {
-    Term& t = s.term;
-    Timeline& tl = s.tl;
-    bool wide = t.cols() >= 60;
-    const char* fmt = wide ? "%s%c%-20.20s %-15.15s %-9.9s %4s %5s" : "%s%c%-9.9s %-15.15s %4s %5s";
-    char buf[96];
-    char left[12];
-    char idle[8];
-    uint32_t now = plat::millis();
-    // A refresh screen redraws from home, so the frame has to be the same
-    // height every time or the tail of a taller frame is left on the screen.
-    // The sysop and busy lines are skipped when free, which makes the height
-    // vary, so while refreshing they become blank rows instead. This is the
-    // same trap DASH hit when it grew a row per node.
-    bool refresh = s.watch != ListKind::None;
-
-    for (;;) {
-        uint8_t i = s.listIdx++;
-        if (i == 0) {
-            char count[16];
-            snprintf(count, sizeof(count), "%u of %u", activeNodes(), BBS_MAX_NODES);
-            rowTitle(s, "Nodes", count);
-            return true;
-        }
-        if (i == 1) {
-            if (wide) snprintf(buf, sizeof(buf), fmt, " N", ' ', "Handle", "IP", "Terminal", "Left", "Idle");
-            else      snprintf(buf, sizeof(buf), fmt, " N", ' ', "Handle", "IP", "Left", "Idle");
-            rowText(s, Color::LightBlue, buf);
-            return true;
-        }
-        uint8_t k = static_cast<uint8_t>(i - 2);
-        if (k == kSessions) { rowRule(s); return true; }
-        if (k == kSessions + 1) {
-            say(t, tl, Color::DarkGrey, kMarkKey);
-            t.nl(tl);
-            return true;
-        }
-        if (k > kSessions + 1) return false;
-        const Session* o = all_[k];
-        if (o->role != Role::Caller && o->st == SState::Free) {
-            if (refresh) { rowText(s, Color::DarkGrey, ""); return true; }  // keep the height
-            continue;
-        }
-
-        if (o->st == SState::Free) {
-            snprintf(buf, sizeof(buf), "%s -", nodeLabel(*o).t);
-            rowText(s, Color::DarkGrey, buf);
-            return true;
-        }
-
-        char h[24];
-        if (o->user[0]) listHandle(h, sizeof(h), o->user, wide ? 20 : 9);
-        else            snprintf(h, sizeof(h), "%s", preLoginName(*o));
-        bool hidden = o != &s && (!o->visible || o->lurk);
-        if (o->role == Role::Caller && o->loggedIn && !unlimited(*o)) {
-            int32_t sec = secondsLeft(*o, now);
-            if (sec == INT32_MAX) snprintf(left, sizeof(left), "--");
-            else                  snprintf(left, sizeof(left), "%ld", static_cast<long>((sec + 59) / 60));
-        } else {
-            snprintf(left, sizeof(left), "--");
-        }
-        fmtIdle(idle, sizeof(idle), now - o->lastInput);
-        if (wide) snprintf(buf, sizeof(buf), fmt, nodeLabel(*o).t, markFor(*o), h, o->ip, o->term.name(), left, idle);
-        else      snprintf(buf, sizeof(buf), fmt, nodeLabel(*o).t, markFor(*o), h, o->ip, left, idle);
-        rowText(s, o == &s ? Color::White : (hidden ? Color::DarkGrey : Color::Grey), buf);
+    NodePlan plan = rowWidth(s) >= 72 ? NodePlan::Wide : NodePlan::From;
+    uint8_t i = s.listIdx++;
+    if (i == 0) {
+        char count[16];
+        snprintf(count, sizeof(count), "%u of %u", activeNodes(), BBS_MAX_NODES);
+        rowTitle(s, "Nodes", count);
         return true;
     }
+    if (i == 1) {
+        rowClose(s, nodeHead(s, plan));
+        return true;
+    }
+    uint8_t k = static_cast<uint8_t>(i - 2);
+    if (k < kNodeRows) {
+        rowClose(s, nodeCells(s, *nodeAt(k), plan));
+        return true;
+    }
+    if (k == kNodeRows) { rowRule(s); return true; }
+    if (k == kNodeRows + 1) {
+        rowText(s, Color::DarkGrey, kMarkKey);
+        return true;
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -820,6 +933,33 @@ const CfgField kBoard[] = {
     // set to anything other than Default overrides this, so changing it
     // moves exactly the people who never expressed a preference.
     { "landing",           "Land on",  CK_TEXT, 0, 0, 8,  nullptr, "Land on after login" },
+    // The sysop's own account (1.1.0, Rob): missed rings are mailed to it,
+    // and it is asked for the sysop password when it logs in. An account
+    // that exists, checked on save, and written with its id (sysop_id)
+    // beside it, so a rename or a new account taking the name cannot catch
+    // the mail. Empty: the last account to elevate to sysop.
+    { "sysop_handle",      "Sysop",    CK_TEXT, 0, 0, BBS_USER_MAX,
+      "Missed pages are mailed to this one.",
+      "Sysop's account",
+      "Missed pages are mailed here; it is asked for the sysop password at login." },
+    // Silent mode (1.1.0, Rob: "Silent as in no lights anywhere"): every
+    // light the firmware drives, off, overriding their own settings without
+    // touching them. The power LED is on 3V3 on every board this knows, so
+    // the note says what firmware cannot do. The hours are a time of day or
+    // blank, both or neither, by the Timezone above; the parser checks them
+    // (syscfg::trial), and they wait for the clock.
+    { "silent",            "Silent",    CK_YESNO, 0, 0, 4,
+      "Every light off. Not the power LED.",
+      "Silent: lights off",
+      "Every LED and pixel dark, the panel too. The power LED is on 3V3: tape it." },
+    { "silent_from",       "Silent at", CK_TEXT,  0, 0, 5,
+      "HH:MM, local. Blank: no silent hours.",
+      "Silent hours from",
+      "Silent every day from this time, HH:MM local. Blank for none. Needs the clock." },
+    { "silent_until",      "Silent to", CK_TEXT,  0, 0, 5,
+      "HH:MM local. Lights back at this time.",
+      "Silent hours until",
+      "Lights back at this time, HH:MM local. After midnight is fine: 22:00 to 07:00." },
 };
 
 const CfgField kLimits[] = {
@@ -894,7 +1034,7 @@ struct CfgPage {
     { name, title, what, arr, static_cast<uint8_t>(sizeof(arr) / sizeof((arr)[0])) }
 
 const CfgPage kPages[] = {
-    CFG_PAGE("board",    "BOARD",           "name, clock, idle, LED, landing", kBoard),
+    CFG_PAGE("board",    "BOARD",           "name, clock, LED, landing, silent", kBoard),
     CFG_PAGE("limits",   "TIME LIMITS",     "minutes per call and per day",    kLimits),
     CFG_PAGE("accounts", "ACCOUNTS",        "sign-ups and guest calls",        kAccounts),
     CFG_PAGE("backup",   "BACKUP WINDOW",   "port, how long it stays open",    kBackup),
@@ -1211,7 +1351,11 @@ void cfgLiveValue(const char* key, char* out, size_t n) {
     else if (!strcmp(key, "ntp_server"))            snprintf(out, n, "%.*s", static_cast<int>(n) - 1, c.ntpServer);
     else if (!strcmp(key, "idle_minutes"))          snprintf(out, n, "%u", c.idleMinutes);
     else if (!strcmp(key, "landing"))               snprintf(out, n, "%s", users::landKey(c.landing));
+    else if (!strcmp(key, "sysop_handle"))          snprintf(out, n, "%s", c.sysopHandle);
     else if (!strcmp(key, "activity_led_gpio"))     snprintf(out, n, "%d", c.ledGpio);
+    else if (!strcmp(key, "silent"))                snprintf(out, n, "%s", c.silent ? "yes" : "no");
+    else if (!strcmp(key, "silent_from"))           board::fmtTime(c.silentFrom, out, n);
+    else if (!strcmp(key, "silent_until"))          board::fmtTime(c.silentUntil, out, n);
     else if (!strcmp(key, "call_minutes"))          snprintf(out, n, "%u", c.callMinutes);
     else if (!strcmp(key, "day_minutes"))           snprintf(out, n, "%u", c.dayMinutes);
     else if (!strcmp(key, "who_refresh_min"))       snprintf(out, n, "%u", c.whoMin);
@@ -2072,9 +2216,12 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
     // first, so the answer is spent whatever this save then finds.
     const bool confirmed = s.form.takeConfirmed();
     if (!g_cfgPage) { snprintf(err, errLen, "nothing to save"); return false; }
-    syscfg::KeyVal pairs[Form::kMaxFields];
-    uint8_t from[Form::kMaxFields];                 // which field each pair came from
+    // One more than a page has fields: the board page's Sysop writes two
+    // keys, the handle and the account id behind it.
+    syscfg::KeyVal pairs[Form::kMaxFields + 1];
+    uint8_t from[Form::kMaxFields + 1];             // which field each pair came from
     uint8_t n = 0;
+    char sysopId[12] = "";                          // sysop_id's value, while pairs points at it
     const bool core = !g_cfgSection[0];
     const uint8_t count = g_cfgPage->count < Form::kMaxFields ? g_cfgPage->count : Form::kMaxFields;
 
@@ -2091,6 +2238,14 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
     // no key to its WPA2 network at the next restart. The verdict says so
     // in words, while there is still time to open the page and put it back.
     bool nowOpen = false;
+    // Silent hours are one setting in two keys (1.1.0). A change to either
+    // sends both to the parser: a file holding only one end is read as no
+    // hours, and the form, which shows the file, would otherwise refuse the
+    // end being added with "set both" while the other end sits on screen.
+    bool hoursTouched = false;
+    for (uint8_t i = 0; core && i < count; ++i)
+        if (!strncmp(g_cfgPage->fields[i].key, "silent_", 7) && bbsu::hash(g_cfgBuf[i]) != g_cfgWas[i])
+            hoursTouched = true;
     if (ssidAt >= 0 && passAt >= 0) {
         const char* ssid = g_cfgBuf[ssidAt];
         const char* pass = g_cfgBuf[passAt];
@@ -2130,6 +2285,7 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
         // before anything compares it, so a tidy-up alone writes nothing.
         if (core && !strcmp(f.key, "hostname")) syscfg::normaliseHostname(v);
         bool pairWith = static_cast<int>(i) == ssidAt && passWritten;
+        if (hoursTouched && !strncmp(f.key, "silent_", 7)) pairWith = true;
         if (bbsu::hash(v) == g_cfgWas[i] && !pairWith) continue;     // nothing to write
         if (!*v && (f.kind == CK_YESNO || f.kind == CK_LEVEL || f.kind == CK_CYCLE)) continue;
         // A cycle holds one of its words, but plain ASCII line mode types
@@ -2200,6 +2356,26 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
         if (!core && f.kind != CK_PASS && strchr(v, ';')) {
             s.form.fail(i, "No ; here: it ends the value", s.term, s.tl);
             return false;
+        }
+        // The sysop's account (1.1.0): an account that exists and is not
+        // retired, written in the file's own spelling with its id beside it.
+        // Emptied, the id goes to 0 and the last account to elevate stands in.
+        if (core && !strcmp(f.key, "sysop_handle")) {
+            if (*v) {
+                uint32_t id = accountId(v, v, f.cap + 1u);
+                if (!id) {
+                    s.form.fail(i, "No account by that name", s.term, s.tl);
+                    return false;
+                }
+                snprintf(sysopId, sizeof(sysopId), "%lu", static_cast<unsigned long>(id));
+                pairs[n].key   = "sysop_id";
+                pairs[n].value = sysopId;
+            } else {
+                pairs[n].key   = "sysop_id";                         // 0 is "not set"
+                pairs[n].value = "0";
+            }
+            from[n] = i;
+            ++n;
         }
         pairs[n].key   = f.key;
         pairs[n].value = v;
@@ -2347,6 +2523,8 @@ bool Bbs::configReloadAll(char* err, size_t errLen) {
 // both come here, so "live" means the same thing after either.
 // ---------------------------------------------------------------------------
 void Bbs::restartPlugins() {
+    // A restore that replaced users.txt removed sysop.last with it (ziparc).
+    sysopLastLoad();
     // A plugin about to be stopped may have callers inside it. Hand them
     // back to the command prompt first: a session left owning a plugin
     // that has given its memory back is a session that never comes home.

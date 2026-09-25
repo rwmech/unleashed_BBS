@@ -50,6 +50,11 @@ namespace camera {
 // running: the camera plugin is on and has a card to keep photos on.
 bool running();
 
+// found: a sensor answered the latest bring-up this boot (the survey's look
+// once a boot, or a snap). What announce's "camera" feature asks, with
+// running(): a board whose camera will not start does not claim the badge.
+bool found();
+
 // busy: a picture is being taken or written, or old ones removed. The
 // card is in use by the camera's worker until this is false.
 bool busy();

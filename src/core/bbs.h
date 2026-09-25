@@ -63,6 +63,7 @@
 #include "users.h"
 #include "form.h"
 #include "ring.h"
+#include "../platform/platform.h"
 
 enum class SState : uint8_t {
     Free,      // slot unused
@@ -95,6 +96,7 @@ enum class SState : uint8_t {
     Ringing,   // a caller waiting on a ring: the spinner, any key stops it
     RingAsk,   // the sysop's one-key question: answer, decline, away, later
     CardJob,   // BACKUP SD / RESTORE SD working, or asking Y/N (1.1.0)
+    AskSysop,  // the sysop's account at login: "Sysop password:", Enter skips (1.1.0)
 };
 
 enum class Role : uint8_t {
@@ -209,10 +211,20 @@ struct Session {
     bool         helpAll     = false;        // ? all: walk every section in turn
     ListKind     watch       = ListKind::None;
     uint8_t      watchSecs   = 0;
+    // DASH (1.1.0): the page this caller is on, and the node row picked with
+    // Up and Down, 0xFF for none. The pick is a row in node order (1 to
+    // BBS_MAX_NODES, then S, then B), so it stays on the same line across
+    // refreshes however the callers come and go. Bit 7 of dashPage is DASH
+    // ALL walking every page as one paged list.
+    uint8_t      dashPage    = 0;
+    uint8_t      dashSel     = 0xFF;
+    // The busy line's countdown, here rather than beside nextTick: in the
+    // padding before watchNext, which is where the two DASH bytes went too,
+    // so the pair costs no Session anything (every byte there costs twelve).
+    uint8_t      countdown   = 0;
     uint32_t     watchNext   = 0;      // next redraw; 0 = drawing now
 
-    // busy line countdown
-    uint8_t      countdown   = 0;
+    // busy line countdown: when the next second is due (countdown is above)
     uint32_t     nextTick    = 0;
 
     // accounts, forms, user manager
@@ -523,6 +535,29 @@ public:
     uint32_t bytesIn()  const { return rxBytes_; }
     uint32_t bytesOut() const { return txBytes_; }
 
+    // sysopMail: the sysop has mail not yet read (1.1.0), missed rings
+    // included, which go to MAIL now. A flag the chat plugin keeps in RAM:
+    // cheap enough for a display to ask on every frame, for its letter icon.
+    // False when chat, and so mail, is not running.
+    bool sysopMail() const;
+
+    // The sysop's own account (1.1.0, Rob): the one a missed ring is mailed
+    // to, whose unread mail sysopMail() means, and who is asked for the
+    // sysop password at login. CONFIG board's "Sysop" (sysop_id) while that
+    // account exists and is not retired; otherwise the last account to
+    // elevate to sysop (sysopLast_, kept in userdata so it outlives a
+    // restart). Matched by id, never by handle.
+    //
+    // sysopAccount: one pass over users.txt, filling out. False when there is
+    // no such account. At a ring's end or a plugin start, never in a frame.
+    bool sysopAccount(UserRec& out);
+    // isSysopAccount: is this id the sysop's account? For a caller who
+    // already has the account in hand (a login, a message being stored),
+    // so the common answers need no read: the configured id, or no id at
+    // all, answer at once, and only "the fallback, while an id is
+    // configured" reads users.txt to see whether the configured one is live.
+    bool isSysopAccount(uint32_t id);
+
 private:
     Bbs() = default;
 
@@ -573,6 +608,12 @@ private:
     void skipSetup(Session& s);                       // ESC at the setup question
     void beginSetup(Session& s, uint32_t now);        // setup screen, then setupConfig
     void setupConfig(Session& s, uint32_t now);       // CONFIG staff, as part of setup
+    // The sysop's account at login (1.1.0): "Sysop password:" there and
+    // then, Enter skips. Through staffPassword, so every rule BYE applies
+    // applies here. Never granted by the account password alone.
+    bool offerSysop(Session& s);
+    void askSysop(Session& s);
+    void onSysopPassword(Session& s, uint32_t now);
     void saveCallStats(Session& s, uint32_t now);
     uint16_t dayMinutesUsed(const char* handle, uint32_t now);
 
@@ -616,6 +657,13 @@ private:
     // when it is worth saying: a crash, or a reset somebody did with the BOOT
     // button (1.1.0), which the chip alone reports as a software restart.
     void bootNotice(Session& s);
+    // staffArrival: what staff are told as they arrive, on the sysop node or
+    // on their own line: why the board last restarted, the rings nobody
+    // answered (the sysop only), and last night's backup if it failed. On
+    // the setup path the setup screen's @CLS@ would wipe all three, and the
+    // ring notes are deleted once shown, so there they are owed instead and
+    // said at the first prompt after the setup (noticeOwed_).
+    void staffArrival(Session& s);
     bool playScreen(Session& s, const char* name);
 
     // -- timers, notices, paging, refresh (bbs.cpp) --------------------------
@@ -674,13 +722,81 @@ private:
     bool rowWho(Session& s);
     bool rowLast(Session& s);
     bool rowDash(Session& s);
-    // DASH keeps a fixed frame height, so its node block is a fixed number of
-    // rows whatever BBS_MAX_NODES is: dashNode picks which session each row
-    // shows, busy lines first. See rowDash for why.
-    static constexpr uint8_t kDashNodeRows = 6;
-    const Session* dashNode(uint8_t slot) const;
-    uint8_t dashBusyCount() const;
     bool rowPlugins(Session& s);
+
+    // -- one node row, for DASH, NODES and WHO (bbs_shell.cpp, 1.1.0) --------
+    // Each screen used to format its own node rows, and each got something
+    // different wrong: NODES cut PETSCII-40 to PETSCII-4, WHO's rows sat
+    // under the wrong headings at 80 columns, DASH showed six lines of ten.
+    // One builder per plan, header and rows from the same widths, so a
+    // column cannot drift from its heading again.
+    //   Wide     80 columns: handle, doing, idle, left, address, terminal (72)
+    //   Narrow   40 columns: handle, doing, idle, left (36)
+    //   From     40 columns: handle, address, a five letter terminal (37)
+    //   Wide132  the Wide row with minutes on before the address (77)
+    //   Who      WHO at 60 columns and up; WhoNarrow below that
+    enum class NodePlan : uint8_t { Wide, Narrow, From, Wide132, Who, WhoNarrow };
+    // nodeAt: node order, the same on every screen: 1 to BBS_MAX_NODES, then
+    // the sysop line, then the busy line. nullptr past the end.
+    const Session* nodeAt(uint8_t k) const;
+    static constexpr uint8_t kNodeRows = BBS_MAX_NODES + 2;
+    uint8_t nodeHead(Session& v, NodePlan plan);
+    uint8_t nodeCells(Session& v, const Session& o, NodePlan plan);
+    // rowClose: the end of a row, padding a highlighted one out in reverse
+    // video first so the bar runs the width of the row
+    void rowClose(Session& s, uint8_t col, bool highlighted = false);
+
+    // -- the dashboard (bbs_shell.cpp, 1.1.0) ---------------------------------
+    // DashSnap: every figure a dashboard frame shows that is not on a
+    // Session, taken once at the top of the frame and read by every row
+    // after it. The rule it enforces, and the reason it exists: a frame
+    // opens no file, walks no heap or filesystem, and makes at most one call
+    // into the Wi-Fi task. The old DASH opened the caller log six times a
+    // frame and walked the heap under a critical section, once a second for
+    // a sysop with DASH 1 up. SYS reads it too, filled with the heap walk it
+    // needs for the biggest block, once per listing instead of once per row.
+    // One for the board: two sysops watching share it and read figures at
+    // most a frame old.
+    struct DashSnap {
+        plat::NetInfo net;                  // the one Wi-Fi task call
+        const char* power      = "";         // plat::powerSave(), "" on the host
+        uint32_t heapFree      = 0;          // plat::heapFree(), 0 on the host
+        uint32_t heapLow       = 0;          // heapLow_ as the watch keeps it
+        uint32_t heapBig       = 0;          // SYS only: largest block
+        uint32_t heapTotal     = 0;          // SYS only
+        bool     heapFull      = false;      // SYS filled the two above
+        uint32_t stackLeast    = 0;          // stackLow_, 0 not measured
+        uint32_t dataFree      = 0;          // plugins::freeBytes(), cached on the board
+        bool     card          = false;
+        uint32_t cardFreeKB    = 0;
+        uint32_t cardTotalKB   = 0;
+        uint8_t  bans          = 0;
+        uint16_t today         = 0;          // calls today, from calllog's kept count
+        char     dir[12]       = "";         // announce's state word, "" when it is off
+    };
+    DashSnap snap_;
+    void snapFill(bool full);
+    uint8_t dashPages(const Session& s) const;
+    bool dashWide132(const Session& s) const;
+    bool dashCells(const Session& s) const;   // cursor keys and reverse: ANSI and PETSCII
+    void dashKey(Session& s, int k, uint32_t now);
+    void dashTitle(Session& s);
+    void dashWaiting(Session& s);
+    void dashSeg(Session& s, uint8_t& col, uint8_t gap, const char* label, const char* value,
+                 bool alarm);
+    void dashVitals(Session& s, uint8_t which);
+    void dashCallsHead(Session& s);
+    void dashNode(Session& s, uint8_t k, NodePlan plan);
+    void dashCall(Session& s, uint8_t back, NodePlan plan);
+    bool dashPluginRow(Session& s, uint8_t which);
+    bool dashBanRow(Session& s, uint8_t which);
+    void dashRight(Session& s, uint8_t& col, uint8_t which);
+    void dashFooter(Session& s, char* out, size_t n);
+    // One row of a page: 0 the page is done, 1 drew a row, 2 nothing to draw
+    // (a blank kept only for a refreshing frame's height)
+    uint8_t dashPage80(Session& s, uint8_t page, uint8_t i);
+    uint8_t dashPage40(Session& s, uint8_t page, uint8_t i);
+    uint8_t dashPage132(Session& s, uint8_t i);
     bool rowWatchFooter(Session& s);
     void cmdHelp(Session& s, const char* arg);
     // longHelp: HELP <command>, one command in full, from helptext.
@@ -704,6 +820,13 @@ private:
     void cmdBell(Session& s);
     void cmdCodes(Session& s);
     void cmdBye(Session& s, const char* arg, uint32_t now);
+    // staffPassword: the one check a typed staff password meets, at BYE and
+    // at the sysop account's login question (1.1.0). The level it buys, with
+    // the published default honoured from the board's own network only; a
+    // right one clears the address's ban count. Access::None for a wrong
+    // one, which is logged and counted toward the address's ban, and
+    // *banned says whether that count just banned it.
+    Access staffPassword(Session& s, const char* pw, uint32_t now, bool* banned);
     void fxNext(Session& s);
 
     // -- sysop (bbs_sysop.cpp) -----------------------------------------------
@@ -779,8 +902,19 @@ private:
     void ringEnd(RingEnd how);
     void ringClosed(Session& s);
     void serviceRing(uint32_t now);
+    // ringLeave: where a ring nobody answered goes (1.1.0, Rob). MAIL, from
+    // the caller, to the sysop's account (sysopAccount); the note file when
+    // there is no such account, mail is off, or the box is full, so a ring
+    // is never lost. True when it went to mail.
+    bool ringLeave(const ring::Note& n);
     void ringSaveNote(const ring::Note& n);
-    void ringNotes(Session& s);           // at the sysop's login or elevation
+    // ringNotes: at the sysop's login or elevation, and at a bare O with no
+    // ring live (1.1.0). False when there was nothing to show, or no room to
+    // show it in, in which case the notes are kept.
+    bool ringNotes(Session& s);
+    // ringNoteCount: the notes on file, read once at boot so the dashboard
+    // knows without opening the file again
+    uint16_t ringNoteCount();
 
     // One ring at a time on the whole board, so this is all the state there
     // is: about a hundred bytes, and nothing on a Session. The caller and
@@ -801,6 +935,20 @@ private:
         char     reason[ring::kReasonMax + 1] = {};
     };
     RingState ring_;
+    // Ring notes waiting for the sysop (1.1.0): counted at boot, raised by
+    // ringSaveNote, cleared when ringNotes shows them. What the dashboard's
+    // "Waiting on you" row says, without opening rings.txt per frame.
+    uint16_t  ringNotesWaiting_ = 0;
+    // The last account to elevate to sysop (1.1.0): the fallback for where
+    // missed rings go when CONFIG names no sysop account, or names one that
+    // is gone. In <userdata>/sysop.last, read at boot, written only when it
+    // changes. 0 is nobody yet.
+    uint32_t  sysopLast_ = 0;
+    void      sysopLastLoad();
+    void      sysopLastSave(uint32_t id);
+    // linkSysop: CONFIG board's Sysop set to this caller's account, by the
+    // setup flow, for the account that set the board up.
+    void      linkSysop(const Session& s);
 
     // -- backups on the SD card (bbs_backup.cpp, 1.1.0) ------------------------
     void cmdBackup(Session& s, const char* arg, uint32_t now);
@@ -873,6 +1021,7 @@ private:
     // on the board rather than only on a console somebody had to be watching.
     uint32_t  slowLogAt_   = 0;      // rate limit: one console line a second
     uint32_t  slowCount_   = 0;      // passes over BBS_SLOW_PASS_US since boot
+    uint32_t  slowAt_      = 0;      // millis of the last one, 0 none: DASH shows it red
     const char* worstPhase_ = nullptr;   // which phase owned the worst pass
     uint8_t   worstNode_   = 0;      // and which node, when it was a session
     // And what that caller was doing. "in session" narrows a stall to the
@@ -912,6 +1061,11 @@ private:
     bool      bootCrash_   = false;  // this boot followed a crash or watchdog
     bool      bootNoted_   = false;  // this boot followed a BOOT-hold reset (recovery::Note)
     char      bootReason_[32] = "";  // in words, for the sysop
+    uint8_t   bootNote_    = 0;      // the recovery::Note this boot came with, 0 none
+    // The Session::id owed the staff arrival notices, 0xFF nobody: the one
+    // elevated on the setup path, told at its first prompt after the setup
+    // (see staffArrival). Moved with moveSession, forgotten with the call.
+    uint8_t   noticeOwed_  = 0xFF;
     uint16_t  bootCrashes_ = 0;      // how many are in the reboot log
     uint8_t   peakNodes_   = 0;      // most nodes busy at once since boot
 #ifdef BBS_HAS_LCD
@@ -945,3 +1099,10 @@ private:
     CommandTable tables_[kCommandTables] = {};
     uint8_t      tableCount_ = 0;
 };
+
+// sdDashCard: the SD card's free and total space for the dashboard, in KB,
+// from the sd plugin's own figure, which it keeps for up to a minute (1.1.0).
+// Defined by the plugin and asked by the core, the way sdScreensDir is, so
+// the dashboard reads a number rather than the card. False with no card
+// mounted or with the plugin switched off.
+bool sdDashCard(uint32_t& freeKB, uint32_t& totalKB);

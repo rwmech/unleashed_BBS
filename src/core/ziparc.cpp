@@ -1444,6 +1444,14 @@ void ZipImport::finishApply() {
     // takes it back, even where it happens to match a stock screen byte for
     // byte (sd.cpp, seedScreens).
     if (mode_ == Mode::Screens && applied_.screens) sdSeededMark(nthLive, this);
+    // sysop.last is an id into users.txt (bbs_sysop.cpp). Another users.txt
+    // gives that id to whoever holds it there, so it goes, and the next
+    // sysop elevation writes it again.
+    if (applied_.users) {
+        char last[96];
+        snprintf(last, sizeof(last), "%s/%s", plat::userBase(), BBS_SYSOP_LAST_FILE);
+        remove(last);
+    }
     discard();
     plat::fsInfoStale();                  // screens and accounts were rewritten wholesale
     char msg[192];

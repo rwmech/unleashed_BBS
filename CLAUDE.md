@@ -688,6 +688,28 @@ this tree.
   the same check and ban counting as BYE. **No auto-escalation** (Rob
   proposed it; declined with his agreement): account passwords cross
   telnet in the clear, so an account login must never grant staff alone.
+  - **Built in the DASH lane (dash-1.1.0).** `Bbs::sysopAccount` resolves
+    by id in one users.txt pass: `sysop_id` while it names a live account,
+    else `sysopLast_` (`<userdata>/sysop.last`, written by `markAccount`
+    when a sysop elevation changes it), and the fallback only ever names an
+    account the sysop password marked. `sysop.last` is an id into
+    users.txt, so a restore that puts users.txt live removes it.
+    `isSysopAccount(id)` reads users.txt only for an id that is one of the
+    two. BYE's check is `staffPassword` now, shared with the login
+    question (`SState::AskSysop`, one try, a count that bans hangs up; keys
+    held from before the question are dropped, so a command typed ahead is
+    never a counted wrong password). Ring notes at login go to that
+    account only. MF_SYSOP, and so `Bbs::sysopMail` and the S3 panel's
+    envelope, follow the one account. `test_sysop_account` fails 14 of 22
+    on 52b5b33.
+  - The DASH merge also routed MEM's card row through `sdCardInfo()` and
+    dropped the panel's `g_sysopUser` and `chat::unreadFor`.
+  - Merged tree (main at 38810ae, dev.12 forms): targeted groups 1,073/0
+    without a card, 1,354/0 with one before the harness's hour ran out and
+    157/0 for the tests it cut off, S3 host profile 80/0, unit tests pass.
+    esp32dev static DRAM 162,968 (17,768 free), flash 1,281,204; S3
+    249,680 of 341,760. The card run of these six groups now outlasts
+    harness.sh's `timeout 3600`.
 - **The backups lane is in (1.1.0-dev.9)**, merged from bk-1.1.0 (94aa16e).
   - A restore holds until the board is quiet (Rob, after TRA hung hard
     taking 38 screens with callers on): it waits up to
@@ -704,6 +726,27 @@ this tree.
   - Merged tree: 774/0 without a card, 1,106/0 with one, S3 host profile
     56/0, unit tests pass. esp32dev static DRAM 161,960 (18,776 free),
     flash 1,255,204.
+
+- **Where it stopped (2026-09-24, night)**:
+  - main is 1.1.0-dev.14 (silent mode). The S3 runs dev.12; UHQ and TRA
+    wait for the 1.1.0 release (Rob: no preview on the installer).
+  - The Freenove (COM13) runs camera phase 1 (b904026). The camera build is
+    done and host-tested on cam-1.1.0 (2660a71, rebased on dev.12, pushed
+    as a backup, not merged). Rob chose "tomorrow" for the camera flash.
+    Next: merge main into cam-1.1.0, flash COM13 with Rob's go, then Rob
+    sets `CAMERA SET snap users` so the builder can snap from a plain
+    account while reading the serial console for Rule no. 1 and heap.
+    Watermark: keep it and measure (8 KB of encoder tables in static
+    DRAM; about 44 KB internal heap at a snap against a 32 KB block).
+    Freenove static DRAM is 6,976 free; photo limits ship at 200 because
+    file areas list at most 254 rows. Check whether the slot's DAT3 is on
+    GPIO 13 before anyone uses pin-mode flash there.
+  - Silent mode hand-backs: the BOOT-hold LED stages still show while
+    silent (the builder's call: someone is at the board); after a reboot
+    in silent hours the lights are on until NTP sets the clock.
+  - Also open for 1.1.0: the harness's 1-hour timeout is too short for six
+    groups with a card; the rest is in the 1.1.0 list above.
+  - Site 1.2.6 is live.
 
 ## 1.0.0 (2026-09-23)
 

@@ -58,6 +58,14 @@ port = 6400
 cosysop1_password =
 cosysop2_password =
 
+# The sysop's own account (CONFIG board, Sysop): missed rings are mailed
+# to it, and it is asked for the sysop password when it logs in. Both
+# lines are written together by CONFIG and by the first-boot setup; the
+# id is what counts, so a renamed account keeps its mail. Unset, the last
+# account to elevate to sysop stands in.
+# sysop_handle =
+# sysop_id = 0
+
 # Idle hangup at the command prompt, warning 1 minute before. 0 = never.
 # (The handle prompt always warns at 30 s and hangs up at 60 s.)
 idle_minutes = 20
@@ -80,6 +88,15 @@ who_refresh_max = 30
 # LED blinked on network traffic. 2 is the blue LED on DOIT-style
 # ESP32 dev boards; set -1 if your board has none there.
 activity_led_gpio = 2
+
+# Silent mode (CONFIG board): every light the firmware drives off, the
+# activity LED, the lights, a display's backlight and the camera's flash.
+# silent_from / silent_until make it silent every day between two times,
+# HH:MM local by tz, both or neither; they need the NTP clock. The power LED
+# is wired to 3V3 and no setting can turn it off.
+silent = no
+silent_from =
+silent_until =
 
 # User accounts (USERS.md). self_register = no: unknown handles are refused
 # and staff add accounts with USERS / USER ADD. max_users is 1..250.

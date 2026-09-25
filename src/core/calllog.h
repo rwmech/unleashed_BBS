@@ -10,7 +10,9 @@
  * Purpose:      Caller log: a fixed ring of BBS_CALLLOG_SIZE records in one
  *                  file on the logs partition (<logs>/calls.log). One write per
  *                  logoff, reads one record at a time for LAST. It never grows,
- *                  is not part of the backup zip, and survives uploadfs.
+ *                  is not part of the backup zip, and survives uploadfs. The
+ *                  newest five and today's count are kept in RAM (1.1.0), so
+ *                  the dashboard and the login line open no file.
  *
  *                  File layout: 8-byte header (magic "CLG1", next u16, count u16),
  *                  then BBS_CALLLOG_SIZE fixed-size CallRec slots.
@@ -67,10 +69,25 @@ bool append(const CallRec& r);
 // count: records stored (up to BBS_CALLLOG_SIZE)
 uint8_t count();
 
-// get: back = 0 is the newest record
+// get: back = 0 is the newest record. The newest kRecent come from RAM.
 bool get(uint8_t back, CallRec& out);
 
 // countSince: records whose login time is at or after epoch (one file pass)
 uint8_t countSince(uint32_t epoch);
+
+// today: calls logged since local midnight, 0 while the clock is not set.
+//
+// Kept, not counted (1.1.0). One pass over the file the first time it is
+// asked on a given day, and append() adds to it after that, so the login
+// line and the dashboard read a number instead of opening the log. The
+// dashboard used to count the whole file on every frame, which put a file
+// open and fifty reads into the loop once a second for a sysop with DASH 1
+// up. A day that rolls over, or a timezone that moves midnight, is seen as
+// a new start and counted afresh.
+uint16_t today();
+
+// kRecent: how many of the newest calls are kept in RAM. get() answers these
+// without the file, which is what the dashboard's last calls read.
+constexpr uint8_t kRecent = 5;
 
 } // namespace calllog

@@ -80,7 +80,8 @@ A directory can show a few badges beside a board's name. Four of them the board 
 - **system**: the chip, the flash this firmware image can use, and PSRAM when the firmware uses it, read at start: `ESP32 · 4 MB`, `ESP32-S3 · 16 MB · PSRAM`. The flash figure is the image's, not the chip's: a 16 MB module running the 4 MB image says 4 MB.
 - **terminals**: what this firmware speaks, which is always `ansi`, `utf8`, `petscii` and `ascii`.
 - **guests**: your `guest` setting.
-- **features**: what works at the moment of the heartbeat, from `chat`, `mail`, `forums` and `files`. Mail counts while chat runs with `mail_slots` above 0. Forums and files count while their plugin runs and a card is mounted, so `SD UNMOUNT` takes them off the next heartbeat. A card pulled without `SD UNMOUNT` is not noticed (nothing watches for it), so they stay until the board next starts without it.
+- **features**: what works at the moment of the heartbeat, from `chat`, `mail`, `forums`, `files` and `camera`. Mail counts while chat runs with `mail_slots` above 0. Forums and files count while their plugin runs and a card is mounted, so `SD UNMOUNT` takes them off the next heartbeat. A card pulled without `SD UNMOUNT` is not noticed (nothing watches for it), so they stay until the board next starts without it.
+  `camera` (1.1.0, camera boards only: the Freenove ESP32-WROVER CAM) is the directory's "This BBS can take pictures" badge. It counts while the camera plugin runs with a card mounted **and a sensor answered** its latest bring-up this boot. The board looks for the sensor once, at the first count of the photos after it starts (brought up and straight down again, no picture, no flash), and every snap looks again. So a board whose camera will not start never claims the badge, and one whose sensor stops answering drops it at the next snap. A reference ESP32 or S3 build never sends it.
 
 `support` and `interests` are yours. The board tidies what you type before sending it: lower case, only `a-z`, `0-9` and `-` kept, a run of spaces, underscores or dashes inside an entry made one `-` and none left at either end (`" Mental Health "` goes as `mental-health`), empty entries and repeats dropped, anything longer than 24 characters dropped, and the first 16 kept. It does not check the words against a list: the directory does that, and ignores any it does not carry, so a typo is a missing badge rather than an error. Which list a slug belongs in is the directory's call too: unleashedbbs.com moved `ham` from support to interests and reads it in either. `ANNOUNCE TEST` shows exactly what went.
 
@@ -147,7 +148,7 @@ Connection: close
 | `system` | string | the machine the board runs on: the chip and the flash its firmware image can use, `ESP32 · 4 MB` (UTF-8 middle dots), `host` from the host build. Never typed by anybody |
 | `terminals` | array of strings | what the board can speak to a caller. Always `["ansi","utf8","petscii","ascii"]` from this firmware |
 | `guests` | boolean | `true` if a caller can look around without an account: the board's `guest` setting |
-| `features` | array of strings | what works right now, from `chat`, `forums`, `files` and `mail`: forums and files only with a card mounted |
+| `features` | array of strings | what works right now, from `chat`, `forums`, `files`, `mail` and `camera`: forums, files and camera only with a card mounted, and camera only on a board whose camera sensor answered |
 | `support` | array of strings | causes the sysop shows support for, as slugs from the directory's published list |
 | `interests` | array of strings | what the sysop is into, the same way |
 

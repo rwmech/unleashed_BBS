@@ -414,6 +414,9 @@ void ledSignal(uint32_t, uint32_t) {}   // no LED on a PC
 // No LED either. main_host traces the watch's pattern (recovery::bootLed)
 // instead, which is the part worth checking: what the LED was told.
 void ledOverride(int8_t) {}
+// Silent mode reaches the LED through here on the board. Nothing to put out
+// on a PC; SYS says whether the board is silent, which is what is tested.
+void ledSilent(bool) {}
 
 // ---------------------------------------------------------------------------
 // diskPulse: a time and a count, exactly as on the board.
@@ -494,6 +497,14 @@ bool pixelsShow(uint8_t out, const uint8_t* rgb, uint8_t count) {
     if (out >= kPixelOuts || !rgb || g_hostPix[out].pin < 0) return false;
     HostPix& p = g_hostPix[out];
     if (count > p.count) count = p.count;
+#ifdef BBS_HAS_CAMERA
+    // A one-pixel output going full white is the camera's flash (or a LIGHTS
+    // TEST). Logged once as it turns white, "pixels: output 0 white", so a
+    // test can see a flash that lasted between two looks at LIGHTS.
+    const bool white = count == 1 && rgb[0] == 255 && rgb[1] == 255 && rgb[2] == 255;
+    const bool was   = p.count == 1 && p.rgb[0] == 255 && p.rgb[1] == 255 && p.rgb[2] == 255;
+    if (white && !was) log("pixels: output %u white", static_cast<unsigned>(out));
+#endif
     memcpy(p.rgb, rgb, static_cast<size_t>(count) * 3u);
     return true;
 }
@@ -517,6 +528,7 @@ uint8_t pixelsFrame(uint8_t out, uint8_t* rgb, uint8_t cap) {
 namespace {
 LcdCfg              g_lcdCfg;
 bool                g_lcdUp = false;
+uint8_t             g_lcdBl = 0;        // the backlight as last set, percent (hostLcdBacklight)
 std::vector<uint16_t> g_glass;
 }
 
@@ -528,6 +540,7 @@ bool lcdBegin(const LcdCfg& c, char* err, size_t errLen) {
     }
     g_lcdCfg = c;
     g_lcdUp  = true;
+    g_lcdBl  = c.backlight;
     g_glass.assign(static_cast<size_t>(c.width) * c.height, 0);
     log("panel: ST7789 %ux%u, rotation %u, %u MHz (host glass)", static_cast<unsigned>(c.width),
         static_cast<unsigned>(c.height), static_cast<unsigned>(c.rotation), static_cast<unsigned>(c.mhz));
@@ -544,6 +557,7 @@ bool lcdSame(const LcdCfg& c) {
 
 void lcdEnd() {
     g_lcdUp = false;
+    g_lcdBl = 0;
     g_lcdCfg = LcdCfg();
     g_glass.clear();
 }
@@ -561,7 +575,7 @@ bool lcdDraw(const uint16_t* fb, uint16_t stride, uint16_t x, uint16_t y, uint16
     return true;
 }
 
-void lcdBacklight(uint8_t) {}
+void lcdBacklight(uint8_t pct) { g_lcdBl = g_lcdUp ? pct : 0; }
 
 void* psramAlloc(size_t n) { return malloc(n); }
 void  psramFree(void* p)  { free(p); }
@@ -578,6 +592,9 @@ void  psramFree(void* p)  { free(p); }
 //                      can watch "Developing..." and hang up in the middle
 //   BBS_CAM_FAIL=1     no camera found
 //   BBS_CAM_FAIL=once  the first bring-up fails part way, the rest work.
+//   BBS_CAM_FAIL=<n>   (2 and up) the nth bring-up fails part way instead.
+//                      The first is the plugin's look for the sensor at
+//                      start, so 2 is the first snap's.
 //                      A bring-up holds the DMA block from the moment it
 //                      starts until camClose, failed or not, the way a
 //                      partial esp_camera_init does: a failure path that
@@ -608,12 +625,14 @@ bool camOpen(const CamCfg& c, char* err, size_t errLen) {
     if (err && errLen) err[0] = '\0';
     usleep(envMs("BBS_CAM_MS", 200) * 1000u);
     const char* f = getenv("BBS_CAM_FAIL");
-    if (f && *f == '1') {
+    if (f && !strcmp(f, "1")) {
         if (err && errLen) snprintf(err, errLen, "%s", "no camera found: check the ribbon");
         return false;
     }
     g_camHeld = true;
-    if (f && !strcmp(f, "once") && g_camOpens++ == 0) {
+    // once is the first bring-up; a number from 2 up is that one.
+    const int failAt = !f ? 0 : !strcmp(f, "once") ? 1 : atoi(f);
+    if (failAt > 0 && ++g_camOpens == failAt) {
         if (err && errLen) snprintf(err, errLen, "%s", "the camera would not start");
         return false;                      // part way: still held until camClose
     }
@@ -704,8 +723,30 @@ bool jpegRaw(const uint8_t*, uint16_t, uint16_t, uint8_t, MarkRowsFn, void*, Mar
 #endif  // BBS_HAS_CAMERA
 
 // The host build is started by a person, so it never crashed its way here.
-const char* resetReason()  { return "host start"; }
-bool        resetWasCrash() { return false; }
+// BBS_HOST_RESET plays one of the board's reset words instead ("task
+// watchdog", "crash (panic)", "brownout (power dipped)"), so the staff
+// notice for a restart the board did not choose can be tested (1.1.0). Read
+// once and forgotten, like the restart note: a restart of the host build is
+// a restart somebody asked for, not the same crash again.
+namespace {
+const char* hostReset() {
+    static const char* word = nullptr;
+    static char held[32];
+    if (!word) {
+        const char* v = getenv("BBS_HOST_RESET");
+        snprintf(held, sizeof(held), "%s", v && *v ? v : "host start");
+        word = held;
+        unsetenv("BBS_HOST_RESET");
+    }
+    return word;
+}
+}   // namespace
+
+const char* resetReason()  { return hostReset(); }
+bool        resetWasCrash() {
+    const char* w = hostReset();
+    return strstr(w, "crash") || strstr(w, "watchdog") || strstr(w, "brownout");
+}
 
 // ---------------------------------------------------------------------------
 // Recovery on the host (1.1.0). A test plays a BOOT hold of BBS_BOOT_HOLD_MS
@@ -813,6 +854,13 @@ bool inflateRaw(InflateIn in, InflateOut out, void* ctx) {
 } // namespace plat
 
 #ifdef BBS_HAS_LCD
+// hostLcdBacklight: the backlight as the panel last set it, percent, 0 dark.
+// PANEL reports it on the host, so a test sees what the glass was told
+// rather than what the plugin meant to tell it (silent mode, 1.1.0).
+int hostLcdBacklight() {
+    return plat::g_lcdUp ? plat::g_lcdBl : 0;
+}
+
 // hostPanelShot: the host's glass as a binary PPM, 8 bits a channel, for a
 // person to look at (PANEL SHOT). Relative paths land in the data folder.
 bool hostPanelShot(const char* path) {

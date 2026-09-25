@@ -2689,6 +2689,19 @@ const char* status() {
     return line;
 }
 
+// ---------------------------------------------------------------------------
+// waiting: the dashboard's "Waiting on you" row (1.1.0). Uploads to approve,
+// for staff, from g_pending: kept as uploads come and go, so no read, and
+// the same people onLogin tells about them.
+// ---------------------------------------------------------------------------
+bool waiting(const Session& s, char* out, size_t n) {
+    if (!g_pending || !plugins::mayUse(s, PlugLevel::Staff)) return false;
+    bool wide = s.term.cols() >= 60;
+    snprintf(out, n, wide ? "%u upload%s to approve" : "%u upload%s",
+             static_cast<unsigned>(g_pending), g_pending == 1 ? "" : "s");
+    return true;
+}
+
 } // namespace
 
 #ifdef BBS_HAS_CAMERA
@@ -2750,4 +2763,5 @@ extern const Plugin kFilesPlugin = {
     listDone,
     hookLift,                // liftInput: notices reach the file areas (1.1.0)
     hookRestore,             // restoreInput
+    waiting,                 // waiting: uploads to approve, on the dashboard (1.1.0)
 };

@@ -36,6 +36,7 @@
 
 #include "sysconfig.h"
 #include "users.h"          // LAND_* and the landing names, kept in one place
+#include "silent.h"         // silent hours: the time rule, and told when the file is read
 #include "../platform/platform.h"
 #include <cstdio>
 #include <cstdlib>
@@ -370,6 +371,25 @@ void keyValue(Ctx& c, const char* key, char* val) {
     else if (!strcmp(key, "sysop_password"))         copyStr(g.sysopPass, sizeof(g.sysopPass), val);
     else if (!strcmp(key, "cosysop1_password"))      copyStr(g.coPass[0], sizeof(g.coPass[0]), val);
     else if (!strcmp(key, "cosysop2_password"))      copyStr(g.coPass[1], sizeof(g.coPass[1]), val);
+    // The sysop's account (1.1.0). Whether the account exists is CONFIG's
+    // question, asked when it is saved: this parser knows nothing of
+    // users.txt, and a restore checks the two files apart.
+    else if (!strcmp(key, "sysop_handle")) {
+        if (*val && !users::validHandle(val)) problem(c, "sysop_handle is not a handle:", val);
+        else copyStr(g.sysopHandle, sizeof(g.sysopHandle), val);
+    }
+    else if (!strcmp(key, "sysop_id")) {
+        // An account id: digits, 0 for none. Not number(), whose ranges are
+        // a long's, and an id is a uint32_t.
+        // Empty is 0, not set: a hand edit that leaves "sysop_id =" must
+        // not refuse the whole file.
+        if (!*val) { g.sysopId = 0; return; }
+        bool digits = strlen(val) <= 10;
+        for (const char* p = val; *p; ++p) if (*p < '0' || *p > '9') digits = false;
+        unsigned long long id = digits ? strtoull(val, nullptr, 10) : 0;
+        if (!digits || id > 0xFFFFFFFFull) problem(c, "sysop_id must be an account id:", val);
+        else g.sysopId = static_cast<uint32_t>(id);
+    }
     else if (!strcmp(key, "wifi_ssid")) {
         if (strlen(val) >= sizeof(g.wifiSsid)) problem(c, "wifi_ssid is longer than 32", "");
         else copyStr(g.wifiSsid, sizeof(g.wifiSsid), val);
@@ -408,6 +428,25 @@ void keyValue(Ctx& c, const char* key, char* val) {
     // the listening port became a setting.
     else if (!strcmp(key, "port"))                  { if (number(c, key, val, n)) g.port = static_cast<uint16_t>(n); }
     else if (!strcmp(key, "backup_port"))           { if (number(c, key, val, n)) g.backupPort = static_cast<uint16_t>(n); }
+    // Silent mode (1.1.0, core/silent). The hours are a time of day or blank;
+    // whether both ends are set is crossCheck's, once every line is in.
+    else if (!strcmp(key, "silent"))                yesNo(c, key, val, g.silent);
+    else if (!strcmp(key, "silent_from") || !strcmp(key, "silent_until")) {
+        // A form is told (a writer's trial); a file is read as no time and
+        // the console says so, for the reason crossCheck gives below.
+        int16_t t = board::parseTime(val);
+        if (t == board::kBadTime && c.bare) {
+            problem(c, "HH:MM, 00:00 to 23:59, or blank", val);
+        } else if (t == board::kBadTime) {
+            plat::log("cfg: line %d %s = %s is not HH:MM, read as none", c.lineNo, key, val);
+            if (key[7] == 'f') g.silentFrom = board::kNoTime;
+            else               g.silentUntil = board::kNoTime;
+        } else if (key[7] == 'f') {
+            g.silentFrom = t;
+        } else {
+            g.silentUntil = t;
+        }
+    }
     else plat::log("cfg: line %d unknown key '%s' ignored", c.lineNo, key);
 }
 
@@ -437,6 +476,24 @@ const char* crossCheck(Ctx& c, SysConfig& out, bool portWritten = false) {
         if (out.backupPort != BBS_BACKUP_PORT) out.backupPort = BBS_BACKUP_PORT;
         else                                   out.port       = BBS_PORT;
         return portWritten ? "port" : "backup_port";
+    }
+    // Silent hours are two ends or none. From a form (a writer's trial) half
+    // a range is refused where it can be finished; from a file it is read as
+    // none and said on the console, because refusing the whole file over the
+    // one setting that only turns lights off would take every other line on
+    // the page down with it.
+    const bool fromSet = out.silentFrom >= 0, untilSet = out.silentUntil >= 0;
+    if (fromSet != untilSet || (fromSet && out.silentFrom == out.silentUntil)) {
+        const bool same = fromSet && untilSet;
+        const char* key = same ? "silent_until" : (fromSet ? "silent_until" : "silent_from");
+        if (c.bare) {
+            problem(c, same ? "The same time twice: no silent hours" : "Set both times, or neither", "");
+        } else {
+            plat::log("cfg: silent hours %s, read as none",
+                      same ? "start and end at the same time" : "have only one end");
+        }
+        out.silentFrom = out.silentUntil = board::kNoTime;
+        return c.bare ? key : nullptr;
     }
     return nullptr;
 }
@@ -631,6 +688,7 @@ bool load() {
     setenv("TZ", g_cfg.tz, 1);
     tzset();
     logSummary();
+    board::silentTick(plat::millis(), true);     // the switch holds from the first light
     return g_cfg.fromFile;
 }
 
@@ -643,6 +701,9 @@ bool reload(char* err, size_t errLen) {
     setenv("TZ", g_cfg.tz, 1);
     tzset();
     logSummary();
+    // Before anything restarts on the new settings: a plugin that lights
+    // something asks silent() as it starts, and must get this file's answer.
+    board::silentTick(plat::millis(), true);
     return true;
 }
 

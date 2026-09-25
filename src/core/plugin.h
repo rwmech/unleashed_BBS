@@ -378,9 +378,22 @@ struct Plugin {
     bool (*liftInput)(Session& s) = nullptr;
     void (*restoreInput)(Session& s) = nullptr;
 
+    // waiting: what this plugin has waiting on this staff member, for the
+    // dashboard's "Waiting on you" row (1.1.0). Write one short phrase into
+    // out ("2 uploads to approve") and return true, or return false for
+    // nothing. The core joins the answers; nothing in it knows which plugin
+    // said what. s is the staff member looking, so a plugin answers for
+    // their level and, from s.term.cols(), in fewer words under 60 columns.
+    //
+    // Called once per dashboard frame, so the same contract as status: a
+    // figure the plugin already keeps, no file opened, nothing counted.
+    // Appended and defaulted, like the two above.
+    bool (*waiting)(const Session& s, char* out, size_t n) = nullptr;
+
 #ifdef BBS_HAS_CAMERA
     // pinShares: whether this plugin's PS_PIN row `key` may share its GPIO
-    // with another plugin's row (1.1.0, camera boards only). CONFIG refuses
+    // with another plugin's row (1.1.0, camera boards only). Appended after
+    // waiting, so every other descriptor keeps its positions. CONFIG refuses
     // a pin another switched-on plugin holds; this is the one exception it
     // asks about, and it is asked from both sides. The camera's flash pin in
     // "pixel" mode shares with the lights' drive light, which is the pixel

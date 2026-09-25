@@ -31,6 +31,9 @@
  *                  wifi_ssid              the network to join, applies at boot
  *                  wifi_password          its passphrase (kept in a backup, which
  *                                         only a local address can download)
+ *                  silent                 yes: every light the firmware drives off
+ *                  silent_from            silent hours start, HH:MM local, blank none
+ *                  silent_until           and end; both or neither, needs NTP
  *
  *                  The password keys and wifi_ssid take the rest of the line
  *                  as it stands: a '#' there is part of the value, because a
@@ -114,6 +117,14 @@ struct SysConfig {
     // honours it only from its own network, offers setup to local callers,
     // and keeps itself out of the directory until it goes false.
     bool     sysopDefault  = false;
+    // The sysop's own account (1.1.0, CONFIG board "Sysop"): where a ring
+    // nobody answered is mailed, and the account asked for the sysop
+    // password at login. The handle is what the page shows; the id is what
+    // counts, so a rename, or a new account taking the old name, cannot
+    // catch the mail. Written together by CONFIG and by the setup flow,
+    // never one without the other. 0 is "not set".
+    char     sysopHandle[BBS_USER_MAX + 1] = "";
+    uint32_t sysopId       = 0;
     uint16_t coPerms[2]    = { static_cast<uint16_t>(PERM_ALL & ~PERM_UNBAN),
                                static_cast<uint16_t>(PERM_NODES | PERM_BROADCAST | PERM_TIME | PERM_BANS |
                                                      PERM_NOLIMITS | PERM_DASH) };
@@ -139,6 +150,12 @@ struct SysConfig {
     uint16_t backupPort    = BBS_BACKUP_PORT;
     uint16_t backupMinutes = BBS_BACKUP_MINUTES;
     int8_t   backupGpio    = BBS_BACKUP_GPIO;
+    // Silent mode (1.1.0, core/silent): every light off. The switch, and the
+    // silent hours as minutes since local midnight, -1 for none. Both ends
+    // or neither: a file that sets one is read as none.
+    bool     silent        = false;
+    int16_t  silentFrom    = -1;
+    int16_t  silentUntil   = -1;
     bool     fromFile      = false;
 };
 

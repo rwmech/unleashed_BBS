@@ -290,6 +290,34 @@ entry when it is released.
   80; form refusals were cut at 60 characters; a full 80-column redraw
   could lose its tail (keys now wait for 2,600 bytes of output room).
 
+**1.1.0-dev.13, the sysop's dashboard, and missed pages to one account.**
+- DASH is a real screen, laid out for 40, 80 and 132 columns, with pages
+  to move between and K/S to pick; NODES and WHO share its node rows.
+- A calls-today count kept in RAM, a "Last restart" row on SYS, and board
+  notices shown after setup.
+- Missed sysop pages are mailed to one account: CONFIG board's Sysop,
+  held by account id so a rename keeps the mail and a new account taking
+  the old name does not get it, or else the last account to elevate to
+  sysop. First-boot setup names the account that set the board up.
+- The sysop's account is asked for the sysop password at login: Enter
+  skips; it is BYE's own check and ban count, and an account login never
+  grants staff by itself.
+- The S3 display's mail envelope follows that account from boot.
+- MEM reads the card's free space from the sd plugin's cache.
+
+
+**1.1.0-dev.14, silent mode.**
+- CONFIG board's Silent switch and optional silent hours (from and until,
+  HH:MM local, may cross midnight, waiting for NTP) put out the activity
+  LED, both lights outputs and the S3 panel's backlight. Each light keeps
+  its settings and returns exactly as it was; the panel redraws the whole
+  glass before relighting. SYS shows whether the board is silent and why.
+  The power LED is on 3V3 and cannot be switched off: tape it or lift it.
+- `board::silent()` is the one-byte query every light asks, the camera's
+  flash included.
+- A half range or a bad time in system.cfg is read as no hours and
+  logged, never a refusal of the whole file.
+
 **Freenove ESP32-WROVER CAM (FNCAM 1.0.0).**
 - Phase 1: a new board profile, `BBS_BOARD_FN_WROVER_CAM` (environments
   `freenove_wrover_cam` / `freenove_wrover_cam_release`), on the

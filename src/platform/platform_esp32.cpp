@@ -740,6 +740,7 @@ bool     g_ledOn    = false;
 uint32_t g_ledSince = 0;
 uint32_t g_ledHold  = BBS_LED_PULSE_MS;   // how long the current show lasts
 int8_t   g_ledForce = -1;                 // ledOverride: -1 traffic drives it, 0 off, 1 on
+bool     g_ledQuiet = false;              // ledSilent: silent mode, traffic shows nothing
 }
 
 // ---------------------------------------------------------------------------
@@ -811,8 +812,15 @@ void ledOverride(int8_t state) {
     gpio_set_level(static_cast<gpio_num_t>(g_ledGpio), g_ledForce > 0 ? 1 : 0);
 }
 
+void ledSilent(bool on) {
+    g_ledQuiet = on;
+    if (!on || g_ledGpio < 0 || g_ledForce >= 0) return;   // the override keeps what it shows
+    g_ledOn = false;
+    gpio_set_level(static_cast<gpio_num_t>(g_ledGpio), 0);
+}
+
 void activityPulse(uint32_t now) {
-    if (g_ledGpio < 0 || g_ledForce >= 0) return;
+    if (g_ledGpio < 0 || g_ledForce >= 0 || g_ledQuiet) return;
     g_ledSince = now;
     g_ledHold  = BBS_LED_PULSE_MS;
     if (!g_ledOn) {
@@ -822,7 +830,7 @@ void activityPulse(uint32_t now) {
 }
 
 void ledSignal(uint32_t now, uint32_t ms) {
-    if (g_ledGpio < 0 || g_ledForce >= 0) return;
+    if (g_ledGpio < 0 || g_ledForce >= 0 || g_ledQuiet) return;
     g_ledSince = now;
     g_ledHold  = ms;
     g_ledOn    = true;

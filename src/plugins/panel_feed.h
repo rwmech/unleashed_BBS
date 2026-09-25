@@ -49,12 +49,6 @@
 #ifdef BBS_HAS_LCD
 #include <cstdint>
 
-// chat.cpp: messages waiting for this handle and not yet read, from the mail
-// index chat keeps in RAM so "you have mail" costs no read. 0 for no handle.
-namespace chat {
-uint8_t unreadFor(const char* handle);
-}
-
 // files.cpp: uploads waiting for approval, board-wide (g_pending, kept as
 // uploads come and go).
 namespace files {

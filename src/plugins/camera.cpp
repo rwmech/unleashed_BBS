@@ -21,7 +21,8 @@
  *               all run on a worker task (plat::taskStart) on the loop's
  *               own core below the loop's priority: whenever the loop has
  *               anything to do, it runs and the worker waits. The loop only
- *               moves a job between phases, turns the flash on and off, and
+ *               moves a job between phases, turns the flash on and off
+ *               (never in silent mode: the photo is taken without it), and
  *               animates the caller's spinner. Card space is read by the
  *               worker too, and kept.
  *
@@ -87,6 +88,7 @@
 #include "../core/clock.h"
 #include "../core/fx.h"
 #include "../core/plugin.h"
+#include "../core/silent.h"
 #include "../core/sysconfig.h"
 #include "../platform/platform.h"
 
@@ -372,6 +374,7 @@ struct Stats {
 struct Job {
     std::atomic<uint8_t> ph{ PH_IDLE };
     uint8_t   kind = K_SURVEY;
+    bool      probe = false;               // a survey that also looks for the sensor
     uint8_t   node = 0xFF;                 // the caller waiting on it
     bool      waiting = false;             // and still there (loop only)
     uint8_t   group = 0;
@@ -406,6 +409,7 @@ struct Job {
     uint32_t  startedAt = 0, phaseAt = 0, spinAt = 0;
     uint8_t   spin = 0;
     bool      flashOn = false, flashOwn = false;
+    bool      flashDark = false;           // on, but not lit: silent mode (board::silent)
     uint8_t   flashMode = 0;               // the flash as the job started
     int8_t    flashPin  = -1;
     uint16_t  flashLead = 0;
@@ -420,6 +424,13 @@ char     g_lastBy[BBS_USER_MAX + 8] = {};
 uint32_t g_lastAt = 0;
 uint32_t g_surveyDay = 0;                  // the local day the last survey ran
 bool     g_surveyWanted = false;
+// Whether a sensor answered, this boot: the directory's camera badge
+// (announce's "camera" feature) is claimed only on SENSOR_FOUND. Written by
+// the worker at each bring-up (the latest one wins), read by the loop. Not
+// reset by a CONFIG save's restart: the sensor is the same sensor. Unknown
+// until the first survey after boot looks, once, or the first snap.
+enum : uint8_t { SENSOR_UNKNOWN, SENSOR_FOUND, SENSOR_MISSING };
+std::atomic<uint8_t> g_sensor{ SENSOR_UNKNOWN };
 uint32_t g_tlSlot = 0;
 bool     g_tlPrimed = false;
 
@@ -715,7 +726,13 @@ void fail(Job& j, const char* why) {
 uint8_t* shoot(Job& j, size_t& len) {
     uint32_t t0 = plat::millis();
     char why[72] = "";
-    if (!plat::camOpen(j.cam, why, sizeof(why))) { plat::camClose(); fail(j, why[0] ? why : "the camera would not start"); return nullptr; }
+    if (!plat::camOpen(j.cam, why, sizeof(why))) {
+        g_sensor.store(SENSOR_MISSING);
+        plat::camClose();
+        fail(j, why[0] ? why : "the camera would not start");
+        return nullptr;
+    }
+    g_sensor.store(SENSOR_FOUND);
     j.freeUp = plat::camInternalFree();                // what the camera left while it runs
     j.dmaUp  = plat::camDmaLargest();
     const uint8_t* buf = nullptr;
@@ -836,6 +853,17 @@ void worker(void*) {
         char tmp[160];
         snprintf(tmp, sizeof(tmp), "%s/%s", photos, camrules::kTmpName);
         remove(tmp);                                   // a photo a power cut interrupted
+        if (j.probe) {
+            // Once a boot, before anybody snaps: is there a sensor at all?
+            // Brought up and straight down again, no frame, no flash. What
+            // it finds is the camera badge on the directory (announce).
+            char why[72] = "";
+            const bool up = plat::camOpen(j.cam, why, sizeof(why));
+            plat::camClose();
+            g_sensor.store(up ? SENSOR_FOUND : SENSOR_MISSING);
+            if (up) plat::log("camera: sensor %s found at start", plat::camSensor());
+            else    plat::log("camera: no sensor at start: %s", why[0] ? why : "the camera would not start");
+        }
         survey(j, photos);
         j.msAll = plat::millis() - t0;
         j.stackFree = plat::taskStackFree();
@@ -929,7 +957,10 @@ bool startJob(uint8_t kind, uint32_t now) {
     j.freeUp = j.dmaUp = 0;
     j.removed = 0;
     j.startedAt = j.phaseAt = j.spinAt = now;
-    j.flashOn = j.flashOwn = false;
+    j.flashOn = j.flashOwn = j.flashDark = false;
+    // roomToSnap walks the heap, so only while the answer is still unknown:
+    // once a boot, in practice.
+    j.probe = kind == K_SURVEY && g_sensor.load() == SENSOR_UNKNOWN && roomToSnap(true);
     j.flashMode = g_set.flash;
     j.flashPin  = g_set.flashPin;
     j.flashLead = g_set.lead;
@@ -973,11 +1004,9 @@ void texts(Job& j, const struct tm& t, const char* who) {
     }
 }
 
-// flash: the light for the exposure, from the loop (the pins and the
-// pixels are the loop's to drive).
-void flashSet(Job& j, bool on) {
-    if (on == j.flashOn) return;
-    j.flashOn = on;
+// flashLight: the light itself, pin or pixel, from the loop (the pins and
+// the pixels are the loop's to drive).
+void flashLight(Job& j, bool on) {
     if (j.flashMode == FLASH_PIN) {
         plat::pinOut(j.flashPin, on);
     } else if (j.flashMode == FLASH_PIXEL) {
@@ -995,6 +1024,25 @@ void flashSet(Job& j, bool on) {
             j.flashOwn = false;
         }
     }
+}
+
+// flashSet: the flash on or off for the exposure. In silent mode it is "on"
+// but dark (flashDark): the job runs exactly as it would, with no lead, and
+// the photo is taken without it (Rob: silent means no lights anywhere).
+void flashSet(Job& j, bool on) {
+    if (on == j.flashOn) return;
+    j.flashOn = on;
+    if (on && board::silent()) { j.flashDark = true; return; }
+    if (!on && j.flashDark)    { j.flashDark = false; return; }
+    flashLight(j, on);
+}
+
+// flashQuiet: silent mode starting while the flash is lit puts it out at
+// once rather than at the end of the exposure. Asked every tick it is on.
+void flashQuiet(Job& j) {
+    if (!j.flashOn || j.flashDark || !board::silent()) return;
+    flashLight(j, false);
+    j.flashDark = true;
 }
 
 Session* waiter() {
@@ -1144,6 +1192,7 @@ void tick(uint32_t now) {
     }
 
     Session* s = waiter();
+    flashQuiet(j);                                      // silent mode, from Ready through Go
     if (ph == PH_READY) {
         if (!j.flashOn) {
             flashSet(j, true);
@@ -1157,7 +1206,9 @@ void tick(uint32_t now) {
             }
         }
         // The lead, and for a pixel one lights frame (20 ms) to reach it.
-        uint32_t lead = j.flashMode == FLASH_OFF ? 0 : j.flashLead + (j.flashMode == FLASH_PIXEL ? 40u : 0u);
+        // None for a flash that is dark: there is nothing to lead with.
+        uint32_t lead = j.flashMode == FLASH_OFF || j.flashDark
+                        ? 0 : j.flashLead + (j.flashMode == FLASH_PIXEL ? 40u : 0u);
         // Compared and swapped: the worker never moves past Ready on its
         // own but for its timeout, and a blind store must not undo it.
         uint8_t want = PH_READY;
@@ -1403,24 +1454,24 @@ const PluginSetting kSettings[] = {
       "Who may see photos" },
     { "size",      "Size",      PS_CYCLE, 0, 0, 5, nullptr, BBS_CAM_SIZES, "Resolution" },
     { "quality",   "Quality",   PS_NUM,   4, 40, 2, "4 to 40; lower is better.", nullptr,
-      "JPEG quality (lower is better)" },
+      "JPEG quality", "4 to 40. Lower is better: a sharper picture and a bigger file." },
     { "names",     "Names",     PS_CYCLE, 0, 0, 12, "SNAP-date, with the handle, or by handle.",
       camrules::kSchemes, "Name snaps" },
     { "watermark", "Watermark", PS_YESNO, 0, 0, 3, "Board, date and who, in a corner.", nullptr,
       "Watermark" },
     { "keep",      "Keep days", PS_NUM,   0, 3650, 4, "Callers' photos; 0 keeps them.", nullptr,
-      "Keep caller snaps for (days)" },
+      "Keep snaps (days)", "Callers' photos older than this are removed; 0 keeps them." },
     { "max",       "Max snaps", PS_NUM,   0, 60000, 5, "Callers' photos kept; 0 no limit.", nullptr,
       "Max caller snaps" },
     { "floor",     "Floor MB",  PS_OPTNUM, 0, 60000, 5, "Card space kept free; empty: auto.", nullptr,
-      "Card space floor (MB)", "Space the camera leaves free on the card. Empty: a tenth of it, 512 MB at most." },
+      "Card floor (MB)", "Space the camera leaves free on the card. Empty: a tenth, 512 MB at most." },
     { "flash",     "Flash",     PS_PAGE,  0, 0, 12, "The light for a photo.", nullptr, "Flash" },
     { "tl",        "Timelapse", PS_PAGE,  0, 0, 16, "A photo every so often.", nullptr, "Timelapse" },
     { "pic",       "Picture",   PS_PAGE,  0, 0, 12, "Brightness, colour, turn.", nullptr, "Picture settings" },
 
     // The flash's page
     { "flash_mode", "Mode",     PS_CYCLE, 0, 0, 5, "off, a pixel, or a pin driven high.", kFlashes,
-      "Flash", "pixel: a WS2812 goes white. pin: the pin goes high, for an LED, a relay or a flash." },
+      "Flash", "pixel: a WS2812 goes white. pin: the pin goes high (an LED, a relay, a flash)." },
     { "flash_pin",  "Pin",      PS_PIN,  -1, BBS_GPIO_OUT_MAX, 2, "-1 for none.", nullptr, "Flash pin" },
     { "flash_lead", "Lead ms",  PS_NUM,   0, 1000, 4, "On this long before the shot.", nullptr,
       "Flash lead (ms)" },
@@ -1429,11 +1480,11 @@ const PluginSetting kSettings[] = {
     // Minutes and seconds rather than one figure: a form's number stops at
     // 65,535 and a day is 86,400 seconds. Both 0 is off; under 10 s is 10.
     { "tl_min",    "Every min", PS_NUM,   0, 1440, 4, "Minutes; 1440 is a day. 0 0 is off.", nullptr,
-      "Automatically take a picture every (min)", "Minutes between the board's own photos, with the seconds below. Both 0 is off." },
+      "Every (minutes)", "Minutes between the board's own photos, with the seconds below. Both 0 is off." },
     { "tl_sec",    "and sec",   PS_NUM,   0, 59, 2, "Seconds; the least is 10 in all.", nullptr,
       "and seconds", "Seconds on top of the minutes. The shortest interval is 10 seconds." },
     { "tl_keep",   "Keep days", PS_NUM,   0, 3650, 4, "Timed photos; 0 keeps them.", nullptr,
-      "Keep timelapse for (days)" },
+      "Keep shots (days)", "Timed photos older than this are removed; 0 keeps them." },
     { "tl_max",    "Max shots", PS_NUM,   0, 60000, 5, "Timed photos kept; 0 no limit.", nullptr,
       "Max timelapse shots" },
 
@@ -1553,6 +1604,7 @@ const char* status() {
 // camera.h
 // ---------------------------------------------------------------------------
 bool camera::running() { return g_running && plat::sdBase()[0]; }
+bool camera::found() { return g_sensor.load() == SENSOR_FOUND; }
 bool camera::busy() {
     const uint8_t p = g_job.ph.load();
     return p != PH_IDLE && p != PH_DONE && p != PH_FAILED;
@@ -1605,6 +1657,7 @@ extern const Plugin kCameraPlugin = {
     nullptr,                 // listDone
     nullptr,                 // liftInput
     nullptr,                 // restoreInput
+    nullptr,                 // waiting
     pinShares,
 };
 
