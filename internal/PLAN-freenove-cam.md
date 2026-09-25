@@ -960,3 +960,16 @@ board took on its directory row ("plenty of space to the right"),
   per board, replaced each time; shown to the right of the row; covered by
   the report/moderation design already queued; dropped when the board is
   delisted or stops sending.
+
+
+## Showing the photo in SyncTERM (Rob, 2026-09-25; after 1.1.0)
+
+Rob: "what is the possibility of showing the photo with SyncTerm, I know it
+has picture ability". SyncTERM has Sixel graphics and its own APC commands
+for caching and drawing images, and it identifies itself (its CTerm version
+answer), so a SyncTERM caller could see the real photo after SNAPSHOT while
+every other terminal gets the text-art preview. Research first, from
+SyncTERM's own docs and source, not memory: which formats it draws (JPEG or
+only PPM/PBM and Sixel), the cache and paste commands, size limits, and the
+cost on the board (a Sixel encode of 640x480 on an ESP32 must run on the
+camera's worker, Rule no. 1). Then a proposal before code.

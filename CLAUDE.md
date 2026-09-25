@@ -677,6 +677,17 @@ this tree.
   board linking and "federation" already on the roadmap (FidoNet's idea,
   modern): board-to-board messages are just another route. Design it with
   those in mind when it starts, one protocol rather than three.
+- **A board is closed until its sysop opens it** (Rob, 2026-09-25, for
+  1.1.0). CONFIG board gains "Temporarily stop taking calls" (closed), ON
+  by default on a fresh board. While closed: every caller gets the busy
+  message, except that the login prompt still takes the first account (the
+  one that registered and ran setup), which lands back in the setup/CONFIG
+  flow; nobody else can register, log in or be a guest. The first caller on
+  a fresh board registers, is told before the password step that the board
+  stays closed until they open it, sets passwords and configuration, and
+  opens it by turning the option off. The setup form's sysop password row
+  says it is the published default and must be changed (it is a real
+  password, so the stars stay).
 - **Missed sysop pages go to one account** (Rob, 2026-09-24, approved).
   Not to every account ever marked sysop: marks are never removed, and
   each copy takes one of the 64 board-wide mail slots. CONFIG board gains
@@ -1248,6 +1259,14 @@ approach everything seems to be haphazard as to how it gets fixed/done."
    then continuing to edit produces a result for a tree that no longer
    exists, which happened three times in one afternoon.
 
+- **Release flow from 1.1.0 on (Rob, 2026-09-25), supersedes the rules
+  below where they differ:** build, then sanity tests (targeted runs, not
+  the full regression), then release the x.y.0 on the website so Rob and
+  anyone can test it early. The full regression and the optimize report
+  run AFTER the .0 is published, and the x.y.1 patches whatever they find.
+  A .0 release says so to users: its release notes, the installer and
+  CHANGELOG carry a line that it has not been through the full regression
+  yet and is out early for testing.
 - **Patch releases ship on review plus targeted runs** (Rob, 2026-09-23,
   releasing 1.0.1: "if there is a regression fix it in .2 this should be
   the way").
