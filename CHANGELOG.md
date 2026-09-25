@@ -290,6 +290,22 @@ entry when it is released.
   80; form refusals were cut at 60 characters; a full 80-column redraw
   could lose its tail (keys now wait for 2,600 bytes of output room).
 
+
+**1.1.0-dev.13, the sysop's dashboard, and missed pages to one account.**
+- DASH is a real screen, laid out for 40, 80 and 132 columns, with pages
+  to move between and K/S to pick; NODES and WHO share its node rows.
+- A calls-today count kept in RAM, a "Last restart" row on SYS, and board
+  notices shown after setup.
+- Missed sysop pages are mailed to one account: CONFIG board's Sysop,
+  held by account id so a rename keeps the mail and a new account taking
+  the old name does not get it, or else the last account to elevate to
+  sysop. First-boot setup names the account that set the board up.
+- The sysop's account is asked for the sysop password at login: Enter
+  skips; it is BYE's own check and ban count, and an account login never
+  grants staff by itself.
+- The S3 display's mail envelope follows that account from boot.
+- MEM reads the card's free space from the sd plugin's cache.
+
 ## 1.0.2, 2026-09-23
 
 A security fix. Restoring a backup could turn the published default sysop
