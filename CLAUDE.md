@@ -891,6 +891,46 @@ this tree.
   - The full regression and the optimize report come next, after the
     website has the .0; 1.1.1 patches what they find.
 
+- **1.1.1-dev.0 (2026-09-25), a pre-release so the ESP32-CAM reaches the
+  installer now** (Rob: "get the esp32-cam (original) out there on the
+  website flasher now"). Tag v1.1.1-dev.0 at 801888a. The other three
+  boards stay on the v1.1.0 full release on the site.
+  - ESPCAM 1.0.1: the AI-Thinker ESP32-CAM has its own pin table. SD over
+    SPI (CS 13, MOSI 15, CLK 14, MISO 2), because SDMMC 1-bit leaves D3
+    floating and cards answered CMD0 in SPI mode and then went silent.
+    GPIO4 (the white flash LED, also DAT1) is held low by a start-up
+    constructor. Red LED 33 is the activity light, active low. BOOT-hold
+    and the backup button are off, because GPIO0 is XCLK.
+  - **Installing needs the card out**: the card holds GPIO2 high at reset,
+    so the chip boots normally instead of entering download mode. /install
+    and /hardware say so (site 1.3.5).
+  - 240 MHz on every profile (Rob: "all boards should run at full speed");
+    the generated sdkconfigs checked.
+  - HARDWARE / HW, public: chip, clock, flash, PSRAM, board, capabilities.
+    Staff also see the live figures. SYS draws the same section.
+  - Static DRAM: esp32dev 163,008, S3 249,712 of 341,760, Freenove
+    174,368, ESPCAM 175,824 (4,912 free). Camera up on the ESPCAM, the
+    internal heap sits near 9 KB free (lowest 8,535): tight, watch it.
+  - A UXGA snap on the OV2640 took 10.6 s at 160 MHz, nearly all of it the
+    watermark's decode and re-encode; XGA stays the shipping size. Measure
+    again at 240 MHz on the bench.
+- **Queued for 1.1.1, found 2026-09-25:**
+  - **Connection security line before login** (Rob): right after
+    detection, before the welcome screen, every caller sees
+    `--> Connection via Telnet is not secure`. With SSH (1.2.0) it becomes
+    `--> Connection via SSH is Secure.`, with "Secure" in bold yellow. The
+    line is 39 columns, so it fits 40.
+  - `test_closed_configured` fails when it runs after `test_backup_card`,
+    whose restore writes `closed = no`. Test order, not the board.
+  - Restoring a WROOM backup onto the ESP32-CAM carries
+    `activity_led_gpio = 2`, which is the card's MISO there: the red LED
+    goes dark and the card still works. Refuse or remap it per profile.
+  - The HARDWARE capability line can repeat or skip if a card or camera
+    appears while a caller sits at `[More]`. Cosmetic.
+  - The stock `screens/about.*` want the "HARDWARE shows what this board
+    is running on" line (screen-artist).
+  - Site: with the Waveshare or the ESP32-CAM picked, /install's Update
+    button is cut off at 1366x768 (tty-ux).
 - **Where it stopped (2026-09-24, night)**:
   - main is 1.1.0-dev.14 (silent mode). The S3 runs dev.12; UHQ and TRA
     wait for the 1.1.0 release (Rob: no preview on the installer).
@@ -1291,6 +1331,12 @@ they are the process, and getting them wrong wastes Rob's time.
 - **The Freenove camera board on COM13 may be flashed without asking**
   (Rob, 2026-09-25: "just flash, whatever, make it work"), for as long as
   the camera work runs. Telnet to it needs no permission either.
+- **Bench boards on Rob's dedicated USB hub are a standing approval**
+  (Rob, 2026-09-25: "so I can have you flash and update as needed"). Flash,
+  erase and update them as the work needs, but only on the COM ports Rob
+  maps to named boards, never any other port. UHQ and TRA stay his. This
+  supersedes the per-flash rules for COM12 and COM13 below once the map
+  exists.
 - **The Waveshare S3 on COM12 is the one board I may flash** (Rob,
   2026-09-24), and only after he acknowledges each flash, the first and
   every new build. Telnet to it needs no permission. UHQ and TRA are still
