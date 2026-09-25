@@ -318,6 +318,28 @@ entry when it is released.
   profile and PSRAM) has actually been flashed and run on the physical
   board; the SD card and the camera plugin have not yet had bench time.
 
+**FNCAM 1.0.1: the camera could not start on the board.**
+- On the bench FNCAM 1.0.0 answered the first `SNAPSHOT` with "No photo:
+  the camera would not start" and the next with "The camera needs memory
+  the board is using". MEM showed 38,855 bytes of internal RAM free and a
+  largest block of 31,744, and the camera driver needs one 32,768-byte
+  internal DMA buffer. Enabling PSRAM had cost the internal RAM: the IDF
+  forces 16 static Wi-Fi TX buffers when `SPIRAM_USE_MALLOC` is on and
+  raises the static RX buffers from 10 to 16, about 35 KB more than the
+  WROOM holds, and the 32 KB reserve pool that ordinary `malloc()` never
+  takes is itself too small for the block once the heap's header is in
+  it. Now ten of each Wi-Fi buffer and a 40 KB pool
+  (`sdkconfig.defaults.fncam`).
+- The check before a snap counts the worker task's stack and the driver's
+  task as well as the DMA block, and is made again on the worker before
+  the driver is touched. A refusal, a failed start and a successful one
+  all log internal RAM free and the largest DMA block. A sensor that does
+  not answer is reported as "no camera found" (the driver says
+  `ESP_ERR_NOT_SUPPORTED`, which was reported as "would not start"), and a
+  partial start is torn down only when something of it is left.
+- No "Smile...": the caller sees the spinner, "Developing..." and the
+  result.
+
 ## 1.0.2, 2026-09-23
 
 A security fix. Restoring a backup could turn the published default sysop

@@ -453,8 +453,9 @@ The BBS loop is cooperative, so none of that runs on it.
   the first frames while exposure settles (three by default, UNCONFIRMED
   how many the OV2640 needs), takes one, validates the JPEG, and hands the
   frame buffer to the loop.
-- The caller sees an `fx::` spinner and "Smile...". Their line is otherwise
-  unaffected, and so is everybody else's.
+- The caller sees an `fx::` spinner, then "Developing...", then the result:
+  no "Smile..." and no countdown (Rob: a caller is not in front of the
+  camera). Their line is otherwise unaffected, and so is everybody else's.
 - The loop writes the frame to the card in slices from `tick()`, a few KB a
   pass, the way a transfer is pumped, so no single pass stalls on a 100 KB
   write. Then it returns the buffer and calls `esp_camera_deinit`, which

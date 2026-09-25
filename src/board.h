@@ -213,7 +213,7 @@
 #define BBS_BOARD_PLUGINS     1       // the camera
 
 #define BBS_BOARD_TAG         "FNCAM"
-#define BBS_BOARD_VERSION     "1.0.0"
+#define BBS_BOARD_VERSION     "1.0.1"
 
 // PSRAM (sdkconfig.defaults.fncam). Wi-Fi's and lwIP's buffers go there.
 // The internal reserve stays the WROOM's 40 KB until the bench's MEM says

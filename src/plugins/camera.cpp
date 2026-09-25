@@ -395,6 +395,7 @@ struct Job {
     bool      marked = false;
     uint32_t  msUp = 0, msShot = 0, msSave = 0, msAll = 0;
     uint32_t  stackFree = 0;
+    uint32_t  freeUp = 0, dmaUp = 0;       // internal RAM with the camera up
     uint32_t  removed = 0;
     Stats     stats;
     // loop side
@@ -711,6 +712,8 @@ uint8_t* shoot(Job& j, size_t& len) {
     uint32_t t0 = plat::millis();
     char why[72] = "";
     if (!plat::camOpen(j.cam, why, sizeof(why))) { plat::camClose(); fail(j, why[0] ? why : "the camera would not start"); return nullptr; }
+    j.freeUp = plat::camInternalFree();                // what the camera left while it runs
+    j.dmaUp  = plat::camDmaLargest();
     const uint8_t* buf = nullptr;
     uint16_t w = 0, h = 0;
     for (int i = 0; i < 3; ++i) {                      // exposure settles over the first frames
@@ -844,7 +847,29 @@ void worker(void*) {
 // The loop's side
 // ---------------------------------------------------------------------------
 constexpr uint32_t kWorkerStack = 6144;
-constexpr uint32_t kDmaNeed     = 33 * 1024;        // the sensor's 32 KB, and its descriptors
+// What a snap takes from internal RAM, the worker's own stack and its task
+// block included: the loop's check before the worker is started, since the
+// stack comes out of the same memory the camera's DMA block has to.
+constexpr uint32_t kSnapInternal = plat::kCamInternal + kWorkerStack + 512;
+
+// roomToSnap: whether internal RAM can take a snap now. The largest DMA
+// block and the internal total both: the camera's 32 KB has to be one
+// piece, and the worker's stack and the driver's task come out of the same
+// memory around it. A refusal is logged with the figures; the board's own
+// shots (the timelapse) only the first of a run, so a board short of RAM
+// does not log every interval.
+bool roomToSnap(bool system) {
+    static bool shortBefore = false;
+    const uint32_t dma = plat::camDmaLargest(), internal = plat::camInternalFree();
+    const bool ok = dma >= plat::kCamDmaBlock && internal >= kSnapInternal;
+    if (!ok && (!system || !shortBefore))
+        plat::log("camera: %s refused for memory: internal free %u of %u, largest DMA %u of %u",
+                  system ? "a timed shot" : "a snap", static_cast<unsigned>(internal),
+                  static_cast<unsigned>(kSnapInternal), static_cast<unsigned>(dma),
+                  static_cast<unsigned>(plat::kCamDmaBlock));
+    shortBefore = !ok;
+    return ok;
+}
 
 bool jobBusy() { return g_job.ph.load() != PH_IDLE; }
 
@@ -882,6 +907,7 @@ bool startJob(uint8_t kind, uint32_t now) {
     j.err[0] = '\0';
     j.bytes = 0; j.w = j.h = 0; j.marked = false;
     j.msUp = j.msShot = j.msSave = j.msAll = 0;
+    j.freeUp = j.dmaUp = 0;
     j.removed = 0;
     j.startedAt = j.phaseAt = j.spinAt = now;
     j.flashOn = j.flashOwn = false;
@@ -1021,12 +1047,13 @@ void finish(uint32_t now) {
             snprintf(g_lastBy, sizeof(g_lastBy), "%.21s", j.kind == K_CALLER ? j.handle : "the board");
             g_lastAt = clk::epoch();
             plat::log("camera: %s %ux%u %u bytes%s, up %u ms, shot %u ms, saved %u ms, all %u ms, "
-                      "%u removed, worker stack %u free, dma %u",
+                      "%u removed, worker stack %u free, internal %u free with it up, dma %u then %u now",
                       j.rel, static_cast<unsigned>(j.w), static_cast<unsigned>(j.h),
                       static_cast<unsigned>(j.bytes), j.marked ? " marked" : "",
                       static_cast<unsigned>(j.msUp), static_cast<unsigned>(j.msShot),
                       static_cast<unsigned>(j.msSave), static_cast<unsigned>(j.msAll),
                       static_cast<unsigned>(j.removed), static_cast<unsigned>(j.stackFree),
+                      static_cast<unsigned>(j.freeUp), static_cast<unsigned>(j.dmaUp),
                       static_cast<unsigned>(plat::camDmaLargest()));
         } else if (j.removed) {
             plat::log("camera: %u old photos removed", static_cast<unsigned>(j.removed));
@@ -1131,7 +1158,7 @@ void tick(uint32_t now) {
         flashSet(j, false);
         uint8_t want = PH_EXPOSED;
         j.ph.compare_exchange_strong(want, PH_WRITING);
-        if (s) {                                        // "Smile... * Developing... /"
+        if (s) {                                        // "* Developing... /"
             s->term.left(s->tl, 1);
             say(*s, Color::LightGreen, "*");
             say(*s, Color::Grey, " Developing... ");
@@ -1179,7 +1206,7 @@ void cmdSnapshot(Bbs& b, Session& s, const char*, uint32_t now) {
         return;
     }
     if (jobBusy()) { refuse(b, s, "The camera is busy. Try again in a moment."); return; }
-    if (plat::camDmaLargest() < kDmaNeed) {
+    if (!roomToSnap(false)) {
         refuse(b, s, "The camera needs memory the board is using. Try in a minute.");
         return;
     }
@@ -1213,8 +1240,9 @@ void cmdSnapshot(Bbs& b, Session& s, const char*, uint32_t now) {
         say(s, Color::Grey, buf);
         s.term.nl(s.tl);
     }
+    // The spinner, then "Developing...", then the result: no countdown and
+    // nothing to smile for (Rob: a caller is not in front of the camera).
     s.term.cursor(s.tl, false);
-    say(s, Color::Cyan, "Smile... ");
     s.term.color(s.tl, Color::Yellow);
     fx::spinFrame(s.term, s.tl, fx::Spin::Line, 0);
 }
@@ -1529,7 +1557,7 @@ void camera::photosLevels(PlugLevel& see, PlugLevel& removeLevel) {
 bool camera::snapSystem(const char* folder, const char* prefix, uint16_t keepDays, uint32_t maxFiles) {
     if (!g_running || !plat::sdBase()[0] || jobBusy()) return false;
     if (!plainWord(folder, 15) || !plainWord(prefix, 7)) return false;
-    if (plat::camDmaLargest() < kDmaNeed) return false;
+    if (!roomToSnap(true)) return false;
     if (g_stats.known && !g_stats.floorMet) return false;
     int g = sysGroup(folder, prefix, keepDays, maxFiles);
     struct tm t;

@@ -476,7 +476,12 @@ void     psramFree(void* p);
 // camClose:      the sensor down and its memory back: the 32 KB DMA block and
 //                the frame buffer. The camera is never left running.
 // camDmaLargest: the largest internal DMA-capable block free now, which a
-//                bring-up needs 32 KB of. Cheap: no I/O.
+//                bring-up needs kCamDmaBlock of. No I/O, but it walks the
+//                heap: once a snap, never a tick.
+// camInternalFree: internal RAM free now, the DMA reserve pool included.
+//                A bring-up needs kCamInternal of it: the DMA block, the
+//                driver's own 4 KB task and its small change. The caller's
+//                own task stack is on top (the plugin adds its worker's).
 // camAlloc:      a block for a copy of a frame or the re-encoder's buffers,
 //                PSRAM first. camFree gives it back.
 // taskStart:     run fn(arg) once on a task of its own, on the BBS task's
@@ -515,11 +520,23 @@ struct CamCfg {
 using MarkRowsFn = void (*)(void* ctx, uint8_t* rgb, uint16_t width, uint16_t y0, uint16_t rows);
 using MarkOutFn  = bool (*)(void* ctx, const uint8_t* p, size_t n);
 
+// What a bring-up of the ESP32's JPEG path takes from internal RAM
+// (esp32-camera 2.1.7, read from its source): one 32,768-byte DMA buffer,
+// eight half buffers of 4 KB that the ESP32's JPEG path fixes whatever
+// CAMERA_DMA_BUFFER_SIZE_MAX says (target/esp32/ll_cam.c ll_cam_dma_sizes),
+// in ONE piece (cam_hal.c cam_dma_config), with its sixteen descriptors and
+// the driver's object beside it; then cam_task's 4 KB stack, its queues,
+// the SCCB bus and the sensor's state. The block is rounded up to cover
+// the descriptors and the heap's own headers.
+constexpr uint32_t kCamDmaBlock = 32768u + 1024u;
+constexpr uint32_t kCamInternal = kCamDmaBlock + 4096u + 2048u;
+
 bool     camOpen(const CamCfg& c, char* err, size_t errLen);
 bool     camGrab(const uint8_t*& buf, size_t& len, uint16_t& w, uint16_t& h);
 void     camRelease();
 void     camClose();
 uint32_t camDmaLargest();
+uint32_t camInternalFree();
 void*    camAlloc(size_t n);
 void     camFree(void* p);
 bool     taskStart(void (*fn)(void*), void* arg, uint32_t stackBytes, const char* name);

@@ -1521,6 +1521,15 @@ void workerMain(void*) {
     vTaskDelete(nullptr);
 }
 
+// camMemLog: internal RAM as the camera sees it, on the console, so a
+// failed bring-up says which budget it met. The walks are the worker's.
+void camMemLog(const char* when) {
+    plat::log("camera: %s: internal free %u, largest %u, largest DMA %u", when,
+              static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+              static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+              static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL)));
+}
+
 }   // namespace
 
 bool camOpen(const CamCfg& c, char* err, size_t errLen) {
@@ -1531,6 +1540,15 @@ bool camOpen(const CamCfg& c, char* err, size_t errLen) {
     if (err && errLen) err[0] = '\0';
     if (g_camUp) camClose();
     if (!heap_caps_get_total_size(MALLOC_CAP_SPIRAM)) return fail("no PSRAM on this board");
+    // Measured here, on the worker, with its own stack already taken: the
+    // driver's one 32 KB DMA buffer is its first large allocation and the
+    // one that fails, and a failure costs a sensor probe and a bus set up
+    // and torn down for nothing. The loop's check before the worker started
+    // could not see the worker's stack come out of the same memory.
+    if (camDmaLargest() < kCamDmaBlock || camInternalFree() < kCamInternal) {
+        camMemLog("not enough memory to start");
+        return fail("not enough memory for the camera");
+    }
 
     camera_config_t cfg = {};
     cfg.pin_pwdn     = BBS_CAM_PWDN;
@@ -1560,9 +1578,21 @@ bool camOpen(const CamCfg& c, char* err, size_t errLen) {
     esp_err_t e = esp_camera_init(&cfg);
     if (e != ESP_OK) {
         plat::log("camera: init failed: %s (0x%x)", esp_err_to_name(e), static_cast<unsigned>(e));
-        esp_camera_deinit();
-        if (e == ESP_ERR_CAMERA_NOT_DETECTED) return fail("no camera found: check the ribbon");
-        if (e == ESP_ERR_NO_MEM)              return fail("not enough memory for the camera");
+        // esp_camera_init tears down what it built on every failing path
+        // but one (cam_init, which frees its own), so as a rule this finds
+        // nothing left. A sensor still registered is a partial start, and
+        // everything it holds goes back: the DMA block, cam_task, the SCCB
+        // bus and XCLK's LEDC channel.
+        if (esp_camera_sensor_get()) esp_camera_deinit();
+        camMemLog("after the failed start");
+        // No sensor on the bus is ESP_ERR_NOT_SUPPORTED in 2.1.7 (camera_
+        // probe: "Detected camera not supported"), not NOT_DETECTED. A DMA
+        // buffer the heap could not give is ESP_FAIL (cam_dma_config),
+        // which the largest DMA block left tells apart from the rest.
+        if (e == ESP_ERR_CAMERA_NOT_DETECTED || e == ESP_ERR_NOT_SUPPORTED || e == ESP_ERR_NOT_FOUND)
+            return fail("no camera found: check the ribbon");
+        if (e == ESP_ERR_NO_MEM || camDmaLargest() < kCamDmaBlock)
+            return fail("not enough memory for the camera");
         return fail("the camera would not start");
     }
     g_camUp = true;
@@ -1614,6 +1644,10 @@ void camClose() {
 
 uint32_t camDmaLargest() {
     return static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+}
+
+uint32_t camInternalFree() {
+    return static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
 }
 
 void* camAlloc(size_t n) {

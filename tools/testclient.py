@@ -4580,7 +4580,8 @@ def test_camera():
     got = snap(c)
     ok &= check("a snap tells the caller where they stand",
                 b"Snapshot 1 of 10 this hour, 1 of 20 today." in got)
-    ok &= check("and says smile while the camera comes up", b"Smile..." in got)
+    ok &= check("no countdown and nothing to smile for: a caller is not in front of it",
+                b"Smile" not in got and b"Cheese" not in got)
     ok &= check("then develops it", b"Developing..." in got)
     m = re.search(rb"Photo saved: (SNAP-\d{8}-\d{6}\.JPG) \(FILES, area 12\)", got)
     ok &= check("names it SNAP-date and points at area 12", m is not None)
@@ -4655,7 +4656,7 @@ def test_camera():
     before = len(photos(card))
     h = ansi_login("CamHangup")
     h.send(b"snapshot\r")
-    h.wait_for(b"Smile", 4)
+    h.wait_for(b"this hour", 4)
     h.close()
     time.sleep(3.0)
     ok &= check("a caller who hangs up mid-snap still gets the photo saved", len(photos(card)) == before + 1)
@@ -4769,6 +4770,52 @@ def test_camera():
     section_config(s, "plugin:camera")
     c.close()
     s.close()
+    return ok
+
+
+def test_camera_failed_start():
+    """A bring-up that fails part way gives back everything it took (FNCAM
+    1.0.1). On FNCAM 1.0.0 a failed start on the board was followed by "The
+    camera needs memory the board is using" for the next snap. The host
+    stub's BBS_CAM_FAIL=once fails the first bring-up and holds its DMA
+    block until camClose, as a partial esp_camera_init does, so a failure
+    path that forgets to close leaves the next snap refused for memory."""
+    print("The camera: a failed start gives everything back")
+    if HOST_BOARD != "fncam" or not PASSWORD:
+        print("  SKIP  needs tools/harness.sh --board fncam")
+        return True
+    import shutil
+    import tempfile
+    card = pathlib.Path(tempfile.mkdtemp(prefix="bbs-camcard-"))
+    tmp = copy_data()
+    cfg = tmp / "data" / "user" / "system.cfg"
+    text = cfg.read_text()
+    if "[plugin:camera]" not in text:
+        text = text.rstrip("\n") + "\n\n[plugin:camera]\n"
+    cfg.write_text(cfg_with(text, {("plugin:camera", "enabled"): "yes", ("plugin:camera", "snap"): "users"}))
+    port = PORT + 3720
+    proc = start_copy(tmp, (str(port),), {"BBS_SD_DIR": str(card), "BBS_CAM_FAIL": "once"})
+    ok = True
+    try:
+        copy_log(tmp, f"listening on {port},")
+        c = ansi_login("CamOnce", port=port)
+        time.sleep(1.0)                              # the survey at start is a job too
+        got = snap(c)
+        ok &= check("the first bring-up fails and the caller is told why",
+                    b"No photo: the camera would not start." in got)
+        ok &= check("with no countdown or cheese on the way", b"Smile" not in got)
+        drain(c)
+        time.sleep(0.5)
+        got = snap(c)
+        ok &= check("the next snap is not refused for memory", b"needs memory" not in got)
+        ok &= check("and takes the photo", b"Photo saved" in got)
+        log = copy_log(tmp, "camera: SNAP-", 4)
+        ok &= check("the console names the failure",
+                    re.search(r"camera: SNAP-\S+ failed: the camera would not start", log) is not None)
+        c.close()
+    finally:
+        stop_copy(proc, tmp)
+        shutil.rmtree(card, ignore_errors=True)
     return ok
 
 
@@ -11237,6 +11284,7 @@ ORDER_NAMES = [
     "test_board_s3",
     "test_board_fncam",
     "test_camera",
+    "test_camera_failed_start",
     "test_config_wifi_live", "test_config_network", "test_config_announce_outside",
     "test_config_wifi_fallback", "test_boot_hold",
     "test_boot_hold_write_fails", "test_boot_hold_factory_fails", "test_sysop_spelled_default",

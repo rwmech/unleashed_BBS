@@ -577,12 +577,22 @@ void  psramFree(void* p)  { free(p); }
 //   BBS_CAM_MS=<ms>    how long a bring-up takes (default 200), so a test
 //                      can watch "Developing..." and hang up in the middle
 //   BBS_CAM_FAIL=1     no camera found
+//   BBS_CAM_FAIL=once  the first bring-up fails part way, the rest work.
+//                      A bring-up holds the DMA block from the moment it
+//                      starts until camClose, failed or not, the way a
+//                      partial esp_camera_init does: a failure path that
+//                      forgets camClose leaves camDmaLargest short, and the
+//                      next snap is refused for memory.
+//   BBS_CAM_DMA=<n>    the largest DMA block free (default 65536)
+//   BBS_CAM_INTERNAL=<n> internal RAM free (default 98304)
 //
 // The flash pin is logged, "cam-pin 13 high", which is how the tests see it
 // go high and low around the exposure.
 // ---------------------------------------------------------------------------
 namespace {
-bool g_camUp = false;
+bool g_camUp   = false;
+bool g_camHeld = false;                    // the DMA block, from start to camClose
+int  g_camOpens = 0;
 const uint8_t kFakeJpeg[] = {
     0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
     0x00, 0x01, 0x00, 0x00, 'h', 'o', 's', 't', ' ', 'f', 'r', 'a', 'm', 'e', 0xFF, 0xD9,
@@ -602,6 +612,11 @@ bool camOpen(const CamCfg& c, char* err, size_t errLen) {
         if (err && errLen) snprintf(err, errLen, "%s", "no camera found: check the ribbon");
         return false;
     }
+    g_camHeld = true;
+    if (f && !strcmp(f, "once") && g_camOpens++ == 0) {
+        if (err && errLen) snprintf(err, errLen, "%s", "the camera would not start");
+        return false;                      // part way: still held until camClose
+    }
     static bool said = false;
     if (!said) { plat::log("camera: sensor %s (host)", BBS_CAM_SENSOR); said = true; }
     g_camUp = true;
@@ -619,8 +634,9 @@ bool camGrab(const uint8_t*& buf, size_t& len, uint16_t& w, uint16_t& h) {
 }
 
 void camRelease() {}
-void camClose() { g_camUp = false; }
-uint32_t camDmaLargest() { return envMs("BBS_CAM_DMA", 65536); }
+void camClose() { g_camUp = false; g_camHeld = false; }
+uint32_t camDmaLargest() { return g_camHeld ? 0 : envMs("BBS_CAM_DMA", 65536); }
+uint32_t camInternalFree() { return envMs("BBS_CAM_INTERNAL", 98304) - (g_camHeld ? 40000u : 0u); }
 void* camAlloc(size_t n) { return malloc(n); }
 void camFree(void* p) { free(p); }
 

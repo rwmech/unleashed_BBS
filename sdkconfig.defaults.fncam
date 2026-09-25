@@ -58,6 +58,32 @@ CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 # panicking in a loop. Only possible while BSS stays internal.
 CONFIG_SPIRAM_IGNORE_NOTFOUND=y
 
+# Internal RAM for the camera (FNCAM 1.0.1). A bring-up takes ONE
+# 32,768-byte internal DMA buffer (esp32-camera's ESP32 JPEG path), and on
+# FNCAM 1.0.0 the board had 38,855 bytes of internal RAM free, its largest
+# DMA block 31,744: the camera could never start. Measured with MEM on the
+# bench, 2026-09-25. Two things took the room, both side effects of PSRAM:
+#
+# SPIRAM_USE_MALLOC forces static Wi-Fi TX buffers (Dynamic "depends on
+# !SPIRAM_USE_MALLOC", esp_wifi/Kconfig), 16 of them at about 1.6 KB, all
+# internal, where the WROOM allocates TX buffers as it sends; and
+# TRY_ALLOCATE_WIFI_LWIP raises the static RX buffers' default from 10 to
+# 16. About 35 KB more than the WROOM holds for the radio. Ten of each is
+# the WROOM's RX figure and more TX than a telnet board keeps in flight
+# (sixteen sockets with 2,880-byte send buffers, two segments each; frames
+# beyond ten wait in the 32-deep cache TX queue rather than being dropped).
+# About 19 KB back.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=10
+# The reserve pool of internal memory ordinary malloc() never takes (only
+# task stacks, DMA and other internal-only requests), which is where the
+# camera's DMA block can stay whole while small mallocs fill the rest of
+# internal RAM. The default 32,768 is one region of that size, and with the
+# heap's own control block inside it that region cannot hold a 32,768-byte
+# block (MEM's largest, 31,744, fits the pool less about 1 KB of header).
+# 40 KB holds the block with room for a task stack that lands there.
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=40960
+
 # Revision 3 minimum. Below it the whole image is built with the PSRAM cache
 # workaround, which measured 33 KB of flash. The board read as v3.1, and no
 # WROVER-E carries an older chip; the price is that this image will not boot
