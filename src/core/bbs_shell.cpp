@@ -19,12 +19,12 @@
  * See also:     COMMANDS.md
  *
  * Copyright 2026 - Robert Mech
- * License:      GNU General Public License v2 or later
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * License:      GNU General Public License v3 or later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
+ * Free Software Foundation; either version 3 of the License, or (at your
  * option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
@@ -33,7 +33,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * with this program. If not, see <https://www.gnu.org/licenses/>. The full
  * text is in the LICENSE file at the top of this repository.
  * ===========================================================================
  */
@@ -284,6 +284,11 @@ const Command* Bbs::coreCommands(uint8_t& count) {
         { "UNBAN", "", PERM_UNBAN, CF_NONE, "UNBAN ip", "lift a ban",
           [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdUnban(s, a); b.prompt(s); },
           Menu::Staff, 14 },
+        // Every screen and where callers get it from, and one played (1.1.0,
+        // bbs_screens.cpp). Any staff level, as SYS is.
+        { "SCREENS", "", 0, CF_STAFF, "SCREENS", "each screen; VIEW plays",
+          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdScreens(s, a); },
+          Menu::Staff, 15 },
         { "DROP", "", 0, CF_STAFF, "DROP", "give up staff access",
           [](Bbs& b, Session& s, const char*, uint32_t n) { b.cmdDrop(s, n); },
           Menu::Staff, 20 },
@@ -449,6 +454,7 @@ bool Bbs::listRow(Session& s) {
         case ListKind::Plugins: return rowPlugins(s);
         case ListKind::Sys:   return rowSys(s);
         case ListKind::Calls: return rowCalls(s);
+        case ListKind::Screens: return rowScreens(s);     // bbs_screens.cpp (1.1.0)
         case ListKind::PlugRows: {
             const Plugin* p = plugins::at(s.listPlugin);
             if (!p || !p->rows || !plugins::running(s.listPlugin)) return false;
@@ -2379,7 +2385,7 @@ void Bbs::cmdMem(Session& s) {
     char buf[48];
     plat::HeapStats h = plat::heap();
 
-    rowTitle(s, "Memory", BBS_VERSION);
+    rowTitle(s, "Memory", BBS_VERSION_SHOWN);
     if (h.valid) {
         statNum(s, "Heap free", h.freeBytes, "bytes");
         statNum(s, "Heap low", h.minFree, "since boot");
@@ -2420,7 +2426,9 @@ void Bbs::cmdMem(Session& s) {
     // The card, when there is one. In megabytes rather than bytes: a figure
     // with seven digits on it is not a figure anybody reads, and the point
     // of the row is whether there is room, not how many bytes of room.
-    plat::SdInfo sd = plat::sdInfo();
+    // The sd plugin's kept figure, never the card's FAT on every MEM: that
+    // read is 15 to 160 ms with the whole board waiting (backup.h).
+    const plat::SdInfo& sd = sdCardInfo();
     if (sd.mounted) {
         fmtCommas(sd.freeKB / 1024u, num, sizeof(num));
         snprintf(buf, sizeof(buf), "MB of %u", static_cast<unsigned>(sd.totalKB / 1024u));
@@ -2476,7 +2484,7 @@ bool Bbs::rowSys(Session& s) {
     const DashSnap& h = snap_;
 
     switch (i) {
-        case 0:  rowTitle(s, "System", BBS_VERSION); return true;
+        case 0:  rowTitle(s, "System", BBS_VERSION_SHOWN); return true;
 
         case 1:  rowSection(s, "network"); return true;
         case 2:  statRow(s, "Wi-Fi", net.ssid[0] ? net.ssid : "-", Color::White); return true;
@@ -2759,7 +2767,7 @@ void Bbs::cmdAbout(Session& s) {
     Term& t = s.term;
     Timeline& tl = s.tl;
     char buf[64];
-    rowTitle(s, "About", BBS_VERSION);
+    rowTitle(s, "About", BBS_VERSION_SHOWN);
     t.color(tl, Color::White);
     t.text(tl, BBS_NAME);
     t.nl(tl);
@@ -2769,7 +2777,7 @@ void Bbs::cmdAbout(Session& s) {
     snprintf(buf, sizeof(buf), "Copyright 2026 - Robert Mech");
     t.text(tl, buf);
     t.nl(tl);
-    t.text(tl, "Free software, GPL v2 or later.");
+    t.text(tl, "Free software, GPL v3 or later.");
     t.nl(tl);
     rowRule(s);
     prompt(s);

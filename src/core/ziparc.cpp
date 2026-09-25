@@ -16,12 +16,12 @@
  * See also:     BACKUP.md
  *
  * Copyright 2026 - Robert Mech
- * License:      GNU General Public License v2 or later
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * License:      GNU General Public License v3 or later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
+ * Free Software Foundation; either version 3 of the License, or (at your
  * option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
@@ -30,12 +30,13 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * with this program. If not, see <https://www.gnu.org/licenses/>. The full
  * text is in the LICENSE file at the top of this repository.
  * ===========================================================================
  */
 
 #include "ziparc.h"
+#include "backup.h"     // sdCardInfo
 #include "crc32.h"
 #include "sysconfig.h"
 #include "users.h"
@@ -318,6 +319,36 @@ bool staffWouldChange(uint8_t k, const CfgPeek& z) {
         case V_DEFAULT: return now != absent;
         default:        return now != Staff::Set || z.hash[k] != fnv(live);
     }
+}
+
+// sysopEmptied: would the zip's system.cfg leave "sysop_password =" with
+// nothing after it? That is staff switched off: nobody can reach the sysop
+// node again, and so nobody can open the backup window or type RESTORE SD
+// to undo it, short of the cable. CONFIG refuses an empty sysop password
+// for the same reason, so a restore does too. A *** that would resolve to
+// an empty live password counts, for completeness: a board with staff off
+// has no sysop to restore anything, so that one is never reached.
+bool sysopEmptied(const CfgPeek& z) {
+    if (!z.present[K_SYSOP]) return false;               // no line: the default
+    if (z.kind[K_SYSOP] == V_EMPTY) return true;
+    const SysConfig& c = syscfg::get();
+    return z.kind[K_SYSOP] == V_KEEP && !c.sysopDefault && !c.sysopPass[0];
+}
+
+// staffKey: which of the three staff passwords a line of system.cfg sets,
+// or -1. The parser's own reading of a key: leading blanks, the name, blanks,
+// then '='.
+int8_t staffKey(const char* line) {
+    const char* p = line;
+    while (*p == ' ' || *p == '\t') ++p;
+    for (uint8_t k = K_SYSOP; k <= K_CO2; ++k) {
+        size_t kl = strlen(kCfgKeys[k]);
+        if (strncmp(p, kCfgKeys[k], kl)) continue;
+        const char* v = p + kl;
+        while (*v == ' ' || *v == '\t') ++v;
+        if (*v == '=') return static_cast<int8_t>(k);
+    }
+    return -1;
 }
 
 } // namespace
@@ -851,8 +882,9 @@ bool ZipImport::roomCheck(char* err, size_t errLen) {
     uint32_t needKB = 0, freeKB = 0;
     if (mode_ == Mode::Screens) {
         // The card: FAT, measured in kilobytes by the platform, and a margin
-        // for its clusters rather than a block count.
-        plat::SdInfo i = plat::sdInfo();
+        // for its clusters rather than a block count. Through the sd
+        // plugin's kept figure, as everything that asks about the card does.
+        plat::SdInfo i = sdCardInfo();
         needKB = (bytes + 1023) / 1024 + 64;
         freeKB = i.freeKB;
     } else {
@@ -911,12 +943,22 @@ bool ZipImport::open(const char* zipPath, char* err, size_t errLen, Mode mode,
     fseek(zf_, size - static_cast<long>(tailLen), SEEK_SET);
     if (fread(tail, 1, tailLen, zf_) != tailLen) { snprintf(err, errLen, "read error"); return false; }
 
+    // The end record, with its comment, ends the file. Or ends it but for
+    // 0x1A padding: a zip uploaded by XMODEM, which has no length field and
+    // fills its last block with SUB (up to 1,023 of them for XMODEM-1K),
+    // arrives that much longer, and the Backups file area takes uploads by
+    // XMODEM as well as YMODEM (1.1.0). Only SUB counts as padding, so a
+    // file with anything else after its end record is still not a zip.
     long eocd = -1;
     for (size_t p = tailLen - 22 + 1; p-- > 0;) {
-        if (get32(tail + p) == kSigEnd && p + 22 + get16(tail + p + 20) == tailLen) {
-            eocd = size - static_cast<long>(tailLen) + static_cast<long>(p);
-            break;
-        }
+        if (get32(tail + p) != kSigEnd) continue;
+        size_t end = p + 22 + get16(tail + p + 20);
+        if (end > tailLen) continue;
+        bool padOnly = true;
+        for (size_t q = end; q < tailLen && padOnly; ++q) padOnly = tail[q] == 0x1A;
+        if (!padOnly) continue;
+        eocd = size - static_cast<long>(tailLen) + static_cast<long>(p);
+        break;
     }
     if (eocd < 0) { snprintf(err, errLen, "not a zip file (no end record)"); return false; }
 
@@ -955,15 +997,26 @@ bool ZipImport::open(const char* zipPath, char* err, size_t errLen, Mode mode,
     size_t strip = (prefixOk && anyName) ? strlen(prefix) : 0;
 
     // The screens partition, in whole blocks, less its root and the screens
-    // folder (a metadata pair each) and two to spare for the copy being
-    // swapped in. Only for a restore onto the board: the card has room.
+    // folder (a metadata pair each). Only for a restore onto the board: the
+    // card has room.
+    //
+    // What has to fit is the peak of the apply, not the set it ends with.
+    // The screens the zip leaves out are removed first; then each screen is
+    // copied in beside the one it replaces (moveFile: "<name>.new", then a
+    // rename over it), so while one is being swapped the partition holds
+    // every screen already put in, that screen's old copy and its new one,
+    // and the old copies of the screens still to come. That is at most the
+    // larger of old and new for each screen, plus one more copy of the
+    // biggest new one. Counting the new set alone, with two blocks spare,
+    // was one file short of that (1.1.0).
     uint32_t fsTotal = 0, fsUsed = 0;
     uint32_t screenRoom = 0xFFFFFFFFu;
     if (mode_ == Mode::Full && plat::fsInfo(fsTotal, fsUsed) && fsTotal) {
         uint32_t b = fsTotal / BBS_FS_BLOCK;
-        screenRoom = b > 6 ? b - 6 : 0;
+        screenRoom = b > 4 ? b - 4 : 0;
     }
-    uint32_t screenBlocks = 0;
+    uint32_t screenBlocks = 0;          // the larger of old and new, each screen
+    uint32_t biggest      = 0;          // blocks of the largest new screen
 
     // pass 2: classify
     fseek(zf_, static_cast<long>(cdOffset_), SEEK_SET);
@@ -1009,11 +1062,21 @@ bool ZipImport::open(const char* zipPath, char* err, size_t errLen, Mode mode,
         if (dup)                                      { reject(name, "duplicate"); continue; }
         if (itemCount_ >= BBS_ZIP_MAX_FILES)          { reject(name, "over 64 files"); continue; }
         if (rep_.bytes + usize > BBS_ZIP_TOTAL_MAX)   { reject(name, "total size limit"); continue; }
-        if (isScreen && screenBlocks + blocks(usize) > screenRoom) {
-            reject(name, "no room for it on the board");
-            continue;
+        if (isScreen && screenRoom != 0xFFFFFFFFu) {
+            uint32_t now = blocks(usize), was = 0;
+            char live[96];
+            struct stat lst;
+            livePath(live, sizeof(live), name);
+            if (stat(live, &lst) == 0 && S_ISREG(lst.st_mode)) was = blocks(static_cast<uint32_t>(lst.st_size));
+            uint32_t each = now > was ? now : was;
+            uint32_t big  = now > biggest ? now : biggest;
+            if (screenBlocks + each + big > screenRoom) {
+                reject(name, "no room for it on the board");
+                continue;
+            }
+            screenBlocks += each;
+            biggest       = big;
         }
-        if (isScreen) screenBlocks += blocks(usize);
 
         Item& it = items_[itemCount_++];
         strncpy(it.name, name, sizeof(it.name) - 1);
@@ -1024,6 +1087,7 @@ bool ZipImport::open(const char* zipPath, char* err, size_t errLen, Mode mode,
         it.usize    = usize;
         it.localOff = loff;
         it.ok       = false;
+        it.live     = false;
         rep_.bytes += usize;
     }
 
@@ -1083,8 +1147,9 @@ bool pipeOut(void* ctx, const uint8_t* data, size_t n) {
 } // namespace
 
 // inspectCfg: what the staged system.cfg would change that the question
-// has to say out loud: the network, and the staff levels.
-void ZipImport::inspectCfg(const char* staged) {
+// has to say out loud: the network, and the staff levels. Returns why the
+// file is refused, or nullptr: a sysop password left empty (1.1.0).
+const char* ZipImport::inspectCfg(const char* staged) {
     CfgPeek z;                         // 45 bytes: kinds and hashes, never a value
     peekCfg(staged, z);
     const SysConfig& c = syscfg::get();
@@ -1094,6 +1159,7 @@ void ZipImport::inspectCfg(const char* staged) {
     rep_.staffChanged = 0;
     for (uint8_t k = K_SYSOP; k <= K_CO2; ++k)
         if (staffWouldChange(k, z)) ++rep_.staffChanged;
+    return sysopEmptied(z) ? "sysop password empty: staff would be off" : nullptr;
 }
 
 bool ZipImport::extract(Item& it) {
@@ -1135,7 +1201,10 @@ bool ZipImport::extract(Item& it) {
         // of one call each (syscfg::check).
         static char cfgErr[96];
         if (syscfg::check(path, cfgErr, sizeof(cfgErr))) why = cfgErr;
-        else inspectCfg(path);
+        else why = inspectCfg(path);
+        // A refused system.cfg changes nothing, so the question must not
+        // say it would.
+        if (why) { rep_.staffChanged = 0; rep_.wifiDiffers = false; }
     }
     if (!why && !strcmp(it.name, BBS_USERS_FILE)) {
         static char usersErr[96];
@@ -1286,7 +1355,17 @@ bool ZipImport::applyItem(Item& it) {
         while (ok && fgets(line, sizeof(line), in)) {
             const char* text = line;
             if (syscfg::unredactLine(line, merged, sizeof(merged))) {
-                if (!merged[0]) { ++dropped; continue; }   // the published password: left out
+                if (!merged[0]) {                      // the published password: left out
+                    ++dropped;
+                    // A co-sysop line left out is that level off. Said in
+                    // the result, not only in the log (1.1.0): finishApply
+                    // keeps the bit only if the level really is off once
+                    // the file is read back, since a later line may set it.
+                    int8_t k = staffKey(line);
+                    if (k == K_CO1 || k == K_CO2)
+                        applied_.coOff = static_cast<uint8_t>(applied_.coOff | (1u << (k - K_CO1)));
+                    continue;
+                }
                 text = merged;
             }
             ok = fputs(text, out) >= 0;
@@ -1316,10 +1395,22 @@ bool ZipImport::applyItem(Item& it) {
         }
     }
     if (!moveFile(src, dst)) { ++applied_.failures; return false; }
+    it.live = true;
     if (!strcmp(it.name, BBS_USERS_FILE)) applied_.users = true;
     else if (validInfoName(it.name))      ++applied_.pages;
     else                                  ++applied_.screens;
     return true;
+}
+
+// nthLive: the file name of the i-th screen a screens restore put on the
+// card ("about.asc"), or nullptr past the last. For sdSeededMark.
+const char* ZipImport::nthLive(void* ctx, uint8_t i) {
+    const ZipImport* z = static_cast<const ZipImport*>(ctx);
+    for (uint8_t k = 0; k < z->itemCount_; ++k) {
+        if (!z->items_[k].live) continue;
+        if (!i--) return z->items_[k].name + sizeof(BBS_SCREEN_DIR);
+    }
+    return nullptr;
 }
 
 // finishApply: reload what was put live, and throw staging away
@@ -1336,10 +1427,30 @@ void ZipImport::finishApply() {
             const SysConfig& n   = syscfg::get();
             applied_.hostChanged = fnv(n.hostname) != host;
             applied_.wifiChanged = fnv(n.wifiSsid) != ssid || fnv(n.wifiPass) != pass;
+            // A co-sysop whose line was left out is only off if nothing
+            // later in the file set it after all.
+            for (uint8_t i = 0; i < 2; ++i)
+                if (n.coPass[i][0]) applied_.coOff = static_cast<uint8_t>(applied_.coOff & ~(1u << i));
         } else {
             snprintf(applied_.cfgErr, sizeof(applied_.cfgErr), "%.60s", err);
             ++applied_.failures;
+            applied_.coOff = 0;           // the old settings are still running
         }
+    } else {
+        applied_.coOff = 0;
+    }
+    // A screen a screens restore put on the card is the sysop's own from now
+    // on: marked so in the seeded-screens manifest, so a stock update never
+    // takes it back, even where it happens to match a stock screen byte for
+    // byte (sd.cpp, seedScreens).
+    if (mode_ == Mode::Screens && applied_.screens) sdSeededMark(nthLive, this);
+    // sysop.last is an id into users.txt (bbs_sysop.cpp). Another users.txt
+    // gives that id to whoever holds it there, so it goes, and the next
+    // sysop elevation writes it again.
+    if (applied_.users) {
+        char last[96];
+        snprintf(last, sizeof(last), "%s/%s", plat::userBase(), BBS_SYSOP_LAST_FILE);
+        remove(last);
     }
     discard();
     plat::fsInfoStale();                  // screens and accounts were rewritten wholesale

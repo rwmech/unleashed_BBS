@@ -73,12 +73,12 @@
  * See also:     ANNOUNCE.md, PLUGINS.md, PUBLIC.md
  *
  * Copyright 2026 - Robert Mech
- * License:      GNU General Public License v2 or later
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * License:      GNU General Public License v3 or later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
+ * Free Software Foundation; either version 3 of the License, or (at your
  * option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
@@ -87,7 +87,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * with this program. If not, see <https://www.gnu.org/licenses/>. The full
  * text is in the LICENSE file at the top of this repository.
  * ===========================================================================
  */
@@ -99,6 +99,7 @@
 #include "../core/sysconfig.h"
 #include "../platform/platform.h"
 #include "chat.h"
+#include "panel_feed.h"       // listing, on a board with a display
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -136,7 +137,13 @@ constexpr uint16_t   kIntervalDef = 10;     // minutes
 constexpr uint8_t    kListMax     = 95;
 constexpr uint8_t    kListEntries = 16;
 constexpr uint8_t    kSlugMax     = 24;
+#ifdef BBS_BOARD_VERSION
+// A board profile adds its own version (1.1.0): "ESP32-S3 · 16 MB · PSRAM ·
+// S3 1.0.0" is 39 bytes and 35 characters, inside the directory's 40.
+constexpr uint8_t    kSystemMax   = 47;
+#else
 constexpr uint8_t    kSystemMax   = 31;     // "ESP32-S3 · 16 MB · PSRAM" is 26 bytes
+#endif
 
 // ---------------------------------------------------------------------------
 // The payload's room, and why it is what it is.
@@ -270,6 +277,12 @@ char     g_state[16]  = {};            // pending, online, offline, queued
 uint32_t g_publicIn   = 0;             // seconds until a pending listing shows
 uint32_t g_okCount  = 0;
 uint32_t g_failCount = 0;
+#ifdef BBS_HAS_LCD
+// Posts that failed in a row, for the board's display: g_state is the last
+// answer a directory gave and is never aged, so without this a board that
+// lost its route would show a listed tower all the while it was delisted.
+uint8_t  g_failRun  = 0;
+#endif
 
 // ---------------------------------------------------------------------------
 // parseServer: "http://host:port/path" into its parts. Anything missing
@@ -720,6 +733,9 @@ void finish(const char* how, bool ok) {
     g_stage = Stage::Idle;
     if (g_at < kMaxServers) snprintf(g_servers[g_at].result, sizeof(g_servers[g_at].result), "%.39s", how);
     if (ok) ++g_okCount; else ++g_failCount;
+#ifdef BBS_HAS_LCD
+    g_failRun = ok ? 0 : static_cast<uint8_t>(g_failRun < 255 ? g_failRun + 1 : 255);
+#endif
     ++g_at;                                        // next directory on the next tick
 }
 
@@ -1017,6 +1033,15 @@ bool start(Bbs& bbs) {
     // What the board is: the chip, and the flash this image can use. Once,
     // here, because neither can change while the board is running.
     plat::hardware(g_system, sizeof(g_system));
+#ifdef BBS_BOARD_VERSION
+    // And a board profile's own version (1.1.0), as one more part of the
+    // same badge: `version` stays the core's, which is what the directory
+    // compares for its update arrow.
+    {
+        const size_t at = strlen(g_system);
+        snprintf(g_system + at, sizeof(g_system) - at, " \xC2\xB7 %s %s", BBS_BOARD_TAG, BBS_BOARD_VERSION);
+    }
+#endif
     g_seenIp[0]  = '\0';
     g_state[0]   = '\0';
     g_publicIn   = 0;
@@ -1066,6 +1091,29 @@ const char* status() {
     }
     return line;
 }
+
+#ifdef BBS_HAS_LCD
+}   // namespace
+
+// The board's display's tower (panel_feed.h), from the same figures status()
+// says in words. "pending" and "queued" wait with "held": a new listing is
+// hours from public by design, and a red tower for all of them would teach a
+// sysop to ignore the red one that matters.
+uint8_t announce::listing() {
+    if (!g_count) return 0;
+    if (syscfg::get().sysopDefault) return 2;
+    // Two posts in a row that got nowhere: whatever the last answer said,
+    // the board is not being heard. Two, so one dropped post does not
+    // flicker the tower.
+    if (g_failRun >= 2) return 3;
+    if (!g_state[0]) return g_failCount ? 3 : 0;
+    if (!strcmp(g_state, "online")) return 1;
+    if (!strcmp(g_state, "held") || !strcmp(g_state, "pending") || !strcmp(g_state, "queued")) return 2;
+    return 3;
+}
+
+namespace {
+#endif
 
 void stop() {
     if (g_fd >= 0) { close(g_fd); g_fd = -1; }

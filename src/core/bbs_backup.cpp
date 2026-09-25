@@ -40,12 +40,12 @@
  * See also:     BACKUP.md "Backups on the SD card", COMMANDS.md
  *
  * Copyright 2026 - Robert Mech
- * License:      GNU General Public License v2 or later
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * License:      GNU General Public License v3 or later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
+ * Free Software Foundation; either version 3 of the License, or (at your
  * option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
@@ -54,7 +54,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * with this program. If not, see <https://www.gnu.org/licenses/>. The full
  * text is in the LICENSE file at the top of this repository.
  * ===========================================================================
  */
@@ -533,18 +533,29 @@ void Bbs::cardKey(Session& s, int k) {
     Term& t = s.term;
     Timeline& tl = s.tl;
     if (!tl.empty()) tl.skipDelays();
+    // A restore waiting for the board to go quiet, from either door: F puts
+    // it live now, with a warning to whoever is still on; N gives it up.
+    if (backup_.holding()) {
+        if (k == 'f' || k == 'F') {
+            t.ch(tl, 'F');
+            t.nl(tl);
+            holdGo(s, true);
+        } else if (k == 'n' || k == 'N' || k == KEY_ESC || k == KEY_BREAK) {
+            t.ch(tl, 'N');
+            t.nl(tl);
+            backup_.holdGiveUp("the sysop stopped waiting");
+            holdUntil_ = 0;
+            line(s, Color::Grey, "Not restored.");                              // RS-no
+            prompt(s);
+        }
+        return;
+    }
     if (backup_.job() != BackupService::Job::Ask) return;
     if (k == 'y' || k == 'Y') {
         t.ch(tl, 'Y');
         t.nl(tl);
-        // Anybody part way through a screen from the card lets go of it
-        // before it is replaced, the way SD UNMOUNT does it.
-        if (cardScreens_) closeCardScreens("Screen ended: the sysop is changing screens.");
-        t.color(tl, Color::Grey);
-        t.text(tl, "Restoring");                                             // RS-restoring
-        cardDots_ = 0;
-        backup_.cardAnswer(true);
-        plat::log("backup: %s restoring %s from the card", s.user, cardName_);
+        backup_.cardAnswer(true);                     // held: holdBegin decides when
+        holdBegin(s, plat::millis());
         return;
     }
     if (k == 'n' || k == 'N' || k == KEY_ENTER || k == KEY_ESC || k == KEY_BREAK) {
@@ -553,6 +564,142 @@ void Bbs::cardKey(Session& s, int k) {
         backup_.cardAnswer(false);
         line(s, Color::Grey, "Not restored.");                                // RS-no
         prompt(s);
+    }
+}
+
+// ===========================================================================
+// A restore waits for the board to go quiet (1.1.0)
+//
+// Rob, watching a live board through a restore: "it hangs hard ... it
+// should be restored only when the site is not busy". A file a pass took
+// the single stall away; this takes away callers being on a board whose
+// accounts, settings and screens are changing under them. After the sysop's
+// Y, at either door, nothing is put live while anybody else is on. It waits
+// for them to go, says how many it is waiting for, and gives up after the
+// backup window's own length (backup_window_minutes) rather than for ever.
+// F puts it live at once, and whoever is still on is warned first, the way
+// SHUTDOWN warns them. While it waits and while it goes in, a new caller
+// gets the busy line (acceptAll).
+// ===========================================================================
+
+namespace {
+
+// holdLimit: how long a restore waits for callers to go. The backup
+// window's length, which is the time the sysop already chose for a restore
+// to be pending. A test cannot wait five minutes, so on the host it may be
+// named in milliseconds. Never on a board.
+uint32_t holdLimit() {
+#ifdef BBS_HOST
+    if (const char* ms = getenv("BBS_RESTORE_HOLD_MS")) return static_cast<uint32_t>(atol(ms));
+#endif
+    return static_cast<uint32_t>(syscfg::get().backupMinutes) * 60000u;
+}
+
+// holdLine: what the sysop is told while it waits
+void holdLine(Session& s, uint8_t n, uint8_t width) {
+    char buf[96];
+    snprintf(buf, sizeof(buf), "Waiting for %u caller%s to leave. F applies it now, N gives up.",  // RS-hold
+             static_cast<unsigned>(n), n == 1 ? "" : "s");
+    wrapped(s, Color::Yellow, buf, width);
+}
+
+} // namespace
+
+uint8_t Bbs::othersOn() const {
+    uint8_t n = 0;
+    for (const Session& o : nodes_)
+        if (o.st != SState::Free && o.st != SState::Closing) ++n;
+    // The busy line is on its way out unless somebody logged in on it.
+    if (busy_.st != SState::Free && busy_.st != SState::Closing && busy_.loggedIn) ++n;
+    return n;
+}
+
+// windowAccepted: the sysop's Y to an upload through the backup window
+void Bbs::windowAccepted(Session& s, uint32_t now) {
+    approvalShown_ = false;
+    s.st = SState::Shell;                    // before decide: notes queue for the prompt
+    backup_.decide(true, "");
+    holdBegin(s, now);
+}
+
+// holdBegin: after a Y, at either door. A quiet board goes straight on.
+void Bbs::holdBegin(Session& s, uint32_t now) {
+    uint8_t n = othersOn();
+    if (!n) { holdGo(s, false); return; }
+    holdUntil_ = now + holdLimit();
+    if (!holdUntil_) holdUntil_ = 1;
+    holdSaid_ = n;
+    backup_.holdTell(n);                     // the window's client hears the same
+    s.ed = LineEditor();
+    s.st = SState::CardJob;                  // F and N are the only keys now
+    holdLine(s, n, rowWidth(s));
+    plat::log("backup: restore waiting for %u caller%s to leave", static_cast<unsigned>(n),
+              n == 1 ? "" : "s");
+}
+
+// holdGo: put it live. Forced (F) with callers on: they are warned first,
+// through the bus the way SHUTDOWN's warnings go, so it reaches them
+// whatever they are doing.
+void Bbs::holdGo(Session& s, bool forced) {
+    bool card = backup_.job() == BackupService::Job::Hold;
+    if (forced) {
+        uint8_t told = 0;
+        for (Session* o : all_) {
+            if (o == &sysop_ || o->st == SState::Free) continue;
+            if (o->role == Role::Busy && !o->loggedIn) continue;
+            post(*o, BusKind::Broadcast, nullptr, "*** The sysop is restoring a backup now.");  // RS-now
+            ++told;
+        }
+        plat::log("backup: restore put live by the sysop with %u caller%s on", static_cast<unsigned>(told),
+                  told == 1 ? "" : "s");
+    }
+    holdUntil_ = 0;
+    backup_.holdRelease();
+    if (card) {
+        // Anybody part way through a screen from the card lets go of it
+        // before it is replaced, the way SD UNMOUNT does it.
+        if (cardScreens_) closeCardScreens("Screen ended: the sysop is changing screens.");
+        s.term.color(s.tl, Color::Grey);
+        s.term.text(s.tl, "Restoring");                                    // RS-restoring
+        cardDots_ = 0;
+        s.ed = LineEditor();
+        s.st = SState::CardJob;
+        plat::log("backup: %s restoring %s from the card", s.user, cardName_);
+    } else {
+        // The window's: it goes in from here (applyTick) and the notes say
+        // how it went. The sysop has their prompt back meanwhile.
+        prompt(s);
+    }
+}
+
+// serviceHold: a pass of the wait. Once nobody else is on, it goes; after
+// the limit, it is given up, as a Y that never came would be.
+void Bbs::serviceHold(uint32_t now) {
+    if (!backup_.holding()) return;
+    Session& s = sysop_;
+    bool sysopOn = s.st != SState::Free && s.loggedIn && s.fd >= 0;
+    if (!sysopOn) {
+        backup_.holdGiveUp("the sysop left");
+        holdUntil_ = 0;
+        plat::log("backup: held restore given up: the sysop left");
+        return;
+    }
+    uint8_t n = othersOn();
+    if (!n) { holdGo(s, false); return; }
+    if (holdUntil_ && static_cast<int32_t>(now - holdUntil_) >= 0) {
+        backup_.holdGiveUp("callers stayed on");
+        holdUntil_ = 0;
+        if (s.st == SState::CardJob) {
+            line(s, Color::LightRed, "Not restored: callers stayed on.");    // RS-hold-gone
+            prompt(s);
+        }
+        plat::log("backup: held restore given up: %u caller%s stayed on", static_cast<unsigned>(n),
+                  n == 1 ? "" : "s");
+        return;
+    }
+    if (n != holdSaid_ && s.st == SState::CardJob && s.tl.freeBytes() > 256) {
+        holdSaid_ = n;
+        holdLine(s, n, rowWidth(s));
     }
 }
 
@@ -634,6 +781,14 @@ void Bbs::cardDone(Session& s, BackupService::Job was, bool watching, uint32_t n
             if (a.hostChanged) line(s, Color::Grey, "Hostname is used from the next restart.");  // RS-done-host
             if (syscfg::get().sysopDefault)
                 line(s, Color::Yellow, "Now set a sysop password: CONFIG staff.");               // RS-done-sysop
+            // A co-sysop line naming the published password was left out,
+            // so that level is off (1.1.0). Both lines 39 columns or less.
+            if (a.coOff) {
+                line(s, Color::Yellow, a.coOff == 3 ? "Co-sysops 1, 2 off: published password."   // RS-done-co2
+                                     : a.coOff == 1 ? "Co-sysop 1 off: the published password."   // RS-done-co
+                                                    : "Co-sysop 2 off: the published password.");
+                line(s, Color::Grey, "Set theirs in CONFIG staff.");                               // RS-done-co-2
+            }
         }
         prompt(s);
     }
@@ -665,6 +820,22 @@ void Bbs::serviceCard(uint32_t now) {
     // A restore that put system.cfg or a page live, from either door: the
     // plugins start again on it, as a CONFIG save makes them.
     if (backup_.takeRestart()) restartPlugins();
+
+    // A restore the sysop said Y to, waiting for the board to go quiet.
+    serviceHold(now);
+
+    // A restore putting screens live, from either door: anybody reading one
+    // of the screens it replaces lets go of it first, every pass, so a
+    // caller who opens a screen part way through (a new caller's welcome)
+    // is let go of too. esp_littlefs will not replace or remove a file
+    // somebody has open (EBUSY), and a screen the restore could not put in
+    // place is a restore that ends "with errors". The window's next file
+    // goes in straight after, in this same pass, with nothing open.
+    bool toCard = false;
+    if (backup_.applyingScreens(toCard))
+        endScreens(toCard, toCard ? "Screen ended: the sysop is changing screens."
+                                  : "Screen ended: the sysop is restoring a backup.");
+    backup_.applyTick();
 
     BackupService::Job was = backup_.job();
     if (was == BackupService::Job::None) {
@@ -798,6 +969,37 @@ void Bbs::nightlyDone() {
     }
     plat::log("backup: nightly %s, %u KB, %u on the card", cardName_,     // NB-log-ok
               static_cast<unsigned>((backup_.cardBytes() + 1023) / 1024), static_cast<unsigned>(left));
+}
+
+// ---------------------------------------------------------------------------
+// tidyCardBackups: a zip is written as <name>.tmp and renamed once it is
+// whole (BackupService::finishWrite), so the power going or the card coming
+// out half way leaves the .tmp behind, where nothing ever removed it. It
+// cannot be restored and takes card space, and since 1.1.0 it would sit in
+// the Backups file area as well. Called by the sd plugin on a mount it has
+// just made, so no backup can be writing to this card. Only names that are
+// provably ours (cardbak::partial) go: anything else is the sysop's.
+// ---------------------------------------------------------------------------
+void tidyCardBackups() {
+    if (!plat::sdBase()[0]) return;
+    char dir[96];
+    backupDir(dir, sizeof(dir));
+    for (uint8_t guard = 0; guard < 32; ++guard) {    // one at a time: never remove mid-walk
+        char victim[cardbak::kNameMax + 8] = "";
+        DIR* d = opendir(dir);
+        if (!d) return;
+        for (struct dirent* e = readdir(d); e; e = readdir(d)) {
+            if (!cardbak::partial(e->d_name)) continue;
+            snprintf(victim, sizeof(victim), "%.34s", e->d_name);    // partial: 31 at most
+            break;
+        }
+        closedir(d);
+        if (!victim[0]) return;
+        char path[140];
+        snprintf(path, sizeof(path), "%.96s/%s", dir, victim);
+        if (remove(path) != 0) return;
+        plat::log("backup: removed %s, a backup the card lost half way", victim);
+    }
 }
 
 // nightlyNotice: to staff as they arrive, while the nightly backup is on

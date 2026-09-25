@@ -4,8 +4,8 @@
 Design history and current state of the project, kept for contributors and AI assistants.
 
 Copyright 2026 - Robert Mech
-License: GNU General Public License v2 or later
-SPDX-License-Identifier: GPL-2.0-or-later
+License: GNU General Public License v3 or later
+SPDX-License-Identifier: GPL-3.0-or-later
 
 Documentation for µnleashed BBS, part of the same distribution as the
 source. See the LICENSE file for terms.
@@ -30,6 +30,23 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
   **Two cores and on-chip Wi-Fi are a requirement, not a preference** (Rob). The loop is pinned to core 1 because Wi-Fi and lwIP own core 0, and that split is what keeps the radio's work off callers' latency; a single core would run but not run well, and fixing it properly means restructuring the core rather than changing a setting. That rules out the C3, C6, S2 and H2 on cores and the P4 on having no radio at all, leaving the ESP32 and S3 families. See [ESP32_BOARD_CHOICE.md](ESP32_BOARD_CHOICE.md).
   An ESP32-S3 with PSRAM is the upgrade path if more RAM is ever wanted: same dual core split, and PSRAM can take large statics off internal DRAM.
   **Corrected 2026-09-24 from primary sources** (`internal/board-waveshare-s3-lcd147-2026-09-24.md`): `CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY` alone only moves lwIP's, Wi-Fi's and a few IDF libraries' zeroed statics; our session pool moves only with `EXT_RAM_BSS_ATTR` on its own declaration. And **more RAM does not raise the caller count**: `LWIP_MAX_SOCKETS` is capped at 16 in IDF 5.3.1 on every chip, so ten caller lines is the ceiling on an S3 too until the socket limit moves. The S3's static data limit is measured differently as well: `_bss_end - 0x3FC88000` against 341,760, with IRAM sharing the same memory. **Not the P4**, which has the most SRAM of the family at 768 KB and no integrated Wi-Fi at all: Espressif's own answer there is a second chip as a wireless companion, which is two chips and a host protocol for a board whose whole premise is telnet over Wi-Fi.
+- **A board profile has its own version beside the core's** (Rob,
+  2026-09-24: "version the S3 slightly different, like S3 board version
+  x.y.z since we have the core versions and s3 versions that compile
+  different"). `BBS_VERSION` is the core, shared by every build and bumped
+  as always; a board build adds `BBS_BOARD_TAG` and `BBS_BOARD_VERSION`
+  (the S3 starts at "S3 1.0.0") and shows both wherever a version shows,
+  as `1.1.0 (S3 1.0.0)`: ASCII, because a middle dot cannot be shown on a
+  C64 or a plain ASCII terminal. The reference ESP32 build shows the core
+  alone. The board version moves when board-only code changes. Announce
+  keeps `version` as the core for the directory's update arrow; the site
+  shows each board's current build on the installer and the tested-boards
+  page, read from each image set's `version.txt`.
+  **Releases:** a plain `vX.Y.Z` tag is a full GitHub release; a suffixed
+  tag (`v1.1.0-dev.8`) is a pre-release. The site serves each board from
+  the latest full release that carries it, and a board no full release
+  carries (the S3 until 1.1.0) from the newest pre-release, labelled
+  preview. Either tag still needs Rob's go.
 - **Screens are designed for 40 AND 80 columns, not pinned to the C64**
   (Rob, 2026-09-24: "we cant keep pinning every screen to the C64, it
   needs a 40/80 on most of these"). This overrules the 1.1.0 UX report's
@@ -39,6 +56,15 @@ Prior art check (done): no BBS software runs on an ESP32. ESP32 only shows up cl
   80 wide). A field has its 9-character label for 40 and a longer one for
   80. New screens are specified at both widths from the start.
 - **Who calls in: the legacy serial community, not one machine** (Rob, and worth holding on to because it is easy to drift from). 8086 boxes, 6502 machines, a VT220 on a serial line, and everything in between. The C64 through TeensyROM is one caller among them and gets attention because PETSCII and 40 columns are the tightest constraints, not because it is the target. A design argument that rests on what a C64 can do is the wrong argument: the right question is whether a feature works across the range and degrades sensibly for the machines that cannot take all of it. File transfer is the live example, where the answer is to offer XMODEM, YMODEM and ZMODEM and let a caller use what their machine handles.
+- **GPL v3 or later, both repositories, from 2026-09-24** (Rob: "make this
+  v3 now across the board ... no benefit to keep gpl v2+"). Firmware from
+  1.1.0-dev.11, the directory site from 1.2.2. Rob holds the whole
+  copyright, so it was his to change. The reason is the Apache-2.0 code
+  the firmware links (ESP-IDF, espressif/mdns, and esp32-camera to come):
+  Apache-2.0 combines cleanly with GPLv3 and not with GPLv2. Every SPDX
+  line is `GPL-3.0-or-later`; `tools/release.py` and `make test` in
+  `host/` refuse a GPL-2.0 SPDX line, so a file added on an old header
+  fails. Older entries in this file that say v2 are history and stay.
 - C++ for core and hardware. Lua only for doors later. Static allocation, no heap in the BBS loop (exceptions: temporary inflate buffers during a backup upload).
 - 10 caller nodes (6 until 0.17.0, briefly 16), a busy line session (the caller past the last node: detection, busy screen, 10 s countdown), a hidden sysop node. Overflow callers get `BUSY` and a drop. Socket budget 24.
 - **The real static RAM ceiling is 180,736 bytes**, and it is in the linker script, not on any datasheet: `memory.ld` sets `dram0_0_seg` to `org = 0x3FFB0000, len = 0x2c200`, and `sections.ld` asserts `_bss_end` stays inside it. Measure with `_bss_end - 0x3FFB0000`. **PlatformIO's RAM percentage is against 327,680, so multiply it by 1.81 to get the truth: 55% on its scale is the wall.** At 0.17.2 the board is at 146,732, which is 81% of what it actually has and 44.8% of what PlatformIO claims.
@@ -355,6 +381,18 @@ https://link.amazon/B08MTidlU. The S3 goes on the tested-boards page only
 once a build has actually run on it, with a flashable image for the current
 version.
 
+**Board features on the site, one section per board** (Rob, 2026-09-24:
+"once this is finalized, the breakdown of the display gets linked with
+the 'Board Features' you'll need to write on the website for each board
+we break out like this"). On /hardware, each board gets a "Board
+features" section, linked from its row and from /install's picker. The
+S3's includes an annotated picture of the display: the image rendered
+from the host build of the FINAL panel (never a mock-up), with every
+element named (the status bar with name, uptime, Wi-Fi bar, card glyph
+and clock; the address row; Callers n/m; the caller lists; the square
+LEDs and what each strip mode means). Write it after the panel is final
+and on the glass, not before, so the page describes what ships.
+
 **Queued for the next web round (Rob, 2026-09-23):**
 - A line at the very bottom of every page, small type: the site version,
   a copyright line, and the licence (GNU GPL v2 or later, linked). The
@@ -449,8 +487,12 @@ this tree.
   a pin: a one-pixel drive light (pc, 1541, disk2, breathe) and a ten-pixel
   strip (nodes, hayes, blinken, scanner, c64, boing, vu, rainbow, manual,
   where manual gives each pixel its own effect and colour, random and
-  cycle included). Brightness 1-30% per output, 10 as shipped, and 30 is
-  a clamp in the firmware, not only the form's range.
+  cycle included). Brightness per output, 10% as shipped. It was clamped
+  at 30%; **from 2026-09-24 it goes to 100%** (Rob: "remove the limit
+  over 30% ... warn the user are you really sure before applying over 30%
+  but allow it"), with CONFIG asking before it saves anything above 30.
+  The question is a general setting feature (a warn threshold on a
+  PluginSetting), not a lights special case.
   - Each output's whole frame fits its RMT channel memory (1 block for the
     drive light, 4 for the strip), so a Wi-Fi interrupt can never land
     mid-frame and stretch a low into a latch. `rmt_transmit` is
@@ -507,6 +549,72 @@ this tree.
     state; one runs at a time.
   - The seeded-screens manifest already existed (`sd.cpp`, `.seeded`).
   - Static DRAM 161,800 after the merge (18,936 free).
+- **The Waveshare S3 is in (1.1.0-dev.8)**, fast-forwarded from its lane
+  (s3-1.1.0, c76b7e5).
+  - Board code sits behind `BBS_BOARD_WS_S3LCD147` / `BBS_HAS_LCD` in
+    `src/board.h`, which `config.h` includes. The ESP32 image grew
+    +1,300 flash and +72 static DRAM, all of it the lights features every
+    board gets.
+  - S3 static DRAM is 247,192 of 341,760, and 81,920 of that is IRAM.
+    Internal heap on the board: 77,739 free, 68,031 at its lowest.
+  - Host runs: 689/0 with no card, 967/0 with a card, S3 profile 55/0.
+  - Still owed on the S3: LIGHTS TEST with Rob watching, and flash #3.
+- **The S3 panel redesign is in (1.1.0-dev.10, S3 1.1.0)**, from
+  s3-1.1.0 64cd0d5, built to internal/tty-ux-panel-2026-09-24.md
+  revisions 1 and 2. The ESP32 image is byte-identical in its sections;
+  the S3 grew +1,416 static DRAM and +8.5 KB of image. "USB plug"
+  replaced the Rotation row because the CONFIG page is at its 16-row
+  limit. Left/right is derived from Waveshare's MADCTL, not yet seen on
+  the glass. The mail envelope reads chat's unread index for the first
+  `]` account seen after boot until the DASH lane's `Bbs::sysopMail()`
+  replaces it at merge (one line in panel.cpp).
+- **Missed sysop pages go to one account** (Rob, 2026-09-24, approved).
+  Not to every account ever marked sysop: marks are never removed, and
+  each copy takes one of the 64 board-wide mail slots. CONFIG board gains
+  "Sysop handle", stored with the account's permanent id (`sysop_id`) so a
+  rename or a new account taking the name cannot catch the mail; the setup
+  flow fills it with the account that set the board up. Unset or stale:
+  the last account to elevate to sysop. When the linked account logs in,
+  the board asks "Sysop password:" there and then (Enter skips), through
+  the same check and ban counting as BYE. **No auto-escalation** (Rob
+  proposed it; declined with his agreement): account passwords cross
+  telnet in the clear, so an account login must never grant staff alone.
+  - **Built in the DASH lane (dash-1.1.0).** `Bbs::sysopAccount` resolves
+    by id in one users.txt pass: `sysop_id` while it names a live account,
+    else `sysopLast_` (`<userdata>/sysop.last`, written by `markAccount`
+    when a sysop elevation changes it), and the fallback only ever names an
+    account the sysop password marked. `sysop.last` is an id into
+    users.txt, so a restore that puts users.txt live removes it.
+    `isSysopAccount(id)` reads users.txt only for an id that is one of the
+    two. BYE's check is `staffPassword` now, shared with the login
+    question (`SState::AskSysop`, one try, a count that bans hangs up; keys
+    held from before the question are dropped, so a command typed ahead is
+    never a counted wrong password). Ring notes at login go to that
+    account only. MF_SYSOP, and so `Bbs::sysopMail` and the S3 panel's
+    envelope, follow the one account. `test_sysop_account` fails 14 of 22
+    on 52b5b33.
+  - The DASH merge also routed MEM's card row through `sdCardInfo()` and
+    dropped the panel's `g_sysopUser` and `chat::unreadFor`.
+  - Merged tree (main at dev.11): targeted groups 999/0 without a card,
+    1,341/0 with one, S3 host profile 77/0, unit tests pass. esp32dev
+    static DRAM 162,416 (18,320 free), flash 1,268,076; S3 249,128 of
+    341,760.
+- **The backups lane is in (1.1.0-dev.9)**, merged from bk-1.1.0 (94aa16e).
+  - A restore holds until the board is quiet (Rob, after TRA hung hard
+    taking 38 screens with callers on): it waits up to
+    `backup_window_minutes` from the Y, F forces it with a warning, and new
+    callers get the busy line. curl hears the hold through a chunked 200.
+  - `.seeded` marks imported screens with 00000000, because removing their
+    names alone let the "byte-for-byte stock" rule take them back.
+    `kPastStock` in sd.cpp recognises stock screens seeded before the
+    manifest existed, which the manifest alone cannot tell from an edit.
+  - A cardless board no longer re-probes at every CONFIG save: a likely
+    part of TRA's slow passes.
+  - Open, bench only: whether one screen sweep per pass always beats
+    esp_littlefs refusing (EBUSY) to replace a file a caller holds open.
+  - Merged tree: 774/0 without a card, 1,106/0 with one, S3 host profile
+    56/0, unit tests pass. esp32dev static DRAM 161,960 (18,776 free),
+    flash 1,255,204.
 
 ## 1.0.0 (2026-09-23)
 
@@ -878,6 +986,16 @@ they are the process, and getting them wrong wastes Rob's time.
   `sudo /srv/unleashed_directory/deploy/update.sh` on the droplet. I have no
   SSH access to it and am not to go looking for a way in. "Get it on the
   website" means "get it into the repo", not "connect to the server".
+  **From 2026-09-24 the directory can autopublish** (Rob): while he has it
+  switched on (manually, when he is online), the droplet runs update.sh
+  every 30 seconds, so a push to its main is live within half a minute,
+  and a firmware release tag reaches /install the same way. Assume it is
+  on: a directory push or a release tag IS a deploy. Commit locally, tell
+  Rob what changed, and push or tag only on his go for that one.
+- **The Waveshare S3 on COM12 is the one board I may flash** (Rob,
+  2026-09-24), and only after he acknowledges each flash, the first and
+  every new build. Telnet to it needs no permission. UHQ and TRA are still
+  his to flash.
 - **Tests and subagents stay on 127.0.0.1.** Never send traffic at the live
   board or the live directory unless Rob asks for an on-board test. My
   "external" checks once ran over his own LAN and every result was hairpin
@@ -2132,6 +2250,7 @@ Queued for the next build (Rob's plan, in order):
   Shape: a second listener on its own port feeding the same session pool, with its own cap (`ssh_nodes = 2`). A caller is a caller once they are in.
   **The gotcha is plumbing, not memory.** SSH is not a socket that can be swapped in: it has a channel layer, a key exchange and window management above TCP. The seam exists, because output already goes through `ByteSink` and the telnet layer already sits between the socket and the session, but this is a genuine port and a phase of its own, not a config flag.
   An S3 with PSRAM moves the per-session buffers off internal DRAM and makes ten encrypted sessions plausible, the same argument that already governs the node count.
+  **Queued as an S3 option, not started** (Rob, 2026-09-24: "add an s3 ssh option but dont start that yet"). After 1.1.0, as its own phase, board-gated (`BBS_HAS_SSH`, S3 profiles only, the ESP32 image unchanged). It adds a way to connect, not lines: sockets stay capped at 16 on every chip, so it is still ten caller lines. SSH gives the terminal type and window size in its pty request, so SSH callers skip the detection probe. First step when it starts: a research pass on the library and its licence (wolfSSH may be GPLv3-only, which would move the combined firmware to GPLv3, and that is Rob's call; moot since 2026-09-24, when the project went GPLv3 or later, so a GPLv3 library now fits; the libssh ESP32 ports are LGPL, which fits, but their ESP-IDF 5.3.1 build without Arduino is unconfirmed), RAM per session and flash cost.
 
 - **Doors go horizontal: a second ESP32 on the serial port, not Lua in the core** (Rob, 2026-09-21). **This replaces the Lua plan and takes it off the roadmap.**
   Rob's framing: "Id rather go horizontal on this and plug in another device to the existing one which FEELS more legit like adding BBS hardware." He is right on both counts, the feeling and the engineering.

@@ -24,12 +24,12 @@
  * See also:     README.md
  *
  * Copyright 2026 - Robert Mech
- * License:      GNU General Public License v2 or later
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * License:      GNU General Public License v3 or later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
+ * Free Software Foundation; either version 3 of the License, or (at your
  * option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
@@ -38,7 +38,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * with this program. If not, see <https://www.gnu.org/licenses/>. The full
  * text is in the LICENSE file at the top of this repository.
  * ===========================================================================
  */
@@ -64,7 +64,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
-#include "driver/uart.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_netif.h"
@@ -326,6 +325,11 @@ static void netServicesStart() {
 // ===========================================================================
 namespace imp {
 
+#ifdef BBS_CHIP_S3
+constexpr char kImprovChip[] = "ESP32-S3";
+#else
+constexpr char kImprovChip[] = "ESP32";
+#endif
 constexpr uint32_t kTrialMs  = 30000;   // ESP Web Tools waits 45 s and says ~30
 constexpr uint32_t kScanMs   = 15000;   // an all-channel scan takes 2-3 s; this is the backstop
 constexpr uint8_t  kScanMax  = 20;      // networks listed; the page scrolls, a C64 does not care
@@ -348,8 +352,10 @@ bool up() { return xEventGroupGetBits(s_wifi) & WIFI_UP; }
 // through one. stdout's lock is held so a log line from another task cannot
 // land in the middle of a packet: ESP_LOG takes the same lock, and a packet
 // with a log line spliced into it fails its checksum and is never seen.
-// uart_write_bytes rather than stdout itself, because stdout turns every
-// 0x0A into CR LF and a length or checksum byte can be 0x0A.
+// plat::consoleWrite rather than stdout itself, because stdout turns every
+// 0x0A into CR LF and a length or checksum byte can be 0x0A. That is UART0
+// on the ESP32 and the chip's own USB on the S3 (1.1.0), whichever port the
+// browser is holding.
 // The IDF's newlib has no flockfile(), and its _flockfile macro does not
 // compile as C++. __lock_acquire_recursive on the stream's own lock is what
 // that macro expands to for a stream that is not a string, so this is the
@@ -358,8 +364,9 @@ void send(const uint8_t* b, size_t n) {
     if (!n) return;
     __lock_acquire_recursive(stdout->_lock);
     fflush(stdout);
-    uart_write_bytes(UART_NUM_0, "\n", 1);
-    uart_write_bytes(UART_NUM_0, b, n);
+    static const uint8_t kNl = '\n';
+    plat::consoleWrite(&kNl, 1);
+    plat::consoleWrite(b, n);
     __lock_release_recursive(stdout->_lock);
 }
 void sendState(uint8_t st) { uint8_t b[16]; send(b, improv::stateFrame(b, sizeof(b), st)); }
@@ -501,7 +508,8 @@ void handle() {
     }
     case improv::C_INFO: {
         const SysConfig& c = syscfg::get();
-        const char* s[] = { "unleashed BBS", BBS_VERSION, "ESP32",
+        // The chip family, as the installer names it: "ESP32" or "ESP32-S3".
+        const char* s[] = { "unleashed BBS", BBS_VERSION_SHOWN, kImprovChip,
                             c.boardName[0] ? c.boardName : c.hostname };
         sendResult(improv::C_INFO, s, 4);
         break;
@@ -574,8 +582,8 @@ bool joinedNew() {
 void poll() {
     if (!g_uartOk) return;                  // the driver refused; say so once, at boot
     uint8_t buf[64];
-    int n = uart_read_bytes(UART_NUM_0, buf, sizeof(buf), 0);
-    for (int i = 0; i < n; ++i) {
+    size_t n = plat::consoleRead(buf, sizeof(buf));
+    for (size_t i = 0; i < n; ++i) {
         if (g_parser.feed(buf[i]) != improv::Parser::Res::Packet) continue;
         g_join.heard();
         handle();
@@ -719,17 +727,16 @@ extern "C" void app_main(void) {
     // radio starts, so the group exists before anything else.
     s_wifi = xEventGroupCreate();
 
-    // The console UART gets a driver so Improv can read it without blocking.
-    // The log keeps writing the way it always has; only input changes hands,
-    // and nothing else here ever read the console.
+    // The console gets a driver so Improv can read it without blocking:
+    // UART0 on the ESP32, the chip's own USB on the S3 (plat::consoleBegin).
+    // Nothing else here ever read the console.
     // Without it every read would fail and the driver would log the failure
     // on every pass, so Improv is simply off.
     //
     // First thing, before NVS: from here a question the installer sends
     // while the board boots waits in the driver's buffer for the first poll.
-    esp_err_t ue = uart_driver_install(UART_NUM_0, 256, 0, 0, nullptr, 0);
-    imp::g_uartOk = ue == ESP_OK;
-    if (!imp::g_uartOk) ESP_LOGE(TAG, "console UART driver: %s, Improv is off", esp_err_to_name(ue));
+    imp::g_uartOk = plat::consoleBegin();
+    if (!imp::g_uartOk) ESP_LOGE(TAG, "console driver would not install, Improv is off");
 
     // The BOOT-hold watch (1.1.0, core/recovery) starts looking as early as
     // anything, and is polled between the steps below and then from the BBS
@@ -747,7 +754,7 @@ extern "C" void app_main(void) {
 
     plat::HeapStats h = plat::heap();
     plat::log("boot: %s %s  heap free %u  largest %u",
-              BBS_NAME, BBS_VERSION, static_cast<unsigned>(h.freeBytes),
+              BBS_NAME, BBS_VERSION_SHOWN, static_cast<unsigned>(h.freeBytes),
               static_cast<unsigned>(h.largestBlock));
 
     fsMount(BBS_FS_LABEL, BBS_FS_MOUNT);

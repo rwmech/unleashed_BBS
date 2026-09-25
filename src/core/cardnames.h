@@ -28,19 +28,19 @@
  *
  *                  Pure and header-only: host/test_cardnames.cpp drives it.
  *
- * Interfaces:   Kind, kindOf, listable, makeName, NightlyScan
+ * Interfaces:   Kind, kindOf, listable, partial, makeName, NightlyScan
  *
  * Libraries:    none
  * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
  * See also:     BACKUP.md "Backups on the SD card"
  *
  * Copyright 2026 - Robert Mech
- * License:      GNU General Public License v2 or later
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * License:      GNU General Public License v3 or later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
+ * Free Software Foundation; either version 3 of the License, or (at your
  * option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
@@ -49,7 +49,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * with this program. If not, see <https://www.gnu.org/licenses/>. The full
  * text is in the LICENSE file at the top of this repository.
  * ===========================================================================
  */
@@ -113,6 +113,23 @@ inline Kind kindOf(const char* name) {
         !strcmp(name + 16, ".zip"))
         return Kind::Nightly;
     return Kind::Other;
+}
+
+// partial: a zip BACKUP SD or the nightly one was part way through writing
+// when the power went or the card was pulled: "<zip>.tmp", where <zip> is a
+// name the list would show. The zip is written under that name and renamed
+// only once it is whole, so the list never offers half of one; a .tmp that
+// outlives the write is taking card space for nothing, and is tidied when
+// the card is next mounted. Nothing else ending in .tmp matches, so a file
+// the sysop keeps in the folder under such a name is never touched.
+inline bool partial(const char* name) {
+    if (!name) return false;
+    size_t n = strlen(name);
+    if (n < 9 || n > kNameMax + 4u || strcmp(name + n - 4, ".tmp")) return false;
+    char zip[kNameMax + 1];
+    memcpy(zip, name, n - 4);
+    zip[n - 4] = '\0';
+    return listable(zip);
 }
 
 // makeName: the board's own name for a zip made now. stamp is

@@ -5,8 +5,8 @@ Downloading and uploading config, accounts and screens as one zip, and
 keeping it on the SD card (BACKUP SD, RESTORE SD, the nightly backup).
 
 Copyright 2026 - Robert Mech
-License: GNU General Public License v2 or later
-SPDX-License-Identifier: GPL-2.0-or-later
+License: GNU General Public License v3 or later
+SPDX-License-Identifier: GPL-3.0-or-later
 
 Documentation for µnleashed BBS, part of the same distribution as the
 source. See the LICENSE file for terms.
@@ -132,7 +132,7 @@ Accept upload (Y/N)?
 
 Read the IP address before answering: anyone on your network can send an upload while the window is open, only the sysop can accept it.
 
-- `Y` swaps the files in, reloads `system.cfg` and the screens immediately (no reboot), and curl prints `Applied: ...` once the last file is in. The files go in one each loop pass, so callers are not held up while it happens, and curl going away part way does not stop it. When `system.cfg` or an information page came back, the plugins start again on it, as a `CONFIG` save makes them, so a restored plugin setting or page is live too (1.1.0); anyone inside a plugin at that moment is put back at the main prompt.
+- `Y` swaps the files in, reloads `system.cfg` and the screens immediately (no reboot), and curl prints `Applied: ...` once the last file is in. With anybody else on the board it first waits for them to leave, and curl prints `Waiting for 1 caller to leave ...` meanwhile; `F` on the console puts it in at once (1.1.0, [below](#a-restore-waits-until-nobody-else-is-on)). The files go in one each loop pass, so callers are not held up while it happens, and curl going away part way does not stop it. When `system.cfg` or an information page came back, the plugins start again on it, as a `CONFIG` save makes them, so a restored plugin setting or page is live too (1.1.0); anyone inside a plugin at that moment is put back at the main prompt.
 - `N` throws the upload away and curl prints `Upload discarded`.
 - No answer in 2 minutes counts as `N`.
 
@@ -143,6 +143,7 @@ Read the IP address before answering: anyone on your network can send an upload 
 | Status | Meaning |
 |---|---|
 | `200 Applied: ...` | accepted by the sysop and live |
+| `200 Waiting for 2 callers to leave ...` | accepted, and waiting for the board to go quiet; `Applied: ...` or `Upload discarded: callers stayed on` follows on the same reply |
 | `403 Upload discarded: ...` | sysop said N, did not answer, or logged off |
 | `422 Nothing to apply ...` | no file in the zip passed the checks (reason included) |
 | `400 rejected: ...` | not a zip, or a damaged one |
@@ -169,15 +170,40 @@ The details, for the sysop at the prompt (sysop only, like `CONFIG`):
 | `BACKUP SD` | `unleashed-YYYYMMDD-HHMM.zip` in `<card>/backup/`: `system.cfg` (staff passwords as `***`), `users.txt`, the information pages, the screens and `MANIFEST.txt`. A dot a file while it writes, then `Saved: 14 files, 31 KB.` |
 | `BACKUP SD SCREENS` | `screens-YYYYMMDD-HHMM.zip`, the screens and the manifest only |
 | `RESTORE SD` | the zips in the backup folder, newest first and numbered (the newest 16), with their sizes |
-| `RESTORE SD n` or `RESTORE SD name.zip` | checks zip n exactly as an upload through the window is checked, says what it would do, and asks `Restore now? (y/N)`. Y puts it back and it is live at once; N, ESC or 60 seconds with no answer is `Not restored.` |
+| `RESTORE SD n` or `RESTORE SD name.zip` | checks zip n exactly as an upload through the window is checked, says what it would do, and asks `Restore now? (y/N)`. Y puts it back and it is live at once, or once nobody else is on (below); N, ESC or 60 seconds with no answer is `Not restored.` |
 | `RESTORE SD SCREENS n` | the same, for a zip's screens only, onto the card's `screens` folder. It adds and replaces, never removes, and anything in the zip that is not a screen is listed as rejected |
 
 - The question always shows `In zip`, `Replaces`, `Accounts`, `Removes` and `Staff` for a full restore. `Removes` is the count of screens on the board that are not in the zip, which a full restore deletes (the window's rule); it is what tells a full restore of a screens-only zip apart from `RESTORE SD SCREENS`. `Staff` says whether the zip changes any staff password: a backup's `***` keeps the board's own, but a line the zip leaves out, empties or types in does change it. `Wi-Fi` appears when the zip's network is not the board's.
 - A number can only name a zip the list shows, and a name only a zip in the backup folder: nothing typed can reach any other file. A name with a space in it is restored by its number.
-- Two backups in the same minute would share a name, so the second is refused: `There is one from this minute already.` A zip is written as `name.tmp` and renamed when it is whole, so a card pulled half way leaves nothing the list would offer.
+- Two backups in the same minute would share a name, so the second is refused: `There is one from this minute already.` A zip is written as `name.zip.tmp` and renamed when it is whole, so a card pulled half way leaves nothing the list would offer.
 - Writing and restoring go a step at a time, a few kilobytes or one file each loop pass, so callers are not held up while it happens. The zip limits are the window's: 256 KB for the zip, and the board has to have room to unpack it.
 - With the `sd` plugin's screens override switched off (`screens = no` in `CONFIG sd`), `RESTORE SD SCREENS` says so: the screens go onto the card but do not play until it is on.
-- A screen imported this way is the sysop's own. The card keeps a record (`screens/.seeded`) of the stock screens the board put there, and a later firmware update refreshes only a card copy that still matches that record. An imported screen that is byte for byte the stock one is indistinguishable from the board's copy and follows stock updates like it.
+- A screen imported this way is the sysop's own. The card keeps a record (`screens/.seeded`) of the stock screens the board put there, and a later firmware update refreshes only a card copy that still matches that record. `RESTORE SD SCREENS` marks what it puts on the card as yours in that record (1.1.0), so even an imported screen that is byte for byte a stock one is never refreshed from under you. `SCREENS` shows which copies are the board's and which are yours.
+- A zip left as `name.zip.tmp` by a card pulled or the power lost part way is removed the next time the board mounts the card (1.1.0); nothing else in the folder is.
+
+### Downloading a backup over the line
+
+The card's `backup` folder is also a file area, `Backups`, number 11 in `FILES`, the sysop's alone (1.1.0), because a full backup holds the Wi-Fi password as typed and every account's password hash. So a backup made with `BACKUP SD`, or by the nightly one, can be taken home over the telnet line the sysop is already on, with no backup window and no curl:
+
+- `FILES 11`, or `#`, `11` and Enter at the file area menu (a single key reaches only 1 to 9, and `0` is ten). A terminal with cursor keys can also move the bar to it.
+- A number downloads that zip: `Y` for YMODEM, which carries the exact length, or `X` for XMODEM. XMODEM pads the last block with `0x1A`; the board's own restore reads such a zip as the zip it is.
+- `U` sends one back. A `.zip` of 27 characters or fewer goes straight in, with no approval, because only the sysop can upload there; anything else is refused before the transfer starts, and so is a zip over 256 KB. A transfer that breaks off takes its half file with it.
+- `RESTORE SD` then lists it with the others, and `RESTORE SD n` checks it exactly as an upload through the window is checked.
+
+### A restore waits until nobody else is on
+
+After the sysop's `Y`, at either door, the board does not put a restore live while anybody else is on it (1.1.0): accounts, settings and screens changing under a caller is what made a live board "hang hard" through one. It says how many it is waiting for, `Waiting for 2 callers to leave. F applies it now, N gives up.`, and goes in by itself when they have left. `F` puts it in at once, and whoever is still on is told first: `*** The sysop is restoring a backup now.` After `backup_window_minutes` (5 as shipped) it gives up, as a question with no answer does, and the staged files are thrown away: `Not restored: callers stayed on.`
+
+While it waits, and while it goes in, a new caller gets the busy line rather than a login to a board about to change. The busy line still lets the sysop in with `BYE` and the password.
+
+Through the window, curl is told the same as the sysop: the reply opens with the waiting line, and the rest follows on the same connection once the restore is in, or given up. Because the reply has begun by then, it is `200` even if the restore then has errors; the words say so.
+
+### What a restore refuses, and what it says
+
+- A `system.cfg` whose `sysop_password =` is empty is refused, as `CONFIG staff` refuses one: it would switch staff off, and with it the only way back in short of the cable. The rest of the zip may still go back; the question lists it under `Rejected`.
+- A staff password line whose value is the published default is left out (1.0.2), which leaves a co-sysop level off. That is said in the result, not only in the serial log: `Co-sysop 1 off: the published password.` after `RESTORE SD`, and `Co-sysop 1 off: the published password is never set.` in the window's reply and on the console.
+- Screens restored onto the board have to fit its `storage` partition while they are being swapped, not only once they are in: each screen is copied in beside the one it replaces, so for a moment both are there. A screen that would not fit at that point is rejected as `no room for it on the board` before anything is replaced.
+- Anybody reading a screen the restore replaces is let go of first and told why (`Screen ended: the sysop is restoring a backup.`): on the board a file somebody has open cannot be replaced.
 
 ### The nightly backup
 

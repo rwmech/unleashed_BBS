@@ -25,10 +25,10 @@
  *
  * Design:       Written here rather than taken from the official C++ SDK.
  *               That SDK is Apache-2.0, which the FSF lists as incompatible
- *               with GPLv2, and this firmware is GPLv2 or later; bringing it
- *               in would make the combined work GPLv3 in practice. The
- *               protocol is small enough that our own copy costs less than
- *               that decision.
+ *               with GPLv2; the firmware was GPLv2 or later when this was
+ *               written. It is GPLv3 or later since 1.1.0-dev.11, so the
+ *               SDK would now combine cleanly, but the protocol is small
+ *               and this copy is tested, so it stays.
  *
  * Interfaces:   improv::Parser, frame, stateFrame, errorFrame, resultFrame,
  *               parseRpc, parseWifi, stateNow, JoinWatch
@@ -38,12 +38,12 @@
  * See also:     src/main.cpp (the UART and the radio)
  *
  * Copyright 2026 - Robert Mech
- * License:      GNU General Public License v2 or later
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * License:      GNU General Public License v3 or later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
+ * Free Software Foundation; either version 3 of the License, or (at your
  * option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
@@ -52,7 +52,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * with this program. If not, see <https://www.gnu.org/licenses/>. The full
  * text is in the LICENSE file at the top of this repository.
  * ===========================================================================
  */

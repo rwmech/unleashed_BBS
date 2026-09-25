@@ -17,12 +17,12 @@
  * See also:     README.md
  *
  * Copyright 2026 - Robert Mech
- * License:      GNU General Public License v2 or later
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * License:      GNU General Public License v3 or later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
+ * Free Software Foundation; either version 3 of the License, or (at your
  * option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
@@ -31,7 +31,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * with this program. If not, see <https://www.gnu.org/licenses/>. The full
  * text is in the LICENSE file at the top of this repository.
  * ===========================================================================
  */
@@ -45,6 +45,7 @@
 #include <cerrno>
 #include <ctime>
 #include <string>
+#include <vector>
 #include <sys/stat.h>
 #include <dirent.h>
 #include <fcntl.h>
@@ -58,6 +59,13 @@ std::string g_logsBase = "../data/logs";
 const uint8_t* g_stackLo  = nullptr;   // the BBS thread's painted stack
 size_t         g_stackLen = 0;
 char* const*   g_argv     = nullptr;   // how this program was started, for restart()
+int16_t        g_hostRssi = -1000;     // plat::wifiRssi's answer; -1000 not read yet
+}
+
+// host-only: the signal plat::wifiRssi reports, set by the lights plugin's
+// host-only LIGHTS RSSI (1.1.0). 0 is "not joined".
+void hostSetRssi(int8_t dbm) {
+    g_hostRssi = dbm;
 }
 
 // host-only: set by main_host.cpp before the BBS thread starts
@@ -170,8 +178,15 @@ void hardware(char* out, size_t n) {
     snprintf(out, n, "host");
 }
 
+// The host has no radio: 0, "not joined", unless a test says otherwise, by
+// BBS_HOST_RSSI in the environment at start or LIGHTS RSSI (hostSetRssi)
+// while it runs, for the lights plugin's wifi meter (1.1.0).
 int8_t wifiRssi() {
-    return 0;
+    if (g_hostRssi == -1000) {
+        const char* v = getenv("BBS_HOST_RSSI");
+        g_hostRssi = static_cast<int16_t>(v && *v ? atoi(v) : 0);
+    }
+    return static_cast<int8_t>(g_hostRssi);
 }
 
 // netInfo: the host has no radio, so the system screen shows the dashes.
@@ -425,34 +440,46 @@ DiskSeen diskSeen() {
 // last frame it was given, and pixelsFrame hands that back, so LIGHTS, and
 // the tests through it, read the colours a board would have sent.
 //
-// The pins are the ESP32's output pins, so a pin the board's RMT driver
-// would refuse is refused here too: 0 to 33, less 20, 24 and 28 to 31,
-// which the chip does not have. A frame is never still going out on the
+// The pins are the chip's output pins, so a pin the board's RMT driver
+// would refuse is refused here too. For the reference WROOM: 0 to 33, less
+// 20, 24 and 28 to 31, which the chip does not have. For an S3 board
+// profile: 0 to 48, less 22 to 25. A frame is never still going out on the
 // host, so pixelsShow always takes it; the board's refusal while the wire
 // is busy has no host equivalent, and the plugin treats one as nothing more
 // than "draw again next frame".
+//
+// The frame is kept as RGB, which is what pixelsFrame returns on the board
+// too, whatever order the bytes went out in. The order goes in the log line,
+// which is what a person reading the host's console checks it against.
 // ---------------------------------------------------------------------------
 namespace {
 struct HostPix {
     int     pin   = -1;
     uint8_t count = 0;
+    uint8_t order = PIX_GRB;
     uint8_t rgb[kPixelMax * 3] = {};
 };
 HostPix g_hostPix[kPixelOuts];
 
 bool outputPin(int p) {
+#ifdef BBS_CHIP_S3
+    return p >= 0 && p <= 48 && !(p >= 22 && p <= 25);
+#else
     return p >= 0 && p <= 33 && p != 20 && p != 24 && !(p >= 28 && p <= 31);
+#endif
 }
 }   // namespace
 
-bool pixelsBegin(uint8_t out, int pin, uint8_t count) {
-    if (out >= kPixelOuts || !count || count > kPixelMax) return false;
+bool pixelsBegin(uint8_t out, int pin, uint8_t count, uint8_t order) {
+    if (out >= kPixelOuts || !count || count > kPixelMax || order >= PIX_ORDERS) return false;
     g_hostPix[out] = HostPix();
     if (!outputPin(pin)) return false;
     g_hostPix[out].pin   = pin;
     g_hostPix[out].count = count;
-    log("pixels: output %u on gpio %d, %u pixel%s (host record)", static_cast<unsigned>(out), pin,
-        static_cast<unsigned>(count), count == 1 ? "" : "s");
+    g_hostPix[out].order = order;
+    static const char* const kOrderName[PIX_ORDERS] = { "GRB", "RGB", "BRG", "RBG", "GBR", "BGR" };
+    log("pixels: output %u on gpio %d, %u pixel%s, %s (host record)", static_cast<unsigned>(out), pin,
+        static_cast<unsigned>(count), count == 1 ? "" : "s", kOrderName[order]);
     return true;
 }
 
@@ -475,6 +502,67 @@ uint8_t pixelsFrame(uint8_t out, uint8_t* rgb, uint8_t cap) {
     memcpy(rgb, p.rgb, static_cast<size_t>(n) * 3u);
     return n;
 }
+
+#ifdef BBS_HAS_LCD
+// ---------------------------------------------------------------------------
+// The panel on the host (a build for a board profile with BBS_HAS_LCD):
+// glass in memory. lcdDraw copies each band onto it exactly as the board
+// would send it, and PANEL SHOT (hostPanelShot, below the namespace)
+// writes it out as a picture. The pins must be ones the panel needs, the
+// rest is taken on trust: there is nothing here to refuse it.
+// ---------------------------------------------------------------------------
+namespace {
+LcdCfg              g_lcdCfg;
+bool                g_lcdUp = false;
+std::vector<uint16_t> g_glass;
+}
+
+bool lcdBegin(const LcdCfg& c, char* err, size_t errLen) {
+    lcdEnd();
+    if (c.mosi < 0 || c.sclk < 0 || c.dc < 0 || !c.width || !c.height) {
+        snprintf(err, errLen, "the panel needs MOSI, SCLK and D/C");
+        return false;
+    }
+    g_lcdCfg = c;
+    g_lcdUp  = true;
+    g_glass.assign(static_cast<size_t>(c.width) * c.height, 0);
+    log("panel: ST7789 %ux%u, rotation %u, %u MHz (host glass)", static_cast<unsigned>(c.width),
+        static_cast<unsigned>(c.height), static_cast<unsigned>(c.rotation), static_cast<unsigned>(c.mhz));
+    return true;
+}
+
+bool lcdSame(const LcdCfg& c) {
+    const LcdCfg& o = g_lcdCfg;
+    return g_lcdUp && o.mosi == c.mosi && o.sclk == c.sclk && o.cs == c.cs && o.dc == c.dc &&
+           o.rst == c.rst && o.bl == c.bl && o.width == c.width && o.height == c.height &&
+           o.xoff == c.xoff && o.yoff == c.yoff && o.rotation == c.rotation &&
+           o.invert == c.invert && o.bgr == c.bgr && o.mirror == c.mirror && o.mhz == c.mhz;
+}
+
+void lcdEnd() {
+    g_lcdUp = false;
+    g_lcdCfg = LcdCfg();
+    g_glass.clear();
+}
+
+bool lcdReady() { return g_lcdUp; }
+
+uint32_t lcdBandPixels() { return 320u * 16u; }
+
+bool lcdDraw(const uint16_t* fb, uint16_t stride, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+    if (!g_lcdUp || !fb || static_cast<uint32_t>(w) * h > lcdBandPixels()) return false;
+    if (x + w > g_lcdCfg.width || y + h > g_lcdCfg.height) return false;
+    for (uint16_t r = 0; r < h; ++r)
+        memcpy(&g_glass[static_cast<size_t>(y + r) * g_lcdCfg.width + x],
+               fb + static_cast<size_t>(y + r) * stride + x, static_cast<size_t>(w) * 2u);
+    return true;
+}
+
+void lcdBacklight(uint8_t) {}
+
+void* psramAlloc(size_t n) { return malloc(n); }
+void  psramFree(void* p)  { free(p); }
+#endif  // BBS_HAS_LCD
 
 // The host build is started by a person, so it never crashed its way here.
 // BBS_HOST_RESET plays one of the board's reset words instead ("task
@@ -606,3 +694,23 @@ bool inflateRaw(InflateIn in, InflateOut out, void* ctx) {
 }
 
 } // namespace plat
+
+#ifdef BBS_HAS_LCD
+// hostPanelShot: the host's glass as a binary PPM, 8 bits a channel, for a
+// person to look at (PANEL SHOT). Relative paths land in the data folder.
+bool hostPanelShot(const char* path) {
+    if (!plat::g_lcdUp || plat::g_glass.empty()) return false;
+    std::string full = path[0] == '/' ? std::string(path) : g_fsBase + "/" + path;
+    FILE* f = fopen(full.c_str(), "wb");
+    if (!f) return false;
+    const unsigned w = plat::g_lcdCfg.width, h = plat::g_lcdCfg.height;
+    fprintf(f, "P6\n%u %u\n255\n", w, h);
+    for (uint16_t v : plat::g_glass) {
+        uint8_t px[3] = { static_cast<uint8_t>((v >> 8) & 0xF8), static_cast<uint8_t>((v >> 3) & 0xFC),
+                          static_cast<uint8_t>((v << 3) & 0xF8) };
+        fwrite(px, 1, 3, f);
+    }
+    fclose(f);
+    return true;
+}
+#endif

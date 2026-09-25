@@ -61,12 +61,12 @@
  * See also:     CLAUDE.md, NEXT.md
  *
  * Copyright 2026 - Robert Mech
- * License:      GNU General Public License v2 or later
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * License:      GNU General Public License v3 or later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
+ * Free Software Foundation; either version 3 of the License, or (at your
  * option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
@@ -75,7 +75,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * with this program. If not, see <https://www.gnu.org/licenses/>. The full
  * text is in the LICENSE file at the top of this repository.
  * ===========================================================================
  */
@@ -85,9 +85,12 @@
 #include "../core/claims.h"
 #include "../core/bbs_util.h"
 #include "../core/xmodem.h"
+#include "../core/cardnames.h"   // the backup folder and the names RESTORE SD lists
 #include "../platform/platform.h"
 #include "../config.h"
+#include "panel_feed.h"       // pendingCount, on a board with a display
 
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -104,14 +107,20 @@ const char* const kName = "files";
 // Eight areas. The limit is the CONFIG form, which holds 16 fields and
 // spends four on the core keys; eight areas plus those is twelve and leaves
 // room. A board wanting more than eight has outgrown a form anyway.
-// Eight the sysop configures, then two the board provides. The built-ins sit
-// at fixed numbers ABOVE the configured ones so a number always means the
+// Eight the sysop configures, then three the board provides. The built-ins
+// sit at fixed numbers ABOVE the configured ones so a number always means the
 // same area: giving them the first free slot would move them every time
 // somebody added a folder.
+//
+// Backups (1.1.0) is the card's backup folder, where BACKUP SD and the
+// nightly backup write, so a sysop can take a backup home over the line they
+// are already on, and bring one back to restore. Sysop only for everything:
+// a full backup holds the Wi-Fi password as typed.
 constexpr uint8_t kCfgAreas    = 8;
-constexpr uint8_t kMaxAreas    = kCfgAreas + 2;
+constexpr uint8_t kMaxAreas    = kCfgAreas + 3;
 constexpr uint8_t kAreaScreens = kCfgAreas;       // shows as 9
 constexpr uint8_t kAreaLogs    = kCfgAreas + 1;   // shows as 10
+constexpr uint8_t kAreaBackups = kCfgAreas + 2;   // shows as 11
 constexpr uint8_t kPathMax  = 48;
 constexpr uint8_t kNameMax  = 24;
 // path | name | read | up | down | del, with " | " between each pair.
@@ -139,6 +148,17 @@ const char* const kPendList = "UPLOADS.BBS";
 // find it fills the card.
 constexpr uint8_t  kMaxPendPerArea = 20;
 constexpr uint32_t kMaxUploadBytes = 4u * 1024u * 1024u;
+
+// Backups takes a zip RESTORE SD will take: no bigger than the importer
+// reads. XMODEM pads its last block, up to 1,023 bytes of 0x1A for
+// XMODEM-1K, which the importer allows for, so an XMODEM upload may run
+// that much over while it arrives.
+constexpr uint32_t kMaxBackupBytes = BBS_ZIP_MAX_BYTES + 1024u;
+
+// capFor: the most an upload into this area may be
+uint32_t capFor(uint8_t area) {
+    return area == kAreaBackups ? kMaxBackupBytes : kMaxUploadBytes;
+}
 
 // An area's own read and write levels, which are the plugin's unless the
 // area says otherwise. Deferring these to the upload phase was a mistake:
@@ -202,6 +222,7 @@ enum : uint8_t {
     AskDescNum,      // which numbered file to describe
     AskDescText,     // the description itself
     AskUpDesc,       // describe the file that has just been uploaded
+    AskArea,         // a section number typed out, # at the menu (1.1.0)
 };
 
 // The file a yes/no question is about. A number chooses it, the question
@@ -469,8 +490,14 @@ bool setDesc(const char* dir, const char* file, const char* text) {
     if (!wrote && *text) fprintf(out, "%s %s\n", file, text);
 
     fflush(out);
-    fclose(out);
-    remove(cur);                                     // FAT rename will not replace
+    if (fclose(out) != 0) { remove(tmp); return false; }   // FAT says "full" here
+    // Renamed over the old file first (1.1.0). FAT will not rename over a
+    // file and says EEXIST, and only then, with the new file whole beside
+    // it, does the old one go. Removing it first on every path lost every
+    // description in the area whenever the rename then failed.
+    if (rename(tmp, cur) == 0) return true;
+    if (errno != EEXIST) { remove(tmp); return false; }
+    remove(cur);
     return rename(tmp, cur) == 0;
 }
 
@@ -549,6 +576,32 @@ void readKey(void* ctx, const char* key, const char* value) {
 // count in the first place.
 void recountPending();
 
+// clearBackupsStaging: Backups takes nothing for approval, so anything in
+// its staging folder at start is half a zip from a transfer the board
+// restarted in the middle of (1.1.0). Left there it would count as an
+// upload awaiting approval for ever, and twenty of them would refuse every
+// upload to Backups. Only while no transfer is running.
+void clearBackupsStaging() {
+    char pd[160];
+    if (claims::held(claims::Res::Transfer) || !pendPath(kAreaBackups, pd, sizeof(pd))) return;
+    for (uint8_t guard = 0; guard < 32; ++guard) {       // one at a time: never remove mid-walk
+        char victim[64] = "";
+        DIR* d = opendir(pd);
+        if (!d) return;
+        for (struct dirent* e = readdir(d); e; e = readdir(d)) {
+            if (e->d_name[0] == '.') continue;
+            snprintf(victim, sizeof(victim), "%.60s", e->d_name);
+            break;
+        }
+        closedir(d);
+        if (!victim[0]) return;
+        char full[224];
+        snprintf(full, sizeof(full), "%s/%s", pd, victim);
+        if (remove(full) != 0) return;
+        plat::log("files: removed %s, half an upload to Backups", victim);
+    }
+}
+
 bool start(Bbs& bbs) {
     (void)bbs;
     g_index = plugins::indexOf(kName);
@@ -557,7 +610,7 @@ bool start(Bbs& bbs) {
     for (uint8_t i = 0; i < BBS_MAX_NODES + 2; ++i) g_at[i] = 0xFF;
     plugins::forEachKey(g_index, readKey, nullptr);
 
-    // The two the board provides, so a fresh card is not an empty room.
+    // The ones the board provides, so a fresh card is not an empty room.
     // Screens is the folder the screen player already reads its overrides
     // from and Logs is where the caller log is mirrored, so both are things
     // a sysop wants at hand and neither is anybody else's business: staff
@@ -581,6 +634,17 @@ bool start(Bbs& bbs) {
     lg.down  = PlugLevel::Staff;
     lg.up    = PlugLevel::Sysop;
     lg.del   = PlugLevel::Sysop;
+
+    // The card's backup folder (1.1.0). The sysop's alone, every level: a
+    // full backup carries the Wi-Fi password as typed and every account's
+    // password hash, which is nobody else's to read.
+    Area& bk = g_area[kAreaBackups];
+    snprintf(bk.path, sizeof(bk.path), "%s", cardbak::kDir);
+    snprintf(bk.name, sizeof(bk.name), "%s", "Backups");
+    bk.read  = PlugLevel::Sysop;
+    bk.down  = PlugLevel::Sysop;
+    bk.up    = PlugLevel::Sysop;
+    bk.del   = PlugLevel::Sysop;
 
     g_areas = kMaxAreas;
 
@@ -610,6 +674,7 @@ bool start(Bbs& bbs) {
             }
         }
     }
+    clearBackupsStaging();
     recountPending();
     plat::log("files: %u area%s, %u folder%s created",
               live, live == 1 ? "" : "s", made, made == 1 ? "" : "s");
@@ -709,6 +774,16 @@ uint8_t visibleAreas(Session& s, uint8_t* out, uint8_t* perRow, uint8_t* widestO
         *perRow = pr;
     }
     return n;
+}
+
+// pastTen: this caller can see an area numbered past 10, which a single key
+// cannot open: 1 to 9 are themselves and 0 is ten. Those take # and the
+// number, typed and confirmed with Enter, the way the forums take numbers
+// (1.1.0, when Backups became 11). Only the sysop sees one today.
+bool pastTen(Session& s) {
+    for (uint8_t i = 10; i < g_areas; ++i)
+        if (g_area[i].path[0] && mayRead(s, i)) return true;
+    return false;
 }
 
 void areaMenu(Bbs& b, Session& s) {
@@ -824,6 +899,11 @@ void filesPrompt(Session& s) {
         t.text(tl, "Files: cursor keys and Enter, or a number. Q/ESC quits");
     else if (canPoint(s))
         t.text(tl, "Files: cursors, Enter, number. Q quits");   // 38, fits 40
+    // No cursor to reach 11 with, so the one way there is said (1.1.0).
+    else if (pastTen(s) && wide)
+        t.text(tl, "Files: a number opens an area, # for 11 and up. Q quits");
+    else if (pastTen(s))
+        t.text(tl, "Files: number opens, # for 11+. Q quits");  // 39, fits 40
     else
         t.text(tl, "Files: number opens an area, Q quits");
     t.nl(tl);
@@ -910,13 +990,20 @@ bool rows(Session& s) {
     // than any real BBS managed and there is no reason to spend the width
     // that is sitting there. 12 + 1 + 6 + 1 = 20 goes to the name and size.
     unsigned cols = s.term.cols() ? s.term.cols() : 40;
-    unsigned dw   = cols > 25 ? cols - 24 : 1;   // 3 more for the number
+    // Backups (1.1.0) shows the whole name, which is how one backup is told
+    // from another: unleashed-20260924-1455.zip cut to twelve characters is
+    // every backup made that year. 27 is the longest name RESTORE SD lists,
+    // and with the number and the size it is 37 columns, inside 40. What is
+    // left over is the description, as elsewhere.
+    unsigned nw   = at == kAreaBackups ? cardbak::kNameMax : 12;
+    unsigned used = nw + 12;                    // "nn " + name + " " + "nnnnnK" + " ", and the margin
+    unsigned dw   = cols > used + 1 ? cols - used : 1;
     if (dw > kDescMax) dw = kDescMax;
     // Numbered, because the number is how a caller picks a file. An
     // unnumbered listing followed by "type the name" is asking somebody to
     // retype what is already on their screen.
-    snprintf(buf, sizeof(buf), "%2u %-12.12s %5luK %-*.*s",
-             static_cast<unsigned>(want + 1), fname, kb,
+    snprintf(buf, sizeof(buf), "%2u %-*.*s %5luK %-*.*s",
+             static_cast<unsigned>(want + 1), static_cast<int>(nw), static_cast<int>(nw), fname, kb,
              static_cast<int>(dw), static_cast<int>(dw), desc);
     b.rowText(s, Color::LightGrey, buf);
     return true;
@@ -1064,6 +1151,22 @@ void onKey(Session& s, int k, uint32_t now) {
         uint8_t at = g_at[slot];
         char name[kDescMax + 1];
         switch (what) {
+        case AskArea: {
+            // The same answer for a number that is no area and one this
+            // caller may not read, as at a single key. Nothing typed is
+            // nothing asked for.
+            if (!answer[0]) { backToArea(b, s); return; }
+            long want = strtol(answer, nullptr, 10);
+            if (want >= 1 && want <= g_areas && g_area[want - 1].path[0] &&
+                mayRead(s, static_cast<uint8_t>(want - 1))) {
+                listArea(b, s, static_cast<uint8_t>(want - 1));
+                return;
+            }
+            s.term.color(s.tl, Color::LightRed);
+            s.term.text(s.tl, "No area by that number.");
+            backToArea(b, s);
+            return;
+        }
         case AskDescNum: {
             long want = strtol(answer, nullptr, 10);
             if (want < 1 || !nthFile(at, static_cast<uint16_t>(want),
@@ -1225,10 +1328,19 @@ void onKey(Session& s, int k, uint32_t now) {
         showMenu(b, s);
         return;
     }
+    // # asks for a section number and takes it on Enter, which is the one
+    // way past 10 without a cursor: 1 opens section 1 the moment it is
+    // pressed, so 11 cannot be typed as two keys (1.1.0).
+    if (k == '#' && g_where[slot] == Where::Menu) {
+        askFor(s, AskArea);
+        return;
+    }
     if (k == '?' && g_where[slot] == Where::Menu) {
         s.term.cls(s.tl);
         b.rowTitle(s, "File sections");
         b.rowText(s, Color::White, "1 2 3    a number opens that section");
+        if (pastTen(s))
+            b.rowText(s, Color::White, "#        a number past 10, then Enter");
         if (canPoint(s))
             b.rowText(s, Color::White, "cursors  move the bar, Enter opens");
         b.rowText(s, Color::White, "?        this");
@@ -1324,6 +1436,7 @@ struct Xfer {
     uint8_t  area   = 0xFF;
     uint32_t started = 0;
     bool     ymodem = false;       // block 0 carried the name and the size
+    bool     made   = false;       // receiving: this transfer created .pending/<name>
     uint32_t written = 0;          // receiving: bytes accepted, for the cap
     char     name[kDescMax + 1] = {};
 };
@@ -1347,6 +1460,16 @@ char g_why[96] = {};
 // have mail". A card edited on a laptop goes stale until the next start,
 // which is the accepted trade for a login that does not touch the card.
 uint16_t g_pending = 0;
+
+#ifdef BBS_HAS_LCD
+}   // namespace
+
+// The board's display shows an upload glyph while this is above 0
+// (panel_feed.h). The same figure staff are told at login, so no read.
+uint16_t files::pendingCount() { return g_pending; }
+
+namespace {
+#endif
 
 // pendPath: an area's staging folder, or false when there is no card.
 bool pendPath(uint8_t i, char* out, size_t n) {
@@ -1376,8 +1499,8 @@ uint16_t countPending(uint8_t i) {
 
 void recountPending() {
     g_pending = 0;
-    for (uint8_t i = 0; i < g_areas; ++i)
-        if (g_area[i].path[0]) g_pending = static_cast<uint16_t>(g_pending + countPending(i));
+    for (uint8_t i = 0; i < g_areas; ++i)                // Backups has nothing to approve
+        if (g_area[i].path[0] && i != kAreaBackups) g_pending = static_cast<uint16_t>(g_pending + countPending(i));
 }
 
 // The engine asks for file data through this and never learns what a file
@@ -1400,7 +1523,7 @@ bool xferWrite(void* ctx, const uint8_t* src, uint16_t len) {
     plat::log("xfer: block accepted, %u bytes", static_cast<unsigned>(len));
 #endif
     if (!x->fp) return false;
-    if (x->written + len > kMaxUploadBytes) {
+    if (x->written + len > capFor(x->area)) {
         plat::log("files: upload %s refused, over the size cap", x->name);
         return false;
     }
@@ -1435,10 +1558,23 @@ bool xferOpen(void* ctx, const char* name, uint32_t size) {
         snprintf(g_why, sizeof(g_why), "that name belongs to the section itself");
         return false;
     }
-    if (size > kMaxUploadBytes) {
-        snprintf(g_why, sizeof(g_why), "%lu bytes is over the %lu byte limit",
-                 static_cast<unsigned long>(size),
-                 static_cast<unsigned long>(kMaxUploadBytes));
+    // Backups takes what RESTORE SD will list and restore: a .zip, 27
+    // characters at most, no bigger than the importer reads (1.1.0). Said
+    // now rather than found out at RESTORE SD, after the whole transfer.
+    if (x->area == kAreaBackups && !cardbak::listable(name)) {
+        snprintf(g_why, sizeof(g_why), "Backups takes a .zip, 27 characters at most.");
+        return false;
+    }
+    uint32_t cap = x->area == kAreaBackups ? static_cast<uint32_t>(BBS_ZIP_MAX_BYTES) : kMaxUploadBytes;
+    if (size > cap) {
+        if (x->area == kAreaBackups)                     // RS-toobig's words
+            snprintf(g_why, sizeof(g_why), "Too big: %lu KB. The limit is %u KB.",
+                     static_cast<unsigned long>((size + 1023) / 1024),
+                     static_cast<unsigned>(BBS_ZIP_MAX_BYTES / 1024));
+        else
+            snprintf(g_why, sizeof(g_why), "%lu bytes is over the %lu byte limit",
+                     static_cast<unsigned long>(size),
+                     static_cast<unsigned long>(kMaxUploadBytes));
         plat::log("files: upload %s refused, block 0 says %lu bytes",
                   name, static_cast<unsigned long>(size));
         return false;
@@ -1463,8 +1599,33 @@ bool xferOpen(void* ctx, const char* name, uint32_t size) {
 
     x->fp = fopen(full, "wb");
     if (!x->fp) return false;
+    x->made = true;
     snprintf(x->name, sizeof(x->name), "%.48s", name);
     return true;
+}
+
+// placeBackup: an upload into Backups goes live the moment it is whole, out
+// of the staging folder and into the area, with no approval (1.1.0). Only
+// the sysop can upload there, and making the sysop approve their own backup
+// is ceremony. It still lands in staging first, so a transfer that breaks
+// off never leaves half a zip where RESTORE SD would list it.
+bool placeBackup(const char* name) {
+    char dir[128], pd[160], from[224], to[224];
+    if (!areaPath(kAreaBackups, dir, sizeof(dir)) || !pendPath(kAreaBackups, pd, sizeof(pd))) return false;
+    snprintf(from, sizeof(from), "%s/%.48s", pd, name);
+    snprintf(to,   sizeof(to),   "%s/%.48s", dir, name);
+    return rename(from, to) == 0;
+}
+
+// dropPartial: a transfer into Backups that did not finish takes its half
+// file out of staging with it. Other areas keep one for staff to look at;
+// here nobody reviews staging, and a leftover name would refuse the retry.
+void dropPartial(const Xfer& x) {
+    if (x.sending || x.area != kAreaBackups || !x.made) return;
+    char pd[160], full[224];
+    if (!pendPath(kAreaBackups, pd, sizeof(pd))) return;
+    snprintf(full, sizeof(full), "%s/%.48s", pd, x.name);
+    remove(full);
 }
 
 // xferPump: move whatever the engine has ready into the caller's timeline.
@@ -1524,11 +1685,32 @@ void xferEnd(Bbs& b, Session& s) {
               static_cast<unsigned long>(g_eng.bytes()),
               static_cast<unsigned>(g_eng.errors()));
 
+    // Backups: in the area at once, or the half file gone (1.1.0).
+    bool direct = !g_x.sending && g_x.area == kAreaBackups;
+    if (direct && g_eng.done()) {
+        if (placeBackup(g_x.name)) {
+            s.term.color(s.tl, Color::LightGreen);
+            snprintf(buf, sizeof(buf), "In Backups: %.27s", g_x.name);
+            s.term.text(s.tl, buf);
+            s.term.nl(s.tl);
+            s.term.color(s.tl, Color::Grey);
+            s.term.text(s.tl, "RESTORE SD lists it.");
+            plat::log("files: %s put %s in Backups", s.user, g_x.name);
+        } else {
+            // Still whole in staging, where P lists it and A puts it in.
+            s.term.color(s.tl, Color::LightRed);
+            s.term.text(s.tl, "Not moved in. P lists it, A adds it.");
+        }
+        s.term.nl(s.tl);
+    } else if (direct) {
+        dropPartial(g_x);
+    }
+
     // A finished upload is recorded next to the file it describes, so a
     // sysop with the card in a laptop can see who sent what without the
     // board running. Appended rather than rewritten: an append cannot lose
     // the lines already there if the power goes.
-    if (!g_x.sending && g_eng.done() && g_x.area != 0xFF) {
+    if (!direct && !g_x.sending && g_eng.done() && g_x.area != 0xFF) {
         char pd[160], lf[192];
         if (pendPath(g_x.area, pd, sizeof(pd))) {
             snprintf(lf, sizeof(lf), "%s/%s", pd, kPendList);
@@ -1543,7 +1725,7 @@ void xferEnd(Bbs& b, Session& s) {
         ++g_pending;
     }
 
-    bool    upOk   = !g_x.sending && g_eng.done() && g_x.area != 0xFF;
+    bool    upOk   = !direct && !g_x.sending && g_eng.done() && g_x.area != 0xFF;
     uint8_t upArea = g_x.area;
     char    upName[kDescMax + 1];
     snprintf(upName, sizeof(upName), "%s", g_x.name);
@@ -1650,6 +1832,7 @@ void onLogin(Session& s) {
 void xferDropped(Session& s) {
     if (g_x.s != &s) return;
     if (g_x.fp) { fclose(g_x.fp); g_x.fp = nullptr; }
+    dropPartial(g_x);
     g_eng.reset();
     if (g_x.s) claims::release(claims::Res::Transfer, g_x.s->id);
     g_x = Xfer();
@@ -1789,7 +1972,7 @@ void startRecv(Bbs& b, Session& s, const char* arg, uint32_t now) {
         backToArea(b, s);
         return;
     }
-    if (countPending(at) >= kMaxPendPerArea) {
+    if (at != kAreaBackups && countPending(at) >= kMaxPendPerArea) {
         s.term.color(s.tl, Color::LightRed);
         s.term.text(s.tl, "This area has all the uploads it can hold until staff clear some.");
         backToArea(b, s);
@@ -1802,6 +1985,10 @@ void startRecv(Bbs& b, Session& s, const char* arg, uint32_t now) {
     // wire and therefore needs one here.
     char name[kDescMax + 1] = {};
     bool useY = !argName(arg, name, sizeof(name));
+    // Backups: straight in, no approval, and only what RESTORE SD takes.
+    const bool backups = at == kAreaBackups;
+    const char* after  = backups ? "It goes straight in. RESTORE SD lists it."
+                                 : "It waits for staff approval before anyone else sees it.";
 
     if (useY) {
         if (!b.own(s, g_index)) { backToArea(b, s); return; }
@@ -1811,6 +1998,7 @@ void startRecv(Bbs& b, Session& s, const char* arg, uint32_t now) {
         g_x.fp      = nullptr;            // xferOpen opens it when block 0 lands
         g_x.sending = false;
         g_x.ymodem  = true;
+        g_x.made    = false;
         g_x.area    = at;
         g_x.started = now;
         g_x.written = 0;
@@ -1820,7 +2008,7 @@ void startRecv(Bbs& b, Session& s, const char* arg, uint32_t now) {
         s.term.text(s.tl, "Ready. Start your YMODEM send now.");
         s.term.nl(s.tl);
         s.term.color(s.tl, Color::Grey);
-        s.term.text(s.tl, "It waits for staff approval before anyone else sees it.");
+        s.term.text(s.tl, after);
         s.term.nl(s.tl);
         s.term.reset(s.tl);
 
@@ -1834,6 +2022,12 @@ void startRecv(Bbs& b, Session& s, const char* arg, uint32_t now) {
     if (ieq(name, BBS_FILES_DESC) || ieq(name, kPendList)) {
         s.term.color(s.tl, Color::LightRed);
         s.term.text(s.tl, "That name belongs to the area. Pick another.");
+        backToArea(b, s);
+        return;
+    }
+    if (backups && !cardbak::listable(name)) {
+        s.term.color(s.tl, Color::LightRed);
+        s.term.text(s.tl, "Backups takes a .zip, 27 characters at most.");
         backToArea(b, s);
         return;
     }
@@ -1874,6 +2068,7 @@ void startRecv(Bbs& b, Session& s, const char* arg, uint32_t now) {
     claims::take(claims::Res::Transfer, s.id);
     g_x.fp      = fp;
     g_x.sending = false;
+    g_x.made    = true;
     g_x.area    = at;
     g_x.started = now;
     g_x.written = 0;
@@ -1883,7 +2078,7 @@ void startRecv(Bbs& b, Session& s, const char* arg, uint32_t now) {
     s.term.text(s.tl, "Ready. Start your XMODEM send now.");
     s.term.nl(s.tl);
     s.term.color(s.tl, Color::Grey);
-    s.term.text(s.tl, "It waits for staff approval before anyone else sees it.");
+    s.term.text(s.tl, after);
     s.term.nl(s.tl);
     s.term.reset(s.tl);
 
@@ -1912,6 +2107,7 @@ void askFor(Session& s, uint8_t what, bool keep) {
     case AskDescNum: q = "Describe which number? ";           break;
     case AskDescText: q = "Description (empty clears it): ";  break;
     case AskUpDesc:  q = "Describe it for the file list: ";   break;
+    case AskArea:    q = "Section number: ";                  break;
     default:         q = "? ";                             break;
     }
 
@@ -2043,7 +2239,9 @@ void filesHelp(Bbs& b, Session& s, uint8_t area) {
     b.rowText(s, Color::White, "Q  ESC   back one level, again to leave");
     b.rowRule(s);
     b.rowText(s, Color::Grey, "Downloads offer YMODEM, or X for plain XMODEM.");
-    if (up)
+    if (up && area == kAreaBackups)
+        b.rowText(s, Color::Grey, "A .zip sent here is in at once.");
+    else if (up)
         b.rowText(s, Color::Grey,
                   "Uploads wait for staff before anyone else can see them.");
 }

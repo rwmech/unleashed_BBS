@@ -14,12 +14,12 @@
  * See also:     SCREENS.md
  *
  * Copyright 2026 - Robert Mech
- * License:      GNU General Public License v2 or later
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * License:      GNU General Public License v3 or later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
+ * Free Software Foundation; either version 3 of the License, or (at your
  * option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
@@ -28,7 +28,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * with this program. If not, see <https://www.gnu.org/licenses/>. The full
  * text is in the LICENSE file at the top of this repository.
  * ===========================================================================
  */
@@ -41,6 +41,7 @@
 #include "../platform/platform.h"
 #include <cstring>
 #include <cstdlib>
+#include <sys/stat.h>
 
 // pump() stops pacing @BAUD@ output at 48 free frames, so there has to be
 // more than that to begin with or a paced screen would never start.
@@ -76,7 +77,7 @@ char tokChar(uint8_t b, bool pet) {
 // ---------------------------------------------------------------------------
 // open: resolve the file for this terminal type
 // ---------------------------------------------------------------------------
-bool ScreenPlayer::open(const char* name, const Term& t) {
+bool ScreenPlayer::open(const char* name, const Term& t, bool flashOnly) {
     close();
     const Ext* list = kAscii;
     size_t     cnt  = 1;
@@ -102,7 +103,7 @@ bool ScreenPlayer::open(const char* name, const Term& t) {
     // pass and every screen still played.
     char flashDir[96];
     snprintf(flashDir, sizeof(flashDir), "%s/%s", plat::fsBase(), BBS_SCREEN_DIR);
-    const char* dirs[2] = { sdScreensDir(), flashDir };
+    const char* dirs[2] = { flashOnly ? nullptr : sdScreensDir(), flashDir };
 
     // Extension first, then directory. The other way round let a lower
     // preference format on the card beat the right format in flash: a sysop
@@ -138,6 +139,69 @@ bool ScreenPlayer::open(const char* name, const Term& t) {
     }
     }
     return false;
+}
+
+// ---------------------------------------------------------------------------
+// find: where open() would get this screen from, or exactly name + want
+// (".seq") when want is given, without opening anything (1.1.0, SCREENS
+// VIEW). The same order open() uses: for each extension the terminal takes,
+// the card and then flash.
+// ---------------------------------------------------------------------------
+bool ScreenPlayer::find(const char* name, const Term& t, const char* want, bool flashOnly, Found& out) {
+    static const Ext kAll[] = { {".asc", 0}, {".ans", 2}, {".seq", 1}, {".p40", 1}, {".p80", 1} };
+    const Ext* list = kAscii;
+    size_t     cnt  = 1;
+    if (want) {
+        list = nullptr;
+        for (const Ext& e : kAll) if (!strcmp(e.ext, want)) { list = &e; break; }
+        if (!list) return false;
+    } else {
+        switch (t.type()) {
+            case TermType::Pet40: list = kPet40; cnt = 3; break;
+            case TermType::Pet80: list = kPet80; cnt = 3; break;
+            case TermType::Ansi:  list = kAnsi;  cnt = 2; break;
+            default: break;
+        }
+    }
+    char flashDir[96];
+    snprintf(flashDir, sizeof(flashDir), "%s/%s", plat::fsBase(), BBS_SCREEN_DIR);
+    const char* dirs[2] = { flashOnly ? nullptr : sdScreensDir(), flashDir };
+    for (size_t i = 0; i < cnt; ++i) {
+        for (size_t r = 0; r < 2; ++r) {
+            if (!dirs[r] || !dirs[r][0]) continue;
+            snprintf(out.path, sizeof(out.path), "%.90s/%.12s%s", dirs[r], name, list[i].ext);
+            struct stat st;
+            if (stat(out.path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+            out.ext  = list[i].ext;
+            out.mode = list[i].mode;
+            out.card = r == 0;
+            return true;
+        }
+    }
+    out.path[0] = '\0';
+    return false;
+}
+
+bool ScreenPlayer::openFound(const Found& f) {
+    close();
+    FILE* file = fopen(f.path, "rb");
+    if (!file) return false;
+    fromCard_ = f.card;
+    plat::diskPulse(fromCard_ ? plat::DISK_CARD : plat::DISK_FLASH);   // the drive light
+    f_        = file;
+    mode_     = static_cast<Mode>(f.mode);
+    inTok_    = false;
+    tokLen_   = 0;
+    prev_     = 0;
+    sauce_    = false;
+    bufLen_   = 0;
+    bufPos_   = 0;
+    pageRows_ = 0;
+    lines_    = 0;
+    paused_   = false;
+    typeMs_   = 0;
+    pace_     = true;
+    return true;
 }
 
 void ScreenPlayer::close() {
@@ -217,7 +281,7 @@ void ScreenPlayer::runToken(Term& t, Timeline& tl, const Vars& v) {
         const char* n = syscfg::get().boardName;
         say(t, tl, n[0] ? n : BBS_NAME);
     }
-    else if (!strcmp(tok_, "VER"))   { say(t, tl, BBS_VERSION); }
+    else if (!strcmp(tok_, "VER"))   { say(t, tl, BBS_VERSION_SHOWN); }
     else if (!strcmp(tok_, "NODE"))  { snprintf(num, sizeof(num), "%u", v.node);  say(t, tl, num); }
     else if (!strcmp(tok_, "NODES")) { snprintf(num, sizeof(num), "%u", v.nodes); say(t, tl, num); }
     else if (!strcmp(tok_, "USER"))  { say(t, tl, (v.user && *v.user) ? v.user : "caller"); }

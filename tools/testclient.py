@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 ===========================================================================
  µnleashed BBS
@@ -36,12 +36,12 @@ Targets:      developer PC, Python 3
 See also:     README.md
 
 Copyright 2026 - Robert Mech
-License:      GNU General Public License v2 or later
-SPDX-License-Identifier: GPL-2.0-or-later
+License:      GNU General Public License v3 or later
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software; you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the
-Free Software Foundation; either version 2 of the License, or (at your
+Free Software Foundation; either version 3 of the License, or (at your
 option) any later version.
 
 This program is distributed in the hope that it will be useful, but
@@ -50,7 +50,7 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
 General Public License for more details.
 
 You should have received a copy of the GNU General Public License along
-with this program; if not, see <https://www.gnu.org/licenses/>. The full
+with this program. If not, see <https://www.gnu.org/licenses/>. The full
 text is in the LICENSE file at the top of this repository.
 ===========================================================================
 """
@@ -187,6 +187,11 @@ def config_num(name, fallback):
 
 
 BBS_VERSION = bbs_version()
+# The S3 profile's own version, read from src/board.h so a board bump does
+# not leave the suite asserting the last one.
+_s3v = re.search(r'#define\s+BBS_BOARD_VERSION\s+"([^"]*)"',
+                 (ROOT / "src" / "board.h").read_text())
+S3_VERSION = _s3v.group(1) if _s3v else "1.0.0"
 MAX_NODES   = config_num("BBS_MAX_NODES", 6)
 BBS_PORT_NUM = config_num("BBS_PORT", 6400)     # the dial-in port, not this run's
 # The published default sysop password, read from the firmware so the suite
@@ -1394,8 +1399,64 @@ def test_about():
     c = ansi_login("Curious")
     c.buf.clear()
     c.send(b"about\r")
-    ok = check("ABOUT plays the screen", c.wait_for(b"GNU General Public License v2 or later", 6))
+    ok = check("ABOUT plays the screen", c.wait_for(b"GNU General Public License v3 or later", 6))
     ok &= check("with the version and handle", b"Curious" in c.buf and BBS_VERSION.encode() in c.buf)
+    c.close()
+    return ok
+
+
+def test_version_shown():
+    """The version everywhere a person reads one (1.1.0, Rob: "version the S3
+    slightly different ... since we have the core versions and s3 versions
+    that compile different"). On a board profile's build, the core version
+    and the profile's own: "1.1.0 (S3 1.0.0)". On the reference board, the
+    core version alone, and no trace of a profile. The directory is sent the
+    core version; the profile's goes into the system badge."""
+    print("The version as it is shown")
+    s3 = os.environ.get("BBS_HOST_BOARD") == "s3"
+    shown = (BBS_VERSION + " (S3 " + S3_VERSION + ")") if s3 else BBS_VERSION
+    tail = ("(S3 " + S3_VERSION + ")").encode()
+    if not PASSWORD:
+        print("  SKIP  needs the sysop")
+        return True
+    c = Caller(ansi=True)
+    c.wait_for(b"Enter your handle", 10)
+    welcome = plain(c.buf)
+    ok = check(f"the welcome screen's @VER@ says {shown}",
+               shown.encode() in welcome and (s3 or tail not in welcome))
+    login(c, "VersionReader")
+    c.buf.clear()
+    c.send(f"bye {PASSWORD}\r".encode())
+    c.wait_for(b"Sysop", 5)
+    c.pump(0.3)
+    # ABOUT plays screens/about.*, whose @VER@ carries it; MEM and SYS carry
+    # it in their title bars. SYS is a paged list: its first page is enough.
+    for cmd in (b"about", b"mem", b"sys"):
+        c.buf.clear()
+        c.send(cmd + b"\r")
+        c.pump(1.5)
+        seen = plain(c.buf)
+        drain(c)
+        good = shown.encode() in seen and (s3 or tail not in seen)
+        ok &= check(f"{cmd.decode().upper()} says {shown}", good)
+        if not good:
+            print("        saw:", seen[:400])
+    if HOST in ("127.0.0.1", "localhost"):
+        log = DATA.parent / "host.log"
+        text = log.read_bytes() if log.exists() else b""
+        line = next((ln for ln in text.split(b"\n") if b"listening on" in ln), b"")
+        ok &= check("the boot line says it", shown.encode() in line and (s3 or tail not in line))
+        c.buf.clear()
+        c.send(b"announce test\r")
+        c.pump(1.5)
+        drain(c)
+        payload = plain(c.buf)
+        m = re.search(rb'"version":"([^"]*)"', payload)
+        ok &= check("announce sends the directory the core version alone",
+                    m is not None and m.group(1) == BBS_VERSION.encode())
+        sysm = re.search(rb'"system":"([^"]*)"', payload)
+        ok &= check("and the profile's version in the system badge, on a profile's build only",
+                    sysm is not None and ((tail[1:-1] in sysm.group(1)) == s3))
     c.close()
     return ok
 
@@ -3468,6 +3529,17 @@ def test_sysop_account():
         ok &= check("an id that matches no account falls back to the last to elevate, after a restart",
                     b"Sysop password: " in plain(c.buf))
         c.close()
+        # sysop.last is an id into users.txt, and a users.txt from elsewhere
+        # can give it to anybody: the fallback only takes a marked account.
+        proc.kill()
+        proc.wait(5)
+        next(iter(user.rglob("sysop.last"))).write_text(f"{user_ids(users).get('AcctRinger')}\n")
+        proc = start_copy(tmp, (str(port),))
+        copy_log(tmp, f"listening on {port},")
+        c = raw_login("AcctRinger")
+        ok &= check("and never to an account the sysop password did not mark",
+                    b"Sysop password: " not in plain(c.buf))
+        c.close()
     finally:
         stop_copy(proc, tmp)
 
@@ -4546,7 +4618,8 @@ def test_config_sd_plugin():
 # that is what these read. Colours are checked against the arithmetic in
 # lights.cpp's shade(), worked by hand here: a channel v at level l and p
 # percent is v * l * p / 25500, rounded down, and 1 if that comes to 0 for a
-# lit channel. So full white is 76 at 30%, 25 at 10% and 2 at 1%.
+# lit channel. So full white is 255 at 100%, 127 at 50%, 76 at 30%, 25 at
+# 10% and 2 at 1%. The firmware allows 1 to 100 since 1.1.0 (it was 30).
 # ---------------------------------------------------------------------------
 HEX6 = re.compile(r"^[0-9A-F]{6}$")
 
@@ -4804,8 +4877,10 @@ def test_config_lights_ascii():
     c.send(b"config lights\r")
     c.wait_for(b"Enabled", 5)
     # Enabled, Read, Write, Admin, Drive pin, Drive fx, Drive %, Strip pin,
-    # Strip, Strip %, and Pixels, which asks "open (y/N)?".
-    got = ascii_form(c, [b"y", b"", b"", b"", b"13", b"", b"", b"14", b"bb", b"", b""])
+    # Strip, Strip %, and Pixels, which asks "open (y/N)?"; then, since
+    # 1.1.0, Strip len, Drive ord and Strip ord.
+    got = ascii_form(c, [b"y", b"", b"", b"", b"13", b"", b"", b"14", b"bb", b"", b"",
+                         b"", b"", b""])
     ok &= check("the lights page saves in line mode", got == 0)
     ok &= check("with blinken's b pressed twice reaching boing",
                 (cfg_sec_line("plugin:lights", "strip_fx") or "").endswith("= boing"))
@@ -4849,10 +4924,24 @@ def test_lights_frames():
     px = lights_px(s)
     ok &= check("rainbow lights every pixel", len(px) == 10 and all(lit(p) for p in px))
     ok &= check("and reaches 30% without passing it", 25 < max(max(p) for p in px) <= 76)
-    lights_config(s, **on, strip_fx="rainbow", strip_bright=80)
+    # Past 30% is allowed since 1.1.0 (Rob: "remove the limit over 30% ...
+    # but allow it"); the firmware's ceiling is 100. White from LIGHTS TEST
+    # on the drive light scales exactly: 255 x p / 100, rounded down.
+    for pct, want in ((50, 127), (100, 255)):
+        lights_config(s, **on, drive_bright=pct)
+        s.buf.clear()
+        s.send(b"lights test\r")
+        s.wait_for(b"a second each", 4)
+        t0 = time.time()
+        time.sleep(max(0.0, t0 + 3.3 - time.time()))
+        f = lights_read(s)
+        ok &= check(f"white on the drive light at {pct}%: {want}",
+                    f["drive"]["pct"] == pct and f["drive"]["px"] == [(want, want, want)])
+    lights_config(s, **on, strip_fx="rainbow", strip_bright=150)
     f = lights_read(s)
-    ok &= check("a hand-edited 80% is read as 30",
-                f["strip"]["pct"] == 30 and max(max(p) for p in f["strip"]["px"]) <= 76)
+    ok &= check("a hand-edited 150% is read as 100, the firmware's ceiling",
+                f["strip"]["pct"] == 100 and max(max(p) for p in f["strip"]["px"]) <= 255 and
+                max(max(p) for p in f["strip"]["px"]) > 76)
     lights_config(s, **on, strip_fx="rainbow", strip_bright=1)
     px = lights_px(s)
     ok &= check("at 1% every pixel stays lit", all(lit(p) for p in px) and max(max(p) for p in px) <= 2)
@@ -5103,6 +5192,571 @@ def test_lights_manual():
     ok &= check("the rest dark", all(f[3:] == [(0, 0, 0)] * 7 for f in frames))
 
     lights_config(s)
+    s.close()
+    return ok
+
+
+def test_lights_count():
+    """The strip's length is a setting (1.1.0, Rob: "could be 8 could be 10,
+    could be 1, so variable would be better"): every effect drawn for the
+    pixels there are and nothing past them, and CONFIG refusing more than an
+    output can carry. On 1.1.0-dev.7 the strip was always ten."""
+    print("Lights: the strip's length")
+    if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    s = cfg_sysop("LightsCount")
+    on = {"enabled": "yes", "drive_pin": 13, "strip_pin": 14}
+    ok = True
+    for n in (1, 8, 10, 16):
+        lights_config(s, **on, strip_fx="rainbow", strip_count=n)
+        px = lights_px(s)
+        ok &= check(f"{n} pixel{'s' if n > 1 else ''}: that many sent, every one lit",
+                    len(px) == n and all(lit(p) for p in px))
+    lights_config(s, **on, strip_fx="rainbow", strip_count=40)
+    ok &= check("a hand-edited 40 is read as 16, the most an output carries", len(lights_px(s)) == 16)
+    lights_config(s, **on, strip_fx="rainbow", strip_count=0)
+    ok &= check("and 0 as 1", len(lights_px(s)) == 1)
+
+    lights_config(s, **on, strip_fx="hayes", strip_count=4)
+    px = lights_px(s)
+    ok &= check("hayes on four: HS, AA, CD and OH, and nothing after",
+                len(px) == 4 and px[0] == px[1] == (25, 0, 0))
+    lights_config(s, **on, strip_fx="hayes", strip_count=16)
+    px = lights_px(s)
+    ok &= check("hayes on sixteen: MR on pixel eight, dark after it",
+                len(px) == 16 and px[7] == px[6] == (25, 0, 0) and all(p == (0, 0, 0) for p in px[8:]))
+
+    lights_config(s, **on, strip_fx="scanner", strip_count=1)
+    frames = [lights_px(s) for _ in range(3)]
+    ok &= check("scanner on one pixel: the head, lit, going nowhere",
+                all(f == [(25, 0, 0)] for f in frames))
+    lights_config(s, **on, strip_fx="scanner", strip_count=16)
+    heads = set()
+    for _ in range(6):
+        px = lights_px(s)
+        top = max(p[0] for p in px)
+        heads.add(next(i for i, p in enumerate(px) if p[0] == top))
+        ok &= check("scanner on sixteen: one head, sixteen pixels",
+                    len(px) == 16 and sum(1 for p in px if p[0] == top) == 1)
+    ok &= check("and it sweeps", len(heads) > 1)
+
+    lights_config(s, **on, strip_fx="boing", strip_count=2)
+    px = lights_px(s)
+    ok &= check("boing on two: the ball fills the strip, red and white",
+                len(px) == 2 and set(px) == {(25, 0, 0), (25, 25, 25)})
+    lights_config(s, **on, strip_fx="boing", strip_count=16)
+    good = True
+    for _ in range(3):
+        px = lights_px(s)
+        on_at = [i for i, p in enumerate(px) if lit(p)]
+        good &= len(px) == 16 and len(on_at) == 3 and on_at[2] - on_at[0] == 2
+    ok &= check("boing on sixteen: three pixels together", good)
+
+    lights_config(s, **on, strip_fx="c64", strip_count=8)
+    px = lights_px(s)
+    ok &= check("c64 on eight: the five stripes, then three again", len(px) == 8 and px[:3] == px[5:8])
+
+    lights_config(s, **on, strip_fx="vu", strip_count=16)
+    bars = []
+    for _ in range(4):
+        px = lights_px(s)
+        k = sum(1 for p in px if lit(p))
+        bars.append(k)
+        ok &= check("vu on sixteen: a bar from the first pixel",
+                    len(px) == 16 and all(lit(p) for p in px[:k]) and not any(lit(p) for p in px[k:]))
+    ok &= check("which moves", max(bars) > 0)
+
+    lights_config(s, **on, strip_fx="blinken", strip_count=16)
+    frames = [lights_px(s) for _ in range(4)]
+    ok &= check("blinken on sixteen: red lamps across all of it",
+                all(len(f) == 16 and all(p[1] == p[2] == 0 for p in f) for f in frames))
+
+    # nodes: pixel i is node i + 1, whatever the length.
+    b = ansi_login("CountNode")
+    n = int(b.node())
+    b.pump(0.6)
+    lights_config(s, **on, strip_fx="nodes", strip_count=n)
+    b.pump(0.6)
+    px = lights_px(s)
+    ok &= check("nodes: a strip as long as the caller's node lights it last",
+                len(px) == n and grey(px[n - 1]))
+    lights_config(s, **on, strip_fx="nodes", strip_count=16)
+    b.pump(0.6)
+    px = lights_px(s)
+    ok &= check("and on sixteen, past the tenth line there is nobody",
+                len(px) == 16 and grey(px[n - 1]) and all(p == (0, 0, 0) for p in px[10:]))
+    b.close()
+
+    # manual: led1 to ledN, and nothing past N even with a setting of its own.
+    leds = {f"led{i}": "off" for i in range(1, 11)}
+    lights_config(s, **on, strip_fx="manual", strip_count=12, led11="solid | red",
+                  led12="solid | white", led13="solid | green", **leds)
+    px = lights_px(s)
+    ok &= check("manual on twelve: led11 and led12 drawn, led13 not sent",
+                len(px) == 12 and px[10] == (25, 0, 0) and px[11] == (25, 25, 25) and
+                all(p == (0, 0, 0) for p in px[:10]))
+
+    # CONFIG: the row, what it says, and the refusal past sixteen. Rows: 0
+    # Enabled, 1-3 levels, 4 Drive pin, 5 Drive fx, 6 Drive %, 7 Strip pin,
+    # 8 Strip, 9 Strip %, 10 Pixels, 11 Strip len, 12 Drive ord, 13 Strip ord.
+    lights_config(s, **on)
+    cfg_open(s, b"lights", b"Drive pin")
+    s.buf.clear()
+    s.send(DOWN * 11)
+    s.pump(0.5)
+    ok &= check("the length's row says what bounds it", b"one Pixels row for each" in plain(s.buf))
+    s.buf.clear()
+    s.send(b"\x08" * 3 + b"17" + F1)
+    got = cfg_verdict(s, [b"Between 1 and 16", b"Saved"])
+    ok &= check("CONFIG refuses 17 pixels", got == b"Between 1 and 16")
+    cfg_cancel(s)
+    cfg_open(s, b"lights", b"Drive pin")
+    s.buf.clear()
+    s.send(DOWN * 11 + b"\x08" * 3 + b"8" + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"Between", b"Saved"])
+    ok &= check("and takes 8, live", got == b"Saved and live" and len(lights_px(s)) == 8)
+    ok &= check("written as the plugin reads it",
+                (cfg_sec_line("plugin:lights", "strip_count") or "").endswith("= 8"))
+    cfg_open(s, b"lights", b"Drive pin")
+    ok &= check("the Pixels button counts the strip", b"8 pixels" in plain(s.buf))
+    s.buf.clear()
+    s.send(DOWN * 10 + b"\r")
+    s.wait_for(b"PIXELS", 6)
+    s.pump(0.8)
+    ok &= check("the Pixels page offers sixteen", b"Pixel 16" in plain(s.buf))
+    s.send(b"\x1b")
+    s.wait_for(b"Drive pin", 6)
+    s.pump(0.4)
+    cfg_cancel(s)
+
+    lights_config(s)
+    s.close()
+    return ok
+
+
+def test_lights_wifi():
+    """The strip as a Wi-Fi signal meter (1.1.0, Rob: "add a wifi signal to
+    the light strip effects"). -90 dBm or weaker lights one pixel and -50 or
+    stronger all of them; green from -67, amber from -75, red below; not
+    joined, one red pixel. The host has no radio, so LIGHTS RSSI (host only)
+    plays the signal. On 1.1.0-dev.7 the mode did not exist."""
+    print("Lights: the Wi-Fi meter")
+    if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    s = cfg_sysop("LightsWifi")
+    on = {"enabled": "yes", "drive_pin": 13, "strip_pin": 14}
+    green, amber, red = (0, 20, 0), (25, 13, 0), (25, 0, 0)
+
+    def rssi(v):
+        s.buf.clear()
+        s.send(f"lights rssi {v}\r".encode())
+        s.wait_for(b"Signal set", 4)
+
+    ok = True
+    for n in (1, 8, 10):
+        lights_config(s, **on, strip_fx="wifi", strip_count=n)
+        ok &= check(f"{n}: LIGHTS names the mode", lights_read(s).get("strip", {}).get("fx") == "wifi")
+        for dbm, lit, colour, name in ((-45, n, green, "strong"),
+                                        (-70, 1 + (n - 1) * 20 // 40, amber, "fair"),
+                                        (-85, 1 + (n - 1) * 5 // 40, red, "weak")):
+            rssi(dbm)
+            px = lights_px(s)
+            body = px[:lit - 1]
+            tip = px[lit - 1] if len(px) >= lit else (0, 0, 0)
+            good = (len(px) == n and all(p == colour for p in body) and
+                    lit_hue(tip) == lit_hue(colour) and all(p == (0, 0, 0) for p in px[lit:]))
+            ok &= check(f"{n} pixels, {name} ({dbm} dBm): {lit} lit, "
+                        f"{'green' if colour == green else 'amber' if colour == amber else 'red'}", good)
+            if not good:
+                print("        saw:", px)
+        rssi("off")
+        frames = [lights_px(s) for _ in range(3)]
+        ok &= check(f"{n} pixels, not joined: one red pixel and the rest dark",
+                    all(len(f) == n and f[0][1] == f[0][2] == 0 and f[0][0] > 0 and
+                        all(p == (0, 0, 0) for p in f[1:]) for f in frames))
+    rssi(-40)
+    lights_config(s, **on, strip_fx="wifi", strip_count=10, strip_bright=100)
+    rssi(-40)
+    px = lights_px(s)
+    ok &= check("at 100% the meter is full green", px[:9] == [(0, 200, 0)] * 9)
+    rssi("off")
+    lights_config(s)
+    s.close()
+    return ok
+
+
+def lit_hue(p):
+    """Which channels are lit, for a pixel whose level breathes."""
+    return tuple(1 if c else 0 for c in p)
+
+
+def test_lights_order():
+    """Each output's colour order on the wire (1.1.0). The onboard pixel of
+    the Waveshare S3 is not the WS2812B's usual GRB, and neither is every
+    strip sold as one. LIGHTS names the order; the colours it reports stay
+    red, green and blue whatever order they go out in."""
+    print("Lights: colour order")
+    if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    s = cfg_sysop("LightsOrder")
+    on = {"enabled": "yes", "drive_pin": 13, "strip_pin": 14}
+    lights_config(s, **on)
+    f = lights_read(s)
+    ok = check("GRB as shipped, on both outputs",
+               f.get("drive", {}).get("text", "").endswith("GRB") and
+               f.get("strip", {}).get("text", "").endswith("GRB"))
+    lights_config(s, **on, drive_order="RGB", strip_order="bgr")
+    f = lights_read(s)
+    ok &= check("each output its own, in any case",
+                f.get("drive", {}).get("text", "").endswith("RGB") and
+                f.get("strip", {}).get("text", "").endswith("BGR"))
+    s.buf.clear()
+    s.send(b"lights test\r")
+    s.wait_for(b"a second each", 4)
+    f = lights_read(s)
+    ok &= check("and LIGHTS TEST still reads red as red",
+                f.get("drive", {}).get("px") == [(25, 0, 0)] and
+                f.get("strip", {}).get("px") == [(25, 0, 0)] * 10)
+    lights_config(s, **on, drive_order="XYZ")
+    f = lights_read(s)
+    ok &= check("a word it does not know leaves GRB", f.get("drive", {}).get("text", "").endswith("GRB"))
+
+    # CONFIG: 12 Drive ord, 13 Strip ord, cycles picked by their letter.
+    cfg_open(s, b"lights", b"Drive pin")
+    s.buf.clear()
+    s.send(DOWN * 12)
+    s.pump(0.5)
+    ok &= check("the order's row says how to tell", b"try RGB" in plain(s.buf))
+    s.buf.clear()
+    s.send(b"r" + DOWN + b"bb" + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"Not one of", b"Saved"])
+    ok &= check("the orders save live", got == b"Saved and live")
+    ok &= check("r for RGB, b twice for BGR",
+                (cfg_sec_line("plugin:lights", "drive_order") or "").endswith("= RGB") and
+                (cfg_sec_line("plugin:lights", "strip_order") or "").endswith("= BGR"))
+    f = lights_read(s)
+    ok &= check("and running as saved",
+                f.get("drive", {}).get("text", "").endswith("RGB") and
+                f.get("strip", {}).get("text", "").endswith("BGR"))
+
+    lights_config(s)
+    s.close()
+    return ok
+
+
+def led_centres(bx, by, bw, bh, n):
+    """The centre of each of n square LEDs in the panel's LED row, worked from
+    the report's rule (revision 1, "The LEDs") rather than from panel_gfx.h's
+    ledAt: a cell of min(16, w / n), the LED max(6, cell - 4) square in it,
+    the row centred in its box."""
+    cell = min(16, bw // n)
+    side = min(max(6, cell - 4), cell - 1)
+    x0 = bx + (bw - cell * n) // 2
+    return [(x0 + i * cell + (cell - side) // 2 + side // 2, by + (bh - side) // 2 + side // 2)
+            for i in range(n)]
+
+
+PANEL_EVENT = rb"(?m)^\s*(login|guest|logoff|page|ring) (\S+) (\S+)\s*$"
+
+
+def panel_read(s):
+    """PANEL, as plain text."""
+    s.buf.clear()
+    s.send(b"panel\r")
+    s.wait_for(b"bands sent", 4)
+    s.pump(0.4)
+    return plain(s.buf)
+
+
+def test_board_s3():
+    """The Waveshare ESP32-S3-LCD-1.47 board profile on the host (1.1.0):
+    its defaults, the S3's pin rules and the panel. SKIPs on the reference
+    board; tools/harness.sh --board s3 --only=board_s3 runs it. On
+    1.1.0-dev.7 built with the same define there was no such profile: no
+    panel, the lights off, GPIO 7 refused as a flash pin and the card on 5."""
+    print("Board profile: Waveshare ESP32-S3-LCD-1.47")
+    if os.environ.get("BBS_HOST_BOARD") != "s3" or not PASSWORD:
+        print("  SKIP  needs tools/harness.sh --board s3")
+        return True
+    s = cfg_sysop("BoardS3")
+
+    f = lights_read(s)
+    ok = check("the lights run as shipped, the drive light on GPIO 38 in RGB",
+               f.get("drive", {}).get("text", "").startswith("pin 38  pc  10%") and
+               f.get("drive", {}).get("text", "").endswith("RGB"))
+    ok &= check("and no strip wired", f.get("strip", {}).get("text") == "no pin, off")
+
+    # PANEL lists every field's words top to bottom (panel.cpp, cmdPanel):
+    # the header's slot, the band's glyphs, the antenna, the clock, the
+    # heading, the list slots, the system row, the LEDs.
+    def fields(p):
+        text = p.decode("latin-1").splitlines()
+        at = next((i for i, ln in enumerate(text) if "bands sent" in ln), None)
+        return [ln.strip() for ln in text[at + 1:]] if at is not None else []
+
+    p = panel_read(s)
+    ok &= check("PANEL: lit, portrait 172 x 320 with the USB plug up, 34 into the controller's RAM",
+                b"lit" in p and b"ST7789 172x320 at 34,0, USB up" in p)
+    ok &= check("on the schematic's pins", b"Pins 45 40 42 41 39 48, 10 MHz" in p)
+    m = re.search(rb"(?m)^\s*Callers (\d+)/(\d+)\s*$", p)
+    ok &= check("Callers N/M, as the directory counts them", m is not None)
+    f0 = fields(p)
+    band = f0[1] if len(f0) > 1 else ""
+    card = bool(os.environ.get("BBS_SD_DIR", ""))
+    ok &= check(f"the band: the card first ({'mounted' if card else 'none'} here), and the sysop on as the person",
+                band.startswith("card" if card else "no card") and not band.startswith("card error")
+                and " sysop" in band)
+    ok &= check("the antenna: not joined on a host with no radio", "wifi none" in f0)
+    ok &= check("the sysop's own line listed first, marked ]",
+                re.search(rb"(?m)^\s*S\] BoardS3 \d+m\s*$", p) is not None)
+    ok &= check("the strip drawn with the lights' ten, no strip wired", b"strip: 10 LEDs" in p)
+
+    # The header's slot turns through the name, the address and the uptime,
+    # 3.5 s a page with the fade: a full turn inside twelve seconds.
+    pages = set()
+    until = time.time() + 12
+    while time.time() < until and len(pages) < 3:
+        f = fields(panel_read(s))
+        if f:
+            slot = f[0]
+            pages.add("addr" if slot.startswith("127.0.0.1:") else "up" if slot.startswith("up ") else "name")
+        time.sleep(0.5)
+    ok &= check("the header turns through the name, the address and the uptime", pages == {"name", "addr", "up"})
+
+    b = ansi_login("PanelCaller")
+    time.sleep(1.2)
+    p2 = panel_read(s)
+    m2 = re.search(rb"(?m)^\s*Callers (\d+)/(\d+)\s*$", p2)
+    ok &= check("a caller logging on moves it up one",
+                bool(m and m2) and int(m2.group(1)) == int(m.group(1)) + 1)
+    row = re.search(rb"(?m)^\s*\d+\) PanelCaller \d+m\s*$", p2)
+    ok &= check("and lists them, with how long they have been on", row is not None)
+    ok &= check("after the sysop's line", row is not None and 0 <= p2.find(b"S] BoardS3") < row.start())
+    ev = re.findall(PANEL_EVENT, p2)
+    ok &= check("and their login is the newest event", bool(ev) and ev[0][0] == b"login" and ev[0][2] == b"PanelCaller")
+
+    # A ring holds the header on who is ringing, and the band shows the
+    # bell, for as long as the ring lasts. Q at the sysop's question sends the
+    # question away and leaves the ring ringing.
+    drain(b)
+    b.buf.clear()
+    s.buf.clear()
+    b.send(b"o panel test\r")
+    b.wait_for(b"Ringing the sysop", 4)
+    asked = s.wait_for(b"[Q] Later: ", 6)
+    s.pump(0.3)
+    s.send(b"q")
+    s.wait_for(b"Still ringing", 4)
+    s.pump(0.6)
+    pr = panel_read(s)
+    fr = fields(pr)
+    ok &= check("a ring: the header says who is ringing, the verb kept whole",
+                asked and bool(fr) and re.match(r"PanelCall\w* is ringing$", fr[0]) is not None)
+    ok &= check("and the band shows the bell", len(fr) > 1 and " ring" in fr[1])
+    ev = re.findall(PANEL_EVENT, pr)
+    ok &= check("and the ring is the newest event", bool(ev) and ev[0][0] == b"ring")
+    b.send(b" ")                                   # any key stops a ring
+    b.wait_for(b"Main", 4)
+    time.sleep(1.0)
+    fr = fields(panel_read(s))
+    ok &= check("when it ends the header goes back to its pages, and the bell goes",
+                bool(fr) and "is ringing" not in fr[0] and len(fr) > 1 and " ring" not in fr[1])
+
+    b.close()
+    time.sleep(1.5)
+    p3 = panel_read(s)
+    ev = re.findall(PANEL_EVENT, p3)
+    ok &= check("and so is leaving: the logoff is the newest event",
+                bool(ev) and ev[0][0] == b"logoff" and ev[0][2] == b"PanelCaller")
+    ok &= check("and they are off the list", re.search(rb"\d+\) PanelCaller", p3) is None)
+
+    shot = DATA / "panel.ppm"
+    if shot.exists():
+        shot.unlink()
+    s.buf.clear()
+    s.send(b"panel shot\r")
+    s.wait_for(b"Written", 4)
+    W, H = 172, 320
+    head = f"P6\n{W} {H}\n255\n".encode()
+    data = shot.read_bytes() if shot.exists() else b""
+    ok &= check("PANEL SHOT writes the glass as it was sent",
+                data.startswith(head) and len(data) == len(head) + W * H * 3)
+    if data:
+        px = lambda x, y: tuple(data[len(head) + (y * W + x) * 3:len(head) + (y * W + x) * 3 + 3])
+        ok &= check("the header's bar in its blue, sent to the glass", px(1, 1) == (24, 44, 120))
+        ok &= check("its band darker under it", px(1, 30) == (8, 24, 72))
+        ok &= check("and the body black", px(1, 200) == (0, 0, 0))
+
+    # The emulated strip: the lights' own frame, whatever its length, lit on
+    # glass with no strip wired, as one row of square LEDs along the foot
+    # (the box from x 4, y 298, 164 x 16), each LED's centre its colour.
+    for n in (10, 16):
+        lights_config(s, enabled="yes", strip_fx="rainbow", strip_count=n)
+        time.sleep(0.8)                            # a frame, and the bands to carry it
+        ok &= check(f"the panel's strip follows the lights to {n} LEDs",
+                    f"strip: {n} LEDs".encode() in panel_read(s))
+        if shot.exists():
+            shot.unlink()
+        s.buf.clear()
+        s.send(b"panel shot\r")
+        s.wait_for(b"Written", 4)
+        data = shot.read_bytes() if shot.exists() else b""
+        if len(data) == len(head) + W * H * 3:
+            px = lambda x, y: tuple(data[len(head) + (y * W + x) * 3:len(head) + (y * W + x) * 3 + 3])
+            centres = [px(cx, cy) for cx, cy in led_centres(4, 298, 164, 16, n)]
+            ok &= check(f"every one of the {n} lit, in more than one colour",
+                        all(max(c) > 60 for c in centres) and len(set(centres)) > 2)
+        else:
+            ok &= check(f"PANEL SHOT at {n} LEDs", False)
+    lights_config(s)
+
+    # CONFIG panel: every row, in 40 columns.
+    ok &= check("CONFIG has a panel page", cfg_open(s, b"panel", b"Driver"))
+    s.pump(1.0)                                   # sixteen rows take a moment to cascade in
+    page = plain(s.buf)
+    missing = [w.decode() for w in (b"ST7789", b"Pins", b"Width", b"Height", b"X offset", b"Y offset",
+                                    b"USB plug", b"Invert", b"Mirror", b"Colours", b"SPI MHz",
+                                    b"Bright %") if w not in page]
+    ok &= check("naming the controller, with every row" + (f" (missing {missing})" if missing else ""),
+                not missing)
+    ok &= check("in 40 columns", max_column(s.buf) <= 39)
+    cfg_cancel(s)
+
+    # The Pins page, and the S3's rules on it: 26 to 37 are the flash and
+    # PSRAM, 19 and 20 the USB, 22 to 25 do not exist, and 6 to 11, the
+    # WROOM's flash, are ordinary pins. Rows 0-3 core, then Pins: the cursor
+    # passes over Driver, which is information and nothing to edit.
+    cfg_open(s, b"panel", b"Driver")
+    s.buf.clear()
+    s.send(DOWN * 4 + b"\r")
+    ok &= check("Pins opens a page of its own", s.wait_for(b"PINS", 6))
+    s.pump(0.6)
+    page = plain(s.buf)
+    ok &= check("with the six",
+                all(w in page for w in (b"MOSI pin", b"SCLK pin", b"CS pin", b"D/C pin", b"RST pin",
+                                        b"Light pin")))
+    for pin, want in ((b"30", b"Pins 26 to 37 are flash and PSRAM."),
+                      (b"19", b"Pins 19 and 20 are the USB port."),
+                      (b"23", b"This chip has no such pin.")):
+        s.buf.clear()
+        s.send(b"\x08" * 3 + pin + F1)
+        got = cfg_verdict(s, [want, b"Saved", b"Between"])
+        ok &= check(f"MOSI on {pin.decode()} refused: {want.decode()}", got == want)
+    s.buf.clear()
+    s.send(b"\x08" * 3 + b"7" + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"flash chip", b"Between"])
+    ok &= check("GPIO 7, the WROOM's flash, is an ordinary pin here", got == b"Saved and live")
+    ok &= check("written as the plugin reads it",
+                (cfg_sec_line("plugin:panel", "pin1_mosi") or "").endswith("= 7"))
+    cfg_cancel(s)                                 # a saved list page returns to the panel's page
+    cfg_cancel(s)
+    ok &= check("and the panel follows it", b"Pins 7 40 42 41 39 48" in panel_read(s))
+
+    def pins_save(value):
+        cfg_open(s, b"panel", b"Driver")
+        s.buf.clear()
+        s.send(DOWN * 4 + b"\r")
+        s.wait_for(b"PINS", 6)
+        s.pump(0.6)
+        s.buf.clear()
+        s.send(b"\x08" * 3 + value + F1)
+        got = cfg_verdict(s, [b"Saved and live", b"Between", b"no such pin", b"flash"])
+        cfg_cancel(s)
+        cfg_cancel(s)
+        return got
+
+    ok &= check("a pin past the WROOM's 33 is in range on the S3", pins_save(b"47") == b"Saved and live")
+    ok &= check("and back on 45", pins_save(b"45") == b"Saved and live")
+
+    # Brightness on the main page: rows 4 Pins, 5 Width ... 14 Bright %.
+    cfg_open(s, b"panel", b"Driver")
+    s.buf.clear()
+    s.send(DOWN * 14 + b"\x08" * 3 + b"80" + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"Between", b"Saved"])
+    ok &= check("the backlight saves live", got == b"Saved and live" and
+                (cfg_sec_line("plugin:panel", "backlight") or "").endswith("= 80"))
+    ok &= check("and the panel is still lit", b"lit" in panel_read(s))
+
+    # The USB plug (1.1.0): CONFIG's row 9, a cycle picked by its first
+    # letter. Left and right draw the landscape layout at 320 x 172 with the
+    # 34 on the y axis; the file holds the word.
+    def turn(key):
+        cfg_open(s, b"panel", b"Driver")
+        s.buf.clear()
+        s.send(DOWN * 9 + key + F1)
+        got = cfg_verdict(s, [b"Saved and live", b"Nothing changed", b"Between"])
+        s.pump(0.8)                                   # a reset and a whole frame
+        return got
+
+    def glass(w, h):
+        if shot.exists():
+            shot.unlink()
+        s.buf.clear()
+        s.send(b"panel shot\r")
+        s.wait_for(b"Written", 4)
+        hd = f"P6\n{w} {h}\n255\n".encode()
+        d = shot.read_bytes() if shot.exists() else b""
+        if not d.startswith(hd) or len(d) != len(hd) + w * h * 3:
+            return None
+        return lambda x, y: tuple(d[len(hd) + (y * w + x) * 3:len(hd) + (y * w + x) * 3 + 3])
+
+    ok &= check("USB plug left saves live", turn(b"l") == b"Saved and live" and
+                (cfg_sec_line("plugin:panel", "orientation") or "").endswith("= left"))
+    p = panel_read(s)
+    ok &= check("and turns the glass: 320 x 172, the 34 on the y axis", b"ST7789 320x172 at 0,34, USB left" in p)
+    px = glass(320, 172)
+    ok &= check("drawn landscape: the bar, the band, and the rule between the two columns",
+                px is not None and px(1, 1) == (24, 44, 120) and px(1, 30) == (8, 24, 72) and
+                px(160, 60) == (40, 44, 56))
+    ok &= check("with the heading on the left", re.search(rb"(?m)^\s*Callers \d+/\d+\s*$", p) is not None)
+    ok &= check("USB plug right", turn(b"r") == b"Saved and live" and
+                b"ST7789 320x172 at 0,34, USB right" in panel_read(s))
+    ok &= check("USB plug down: portrait again, upside down",
+                turn(b"d") == b"Saved and live" and b"ST7789 172x320 at 34,0, USB down" in panel_read(s))
+    px = glass(172, 320)
+    ok &= check("and drawn in the portrait layout", px is not None and px(1, 1) == (24, 44, 120) and
+                px(1, 200) == (0, 0, 0))
+
+    def panel_key(key, value):
+        """[plugin:panel] with key set to value (None: taken out), read again."""
+        path = USERDATA / "system.cfg"
+        out, cur = [], None
+        for line in path.read_text().splitlines():
+            t = line.strip()
+            if t.startswith("["):
+                cur = t.lower()
+            if cur == "[plugin:panel]" and "=" in t and t.split("=", 1)[0].strip() in ("orientation", "rotation",
+                                                                                       "width", "height",
+                                                                                       "xoff", "yoff"):
+                continue
+            out.append(line)
+            if t.lower() == "[plugin:panel]" and value:
+                out += [f"{k} = {v}" for k, v in value.items()]
+        path.write_text("\n".join(out) + "\n")
+        cfg_reload(s)
+        s.pump(0.8)
+
+    panel_key("orientation", {"orientation": "sideways"})
+    ok &= check("a word it does not know leaves the plug up",
+                b"ST7789 172x320 at 34,0, USB up" in panel_read(s))
+    # A file from before the setting: rotation, and the glass typed turned.
+    panel_key("rotation", {"rotation": "90", "width": "320", "height": "172", "xoff": "0", "yoff": "34"})
+    ok &= check("an old rotation = 90 reads as the plug on the right, the same glass",
+                b"ST7789 320x172 at 0,34, USB right" in panel_read(s))
+    panel_key("orientation", None)
+    ok &= check("and with neither, the plug is up", b"ST7789 172x320 at 34,0, USB up" in panel_read(s))
+
+    # The TF slot's pins as the card's defaults.
+    cfg_open(s, b"sd", b"CS pin")
+    rows = [ln for ln in render_lines(s.buf) if "pin" in ln]
+    have = {k: next((ln for ln in rows if k in ln), "") for k in ("CS pin", "MOSI pin", "CLK pin", "MISO pin")}
+    ok &= check("the card on the TF slot: CS 21, MOSI 15, CLK 14, MISO 16",
+                "21" in have["CS pin"] and "15" in have["MOSI pin"] and
+                "14" in have["CLK pin"] and "16" in have["MISO pin"])
+    cfg_cancel(s)
     s.close()
     return ok
 
@@ -11321,13 +11975,13 @@ GROUPS = {
                   "long_help", "info_pages", "operator", "notices_in", "ring_mail",
                   "sysop_account"],
     # The subsystems that own a session and draw their own screens.
-    "places":    ["forums", "files", "chat", "xfer", "notices_in"],
+    "places":    ["forums", "files", "chat", "xfer", "notices_in", "backups_area"],
     # Anything that reads or writes the card, and the backups (on the card
     # since 1.1.0, and restores across the board's two partitions).
-    "storage":   ["files", "forums", "sd", "xfer", "backup", "restore"],
+    "storage":   ["files", "forums", "sd", "xfer", "backup", "restore", "card_screens", "rewrites"],
     # The shell, its lists and the screens the core draws.
     "shell":     ["menus", "sysinfo", "page", "about", "config", "welcome", "paced", "seeded", "fx_codes",
-                  "lights", "operator", "dash", "nodes_columns"],
+                  "lights", "operator", "dash", "nodes_columns", "version_shown", "screens_command"],
     # Logging in, accounts, staff.
     "login":     ["accounts", "handle_case", "guest", "sysop", "cosysop", "user_admin", "first_setup", "ban",
                   "boot_hold", "boot_notices"],
@@ -11371,6 +12025,9 @@ ORDER_NAMES = [
     "test_config_timezone", "test_config_cycle_numbers",
     "test_config_sd_plugin",
     "test_config_lights", "test_config_lights_ascii", "test_lights_frames", "test_lights_manual",
+    "test_lights_count", "test_lights_order", "test_lights_wifi", "test_version_shown",
+    # SKIPs on the reference board: tools/harness.sh --board s3 runs it.
+    "test_board_s3",
     "test_config_wifi_live", "test_config_network", "test_config_announce_outside",
     "test_config_wifi_fallback", "test_boot_hold",
     "test_boot_hold_write_fails", "test_boot_hold_factory_fails", "test_sysop_spelled_default",
@@ -11394,6 +12051,12 @@ ORDER_NAMES = [
     # card one restores this board from a backup it has just taken, which is
     # the board as it was a minute before, so it sits with the restores.
     "test_backup_card", "test_backup_card_nightly", "test_restore_cross_partition",
+    # 1.1.0 Phase 5, the backups lane. Before the destructive ones below,
+    # never after test_ban. The Backups area restores this board from a
+    # backup it has just taken, as test_backup_card does.
+    "test_backups_area", "test_card_screens_manifest", "test_restore_checks",
+    "test_restore_staff_report", "test_restore_ends_screens", "test_sd_no_reprobe",
+    "test_rewrites_keep_old", "test_restore_waits_quiet", "test_screens_command",
     # Destructive, and therefore last whatever else is running. The published
     # default's restore test puts the board back as it found it, and on a
     # --fresh board it needs to run before first_setup gives it a password.
@@ -11653,6 +12316,924 @@ def test_user_admin_retire():
     s.send(b"q")
     s.pump(0.5)
     s.close()
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# 1.1.0 Phase 5: backups on the board, and what a restore and a rewrite may
+# and may not do to the files already there.
+# ---------------------------------------------------------------------------
+
+def fnv1a(data):
+    """FNV-1a 32 over bytes, 0 read as 1: the sd plugin's fileHash."""
+    h = 2166136261
+    for b in data:
+        h ^= b
+        h = (h * 16777619) & 0xFFFFFFFF
+    return h or 1
+
+
+def card_remount(s):
+    """SD UNMOUNT, then SD MOUNT, from a sysop session: True once mounted."""
+    s.buf.clear()
+    s.send(b"sd unmount\r")
+    s.wait_for(b"safe to pull", 6)
+    s.buf.clear()
+    s.send(b"sd mount\r")
+    return s.wait_for(b"Mounted", 8)
+
+
+def copy_sysop(handle, port):
+    """A caller on a copy board, elevated to its sysop node."""
+    s = ansi_login(handle, port=port)
+    s.buf.clear()
+    s.send(f"bye {PASSWORD}\r".encode())
+    ok = s.wait_for(b"SysOp node", 6)
+    s.wait_for(b"Sysop", 3)
+    s.pump(0.4)
+    return s, ok
+
+
+def test_backups_area():
+    """The Backups file area (1.1.0): the card's backup folder as area 11.
+
+    Rob asked where a backup can be downloaded on the board itself. Only the
+    HTTP window served one; BACKUP SD put a zip on the card with no way to
+    fetch it over the line the sysop was already on. The round trip here is
+    the whole feature: BACKUP SD, download it by YMODEM, send it back, and
+    RESTORE SD the zip that came back.
+    """
+    print("The Backups file area")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    card = card_dir()
+    if card is None:
+        print("  SKIP  needs a card")
+        return True
+    import shutil
+    bdir = card / "backup"
+    shutil.rmtree(bdir, ignore_errors=True)
+    s = cfg_sysop("BackupsKeeper")
+    ok = True
+    try:
+        i, txt = card_cmd(s, b"backup sd", [b"Saved:", b"Card write failed", b"Card full"], 30)
+        m = re.search(rb"Writing (unleashed-\d{8}-\d{4}\.zip)", txt)
+        ok &= check("BACKUP SD puts a zip on the card to fetch", i == 0 and m is not None)
+        name = m.group(1).decode() if m else "none.zip"
+        zbytes = bytes_of(bdir / name) or b""
+
+        # Half an upload left by a restart part way through one: Backups has
+        # nothing to approve, so its staging is cleared when the area starts
+        # rather than counted as an upload waiting for ever.
+        (bdir / ".pending").mkdir(parents=True, exist_ok=True)
+        (bdir / ".pending" / "stale.zip").write_bytes(b"half a zip")
+        cfg_reload(s)
+        ok &= check("half an upload left in Backups' staging is cleared at start",
+                    not (bdir / ".pending" / "stale.zip").exists())
+
+        # ---- who sees it, and how a number past 10 is reached -------------
+        s.buf.clear()
+        s.send(b"files\r")
+        s.wait_for(b"File areas", 5)
+        s.pump(0.8)
+        ok &= check("the sysop's file areas list Backups as 11",
+                    re.search(rb"11  Backups", plain(s.buf)) is not None)
+        # 1 opens area 1 the moment it is pressed, so 11 cannot be two keys:
+        # # asks for the number and Enter takes it, the forums' way.
+        s.buf.clear()
+        s.send(b"#")
+        ok &= check("# at the menu asks for a section number", s.wait_for(b"Section number:", 4))
+        s.buf.clear()
+        s.send(b"11\r")
+        ok &= check("and 11 then Enter opens Backups", s.wait_for(b"Backups", 5))
+        s.pump(0.8)
+        drain(s)
+        ok &= check("which lists the zip BACKUP SD wrote", name.encode() in plain(s.buf))
+        leave_files(s)
+
+        c = ansi_login("NotBackups")
+        c.buf.clear()
+        c.send(b"files\r")
+        c.wait_for(b"File areas", 5)
+        c.pump(0.8)
+        ok &= check("an ordinary caller is not shown Backups", b"Backups" not in plain(c.buf))
+        leave_files(c)
+        c.buf.clear()
+        c.send(b"files 11\r")
+        ok &= check("and FILES 11 is no area to them", c.wait_for(b"No area by that number.", 4))
+        c.close()
+
+        a = ascii_sysop("AsciiBackups")
+        a.buf.clear()
+        a.send(b"files\r")
+        a.wait_for(b"File areas", 5)
+        a.pump(0.8)
+        ok &= check("a terminal with no cursor is told how to reach 11",
+                    b"# for 11" in plain(a.buf))
+        leave_files(a)
+        a.close()
+
+        # ---- download it ---------------------------------------------------
+        ok &= check("FILES 11 opens Backups", enter_area(s, 11, b"Backups"))
+        n = number_of(s, name.encode())
+        ok &= check("the zip is numbered in it", n is not None)
+        ok &= check("its number offers it by YMODEM",
+                    n is not None and file_num(s, n, b"Start your YMODEM receive"))
+        got_name, size, got = ymodem_receive(s)
+        ok &= check("block 0 names the zip", got_name == name)
+        ok &= check("and it arrives byte for byte", bool(zbytes) and got[:size] == zbytes)
+        s.wait_for(b"Download complete", 8)
+        settle_after_transfer(s)
+
+        # ---- send it back ----------------------------------------------------
+        ok &= check("back in Backups", enter_area(s, 11, b"Backups"))
+        ok &= check("U takes YMODEM", area_key(s, b"u", "", b"Start your YMODEM send"))
+        ok &= check("and says it goes straight in", s.wait_for(b"It goes straight in.", 3))
+        _seen.clear()
+        ok &= check("the board takes the zip", ymodem_send(s, "copy.zip", zbytes))
+        s.pump(1.0)
+        _seen.extend(bytes(s.buf))
+        said = plain(bytes(_seen))
+        ok &= check("and says where it went", b"In Backups: copy.zip" in said)
+        ok &= check("it is in the area at once, not waiting for approval",
+                    bytes_of(bdir / "copy.zip") == zbytes and not (bdir / ".pending" / "copy.zip").exists())
+        ok &= check("and nothing asks for a description", b"Describe it" not in said)
+        settle_after_transfer(s)
+
+        # XMODEM has no length, so its zip arrives padded with 0x1A.
+        ok &= check("back in Backups again", enter_area(s, 11, b"Backups"))
+        ok &= check("a name that is not a zip is refused before anything is sent",
+                    area_key(s, b"u", "notes.txt", b"Backups takes a .zip"))
+        ok &= check("XMODEM takes a zip by name", area_key(s, b"u", "xcopy.zip", b"Start your XMODEM send"))
+        ok &= check("and the board takes it", xmodem_send(s, zbytes))
+        ok &= check("into the area at once", s.wait_for(b"In Backups: xcopy.zip", 12))
+        xb = bytes_of(bdir / "xcopy.zip") or b""
+        ok &= check("padded the way XMODEM pads",
+                    xb[:len(zbytes)] == zbytes and set(xb[len(zbytes):]) <= {SUB})
+        settle_after_transfer(s)
+        leave_files(s)
+
+        # ---- RESTORE SD takes what came back -------------------------------
+        i, txt = card_cmd(s, b"restore sd", [b"restores one."])
+        ok &= check("RESTORE SD lists both", b"copy.zip" in txt and b"xcopy.zip" in txt)
+        i, txt = card_cmd(s, b"restore sd xcopy.zip", [b"Restore now? (y/N)", b"Cannot read", b"Nothing in it"], 30)
+        ok &= check("the XMODEM one still reads as the zip it is", i == 0)
+        s.buf.clear()
+        s.send(b"n")
+        s.wait_for(b"Not restored.", 5)
+        i, txt = card_cmd(s, b"restore sd copy.zip", [b"Restore now? (y/N)", b"Cannot read", b"Nothing in it"], 30)
+        ok &= check("RESTORE SD checks the uploaded zip and asks", i == 0)
+        s.buf.clear()
+        s.send(b"y")
+        ok &= check("and puts it back", s.wait_for(b"Restored and live.", 30))
+    finally:
+        shutil.rmtree(bdir, ignore_errors=True)
+        s.close()
+    return ok
+
+
+def test_card_screens_manifest():
+    """The card's screens and backups, at mount (1.1.0).
+
+    - A zip BACKUP SD left half written (<zip>.tmp, a pulled card or a power
+      cut) is tidied away, and nothing else in the folder is.
+    - A stock screen the board seeded before it kept a record (0.18.0 to
+      0.22.0), and could never refresh because it no longer matched the
+      stock one, is known for what it is and refreshed: Unleashed HQ's
+      welcome after its 1.0.0 update.
+    - A screen RESTORE SD SCREENS put on the card is the sysop's, even one
+      byte for byte the stock screen, and a stock update never takes it back.
+    """
+    print("The card's screens and backups at mount")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    card = card_dir()
+    if card is None:
+        print("  SKIP  needs a card")
+        return True
+    stock = DATA / "screens"
+    scr = card / "screens"
+    bdir = card / "backup"
+    manifest = scr / ".seeded"
+    mark = "zzmark.asc"
+    cur = (stock / "welcome.asc").read_bytes()
+    s = cfg_sysop("MountKeeper")
+    ok = True
+    try:
+        # ---- half-written backups ------------------------------------------
+        bdir.mkdir(parents=True, exist_ok=True)
+        (bdir / "unleashed-20200101-0000.zip.tmp").write_bytes(b"half a zip")
+        (bdir / "keep.tmp").write_bytes(b"the sysop's own")
+        ok &= check("the card remounts", card_remount(s))
+        ok &= check("a backup left half written is gone after a mount",
+                    not (bdir / "unleashed-20200101-0000.zip.tmp").exists())
+        ok &= check("and a .tmp that is the sysop's own stays", (bdir / "keep.tmp").exists())
+
+        # ---- a screen seeded before the manifest ---------------------------
+        # welcome.asc as 0.18.0 shipped it: today's, less the 300 baud line
+        # 0.21.9 added, and with the licence it named until 1.1.0-dev.11
+        # (GPLv2+): the two changes it has had since.
+        new_tail = b"\n@BAUD:300@Connecting you to @BOARD@ @BAUD:0@@SPIN:900@\n"
+        old = (cur[:-len(new_tail)].replace(b"GPLv3+", b"GPLv2+") +
+               b" Connecting you @SPIN:900@unleashed\n") if cur.endswith(new_tail) else b""
+        ok &= check("(the 0.18.0 welcome.asc, rebuilt)", fnv1a(old) == 0x62b7208f)
+        if old:
+            (scr / "welcome.asc").write_bytes(old)
+            lines = manifest.read_text().splitlines() if manifest.exists() else []
+            manifest.write_text("".join(ln + "\n" for ln in lines if not ln.startswith("welcome.asc ")))
+            card_remount(s)
+            ok &= check("a welcome seeded before the manifest follows the stock one now",
+                        bytes_of(scr / "welcome.asc") == cur)
+            rec = manifest.read_text() if manifest.exists() else ""
+            ok &= check("and is recorded as the board's copy", ("welcome.asc %08x" % fnv1a(cur)) in rec)
+
+        # ---- an imported screen is the sysop's -----------------------------
+        (stock / mark).write_text("stock A\n")
+        card_remount(s)
+        ok &= check("(a new stock screen is seeded)", bytes_of(scr / mark) == b"stock A\n")
+        (bdir / "mine.zip").write_bytes(make_zip({"screens/" + mark: b"stock A\n"}))
+        i, txt = card_cmd(s, b"restore sd screens mine.zip", [b"Restore now? (y/N)", b"Cannot read"], 30)
+        s.buf.clear()
+        s.send(b"y")
+        ok &= check("RESTORE SD SCREENS puts one on the card, the stock one byte for byte",
+                    i == 0 and s.wait_for(b"Restored: 1 screen on the card.", 30))
+        rec = manifest.read_text() if manifest.exists() else ""
+        ok &= check("and marks it the sysop's in the card's record", (mark + " 00000000") in rec)
+        (stock / mark).write_text("stock B\n")
+        card_remount(s)
+        ok &= check("a stock update does not take an imported screen back",
+                    bytes_of(scr / mark) == b"stock A\n")
+        ok &= check("and the mark is kept",
+                    (mark + " 00000000") in (manifest.read_text() if manifest.exists() else ""))
+    finally:
+        for p in (stock / mark, scr / mark, bdir / "mine.zip", bdir / "keep.tmp",
+                  bdir / "unleashed-20200101-0000.zip.tmp"):
+            try:
+                p.unlink()
+            except FileNotFoundError:
+                pass
+        (scr / "welcome.asc").write_bytes(cur)
+        card_remount(s)
+        s.close()
+    return ok
+
+
+def test_restore_checks():
+    """What a restore refuses before it asks (1.1.0).
+
+    - A system.cfg that leaves sysop_password empty: that is staff switched
+      off, and with it the only way back in short of the cable. CONFIG
+      already refuses an empty sysop password.
+    - Screens that fit the board once the restore is done but not while it
+      is being done: a screen being swapped has its old copy and its new one
+      on the partition together, and the check was one file short of that.
+    - A zip with 0x1A after its end record, which is what an XMODEM upload
+      into the Backups area makes, is still the zip it is.
+    """
+    print("What a restore refuses before it asks")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    card = card_dir()
+    if card is None:
+        print("  SKIP  needs a card")
+        return True
+    bdir = card / "backup"
+    bdir.mkdir(parents=True, exist_ok=True)
+    made = ("nostaff.zip", "room.zip", "padded.zip", "trailing.zip")
+    s = cfg_sysop("RestoreGuard")
+    ok = True
+    try:
+        (bdir / "nostaff.zip").write_bytes(make_zip({
+            "system.cfg": b"sysop_password =\nidle_minutes = 9\n",
+            "info/5.txt": b"Page five\n"}))
+        i, txt = card_cmd(s, b"restore sd nostaff.zip", [b"Restore now? (y/N)", b"Cannot read",
+                                                         b"Nothing in it"], 30)
+        ok &= check("a system.cfg that empties the sysop password is refused",
+                    i == 0 and re.search(rb"Rejected\s+1: system.cfg: sysop password empty: "
+                                         rb"staff would be off", txt) is not None)
+        ok &= check("and the question does not say the staff would change",
+                    re.search(rb"Staff\s+passwords stay as they are", txt) is not None)
+        s.buf.clear()
+        s.send(b"n")
+        s.wait_for(b"Not restored.", 5)
+
+        # 256 KB of partition is 64 blocks, 60 once its root and the screens
+        # folder are counted. 16 + 16 + 16 + 10 blocks fitted the old rule
+        # (58); at the peak the biggest one is there twice, so the third
+        # 64 KB screen no longer fits and the 40 KB one still does.
+        big = b"A" * 65536
+        (bdir / "room.zip").write_bytes(make_zip({
+            "screens/rbig1.asc": big, "screens/rbig2.asc": big,
+            "screens/rbig3.asc": big, "screens/rbig4.asc": b"B" * 40960}))
+        i, txt = card_cmd(s, b"restore sd room.zip", [b"Restore now? (y/N)", b"Cannot read",
+                                                      b"Nothing in it"], 60)
+        ok &= check("screens must fit the board at the peak of the swap, not only at the end",
+                    i == 0 and re.search(rb"Rejected\s+1: screens/rbig3.asc: no room for it on the board",
+                                         txt) is not None)
+        s.buf.clear()
+        s.send(b"n")
+        s.wait_for(b"Not restored.", 5)
+
+        (bdir / "padded.zip").write_bytes(make_zip({"info/6.txt": b"Page six\n"}) + bytes([SUB]) * 700)
+        i, txt = card_cmd(s, b"restore sd padded.zip", [b"Restore now? (y/N)", b"Cannot read"], 30)
+        ok &= check("a zip with 0x1A padding after its end, as XMODEM leaves one, still reads", i == 0)
+        if i == 0:
+            s.buf.clear()
+            s.send(b"n")
+            s.wait_for(b"Not restored.", 5)
+        (bdir / "trailing.zip").write_bytes(make_zip({"info/6.txt": b"x"}) + b"not padding")
+        i, txt = card_cmd(s, b"restore sd trailing.zip", [b"Cannot read it:", b"Restore now?"], 20)
+        ok &= check("but anything else after the end is still not a zip", i == 0 and b"no end record" in txt)
+        if i == 1:
+            s.send(b"n")
+            s.wait_for(b"Not restored.", 5)
+    finally:
+        for n in made:
+            try:
+                (bdir / n).unlink()
+            except FileNotFoundError:
+                pass
+        s.close()
+    return ok
+
+
+def cfg_key_in(path, key):
+    """A top-of-file key's value in some other system.cfg, or None."""
+    for line in path.read_text().splitlines():
+        if line.strip().startswith("["):
+            break
+        if "=" in line and line.split("=", 1)[0].strip() == key:
+            return line.split("=", 1)[1].strip()
+    return None
+
+
+def test_restore_staff_report():
+    """A restore says which co-sysops it left off (1.1.0), and a caller on
+    the welcome screen when the card goes is taken on to log in.
+
+    A co-sysop line naming the published password is left out of a restore
+    (1.0.2), which switches that level off, and only the serial log said so.
+    Now the RESTORE SD output and the window's reply to curl say it too.
+
+    The second half is closeCardScreens: a caller not yet logged in was put
+    in the shell with no prompt and no account when the card went from
+    under their welcome screen, and nothing they typed did anything.
+    """
+    print("A restore says which co-sysops it left off")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    import shutil
+    import tempfile
+    tmp = copy_data()
+    card = pathlib.Path(tempfile.mkdtemp(prefix="bbs-staff-card-"))
+    port = PORT + 3850
+    bport = PORT + 3851
+    cfg = tmp / "data" / "user" / "system.cfg"
+    cfg.write_text(cfg_with(cfg.read_text(), {("", "backup_port"): str(bport)}))
+    proc = start_copy(tmp, (str(port),), {"BBS_SD_DIR": str(card), "BBS_BACKUP_TEST_OPEN": "1"})
+    ok = True
+    s = None
+    try:
+        copy_log(tmp, f"listening on {port},", 8)
+        s, on = copy_sysop("StaffKeeper", port)
+        ok &= check("sysop on a copy with a card and the window open",
+                    on and s.wait_for(b"*** Backup open", 8))
+        co2 = cfg_key_in(cfg, "cosysop2_password")
+        zcfg = cfg_with(cfg.read_text(), {("", "sysop_password"): "***",
+                                           ("", "cosysop1_password"): BBS_DEFAULT,
+                                           ("", "cosysop2_password"): "***"})
+        z = make_zip({"system.cfg": zcfg.encode()})
+        bdir = card / "backup"
+        bdir.mkdir(parents=True, exist_ok=True)
+        (bdir / "costaff.zip").write_bytes(z)
+        i, txt = card_cmd(s, b"restore sd costaff.zip", [b"Restore now? (y/N)", b"Cannot read",
+                                                         b"Nothing in it"], 30)
+        s.buf.clear()
+        s.send(b"y")
+        done = i == 0 and s.wait_for(b"Restored and live.", 30)
+        s.pump(1.0)
+        said = plain(s.buf)
+        ok &= check("RESTORE SD puts the zip back", done)
+        ok &= check("and says co-sysop 1 is off, and why", b"Co-sysop 1 off: the published password." in said)
+        ok &= check("and where a real one is set", b"Set theirs in CONFIG staff." in said)
+        ok &= check("co-sysop 1 has no password line now", cfg_key_in(cfg, "cosysop1_password") is None)
+        ok &= check("while co-sysop 2 kept theirs", co2 is not None and cfg_key_in(cfg, "cosysop2_password") == co2)
+
+        status, body, seen = upload_with_answer(s, z, b"y", port=bport)
+        ok &= check("the window asks about the same zip", seen)
+        ok &= check("and its reply to curl says co-sysop 1 is off",
+                    status == 200 and b"Co-sysop 1 off: the published password is never set." in body)
+
+        # ---- the welcome screen, and the card going from under it ----------
+        slow = b"".join(b"@DELAY:100@." for _ in range(200)) + b"\r\n"
+        (card / "screens").mkdir(parents=True, exist_ok=True)
+        for ext in ("ans", "asc"):
+            (card / "screens" / ("welcome." + ext)).write_bytes(slow)
+        w = Caller(ansi=True, port=port)
+        started = w.wait_for(b"DETECTED", 10)
+        time.sleep(1.5)                         # into the welcome, still being read off the card
+        s.buf.clear()
+        s.send(b"sd unmount\r")
+        ok &= check("(the card is unmounted under the welcome)", s.wait_for(b"safe to pull", 6))
+        ok &= check("a caller still on the welcome when the card goes is taken on to log in",
+                    started and w.wait_for(b"Enter your handle", 20))
+        w.close()
+    finally:
+        if s:
+            s.close()
+        stop_copy(proc, tmp)
+        shutil.rmtree(card, ignore_errors=True)
+    return ok
+
+
+def test_restore_ends_screens():
+    """A restore lets go of the screens it replaces first (1.1.0).
+
+    On the board esp_littlefs refuses to rename over or remove a file
+    somebody has open (EBUSY), so a caller paused at a page break of a stock
+    screen held up the restore of that screen, which ended "with errors".
+    Every caller reading a screen the restore replaces is let go of first,
+    and told why. The host would rename over the open file anyway, so what
+    is checked is the caller being let go of and landing somewhere useful.
+    """
+    print("A restore ends the screens it replaces")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    tmp = copy_data()
+    port = PORT + 3852
+    bport = PORT + 3853
+    cfg = tmp / "data" / "user" / "system.cfg"
+    cfg.write_text(cfg_with(cfg.read_text(), {("", "backup_port"): str(bport)}))
+    proc = start_copy(tmp, (str(port),), {"BBS_BACKUP_TEST_OPEN": "1"})
+    ok = True
+    r = s = None
+    try:
+        copy_log(tmp, f"listening on {port},", 8)
+        r = ansi_login("PausedReader", port=port)
+        r.buf.clear()
+        r.send(b"privacy\r")
+        ok &= check("a caller is paused in a screen from the board's own flash",
+                    r.wait_for(b"Press SPACE to continue", 8))
+        s, on = copy_sysop("ScreenRestorer", port)
+        ok &= check("sysop with the window open", on and s.wait_for(b"*** Backup open", 8))
+        z = make_zip({"screens/privacy.ans": b"A restored privacy screen\r\n",
+                      "screens/about.asc": b"A restored about screen\n"})
+        r.buf.clear()
+        # The reader is on, so the restore waits for them (1.1.0) and F puts
+        # it live anyway: the case where a screen is open when it goes in.
+        result = {}
+
+        def worker():
+            result["r"] = http_call("PUT", "/restore", z, timeout=60, port=bport)
+
+        s.buf.clear()
+        th = threading.Thread(target=worker)
+        th.start()
+        seen = s.wait_for(b"Accept upload (Y/N)?", 20)
+        s.buf.clear()
+        s.send(b"y")
+        s.wait_for(b"F applies it now", 6)
+        s.send(b"f")
+        th.join(40)
+        status, body = result.get("r", (0, b""))
+        ok &= check("the restore is asked and put live", seen and status == 200 and b"Applied:" in body)
+        r.pump(1.5)
+        ok &= check("the paused caller is told why their screen ended",
+                    b"Screen ended: the sysop is restoring a backup." in plain(r.buf))
+        r.buf.clear()
+        r.send(b"who\r")
+        ok &= check("and is at a working prompt, not stuck", r.wait_for(b"Who's online", 6))
+    finally:
+        for c in (r, s):
+            if c:
+                c.close()
+        stop_copy(proc, tmp)
+    return ok
+
+
+def test_sd_no_reprobe():
+    """A board with no card asks for one at boot, not at every CONFIG save (1.1.0).
+
+    Saving any CONFIG page restarts the plugins, and the sd plugin probed the
+    SPI bus again every time on a board with no card: a stall in the loop for
+    every caller, for an answer that cannot change until somebody fits a
+    card and types SD MOUNT. The Rusty Antenna, no card, logged 541 slow
+    passes in 24 minutes. SD MOUNT and a change of pins still look.
+    """
+    print("A board with no card stops looking for one at every save")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    tmp = copy_data()
+    port = PORT + 3854
+    proc = start_copy(tmp, (str(port),))
+    ok = True
+    s = None
+    hostlog = tmp / "host.log"
+
+    def tries():
+        return (hostlog.read_text(errors="replace") if hostlog.exists() else "").count("sd: no card:")
+
+    try:
+        copy_log(tmp, f"listening on {port},", 8)
+        ok &= check("the board looks for a card once at boot", tries() == 1)
+        s, on = copy_sysop("NoCardSaver", port)
+        ok &= check("sysop on a copy with no card", on)
+        cfg_reload(s)
+        ok &= check("and not again when CONFIG saves restart the plugins", tries() == 1)
+        s.buf.clear()
+        s.send(b"sd mount\r")
+        ok &= check("SD MOUNT still looks", s.wait_for(b"no card found", 6))
+        cfg = tmp / "data" / "user" / "system.cfg"
+        text = cfg.read_text()
+        if "[plugin:sd]" not in text:
+            text = text.rstrip("\n") + "\n\n[plugin:sd]\n"
+        cfg.write_text(cfg_with(text, {("plugin:sd", "cs"): "4"}))
+        cfg_reload(s)
+        ok &= check("and a save that moves a pin looks once, on the new pin", tries() == 2)
+        s.buf.clear()
+        s.send(b"sd\r")
+        s.wait_for(b"SD card", 4)
+        s.pump(0.5)
+        ok &= check("SD still says why there is no card", b"no card found" in plain(s.buf))
+    finally:
+        if s:
+            s.close()
+        stop_copy(proc, tmp)
+    return ok
+
+
+# rename() that answers the way the test asks, for the files named in two
+# lists (by the end of the path): SHIM_FAT refuses an existing name with
+# EEXIST, as FatFs does; SHIM_EIO fails outright, once the file SHIM_GATE
+# exists. Preloaded into a copy of the board.
+REWRITE_SHIM_C = """
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/stat.h>
+
+static int listed(const char *list, const char *to) {
+    if (!list) return 0;
+    size_t n = strlen(to);
+    const char *p = list;
+    while (*p) {
+        const char *bar = strchr(p, '|');
+        size_t k = bar ? (size_t)(bar - p) : strlen(p);
+        if (k && n >= k && !strncmp(to + n - k, p, k)) return 1;
+        if (!bar) break;
+        p = bar + 1;
+    }
+    return 0;
+}
+
+int rename(const char *from, const char *to) {
+    int (*real)(const char *, const char *) =
+        (int (*)(const char *, const char *))dlsym(RTLD_NEXT, "rename");
+    const char *gate = getenv("SHIM_GATE");
+    if (listed(getenv("SHIM_EIO"), to) && gate && access(gate, F_OK) == 0) {
+        errno = EIO;
+        return -1;
+    }
+    if (listed(getenv("SHIM_FAT"), to)) {
+        struct stat st;
+        if (stat(to, &st) == 0) { errno = EEXIST; return -1; }
+    }
+    return real(from, to);
+}
+"""
+
+
+def test_rewrites_keep_old():
+    """A rewrite whose rename fails keeps the old file (1.1.0).
+
+    The mailbox, an information page, a file area's FILES.BBS and the card's
+    record of its seeded screens were each written through a temp file and
+    then put in place by removing the live file and renaming the new one
+    over it. If that rename then failed, the old file was already gone:
+    everybody's mail, a page, every description in an area. They rename
+    over the old file first now, and only on FAT's own refusal (EEXIST)
+    does the old one go first, with the new one whole beside it.
+    """
+    print("A rewrite that fails keeps the old file")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    import shutil
+    import subprocess
+    import tempfile
+    cc = shutil.which("cc") or shutil.which("gcc")
+    if not cc:
+        print("  SKIP  no C compiler for the rename shim")
+        return True
+    tmp = copy_data()
+    (tmp / "shim.c").write_text(REWRITE_SHIM_C)
+    so = tmp / "shim.so"
+    built = subprocess.run([cc, "-shared", "-fPIC", "-o", str(so), str(tmp / "shim.c"), "-ldl"],
+                           capture_output=True)
+    if built.returncode != 0:
+        shutil.rmtree(tmp, ignore_errors=True)
+        print("  SKIP  the rename shim did not build")
+        return True
+    card = pathlib.Path(tempfile.mkdtemp(prefix="bbs-rewrite-card-"))
+    area = card / "pub" / "c64"
+    area.mkdir(parents=True)
+    (area / "GAME.PRG").write_text("CBM PRG content\n")
+    (area / "FILES.BBS").write_text("GAME.PRG A game from the card\n")
+    user = tmp / "data" / "user"
+    page = user / "p" / "info" / "0.txt"
+    page.parent.mkdir(parents=True, exist_ok=True)
+    page.write_text("The page as it was\n")
+    gate = tmp / "gate"
+    port = PORT + 3855
+    env = {"BBS_SD_DIR": str(card), "LD_PRELOAD": str(so), "SHIM_GATE": str(gate),
+           "SHIM_EIO": "/mail.dat|/info/0.txt|/FILES.BBS|/.seeded",
+           "SHIM_FAT": "/mail.dat|/FILES.BBS|/.seeded"}
+    proc = start_copy(tmp, (str(port),), env)
+    ok = True
+    a = s = None
+    try:
+        copy_log(tmp, f"listening on {port},", 8)
+        mail = user / "p" / "chat" / "mail.dat"
+        seeded = card / "screens" / ".seeded"
+        ansi_login("ShimBob", port=port).close()
+        a = ansi_login("ShimAnn", port=port)
+        a.buf.clear()
+        a.send(b"mail ShimBob first of three\r")
+        ok &= check("a message is left", a.wait_for(b"Left for ShimBob", 5))
+        a.buf.clear()
+        a.send(b"mail ShimBob second of three\r")
+        a.wait_for(b"Left for ShimBob", 5)
+        box = bytes_of(mail) or b""
+        ok &= check("where a rename will not go over a file (FAT), a second one still lands",
+                    b"first of three" in box and b"second of three" in box)
+
+        s, on = copy_sysop("ShimSysop", port)
+        ok &= check("sysop on the copy", on)
+        ok &= check("a file area opens", enter_area(s, 1, b"C64 Downloads"))
+        n = number_of(s, b"GAME.PRG") or 1
+        area_key(s, b"d", str(n), b"Description")
+        s.buf.clear()
+        s.send(b"Described on FAT\r")
+        ok &= check("a description is written where the rename must go round FAT",
+                    s.wait_for(b"Described.", 5) and
+                    bytes_of(area / "FILES.BBS") == b"GAME.PRG Described on FAT\n")
+
+        # From here every rename of those files fails outright.
+        gate.write_text("on")
+        area_key(s, b"d", str(n), b"Description")
+        s.buf.clear()
+        s.send(b"Never written\r")
+        ok &= check("a description whose rename fails says so",
+                    s.wait_for(b"Could not write the description file.", 5))
+        ok &= check("and every description in the area is still there",
+                    bytes_of(area / "FILES.BBS") == b"GAME.PRG Described on FAT\n")
+        leave_files(s)
+
+        a.buf.clear()
+        a.send(b"mail ShimBob third of three\r")
+        a.wait_for(b"could not be stored", 5)
+        box = bytes_of(mail) or b""
+        ok &= check("a message whose rename fails leaves the mailbox as it was",
+                    b"first of three" in box and b"second of three" in box)
+
+        s.buf.clear()
+        s.send(b"info 0 edit\r")
+        s.wait_for(b"/s saves", 6)
+        s.pump(0.6)
+        s.buf.clear()
+        s.send(b"/s\r")
+        ok &= check("a page whose rename fails says it did not save", s.wait_for(b"Page 0 did not save.", 6))
+        ok &= check("and the page is still there as it was", bytes_of(page) == b"The page as it was\n")
+
+        before = bytes_of(seeded)
+        card_remount(s)
+        ok &= check("the card's screen record survives a rewrite that fails",
+                    before is not None and bytes_of(seeded) == before)
+    finally:
+        for c in (a, s):
+            if c:
+                c.close()
+        stop_copy(proc, tmp)
+        shutil.rmtree(card, ignore_errors=True)
+    return ok
+
+
+def test_restore_waits_quiet():
+    """A restore waits for the board to go quiet (1.1.0).
+
+    Rob, after watching a live board through a restore: "it hangs hard when
+    doing that update ... it should be restored only when the site is not
+    busy". After the sysop's Y, at either door, nothing is put live while
+    anybody else is on: it waits, says how many for, and goes once they have
+    left. F puts it live at once, warning whoever is still on. It gives up
+    after a limit (backup_window_minutes; 12 s here). Meanwhile a new caller
+    gets the busy line, not a login to a board about to change.
+    """
+    print("A restore waits until nobody else is on")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    import shutil
+    import tempfile
+    tmp = copy_data()
+    card = pathlib.Path(tempfile.mkdtemp(prefix="bbs-quiet-card-"))
+    port = PORT + 3856
+    bport = PORT + 3857
+    user = tmp / "data" / "user"
+    cfg = user / "system.cfg"
+    cfg.write_text(cfg_with(cfg.read_text(), {("", "backup_port"): str(bport)}))
+    proc = start_copy(tmp, (str(port),), {"BBS_SD_DIR": str(card), "BBS_BACKUP_TEST_OPEN": "1",
+                                          "BBS_RESTORE_HOLD_MS": "12000"})
+
+    def page(n):
+        return user / "p" / "info" / f"{n}.txt"
+
+    ok = True
+    s = c = None
+    try:
+        copy_log(tmp, f"listening on {port},", 8)
+        s, on = copy_sysop("QuietKeeper", port)
+        ok &= check("sysop with the window open", on and s.wait_for(b"*** Backup open", 8))
+        c = ansi_login("StillOn", port=port)
+
+        # ---- the window: it waits, and goes once the caller has left -------
+        result = {}
+        z = make_zip({"info/7.txt": b"Held page\n"})
+
+        def worker():
+            result["r"] = http_call("PUT", "/restore", z, timeout=60, port=bport)
+
+        s.buf.clear()
+        th = threading.Thread(target=worker)
+        th.start()
+        asked = s.wait_for(b"Accept upload (Y/N)?", 20)
+        s.buf.clear()
+        s.send(b"y")
+        ok &= check("with a caller on, a Y at the window waits",
+                    asked and s.wait_for(b"Waiting for 1 caller to leave.", 6))
+        time.sleep(1.0)
+        ok &= check("and puts nothing live while it does", not page(7).exists())
+        n2 = Caller(ansi=True, port=port)
+        ok &= check("a new caller meanwhile gets the busy line", n2.wait_for(b"lines are busy", 8))
+        n2.close()
+        c.close()
+        c = None
+        th.join(40)
+        status, body = result.get("r", (0, b""))
+        ok &= check("once the caller has gone, it goes in", bytes_of(page(7)) == b"Held page\n")
+        ok &= check("and curl heard that it waited, then how it went",
+                    status == 200 and b"Waiting for 1 caller to leave" in body and b"Applied:" in body)
+        s.pump(0.5)
+
+        # ---- RESTORE SD, and F ------------------------------------------------
+        c = ansi_login("StillOnToo", port=port)
+        bdir = card / "backup"
+        bdir.mkdir(parents=True, exist_ok=True)
+        (bdir / "held.zip").write_bytes(make_zip({"info/8.txt": b"Forced page\n"}))
+        i, txt = card_cmd(s, b"restore sd held.zip", [b"Restore now? (y/N)", b"Cannot read"], 30)
+        s.buf.clear()
+        s.send(b"y")
+        ok &= check("RESTORE SD waits for the caller too",
+                    i == 0 and s.wait_for(b"Waiting for 1 caller to leave.", 6))
+        time.sleep(1.0)
+        ok &= check("with nothing put live", not page(8).exists())
+        s.buf.clear()
+        s.send(b"f")
+        ok &= check("F puts it live at once",
+                    s.wait_for(b"Restored and live.", 20) and bytes_of(page(8)) == b"Forced page\n")
+        ok &= check("and the caller still on is warned first",
+                    c.wait_for(b"The sysop is restoring a backup now.", 6))
+
+        # ---- the limit ----------------------------------------------------------
+        (bdir / "late.zip").write_bytes(make_zip({"info/9.txt": b"Late page\n"}))
+        i, txt = card_cmd(s, b"restore sd late.zip", [b"Restore now? (y/N)", b"Cannot read"], 30)
+        s.buf.clear()
+        s.send(b"y")
+        ok &= check("(it waits again)", i == 0 and s.wait_for(b"Waiting for 1 caller", 6))
+        ok &= check("and gives up when the caller stays past the limit",
+                    s.wait_for(b"Not restored: callers stayed on.", 25))
+        ok &= check("with nothing put live", not page(9).exists())
+    finally:
+        for x in (c, s):
+            if x:
+                x.close()
+        stop_copy(proc, tmp)
+        shutil.rmtree(card, ignore_errors=True)
+    return ok
+
+
+def test_screens_command():
+    """SCREENS and SCREENS VIEW (1.1.0): the board's screens from the board.
+
+    Rob: "a screen pager where we can see the screens online, this should be
+    super low overhead". One row a name: which of .ans, .asc and .seq there
+    are, their sizes, and where callers get each from (flash, or the card and
+    there the seeded stock copy or the sysop's own). VIEW plays one: the
+    flavour the terminal gets, an exact file if the terminal can show it, or
+    the flash copy with FLASH. Staff only.
+    """
+    print("SCREENS: the screens, listed and played")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    card = card_dir()
+    scr = card / "screens" if card else None
+    own = b"The sysop's own about screen\n"
+    aside = None
+    s = cfg_sysop("ScreenLister")
+    ok = True
+    try:
+        if card:
+            (scr / "about.asc").write_bytes(own)          # edited: the sysop's
+            if (scr / "busy.seq").exists():               # flash only, for this run
+                aside = (scr / "busy.seq").read_bytes()
+                (scr / "busy.seq").unlink()
+        s.buf.clear()
+        s.send(b"screens\r")
+        ok &= check("SCREENS lists the screens", s.wait_for(b"SCREENS VIEW", 8))
+        drain(s)
+        rows = render_lines(s.buf)
+        text = "\n".join(rows)
+
+        def row_of(name):
+            return next((r for r in rows if r.startswith(name + " ")), "")
+
+        welcome, about, busy = row_of("welcome"), row_of("about"), row_of("busy")
+        ok &= check("one row a name, with a size for each flavour",
+                    re.search(r"^welcome\s+\d+ \S", welcome) is not None and len(re.findall(r"\d+ ", welcome)) >= 3)
+        if card:
+            ok &= check("a card copy the board seeded says so", "card, seeded" in welcome)
+            ok &= check("one the sysop changed is theirs", re.search(r"\d+ card, own", about) is not None)
+            ok &= check("and a flavour only flash has says flash", re.search(r"\d+ flash\s*$", busy) is not None)
+            ok &= check("the title says where screens come from", "card and flash" in text)
+        else:
+            ok &= check("with no card every copy is flash's", "flash" in welcome and "card" not in welcome)
+            ok &= check("and the title says so", "flash only" in text)
+
+        # ---- 40 columns ------------------------------------------------------
+        s.send(b"\xff\xfa\x1f\x00\x28\x00\x19\xff\xf0")     # NAWS: 40 x 25
+        s.pump(0.4)
+        s.buf.clear()
+        s.send(b"screens\r")
+        s.wait_for(b"SCREENS VIEW", 8)
+        drain(s)
+        narrow = render_lines(s.buf, cols=40)
+        ok &= check("at 40 columns every row fits 39",
+                    any(r.startswith("welcome") for r in narrow) and max(len(r.rstrip()) for r in narrow) <= 39)
+        ok &= check("with the one-letter key", any("F flash  C card, seeded  O card, own" in r for r in narrow))
+        s.send(b"\xff\xfa\x1f\x00\x50\x00\x18\xff\xf0")     # back to 80 x 24
+        s.pump(0.4)
+
+        # ---- VIEW ----------------------------------------------------------------
+        where = b"the card" if card else b"flash"
+        i, txt = card_cmd(s, b"screens view about", [b"Playing", b"No screen", b"Unknown"], 6)
+        ok &= check("VIEW plays the flavour this terminal gets",
+                    i == 0 and (b"Playing about.ans, from " + where + b".") in txt)
+        drain(s)
+        if card:
+            i, txt = card_cmd(s, b"screens view about.asc", [b"Playing", b"No screen"], 6)
+            ok &= check("VIEW name.ext plays exactly that file", i == 0 and b"Playing about.asc, from the card." in txt
+                        and b"The sysop's own about screen" in txt)
+            drain(s)
+            i, txt = card_cmd(s, b"screens view about.asc flash", [b"Playing", b"No screen"], 6)
+            ok &= check("FLASH plays the flash copy under the card's",
+                        i == 0 and b"Playing about.asc, from flash." in txt and b"The sysop's own" not in txt)
+            drain(s)
+        else:
+            i, txt = card_cmd(s, b"screens view about.asc flash", [b"Playing", b"No screen"], 6)
+            ok &= check("FLASH plays the flash copy", i == 0 and b"Playing about.asc, from flash." in txt)
+            drain(s)
+        i, txt = card_cmd(s, b"screens view welcome.seq", [b"this terminal is", b"Playing"], 6)
+        ok &= check("a file this terminal cannot show is refused, both kinds named",
+                    i == 0 and b"welcome.seq is PETSCII; this terminal is ANSI" in txt)
+        i, txt = card_cmd(s, b"screens view nosuch", [b"No screen by that name.", b"Playing"], 6)
+        ok &= check("a name that is not a screen says so", i == 0)
+        refused = True
+        for trick in (b"../user/users", b"../../users.txt", b"screens/about", b"about.txt", b"..", b"a/b.asc"):
+            i, txt = card_cmd(s, b"screens view " + trick, [b"Not a screen name.", b"Playing", b"No screen"], 6)
+            refused &= i == 0
+        ok &= check("and a path is not a name at all", refused)
+
+        c = ansi_login("NotScreens")
+        c.buf.clear()
+        c.send(b"screens\r")
+        ok &= check("below staff, SCREENS is an unknown command", c.wait_for(b"Unknown command", 4))
+        c.close()
+    finally:
+        if card:
+            (scr / "about.asc").unlink(missing_ok=True)
+            if aside is not None:
+                (scr / "busy.seq").write_bytes(aside)
+        s.close()
     return ok
 
 

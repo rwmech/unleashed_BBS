@@ -24,12 +24,12 @@
  * See also:     README.md
  *
  * Copyright 2026 - Robert Mech
- * License:      GNU General Public License v2 or later
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * License:      GNU General Public License v3 or later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
+ * Free Software Foundation; either version 3 of the License, or (at your
  * option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
@@ -38,12 +38,16 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * with this program. If not, see <https://www.gnu.org/licenses/>. The full
  * text is in the LICENSE file at the top of this repository.
  * ===========================================================================
  */
 
 #pragma once
+
+// What differs between boards: the pins a profile ships with and the
+// capabilities it adds. The reference board's values are its defaults.
+#include "board.h"
 
 // ---------------------------------------------------------------------------
 // Identity
@@ -51,8 +55,24 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "1.1.0-dev.7"
+#define BBS_VERSION         "1.1.0-dev.11"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
+
+// BBS_VERSION_SHOWN: the version as every place a person reads one shows it
+// (1.1.0): the welcome screen's @VER@, ABOUT, SYS, MEM, DASH, the boot line
+// and Improv's device info. The core version alone on the reference board,
+// and the core version with the board profile's own after it on a board
+// that has one (board.h): "1.1.0 (S3 1.0.0)". Plain ASCII on purpose: the
+// terminal layer turns only the micro sign from UTF-8 into a glyph, so a
+// middle dot would reach a C64 or a plain ASCII terminal as "??". The one
+// definition, so the places cannot drift. The directory is still sent the
+// core version alone (announce), which is what it compares for its update
+// arrow; tools/release.py reads this format out of board.h for version.txt.
+#ifdef BBS_BOARD_VERSION
+#define BBS_VERSION_SHOWN   BBS_VERSION " (" BBS_BOARD_TAG " " BBS_BOARD_VERSION ")"
+#else
+#define BBS_VERSION_SHOWN   BBS_VERSION
+#endif
 
 // ---------------------------------------------------------------------------
 // Network: one dial-in port, 10 caller nodes, a busy line, a hidden sysop node
@@ -83,8 +103,9 @@
 #define BBS_KEEPALIVE_INTVL_S  10
 #define BBS_KEEPALIVE_CNT      3
 
-// Activity LED (system.cfg activity_led_gpio overrides the pin)
-#define BBS_LED_GPIO        2        // blue LED on DOIT-style dev boards, -1 = none
+// Activity LED (system.cfg activity_led_gpio overrides the pin). The pin a
+// board ships with is BBS_LED_GPIO in board.h: 2 on the WROOM, none on a
+// board whose only lamp is a WS2812B.
 #define BBS_LED_PULSE_MS    40
 
 // How long the line is held open after the exit screen has been sent, so the
@@ -171,6 +192,10 @@
 // User accounts (users.txt on the storage partition, in the backup zip)
 // ---------------------------------------------------------------------------
 #define BBS_USERS_FILE      "users.txt"
+// The last account to elevate to sysop (1.1.0), on userdata: where missed
+// rings go while CONFIG names no sysop account. An id into users.txt, so a
+// restore that replaces users.txt removes it (ziparc).
+#define BBS_SYSOP_LAST_FILE "sysop.last"
 // Accounts never move to the SD card: they are the one thing that has to
 // survive a card failing, and LittleFS is power-fail safe in a way FAT is
 // not. userdata is 608 KB and a UserRec is about 450 bytes, so the space is
@@ -204,9 +229,11 @@
 // ---------------------------------------------------------------------------
 // Plugins (PLUGINS.md)
 // ---------------------------------------------------------------------------
-// Nine since 1.1.0, for lights. Exactly the table, so the tenth plugin fails
-// registry.cpp's static_assert rather than compiling and never starting.
-#define BBS_MAX_PLUGINS     9        // compiled-in plugin table
+// Nine since 1.1.0, for lights, plus whatever the board profile compiles in
+// (board.h: the panel on a board with a display). Exactly the table, so one
+// more plugin fails registry.cpp's static_assert rather than compiling and
+// never starting.
+#define BBS_MAX_PLUGINS     (9 + BBS_BOARD_PLUGINS)   // compiled-in plugin table
 #define BBS_PLUGIN_TICK_MS  250      // periodic hook cadence
 // A PF_FAST plugin's cadence: 50 frames a second for the lights, which is as
 // fast as a pixel is worth updating and two loop passes apart.
@@ -214,7 +241,12 @@
 #define BBS_PLUGIN_DIR      "p"      // <fs>/p/<name>/ holds a plugin's files
 #define BBS_PLUGIN_QUOTA    65536    // per plugin, onboard
 #define BBS_FS_RESERVE      32768    // free space the core keeps for accounts
-#define BBS_HEAP_RESERVE    40960    // heap kept free for callers and backups
+// Heap kept free for callers and backups, which a plugin may not take at its
+// start. A board profile may set less (board.h): with PSRAM, the callers'
+// socket buffers and the backup inflater are PSRAM's, not internal RAM's.
+#ifndef BBS_HEAP_RESERVE
+#define BBS_HEAP_RESERVE    40960
+#endif
 
 // ---------------------------------------------------------------------------
 // Scheduler / task

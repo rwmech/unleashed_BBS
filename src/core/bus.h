@@ -19,12 +19,12 @@
  * See also:     README.md
  *
  * Copyright 2026 - Robert Mech
- * License:      GNU General Public License v2 or later
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * License:      GNU General Public License v3 or later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
+ * Free Software Foundation; either version 3 of the License, or (at your
  * option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
@@ -33,7 +33,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * with this program. If not, see <https://www.gnu.org/licenses/>. The full
  * text is in the LICENSE file at the top of this repository.
  * ===========================================================================
  */
@@ -99,3 +99,21 @@ private:
     uint8_t head_  = 0;
     uint8_t count_ = 0;
 };
+
+#ifdef BBS_HAS_LCD
+// ---------------------------------------------------------------------------
+// The last page on the board, for the panel's "last event" (BBS_HAS_LCD
+// boards only). Every page and every ring for the sysop goes through
+// Mailbox::push, so it is noted there: no hook in the paging code, and
+// nothing at all on a board without a panel. count wraps; only a change
+// means anything, and the panel keeps its own clock of when it saw one.
+// ---------------------------------------------------------------------------
+namespace bus {
+struct PageSeen {
+    uint16_t count = 0;
+    bool     ring  = false;                      // a ring for the sysop, not a caller's PAGE
+    char     from[BBS_USER_MAX + 1] = {};
+};
+const PageSeen& lastPage();
+} // namespace bus
+#endif

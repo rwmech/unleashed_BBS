@@ -4,8 +4,8 @@
 Every command, key, limit and system.cfg setting the BBS understands.
 
 Copyright 2026 - Robert Mech
-License: GNU General Public License v2 or later
-SPDX-License-Identifier: GPL-2.0-or-later
+License: GNU General Public License v3 or later
+SPDX-License-Identifier: GPL-3.0-or-later
 
 Documentation for µnleashed BBS, part of the same distribution as the
 source. See the LICENSE file for terms.
@@ -177,7 +177,7 @@ Limits, each refused in place of the question: `Three rings is the most for one 
 
 **Missed rings go to MAIL (1.1.0).** A ring nobody answered (no answer, declined, away, the sysop not available, the caller stopping or hanging up) becomes a MAIL message to the sysop's account: the one `CONFIG board` names as **Sysop** (`sysop_handle`, below), or, while that is unset or names an account that is gone, the last account to elevate to sysop. One account, not every account the sysop password has ever marked: marks are never taken off, and each copy would take one of the board's 64 mail slots. It comes from the caller's handle, a guest's marked `*` (`Visitor*`) and said to be a guest in the text, since a guest has no account to reply to. Its first line is `Ring:` and the reason, the second where it rang from and when: `Rang from node 3 at 22:14.` So the sysop's `You have mail.`, `DASH`'s waiting row and the display panel's letter icon all count missed rings without knowing rings exist. It is ordinary mail and follows MAIL's rules: the sysop's box, when full, refuses it (3 messages without a card, 12 with one), and the sysop is told `You have mail.` if they are on. An answered ring leaves nothing. The rate limits and one ring at a time are unchanged.
 
-**Notes, the fallback.** A missed ring that MAIL cannot take leaves a note instead, so a ring is never lost: when the board has no sysop account yet (none named in `CONFIG board` and nobody has typed `BYE <password>`), when mail is switched off (`mail_slots = 0`), or when the sysop's box is full. Notes are kept in `rings.txt` on the user data partition, so a restart does not lose them. The newest 8 are kept. They are shown to the sysop at the next elevation, at login to an account the sysop password has marked, or at a bare `O`, and then cleared. `DASH` says how many are waiting:
+**Notes, the fallback.** A missed ring that MAIL cannot take leaves a note instead, so a ring is never lost: when the board has no sysop account yet (none named in `CONFIG board` and nobody has typed `BYE <password>`), when mail is switched off (`mail_slots = 0`), or when the sysop's box is full. Notes are kept in `rings.txt` on the user data partition, so a restart does not lose them. The newest 8 are kept. They are shown to the sysop at the next elevation, at login to the sysop's account, or at a bare `O`, and then cleared. `DASH` says how many are waiting:
 
 ```
 2 rings while you were off:
@@ -273,12 +273,14 @@ All caller commands still work. Node arguments are `1`-`10`, `S` (sysop node) or
 | `BANS` | `BANS` | Active IP bans and minutes remaining. |
 | `PLUGINS` | any staff | Every plugin compiled in: version, whether it is running, and why not. Also free disk space and the reserve. |
 | `SYS` | any staff | The whole board on one screen, in groups: network (SSID, signal in dBm with a word for what it means, channel, address, port), memory (heap free, the lowest it has been, the biggest block, session size), storage (used, free, what is held back for the board), load (uptime, why the board last restarted, clock, scheduler work per pass in microseconds, worst pass **and which phase of the loop it happened in**, how many passes have run over 50 ms since boot, passes since boot) and traffic (nodes busy and the peak, calls answered since boot, records in the caller log, plugins running, active IP bans). Any staff level can run it, though it is grouped with the sysop tools below. |
-| `FILES` / `F` | all | **Goes into the file area**, the way `CHAT` goes into the room, rather than printing a list and returning. A screen plays on the way in if the board has `screens/files`, then the areas appear as a numbered menu laid out in as many columns as the terminal has room for. A digit opens an area, `Q` goes back one level and `Q` again leaves. `FILES n` enters and opens that area in one go. Only on a board with a card: the plugin does not start without one, so on a cardless board the command does not exist rather than offering an empty file area. |
+| `FILES` / `F` | all | **Goes into the file area**, the way `CHAT` goes into the room, rather than printing a list and returning. A screen plays on the way in if the board has `screens/files`, then the areas appear as a numbered menu laid out in as many columns as the terminal has room for. A digit opens an area (`0` is ten), `Q` goes back one level and `Q` again leaves. An area numbered past 10, which only the sysop's Backups is today, is `#`, the number and Enter at the menu (1.1.0), or the cursor keys. `FILES n` enters and opens that area in one go. Only on a board with a card: the plugin does not start without one, so on a cardless board the command does not exist rather than offering an empty file area. |
 | `FORUMS` | all | **Goes into the message boards**, the way `FILES` and `CHAT` go into theirs. Three levels: topic areas the sysop sets up (`CONFIG forums`), subjects that callers start inside them, and the messages in each subject. A screen plays on the way in if the board has `screens/forums`. Only on a board with a card, the same as `FILES`: the plugin does not start without one, so on a cardless board the command does not exist rather than offering empty boards. `FORUMS SCAN` needs the forums plugin's admin level (`co1` by default) and prints what the board thinks is on the card. |
 | `SD` | sysop | SD card status: type, mount point, free space, and where screens are coming from. With no card it says which pins it tried, because "no card found" without them sends you to re-seat a card that was never the problem. |
 | `SD MOUNT` | sysop | Mount the card without rebooting. **Pauses the whole board** for a few hundred milliseconds while it negotiates over SPI, which is why it is typed rather than retried on a timer. |
-| `SD UNMOUNT` | sysop | Flush and release, so the card can be pulled safely. Screens fall back to the stock set. |
+| `SD UNMOUNT` | sysop | Flush and release, so the card can be pulled safely. Screens fall back to the stock set. The card stays out until `SD MOUNT`, a change of its pins in `CONFIG sd`, or a restart: a `CONFIG` save does not put it back (1.1.0). |
 | `UNBAN a.b.c.d` | `UNBAN` | Lift a ban. |
+| `SCREENS` | any staff | Every screen by name, one row each: the size of each of `.ans`, `.asc` and `.seq`, and where callers get that copy from. At 80 columns that reads `flash`, `card, seeded` (the stock copy the board put on the card) or `card, own` (one the sysop edited or imported); at 40 it is `F`, `C` or `O`, with the key under the list. Read from the folders when asked; nothing is kept (1.1.0). |
+| `SCREENS VIEW name[.ext] [FLASH]` | any staff | Plays one screen. With no extension, the one your terminal would get; with one, exactly that file, if your terminal can show it (`.asc` anywhere, `.ans` on ANSI, `.seq` on PETSCII; otherwise it says which kind the file is and which your terminal is). `FLASH` plays the stock copy even where the card overrides it. A name is a screen's name only: no paths. |
 | `USERS` | `USERS` | User manager: cursor list of accounts with edit, add and retire (ANSI, PETSCII; `D` retires, as `USER DEL` does). A paged list on plain ASCII. |
 | `USER ADD` | `USERS` | Add-account form: handle, password, fields, Level, Locked. |
 | `USER EDIT handle` | `USERS` | Edit-account form. Empty `New pass` keeps the password. Renames follow callers who are online. |
@@ -348,7 +350,7 @@ leave to use it.
 |---|---|---|
 | `L` | area's read | Lists this section's files, numbered. |
 | a number | area's download | Picks that file, then asks: `Download NAME? [Y]es [X]modem [N]o`. Y is YMODEM, which carries the exact length so the file arrives byte for byte. X is plain XMODEM for terminals that only speak it, and pads the last block with `0x1A`. |
-| `U` | area's upload | Receives a file. Enter alone uses YMODEM and takes the name off the wire; type a name only if your terminal speaks XMODEM alone. **It waits for staff approval before anyone else sees it.** |
+| `U` | area's upload | Receives a file. Enter alone uses YMODEM and takes the name off the wire; type a name only if your terminal speaks XMODEM alone. **It waits for staff approval before anyone else sees it**, except in the sysop's Backups area, where a `.zip` of 27 characters or fewer goes straight in and `RESTORE SD` lists it (1.1.0). |
 | `D` | area's upload | Describes a file by number. Describing is part of putting one somewhere, so it follows the upload level. |
 | `P` | area's delete | Lists the uploads waiting for approval in this section, numbered. |
 | `A` | area's delete | Approves one by number, or `A` for all of them. |
@@ -368,10 +370,11 @@ outside it and no way to approve a file that is waiting somewhere else.
 | Command | What it does |
 |---|---|
 | `ANNOUNCE` | Whether this board is listed in a directory, when each one last answered, and the public address the directory sees. `ANNOUNCE TEST` prints the exact payload and sends nothing; `ANNOUNCE NOW` sends a heartbeat immediately. Off until switched on: see [ANNOUNCE.md](ANNOUNCE.md). |
-| `LIGHTS` | The lights plugin's two outputs: each one's pin, effect and brightness, and the colours it was last sent, in hex. `LIGHTS TEST` shows red, green, blue and then white on every pixel, a second each, for checking the wiring. Off until switched on: see `lights` under Plugins below. |
+| `LIGHTS` | The lights plugin's two outputs: each one's pin, effect, brightness and colour order, and the colours it was last sent, in hex. `LIGHTS TEST` shows red, green, blue and then white on every pixel, a second each, for checking the wiring and the order. Off until switched on (on as shipped on the Waveshare S3): see `lights` under Plugins below. |
+| `PANEL` | Boards with a display only (the Waveshare ESP32-S3-LCD-1.47): what the panel is running on (controller, size and offsets as turned, where the USB plug is, pins, SPI clock) and everything it is showing, as text, top to bottom: the bar's current page, the band's glyphs in words, the antenna's fill, the clock, the heading, each list row (a recent row as `login`, `guest`, `logoff`, `page` or `ring`, then its time and handle), the system row, and the number of LEDs in its strip. `Dark:` and why, when it is not lit. See `panel` under Plugins below. |
 | `SHUTDOWN [n]` | Take the board off the air on purpose. Announces to every node, counts down n seconds (5 to 3600, default 60), then hangs up on everyone including you, each with the ordinary send-off. `SHUTDOWN CANCEL` stops a countdown and says so. Afterwards the board keeps answering and tells callers it has been shut down, rather than refusing connections in a way that looks like a crash. A physical reboot brings it back. Any transfer running when the countdown ends is lost, and the warning says so. |
 | `BACKUP SD` | The zip the backup window gives, onto the SD card: `unleashed-YYYYMMDD-HHMM.zip` in the card's `backup` folder, with a dot a file while it writes and then `Saved: 14 files, 31 KB.` It holds the Wi-Fi password as typed, and says so. `BACKUP SD SCREENS` writes `screens-YYYYMMDD-HHMM.zip`, the screens alone. Two in one minute would share a name, so the second is refused. `BACKUP` on its own explains the difference from the backup window (1.1.0). |
-| `RESTORE SD [SCREENS] [n]` | On its own, the card's backups, newest first and numbered. With a number or a zip's name, checks it exactly as an upload through the backup window is checked, shows what it would replace (a full restore always shows `Replaces`, `Accounts`, `Removes` and `Staff`) and asks `Restore now? (y/N)`; N or 60 seconds is `Not restored.` `SCREENS` puts only the zip's screens back, onto the card's `screens` folder, and never removes anything; deleting them from the card undoes it (1.1.0). Details: [BACKUP.md](BACKUP.md#backups-on-the-sd-card). |
+| `RESTORE SD [SCREENS] [n]` | On its own, the card's backups, newest first and numbered. With a number or a zip's name, checks it exactly as an upload through the backup window is checked, shows what it would replace (a full restore always shows `Replaces`, `Accounts`, `Removes` and `Staff`) and asks `Restore now? (y/N)`; N or 60 seconds is `Not restored.` With anybody else on the board, Y waits for them to leave (`Waiting for 2 callers to leave. F applies it now, N gives up.`), `F` puts it back at once with a warning to them, and after `backup_window_minutes` it gives up: `Not restored: callers stayed on.` New callers get the busy line meanwhile. `SCREENS` puts only the zip's screens back, onto the card's `screens` folder, and never removes anything; deleting them from the card undoes it (1.1.0). The zips are also the sysop's Backups file area, `FILES` 11, to download and upload over the line. Details: [BACKUP.md](BACKUP.md#backups-on-the-sd-card). |
 | `CONFIG` | The settings, page by page. On its own it lists the pages: `board`, `limits`, `accounts`, `backup`, `staff`, `network`, and one per plugin. `network` is the one page that is not live: the Wi-Fi network and the listening port are used from the next restart, a passphrase under 8 characters is refused before it is written, and so is a port equal to the backup window's. A network saved here that has not joined within a minute of the restart is given up for the last one that did (1.1.0), so a typo costs a minute. `CONFIG wifi`, its name before 1.1.0, still opens it. `CONFIG limits` opens that page as the same kind of form the user manager uses: Up and Down move, F1 saves, ESC cancels. Only what you changed is written, the rest of `system.cfg` is left exactly as it was, comments included, and the board reloads the new settings straight away. Passwords show as `********` and are only written when you type a new one. One sysop edits at a time. |
 
 `CONFIG` is the sysop's own command: co-sysops do not get it whatever the `[access]` matrix says, because it can change the staff passwords. So are `BACKUP` and `RESTORE`, because a restore replaces the settings and the accounts and a backup holds the Wi-Fi password.
@@ -387,8 +390,8 @@ On a plain ASCII terminal, which has no cursor to put a button under, the row
 becomes `Area 1 [C64 Downloads] open (y/N)?` instead.
 
 A plugin with more settings than one page holds has a button to a page of
-them: `CONFIG lights` has Pixels, a list of ten pixels, each a button to its
-own two-row page. Escape on the list comes back to the plugin's page. The
+them: `CONFIG lights` has Pixels, a list of sixteen pixels, each a button to
+its own two-row page, and `CONFIG panel` has Pins. Escape on the list comes back to the plugin's page. The
 list takes the page's place, so it will not open over changes you have not
 saved: F1 first.
 
@@ -446,7 +449,7 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `port` | `6400` | The port callers dial. Used from the next restart. It cannot be the backup window's port. Takes 1 to 65535; as shipped, `6400`. If callers reach the board from the internet, the forward on your router has to point at the new number too. mDNS, SYS, the console's `dial in` line, Improv's telnet link and announce's default all follow it |
 | `idle_minutes` | `20` | shell idle hangup, 0 = never |
 | `landing` | `main` | where a caller goes after login when their account has not said: `main`, `chat` or `forums` |
-| `sysop_handle` | empty | the sysop's own account (1.1.0, `CONFIG board`, **Sysop**): missed rings are mailed to it, and it is asked for the sysop password at login. `CONFIG` refuses a handle with no live account and writes it in `users.txt`'s spelling. Empty: the last account to elevate to sysop, which the board keeps in `userdata/sysop.last` across a restart |
+| `sysop_handle` | empty | the sysop's own account (1.1.0, `CONFIG board`, **Sysop**): missed rings are mailed to it, and it is asked for the sysop password at login. `CONFIG` refuses a handle with no live account and writes it in `users.txt`'s spelling. Empty: the last account to elevate to sysop, which the board keeps in `userdata/sysop.last` across a restart (a restore that brings back `users.txt` clears it, since it is an id into that file) |
 | `sysop_id` | `0` | that account's permanent id, written by `CONFIG board` and the setup flow alongside `sysop_handle`. The id is what counts: a renamed account keeps the mail, and a new account taking the old handle does not get it. An id that matches no live account falls back to the last account to elevate. 0 is not set |
 | `call_minutes` | `60` | per-call limit, 0 = unlimited |
 | `day_minutes` | `480` | per-day limit, 0 = unlimited |
@@ -485,9 +488,10 @@ template for writing your own ([PLUGINS.md](PLUGINS.md)):
 | `files` | publishes folders on the card as file areas callers can browse | `read = all`, `write = staff` |
 | `forums` | topic message boards on the card | `read = all`, `write = users`, `admin = co1` |
 | `info` | the ten information pages, `INFO` / `/i` | `read = all`, `write = sysop` |
-| `lights` | a disk light and a strip of ten pixels (WS2812B) for a board in a case | `sysop` throughout |
+| `lights` | a disk light and a strip of 1 to 16 pixels (WS2812B) for a board in a case | `sysop` throughout |
+| `panel` | the board's own display as a status panel (boards with one only) | `sysop` throughout |
 
-Chat, `sd` and `info` are on by default, even with no section in `system.cfg`; `enabled = no` turns any of them off. `files` is also on by default once a card is mounted and an area is configured. `sd` on a board with no card costs one failed mount at boot and then nothing. `forums`, the serial bridge, `announce` and `lights` wait to be switched on: `forums` because a sysop sets the topic areas up first, the serial bridge and the lights because they need wiring, and `announce` because it is the one thing that talks out. Turning any of them off costs nothing: no commands, no hooks, no memory.
+Chat, `sd` and `info` are on by default, even with no section in `system.cfg`; `enabled = no` turns any of them off. `files` is also on by default once a card is mounted and an area is configured. `sd` on a board with no card costs one failed mount at boot and then nothing. `forums`, the serial bridge, `announce` and `lights` wait to be switched on: `forums` because a sysop sets the topic areas up first, the serial bridge and the lights because they need wiring, and `announce` because it is the one thing that talks out. On a board whose pixel and display are part of the board (the Waveshare S3), `lights` and `panel` are on as shipped. Turning any of them off costs nothing: no commands, no hooks, no memory.
 
 The SD card is optional and the board is complete without one. What goes on
 it is the things that grow without limit and can be lost: file areas, message
@@ -523,7 +527,27 @@ the card attached, move `CS` to D4 and set `cs = 4`.
 A fresh card is seeded with the stock screens at mount, so the Screens file
 area is never empty. A later firmware update that changes a stock screen
 updates the card's copy too the next time it mounts, unless the sysop edited
-that file: a screen you touched is yours and is never overwritten.
+that file: a screen you touched is yours and is never overwritten. So is one
+put there by `RESTORE SD SCREENS`, even one identical to a stock screen: the
+card's record (`screens/.seeded`) marks it as yours. A copy seeded by a board
+older than that record (0.18.0 to 0.22.0) that nobody edited is recognised
+and refreshed too, from 1.1.0.
+
+A mount the board makes also clears away any zip `BACKUP SD` or the nightly
+backup left half written in the `backup` folder (`name.zip.tmp`, from a card
+pulled or power lost part way). Nothing else there is touched.
+
+On a board with no card, the board looks for one at boot, and again at
+`SD MOUNT` or when its pins change in `CONFIG sd`, but not at every `CONFIG`
+save: each look holds every caller up, and the answer does not change until
+somebody fits a card (1.1.0).
+
+The board provides three file areas of its own above the eight configured
+ones: 9 is `Screens` (the card's screens folder) and 10 is `Logs` (the caller
+log mirror), both staff to read and the sysop to change, and 11 is `Backups`
+(the card's `backup` folder), the sysop's alone. A backup can be downloaded
+there by YMODEM or XMODEM, and a `.zip` uploaded there goes in at once, with
+no approval, for `RESTORE SD` to restore (1.1.0).
 
 A file area is a folder on the card that the sysop mounts under a name. The
 path is never shown to callers, so an area can point at a folder you already
@@ -645,11 +669,14 @@ all up with `CONFIG lights`, or in the file:
 enabled      = yes
 drive_pin    = 13       ; -1 is off, as shipped
 drive_fx     = pc       ; pc | 1541 | disk2 | breathe | off
-drive_bright = 10       ; percent, 1 to 30
+drive_bright = 10       ; percent, 1 to 100 (past 30: see Power, below)
 strip_pin    = 14       ; -1 is off, as shipped
-strip_fx     = nodes    ; nodes | hayes | blinken | scanner | c64 | boing | vu | rainbow | manual | off
-strip_bright = 10       ; percent, 1 to 30
-led3         = sparkle | random   ; manual mode: led1 to led10, effect | colour
+strip_fx     = nodes    ; nodes | hayes | blinken | scanner | c64 | boing | vu | rainbow | manual | off | wifi
+strip_bright = 10       ; percent, 1 to 100 (past 30: see Power, below)
+led3         = sparkle | random   ; manual mode: led1 to led16, effect | colour
+strip_count  = 10       ; pixels on the strip, 1 to 16
+drive_order  = GRB      ; the order the bytes go out in:
+strip_order  = GRB      ; GRB | RGB | BRG | RBG | GBR | BGR
 ```
 
 - **Drive pin**: one pixel that shows storage at work. Amber when the SD
@@ -666,38 +693,68 @@ led3         = sparkle | random   ; manual mode: led1 to led10, effect | colour
     Apple II Disk II, whose motor kept running.
   - `breathe`: a slow pulse at rest, with the access colour on top.
   - `off`.
-- **Strip pin**: a strip of ten pixels. `-1` is off, as shipped.
+- **Strip pin**: the strip. `-1` is off, as shipped.
+- **Strip len**: how many pixels the strip has, 1 to 16, 10 as shipped (1.1.0,
+  Rob: "could be 8 could be 10, could be 1"). Used when the plugin restarts,
+  which saving the page does. CONFIG refuses more than 16, and a bigger
+  number written into `system.cfg` is read as 16: sixteen is what the
+  Pixels page can list, one row a pixel, and what both chips can send
+  whole. Every effect is drawn for the length there is, and nothing past
+  the end is drawn or sent.
 - **Strip**: what the strip shows.
-  - `nodes`, as shipped: each pixel is one caller line. Dark while the line
-    is free, the caller's rank colour while somebody is on (the colours WHO
-    uses: grey for a caller, dark grey for a guest, yellow for a co-sysop),
-    and a flicker when that line has traffic. A hidden or lurking co-sysop
-    looks like a free line, as in WHO.
+  - `nodes`, as shipped: each pixel is one caller line, pixel 1 being node
+    1. Dark while the line is free, the caller's rank colour while somebody
+    is on (the colours WHO uses: grey for a caller, dark grey for a guest,
+    yellow for a co-sysop), and a flicker when that line has traffic. A
+    hidden or lurking co-sysop looks like a free line, as in WHO. A strip
+    shorter than the board's ten lines shows the first ones only: on eight
+    pixels, nodes 9 and 10 have none. A longer one leaves the pixels past
+    the tenth line dark.
   - `hayes`: a Hayes Smartmodem's front panel on the first eight pixels,
     left to right, from the board's real state. HS: a caller faster than
     2400 baud (`BAUD`), and on while nobody is on. AA: taking calls, off
     once a `SHUTDOWN` starts. CD: a caller connected. OH: a line in use,
     the busy line included. RD and SD: bytes received and sent, on any
-    line. TR: the board is listening. MR: power. The last two pixels stay
-    dark.
+    line. TR: the board is listening. MR: power. Pixels past the eighth stay
+    dark; a strip shorter than eight shows the first lamps only.
   - `blinken`: an IMSAI's front-panel lamps, changing faster the busier the
     board is.
-  - `scanner`: a light sweeping end to end with a fading tail.
+  - `scanner`: a light sweeping end to end with a fading tail (on one
+    pixel, it stays lit).
   - `c64`: the breadbin Commodore's badge stripes, red, orange, yellow,
     green and blue, in a slow chase.
-  - `boing`: the Amiga ball, red and white, bouncing end to end.
-  - `vu`: a bar of the board's traffic that falls back slowly.
+  - `boing`: the Amiga ball, red and white, bouncing end to end (on three
+    pixels or fewer it fills the strip and spins in place).
+  - `vu`: a bar of the board's traffic that falls back slowly, green for
+    the first six tenths of the strip, then yellow, then red.
   - `rainbow`: the colours, cycling along the strip.
   - `manual`: each pixel its own effect and colour; see below.
   - `off`.
+  - `wifi` (1.1.0): the board's Wi-Fi signal as a meter, like the bars on a
+    phone. The lit length follows the signal the board reads once a second:
+    -90 dBm or weaker lights one pixel, -50 dBm or stronger lights them all,
+    and in between it is in proportion (on ten pixels, -70 dBm lights five).
+    The colour is `SYS`'s word for the signal: green from -67 dBm (good or
+    excellent), amber from -75 (fair), red below it (weak). The last lit
+    pixel breathes a little so the meter reads as live. Not joined to a
+    network, one red pixel breathes slowly.
 - **Drive %** and **Strip %**: brightness, as a percentage of full, 1 to
-  30, each output its own, 10 as shipped. 30 is a ceiling in the firmware,
-  not only on the form: CONFIG refuses more, and a bigger number written
-  into `system.cfg` is read as 30. A dim colour never goes out at a low
+  100, each output its own, 10 as shipped (1.1.0; it was capped at 30). Past
+  30 is allowed and is your call, and CONFIG asks you to confirm first,
+  because of what it draws: see Power, below. A number past 100 written into
+  `system.cfg` is read as 100. A dim colour never goes out at a low
   percentage: a lit channel stays at least 1.
-- Neither pin can be 6 to 11, which the flash chip uses, or one the chip
-  does not have (20, 24, 28 to 31 on the WROOM), and the two cannot
-  be the same pin. A change applies when the plugin restarts, which saving
+- **Drive ord** and **Strip ord**: the order each output's bytes go out in
+  (1.1.0). `GRB` as shipped, the WS2812B's own; some strips sold as WS2812
+  want `RGB` or `BRG`, and the Waveshare S3's onboard pixel ships as `RGB`.
+  Run `LIGHTS TEST`: if the first colour is not red, try another order.
+  `LIGHTS` shows the order at the end of each output's line, and the
+  colours it reports are always red, green and blue as meant, whatever
+  order they went out in.
+- Neither pin can be one the flash uses (6 to 11 on the WROOM; 26 to 37,
+  and USB's 19 and 20, on an S3) or one the chip does not have (20, 24, 28
+  to 31 on the WROOM; 22 to 25 on an S3), and the two cannot be the same
+  pin. A change applies when the plugin restarts, which saving
   the page does. GPIO13 is a good pin for either: it has no job at boot.
   Nothing yet stops a lights pin taking one the board already uses, so
   keep clear of the activity LED's (2 as shipped), the BOOT button (0) and
@@ -708,8 +765,8 @@ led3         = sparkle | random   ; manual mode: led1 to led10, effect | colour
   each; a strip that shows green for red is not a GRB strip.
 
 **Manual mode.** `CONFIG lights` has a Pixels button. It opens a list of
-the ten pixels, and each of those opens a page of two rows (Escape goes
-back a page):
+sixteen pixels, and each of those opens a page of two rows (Escape goes
+back a page). Only the first Strip len of them are drawn:
 
 - **Effect**: `solid`, `blink`, `breathe`, `flicker` (a candle), `sparkle`
   (an occasional twinkle), `traffic` (flickers with the board's traffic),
@@ -729,9 +786,13 @@ again is pink.
 at full white, which the board's own 5 V pin handles from USB. Ten draw
 about 600 mA at full white, and the board itself needs up to about 400 mA
 when its radio transmits. The firmware ships the strip at 10%, roughly
-60 mA, and never drives it past 30%, roughly 180 mA; with the board's own
-draw on top, even that is close to what a USB 2 port supplies (500 mA on
-USB 2, 900 mA on USB 3), so wire the strip to stand on its own:
+60 mA. At 30% it is roughly 180 mA, and with the board's own draw on top
+even that is close to what a USB 2 port supplies (500 mA on USB 2, 900 mA
+on USB 3). Past 30% it is more than USB gives: 50% is about 300 mA for ten
+pixels at white, 100% about 600 mA, and sixteen pixels at 100% nearly a
+full ampere. A strip that bright must have its own 5 V supply; drawn from
+USB, the voltage sags, the board browns out and restarts, and the port may
+cut the power altogether. So wire the strip to stand on its own:
 
 - Give the strip its own 5 V supply, rated 1 A or more, and join its
   ground to the board's ground. Without the shared ground the data line
@@ -743,6 +804,90 @@ USB 2, 900 mA on USB 3), so wire the strip to stand on its own:
   across the same two points helps; Adafruit suggests 500 to 1000
   microfarads.
 - Connect ground first and disconnect it last.
+
+#### panel
+
+Boards with a display only: the Waveshare ESP32-S3-LCD-1.47's 1.47" ST7789
+(1.1.0). On any other board there is no such plugin, no page and no
+command. On as shipped, portrait with the plug at the top, laid out like a
+phone's status bar over two lists, top to bottom:
+
+- The bar: the board's name, the address and port to dial, and the uptime
+  with the SD card's free space, in turn, 3 s each with a fade between.
+  With no network the address reads `no network` in red. While a caller is
+  ringing the sysop it says `<handle> is ringing` instead, for as long as
+  the ring lasts.
+- The band: glyphs that show only while they are true, left to right: the
+  SD card (always: filled with a card, hollow without, red when a card will
+  not mount or a read failed), a bell while a caller rings (blinking), a
+  letter while the sysop has unread mail, uploads waiting for approval, an
+  open padlock while the backup window is open, a tower for the directory
+  listing (green listed, amber waiting or held, red failing), a person
+  while staff are on (red for the sysop, yellow for a co-sysop), a warning
+  after a restart that was not clean (until staff have been on), and an
+  hourglass after a slow pass in the last minute. Then the Wi-Fi antenna,
+  which fills from the bottom with the signal (-90 to -50 dBm; green, amber
+  and red on the same thresholds as SYS; all red when not joined), and the
+  clock.
+- A dot travelling along the rail under the band: the board is alive.
+- `Callers 4/11`, counted as the directory counts them (a hidden sysop is
+  not on), then who is on, the sysop's line first, with the rank mark and
+  how long each has been on; past ten, the tenth row reads `+N more`. The
+  rows the callers leave go to the recent logins, logoffs, pages and rings,
+  newest first.
+- The free heap and the calls today, and on a landscape panel the most
+  lines busy at once since boot.
+- The lights plugin's strip as a row of square LEDs, the same effect and
+  colours at the same length, whether or not a strip is wired. A dimmed
+  strip is drawn brighter than its figures would make it, because 10% on
+  glass is a black a person reads as off.
+
+Hidden and lurking staff never appear in the lists or as an event, and do
+not light the person glyph. The letter follows the sysop's account, which
+the panel learns when the sysop is first on after a boot. Everything shown
+is a figure the board already keeps in RAM; the card's free space is the sd
+plugin's figure, renewed once a minute.
+
+`CONFIG panel` holds everything a board with another panel, or a panel whose
+spec changes, would need to change, and every default is the board
+profile's:
+
+```
+[plugin:panel]
+enabled   = yes
+pin1_mosi = 45     ; the Pins page: SDA
+pin2_sclk = 40     ; SCL
+pin3_cs   = 42     ; -1 for a panel with CS tied low
+pin4_dc   = 41
+pin5_rst  = 39     ; -1 resets it by command
+pin6_bl   = 48     ; -1 for a backlight that is always on
+width     = 172    ; the glass with the USB plug up
+height    = 320
+xoff      = 34     ; where that sits in the controller's RAM, plug up
+yoff      = 0
+orientation = up   ; up | left | right | down: where the USB plug is
+invert    = yes    ; an IPS panel is normally black
+mirror    = yes    ; text back to front: flip this
+colours   = BGR    ; RGB | BGR: red and blue swapped, flip this
+spi_mhz   = 10     ; 10 | 20 | 40 (the panel's own limit is 62.5)
+backlight = 60     ; percent, 0 dark
+```
+
+- **Driver** names the controller, ST7789, and is not a setting.
+- **USB plug** (`orientation`) turns the picture: where the USB plug is as
+  you face the screen. `up` is portrait as shipped; `left` and `right` draw
+  the landscape layout at 320 by 172 (the callers and the recent events in
+  two columns, three caller rows, and the most lines busy at once added to
+  the system row); `down` is portrait upside down. Width, Height and the
+  offsets stay the glass as it sits with the plug up, and the panel works
+  out the turn, the offsets on the other axis included, from them. A file
+  written before this setting, which says `rotation`, is read as the plug
+  position it meant (90 is right and 270 left on this glass).
+- A window that runs past the controller's own 240 by 320 is refused at
+  start, and `PANEL` says so.
+- A save restarts the plugin like any other; a panel whose settings did not
+  change stays lit through it. A new turn resets the panel and keeps it dark
+  until the whole new picture has been drawn.
 
 A value out of range is logged and the default is kept. An upload with a bad value is rejected, so it never replaces a working config.
 

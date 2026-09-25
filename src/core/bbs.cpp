@@ -18,12 +18,12 @@
  * See also:     COMMANDS.md
  *
  * Copyright 2026 - Robert Mech
- * License:      GNU General Public License v2 or later
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * License:      GNU General Public License v3 or later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
+ * Free Software Foundation; either version 3 of the License, or (at your
  * option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
@@ -32,7 +32,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * with this program. If not, see <https://www.gnu.org/licenses/>. The full
  * text is in the LICENSE file at the top of this repository.
  * ===========================================================================
  */
@@ -213,7 +213,7 @@ bool Bbs::begin(uint16_t port) {
     heapBaseline_ = h.freeBytes;
     plat::backupButtonBegin(syscfg::get().backupGpio);
     plat::activityLedBegin(syscfg::get().ledGpio);
-    plat::log("bbs: %s %s listening on %u, %u nodes", BBS_NAME, BBS_VERSION, port, BBS_MAX_NODES);
+    plat::log("bbs: %s %s listening on %u, %u nodes", BBS_NAME, BBS_VERSION_SHOWN, port, BBS_MAX_NODES);
     plat::log("bbs: session %u bytes, pool %u bytes (static), heap free %u",
               static_cast<unsigned>(sizeof(Session)),
               static_cast<unsigned>(sizeof(Session) * kSessions),
@@ -241,18 +241,45 @@ bool Bbs::registerCommands(const Command* list, uint8_t count, uint8_t plugin) {
 // drawn screen with no way on.
 // ---------------------------------------------------------------------------
 void Bbs::closeCardScreens(const char* why) {
+    endScreens(true, why ? why : "Screen ended: the card was removed.");
+}
+
+// ---------------------------------------------------------------------------
+// endScreens: closeCardScreens for either place a screen is read from. A
+// restore that replaces the board's own screens needs it too (1.1.0): on
+// the board esp_littlefs refuses to rename over or remove a file somebody
+// has open, so a caller paused at a page break of ABOUT held the restore of
+// that one screen up, and it ended "with errors".
+//
+// Where the caller goes depends on where they were, and before 1.1.0 every
+// one of them was put in the shell. A caller still on the welcome screen,
+// not logged in, landed at no prompt with no account, and nothing they typed
+// did anything until the line timed out. The welcome now ends as it would
+// have: on to the handle prompt. The goodbye screen ends on its line noise,
+// the busy line on its countdown, and a screen in the shell goes wherever it
+// was leading, as if it had played to the end.
+// ---------------------------------------------------------------------------
+void Bbs::endScreens(bool card, const char* why) {
+    uint32_t now = plat::millis();
     for (uint8_t i = 0; i < kSessions; ++i) {
         Session& s = *all_[i];
-        if (s.st == SState::Free || !s.scr.onCard()) continue;
+        if (s.st == SState::Free || !s.scr.active() || s.scr.onCard() != card) continue;
         s.scr.close();
-        s.pendingPrompt = false;
-        s.pendingForm   = FormKind::None;
-        if (s.st == SState::AnyKey || s.st == SState::More || s.st == SState::Intro)
-            s.st = SState::Shell;
+        if (s.st == SState::Intro || s.st == SState::BusyWait) continue;   // serviceSession moves on
+        if (s.st == SState::Closing) {
+            if (s.pendingTail) {
+                s.pendingTail = false;
+                fx::lineNoise(s.term, s.tl, 12, 300);
+                fx::hangup(s.term, s.tl);
+            }
+            continue;
+        }
+        if (s.st == SState::AnyKey || s.st == SState::More) s.st = SState::Shell;
         s.term.color(s.tl, Color::Grey);
         s.term.nl(s.tl);
-        s.term.text(s.tl, why ? why : "Screen ended: the card was removed.");
-        if (s.loggedIn) prompt(s);
+        s.term.text(s.tl, why);
+        if (s.st != SState::Shell) continue;
+        if (!screenEnded(s, now) && s.loggedIn) prompt(s);
     }
 }
 
@@ -627,9 +654,16 @@ void Bbs::acceptAll(uint32_t now) {
 #endif
         plat::activityPulse(now);
 
+        // A restore waiting for the board to go quiet, or being put live,
+        // takes no new callers: they get the busy line, as if every node
+        // were full, rather than a login to a board about to change under
+        // them, accounts and all (1.1.0). The busy line still lets the
+        // sysop in with BYE and the password.
         Session* slot = nullptr;
-        for (auto& s : nodes_) {
-            if (s.st == SState::Free) { slot = &s; break; }
+        if (!backup_.restoring()) {
+            for (auto& s : nodes_) {
+                if (s.st == SState::Free) { slot = &s; break; }
+            }
         }
         if (slot) {
             openSession(*slot, fd, ip, ipAddr, Role::Caller, now);
@@ -968,6 +1002,39 @@ void Bbs::flush(Session& s, uint32_t now) {
 }
 
 // ---------------------------------------------------------------------------
+// screenEnded: a screen played in the shell is over, whether it ran to its
+// end or was cut short (endScreens). One chain of "what comes next" for both,
+// so a screen closed under a caller cannot strand them somewhere the screen
+// ending would never have left them.
+// ---------------------------------------------------------------------------
+bool Bbs::screenEnded(Session& s, uint32_t now) {
+    if (s.pendingForm != FormKind::None) {
+        s.pendingForm = FormKind::None;      // a screen that leads into a form
+        pauseFor(s, AfterKey::SignupForm);   // let them read it first
+    } else if (s.pendingKnowMore) {
+        s.pendingKnowMore = false;           // rules read, now the warning
+        pauseFor(s, AfterKey::KnowMore);
+    } else if (s.setupStage == 1) {
+        // First-boot setup: the setup screen has been read, so the staff
+        // passwords form comes next, not the prompt.
+        s.pendingPrompt = false;
+        setupConfig(s, now);
+    } else if (s.pendingLand) {
+        // Before pendingPrompt, because playScreen set that too and landing
+        // does its own finishing.
+        s.pendingLand   = false;
+        s.pendingPrompt = false;
+        landAfterLogin(s);
+    } else if (s.pendingPrompt) {
+        s.pendingPrompt = false;
+        prompt(s);
+    } else {
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // serviceSession: timers, screens, lists, effects, mail, output
 // ---------------------------------------------------------------------------
 void Bbs::serviceSession(Session& s, uint32_t now) {
@@ -996,26 +1063,8 @@ void Bbs::serviceSession(Session& s, uint32_t now) {
                     pauseFor(s, AfterKey::ScreenNext);
                 } else if (s.scr.paused()) {
                     showMore(s, MoreFrom::Screen);
-                } else if (!more && s.pendingForm != FormKind::None) {
-                    s.pendingForm = FormKind::None;  // a screen that leads into a form
-                    pauseFor(s, AfterKey::SignupForm);   // let them read it first
-                } else if (!more && s.pendingKnowMore) {
-                    s.pendingKnowMore = false;   // rules read, now the warning
-                    pauseFor(s, AfterKey::KnowMore);
-                } else if (!more && s.setupStage == 1) {
-                    // First-boot setup: the setup screen has been read, so
-                    // the staff passwords form comes next, not the prompt.
-                    s.pendingPrompt = false;
-                    setupConfig(s, now);
-                } else if (!more && s.pendingLand) {
-                    // Before pendingPrompt, because playScreen set that too
-                    // and landing does its own finishing.
-                    s.pendingLand   = false;
-                    s.pendingPrompt = false;
-                    landAfterLogin(s);
-                } else if (!more && s.pendingPrompt) {
-                    s.pendingPrompt = false;
-                    prompt(s);
+                } else if (!more) {
+                    screenEnded(s, now);
                 }
             }
             break;
@@ -1712,6 +1761,9 @@ void Bbs::completeLogin(Session& s, uint32_t now) {
     // nothing for it. It stays right across a reboot, which counts the file
     // again, and across midnight, which does too.
     unsigned today = static_cast<unsigned>(calllog::today()) + 1u;
+#ifdef BBS_HAS_LCD
+    panelToday_ = static_cast<uint16_t>(today);      // the display's "23 today", no read of its own
+#endif
     const char* ord = (today % 10 == 1 && today % 100 != 11) ? "st"
                     : (today % 10 == 2 && today % 100 != 12) ? "nd"
                     : (today % 10 == 3 && today % 100 != 13) ? "rd" : "th";
@@ -1738,7 +1790,11 @@ void Bbs::completeLogin(Session& s, uint32_t now) {
     // Rings nobody answered, to the sysop's own account as it arrives
     // (1.1.0): the account the sysop password marked, the ] in WHO. An
     // elevation shows them too, for a sysop who never logs in as themselves.
-    if (!s.guest && s.rank >= static_cast<uint8_t>(Access::Sysop)) ringNotes(s);
+    // Only that account (1.1.0): marks are never taken off, and a plain login
+    // to any account ever marked would read the notes and clear them before
+    // the sysop saw them. An elevation shows them too (staffArrival).
+    if (!s.guest && s.rank >= static_cast<uint8_t>(Access::Sysop) && isSysopAccount(s.edit.id))
+        ringNotes(s);
     // The "[H]ELP for commands." line used to be printed here, to everybody.
     // It belongs to the main prompt and only to the main prompt: telling
     // somebody who is about to be put in the chat room to press H for
@@ -1916,6 +1972,10 @@ void Bbs::askSysop(Session& s) {
     t.text(tl, "Sysop password: ");       // 16 columns and 24 stars fit a C64's 40
     t.color(tl, Color::White);
     s.ed.begin(BBS_PASS_MAX, LineEditor::F_MASK | LineEditor::F_STAY);
+    // Keys typed ahead of the question were meant for the prompt, not as a
+    // password: "dash" typed straight after logging in would otherwise be a
+    // failed staff password, counted toward banning the sysop's own address.
+    s.rxLen = s.rxPos = 0;
     s.st        = SState::AskSysop;
     s.lastInput = plat::millis();
 }
@@ -3121,9 +3181,12 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
         }
 
         case SState::AskSysop: {
-            // As at the setup question, keys typed while it prints are kept.
-            // Enter on nothing and ESC both skip: this one is a convenience,
-            // and a stray Enter costs only the BYE the sysop would type anyway.
+            // Keys held from before the question was asked were dropped by
+            // askSysop; anything after it is an answer, and is kept even
+            // while the question is still printing, or a quick typist loses
+            // the first letters (the setup question's lesson). Enter on
+            // nothing and ESC both skip: this one is a convenience, and a
+            // stray Enter costs only the BYE the sysop would type anyway.
             if (!tl.empty()) tl.skipDelays();
             LineEditor::Res r = s.ed.key(k, t, tl);
             if (r == LineEditor::Res::Abort) { s.ed = LineEditor(); t.nl(tl); t.nl(tl); arrive(s); return; }
@@ -3252,7 +3315,10 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
                     t.color(tl, r == users::Result::Ok ? Color::LightGreen : Color::LightRed);
                     t.text(tl, r == users::Result::Ok ? "Account retired. The handle stays reserved."
                                                       : "Could not retire that account.");
-                    if (r == users::Result::Ok) plat::log("bbs: %s retired account '%s'", s.user, s.origHandle);
+                    if (r == users::Result::Ok) {
+                        plat::log("bbs: %s retired account '%s'", s.user, s.origHandle);
+                        chat::sysopChanged();    // it may have been the sysop's (1.1.0)
+                    }
                 } else {
                     t.color(tl, Color::Grey);
                     t.text(tl, "Kept.");
@@ -3311,10 +3377,7 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
             if (k == 'y' || k == 'Y') {
                 t.ch(tl, 'Y');
                 t.nl(tl);
-                approvalShown_ = false;
-                s.st = SState::Shell;                    // before decide: notes queue for the prompt
-                backup_.decide(true, "");
-                prompt(s);
+                windowAccepted(s, now);                  // waits for a quiet board (1.1.0)
             } else if (k == 'n' || k == 'N' || k == KEY_ESC || k == KEY_BREAK) {
                 t.ch(tl, 'N');
                 t.nl(tl);

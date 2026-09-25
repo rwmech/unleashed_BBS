@@ -26,6 +26,11 @@
 #
 #                 --tag NAME   isolate this run (default "main")
 #                 --card       give the board an SD card
+#                 --board s3   run the host build of the Waveshare S3 profile
+#                              (bbs_host_s3: the S3's pin rules, that board's
+#                              defaults, the panel). Pair it with
+#                              --only=board_s3; the rest of the suite is
+#                              written for the reference board.
 #
 #               Examples:
 #                 tools/harness.sh --backup
@@ -55,8 +60,8 @@
 # See also:     CLAUDE.md
 #
 # Copyright 2026 - Robert Mech
-# License:      GNU General Public License v2 or later
-# SPDX-License-Identifier: GPL-2.0-or-later
+# License:      GNU General Public License v3 or later
+# SPDX-License-Identifier: GPL-3.0-or-later
 # ===========================================================================
 
 set -e
@@ -64,11 +69,18 @@ set -e
 TAG=main
 CARD=no
 FRESH=no
+BIN=bbs_host
 ARGS=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --tag)   TAG="$2"; shift 2 ;;
         --card)  CARD=yes; shift ;;
+        --board)
+            case "$2" in
+                s3) BIN=bbs_host_s3; export BBS_HOST_BOARD=s3 ;;
+                *)  echo "harness: no board profile called $2 (s3)"; exit 2 ;;
+            esac
+            shift 2 ;;
         # A board as it leaves the web installer: no staff passwords in its
         # config, so it runs on the published default and offers setup.
         # Pair it with --only=first_setup or --only=backup_published; the
@@ -111,11 +123,11 @@ export BBS_RING_MS=10000
 rm -f "$OUT"
 
 cd "$PROJ/host"
-make -s
+make -s "$BIN"
 
 # Kill only this tag's board. Matching on the process name would take down a
 # parallel run's board, which is the whole thing this file exists to stop.
-pkill -f "bbs_host $DATA" 2>/dev/null || true
+pkill -f "$BIN $DATA" 2>/dev/null || true
 sleep 0.3
 
 rm -rf "$DIR"
@@ -213,7 +225,7 @@ if [ "$CARD" = yes ]; then
     export BBS_SD_DIR="$CARDDIR"
 fi
 
-BBS_BACKUP_TEST_OPEN=1 ./bbs_host "$DATA" "$PORT" > "$LOG" 2>&1 &
+BBS_BACKUP_TEST_OPEN=1 ./"$BIN" "$DATA" "$PORT" > "$LOG" 2>&1 &
 PID=$!
 sleep 1
 

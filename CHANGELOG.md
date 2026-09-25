@@ -13,8 +13,8 @@
  Audience:     Anyone picking the project up, and the next build's planning.
 
  Copyright 2026 - Robert Mech
- License:      GNU General Public License v2 or later
- SPDX-License-Identifier: GPL-2.0-or-later
+ License:      GNU General Public License v3 or later
+ SPDX-License-Identifier: GPL-3.0-or-later
  ===========================================================================
 -->
 
@@ -178,6 +178,93 @@ entry when it is released.
   console lines for the password band's restart, the factory band, and
   the Wi-Fi fallback, including the same network with a new password.
 - The user manager's D says Retire, as `USER DEL` does.
+
+**1.1.0-dev.8, a second board: the Waveshare ESP32-S3-LCD-1.47.**
+- A build profile of its own, `ws_s3_lcd147`, never a fork. Everything
+  specific to the board (the screen, its pins, PSRAM) is behind the
+  board's defines, so none of it is compiled into the ESP32 image, which
+  grew 1.3 KB of flash and 72 bytes of static RAM for the features below.
+- The board carries its own version beside the core's and shows both:
+  `1.1.0-dev.8 (S3 1.0.0)`. The directory still compares the core number.
+- The screen shows the board's name, callers on, the address, uptime, the
+  card and the last events, from the `panel` plugin, with a CONFIG page
+  for its pins. The RGB LED on the board is the drive light.
+- The TF slot is the SD card, with no wiring.
+- Wi-Fi and lwIP buffers live in PSRAM, which is what leaves the plugins
+  room on this chip; the plugin reserve is 16 KB on a board with PSRAM.
+- Pin settings refuse the S3's flash, PSRAM and USB pins.
+- Lights, on every board: the strip takes 1 to 16 pixels, each output has
+  a colour order, a `wifi` strip effect shows the signal as a meter, and
+  brightness goes to 100%.
+- Releases carry an image set for each chip, each with its own manifest,
+  and a tag with a `-` in it is published as a pre-release.
+- On hardware: flashed to the S3 from COM12 (flash #2): it boots, joins,
+  mounts the card, and the screen and LED work. The panel's redesign is
+  still to come.
+
+**1.1.0-dev.9, backups you can reach, and a restore that waits.**
+- A Backups file area, number 11 in FILES, the sysop's alone: the card's
+  backup folder. Download a backup by YMODEM or XMODEM; a .zip sent there
+  goes straight in, with no approval, ready for `RESTORE SD`. At the area
+  menu, `#`, a number and Enter reaches an area past 10. A zip with
+  XMODEM's 0x1A padding after its end still restores.
+- A restore waits until nobody else is on. After the sysop's Y, at either
+  door, it says how many callers it is waiting for; F puts it live with a
+  warning to them, N gives it up, and it gives up by itself after
+  `backup_window_minutes`. New callers get the busy line meanwhile, and
+  curl is told the same as the sysop.
+- `SCREENS` lists every screen with the size of its .ans, .asc and .seq,
+  and whether callers get it from flash, the card's seeded copy or the
+  sysop's own. `SCREENS VIEW name[.ext] [FLASH]` plays one. Staff only.
+- A restore refuses a system.cfg that empties the sysop password, reports
+  a co-sysop left off because their line named the published password,
+  checks that restored screens fit while they are being swapped in, and
+  lets go of every screen it replaces first.
+- A caller on the welcome screen when the card is unmounted goes on to log
+  in, rather than being stranded with no prompt.
+- `RESTORE SD SCREENS` marks what it imports as the sysop's own, so a
+  stock update never replaces it. Card screens seeded before 0.22.1 that
+  nobody edited now follow the stock set.
+- A backup left half written on the card is removed at the next mount, and
+  a half-uploaded one no longer counts as an upload awaiting approval.
+- A board with no card no longer probes for one at every CONFIG save;
+  `SD MOUNT`, a pin change and a restart still look. `SD UNMOUNT` keeps the
+  card out through CONFIG saves.
+- Mail, information pages, FILES.BBS and the card's screen record are
+  replaced by renaming over the old file, never by removing it first.
+
+**1.1.0-dev.10 (S3 1.1.0), the S3's status panel, redesigned.**
+- A phone-style status bar: the board's name, its address and its uptime
+  with the card's free space turn every 3 s with a fade, and a caller
+  ringing the sysop takes the slot. Beneath it, glyphs that appear only
+  while true: the card, a ringing bell, sysop mail, an upload awaiting
+  approval, the backup window, the directory listing, staff on, an
+  unclean restart and a slow pass. Then a Wi-Fi antenna that fills with
+  the signal, and the clock.
+- Callers on now, one row each up to all ten, with the recent logins,
+  logoffs and rings taking whatever rows are left; "+N more" past what
+  fits. A system row, and the strip's lamps as square LEDs.
+- CONFIG panel's "USB plug" setting turns the screen four ways: up (as
+  before), left, right, down. Left and right are landscape, with a
+  two-column layout. An old `rotation` line is still read.
+- The sd plugin reports a card that is present but will not mount, and a
+  recent failed read, for the panel's card glyph.
+- The ESP32 image is unchanged by this: all of it is behind the board's
+  defines.
+
+**1.1.0-dev.11, GPL v3 or later.**
+- µnleashed BBS is now under the GNU General Public License, version 3 or
+  later (was version 2 or later). Robert Mech holds the whole copyright
+  and made the change on 2026-09-24. The firmware links Apache-2.0 code
+  (ESP-IDF, espressif/mdns, and the camera driver to come), and Apache-2.0
+  combines cleanly with GPLv3 but not with GPLv2.
+- `LICENSE` is the GPLv3 text; every SPDX line is `GPL-3.0-or-later` and
+  every file notice says version 3. ABOUT, the welcome and goodbye screens
+  and THIRD_PARTY_NOTICES say v3.
+- `tools/release.py` refuses a release while any tracked file still
+  carries a GPL-2.0 SPDX line, and `make test` in `host/` checks the same,
+  so a file added later on an old header fails.
+- Nothing else changed; the firmware behaves exactly as dev.10.
 
 ## 1.0.2, 2026-09-23
 

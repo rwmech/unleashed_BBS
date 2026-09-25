@@ -16,12 +16,12 @@
  * See also:     PLUGINS.md
  *
  * Copyright 2026 - Robert Mech
- * License:      GNU General Public License v2 or later
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * License:      GNU General Public License v3 or later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
+ * Free Software Foundation; either version 3 of the License, or (at your
  * option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
@@ -30,7 +30,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * with this program. If not, see <https://www.gnu.org/licenses/>. The full
  * text is in the LICENSE file at the top of this repository.
  * ===========================================================================
  */
@@ -45,6 +45,9 @@ extern const Plugin kFilesPlugin;
 extern const Plugin kForumsPlugin;
 extern const Plugin kInfoPlugin;
 extern const Plugin kLightsPlugin;
+#ifdef BBS_HAS_LCD
+extern const Plugin kPanelPlugin;        // a board with a display (board.h)
+#endif
 
 // Order here is display order, not start order: the sd plugin is PF_EARLY
 // and plugins::begin() runs those first whatever position they hold, so this
@@ -59,6 +62,9 @@ const Plugin* const kPlugins[] = {
     &kSerialPlugin,
     &kAnnouncePlugin,
     &kLightsPlugin,
+#ifdef BBS_HAS_LCD
+    &kPanelPlugin,
+#endif
 };
 
 const uint8_t kPluginCount = sizeof(kPlugins) / sizeof(kPlugins[0]);

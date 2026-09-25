@@ -1,0 +1,87 @@
+# ===========================================================================
+#  unleashed BBS
+#  Electronic freedom on a microcontroller.
+# ===========================================================================
+#
+# File:         sdkconfig.defaults.esp32s3
+# Module:       Build / ESP-IDF defaults, ESP32-S3 layer
+#
+# Purpose:      What every ESP32-S3 build changes from sdkconfig.defaults.
+#               ESP-IDF reads this file straight after sdkconfig.defaults
+#               for any esp32s3 target, with nothing in platformio.ini to
+#               say so (tools/cmake/kconfig.cmake: "<defaults>.<target>"),
+#               and a later file wins, so these override the WROOM's.
+#
+#               Written for the one S3 board this firmware knows, the
+#               Waveshare ESP32-S3-LCD-1.47: an ESP32-S3R8 (8 MB octal PSRAM
+#               in the package) beside a 16 MB W25Q128 quad flash, and no
+#               USB-serial bridge. Sources for every value are in
+#               internal/board-waveshare-s3-lcd147-2026-09-24.md.
+#
+#               PlatformIO keeps the generated sdkconfig.<env> and a value
+#               it already holds wins over this file, and it does not watch
+#               this file for changes: delete sdkconfig.ws_s3_lcd147 (and the
+#               release one) after editing here, and check the generated file.
+#
+# Targets:      ESP32-S3 (ESP-IDF 5.3.1)
+# See also:     sdkconfig.defaults, platformio.ini, ESP32_BOARD_CHOICE.md
+#
+# Copyright 2026 - Robert Mech
+# License:      GNU General Public License v3 or later
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 3 of the License, or (at your
+# option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program. If not, see <https://www.gnu.org/licenses/>. The full
+# text is in the LICENSE file at the top of this repository.
+# ===========================================================================
+
+# Flash: 16 MB, DIO at 80 MHz, which is how Waveshare's own demo runs this
+# part. QIO is untried here and is a measured step for later. The partition
+# table stays the 4 MB one, so nothing else moves; the image header says
+# 16 MB, which is what the directory's system badge reports.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# PSRAM: the 8 MB in the R8's package is octal, on GPIO 26 to 37 with the
+# flash (which is why syscfg::pinProblem refuses those on an S3). Nothing
+# static moves into it yet: CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY is a
+# separate, measured step, and even then only what is marked EXT_RAM_BSS_ATTR
+# moves. What uses it now is the panel's framebuffer, allocated at the panel
+# plugin's start.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+# No PSRAM memory test at boot. It walks all 8 MB before app_main runs, and
+# the web installer's Improv question has a deadline measured from the reset
+# it causes: 1.5 s, after which a board already running this firmware is
+# offered a fresh install instead of Update (main.cpp, "Why during boot").
+# The test earns nothing a crash on a bad part would not also say.
+CONFIG_SPIRAM_MEMTEST=n
+# Wi-Fi's and lwIP's buffers in PSRAM first, internal RAM only when that
+# fails (Espressif's own option for exactly this). Measured on the first
+# flash without it: internal heap 35,707 free and 20,415 at its lowest, out
+# of 248,219, with nobody on, because with PSRAM enabled the IDF also
+# switches Wi-Fi to sixteen preallocated internal TX buffers. The lights and
+# the panel were both refused at start for want of internal heap while
+# eight megabytes of PSRAM sat idle.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+# The console on the S3's own USB (USB-Serial-JTAG), as the primary console.
+# The Waveshare stick has no USB-serial bridge: its USB-A plug goes straight
+# to GPIO 19 and 20, and UART0 reaches only two header pins. Primary rather
+# than secondary because a secondary console is output only, and Improv has
+# to read what the web installer sends (IDF's USB-Serial-JTAG console guide:
+# "if you also want to input ... please select
+# CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG").
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

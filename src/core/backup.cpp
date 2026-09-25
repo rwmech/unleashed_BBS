@@ -17,12 +17,12 @@
  * See also:     BACKUP.md
  *
  * Copyright 2026 - Robert Mech
- * License:      GNU General Public License v2 or later
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * License:      GNU General Public License v3 or later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
+ * Free Software Foundation; either version 3 of the License, or (at your
  * option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
@@ -31,7 +31,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * with this program. If not, see <https://www.gnu.org/licenses/>. The full
  * text is in the LICENSE file at the top of this repository.
  * ===========================================================================
  */
@@ -229,12 +229,10 @@ void BackupService::service(const fd_set& r, const fd_set& w, uint32_t now) {
         decide(false, "no answer from the sysop in time");
     }
 
-    // An accepted upload goes live a file a pass. It carries on if curl goes
-    // away: stopping half way through would leave a board with part of one
-    // backup and part of what it had.
-    if (st_ == St::Apply && !importer().applyStep()) finishApply();
+    // An accepted upload goes live a file a pass, in applyTick, which the
+    // Bbs calls once it has closed any screen the upload replaces.
 
-    if (cfd_ >= 0 && st_ != St::Approve && st_ != St::Extract && st_ != St::Apply) {
+    if (cfd_ >= 0 && st_ != St::Approve && st_ != St::Extract && st_ != St::Apply && st_ != St::Hold) {
         if (now - lastIo_ > BBS_BACKUP_IDLE_MS)                  dropClient("idle timeout");
         else if (static_cast<int32_t>(now - deadline_) >= 0)     dropClient("too slow");
     }
@@ -244,6 +242,25 @@ void BackupService::service(const fd_set& r, const fd_set& w, uint32_t now) {
         lfd_ = -1;
         note("*** Backup window closed (time up)");
     }
+}
+
+// ---------------------------------------------------------------------------
+// applyTick: an accepted upload goes live a file a pass. It carries on if
+// curl goes away: stopping half way through would leave a board with part of
+// one backup and part of what it had.
+// ---------------------------------------------------------------------------
+void BackupService::applyTick() {
+    if (st_ == St::Apply && !importer().applyStep()) finishApply();
+}
+
+bool BackupService::applyingScreens(bool& card) const {
+    card = false;
+    if (zipUse_ != ZipUse::Import) return false;
+    bool window = st_ == St::Apply;
+    bool onCard = job_ == Job::Apply;
+    if ((!window && !onCard) || !zip_.imp.report().hasScreens) return false;
+    card = onCard && jobScreens_;
+    return true;
 }
 
 // ===========================================================================
@@ -296,6 +313,7 @@ void BackupService::acceptClient(uint32_t now) {
         hdrLen_ = 0;
         outLen_ = outPos_ = 0;
         closeAfterOut_ = false;
+        chunked_ = false;
         lastIo_   = now;
         deadline_ = now + BBS_BACKUP_HEADER_MS;
         ipToText(a.sin_addr.s_addr, clientIp_, sizeof(clientIp_));
@@ -548,11 +566,14 @@ void BackupService::dropClient(const char* why) {
     cfd_ = -1;
     if (upload_) { fclose(upload_); upload_ = nullptr; }
     // Half way through putting an upload live, the socket goes and the
-    // restore does not: see service(). finishApply() tells the console.
-    if (st_ == St::Apply) {
+    // restore does not: see service(). finishApply() tells the console. A
+    // restore the sysop has said Y to and that is waiting for the board to
+    // go quiet (Hold) carries on the same way: the Bbs decides its end.
+    if (st_ == St::Apply || st_ == St::Hold) {
         plat::log("backup: client %s done (%s), the restore carries on", clientIp_, why);
         outLen_ = outPos_ = 0;
         closeAfterOut_ = false;
+        chunked_ = false;
         return;
     }
     // Tidy the half of the zip storage that is live and never the other
@@ -568,6 +589,7 @@ void BackupService::dropClient(const char* why) {
     st_ = St::Idle;
     outLen_ = outPos_ = 0;
     closeAfterOut_ = false;
+    chunked_ = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -576,13 +598,13 @@ void BackupService::dropClient(const char* why) {
 void BackupService::decide(bool accept, const char* why) {
     if (st_ != St::Approve) return;
     if (accept) {
-        // A file a pass from here (service), and curl hears once it is done.
-        // Putting sixty-odd files live in this one call held every caller up
-        // for as long as it took, and since 1.1.0 each screen is a copy from
-        // the user partition rather than a rename.
-        st_       = St::Apply;
-        deadline_ = plat::millis() + BBS_BACKUP_TRANSFER_MS;
-        lastIo_   = plat::millis();
+        // Held until the Bbs releases it (holdRelease), which it does at once
+        // on a quiet board. From there a file a pass (applyTick), and curl
+        // hears once it is done. Putting sixty-odd files live in this one
+        // call held every caller up for as long as it took, and since 1.1.0
+        // each screen is a copy from the user partition rather than a rename.
+        st_     = St::Hold;
+        lastIo_ = plat::millis();
         return;
     }
     char msg[160];
@@ -607,13 +629,107 @@ void BackupService::finishApply() {
     // published default is still on it (1.0.2).
     if (rep.hasCfg && syscfg::get().sysopDefault)
         note("*** Sysop password is the published default: local only");
+    // A co-sysop line naming the published password was left out, so that
+    // level is off now (1.1.0). Said here and to curl, not only in the log,
+    // because it changes who can get onto the board.
+    char coLine[80] = "";
+    uint8_t co = importer().applied().coOff;
+    if (co) {
+        snprintf(coLine, sizeof(coLine), "Co-sysop %s off: the published password is never set.",
+                 co == 3 ? "1 and 2" : co == 1 ? "1" : "2");
+        note("*** %s", coLine);
+    }
     if (cfd_ < 0) {                                  // curl went away: nobody to tell
         st_ = St::Idle;
         return;
     }
-    char body[300];
-    snprintf(body, sizeof(body), "%.180s\n%.110s\n", msg, detail_);
+    char body[384];
+    snprintf(body, sizeof(body), "%.180s\n%.110s\n%s%s", msg, detail_, coLine, coLine[0] ? "\n" : "");
+    // A restore that waited has told curl so already, as the first chunk
+    // of a 200 (holdTell): the rest of the reply follows it. The status is
+    // spent by then, so a restore with errors says so in the words.
+    if (chunked_) { chunk(body, true); return; }
     reply(ok ? 200 : 500, ok ? "OK" : "Internal Server Error", body);
+}
+
+// ---------------------------------------------------------------------------
+// chunk: HTTP/1.1 chunked transfer, one chunk onto out_. Anything of the
+// last chunk still unsent is kept in front of it.
+// ---------------------------------------------------------------------------
+void BackupService::chunk(const char* text, bool last) {
+    if (outPos_ && outPos_ < outLen_) {
+        memmove(out_, out_ + outPos_, outLen_ - outPos_);
+        outLen_ = static_cast<uint16_t>(outLen_ - outPos_);
+        outPos_ = 0;
+    } else if (outPos_ >= outLen_) {
+        outLen_ = outPos_ = 0;
+    }
+    size_t room = sizeof(out_) - outLen_;
+    size_t n    = strlen(text);
+    if (n + 16 > room) n = room > 16 ? room - 16 : 0;       // size line, CRLFs, the end
+    int w = n ? snprintf(reinterpret_cast<char*>(out_) + outLen_, room, "%x\r\n", static_cast<unsigned>(n)) : 0;
+    if (w > 0) {
+        outLen_ = static_cast<uint16_t>(outLen_ + w);
+        memcpy(out_ + outLen_, text, n);
+        outLen_ = static_cast<uint16_t>(outLen_ + n);
+        memcpy(out_ + outLen_, "\r\n", 2);
+        outLen_ = static_cast<uint16_t>(outLen_ + 2);
+    }
+    if (last) {
+        // The clamp above keeps room for this, and the check says so rather
+        // than trusting every message to stay short. Without room the reply
+        // still ends: the connection closes after it (Connection: close).
+        if (outLen_ + 5u <= sizeof(out_)) {
+            memcpy(out_ + outLen_, "0\r\n\r\n", 5);
+            outLen_ = static_cast<uint16_t>(outLen_ + 5);
+        }
+        closeAfterOut_ = true;
+        deadline_ = plat::millis() + BBS_BACKUP_HEADER_MS;   // a reply that cannot be delivered is dropped
+        st_ = St::Reply;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The hold (1.1.0): see holding() in backup.h.
+// ---------------------------------------------------------------------------
+void BackupService::holdTell(uint8_t callers) {
+    if (st_ != St::Hold || cfd_ < 0 || chunked_) return;
+    static const char kHead[] = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n"
+                                "Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+    outLen_ = outPos_ = 0;
+    memcpy(out_, kHead, sizeof(kHead) - 1);
+    outLen_  = sizeof(kHead) - 1;
+    chunked_ = true;
+    char line[128];
+    snprintf(line, sizeof(line), "Waiting for %u caller%s to leave before it is applied. "
+             "The sysop's F applies it now.\n", callers, callers == 1 ? "" : "s");
+    chunk(line, false);
+    lastIo_ = plat::millis();
+}
+
+void BackupService::holdRelease() {
+    if (st_ == St::Hold) {
+        st_       = St::Apply;
+        deadline_ = plat::millis() + BBS_BACKUP_TRANSFER_MS;
+        lastIo_   = plat::millis();
+    }
+    if (job_ == Job::Hold) job_ = Job::Apply;
+}
+
+void BackupService::holdGiveUp(const char* why) {
+    if (job_ == Job::Hold) {
+        importer().discard();
+        job_ = Job::None;
+        return;
+    }
+    if (st_ != St::Hold) return;
+    importer().discard();
+    note("*** Upload discarded: %.48s", why);
+    if (cfd_ < 0) { st_ = St::Idle; return; }
+    char msg[160];
+    snprintf(msg, sizeof(msg), "Upload discarded: %s\n", why);
+    if (chunked_) chunk(msg, true);
+    else          reply(403, "Forbidden", msg);
 }
 
 // ===========================================================================
@@ -631,7 +747,7 @@ BackupService::Start BackupService::cardBackup(const char* dir, const char* name
 
     uint32_t estimate = 0;
     exporter().beginFile(screensOnly, estimate);
-    plat::SdInfo card = plat::sdInfo();
+    plat::SdInfo card = sdCardInfo();
     needKB = (estimate + 1023) / 1024;
     freeKB = card.freeKB;
     if (!card.mounted || needKB > freeKB) {
@@ -725,7 +841,7 @@ uint8_t BackupService::cardStep() {
 
 void BackupService::cardAnswer(bool yes) {
     if (job_ != Job::Ask) return;
-    if (yes) { job_ = Job::Apply; return; }
+    if (yes) { job_ = Job::Hold; return; }       // the Bbs releases it (holdRelease)
     importer().discard();
     job_ = Job::None;
 }
@@ -737,6 +853,7 @@ void BackupService::cardDrop() {
             break;
         case Job::Check:
         case Job::Ask:
+        case Job::Hold:
             importer().discard();
             job_ = Job::None;
             break;

@@ -15,12 +15,12 @@
  * See also:     COMMANDS.md
  *
  * Copyright 2026 - Robert Mech
- * License:      GNU General Public License v2 or later
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * License:      GNU General Public License v3 or later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
+ * Free Software Foundation; either version 3 of the License, or (at your
  * option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
@@ -29,7 +29,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * with this program. If not, see <https://www.gnu.org/licenses/>. The full
  * text is in the LICENSE file at the top of this repository.
  * ===========================================================================
  */
@@ -244,7 +244,9 @@ void accessRow(Ctx& c, char* line) {
 // work out that CONFIG took a number the chip never had (the WROOM has no 20,
 // 24 or 28 to 31). On the board the IDF's soc caps answer, so the rule for
 // another chip arrives with its build target and nothing here changes. The
-// host has no chip, and stands in for the reference board, the WROOM.
+// host has no chip, and stands in for the reference board, the WROOM, or for
+// the S3 when it is built for an S3 board profile (board.h, BBS_CHIP_S3):
+// 0 to 48, less 22 to 25, which the S3 does not have.
 bool pinExists(long pin) {
 #ifdef ESP_PLATFORM
     if (pin < 0 || pin >= GPIO_NUM_MAX) return false;
@@ -255,6 +257,8 @@ bool pinExists(long pin) {
     if (pin == 20) return false;
 #endif
     return true;
+#elif defined(BBS_CHIP_S3)
+    return pin >= 0 && pin <= 48 && !(pin >= 22 && pin <= 25);
 #else
     return pin >= 0 && pin <= 39 && pin != 20 && pin != 24 && !(pin >= 28 && pin <= 31);
 #endif
@@ -308,7 +312,10 @@ void keyValue(Ctx& c, const char* key, char* val) {
     else if (!strcmp(key, "sysop_id")) {
         // An account id: digits, 0 for none. Not number(), whose ranges are
         // a long's, and an id is a uint32_t.
-        bool digits = *val != '\0' && strlen(val) <= 10;
+        // Empty is 0, not set: a hand edit that leaves "sysop_id =" must
+        // not refuse the whole file.
+        if (!*val) { g.sysopId = 0; return; }
+        bool digits = strlen(val) <= 10;
         for (const char* p = val; *p; ++p) if (*p < '0' || *p > '9') digits = false;
         unsigned long long id = digits ? strtoull(val, nullptr, 10) : 0;
         if (!digits || id > 0xFFFFFFFFull) problem(c, "sysop_id must be an account id:", val);
@@ -665,11 +672,29 @@ void normaliseHostname(char* v) {
     while (n && v[n - 1] == '.') v[--n] = '\0';
 }
 
+// The rule is the chip's (1.1.0). On the ESP32, the WROOM's rule, unchanged:
+// 6 to 11 are the flash. On the S3 those are ordinary pins, and the ones
+// that must never be handed out are elsewhere:
+//   26 to 32  the flash and the PSRAM's shared bus (SPICS1, SPIHD, SPIWP,
+//             SPICS0, SPICLK, SPIQ, SPID; ESP32-S3 datasheet table 2-14)
+//   33 to 37  octal PSRAM's DQ4 to DQ7 and DQS, on an R8 like the Waveshare
+//             stick's. Refused on every S3 build: the one S3 board this
+//             firmware knows has octal PSRAM, and a quad part that frees
+//             them is a board profile's business when one arrives
+//   19, 20    the chip's own USB. On a board with no USB-serial bridge it is
+//             the only way in, and a pin taken from it makes the board
+//             vanish from the computer until it is put into download mode
+//             by hand (the IDF's USB-Serial-JTAG console guide)
+// The flash pins first, on either chip: they are real pins, and why not to
+// use them is more use to a sysop than "no such pin".
 const char* pinProblem(long pin) {
     if (pin == -1) return nullptr;                   // "none", in every pin key's range
-    // The flash pins first: they are real pins, and why not to use them is
-    // more use to a sysop than "no such pin".
+#ifdef BBS_CHIP_S3
+    if (pin >= 26 && pin <= 37) return "pins 26-37 are the flash and PSRAM";
+    if (pin == 19 || pin == 20) return "pins 19 and 20 are the USB port";
+#else
     if (pin >= 6 && pin <= 11) return "pins 6-11 are the flash chip";
+#endif
     if (!pinExists(pin)) return "this chip has no such pin";
     return nullptr;
 }
@@ -677,8 +702,14 @@ const char* pinProblem(long pin) {
 const char* pinSentence(long pin) {
     const char* why = pinProblem(pin);
     if (!why) return nullptr;
+#ifdef BBS_CHIP_S3
+    if (pin >= 26 && pin <= 37) return "Pins 26 to 37 are flash and PSRAM.";
+    if (pin == 19 || pin == 20) return "Pins 19 and 20 are the USB port.";
+    return "This chip has no such pin.";
+#else
     return pin >= 6 && pin <= 11 ? "Pins 6 to 11 are the flash chip."   // the copy's LT-flash-pin
                                  : "This chip has no such pin.";
+#endif
 }
 
 const char* trial(const KeyVal* pairs, uint8_t count, char* why, size_t n) {

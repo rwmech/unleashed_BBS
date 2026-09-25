@@ -27,12 +27,12 @@
  * See also:     COMMANDS.md
  *
  * Copyright 2026 - Robert Mech
- * License:      GNU General Public License v2 or later
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * License:      GNU General Public License v3 or later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
+ * Free Software Foundation; either version 3 of the License, or (at your
  * option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
@@ -41,7 +41,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * with this program. If not, see <https://www.gnu.org/licenses/>. The full
  * text is in the LICENSE file at the top of this repository.
  * ===========================================================================
  */
@@ -113,7 +113,7 @@ enum class Role : uint8_t {
 // PLUGINS command and is unrelated; the names are close because the two
 // things are not.
 enum class ListKind : uint8_t { None, Help, Who, Last, Nodes, Bans, Dash, Users, Plugins,
-                                Sys, Calls, PlugRows };
+                                Sys, Calls, PlugRows, Screens };
 enum class MoreFrom : uint8_t { List, Screen };
 // ConfigArea is a CONFIG page opened from a button on another CONFIG page:
 // one level of nesting, which is what a row standing for several values
@@ -341,6 +341,30 @@ public:
     uint8_t publicBusy() const;
     static size_t sessionSize() { return sizeof(Session); }
 
+#ifdef BBS_HAS_LCD
+    // ----------------------------------------------------------------------
+    // What the board's own display reads (BBS_HAS_LCD boards only: the
+    // panel plugin). Each is a member the core already keeps, read as it
+    // stands: never a file, never a walk of the heap, because the panel asks
+    // twice a second. None of them exists on a board without a panel.
+    //
+    // ringing:    the handle of the caller ringing the sysop right now, or
+    //             null. The ring's own limit ends it.
+    // backupOpen: the backup window is open (BOOT with the sysop on).
+    // slowPasses: passes over BBS_SLOW_PASS_US since boot, SYS's figure.
+    // crashBoot:  this boot followed a crash, a watchdog or a brownout.
+    // peakNodes:  most lines busy at once since boot.
+    // callsToday: the "nth caller today" the last login was told, 0 until
+    //             somebody logs in after a boot.
+    // ----------------------------------------------------------------------
+    const char* ringing() const { return ring_.from != 0xFF ? ring_.handle : nullptr; }
+    bool     backupOpen() const { return backup_.isOpen(); }
+    uint32_t slowPasses() const { return slowCount_; }
+    bool     crashBoot()  const { return bootCrash_; }
+    uint8_t  peakNodes()  const { return peakNodes_; }
+    uint16_t callsToday() const { return panelToday_; }
+#endif
+
     // key dispatch target (public for the Term callback trampoline)
     void onKey(Session& s, int k, uint32_t now);
 
@@ -356,6 +380,12 @@ public:
     // and before RESTORE SD SCREENS replaces the card's screens, which says
     // so in why (the default is the unmount's line).
     void closeCardScreens(const char* why = nullptr);
+    // endScreens: the same for the screens being read from one place: the
+    // card (card) or the board's own flash (!card). A restore that replaces
+    // screens calls it before each file goes in (1.1.0). A caller not yet
+    // logged in is moved on as their screen ending would have moved them,
+    // never left at a prompt they have no account for.
+    void endScreens(bool card, const char* why);
     // dropCardJob: a backup being written to the card, or a zip being
     // checked off it, lets go of its files, for the same reason (1.1.0). The
     // nightly one is the case that matters: it runs while the sysop is free
@@ -541,6 +571,10 @@ private:
     void readSession(Session& s, uint32_t now);
     void processInput(Session& s, uint32_t now);
     void serviceSession(Session& s, uint32_t now);
+    // screenEnded: a screen played in the shell has finished, or been cut
+    // short: go wherever it was leading (a form, the warning, setup, the
+    // landing, the prompt). False when it was leading nowhere (1.1.0).
+    bool screenEnded(Session& s, uint32_t now);
     void flush(Session& s, uint32_t now);
     void moveSession(Session& from, Session& to, uint8_t newId, Role role);
 
@@ -929,6 +963,22 @@ private:
     void nightlyDone();
     // nightlyNotice: last night's backup did not happen, to staff arriving
     void nightlyNotice(Session& s);
+    // A restore the sysop said Y to waits for the board to go quiet (1.1.0,
+    // BackupService::holding). windowAccepted: the Y to the window's
+    // question. holdBegin: after either Y, wait or go. holdGo: put it live,
+    // warning anybody still on when forced (F). serviceHold: a pass of the
+    // wait. othersOn: callers on the board other than the sysop.
+    void windowAccepted(Session& s, uint32_t now);
+    void holdBegin(Session& s, uint32_t now);
+    void holdGo(Session& s, bool forced);
+    void serviceHold(uint32_t now);
+    uint8_t othersOn() const;
+
+    // -- SCREENS (bbs_screens.cpp, 1.1.0) --------------------------------------
+    // Every screen by name, what callers get of each and from where, and
+    // SCREENS VIEW to play one. Staff. Read from the folders when asked.
+    void cmdScreens(Session& s, const char* arg);
+    bool rowScreens(Session& s);
     // restartPlugins: hand anybody inside a plugin home, stop them all and
     // start them again on the file as it is now. A CONFIG save and a
     // restore both end here (bbs_sysop.cpp).
@@ -948,6 +998,8 @@ private:
     uint8_t   cardDots_      = 0;       // dots on the current line
     bool      cardScreens_   = false;   // SCREENS
     bool      cardNightly_   = false;   // the nightly backup: nobody watching
+    uint32_t  holdUntil_     = 0;       // a held restore gives up here (1.1.0)
+    uint8_t   holdSaid_      = 0;       // callers the sysop was last told of
     // The nightly backup's clock. nightlyDay_ is the clk::dayKey it last
     // tried, nightlyFail_ why that did not happen (0 when it did).
     uint32_t  nightlyDay_     = 0;
@@ -1016,6 +1068,9 @@ private:
     uint8_t   noticeOwed_  = 0xFF;
     uint16_t  bootCrashes_ = 0;      // how many are in the reboot log
     uint8_t   peakNodes_   = 0;      // most nodes busy at once since boot
+#ifdef BBS_HAS_LCD
+    uint16_t  panelToday_  = 0;      // callsToday(), for the board's display
+#endif
     uint16_t  callHours_[24] = {};   // CALLS: calls per hour of the day
     uint16_t  callsCounted_ = 0;     // records that went into callHours_
     // Traffic, for takeTraffic and bytesIn/bytesOut. Twelve bytes, set where

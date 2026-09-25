@@ -33,12 +33,12 @@
  * See also:     SCREENS.md
  *
  * Copyright 2026 - Robert Mech
- * License:      GNU General Public License v2 or later
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * License:      GNU General Public License v3 or later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
+ * Free Software Foundation; either version 3 of the License, or (at your
  * option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
@@ -47,7 +47,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * with this program. If not, see <https://www.gnu.org/licenses/>. The full
  * text is in the LICENSE file at the top of this repository.
  * ===========================================================================
  */
@@ -71,6 +71,12 @@
 // ---------------------------------------------------------------------------
 const char* sdScreensDir();
 
+// sdSeededStock: file ("welcome.ans") on the card is still the stock copy
+// the board seeded there, by the sd plugin's manifest and the file itself;
+// false for a copy the sysop edited or imported, or one it has no record of
+// (1.1.0, for SCREENS). Defined by the plugin, as sdScreensDir is.
+bool sdSeededStock(const char* file);
+
 class ScreenPlayer {
 public:
     struct Vars {
@@ -80,7 +86,24 @@ public:
     };
 
     // open: find the best file for this terminal. False if none exists.
-    bool open(const char* name, const Term& t);
+    // flashOnly: the stock copy, even where the card overrides it (1.1.0).
+    bool open(const char* name, const Term& t, bool flashOnly = false);
+
+    // Found: where a screen comes from, for SCREENS VIEW (1.1.0). Static
+    // storage in the caller, never a member: a ScreenPlayer lives in every
+    // Session, and every byte there costs twelve.
+    struct Found {
+        char        path[112];
+        const char* ext;          // ".ans", with the dot
+        uint8_t     mode;         // 0 text, 1 PETSCII, 2 ANSI
+        bool        card;
+    };
+    // find: the file open() would play for this terminal, not opened. With
+    // ext (".seq") exactly that file, whatever the terminal takes. Card
+    // first unless flashOnly. False when there is none.
+    static bool find(const char* name, const Term& t, const char* ext, bool flashOnly, Found& out);
+    // openFound: play what find() found.
+    bool openFound(const Found& f);
     bool active() const { return f_ != nullptr; }
     // onCard: this screen is being read from the SD card. The card can be
     // unmounted under a caller who is paused at a page break, and a stale

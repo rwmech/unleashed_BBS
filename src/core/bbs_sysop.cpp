@@ -23,12 +23,12 @@
  * See also:     COMMANDS.md
  *
  * Copyright 2026 - Robert Mech
- * License:      GNU General Public License v2 or later
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * License:      GNU General Public License v3 or later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
+ * Free Software Foundation; either version 3 of the License, or (at your
  * option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
@@ -37,7 +37,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * with this program. If not, see <https://www.gnu.org/licenses/>. The full
  * text is in the LICENSE file at the top of this repository.
  * ===========================================================================
  */
@@ -101,19 +101,29 @@ void Bbs::cmdLurk(Session& s) {
 // markAccount: remember the rank on the account that just used a staff
 // password. Guests and the busy line have no account to mark.
 // ---------------------------------------------------------------------------
+namespace {
+// markRecord: the rank onto the account in users.txt, and its id back. Never
+// inlined, so the record is off the stack before markAccount goes on to
+// save the fallback, whose chat::sysopChanged reads users.txt again.
+__attribute__((noinline)) uint32_t markRecord(const char* handle, Access level) {
+    UserRec u;                                     // on the stack since 1.1.0
+    if (!users::find(handle, u)) return 0;
+    if (u.level < static_cast<uint8_t>(level)) {
+        u.level = static_cast<uint8_t>(level);
+        if (users::update(u.handle, u) == users::Result::Ok)
+            plat::log("bbs: account '%s' marked %s", u.handle, syscfg::levelName(level));
+    }
+    return u.id;
+}
+} // namespace
+
 void Bbs::markAccount(Session& s, Access level) {
     s.rank = static_cast<uint8_t>(level) > s.rank ? static_cast<uint8_t>(level) : s.rank;
     if (s.guest || !s.user[0]) return;
-    UserRec u;                                     // on the stack since 1.1.0
-    if (!users::find(s.user, u)) return;
+    uint32_t id = markRecord(s.user, level);
     // The last account to elevate to sysop, whichever way it did (1.1.0):
     // where missed rings go while CONFIG names no sysop account.
-    if (level == Access::Sysop && u.id && u.id != sysopLast_) sysopLastSave(u.id);
-    if (u.level >= static_cast<uint8_t>(level)) return;
-    u.level = static_cast<uint8_t>(level);
-    if (users::update(u.handle, u) == users::Result::Ok) {
-        plat::log("bbs: account '%s' marked %s", u.handle, syscfg::levelName(level));
-    }
+    if (level == Access::Sysop && id && id != sysopLast_) sysopLastSave(id);
 }
 
 // ===========================================================================
@@ -128,10 +138,20 @@ void Bbs::markAccount(Session& s, Access level) {
 
 namespace {
 
-constexpr const char kSysopLastFile[] = "sysop.last";
+// accountId: the id of the live account with this handle, 0 when there is
+// none or it is retired, with the handle as the file spells it copied to
+// out (which may be handle itself). Never inlined, so the record is off the
+// stack again before configSave or linkSysop goes on to
+// write the file.
+__attribute__((noinline)) uint32_t accountId(const char* handle, char* out, size_t n) {
+    UserRec u;
+    if (!users::find(handle, u) || u.retired || !u.id) return 0;
+    snprintf(out, n, "%s", u.handle);
+    return u.id;
+}
 
 void sysopLastPath(char* out, size_t n) {
-    snprintf(out, n, "%s/%s", plat::userBase(), kSysopLastFile);
+    snprintf(out, n, "%s/%s", plat::userBase(), BBS_SYSOP_LAST_FILE);
 }
 
 // One pass over users.txt for the configured id and the fallback id at once.
@@ -150,7 +170,11 @@ void sysopFindRow(void* ctx, uint8_t, const UserRec& u) {
     if (f.cfgId && u.id == f.cfgId) {
         *f.out   = u;
         f.gotCfg = true;
-    } else if (f.lastId && u.id == f.lastId && !f.gotCfg) {
+    } else if (f.lastId && u.id == f.lastId && !f.gotCfg &&
+               u.level >= static_cast<uint8_t>(Access::Sysop)) {
+        // The fallback only ever names an account the sysop password marked.
+        // sysop.last is an id into whatever users.txt is live, and a file
+        // brought back from elsewhere can give that id to a stranger.
         *f.out    = u;
         f.gotLast = true;
     }
@@ -206,9 +230,10 @@ bool Bbs::sysopAccount(UserRec& out) {
 bool Bbs::isSysopAccount(uint32_t id) {
     if (!id) return false;
     uint32_t cfgId = syscfg::get().sysopId;
-    if (cfgId && id == cfgId) return true;
-    if (id != sysopLast_) return false;
-    if (!cfgId) return true;
+    if (id != cfgId && id != sysopLast_) return false;
+    // Either may name an account that is retired, gone, or (the fallback)
+    // not marked sysop; sysopAccount is the one answer to all of that. Only
+    // the sysop's own account ever pays for the pass.
     UserRec u;
     return sysopAccount(u) && u.id == id;
 }
@@ -217,17 +242,18 @@ bool Bbs::isSysopAccount(uint32_t id) {
 // id together, and read back at once so the rest of the setup sees it.
 void Bbs::linkSysop(const Session& s) {
     if (s.guest || !s.user[0]) return;
-    UserRec u;
-    if (!users::find(s.user, u) || !u.id) return;
+    char handle[BBS_USER_MAX + 1];
+    uint32_t n = accountId(s.user, handle, sizeof(handle));
+    if (!n) return;
     char id[12];
-    snprintf(id, sizeof(id), "%lu", static_cast<unsigned long>(u.id));
-    const syscfg::KeyVal kv[] = { { "sysop_handle", u.handle }, { "sysop_id", id } };
+    snprintf(id, sizeof(id), "%lu", static_cast<unsigned long>(n));
+    const syscfg::KeyVal kv[] = { { "sysop_handle", handle }, { "sysop_id", id } };
     char err[80] = "";
     if (!syscfg::write(kv, 2, nullptr, err, sizeof(err)) || !syscfg::reload(err, sizeof(err))) {
-        plat::log("bbs: could not name '%s' the sysop's account: %s", u.handle, err);
+        plat::log("bbs: could not name '%s' the sysop's account: %s", handle, err);
         return;
     }
-    plat::log("bbs: '%s' (id %lu) is the sysop's account", u.handle, static_cast<unsigned long>(u.id));
+    plat::log("bbs: '%s' (id %s) is the sysop's account", handle, id);
     chat::sysopChanged();
 }
 
@@ -1243,17 +1269,6 @@ bool cfgFileValue(const char* section, const char* key, char* out, size_t n) {
     return found;
 }
 
-// accountId: the id of the live account with this handle, 0 when there is
-// none or it is retired, with the handle as the file spells it copied to
-// out (which may be handle itself). Never inlined, so the record is off the
-// stack again before configSave goes on to write the file.
-__attribute__((noinline)) uint32_t accountId(const char* handle, char* out, size_t n) {
-    UserRec u;
-    if (!users::find(handle, u) || u.retired || !u.id) return 0;
-    snprintf(out, n, "%s", u.handle);
-    return u.id;
-}
-
 // cfgLiveValue: what the board is actually running with, for a key the
 // file does not mention. Keeps the form honest about defaults.
 void cfgLiveValue(const char* key, char* out, size_t n) {
@@ -2023,6 +2038,8 @@ bool Bbs::configReloadAll(char* err, size_t errLen) {
 // both come here, so "live" means the same thing after either.
 // ---------------------------------------------------------------------------
 void Bbs::restartPlugins() {
+    // A restore that replaced users.txt removed sysop.last with it (ziparc).
+    sysopLastLoad();
     // A plugin about to be stopped may have callers inside it. Hand them
     // back to the command prompt first: a session left owning a plugin
     // that has given its memory back is a session that never comes home.

@@ -37,12 +37,12 @@
  * See also:     PLUGINS.md, COMMANDS.md
  *
  * Copyright 2026 - Robert Mech
- * License:      GNU General Public License v2 or later
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * License:      GNU General Public License v3 or later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
+ * Free Software Foundation; either version 3 of the License, or (at your
  * option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
@@ -51,7 +51,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * with this program. If not, see <https://www.gnu.org/licenses/>. The full
  * text is in the LICENSE file at the top of this repository.
  * ===========================================================================
  */
@@ -73,7 +73,10 @@ constexpr uint16_t   kScrollback  = 1024;     // bytes replayed to a joiner
 constexpr uint16_t   kReadChunk   = 128;      // bytes taken from the port per tick
 constexpr uint16_t   kRoomNeeded  = 512;      // output room a watcher must have
 
-int      g_rx = 16, g_tx = 17;                // UART2 defaults on a WROOM-32E
+// The board profile's (board.h): UART2's usual 16 and 17 on a WROOM-32E,
+// header IO2 and IO1 on the Waveshare S3, whose 16 and 17 are its TF slot
+// and whose RXD and TXD carry the ROM's boot banner.
+int      g_rx = BBS_SERIAL_RX, g_tx = BBS_SERIAL_TX;
 uint32_t g_baud   = 115200;
 uint8_t  g_bits   = 8, g_stop = 1;
 char     g_parity = 'N';
@@ -106,12 +109,16 @@ void readKey(void* ctx, const char* key, const char* value) {
     else if (!strcmp(key, "format")) parseFormat(value);
 }
 
-// badPin: pins that are not ours to use
+// badPin: pins that are not ours to use. The ranges are the chip's
+// (board.h); the console UART is the ESP32's 1 and 3, while an S3 build's
+// console is the chip's own USB and UART0 is free.
 bool badPin(int pin, bool output) {
-    if (pin < 0 || pin > 39) return true;
+    if (pin < 0 || pin > BBS_GPIO_MAX) return true;
     if (syscfg::pinProblem(pin)) return true;                // internal flash
-    if (output && pin >= 34) return true;                    // input only
+    if (output && pin > BBS_GPIO_OUT_MAX) return true;       // input only
+#ifndef BBS_CHIP_S3
     if (pin == 1 || pin == 3) return true;                   // the console UART
+#endif
     return false;
 }
 

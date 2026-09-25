@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 # ===========================================================================
 #  µnleashed BBS: release on a version tag
 #
@@ -6,6 +6,12 @@
 #  tools/release.py on a fresh checkout and publishes it as a GitHub Release.
 #  The directory server's deploy/update.sh fetches the newest release from
 #  there, checks it against SHA256SUMS, and the web installer offers it.
+#
+#  Two chip families since 1.1.0, both from the one release.py run: the
+#  ESP32 (WROOM-32E) under the plain asset names every release has had, and
+#  the ESP32-S3 (the Waveshare ESP32-S3-LCD-1.47 profile) as esp32s3-*.
+#  PlatformIO fetches the S3's toolchain and target files itself; the cache
+#  below keeps them between runs.
 #
 #  A fresh checkout is the point: include/secrets.h and data/system.cfg are
 #  git-ignored, so they cannot exist here, and the release environment
@@ -45,8 +51,14 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+        # A tag with a suffix (v1.1.0-dev.8) is a pre-release, a plain
+        # vX.Y.Z a full one. The directory serves the ESP32 from the latest
+        # full release and the ESP32-S3 from the newest pre-release that
+        # carries it, so the S3 can ship ahead of a core release.
         run: |
           ver="${GITHUB_REF_NAME#v}"
-          gh release create "${GITHUB_REF_NAME}" release/"${ver}"/assets/* \
+          kind=""
+          case "${ver}" in *-*) kind="--prerelease" ;; esac
+          gh release create "${GITHUB_REF_NAME}" release/"${ver}"/assets/* ${kind} \
             --title "µnleashed BBS ${ver}" \
-            --notes "Flash it from https://unleashedbbs.com/install. SHA256SUMS lists every file."
+            --notes "Flash it from https://unleashedbbs.com/install. The ESP32 images carry their plain names, the ESP32-S3 (Waveshare ESP32-S3-LCD-1.47) images an esp32s3- prefix; each family's version.txt says its version. SHA256SUMS lists every file."

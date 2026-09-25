@@ -4,8 +4,8 @@
 What the project is, how to build, flash and test it, and where the rest of the documentation lives.
 
 Copyright 2026 - Robert Mech
-License: GNU General Public License v2 or later
-SPDX-License-Identifier: GPL-2.0-or-later
+License: GNU General Public License v3 or later
+SPDX-License-Identifier: GPL-3.0-or-later
 
 Documentation for µnleashed BBS, part of the same distribution as the
 source. See the LICENSE file for terms.
@@ -99,6 +99,12 @@ The reference board is a bare ESP32-WROOM-32E: 520 KB of SRAM, 4 MB of flash, no
 Power: it runs from the USB port of the machine you flash it with, from a phone charger, or from 3V3 on a bench supply. Draw is roughly 100 mA, because the board keeps the radio awake (Wi-Fi power save is off, so a caller never waits for it to wake), with short peaks of about 250 mA when it transmits. Anything that can deliver 500 mA is comfortable.
 
 A carrier PCB with the module, a level shifter and screw terminals is the obvious next step. Not today.
+
+### Other boards
+
+A board other than the reference is a profile, not a fork: a PlatformIO environment that defines the board, and its defaults in `src/board.h`. Whatever only that board has is compiled only into its image, so the WROOM's build carries none of it. One so far (1.1.0), described with its pins and its measured memory in [ESP32_BOARD_CHOICE.md](ESP32_BOARD_CHOICE.md):
+
+- **Waveshare ESP32-S3-LCD-1.47** (`pio run -e ws_s3_lcd147`), the USB-A stick with an ESP32-S3R8, 16 MB of flash, 8 MB of PSRAM, a TF slot, one RGB pixel and a 1.47" display. The pixel is the drive light, the TF slot is the SD card, and the display is a status panel laid out like a phone's status bar: the board's name, where to dial and the uptime with the card's free space turning in the bar, status glyphs (a ring, the sysop's mail, uploads waiting, the listing, staff on), the Wi-Fi signal and the clock under it, who is on and the recent logins and logoffs, and the lights' strip as a row of square LEDs. `CONFIG panel` has its pins and geometry, and `PANEL` says what it is showing. The console, flashing and Improv all go through the chip's own USB, because the stick has no USB-serial bridge.
 
 ### Getting it on Wi-Fi
 
@@ -196,7 +202,7 @@ pio device monitor                               # then set Wi-Fi with Improv, s
 After that:
 
 - `pio run -t upload` for new firmware. Config, screens and logs stay as they are.
-- Config and screens change through the backup window ([BACKUP.md](BACKUP.md)), not by reflashing. With an SD card, `BACKUP SD` and `RESTORE SD` keep the same zip on the card from the sysop's prompt, and `nightly = yes` on `CONFIG sd` makes one every night.
+- Config and screens change through the backup window ([BACKUP.md](BACKUP.md)), not by reflashing. With an SD card, `BACKUP SD` and `RESTORE SD` keep the same zip on the card from the sysop's prompt, `nightly = yes` on `CONFIG sd` makes one every night, and the sysop's `Backups` file area (`FILES 11`) downloads and uploads them over the line. A restore waits until nobody else is on. `SCREENS` lists every screen and where callers get it from.
 - `flashall` / `uploadfs` rewrite the `storage` partition with `data/`, which is the screens. The accounts and the config are on `userdata` and stay put, so reflashing a board is no longer a reset.
 
 Flash layout (4 MB): two 1.5 MB OTA app slots and three data partitions.
@@ -269,7 +275,8 @@ src/core/clock.*          wall clock formatting (NTP)
 src/core/sysconfig.*      system.cfg loader, validator, password redaction, access matrix
 src/core/backup.*         backup window: button, HTTP in the BBS loop, Y/N approval; the card jobs
 src/core/ziparc.*         backup zip export (stored) and import (stored/deflate, staged)
-src/core/bbs_backup.cpp   BACKUP SD, RESTORE SD and the nightly backup, as the sysop sees them
+src/core/bbs_backup.cpp   BACKUP SD, RESTORE SD and the nightly backup, as the sysop sees them; a restore waiting for a quiet board
+src/core/bbs_screens.cpp  SCREENS and SCREENS VIEW: every screen and where callers get it from
 src/core/cardnames.h      the backups' names on the card, and which nightly one to prune
 src/core/tzones.h         the timezones CONFIG board offers by name
 src/core/crc32.h          CRC-32 for the zip
@@ -330,7 +337,7 @@ These are codes in the mixed-case charset, confirmed on a C64 through TeensyROM:
 
 ## License
 
-µnleashed BBS is free software under the GNU General Public License, version 2
+µnleashed BBS is free software under the GNU General Public License, version 3
 or later. The full text is in [LICENSE](LICENSE), and every source file carries
 the notice.
 

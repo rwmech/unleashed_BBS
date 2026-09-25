@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 ===========================================================================
  µnleashed BBS
@@ -41,8 +41,8 @@ Libraries:    Python 3 standard library; tools/testclient.py beside it
 See also:     tools/testclient.py (the full suite, host only)
 
 Copyright 2026 - Robert Mech
-License:      GNU General Public License v2 or later
-SPDX-License-Identifier: GPL-2.0-or-later
+License:      GNU General Public License v3 or later
+SPDX-License-Identifier: GPL-3.0-or-later
 ===========================================================================
 """
 

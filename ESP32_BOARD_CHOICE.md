@@ -8,8 +8,8 @@
                nodes each one would carry.
 
  Copyright 2026 - Robert Mech
- License:      GNU General Public License v2 or later
- SPDX-License-Identifier: GPL-2.0-or-later
+ License:      GNU General Public License v3 or later
+ SPDX-License-Identifier: GPL-3.0-or-later
  ===========================================================================
 -->
 
@@ -153,6 +153,63 @@ be a modem this is unlikely to be noticeable, but it has not been measured.
 Similar internal SRAM to the original, a more flexible memory layout, and
 the same dual-core arrangement the BBS already assumes. Probably somewhat
 more usable DRAM than the WROOM, hence the wider range: nobody has looked.
+
+## A board this firmware has a profile for: Waveshare ESP32-S3-LCD-1.47
+
+The first part other than the WROOM that the firmware has run on (1.1.0).
+It is a board profile, not a fork: `-DBBS_BOARD_WS_S3LCD147` in its own
+PlatformIO environment picks its defaults out of `src/board.h` and compiles
+in what only it has. The WROOM's image carries none of it.
+
+```
+pio run -e ws_s3_lcd147 -t upload --upload-port COMn
+pio run -e ws_s3_lcd147 -t uploadfs --upload-port COMn     (the screens)
+```
+
+The pins below are Waveshare's own schematic, read for this port and
+recorded with their sources in
+`internal/board-waveshare-s3-lcd147-2026-09-24.md`.
+
+- **The part.** SKU 28317, the USB-A stick: a bare ESP32-S3R8 (8 MB of octal
+  PSRAM in the package), a 16 MB quad flash, a TF slot, one WS2812B and a
+  1.47" 172x320 ST7789 panel. The USB-C version (1.47B) moves the backlight
+  and is not this profile.
+- **USB is the chip's own.** There is no USB-serial bridge: the plug goes to
+  GPIO 19 and 20, which are the console, the flashing port and Improv's
+  port at once (USB-Serial-JTAG). On the one PC it has been flashed from,
+  esptool's automatic reset did not reach the chip, so the first flash wants
+  BOOT held while RESET is tapped, and a press of RESET afterwards.
+- **What it ships with** (`src/board.h`), every one a CONFIG setting:
+  - no activity LED; the lights plugin is on as shipped, with its drive
+    light on the onboard WS2812B (GPIO 38, RGB order);
+  - the SD card on the TF slot in SPI mode: CS 21, MOSI 15, CLK 14, MISO 16;
+  - the serial bridge on header IO2 (RX) and IO1 (TX): 16 and 17 are the TF
+    slot, and the header's RXD and TXD (44 and 43) carry the chip's ROM boot
+    banner at every reset;
+  - the panel plugin (`CONFIG panel`, `PANEL`), portrait with the plug at
+    the top, laid out like a phone's status bar: the name, the address and
+    the uptime with the card's free space turning in the bar; status
+    glyphs, the Wi-Fi antenna and the clock under it; who is on and the
+    recent logins, logoffs and pages; free heap and calls today; and the
+    lights' strip as a row of square LEDs.
+- **Pins it refuses.** 26 to 37 are the flash and the octal PSRAM, and 19
+  and 20 are the USB; 22 to 25 do not exist on the S3. 6 to 11, the WROOM's
+  flash, are ordinary pins here. `syscfg::pinProblem` applies whichever
+  chip's rule the build is for.
+- **Memory, measured.** Static DRAM is `_bss_end - 0x3FC88000` against
+  341,760, and on the S3 that figure includes the IRAM, which shares the
+  same SRAM: 246,656 at 1.1.0-dev.7, of which 81,408 is IRAM. The first
+  flash showed the real constraint is the internal heap, not static RAM:
+  with PSRAM enabled the IDF preallocates Wi-Fi's TX buffers internally and
+  keeps a 32 KB internal pool, and 35,707 bytes were free with nobody on,
+  which refused the lights and the panel. Wi-Fi's and lwIP's buffers now go
+  to PSRAM first (`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`), and the plugins'
+  internal reserve is 16 KB on this board rather than the WROOM's 40. The
+  session pool is still in internal RAM: moving it to PSRAM is the separate,
+  measured step described above, and it needs `EXT_RAM_BSS_ATTR` on the
+  pool, not only the option.
+- **Nodes.** Ten, the same as the WROOM. The socket ceiling (lwIP's 16) does
+  not move with the chip.
 
 ### The ones that are out, and why it is worth saying
 

@@ -37,18 +37,23 @@
  *                  Mode::Screens (RESTORE SD SCREENS) takes the screens and
  *                  nothing else, and puts them in the card's screens folder,
  *                  the override layer, where they only ever add or replace.
+ *                  What it puts there is marked as the sysop's own in the
+ *                  seeded-screens manifest (sdSeededMark), 1.1.0.
+ *
+ *                  A zip that ends in 0x1A padding after its end record, as
+ *                  one uploaded by XMODEM does, is read as the zip it is.
  *
  * Libraries:    none (libc stdio, dirent)
  * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
  * See also:     BACKUP.md
  *
  * Copyright 2026 - Robert Mech
- * License:      GNU General Public License v2 or later
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * License:      GNU General Public License v3 or later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
+ * Free Software Foundation; either version 3 of the License, or (at your
  * option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
@@ -57,7 +62,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * with this program. If not, see <https://www.gnu.org/licenses/>. The full
  * text is in the LICENSE file at the top of this repository.
  * ===========================================================================
  */
@@ -207,6 +212,11 @@ struct ApplyReport {
     bool     cfgLive  = false;     // and the board is running it
     bool     hostChanged = false;  // hostname differs: used from the next restart
     bool     wifiChanged = false;  // network differs: used from the next restart
+    // Co-sysop levels the restore left off, because their line named the
+    // published password, which is never written (1.0.2): bit 0 co-sysop 1,
+    // bit 1 co-sysop 2 (1.1.0). The sysop's own such line needs no bit: the
+    // board is then on the published default, which is said already.
+    uint8_t  coOff    = 0;
     char     cfgErr[64] = {};      // why it is not running, when it is not
 };
 
@@ -264,12 +274,14 @@ private:
         uint32_t usize;
         uint32_t localOff;
         bool     ok;           // still accepted after extraction
+        bool     live;         // put live by the apply (1.1.0)
     };
 
     void reject(const char* name, const char* why);
     bool extract(Item& it);
     void countRemovals();
-    void inspectCfg(const char* staged);
+    const char* inspectCfg(const char* staged);
+    static const char* nthLive(void* ctx, uint8_t i);
     bool roomCheck(char* err, size_t errLen);
     void stagePath(char* out, size_t n, const char* name) const;
     bool applyItem(Item& it);
@@ -295,3 +307,11 @@ private:
 };
 
 } // namespace ziparc
+
+// sdSeededMark: mark screens on the card as the sysop's own in the sd
+// plugin's seeded-screens manifest (<sd>/screens/.seeded), so the board
+// never refreshes them from a newer stock screen. nth(ctx, i) gives the i-th
+// file name ("about.asc") and nullptr past the last. Defined by the plugin,
+// asked by the core, the way sdScreensDir is (1.1.0): RESTORE SD SCREENS
+// calls it for what it put on the card.
+void sdSeededMark(const char* (*nth)(void* ctx, uint8_t i), void* ctx);

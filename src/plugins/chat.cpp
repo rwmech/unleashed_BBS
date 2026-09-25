@@ -69,12 +69,12 @@
  * See also:     PLUGINS.md, COMMANDS.md
  *
  * Copyright 2026 - Robert Mech
- * License:      GNU General Public License v2 or later
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * License:      GNU General Public License v3 or later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
+ * Free Software Foundation; either version 3 of the License, or (at your
  * option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
@@ -83,7 +83,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <https://www.gnu.org/licenses/>. The full
+ * with this program. If not, see <https://www.gnu.org/licenses/>. The full
  * text is in the LICENSE file at the top of this repository.
  * ===========================================================================
  */
@@ -99,6 +99,7 @@
 #include "../core/plugin.h"
 #include "../platform/platform.h"
 
+#include <cerrno>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -965,6 +966,24 @@ uint8_t mailCountFor(const char* handle) {
 }
 
 // ---------------------------------------------------------------------------
+// mailReplace: the rewritten mailbox, tmp, over the live one, path.
+//
+// Renamed over it first (1.1.0). On LittleFS and in POSIX that replaces the
+// old file in one step. The mailbox is on the card when there is one, and
+// FatFs refuses a name that is there (EEXIST): only then, with the new file
+// whole beside it, does the old one go first. Removing it first on every
+// path, as this did, meant any rename that then failed (a full directory, a
+// card on its way out) took everybody's mail with it. Any other failure now
+// leaves the old mailbox exactly as it was.
+// ---------------------------------------------------------------------------
+bool mailReplace(const char* tmp, const char* path) {
+    if (rename(tmp, path) == 0) return true;
+    if (errno != EEXIST) { remove(tmp); return false; }
+    remove(path);
+    return rename(tmp, path) == 0;
+}
+
+// ---------------------------------------------------------------------------
 // mailRewrite: copy the file across, keeping every record the filter says
 // to keep and adding one if there is one to add. Everything goes through a
 // temp file and a rename, so a power cut during a write cannot lose the
@@ -1010,9 +1029,8 @@ bool mailRewrite(int16_t dropIdx, const MailRec* add, uint32_t nowEpoch,
     if (add && kept < g_mailSlots) {
         if (fwrite(add, sizeof(*add), 1, out) != 1) { fclose(out); remove(tmp); return false; }
     }
-    fclose(out);
-    remove(path);
-    if (rename(tmp, path) != 0) return false;
+    if (fclose(out) != 0) { remove(tmp); return false; }   // FAT says "full" here
+    if (!mailReplace(tmp, path)) return false;
     mailIndex();
     return true;
 }
@@ -3045,8 +3063,7 @@ void onRename(const char* oldHandle, const char* newHandle) {
     if (fclose(out) != 0) ok = false;
     if (!ok) { remove(tmp); return; }                 // leave the old file alone
 
-    remove(path);
-    if (rename(tmp, path) != 0) return;
+    if (!mailReplace(tmp, path)) return;
     mailIndex();                                      // the in-RAM index names them too
     mailMarkSysops();       // this copy did not write the sysop marks through (1.1.0)
     if (moved) plat::log("chat: %u message%s follow%s %s to %s",
