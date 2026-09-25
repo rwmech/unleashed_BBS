@@ -953,7 +953,10 @@ this tree.
     instead of dumping them all. The partner's view is unchanged unless
     they are in `/p<you>*` too. This is also what the 1.2.0 sysop chat
     reuses, so build it as the room's private mode rather than as a
-    filter bolted onto `/p`. Watch the room ring: a long private
+    filter bolted onto `/p`. On entering `/p<n>*` the room tells the
+    caller, in its own voice (Rob's words): `--> You won't see other
+    callers while talking directly`. That is 49 columns, so at 40 it needs
+    a short form or a wrap at a word; tty-ux picks which. Watch the room ring: a long private
     conversation must not push held lines out of it without the count
     saying so.
   - **The name is µnleashed wherever a person reads it** (Rob, 2026-09-25;
