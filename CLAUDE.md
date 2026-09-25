@@ -681,6 +681,27 @@ this tree.
     56/0, unit tests pass. esp32dev static DRAM 161,960 (18,776 free),
     flash 1,255,204.
 
+- **Where it stopped (2026-09-24, night)**:
+  - main is 1.1.0-dev.14 (silent mode). The S3 runs dev.12; UHQ and TRA
+    wait for the 1.1.0 release (Rob: no preview on the installer).
+  - The Freenove (COM13) runs camera phase 1 (b904026). The camera build is
+    done and host-tested on cam-1.1.0 (2660a71, rebased on dev.12, pushed
+    as a backup, not merged). Rob chose "tomorrow" for the camera flash.
+    Next: merge main into cam-1.1.0, flash COM13 with Rob's go, then Rob
+    sets `CAMERA SET snap users` so the builder can snap from a plain
+    account while reading the serial console for Rule no. 1 and heap.
+    Watermark: keep it and measure (8 KB of encoder tables in static
+    DRAM; about 44 KB internal heap at a snap against a 32 KB block).
+    Freenove static DRAM is 6,976 free; photo limits ship at 200 because
+    file areas list at most 254 rows. Check whether the slot's DAT3 is on
+    GPIO 13 before anyone uses pin-mode flash there.
+  - Silent mode hand-backs: the BOOT-hold LED stages still show while
+    silent (the builder's call: someone is at the board); after a reboot
+    in silent hours the lights are on until NTP sets the clock.
+  - Also open for 1.1.0: the harness's 1-hour timeout is too short for six
+    groups with a card; the rest is in the 1.1.0 list above.
+  - Site 1.2.6 is live.
+
 ## 1.0.0 (2026-09-23)
 
 **The installer test passed.** Rob flashed a new ESP32 from /install,

@@ -306,6 +306,19 @@ entry when it is released.
 - The S3 display's mail envelope follows that account from boot.
 - MEM reads the card's free space from the sd plugin's cache.
 
+
+**1.1.0-dev.14, silent mode.**
+- CONFIG board's Silent switch and optional silent hours (from and until,
+  HH:MM local, may cross midnight, waiting for NTP) put out the activity
+  LED, both lights outputs and the S3 panel's backlight. Each light keeps
+  its settings and returns exactly as it was; the panel redraws the whole
+  glass before relighting. SYS shows whether the board is silent and why.
+  The power LED is on 3V3 and cannot be switched off: tape it or lift it.
+- `board::silent()` is the one-byte query every light asks, the camera's
+  flash included.
+- A half range or a bad time in system.cfg is read as no hours and
+  logged, never a refusal of the whole file.
+
 ## 1.0.2, 2026-09-23
 
 A security fix. Restoring a backup could turn the published default sysop
