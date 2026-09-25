@@ -388,6 +388,20 @@ entry when it is released.
   to saved, downloaded by YMODEM, listed in FILES 12, two in a row. With
   the camera up, 14 KB of internal RAM is free.
 
+
+**1.1.0-dev.15 (FNCAM 1.0.2), the camera.**
+- A third board: the Freenove ESP32-WROVER camera board, with PSRAM, the
+  card slot over SDMMC, and a camera plugin. `SNAPSHOT` takes a photo at
+  once and offers "Download it now?"; Photos and Timelapse are file areas
+  12 and 13; limits of 10 an hour and 20 a day per caller; naming, age,
+  count and card-space retention; a small who-and-when watermark.
+- The sensor on Rob's board is a GalaxyCore GC0308 (640x480, no JPEG of
+  its own), not the OV2640 Freenove documents: frames are captured raw and
+  encoded on a worker task below the BBS loop, so nobody lags.
+- The flash (pixel or a pin driven high, with a lead time) stays dark in
+  silent mode.
+- announce sends `camera` in features while a sensor answered this boot.
+
 ## 1.0.2, 2026-09-23
 
 A security fix. Restoring a backup could turn the published default sysop
