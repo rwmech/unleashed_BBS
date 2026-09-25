@@ -1078,6 +1078,9 @@ they are the process, and getting them wrong wastes Rob's time.
   and a firmware release tag reaches /install the same way. Assume it is
   on: a directory push or a release tag IS a deploy. Commit locally, tell
   Rob what changed, and push or tag only on his go for that one.
+- **The Freenove camera board on COM13 may be flashed without asking**
+  (Rob, 2026-09-25: "just flash, whatever, make it work"), for as long as
+  the camera work runs. Telnet to it needs no permission either.
 - **The Waveshare S3 on COM12 is the one board I may flash** (Rob,
   2026-09-24), and only after he acknowledges each flash, the first and
   every new build. Telnet to it needs no permission. UHQ and TRA are still
