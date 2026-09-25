@@ -943,6 +943,31 @@ this tree.
     is running on" line (screen-artist).
   - Site: with the Waveshare or the ESP32-CAM picked, /install's Update
     button is cut off at 1366x768 (tty-ux).
+  - **The name is µnleashed wherever a person reads it** (Rob, 2026-09-25;
+    the site did it in 1.3.8). Firmware still sends plain "unleashed" in:
+    Improv's firmware name (main.cpp ~512; the installer decodes UTF-8 and
+    matches either spelling since site 1.3.8), the camera's JPEG comment
+    and fallback board name (camera.cpp ~991), and the shell marquee
+    (bbs_shell.cpp ~3182), which needs µ on terminals that can show it and
+    "u" on those that cannot. Identifiers stay ASCII: the hostname, the
+    default password, announce's `software` value.
+- **1.1.1-dev.1 (2026-09-25)**, tag at 38fcca9: the picture fix for both
+  camera boards (FNCAM 1.0.5, ESPCAM 1.0.2). Sizes follow the sensor (an
+  OV2640 on the Freenove reaches UXGA); the OV2640's AWB gain was off in
+  1.1.0 (`set_awb_gain(wb ? 1 : 0)`), the cause of the green cast; frames
+  settle before the kept one; Auto levels; 20 MHz XCLK for the OV2640;
+  photo re-encodes at 100 minus the quality setting; the white µnleashed
+  wordmark at 37.5% bottom left; a guide note on JPEG quality; the file
+  menu's "(staff)" label now follows the camera's real Photos level. A
+  UXGA snap on the Freenove takes about 14 s at 240 MHz, bound by PSRAM
+  and the card, off the loop with no slow pass; Rob: "as long as its
+  throttled and the animation works I dont care how long it takes".
+  **Trap found:** a rebase left a stale generated `sdkconfig.<env>`, and
+  PlatformIO does not regenerate it when `sdkconfig.defaults` changes, so
+  a board flashed from a worktree ran 160 MHz. Delete the generated file
+  after changing defaults; release builds start clean.
+  Site 1.3.7 serves the Freenove the newest preview ahead of its release
+  (`previews: "ahead"`), with 1.1.0 offered beside it.
 - **Where it stopped (2026-09-24, night)**:
   - main is 1.1.0-dev.14 (silent mode). The S3 runs dev.12; UHQ and TRA
     wait for the 1.1.0 release (Rob: no preview on the installer).
