@@ -943,6 +943,19 @@ this tree.
     is running on" line (screen-artist).
   - Site: with the Waveshare or the ESP32-CAM picked, /install's Update
     button is cut off at 1366x768 (tty-ux).
+  - **Sticky private is a private conversation** (Rob, 2026-09-25: "/p*
+    commands show the other callers in the chat typing, it should just be
+    who you're privately talking to"). While a caller is in `/p<n>*`, show
+    them only the lines between them and node n: privates both ways, plus
+    notices that are about them (pages, broadcasts, time warnings, the
+    partner leaving). Hold room lines rather than drop them. When `/p*`
+    ends, say how many room lines went by and that `/sh` replays them,
+    instead of dumping them all. The partner's view is unchanged unless
+    they are in `/p<you>*` too. This is also what the 1.2.0 sysop chat
+    reuses, so build it as the room's private mode rather than as a
+    filter bolted onto `/p`. Watch the room ring: a long private
+    conversation must not push held lines out of it without the count
+    saying so.
   - **The name is µnleashed wherever a person reads it** (Rob, 2026-09-25;
     the site did it in 1.3.8). Firmware still sends plain "unleashed" in:
     Improv's firmware name (main.cpp ~512; the installer decodes UTF-8 and
