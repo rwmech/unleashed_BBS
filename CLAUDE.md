@@ -681,6 +681,29 @@ this tree.
   with no one in it is skipped. The example Rob gave: "We meet every
   Tuesday at 10a". This reverses nothing: /M message slots stay rejected,
   because /i now does the job.
+- **1.2.0: BBS classics, Rob's picks (2026-09-25)**, beside rotating /i:
+  - **Sysop chat without a split screen.** Rob: "I would just repurpose
+    chat." When the sysop answers a page, both land in a private two-person
+    conversation using what the room already has (sticky private `/p<n>*`
+    or a private channel), linked from OPERATOR's answer. Minimal code: the
+    WROOM image is at 81.7% flash after the hardware work.
+  - **FILE_ID.DIZ, only if it is small.** Rob pushed back unless the code is
+    minimal; it must feed the file listings' descriptions for callers
+    browsing. The zip reader and ROM inflate already exist, so measure it
+    (expected under 2 KB) and bring the number back before building.
+  - **Oneliners**, with **CONFIG censorship**: a banned-words list that
+    applies to everything public (oneliners and forum posts), and to chat
+    only if a separate option says so. Report the overhead if it is not
+    small.
+  - **Top 10 and call statistics** under CALLS: `CALLS TOP`, `CALLS
+    UPLOADERS`, `CALLS CHATTERS` and more, tracking the metrics needed and
+    drawn as a screen.
+  - **Voting booth.**
+  - **Credits, not a time bank.** Unused time turns into board credits that
+    buy things: more time, extra snapshots (if the camera is on), and more
+    added later. A CONFIG page (name to settle: Credits, or something
+    better) with conversion rates and a price per item.
+  - **Not wanted:** upload/download ratios, QWK offline mail.
 - **Long term: push photos out to social media** (Rob, 2026-09-24, "a future
   long term possibility"). Every snapshot, or a chosen few, sent onward so
   a board can post to Bluesky, Mastodon, X or Discord, advertising the
