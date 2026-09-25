@@ -76,6 +76,7 @@
  */
 
 #include "../config.h"
+#include "../core/disk.h"              // fopen and opendir that tell the drive light (1.1.1)
 
 #ifdef BBS_HAS_CAMERA
 #include "camera.h"
@@ -905,7 +906,7 @@ void save(Job& j, const char* photos, const uint8_t* jpg, size_t len) {
     struct stat st;
     if (stat(dst, &st) == 0) { fail(j, "a photo with that name is already there"); return; }
 
-    FILE* fp = fopen(tmp, "wb");
+    FILE* fp = disk::open(tmp, "wb");
     if (!fp) { fail(j, "the card would not take the photo"); return; }
     FileOut fo{ fp, 0, true };
     bool ok = false;
@@ -939,7 +940,7 @@ void save(Job& j, const char* photos, const uint8_t* jpg, size_t len) {
             if (!said) plat::log("camera: the photo could not be re-encoded; saving it as the sensor gave it");
             said = true;
             fclose(fp);
-            fp = fopen(tmp, "wb");
+            fp = disk::open(tmp, "wb");
             fo = FileOut{ fp, 0, fp != nullptr };
         }
     }

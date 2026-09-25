@@ -36,6 +36,7 @@
  * ===========================================================================
  */
 #include "plugin.h"
+#include "disk.h"              // fopen and opendir that tell the drive light (1.1.1)
 #include "bbs.h"
 #include "bbs_util.h"
 #include "sysconfig.h"
@@ -108,7 +109,7 @@ void scan(uint8_t index, plugins::KeyFn fn, void* ctx, bool core) {
     char path[96], want[40], line[176];
     snprintf(path, sizeof(path), "%s/%s", plat::userBase(), BBS_CONFIG_FILE);
     sectionName(p->info.name, want, sizeof(want));
-    FILE* f = fopen(path, "r");
+    FILE* f = disk::open(path, "r");
     if (!f) return;
 
     bool mine = false;

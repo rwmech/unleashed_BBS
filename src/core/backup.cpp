@@ -37,6 +37,7 @@
  */
 
 #include "backup.h"
+#include "disk.h"              // fopen and opendir that tell the drive light (1.1.1)
 #include "cardnames.h"
 #include "sysconfig.h"
 #include "guard.h"
@@ -508,7 +509,7 @@ void BackupService::route(uint32_t now) {
         stagingDir(dir, sizeof(dir));
         mkdir(dir, 0755);
         uploadPath(file, sizeof(file));
-        upload_ = fopen(file, "wb");
+        upload_ = disk::open(file, "wb");
         if (!upload_) { reply(507, "Insufficient Storage", "cannot open staging\n"); return; }
 
         bodyLeft_ = static_cast<uint32_t>(len);
@@ -753,7 +754,7 @@ BackupService::Start BackupService::cardBackup(const char* dir, const char* name
     snprintf(jobPath_, sizeof(jobPath_), "%s/%s", dir, name);
     char tmp[124];
     snprintf(tmp, sizeof(tmp), "%.112s.tmp", jobPath_);
-    jobOut_ = fopen(tmp, "wb");
+    jobOut_ = disk::open(tmp, "wb");
     if (!jobOut_) {
         exporter().abort();
         return Start::Failed;

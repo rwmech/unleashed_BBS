@@ -38,6 +38,7 @@
  */
 
 #include "bbs.h"
+#include "disk.h"              // fopen and opendir that tell the drive light (1.1.1)
 #include "claims.h"
 #include "bbs_util.h"
 #include "fx.h"
@@ -461,6 +462,7 @@ void Bbs::tick() {
     backup_.service(rfds, wfds, now);
     serviceBackup(now);
     serviceCard(now);                 // BACKUP SD, RESTORE SD, the nightly one (1.1.0)
+    serviceScreens(now);              // SCREENS INSTALL, a step a pass (1.1.1)
     stackWatch("backup", nullptr);
     usBack = plat::micros() - mark; mark += usBack;
 
@@ -2611,7 +2613,7 @@ void Bbs::noteBoot() {
     // without limit on a board that is genuinely stuck in a reboot loop.
     uint16_t lines = 0;
     long size = 0;
-    if (FILE* r = fopen(path, "r")) {
+    if (FILE* r = disk::open(path, "r")) {
         char line[96];
         while (fgets(line, sizeof(line), r)) {
             ++lines;
@@ -2623,7 +2625,7 @@ void Bbs::noteBoot() {
         fclose(r);
     }
 
-    FILE* f = fopen(path, size > BBS_REBOOT_MAX ? "w" : "a");
+    FILE* f = disk::open(path, size > BBS_REBOOT_MAX ? "w" : "a");
     if (!f) return;
     // This boot counts too (1.1.0), once its line is going in. The file
     // above was read before this boot's line is written below, so under the

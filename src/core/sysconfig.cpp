@@ -35,6 +35,7 @@
  */
 
 #include "sysconfig.h"
+#include "disk.h"              // fopen and opendir that tell the drive light (1.1.1)
 #include "users.h"          // LAND_* and the landing names, kept in one place
 #include "silent.h"         // silent hours: the time rule, and told when the file is read
 #include "tzones.h"         // valid: a TZ string newlib can read (1.1.1)
@@ -654,7 +655,7 @@ static void closedDefault(SysConfig& out) {
 int parseFile(const char* path, SysConfig& out, char* err, size_t errLen) {
     Ctx c{ &out, 0, err, errLen, 0 };
     if (err && errLen) err[0] = '\0';
-    FILE* f = fopen(path, "r");
+    FILE* f = disk::open(path, "r");
     if (!f) {                                       // no file: defaults, not a problem
         useDefaultSysop(out);
         closedDefault(out);
@@ -720,11 +721,11 @@ static void seed() {
     snprintf(live, sizeof(live), "%s/%s", plat::userBase(), BBS_CONFIG_FILE);
     snprintf(shipped, sizeof(shipped), "%s/%s", plat::fsBase(), BBS_CONFIG_FILE);
 
-    FILE* have = fopen(live, "r");
+    FILE* have = disk::open(live, "r");
     if (have) { fclose(have); return; }              // already ours, leave it
-    FILE* from = fopen(shipped, "r");
+    FILE* from = disk::open(shipped, "r");
     if (!from) return;                               // nothing to seed from
-    FILE* to = fopen(live, "w");
+    FILE* to = disk::open(live, "w");
     if (!to) { fclose(from); return; }
 
     char buf[256];
@@ -970,13 +971,13 @@ bool write(const KeyVal* pairs, uint8_t count, const char* section, char* err, s
     // never added at the end. Marked done up front for the second half.
     for (uint8_t i = 0; i < count; ++i) if (!pairs[i].value) done[i] = true;
 
-    FILE* out = fopen(tmp, "w");
+    FILE* out = disk::open(tmp, "w");
     if (!out) {
         snprintf(err, errLen, "cannot write the config file");
         return false;
     }
 
-    FILE* in = fopen(path, "r");
+    FILE* in = disk::open(path, "r");
     bool inSection = section == nullptr;        // the top of the file is the unnamed section
     bool seen      = inSection;
     if (in) {

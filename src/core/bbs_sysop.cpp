@@ -43,6 +43,7 @@
  */
 
 #include "bbs.h"
+#include "disk.h"              // fopen and opendir that tell the drive light (1.1.1)
 #include "claims.h"
 #include "bbs_util.h"
 #include "clock.h"
@@ -195,7 +196,7 @@ void Bbs::sysopLastLoad() {
     char path[96];
     sysopLastPath(path, sizeof(path));
     sysopLast_ = 0;
-    FILE* f = fopen(path, "r");
+    FILE* f = disk::open(path, "r");
     if (!f) return;
     char line[16] = "";
     if (fgets(line, sizeof(line), f)) sysopLast_ = static_cast<uint32_t>(strtoul(line, nullptr, 10));
@@ -206,7 +207,7 @@ void Bbs::sysopLastSave(uint32_t id) {
     char path[96], tmp[104];
     sysopLastPath(path, sizeof(path));
     snprintf(tmp, sizeof(tmp), "%s.tmp", path);
-    FILE* f = fopen(tmp, "w");
+    FILE* f = disk::open(tmp, "w");
     if (!f) return;
     bool ok = fprintf(f, "%lu\n", static_cast<unsigned long>(id)) > 0;
     if (fclose(f) != 0) ok = false;
@@ -1305,7 +1306,7 @@ bool cfgFileValue(const char* section, const char* key, char* out, size_t n) {
     char path[160], line[192], want[40];
     out[0] = '\0';
     snprintf(path, sizeof(path), "%s/system.cfg", plat::userBase());
-    FILE* f = fopen(path, "r");
+    FILE* f = disk::open(path, "r");
     if (!f) return false;
     bool inSection = section == nullptr || !*section;
     bool found = false;

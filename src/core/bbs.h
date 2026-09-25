@@ -1010,6 +1010,15 @@ private:
     // SCREENS VIEW to play one. Staff. Read from the folders when asked.
     void cmdScreens(Session& s, const char* arg);
     bool rowScreens(Session& s);
+    // SCREENS INSTALL [STOCK] (1.1.1): the card's own screens copied into
+    // flash so they survive the card being pulled, and the stock set put
+    // back. A job of one step a pass, never a burst (Rule no. 1), from
+    // tick. screensBusy: one is under way (a backup or restore waits for
+    // it, and it for them). screensDrop: the card is going (dropCardJob).
+    void serviceScreens(uint32_t now);
+    bool screensBusy() const;
+    void screensDrop();
+    void screensInstall(Session& s, bool stock);
     // restartPlugins: hand anybody inside a plugin home, stop them all and
     // start them again on the file as it is now. A CONFIG save and a
     // restore both end here (bbs_sysop.cpp).
