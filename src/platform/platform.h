@@ -505,6 +505,16 @@ void     psramFree(void* p);
 // camRaw:        the sensor up now gives RGB565, for jpegRaw to encode.
 // camSensor:     the name of the sensor the last bring-up found, "" before
 //                one has.
+// camMaxSize:    the largest frame that sensor gives, false before a
+//                bring-up has found one.
+// camMeter:      what the sensor's auto exposure is doing, read from the
+//                sensor while the camera is up (a few register reads, the
+//                worker's). CAM_METER_LUMA: a = its frame average, b = the
+//                average it aims for (the GC0308: 0xD4, 0xD3).
+//                CAM_METER_EXPOSURE: a = exposure lines, b = gain (the
+//                OV2640: sensor bank 0x45/0x10/0x04 and 0x00).
+//                CAM_METER_NONE for any other.
+// camQuality:    the sensor's JPEG quality, changed while it runs.
 // camClose:      the sensor down and its memory back: the 32 KB DMA block and
 //                the frame buffer. The camera is never left running.
 // camDmaLargest: the largest internal DMA-capable block free now, which a
@@ -540,6 +550,10 @@ void     psramFree(void* p);
 //                not decode; out may then have had a part, to discard.
 // jpegRaw:       encode an RGB565 frame (camRaw) the same way, drawing on
 //                each strip first. False when this build cannot (the host).
+// jpegHist:      decode a JPEG at an eighth of its size and hand the
+//                pixels (RGB888) to fn a block at a time, for a histogram:
+//                the entropy decoding without the full picture. False when
+//                this build cannot or the picture did not decode.
 // ---------------------------------------------------------------------------
 struct CamCfg {
     const char* size    = "svga";     // one of BBS_CAM_SIZES
@@ -549,6 +563,12 @@ struct CamCfg {
     int8_t      bright = 0, contrast = 0, saturation = 0, exposure = 0;   // -2..2
     uint8_t     wb      = 0;          // auto|sunny|cloudy|office|home
     uint8_t     effect  = 0;          // none|negative|grey|red|green|blue|sepia
+    // Register writes for one sensor, by its PID, made after the driver's
+    // own settings at every bring-up (a page select included, in order):
+    // what the plugin knows a sensor's driver leaves out. None when 0.
+    uint16_t    regsPid = 0;
+    uint8_t     nRegs   = 0;
+    uint8_t     regs[8][2] = {};
 };
 
 using MarkRowsFn = void (*)(void* ctx, uint8_t* rgb, uint16_t width, uint16_t y0, uint16_t rows);
@@ -573,6 +593,10 @@ uint32_t camDmaLargest();
 uint32_t camInternalFree();
 bool     camRaw();
 const char* camSensor();
+bool     camMaxSize(uint16_t& w, uint16_t& h);
+enum CamMeter : uint8_t { CAM_METER_NONE = 0, CAM_METER_LUMA, CAM_METER_EXPOSURE };
+CamMeter camMeter(uint16_t& a, uint16_t& b);
+bool     camQuality(int quality);
 void*    camAlloc(size_t n);
 void     camFree(void* p);
 bool     taskStart(void (*fn)(void*), void* arg, uint32_t stackBytes, const char* name);
@@ -586,6 +610,8 @@ bool     jpegMark(const uint8_t* jpg, size_t len, uint8_t quality, MarkRowsFn dr
                   MarkOutFn out, void* octx, uint16_t& width, uint16_t& height);
 bool     jpegRaw(const uint8_t* rgb565, uint16_t w, uint16_t h, uint8_t quality, MarkRowsFn draw, void* dctx,
                  MarkOutFn out, void* octx);
+using HistPixFn = void (*)(void* ctx, const uint8_t* rgb, size_t pixels);
+bool     jpegHist(const uint8_t* jpg, size_t len, HistPixFn fn, void* ctx);
 #endif  // BBS_HAS_CAMERA
 
 // ---------------------------------------------------------------------------

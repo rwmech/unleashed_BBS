@@ -6165,7 +6165,59 @@ def test_camera():
     s.pump(0.3)
     cam = plain(s.buf)
     ok &= check("CAMERA: the sensor, the count, the card, the last photo",
-                b"Sensor GC0308 at vga" in cam and b"Photos 1" in cam and b"Last " in cam and b"CamCaller" in cam)
+                b"Sensor GC0308, up to vga" in cam and b"Size vga" in cam and b"Photos 1" in cam and
+                b"Last " in cam and b"CamCaller" in cam)
+    ok &= check("and the picture's correction, levels on as shipped", b"Levels auto, gamma 1.0" in cam)
+
+    # A size the sensor cannot give (1.1.1): kept in the file, used as the
+    # largest it can, said once in the log. The host's sensor is the
+    # profile's GC0308, qvga and vga.
+    s.buf.clear()
+    s.send(b"camera set size uxga\r")
+    ok &= check("a saved uxga is taken", s.wait_for(b"live now", 4))
+    s.buf.clear()
+    s.send(b"camera\r")
+    s.wait_for(b"Card free", 4)
+    s.pump(0.3)
+    ok &= check("CAMERA says it is using vga, and what was saved", b"Size vga (saved uxga)" in plain(s.buf))
+    got = snap(s)
+    if b"Download it now?" in got:
+        s.send(b"n")
+        s.wait_for(b"kept in the Photos area", 4)
+    ok &= check("a snap at a saved uxga logs the clamp once",
+                host_log().count("camera: size uxga is more than the GC0308 gives; using vga") == 1)
+    s.buf.clear()
+    s.send(b"camera set size vga\r")
+    s.wait_for(b"live now", 4)
+
+    # The FILES menu marks an area closed to callers "(staff)", and the
+    # photo areas take that from the camera's Photos setting, not from
+    # their placeholder level (1.1.1, found on PixelBBS).
+    def area_menu():
+        c.buf.clear()
+        c.send(b"files\r")
+        c.wait_for(b"File areas", 5)
+        c.pump(0.6)
+        seen = plain(c.buf)
+        c.send(b"q")
+        c.pump(0.6)
+        return seen
+    menu = area_menu()
+    ok &= check("Photos = all: Photos is not marked (staff) in the FILES menu",
+                b"Photos" in menu and b"Photos (staff)" not in menu and b"Timelapse (staff)" not in menu)
+    s.buf.clear()
+    s.send(b"camera set photos staff\r")
+    s.wait_for(b"live now", 4)
+    s.buf.clear()
+    s.send(b"files\r")
+    s.wait_for(b"File areas", 5)
+    s.pump(0.6)
+    ok &= check("Photos = staff: it is marked (staff)", b"Photos (staff)" in plain(s.buf))
+    s.send(b"q")
+    s.pump(0.6)
+    s.buf.clear()
+    s.send(b"camera set photos all\r")
+    s.wait_for(b"live now", 4)
 
     # The Photos area: the caller finds it in FILES, area 12.
     c.buf.clear()

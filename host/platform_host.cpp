@@ -669,6 +669,22 @@ uint32_t camDmaLargest() { return g_camHeld ? 0 : envMs("BBS_CAM_DMA", 65536); }
 uint32_t camInternalFree() { return envMs("BBS_CAM_INTERNAL", 98304) - (g_camHeld ? 40000u : 0u); }
 bool camRaw() { return false; }            // the host's frames are JPEG-shaped
 const char* camSensor() { return BBS_CAM_SENSOR; }
+// The host's stand-in sensor gives the profile's shipped sizes, the last
+// of them as its largest: BBS_CAM_HOST_MAX ("w x h") overrides, so a test
+// can play a sensor with a larger or smaller frame.
+bool camMaxSize(uint16_t& w, uint16_t& h) {
+    w = h = 0;
+    const char* e = getenv("BBS_CAM_HOST_MAX");
+    unsigned a = 0, b = 0;
+    if (e && sscanf(e, "%ux%u", &a, &b) == 2 && a && b) {
+        w = static_cast<uint16_t>(a);
+        h = static_cast<uint16_t>(b);
+        return true;
+    }
+    return false;
+}
+CamMeter camMeter(uint16_t&, uint16_t&) { return CAM_METER_NONE; }
+bool camQuality(int) { return false; }
 void* camAlloc(size_t n) { return malloc(n); }
 void camFree(void* p) { free(p); }
 
@@ -728,6 +744,9 @@ bool jpegMark(const uint8_t*, size_t, uint8_t, MarkRowsFn, void*, MarkOutFn, voi
     return false;                          // no codec on the host: the photo goes out unmarked
 }
 
+bool jpegHist(const uint8_t*, size_t, HistPixFn, void*) {
+    return false;                          // no codec on the host
+}
 bool jpegRaw(const uint8_t*, uint16_t, uint16_t, uint8_t, MarkRowsFn, void*, MarkOutFn, void*) {
     return false;                          // no codec on the host, and camRaw never says raw
 }

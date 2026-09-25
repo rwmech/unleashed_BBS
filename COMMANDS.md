@@ -1025,8 +1025,8 @@ whether one answers; every snap looks again. The directory's camera badge
 enabled    = yes
 snap       = staff      ; who may take a photo, as shipped
 photos     = all        ; who may see and download photos, as shipped
-size       = vga        ; qvga | vga, the sensor's own sizes (BBS_CAM_SIZES)
-quality    = 12         ; 4 to 40, lower is better
+size       = vga        ; qvga | vga | svga | xga | hd | sxga | uxga | qxga, what the sensor gives
+quality    = 10         ; 4 to 40, lower is better
 names      = date       ; date | date+handle | by handle
 watermark  = yes
 keep       = 30         ; days callers' photos are kept; 0 keeps them forever
@@ -1047,6 +1047,8 @@ pic_sat    = 0          ; saturation
 pic_exposure = 0
 pic_wb     = auto       ; auto | sunny | cloudy | office | home
 pic_effect = none       ; none | negative | grey | red | green | blue | sepia
+pic_levels = yes        ; Auto levels: stretch each photo to full black and white
+pic_gamma  = 1.0        ; 0.6 | 0.7 | 0.8 | 0.9 | 1.0 | 1.1 | 1.2 | 1.4 | 1.6
 ```
 
 - **Snap** and **Photos**: who may take a picture, and who may see and
@@ -1056,12 +1058,23 @@ pic_effect = none       ; none | negative | grey | red | green | blue | sepia
   a camera, and that it also shoots on a timer, only when Snap is open below
   staff and Timelapse is running: nobody is invited to a feature closed to
   them.
-- **Size**: the sensor's own resolutions, `qvga` (320x240) or `vga`
-  (640x480), `vga` as shipped. The FNK0060 on the bench carries a GC0308,
-  which goes no higher, though Freenove document an OV2640. CAMERA names
-  the sensor the board found.
+- **Size**: the choices follow the sensor the board found (1.1.1): a
+  GC0308 offers `qvga` (320x240) and `vga` (640x480), an OV2640 goes on
+  through `svga`, `xga`, `hd`, `sxga` and `uxga` (1600x1200). Until a
+  sensor has been brought up the board's own list is offered (`qvga | vga`
+  on the Freenove, whose FNK0060 on the bench carries a GC0308, though
+  Freenove document an OV2640). A size saved for a bigger sensor is kept
+  in the file, and the snap uses the largest this sensor gives, logged
+  once (`camera: size uxga is more than the GC0308 gives; using vga`), so
+  a camera swapped back gets its size back. CAMERA names the sensor
+  (`Sensor GC0308, up to vga`, or that none was found, or that none has
+  been looked for yet) and the size in use.
 - **Quality**: JPEG quality, 4 to 40, lower is better (the sensor's own
-  scale). 12 as shipped.
+  scale). 10 as shipped (12 before 1.1.1), which an OV2640's frame buffer
+  holds at UXGA; a frame that does not come whole twice running is tried
+  two steps lower and the board logs it. A photo encoded again for the
+  watermark or the correction is encoded at 100 minus this, 90 as
+  shipped, so the re-encode never costs the sensor's quality back.
 - **Names**: how a caller's photo is filed.
   - `date`, as shipped: `SNAP-20260924-171204.JPG`.
   - `date+handle`: `SNAP-20260924-171204-quantumrob.JPG`.
@@ -1123,10 +1136,36 @@ Timed photos go in `Photos/timelapse/`, area 13 below, never inside Photos
 itself.
 
 **Picture** (its own page): the sensor's own adjustments, `0`/`no`/`auto`/
-`none` as shipped throughout.
+`none` as shipped throughout, and the board's own correction.
 - **Flip** and **Mirror**: upside down, and left-right mirrored.
 - **Bright**, **Contrast**, **Colour** (saturation) and **Exposure**: -2 to
-  2 each.
+  2 each. On a GC0308 the board writes all four to the sensor itself
+  (1.1.1): its driver has no brightness at all. Brightness is the luma
+  offset (0xB5, 16 a step), contrast 0xB3, colour 0xB1 and 0xB2 (16 a
+  step either side of 0x40), and exposure the auto exposure's target
+  (0xD3, 72 as shipped, 12 a step: 48 to 96).
+- **Levels** (Auto levels): `yes` as shipped. Every photo is stretched so
+  its darkest half percent is black and its brightest half percent white,
+  a channel at a time, which also takes out a colour cast; each channel
+  stays within 32 of the three's common points, so a green lawn is not
+  turned grey. A flat frame is never stretched more than about five times.
+- **Gamma**: `1.0` as shipped, changing nothing. Lower darkens the middle
+  tones, which is what a washed-out sky wants; higher lightens them.
+- Levels and Gamma work on any sensor. They run on the camera's worker
+  before the encode, from a 768-byte table built from a histogram of the
+  frame, never a second copy of the picture: a GC0308's raw frame is read
+  once for the histogram, an OV2640's JPEG is decoded at an eighth of its
+  size for it and then re-encoded, as the watermark does.
+- The camera comes up from cold for every photo, so frames are thrown
+  away until the sensor has settled rather than the three it used to get:
+  a GC0308 until its own frame average meets its target (up to 2.5 s), an
+  OV2640 until its exposure and gain hold still for two frames, four at
+  least (up to 1.5 s), which also gives its white balance time. Every
+  automatic control is switched on at each bring-up (exposure, AEC2, gain,
+  white balance and its gain) with White choosing the mode, and on an
+  OV2640 its own lens shading, raw gamma and pixel corrections. The first outdoor
+  photo on the bench was taken before the exposure had moved at all, which
+  is why it was white and why Exposure seemed to do nothing.
 - **White**: `auto | sunny | cloudy | office | home`.
 - **Effect**: `none | negative | grey | red | green | blue | sepia`.
 

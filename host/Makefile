@@ -157,7 +157,8 @@ test_silent: test_silent.cpp ../src/core/silent.h
 # The camera's rules and its watermark (1.1.0): names, limits, retention,
 # the timelapse's schedule, the download offer, the JPEG comment, and the
 # watermark drawn a strip at a time, all with no sensor and no card.
-test_camera: test_camera.cpp ../src/plugins/camera_rules.h ../src/plugins/camera_mark.h ../src/plugins/panel_font.h
+test_camera: test_camera.cpp ../src/plugins/camera_rules.h ../src/plugins/camera_mark.h ../src/plugins/panel_font.h \
+             ../src/plugins/camera_pic.h
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_camera.cpp
 
 # The project is GPL-3.0-or-later (1.1.0-dev.11). A tracked file whose SPDX

@@ -706,6 +706,18 @@ this tree.
   sensor. Measure the added encode time (Rule no. 1 is about the loop, but
   a snap should stay a few seconds) and the memory (it should need none
   beyond a 256-entry table).
+  **Built on pic-1.1.1 (FNCAM 1.0.4), host-tested.** The histogram says
+  the photo was not low in contrast but overexposed (median 247). The
+  cause is the bring-up, not the driver: the camera comes up cold for
+  every snap and was shot three frames in, before the GC0308's AEC had
+  moved, so no exposure setting could show. It now waits on the sensor's
+  own Y_average (0xD4) against its target (0xD3), up to 2.5 s. The driver
+  lacks only brightness (set_dummy); the board writes all four settings
+  from the datasheet anyway. **IR cut: the evidence does not fit.** The
+  lawn and trees are green and only one shrub is red (a burning bush in
+  September); a missing IR filter pinks all foliage. So no IR mitigation.
+  Levels and gamma: 768 bytes of tables and a 4 KB histogram, both PSRAM,
+  for the snap only. Time added per snap: to be measured on the board.
 - **1.1.1: `SCREENS INSTALL`** (Rob, 2026-09-25). Screens on the card are
   played from the card and never copied into flash, so pulling the card
   loses a sysop's own screens until it returns. `SCREENS INSTALL` (sysop)

@@ -24,6 +24,50 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.1.1-dev.1 (FNCAM 1.0.4, the picture), 2026-09-25
+
+The first outdoor photo on the Freenove came out white, median 247 of 255
+on every channel, and Brightness -2, Contrast 2 and Exposure -2 changed
+nothing. Host-tested; waits for the board to be back on USB.
+
+- **The camera waits for the exposure to settle.** It comes up from cold
+  for every photo, and the GC0308 starts on its default exposure, which
+  outdoors is many times too long. Three frames were waited, before its
+  auto exposure had moved. Now the sensor's own frame average (Y_average,
+  0xD4) is read each frame against its target (0xD3), up to 2.5 s.
+- **The GC0308's settings, written by the board.** esp32-camera 2.1.7's
+  driver has contrast, saturation and the exposure target, but its
+  brightness is `set_dummy`. All four are written after the driver's own
+  (GC0308 datasheet, page 0: 0xB5, 0xB3, 0xB1/0xB2, 0xD3).
+- **Auto levels and gamma** on CONFIG camera's Picture page, on any
+  sensor, on the worker before the encode: three 256-entry tables from a
+  histogram, never a second frame.
+- **The size list follows the sensor**: up to VGA on a GC0308, UXGA on an
+  OV2640. A saved size too big for the sensor is used as the largest it
+  gives, with one log line, and kept in the file. CAMERA and PLUGINS name
+  the sensor, or say none was found, or none looked for yet.
+- The OV2640's own JPEG is still what is saved when there is nothing to
+  do to it; with the watermark or a correction it is decoded a strip at a
+  time and encoded again, on the worker, now at quality 90 (it was 83).
+- **The OV2640's green cast.** `set_awb_gain` was given `wb ? 1 : 0`, so
+  with White on auto the white balance was measured and never applied.
+  AWB gain, AEC, AEC2 and AGC are all on at every bring-up now, and the
+  OV2640 is settled by its own exposure and gain (sensor bank 0x45,
+  0x10, 0x04 and 0x00) holding still, up to 1.5 s. Its lens shading, raw
+  gamma, black and white pixel correction and DCW are on.
+- **FILES marked Photos and Timelapse "(staff)" with Photos = all** (Rob,
+  on PixelBBS). The marker read the photo areas' placeholder level, which
+  is Sysop and never used; access itself was right. The marker and the
+  check now take the level from one helper (`areaRead`).
+- JPEG quality 10 as shipped (12 before), with one step down logged if a
+  frame will not come whole. XCLK stays per sensor: 20 MHz for a sensor
+  that encodes (the OV2640), 10 MHz for a raw one (the GC0308).
+- Measured on the ESP32-CAM (1.1.1-dev.0 base, 160 MHz): GC0308 at VGA
+  settled in 6 frames (average 71, target 72), 5.8 s a snap with levels
+  (0.35 s of it the correction); OV2640 at UXGA 13.1 s with levels (the
+  eighth-size histogram 0.8 s) against 10.5 s without. No slow pass in
+  any of them.
+
 ## 1.1.1-dev.0 (ESPCAM 1.0.1), 2026-09-25, pre-release
 
 **Out early for testing.** A development build, published as a GitHub

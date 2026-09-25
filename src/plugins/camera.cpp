@@ -80,6 +80,7 @@
 #ifdef BBS_HAS_CAMERA
 #include "camera.h"
 #include "camera_mark.h"
+#include "camera_pic.h"
 #include "camera_rules.h"
 #include "files.h"
 #include "lights.h"
@@ -130,7 +131,7 @@ struct Settings {
     PlugLevel snap     = PlugLevel::Staff;   // Rob: staff as shipped
     PlugLevel photos   = PlugLevel::All;     // Rob: everyone, guests included
     uint8_t   size     = BBS_CAM_SIZE;
-    uint8_t   quality  = 12;
+    uint8_t   quality  = 10;                 // 1.1.1: 12 before; the frame buffer holds it at UXGA
     uint8_t   names    = camrules::NAME_DATE;
     bool      mark     = true;
     uint16_t  keepDays = 30;
@@ -147,8 +148,39 @@ struct Settings {
     bool      flip = false, mirror = false;
     int8_t    bright = 0, contrast = 0, sat = 0, exposure = 0;
     uint8_t   wb = 0, effect = 0;
+    bool      levels = true;                 // "Auto levels" (1.1.1): on as shipped
+    uint8_t   gamma  = campic::kGammaNone;   // a word of campic::kGammas
 };
 Settings g_set;
+
+// ---------------------------------------------------------------------------
+// The sizes CONFIG offers follow the sensor (1.1.1): until a bring-up has
+// found one, the profile's list (BBS_CAM_SIZES, what the board ships with);
+// after it, every size that fits the sensor's largest frame. The worker
+// sets the count, the loop rebuilds the words. A saved size is kept by its
+// word, whatever the sensor: only the size a snap uses is brought down.
+// ---------------------------------------------------------------------------
+char                 g_sizeChoices[48] = BBS_CAM_SIZES;
+std::atomic<uint8_t> g_sizeFound{ 0 };      // 0 until a bring-up says
+uint8_t              g_sizeShown = 0;       // the count g_sizeChoices was built for
+
+// sizeCount: how many sizes the camera offers now.
+uint8_t sizeCount() {
+    const uint8_t n = g_sizeFound.load();
+    if (n) return n;
+    uint8_t words = 1;
+    for (const char* p = BBS_CAM_SIZES; *p; ++p) words += *p == '|';
+    return words;
+}
+
+// sizeChoicesNow: the words brought up to date with the sensor, from the
+// loop only.
+void sizeChoicesNow() {
+    const uint8_t n = g_sizeFound.load();
+    if (!n || n == g_sizeShown) return;
+    g_sizeShown = n;
+    campic::sizeList(n, g_sizeChoices, sizeof(g_sizeChoices));
+}
 
 // wordAt: the n-th word of a bar-separated list, into out.
 bool wordAt(const char* list, uint8_t n, char* out, size_t cap) {
@@ -191,7 +223,7 @@ bool apply(Settings& g, const char* key, const char* v) {
     int w;
     if (!strcmp(key, "snap"))           { PlugLevel l; if (!plugins::levelFromText(v, l)) return false; g.snap = l; }
     else if (!strcmp(key, "photos"))    { PlugLevel l; if (!plugins::levelFromText(v, l)) return false; g.photos = l; }
-    else if (!strcmp(key, "size"))      { if ((w = wordIndex(BBS_CAM_SIZES, v)) < 0) return false; g.size = static_cast<uint8_t>(w); }
+    else if (!strcmp(key, "size"))      { if ((w = wordIndex(campic::kAllSizes, v)) < 0) return false; g.size = static_cast<uint8_t>(w); }
     else if (!strcmp(key, "quality"))   { if (!num(v, 4, 40, n)) return false; g.quality = static_cast<uint8_t>(n); }
     else if (!strcmp(key, "names"))     { if ((w = wordIndex(camrules::kSchemes, v)) < 0) return false; g.names = static_cast<uint8_t>(w); }
     else if (!strcmp(key, "watermark")) { g.mark = yes(v); }
@@ -218,6 +250,8 @@ bool apply(Settings& g, const char* key, const char* v) {
     else if (!strcmp(key, "pic_exposure")) { if (!num(v, -2, 2, n)) return false; g.exposure = static_cast<int8_t>(n); }
     else if (!strcmp(key, "pic_wb"))    { if ((w = wordIndex(kWbs, v)) < 0) return false; g.wb = static_cast<uint8_t>(w); }
     else if (!strcmp(key, "pic_effect")){ if ((w = wordIndex(kEffects, v)) < 0) return false; g.effect = static_cast<uint8_t>(w); }
+    else if (!strcmp(key, "pic_levels")){ g.levels = yes(v); }
+    else if (!strcmp(key, "pic_gamma")) { if ((w = wordIndex(campic::kGammas, v)) < 0) return false; g.gamma = static_cast<uint8_t>(w); }
     else return false;
     return true;
 }
@@ -389,6 +423,9 @@ struct Job {
     uint8_t   jq = 80;                     // the re-encode's quality
     char      sizeWord[8] = {};
     plat::CamCfg cam;
+    // the picture (camera_pic.h), copied when the job starts
+    bool      levels = true;
+    uint8_t   gammaT = 10;                 // tenths
     // pruning, copied when the job starts
     Policy    pol[kSysMax + 1];
     char      sysFolder[kSysMax][16] = {};
@@ -401,6 +438,14 @@ struct Job {
     uint16_t  w = 0, h = 0;
     bool      marked = false;
     uint32_t  msUp = 0, msShot = 0, msSave = 0, msAll = 0;
+    uint32_t  msFix = 0;                   // the histogram and the tables
+    uint8_t   settleFrames = 0;            // frames waited for the exposure
+    uint16_t  meterA = 0, meterB = 0;      // the last meter reading (camMeter)
+    uint8_t   meterKind = 0;               // plat::CamMeter
+    uint32_t  srcBytes = 0;                // the sensor's own JPEG, before any re-encode
+    uint8_t   qUsed = 0;                   // the sensor quality the frame was taken at
+    bool      fixed = false;               // the tables changed the picture
+    uint8_t   lo[3] = {}, hi[3] = {};      // the levels chosen
     uint32_t  stackFree = 0;
     uint32_t  freeUp = 0, dmaUp = 0;       // internal RAM with the camera up
     uint32_t  removed = 0;
@@ -481,6 +526,45 @@ void markRows(void* ctx, uint8_t* rgb, uint16_t width, uint16_t y0, uint16_t row
     MarkCtx* m = static_cast<MarkCtx*>(ctx);
     if (!m->laid) { m->box = cammark::layout(width, m->h, m->text); m->laid = true; }
     cammark::drawRows(rgb, width, y0, rows, m->box, m->text);
+}
+
+// Each strip on its way to the encoder: the tables first (the correction),
+// then the watermark on top, so the mark is never corrected.
+struct PicCtx {
+    const uint8_t (*lut)[256];            // null: nothing to correct
+    MarkCtx*      mark;                   // null: no watermark
+};
+
+void picRows(void* ctx, uint8_t* rgb, uint16_t width, uint16_t y0, uint16_t rows) {
+    PicCtx* p = static_cast<PicCtx*>(ctx);
+    if (p->lut) campic::apply(p->lut, rgb, static_cast<size_t>(width) * rows);
+    if (p->mark) markRows(p->mark, rgb, width, y0, rows);
+}
+
+void histPix(void* ctx, const uint8_t* rgb, size_t pixels) {
+    campic::histRgb888(rgb, pixels, *static_cast<campic::Hist*>(ctx));
+}
+
+// tables: the correction for this picture, into lut (PSRAM, 768 bytes),
+// from a histogram of the raw frame or of the JPEG at an eighth of its
+// size. False when it would change nothing, or there was no room: the
+// picture is then saved as it came, never refused for it.
+bool tables(Job& j, const uint8_t* pic, size_t len, uint8_t (*lut)[256]) {
+    const uint32_t t0 = plat::millis();
+    campic::Hist* h = nullptr;
+    if (j.levels) {
+        h = static_cast<campic::Hist*>(plat::camAlloc(sizeof(campic::Hist)));
+        if (h) {
+            memset(h, 0, sizeof(*h));
+            if (j.raw) campic::histRgb565(pic, j.w, j.h, 2, *h);
+            else if (!plat::jpegHist(pic, len, histPix, h)) h->n = 0;
+        }
+    }
+    campic::buildTables(h, j.levels, j.gammaT, lut, j.lo, j.hi);
+    plat::camFree(h);
+    j.msFix = plat::millis() - t0;
+    j.fixed = !campic::identity(lut);
+    return j.fixed;
 }
 
 // mkdirs: the folders of a path under Photos, made as needed.
@@ -718,6 +802,12 @@ void fail(Job& j, const char* why) {
     j.ph.store(PH_FAILED);
 }
 
+// sensorSizes: after a bring-up, which sizes the sensor gives.
+void sensorSizes() {
+    uint16_t w = 0, h = 0;
+    if (plat::camMaxSize(w, h)) g_sizeFound.store(campic::sizeCountFor(w, h, 0));
+}
+
 // shoot: bring the sensor up, wait for the flash, take the frame, keep a
 // copy, and put the sensor down again. The copy is what is written: the
 // sensor's 32 KB of internal DMA memory is back before the card is touched.
@@ -733,12 +823,38 @@ uint8_t* shoot(Job& j, size_t& len) {
         return nullptr;
     }
     g_sensor.store(SENSOR_FOUND);
+    sensorSizes();
     j.freeUp = plat::camInternalFree();                // what the camera left while it runs
     j.dmaUp  = plat::camDmaLargest();
     const uint8_t* buf = nullptr;
     uint16_t w = 0, h = 0;
-    for (int i = 0; i < 3; ++i) {                      // exposure settles over the first frames
+    // The exposure and white balance settle over the first frames, and the
+    // camera comes up cold for every photo, so frames are thrown away until
+    // the sensor says it has settled (camera_pic.h): the GC0308 by its own
+    // average against its target (Settle, at most kSettleMaxMs), the OV2640
+    // by its exposure and gain holding still (Steady, at most
+    // kSteadyMaxMs). A sensor with no meter gets the three frames it
+    // always had.
+    campic::Settle st;
+    campic::Steady sd;
+    const uint32_t settleFrom = plat::millis();
+    for (int i = 0; i < 60; ++i) {
         if (plat::camGrab(buf, len, w, h)) plat::camRelease();
+        ++j.settleFrames;
+        uint16_t a = 0, b = 0;
+        const plat::CamMeter kind = plat::camMeter(a, b);
+        j.meterKind = kind;
+        j.meterA = a;
+        j.meterB = b;
+        const uint32_t took = plat::millis() - settleFrom;
+        if (kind == plat::CAM_METER_LUMA) {
+            if (campic::settled(st, static_cast<uint8_t>(a), static_cast<uint8_t>(b), took) ||
+                took >= campic::kSettleMaxMs) break;
+        } else if (kind == plat::CAM_METER_EXPOSURE) {
+            if (campic::steady(sd, a, b) || took >= campic::kSteadyMaxMs) break;
+        } else if (i >= 2) {
+            break;
+        }
     }
     j.msUp = plat::millis() - t0;
     j.ph.store(PH_READY);
@@ -747,7 +863,16 @@ uint8_t* shoot(Job& j, size_t& len) {
 
     uint32_t t1 = plat::millis();
     uint8_t* copy = nullptr;
+    j.qUsed = j.cam.quality;
     for (int tries = 0; tries < 4 && !copy; ++tries) {
+        // A JPEG that did not come whole twice running at this quality may
+        // be too big for the frame buffer (the driver sizes it by the frame,
+        // a fifth of the pixels): one step down, said once.
+        if (tries == 2 && !plat::camRaw() && j.qUsed < 40 && plat::camQuality(j.qUsed + 2)) {
+            plat::log("camera: no whole frame at quality %u; trying %u", static_cast<unsigned>(j.qUsed),
+                      static_cast<unsigned>(j.qUsed + 2));
+            j.qUsed = static_cast<uint8_t>(j.qUsed + 2);
+        }
         // The frame being filled when the flash came on began before it, so
         // it goes; the one after is the picture.
         if (plat::camGrab(buf, len, w, h)) plat::camRelease();
@@ -757,7 +882,7 @@ uint8_t* shoot(Job& j, size_t& len) {
         if (raw ? (w && h && n == static_cast<size_t>(w) * h * 2u) : camrules::jpegWhole(buf, n)) {
             j.raw = raw;
             copy = static_cast<uint8_t*>(plat::camAlloc(n));
-            if (copy) { memcpy(copy, buf, n); len = n; j.w = w; j.h = h; }
+            if (copy) { memcpy(copy, buf, n); len = n; j.w = w; j.h = h; j.srcBytes = static_cast<uint32_t>(n); }
         }
         plat::camRelease();
     }
@@ -789,27 +914,36 @@ void save(Job& j, const char* photos, const uint8_t* jpg, size_t len) {
         if (max > static_cast<int>(sizeof(j.markText)) - 1) max = static_cast<int>(sizeof(j.markText)) - 1;
         cammark::fitText(j.markBoard, j.markWhen, j.markWho, max, j.markText, sizeof(j.markText));
     }
+    // The correction's tables, in PSRAM beside the frame: 768 bytes, never a
+    // second copy of the picture.
+    uint8_t (*lut)[256] = static_cast<uint8_t (*)[256]>(plat::camAlloc(3 * 256));
+    const bool fix = lut && tables(j, jpg, len, lut);
+    MarkCtx mc{ {}, j.markText, false, j.w, j.h };
+    PicCtx pc{ fix ? lut : nullptr, j.doMark ? &mc : nullptr };
     if (j.raw) {
-        // No JPEG from the sensor: this is the encode, watermark or not.
-        MarkCtx mc{ {}, j.markText, false, j.w, j.h };
+        // No JPEG from the sensor: this is the encode, corrected, watermark
+        // or not.
         camrules::ComSink sink(fileOut, &fo, j.comment);
-        ok = plat::jpegRaw(jpg, j.w, j.h, j.jq, j.doMark ? markRows : nullptr, &mc, comOut, &sink) && fo.ok;
+        ok = plat::jpegRaw(jpg, j.w, j.h, j.jq, (fix || j.doMark) ? picRows : nullptr, &pc, comOut, &sink) &&
+             fo.ok;
         j.marked = ok && j.doMark;
-    } else if (j.doMark) {
-        MarkCtx mc{ {}, j.markText, false, j.w, j.h };
+    } else if (j.doMark || fix) {
+        // The sensor's own JPEG, decoded a strip at a time, corrected and
+        // marked, and encoded again (the OV2640).
         camrules::ComSink sink(fileOut, &fo, j.comment);
         uint16_t w = 0, h = 0;
-        ok = plat::jpegMark(jpg, len, j.jq, markRows, &mc, comOut, &sink, w, h) && fo.ok;
-        j.marked = ok;
-        if (!ok) {                                     // unmarked rather than nothing
+        ok = plat::jpegMark(jpg, len, j.jq, picRows, &pc, comOut, &sink, w, h) && fo.ok;
+        j.marked = ok && j.doMark;
+        if (!ok) {                                     // as it came rather than nothing
             static bool said = false;                  // once: on the host there is no codec at all
-            if (!said) plat::log("camera: the watermark could not be drawn; saving the photo without it");
+            if (!said) plat::log("camera: the photo could not be re-encoded; saving it as the sensor gave it");
             said = true;
             fclose(fp);
             fp = fopen(tmp, "wb");
             fo = FileOut{ fp, 0, fp != nullptr };
         }
     }
+    plat::camFree(lut);
     if (!ok && fp && !j.raw) {
         camrules::ComSink sink(fileOut, &fo, j.comment);
         ok = sink.put(jpg, len) && fo.ok;
@@ -859,6 +993,7 @@ void worker(void*) {
             // it finds is the camera badge on the directory (announce).
             char why[72] = "";
             const bool up = plat::camOpen(j.cam, why, sizeof(why));
+            if (up) sensorSizes();
             plat::camClose();
             g_sensor.store(up ? SENSOR_FOUND : SENSOR_MISSING);
             if (up) plat::log("camera: sensor %s found at start", plat::camSensor());
@@ -922,9 +1057,21 @@ bool jobBusy() { return g_job.ph.load() != PH_IDLE; }
 
 void snapshotCfg(Job& j) {
     j.cam = plat::CamCfg();
-    char w[8] = "svga";
-    wordAt(BBS_CAM_SIZES, g_set.size, w, sizeof(w));
-    snprintf(j.sizeWord, sizeof(j.sizeWord), "%s", w);
+    // The saved size, or the largest the sensor gives when it is more: said
+    // once for each saved size and sensor, not at every snap.
+    const uint8_t count = sizeCount();
+    const uint8_t use   = campic::clampSize(g_set.size, count);
+    if (use != g_set.size) {
+        static uint16_t said = 0xFFFF;
+        const uint16_t now = static_cast<uint16_t>(g_set.size << 8 | count);
+        if (said != now) {
+            said = now;
+            plat::log("camera: size %s is more than the %s gives; using %s",
+                      campic::kSizes[g_set.size < campic::kSizeCount ? g_set.size : 0].word,
+                      plat::camSensor()[0] ? plat::camSensor() : BBS_CAM_SENSOR, campic::kSizes[use].word);
+        }
+    }
+    snprintf(j.sizeWord, sizeof(j.sizeWord), "%s", campic::kSizes[use].word);
     j.cam.size       = j.sizeWord;
     j.cam.quality    = g_set.quality;
     j.cam.flip       = g_set.flip;
@@ -935,8 +1082,16 @@ void snapshotCfg(Job& j) {
     j.cam.exposure   = g_set.exposure;
     j.cam.wb         = g_set.wb;
     j.cam.effect     = g_set.effect;
-    int q = 95 - g_set.quality;                        // the sensor's 4..40, lower better
-    j.jq = static_cast<uint8_t>(q < 30 ? 30 : q > 95 ? 95 : q);
+    // The GC0308's settings its driver leaves out (camera_pic.h), written
+    // by camOpen only when that is the sensor it finds.
+    campic::Reg regs[6];
+    const uint8_t nr = campic::gc0308Regs(g_set.bright, g_set.contrast, g_set.sat, g_set.exposure, regs);
+    j.cam.regsPid = 0x9B;                              // GC0308_PID (esp32-camera sensor.h)
+    j.cam.nRegs   = nr;
+    for (uint8_t i = 0; i < nr; ++i) { j.cam.regs[i][0] = regs[i].reg; j.cam.regs[i][1] = regs[i].val; }
+    j.levels = g_set.levels;
+    j.gammaT = campic::gammaTenths(g_set.gamma);
+    j.jq = campic::reencodeQuality(g_set.quality);      // 90 at the shipped 10
     j.pol[0].days  = g_set.keepDays;
     j.pol[0].count = g_set.maxSnaps;
     j.groups = static_cast<uint8_t>(1 + g_sysCount);
@@ -954,6 +1109,8 @@ bool startJob(uint8_t kind, uint32_t now) {
     j.err[0] = '\0';
     j.bytes = 0; j.w = j.h = 0; j.marked = false; j.raw = false;
     j.msUp = j.msShot = j.msSave = j.msAll = 0;
+    j.msFix = 0; j.settleFrames = 0; j.meterA = j.meterB = 0; j.meterKind = 0; j.fixed = false;
+    j.srcBytes = 0; j.qUsed = 0;
     j.freeUp = j.dmaUp = 0;
     j.removed = 0;
     j.startedAt = j.phaseAt = j.spinAt = now;
@@ -1089,6 +1246,7 @@ void notifyStaff(uint8_t fromNode) {
 void finish(uint32_t now) {
     Job& j = g_job;
     const bool ok = j.ph.load() == PH_DONE;
+    sizeChoicesNow();                                  // the sensor may have said its sizes
     flashSet(j, false);
     if (ok) {
         if (j.stats.known && !j.stats.floorMet && (!g_stats.known || g_stats.floorMet))
@@ -1111,6 +1269,26 @@ void finish(uint32_t now) {
                       "up, largest DMA %u now",
                       static_cast<unsigned>(j.stackFree), static_cast<unsigned>(j.freeUp),
                       static_cast<unsigned>(j.dmaUp), static_cast<unsigned>(plat::camDmaLargest()));
+            char luma[48] = "";
+            if (j.meterKind == plat::CAM_METER_LUMA)
+                snprintf(luma, sizeof(luma), " (average %u, aiming at %u)",
+                         static_cast<unsigned>(j.meterA), static_cast<unsigned>(j.meterB));
+            else if (j.meterKind == plat::CAM_METER_EXPOSURE)
+                snprintf(luma, sizeof(luma), " (exposure %u, gain %u)",
+                         static_cast<unsigned>(j.meterA), static_cast<unsigned>(j.meterB));
+            if (!j.raw && j.srcBytes)
+                plat::log("camera: the sensor's JPEG %u bytes at quality %u; saved %u bytes, %s %u",
+                          static_cast<unsigned>(j.srcBytes), static_cast<unsigned>(j.qUsed),
+                          static_cast<unsigned>(j.bytes),
+                          j.marked || j.fixed ? "encoded again at" : "as it came, not", static_cast<unsigned>(j.jq));
+            plat::log("camera: settled after %u frames%s; levels %u-%u %u-%u %u-%u, gamma %u.%u, "
+                      "%s, %u ms",
+                      static_cast<unsigned>(j.settleFrames), luma,
+                      static_cast<unsigned>(j.lo[0]), static_cast<unsigned>(j.hi[0]),
+                      static_cast<unsigned>(j.lo[1]), static_cast<unsigned>(j.hi[1]),
+                      static_cast<unsigned>(j.lo[2]), static_cast<unsigned>(j.hi[2]),
+                      static_cast<unsigned>(j.gammaT / 10), static_cast<unsigned>(j.gammaT % 10),
+                      j.fixed ? "corrected" : "as it came", static_cast<unsigned>(j.msFix));
         } else if (j.removed) {
             plat::log("camera: %u old photos removed", static_cast<unsigned>(j.removed));
         }
@@ -1386,11 +1564,29 @@ void cmdCamera(Bbs& b, Session& s, const char* arg, uint32_t) {
     }
     b.rowTitle(s, "CAMERA");
     {
-        char w[8] = "?";
-        wordAt(BBS_CAM_SIZES, g_set.size, w, sizeof(w));
-        snprintf(buf, sizeof(buf), "Sensor %s at %s, quality %u%s",
-                 plat::camSensor()[0] ? plat::camSensor() : BBS_CAM_SENSOR, w,
+        // The sensor by name once a bring-up has found one: "not found"
+        // and "not looked for yet" are different evenings.
+        const uint8_t count = sizeCount();
+        const uint8_t use   = campic::clampSize(g_set.size, count);
+        const uint8_t sen   = g_sensor.load();
+        if (sen == SENSOR_FOUND)
+            snprintf(buf, sizeof(buf), "Sensor %s, up to %s", plat::camSensor(),
+                     campic::kSizes[count ? count - 1 : 0].word);
+        else if (sen == SENSOR_MISSING)
+            snprintf(buf, sizeof(buf), "No sensor found (%s as shipped)", BBS_CAM_SENSOR);
+        else
+            snprintf(buf, sizeof(buf), "Sensor not looked for yet (%s as shipped)", BBS_CAM_SENSOR);
+        b.rowText(s, sen == SENSOR_MISSING ? Color::LightRed : Color::White, buf);
+        char saved[16] = "";
+        if (use != g_set.size)
+            snprintf(saved, sizeof(saved), " (saved %s)",
+                     campic::kSizes[g_set.size < campic::kSizeCount ? g_set.size : 0].word);
+        snprintf(buf, sizeof(buf), "Size %s%s, quality %u%s", campic::kSizes[use].word, saved,
                  static_cast<unsigned>(g_set.quality), g_set.mark ? ", watermarked" : "");
+        b.rowText(s, Color::White, buf);
+        char gw[8] = "1.0";
+        wordAt(campic::kGammas, g_set.gamma, gw, sizeof(gw));
+        snprintf(buf, sizeof(buf), "Levels %s, gamma %s", g_set.levels ? "auto" : "off", gw);
     }
     b.rowText(s, Color::White, buf);
     if (!g_stats.known) {
@@ -1452,7 +1648,9 @@ const PluginSetting kSettings[] = {
       "Who may take a photo" },
     { "photos",    "Photos",    PS_CYCLE, 0, 0, 6, "Who may see and download photos.", kLevels,
       "Who may see photos" },
-    { "size",      "Size",      PS_CYCLE, 0, 0, 5, nullptr, BBS_CAM_SIZES, "Resolution" },
+    // The choices follow the sensor the last bring-up found (g_sizeChoices).
+    { "size",      "Size",      PS_CYCLE, 0, 0, 5, "What this sensor gives; up to its largest.",
+      g_sizeChoices, "Resolution" },
     { "quality",   "Quality",   PS_NUM,   4, 40, 2, "4 to 40; lower is better.", nullptr,
       "JPEG quality", "4 to 40. Lower is better: a sharper picture and a bigger file." },
     { "names",     "Names",     PS_CYCLE, 0, 0, 12, "SNAP-date, with the handle, or by handle.",
@@ -1467,7 +1665,7 @@ const PluginSetting kSettings[] = {
       "Card floor (MB)", "Space the camera leaves free on the card. Empty: a tenth, 512 MB at most." },
     { "flash",     "Flash",     PS_PAGE,  0, 0, 12, "The light for a photo.", nullptr, "Flash" },
     { "tl",        "Timelapse", PS_PAGE,  0, 0, 16, "A photo every so often.", nullptr, "Timelapse" },
-    { "pic",       "Picture",   PS_PAGE,  0, 0, 12, "Brightness, colour, turn.", nullptr, "Picture settings" },
+    { "pic",       "Picture",   PS_PAGE,  0, 0, 12, "Levels, brightness, colour, turn.", nullptr, "Picture settings" },
 
     // The flash's page
     { "flash_mode", "Mode",     PS_CYCLE, 0, 0, 5, "off, a pixel, or a pin driven high.", kFlashes,
@@ -1497,13 +1695,19 @@ const PluginSetting kSettings[] = {
     { "pic_exposure", "Exposure", PS_NUM,  -2, 2, 2, "-2 to 2.", nullptr, "Exposure level" },
     { "pic_wb",       "White",    PS_CYCLE, 0, 0, 7, nullptr, kWbs, "White balance" },
     { "pic_effect",   "Effect",   PS_CYCLE, 0, 0, 8, nullptr, kEffects, "Effect" },
+    // The board's own correction, on the worker before the encode, for any
+    // sensor (camera_pic.h).
+    { "pic_levels",   "Levels",   PS_YESNO, 0, 0, 3, "Stretch to full black and white.", nullptr,
+      "Auto levels", "Stretches each photo to full black and white, and takes a colour cast out." },
+    { "pic_gamma",    "Gamma",    PS_CYCLE, 0, 0, 3, "1.0 none; lower darkens the middle.",
+      campic::kGammas, "Gamma", "1.0 changes nothing. Lower darkens the middle tones (a washed-out sky)." },
 };
 
 void setting(const char* key, char* out, size_t n) {
     char w[24];
     if      (!strcmp(key, "snap"))      snprintf(out, n, "%s", plugins::levelName(g_set.snap));
     else if (!strcmp(key, "photos"))    snprintf(out, n, "%s", plugins::levelName(g_set.photos));
-    else if (!strcmp(key, "size"))      { wordAt(BBS_CAM_SIZES, g_set.size, w, sizeof(w)); snprintf(out, n, "%s", w); }
+    else if (!strcmp(key, "size"))      snprintf(out, n, "%s", campic::kSizes[campic::clampSize(g_set.size, sizeCount())].word);
     else if (!strcmp(key, "quality"))   snprintf(out, n, "%u", static_cast<unsigned>(g_set.quality));
     else if (!strcmp(key, "names"))     { wordAt(camrules::kSchemes, g_set.names, w, sizeof(w)); snprintf(out, n, "%s", w); }
     else if (!strcmp(key, "watermark")) snprintf(out, n, "%s", g_set.mark ? "yes" : "no");
@@ -1519,7 +1723,8 @@ void setting(const char* key, char* out, size_t n) {
         else               snprintf(out, n, "off");
     }
     else if (!strcmp(key, "pic"))       snprintf(out, n, "%s", (g_set.flip || g_set.mirror || g_set.bright || g_set.contrast ||
-                                                               g_set.sat || g_set.exposure || g_set.wb || g_set.effect)
+                                                               g_set.sat || g_set.exposure || g_set.wb || g_set.effect ||
+                                                               !g_set.levels || g_set.gamma != campic::kGammaNone)
                                                                ? "adjusted" : "as it comes");
     else if (!strcmp(key, "flash_mode")){ wordAt(kFlashes, g_set.flash, w, sizeof(w)); snprintf(out, n, "%s", w); }
     else if (!strcmp(key, "flash_pin")) snprintf(out, n, "%d", static_cast<int>(g_set.flashPin));
@@ -1536,6 +1741,8 @@ void setting(const char* key, char* out, size_t n) {
     else if (!strcmp(key, "pic_exposure")) snprintf(out, n, "%d", g_set.exposure);
     else if (!strcmp(key, "pic_wb"))    { wordAt(kWbs, g_set.wb, w, sizeof(w)); snprintf(out, n, "%s", w); }
     else if (!strcmp(key, "pic_effect")){ wordAt(kEffects, g_set.effect, w, sizeof(w)); snprintf(out, n, "%s", w); }
+    else if (!strcmp(key, "pic_levels"))snprintf(out, n, "%s", g_set.levels ? "yes" : "no");
+    else if (!strcmp(key, "pic_gamma")) { wordAt(campic::kGammas, g_set.gamma, w, sizeof(w)); snprintf(out, n, "%s", w); }
 }
 
 // pinShares: the flash pin may share its GPIO with the lights' drive light,
@@ -1592,8 +1799,10 @@ void stop() {
 const char* status() {
     static char line[48];
     if (jobBusy()) return "taking a photo";
-    if (!g_stats.known) return "no count yet";
-    snprintf(line, sizeof(line), "%u photos, %u timed", static_cast<unsigned>(g_stats.callers),
+    const char* sen = g_sensor.load() == SENSOR_FOUND ? plat::camSensor()
+                    : g_sensor.load() == SENSOR_MISSING ? "no sensor" : "sensor not seen yet";
+    if (!g_stats.known) { snprintf(line, sizeof(line), "%s, no count yet", sen); return line; }
+    snprintf(line, sizeof(line), "%s, %u photos, %u timed", sen, static_cast<unsigned>(g_stats.callers),
              static_cast<unsigned>(g_stats.system));
     return line;
 }

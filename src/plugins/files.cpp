@@ -300,10 +300,28 @@ bool photoMay(const Session& s, uint8_t which) {
 #define BBS_PHOTO_MAY(which) (void)0
 #endif
 
+// areaRead: the level an area is read at, the one place both the check
+// (mayRead) and the menu's "(staff)" marker take it from. The photo areas'
+// is the camera's Photos setting: their own read level is a placeholder
+// that is never read, and the marker once read it and showed "(staff)"
+// on Photos open to everyone (1.1.1). Nobody: inherit the plugin's.
+PlugLevel areaRead(uint8_t i) {
+#ifdef BBS_HAS_CAMERA
+    if (i == kAreaPhotos || i == kAreaTimed) {
+        PlugLevel see = PlugLevel::Sysop, rm = PlugLevel::Sysop;
+        camera::photosLevels(see, rm);
+        return see;
+    }
+#endif
+    return g_area[i].read;
+}
+
 bool mayRead(const Session& s, uint8_t i) {
     if (i >= g_areas || !g_area[i].path[0]) return false;
-    BBS_PHOTO_MAY(0);
-    PlugLevel lv = g_area[i].read;
+#ifdef BBS_HAS_CAMERA
+    if ((i == kAreaPhotos || i == kAreaTimed) && !camera::running()) return false;
+#endif
+    PlugLevel lv = areaRead(i);
     if (lv == PlugLevel::Nobody) lv = plugins::levelFor(g_index, 0);
     return plugins::mayUse(s, lv);
 }
@@ -965,8 +983,8 @@ void areaMenu(Bbs& b, Session& s) {
         // An area with a read level of its own is marked, so a sysop can see
         // at a glance which ones a caller will not be shown. Lost when the
         // menu moved out of rows() into here, and only a test noticed.
-        bool shut = g_area[a].read != PlugLevel::Nobody &&
-                    g_area[a].read != PlugLevel::All;
+        const PlugLevel rd = areaRead(a);
+        bool shut = rd != PlugLevel::Nobody && rd != PlugLevel::All;
         char nm[kNameMax + 10];
         snprintf(nm, sizeof(nm), "%s%s", g_area[a].name, shut ? " (staff)" : "");
         // The highlight covers the number and the name together, because a

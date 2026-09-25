@@ -45,6 +45,7 @@
 #include <vector>
 #include "../src/plugins/camera_rules.h"
 #include "../src/plugins/camera_mark.h"
+#include "../src/plugins/camera_pic.h"
 
 using namespace camrules;
 
@@ -245,6 +246,164 @@ int main() {
     ::check("and not one pixel outside the corner touched", outside == 0);
     long covered = light + dark;
     ::check("covering well under 1% of the picture", covered * 100 < static_cast<long>(W) * H);
+
+    // ---------------------------------------------------------------------
+    // The picture (1.1.1, camera_pic.h)
+    // ---------------------------------------------------------------------
+    printf("Sizes by sensor\n");
+    ::check("a GC0308 (640x480) gives qvga and vga", campic::sizeCountFor(640, 480, 0) == 2);
+    ::check("an OV2640 (1600x1200) gives qvga to uxga, seven", campic::sizeCountFor(1600, 1200, 0) == 7);
+    ::check("an OV3660 (2048x1536) all eight", campic::sizeCountFor(2048, 1536, 0) == 8);
+    ::check("no sensor yet: the fallback", campic::sizeCountFor(0, 0, 2) == 2);
+    ::check("a sensor smaller than qvga still offers one size", campic::sizeCountFor(160, 120, 0) == 1);
+    char sl[48];
+    campic::sizeList(2, sl, sizeof(sl));
+    ::check("the GC0308's list is qvga|vga", !strcmp(sl, "qvga|vga"));
+    campic::sizeList(7, sl, sizeof(sl));
+    ::check("the OV2640's list ends at uxga", !strcmp(sl, "qvga|vga|svga|xga|hd|sxga|uxga"));
+    campic::sizeList(8, sl, sizeof(sl));
+    ::check("the whole list fits CONFIG's buffer", !strcmp(sl, campic::kAllSizes));
+    char tiny[8];
+    campic::sizeList(7, tiny, sizeof(tiny));
+    ::check("a short buffer stops at a whole word", !strcmp(tiny, "qvga"));
+    ::check("a saved uxga on a GC0308 clamps to vga", campic::clampSize(6, 2) == 1);
+    ::check("a saved vga on a GC0308 stays vga", campic::clampSize(1, 2) == 1);
+    ::check("a saved uxga on an OV2640 stays uxga", campic::clampSize(6, 7) == 6);
+    ::check("the words and the table agree",
+            !strcmp(campic::kSizes[1].word, "vga") && campic::kSizes[6].w == 1600 && campic::kSizes[6].h == 1200);
+
+    printf("GC0308 registers\n");
+    campic::Reg rg[6];
+    ::check("six writes, page 0 first", campic::gc0308Regs(0, 0, 0, 0, rg) == 6 && rg[0].reg == 0xFE && rg[0].val == 0);
+    ::check("all at 0: the datasheet's defaults (0xB5 0, 0xB3 0x40, 0xD3 0x48)",
+            rg[1].reg == 0xB5 && rg[1].val == 0x00 && rg[2].reg == 0xB3 && rg[2].val == 0x40 &&
+            rg[3].val == 0x40 && rg[4].val == 0x40 && rg[5].reg == 0xD3 && rg[5].val == 0x48);
+    campic::gc0308Regs(-2, 2, -2, -2, rg);
+    ::check("brightness -2 is a signed -32 (0xE0)", rg[1].val == 0xE0);
+    ::check("contrast 2 is 1.5 (0x60)", rg[2].val == 0x60);
+    ::check("saturation -2 is 0x20 on Cb and Cr", rg[3].reg == 0xB1 && rg[3].val == 0x20 && rg[4].reg == 0xB2 && rg[4].val == 0x20);
+    ::check("exposure -2 aims the AEC at 48", rg[5].val == 48);
+    campic::gc0308Regs(2, -2, 2, 2, rg);
+    ::check("brightness 2 is +32, exposure 2 aims at 96", rg[1].val == 0x20 && rg[5].val == 96 && rg[2].val == 0x20);
+    campic::gc0308Regs(9, -9, 9, -9, rg);
+    ::check("out of range is held at -2..2", rg[1].val == 0x20 && rg[2].val == 0x20 && rg[5].val == 48);
+
+    printf("Exposure settling\n");
+    {
+        campic::Settle st;
+        const uint8_t outdoor[] = { 250, 240, 200, 150, 110, 84, 76, 74, 73 };
+        int at = -1;
+        for (int i = 0; i < 9; ++i)
+            if (campic::settled(st, outdoor[i], 72, 100u * i)) { at = i; break; }
+        ::check("a white start is followed down, and settles near the target", at >= 6 && at <= 8);
+        campic::Settle s2;
+        bool early = false;
+        for (int i = 0; i < 6; ++i) early |= campic::settled(s2, 250, 72, 100u * i);
+        ::check("stuck white is not settled before the AEC has had time", !early);
+        ::check("stuck for long enough is a limit, and settled", campic::settled(s2, 250, 72, 1300));
+        campic::Settle s3;
+        ::check("two readings are never enough", !campic::settled(s3, 72, 72, 0) && !campic::settled(s3, 72, 72, 5000));
+        ::check("the third, still and on target, is", campic::settled(s3, 72, 72, 200));
+    }
+
+    printf("OV2640 steady\n");
+    {
+        campic::Steady sd;
+        const uint16_t e[] = { 1200, 600, 300, 180, 150, 149, 150, 150 };
+        const uint16_t g[] = { 30, 20, 12, 8, 6, 6, 6, 6 };
+        int at = -1;
+        for (int i = 0; i < 8; ++i) if (campic::steady(sd, e[i], g[i])) { at = i; break; }
+        ::check("a falling exposure is followed until it holds still", at == 6);
+        campic::Steady s2;
+        bool early = false;
+        for (int i = 0; i < 3; ++i) early |= campic::steady(s2, 500, 10);
+        ::check("never before four frames, however still", !early && campic::steady(s2, 500, 10));
+        campic::Steady s3;
+        bool any = false;
+        for (int i = 0; i < 10; ++i) any |= campic::steady(s3, static_cast<uint16_t>(i % 2 ? 400 : 440), 10);
+        ::check("a hunting exposure (10% either way) is not steady", !any);
+        campic::Steady s4;
+        for (int i = 0; i < 4; ++i) campic::steady(s4, static_cast<uint16_t>(1000 + i * 20), 10);
+        ::check("within 3% is steady", campic::steady(s4, 1080, 10));
+    }
+    ::check("the re-encode quality: 90 at the shipped 10, never under 60 or over 95",
+            campic::reencodeQuality(10) == 90 && campic::reencodeQuality(40) == 60 &&
+            campic::reencodeQuality(4) == 95 && campic::reencodeQuality(12) == 88);
+
+    printf("Levels and gamma\n");
+    {
+        uint8_t lut[3][256], lo[3], hi[3];
+        campic::buildTables(nullptr, false, 10, lut, lo, hi);
+        ::check("off and gamma 1.0: the identity", campic::identity(lut));
+        campic::buildTables(nullptr, true, 10, lut, lo, hi);
+        ::check("levels with no histogram: the identity", campic::identity(lut));
+
+        // A washed-out frame, as the bench's first outdoor photo: every
+        // channel between 150 and 250.
+        static campic::Hist h;
+        memset(&h, 0, sizeof(h));
+        for (int v = 150; v <= 250; ++v)
+            for (int c = 0; c < 3; ++c) h.c[c][v] = 10;
+        h.n = 101 * 10;
+        campic::buildTables(&h, true, 10, lut, lo, hi);
+        ::check("black and white points near the ends of the data", lo[0] >= 150 && lo[0] <= 152 && hi[0] >= 248 && hi[0] <= 250);
+        ::check("stretched: 150 goes to black, 250 to white", lut[0][150] == 0 && lut[0][250] == 255 && lut[1][100] == 0);
+        ::check("and the middle to the middle", lut[0][200] > 120 && lut[0][200] < 135);
+        ::check("monotonic", [&] { for (int v = 1; v < 256; ++v) if (lut[0][v] < lut[0][v - 1]) return false; return true; }());
+        ::check("and it changes the picture", !campic::identity(lut));
+
+        // Gamma alone: 0.5 of the way up.
+        campic::buildTables(nullptr, false, 8, lut, lo, hi);
+        ::check("gamma 0.8 darkens the middle, keeps the ends", lut[1][128] < 128 && lut[1][0] == 0 && lut[1][255] == 255);
+        campic::buildTables(nullptr, false, 14, lut, lo, hi);
+        ::check("gamma 1.4 lightens it", lut[1][128] > 128);
+        ::check("the words and the tenths agree", campic::gammaTenths(campic::kGammaNone) == 10 &&
+                campic::gammaTenths(0) == 6 && campic::gammaTenths(8) == 16 && campic::gammaTenths(99) == 10);
+
+        // A flat frame is not stretched to noise.
+        memset(&h, 0, sizeof(h));
+        for (int c = 0; c < 3; ++c) h.c[c][100] = 1000;
+        h.n = 1000;
+        campic::buildTables(&h, true, 10, lut, lo, hi);
+        ::check("a flat frame keeps at least a 48 wide window", hi[0] - lo[0] >= 48);
+
+        // A cast: blue sits 60 above red and green. The cast is taken out
+        // only as far as kCastSpan allows.
+        memset(&h, 0, sizeof(h));
+        for (int v = 20; v <= 180; ++v) { h.c[0][v] = 5; h.c[1][v] = 5; }
+        for (int v = 80; v <= 240; ++v) h.c[2][v] = 5;
+        h.n = 161 * 5;
+        campic::buildTables(&h, true, 10, lut, lo, hi);
+        ::check("each channel's points held near the common ones",
+                lo[2] <= lo[0] + 2 * campic::kCastSpan && hi[0] + 2 * campic::kCastSpan >= hi[2]);
+
+        // apply over RGB888, in place.
+        uint8_t px[6] = { 150, 200, 250, 0, 128, 255 };
+        memset(&h, 0, sizeof(h));
+        for (int v = 150; v <= 250; ++v) for (int c = 0; c < 3; ++c) h.c[c][v] = 10;
+        h.n = 1010;
+        campic::buildTables(&h, true, 10, lut, lo, hi);
+        campic::apply(lut, px, 2);
+        ::check("apply uses each channel's table", px[0] == 0 && px[2] == 255 && px[3] == 0 && px[5] == 255);
+    }
+
+    printf("Histograms\n");
+    {
+        // RGB565, high byte first: pure red, pure green, pure blue, white.
+        const uint8_t f[] = { 0xF8, 0x00, 0x07, 0xE0, 0x00, 0x1F, 0xFF, 0xFF };
+        campic::Hist h;
+        campic::histRgb565(f, 4, 1, 1, h);
+        ::check("four pixels counted", h.n == 4);
+        ::check("red lands on 248, green's 252, blue's 248",
+                h.c[0][248] == 2 && h.c[1][252] == 2 && h.c[2][248] == 2 && h.c[0][0] == 2);
+        std::vector<uint8_t> big(64u * 32u * 2u, 0);
+        campic::histRgb565(big.data(), 64, 32, 2, h);
+        ::check("every second pixel of every second row", h.n == 32u * 16u);
+        const uint8_t rgb[] = { 1, 2, 3, 1, 2, 4 };
+        memset(&h, 0, sizeof(h));
+        campic::histRgb888(rgb, 2, h);
+        ::check("RGB888 counted by channel", h.n == 2 && h.c[0][1] == 2 && h.c[2][3] == 1 && h.c[2][4] == 1);
+    }
 
     printf("%d passed, %d failed\n", passes, fails);
     return fails ? 1 : 0;

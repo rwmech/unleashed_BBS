@@ -229,7 +229,7 @@
 #define BBS_BOARD_PLUGINS     1       // the camera
 
 #define BBS_BOARD_TAG         "FNCAM"
-#define BBS_BOARD_VERSION     "1.0.3"
+#define BBS_BOARD_VERSION     "1.0.4"
 
 // PSRAM (sdkconfig.defaults.fncam). Wi-Fi's and lwIP's buffers go there.
 // The internal reserve stays the WROOM's 40 KB until the bench's MEM says
@@ -274,8 +274,9 @@
 // (sdkconfig.defaults.fncam), and the bring-up finds out which is there.
 //   BBS_CAM_SENSOR      the sensor as shipped, named until a bring-up has
 //                       found the real one (plat::camSensor)
-//   BBS_CAM_SIZES       what CONFIG camera offers: the GC0308's own sizes,
-//                       which an OV2640 can also do
+//   BBS_CAM_SIZES       what CONFIG camera offers until a bring-up has found
+//                       the sensor (the GC0308's sizes); after it, every
+//                       size that sensor gives (camera_pic.h)
 //   BBS_CAM_SIZE        the size as shipped, one of them
 //   BBS_CAM_FLASH_PIN   the flash output as shipped (Rob: "leave a single
 //                       pin, just make it neopixel or ... relay high on the

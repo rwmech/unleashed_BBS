@@ -1590,6 +1590,10 @@ bool         g_camUp = false;
 // at the first bring-up and kept, so the JPEG attempt is paid once a boot.
 bool         g_camRaw = false;
 char         g_camName[12] = "";
+// The largest frame the last sensor found gives, and its PID, for the
+// sizes CONFIG offers and for camMeter.
+uint16_t     g_camMaxW = 0, g_camMaxH = 0;
+uint16_t     g_camPid  = 0;
 // Raw frames are two bytes a pixel through the ESP32's I2S camera DMA, and
 // cam_task copies each half buffer into the frame in PSRAM. At the JPEG
 // path's 20 MHz XCLK it fell behind (cam_hal "EV-EOF-OVF", every frame lost
@@ -1719,6 +1723,11 @@ bool camOpen(const CamCfg& c, char* err, size_t errLen) {
             said = true;
         }
         snprintf(g_camName, sizeof(g_camName), "%s", info ? info->name : "unknown");
+        g_camPid = s->id.PID;
+        if (info && info->max_size < FRAMESIZE_INVALID) {
+            g_camMaxW = resolution[info->max_size].width;
+            g_camMaxH = resolution[info->max_size].height;
+        }
         // Each driver fills in what its sensor has; one that left a setting
         // out is skipped rather than called through a null.
         if (s->set_vflip)          s->set_vflip(s, c.flip ? 1 : 0);
@@ -1727,10 +1736,34 @@ bool camOpen(const CamCfg& c, char* err, size_t errLen) {
         if (s->set_contrast)       s->set_contrast(s, c.contrast);
         if (s->set_saturation)     s->set_saturation(s, c.saturation);
         if (s->set_ae_level)       s->set_ae_level(s, c.exposure);
+        // Every automatic control on (1.1.1). The AWB gain was switched
+        // off whenever White was auto (c.wb ? 1 : 0), which on an OV2640
+        // leaves the white balance measured and never applied: the green
+        // cast. It is on whatever the mode; the mode picks the gains.
+        if (s->set_exposure_ctrl)  s->set_exposure_ctrl(s, 1);
+        if (s->set_aec2)           s->set_aec2(s, 1);
+        if (s->set_gain_ctrl)      s->set_gain_ctrl(s, 1);
         if (s->set_whitebal)       s->set_whitebal(s, 1);
-        if (s->set_awb_gain)       s->set_awb_gain(s, c.wb ? 1 : 0);
+        if (s->set_awb_gain)       s->set_awb_gain(s, 1);
         if (s->set_wb_mode)        s->set_wb_mode(s, c.wb);
+        // The sensor's own corrections, where its driver has them (the
+        // OV2640's DSP; a no-op on the GC0308): lens shading, the raw
+        // gamma, black and white pixel correction, downsize cropping.
+        if (s->set_lenc)           s->set_lenc(s, 1);
+        if (s->set_raw_gma)        s->set_raw_gma(s, 1);
+        if (s->set_bpc)            s->set_bpc(s, 1);
+        if (s->set_wpc)            s->set_wpc(s, 1);
+        if (s->set_dcw)            s->set_dcw(s, 1);
         if (s->set_special_effect) s->set_special_effect(s, c.effect);
+        // The plugin's own writes for this sensor, after the driver's, so
+        // they win where both set a register (camera_pic.h, the GC0308).
+        if (c.nRegs && c.regsPid == s->id.PID && s->set_reg) {
+            int bad = 0;
+            for (uint8_t i = 0; i < c.nRegs && i < 8; ++i)
+                bad += s->set_reg(s, c.regs[i][0], 0xFF, c.regs[i][1]) < 0;
+            if (bad) plat::log("camera: %d of %u picture registers not written", bad,
+                               static_cast<unsigned>(c.nRegs));
+        }
     }
     return true;
 }
@@ -1769,6 +1802,45 @@ uint32_t camInternalFree() {
 bool camRaw() { return g_camRaw; }
 
 const char* camSensor() { return g_camName; }
+
+bool camMaxSize(uint16_t& w, uint16_t& h) {
+    w = g_camMaxW;
+    h = g_camMaxH;
+    return w && h;
+}
+
+// camMeter: the GC0308's frame average and AEC target, page 0 (GC0308
+// DataSheet: P0:0xD4 Y_average, RO; P0:0xD3 AEC_target_Y; the page register
+// is 0xFE, set again so a read never lands on another page). The OV2640's
+// exposure and gain from its sensor bank (the driver's get_reg takes the
+// bank in bit 8): AEC[15:10] in 0x45, AEC[9:2] in 0x10, AEC[1:0] in 0x04,
+// GAIN in 0x00 (OV2640 datasheet, register tables, bank 1).
+CamMeter camMeter(uint16_t& a, uint16_t& b) {
+    sensor_t* s = g_camUp ? esp_camera_sensor_get() : nullptr;
+    if (!s || !s->get_reg) return CAM_METER_NONE;
+    if (g_camPid == GC0308_PID && s->set_reg) {
+        if (s->set_reg(s, 0xFE, 0xFF, 0x00) < 0) return CAM_METER_NONE;
+        const int y = s->get_reg(s, 0xD4, 0xFF), t = s->get_reg(s, 0xD3, 0xFF);
+        if (y < 0 || t < 0) return CAM_METER_NONE;
+        a = static_cast<uint16_t>(y);
+        b = static_cast<uint16_t>(t);
+        return CAM_METER_LUMA;
+    }
+    if (g_camPid == OV2640_PID) {
+        const int hi = s->get_reg(s, 0x145, 0x3F), mid = s->get_reg(s, 0x110, 0xFF);
+        const int lo = s->get_reg(s, 0x104, 0x03), gain = s->get_reg(s, 0x100, 0xFF);
+        if (hi < 0 || mid < 0 || lo < 0 || gain < 0) return CAM_METER_NONE;
+        a = static_cast<uint16_t>(hi << 10 | mid << 2 | lo);
+        b = static_cast<uint16_t>(gain);
+        return CAM_METER_EXPOSURE;
+    }
+    return CAM_METER_NONE;
+}
+
+bool camQuality(int quality) {
+    sensor_t* s = g_camUp ? esp_camera_sensor_get() : nullptr;
+    return s && s->set_quality && s->set_quality(s, quality) == 0;
+}
 
 void* camAlloc(size_t n) {
     void* p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -1939,6 +2011,52 @@ bool jpegMark(const uint8_t* jpg, size_t len, uint8_t quality, MarkRowsFn draw, 
     camFree(jd);
     camFree(pool);
     return done;
+}
+
+// ---------------------------------------------------------------------------
+// jpegHist: TJpgDec's own descaling at 1/8 (the ROM's JD_USE_SCALE is 1):
+// every 8x8 block comes out as one pixel, its DC term, so no inverse DCT is
+// done and a UXGA picture is 200 x 150 pixels of histogram. The entropy
+// decoding is still the whole file's.
+// ---------------------------------------------------------------------------
+namespace {
+struct HistJob {
+    const uint8_t* src;
+    size_t         len, pos;
+    HistPixFn      fn;
+    void*          ctx;
+    uint32_t       blocks;
+};
+
+UINT histIn(JDEC* jd, BYTE* buf, UINT n) {
+    HistJob* j = static_cast<HistJob*>(jd->device);
+    size_t left = j->len - j->pos;
+    if (n > left) n = static_cast<UINT>(left);
+    if (buf) memcpy(buf, j->src + j->pos, n);
+    j->pos += n;
+    return n;
+}
+
+UINT histOut(JDEC* jd, void* bitmap, JRECT* r) {
+    HistJob* j = static_cast<HistJob*>(jd->device);
+    const size_t px = static_cast<size_t>(r->right - r->left + 1) * (r->bottom - r->top + 1);
+    j->fn(j->ctx, static_cast<const uint8_t*>(bitmap), px);
+    if ((++j->blocks & 63) == 0) vTaskDelay(1);         // the loop and the idle task first
+    return 1;
+}
+}   // namespace
+
+bool jpegHist(const uint8_t* jpg, size_t len, HistPixFn fn, void* ctx) {
+    if (!jpg || !len || !fn) return false;
+    constexpr size_t kPool = 3100;                       // TJpgDec's work area (its own figure)
+    void* pool = camAlloc(kPool);
+    JDEC* jd   = static_cast<JDEC*>(camAlloc(sizeof(JDEC)));
+    HistJob job{ jpg, len, 0, fn, ctx, 0 };
+    bool ok = pool && jd && jd_prepare(jd, histIn, pool, kPool, &job) == JDR_OK &&
+              jd_decomp(jd, histOut, 3) == JDR_OK;
+    camFree(jd);
+    camFree(pool);
+    return ok;
 }
 
 // ---------------------------------------------------------------------------
