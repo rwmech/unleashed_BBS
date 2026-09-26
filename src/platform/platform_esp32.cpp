@@ -73,10 +73,15 @@
 #ifdef BBS_SD_SDMMC1
 #include "driver/sdmmc_host.h"           // a card slot wired for SDMMC (board.h)
 #endif
-#ifdef BBS_HAS_CAMERA
 #include "ff.h"                          // sdList: FatFs's directory entries, sizes and all
 #include "diskio_sdmmc.h"                // the card's drive number
-#include "esp_camera.h"                  // Espressif's camera driver (Apache-2.0)
+#include "freertos/semphr.h"             // the runner's lock and its wake (1.1.2)
+#if CONFIG_IDF_TARGET_ESP32
+#include "esp_rom_sys.h"                 // resetReason: the RTC's own reset cause
+#endif
+#ifdef BBS_HAS_CAMERA
+#include "esp_camera.h"                 // Espressif's camera driver (Apache-2.0)
+#include "esp_log.h"                          // camOpen quiets the gpio driver's tag (1.1.2)
 #include "jpge.h"                        // its JPEG encoder, for the watermark
 #if CONFIG_IDF_TARGET_ESP32
 #include "esp32/rom/tjpgd.h"             // the ROM's JPEG decoder: no flash
@@ -131,50 +136,29 @@ const char* userBase() {
 }
 
 // ---------------------------------------------------------------------------
-// LittleFS free space, remembered.
+// measure: a partition's or the card's size and use, read now.
 //
 // esp_littlefs_info calls lfs_fs_size, which walks every block of every file
-// (esp_littlefs.c:313 in the 1.22.3 component). On the board that is about
-// 85 ms a partition with the BBS loop stopped: SYS asked for two and froze
-// every caller for 170 ms, and DASH asked once a second. Rob felt it as "slow
-// after BYE", because the sysop is who opens those screens. The host sums a
-// few file sizes on Linux, so no host test could ever have shown it.
-//
-// So each figure is taken once and kept. The screens partition changes only
-// when a backup restore or a filesystem upload rewrites it, and a restore
-// calls fsInfoStale(). User data changes whenever anybody does anything, but
-// its figure only feeds free-space displays and the plugins' reserve guard,
-// and a figure up to a minute old serves both: the guard holds 32 KB back,
-// and nothing a caller writes in a minute comes near that.
+// (esp_littlefs.c:313 in the 1.22.3 component): about 85 ms a partition, and
+// it holds that partition's lock throughout. On the loop that froze every
+// caller (SYS asked for two, 170 ms; DASH once a minute; every plugin write
+// once a minute). Since 1.1.2 only the runner asks, and core/space.h keeps
+// the figures for every screen and for the plugins' reserve guard.
 // ---------------------------------------------------------------------------
-struct LfsFigure { uint32_t total = 0, used = 0, at = 0; };
-static LfsFigure g_userFig, g_dataFig;
-static constexpr uint32_t kUserInfoMs = 60000;
-
-// lfsInfo: the kept figure, taken again when it is older than maxAgeMs
-// (0 means keep it until fsInfoStale says otherwise).
-static bool lfsInfo(const char* label, LfsFigure& f, uint32_t maxAgeMs,
-                    uint32_t& total, uint32_t& used) {
-    uint32_t now = millis();
-    if (!f.at || (maxAgeMs && now - f.at >= maxAgeMs)) {
-        size_t t = 0, u = 0;
-        if (esp_littlefs_info(label, &t, &u) != ESP_OK) return false;
-        f.total = static_cast<uint32_t>(t);
-        f.used  = static_cast<uint32_t>(u);
-        f.at    = now ? now : 1;
+bool measure(Part p, uint64_t& total, uint64_t& used) {
+    total = used = 0;
+    if (p == PART_CARD) {
+        uint64_t freeB = 0;
+        if (!sdSpace(total, freeB)) return false;
+        used = total > freeB ? total - freeB : 0;
+        return true;
     }
-    total = f.total;
-    used  = f.used;
+    const char* label = p == PART_SCREENS ? BBS_FS_LABEL : p == PART_USER ? BBS_USER_LABEL : BBS_LOGS_LABEL;
+    size_t t = 0, u = 0;
+    if (esp_littlefs_info(label, &t, &u) != ESP_OK) return false;
+    total = t;
+    used  = u;
     return true;
-}
-
-void fsInfoStale() {
-    g_dataFig.at = 0;
-    g_userFig.at = 0;
-}
-
-bool userInfo(uint32_t& total, uint32_t& used) {
-    return lfsInfo(BBS_USER_LABEL, g_userFig, kUserInfoMs, total, used);
 }
 
 const char* fsBase() {
@@ -217,6 +201,59 @@ uint32_t stackSize() {
     return BBS_TASK_STACK;
 }
 
+// ---------------------------------------------------------------------------
+// The background runner's task (1.1.2, core/runner). On the BBS task's core
+// and three below its priority, so whenever the loop has anything to do it
+// runs and the runner waits; the stack is the heap's, internal, since jobs
+// write the card. The function goes in as the task's parameter: the camera
+// worker's trampoline kept it in one global the new task read later, so a
+// second start before the first task ran would have run the second job twice.
+//
+// The lock is a critical section, not a mutex: it is held for a handful of
+// instructions around the queue, both tasks are on core 1, and it costs 8
+// bytes of static DRAM where a static mutex costs about 80. The wake is a
+// task notification on the runner, whose handle is set here as it starts;
+// runner.cpp only wakes a task it knows to be alive (under the same lock).
+// ---------------------------------------------------------------------------
+namespace {
+portMUX_TYPE g_runMux  = portMUX_INITIALIZER_UNLOCKED;
+TaskHandle_t g_runTask = nullptr;
+
+void runTramp(void* p) {
+    reinterpret_cast<void (*)()>(p)();
+    vTaskDelete(nullptr);
+}
+}   // namespace
+
+bool taskStart(void (*fn)(), uint32_t stackBytes, const char* name) {
+    TaskHandle_t h = nullptr;
+    BaseType_t ok = xTaskCreatePinnedToCore(runTramp, name, stackBytes, reinterpret_cast<void*>(fn),
+                                            BBS_TASK_PRIO > 3 ? BBS_TASK_PRIO - 3 : 1, &h,
+                                            BBS_TASK_CORE);
+    if (ok != pdPASS) return false;
+    g_runTask = h;
+    return true;
+}
+
+void taskSleep(uint32_t ms) {
+    vTaskDelay(ms ? pdMS_TO_TICKS(ms) : 1);
+}
+
+uint32_t taskStackFree() {
+    return static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr)) * sizeof(StackType_t);
+}
+
+void runLock()   { portENTER_CRITICAL(&g_runMux); }
+void runUnlock() { portEXIT_CRITICAL(&g_runMux); }
+
+bool runWait(uint32_t ms) {
+    return ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(ms)) != 0;
+}
+
+void runWake() {
+    if (g_runTask) xTaskNotifyGive(g_runTask);
+}
+
 // stackDeeper: read the band of fill just under the old mark, a word at a
 // time. The kernel paints a new task's stack with 0xA5 (tskSTACK_FILL_BYTE)
 // from pxTaskGetStackStart, the lowest address, upwards, and knownFree bytes
@@ -248,9 +285,6 @@ HeapStats heap() {
     return h;
 }
 
-bool fsInfo(uint32_t& total, uint32_t& used) {
-    return lfsInfo(BBS_FS_LABEL, g_dataFig, 0, total, used);   // see userInfo
-}
 
 // ---------------------------------------------------------------------------
 // hardware: the chip, the flash this image can use and any PSRAM the
@@ -535,50 +569,53 @@ void sdUnmount() {
     plat::log("sd: unmounted");
 }
 
-// How long a free-space reading is considered current. Three seconds is
-// long enough that a refresh screen redrawing once a second does not pay
-// for it every frame, and short enough that a sysop watching a transfer
-// sees the figure move.
-static constexpr uint32_t kSdInfoMs = 3000;
-static SdInfo   g_sdInfo;
-static uint32_t g_sdInfoAt = 0;          // 0 means nothing cached
+// sdInfoStale: called by mount and unmount. Nothing is kept here since
+// 1.1.2 (sdInfo reads registers only), so there is nothing to forget.
+static void sdInfoStale() {}
 
-// sdInfoStale: called by mount and unmount. The figures are about a card,
-// so they stop meaning anything the moment the card does.
-static void sdInfoStale() { g_sdInfoAt = 0; g_sdInfo = SdInfo(); }
-
+// sdInfo: registers only, never the FAT (1.1.2). The size is the card's own
+// (its CSD, read at mount), which is what the size printed on it is rounded
+// from; free space is a measurement, the runner's (measure(PART_CARD)), and
+// core/space.h keeps it. Asking esp_vfs_fat_info here, as this did, put a
+// possible whole-FAT scan on whichever screen asked.
 SdInfo sdInfo() {
-    uint32_t now = millis();
-    if (g_sdInfoAt && now - g_sdInfoAt < kSdInfoMs) return g_sdInfo;
-
     SdInfo i;
-    if (!g_mount || !g_card) {
-        g_sdInfo = i;
-        g_sdInfoAt = now ? now : 1;
-        return i;
-    }
+    if (!g_mount || !g_card) return i;
     i.mounted  = true;
     i.speedKHz = g_speed;
     snprintf(i.type, sizeof(i.type), "%s",
              g_card->is_mmc ? "MMC" : (g_card->ocr & (1u << 30)) ? "SDHC/SDXC" : "SDSC");
-
-    // By mount point, not by drive number. The first version called
-    // f_getfree("0:"), which is right only because this is the only FAT
-    // volume on the board: the drive number comes from the first free slot
-    // in the FATFS table, so "0:" was a coincidence rather than a contract.
-    // esp_vfs_fat_info reads the drive out of the mount it was given and
-    // cannot be wrong. It is also the cheap path: the failure mode of the
-    // old call was a whole-FAT scan on a card whose free-cluster hint was
-    // stale, which is what pulling a FAT card mid-write produces, and that
-    // scan would have run on the DASH refresh timer.
-    uint64_t total = 0, freeB = 0;
-    if (esp_vfs_fat_info(BBS_SD_MOUNT, &total, &freeB) == ESP_OK) {
-        i.totalKB = static_cast<uint32_t>(total / 1024ULL);
-        i.freeKB  = static_cast<uint32_t>(freeB / 1024ULL);
-    }
-    g_sdInfo   = i;
-    g_sdInfoAt = now ? now : 1;
+    const uint64_t bytes = static_cast<uint64_t>(g_card->csd.capacity) *
+                           static_cast<uint64_t>(g_card->csd.sector_size);
+    i.totalKB = static_cast<uint32_t>(bytes / 1024ULL);
     return i;
+}
+
+// sdSpace: FAT's own figure, by mount point rather than drive number (the
+// drive number comes from the first free slot in the FATFS table, so "0:"
+// was a coincidence rather than a contract). A card with a stale free-cluster
+// hint, which is what pulling one mid-write leaves, makes this a scan of the
+// whole FAT: the runner's, never the loop's.
+bool sdSpace(uint64_t& total, uint64_t& freeBytes) {
+    total = freeBytes = 0;
+    if (!g_mount) return false;
+    return esp_vfs_fat_info(BBS_SD_MOUNT, &total, &freeBytes) == ESP_OK;
+}
+
+// sdList: FatFs's directory entries, sizes and all, one read of the folder.
+bool sdList(const char* rel, SdListFn fn, void* ctx) {
+    if (!g_mount || !g_card || !fn) return false;
+    char path[160];
+    snprintf(path, sizeof(path), "%u:/%s", static_cast<unsigned>(ff_diskio_get_pdrv_card(g_card)), rel ? rel : "");
+    FF_DIR d;
+    if (f_opendir(&d, path) != FR_OK) return false;
+    FILINFO fi;
+    while (f_readdir(&d, &fi) == FR_OK && fi.fname[0]) {
+        if (fi.fname[0] == '.') continue;
+        if (!fn(ctx, fi.fname, (fi.fattrib & AM_DIR) != 0, static_cast<uint32_t>(fi.fsize))) break;
+    }
+    f_closedir(&d);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -825,8 +862,28 @@ inline uint32_t ledLevel(bool on) {
 esp_reset_reason_t g_reset = ESP_RST_UNKNOWN;
 bool               g_resetRead = false;
 
+// The RTC's own reset cause, beside the IDF's reading of it (1.1.2). On the
+// classic ESP32 the IDF files RESET_REASON_SYS_RTC_WDT (0x10) under
+// ESP_RST_WDT, and 0x10 is also what the chip reports after a reset on its
+// EN pin that a USB-serial bridge (the ESP32-CAM-MB, opening its port) or a
+// RESET button makes: the bench's ESP32-CAM said "watchdog" and told the
+// sysop the board had frozen when somebody had only opened the console. Our
+// own watchdogs never reach 0x10: the task watchdog panics (a software reset
+// with the TASK_WDT hint), the interrupt watchdog is MWDT1, and the RTC
+// watchdog's other causes (0x09, 0x0D) are core and CPU resets. The one real
+// hang that lands there is the bootloader's own RTC watchdog, a start that
+// never reached the app, which is rare enough to name beside the button.
+bool g_extReset = false;
+
 void readReset() {
-    if (!g_resetRead) { g_reset = esp_reset_reason(); g_resetRead = true; }
+    if (!g_resetRead) {
+        g_reset = esp_reset_reason();
+#if CONFIG_IDF_TARGET_ESP32
+        g_extReset = g_reset == ESP_RST_WDT &&
+                     esp_rom_get_reset_reason(0) == RESET_REASON_SYS_RTC_WDT;
+#endif
+        g_resetRead = true;
+    }
 }
 
 // No case for ESP_RST_EXT. The IDF documents it as not applicable to the
@@ -839,6 +896,7 @@ void readReset() {
 // target, so it needs no guard; the ESP32 simply never returns it.
 const char* resetReason() {
     readReset();
+    if (g_extReset) return "reset pin (EN or a serial port)";
     switch (g_reset) {
         case ESP_RST_POWERON:  return "power on";
         case ESP_RST_USB:      return "USB reset";
@@ -856,6 +914,7 @@ const char* resetReason() {
 
 bool resetWasCrash() {
     readReset();
+    if (g_extReset) return false;
     return g_reset == ESP_RST_PANIC || g_reset == ESP_RST_INT_WDT ||
            g_reset == ESP_RST_TASK_WDT || g_reset == ESP_RST_WDT ||
            g_reset == ESP_RST_BROWNOUT;
@@ -1614,15 +1673,6 @@ framesize_t camSize(const char* name) {
     return FRAMESIZE_SVGA;
 }
 
-// The worker's task: one at a time, so one trampoline.
-struct Worker { void (*fn)(void*); void* arg; };
-Worker g_worker;
-
-void workerMain(void*) {
-    g_worker.fn(g_worker.arg);
-    vTaskDelete(nullptr);
-}
-
 // camMemLog: internal RAM as the camera sees it, on the console, so a
 // failed bring-up says which budget it met. The walks are the worker's.
 void camMemLog(const char* when) {
@@ -1680,6 +1730,14 @@ bool camOpen(const CamCfg& c, char* err, size_t errLen) {
     cfg.grab_mode    = CAMERA_GRAB_WHEN_EMPTY;
     cfg.sccb_i2c_port = -1;
 
+    // The driver's ll_cam_set_pin installs the GPIO ISR service at every
+    // bring-up and leaves it installed at deinit, so from the second snap on
+    // the IDF's gpio driver said "GPIO isr service already installed" on the
+    // console at every snap (1.1.2, from the bench). The call is harmless
+    // (the driver ignores the answer); the line is only noise. Quiet for the
+    // bring-up, then as it was, and only its own tag.
+    const esp_log_level_t gpioWas = esp_log_level_get("gpio");
+    esp_log_level_set("gpio", ESP_LOG_NONE);
     esp_err_t e = esp_camera_init(&cfg);
     if (e == ESP_ERR_NOT_SUPPORTED && !g_camRaw) {
         // Either nothing answered on the bus, or a sensor answered that
@@ -1695,6 +1753,7 @@ bool camOpen(const CamCfg& c, char* err, size_t errLen) {
             plat::log("camera: the sensor gives no JPEG: raw frames, encoded on the worker");
         }
     }
+    esp_log_level_set("gpio", gpioWas);
     if (e != ESP_OK) {
         plat::log("camera: init failed: %s (0x%x)", esp_err_to_name(e), static_cast<unsigned>(e));
         // esp_camera_init tears down what it built on every failing path
@@ -1853,47 +1912,6 @@ void camFree(void* p) {
     heap_caps_free(p);
 }
 
-// taskStart: the worker, on the BBS task's core and three below its
-// priority, so whenever the loop has anything to do it runs and the worker
-// waits; the stack is internal, since the worker writes the card. One at a
-// time: the camera plugin's job is the lock.
-bool taskStart(void (*fn)(void*), void* arg, uint32_t stackBytes, const char* name) {
-    g_worker.fn  = fn;
-    g_worker.arg = arg;
-    BaseType_t ok = xTaskCreatePinnedToCore(workerMain, name, stackBytes, nullptr,
-                                            BBS_TASK_PRIO > 3 ? BBS_TASK_PRIO - 3 : 1, nullptr,
-                                            BBS_TASK_CORE);
-    return ok == pdPASS;
-}
-
-void taskSleep(uint32_t ms) {
-    vTaskDelay(ms ? pdMS_TO_TICKS(ms) : 1);
-}
-
-uint32_t taskStackFree() {
-    return static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr)) * sizeof(StackType_t);
-}
-
-bool sdSpace(uint64_t& total, uint64_t& freeBytes) {
-    total = freeBytes = 0;
-    if (!g_mount) return false;
-    return esp_vfs_fat_info(BBS_SD_MOUNT, &total, &freeBytes) == ESP_OK;
-}
-
-bool sdList(const char* rel, SdListFn fn, void* ctx) {
-    if (!g_mount || !g_card || !fn) return false;
-    char path[160];
-    snprintf(path, sizeof(path), "%u:/%s", static_cast<unsigned>(ff_diskio_get_pdrv_card(g_card)), rel ? rel : "");
-    FF_DIR d;
-    if (f_opendir(&d, path) != FR_OK) return false;
-    FILINFO fi;
-    while (f_readdir(&d, &fi) == FR_OK && fi.fname[0]) {
-        if (fi.fname[0] == '.') continue;
-        if (!fn(ctx, fi.fname, (fi.fattrib & AM_DIR) != 0, static_cast<uint32_t>(fi.fsize))) break;
-    }
-    f_closedir(&d);
-    return true;
-}
 
 // pinOut: the flash pin. Two register writes, safe from the loop.
 void pinOut(int pin, bool high) {

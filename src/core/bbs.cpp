@@ -40,6 +40,8 @@
 #include "bbs.h"
 #include "disk.h"              // fopen and opendir that tell the drive light (1.1.1)
 #include "claims.h"
+#include "space.h"            // the kept free-space figures (1.1.2)
+#include "runner.h"           // the background runner (1.1.2)
 #include "bbs_util.h"
 #include "fx.h"
 #include "clock.h"
@@ -164,6 +166,9 @@ bool Bbs::begin(uint16_t port) {
     // that fixes them: it runs before the listener is up, so nobody can be
     // logging in while the file is being rewritten.
     users::assignIds();
+    // The call figures, out of users.txt into a file of their own (1.1.2):
+    // once, on the first boot of this firmware; nothing on every one after.
+    users::statsMigrate();
 
     // The ring notes waiting from before the restart, counted once so the
     // dashboard can say so without opening the file.
@@ -213,6 +218,9 @@ bool Bbs::begin(uint16_t port) {
 
     plat::HeapStats h = plat::heap();
     heapBaseline_ = h.freeBytes;
+    // The free-space figures, measured on the runner (1.1.2): every screen
+    // and the plugins' write guard read what this finds.
+    space::refresh(true);
     plat::backupButtonBegin(syscfg::get().backupGpio);
     plat::activityLedBegin(syscfg::get().ledGpio);
     plat::log("bbs: %s %s listening on %u, %u nodes", BBS_NAME, BBS_VERSION_SHOWN, port, BBS_MAX_NODES);
@@ -299,9 +307,18 @@ void Bbs::endScreens(bool card, const char* why) {
 // Table 0 is the core's and stays: it is registered in begin() and the core
 // is not restarted by a reload.
 // ---------------------------------------------------------------------------
-void Bbs::dropPluginCommands() {
-    for (uint8_t t = 1; t < tableCount_; ++t) tables_[t] = CommandTable{};
-    tableCount_ = 1;
+void Bbs::dropPluginCommands(uint32_t mask) {
+    // The tables of the plugins in mask go; the rest close up behind them in
+    // the order they were registered (1.1.2: a save of one plugin's page
+    // restarts only that plugin, and only its commands are registered again).
+    uint8_t w = 1;
+    for (uint8_t t = 1; t < tableCount_; ++t) {
+        const uint8_t pl = tables_[t].plugin;
+        if (pl != 0xFF && pl < 32 && (mask & (1u << pl))) continue;
+        tables_[w++] = tables_[t];
+    }
+    for (uint8_t t = w; t < tableCount_; ++t) tables_[t] = CommandTable{};
+    tableCount_ = w;
 }
 
 // ===========================================================================
@@ -471,6 +488,8 @@ void Bbs::tick() {
     usPlug = plat::micros() - mark; mark += usPlug;
 
     plat::activityTick(now);
+    space::tick();                   // a free-space measure the runner finished (1.1.2)
+    calllog::mirrorTick();           // the caller log's card copy, on the runner (1.1.2)
     board::silentTick(now);          // the switch and the hours: a compare, and a look once a second
     heapWatch(now);
     serviceShutdown(now);
@@ -510,6 +529,15 @@ void Bbs::tick() {
     if (dt > BBS_SLOW_PASS_US) {
         ++slowCount_;
         slowAt_ = now ? now : 1;
+#ifdef BBS_HOST
+        // Every slow pass, unthrottled, with what the slowest caller was
+        // doing (1.1.2): the tests' pass timer. A test reads these lines for
+        // the one path it drives, so the one-a-second limit below cannot
+        // hide the pass it is looking for behind one it is not.
+        plat::log("host: slow pass %luus in %s node %u doing %s",
+                  static_cast<unsigned long>(dt), phase, static_cast<unsigned>(slowest),
+                  slowDoing && *slowDoing ? slowDoing : "-");
+#endif
         if (!slowLogAt_ || now - slowLogAt_ >= 1000) {
             slowLogAt_ = now ? now : 1;
             plat::log("bbs: slow pass %luus in %s (node %u %s): accept %lu session %lu "
@@ -698,6 +726,10 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
     ringLimits_.forget(s.id);
     s.fd            = fd;
     s.st            = SState::Detect;
+    s.call          = ++callSerial_;     // never 0: 0 is "no call" to a runner job
+    if (!s.call) s.call = ++callSerial_;
+    s.waitFor       = WaitFor::None;
+    s.waitArg       = 0;
     s.role          = role;
     s.wantWrite     = false;
     s.negotiated    = false;
@@ -878,10 +910,13 @@ void Bbs::closeSession(Session& s, const char* why, uint32_t now) {
     s.mb.clear();
     s.list = ListKind::None;
     s.st   = SState::Free;
+    s.waitFor = WaitFor::None;
+    screensTableRelease();            // a SCREENS reader hanging up (1.1.2)
 
-    plat::HeapStats h = plat::heap();
+    // The counter, not plat::heap(), which walks the heap for its largest
+    // block with interrupts off: this is on every caller's hang-up (1.1.2).
     plat::log("bbs: node %s HANGUP (%s)  nodes %u/%u  heap free %u",
-              nodeName(s).t, why, activeNodes(), BBS_MAX_NODES, static_cast<unsigned>(h.freeBytes));
+              nodeName(s).t, why, activeNodes(), BBS_MAX_NODES, static_cast<unsigned>(plat::heapFree()));
 }
 
 // ---------------------------------------------------------------------------
@@ -1080,6 +1115,9 @@ void Bbs::serviceSession(Session& s, uint32_t now) {
             break;
         case SState::Fx:
             if (tl.empty()) fxNext(s);
+            break;
+        case SState::Waiting:
+            serviceWait(s, now);
             break;
         case SState::BusyWait:
             if (s.scr.active()) {
@@ -2411,8 +2449,9 @@ void Bbs::serviceShutdown(uint32_t now) {
 // saveCallStats: at logoff, count the call and the day's minutes
 // ---------------------------------------------------------------------------
 void Bbs::saveCallStats(Session& s, uint32_t now) {
-    // On the stack since 1.1.0, under users::update and rewrite's own record:
-    // this is one of the account writes the task stack was raised for.
+    // One 16-byte record in place since 1.1.2 (users::statsPut), not users.txt
+    // parsed and written back whole: that was every account on every
+    // hang-up, 28 block erases at 250 accounts, each one stopping both cores.
     UserRec u;
     if (s.guest || s.role == Role::Busy || !users::find(s.user, u)) return;
     uint32_t mins = ((now - s.loginAt) / 1000u + 59u) / 60u;
@@ -2424,7 +2463,7 @@ void Bbs::saveCallStats(Session& s, uint32_t now) {
     }
     if (u.calls < 0xFFFF) ++u.calls;
     if (s.loginEpoch) u.lastCall = s.loginEpoch;
-    users::update(u.handle, u);
+    users::statsPut(u.id, u.calls, u.lastCall, u.dayKey, u.dayMinutes);
 }
 
 uint16_t Bbs::dayMinutesUsed(const char* handle, uint32_t now) {
@@ -2712,6 +2751,10 @@ void Bbs::bootNotice(Session& s) {
 // staffArrival: see bbs.h. The order is the one elevate always used.
 // ---------------------------------------------------------------------------
 void Bbs::staffArrival(Session& s) {
+    // The free-space figures, measured again on the runner for whoever is
+    // about to look at them (1.1.2, Rob): MEM, SYS and DASH read the kept
+    // ones, and a staff login is when they are taken, never on the loop.
+    space::refresh(true);
     bootNotice(s);
     // Rings nobody answered while the sysop was off (1.1.0), once, then gone.
     if (s.level == Access::Sysop) ringNotes(s);
@@ -3148,6 +3191,7 @@ void Bbs::startList(Session& s, ListKind kind) {
     s.list      = kind;
     s.listIdx   = 0;
     s.listSub   = 0;
+    s.listHeld  = false;
     s.pageLines = 0;
     s.nonstop   = false;
     s.ed        = LineEditor();
@@ -3171,6 +3215,7 @@ void Bbs::startList(Session& s, ListKind kind) {
 // the plugin's.
 // ---------------------------------------------------------------------------
 void Bbs::listEnded(Session& s, bool aborted) {
+    screensTableRelease();            // SCREENS's table, once nobody is in it (1.1.2)
     if (s.owner != 0xFF && plugins::running(s.owner)) {
         s.st = SState::Plugin;
         // And say so. The plugin owns the screen now and the core will not
@@ -3189,10 +3234,12 @@ void Bbs::serviceList(Session& s) {
             return;
         }
         if (!listRow(s)) {
+            s.listHeld = false;
             s.list = ListKind::None;
             listEnded(s);
             return;
         }
+        if (s.listHeld) { s.listHeld = false; return; }   // not ready: the same row next pass
         ++s.pageLines;
     }
 }
@@ -3255,6 +3302,7 @@ void Bbs::startWatch(Session& s, ListKind kind, uint8_t secs) {
     s.list      = kind;
     s.listIdx   = 0;
     s.listSub   = 0;
+    s.listHeld  = false;
     s.ed        = LineEditor();
     s.st        = SState::Watch;
     s.term.cursor(s.tl, false);
@@ -3382,6 +3430,11 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
         case SState::AnyKey:
             if (!tl.empty()) { tl.skipDelays(); return; }   // still printing: let it finish
             onAnyKey(s, now);
+            return;
+
+        case SState::Waiting:
+            // The runner is working for this caller: the spinner is the
+            // answer to a key, as it is to BACKUP SD's (1.1.2).
             return;
 
         case SState::Form: {

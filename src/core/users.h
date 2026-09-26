@@ -223,6 +223,9 @@ Lookup lookup(const char* handle, UserRec& out);
 // count: accounts in the file
 uint8_t count();
 
+// byId: the account with this id (1.1.2): from the handle index, a seek.
+bool byId(uint32_t id, UserRec& out);
+
 // at: index-th account in file order (for listings)
 bool at(uint8_t index, UserRec& out);
 
@@ -271,5 +274,19 @@ struct Issues {
 // validateFile: a users.txt from an upload parses cleanly (handles valid
 // and unique, passwords well formed). Problems count, first one in err.
 int validateFile(const char* path, Issues& issues);
+
+// reindex: users.txt was put in place by something other than this file (a
+// restore): the handle index is rebuilt at the next question (1.1.2).
+void reindex();
+
+// The call statistics (1.1.2): calls, last call, and the day's minutes live
+// in <userdata>/callstats.dat, a 16-byte record an account at its id,
+// written in place at a logoff instead of rewriting users.txt whole. Every
+// read above lays them over the account's block, so a UserRec from find,
+// lookup, at or range has them. statsPut writes one account's; statsMigrate
+// makes the file from users.txt's figures when there is none (the first
+// boot of 1.1.2, a restore of an older zip), and says how many it copied.
+bool     statsPut(uint32_t id, uint16_t calls, uint32_t lastCall, uint32_t dayKey, uint16_t dayMinutes);
+uint16_t statsMigrate();
 
 } // namespace users

@@ -775,6 +775,17 @@ bool reload(char* err, size_t errLen) {
     return true;
 }
 
+// checkWith: check into a scratch the caller owns (1.1.2), for the restore's
+// unpack on the background runner, which must not share g_scratch with a
+// reload the loop may be doing at the same moment.
+int checkWith(const char* path, SysConfig& scratch, char* err, size_t errLen, uint8_t* maxUsers) {
+    scratch = SysConfig();
+    int problems = parseFile(path, scratch, err, errLen);
+    if (maxUsers) *maxUsers = scratch.maxUsers;
+    scratch = SysConfig();                          // as check(): forgotten at once
+    return problems;
+}
+
 int check(const char* path, char* err, size_t errLen, uint8_t* maxUsers) {
     g_scratch = SysConfig();
     int problems = parseFile(path, g_scratch, err, errLen);

@@ -77,6 +77,17 @@ const char* sdScreensDir();
 // (1.1.0, for SCREENS). Defined by the plugin, as sdScreensDir is.
 bool sdSeededStock(const char* file);
 
+// sdSeededEach: the manifest's lines, once, in file order: fn gets each
+// screen's file name and the hash the board recorded when it seeded it
+// (sdSeededMine for the sysop's own), until it returns false. False with no
+// card or no manifest. sdFileHash: the same FNV-1a over a card file, 0 when
+// it cannot be read. For SCREENS's table, built on the background runner
+// (1.1.2): the manifest read once for the whole list, not once a cell.
+constexpr uint32_t sdSeededMine = 0;
+using SeededFn = bool (*)(void* ctx, const char* file, uint32_t hash);
+bool     sdSeededEach(SeededFn fn, void* ctx);
+uint32_t sdFileHash(const char* path);
+
 class ScreenPlayer {
 public:
     struct Vars {

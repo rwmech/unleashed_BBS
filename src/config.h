@@ -55,7 +55,7 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "1.1.1"
+#define BBS_VERSION         "1.1.2-dev.1"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // BBS_VERSION_SHOWN: the version as every place a person reads one shows it
@@ -201,6 +201,9 @@
 // rings go while CONFIG names no sysop account. An id into users.txt, so a
 // restore that replaces users.txt removes it (ziparc).
 #define BBS_SYSOP_LAST_FILE "sysop.last"
+// Each account's calls, last call and the day's minutes, a 16-byte record at
+// its id (1.1.2, core/users.cpp): written in place at a logoff.
+#define BBS_STATS_FILE      "callstats.dat"
 // Accounts never move to the SD card: they are the one thing that has to
 // survive a card failing, and LittleFS is power-fail safe in a way FAT is
 // not. userdata is 608 KB and a UserRec is about 450 bytes, so the space is
@@ -267,6 +270,14 @@
 // add up to three records (1,476 bytes) on an account write.
 #define BBS_TASK_STACK      12288
 #define BBS_TASK_PRIO       5
+
+// The background runner's stack (1.1.2, core/runner.h), bytes, from the heap
+// while the runner has work and for a few seconds after, never static DRAM.
+// 8 KB because the camera's worker is one of its jobs, and that is what a
+// snap measured on the bench (encoding a raw GC0308 frame and the survey
+// after it left 2,008 of 6,144 free). SYS shows the least the runner has had
+// free ("Runner stack"), so it is settled on the bench, not guessed.
+#define BBS_RUNNER_STACK    8192
 
 // The band of the task's stack that stackWatch reads just under the low mark
 // after each phase (plat::stackDeeper), in bytes. 512 because a UserRec is

@@ -56,6 +56,9 @@ inline plat::DiskKind kindOf(const char* path) {
 // is tried first (the caller log's first call, a new forum), and its miss is
 // the expected path to "w+".
 inline FILE* open(const char* path, const char* mode) {
+#ifdef BBS_HOST
+    plat::hostDiskOpen(path, mode);          // a test's cost per open, and its count (1.1.2)
+#endif
     FILE* f = fopen(path, mode);
     if (f)                                   plat::diskPulse(kindOf(path));
     else if (mode[0] == 'w' || mode[0] == 'a') plat::diskPulse(plat::DISK_ERROR);
@@ -64,6 +67,9 @@ inline FILE* open(const char* path, const char* mode) {
 
 // dir: opendir, and the drive light told when it opens.
 inline DIR* dir(const char* path) {
+#ifdef BBS_HOST
+    plat::hostDiskOpen(path, "dir");
+#endif
     DIR* d = opendir(path);
     if (d) plat::diskPulse(kindOf(path));
     return d;

@@ -88,15 +88,16 @@ const char* logsBase();
 // ---------------------------------------------------------------------------
 const char* userBase();
 
-// userInfo: size and used bytes of that partition, for the space a plugin
-// is allowed to claim. False when the platform cannot tell. The figure may
-// be up to a minute old: measuring it on LittleFS walks the whole partition
-// with the loop stopped, so it is measured once and kept.
-bool userInfo(uint32_t& total, uint32_t& used);
-
-// fsInfoStale: forget the kept free-space figures, after something rewrote a
-// partition wholesale (a backup restore). The next ask measures again.
-void fsInfoStale();
+// ---------------------------------------------------------------------------
+// measure: the size and the used bytes of one partition or of the card, read
+// now (1.1.2). BLOCKING: on LittleFS esp_littlefs_info walks every block of
+// every file (about 85 ms a partition on the board), and on the card FAT's
+// own figure can mean a scan of the whole FAT. So only the background runner
+// asks (core/space.h keeps the figures for everybody else), never the loop.
+// False when the platform cannot tell, or for the card when none is mounted.
+// ---------------------------------------------------------------------------
+enum Part : uint8_t { PART_SCREENS = 0, PART_USER, PART_LOGS, PART_CARD, PART_COUNT };
+bool measure(Part p, uint64_t& total, uint64_t& used);
 
 // ---------------------------------------------------------------------------
 // heap: heap statistics for MEM command and per-session measurement
@@ -215,12 +216,6 @@ struct NetInfo {
 NetInfo netInfo();
 
 // ---------------------------------------------------------------------------
-// fsInfo: size and used bytes of the data filesystem. False when the
-// platform cannot tell.
-// ---------------------------------------------------------------------------
-bool fsInfo(uint32_t& total, uint32_t& used);
-
-// ---------------------------------------------------------------------------
 // The SD card (the sd plugin). Optional: a board with no card is a complete
 // board, and everything that must survive stays on internal flash whatever
 // is plugged in.
@@ -277,7 +272,65 @@ void sdUnmount();
 // is the test callers should use: a board without a card is not an error.
 const char* sdBase();
 
+// sdInfo: whether a card is mounted, its type, bus speed and size (from the
+// card's own registers: no I/O). freeKB is left 0 from 1.1.2: free space is
+// a measurement (measure(PART_CARD)), the runner's, and core/space.h keeps it.
 SdInfo sdInfo();
+
+// sdSpace: the card's size and free space in bytes, read now (FAT's own
+// figure, which can mean a scan): the runner's, never the loop's. False with
+// no card. (The camera's until 1.1.2; every board's now.)
+bool sdSpace(uint64_t& total, uint64_t& freeBytes);
+
+// sdList: every entry of a folder on the card (path under sdBase(),
+// "photos/timelapse"), with whether it is a folder and its size, in the
+// order the card holds them, until fn returns false. One read of the folder:
+// FatFs's own directory entry carries the size, so no entry is looked up
+// again (a stat on FAT searches the folder from the top, which made a walk of
+// a thousand photos a million entry reads). Dot entries are left out. False
+// when the folder cannot be opened. The runner's: a big folder is a long
+// read. (The camera's until 1.1.2.)
+using SdListFn = bool (*)(void* ctx, const char* name, bool dir, uint32_t size);
+bool sdList(const char* rel, SdListFn fn, void* ctx);
+
+// ---------------------------------------------------------------------------
+// The background runner's platform side (1.1.2, core/runner.h, which is the
+// only user). One task at a time, on the BBS task's core three priorities
+// below it, so it only ever gets the loop's idle time: that is the throttle.
+//
+// taskStart:     run fn once on a task of its own, its stack from the heap;
+//                the task ends when fn returns. False when it would not
+//                start. fn goes to the task as its parameter, not through a
+//                global the task reads later (the old trampoline's bug).
+// taskSleep:     give the processor away for ms (0: to anything waiting).
+// taskStackFree: the least free stack the calling task has had, in bytes;
+//                0 where it is not measured (the host).
+// runLock/runUnlock: the runner's queue lock. Held for a few instructions,
+//                never across I/O or taskStart.
+// runWait:       the runner waits for work up to ms; true when woken.
+// runWake:       wake it.
+// ---------------------------------------------------------------------------
+bool     taskStart(void (*fn)(), uint32_t stackBytes, const char* name);
+void     taskSleep(uint32_t ms);
+uint32_t taskStackFree();
+void     runLock();
+void     runUnlock();
+bool     runWait(uint32_t ms);
+void     runWake();
+
+#ifdef BBS_HOST
+// hostDiskOpen (host build only): disk::open and disk::dir report every open
+// here, so a test can count what a path opened, and so a test can give the
+// card and the flash a cost per open (1.1.2): the host's Linux filesystem
+// costs nothing, which is exactly why every stall the audit found passed
+// every host test. Both come from <data>/hostio.txt, "card_us flash_us" and
+// then any of the words "log" and "nodns", read again every half second: a
+// test switches them on for the one thing it measures.
+void hostDiskOpen(const char* path, const char* mode);
+// hostNoDns (host build only): hostio.txt says "nodns", so a name lookup
+// fails the way a DNS server that has gone away makes one fail (1.1.2).
+bool hostNoDns();
+#endif
 
 // ---------------------------------------------------------------------------
 // Device serial port (the serial bridge plugin). This is the second UART,
@@ -526,23 +579,9 @@ void     psramFree(void* p);
 //                own task stack is on top (the plugin adds its worker's).
 // camAlloc:      a block for a copy of a frame or the re-encoder's buffers,
 //                PSRAM first. camFree gives it back.
-// taskStart:     run fn(arg) once on a task of its own, on the BBS task's
-//                core below its priority, so it only ever gets the loop's
-//                idle time: that is the throttle. The task ends when fn does.
-// taskSleep:     give the processor away for ms (0: to anything waiting).
-// taskStackFree: the least free stack the calling task has had, in bytes.
-// sdSpace:       the card's size and free space in bytes, read now (FAT's
-//                own figure, which can mean a scan: the worker's, never the
-//                loop's), not sdInfo's kept one. False with no card.
-// sdList:        every entry of a folder on the card (path under sdBase(),
-//                "photos/timelapse"), with whether it is a folder and its
-//                size, in the order the card holds them, until fn returns
-//                false. One read of the folder: FatFs's own directory entry
-//                carries the size, so no entry is looked up again (a stat on
-//                FAT searches the folder from the top, which made a walk of
-//                a thousand photos a million entry reads). Dot entries are
-//                left out. False when the folder cannot be opened.
-// pinOut:        a GPIO as an output, driven high or low (the flash pin).
+// The camera's worker is a job on the background runner since 1.1.2
+// (core/runner.h); taskStart, sdSpace and sdList moved out of this block.
+// pinOut:       a GPIO as an output, driven high or low (the flash pin).
 // jpegMark:      re-encode a JPEG a strip of rows at a time, calling draw on
 //                each strip (RGB888) before it is encoded, and out with the
 //                result as it is made. quality 1 to 100, higher is better.
@@ -599,12 +638,6 @@ CamMeter camMeter(uint16_t& a, uint16_t& b);
 bool     camQuality(int quality);
 void*    camAlloc(size_t n);
 void     camFree(void* p);
-bool     taskStart(void (*fn)(void*), void* arg, uint32_t stackBytes, const char* name);
-void     taskSleep(uint32_t ms);
-uint32_t taskStackFree();
-bool     sdSpace(uint64_t& total, uint64_t& freeBytes);
-using SdListFn = bool (*)(void* ctx, const char* name, bool dir, uint32_t size);
-bool     sdList(const char* rel, SdListFn fn, void* ctx);
 void     pinOut(int pin, bool high);
 bool     jpegMark(const uint8_t* jpg, size_t len, uint8_t quality, MarkRowsFn draw, void* dctx,
                   MarkOutFn out, void* octx, uint16_t& width, uint16_t& height);

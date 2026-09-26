@@ -1013,22 +1013,32 @@ void noteSysopMail() {
 
 // mailIndex: read the addressees back into RAM. One pass, one record
 // buffer, so the whole mailbox never sits in memory at once.
+//
+// Since 1.1.2 a slot IS the record's place in the file: slot 5 is the sixth
+// record, and a message read and deleted leaves a hole there (to[0] == 0)
+// rather than the file being written again without it. New mail goes on the
+// end, so the file's order is still the order mail was left in, oldest
+// first, which is what every walk of the slots below relies on. An expired
+// message is a hole to the index; the next compaction drops it.
+uint8_t g_mailN = 0;                    // records in the file, holes and all
+
 void mailIndex() {
     memset(g_mailTo, 0, sizeof(g_mailTo));
     memset(g_mailAt, 0, sizeof(g_mailAt));
     memset(g_mailFl, 0, sizeof(g_mailFl));
+    g_mailN = 0;
     char path[96];
     if (!mailReadPath(path, sizeof(path))) return;
     FILE* f = disk::open(path, "rb");
     if (!f) return;
     MailRec r;
-    uint8_t n = 0;
-    while (n < kMailSlots && fread(&r, sizeof(r), 1, f) == 1) {
-        if (!r.to[0]) continue;
+    const uint32_t nowEpoch = clk::epoch();
+    while (g_mailN < kMailSlots && fread(&r, sizeof(r), 1, f) == 1) {
+        const uint8_t n = g_mailN++;
+        if (!r.to[0] || mailExpired(r.at, nowEpoch)) continue;
         snprintf(g_mailTo[n], BBS_USER_MAX + 1, "%.*s", BBS_USER_MAX, r.to);
         g_mailAt[n] = r.at;
         g_mailFl[n] = r.flags;
-        ++n;
     }
     fclose(f);
     noteSysopMail();
@@ -1115,10 +1125,14 @@ bool mailReplace(const char* tmp, const char* path) {
 // temp file and a rename, so a power cut during a write cannot lose the
 // mailbox.
 // ---------------------------------------------------------------------------
-// dropIdx is a position in the same order mailIndex() walks: the nth
-// non-empty record in the file. It used to be a handle, which meant reading
-// one message threw away every message that person had, which was invisible
-// while nobody could have two.
+// dropIdx is a slot, which since 1.1.2 is the record's place in the file. It
+// used to be a handle, which meant reading one message threw away every
+// message that person had, which was invisible while nobody could have two.
+//
+// Since 1.1.2 this is the compaction, not the way every change is made: it
+// drops the holes and the expired, and runs only when the file has used all
+// its places at the end (mailAdd). Reading, keeping and deleting are a byte
+// in place (mailDrop, mailKeep); sending is a record on the end (mailAdd).
 bool mailRewrite(int16_t dropIdx, const MailRec* add, uint32_t nowEpoch,
                  int16_t markIdx = -1) {
     char path[96], tmp[112];
@@ -1131,10 +1145,11 @@ bool mailRewrite(int16_t dropIdx, const MailRec* add, uint32_t nowEpoch,
     uint8_t kept = 0;
     if (in) {
         MailRec r;
-        int16_t seen = 0;
+        int16_t pos = -1;
         while (fread(&r, sizeof(r), 1, in) == 1) {
+            ++pos;
             if (!r.to[0]) continue;
-            int16_t idx = seen++;
+            int16_t idx = pos;                                      // a slot is a place in the file
             if (dropIdx >= 0 && idx == dropIdx) continue;          // the one just read
             // The line that used to sit here dropped every record addressed
             // to the sender's recipient, so a new message quietly deleted
@@ -1158,6 +1173,72 @@ bool mailRewrite(int16_t dropIdx, const MailRec* add, uint32_t nowEpoch,
     if (fclose(out) != 0) { remove(tmp); return false; }   // FAT says "full" here
     if (!mailReplace(tmp, path)) return false;
     mailIndex();
+    return true;
+}
+
+// mailPut: bytes at a place in the file, in place (r+b), 1.1.2. The mailbox
+// was written whole through a temp file and a rename for every read, keep
+// and send: up to 36 KB, about nine block erases, each stopping both cores.
+// LittleFS commits a file's change whole at close, so a power cut leaves the
+// old byte or the new one, and the rename bought nothing. (On LittleFS a
+// change still copies the file from the block it is in to the end, so a
+// message near the start of a full box costs more than one near the end; a
+// new message goes on the end, one block.)
+bool mailPut(long at, const void* data, size_t n) {
+    char path[96];
+    if (!mailPath(path, sizeof(path))) return false;
+    FILE* f = disk::open(path, "r+b");
+    if (!f) f = disk::open(path, "w+b");
+    if (!f) return false;
+    bool ok = fseek(f, at, SEEK_SET) == 0 && fwrite(data, 1, n, f) == n;
+    ok = (fclose(f) == 0) && ok;
+    if (!ok) plat::diskPulse(plat::DISK_ERROR);
+    return ok;
+}
+
+// mailDrop: the message at this slot gone, in place: its first byte, the
+// addressee, made 0. A hole to the index from then on.
+bool mailDrop(uint8_t slot) {
+    if (slot >= kMailSlots || !g_mailTo[slot][0]) return false;
+    const char zero = 0;
+    if (!mailPut(static_cast<long>(slot) * static_cast<long>(sizeof(MailRec)) +
+                 static_cast<long>(offsetof(MailRec, to)), &zero, 1))
+        return false;
+    g_mailTo[slot][0] = '\0';
+    g_mailAt[slot] = 0;
+    g_mailFl[slot] = 0;
+    noteSysopMail();
+    return true;
+}
+
+// mailKeep: read and kept (MF_KEPT), in place: the flags byte.
+bool mailKeep(uint8_t slot) {
+    if (slot >= kMailSlots || !g_mailTo[slot][0]) return false;
+    const uint8_t fl = static_cast<uint8_t>(g_mailFl[slot] | MF_KEPT);
+    if (!mailPut(static_cast<long>(slot) * static_cast<long>(sizeof(MailRec)) +
+                 static_cast<long>(offsetof(MailRec, flags)), &fl, 1))
+        return false;
+    g_mailFl[slot] = fl;
+    noteSysopMail();
+    return true;
+}
+
+// mailAdd: a new message on the end of the file, and the reply's original
+// dropped after it. Appended first, so a failure leaves the original to be
+// answered again rather than thrown away with nothing sent. Only when the
+// file has used all its places is it the whole rewrite, which drops the
+// holes and the expired, and the reply's original with them, and adds this
+// one, all in one pass and one rename, as every send was before 1.1.2.
+bool mailAdd(const MailRec& r, int16_t dropIdx, uint32_t nowEpoch) {
+    if (g_mailN >= kMailSlots) return mailRewrite(dropIdx, &r, nowEpoch);
+    const uint8_t at = g_mailN;
+    if (!mailPut(static_cast<long>(at) * static_cast<long>(sizeof(MailRec)), &r, sizeof(r))) return false;
+    ++g_mailN;
+    snprintf(g_mailTo[at], BBS_USER_MAX + 1, "%.*s", BBS_USER_MAX, r.to);
+    g_mailAt[at] = r.at;
+    g_mailFl[at] = r.flags;
+    if (dropIdx >= 0) mailDrop(static_cast<uint8_t>(dropIdx));
+    noteSysopMail();
     return true;
 }
 
@@ -1245,12 +1326,9 @@ bool mailRecordAt(uint8_t slot, MailRec& r) {
     if (!mailReadPath(path, sizeof(path))) return false;
     FILE* f = disk::open(path, "rb");
     if (!f) return false;
-    bool found = false;
-    int16_t seen = 0;
-    while (fread(&r, sizeof(r), 1, f) == 1) {
-        if (!r.to[0]) continue;
-        if (seen++ == static_cast<int16_t>(slot)) { found = true; break; }
-    }
+    // A slot is its place in the file (1.1.2): a seek, not a walk.
+    bool found = fseek(f, static_cast<long>(slot) * static_cast<long>(sizeof(MailRec)), SEEK_SET) == 0 &&
+                 fread(&r, sizeof(r), 1, f) == 1 && r.to[0];
     fclose(f);
     if (found) r.text[kMailChars] = '\0';
     return found;
@@ -1285,7 +1363,7 @@ bool mailOpen(Session& s, uint8_t slot) {
     char buf[80];
     uint32_t nowEpoch = clk::epoch();
     if (mailExpired(g_mailAt[slot], nowEpoch)) {                   // gone stale
-        mailRewrite(static_cast<int16_t>(slot), nullptr, nowEpoch);
+        mailDrop(slot);
         snprintf(buf, sizeof(buf), "A message for you expired after %u days.",
                  static_cast<unsigned>(g_mailDays));
         mailSay(s, Color::Yellow, buf);
@@ -1374,7 +1452,7 @@ bool mailOpen(Session& s, uint8_t slot) {
         // No way to read single keys, so there is no decision to offer.
         // Mark it kept rather than leaving it unread: unread would show
         // this same message again on the next MAIL, for ever.
-        mailRewrite(-1, nullptr, nowEpoch, static_cast<int16_t>(slot));
+        mailKeep(slot);
         return true;
     }
     g_mailIdx [sl] = static_cast<int16_t>(slot);
@@ -1472,9 +1550,8 @@ void mailBoxDraw(Session& s, bool clear) {
         if (have) {
             FILE* f = disk::open(path, "rb");
             MailRec r;
-            for (int16_t seen = 0, got = 0; f && got < n && fread(&r, sizeof(r), 1, f) == 1;) {
-                if (!r.to[0]) continue;
-                if (seen++ != list[got]) continue;
+            for (int16_t pos = 0, got = 0; f && got < n && fread(&r, sizeof(r), 1, f) == 1; ++pos) {
+                if (!r.to[0] || pos != list[got]) continue;
                 ++got;
                 uint8_t fl = static_cast<uint8_t>(strnlen(r.from, BBS_USER_MAX));
                 if (fl > fromW) fromW = fl;
@@ -1485,7 +1562,7 @@ void mailBoxDraw(Session& s, bool clear) {
         uint8_t w = b.rowWidth(s);
         int previewW = static_cast<int>(w) - 1 - 2 - 1 - fromW - 1 - 6 - 2;
         FILE* f = have ? disk::open(path, "rb") : nullptr;
-        int16_t seen = 0;
+        int16_t pos = 0;
         for (uint8_t i = 0; i < n; ++i) {
             MailRec r;
             char from[BBS_USER_MAX + 1] = "?";
@@ -1494,8 +1571,9 @@ void mailBoxDraw(Session& s, bool clear) {
             // file order, so this is one walk down the file in total.
             bool found = false;
             while (f && fread(&r, sizeof(r), 1, f) == 1) {
+                const int16_t at = pos++;
                 if (!r.to[0]) continue;
-                if (seen++ == list[i]) { found = true; break; }
+                if (at == list[i]) { found = true; break; }
             }
             if (found) {
                 r.text[kMailChars] = '\0';
@@ -1714,7 +1792,7 @@ MailStored mailStore(const char* from, const UserRec& u, const char* text, int16
     snprintf(r.text, sizeof(r.text), "%.*s", static_cast<int>(g_mailChars), text);
     r.len = static_cast<uint16_t>(strlen(r.text));
 
-    if (!mailRewrite(dropIdx, &r, nowEpoch)) return MS_IO;
+    if (!mailAdd(r, dropIdx, nowEpoch)) return MS_IO;
 
     Session* now = online(u.handle);                               // tell them if they are on
     if (now && now != sender) {
@@ -2732,14 +2810,14 @@ void say(Session& s, const char* text, uint32_t now) {
 }
 
 // ---------------------------------------------------------------------------
-// mailChoose: one key, one outcome, and each of them is a single rewrite of
-// the mailbox through a temp file and a rename. A power cut either leaves
-// the message alone or leaves the decision made, never half of it.
+// mailChoose: one key, one outcome, and each of them is one write to the
+// mailbox in place (1.1.2): a byte for S and D. LittleFS commits it whole at
+// close, so a power cut either leaves the message alone or leaves the
+// decision made, never half of it.
 // ---------------------------------------------------------------------------
 void mailChoose(Session& s, int k) {
     uint8_t  slot = slotOf(s);
     int16_t  idx  = g_mailIdx[slot];
-    uint32_t nowEpoch = clk::epoch();
 
     if (k == 'r' || k == 'R') {
         s.term.text(s.tl, "R");
@@ -2761,7 +2839,7 @@ void mailChoose(Session& s, int k) {
         // Kept, not deleted: it stays in the box, stops ringing "you have
         // mail", and still counts against the limit, because it is still
         // taking up room somebody else cannot use.
-        if (idx >= 0 && mailRewrite(-1, nullptr, nowEpoch, idx))
+        if (idx >= 0 && mailKeep(static_cast<uint8_t>(idx)))
             tell(s, Color::LightGreen, "Kept.");
         else
             tell(s, Color::LightRed, "Could not keep it. It is still unread.");
@@ -2772,7 +2850,7 @@ void mailChoose(Session& s, int k) {
     if (k == 'd' || k == 'D') {
         s.term.text(s.tl, "D");
         s.term.nl(s.tl);
-        if (idx >= 0 && mailRewrite(idx, nullptr, nowEpoch))
+        if (idx >= 0 && mailDrop(static_cast<uint8_t>(idx)))
             tell(s, Color::Grey, "Deleted.");
         else
             tell(s, Color::LightRed, "Could not delete it.");

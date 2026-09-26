@@ -41,6 +41,8 @@
 #include "cardnames.h"
 #include "sysconfig.h"
 #include "guard.h"
+#include "space.h"             // the kept free-space figures (1.1.2)
+#include "runner.h"            // the unpack and the download's scan, off the loop (1.1.2)
 #include "../platform/platform.h"
 
 #include <sys/types.h>
@@ -193,14 +195,105 @@ void BackupService::addFds(fd_set& r, fd_set& w, int& maxfd) const {
 // ---------------------------------------------------------------------------
 // service: accept, read, write, extract one entry, timers
 // ---------------------------------------------------------------------------
+// ===========================================================================
+// Off the loop (1.1.2): the restore's unpack, and the download's scan.
+//
+// Both were a pass each on the loop that could be a second long. A restore
+// unpacked one entry a pass, and an entry is up to 64 KB inflated with the
+// ROM's tinfl, CRC'd and written to staging; the window's GET read every
+// file of the backup whole for its CRC before the 200 (internal/audit-
+// 1.1.2-2026-09-26.md, items 6 and 8). Now each is one job on the background
+// runner, and the loop only watches for it to finish. The importer and the
+// exporter are one union (zip_): the window's client and a card job never
+// hold it at once (busy()), and while a job has it the loop does not touch
+// it, only the job's phase.
+//
+// The unpack writes to staging in slices, with a breath between them, so a
+// LittleFS erase lands in a different loop pass from the next one. A flash
+// erase stops both cores whoever asks for it; on the loop the whole entry's
+// erases were one pass.
+// ===========================================================================
+namespace {
+struct ZipJob {
+    runner::Job job;
+    BackupService* svc = nullptr;
+    char hostname[40] = {};          // the scan's MANIFEST
+    bool ok = false;                 // the scan: made; the unpack: room to do it
+    char err[96] = {};
+};
+ZipJob g_unpack, g_scan;
+}   // namespace
+
+void BackupService::unpackWork(runner::Job&) {
+    BackupService& b = *g_unpack.svc;
+    g_unpack.ok = b.importer().recheckRoom(g_unpack.err, sizeof(g_unpack.err));
+    if (!g_unpack.ok) return;
+    while (b.importer().step()) runner::breathe();
+}
+
+void BackupService::scanWork(runner::Job&) {
+    BackupService& b = *g_scan.svc;
+    g_scan.ok = b.exporter().scan(g_scan.hostname, g_scan.err, sizeof(g_scan.err));
+}
+
+// unpacked: start the unpack when none is out, and say when it is done. The
+// loop's, every pass while one is wanted.
+bool BackupService::unpacked() {
+    if (runner::idle(g_unpack.job) && !unpackOut_) {
+        g_unpack.svc = this;
+        g_unpack.err[0] = '\0';
+        g_unpack.job.work = unpackWork;
+        g_unpack.job.name = "restore unpack";
+        unpackOut_ = runner::post(g_unpack.job);
+        if (!unpackOut_) {                         // no runner: say so as a refusal
+            snprintf(g_unpack.err, sizeof(g_unpack.err), "the board could not start the unpack");
+            g_unpack.ok = false;
+            unpackFailed_ = true;
+            return true;
+        }
+        return false;
+    }
+    if (!runner::done(g_unpack.job)) return false;
+    runner::collect(g_unpack.job);
+    unpackOut_    = false;
+    unpackFailed_ = !g_unpack.ok;
+    return true;
+}
+
+const char* BackupService::unpackWhy() const { return g_unpack.err; }
+
+// zipJobOut: a job on the runner has the zip storage: queued or running,
+// or done and not yet collected.
+bool BackupService::zipJobOut() const {
+    return !runner::idle(g_unpack.job) || !runner::idle(g_scan.job);
+}
+
 void BackupService::service(const fd_set& r, const fd_set& w, uint32_t now) {
+    // A client that went while a job had the zip storage: tidied now it is
+    // the loop's again (1.1.2).
+    if (abandon_ && !zipJobOut()) {
+        if (runner::done(g_unpack.job)) runner::collect(g_unpack.job);
+        if (runner::done(g_scan.job))   runner::collect(g_scan.job);
+        unpackOut_ = false;
+        if (zipUse_ == ZipUse::Import) zip_.imp.discard();
+        else { zip_.exp.abort(); zip_.exp.dropSnapshot(); }
+        abandon_ = false;
+    }
     if (lfd_ >= 0 && FD_ISSET(lfd_, &r)) acceptClient(now);
     if (cfd_ >= 0 && FD_ISSET(cfd_, &r)) readClient(now);
     if (cfd_ >= 0 && (FD_ISSET(cfd_, &w) || outPos_ < outLen_ || st_ == St::SendZip)) writeClient(now);
 
-    if (st_ == St::Extract && !importer().step()) {
+    if (st_ == St::Extract && unpacked()) {
         const ziparc::ImportReport& rep = importer().report();
-        if (!rep.accepted) {
+        if (unpackFailed_) {
+            // No room once measured on the runner: the zip's fault it is
+            // not, and it says so as the check at receipt does.
+            char body[128];
+            snprintf(body, sizeof(body), "Board full: %.100s\n", unpackWhy());
+            note("*** Upload from %s refused: no room on the board", clientIp_);
+            importer().discard();
+            reply(507, "Insufficient Storage", body);
+        } else if (!rep.accepted) {
             char body[160];
             snprintf(body, sizeof(body), "Nothing to apply. %u rejected%s%s\n", rep.rejected,
                      rep.rejected ? ", first: " : "", rep.firstReject);
@@ -228,6 +321,25 @@ void BackupService::service(const fd_set& r, const fd_set& w, uint32_t now) {
 
     if (st_ == St::Approve && static_cast<int32_t>(now - approveBy_) >= 0) {
         decide(false, "no answer from the sysop in time");
+    }
+
+    // The download's scan is done: the headers, then the zip (1.1.2).
+    if (st_ == St::Scan && runner::done(g_scan.job)) {
+        runner::collect(g_scan.job);
+        if (!g_scan.ok) {
+            reply(500, "Internal Server Error", g_scan.err);
+        } else {
+            int w = snprintf(reinterpret_cast<char*>(out_), sizeof(out_),
+                             "HTTP/1.1 200 OK\r\n"
+                             "Content-Type: application/zip\r\n"
+                             "Content-Length: %u\r\n"
+                             "Content-Disposition: attachment; filename=\"%s-backup.zip\"\r\n"
+                             "Connection: close\r\n\r\n",
+                             static_cast<unsigned>(exporter().totalBytes()), g_scan.hostname);
+            outLen_ = static_cast<uint16_t>(w);
+            outPos_ = 0;
+            st_     = St::SendZip;
+        }
     }
 
     // An accepted upload goes live a file a pass, in applyTick, which the
@@ -456,18 +568,20 @@ void BackupService::route(uint32_t now) {
     }
 
     if (get && !strcmp(path, "/backup.zip")) {
-        char err[64];
-        if (!exporter().scan(cfg.hostname, err, sizeof(err))) { reply(500, "Internal Server Error", err); return; }
-        int w = snprintf(reinterpret_cast<char*>(out_), sizeof(out_),
-                         "HTTP/1.1 200 OK\r\n"
-                         "Content-Type: application/zip\r\n"
-                         "Content-Length: %u\r\n"
-                         "Content-Disposition: attachment; filename=\"%s-backup.zip\"\r\n"
-                         "Connection: close\r\n\r\n",
-                         static_cast<unsigned>(exporter().totalBytes()), cfg.hostname);
-        outLen_ = static_cast<uint16_t>(w);
-        outPos_ = 0;
-        st_     = St::SendZip;
+        // The scan (every file read whole for its CRC, the accounts
+        // snapshotted) is the runner's (1.1.2); the 200 goes once it is
+        // done, from service(). curl waits for the headers meanwhile.
+        (void)exporter();                  // the union switched here, on the loop, not on the runner
+        g_scan.svc = this;
+        g_scan.err[0] = '\0';
+        snprintf(g_scan.hostname, sizeof(g_scan.hostname), "%s", cfg.hostname);
+        g_scan.job.work = scanWork;
+        g_scan.job.name = "backup scan";
+        if (!runner::idle(g_scan.job) || !runner::post(g_scan.job)) {
+            reply(503, "Service Unavailable", "the board is busy; try again in a moment\n");
+            return;
+        }
+        st_ = St::Scan;
         return;
     }
 
@@ -492,10 +606,13 @@ void BackupService::route(uint32_t now) {
         // Room for the zip itself, before a byte of it is taken. Unpacking
         // it is measured again once it is here (ZipImport::open), but a zip
         // that will not even land is better refused than half received.
+        // The kept figure (core/space.h, 1.1.2): this is the loop, and a
+        // fresh one is a walk of the partition. ZipImport::open measures
+        // again, fresh, once the zip is here, before a byte is unpacked.
         {
-            uint32_t total = 0, used = 0;
-            plat::fsInfoStale();
-            if (plat::userInfo(total, used)) {
+            const space::Fig fig = space::get(plat::PART_USER);
+            const uint32_t total = static_cast<uint32_t>(fig.total), used = static_cast<uint32_t>(fig.used);
+            if (fig.valid) {
                 uint32_t free  = total > used ? total - used : 0;
                 uint32_t avail = free > BBS_FS_RESERVE ? free - BBS_FS_RESERVE : 0;
                 uint32_t need  = static_cast<uint32_t>((len + BBS_FS_BLOCK - 1) / BBS_FS_BLOCK) * BBS_FS_BLOCK;
@@ -573,6 +690,17 @@ void BackupService::dropClient(const char* why) {
     // go quiet (Hold) carries on the same way: the Bbs decides its end.
     if (st_ == St::Apply || st_ == St::Hold) {
         plat::log("backup: client %s done (%s), the restore carries on", clientIp_, why);
+        outLen_ = outPos_ = 0;
+        closeAfterOut_ = false;
+        chunked_ = false;
+        return;
+    }
+    // A job on the runner still has the zip storage (1.1.2): it is tidied
+    // when the job is done (service, abandon_), never from under it.
+    if (zipJobOut()) {
+        abandon_ = true;
+        plat::log("backup: client %s done (%s)", clientIp_, why);
+        st_ = St::Idle;
         outLen_ = outPos_ = 0;
         closeAfterOut_ = false;
         chunked_ = false;
@@ -751,7 +879,11 @@ BackupService::Start BackupService::cardBackup(const char* dir, const char* name
     exporter().beginFile(screensOnly, estimate);
     plat::SdInfo card = sdCardInfo();
     needKB = (estimate + 1023) / 1024;
-    freeKB = card.freeKB;
+    // The card's kept free space (core/space.h, 1.1.2). Not measured yet is
+    // not "full": the writer stops and says so if the card fills, and the
+    // .tmp it leaves is removed.
+    const space::Fig cf = space::get(plat::PART_CARD);
+    freeKB = cf.valid ? static_cast<uint32_t>((cf.total > cf.used ? cf.total - cf.used : 0) / 1024ull) : needKB;
     if (!card.mounted || needKB > freeKB) {
         exporter().abort();
         return Start::Full;
@@ -823,12 +955,24 @@ uint8_t BackupService::cardStep() {
             }
             break;
         }
-        case Job::Check:
-            // One file unpacked and checked a pass, the way an upload is.
-            if (importer().step()) { dots = 1; break; }
-            if (!importer().report().accepted) { importer().discard(); job_ = Job::None; }
-            else                               job_ = Job::Ask;
+        case Job::Check: {
+            // Unpacked and checked on the runner, the way an upload is
+            // (1.1.2), a dot for every file it has finished so far.
+            const uint8_t was = dotsSeen_;
+            const bool fin = unpacked();
+            const uint8_t now = importer().stepped();
+            if (now > was) { dots = static_cast<uint8_t>(now - was); dotsSeen_ = now; }
+            if (!fin) break;
+            dotsSeen_ = 0;
+            if (unpackFailed_ || !importer().report().accepted) {
+                if (unpackFailed_) importer().noteRefusal(unpackWhy());
+                importer().discard();
+                job_ = Job::None;
+            } else {
+                job_ = Job::Ask;
+            }
             break;
+        }
         case Job::Apply:
             if (importer().applyStep()) { dots = 1; break; }
             if (!jobScreens_ && (importer().report().hasCfg || importer().report().pages)) restart_ = true;
@@ -854,6 +998,10 @@ void BackupService::cardDrop() {
             finishWrite(false);
             break;
         case Job::Check:
+            if (zipJobOut()) { abandon_ = true; job_ = Job::None; break; }   // tidied after it (1.1.2)
+            importer().discard();
+            job_ = Job::None;
+            break;
         case Job::Ask:
         case Job::Hold:
             importer().discard();

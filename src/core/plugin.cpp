@@ -40,6 +40,7 @@
 #include "bbs.h"
 #include "bbs_util.h"
 #include "sysconfig.h"
+#include "space.h"             // the kept free-space figures (1.1.2)
 #include "../plugins/registry.h"
 #include "../platform/platform.h"
 
@@ -101,19 +102,81 @@ char* trim(char* s) {
     return s;
 }
 
+// ---------------------------------------------------------------------------
+// The file once, for a whole start (1.1.2).
+//
+// Every plugin read system.cfg through for its own section twice as it
+// started: once here for enabled and its levels, and again for its own keys
+// (forEachKey, from its start). A CONFIG save starts them all again, so that
+// was about two dozen reads of an 11 KB file on the loop for one save
+// (internal/audit-1.1.2-2026-09-26.md, item 11). While begin() runs, the
+// file is held in memory, read once, and every scan reads from that. It is
+// the heap's for the length of begin(): never on the loop's steady path.
+// A board that cannot spare it reads the file as before.
+// ---------------------------------------------------------------------------
+char*  g_cfgText = nullptr;          // the file, NUL terminated, while begin() runs
+size_t g_cfgLen  = 0;
+
+void cfgHold() {
+    if (g_cfgText) return;
+    char path[96];
+    snprintf(path, sizeof(path), "%s/%s", plat::userBase(), BBS_CONFIG_FILE);
+    FILE* f = disk::open(path, "r");
+    if (!f) return;
+    if (fseek(f, 0, SEEK_END) == 0) {
+        long n = ftell(f);
+        if (n > 0 && n < 64 * 1024 && fseek(f, 0, SEEK_SET) == 0) {
+            g_cfgText = static_cast<char*>(malloc(static_cast<size_t>(n) + 1));
+            if (g_cfgText) {
+                g_cfgLen = fread(g_cfgText, 1, static_cast<size_t>(n), f);
+                g_cfgText[g_cfgLen] = '\0';
+            }
+        }
+    }
+    fclose(f);
+}
+
+void cfgRelease() {
+    free(g_cfgText);
+    g_cfgText = nullptr;
+    g_cfgLen  = 0;
+}
+
+// Lines: the file's lines, from memory when it is held, else from the file.
+struct Lines {
+    FILE*       f   = nullptr;
+    const char* at  = nullptr;
+    bool open() {
+        if (g_cfgText) { at = g_cfgText; return true; }
+        char path[96];
+        snprintf(path, sizeof(path), "%s/%s", plat::userBase(), BBS_CONFIG_FILE);
+        f = disk::open(path, "r");
+        return f != nullptr;
+    }
+    bool next(char* line, size_t n) {
+        if (f) return fgets(line, static_cast<int>(n), f) != nullptr;
+        if (!at || !*at) return false;
+        size_t w = 0;
+        while (*at && *at != '\n') { if (w + 1 < n) line[w++] = *at; ++at; }
+        if (*at == '\n') { if (w + 1 < n) line[w++] = '\n'; ++at; }
+        line[w] = '\0';
+        return true;
+    }
+    ~Lines() { if (f) fclose(f); }
+};
+
 // scan: walk system.cfg, hand every key of one plugin's section to fn.
 // core = true also applies enabled/read/write/admin to the plugin's state.
 void scan(uint8_t index, plugins::KeyFn fn, void* ctx, bool core) {
     const Plugin* p = plugins::at(index);
     if (!p) return;
-    char path[96], want[40], line[176];
-    snprintf(path, sizeof(path), "%s/%s", plat::userBase(), BBS_CONFIG_FILE);
+    char want[40], line[176];
     sectionName(p->info.name, want, sizeof(want));
-    FILE* f = disk::open(path, "r");
-    if (!f) return;
+    Lines src;
+    if (!src.open()) return;
 
     bool mine = false;
-    while (fgets(line, sizeof(line), f)) {
+    while (src.next(line, sizeof(line))) {
         char* l = trim(line);
         if (!*l || *l == '#' || *l == ';') continue;
         if (*l == '[') {
@@ -148,7 +211,6 @@ void scan(uint8_t index, plugins::KeyFn fn, void* ctx, bool core) {
         }
         if (fn) fn(ctx, key, val);
     }
-    fclose(f);
 }
 
 // ensureDir: make a directory, ignoring "already there"
@@ -226,11 +288,18 @@ void forEachKey(uint8_t index, KeyFn fn, void* ctx) {
 uint32_t reserveBytes() { return BBS_FS_RESERVE; }
 
 // freeBytes: room left where plugins keep their files, which is the user
-// partition, not the one the screens are on.
+// partition, not the one the screens are on. The kept figure (core/space.h,
+// 1.1.2): measured on the runner at boot, at each staff login and on MEM
+// FORCE, never on the loop. It measured again on the loop once a minute
+// before, about 85 ms for whichever plugin write came first. The 32 KB
+// reserve is the margin that makes a kept figure safe here. Before the first
+// measure after boot the answer is "plenty", not "none": refusing every
+// plugin write for the second the runner takes would be the worse error.
 uint32_t freeBytes() {
-    uint32_t total = 0, used = 0;
-    if (!plat::userInfo(total, used) || used > total) return 0;
-    return total - used;
+    const space::Fig f = space::get(plat::PART_USER);
+    if (!f.valid) return 0xFFFFFFFFu;
+    const uint64_t free = f.total > f.used ? f.total - f.used : 0;
+    return free > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<uint32_t>(free);
 }
 
 // ---------------------------------------------------------------------------
@@ -256,15 +325,16 @@ bool path(uint8_t index, const char* file, char* out, size_t n) {
     const char* base = sd ? plat::sdBase() : plat::userBase();
     if (sd) {
         if (!base[0]) return false;                           // no card, so no files
-        // The sd plugin's kept figure (1.1.0): this runs on every file a
+        // The kept figure (core/space.h, 1.1.2): this runs on every file a
         // plugin opens on the card, and asking the card each time is a trip
-        // to its FAT whenever the platform's own figure has run out.
-        const plat::SdInfo& i = sdCardInfo();
+        // to its FAT.
+        //
         // The reserve is a flash rule: LittleFS needs room to garbage collect
         // and the core has to be able to write users.txt whatever a plugin is
         // doing. A card has neither problem, so the only question is whether
         // there is any room left at all.
-        if (i.mounted && i.totalKB && i.freeKB == 0) return false;
+        const space::Fig c = space::get(plat::PART_CARD);
+        if (c.valid && c.total && c.used >= c.total) return false;
     } else {
         if (freeBytes() <= reserveBytes()) return false;
     }
@@ -299,11 +369,13 @@ bool readPath(uint8_t index, const char* file, char* out, size_t n) {
 // the same answer today and a different one the first time somebody reorders
 // the registry, which is not a thing that should change behaviour.
 // ---------------------------------------------------------------------------
-void begin(Bbs& bbs) {
+void begin(Bbs& bbs, uint32_t mask) {
+    cfgHold();                                            // the file once for all of them (1.1.2)
     for (uint8_t pass = 0; pass < 2; ++pass) {
     for (uint8_t i = 0; i < count(); ++i) {
         const Plugin* p = kPlugins[i];
         if (((p->info.flags & PF_EARLY) != 0) != (pass == 0)) continue;
+        if (!(mask & (1u << i))) continue;                // not one this start is for
         State& st = g_state[i];
         st = State();
         st.enabled  = (p->info.flags & PF_ON) != 0;           // on unless told otherwise
@@ -327,12 +399,15 @@ void begin(Bbs& bbs) {
                       p->info.name);
             continue;
         }
-        plat::HeapStats h = plat::heap();
-        if (h.valid && p->info.heapBytes && h.freeBytes < p->info.heapBytes + BBS_HEAP_RESERVE) {
+        // The counter, not plat::heap(), which walks the whole heap under a
+        // critical section for its largest block, once per plugin at every
+        // CONFIG save (1.1.2). 0 is the host's "cannot tell".
+        const uint32_t heapFree = plat::heapFree();
+        if (heapFree && p->info.heapBytes && heapFree < p->info.heapBytes + BBS_HEAP_RESERVE) {
             st.why = "not enough memory";
             plat::log("plugin: %s wants %u bytes, only %u free: not started",
                       p->info.name, static_cast<unsigned>(p->info.heapBytes),
-                      static_cast<unsigned>(h.freeBytes));
+                      static_cast<unsigned>(heapFree));
             continue;
         }
         // Measure the partition the plugin will actually write to. A PF_SD
@@ -342,8 +417,8 @@ void begin(Bbs& bbs) {
         uint32_t freeFs  = 0;
         uint32_t reserve = 0;
         if (p->info.flags & PF_SD) {
-            const plat::SdInfo& si = sdCardInfo();
-            freeFs = si.freeKB > (0xFFFFFFFFu / 1024u) ? 0xFFFFFFFFu : si.freeKB * 1024u;
+            const uint64_t cf = space::freeBytes(plat::PART_CARD);   // 0 before the first measure: not checked
+            freeFs = cf > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<uint32_t>(cf);
         } else {
             freeFs  = freeBytes();
             reserve = reserveBytes();
@@ -371,10 +446,12 @@ void begin(Bbs& bbs) {
                   levelText(st.level[0]), levelText(st.level[1]), levelText(st.level[2]));
     }
     }
+    cfgRelease();
 }
 
-void stopAll() {
+void stopAll(uint32_t mask) {
     for (uint8_t i = 0; i < count(); ++i) {
+        if (!(mask & (1u << i))) continue;
         if (!g_state[i].running) continue;
         if (kPlugins[i]->stop) kPlugins[i]->stop();
         g_state[i].running = false;

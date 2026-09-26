@@ -90,6 +90,8 @@
 #include "../core/clock.h"
 #include "../core/fx.h"
 #include "../core/plugin.h"
+#include "../core/runner.h"            // the worker is a job on the background runner (1.1.2)
+#include "../core/bbs_util.h"          // wrap: the busy line at the width
 #include "../core/silent.h"
 #include "../core/sysconfig.h"
 #include "../platform/platform.h"
@@ -1027,9 +1029,19 @@ void worker(void*) {
 // ---------------------------------------------------------------------------
 // The loop's side
 // ---------------------------------------------------------------------------
-// 8 KB: encoding a raw frame (a GC0308's RGB565) and the survey after it
-// left 2,008 of 6,144 free on the bench, and an overflow reboots the board.
-constexpr uint32_t kWorkerStack = 8192;
+// The worker is a job on the background runner since 1.1.2 (core/runner.h),
+// whose task's stack is BBS_RUNNER_STACK: 8 KB, because encoding a raw frame
+// (a GC0308's RGB565) and the survey after it left 2,008 of 6,144 free on the
+// bench, and an overflow reboots the board.
+constexpr uint32_t kWorkerStack = BBS_RUNNER_STACK;
+
+// The camera's job on the runner. The camera's own phases (Job::ph) still
+// carry the snap; this is only how the worker gets a task to run on, one
+// job in the runner's queue like any other, and the runner's lock rather
+// than the old one-global trampoline.
+runner::Job g_run;
+
+void runWork(runner::Job&) { worker(nullptr); }
 // What a snap takes from internal RAM, the worker's own stack and its task
 // block included: the loop's check before the worker is started, since the
 // stack comes out of the same memory the camera's DMA block has to.
@@ -1054,7 +1066,9 @@ bool roomToSnap(bool system) {
     return ok;
 }
 
-bool jobBusy() { return g_job.ph.load() != PH_IDLE; }
+// Busy until the runner has handed the job back too: the worker sets DONE
+// on the camera's job a moment before it returns to the runner.
+bool jobBusy() { return g_job.ph.load() != PH_IDLE || !runner::idle(g_run); }
 
 void snapshotCfg(Job& j) {
     j.cam = plat::CamCfg();
@@ -1124,9 +1138,11 @@ bool startJob(uint8_t kind, uint32_t now) {
     j.flashLead = g_set.lead;
     snapshotCfg(j);
     j.ph.store(PH_WORKING);
-    if (!plat::taskStart(worker, nullptr, kWorkerStack, "camera")) {
+    g_run.work = runWork;
+    g_run.name = "camera";
+    if (!runner::post(g_run)) {
         j.ph.store(PH_IDLE);
-        plat::log("camera: the worker task would not start");
+        plat::log("camera: the worker would not start");
         return false;
     }
     return true;
@@ -1348,6 +1364,7 @@ void finish(uint32_t now) {
 // ---------------------------------------------------------------------------
 void tick(uint32_t now) {
     Job& j = g_job;
+    if (runner::done(g_run)) runner::collect(g_run);   // the worker has returned
     const uint8_t ph = j.ph.load();
     if (ph == PH_IDLE) {
         struct tm t;
@@ -1446,7 +1463,29 @@ void cmdSnapshot(Bbs& b, Session& s, const char*, uint32_t now) {
         refuse(b, s, "The card is too full for another photo.");
         return;
     }
-    if (jobBusy()) { refuse(b, s, "The camera is busy. Try again in a moment."); return; }
+    if (jobBusy()) {
+        // One snapshot at a time (Rob, 2026-09-26), and who has it, in the
+        // room's voice: "--> Camera in use by node 3, try again in a minute".
+        // The board's own shots (the timelapse, the daily count) have no
+        // node. Wrapped at a word on a narrow terminal.
+        char why[64], row[64];
+        if (g_job.node != 0xFF && g_job.kind == K_CALLER)
+            snprintf(why, sizeof(why), "Camera in use by node %u, try again in a minute",
+                     static_cast<unsigned>(g_job.node));
+        else
+            snprintf(why, sizeof(why), "Camera in use by the board, try again in a minute");
+        const uint8_t w = static_cast<uint8_t>(b.rowWidth(s) > 4 ? b.rowWidth(s) - 4 : 36);
+        bool first = true;
+        for (const char* q = bbsu::wrap(why, row, sizeof(row), w); ; q = bbsu::wrap(q, row, sizeof(row), w)) {
+            say(s, Color::Cyan, first ? "--> " : "    ");
+            say(s, Color::Yellow, row);
+            s.term.nl(s.tl);
+            first = false;
+            if (!q || !*q) break;
+        }
+        b.prompt(s);
+        return;
+    }
     if (!roomToSnap(false)) {
         refuse(b, s, "The camera needs memory the board is using. Try in a minute.");
         return;

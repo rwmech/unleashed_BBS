@@ -52,6 +52,7 @@
 #include <unistd.h>
 #include <zlib.h>
 #include <pthread.h>
+#include <atomic>
 
 namespace {
 std::string g_fsBase   = "../data";
@@ -296,10 +297,9 @@ SdInfo sdInfo() {
     i.speedKHz = 20000;
     snprintf(i.type, sizeof(i.type), "%s", "host dir");
     // A notional 2 GB, so the free-space arithmetic a plugin does is
-    // exercised rather than skipped.
+    // exercised rather than skipped. Free space is measure(PART_CARD)'s, as
+    // on the board (1.1.2): sdInfo reads no files.
     i.totalKB = 2u * 1024u * 1024u;
-    uint32_t used = dirBytes(g_sdBase) / 1024u;
-    i.freeKB  = used < i.totalKB ? i.totalKB - used : 0;
     return i;
 }
 
@@ -370,28 +370,168 @@ size_t serialWrite(const uint8_t* data, size_t n) {
 
 uint32_t serialFramingErrors() { return 0; }
 
-// The partitions' sizes are the board's (partitions.csv), so a restore's room
-// check does the same arithmetic here as there. They were 768 KB and 128 KB,
-// the sizes before 0.17.0 moved the accounts to a partition of their own.
-bool fsInfo(uint32_t& total, uint32_t& used) {
-    total = 256u * 1024u;                            // the board's storage partition
-    // The host keeps the user and logs "partitions" inside the data folder;
-    // on the board they are partitions of their own and not in this figure.
-    uint32_t all = dirBytes(g_fsBase), other = dirBytes(g_userBase) + dirBytes(g_logsBase);
-    used = all > other ? all - other : 0;
-    return true;
+// measure: the partitions' sizes are the board's (partitions.csv), so a
+// restore's room check does the same arithmetic here as there, with what the
+// folders actually hold. The host keeps the user and logs "partitions"
+// inside the data folder; on the board they are partitions of their own and
+// not in the screens figure. The card is the notional 2 GB sdInfo says.
+// Summing a folder costs nothing here, which is exactly why the board's cost
+// never showed up in a host test (hostDiskOpen below is how a test gives it
+// one).
+bool measure(Part p, uint64_t& total, uint64_t& used) {
+    total = used = 0;
+    switch (p) {
+        case PART_SCREENS: {
+            total = 256u * 1024u;
+            uint32_t all = dirBytes(g_fsBase), other = dirBytes(g_userBase) + dirBytes(g_logsBase);
+            used = all > other ? all - other : 0;
+            return true;
+        }
+        case PART_USER: total = 608u * 1024u; used = dirBytes(g_userBase); return true;
+        case PART_LOGS: total = 32u * 1024u;  used = dirBytes(g_logsBase); return true;
+        case PART_CARD:
+            if (!g_sdMount) return false;
+            total = 2ull * 1024u * 1024u * 1024u;
+            used  = dirBytes(g_sdBase);
+            return true;
+        default: return false;
+    }
 }
-// userInfo: the host has no partitions, so report the same notional size the
-// board gives its user partition, with what the directory actually holds.
-bool userInfo(uint32_t& total, uint32_t& used) {
-    total = 608u * 1024u;
-    used  = dirBytes(g_userBase);
+
+// ---------------------------------------------------------------------------
+// hostDiskOpen: every disk::open and disk::dir comes through here on the host
+// (1.1.2). <data>/hostio.txt, read again every half second, says what an open
+// costs: "card_us flash_us log". A test writes it to give the card and the
+// flash the cost of a real open (a FAT directory search, a LittleFS path
+// walk), so a path that opens a file a row or a record shows up as the slow
+// pass it is on the board; "log" writes one console line an open, so a test
+// can count what a path opened. No file, no cost and no lines.
+// ---------------------------------------------------------------------------
+namespace {
+std::atomic<uint32_t> g_ioCard{ 0 }, g_ioFlash{ 0 };
+std::atomic<bool>     g_ioLog{ false }, g_ioNoDns{ false };
+std::atomic<uint32_t> g_ioReadAt{ 0 };
+
+// hostIoRead: hostio.txt, at most every half second. "card_us flash_us",
+// then words: "log" (a line an open), "nodns" (lookups fail).
+void hostIoRead() {
+    const uint32_t now = millis();
+    const uint32_t was = g_ioReadAt.load();
+    if (was && now - was < 500) return;
+    g_ioReadAt.store(now ? now : 1);
+    unsigned c = 0, f = 0;
+    bool logOn = false, noDns = false;
+    std::string cfg = g_fsBase + "/hostio.txt";
+    if (FILE* h = fopen(cfg.c_str(), "r")) {
+        char line[128] = "";
+        if (fgets(line, sizeof(line), h)) {
+            if (sscanf(line, "%u %u", &c, &f) < 2) c = f = 0;
+            logOn = strstr(line, "log") != nullptr;
+            noDns = strstr(line, "nodns") != nullptr;
+        }
+        fclose(h);
+    }
+    g_ioCard.store(c);
+    g_ioFlash.store(f);
+    g_ioLog.store(logOn);
+    g_ioNoDns.store(noDns);
+}
+}   // namespace
+
+bool hostNoDns() {
+    hostIoRead();
+    return g_ioNoDns.load();
+}
+
+void hostDiskOpen(const char* path, const char* mode) {
+    hostIoRead();
+    const bool card = g_sdMount && !strncmp(path, g_sdBase.c_str(), g_sdBase.size());
+    if (g_ioLog.load()) log("hostio: %s %s", mode, path);
+    const uint32_t us = card ? g_ioCard.load() : g_ioFlash.load();
+    if (us) usleep(us);
+}
+
+// ---------------------------------------------------------------------------
+// The background runner on the host (1.1.2): a thread, so the tests exercise
+// the real concurrency of the board's runner rather than a stand-in that runs
+// jobs in line. The lock is a mutex and the wake a condition variable.
+// ---------------------------------------------------------------------------
+namespace {
+pthread_mutex_t g_runMu   = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t g_wakeMu  = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t  g_wakeCv  = PTHREAD_COND_INITIALIZER;
+bool            g_woken   = false;
+}   // namespace
+
+bool taskStart(void (*fn)(), uint32_t stackBytes, const char* name) {
+    (void)stackBytes;
+    (void)name;
+    pthread_t t;
+    if (pthread_create(&t, nullptr, [](void* p) -> void* {
+            reinterpret_cast<void (*)()>(p)();
+            return nullptr;
+        }, reinterpret_cast<void*>(fn)) != 0)
+        return false;
+    pthread_detach(t);
     return true;
 }
 
-// Nothing kept on the host: summing a directory costs nothing here, which is
-// exactly why the board's cost never showed up in a host test.
-void fsInfoStale() {}
+void taskSleep(uint32_t ms) { usleep((ms ? ms : 1) * 1000u); }
+uint32_t taskStackFree() { return 0; }
+
+void runLock()   { pthread_mutex_lock(&g_runMu); }
+void runUnlock() { pthread_mutex_unlock(&g_runMu); }
+
+bool runWait(uint32_t ms) {
+    pthread_mutex_lock(&g_wakeMu);
+    if (!g_woken) {
+        timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec  += ms / 1000u;
+        ts.tv_nsec += static_cast<long>(ms % 1000u) * 1000000L;
+        if (ts.tv_nsec >= 1000000000L) { ts.tv_sec += 1; ts.tv_nsec -= 1000000000L; }
+        while (!g_woken && pthread_cond_timedwait(&g_wakeCv, &g_wakeMu, &ts) == 0) {}
+    }
+    const bool woke = g_woken;
+    g_woken = false;
+    pthread_mutex_unlock(&g_wakeMu);
+    return woke;
+}
+
+void runWake() {
+    pthread_mutex_lock(&g_wakeMu);
+    g_woken = true;
+    pthread_cond_signal(&g_wakeCv);
+    pthread_mutex_unlock(&g_wakeMu);
+}
+
+// sdSpace: the notional card sdInfo describes, unless a test says how full
+// it is: BBS_CAM_CARD_MB and BBS_CAM_FREE_MB (the camera floor's tests).
+bool sdSpace(uint64_t& total, uint64_t& freeBytes) {
+    total = freeBytes = 0;
+    if (!g_sdMount) return false;
+    const char* c = getenv("BBS_CAM_CARD_MB");
+    const char* f = getenv("BBS_CAM_FREE_MB");
+    total     = static_cast<uint64_t>(c && *c ? strtoul(c, nullptr, 10) : 2048u) * 1024u * 1024u;
+    freeBytes = static_cast<uint64_t>(f && *f ? strtoul(f, nullptr, 10) : 1900u) * 1024u * 1024u;
+    return true;
+}
+
+bool sdList(const char* rel, SdListFn fn, void* ctx) {
+    if (!g_sdMount || !fn) return false;
+    std::string dir = g_sdBase + "/" + (rel ? rel : "");
+    hostDiskOpen(dir.c_str(), "dir");                  // one read of the folder, as on the board
+    DIR* d = opendir(dir.c_str());
+    if (!d) return false;
+    for (struct dirent* e = readdir(d); e; e = readdir(d)) {
+        if (e->d_name[0] == '.') continue;
+        struct stat st;
+        if (stat((dir + "/" + e->d_name).c_str(), &st) != 0) continue;
+        if (!fn(ctx, e->d_name, S_ISDIR(st.st_mode), static_cast<uint32_t>(st.st_size))) break;
+    }
+    closedir(d);
+    return true;
+}
 
 void log(const char* fmt, ...) {
     timespec ts;
@@ -687,53 +827,6 @@ CamMeter camMeter(uint16_t&, uint16_t&) { return CAM_METER_NONE; }
 bool camQuality(int) { return false; }
 void* camAlloc(size_t n) { return malloc(n); }
 void camFree(void* p) { free(p); }
-
-bool taskStart(void (*fn)(void*), void* arg, uint32_t stackBytes, const char* name) {
-    (void)stackBytes;
-    (void)name;
-    pthread_t t;
-    struct Tramp { void (*fn)(void*); void* arg; };
-    Tramp* tr = new Tramp{ fn, arg };
-    if (pthread_create(&t, nullptr, [](void* p) -> void* {
-            Tramp* x = static_cast<Tramp*>(p);
-            x->fn(x->arg);
-            delete x;
-            return nullptr;
-        }, tr) != 0) {
-        delete tr;
-        return false;
-    }
-    pthread_detach(t);
-    return true;
-}
-
-void taskSleep(uint32_t ms) { usleep((ms ? ms : 1) * 1000u); }
-uint32_t taskStackFree() { return 0; }
-
-// sdSpace: the notional card sdInfo describes, unless a test says how full
-// it is: BBS_CAM_CARD_MB and BBS_CAM_FREE_MB (the floor's tests).
-bool sdSpace(uint64_t& total, uint64_t& freeBytes) {
-    total = freeBytes = 0;
-    if (!g_sdMount) return false;
-    total     = static_cast<uint64_t>(envMs("BBS_CAM_CARD_MB", 2048)) * 1024u * 1024u;
-    freeBytes = static_cast<uint64_t>(envMs("BBS_CAM_FREE_MB", 1900)) * 1024u * 1024u;
-    return true;
-}
-
-bool sdList(const char* rel, SdListFn fn, void* ctx) {
-    if (!g_sdMount || !fn) return false;
-    std::string dir = g_sdBase + "/" + (rel ? rel : "");
-    DIR* d = opendir(dir.c_str());
-    if (!d) return false;
-    for (struct dirent* e = readdir(d); e; e = readdir(d)) {
-        if (e->d_name[0] == '.') continue;
-        struct stat st;
-        if (stat((dir + "/" + e->d_name).c_str(), &st) != 0) continue;
-        if (!fn(ctx, e->d_name, S_ISDIR(st.st_mode), static_cast<uint32_t>(st.st_size))) break;
-    }
-    closedir(d);
-    return true;
-}
 
 void pinOut(int pin, bool high) {
     if (pin < 0) return;

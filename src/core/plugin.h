@@ -408,11 +408,14 @@ struct Plugin {
 
 namespace plugins {
 
-// begin: check requirements, start every enabled plugin, register commands
-void begin(Bbs& bbs);
+// begin: check requirements, start every enabled plugin, register commands.
+// mask (1.1.2): which plugins, by index, all of them unless said; a CONFIG
+// save of one plugin's page starts only that one again.
+constexpr uint32_t kAll = 0xFFFFFFFFu;
+void begin(Bbs& bbs, uint32_t mask = kAll);
 
-// stopAll: called before a config reload
-void stopAll();
+// stopAll: called before a config reload. mask as begin's.
+void stopAll(uint32_t mask = kAll);
 
 // tick: call from the BBS loop
 void tick(uint32_t now);

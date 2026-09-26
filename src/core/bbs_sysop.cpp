@@ -159,32 +159,6 @@ void sysopLastPath(char* out, size_t n) {
     snprintf(out, n, "%s/%s", plat::userBase(), BBS_SYSOP_LAST_FILE);
 }
 
-// One pass over users.txt for the configured id and the fallback id at once.
-// The configured one wins wherever it falls in the file.
-struct SysopFind {
-    uint32_t cfgId;
-    uint32_t lastId;
-    UserRec* out;
-    bool     gotCfg;
-    bool     gotLast;
-};
-
-void sysopFindRow(void* ctx, uint8_t, const UserRec& u) {
-    SysopFind& f = *static_cast<SysopFind*>(ctx);
-    if (u.retired || !u.id) return;
-    if (f.cfgId && u.id == f.cfgId) {
-        *f.out   = u;
-        f.gotCfg = true;
-    } else if (f.lastId && u.id == f.lastId && !f.gotCfg &&
-               u.level >= static_cast<uint8_t>(Access::Sysop)) {
-        // The fallback only ever names an account the sysop password marked.
-        // sysop.last is an id into whatever users.txt is live, and a file
-        // brought back from elsewhere can give that id to a stranger.
-        *f.out    = u;
-        f.gotLast = true;
-    }
-}
-
 } // namespace
 
 // sysopLastLoad / sysopLastSave: the fallback's id in its own small file on
@@ -224,10 +198,15 @@ void Bbs::sysopLastSave(uint32_t id) {
 
 // sysopAccount: see bbs.h
 bool Bbs::sysopAccount(UserRec& out) {
-    SysopFind f{ syscfg::get().sysopId, sysopLast_, &out, false, false };
-    if (!f.cfgId && !f.lastId) return false;
-    users::range(0, 255, sysopFindRow, &f);
-    return f.gotCfg || f.gotLast;
+    // By id, from the accounts' index (1.1.2): a seek for each id, where
+    // this was a walk of every account, at every elevation and every
+    // sysop's login.
+    const uint32_t cfgId = syscfg::get().sysopId;
+    if (cfgId && users::byId(cfgId, out) && !out.retired) return true;
+    if (sysopLast_ && users::byId(sysopLast_, out) && !out.retired &&
+        out.level >= static_cast<uint8_t>(Access::Sysop))
+        return true;
+    return false;
 }
 
 // isSysopAccount: see bbs.h. Only the fallback while an id is configured
@@ -1355,6 +1334,64 @@ bool cfgFileValue(const char* section, const char* key, char* out, size_t n) {
     return found;
 }
 
+// cfgFileValues: what the file says for several keys of one section, in one
+// pass (1.1.2). A page is up to sixteen fields, and cfgFileValue opened and
+// read the whole of system.cfg for each: CONFIG open held the loop 130 to
+// 173 ms on the bench. The same rules as cfgFileValue, a later line winning,
+// for every key at once.
+struct CfgWant { const char* key; char* out; size_t n; bool found; };
+
+void cfgFileValues(const char* section, CfgWant* want, uint8_t count) {
+    for (uint8_t k = 0; k < count; ++k) { want[k].found = false; if (want[k].out) want[k].out[0] = '\0'; }
+    char path[160], line[192];
+    snprintf(path, sizeof(path), "%s/system.cfg", plat::userBase());
+    FILE* f = disk::open(path, "r");
+    if (!f) return;
+    bool inSection = section == nullptr || !*section;
+    while (fgets(line, sizeof(line), f)) {
+        const char* p = line;
+        while (*p == ' ' || *p == '\t') ++p;
+        if (*p == '[') {
+            char name[40];
+            size_t w = 0;
+            ++p;
+            while (*p && *p != ']' && w + 1 < sizeof(name)) name[w++] = *p++;
+            name[w] = '\0';
+            inSection = section && *section && !strcasecmp(name, section);
+            continue;
+        }
+        if (!inSection || *p == '#' || *p == ';' || *p == '\n' || !*p) continue;
+        size_t klen = 0;
+        while (p[klen] && p[klen] != '=' && p[klen] != ' ' && p[klen] != '\t') ++klen;
+        char key[40];
+        if (klen + 1 >= sizeof(key)) continue;
+        memcpy(key, p, klen);
+        key[klen] = '\0';
+        const char* v = p + klen;
+        while (*v == ' ' || *v == '\t') ++v;
+        if (*v != '=') continue;
+        ++v;
+        while (*v == ' ' || *v == '\t') ++v;
+        for (uint8_t k = 0; k < count; ++k) {
+            CfgWant& wnt = want[k];
+            if (!wnt.out || strcasecmp(key, wnt.key)) continue;
+            size_t w = 0;
+            const char* q = v;
+            while (*q && *q != '\n' && *q != '\r' && w + 1 < wnt.n) wnt.out[w++] = *q++;
+            wnt.out[w] = '\0';
+            bool verbatim = strstr(wnt.key, "_password") || !strcasecmp(wnt.key, "wifi_ssid");
+            char* cut = nullptr;
+            if (section && *section)  cut = strchr(wnt.out, ';');
+            else if (!verbatim)       cut = strchr(wnt.out, '#');
+            if (cut) { *cut = '\0'; w = strlen(wnt.out); }
+            while (w && (wnt.out[w - 1] == ' ' || wnt.out[w - 1] == '\t')) --w;
+            wnt.out[w] = '\0';
+            wnt.found = true;
+        }
+    }
+    fclose(f);
+}
+
 // cfgLiveValue: what the board is actually running with, for a key the
 // file does not mention. Keeps the form honest about defaults.
 void cfgLiveValue(const char* key, char* out, size_t n) {
@@ -1738,10 +1775,15 @@ void cfgPluginPage(uint8_t pi, const char* list) {
 // plugin is running with. The plugin half of what cmdConfig does for every
 // page, for the pages a PS_PAGE button swaps in and out.
 void cfgLoadPlugin(const char* name) {
-    for (uint8_t i = 0; i < g_cfgPage->count && i < Form::kMaxFields; ++i) {
+    CfgWant want[Form::kMaxFields];
+    const uint8_t cnt = static_cast<uint8_t>(g_cfgPage->count < Form::kMaxFields ? g_cfgPage->count : Form::kMaxFields);
+    for (uint8_t i = 0; i < cnt; ++i)
+        want[i] = { g_cfgPage->fields[i].key, g_cfgBuf[i], sizeof(g_cfgBuf[0]), false };
+    cfgFileValues(g_cfgSection, want, cnt);              // one pass for the page (1.1.2)
+    for (uint8_t i = 0; i < cnt; ++i) {
         const CfgField& f = g_cfgPage->fields[i];
         char* buf = g_cfgBuf[i];
-        if (!cfgFileValue(g_cfgSection, f.key, buf, sizeof(g_cfgBuf[0])))
+        if (!want[i].found)
             cfgPluginValue(name, f.key, buf, sizeof(g_cfgBuf[0]));
         if (f.kind == CK_PASS && *buf) snprintf(buf, sizeof(g_cfgBuf[0]), "%s", kMasked);
         g_cfgWas[i] = bbsu::hash(buf);
@@ -2125,25 +2167,34 @@ void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now, uint8_t focus) {
     // password only alongside the file's network name (main.cpp). With no
     // name in the file, both boxes show what the board is actually on. The
     // port on the same page is its own key and reads the file as usual.
-    bool wifiInFile = true;
-    if (page->fields == kNetwork) {
-        char name[40];
-        wifiInFile = cfgFileValue(nullptr, "wifi_ssid", name, sizeof(name)) && name[0];
+    // The page's values, the Wi-Fi name and the TZ string, in one pass over
+    // the file (1.1.2): it was a whole read of system.cfg for every field.
+    const uint8_t cnt = static_cast<uint8_t>(page->count < Form::kMaxFields ? page->count : Form::kMaxFields);
+    CfgWant want[Form::kMaxFields + 2];
+    char ssidv[40] = "", tzv[48] = "";
+    for (uint8_t i = 0; i < cnt; ++i) want[i] = { page->fields[i].key, g_cfgBuf[i], sizeof(g_cfgBuf[0]), false };
+    uint8_t extra = cnt;
+    const bool coreSec = !g_cfgSection[0];
+    if (coreSec) {
+        want[extra++] = { "wifi_ssid", ssidv, sizeof(ssidv), false };
+        want[extra++] = { "tz", tzv, sizeof(tzv), false };
     }
-    for (uint8_t i = 0; i < page->count && i < Form::kMaxFields; ++i) {
+    cfgFileValues(g_cfgSection, want, extra);
+    bool wifiInFile = true;
+    if (page->fields == kNetwork) wifiInFile = coreSec && want[cnt].found && ssidv[0];
+    for (uint8_t i = 0; i < cnt; ++i) {
         const CfgField& f = page->fields[i];
         char* buf2 = g_cfgBuf[i];
         if (f.kind == CK_ZONE) {
             // The zone the TZ string is, by name, or Custom when it is none
             // of the table's: the file's string first, then the running one.
-            char tzv[48];
-            if (!cfgFileValue(nullptr, "tz", tzv, sizeof(tzv))) cfgLiveValue("tz", tzv, sizeof(tzv));
+            if (!coreSec || !want[cnt + 1].found) cfgLiveValue("tz", tzv, sizeof(tzv));
             const char* name = tzones::nameFor(tzv);
             snprintf(buf2, sizeof(g_cfgBuf[0]), "%s", name ? name : tzones::kCustom);
             g_cfgWas[i] = bbsu::hash(buf2);
             continue;
         }
-        bool inFile = cfgFileValue(g_cfgSection, f.key, buf2, sizeof(g_cfgBuf[0]));
+        bool inFile = want[i].found;
         if (page->fields == kNetwork && !wifiInFile && isWifiKey(f.key)) inFile = false;
         if (!inFile) {
             if (g_cfgSection[0]) cfgPluginValue(arg, f.key, buf2, sizeof(g_cfgBuf[0]));
@@ -2548,6 +2599,15 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
     if (ok && g_cfgPage->fields == kNetwork && restartOnly && !strcmp(err, "Saved and live"))
         snprintf(err, errLen, nowOpen ? "Saved: OPEN network, from restart"
                                       : "Saved, used from the next restart");
+    // The hostname (1.1.2, from the bench): DHCP and mDNS are given it as the
+    // radio comes up, so a new one is heard from the next restart, and
+    // "Saved and live" said otherwise. 37 columns, inside the status line.
+    if (ok && !strcmp(err, "Saved and live"))
+        for (uint8_t k = 0; k < n; ++k)
+            if (!strcmp(pairs[k].key, "hostname")) {
+                snprintf(err, errLen, "Saved; hostname from the next restart");
+                break;
+            }
     return ok;
 }
 
@@ -2562,7 +2622,17 @@ bool Bbs::configReloadAll(char* err, size_t errLen) {
         snprintf(err, errLen, "saved, but %.48s", rerr);
         return true;
     }
-    restartPlugins();
+    // Only the plugin whose page this was starts again (1.1.2), unless the
+    // page was the core's (a plugin may read the core's settings as it
+    // starts: announce the board's name) or the card's (every PF_SD plugin
+    // depends on the mount). It was every plugin, every save.
+    uint32_t mask = plugins::kAll;
+    {
+        const uint8_t sec = cfgSectionPlugin(g_cfgSection);
+        const Plugin* sp = plugins::at(sec);
+        if (sec != 0xFF && sec < 32 && sp && !(sp->info.flags & PF_EARLY)) mask = 1u << sec;
+    }
+    restartPlugins(mask);
     snprintf(err, errLen, "Saved and live");
 
     // "Live" is a claim about the plugin whose page this was, so check it.
@@ -2587,14 +2657,17 @@ bool Bbs::configReloadAll(char* err, size_t errLen) {
 // a backup restore that put system.cfg or an information page live (1.1.0)
 // both come here, so "live" means the same thing after either.
 // ---------------------------------------------------------------------------
-void Bbs::restartPlugins() {
+void Bbs::restartPlugins(uint32_t mask) {
     // A restore that replaced users.txt removed sysop.last with it (ziparc).
     sysopLastLoad();
     // A plugin about to be stopped may have callers inside it. Hand them
     // back to the command prompt first: a session left owning a plugin
     // that has given its memory back is a session that never comes home.
-    eachSession([](void*, Session& o) {
-        if (o.st == SState::Plugin) {
+    // Only a plugin that is being restarted (1.1.2): a caller in the chat
+    // room stays there through a save of CONFIG files.
+    eachSession([](void* ctx, Session& o) {
+        const uint32_t m = *static_cast<const uint32_t*>(ctx);
+        if (o.st == SState::Plugin && o.owner != 0xFF && o.owner < 32 && (m & (1u << o.owner))) {
             o.term.color(o.tl, Color::Yellow);
             o.term.nl(o.tl);
             o.term.text(o.tl, "The sysop changed the settings.");
@@ -2609,10 +2682,10 @@ void Bbs::restartPlugins() {
         // the index survive a reload.
         if (o.st == SState::List || o.st == SState::More || o.list != ListKind::None)
             Bbs::instance().abortOutput(o);
-    }, nullptr);
-    plugins::stopAll();
-    dropPluginCommands();        // or every reload registers them again
-    plugins::begin(*this);
+    }, &mask);
+    plugins::stopAll(mask);
+    dropPluginCommands(mask);    // or every reload registers them again
+    plugins::begin(*this, mask);
 }
 
 // ===========================================================================
