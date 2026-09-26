@@ -794,6 +794,18 @@ this tree.
       `fsInfoStale()` clearing both partitions' figures.
     - Measured on the bench: no slow pass from any audited path.
   - The uploads bug and the smaller bugs below.
+  - **Announce is rock solid** (Rob, 2026-09-26: "its key to getting more
+    support from users"):
+    - A join or leave is sent at once (coalesced about 2 s), because the
+      directory lagged callers on the live boards.
+    - DNS moves onto the runner.
+    - A host reliability suite covers DNS failure and recovery, the
+      directory being down and coming back, half-open connections, bad
+      replies, a lost token, a CONFIG save mid-POST, and a 24-hour
+      fast-clock soak with flat socket and heap counts.
+    - ANNOUNCE shows staff the last sent, last result and next heartbeat.
+    - Before 1.1.2 ships, a bench soak on a real board against a local
+      directory on the PC.
   - **Testing must take less time than writing the code** (Rob,
     2026-09-26). Part 1 adds `harness.sh --changed <range>`, which picks
     the groups from what changed. A test-speed job follows part 1, on its
