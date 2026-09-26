@@ -534,6 +534,10 @@ public:
     // Public because secondsLeft and unlimited are not, and a plugin has no
     // business reaching for either: this is the question they actually have.
     int32_t minutesLeft(const Session& s, uint32_t now) const;
+    // callSecondsLeft: the same in seconds, -1 for no limit (1.2.0). For a
+    // plugin that must act before the core hangs up at 0: the doors plugin
+    // tells a door its time is up with a few seconds' grace to save.
+    int32_t callSecondsLeft(const Session& s, uint32_t now) const;
 
     // Shell handlers a plugin may reuse, so the room and the main prompt
     // cannot drift into two answers for one question.
@@ -634,7 +638,9 @@ private:
     Bbs() = default;
 
     static constexpr uint8_t kSessions      = BBS_MAX_NODES + 2;   // + busy + sysop
-    static constexpr uint8_t kCommandTables = 12;                  // core + plugins
+    // core + every plugin (1.2.0: was 12, a count written beside the plugin
+    // table; the link, doors and external plugins took the table past it)
+    static constexpr uint8_t kCommandTables = 1 + BBS_MAX_PLUGINS;
 
     // -- connections (bbs.cpp) ---------------------------------------------
     void acceptAll(uint32_t now);
