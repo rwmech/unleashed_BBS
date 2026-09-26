@@ -61,8 +61,15 @@ at 78a0ba4; not merged, pushed or tagged. This page is as of 1.2.0-link.5.
 - tools/test_ext_plugin.sh: 13 checks.
 - Not yet on a board: the link.5 engine. The camsat engineer re-measures.
 
-## Next in this lane
+## link.5 on the bench, and link.6
 
-- The camera registry you approved: one SNAPSHOT for every camera, the
-  built-in first then satellites by pairing, a CONFIG default, and one
-  per-caller budget across all cameras.
+- link.5 with camsat (S3 plus ESP32-CAM): 54 KB/s steady, no retries, 39 of
+  39 in a 6.5-minute timelapse soak. That is the pre-runner ceiling; the
+  runner lifts it at the 1.1.2 merge. One or two slow passes a picture
+  (worst 105 ms) are the card writes on the tick, also gone with the runner.
+- link.6: the camera registry you approved. One SNAPSHOT for every camera
+  (built-in first, then satellites by pairing), CONFIG cameras for the
+  default, and one per-caller budget across all cameras. The engine now
+  also tells the far end when it closes a session: the soak found a
+  satellite's session table filling after 16 pictures.
+- WROOM static DRAM 161,712 (19,024 free); Freenove 7,528 free.

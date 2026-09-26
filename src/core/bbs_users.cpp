@@ -43,6 +43,7 @@
 #include "sysconfig.h"
 #include "users.h"
 #include "plugin.h"     // plugins::renamed, so a rename reaches the plugins
+#include "photos.h"     // photos::renamed: a caller's snap limits follow the rename
 #include "../platform/platform.h"
 
 #include <cstring>
@@ -488,7 +489,10 @@ void Bbs::formSave(Session& s, uint32_t now) {
                 // caller's own unread mail stayed filed under a name that no
                 // longer existed, and a room ban did too, so renaming was a
                 // way out of one. Only reached when the write succeeded.
-                if (renamed) plugins::renamed(s.origHandle, s.edit.handle);
+                if (renamed) {
+                    plugins::renamed(s.origHandle, s.edit.handle);
+                    photos::renamed(s.origHandle, s.edit.handle);   // the snap limits (1.2.0)
+                }
             }
             plat::log("bbs: %s %s account '%s'", s.user, adding ? "added" : "saved", s.edit.handle);
             snprintf(msg, sizeof(msg), adding ? "Account %s added." : "Account %s saved.", s.edit.handle);
