@@ -3143,6 +3143,13 @@ int32_t Bbs::minutesLeft(const Session& s, uint32_t now) const {
     return (secs + 59) / 60;
 }
 
+// callSecondsLeft: the same, unrounded (1.2.0, for the doors plugin).
+int32_t Bbs::callSecondsLeft(const Session& s, uint32_t now) const {
+    if (s.role != Role::Caller || !s.loggedIn || unlimited(s)) return -1;
+    int32_t secs = secondsLeft(s, now);
+    return secs < 0 ? 0 : secs;
+}
+
 // ---------------------------------------------------------------------------
 // cmdBaud: emulate a modem line speed for this session
 // ---------------------------------------------------------------------------

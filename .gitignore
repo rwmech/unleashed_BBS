@@ -86,3 +86,5 @@ data/logs/
 release/
 host/obj-mbedtls/
 host/libmbedtls_host.a
+host/ext-gen/
+/ext/

@@ -191,13 +191,14 @@ struct Events {
     bool (*bulkBegin)(void* ctx, uint8_t peer, uint16_t sess, uint8_t family, uint8_t type,
                       uint32_t total) = nullptr;
     // The next bytes of that message, in order. On the runner. False aborts.
-    bool (*bulkData)(void* ctx, uint8_t peer, uint16_t sess, const uint8_t* p, size_t n) = nullptr;
+    bool (*bulkData)(void* ctx, uint8_t peer, uint16_t sess, uint8_t family,
+                     const uint8_t* p, size_t n) = nullptr;
     // The bulk message is complete: ok when every byte came and the CRC-32 checked.
-    void (*bulkEnd)(void* ctx, uint8_t peer, uint16_t sess, bool ok) = nullptr;
+    void (*bulkEnd)(void* ctx, uint8_t peer, uint16_t sess, uint8_t family, bool ok) = nullptr;
     // A bulk message this end sent has been taken whole (ok) or given up.
-    void (*bulkSent)(void* ctx, uint8_t peer, uint16_t sess, bool ok) = nullptr;
+    void (*bulkSent)(void* ctx, uint8_t peer, uint16_t sess, uint8_t family, bool ok) = nullptr;
     // A session ended by the far end or by retries running out.
-    void (*reset)(void* ctx, uint8_t peer, uint16_t sess, uint8_t reason) = nullptr;
+    void (*reset)(void* ctx, uint8_t peer, uint16_t sess, uint8_t family, uint8_t reason) = nullptr;
     // A peer's link session came up or went down.
     void (*peerState)(void* ctx, uint8_t peer, bool up) = nullptr;
     // Host: a device asks to pair (code worked out). The owner shows the
@@ -280,6 +281,8 @@ public:
     uint8_t peerKind(uint8_t peer) const;
     const Mac& peerMac(uint8_t peer) const;
     const PeerStats& peerStats(uint8_t peer) const;
+    // peerKey: a pairing's k_link, for its owner to store. Never shown, never logged.
+    const uint8_t* peerKey(uint8_t peer) const;
     uint8_t peerCount() const;
     uint8_t peersUp() const;
     int  peerIndex(const Mac& mac) const;
@@ -291,10 +294,28 @@ public:
     void closePairing();
     bool pairingOpen() const;
     void pairAnswer(bool yes);
-    // pairCompute: the slow part of pairing (P-256, tens of milliseconds on
-    // an ESP32): make the key pair and the shared secret. Returns true when it
-    // did something. The host runs it on the runner; see pairComputeWanted.
+    // The slow part of pairing (P-256: tens of milliseconds on an ESP32):
+    // the key pair and the shared secret. In three steps, so the middle one
+    // can run on the background runner while the engine stays the loop's:
+    //   pairTake  (loop)   copy what it needs into j; false when nothing wants doing
+    //   pairRun   (any task) the arithmetic, touching nothing but j
+    //   pairGive  (loop)   put the answer back
+    // pairCompute is the three in a row, for a peer's own loop and the tests.
+    struct PairJob {
+        bool     keygen = false;
+        uint8_t  from = 0;
+        bool     ok = false;
+        uint8_t  np[16] = {}, nh[16] = {};
+        uint8_t  priv[linkcrypto::kPriv] = {};
+        uint8_t  pubMine[linkcrypto::kPub] = {};
+        uint8_t  pubTheirs[linkcrypto::kPub] = {};
+        uint8_t  key[linkcrypto::kKey] = {};
+        uint16_t code = 0;
+    };
     bool pairComputeWanted() const;
+    bool pairTake(PairJob& j);
+    static void pairRun(PairJob& j, linkcrypto::Rng rng, void* rctx);
+    void pairGive(PairJob& j);
     bool pairCompute();
     // Peer: startPairing broadcasts PAIR_HELLO on every channel until a host
     // answers or stopPairing.
@@ -309,6 +330,9 @@ public:
     uint16_t openSession(uint8_t peer, uint8_t family);
     // closeSession: forget it here (the family says goodbye in its own words).
     void closeSession(uint8_t peer, uint16_t sess);
+    // closeAfter: forget it once what is queued on it has been taken, so a
+    // last message ("CLOSE") still goes. Nothing more may be sent on it.
+    void closeAfter(uint8_t peer, uint16_t sess);
     // resetSession: tell the far end, then forget it.
     void resetSession(uint8_t peer, uint16_t sess, uint8_t reason);
     // send: a single-frame message. 1 queued, 0 not now (the session's window

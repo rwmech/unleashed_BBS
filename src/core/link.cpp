@@ -209,7 +209,8 @@ const char* dropName(uint8_t d) {
 namespace {
 enum : uint8_t { PS_IDLE, PS_SCAN, PS_HELLO, PS_WAITUP, PS_UP };   // a peer's link state
 enum : uint8_t { PAIR_NONE, PAIR_KEYGEN, PAIR_ASKING, PAIR_OFFERED,        // host
-                 PAIR_HELLOING, PAIR_SHARED, PAIR_WAITDONE, PAIR_DONE_ };  // peer
+                 PAIR_HELLOING, PAIR_SHARED, PAIR_WAITDONE, PAIR_DONE_,       // peer
+                 PAIR_COMPUTING };                                  // either, on the runner
 enum : uint8_t { BX_FREE, BX_RECV, BX_BEGUN, BX_OK, BX_BAD, BX_ABORT, BX_CANCEL };
 }  // namespace
 
@@ -250,6 +251,7 @@ struct Engine::Sess {
     bool      ackNow = false;
     uint32_t  ackAt = 0;
     bool      refusing = false;       // the owner said "no room": advertise 0
+    bool      closing = false;        // closeAfter: drop once nothing is in flight
     uint32_t  lastActive = 0;
 };
 
@@ -432,7 +434,7 @@ void Engine::dropSess(Sess& s) {
     for (uint8_t i = 0; i < kTxMsgs; ++i) {
         TxMsg& m = tx_[i];
         if (!m.used || m.peer != s.peer || m.sess != s.id) continue;
-        if (m.bulk && ev_.bulkSent) ev_.bulkSent(ev_.ctx, m.peer, m.sess, false);
+        if (m.bulk && ev_.bulkSent) ev_.bulkSent(ev_.ctx, m.peer, m.sess, m.family, false);
         m.used = false;
     }
     BulkRx& b = *bulk_;
@@ -449,6 +451,7 @@ void Engine::dropSess(Sess& s) {
 void Engine::failSess(Sess& s, uint8_t reason, bool tellFar) {
     uint8_t pi = s.peer;
     uint16_t id = s.id;
+    uint8_t fam = s.family;
     if (tellFar && peers_[pi].haveSess) {
         uint8_t p[3];
         put16(p, id);
@@ -456,7 +459,7 @@ void Engine::failSess(Sess& s, uint8_t reason, bool tellFar) {
         queueCtrl(pi, nullptr, T_RESET, p, sizeof(p), true);
     }
     dropSess(s);
-    if (ev_.reset) ev_.reset(ev_.ctx, pi, id, reason);
+    if (ev_.reset) ev_.reset(ev_.ctx, pi, id, fam, reason);
 }
 
 uint8_t Engine::inFlight(const Sess& s) const {
@@ -926,7 +929,7 @@ void Engine::onClear(const Header& h, const uint8_t* p, const Mac& from) {
             }
             case T_PAIR_HELLO: {
                 if (!pr.open || reached(now, pr.until)) return;
-                if (h.len < 110 || pr.st == PAIR_ASKING || pr.st == PAIR_KEYGEN) return;
+                if (h.len < 110 || pr.st == PAIR_ASKING || pr.st == PAIR_KEYGEN || pr.st == PAIR_COMPUTING) return;
                 if (pr.st == PAIR_OFFERED) return;       // one at a time
                 pr = Pair();
                 pr.open = true;
@@ -1041,8 +1044,9 @@ void Engine::onLinkMsg(uint8_t pi, const Header& h, const uint8_t* p) {
             Sess* s = findSess(pi, get16(p));
             if (!s) return;
             uint16_t id = s->id;
+            uint8_t fam = s->family;
             dropSess(*s);
-            if (ev_.reset) ev_.reset(ev_.ctx, pi, id, p[2]);
+            if (ev_.reset) ev_.reset(ev_.ctx, pi, id, fam, p[2]);
             return;
         }
         default:
@@ -1070,7 +1074,7 @@ void Engine::onAck(uint8_t pi, const uint8_t* p, size_t n) {
         if (before(m.seq, cum)) {
             if (m.bulk && ev_.bulkSent) {
                 m.used = false;
-                ev_.bulkSent(ev_.ctx, pi, id, true);
+                ev_.bulkSent(ev_.ctx, pi, id, m.family, true);
             }
             m.used = false;
             continue;
@@ -1251,9 +1255,12 @@ bool Engine::pumpBulk(uint16_t maxFrags) {
         if (b.got + n > b.total) n = b.total - b.got;
         b.crcRun = crc32::update(b.crcRun, d, n);
         b.got += static_cast<uint32_t>(n);
-        bool ok = ev_.bulkData ? ev_.bulkData(ev_.ctx, b.peer, b.sess, d, n) : true;
-        b.have.fetch_and(~bit);
+        bool ok = ev_.bulkData ? ev_.bulkData(ev_.ctx, b.peer, b.sess, b.family, d, n) : true;
+        // consumed first, then the slot's bit: the other order lets the loop,
+        // still reading the old consumed, take a late duplicate of fragment c
+        // into the slot and mark it, where fragment c + window then finds it.
         b.consumed.store(static_cast<uint16_t>(c + 1));
+        b.have.fetch_and(~bit);
         ++done;
         if (!ok) { b.st.store(BX_ABORT); break; }
         if (c + 1 == b.nfrag) {
@@ -1275,8 +1282,9 @@ void Engine::bulkEndCheck() {
         if (pumping_.load()) return;
         uint8_t pi = b.peer;
         uint16_t sid = b.sess;
+        uint8_t fam = b.family;
         b.st.store(BX_FREE);
-        if (ev_.bulkEnd) ev_.bulkEnd(ev_.ctx, pi, sid, false);
+        if (ev_.bulkEnd) ev_.bulkEnd(ev_.ctx, pi, sid, fam, false);
         return;
     }
     if (st != BX_OK && st != BX_BAD && st != BX_ABORT) {
@@ -1293,10 +1301,10 @@ void Engine::bulkEndCheck() {
     if (pumping_.load()) return;
     const uint8_t pi = b.peer;
     const uint16_t sid = b.sess;
+    const uint8_t fam = b.family;
     b.st.store(BX_FREE);
+    if (ev_.bulkEnd) ev_.bulkEnd(ev_.ctx, pi, sid, fam, st == BX_OK);
     Sess* s = findSess(pi, sid);
-    if (ev_.bulkEnd) ev_.bulkEnd(ev_.ctx, pi, sid, st == BX_OK);
-    s = findSess(pi, sid);
     if (!s) return;
     if (st == BX_OK) {
         ++s->rxExpect;
@@ -1314,6 +1322,9 @@ void Engine::timers(uint32_t now) {
     if (role_ == Role::Host) hostTimers(now);
     else                     peerTimers(now);
     bulkEndCheck();
+    // Sessions closed with closeAfter go once their last message is taken.
+    for (uint8_t k = 0; k < kSessions; ++k)
+        if (sess_[k].used && sess_[k].closing && !inFlight(sess_[k])) dropSess(sess_[k]);
 }
 
 void Engine::hostTimers(uint32_t now) {
@@ -1504,6 +1515,10 @@ bool Engine::peerUp(uint8_t pi) const { return pi < npeers_ && peers_[pi].used &
 uint8_t Engine::peerKind(uint8_t pi) const { return pi < npeers_ ? peers_[pi].kind : static_cast<uint8_t>(KIND_UNKNOWN); }
 const Mac& Engine::peerMac(uint8_t pi) const { static const Mac z; return pi < npeers_ ? peers_[pi].mac : z; }
 const PeerStats& Engine::peerStats(uint8_t pi) const { static const PeerStats z; return pi < npeers_ ? peers_[pi].st : z; }
+const uint8_t* Engine::peerKey(uint8_t pi) const {
+    static const uint8_t z[linkcrypto::kKey] = {};
+    return pi < npeers_ ? peers_[pi].kLink : z;
+}
 uint8_t Engine::peerCount() const { uint8_t n = 0; for (uint8_t i = 0; i < npeers_; ++i) n += peers_[i].used; return n; }
 uint8_t Engine::peersUp() const { uint8_t n = 0; for (uint8_t i = 0; i < npeers_; ++i) n += peers_[i].used && peers_[i].up; return n; }
 bool Engine::hostUp() const { return role_ == Role::Peer && peers_[0].used && peers_[0].up; }
@@ -1552,35 +1567,65 @@ int rngThunk(void* ctx, unsigned char* out, size_t n) {
 }
 }  // namespace
 
-bool Engine::pairCompute() {
+// The slow part of pairing, in three steps so the middle one can run on
+// another task: take copies what it needs out of the engine (loop), run
+// computes with nothing of the engine's (runner), give puts the answer back
+// (loop). The engine's pairing state is only ever touched by the loop.
+bool Engine::pairTake(PairJob& j) {
     Pair& pr = *pair_;
+    if (pr.st != PAIR_KEYGEN && pr.st != PAIR_SHARED) return false;
+    j = PairJob();
+    j.keygen = pr.st == PAIR_KEYGEN;
+    if (j.keygen) io_.random(pr.nh, 16);
+    memcpy(j.np, pr.np, 16);
+    memcpy(j.nh, pr.nh, 16);
+    memcpy(j.priv, pr.priv, sizeof(j.priv));
+    memcpy(j.pubTheirs, pr.pubTheirs, sizeof(j.pubTheirs));
+    j.from = pr.st;
+    pr.st = PAIR_COMPUTING;
+    return true;
+}
+
+void Engine::pairRun(PairJob& j, linkcrypto::Rng rng, void* rctx) {
     uint8_t secret[linkcrypto::kSecret];
     uint8_t okm[linkcrypto::kKey + 2];
     uint8_t salt[32];
-    if (pr.st == PAIR_KEYGEN) {                         // host
-        io_.random(pr.nh, 16);
-        if (!linkcrypto::keypair(rngThunk, &io_, pr.priv, pr.pubMine) ||
-            !linkcrypto::shared(rngThunk, &io_, pr.priv, pr.pubTheirs, secret)) {
-            closePairing();
-            return true;
-        }
-    } else if (pr.st == PAIR_SHARED) {                  // peer
-        if (!linkcrypto::shared(rngThunk, &io_, pr.priv, pr.pubTheirs, secret)) {
-            pr.st = PAIR_HELLOING;
-            return true;
-        }
-    } else {
-        return false;
-    }
-    memcpy(salt, pr.np, 16);
-    memcpy(salt + 16, pr.nh, 16);
+    j.ok = false;
+    if (j.keygen && !linkcrypto::keypair(rng, rctx, j.priv, j.pubMine)) return;
+    if (!linkcrypto::shared(rng, rctx, j.priv, j.pubTheirs, secret)) return;
+    memcpy(salt, j.np, 16);
+    memcpy(salt + 16, j.nh, 16);
     linkcrypto::hkdf(salt, sizeof(salt), secret, sizeof(secret), kInfoLink, sizeof(kInfoLink), okm, sizeof(okm));
-    memcpy(pr.key, okm, linkcrypto::kKey);
-    pr.info.code = static_cast<uint16_t>(get16(okm + linkcrypto::kKey) % 10000);
+    memcpy(j.key, okm, linkcrypto::kKey);
+    j.code = static_cast<uint16_t>(get16(okm + linkcrypto::kKey) % 10000);
     linkcrypto::wipe(secret, sizeof(secret));
     linkcrypto::wipe(okm, sizeof(okm));
+    linkcrypto::wipe(j.priv, sizeof(j.priv));
+    j.ok = true;
+}
+
+void Engine::pairGive(PairJob& j) {
+    Pair& pr = *pair_;
+    if (pr.st != PAIR_COMPUTING) { linkcrypto::wipe(&j, sizeof(j)); return; }   // closed meanwhile
+    if (!j.ok) {
+        if (j.from == PAIR_KEYGEN) closePairing();
+        else                       pr.st = PAIR_HELLOING;
+        linkcrypto::wipe(&j, sizeof(j));
+        return;
+    }
+    if (j.keygen) memcpy(pr.pubMine, j.pubMine, sizeof(pr.pubMine));
+    memcpy(pr.key, j.key, sizeof(pr.key));
+    pr.info.code = j.code;
     linkcrypto::wipe(pr.priv, sizeof(pr.priv));
-    pr.st = pr.st == PAIR_KEYGEN ? PAIR_ASKING : PAIR_WAITDONE;
+    pr.st = j.from == PAIR_KEYGEN ? PAIR_ASKING : PAIR_WAITDONE;
+    linkcrypto::wipe(&j, sizeof(j));
+}
+
+bool Engine::pairCompute() {
+    PairJob j;
+    if (!pairTake(j)) return false;
+    pairRun(j, rngThunk, &io_);
+    pairGive(j);
     return true;
 }
 
@@ -1622,6 +1667,13 @@ void Engine::closeSession(uint8_t pi, uint16_t id) {
     if (s) dropSess(*s);
 }
 
+void Engine::closeAfter(uint8_t pi, uint16_t id) {
+    Sess* s = findSess(pi, id);
+    if (!s) return;
+    if (!inFlight(*s)) { dropSess(*s); return; }
+    s->closing = true;
+}
+
 void Engine::resetSession(uint8_t pi, uint16_t id, uint8_t reason) {
     Sess* s = findSess(pi, id);
     if (!s) return;
@@ -1654,7 +1706,7 @@ uint8_t Engine::sessionFamily(uint8_t pi, uint16_t id) const {
 int Engine::send(uint8_t pi, uint16_t id, uint8_t family, uint8_t type, const void* p, size_t n, bool reliable) {
     if (!ok() || n > kPayloadMax || family == FAM_LINK) return -1;
     Sess* s = findSess(pi, id);
-    if (!s) return -1;
+    if (!s || s->closing) return -1;
     if (!canSend(pi, id)) return 0;
     for (uint8_t i = 0; i < kTxMsgs; ++i) {
         TxMsg& m = tx_[i];
@@ -1678,7 +1730,7 @@ int Engine::send(uint8_t pi, uint16_t id, uint8_t family, uint8_t type, const vo
 int Engine::sendBulk(uint8_t pi, uint16_t id, uint8_t family, uint8_t type, const uint8_t* data, uint32_t n) {
     if (!ok() || n > kBulkMax || family == FAM_LINK || (!data && n)) return -1;
     Sess* s = findSess(pi, id);
-    if (!s) return -1;
+    if (!s || s->closing) return -1;
     if (!canSend(pi, id)) return 0;
     for (uint8_t i = 0; i < kTxMsgs; ++i) {
         TxMsg& m = tx_[i];

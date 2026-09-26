@@ -52,6 +52,7 @@
 
 #include "../src/core/link.h"
 #include "../src/core/linkcrypto.h"
+#include "mbedtls/ccm.h"
 
 using namespace ulink;
 
@@ -200,20 +201,20 @@ struct End {
             e.bulk.clear();
             return true;
         };
-        ev.bulkData = [](void* c, uint8_t, uint16_t, const uint8_t* p, size_t n) {
+        ev.bulkData = [](void* c, uint8_t, uint16_t, uint8_t, const uint8_t* p, size_t n) {
             End& e = *static_cast<End*>(c);
             e.bulk.insert(e.bulk.end(), p, p + n);
             return true;
         };
-        ev.bulkEnd = [](void* c, uint8_t, uint16_t, bool ok) {
+        ev.bulkEnd = [](void* c, uint8_t, uint16_t, uint8_t, bool ok) {
             End& e = *static_cast<End*>(c);
             if (ok) ++e.bulkOk; else ++e.bulkBad;
         };
-        ev.bulkSent = [](void* c, uint8_t, uint16_t, bool ok) {
+        ev.bulkSent = [](void* c, uint8_t, uint16_t, uint8_t, bool ok) {
             End& e = *static_cast<End*>(c);
             if (ok) ++e.bulkSentOk; else ++e.bulkSentFail;
         };
-        ev.reset = [](void* c, uint8_t, uint16_t, uint8_t r) { static_cast<End*>(c)->resets.push_back(r); };
+        ev.reset = [](void* c, uint8_t, uint16_t, uint8_t, uint8_t r) { static_cast<End*>(c)->resets.push_back(r); };
         ev.peerState = [](void* c, uint8_t, bool up) { End& e = *static_cast<End*>(c); if (up) ++e.ups; else ++e.downs; };
         ev.pairAsk = [](void* c, const PairInfo& w) { End& e = *static_cast<End*>(c); e.asked = true; e.askedWho = w; };
         ev.paired = [](void* c, uint8_t, const PairInfo& w) { End& e = *static_cast<End*>(c); e.paired = true; e.pairedWho = w; };
@@ -360,6 +361,40 @@ int main() {
         check("HKDF-SHA256 matches RFC 5869 test case 1",
               linkcrypto::hkdf(salt, sizeof(salt), ikm, sizeof(ikm), info, sizeof(info), okm, sizeof(okm)) &&
               memcmp(okm, want, sizeof(want)) == 0);
+
+        {
+            // RFC 3610, packet vector 1: 8 bytes of header, 23 of payload, an 8-byte tag.
+            uint8_t k[16], iv[13] = { 0x00,0x00,0x00,0x03,0x02,0x01,0x00,0xA0,0xA1,0xA2,0xA3,0xA4,0xA5 };
+            uint8_t hdr[8], pl[23], out[23], tg[8], back[23];
+            for (int i = 0; i < 16; ++i) k[i] = static_cast<uint8_t>(0xC0 + i);
+            for (int i = 0; i < 8; ++i) hdr[i] = static_cast<uint8_t>(i);
+            for (int i = 0; i < 23; ++i) pl[i] = static_cast<uint8_t>(8 + i);
+            const uint8_t want[31] = { 0x58,0x8C,0x97,0x9A,0x61,0xC6,0x63,0xD2,0xF0,0x66,0xD0,0xC2,0xC0,0xF9,0x89,
+                                       0x80,0x6D,0x5F,0x6B,0x61,0xDA,0xC3,0x84,0x17,0xE8,0xD1,0x2C,0xFD,0xF9,0x26,0xE0 };
+            bool sealed = linkcrypto::ccmSeal(k, iv, hdr, 8, pl, 23, out, tg);
+            check("CCM matches RFC 3610 packet vector 1",
+                  sealed && memcmp(out, want, 23) == 0 && memcmp(tg, want + 23, 8) == 0);
+            check("and opens it", linkcrypto::ccmOpen(k, iv, hdr, 8, out, 23, back, tg) && memcmp(back, pl, 23) == 0);
+
+            // Byte for byte mbedTLS's own CCM, for every payload length a frame can carry.
+            Rand r(4242);
+            bool same = true;
+            for (size_t n = 0; n <= kPayloadMax && same; ++n) {
+                uint8_t kk[16], nn[13], ad[kHdr], p[kPayloadMax], c1[kPayloadMax], c2[kPayloadMax], t1[8], t2[8];
+                for (auto& x : kk) x = static_cast<uint8_t>(r.next());
+                for (auto& x : nn) x = static_cast<uint8_t>(r.next());
+                for (auto& x : ad) x = static_cast<uint8_t>(r.next());
+                for (auto& x : p) x = static_cast<uint8_t>(r.next());
+                mbedtls_ccm_context cc;
+                mbedtls_ccm_init(&cc);
+                mbedtls_ccm_setkey(&cc, MBEDTLS_CIPHER_ID_AES, kk, 128);
+                mbedtls_ccm_encrypt_and_tag(&cc, n, nn, 13, ad, sizeof(ad), p, c1, t1, 8);
+                mbedtls_ccm_free(&cc);
+                same = linkcrypto::ccmSeal(kk, nn, ad, sizeof(ad), p, n, c2, t2) &&
+                       memcmp(c1, c2, n) == 0 && memcmp(t1, t2, 8) == 0;
+            }
+            check("the two-call CCM is mbedTLS's CCM for payloads of 0 to 222 bytes", same);
+        }
 
         uint8_t key[16];
         for (int i = 0; i < 16; ++i) key[i] = static_cast<uint8_t>(0x40 + i);
