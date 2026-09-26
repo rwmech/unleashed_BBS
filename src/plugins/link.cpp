@@ -190,6 +190,10 @@ bool evBulkData(void*, uint8_t peer, uint16_t sess, uint8_t family, const uint8_
     const linkp::Family* f = fam(family);
     return f && f->bulkData ? f->bulkData(peer, sess, p, n) : false;
 }
+void evBulkFinish(void*, uint8_t peer, uint16_t sess, uint8_t family, bool ok) {
+    const linkp::Family* f = fam(family);
+    if (f && f->bulkFinish) f->bulkFinish(peer, sess, ok);
+}
 void evBulkEnd(void*, uint8_t peer, uint16_t sess, uint8_t family, bool ok) {
     const linkp::Family* f = fam(family);
     if (f && f->bulkEnd) f->bulkEnd(peer, sess, ok);
@@ -337,6 +341,11 @@ Session* pairSession() {
 void pairEnd(Session* s, Color col, const char* text) {
     Ctx* c = g_ctx;
     if (c) {
+        // A device that asked and was not paired leaves nothing behind in
+        // ESP-NOW's own peer table, which holds 20 in all: the offer to it
+        // added it there.
+        if (c->eng && c->pairedAs < 0 && !c->asking.mac.zero() && c->eng->peerIndex(c->asking.mac) < 0)
+            plat::linkRadioDelPeer(c->asking.mac.b);
         if (c->eng) c->eng->closePairing();
         c->pairNode = 0xFF;
         c->pairStep = 0;
@@ -463,6 +472,7 @@ bool start(Bbs& bbs) {
     ev.bulkBegin = evBulkBegin;
     ev.bulkData  = evBulkData;
     ev.bulkEnd   = evBulkEnd;
+    ev.bulkFinish = evBulkFinish;
     ev.bulkSent  = evBulkSent;
     ev.reset     = evReset;
     ev.peerState = evPeerState;

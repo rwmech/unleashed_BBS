@@ -176,6 +176,8 @@ struct End {
     std::vector<uint8_t> bulk;
     int bulkBegun = 0, bulkOk = 0, bulkBad = 0;
     int bulkSentOk = 0, bulkSentFail = 0;
+    int bulkFinished = 0;
+    bool finishBeforeEnd = false;
     std::vector<uint8_t> resets;
     int ups = 0, downs = 0;
     bool asked = false;
@@ -209,6 +211,11 @@ struct End {
         ev.bulkEnd = [](void* c, uint8_t, uint16_t, uint8_t, bool ok) {
             End& e = *static_cast<End*>(c);
             if (ok) ++e.bulkOk; else ++e.bulkBad;
+        };
+        ev.bulkFinish = [](void* c, uint8_t, uint16_t, uint8_t, bool ok) {
+            End& e = *static_cast<End*>(c);
+            if (ok) ++e.bulkFinished;
+            e.finishBeforeEnd = e.bulkOk == e.bulkFinished - 1;   // bulkEnd not yet told
         };
         ev.bulkSent = [](void* c, uint8_t, uint16_t, uint8_t, bool ok) {
             End& e = *static_cast<End*>(c);
@@ -543,6 +550,7 @@ int main() {
         check("the host's sink got every byte, in order", host.bulk == jpeg);
         check("and the CRC-32 checked", host.bulkOk == 1 && host.bulkBad == 0 && host.bulkBegun == 1);
         check("the sender was told it was taken", peer.bulkSentOk == 1 && peer.bulkSentFail == 0);
+        check("the sink finished on the runner, before the loop heard", host.bulkFinished == 1 && host.finishBeforeEnd);
         printf("    (window drops %u, retries %u)\n", host.eng->drops(D_WINDOW), peer.eng->peerStats(0).retries);
         // A second one on the same session goes too.
         std::vector<uint8_t> small = blob(500, 3);

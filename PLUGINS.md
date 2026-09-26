@@ -64,10 +64,12 @@ Disk free 612K, reserve 32K
 | `lights` | two WS2812B outputs on the RMT peripheral (`plat::pixels*`): a drive light fed by `plat::diskPulse`, with PC, 1541, Disk II and breathing styles, and a strip of ten showing the caller lines, a Hayes front panel, several retro effects, or a colour and effect per pixel. Brightness is a percentage per output with a hard ceiling of 30. `PF_FAST`; off until switched on and given pins. `LIGHTS` shows what each output was last sent, which is also how the host tests read the pixels. |
 | `example` | the template, and what the tests drive |
 | `camera` | photos from the board's own camera (camera boards only, `BBS_HAS_CAMERA`): `SNAPSHOT` for a caller, a timelapse of its own, into the Photos and Timelapse file areas. Needs a card and a board wired for a sensor, so it neither starts nor exists in the binary on any other board. Its own doc: COMMANDS.md, `camera` under Plugins. |
+| `link` | 1.2.0. The µnleashed link: ESP-NOW to devices beside the board (a camera satellite, a door box), paired by the sysop (`LINK PAIR`), every frame sealed with AES-CCM. Off until switched on. `PF_FAST`. The family table other plugins speak through (below). Its own doc: [LINK.md](LINK.md). |
+| `doors` | 1.2.0. Doors on a door box over the link: `DOORS` lists them, `DOORS n` hands the caller over with the handoff line in LINK.md and takes them back when the door finishes, the time runs out, or they press Ctrl-] three times. Off until switched on. |
 
 ## Writing one
 
-A plugin is one static descriptor. Copy `src/plugins/example.cpp`, which exercises every part of the API, and add it to `src/plugins/registry.cpp`.
+A plugin is one static descriptor. Copy `src/plugins/example.cpp`, which exercises every part of the API, and add it to `src/plugins/registry.cpp`, or keep it in a repository of its own (below) and add nothing to the core.
 
 ```c
 extern const Plugin kExamplePlugin = {
@@ -299,11 +301,73 @@ plugins::path(myIndex, "count", buf, sizeof(buf)); // <fs>/p/<name>/count
 ```
 
 - Each plugin gets its own folder and may not touch core files.
-- Only plugins shipped in this repository (`PF_CORE`) get storage at all.
+- Only plugins shipped in this repository (`PF_CORE`) get the board's flash. A plugin from its own repository keeps what it stores on the card (`PF_SD`); one that asks for storage without `PF_SD` is not started, and `PLUGINS` says it "wants the board's flash" (1.2.0: before that no plugin outside the repository could start at all).
 - `PF_SD` says a plugin's files live on the SD card. It gets `<sd>/p/<name>/` instead of `<userdata>/p/<name>/`, and it does not start at all when no card is mounted (`PLUGINS` says "no SD card"). There is deliberately no fallback to internal flash: a plugin that quietly writes somewhere other than where it said it would is worse than one that is refused, because the sysop pulls the card expecting the data to be on it.
 - The free-space check follows the same split. A `PF_SD` plugin's `storageBytes` is weighed against the card, not against the 608 KB flash partition it is never going to touch.
 - The core keeps 32 KB of free space in reserve so accounts can always be written. Once space is that tight, `plugins::path` returns false and the plugin should carry on without saving. The check reads the kept free-space figure (1.1.2, `src/core/space.h`), measured on the runner at boot and at each staff login, so a write never walks the partition to find out; a plugin that writes a lot at once can call `space::stale` for its partition so the next staff login measures it again.
 - `plugins::readPath` is for reads: it builds the same path without the free-space check.
+
+### Speaking over the link
+
+A plugin that talks to a device beside the board registers a message family
+with the link plugin (`src/plugins/link.h`, 1.2.0) and gets that family's
+messages; LINK.md's table assigns the ids (1 CAMERA, 2 DOOR, 128 to 239 for
+plugins). The doors plugin is the worked example.
+
+```c
+linkp::Family f;                 // static: the link keeps a pointer to it
+f.id = 130;
+f.name = "weather";
+f.message   = onMessage;         // (peer, sess, type, p, n): a single frame; false = no room now
+f.bulkBegin = onBulkBegin;       // a bulk message's first fragment: false refuses it
+f.bulkData  = onBulkData;        // its bytes in order: ON THE BACKGROUND RUNNER, not the loop
+f.bulkEnd   = onBulkEnd;         // whole and checked, or abandoned
+f.reset     = onReset;           // the far end or the retries ended a session
+f.peerState = onPeerState;       // a device came up or went down
+linkp::registerFamily(f);        // in start(); unregisterFamily(130) in stop()
+```
+
+To send, borrow the engine for the length of a call and never keep the
+pointer: a CONFIG save can stop and start the link.
+
+```c
+if (ulink::Engine* e = linkp::engine()) {
+    uint16_t sess = e->openSession(peer, 130);
+    e->send(peer, sess, 130, MY_TYPE, buf, len);     // 1 queued, 0 not now, -1 never
+}
+```
+
+Registering does not depend on which plugin starts first or on the link
+being on; a family registered while the link is off hears nothing until it
+is switched on. Nothing a device sends may grant a caller anything: its bytes
+are data, the board chooses every name and every level (LINK.md, "Security
+rules").
+
+## Plugins in their own repositories
+
+From 1.2.0 a plugin can live in a git repository of its own and be built into
+a board's firmware at a pinned commit, without an edit to the core. LINK.md,
+"Plugins in their own repositories", is the full design; in short:
+
+- The repository has `unleashed-plugin.ini` (name, version, the plugin API it
+  needs, its descriptor, its licence) and its board-side sources in `bbs/`.
+  `tools/testplugin/` is a working template.
+- `plugins.lock` pins it (`name  source  commit`), and a PlatformIO
+  environment's `custom_ext_plugins` names it. `tools/plugins.py` fetches it
+  into `ext/<name>` and checks it; `pio run` does that by itself through
+  `tools/pio_plugins.py`.
+- The build adds its sources and generates `ext_plugins.h`, which
+  `registry.cpp` expands, so the registry is never edited for it. On the
+  host: `make EXT="name" bbs_host_ext`.
+- It states the plugin API it was written against with
+  `UNLEASHED_PLUGIN_API(1, 0);` in one of its sources. `BBS_PLUGIN_API_MAJOR`
+  and `BBS_PLUGIN_API_MINOR` in `plugin.h` are the core's: the minor goes up
+  with anything added that a plugin may use (1.0 is 1.2.0's), the major only
+  for a break. A plugin that needs a newer core fails to compile with a
+  sentence saying so.
+- Its sources include the core's headers from `src/`:
+  `#include "core/plugin.h"`.
+- `tools/test_ext_plugin.sh` proves the path end to end on the host.
 
 ## Memory
 

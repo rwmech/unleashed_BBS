@@ -242,6 +242,11 @@ if [ -n "$FAST" ]; then
 else
     unset BBS_FAST_TIMERS
 fi
+# The unleashed link (1.2.0): the host's radio is UDP on 127.0.0.1, on a port
+# from the tag like every other, and the pretend door box (host/linkpeer)
+# listens on the next one. test_radio_link and test_doors use them.
+export BBS_LINK_PORT=$((PORT + 3000))
+export BBS_LINK_PEER_PORT=$((PORT + 3001))
 
 # Delete the previous result before building. A failed build exits here, and
 # leaving the last run's output behind means the next look at it shows a full
@@ -255,8 +260,9 @@ if [ "$BUILD" = yes ]; then
     make -s "$BIN"
     # The S3 profile has SSH (1.1.2): its tests call in with wolfSSH's client.
     if [ "$BIN" = bbs_host_s3 ]; then make -s ssh_call; fi
-elif [ ! -x "$BIN" ] || { [ "$BIN" = bbs_host_s3 ] && [ ! -x ssh_call ]; }; then
-    echo "harness: --no-build, and host/$BIN (or ssh_call) has not been built"
+    make -s linkpeer
+elif [ ! -x "$BIN" ] || { [ "$BIN" = bbs_host_s3 ] && [ ! -x ssh_call ]; } || [ ! -x linkpeer ]; then
+    echo "harness: --no-build, and host/$BIN (or ssh_call, or linkpeer) has not been built"
     exit 2
 fi
 
@@ -347,6 +353,13 @@ topic2 = news | Board News | What the sysop is up to | all | sysop | users | sys
 # get the same answer for it as for a page that does not exist.
 page0 = House rules | all
 page1 = Staff notes | staff
+
+# The unleashed link and doors (1.2.0), on the host's UDP radio.
+[plugin:link]
+enabled = yes
+
+[plugin:doors]
+enabled = yes
 CFG
 
 # SSH's own port (1.1.2) on the S3 profile, per tag like the others: 6422

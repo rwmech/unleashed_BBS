@@ -824,6 +824,36 @@ this tree.
     voting booth, credits, FILE_ID.DIZ) and the camera boards' PSRAM
     memory move. The entries below that say "1.2.0" for those items now
     mean 1.3.0.
+  - **The link lane (rel-1.2.0-link, 2026-09-26)**: LINK.md is the spec,
+    written first. Rob's decisions on it the same day: our own AES-128-CCM
+    on every frame, header as associated data, ESP-NOW peers unencrypted
+    (the 5.3.1 receive callback cannot say whether a frame was decrypted,
+    and MACs spoof); 8 pairings; pairings out of the backup; a core `doors`
+    plugin; shared photo filing with files owning FILES.BBS; camsat in
+    every image, off by default; a serial box trusted by the wire.
+    - Built: the engine (`src/core/link.*`, `ulink::` because `link` is
+      POSIX's), the crypto (`linkcrypto.*`), the families' layouts
+      (`linkfam.h`), the radio (`src/platform/linkradio*`, UDP on the host),
+      the `link` and `doors` plugins, `src/core/photos.*`, and plugins in
+      their own repositories (`plugins.lock`, `tools/plugins.py`,
+      `tools/pio_plugins.py`, `ext_plugins.h`, `UNLEASHED_PLUGIN_API`).
+    - **The first bench number moved the design**: mbedtls_ccm costs 320 us
+      a frame on an ESP32 and 1,000 us on an S3 (camsat bench), against
+      Rob's 100 us line for work on the loop. linkcrypto now does the same
+      CCM as one CBC and one CTR call: 78 us to seal and 78 to open on the
+      S3 in the real -Os build (963 for mbedtls_ccm in the same image). The
+      per-block peripheral lock was the cost, not the hardware. Under the
+      line, so the link stays on the loop; the ESP32's figure is to come.
+    - Retries count only while the far end is heard and only for a
+      session's oldest message: the first version failed a session behind
+      one lost frame, and a channel hop killed sessions that should pause.
+      The simulated radio in `host/test_link.cpp` found both.
+    - Measured on the WROOM: 142 bytes static, 34,293 flash, ~15 KB heap
+      while on. Tests: test_link (90), `--only=radio` (28, a pretend door
+      box, `host/linkpeer`), `tools/test_ext_plugin.sh` (11).
+    - At the 1.1.2 merge: the link's job goes on the runner by itself
+      (`__has_include`); camera.cpp and files.cpp move onto photos.* then,
+      not before, because 1.1.2a rewrote both.
 - **1.1.2 scope, decided by Rob 2026-09-26** (discussed before coding):
   - A read-only audit first of every path that can hold the loop over
     50 ms (internal/audit-1.1.2-2026-09-26.md); the worst move onto one
