@@ -559,6 +559,97 @@ int main() {
               static_cast<uint32_t>(P.leds.w) * P.leds.h <= 320u * 16u);
     }
 
+    // ------------------------------------------------------------------
+    // The big glass (MF35 1.0.0, internal/tty-ux-panel-mf35-2026-09-26.md):
+    // 480 x 320 and 320 x 480, chosen by size; the Waveshare's never.
+    // ------------------------------------------------------------------
+    printf("The big glass\n");
+    {
+        Layout L;
+        check("the Waveshare's glass never takes the big layout",
+              !bigLayout(172, 320, L).on && !bigLayout(320, 172, L).on);
+        for (int turn = 0; turn < 2; ++turn) {
+            const uint16_t W = turn ? 320 : 480, H = turn ? 480 : 320;
+            const BigLayout B = bigLayout(W, H, L);
+            char what[96];
+            snprintf(what, sizeof(what), "%u x %u takes the big layout, %s", W, H, turn ? "portrait" : "landscape");
+            check(what, B.on && B.land == !turn);
+            // Every field on the glass, and no two sharing a pixel.
+            std::vector<Rect> boxes;
+            for (uint8_t f = 0; f < F_BIG_COUNT; ++f) {
+                const Rect r = bigFieldBox(B, L, f);
+                if (!empty(r)) boxes.push_back(r);
+            }
+            boxes.push_back(B.graph);
+            boxes.push_back(L.leds);
+            bool on = true, apart = true;
+            for (size_t i = 0; i < boxes.size(); ++i) {
+                const Rect& a = boxes[i];
+                if (a.x < 0 || a.y < 0 || a.x + a.w > W || a.y + a.h > H) on = false;
+                for (size_t j = i + 1; j < boxes.size(); ++j) {
+                    const Rect& b = boxes[j];
+                    if (a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h) {
+                        apart = false;
+                        printf("    overlap: %d,%d %dx%d and %d,%d %dx%d\n", a.x, a.y, a.w, a.h, b.x, b.y, b.w, b.h);
+                    }
+                }
+            }
+            snprintf(what, sizeof(what), "every field on the %s glass", turn ? "portrait" : "landscape");
+            check(what, on);
+            snprintf(what, sizeof(what), "and no two fields overlap (%s)", turn ? "portrait" : "landscape");
+            check(what, apart);
+            bool rows = true;
+            for (uint8_t k = 0; k < kBigRows; ++k)
+                if (B.row[k].y != 68 + kPitch * k || B.row[k].x + B.row[k].w != 302) rows = false;
+            check("eleven rows at a 20 px pitch, each ending by x 301", rows);
+            check("the sweep's axis leaves 28 above and 27 below",
+                  B.axis - B.graph.y == kGraphUp && B.graph.y + B.graph.h - 1 - B.axis == kGraphDown);
+        }
+        // The LED row: at most one band, no cell overlapping, for 1 to 16.
+        bool band = true, apart = true;
+        const Rect box = R(0, 296, 480, 16);
+        for (uint8_t n = 1; n <= 16; ++n) {
+            const Led first = bigLedAt(box, 0, n), last = bigLedAt(box, static_cast<uint8_t>(n - 1), n);
+            const Rect row = unite(first.cell, last.cell);
+            if (static_cast<uint32_t>(row.w) * row.h > 3840u) band = false;
+            for (uint8_t i = 0; i + 1 < n; ++i)
+                if (bigLedAt(box, i, n).cell.x + bigLedAt(box, i, n).cell.w > bigLedAt(box, i + 1, n).cell.x)
+                    apart = false;
+        }
+        check("the LED row is one 3,840 px band at any length from 1 to 16", band);
+        check("and its cells never overlap", apart);
+        // The sweep's fixed log scale.
+        check("the sweep: 0 B/s is no column, 1 is 2 px, 5 is 5 px",
+              graphHeight(0, kGraphUp) == 0 && graphHeight(1, kGraphUp) == 2 && graphHeight(5, kGraphUp) == 5);
+        check("and 128 KB/s is the full 28, never more",
+              graphHeight(131071, kGraphUp) == 28 && graphHeight(0xFFFFFFFFu, kGraphUp) == 28 &&
+              graphHeight(0xFFFFFFFFu, kGraphDown) == 27);
+        char r1[8], r2[8], r3[8], r4[8], r5[8];
+        fmtRate(0, r1, sizeof(r1));
+        fmtRate(340, r2, sizeof(r2));
+        fmtRate(1234, r3, sizeof(r3));
+        fmtRate(12345, r4, sizeof(r4));
+        fmtRate(1234567, r5, sizeof(r5));
+        check("rates in four glyphs: 0, 340, 1.2K, 12K, 1.2M",
+              !strcmp(r1, "0") && !strcmp(r2, "340") && !strcmp(r3, "1.2K") && !strcmp(r4, "12K") &&
+              !strcmp(r5, "1.2M"));
+        const Rect g = R(316, 168, 160, 56);
+        Rect wrap;
+        const Rect mid = sweepBox(g, 10, wrap);
+        check("a sample sends its column and the two ahead", mid.x == 326 && mid.w == 3 && empty(wrap));
+        const Rect end = sweepBox(g, 159, wrap);
+        check("and wraps to the left edge at the right one",
+              end.x == 475 && end.w == 1 && wrap.x == 316 && wrap.w == 2 && wrap.h == 56);
+        // A full queue merges its cheapest pair, not everything.
+        DirtyCheap q;
+        for (int i = 0; i < Dirty::kMax; ++i) q.add(R((i % 12) * 40, (i / 12) * 150, 10, 10));
+        q.add(R(470, 310, 10, 10));
+        int32_t biggest = 0;
+        for (uint8_t i = 0; i < q.n; ++i) if (area(q.q[i]) > biggest) biggest = area(q.q[i]);
+        check("a full queue of small rectangles stays small: none over 20% of the glass",
+              q.n == Dirty::kMax && biggest < 480 * 320 / 5);
+    }
+
     printf("%d passed, %d failed\n", passes, fails);
     return fails ? 1 : 0;
 }
