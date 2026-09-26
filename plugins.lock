@@ -1,0 +1,21 @@
+# ===========================================================================
+#  µnleashed BBS: plugins.lock
+#
+#  The plugins kept in repositories of their own, each pinned to the one
+#  commit the firmware is built with (LINK.md, "Plugins in their own
+#  repositories"). tools/plugins.py fetches them into ext/<name>; a
+#  PlatformIO environment's custom_ext_plugins says which it builds in.
+#
+#  One plugin a line:  name  source  commit
+#    source  a git URL, or a local path for developing one beside the core
+#    commit  the full 40-character commit; "-" takes a local path's working
+#            tree as it is (never in a release)
+#
+#  Copyright 2026 - Robert Mech
+#  SPDX-License-Identifier: GPL-3.0-or-later
+# ===========================================================================
+
+# The camera satellite (Rob, 2026-09-26: in every official image, off by
+# default). Pinned here, and named in the release environments'
+# custom_ext_plugins, once unleashed_camsat has its first commit:
+# camsat  https://github.com/rwmech/unleashed_camsat  <commit>

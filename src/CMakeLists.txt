@@ -64,8 +64,15 @@ set(app_requires esp_wifi esp_netif esp_event nvs_flash esp_timer esp_hw_support
 # and ext_plugins.h, in the build directory, names their descriptors for
 # plugins/registry.cpp. No list: an empty ext_plugins.h and nothing else.
 # ---------------------------------------------------------------------------
-if(DEFINED ENV{BBS_EXT_PLUGINS} AND NOT DEFINED BBS_EXT_PLUGINS)
-    set(BBS_EXT_PLUGINS "$ENV{BBS_EXT_PLUGINS}")
+if(NOT DEFINED BBS_EXT_PLUGINS)
+    if(EXISTS "${CMAKE_BINARY_DIR}/ext_plugins.txt")
+        # Written by tools/pio_plugins.py; a change to it reconfigures.
+        file(READ "${CMAKE_BINARY_DIR}/ext_plugins.txt" BBS_EXT_PLUGINS)
+        string(STRIP "${BBS_EXT_PLUGINS}" BBS_EXT_PLUGINS)
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_BINARY_DIR}/ext_plugins.txt")
+    elseif(DEFINED ENV{BBS_EXT_PLUGINS})
+        set(BBS_EXT_PLUGINS "$ENV{BBS_EXT_PLUGINS}")
+    endif()
 endif()
 set(ext_gen_dir "${CMAKE_BINARY_DIR}/ext_gen")
 file(MAKE_DIRECTORY "${ext_gen_dir}")

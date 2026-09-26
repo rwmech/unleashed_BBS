@@ -213,9 +213,9 @@ WPA3 (checked in the 1.1.1 ELF: `mbedtls_ecdh_compute_shared`,
 HMAC that is there (RFC 5869, a dozen lines, checked against its test
 vectors).
 
-**Where pairings live:** `<userdata>/link/peers`, one block per peer (MAC,
-kind, name, `k_link`, checked, paired-at), written through a temp file and
-a rename. It is **not** in the backup zip, the same as `wifi.last`: a
+**Where pairings live:** `<userdata>/p/link/peers`, the link plugin's own
+folder, one line per peer (MAC, kind, checked, paired-at, `k_link` in hex,
+name), written through a temp file and a rename within the partition. It is **not** in the backup zip, the same as `wifi.last`: a
 restored board pairs its devices again.
 
 **Forgetting** (`LINK FORGET n`) deletes the ESP-NOW peer and the block. The
@@ -329,16 +329,33 @@ caller who is not using it.
 
 | Where | What | Bound |
 |---|---|---|
-| Wi-Fi task, core 0 (receive callback) | length check, copy the frame into one of two rings by `nfrag`, count a drop if full | one copy of 250 bytes |
+| Wi-Fi task, core 0 (receive callback) | length check, copy the frame into the receive ring, count a drop if full | one copy of 250 bytes |
 | Wi-Fi task (send callback) | set "the last frame is done", with its result | an atomic store |
-| BBS loop, core 1 | single-frame messages: open, replay window, CRC, ack, dispatch to the family (door bytes into the caller's timeline, control); hand the radio its next frame | 8 frames a pass |
-| background runner (1.1.2) | multi-fragment messages: open, reassemble in order, the message CRC-32, and the family's sink (a card file for a picture) | a runner job, `breathe()` between blocks |
+| BBS loop, core 1 (the link plugin's tick, every 20 ms) | every frame: open (CCM), replay window, CRC, ack; a single-frame message goes to its family (door bytes into the caller's timeline, control); a bulk fragment's plaintext goes into the bulk window; hand the radio its next frame | 8 frames a pass |
+| background runner (1.1.2) | bulk messages: take the window's fragments in order, the message CRC-32, and the family's sink (a card file for a picture); the pairing arithmetic (P-256) | a runner job, `breathe()` between blocks |
 
 Single-frame messages stay on the loop on purpose: a door keystroke is one
 frame, and queueing it behind a SCREENS walk on the runner would put a
 second of lag between a caller and their door. Reassembly, which is where
 buffers and card writes live, is always on the runner and never on the
-loop.
+loop. The loop opens every frame, bulk ones included, so the keys, the
+replay window and the sessions have one owner and no locks; the runner
+only ever sees plaintext in the window, through two atomics (how far it has
+taken, and which slots are full).
+
+**The cost of opening a frame.** mbedTLS's own CCM runs the cipher a block
+at a time, and on the ESP32 each block is one trip to the AES peripheral,
+lock and all: the camsat bench measured about 320 us for one 222-byte frame
+on an ESP32 and 1,000 us on an S3 (2026-09-26). linkcrypto builds the same
+CCM from one CBC call for the MAC and one CTR call for the keystream, which
+hold the peripheral once each; it is byte for byte mbedtls_ccm's (checked
+against RFC 3610 packet vector 1 and against mbedtls_ccm for every payload
+length a frame can have). Measured on the S3 in the BBS's own -Os build
+with hardware AES, a 222-byte frame with its 20-byte header: **seal 78 us,
+open 78 us**, against 963 us for mbedtls_ccm in the same image (camsat
+bench, 2026-09-26). Under Rob's 100 us line, so the link stays on the loop.
+The ESP32's figure and `Engine::poll`'s per frame (from `LINK`) are still to
+be read on the bench.
 
 **The loop's per-frame cost is measured on the bench and has a limit**
 (Rob, 2026-09-26): if opening and dispatching one frame costs more than
@@ -352,9 +369,14 @@ board that has it and the heap otherwise, and freed when it stops. Nothing
 is allocated per frame, and nothing at all while the link is off.
 
 The runner interface used is the one on rel-1.1.2a (`src/core/runner.h`):
-a static `runner::Job` per kind of work, `post`, `done`, `collect`,
-`breathe`. The link owns one job, "link rx", posted when the bulk ring is
-not empty and the job is idle.
+a `runner::Job` per kind of work, `post`, `done`, `collect`, `breathe`.
+The link owns one job, "link", posted when the bulk window has fragments
+waiting or pairing wants its arithmetic, and the job is idle. The engine's
+pairing state stays the loop's: `pairTake` copies what the arithmetic needs
+into a job, `pairRun` does it anywhere, `pairGive` puts the answer back.
+On a tree without the runner (the link branch before the 1.1.2 merge) the
+plugin calls the same work from its tick; `__has_include("core/runner.h")`
+picks, so the merge needs no edit here.
 
 ---
 
@@ -432,7 +454,25 @@ their own repositories.
 | 7 | WARN | H→P | minutes left (sent at 5 and 1) |
 | 8 | TIMEUP | H→P | the caller's time is over |
 | 9 | FINISHED | P→H | exit code, optional one-line text for the caller |
-| 10 | CLOSE | H→P | the caller has gone (hung up, dropped, taken back) |
+| 10 | CLOSE | H→P | the caller has gone: 1 hung up, 2 time's up, 3 taken back, 4 the board is closing the doors |
+| 11 | LIST_ASK | H→P | send LIST on this session (the board asks whenever a box comes up) |
+
+Byte layouts for both families are in `src/core/linkfam.h`, which the
+board and a peer both build, with every multi-byte field little-endian:
+
+- CAMERA SNAP: `u16 req, u8 size, u8 quality, u8 flash, u8 reason`.
+- CAMERA PICTURE: a 16-byte header (`u16 req, u8 reason, u8 0, u16 width,
+  u16 height, u32 takenAt, u32 0`), then the JPEG.
+- CAMERA SNAP_FAIL `u16 req, u8 code`; STATUS `u8 sensor, u8 maxSize,
+  u32 heap, u32 psram, u32 uptime, u8 lastErr, u8 0, char model[12]`;
+  EVENT `u8 kind, u32 takenAt`; SETTINGS and SETTINGS_OK `u16 timelapseMin,
+  u8 motion, u16 holdoffS, u8 size, u8 quality, u8 flash`.
+- Frame sizes are the link's own numbers: 0 the satellite's default, 1
+  QQVGA, 2 QVGA, 3 VGA, 4 SVGA, 5 XGA, 6 SXGA, 7 UXGA.
+- DOOR LIST: `u8 sessions it holds, u8 count`, then per door `u8 id,
+  u8 players, char name[24]` (8 doors at most in one frame).
+- DOOR OPEN: `u8 door id`, then the handoff line. REFUSED and FINISHED:
+  `u8 code`, then up to 60 characters for the caller.
 
 ### The handoff line
 
@@ -553,34 +593,38 @@ The link moves data. It never moves authority.
 The link is compiled into every image and costs nothing but flash until a
 sysop turns it on.
 
-**Static DRAM, measured baseline:** the 1.1.1 WROOM image
-(`release-prep/base-elf/esp32dev.elf`) has `_bss_end = 0x3ffd7cb0`, which
-is 162,992 of 180,736, so **17,744 free**. 1.1.2's lag work moves that;
-the figure is taken again at the merge.
+Measured off the esp32dev build of the link branch (`1.2.0-link.2`,
+2026-09-26), per object from the linker map:
 
 | | WROOM (no PSRAM) | Boards with PSRAM |
 |---|---|---|
-| Static DRAM | 1,024 bytes at most: 8 peer records, state, counters | the same |
-| While on (heap) | about 10 KB internal: two 8-slot receive rings (4 KB), an 8-slot send queue (2 KB), one bulk window of 16 fragments (3.5 KB) | the same in PSRAM, bulk window 64 fragments |
+| Static DRAM | **142 bytes**: the family table and pointers (link 65, doors 41, the radio 32, ESP-NOW 4). `_bss_end` 0x3ffd7750, 161,616 of 180,736: **19,120 free** | the same |
+| While on (heap) | about 15 KB: the engine and its tables 7.7 KB, the bulk window 3.5 KB, the receive ring 2 KB, the doors' table 1.4 KB, the rest 0.5 KB (the host's 64-bit figures; the ESP32's pointers are half the size) | the same, from PSRAM |
 | While off | 0 | 0 |
-| Flash | measured in the build (CHANGELOG): the ESP-NOW library from the Wi-Fi blobs, the link, `doors` and the camera satellite plugin. The crypto is already linked | the same |
+| Flash | **34,293 bytes**: the engine and the link plugin 21,113, doors 3,844, the CCM, HKDF and ECDH glue 1,492, the radio 1,240, ESP-NOW's library 6,604. The ECDH, CCM, HMAC and SHA-256 code under them was already in the image for WPA3 | about the same |
 | Per session | 0: door state sits in `Session::ownerData` | 0 |
 
-Flash is the figure to watch: the WROOM image was 81.7% of its slot after
-1.1.0.
+The WROOM image is 1,267,544 bytes, 80.6% of its slot, with the link and
+doors in. The camera satellite plugin is measured when it exists
+(unleashed_camsat).
 
 ---
 
 ## On the board: commands, SYS, HARDWARE
 
-- **CONFIG link** (sysop): Enabled, the serial door box (on/off, baud),
-  and the pairings as buttons (name, kind, checked; opening one gives Name
-  and Forget).
-- **`LINK`** (staff): one row a peer: name, kind, up/down, RSSI, last
-  heard, frames in and out, retries, drops; then the channel, the drop
-  counts by reason, the per-frame time (average and worst) and the ring's
+- **CONFIG link** (sysop): Enabled and the levels, the rows every plugin
+  has. Off as shipped. Pairings are managed with the commands, not the form.
+- **`LINK`** (staff): one row a pairing: number, name, kind, up/down, RSSI,
+  and at 60 columns and wider when it was last heard and whether its code
+  was checked; then frames in and out, retries, drops by reason, the time
+  the loop spends on a frame (average and worst) and the receive ring's
   high-water mark.
-- **`LINK PAIR`**, **`LINK FORGET n`** (sysop).
+- **`LINK PAIR`** (sysop): opens the 2-minute window and asks the pairing
+  question on the sysop's own screen.
+- **`LINK FORGET n`**, **`LINK NAME n name`** (sysop).
+- **`DOORS`** (users): the doors the boxes on the air offer, numbered;
+  **`DOORS n`** goes through one. Ctrl-] three times in a row always comes
+  back.
 - **SYS**, one line in the network section:
   `Link      on, ch 6, 2 of 3 up, 0 drops`, and `, peers full` when all
   8 pairings are taken.
@@ -623,42 +667,59 @@ license     = GPL-3.0-or-later
 
 ### Choosing plugins for a build
 
-A board's PlatformIO environment names its external plugins, with the
-same list handed to CMake:
+A board's PlatformIO environment names its external plugins:
 
 ```ini
 [env:ws_s3_lcd147]
 custom_ext_plugins = camsat
 ```
 
-and `plugins.lock` at the top of the core repository pins each one:
+and `plugins.lock` at the top of the core repository pins each one, a
+line a plugin (`name  source  commit`):
 
 ```
-camsat  https://github.com/rwmech/unleashed_camsat  v1.0.0  3f2a9c1e...  (full commit)
+camsat  https://github.com/rwmech/unleashed_camsat  3f2a9c1e...(the full 40-character commit)
 ```
 
 `tools/plugins.py fetch` clones each locked plugin into `ext/<name>/`
 (ignored by git) at exactly that commit, and refuses a checkout whose
 commit does not match the lock. `tools/pio_plugins.py`, a PlatformIO
-pre-script, runs it and passes the list on, so `pio run -e ws_s3_lcd147`
-needs nothing typed beforehand. A plugin under development can be a local
-path in the lock instead of a URL (`path` in the URL column), which is
-never allowed in a release.
+pre-script on every environment, runs it and passes the list on, so
+`pio run -e ws_s3_lcd147` needs nothing typed beforehand. A plugin under
+development can have a local path as its source, and `-` as its commit to
+take that folder's working tree as it is; a release refuses both.
 
 ### How it is compiled and registered
 
-- `src/CMakeLists.txt` reads the list (`BBS_EXT_PLUGINS`, a cache
-  variable the pre-script sets), adds `ext/<name>/bbs/*.cpp` to the core
-  component's sources, and writes `ext_plugins.inc` into the build
-  directory: `EXT_PLUGIN(kCamsatPlugin)`, one line per plugin, and
-  `BBS_EXT_PLUGIN_COUNT`.
-- `src/plugins/registry.cpp` includes that file twice, once to declare
-  the descriptors and once to list them, so it is edited once and never
-  again for a new plugin. `BBS_MAX_PLUGINS` counts them, and the
-  existing `static_assert` catches an overflow.
-- The host build does the same from `host/Makefile`
-  (`make EXT=camsat`), so external plugins are tested exactly as the core
-  ones are.
+- `src/CMakeLists.txt` reads the list (a file the pre-script writes in the
+  build directory, listed as a configure dependency so a changed list
+  reconfigures; or `BBS_EXT_PLUGINS` in the environment), adds
+  `ext/<name>/bbs/*.cpp` to the core component's sources, and writes
+  `ext_plugins.h` into the build directory. It defines
+  `BBS_EXT_PLUGIN_COUNT` and `BBS_EXT_PLUGINS(X)`, which calls `X` once
+  for each plugin's descriptor, as the manifest names it.
+- `src/config.h` includes `ext_plugins.h` when there is one and counts the
+  plugins into `BBS_MAX_PLUGINS`; `src/plugins/registry.cpp` expands
+  `BBS_EXT_PLUGINS` twice, to declare the descriptors and to list them.
+  So a new plugin changes no file in the core, and the `static_assert` on
+  the table still catches an overflow.
+- A plugin's sources include the core's headers from `src/`
+  (`#include "core/plugin.h"`), which is on the include path for them.
+- The host build does the same from `host/Makefile`:
+  `make EXT="hello" bbs_host_ext` builds a host board with the named
+  plugins beside the ordinary `bbs_host`.
+- A plugin from its own repository runs like a shipped one, with one
+  difference the core enforces: only a shipped plugin (`PF_CORE`) may keep
+  files on the board's flash. One that wants storage declares `PF_SD` and
+  keeps it on the card; one that wants flash storage without `PF_SD` is
+  not started, and says why.
+
+`tools/testplugin/` is the smallest such plugin ("hello", one command) and
+the template for the next. `tools/test_ext_plugin.sh` proves the path end
+to end on the host: it makes a git repository of the template, locks it,
+fetches it, builds it in, sees it start, and checks the refusals (a local
+path in a release, a commit the repository does not have, a plugin that
+needs a newer core).
 
 Why this and not the alternatives:
 
@@ -689,21 +750,48 @@ Why this and not the alternatives:
   to compile with a sentence saying why, not with a positional field
   error.
 - `tools/plugins.py` checks the manifest's `api` against the core before
-  it fetches, and `PLUGINS` on the board shows an external plugin's name,
-  version and `ext` beside it.
+  anything is compiled. On the board, `PLUGINS` lists an external plugin
+  with its version like any other.
 
 ### Releases
 
 `tools/release.py` builds each release environment with its locked
-plugins, and before it does:
+plugins, fetched with `tools/plugins.py --release`, which:
 
 - refuses a plugin whose checkout is not the locked commit, or whose lock
-  entry is a local path;
-- refuses a source file without a GPL-3.0-compatible SPDX line, the same
-  check the core gets;
-- runs the copyright check it runs on the core over Rob's own plugins;
-- writes each plugin's name, version and commit into the release notes
-  and `version.txt`, so a board's image says exactly what went into it.
+  entry is a local path or a working tree;
+- refuses a manifest licence, or a source file's SPDX line, that cannot go
+  into the GPL-3.0-or-later firmware, and a source file with no SPDX line;
+- refuses a copyright or licence line naming Anthropic or Claude, the check
+  the core gets;
+
+and then writes each plugin's name, version and commit into the release's
+`release.txt` (`plugin <family> <name> <version> <commit>`), so what went
+into an image is on record. `version.txt` stays one line, the version, as
+the directory's fetcher reads it.
+
+---
+
+## Testing
+
+- `host/test_link.cpp` (`make test` runs it): both ends of the engine
+  through a simulated radio that loses, duplicates and reorders frames and
+  on which the host changes channel; pairing, a No, messages both ways in
+  order and once each, a 30 KB bulk message through a lagging runner, a
+  refused one, a receiver with no room, forgeries, replays, a forged HELLO,
+  a peer that goes away and one that comes back new. The wire against a
+  published CRC-16, CCM against RFC 3610, HKDF against RFC 5869. Clean
+  under ASan and UBSan.
+- `host/linkpeer`: a pretend door box (Echo and Clock) on the host board's
+  UDP radio, built from the same engine. `tools/harness.sh` switches the
+  link and doors on and gives the board and the box a port each;
+  `--only=radio` runs `test_radio_link` (pairing through LINK PAIR, the
+  codes, LINK, SYS) and `test_doors` (the handoff line, keys and output,
+  FINISHED, Ctrl-], a caller hanging up in a door).
+- `tools/test_ext_plugin.sh`: plugins in their own repositories, above.
+- On the bench, still to do: the frame cost against the 100 us line, a
+  picture from a real satellite, and whether 5.3.1 delivers an unsealed
+  frame from a MAC it knows (the design does not depend on the answer).
 
 ---
 

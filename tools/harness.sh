@@ -126,6 +126,11 @@ export BBS_HOST_SSID=HostNet
 # watch one run out without sitting through the rest (host build only; see
 # ring::ringMs). Long enough that a scripted sysop always answers first.
 export BBS_RING_MS=10000
+# The unleashed link (1.2.0): the host's radio is UDP on 127.0.0.1, on a port
+# from the tag like every other, and the pretend door box (host/linkpeer)
+# listens on the next one. test_radio_link and test_doors use them.
+export BBS_LINK_PORT=$((PORT + 3000))
+export BBS_LINK_PEER_PORT=$((PORT + 3001))
 
 # Delete the previous result before building. A failed build exits here, and
 # leaving the last run's output behind means the next look at it shows a full
@@ -136,6 +141,7 @@ rm -f "$OUT"
 
 cd "$PROJ/host"
 make -s "$BIN"
+make -s linkpeer
 
 # Kill only this tag's board. Matching on the process name would take down a
 # parallel run's board, which is the whole thing this file exists to stop.
@@ -222,6 +228,13 @@ topic2 = news | Board News | What the sysop is up to | all | sysop | users | sys
 # get the same answer for it as for a page that does not exist.
 page0 = House rules | all
 page1 = Staff notes | staff
+
+# The unleashed link and doors (1.2.0), on the host's UDP radio.
+[plugin:link]
+enabled = yes
+
+[plugin:doors]
+enabled = yes
 CFG
 
 if [ "$FRESH" = yes ]; then
