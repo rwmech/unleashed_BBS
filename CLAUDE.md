@@ -762,6 +762,24 @@ this tree.
     S3 is a full erase. The ESP32 layout is untouched.
   - The S3's Wi-Fi buffers 16/16 to 10/10 for SSH's internal heap; SSH
     session buffers in PSRAM.
+  - **All of the audit's lag work** (Rob, 2026-09-26: "All of it"), from
+    internal/audit-1.1.2-2026-09-26.md:
+    - One shared background runner (a task with a job slot, not the one
+      global trampoline in `plat::taskStart`), for every read-side stall:
+      SCREENS and SCREENS INSTALL's plan, FILES page building, forum
+      walks, restore inflate and validate, the backup window's CRC scan,
+      announce's DNS (and keep the last good address), the free-space
+      figures, the caller-log card mirror. The camera moves onto it.
+    - Write-side (a worker cannot help, since a flash erase stops both
+      cores): call stats out of users.txt into a fixed-record file
+      updated in place; mail.dat records updated in place; a RAM handle
+      index and cached count for login; CONFIG open and save read
+      system.cfg in one pass and restart only the changed plugins.
+    - Bugs from the audit: users.cpp:410-412's remove-then-rename
+      fallback (it could delete every account); FILES.BBS written by the
+      camera worker and the loop (serialize through the runner);
+      `fsInfoStale()` clearing both partitions' figures.
+    - Measured on the bench: no slow pass from any audited path.
   - The uploads bug and the smaller bugs below.
   - Stays 1.2.0: silent assertions, the camera boards' PSRAM .bss move.
   - Parked: the badge pick-list.
