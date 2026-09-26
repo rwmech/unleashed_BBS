@@ -1199,6 +1199,31 @@ this tree.
     216-338, the FILES Screens area (34 files) 123-313, a sysop hanging up
     60-220. Internal heap drops to 12,731 free during a snap on the
     ESP32-CAM (57,499 idle).
+- **Where it stopped (2026-09-26, night).**
+  - **1.1.2 is code-complete on main** at 5b9f25b (1.1.2-dev.5, S3 1.1.3,
+    FNCAM 1.0.8, ESPCAM 1.0.5): part 1, SSH, the small printf, test
+    speed and the F2-F4 fixes. Full host run 3,881/0.
+  - **Before the tag:**
+    - Finish the bench. Its interim notes are in
+      release-prep/bench-1.1.2-interim-2026-09-26.md: the S3 on COM12
+      wiped to 1.1.2, the Freenove, the announce soak, logins at 70-105
+      ms vs 50-69 on 1.1.1, the S3's heap with SSH on and off, and new
+      connections after an upload.
+    - Rob's go on the tag.
+    - Rob's SSH client tests can follow the tag (the SSH is a preview).
+  - **Site split:** live (directory 2.0.1, unleashed_site, docs).
+  - **1.2.0 lanes, all stopped and pushed as branches:**
+    - link: rel-1.2.0-link-r2, 4df93cf; rebase onto main after the
+      1.1.2 tag;
+    - camsat: main 6eaac59;
+    - skins: panel-skins, 4128a5a;
+    - MF35: board-mf35-skins, 3f9b440.
+  - **Tomorrow, Rob's hands:** the real PIR wake test
+    (release-prep/camsat-bench/pir_test.sh; it needs COM12 and COM20),
+    and a look at whether the Makerfabs skin's lamps keep up.
+  - **With Rob:** the six 1.3.0 decisions (branch specs-1.3.0), and
+    whether the camera boards' PSRAM move comes forward (the ESP32-CAM
+    has 3.5 KB of static DRAM left on the 1.2.0 link build).
 - **Queued for 1.1.3, from the 1.3.0 spec (2026-09-26).** F2 to F4 (chat
   line cut short, own tag in private chat, LAST's node 10) went into
   1.1.2 on Rob's go. Waiting:
