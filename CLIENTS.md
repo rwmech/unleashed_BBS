@@ -119,19 +119,22 @@ macOS has not shipped `telnet` since 10.13 High Sierra. Use `nc`, install one wi
 
 ## SSH (the S3 boards, 1.1.2 preview)
 
-A board built on an ESP32-S3 also answers SSH on the same port, encrypted,
-for the machines that can: `ssh -p 6400 <handle>@<board>`. Your handle is
-the SSH user name and your account password is the SSH password; any other
-name gets in without one and lands at the ordinary handle prompt. The
-ESP32 boards are telnet only. See [COMMANDS.md](COMMANDS.md).
+A board built on an ESP32-S3 also answers SSH, encrypted, for the machines
+that can, on two ports: the telnet port itself (`ssh -p 6400
+<handle>@<board>`) and a port of its own, 6422 as shipped, where the board
+speaks first. **SyncTERM 1.9 and older must use 6422**; everything else
+works on either. Your handle is the SSH user name and your account password
+is the SSH password; any other name gets in without one and lands at the
+ordinary handle prompt. The ESP32 boards are telnet only. See
+[COMMANDS.md](COMMANDS.md).
 
 | Client | Notes |
 |---|---|
-| [OpenSSH](https://www.openssh.com/) | Linux, macOS, and Windows 10 and 11 (built in). `ssh -p 6400 handle@unleashed.local`. It sends its identification first, which is how the board knows it is SSH |
-| [PuTTY](https://www.chiark.greenend.org.uk/~sgtatham/putty/) | connection type SSH, port 6400. Sends first whenever it is set to SSH-2 only, which has been its default for years |
-| [SyncTERM](https://syncterm.bbsdev.net/) up to 1.9 | **does not connect over SSH yet.** Its SSH is cryptlib's, which waits to hear the server's identification before sending its own, so the board never sees `SSH-2.0-` and treats it as telnet; the client sees the terminal probe and gives up. Use telnet with it |
-| SyncTERM 1.10 | a new SSH library (DeuceSSH); not tried yet |
-| [Termius](https://termius.com/), [ConnectBot](https://connectbot.org/) | phone and tablet SSH clients; not tried yet |
+| [OpenSSH](https://www.openssh.com/) | Linux, macOS, and Windows 10 and 11 (built in). `ssh -p 6400 handle@unleashed.local`, or `-p 6422`. It sends its identification first, which is how the board tells it from telnet on 6400 |
+| [PuTTY](https://www.chiark.greenend.org.uk/~sgtatham/putty/) | connection type SSH, port 6400 or 6422. Sends first whenever it is set to SSH-2 only, which has been its default for years |
+| [SyncTERM](https://syncterm.bbsdev.net/) up to 1.9 | **port 6422, the SSH port.** Its SSH is cryptlib's, which waits to hear the server's identification before sending its own; on 6400 the board cannot tell it from a silent telnet caller, sends it the terminal probe, and it gives up |
+| SyncTERM 1.10 | a new SSH library (DeuceSSH); not tried yet, so 6422 to be safe |
+| [Termius](https://termius.com/), [ConnectBot](https://connectbot.org/) | phone and tablet SSH clients; not tried yet. 6422 always works |
 
 On the first call the client asks you to trust the board's host key. Staff
 can read its fingerprint in `SYS` or `HARDWARE` and compare. A board that

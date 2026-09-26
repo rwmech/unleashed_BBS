@@ -110,6 +110,7 @@ const char* why(const ssh::Link* l);
 
 // For SYS and HARDWARE (staff).
 uint8_t     inUse();          // links not Free
+uint8_t     lingering();      // sockets the task still holds for sessions already gone
 uint8_t     cap();            // the lower of the board's constant and what PSRAM holds now
 uint8_t     boardCap();       // BBS_SSH_MAX
 const char* fingerprint(uint8_t which);   // 0 Ed25519, 1 ECDSA: "SHA256:...", "" none

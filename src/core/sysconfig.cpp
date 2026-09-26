@@ -181,6 +181,9 @@ const NumKey kNumKeys[] = {
     { "who_refresh_max",       1,  60 },
     { "port",                  1,  65535 },
     { "backup_port",           1,  65535 },
+#if BBS_HAS_SSH
+    { "ssh_port",              0,  65535 },         // 0 = no SSH port of its own
+#endif
 };
 
 const NumKey* numKey(const char* key) {
@@ -473,6 +476,9 @@ void keyValue(Ctx& c, const char* key, char* val) {
     // the listening port became a setting.
     else if (!strcmp(key, "port"))                  { if (number(c, key, val, n)) g.port = static_cast<uint16_t>(n); }
     else if (!strcmp(key, "backup_port"))           { if (number(c, key, val, n)) g.backupPort = static_cast<uint16_t>(n); }
+#if BBS_HAS_SSH
+    else if (!strcmp(key, "ssh_port"))              { if (number(c, key, val, n)) g.sshPort = static_cast<uint16_t>(n); }
+#endif
     // Silent mode (1.1.0, core/silent). The hours are a time of day or blank;
     // whether both ends are set is crossCheck's, once every line is in.
     else if (!strcmp(key, "silent"))                yesNo(c, key, val, g.silent);
@@ -507,6 +513,13 @@ void keyValue(Ctx& c, const char* key, char* val) {
 // once every line is in. Returns the key it objects to, or nullptr.
 // portWritten: a writer's trial that sets port, so a clash is said about
 // the port rather than about the backup window.
+#if BBS_HAS_SSH
+// Which of the three listeners' keys a writer's trial set, so a clash is
+// said about the row the sysop changed.
+enum : uint8_t { kWrotePort = 1, kWroteBackup = 2, kWroteSsh = 4 };
+uint8_t g_wrote = 0;
+#endif
+
 const char* crossCheck(Ctx& c, SysConfig& out, bool portWritten = false) {
     if (out.whoMin > out.whoMax) {
         c.lineNo = 0;
@@ -514,6 +527,33 @@ const char* crossCheck(Ctx& c, SysConfig& out, bool portWritten = false) {
         out.whoMin = out.whoMax;
         return "who_refresh_min";
     }
+#if BBS_HAS_SSH
+    // SSH's own port is a third listener, never on either of the others.
+    // A file (at boot, a reload, a restore) keeps the other two and runs
+    // without the SSH port, said on the console and nothing refused: a board
+    // already on 6422 has no ssh_port line, and the default clashing must
+    // not make its every later save or restore fail. A page is told which
+    // row to change: the one the sysop moved.
+    if (out.sshPort && (out.sshPort == out.port || out.sshPort == out.backupPort)) {
+        const bool withPort = out.sshPort == out.port;
+        if (!c.bare) {
+            plat::log("cfg: ssh_port %u is the %s port too; no SSH port of its own",
+                      static_cast<unsigned>(out.sshPort), withPort ? "telnet" : "backup");
+            out.sshPort = 0;
+        } else {
+            c.lineNo = 0;
+            const uint8_t other = withPort ? kWrotePort : kWroteBackup;
+            out.sshPort = 0;
+            if ((g_wrote & other) && !(g_wrote & kWroteSsh)) {
+                problem(c, "Same as the SSH port. Pick another.", "");
+                return withPort ? "port" : "backup_port";
+            }
+            problem(c, withPort ? "Same as the telnet port. Pick another."
+                                : "Same as the backup port. Pick another.", "");
+            return "ssh_port";
+        }
+    }
+#endif
     // One port, two listeners: the backup window would fail to open, or
     // worse, open over the callers' line. Said in the words of the page the
     // sysop is on; a file gets the sentence the backup page always had.
@@ -609,6 +649,10 @@ void logSummary() {
     plat::log("cfg: port %u  idle %u  limits %u/call %u/day  backup port %u, %u min, gpio %d",
               g_cfg.port, g_cfg.idleMinutes, g_cfg.callMinutes, g_cfg.dayMinutes,
               g_cfg.backupPort, g_cfg.backupMinutes, g_cfg.backupGpio);
+#if BBS_HAS_SSH
+    if (g_cfg.sshPort) plat::log("cfg: ssh port %u (and SSH on port %u too)", g_cfg.sshPort, g_cfg.port);
+    else               plat::log("cfg: no SSH port of its own (SSH on port %u only)", g_cfg.port);
+#endif
     plat::log("cfg: who refresh %u..%u s  activity led gpio %d  self_register %s  max_users %u  guest %s %u min",
               g_cfg.whoMin, g_cfg.whoMax, g_cfg.ledGpio, g_cfg.selfRegister ? "yes" : "no", g_cfg.maxUsers,
               g_cfg.guestEnabled ? "yes" : "no", g_cfg.guestMinutes);
@@ -917,10 +961,18 @@ const char* trial(const KeyVal* pairs, uint8_t count, char* why, size_t n) {
     if (why && n) why[0] = '\0';
     char val[128];
     bool portWritten = false;
+#if BBS_HAS_SSH
+    g_wrote = 0;
+#endif
     for (uint8_t i = 0; i < count; ++i) {
         const char* key = pairs[i].key;
         const char* v   = pairs[i].value;
         if (!strcmp(key, "port")) portWritten = true;
+#if BBS_HAS_SSH
+        if (!strcmp(key, "port"))        g_wrote |= kWrotePort;
+        if (!strcmp(key, "backup_port")) g_wrote |= kWroteBackup;
+        if (!strcmp(key, "ssh_port"))    g_wrote |= kWroteSsh;
+#endif
         size_t len = strlen(v);
         if (len >= sizeof(val)) {
             problem(c, "Too long", "");

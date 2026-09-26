@@ -629,6 +629,16 @@ private:
     void sshWait(Session& s, uint32_t now);
     bool sshAuth(Session& s, uint8_t kind, const char* user, const char* pass, uint32_t now);
     void sshLogin(Session& s, uint32_t now);
+    // SSH's own port (1.1.2): its listener, its accept, and the handoff the
+    // settle's sniff and that port share. busyFits: the socket budget's
+    // rule for the busy line (config.h, BBS_SOCK_RESERVE).
+    void sshListen();
+    void acceptSsh(uint32_t now);
+    bool sshHandoff(Session& s, const uint8_t* pre, size_t n, uint32_t now);
+    bool busyFits() const;
+public:
+    uint16_t sshPort() const { return sshPort_; }
+private:
 #endif
     void processInput(Session& s, uint32_t now);
     void serviceSession(Session& s, uint32_t now);
@@ -1114,6 +1124,10 @@ private:
 
     int       lfd_          = -1;
     uint16_t  port_         = 0;             // see port()
+#if BBS_HAS_SSH
+    int       sshLfd_       = -1;            // SSH's own port (1.1.2), -1 none
+    uint16_t  sshPort_      = 0;             // what it is bound to, 0 none
+#endif
     BackupService backup_;
     bool      approvalShown_ = false;
     uint32_t  lastBtnLog_    = 0;

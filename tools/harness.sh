@@ -287,6 +287,12 @@ page0 = House rules | all
 page1 = Staff notes | staff
 CFG
 
+# SSH's own port (1.1.2) on the S3 profile, per tag like the others: 6422
+# for every run would have two tags' boards fighting over it.
+if [ "$BIN" = bbs_host_s3 ]; then
+    sed -i "s/^backup_port = .*/&\nssh_port = $((PORT + 1500))/" "$DATA/user/system.cfg"
+fi
+
 if [ "$FRESH" = yes ]; then
     sed -i -E '/^(sysop|cosysop1|cosysop2)_password = /d' "$DATA/user/system.cfg"
     export BBS_FRESH=1

@@ -19,6 +19,10 @@
  *
  *               -R sends a window-change that long after the shell opens.
  *               -k offers only that host key type, to prove each one.
+ *               -W waits to hear the server's identification before sending
+ *               its own, as cryptlib (SyncTERM 1.9 and older) does: lines
+ *               that are not "SSH-" are skipped, up to 20 of them, for up
+ *               to 12 s, and then it gives up, as cryptlib would.
  *
  *               OpenSSH would be the better witness, being somebody else's
  *               implementation, but this machine does not allow an ssh
@@ -130,6 +134,69 @@ int userAuth(byte type, WS_UserAuthData* d, void*) {
     return WOLFSSH_USERAUTH_FAILURE;
 }
 
+// Banner-first (-W): what was read while waiting for the server's line,
+// from that line on, handed to wolfSSH ahead of the socket.
+unsigned char g_held[512];
+int g_heldLen = 0, g_heldAt = 0;
+
+int ioRecv(WOLFSSH*, void* buf, word32 sz, void* ctx) {
+    int fd = *static_cast<int*>(ctx);
+    if (g_heldAt < g_heldLen) {
+        int n = g_heldLen - g_heldAt;
+        if (n > static_cast<int>(sz)) n = static_cast<int>(sz);
+        memcpy(buf, g_held + g_heldAt, static_cast<size_t>(n));
+        g_heldAt += n;
+        return n;
+    }
+    ssize_t r = recv(fd, buf, sz, 0);
+    if (r > 0) return static_cast<int>(r);
+    if (r == 0) return WS_CBIO_ERR_CONN_CLOSE;
+    return (errno == EAGAIN || errno == EWOULDBLOCK) ? WS_CBIO_ERR_WANT_READ : WS_CBIO_ERR_GENERAL;
+}
+
+int ioSend(WOLFSSH*, void* buf, word32 sz, void* ctx) {
+    int fd = *static_cast<int*>(ctx);
+    ssize_t r = send(fd, buf, sz, MSG_NOSIGNAL);
+    if (r >= 0) return static_cast<int>(r);
+    return (errno == EAGAIN || errno == EWOULDBLOCK) ? WS_CBIO_ERR_WANT_WRITE : WS_CBIO_ERR_CONN_CLOSE;
+}
+
+// waitBanner: read lines until one begins "SSH-", keeping it and whatever
+// came after it. False on 20 other lines, 12 s, or the far end closing.
+bool waitBanner(int fd) {
+    unsigned char buf[4096];
+    size_t have = 0;
+    int lines = 0;
+    uint32_t t0 = nowMs();
+    for (;;) {
+        // A complete line at the front: keep it if it is the server's, else drop it.
+        for (;;) {
+            unsigned char* nl = static_cast<unsigned char*>(memchr(buf, '\n', have));
+            if (have >= 4 && !memcmp(buf, "SSH-", 4) && nl) {
+                size_t n = have < sizeof(g_held) ? have : sizeof(g_held);
+                memcpy(g_held, buf, n);
+                g_heldLen = static_cast<int>(n);
+                return true;
+            }
+            if (!nl) break;
+            size_t used = static_cast<size_t>(nl - buf) + 1;
+            memmove(buf, buf + used, have - used);
+            have -= used;
+            if (++lines >= 20) { fprintf(stderr, "ssh_call: 20 lines and no SSH identification\n"); return false; }
+        }
+        if (nowMs() - t0 > 12000) { fprintf(stderr, "ssh_call: no SSH identification in 12 s\n"); return false; }
+        fd_set rs;
+        FD_ZERO(&rs);
+        FD_SET(fd, &rs);
+        timeval tv{ 0, 100 * 1000 };
+        if (select(fd + 1, &rs, nullptr, nullptr, &tv) <= 0) continue;
+        if (have == sizeof(buf)) have = 0;           // a line far too long: not a banner
+        ssize_t r = recv(fd, buf + have, sizeof(buf) - have, 0);
+        if (r <= 0) { fprintf(stderr, "ssh_call: closed before any SSH identification\n"); return false; }
+        have += static_cast<size_t>(r);
+    }
+}
+
 bool waitFd(int fd, bool wr, int ms) {
     fd_set s;
     FD_ZERO(&s);
@@ -145,15 +212,17 @@ int main(int argc, char** argv) {
     const char* user = "guest";
     const char* key  = nullptr;
     const char* from = nullptr;
+    bool bannerFirst = false;
     unsigned rc = 0, rr = 0, rAt = 0;
     int opt;
-    while ((opt = getopt(argc, argv, "p:u:w:R:k:b:")) != -1) {
+    while ((opt = getopt(argc, argv, "p:u:w:R:k:b:W")) != -1) {
         if (opt == 'p') port = atoi(optarg);
         else if (opt == 'u') user = optarg;
         else if (opt == 'w') g_pass = optarg;
         else if (opt == 'R') sscanf(optarg, "%u:%u@%u", &rc, &rr, &rAt);
         else if (opt == 'k') key = optarg;
         else if (opt == 'b') from = optarg;
+        else if (opt == 'W') bannerFirst = true;
         else { fprintf(stderr, "usage: ssh_call [-p port] [-u user] [-w pass] [-R c:r@ms] [-k type] host\n"); return 2; }
     }
     if (optind >= argc) { fprintf(stderr, "ssh_call: no host\n"); return 2; }
@@ -188,7 +257,21 @@ int main(int argc, char** argv) {
     if (key && !strcmp(key, "ed25519")) wolfSSH_CTX_SetAlgoListKey(ctx, "ssh-ed25519");
     if (key && !strcmp(key, "ecdsa"))   wolfSSH_CTX_SetAlgoListKey(ctx, "ecdsa-sha2-nistp256");
     WOLFSSH* ssh = wolfSSH_new(ctx);
-    wolfSSH_set_fd(ssh, fd);
+    if (bannerFirst) {
+        if (!waitBanner(fd)) {
+            fprintf(stderr, "ssh_call: closed: the board never spoke SSH first\n");
+            return 1;
+        }
+        fprintf(stderr, "ssh_call: heard the board's identification first\n");
+        wolfSSH_SetIORecv(ctx, ioRecv);
+        wolfSSH_SetIOSend(ctx, ioSend);
+        static int sfd;
+        sfd = fd;
+        wolfSSH_SetIOReadCtx(ssh, &sfd);
+        wolfSSH_SetIOWriteCtx(ssh, &sfd);
+    } else {
+        wolfSSH_set_fd(ssh, fd);
+    }
     wolfSSH_SetUsername(ssh, user);
     wolfSSH_SetChannelType(ssh, WOLFSSH_SESSION_TERMINAL, nullptr, 0);
 

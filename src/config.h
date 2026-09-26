@@ -430,4 +430,22 @@
 // plenty for keystrokes and 1 KB transfer blocks (research section 3.2).
 #define BBS_SSH_WINDOW          2048
 #define BBS_SSH_PACKET          2048
+// The SSH port of its own (Rob, 2026-09-26): a second listener where the
+// board speaks first, for clients that wait to hear the server before they
+// say anything (SyncTERM up to 1.9, on cryptlib), which the shared port
+// cannot tell from a silent telnet caller. `ssh_port` in system.cfg (CONFIG
+// network), used from the next restart; 0 turns it off.
+#define BBS_SSH_PORT            6422
+// The socket budget: lwIP has CONFIG_LWIP_MAX_SOCKETS (16, its maximum in
+// IDF 5.3.1) for everything. With the SSH listener the worst case would be
+// two listeners, twelve sessions (ten nodes, the sysop node, the busy line),
+// the backup window's two and announce's one: 17. So the busy line is the
+// first thing given up: it is offered only while the sessions after it plus
+// the listeners leave BBS_SOCK_RESERVE free, for the backup window and
+// announce. Nodes are never refused for it, so a caller who moves to the
+// sysop node while the busy line is held, and a new caller then taking the
+// node they left, can still reach 17 for as long as both stay: then one
+// announce attempt fails or one backup-window client is dropped at accept,
+// and nothing else. A board past its sockets loses the caller at accept.
+#define BBS_SOCK_RESERVE        3
 #endif

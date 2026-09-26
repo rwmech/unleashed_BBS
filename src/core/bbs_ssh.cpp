@@ -61,9 +61,16 @@
 #include "users.h"
 #include "../platform/platform.h"
 
+#include "sysconfig.h"
+#include "guard.h"
+
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
 #include <cstdio>
 #include <cstring>
 
@@ -113,7 +120,16 @@ bool Bbs::sshSniff(Session& s, const uint8_t* raw, size_t n, uint32_t now) {
     if (rest > sizeof(pre) - pn) rest = sizeof(pre) - pn;    // n is one BBS_RX_CHUNK read
     memcpy(pre + pn, raw + i, rest);
     pn += rest;
+    return sshHandoff(s, pre, pn, now);
+}
 
+// ---------------------------------------------------------------------------
+// sshHandoff: the session's socket to the SSH task, with what was already
+// read of it (nothing, on SSH's own port). Or, when there is no slot, the
+// refusal in the clear and the node given straight back. Always true: the
+// socket is dealt with either way.
+// ---------------------------------------------------------------------------
+bool Bbs::sshHandoff(Session& s, const uint8_t* pre, size_t pn, uint32_t now) {
     uint32_t local = 0;
     sockaddr_in a;
     socklen_t al = sizeof(a);
@@ -147,6 +163,127 @@ bool Bbs::sshSniff(Session& s, const uint8_t* raw, size_t n, uint32_t now) {
     plat::log("bbs: node %u SSH from %s (%u of %u)", s.id, s.ip,
               static_cast<unsigned>(sshd::inUse()), static_cast<unsigned>(sshd::cap()));
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// sshListen: SSH's own port (Rob, 2026-09-26), where the board sends its
+// identification the moment a client connects, with no telnet detection,
+// so a client that waits to hear the server first (cryptlib: SyncTERM 1.9
+// and older) connects. The shared port stays for the clients that speak
+// first. Failing to bind is logged and costs nothing else: SSH goes on on
+// the shared port.
+// ---------------------------------------------------------------------------
+void Bbs::sshListen() {
+    const uint16_t p = syscfg::get().sshPort;
+    if (!p || p == port_) return;
+    int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (fd < 0) { plat::log("ssh: no socket for port %u (errno %d)", p, errno); return; }
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    sockaddr_in a;
+    memset(&a, 0, sizeof(a));
+    a.sin_family      = AF_INET;
+    a.sin_port        = htons(p);
+    a.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof(a)) < 0 || listen(fd, BBS_LISTEN_BACKLOG) < 0) {
+        plat::log("ssh: port %u will not bind (errno %d); SSH stays on port %u only", p, errno, port_);
+        close(fd);
+        return;
+    }
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    sshLfd_  = fd;
+    sshPort_ = p;
+    plat::log("ssh: listening on %u too, speaking first", p);
+}
+
+// ---------------------------------------------------------------------------
+// busyFits: the busy line only while the sessions after it and the
+// listeners leave BBS_SOCK_RESERVE of lwIP's sockets for the backup window
+// and announce. Counts what the board holds: listeners, sessions, and SSH
+// sockets the task still holds for sessions already gone.
+// ---------------------------------------------------------------------------
+bool Bbs::busyFits() const {
+#ifdef CONFIG_LWIP_MAX_SOCKETS
+    constexpr uint8_t kSockets = CONFIG_LWIP_MAX_SOCKETS;
+#else
+    constexpr uint8_t kSockets = 16;
+#endif
+    uint8_t held = static_cast<uint8_t>((lfd_ >= 0) + (sshLfd_ >= 0) + sshd::lingering());
+    for (const Session* o : all_) if (o->st != SState::Free) ++held;
+    return held + 1u + BBS_SOCK_RESERVE <= kSockets;
+}
+
+// ---------------------------------------------------------------------------
+// acceptSsh: acceptAll for SSH's own port. The same checks in the same
+// order (a ban, a shut-down board, a restore holding callers off, a free
+// node, the busy line, the socket budget), each answered in SSH's terms,
+// since nothing but an SSH client calls here: a refusal is the board's
+// identification and one DISCONNECT in the clear, never text.
+// ---------------------------------------------------------------------------
+void Bbs::acceptSsh(uint32_t now) {
+    for (;;) {
+        sockaddr_in a;
+        socklen_t   al = sizeof(a);
+        int fd = accept(sshLfd_, reinterpret_cast<sockaddr*>(&a), &al);
+        if (fd < 0) break;                           // none waiting, or no socket to take it
+
+        uint32_t ipAddr = peerAddr(a.sin_addr.s_addr);
+        char ip[16];
+        ipToText(ipAddr, ip, sizeof(ip));
+        if (bans_.banned(ipAddr, now)) {
+            close(fd);
+            plat::log("bbs: BANNED %s dropped (SSH port)", ip);
+            continue;
+        }
+        // A refusal: the words in the clear, the sending side shut so they
+        // go ahead of the FIN, and what the client already sent (its own
+        // identification) read off first, since closing on unread input is
+        // a reset, which some clients show instead of the words. Never
+        // waits: whatever has not arrived yet is not waited for.
+        auto refuse = [&](const char* why, const char* log) {
+            uint8_t buf[128];
+            size_t k = sshd::refusal(buf, sizeof(buf), why);
+            if (k) send(fd, buf, k, MSG_DONTWAIT | MSG_NOSIGNAL);
+            shutdown(fd, SHUT_WR);
+            uint8_t sink[128];
+            for (int drain = 0; drain < 8 && recv(fd, sink, sizeof(sink), MSG_DONTWAIT) > 0; ++drain) {}
+            close(fd);
+            plat::log("bbs: SSH port, %s refused: %s", ip, log);
+        };
+        if (shutDone_) { refuse("--> This board has been shut down by the sysop", "shut down"); continue; }
+
+        // The same socket options acceptAll gives a caller: a line whose far
+        // end vanishes (a laptop's Wi-Fi gone) is dropped in about 90 s, not
+        // the stack's two hours, which would hold the sysop node that long.
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+        int one = 1;
+        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+        setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
+        int ka[3] = { BBS_KEEPALIVE_IDLE_S, BBS_KEEPALIVE_INTVL_S, BBS_KEEPALIVE_CNT };
+#if defined(TCP_KEEPIDLE) && defined(TCP_KEEPINTVL) && defined(TCP_KEEPCNT)
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,  &ka[0], sizeof(int));
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &ka[1], sizeof(int));
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,   &ka[2], sizeof(int));
+#else
+        (void)ka;
+#endif
+        plat::activityPulse(now);
+
+        Session* slot = nullptr;
+        Role role = Role::Caller;
+        if (!backup_.restoring()) {
+            for (auto& s : nodes_) if (s.st == SState::Free) { slot = &s; break; }
+        }
+        const bool budget = !slot && busy_.st == SState::Free && !busyFits();
+        if (!slot && busy_.st == SState::Free && !budget) { slot = &busy_; role = Role::Busy; }
+        if (!slot) {
+            refuse("--> All lines are busy", budget ? "all lines busy (the busy line held back: socket budget)"
+                                                    : "all lines busy");
+            continue;
+        }
+        openSession(*slot, fd, ip, ipAddr, role, now);
+        sshHandoff(*slot, nullptr, 0, now);
+    }
 }
 
 // ---------------------------------------------------------------------------

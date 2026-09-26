@@ -342,7 +342,9 @@ bool Bbs::hwRow(Session& s, uint8_t k, bool inSys) {
         if (sshd::running()) {
             snprintf(val, sizeof(val), "%u of %u", static_cast<unsigned>(sshd::inUse()),
                      static_cast<unsigned>(sshd::cap()));
-            snprintf(note, sizeof(note), "in use, most %u", static_cast<unsigned>(sshd::boardCap()));
+            if (sshPort_) snprintf(note, sizeof(note), "in use, most %u, own port %u",
+                                   static_cast<unsigned>(sshd::boardCap()), static_cast<unsigned>(sshPort_));
+            else          snprintf(note, sizeof(note), "in use, most %u", static_cast<unsigned>(sshd::boardCap()));
             statRow(s, "SSH", val, Color::LightGreen, fits(val, note) ? note : nullptr);
         } else {
             statRow(s, "SSH", "off", Color::LightRed, fits("off", sshd::offWhy()) ? sshd::offWhy() : nullptr);

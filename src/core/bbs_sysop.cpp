@@ -1008,6 +1008,14 @@ const CfgField kNetwork[] = {
       "Yes trusts all behind your carrier NAT",
       "CGNAT/Tailscale LAN",
       "Yes: 100.64/10 is local. Trusts everyone behind the same carrier NAT too." },
+#if BBS_HAS_SSH
+    // SSH's own port (1.1.2, the S3), after CGNAT so no row before it moves.
+    // Next restart, like port; 0 is off. SSH still works on the telnet port
+    // for clients that speak first; this one is for SyncTERM 1.9 and older.
+    { "ssh_port",      "SSH port", CK_NUM,  0, 0, 5, "0 is off. Used from the next restart.",
+      "SSH port (SyncTERM)",
+      "SSH that speaks first, for SyncTERM 1.9 and older. 0 off. Next restart." },
+#endif
 };
 
 // isWifiKey: one of the two keys that are one setting (see configSave)
@@ -1428,6 +1436,9 @@ void cfgLiveValue(const char* key, char* out, size_t n) {
     else if (!strcmp(key, "guest_minutes"))         snprintf(out, n, "%u", c.guestMinutes);
     else if (!strcmp(key, "port"))                  snprintf(out, n, "%u", c.port);
     else if (!strcmp(key, "backup_port"))           snprintf(out, n, "%u", c.backupPort);
+#if BBS_HAS_SSH
+    else if (!strcmp(key, "ssh_port"))              snprintf(out, n, "%u", c.sshPort);
+#endif
     else if (!strcmp(key, "backup_window_minutes")) snprintf(out, n, "%u", c.backupMinutes);
     else if (!strcmp(key, "backup_button_gpio"))    snprintf(out, n, "%d", c.backupGpio);
     else if (!strcmp(key, "sysop_password"))        snprintf(out, n, "%s", c.sysopPass[0] ? kMasked : "");

@@ -1020,8 +1020,33 @@ this tree.
     many connections)" in its error box; pre-banner lines are debug-only in
     OpenSSH and silently discarded by PuTTY, and a userauth banner costs a
     key exchange. Not seen on a real client (the guard refuses ssh here).
-  - **Found building it, needs Rob: SyncTERM up to 1.9 cannot connect on a
-    shared port.** cryptlib's client reads the server's identification
+  - **SyncTERM up to 1.9 cannot connect on a shared port; Rob's answer
+    (2026-09-26): keep SSH on 6400 for clients that speak first AND a port
+    of its own, `ssh_port` (default 6422, 0 off, CONFIG network's last row,
+    S3 only), where the board speaks first.** `Bbs::sshListen` and
+    `acceptSsh` (bbs_ssh.cpp): the same checks as acceptAll, every refusal
+    in SSH (a plaintext DISCONNECT: `--> All lines are busy`, `--> This
+    board has been shut down by the sysop`), a bind failure logged and SSH
+    left on 6400 only. crossCheck refuses it on `port` or `backup_port`
+    (a file at boot runs without it). mDNS `_ssh._tcp`. **Socket budget:**
+    two listeners + ten nodes + the sysop node + the busy line + the backup
+    window's two + announce's one = 17 of 16, so `Bbs::busyFits` offers the
+    busy line only while listeners + sessions + SSH sockets still held +
+    `BBS_SOCK_RESERVE` (3) fit 16: worst case 16 (2 + 11 + 2 + 1), except
+    that nodes are never refused for it, so an elevation to the sysop node
+    while the busy line is held, and a new caller on the freed node, can
+    reach 17 while both stay (one announce attempt or one backup client
+    lost). A board that runs out loses the caller at accept (lwIP takes and
+    drops it). Code review of this part: a clash with the default ssh_port
+    on a board already on 6422 made every later reload and restore refuse
+    the file (crossCheck now only logs for a file and zeroes the port); the
+    SSH port's accept lacked the keepalive tuning; refusals closed on the
+    client's unread identification (a reset); mDNS advertised before the
+    bind; blame per written row (`g_wrote`). Left: `ssh_port` is compared
+    with the configured `backup_port`, not the bound SSH port, until the
+    restart that moves it (the same class `port` has). Tested on the host with an LD_PRELOAD table of 16 sockets (peak 14
+    in the test) and of 12 (the next caller dropped, the board unharmed).
+    The history of the finding: cryptlib's client reads the server's identification
     before writing its own (session/ssh.c completeStartup: "If we're the
     client we now have to send our SSH ID in response to what the server
     sent us"), so it sends nothing during the settle, gets the telnet probe
@@ -1052,8 +1077,8 @@ this tree.
     from the vendored tree); `host/ssh_call` is wolfSSH's client on a pipe
     for the tests (`SshCaller`), since the guard refuses `ssh`. The copy
     board's PSRAM is `BBS_HOST_PSRAM` (the slots-full test).
-  - Sizes off the ELF: S3 image 1,404,400 (+134,160 on 1.1.1's
-    1,270,240), static DRAM 251,392 of 341,760 (+3,608). ESP32 images:
+  - Sizes off the ELF (with the SSH port): S3 image 1,406,384 (+136,144 on 1.1.1's
+    1,270,240), static DRAM 251,400 of 341,760 (+3,616). ESP32 images:
     every application object and library the same size section for
     section as main's, static DRAM identical (161,336 / 172,816 /
     174,272); the linked .flash.text moves by -168 to +4 bytes, all of it

@@ -676,6 +676,14 @@ static void bbsTask(void*) {
     netServicesStart();
     Bbs& bbs = Bbs::instance();
     while (!bbs.begin(s_port)) vTaskDelay(pdMS_TO_TICKS(1000));
+#if BBS_HAS_SSH
+    // SSH's own port (1.1.2), advertised once it is really listening, so an
+    // SSH client that browses for _ssh._tcp never finds a dead one.
+    if (bbs.sshPort()) {
+        mdns_service_add(BBS_NAME, "_ssh", "_tcp", bbs.sshPort(), nullptr, 0);
+        ESP_LOGI(TAG, "mdns: _ssh._tcp port %u", static_cast<unsigned>(bbs.sshPort()));
+    }
+#endif
     recovery::bootPoll(plat::millis());
     plugins::begin(bbs);
 

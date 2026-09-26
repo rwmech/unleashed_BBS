@@ -45,6 +45,11 @@ wifi_password =
 # forwarding to the board has to forward to this number.
 port = 6400
 
+# The S3 boards (1.1.2): SSH's own port, where the board speaks first, for
+# SyncTERM 1.9 and older. SSH works on port too for every other client.
+# 0 turns it off. Never port or backup_port. CONFIG network.
+# ssh_port = 6422
+
 # yes: 100.64.0.0/10 (carrier-grade NAT, and Tailscale) counts as the local
 # network: the published default password, a second sysop in place and the
 # backup window then answer it. It trusts everybody behind the same carrier

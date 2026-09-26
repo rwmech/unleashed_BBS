@@ -787,7 +787,7 @@ ssh::Link* claim(int sock, const uint8_t* pre, size_t n, uint32_t peer, uint32_t
         l.node    = node;
         l.peer    = peer;
         l.local   = local;
-        memcpy(l.pre, pre, n);
+        if (n) memcpy(l.pre, pre, n);            // SSH's own port hands over nothing read
         l.preLen  = static_cast<uint8_t>(n);
         l.preAt   = 0;
         l.asks    = 0;
@@ -855,6 +855,15 @@ int write(ssh::Link* l, const uint8_t* d, size_t n) {
     size_t put = l->out.push(d, n);
     if (put) plat::wakePost(g_wake);
     return static_cast<int>(put);
+}
+
+uint8_t lingering() {
+    uint8_t n = 0;
+    for (const Link& l : g_link) {
+        LState st = stateOf(l);
+        if (st != LState::Free && st != LState::Done && l.loopDone.load(std::memory_order_acquire)) ++n;
+    }
+    return n;
 }
 
 bool gone(const ssh::Link* l) {

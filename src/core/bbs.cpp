@@ -251,9 +251,10 @@ bool Bbs::begin(uint16_t port) {
               static_cast<unsigned>(sizeof(Session) * kSessions),
               static_cast<unsigned>(h.freeBytes));
 #if BBS_HAS_SSH
-    // SSH on this same port (1.1.2). If it cannot start, telnet carries on
-    // as it always has and SYS says why.
-    sshd::begin();
+    // SSH on this same port (1.1.2), and on a port of its own where the
+    // board speaks first. If it cannot start, telnet carries on as it always
+    // has and SYS says why.
+    if (sshd::begin()) sshListen();
 #endif
     return true;
 }
@@ -445,6 +446,12 @@ void Bbs::tick() {
     FD_ZERO(&wfds);
     int maxfd = lfd_;
     FD_SET(lfd_, &rfds);
+#if BBS_HAS_SSH
+    if (sshLfd_ >= 0) {
+        FD_SET(sshLfd_, &rfds);
+        if (sshLfd_ > maxfd) maxfd = sshLfd_;
+    }
+#endif
     for (Session* s : all_) {
         if (s->fd < 0) continue;
         // backpressure: leave input in the socket while earlier input waits
@@ -484,6 +491,12 @@ void Bbs::tick() {
         acceptAll(now);
         stackWatch("accept", nullptr);
     }
+#if BBS_HAS_SSH
+    if (sshLfd_ >= 0 && FD_ISSET(sshLfd_, &rfds)) {
+        acceptSsh(now);
+        stackWatch("accept", nullptr);
+    }
+#endif
     usAcc = plat::micros() - mark; mark += usAcc;
 
     {
@@ -738,13 +751,25 @@ void Bbs::acceptAll(uint32_t now) {
             openSession(*slot, fd, ip, ipAddr, Role::Caller, now);
             continue;
         }
+#if BBS_HAS_SSH
+        // The socket budget: the busy line is the first thing given up when
+        // the second listener would otherwise leave the backup window or
+        // announce without a socket (config.h, BBS_SOCK_RESERVE).
+        if (busy_.st == SState::Free && busyFits()) {
+#else
         if (busy_.st == SState::Free) {
+#endif
             openSession(busy_, fd, ip, ipAddr, Role::Busy, now);
             continue;
         }
         send(fd, kBusyMsg, sizeof(kBusyMsg) - 1, MSG_DONTWAIT | MSG_NOSIGNAL);
         close(fd);
+#if BBS_HAS_SSH
+        plat::log(busy_.st == SState::Free ? "bbs: BUSY  %s (the busy line held back: socket budget)"
+                                           : "bbs: BUSY  %s (overflow, dropped)", ip);
+#else
         plat::log("bbs: BUSY  %s (overflow, dropped)", ip);
+#endif
     }
 }
 

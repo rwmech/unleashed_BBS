@@ -173,6 +173,12 @@ struct SysConfig {
     // carrier NAT, not only the sysop's own Tailscale. Read by the one
     // local-address rule (guard.h localNet), wherever local is asked.
     bool     cgnatLocal    = false;
+#if BBS_HAS_SSH
+    // SSH's own port (1.1.2, the S3): the board speaks first there, for the
+    // clients that wait to be spoken to. 0 is off. Read at boot, bound once,
+    // like port. Never the same as port or backup_port (crossCheck).
+    uint16_t sshPort       = BBS_SSH_PORT;
+#endif
 };
 
 namespace syscfg {

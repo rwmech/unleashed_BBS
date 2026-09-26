@@ -65,9 +65,28 @@ says `ESP32-S3 · 8 MB · PSRAM` from here on, since the image header is
   exchange (one SSH_MSG_DISCONNECT in the clear, reason 12): OpenSSH prints
   `Received disconnect from ...: --> All SSH ports are full`, PuTTY shows
   it in its error box. A telnet caller is never refused because of SSH.
-- Not yet for SyncTERM up to 1.9: its SSH (cryptlib) waits to hear the
-  server first, so it is never recognised on the shared port and sees the
-  terminal probe instead. OpenSSH and PuTTY send first and connect.
+- **SSH's own port, 6422** (`ssh_port`, CONFIG network's last row, 0 off),
+  where the board speaks first with no terminal detection: for SyncTERM
+  1.9 and older, whose SSH (cryptlib) waits to hear the server, and on the
+  shared port only ever hears the telnet probe. Everything else works on
+  either port. Never the same as `port` or `backup_port`. Advertised over
+  mDNS as `_ssh._tcp`. A full board there says `--> All lines are busy`.
+- **The socket budget.** The second listener would make lwIP's worst case
+  17 of its 16 sockets (two listeners, ten nodes, the sysop node, the busy
+  line, the backup window's two, announce's one). The busy line goes first:
+  with SSH's port on it is offered only while the sysop node is free, so
+  the worst case is 16 (2 + 11 + 2 + 1). Nodes are never refused for it:
+  a caller moving to the sysop node while the busy line is held, and a new
+  caller taking the node they left, can still reach 17 while both stay,
+  which costs one announce attempt or one backup-window client and nothing
+  else. A board that runs out drops the caller at accept, as lwIP does. A
+  budget refusal says so on the console.
+- A board already using 6422 (its backup window, say) runs without SSH's
+  port after the upgrade and says so; its CONFIG saves and restores are not
+  refused over the default. Refusals on SSH's port read the client's
+  identification off before closing, so they arrive as words, not a reset;
+  its callers get the same keepalive as telnet's. SYS shows the bound port,
+  and mDNS advertises `_ssh._tcp` only once the listener is up.
 
 **Sysops**
 - Host keys, Ed25519 and ECDSA P-256 (both, for SyncTERM 1.10's and the
@@ -97,9 +116,9 @@ says `ESP32-S3 · 8 MB · PSRAM` from here on, since the image header is
   window at 10 (about 19 KB of internal RAM back).
 - `tools/release.py` takes each family's offsets from its own partition
   table and checks the built `partitions.bin` against it.
-- Sizes, off the ELF: the S3 image 1,404,400 bytes (1.1.1: 1,270,240,
-  so +134,160, of a 3 MB slot now), static DRAM 251,392 of 341,760
-  (+3,608: eight links, the host keys, three Session fields). The ESP32
+- Sizes, off the ELF: the S3 image 1,406,384 bytes (1.1.1: 1,270,240,
+  so +136,144, of a 3 MB slot now), static DRAM 251,400 of 341,760
+  (+3,616: eight links, the host keys, three Session fields). The ESP32
   images' application objects and libraries match 1.1.1's section for
   section and their static DRAM is identical (161,336, 172,816, 174,272);
   only the Xtensa linker's call relaxation in esp_littlefs's VFS functions

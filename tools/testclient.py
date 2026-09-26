@@ -660,7 +660,7 @@ class SshCaller(Caller):
     raw_link = True
 
     def __init__(self, user="SshNobody", password=None, ansi=True, utf8=True, port=None,
-                 resize=None, key=None, source=None):
+                 resize=None, key=None, source=None, banner_first=False):
         import fcntl
         import subprocess
         self.t0 = time.time()
@@ -673,6 +673,8 @@ class SshCaller(Caller):
             args += ["-k", key]
         if source:
             args += ["-b", source]
+        if banner_first:
+            args += ["-W"]                     # waits for the server's line, as cryptlib does
         args.append(HOST)
         self.proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE)
@@ -15910,6 +15912,288 @@ def test_ssh_ymodem():
     return ok
 
 
+# The SSH port of its own (1.1.2, Rob): the harness gives each tag its own.
+SSH_PORT = int(cfg_value("ssh_port") or 0)
+
+
+def test_ssh_dedicated_port():
+    """SSH's own port (1.1.2, Rob): the board speaks first there, so a client
+    that waits to hear the server before it says anything (cryptlib:
+    SyncTERM 1.9 and older) connects. On the shared port the same client
+    hears the telnet probe and gives up, and the board is none the worse.
+    A port that clashes with the telnet or the backup port is refused."""
+    print("SSH: the port of its own, for banner-first clients")
+    why = ssh_ready()
+    if why:
+        print("  SKIP  " + why)
+        return True
+    if not SSH_PORT:
+        print("  SKIP  no ssh_port in this board's system.cfg")
+        return True
+    t = ansi_login("SshSync")
+    t.close()
+    c = SshCaller(user="SshSync", password=TEST_PW, port=SSH_PORT, banner_first=True)
+    ok = check("a banner-first client hears the board first on the SSH port",
+               c.said(b"heard the board's identification first", 10))
+    ok &= check("and logs in", c.said(b"ssh_call: open", 15) and c.wait_for(b"Signed in over SSH as", 15))
+    ok &= check("\"Secure.\" there too", b"Connection via SSH is Secure." in plain(c.buf))
+    ok &= check("to the main prompt", c.wait_for(b"Main", 10))
+    c.close()
+
+    d = SshCaller(user="nobody-direct", port=SSH_PORT)
+    ok &= check("a client that speaks first gets in on it too", d.said(b"ssh_call: open", 15)
+                and d.wait_for(b"Enter your handle", 15))
+    d.close()
+
+    started = time.time()
+    b = SshCaller(user="SshSync", password=TEST_PW, banner_first=True)
+    b.wait_closed(20)
+    took = time.time() - started
+    ok &= check("on the shared port the same client gives up, as cryptlib would",
+                b"the board never spoke SSH first" in b.err and b"ssh_call: open" not in b.err)
+    ok &= check("within its own 12 s, without hanging", took < 20)
+    b.close()
+    time.sleep(0.5)
+    v = Caller(ansi=True)
+    ok &= check("and the board takes the next telnet caller as ever", v.wait_for(b"Enter your handle", 12))
+    v.close()
+
+    # A clash is refused: a copy whose ssh_port is the telnet port, and one
+    # whose ssh_port is the backup port, each runs without an SSH port.
+    for what, value in (("telnet", str(cfg_value("port") or BBS_PORT_NUM)), ("backup", str(BACKUP_PORT))):
+        proc, tmp = restart_copy((str(PORT + 3904),), edits={("", "ssh_port"): value})
+        try:
+            # Past the SSH server's start, where the listener would have
+            # said it was listening.
+            log = copy_log(tmp, "ssh: on the telnet port", 8)
+            ok &= check(f"ssh_port on the {what} port: the board runs without it, and says so",
+                        f"is the {what} port too; no SSH port of its own" in log
+                        and "ssh: on the telnet port" in log and "speaking first" not in log)
+        finally:
+            stop_copy(proc, tmp)
+
+    # A board already using 6422 for its backup window, upgraded: no
+    # ssh_port line, so the default clashes. It must run without the SSH
+    # port and still save CONFIG, rather than refusing every later reload.
+    tmp = copy_data()
+    cfg = tmp / "data" / "user" / "system.cfg"
+    text = "\n".join(ln for ln in cfg.read_text().splitlines() if not ln.startswith("ssh_port"))
+    cfg.write_text(cfg_with(text + "\n", {("", "backup_port"): "6422"}))
+    cport = PORT + 3907
+    proc = start_copy(tmp, (str(cport),))
+    try:
+        log = copy_log(tmp, "ssh: on the telnet port", 8)
+        ok &= check("an upgraded board with its backup window on 6422 runs without the SSH port",
+                    "is the backup port too; no SSH port of its own" in log and "speaking first" not in log)
+        s2 = ansi_login("ClashSysop", port=cport)
+        s2.send(f"bye {PASSWORD}\r".encode())
+        s2.wait_for(b"SysOp node", 8)
+        s2.pump(0.5)
+        ok &= check("and its CONFIG saves go live, as before", cfg_reload(s2))
+        s2.close()
+    finally:
+        stop_copy(proc, tmp)
+    return ok
+
+
+# lwIP's socket table, played on the host: at most BBS_SOCK_LIMIT inet
+# sockets (socket() and accept()), and an accept past it is taken and closed
+# again, as lwIP's accept does when it has no socket for the connection.
+# The peak and the refusals go to BBS_SOCK_LOG.
+SOCK_LIMIT_C = r"""
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
+static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+static unsigned char held[65536];
+static int count, peak, refused;
+static int limit(void) { const char* e = getenv("BBS_SOCK_LIMIT"); return e ? atoi(e) : 16; }
+static void note(void) {
+    const char* p = getenv("BBS_SOCK_LOG");
+    if (!p) return;
+    FILE* f = fopen(p, "w");
+    if (f) { fprintf(f, "count %d peak %d refused %d\n", count, peak, refused); fclose(f); }
+}
+static int take(int fd) {
+    if (fd < 0 || fd >= 65536) return fd;
+    pthread_mutex_lock(&mu);
+    held[fd] = 1; if (++count > peak) peak = count; note();
+    pthread_mutex_unlock(&mu);
+    return fd;
+}
+static int full(void) {
+    pthread_mutex_lock(&mu);
+    int f = count >= limit();
+    if (f) { ++refused; note(); }
+    pthread_mutex_unlock(&mu);
+    return f;
+}
+int socket(int d, int t, int p) {
+    static int (*real)(int, int, int);
+    if (!real) real = (int (*)(int, int, int))dlsym(RTLD_NEXT, "socket");
+    if (d != AF_INET && d != AF_INET6) return real(d, t, p);
+    if (full()) { errno = ENFILE; return -1; }
+    return take(real(d, t, p));
+}
+static int shut(int fd, int (*rc)(int)) {
+    if (fd >= 0 && fd < 65536) {
+        pthread_mutex_lock(&mu);
+        if (held[fd]) { held[fd] = 0; --count; note(); }
+        pthread_mutex_unlock(&mu);
+    }
+    return rc(fd);
+}
+int close(int fd) {
+    static int (*real)(int);
+    if (!real) real = (int (*)(int))dlsym(RTLD_NEXT, "close");
+    return shut(fd, real);
+}
+int accept(int s, struct sockaddr* a, socklen_t* l) {
+    static int (*real)(int, struct sockaddr*, socklen_t*);
+    static int (*rc)(int);
+    if (!real) real = (int (*)(int, struct sockaddr*, socklen_t*))dlsym(RTLD_NEXT, "accept");
+    if (!rc) rc = (int (*)(int))dlsym(RTLD_NEXT, "close");
+    int fd = real(s, a, l);
+    if (fd < 0) return fd;
+    if (full()) { rc(fd); errno = ENFILE; return -1; }
+    return take(fd);
+}
+"""
+
+
+def sock_limit_so(tmp):
+    import shutil
+    import subprocess
+    cc = shutil.which("cc") or shutil.which("gcc")
+    if not cc:
+        return None
+    (tmp / "socklimit.c").write_text(SOCK_LIMIT_C)
+    so = tmp / "socklimit.so"
+    r = subprocess.run([cc, "-shared", "-fPIC", "-o", str(so), str(tmp / "socklimit.c"), "-ldl", "-lpthread"],
+                       capture_output=True)
+    return so if r.returncode == 0 else None
+
+
+def sock_log(tmp):
+    p = tmp / "sockets.txt"
+    m = re.search(r"count (\d+) peak (\d+) refused (\d+)", p.read_text() if p.exists() else "")
+    return tuple(int(x) for x in m.groups()) if m else (None, None, None)
+
+
+def test_ssh_socket_budget():
+    """The socket budget with SSH's own listener (1.1.2, Rob). lwIP has 16
+    sockets; two listeners, ten nodes, the sysop node and the busy line,
+    the backup window's two and announce's one would be 17. The busy line is
+    given up first: with the sysop node in use and every node busy, the
+    next telnet caller gets BUSY and the next SSH caller "--> All lines are
+    busy", and the board never reaches the limit. Then, on a board given
+    fewer sockets than it plans for, running out refuses callers and costs
+    nothing else: no crash, no stall."""
+    print("SSH: the socket budget")
+    why = ssh_ready()
+    if why:
+        print("  SKIP  " + why)
+        return True
+    tmp = copy_data()
+    so = sock_limit_so(tmp)
+    if not so:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+        print("  SKIP  the socket shim did not build")
+        return True
+    cfg = tmp / "data" / "user" / "system.cfg"
+    port, sport = PORT + 3905, PORT + 3906
+    cfg.write_text(cfg_with(cfg.read_text(), {("", "ssh_port"): str(sport)}))
+    proc = start_copy(tmp, (str(port),), {"LD_PRELOAD": str(so), "BBS_SOCK_LIMIT": "16",
+                                          "BBS_SOCK_LOG": str(tmp / "sockets.txt")})
+    ok = True
+    held = []
+    try:
+        copy_log(tmp, "speaking first", 8)
+        s = ansi_login("SockSysop", port=port)
+        s.send(f"bye {PASSWORD}\r".encode())
+        ok &= check("a sysop on the sysop node", s.wait_for(b"SysOp node", 8))
+        for _ in range(MAX_NODES):
+            c = socket.create_connection((HOST, port), timeout=3)
+            held.append(c)
+            time.sleep(0.15)
+        time.sleep(1.0)
+        over = Caller(ansi=True, port=port)
+        ok &= check("every node and the sysop node taken: the busy line is not offered, BUSY",
+                    over.wait_for(b"BUSY", 5) and over.wait_closed(5) and b"Disconnecting in" not in over.buf)
+        over.close()
+        data, closed = ssh_raw_hello(sport, secs=5)
+        ident, packets, _ = parse_ssh_hello(data)
+        code, text = ssh_disconnect_reason(packets[0][1]) if packets else (None, None)
+        ok &= check("and an SSH caller on its own port is told \"--> All lines are busy\"",
+                    ident == b"SSH-2.0-unleashedBBS" and text == "--> All lines are busy" and closed)
+        count, peak, refused = sock_log(tmp)
+        ok &= check(f"no socket the board asked for was refused (peak {peak} of 16)",
+                    peak is not None and peak <= 16 and refused == 0)
+        s.send(b"g\r")
+        s.wait_for(b"Log off (Y/N)?", 5)
+        s.send(b"y")
+        s.wait_closed(15)
+        s.close()
+        time.sleep(0.8)
+        busy = Caller(ansi=True, port=port)
+        ok &= check("with the sysop node free again, the busy line is offered",
+                    busy.wait_for(b"Disconnecting in", 15))
+        busy.close()
+        log = copy_log(tmp, "", 1)
+        ok &= check("the console says why the caller was refused",
+                    "the busy line held back: socket budget" in log)
+    finally:
+        for c in held:
+            c.close()
+        stop_copy(proc, tmp)
+
+    # Fewer sockets than the board plans for: 12. Two listeners and ten
+    # callers fill them; the next accept finds none, and lwIP's answer is
+    # to take the connection and close it at once. The board goes on.
+    tmp = copy_data()
+    so = sock_limit_so(tmp)
+    cfg = tmp / "data" / "user" / "system.cfg"
+    cfg.write_text(cfg_with(cfg.read_text(), {("", "ssh_port"): str(sport)}))
+    proc = start_copy(tmp, (str(port),), {"LD_PRELOAD": str(so), "BBS_SOCK_LIMIT": "12",
+                                          "BBS_SOCK_LOG": str(tmp / "sockets.txt")})
+    held = []
+    try:
+        copy_log(tmp, "speaking first", 8)
+        for _ in range(MAX_NODES):
+            held.append(socket.create_connection((HOST, port), timeout=3))
+            time.sleep(0.15)
+        time.sleep(1.0)
+        extra = socket.create_connection((HOST, port), timeout=3)
+        extra.settimeout(3)
+        try:
+            got = extra.recv(64)
+        except OSError:
+            got = b""
+        extra.close()
+        _, peak, refused = sock_log(tmp)
+        ok &= check("out of sockets: the next caller is dropped at once", got == b"" and refused >= 1)
+        held.pop().close()
+        time.sleep(1.0)
+        again = Caller(ansi=True, port=port)
+        ok &= check("and a caller after a socket frees gets in: nothing stalled",
+                    again.wait_for(b"DETECTING TERMINAL", 5))
+        again.close()
+        ok &= check("the board is still running", proc.poll() is None)
+    finally:
+        for c in held:
+            c.close()
+        stop_copy(proc, tmp)
+    return ok
+
+
 def user_exists(handle):
     """An account by that handle in users.txt, any case."""
     p = USERDATA / "users.txt"
@@ -15999,6 +16283,7 @@ ORDER_NAMES = [
     # of the board, so their ban never reaches this one.
     "test_ssh_login", "test_ssh_new_caller", "test_ssh_resize", "test_ssh_host_keys",
     "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
+    "test_ssh_dedicated_port", "test_ssh_socket_budget",
     "test_board_fncam", "test_board_espcam",
     "test_camera",
     "test_camera_failed_start",
@@ -17586,10 +17871,9 @@ def test_forms_ascii_wide():
                 c.wait_for(b"Wi-Fi password [set, - clears]: ", 4))
     c.send(b"-\r")
     c.pump(0.3)
-    c.send(b"\r")                                  # Port
-    c.pump(0.3)
-    c.send(b"\r")                                  # CGNAT/Tailscale LAN (1.1.1)
-    c.wait_for(b"Save (Y/n)?", 4)
+    # Port, CGNAT, and on an S3 the SSH port (1.1.2): to Save by the prompt,
+    # not by counting rows the board profile decides.
+    enter_until(b"Save (Y/n)?")
     c.buf.clear()
     c.send(b"y")
     ok &= check("- saves an open network", c.wait_for(b"OPEN network", 6))
