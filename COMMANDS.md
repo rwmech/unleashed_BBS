@@ -387,7 +387,7 @@ outside it and no way to approve a file that is waiting somewhere else.
 |---|---|
 | `ANNOUNCE` | Whether this board is listed in a directory, when each one last answered, and the public address the directory sees, then when the last heartbeat went and what came back, and when the next is due (1.1.2): `Last sent 14:02: listed`, `Next in 9m 58s`, with `a caller change` or `backing off` after it when either applies. `ANNOUNCE TEST` prints the exact payload and sends nothing; `ANNOUNCE NOW` sends a heartbeat immediately. A caller arriving or leaving, and `SHOW`, `HIDE` and `LURK`, send one within seconds. Off until switched on: see [ANNOUNCE.md](ANNOUNCE.md). |
 | `LIGHTS` | The lights plugin's two outputs: each one's pin, effect, brightness and colour order, and the colours it was last sent, in hex. `LIGHTS TEST` shows red, green, blue and then white on every pixel, a second each, for checking the wiring and the order. In silent mode every pixel is dark, the title says `silent` and `LIGHTS TEST` is refused. Off until switched on (on as shipped on the Waveshare S3): see `lights` under Plugins below. |
-| `PANEL` | Boards with a display only (the Waveshare ESP32-S3-LCD-1.47): what the panel is running on (controller, size and offsets as turned, where the USB plug is, pins, SPI clock) and everything it is showing, as text, top to bottom: the bar's current page, the band's glyphs in words, the antenna's fill, the clock, the heading, each list row (a recent row as `login`, `guest`, `logoff`, `page` or `ring`, then its time and handle), the system row, and the number of LEDs in its strip. `Dark:` and why, when it is not lit. See `panel` under Plugins below. |
+| `PANEL` | Boards with a display only (the Waveshare ESP32-S3-LCD-1.47): what the panel is running on (controller, size and offsets as turned, where the USB plug is, pins, SPI clock) and everything it is showing, as text, top to bottom: the bar's current page, the band's glyphs in words, the antenna's fill, the clock, the heading, each list row (a recent row as `login`, `guest`, `logoff`, `page` or `ring`, then its time and handle), the system row, and the number of LEDs in its strip. `Dark:` and why, when it is not lit. From 1.1.2 also the skin on the glass (`Skin status`, `Skin c64`), when the skin set is not the one showing a red line saying why (`Not c64: skin.txt line 12: led 3's box overlaps led 2's (line 11)`, `Not c64: loading`), and the skins CONFIG offers (`Skins status c64 pc`). While a skin has the glass the field list is left out: its figures are drawn on the skin, not in the layout the list describes. See `panel` under Plugins below. |
 | `SHUTDOWN [n]` | Take the board off the air on purpose. Announces to every node, counts down n seconds (5 to 3600, default 60), then hangs up on everyone including you, each with the ordinary send-off. `SHUTDOWN CANCEL` stops a countdown and says so. Afterwards the board keeps answering and tells callers it has been shut down, rather than refusing connections in a way that looks like a crash. A physical reboot brings it back. Any transfer running when the countdown ends is lost, and the warning says so. |
 | `BACKUP SD` | The zip the backup window gives, onto the SD card: `unleashed-YYYYMMDD-HHMM.zip` in the card's `backup` folder, with a dot a file while it writes and then `Saved: 14 files, 31 KB.` It holds the Wi-Fi password as typed, and says so. `BACKUP SD SCREENS` writes `screens-YYYYMMDD-HHMM.zip`, the screens alone. Two in one minute would share a name, so the second is refused. `BACKUP` on its own explains the difference from the backup window (1.1.0). |
 | `RESTORE SD [SCREENS] [n]` | On its own, the card's backups, newest first and numbered. With a number or a zip's name, checks it exactly as an upload through the backup window is checked, shows what it would replace (a full restore always shows `Replaces`, `Accounts`, `Removes` and `Staff`) and asks `Restore now? (y/N)`; N or 60 seconds is `Not restored.` With anybody else on the board, Y waits for them to leave (`Waiting for 2 callers to leave. F applies it now, N gives up.`), `F` puts it back at once with a warning to them, and after `backup_window_minutes` it gives up: `Not restored: callers stayed on.` New callers get the busy line meanwhile. `SCREENS` puts only the zip's screens back, onto the card's `screens` folder, and never removes anything; deleting them from the card undoes it (1.1.0). The zips are also the sysop's Backups file area, `FILES` 11, to download and upload over the line. Details: [BACKUP.md](BACKUP.md#backups-on-the-sd-card). |
@@ -984,6 +984,7 @@ profile's:
 ```
 [plugin:panel]
 enabled   = yes
+skin      = status ; status, or a skin folder in the card's skins/ (1.1.2)
 pin1_mosi = 45     ; the Pins page: SDA
 pin2_sclk = 40     ; SCL
 pin3_cs   = 42     ; -1 for a panel with CS tied low
@@ -1002,7 +1003,31 @@ spi_mhz   = 10     ; 10 | 20 | 40 (the panel's own limit is 62.5)
 backlight = 60     ; percent, 0 dark
 ```
 
-- **Driver** names the controller, ST7789, and is not a setting.
+- **Skin** (`skin`, 1.1.2; `Panel skin` at 80 columns) is what the glass
+  shows: `status`, the layout above, as shipped; or a skin, a folder of the
+  SD card's `skins/` holding a picture (`background.jpg`, the glass's size)
+  and a manifest (`skin.txt`) saying where the drive light, the activity
+  light, the strip's LEDs, the status lines and the clock go. The board lights
+  the LEDs over the picture as real lamps (the drive light in the skin's own
+  style, pc, 1541, disk2 or breathe, from the same disk state as a wired one;
+  the strip in the lights plugin's effect whether or not a strip is wired)
+  and writes the chosen status lines in their rectangle. The row cycles
+  through `status` and the skins on the card drawn for this glass's size, in
+  name order, and keeps the one in the file even while it is not on the
+  card. The skin is read and decoded on a task of its own, never the BBS
+  loop; the status layout shows until it is ready, and again whenever it
+  cannot be used (no card, no such folder, a fault in `skin.txt`, a picture
+  of the wrong size or a kind the board cannot decode), with the reason in
+  `PANEL` and the console, the line of `skin.txt` included. A skin that
+  failed is read again at the next CONFIG save (any page), when a card comes
+  or goes, or when a file for it arrives in the Skins area; never every
+  tick. The format, the rules and the tool that checks them are
+  [SKINS.md](SKINS.md). A skin also reaches the card through the BBS: the
+  **Skins** file area (12 on a board with a display, 14 with a camera too;
+  the sysop uploads, straight in, no approval) takes a skin as the pair
+  `<name>.txt` and `<name>.jpg` over YMODEM, and CONFIG offers it once both
+  are in. The controller is named by `PANEL` and `PLUGINS`; its
+  row (Driver) gave its place to this one, the page being full.
 - **USB plug** (`orientation`) turns the picture: where the USB plug is as
   you face the screen. `up` is portrait as shipped; `left` and `right` draw
   the landscape layout at 320 by 172 (the callers and the recent events in

@@ -1,0 +1,662 @@
+# ===========================================================================
+#  µnleashed BBS: skin.txt test cases (1.1.2)
+#
+#  Read by host/test_skin.cpp (the board's reader, skin_manifest.h) and by
+#  tools/mkskin.py --selftest (the PC's), so the two agree on every one.
+#
+#  A case starts with "=== name", then "expect ok" or
+#  "expect error LINE TEXT": LINE is the line of the case's skin.txt the
+#  error names (0: the file as a whole) and TEXT a piece of the message.
+#  The rest, up to the next "===", is the skin.txt, each line ending in a
+#  newline, with \r, \t and \xHH made the bytes they name. Lines of this
+#  file before the first "===" are its own comments.
+#  SPDX-License-Identifier: GPL-3.0-or-later. Copyright 2026 - Robert Mech.
+# ===========================================================================
+
+=== minimal
+expect ok
+skin 1
+panel 480 320
+
+=== full
+expect ok
+# every directive once
+skin 1
+panel 480 320
+name Beige Tower   ; a comment after
+drive 400 250 12 pc halo=6
+activity 440 250 8 colour=#FF8000
+strip 3
+led 1 20 300 8
+led 2 40 300 8 halo=2
+led 3 60 300 8
+text 20 20 200 64 size=small colour=#E0E0E0 shadow=#000000 background=none align=left
+lines name address callers who
+clock 400 20 size=big colour=#FFD35C
+
+=== case insensitive words
+expect ok
+SKIN 1
+Panel 480 320
+DRIVE 100 100 10 BREATHE HALO=4
+Text 0 0 100 32 Size=Big Align=Centre Colour=#abcdef
+LINES Clock
+
+=== crlf and tabs
+expect ok
+skin 1\r
+panel\t480\t320\r
+\tdrive 100 100 10 1541\r
+
+=== empty file
+expect error 0 first line must be 'skin 1'
+
+=== only comments
+expect error 0 first line must be 'skin 1'
+# nothing
+   # still nothing
+
+=== skin not first
+expect error 1 first line must be 'skin 1'
+panel 480 320
+skin 1
+
+=== skin newer
+expect error 1 format 2
+skin 2
+panel 480 320
+
+=== skin not a number
+expect error 1 not a number
+skin one
+
+=== second skin
+expect error 3 second skin
+skin 1
+panel 480 320
+skin 1
+
+=== no panel
+expect error 0 no panel line
+skin 1
+name Nothing
+
+=== second panel
+expect error 3 second panel
+skin 1
+panel 480 320
+panel 320 480
+
+=== panel zero
+expect error 2 width 0 is outside 1 to 1024
+skin 1
+panel 0 320
+
+=== panel huge
+expect error 2 height 2000 is outside 1 to 1024
+skin 1
+panel 480 2000
+
+=== panel sign
+expect error 2 not a number
+skin 1
+panel +480 320
+
+=== panel hex
+expect error 2 not a number
+skin 1
+panel 0x1E0 320
+
+=== panel too many numbers
+expect error 2 too many values
+skin 1
+panel 480 320 16
+
+=== panel too few
+expect error 2 needs 2 values
+skin 1
+panel 480
+
+=== number too long
+expect error 2 not a number
+skin 1
+panel 000480 320
+
+=== unknown directive
+expect error 3 not a skin directive
+skin 1
+panel 480 320
+bezel 4
+
+=== name too long
+expect error 3 name is 25 characters
+skin 1
+panel 480 320
+name ABCDEFGHIJKLMNOPQRSTUVWXY
+
+=== name empty
+expect error 3 name is empty
+skin 1
+panel 480 320
+name    ; only a comment
+
+=== second name
+expect error 4 second name
+skin 1
+panel 480 320
+name One
+name Two
+
+=== non ascii
+expect error 3 not plain ASCII
+skin 1
+panel 480 320
+name Caf\xc3\xa9
+
+=== control character
+expect error 2 not plain ASCII
+skin 1
+panel 480\x07 320
+
+=== line too long
+expect error 3 characters; 120 at most
+skin 1
+panel 480 320
+name xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+=== drive style unknown
+expect error 3 not pc, 1541, disk2 or breathe
+skin 1
+panel 480 320
+drive 100 100 10 amiga
+
+=== drive too few
+expect error 3 drive needs X Y D STYLE
+skin 1
+panel 480 320
+drive 100 100 10
+
+=== drive diameter small
+expect error 3 diameter 1 is outside 2 to 64
+skin 1
+panel 480 320
+drive 100 100 1 pc
+
+=== drive diameter big
+expect error 3 diameter 65 is outside 2 to 64
+skin 1
+panel 480 320
+drive 100 100 65 pc
+
+=== drive halo big
+expect error 3 halo 33 is outside 0 to 32
+skin 1
+panel 480 320
+drive 100 100 10 pc halo=33
+
+=== drive bad option
+expect error 3 takes no colour= option
+skin 1
+panel 480 320
+drive 100 100 10 pc colour=#FF0000
+
+=== drive not an option
+expect error 3 is not an option
+skin 1
+panel 480 320
+drive 100 100 10 pc extra
+
+=== option twice
+expect error 3 given twice
+skin 1
+panel 480 320
+drive 100 100 10 pc halo=2 halo=3
+
+=== option empty value
+expect error 3 has no value
+skin 1
+panel 480 320
+drive 100 100 10 pc halo=
+
+=== second drive
+expect error 4 second drive line (the first is line 3)
+skin 1
+panel 480 320
+drive 100 100 10 pc
+drive 200 100 10 pc
+
+=== drive off the panel
+expect error 3 runs off the 480x320 panel
+skin 1
+panel 480 320
+drive 475 100 10 pc
+
+=== drive off the top
+expect error 3 runs off
+skin 1
+panel 480 320
+drive 100 2 10 pc
+
+=== activity colour bad
+expect error 3 is not #RRGGBB
+skin 1
+panel 480 320
+activity 100 100 8 colour=#GG0000
+
+=== activity colour short
+expect error 3 is not #RRGGBB
+skin 1
+panel 480 320
+activity 100 100 8 colour=#FFF
+
+=== activity color spelling
+expect ok
+skin 1
+panel 480 320
+activity 100 100 8 color=#00FF00
+
+=== led before strip
+expect error 3 led before the strip line
+skin 1
+panel 480 320
+led 1 10 10 4
+
+=== strip zero
+expect error 3 strip 0 is outside 1 to 16
+skin 1
+panel 480 320
+strip 0
+
+=== strip seventeen
+expect error 3 strip 17 is outside 1 to 16
+skin 1
+panel 480 320
+strip 17
+
+=== led index past strip
+expect error 5 led 3 is outside 1 to 2
+skin 1
+panel 480 320
+strip 2
+led 1 10 10 4
+led 3 30 10 4
+
+=== led twice
+expect error 5 led 1 again (the first is line 4)
+skin 1
+panel 480 320
+strip 2
+led 1 10 10 4
+led 1 30 10 4
+
+=== led missing
+expect error 3 strip 3 but led 2 is missing
+skin 1
+panel 480 320
+strip 3
+led 1 10 10 4
+led 3 30 10 4
+
+=== leds overlap
+expect error 5 led 2's box overlaps led 1's (line 4)
+skin 1
+panel 480 320
+strip 2
+led 1 10 10 8
+led 2 16 10 8
+
+=== leds touch but do not overlap
+expect ok
+skin 1
+panel 480 320
+strip 2
+led 1 10 10 8 halo=0
+led 2 18 10 8 halo=0
+
+=== text overlaps drive
+expect error 4 text's box overlaps drive's (line 3)
+skin 1
+panel 480 320
+drive 50 50 10 pc
+text 0 0 100 100
+lines name
+
+=== clock overlaps text
+expect error 5 clock's box overlaps text's (line 3)
+skin 1
+panel 480 320
+text 0 0 100 100
+lines name
+clock 90 90
+
+=== text without lines
+expect error 3 text without a lines line
+skin 1
+panel 480 320
+text 0 0 100 100
+
+=== lines without text
+expect error 3 lines without a text line
+skin 1
+panel 480 320
+lines name
+
+=== lines unknown word
+expect error 4 'weather' is not a word
+skin 1
+panel 480 320
+text 0 0 100 100
+lines name weather
+
+=== who not last
+expect error 4 who takes the lines left
+skin 1
+panel 480 320
+text 0 0 100 100
+lines who name
+
+=== too many lines for the box
+expect error 3 3 lines of 16 px need 48 px; the rectangle is 40
+skin 1
+panel 480 320
+text 0 0 100 40
+lines name address uptime
+
+=== big lines for the box
+expect error 3 2 lines of 32 px need 64 px
+skin 1
+panel 480 320
+text 0 0 200 40 size=big
+lines name clock
+
+=== text narrower than a glyph
+expect error 3 text is 7 px wide
+skin 1
+panel 480 320
+text 0 0 7 16
+lines name
+
+=== text off the panel
+expect error 3 text's box 400,0 100x16 runs off
+skin 1
+panel 480 320
+text 400 0 100 16
+lines name
+
+=== text size bad
+expect error 3 size=huge is not tiny, small or big
+skin 1
+panel 480 320
+text 0 0 100 16 size=huge
+lines name
+
+=== text align bad
+expect error 3 align=middle is not left, centre or right
+skin 1
+panel 480 320
+text 0 0 100 16 align=middle
+lines name
+
+=== text background none
+expect ok
+skin 1
+panel 480 320
+text 0 0 100 16 background=none shadow=none
+lines name
+
+=== clock off the panel
+expect error 3 clock's box 460,0 40x16 runs off
+skin 1
+panel 480 320
+clock 460 0
+
+=== clock align not allowed
+expect error 3 takes no align= option
+skin 1
+panel 480 320
+clock 0 0 align=left
+
+=== too many words
+expect error 3 more than 20 words
+skin 1
+panel 480 320
+lines a b c d e f g h i j k l m n o p q r s t u
+
+=== too many line words
+expect error 4 lines has 17 words; 16 at most
+skin 1
+panel 480 320
+text 0 0 100 300
+lines blank blank blank blank blank blank blank blank blank blank blank blank blank blank blank blank blank
+
+=== leds cover too much
+expect error 0 cover 81920 pixels between them; 65536 at most
+skin 1
+panel 1024 1024
+strip 5
+led 1 64 64 64 halo=32
+led 2 192 64 64 halo=32
+led 3 320 64 64 halo=32
+led 4 448 64 64 halo=32
+led 5 576 64 64 halo=32
+
+=== semicolon cuts a name
+expect ok
+skin 1
+panel 480 320
+name C64;with a comment
+
+=== widgets all kinds
+expect ok
+skin 1
+panel 480 320
+field 10 10 200 callers label=ON_LINE size=tiny colour=#FFFFFF align=right
+field 10 30 200 lastcaller
+digits 300 10 24 2 online colour=#FF3020 dim=#300806
+digits 300 40 20 4 clock dim=none
+nodes 10 60 240 96 size=tiny free=yes
+events 10 160 240 48 order=oldest background=#000000
+meter 300 80 100 8 traffic dir=right
+meter 420 80 10 60 heap dir=up colour=#FFAA00 background=none
+graph 300 100 100 40 callers
+lamp 300 200 8 node1
+lamp 320 200 8 node16 colour=#00FF00 halo=2
+lamp 340 200 8 rx
+lamp 360 200 8 error
+
+=== field value who
+expect error 3 'who' is not a value a field shows
+skin 1
+panel 480 320
+field 0 0 100 who
+
+=== field label too long
+expect error 3 label is 13 characters
+skin 1
+panel 480 320
+field 0 0 100 name label=ABCDEFGHIJKLM
+
+=== field too narrow
+expect error 3 field is 5 px wide; one character is 6
+skin 1
+panel 480 320
+field 0 0 5 name size=tiny
+
+=== field off the panel
+expect error 3 field 1's box 470,0 20x16 runs off
+skin 1
+panel 480 320
+field 470 0 20 name
+
+=== digits of a word
+expect error 3 'name' is not a number the panel shows
+skin 1
+panel 480 320
+digits 0 0 20 2 name
+
+=== digits clock needs four
+expect error 3 the clock takes 4 digits
+skin 1
+panel 480 320
+digits 0 0 20 2 clock
+
+=== digits too short
+expect error 3 height 9 is outside 10 to 64
+skin 1
+panel 480 320
+digits 0 0 9 2 online
+
+=== digits dim bad
+expect error 3 dim=red is not #RRGGBB or none
+skin 1
+panel 480 320
+digits 0 0 20 2 online dim=red
+
+=== nodes too narrow
+expect error 3 nodes is 40 px wide; 8 characters are 48
+skin 1
+panel 480 320
+nodes 0 0 40 50 size=tiny
+
+=== nodes free bad
+expect error 3 free=maybe is not yes or no
+skin 1
+panel 480 320
+nodes 0 0 200 50 free=maybe
+
+=== events order on nodes
+expect error 3 nodes takes no order= option
+skin 1
+panel 480 320
+nodes 0 0 200 50 order=oldest
+
+=== events order bad
+expect error 3 order=sideways is not newest or oldest
+skin 1
+panel 480 320
+events 0 0 200 50 order=sideways
+
+=== three node lists
+expect error 5 more than 2 nodes lines
+skin 1
+panel 480 320
+nodes 0 0 200 20
+nodes 0 30 200 20
+nodes 0 60 200 20
+
+=== meter source bad
+expect error 3 'wind' is not traffic, heap, card, callers or rssi
+skin 1
+panel 480 320
+meter 0 0 100 10 wind
+
+=== graph of heap
+expect error 3 'heap' is not traffic or callers
+skin 1
+panel 480 320
+graph 0 0 100 10 heap
+
+=== graph takes no dir
+expect error 3 graph takes no dir= option
+skin 1
+panel 480 320
+graph 0 0 100 10 traffic dir=up
+
+=== meter too small
+expect error 3 meter is smaller than 2 x 2
+skin 1
+panel 480 320
+meter 0 0 100 1 heap
+
+=== lamp state bad
+expect error 3 'node17' is not a state a lamp shows
+skin 1
+panel 480 320
+lamp 20 20 8 node17
+
+=== lamp node0
+expect error 3 'node0' is not a state a lamp shows
+skin 1
+panel 480 320
+lamp 20 20 8 node0
+
+=== lamp overlaps a field
+expect error 3 field 1's box overlaps lamp 1's (line 4)
+skin 1
+panel 480 320
+field 0 0 100 name
+lamp 20 10 8 run
+
+=== meter overlaps graph
+expect error 4 graph 1's box overlaps meter 1's (line 3)
+skin 1
+panel 480 320
+meter 0 0 100 20 heap
+graph 50 10 100 20 traffic
+
+=== widget proposals
+expect ok
+skin 1
+panel 480 320
+nodes 10 10 240 96 dim=#404040 tint=yes free=yes
+events 10 120 240 48 tint=yes
+lamp 300 20 8 ring blink=yes
+lamp 320 20 8 online
+lamp 340 20 8 open
+lamp 360 20 8 sysop
+lamp 380 20 8 NODE3
+clock 300 60 size=tiny
+
+=== lamp blink bad
+expect error 3 blink=often is not yes or no
+skin 1
+panel 480 320
+lamp 20 20 8 ring blink=often
+
+=== nodes tint bad
+expect error 3 tint=maybe is not yes or no
+skin 1
+panel 480 320
+nodes 0 0 200 50 tint=maybe
+
+=== events dim not allowed
+expect error 3 events takes no dim= option
+skin 1
+panel 480 320
+events 0 0 200 50 dim=#101010
+
+=== colour with a sign
+expect error 3 is not #RRGGBB
+skin 1
+panel 480 320
+lamp 20 20 8 ring colour=#+1+2+3
+
+=== nodeS is no longer a word
+expect error 3 'nodeS' is not a state a lamp shows
+skin 1
+panel 480 320
+lamp 20 20 8 nodeS
+
+=== node in capitals
+expect ok
+skin 1
+panel 480 320
+lamp 20 20 8 Node10
+
+=== a graph bigger than a pass
+expect error 3 graph 1 draws 96000 pixels at once; 16384 at most
+skin 1
+panel 480 320
+graph 0 0 480 200 traffic
+
+=== a big-face list row wider than a pass
+expect error 3 nodes 1 draws 16640 pixels at once; 16384 at most
+skin 1
+panel 1024 320
+nodes 0 0 520 64 size=big
+
+=== a big-face list row that fits
+expect ok
+skin 1
+panel 1024 320
+nodes 0 0 512 64 size=big

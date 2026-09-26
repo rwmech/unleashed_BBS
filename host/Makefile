@@ -59,13 +59,27 @@ WOLF_WC       = aes asn coding curve25519 ecc ed25519 error fe_low_mem ge_low_me
                 logging memory random sha256 sha512 signature sp_c32 sp_int wc_encrypt wc_port wolfmath
 WOLF_WS       = internal io log port ssh
 WOLF_OBJS     = $(patsubst %,wolfobj/wc_%.o,$(WOLF_WC)) $(patsubst %,wolfobj/ws_%.o,$(WOLF_WS))
-SRCS      = $(wildcard ../src/core/*.cpp) $(wildcard ../src/plugins/*.cpp) platform_host.cpp main_host.cpp
+SRCS      = $(wildcard ../src/core/*.cpp) $(wildcard ../src/plugins/*.cpp) platform_host.cpp main_host.cpp \
+            jpeg_host.cpp
 
 HDRS      = $(wildcard ../src/core/*.h) $(wildcard ../src/plugins/*.h) ../src/config.h ../src/board.h \
             ../src/platform/platform.h
 
-bbs_host: $(SRCS) $(HDRS)
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) $(LDLIBS)
+# ChaN's TJpgDec (host/tjpgd, R0.03, set up as the ESP32-S3's ROM copy is):
+# the panel's JPEG decoder on the host (1.1.2, panel skins). C, so compiled
+# as C; linked into every host board, used only by those with a panel.
+TJPGD     = tjpgd.o
+ifeq ($(SAN),1)
+# Its own name under the sanitisers, so a later plain build never links an
+# instrumented object (undefined __asan_* at the link).
+TJPGD     = tjpgd_san.o
+TJSAN     = -fsanitize=address,undefined -fno-omit-frame-pointer
+endif
+$(TJPGD): tjpgd/tjpgd.c tjpgd/tjpgd.h tjpgd/tjpgdcnf.h
+	$(CC) -std=c99 -O1 -g -Wall -Wextra $(TJSAN) -c -o $@ tjpgd/tjpgd.c
+
+bbs_host: $(SRCS) $(HDRS) $(TJPGD)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) $(TJPGD) $(LDLIBS)
 
 # The same host board built as the Waveshare ESP32-S3-LCD-1.47 profile
 # (1.1.0, src/board.h): the S3's pin rules, that board's defaults, and the
@@ -73,9 +87,9 @@ bbs_host: $(SRCS) $(HDRS)
 # the ordinary suite is written for the reference board and runs bbs_host.
 #
 # It carries SSH (1.1.2), so it links wolfSSH: libwolfssh_host.a below.
-bbs_host_s3: $(SRCS) $(HDRS) libwolfssh_host.a
+bbs_host_s3: $(SRCS) $(HDRS) libwolfssh_host.a $(TJPGD)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_WS_S3LCD147 $(WOLF_CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) \
-	    libwolfssh_host.a $(LDLIBS)
+	    $(TJPGD) libwolfssh_host.a $(LDLIBS)
 
 wolfobj/wc_%.o: $(WOLF)/wolfssl/wolfcrypt/src/%.c $(WOLF)/user_settings.h
 	@mkdir -p wolfobj
@@ -106,13 +120,22 @@ test_sshlink: test_sshlink.cpp ../src/core/sshlink.h
 # The Freenove ESP32-WROVER CAM profile (1.1.0, src/board.h): its defaults
 # and the pins it owns, which syscfg::pinProblem refuses by name.
 # tools/harness.sh --board fncam runs it with --only=board_fncam.
-bbs_host_fncam: $(SRCS) $(HDRS)
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_FN_WROVER_CAM $(LDFLAGS) -o $@ $(SRCS) $(LDLIBS)
+bbs_host_fncam: $(SRCS) $(HDRS) $(TJPGD)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_FN_WROVER_CAM $(LDFLAGS) -o $@ $(SRCS) $(TJPGD) $(LDLIBS)
 
 # The AI-Thinker ESP32-CAM profile (1.1.1, src/board.h).
 # tools/harness.sh --board espcam runs it with --only=board_espcam.
-bbs_host_espcam: $(SRCS) $(HDRS)
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_AI_ESP32CAM $(LDFLAGS) -o $@ $(SRCS) $(LDLIBS)
+bbs_host_espcam: $(SRCS) $(HDRS) $(TJPGD)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_AI_ESP32CAM $(LDFLAGS) -o $@ $(SRCS) $(TJPGD) $(LDLIBS)
+
+# Panel skins (1.1.2): the manifest's grammar thrown at hard (the shared
+# cases in skins/cases.txt, then a fuzz), the JPEG check, the LEDs and the
+# lines drawn over a real decoded picture, and the stock set's seeding, with
+# no panel. A picture of each skin lands in skins/out/ for a person to look
+# at. From the pure headers and the host decoder.
+test_skin: test_skin.cpp ../src/plugins/skin_manifest.h ../src/plugins/skin_jpeg.h ../src/plugins/skin_draw.h \
+           ../src/plugins/skin_seed.h ../src/plugins/panel_gfx.h ../src/plugins/panel_font.h $(TJPGD)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_skin.cpp $(TJPGD)
 
 # The panel's drawing: glyphs, layout, lamps and the queue of what to send.
 # Pure code with no platform, checked pixel by pixel with no display.
@@ -211,7 +234,8 @@ licence:
 	    echo "licence: GPL-2.0 SPDX line(s) above; the project is GPL-3.0-or-later"; exit 1; \
 	else echo "licence: no GPL-2.0 SPDX lines"; fi
 
-test: licence test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera test_sshlink
+test: licence test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera test_sshlink test_skin
+	./test_skin
 	./test_xmodem
 	./test_wrap
 	./test_forums_ptr
@@ -230,6 +254,6 @@ test: licence test_xmodem test_wrap test_forums_ptr test_compose test_codes test
 
 clean:
 	rm -rf wolfobj libwolfssh_host.a ssh_call test_sshlink
-	rm -f bbs_host bbs_host_s3 bbs_host_fncam bbs_host_espcam test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera
+	rm -f bbs_host bbs_host_s3 bbs_host_fncam bbs_host_espcam tjpgd.o tjpgd_san.o test_skin test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera
 
 .PHONY: clean test licence

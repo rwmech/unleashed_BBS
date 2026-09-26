@@ -733,6 +733,7 @@ void lcdBacklight(uint8_t pct) { g_lcdBl = g_lcdUp ? pct : 0; }
 
 void* psramAlloc(size_t n) { return malloc(n); }
 void  psramFree(void* p)  { free(p); }
+// jpegDecode: host/jpeg_host.cpp, with the TJpgDec it carries.
 #endif  // BBS_HAS_LCD
 
 #ifdef BBS_HAS_CAMERA

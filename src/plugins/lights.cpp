@@ -523,13 +523,16 @@ void noteDisk() {
     g_seen = d;
 }
 
-void drawDrive(uint32_t now, uint8_t* f) {
+// drawDrive: the drive light's frame in style fx (DF_). The wired light
+// draws it in its own setting's style; a panel skin draws its lens in the
+// style the skin names (lights::panelDrive), from the same disk state.
+void drawDrive(uint32_t now, uint8_t* f, uint8_t fx) {
     put(f, 0, kBlack, 0, g_drivePct);
-    if (g_driveFx == DF_OFF) return;
+    if (fx == DF_OFF) return;
     uint32_t since = now - g_accessAt;
     bool lit = false;
     if (g_accessed) {
-        switch (g_driveFx) {
+        switch (fx) {
             case DF_PC:
                 lit = since < kPcHold;
                 // A run of reads longer than one flash flickers, the way a
@@ -553,7 +556,7 @@ void drawDrive(uint32_t now, uint8_t* f) {
         if (((now - g_errorAt) / kErrorHalf) % 2u == 0) put(f, 0, kRed, 255, g_drivePct);
         return;
     }
-    if (g_driveFx == DF_BREATHE) {
+    if (fx == DF_BREATHE) {
         put(f, 0, kAmber, static_cast<uint8_t>(8u + tri(now, 4000u) * 5u / 8u), g_drivePct);
         return;
     }
@@ -808,7 +811,7 @@ void tick(uint32_t now) {
     uint8_t drive[3];
     uint8_t strip[kStrip * 3];
     if (!g_testAt || !drawTest(now, drive, strip)) {
-        drawDrive(now, drive);
+        drawDrive(now, drive, g_driveFx);
         drawStrip(now, strip, rx, tx, bytes);
     }
 #ifdef BBS_HAS_CAMERA
@@ -850,6 +853,16 @@ uint8_t lights::panelFrame(uint8_t* rgb, uint8_t cap, uint8_t& pct) {
     uint8_t n = g_count < cap ? g_count : cap;
     memcpy(rgb, g_shown, static_cast<size_t>(n) * 3u);
     return n;
+}
+
+// A skin's drive light (lights.h): drawDrive in the skin's style, from the
+// disk state tick() keeps. Dark while the plugin is not running, as a wired
+// light is.
+bool lights::panelDrive(uint8_t style, uint32_t now, uint8_t* rgb, uint8_t& pct) {
+    pct = g_drivePct;
+    if (!g_running || !rgb) return false;
+    drawDrive(now, rgb, style < DF_OFF ? style : static_cast<uint8_t>(DF_PC));
+    return true;
 }
 
 namespace {

@@ -1474,6 +1474,42 @@ this tree.
   - Not built: the badge pick-list, about a day on its own (a scrolling
     checklist at 40, 80 and plain ASCII, the badges.json generator, the
     CONFIG hook). For Rob to schedule.
+- **Panel skins (lane panel-skins, 1.1.2-skins.1, 2026-09-26)**, Rob's
+  design, built against the board engineer's MF35 panel lane (board-mf35)
+  through a narrow interface (`skin.h`: want, stop, tick, figures, redraw).
+  [SKINS.md](SKINS.md) is the whole story. What was decided on the way:
+  - **The decoder is the S3's ROM TJpgDec** (R0.01, RGB888, 512-byte
+    buffer, baseline YCbCr only), checked by our own header walk first,
+    because the host's R0.03 takes greyscale and the ROM does not.
+  - **The worker builds the skin in its own PSRAM block** (manifest,
+    background, LED weights) and never touches the panel's framebuffer: the
+    panel keeps drawing status meanwhile, a size change cannot free memory
+    under a decode, and a silent-mode return or a CONFIG save puts the skin
+    back from its copy with no card read. It costs a second 300 KB of PSRAM
+    at 480 x 320 against Rob's "save the pixels under the LEDs"; the text
+    then needs no saved patch either.
+  - **LEDs are screen-blended light**, so black is the art unchanged and a
+    lens is painted unlit; overlapping boxes are refused rather than
+    ordered.
+  - **The Skin row took Driver's place** (main's call, 2026-09-26): the
+    panel page was at its 16 rows.
+  - **Stock skins seed from the app image, not a partition** (main: option
+    a), but only from 1.1.2's 8 MB S3 layout; `stockFiles()` is empty until
+    then.
+  - **The decode is one function** so 1.1.2's background runner can take it.
+    It did at skins.4: the load is a `runner::Job`, and the lane's own
+    per-task trampoline is gone.
+  - **Live widgets (skins.2 to .4, Rob: "we need some more info, not just
+    the more or less static image")**: field, digits, nodes, events, meter,
+    graph and lamp in skin.txt, spec'd by tty-ux
+    (`internal/tty-ux-skin-widgets-2026-09-26.md`), all five scenes approved
+    by Rob as drawn. Node rows show the doing column (the verb only; Rob's
+    call, since the glass is on the sysop's desk). Each unit redraws only
+    when its hash moves, 16,384 px a pass, and the reader refuses a unit
+    bigger than that, because a pass always draws its first unit and an
+    oversized one would take the pass past its budget every time (code
+    review). The sysop's lamp is `sysop`, not `nodeS`: in a reader where
+    every word is any case, `nodeS` is `nodes`.
 - **Where it stopped (2026-09-24, night)**:
   - main is 1.1.0-dev.14 (silent mode). The S3 runs dev.12; UHQ and TRA
     wait for the 1.1.0 release (Rob: no preview on the installer).

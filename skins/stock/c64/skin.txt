@@ -1,0 +1,23 @@
+skin 1
+panel 480 320
+name Breadbin and drive
+; the monitor: who is on, in the machine's light blue
+field 36 30 184 name colour=#C4BAFF
+clock 236 30 colour=#C4BAFF
+field 36 46 240 address colour=#C4BAFF
+field 36 62 240 ring colour=#F0E070
+nodes 36 78 240 80 colour=#C4BAFF
+field 36 158 104 callers colour=#C4BAFF
+field 148 158 128 today colour=#C4BAFF align=right
+; the drive: PWR is the board up, DRV its storage
+lamp 334 168 6 run colour=#40FF50 halo=5
+drive 356 168 6 1541 halo=5
+; the computer's power lamp flickers with traffic
+activity 452 235 5 colour=#FF3A20 halo=4
+; the modem: MR AA CD RI RD SD
+lamp 30 278 5 run colour=#FF3020 halo=4
+lamp 48 278 5 open colour=#FF3020 halo=4
+lamp 66 278 5 online colour=#FF3020 halo=4
+lamp 84 278 5 ring colour=#FF3020 halo=4 blink=yes
+lamp 102 278 5 rx colour=#FF3020 halo=4
+lamp 120 278 5 tx colour=#FF3020 halo=4

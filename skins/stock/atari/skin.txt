@@ -1,0 +1,22 @@
+skin 1
+panel 480 320
+name Cream and wood
+; the television: the board's name and the events, newest at the bottom
+field 34 30 144 name colour=#E8F0FF shadow=#0A1A38
+clock 184 30 colour=#E8F0FF shadow=#0A1A38
+events 34 50 192 128 order=oldest colour=#E8F0FF shadow=#0A1A38
+field 42 180 176 address size=tiny colour=#E8F0FF align=centre
+; the channel readout is callers on, the tuning meter is the signal
+digits 245 122 24 2 online colour=#FF3020 dim=#2A0804
+meter 254 160 12 34 rssi colour=#5DDC7A dir=up
+; the drive: PWR, BUSY; the computer's power lamp for traffic
+lamp 330 170 5 run colour=#FF2A18 halo=5
+drive 350 170 5 1541 halo=5
+activity 460 233 4 colour=#FF3A20 halo=4
+; the modem on the drive: MR AA CD RI RD SD
+lamp 336 36 5 run colour=#FF3020 halo=4
+lamp 356 36 5 open colour=#FF3020 halo=4
+lamp 376 36 5 online colour=#FF3020 halo=4
+lamp 396 36 5 ring colour=#FF3020 halo=4 blink=yes
+lamp 416 36 5 rx colour=#FF3020 halo=4
+lamp 436 36 5 tx colour=#FF3020 halo=4

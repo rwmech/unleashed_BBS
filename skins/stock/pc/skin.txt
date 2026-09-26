@@ -1,0 +1,21 @@
+skin 1
+panel 480 320
+name Beige tower
+; the WFC screen: bar, lines, events, traffic, status
+field 34 24 232 name colour=#10106A
+clock 282 24 colour=#10106A
+nodes 34 56 288 96 colour=#FFFFFF tint=yes
+events 34 158 180 36 size=tiny colour=#A8A8A8 order=newest tint=yes
+graph 222 158 100 36 traffic colour=#5DDC7A
+field 34 202 126 address size=tiny colour=#10106A
+field 166 202 90 today size=tiny colour=#10106A
+field 262 202 60 uptime size=tiny colour=#10106A align=right
+; the tower: callers on in the window, POWER, TURBO (traffic), HDD
+digits 378 90 28 2 online colour=#FF3020 dim=#2A0604
+lamp 372 172 6 run colour=#40FF50 halo=5
+activity 412 172 6 colour=#FFC020 halo=5
+drive 452 172 6 pc halo=5
+; the keyboard's lock lamps: MAIL, RING, LOCK (closed to callers)
+lamp 300 276 5 mail colour=#40FF50 halo=4
+lamp 300 292 5 ring colour=#40FF50 halo=4 blink=yes
+lamp 300 308 5 closed colour=#40FF50 halo=4

@@ -75,6 +75,9 @@ host/libwolfssh_host.a
 # because git status stops mentioning a file once it is tracked.
 host/test_*
 !host/test_*.cpp
+# The host's TJpgDec object (1.1.2) and the skins test_skin draws for a person.
+host/*.o
+host/skins/out/
 __pycache__/
 /*.zip
 /backup/

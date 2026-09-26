@@ -107,6 +107,7 @@
 #include "panel_gfx.h"
 #include "panel_feed.h"
 #include "lights.h"
+#include "skin.h"
 #include "../core/bbs.h"
 #include "../core/bbs_util.h"
 #include "../core/bus.h"
@@ -114,6 +115,7 @@
 #include "../core/form.h"
 #include "../core/plugin.h"
 #include "../core/silent.h"
+#include "../core/space.h"     // the card's kept figure, for a skin's meter
 #include "../core/sysconfig.h"
 #include "../platform/platform.h"
 
@@ -186,6 +188,13 @@ uint8_t        g_blNow   = 0;               // the backlight as this plugin last
 // into the new terms, so a board that was turned stays turned.
 bool           g_orientSet = false;
 int16_t        g_legacyRot = -1;
+
+// The skin (1.1.2, skin.h): "status" is the layout this file draws; any
+// other is a folder of the card's skins/, which skin.cpp loads and draws in
+// its place. g_skinOwned: the skin had the glass last pass, so the status
+// skin is drawn whole the first pass it does not.
+char           g_skin[skin::kNameMax + 1] = "status";
+bool           g_skinOwned = false;
 
 // The framebuffer, in PSRAM, kept across restarts of the plugin while its
 // size does not change: a CONFIG save restarts every plugin.
@@ -275,6 +284,7 @@ void defaults() {
     g_cfg.mirror = BBS_LCD_MIRROR;
     g_cfg.mhz    = BBS_LCD_MHZ;
     g_cfg.backlight = BBS_LCD_BACKLIGHT;
+    snprintf(g_skin, sizeof(g_skin), "%s", skin::kBuiltIn);
 }
 
 // ---------------------------------------------------------------------------
@@ -349,6 +359,10 @@ void readKey(void* ctx, const char* key, const char* v) {
         uint16_t b = g_cfg.backlight;
         numKey(b, key, v, 0, 100);
         g_cfg.backlight = static_cast<uint8_t>(b);
+    }
+    else if (!strcmp(key, "skin")) {          // skin.cpp checks the name when it is wanted
+        if (strlen(v) <= skin::kNameMax) snprintf(g_skin, sizeof(g_skin), "%s", v);
+        else plat::log("panel: skin = %.32s is longer than a skin's name, keeping %s", v, g_skin);
     }
 }
 
@@ -874,9 +888,121 @@ uint8_t cardState(uint32_t now) {
     return c;
 }
 
+// skinFigures: the figures a skin's status lines show, in words, from what
+// refreshText has just gathered (skin_draw.h Figures).
+void skinFigures(skin::Figures& f, uint32_t now, const OnNow& on, uint8_t staff, uint8_t card) {
+    Bbs& b = Bbs::instance();
+    const SysConfig& c = syscfg::get();
+    snprintf(f.name, sizeof(f.name), "%.39s", c.boardName[0] ? c.boardName : BBS_NAME);
+    snprintf(f.address, sizeof(f.address), "%s", g_addr[0] ? g_addr : "no network");
+    char up[16];
+    fmtUptime(now / 1000u, up, sizeof(up));
+    snprintf(f.uptime, sizeof(f.uptime), "up %s", up);
+    snprintf(f.callers, sizeof(f.callers), "Callers %u/%u", static_cast<unsigned>(b.publicBusy()),
+             static_cast<unsigned>(b.publicNodes()));
+    snprintf(f.today, sizeof(f.today), "%u calls today", static_cast<unsigned>(g_today));
+    snprintf(f.heap, sizeof(f.heap), "%uK free", static_cast<unsigned>(g_heapK));
+    if (g_free[0]) snprintf(f.card, sizeof(f.card), "card %.12s free", g_free);
+    else           snprintf(f.card, sizeof(f.card), "no card");
+    const bool ok = clk::valid();
+    if (ok) {
+        clk::fmt(f.clock, sizeof(f.clock), "%H:%M");
+        clk::fmt(f.date, sizeof(f.date), "%a %d %b");
+    } else {
+        snprintf(f.clock, sizeof(f.clock), "--:--");
+        f.date[0] = '\0';
+    }
+    if (g_eventN) snprintf(f.last, sizeof(f.last), "%.5s %.6s %.24s", g_events[0].text, evWord(g_events[0].kind),
+                           g_events[0].text + 6);
+    else          snprintf(f.last, sizeof(f.last), "nothing yet");
+    if (const char* who = b.ringing()) snprintf(f.ring, sizeof(f.ring), "%.24s is ringing", who);
+    else                               f.ring[0] = '\0';
+    f.who = on.n < skin::kWhoMax ? on.n : skin::kWhoMax;
+    for (uint8_t i = 0; i < f.who; ++i) {
+        const Session& s = *on.s[i];
+        const char mark = markFor(s) == ' ' ? ')' : markFor(s);
+        char t[8];
+        fmtOnFor(now - s.loginAt, t, sizeof(t));
+        snprintf(f.whoLine[i], sizeof(f.whoLine[i]), "%s%c %.16s %s", nodeLabel(s).t, mark, s.user, t);
+    }
+
+    // The widgets' own (1.2.0): the numbers, the states and every line.
+    const unsigned busy = b.publicBusy(), lines = b.publicNodes();
+    snprintf(f.online, sizeof(f.online), "%u", busy);
+    snprintf(f.lines, sizeof(f.lines), "%u", lines);
+    snprintf(f.peak, sizeof(f.peak), "%u", static_cast<unsigned>(b.peakNodes()));
+    snprintf(f.version, sizeof(f.version), "%.23s", BBS_VERSION_SHOWN);
+    const int rssi = plat::wifiRssi();
+    if (rssi) snprintf(f.rssi, sizeof(f.rssi), "%d dBm", rssi);
+    else      snprintf(f.rssi, sizeof(f.rssi), "no Wi-Fi");
+    f.nOnline = static_cast<int16_t>(busy);
+    f.nLines  = static_cast<int16_t>(lines);
+    f.nToday  = static_cast<int16_t>(g_today);
+    f.nPeak   = static_cast<int16_t>(b.peakNodes());
+    f.nRssi   = static_cast<int16_t>(rssi);
+    f.nHeapK  = static_cast<int16_t>(g_heapK > 32767 ? 32767 : g_heapK);
+    if (g_heapK > f.heapTopK) f.heapTopK = g_heapK;
+    if (ok) {
+        char hm[8];
+        clk::fmt(hm, sizeof(hm), "%H%M");
+        f.nClock = static_cast<int16_t>(atoi(hm));
+    } else {
+        f.nClock = -1;
+    }
+    // The card's figure as the runner last measured it (core/space.h, 1.1.2):
+    // kept, never a trip to the FAT from here.
+    const space::Fig cf = space::get(plat::PART_CARD);
+    const bool cardKnown = card == Status::CARD_IN && cf.valid && cf.total >= cf.used;
+    f.cardFreeMB  = cardKnown ? static_cast<uint32_t>((cf.total - cf.used) >> 20) : 0;
+    f.cardTotalMB = cardKnown ? static_cast<uint32_t>(cf.total >> 20) : 0;
+    f.fRing   = b.ringing() != nullptr;
+    f.fMail   = sysopMail();
+    f.fStaff  = staff != Status::STAFF_NONE;
+    f.fListed = g_annIdx != 0xFF && plugins::running(g_annIdx) && announce::listing() == Status::LIST_ONLINE;
+    f.fClosed = syscfg::get().closed;
+    f.fCard   = card == Status::CARD_IN;
+
+    // The last caller: the newest login or guest in the events.
+    f.lastcaller[0] = '\0';
+    for (uint8_t i = 0; i < g_eventN; ++i)
+        if (g_events[i].kind == EV_LOGIN || g_events[i].kind == EV_GUEST) {
+            snprintf(f.lastcaller, sizeof(f.lastcaller), "%.16s", g_events[i].text + 6);
+            break;
+        }
+    f.events = g_eventN < skin::kEventsMax ? g_eventN : skin::kEventsMax;
+    for (uint8_t i = 0; i < f.events; ++i)
+        snprintf(f.event[i], sizeof(f.event[i]), "%.5s %.6s %.24s", g_events[i].text, evWord(g_events[i].kind),
+                 g_events[i].text + 6);
+
+    // Every line: the sysop's first, then 1 to the board's lines, each with
+    // whoever the panel may name on it.
+    f.rows = 0;
+    auto put = [&](uint8_t line) {
+        if (f.rows >= skin::kRowsMax) return;
+        skin::NodeRow& r = f.row[f.rows++];
+        r = skin::NodeRow();
+        r.line = line;
+        for (uint8_t i = 0; i < on.n; ++i) {
+            const Session& s = *on.s[i];
+            const bool isLine = line == 0 ? s.role == Role::Sysop : (s.role != Role::Sysop && s.id == line);
+            if (!isLine) continue;
+            r.on   = true;
+            r.mark = markFor(s) == ' ' ? ')' : markFor(s);
+            snprintf(r.handle, sizeof(r.handle), "%.16s", s.user);
+            snprintf(r.doing, sizeof(r.doing), "%.8s", s.doing[0] ? s.doing : "-");   // logged in: the verb, as WHO's staff column
+            fmtOnFor(now - s.loginAt, r.onFor, sizeof(r.onFor));
+            break;
+        }
+    };
+    put(0);
+    for (uint8_t line = 1; line <= BBS_MAX_NODES && line <= skin::kNodeLines; ++line) put(line);
+}
+
 // refreshText: every figure but the fade, the bell, the antenna and the
-// strip, twice a second. Each is redrawn only when it changed.
-void refreshText(uint32_t now) {
+// strip, twice a second. Each is redrawn only when it changed. With fig, a
+// skin has the glass: the same figures are gathered, put into words for it,
+// and nothing is drawn.
+void refreshText(uint32_t now, skin::Figures* fig) {
     Bbs& b = Bbs::instance();
 
     OnNow on;
@@ -903,6 +1029,13 @@ void refreshText(uint32_t now) {
     if (!g_slowInit) { g_slowInit = true; g_slowSeen = slow; }
     if (slow != g_slowSeen) { g_slowSeen = slow; g_slowAt = now ? now : 1; }
 
+    if (g_todayDay && clk::dayKey(now) != g_todayDay) { g_today = 0; g_todayDay = 0; }
+    if (fig) {
+        const uint8_t card = cardState(now);               // the card's free space, for card
+        skinFigures(*fig, now, on, staff, card);
+        return;
+    }
+
     Status s;
     s.card    = cardState(now);
     s.ring    = b.ringing() != nullptr;
@@ -919,7 +1052,6 @@ void refreshText(uint32_t now) {
     drawClock();
     drawHead(b.publicBusy(), b.publicNodes());
     drawLists(now, on);
-    if (g_todayDay && clk::dayKey(now) != g_todayDay) { g_today = 0; g_todayDay = 0; }
     drawSys(g_heapK, g_today, b.peakNodes());
 }
 
@@ -1092,6 +1224,10 @@ bool start(Bbs& bbs) {
     g_up = true;
     g_why[0] = '\0';
     lights::wantPanel(true);
+    // The skin: the status skin above until a card's skin is ready, and put
+    // back from its copy after a CONFIG save that left the glass alone.
+    g_skinOwned = false;
+    skin::want(g_skin, g_run.width, g_run.height);
     return true;
 }
 
@@ -1099,6 +1235,7 @@ bool start(Bbs& bbs) {
 // start a moment later, and the panel keeps its framebuffer and its bus
 // across it; a panel switched off stays dark.
 void stop() {
+    skin::stop();
     lights::wantPanel(false);
     if (g_up) light(0);
     g_up = false;
@@ -1125,13 +1262,35 @@ void tick(uint32_t now) {
         // light owed until all of it has been sent.
         g_dark = false;
         redrawAll();
+        skin::redraw();
         g_textAt = g_stripAt = 0;
         oweLight();
     }
-    if (!g_textAt || now - g_textAt >= kTextMs) {
-        g_textAt = now ? now : 1;
-        refreshText(now);
+    const bool textDue = !g_textAt || now - g_textAt >= kTextMs;
+    if (textDue) g_textAt = now ? now : 1;
+
+    // A skin from the card, when one is set and ready: it draws the glass
+    // and the status skin below draws nothing. Its figures are the same
+    // ones, gathered by refreshText, put into words for it.
+    // skin::tick runs every pass whatever the setting: it also takes the
+    // worker's list of the card's skins for CONFIG.
+    const bool copying = skin::copying();
+    const bool figs = skin::live() && (textDue || copying);
+    if (figs) refreshText(now, &skin::figures());
+    if (skin::tick(g_canvas, g_dirty, now, figs)) {
+        g_skinOwned = true;
+        // The skin threw away the queue it found: the light waits for its
+        // own whole frame, not the one it replaced.
+        if (g_lightOwed && (copying || skin::copying())) g_owedAt = g_bands;
+        flush();
+        return;
     }
+    if (g_skinOwned) {                                   // the status skin, back from a skin
+        g_skinOwned = false;
+        redrawAll();
+        if (g_lightOwed) g_owedAt = g_bands;
+    }
+    if (textDue) refreshText(now, nullptr);
     slotTick(now);
     bellTick(now);
     antTick(now);
@@ -1206,6 +1365,28 @@ void cmdPanel(Bbs& b, Session& s, const char* a, uint32_t now) {
              g_cfg.mosi, g_cfg.sclk, g_cfg.cs, g_cfg.dc, g_cfg.rst, g_cfg.bl,
              static_cast<unsigned>(g_cfg.mhz));
     line(s, Color::Grey, buf);
+    // The skin on the glass, and why the one set is not, when it is not.
+    if (skin::title()[0]) {
+        char tb[64];
+        snprintf(tb, sizeof(tb), "Skin %.24s (%.24s)", skin::running(), skin::title());
+        line(s, Color::Grey, tb);
+    } else {
+        snprintf(buf, sizeof(buf), "Skin %.24s", skin::running());
+        line(s, Color::Grey, buf);
+    }
+    const char* why = skin::why();
+    if (strcmp(skin::running(), g_skin) && *why) {
+        char wb[112];
+        snprintf(wb, sizeof(wb), "Not %.24s: %.80s", g_skin, why);
+        line(s, Color::LightRed, wb);
+    }
+    {
+        // What CONFIG offers: the built-in and the card's skins for this glass.
+        char cb[skin::kChoicesMax + 8];
+        snprintf(cb, sizeof(cb), "Skins %s", skin::choices());
+        for (char* p = cb; *p; ++p) if (*p == '|') *p = ' ';
+        line(s, Color::Grey, cb);
+    }
     // What the backlight was last told (silent mode, 1.1.0). On the host,
     // what the platform holds rather than what this plugin meant, so a test
     // reads the glass. Above "bands sent": the fields' words follow that
@@ -1220,7 +1401,7 @@ void cmdPanel(Bbs& b, Session& s, const char* a, uint32_t now) {
     line(s, Color::Grey, buf);
     snprintf(buf, sizeof(buf), "%u bands sent", static_cast<unsigned>(g_bands));
     line(s, Color::Grey, buf);
-    if (g_up) {
+    if (g_up && !skin::live()) {                   // a skin's glass has no fields to list
         static const uint8_t kOrder[] = { F_SLOT, F_GLYPHS, F_ANT, F_CLOCK, F_HEAD };
         auto say = [&](uint8_t f) {
             const char* k = g_shown[f];
@@ -1252,8 +1433,11 @@ const Command kCommands[] = {
 // columns each row has a twenty column label too (1.1.0, the forms at 80).
 // ---------------------------------------------------------------------------
 constexpr PluginSetting kSettings[] = {
-    { "driver",    "Driver",    PS_INFO,  0, 0,   8, "The panel's controller chip.", nullptr,
-      "Controller chip" },
+    // The skin (1.1.2), in the row Driver had: the page is full, and PANEL
+    // and PLUGINS still name the controller. Its choices are the card's
+    // skins for this glass, listed by skin.cpp's worker.
+    { "skin",      "Skin",      PS_CYCLE, 0, 0,   skin::kNameMax, "status, or a folder in skins/ on SD.",
+      skin::g_choices, "Panel skin", "status is the built-in layout; the rest are folders in skins/ on the SD card." },
     { "pin",       "Pins",      PS_PAGE,  0, 0,   0, "The panel's SPI and control pins.", nullptr,
       "Panel pins" },
     { "width",     "Width",     PS_NUM,   1, kRamLong,     3, "Pixels across, with the USB plug up.",
@@ -1305,6 +1489,7 @@ static_assert(kCoreRows + (kSettingCount - countPins()) <= Form::kMaxFields, "th
 void setting(const char* key, char* out, size_t n) {
     if (!g_defaulted) defaults();
     if      (!strcmp(key, "driver"))    snprintf(out, n, "ST7789");
+    else if (!strcmp(key, "skin"))      snprintf(out, n, "%s", g_skin);
     else if (!strcmp(key, "pin"))       snprintf(out, n, "%d %d %d %d %d %d", g_cfg.mosi, g_cfg.sclk,
                                                  g_cfg.cs, g_cfg.dc, g_cfg.rst, g_cfg.bl);
     else if (!strcmp(key, "pin1_mosi")) snprintf(out, n, "%d", g_cfg.mosi);

@@ -1,0 +1,19 @@
+skin 1
+panel 480 320
+name Beige lid and drives
+; the green screen: every line, taken or waiting
+field 60 26 108 name size=tiny colour=#4CFF7A
+field 174 26 126 address size=tiny colour=#4CFF7A align=right
+nodes 60 40 240 132 size=tiny colour=#4CFF7A free=yes dim=#2A9A48
+; the drives: the top one's IN USE is storage, the bottom one's a card in
+drive 368 126 5 disk2 halo=5
+lamp 368 206 5 card colour=#FF2A18 halo=5
+; the power lamp on the keyboard, for traffic
+activity 36 290 4 colour=#9CFF6A halo=4
+; the modem: MR AA CD RI RD SD
+lamp 372 274 5 run colour=#FF3020 halo=4
+lamp 389 274 5 open colour=#FF3020 halo=4
+lamp 406 274 5 online colour=#FF3020 halo=4
+lamp 423 274 5 ring colour=#FF3020 halo=4 blink=yes
+lamp 440 274 5 rx colour=#FF3020 halo=4
+lamp 457 274 5 tx colour=#FF3020 halo=4

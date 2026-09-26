@@ -539,6 +539,23 @@ bool     lcdDraw(const uint16_t* fb, uint16_t stride, uint16_t x, uint16_t y, ui
 void     lcdBacklight(uint8_t pct);
 void*    psramAlloc(size_t n);
 void     psramFree(void* p);
+
+// ---------------------------------------------------------------------------
+// jpegDecode (BBS_HAS_LCD boards, for panel skins): a baseline JPEG read
+// through rd (fill buf with up to n bytes and say how many; buf null means
+// skip n) and handed to put a block at a time: RGB888, w x h pixels at x, y,
+// row after row. put returns false to stop. BLOCKS for as long as the
+// picture takes (about 150 ms for 480 x 320 on an S3, plus the reads), so a
+// background runner's job (core/runner.h), never the loop's. The ESP32-S3's is the TJpgDec
+// in its ROM (R0.01, no flash); the host's is R0.03 (host/tjpgd). Neither
+// checks what the other refuses: skin::checkJpeg does, first.
+// 0 when the picture was decoded whole; otherwise the decoder's own result
+// code (TJpgDec's JRESULT: 1 put stopped it, 2 the input ran out, 3 or 4 out
+// of memory, 6 to 8 a format it cannot do).
+// ---------------------------------------------------------------------------
+using JpegRead = size_t (*)(void* ctx, uint8_t* buf, size_t n);
+using JpegPut  = bool (*)(void* ctx, uint16_t x, uint16_t y, uint16_t w, uint16_t h, const uint8_t* rgb);
+int      jpegDecode(JpegRead rd, JpegPut put, void* ctx, uint16_t& width, uint16_t& height);
 #endif  // BBS_HAS_LCD
 
 #ifdef BBS_HAS_CAMERA
