@@ -93,12 +93,70 @@ void hostSetFsBase(const char* path) {
     mkdir(g_logsBase.c_str(), 0755);
 }
 
+// host-only (1.1.2, test speed): BBS_FAST_TIMERS runs the board's clock
+// faster than the wall, so the suite does not sit through waits that exist
+// for people: the busy line's ten second countdown, the five second goodbye
+// linger, the detection pauses, the idle and time warnings, the heartbeat
+// gaps. Unset or 0 is real time, which is what a hand-run board and every
+// serial harness run get. 1 is the default factor, 4; any figure from 2 up
+// is that factor, up to 20.
+//
+// It scales plat::millis and the host's own sleeps (taskSleep, runWait, the
+// simulated camera), and nothing else. plat::micros stays real on purpose:
+// it is what the loop's pass times and the slow-pass count are measured
+// with, and the lag tests assert on those, so a scaled micros would make a
+// 12 ms pass read as 48. The wall clock (time()) stays real too: a date is a
+// date. A test that measures a real duration against the board's clock opts
+// out through tools/testclient.py's REALTIME table, and harness.sh --jobs
+// runs it on a board without this set.
+//
+// Nothing here reaches a board: this file is the host platform, and the
+// ESP32 build's plat::millis is esp_timer's.
+namespace {
+uint32_t fastFactor() {
+    static const uint32_t k = [] {
+        const char* e = getenv("BBS_FAST_TIMERS");
+        const unsigned long v = e && *e ? strtoul(e, nullptr, 10) : 0;
+        if (v == 0) return 1u;
+        if (v == 1) return 4u;
+        return static_cast<uint32_t>(v > 20 ? 20 : v);
+    }();
+    return k;
+}
+
+uint64_t monoMs() {
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000ULL + ts.tv_nsec / 1000000ULL;
+}
+
+// A host sleep of ms board milliseconds, in wall milliseconds: never less
+// than 1 unless it was asked for 0.
+uint32_t wallMs(uint32_t ms) {
+    const uint32_t k = fastFactor();
+    if (k <= 1 || ms == 0) return ms;
+    return ms / k ? ms / k : 1;
+}
+}   // namespace
+
+// host-only: the factor BBS_FAST_TIMERS gave (1 is real time), for the
+// banner main_host.cpp prints so a run says which clock it had.
+uint32_t hostClockFactor() {
+    return fastFactor();
+}
+
 namespace plat {
 
 uint32_t millis() {
-    timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return static_cast<uint32_t>(ts.tv_sec * 1000ULL + ts.tv_nsec / 1000000ULL);
+    const uint64_t now = monoMs();
+    const uint32_t k = fastFactor();
+    if (k <= 1) return static_cast<uint32_t>(now);
+    // From the first call on, k board milliseconds to each wall one. It
+    // starts where the real clock was, so the first figure is an ordinary
+    // one and the clock is monotonic across threads (a static's
+    // initialisation is thread-safe).
+    static const uint64_t t0 = now;
+    return static_cast<uint32_t>(t0 + (now - t0) * k);
 }
 
 uint32_t micros() {
@@ -479,13 +537,14 @@ bool taskStart(void (*fn)(), uint32_t stackBytes, const char* name) {
     return true;
 }
 
-void taskSleep(uint32_t ms) { usleep((ms ? ms : 1) * 1000u); }
+void taskSleep(uint32_t ms) { usleep((ms ? wallMs(ms) : 1) * 1000u); }
 uint32_t taskStackFree() { return 0; }
 
 void runLock()   { pthread_mutex_lock(&g_runMu); }
 void runUnlock() { pthread_mutex_unlock(&g_runMu); }
 
 bool runWait(uint32_t ms) {
+    ms = wallMs(ms);                        // board milliseconds, BBS_FAST_TIMERS
     pthread_mutex_lock(&g_wakeMu);
     if (!g_woken) {
         timespec ts;
@@ -777,7 +836,7 @@ uint32_t envMs(const char* name, uint32_t dflt) {
 bool camOpen(const CamCfg& c, char* err, size_t errLen) {
     (void)c;
     if (err && errLen) err[0] = '\0';
-    usleep(envMs("BBS_CAM_MS", 200) * 1000u);
+    usleep(wallMs(envMs("BBS_CAM_MS", 200)) * 1000u);     // board ms, BBS_FAST_TIMERS
     const char* f = getenv("BBS_CAM_FAIL");
     if (f && !strcmp(f, "1")) {
         if (err && errLen) snprintf(err, errLen, "%s", "no camera found: check the ribbon");

@@ -60,8 +60,36 @@
 #                              forms exist so a script can use whichever is
 #                              easier to spell.
 #
+#                 --jobs N     run the selection as lanes side by side, N
+#                              boards at a time, with and without a card at
+#                              once, and merge the results into one summary
+#                              (tools/parallel.py; 1.1.2 test speed). Takes
+#                              --only, --changed, --tests and --card or
+#                              --no-card (one mode only). Each lane is an
+#                              ordinary run of this script with its own tag,
+#                              port and data directory, keeps the declared
+#                              order among its tests, and runs on a fast
+#                              clock unless a test in it measures real time.
+#                              Isolation markers in tools/testclient.py keep
+#                              the tests that need a board to themselves.
+#                 --fast[=N]   run the board on the host's fast clock
+#                              (BBS_FAST_TIMERS, host/platform_host.cpp): the
+#                              busy countdown, the goodbye linger, detection,
+#                              idle and time warnings and the heartbeat all
+#                              pass N times quicker (4 without a figure).
+#                              Tests that time something real SKIP on it and
+#                              say so; --jobs runs those on a real clock.
+#                 --port P     this port instead of the one from the tag
+#                              (--jobs hands each lane one that no other
+#                              lane's copies can meet)
+#                 --no-build   use the binary already built (--jobs builds
+#                              each profile once, before any lane starts)
+#                 --tests=a,b  exactly these tests by full name (testclient)
+#
 #               Examples:
 #                 tools/harness.sh --backup
+#                 tools/harness.sh --jobs 16
+#                 tools/harness.sh --jobs 12 --changed main..HEAD
 #                 tools/harness.sh --tag files --card --only=files
 #                 tools/harness.sh --changed main..HEAD
 #                 BBS_CHANGED_DRY=1 tools/harness.sh --changed main..HEAD
@@ -109,11 +137,23 @@ BIN=bbs_host
 ARGS=""
 CHANGED_RANGE=""
 CHANGED_DRY=no
+JOBS=""
+MODE_ARG=""
+FAST=""
+PORT_ARG=""
+BUILD=yes
 case "${BBS_CHANGED_DRY:-}" in 1|yes) CHANGED_DRY=yes ;; esac
 while [ $# -gt 0 ]; do
     case "$1" in
         --tag)   TAG="$2"; shift 2 ;;
-        --card)  CARD=yes; shift ;;
+        --card)  CARD=yes; MODE_ARG="--card"; shift ;;
+        --no-card) MODE_ARG="--no-card"; shift ;;
+        --jobs)  JOBS="$2"; shift 2 ;;
+        --jobs=*) JOBS="${1#--jobs=}"; shift ;;
+        --fast)  FAST=1; shift ;;
+        --fast=*) FAST="${1#--fast=}"; shift ;;
+        --port)  PORT_ARG="$2"; shift 2 ;;
+        --no-build) BUILD=no; shift ;;
         --changed)          CHANGED_RANGE="$2"; shift 2 ;;
         --changed-dry-run)  CHANGED_RANGE="$2"; CHANGED_DRY=yes; shift 2 ;;
         --board)
@@ -164,6 +204,13 @@ if [ -n "$CHANGED_RANGE" ]; then
     # for the whole suite.
 fi
 
+# --jobs: the lanes are planned, built for and run by tools/parallel.py, each
+# lane one ordinary run of this script. The selection (--only, --tests, or
+# the --changed words worked out above) goes with it.
+if [ -n "$JOBS" ]; then
+    exec python3 "$PROJ/tools/parallel.py" --jobs "$JOBS" --tag "$TAG" $MODE_ARG         ${FAST:+--fast=$FAST} $ARGS
+fi
+
 DIR=/tmp/bbs-$TAG
 DATA=$DIR/data
 CARDDIR=$DIR/card
@@ -174,6 +221,9 @@ LOG=$DIR/host.log
 # across runs. 6400 stays the hand-testing port and is never taken here.
 PORT=$(printf '%s' "$TAG" | cksum | cut -d' ' -f1)
 PORT=$((6500 + PORT % 400))
+if [ -n "$PORT_ARG" ]; then
+    PORT=$PORT_ARG
+fi
 # The announce test stands up a directory of its own. Give it a port from
 # the same tag, or two parallel runs bind the same one and the failure
 # lands on the BBS socket looking like a board bug.
@@ -187,6 +237,11 @@ export BBS_HOST_SSID=HostNet
 # watch one run out without sitting through the rest (host build only; see
 # ring::ringMs). Long enough that a scripted sysop always answers first.
 export BBS_RING_MS=10000
+if [ -n "$FAST" ]; then
+    export BBS_FAST_TIMERS="$FAST"
+else
+    unset BBS_FAST_TIMERS
+fi
 
 # Delete the previous result before building. A failed build exits here, and
 # leaving the last run's output behind means the next look at it shows a full
@@ -196,14 +251,21 @@ export BBS_RING_MS=10000
 rm -f "$OUT"
 
 cd "$PROJ/host"
-make -s "$BIN"
-# The S3 profile has SSH (1.1.2): its tests call in with wolfSSH's client.
-if [ "$BIN" = bbs_host_s3 ]; then make -s ssh_call; fi
+if [ "$BUILD" = yes ]; then
+    make -s "$BIN"
+    # The S3 profile has SSH (1.1.2): its tests call in with wolfSSH's client.
+    if [ "$BIN" = bbs_host_s3 ]; then make -s ssh_call; fi
+elif [ ! -x "$BIN" ] || { [ "$BIN" = bbs_host_s3 ] && [ ! -x ssh_call ]; }; then
+    echo "harness: --no-build, and host/$BIN (or ssh_call) has not been built"
+    exit 2
+fi
 
 # Kill only this tag's board. Matching on the process name would take down a
 # parallel run's board, which is the whole thing this file exists to stop.
-pkill -f "$BIN $DATA" 2>/dev/null || true
-sleep 0.3
+# The pause is only for a board that was there to be killed.
+if pkill -f "$BIN $DATA" 2>/dev/null; then
+    sleep 0.3
+fi
 
 rm -rf "$DIR"
 mkdir -p "$DATA/user" "$CARDDIR"
@@ -308,7 +370,14 @@ fi
 
 BBS_BACKUP_TEST_OPEN=1 ./"$BIN" "$DATA" "$PORT" > "$LOG" 2>&1 &
 PID=$!
-sleep 1
+# Until the board says it is listening, not a fixed second: a quiet machine
+# has it up in a few milliseconds and a loaded one may take longer than one.
+# Ten seconds at most, and then the tests find out for themselves.
+for _ in $(seq 1 100); do
+    grep -q "listening on" "$LOG" 2>/dev/null && break
+    kill -0 $PID 2>/dev/null || break
+    sleep 0.1
+done
 
 cd "$PROJ"
 set +e
@@ -328,7 +397,7 @@ if [ $RC -eq 124 ]; then
     echo "harness: the run outlasted BBS_HARNESS_TIMEOUT (${BBS_HARNESS_TIMEOUT:-14400} s) and was stopped" >> "$OUT"
 fi
 
-echo "tag $TAG  port $PORT  directory $DIRPORT  card $CARD"
+echo "tag $TAG  port $PORT  directory $DIRPORT  card $CARD${FAST:+  fast $FAST}"
 # grep -c prints 0 and fails when nothing matches, so "|| echo 0" printed a
 # second 0 on its own line: "25 passed, 0" then "0 failed".
 NPASS=$(grep -c '  PASS' "$OUT" 2>/dev/null) || true

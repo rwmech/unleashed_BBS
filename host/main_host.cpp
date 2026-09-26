@@ -53,6 +53,7 @@
 void hostSetFsBase(const char* path);
 void hostSetStack(const uint8_t* lo, size_t len);
 void hostSetArgv(char* const* argv);
+uint32_t hostClockFactor();
 
 namespace {
 
@@ -147,6 +148,10 @@ int main(int argc, char** argv) {
     srand(static_cast<unsigned>(time(nullptr)));
     hostSetArgv(argv);
     hostSetFsBase(argc > 1 ? argv[1] : "../data");
+    // Said once, so a log shows which clock a run had (host/platform_host.cpp).
+    if (hostClockFactor() > 1)
+        plat::log("host: BBS_FAST_TIMERS, the board's clock runs %ux the wall",
+                  static_cast<unsigned>(hostClockFactor()));
     syscfg::load();          // the host clock is already set, no NTP here
     bootWatch();             // may restart this program, as the board would restart
     if (const char* w = getenv("BBS_HOST_WIFI")) wifiSim(w);

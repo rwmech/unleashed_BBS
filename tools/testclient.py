@@ -221,6 +221,35 @@ BACKUP_PORT = int(cfg_value("backup_port") or 8080)
 UP = b"\x1b[A"
 
 
+def fast_clock():
+    """The factor the harness board's clock runs at (1 is real time): the
+    BBS_FAST_TIMERS the harness gave it (tools/harness.sh --fast, and every
+    fast lane of --jobs), read the way host/platform_host.cpp reads it. A
+    copy a test starts inherits it, so the copies run on the same clock."""
+    v = os.environ.get("BBS_FAST_TIMERS", "")
+    try:
+        n = int(v) if v else 0
+    except ValueError:
+        return 1
+    if n <= 0:
+        return 1
+    return 4 if n == 1 else min(n, 20)
+
+
+def board_secs(secs):
+    """How long secs of the board's clock takes on the wall: secs on a real
+    clock, a quarter of it on the default fast one. A check on a timer the
+    board keeps (the busy countdown, the goodbye linger, the detection
+    timeout) keeps its meaning this way on either clock."""
+    return secs / fast_clock()
+
+
+# Room for a fast board's scaled windows on a loaded machine: a quarter of a
+# second of a window is a small target when sixteen lanes share the host.
+# Nothing on the real clock, where every window was written.
+FAST_SLACK = 0.0 if fast_clock() == 1 else 0.5
+
+
 class Caller:
     def __init__(self, ansi=False, utf8=True, telnet=False, source=None, port=None):
         self.t0 = time.time()
@@ -241,19 +270,70 @@ class Caller:
             self.s.sendall(b"\xff\xfb\x1f\xff\xfa\x1f\x00\x50\x00\x18\xff\xf0")
 
     def pump(self, secs):
+        if WAIT_STATS:
+            if sys._getframe(1).f_code.co_name not in _WAIT_LOOPS:
+                _waits["pump"] += secs
+            _waits["in_pump"] = True
+        try:
+            end = time.time() + secs
+            while time.time() < end:
+                try:
+                    d = self.s.recv(4096)
+                    if not d:
+                        return False
+                    self._answer(d)
+                    self.buf += d
+                except BlockingIOError:
+                    time.sleep(0.02)
+                except (ConnectionResetError, OSError):
+                    return False
+            return True
+        finally:
+            _waits["in_pump"] = False
+
+    def pump_some(self, secs):
+        """Like pump, but back as soon as something has arrived: up to secs
+        for the first bytes, then whatever else is already waiting, and no
+        more. False once the far end has gone.
+
+        pump(secs) always takes secs, which is what a test wants when it is
+        collecting everything a screen says in that time, or proving that
+        nothing more comes. A loop that is waiting for one thing wants the
+        other: every wait_for used to cost a whole pump(0.1) past the moment
+        its pattern arrived, and the protocol clients waited a fixed 0.1 s
+        for every ACK, which made a 42 KB upload take 35 s (1.1.2 test
+        speed). Every caller of this loops on its own condition and deadline,
+        so returning early changes when it looks, never what it waits for.
+        Not for wait_for: see there.
+        """
+        import select
         end = time.time() + secs
-        while time.time() < end:
+        got = False
+        while True:
+            left = end - time.time()
+            if got:
+                left = 0
+            elif left <= 0:
+                return True
+            try:
+                r, _, _ = select.select([self.s], [], [], max(0.0, left))
+            except (OSError, ValueError):
+                return False
+            if not r:
+                return True
             try:
                 d = self.s.recv(4096)
-                if not d:
-                    return False
-                self._answer(d)
-                self.buf += d
             except BlockingIOError:
-                time.sleep(0.02)
+                if got:
+                    return True
+                continue
             except (ConnectionResetError, OSError):
                 return False
-        return True
+            if not d:
+                return False
+            self._answer(d)
+            self.buf += d
+            got = True
 
     def _options(self, d):
         """Answer telnet option negotiation, the way a terminal does.
@@ -303,6 +383,12 @@ class Caller:
         self.s.sendall(b)
 
     def wait_for(self, pat, secs=10):
+        # Deliberately pump(0.1), not pump_some: a match is only looked for
+        # at the end of a tenth of a second, so what the board sent in the
+        # same breath as the pattern is in the buffer too. Tests lean on
+        # that ("wait for the area's name, then read its listing"), and
+        # returning the instant the pattern lands broke twenty checks in the
+        # file areas when it was tried (1.1.2 test speed).
         end = time.time() + secs
         while time.time() < end:
             if pat in self.buf:
@@ -314,7 +400,7 @@ class Caller:
     def wait_closed(self, secs):
         end = time.time() + secs
         while time.time() < end:
-            if not self.pump(0.1):
+            if not self.pump_some(min(0.1, max(0.0, end - time.time()))):
                 return True
         return False
 
@@ -332,8 +418,36 @@ class Caller:
             pass
 
 
+# BBS_WAIT_STATS=1: at the end of each test, how much of it was fixed
+# waiting: time.sleep, and pump(secs) outside a wait loop, which always takes
+# all of secs. The rest is waiting on the board for something named
+# (wait_for and its kind) and the board's own work. The slowest-test report
+# uses it to tell a test that sleeps from a test the board keeps busy.
+WAIT_STATS = bool(os.environ.get("BBS_WAIT_STATS"))
+_waits = {"sleep": 0.0, "pump": 0.0, "in_pump": False}
+_WAIT_LOOPS = {"wait_for", "wait_any", "wait_any_after", "wait_plain", "seen", "wait_closed"}
+if WAIT_STATS:
+    _real_sleep = time.sleep
+
+    def _counted_sleep(secs):
+        if not _waits["in_pump"]:
+            _waits["sleep"] += max(0.0, secs)
+        _real_sleep(secs)
+
+    time.sleep = _counted_sleep
+
+
+# BBS_CHECK_TIMES=1: each check line is followed by the seconds since its
+# test started, which is how the slow stretch of a slow test is found
+# (tools/testtimes.py names the test; this names the check after the wait).
+CHECK_TIMES = bool(os.environ.get("BBS_CHECK_TIMES"))
+_test_t0 = [time.time()]
+
+
 def check(name, ok):
     print(f"  {'PASS' if ok else 'FAIL'}  {name}")
+    if CHECK_TIMES:
+        print(f"        @ {time.time() - _test_t0[0]:.1f} s")
     return ok
 
 
@@ -514,6 +628,23 @@ def wait_any(c, pats, secs=10):
     return -1
 
 
+def wait_any_after(c, pats, start, secs=10):
+    """wait_any, counting only what arrived from byte start of c.buf on."""
+    end = time.time() + secs
+    while True:
+        tail = bytes(c.buf[start:])
+        for i, p in enumerate(pats):
+            if p in tail:
+                return i
+        if time.time() >= end or not c.pump(0.1):
+            break
+    tail = bytes(c.buf[start:])
+    for i, p in enumerate(pats):
+        if p in tail:
+            return i
+    return -1
+
+
 PROMPT_RE = re.compile(rb"\[(\d|S|B)\] [^:]*: ")
 
 
@@ -616,10 +747,19 @@ def login(c, handle, pw=TEST_PW, as_pet=False, wait_main=True):
     # (1.1.0), and on the harness board that is whichever account elevated
     # last. Enter skips, which is what every test that did not come here to
     # answer it wants; test_sysop_account answers it.
-    got = wait_any(c, [enc("Main"), enc("Sysop password: ")], 8)
+    #
+    # Only what came after the login succeeded counts. The sign-up form
+    # itself says "Main" (its Start row offers Main | Chat | ...), so a wait
+    # on the whole buffer returned the moment the form was saved, before the
+    # greeting and the newuser screen had arrived, and a test that cleared
+    # the buffer and typed a command then read them as its own output. The
+    # real clock's pauses hid it; the fast clock (1.1.2) found it.
+    mark = max(c.buf.rfind(enc("WELCOME ABOARD")), c.buf.rfind(enc("ACCESS GRANTED")), 0)
+    got = wait_any_after(c, [enc("Main"), enc("Sysop password: ")], mark, 8)
     if got == 1:
         c.send(b"\r")
-        return c.wait_for(enc("Main"), 8)
+        mark = c.buf.rfind(enc("Sysop password: "))
+        return wait_any_after(c, [enc("Main")], mark, 8) == 0
     return got == 0
 
 
@@ -967,7 +1107,7 @@ def test_petscii():
     ok = check("probe text", c.wait_for(b"DETECTING TERMINAL", 3))
     t0 = time.time()
     ok &= check("key prompt after timeout", c.wait_for(b"HIT DEL OR BACKSPACE", 5))
-    ok &= check("prompt after ~2 s", 1.5 < time.time() - t0 < 3.5)
+    ok &= check("prompt after ~2 s", board_secs(1.5) < time.time() - t0 < board_secs(3.5) + FAST_SLACK)
     ok &= check("PETSCII clear before prompt", b"\x93\r\nHIT DEL" in c.buf)
     c.send(b"\x14")
     ok &= check("column prompt", c.wait_for(b"40 OR 80 COLUMNS", 3))
@@ -1901,7 +2041,9 @@ def test_busy():
     ok &= check("the next caller gets BUSY", eighth.wait_for(b"BUSY", 3))
     ok &= check("and is dropped at once", eighth.wait_closed(2))
     ok &= check("busy line hangs up after countdown", over.wait_for(b"NO CARRIER", 13))
-    ok &= check("busy countdown ~10 s", 9 < time.time() - t0 < 12)
+    dt = time.time() - t0
+    print(f"        (hung up after {dt:.2f} s, clock x{fast_clock()})")
+    ok &= check("busy countdown ~10 s", board_secs(9) - FAST_SLACK < dt < board_secs(12) + FAST_SLACK)
     over.close()
     eighth.close()
 
@@ -9081,7 +9223,7 @@ def test_welcome_connecting():
                 and "nleashed BBS" not in line)
     # At 300 baud the rest of the line is a second or more on its own, then
     # the spinner. Unpaced it was the spinner alone, about 0.9 s.
-    ok &= check("typed at 300 baud rather than all at once (%.1f s)" % dt, dt > 1.6)
+    ok &= check("typed at 300 baud rather than all at once (%.1f s)" % dt, dt > board_secs(1.6))
     c.close()
     return ok
 
@@ -13556,7 +13698,7 @@ def xmodem_receive(s, timeout=25.0):
     end = time.time() + timeout
     pending = bytearray()
     while time.time() < end:
-        s.pump(0.15)
+        s.pump_some(0.15)
         pending += _unescape(bytes(s.buf))
         s.buf.clear()
         while pending:
@@ -13565,7 +13707,7 @@ def xmodem_receive(s, timeout=25.0):
                 s.send(bytes([NAK]))            # the engine wants one NAK first
                 end = time.time() + timeout
                 # the second EOT is the real one
-                s.pump(0.5)
+                s.pump_some(0.5)
                 pending += _unescape(bytes(s.buf))
                 s.buf.clear()
                 if pending and pending[0] == EOT:
@@ -13599,7 +13741,7 @@ def xmodem_send(s, data, timeout=25.0):
     end = time.time() + timeout
     crc = None
     while time.time() < end and crc is None:
-        s.pump(0.2)
+        s.pump_some(0.2)
         seen = _unescape(bytes(s.buf))
         for b in seen:
             if b == CRCREQ:
@@ -13625,7 +13767,7 @@ def xmodem_send(s, data, timeout=25.0):
             done = time.time() + 6
             ans = None
             while time.time() < done and ans is None:
-                s.pump(0.1)
+                s.pump_some(0.1)
                 for b in _unescape(bytes(s.buf)):
                     if b in (ACK, NAK, CAN):
                         ans = b
@@ -13864,7 +14006,7 @@ def ymodem_receive(s, timeout=25.0):
     end = time.time() + timeout
 
     while time.time() < end:
-        s.pump(0.15)
+        s.pump_some(0.15)
         pending += _unescape(bytes(s.buf))
         s.buf.clear()
         progressed = True
@@ -13908,7 +14050,7 @@ def ymodem_receive(s, timeout=25.0):
                 pending.pop(0)
                 progressed = True
                 s.send(bytes([NAK]))                 # the engine wants one NAK
-                s.pump(0.4)
+                s.pump_some(0.4)
                 pending += _unescape(bytes(s.buf))
                 s.buf.clear()
                 if pending and pending[0] == EOT:
@@ -13936,7 +14078,7 @@ def ymodem_send(s, fname, data, timeout=25.0):
     def wait_for_byte(want, secs=8.0):
         stop = time.time() + secs
         while time.time() < stop:
-            s.pump(0.1)
+            s.pump_some(0.1)
             raw = bytes(s.buf)
             _seen.extend(raw)
             seen = _unescape(raw)
@@ -14997,7 +15139,7 @@ def test_exit_screen():
     # Five seconds of linger, minus the time the screen itself took to send.
     print(f"        (line held {held:.1f}s)")
     ok &= check("the line is held open afterwards, not dropped at once",
-                held >= 3.0)
+                held >= board_secs(3.0))
     c.close()
     return ok
 
@@ -18331,6 +18473,79 @@ def test_config_warn_levels():
     return ok
 
 
+# ---------------------------------------------------------------------------
+# Lanes (1.1.2 test speed). tools/harness.sh --jobs N hands the selection to
+# tools/parallel.py, which splits it into lanes: ordinary harness runs, each
+# on a board of its own, N at a time, with and without a card at once. Within
+# a lane the tests keep the order above. These tables say what a lane may not
+# do to a test. tools/parallel.py reads them through --plan, so they are the
+# only copy.
+# ---------------------------------------------------------------------------
+
+# A board of its own, never shared with any other test. The reason is the
+# value, and parallel.py prints it.
+ALONE = {
+    "test_ban": "bans 127.0.0.1 on its board for 15 minutes; any test after it "
+                "on the same board could not call in",
+}
+
+# Tests that need a --fresh board (no staff passwords, as the web installer
+# leaves one). On the ordinary board each runs its configured half or SKIPs;
+# parallel.py also gives each one a --fresh board of its own, which a serial
+# run never did.
+FRESH_TESTS = ["test_backup_published_default", "test_first_setup",
+               "test_closed_fresh", "test_setup_abort"]
+
+# The board profiles and the tests written for each. They SKIP on the
+# reference board; parallel.py runs them again on the profile's own build.
+PROFILE_TESTS = {
+    "s3":     ["test_board_s3", "test_board_s3_silent"],
+    "fncam":  ["test_board_fncam"],
+    "espcam": ["test_board_espcam"],
+}
+
+# Tests that time something against the board's clock and so cannot run on
+# the host's fast clock (BBS_FAST_TIMERS). On a fast board they SKIP, saying
+# so; parallel.py puts them on a lane with the real clock. The reason is the
+# value.
+REALTIME = {
+    "test_announce_join_prompt":
+        "sleeps 31 real seconds past a post against the directory's own 30 s "
+        "limit, which a stand-in directory keeps on the wall clock",
+    "test_announce_join_in_flight":
+        "holds a post 9 s against the board's 10 s directory timeout; at x4 the "
+        "board gives up after 2.5 s and the join goes out for the wrong reason",
+    "test_announce_join_refused":
+        "a refused join must come back 30 s or more later, measured by the "
+        "stand-in directory in real seconds",
+    "test_announce_reliable":
+        "counts the board's sockets between heartbeats timed in real "
+        "milliseconds (interval_ms_test); a fast clock puts a post on the "
+        "wire at the moment of the count",
+    "test_lag_screens":
+        "gives every open a real cost in microseconds (hostio.txt) while the "
+        "caller's wait for the list is a board minute; at x4 that minute is "
+        "15 s and a busy host's runner does not finish inside it",
+    "test_lights_frames":
+        "samples the strip's animation and LIGHTS TEST's one-second steps at "
+        "real moments (t0 + 3.3 s)",
+}
+
+# What a test needs to have run before it, on the same board. parallel.py
+# keeps a test and everything it needs in one lane, in the declared order,
+# and runs the prerequisite too when a selection left it out. Every entry is
+# a test that leans on another's leftovers; the better fix is a test that
+# seeds its own, and an entry here is the record of one that does not yet.
+NEEDS = {
+    # "a co-sysop cannot edit the sysop's account" edits Rob, the account
+    # test_sysop registers and elevates.
+    "test_cosysop": ["test_sysop"],
+    # "staff WHOIS shows private fields" reads Acct, whom test_accounts
+    # registers with an email and a profile.
+    "test_user_admin": ["test_accounts"],
+}
+
+
 class TestTimeout(BaseException):
     """A test that used up its budget (run_test)."""
 
@@ -18358,7 +18573,18 @@ def run_test(name, f):
 
     old = signal.signal(signal.SIGALRM, ring)
     signal.alarm(TEST_BUDGET)
+    # A start and an end line per test with its wall time (1.1.2 test
+    # speed), read by tools/testtimes.py for the slowest-test report and by
+    # harness.sh --jobs to say which test a check belongs to. Neither is a
+    # check: the harness counts "  PASS" and "  FAIL" only.
+    print(f"  TEST  {name}", flush=True)
+    t0 = time.time()
+    _test_t0[0] = t0
     try:
+        if name in REALTIME and fast_clock() > 1:
+            print(f"  SKIP  {name} times real seconds: {REALTIME[name]} "
+                  "(harness.sh --jobs runs it on a real clock)")
+            return True
         return bool(f())
     except TestTimeout:
         print(f"  FAIL  {name} ran out of its {TEST_BUDGET} s budget (--test-timeout)")
@@ -18370,6 +18596,10 @@ def run_test(name, f):
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, old)
+        if WAIT_STATS:
+            print(f"  WAIT  {name} sleep {_waits['sleep']:.1f} pump {_waits['pump']:.1f}", flush=True)
+            _waits["sleep"] = _waits["pump"] = 0.0
+        print(f"  TIME  {name} {time.time() - t0:.1f}", flush=True)
 
 
 def run_order():
@@ -18400,26 +18630,11 @@ def run_selected(only):
     Matching is by substring, so --only=mail catches test_mail and
     test_mail_compose alike, which is usually what somebody means.
     """
-    import types
-
-    wanted = []
-    for word in only.split(","):
-        word = word.strip()
-        if not word:
-            continue
-        wanted.extend(GROUPS.get(word, [word]))
-
-    picked = []
-    seen = set()
     # Declared order, not alphabetical. See ORDER_NAMES: a group that runs
     # its tests in a different order than the full suite is testing a
     # sequence nobody designed, and test_ban in particular bans the host.
-    for n, f in sorted(globals().items(), key=lambda kv: order_index(kv[0])):
-        if not n.startswith("test_") or not isinstance(f, types.FunctionType):
-            continue
-        if any(w in n for w in wanted) and n not in seen:
-            seen.add(n)
-            picked.append((n, f))
+    # pick_selected (below) is the one rule, shared with --list.
+    picked = pick_selected(only)
 
     if not picked:
         print("no test matches", only)
@@ -18435,8 +18650,91 @@ def run_selected(only):
     return all(results)
 
 
+def pick_selected(only):
+    """The (name, function) pairs --only=ONLY runs, in the declared order."""
+    import types
+
+    wanted = []
+    for word in only.split(","):
+        word = word.strip()
+        if word:
+            wanted.extend(GROUPS.get(word, [word]))
+    picked = []
+    for n, f in sorted(globals().items(), key=lambda kv: order_index(kv[0])):
+        if not n.startswith("test_") or not isinstance(f, types.FunctionType):
+            continue
+        if any(w in n for w in wanted):
+            picked.append((n, f))
+    return picked
+
+
+def pick_exact(names):
+    """--tests=a,b,c: exactly these tests, by full name, in the declared order
+    whatever order they were given in. harness.sh --jobs hands each lane its
+    tests this way, because --only matches substrings and --only=test_mail
+    would also run test_mail_compose on a lane that was not given it."""
+    g = globals()
+    want = [n.strip() for n in names.split(",") if n.strip()]
+    missing = [n for n in want if not callable(g.get(n))]
+    if missing:
+        print("no such test:", ", ".join(missing))
+        return None
+    return [(n, g[n]) for n in sorted(set(want), key=order_index)]
+
+
+def full_run():
+    """The (name, function) pairs a run with no --only runs, --backup and
+    --ban included when they were given."""
+    picked = [(f.__name__, f) for f in run_order()]
+    if "--backup" in FLAGS:
+        picked.append(("test_backup", test_backup))
+    if "--ban" in FLAGS:
+        picked.append(("test_ban", test_ban))
+    return picked
+
+
 if __name__ == "__main__":
     ONLY = next((a.split("=", 1)[1] for a in FLAGS if a.startswith("--only=")), None)
+    EXACT = next((a.split("=", 1)[1] for a in FLAGS if a.startswith("--tests=")), None)
+    if "--plan" in FLAGS:
+        # The selection and the lane rules as JSON, for tools/parallel.py.
+        import json
+        if EXACT is not None:
+            listed = pick_exact(EXACT) or []
+        elif ONLY:
+            listed = pick_selected(ONLY)
+        else:
+            listed = full_run()
+        print(json.dumps({
+            "selected": [n for n, _ in listed],
+            "order": ORDER_NAMES,
+            "alone": ALONE,
+            "fresh": FRESH_TESTS,
+            "profiles": PROFILE_TESTS,
+            "realtime": REALTIME,
+            "needs": NEEDS,
+        }))
+        sys.exit(0)
+    if "--list" in FLAGS:
+        # What a run with these flags would run, one name a line, and
+        # nothing else: no board is called. tools/parallel.py plans its
+        # lanes from it, so the selection rules live in one place.
+        if EXACT is not None:
+            listed = pick_exact(EXACT) or []
+        elif ONLY:
+            listed = pick_selected(ONLY)
+        else:
+            listed = full_run()
+        for n, _ in listed:
+            print(n)
+        sys.exit(0)
+    if EXACT is not None:
+        picked = pick_exact(EXACT)
+        if picked is None:
+            sys.exit(2)
+        results = [run_test(n, f) for n, f in picked]
+        print("ALL PASS" if all(results) else "FAILURES")
+        sys.exit(0 if all(results) else 1)
     if ONLY:
         picked_ok = run_selected(ONLY)
         print("ALL PASS" if picked_ok else "FAILURES")

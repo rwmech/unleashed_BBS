@@ -248,6 +248,7 @@ TABLE = [
     ("*.png", []), ("*.jpg", []), ("*.jpeg", []), ("*.gif", []), ("*.svg", []),
     ("tools/*.py", []),   # tools/testclient.py above already overrides this
     ("tools/*.sh", []),
+    ("tools/test-times.txt", []),   # the figures --jobs packs lanes by, not a test
     ("data/*.example", []),
     ("LICENSE", []),
 ]
