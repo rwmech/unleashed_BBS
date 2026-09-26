@@ -275,6 +275,12 @@ uint32_t linkRadioSendFails()    { return 0; }
 uint32_t linkRadioChannelMoves() { std::lock_guard<std::mutex> g(g_mx); return g_moves; }
 uint8_t  linkRadioSlowPeers()    { return 0; }
 
+// The host plays a board without PSRAM, unless BBS_LINK_PSRAM=1 says otherwise.
+bool linkRadioPsram() {
+    const char* e = getenv("BBS_LINK_PSRAM");
+    return e && *e == '1';
+}
+
 void* linkAlloc(size_t n) { return malloc(n); }
 void  linkFree(void* p) { free(p); }
 

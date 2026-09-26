@@ -1211,10 +1211,12 @@ it where it is. If somebody else is already transferring, they are told so
 and where to find it instead. The board's own shots are never offered:
 nobody is waiting on those.
 
-**Photos (area 12)** and **Timelapse (area 13)**, camera boards only, above
-the eight configured file areas and the board's own three (Screens 9, Logs
-10, Backups 11). Their levels are the camera's own settings (Snap, Photos
-and the plugin's admin level), never a `files` area's `read | up | down |
+**Photos (area 12)** and **Timelapse (area 13)**, above the eight
+configured file areas and the board's own three (Screens 9, Logs 10,
+Backups 11). On any board with a camera, built in or a satellite on the
+link (1.2.0), and shown only while one is running. Their levels are the
+camera's own settings (Snap, Photos and the plugin's admin level; with a
+built-in camera and a satellite both, the more open of the two), never a `files` area's `read | up | down |
 del` line, and `CONFIG files` does not offer them. Seeing and downloading
 follow **Photos**; uploading is the sysop alone, always (a caller adds a
 photo only through `SNAPSHOT`, never by uploading one); removing follows the

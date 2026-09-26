@@ -160,8 +160,19 @@ void cmdSnapshot(Bbs& b, Session& s, const char* arg, uint32_t now) {
     const size_t n = word(arg);
     const Camera* c = n ? pick(arg, n) : byDefault();
     if (!c) {
-        say(s, Color::LightRed, g_ncam ? "No camera by that name or number. CAMERA lists them."
-                                       : "This board has no camera just now.");
+        if (!g_ncam) {
+            say(s, Color::LightRed, "This board has no camera just now.");
+        } else if (s.perms) {
+            say(s, Color::LightRed, "No camera by that name or number. CAMERA lists them.");
+        } else {
+            // CAMERA is staff's (camsat bench), so a caller is told the choices here.
+            char buf[112];
+            int w = snprintf(buf, sizeof(buf), "No such camera. Try:");
+            for (uint8_t i = 0; i < g_ncam && w > 0 && static_cast<size_t>(w) < sizeof(buf); ++i)
+                w += snprintf(buf + w, sizeof(buf) - static_cast<size_t>(w), " %u %s%s", static_cast<unsigned>(i + 1),
+                              g_cam[i]->name, i + 1 < g_ncam ? "," : ".");
+            say(s, Color::LightRed, buf);
+        }
         b.prompt(s);
         return;
     }

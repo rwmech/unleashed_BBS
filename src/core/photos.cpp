@@ -40,9 +40,7 @@
 #include "disk.h"
 #include "../platform/platform.h"
 #include "../plugins/camera_rules.h"
-#ifdef BBS_HAS_CAMERA
 #include "../plugins/files.h"        // photoDesc: FILES.BBS's one writer
-#endif
 
 namespace photos {
 
@@ -130,8 +128,13 @@ bool file(Writer& w, const char* rel, const char* desc) {
         abandon(w);
         return false;
     }
-    // The one folder a name may have (a handle's, a satellite's, a system folder).
-    const char* slash = strrchr(rel, '/');
+    // The one folder a name may have (a handle's, a satellite's, a system
+    // folder): a second slash is refused, as the Photos area lists one level.
+    const char* slash = strchr(rel, '/');
+    if (slash && (slash == rel || !slash[1] || strchr(slash + 1, '/'))) {
+        abandon(w);
+        return false;
+    }
     if (slash) {
         char sub[200];
         snprintf(sub, sizeof(sub), "%s/%.*s", d, static_cast<int>(slash - rel), rel);
@@ -145,18 +148,17 @@ bool file(Writer& w, const char* rel, const char* desc) {
         return false;
     }
     w.tmp[0] = '\0';
+    // Its FILES.BBS line is asked of the file areas, that file's one writer
+    // (1.1.2), with the folder relative to Photos ("" for Photos itself). The
+    // ask is queued: the line follows the picture, never holds it up.
     if (desc && *desc) {
-#ifdef BBS_HAS_CAMERA
-        // MERGE NOTE: 1.1.2a's files::photoDesc(sub, name, text) asks, with
-        // sub relative to Photos; main's takes the folder's full path.
-        char folder[256];
-        snprintf(folder, sizeof(folder), "%s", dst);
-        char* cut = strrchr(folder, '/');
-        if (cut) {
-            *cut = '\0';
-            files::photoDesc(folder, cut + 1, desc);
+        char sub[64] = "";
+        const char* name = rel;
+        if (slash) {
+            snprintf(sub, sizeof(sub), "%.*s", static_cast<int>(slash - rel < 63 ? slash - rel : 63), rel);
+            name = slash + 1;
         }
-#endif
+        files::photoDesc(sub, name, desc);
     }
     return true;
 }

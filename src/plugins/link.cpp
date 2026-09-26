@@ -83,8 +83,13 @@ namespace {
 constexpr const char kName[]     = "link";
 constexpr uint8_t    kFamilies   = 4;
 constexpr uint8_t    kCtrlSlots  = 8;      // the loop's ring
-constexpr uint8_t    kBulkSlots  = 16;     // the runner's: one bulk window (16) of fragments
-constexpr uint8_t    kBulkWin    = 16;
+// The bulk window, and the runner's ring that holds one window of fragments:
+// 16 on a board without PSRAM (3.5 KB of window), 64 on one with it (14 KB,
+// in PSRAM), chosen at start (plat::linkRadioPsram). The camsat bench on the
+// S3 (72-88 KB/s at 16, no retries) was paced by the window, not the radio.
+constexpr uint8_t    kBulkWinSmall = 16;
+constexpr uint8_t    kBulkWinBig   = 64;
+uint8_t              g_bulkWin     = kBulkWinSmall;
 constexpr uint32_t   kLingerMs   = 50;     // the job waits this long for the next fragment
 constexpr uint32_t   kJobMaxMs   = 500;    // and gives the runner back after this long
 constexpr uint32_t   kPairMs     = 120000;
@@ -529,7 +534,8 @@ bool start(Bbs& bbs) {
     (void)bbs;
     g_index = plugins::indexOf(kName);
     buryGraves();
-    if (!plat::linkRadioStart(kCtrlSlots, kBulkSlots)) {
+    g_bulkWin = plat::linkRadioPsram() ? kBulkWinBig : kBulkWinSmall;
+    if (!plat::linkRadioStart(kCtrlSlots, g_bulkWin)) {
         plat::log("link: no radio (ESP-NOW would not start)");
         return true;                  // the commands stay, and say why
     }
@@ -537,7 +543,7 @@ bool start(Bbs& bbs) {
     if (!mem) { plat::linkRadioStop(); return false; }
     Ctx* c = new (mem) Ctx();
     c->radio.owner = c;
-    const uint8_t win = kBulkWin;
+    const uint8_t win = g_bulkWin;
     c->win = static_cast<uint8_t*>(plat::linkAlloc(static_cast<size_t>(win) * ulink::kPayloadMax));
     ulink::Events ev;
     ev.ctx       = c;
@@ -715,7 +721,7 @@ void cmdList(Bbs& b, Session& s) {
                                       : "Frame %uus, worst %u. Ring %u/%u, %u/%u",
              static_cast<unsigned>(e.frameUsAvg()), static_cast<unsigned>(e.frameUsMax()),
              static_cast<unsigned>(plat::linkRadioRingHigh()), static_cast<unsigned>(kCtrlSlots),
-             static_cast<unsigned>(plat::linkRadioBulkHigh()), static_cast<unsigned>(kBulkSlots));
+             static_cast<unsigned>(plat::linkRadioBulkHigh()), static_cast<unsigned>(g_bulkWin));
     b.rowText(s, Color::Grey, line);
     if (const uint8_t slow = plat::linkRadioSlowPeers()) {
         snprintf(line, sizeof(line), wide ? "%u device%s at 1 Mbps after failed sends, 24 again after 30 s clean."

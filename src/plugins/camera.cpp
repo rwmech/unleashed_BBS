@@ -499,16 +499,6 @@ bool tables(Job& j, const uint8_t* pic, size_t len, uint8_t (*lut)[256]) {
     return j.fixed;
 }
 
-// mkdirs: the folders of a path under Photos, made as needed.
-void mkdirs(const char* dir, const char* rel) {
-    mkdir(dir, 0755);
-    char p[192];
-    const char* slash = strrchr(rel, '/');
-    if (!slash) return;
-    snprintf(p, sizeof(p), "%s/%.*s", dir, static_cast<int>(slash - rel), rel);
-    mkdir(p, 0755);
-}
-
 // A photo the survey found: where it is, so the second pass can find it.
 struct Found {
     uint64_t key;
@@ -782,20 +772,21 @@ uint8_t* shoot(Job& j, size_t& len) {
     return copy;
 }
 
-// save: write the picture under the temporary name and rename it into
-// place. Never over a photo that is there already (FatFs refuses a rename
-// onto a name, and the camera never removes one to make room).
+// save: write the picture through the shared filing (photos.h, 1.2.0, the
+// path a camera satellite's pictures take too): a temporary name in Photos,
+// then one rename into place, and its FILES.BBS line asked of the file
+// areas. Never over a photo that is there already (FatFs refuses a rename
+// onto a name, and nothing removes one to make room).
 void save(Job& j, const char* photos, const uint8_t* jpg, size_t len) {
     uint32_t t0 = plat::millis();
-    mkdirs(photos, j.rel);
-    char tmp[192], dst[256];
-    snprintf(tmp, sizeof(tmp), "%s/%s", photos, camrules::kTmpName);
+    char dst[256];
     snprintf(dst, sizeof(dst), "%s/%s", photos, j.rel);
     struct stat st;
     if (stat(dst, &st) == 0) { fail(j, "a photo with that name is already there"); return; }
 
-    FILE* fp = disk::open(tmp, "wb");
-    if (!fp) { fail(j, "the card would not take the photo"); return; }
+    photos::Writer pw;
+    if (!photos::open(pw, camrules::kTmpName)) { fail(j, "the card would not take the photo"); return; }
+    FILE* fp = pw.f;
     FileOut fo{ fp, 0, true };
     bool ok = false;
     if (j.doMark) {
@@ -828,7 +819,7 @@ void save(Job& j, const char* photos, const uint8_t* jpg, size_t len) {
             if (!said) plat::log("camera: the photo could not be re-encoded; saving it as the sensor gave it");
             said = true;
             fclose(fp);
-            fp = disk::open(tmp, "wb");
+            fp = pw.f = disk::open(pw.tmp, "wb");
             fo = FileOut{ fp, 0, fp != nullptr };
         }
     }
@@ -837,36 +828,16 @@ void save(Job& j, const char* photos, const uint8_t* jpg, size_t len) {
         camrules::ComSink sink(fileOut, &fo, j.comment);
         ok = sink.put(jpg, len) && fo.ok;
     }
-    if (fp) {
-        if (fflush(fp) != 0) ok = false;
-        fsync(fileno(fp));
-        if (fclose(fp) != 0) ok = false;
-    } else {
-        ok = false;
-    }
-    if (!ok || rename(tmp, dst) != 0) {
-        remove(tmp);
+    pw.ok = ok && fp != nullptr;
+    // Who took a caller's photo goes in its folder's FILES.BBS, as any file
+    // is described. Not the board's own: their names say whose they are, and
+    // a thousand-line FILES.BBS rewritten for every timed shot is card wear
+    // and seconds of the card's time for nothing.
+    if (!photos::file(pw, j.rel, j.kind == K_CALLER ? j.desc : nullptr)) {
         fail(j, "the card would not take the photo");
         return;
     }
     j.bytes  = static_cast<uint32_t>(fo.written);
-    // Who took a caller's photo, in its folder's FILES.BBS, as any file is
-    // described. Not the board's own: their names say whose they are, and a
-    // thousand-line FILES.BBS rewritten for every timed shot is card wear
-    // and seconds of the card's time for nothing.
-    if (j.kind == K_CALLER) {
-        // Asked of the file areas, FILES.BBS's one writer (1.1.2): the
-        // handle folder under Photos, or Photos itself.
-        char rel[112];
-        snprintf(rel, sizeof(rel), "%s", j.rel);
-        char* slash = strrchr(rel, '/');
-        if (slash) {
-            *slash = '\0';
-            files::photoDesc(rel, slash + 1, j.desc);
-        } else {
-            files::photoDesc("", rel, j.desc);
-        }
-    }
     j.msSave = plat::millis() - t0;
 }
 
@@ -1590,6 +1561,14 @@ void camCommand(void*, Bbs& b, Session& s, const char* arg, uint32_t now) {
 
 const photos::Camera kCam = { "camera", 0, nullptr, camUp, camBusy, camSnap, camLine, camCommand };
 
+// This camera as a provider of the Photos area (photos.h): the file areas
+// ask photos::present and photos::levels, not the camera, so a satellite's
+// pictures and this camera's share one area at the more open of the two
+// cameras' levels.
+bool provRunning() { return camera::running(); }
+void provLevels(PlugLevel& see, PlugLevel& rm) { camera::photosLevels(see, rm); }
+const photos::Provider kProv = { "camera", provRunning, provLevels };
+
 // ---------------------------------------------------------------------------
 // CONFIG camera. Labels are 9 characters at 40 columns; the wide ones for
 // 80 are the plan's wording.
@@ -1740,11 +1719,13 @@ bool start(Bbs& bbs) {
     if (p == PH_DONE || p == PH_FAILED) { g_job.waiting = false; finish(plat::millis()); }
     if (!jobBusy()) g_surveyWanted = true;
     photos::addCamera(kCam);                           // SNAPSHOT and CAMERA reach it
+    photos::provide(kProv);                            // and Photos is there while it runs
     return true;
 }
 
 void stop() {
     photos::removeCamera(kCam);
+    photos::withdraw(kProv);
     g_running = false;
     flashSet(g_job, false);                            // never left on by a plugin that stopped
 }

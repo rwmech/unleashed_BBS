@@ -7460,8 +7460,8 @@ def test_camera_registry():
     def snapped(cmd):
         c.buf.clear()
         c.send(cmd + b"\r")
-        wait_any(c, [b"Download it now?", b"No camera", b"not taking", b"not open to you", b"allowed at",
-                     b"busy"], 12)
+        wait_any(c, [b"Download it now?", b"No camera", b"No such camera", b"not taking", b"not open to you",
+                     b"allowed at", b"busy"], 12)
         c.pump(0.4)
         got = plain(c.buf)
         if b"Download it now?" in got:
@@ -7479,7 +7479,11 @@ def test_camera_registry():
     got = snapped(b"snapshot camera")
     ok &= check("and so is SNAPSHOT camera, by name", f"Snapshot {first + 2} of 10 this hour".encode() in got)
     got = snapped(b"snapshot 7")
-    ok &= check("a camera the board does not have is said so", b"No camera by that name or number" in got)
+    ok &= check("a camera the board does not have is said so, with the ones it has (CAMERA is staff's)",
+                b"No such camera. Try: 1 camera." in got)
+    s.buf.clear()
+    s.send(b"snapshot 7\r")
+    ok &= check("and staff are pointed at CAMERA", s.wait_for(b"CAMERA lists them", 4))
     s.buf.clear()
     s.send(b"camera camera\r")
     ok &= check("CAMERA camera is the built-in camera's own view", s.wait_for(b"Card free", 4))

@@ -31,11 +31,10 @@
 //               Everything in the Writer half is card I/O: the background
 //               runner's, never the loop's (Rule no. 1).
 //
-//               MERGE NOTE (written against rel-1.1.2a, 2026-09-26): at the
-//               1.1.2 merge, plugins/camera.cpp files its pictures through
-//               this, and plugins/files.cpp asks present()/levels() where it
-//               now asks BBS_HAS_CAMERA and camera::photosLevels. Neither is
-//               done on this branch because 1.1.2a rewrote both.
+//               Since 1.2.0-link.7 (on 1.1.2) the built-in camera files its
+//               pictures through this and provides Photos, and the file
+//               areas ask present() and levels(), so Photos and Timelapse
+//               exist on every board, shown while something takes pictures.
 //
 // Targets:      ESP32 and ESP32-S3 (ESP-IDF 5.3.1) and the Linux host build
 // See also:     LINK.md (Family 1: CAMERA), src/plugins/camera_rules.h (names)

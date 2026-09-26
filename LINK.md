@@ -363,7 +363,10 @@ One layout on every transport. Little-endian throughout.
   (streams, 4) unacknowledged. The receiver states `win` in `HELLO`,
   `HELLO_ACK` and every `ACK`, and states 0 when it has no room, which is
   how a slow caller's terminal throttles a door box. 16 fragments for bulk
-  on every board as built (3.5 KB of buffer); the engine takes up to 64.
+  on a board without PSRAM (3.5 KB of window), 64 on one with it (14 KB, in
+  PSRAM; link.7, after the camsat bench found the S3 paced by a 16-fragment
+  window at 72-88 KB/s with no retries). The SACK bitmap covers 32 past the
+  first gap, so at 64 a loss can cost a few needless resends, never data.
 - **Closing.** `closeAfter` ends a session once what is queued on it has
   been taken and the ACK this end owes has gone; the session then leaves a
   tombstone (8 kept, 30 s each). A resend of something already taken on a
@@ -746,6 +749,19 @@ At `1.2.0-link.6` (the camera registry in the core): esp32dev `_bss_end`
 board: `_bss_end` 0x3ffda498, 173,208, 7,528 free, flash 85.9%. The S3
 builds at 83.6% flash. The callers' snap windows (about 2 KB) are taken
 from the heap at the first camera, as the built-in camera took them before.
+
+At `1.2.0-link.7`, rebased on main 1.1.2-dev.3 (the runner, SSH on the S3),
+off the ELFs:
+
+| Image | Static RAM (`_bss_end`) | Free | Against main at 1.1.2-dev.1 | Flash (PlatformIO) |
+|---|---|---|---|---|
+| esp32dev | 164,368 | 16,368 of 180,736 | +568 | 1,301,028 (82.7%) |
+| Freenove WROVER CAM | 175,720 | 5,016 | +400 | 1,374,456 (87.4%) |
+| AI-Thinker ESP32-CAM | 177,192 | **3,544** | +416 | 1,429,460 (90.9%) |
+| Waveshare S3 (8 MB layout) | 254,672 of 341,760 (`_bss_end - 0x3FC88000`) | 87,088 | +4,176, SSH's included | 1,476,040 of a 3 MB slot (46.9%) |
+
+The ESP32-CAM is the one to watch: 3.5 KB of static RAM and 91% of its
+program slot. The camera boards' PSRAM move (1.3.0) is what buys it room.
 
 ---
 

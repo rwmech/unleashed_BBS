@@ -626,6 +626,22 @@ int main() {
         check("a second picture on the same session", host.bulkOk == 2 && host.bulk == small);
     }
 
+    printf("A picture into a 64-fragment window (a board with PSRAM)\n");
+    {
+        Air air;
+        End host(air, 1, Role::Host, 64, 31);
+        End peer(air, 2, Role::Peer, 16, 32);
+        check("paired and up", pairUp(air, host, peer, 3));
+        air.loss = 10; air.dup = 5; air.reorder = 20;
+        std::vector<uint8_t> jpeg = blob(60 * 1024, 91);
+        uint16_t ps = peer.eng->openSession(0, FAM_CAMERA);
+        peer.eng->sendBulk(0, ps, FAM_CAMERA, 2, jpeg.data(), static_cast<uint32_t>(jpeg.size()));
+        bool done = runUntil(air, { &host, &peer }, 180000,
+                             [&] { return host.bulkOk + host.bulkBad > 0 && peer.bulkSentOk + peer.bulkSentFail > 0; });
+        check("60 KB arrives whole through the wider window", done && host.bulk == jpeg && host.bulkOk == 1);
+        check("and the sender is told it was taken", peer.bulkSentOk == 1);
+    }
+
     printf("A picture the host refuses\n");
     {
         Air air;

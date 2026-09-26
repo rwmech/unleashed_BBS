@@ -873,6 +873,17 @@ this tree.
       are ONE budget across all cameras (Rob). camera.cpp lost its command
       table and its limits table to the core: a small edit, but it touches
       a file 1.1.2a rewrote, so it is a merge point.
+    - **Rebased onto main at b278284 (link.7, 2026-09-26)**, after 1.1.2
+      part 1 and SSH; the pre-rebase history is kept on origin as
+      rel-1.2.0-link (the rebased branch is local only: replacing it there
+      is a force push, Rob's call). The link's job found
+      `core/runner.h` by itself. The camera now files through `photos::`
+      and provides Photos; the file areas ask `photos::present`/`levels`,
+      so Photos (12) and Timelapse (13) are on every board, shown while a
+      camera or satellite runs. Bulk window 64 with PSRAM, 16 without.
+      Open, for Rob: the S3's internal heap was 26-36 KB free with a
+      satellite snapping on link.6 against 65 KB on link.5's old layout
+      (camsat bench); the SSH preview's share is the suspect.
     - Retries count only while the far end is heard and only for a
       session's oldest message: the first version failed a session behind
       one lost frame, and a channel hop killed sessions that should pause.
