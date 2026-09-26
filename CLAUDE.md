@@ -788,6 +788,13 @@ this tree.
     picks are redone once the satellite works.
   - Bench: the ESP32-CAM without a card on COM15 as the satellite, and
     the Waveshare S3 on COM12 as its BBS.
+  - **Split (Rob, 2026-09-26):** 1.2.0 is the hardware release: the link,
+    camera satellites, the door framework, the panel skins and the
+    Makerfabs board. **1.3.0** takes the rotating /i pages, the BBS
+    classics (sysop chat, oneliners and censorship, CALLS top-10 stats,
+    voting booth, credits, FILE_ID.DIZ) and the camera boards' PSRAM
+    memory move. The entries below that say "1.2.0" for those items now
+    mean 1.3.0.
 - **1.1.2 scope, decided by Rob 2026-09-26** (discussed before coding):
   - A read-only audit first of every path that can hold the loop over
     50 ms (internal/audit-1.1.2-2026-09-26.md); the worst move onto one
