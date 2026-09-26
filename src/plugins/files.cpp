@@ -3060,7 +3060,9 @@ struct Edit {
     char    text[kDescMax + 1] = {};
 };
 constexpr uint8_t kEdits = 4;
-Edit        g_edit[kEdits];
+// On the heap (PSRAM where the board has it) only while edits wait: 552
+// bytes of static DRAM on the two boards that have the least of it.
+Edit*       g_edit      = nullptr;     // under the runner's lock
 uint8_t     g_editHead  = 0;           // under the runner's lock
 uint8_t     g_editCount = 0;
 runner::Job g_editJob;
@@ -3143,15 +3145,33 @@ bool editQueue(uint8_t kind, const char* sub, const char* name, const char* text
     snprintf(e.sub, sizeof(e.sub), "%.23s", sub ? sub : "");
     snprintf(e.name, sizeof(e.name), "%.63s", name ? name : "");
     snprintf(e.text, sizeof(e.text), "%.*s", static_cast<int>(kDescMax), text ? text : "");
-    plat::runLock();
-    const bool room = g_editCount < kEdits;
-    if (room) {
-        g_edit[(g_editHead + g_editCount) % kEdits] = e;
-        ++g_editCount;
+    // The queue is made outside the lock (no allocating inside a critical
+    // section), and taken inside it only if nobody made one meanwhile; it
+    // can also be freed between the look and the lock, hence the second go.
+    Edit* spare = nullptr;
+    for (uint8_t tries = 0; tries < 2; ++tries) {
+        plat::runLock();
+        if (!g_edit && spare) { g_edit = spare; spare = nullptr; }
+        if (g_edit) {
+            const bool room = g_editCount < kEdits;
+            if (room) {
+                g_edit[(g_editHead + g_editCount) % kEdits] = e;
+                ++g_editCount;
+            }
+            plat::runUnlock();
+            if (spare) plat::camFree(spare);
+            if (!room) plat::log("files: a photo's description was not written: the queue was full");
+            return room;
+        }
+        plat::runUnlock();
+        void* mem = plat::camAlloc(sizeof(Edit) * kEdits);
+        if (!mem) break;
+        spare = static_cast<Edit*>(mem);
+        for (uint8_t i = 0; i < kEdits; ++i) new (&spare[i]) Edit();
     }
-    plat::runUnlock();
-    if (!room) plat::log("files: a photo's description was not written: the queue was full");
-    return room;
+    if (spare) plat::camFree(spare);
+    plat::log("files: a photo's description was not written: no memory for the queue");
+    return false;
 }
 }   // namespace
 
@@ -3164,7 +3184,10 @@ void editTick() {
     if (!runner::idle(g_editJob)) return;
     plat::runLock();
     const bool waiting = g_editCount != 0;
+    Edit* drop = nullptr;
+    if (!waiting && g_edit) { drop = g_edit; g_edit = nullptr; g_editHead = 0; }
     plat::runUnlock();
+    if (drop) plat::camFree(drop);                 // nothing waits: back to the heap
     if (!waiting) return;
     g_editJob.work = editWork;
     g_editJob.name = "files descriptions";

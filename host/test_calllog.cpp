@@ -38,6 +38,7 @@
 #include "../src/core/calllog.h"
 #include "../src/core/clock.h"
 #include "../src/platform/platform.h"
+#include "../src/core/runner.h"
 
 // ---- stubs: what calllog.cpp asks of the platform and the clock -----------
 static std::string g_dir;
@@ -48,6 +49,13 @@ const char* logsBase() { return g_dir.c_str(); }
 const char* sdBase()   { return ""; }                  // no card: no mirror
 void log(const char* fmt, ...) { (void)fmt; }
 void diskPulse(DiskKind) {}                            // the drive light (core/disk.h, 1.1.1)
+void hostDiskOpen(const char*, const char*) {}         // the host's cost per open (1.1.2)
+void runLock() {}                                      // the card mirror's queue (1.1.2)
+void runUnlock() {}
+}
+namespace runner {
+bool post(Job&) { return false; }                      // no card here, so nothing is mirrored
+void breathe() {}
 }
 namespace clk {
 uint32_t todayStart() { return g_midnight; }

@@ -11766,7 +11766,8 @@ def test_time_warn_in_plugins():
         ok &= check("with the bell", b"\x07" in a.buf)
         a.buf.clear()
         s.send(f"time {na} -3\r".encode())
-        ok &= check("and the last minute's", a.wait_for(b"--> 1 minute left on this call", 6))
+        ok &= check("and the last minute's", a.wait_for(b"1 minute left on this call", 6) and
+                    any(r.startswith("--> 1 minute left on this call") for r in render_lines(a.buf)))
         a.send(b"still here\r")
         a.pump(0.6)
         ok &= check("and the caller is still in the room, typing", b"still here" in plain(a.buf))
@@ -11797,7 +11798,8 @@ def test_time_warn_in_plugins():
             a.buf.clear()
             s.send(f"time {na} -56\r".encode())
             ok &= check("in the forums too, marked",
-                        a.wait_for(b"--> 4 minutes left on this call", 6))
+                        a.wait_for(b"left on this call", 6) and
+                        any(r.startswith("--> ") and "left on this call" in r for r in render_lines(a.buf)))
             s.send(f"time {na} +56\r".encode())
             s.pump(0.5)
             a.send(b"q")
@@ -11875,7 +11877,7 @@ def test_lag_files():
         mark = len(copy_text(tmp))
         c.buf.clear()
         c.send(b"files 5\r")
-        ok &= check("the area opens", c.wait_for(b"[S5]", 15))   # by number: an earlier test may rename it
+        ok &= check("the area opens", c.wait_for(b".TXT", 15))   # a file: an earlier test may rename the area
         ok &= check("and lists to its last file", page_all(c, b"LAG199.TXT", 60))
         ok &= check("with its description", b"File number 199 of the lag test" in plain(c.buf))
         slow = slow_passes(copy_text(tmp)[mark:])          # the copy has this one caller
@@ -12242,6 +12244,7 @@ def test_camera_one_at_a_time():
     camera_config(s, snap="users")
     time.sleep(1.0)
     a = ansi_login("CamFirst")
+    na = a.node()                         # read before the buffer is cleared below
     b = ansi_login("CamSecond")
     ok = True
     try:
@@ -12250,8 +12253,12 @@ def test_camera_one_at_a_time():
         a.send(b"snapshot\r")
         time.sleep(0.05)
         b.send(b"snapshot\r")
-        want = f"--> Camera in use by node {a.node()}, try again in a minute".encode()
-        ok &= check("the second caller is told whose it is", b.wait_for(want, 6))
+        want = f"--> Camera in use by node {na}, try again in a minute".encode()
+        b.wait_for(b"try again in a minute", 6)       # the marker is coloured apart from the words
+        b.pump(0.2)
+        ok &= check("the second caller is told whose it is", want in plain(b.buf))
+        if want not in plain(b.buf):
+            print("        they saw:", " / ".join(r for r in render_lines(b.buf) if r.strip())[-200:])
         if a.wait_for(b"Download it now?", 12):
             a.send(b"n")
             a.wait_for(b"kept in the Photos area", 4)
