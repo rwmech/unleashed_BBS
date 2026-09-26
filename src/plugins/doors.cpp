@@ -79,6 +79,7 @@ constexpr uint8_t    kKeyBuf    = 64;            // keys held while the box's wi
 constexpr uint32_t   kOpenMs    = 5000;
 constexpr uint32_t   kGraceMs   = 10000;
 constexpr int32_t    kTimeUpSec = 15;             // TIMEUP this long before the core hangs up
+constexpr uint32_t   kCloseMs   = 5000;           // a CLOSE the window would not take: tried this long
 
 struct Door {
     bool    used;
@@ -88,7 +89,10 @@ struct Door {
     char    name[kDoorName + 1];
 };
 
-enum : uint8_t { ST_FREE, ST_OPENING, ST_IN, ST_TIMEUP };
+// ST_CLOSING: the caller is back at the prompt, and the box has still to be
+// told (its session's window was full when they left). Belongs to no node.
+enum : uint8_t { ST_FREE, ST_OPENING, ST_IN, ST_TIMEUP, ST_CLOSING };
+constexpr uint8_t kNoNode = 0xFF;
 
 // One caller in a door. Found by node, never by Session*: the pool reuses
 // sessions, and a slot outliving its caller would hand the next one a door.
@@ -98,7 +102,8 @@ struct Slot {
     uint8_t  peer;
     uint16_t sess;
     uint8_t  door;
-    uint32_t at;              // opening: when OPEN went; timeup: when TIMEUP went
+    uint8_t  closeWhy;        // closing: the DC_ reason CLOSE carries
+    uint32_t at;              // opening: when OPEN went; timeup: when TIMEUP went; closing: since
     uint8_t  warned;          // 0, 5 or 1: the last WARN sent
     uint8_t  cols, rows;
     uint8_t  escapes;         // Ctrl-] in a row
@@ -134,24 +139,46 @@ Slot* slotOfSession(uint8_t peer, uint16_t sess) {
 
 Slot* slotOfNode(uint8_t node) {
     if (!g_ctx) return nullptr;
-    for (Slot& sl : g_ctx->slots) if (sl.st != ST_FREE && sl.node == node) return &sl;
+    for (Slot& sl : g_ctx->slots)
+        if (sl.st != ST_FREE && sl.st != ST_CLOSING && sl.node == node) return &sl;
     return nullptr;
 }
 
-// giveBack: the caller comes back to the prompt with a line saying why. The
-// session on the link is closed here, and CLOSE told to the box if asked.
-void giveBack(Slot& sl, Color col, const char* why, uint8_t closeReason) {
+// tryClose: CLOSE to the box, the last message on the session, which the
+// engine forgets once CLOSE is acknowledged or out of tries. True when it is
+// done with (sent, or never can be); false when the window is full and the
+// slot is to try again next tick.
+bool tryClose(Slot& sl) {
     ulink::Engine* e = linkp::engine();
-    if (e && closeReason) {
-        // CLOSE is the last thing on the session; the engine forgets it once
-        // CLOSE is acknowledged or has run out of tries.
-        e->send(sl.peer, sl.sess, ulink::FAM_DOOR, DOOR_CLOSE, &closeReason, 1);
-        e->closeAfter(sl.peer, sl.sess);
-    } else if (e) {
+    if (!e) return true;
+    const int r = e->send(sl.peer, sl.sess, ulink::FAM_DOOR, DOOR_CLOSE, &sl.closeWhy, 1);
+    if (r == 1)  { e->closeAfter(sl.peer, sl.sess); return true; }
+    if (r < 0)   { e->closeSession(sl.peer, sl.sess); return true; }
+    return false;
+}
+
+// endLink: the session on the link, ended. No reason: forgotten here only
+// (the box has gone, or said so itself). A reason: CLOSE told to the box,
+// now or from tick while the session's window is full.
+void endLink(Slot& sl, uint8_t closeReason) {
+    ulink::Engine* e = linkp::engine();
+    sl.node = kNoNode;
+    if (!e) { sl.st = ST_FREE; return; }
+    if (!closeReason) {
         e->closeSession(sl.peer, sl.sess);
+        sl.st = ST_FREE;
+        return;
     }
+    sl.closeWhy = closeReason;
+    sl.at = plat::millis();
+    sl.st = tryClose(sl) ? ST_FREE : ST_CLOSING;
+}
+
+// giveBack: the caller comes back to the prompt with a line saying why, and
+// the link session is ended (endLink).
+void giveBack(Slot& sl, Color col, const char* why, uint8_t closeReason) {
     Session* s = sessionOf(sl.node);
-    sl.st = ST_FREE;
+    endLink(sl, closeReason);
     if (!s) return;
     bbs().setRawInput(*s, false);
     s->term.reset(s->tl);
@@ -198,7 +225,7 @@ bool onMessage(uint8_t peer, uint16_t sess, uint8_t type, const uint8_t* p, size
         return true;
     }
     Slot* sl = slotOfSession(peer, sess);
-    if (!sl) return true;                          // a caller already gone: drop it
+    if (!sl || sl->st == ST_CLOSING) return true;  // a caller already gone: drop it
     Session* s = sessionOf(sl->node);
     if (!s) { giveBack(*sl, Color::Grey, "", DC_HUNGUP); return true; }
 
@@ -370,17 +397,20 @@ void cmdDoors(Bbs& b, Session& s, const char* arg, uint32_t now) {
     uint8_t msg[ulink::kPayloadMax];
     msg[0] = d.id;
     size_t len = 1 + handoff(s, sess, now, reinterpret_cast<char*>(msg + 1), sizeof(msg) - 1);
-    if (e->send(d.peer, sess, ulink::FAM_DOOR, DOOR_OPEN, msg, len) != 1 || !b.own(s, g_index)) {
-        e->closeSession(d.peer, sess);
+    memset(sl, 0, sizeof(*sl));
+    sl->peer = d.peer;
+    sl->sess = sess;
+    const int sent = e->send(d.peer, sess, ulink::FAM_DOOR, DOOR_OPEN, msg, len);
+    if (sent != 1 || !b.own(s, g_index)) {
+        // Nothing went: forget the session. OPEN went and the board could
+        // not take the caller: the box is told, so it does not sit waiting.
+        endLink(*sl, sent == 1 ? DC_TAKENBACK : 0);
         s.term.text(s.tl, "The link is busy. Try again in a moment.");
         b.prompt(s);
         return;
     }
-    memset(sl, 0, sizeof(*sl));
     sl->st = ST_OPENING;
     sl->node = s.id;
-    sl->peer = d.peer;
-    sl->sess = sess;
     sl->door = static_cast<uint8_t>(n - 1);
     sl->at = now;
     sl->cols = s.term.cols();
@@ -430,14 +460,7 @@ void onKey(Session& s, int k, uint32_t now) {
 
 void onLogoff(Session& s) {
     Slot* sl = slotOfNode(s.id);
-    if (!sl) return;
-    ulink::Engine* e = linkp::engine();
-    const uint8_t r = DC_HUNGUP;
-    if (e) {
-        e->send(sl->peer, sl->sess, ulink::FAM_DOOR, DOOR_CLOSE, &r, 1);
-        e->closeAfter(sl->peer, sl->sess);
-    }
-    sl->st = ST_FREE;
+    if (sl) endLink(*sl, DC_HUNGUP);
 }
 
 void tick(uint32_t now) {
@@ -446,6 +469,17 @@ void tick(uint32_t now) {
     if (!c) return;
     for (Slot& sl : c->slots) {
         if (sl.st == ST_FREE) continue;
+        if (sl.st == ST_CLOSING) {
+            if (tryClose(sl)) {
+                sl.st = ST_FREE;
+            } else if (now - sl.at > kCloseMs) {
+                // The box is not taking anything on this session: forget it
+                // here. It finds out from its own side (the session resets).
+                if (e) e->closeSession(sl.peer, sl.sess);
+                sl.st = ST_FREE;
+            }
+            continue;
+        }
         Session* s = sessionOf(sl.node);
         if (!s || !e) { giveBack(sl, Color::Grey, "The link stopped.", 0); continue; }
         if (sl.st == ST_OPENING) {
@@ -496,7 +530,15 @@ bool start(Bbs&) {
 void stop() {
     linkp::unregisterFamily(ulink::FAM_DOOR);
     if (!g_ctx) return;
-    for (Slot& sl : g_ctx->slots) if (sl.st != ST_FREE) giveBack(sl, Color::Grey, "The doors are closing.", DC_CLOSING);
+    ulink::Engine* e = linkp::engine();
+    for (Slot& sl : g_ctx->slots) {
+        if (sl.st == ST_FREE) continue;
+        if (sl.st != ST_CLOSING) giveBack(sl, Color::Grey, "The doors are closing.", DC_CLOSING);
+        // No tick left to retry a CLOSE the window would not take: a RESET
+        // needs no window, and the box hears the session has ended.
+        if (sl.st == ST_CLOSING && e) e->resetSession(sl.peer, sl.sess, ulink::R_CLOSED);
+        sl.st = ST_FREE;
+    }
     plat::linkFree(g_ctx);
     g_ctx = nullptr;
 }

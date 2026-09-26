@@ -80,8 +80,11 @@ const Plugin* const kPlugins[] = {
 #ifdef BBS_HAS_CAMERA
     &kCameraPlugin,
 #endif
-    &kLinkPlugin,
+    // doors before link: plugins stop in this order, so the doors close their
+    // sessions (a CLOSE each) while the link is still there to send them,
+    // and the link's stop() flushes them to the radio.
     &kDoorsPlugin,
+    &kLinkPlugin,
 #define BBS_EXT_LIST(sym) &sym,
     BBS_EXT_PLUGINS(BBS_EXT_LIST)
 #undef BBS_EXT_LIST

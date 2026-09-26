@@ -180,6 +180,10 @@ bool ccmOpen(const uint8_t key[kKey], const uint8_t iv[kNonce], const uint8_t* a
     return ok;
 }
 
+void sha256(const uint8_t* in, size_t n, uint8_t out[32]) {
+    mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), in, n, out);
+}
+
 void hmac(const uint8_t* key, size_t keyLen, const uint8_t* in, size_t n, uint8_t out[32]) {
     mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), key, keyLen, in, n, out);
 }

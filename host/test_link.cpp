@@ -43,11 +43,15 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>. The full
 // text is in the LICENSE file at the top of this repository.
 // ===========================================================================
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "../src/core/link.h"
@@ -76,7 +80,8 @@ struct Rand {
 // ---------------------------------------------------------------------------
 // The medium
 // ---------------------------------------------------------------------------
-static uint32_t g_now = 1000;
+// Atomic: a node in split mode has a real second thread (the runner) reading it.
+static std::atomic<uint32_t> g_now{ 1000 };
 
 struct Node;
 
@@ -88,6 +93,9 @@ struct Air {
         std::vector<uint8_t> data;
     };
     std::vector<Node*> nodes;
+    // A split node's runner sends too (its ACKs, 1.2.0-link.5), so the air
+    // is shared between two threads: one lock over what is flying.
+    std::recursive_mutex mu;
     std::deque<Frame> flying;
     Rand rnd{ 12345 };
     uint32_t loss = 0, dup = 0, reorder = 0;     // percent
@@ -101,10 +109,19 @@ struct Node : Io {
     Mac mac;
     uint8_t chan = 1;
     bool present = true;                  // false: switched off
-    uint32_t busyUntil = 0;
+    std::atomic<uint32_t> busyUntil{ 0 };
     std::deque<std::pair<Mac, std::vector<uint8_t>>> inbox;
     Rand rnd;
     uint32_t chanMoves = 0;
+    // Split mode: the radio sorts bulk fragments into their own queue, which
+    // a real second thread (the runner) empties with pumpRx, as the board's
+    // radio does (1.2.0 bench). The engine's lock is a real recursive mutex.
+    bool split = false;
+    std::mutex bulkMu;
+    std::deque<std::pair<Mac, std::vector<uint8_t>>> bulkInbox;
+    std::recursive_mutex lk;
+    bool assoc = true;
+    uint8_t failStreak = 0;
 
     Node(Air& a, uint8_t last, uint64_t seed) : air(a), rnd(seed) {
         uint8_t m[6] = { 0x02, 0, 0, 0, 0, last };
@@ -134,9 +151,35 @@ struct Node : Io {
     uint8_t channel() override { return chan; }
     void setChannel(uint8_t c) override { if (c != chan) ++chanMoves; chan = c; }
     uint32_t unixTime() override { return 1790000000u + g_now / 1000; }
+    size_t recvBulk(uint8_t* out, size_t cap, Mac& from, int8_t& rssi) override {
+        std::lock_guard<std::mutex> g(bulkMu);
+        if (bulkInbox.empty()) return 0;
+        auto& fr = bulkInbox.front();
+        size_t n = fr.second.size() < cap ? fr.second.size() : cap;
+        memcpy(out, fr.second.data(), n);
+        from = fr.first;
+        rssi = -50;
+        bulkInbox.pop_front();
+        return n;
+    }
+    void lock() override { lk.lock(); }
+    void unlock() override { lk.unlock(); }
+    bool associated() override { return assoc; }
+    uint8_t macFailStreak() override { return failStreak; }
+    void deliver(const Mac& from, const std::vector<uint8_t>& d) {
+        // The sort the board's radio does in its receive callback: bytes 10-11
+        // are nfrag, unauthenticated, so only a routing decision.
+        if (split && d.size() >= kHdr && (d[10] | (d[11] << 8)) > 1) {
+            std::lock_guard<std::mutex> g(bulkMu);
+            bulkInbox.emplace_back(from, d);
+        } else {
+            inbox.emplace_back(from, d);
+        }
+    }
 };
 
 void Air::transmit(Node& from, const Mac* to, const uint8_t* f, size_t n) {
+    std::lock_guard<std::recursive_mutex> g(mu);
     captured.emplace_back(f, f + n);
     for (Node* nd : nodes) {
         if (nd == &from || !nd->present) continue;
@@ -151,11 +194,12 @@ void Air::transmit(Node& from, const Mac* to, const uint8_t* f, size_t n) {
 }
 
 void Air::step() {
+    std::lock_guard<std::recursive_mutex> g(mu);
     for (auto it = flying.begin(); it != flying.end();) {
         if (it->at <= g_now) {
             // Delivered only if the receiver is still on the channel: a
             // receiver that moved while the frame was in the air misses it.
-            if (it->to->present) it->to->inbox.emplace_back(it->from, it->data);
+            if (it->to->present) it->to->deliver(it->from, it->data);
             it = flying.erase(it);
         } else {
             ++it;
@@ -240,10 +284,26 @@ static void run(Air& air, std::vector<End*> ends, uint32_t ms) {
         for (End* e : ends) {
             e->eng->poll();
             if (e->eng->pairComputeWanted()) e->eng->pairCompute();
-            if (g_now % g_pumpEvery == 0) e->eng->pumpBulk(4);
+            // A split node's runner is a real thread (Runner below).
+            if (!e->node.split && g_now % g_pumpEvery == 0) e->eng->pumpBulk(4);
         }
     }
 }
+
+// Runner: a real second thread doing what the board's background runner
+// does for the link: take the sorted bulk fragments and feed the sink.
+struct Runner {
+    std::atomic<bool> stop{ false };
+    std::thread t;
+    explicit Runner(Engine* e) : t([this, e] {
+        while (!stop.load()) {
+            bool a = e->pumpRx(8);
+            bool b = e->pumpBulk(4);
+            if (!a && !b) std::this_thread::sleep_for(std::chrono::microseconds(50));
+        }
+    }) {}
+    ~Runner() { stop.store(true); t.join(); }
+};
 
 template <class F>
 static bool runUntil(Air& air, std::vector<End*> ends, uint32_t maxMs, F done) {
@@ -461,8 +521,15 @@ int main() {
         run(air, { &host, &peer }, 3000);
         check("nothing is paired until the sysop says yes", !host.paired && !peer.paired);
         host.eng->pairAnswer(true);
-        check("both ends finish pairing",
-              runUntil(air, { &host, &peer }, 20000, [&] { return host.paired && peer.paired; }));
+        bool bothPaired = runUntil(air, { &host, &peer }, 20000, [&] { return host.paired && peer.paired; });
+        if (!bothPaired) {
+            printf("    (host paired %d, peer paired %d, peer asked %d, peer chan %u)\n", host.paired, peer.paired,
+                   peer.asked, peer.node.chan);
+            for (uint8_t d = 0; d < D_COUNT; ++d)
+                if (host.eng->drops(d) || peer.eng->drops(d))
+                    printf("    (drops %-8s host %u peer %u)\n", dropName(d), host.eng->drops(d), peer.eng->drops(d));
+        }
+        check("both ends finish pairing", bothPaired);
         check("the code the peer shows is the host's", peer.pairedWho.code == host.askedWho.code);
         check("both hold the same key", memcmp(peer.pairedWho.key, host.pairedWho.key, 16) == 0);
         check("the peer followed the host to channel 6", peer.node.chan == 6);
@@ -577,6 +644,39 @@ int main() {
         runUntil(air, { &host, &peer }, 20000, [&] { return !peer.resets.empty(); });
         check("the sender hears REFUSED", !peer.resets.empty() && peer.resets[0] == R_REFUSED);
         check("and its bulk message is given up", peer.bulkSentFail == 1);
+    }
+
+    printf("The host closes each picture's session at once; its last ACK may be lost\n");
+    {
+        Air air;
+        End host(air, 1, Role::Host, 16, 41);
+        End peer(air, 2, Role::Peer, 16, 42);
+        check("paired and up", pairUp(air, host, peer, 9));
+        // What the camera plugin does: done with the session the moment the
+        // picture is filed (camsat bench: filed here, "failed" there).
+        host.ev.bulkEnd = [](void* c, uint8_t pi, uint16_t sess, uint8_t, bool ok) {
+            End& e = *static_cast<End*>(c);
+            if (ok) ++e.bulkOk; else ++e.bulkBad;
+            e.eng->closeAfter(pi, sess);
+        };
+        delete host.eng;
+        host.eng = new Engine(Role::Host, host.node, host.ev, 16, host.win.data());
+        host.eng->addPeer(peer.node.mac, host.pairedWho.key, KIND_CAMSAT);
+        runUntil(air, { &host, &peer }, 30000, [&] { return host.eng->peerUp(0) && peer.eng->peerUp(0); });
+        air.loss = 30;
+        const int kPics = 8;
+        for (int i = 0; i < kPics; ++i) {
+            std::vector<uint8_t> jpeg = blob(1500, static_cast<uint32_t>(i + 1));
+            uint16_t ps = peer.eng->openSession(0, FAM_CAMERA);
+            peer.eng->sendBulk(0, ps, FAM_CAMERA, 2, jpeg.data(), static_cast<uint32_t>(jpeg.size()));
+            runUntil(air, { &host, &peer }, 60000, [&] { return peer.bulkSentOk + peer.bulkSentFail > i; });
+            peer.eng->closeAfter(0, ps);
+        }
+        air.loss = 0;
+        printf("    (filed %d, bad %d, sent ok %d, failed %d, resets %zu)\n", host.bulkOk, host.bulkBad,
+               peer.bulkSentOk, peer.bulkSentFail, peer.resets.size());
+        check("every picture filed, and none twice", host.bulkOk == kPics);
+        check("and the sender told each was taken, none failed", peer.bulkSentOk == kPics && peer.bulkSentFail == 0);
     }
 
     printf("No room: the receiver makes the sender wait, not fail\n");
@@ -712,6 +812,155 @@ int main() {
         host.eng->send(0, s2, FAM_DOOR, 5, "hi again", 8);
         runUntil(air, { &host, &peer }, 3000, [&] { return !peer.msgs.empty(); });
         check("and a new session works", !peer.msgs.empty() && peer.msgs.back() == "2/5/hi again");
+    }
+
+    printf("A picture through a real runner thread (the board's split receive)\n");
+    {
+        Air air;
+        End host(air, 1, Role::Host, 16, 31);
+        End peer(air, 2, Role::Peer, 64, 32);
+        check("paired and up", pairUp(air, host, peer, 11));
+        host.node.split = true;
+        Runner runner(host.eng);
+        air.loss = 15; air.dup = 10; air.reorder = 20;
+        std::vector<uint8_t> jpeg = blob(40 * 1024, 91);
+        uint16_t ps = peer.eng->openSession(0, FAM_CAMERA);
+        peer.eng->sendBulk(0, ps, FAM_CAMERA, 2, jpeg.data(), static_cast<uint32_t>(jpeg.size()));
+        bool done = runUntil(air, { &host, &peer }, 200000,
+                             [&] { return host.bulkOk + host.bulkBad > 0 && peer.bulkSentOk + peer.bulkSentFail > 0; });
+        check("40 KB through the runner, lost, duplicated and reordered on the way", done && host.bulk == jpeg);
+        check("the CRC-32 checked and the sender was told", host.bulkOk == 1 && peer.bulkSentOk == 1);
+        check("the sink finished on the runner before the loop heard", host.bulkFinished == 1 && host.finishBeforeEnd);
+        air.loss = 0; air.dup = 0; air.reorder = 0;
+        uint16_t s = host.eng->openSession(0, FAM_DOOR);
+        host.eng->send(0, s, FAM_DOOR, 5, "after", 5);
+        runUntil(air, { &host, &peer }, 5000, [&] { return !peer.msgs.empty(); });
+        check("and single messages still go by the loop", !peer.msgs.empty() && peer.msgs.back() == "2/5/after");
+    }
+
+    printf("A device that restarts within seconds\n");
+    {
+        Air air;
+        End host(air, 1, Role::Host, 16, 41);
+        End peer(air, 2, Role::Peer, 16, 42);
+        check("paired and up", pairUp(air, host, peer, 6));
+        uint16_t hs = host.eng->openSession(0, FAM_DOOR);
+        check("a session the board opened works", sendN(air, host, peer, hs, "a%02d", 0, 5) &&
+              runUntil(air, { &host, &peer }, 3000, [&] { return peer.msgs.size() == 5; }));
+        uint16_t ps = peer.eng->openSession(0, FAM_DOOR);
+        check("and one the device opened", sendN(air, peer, host, ps, "b%02d", 0, 5) &&
+              runUntil(air, { &host, &peer }, 3000, [&] { return host.msgs.size() == 5; }));
+        // Browns out and is back in two seconds, before the board could miss it.
+        uint8_t key[16];
+        memcpy(key, peer.pairedWho.key, 16);
+        delete peer.eng;
+        peer.msgs.clear();
+        peer.eng = new Engine(Role::Peer, peer.node, peer.ev, 16, peer.win.data());
+        peer.eng->setIdentity(KIND_DOORBOX, "t1.1", 0x6);
+        peer.eng->addPeer(host.node.mac, key, KIND_UNKNOWN);
+        run(air, { &host, &peer }, 2000);
+        runUntil(air, { &host, &peer }, 20000, [&] { return peer.eng->hostUp() && host.resets.size() >= 2; });
+        size_t restarts = 0;
+        for (uint8_t r : host.resets) restarts += r == R_RESTART;
+        check("the board drops both old sessions once the new key is proved", restarts == 2);
+        uint16_t ps2 = peer.eng->openSession(0, FAM_DOOR);
+        host.msgs.clear();
+        check("the device's new session is heard, not taken for an old one",
+              sendN(air, peer, host, ps2, "c%02d", 0, 3) &&
+              runUntil(air, { &host, &peer }, 5000, [&] { return host.msgs.size() == 3; }) &&
+              inOrder(host.msgs, "c%02d", 3));
+    }
+
+    printf("The board restarts its link (a CONFIG save)\n");
+    {
+        Air air;
+        End host(air, 1, Role::Host, 16, 51);
+        End peer(air, 2, Role::Peer, 16, 52);
+        check("paired and up", pairUp(air, host, peer, 6));
+        uint16_t ps = peer.eng->openSession(0, FAM_DOOR);
+        check("the device's session works", sendN(air, peer, host, ps, "d%02d", 0, 3) &&
+              runUntil(air, { &host, &peer }, 3000, [&] { return host.msgs.size() == 3; }));
+        uint8_t key[16];
+        memcpy(key, host.pairedWho.key, 16);
+        delete host.eng;
+        host.eng = new Engine(Role::Host, host.node, host.ev, 16, host.win.data());
+        host.eng->addPeer(peer.node.mac, key, KIND_DOORBOX);
+        runUntil(air, { &host, &peer }, 30000, [&] { return host.eng->peerUp(0) && !peer.resets.empty(); });
+        check("the device drops its sessions: the board has none of them now",
+              !peer.resets.empty() && peer.resets[0] == R_RESTART);
+        uint16_t hs = host.eng->openSession(0, FAM_DOOR);
+        peer.msgs.clear();
+        check("and the board's new session works",
+              sendN(air, host, peer, hs, "e%02d", 0, 3) &&
+              runUntil(air, { &host, &peer }, 5000, [&] { return peer.msgs.size() == 3; }));
+    }
+
+    printf("HELLO and HELLO_ACK cannot be forged or replayed\n");
+    {
+        Air air;
+        End host(air, 1, Role::Host, 16, 61);
+        End peer(air, 2, Role::Peer, 16, 62);
+        check("paired and up", pairUp(air, host, peer, 6));
+        // Replay every HELLO_ACK the air has carried into the device.
+        size_t acks = 0;
+        for (auto& f : air.captured) {
+            Header h;
+            if (unpackHeader(f.data(), f.size(), h) && h.family == FAM_LINK && h.type == T_HELLO_ACK) {
+                peer.node.inbox.emplace_back(host.node.mac, f);
+                ++acks;
+            }
+        }
+        run(air, { &host, &peer }, 200);
+        uint16_t ps = peer.eng->openSession(0, FAM_DOOR);
+        check("replayed HELLO_ACKs change nothing: the device's frames still open at the board",
+              acks > 0 && sendN(air, peer, host, ps, "f%02d", 0, 5) &&
+              runUntil(air, { &host, &peer }, 2000, [&] { return host.msgs.size() == 5; }));
+        // A HELLO under the device's MAC with another kind and a made-up tag.
+        uint8_t f[kHdr + 47] = {};
+        Header h;
+        h.family = FAM_LINK; h.type = T_HELLO; h.len = 47; h.chan = 6;
+        f[kHdr + 17] = KIND_CAMSAT;
+        packHeader(h, f);
+        h.crc = frameCrc(f, f + kHdr, 47);
+        packHeader(h, f);
+        uint32_t tags = host.eng->drops(D_TAG);
+        host.node.inbox.emplace_back(peer.node.mac, std::vector<uint8_t>(f, f + sizeof(f)));
+        run(air, { &host, &peer }, 100);
+        check("a HELLO without the pairing's tag is dropped", host.eng->drops(D_TAG) == tags + 1);
+        check("and what the board believes of the device is unchanged", host.eng->peerKind(0) == KIND_DOORBOX);
+    }
+
+    printf("The board answers nobody while it is off its router\n");
+    {
+        Air air;
+        End host(air, 1, Role::Host, 16, 71);
+        End peer(air, 2, Role::Peer, 16, 72);
+        check("paired and up", pairUp(air, host, peer, 6));
+        host.node.assoc = false;
+        host.node.present = true;
+        // The device loses the link (the router moved), and looks.
+        host.node.chan = 9;
+        run(air, { &host, &peer }, 15000);
+        check("a board reconnecting to its router sends no BEACON, so no device settles on it",
+              !peer.eng->hostUp());
+        host.node.assoc = true;
+        check("once it is back on its router the device finds it",
+              runUntil(air, { &host, &peer }, 20000, [&] { return peer.eng->hostUp() && peer.node.chan == 9; }));
+    }
+
+    printf("A sleeping sender rescans at once on MAC failures\n");
+    {
+        Air air;
+        End host(air, 1, Role::Host, 16, 81);
+        End peer(air, 2, Role::Peer, 16, 82);
+        check("paired and up", pairUp(air, host, peer, 6));
+        peer.eng->setFastRescan(true);
+        int downs = peer.downs;
+        peer.node.failStreak = 3;
+        run(air, { &host, &peer }, 50);
+        check("three MAC failures in a row and it looks for the host straight away", peer.downs == downs + 1);
+        peer.node.failStreak = 0;
+        check("and finds it again", runUntil(air, { &host, &peer }, 10000, [&] { return peer.eng->hostUp(); }));
     }
 
     printf("\n%d passed, %d failed\n", passes, fails);

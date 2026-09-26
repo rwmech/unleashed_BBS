@@ -17,12 +17,16 @@
 //               alone and nothing is allocated.
 //
 //               Where the work runs (Rule no. 1): the engine's poll is this
-//               plugin's tick, every 20 ms (PF_FAST), at most eight frames a
-//               call; a bulk message's reassembly and the pairing arithmetic
-//               run as one job on the background runner (core/runner.h,
-//               1.1.2). On a tree without the runner (this branch before the
-//               1.1.2 merge) the same job is called from tick, which is the
-//               one place that breaks the rule, and only until the merge.
+//               plugin's tick, every 20 ms (PF_FAST), at most eight control
+//               frames a call. Bulk fragments never touch the loop: the radio
+//               sorts them into their own ring, and one job on the background
+//               runner (core/runner.h, 1.1.2) takes them (pumpRx), feeds the
+//               family's sink (pumpBulk) and does the pairing arithmetic,
+//               lingering 50 ms after the last fragment so a picture is one
+//               job, not one a tick. On a tree without the runner (this
+//               branch before the 1.1.2 merge) tick does a bounded slice of
+//               the same work, which breaks the rule under a stream and is
+//               why bulk is not to be used before the merge.
 //
 //               Pairings are <userdata>/p/link/peers: not in the backup zip,
 //               so a restored board pairs its devices again (Rob,
@@ -52,6 +56,7 @@
 // ===========================================================================
 #include "link.h"
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -77,7 +82,11 @@ namespace {
 
 constexpr const char kName[]     = "link";
 constexpr uint8_t    kFamilies   = 4;
-constexpr uint8_t    kRingSlots  = 8;
+constexpr uint8_t    kCtrlSlots  = 8;      // the loop's ring
+constexpr uint8_t    kBulkSlots  = 16;     // the runner's: one bulk window (16) of fragments
+constexpr uint8_t    kBulkWin    = 16;
+constexpr uint32_t   kLingerMs   = 50;     // the job waits this long for the next fragment
+constexpr uint32_t   kJobMaxMs   = 500;    // and gives the runner back after this long
 constexpr uint32_t   kPairMs     = 120000;
 constexpr const char kPeersFile[] = "peers";
 
@@ -96,19 +105,36 @@ struct Meta {                          // what the board knows of a pairing beyo
 };
 
 struct Ctx;
-Ctx* g_ctx = nullptr;
-Ctx* g_grave = nullptr;                // a stopped link the runner has not let go of yet
+// The live link. Atomic because the runner's job reads it to find out that
+// its engine has been stopped (a CONFIG save restarts the plugins while a
+// job may still be running).
+std::atomic<Ctx*> g_ctx{ nullptr };
 
-// The radio, as the engine sees it.
+// The radio, as the engine sees it. An engine that is no longer the live
+// one (in the grave, its job still running) neither sends nor takes frames:
+// the rings may already belong to its successor.
 class Radio : public ulink::Io {
 public:
+    Ctx* owner = nullptr;
+    bool live() const { return owner && owner == g_ctx.load(); }
     bool send(const Mac* to, const uint8_t* f, size_t n) override {
-        return plat::linkRadioSend(to ? to->b : nullptr, f, n);
+        return live() && plat::linkRadioSend(to ? to->b : nullptr, f, n);
     }
     bool idle() override { return plat::linkRadioIdle(); }
     size_t recv(uint8_t* out, size_t cap, Mac& from, int8_t& rssi) override {
-        return plat::linkRadioRecv(out, cap, from.b, rssi);
+        return live() ? plat::linkRadioRecv(out, cap, from.b, rssi) : 0;
     }
+    // On the runner. Under the link lock, so stop() cannot free the ring
+    // under it.
+    size_t recvBulk(uint8_t* out, size_t cap, Mac& from, int8_t& rssi) override {
+        plat::linkLock();
+        const size_t n = live() ? plat::linkRadioRecvBulk(out, cap, from.b, rssi) : 0;
+        plat::linkUnlock();
+        return n;
+    }
+    void lock() override { plat::linkLock(); }
+    void unlock() override { plat::linkUnlock(); }
+    bool associated() override { return plat::linkRadioAssociated(); }
     uint32_t millis() override { return plat::millis(); }
     uint32_t micros() override { return plat::micros(); }
     void random(uint8_t* out, size_t n) override {
@@ -151,64 +177,82 @@ int rngRunner(void*, unsigned char* out, size_t n) {
     return 0;
 }
 
-// The work the loop hands off: pairing's arithmetic and a picture's bytes.
-void work(Ctx& c) {
-    if (c.pjTaken) Engine::pairRun(c.pj, rngRunner, nullptr);
-    if (c.eng) {
-        while (c.eng->pumpBulk(8)) {
 #ifdef LINK_HAS_RUNNER
-            runner::breathe();
-#endif
-        }
+// The work the loop hands off, on the runner: pairing's arithmetic, then the
+// bulk fragments from their ring into the engine and on to the family's sink,
+// until none has come for kLingerMs or the job has had the runner kJobMaxMs.
+void jobWork(runner::Job& j) {
+    Ctx& c = *static_cast<Ctx::Job&>(j).ctx;
+    if (c.pjTaken) Engine::pairRun(c.pj, rngRunner, nullptr);
+    if (!c.eng) return;
+    const uint32_t t0 = plat::millis();
+    uint32_t heard = t0;
+    uint8_t spins = 0;
+    while (c.radio.live()) {
+        const bool a = c.eng->pumpRx(16);
+        const bool b = c.eng->pumpBulk(16);
+        const uint32_t now = plat::millis();
+        if (a || b) heard = now;
+        else if (now - heard >= kLingerMs) break;
+        if (now - t0 >= kJobMaxMs) break;
+        // The runner sits below the BBS task, so the loop is never kept
+        // waiting; the breath is for the idle task and whatever else is queued.
+        if (!(a || b) || ++spins == 0) runner::breathe();
     }
 }
-
-#ifdef LINK_HAS_RUNNER
-void jobWork(runner::Job& j) {
-    work(*static_cast<Ctx::Job&>(j).ctx);
+#else
+// Before the 1.1.2 merge: a bounded slice on the loop.
+void work(Ctx& c) {
+    if (c.pjTaken) Engine::pairRun(c.pj, rngRunner, nullptr);
+    if (!c.eng) return;
+    c.eng->pumpRx(8);
+    c.eng->pumpBulk(8);
 }
 #endif
 
 // ---------------------------------------------------------------------------
 // The families
 // ---------------------------------------------------------------------------
-const linkp::Family* fam(uint8_t id) {
+const linkp::Family* fam(void* cx, uint8_t id) {
+    if (!cx || cx != g_ctx.load()) return nullptr;   // a stopped engine's job, still running
     for (const linkp::Family* f : g_fam) if (f && f->id == id) return f;
     return nullptr;
 }
 
-bool evMessage(void*, uint8_t peer, uint16_t sess, uint8_t family, uint8_t type, const uint8_t* p, size_t n) {
-    const linkp::Family* f = fam(family);
+bool evMessage(void* cx, uint8_t peer, uint16_t sess, uint8_t family, uint8_t type, const uint8_t* p, size_t n) {
+    const linkp::Family* f = fam(cx, family);
     if (!f || !f->message) return true;             // nobody listening: taken and dropped
     return f->message(peer, sess, type, p, n);
 }
-bool evBulkBegin(void*, uint8_t peer, uint16_t sess, uint8_t family, uint8_t type, uint32_t total) {
-    const linkp::Family* f = fam(family);
+bool evBulkBegin(void* cx, uint8_t peer, uint16_t sess, uint8_t family, uint8_t type, uint32_t total) {
+    const linkp::Family* f = fam(cx, family);
     return f && f->bulkBegin && f->bulkBegin(peer, sess, type, total);
 }
-bool evBulkData(void*, uint8_t peer, uint16_t sess, uint8_t family, const uint8_t* p, size_t n) {
-    const linkp::Family* f = fam(family);
+bool evBulkData(void* cx, uint8_t peer, uint16_t sess, uint8_t family, const uint8_t* p, size_t n) {
+    const linkp::Family* f = fam(cx, family);
     return f && f->bulkData ? f->bulkData(peer, sess, p, n) : false;
 }
-void evBulkFinish(void*, uint8_t peer, uint16_t sess, uint8_t family, bool ok) {
-    const linkp::Family* f = fam(family);
+void evBulkFinish(void* cx, uint8_t peer, uint16_t sess, uint8_t family, bool ok) {
+    const linkp::Family* f = fam(cx, family);
     if (f && f->bulkFinish) f->bulkFinish(peer, sess, ok);
 }
-void evBulkEnd(void*, uint8_t peer, uint16_t sess, uint8_t family, bool ok) {
-    const linkp::Family* f = fam(family);
+void evBulkEnd(void* cx, uint8_t peer, uint16_t sess, uint8_t family, bool ok) {
+    const linkp::Family* f = fam(cx, family);
     if (f && f->bulkEnd) f->bulkEnd(peer, sess, ok);
 }
-void evBulkSent(void*, uint8_t peer, uint16_t sess, uint8_t family, bool ok) {
-    const linkp::Family* f = fam(family);
+void evBulkSent(void* cx, uint8_t peer, uint16_t sess, uint8_t family, bool ok) {
+    const linkp::Family* f = fam(cx, family);
     if (f && f->bulkSent) f->bulkSent(peer, sess, ok);
 }
-void evReset(void*, uint8_t peer, uint16_t sess, uint8_t family, uint8_t reason) {
-    const linkp::Family* f = fam(family);
+void evReset(void* cx, uint8_t peer, uint16_t sess, uint8_t family, uint8_t reason) {
+    const linkp::Family* f = fam(cx, family);
     if (f && f->reset) f->reset(peer, sess, reason);
 }
-void evPeerState(void*, uint8_t peer, bool up) {
-    if (g_ctx && peer < Engine::kPeers)
-        plat::log("link: %s \"%s\" %s", ulink::kindName(g_ctx->meta[peer].kind), g_ctx->meta[peer].name,
+void evPeerState(void* cx, uint8_t peer, bool up) {
+    Ctx* c = g_ctx.load();
+    if (!c || cx != c) return;
+    if (peer < Engine::kPeers)
+        plat::log("link: %s \"%s\" %s", ulink::kindName(c->meta[peer].kind), c->meta[peer].name,
                   up ? "is up" : "went quiet");
     for (const linkp::Family* f : g_fam) if (f && f->peerState) f->peerState(peer, up);
 }
@@ -260,8 +304,10 @@ void savePeers() {
                 static_cast<unsigned>(c->meta[i].pairedAt), key, c->meta[i].name);
         linkcrypto::wipe(key, sizeof(key));
     }
-    const bool ok = fflush(f) == 0;
-    fclose(f);
+    // fclose flushes what is left and can fail on its own (a full partition),
+    // so both answers count.
+    const bool flushed = fflush(f) == 0;
+    const bool ok = (fclose(f) == 0) && flushed;
     // Same partition: LittleFS replaces the old file in the rename, so it is
     // never removed first (CLAUDE.md, "never remove a live file to make
     // room for a rename").
@@ -306,14 +352,15 @@ void loadPeers() {
 // ---------------------------------------------------------------------------
 // Pairing, from the sysop's side
 // ---------------------------------------------------------------------------
-void evPairAsk(void*, const ulink::PairInfo& who) {
-    if (!g_ctx) return;
-    g_ctx->asking = who;
+void evPairAsk(void* cx, const ulink::PairInfo& who) {
+    Ctx* c = g_ctx.load();
+    if (!c || cx != c) return;
+    c->asking = who;
 }
 
-void evPaired(void*, uint8_t peer, const ulink::PairInfo& who) {
-    Ctx* c = g_ctx;
-    if (!c || peer >= Engine::kPeers) return;
+void evPaired(void* cx, uint8_t peer, const ulink::PairInfo& who) {
+    Ctx* c = g_ctx.load();
+    if (!c || cx != c || peer >= Engine::kPeers) return;
     Meta& m = c->meta[peer];
     snprintf(m.name, sizeof(m.name), "%s", who.name[0] ? who.name : ulink::kindName(who.kind));
     m.kind = who.kind;
@@ -428,7 +475,8 @@ void onKey(Session& s, int k, uint32_t now) {
 }
 
 void onLogoff(Session& s) {
-    if (g_ctx && s.id == g_ctx->pairNode) pairEnd(nullptr, Color::Grey, "");
+    Ctx* c = g_ctx.load();
+    if (c && s.id == c->pairNode) pairEnd(nullptr, Color::Grey, "");
 }
 
 // ---------------------------------------------------------------------------
@@ -445,29 +493,54 @@ void freeCtx(Ctx* c) {
     plat::linkFree(c);
 }
 
-bool jobBusy(Ctx* c) {
+// A stopped link whose job the runner has not handed back yet. Two, because
+// a CONFIG save straight after another can stop a link while the last one
+// is still waiting; a third waits for one of them (the job is bounded, and
+// it leaves at once once its engine is not the live one).
+constexpr uint8_t kGraves = 2;
+Ctx* g_grave[kGraves] = {};
+
+bool jobIdle(Ctx* c) {
 #ifdef LINK_HAS_RUNNER
-    return c && !runner::idle(c->job);
+    // A finished job is DONE, not IDLE, until somebody collects it, and for
+    // a buried context nobody else will.
+    if (runner::done(c->job)) runner::collect(c->job);
+    return runner::idle(c->job);
 #else
     (void)c;
-    return false;
+    return true;
 #endif
+}
+
+void buryGraves() {
+    for (Ctx*& g : g_grave)
+        if (g && jobIdle(g)) { freeCtx(g); g = nullptr; }
+}
+
+void toGrave(Ctx* c) {
+    for (;;) {
+        buryGraves();
+        for (Ctx*& g : g_grave) if (!g) { g = c; return; }
+        plat::linkRadioWait(1);
+    }
 }
 
 bool start(Bbs& bbs) {
     (void)bbs;
     g_index = plugins::indexOf(kName);
-    if (g_grave && !jobBusy(g_grave)) { freeCtx(g_grave); g_grave = nullptr; }
-    if (!plat::linkRadioStart(kRingSlots)) {
+    buryGraves();
+    if (!plat::linkRadioStart(kCtrlSlots, kBulkSlots)) {
         plat::log("link: no radio (ESP-NOW would not start)");
         return true;                  // the commands stay, and say why
     }
     void* mem = plat::linkAlloc(sizeof(Ctx));
     if (!mem) { plat::linkRadioStop(); return false; }
     Ctx* c = new (mem) Ctx();
-    const uint8_t win = 16;
+    c->radio.owner = c;
+    const uint8_t win = kBulkWin;
     c->win = static_cast<uint8_t*>(plat::linkAlloc(static_cast<size_t>(win) * ulink::kPayloadMax));
     ulink::Events ev;
+    ev.ctx       = c;
     ev.message   = evMessage;
     ev.bulkBegin = evBulkBegin;
     ev.bulkData  = evBulkData;
@@ -493,36 +566,51 @@ bool start(Bbs& bbs) {
     g_ctx = c;
     c->eng->setBoardName(syscfg::get().boardName[0] ? syscfg::get().boardName : "unleashed");
     loadPeers();
-    plat::log("link: on, channel %u, %u pairing%s", plat::linkRadioChannel(), c->eng->peerCount(),
-              c->eng->peerCount() == 1 ? "" : "s");
+    // The channel is the router's, and means nothing until the board has
+    // joined it (camsat bench: channel 6 printed before association).
+    if (plat::linkRadioAssociated())
+        plat::log("link: on, channel %u, %u pairing%s", plat::linkRadioChannel(), c->eng->peerCount(),
+                  c->eng->peerCount() == 1 ? "" : "s");
+    else
+        plat::log("link: on, %u pairing%s, on the router's channel once it joins", c->eng->peerCount(),
+                  c->eng->peerCount() == 1 ? "" : "s");
     return true;
 }
 
 void stop() {
-    Ctx* c = g_ctx;
-    g_ctx = nullptr;
+    Ctx* c = g_ctx.load();
     if (!c) { plat::linkRadioStop(); return; }
+    // The doors plugin stops first (registry order) and closes its sessions,
+    // which queues a CLOSE each. Give them to the radio before it goes: a
+    // few polls, a few milliseconds, once, at a restart or a shutdown.
+    for (uint8_t i = 0; i < 4; ++i) {
+        c->eng->poll();
+        plat::linkRadioWait(5);
+    }
+    g_ctx = nullptr;
     if (c->pairNode != 0xFF) {
-        Session* s = nullptr;
         struct Find { uint8_t node; Session* s; } fd{ c->pairNode, nullptr };
         Bbs::instance().eachSession([](void* ctx, Session& ss) {
             Find* f = static_cast<Find*>(ctx);
             if (ss.st != SState::Free && ss.id == f->node) f->s = &ss;
         }, &fd);
-        s = fd.s;
-        if (s && Bbs::instance().owns(*s, g_index)) Bbs::instance().release(*s);
+        if (fd.s && Bbs::instance().owns(*fd.s, g_index)) Bbs::instance().release(*fd.s);
     }
+    // Under the link lock: a job inside recvBulk finishes before the rings
+    // are freed, and finds itself not live after.
+    plat::linkLock();
     plat::linkRadioStop();
+    plat::linkUnlock();
     // The runner may still be inside this engine: leave it to be freed once
     // the job is back.
-    if (jobBusy(c)) { g_grave = c; return; }
+    if (!jobIdle(c)) { toGrave(c); return; }
     freeCtx(c);
 }
 
 void tick(uint32_t now) {
     (void)now;
-    if (g_grave && !jobBusy(g_grave)) { freeCtx(g_grave); g_grave = nullptr; }
-    Ctx* c = g_ctx;
+    buryGraves();
+    Ctx* c = g_ctx.load();
     if (!c || !c->eng) return;
     c->eng->poll();
 
@@ -534,13 +622,13 @@ void tick(uint32_t now) {
     }
     if (runner::idle(c->job)) {
         if (!c->pjTaken && c->eng->pairComputeWanted()) c->pjTaken = c->eng->pairTake(c->pj);
-        if (c->pjTaken || c->eng->bulkWaiting()) runner::post(c->job);
+        if (c->pjTaken || c->eng->bulkWaiting() || plat::linkRadioBulkWaiting()) runner::post(c->job);
     }
 #else
     // Until the 1.1.2 runner is merged: on the loop, bounded. The pairing
     // arithmetic is one slow pass per pairing, a sysop standing at the board.
     if (!c->pjTaken && c->eng->pairComputeWanted()) c->pjTaken = c->eng->pairTake(c->pj);
-    work(*c);                         // at most a window's worth of fragments
+    work(*c);
     if (c->pjTaken) { c->eng->pairGive(c->pj); c->pjTaken = false; }
 #endif
     pairTick();
@@ -555,7 +643,7 @@ void say(Session& s, Color col, const char* text) {
 }
 
 bool needLink(Bbs& b, Session& s) {
-    if (g_ctx && g_ctx->eng) return true;
+    if (g_ctx && g_ctx.load()->eng) return true;
     say(s, Color::LightRed, plat::linkRadioUp() || !plugins::running(g_index)
                                ? "The link is off. CONFIG link turns it on."
                                : "The link has no radio on this board.");
@@ -621,12 +709,20 @@ void cmdList(Bbs& b, Session& s) {
         }
         b.rowText(s, Color::Grey, line);
     }
-    // Rule no. 1, read off the board: the loop's cost per frame and how full
-    // the receive ring has been (LINK.md, "Where the work runs").
-    snprintf(line, sizeof(line), "Per frame %u us, worst %u. Ring high %u of %u.",
+    // Rule no. 1, read off the board: the cost per frame and how full each
+    // receive ring has been (LINK.md, "Where the work runs").
+    snprintf(line, sizeof(line), wide ? "Per frame %u us, worst %u. Rings high %u/%u, bulk %u/%u."
+                                      : "Frame %uus, worst %u. Ring %u/%u, %u/%u",
              static_cast<unsigned>(e.frameUsAvg()), static_cast<unsigned>(e.frameUsMax()),
-             static_cast<unsigned>(plat::linkRadioRingHigh()), static_cast<unsigned>(kRingSlots));
+             static_cast<unsigned>(plat::linkRadioRingHigh()), static_cast<unsigned>(kCtrlSlots),
+             static_cast<unsigned>(plat::linkRadioBulkHigh()), static_cast<unsigned>(kBulkSlots));
     b.rowText(s, Color::Grey, line);
+    if (const uint8_t slow = plat::linkRadioSlowPeers()) {
+        snprintf(line, sizeof(line), wide ? "%u device%s at 1 Mbps after failed sends, 24 again after 30 s clean."
+                                          : "%u device%s at 1 Mbps (failed sends).",
+                 static_cast<unsigned>(slow), slow == 1 ? "" : "s");
+        b.rowText(s, Color::Yellow, line);
+    }
     if (e.peerCount() >= Engine::kPeers) b.rowText(s, Color::Yellow, "All 8 pairings are taken: LINK FORGET frees one.");
     b.rowRule(s);
     b.prompt(s);
@@ -757,17 +853,17 @@ void unregisterFamily(uint8_t id) {
     for (const Family*& slot : g_fam) if (slot && slot->id == id) slot = nullptr;
 }
 
-ulink::Engine* engine() { return g_ctx ? g_ctx->eng : nullptr; }
+ulink::Engine* engine() { return g_ctx ? g_ctx.load()->eng : nullptr; }
 
 const char* peerName(uint8_t peer) {
-    if (!g_ctx || peer >= Engine::kPeers || !g_ctx->eng->peerUsed(peer)) return "";
-    return g_ctx->meta[peer].name;
+    if (!g_ctx || peer >= Engine::kPeers || !g_ctx.load()->eng->peerUsed(peer)) return "";
+    return g_ctx.load()->meta[peer].name;
 }
 
 int peerOfKind(uint8_t kind, uint8_t n) {
     if (!g_ctx) return -1;
     for (uint8_t i = 0; i < Engine::kPeers; ++i) {
-        if (!g_ctx->eng->peerUsed(i) || g_ctx->eng->peerKind(i) != kind) continue;
+        if (!g_ctx.load()->eng->peerUsed(i) || g_ctx.load()->eng->peerKind(i) != kind) continue;
         if (n-- == 0) return i;
     }
     return -1;
@@ -790,7 +886,7 @@ bool linkHwRow(char* val, size_t valN, char* note, size_t noteN, bool& warn) {
 }
 
 extern const Plugin kLinkPlugin = {
-    { kName, "The unleashed link (ESP-NOW)", "1.0", 12 * 1024, 1024, PF_CORE | PF_FAST,
+    { kName, "The unleashed link (ESP-NOW)", "1.0", 20 * 1024, 1024, PF_CORE | PF_FAST,
       PlugLevel::Staff, PlugLevel::Staff, PlugLevel::Sysop },
     start,
     stop,

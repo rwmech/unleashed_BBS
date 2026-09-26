@@ -299,7 +299,8 @@ plugins::path(myIndex, "count", buf, sizeof(buf)); // <fs>/p/<name>/count
 ```
 
 - Each plugin gets its own folder and may not touch core files.
-- Only plugins shipped in this repository (`PF_CORE`) get the board's flash. A plugin from its own repository keeps what it stores on the card (`PF_SD`); one that asks for storage without `PF_SD` is not started, and `PLUGINS` says it "wants the board's flash" (1.2.0: before that no plugin outside the repository could start at all).
+- Only plugins shipped in this repository (`PF_CORE`) get the board's flash. A plugin from its own repository keeps what it stores on the card (`PF_SD`); one that asks for storage without `PF_SD` is not started, and `PLUGINS` says it "wants the board's flash" (1.2.0: before that no plugin outside the repository could start at all). `PF_CORE` in such a plugin's descriptor changes nothing: the core knows the external ones by their place at the end of the registry, not by their flags.
+- A plugin whose name an earlier plugin already has is not started (`PLUGINS`: "name already taken"): its `[plugin:name]` section, its folder and its commands would all be the other one's.
 - `PF_SD` says a plugin's files live on the SD card. It gets `<sd>/p/<name>/` instead of `<userdata>/p/<name>/`, and it does not start at all when no card is mounted (`PLUGINS` says "no SD card"). There is deliberately no fallback to internal flash: a plugin that quietly writes somewhere other than where it said it would is worse than one that is refused, because the sysop pulls the card expecting the data to be on it.
 - The free-space check follows the same split. A `PF_SD` plugin's `storageBytes` is weighed against the card, not against the 608 KB flash partition it is never going to touch.
 - The core keeps 32 KB of free space in reserve so accounts can always be written. Once space is that tight, `plugins::path` returns false and the plugin should carry on without saving. The check reads the kept free-space figure (1.1.2, `src/core/space.h`), measured on the runner at boot and at each staff login, so a write never walks the partition to find out; a plugin that writes a lot at once can call `space::stale` for its partition so the next staff login measures it again.
@@ -337,7 +338,12 @@ if (ulink::Engine* e = linkp::engine()) {
 
 Registering does not depend on which plugin starts first or on the link
 being on; a family registered while the link is off hears nothing until it
-is switched on. Nothing a device sends may grant a caller anything: its bytes
+is switched on. Plugins stop in registry order, and a plugin that speaks
+over the link belongs before `link` in it (the doors do): its `stop()` can
+then still send a last message, and the link's `stop()` hands what is queued
+to the radio before it goes. `bulkData` and the bulk callbacks come from the
+background runner; a link that has been stopped delivers nothing more, even
+from a runner job still finishing. Nothing a device sends may grant a caller anything: its bytes
 are data, the board chooses every name and every level (LINK.md, "Security
 rules").
 
