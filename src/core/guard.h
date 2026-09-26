@@ -103,6 +103,10 @@ bool ipFromText(const char* s, uint32_t& out);
 // port both ask (1.1.1).
 bool localNet(uint32_t netOrder, bool cgnat);
 
+// cgnatAddr: in 100.64.0.0/10, so that a refusal can say which setting
+// would let it in (a sysop on Tailscale after 1.1.1 turned it off).
+bool cgnatAddr(uint32_t netOrder);
+
 // peerAddr: a socket's peer as the board takes it. The same address on a
 // board; the host build maps 127.0.0.3 to 100.64.0.3 for its tests.
 uint32_t peerAddr(uint32_t netOrder);

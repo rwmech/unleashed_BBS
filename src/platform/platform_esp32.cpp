@@ -754,6 +754,7 @@ void consoleWrite(const uint8_t* b, size_t n) {
 // Backup button: active low with pull-up (BOOT is GPIO0 on dev boards)
 // ===========================================================================
 
+#ifndef BBS_BACKUP_TEST_OPEN          // the test build holds the button, and has none
 namespace {
 int      g_btnGpio   = -1;
 bool     g_btnLast   = false;    // debounced state, true = pressed
@@ -761,6 +762,7 @@ bool     g_btnRaw    = false;
 uint32_t g_btnSince  = 0;
 constexpr uint32_t kDebounceMs = 50;
 }
+#endif
 
 void backupButtonBegin(int gpio) {
 #ifdef BBS_BACKUP_TEST_OPEN

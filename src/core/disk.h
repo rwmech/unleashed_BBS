@@ -19,9 +19,10 @@
 //
 //               Which lamp is the path's: under the card's mount (plat::
 //               sdBase) it is the card, anything else is the board's own
-//               flash. A file that will not open for writing is an error;
-//               one that will not open for reading usually just is not
-//               there, and says nothing.
+//               flash. A file that will not open to be written or appended
+//               is an error; one that will not open for reading (or r+,
+//               tried first where a file may not exist yet) usually just is
+//               not there, and says nothing.
 //
 //               A pulse is two stores (platform.h), so this costs nothing
 //               worth measuring on any path, and nothing at all on a board
@@ -50,11 +51,14 @@ inline plat::DiskKind kindOf(const char* path) {
     return (n && path && !strncmp(path, sd, n)) ? plat::DISK_CARD : plat::DISK_FLASH;
 }
 
-// open: fopen, and the drive light told. A write that cannot open is an error.
+// open: fopen, and the drive light told. A write or an append that cannot
+// open is an error. "r+" is not: it is how a file that may not be there yet
+// is tried first (the caller log's first call, a new forum), and its miss is
+// the expected path to "w+".
 inline FILE* open(const char* path, const char* mode) {
     FILE* f = fopen(path, mode);
-    if (f)                                 plat::diskPulse(kindOf(path));
-    else if (strpbrk(mode, "wa+"))         plat::diskPulse(plat::DISK_ERROR);
+    if (f)                                   plat::diskPulse(kindOf(path));
+    else if (mode[0] == 'w' || mode[0] == 'a') plat::diskPulse(plat::DISK_ERROR);
     return f;
 }
 

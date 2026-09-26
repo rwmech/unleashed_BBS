@@ -121,6 +121,10 @@ int main() {
         if (valid(b)) { badOk = false; printf("        taken: \"%s\"\n", b); }
     check("strings it would run as unnamed UTC, and typos, refused", badOk);
     check("no string at all is no TZ", !valid(nullptr));
+    // A file is read as newlib reads it: the start, and the rest ignored.
+    check("a file's line with a tail: read for what newlib reads",
+          valid("CST6CDT,M3.2.0,M11.1.0 ; Chicago", false) && valid("UTC0 # note", false));
+    check("but not a start newlib cannot read", !valid("America/Chicago", false) && !valid("EST", false));
 
     printf("%d passed, %d failed\n", passes, fails);
     return fails ? 1 : 0;

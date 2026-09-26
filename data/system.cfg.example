@@ -26,6 +26,8 @@ hostname = unleashed
 #   PST8PDT,M3.2.0,M11.1.0      US Pacific
 #   GMT0BST,M3.5.0/1,M10.5.0    UK
 #   CET-1CEST,M3.5.0,M10.5.0/3  Central Europe
+# A string the board cannot read (a zone name such as America/Chicago is
+# not one) is ignored at boot with a console line, and CONFIG refuses it.
 tz = UTC0
 
 ntp_server = pool.ntp.org
@@ -42,6 +44,12 @@ wifi_password =
 # network sets it). 1 to 65535, never the same as backup_port. A router
 # forwarding to the board has to forward to this number.
 port = 6400
+
+# yes: 100.64.0.0/10 (carrier-grade NAT, and Tailscale) counts as the local
+# network: the published default password, a second sysop in place and the
+# backup window then answer it. It trusts everybody behind the same carrier
+# NAT, not only your own devices, so it is off as shipped. CONFIG network.
+# cgnat_local = no
 
 # Staff passwords, entered at any prompt as: BYE <password>
 # A wrong password is a normal logoff; 3 wrong from one IP in 15 min = 15 min ban.

@@ -4602,6 +4602,16 @@ def test_config():
     # full no-card run registers 77 accounts by the time the backup test asks
     # whether sign-up is offered. At 77 the board rightly said no, and the
     # failure was reported against the backup.
+    # Tests before this one may have left it at 200 already (cfg_reload ends
+    # there), and a save that changes nothing is "Nothing changed": 199
+    # first, when it is 200, so the save being checked always changes it.
+    if cfg_value("max_users") == "200":
+        s.send(DOWN * 4 + b"\x08" * 4 + b"199" + F1)
+        s.wait_for(b"Saved and live", 5)
+        s.buf.clear()
+        s.send(b"config limits\r")
+        wait_label(s, b"Per call", 5)
+        s.buf.clear()
     s.send(DOWN * 4 + b"\x08" * 4 + b"200" + F1)        # Accounts -> 200
     ok &= check("the page saves", s.wait_for(b"Saved and live", 5))
     if HOST in ("127.0.0.1", "localhost"):
@@ -6519,6 +6529,24 @@ def photos(card):
     return sorted(str(p.relative_to(root)).replace("\\", "/") for p in root.rglob("*.JPG")) if root.exists() else []
 
 
+# The camera boards' host profiles (1.1.1): what test_camera and its
+# neighbours may take for granted on each. They were written on the
+# Freenove's and skipped everywhere else, so the ESP32-CAM, a camera board
+# since 1.1.1-dev.0, had no camera tests at all.
+#   sensor, top  the stub camera's sensor and the largest size it gives
+#   size         the size as shipped (BBS_CAM_SIZE)
+#   over         a size past the sensor's, for the clamp, or None when the
+#                sensor goes to the top of the list
+#   pin          a GPIO the camera's flash may use in pin and pixel mode:
+#                the Freenove's free 13, the ESP32-CAM's own flash LED on 4
+#                (13 is its card's CS there)
+CAM_BOARD = {
+    "fncam":  dict(sensor=b"GC0308", top=b"vga", size=b"vga", over=b"uxga", pin="13"),
+    "espcam": dict(sensor=b"OV2640", top=b"uxga", size=b"xga", over=None, pin="4"),
+}
+CB = CAM_BOARD.get(HOST_BOARD, CAM_BOARD["fncam"])
+
+
 def test_camera():
     """The camera (1.1.0, the Freenove WROVER CAM's profile): SNAPSHOT, the
     download offer, the flash pin, the limits, naming, retention and the
@@ -6526,7 +6554,7 @@ def test_camera():
     with no card: the camera is PF_SD."""
     print("The camera")
     card = card_dir()
-    if HOST_BOARD != "fncam" or not PASSWORD or card is None:
+    if HOST_BOARD not in CAM_BOARD or not PASSWORD or card is None:
         print("  SKIP  needs tools/harness.sh --board fncam --card")
         return True
     s = cfg_sysop("CamSysop")
@@ -6548,10 +6576,10 @@ def test_camera():
     got = snap(c)
     ok &= check("snapping is for staff as shipped", b"not open to you" in got)
 
-    camera_config(s, snap="users", flash_mode="pin", flash_pin="13", flash_lead="300")
+    camera_config(s, snap="users", flash_mode="pin", flash_pin=CB["pin"], flash_lead="300")
     time.sleep(1.0)
     log0 = host_log()
-    ok &= check("in pin mode the flash pin idles low from the start", "cam-pin 13 low" in log0)
+    ok &= check("in pin mode the flash pin idles low from the start", f"cam-pin {CB['pin']} low" in log0)
     s.buf.clear()
     got = snap(c)
     ok &= check("a snap tells the caller where they stand",
@@ -6574,8 +6602,8 @@ def test_camera():
     desc = (card / "photos" / "FILES.BBS").read_text(errors="replace") if (card / "photos" / "FILES.BBS").exists() else ""
     ok &= check("and FILES.BBS says so", f"{name} Taken by CamCaller" in desc)
     log1 = host_log()[len(log0):]
-    hi = re.search(r"\[\s*(\d+)\.(\d+)\] cam-pin 13 high", log1)
-    lo = re.search(r"\[\s*(\d+)\.(\d+)\] cam-pin 13 low", log1)
+    hi = re.search(r"\[\s*(\d+)\.(\d+)\] cam-pin " + CB["pin"] + r" high", log1)
+    lo = re.search(r"\[\s*(\d+)\.(\d+)\] cam-pin " + CB["pin"] + r" low", log1)
     ok &= check("the flash pin went high, then low", hi is not None and lo is not None and hi.start() < lo.start())
     if hi and lo:
         ms = (int(lo.group(1)) - int(hi.group(1))) * 1000 + int(lo.group(2)) - int(hi.group(2))
@@ -6590,30 +6618,32 @@ def test_camera():
     s.pump(0.3)
     cam = plain(s.buf)
     ok &= check("CAMERA: the sensor, the count, the card, the last photo",
-                b"Sensor GC0308, up to vga" in cam and b"Size vga" in cam and b"Photos 1" in cam and
+                b"Sensor " + CB["sensor"] + b", up to " + CB["top"] in cam and b"Size " + CB["size"] in cam and b"Photos 1" in cam and
                 b"Last " in cam and b"CamCaller" in cam)
     ok &= check("and the picture's correction, levels on as shipped", b"Levels auto, gamma 1.0" in cam)
 
     # A size the sensor cannot give (1.1.1): kept in the file, used as the
-    # largest it can, said once in the log. The host's sensor is the
-    # profile's GC0308, qvga and vga.
-    s.buf.clear()
-    s.send(b"camera set size uxga\r")
-    ok &= check("a saved uxga is taken", s.wait_for(b"live now", 4))
-    s.buf.clear()
-    s.send(b"camera\r")
-    s.wait_for(b"Card free", 4)
-    s.pump(0.3)
-    ok &= check("CAMERA says it is using vga, and what was saved", b"Size vga (saved uxga)" in plain(s.buf))
-    got = snap(s)
-    if b"Download it now?" in got:
-        s.send(b"n")
-        s.wait_for(b"kept in the Photos area", 4)
-    ok &= check("a snap at a saved uxga logs the clamp once",
-                host_log().count("camera: size uxga is more than the GC0308 gives; using vga") == 1)
-    s.buf.clear()
-    s.send(b"camera set size vga\r")
-    s.wait_for(b"live now", 4)
+    # largest it can, said once in the log. The Freenove's sensor is a
+    # GC0308, qvga and vga; the ESP32-CAM's OV2640 goes to the top of the
+    # list, so there is nothing past it to ask for.
+    if CB["over"]:
+        s.buf.clear()
+        s.send(b"camera set size uxga\r")
+        ok &= check("a saved uxga is taken", s.wait_for(b"live now", 4))
+        s.buf.clear()
+        s.send(b"camera\r")
+        s.wait_for(b"Card free", 4)
+        s.pump(0.3)
+        ok &= check("CAMERA says it is using vga, and what was saved", b"Size vga (saved uxga)" in plain(s.buf))
+        got = snap(s)
+        if b"Download it now?" in got:
+            s.send(b"n")
+            s.wait_for(b"kept in the Photos area", 4)
+        ok &= check("a snap at a saved uxga logs the clamp once",
+                    host_log().count("camera: size uxga is more than the GC0308 gives; using vga") == 1)
+        s.buf.clear()
+        s.send(b"camera set size " + CB["size"] + b"\r")
+        s.wait_for(b"live now", 4)
 
     # The FILES menu marks an area closed to callers "(staff)", and the
     # photo areas take that from the camera's Photos setting, not from
@@ -6742,29 +6772,29 @@ def test_camera():
 
     # The flash pin and the lights: in pin mode the pin is held, in pixel
     # mode it is shared with the drive light.
-    camera_config(s, snap="users", flash_mode="pin", flash_pin="13")
+    camera_config(s, snap="users", flash_mode="pin", flash_pin=CB["pin"])
     lights_config(s, enabled="yes")
     cfg_open(s, b"lights", b"Drive pin")
     s.buf.clear()
-    s.send(DOWN * 4 + b"\x08" * 3 + b"13" + F1)
-    got = cfg_verdict(s, [b"Taken: camera", b"Saved", b"Between", b"GPIO 13"])
-    ok &= check("in pin mode the camera holds its pin: the drive light may not have 13",
-                got in (b"Taken: camera", b"GPIO 13"))
+    s.send(DOWN * 4 + b"\x08" * 3 + CB["pin"].encode() + F1)
+    got = cfg_verdict(s, [b"Taken: camera", b"Saved", b"Between", ("GPIO " + CB["pin"]).encode()])
+    ok &= check("in pin mode the camera holds its pin: the drive light may not have it",
+                got in (b"Taken: camera", ("GPIO " + CB["pin"]).encode()))
     cfg_cancel(s)
-    camera_config(s, snap="users", flash_mode="pixel", flash_pin="13", flash_lead="1000")
+    camera_config(s, snap="users", flash_mode="pixel", flash_pin=CB["pin"], flash_lead="1000")
     cfg_open(s, b"lights", b"Drive pin")
     s.buf.clear()
-    s.send(DOWN * 4 + b"\x08" * 3 + b"13" + F1)
-    got = cfg_verdict(s, [b"Saved", b"Taken: camera", b"GPIO 13", b"Between"])
+    s.send(DOWN * 4 + b"\x08" * 3 + CB["pin"].encode() + F1)
+    got = cfg_verdict(s, [b"Saved", b"Taken: camera", ("GPIO " + CB["pin"]).encode(), b"Between"])
     cfg_cancel(s)
     ok &= check("in pixel mode the drive light may share it", got == b"Saved" and
-                lights_read(s).get("drive", {}).get("pin") == 13)
+                lights_read(s).get("drive", {}).get("pin") == int(CB["pin"]))
     cfg_open(s, b"board", b"Hostname")
     s.buf.clear()
-    s.send(DOWN * BOARD_LED + b"\x08" * 3 + b"13" + F1)
-    got = cfg_verdict(s, [b"Saved", b"Taken", b"GPIO 13", b"Between"])
+    s.send(DOWN * BOARD_LED + b"\x08" * 3 + CB["pin"].encode() + F1)
+    got = cfg_verdict(s, [b"Saved", b"Taken", ("GPIO " + CB["pin"]).encode(), b"Between"])
     cfg_cancel(s)
-    ok &= check("but nothing else may: the board LED on 13 is refused", got in (b"Taken", b"GPIO 13"))
+    ok &= check("but nothing else may: the board LED on it is refused", got in (b"Taken", ("GPIO " + CB["pin"]).encode()))
     p = ansi_login("CamPixel")                         # CamCaller is at the hour's limit
     p.buf.clear()
     p.send(b"snapshot\r")
@@ -6899,7 +6929,7 @@ def test_camera_failed_start():
     camClose, as a partial esp_camera_init does, so a failure path that
     forgets to close leaves the next snap refused for memory."""
     print("The camera: a failed start gives everything back")
-    if HOST_BOARD != "fncam" or not PASSWORD:
+    if HOST_BOARD not in CAM_BOARD or not PASSWORD:
         print("  SKIP  needs tools/harness.sh --board fncam")
         return True
     import shutil
@@ -6948,7 +6978,7 @@ def test_announce_camera():
         print("  SKIP  needs the host build and the sysop")
         return True
     s = cfg_sysop("CamBadge")
-    if HOST_BOARD != "fncam":
+    if HOST_BOARD not in CAM_BOARD:
         feats = announce_features(s)
         ok = check("no camera board, no camera feature", feats is not None and "camera" not in feats)
         s.close()
@@ -7008,7 +7038,7 @@ def test_camera_silent():
     and not a flash that never worked."""
     print("Silent mode: the camera's flash")
     card = card_dir()
-    if HOST_BOARD != "fncam" or not PASSWORD or card is None:
+    if HOST_BOARD not in CAM_BOARD or not PASSWORD or card is None:
         print("  SKIP  needs tools/harness.sh --board fncam --card")
         return True
     s = cfg_sysop("CamSilent")
@@ -7023,28 +7053,28 @@ def test_camera_silent():
     ok = check("silent on, by the switch", top_config(s, silent="yes"))
 
     # Pin mode: the pin stays low.
-    camera_config(s, snap="users", flash_mode="pin", flash_pin="13", flash_lead="1000")
+    camera_config(s, snap="users", flash_mode="pin", flash_pin=CB["pin"], flash_lead="1000")
     time.sleep(1.2)
     at = len(host_log())
     got = sysop_snap()
     ok &= check("pin mode, silent: the photo is taken", b"Photo saved" in got)
     log = host_log()[at:]
-    ok &= check("and the flash pin never went high", "cam-pin 13 high" not in log)
+    ok &= check("and the flash pin never went high", f"cam-pin {CB['pin']} high" not in log)
 
     # Pixel mode, the lights off: the camera would drive the pixel itself.
-    camera_config(s, snap="users", flash_mode="pixel", flash_pin="13", flash_lead="1000")
+    camera_config(s, snap="users", flash_mode="pixel", flash_pin=CB["pin"], flash_lead="1000")
     time.sleep(1.2)
     at = len(host_log())
     got = sysop_snap()
     ok &= check("pixel mode on its own pixel, silent: the photo is taken", b"Photo saved" in got)
     log = host_log()[at:]
     ok &= check("and the camera never started the pixel, nor lit it",
-                "pixels: output 0 on gpio 13" not in log and "pixels: output 0 white" not in log)
+                f"pixels: output 0 on gpio {CB['pin']}" not in log and "pixels: output 0 white" not in log)
 
     # Pixel mode on the lights' drive light: never white. The host logs a
     # one-pixel output turning white ("pixels: output 0 white"), which sees
     # a flash too short for two looks at LIGHTS to catch.
-    lights_config(s, enabled="yes", drive_pin=13)
+    lights_config(s, enabled="yes", drive_pin=int(CB["pin"]))
     time.sleep(0.5)
     p = ansi_login("CamQuiet")
 
@@ -7067,7 +7097,7 @@ def test_camera_silent():
     ok &= check("and the drive light never went white",
                 "pixels: output 0 white" not in log and all(px == (0, 0, 0) for px in seen))
     top_config(s, silent=None)
-    camera_config(s, snap="users", flash_mode="pixel", flash_pin="13", flash_lead="300")
+    camera_config(s, snap="users", flash_mode="pixel", flash_pin=CB["pin"], flash_lead="300")
     time.sleep(1.2)
     got, seen, log = drive_snap()
     ok &= check("silent off: the same snap turns the drive light white",
@@ -7076,13 +7106,13 @@ def test_camera_silent():
     lights_config(s)
 
     # The control: silent off, the same pin mode snap lights the pin.
-    camera_config(s, snap="users", flash_mode="pin", flash_pin="13", flash_lead="300")
+    camera_config(s, snap="users", flash_mode="pin", flash_pin=CB["pin"], flash_lead="300")
     time.sleep(1.2)
     at = len(host_log())
     got = sysop_snap()
     log = host_log()[at:]
     ok &= check("silent off: the same snap lights the flash pin",
-                b"Photo saved" in got and "cam-pin 13 high" in log)
+                b"Photo saved" in got and f"cam-pin {CB['pin']} high" in log)
 
     camera_config(s)
     section_config(s, "plugin:camera")
@@ -7548,7 +7578,12 @@ def copy_data():
     import shutil
     import tempfile
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="bbs-restart-"))
-    shutil.copytree(DATA, tmp / "data")
+    # A write under way on the live board (users.txt.new, system.tmp) is
+    # there when listed and gone by the copy, and copytree raised on it,
+    # which took test_operator_notes down in a 1.1.1 run. The board's own
+    # temp files are never part of what a restart reads.
+    shutil.copytree(DATA, tmp / "data",
+                    ignore=shutil.ignore_patterns("*.new", "*.tmp"))
     return tmp
 
 
@@ -9399,12 +9434,12 @@ def test_closed_configured():
     if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
         print("  SKIP  needs the host build and the sysop")
         return True
-    # Seeded, not assumed (1.1.1): the board this test stands for has no
-    # closed line, and an earlier test may have left one. test_backup_card's
-    # restore writes closed = no, and this failed whenever it ran first.
-    # Taken out of the file and the file read again, the harness board is
-    # the pre-1.1.0 board the test is about, whatever ran before it.
-    if closed_value() is not None:
+    # An open board, whatever ran before (1.1.1). test_backup_card's restore
+    # writes closed = no, by design (ziparc applyItem gives a restored file
+    # the live state), and this failed whenever it ran first: an explicit no
+    # is the same board as no line. A yes left by a test that failed half
+    # way is taken out and the file read again, so this starts open.
+    if closed_value() not in (None, "no"):
         cfgp = USERDATA / "system.cfg"
         cfgp.write_text("".join(l for l in cfgp.read_text().splitlines(keepends=True)
                                 if l.split("=", 1)[0].strip() != "closed" or "=" not in l))
@@ -9412,8 +9447,8 @@ def test_closed_configured():
         cfg_reload(r)
         r.close()
         time.sleep(0.5)
-    ok = check("the board has its own sysop password and no closed line",
-               cfg_line("sysop_password") is not None and closed_value() is None)
+    ok = check("the board has its own sysop password and no closed line, or closed = no",
+               cfg_line("sysop_password") is not None and closed_value() in (None, "no"))
     ins = ansi_login("InsideJob")
     ok &= check("an account exists to be refused later", b"Main" in ins.buf)
     ins.close()
@@ -11531,7 +11566,8 @@ def test_announce_directory():
         ok &= check("and the interests it knows, as codes, nonsense dropped",
                     b.get("interests") == ["c64", "elctr", "ham"])
 
-        page = get("/")[1]
+        # The board list is /directory since site 1.3.0; / is the front page.
+        page = get("/directory")[1]
         name = _html.escape(b.get("name", "?"), quote=False)
         at = page.find(f"<span class='bname'>{name}</span>")
         row = page[at:page.find("</tr>", at)] if at >= 0 else ""
@@ -15473,12 +15509,24 @@ def test_screens_install():
     cscr = card / "screens"
     fscr = DATA / "screens"
     stock_goodbye = (fscr / "goodbye.asc").read_bytes()
+    # The card as the test found it is kept whole beside the one it uses,
+    # and the one it uses holds the stock copies alone: an earlier test's
+    # own screens (RESTORE SD SCREENS imports some) would be installed too,
+    # and every count below would be theirs as well.
+    keep = pathlib.Path(tempfile.mkdtemp(prefix="bbs-cardkeep-"))
+    shutil.copytree(cscr, keep / "screens")
     shm = None
     if pathlib.Path("/dev/shm").is_dir() and not cscr.is_symlink():
         shm = pathlib.Path(tempfile.mkdtemp(prefix="bbs-cardscr-", dir="/dev/shm"))
         shutil.copytree(cscr, shm / "screens")
         shutil.rmtree(cscr)
         cscr.symlink_to(shm / "screens")
+    for f in list(cscr.iterdir()):
+        if f.name.startswith("."):
+            continue
+        stock = fscr / f.name.lower()
+        if not stock.exists() or stock.read_bytes() != f.read_bytes():
+            f.unlink()
     ok = True
     s = cfg_sysop("ScreenFitter")
     try:
@@ -15558,16 +15606,18 @@ def test_screens_install():
         i, text = card_cmd(s, b"screens install stock", [b"Stock screens back", b"already"])
         ok &= check("and again: flash has them already", b"Flash has the stock screens already." in text)
     finally:
-        for f in ("goodbye.asc", "CLOSED.ASC"):
-            try:
-                (cscr / f).unlink()
-            except OSError:
-                pass
+        # Flash back to its stock set if a check left it part way, then the
+        # card as it was found.
+        if (fscr / ".stock").exists():
+            card_cmd(s, b"screens install stock", [b"Stock screens back", b"already", b"Could not"])
         s.close()
         if shm is not None:
             cscr.unlink()
-            shutil.copytree(shm / "screens", cscr)
             shutil.rmtree(shm, ignore_errors=True)
+        else:
+            shutil.rmtree(cscr, ignore_errors=True)
+        shutil.copytree(keep / "screens", cscr)
+        shutil.rmtree(keep, ignore_errors=True)
     return ok
 
 
@@ -15791,7 +15841,9 @@ def test_forms_ascii_wide():
                 c.wait_for(b"Wi-Fi password [set, - clears]: ", 4))
     c.send(b"-\r")
     c.pump(0.3)
-    c.send(b"\r")
+    c.send(b"\r")                                  # Port
+    c.pump(0.3)
+    c.send(b"\r")                                  # CGNAT/Tailscale LAN (1.1.1)
     c.wait_for(b"Save (Y/n)?", 4)
     c.buf.clear()
     c.send(b"y")
@@ -16244,7 +16296,7 @@ def test_config_warn_levels():
     return ok
 
 
-class TestTimeout(Exception):
+class TestTimeout(BaseException):
     """A test that used up its budget (run_test)."""
 
 

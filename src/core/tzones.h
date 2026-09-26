@@ -228,22 +228,30 @@ inline bool tzRule(const char*& p) {
 
 } // namespace detail
 
-inline bool valid(const char* tz) {
+// whole = false asks what newlib itself asks: the start read, whatever
+// follows it ignored ("CST6CDT,M3.2.0,M11.1.0 ; Chicago" in a hand-edited
+// file). A file is read that way, so a line newlib would run right is not
+// dropped for its tail; CONFIG asks for the whole string.
+inline bool valid(const char* tz, bool whole = true) {
     using namespace detail;
     if (!tz) return false;
     const char* p = tz;
     if (*p == ':') ++p;                               // newlib skips one
     if (!tzName(p) || !tzClock(p, 24)) return false;
     if (!*p) return true;                             // standard time only
-    if (!tzName(p)) return false;
+    if (!tzName(p)) return !whole;                    // newlib: no summer time
     if (*p && *p != ',') {                            // the summer offset
-        if (!tzClock(p, 24)) return false;
+        const char* back = p;
+        if (!tzClock(p, 24)) {
+            if (whole) return false;
+            p = back;                                 // newlib: an hour less
+        }
     }
     for (uint8_t i = 0; i < 2 && *p; ++i) {
         if (*p == ',') ++p;
         if (!tzRule(p)) return false;
     }
-    return *p == '\0';
+    return *p == '\0' || !whole;
 }
 
 } // namespace tzones

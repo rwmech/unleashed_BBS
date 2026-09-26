@@ -3116,8 +3116,10 @@ Access Bbs::staffPassword(Session& s, const char* pw, uint32_t now, bool* banned
     // From anywhere else it is a wrong password, ban count and all, because
     // anybody can read it on the install page.
     if (lv == Access::Sysop && syscfg::get().sysopDefault && !localAddr(s.ip)) {
-        plat::log("bbs: node %s default sysop password refused from %s (not local)",
-                  nodeName(s).t, s.ip);
+        uint32_t a = 0;
+        const bool cg = ipFromText(s.ip, a) && cgnatAddr(a);
+        plat::log("bbs: node %s default sysop password refused from %s (not local%s)",
+                  nodeName(s).t, s.ip, cg ? "; 100.64/10 is local only with CONFIG network CGNAT" : "");
         lv = Access::None;
     }
     if (lv != Access::None) {

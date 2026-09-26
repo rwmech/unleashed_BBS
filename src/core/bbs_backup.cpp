@@ -923,7 +923,7 @@ void Bbs::nightlyTick(uint32_t now) {
     clk::fmt(hour, sizeof(hour), "%H");
     uint32_t today = clk::dayKey(now);
     if (atoi(hour) != wanted || nightlyDay_ == today) return;
-    if (backup_.busy()) return;                   // the window or the sysop: try again in 30 s
+    if (backup_.busy() || screensBusy()) return;  // the window, the sysop or SCREENS INSTALL: try again in 30 s
     nightlyDay_ = today;
 
     if (!plat::sdBase()[0]) {

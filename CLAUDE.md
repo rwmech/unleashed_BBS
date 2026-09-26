@@ -984,6 +984,66 @@ this tree.
   after changing defaults; release builds start clean.
   Site 1.3.7 serves the Freenove the newest preview ahead of its release
   (`previews: "ahead"`), with 1.1.0 offered beside it.
+- **1.1.1 (2026-09-25, rel-1.1.1, not merged, not tagged)**: the queued
+  list above, plus Rob's later three (CGNAT as an option, a closed board
+  listed as closed, the flash trims). S3 1.1.2, FNCAM 1.0.6, ESPCAM 1.0.3.
+  CHANGELOG has what changed; what is worth keeping here:
+  - **Private mode is the sticky, not a filter on /p.** `g_sticky` is the
+    partner, `g_privSince` where in the ring it began; `flush` shows only
+    `aboutUs` lines (board lines naming either tag) while it is on, and
+    counts the rest from `g_privSince`, so a ring the room outran is said,
+    not hidden. `converse` and `join(stick)` go through `privateBegin`,
+    which is what the 1.2.0 sysop chat reuses.
+  - **Ending the mode when the partner left was the obvious fix and the
+    wrong one.** The caller's half-typed private would have gone to the
+    room on the next Enter, the accident the marker exists for, and the
+    existing test caught it. The mode stays, marked `kGone` (bit 7 of
+    `g_sticky`), until the caller says what next.
+  - **SCREENS INSTALL never deletes to make room.** The stock copy is
+    renamed into `screens/.stock/<name>` (an empty file for a screen flash
+    never had), the new one renamed over the live one, and a failure moves
+    the stock copy back. STOCK stops, rather than steps past, a file it
+    cannot put back: the stock copy is the only one. Everything is within
+    the screens partition, so no rename crosses a mount; the test still
+    puts the card's folder on /dev/shm.
+  - **One rule for local** (`guard.h` `localNet`): the shell took
+    127.0.0.1 and the backup port all of 127/8, and both took 100.64/10
+    unconditionally. Loopback is 127.0.0.1 alone now, and 100.64/10 is
+    `cgnat_local`. The host maps a caller from 127.0.0.3 to 100.64.0.3
+    (`peerAddr`, `BBS_HOST` only), so `Caller(source="127.0.0.3")` tests it.
+  - **`disk::open` and `disk::dir`** (core/disk.h) replace fopen and
+    opendir on the storage paths, so the drive light cannot miss a new
+    one: a new file path that uses them gets the pulse for nothing.
+  - **A test found a real bug in chat's reload**: `start()` reset the mail
+    limits and the history size but not the rate, the room name or the
+    colours, so a line taken out of `[plugin:chat]` kept its old value
+    running. Same shape as the 1.1.0 mail fix; now all of them.
+  - **The long help's source had drifted from helptext.cpp**: HARDWARE,
+    HW, ABOUT and SYS were edited in the .cpp at 1.1.1-dev.0 and not in
+    `internal/long-help-2026-09-22.md`, so running `tools/mkhelp.py` for
+    1.1.1 would have deleted them. Put back in the source; edit the .md and
+    regenerate, never the .cpp.
+  - **The harness's clock is per test now** (testclient `run_test`, 900 s,
+    `--test-timeout`), with a four-hour backstop: a test that hangs or
+    raises fails by name and the run goes on.
+  - Static DRAM +216 for the features (private mode 48, the install job,
+    announce's room +24), then −1,888 for IPv6 off: see the sizes below.
+  - Code review before the commit found four worth fixing, all fixed: the
+    install's 64 limit was on the folder position, not the count (a
+    256-bit map now, a walk that always ends, each file checked again as it
+    goes in); a caller reading mail in the room kept a private aimed at a
+    node somebody new could take (`kGone` for every owner now, and the
+    kick clears it as leave does); `/sh` of the whole ring could overflow
+    the output buffer and lose the newest lines; the install guard missed
+    the backup window's own work and the nightly ignored the install. And
+    the drive light blinked red for an expected `r+` miss.
+  - Sizes off the ELF at 1.1.1: static DRAM WROOM 161,336 (19,400 free),
+    Freenove 172,808 (7,928), ESP32-CAM 174,264 (6,472), S3 247,784 of
+    341,760. Images 1,230,592 / 1,303,152 / 1,355,840 / 1,270,240. All
+    eleven envs, no warnings.
+  - Not built: the badge pick-list, about a day on its own (a scrolling
+    checklist at 40, 80 and plain ASCII, the badges.json generator, the
+    CONFIG hook). For Rob to schedule.
 - **Where it stopped (2026-09-24, night)**:
   - main is 1.1.0-dev.14 (silent mode). The S3 runs dev.12; UHQ and TRA
     wait for the 1.1.0 release (Rob: no preview on the installer).
@@ -1275,8 +1335,10 @@ the queue above that says 1.0.2 was written before it.
   careful thing that writes lines.
 - **A caller from outside, on the host:** `Caller(source="127.0.0.2")`.
   Loopback to the kernel and not local to `Bbs::localAddr`, which takes
-  127.0.0.1 exactly. The backup port's own check takes all of 127/8, so it
-  stands in for "outside" to the shell only.
+  127.0.0.1 exactly. The backup port's own check took all of 127/8, so it
+  stood in for "outside" to the shell only; since 1.1.1 both ask one rule
+  (`localNet`) and 127.0.0.2 is outside to both. `source="127.0.0.3"` is a
+  caller at 100.64.0.3 on the host (`peerAddr`).
 
 ## Improv and the network in system.cfg (0.22.1)
 

@@ -60,6 +60,12 @@
 #               Results land in /tmp/bbs-<tag>/out.txt and the board's log
 #               in /tmp/bbs-<tag>/host.log.
 #
+#               Each test has a budget of its own (1.1.1): 900 s, or
+#               --test-timeout=N passed through to testclient.py, or
+#               BBS_TEST_TIMEOUT. A test that runs out, or raises, fails by
+#               name and the run goes on. The whole run's clock is only a
+#               backstop: BBS_HARNESS_TIMEOUT, four hours by default.
+#
 # Targets:      Linux host build (WSL)
 # See also:     CLAUDE.md
 #

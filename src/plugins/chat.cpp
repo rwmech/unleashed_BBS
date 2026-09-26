@@ -835,6 +835,7 @@ void privateBegin(Session& s, uint8_t with) {
 void privateEnd(Session& s, const char* lead) {
     const uint8_t slot = slotOf(s);
     if (!inPrivate(s)) return;
+    flush(s);                                 // anything about the two of them, first
     uint32_t went = g_seq - g_privSince[slot];
     uint32_t kept = went < g_histCount ? went : g_histCount;
     g_sticky[slot]  = 0xFF;
@@ -863,7 +864,15 @@ void privateEnd(Session& s, const char* lead) {
 void partnerGone(uint8_t id) {
     Bbs::instance().eachSession([](void* ctx, Session& o) {
         const uint8_t gone = *static_cast<uint8_t*>(ctx);
-        if (!listening(o) || o.id == gone || g_sticky[slotOf(o)] != gone) return;
+        if (!Bbs::instance().owns(o, g_index) || o.id == gone || g_sticky[slotOf(o)] != gone) return;
+        // Marked for everybody the room has, a caller reading mail in it
+        // too: their node number may be somebody else's before they are
+        // back (code review). Told now only if they are listening; the
+        // rest hear "They have gone" at their next line.
+        if (!listening(o)) {
+            g_sticky[slotOf(o)] = static_cast<uint8_t>(gone | kGone);
+            return;
+        }
         wipeInput(o);
         flush(o);                                            // the leaving line itself
         g_sticky[slotOf(o)] = static_cast<uint8_t>(gone | kGone);
@@ -2076,9 +2085,11 @@ void kickFromRoom(Session& target, const char* by, const char* why) {
         target.term.text(target.tl, why);
         target.term.nl(target.tl);
     }
+    g_sticky[slotOf(target)] = 0xFF;                   // as leave() does (1.1.1)
     Bbs::instance().release(target);
     snprintf(line, sizeof(line), "*** %.28s was removed by %.16s", who, by);
     notice(line, &target);
+    partnerGone(target.id);
     plat::log("chat: %s removed %s%s%s", by, target.user, why && *why ? " - " : "", why ? why : "");
 }
 
@@ -2484,10 +2495,24 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
         if (!show) {
             tell(s, g_cRoom, "Nothing said yet.");
         } else {
+            // As many as the output buffer holds, oldest first, then how
+            // many that was (1.1.1): a put() that does not fit is dropped
+            // whole, and the lines lost were the newest, the ones asked for.
+            // Private mode's end offers /sh for the whole ring, which at
+            // the default 48 lines is more than one buffer.
+            uint16_t shown = 0;
             for (uint16_t i = 0; i < show; ++i) {
+                if (s.tl.freeBytes() < 200) break;
                 uint16_t at = static_cast<uint16_t>((g_histNext + g_histMax - show + i) % g_histMax);
+                ++shown;
                 if (squelched(s, g_hist[at])) continue;
                 showLine(s, g_hist[at], true);
+            }
+            if (shown < show) {
+                snprintf(buf, sizeof(buf), "%u of %u shown: /sh %u for the rest.",
+                         static_cast<unsigned>(shown), static_cast<unsigned>(show),
+                         static_cast<unsigned>(show - shown));
+                tell(s, g_cRoom, buf);
             }
         }
         flush(s);

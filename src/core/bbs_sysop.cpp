@@ -2544,7 +2544,7 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
     // reads it on every question, so a save of that row alone is live.
     bool restartOnly = false;
     for (uint8_t k = 0; k < n; ++k)
-        if (strcmp(pairs[k].key, "cgnat_local")) restartOnly = true;
+        if (strcmp(pairs[k].key, "cgnat_local") && strcmp(pairs[k].key, "closed")) restartOnly = true;
     if (ok && g_cfgPage->fields == kNetwork && restartOnly && !strcmp(err, "Saved and live"))
         snprintf(err, errLen, nowOpen ? "Saved: OPEN network, from restart"
                                       : "Saved, used from the next restart");

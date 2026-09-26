@@ -123,7 +123,7 @@
 // the version is shown, as BBS_VERSION_SHOWN (config.h) puts it. The
 // reference board defines neither.
 #define BBS_BOARD_TAG         "S3"
-#define BBS_BOARD_VERSION     "1.1.1"
+#define BBS_BOARD_VERSION     "1.1.2"
 
 // The internal heap a plugin may not take at start (config.h). 16 KB, not
 // the WROOM's 40: with PSRAM, Wi-Fi's and lwIP's buffers go there
@@ -230,7 +230,7 @@
 #define BBS_BOARD_PLUGINS     1       // the camera
 
 #define BBS_BOARD_TAG         "FNCAM"
-#define BBS_BOARD_VERSION     "1.0.5"
+#define BBS_BOARD_VERSION     "1.0.6"
 
 // PSRAM (sdkconfig.defaults.fncam). Wi-Fi's and lwIP's buffers go there.
 // The internal reserve stays the WROOM's 40 KB until the bench's MEM says
@@ -369,7 +369,7 @@
 #define BBS_BOARD_PLUGINS     1       // the camera
 
 #define BBS_BOARD_TAG         "ESPCAM"
-#define BBS_BOARD_VERSION     "1.0.2"
+#define BBS_BOARD_VERSION     "1.0.3"
 
 // PSRAM (sdkconfig.defaults.espcam). A build that lost the sdkconfig layer
 // would otherwise link quietly without it.

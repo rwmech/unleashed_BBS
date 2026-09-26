@@ -214,6 +214,11 @@ bool localNet(uint32_t netOrder, bool cgnat) {
            (cgnat && o[0] == 100 && (o[1] & 0xC0) == 64);         // 100.64/10
 }
 
+bool cgnatAddr(uint32_t netOrder) {
+    const uint8_t* o = reinterpret_cast<const uint8_t*>(&netOrder);
+    return o[0] == 100 && (o[1] & 0xC0) == 64;
+}
+
 // peerAddr: the address a caller is taken to have come from. The board's is
 // the socket's. The host build has no carrier NAT to call from, so there a
 // caller from 127.0.0.3 stands for one at 100.64.0.3 (test_cgnat_local),

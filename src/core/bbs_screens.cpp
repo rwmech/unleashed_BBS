@@ -13,6 +13,9 @@
  *
  *                    SCREENS                          every screen by name
  *                    SCREENS VIEW name[.ext] [FLASH]  play one
+ *                    SCREENS INSTALL [STOCK]          the card's own into
+ *                                                     flash, and back (1.1.1,
+ *                                                     sysop; see below)
  *
  *                  The list is one row a name: which of .ans, .asc and .seq
  *                  there are, how big the copy callers get is, and where it
@@ -398,16 +401,22 @@ namespace {
 
 constexpr char kStockDir[] = ".stock";           // under the flash screens folder
 constexpr uint16_t kChunk  = 512;                // bytes a pass
+// Screen files the card's folder may hold for an install to look at them
+// all. A position in the folder, not a count of what goes in (that is
+// BBS_ZIP_MAX_FILES): the stock set is seeded there first, so the sysop's
+// own sit from position 33 on.
+constexpr uint16_t kMaxEntries = 256;
 
 struct Install {
     enum Ph : uint8_t { Idle, Plan, Copy, Stock } ph = Idle;
     uint8_t  who    = 0xFF;      // the sysop's session id, while they watch
-    uint8_t  idx    = 0;         // Plan and Copy: the card entry looked at
-    uint64_t pick   = 0;         // card entries to install, by index
+    uint16_t idx    = 0;         // Plan and Copy: the card entry looked at
+    uint8_t  pick[kMaxEntries / 8] = {};   // card entries to install, by position
     uint8_t  picked = 0, same = 0, seeded = 0, done = 0, failed = 0, back = 0, gone = 0;
-    int32_t  need   = 0;         // blocks the set adds, once it is all in
-    uint32_t big    = 0;         // blocks of the biggest new screen (the peak)
+    int32_t  need   = 0;         // blocks the set adds so far, in the order it goes in
+    int32_t  peak   = 0;         // the most it adds at any moment of that
     uint32_t bytes  = 0;
+    uint32_t copied = 0;         // Copy: bytes of this screen so far
     FILE*    in     = nullptr;
     FILE*    out    = nullptr;
     char     lower[16] = {};     // this screen's flash name
@@ -433,12 +442,14 @@ void stockPath(char* out, size_t n, const char* file) {
 // cardEntry: the i-th screen in the card's folder, its name there and in
 // lower case. Walked afresh each time, as the SCREENS list is, and nothing
 // held open between passes: the card may be pulled between two of them.
-bool cardEntry(uint8_t i, char* name, size_t nn, char* lower, size_t ln) {
+bool isPicked(uint16_t i) { return i < kMaxEntries && (g_in.pick[i / 8] >> (i % 8)) & 1u; }
+
+bool cardEntry(uint16_t i, char* name, size_t nn, char* lower, size_t ln) {
     const char* dir = sdScreensDir();
     if (!dir || !dir[0]) return false;
     DIR* d = disk::dir(dir);
     if (!d) return false;
-    uint8_t k = 0;
+    uint16_t k = 0;
     bool found = false;
     for (struct dirent* e = readdir(d); e; e = readdir(d)) {
         size_t n = strlen(e->d_name);
@@ -473,17 +484,11 @@ bool sameFile(const char* a, const char* b) {
     return same;
 }
 
-// markNth: the installed screens, for the card's manifest (sdSeededMark).
-const char* markNth(void*, uint8_t i) {
-    static char lower[16];
-    char name[16];
-    uint8_t seen = 0;
-    for (uint8_t k = 0; k < 64; ++k) {
-        if (!(g_in.pick & (1ull << k))) continue;
-        if (seen++ != i) continue;
-        return cardEntry(k, name, sizeof(name), lower, sizeof(lower)) ? lower : nullptr;
-    }
-    return nullptr;
+// markOne: one installed screen, for the card's manifest (sdSeededMark),
+// marked as it goes in: one rewrite a screen, one screen a pass, and only
+// the ones that did go in.
+const char* markOne(void* ctx, uint8_t i) {
+    return i == 0 ? static_cast<const char*>(ctx) : nullptr;
 }
 
 void closeFiles() {
@@ -545,13 +550,13 @@ void Bbs::screensInstall(Session& s, bool stock) {
         prompt(s);
         return;
     }
-    if (backup_.job() != BackupService::Job::None || backup_.holding()) {
+    if (backup_.job() != BackupService::Job::None || backup_.holding() || backup_.busy()) {
         say(Color::Yellow, "A backup or restore is running. Try again after.");  // SI-backup
         prompt(s);
         return;
     }
     if (!stock && !sdScreensDir()) {
-        say(Color::LightRed, "No card in: nothing to install.");                // SI-nocard
+        say(Color::LightRed, "No card, or CONFIG sd has Screens off.");         // SI-nocard
         prompt(s);
         return;
     }
@@ -612,8 +617,15 @@ void Bbs::serviceScreens(uint32_t now) {
     if (g_in.ph == Install::Plan) {
         char name[16], cardPath[112], live[112], stockp[112];
         if (!sdScreensDir()) { finish(Color::LightRed, "The card went. Nothing was installed.", nullptr); return; }
-        if (cardEntry(g_in.idx, name, sizeof(name), g_in.lower, sizeof(g_in.lower))) {
-            const uint8_t i = g_in.idx++;
+        if (g_in.idx >= kMaxEntries) {
+            // A folder this full is not looked at further, and not taken
+            // in part: the walk has to end, and a set it did not see whole
+            // is not a set it checked.
+            if (!g_in.why[0])
+                snprintf(g_in.why, sizeof(g_in.why), "More than %u files in the card's screens folder.",  // SI-folder
+                         static_cast<unsigned>(kMaxEntries));
+        } else if (cardEntry(g_in.idx, name, sizeof(name), g_in.lower, sizeof(g_in.lower))) {
+            const uint16_t i = g_in.idx++;
             snprintf(cardPath, sizeof(cardPath), "%.90s/%s", sdScreensDir(), name);
             struct stat cs, fs, ss;
             if (stat(cardPath, &cs) != 0 || !S_ISREG(cs.st_mode)) return;          // not a file: pass it by
@@ -631,12 +643,12 @@ void Bbs::serviceScreens(uint32_t now) {
                 snprintf(g_in.why, sizeof(g_in.why), "%s is too big: %u KB, a screen may be %u.",  // SI-big
                          g_in.lower, static_cast<unsigned>((size + 1023) / 1024),
                          static_cast<unsigned>(BBS_ZIP_FILE_MAX / 1024));
-            if (i >= 64 || g_in.picked >= BBS_ZIP_MAX_FILES) {
+            if (g_in.picked >= BBS_ZIP_MAX_FILES) {
                 if (!g_in.why[0]) snprintf(g_in.why, sizeof(g_in.why), "More than %u screens to install.",   // SI-many
                                            static_cast<unsigned>(BBS_ZIP_MAX_FILES));
                 return;
             }
-            g_in.pick |= 1ull << i;
+            g_in.pick[i / 8] = static_cast<uint8_t>(g_in.pick[i / 8] | (1u << (i % 8)));
             ++g_in.picked;
             g_in.bytes += size;
             // What the set adds once it is in. The stock copy it replaces
@@ -646,8 +658,11 @@ void Bbs::serviceScreens(uint32_t now) {
             const bool hadStock = stat(stockp, &ss) == 0;
             const int32_t newB = static_cast<int32_t>(blocksOf(size));
             const int32_t oldB = (hadStock && inFlash) ? static_cast<int32_t>(blocksOf(static_cast<uint32_t>(fs.st_size))) : 0;
+            // The peak is while this one sits beside the one it replaces:
+            // everything in so far plus its new blocks, before the old ones
+            // go. The largest of those over the set, in the order it goes in.
+            if (g_in.need + newB > g_in.peak) g_in.peak = g_in.need + newB;
             g_in.need += newB - oldB;
-            if (static_cast<uint32_t>(newB) > g_in.big) g_in.big = static_cast<uint32_t>(newB);
             return;
         }
         // The whole set looked at: refuse it whole, or go.
@@ -673,10 +688,10 @@ void Bbs::serviceScreens(uint32_t now) {
             finish(Color::LightRed, "Could not read the flash's free space.", "Nothing was installed.");  // SI-noinfo
             return;
         }
-        // The peak: every screen in, plus one more of the biggest beside the
-        // one it replaces, plus the .stock folder and a spare block.
+        // The peak of the running total (Plan), plus the .stock folder and
+        // a spare block.
         const int32_t freeB = static_cast<int32_t>((total > used ? total - used : 0) / BBS_FS_BLOCK);
-        const int32_t want  = (g_in.need > 0 ? g_in.need : 0) + static_cast<int32_t>(g_in.big) + 2;
+        const int32_t want  = (g_in.peak > 0 ? g_in.peak : 0) + 2;
         if (want > freeB) {
             snprintf(msg, sizeof(msg), "Not enough room in flash: %u KB needed, %u KB free.",       // SI-room
                      static_cast<unsigned>(want * (BBS_FS_BLOCK / 1024)),
@@ -699,11 +714,8 @@ void Bbs::serviceScreens(uint32_t now) {
     if (g_in.ph == Install::Copy) {
         char name[16], cardPath[112], live[112], neu[112], stockp[112];
         if (!g_in.in) {
-            while (g_in.idx < 64 && !(g_in.pick & (1ull << g_in.idx))) ++g_in.idx;
-            if (g_in.idx >= 64) {
-                // All in. The card's manifest marks them the sysop's, so a
-                // later firmware's stock screens never replace them there.
-                sdSeededMark(markNth, nullptr);
+            while (g_in.idx < kMaxEntries && !isPicked(g_in.idx)) ++g_in.idx;
+            if (g_in.idx >= kMaxEntries) {
                 snprintf(msg, sizeof(msg), "Installed %u screen%s in flash.",                    // SI-done
                          static_cast<unsigned>(g_in.done), g_in.done == 1 ? "" : "s");
                 if (g_in.failed)
@@ -724,6 +736,17 @@ void Bbs::serviceScreens(uint32_t now) {
             }
             snprintf(cardPath, sizeof(cardPath), "%.90s/%s", sdScreensDir(), name);
             flashPath(neu, sizeof(neu), g_in.lower, ".new");
+            // Checked again as it goes in: the card is the sysop's to change
+            // while this runs, and what sits at this place in the folder now
+            // may not be what was checked there.
+            struct stat cs;
+            if (stat(cardPath, &cs) != 0 || !S_ISREG(cs.st_mode) || cs.st_size <= 0 ||
+                cs.st_size > BBS_ZIP_FILE_MAX || sdSeededStock(g_in.lower)) {
+                ++g_in.failed;
+                ++g_in.idx;
+                return;
+            }
+            g_in.copied = 0;
             g_in.in  = disk::open(cardPath, "rb");
             g_in.out = g_in.in ? disk::open(neu, "wb") : nullptr;
             if (!g_in.in || !g_in.out) {
@@ -736,7 +759,11 @@ void Bbs::serviceScreens(uint32_t now) {
         }
         char buf[kChunk];
         size_t n = fread(buf, 1, sizeof(buf), g_in.in);
-        if (n && fwrite(buf, 1, n, g_in.out) != n) {
+        g_in.copied += static_cast<uint32_t>(n);
+        // The card is the sysop's to change while this runs: a file that
+        // has grown past what the check allowed since it was checked (or a
+        // different one now at that place in the folder) is not put in.
+        if ((n && fwrite(buf, 1, n, g_in.out) != n) || g_in.copied > BBS_ZIP_FILE_MAX) {
             closeFiles();
             flashPath(neu, sizeof(neu), g_in.lower, ".new");
             remove(neu);
@@ -780,6 +807,9 @@ void Bbs::serviceScreens(uint32_t now) {
         }
         if (rename(neu, live) == 0) {
             ++g_in.done;
+            // The card's manifest marks it the sysop's, so a later firmware's
+            // stock screens never replace it there.
+            sdSeededMark(markOne, g_in.lower);
             return;
         }
         // Put back what was moved: the board is left as it was for this one.

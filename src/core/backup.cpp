@@ -286,14 +286,19 @@ void BackupService::acceptClient(uint32_t now) {
         if (!localAddr(a.sin_addr.s_addr)) {
             // A forwarded port, or one UPnP opened without anybody asking,
             // must not hand the accounts and the Wi-Fi password to the
-            // internet. A VPN still works: it puts the caller on a private
-            // address.
+            // internet. A VPN on a private address still works; Tailscale's
+            // 100.64/10 only with CONFIG network's CGNAT row (1.1.1), and a
+            // sysop refused from there is told which setting it is.
             static const char no[] = "HTTP/1.1 403 Forbidden\r\nContent-Length: 20\r\nConnection: close\r\n\r\nlocal network only.\n";
-            send(fd, no, sizeof(no) - 1, MSG_DONTWAIT | MSG_NOSIGNAL);
+            static const char cg[] = "HTTP/1.1 403 Forbidden\r\nContent-Length: 47\r\nConnection: close\r\n\r\nlocal network only; see CONFIG network, CGNAT.\n";
+            const bool cgnat = cgnatAddr(a.sin_addr.s_addr);
+            if (cgnat) send(fd, cg, sizeof(cg) - 1, MSG_DONTWAIT | MSG_NOSIGNAL);
+            else       send(fd, no, sizeof(no) - 1, MSG_DONTWAIT | MSG_NOSIGNAL);
             ::close(fd);
             char ip[16];
             ipToText(a.sin_addr.s_addr, ip, sizeof(ip));
-            note("*** Backup refused %s: not a local address", ip);
+            if (cgnat) note("*** Backup refused %s: 100.64/10, see CONFIG network CGNAT", ip);
+            else       note("*** Backup refused %s: not a local address", ip);
             continue;
         }
         // One client at a time, and none while the zip storage is in use: a

@@ -152,6 +152,34 @@ your terminal would get it, `SCREENS VIEW name.seq` plays exactly that file
 if your terminal can show it, and `FLASH` on the end plays the stock copy
 even where the card overrides it. See [COMMANDS.md](COMMANDS.md).
 
+## Keeping your screens without the card
+
+Screens on the card are played from the card and never copied into flash,
+so pulling the card takes your own screens with it until it comes back.
+`SCREENS INSTALL` (sysop, 1.1.1) copies them into the screens partition:
+
+- Which: every screen in the card's `screens` folder that is not the board's
+  seeded stock copy and is not in flash already, byte for byte. A name the
+  card has in capitals (`CLOSED.ASC`, written on a laptop) goes in in lower
+  case.
+- Checked whole first, by the limits above: a screen's name, none empty,
+  none over 64 KB, no more than 64 of them and 256 KB together, and the room
+  in the 256 KB partition, counted in 4 KB blocks with one more of the
+  biggest for the moment it is swapped in. Anything wrong and nothing is
+  installed.
+- Each written beside the one it replaces and put live by a rename, so it
+  is in whole or not at all. The stock copy it replaces moves to
+  `screens/.stock/`, and a screen flash never had leaves an empty marker
+  there instead. Anybody reading a flash screen is let go of it first, as a
+  restore does.
+- The card's `screens/.seeded` marks them as yours, so a later firmware's
+  stock screens never replace them on the card.
+
+`SCREENS INSTALL STOCK` puts the stock set back from `screens/.stock` and
+removes the screens flash never had. A firmware update does the same, since
+the installer rewrites the whole screens partition. With the card in, the
+card's copies still win, as ever.
+
 ## Logs
 
 Logs (the caller log behind `LAST`) live on their own 32 KB partition. They are fixed-size rings that cannot grow, they are not in the zip, and a restore never touches them.

@@ -377,6 +377,12 @@ void keyValue(Ctx& c, const char* key, char* val) {
         // restore is not refused whole over its timezone.
         if (tzones::valid(val))  copyStr(g.tz, sizeof(g.tz), val);
         else if (c.bare)         problem(c, "not a TZ string the board can read", "");
+        else if (tzones::valid(val, false)) {
+            // Newlib reads the start and ignores the rest, and so the clock
+            // is right: kept, with the tail named, never dropped for it.
+            copyStr(g.tz, sizeof(g.tz), val);
+            plat::log("cfg: line %d tz = %.48s: the end of it is ignored", c.lineNo, val);
+        }
         else plat::log("cfg: line %d tz = %.48s: not a TZ string the board can read, "
                        "line ignored, the clock stays on %s", c.lineNo, val, g.tz);
     }
@@ -441,8 +447,12 @@ void keyValue(Ctx& c, const char* key, char* val) {
         // board owns outright is (gpio above). The sd plugin's own pin
         // settings are untouched: only the LED is compared, and only with
         // the slot's wiring, not with whatever CONFIG sd says.
-        if (!c.bare && n >= 0 &&
-            (n == BBS_SD_CS || n == BBS_SD_MOSI || n == BBS_SD_CLK || n == BBS_SD_MISO)) {
+        const bool slot = n >= 0 &&
+            (n == BBS_SD_CS || n == BBS_SD_MOSI || n == BBS_SD_CLK || n == BBS_SD_MISO);
+        // CONFIG refuses it too, whether or not the sd plugin is on to hold
+        // it: the form would otherwise save a pin the next read drops.
+        if (slot && c.bare) { problem(c, "that pin is the SD card slot", ""); return; }
+        if (slot) {
             plat::log("cfg: line %d activity_led_gpio = %ld: that pin is the SD card slot on this "
                       "board, line ignored, the board's own LED (%d) kept",
                       c.lineNo, n, static_cast<int>(BBS_LED_GPIO));
