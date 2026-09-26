@@ -1264,7 +1264,11 @@ bool Engine::pumpBulk(uint16_t maxFrags) {
         ++done;
         if (!ok) { b.st.store(BX_ABORT); break; }
         if (c + 1 == b.nfrag) {
-            b.st.store(b.got == b.total && b.crcRun == b.crcWant ? BX_OK : BX_BAD);
+            const bool whole = b.got == b.total && b.crcRun == b.crcWant;
+            // Still on the runner: the sink finishes its card work here (a
+            // picture's rename into Photos), never on the loop.
+            if (ev_.bulkFinish) ev_.bulkFinish(ev_.ctx, b.peer, b.sess, b.family, whole);
+            b.st.store(whole ? BX_OK : BX_BAD);
             break;
         }
     }

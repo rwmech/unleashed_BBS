@@ -24,6 +24,73 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.2.0-link (in development, not released), 2026-09-26
+
+The µnleashed link, its lane (rel-1.2.0-link, off main at 78a0ba4). Merges
+after 1.1.2. Host-tested; not yet flashed.
+
+**The link** ([LINK.md](LINK.md))
+- One ESP-NOW protocol in the core for devices beside the board: a camera
+  satellite, a door box. Specified first, then built to it, with Rob's
+  decisions of 2026-09-26: our own AES-128-CCM on every frame with the
+  header as associated data (the IDF 5.3.1 receive callback cannot say
+  whether ESP-NOW decrypted a frame, and a MAC is easily spoofed), 8
+  pairings, pairings kept out of the backup.
+- Pairing is a sysop's `LINK PAIR` plus a physical act on the device: P-256
+  ECDH, HKDF, and a 4-digit code both ends show. A fresh session key at
+  every HELLO, used only once a sealed frame proves it, so a HELLO anybody
+  can send cannot cut a working device off.
+- Reliable, in-order messages; bulk messages (a picture) in fragments with
+  a window and selective acknowledgement; a packet-number replay window;
+  retries counted only while the far end is heard, so a router's channel
+  hop is a pause and not a lost session. A satellite scans the channels to
+  find the board and follows it when the router moves.
+- Where the work runs (Rule no. 1): the loop opens each frame, eight a pass
+  at most, and `LINK` reports what a frame costs it; reassembly, the
+  picture's CRC-32, its card writes and the pairing arithmetic are the
+  background runner's (1.1.2) once it is in the tree.
+- CCM built from one CBC and one CTR call over mbedTLS's AES, after the
+  camsat bench measured mbedtls_ccm at 320 us a frame on an ESP32 and
+  1,000 us on an S3: byte for byte mbedtls_ccm's, checked against RFC 3610.
+- `LINK`, `LINK PAIR`, `LINK FORGET n`, `LINK NAME n name`; a `Radio link`
+  row in SYS and HARDWARE for staff.
+- Budget on the WROOM, measured: 142 bytes of static DRAM, 34,293 bytes of
+  flash (ESP-NOW's own library 6,604 of it), about 15 KB of heap only while
+  the link is on.
+
+**Doors**
+- `DOORS` lists what the door boxes on the air offer; `DOORS n` hands the
+  caller over with one line a door can read in ten lines of Python
+  (`UNLEASHED-DOOR 1 node=3 ... handle=Big+Dave ... term=pet40 minutes=42`),
+  and takes them back when the door finishes, when their time runs out
+  (TIMEUP with ten seconds' grace), when the box goes quiet, or on Ctrl-]
+  three times. Several callers share one box. Nothing a box sends is ever
+  read by the board as input.
+
+**Plugins in their own repositories**
+- A plugin can live in a git repository of its own and be built in at a
+  pinned commit (`plugins.lock`, `custom_ext_plugins`, `tools/plugins.py`,
+  `tools/pio_plugins.py`) with no edit to the core: the build generates
+  `ext_plugins.h` and the registry expands it. The plugin API is numbered
+  (1.0) and a plugin says what it needs (`UNLEASHED_PLUGIN_API(1, 0)`).
+  `tools/release.py` refuses a plugin that is not at its locked commit, a
+  local path, or a licence the firmware cannot carry, and records every
+  plugin and commit in `release.txt`. `tools/testplugin/` is the template;
+  `tools/test_ext_plugin.sh` the test.
+- A plugin outside the repository may now start: only the board's flash is
+  kept for shipped plugins (`PF_CORE`), and a plugin that stores anything
+  keeps it on the card (`PF_SD`).
+
+**Also**
+- `src/core/photos.*`: filing a picture in Photos, for the built-in camera
+  and the camera satellite both, with FILES.BBS's single writer. The camera
+  and the file areas move onto it at the 1.1.2 merge.
+- `Bbs::callSecondsLeft` for plugins. The command table follows the plugin
+  count (it was 12, written beside the table).
+- The host build compiles ESP-IDF's own mbedTLS 3.6.0 (`MBEDTLS_DIR`), and
+  `host/linkpeer` is a pretend door box on the host's UDP radio for the
+  tests (`--only=radio`). `host/test_link` runs in `make test`: 90 checks,
+  clean under ASan and UBSan.
 ## 1.1.2-dev.3 (S3 1.1.3): SSH on the S3, a preview, 2026-09-26
 
 Part 3 of 1.1.2. The ESP32 images (the WROOM, the Freenove, the ESP32-CAM)

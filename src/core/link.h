@@ -195,6 +195,10 @@ struct Events {
                      const uint8_t* p, size_t n) = nullptr;
     // The bulk message is complete: ok when every byte came and the CRC-32 checked.
     void (*bulkEnd)(void* ctx, uint8_t peer, uint16_t sess, uint8_t family, bool ok) = nullptr;
+    // The same moment, on the runner and before bulkEnd: for the sink to
+    // finish its own slow work (closing and renaming a file) off the loop.
+    // Appended; a message that is cancelled gets bulkEnd(false) only.
+    void (*bulkFinish)(void* ctx, uint8_t peer, uint16_t sess, uint8_t family, bool ok) = nullptr;
     // A bulk message this end sent has been taken whole (ok) or given up.
     void (*bulkSent)(void* ctx, uint8_t peer, uint16_t sess, uint8_t family, bool ok) = nullptr;
     // A session ended by the far end or by retries running out.

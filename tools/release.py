@@ -349,6 +349,33 @@ def check_notices():
         die("copyright or licence lines name Anthropic or Claude: " + ", ".join(bad[:10]))
 
 
+def ext_plugins(b):
+    """The plugins from their own repositories this build carries (1.2.0,
+    LINK.md): each fetched at its locked commit with tools/plugins.py
+    --release, which refuses a local path, a working tree, a checkout that
+    is not the locked commit, a licence the firmware cannot carry, and a
+    copyright line naming Anthropic or Claude. Returns [(name, version,
+    commit)] for release.txt."""
+    tool = ROOT / "tools" / "plugins.py"
+    r = subprocess.run([sys.executable, str(tool), "env", b["env"]], cwd=ROOT,
+                       capture_output=True, text=True)
+    if r.returncode:
+        die(f"{b['env']}: could not read custom_ext_plugins: {r.stderr.strip()}")
+    names = r.stdout.split()
+    if not names:
+        return []
+    r = subprocess.run([sys.executable, str(tool), "fetch", "--release", *names], cwd=ROOT)
+    if r.returncode:
+        die(f"{b['env']}: its plugins did not pass tools/plugins.py --release")
+    out = []
+    for n in names:
+        ini = (ROOT / "ext" / n / "unleashed-plugin.ini").read_text(encoding="utf-8")
+        m = re.search(r"^version\s*=\s*(\S+)", ini, re.M)
+        commit = git("-C", str(ROOT / "ext" / n), "rev-parse", "HEAD")
+        out.append((n, m.group(1) if m else "?", commit))
+    return out
+
+
 def check_boot_offset(b):
     """The bootloader offset BUILDS names for a family is the one its build
     was made for: CONFIG_BOOTLOADER_OFFSET_IN_FLASH in the generated
@@ -415,6 +442,7 @@ def main():
     # written: a release is all of its families or none of them.
     families = []
     for b in BUILDS:
+        b["plugins"] = ext_plugins(b)
         pio("run", "-e", b["env"], env=env)
         pio("run", "-e", b["env"], "-t", "buildfs", env=env)
         build = ROOT / ".pio" / "build" / b["env"]
@@ -486,7 +514,13 @@ def main():
     sums.append(f"{hashlib.sha256(note.encode('utf-8')).hexdigest()}  {NOTICES}")
     write(assets / "SHA256SUMS", "\n".join(sums) + "\n", "ascii")
     commit = git("rev-parse", "--short", "HEAD") + ("-dirty" if dirty else "")
-    write(install / "release.txt", f"version {ver}\ncommit {commit}\n", "ascii")
+    # Every plugin built in from its own repository, per family, with the
+    # commit it was built from (1.2.0): what went into an image is on record.
+    rel = [f"version {ver}", f"commit {commit}"]
+    for b, _ in families:
+        for name, pver, pcommit in b.get("plugins", []):
+            rel.append(f"plugin {b['dir']} {name} {pver} {pcommit}")
+    write(install / "release.txt", "\n".join(rel) + "\n", "ascii")
 
     print(f"release {ver} ({commit})")
     for line in sums:

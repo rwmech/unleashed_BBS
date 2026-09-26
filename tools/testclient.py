@@ -1683,6 +1683,159 @@ def test_about():
     return ok
 
 
+# ---------------------------------------------------------------------------
+# The unleashed link (1.2.0): a pretend door box (host/linkpeer) on the host
+# board's UDP radio. tools/harness.sh switches the link and doors plugins on
+# and sets BBS_LINK_PORT (the board's) and BBS_LINK_PEER_PORT (the box's).
+# The pairing test leaves its pairing on both ends, in the board's
+# p/link/peers and the box's state file, and the doors test uses it.
+# ---------------------------------------------------------------------------
+class LinkPeer:
+    """host/linkpeer, with every line it prints kept for the test to read."""
+
+    def __init__(self, pair=False, chan=1):
+        host = os.environ["BBS_LINK_PORT"]
+        port = os.environ["BBS_LINK_PEER_PORT"]
+        self.state = os.path.join(os.environ.get("BBS_DATA", "/tmp"), "linkpeer.state")
+        args = [str(pathlib.Path(__file__).resolve().parent.parent / "host" / "linkpeer"),
+                "--port", port, "--host", host, "--chan", str(chan), "--state", self.state]
+        if pair:
+            args.append("--pair")
+        import subprocess
+        self.p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        self.lines = []
+        self.t = threading.Thread(target=self._read, daemon=True)
+        self.t.start()
+
+    def _read(self):
+        for line in self.p.stdout:
+            self.lines.append(line.strip())
+
+    def wait(self, prefix, secs=15):
+        end = time.time() + secs
+        while time.time() < end:
+            for line in self.lines:
+                if line.startswith(prefix):
+                    return line
+            time.sleep(0.05)
+        return None
+
+    def stop(self):
+        self.p.terminate()
+        try:
+            self.p.wait(3)
+        except Exception:
+            self.p.kill()
+
+
+def link_ready():
+    if not os.environ.get("BBS_LINK_PORT") or not os.environ.get("BBS_LINK_PEER_PORT"):
+        print("  SKIP  no link radio on this board (tools/harness.sh sets BBS_LINK_PORT)")
+        return False
+    if not (pathlib.Path(__file__).resolve().parent.parent / "host" / "linkpeer").exists():
+        print("  SKIP  host/linkpeer is not built (make linkpeer)")
+        return False
+    return True
+
+
+def test_radio_link():
+    print("The radio link: pairing a device")
+    if not link_ready() or not PASSWORD:
+        return True
+    peer = LinkPeer(pair=True, chan=1)
+    s = sysop_on("LinkKeeper")
+    ok = True
+    try:
+        drain(s)
+        s.send(b"link\r")
+        ok &= check("LINK shows the radio and its channel", s.wait_for(b"Radio link", 6) and s.wait_for(b"channel", 2))
+        drain(s)
+        s.send(b"link pair\r")
+        ok &= check("LINK PAIR opens a window", s.wait_for(b"Pairing is open", 6))
+        ok &= check("the board asks, naming the device", s.wait_for(b'Pair doorbox "shelf"', 20))
+        m = re.search(rb"code (\d{4})\? \(y/N\)", s.buf)
+        ok &= check("with a 4-digit code", m is not None)
+        s.send(b"y")
+        ok &= check("then asks whether the device shows the same code", s.wait_for(b"Does the device show", 20))
+        line = peer.wait("paired code", 10)
+        ok &= check("the device paired and printed its code", line is not None)
+        ok &= check("the two codes match", m is not None and line is not None and line.endswith(m.group(1).decode()))
+        s.send(b"y")
+        ok &= check("Y marks it checked", s.wait_for(b"Paired and checked.", 6))
+        ok &= check("the link comes up on the device", peer.wait("link up", 20) is not None)
+        time.sleep(1.0)
+        drain(s)
+        s.send(b"link\r")
+        ok &= check("LINK lists it, up", s.wait_for(b"shelf", 6) and s.wait_for(b"up", 2))
+        drain(s)
+        s.send(b"link forget 7\r")
+        ok &= check("LINK FORGET refuses a pairing that is not there", s.wait_for(b"LINK FORGET n", 6))
+        drain(s)
+        s.send(b"sys\r")
+        ok &= check("SYS has a Radio link row", s.wait_for(b"Radio link", 8))
+        s.send(b"q")
+        c = ansi_login("LinkCaller")
+        drain(c)
+        c.send(b"link pair\r")
+        ok &= check("a caller cannot pair (staff level)", not c.wait_for(b"Pairing is open", 3))
+        c.close()
+    finally:
+        s.close()
+        peer.stop()
+    return ok
+
+
+def test_doors():
+    print("Doors over the link")
+    if not link_ready():
+        return True
+    peer = LinkPeer(pair=False, chan=4)
+    ok = True
+    c = None
+    try:
+        if not check("the paired door box finds the board", peer.wait("link up", 25) is not None):
+            return False
+        time.sleep(1.5)                      # it answers the board's LIST_ASK
+        c = ansi_login("DoorGoer")
+        drain(c)
+        c.send(b"doors\r")
+        ok &= check("DOORS lists the box's doors", c.wait_for(b"Echo", 6) and c.wait_for(b"Clock", 2))
+        drain(c)
+        c.send(b"doors 9\r")
+        ok &= check("a door that is not there says so", c.wait_for(b"No door by that number", 6))
+        drain(c)
+        c.send(b"doors 1\r")
+        ok &= check("DOORS 1 opens Echo", c.wait_for(b"Opening Echo", 6) and c.wait_for(b"ECHO DOOR", 8))
+        h = peer.wait("handoff 1 ", 5) or ""
+        ok &= check("the door is handed the caller's handle", "handle=DoorGoer" in h)
+        ok &= check("and the terminal the board measured", "term=ansi" in h and "cols=" in h and "rows=" in h)
+        ok &= check("and the time left and the node", "minutes=" in h and "node=" in h)
+        ok &= check("the handoff line starts as specified", h.startswith("handoff 1 UNLEASHED-DOOR 1 "))
+        drain(c)
+        c.send(b"hello")
+        ok &= check("keys go to the door and its output comes back", c.wait_for(b"HELLO", 6))
+        c.send(b"q")
+        ok &= check("the door finishing brings the caller back", c.wait_for(b"Echo says bye.", 6))
+        ok &= check("to the prompt", c.wait_for(b"Main", 6))
+        drain(c)
+        c.send(b"doors 2\r")
+        ok &= check("DOORS 2 opens Clock", c.wait_for(b"CLOCK DOOR", 8))
+        c.send(b"\x1d\x1d\x1d")
+        ok &= check("Ctrl-] three times always gets out", c.wait_for(b"You left the door.", 6))
+        ok &= check("and the box is told", peer.wait("close 3", 6) is not None)
+        drain(c)
+        c.send(b"doors 2\r")
+        c.wait_for(b"CLOCK DOOR", 8)
+        c.close()
+        c = None
+        ok &= check("a caller hanging up in a door closes it on the box", peer.wait("close 1", 10) is not None)
+    finally:
+        if c:
+            c.close()
+        peer.stop()
+    return ok
+
+
 def test_version_shown():
     """The version everywhere a person reads one (1.1.0, Rob: "version the S3
     slightly different ... since we have the core versions and s3 versions
@@ -16240,6 +16393,8 @@ GROUPS = {
     # SSH on the S3 profiles (1.1.2): harness.sh --board s3 [--card]. Each
     # SKIPs on the reference board.
     "ssh":       ["ssh_"],
+    # The radio link and what rides on it (1.2.0).
+    "radio":     ["radio_link", "doors"],
 }
 
 
@@ -16282,6 +16437,8 @@ ORDER_NAMES = [
     "test_config_sd_plugin",
     "test_config_lights", "test_config_lights_ascii", "test_lights_frames", "test_lights_manual",
     "test_lights_count", "test_lights_order", "test_lights_wifi", "test_lights_silent", "test_lights_disk",
+    # The radio link and doors (1.2.0): the pairing first, doors use it.
+    "test_radio_link", "test_doors",
     "test_version_shown",
     # SKIPs on the reference board: tools/harness.sh --board s3 runs it.
     "test_board_s3", "test_board_s3_silent",

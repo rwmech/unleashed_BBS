@@ -271,6 +271,17 @@ test_camera: test_camera.cpp ../src/plugins/camera_rules.h ../src/plugins/camera
 test_link: test_link.cpp ../src/core/link.cpp ../src/core/link.h ../src/core/linkcrypto.cpp ../src/core/linkcrypto.h $(MBED_LIB)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_link.cpp ../src/core/link.cpp ../src/core/linkcrypto.cpp $(MBED_LIB)
 
+# A pretend door box for the host board's link (1.2.0): the peer end of the
+# same engine, over the host's UDP radio, so tools/testclient.py can pair a
+# device and send a caller through a door with no radio anywhere.
+linkpeer: linkpeer.cpp ../src/core/link.cpp ../src/core/link.h ../src/core/linkcrypto.cpp ../src/core/linkfam.h $(MBED_LIB)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ linkpeer.cpp ../src/core/link.cpp ../src/core/linkcrypto.cpp $(MBED_LIB)
+
+# The host board with plugins from their own repositories built in, beside
+# bbs_host rather than over it: make EXT="hello" bbs_host_ext
+bbs_host_ext: $(SRCS) $(HDRS) $(MBED_LIB)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) $(MBED_LIB) $(LDLIBS)
+
 # The project is GPL-3.0-or-later (1.1.0-dev.11). A tracked file whose SPDX
 # line still says GPL-2.0 was added on an old header; release.py refuses it
 # too, and this catches it before a release is ever attempted.
@@ -299,6 +310,6 @@ test: licence test_link test_xmodem test_wrap test_forums_ptr test_compose test_
 
 clean:
 	rm -rf wolfobj libwolfssh_host.a ssh_call test_sshlink
-	rm -f bbs_host bbs_host_s3 bbs_host_fncam bbs_host_espcam test_link test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera
+	rm -f bbs_host bbs_host_s3 bbs_host_fncam bbs_host_espcam bbs_host_ext linkpeer test_link test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera
 
 .PHONY: clean test licence FORCE mbedtls-check

@@ -60,7 +60,7 @@ struct Family {
     bool (*bulkBegin)(uint8_t peer, uint16_t sess, uint8_t type, uint32_t total) = nullptr;
     // Its bytes, in order. ON THE RUNNER, not the loop. False aborts it.
     bool (*bulkData)(uint8_t peer, uint16_t sess, const uint8_t* p, size_t n) = nullptr;
-    // It is complete (ok) or abandoned.
+    // It is complete (ok) or abandoned. On the loop.
     void (*bulkEnd)(uint8_t peer, uint16_t sess, bool ok) = nullptr;
     // A bulk message this end sent was taken (ok) or given up.
     void (*bulkSent)(uint8_t peer, uint16_t sess, bool ok) = nullptr;
@@ -68,6 +68,10 @@ struct Family {
     void (*reset)(uint8_t peer, uint16_t sess, uint8_t reason) = nullptr;
     // A peer came up or went down (every family hears every peer).
     void (*peerState)(uint8_t peer, bool up) = nullptr;
+    // The bulk message's last bytes are in: ON THE RUNNER, just before
+    // bulkEnd, for the sink to finish its card work (photos::file) off the
+    // loop. ok is false when the message CRC-32 did not check. Appended.
+    void (*bulkFinish)(uint8_t peer, uint16_t sess, bool ok) = nullptr;
 };
 
 // registerFamily: false when the id is taken by another family (logged, by

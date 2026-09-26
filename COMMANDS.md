@@ -591,7 +591,8 @@ board, is the only way.
 
 ### Plugins
 
-Eight plugins ship with the firmware, plus an `example` plugin that is the
+Ten plugins ship with the firmware on every board, the panel and the
+camera besides on the boards that have them, plus an `example` plugin that is the
 template for writing your own ([PLUGINS.md](PLUGINS.md)):
 
 | Plugin | What it does | Defaults |
@@ -606,6 +607,8 @@ template for writing your own ([PLUGINS.md](PLUGINS.md)):
 | `lights` | a disk light and a strip of 1 to 16 pixels (WS2812B) for a board in a case | `sysop` throughout |
 | `panel` | the board's own display as a status panel (boards with one only) | `sysop` throughout |
 | `camera` | photos from the board's own camera, into their own file areas (camera boards only) | `read = all`, `write = staff`, `admin = sysop` |
+| `link` | 1.2.0. The µnleashed link: ESP-NOW to paired devices beside the board ([LINK.md](LINK.md)) | `read = staff`, `write = staff`, `admin = sysop` |
+| `doors` | 1.2.0. Doors on a door box over the link | `read = users`, `write = users`, `admin = sysop` |
 
 Chat, `sd` and `info` are on by default, even with no section in `system.cfg`; `enabled = no` turns any of them off. `files` is also on by default once a card is mounted and an area is configured. `sd` on a board with no card costs one failed mount at boot and then nothing. `forums`, the serial bridge, `announce`, `lights` and `camera` wait to be switched on: `forums` because a sysop sets the topic areas up first, the serial bridge and the lights because they need wiring, `announce` because it is the one thing that talks out, and `camera` because even a board built with one should have a sysop's say before it starts taking photos. On a board whose pixel and display are part of the board (the Waveshare S3), `lights` and `panel` are on as shipped. Turning any of them off costs nothing: no commands, no hooks, no memory.
 
@@ -1249,6 +1252,37 @@ an ESP32-CAM, **take the SD card out first** and put it back after: GPIO2
 is both the card's MISO and a download-mode strap, and a seated card holds
 it high at reset, so the board boots its old firmware instead of taking
 the new one.
+
+#### link
+
+1.2.0. The board's end of the µnleashed link, ESP-NOW to devices beside it
+(a camera satellite, a door box). [LINK.md](LINK.md) is the whole of it.
+Off as shipped; `[plugin:link] enabled = yes` or CONFIG link turns it on,
+and the radio starts with it. It has no settings of its own beyond the
+levels.
+
+| Command | Who | What it does |
+|---|---|---|
+| `LINK` | staff (the plugin's read level) | The paired devices, one row each: number, name, kind, up or down, the signal as the board hears it, and at 60 columns and wider when it was last heard and whether its code was checked. Then frames in and out, retries, drops by reason, the time the board spends on each frame (average and worst) and how full its receive ring has been. Says so when all 8 pairings are taken. |
+| `LINK PAIR` | sysop | Opens pairing for 2 minutes. Put the device in pairing mode (a satellite with no pairing is in it for 5 minutes after it boots); when it answers the board asks `Pair doorbox "shelf" 02:00:00:00:1a:2b, code 4821? (y/N)`. Y pairs it, and the board then asks whether the device shows the same code, which a device prints on its serial console: Y there marks the pairing checked. Q stops. |
+| `LINK FORGET n` | sysop | Forgets pairing n. The device has to be paired again. |
+| `LINK NAME n name` | sysop | Renames pairing n (16 characters). |
+
+Pairings are kept in `p/link/peers` on the user partition and are not in a
+backup: a restored board pairs its devices again. SYS and HARDWARE have a
+`Radio link` row for staff (`on, ch 6`, and how many devices are up).
+
+#### doors
+
+1.2.0. Doors run on a door box, another device on the link (LINK.md,
+"Family 2"). The board hands a caller over with one line saying who they
+are, what terminal they have and how long they have left, and takes them
+back. Off as shipped; needs the link on.
+
+| Command | Who | What it does |
+|---|---|---|
+| `DOORS` | users | The doors the boxes on the air offer, numbered. |
+| `DOORS n` | users | Goes through door n. Everything typed goes to the door, and everything it sends comes to the terminal as it is. Back at the prompt when the door finishes, when the call's time runs out (the door is told with fifteen seconds left and has ten to save), when the box goes quiet, or on **Ctrl-] three times in a row**, which always works. |
 
 ### [access] matrix
 
