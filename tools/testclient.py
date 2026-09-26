@@ -7073,6 +7073,58 @@ def test_board_s3_silent():
     return ok
 
 
+def test_camera_registry():
+    """One SNAPSHOT for every camera (1.2.0): the verbs are the core's and
+    reach the built-in camera by number or name; a camera that is not there
+    is said so; a caller's budget is one count however the camera is named;
+    SNAPSHOT is gone again when the last camera is. SKIPs off a camera
+    board or with no card."""
+    print("The cameras: one SNAPSHOT")
+    card = card_dir()
+    if HOST_BOARD not in CAM_BOARD or not PASSWORD or card is None:
+        print("  SKIP  needs tools/harness.sh --board fncam --card")
+        return True
+    s = cfg_sysop("RegSysop")
+    camera_config(s, snap="users")
+    time.sleep(1.0)
+    c = ansi_login("RegCaller")
+
+    def snapped(cmd):
+        c.buf.clear()
+        c.send(cmd + b"\r")
+        wait_any(c, [b"Download it now?", b"No camera", b"not taking", b"not open to you", b"allowed at",
+                     b"busy"], 12)
+        c.pump(0.4)
+        got = plain(c.buf)
+        if b"Download it now?" in got:
+            c.send(b"n")
+            c.wait_for(b"kept in the Photos area", 4)
+        return got
+
+    got = snapped(b"snapshot")
+    m = re.search(rb"Snapshot (\d+) of 10 this hour", got)
+    first = int(m.group(1)) if m else 0
+    ok = check("SNAPSHOT takes one with the board's camera", m is not None)
+    got = snapped(b"snapshot 1")
+    ok &= check("SNAPSHOT 1 is the same camera, and the same count",
+                f"Snapshot {first + 1} of 10 this hour".encode() in got)
+    got = snapped(b"snapshot camera")
+    ok &= check("and so is SNAPSHOT camera, by name", f"Snapshot {first + 2} of 10 this hour".encode() in got)
+    got = snapped(b"snapshot 7")
+    ok &= check("a camera the board does not have is said so", b"No camera by that name or number" in got)
+    s.buf.clear()
+    s.send(b"camera camera\r")
+    ok &= check("CAMERA camera is the built-in camera's own view", s.wait_for(b"Card free", 4))
+    camera_config(s, enabled="no")
+    time.sleep(1.0)
+    c.buf.clear()
+    c.send(b"snapshot\r")
+    ok &= check("with the last camera gone, SNAPSHOT is not a command", c.wait_for(b"Unknown command", 4))
+    c.close()
+    s.close()
+    return ok
+
+
 def test_camera_failed_start():
     """A bring-up that fails part way gives back everything it took (FNCAM
     1.0.1). On FNCAM 1.0.0 a failed start on the board was followed by "The
@@ -14418,6 +14470,7 @@ ORDER_NAMES = [
     "test_board_s3", "test_board_s3_silent",
     "test_board_fncam", "test_board_espcam",
     "test_camera",
+    "test_camera_registry",
     "test_camera_failed_start",
     "test_camera_silent",
     "test_announce_camera",

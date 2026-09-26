@@ -96,7 +96,7 @@ inserted.
 |---|---|
 | `start(bbs)` | after config load; return false to refuse |
 | `stop()` | switched off, or a config reload |
-| `tick(now)` | every 250 ms from the BBS loop, every 20 ms for a `PF_FAST` plugin; never block |
+| `tick(now)` | every 250 ms from the BBS loop, every 20 ms for a `PF_FAST` plugin; never block. `now` is read once for the pass, so it can be earlier than a `plat::millis()` taken in a handler that ran before this tick in the same pass (a link message, for one): compare times as `static_cast<int32_t>(now - then) >= 0`, never `now - then` unsigned (camsat's motion pictures all failed on exactly that, 2026-09-26) |
 | `onConnect(s)` | a caller arrives, after terminal detection |
 | `onLogin(s)` | a caller logs in |
 | `onLogoff(s)` | a caller leaves |
@@ -284,6 +284,33 @@ plugins::path(myIndex, "count", buf, sizeof(buf)); // <fs>/p/<name>/count
 - `PF_SD` says a plugin's files live on the SD card. It gets `<sd>/p/<name>/` instead of `<userdata>/p/<name>/`, and it does not start at all when no card is mounted (`PLUGINS` says "no SD card"). There is deliberately no fallback to internal flash: a plugin that quietly writes somewhere other than where it said it would is worse than one that is refused, because the sysop pulls the card expecting the data to be on it.
 - The free-space check follows the same split. A `PF_SD` plugin's `storageBytes` is weighed against the card, not against the 608 KB flash partition it is never going to touch.
 - The core keeps 32 KB of free space in reserve so accounts can always be written. Once space is that tight, `plugins::path` returns false and the plugin should carry on without saving.
+
+### A camera
+
+A plugin that takes pictures (the built-in camera, a camera satellite's
+plugin) does not register `SNAPSHOT` or `CAMERA`: those are the core's, one
+pair for every camera on the board (1.2.0, `src/core/photos.h`). It adds
+itself to the camera list from `start()` and takes itself out in `stop()`
+(a satellite's plugin as each satellite comes and goes):
+
+```c
+static const photos::Camera kCam = {
+    "garden",            // what CAMERA shows and SNAPSHOT takes by name
+    1 + pairing,         // order: 0 is the built-in camera, then satellites
+    ctx,                 // handed back to every call below
+    up, busy,            // bool(ctx): can take one now / taking one now
+    snap,                // (ctx, bbs, session, now): take one, as a command handler would
+    line,                // (ctx, out, n): a short status for CAMERA's list
+    command,             // (ctx, bbs, session, arg, now): CAMERA <this one> ...; null for none
+};
+photos::addCamera(kCam);     // 8 cameras at most; SNAPSHOT exists while there is one
+```
+
+`snap` applies its own levels. For anybody but the sysop it asks
+`photos::budget(s, now)` before it starts and calls `photos::spend(s, now)`
+once the picture is under way: the limits are one count across every
+camera, so ten an hour is ten on the board (Rob). The core carries an
+account's count across a rename.
 
 ### Speaking over the link
 

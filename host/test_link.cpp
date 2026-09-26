@@ -679,6 +679,31 @@ int main() {
         check("and the sender told each was taken, none failed", peer.bulkSentOk == kPics && peer.bulkSentFail == 0);
     }
 
+    printf("A side that never closes its sessions is told when the other does\n");
+    {
+        Air air;
+        End host(air, 1, Role::Host, 16, 43);
+        End peer(air, 2, Role::Peer, 16, 44);
+        check("paired and up", pairUp(air, host, peer, 5));
+        // The host opens one a picture (a SNAP) and closes it; the peer
+        // never closes its side (camsat bench: its 16 filled after 16).
+        const int kSnaps = 24;
+        int sent = 0;
+        for (int i = 0; i < kSnaps; ++i) {
+            uint16_t hs = host.eng->openSession(0, FAM_CAMERA);
+            if (!hs) break;
+            char m[8];
+            snprintf(m, sizeof(m), "s%02d", i);
+            if (host.eng->send(0, hs, FAM_CAMERA, 1, m, strlen(m)) != 1) break;
+            host.eng->closeAfter(0, hs);
+            ++sent;
+            runUntil(air, { &host, &peer }, 10000, [&] { return static_cast<int>(peer.msgs.size()) > i; });
+            run(air, { &host, &peer }, 2500);          // past the tombstone's word to the far end
+        }
+        check("every one of 24 got through, past the table's 16", sent == kSnaps &&
+              static_cast<int>(peer.msgs.size()) == kSnaps);
+    }
+
     printf("No room: the receiver makes the sender wait, not fail\n");
     {
         Air air;

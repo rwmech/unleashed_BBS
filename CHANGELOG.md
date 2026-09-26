@@ -92,6 +92,30 @@ after 1.1.2. Host-tested; not yet flashed.
   tests (`--only=radio`). `host/test_link` runs in `make test`: 118 checks,
   clean under ASan and UBSan.
 
+**1.2.0-link.6: one SNAPSHOT for every camera**
+- The camsat engineer's registry, approved 2026-09-26: `photos::Camera`,
+  added and removed by whatever takes pictures. The built-in camera is
+  camera 1, then satellites by pairing. `SNAPSHOT` and `CAMERA` are the
+  core's (`src/core/cameras.cpp`), there while the board has a camera and
+  gone with the last one.
+  - `SNAPSHOT` takes CONFIG cameras' Default (a new core page, key
+    `camera`), else the built-in camera, else the first that is up.
+    `SNAPSHOT n` or `SNAPSHOT name` picks one.
+  - `CAMERA` with one camera is that camera's own view and `CAMERA SET`, as
+    before. With more it lists them; `CAMERA n ...` reaches camera n.
+- A caller's snap limits are one budget across every camera (Rob), kept by
+  the core and carried across a rename by the core. The built-in camera
+  checks its plugin levels itself now, since its commands left its table.
+- `Bbs::hasCommands` and `dropCommands` take one command table out by
+  pointer; the core's tables survive a CONFIG reload.
+- `test_camera_registry` (camera boards, with a card).
+- The engine tells the far end when it closes a session (RESET CLOSED,
+  two seconds after, from the tombstone), so a peer that never closes its
+  own side no longer fills its 16 (camsat's 6.5-minute soak on link.5:
+  54 KB/s, 0 retries, 39 of 39 timelapse pictures, but a satellite that did
+  not close its side refused every SNAP after the 16th). `test_link` has
+  it: 24 host-opened sessions, the peer closing none.
+
 **1.2.0-link.5: the bench's figures, and the code review**
 - The camsat bench (2026-09-26, the S3 on Rob's router and an ESP32-CAM)
   set the radio: 802.11g 24 Mbps per peer, down to 1 Mbps after three

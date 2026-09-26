@@ -377,6 +377,11 @@ public:
     // static). plugin is the plugin's index, 0xFF for the core table.
     // False when the registry is full.
     bool registerCommands(const Command* list, uint8_t count, uint8_t plugin = 0xFF);
+    // hasCommands / dropCommands: one table, by its pointer (1.2.0: the
+    // cameras' verbs, there while the board has a camera and gone when it
+    // has none, so SNAPSHOT is "Unknown command" on a board without one).
+    bool hasCommands(const Command* list) const;
+    void dropCommands(const Command* list);
     // dropPluginCommands: take every plugin's table back out, keeping the
     // core's. Called before the plugins are restarted by a config reload.
     void dropPluginCommands();
