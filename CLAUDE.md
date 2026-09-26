@@ -743,6 +743,19 @@ this tree.
   with no one in it is skipped. The example Rob gave: "We meet every
   Tuesday at 10a". This reverses nothing: /M message slots stay rejected,
   because /i now does the job.
+- **How a new board comes in** (Rob, 2026-09-26, "DO this for all future
+  boards attached"): a board lane of its own, separate from the release
+  developer. It branches from the current release tag, adds a self-contained
+  profile (env, sdkconfig layer, pin table from the vendor's schematic),
+  brings it up on its COM port, and ships as a board pre-release that
+  carries ONLY that board's image set (so no other board's preview rules
+  pick it up). The site lists it as a preview, and the profile merges into
+  the next release.
+  **Boards are chosen to maximise what the BBS can do, not to work around
+  vendor wiring** (Rob: "not work around dumb vendor BS"). Rejected on
+  that ground: the KEYESTUDIO ESP32-S3 PRO (N16R8), whose on-board SD slot
+  sits on GPIO 35-37, inside the octal PSRAM bus, so PSRAM and the card
+  slot cannot both work.
 - **1.1.2 scope, decided by Rob 2026-09-26** (discussed before coding):
   - A read-only audit first of every path that can hold the loop over
     50 ms (internal/audit-1.1.2-2026-09-26.md); the worst move onto one
