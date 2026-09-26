@@ -228,7 +228,7 @@ uint8_t        g_blNow   = 0;               // the backlight as this plugin last
 bool           g_orientSet = false;
 int16_t        g_legacyRot = -1;
 
-// The skin (1.1.2, skin.h): "status" is the layout this file draws; any
+// The skin (1.2.0, skin.h): "status" is the layout this file draws; any
 // other is a folder of the card's skins/, which skin.cpp loads and draws in
 // its place. g_skinOwned: the skin had the glass last pass, so the status
 // skin is drawn whole the first pass it does not.
@@ -1960,7 +1960,7 @@ const Command kCommands[] = {
 // columns each row has a twenty column label too (1.1.0, the forms at 80).
 // ---------------------------------------------------------------------------
 constexpr PluginSetting kSettings[] = {
-    // The skin (1.1.2), in the row Driver had: the page is full, and PANEL
+    // The skin (1.2.0), in the row Driver had: the page is full, and PANEL
     // and PLUGINS still name the controller. Its choices are the card's
     // skins for this glass, listed by skin.cpp's worker.
     { "skin",      "Skin",      PS_CYCLE, 0, 0,   skin::kNameMax, "status, or a folder in skins/ on SD.",

@@ -1474,7 +1474,8 @@ this tree.
   - Not built: the badge pick-list, about a day on its own (a scrolling
     checklist at 40, 80 and plain ASCII, the badges.json generator, the
     CONFIG hook). For Rob to schedule.
-- **Panel skins (lane panel-skins, 1.1.2-skins.1, 2026-09-26)**, Rob's
+- **Panel skins (lane panel-skins, 1.1.2-skins.1, 2026-09-26; part of the
+  1.2.0 hardware release, not 1.1.2, main's call the same day)**, Rob's
   design, built against the board engineer's MF35 panel lane (board-mf35)
   through a narrow interface (`skin.h`: want, stop, tick, figures, redraw).
   [SKINS.md](SKINS.md) is the whole story. What was decided on the way:

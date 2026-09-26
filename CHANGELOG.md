@@ -24,6 +24,15 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.2.0-skins.5 (S3 1.1.3), 2026-09-26: the skins are 1.2.0's
+
+Not a release. Main's call: panel skins and the live widgets are part of
+the 1.2.0 hardware release, and 1.1.2 is a patch that ships without them,
+so this lane stays out of the 1.1.2 tag. The version and every "(1.1.2)"
+this lane wrote on a skin feature say 1.2.0 now; what is 1.1.2's (the
+runner, the S3's 8 MB layout, SSH) keeps its number. SKINS.md says the S3
+layout now has room to embed the stock set, which is still to do.
+
 ## 1.1.2-skins.4 (S3 1.1.3), 2026-09-26: skins on 1.1.2-dev.3, and the review
 
 Not a release: the panel-skins lane brought onto main at 1.1.2-dev.3 (SSH,

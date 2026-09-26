@@ -7,7 +7,7 @@
  * File:         host/test_skin.cpp
  * Module:       Host tests / panel skins
  *
- * Purpose:      Panel skins (1.1.2) with no panel:
+ * Purpose:      Panel skins (1.2.0) with no panel:
  *                 - skin.txt's grammar against every case in
  *                   host/skins/cases.txt (the ones tools/mkskin.py
  *                   --selftest reads too), then a fuzz: a hundred thousand

@@ -956,7 +956,7 @@ struct Scene {
     }
 
     // text: every widget now, whatever the budget: the tests' way in, and
-    // what 1.1.2's status lines were.
+    // what the first skins' status lines were.
     void text(panelgfx::Canvas& c, panelgfx::Dirty& d, const Figures& f) {
         Live none;
         widgets(c, d, f, none, 0xFFFFFFFFu);

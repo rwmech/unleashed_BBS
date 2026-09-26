@@ -32,11 +32,12 @@ and the two over-budget figures (a 480 x 35 graph, a six-digit readout 64
 tall) were confirmed refused with the messages quoted.
 
 For the site agent:
-- The widgets' version is not settled: SKINS.md marks them 1.2.0, while the
-  lane's CHANGELOG calls them 1.1.2-skins.2. Once it is, gate "## Live
-  widgets" (and the widget half of the stock skins table) with "::: from".
-  The page says only "a board whose firmware is older than the widgets", on
-  purpose.
+- Version, settled 2026-09-26 (main): panel skins AND the live widgets are
+  part of the 1.2.0 hardware release; 1.1.2 is a patch that ships without
+  them. So the whole page says "coming in 1.2.0" until a release carries
+  it, and is then gated "::: from 1.2.0". The body says only "a board whose
+  firmware is older than the widgets", on purpose, so the gate is the one
+  place the number lives.
 - Placeholder: /STOCK-SKINS-ZIP below is the stock skins download, skins.zip
   in card layout. Put the real link in.
 - The feature ships with the S3 build that carries skins (COMMANDS.md says

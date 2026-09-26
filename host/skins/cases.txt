@@ -1,5 +1,5 @@
 # ===========================================================================
-#  µnleashed BBS: skin.txt test cases (1.1.2)
+#  µnleashed BBS: skin.txt test cases (1.2.0)
 #
 #  Read by host/test_skin.cpp (the board's reader, skin_manifest.h) and by
 #  tools/mkskin.py --selftest (the PC's), so the two agree on every one.
