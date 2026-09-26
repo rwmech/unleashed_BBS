@@ -781,6 +781,19 @@ this tree.
       `fsInfoStale()` clearing both partitions' figures.
     - Measured on the bench: no slow pass from any audited path.
   - The uploads bug and the smaller bugs below.
+  - **Testing must take less time than writing the code** (Rob,
+    2026-09-26). Part 1 adds `harness.sh --changed <range>`, which picks
+    the groups from what changed. A test-speed job follows part 1, on its
+    own branch after part 1 merges:
+    - `--jobs N` to run groups side by side, with and without a card at
+      once;
+    - a host-only fast-timing mode that scales down the busy countdown,
+      the goodbye linger, time warnings and detection pauses, never on a
+      board;
+    - a timing run listing the 20 slowest tests, with their sleeps
+      replaced by waiting for the expected text;
+    - each profile built once per run.
+    Target: a patch's targeted run in minutes.
   - Stays 1.2.0: silent assertions, the camera boards' PSRAM .bss move.
   - Parked: the badge pick-list.
 - **1.1.2, from the 1.1.1 bench check on the ESP32-CAM (2026-09-25)**.
