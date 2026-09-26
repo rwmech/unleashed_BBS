@@ -743,6 +743,44 @@ this tree.
   with no one in it is skipped. The example Rob gave: "We meet every
   Tuesday at 10a". This reverses nothing: /M message slots stay rejected,
   because /i now does the job.
+- **1.1.2, from the 1.1.1 bench check on the ESP32-CAM (2026-09-25)**.
+  1.1.1 shipped on Rob's go before this check finished; the regression was
+  clean (internal/regression-1.1.1-final-2026-09-25.md).
+  - **Rule no. 1 fails, first:** the plain `SCREENS` list holds the loop
+    1.22 to 1.28 s in one pass, the worst on the board. Check whether
+    1.1.1's manifest or `sameFile` work made it worse. `SCREENS INSTALL`
+    held one pass for 491 ms installing one 71-byte screen, right after
+    the space check; the `fsInfo` partition walk is the suspect. Both need
+    slicing or caching, then measuring on the bench.
+  - **Bug, files:** the staging folder's own `.pending/FILES.BBS` is
+    listed by P as an upload waiting (`listPending`, `nthPending` and
+    `countPending` skip `UPLOADS.BBS` only), and A moves it into the area.
+    A sysop's own auto-approved upload creates it. In an area with its own
+    FILES.BBS that would replace the area's descriptions, or sit waiting
+    for ever. The same miscount feeds the uploads-waiting notice.
+  - An external reset (EN, or a serial-port open on the ESP32-CAM-MB)
+    records as `boot: watchdog`, and the sysop is told "the board froze".
+    Check `esp_reset_reason` and the RTC reset cause on the classic ESP32
+    before deciding what counts as a crash.
+  - Sticky private: after the partner leaves, "1 room line went by" counts
+    the leave notice itself.
+  - CONFIG says "Saved and live" for a hostname change that applies only
+    at the next restart.
+  - HARDWARE: `Card free 29,537 MB of 29539` needs the comma and the unit
+    on the total.
+  - The camera logs `gpio_install_isr_service ... already installed` on
+    every snap.
+  - Blank board name: the welcome reads "µnleashed BBS running µnleashed
+    BBS v1.1.1".
+  - The espcam camera-test SKIP messages name `--board fncam`.
+  - Not verified on hardware: announce's `"closed":true` (ANNOUNCE TEST
+    exists only while announce runs). Check it against a loopback
+    directory.
+  - Worth measuring, long-standing sysop-path slow passes on the bench:
+    login 65-77 ms, elevation 90-138, CONFIG open 130-173, CONFIG save
+    216-338, the FILES Screens area (34 files) 123-313, a sysop hanging up
+    60-220. Internal heap drops to 12,731 free during a snap on the
+    ESP32-CAM (57,499 idle).
 - **1.2.0: memory, from internal/memory-2026-09-25-1.1.1.md** (Rob,
   2026-09-25):
   - The small printf (newlib nano, about 69.5 KB of flash on every board,
