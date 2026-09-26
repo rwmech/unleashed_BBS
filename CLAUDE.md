@@ -1695,6 +1695,13 @@ approach everything seems to be haphazard as to how it gets fixed/done."
   A .0 release says so to users: its release notes, the installer and
   CHANGELOG carry a line that it has not been through the full regression
   yet and is out early for testing.
+- **A patch (x.y.Z) never gets a full regression** (Rob, 2026-09-26:
+  "full regressions werent necessary for .x releases. More akin to 'we
+  changed xyz and tested only those areas' full regressions on x.x
+  releases"). This supersedes "the full regression runs straight after the
+  tag" below. A patch runs the `--only=` groups for the areas it changed,
+  with and without a card, on the board profiles it touches, plus a bench
+  check. The full suite is for x.Y.0.
 - **Patch releases ship on review plus targeted runs** (Rob, 2026-09-23,
   releasing 1.0.1: "if there is a regression fix it in .2 this should be
   the way").
