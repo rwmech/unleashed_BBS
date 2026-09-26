@@ -277,6 +277,7 @@ public:
     static constexpr uint32_t kSessIdleMs    = 120000;
     static constexpr uint8_t  kTombs         = 8;     // closed sessions remembered, to re-ACK resends
     static constexpr uint32_t kTombMs        = 30000; // for this long
+    static constexpr uint32_t kTombTellMs    = 2000;  // then the far end is told it is closed
     static constexpr uint32_t kPairResendMs  = 500;
 
     // bulkWin: fragments in the receive window (16 on a board without PSRAM).
@@ -485,7 +486,7 @@ private:
     void        emit(uint8_t kind, uint8_t pi, uint16_t sess, uint8_t family, uint8_t v);
     // Sessions closed here lately (closeAfter): a resend on one is ACKed
     // again from its tombstone, never taken as a new session.
-    struct Tomb { bool used; uint8_t peer; uint16_t id; uint16_t expect; uint32_t at; };
+    struct Tomb { bool used; bool told; uint8_t peer; uint16_t id; uint16_t expect; uint32_t at; };
     Tomb        tombs_[kTombs] = {};
     void        bury(const Sess& s, uint32_t now);
     Tomb*       tombOf(uint8_t pi, uint16_t id, uint32_t now);

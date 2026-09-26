@@ -503,6 +503,7 @@ void Engine::bury(const Sess& s, uint32_t now) {
         if (static_cast<int32_t>(x.at - t->at) < 0) t = &x;
     }
     t->used = true;
+    t->told = false;
     t->peer = s.peer;
     t->id = s.id;
     t->expect = s.rxExpect;
@@ -1691,6 +1692,18 @@ void Engine::timers(uint32_t now) {
         if (!s.used || !s.closing || s.ackDue || inFlight(s)) continue;
         bury(s, now);
         dropSess(s);
+    }
+    // And the far end is told, a little later, so its side of the session
+    // does not sit in its table until it idles out: a peer that does not
+    // close its own filled its 16 after 16 pictures (camsat bench). Late
+    // enough that a lost last ACK has been resent and answered first.
+    for (Tomb& t : tombs_) {
+        if (!t.used || t.told || !reached(now, t.at + kTombTellMs)) continue;
+        if (!peers_[t.peer].haveSess) { t.told = true; continue; }
+        uint8_t r[3];
+        put16(r, t.id);
+        r[2] = R_CLOSED;
+        if (queueCtrl(t.peer, nullptr, T_RESET, r, sizeof(r), true)) t.told = true;
     }
 }
 

@@ -333,8 +333,8 @@ void Bbs::endScreens(bool card, const char* why) {
 // "Unknown command" on a board where the plugin was running fine.
 //
 // The core's tables stay (plugin 0xFF): table 0 is registered in begin(),
-// the cameras' verbs (photos.cpp, 1.2.0) once, when the first camera
-// appears, and the core is not restarted by a reload.
+// and the cameras' verbs (cameras.cpp, 1.2.0) come and go with the cameras
+// themselves, whichever plugins they belong to.
 // ---------------------------------------------------------------------------
 void Bbs::dropPluginCommands(uint32_t mask) {
     // The tables of the plugins in mask go; the rest close up behind them in
@@ -348,6 +348,19 @@ void Bbs::dropPluginCommands(uint32_t mask) {
     }
     for (uint8_t t = w; t < tableCount_; ++t) tables_[t] = CommandTable{};
     tableCount_ = w;
+}
+
+bool Bbs::hasCommands(const Command* list) const {
+    for (uint8_t t = 0; t < tableCount_; ++t) if (tables_[t].list == list) return true;
+    return false;
+}
+
+void Bbs::dropCommands(const Command* list) {
+    uint8_t keep = 0;
+    for (uint8_t t = 0; t < tableCount_; ++t)
+        if (t == 0 || tables_[t].list != list) tables_[keep++] = tables_[t];
+    for (uint8_t t = keep; t < tableCount_; ++t) tables_[t] = CommandTable{};
+    tableCount_ = keep;
 }
 
 // ===========================================================================

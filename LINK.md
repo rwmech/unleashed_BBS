@@ -370,12 +370,23 @@ One layout on every transport. Little-endian throughout.
   closed session (its ACK was lost) is ACKed again from the tombstone;
   anything new on it gets RESET, and is never taken as the first message of
   a new session. Without this the camsat bench saw a picture filed on the
-  board and reported failed on the satellite (2026-09-26).
+  board and reported failed on the satellite (2026-09-26). Two seconds
+  after it closes, the far end is sent RESET(CLOSED) for it, so its side
+  goes too rather than idling in its table for two minutes: a satellite
+  that never closed its own side filled all 16 after 16 pictures (camsat
+  soak, link.5). The two seconds let a lost last ACK be resent and
+  answered first.
 - **Bulk ACKs from the runner.** The runner sends the acknowledgements that
   are due as soon as it has taken fragments, and again when it has freed
   half a window, instead of leaving them to the loop's next tick: a sender
   with 16 fragments in its window otherwise waits up to 20 ms a window,
   which the first real pictures (17 KB/s, 2026-09-26) showed was the limit.
+  With it (link.5, same bench, before the runner is in the tree): 54 KB/s
+  steady, no retries and no drops, XGA pictures of 87-93 KB in 1.6-1.8 s,
+  39 of 39 in a 6.5-minute timelapse soak. That is near the loop fallback's
+  ceiling (8 fragments a 20 ms tick); the runner lifts it at the 1.1.2
+  merge. The same soak saw one or two slow passes a picture, worst 105 ms:
+  the card writes, running from the tick until the runner is there.
 - **Order.** Fragments of a bulk message are written in order into the
   receiver's window and handed on as an in-order stream. With four frames
   outstanding at the MAC a loss can put fragments out of order; the window
@@ -518,7 +529,13 @@ tables are 8 KB of static DRAM.)
 - The camera satellite's BBS side is **in every official image, off by
   default**, the base WROOM included (Rob): any board can add a camera.
 - A caller's snap from a satellite shows the camera's usual spinner while
-  it waits, and the same limits per handle apply.
+  it waits, and the same limits per handle apply: one count across every
+  camera on the board, not one per camera (Rob).
+- **One SNAPSHOT.** A satellite does not bring verbs of its own: the camsat
+  plugin adds a `photos::Camera` for each satellite that is up (order 1 +
+  its pairing number, so the built-in camera stays camera 1), and the
+  core's `SNAPSHOT [n|name]` and `CAMERA [n|name]` reach it. CONFIG cameras
+  picks the default (PLUGINS.md, "A camera").
 
 ---
 
@@ -722,6 +739,13 @@ second ring and the rate table: control ring 8 x 258, bulk ring 16 x 258
 and 12 rate entries, about 6.4 KB together in place of the 2 KB ring, so
 about 19 KB in all; the plugin declares 20 KB and starts only with that
 plus the core's reserve free.
+
+At `1.2.0-link.6` (the camera registry in the core): esp32dev `_bss_end`
+0x3ffd77b0, 161,712, so **19,024 free** (+40: the camera table and the
+`camera` setting), PlatformIO flash 1,275,740 (81.1%). The Freenove camera
+board: `_bss_end` 0x3ffda498, 173,208, 7,528 free, flash 85.9%. The S3
+builds at 83.6% flash. The callers' snap windows (about 2 KB) are taken
+from the heap at the first camera, as the built-in camera took them before.
 
 ---
 

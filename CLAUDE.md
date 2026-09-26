@@ -838,6 +838,18 @@ this tree.
       fenced off (`Radio::live`, the graves); doors retry CLOSE (ST_CLOSING)
       and stop before the link; an external plugin's `PF_CORE` is ignored
       and duplicate names refused.
+    - **The first real pictures (camsat, link.4)**: 5 of 5 filed but 17 KB/s.
+      A session closed straight after its picture lost its last ACK, and the
+      satellite reported a filed picture as failed; now a closed session
+      waits for the ACK it owes and leaves a tombstone. Bulk ACKs waited for
+      the loop's tick; the runner sends them now. Both in link.5.
+    - **One SNAPSHOT (link.6, approved 2026-09-26)**: `photos::Camera` is
+      the camera registry; the core owns SNAPSHOT and CAMERA
+      (`src/core/cameras.cpp`), the built-in camera is 1, satellites follow
+      by pairing, CONFIG cameras sets the default, and a caller's limits
+      are ONE budget across all cameras (Rob). camera.cpp lost its command
+      table and its limits table to the core: a small edit, but it touches
+      a file 1.1.2a rewrote, so it is a merge point.
     - Retries count only while the far end is heard and only for a
       session's oldest message: the first version failed a session behind
       one lost frame, and a channel hop killed sessions that should pause.

@@ -1018,6 +1018,15 @@ const CfgField kNetwork[] = {
 #endif
 };
 
+// The cameras (1.2.0): which one a bare SNAPSHOT takes. A name CAMERA
+// shows; blank, or a name that is not on the air, is the built-in camera,
+// else the first that is up.
+const CfgField kCameras[] = {
+    { "camera", "Default", CK_TEXT, 0, 0, 16, "A name from CAMERA. Blank: built-in.",
+      "Default camera",
+      "The camera SNAPSHOT uses: a name CAMERA lists. Blank: the built-in one, else the first up." },
+};
+
 // isWifiKey: one of the two keys that are one setting (see configSave)
 bool isWifiKey(const char* key) {
     return !strcmp(key, "wifi_ssid") || !strcmp(key, "wifi_password");
@@ -1053,6 +1062,9 @@ const CfgPage kPages[] = {
     // still taken (see pageByName), because it is in every guide written
     // before that and in a sysop's fingers.
     CFG_PAGE("network",  "NETWORK",         "Wi-Fi and port, next restart",    kNetwork),
+    // 1.2.0: one SNAPSHOT for every camera the board has (photos.h). Its
+    // own page, last, so no row on the pages above moves.
+    CFG_PAGE("cameras",  "CAMERAS",         "which camera SNAPSHOT uses",      kCameras),
 };
 constexpr uint8_t kPageCount = sizeof(kPages) / sizeof(kPages[0]);
 
@@ -1420,6 +1432,7 @@ void cfgLiveValue(const char* key, char* out, size_t n) {
     else if (!strcmp(key, "idle_minutes"))          snprintf(out, n, "%u", c.idleMinutes);
     else if (!strcmp(key, "landing"))               snprintf(out, n, "%s", users::landKey(c.landing));
     else if (!strcmp(key, "sysop_handle"))          snprintf(out, n, "%s", c.sysopHandle);
+    else if (!strcmp(key, "camera"))                snprintf(out, n, "%s", c.camera);
     else if (!strcmp(key, "activity_led_gpio"))     snprintf(out, n, "%d", c.ledGpio);
     else if (!strcmp(key, "silent"))                snprintf(out, n, "%s", c.silent ? "yes" : "no");
     else if (!strcmp(key, "closed"))                snprintf(out, n, "%s", c.closed ? "yes" : "no");

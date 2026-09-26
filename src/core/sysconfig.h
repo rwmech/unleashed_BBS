@@ -125,6 +125,9 @@ struct SysConfig {
     // never one without the other. 0 is "not set".
     char     sysopHandle[BBS_USER_MAX + 1] = "";
     uint32_t sysopId       = 0;
+    // The camera a bare SNAPSHOT uses (1.2.0): a camera's name, blank for the
+    // built-in camera or else the first that is up (photos.h).
+    char     camera[17]    = "";
     uint16_t coPerms[2]    = { static_cast<uint16_t>(PERM_ALL & ~PERM_UNBAN),
                                static_cast<uint16_t>(PERM_NODES | PERM_BROADCAST | PERM_TIME | PERM_BANS |
                                                      PERM_NOLIMITS | PERM_DASH) };

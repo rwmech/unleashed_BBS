@@ -65,6 +65,9 @@
 
 #include "plugin.h"
 
+class Bbs;
+struct Session;
+
 namespace photos {
 
 // ---------------------------------------------------------------------------
@@ -113,5 +116,64 @@ bool write(Writer& w, const uint8_t* p, size_t n);
 bool file(Writer& w, const char* rel, const char* desc);
 // abandon: close and remove the temporary file.
 void abandon(Writer& w);
+
+// ---------------------------------------------------------------------------
+// The board's cameras (1.2.0, approved 2026-09-26): one SNAPSHOT verb for
+// every camera the board has, built in or on the link. The verbs are the
+// core's (cameras.cpp) and exist while at least one camera is registered:
+//   SNAPSHOT            the default camera: CONFIG cameras "Default" when it
+//                       names one that is up, else the built-in camera, else
+//                       the first that is up
+//   SNAPSHOT n|name     that one
+//   CAMERA              staff: with one camera, its own view (as before);
+//                       with more, every camera numbered, one line each
+//   CAMERA n|name ...   that camera's own command (CAMERA 1 SET ...); with
+//                       one camera, CAMERA SET ... still reaches it
+// Numbered by order: the built-in camera (order 0) first, then satellites
+// by pairing number (order 1 + n). With one camera nothing changes for a
+// caller.
+//
+// A caller's limits are ONE budget across every camera (Rob, 2026-09-26):
+// 10 an hour means 10 on the board, not 10 per camera. A camera's snap asks
+// budget() for anybody but the sysop and calls spend() once its picture is
+// under way.
+// ---------------------------------------------------------------------------
+struct Camera {
+    const char* name;      // shown and typed after SNAPSHOT: "camera", "garden"
+    uint8_t     order;     // 0 the built-in camera, 1 + pairing number a satellite
+    void*       ctx;       // handed back to every call
+    bool (*up)(void* ctx);                                   // can take one now
+    bool (*busy)(void* ctx);                                 // taking one now
+    // snap: take one for this caller, with its own levels and refusals; it
+    // prompts, or owns the session, exactly as a command handler does.
+    void (*snap)(void* ctx, Bbs& b, Session& s, uint32_t now);
+    // line: a short status for CAMERA's list (sensor, what is kept).
+    void (*line)(void* ctx, char* out, size_t n);
+    // command: CAMERA <this camera> <arg>. Null: CAMERA shows its line.
+    void (*command)(void* ctx, Bbs& b, Session& s, const char* arg, uint32_t now);
+};
+
+// addCamera: from a camera's start(), or when a satellite comes up; kept by
+// pointer, 8 at most. removeCamera: from its stop(), or when it goes.
+bool addCamera(const Camera& c);
+void removeCamera(const Camera& c);
+// cameras: how many; camera(i): the i-th by order, from 0.
+uint8_t       cameras();
+const Camera* camera(uint8_t i);
+
+// Budget: the tighter of a caller's windows (an account's by handle, a
+// guest's by address and by name), each at most kPerHour an hour and
+// kPerDay a day (camera_rules.h).
+struct Budget {
+    bool     ok     = true;
+    uint8_t  hour   = 0;       // pictures in the last hour, before this one
+    uint8_t  day    = 0;       // and in the last day
+    uint32_t nextAt = 0;       // refused: the first moment one is allowed
+    bool     byDay  = false;   // refused by the day's limit, else the hour's
+};
+Budget budget(const Session& s, uint32_t now);
+void   spend(const Session& s, uint32_t now);
+// renamed: an account's window follows its new handle (the core calls it).
+void   renamed(const char* oldHandle, const char* newHandle);
 
 }  // namespace photos
