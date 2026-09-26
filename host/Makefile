@@ -61,11 +61,45 @@ WOLF_WS       = internal io log port ssh
 WOLF_OBJS     = $(patsubst %,wolfobj/wc_%.o,$(WOLF_WC)) $(patsubst %,wolfobj/ws_%.o,$(WOLF_WS))
 SRCS      = $(wildcard ../src/core/*.cpp) $(wildcard ../src/plugins/*.cpp) platform_host.cpp main_host.cpp
 
+# ---------------------------------------------------------------------------
+# mbedTLS for the host (1.2.0). The link (src/core/linkcrypto.cpp) seals its
+# frames with AES-CCM and pairs with P-256 ECDH over mbedTLS, which the board
+# gets from ESP-IDF. The host has no mbedTLS of its own, so it compiles the
+# very sources ESP-IDF 5.3.1 ships (mbedTLS 3.6.0) out of the PlatformIO
+# package, with mbedTLS's own default configuration: the same code the board
+# runs, in software rather than on the AES and SHA hardware. Built once into
+# obj-mbedtls/ and libmbedtls_host.a, then only linked.
+#
+# MBEDTLS_DIR overrides where it is looked for:
+#   make MBEDTLS_DIR=/path/to/mbedtls bbs_host
+# ---------------------------------------------------------------------------
+MBEDTLS_DIR ?= $(firstword $(wildcard /mnt/c/Users/*/.platformio/packages/framework-espidf@3.50301.0/components/mbedtls/mbedtls) \
+                           $(wildcard $(HOME)/.platformio/packages/framework-espidf@3.50301.0/components/mbedtls/mbedtls))
+MBED_SRCS  = $(wildcard $(MBEDTLS_DIR)/library/*.c)
+MBED_OBJS  = $(patsubst $(MBEDTLS_DIR)/library/%.c,obj-mbedtls/%.o,$(MBED_SRCS))
+MBED_LIB   = libmbedtls_host.a
+CPPFLAGS  += -I$(MBEDTLS_DIR)/include
+
+mbedtls-check:
+	@if [ ! -f "$(MBEDTLS_DIR)/include/mbedtls/ccm.h" ]; then \
+	    echo "host: mbedTLS not found (MBEDTLS_DIR='$(MBEDTLS_DIR)')."; \
+	    echo "host: it comes from PlatformIO's framework-espidf@3.50301.0 package: run 'pio run' once,"; \
+	    echo "host: or point MBEDTLS_DIR at an mbedTLS 3.6 source tree (the folder holding include/ and library/)."; \
+	    exit 1; fi
+
+obj-mbedtls/%.o: $(MBEDTLS_DIR)/library/%.c | mbedtls-check
+	@mkdir -p obj-mbedtls
+	$(CC) -O2 -I$(MBEDTLS_DIR)/include -I$(MBEDTLS_DIR)/library -c $< -o $@
+
+$(MBED_LIB): mbedtls-check $(MBED_OBJS)
+	@rm -f $@
+	ar rcs $@ $(MBED_OBJS)
+
 HDRS      = $(wildcard ../src/core/*.h) $(wildcard ../src/plugins/*.h) ../src/config.h ../src/board.h \
             ../src/platform/platform.h
 
-bbs_host: $(SRCS) $(HDRS)
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) $(LDLIBS)
+bbs_host: $(SRCS) $(HDRS) $(MBED_LIB)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) $(MBED_LIB) $(LDLIBS)
 
 # The same host board built as the Waveshare ESP32-S3-LCD-1.47 profile
 # (1.1.0, src/board.h): the S3's pin rules, that board's defaults, and the
@@ -73,9 +107,9 @@ bbs_host: $(SRCS) $(HDRS)
 # the ordinary suite is written for the reference board and runs bbs_host.
 #
 # It carries SSH (1.1.2), so it links wolfSSH: libwolfssh_host.a below.
-bbs_host_s3: $(SRCS) $(HDRS) libwolfssh_host.a
+bbs_host_s3: $(SRCS) $(HDRS) libwolfssh_host.a $(MBED_LIB)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_WS_S3LCD147 $(WOLF_CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) \
-	    libwolfssh_host.a $(LDLIBS)
+	    libwolfssh_host.a $(MBED_LIB) $(LDLIBS)
 
 wolfobj/wc_%.o: $(WOLF)/wolfssl/wolfcrypt/src/%.c $(WOLF)/user_settings.h
 	@mkdir -p wolfobj
@@ -106,13 +140,13 @@ test_sshlink: test_sshlink.cpp ../src/core/sshlink.h
 # The Freenove ESP32-WROVER CAM profile (1.1.0, src/board.h): its defaults
 # and the pins it owns, which syscfg::pinProblem refuses by name.
 # tools/harness.sh --board fncam runs it with --only=board_fncam.
-bbs_host_fncam: $(SRCS) $(HDRS)
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_FN_WROVER_CAM $(LDFLAGS) -o $@ $(SRCS) $(LDLIBS)
+bbs_host_fncam: $(SRCS) $(HDRS) $(MBED_LIB)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_FN_WROVER_CAM $(LDFLAGS) -o $@ $(SRCS) $(MBED_LIB) $(LDLIBS)
 
 # The AI-Thinker ESP32-CAM profile (1.1.1, src/board.h).
 # tools/harness.sh --board espcam runs it with --only=board_espcam.
-bbs_host_espcam: $(SRCS) $(HDRS)
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_AI_ESP32CAM $(LDFLAGS) -o $@ $(SRCS) $(LDLIBS)
+bbs_host_espcam: $(SRCS) $(HDRS) $(MBED_LIB)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_AI_ESP32CAM $(LDFLAGS) -o $@ $(SRCS) $(MBED_LIB) $(LDLIBS)
 
 # The panel's drawing: glyphs, layout, lamps and the queue of what to send.
 # Pure code with no platform, checked pixel by pixel with no display.
@@ -203,6 +237,12 @@ test_camera: test_camera.cpp ../src/plugins/camera_rules.h ../src/plugins/camera
              ../src/plugins/camera_pic.h
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_camera.cpp
 
+# The µnleashed link (1.2.0): both ends of the protocol through a simulated
+# radio that loses, duplicates and reorders frames and changes channel, the
+# wire against a published CRC, and the cryptography against RFC 5869.
+test_link: test_link.cpp ../src/core/link.cpp ../src/core/link.h ../src/core/linkcrypto.cpp ../src/core/linkcrypto.h $(MBED_LIB)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_link.cpp ../src/core/link.cpp ../src/core/linkcrypto.cpp $(MBED_LIB)
+
 # The project is GPL-3.0-or-later (1.1.0-dev.11). A tracked file whose SPDX
 # line still says GPL-2.0 was added on an old header; release.py refuses it
 # too, and this catches it before a release is ever attempted.
@@ -211,7 +251,8 @@ licence:
 	    echo "licence: GPL-2.0 SPDX line(s) above; the project is GPL-3.0-or-later"; exit 1; \
 	else echo "licence: no GPL-2.0 SPDX lines"; fi
 
-test: licence test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera test_sshlink
+test: licence test_link test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera test_sshlink
+	./test_link
 	./test_xmodem
 	./test_wrap
 	./test_forums_ptr
@@ -230,6 +271,6 @@ test: licence test_xmodem test_wrap test_forums_ptr test_compose test_codes test
 
 clean:
 	rm -rf wolfobj libwolfssh_host.a ssh_call test_sshlink
-	rm -f bbs_host bbs_host_s3 bbs_host_fncam bbs_host_espcam test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera
+	rm -f bbs_host bbs_host_s3 bbs_host_fncam bbs_host_espcam test_link test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera
 
 .PHONY: clean test licence
