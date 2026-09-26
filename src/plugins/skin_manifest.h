@@ -175,7 +175,7 @@ enum DriveStyle : uint8_t { DS_PC, DS_1541, DS_DISK2, DS_BREATHE, DS_COUNT };
 constexpr const char* kDriveWords[DS_COUNT] = { "pc", "1541", "disk2", "breathe" };
 
 // What a line of the status rectangle, or a field, can show. The first
-// thirteen are the lines' own (1.1.2); the rest came with the fields
+// thirteen are the lines' own (1.2.0); the rest came with the fields
 // (1.2.0). who and blank belong to lines only.
 enum LineWord : uint8_t {
     LW_BLANK, LW_NAME, LW_ADDRESS, LW_UPTIME, LW_CALLERS, LW_TODAY, LW_HEAP,

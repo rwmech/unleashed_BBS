@@ -12,7 +12,7 @@ Module:       Tools / panel font generator
 Purpose:      Turns Spleen's BDF fonts into src/plugins/panel_font.h, the
               bitmap faces the panel plugin draws with (BBS_HAS_LCD boards
               only). Three sizes: 8x16 for every line of figures, 16x32 for
-              the one number that matters, and 6x12 (1.1.2) for a skin's
+              the one number that matters, and 6x12 (1.2.0) for a skin's
               screens, where 80 columns fit across 480 pixels. Printable ASCII, plus the micro
               sign, because the board's own name starts with one.
 

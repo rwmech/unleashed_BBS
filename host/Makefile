@@ -66,7 +66,7 @@ HDRS      = $(wildcard ../src/core/*.h) $(wildcard ../src/plugins/*.h) ../src/co
             ../src/platform/platform.h
 
 # ChaN's TJpgDec (host/tjpgd, R0.03, set up as the ESP32-S3's ROM copy is):
-# the panel's JPEG decoder on the host (1.1.2, panel skins). C, so compiled
+# the panel's JPEG decoder on the host (1.2.0, panel skins). C, so compiled
 # as C; linked into every host board, used only by those with a panel.
 TJPGD     = tjpgd.o
 ifeq ($(SAN),1)
@@ -128,7 +128,7 @@ bbs_host_fncam: $(SRCS) $(HDRS) $(TJPGD)
 bbs_host_espcam: $(SRCS) $(HDRS) $(TJPGD)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_AI_ESP32CAM $(LDFLAGS) -o $@ $(SRCS) $(TJPGD) $(LDLIBS)
 
-# Panel skins (1.1.2): the manifest's grammar thrown at hard (the shared
+# Panel skins (1.2.0): the manifest's grammar thrown at hard (the shared
 # cases in skins/cases.txt, then a fuzz), the JPEG check, the LEDs and the
 # lines drawn over a real decoded picture, and the stock set's seeding, with
 # no panel. A picture of each skin lands in skins/out/ for a person to look

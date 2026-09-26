@@ -97,7 +97,7 @@
 #include "camera_rules.h"     // its folder
 #endif
 #ifdef BBS_HAS_LCD
-#include "skin.h"             // the Skins area (1.1.2): a skin uploaded is read again
+#include "skin.h"             // the Skins area (1.2.0): a skin uploaded is read again
 #endif
 
 #include <cerrno>
@@ -137,7 +137,7 @@ const char* const kName = "files";
 // hundred timed shots inside Photos would bury the callers' photos, and
 // every row of a listing walks its folder from the top.
 //
-// Skins (1.1.2, boards with a display) is the card's skins folder, after
+// Skins (1.2.0, boards with a display) is the card's skins folder, after
 // the others: the sysop's alone to send to, staff may look. A skin's two
 // files uploaded there as a pair, <name>.txt and <name>.jpg, go in at once
 // with no approval, as a backup does, and the panel reads the list again.
@@ -194,7 +194,7 @@ constexpr uint32_t kMaxUploadBytes = 4u * 1024u * 1024u;
 constexpr uint32_t kMaxBackupBytes = BBS_ZIP_MAX_BYTES + 1024u;
 
 // direct: an area whose uploads go in the moment they are whole, with no
-// approval: the sysop's own Backups (1.1.0) and Skins (1.1.2), which only the
+// approval: the sysop's own Backups (1.1.0) and Skins (1.2.0), which only the
 // sysop can send to, where making the sysop approve their own file is
 // ceremony. They still land in staging first, so a transfer that breaks off
 // never leaves half a file where it would be read.
@@ -781,7 +781,7 @@ void readKey(void* ctx, const char* key, const char* value) {
 // count in the first place.
 void recountPending();
 
-// clearBackupsStaging: Backups (and Skins, 1.1.2) take nothing for
+// clearBackupsStaging: Backups (and Skins, 1.2.0) take nothing for
 // approval, so anything in their staging folder at start is half a file from
 // a transfer the board restarted in the middle of (1.1.0). Left there it
 // would count as an upload awaiting approval for ever, and twenty of them
@@ -857,7 +857,7 @@ bool start(Bbs& bbs) {
     bk.del   = PlugLevel::Sysop;
 
 #ifdef BBS_HAS_LCD
-    // The panel's skins (1.1.2): the folder skin.cpp reads. Staff may look;
+    // The panel's skins (1.2.0): the folder skin.cpp reads. Staff may look;
     // only the sysop sends, and what the sysop sends goes straight in.
     Area& sk = g_area[kAreaSkins];
     snprintf(sk.path, sizeof(sk.path), "%s", "skins");
@@ -2106,7 +2106,7 @@ bool xferOpen(void* ctx, const char* name, uint32_t size) {
         snprintf(g_why, sizeof(g_why), "Backups takes a .zip, 27 characters at most.");
         return false;
     }
-    // Skins takes a skin's pair, and only that (1.1.2).
+    // Skins takes a skin's pair, and only that (1.2.0).
     if (x->area == kAreaSkins && !skinFile(name)) {
         snprintf(g_why, sizeof(g_why), "Skins takes <name>.txt and <name>.jpg, name 1-24 of A-Z 0-9 _ -.");
         return false;
@@ -2163,7 +2163,7 @@ bool placeBackup(uint8_t area, const char* name) {
     snprintf(from, sizeof(from), "%s/%.48s", pd, name);
     snprintf(to,   sizeof(to),   "%s/%.48s", dir, name);
     if (rename(from, to) == 0) return true;
-    // A skin's file replacing the one there (1.1.2): FatFs will not rename
+    // A skin's file replacing the one there (1.2.0): FatFs will not rename
     // over a file, so the old one goes first, with the new one whole in
     // staging; a failure after that leaves it there for P and A.
     if (area != kAreaSkins) return false;

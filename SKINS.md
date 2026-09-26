@@ -531,9 +531,10 @@ They reach a sysop two ways.
   Each file goes down under a temporary name and is renamed in. The set
   comes from `skin::stockFiles()` (`skin_stock.cpp`), which is empty in
   this build. Five skins are about 115 KB, which the 1.1.1 layout's 1.5 MB
-  app slots cannot spare on an S3. They are embedded when the S3 boards
-  move to the 1.1.2 layout with 3 MB slots. Until then a board shows the
-  status layout and a sysop copies skins from the zip.
+  app slots could not spare on an S3. The S3 boards have 1.1.2's layout
+  with 3 MB slots now, so the set can be embedded; that is still to do.
+  Until then a board shows the status layout and a sysop copies skins from
+  the zip.
 
 ## The code
 
@@ -576,9 +577,11 @@ The skin only draws into the one and adds to the other, from the loop.
 When `tick` returns false after returning true, the panel draws its own
 layout whole.
 
-**The decode is one function** (`jobMain`), started through
-`plat::taskStart`. That is so 1.1.2's shared background runner can take
-it as a job in place of a task of its own.
+**The load is a job on the background runner** (`core/runner.h`):
+`jobMain` is the job's work, run on the runner's task (`BBS_RUNNER_STACK`,
+8,192 bytes) below the loop, and the loop takes the result once the runner
+says DONE. SD UNMOUNT and a remount wait for it through `runner::busy()`
+like any other job on the card.
 
 **Tests.** `make test` in `host/` runs `test_skin`:
 

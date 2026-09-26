@@ -7065,7 +7065,7 @@ def panel_config(s, **keys):
 
 
 def test_board_s3_skin():
-    """Panel skins on the Waveshare S3's glass (1.1.2): a skin from the card
+    """Panel skins on the Waveshare S3's glass (1.2.0): a skin from the card
     loaded on the worker and drawn in place of the status layout; the skins
     CONFIG offers; one that is wrong refused with its line and the status
     skin shown instead; one not on the card said so; back to status. Needs
@@ -7172,7 +7172,7 @@ def test_board_s3_skin():
                 not (pathlib.Path(card) / "skins" / ".pending" / "flat.jpg").exists())
     p = settle(b"Skins status e2e flat")
     ok &= check("CONFIG offers the uploaded skin at once", re.search(rb"Skins status e2e flat\s", p) is not None)
-    # From one skin to another (1.1.2): the one on the glass stays until the
+    # From one skin to another (1.2.0): the one on the glass stays until the
     # new one is ready, never the status layout between (it cost the loop
     # 24 ms on the MF35 to draw it whole).
     panel_config(s, skin="e2e")
@@ -7635,7 +7635,7 @@ def test_board_s3():
 
     # The Pins page, and the S3's rules on it: 26 to 37 are the flash and
     # PSRAM, 19 and 20 the USB, 22 to 25 do not exist, and 6 to 11, the
-    # WROOM's flash, are ordinary pins. Rows 0-3 core, 4 the skin (1.1.2, in
+    # WROOM's flash, are ordinary pins. Rows 0-3 core, 4 the skin (1.2.0, in
     # the row Driver had, which the cursor passed over), then Pins.
     cfg_open(s, b"panel", b"Skin")
     s.buf.clear()
