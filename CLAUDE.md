@@ -755,8 +755,11 @@ this tree.
   - **The S3 gets bigger program slots regardless** (Rob: "If base is
     limited to 4mb, we have no reason s3 should follow that rule ... s3
     can become the stronger version"). Sized to 8 MB, not 16, so the
-    DevKitC-1 N8R8 fits too. Data partitions stay where they are so a
-    non-erasing Update keeps accounts; new app slots sit above 4 MB.
+    DevKitC-1 N8R8 fits too. **A clean S3 layout, not a patch on the old
+    one** (Rob: no S3 in the field needs its data kept; only his desk
+    boards): its own partitions file for the S3 envs, the full 8 MB
+    redesigned with storage still last, and the first 1.1.2 install on an
+    S3 is a full erase. The ESP32 layout is untouched.
   - The S3's Wi-Fi buffers 16/16 to 10/10 for SSH's internal heap; SSH
     session buffers in PSRAM.
   - The uploads bug and the smaller bugs below.
