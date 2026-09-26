@@ -2036,6 +2036,27 @@ void Bbs::dashCallsHead(Session& s) {
     rowSection(s, name);
 }
 
+// dashKeptRule: the rule over what is waiting and the vitals (1.1.2). The
+// free data and card space on those rows are kept figures ending in ".", so
+// the rule says when they were measured, as MEM's and SYS's line does:
+// "-- ending in . as of 14:02 ---" at 40 columns, and at 80 the long form
+// with how to measure again. A heading on a row the page already had, so no
+// page grows and no last call is given up for it. A plain rule until the
+// first measure, when nothing on the page ends in "." yet. The time is the
+// oldest kept figure's (space::asOf), from memory: a frame opens nothing.
+void Bbs::dashKeptRule(Session& s) {
+    char when[16], name[72];
+    space::asOf(when, sizeof(when));
+    if (!when[0]) { rowRule(s); return; }
+    if (rowWidth(s) < kDash80)
+        snprintf(name, sizeof(name), "ending in . as of %s", when);
+    else if (s.level != Access::None)                  // FORCE is staff's, as in keptNote
+        snprintf(name, sizeof(name), "figures ending in . as of %s, MEM FORCE measures now", when);
+    else
+        snprintf(name, sizeof(name), "figures ending in . as of %s", when);
+    rowSection(s, name);
+}
+
 // dashNode: node row k of a page, highlighted when it is the pick and the
 // frame is a refreshing one on a terminal that can show reverse video
 void Bbs::dashNode(Session& s, uint8_t k, NodePlan plan) {
@@ -2058,7 +2079,7 @@ uint8_t Bbs::dashPage80(Session& s, uint8_t page, uint8_t i) {
         if (i < 2 + N)  { dashNode(s, static_cast<uint8_t>(i - 2), NodePlan::Wide); return DR_DREW; }
         uint8_t k = static_cast<uint8_t>(i - 2 - N);
         switch (k) {
-            case 0: rowRule(s);         return DR_DREW;
+            case 0: dashKeptRule(s);    return DR_DREW;
             case 1: dashWaiting(s);     return DR_DREW;
             case 2: dashVitals(s, 0);   return DR_DREW;
             case 3: dashVitals(s, 1);   return DR_DREW;
@@ -2105,7 +2126,7 @@ uint8_t Bbs::dashPage40(Session& s, uint8_t page, uint8_t i) {
         if (i == 1)     { rowClose(s, nodeHead(s, NodePlan::Narrow)); return DR_DREW; }
         if (i < 2 + N)  { dashNode(s, static_cast<uint8_t>(i - 2), NodePlan::Narrow); return DR_DREW; }
         uint8_t k = static_cast<uint8_t>(i - 2 - N);
-        if (k == 0) { rowRule(s); return DR_DREW; }
+        if (k == 0) { dashKeptRule(s); return DR_DREW; }
         if (k == 1) { dashWaiting(s); return DR_DREW; }
         if (k < 6)  { dashVitals(s, static_cast<uint8_t>(k - 2)); return DR_DREW; }
         if (k == 6) { dashCallsHead(s); return DR_DREW; }
@@ -2284,7 +2305,13 @@ void Bbs::dashRight(Session& s, uint8_t& col, uint8_t which) {
             char num[16];
             if (d.dataKnown) { fmtCommas(d.dataFree, num, sizeof(num)); snprintf(value, sizeof(value), "%s.", num); }
             else             { snprintf(value, sizeof(value), "-"); vc = Color::DarkGrey; }
-            snprintf(note, sizeof(note), "bytes, kept");
+            // When the kept figures were measured (1.1.2): on this row
+            // rather than the rule, which here sits under the calls, not
+            // under this block.
+            char when[16];
+            space::asOf(when, sizeof(when));
+            if (when[0]) snprintf(note, sizeof(note), "bytes, as of %s", when);
+            else         snprintf(note, sizeof(note), "bytes, kept");
             break;
         }
         case 7:

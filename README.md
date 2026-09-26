@@ -270,6 +270,7 @@ fast clock (`BBS_FAST_TIMERS`, host build only); `tools/parallel.py` says
 how the lanes are made.
 
 - `make SAN=1` builds with AddressSanitizer and UBSan.
+- `make test` runs the unit tests, and `tools/check_formats.py`: every board's printf is newlib nano (1.1.2), which has no `%ll`, `%z`, `%hh`, `%j`, `%t` or positional arguments, and gets them wrong on a board while the host's glibc prints them all. The check refuses them in `src/`, and floats as well; `tools/release.py` runs it too, and checks each generated `sdkconfig.<env>` says `CONFIG_NEWLIB_NANO_FORMAT=y`. A 64-bit value is cast down to what it fits before it is printed.
 - `BBS_BACKUP_TEST_OPEN=1` holds the backup button down, so the window opens as soon as the sysop logs in.
 - The same script runs against a board: `python3 tools/testclient.py <ip> 6400`. `--backup` there needs the bench build (`pio run -e esp32dev_backuptest -t upload`). Don't use `--ban` against a board, because it bans your own PC.
 
@@ -322,6 +323,7 @@ tools/testclient.py       scripted callers
 tools/harness.sh          stands up a host board and runs the callers; --jobs for lanes
 tools/parallel.py         harness.sh --jobs: lanes, ports, the merged verdict
 tools/testtimes.py        the slowest tests, the check list, tools/test-times.txt
+tools/check_formats.py    refuses printf formats newlib nano cannot print
 host/                     Linux build of the same core
 ```
 

@@ -24,13 +24,50 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
-## Test speed (tools and the host build only), 2026-09-26
+## 1.1.2-dev.4 (S3 1.1.3, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-26
 
-No firmware change and no version of its own: every esp32dev application
-object is identical to 1.1.2-dev.3's, so the next build's entry takes these
-lines. `internal/test-speed-2026-09-26.md` has the figures.
+Part 2 of 1.1.2: the small printf, and DASH says how old its kept figures
+are, plus the test-speed tools. Host-tested; not yet on hardware.
 
-**Testing**
+**The small printf, on every board**
+- **About 70 KB less flash on every board**: `CONFIG_NEWLIB_NANO_FORMAT`,
+  newlib's nano printf and scanf in place of the full ones. Off the ELF:
+  the WROOM 1,251,616 to 1,181,872 bytes (-69,744), the Freenove -69,408,
+  the ESP32-CAM -69,872, the S3 with SSH 1,427,808 to 1,358,432 (-69,376).
+  Static DRAM unchanged on all four. The formatter's stack frame goes from
+  800 bytes to 160 (with 48 and 48 for the two helpers under it).
+- Nano has no `%ll`, `%z`, `%hh`, `%j`, `%t` or positional arguments, and
+  on a board `%llu` prints `lu` and moves every argument after it. The one
+  that existed was `CAMERA`'s "Oldest kept" date, whose three figures
+  would each have come out as `lu`; it prints the date from 32 bits now.
+- **`tools/check_formats.py` refuses those formats in `src/`**, floats and
+  `PRIu64` too, run by `make test` in `host/` and by `tools/release.py`,
+  each time after its own self-test. The host build is glibc and prints
+  all of them, so no test that runs a board could ever have seen one.
+- **A board build stops if the nano setting did not take.** A
+  `sdkconfig.<env>` generated before this says it is not set, which wins
+  over `sdkconfig.defaults`, so it would have built the full printf without
+  a word. `board.h` refuses such a build (delete the file and build again),
+  and `release.py` checks each release's generated sdkconfig.
+- Floats still print: the IDF links nano's float formatting in by itself.
+  The checker refuses them anyway; nothing needs them.
+- wolfSSH and wolfCrypt on the S3 were checked from the compiled objects:
+  their logging is compiled out, and the two functions that format
+  anything (a hex dump and a name lookup, `%02X`, `%04X`, `%s`, `%d`) are
+  not in the linked image. esp_littlefs prints its geometry errors with
+  `PRIu64`, so those console lines show wrong figures under nano.
+
+**DASH**
+- **The rule over the vitals says when the kept figures were measured**,
+  as `MEM` and `SYS` do: `-- ending in . as of 14:02 ---` at 40 columns,
+  `-- figures ending in . as of 14:02, MEM FORCE measures now ---` at 80.
+  It is the row the rule already had, so the page is no taller and no last
+  call is given up. At 132 columns the Data free row's note says `bytes,
+  as of 14:02`.
+
+**Testing** (tools and the host build only, no firmware change: landed
+between dev.3 and this build; `internal/test-speed-2026-09-26.md` has the
+figures)
 - `tools/harness.sh --jobs N` runs the suite as lanes side by side
   (`tools/parallel.py`), with and without a card at once, plus a `--fresh`
   board for each fresh test and each board profile on its own build, and

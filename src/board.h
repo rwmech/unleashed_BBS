@@ -98,6 +98,14 @@
 #if CONFIG_IDF_TARGET_ESP32S3
 #define BBS_CHIP_S3 1
 #endif
+// Every board's printf is newlib nano (sdkconfig.defaults, 1.1.2), and the
+// formats in src/ are checked for it (tools/check_formats.py). A generated
+// sdkconfig.<env> from before 1.1.2 says "# CONFIG_NEWLIB_NANO_FORMAT is not
+// set", which is a value and wins over the defaults, so it would build the
+// full printf without a word and a bench image would not be what ships.
+#if !CONFIG_NEWLIB_NANO_FORMAT
+#error "the nano printf in sdkconfig.defaults was not applied: delete sdkconfig.<env> and build again"
+#endif
 #endif
 
 // ===========================================================================
@@ -238,7 +246,7 @@
 #define BBS_BOARD_PLUGINS     1       // the camera
 
 #define BBS_BOARD_TAG         "FNCAM"
-#define BBS_BOARD_VERSION     "1.0.7"
+#define BBS_BOARD_VERSION     "1.0.8"
 
 // PSRAM (sdkconfig.defaults.fncam). Wi-Fi's and lwIP's buffers go there.
 // The internal reserve stays the WROOM's 40 KB until the bench's MEM says
@@ -377,7 +385,7 @@
 #define BBS_BOARD_PLUGINS     1       // the camera
 
 #define BBS_BOARD_TAG         "ESPCAM"
-#define BBS_BOARD_VERSION     "1.0.4"
+#define BBS_BOARD_VERSION     "1.0.5"
 
 // PSRAM (sdkconfig.defaults.espcam). A build that lost the sdkconfig layer
 // would otherwise link quietly without it.

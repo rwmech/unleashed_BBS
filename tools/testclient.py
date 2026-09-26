@@ -3451,6 +3451,11 @@ def test_dash_frame():
                 any(l.startswith("WiFi") and "Dir" in l for l in lines))
     ok &= check("and the last calls under a section with today's count",
                 any(re.search(r"-- last calls, \d+ today", l) for l in lines))
+    # 1.1.2: the free data and card space are kept figures ending in ".",
+    # and the rule over the vitals says when, as MEM's and SYS's line does.
+    ok &= check("the rule over the vitals says when the kept figures were measured",
+                any(re.match(r"-- figures ending in \. as of .+, MEM FORCE measures now -+$", l.rstrip())
+                    for l in lines))
 
     # Keys: a stray one no longer throws the dashboard away.
     s.buf.clear()
@@ -3576,6 +3581,8 @@ def test_dash_narrow():
     lines = render_lines(since_clear(s.buf), 40)
     ok = check("page 1 fits 40x25: no row wider than 39, no more than 25 rows",
                widest(s.buf) <= 39 and len(lines) <= 25 and bytes(s.buf).count(b"DASHBOARD") >= 2)
+    ok &= check("the rule over the vitals says when the kept figures were measured, inside 39",
+                any(re.match(r"-- ending in \. as of .+ -+$", l.rstrip()) for l in lines))
     ok &= check("with every line on it and the footer's page count",
                 [l[:2] for l in lines[2:4 + MAX_NODES]] ==
                 [("%2d" % n) for n in range(1, MAX_NODES + 1)] + [" S", " B"] and
@@ -4329,6 +4336,8 @@ def test_dash_wide():
                 any(l[80:].startswith("Uptime") for l in lines) and
                 any(l[80:].startswith("Slow passes") for l in lines))
     ok &= check("and minutes on for each call", any(l.startswith(" N Handle") and " On " in l for l in lines))
+    ok &= check("and the free data space says when the kept figures were measured",
+                any(l[80:].startswith("Data free") and ", as of " in l[80:] for l in lines))
     s.send(b"q")
     wait_plain(s, b"Sysop: ", 3)
     s.close()

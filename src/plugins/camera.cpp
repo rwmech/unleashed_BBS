@@ -1609,8 +1609,11 @@ void cmdCamera(Bbs& b, Session& s, const char* arg, uint32_t) {
                  static_cast<unsigned>(g_stats.system), sb);
         b.rowText(s, Color::White, buf);
         if (g_stats.oldest) {
-            unsigned long long o = static_cast<unsigned long long>(g_stats.oldest / 1000000ull);
-            snprintf(buf, sizeof(buf), "Oldest kept %04llu-%02llu-%02llu", o / 10000, (o / 100) % 100, o % 100);
+            // The key is YYYYMMDDhhmmss; its date half fits 32 bits, and it
+            // has to: the board's printf is newlib nano (1.1.2), which has
+            // no %ll and would print "lu" and shift every argument after it.
+            unsigned d = static_cast<unsigned>(g_stats.oldest / 1000000ull);
+            snprintf(buf, sizeof(buf), "Oldest kept %04u-%02u-%02u", d / 10000, (d / 100) % 100, d % 100);
             b.rowText(s, Color::White, buf);
         }
         snprintf(buf, sizeof(buf), "Card free %s, floor %s%s", fb, fl, g_stats.floorMet ? "" : " (UNDER)");

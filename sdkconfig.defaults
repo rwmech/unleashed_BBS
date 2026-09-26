@@ -203,3 +203,40 @@ CONFIG_LWIP_IPV6=n
 # neither could be used. About 44 KB of flash.
 CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
 CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=n
+
+# ---------------------------------------------------------------------------
+# The small printf, on every board (1.1.2)
+# ---------------------------------------------------------------------------
+# newlib "nano" formatting: the link takes libc_nano (--specs=nano.specs,
+# newlib/CMakeLists.txt) instead of the full newlib printf and scanf. Not
+# the ROM copy: the ESP32's and the S3's ROM nano functions were built with
+# a 32-bit time_t, so IDF 5.3.1 leaves them out on both
+# (esp_rom/CMakeLists.txt, ESP_ROM_HAS_NEWLIB_32BIT_TIME) and the nano code
+# is in flash. Measured (1.1.2-dev.4): about 70 KB less flash on every
+# board, static DRAM unchanged, and the formatter's stack frame 800 bytes
+# to 160 (plus 48 for _printf_i and 48 for _printf_common under it).
+#
+# The price is C89 formatted I/O (newlib's README,
+# --enable-newlib-nano-formatted-io): no %ll, %hh, %j, %z or %t, and no
+# positional %n$. None of that is a compile error; on the board nano reads
+# one length letter, so %llu prints "lu", takes no argument, and every
+# argument after it moves one place, while the host build is glibc and
+# prints it right. So tools/check_formats.py refuses those formats in src/
+# (make test in host/, and tools/release.py), and release.py checks each
+# generated sdkconfig.<env> says CONFIG_NEWLIB_NANO_FORMAT=y.
+#
+# Floats do still print: IDF's newlib_init.c names _printf_float and
+# _scanf_float in its syscall table whenever this is on, which links nano's
+# float formatting in. The check refuses %f all the same, because nothing
+# here needs it and it only works through that side door.
+#
+# A 64-bit value is cast down to what it fits before it is printed (the
+# camera's "Oldest kept" date, backup.h's card size).
+#
+# Third-party code is not checked: esp_littlefs prints its geometry errors
+# with PRIu64, so a LittleFS mount failure's console line shows shifted
+# numbers under nano. The words are right; the figures are not.
+#
+# A generated sdkconfig.<env> from before this line says "is not set",
+# which wins over this file; src/board.h stops such a build with #error.
+CONFIG_NEWLIB_NANO_FORMAT=y

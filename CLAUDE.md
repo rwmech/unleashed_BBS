@@ -988,6 +988,46 @@ this tree.
     camera boards' description queue is on the heap only while edits wait.
     The runner's 8 KB stack is heap, while it runs. Images: 1,251,616,
     1,326,128, 1,379,664 and 1,291,632 bytes. Eleven envs, no warnings.
+- **1.1.2 part 2: the small printf and DASH's "as of" (rel-1.1.2b,
+  1.1.2-dev.4, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-26, host-tested, not on
+  a board.** Built on part 3 and the test-speed work (rebased onto a055624).
+  - `CONFIG_NEWLIB_NANO_FORMAT=y` in the shared sdkconfig.defaults. **It
+    links libc_nano from flash, not the ROM copy**: the ESP32's and S3's
+    ROM nano was built with a 32-bit time_t, so IDF 5.3.1 leaves it out
+    (esp_rom/CMakeLists.txt). Measured off the ELF: esp32dev 1,251,616 to
+    1,181,872 (-69,744), Freenove -69,408, ESP32-CAM -69,872, S3 (with SSH)
+    1,427,808 to 1,358,432 (-69,376); static DRAM unchanged on all four.
+    The formatter's frame (`entry a1`) is 800 bytes full and 160 nano,
+    with `_printf_i` and `_printf_common` 48 each under it; scanf 896 to 704.
+  - **Floats still print under nano, and the audit said they would not.**
+    IDF's newlib_init.c names `_printf_float`/`_scanf_float` in its
+    syscall table whenever nano is on, which links them; nano's
+    `_svfprintf_r` then reaches them. So esp32-camera's `%f` log lines are
+    fine. esp_littlefs's geometry errors use `PRIu64` and print shifted
+    figures under nano (console only).
+  - **A stale sdkconfig.<env> says "is not set", which beats the defaults**,
+    and would build full newlib without a word (the main tree's WROOM
+    sdkconfigs did). board.h `#error`s on an ESP build without
+    `CONFIG_NEWLIB_NANO_FORMAT`, the way the camera profiles guard PSRAM,
+    and release.py checks each release env's generated sdkconfig too.
+  - The one `%llu` (camera "Oldest kept") prints YYYYMMDD as 32 bits.
+    `tools/check_formats.py` lexes every literal in src/ (comments, raw
+    strings, digit separators, adjacent literals, the innermost call) and
+    refuses C99 lengths, positional arguments, `%lc`/`%ls`/`%m`/`%C`/`%S`,
+    floats and PRI/SCN macros; strftime arguments are skipped, and a
+    space-flag float counts only inside a printf-family call so prose with
+    "5% at" passes. `make test` and release.py run it with its self-test.
+  - **wolfSSH/wolfCrypt on the S3, audited from the objects**: of the 28
+    wolf objects only internal.c.o (`printf` in DumpOctetString: `%04X`,
+    `%02X`, `%s`) and ssh.c.o (`snprintf` in wolfSSH_GetText: `%s`, `%d`)
+    call a formatter, logging is compiled out (log.c.o has no vsnprintf),
+    and neither function is in the linked image. The source's own `%016llx`
+    (sp_int.h, SP_WORD_SIZE 64 only) and `%17.3f` (logging.c,
+    WOLFSSL_FUNC_TIME) are not compiled. The checker's scope stays src/.
+  - DASH page 1 at 40 and 80: the rule over the vitals is a heading
+    `-- ending in . as of 14:02 ---` (80: `figures ending in . as of 14:02,
+    MEM FORCE measures now`), no row added, a plain rule until the first
+    measure; at 132 the Data free note says `bytes, as of 14:02`.
 - **1.1.2 part 3: SSH on the S3, a preview (rel-1.1.2c, 1.1.2-dev.3,
   S3 1.1.3), built 2026-09-26, host-tested, not on the board.** Built to
   internal/ssh-research-2026-09-26.md and Rob's decisions of the same day.
@@ -1160,9 +1200,8 @@ this tree.
     ESP32-CAM (57,499 idle).
 - **1.2.0: memory, from internal/memory-2026-09-25-1.1.1.md** (Rob,
   2026-09-25):
-  - The small printf (newlib nano, about 69.5 KB of flash on every board,
-    printf frames 800 to 160 bytes), only after an audit of every `%f`
-    and `%ll` (nano drops floats; camera.cpp:1605 uses `%llu`). Silent
+  - The small printf: **done in 1.1.2 part 2 (1.1.2-dev.4)**, see the 1.1.2
+    entries. (Nano does not drop floats here after all: IDF links them.) Silent
     assertions only if release.py keeps the release ELFs to decode an
     address.
   - Camera boards: zero-filled statics into PSRAM (`EXT_RAM_BSS_ATTR`,

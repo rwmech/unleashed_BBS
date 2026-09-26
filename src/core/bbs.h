@@ -900,6 +900,7 @@ private:
                  bool alarm);
     void dashVitals(Session& s, uint8_t which);
     void dashCallsHead(Session& s);
+    void dashKeptRule(Session& s);            // the rule over the vitals, with the kept figures' time
     void dashNode(Session& s, uint8_t k, NodePlan plan);
     void dashCall(Session& s, uint8_t back, NodePlan plan);
     bool dashPluginRow(Session& s, uint8_t which);

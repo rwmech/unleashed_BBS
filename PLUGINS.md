@@ -289,6 +289,8 @@ A plugin that edits a file another plugin owns asks that plugin rather than writ
 | `bbs.prompt(s)` | end a command back at the prompt |
 | `s.ownerData` | a 32-bit scratch word per session, yours while you own it |
 
+Formatting text: every board's printf is newlib nano (1.1.2), C89 formats only. No `%ll`, `%z`, `%hh`, `%j`, `%t` and no positional `%1$s`: on a board `%llu` prints `lu` and moves every argument after it one place, while the host build's glibc prints it correctly, so no host test notices. Cast a 64-bit value to what it fits and print it with `%u` or `%lu`. Floats happen to print (the IDF links nano's float code in for its own reasons) but are refused all the same: scale a fraction to an integer. `make test` in `host/` and `tools/release.py` run `tools/check_formats.py`, which refuses these in `src/`.
+
 ### Config and storage
 
 ```c

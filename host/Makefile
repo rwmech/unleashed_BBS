@@ -211,7 +211,16 @@ licence:
 	    echo "licence: GPL-2.0 SPDX line(s) above; the project is GPL-3.0-or-later"; exit 1; \
 	else echo "licence: no GPL-2.0 SPDX lines"; fi
 
-test: licence test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera test_sshlink
+# Every board's printf is newlib nano (CONFIG_NEWLIB_NANO_FORMAT, 1.1.2): no
+# %ll, %z, %hh, %j, %t or positional arguments, and floats are refused too.
+# The host is glibc and prints all of them, so no host test can see one;
+# this refuses them in src/. The self-test first, so a checker that stopped
+# seeing %llu cannot pass.
+formats:
+	@python3 ../tools/check_formats.py --self-test
+	@python3 ../tools/check_formats.py ../src
+
+test: licence formats test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera test_sshlink
 	./test_xmodem
 	./test_wrap
 	./test_forums_ptr
@@ -232,4 +241,4 @@ clean:
 	rm -rf wolfobj libwolfssh_host.a ssh_call test_sshlink
 	rm -f bbs_host bbs_host_s3 bbs_host_fncam bbs_host_espcam test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera
 
-.PHONY: clean test licence
+.PHONY: clean test licence formats

@@ -349,6 +349,27 @@ def check_notices():
         die("copyright or licence lines name Anthropic or Claude: " + ", ".join(bad[:10]))
 
 
+def check_formats():
+    """Every board's printf is newlib nano (1.1.2), which has no %ll, %z,
+    %hh, %j, %t, positional arguments or floats; tools/check_formats.py
+    refuses them in src/, after proving on its own cases that it can see
+    them."""
+    tool = str(ROOT / "tools" / "check_formats.py")
+    for args in (["--self-test"], [str(ROOT / "src")]):
+        r = subprocess.run([sys.executable, tool, *args], cwd=ROOT,
+                           capture_output=True, text=True)
+        if r.returncode:
+            die("printf formats newlib nano cannot print:\n" + r.stdout.strip())
+
+
+def check_nano(b):
+    """The generated sdkconfig is the only place a Kconfig choice is proven
+    to have taken: a value a layer cannot set is dropped without a word."""
+    cfg = ROOT / f"sdkconfig.{b['env']}"
+    if "CONFIG_NEWLIB_NANO_FORMAT=y" not in cfg.read_text(encoding="utf-8"):
+        die(f"{cfg.name} does not say CONFIG_NEWLIB_NANO_FORMAT=y; delete it and build again")
+
+
 def check_boot_offset(b):
     """The bootloader offset BUILDS names for a family is the one its build
     was made for: CONFIG_BOOTLOADER_OFFSET_IN_FLASH in the generated
@@ -398,6 +419,7 @@ def main():
     for b in BUILDS:
         b["parts"] = check_partitions(b["table"])
     check_notices()
+    check_formats()
 
     # The screens image, from data/screens only.
     stage = ROOT / ".pio" / "release-data"
@@ -434,6 +456,7 @@ def main():
                 die(f"{b['env']}: the built partitions.bin puts {label} at {built.get(label)}, "
                     f"not {b['parts'][label]} as {b['table']} says")
         check_boot_offset(b)
+        check_nano(b)
         b["version"] = shown_version(ver, b["board"])
         blobs = {name: p.read_bytes() for name, p in src.items()}
         # The image says it is the version it is published as: the string
