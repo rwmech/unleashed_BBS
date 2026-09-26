@@ -1328,6 +1328,10 @@ void tick(uint32_t now) {
     if (runner::done(g_run)) runner::collect(g_run);   // the worker has returned
     const uint8_t ph = j.ph.load();
     if (ph == PH_IDLE) {
+        // The last job may be idle to the camera and still returning on the
+        // runner: a start now would be refused, and the survey's wish with
+        // it (code review, 1.1.2). Next tick.
+        if (!runner::idle(g_run)) return;
         struct tm t;
         bool clock = localNow(t);
         if (g_surveyWanted && plat::sdBase()[0]) {

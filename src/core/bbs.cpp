@@ -2852,13 +2852,84 @@ void Bbs::checkTimers(Session& s, uint32_t now) {
             return;
         }
         uint8_t level = left <= BBS_TIME_WARN2_S ? 2 : (left <= BBS_TIME_WARN1_S ? 1 : 0);
-        if (level > s.timeWarned && canNotify(s)) {
-            s.timeWarned = level;
+        if (level > s.timeWarned) {
             long mins = (left + 59) / 60;
-            snprintf(msg, sizeof(msg), "%ld minute%s left.", mins, mins == 1 ? "" : "s");
-            warnNow(s, msg);
+            if (canNotify(s)) {
+                s.timeWarned = level;
+                snprintf(msg, sizeof(msg), "%ld minute%s left.", mins, mins == 1 ? "" : "s");
+                warnNow(s, msg);
+            } else {
+                // In the room, the forums, the files or the mailbox, or at a
+                // screen's page break (1.1.2, found on TRA: Rob was cut off
+                // mid-chat at his limit with no warning at all, because only
+                // a caller at a prompt was ever told). The idle warning has
+                // no such case: a plugin's session does not idle (above).
+                snprintf(msg, sizeof(msg), "%ld minute%s left on this call", mins, mins == 1 ? "" : "s");
+                if (warnElsewhere(s, msg)) s.timeWarned = level;
+            }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// markedLine: see bbs.h. In the room (and chat's mailbox) the room's own
+// voice, which marks in its own colour; elsewhere the same shape here.
+// ---------------------------------------------------------------------------
+void Bbs::markedLine(Session& s, Color c, const char* text) {
+    if (s.st == SState::Plugin && s.owner != 0xFF && s.owner == plugins::indexOf("chat")) {
+        chat::roomSay(s, c, text);
+        return;
+    }
+    Term& t = s.term;
+    const uint8_t w    = rowWidth(s);
+    const uint8_t cols = w > 12 ? static_cast<uint8_t>(w - 4) : w;
+    char line[160];
+    const char* p = text;
+    bool first = true;
+    uint8_t guard = 0;
+    while ((p = wrap(p, line, sizeof(line), cols)) != nullptr && ++guard < 8) {
+        t.color(s.tl, Color::Cyan);
+        t.text(s.tl, first ? "--> " : "    ");
+        t.color(s.tl, c);
+        t.text(s.tl, line);
+        t.reset(s.tl);
+        t.nl(s.tl);
+        first = false;
+        if (!*p) break;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// warnElsewhere: see bbs.h.
+// ---------------------------------------------------------------------------
+bool Bbs::warnElsewhere(Session& s, const char* msg) {
+    if (!s.tl.empty() || s.tl.freeBytes() < 512) return false;
+    if (s.st == SState::Plugin) {
+        // The same door a page comes in by (deliverPlugin), and the same
+        // conditions: a plugin that cannot lift its line, a transfer or a
+        // raw stream, or a screen the plugin is playing, waits.
+        if (s.rawInput || s.scr.active()) return false;
+        if (s.owner == 0xFF || !plugins::running(s.owner)) return false;
+        const Plugin* p = plugins::at(s.owner);
+        if (!p || !p->liftInput || !p->restoreInput) return false;
+        if (!p->liftInput(s)) return false;
+        if (!s.bellOff) s.term.bell(s.tl);
+        markedLine(s, Color::Yellow, msg);
+        p->restoreInput(s);
+        return true;
+    }
+    if (s.st == SState::AnyKey) {
+        // A page break ("Press SPACE to continue"), a screen's or a pause
+        // before something: the line goes under it and the question again.
+        Term& t = s.term;
+        t.nl(s.tl);
+        if (!s.bellOff) t.bell(s.tl);
+        markedLine(s, Color::Yellow, msg);
+        t.color(s.tl, Color::Cyan);
+        t.text(s.tl, t.isPet() ? "PRESS SPACE TO CONTINUE" : "Press SPACE to continue");
+        return true;
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------

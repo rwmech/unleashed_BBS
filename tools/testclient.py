@@ -3909,8 +3909,9 @@ def test_dash_card_age():
 
     On the board it is f_getfree: 15 to 25 ms, and 160 ms on a card pulled
     mid-write. Kept for three seconds, DASH 1 put that into the loop every
-    third frame. A minute now, and SD, a mount and an unmount still measure
-    at once. Checked by filling the card and asking again.
+    third frame. A minute then; since 1.1.2 a kept figure, measured on the
+    runner at boot and at a staff login, and MEM FORCE measures at once.
+    Checked by filling the card and asking again.
     """
     print("DASH: the card's free space, a minute old")
     card = card_dir()
@@ -3946,12 +3947,14 @@ def test_dash_card_age():
         ok = check("the dashboard shows the card's free space", before is not None)
         ok &= check("and a minute's figure, not a fresh read every few seconds",
                     before is not None and after == before)
+        # Since 1.1.2 every free-space figure is kept, SD's included, and
+        # MEM FORCE is what measures now (on the runner, with a spinner).
         s.buf.clear()
-        s.send(b"sd\r")
-        s.wait_for(b"SD card", 4)
+        s.send(b"mem force\r")
+        s.wait_for(b"Disk free", 20)
         s.pump(0.5)
         fresh = card_free(s)
-        ok &= check("SD measures at once, and the dashboard follows it",
+        ok &= check("MEM FORCE measures at once, and the dashboard follows it",
                     before is not None and fresh is not None and fresh <= before - 5)
     finally:
         blob.unlink()
@@ -4080,10 +4083,14 @@ def test_dash_opens_nothing():
         frames = bytes(s.buf).count(b"DASHBOARD")
         opened = []
         if logf.exists():
+            # hostio.txt is the host's own test knob (1.1.2), read by the
+            # host platform layer, not a file the board opens.
             opened = [p for p in logf.read_bytes()[mark:].decode(errors="replace").splitlines()
-                      if str(tmp) in p]
+                      if str(tmp) in p and not p.endswith("/hostio.txt")]
         ok = check("DASH 1 drew a frame a second", frames >= 3)
         ok &= check("and opened no file doing it", not opened)
+        if opened:
+            print("        opened:", "; ".join(sorted(set(opened))[:6]))
         if opened:
             print("        opened: " + ", ".join(sorted(set(p.replace(str(tmp), "") for p in opened))))
         s.send(b"q")
@@ -11727,6 +11734,80 @@ def page_all(c, until, secs=30):
     return until in c.buf
 
 
+def test_time_warn_in_plugins():
+    """The time warnings reach a caller inside a plugin (1.1.2, found on TRA).
+
+    Only a caller at a prompt was ever warned, so Rob was cut off mid-chat
+    at his call limit with no notice at all. In the room it is the room's
+    voice, "--> 5 minutes left on this call", with the bell; in the forums
+    too, where a card is in; and it fits 40 columns."""
+    print("Time warnings inside the room and the forums")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    s = cfg_sysop("TimeKeeper")
+    a = ansi_login("TimeChatter")
+    na = a.node()
+    ok = True
+    try:
+        a.send(b"chat\r")
+        a.wait_for(b"here.", 4)
+        a.pump(0.4)
+        a.buf.clear()
+        # 60 minutes a call on the harness: 56 off leaves four, inside the
+        # five-minute warning. TIME re-arms the warnings, as it always has.
+        s.send(f"time {na} -56\r".encode())
+        ok &= check("in the room, the warning arrives in the room's voice",
+                    a.wait_for(b"minutes left on this call", 6))
+        a.pump(0.4)
+        shown = plain(a.buf)
+        ok &= check("marked --> from column 0",
+                    any(r.startswith("--> 4 minutes left on this call") for r in render_lines(a.buf)))
+        ok &= check("with the bell", b"\x07" in a.buf)
+        a.buf.clear()
+        s.send(f"time {na} -3\r".encode())
+        ok &= check("and the last minute's", a.wait_for(b"--> 1 minute left on this call", 6))
+        a.send(b"still here\r")
+        a.pump(0.6)
+        ok &= check("and the caller is still in the room, typing", b"still here" in plain(a.buf))
+        s.send(f"time {na} +59\r".encode())
+        s.pump(0.5)
+
+        # 40 columns: the room wraps its own voice inside 39.
+        naws(a, 40, 25)
+        a.pump(0.3)
+        a.buf.clear()
+        s.send(f"time {na} -56\r".encode())
+        a.wait_for(b"left on", 6)
+        a.pump(0.5)
+        rows = render_lines(a.buf, cols=40)
+        ok &= check("at 40 columns it fits 39",
+                    any("--> 4 minutes left on" in r for r in rows) and max(len(r.rstrip()) for r in rows) <= 39)
+        s.send(f"time {na} +56\r".encode())
+        s.pump(0.5)
+        naws(a, 80, 24)
+        a.send(b"/q\r")
+        a.wait_for(b"Main", 4)
+
+        if card_dir() is not None:
+            a.buf.clear()
+            a.send(b"forums\r")
+            a.wait_for(b"Forums>", 8)
+            a.pump(0.5)
+            a.buf.clear()
+            s.send(f"time {na} -56\r".encode())
+            ok &= check("in the forums too, marked",
+                        a.wait_for(b"--> 4 minutes left on this call", 6))
+            s.send(f"time {na} +56\r".encode())
+            s.pump(0.5)
+            a.send(b"q")
+            a.pump(0.5)
+    finally:
+        a.close()
+        s.close()
+    return ok
+
+
 def test_lag_screens():
     """SCREENS lists every screen without holding the loop (1.1.2).
 
@@ -11754,7 +11835,7 @@ def test_lag_screens():
         s.send(b"screens\r")
         ok &= check("SCREENS lists the screens", s.wait_for(b"SCREENS VIEW", 20))
         drain(s)
-        slow = slow_passes(copy_text(tmp)[mark:], "SCREENS")
+        slow = slow_passes(copy_text(tmp)[mark:])          # the copy has this one caller
         ok &= check("with no pass over 50 ms (" + (", ".join(slow[:3]) or "none") + ")", not slow)
     finally:
         if s:
@@ -11794,10 +11875,10 @@ def test_lag_files():
         mark = len(copy_text(tmp))
         c.buf.clear()
         c.send(b"files 5\r")
-        ok &= check("the area opens", c.wait_for(b"Drop Box", 10))
+        ok &= check("the area opens", c.wait_for(b"[S5]", 15))   # by number: an earlier test may rename it
         ok &= check("and lists to its last file", page_all(c, b"LAG199.TXT", 60))
         ok &= check("with its description", b"File number 199 of the lag test" in plain(c.buf))
-        slow = slow_passes(copy_text(tmp)[mark:], "FILES")
+        slow = slow_passes(copy_text(tmp)[mark:])          # the copy has this one caller
         ok &= check("with no pass over 50 ms (" + (", ".join(slow[:3]) or "none") + ")", not slow)
     finally:
         if c:
@@ -11810,11 +11891,15 @@ def test_lag_files():
 def test_lag_forums():
     """A forum of 2,000 messages opens and reads without holding the loop.
 
-    The subject list walked the whole index in one pass, and "next unread"
-    walked it from the top a message, each reopening INDEX.TXT; the read
-    pointers were rewritten at every message. Walks are sliced across
-    passes now, open the index once, and the pointers live in RAM until the
-    caller leaves."""
+    The subject list walked the whole index in one pass, and the next
+    message in a subject was found by reopening INDEX.TXT for every record
+    in between; the read pointers were rewritten at every message. Walks
+    are sliced across passes now, open the index once, and the pointers
+    live in RAM until the caller leaves.
+
+    Laid out for the worst case: "Coffee" is message 1 and message 2,000,
+    and the 1,998 between are another subject, so reading Coffee's second
+    message walks the whole forum."""
     print("Lag: a forum of 2,000 messages")
     if HOST not in ("127.0.0.1", "localhost"):
         print("  SKIP  needs the host build")
@@ -11826,7 +11911,8 @@ def test_lag_forums():
     card = pathlib.Path(tempfile.mkdtemp(prefix="bbs-lagcard-"))
     import contextlib
     with contextlib.redirect_stdout(io.StringIO()):
-        forum_check.build_forum(str(card / "p" / "forums" / "general"), 2000)
+        forum_check.build_forum(str(card / "p" / "forums" / "general"), 2000,
+                                lambda n: "Coffee" if n in (1, 2000) else "20m antennas")
     tmp, proc = lag_board(PORT + 3902, card)
     ok = True
     c = None
@@ -11843,14 +11929,23 @@ def test_lag_forums():
         ok &= check("the forum of 2,000 lists its subjects", c.wait_for(b"Coffee", 20))
         c.pump(0.5)
         c.buf.clear()
-        c.send(b"\r")
-        ok &= check("Enter reads the next new message", c.wait_for(b"Message ", 20))
+        c.send(b"1\r")                                   # Coffee: numbered by its first message
+        ok &= check("its first subject opens", c.wait_for(b"Coffee", 20))
         c.pump(0.5)
-        c.buf.clear()
-        c.send(b"\r")
-        ok &= check("and Enter again the one after", c.wait_for(b"Message ", 20))
-        c.pump(0.5)
-        slow = slow_passes(copy_text(tmp)[mark:], "FORUMS")
+        seen = bytearray(c.buf)
+        for _ in range(3):
+            if b"Message 2000 about Coffee" in seen:
+                break
+            c.buf.clear()                               # each Enter waits for its own answer
+            c.send(b"\r")
+            c.wait_for(b"[R]eply", 30)
+            c.pump(0.5)
+            seen += c.buf
+        ok &= check("and reads to its second message, 1,998 records on",
+                    b"Message 2000 about Coffee" in seen)
+        if b"Message 2000 about Coffee" not in seen:
+            print("        the screen ended:", " / ".join(render_lines(c.buf)[-8:]))
+        slow = slow_passes(copy_text(tmp)[mark:])          # the copy has this one caller
         ok &= check("with no pass over 50 ms (" + (", ".join(slow[:3]) or "none") + ")", not slow)
     finally:
         if c:
@@ -12117,7 +12212,7 @@ def test_uploads_pending_bbs():
     if made:
         (pend / "FILES.BBS").write_text("GHOST.BIN  a description with no upload\n")
     s = cfg_sysop("PendKeeper")
-    ok = check("staff open the drop box", enter_area(s, 5, b"Drop Box"))
+    ok = check("staff open the drop box", enter_area(s, 5, b"[S5]"))   # by number: its name may change
     try:
         s.buf.clear()
         s.send(b"p")
@@ -15290,9 +15385,9 @@ GROUPS = {
                   "survives_notice", "config_forum", "room_time", "bell", "codes_in",
                   "room_narrow", "room_private",
                   "long_help", "info_pages", "operator", "notices_in", "ring_mail",
-                  "sysop_account", "mail_in_place"],
+                  "sysop_account", "mail_in_place", "time_warn"],
     # The subsystems that own a session and draw their own screens.
-    "places":    ["forums", "files", "chat", "xfer", "notices_in", "backups_area"],
+    "places":    ["forums", "files", "chat", "xfer", "notices_in", "backups_area", "time_warn"],
     # Anything that reads or writes the card, and the backups (on the card
     # since 1.1.0, and restores across the board's two partitions).
     "storage":   ["files", "forums", "sd", "xfer", "backup", "restore", "card_screens", "rewrites",
@@ -15300,7 +15395,7 @@ GROUPS = {
     # The shell, its lists and the screens the core draws.
     "shell":     ["menus", "sysinfo", "hardware", "page", "about", "config", "welcome", "paced", "seeded", "fx_codes",
                   "lights", "operator", "dash", "nodes_columns", "version_shown", "screens_command",
-                  "forms", "whois", "space_kept", "config_one_pass"],
+                  "forms", "whois", "space_kept", "config_one_pass", "time_warn"],
     # Logging in, accounts, staff.
     "login":     ["accounts", "handle_case", "guest", "sysop", "cosysop", "user_admin", "first_setup", "ban",
                   "closed_configured", "closed_fresh", "setup_abort",
@@ -15332,7 +15427,7 @@ ORDER_NAMES = [
     "test_announce_reliable",
     "test_announce_badges", "test_announce_directory",
     "test_chat", "test_room_commands", "test_room_new_commands", "test_room_private", "test_room_quit_logoff",
-    "test_room_time_staff_only", "test_bell", "test_codes_in_messages", "test_fx_codes", "test_room_narrow_effects",
+    "test_room_time_staff_only", "test_time_warn_in_plugins", "test_bell", "test_codes_in_messages", "test_fx_codes", "test_room_narrow_effects",
     "test_long_help",
     "test_info_pages",
     "test_mail", "test_prompt_survives_notice", "test_menus", "test_sysinfo", "test_hardware",

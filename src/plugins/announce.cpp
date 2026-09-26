@@ -293,6 +293,7 @@ uint32_t g_lastSentMs    = 0;              // millis the last round began, 0 nev
 uint32_t g_lastSentEpoch = 0;
 char     g_lastResult[48] = "nothing sent yet";
 bool     g_roundOk  = false;               // a directory said yes this round
+bool     g_roundMiss = false;              // and one did not
 bool     g_inRound  = false;
 uint8_t  g_backoff  = 0;                   // rounds in a row with nothing listed
 uint16_t g_sentBusy = 0, g_sentNodes = 0;  // what the last payload said
@@ -914,7 +915,8 @@ void finish(const char* how, bool ok) {
         if (ok) {
             sv.fails = 0;
             g_roundOk = true;
-        } else if (sv.fails < 255 && ++sv.fails >= kReresolve) {
+        } else g_roundMiss = true;
+        if (!ok && sv.fails < 255 && ++sv.fails >= kReresolve) {
             sv.fails  = 0;
             sv.lookup = true;                       // the address may have moved
         }
@@ -1092,19 +1094,21 @@ void service(uint32_t now) {
 // interval.
 void roundDone(uint32_t now) {
     g_inRound = false;
+    // The caller change it carried, again once the gap allows, when any
+    // directory missed it: with two, one listing it left the other stale
+    // until the interval (code review, 1.1.2). The gap is timed from this
+    // round's start, which puts the retry just past the directory's 30 s from
+    // the refusal it restarted its clock on.
+    if (g_carry && g_roundMiss && g_nudgeSecs && g_retry < kRetries && !g_want) {
+        ++g_retry;
+        g_want   = true;
+        g_wantAt = now;
+    }
     if (g_roundOk) {
         g_backoff = 0;
-        g_retry   = 0;
+        if (!g_roundMiss) g_retry = 0;
         g_nextRun = g_lastSentMs + g_intervalMs;
     } else {
-        // The caller change it carried, again once the gap allows. The gap
-        // is timed from this round's start, which puts the retry just past
-        // the directory's 30 s from the refusal it restarted its clock on.
-        if (g_carry && g_nudgeSecs && g_retry < kRetries && !g_want) {
-            ++g_retry;
-            g_want   = true;
-            g_wantAt = now;
-        }
         uint32_t wait = 30000u << (g_backoff < 5 ? g_backoff : 5);
         if (wait > g_intervalMs) wait = g_intervalMs;
         if (g_backoff < 255) ++g_backoff;
@@ -1118,6 +1122,7 @@ void beginRound(uint32_t now) {
     g_at          = 0;
     g_inRound     = true;
     g_roundOk     = false;
+    g_roundMiss   = false;
     g_carry       = g_want;             // this round carries the change, if one waited
     g_want        = false;              // a change after this is sent by the next round
     g_lastRound   = now;

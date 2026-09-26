@@ -1121,6 +1121,10 @@ Ptr      g_ptr[BBS_MAX_NODES + 2];
 uint8_t  g_ptrForum[BBS_MAX_NODES + 2];   // 0xFF: none loaded (set in start)
 bool     g_ptrDirty[BBS_MAX_NODES + 2] = {};
 uint32_t g_ptrUser[BBS_MAX_NODES + 2]  = {};
+// The call it was loaded for (code review, 1.1.2): a caller who left the
+// forums without leave() (a ring answered from inside) keeps their pointer
+// in the slot, and the next caller on that node must not read from it.
+uint16_t g_ptrCall[BBS_MAX_NODES + 2]  = {};
 
 void ptrFlush(uint8_t sl) {
     if (g_ptrDirty[sl] && g_ptrForum[sl] != 0xFF && g_ptrUser[sl])
@@ -1138,10 +1142,11 @@ void ptrForget(uint8_t sl) {
 // is not the one in RAM (the one that was is written first, if it changed).
 Ptr& ptrFor(const Session& s, uint8_t forum) {
     uint8_t sl = slotOf(s);
-    if (g_ptrForum[sl] != forum) {
-        ptrFlush(sl);
+    if (g_ptrForum[sl] != forum || g_ptrCall[sl] != s.call) {
+        ptrFlush(sl);                          // the previous caller's, under their own id
         g_ptrUser[sl]  = callerId(s);
         g_ptrForum[sl] = forum;
+        g_ptrCall[sl]  = s.call;
         readPtr(g_ptrUser[sl], forum, g_ptr[sl]);
     }
     return g_ptr[sl];
@@ -1219,7 +1224,11 @@ void walkBegin(Session& s, uint8_t kind, uint8_t then, uint8_t forum, bool fg) {
 void walkScanBegin(Session& s, uint8_t forum, uint8_t then) {
     walkBegin(s, W_SCAN, then, forum, true);
     Walk& w = g_walk[slotOf(s)];
-    scanReset(forum, slotOf(s));
+    // Not from under another caller's fill: the slice takes the table once
+    // theirs is done (see W_SCAN in walkSlice).
+    const uint8_t o = claims::owner(claims::Res::Subjects);
+    if (!(o != 0xFF && o != slotOf(s) && o < BBS_MAX_NODES + 2 && g_walk[o].kind == W_SCAN))
+        scanReset(forum, slotOf(s));
     ptrFor(s, forum);
     w.pos = g_forum[forum].newest;
     w.end = w.pos > kScanMax ? w.pos - kScanMax : 1;
@@ -1325,6 +1334,12 @@ bool walkSlice(Session& s, Walk& w, uint16_t& budget) {
                 // board's one shared cache: if somebody else took it since
                 // this scan began, it starts again for this caller.
                 if (!claims::holds(claims::Res::Subjects, sl) || g_subjFor != f) {
+                    // Another caller's fill still under way is waited for,
+                    // not taken: two fills spread over passes took the table
+                    // from each other every slice and neither ever ended
+                    // (code review, 1.1.2). A cache is a lock while it fills.
+                    const uint8_t o = claims::owner(claims::Res::Subjects);
+                    if (o != 0xFF && o != sl && o < BBS_MAX_NODES + 2 && g_walk[o].kind == W_SCAN) break;
                     scanReset(f, sl);
                     w.pos = g_forum[f].newest;
                     w.end = w.pos > kScanMax ? w.pos - kScanMax : 1;

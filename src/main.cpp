@@ -776,16 +776,8 @@ extern "C" void app_main(void) {
     // has booted before; the partition walks used to come first and now
     // come after it, with a poll between each slow step.
     imp::poll();
-    // Take the free-space figures now, while there is nobody to stall. Each
-    // one walks its whole partition; after this the board keeps them, and a
-    // SYS or DASH reads the kept figure rather than paying the walk.
-    {
-        uint32_t t = 0, u = 0;
-        plat::fsInfo(t, u);
-        imp::poll();
-        recovery::bootPoll(plat::millis());
-        plat::userInfo(t, u);
-    }
+    // The free-space figures are measured on the background runner once the
+    // BBS starts (space::refresh in Bbs::begin, 1.1.2), not walked here.
     imp::poll();
     recovery::bootPoll(plat::millis());
     wifiStart();

@@ -79,6 +79,7 @@ text is in the LICENSE file at the top of this repository.
 
 import fnmatch
 import re
+import os
 import subprocess
 import sys
 
@@ -259,12 +260,30 @@ VERSION_ONLY_DOWNGRADE = {
 }
 
 
+def git(args, cwd=None):
+    """git, or git.exe when git cannot see the repository.
+
+    A git worktree made on Windows (release-prep/wt-*) has a .git file that
+    points at a C:/ path, which Linux git in WSL cannot follow, so --changed
+    failed in every worktree. WSL runs Windows programs, and git.exe reads
+    the same worktree from the Windows side."""
+    result = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True)
+    if result.returncode != 0 and "not a git repository" in result.stderr:
+        try:
+            alt = subprocess.run(["git.exe"] + args, cwd=cwd, capture_output=True, text=True)
+        except OSError:
+            return result
+        if alt.returncode == 0:
+            alt.stdout = alt.stdout.replace("\r\n", "\n")
+            return alt
+    return result
+
+
 def diff_body_lines(git_range, root, path):
     """Every added or removed line for one path's diff, the +/- stripped and
     the +++ / --- file headers left out. --unified=0 keeps this to just the
     changed lines, which is all a content check needs."""
-    result = subprocess.run(["git", "diff", "--unified=0", "--no-color", git_range, "--", path],
-                             cwd=root, capture_output=True, text=True)
+    result = git(["diff", "--unified=0", "--no-color", git_range, "--", path], cwd=root)
     out = []
     for line in result.stdout.splitlines():
         if line.startswith("+++") or line.startswith("---"):
@@ -307,16 +326,19 @@ def classify(path, git_range, root):
 
 
 def repo_root():
-    return subprocess.run(["git", "rev-parse", "--show-toplevel"],
-                           capture_output=True, text=True, check=True).stdout.strip()
+    """The repository's top, or this script's parent's parent when git can
+    only answer from the Windows side (whose path WSL would not open)."""
+    result = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    if result.returncode == 0:
+        return result.stdout.strip()
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def changed_files(git_range, root):
     """git diff --name-only over the range, run from the repo root so a
     relative path in TABLE always means the same thing regardless of the
     caller's working directory."""
-    result = subprocess.run(["git", "diff", "--name-only", git_range],
-                             cwd=root, capture_output=True, text=True)
+    result = git(["diff", "--name-only", git_range], cwd=root)
     if result.returncode != 0:
         sys.stderr.write(result.stderr)
         sys.exit(2)

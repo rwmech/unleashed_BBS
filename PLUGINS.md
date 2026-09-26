@@ -93,7 +93,7 @@ inserted.
 | Hook | When |
 |---|---|
 | `start(bbs)` | after config load; return false to refuse |
-| `stop()` | switched off, or a config reload. Since 1.1.2 a `CONFIG` save stops and starts only the plugin whose section it wrote (every plugin for a core page, and every one when `sd`'s section changes, since the others wait on the card), so a plugin must not count on seeing a stop at every save |
+| `stop()` | switched off, or a config reload. Since 1.1.2 a `CONFIG` save stops and starts only the plugin whose section it wrote and any other whose section of `system.cfg` is not what it started on (every plugin for a core page, and every one when `sd`'s section changes, since the others wait on the card), so a plugin must not count on seeing a stop at every save |
 | `tick(now)` | every 250 ms from the BBS loop, every 20 ms for a `PF_FAST` plugin; never block |
 | `onConnect(s)` | a caller arrives, after terminal detection |
 | `onLogin(s)` | a caller logs in |

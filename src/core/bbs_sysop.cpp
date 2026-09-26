@@ -258,7 +258,16 @@ void Bbs::rememberStaff(const Session& s, Access level) {
     if (!clk::valid()) return;                    // no clock, nothing to date it by
     UserRec u;
     if (!users::find(s.user, u)) return;
-    u.staffAt    = clk::epoch();
+    // Saving it is a rewrite of the whole of users.txt, on the loop, at every
+    // co-sysop elevation (1.1.2, audit item 14: 90-138 ms with a few dozen
+    // accounts). Not when the account already says this level from this
+    // address within the last day: the week then runs from the day's first
+    // elevation, at most a day short of it.
+    const uint32_t now = clk::epoch();
+    if (u.staffLevel == static_cast<uint8_t>(level) && !strcmp(u.staffIp, s.ip) &&
+        u.staffAt && now >= u.staffAt && now - u.staffAt < 24u * 60u * 60u)
+        return;
+    u.staffAt    = now;
     u.staffLevel = static_cast<uint8_t>(level);
     snprintf(u.staffIp, sizeof(u.staffIp), "%s", s.ip);
     users::update(u.handle, u);
@@ -2626,11 +2635,19 @@ bool Bbs::configReloadAll(char* err, size_t errLen) {
     // page was the core's (a plugin may read the core's settings as it
     // starts: announce the board's name) or the card's (every PF_SD plugin
     // depends on the mount). It was every plugin, every save.
+    // And any other plugin whose section is not what it started on: a file
+    // edited by hand before the save, which a restart of every plugin used to
+    // pick up as a side effect (the badge test's mail_slots, caught it).
     uint32_t mask = plugins::kAll;
     {
         const uint8_t sec = cfgSectionPlugin(g_cfgSection);
         const Plugin* sp = plugins::at(sec);
-        if (sec != 0xFF && sec < 32 && sp && !(sp->info.flags & PF_EARLY)) mask = 1u << sec;
+        if (sec != 0xFF && sec < 32 && sp && !(sp->info.flags & PF_EARLY))
+            mask = (1u << sec) | plugins::changed();
+        for (uint8_t i = 0; i < plugins::count() && i < 32 && mask != plugins::kAll; ++i) {
+            const Plugin* q = plugins::at(i);
+            if ((mask & (1u << i)) && q && (q->info.flags & PF_EARLY)) mask = plugins::kAll;   // the card's
+        }
     }
     restartPlugins(mask);
     snprintf(err, errLen, "Saved and live");

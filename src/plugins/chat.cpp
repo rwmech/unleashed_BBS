@@ -1158,6 +1158,12 @@ bool mailRewrite(int16_t dropIdx, const MailRec* add, uint32_t nowEpoch,
     if (!out) return false;
     FILE* in = disk::open(path, "rb");
     uint8_t kept = 0;
+    // Where each record lands, for the callers holding one (code review,
+    // 1.1.2): a slot is a place in the file, and this closes the holes, so a
+    // caller at R, S or D, or writing a reply, would act on whichever message
+    // had moved into their place. -1: gone.
+    int16_t moved[kMailSlots];
+    for (auto& m : moved) m = -1;
     if (in) {
         MailRec r;
         int16_t pos = -1;
@@ -1178,6 +1184,7 @@ bool mailRewrite(int16_t dropIdx, const MailRec* add, uint32_t nowEpoch,
             if (idx < kMailSlots)
                 r.flags = static_cast<uint8_t>((r.flags & ~MF_SYSOP) | (g_mailFl[idx] & MF_SYSOP));
             if (fwrite(&r, sizeof(r), 1, out) != 1) { fclose(in); fclose(out); remove(tmp); return false; }
+            if (pos < kMailSlots) moved[pos] = static_cast<int16_t>(kept);
             ++kept;
         }
         fclose(in);
@@ -1187,6 +1194,8 @@ bool mailRewrite(int16_t dropIdx, const MailRec* add, uint32_t nowEpoch,
     }
     if (fclose(out) != 0) { remove(tmp); return false; }   // FAT says "full" here
     if (!mailReplace(tmp, path)) return false;
+    for (auto& held : g_mailIdx)
+        if (held >= 0 && held < kMailSlots) held = moved[held];
     mailIndex();
     return true;
 }
@@ -1203,7 +1212,10 @@ bool mailPut(long at, const void* data, size_t n) {
     char path[96];
     if (!mailPath(path, sizeof(path))) return false;
     FILE* f = disk::open(path, "r+b");
-    if (!f) f = disk::open(path, "w+b");
+    // Made only when it is not there (code review, 1.1.2): w+b truncates, and
+    // an open that failed for any other reason (out of FatFs handles, a card
+    // timing out) would have emptied every mailbox on the board.
+    if (!f && errno == ENOENT) f = disk::open(path, "w+b");
     if (!f) return false;
     bool ok = fseek(f, at, SEEK_SET) == 0 && fwrite(data, 1, n, f) == n;
     ok = (fclose(f) == 0) && ok;

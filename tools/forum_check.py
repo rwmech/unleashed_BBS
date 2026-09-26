@@ -203,7 +203,7 @@ def check_forum(path):
     return 1 if fails else 0
 
 
-def build_forum(path, count=12):
+def build_forum(path, count=12, subject_of=None):
     """Write a forum by hand for the board to read back.
 
     The other half of testing a format from the outside: not only reading
@@ -216,7 +216,9 @@ def build_forum(path, count=12):
     recs = []
 
     for n in range(1, count + 1):
-        subj = subjects[n % len(subjects)]
+        # subject_of(n) picks message n's subject, so a test can lay a forum
+        # out the way it needs (1.1.2's lag test: one subject at both ends).
+        subj = subject_of(n) if subject_of else subjects[n % len(subjects)]
         # FNV-1a over the folded subject, same as the board. Typed in from
         # the plan; if the board's hash ever changes, this disagreeing is
         # exactly what should happen.

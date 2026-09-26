@@ -219,6 +219,7 @@ struct ZipJob {
     BackupService* svc = nullptr;
     char hostname[40] = {};          // the scan's MANIFEST
     bool ok = false;                 // the scan: made; the unpack: room to do it
+    bool noRunner = false;           // the unpack never started: busy, not full
     char err[96] = {};
 };
 ZipJob g_unpack, g_scan;
@@ -242,12 +243,14 @@ bool BackupService::unpacked() {
     if (runner::idle(g_unpack.job) && !unpackOut_) {
         g_unpack.svc = this;
         g_unpack.err[0] = '\0';
+        g_unpack.noRunner = false;
         g_unpack.job.work = unpackWork;
         g_unpack.job.name = "restore unpack";
         unpackOut_ = runner::post(g_unpack.job);
         if (!unpackOut_) {                         // no runner: say so as a refusal
             snprintf(g_unpack.err, sizeof(g_unpack.err), "the board could not start the unpack");
             g_unpack.ok = false;
+            g_unpack.noRunner = true;
             unpackFailed_ = true;
             return true;
         }
@@ -271,9 +274,14 @@ bool BackupService::zipJobOut() const {
 void BackupService::service(const fd_set& r, const fd_set& w, uint32_t now) {
     // A client that went while a job had the zip storage: tidied now it is
     // the loop's again (1.1.2).
-    if (abandon_ && !zipJobOut()) {
+    // Collected first: zipJobOut counts a finished job not yet collected, and
+    // nothing else collects one once its client has gone, so testing first
+    // left the window answering 503 until a reboot (code review, 1.1.2).
+    if (abandon_) {
         if (runner::done(g_unpack.job)) runner::collect(g_unpack.job);
         if (runner::done(g_scan.job))   runner::collect(g_scan.job);
+    }
+    if (abandon_ && !zipJobOut()) {
         unpackOut_ = false;
         if (zipUse_ == ZipUse::Import) zip_.imp.discard();
         else { zip_.exp.abort(); zip_.exp.dropSnapshot(); }
@@ -285,7 +293,13 @@ void BackupService::service(const fd_set& r, const fd_set& w, uint32_t now) {
 
     if (st_ == St::Extract && unpacked()) {
         const ziparc::ImportReport& rep = importer().report();
-        if (unpackFailed_) {
+        if (unpackFailed_ && g_unpack.noRunner) {
+            // The runner would not take it (its queue full, or no memory for
+            // its stack): busy and worth another go, not a full board.
+            note("*** Upload from %s refused: the board is busy", clientIp_);
+            importer().discard();
+            reply(503, "Service Unavailable", "Busy: the board could not start the unpack. Try again.\n");
+        } else if (unpackFailed_) {
             // No room once measured on the runner: the zip's fault it is
             // not, and it says so as the check at receipt does.
             char body[128];
@@ -326,6 +340,7 @@ void BackupService::service(const fd_set& r, const fd_set& w, uint32_t now) {
     // The download's scan is done: the headers, then the zip (1.1.2).
     if (st_ == St::Scan && runner::done(g_scan.job)) {
         runner::collect(g_scan.job);
+        lastIo_ = now;                                   // the idle clock starts from the answer
         if (!g_scan.ok) {
             reply(500, "Internal Server Error", g_scan.err);
         } else {
@@ -345,7 +360,10 @@ void BackupService::service(const fd_set& r, const fd_set& w, uint32_t now) {
     // An accepted upload goes live a file a pass, in applyTick, which the
     // Bbs calls once it has closed any screen the upload replaces.
 
-    if (cfd_ >= 0 && st_ != St::Approve && st_ != St::Extract && st_ != St::Apply && st_ != St::Hold) {
+    // Nor while the scan runs: the client is waiting on the board, not the
+    // other way round, and dropping it then is what left a job out.
+    if (cfd_ >= 0 && st_ != St::Approve && st_ != St::Extract && st_ != St::Apply && st_ != St::Hold &&
+        st_ != St::Scan) {
         if (now - lastIo_ > BBS_BACKUP_IDLE_MS)                  dropClient("idle timeout");
         else if (static_cast<int32_t>(now - deadline_) >= 0)     dropClient("too slow");
     }

@@ -114,15 +114,40 @@ void main() {
 
 }  // namespace
 
+// A refusal is said at most every ten seconds, and a task that would not
+// start is not tried again for a second (code review, 1.1.2). Callers post
+// again every pass until one is taken, so a heap too short for the stack
+// made a console line and a task-create attempt a pass: the UART filling,
+// and printf then holding the loop, turns a memory shortage into lag.
+namespace {
+uint32_t g_saidAt    = 0;          // millis a refusal was last logged, 0 never
+uint32_t g_refused   = 0;          // refusals since then
+uint32_t g_noStartTo = 0;          // no start attempt before this, 0 none
+bool refusedSay(const char* what, const char* name) {
+    const uint32_t now = plat::millis();
+    ++g_refused;
+    if (g_saidAt && now - g_saidAt < 10000) return false;
+    plat::log("runner: %s, %s refused (%lu refusals)", what, name, static_cast<unsigned long>(g_refused));
+    g_saidAt  = now ? now : 1;
+    g_refused = 0;
+    return true;
+}
+}   // namespace
+
 bool post(Job& j) {
     uint8_t s = j.st.load();
     if (s == QUEUED || s == RUNNING) return false;
+    if (g_noStartTo && static_cast<int32_t>(plat::millis() - g_noStartTo) < 0) {
+        refusedSay("no task", j.name);
+        return false;
+    }
+    g_noStartTo = 0;
     j.postedAt = plat::millis();
     j.tookMs   = 0;
     plat::runLock();
     if (g_count >= kQueue) {
         plat::runUnlock();
-        plat::log("runner: queue full, %s refused", j.name);
+        refusedSay("queue full", j.name);
         return false;
     }
     j.st.store(QUEUED);
@@ -141,6 +166,8 @@ bool post(Job& j) {
     // No task: take back what is queued, this job with the rest, and say
     // so. A job left QUEUED with nothing to run it would hang its caller.
     plat::log("runner: the task would not start (heap %u free)", static_cast<unsigned>(plat::heapFree()));
+    g_noStartTo = plat::millis() + 1000;
+    if (!g_noStartTo) g_noStartTo = 1;
     plat::runLock();
     g_alive = false;
     while (g_count) {

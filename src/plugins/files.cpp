@@ -1109,8 +1109,10 @@ void filesPrompt(Session& s) {
 // board would otherwise keep in static DRAM, and the camera boards have 6 to
 // 8 KB of that. Tagged with the area and the first row it holds; a caller
 // who finds somebody else's page asks for their own, which is what a cache
-// does (claims.h's seize), and each build lets its caller draw at least a
-// pass of rows, so two callers listing at once both get there.
+// does (claims.h's seize). A finished build is the asker's until they have
+// drawn from it or a second has gone by (g_pageFor), so two callers listing
+// at once both get there: without it, whoever was serviced first took the
+// other's build and asked for its own, and a slow terminal never drew.
 // ===========================================================================
 constexpr uint8_t kPage     = 24;
 constexpr uint8_t kPageName = 49;
@@ -1135,11 +1137,16 @@ struct PageJob {
     Page*    page  = nullptr;
     uint8_t  area  = 0xFF;       // in
     uint16_t start = 0;          // in
+    uint16_t gen   = 0;          // g_pageGen when it was asked for
+    uint16_t call  = 0;          // Session::call of the caller who asked
     char     rel[kPathMax + 1] = {};   // in: the area's folder under the card
 };
 PageJob  g_pj;
 Page*    g_page = nullptr;       // the loop's: read only once the job is DONE
 bool     g_pageOk = false;       // g_page holds a finished build
+uint16_t g_pageGen = 0;          // moved on by pageDrop: an older build is stale
+uint16_t g_pageFor = 0;          // the caller a finished build waits for, 0 anybody
+uint32_t g_pageAt  = 0;          // when it finished
 
 // --- the runner's side -------------------------------------------------------
 
@@ -1291,21 +1298,34 @@ void pageWork(runner::Job&) {
 
 // pageFor: a finished page holding row want of area at, or null; asks the
 // runner for one when there is none, so the caller holds the list meanwhile.
-const PageEnt* pageRow(uint8_t at, uint16_t want, bool& ended, bool& missing, uint16_t& seen) {
+const PageEnt* pageRow(uint16_t call, uint8_t at, uint16_t want, bool& ended, bool& missing, uint16_t& seen) {
     ended = missing = false;
     seen  = 0;
-    if (runner::done(g_pj.job)) { runner::collect(g_pj.job); g_pageOk = true; }
+    if (runner::done(g_pj.job)) {
+        runner::collect(g_pj.job);
+        // A page asked for before a file went in or out is not kept.
+        g_pageOk  = g_pj.gen == g_pageGen;
+        g_pageFor = g_pageOk ? g_pj.call : 0;
+        g_pageAt  = plat::millis();
+    }
     if (g_page && g_pageOk && runner::idle(g_pj.job) && g_page->area == at) {
         const Page& p = *g_page;
-        if (want >= p.start && want < p.start + p.count) return &p.e[want - p.start];
+        if (want >= p.start && want < p.start + p.count) {
+            if (g_pageFor == call) g_pageFor = 0;            // drawn from: anybody's now
+            return &p.e[want - p.start];
+        }
         if (p.end && want >= p.start + p.count) {
             ended   = true;
             missing = p.missing;
             seen    = static_cast<uint16_t>(p.start + p.count);
+            if (g_pageFor == call) g_pageFor = 0;
             return nullptr;
         }
     }
     if (!runner::idle(g_pj.job)) return nullptr;                // one being built: wait for it
+    // Somebody else's build, not yet drawn from: theirs for a second.
+    if (g_pageFor && g_pageFor != call && plat::millis() - g_pageAt < 1000) return nullptr;
+    g_pageFor = 0;
     if (!g_page) {
         g_page = static_cast<Page*>(malloc(sizeof(Page)));
         if (!g_page) return nullptr;
@@ -1313,6 +1333,8 @@ const PageEnt* pageRow(uint8_t at, uint16_t want, bool& ended, bool& missing, ui
     }
     g_pageOk      = false;
     g_pj.page     = g_page;
+    g_pj.gen      = g_pageGen;
+    g_pj.call     = call;
     g_pj.area     = at;
     g_pj.start    = static_cast<uint16_t>((want / kPage) * kPage);
     snprintf(g_pj.rel, sizeof(g_pj.rel), "%s", g_area[at].path);
@@ -1324,7 +1346,8 @@ const PageEnt* pageRow(uint8_t at, uint16_t want, bool& ended, bool& missing, ui
 
 // pageDrop: the page is out of date (a file went in, out, or was described).
 void pageDrop() {
-    if (runner::idle(g_pj.job)) g_pageOk = false;
+    g_pageOk = false;
+    ++g_pageGen;                     // and a build already out is stale when it lands
 }
 
 // pageRelease: back to the heap once nobody is listing and no build is out.
@@ -1367,7 +1390,7 @@ bool rows(Session& s) {
         const uint16_t want = static_cast<uint16_t>(i - 1);
         bool ended = false, missing = false;
         uint16_t seen = 0;
-        const PageEnt* pe = pageRow(at, want, ended, missing, seen);
+        const PageEnt* pe = pageRow(s.call, at, want, ended, missing, seen);
         if (!pe && !ended) { b.listHold(s); return true; }
         ++s.listIdx;
         if (missing) {

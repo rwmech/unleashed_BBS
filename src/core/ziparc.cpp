@@ -1313,13 +1313,29 @@ bool ZipImport::step() {
         if (zf_) {                                   // first time past the end: finish up
             fclose(zf_);
             zf_ = nullptr;
+            // The call figures go only with the accounts they belong to
+            // (code review, 1.1.2): without an accepted users.txt beside
+            // them, another board's figures would be laid over this board's
+            // ids, and today's minutes would count against its callers.
+            if (!rep_.hasUsers)
+                for (uint8_t k = 0; k < itemCount_; ++k) {
+                    Item& st = items_[k];
+                    if (!st.ok || strcmp(st.name, BBS_STATS_FILE)) continue;
+                    st.ok = false;
+                    --rep_.accepted;
+                    ++rep_.rejected;
+                    rep_.bytes -= st.usize;
+                    if (!rep_.firstReject[0])
+                        snprintf(rep_.firstReject, sizeof(rep_.firstReject), "%s: only with users.txt",
+                                 BBS_STATS_FILE);
+                }
             countRemovals();
         }
         return false;
     }
     Item& it = items_[next_++];
     it.ok = extract(it);
-    ++stepped_;                                  // for the card job's dots (1.1.2)
+    stepped_ = static_cast<uint8_t>(stepped_ + 1);   // for the card job's dots (1.1.2)
     if (it.ok) {
         ++rep_.accepted;
         if (!strcmp(it.name, BBS_CONFIG_FILE))     rep_.hasCfg = true;
@@ -1482,7 +1498,12 @@ bool ZipImport::applyItem(Item& it) {
     }
     if (!moveFile(src, dst)) { ++applied_.failures; return false; }
     it.live = true;
-    if (!strcmp(it.name, BBS_USERS_FILE))      applied_.users = true;
+    if (!strcmp(it.name, BBS_USERS_FILE)) {
+        applied_.users = true;
+        // The index is of the file that was live: stale from this moment,
+        // not from the end of the apply several passes on (code review).
+        users::reindex();
+    }
     else if (!strcmp(it.name, BBS_STATS_FILE)) applied_.stats = true;
     else if (validInfoName(it.name))           ++applied_.pages;
     else                                  ++applied_.screens;

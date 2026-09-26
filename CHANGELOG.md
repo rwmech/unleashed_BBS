@@ -80,8 +80,9 @@ using it. Host-tested with targeted runs; not yet on hardware.
   one, keeping one flips a byte. Every one of those rewrote `mail.dat`.
 - **CONFIG reads `system.cfg` once to open a page**, where each field
   searched the file from the top, and a save restarts only the plugin whose
-  section it wrote (every plugin for a core page, and all of them for
-  `sd`'s, which the others wait on).
+  section it wrote and any whose section is not what it started on
+  (every plugin for a core page, and all of them for `sd`'s, which the
+  others wait on).
 - **Free space is measured on the runner, and kept.** MEM, SYS, DASH,
   HARDWARE, PLUGINS and every plugin's write guard asked LittleFS, which
   walks every block (170 ms on a board), or FAT, which reads its table. The
@@ -93,6 +94,9 @@ using it. Host-tested with targeted runs; not yet on hardware.
   counter, not the allocator walk.
 - **The caller log's copy on the card is written on the runner** at a
   hang-up, through a small queue.
+- A co-sysop typing the staff password again the same day, from the same
+  address, no longer rewrites `users.txt` to move the remembered date; the
+  week runs from the day's first time.
 
 **Bugs**
 - **`users.txt` is never removed to make room for a rename.** The fallback
@@ -112,6 +116,14 @@ using it. Host-tested with targeted runs; not yet on hardware.
 - **One snapshot at a time**, and the second caller is told whose: `-->
   Camera in use by node 3, try again in a minute` (`by the board` for a
   timed one), wrapped at a word on 40 columns (Rob).
+- **The time warnings reach a caller inside the room, the forums, the file
+  areas and the mailbox** (found on TRA: Rob was cut off mid-chat at his
+  limit with no warning). Only a caller at a prompt was ever told. They
+  come in through the same door as a page, in the board's own voice, with
+  the bell: `--> 5 minutes left on this call`, `--> 1 minute left on this
+  call`, wrapped inside 39 on 40 columns. At a screen's `Press SPACE to
+  continue` the line goes under it and the question again. (A caller inside
+  a plugin is never idle, so there is no idle warning to carry.)
 - **An external reset is not a watchdog.** The classic ESP32 reports a
   press of EN, or a serial port toggling it, as an RTC watchdog reset, and
   the board said it had crashed. It reads the ROM's own reason now and says

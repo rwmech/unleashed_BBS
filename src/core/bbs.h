@@ -721,6 +721,15 @@ private:
     bool canNotify(const Session& s) const;
     void notify(Session& s, Color c, const char* msg);
     void warnNow(Session& s, const char* msg);
+    // warnElsewhere (1.1.2): a timer warning for a caller the prompt's path
+    // cannot reach: inside a plugin, through its liftInput/restoreInput, or
+    // at a screen's page break. In the board's own voice, "--> 5 minutes left
+    // on this call", with the bell. False when not now: the caller is asked
+    // again next pass.
+    bool warnElsewhere(Session& s, const char* msg);
+    // markedLine: "--> text" from column 0, wrapped at the row width with the
+    // text's own column kept; in the room, the room's voice (chat::roomSay).
+    void markedLine(Session& s, Color c, const char* text);
     void redrawInput(Session& s);
     void deliverMail(Session& s);
     // deliverMail's three shapes (1.1.0): at the prompt, inside a plugin

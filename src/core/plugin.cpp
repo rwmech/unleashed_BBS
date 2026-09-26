@@ -213,6 +213,35 @@ void scan(uint8_t index, plugins::KeyFn fn, void* ctx, bool core) {
     }
 }
 
+// sectionHash: one plugin's section as the file has it, reduced to a hash
+// (FNV-1a over its trimmed lines, comments left out), so a CONFIG save can
+// tell which plugins' settings moved since they started (1.1.2). The save
+// restarts only those, where it used to restart every plugin; hashing the
+// file rather than trusting "the page that was saved" still catches a
+// section edited some other way, such as by hand before the save.
+uint32_t g_secHash[BBS_MAX_PLUGINS] = {};
+
+uint32_t sectionHash(uint8_t index) {
+    const Plugin* p = plugins::at(index);
+    if (!p) return 0;
+    char want[40], line[176];
+    sectionName(p->info.name, want, sizeof(want));
+    Lines src;
+    uint32_t h = 2166136261u;
+    if (!src.open()) return h;
+    bool mine = false;
+    while (src.next(line, sizeof(line))) {
+        char* l = trim(line);
+        if (!*l || *l == '#' || *l == ';') continue;
+        if (*l == '[') { mine = ieq(l, want); continue; }
+        if (!mine) continue;
+        for (const char* c = l; *c; ++c) { h ^= static_cast<uint8_t>(*c); h *= 16777619u; }
+        h ^= '\n';
+        h *= 16777619u;
+    }
+    return h;
+}
+
 // ensureDir: make a directory, ignoring "already there"
 void ensureDir(const char* path) {
 #if defined(_WIN32)
@@ -378,6 +407,7 @@ void begin(Bbs& bbs, uint32_t mask) {
         if (!(mask & (1u << i))) continue;                // not one this start is for
         State& st = g_state[i];
         st = State();
+        g_secHash[i] = sectionHash(i);                        // what it starts on (changed())
         st.enabled  = (p->info.flags & PF_ON) != 0;           // on unless told otherwise
         st.level[0] = p->info.read;                           // the plugin's own defaults
         st.level[1] = p->info.write;
@@ -447,6 +477,17 @@ void begin(Bbs& bbs, uint32_t mask) {
     }
     }
     cfgRelease();
+}
+
+// changed: the plugins whose section of system.cfg is not what they last
+// started on. One read of the file.
+uint32_t changed() {
+    cfgHold();
+    uint32_t mask = 0;
+    for (uint8_t i = 0; i < count() && i < 32; ++i)
+        if (sectionHash(i) != g_secHash[i]) mask |= 1u << i;
+    cfgRelease();
+    return mask;
 }
 
 void stopAll(uint32_t mask) {

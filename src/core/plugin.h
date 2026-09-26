@@ -417,6 +417,11 @@ void begin(Bbs& bbs, uint32_t mask = kAll);
 // stopAll: called before a config reload. mask as begin's.
 void stopAll(uint32_t mask = kAll);
 
+// changed: the plugins, as a begin() mask, whose section of system.cfg is not
+// what they last started on (1.1.2). A CONFIG save restarts the page's own
+// plugin and these, so a section edited any other way is not left stale.
+uint32_t changed();
+
 // tick: call from the BBS loop
 void tick(uint32_t now);
 

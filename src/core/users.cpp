@@ -887,7 +887,9 @@ bool statsPut(uint32_t id, uint16_t calls, uint32_t lastCall, uint32_t dayKey, u
     // record makes the file. An id past its end leaves a hole of zeros,
     // which reads back as "no record" (id 0), which is the truth.
     FILE* f = disk::open(p, "r+b");
-    if (!f) f = disk::open(p, "w+b");
+    // Made only when it is not there: w+b truncates, and an open that failed
+    // for any other reason would have thrown every account's figures away.
+    if (!f && errno == ENOENT) f = disk::open(p, "w+b");
     if (!f) return false;
     StatRec r{ id, lastCall, dayKey, calls, dayMinutes };
     bool ok = fseek(f, static_cast<long>(id) * static_cast<long>(sizeof(StatRec)), SEEK_SET) == 0 &&
