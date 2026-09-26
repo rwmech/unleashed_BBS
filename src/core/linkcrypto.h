@@ -96,6 +96,9 @@ bool ccmSeal(const uint8_t key[kKey], const uint8_t iv[kNonce], const uint8_t* a
 bool ccmOpen(const uint8_t key[kKey], const uint8_t iv[kNonce], const uint8_t* ad, size_t adLen,
              const uint8_t* ct, size_t n, uint8_t* pt, const uint8_t tag[kTag]);
 
+// sha256: a plain SHA-256, for the pairing commitment.
+void sha256(const uint8_t* in, size_t n, uint8_t out[32]);
+
 // hmac: HMAC-SHA256.
 void hmac(const uint8_t* key, size_t keyLen, const uint8_t* in, size_t n, uint8_t out[32]);
 

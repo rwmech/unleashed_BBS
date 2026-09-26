@@ -1263,7 +1263,7 @@ levels.
 
 | Command | Who | What it does |
 |---|---|---|
-| `LINK` | staff (the plugin's read level) | The paired devices, one row each: number, name, kind, up or down, the signal as the board hears it, and at 60 columns and wider when it was last heard and whether its code was checked. Then frames in and out, retries, drops by reason, the time the board spends on each frame (average and worst) and how full its receive ring has been. Says so when all 8 pairings are taken. |
+| `LINK` | staff (the plugin's read level) | The paired devices, one row each: number, name, kind, up or down, the signal as the board hears it, and at 60 columns and wider when it was last heard and whether its code was checked. Then frames in and out, retries, drops by reason, the time the board spends on each frame (average and worst) and how full its two receive rings have been (the loop's and the picture fragments'). Says so when a device has dropped to the slower radio rate after failed sends, and when all 8 pairings are taken. |
 | `LINK PAIR` | sysop | Opens pairing for 2 minutes. Put the device in pairing mode (a satellite with no pairing is in it for 5 minutes after it boots); when it answers the board asks `Pair doorbox "shelf" 02:00:00:00:1a:2b, code 4821? (y/N)`. Y pairs it, and the board then asks whether the device shows the same code, which a device prints on its serial console: Y there marks the pairing checked. Q stops. |
 | `LINK FORGET n` | sysop | Forgets pairing n. The device has to be paired again. |
 | `LINK NAME n name` | sysop | Renames pairing n (16 characters). |

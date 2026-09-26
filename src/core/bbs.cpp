@@ -342,8 +342,9 @@ void Bbs::endScreens(bool card, const char* why) {
 // because the tables are static, but a caller typing ANNOUNCE was told
 // "Unknown command" on a board where the plugin was running fine.
 //
-// Table 0 is the core's and stays: it is registered in begin() and the core
-// is not restarted by a reload.
+// The core's tables stay (plugin 0xFF): table 0 is registered in begin(),
+// the cameras' verbs (photos.cpp, 1.2.0) once, when the first camera
+// appears, and the core is not restarted by a reload.
 // ---------------------------------------------------------------------------
 void Bbs::dropPluginCommands(uint32_t mask) {
     // The tables of the plugins in mask go; the rest close up behind them in

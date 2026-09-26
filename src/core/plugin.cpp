@@ -251,6 +251,24 @@ void ensureDir(const char* path) {
 #endif
 }
 
+// onFlash: a plugin that may keep files on the board's flash. Only a shipped
+// plugin (PF_CORE) may, and a plugin built in from its own repository is
+// never shipped whatever flags its descriptor claims: those are the last
+// BBS_EXT_PLUGIN_COUNT entries of the registry (registry.cpp appends them).
+bool onFlash(uint8_t index, const Plugin* p) {
+    if (index + BBS_EXT_PLUGIN_COUNT >= kPluginCount) return false;
+    return (p->info.flags & PF_CORE) != 0;
+}
+
+// firstNamed: a plugin whose name an earlier entry already has is refused:
+// its config section, its folder and its commands would all be the other's.
+bool firstNamed(uint8_t index) {
+    const Plugin* p = kPlugins[index];
+    for (uint8_t i = 0; i < index; ++i)
+        if (ieq(kPlugins[i]->info.name, p->info.name)) return false;
+    return true;
+}
+
 } // namespace
 
 namespace plugins {
@@ -349,7 +367,7 @@ bool path(uint8_t index, const char* file, char* out, size_t n) {
     if (!p || !file || !*file) return false;
     // Only shipped plugins get the board's flash; any plugin may have the card
     // (PF_SD), which is where a plugin from its own repository keeps files.
-    if (!(p->info.flags & PF_CORE) && !(p->info.flags & PF_SD)) return false;
+    if (!onFlash(index, p) && !(p->info.flags & PF_SD)) return false;
     if (strchr(file, '/') || strstr(file, "..")) return false;
 
     const bool sd = (p->info.flags & PF_SD) != 0;
@@ -382,7 +400,7 @@ bool path(uint8_t index, const char* file, char* out, size_t n) {
 bool readPath(uint8_t index, const char* file, char* out, size_t n) {
     const Plugin* p = at(index);
     if (!p || !file || !*file) return false;
-    if (!(p->info.flags & PF_CORE) && !(p->info.flags & PF_SD)) return false;
+    if (!onFlash(index, p) && !(p->info.flags & PF_SD)) return false;
     if (strchr(file, '/') || strstr(file, "..")) return false;
     const bool sd = (p->info.flags & PF_SD) != 0;
     const char* base = sd ? plat::sdBase() : plat::userBase();
@@ -416,12 +434,18 @@ void begin(Bbs& bbs, uint32_t mask) {
         st.level[2] = p->info.admin;
         scan(i, nullptr, nullptr, true);                      // enabled + levels
 
+        if (!firstNamed(i)) {
+            st.enabled = false;
+            st.why = "name already taken";
+            plat::log("plugin: a second plugin called %s, not started", p->info.name);
+            continue;
+        }
         if (!st.enabled) { st.why = "off in system.cfg"; continue; }
         // A plugin from its own repository (1.2.0) runs like any other, but
         // only a shipped one (PF_CORE) may keep files on the board's flash:
         // one that wants storage keeps it on the card (PF_SD). path() refuses
         // it the flash either way; this says so at start instead.
-        if (!(p->info.flags & PF_CORE) && !(p->info.flags & PF_SD) && p->info.storageBytes) {
+        if (!onFlash(i, p) && !(p->info.flags & PF_SD) && p->info.storageBytes) {
             st.why = "wants the board's flash";
             plat::log("plugin: %s wants storage on the board's flash, which only shipped plugins may "
                       "have (PF_SD puts it on the card): not started", p->info.name);

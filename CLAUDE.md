@@ -842,15 +842,33 @@ this tree.
       Rob's 100 us line for work on the loop. linkcrypto now does the same
       CCM as one CBC and one CTR call: 78 us to seal and 78 to open on the
       S3 in the real -Os build (963 for mbedtls_ccm in the same image). The
-      per-block peripheral lock was the cost, not the hardware. Under the
-      line, so the link stays on the loop; the ESP32's figure is to come.
+      per-block peripheral lock was the cost, not the hardware. The ESP32:
+      93.6 / 94.7 us.
+    - **The second bench round moved it again (Rob adopted, 2026-09-26)**:
+      a whole control frame on the loop is 150-184 us, over the line, but
+      control frames are a few a second so they stay; a loop taking eight
+      frames a pass lost half a picture at 24 Mbps, so **bulk fragments
+      never touch the loop**: the radio sorts them into a second ring
+      (by `nfrag`, unauthenticated, a routing decision only) and the runner
+      job opens and sinks them (`pumpRx`, `pumpBulk`) under the engine's
+      recursive lock. Also: 11g 24 Mbps per peer with a 1 Mbps fallback
+      after three MAC failures (back after 30 s clean), four frames
+      outstanding, DISCOVER dwell 20 ms, the host silent while off its
+      router, BEACON the only channel a peer trusts, a sleeping sender's
+      fast rescan, LR off (gateway pings 29-55 ms). LINK.md has the table.
+    - Code review (1.2.0-link.5): pairing became commit-then-reveal; HELLO
+      is HMAC-tagged with a boot epoch; a stopped link's runner job is
+      fenced off (`Radio::live`, the graves); doors retry CLOSE (ST_CLOSING)
+      and stop before the link; an external plugin's `PF_CORE` is ignored
+      and duplicate names refused.
     - Retries count only while the far end is heard and only for a
       session's oldest message: the first version failed a session behind
       one lost frame, and a channel hop killed sessions that should pause.
       The simulated radio in `host/test_link.cpp` found both.
-    - Measured on the WROOM: 142 bytes static, 34,293 flash, ~15 KB heap
-      while on. Tests: test_link (90), `--only=radio` (28, a pretend door
-      box, `host/linkpeer`), `tools/test_ext_plugin.sh` (11).
+    - Measured on the WROOM (link.4): 142 bytes static, 34,293 flash, ~15 KB
+      heap while on. Tests: test_link (115, ASan/UBSan; TSan cannot link in
+      this WSL), `--only=radio` (a pretend door box, `host/linkpeer`),
+      `tools/test_ext_plugin.sh` (13).
     - At the 1.1.2 merge: the link's job goes on the runner by itself
       (`__has_include`); camera.cpp and files.cpp move onto photos.* then,
       not before, because 1.1.2a rewrote both.

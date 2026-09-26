@@ -45,10 +45,10 @@ after 1.1.2. Host-tested; not yet flashed.
   retries counted only while the far end is heard, so a router's channel
   hop is a pause and not a lost session. A satellite scans the channels to
   find the board and follows it when the router moves.
-- Where the work runs (Rule no. 1): the loop opens each frame, eight a pass
-  at most, and `LINK` reports what a frame costs it; reassembly, the
-  picture's CRC-32, its card writes and the pairing arithmetic are the
-  background runner's (1.1.2) once it is in the tree.
+- Where the work runs (Rule no. 1): the loop opens control frames, eight a
+  pass at most, and `LINK` reports what a frame costs it; picture
+  fragments, reassembly, the CRC-32, the card writes and the pairing
+  arithmetic are the background runner's (1.1.2) once it is in the tree.
 - CCM built from one CBC and one CTR call over mbedTLS's AES, after the
   camsat bench measured mbedtls_ccm at 320 us a frame on an ESP32 and
   1,000 us on an S3: byte for byte mbedtls_ccm's, checked against RFC 3610.
@@ -89,7 +89,7 @@ after 1.1.2. Host-tested; not yet flashed.
   count (it was 12, written beside the table).
 - The host build compiles ESP-IDF's own mbedTLS 3.6.0 (`MBEDTLS_DIR`), and
   `host/linkpeer` is a pretend door box on the host's UDP radio for the
-  tests (`--only=radio`). `host/test_link` runs in `make test`: 90 checks,
+  tests (`--only=radio`). `host/test_link` runs in `make test`: 118 checks,
   clean under ASan and UBSan.
 ## 1.1.2 (S3 1.1.3, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-27
 
@@ -578,6 +578,55 @@ that out asap, it doesnt")
   what the path opened.
 - `tools/harness.sh --changed <range>` works out the test groups from the
   files a git range touched (`tools/changed_groups.py`).
+
+**1.2.0-link.5: the bench's figures, and the code review**
+- The camsat bench (2026-09-26, the S3 on Rob's router and an ESP32-CAM)
+  set the radio: 802.11g 24 Mbps per peer, down to 1 Mbps after three
+  MAC failures in a row and back after 30 s clean; four frames
+  outstanding (+53%); DISCOVER listens 20 ms a channel; Long Range stays
+  off (it raised the board's own gateway pings to 29-55 ms).
+- Picture fragments never touch the loop: the radio sorts them into their
+  own ring and the runner's job takes them, opens them and feeds the sink,
+  staying 50 ms after the last one. The loop taking eight a pass lost half
+  a picture at 24 Mbps; on the task path the bench saw no slow passes.
+- Pairing is commit then reveal (`PAIR_NONCE`, `PAIR_REVEAL`): the host
+  commits to its nonce before it sees the device's, so nobody in the middle
+  can steer two exchanges to one code. The key and code are bound to both
+  public keys.
+- HELLO and HELLO_ACK carry an HMAC tag under the pairing key, so only a
+  paired device is answered, and a random boot epoch, so a device that
+  restarted ends its old sessions at once. The host answers nothing while
+  it is off its router; a device believes only BEACON's channel; a
+  sleeping satellite rescans after three failed sends.
+- Doors: a CLOSE the box's full window will not take is retried for 5 s
+  after the caller is back at the prompt; the doors stop before the link,
+  and the link sends what is queued before its radio goes.
+- The link plugin: a stopped link's runner job neither sends nor delivers
+  (a CONFIG save while a picture arrives); a finished job of a stopped link
+  is collected and freed; the pairings file checks `fclose`; heap declared
+  20 KB. `LINK` shows both rings and devices on the slow rate. The start
+  line gives the channel only once the board has joined its router.
+- **The first real pictures** (camsat on c948de3: 5 of 5 filed, XGA, about
+  87 KB, but 17 KB/s and about 16 retries a picture) found two engine
+  faults:
+  - a session closed with `closeAfter` straight after its picture was
+    forgotten before its last ACK had gone, and the sender's resend was
+    answered "no such session": filed here, reported failed there. A
+    closed session now goes only after the ACK it owes, and leaves a
+    tombstone (8, 30 s) that ACKs a resend again and answers anything new
+    with RESET, never opening it as a new session. `test_link` has the case
+    (8 pictures, each session closed at once, 30% loss), failing without it;
+  - the ACKs a bulk sender waits for went out at the loop's next tick, up
+    to 20 ms after the fragments landed: with a 16-fragment window that
+    wait, not the radio, set the speed. The runner now sends the ACKs that
+    are due as soon as it has taken fragments, and when it has made half a
+    window of room. To be measured on the bench against camsat's 440 KB/s.
+- A plugin from its own repository gets no flash whatever flags it claims,
+  and a second plugin with a name already taken is not started.
+- Photos refuses a backslash or a colon in a name from a satellite.
+- CAMERA family: SNAP carries the watermark text and the JPEG comment
+  (the satellite does the pixel work), every picture is a host SNAP (EVENT
+  asks for one), SETTINGS is 24 bytes (`src/core/linkfam.h`).
 
 ## 1.1.1 (S3 1.1.2, FNCAM 1.0.6, ESPCAM 1.0.3), 2026-09-25
 

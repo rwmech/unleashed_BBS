@@ -78,7 +78,7 @@ enum : uint8_t { FAM_LINK = 0, FAM_CAMERA = 1, FAM_DOOR = 2 };
 enum : uint8_t { F_REL = 0x01, F_SEC = 0x02 };
 enum : uint8_t {
     T_DISCOVER = 1, T_BEACON, T_HELLO, T_HELLO_ACK, T_PING, T_PONG, T_ACK, T_RESET,
-    T_PAIR_HELLO = 16, T_PAIR_OFFER, T_PAIR_DONE, T_PAIR_ACK,
+    T_PAIR_HELLO = 16, T_PAIR_OFFER, T_PAIR_DONE, T_PAIR_ACK, T_PAIR_NONCE, T_PAIR_REVEAL,
 };
 enum : uint8_t { DIR_HOST = 'H', DIR_PEER = 'P' };
 
@@ -91,6 +91,8 @@ enum : uint8_t {
     R_BADCRC,         // a bulk message's CRC-32 did not check
     R_UNKNOWN,        // a session the receiver does not know
     R_ABORTED,        // the receiver's sink gave up (a card write failed)
+    R_RESTART,        // the far end restarted (a new boot epoch): its sessions are gone
+    R_REKEY,          // session 0 only: the host asks for a new HELLO (its pn nears the wrap)
 };
 
 struct Header {
@@ -167,6 +169,24 @@ public:
     virtual uint32_t unixTime() { return 0; }
     // heapFree: a peer's free heap, reported in PING.
     virtual uint32_t heapFree() { return 0; }
+    // recvBulk: a radio that sorts what it receives keeps the fragments of
+    // bulk messages (nfrag > 1) apart, for the background runner to take
+    // with pumpRx (1.2.0 bench: a loop taking eight frames a pass lost half
+    // a picture at 24 Mbps). Default: none, and recv() carries everything.
+    virtual size_t recvBulk(uint8_t* out, size_t cap, Mac& from, int8_t& rssi) {
+        (void)out; (void)cap; (void)from; (void)rssi; return 0;
+    }
+    // lock/unlock: a recursive lock, for an embedder that runs pumpRx on
+    // another task than poll. Every public call takes it. Default: none.
+    virtual void lock() {}
+    virtual void unlock() {}
+    // associated: the host is joined to its router. While it is not (its own
+    // reconnect scan) its channel means nothing, and it answers no DISCOVER,
+    // HELLO or PAIR_HELLO. Always true on a peer.
+    virtual bool associated() { return true; }
+    // macFailStreak: send callbacks in a row that said FAIL (a peer's view of
+    // its host), for a sleeping sender's fast rescan (setFastRescan).
+    virtual uint8_t macFailStreak() { return 0; }
 };
 
 // A pairing request as the host sees it, or a pairing as either side stores it.
@@ -180,7 +200,9 @@ struct PairInfo {
 };
 
 // What the engine tells its owner. ctx is passed back. Every call is from
-// poll(), on the loop, except bulkData, which pumpBulk() makes.
+// poll(), on the loop, except bulkData and bulkFinish (pumpBulk) and, when
+// the radio sorts bulk fragments to Io::recvBulk, bulkBegin (pumpRx): those
+// are the runner's.
 struct Events {
     void* ctx = nullptr;
     // A single-frame message, in order. Return false for "no room now": the
@@ -251,8 +273,10 @@ public:
     static constexpr uint32_t kPingMs        = 5000;
     static constexpr uint8_t  kPingMisses    = 3;
     static constexpr uint32_t kHostQuietMs   = 20000; // a host marks a peer down after this
-    static constexpr uint32_t kDwellMs       = 60;    // a peer's listen per channel while scanning
+    static constexpr uint32_t kDwellMs       = 20;    // a peer's listen per channel while scanning (bench)
     static constexpr uint32_t kSessIdleMs    = 120000;
+    static constexpr uint8_t  kTombs         = 8;     // closed sessions remembered, to re-ACK resends
+    static constexpr uint32_t kTombMs        = 30000; // for this long
     static constexpr uint32_t kPairResendMs  = 500;
 
     // bulkWin: fragments in the receive window (16 on a board without PSRAM).
@@ -269,9 +293,16 @@ public:
     void poll();
 
     // -- the runner -----------------------------------------------------------
+    // pumpRx: take up to maxFrames bulk fragments from Io::recvBulk, open
+    // them and put them in the bulk window, holding the lock a frame at a
+    // time. The runner's. True when it took any. Events that belong to the
+    // loop (a peer coming up, a refused message) wait for the next poll;
+    // bulkBegin is called here, on the runner.
+    bool pumpRx(uint16_t maxFrames);
     // pumpBulk: move a bulk message's received fragments, in order, into its
     // sink, and check its CRC-32 at the end. At most maxFrags a call. True
-    // while there is more it could do. The only call that is not the loop's.
+    // while there is more it could do. The runner's, and lock-free: it shares
+    // the window with the other side through atomics only.
     bool pumpBulk(uint16_t maxFrags);
     // bulkWaiting: whether pumpBulk has anything to do (for posting the job).
     bool bulkWaiting() const;
@@ -309,12 +340,12 @@ public:
         bool     keygen = false;
         uint8_t  from = 0;
         bool     ok = false;
-        uint8_t  np[16] = {}, nh[16] = {};
+        uint8_t  nh[16] = {};
         uint8_t  priv[linkcrypto::kPriv] = {};
         uint8_t  pubMine[linkcrypto::kPub] = {};
         uint8_t  pubTheirs[linkcrypto::kPub] = {};
-        uint8_t  key[linkcrypto::kKey] = {};
-        uint16_t code = 0;
+        uint8_t  secret[linkcrypto::kSecret] = {};
+        uint8_t  commit[16] = {};
     };
     bool pairComputeWanted() const;
     bool pairTake(PairJob& j);
@@ -328,6 +359,11 @@ public:
 
     // Peer: what it tells the host about itself in HELLO.
     void setIdentity(uint8_t kind, const char* fw, uint32_t families);
+    // Peer: rescan at once after three MAC failures in a row
+    // (Io::macFailStreak) instead of waiting out PING's misses: for a sender
+    // that sleeps between pictures (a camera satellite). Others keep PING
+    // every 5 s and three misses.
+    void setFastRescan(bool on) { fastRescan_ = on; }
 
     // -- sessions and messages -----------------------------------------------
     // openSession: a session id for talking to peer, 0 when none is free.
@@ -390,6 +426,7 @@ private:
     bool     queueCtrl(uint8_t pi, const Mac* to, uint8_t type, const uint8_t* p, size_t n,
                        bool sealed, uint16_t sess = 0);
     bool     buildAck(Sess& s, uint8_t* out, size_t& n);
+    void     flushAcks();
     // timers
     void     timers(uint32_t now);
     void     peerTimers(uint32_t now);
@@ -437,6 +474,23 @@ private:
     char        boardName_[17] = {};
     uint32_t    pairUntil_ = 0;
     std::atomic<bool> pumping_{ false };                 // pumpBulk is running
+    bool        onRunner_ = false;                       // inside pumpRx, under the lock
+    bool        fastRescan_ = false;
+    uint32_t    epoch_ = 0;                              // this end's boot epoch, random, never 0
+    // Events pumpRx raised on the runner, for the next poll to tell.
+    struct Deferred { uint8_t kind, peer, family, v; uint16_t sess; };
+    static constexpr uint8_t kDeferred = 24;
+    Deferred    deferred_[kDeferred] = {};
+    uint8_t     ndeferred_ = 0;
+    void        emit(uint8_t kind, uint8_t pi, uint16_t sess, uint8_t family, uint8_t v);
+    // Sessions closed here lately (closeAfter): a resend on one is ACKed
+    // again from its tombstone, never taken as a new session.
+    struct Tomb { bool used; uint8_t peer; uint16_t id; uint16_t expect; uint32_t at; };
+    Tomb        tombs_[kTombs] = {};
+    void        bury(const Sess& s, uint32_t now);
+    Tomb*       tombOf(uint8_t pi, uint16_t id, uint32_t now);
+    void        farRestarted(uint8_t pi);
+    void        deriveLink(bool host);
     uint8_t     frame_[kFrameMax];
     uint8_t     scratch_[kFrameMax];
 };

@@ -122,7 +122,11 @@ bool file(Writer& w, const char* rel, const char* desc) {
     if (fclose(w.f) != 0) ok = false;
     w.f = nullptr;
     char d[128], dst[256];
-    if (!ok || !rel || !*rel || strstr(rel, "..") || rel[0] == '/' || !dir(d, sizeof(d))) {
+    // A name from a satellite is data from the air: nothing that climbs out
+    // of the folder, and none of FAT's other separators (a backslash, or a
+    // colon naming a drive).
+    if (!ok || !rel || !*rel || strstr(rel, "..") || rel[0] == '/' || strpbrk(rel, "\\:") ||
+        !dir(d, sizeof(d))) {
         abandon(w);
         return false;
     }

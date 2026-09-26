@@ -82,6 +82,21 @@ check "it starts with the board" grep -q "hello: an external plugin, started" "$
 grep -q "hello: an external plugin, started" "$TMP/log" || tail -20 "$TMP/log"
 check "and the plugin table has room for it" bash -c "! grep -q 'more plugins than' '$TMP/log'"
 
+# PF_CORE on a plugin from its own repository buys it nothing: no flash.
+HELLO="$PROJ/ext/hello/bbs/hello.cpp"
+sed -i 's/"1.0.0", 0, 0, PF_ON,/"1.0.0", 0, 4096, PF_ON | PF_CORE,/' "$HELLO"
+make -s EXT=hello bbs_host_ext > /dev/null 2>&1
+timeout 4 ./bbs_host_ext "$DATA" "$PORT" > "$TMP/log" 2>&1
+check "one that claims PF_CORE still gets no flash" grep -q "hello wants storage on the board's flash" "$TMP/log"
+sed -i 's/"1.0.0", 0, 4096, PF_ON | PF_CORE,/"1.0.0", 0, 0, PF_ON,/' "$HELLO"
+
+# A name a shipped plugin has is refused: its section and folder are taken.
+sed -i 's/{ "hello", /{ "chat", /' "$HELLO"
+make -s EXT=hello bbs_host_ext > /dev/null 2>&1
+timeout 4 ./bbs_host_ext "$DATA" "$PORT" > "$TMP/log" 2>&1
+check "one named like a shipped plugin is not started" grep -q "a second plugin called chat" "$TMP/log"
+sed -i 's/{ "chat", /{ "hello", /' "$HELLO"
+
 # A plugin written for a newer core fails to compile, and says why.
 sed -i 's/UNLEASHED_PLUGIN_API(1, 0)/UNLEASHED_PLUGIN_API(1, 99)/' "$PROJ/ext/hello/bbs/hello.cpp"
 make -s EXT=hello bbs_host_ext > "$TMP/err" 2>&1
