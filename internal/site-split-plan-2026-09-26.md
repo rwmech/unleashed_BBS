@@ -59,7 +59,16 @@ Pages that do not sit cleanly: `/build` (a funnel with a from-source section; ke
 - "unleashedbbs.com lists them at /badges" (ANNOUNCE.md, system.cfg.example, announce.cpp comments) → 301 works; update to .net in the next batch.
 - `release.yml` notes `unleashedbbs.com/install`: still right.
 
-## 6. Droplet steps for Rob, in order
+## 6a. The one-command cutover (supersedes the manual steps below)
+
+The scripts are in `release-prep/cutover/`: `split-cutover.sh`, `split-finish.sh` and `split-rollback.sh`. Rob runs `sudo bash split-cutover.sh`.
+
+- The directory code comes from branch `origin/dirsplit` (`498811a`), never from main mid-run.
+- After the step 8 checks pass, the script waits for the agents to fast-forward origin/main to that commit. It then puts the checkout back on main, so update.sh's `git merge --ff-only @{u}` has nothing to do, and switches autopublish back on for both update.sh scripts.
+- `--dry-run` prints every command without running any.
+- Rollback: `sudo bash split-rollback.sh`.
+
+## 6. Droplet steps for Rob, in order (manual, kept for reference)
 
 `$DIRECTORY` is the directory checkout that autopublish runs (`systemctl cat unleashed-directory-update` shows it). Clone the new repos beside it. unleashed_site is private: the droplet needs a read-only deploy key for it, as the directory had before 1.0.0.
 
