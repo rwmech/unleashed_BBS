@@ -37,7 +37,7 @@
 
 #include <cstring>
 
-#include "mbedtls/ccm.h"
+#include "mbedtls/aes.h"
 #include "mbedtls/ecdh.h"
 #include "mbedtls/ecp.h"
 #include "mbedtls/md.h"
@@ -54,17 +54,76 @@ void nonce(uint8_t out[kNonce], uint8_t dir, uint32_t pn) {
     out[4] = static_cast<uint8_t>(pn >> 24);
 }
 
+// ---------------------------------------------------------------------------
+// CCM (RFC 3610 / NIST SP 800-38C), built from two whole-buffer AES calls.
+//
+// mbedtls_ccm drives the cipher a block at a time, and on the ESP32 every
+// block is one trip to the AES peripheral with its lock taken and given
+// back: the bench measured about 320 us for one 222-byte frame on an ESP32
+// and 1,000 us on an S3 (1.2.0, the camsat bench), against Rob's line of
+// 100 us for a frame on the loop. The same arithmetic as one CBC call for
+// the MAC and one CTR call for the keystream holds the peripheral once for
+// each. The output is byte for byte mbedtls_ccm's: host/test_link.cpp checks
+// it against mbedtls_ccm and against RFC 3610's packet vector 1.
+//
+// The frame's limits make the formatting fixed: a 13-byte nonce (so L = 2,
+// a 2-byte length), an 8-byte tag, associated data under 65,280 bytes (a
+// 2-byte length prefix), and a payload of at most kMaxSealed bytes.
+// ---------------------------------------------------------------------------
+namespace {
+
+constexpr size_t kMaxSealed = 240;       // a 222-byte payload, with room
+constexpr size_t kMaxAd     = 32;        // the link's is the 20-byte header
+
+// mac: the CBC-MAC over B0, the associated data and the plaintext.
+bool ccmMac(mbedtls_aes_context& aes, const uint8_t iv[kNonce], const uint8_t* ad, size_t adLen,
+            const uint8_t* pt, size_t n, uint8_t mac[16]) {
+    // B0 | len(ad) ad, zero-padded | plaintext, zero-padded
+    uint8_t buf[16 + 16 + kMaxAd + kMaxSealed + 16];
+    size_t k = 0;
+    buf[k++] = static_cast<uint8_t>((adLen ? 0x40 : 0) | (((kTag - 2) / 2) << 3) | (2 - 1));
+    memcpy(buf + k, iv, kNonce);
+    k += kNonce;
+    buf[k++] = static_cast<uint8_t>(n >> 8);
+    buf[k++] = static_cast<uint8_t>(n);
+    if (adLen) {
+        buf[k++] = static_cast<uint8_t>(adLen >> 8);
+        buf[k++] = static_cast<uint8_t>(adLen);
+        memcpy(buf + k, ad, adLen);
+        k += adLen;
+        while (k % 16) buf[k++] = 0;
+    }
+    memcpy(buf + k, pt, n);
+    k += n;
+    while (k % 16) buf[k++] = 0;
+    uint8_t chain[16] = {};
+    const bool ok = mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, k, chain, buf, buf) == 0;
+    memcpy(mac, buf + k - 16, 16);
+    mbedtls_platform_zeroize(buf, k);
+    return ok;
+}
+
+// ctr: the keystream from counter 0, applied to [mac block | data]: the
+// first block comes back as the tag, the rest as the other side's text.
+bool ccmCtr(mbedtls_aes_context& aes, const uint8_t iv[kNonce], uint8_t* block, size_t len) {
+    uint8_t ctr[16] = {};
+    uint8_t stream[16];
+    size_t off = 0;
+    ctr[0] = 2 - 1;                        // flags: L - 1
+    memcpy(ctr + 1, iv, kNonce);           // counter bytes 14-15 start at 0
+    const bool ok = mbedtls_aes_crypt_ctr(&aes, len, &off, ctr, stream, block, block) == 0;
+    mbedtls_platform_zeroize(stream, sizeof(stream));
+    return ok;
+}
+
+}  // namespace
+
 bool seal(const uint8_t key[kKey], uint8_t dir, uint32_t pn,
           const uint8_t* ad, size_t adLen, const uint8_t* pt, size_t n,
           uint8_t* ct, uint8_t tag[kTag]) {
     uint8_t iv[kNonce];
     nonce(iv, dir, pn);
-    mbedtls_ccm_context c;
-    mbedtls_ccm_init(&c);
-    bool ok = mbedtls_ccm_setkey(&c, MBEDTLS_CIPHER_ID_AES, key, 128) == 0 &&
-              mbedtls_ccm_encrypt_and_tag(&c, n, iv, kNonce, ad, adLen, pt, ct, tag, kTag) == 0;
-    mbedtls_ccm_free(&c);
-    return ok;
+    return ccmSeal(key, iv, ad, adLen, pt, n, ct, tag);
 }
 
 bool open(const uint8_t key[kKey], uint8_t dir, uint32_t pn,
@@ -72,11 +131,52 @@ bool open(const uint8_t key[kKey], uint8_t dir, uint32_t pn,
           uint8_t* pt, const uint8_t tag[kTag]) {
     uint8_t iv[kNonce];
     nonce(iv, dir, pn);
-    mbedtls_ccm_context c;
-    mbedtls_ccm_init(&c);
-    bool ok = mbedtls_ccm_setkey(&c, MBEDTLS_CIPHER_ID_AES, key, 128) == 0 &&
-              mbedtls_ccm_auth_decrypt(&c, n, iv, kNonce, ad, adLen, ct, pt, tag, kTag) == 0;
-    mbedtls_ccm_free(&c);
+    return ccmOpen(key, iv, ad, adLen, ct, n, pt, tag);
+}
+
+bool ccmSeal(const uint8_t key[kKey], const uint8_t iv[kNonce], const uint8_t* ad, size_t adLen,
+             const uint8_t* pt, size_t n, uint8_t* ct, uint8_t tag[kTag]) {
+    if (n > kMaxSealed || adLen > kMaxAd) return false;
+    mbedtls_aes_context aes;
+    mbedtls_aes_init(&aes);
+    uint8_t block[16 + kMaxSealed];
+    bool ok = mbedtls_aes_setkey_enc(&aes, key, 128) == 0 && ccmMac(aes, iv, ad, adLen, pt, n, block);
+    if (ok) {
+        memcpy(block + 16, pt, n);
+        ok = ccmCtr(aes, iv, block, 16 + n);
+    }
+    if (ok) {
+        memcpy(tag, block, kTag);
+        memcpy(ct, block + 16, n);
+    }
+    mbedtls_platform_zeroize(block, sizeof(block));
+    mbedtls_aes_free(&aes);
+    return ok;
+}
+
+bool ccmOpen(const uint8_t key[kKey], const uint8_t iv[kNonce], const uint8_t* ad, size_t adLen,
+             const uint8_t* ct, size_t n, uint8_t* pt, const uint8_t tag[kTag]) {
+    if (n > kMaxSealed || adLen > kMaxAd) return false;
+    mbedtls_aes_context aes;
+    mbedtls_aes_init(&aes);
+    uint8_t block[16 + kMaxSealed] = {};
+    uint8_t mac[16];
+    bool ok = mbedtls_aes_setkey_enc(&aes, key, 128) == 0;
+    if (ok) {
+        memcpy(block + 16, ct, n);         // block 0 stays zero: it comes back as S0
+        ok = ccmCtr(aes, iv, block, 16 + n);
+    }
+    if (ok) ok = ccmMac(aes, iv, ad, adLen, block + 16, n, mac);
+    if (ok) {
+        // Constant time: which byte differed says nothing to somebody forging.
+        uint8_t diff = 0;
+        for (size_t i = 0; i < kTag; ++i) diff |= static_cast<uint8_t>((mac[i] ^ block[i]) ^ tag[i]);
+        ok = diff == 0;
+    }
+    if (ok) memcpy(pt, block + 16, n);
+    mbedtls_platform_zeroize(block, sizeof(block));
+    mbedtls_platform_zeroize(mac, sizeof(mac));
+    mbedtls_aes_free(&aes);
     return ok;
 }
 

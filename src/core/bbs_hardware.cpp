@@ -65,6 +65,7 @@
 #include "../platform/platform.h"
 #include "../plugins/camera.h" // camera::running, camera::found (camera boards)
 #include "../plugins/lights.h" // lights::wired
+#include "../plugins/link.h"   // linkHwRow: the radio link (1.2.0)
 
 #include <cstdio>
 #include <cstring>
@@ -289,6 +290,16 @@ bool Bbs::hwRow(Session& s, uint8_t k, bool inSys) {
             }
             first = false;
             p = next;
+        }
+    }
+
+    // The unleashed link (1.2.0), for staff: on, its channel, its devices, and
+    // a warning when every pairing is taken. Nothing when the link is off.
+    if (staff) {
+        bool warn = false;
+        if (linkHwRow(val, sizeof(val), note, sizeof(note), warn) && here()) {
+            statRow(s, "Radio link", val, warn ? Color::Yellow : Color::LightGreen, note);
+            return true;
         }
     }
 
