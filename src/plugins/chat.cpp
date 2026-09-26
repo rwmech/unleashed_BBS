@@ -113,9 +113,17 @@ namespace {
 constexpr const char kName[]     = "chat";
 constexpr uint16_t   kHistDef    = 48;    // room buffer: nothing is dropped in practice
 constexpr uint16_t   kHistMin    = 8;
-constexpr uint16_t   kHistCeil   = 2000;  // 130 KB of line buffer: for a big board
+constexpr uint16_t   kHistCeil   = 2000;  // 182 KB of line buffer: for a big board
 constexpr uint8_t    kJoinShow   = 8;     // of those, how many a joiner is shown
-constexpr uint8_t    kLineMax    = 64;    // one chat line, fits 40 columns twice
+constexpr uint8_t    kLineMax    = 64;    // what a caller may type on one line
+// The longest tag a line carries: "#10:" + a whole handle + the rank mark.
+constexpr uint8_t    kTagMax     = 4 + BBS_USER_MAX + 1;
+static_assert(BBS_MAX_NODES < 100, "a line tag holds a two digit node");
+// A room line as the ring keeps it: the tag, a space and everything the
+// caller could type. It was kLineMax tag and all, so every reader got the
+// line short by its tag: 64 typed, 53 arrived for "#2:Rover2) ", 38 for a
+// long handle on node 10, and the sender's own copy stopped at 60 (1.1.2).
+constexpr uint8_t    kRoomLine   = kTagMax + 1 + kLineMax;
 constexpr uint8_t    kBurst      = 8;     // lines a caller may fire off at once
 constexpr uint16_t   kRateDef    = 80;    // lines a minute after that (see rate =)
 constexpr uint8_t    kSlots      = BBS_MAX_NODES + 2;   // nodes, sysop, busy line
@@ -199,7 +207,7 @@ static_assert(offsetof(MailRec, at) == 44,
 // when it stops, never in the BBS loop. history = in the config sizes it:
 // the stock ESP32 is happy with the default, a board with more RAM can hold
 // a whole evening of talk.
-using ChatLine = char[kLineMax + 1];
+using ChatLine = char[kRoomLine + 1];
 
 char     g_room[20] = "Main";
 
@@ -575,7 +583,7 @@ void interrupt(Session& s, Color c, const char* text) {
 // remember: keep the line for whoever joins next, and number it
 void remember(const char* line) {
     if (!g_hist) return;
-    snprintf(g_hist[g_histNext], kLineMax + 1, "%.*s", kLineMax, line);
+    snprintf(g_hist[g_histNext], kRoomLine + 1, "%.*s", kRoomLine, line);
     g_histNext = static_cast<uint16_t>((g_histNext + 1) % g_histMax);
     if (g_histCount < g_histMax) ++g_histCount;
     ++g_seq;
@@ -705,7 +713,10 @@ void roomRows(Session& s, const char* text, uint8_t first, uint8_t rest, codes::
     if (!any) s.term.nl(s.tl);
 }
 
-void showLine(Session& s, const char* line, bool old) {
+// lead: columns already printed on this row before the line, the P or P>
+// of a private, so the first row wraps where the reader's screen ends rather
+// than a character or two past it.
+void showLine(Session& s, const char* line, bool old, uint8_t lead = 0) {
     Term& t = s.term;
     Timeline& tl = s.tl;
     const char* colon = line[0] == '#' ? strchr(line, ':') : nullptr;
@@ -724,15 +735,28 @@ void showLine(Session& s, const char* line, bool old) {
         char plainText[160];
         codes::plain(line, plainText, sizeof(plainText));
         t.color(tl, g_cOld);
-        t.text(tl, plainText);
-        t.nl(tl);
+        // Wrapped at a word (1.1.2): a room line is up to 90 characters now,
+        // past 80, and the terminal's own wrap cut words in half. The plain
+        // wrap, not the code one: plainText has had its codes taken out, and
+        // an @@ in it is already a single @.
+        char row[160];
+        const char* p = plainText;
+        uint8_t guard = 0;
+        bool any = false;
+        while ((p = bbsu::wrap(p, row, sizeof(row), w)) != nullptr && ++guard < 8) {
+            t.text(tl, row);
+            t.nl(tl);
+            any = true;
+            if (!*p) break;
+        }
+        if (!any) t.nl(tl);
         return;
     }
     if (!mark) {                                             // a notice, or an action
         if (action) {
             codes::Painter pt;
             pt.begin(g_cAction, !s.bellOff);
-            roomRows(s, line, w, w, pt);
+            roomRows(s, line, w > lead + 8 ? static_cast<uint8_t>(w - lead) : w, w, pt);
             return;
         } else {
             t.color(tl, line[0] == '#' ? g_cText : g_cNotice);
@@ -750,7 +774,7 @@ void showLine(Session& s, const char* line, bool old) {
     // renderer then cut effects to a margin it believed in: a 40 column
     // reader lost the words inside an effect that crossed it, while an 80
     // column reader saw them (code review, 0.22.0).
-    uint8_t used = static_cast<uint8_t>(mark + 1 - line);
+    uint8_t used = static_cast<uint8_t>(lead + (mark + 1 - line));
     const char* text = mark + 1;
     // The space after the tag is printed here: the wrap skips leading
     // spaces, which is right for a continuation row and would have joined
@@ -803,6 +827,10 @@ void flush(Session& s) {
     if (s.tl.freeBytes() < 256) return;                      // slow line: next time
     const bool priv = inPrivate(s);
     while (s.ownerData < g_seq) {
+        // Room checked per line, not once (1.1.2): put() is all or nothing,
+        // so a line that did not fit was lost with its place already moved
+        // past it. What does not fit now waits for the next key or post.
+        if (s.tl.freeBytes() < 256) break;
         const char* line = lineAt(s.ownerData);
         ++s.ownerData;
         if (!line) continue;                                 // older than the buffer
@@ -2288,6 +2316,7 @@ void voteKick(Session& s, const char* arg, uint32_t now) {
 // ---------------------------------------------------------------------------
 bool roomCommand(Session& s, const char* p, uint32_t now) {
     char line[96], me[32], buf[64];
+    static_assert(sizeof(line) > kRoomLine, "a room line, whole");
     // The verb ends at a space OR at the first digit, so "/p1 hello" and
     // "/p 1 hello" are the same command. Rob: "We should not need a space
     // there, that applies to all / commands in chat." Every room command
@@ -2434,7 +2463,8 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
         // The node tag and rank bracket come off: an action is prose about
         // somebody, not a line they said, and the asterisks are what every
         // board has used to mark one since before IRC borrowed it.
-        snprintf(line, sizeof(line), "** %.20s %.44s **", s.user, arg);
+        // Whole (1.1.2): it was cut at 44, of the 60 a caller can type.
+        snprintf(line, sizeof(line), "** %.*s %.*s **", BBS_USER_MAX, s.user, kLineMax, arg);
         showLine(s, line, false);
         post(line, &s);
         armInput(s);
@@ -2529,7 +2559,7 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
             tell(s, Color::LightRed, "Too fast.");
         } else {
             tag(s, me, sizeof(me));
-            snprintf(line, sizeof(line), "%.28s %.60s", me, rest);
+            snprintf(line, sizeof(line), "%.*s %.*s", kTagMax, me, kLineMax, rest);
             wipeInput(*to);
             if (!to->bellOff) to->term.bell(to->tl);
             // P, not '>'. A letter says what it is without a key, and the
@@ -2537,7 +2567,7 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
             // elsewhere in the room.
             to->term.color(to->tl, g_cPmark);
             to->term.text(to->tl, "P");
-            showLine(*to, line, false);
+            showLine(*to, line, false, 1);
             restoreInput(*to);
             if (g_away[slotOf(*to)][0]) {
                 snprintf(buf, sizeof(buf), "%.20s is away: %.16s", to->user, g_away[slotOf(*to)]);
@@ -2545,17 +2575,19 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
             }
             if (g_sticky[slotOf(s)] == id) {
                 // In a stuck conversation the sender sees what they said, as
-                // a line of the conversation: P> and who it went to, then the
+                // a line of the conversation: P>, their own tag, then the
                 // words. A receipt per line ("--> /p to #2 sent." four times
                 // running) told them nothing the [>n] marker had not already
                 // said, and never showed the words, because the typing that
                 // would have shown them was wiped to make room for the receipt.
-                char them[32];
-                tag(*to, them, sizeof(them));
-                snprintf(line, sizeof(line), "%.28s %.60s", them, rest);
+                //
+                // Their OWN tag (1.1.2). It carried the partner's, so
+                // "P>#S:OpSys] my upload keeps failing" read as the sysop
+                // saying it; the [>n] marker already says who it went to.
+                // line still holds exactly that: the copy sent above.
                 s.term.color(s.tl, g_cPmark);
                 s.term.text(s.tl, "P>");
-                showLine(s, line, false);
+                showLine(s, line, false, 2);
             } else {
                 // The board confirming to the sender, so it carries the
                 // room's own marker and names the person as well as the node.
@@ -2809,7 +2841,7 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
 }
 
 void say(Session& s, const char* text, uint32_t now) {
-    char line[96], me[32];
+    char line[kRoomLine + 1], me[32];
     wipeInput(s);
     if (!plugins::mayUse(s, plugins::levelFor(g_index, 1))) {   // read-only in the room
         s.term.color(s.tl, Color::LightRed);
@@ -2830,7 +2862,8 @@ void say(Session& s, const char* text, uint32_t now) {
     }
     flush(s);                                                   // held while they typed, first
     tag(s, me, sizeof(me));
-    snprintf(line, sizeof(line), "%.28s %.60s", me, text);
+    // All of it (1.1.2): this was %.60s of the 64 they could type.
+    snprintf(line, sizeof(line), "%.*s %.*s", kTagMax, me, kLineMax, text);
     showLine(s, line, false);                                   // then their own line
     post(line, &s);
     armInput(s);

@@ -2530,9 +2530,9 @@ bool Bbs::rowLast(Session& s) {
     uint8_t i = s.listIdx++;
     if (i == 0) { rowTitle(s, "Last callers"); return true; }
     if (i == 1) {
-        if (wide && sysop) snprintf(buf, sizeof(buf), " %-20s N %-10s %-11s %4s %s", "Handle", "Terminal", "When", "Min", "IP");
-        else if (wide)     snprintf(buf, sizeof(buf), " %-20s N %-10s %-11s %4s", "Handle", "Terminal", "When", "Min");
-        else               snprintf(buf, sizeof(buf), " %-11s N %-11s %4s", "Handle", "When", "Min");
+        if (wide && sysop) snprintf(buf, sizeof(buf), " %-20s  N %-10s %-11s %4s %s", "Handle", "Terminal", "When", "Min", "IP");
+        else if (wide)     snprintf(buf, sizeof(buf), " %-20s  N %-10s %-11s %4s", "Handle", "Terminal", "When", "Min");
+        else               snprintf(buf, sizeof(buf), " %-11s  N %-11s %4s", "Handle", "When", "Min");
         rowText(s, Color::LightBlue, buf);
         return true;
     }
@@ -2556,15 +2556,17 @@ bool Bbs::rowLast(Session& s) {
 
         char when[16];
         clk::fmtEpoch(when, sizeof(when), "%m/%d %H:%M", r.start);
-        char node = (r.flags & CallRec::F_SYSOP) ? 'S' : static_cast<char>('0' + (r.node % 10));
+        // Two columns, as DASH draws a call (1.1.2): '0' + node % 10 listed
+        // node 10's calls as node 0. Widest row: 68 at 80 with the IP, 32 at 40.
+        NodeStr node = callNode(r);
         unsigned mins = static_cast<unsigned>((r.secs + 59u) / 60u);
         const char* term = Term::nameOf(static_cast<TermType>(r.term), static_cast<Charset>(r.charset));
         char h[24];
         char mk = markForFlags(r.flags);
         listHandle(h, sizeof(h), r.user, wide ? 20 : 11);
-        if (wide && sysop) snprintf(buf, sizeof(buf), "%c%-20.20s %c %-10.10s %-11s %4u %s", mk, h, node, term, when, mins, r.ip);
-        else if (wide)     snprintf(buf, sizeof(buf), "%c%-20.20s %c %-10.10s %-11s %4u", mk, h, node, term, when, mins);
-        else               snprintf(buf, sizeof(buf), "%c%-11.11s %c %-11s %4u", mk, h, node, when, mins);
+        if (wide && sysop) snprintf(buf, sizeof(buf), "%c%-20.20s %s %-10.10s %-11s %4u %s", mk, h, node.t, term, when, mins, r.ip);
+        else if (wide)     snprintf(buf, sizeof(buf), "%c%-20.20s %s %-10.10s %-11s %4u", mk, h, node.t, term, when, mins);
+        else               snprintf(buf, sizeof(buf), "%c%-11.11s %s %-11s %4u", mk, h, node.t, when, mins);
         rowText(s, Color::Grey, buf);
         return true;
     }

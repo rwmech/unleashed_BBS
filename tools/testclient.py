@@ -9956,6 +9956,161 @@ def test_room_narrow_effects():
     return ok
 
 
+def _flat(rows):
+    """Rendered rows run together, one space between words: a line the room
+    wrapped at a word reads back as the line that was typed."""
+    return re.sub(r"\s+", " ", " ".join(r.strip() for r in rows)).strip()
+
+
+def test_room_narrow_whole_line():
+    """What a caller may type arrives whole, for the sender and every reader
+    (1.1.2, F2 of the 1.3.0 spec work).
+
+    The room let an 80 column caller type 64 characters, echoed 60 of them
+    back, and stored the line in a 64 character ring slot tag and all, so
+    every other reader got 64 minus the tag: "how is the weather" arrived as
+    "how is". A 20 character handle is the long tag. /me had the same cut at
+    44 characters.
+    """
+    print("Chat room: a whole line arrives, at 40 and 80 columns")
+    text = "hello from the eighty column side of the room how is the weather"
+    act = "waves at everybody in the room and says the weather is fine!"
+    assert len(text) == 64 and len(act) == 60
+    w = ansi_login("Twentycharhandle1234")
+    n = ansi_login("NarrowWholeReader")
+    naws(n, 40, 25)
+    for x in (w, n):
+        x.send(b"chat\r")
+        x.wait_for(b"here.", 4)
+        x.pump(0.4)
+        x.buf.clear()
+    w.send(text.encode() + b"\r")
+    n.wait_for(b"weather", 6)
+    n.pump(0.8)
+    w.pump(0.4)
+    nrows = render_lines(n.buf, cols=40)
+    ok = check("a 40 column reader gets all 64 characters", text in _flat(nrows))
+    ok &= check("wrapped inside 39 columns",
+                max((len(r.rstrip()) for r in nrows), default=0) <= 39)
+    ok &= check("the sender sees all 64 of theirs",
+                text in _flat(render_lines(w.buf, cols=80)))
+    # History is replayed plain, and wrapped at a word the same way.
+    n.buf.clear()
+    n.send(b"/sh 1\r")
+    n.wait_for(b"weather", 4)
+    n.pump(0.5)
+    hrows = render_lines(n.buf, cols=40)
+    ok &= check("/sh replays it whole, wrapped inside 39",
+                text in _flat(hrows) and max((len(r.rstrip()) for r in hrows), default=0) <= 39)
+    n.buf.clear()
+    w.buf.clear()
+    w.send(b"/me " + act.encode() + b"\r")
+    n.wait_for(b"fine!", 6)
+    n.pump(0.8)
+    w.pump(0.4)
+    ok &= check("an action arrives whole too", act in _flat(render_lines(n.buf, cols=40)))
+    ok &= check("and the sender sees it whole", act in _flat(render_lines(w.buf, cols=80)))
+    w.close()
+    n.close()
+    return ok
+
+
+def test_room_private_own_tag():
+    """In a sticky private your own line carries your own tag (1.1.2, F3).
+
+    It printed P> and the PARTNER's tag in front of your words, so
+    "P>#S:OpSys] my upload keeps failing" read as the sysop saying it. The
+    P> marker stays; only the tag changes.
+    """
+    print("Chat room: your own private line is yours")
+    a = ansi_login("OwnTagAlpha")
+    b = ansi_login("OwnTagBravo")
+    na, nb = a.node(), b.node()
+    for x in (a, b):
+        x.send(b"chat\r")
+        x.wait_for(b"here.", 4)
+        x.pump(0.3)
+    a.send(f"/p{nb}*\r".encode())
+    a.wait_for(b"ends it", 4)
+    a.pump(0.4)
+    a.buf.clear()
+    b.buf.clear()
+    a.send(b"my upload keeps failing\r")
+    ok = check("the partner gets it", b.wait_for(b"keeps failing", 4))
+    a.pump(0.6)
+    mine = plain(a.buf)
+    ok &= check("the sender's copy carries the sender's tag",
+                f"P>#{na}:OwnTagAlpha) my upload keeps failing".encode() in mine)
+    ok &= check("not the partner's",
+                f"#{nb}:OwnTagBravo)".encode() not in mine)
+    ok &= check("the partner's copy is unchanged",
+                f"P#{na}:OwnTagAlpha) my upload keeps failing".encode() in plain(b.buf))
+    # At 40 columns the P and P> in front are counted, so the first row
+    # ends inside 39 rather than a column or two past it. The first two
+    # words fill exactly what the row has after the tag, which is where an
+    # uncounted P or P> pushed it to column 40 or 41.
+    cap = 39 - (len(f"#{na}:OwnTagAlpha)") + 1)
+    words = "w" * (cap - 6) + " " + "z" * 5 + " ok!"
+    for x in (a, b):
+        naws(x, 40, 25)
+        x.buf.clear()
+    a.send(words.encode() + b"\r")
+    b.wait_for(b"ok!", 4)
+    a.pump(0.6)
+    b.pump(0.3)
+    for who, x in (("sender", a), ("partner", b)):
+        rows = render_lines(x.buf, cols=40)
+        ok &= check(f"at 40 columns the {who}'s copy is whole and inside 39",
+                    words in _flat(rows) and max((len(r.rstrip()) for r in rows), default=0) <= 39)
+    a.close()
+    b.close()
+    return ok
+
+
+def test_last_node_ten():
+    """LAST writes node 10 as 10, not 0 (1.1.2, F4), at 40 and 80 columns.
+
+    It printed '0' + node % 10, the bug DASH had and lost with callNode.
+    """
+    print("LAST: two-digit nodes")
+    if MAX_NODES < 10:
+        print("  SKIP  this profile has fewer than ten nodes")
+        return True
+    fillers = [Caller(ansi=True) for _ in range(MAX_NODES - 1)]
+    time.sleep(0.5 + MAX_NODES * 0.05)       # every node has to finish detection
+    t = ansi_login("NodeTenCaller")
+    ok = check("the tenth caller is on node 10", t.node() == "10")
+    t.send(b"bye\r")
+    t.wait_closed(8)
+    t.close()
+    for f in fillers:
+        f.close()
+    time.sleep(0.5)
+    v = ansi_login("NodeTenViewer")
+    drain(v)
+    v.buf.clear()
+    v.send(b"last\r")
+    v.wait_for(b"NodeTenCaller", 4)
+    v.pump(0.6)
+    rows = render_lines(v.buf, cols=80)
+    ok &= check("at 80 columns the call is listed on node 10",
+                any(re.search(r"NodeTenCaller\s+10 ", r) for r in rows))
+    ok &= check("and every row fits 79", max((len(r.rstrip()) for r in rows), default=0) <= 79)
+    drain(v)
+    naws(v, 40, 25)
+    v.buf.clear()
+    v.send(b"last\r")
+    v.wait_for(b"NodeTenCall", 4)
+    v.pump(0.6)
+    rows = render_lines(v.buf, cols=40)
+    ok &= check("at 40 columns too",
+                any(re.search(r"NodeTenCall\s+10 ", r) for r in rows))
+    ok &= check("and every row fits 39", max((len(r.rstrip()) for r in rows), default=0) <= 39)
+    drain(v)
+    v.close()
+    return ok
+
+
 def test_long_help():
     """HELP <command> and /? <command>: one command in full."""
     print("Long help")
@@ -16385,7 +16540,7 @@ GROUPS = {
     # The shell, its lists and the screens the core draws.
     "shell":     ["menus", "sysinfo", "hardware", "page", "about", "config", "welcome", "paced", "seeded", "fx_codes",
                   "lights", "operator", "dash", "nodes_columns", "version_shown", "screens_command",
-                  "forms", "whois", "space_kept", "config_one_pass", "time_warn"],
+                  "forms", "whois", "space_kept", "config_one_pass", "time_warn", "last_node"],
     # Logging in, accounts, staff.
     "login":     ["accounts", "handle_case", "guest", "sysop", "cosysop", "user_admin", "first_setup", "ban",
                   "closed_configured", "closed_fresh", "setup_abort",
@@ -16421,6 +16576,7 @@ ORDER_NAMES = [
     "test_announce_badges", "test_announce_directory",
     "test_chat", "test_room_commands", "test_room_new_commands", "test_room_private", "test_room_quit_logoff",
     "test_room_time_staff_only", "test_time_warn_in_plugins", "test_bell", "test_codes_in_messages", "test_fx_codes", "test_room_narrow_effects",
+    "test_room_narrow_whole_line", "test_room_private_own_tag", "test_last_node_ten",
     "test_long_help",
     "test_info_pages",
     "test_mail", "test_prompt_survives_notice", "test_menus", "test_sysinfo", "test_hardware",

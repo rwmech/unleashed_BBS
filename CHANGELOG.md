@@ -24,6 +24,49 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.1.2-dev.5, 2026-09-26
+
+Three small fixes found by the 1.3.0 spec work, before 1.1.2's tag. Core
+only, so the board versions do not move. Host-tested; not yet on hardware.
+
+- **A room line arrives whole.** A caller may type 64 characters, but the
+  sender saw 60 of them back, and the ring that carries a line to everybody
+  else held 64 characters tag and all, so readers got the line short by its
+  tag: "how is the weather" arrived as "how is", and a 20 character handle
+  on node 10 left 38. A ring line is now the longest tag, a space and all 64
+  typed characters (90), wrapped at each reader's width as effects already
+  were. `/me` was cut at 44 of the 60 it can take and is whole too. The
+  ring is heap claimed when chat starts: 1,248 bytes more at the default 48
+  lines, up to 52 KB more at the 2,000 line ceiling. Static DRAM unchanged
+  on every board, off the ELF: WROOM 163,800, Freenove 175,320, ESP32-CAM
+  176,776, S3 253,872 of 341,760. Images +208, +16, +144 and +256 bytes.
+  On the camera boards the ring stays in internal RAM (it is under the
+  16 KB above which allocations go to PSRAM), so the ESP32-CAM, at about
+  9 KB free with the camera up, is where the 1,248 bytes are worth
+  watching.
+- **Your own private line carries your own tag.** In a sticky private
+  (`/p3*`, and every answered ring) your copy of what you said printed `P>`
+  and the other person's tag, so `P>#S:OpSys] my upload keeps failing` read
+  as the sysop saying it. It was a deliberate mirror in 0.21.8 ("the mirror
+  of the `P#1:...` the other side sees"); it is your tag now, and the `[>3]`
+  on the input line says who it went to. `P>` itself is unchanged. The `P`
+  and `P>` in front of a private are counted when the line wraps, so the
+  first row no longer runs a column or two past a 40 column screen.
+- **Held room lines are not lost to a full buffer.** Handing a caller the
+  lines said while they typed checked for room once, before the first, and
+  a line that did not fit was dropped with its place already passed. It
+  checks before each line now, and what does not fit waits for the next
+  key or post. Found by the code review; longer lines made it likelier.
+- **History is wrapped at a word.** Joining and `/sh` replay lines plain,
+  and with lines up to 90 characters the terminal's own wrap cut words in
+  half; they wrap at the reader's width now.
+- **LAST shows node 10 as 10.** It printed `'0' + node % 10`, so node 10's
+  calls were listed as node 0. Two columns now, as DASH draws a call; the
+  widest rows are 68 at 80 columns (with the IP) and 32 at 40.
+- Tests: `test_room_narrow_whole_line`, `test_room_private_own_tag` and
+  `test_last_node_ten`, each run against 1.1.2-dev.4 first and failing
+  there.
+
 ## 1.1.2-dev.4 (S3 1.1.3, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-26
 
 Part 2 of 1.1.2: the small printf, and DASH says how old its kept figures

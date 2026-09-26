@@ -1150,6 +1150,7 @@ this tree.
     plaintext `BUSY`; SNOOP across link kinds shows raw or doubled 0xFF.
     IDF 5.3.1's eventfd read never blocks (vfs_eventfd.c, event_read), so
     `wakeTake` in the loop is safe.
+- **1.1.2-dev.5 (rel-1.1.2d)**: a room line arrives whole (ring line = longest tag + 64, heap +1,248 at 48 lines, static DRAM unchanged), your own private line carries your tag, LAST prints node 10; squelch still reads one digit of a tag (`/sq 10` hides nothing), queued for 1.1.3.
 - **1.1.2, from the 1.1.1 bench check on the ESP32-CAM (2026-09-25)**.
   1.1.1 shipped on Rob's go before this check finished; the regression was
   clean (internal/regression-1.1.1-final-2026-09-25.md).

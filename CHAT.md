@@ -101,9 +101,9 @@ If the sysop answers, you stay in the room in a private conversation with the sy
 
 A line said in the room while your line is empty prints above the marker, and the marker comes back under it (1.1.0: it used to print after the marker, and a re-armed line could carry the marker twice).
 
-If they leave while you are stuck to them, the mode ends and **the line you were typing is not sent anywhere**. Falling back to the room would be precisely the accident the marker exists to prevent.
+If they leave while you are stuck to them, you are told (`They have left. /p* goes back to the room.`), the mode stays on until you say what next, and **the line you were typing is not sent anywhere**: pressing Enter on it answers "They have gone. That line was not sent." and puts you back in the room. Falling back to the room by itself would be precisely the accident the marker exists to prevent.
 
-A stuck line is the same code as a typed `/p`: the same `P` marker on their screen, the same away note back to you, the same rate limit, the same confirmation. Two send paths is how one of them ends up not checking something.
+A stuck line is the same code as a typed `/p`: the same `P` marker on their screen, the same away note back to you, the same rate limit. Two send paths is how one of them ends up not checking something. Where a plain `/p` confirms with `/p to #3:Daytona sent.`, a stuck one shows you your own words as a line of the conversation, `P>` and your own tag (`P>#1:Rover) hi`); the `[>3]` on the input line says who it went to. Until 1.1.2 that copy carried the other person's tag, so your words read as theirs.
 
 ### Squelch
 
@@ -222,7 +222,7 @@ It is deliberately **not** on everything:
 
 Colour names are the C64 palette: `black white red cyan purple green blue yellow orange brown ltred darkgrey grey ltgreen ltblue ltgrey`. A name the board does not know leaves that colour alone rather than blanking the screen.
 
-`history` is claimed once when the plugin starts and given back when it stops. The default costs about 3 KB; a board with more memory can raise it as far as 2000 lines and hold a whole evening. If the board cannot spare what was asked for, it falls back to the default and says so in the log.
+`history` is claimed once when the plugin starts and given back when it stops. A line is 91 bytes (the longest tag and all 64 characters a caller can type), so the default 48 costs about 4.4 KB; a board with more memory can raise it as far as 2000 lines and hold a whole evening. If the board cannot spare what was asked for, it falls back to the default and says so in the log.
 
 `CHATCLEAR` empties the room's memory. It needs the admin level.
 
