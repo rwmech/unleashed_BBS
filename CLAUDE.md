@@ -1209,6 +1209,21 @@ this tree.
       wiped to 1.1.2, the Freenove, the announce soak, logins at 70-105
       ms vs 50-69 on 1.1.1, the S3's heap with SSH on and off, and new
       connections after an upload.
+    - **Rule no. 1 finding from the S3 bench, a blocker until measured:**
+      with 2 callers on, every login is a slow pass (64-94 ms, rising as
+      the caller log fills), logoffs 55-186 ms, LAST 70-88 ms. Wrong
+      passwords are never slow, so it is not the hashing. The suspect is
+      the caller log read at login and written at logoff, not yet proven
+      (the console gives one "session" figure per pass). First job
+      tomorrow: split that figure, find the cost, fix it off the loop.
+    - Ordinary use was clean: 5 callers for 5 minutes, no slow pass,
+      echo p50 4 ms and p95 12 ms, internal heap low 49,439. SSH holds
+      about 110-200 bytes a connection plus its 16 KB task stack; the
+      rest is in PSRAM.
+    - Not benched yet: the Freenove on dev.5, upload and reconnect
+      checks, and the announce soak.
+    - PlatformIO cannot flash COM12 ("Wrong boot mode 0x8"); esptool
+      with `--before usb_reset` can.
     - Rob's go on the tag.
     - Rob's SSH client tests can follow the tag (the SSH is a preview).
   - **Site split:** live (directory 2.0.1, unleashed_site, docs).
