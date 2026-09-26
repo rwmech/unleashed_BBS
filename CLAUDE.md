@@ -751,6 +751,12 @@ this tree.
   carries ONLY that board's image set (so no other board's preview rules
   pick it up). The site lists it as a preview, and the profile merges into
   the next release.
+  **First, confirm the exact model from the board itself**: the silkscreen
+  (ask Rob for a photo of both sides), esptool's chip, flash and PSRAM
+  readout, and the vendor page that matches both. A product link alone is
+  not enough. On 2026-09-26 the Makerfabs board on COM18 was brought up
+  from the SPI TFT's schematic while it was the Parallel TFT v1.0, and the
+  screen stayed dark until a photo of the back showed it.
   **Boards are chosen to maximise what the BBS can do, not to work around
   vendor wiring** (Rob: "not work around dumb vendor BS"). Rejected on
   that ground: the KEYESTUDIO ESP32-S3 PRO (N16R8), whose on-board SD slot
