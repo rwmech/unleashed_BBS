@@ -309,12 +309,33 @@ def make_lanes(opts, plan, times):
                             fresh=True, why="fresh")
                 lane.est = est(t)
                 lanes.append(lane)
+        # A profile's tests on its own build, packed the same way as the
+        # rest, with the profile's NEEDS kept together. With a card too
+        # where PROFILE_CARD says the profile's tests use one (the S3's
+        # SSH YMODEM); the others were only ever run without.
         for board, tests in plan["profiles"].items():
             mine = [t for t in tests if t in sel]
-            if mine:
-                lane = Lane("n", sorted(mine, key=key), 1, board=board, why="profile " + board)
-                lane.est = sum(est(t) for t in mine)
-                lanes.append(lane)
+            if not mine:
+                continue
+            modes = opts.modes if board in plan.get("profile_card", []) else ["n"]
+            for mode in modes:
+                open_ = []
+                for c in sorted(clusters_of(mine, plan, False), key=lambda c: -sum(est(t) for t in c)):
+                    fast = 1 if (opts.fast <= 1 or any(t in realtime for t in c)) else opts.fast
+                    secs = sum(est(t) for t in c)
+                    open_.sort(key=lambda b: b[1])
+                    for b in open_:
+                        if b[2] == fast and b[1] + secs <= target:
+                            b[0].extend(c)
+                            b[1] += secs
+                            break
+                    else:
+                        open_.append([list(c), secs, fast])
+                for tests_, secs, fast in open_:
+                    lane = Lane(mode, sorted(tests_, key=key), fast, board=board,
+                                why="profile " + board)
+                    lane.est = secs
+                    lanes.append(lane)
     return lanes
 
 
@@ -322,9 +343,10 @@ def port_offsets():
     """Every offset from the harness port a test binds a copy at, each taken
     as a run of four: test_boot_hold binds base + 1 to base + 3 from its
     PORT + 3200, the only place a port is worked out from another."""
-    src = (TOOLS / "testclient.py").read_text(encoding="utf-8")
     offs = {0, 1000, 2000}                        # board, backup window, directory
-    offs.update(int(m) for m in re.findall(r"PORT\s*\+\s*(\d+)", src))
+    for f in ("testclient.py", "harness.sh"):     # harness.sh: the S3's ssh_port, PORT + 1500
+        src = (TOOLS / f).read_text(encoding="utf-8")
+        offs.update(int(m) for m in re.findall(r"PORT\s*\+\s*(\d+)", src))
     return sorted({o + k for o in offs for k in range(4)})
 
 
@@ -333,7 +355,7 @@ def slot_ports(n, block):
     that no port any lane on one worker can bind is a port a lane on another
     can. Ports belong to the worker, not the lane: only lanes running at the
     same moment can meet, and a worker runs one lane at a time. Fewer than n
-    when the block is full (29 fit in one with the offsets of 1.1.2)."""
+    when the block is full (27 fit in one with the offsets of 1.1.2-dev.3)."""
     lo, hi = block
     offs = port_offsets()
     span = offs[-1]
@@ -404,6 +426,8 @@ def build(boards):
     import fcntl
     import zlib
     targets = sorted({PROFILE_BIN[b] for b in boards})
+    if "s3" in boards:
+        targets.append("ssh_call")                # the S3's SSH tests call in with it
     t0 = time.time()
     lock = open("/tmp/bbs-parallel-build-%08x.lock" % zlib.crc32(str(ROOT).encode()), "w")
     fcntl.flock(lock, fcntl.LOCK_EX)
@@ -534,7 +558,7 @@ def main(argv):
     times = load_times()
     lanes = make_lanes(opts, plan, times)
     for i, lane in enumerate(sorted(lanes, key=lambda l: (l.mode, -l.est))):
-        lane.tag = "%s-%s%d" % (opts.tag, lane.mode if not lane.board else lane.board, i)
+        lane.tag = "%s-%s%d" % (opts.tag, lane.mode if not lane.board else lane.board + lane.mode, i)
 
     boards = {""} | {l.board for l in lanes}
     t_start = time.time()

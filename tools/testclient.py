@@ -799,6 +799,11 @@ class _SshPipe:
 class SshCaller(Caller):
     raw_link = True
 
+    def pump_some(self, secs):
+        # A pipe to ssh_call, not a socket to select on: the fixed pump, which
+        # the protocol clients looping on their own deadlines are fine with.
+        return self.pump(secs)
+
     def __init__(self, user="SshNobody", password=None, ansi=True, utf8=True, port=None,
                  resize=None, key=None, source=None, banner_first=False):
         import fcntl
@@ -15895,7 +15900,8 @@ def test_ssh_telnet_unchanged():
     c.close()
     q = Caller(ansi=True)
     ok &= check("a silent caller still gets the probe", q.wait_for(b"DETECTING TERMINAL", 5))
-    ok &= check("after the settle, as before", q.first_probe is not None and 0.25 <= q.first_probe < 1.5)
+    ok &= check("after the settle, as before",
+                q.first_probe is not None and board_secs(0.25) <= q.first_probe < 1.5)
     q.close()
     t = Caller(ansi=True, telnet=True)
     ok &= check("a telnet client that speaks first: the probe at once",
@@ -18499,10 +18505,17 @@ FRESH_TESTS = ["test_backup_published_default", "test_first_setup",
 # The board profiles and the tests written for each. They SKIP on the
 # reference board; parallel.py runs them again on the profile's own build.
 PROFILE_TESTS = {
-    "s3":     ["test_board_s3", "test_board_s3_silent"],
+    "s3":     ["test_board_s3", "test_board_s3_silent",
+               # SSH (1.1.2) is compiled into the S3 profile only.
+               "test_ssh_login", "test_ssh_new_caller", "test_ssh_resize", "test_ssh_host_keys",
+               "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
     "fncam":  ["test_board_fncam"],
     "espcam": ["test_board_espcam"],
 }
+# The profiles whose lanes also run with a card (harness.sh --board s3
+# --card --only=ssh is how SSH's YMODEM was tested).
+PROFILE_CARD = ["s3"]
 
 # Tests that time something against the board's clock and so cannot run on
 # the host's fast clock (BBS_FAST_TIMERS). On a fast board they SKIP, saying
@@ -18711,6 +18724,7 @@ if __name__ == "__main__":
             "alone": ALONE,
             "fresh": FRESH_TESTS,
             "profiles": PROFILE_TESTS,
+            "profile_card": PROFILE_CARD,
             "realtime": REALTIME,
             "needs": NEEDS,
         }))

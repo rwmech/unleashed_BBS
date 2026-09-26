@@ -253,6 +253,22 @@ python3 tools/testclient.py 127.0.0.1 6400 --backup  # add --slow for the 60 s h
 python3 tools/testclient.py 127.0.0.1 6400 --ban     # bans 127.0.0.1 for 15 min
 ```
 
+The suite is normally run through `tools/harness.sh`, which builds the host
+board, stands it up on a throwaway data directory and a port of its own, and
+runs the test client against it (WSL):
+
+```bash
+tools/harness.sh --jobs 24                        # everything, with and without a card: about 5 min
+tools/harness.sh --jobs 12 --only=messaging       # one group, both modes
+tools/harness.sh --jobs 16 --changed main..HEAD   # the groups a range touched
+tools/harness.sh --tag mine --card --only=forums  # one serial run, as before
+python3 tools/testtimes.py /tmp/bbs-jobs/out.txt  # the slowest tests
+```
+
+`--jobs` runs lanes side by side on boards of their own and on the host's
+fast clock (`BBS_FAST_TIMERS`, host build only); `tools/parallel.py` says
+how the lanes are made.
+
 - `make SAN=1` builds with AddressSanitizer and UBSan.
 - `BBS_BACKUP_TEST_OPEN=1` holds the backup button down, so the window opens as soon as the sysop logs in.
 - The same script runs against a board: `python3 tools/testclient.py <ip> 6400`. `--backup` there needs the bench build (`pio run -e esp32dev_backuptest -t upload`). Don't use `--ban` against a board, because it bans your own PC.
@@ -303,6 +319,9 @@ data/system.cfg.example   run-time settings template
 tools/mkscreens.py        regenerates the stock screens
 tools/pio_flashall.py     adds the flashall target
 tools/testclient.py       scripted callers
+tools/harness.sh          stands up a host board and runs the callers; --jobs for lanes
+tools/parallel.py         harness.sh --jobs: lanes, ports, the merged verdict
+tools/testtimes.py        the slowest tests, the check list, tools/test-times.txt
 host/                     Linux build of the same core
 ```
 

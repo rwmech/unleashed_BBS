@@ -864,6 +864,13 @@ this tree.
       replaced by waiting for the expected text;
     - each profile built once per run.
     Target: a patch's targeted run in minutes.
+    **Built on test-speed (2026-09-26, tools and host only, no firmware
+    change; `internal/test-speed-2026-09-26.md` has the figures).** The full
+    suite with and without a card, the four `--fresh` boards and every
+    profile (the S3 with SSH, with and without a card) is 5.1 min with
+    `harness.sh --jobs 24`, against 75.8 and 98.5 min serial. A group is
+    1.5 to 2.5 min. Per test: `tools/testtimes.py`, `tools/test-times.txt`.
+    `--solo` found two order dependencies (NEEDS in testclient.py).
   - Stays 1.2.0: silent assertions, the camera boards' PSRAM .bss move.
   - Parked: the badge pick-list.
 - **1.1.2 part 1 is built (1.1.2-dev.1, rel-1.1.2a, 2026-09-26), host-tested,
@@ -1974,6 +1981,29 @@ they are the process, and getting them wrong wastes Rob's time.
   argument in one line.
   **Stop editing once the full run starts.** A run against a tree that has
   moved is worse than no run, because it is reported as evidence.
+- **`harness.sh --jobs N` is the full run now** (1.1.2 test speed).
+  `tools/parallel.py` splits the selection (full, `--only`, `--changed`,
+  `--tests=a,b`) into lanes, each an ordinary harness run on a board of its
+  own, packed by the kept per-test times (`tools/test-times.txt`), N at a
+  time, with and without a card at once, plus a `--fresh` board for each
+  fresh test and each profile on its own build; one merged verdict and
+  `/tmp/bbs-<tag>/out.txt`. Within a lane ORDER_NAMES' order holds.
+  What a lane may not do to a test lives in testclient.py beside
+  ORDER_NAMES: `ALONE` (test_ban), `NEEDS` (a test that leans on another's
+  leftovers; the fix is a test that seeds its own), `REALTIME` (times real
+  seconds), `FRESH_TESTS`, `PROFILE_TESTS`/`PROFILE_CARD`. A new test that
+  starts a copy takes a `PORT + N` offset like the others: parallel.py reads
+  every one to keep workers' ports apart.
+  **Lanes run on the host's fast clock** (`BBS_FAST_TIMERS`, 4x;
+  `harness.sh --fast` for a serial run): `plat::millis`, the host's sleeps
+  and the simulated camera, never `plat::micros` (slow passes and the lag
+  tests) or `time()`. A check on a board timer compares against
+  `board_secs(s)`; a check on the wall goes in REALTIME with its reason.
+  `host/platform_host.cpp` only, so the board build is untouched (49 of 49
+  esp32dev objects identical on the day it was built).
+  Two `--jobs` runs at once each claim one of two port blocks; a third
+  waits. After adding tests, refresh the figures:
+  `python3 tools/testtimes.py --save tools/test-times.txt /tmp/bbs-<tag>/out.txt`.
 
 ## How work gets done (Rob, 2026-09-22)
 
@@ -2001,8 +2031,8 @@ approach everything seems to be haphazard as to how it gets fixed/done."
    owns copy and writes it against the historical references, not from
    memory of how BBSes sounded.
 5. **Full regressions are for checkpoints only.** A minor build gets a
-   focused run of the areas it touched (`--only=` with a group name, see
-   `tools/regress.sh --list`). The whole suite runs at a version boundary
+   focused run of the areas it touched (`--only=` with a group name, or
+   `--changed <range>`, both with `--jobs N` since 1.1.2). The whole suite runs at a version boundary
    or before a flash that matters. It is minutes long, so starting one and
    then continuing to edit produces a result for a tree that no longer
    exists, which happened three times in one afternoon.

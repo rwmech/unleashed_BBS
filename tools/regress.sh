@@ -64,6 +64,11 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # list at all.
 #
 # Each line: name | needs-card | --only argument
+# SUPERSEDED (1.1.2): tools/harness.sh --jobs N does what this set out to
+# do, with lanes packed by measured time, the order dependencies recorded
+# (NEEDS in testclient.py) and both card modes at once. It is the one to use;
+# this is kept for its area names. The note below is how it stood before.
+#
 # STATUS: targeted runs are reliable; a full parallel run is NOT yet a
 # substitute for the serial suite, and the reason is worth knowing.
 #

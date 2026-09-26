@@ -24,6 +24,32 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## Test speed (tools and the host build only), 2026-09-26
+
+No firmware change and no version of its own: every esp32dev application
+object is identical to 1.1.2-dev.3's, so the next build's entry takes these
+lines. `internal/test-speed-2026-09-26.md` has the figures.
+
+**Testing**
+- `tools/harness.sh --jobs N` runs the suite as lanes side by side
+  (`tools/parallel.py`), with and without a card at once, plus a `--fresh`
+  board for each fresh test and each board profile on its own build, and
+  merges one verdict. The full run is 5.1 minutes at 24 lanes, against 75.8
+  and 98.5 serial; a group is 1.5 to 2.5.
+- The host board's clock can run fast (`BBS_FAST_TIMERS`, `harness.sh
+  --fast`, on by default in `--jobs`): the busy countdown, the goodbye
+  linger, detection, idle and time warnings and heartbeats pass 4x quicker.
+  Loop timing and the wall clock stay real. Tests that time real seconds are
+  listed with their reasons (`REALTIME`) and run on a real clock.
+- Each profile is built once per `--jobs` run; lanes use `--no-build`.
+- Per-test times (`TEST`/`TIME` lines, `tools/testtimes.py`), exact
+  selection (`--tests=a,b`), and the lane rules beside ORDER_NAMES
+  (`ALONE`, `NEEDS`, `REALTIME`, `FRESH_TESTS`, `PROFILE_TESTS`).
+- The XMODEM and YMODEM test clients no longer wait a fixed tenth of a
+  second for every ACK: a 42 KB transfer took 35 s.
+- `login()` in the test client no longer takes the sign-up form's "Main"
+  for the prompt.
+
 ## 1.1.2-dev.3 (S3 1.1.3): SSH on the S3, a preview, 2026-09-26
 
 Part 3 of 1.1.2. The ESP32 images (the WROOM, the Freenove, the ESP32-CAM)
