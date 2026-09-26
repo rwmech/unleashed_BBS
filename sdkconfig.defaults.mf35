@@ -1,0 +1,63 @@
+# ===========================================================================
+#  unleashed BBS
+#  Electronic freedom on a microcontroller.
+# ===========================================================================
+#
+# File:         sdkconfig.defaults.mf35
+# Module:       Build / ESP-IDF defaults, Makerfabs ESP32-S3 Parallel TFT 3.5" layer
+#
+# Purpose:      What the Makerfabs ESP32-S3 Parallel TFT with Touch 3.5" build
+#               changes from sdkconfig.defaults and sdkconfig.defaults.esp32s3.
+#               platformio.ini names this file for the board's environments
+#               through SDKCONFIG_DEFAULTS (board_build.cmake_extra_args).
+#               IDF 5.3.1 still reads "<file>.<target>" after each file it is
+#               given (tools/cmake/kconfig.cmake), so the order is
+#               sdkconfig.defaults, sdkconfig.defaults.esp32s3, then this
+#               file, and a later value wins: this layer only undoes what the
+#               S3 layer wrote for the Waveshare stick.
+#
+#               The part (hardware v1.0): ESP32-S3-WROOM-1-N16R2 (read on the bench: "Embedded
+#               PSRAM 2MB (AP_3v3)", 16 MB quad flash), with a CP2104 bridge
+#               to UART0 as well as the chip's own USB. Sources are in
+#               src/board.h, BBS_BOARD_MF_S3PAR35.
+#
+#               PlatformIO keeps the generated sdkconfig.<env>, a value it
+#               already holds wins over this file, and it does not watch this
+#               file: delete sdkconfig.makerfabs_s3_par35* after editing here,
+#               and check the generated file. A value outside its Kconfig
+#               range is discarded, not clamped.
+#
+# Targets:      ESP32-S3 (ESP-IDF 5.3.1)
+# See also:     sdkconfig.defaults, sdkconfig.defaults.esp32s3, platformio.ini
+#
+# Copyright 2026 - Robert Mech
+# License:      GNU General Public License v3 or later
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 3 of the License, or (at your
+# option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program. If not, see <https://www.gnu.org/licenses/>. The full
+# text is in the LICENSE file at the top of this repository.
+# ===========================================================================
+
+# PSRAM: the N16R2's 2 MB is QUAD, on the flash's bus (26 to 32). The S3
+# layer's octal mode would find nothing, and would take 33 to 37, which are
+# this board's panel bus. 80 MHz as the S3 layer has it.
+CONFIG_SPIRAM_MODE_QUAD=y
+
+# The console on UART0, which the CP2104 carries to the USB-C port marked
+# USB-TTL: that is the port with auto-reset, the flashing port and Improv's port,
+# as on the WROOM. The S3 layer puts the console on the chip's own USB
+# because the Waveshare stick has no bridge. The IDF's default secondary
+# console, USB-Serial-JTAG output, stays: the board's other USB-C port then
+# shows the log too, and takes no input.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y

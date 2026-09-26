@@ -368,6 +368,14 @@ public:
     bool     crashBoot()  const { return bootCrash_; }
     uint8_t  peakNodes()  const { return peakNodes_; }
     uint16_t callsToday() const { return panelToday_; }
+    // takePanelTraffic: the lines that read or wrote bytes since the panel
+    // last asked, a bit per Session::id, and clears them: the big glass's
+    // pips. Its own bits, because takeTraffic clears on read for the lights.
+    uint16_t takePanelTraffic() {
+        const uint16_t m = panelMoved_;
+        panelMoved_ = 0;
+        return m;
+    }
 #endif
 
     // key dispatch target (public for the Term callback trampoline)
@@ -1110,6 +1118,7 @@ private:
     uint8_t   peakNodes_   = 0;      // most nodes busy at once since boot
 #ifdef BBS_HAS_LCD
     uint16_t  panelToday_  = 0;      // callsToday(), for the board's display
+    uint16_t  panelMoved_  = 0;      // takePanelTraffic()
 #endif
     uint16_t  callHours_[24] = {};   // CALLS: calls per hour of the day
     uint16_t  callsCounted_ = 0;     // records that went into callHours_

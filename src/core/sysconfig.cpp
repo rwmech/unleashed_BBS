@@ -272,7 +272,7 @@ bool pinExists(long pin) {
 // card slot, its PSRAM. Only a profile that names them has any, so the
 // reference board's rule is the chip's alone.
 #if defined(BBS_PINS_PSRAM) || defined(BBS_PINS_CONSOLE) || defined(BBS_PINS_CARD) || \
-    defined(BBS_PINS_CAMERA) || defined(BBS_PINS_STRAP)
+    defined(BBS_PINS_CAMERA) || defined(BBS_PINS_STRAP) || defined(BBS_PINS_LCDBUS)
 #define BBS_HAS_BOARD_PINS 1
 struct BoardPins { const int8_t* pins; uint8_t count; const char* problem; const char* sentence; };
 #ifdef BBS_PINS_PSRAM
@@ -289,6 +289,9 @@ constexpr int8_t kPinsCamera[]  = { BBS_PINS_CAMERA };
 #endif
 #ifdef BBS_PINS_STRAP
 constexpr int8_t kPinsStrap[]   = { BBS_PINS_STRAP };
+#endif
+#ifdef BBS_PINS_LCDBUS
+constexpr int8_t kPinsLcdBus[]  = { BBS_PINS_LCDBUS };
 #endif
 #define BBS_PINROW(a, p, s) { a, static_cast<uint8_t>(sizeof(a)), p, s }
 // Both columns fit a form's status line: a core key shows the problem
@@ -308,6 +311,9 @@ constexpr BoardPins kBoardPins[] = {
 #endif
 #ifdef BBS_PINS_STRAP
     BBS_PINROW(kPinsStrap,   "a strapping pin, low at boot",        "That is a strapping pin."),
+#endif
+#ifdef BBS_PINS_LCDBUS
+    BBS_PINROW(kPinsLcdBus,  "that pin is the panel's data bus",    "That pin is the panel's data bus."),
 #endif
 };
 #undef BBS_PINROW
@@ -856,9 +862,10 @@ void normaliseHostname(char* v) {
 //   26 to 32  the flash and the PSRAM's shared bus (SPICS1, SPIHD, SPIWP,
 //             SPICS0, SPICLK, SPIQ, SPID; ESP32-S3 datasheet table 2-14)
 //   33 to 37  octal PSRAM's DQ4 to DQ7 and DQS, on an R8 like the Waveshare
-//             stick's. Refused on every S3 build: the one S3 board this
-//             firmware knows has octal PSRAM, and a quad part that frees
-//             them is a board profile's business when one arrives
+//             stick's. Refused on every S3 build whose profile does not
+//             say BBS_PSRAM_QUAD: a quad part (the Makerfabs Parallel TFT
+//             v1.0's N16R2) leaves them free, and that board's panel bus
+//             is on them
 //   19, 20    the chip's own USB. On a board with no USB-serial bridge it is
 //             the only way in, and a pin taken from it makes the board
 //             vanish from the computer until it is put into download mode
@@ -868,7 +875,12 @@ void normaliseHostname(char* v) {
 // board itself owns (kBoardPins, above gpio()).
 const char* pinProblem(long pin) {
     if (pin == -1) return nullptr;                   // "none", in every pin key's range
-#ifdef BBS_CHIP_S3
+#if defined(BBS_CHIP_S3) && defined(BBS_PSRAM_QUAD)
+    // Quad PSRAM shares the flash's pins, and 33 to 37 are free on the part
+    // (board.h, BBS_PSRAM_QUAD): a board profile may use them.
+    if (pin >= 26 && pin <= 32) return "pins 26-32 are the flash and PSRAM";
+    if (pin == 19 || pin == 20) return "pins 19 and 20 are the USB port";
+#elif defined(BBS_CHIP_S3)
     if (pin >= 26 && pin <= 37) return "pins 26-37 are the flash and PSRAM";
     if (pin == 19 || pin == 20) return "pins 19 and 20 are the USB port";
 #else
@@ -889,7 +901,11 @@ const char* pinSentence(long pin) {
         if (const BoardPins* b = boardPin(pin)) return b->sentence;
     }
 #endif
-#ifdef BBS_CHIP_S3
+#if defined(BBS_CHIP_S3) && defined(BBS_PSRAM_QUAD)
+    if (pin >= 26 && pin <= 32) return "Pins 26 to 32 are flash and PSRAM.";
+    if (pin == 19 || pin == 20) return "Pins 19 and 20 are the USB port.";
+    return "This chip has no such pin.";
+#elif defined(BBS_CHIP_S3)
     if (pin >= 26 && pin <= 37) return "Pins 26 to 37 are flash and PSRAM.";
     if (pin == 19 || pin == 20) return "Pins 19 and 20 are the USB port.";
     return "This chip has no such pin.";

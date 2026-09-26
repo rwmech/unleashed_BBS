@@ -1229,6 +1229,44 @@ as 0.24.0, except the parts that need bench time.
   care about". The DDNS name was left alone because Rob publishes it in
   the directory.
 
+## The Makerfabs ESP32-S3 Parallel TFT 3.5" v1.0 (MF35 1.0.0, 2026-09-26)
+
+A board lane of its own (branch board-mf35 from v1.1.1, worktree
+release-prep/wt-mf35), shipped as a board pre-release `v1.1.1-mf35.1`
+carrying only its `esp32s3-mf35` set. Profile `BBS_BOARD_MF_S3PAR35`, env
+`makerfabs_s3_par35`, on COM18 on the bench.
+
+- **Gate 1 was first done for the wrong product.** Makerfabs sell an "SPI
+  TFT" and a "Parallel TFT", both 3.5" ILI9488, both S3, and the board on
+  the bench was the Parallel one. The SPI profile was built, flashed and
+  gave a dark glass; Rob's photo of the silkscreen settled it. Read the
+  board's own silkscreen (a photo) before the vendor's product page.
+- **A vendor schematic can carry another chip's pin names.** Makerfabs'
+  v1.0 schematic draws the S3 module with an ESP32-S2-SOLO symbol, so the
+  nets "IO33/DB0" and "IO34/LCD_RD" are really the S3's IO47 and IO48. Built
+  from the netlist alone, D0 was on the wrong pin, every init command
+  arrived with bit 0 missing, and the panel stayed white. Makerfabs' own
+  firmware for that revision (firmware/SD16_3.5, 2022) drives D0 on 47 and
+  RD on 48, and their v2.0 schematic renames exactly those nets. Rule for
+  every new board: cross-check the schematic's pins against the vendor's
+  shipped firmware or example for the same revision, and treat a mismatch as
+  the schematic being wrong until proven otherwise.
+- **Revisions change the PSRAM and the pins.** v1.0 is an N16R2 (quad) with
+  WR, D/C and CS on IO35 to 37, octal PSRAM's pins: fine on quad
+  (`BBS_PSRAM_QUAD` lets pinProblem pass 33 to 37). v2.0, what Makerfabs
+  sell now, is an N16R8 (octal) with those three moved to 18, 17 and 46 and
+  its Mabee GPIO moved onto the native USB pins. Different image; not built
+  (Rob's call pending, no v2.0 on the bench).
+- The glass sits the other way round against its board from the
+  Waveshare's, so `BBS_LCD_PLUG_SCANS` maps CONFIG's "USB plug" words to the
+  panel's turns. Plug up and down were seen on the glass; left and right
+  (the portraits) were not.
+- The 480 x 320 status skin is tty-ux's spec
+  (`internal/tty-ux-panel-mf35-2026-09-26.md`), compiled only where
+  `BBS_LCD_RAM_LONG >= 400`, so the Waveshare's image carries none of it.
+  JPEG machine skins from the card are the next step in this lane, on the
+  skins engineer's `skin.h`.
+
 **Agents render pages with the Chrome command line only** (`--headless=new`,
 `--screenshot` or `--dump-dom`, a profile in the scratchpad). Never with
 playwright, selenium or puppeteer. Two automation sessions put windows

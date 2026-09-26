@@ -86,8 +86,11 @@
 #include <new>
 #endif
 #ifdef BBS_HAS_LCD
-#include "esp_lcd_panel_io.h"            // the panel: esp_lcd over SPI
+#include "esp_lcd_panel_io.h"            // the panel: esp_lcd over SPI or i80
 #include "esp_lcd_io_spi.h"
+#ifdef BBS_LCD_I80
+#include "esp_lcd_io_i80.h"              // a parallel panel (board.h, BBS_LCD_I80)
+#endif
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_st7789.h"
 #include "esp_lcd_panel_commands.h"
@@ -1294,11 +1297,13 @@ uint8_t pixelsFrame(uint8_t out, uint8_t* rgb, uint8_t cap) {
 
 #ifdef BBS_HAS_LCD
 // ===========================================================================
-// The panel (BBS_HAS_LCD): an ST7789 through the IDF's esp_lcd, on SPI3.
+// The panel (BBS_HAS_LCD) through the IDF's esp_lcd: an ST7789 on SPI3 (the
+// Waveshare), or an ILI9488 on a 16-bit i80 parallel bus, the S3's LCD_CAM
+// peripheral (the Makerfabs Parallel TFT, BBS_LCD_I80).
 //
 // SPI3 because the SD card's SPI mode takes SPI2 (SDSPI_DEFAULT_HOST), and
 // the S3 has exactly those two for general use; Waveshare's demo puts the
-// panel on SPI3 as well.
+// panel on SPI3 as well. The i80 bus shares nothing with either.
 //
 // Never waiting in the loop. esp_lcd sends colour data as a queued DMA
 // transaction and returns, but the address commands in front of it are
@@ -1308,19 +1313,38 @@ uint8_t pixelsFrame(uint8_t out, uint8_t* rgb, uint8_t cap) {
 // internal DMA memory, allocated here at begin, because the SPI driver
 // copies anything it cannot DMA from (PSRAM, where the framebuffer is) into
 // a buffer it allocates per transaction, which would be heap in the loop.
+// The i80 path keeps the same staging buffer, for the same reason and so the
+// two paths send a band the same way.
 // ===========================================================================
+#if defined(BBS_LCD_ILI9488) && !defined(BBS_LCD_I80)
+#error "the ILI9488 is driven on a 16-bit i80 bus only (board.h, BBS_LCD_I80)"
+#endif
 namespace {
 
+#ifdef BBS_LCD_I80
+// A band: 12 rows of a 480-pixel line, RGB565 as the framebuffer holds it
+// (COLMOD 0x55 over 16 bits), 11.25 KB of internal DMA memory. About 0.3 ms on
+// the bus at a 20 MHz WR clock, one per plugin tick.
+constexpr uint32_t kBandPixels = 480u * 12u;
+constexpr uint32_t kBpp        = 2u;
+#else
 // A band: 16 rows of a 320-pixel line, 10 KB. About 8 ms on the wire at
 // 10 MHz and 2 ms at 40, one per plugin tick.
 constexpr uint32_t kBandPixels = 320u * 16u;
+constexpr uint32_t kBpp        = 2u;
+#endif
 
 struct Lcd {
     esp_lcd_panel_io_handle_t io     = nullptr;
-    esp_lcd_panel_handle_t    panel  = nullptr;
-    uint16_t*                 stage  = nullptr;
+    esp_lcd_panel_handle_t    panel  = nullptr;   // the ST7789's esp_lcd driver; unused for the ILI9488
+#ifdef BBS_LCD_I80
+    esp_lcd_i80_bus_handle_t  i80    = nullptr;   // the parallel bus
+#endif
+    uint8_t*                  stage  = nullptr;   // kBandPixels x kBpp bytes
+    bool                      up     = false;     // set up and on: bands may be drawn
     bool                      busUp  = false;
     bool                      blUp   = false;
+    int8_t                    blPin  = -1;      // the backlight's pin while blUp
     volatile bool             busy   = false;   // a band is on the wire
     LcdCfg                    cfg;
 };
@@ -1337,7 +1361,30 @@ bool lcdDone(esp_lcd_panel_io_handle_t, esp_lcd_panel_io_event_data_t*, void*) {
 // generic ST7789 init sends only sleep-out, MADCTL, COLMOD and RAMCTRL, which
 // lights the panel with the controller's defaults; these are what the panel
 // maker tuned it to. Register values, sent as the demo sends them.
-struct LcdInit { uint8_t cmd; uint8_t n; uint8_t data[14]; };
+struct LcdInit { uint8_t cmd; uint8_t n; uint8_t data[15]; };
+#ifdef BBS_LCD_ILI9488
+// The ILI9488's own settings after its software reset: the gamma curves,
+// power, VCOM, interface, frame rate, inversion, display function, entry
+// mode and adjust control. The values the common ILI9488 drivers send for a
+// TN glass like this one (the IDF component registry's atanisoft/
+// esp_lcd_ili9488 "default" table, which Makerfabs' own IDF board support
+// uses for their ILI9488 boards, and LovyanGFX's Panel_ILI9488, which their
+// Parallel TFT demos run). Register values as they send them; MADCTL and
+// COLMOD follow in lcdBegin.
+const LcdInit kLcdInit[] = {
+    { 0xE0, 15, { 0x00, 0x03, 0x09, 0x08, 0x16, 0x0A, 0x3F, 0x78, 0x4C, 0x09, 0x0A, 0x08, 0x16, 0x1A, 0x0F } },
+    { 0xE1, 15, { 0x00, 0x16, 0x19, 0x03, 0x0F, 0x05, 0x32, 0x45, 0x46, 0x04, 0x0E, 0x0D, 0x35, 0x37, 0x0F } },
+    { 0xC0, 2,  { 0x17, 0x15 } },                                     // power control 1
+    { 0xC1, 1,  { 0x41 } },                                           // power control 2
+    { 0xC5, 3,  { 0x00, 0x12, 0x80 } },                               // VCOM
+    { 0xB0, 1,  { 0x00 } },                                           // interface mode: SDO on
+    { 0xB1, 1,  { 0xA0 } },                                           // frame rate, 60 Hz
+    { 0xB4, 1,  { 0x02 } },                                           // inversion: 2-dot
+    { 0xB6, 3,  { 0x02, 0x02, 0x3B } },                               // display function
+    { 0xB7, 1,  { 0xC6 } },                                           // entry mode
+    { 0xF7, 4,  { 0xA9, 0x51, 0x2C, 0x02 } },                         // adjust control 3
+};
+#else
 const LcdInit kLcdInit[] = {
     { 0xB2, 5,  { 0x0C, 0x0C, 0x00, 0x33, 0x33 } },                   // porch
     { 0xB7, 1,  { 0x75 } },                                           // gate voltages
@@ -1351,12 +1398,21 @@ const LcdInit kLcdInit[] = {
     { 0xE0, 14, { 0xD0, 0x0D, 0x14, 0x0D, 0x0D, 0x09, 0x38, 0x44, 0x4E, 0x3A, 0x17, 0x18, 0x2F, 0x30 } },
     { 0xE1, 14, { 0xD0, 0x09, 0x0F, 0x08, 0x07, 0x14, 0x37, 0x44, 0x4D, 0x38, 0x15, 0x16, 0x2C, 0x2E } },
 };
+#endif
 
 void lcdBlSet(uint8_t pct) {
-    if (!g_lcd.blUp) return;
+    if (!g_lcd.blUp) {
+        log("panel: backlight asked for %u%%, but it has no pin running", static_cast<unsigned>(pct));
+        return;
+    }
     uint32_t duty = pct >= 100 ? 8191u : static_cast<uint32_t>(pct) * 8191u / 100u;
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+    // Said on the console at every change (start, silent, a CONFIG save:
+    // never per frame), with the duty given to the LEDC, so a dark glass can
+    // be told from a backlight that was never asked for.
+    log("panel: backlight gpio %d at %u%%, PWM duty %u of 8191, active high", g_lcd.blPin,
+        static_cast<unsigned>(pct), static_cast<unsigned>(duty));
 }
 
 bool lcdFail(char* err, size_t n, const char* why, esp_err_t e) {
@@ -1366,6 +1422,39 @@ bool lcdFail(char* err, size_t n, const char* why, esp_err_t e) {
     return false;
 }
 
+#ifdef BBS_LCD_ILI9488
+// iliMadctl: the ILI9488's MADCTL for a rotation and the glass's mirror, the
+// same four turns and the same mirror rule as the ST7789 path below (and as
+// panelgfx::scanFor works them out): MY 0x80, MX 0x40, MV 0x20, BGR 0x08.
+uint8_t iliMadctl(const LcdCfg& c) {
+    bool swap = false, mx = false, my = false;
+    switch (c.rotation) {
+        case 90:  swap = true;  mx = true;  break;
+        case 180: mx = true;    my = true;  break;
+        case 270: swap = true;  my = true;  break;
+        default:  break;
+    }
+    if (c.mirror) {
+        if (swap) my = !my;
+        else      mx = !mx;
+    }
+    return static_cast<uint8_t>((my ? 0x80 : 0) | (mx ? 0x40 : 0) | (swap ? 0x20 : 0) | (c.bgr ? 0x08 : 0));
+}
+
+// iliWindow: the column and row addresses of a rectangle, the gaps added.
+esp_err_t iliWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+    const uint16_t x0 = static_cast<uint16_t>(x + g_lcd.cfg.xoff), x1 = static_cast<uint16_t>(x0 + w - 1);
+    const uint16_t y0 = static_cast<uint16_t>(y + g_lcd.cfg.yoff), y1 = static_cast<uint16_t>(y0 + h - 1);
+    const uint8_t ca[4] = { static_cast<uint8_t>(x0 >> 8), static_cast<uint8_t>(x0), static_cast<uint8_t>(x1 >> 8),
+                            static_cast<uint8_t>(x1) };
+    const uint8_t ra[4] = { static_cast<uint8_t>(y0 >> 8), static_cast<uint8_t>(y0), static_cast<uint8_t>(y1 >> 8),
+                            static_cast<uint8_t>(y1) };
+    esp_err_t e = esp_lcd_panel_io_tx_param(g_lcd.io, 0x2A, ca, 4);        // CASET
+    if (e == ESP_OK) e = esp_lcd_panel_io_tx_param(g_lcd.io, 0x2B, ra, 4); // RASET
+    return e;
+}
+#endif
+
 }   // namespace
 
 bool lcdBegin(const LcdCfg& c, char* err, size_t errLen) {
@@ -1373,13 +1462,50 @@ bool lcdBegin(const LcdCfg& c, char* err, size_t errLen) {
     if (err && errLen) err[0] = '\0';
     esp_err_t e;
 
+#ifdef BBS_LCD_I80
+    // The i80 bus: WR is LcdCfg's mosi and RD its sclk (board.h). RD is only
+    // for reading the panel, which nothing does: held high, idle.
+    if (c.sclk >= 0) {
+        gpio_config_t g = {};
+        g.pin_bit_mask = 1ULL << c.sclk;
+        g.mode = GPIO_MODE_OUTPUT;
+        gpio_config(&g);
+        gpio_set_level(static_cast<gpio_num_t>(c.sclk), 1);
+    }
+    esp_lcd_i80_bus_config_t bus = {};
+    static const int kData[] = { BBS_LCD_DATA_PINS };
+    static_assert(sizeof(kData) / sizeof(kData[0]) == 16, "a 16-bit bus names sixteen data pins");
+    bus.dc_gpio_num = static_cast<gpio_num_t>(c.dc);
+    bus.wr_gpio_num = static_cast<gpio_num_t>(c.mosi);
+    bus.clk_src     = LCD_CLK_SRC_DEFAULT;
+    for (int i = 0; i < 16; ++i) bus.data_gpio_nums[i] = static_cast<gpio_num_t>(kData[i]);
+    bus.bus_width          = 16;
+    bus.max_transfer_bytes = kBandPixels * kBpp;
+    e = esp_lcd_new_i80_bus(&bus, &g_lcd.i80);
+    if (e != ESP_OK) return lcdFail(err, errLen, "the parallel bus would not start: check the pins", e);
+    g_lcd.busUp = true;
+
+    esp_lcd_panel_io_i80_config_t io = {};
+    io.cs_gpio_num       = static_cast<gpio_num_t>(c.cs);
+    io.pclk_hz           = static_cast<uint32_t>(c.mhz) * 1000u * 1000u;
+    io.trans_queue_depth = 2;
+    io.on_color_trans_done = lcdDone;
+    io.lcd_cmd_bits      = 8;
+    io.lcd_param_bits    = 8;
+    io.dc_levels.dc_idle_level  = 0;
+    io.dc_levels.dc_cmd_level   = 0;
+    io.dc_levels.dc_dummy_level = 0;
+    io.dc_levels.dc_data_level  = 1;
+    e = esp_lcd_new_panel_io_i80(g_lcd.i80, &io, &g_lcd.io);
+    if (e != ESP_OK) return lcdFail(err, errLen, "the panel would not take the parallel bus", e);
+#else
     spi_bus_config_t bus = {};
     bus.mosi_io_num     = c.mosi;
     bus.miso_io_num     = -1;
     bus.sclk_io_num     = c.sclk;
     bus.quadwp_io_num   = -1;
     bus.quadhd_io_num   = -1;
-    bus.max_transfer_sz = static_cast<int>(kBandPixels * 2u);
+    bus.max_transfer_sz = static_cast<int>(kBandPixels * kBpp);
     e = spi_bus_initialize(SPI3_HOST, &bus, SPI_DMA_CH_AUTO);
     if (e != ESP_OK) return lcdFail(err, errLen, "the SPI bus would not start: check the pins", e);
     g_lcd.busUp = true;
@@ -1395,7 +1521,40 @@ bool lcdBegin(const LcdCfg& c, char* err, size_t errLen) {
     io.lcd_param_bits    = 8;
     e = esp_lcd_new_panel_io_spi(static_cast<esp_lcd_spi_bus_handle_t>(SPI3_HOST), &io, &g_lcd.io);
     if (e != ESP_OK) return lcdFail(err, errLen, "the panel would not take the SPI bus", e);
+#endif
 
+#ifdef BBS_LCD_ILI9488
+    // No esp_lcd driver for the ILI9488 in IDF 5.3.1, and only a handful of
+    // commands are needed, so they are sent here. A reset pin when there is
+    // one, else the software reset (this board's RESET is the chip's EN).
+    // The reset, sleep-out and display-on waits are the datasheet's (5 ms
+    // after a reset before a command, 120 ms before sleep-out, 5 ms after
+    // it): this is a plugin's start, never the loop.
+    if (c.rst >= 0) {
+        gpio_config_t g = {};
+        g.pin_bit_mask = 1ULL << c.rst;
+        g.mode = GPIO_MODE_OUTPUT;
+        gpio_config(&g);
+        gpio_set_level(static_cast<gpio_num_t>(c.rst), 0);
+        vTaskDelay(pdMS_TO_TICKS(10));
+        gpio_set_level(static_cast<gpio_num_t>(c.rst), 1);
+    } else {
+        e = esp_lcd_panel_io_tx_param(g_lcd.io, 0x01, nullptr, 0);         // SWRESET
+        if (e != ESP_OK) return lcdFail(err, errLen, "the panel did not answer its reset", e);
+    }
+    vTaskDelay(pdMS_TO_TICKS(120));
+    for (const LcdInit& in : kLcdInit) {
+        e = esp_lcd_panel_io_tx_param(g_lcd.io, in.cmd, in.data, in.n);
+        if (e != ESP_OK) return lcdFail(err, errLen, "the panel refused its settings", e);
+    }
+    const uint8_t mad = iliMadctl(c), colmod = 0x55;                      // RGB565 over 16 bits
+    e = esp_lcd_panel_io_tx_param(g_lcd.io, 0x36, &mad, 1);                 // MADCTL
+    if (e == ESP_OK) e = esp_lcd_panel_io_tx_param(g_lcd.io, 0x3A, &colmod, 1);   // COLMOD
+    if (e == ESP_OK) e = esp_lcd_panel_io_tx_param(g_lcd.io, c.invert ? 0x21 : 0x20, nullptr, 0);
+    if (e == ESP_OK) e = esp_lcd_panel_io_tx_param(g_lcd.io, 0x11, nullptr, 0);   // SLPOUT
+    if (e != ESP_OK) return lcdFail(err, errLen, "the panel refused its settings", e);
+    vTaskDelay(pdMS_TO_TICKS(120));
+#else
     esp_lcd_panel_dev_config_t pc = {};
     pc.reset_gpio_num = c.rst;
     pc.rgb_ele_order  = c.bgr ? LCD_RGB_ELEMENT_ORDER_BGR : LCD_RGB_ELEMENT_ORDER_RGB;
@@ -1437,8 +1596,9 @@ bool lcdBegin(const LcdCfg& c, char* err, size_t errLen) {
     esp_lcd_panel_swap_xy(g_lcd.panel, swap);
     esp_lcd_panel_mirror(g_lcd.panel, mx, my);
     esp_lcd_panel_set_gap(g_lcd.panel, c.xoff, c.yoff);
+#endif
 
-    g_lcd.stage = static_cast<uint16_t*>(heap_caps_malloc(kBandPixels * 2u, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+    g_lcd.stage = static_cast<uint8_t*>(heap_caps_malloc(kBandPixels * kBpp, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
     if (!g_lcd.stage) return lcdFail(err, errLen, "no DMA memory for the panel's band", ESP_ERR_NO_MEM);
 
     // The backlight, on LEDC at 5 kHz as the demo runs it. Only once the
@@ -1456,21 +1616,35 @@ bool lcdBegin(const LcdCfg& c, char* err, size_t errLen) {
         ch.channel    = LEDC_CHANNEL_0;
         ch.timer_sel  = LEDC_TIMER_0;
         ch.duty       = 0;
-        if (ledc_timer_config(&t) == ESP_OK && ledc_channel_config(&ch) == ESP_OK) g_lcd.blUp = true;
-        else log("panel: the backlight on gpio %d would not start", c.bl);
+        if (ledc_timer_config(&t) == ESP_OK && ledc_channel_config(&ch) == ESP_OK) {
+            g_lcd.blUp  = true;
+            g_lcd.blPin = c.bl;
+        } else {
+            log("panel: the backlight on gpio %d would not start", c.bl);
+        }
     }
+#ifdef BBS_LCD_ILI9488
+    esp_lcd_panel_io_tx_param(g_lcd.io, 0x29, nullptr, 0);                // DISPON
+#else
     esp_lcd_panel_disp_on_off(g_lcd.panel, true);
+#endif
     g_lcd.cfg  = c;
     g_lcd.busy = false;
+    g_lcd.up   = true;
     lcdBlSet(c.backlight);
-    log("panel: ST7789 %ux%u, rotation %u, %u MHz, on SPI3", static_cast<unsigned>(c.width),
+#ifdef BBS_LCD_I80
+    log("panel: %s %ux%u, rotation %u, %u MHz, on a 16-bit parallel bus", BBS_LCD_DRIVER,
+        static_cast<unsigned>(c.width),
+#else
+    log("panel: %s %ux%u, rotation %u, %u MHz, on SPI3", BBS_LCD_DRIVER, static_cast<unsigned>(c.width),
+#endif
         static_cast<unsigned>(c.height), static_cast<unsigned>(c.rotation), static_cast<unsigned>(c.mhz));
     return true;
 }
 
 bool lcdSame(const LcdCfg& c) {
     const LcdCfg& o = g_lcd.cfg;
-    return g_lcd.panel && o.mosi == c.mosi && o.sclk == c.sclk && o.cs == c.cs && o.dc == c.dc &&
+    return g_lcd.up && o.mosi == c.mosi && o.sclk == c.sclk && o.cs == c.cs && o.dc == c.dc &&
            o.rst == c.rst && o.bl == c.bl && o.width == c.width && o.height == c.height &&
            o.xoff == c.xoff && o.yoff == c.yoff && o.rotation == c.rotation &&
            o.invert == c.invert && o.bgr == c.bgr && o.mirror == c.mirror && o.mhz == c.mhz;
@@ -1480,29 +1654,46 @@ void lcdEnd() {
     if (g_lcd.blUp) {
         lcdBlSet(0);
         ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
-        g_lcd.blUp = false;
+        g_lcd.blUp  = false;
+        g_lcd.blPin = -1;
     }
     if (g_lcd.panel) {
         esp_lcd_panel_disp_on_off(g_lcd.panel, false);   // waits out a band in flight
         esp_lcd_panel_del(g_lcd.panel);
         g_lcd.panel = nullptr;
     }
+#ifdef BBS_LCD_ILI9488
+    if (g_lcd.io && g_lcd.up) {
+        // A command waits out a band in flight, as the ST7789 path's does.
+        esp_lcd_panel_io_tx_param(g_lcd.io, 0x28, nullptr, 0);            // DISPOFF
+        esp_lcd_panel_io_tx_param(g_lcd.io, 0x10, nullptr, 0);            // SLPIN
+    }
+#endif
     if (g_lcd.io) {
         esp_lcd_panel_io_del(g_lcd.io);
         g_lcd.io = nullptr;
     }
     if (g_lcd.busUp) {
+#ifdef BBS_LCD_I80
+        esp_lcd_del_i80_bus(g_lcd.i80);
+        g_lcd.i80 = nullptr;
+        // RD was a plain output held high: give it back, or a pin moved in
+        // CONFIG leaves the old one driven.
+        if (g_lcd.cfg.sclk >= 0) gpio_reset_pin(static_cast<gpio_num_t>(g_lcd.cfg.sclk));
+#else
         spi_bus_free(SPI3_HOST);
+#endif
         g_lcd.busUp = false;
     }
     heap_caps_free(g_lcd.stage);
     g_lcd.stage = nullptr;
+    g_lcd.up    = false;
     g_lcd.busy  = false;
     g_lcd.cfg   = LcdCfg();
 }
 
 bool lcdReady() {
-    return g_lcd.panel && g_lcd.stage && !g_lcd.busy;
+    return g_lcd.up && g_lcd.stage && !g_lcd.busy;
 }
 
 uint32_t lcdBandPixels() {
@@ -1512,13 +1703,23 @@ uint32_t lcdBandPixels() {
 bool lcdDraw(const uint16_t* fb, uint16_t stride, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     if (!lcdReady() || !fb || !w || !h) return false;
     if (static_cast<uint32_t>(w) * h > kBandPixels) return false;
-    uint16_t* out = g_lcd.stage;
+    uint16_t* out = reinterpret_cast<uint16_t*>(g_lcd.stage);
     for (uint16_t r = 0; r < h; ++r) {
         memcpy(out, fb + static_cast<size_t>(y + r) * stride + x, static_cast<size_t>(w) * 2u);
         out += w;
     }
+#ifdef BBS_LCD_ILI9488
+    // The framebuffer's RGB565 as it sits in memory: on the 16-bit bus a
+    // pixel is one WR cycle, its low byte on D0 to D7, which is the ILI9488's
+    // 16-bit RGB565 order (D15 to D11 red).
+    if (iliWindow(x, y, w, h) != ESP_OK) return false;
+    g_lcd.busy = true;
+    esp_err_t e = esp_lcd_panel_io_tx_color(g_lcd.io, 0x2C, g_lcd.stage,                 // RAMWR
+                                            static_cast<size_t>(w) * h * kBpp);
+#else
     g_lcd.busy = true;
     esp_err_t e = esp_lcd_panel_draw_bitmap(g_lcd.panel, x, y, x + w, y + h, g_lcd.stage);
+#endif
     if (e != ESP_OK) {
         g_lcd.busy = false;
         return false;

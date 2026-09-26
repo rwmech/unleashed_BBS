@@ -46,6 +46,9 @@ sdkconfig.*
 !sdkconfig.defaults.fncam
 # The AI-Thinker ESP32-CAM's layer, named to it in platformio.ini (1.1.1).
 !sdkconfig.defaults.espcam
+# The Makerfabs Parallel TFT 3.5" layers, v1.0 and v2.0 (MF35, 1.1.1).
+!sdkconfig.defaults.mf35
+!sdkconfig.defaults.mf35v2
 include/secrets.h
 data/system.cfg
 data/calls.log
@@ -65,6 +68,8 @@ host/bbs_host
 host/bbs_host_s3
 host/bbs_host_fncam
 host/bbs_host_espcam
+host/bbs_host_mf35
+host/bbs_host_mf35v2
 # Every compiled test, by pattern rather than by name. Naming them one
 # at a time meant test_wrap's binary was committed the day it was
 # written, 72 KB of build output in the tree, and nothing noticed

@@ -135,16 +135,55 @@ bool hostPanelShot(const char* path);
 int hostLcdBacklight();
 #endif
 
+// The big glass (480 x 320, the Makerfabs Parallel TFT): its layout, fields
+// and figures are compiled only for a profile whose controller is that big,
+// so the Waveshare's image carries none of it
+// (internal/tty-ux-panel-mf35-2026-09-26.md, the status skin).
+#define PANEL_BIG (BBS_LCD_RAM_LONG >= 400)
+
 namespace {
 
 constexpr const char kName[] = "panel";
 
-// The ST7789's RAM: 240 x 320, or 320 x 240 once the axes are swapped. A
-// window past its edge would wrap into the far side of the glass.
-constexpr uint16_t kRamShort = 240, kRamLong = 320;
+// The controller's RAM: the ST7789's 240 x 320, or the profile's (board.h:
+// the ILI9488's 320 x 480), and the other way round once the axes are
+// swapped. A window past its edge would wrap into the far side of the glass.
+constexpr uint16_t kRamShort = BBS_LCD_RAM_SHORT, kRamLong = BBS_LCD_RAM_LONG;
 
 constexpr char kColours[]   = "RGB|BGR";
+// Where the USB plug is, as CONFIG names it, to the turn that puts it there
+// (panel_gfx.h, Orient). The same on the Waveshare, whose words are its
+// glass's own; a board whose glass sits otherwise maps them (board.h).
+#ifdef BBS_LCD_PLUG_SCANS
+constexpr uint8_t kPlugScan[ORIENTS] = { BBS_LCD_PLUG_SCANS };
+#else
+constexpr uint8_t kPlugScan[ORIENTS] = { ORIENT_UP, ORIENT_LEFT, ORIENT_RIGHT, ORIENT_DOWN };
+#endif
+// The first two pins: the SPI's data and clock, or on a parallel panel
+// (board.h, BBS_LCD_I80) its write and read strobes. The keys say which, so a
+// system.cfg for one bus never sets the other's.
+#ifdef BBS_LCD_I80
+constexpr char kPin1Key[]   = "pin1_wr";
+constexpr char kPin2Key[]   = "pin2_rd";
+constexpr bool kPin2Optional = true;        // RD may be tied high
+#else
+constexpr char kPin1Key[]   = "pin1_mosi";
+constexpr char kPin2Key[]   = "pin2_sclk";
+constexpr bool kPin2Optional = false;
+#endif
+// The bus clock's choices. The ILI9488's i80 write cycle is 30 ns at the
+// least, 33 MHz, so a parallel panel stops at 20, Makerfabs' own figure.
+#ifdef BBS_LCD_I80
+constexpr char kClocks[]    = "10|20";
+constexpr char kClockLabel[] = "Bus MHz";
+constexpr char kClockWide[]  = "WR clock, MHz";
+constexpr uint16_t kClockMax = 20;
+#else
 constexpr char kClocks[]    = "10|20|40";
+constexpr char kClockLabel[] = "SPI MHz";
+constexpr char kClockWide[]  = "SPI clock, MHz";
+constexpr uint16_t kClockMax = 40;
+#endif
 
 constexpr uint32_t kTextMs    = 500;      // figures recomposed twice a second
 constexpr uint32_t kStripMs   = 40;       // the LEDs and the dot, 25 frames a second
@@ -193,7 +232,13 @@ uint16_t*      g_fb      = nullptr;
 size_t         g_fbSize  = 0;
 Canvas         g_canvas;
 Layout         g_layout;
+#if PANEL_BIG
+DirtyCheap     g_dirty;                     // a full queue merges its cheapest pair
+BigLayout      g_big;                       // the big glass's own rectangles
+bool           g_bigOn = false;             // this glass takes the big layout
+#else
 Dirty          g_dirty;
+#endif
 uint32_t       g_bands   = 0;               // bands sent since start, for PANEL
 
 // What each field last drew: its words (what PANEL prints), then \x1F and
@@ -201,7 +246,12 @@ uint32_t       g_bands   = 0;               // bands sent since start, for PANEL
 // list slot). Only a change is redrawn. A leading 0x01 can never match a
 // real key, which is how "draw it again" is said.
 constexpr size_t kKey = 80;
-char           g_shown[F_COUNT][kKey];
+#if PANEL_BIG
+constexpr uint8_t kFields = F_BIG_COUNT;
+#else
+constexpr uint8_t kFields = F_COUNT;
+#endif
+char           g_shown[kFields][kKey];
 
 // The strip as it was last drawn.
 uint16_t       g_ledCol[plat::kPixelMax];
@@ -312,8 +362,8 @@ bool yes(const char* v) {
 
 void readKey(void* ctx, const char* key, const char* v) {
     (void)ctx;
-    if      (!strcmp(key, "pin1_mosi")) pinKey(g_cfg.mosi, key, v, false);
-    else if (!strcmp(key, "pin2_sclk")) pinKey(g_cfg.sclk, key, v, false);
+    if      (!strcmp(key, kPin1Key)) pinKey(g_cfg.mosi, key, v, false);
+    else if (!strcmp(key, kPin2Key)) pinKey(g_cfg.sclk, key, v, kPin2Optional);
     else if (!strcmp(key, "pin3_cs"))   pinKey(g_cfg.cs,   key, v, true);
     else if (!strcmp(key, "pin4_dc"))   pinKey(g_cfg.dc,   key, v, false);
     else if (!strcmp(key, "pin5_rst"))  pinKey(g_cfg.rst,  key, v, true);
@@ -341,9 +391,9 @@ void readKey(void* ctx, const char* key, const char* v) {
     }
     else if (!strcmp(key, "spi_mhz")) {
         uint16_t m = g_cfg.mhz;
-        numKey(m, key, v, 10, 40);
-        if (m == 10 || m == 20 || m == 40) g_cfg.mhz = static_cast<uint8_t>(m);
-        else plat::log("panel: spi_mhz = %s is not 10, 20 or 40", v);
+        numKey(m, key, v, 10, kClockMax);
+        if (m == 10 || m == 20 || (m == 40 && kClockMax >= 40)) g_cfg.mhz = static_cast<uint8_t>(m);
+        else plat::log("panel: spi_mhz = %s is not one of %s", v, kClocks);
     }
     else if (!strcmp(key, "backlight")) {
         uint16_t b = g_cfg.backlight;
@@ -386,7 +436,9 @@ const char* fits(const plat::LcdCfg& c) {
 // picture's size, the gaps and the rotation the platform sets MADCTL from.
 plat::LcdCfg turned() {
     plat::LcdCfg r = g_cfg;
-    const Scan s = scanFor(g_orient, g_cfg.mirror, g_cfg.width, g_cfg.height, g_cfg.xoff, g_cfg.yoff);
+    const Scan s = scanFor(kPlugScan[g_orient < ORIENTS ? g_orient : 0], g_cfg.mirror, g_cfg.width,
+                           g_cfg.height, g_cfg.xoff, g_cfg.yoff,
+                           kRamShort, kRamLong);
     r.rotation = s.rotation;
     r.width    = s.w;
     r.height   = s.h;
@@ -405,15 +457,23 @@ void invalidate() {
 
 // changed: the field's key is new. Stores it, so the caller draws once.
 // A field with no box on this glass is never drawn.
+// boxOf: a field's box on this glass: the big layout's where it applies.
+Rect boxOf(uint8_t f) {
+#if PANEL_BIG
+    if (g_bigOn) return bigFieldBox(g_big, g_layout, f);
+#endif
+    return f < F_COUNT ? fieldBox(g_layout, f) : Rect();
+}
+
 bool changed(uint8_t f, const char* key) {
-    if (!strcmp(g_shown[f], key)) return false;
+    if (f >= kFields || !strcmp(g_shown[f], key)) return false;
     snprintf(g_shown[f], sizeof(g_shown[f]), "%s", key);
-    return !empty(fieldBox(g_layout, f));
+    return !empty(boxOf(f));
 }
 
 // begin: clear a field's box to its background and queue it.
 void begin(uint8_t f, uint16_t bg) {
-    const Rect r = fieldBox(g_layout, f);
+    const Rect r = boxOf(f);
     fill(g_canvas, r, bg);
     g_dirty.add(r);
 }
@@ -449,6 +509,15 @@ void dotDraw(int x) {
     dot(g_canvas, x, y, kWhite);
 }
 
+#if PANEL_BIG
+// The big glass's parts (below, after refreshText) that the shared drawing
+// above calls into.
+void bigBackdrop();
+void bigSlotTick(uint32_t now);
+void bigDbm(int rssi, uint32_t now);
+void refreshBig(uint32_t now);
+#endif
+
 // redrawAll: the whole glass from nothing: the header's two rows, the rail,
 // the rules, and every field and LED redrawn on the next pass.
 void redrawAll() {
@@ -460,6 +529,9 @@ void redrawAll() {
     fill(g_canvas, L.colRule, kRule);
     fill(g_canvas, L.rule1, kRule);
     fill(g_canvas, L.rule2, kRule);
+#if PANEL_BIG
+    if (g_bigOn) bigBackdrop();
+#endif
     if (g_dotX >= g_canvas.w) g_dotX = 0;
     dotDraw(g_dotX);
     invalidate();
@@ -503,6 +575,9 @@ void pageText(uint8_t page, uint32_t now, char* out, size_t n, uint16_t& col) {
 // live ring holds the slot on who is ringing, and when it ends the
 // rotation starts again from the name.
 void slotTick(uint32_t now) {
+#if PANEL_BIG
+    if (g_bigOn) { bigSlotTick(now); return; }
+#endif
     char buf[64];
     if (const char* who = Bbs::instance().ringing()) {
         char h[BBS_USER_MAX * 2 + 1];
@@ -587,6 +662,9 @@ void antTick(uint32_t now) {
     if (g_rssiAt && now - g_rssiAt < kRssiMs) return;
     g_rssiAt = now ? now : 1;
     const int rssi = plat::wifiRssi();
+#if PANEL_BIG
+    if (g_bigOn) bigDbm(rssi, now);
+#endif
     const bool joined = rssi != 0;
     const int h = signalFill(rssi);
     const uint16_t col = signalColour(rssi);
@@ -917,11 +995,417 @@ void refreshText(uint32_t now) {
     drawGlyphs(s);
 
     drawClock();
+#if PANEL_BIG
+    if (g_bigOn) { refreshBig(now); return; }
+#endif
     drawHead(b.publicBusy(), b.publicNodes());
     drawLists(now, on);
     if (g_todayDay && clk::dayKey(now) != g_todayDay) { g_today = 0; g_todayDay = 0; }
     drawSys(g_heapK, g_today, b.peakNodes());
 }
+
+#if PANEL_BIG
+// ===========================================================================
+// The big glass: the status skin (internal/tty-ux-panel-mf35-2026-09-26.md,
+// part 1). The Waveshare's header, glyphs, antenna, clock, track and LEDs,
+// drawn by the code above; here the rest: the board's name, the two-page
+// slot, the band's word, the dBm figure, the fixed node board, the calls and
+// the recent list, the traffic sweep and the six system cells. Every figure
+// is one already in RAM, recomposed with the rest twice a second, and
+// redrawn only when its words change.
+// ===========================================================================
+constexpr uint32_t kSampleMs = 4000;      // a column of the sweep
+constexpr uint32_t kIdleMs   = 300000;    // doing goes faint, as DASH greys idle
+constexpr uint32_t kDbmMs    = 1000;      // the dBm figure, at most once a second
+constexpr uint32_t kDotMs    = 80;        // the dot: 2 px a step here, not 1 per 40 ms
+
+uint8_t   g_gIn[kGraphCols];                // the sweep's heights, in and out
+uint8_t   g_gOut[kGraphCols];
+uint8_t   g_gHead = 0;                      // the column the next sample draws
+uint32_t  g_gAt = 0, g_gIn0 = 0, g_gOut0 = 0;   // last sample's time and totals
+uint32_t  g_rateIn = 0, g_rateOut = 0;      // bytes a second, that sample
+int8_t    g_rssiRing[4] = {};               // the antenna's last four, for dBm
+uint8_t   g_rssiN = 0, g_rssiK = 0;
+uint32_t  g_dbmAt = 0;
+int16_t   g_slotW = 0;                      // the slot's text width as last sent
+uint32_t  g_dotAt = 0;
+uint16_t  g_moved = 0;                      // lines that moved bytes, a bit per Session::id
+
+// graphColumn: one column of the sweep from the ring; blank leaves only the
+// axis, the gap ahead of the head that says where "now" is.
+void graphColumn(int col, bool blank) {
+    const Rect& g = g_big.graph;
+    if (empty(g) || col < 0 || col >= g.w) return;
+    const int x = g.x + col;
+    fill(g_canvas, R(x, g.y, 1, g.h), kBg);
+    dot(g_canvas, x, g_big.axis, kRule);
+    if (blank) return;
+    if (g_gIn[col])  fill(g_canvas, R(x, g_big.axis - g_gIn[col], 1, g_gIn[col]), kDial);
+    if (g_gOut[col]) fill(g_canvas, R(x, g_big.axis + 1, 1, g_gOut[col]), kLive);
+}
+
+// bigBackdrop: the big glass's still parts, from redrawAll: its rules and
+// the whole sweep, put back from the ring after silent mode or a restart.
+void bigBackdrop() {
+    fill(g_canvas, g_big.colRule, kRule);
+    fill(g_canvas, g_big.midRule, kRule);
+    fill(g_canvas, g_big.foot, kRule);
+    // A rule in the air between the sysop's line and node 1, so S reads as a
+    // line apart from the ten the heading counts.
+    const Rect& s0 = g_big.row[0];
+    fill(g_canvas, R(s0.x, s0.y + s0.h + 1, s0.w, 1), kRule);   // y 85, midway in the 4 px of air
+    const int cols = g_big.graph.w;
+    for (int c = 0; c < cols; ++c)
+        graphColumn(c, c == (g_gHead) % cols || c == (g_gHead + 1) % cols);
+    g_slotW = g_big.slot.w;                           // the first slot draw sends the lot
+}
+
+// graphSample: every 4 s, the bytes a second in and out since the last, as
+// one column at the head and two blank ones ahead of it: one rectangle of
+// 3 x 56, or two where it wraps. A sweep, never a scroll.
+void graphSample(uint32_t now) {
+    if (g_gAt && now - g_gAt < kSampleMs) return;
+    Bbs& b = Bbs::instance();
+    const uint32_t in = b.bytesIn(), out = b.bytesOut();
+    if (!g_gAt) { g_gAt = now ? now : 1; g_gIn0 = in; g_gOut0 = out; return; }
+    const uint32_t dt = now - g_gAt ? now - g_gAt : 1;
+    g_gAt = now ? now : 1;
+    g_rateIn  = static_cast<uint32_t>(static_cast<uint64_t>(in - g_gIn0) * 1000u / dt);
+    g_rateOut = static_cast<uint32_t>(static_cast<uint64_t>(out - g_gOut0) * 1000u / dt);
+    g_gIn0 = in;
+    g_gOut0 = out;
+    const int cols = g_big.graph.w;
+    if (cols <= 0) return;
+    if (g_gHead >= cols) g_gHead = 0;
+    g_gIn[g_gHead]  = static_cast<uint8_t>(graphHeight(g_rateIn, kGraphUp));
+    g_gOut[g_gHead] = static_cast<uint8_t>(graphHeight(g_rateOut, kGraphDown));
+    graphColumn(g_gHead, false);
+    graphColumn((g_gHead + 1) % cols, true);
+    graphColumn((g_gHead + 2) % cols, true);
+    Rect wrap;
+    g_dirty.add(sweepBox(g_big.graph, g_gHead, wrap));
+    if (!empty(wrap)) g_dirty.add(wrap);
+    g_gHead = static_cast<uint8_t>((g_gHead + 1) % cols);
+}
+
+void drawTraffic() {
+    char a[8], o[8], key[kKey];
+    fmtRate(g_rateIn, a, sizeof(a));
+    fmtRate(g_rateOut, o, sizeof(o));
+    snprintf(key, sizeof(key), "%s in %s out", a, o);
+    if (!changed(F_TRAF, key)) return;
+    begin(F_TRAF, kBg);
+    const Rect& r = g_big.traf;
+    const int end = r.x + r.w;
+    icon(g_canvas, r.x, r.y, kIconTraffic, kDial);
+    int x = r.x + 20;
+    x += text(g_canvas, x, r.y, a, g_rateIn ? kDial : kDim, kBg, false, end - x);
+    x += text(g_canvas, x, r.y, " in ", kDim, kBg, false, end - x);
+    x += text(g_canvas, x, r.y, o, g_rateOut ? kLive : kDim, kBg, false, end - x);
+    text(g_canvas, x, r.y, " out", kDim, kBg, false, end - x);
+}
+
+// bigSlot: the slot's text right aligned, the whole slot cleared in the
+// framebuffer and only the wider of the old and new text sent: a fade step is
+// the text's extent, one band, not the slot.
+void bigSlot(const char* s, uint16_t col) {
+    char key[kKey];
+    snprintf(key, sizeof(key), "%.60s\x1F%04X", s, static_cast<unsigned>(col));
+    if (!changed(F_SLOT, key)) return;
+    const Rect& r = g_big.slot;
+    fill(g_canvas, r, kBar);
+    int w = textWidth(s, false);
+    if (w > r.w) w = r.w - r.w % kSmallW;
+    text(g_canvas, r.x + r.w - w, r.y, s, col, kBar, false, w);
+    const int send = w > g_slotW ? w : g_slotW;
+    g_slotW = static_cast<int16_t>(w);
+    if (send > 0) g_dirty.add(R(r.x + r.w - send, r.y, send, r.h));
+}
+
+// bigSlotTick: two pages, both ways to dial the board (the address, and the
+// name the board answers to over mDNS), with the shipped fade; a ring
+// overrides it as on the Waveshare.
+void bigSlotTick(uint32_t now) {
+    char buf[64];
+    if (const char* who = Bbs::instance().ringing()) {
+        char h[BBS_USER_MAX * 2 + 1];
+        const int fit = g_big.slot.w / kSmallW - 11;
+        cutGlyphs(who, fit > 1 ? fit : 1, h, sizeof(h));
+        snprintf(buf, sizeof(buf), "%s is ringing", h);
+        bigSlot(buf, kBusy);
+        g_ringShown = true;
+        return;
+    }
+    if (g_ringShown) {
+        g_ringShown = false;
+        g_page = 0;
+        g_fade = 0;
+        g_dir  = 0;
+        g_stepAt = now;
+    }
+    if (g_dir == 0) {
+        if (now - g_stepAt >= kHoldMs) { g_dir = 1; g_fade = 1; g_stepAt = now; }
+    } else if (now - g_stepAt >= kStepMs) {
+        g_stepAt = now;
+        if (g_dir > 0) {
+            if (g_fade < kSteps) ++g_fade;
+            else { g_page = static_cast<uint8_t>((g_page + 1) % 2); g_dir = -1; g_fade = kSteps - 1; }
+        } else {
+            if (g_fade > 0) --g_fade;
+            if (g_fade == 0) g_dir = 0;
+        }
+    }
+    uint16_t col = kDial;
+    if (!g_addr[0]) {
+        snprintf(buf, sizeof(buf), "no network");
+        col = kRisk;
+    } else if (g_page % 2 == 0) {
+        snprintf(buf, sizeof(buf), "%s", g_addr);
+    } else {
+        const char* colon = strrchr(g_addr, ':');
+        snprintf(buf, sizeof(buf), "%s.local%s", syscfg::get().hostname, colon ? colon : "");
+    }
+    bigSlot(buf, mix(col, kBar, g_fade, kSteps));
+}
+
+// bigDbm: the antenna's samples, four times a second from antTick; the
+// figure is their mean, redrawn at most once a second in the antenna's
+// colour, so it reads steady while the antenna moves.
+void bigDbm(int rssi, uint32_t now) {
+    g_rssiRing[g_rssiK] = static_cast<int8_t>(rssi < -127 ? -127 : rssi > 0 ? 0 : rssi);
+    g_rssiK = static_cast<uint8_t>((g_rssiK + 1) % 4);
+    if (g_rssiN < 4) ++g_rssiN;
+    if (g_dbmAt && now - g_dbmAt < kDbmMs) return;
+    g_dbmAt = now ? now : 1;
+    // The mean of the samples taken while joined: a 0 is "not joined", not a
+    // signal, and would drag the figure toward 0 for a second after a rejoin.
+    int sum = 0, got = 0;
+    for (uint8_t i = 0; i < g_rssiN; ++i)
+        if (g_rssiRing[i]) { sum += g_rssiRing[i]; ++got; }
+    const int mean = got ? sum / got : 0;
+    char key[kKey];
+    const bool joined = rssi != 0 && mean != 0;
+    if (joined) snprintf(key, sizeof(key), "%d", mean);
+    else        snprintf(key, sizeof(key), "--");
+    if (!changed(F_DBM, key)) return;
+    begin(F_DBM, kBand);
+    line(g_canvas, g_big.dbm, g_big.dbm.y, key, joined ? signalColour(mean) : kFaint, kBand, false, RIGHT);
+}
+
+// rowLabel: a row's node, as NODES writes it: " S", " 1" to "10".
+bbsu::NodeStr rowLabel(uint8_t k) {
+    bbsu::NodeStr r{};
+    if (!k) { r.t[0] = ' '; r.t[1] = 'S'; return r; }
+    r = bbsu::nodeNum(k);
+    if (r.t[1] == '\0') { r.t[1] = r.t[0]; r.t[0] = ' '; }
+    return r;
+}
+
+// bigRow: row k of the node board, for the session on that line (row 0 the
+// sysop's), or free. A hidden or lurking member of staff draws exactly as a
+// free line does: the desk gives away no more than WHO.
+void bigRow(uint8_t k, const Session* s, uint32_t now) {
+    const Rect& r = g_big.row[k];
+    const bbsu::NodeStr lab = rowLabel(k);
+    char key[kKey];
+    const int16_t x0 = r.x;                              // 14: the node, then the columns
+    if (s && shown(*s)) {
+        const char mark = markFor(*s) == ' ' ? ')' : markFor(*s);
+        char on[8];
+        fmtOnFor(now - s->loginAt, on, sizeof(on));
+        const char* doing = s->doing[0] ? s->doing : "-";
+        const bool idle = now - s->lastInput >= kIdleMs;
+        snprintf(key, sizeof(key), "%s%c %s %s %s %s\x1F%d", lab.t, mark, s->user, doing, on,
+                 s->term.shortName(), idle ? 1 : 0);
+        if (!changed(static_cast<uint8_t>(F_ROW + k), key)) return;
+        begin(static_cast<uint8_t>(F_ROW + k), kBg);
+        const uint16_t rc = rankColour(mark);
+        const char markS[2] = { mark, '\0' };
+        text(g_canvas, x0, r.y, lab.t, rc, kBg, false, 16);
+        text(g_canvas, x0 + 16, r.y, markS, rc, kBg, false, 8);
+        text(g_canvas, 46, r.y, s->user, kInk, kBg, false, 12 * kSmallW);
+        text(g_canvas, g_big.colDoing, r.y, doing, idle ? kFaint : kStruct, kBg, false, 9 * kSmallW);
+        const int tw = textWidth(on, false);
+        text(g_canvas, g_big.colOnEnd - tw, r.y, on, kDim, kBg, false, tw);
+        text(g_canvas, g_big.colTerm, r.y, s->term.shortName(), kFaint, kBg, false, 5 * kSmallW);
+        return;
+    }
+    if (s && s->st != SState::Free && !s->loggedIn) {
+        const char* who = Bbs::preLoginName(*s);
+        const bool known = s->st != SState::Detect && s->st != SState::Intro;
+        snprintf(key, sizeof(key), "%s %s %s\x1Fp", lab.t, who, known ? s->term.shortName() : "");
+        if (!changed(static_cast<uint8_t>(F_ROW + k), key)) return;
+        begin(static_cast<uint8_t>(F_ROW + k), kBg);
+        text(g_canvas, x0, r.y, lab.t, kFaint, kBg, false, 16);
+        text(g_canvas, 46, r.y, who, kFaint, kBg, false, g_big.colTerm - 8 - 46);
+        if (known) text(g_canvas, g_big.colTerm, r.y, s->term.shortName(), kFaint, kBg, false, 5 * kSmallW);
+        return;
+    }
+    // Free, or staff who chose not to be seen: the node and what the line is,
+    // in faint. Row S says it is the sysop's line (Rob, on the glass: "only 10
+    // show" beside "Callers 0/10"), the rest that they are free, which is what
+    // the eleven rows are at idle. The same words for hidden staff as for an
+    // empty line, so nothing is given away.
+    const char* what = k ? "free" : "sysop line";
+    snprintf(key, sizeof(key), "%s %s\x1F""f", lab.t, what);
+    if (!changed(static_cast<uint8_t>(F_ROW + k), key)) return;
+    begin(static_cast<uint8_t>(F_ROW + k), kBg);
+    text(g_canvas, x0, r.y, lab.t, kFaint, kBg, false, 16);
+    text(g_canvas, 46, r.y, what, k ? scale(kFaint, 2, 3) : kFaint, kBg, false, 12 * kSmallW);
+}
+
+// bigPips: a 6 x 6 pip beside each line that moved bytes since the last
+// look, twice a second, all eleven as one field and one rectangle. Only for
+// lines the board shows.
+void bigPips(uint16_t mask) {
+    char key[kKey];
+    snprintf(key, sizeof(key), "\x1F%04X", static_cast<unsigned>(mask));
+    if (!changed(F_PIPS, key)) return;
+    begin(F_PIPS, kBg);
+    for (uint8_t k = 0; k < kBigRows; ++k)
+        if (mask & (1u << k)) fill(g_canvas, R(g_big.pips.x, g_big.row[k].y + 5, 6, 6), kDial);
+}
+
+void bigHead(unsigned on, unsigned of) {
+    char key[kKey];
+    snprintf(key, sizeof(key), "Callers %u/%u", on, of);
+    if (!changed(F_HEAD, key)) return;
+    begin(F_HEAD, kBg);
+    const Rect& r = g_big.head;
+    const uint16_t col = on ? kStruct : kDim;
+    icon(g_canvas, r.x, r.y, kIconCallers, col);
+    text(g_canvas, r.x + 20, r.y, key, col, kBg, false, g_big.colDoing - 8 - (r.x + 20));
+    text(g_canvas, g_big.colDoing, r.y, "DOING", kFaint, kBg, false, 5 * kSmallW);
+    text(g_canvas, g_big.colOnEnd - 2 * kSmallW, r.y, "ON", kFaint, kBg, false, 2 * kSmallW);
+    text(g_canvas, g_big.colTerm, r.y, "TERM", kFaint, kBg, false, 4 * kSmallW);
+}
+
+void bigCalls(unsigned today) {
+    char key[kKey];
+    snprintf(key, sizeof(key), "Calls %u today", today);
+    if (!changed(F_CALLS, key)) return;
+    begin(F_CALLS, kBg);
+    const Rect& r = g_big.calls;
+    const uint16_t col = today ? kStruct : kDim;
+    icon(g_canvas, r.x, r.y, kIconHandset, col);
+    text(g_canvas, r.x + 20, r.y, key, col, kBg, false, r.w - 20);
+}
+
+// bigRecent: recent row j, event j of the ring, drawn as the Waveshare's
+// recent list draws it.
+void bigRecent(uint8_t j) {
+    const uint8_t f = static_cast<uint8_t>(F_RECENT + j);
+    const Rect& r = g_big.recent[j];
+    char key[kKey];
+    if (!g_eventN && !j) {
+        if (!changed(f, "nothing yet")) return;
+        begin(f, kBg);
+        icon(g_canvas, r.x, r.y, kIconQuiet, kFaint);
+        text(g_canvas, r.x + 20, r.y, "nothing yet", kDim, kBg, false, r.w - 20);
+        return;
+    }
+    if (j >= g_eventN) {
+        if (!changed(f, "\x1F-")) return;
+        begin(f, kBg);
+        return;
+    }
+    const Event& e = g_events[j];
+    const uint8_t age = j < 2 ? j : 2;
+    snprintf(key, sizeof(key), "%s %s\x1F%u", evWord(e.kind), e.text, static_cast<unsigned>(age));
+    if (!changed(f, key)) return;
+    begin(f, kBg);
+    const uint16_t shade = age == 0 ? kInk : age == 1 ? kDim : kFaint;
+    const bool bell = e.kind == EV_PAGE || e.kind == EV_RING;
+    const uint16_t kindCol = e.kind == EV_LOGIN ? kLive : e.kind == EV_GUEST ? kWarm
+                           : e.kind == EV_LOGOFF ? kDim : kBusy;
+    icon(g_canvas, r.x, r.y, bell ? kIconBell : e.kind == EV_LOGOFF ? kIconLogoff : kIconLogin,
+         (age == 0 || bell) ? kindCol : shade);
+    text(g_canvas, r.x + 20, r.y, e.text, shade, kBg, false, r.w - 20);
+}
+
+void bigCell(uint8_t c, const Icon& ic, const char* fig, uint16_t col) {
+    char key[kKey];
+    snprintf(key, sizeof(key), "%s\x1F%04X", fig, static_cast<unsigned>(col));
+    if (!changed(static_cast<uint8_t>(F_CELL + c), key)) return;
+    begin(static_cast<uint8_t>(F_CELL + c), kBg);
+    const Rect& r = g_big.cell[c];
+    icon(g_canvas, r.x, r.y, ic, kDial);
+    text(g_canvas, r.x + 20, r.y, fig, col, kBg, false, r.w - 20);
+}
+
+// bigWord: the band's word for the two board states that have no glyph.
+void bigWord() {
+    Bbs& b = Bbs::instance();
+    const char* w = "";
+    uint16_t col = kWarm;
+    if (b.listening() && !b.answering()) { w = "SHUTTING DOWN"; col = kRisk; }
+    else if (syscfg::get().closed)       { w = "CLOSED to callers"; }
+    char key[kKey];
+    snprintf(key, sizeof(key), "%s", w);
+    if (!changed(F_WORD, key[0] ? key : "\x1F-")) return;
+    begin(F_WORD, kBand);
+    if (w[0]) text(g_canvas, g_big.word.x, g_big.word.y, w, col, kBand, false, g_big.word.w);
+}
+
+void bigName() {
+    const SysConfig& c = syscfg::get();
+    char buf[64];
+    cutWords(c.boardName[0] ? c.boardName : BBS_NAME, g_big.name.w / kSmallW, buf, sizeof(buf));
+    if (!changed(F_NAME, buf)) return;
+    begin(F_NAME, kBar);
+    text(g_canvas, g_big.name.x, g_big.name.y, buf, kInk, kBar, false, g_big.name.w);
+}
+
+struct ById {
+    const Session* s[kBigRows] = {};
+};
+
+void byId(void* ctx, Session& s) {
+    ById& b = *static_cast<ById*>(ctx);
+    if (s.id < kBigRows && s.id <= BBS_MAX_NODES) b.s[s.id] = &s;
+}
+
+// refreshBig: the big glass's figures, from refreshText twice a second,
+// after the header's glyphs and clock, which the two layouts share.
+void refreshBig(uint32_t now) {
+    Bbs& b = Bbs::instance();
+    bigName();
+    bigWord();
+    bigHead(b.publicBusy(), b.publicNodes());
+
+    ById ids;
+    b.eachSession(byId, &ids);
+    const uint8_t rows = static_cast<uint8_t>(BBS_MAX_NODES + 1 < kBigRows ? BBS_MAX_NODES + 1 : kBigRows);
+    uint16_t seen = 0;                                   // lines a pip may show on
+    for (uint8_t k = 0; k < rows; ++k) {
+        const Session* s = ids.s[k];
+        bigRow(k, s, now);
+        if (s && (shown(*s) || (s->st != SState::Free && !s->loggedIn))) seen = static_cast<uint16_t>(seen | (1u << k));
+    }
+    g_moved = static_cast<uint16_t>(g_moved | b.takePanelTraffic());
+    bigPips(static_cast<uint16_t>(g_moved & seen));
+    g_moved = 0;
+
+    if (g_todayDay && clk::dayKey(now) != g_todayDay) { g_today = 0; g_todayDay = 0; }
+    bigCalls(g_today);
+    for (uint8_t j = 0; j < kRecent; ++j) bigRecent(j);
+
+    graphSample(now);
+    drawTraffic();
+
+    char fig[16];
+    snprintf(fig, sizeof(fig), "%uK", static_cast<unsigned>(g_heapK));
+    bigCell(C_HEAP, kIconChip, fig, g_heapK >= 40 ? kInk : g_heapK >= 20 ? kWarm : kRisk);
+    snprintf(fig, sizeof(fig), "%u slow", static_cast<unsigned>(b.slowPasses()));
+    bigCell(C_SLOW, kIconHourglass, fig, g_slowAt && now - g_slowAt < kSlowMs ? kWarm : kInk);
+    const bool cardErr = g_errAt && now - g_errAt < kCardErrMs;
+    bigCell(C_CARD, kIconCard, g_free[0] ? g_free : "--", cardErr ? kRisk : g_free[0] ? kInk : kFaint);
+    snprintf(fig, sizeof(fig), "peak %u", static_cast<unsigned>(b.peakNodes()));
+    bigCell(C_PEAK, kIconCallers, fig, kInk);
+    fmtUptime(now / 1000u, fig, sizeof(fig));
+    bigCell(C_UP, kIconClock, fig, kInk);
+}
+#endif  // PANEL_BIG
 
 // refreshLeds: the lights' frame as square LEDs. How many it queued, which
 // the dot reads to stand aside for a busy strip.
@@ -944,14 +1428,25 @@ uint8_t refreshLeds() {
                                  glassLevel(rgbs[i * 3 + 2], pct));
         if (!all && col == g_ledCol[i]) continue;
         g_ledCol[i] = col;
+#if PANEL_BIG
+        const Led l = g_bigOn ? bigLedAt(box, i, n) : ledAt(box, i, n);
+#else
         const Led l = ledAt(box, i, n);
+#endif
         drawLed(g_canvas, l, col);
         cells[moved++] = l.cell;
     }
     // A few LEDs one at a time; most of the row as the whole row, which is
-    // one queued rectangle rather than a queue full of small ones.
+    // one queued rectangle rather than a queue full of small ones. On the big
+    // glass "the row" is the span its LEDs take, at most 240 x 16, one band,
+    // not the 480-wide box: a strip changing every frame is then one band a
+    // frame, as the spec budgets it.
     if (all) return moved;
-    if (moved > 3) g_dirty.add(box);
+    Rect row = box;
+#if PANEL_BIG
+    if (g_bigOn && n) row = unite(bigLedAt(box, 0, n).cell, bigLedAt(box, static_cast<uint8_t>(n - 1), n).cell);
+#endif
+    if (moved > 3) g_dirty.add(row);
     else for (uint8_t i = 0; i < moved; ++i) g_dirty.add(cells[i]);
     return moved;
 }
@@ -961,8 +1456,20 @@ uint8_t refreshLeds() {
 // busy strip has the glass to itself.
 void dotStep(uint8_t leds) {
     if (leds > 1 || empty(g_layout.track)) return;
+    int step = 1;
+#if PANEL_BIG
+    // The big glass: 2 px every 80 ms, the same speed in half the
+    // transactions, and aside while the queue holds three or more, because
+    // there the queue is what runs out first.
+    if (g_bigOn) {
+        const uint32_t now = plat::millis();
+        if (g_dirty.n >= 3 || (g_dotAt && now - g_dotAt < kDotMs)) return;
+        g_dotAt = now ? now : 1;
+        step = 2;
+    }
+#endif
     const Rect was = dotBox(g_dotX);
-    g_dotX = static_cast<int16_t>(g_dotX + 1 >= g_canvas.w ? 0 : g_dotX + 1);
+    g_dotX = static_cast<int16_t>(g_dotX + step >= g_canvas.w ? 0 : g_dotX + step);
     const Rect now = dotBox(g_dotX);
     dotErase(was);
     dotDraw(g_dotX);
@@ -1049,7 +1556,13 @@ bool start(Bbs& bbs) {
     // The layout follows the turn: landscape when the picture is wider than
     // tall (MV set), the same portrait layout for the plug up or down.
     g_canvas = { g_fb, g_run.width, g_run.height };
+#if PANEL_BIG
+    g_big   = bigLayout(g_run.width, g_run.height, g_layout);
+    g_bigOn = g_big.on;
+    if (!g_bigOn) g_layout = layout(g_run.width, g_run.height);
+#else
     g_layout = layout(g_run.width, g_run.height);
+#endif
 
     // A CONFIG save restarts every plugin. Settings that did not change keep
     // the panel as it is, lit, rather than taking it through its reset. New
@@ -1157,8 +1670,8 @@ void onLogoff(Session& s) {
 
 const char* status() {
     static char out[48];
-    if (g_up) snprintf(out, sizeof(out), "Panel: %ux%u ST7789, %u bands sent",
-                       static_cast<unsigned>(g_run.width), static_cast<unsigned>(g_run.height),
+    if (g_up) snprintf(out, sizeof(out), "Panel: %ux%u %s, %u bands sent",
+                       static_cast<unsigned>(g_run.width), static_cast<unsigned>(g_run.height), BBS_LCD_DRIVER,
                        static_cast<unsigned>(g_bands));
     else      snprintf(out, sizeof(out), "Panel: dark, %.34s", g_why);
     return out;
@@ -1198,7 +1711,7 @@ void cmdPanel(Bbs& b, Session& s, const char* a, uint32_t now) {
         line(s, Color::LightRed, buf);
     }
     // As driven: the picture's size and where it sits, turned.
-    snprintf(buf, sizeof(buf), "ST7789 %ux%u at %u,%u, USB %s",
+    snprintf(buf, sizeof(buf), "%s %ux%u at %u,%u, USB %s", BBS_LCD_DRIVER,
              static_cast<unsigned>(g_run.width), static_cast<unsigned>(g_run.height),
              static_cast<unsigned>(g_run.xoff), static_cast<unsigned>(g_run.yoff), orientWord(g_orient));
     line(s, Color::Yellow, buf);
@@ -1221,18 +1734,32 @@ void cmdPanel(Bbs& b, Session& s, const char* a, uint32_t now) {
     snprintf(buf, sizeof(buf), "%u bands sent", static_cast<unsigned>(g_bands));
     line(s, Color::Grey, buf);
     if (g_up) {
-        static const uint8_t kOrder[] = { F_SLOT, F_GLYPHS, F_ANT, F_CLOCK, F_HEAD };
         auto say = [&](uint8_t f) {
             const char* k = g_shown[f];
-            if (empty(fieldBox(g_layout, f)) || k[0] == '\x01') return;
+            if (empty(boxOf(f)) || k[0] == '\x01') return;
             const size_t n = strcspn(k, "\x1F");
             if (!n) return;
             snprintf(buf, sizeof(buf), "  %.*s", static_cast<int>(n < 44 ? n : 44), k);
             line(s, Color::White, buf);
         };
-        for (uint8_t f : kOrder) say(f);
-        for (uint8_t k = 0; k < g_layout.slots; ++k) say(static_cast<uint8_t>(F_LIST + k));
-        say(F_SYS);
+#if PANEL_BIG
+        if (g_bigOn) {
+            // The big glass, top to bottom and left to right.
+            static const uint8_t kBigOrder[] = { F_NAME, F_SLOT, F_GLYPHS, F_WORD, F_ANT, F_DBM, F_CLOCK, F_HEAD };
+            for (uint8_t f : kBigOrder) say(f);
+            for (uint8_t k = 0; k < kBigRows; ++k) say(static_cast<uint8_t>(F_ROW + k));
+            say(F_CALLS);
+            for (uint8_t j = 0; j < kRecent; ++j) say(static_cast<uint8_t>(F_RECENT + j));
+            say(F_TRAF);
+            for (uint8_t c = 0; c < kCells; ++c) say(static_cast<uint8_t>(F_CELL + c));
+        } else
+#endif
+        {
+            static const uint8_t kOrder[] = { F_SLOT, F_GLYPHS, F_ANT, F_CLOCK, F_HEAD };
+            for (uint8_t f : kOrder) say(f);
+            for (uint8_t k = 0; k < g_layout.slots; ++k) say(static_cast<uint8_t>(F_LIST + k));
+            say(F_SYS);
+        }
         const uint8_t n = g_ledN == 0xFF ? 0 : g_ledN;
         snprintf(buf, sizeof(buf), "  strip: %u LEDs", static_cast<unsigned>(n));
         line(s, Color::White, buf);
@@ -1274,14 +1801,21 @@ constexpr PluginSetting kSettings[] = {
       "Mirror the picture" },
     { "colours",   "Colours",   PS_CYCLE, 0, 0,   3, "BGR if red and blue are swapped.", kColours,
       "Colour order" },
-    { "spi_mhz",   "SPI MHz",   PS_CYCLE, 0, 0,   2, "10 is safe; the panel's limit is 62.5.", kClocks,
-      "SPI clock, MHz" },
+    { "spi_mhz",   kClockLabel, PS_CYCLE, 0, 0,   2, BBS_LCD_MHZ_NOTE, kClocks,
+      kClockWide },
     { "backlight", "Bright %",  PS_NUM,   0, 100, 3, "0 is dark; 60 as shipped.", nullptr,
       "Backlight %" },
-    { "pin1_mosi", "MOSI pin",  PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, "Data to the panel: SDA.", nullptr,
+#ifdef BBS_LCD_I80
+    { kPin1Key,    "WR pin",    PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, "The parallel bus's write strobe.", nullptr,
+      "WR strobe GPIO" },
+    { kPin2Key,    "RD pin",    PS_PIN,  -1, BBS_GPIO_OUT_MAX, 2, "Read strobe, held high. -1 if tied.", nullptr,
+      "RD strobe GPIO" },
+#else
+    { kPin1Key,    "MOSI pin",  PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, "Data to the panel: SDA.", nullptr,
       "MOSI GPIO (SDA)" },
-    { "pin2_sclk", "SCLK pin",  PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, "The clock to the panel: SCL.", nullptr,
+    { kPin2Key,    "SCLK pin",  PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, "The clock to the panel: SCL.", nullptr,
       "Clock GPIO (SCL)" },
+#endif
     { "pin3_cs",   "CS pin",    PS_PIN,  -1, BBS_GPIO_OUT_MAX, 2, "Chip select. -1 if it is tied low.", nullptr,
       "Chip select GPIO" },
     { "pin4_dc",   "D/C pin",   PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, "Data or command select.", nullptr,
@@ -1304,11 +1838,11 @@ static_assert(kCoreRows + (kSettingCount - countPins()) <= Form::kMaxFields, "th
 
 void setting(const char* key, char* out, size_t n) {
     if (!g_defaulted) defaults();
-    if      (!strcmp(key, "driver"))    snprintf(out, n, "ST7789");
+    if      (!strcmp(key, "driver"))    snprintf(out, n, "%s", BBS_LCD_DRIVER);
     else if (!strcmp(key, "pin"))       snprintf(out, n, "%d %d %d %d %d %d", g_cfg.mosi, g_cfg.sclk,
                                                  g_cfg.cs, g_cfg.dc, g_cfg.rst, g_cfg.bl);
-    else if (!strcmp(key, "pin1_mosi")) snprintf(out, n, "%d", g_cfg.mosi);
-    else if (!strcmp(key, "pin2_sclk")) snprintf(out, n, "%d", g_cfg.sclk);
+    else if (!strcmp(key, kPin1Key))    snprintf(out, n, "%d", g_cfg.mosi);
+    else if (!strcmp(key, kPin2Key))    snprintf(out, n, "%d", g_cfg.sclk);
     else if (!strcmp(key, "pin3_cs"))   snprintf(out, n, "%d", g_cfg.cs);
     else if (!strcmp(key, "pin4_dc"))   snprintf(out, n, "%d", g_cfg.dc);
     else if (!strcmp(key, "pin5_rst"))  snprintf(out, n, "%d", g_cfg.rst);

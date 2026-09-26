@@ -24,6 +24,65 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.1.1 (MF35 1.0.0), 2026-09-26, board pre-release
+
+A new board, as a pre-release that carries its image set and nothing else
+(tag `v1.1.1-mf35.1`). The core is 1.1.1 unchanged; every other board's
+image is the one 1.1.1 shipped. **On hardware**: bench-tested on one v1.0
+board, with the glass checked by eye. This pre-release has not been through
+the full regression.
+
+**The Makerfabs ESP32-S3 Parallel TFT with Touch 3.5" (ILI9488), hardware
+v1.0** (`BBS_BOARD_MF_S3PAR35`, `pio run -e makerfabs_s3_par35`, MF35 1.0.0)
+- ESP32-S3-WROOM-1-N16R2: 16 MB flash, 2 MB quad PSRAM. A CP2104 on UART0
+  (the USB-TTL port: the console and Improv) beside the chip's own USB, a
+  micro SD slot on SPI, FLASH and RST buttons, and a 480 x 320 ILI9488 on a
+  16-bit parallel bus. `sdkconfig.defaults.mf35` puts PSRAM in quad mode and
+  the console on UART0 over the S3 layer.
+- **v1.0 only.** It runs the panel's WR, D/C and CS on IO35 to 37, octal
+  PSRAM's pins, which the v1.0's quad N16R2 leaves free. Makerfabs sell v2.0
+  now, an N16R8 with octal PSRAM and those pins moved: this image does not
+  boot on it. The silkscreen on the back says which.
+- **The panel on esp_lcd's i80 bus**: RGB565 straight from the framebuffer,
+  20 MHz WR, bands of 480 x 12 sent by DMA from an 11.25 KB staging buffer
+  and never waited on. RESET is the chip's EN, so it is reset by command.
+  The backlight is PWM on IO45, active high, held low from the start-up code
+  until the panel is up (IO45 is a strapping pin).
+- **A status skin for 480 x 320**, from
+  `internal/tty-ux-panel-mf35-2026-09-26.md`: the Waveshare's header,
+  glyphs, antenna, clock, track and LEDs, then the board's name kept on the
+  bar, the slot turning between the address and `host.local:port`, a word
+  on the band for CLOSED and SHUTTING DOWN, the signal in dBm, a node board
+  of all eleven lines (node, rank, handle, what they are doing, time on,
+  terminal, and a pip while the line moves bytes), the calls today and the
+  last four events, traffic in and out with a ten-minute sweep, and cells
+  for heap, slow passes, card, peak and uptime. Portrait (320 x 480) places
+  the same blocks again. Chosen by the glass's size, so the Waveshare's
+  layout is untouched. The dot moves 2 px every 80 ms and stands aside for
+  a busy queue, and a full queue merges its cheapest pair rather than
+  uniting the whole glass.
+- **CONFIG panel's "USB plug"** says where the USB-C edge is, as on the
+  Waveshare. This glass sits the other way round against its board, so the
+  profile maps each word to the panel's own turn. Plug down (landscape,
+  USB-C at the bottom) as shipped.
+- **Pins**: 26 to 32 refused as flash and PSRAM (33 to 37 are free on this
+  quad part, `BBS_PSRAM_QUAD`), the panel's data bus refused by name, 43
+  and 44 the console, 46 a strap. The serial bridge defaults to the J1
+  Mabee socket, IO17 RX and IO18 TX. No LED the firmware can drive, so the
+  lights ship off.
+- Touch (the FT6236 on I2C 38/39, INT 40) is not used yet.
+- Measured on the bench: 2 MB PSRAM found, 1.71 MB free with the
+  framebuffer; internal heap 78.5 KB free, 73.6 KB at its lowest; no slow
+  pass from the panel (its phase 41 us). The two slow passes seen, a login
+  at 62 ms and PLUGINS at 140 ms, are core paths already on 1.1.2's list.
+- `tools/release.py --tag v1.1.1-mf35.1` builds that one set
+  (`esp32s3-mf35-*`). A plain `v<version>` tag leaves both Makerfabs sets
+  out (`tag_only` in BUILDS) until a profile merges into a release.
+- The v2.0 sibling, `BBS_BOARD_MF_S3PAR35V2` (MF35V2 1.0.0,
+  `makerfabs_s3_par35v2`, set `esp32s3-mf35v2`, tag key `mf35v2`): octal
+  PSRAM, WR 18, RD 48, D/C 17, CS 46, no serial bridge pins (its only GPIO
+  socket is the native USB). Built and host-tested; not yet on a bench.
+
 ## 1.1.1 (S3 1.1.2, FNCAM 1.0.6, ESPCAM 1.0.3), 2026-09-25
 
 The patch to 1.1.0, with what 1.1.0 left and what its first days found.

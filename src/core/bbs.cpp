@@ -933,6 +933,9 @@ void Bbs::readSession(Session& s, uint32_t now) {
 
     plat::activityPulse(now);
     rxSeen_  = static_cast<uint16_t>(rxSeen_ | (1u << s.id));   // for the lights
+#ifdef BBS_HAS_LCD
+    panelMoved_ = static_cast<uint16_t>(panelMoved_ | (1u << s.id));   // the panel's pips
+#endif
     rxBytes_ += static_cast<uint32_t>(n);
     DirectSink ds(s.fd);
     size_t m = s.tn.filter(raw, static_cast<size_t>(n), data, ds);
@@ -1001,6 +1004,9 @@ void Bbs::flush(Session& s, uint32_t now) {
     else if (sent > 0) {
         plat::activityPulse(now);
         txSeen_  = static_cast<uint16_t>(txSeen_ | (1u << s.id));   // for the lights
+#ifdef BBS_HAS_LCD
+        panelMoved_ = static_cast<uint16_t>(panelMoved_ | (1u << s.id));   // the panel's pips
+#endif
         txBytes_ += static_cast<uint32_t>(sent);
     }
 }

@@ -545,7 +545,12 @@ std::vector<uint16_t> g_glass;
 
 bool lcdBegin(const LcdCfg& c, char* err, size_t errLen) {
     lcdEnd();
-    if (c.mosi < 0 || c.sclk < 0 || c.dc < 0 || !c.width || !c.height) {
+#ifdef BBS_LCD_I80
+    const bool clockless = false;                   // RD may be -1 on a parallel bus
+#else
+    const bool clockless = c.sclk < 0;
+#endif
+    if (c.mosi < 0 || clockless || c.dc < 0 || !c.width || !c.height) {
         snprintf(err, errLen, "the panel needs MOSI, SCLK and D/C");
         return false;
     }
@@ -553,7 +558,7 @@ bool lcdBegin(const LcdCfg& c, char* err, size_t errLen) {
     g_lcdUp  = true;
     g_lcdBl  = c.backlight;
     g_glass.assign(static_cast<size_t>(c.width) * c.height, 0);
-    log("panel: ST7789 %ux%u, rotation %u, %u MHz (host glass)", static_cast<unsigned>(c.width),
+    log("panel: %s %ux%u, rotation %u, %u MHz (host glass)", BBS_LCD_DRIVER, static_cast<unsigned>(c.width),
         static_cast<unsigned>(c.height), static_cast<unsigned>(c.rotation), static_cast<unsigned>(c.mhz));
     return true;
 }
@@ -575,7 +580,13 @@ void lcdEnd() {
 
 bool lcdReady() { return g_lcdUp; }
 
+// The board's band (platform_esp32.cpp): 12 rows of 480 on the parallel
+// ILI9488, 16 rows of 320 on the Waveshare's SPI ST7789.
+#ifdef BBS_LCD_I80
+uint32_t lcdBandPixels() { return 480u * 12u; }
+#else
 uint32_t lcdBandPixels() { return 320u * 16u; }
+#endif
 
 bool lcdDraw(const uint16_t* fb, uint16_t stride, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     if (!g_lcdUp || !fb || static_cast<uint32_t>(w) * h > lcdBandPixels()) return false;
