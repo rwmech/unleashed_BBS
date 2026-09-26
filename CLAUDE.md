@@ -762,6 +762,32 @@ this tree.
   that ground: the KEYESTUDIO ESP32-S3 PRO (N16R8), whose on-board SD slot
   sits on GPIO 35-37, inside the octal PSRAM bus, so PSRAM and the card
   slot cannot both work.
+- **1.2.0: the µnleashed link, camera satellites and the door framework**
+  (Rob, 2026-09-26). 1.1.2 stays a patch and ships first; this is 1.2.0,
+  built in parallel lanes now and merged after 1.1.2.
+  - **The link:** one ESP-NOW protocol, specified before it's built:
+    pairing with encryption, following the router's channel, sequenced
+    frames reassembled on the background runner, sessions. It has two
+    message families from day one: camera and door. It lives in the core,
+    so every board (the WROOM included) can use it.
+  - **Camera satellite:** a cheap ESP32-CAM (no card needed) running its
+    own small firmware adds a camera to ANY board, placed anywhere in
+    radio range. On request, on a timer or on motion, it sends the JPEG
+    to its BBS, which files it in Photos like a built-in snap. Repo
+    **unleashed_camsat** (the satellite firmware plus its BBS-side
+    plugin).
+  - **Each plugin gets its own repository** (Rob). The core needs a way to
+    build external plugin repos into the firmware; the link lane designs
+    it.
+  - **The door framework:** the door protocol (who the caller is, their
+    terminal and minutes, "finished" and "time's up", several callers per
+    box) over the link, and over serial later. The building-game door
+    (IDEAS.local.md, private) gets its own repo later: **not built now**.
+  - **Recommended hardware changes:** the Waveshare S3 plus a camera
+    satellite is the best setup today (Rob). The site and the board
+    picks are redone once the satellite works.
+  - Bench: the ESP32-CAM without a card on COM15 as the satellite, and
+    the Waveshare S3 on COM12 as its BBS.
 - **1.1.2 scope, decided by Rob 2026-09-26** (discussed before coding):
   - A read-only audit first of every path that can hold the loop over
     50 ms (internal/audit-1.1.2-2026-09-26.md); the worst move onto one
