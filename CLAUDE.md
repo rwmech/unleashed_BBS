@@ -750,8 +750,18 @@ this tree.
     1.22 to 1.28 s in one pass, the worst on the board. Check whether
     1.1.1's manifest or `sameFile` work made it worse. `SCREENS INSTALL`
     held one pass for 491 ms installing one 71-byte screen, right after
-    the space check; the `fsInfo` partition walk is the suspect. Both need
-    slicing or caching, then measuring on the bench.
+    the space check; the `fsInfo` partition walk is the suspect.
+    **The fix, Rob's shape (2026-09-26):** do it the way the camera does.
+    The slow part (the directory walk, the per-file checks and hashes, the
+    free-space walk, the copies) runs on a background worker task below the
+    BBS task, and the loop only shows the spinner and then draws the
+    finished rows through the existing paced list machinery, which already
+    throttles output to the caller's buffer. Generalise the camera's worker
+    into one shared background-job runner (one job at a time, the job is
+    the lock, results in a small table) rather than a second copy of it.
+    The same runner then takes the other sysop-path stalls on the list
+    below. Measure on the bench: no slow pass from SCREENS or SCREENS
+    INSTALL.
   - **Bug, files:** the staging folder's own `.pending/FILES.BBS` is
     listed by P as an upload waiting (`listPending`, `nthPending` and
     `countPending` skip `UPLOADS.BBS` only), and A moves it into the area.
