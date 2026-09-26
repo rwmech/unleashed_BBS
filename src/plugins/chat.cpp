@@ -836,22 +836,37 @@ void privateEnd(Session& s, const char* lead) {
     const uint8_t slot = slotOf(s);
     if (!inPrivate(s)) return;
     flush(s);                                 // anything about the two of them, first
-    uint32_t went = g_seq - g_privSince[slot];
-    uint32_t kept = went < g_histCount ? went : g_histCount;
+    // What went by is what the caller was NOT shown (1.1.2, from the bench):
+    // every line since the mode began, less the ones about the two of them,
+    // which were shown as they came, the partner's leaving line among them.
+    // Counting them all said "1 room line went by" for the leave notice the
+    // caller had just read. A line the ring no longer holds cannot be looked
+    // at and is counted. /sh replays the last lines of the ring, the shown
+    // ones among them, so it is told how far back the first unshown one is.
+    const uint32_t oldest = g_seq > g_histCount ? g_seq - g_histCount : 0;
+    uint32_t went = 0, first = g_seq;
+    for (uint32_t q = g_privSince[slot]; q < g_seq; ++q) {
+        if (q >= oldest && aboutUs(s, lineAt(q))) continue;
+        ++went;
+        if (first == g_seq) first = q;
+    }
+    const uint32_t back_ = g_seq - first;                  // /sh this many reaches it
+    const bool     whole = first >= oldest;
+    const uint32_t shows = whole ? back_ : g_histCount;
     g_sticky[slot]  = 0xFF;
     s.ownerData     = g_seq;
     char buf[112];
     const char* back = lead ? lead : "Back to the room.";
     if (!went)
         snprintf(buf, sizeof(buf), "%s", back);
-    else if (kept == went)
+    else if (whole)
         snprintf(buf, sizeof(buf), "%s %lu room line%s went by: /sh %lu shows %s.", back,
                  static_cast<unsigned long>(went), went == 1 ? "" : "s",
-                 static_cast<unsigned long>(went), went == 1 ? "it" : "them");
+                 static_cast<unsigned long>(shows), went == 1 ? "it" : "them");
     else
         snprintf(buf, sizeof(buf), "%s %lu room lines went by; /sh %lu shows the last %lu.", back,
-                 static_cast<unsigned long>(went), static_cast<unsigned long>(kept),
-                 static_cast<unsigned long>(kept));
+                 static_cast<unsigned long>(went), static_cast<unsigned long>(shows),
+                 static_cast<unsigned long>(shows));
     sayWrapped(s, g_cPriv, buf, true);
 }
 

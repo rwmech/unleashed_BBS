@@ -404,6 +404,7 @@ size_t ZipExport::cfgRead(uint8_t* buf, size_t cap) {
         char path[96];
         livePath(path, sizeof(path), BBS_CONFIG_FILE);
         f_ = disk::open(path, "r");
+        ++opened_;
         lineLen_ = linePos_ = 0;
         if (!f_) return 0;
     }
@@ -449,6 +450,7 @@ size_t ZipExport::readData(Entry& e, uint8_t* buf, size_t cap) {
                 if (e.src == Src::Snapshot) livePath(path, sizeof(path), snap);
                 else                        livePath(path, sizeof(path), e.name);
                 f_ = disk::open(path, "rb");
+                ++opened_;
                 if (!f_) return 0;
             }
             return fread(buf, 1, cap, f_);
@@ -760,6 +762,7 @@ void ZipExport::fillHeader(const Entry& e, bool central) {
 // ---------------------------------------------------------------------------
 size_t ZipExport::produce(uint8_t* buf, size_t cap) {
     size_t n = 0;
+    const uint16_t opened0 = opened_;
     while (n < cap && phase_ != Phase::Done) {
         if (hdrPos_ < hdrLen_) {
             size_t take = hdrLen_ - hdrPos_;
@@ -793,6 +796,10 @@ size_t ZipExport::produce(uint8_t* buf, size_t cap) {
                 }
                 sent_ += static_cast<uint32_t>(got);
                 n += got;
+                // One open a call (1.1.2): the backup window's download ran
+                // the screens' small files together, several opens to a
+                // pass, 61 ms of them at a flash open's cost.
+                if (opened_ != opened0) return n;
                 break;
             }
             case Phase::Central:

@@ -24,6 +24,144 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.1.2-dev.1 (S3 1.1.2, FNCAM 1.0.7, ESPCAM 1.0.4), 2026-09-26
+
+Part 1 of 1.1.2: the lag the 1.1.1 audit found
+(`internal/audit-1.1.2-2026-09-26.md`), and the bugs from the 1.1.1 bench
+check. Rule no. 1: nothing a feature does may stall the callers who are not
+using it. Host-tested with targeted runs; not yet on hardware.
+
+**The background runner**
+- **One task for everything slow** (`src/core/runner.*`). Pinned to the BBS
+  task's core, three priorities below it, so it only runs in the loop's idle
+  time; started when a job is posted and gone three seconds after the last;
+  an 8 KB stack from the heap, not static RAM; a static queue of 8. A job's
+  state is set last by the runner, so the loop reads results only once they
+  are whole, and a job that answers a caller records the caller's connection
+  number (`Session::call`) and node rather than a `Session*`, so a caller
+  who hangs up mid-job is never answered in somebody else's session. The
+  host runs the same jobs on a thread. `SYS` shows its lowest stack and its
+  longest job.
+- The camera's worker is a runner job now, unchanged, and its own task and
+  trampoline are gone.
+
+**The ten audited stalls, and the rest**
+- **The directory's name is looked up on the runner**, before each
+  heartbeat (lwIP answers from its cache while the TTL runs), and a lookup
+  that fails keeps the last address. It was a blocking lookup on the loop at
+  every start, so at every `CONFIG` save, and after every refused connect,
+  whatever the comment above it said.
+- **Call figures are 16-byte records in `callstats.dat`**, updated in place
+  at a logoff, rather than a rewrite of the whole of `users.txt` for four
+  numbers. Made from `users.txt` on the first boot; `users.txt` keeps the
+  fields so an older firmware still reads it. In the backup zip; an older
+  zip restores the figures from its `users.txt`.
+- **The handles are indexed in memory**, rebuilt whenever the board
+  rewrites `users.txt`: the handle prompt, sign-up's checks, the account
+  count and a lookup by id no longer read the file to its end.
+- **Forums walk the index in slices**: one open of `INDEX.TXT` a walk, 64
+  records a slice and 128 a pass, for the subject list, next-unread, the
+  unread counts, `FORUMS SCAN` and the forum list's counts. A spinner if a
+  walk runs long. The read pointers live in memory and are written when the
+  caller leaves a forum or logs off, rather than at every message.
+- **`SCREENS` and `SCREENS INSTALL` read on the runner**: one table from
+  one read of each folder and one of the card's manifest, where each row
+  stat'ed every flavour and read the manifest again. The install's plan runs
+  there too; its renames stay on the loop, beside closing any caller's open
+  screen.
+- **File listings read a page at a time on the runner**, into a page
+  cache shared by the callers on one area: one walk of the folder and one
+  read of `FILES.BBS` a page, where each row reopened the folder, walked to
+  its file and searched `FILES.BBS`. Photos too.
+- **The backup window's download** reads every file for its CRC on the
+  runner before the 200 goes out, where it did it on the loop in one pass.
+- **A restore unpacks, checks and writes on the runner**, a file at a time.
+- **Mail is written in place**: a send takes a free slot, a delete empties
+  one, keeping one flips a byte. Every one of those rewrote `mail.dat`.
+- **CONFIG reads `system.cfg` once to open a page**, where each field
+  searched the file from the top, and a save restarts only the plugin whose
+  section it wrote (every plugin for a core page, and all of them for
+  `sd`'s, which the others wait on).
+- **Free space is measured on the runner, and kept.** MEM, SYS, DASH,
+  HARDWARE, PLUGINS and every plugin's write guard asked LittleFS, which
+  walks every block (170 ms on a board), or FAT, which reads its table. The
+  figures are measured at boot and at every staff login, a kept one ends in
+  `.`, and one line says when: `Figures ending in . are as of 14:02.`
+  `MEM FORCE` and `SYS FORCE` (staff) measure now, with a spinner. A
+  restore or `SCREENS INSTALL` marks only its own partition to be measured
+  again. The heap figures are still read fresh, and `heapFree()` is the
+  counter, not the allocator walk.
+- **The caller log's copy on the card is written on the runner** at a
+  hang-up, through a small queue.
+
+**Bugs**
+- **`users.txt` is never removed to make room for a rename.** The fallback
+  after a failed rename deleted the live accounts and tried again, the
+  shape that lost every account on a restore until 1.0.3.
+- **`FILES.BBS` has one writer.** The camera wrote photo descriptions into
+  the Photos folders' `FILES.BBS` while the file areas could be editing the
+  same file on the loop, and FatFs does not lock. It asks the files plugin
+  now (`files::photoDesc`, `files::photoTidy`), which queues the edit and
+  does it on the runner.
+- **An upload's staging folder listed its own files as uploads.** An
+  auto-approved upload's description landed in `.pending/FILES.BBS`, and `P`
+  offered `FILES.BBS` for approval, over the area's real one. The staging
+  folder's `FILES.BBS` and `UPLOADS.BBS` are never uploads, in the list, the
+  count and the approval; an auto-approved description goes straight into
+  the area.
+- **One snapshot at a time**, and the second caller is told whose: `-->
+  Camera in use by node 3, try again in a minute` (`by the board` for a
+  timed one), wrapped at a word on 40 columns (Rob).
+- **An external reset is not a watchdog.** The classic ESP32 reports a
+  press of EN, or a serial port toggling it, as an RTC watchdog reset, and
+  the board said it had crashed. It reads the ROM's own reason now and says
+  `reset pin (EN or a serial port)`.
+- **The private conversation's count left out what the caller saw.**
+  `/p*` after the partner left said `1 room line went by` for the leave
+  notice the caller had just read. Only lines not shown are counted.
+- **A hostname saved in CONFIG said `Saved and live`**, and it is used
+  from the next restart. It says so.
+- **HARDWARE's card free** had no thousands separator and no unit.
+- **A board with no name set called itself by the software's**: `µnleashed
+  BBS running µnleashed BBS v1.1.1`. `@BOARD@` falls back to the hostname,
+  in screens and in messages alike.
+- The camera's bring-up no longer logs `gpio_install_isr_service` at every
+  snap.
+- The ESP32-CAM's host tests named the Freenove in their skip messages.
+
+**Announce, rock solid** (Rob: "when a caller joins announce should send
+that out asap, it doesnt")
+- **A caller change is sent within seconds**: a login, a logoff, a guest,
+  `SHOW`, `HIDE` and `LURK`, gathered for two seconds and sent as soon as
+  the directory's 30 s per-address limit allows. It waited out a 60 s gap,
+  was dropped outright if a heartbeat was on the wire, and was never sent
+  again if the directory refused it, which left the directory up to ten
+  minutes behind. `nudge_seconds` is 32 as shipped (the board times the gap
+  from when its heartbeat left, the directory from when it arrived), and a
+  refused change is sent again up to three times.
+- After failures the timed heartbeat backs off from 30 s, doubling, up to
+  the interval, so a directory that comes back hears from the board in
+  minutes.
+- A reply whose headers never finished is a failure and nothing in it is
+  kept: a token cut part way would have replaced the good one.
+- **Every heartbeat's outcome is one console line**, with the count it
+  carried; `ANNOUNCE` shows staff the last send, its answer and the next.
+- A reliability suite on the host, against a stand-in directory: a join
+  and a leave in seconds, DNS gone and back, a directory gone and back, one
+  that never answers (timed out, its socket closed), replies refused, not
+  HTTP, too long and cut off, a token issued again, a CONFIG save mid-post,
+  closed with the largest payload, the published default holding the
+  listing, and a day of heartbeats with the sockets and the memory flat.
+
+**Testing**
+- The host can give every open a cost (`<data>/hostio.txt`: card and flash
+  microseconds, and `log` for a console line an open) and prints every slow
+  pass, so a test drives an audited path at a realistic size (250 accounts,
+  200 files, 2,000 forum messages) and asserts no pass over 50 ms, or counts
+  what the path opened.
+- `tools/harness.sh --changed <range>` works out the test groups from the
+  files a git range touched (`tools/changed_groups.py`).
+
 ## 1.1.1 (S3 1.1.2, FNCAM 1.0.6, ESPCAM 1.0.3), 2026-09-25
 
 The patch to 1.1.0, with what 1.1.0 left and what its first days found.

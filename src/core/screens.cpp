@@ -278,8 +278,12 @@ void ScreenPlayer::runToken(Term& t, Timeline& tl, const Vars& v) {
 
     if (!strcmp(tok_, "BBS"))        { say(t, tl, BBS_NAME); }
     else if (!strcmp(tok_, "BOARD")) {          // this board, not the software
-        const char* n = syscfg::get().boardName;
-        say(t, tl, n[0] ? n : BBS_NAME);
+        // A board with no name set is called by its hostname (1.1.2, from
+        // the bench): it fell back to the software's name, and the welcome
+        // said "µnleashed BBS running µnleashed BBS v1.1.1". The hostname is
+        // what the board already calls itself on the network (name.local).
+        const SysConfig& c = syscfg::get();
+        say(t, tl, c.boardName[0] ? c.boardName : (c.hostname[0] ? c.hostname : BBS_HOSTNAME));
     }
     else if (!strcmp(tok_, "VER"))   { say(t, tl, BBS_VERSION_SHOWN); }
     else if (!strcmp(tok_, "NODE"))  { snprintf(num, sizeof(num), "%u", v.node);  say(t, tl, num); }

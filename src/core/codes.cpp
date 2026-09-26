@@ -177,8 +177,10 @@ uint8_t visible(const char* s, size_t n) {
 const char* fill(Kind k, char* buf, size_t n) {
     switch (k) {
         case Kind::Board: {
-            const char* b = syscfg::get().boardName;
-            return b[0] ? b : BBS_NAME;
+            // The same fallback as the screens' @BOARD@ (1.1.2): a board with
+            // no name set is called by its hostname, not by the software.
+            const SysConfig& c = syscfg::get();
+            return c.boardName[0] ? c.boardName : (c.hostname[0] ? c.hostname : BBS_HOSTNAME);
         }
         case Kind::Date: clk::fmt(buf, n, "%d %b %Y"); return buf;
         case Kind::Time: clk::fmt(buf, n, "%H:%M");    return buf;

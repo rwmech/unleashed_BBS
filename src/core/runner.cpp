@@ -82,14 +82,12 @@ void main() {
             if (!g_count) {
                 g_alive = false;
                 plat::runUnlock();
-                plat::log("DBG runner: exit");
                 return;
             }
             plat::runUnlock();
             continue;
         }
         j->st.store(RUNNING);
-        plat::log("DBG runner: run %s", j->name);
         g_current.store(j->name);
         const uint32_t t0 = plat::millis();
         if (j->work) j->work(*j);
@@ -131,7 +129,6 @@ bool post(Job& j) {
     g_q[(g_head + g_count) % kQueue] = &j;
     ++g_count;
     const bool start = !g_alive;
-    plat::log("DBG runner: post %s start %d count %u", j.name, start ? 1 : 0, g_count);
     if (start) g_alive = true;
     plat::runUnlock();
 

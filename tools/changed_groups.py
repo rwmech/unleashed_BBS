@@ -170,14 +170,20 @@ TABLE = [
     ("src/core/netfallback*", ["shell", "login"]),
     ("src/core/recovery*", ["login"]),
     ("src/core/ring.h", ["messaging", "shell"]),
+    # runner.*: the background task every slow job moved onto in 1.1.2, so
+    # everything that posts to it.
+    ("src/core/runner*", ["storage", "messaging", "places", "shell", "login", "announce", "camera", "lag"]),
     ("src/core/screens*", ["shell", "storage", "login", "motd", "exit_screen", "privacy"]),
     ("src/core/sha256*", ["login"]),
+    # space.*: the kept free-space figures (1.1.2): MEM, SYS, DASH,
+    # HARDWARE and every plugin's write guard read them.
+    ("src/core/space*", ["shell", "storage", "plugins", "space_kept"]),
     # silent.cpp/.h: the switch and hours, which config, lights and the
     # camera's flash LED and the S3 backlight all read.
     ("src/core/silent*", ["shell", "silent"]),
     ("src/core/sysconfig*", ["shell", "login"]),
     ("src/core/tzones*", ["shell"]),
-    ("src/core/users*", ["login", "messaging", "rename_follows"]),
+    ("src/core/users*", ["login", "messaging", "rename_follows", "lag_logins"]),
     ("src/core/xmodem*", ["storage", "binary", "upload_no_binary", "ymodem", "list_abort"]),
     ("src/core/ziparc*", ["storage", "partitions"]),
 
@@ -188,8 +194,8 @@ TABLE = [
     ("src/plugins/camera*", ["camera", "board_fncam", "board_espcam"]),
     ("src/plugins/chat*", ["messaging", "places", "rename_follows"]),
     ("src/plugins/example*", ["plugins"]),
-    ("src/plugins/files*", ["storage", "places"]),
-    ("src/plugins/forums*", ["messaging", "places", "storage", "partitions"]),
+    ("src/plugins/files*", ["storage", "places", "lag"]),
+    ("src/plugins/forums*", ["messaging", "places", "storage", "partitions", "lag_forums"]),
     ("src/plugins/info*", ["messaging"]),
     ("src/plugins/lights*", ["shell", "storage"]),
     ("src/plugins/panel*", ["board_s3", "shell"]),

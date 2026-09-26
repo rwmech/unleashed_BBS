@@ -501,6 +501,10 @@ void BackupService::openUpload(const char* path) {
 }
 
 void BackupService::writeClient(uint32_t now) {
+    // One file opened a pass (1.1.2). The screens are small, so eight rounds
+    // of a buffer could open a dozen of them in one pass, and an open on
+    // LittleFS is a path walk; the rest go out on the passes after.
+    const uint16_t opened0 = st_ == St::SendZip ? exporter().opened() : 0;
     for (int rounds = 0; rounds < 8; ++rounds) {
         if (outPos_ < outLen_) {
             ssize_t n = send(cfd_, out_ + outPos_, outLen_ - outPos_, MSG_DONTWAIT | MSG_NOSIGNAL);
@@ -514,6 +518,7 @@ void BackupService::writeClient(uint32_t now) {
         }
         outPos_ = outLen_ = 0;
         if (st_ == St::SendZip) {
+            if (exporter().opened() != opened0) return;    // the next pass goes on
             size_t n = exporter().produce(out_, sizeof(out_));
             if (n == 0) {
                 note("*** Backup downloaded by %s: %u files, %u KB", clientIp_, exporter().entries(),
@@ -948,7 +953,9 @@ uint8_t BackupService::cardStep() {
                 if (used >= BBS_CARD_STEP_BYTES) break;
                 ziparc::ZipExport::Wrote w =
                     exporter().writeFile(jobOut_, out_, sizeof(out_), BBS_CARD_STEP_BYTES - used);
-                if (w == ziparc::ZipExport::Wrote::Entry) { ++dots; continue; }
+                // One file a pass (1.1.2), the way the window's download
+                // goes: the next entry's open waits for the next pass.
+                if (w == ziparc::ZipExport::Wrote::Entry) { ++dots; break; }
                 if (w == ziparc::ZipExport::Wrote::More) break;
                 finishWrite(w == ziparc::ZipExport::Wrote::Done);
                 break;

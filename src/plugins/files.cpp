@@ -100,7 +100,8 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
-#include <new>             // the listing's page, placed on the heap (1.1.2)
+#include <new>
+#include <unistd.h>          // rmdir: a handle folder the camera emptied             // the listing's page, placed on the heap (1.1.2)
 #include <cstdlib>
 #include <dirent.h>
 #include <sys/stat.h>
@@ -1652,7 +1653,34 @@ void onKey(Session& s, int k, uint32_t now) {
         case AskDescText: {
             char dir[128];
             if (!areaPath(at, dir, sizeof(dir))) { backToArea(b, s); return; }
+#ifdef BBS_HAS_CAMERA
+            // The photo areas' FILES.BBS has one writer, on the runner
+            // (1.1.2): this is queued there like the camera's own, and a
+            // photo in a handle folder is described in that folder's file.
+            if (at == kAreaPhotos || at == kAreaTimed) {
+                char sub[24] = "";
+                const char* nm = g_pend[slot];
+                const char* slash = strchr(nm, '/');
+                if (slash) {
+                    snprintf(sub, sizeof(sub), "%.*s", static_cast<int>(slash - nm < 23 ? slash - nm : 23), nm);
+                    nm = slash + 1;
+                }
+                if (at == kAreaTimed) {
+                    // The timed shots' folder sits under Photos by its own name.
+                    snprintf(sub, sizeof(sub), "%.23s", g_area[at].path + strlen(camrules::kPhotosDir) +
+                             (g_area[at].path[strlen(camrules::kPhotosDir)] == '/' ? 1 : 0));
+                }
+                const bool queued = files::photoDesc(sub, nm, answer);
+                pageDrop();
+                s.term.color(s.tl, queued ? Color::LightGreen : Color::LightRed);
+                s.term.text(s.tl, queued ? (answer[0] ? "Described." : "Description cleared.")
+                                         : "The board is busy. Try again in a moment.");
+                backToArea(b, s);
+                return;
+            }
+#endif
             bool ok = setDesc(dir, g_pend[slot], answer);
+            pageDrop();
             s.term.color(s.tl, ok ? Color::LightGreen : Color::LightRed);
             s.term.text(s.tl, ok ? (answer[0] ? "Described." : "Description cleared.")
                                  : "Could not write the description file.");
@@ -2240,8 +2268,15 @@ void onBytes(Session& s, const uint8_t* in, size_t n, uint32_t now) {
 
 // tick: timeouts and retries only. The transfer is driven by the far end
 // answering, so this is what notices when it stops answering.
+#ifdef BBS_HAS_CAMERA
+void editTick();                         // the photos' descriptions (below)
+#endif
+
 void tick(uint32_t now) {
     pageRelease();                       // the listing's page, once nobody lists (1.1.2)
+#ifdef BBS_HAS_CAMERA
+    editTick();
+#endif
     if (!g_x.s) return;
     xferDrive(*g_x.s, nullptr, 0, now);
 }
@@ -2980,16 +3015,146 @@ bool files::sendPhoto(Bbs& b, Session& s, const char* rel, bool xmodem, uint32_t
     return true;
 }
 
-bool files::photoDesc(const char* dir, const char* name, const char* text) {
-    return setDesc(dir, name, text, ".ctmp");
+// ===========================================================================
+// One writer for the photos' FILES.BBS (1.1.2).
+//
+// The camera's worker wrote the Photos folders' FILES.BBS itself, and so did
+// the loop (DESC in the Photos area), two tasks on one FAT file with
+// CONFIG_FATFS_FS_LOCK at 0: the last rename won and a description was lost,
+// and the EEXIST fallback removed the live file while the other side might
+// have had it open. Now the camera asks, through photoDesc and photoTidy,
+// and never touches the file: its asks, and the loop's own for those areas,
+// go into one small queue, and one job of this plugin's on the background
+// runner makes them, one at a time. Every other area's FILES.BBS has only
+// ever had the loop as its writer, and still does.
+// ===========================================================================
+namespace {
+enum : uint8_t { EDIT_SET = 1, EDIT_TIDY = 2 };
+struct Edit {
+    uint8_t kind = 0;
+    char    sub[24] = {};              // the handle folder under Photos, "" for Photos itself
+    char    name[64] = {};
+    char    text[kDescMax + 1] = {};
+};
+constexpr uint8_t kEdits = 4;
+Edit        g_edit[kEdits];
+uint8_t     g_editHead  = 0;           // under the runner's lock
+uint8_t     g_editCount = 0;
+runner::Job g_editJob;
+
+void photoFolder(char* out, size_t n, const char* sub) {
+    if (sub && *sub) snprintf(out, n, "%s/%s/%.23s", plat::sdBase(), camrules::kPhotosDir, sub);
+    else             snprintf(out, n, "%s/%s", plat::sdBase(), camrules::kPhotosDir);
 }
 
-bool files::photoDescDrop(const char* dir, bool (*gone)(void* ctx, const char* name), void* ctx) {
-    char cur[160];
-    snprintf(cur, sizeof(cur), "%s/%s", dir, BBS_FILES_DESC);
-    struct stat st;
-    if (stat(cur, &st) != 0) return true;            // no descriptions to tidy
-    return setDesc(dir, nullptr, "", ".ctmp", gone, ctx);
+// The names a folder holds, as hashes, for a tidy: one read of the folder.
+struct Present { uint32_t* h; size_t n, cap; bool desc, other; };
+
+uint32_t foldName(const char* s) { return bbsu::foldHash(s); }
+
+bool presentAdd(void* ctx, const char* name, bool dir, uint32_t) {
+    Present& p = *static_cast<Present*>(ctx);
+    if (ieq(name, BBS_FILES_DESC)) { p.desc = true; return true; }
+    p.other = true;
+    if (dir) return true;
+    if (p.n == p.cap) {
+        const size_t cap = p.cap ? p.cap * 2 : 64;
+        uint32_t* g = static_cast<uint32_t*>(plat::camAlloc(cap * sizeof(uint32_t)));
+        if (!g) return false;
+        if (p.h) { memcpy(g, p.h, p.n * sizeof(uint32_t)); plat::camFree(p.h); }
+        p.h = g;
+        p.cap = cap;
+    }
+    p.h[p.n++] = foldName(name);
+    return true;
+}
+
+bool notPresent(void* ctx, const char* name) {
+    const Present& p = *static_cast<const Present*>(ctx);
+    const uint32_t h = foldName(name);
+    for (size_t i = 0; i < p.n; ++i) if (p.h[i] == h) return false;
+    return true;                                     // its file has gone: drop the line
+}
+
+void editRun(const Edit& e) {
+    char dir[160];
+    photoFolder(dir, sizeof(dir), e.sub);
+    if (e.kind == EDIT_SET) {
+        setDesc(dir, e.name, e.text, ".ctmp");
+        return;
+    }
+    // TIDY: the lines of files that are gone, and a handle folder the
+    // camera emptied goes, with its FILES.BBS if that is all it holds.
+    char rel[96];
+    if (e.sub[0]) snprintf(rel, sizeof(rel), "%s/%.23s", camrules::kPhotosDir, e.sub);
+    else          snprintf(rel, sizeof(rel), "%s", camrules::kPhotosDir);
+    Present p{ nullptr, 0, 0, false, false };
+    if (!plat::sdList(rel, presentAdd, &p)) { plat::camFree(p.h); return; }
+    if (p.desc) setDesc(dir, nullptr, "", ".ctmp", notPresent, &p);
+    if (e.sub[0] && p.n == 0) {
+        char fb[200];
+        snprintf(fb, sizeof(fb), "%s/%s", dir, BBS_FILES_DESC);
+        remove(fb);
+        rmdir(dir);                                  // only goes when empty
+    }
+    plat::camFree(p.h);
+}
+
+void editWork(runner::Job&) {
+    for (;;) {
+        Edit e;
+        plat::runLock();
+        if (!g_editCount) { plat::runUnlock(); break; }
+        e = g_edit[g_editHead];
+        g_editHead = static_cast<uint8_t>((g_editHead + 1) % kEdits);
+        --g_editCount;
+        plat::runUnlock();
+        editRun(e);
+        runner::breathe();
+    }
+}
+
+bool editQueue(uint8_t kind, const char* sub, const char* name, const char* text) {
+    Edit e;
+    e.kind = kind;
+    snprintf(e.sub, sizeof(e.sub), "%.23s", sub ? sub : "");
+    snprintf(e.name, sizeof(e.name), "%.63s", name ? name : "");
+    snprintf(e.text, sizeof(e.text), "%.*s", static_cast<int>(kDescMax), text ? text : "");
+    plat::runLock();
+    const bool room = g_editCount < kEdits;
+    if (room) {
+        g_edit[(g_editHead + g_editCount) % kEdits] = e;
+        ++g_editCount;
+    }
+    plat::runUnlock();
+    if (!room) plat::log("files: a photo's description was not written: the queue was full");
+    return room;
+}
+}   // namespace
+
+namespace {
+// editTick: post the edit job while edits wait and it is not out. The
+// loop's: the camera queues from the runner and the runner's queue is the
+// loop's to post to.
+void editTick() {
+    if (runner::done(g_editJob)) runner::collect(g_editJob);
+    if (!runner::idle(g_editJob)) return;
+    plat::runLock();
+    const bool waiting = g_editCount != 0;
+    plat::runUnlock();
+    if (!waiting) return;
+    g_editJob.work = editWork;
+    g_editJob.name = "files descriptions";
+    runner::post(g_editJob);
+}
+}   // namespace
+
+bool files::photoDesc(const char* sub, const char* name, const char* text) {
+    return editQueue(EDIT_SET, sub, name, text);
+}
+
+bool files::photoTidy(const char* sub) {
+    return editQueue(EDIT_TIDY, sub, "", "");
 }
 #endif
 

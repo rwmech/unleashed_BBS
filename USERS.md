@@ -313,6 +313,8 @@ retired = no
 - Keys the BBS doesn't know are accepted with a warning that names the line ("line 12: unknown key 'nickname'"), and dropped the next time the file is written.
 - Numbers that aren't numbers, values longer than the field, and a `pass` that isn't a salt and hash are refused, each naming its line.
 - `created` and `last_call` are Unix times; `day` and `day_minutes` track the daily limit.
+- **The live call figures are in `callstats.dat`, not here** (1.1.2). `calls`, `last_call`, `day` and `day_minutes` change at every logoff, and writing them here meant rewriting the whole of `users.txt` for four numbers, on the loop, at every hang-up. They are 16-byte records in `userdata/callstats.dat`, one for each account id at id x 16, each updated in place. The board lays them over these fields whenever it reads an account, so nothing that shows them changed. `users.txt` keeps the four fields, as they were when that account was last saved, so an older firmware still reads the file; they are not the live figures. On the first boot of 1.1.2 the file is made from `users.txt`'s figures. It travels in the backup zip beside `users.txt`.
+- The board keeps an index of the handles in memory (1.1.2), so the handle prompt, the sign-up checks and a lookup by id never read the file to the end. It is rebuilt whenever the board rewrites `users.txt` and after a restore. Edit the file only through the backup zip: a file changed under a running board is read through a stale index until the next rewrite.
 - Uploading a zip without `users.txt` leaves the accounts on the board as they are.
 - More accounts than `max_users` is refused.
 

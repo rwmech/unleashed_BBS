@@ -93,8 +93,11 @@ public:
     uint32_t totalBytes() const { return total_; }
     uint8_t  entries()    const { return count_; }
 
-    // produce: next bytes of the zip, 0 when finished
+    // produce: next bytes of the zip, 0 when finished. It returns as soon as
+    // it has opened a file (1.1.2), so a caller can keep to one open a pass.
     size_t produce(uint8_t* buf, size_t cap);
+    // opened: files opened for reading so far, a count that only goes up
+    uint16_t opened() const { return opened_; }
 
     // abort: close any open file (client went away)
     void abort();
@@ -175,6 +178,7 @@ private:
     uint8_t  hdrLen_ = 0;
     uint8_t  hdrPos_ = 0;
     FILE*    f_      = nullptr;
+    uint16_t opened_ = 0;          // see opened()
     uint32_t sent_   = 0;          // bytes of the current entry's data sent
     char     line_[176] = {};      // redacted config line in progress
     uint8_t  lineLen_ = 0;

@@ -144,8 +144,13 @@ constexpr uint8_t    kNameMax     = 40;
 // The shortest gap between two heartbeats a caller change may bring about,
 // in seconds: the project directory refuses a post from an address that
 // posted less than MIN_SECONDS (30) before, and a refused one starts that
-// clock again, so going sooner is slower. 0: never push on a change.
-constexpr uint16_t   kNudgeDef    = 30;
+// clock again, so going sooner is slower. 32 rather than 30: the board
+// times the gap from when its round began and the directory from when the
+// post arrived, which is later by the connection's setup, so 30 on the
+// board's clock can be 29.9 on the directory's and draw a 429. 0: never
+// push on a change.
+constexpr uint16_t   kNudgeDef    = 32;
+constexpr uint8_t    kRetries     = 3;      // a caller change nobody listed is sent again this often
 constexpr uint32_t   kCoalesceMs  = 2000;   // caller changes this close together are one heartbeat
 constexpr uint8_t    kReresolve   = 3;      // failed posts in a row before the name is looked up again
 constexpr size_t     kTokenMin    = 16;     // shortest token worth believing
@@ -275,6 +280,13 @@ uint32_t g_intervalMs = 0;                 // g_interval in ms (a host test may 
 // starts takes whatever the count is by then.
 bool     g_want     = false;
 uint32_t g_wantAt   = 0;
+// A round that carried a caller change and listed nowhere (a 429 from the
+// directory's per-address limit, which two boards behind one address hit,
+// or a directory briefly away) wants the change again after the gap, up to
+// kRetries times, rather than leaving it to the next timed heartbeat ten
+// minutes on. A new change starts the count again.
+bool     g_carry    = false;
+uint8_t  g_retry    = 0;
 // What a sysop sees in ANNOUNCE (1.1.2): when the last round went, what came
 // back, and how the board is backing off after failures.
 uint32_t g_lastSentMs    = 0;              // millis the last round began, 0 never
@@ -852,6 +864,7 @@ void saveToken() {
 // Failures do not hold it: their back-off is for the timed heartbeat.
 void nudge(uint32_t now) {
     if (!g_count || !g_nudgeSecs) return;
+    g_retry = 0;
     if (!g_want) {
         g_want   = true;
         g_wantAt = now + kCoalesceMs;
@@ -1035,6 +1048,16 @@ void service(uint32_t now) {
 
         if (!g_replyLen) { finish("no reply", false); return; }
         g_io[g_replyLen] = '\0';
+        // Headers that never reached their blank line are not a reply
+        // (1.1.2, the reliability suite): a buffer filled, or a connection
+        // closed, part way through them, and whatever header was cut reads
+        // as a shorter value. A token cut at twenty characters still passes
+        // kTokenMin and would be saved over the good one.
+        if (!strstr(g_io, "\r\n\r\n")) {
+            finish(static_cast<size_t>(g_replyLen) + 1 >= kReplyMax ? "reply too long" : "reply cut short",
+                   false);
+            return;
+        }
 
         const char* reply = g_io;
         int code = 0;                              // "HTTP/1.1 200 OK"
@@ -1071,8 +1094,17 @@ void roundDone(uint32_t now) {
     g_inRound = false;
     if (g_roundOk) {
         g_backoff = 0;
+        g_retry   = 0;
         g_nextRun = g_lastSentMs + g_intervalMs;
     } else {
+        // The caller change it carried, again once the gap allows. The gap
+        // is timed from this round's start, which puts the retry just past
+        // the directory's 30 s from the refusal it restarted its clock on.
+        if (g_carry && g_nudgeSecs && g_retry < kRetries && !g_want) {
+            ++g_retry;
+            g_want   = true;
+            g_wantAt = now;
+        }
         uint32_t wait = 30000u << (g_backoff < 5 ? g_backoff : 5);
         if (wait > g_intervalMs) wait = g_intervalMs;
         if (g_backoff < 255) ++g_backoff;
@@ -1086,6 +1118,7 @@ void beginRound(uint32_t now) {
     g_at          = 0;
     g_inRound     = true;
     g_roundOk     = false;
+    g_carry       = g_want;             // this round carries the change, if one waited
     g_want        = false;              // a change after this is sent by the next round
     g_lastRound   = now;
     g_lastSentMs  = now ? now : 1;
@@ -1338,6 +1371,8 @@ bool start(Bbs& bbs) {
     // The first round goes at once and waits on the lookup for up to the
     // post's own timeout.
     g_want     = false;
+    g_carry    = false;
+    g_retry    = 0;
     g_inRound  = false;
     g_backoff  = 0;
     beginRound(plat::millis());

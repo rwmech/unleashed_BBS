@@ -2859,6 +2859,23 @@ bool Bbs::rowSys(Session& s) {
                     statRow(s, "Stack free", "n/a", Color::Grey, "not measured");
                 }
             }
+            // The background runner (1.1.2): the least its stack has had
+            // free, out of what it has, which is how its size gets settled
+            // on the bench, and the longest job it has run.
+            {
+                const uint32_t rl = runner::stackLow();
+                char of[16], note[28];
+                fmtCommas(BBS_RUNNER_STACK, of, sizeof(of));
+                snprintf(note, sizeof(note), "least of %s", of);
+                if (rl) statNum(s, "Runner stack", rl, note);
+                else    statRow(s, "Runner stack", "-", Color::DarkGrey, runner::jobsDone() ? "not measured" : "not run yet");
+                if (runner::jobsDone()) {
+                    char nm[24];
+                    snprintf(nm, sizeof(nm), "ms, %.15s", runner::longestName());
+                    if (23 + strlen(nm) > rowWidth(s)) snprintf(nm, sizeof(nm), "ms");
+                    statNum(s, "Longest job", runner::longestMs(), nm);
+                }
+            }
             return true;
 
         case 26: rowSection(s, "traffic"); return true;
