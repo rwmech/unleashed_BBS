@@ -757,6 +757,12 @@ this tree.
   not enough. On 2026-09-26 the Makerfabs board on COM18 was brought up
   from the SPI TFT's schematic while it was the Parallel TFT v1.0, and the
   screen stayed dark until a photo of the back showed it.
+  **A vendor schematic can carry another chip's pin names.** Makerfabs'
+  Parallel v1.0 schematic uses an ESP32-S2 module symbol, so the nets
+  "IO33/DB0" and "IO34/LCD_RD" are really the S3's IO47 and IO48. D0 on the
+  wrong pin garbled every panel command and the glass stayed white.
+  Cross-check the schematic against the firmware the vendor actually
+  ships before trusting a pin.
   **Boards are chosen to maximise what the BBS can do, not to work around
   vendor wiring** (Rob: "not work around dumb vendor BS"). Rejected on
   that ground: the KEYESTUDIO ESP32-S3 PRO (N16R8), whose on-board SD slot
