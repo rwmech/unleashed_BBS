@@ -16082,9 +16082,15 @@ def sock_limit_so(tmp):
 
 
 def sock_log(tmp):
+    # The shim rewrites the file on every socket it sees, so a read can land
+    # between its truncate and its write: read again rather than take that.
     p = tmp / "sockets.txt"
-    m = re.search(r"count (\d+) peak (\d+) refused (\d+)", p.read_text() if p.exists() else "")
-    return tuple(int(x) for x in m.groups()) if m else (None, None, None)
+    for _ in range(50):
+        m = re.search(r"count (\d+) peak (\d+) refused (\d+)", p.read_text() if p.exists() else "")
+        if m:
+            return tuple(int(x) for x in m.groups())
+        time.sleep(0.02)
+    return (None, None, None)
 
 
 def test_ssh_socket_budget():

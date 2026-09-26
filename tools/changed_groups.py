@@ -186,6 +186,14 @@ TABLE = [
     ("src/core/tzones*", ["shell"]),
     ("src/core/users*", ["login", "messaging", "rename_follows", "lag_logins"]),
     ("src/core/xmodem*", ["storage", "binary", "upload_no_binary", "ymodem", "list_abort"]),
+    # SSH (1.1.2): compiled only where BBS_HAS_SSH, so its tests SKIP off the
+    # S3 profile; run them with harness.sh --board s3 [--card] --only=ssh.
+    ("src/core/sshd*", ["ssh", "board_s3"]),
+    ("src/core/sshlink*", ["ssh", "board_s3"]),
+    ("src/core/bbs_ssh*", ["ssh", "board_s3", "login", "terminal"]),
+    ("components/wolfssh/*", ["ssh"]),
+    ("partitions_s3.csv", ["board_s3"]),
+    ("host/ssh_call.cpp", ["ssh"]),
     ("src/core/ziparc*", ["storage", "partitions"]),
 
     # -----------------------------------------------------------------

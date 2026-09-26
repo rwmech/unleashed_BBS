@@ -116,13 +116,13 @@ says `ESP32-S3 · 8 MB · PSRAM` from here on, since the image header is
   window at 10 (about 19 KB of internal RAM back).
 - `tools/release.py` takes each family's offsets from its own partition
   table and checks the built `partitions.bin` against it.
-- Sizes, off the ELF: the S3 image 1,406,384 bytes (1.1.1: 1,270,240,
-  so +136,144, of a 3 MB slot now), static DRAM 251,400 of 341,760
-  (+3,616: eight links, the host keys, three Session fields). The ESP32
-  images' application objects and libraries match 1.1.1's section for
-  section and their static DRAM is identical (161,336, 172,816, 174,272);
-  only the Xtensa linker's call relaxation in esp_littlefs's VFS functions
-  moves by a few bytes between any two links.
+- Sizes, off the ELF, on 1.1.2-dev.1 (part 1): the S3 image 1,427,808
+  bytes (+136,176 on 1,291,632, of a 3 MB slot now), static DRAM 253,872
+  of 341,760 (+3,376: eight links, the host keys, the SSH listener, three
+  Session fields). The ESP32 images' application objects and libraries
+  match dev.1's section for section and their static DRAM is identical
+  (163,800, 175,320, 176,776); the linked images move by 0, +128 and +32
+  bytes, the Xtensa linker's call relaxation, which varies between links.
 - Found by the code review and fixed before the commit: the SSH task could
   spin without waiting (a client that never opens its window, or a socket
   that stops taking output) and starve core 0's idle task into a watchdog

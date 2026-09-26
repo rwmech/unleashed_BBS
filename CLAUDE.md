@@ -1077,14 +1077,14 @@ this tree.
     from the vendored tree); `host/ssh_call` is wolfSSH's client on a pipe
     for the tests (`SshCaller`), since the guard refuses `ssh`. The copy
     board's PSRAM is `BBS_HOST_PSRAM` (the slots-full test).
-  - Sizes off the ELF (with the SSH port): S3 image 1,406,384 (+136,144 on 1.1.1's
-    1,270,240), static DRAM 251,400 of 341,760 (+3,616). ESP32 images:
-    every application object and library the same size section for
-    section as main's, static DRAM identical (161,336 / 172,816 /
-    174,272); the linked .flash.text moves by -168 to +4 bytes, all of it
-    call relaxation in esp_littlefs's vfs_littlefs_* functions, which
-    varies between any two links (it moved between two of this branch's
-    own builds). The SSH sources are also filtered out of non-S3 builds in
+  - Sizes off the ELF, rebased on part 1 (1.1.2-dev.1, 0f7fbb4): S3 image
+    1,427,808 (+136,176 on dev.1's 1,291,632), static DRAM 253,872 of
+    341,760 (+3,376). ESP32 images: every application object and library
+    the same size section for section as dev.1's (153/154/154 entries, 0
+    differing), static DRAM identical (163,800 / 175,320 / 176,776); the
+    linked images move by 0 / +128 / +32 bytes, call relaxation in
+    esp_littlefs's vfs_littlefs_* functions, which varies between any two
+    links (it moved between two of this branch's own builds). The SSH sources are also filtered out of non-S3 builds in
     src/CMakeLists.txt, so those link main's exact object set.
   - Code review before the commit: two HIGH. (1) The SSH task could spin
     with a zero select timeout (window never opened by the client, or the
