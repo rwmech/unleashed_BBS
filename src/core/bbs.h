@@ -571,9 +571,10 @@ private:
     Bbs() = default;
 
     static constexpr uint8_t kSessions      = BBS_MAX_NODES + 2;   // + busy + sysop
-    // core + every plugin (1.2.0: was 12, a count written beside the plugin
-    // table; the link, doors and external plugins took the table past it)
-    static constexpr uint8_t kCommandTables = 1 + BBS_MAX_PLUGINS;
+    // core + the cameras' verbs (photos.cpp) + every plugin (1.2.0: was 12,
+    // a count written beside the plugin table; the link, doors and external
+    // plugins took the table past it)
+    static constexpr uint8_t kCommandTables = 2 + BBS_MAX_PLUGINS;
 
     // -- connections (bbs.cpp) ---------------------------------------------
     void acceptAll(uint32_t now);

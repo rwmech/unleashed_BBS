@@ -79,7 +79,7 @@ obj-mbedtls/%.o: $(MBEDTLS_DIR)/library/%.c | mbedtls-check
 	@mkdir -p obj-mbedtls
 	$(CC) -O2 -I$(MBEDTLS_DIR)/include -I$(MBEDTLS_DIR)/library -c $< -o $@
 
-$(MBED_LIB): mbedtls-check $(MBED_OBJS)
+$(MBED_LIB): $(MBED_OBJS) | mbedtls-check
 	@rm -f $@
 	ar rcs $@ $(MBED_OBJS)
 
@@ -227,7 +227,7 @@ test_camera: test_camera.cpp ../src/plugins/camera_rules.h ../src/plugins/camera
 # radio that loses, duplicates and reorders frames and changes channel, the
 # wire against a published CRC, and the cryptography against RFC 5869.
 test_link: test_link.cpp ../src/core/link.cpp ../src/core/link.h ../src/core/linkcrypto.cpp ../src/core/linkcrypto.h $(MBED_LIB)
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_link.cpp ../src/core/link.cpp ../src/core/linkcrypto.cpp $(MBED_LIB)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_link.cpp ../src/core/link.cpp ../src/core/linkcrypto.cpp $(MBED_LIB) -lpthread
 
 # A pretend door box for the host board's link (1.2.0): the peer end of the
 # same engine, over the host's UDP radio, so tools/testclient.py can pair a

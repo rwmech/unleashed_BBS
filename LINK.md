@@ -89,19 +89,25 @@ Checked against `components/esp_wifi/include/esp_now.h` and
   layer", otherwise `ESP_NOW_SEND_FAIL`. That means the far radio got the
   frame, not that the far application took it. The link's own
   acknowledgements (below) cover the second half.
-- **One frame in flight at the MAC.** The docs warn that "too short
+- **Four frames outstanding at the MAC.** The docs warn that "too short
   interval between sending two ESP-NOW data may lead to disorder of sending
-  callback function" and recommend sending the next frame after the
-  previous callback returned. The link's sender does exactly that.
+  callback function". The link does not rely on the callbacks' order: it
+  counts them, and sends while fewer than four are outstanding. On the
+  bench four outstanding moved 53% more than one at 24 Mbps. The link's
+  own window (below) is what keeps order and completeness, not the MAC.
 - **Callbacks run in the Wi-Fi task**, high priority, on core 0: "do not
-  do lengthy operations in the callback function". The link's receive
-  callback copies the frame into a ring and returns. Nothing else.
-- **Rate: 1 Mbps PHY by default.** Espressif's FAQ measures about 214 kbps
-  of real throughput in open air and 555 kbps shielded. At 222 payload
-  bytes a frame, a 30 KB VGA JPEG is 136 frames, roughly 1.2 s in open
-  air. `esp_now_set_peer_rate_config()` (5.2 and later) can raise it per
-  peer; the link leaves the default until a bench measurement says a
-  faster rate still reaches the garden.
+  do lengthy operations in the callback function". The receive callback
+  copies the frame into one of two rings and returns; the send callback
+  updates two counters. Nothing else.
+- **Rate: 802.11g 24 Mbps per peer** (`esp_now_set_peer_rate_config`,
+  5.2 and later, `WIFI_PHY_MODE_11G`, `WIFI_PHY_RATE_24M`). A peer drops
+  to 1 Mbps (11b) after three MAC failures in a row to it, and goes back to
+  24 Mbps after 30 s without one. Not MCS7 and not 54 Mbps: 24 is where the
+  bench stayed reliable across a house. The ESP-NOW default is 1 Mbps,
+  which Espressif's FAQ measures at about 214 kbps of real throughput in
+  open air; 24 Mbps moved 6 to 10 times that on the bench and took less
+  airtime from the callers' Wi-Fi (gateway pings 1-4 ms against 7-21 ms at
+  1 Mbps). `LINK` says how many devices are on 1 Mbps just now.
 - **Peers: 20 in the ESP-NOW table.** The link caps itself at
   **8** (`BBS_LINK_PEERS`), and SYS and `LINK` say when that is full.
   **Peers are added unencrypted at the ESP-NOW layer**; the link does its
@@ -113,10 +119,11 @@ Checked against `components/esp_wifi/include/esp_now.h` and
 - **Long Range (LR).** `WIFI_PROTOCOL_LR` exists and can be enabled
   alongside 11b/g/n (`esp_wifi_set_protocol(ifx, 11B|11G|11N|LR)`), with
   raw rates of 1/2 and 1/4 Mbps (`WIFI_PHY_RATE_LORA_500K`,
-  `WIFI_PHY_RATE_LORA_250K`), and only between Espressif chips. Whether a
-  host that is a station on a non-Espressif router keeps its router link
-  unchanged with LR added is **not documented and not yet measured**. So LR
-  is **off** in 1.2.0 and a later, bench-measured option.
+  `WIFI_PHY_RATE_LORA_250K`), and only between Espressif chips. **Off by
+  default**: on the bench, adding LR to the host raised the BBS's own
+  gateway pings to 29-55 ms on average, which is callers' latency (Rule
+  no. 1). A later option for a board whose satellite is out of reach, with
+  that cost stated.
 
 ### Why the link encrypts for itself
 
@@ -146,24 +153,35 @@ came from. mbedTLS does the work, with the ESP32's AES hardware
   it may set its own channel with `esp_wifi_set_channel()`. It finds the
   host by scanning:
   1. try the last channel that worked, then 1 to 13 in order;
-  2. on each, send a `DISCOVER` broadcast and listen 60 ms;
+  2. on each, send an empty `DISCOVER` broadcast and listen 20 ms (the
+     bench's figure, 2026-09-26, down from 60);
   3. the host answers with a unicast `BEACON` that carries its channel;
-  4. stay there.
-  A full sweep is under a second. Channel 14 (Japan, 11b only) is not
-  scanned.
+  4. move to the channel the BEACON names, and stay there.
+  A full sweep is about a quarter of a second. Channel 14 (Japan, 11b only)
+  is not scanned.
+- **BEACON is the only thing a peer trusts about the channel**, never a MAC
+  acknowledgement: a MAC ACK says some radio heard the frame, not that the
+  host is on that channel (on the bench a peer settled on a neighbouring
+  channel that way).
+- **The host answers DISCOVER, HELLO and PAIR_HELLO only while it is
+  joined to its router** (`esp_wifi_sta_get_ap_info`). While it is
+  reconnecting its channel is wherever the scan has it, and a peer that
+  believed a BEACON from there would wait on the wrong channel.
 - **Every frame from the host carries the channel** in its `chan` byte
   (`esp_wifi_get_channel`). A peer that sees a different number from the
   one it is on moves at once.
 - **When the router hops**, the host sees `WIFI_EVENT_HOME_CHANNEL_CHANGE`
   (present in 5.3.1, "doesn't occur when scanning"), logs it and counts it.
   It cannot warn its peers, because they are still on the old channel.
-  They notice by silence: a peer sends `PING` every 5 s and rescans after
-  three missed `PONG`s (15 s). A door caller sees a pause of up to that long
-  while the box finds the host again; nothing is lost, because every
-  unacknowledged frame is sent again.
-- While the host is itself reconnecting to the router its channel wanders.
-  Sends then fail with `ESP_ERR_ESPNOW_CHAN` or at the MAC, are counted,
-  and are retried by the ordinary retry rules.
+  They notice by silence: a peer sends `PING` every 5 s, and after a miss
+  the next one goes after 1 s; after three misses it rescans. A door caller
+  sees a pause of a few seconds while the box finds the host again; nothing
+  is lost, because every unacknowledged frame is sent again.
+- **A sleeping sender rescans at once.** A peer that wakes, sends and
+  sleeps again (camsat on a timer) cannot wait out three PINGs. It rescans
+  after three MAC failures in a row instead (`Engine::setFastRescan`).
+  Other peers keep the PING rule, because a MAC failure proves nothing
+  about the host.
 
 ---
 
@@ -178,33 +196,46 @@ CONFIG link). The window is open for 2 minutes, and one pairing at a time.
 **At the peer:** a peer with a button holds it for 3 s. A peer without one
 (the ESP32-CAM has only RESET) is in pairing mode for 5 minutes after any
 boot **while it holds no pairing**; to pair it again it is told to forget
-its pairing by a physical act its own firmware documents (for camsat: IO0
-held to ground at power-up). Physical access to the peer is ownership of it.
+its pairing by a physical act its own firmware documents (camsat: IO0 held
+low while it powers up, as its README says). Physical access to the peer is
+ownership of it.
 
-**The exchange** (family 0; broadcast until the host answers, then unicast):
+**The exchange** (family 0, all in the clear; commit, then reveal):
 
-1. peer to host, `PAIR_HELLO`: its kind (`camsat`, `doorbox`), name,
-   firmware version, link protocol version, a 16-byte nonce and an
-   ephemeral ECDH public key (P-256, 65 bytes uncompressed).
-2. The host, inside its window, shows the sysop:
-   `Pair camsat "garden" 24:6f:28:aa:bb:cc, code 4821? (y/N)`.
-3. On Y, host to peer, `PAIR_OFFER`: the host's ephemeral public key,
-   its own nonce, the board's name and its channel.
-4. Both sides compute the ECDH shared secret and derive with HKDF-SHA256
-   (salt: host MAC, peer MAC, both nonces; info `"unleashed link 1"`):
-   - `k_link`, 16 bytes: this pairing's long-term key;
-   - the 4-digit code: two more bytes of the same output, mod 10000.
-5. host to peer, `PAIR_DONE`, and peer to host, `PAIR_ACK`: each is a
+1. peer to host, `PAIR_HELLO`, broadcast on each channel in turn, a
+   quarter of a second each: its kind, name (16), firmware version (12)
+   and an ephemeral ECDH public key `pubP` (P-256, 65 bytes uncompressed).
+2. The host, inside its window and for one device at a time, makes its own
+   key pair `pubH` and the ECDH secret (on the runner), picks a 16-byte
+   nonce `nh`, and answers `PAIR_OFFER`: `pubH`, a commitment
+   `SHA-256(pubH || nh)` cut to 16 bytes, the board's name and its channel.
+3. The peer moves to that channel, makes the same secret, picks its own
+   nonce `np` and sends `PAIR_NONCE`: `np`, again every quarter second
+   until it hears the next step.
+4. The host, holding `np`, sends `PAIR_REVEAL`: `nh`. The peer checks it
+   against the commitment and drops the exchange if it does not match.
+5. Both derive, with HKDF-SHA256 (salt `np || nh`, the ECDH secret as
+   input, info `"unleashed link 1" || pubP || pubH`), 18 bytes:
+   - `k_link`, the first 16: this pairing's long-term key;
+   - the 4-digit code: the last two as a little-endian number, mod 10000.
+6. The host shows the sysop
+   `Pair camsat "garden" 24:6f:28:aa:bb:cc, code 4821? (y/N)`, and the
+   peer shows the same code (its console, an LED pattern).
+7. On Y, host to peer `PAIR_DONE`, and peer to host `PAIR_ACK`: each a
    sealed empty message under `k_link` (packet number 0, each direction
    once), so each side proves it holds the same key. Then both store the
-   pairing.
+   pairing. The peer stays on the host's channel for 5 s after, sending
+   DISCOVER every 100 ms, so its first HELLO finds the host at once.
 
-The code in step 2 is printed by the peer on its serial console too. A
-sysop who has the console can compare them and so rule out anybody in the
-middle; a sysop who has not is trusting that nobody else answered inside a
+**Why commit and reveal.** The host commits to `nh` before it sees `np`,
+and the peer sends `np` only after it has the commitment, so neither end
+can choose its nonce after seeing the other's. A man in the middle running
+two exchanges therefore cannot steer them to the same code: two codes match
+by chance once in 10,000. A sysop who compares the codes rules the middle
+out; a sysop who does not is trusting that nobody else answered inside a
 2-minute window they were standing beside, which is the same trust as
 pressing WPS. `LINK` shows `checked` or `unchecked` beside each pairing,
-set by the sysop's answer to `Codes match? (y/N)`.
+set by the sysop's answer to `Does the device show 4821 too? (y/N)`.
 
 All of the cryptography is mbedTLS code the WROOM image already links for
 WPA3 (checked in the 1.1.1 ELF: `mbedtls_ecdh_compute_shared`,
@@ -257,13 +288,14 @@ One layout on every transport. Little-endian throughout.
   never reused under a key.
 - **Payload at most 222 bytes** on the radio (250 - 20 - 8). On serial the
   limit is the same, so a frame can move between transports unchanged.
-- **Which frames are sealed.** Everything once a session key exists. Six
+- **Which frames are sealed.** Everything once a session key exists. Eight
   types come before one and go in the clear: `DISCOVER`, `BEACON`,
-  `HELLO`, `HELLO_ACK`, `PAIR_HELLO` and `PAIR_OFFER`. They carry nonces,
-  versions, a public key, the board's name and its channel, which the
+  `HELLO`, `HELLO_ACK` and the four pairing steps `PAIR_HELLO`,
+  `PAIR_OFFER`, `PAIR_NONCE` and `PAIR_REVEAL`. They carry nonces,
+  versions, public keys, the board's name and its channel, which the
   router's beacons already show. None of them grants anything, and a
   receiver ignores every other type that arrives unsealed from a radio
-  peer.
+  peer. `HELLO` and `HELLO_ACK` still carry a tag of their own (below).
 - **The CRC-16** is on every frame. On serial it is the integrity check;
   on the radio it is redundant with the tag and cheap, and it catches our
   own bugs (a frame assembled from the wrong buffer) before the tag does.
@@ -287,10 +319,25 @@ One layout on every transport. Little-endian throughout.
   `k_sess = HKDF-SHA256(k_link, salt = nonce_peer || nonce_host,
   info = "sess")`, 16 bytes, and packet numbers start at 1 in each
   direction. A frame recorded before a reboot never opens after one.
+- **HELLO and HELLO_ACK are tagged.** Each ends in 8 bytes of
+  `HMAC-SHA256(k_link, dir || type || payload)`, so only a paired device
+  gets an answer and only the host's answer is believed. A peer takes one
+  HELLO_ACK per HELLO, the one that echoes its nonce, so a replayed ACK
+  cannot put its packet numbers back to 1 under an old key.
+- **Boot epochs.** Each end picks a random 32-bit epoch at boot and sends
+  it in HELLO and HELLO_ACK. A new epoch, believed only when it is
+  authenticated (the peer: a HELLO_ACK that answers its HELLO; the host: a
+  HELLO whose key a sealed frame has proved), means the far end restarted:
+  the
+  sessions this end had with it are gone on its side, so they are ended
+  here too (their owners told, reason `RESTART`) rather than left waiting
+  for retries.
 - **A new key does not displace a working one until it is proved.** The
   host keeps the old session key alongside a pending new one, and switches
-  only when a sealed frame opens under the new key. A `HELLO` anybody can
-  send in the clear therefore cannot cut a working peer off.
+  only when a sealed frame opens under the new key. A replayed `HELLO`
+  therefore cannot cut a working peer off.
+- **Rekey.** Long before a packet number could wrap, the peer sends a new
+  HELLO; the host asks for one with `RESET` on session 0, reason `REKEY`.
 - **Replay window, per peer and direction:** a `pn` is accepted if it is
   above the highest seen, or among the 64 below it and not yet seen.
 - **Sessions** carry one conversation: one snap, one door caller. The id
@@ -307,18 +354,32 @@ One layout on every transport. Little-endian throughout.
   the fragments after it, and the receiver's `win`. Acks go out at most
   20 ms after the frame they answer.
 - **Retries.** An unacknowledged frame is sent again (as a new frame, new
-  `pn`) after 150 ms, doubling to 1.2 s, 8 tries in all. Then the session
-  is reset with `RESET` and its owner told: a transfer is abandoned, a door
-  caller taken back.
+  `pn`) after 150 ms, doubling to 1.2 s, 8 tries in all. A try counts only
+  for the oldest message on a session, and only if the far end has been
+  heard since the last send: a peer that is merely slow, or a window held
+  at 0, waits rather than fails. Then the session is reset with `RESET`
+  and its owner told: a transfer is abandoned, a door caller taken back.
 - **Window.** A sender may have at most `win` fragments (bulk) or messages
-  (streams) unacknowledged. The receiver states `win` in `HELLO`,
+  (streams, 4) unacknowledged. The receiver states `win` in `HELLO`,
   `HELLO_ACK` and every `ACK`, and states 0 when it has no room, which is
-  how a slow caller's terminal throttles a door box. Default 16 fragments
-  for bulk on a board without PSRAM (3.5 KB of buffer), 64 on one with it.
+  how a slow caller's terminal throttles a door box. 16 fragments for bulk
+  on every board as built (3.5 KB of buffer); the engine takes up to 64.
+- **Closing.** `closeAfter` ends a session once what is queued on it has
+  been taken and the ACK this end owes has gone; the session then leaves a
+  tombstone (8 kept, 30 s each). A resend of something already taken on a
+  closed session (its ACK was lost) is ACKed again from the tombstone;
+  anything new on it gets RESET, and is never taken as the first message of
+  a new session. Without this the camsat bench saw a picture filed on the
+  board and reported failed on the satellite (2026-09-26).
+- **Bulk ACKs from the runner.** The runner sends the acknowledgements that
+  are due as soon as it has taken fragments, and again when it has freed
+  half a window, instead of leaving them to the loop's next tick: a sender
+  with 16 fragments in its window otherwise waits up to 20 ms a window,
+  which the first real pictures (17 KB/s, 2026-09-26) showed was the limit.
 - **Order.** Fragments of a bulk message are written in order into the
-  receiver's window and handed on as an in-order stream. With one frame in
-  flight at the MAC, reordering only follows a loss and a retransmission,
-  and the SACK bitmap resends only what is missing.
+  receiver's window and handed on as an in-order stream. With four frames
+  outstanding at the MAC a loss can put fragments out of order; the window
+  holds them, and the SACK bitmap resends only what is missing.
 
 ---
 
@@ -329,19 +390,26 @@ caller who is not using it.
 
 | Where | What | Bound |
 |---|---|---|
-| Wi-Fi task, core 0 (receive callback) | length check, copy the frame into the receive ring, count a drop if full | one copy of 250 bytes |
-| Wi-Fi task (send callback) | set "the last frame is done", with its result | an atomic store |
-| BBS loop, core 1 (the link plugin's tick, every 20 ms) | every frame: open (CCM), replay window, CRC, ack; a single-frame message goes to its family (door bytes into the caller's timeline, control); a bulk fragment's plaintext goes into the bulk window; hand the radio its next frame | 8 frames a pass |
-| background runner (1.1.2) | bulk messages: take the window's fragments in order, the message CRC-32, and the family's sink (a card file for a picture); the pairing arithmetic (P-256) | a runner job, `breathe()` between blocks |
+| Wi-Fi task, core 0 (receive callback) | length check; a fragment of a bulk message (`nfrag` above 1) into the bulk ring, anything else into the control ring; count a drop if full | one copy of 250 bytes |
+| Wi-Fi task (send callback) | one fewer outstanding; the peer's run of failures for its rate | two atomics |
+| BBS loop, core 1 (the link plugin's tick, every 20 ms) | control frames: open (CCM), replay window, CRC, ack; a single-frame message goes to its family (door bytes into the caller's timeline, control); hand the radio its next frames | 8 frames a pass |
+| background runner (1.1.2) | bulk: take the bulk ring's fragments, open them, into the window (`pumpRx`); the window in order, the message CRC-32, and the family's sink, a card file for a picture (`pumpBulk`); the pairing arithmetic (P-256) | one job, which stays 50 ms after the last fragment and gives the runner back after 500 ms |
+
+**Bulk never touches the loop** (Rob, from the bench, 2026-09-26). A loop
+taking eight frames a pass lost half a picture at 24 Mbps: the fragments
+arrive faster than a 20 ms tick drains them. The radio sorts them by the
+header (unauthenticated, so only a routing decision; the engine checks the
+frame whichever ring it arrives on) and the runner takes them all. On the
+task path the bench saw no slow passes and a worst loop pass of 1.4 to
+3.2 ms during a picture.
 
 Single-frame messages stay on the loop on purpose: a door keystroke is one
 frame, and queueing it behind a SCREENS walk on the runner would put a
-second of lag between a caller and their door. Reassembly, which is where
-buffers and card writes live, is always on the runner and never on the
-loop. The loop opens every frame, bulk ones included, so the keys, the
-replay window and the sessions have one owner and no locks; the runner
-only ever sees plaintext in the window, through two atomics (how far it has
-taken, and which slots are full).
+second of lag between a caller and their door. The engine has one lock (a
+recursive mutex, `linkLock`), which every public call and `pumpRx` take,
+so the keys, the replay window and the sessions have one owner at a time;
+`pumpBulk` works on plaintext in the window outside the lock, through two
+atomics (how far it has taken, and which slots are full).
 
 **The cost of opening a frame.** mbedTLS's own CCM runs the cipher a block
 at a time, and on the ESP32 each block is one trip to the AES peripheral,
@@ -350,73 +418,92 @@ on an ESP32 and 1,000 us on an S3 (2026-09-26). linkcrypto builds the same
 CCM from one CBC call for the MAC and one CTR call for the keystream, which
 hold the peripheral once each; it is byte for byte mbedtls_ccm's (checked
 against RFC 3610 packet vector 1 and against mbedtls_ccm for every payload
-length a frame can have). Measured on the S3 in the BBS's own -Os build
-with hardware AES, a 222-byte frame with its 20-byte header: **seal 78 us,
-open 78 us**, against 963 us for mbedtls_ccm in the same image (camsat
-bench, 2026-09-26). Under Rob's 100 us line, so the link stays on the loop.
-The ESP32's figure and `Engine::poll`'s per frame (from `LINK`) are still to
-be read on the bench.
+length a frame can have). Measured in the BBS's own -Os build with hardware
+AES, a 222-byte frame with its 20-byte header (camsat bench, 2026-09-26):
 
-**The loop's per-frame cost is measured on the bench and has a limit**
-(Rob, 2026-09-26): if opening and dispatching one frame costs more than
-about 100 µs, or the single-frame ring grows under load, the link moves
-that work to a task of its own. `LINK` shows the average and worst
-per-frame time and the ring's high-water mark, so the answer is read off
-the board rather than argued.
+| | seal | open | mbedtls_ccm, same image |
+|---|---|---|---|
+| ESP32-S3 | 78 us | 78 us | 963 us |
+| ESP32 | 93.6 us | 94.7 us | 654 us seal, 656 us open |
+
+**The loop's per-frame cost has a limit** (Rob, 2026-09-26): about 100 µs a
+frame, or the control ring growing under load, moves that work to a task
+of its own. The bench measured a whole control frame on the loop, open and
+dispatch together, at 150 to 184 µs, and Rob kept control frames on the
+loop anyway: they come a few a second (a keystroke, a PING, an ACK), where
+bulk comes hundreds a second, and bulk is what moved. `LINK` shows the
+average and worst per-frame time and both rings' high-water marks, so the
+answer is read off the board rather than argued.
 
 The rings and windows are allocated when the link starts, from PSRAM on a
 board that has it and the heap otherwise, and freed when it stops. Nothing
 is allocated per frame, and nothing at all while the link is off.
 
 The runner interface used is the one on rel-1.1.2a (`src/core/runner.h`):
-a `runner::Job` per kind of work, `post`, `done`, `collect`, `breathe`.
-The link owns one job, "link", posted when the bulk window has fragments
-waiting or pairing wants its arithmetic, and the job is idle. The engine's
-pairing state stays the loop's: `pairTake` copies what the arithmetic needs
-into a job, `pairRun` does it anywhere, `pairGive` puts the answer back.
-On a tree without the runner (the link branch before the 1.1.2 merge) the
-plugin calls the same work from its tick; `__has_include("core/runner.h")`
-picks, so the merge needs no edit here.
+a `runner::Job` per kind of work, `post`, `done`, `idle`, `collect`,
+`breathe`. The link owns one job, "link", posted when the bulk ring or the
+window has fragments waiting or pairing wants its arithmetic, and the job
+is idle. The engine's pairing state stays the loop's: `pairTake` copies
+what the arithmetic needs into a job, `pairRun` does it anywhere,
+`pairGive` puts the answer back. A link stopped while its job runs (a
+CONFIG save) is kept until the runner hands the job back, and its engine
+neither sends nor takes frames meanwhile. On a tree without the runner
+(the link branch before the 1.1.2 merge) the plugin's tick does a bounded
+slice of the same work, which is fine for the host tests and not for a
+picture at 24 Mbps; `__has_include("core/runner.h")` picks, so the merge
+needs no edit here.
 
 ---
 
 ## Family 0: LINK (control)
 
-| Type | Name | Dir | Sealed | Payload |
+| Type | Name | Dir | Sealed | Payload (bytes) |
 |---|---|---|---|---|
-| 1 | DISCOVER | P→H broadcast | no | peer MAC; the host answers only its own peers, once a second each |
-| 2 | BEACON | H→P | no | host channel, board name, link protocol version |
-| 3 | HELLO | P→H | no | nonce, protocol version, kind, firmware version, families spoken, `win` |
-| 4 | HELLO_ACK | H→P | no | nonce, `win` |
-| 5 | PING | P→H | yes | uptime, free heap, RSSI of the host as the peer hears it |
-| 6 | PONG | H→P | yes | unix time (0 when the host has no NTP), host channel |
-| 7 | ACK | both | yes | session, seq delivered, frag delivered, 32-bit SACK, `win` |
-| 8 | RESET | both | yes | session, reason code |
-| 16 | PAIR_HELLO | P→H broadcast | no | kind, name, versions, nonce, ECDH public key |
-| 17 | PAIR_OFFER | H→P | no | ECDH public key, nonce, board name, channel |
+| 1 | DISCOVER | P→H broadcast | no | empty; the host answers only its own peers (by source MAC), once a second each, and only while joined to its router |
+| 2 | BEACON | H→P | no | `u8 channel, u8 version, char board[16]` |
+| 3 | HELLO | P→H | tagged | `nonce[16], u8 version, u8 kind, char fw[12], u32 families, u8 win, u32 epoch`, then the 8-byte tag |
+| 4 | HELLO_ACK | H→P | tagged | `nonce_peer[16], nonce_host[16], u8 win, u32 epoch`, then the 8-byte tag |
+| 5 | PING | P→H | yes | `u32 uptime s, u32 free heap, i8 RSSI of the host as the peer hears it` |
+| 6 | PONG | H→P | yes | `u32 unix time (0: no NTP), u8 channel` |
+| 7 | ACK | both | yes | `u16 session, u16 seq expected, u8 bulk, u16 bulk seq, u16 fragments in order, u32 SACK, u16 win` |
+| 8 | RESET | both | yes | `u16 session, u8 reason` (`CLOSED`, `RETRIES`, `REFUSED`, `BUSY`, `BADCRC`, `UNKNOWN`, `ABORTED`, `RESTART`, `REKEY`) |
+| 16 | PAIR_HELLO | P→H broadcast | no | `u8 kind, char name[16], char fw[12], pubP[65]` |
+| 17 | PAIR_OFFER | H→P | no | `pubH[65], commit[16], char board[16], u8 channel` |
 | 18 | PAIR_DONE | H→P | yes, `k_link` | empty |
 | 19 | PAIR_ACK | P→H | yes, `k_link` | empty |
+| 20 | PAIR_NONCE | P→H | no | `np[16]` |
+| 21 | PAIR_REVEAL | H→P | no | `nh[16]` |
 
 ---
 
 ## Family 1: CAMERA
 
-A camera satellite is a small ESP32 with a camera and no card. It takes a
-picture when the host asks, on its own timer, or on motion, and the host
-files it in Photos exactly like a snap from a built-in camera: the host
-names the file, applies the Photos limits and keeps the record. The
-satellite never chooses a path.
+A camera satellite is a small ESP32 with a camera and no card. **Every
+picture is a host SNAP**: the host names the file, applies the Photos
+limits, dates and describes it and keeps the record, exactly as for a snap
+from a built-in camera. The satellite never chooses a path or a name and
+needs no clock. The pixel work, the watermark and the picture correction
+(levels, gamma), runs on the satellite, which has the PSRAM for it; the
+host sends the text to stamp. (The WROOM could not: the JPEG encoder's
+tables are 8 KB of static DRAM.)
 
 | Type | Name | Dir | Payload |
 |---|---|---|---|
-| 1 | SNAP | H→P | request id, frame size, quality (10-63), flash (off, on, auto), reason (caller, timelapse, test) |
-| 2 | PICTURE | P→H, bulk | request id (0 when the satellite started it), reason, width, height, taken-at (unix, 0 if unknown), then the JPEG |
-| 3 | SNAP_FAIL | P→H | request id, reason code (no sensor, no memory, busy, flash fault) |
+| 1 | SNAP | H→P | request id, frame size, quality, flash (off, on, auto), reason (caller, timelapse, test, motion); then optionally the watermark switch, board name, date, who, and the JPEG comment |
+| 2 | PICTURE | P→H, bulk | the request id, reason, width, height, taken-at (0: no clock), then the JPEG |
+| 3 | SNAP_FAIL | P→H | request id, reason code (no sensor, no memory, busy, flash fault, capture) |
 | 4 | STATUS | P→H | sensor model, largest frame size, free heap and PSRAM, uptime, last error; sent after HELLO and every 60 s |
-| 5 | EVENT | P→H | motion or timelapse, taken-at; always followed by its PICTURE |
-| 6 | SETTINGS | H→P | timelapse interval (0 off), motion on/off, motion hold-off seconds, default frame size and quality, flash |
-| 7 | SETTINGS_OK | P→H | what it is now using (it may clamp) |
+| 5 | EVENT | P→H | motion, or its timer while it deep-sleeps: a request for a SNAP |
+| 6 | SETTINGS | H→P | the camera page: timelapse, motion and hold-off, size, quality, flash, deep sleep, the picture settings, the motion pin |
+| 7 | SETTINGS_OK | P→H | the same, as it now runs them (it may clamp) |
 
+- **Motion and deep sleep.** The satellite sends EVENT; the host answers
+  with a SNAP (reason motion or timelapse, the texts filled) under the
+  Photos limits and the system folders, as the built-in camera's system
+  snaps are, or drops the EVENT by not answering (hold-off, card full). An
+  EVENT to picture round trip is 3 to 10 ms on the bench, so motion loses
+  nothing. A satellite that stays awake gets its timelapse SNAPs from the
+  host's own clock.
 - The host is the source of truth for the satellite's settings and sends
   SETTINGS after every HELLO, so a satellite that rebooted or was swapped
   picks them up without a UI of its own.
@@ -460,13 +547,22 @@ their own repositories.
 Byte layouts for both families are in `src/core/linkfam.h`, which the
 board and a peer both build, with every multi-byte field little-endian:
 
-- CAMERA SNAP: `u16 req, u8 size, u8 quality, u8 flash, u8 reason`.
+- CAMERA SNAP, 6 bytes then an optional text block, 217 at most:
+  `u16 req, u8 size, u8 quality, u8 flash, u8 reason` (0-5), `u8 mark`
+  (6), `char board[20]` (7), `char when[16]` (27, "2026-09-26 14:05", the
+  host's local time), `char who[24]` (43, "*guest", a handle, "timelapse"
+  or "motion"), then the JPEG comment, up to 150 bytes and no NUL (67). A
+  satellite that reads only the first 6 still works.
 - CAMERA PICTURE: a 16-byte header (`u16 req, u8 reason, u8 0, u16 width,
   u16 height, u32 takenAt, u32 0`), then the JPEG.
 - CAMERA SNAP_FAIL `u16 req, u8 code`; STATUS `u8 sensor, u8 maxSize,
   u32 heap, u32 psram, u32 uptime, u8 lastErr, u8 0, char model[12]`;
-  EVENT `u8 kind, u32 takenAt`; SETTINGS and SETTINGS_OK `u16 timelapseMin,
-  u8 motion, u16 holdoffS, u8 size, u8 quality, u8 flash`.
+  EVENT `u8 kind, u32 takenAt`.
+- CAMERA SETTINGS and SETTINGS_OK, 24 bytes: `u16 timelapseMin,
+  u8 timelapseSec, u8 motion, u16 holdoffS, u8 size, u8 quality, u8 flash,
+  u8 sleep` (0 awake, 1 deep sleep between shots), `u8 flip, u8 mirror,
+  i8 bright, i8 contrast, i8 saturation, i8 exposure, u8 wb, u8 effect,
+  u8 levels, u8 gammaIdx, u8 motionPin` (0xFF none), `u8 0[3]`.
 - Frame sizes are the link's own numbers: 0 the satellite's default, 1
   QQVGA, 2 QVGA, 3 VGA, 4 SVGA, 5 XGA, 6 SXGA, 7 UXGA.
 - DOOR LIST: `u8 sessions it holds, u8 count`, then per door `u8 id,
@@ -527,9 +623,15 @@ def handoff(line):
   - time runs out: TIMEUP, then a 10 s grace for the door to save, then
     the board takes the caller back whether or not FINISHED came;
   - the caller hangs up: CLOSE, and the session ends.
-- If the box goes silent (no ACK within the retry rules, or the peer
-  drops), the board takes the caller back with "The door has gone away."
-  and sends CLOSE when it next hears from the box.
+- CLOSE is the last message on its session. When the session's window is
+  full (a box that has stopped reading) the caller is back at the prompt
+  at once and the board keeps trying CLOSE for 5 s from its tick, then
+  forgets the session. When the doors stop (a CONFIG save, a shutdown) a
+  CLOSE that cannot go becomes a RESET, which needs no window, and the
+  link sends what is queued before its radio goes.
+- If the box goes silent (retries run out, or the peer drops), the board
+  takes the caller back with "The door has gone away." or "The door box
+  went quiet."
 - The session number the board uses to track the door is kept in
   `Session::ownerData`, which is the owning plugin's scratch word, so the
   door framework adds nothing to the `Session` struct.
@@ -548,7 +650,12 @@ no radio, or be a PC or a Raspberry Pi with a USB serial adapter.
 - **Trusted by the wire: no pairing and no sealing** (Rob). A serial box
   is on a port the sysop configured, the same as the serial bridge:
   whoever can plug into the board's UART already has the board. SEC is
-  never set on serial in 1.2.0.
+  never set on serial in 1.2.0. The trust belongs to the transport, not to
+  the frame: a frame from the radio is never treated as serial, whatever
+  it says.
+- **Not built in 1.2.0-link.** The frames, COBS and the rules are settled
+  and `cobsEncode`/`cobsDecode` are in the engine and tested; the UART
+  transport itself follows the radio.
 - One serial peer per UART, and UART2 is shared with the serial bridge
   plugin: one owner at a time, refused by CONFIG like any other pin
   clash. Many callers still share that one box, because sessions are
@@ -577,7 +684,7 @@ The link moves data. It never moves authority.
   accepting it, writes to a temp name and files it only when the CRC-32
   checks. A satellite cannot write anywhere but Photos, and only through
   the board.
-- **On the radio, sealed or nothing.** Past the six clear types, a frame
+- **On the radio, sealed or nothing.** Past the eight clear types, a frame
   that is not sealed, or does not open, is dropped, whatever MAC it shows.
   PAIR_HELLO is only looked at while a sysop's window is open. Every drop
   is counted by reason in `LINK`.
@@ -607,6 +714,14 @@ Measured off the esp32dev build of the link branch (`1.2.0-link.2`,
 The WROOM image is 1,267,544 bytes, 80.6% of its slot, with the link and
 doors in. The camera satellite plugin is measured when it exists
 (unleashed_camsat).
+
+At `1.2.0-link.5` (the bench's radio: two rings, four outstanding, the rate
+table): `_bss_end` 0x3ffd7788, 161,672, so **19,064 free** (+56 bytes), and
+PlatformIO's flash figure 1,275,160 (81.1%). The heap while on grows by the
+second ring and the rate table: control ring 8 x 258, bulk ring 16 x 258
+and 12 rate entries, about 6.4 KB together in place of the 2 KB ring, so
+about 19 KB in all; the plugin declares 20 KB and starts only with that
+plus the core's reserve free.
 
 ---
 
@@ -789,6 +904,10 @@ the directory's fetcher reads it.
   codes, LINK, SYS) and `test_doors` (the handoff line, keys and output,
   FINISHED, Ctrl-], a caller hanging up in a door).
 - `tools/test_ext_plugin.sh`: plugins in their own repositories, above.
+  The board's side of the same path was proved by building `esp32dev`
+  with `custom_ext_plugins = hello` and `hello  tools/testplugin  -` in the
+  lock: the pre-script fetched it, CMake wrote `X(kHelloPlugin)` into the
+  build directory's `ext_plugins.h`, and `kHelloPlugin` is in the ELF.
 - On the bench, still to do: the frame cost against the 100 us line, a
   picture from a real satellite, and whether 5.3.1 delivers an unsealed
   frame from a MAC it knows (the design does not depend on the answer).
