@@ -7,17 +7,17 @@
  * File:         src/plugins/files.h
  * Module:       Plugins / file areas, what other plugins may ask of them
  *
- * Purpose:      The camera (1.1.0, BBS_HAS_CAMERA boards) hands a caller
- *               straight to a download of the photo just taken, and labels
- *               each photo with who took it the way any file is labelled,
- *               in its folder's FILES.BBS. Both through the file areas' own
- *               code, so a photo is downloaded and described exactly as any
- *               file is.
+ * Purpose:      A camera, built in (1.1.0) or a satellite on the link
+ *               (1.2.0, any board), hands a caller straight to a download of
+ *               the photo just taken, and labels each photo with who took it
+ *               the way any file is labelled, in its folder's FILES.BBS.
+ *               Both through the file areas' own code, so a photo is
+ *               downloaded and described exactly as any file is.
  *
- * Interfaces:   sendPhoto, photoDesc, photoDescDrop
+ * Interfaces:   sendPhoto, photoDesc, photoTidy
  *
  * Libraries:    none
- * Targets:      ESP32 and ESP32-S3 camera boards and the Linux host build
+ * Targets:      ESP32 and ESP32-S3 (ESP-IDF 5.3.1) and the Linux host build
  * See also:     src/plugins/files.cpp, src/plugins/camera.cpp
  *
  * Copyright 2026 - Robert Mech
@@ -44,7 +44,6 @@
 #include <cstdint>
 #include "../config.h"
 
-#ifdef BBS_HAS_CAMERA
 class Bbs;
 struct Session;
 
@@ -68,4 +67,3 @@ bool photoDesc(const char* sub, const char* name, const char* text);
 bool photoTidy(const char* sub);
 
 } // namespace files
-#endif

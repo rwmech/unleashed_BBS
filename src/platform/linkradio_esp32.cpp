@@ -413,6 +413,8 @@ uint8_t linkRadioSlowPeers() {
     return n;
 }
 
+bool linkRadioPsram() { return heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0; }
+
 void* linkAlloc(size_t n) {
     void* p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     return p ? p : heap_caps_malloc(n, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);

@@ -108,6 +108,10 @@ uint32_t linkRadioSendFails();     // send callbacks that said FAIL
 uint32_t linkRadioChannelMoves();  // home channel changes seen (the router hopped)
 uint8_t  linkRadioSlowPeers();     // peers sent at 1 Mbps just now (fallen back)
 
+// linkRadioPsram: the board has PSRAM for the link's buffers, so the bulk
+// window can be 64 fragments rather than 16.
+bool     linkRadioPsram();
+
 // linkAlloc / linkFree: the link's buffers, from PSRAM on a board that has
 // it and the internal heap otherwise. Only at start and stop, never per frame.
 void*    linkAlloc(size_t n);

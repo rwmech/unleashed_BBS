@@ -26,8 +26,31 @@ A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E
 
 ## 1.2.0-link (in development, not released), 2026-09-26
 
-The µnleashed link, its lane (rel-1.2.0-link, off main at 78a0ba4). Merges
-after 1.1.2. Host-tested; not yet flashed.
+The µnleashed link, its lane (rel-1.2.0-link, rebased onto main at b278284,
+after 1.1.2 part 1 and SSH). Host-tested; not yet flashed.
+
+**1.2.0-link.7: on 1.1.2, and one filing for every picture**
+- Rebased onto main (1.1.2-dev.3): the link's job runs on the background
+  runner by itself now (`__has_include("core/runner.h")` found it), so
+  picture fragments, reassembly and the pairing arithmetic are off the loop
+  for real; the bounded slice on the tick is gone from the build.
+- The built-in camera files its pictures through `photos::` (`open`,
+  `write`, `file`), the path a satellite's pictures take, and provides the
+  Photos area (`photos::provide`). The file areas ask `photos::present` and
+  `photos::levels`, no longer the camera, so **Photos and Timelapse (areas
+  12 and 13) are on every board**, shown while something takes pictures: a
+  WROOM with a camera satellite has them. The photos' description queue
+  and `files::sendPhoto` are on every board too, so a satellite's plugin can
+  offer "Download it now?".
+- From the camsat bench on link.6 (S3 plus satellite, runner in: 72-88
+  KB/s, no retries, no slow pass from any picture):
+  - the bulk window is 64 fragments on a board with PSRAM (16 without),
+    chosen at start, since the window was what paced the transfer;
+  - a caller asking for a camera the board does not have is told the ones
+    it has (`No such camera. Try: 1 camera, 2 garden.`), since `CAMERA` is
+    staff's; staff are still pointed at `CAMERA`.
+- `photos::file` refuses a name with more than one folder in it, as the
+  Photos area lists one level.
 
 **The link** ([LINK.md](LINK.md))
 - One ESP-NOW protocol in the core for devices beside the board: a camera
