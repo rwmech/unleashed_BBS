@@ -90,6 +90,8 @@
 #include "../core/clock.h"
 #include "../core/fx.h"
 #include "../core/plugin.h"
+#include "../core/runner.h"            // the worker is a job on the background runner (1.1.2)
+#include "../core/bbs_util.h"          // wrap: the busy line at the width
 #include "../core/silent.h"
 #include "../core/sysconfig.h"
 #include "../platform/platform.h"
@@ -650,21 +652,6 @@ void walk(const Job& j, Fn fn) {
     plat::camFree(subs);
 }
 
-// The names the second pass removed, for FILES.BBS: one rewrite a folder.
-struct Gone {
-    const uint32_t* hashes;
-    const uint16_t* dirs;
-    size_t          n;
-    uint16_t        dir;                   // this folder's number
-};
-
-bool goneName(void* ctx, const char* name) {
-    const Gone* g = static_cast<const Gone*>(ctx);
-    uint32_t h = nameHash(name);
-    for (size_t i = 0; i < g->n; ++i) if (g->dirs[i] == g->dir && g->hashes[i] == h) return true;
-    return false;
-}
-
 // survey: count what is kept, measure the card, and prune by age, count
 // and the floor (camera_rules.h, choose). Two passes over the folder, the
 // first to decide and the second to remove, so no name is held in memory.
@@ -721,9 +708,6 @@ void survey(Job& j, const char* photos) {
     size_t   marked  = 0;
     for (size_t i = 0; i < n; ++i) marked += f[i].del ? 1 : 0;
     if (marked) {
-        uint32_t* hashes = static_cast<uint32_t*>(plat::camAlloc(marked * sizeof(uint32_t)));
-        uint16_t* dirs   = static_cast<uint16_t*>(plat::camAlloc(marked * sizeof(uint16_t)));
-        size_t    nh     = 0;
         constexpr uint16_t kTouchedMax = 64;           // folders a pass may tidy
         struct Touched { char name[64]; uint16_t idx; };
         Touched* touched = static_cast<Touched*>(plat::camAlloc(sizeof(Touched) * kTouchedMax));
@@ -738,7 +722,6 @@ void survey(Job& j, const char* photos) {
                 if (remove(path) == 0) {
                     ++removed;
                     f[i].del = false; f[i].bytes = 0; f[i].key = 0;
-                    if (g == 0 && hashes && dirs && nh < marked) { hashes[nh] = h; dirs[nh] = dir; ++nh; }
                     bool seen = false;
                     for (uint16_t t = 0; t < nt; ++t) seen |= touched[t].idx == dir;
                     if (g == 0 && !seen && touched && nt < kTouchedMax) {
@@ -749,35 +732,11 @@ void survey(Job& j, const char* photos) {
                 break;
             }
         });
-        for (uint16_t t = 0; t < nt; ++t) {
-            char dir[200];
-            if (touched[t].name[0]) snprintf(dir, sizeof(dir), "%s/%s", photos, touched[t].name);
-            else                    snprintf(dir, sizeof(dir), "%s", photos);
-            Gone gone{ hashes, dirs, hashes && dirs ? nh : 0, touched[t].idx };   // this folder's names only
-            files::photoDescDrop(dir, goneName, &gone);
-            if (!touched[t].name[0]) continue;
-            // An emptied handle folder goes, with its FILES.BBS if that is
-            // all that is left in it.
-            struct Left { bool other, desc; } left{ false, false };
-            char rel[96];
-            snprintf(rel, sizeof(rel), "%s/%.63s", camrules::kPhotosDir, touched[t].name);
-            plat::sdList(rel, [](void* ctx, const char* name, bool, uint32_t) {
-                Left* l = static_cast<Left*>(ctx);
-                if (!strcasecmp(name, BBS_FILES_DESC)) l->desc = true;
-                else                                   l->other = true;
-                return !l->other;
-            }, &left);
-            if (left.other) continue;
-            if (left.desc) {
-                char fb[240];
-                snprintf(fb, sizeof(fb), "%s/%s", dir, BBS_FILES_DESC);
-                remove(fb);
-            }
-            rmdir(dir);
-        }
+        // Each folder a photo went from is tidied by the file areas, which
+        // are FILES.BBS's one writer (1.1.2): its lines for photos that have
+        // gone, and a handle folder left empty removed. Asked, not done.
+        for (uint16_t t = 0; t < nt; ++t) files::photoTidy(touched[t].name);
         plat::camFree(touched);
-        plat::camFree(dirs);
-        plat::camFree(hashes);
         if (space) plat::sdSpace(total, freeB);
     }
 
@@ -967,12 +926,16 @@ void save(Job& j, const char* photos, const uint8_t* jpg, size_t len) {
     // thousand-line FILES.BBS rewritten for every timed shot is card wear
     // and seconds of the card's time for nothing.
     if (j.kind == K_CALLER) {
-        char folder[256];
-        snprintf(folder, sizeof(folder), "%s", dst);
-        char* slash = strrchr(folder, '/');
+        // Asked of the file areas, FILES.BBS's one writer (1.1.2): the
+        // handle folder under Photos, or Photos itself.
+        char rel[112];
+        snprintf(rel, sizeof(rel), "%s", j.rel);
+        char* slash = strrchr(rel, '/');
         if (slash) {
             *slash = '\0';
-            files::photoDesc(folder, slash + 1, j.desc);
+            files::photoDesc(rel, slash + 1, j.desc);
+        } else {
+            files::photoDesc("", rel, j.desc);
         }
     }
     j.msSave = plat::millis() - t0;
@@ -1027,9 +990,19 @@ void worker(void*) {
 // ---------------------------------------------------------------------------
 // The loop's side
 // ---------------------------------------------------------------------------
-// 8 KB: encoding a raw frame (a GC0308's RGB565) and the survey after it
-// left 2,008 of 6,144 free on the bench, and an overflow reboots the board.
-constexpr uint32_t kWorkerStack = 8192;
+// The worker is a job on the background runner since 1.1.2 (core/runner.h),
+// whose task's stack is BBS_RUNNER_STACK: 8 KB, because encoding a raw frame
+// (a GC0308's RGB565) and the survey after it left 2,008 of 6,144 free on the
+// bench, and an overflow reboots the board.
+constexpr uint32_t kWorkerStack = BBS_RUNNER_STACK;
+
+// The camera's job on the runner. The camera's own phases (Job::ph) still
+// carry the snap; this is only how the worker gets a task to run on, one
+// job in the runner's queue like any other, and the runner's lock rather
+// than the old one-global trampoline.
+runner::Job g_run;
+
+void runWork(runner::Job&) { worker(nullptr); }
 // What a snap takes from internal RAM, the worker's own stack and its task
 // block included: the loop's check before the worker is started, since the
 // stack comes out of the same memory the camera's DMA block has to.
@@ -1054,7 +1027,9 @@ bool roomToSnap(bool system) {
     return ok;
 }
 
-bool jobBusy() { return g_job.ph.load() != PH_IDLE; }
+// Busy until the runner has handed the job back too: the worker sets DONE
+// on the camera's job a moment before it returns to the runner.
+bool jobBusy() { return g_job.ph.load() != PH_IDLE || !runner::idle(g_run); }
 
 void snapshotCfg(Job& j) {
     j.cam = plat::CamCfg();
@@ -1124,9 +1099,11 @@ bool startJob(uint8_t kind, uint32_t now) {
     j.flashLead = g_set.lead;
     snapshotCfg(j);
     j.ph.store(PH_WORKING);
-    if (!plat::taskStart(worker, nullptr, kWorkerStack, "camera")) {
+    g_run.work = runWork;
+    g_run.name = "camera";
+    if (!runner::post(g_run)) {
         j.ph.store(PH_IDLE);
-        plat::log("camera: the worker task would not start");
+        plat::log("camera: the worker would not start");
         return false;
     }
     return true;
@@ -1348,8 +1325,13 @@ void finish(uint32_t now) {
 // ---------------------------------------------------------------------------
 void tick(uint32_t now) {
     Job& j = g_job;
+    if (runner::done(g_run)) runner::collect(g_run);   // the worker has returned
     const uint8_t ph = j.ph.load();
     if (ph == PH_IDLE) {
+        // The last job may be idle to the camera and still returning on the
+        // runner: a start now would be refused, and the survey's wish with
+        // it (code review, 1.1.2). Next tick.
+        if (!runner::idle(g_run)) return;
         struct tm t;
         bool clock = localNow(t);
         if (g_surveyWanted && plat::sdBase()[0]) {
@@ -1446,7 +1428,29 @@ void cmdSnapshot(Bbs& b, Session& s, const char*, uint32_t now) {
         refuse(b, s, "The card is too full for another photo.");
         return;
     }
-    if (jobBusy()) { refuse(b, s, "The camera is busy. Try again in a moment."); return; }
+    if (jobBusy()) {
+        // One snapshot at a time (Rob, 2026-09-26), and who has it, in the
+        // room's voice: "--> Camera in use by node 3, try again in a minute".
+        // The board's own shots (the timelapse, the daily count) have no
+        // node. Wrapped at a word on a narrow terminal.
+        char why[64], row[64];
+        if (g_job.node != 0xFF && g_job.kind == K_CALLER)
+            snprintf(why, sizeof(why), "Camera in use by node %u, try again in a minute",
+                     static_cast<unsigned>(g_job.node));
+        else
+            snprintf(why, sizeof(why), "Camera in use by the board, try again in a minute");
+        const uint8_t w = static_cast<uint8_t>(b.rowWidth(s) > 4 ? b.rowWidth(s) - 4 : 36);
+        bool first = true;
+        for (const char* q = bbsu::wrap(why, row, sizeof(row), w); ; q = bbsu::wrap(q, row, sizeof(row), w)) {
+            say(s, Color::Cyan, first ? "--> " : "    ");
+            say(s, Color::Yellow, row);
+            s.term.nl(s.tl);
+            first = false;
+            if (!q || !*q) break;
+        }
+        b.prompt(s);
+        return;
+    }
     if (!roomToSnap(false)) {
         refuse(b, s, "The camera needs memory the board is using. Try in a minute.");
         return;

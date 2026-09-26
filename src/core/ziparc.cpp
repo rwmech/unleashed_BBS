@@ -42,6 +42,7 @@
 #include "sysconfig.h"
 #include "users.h"
 #include "clock.h"
+#include "space.h"      // the kept free-space figures, marked stale (1.1.2)
 #include "../platform/platform.h"
 
 #include <cerrno>
@@ -91,7 +92,8 @@ void livePath(char* out, size_t n, const char* name) {
         snprintf(out, n, "%s/%s/%s", plat::userBase(), BBS_PLUGIN_DIR, name);
         return;
     }
-    bool owned = !strcmp(name, BBS_CONFIG_FILE) || !strcmp(name, BBS_USERS_FILE);
+    bool owned = !strcmp(name, BBS_CONFIG_FILE) || !strcmp(name, BBS_USERS_FILE) ||
+                 !strcmp(name, BBS_STATS_FILE);
     snprintf(out, n, "%s/%s", owned ? plat::userBase() : plat::fsBase(), name);
 }
 
@@ -402,6 +404,7 @@ size_t ZipExport::cfgRead(uint8_t* buf, size_t cap) {
         char path[96];
         livePath(path, sizeof(path), BBS_CONFIG_FILE);
         f_ = disk::open(path, "r");
+        ++opened_;
         lineLen_ = linePos_ = 0;
         if (!f_) return 0;
     }
@@ -442,9 +445,12 @@ size_t ZipExport::readData(Entry& e, uint8_t* buf, size_t cap) {
         default:
             if (!f_) {
                 char path[96];
-                if (e.src == Src::Snapshot) livePath(path, sizeof(path), BBS_USERS_FILE ".export");
+                char snap[48];
+                snprintf(snap, sizeof(snap), "%.30s.export", e.name);
+                if (e.src == Src::Snapshot) livePath(path, sizeof(path), snap);
                 else                        livePath(path, sizeof(path), e.name);
                 f_ = disk::open(path, "rb");
+                ++opened_;
                 if (!f_) return 0;
             }
             return fread(buf, 1, cap, f_);
@@ -521,7 +527,15 @@ void ZipExport::collect(bool screensOnly, bool snapshot) {
             // The window's download promises its length up front, so it
             // snapshots the accounts; a file written as it goes does not.
             if (!snapshot)            addEntry(BBS_USERS_FILE, Src::File);
-            else if (snapshotUsers()) addEntry(BBS_USERS_FILE, Src::Snapshot);
+            else if (snapshotFile(BBS_USERS_FILE)) addEntry(BBS_USERS_FILE, Src::Snapshot);
+        }
+        // The accounts' call figures (1.1.2, users.h): written in place at
+        // every logoff, so the window's download snapshots them as it does
+        // users.txt. A board still on its first boot of 1.1.2 has none.
+        livePath(path, sizeof(path), BBS_STATS_FILE);
+        if (stat(path, &st) == 0 && st.st_size > 0) {
+            if (!snapshot)                         addEntry(BBS_STATS_FILE, Src::File);
+            else if (snapshotFile(BBS_STATS_FILE)) addEntry(BBS_STATS_FILE, Src::Snapshot);
         }
         // The information pages (1.1.0). A page with no text has no file,
         // or an empty one, and nothing to keep.
@@ -748,6 +762,7 @@ void ZipExport::fillHeader(const Entry& e, bool central) {
 // ---------------------------------------------------------------------------
 size_t ZipExport::produce(uint8_t* buf, size_t cap) {
     size_t n = 0;
+    const uint16_t opened0 = opened_;
     while (n < cap && phase_ != Phase::Done) {
         if (hdrPos_ < hdrLen_) {
             size_t take = hdrLen_ - hdrPos_;
@@ -781,6 +796,10 @@ size_t ZipExport::produce(uint8_t* buf, size_t cap) {
                 }
                 sent_ += static_cast<uint32_t>(got);
                 n += got;
+                // One open a call (1.1.2): the backup window's download ran
+                // the screens' small files together, several opens to a
+                // pass, 61 ms of them at a flash open's cost.
+                if (opened_ != opened0) return n;
                 break;
             }
             case Phase::Central:
@@ -816,14 +835,15 @@ void ZipExport::abort() {
 }
 
 // ---------------------------------------------------------------------------
-// snapshotUsers: copy users.txt aside for the download. Accounts keep
-// changing while a client downloads (a logoff writes call stats), and the
-// zip promises the size and CRC measured up front.
+// snapshotFile: copy users.txt, or callstats.dat (1.1.2), aside for the
+// download. Accounts keep changing while a client downloads (a logoff writes
+// call figures), and the zip promises the size and CRC measured up front.
 // ---------------------------------------------------------------------------
-bool ZipExport::snapshotUsers() {
-    char src[96], dst[96];
-    livePath(src, sizeof(src), BBS_USERS_FILE);
-    livePath(dst, sizeof(dst), BBS_USERS_FILE ".export");
+bool ZipExport::snapshotFile(const char* name) {
+    char src[96], dst[96], snap[48];
+    snprintf(snap, sizeof(snap), "%.30s.export", name);
+    livePath(src, sizeof(src), name);
+    livePath(dst, sizeof(dst), snap);
     FILE* in = disk::open(src, "rb");
     if (!in) return false;
     FILE* out = disk::open(dst, "wb");
@@ -839,10 +859,12 @@ bool ZipExport::snapshotUsers() {
     return ok;
 }
 
-// dropSnapshot: remove the download copy once the transfer ends
+// dropSnapshot: remove the download copies once the transfer ends
 void ZipExport::dropSnapshot() {
     char dst[96];
     livePath(dst, sizeof(dst), BBS_USERS_FILE ".export");
+    remove(dst);
+    livePath(dst, sizeof(dst), BBS_STATS_FILE ".export");
     remove(dst);
 }
 
@@ -869,11 +891,14 @@ void ZipImport::reject(const char* name, const char* why) {
 // partition. On the board it is counted in LittleFS's whole blocks, and the
 // accounts' reserve is kept back, as a plugin has to (plugins::path).
 //
-// The figure is taken fresh (fsInfoStale), which on the board walks the
-// user partition once: the kept one can be a minute old and would not yet
-// show an upload that has just landed in staging.
+// Twice since 1.1.2. open(), on the loop, asks the kept figures (core/
+// space.h), which never walk anything. The unpack, on the background runner,
+// asks again with the figure measured there and then (recheckRoom), before a
+// byte is extracted: the kept one can be old and would not yet show an
+// upload that has just landed in staging, and on the runner a walk of the
+// partition is nobody's wait.
 // ---------------------------------------------------------------------------
-bool ZipImport::roomCheck(char* err, size_t errLen) {
+bool ZipImport::roomCheck(char* err, size_t errLen, bool fresh) {
     uint32_t needBlocks = 3 * 2;                   // staging and its two folders
     uint32_t bytes = 0;
     for (uint8_t i = 0; i < itemCount_; ++i) {
@@ -885,13 +910,26 @@ bool ZipImport::roomCheck(char* err, size_t errLen) {
         // The card: FAT, measured in kilobytes by the platform, and a margin
         // for its clusters rather than a block count. Through the sd
         // plugin's kept figure, as everything that asks about the card does.
-        plat::SdInfo i = sdCardInfo();
+        uint64_t ct = 0, cu = 0;
         needKB = (bytes + 1023) / 1024 + 64;
-        freeKB = i.freeKB;
+        if (fresh) {
+            if (!plat::measure(plat::PART_CARD, ct, cu)) return true;   // cannot tell: go on, as ever
+        } else {
+            const space::Fig f = space::get(plat::PART_CARD);
+            if (!f.valid) return true;
+            ct = f.total; cu = f.used;
+        }
+        freeKB = static_cast<uint32_t>((ct > cu ? ct - cu : 0) / 1024ull);
     } else {
-        uint32_t total = 0, used = 0;
-        plat::fsInfoStale();
-        if (!plat::userInfo(total, used)) return true;     // cannot tell: go on, as ever
+        uint64_t t64 = 0, u64 = 0;
+        if (fresh) {
+            if (!plat::measure(plat::PART_USER, t64, u64)) return true;     // cannot tell: go on, as ever
+        } else {
+            const space::Fig f = space::get(plat::PART_USER);
+            if (!f.valid) return true;
+            t64 = f.total; u64 = f.used;
+        }
+        const uint32_t total = static_cast<uint32_t>(t64), used = static_cast<uint32_t>(u64);
         uint32_t free  = total > used ? total - used : 0;
         uint32_t avail = free > BBS_FS_RESERVE ? free - BBS_FS_RESERVE : 0;
         needKB = (needBlocks * BBS_FS_BLOCK + 1023) / 1024;
@@ -911,6 +949,7 @@ bool ZipImport::roomCheck(char* err, size_t errLen) {
 // ---------------------------------------------------------------------------
 bool ZipImport::open(const char* zipPath, char* err, size_t errLen, Mode mode,
                      const char* stageDir, const char* destDir) {
+    stepped_ = 0;
     if (zf_) { fclose(zf_); zf_ = nullptr; }         // the upload itself lives in staging: keep it
     strncpy(zipPath_, zipPath, sizeof(zipPath_) - 1);
     zipPath_[sizeof(zipPath_) - 1] = '\0';
@@ -1010,10 +1049,13 @@ bool ZipImport::open(const char* zipPath, char* err, size_t errLen, Mode mode,
     // larger of old and new for each screen, plus one more copy of the
     // biggest new one. Counting the new set alone, with two blocks spare,
     // was one file short of that (1.1.0).
-    uint32_t fsTotal = 0, fsUsed = 0;
+    // The screens partition's size (kept, core/space.h): only its total is
+    // read here, which does not change.
+    const space::Fig sfig = space::get(plat::PART_SCREENS);
+    const uint64_t fsTotal = sfig.valid ? sfig.total : 0;
     uint32_t screenRoom = 0xFFFFFFFFu;
-    if (mode_ == Mode::Full && plat::fsInfo(fsTotal, fsUsed) && fsTotal) {
-        uint32_t b = fsTotal / BBS_FS_BLOCK;
+    if (mode_ == Mode::Full && fsTotal) {
+        uint32_t b = static_cast<uint32_t>(fsTotal / BBS_FS_BLOCK);
         screenRoom = b > 4 ? b - 4 : 0;
     }
     uint32_t screenBlocks = 0;          // the larger of old and new, each screen
@@ -1043,7 +1085,8 @@ bool ZipImport::open(const char* zipPath, char* err, size_t errLen, Mode mode,
         if (method != 0 && method != 8)               { reject(name, "unsupported compression"); continue; }
         if (csize == 0xFFFFFFFFu || usize == 0xFFFFFFFFu) { reject(name, "zip64 not supported"); continue; }
 
-        bool isCfg    = !strcmp(name, BBS_CONFIG_FILE) || !strcmp(name, BBS_USERS_FILE);
+        bool isStats  = !strcmp(name, BBS_STATS_FILE);           // 1.1.2: the call figures
+        bool isCfg    = !strcmp(name, BBS_CONFIG_FILE) || !strcmp(name, BBS_USERS_FILE) || isStats;
         bool isPage   = validInfoName(name);
         bool isScreen = !strncmp(name, BBS_SCREEN_DIR "/", sizeof(BBS_SCREEN_DIR)) &&
                         validScreenName(name + sizeof(BBS_SCREEN_DIR));
@@ -1055,6 +1098,7 @@ bool ZipImport::open(const char* zipPath, char* err, size_t errLen, Mode mode,
                      : isPage                        ? BBS_ZIP_INFO_MAX
                                                      : BBS_ZIP_FILE_MAX;
         if (usize > cap)                              { reject(name, "file too big"); continue; }
+        if (isStats && (usize % 16u))                 { reject(name, "not whole 16-byte records"); continue; }
         if (method == 0 && csize != usize)            { reject(name, "corrupt entry"); continue; }
         if (static_cast<uint64_t>(loff) + 30u + csize > cdOffset_) { reject(name, "corrupt entry"); continue; }
 
@@ -1100,7 +1144,7 @@ bool ZipImport::open(const char* zipPath, char* err, size_t errLen, Mode mode,
         break;
     }
 
-    if (itemCount_ && !roomCheck(err, errLen)) { fail_ = Fail::NoRoom; return false; }
+    if (itemCount_ && !roomCheck(err, errLen, false)) { fail_ = Fail::NoRoom; return false; }
 
     char dir[112];
     ensureDir(stage_);
@@ -1201,7 +1245,11 @@ bool ZipImport::extract(Item& it) {
         // two static probes here were 820 bytes of DRAM held for the length
         // of one call each (syscfg::check).
         static char cfgErr[96];
-        if (syscfg::check(path, cfgErr, sizeof(cfgErr))) why = cfgErr;
+        // Into a scratch of this call's own (1.1.2): extract runs on the
+        // background runner, and syscfg's shared scratch is the one a CONFIG
+        // save's reload fills on the loop.
+        SysConfig scratch;
+        if (syscfg::checkWith(path, scratch, cfgErr, sizeof(cfgErr))) why = cfgErr;
         else why = inspectCfg(path);
         // A refused system.cfg changes nothing, so the question must not
         // say it would.
@@ -1220,7 +1268,8 @@ bool ZipImport::extract(Item& it) {
         struct stat cst;
         char ignore[8];
         uint8_t upMax = 0;
-        if (stat(cfgPath, &cst) == 0 && !syscfg::check(cfgPath, ignore, 0, &upMax)) {
+        SysConfig scratch;                       // the runner's own, as above
+        if (stat(cfgPath, &cst) == 0 && !syscfg::checkWith(cfgPath, scratch, ignore, 0, &upMax)) {
             iss.maxUsers = upMax;
         }
         if (users::validateFile(path, iss)) {
@@ -1243,21 +1292,55 @@ bool ZipImport::extract(Item& it) {
     return true;
 }
 
+// noteRefusal: the whole zip refused for a reason of the board's (no room),
+// said as its first problem so the card job's answer names it (1.1.2).
+void ZipImport::noteRefusal(const char* why) {
+    snprintf(rep_.firstReject, sizeof(rep_.firstReject), "%.90s", why ? why : "refused");
+    if (!rep_.rejected) rep_.rejected = itemCount_;
+    rep_.accepted = 0;
+}
+
+// recheckRoom: the room check again, with the figure measured now. The
+// unpack's first step, on the background runner (1.1.2).
+bool ZipImport::recheckRoom(char* err, size_t errLen) {
+    if (!itemCount_ || roomCheck(err, errLen, true)) return true;
+    fail_ = Fail::NoRoom;
+    return false;
+}
+
 bool ZipImport::step() {
     if (next_ >= itemCount_) {
         if (zf_) {                                   // first time past the end: finish up
             fclose(zf_);
             zf_ = nullptr;
+            // The call figures go only with the accounts they belong to
+            // (code review, 1.1.2): without an accepted users.txt beside
+            // them, another board's figures would be laid over this board's
+            // ids, and today's minutes would count against its callers.
+            if (!rep_.hasUsers)
+                for (uint8_t k = 0; k < itemCount_; ++k) {
+                    Item& st = items_[k];
+                    if (!st.ok || strcmp(st.name, BBS_STATS_FILE)) continue;
+                    st.ok = false;
+                    --rep_.accepted;
+                    ++rep_.rejected;
+                    rep_.bytes -= st.usize;
+                    if (!rep_.firstReject[0])
+                        snprintf(rep_.firstReject, sizeof(rep_.firstReject), "%s: only with users.txt",
+                                 BBS_STATS_FILE);
+                }
             countRemovals();
         }
         return false;
     }
     Item& it = items_[next_++];
     it.ok = extract(it);
+    stepped_ = static_cast<uint8_t>(stepped_ + 1);   // for the card job's dots (1.1.2)
     if (it.ok) {
         ++rep_.accepted;
         if (!strcmp(it.name, BBS_CONFIG_FILE))     rep_.hasCfg = true;
         else if (!strcmp(it.name, BBS_USERS_FILE)) rep_.hasUsers = true;
+        else if (!strcmp(it.name, BBS_STATS_FILE)) {}          // the call figures (1.1.2)
         else if (validInfoName(it.name))           ++rep_.pages;
         else                                       { rep_.hasScreens = true; ++rep_.screens; }
     } else {
@@ -1415,8 +1498,14 @@ bool ZipImport::applyItem(Item& it) {
     }
     if (!moveFile(src, dst)) { ++applied_.failures; return false; }
     it.live = true;
-    if (!strcmp(it.name, BBS_USERS_FILE)) applied_.users = true;
-    else if (validInfoName(it.name))      ++applied_.pages;
+    if (!strcmp(it.name, BBS_USERS_FILE)) {
+        applied_.users = true;
+        // The index is of the file that was live: stale from this moment,
+        // not from the end of the apply several passes on (code review).
+        users::reindex();
+    }
+    else if (!strcmp(it.name, BBS_STATS_FILE)) applied_.stats = true;
+    else if (validInfoName(it.name))           ++applied_.pages;
     else                                  ++applied_.screens;
     return true;
 }
@@ -1470,9 +1559,27 @@ void ZipImport::finishApply() {
         char last[96];
         snprintf(last, sizeof(last), "%s/%s", plat::userBase(), BBS_SYSOP_LAST_FILE);
         remove(last);
+        // The handle index is of the file that was live (1.1.2): rebuilt at
+        // the next question. The call figures go with the accounts: a zip
+        // that carried none (from before 1.1.2) has them in its users.txt,
+        // so the old file goes and they are copied across from that.
+        users::reindex();
+        if (!applied_.stats) {
+            char st[96];
+            livePath(st, sizeof(st), BBS_STATS_FILE);
+            remove(st);
+        }
+        users::statsMigrate();
     }
     discard();
-    plat::fsInfoStale();                  // screens and accounts were rewritten wholesale
+    // Screens and accounts were rewritten wholesale: those figures are
+    // measured again at the next staff login or FORCE (1.1.2), never here.
+    if (mode_ == Mode::Screens) {
+        space::stale(plat::PART_CARD);
+    } else {
+        space::stale(plat::PART_SCREENS);
+        space::stale(plat::PART_USER);
+    }
     char msg[192];
     applyMessage(msg, sizeof(msg));
     plat::log("backup: %s", msg);

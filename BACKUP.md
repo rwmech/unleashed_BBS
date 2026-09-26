@@ -76,6 +76,7 @@ What is inside:
 |---|---|
 | `system.cfg` | all settings, the staff passwords show as `***`; the Wi-Fi password is in it as typed, so a restore onto a fresh board brings the network with it |
 | `users.txt` | user accounts, passwords as salted hashes, see [USERS.md](USERS.md#userstxt). The download is taken from a snapshot, so accounts may change while it streams without spoiling the zip. |
+| `callstats.dat` | the accounts' call figures (calls, last call, today's minutes), 16 bytes an account id, binary (1.1.2). Taken from a snapshot like `users.txt`. Not meant for editing: a zip without it restores the figures from `users.txt`'s own fields, which is what an older backup does. |
 | `info/0.txt` to `info/9.txt` | the information pages' text (`INFO`), one file for each page that has any (1.1.0). The pages' titles and levels are in `system.cfg`. |
 | `screens/*.asc .ans .seq .p40 .p80` | display files, see [SCREENS.md](SCREENS.md) |
 | `MANIFEST.txt` | version, date, file list (ignored on upload) |
@@ -86,7 +87,7 @@ A restore never writes the published default sysop password. A board still on th
 
 Screens: add, change or delete files in `screens/`. When your upload contains any screens, the board's screens become exactly that set, so a screen you delete from the folder is deleted on the board. An upload with no screens at all leaves the screens alone.
 
-Accounts: an upload with `users.txt` replaces every account with the file's contents; an upload without it leaves the accounts alone. Account passwords can't be typed into the file, only kept or cleared (see [USERS.md](USERS.md#userstxt)).
+Accounts: an upload with `users.txt` replaces every account with the file's contents; an upload without it leaves the accounts alone. With `users.txt` and no `callstats.dat` (a backup from before 1.1.2, or one you took the file out of), the call figures come from `users.txt`'s `calls`, `last_call`, `day` and `day_minutes`. Account passwords can't be typed into the file, only kept or cleared (see [USERS.md](USERS.md#userstxt)).
 
 Information pages: a page in the zip (`info/3.txt`) replaces that page's text on the board. A page that is not in the zip is left as it is, so an older backup, which has none, changes no page. Up to 8 KB a page.
 

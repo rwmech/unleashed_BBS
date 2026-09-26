@@ -34,6 +34,7 @@
  */
 
 #include "calllog.h"
+#include "runner.h"             // the card copy, off the loop (1.1.2)
 #include "disk.h"              // fopen and opendir that tell the drive light (1.1.1)
 #include "../platform/platform.h"
 #include "clock.h"
@@ -173,6 +174,51 @@ static void mirror(const CallRec& r) {
 }
 
 // ---------------------------------------------------------------------------
+// The mirror, on the background runner (1.1.2). A hang-up is on the caller's
+// own path, and the card copy was a mkdir, an open, an append and a flush
+// there, with an SD card's write-busy at up to 250 ms (a sysop's hang-up
+// measured 60 to 220 ms on the bench). Now the record goes into a small
+// queue and the runner writes it; the loop only hands it over. A queue that
+// is full (four hang-ups before the runner got to any of them) loses the
+// card copy of the one that did not fit, and says so: the ring above, which
+// is the record, has it.
+// ---------------------------------------------------------------------------
+constexpr uint8_t kMirrorQ = 4;
+CallRec     g_mq[kMirrorQ];
+uint8_t     g_mqHead  = 0;           // under the runner's lock
+uint8_t     g_mqCount = 0;
+runner::Job g_mirrorJob;
+
+void mirrorWork(runner::Job&) {
+    for (;;) {
+        CallRec r;
+        plat::runLock();
+        if (!g_mqCount) { plat::runUnlock(); break; }
+        r = g_mq[g_mqHead];
+        g_mqHead = static_cast<uint8_t>((g_mqHead + 1) % kMirrorQ);
+        --g_mqCount;
+        plat::runUnlock();
+        mirror(r);
+        runner::breathe();
+    }
+}
+
+void mirrorTick();
+
+void mirrorQueue(const CallRec& r) {
+    if (!plat::sdBase()[0]) return;             // no card, nothing to mirror to
+    plat::runLock();
+    const bool room = g_mqCount < kMirrorQ;
+    if (room) {
+        g_mq[(g_mqHead + g_mqCount) % kMirrorQ] = r;
+        ++g_mqCount;
+    }
+    plat::runUnlock();
+    if (!room) plat::log("calllog: the card copy of a call was dropped: the queue was full");
+    mirrorTick();
+}
+
+// ---------------------------------------------------------------------------
 // append: record into slot "next", then rewrite the header
 // ---------------------------------------------------------------------------
 bool append(const CallRec& r) {
@@ -211,7 +257,7 @@ bool append(const CallRec& r) {
     } else {
         plat::log("calllog: write failed");
     }
-    mirror(r);
+    mirrorQueue(r);                              // the card's copy, on the runner (1.1.2)
     return ok;
 }
 
@@ -266,4 +312,19 @@ uint16_t today() {
     return g_today;
 }
 
+
+// mirrorTick: post the mirror job while records wait and it is not out. The
+// loop's, from Bbs::tick: a record queued while the job was finishing is
+// picked up here rather than left until the next hang-up.
+void mirrorTick() {
+    if (runner::done(g_mirrorJob)) runner::collect(g_mirrorJob);
+    if (!runner::idle(g_mirrorJob)) return;
+    plat::runLock();
+    const bool waiting = g_mqCount != 0;
+    plat::runUnlock();
+    if (!waiting) return;
+    g_mirrorJob.work = mirrorWork;
+    g_mirrorJob.name = "call log mirror";
+    runner::post(g_mirrorJob);
+}
 } // namespace calllog

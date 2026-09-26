@@ -57,13 +57,15 @@ namespace files {
 bool sendPhoto(Bbs& b, Session& s, const char* rel, bool xmodem, uint32_t now);
 
 // photoDesc: set, or with an empty text remove, the FILES.BBS line for one
-// file in dir (a folder on the card), through the file areas' temp file and
-// rename. Blocking card I/O: the camera's worker calls it, never the loop.
-bool photoDesc(const char* dir, const char* name, const char* text);
-
-// photoDescDrop: one rewrite of dir's FILES.BBS without the lines for which
-// gone(ctx, name) says the file has gone. The camera's worker, after pruning.
-bool photoDescDrop(const char* dir, bool (*gone)(void* ctx, const char* name), void* ctx);
+// photo: sub is its handle folder under Photos, "" for Photos itself.
+// photoTidy: that folder's FILES.BBS without the lines of photos that have
+// gone, and a handle folder that is empty now removed. Both are ASKS
+// (1.1.2): they go into the file areas' queue, and the files plugin writes
+// the file from one job on the background runner, so the Photos folders'
+// FILES.BBS has one writer. False when the queue was full. The camera's
+// worker asks; it never writes the file itself.
+bool photoDesc(const char* sub, const char* name, const char* text);
+bool photoTidy(const char* sub);
 
 } // namespace files
 #endif

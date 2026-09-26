@@ -67,6 +67,9 @@
 #include "../core/screens.h"   // declares sdScreensDir, so it is checked against the definition
 #include "../core/backup.h"    // and sdNightly
 #include "../core/bbs_util.h"
+#include "../core/disk.h"      // opens the host can cost (1.1.2)
+#include "../core/space.h"     // the card's free space, measured on the runner (1.1.2)
+#include "../core/runner.h"    // runner::busy: SD UNMOUNT waits for a job on the card
 #include "../platform/platform.h"
 #ifdef BBS_HAS_CAMERA
 #include "camera.h"             // camera::busy: the card is in use by its worker
@@ -104,28 +107,26 @@ char           g_why[72] = "not mounted";  // why there is no card, for SD and D
 // try; a reboot starts over.
 bool           g_tried   = false;
 
-// sdInfo() reaches the filesystem, and status() is called from the DASH
-// refresh, once per running plugin per row per redraw. Cached so a card that
-// is slow to answer cannot turn a dashboard into a stall.
-//
-// A minute for the dashboard (1.1.0), not three seconds. On the board the
-// read is f_getfree: 15 to 25 ms typical and 160 ms on a card whose free
-// cluster hint is stale, which is what pulling a FAT card mid-write leaves.
-// At three seconds, DASH 1 put that into the loop every third frame. Free
-// space on a card moves by uploads and backups, and a dashboard a minute
-// behind on it is still right about whether there is room. SD asks with
-// force, and so do a mount and an unmount, so none of them waits.
+// The card's figures for SD, DASH, MEM and everything else that asks. Since
+// 1.1.2 nothing here reads the card on the loop at all: plat::sdInfo reads
+// the card's registers (mounted, type, speed, its size), and free space is
+// the runner's measurement, kept by core/space.h and laid over it here. It
+// was f_getfree on the loop, 15 to 25 ms typical and 160 ms on a card whose
+// free-cluster hint was stale (what pulling one mid-write leaves), cached a
+// minute for DASH and taken fresh for SD. The arguments stay so nothing that
+// asks has to change; "force" no longer means a trip to the FAT.
 plat::SdInfo   g_info;
-uint32_t       g_infoAt  = 0;
 const uint32_t kInfoMs   = 3000;
 const uint32_t kDashMs   = 60000;
 
 const plat::SdInfo& cardInfo(bool force = false, uint32_t maxAgeMs = kInfoMs) {
-    uint32_t now = plat::millis();
-    if (force || !g_infoAt || now - g_infoAt >= maxAgeMs) {
-        g_info  = plat::sdInfo();
-        g_infoAt = now ? now : 1;
-        if (g_info.mounted) plat::diskPulse(plat::DISK_CARD);   // it read the FAT
+    (void)force;
+    (void)maxAgeMs;
+    g_info = plat::sdInfo();
+    const space::Fig f = space::get(plat::PART_CARD);
+    if (g_info.mounted && f.valid) {
+        g_info.totalKB = static_cast<uint32_t>(f.total / 1024ull);
+        g_info.freeKB  = static_cast<uint32_t>((f.total > f.used ? f.total - f.used : 0) / 1024ull);
     }
     return g_info;
 }
@@ -285,7 +286,7 @@ bool copyOne(const char* from, const char* to) {
 // compared for equality, so the cost of a collision is one screen not
 // refreshed, never one overwritten.
 uint32_t fileHash(const char* path) {
-    FILE* f = fopen(path, "rb");
+    FILE* f = disk::open(path, "rb");
     if (!f) return 0;
     uint32_t h = 2166136261u;
     uint8_t  buf[64];
@@ -500,17 +501,19 @@ bool start(Bbs& bbs) {
         if (!strcmp(g_why, "not mounted")) snprintf(g_why, sizeof(g_why), "%s", was);
         return true;
     }
-#ifdef BBS_HAS_CAMERA
-    if (had && moved && camera::busy()) {
-        plat::log("sd: the camera is writing the card; the new bus speed waits for the next save");
+    // A job on the background runner may be on the card (a photo, a file
+    // listing, a survey): the card stays until it is done (1.1.2; it asked
+    // the camera alone before).
+    if (had && moved && runner::busy()) {
+        plat::log("sd: a job is using the card; the new pins wait for the next save");
         g_pins = before;
         return true;
     }
-#endif
     if (had && moved) {
         plat::log("sd: pins changed, remounting");
         if (g_bbs) { g_bbs->closeCardScreens(); g_bbs->dropCardJob(); }
         plat::sdUnmount();
+        space::forget(plat::PART_CARD);
     }
 
     g_tried = true;
@@ -522,6 +525,8 @@ bool start(Bbs& bbs) {
         // unrelated setting never walks the screens folder.
         tidyCardBackups();
         seedScreens();
+        space::forget(plat::PART_CARD);          // a new card: measured on the runner
+        space::refresh(false);
     } else {
         noMount(false);
         plat::log("sd: no card: %s", g_why);
@@ -653,10 +658,15 @@ const Command kCommands[] = {
                   // a backup may be writing its .tmp right now.
                   if (fresh) tidyCardBackups();
                   seedScreens();          // a fresh card gets the stock set
+                  // Its free space is measured on the runner (1.1.2), so it
+                  // is the card's size that is said here, from its registers.
+                  space::forget(plat::PART_CARD);
+                  space::refresh(false);
                   const plat::SdInfo& i = cardInfo(true);
+                  char mb[16];
+                  bbsu::fmtCommas(i.totalKB / 1024u, mb, sizeof(mb));
                   t.color(tl, Color::LightGreen);
-                  snprintf(buf, sizeof(buf), "Mounted: %.10s, %u MB free.", i.type,
-                           static_cast<unsigned>(i.freeKB / 1024u));
+                  snprintf(buf, sizeof(buf), "Mounted: %.10s, a %s MB card.", i.type, mb);
                   t.text(tl, buf);
               } else {
                   noMount(true);          // the sysop asked, so no card is an error
@@ -674,22 +684,28 @@ const Command kCommands[] = {
                   b.prompt(s);
                   return;
               }
-#ifdef BBS_HAS_CAMERA
-              // The camera writes a photo on a task of its own: the card
-              // stays until it has finished, a few seconds at most.
-              if (camera::busy()) {
+              // A job on the background runner may be on the card (a photo,
+              // a file listing, a count): the card stays until it has
+              // finished, a few seconds at most (1.1.2; the camera alone
+              // was asked before, and the runner has more jobs than it).
+              if (runner::busy()) {
                   t.color(tl, Color::Grey);
-                  t.text(tl, "The camera is saving a photo. Try again in a moment.");
+#ifdef BBS_HAS_CAMERA
+                  t.text(tl, camera::busy() ? "The camera is saving a photo. Try again in a moment."
+                                            : "The board is using the card. Try again in a moment.");
+#else
+                  t.text(tl, "The board is using the card. Try again in a moment.");
+#endif
                   b.prompt(s);
                   return;
               }
-#endif
               // Anyone mid-screen from the card has to be let go first, and
               // so does a backup being written to it (the nightly one).
               b.closeCardScreens();
               b.dropCardJob();
               plat::diskPulse(plat::DISK_CARD);  // the flush
               plat::sdUnmount();
+              space::forget(plat::PART_CARD);
               g_tried = true;                    // a CONFIG save must not put it back
               cardInfo(true);
               snprintf(g_why, sizeof(g_why), "%s", "unmounted by the sysop");
@@ -820,6 +836,30 @@ bool sdSeededStock(const char* file) {
     if (!known || was == kMine) return false;
     snprintf(path, sizeof(path), "%s/%s/%.64s", base, BBS_SD_SCREEN_DIR, file);
     return fileHash(path) == was;
+}
+
+// sdSeededEach / sdFileHash: see screens.h. The runner's (SCREENS's table):
+// one read of the manifest, however many screens are asked about.
+bool sdSeededEach(SeededFn fn, void* ctx) {
+    const char* base = plat::sdBase();
+    if (!fn || !base[0]) return false;
+    char manifest[112];
+    snprintf(manifest, sizeof(manifest), "%s/%s/.seeded", base, BBS_SD_SCREEN_DIR);
+    FILE* f = disk::open(manifest, "r");
+    if (!f) return false;
+    char line[96];
+    while (fgets(line, sizeof(line), f)) {
+        char* sp = strchr(line, ' ');
+        if (!sp) continue;
+        *sp = '\0';
+        if (!fn(ctx, line, static_cast<uint32_t>(strtoul(sp + 1, nullptr, 16)))) break;
+    }
+    fclose(f);
+    return true;
+}
+
+uint32_t sdFileHash(const char* path) {
+    return fileHash(path);
 }
 
 // ---------------------------------------------------------------------------

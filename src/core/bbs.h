@@ -97,6 +97,16 @@ enum class SState : uint8_t {
     RingAsk,   // the sysop's one-key question: answer, decline, away, later
     CardJob,   // BACKUP SD / RESTORE SD working, or asking Y/N (1.1.0)
     AskSysop,  // the sysop's account at login: "Sysop password:", Enter skips (1.1.0)
+    Waiting,   // the background runner is doing something slow for this caller:
+               // a spinner, keys dropped, then what waitFor says (1.1.2)
+};
+
+// What a session in SState::Waiting is waiting for, and what it does when
+// the answer is there (1.1.2). waitArg says which of that kind's endings.
+enum class WaitFor : uint8_t {
+    None,
+    Space,      // the free-space figures (MEM FORCE, SYS FORCE): arg 0 MEM, 1 SYS
+    Screens,    // SCREENS's table, built on the runner: then the list
 };
 
 enum class Role : uint8_t {
@@ -170,6 +180,17 @@ struct Session {
     uint32_t     heapAtOpen  = 0;
     char         user[BBS_USER_MAX + 1] = {};
 
+    // call: which call this is, since boot (1.1.2). A job the background
+    // runner does for a caller carries the node AND this, never a Session*:
+    // the caller may have hung up by the time the answer comes back, and
+    // the slot may be somebody else's. openSession numbers every call.
+    uint16_t     call        = 0;
+    // SState::Waiting: for what, which ending, since when, and the spinner.
+    WaitFor      waitFor     = WaitFor::None;
+    uint8_t      waitArg     = 0;
+    uint32_t     waitFrom    = 0;
+    uint32_t     waitSpinAt  = 0;
+
     // A message being written, whichever subsystem is taking it. One per
     // session rather than one per subsystem: a caller writes one thing at a
     // time, and forums and mail each keeping their own is what overflowed
@@ -204,6 +225,10 @@ struct Session {
     uint8_t      listSub     = 0;      // wrap offset inside the current row
     uint8_t      pageLines   = 0;
     bool         nonstop     = false;
+    // listHold (1.1.2): the row asked for is not ready (a plugin's list
+    // built on the background runner). No row was drawn and none taken:
+    // the list waits and asks for the same row again next pass.
+    bool         listHeld    = false;
     MoreFrom     moreFrom    = MoreFrom::List;
 
     // WHO n / DASH n refresh
@@ -379,7 +404,7 @@ public:
     bool registerCommands(const Command* list, uint8_t count, uint8_t plugin = 0xFF);
     // dropPluginCommands: take every plugin's table back out, keeping the
     // core's. Called before the plugins are restarted by a config reload.
-    void dropPluginCommands();
+    void dropPluginCommands(uint32_t mask = 0xFFFFFFFFu);
     // closeCardScreens: end any screen being read from the SD card and hand
     // those callers back to the prompt. Called before the card is unmounted,
     // and before RESTORE SD SCREENS replaces the card's screens, which says
@@ -452,6 +477,10 @@ public:
     // the session; turning it on without owning it does nothing.
     void setRawInput(Session& s, bool on);
     void startPluginList(Session& s, uint8_t plugin);
+    // listHold: inside a plugin's rows(), "not yet": return true after it,
+    // having drawn nothing and taken no row (1.1.2, for rows built on the
+    // background runner). The list asks for the same row next pass.
+    void listHold(Session& s) { s.listHeld = true; }
     void rowText(Session& s, Color c, const char* text, bool newline = true);
     void rowRule(Session& s);
     void rowTitle(Session& s, const char* title, const char* right = nullptr);
@@ -692,6 +721,15 @@ private:
     bool canNotify(const Session& s) const;
     void notify(Session& s, Color c, const char* msg);
     void warnNow(Session& s, const char* msg);
+    // warnElsewhere (1.1.2): a timer warning for a caller the prompt's path
+    // cannot reach: inside a plugin, through its liftInput/restoreInput, or
+    // at a screen's page break. In the board's own voice, "--> 5 minutes left
+    // on this call", with the bell. False when not now: the caller is asked
+    // again next pass.
+    bool warnElsewhere(Session& s, const char* msg);
+    // markedLine: "--> text" from column 0, wrapped at the row width with the
+    // text's own column kept; in the room, the room's voice (chat::roomSay).
+    void markedLine(Session& s, Color c, const char* text);
     void redrawInput(Session& s);
     void deliverMail(Session& s);
     // deliverMail's three shapes (1.1.0): at the prompt, inside a plugin
@@ -722,6 +760,15 @@ private:
     void statRow(Session& s, const char* label, const char* value, Color c = Color::LightGreen,
                  const char* note = nullptr);
     void statNum(Session& s, const char* label, uint32_t value, const char* note = nullptr);
+    // statKept: a figure that is kept rather than read now (core/space.h,
+    // 1.1.2), with the trailing "." that says so. keptNote: the one line
+    // under them saying when they were taken and how to take them again.
+    void statKept(Session& s, const char* label, bool known, uint32_t value, const char* note);
+    void keptNote(Session& s, const char* force);
+    // startWait: SState::Waiting with a spinner after text, until what the
+    // runner is doing for this caller is done; serviceWait is its pass.
+    void startWait(Session& s, WaitFor what, uint8_t arg, const char* text);
+    void serviceWait(Session& s, uint32_t now);
     void rowSection(Session& s, const char* name);
     bool rowSys(Session& s);
     // HARDWARE (bbs_hardware.cpp, 1.1.1): the board's spec sheet, for every
@@ -794,8 +841,10 @@ private:
         uint32_t heapTotal     = 0;          // SYS only
         bool     heapFull      = false;      // SYS filled the two above
         uint32_t stackLeast    = 0;          // stackLow_, 0 not measured
-        uint32_t dataFree      = 0;          // plugins::freeBytes(), cached on the board
+        uint32_t dataFree      = 0;          // the user partition's kept free space (core/space.h)
+        bool     dataKnown     = false;      // measured yet
         bool     card          = false;
+        bool     cardKnown     = false;      // the card's free space measured yet
         uint32_t cardFreeKB    = 0;
         uint32_t cardTotalKB   = 0;
         uint8_t  bans          = 0;
@@ -840,6 +889,10 @@ private:
     bool shuttingDown() const { return shutEnds_ != 0; }
     void cmdDash(Session& s, const char* arg);
     void cmdMem(Session& s);
+    // MEM and SYS with FORCE (1.1.2): measure the kept free-space figures
+    // again on the runner, the spinner meanwhile, then draw. Staff only.
+    void cmdMemArg(Session& s, const char* arg);
+    void cmdSysArg(Session& s, const char* arg);
     void cmdAbout(Session& s);
     void cmdTerm(Session& s);
     void cmdTime(Session& s, const char* arg, uint32_t now);
@@ -1019,10 +1072,18 @@ private:
     bool screensBusy() const;
     void screensDrop();
     void screensInstall(Session& s, bool stock);
+    // The table SCREENS draws from, built on the background runner (1.1.2):
+    // who is reading it, whether this caller's is ready, the one line when
+    // it could not be made, and giving it back to the heap when nobody is.
+    uint8_t screensReaders() const;
+    bool screensTableReady(const Session& s) const;
+    void screensTableGone(Session& s);
+    void screensTableRelease();
     // restartPlugins: hand anybody inside a plugin home, stop them all and
     // start them again on the file as it is now. A CONFIG save and a
     // restore both end here (bbs_sysop.cpp).
-    void restartPlugins();
+    // mask (1.1.2): which plugins by index; all of them unless said.
+    void restartPlugins(uint32_t mask = 0xFFFFFFFFu);
 
     int       lfd_          = -1;
     uint16_t  port_         = 0;             // see port()
@@ -1098,6 +1159,7 @@ private:
     uint32_t  shutSaid_  = 0xFFFFFFFFu;    // smallest threshold already announced
     bool      shutDone_  = false;          // the lines are closed, stay closed
     uint16_t  callsBoot_   = 0;      // calls answered since boot
+    uint16_t  callSerial_  = 0;      // Session::call, every session opened (1.1.2)
     bool      bootCrash_   = false;  // this boot followed a crash or watchdog
     bool      bootNoted_   = false;  // this boot followed a BOOT-hold reset (recovery::Note)
     char      bootReason_[32] = "";  // in words, for the sysop

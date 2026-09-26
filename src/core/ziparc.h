@@ -93,8 +93,11 @@ public:
     uint32_t totalBytes() const { return total_; }
     uint8_t  entries()    const { return count_; }
 
-    // produce: next bytes of the zip, 0 when finished
+    // produce: next bytes of the zip, 0 when finished. It returns as soon as
+    // it has opened a file (1.1.2), so a caller can keep to one open a pass.
     size_t produce(uint8_t* buf, size_t cap);
+    // opened: files opened for reading so far, a count that only goes up
+    uint16_t opened() const { return opened_; }
 
     // abort: close any open file (client went away)
     void abort();
@@ -142,9 +145,10 @@ private:
     // download and a card backup cannot come to hold different things.
     void   collect(bool screensOnly, bool snapshot);
     bool   addEntry(const char* name, Src src);
-    bool   snapshotUsers();
+    bool   snapshotFile(const char* name);
 public:
-    // dropSnapshot: delete the users.txt copy taken for this download
+    // dropSnapshot: delete the users.txt and callstats.dat copies taken
+    // for this download
     void   dropSnapshot();
 private:
     bool   measure(Entry& e);
@@ -174,6 +178,7 @@ private:
     uint8_t  hdrLen_ = 0;
     uint8_t  hdrPos_ = 0;
     FILE*    f_      = nullptr;
+    uint16_t opened_ = 0;          // see opened()
     uint32_t sent_   = 0;          // bytes of the current entry's data sent
     char     line_[176] = {};      // redacted config line in progress
     uint8_t  lineLen_ = 0;
@@ -208,6 +213,7 @@ struct ApplyReport {
     uint8_t  pages    = 0;         // information pages put live
     uint8_t  failures = 0;
     bool     users    = false;     // users.txt put live
+    bool     stats    = false;     // callstats.dat put live (1.1.2)
     bool     cfgTried = false;     // the zip had a system.cfg
     bool     cfgLive  = false;     // and the board is running it
     bool     hostChanged = false;  // hostname differs: used from the next restart
@@ -241,7 +247,15 @@ public:
     bool     roomOnCard() const { return mode_ == Mode::Screens; }
 
     // step: extract the next accepted entry into staging. False when done.
+    // The background runner's since 1.1.2 (backup.cpp's unpack job): an
+    // entry is up to 64 KB inflated, CRC'd and written, which held a loop
+    // pass for up to a second. recheckRoom is the unpack's first step, with
+    // the free space measured there. stepped: entries done, which the loop
+    // reads for the card job's dots (one byte, written by the runner).
     bool step();
+    bool recheckRoom(char* err, size_t errLen);
+    void noteRefusal(const char* why);
+    uint8_t stepped() const { return stepped_; }
 
     const ImportReport& report() const { return rep_; }
 
@@ -282,7 +296,7 @@ private:
     void countRemovals();
     const char* inspectCfg(const char* staged);
     static const char* nthLive(void* ctx, uint8_t i);
-    bool roomCheck(char* err, size_t errLen);
+    bool roomCheck(char* err, size_t errLen, bool fresh);
     void stagePath(char* out, size_t n, const char* name) const;
     bool applyItem(Item& it);
     bool removeOneStale();
@@ -298,6 +312,7 @@ private:
     uint8_t      next_      = 0;
     Mode         mode_      = Mode::Full;
     Fail         fail_      = Fail::None;
+    volatile uint8_t stepped_ = 0;   // step() calls since open (1.1.2)
     uint32_t     needKB_    = 0;
     uint32_t     freeKB_    = 0;
     uint8_t      applyPhase_ = 0;

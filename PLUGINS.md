@@ -93,7 +93,7 @@ inserted.
 | Hook | When |
 |---|---|
 | `start(bbs)` | after config load; return false to refuse |
-| `stop()` | switched off, or a config reload |
+| `stop()` | switched off, or a config reload. Since 1.1.2 a `CONFIG` save stops and starts only the plugin whose section it wrote and any other whose section of `system.cfg` is not what it started on (every plugin for a core page, and every one when `sd`'s section changes, since the others wait on the card), so a plugin must not count on seeing a stop at every save |
 | `tick(now)` | every 250 ms from the BBS loop, every 20 ms for a `PF_FAST` plugin; never block |
 | `onConnect(s)` | a caller arrives, after terminal detection |
 | `onLogin(s)` | a caller logs in |
@@ -101,7 +101,7 @@ inserted.
 | `onKey(s, key, now)` | only while the plugin owns that session |
 | `status()` | one short line for the dashboard (`DASH`, the plugins section on its second page, and the 132 column page's Directory and Lights rows), or null for none; return a pointer to storage that outlives the call, and do no real work: `DASH n` redraws on a timer, and a frame opens no file. Start it with the plugin's own name and a colon (`SD:`, `Files:`), which is how the 132 column page splits it into a value and a note |
 | `setting(key, out, n)` | CONFIG wants this plugin's live value for one of its declared `settings` keys, used when `system.cfg` does not carry it yet; leave `out` empty for a key you do not recognise, so a blank on the form never quietly means something else |
-| `rows(s)` | once per line after `Bbs::startPluginList`, with the row number in `Session::listIdx`, until it returns false; the plugin gets the core's paging, `[More]` prompt, abort keys and output backpressure instead of reimplementing them |
+| `rows(s)` | once per line after `Bbs::startPluginList`, with the row number in `Session::listIdx`, until it returns false; the plugin gets the core's paging, `[More]` prompt, abort keys and output backpressure instead of reimplementing them. A row whose data is not ready yet (being read on the runner, below) calls `b.listHold(s)` and returns true: the core draws nothing, keeps the row number, and asks again next pass (1.1.2) |
 | `onPresence(s)` | what the outside can see about who is on has changed: `SHOW`, `HIDE` or `LURK`, not only `onLogin`/`onLogoff`, because `Bbs::publicBusy` counts a session only while it is visible |
 | `onBytes(s, b, n, now)` | raw input as it arrived, only while the plugin owns the session and has turned on `Bbs::setRawInput`; telnet has already been unescaped, so `IAC IAC` is one 0xFF here |
 | `onRename(old, new)` | a caller's handle changed; called after `users.txt` has been written and only when the write succeeded, so a plugin acting on it can trust the new name |
@@ -257,7 +257,27 @@ The core may also take a session away from its plugin: a sysop answering a ring 
 
 ### Slow work stays off the loop
 
-The BBS loop is cooperative: a `tick` or a command handler that blocks stalls every caller on the board, not only the one that asked for it. The camera plugin (`BBS_HAS_CAMERA`) is the first one whose job genuinely cannot fit inside a tick: bringing a sensor up, taking a frame, decoding and re-encoding a JPEG for the watermark and writing it to the card all take real time, seconds at the worst of it. Its pattern is the one to copy for anything else this slow: run the work on a task of its own with `plat::taskStart` (pinned to the BBS task's own core, below its priority, so it only ever runs in the loop's idle time and never competes with it), and let `tick` do nothing more than move a job between phases (`Idle -> Working -> Ready -> Go -> Exposed -> Writing -> Done`) and drive whatever the caller sees changing meanwhile, a spinner, a flash pin, an LED. The worker sets the phase last, once everything it touched for that phase is settled, so the loop never reads a result that is still being written.
+The BBS loop is cooperative: a `tick` or a command handler that blocks stalls every caller on the board, not only the one that asked for it. Anything that can take more than a few milliseconds (a directory walk, a file read a row, a name lookup, a JPEG, a whole-file rewrite) goes on **the background runner** (`src/core/runner.h`, 1.1.2), one task shared by the whole board: pinned to the BBS task's core, three priorities below it, so it only runs in the loop's idle time, started when a job is posted and gone three seconds after the last one. Its stack is `BBS_RUNNER_STACK` (8 KB, from the heap), and `SYS` shows its lowest free and its longest job.
+
+```c
+runner::Job g_job;                           // static: it outlives the caller who asked
+void work(runner::Job&) { ...slow... }      // on the runner: no Session, no Term, no Timeline
+
+g_job.work = work;  g_job.name = "my job";
+runner::post(g_job);                         // loop only; false when the queue (8) is full
+...
+if (runner::done(g_job)) { ...read results...; runner::collect(g_job); }   // in tick
+```
+
+- A job is posted and collected from the loop only. Its state moves `IDLE -> QUEUED -> RUNNING -> DONE`, set last by the runner once everything the job wrote is written, so the loop reads results only after `done()`.
+- Results go in the job's own struct, never into a `Session`. A caller can hang up while a job runs and the session be handed to somebody else, so a job that answers a caller records `Session::call` (a serial number every connection gets) and the node, and the loop checks both before drawing anything.
+- Jobs run one at a time, in order. A job that loops over many files calls `runner::breathe()` between them, so the loop gets the core back.
+- The caller who is waiting sees a spinner (`Bbs::startWait`, or the plugin's own), never a frozen line.
+- Two things stay on the loop: anything that has to be in step with the callers, such as renaming a screen file a caller may be reading (the loop closes theirs first), and anything that draws.
+
+The camera plugin (`BBS_HAS_CAMERA`) was the first job too slow for a tick and ran its own task until 1.1.2; it is a runner job now, unchanged, with its phases (`Idle -> Working -> Ready -> Go -> Exposed -> Writing -> Done`) moved by `tick`. One snapshot runs at a time on the whole board.
+
+A plugin that edits a file another plugin owns asks that plugin rather than writing it: the camera asks the files plugin to write a photo's description (`files::photoDesc`, `files::photoTidy`), which queues the edit and does it on the runner, so each `FILES.BBS` has one writer (1.1.2).
 
 ### Talking to callers
 
@@ -280,7 +300,8 @@ plugins::path(myIndex, "count", buf, sizeof(buf)); // <fs>/p/<name>/count
 - Only plugins shipped in this repository (`PF_CORE`) get storage at all.
 - `PF_SD` says a plugin's files live on the SD card. It gets `<sd>/p/<name>/` instead of `<userdata>/p/<name>/`, and it does not start at all when no card is mounted (`PLUGINS` says "no SD card"). There is deliberately no fallback to internal flash: a plugin that quietly writes somewhere other than where it said it would is worse than one that is refused, because the sysop pulls the card expecting the data to be on it.
 - The free-space check follows the same split. A `PF_SD` plugin's `storageBytes` is weighed against the card, not against the 608 KB flash partition it is never going to touch.
-- The core keeps 32 KB of free space in reserve so accounts can always be written. Once space is that tight, `plugins::path` returns false and the plugin should carry on without saving.
+- The core keeps 32 KB of free space in reserve so accounts can always be written. Once space is that tight, `plugins::path` returns false and the plugin should carry on without saving. The check reads the kept free-space figure (1.1.2, `src/core/space.h`), measured on the runner at boot and at each staff login, so a write never walks the partition to find out; a plugin that writes a lot at once can call `space::stale` for its partition so the next staff login measures it again.
+- `plugins::readPath` is for reads: it builds the same path without the free-space check.
 
 ## Memory
 

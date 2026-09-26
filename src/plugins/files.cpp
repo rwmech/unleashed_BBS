@@ -87,6 +87,7 @@
 #include "../core/bbs_util.h"
 #include "../core/xmodem.h"
 #include "../core/cardnames.h"   // the backup folder and the names RESTORE SD lists
+#include "../core/runner.h"          // the listing's page, built off the loop (1.1.2)
 #include "../platform/platform.h"
 #include "../config.h"
 #include "panel_feed.h"       // pendingCount, on a board with a display
@@ -99,6 +100,8 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <new>
+#include <unistd.h>          // rmdir: a handle folder the camera emptied             // the listing's page, placed on the heap (1.1.2)
 #include <cstdlib>
 #include <dirent.h>
 #include <sys/stat.h>
@@ -370,6 +373,17 @@ bool areaPath(uint8_t i, char* out, size_t n);       // just below
 
 bool pendPath(uint8_t i, char* out, size_t n);       // just below
 
+// notUpload: a name in the staging folder that is not an upload: the list
+// of who sent what, and the staging folder's own FILES.BBS (1.1.2). That one
+// holds an upload's description while it waits, so it is there whenever
+// anything is, and after a sysop's own upload went straight in it was left
+// behind, listed by P as an upload waiting and moved into the area by A,
+// where it would have replaced the area's own descriptions. The count the
+// staff notice gives followed the same walk and was one too many.
+bool notUpload(const char* name) {
+    return name[0] == '.' || ieq(name, kPendList) || ieq(name, BBS_FILES_DESC);
+}
+
 // nthPending: the Nth upload waiting in a section, numbered the way the
 // pending list shows them. Same walk as nthFile, different folder.
 bool nthPending(uint8_t area, uint16_t want, char* out, size_t n) {
@@ -381,8 +395,7 @@ bool nthPending(uint8_t area, uint16_t want, char* out, size_t n) {
     bool found = false;
     struct dirent* e;
     while ((e = readdir(d)) != nullptr) {
-        if (e->d_name[0] == '.') continue;
-        if (ieq(e->d_name, kPendList)) continue;
+        if (notUpload(e->d_name)) continue;
         if (++seen != want) continue;
         snprintf(out, n, "%.48s", e->d_name);
         found = true;
@@ -562,7 +575,7 @@ bool safeIn(uint8_t area, const char* f) {
 void findDesc(const char* dir, const char* file, char* out, size_t n) {
     out[0] = '\0';
     char p[160];
-    snprintf(p, sizeof(p), "%s/%s", dir, BBS_FILES_DESC);
+    snprintf(p, sizeof(p), "%.140s/%s", dir, BBS_FILES_DESC);
     FILE* f = disk::open(p, "r");
     if (!f) return;
     char line[128];
@@ -1074,13 +1087,293 @@ void filesPrompt(Session& s) {
     t.color(tl, Color::White);
 }
 
+// ===========================================================================
+// The listing's page, built on the background runner (1.1.2).
+//
+// A row of a file listing used to cost a walk of the folder from the top to
+// that row, a stat of the file (on FAT, a search of the folder), and a read
+// of FILES.BBS from the top for its description: about twenty rows a pass,
+// so a page of the Screens area (34 files) held the loop 123 to 313 ms on
+// the bench, and 200 files would be about a second, for any caller with the
+// area's read level (internal/audit-1.1.2-2026-09-26.md, item 5). The Photos
+// area walked the Photos folder and every handle folder for every row.
+//
+// Now a page, kPage rows, is built at once by a runner job: the folder read
+// once through plat::sdList (FatFs's own entries carry the sizes, so no file
+// is looked up by name), FILES.BBS read once for all of the page's
+// descriptions. The loop draws rows from it through the ordinary paced list,
+// and a row the page does not have yet holds the list (Bbs::listHold) until
+// the runner has built it.
+//
+// One page, shared, on the heap while anybody is listing: 2.5 KB that every
+// board would otherwise keep in static DRAM, and the camera boards have 6 to
+// 8 KB of that. Tagged with the area and the first row it holds; a caller
+// who finds somebody else's page asks for their own, which is what a cache
+// does (claims.h's seize). A finished build is the asker's until they have
+// drawn from it or a second has gone by (g_pageFor), so two callers listing
+// at once both get there: without it, whoever was serviced first took the
+// other's build and asked for its own, and a slow terminal never drew.
+// ===========================================================================
+constexpr uint8_t kPage     = 24;
+constexpr uint8_t kPageName = 49;
+
+struct PageEnt {
+    char     name[kPageName];
+    uint32_t size;
+    char     desc[kDescMax + 1];
+};
+
+struct Page {
+    uint8_t  area    = 0xFF;
+    uint16_t start   = 0;        // the first row this page holds (0-based)
+    uint8_t  count   = 0;        // rows it holds
+    bool     end     = false;    // the folder ends inside this page
+    bool     missing = false;    // the folder is not on the card
+    PageEnt  e[kPage];
+};
+
+struct PageJob {
+    runner::Job job;
+    Page*    page  = nullptr;
+    uint8_t  area  = 0xFF;       // in
+    uint16_t start = 0;          // in
+    uint16_t gen   = 0;          // g_pageGen when it was asked for
+    uint16_t call  = 0;          // Session::call of the caller who asked
+    char     rel[kPathMax + 1] = {};   // in: the area's folder under the card
+};
+PageJob  g_pj;
+Page*    g_page = nullptr;       // the loop's: read only once the job is DONE
+bool     g_pageOk = false;       // g_page holds a finished build
+uint16_t g_pageGen = 0;          // moved on by pageDrop: an older build is stale
+uint16_t g_pageFor = 0;          // the caller a finished build waits for, 0 anybody
+uint32_t g_pageAt  = 0;          // when it finished
+
+// --- the runner's side -------------------------------------------------------
+
+struct PageWalk {
+    Page*       p;
+    uint16_t    want;            // the row the page starts at
+    uint16_t    seen;            // rows walked past so far
+    const char* sub;             // Photos: the handle folder being walked, "" at the top
+    bool        photos;
+};
+
+bool pageTake(PageWalk& w, const char* name, uint32_t size) {
+    if (w.seen++ < w.want) return true;                   // before the page
+    if (w.p->count >= kPage) return false;                // after it: stop
+    PageEnt& e = w.p->e[w.p->count++];
+    if (w.sub && *w.sub) snprintf(e.name, sizeof(e.name), "%.20s/%.27s", w.sub, name);
+    else                 snprintf(e.name, sizeof(e.name), "%.48s", name);
+    e.size    = size;
+    e.desc[0] = '\0';
+    return true;
+}
+
+#ifdef BBS_HAS_CAMERA
+bool pageSubEntry(void* ctx, const char* name, bool dir, uint32_t size) {
+    PageWalk& w = *static_cast<PageWalk*>(ctx);
+    if (dir || ieq(name, BBS_FILES_DESC)) return true;
+    return pageTake(w, name, size);
+}
+#endif
+
+bool pageEntry(void* ctx, const char* name, bool dir, uint32_t size) {
+    PageWalk& w = *static_cast<PageWalk*>(ctx);
+    if (ieq(name, BBS_FILES_DESC)) return true;           // the descriptions are not a file
+#ifdef BBS_HAS_CAMERA
+    // The Photos area: a handle folder's photos in place of the folder, in
+    // the order the card gives both, as photoEntry numbers them.
+    if (w.photos && dir) {
+        if (camrules::isSystemFolder(name)) return true;   // its own area
+        char rel[96];
+        snprintf(rel, sizeof(rel), "%s/%.60s", camrules::kPhotosDir, name);
+        w.sub = name;
+        const bool more = plat::sdList(rel, pageSubEntry, &w) && w.p->count < kPage;
+        w.sub = "";
+        runner::breathe();
+        return more || w.p->count < kPage;
+    }
+#else
+    (void)dir;
+#endif
+    return pageTake(w, name, size);
+}
+
+// pageDescs: FILES.BBS once, for every row of the page.
+void pageDescs(Page& p, const char* dir) {
+    char path[192];
+    snprintf(path, sizeof(path), "%.160s/%s", dir, BBS_FILES_DESC);
+    FILE* f = disk::open(path, "r");
+    if (!f) return;
+    char line[128];
+    uint8_t left = p.count;
+    while (left && fgets(line, sizeof(line), f)) {
+        char* nl = strpbrk(line, "\r\n");
+        if (nl) *nl = '\0';
+        char* sp = line;
+        while (*sp && *sp != ' ' && *sp != '\t') ++sp;
+        if (!*sp) continue;
+        *sp++ = '\0';
+        while (*sp == ' ' || *sp == '\t') ++sp;
+        for (uint8_t k = 0; k < p.count; ++k) {
+            if (p.e[k].desc[0] || !ieq(line, p.e[k].name)) continue;
+            snprintf(p.e[k].desc, sizeof(p.e[k].desc), "%.*s", static_cast<int>(kDescMax), sp);
+            --left;
+            break;
+        }
+    }
+    fclose(f);
+}
+
+void pageWork(runner::Job&) {
+    Page& p = *g_pj.page;
+    p.area    = g_pj.area;
+    p.start   = g_pj.start;
+    p.count   = 0;
+    p.end     = false;
+    p.missing = false;
+#ifdef BBS_HAS_CAMERA
+    const bool photos = g_pj.area == kAreaPhotos;
+#else
+    const bool photos = false;
+#endif
+    PageWalk w{ &p, g_pj.start, 0, "", photos };
+    if (!plat::sdList(g_pj.rel, pageEntry, &w)) {
+        p.missing = true;
+        p.end     = true;
+        return;
+    }
+    p.end = p.count < kPage;
+    runner::breathe();
+    const char* base = plat::sdBase();
+    char dir[160];
+    snprintf(dir, sizeof(dir), "%.40s/%.100s", base, g_pj.rel);
+#ifdef BBS_HAS_CAMERA
+    if (photos) {
+        // A photo in a handle folder has its description in that folder's
+        // FILES.BBS: one read of each folder the page touches.
+        for (uint8_t k = 0; k < p.count; ++k) {
+            const char* slash = strchr(p.e[k].name, '/');
+            if (!slash) continue;
+            const size_t pl = static_cast<size_t>(slash - p.e[k].name) + 1;
+            bool done = false;                      // this folder's lines were read for an earlier row
+            for (uint8_t m = 0; m < k && !done; ++m) done = !strncmp(p.e[m].name, p.e[k].name, pl);
+            if (done) continue;
+            char sub[192];
+            snprintf(sub, sizeof(sub), "%.150s/%.*s", dir, static_cast<int>(pl - 1 < 40 ? pl - 1 : 40), p.e[k].name);
+            // The folder's own lines, read once for every row of it on the page.
+            FILE* f = nullptr;
+            char path[224];
+            snprintf(path, sizeof(path), "%.200s/%s", sub, BBS_FILES_DESC);
+            f = disk::open(path, "r");
+            const size_t pre = static_cast<size_t>(slash - p.e[k].name) + 1;
+            if (f) {
+                char line[128];
+                while (fgets(line, sizeof(line), f)) {
+                    char* nl = strpbrk(line, "\r\n");
+                    if (nl) *nl = '\0';
+                    char* sp = line;
+                    while (*sp && *sp != ' ' && *sp != '\t') ++sp;
+                    if (!*sp) continue;
+                    *sp++ = '\0';
+                    while (*sp == ' ' || *sp == '\t') ++sp;
+                    for (uint8_t m = k; m < p.count; ++m) {
+                        if (strncmp(p.e[m].name, p.e[k].name, pre) || p.e[m].desc[0]) continue;
+                        if (ieq(line, p.e[m].name + pre))
+                            snprintf(p.e[m].desc, sizeof(p.e[m].desc), "%.*s", static_cast<int>(kDescMax), sp);
+                    }
+                }
+                fclose(f);
+            }
+            runner::breathe();
+        }
+        pageDescs(p, dir);                          // the photos at the top of Photos
+        return;
+    }
+#endif
+    pageDescs(p, dir);
+}
+
+// --- the loop's side ---------------------------------------------------------
+
+// pageFor: a finished page holding row want of area at, or null; asks the
+// runner for one when there is none, so the caller holds the list meanwhile.
+const PageEnt* pageRow(uint16_t call, uint8_t at, uint16_t want, bool& ended, bool& missing, uint16_t& seen) {
+    ended = missing = false;
+    seen  = 0;
+    if (runner::done(g_pj.job)) {
+        runner::collect(g_pj.job);
+        // A page asked for before a file went in or out is not kept.
+        g_pageOk  = g_pj.gen == g_pageGen;
+        g_pageFor = g_pageOk ? g_pj.call : 0;
+        g_pageAt  = plat::millis();
+    }
+    if (g_page && g_pageOk && runner::idle(g_pj.job) && g_page->area == at) {
+        const Page& p = *g_page;
+        if (want >= p.start && want < p.start + p.count) {
+            if (g_pageFor == call) g_pageFor = 0;            // drawn from: anybody's now
+            return &p.e[want - p.start];
+        }
+        if (p.end && want >= p.start + p.count) {
+            ended   = true;
+            missing = p.missing;
+            seen    = static_cast<uint16_t>(p.start + p.count);
+            if (g_pageFor == call) g_pageFor = 0;
+            return nullptr;
+        }
+    }
+    if (!runner::idle(g_pj.job)) return nullptr;                // one being built: wait for it
+    // Somebody else's build, not yet drawn from: theirs for a second.
+    if (g_pageFor && g_pageFor != call && plat::millis() - g_pageAt < 1000) return nullptr;
+    g_pageFor = 0;
+    if (!g_page) {
+        g_page = static_cast<Page*>(malloc(sizeof(Page)));
+        if (!g_page) return nullptr;
+        new (g_page) Page();
+    }
+    g_pageOk      = false;
+    g_pj.page     = g_page;
+    g_pj.gen      = g_pageGen;
+    g_pj.call     = call;
+    g_pj.area     = at;
+    g_pj.start    = static_cast<uint16_t>((want / kPage) * kPage);
+    snprintf(g_pj.rel, sizeof(g_pj.rel), "%s", g_area[at].path);
+    g_pj.job.work = pageWork;
+    g_pj.job.name = "files page";
+    runner::post(g_pj.job);
+    return nullptr;
+}
+
+// pageDrop: the page is out of date (a file went in, out, or was described).
+void pageDrop() {
+    g_pageOk = false;
+    ++g_pageGen;                     // and a build already out is stale when it lands
+}
+
+// pageRelease: back to the heap once nobody is listing and no build is out.
+void pageRelease() {
+    if (!g_page || !runner::idle(g_pj.job)) return;
+    bool listing = false;
+    Bbs::instance().eachSession([](void* ctx, Session& x) {
+        if ((x.st == SState::List || x.st == SState::More) && x.list == ListKind::PlugRows &&
+            x.listPlugin == g_index)
+            *static_cast<bool*>(ctx) = true;
+    }, &listing);
+    if (listing) return;
+    g_page->~Page();
+    free(g_page);
+    g_page   = nullptr;
+    g_pageOk = false;
+}
+
 // ---------------------------------------------------------------------------
 // rows: the paged list, both kinds. listIdx is the row, as in the core's own
 // list builders, and returning false ends the list.
 // ---------------------------------------------------------------------------
+bool pageRowDraw(Session& s, uint8_t at, uint16_t want, const PageEnt& pe);
+
 bool rows(Session& s) {
     Bbs& b = Bbs::instance();
-    char buf[96];
     uint8_t at = g_at[slotOf(s)];
     if (at == 0xFF) return false;
 
@@ -1088,94 +1381,60 @@ bool rows(Session& s) {
     char dir[128];
     if (!areaPath(at, dir, sizeof(dir))) return false;
 
-    uint8_t i = s.listIdx++;
-    if (i == 0) { b.rowTitle(s, g_area[at].name); return true; }
+    uint8_t i = s.listIdx;
+    if (i == 0) { ++s.listIdx; b.rowTitle(s, g_area[at].name); return true; }
 
-    // The directory is reopened and walked to row i every time. A board with
-    // sixteen callers cannot hold sixteen open DIR handles against a FATFS
-    // budget of twenty, and a held handle across a page break is a handle
-    // held until somebody presses a key, which may be never.
-    DIR* d = disk::dir(dir);
-    if (!d) {
-        // The folder is made at start, so reaching this means it went away
-        // afterwards: the card was pulled, or somebody deleted it on a PC.
-        if (i == 1) {
-            // Not "any more": it may never have been there. The old wording
-            // sent a sysop looking for a folder that had gone missing when
-            // the truth was that it was never created.
-            b.rowText(s, Color::LightRed, "That folder is not on the card.");
-            if (plugins::mayUse(s, PlugLevel::Staff))
-                b.rowText(s, Color::Grey, "Check the area's path in CONFIG files.");
-            return true;
-        }
-        return false;
-    }
-    uint8_t want = static_cast<uint8_t>(i - 1);
-#ifdef BBS_HAS_CAMERA
-    uint16_t seen = 0;
-    bool    found = false;
-    char    fname[kDescMax + 1] = {};
-    if (at == kAreaPhotos) {
-        closedir(d);
-        found = photoEntry(dir, static_cast<uint16_t>(want + 1), fname, sizeof(fname), seen);
-        if (found) seen = want;
-    } else
-#else
-    uint8_t seen = 0;
-    bool    found = false;
-    char    fname[40] = {};
-#endif
+    // From the page the runner builds (1.1.2). Not there yet: hold the list,
+    // with the row not taken, and look again next pass.
     {
-        struct dirent* e;
-        while ((e = readdir(d)) != nullptr) {
-            if (e->d_name[0] == '.') continue;
-            if (ieq(e->d_name, BBS_FILES_DESC)) continue;   // the descriptions are not a file area
-            if (seen++ != want) continue;
-            snprintf(fname, sizeof(fname), "%.39s", e->d_name);
-            found = true;
-            break;
+        const uint16_t want = static_cast<uint16_t>(i - 1);
+        bool ended = false, missing = false;
+        uint16_t seen = 0;
+        const PageEnt* pe = pageRow(s.call, at, want, ended, missing, seen);
+        if (!pe && !ended) { b.listHold(s); return true; }
+        ++s.listIdx;
+        if (missing) {
+            // The folder is made at start, so reaching this means it went
+            // away afterwards: the card was pulled, or somebody deleted it
+            // on a PC. Not "any more": it may never have been there.
+            if (i == 1) {
+                b.rowText(s, Color::LightRed, "That folder is not on the card.");
+                if (plugins::mayUse(s, PlugLevel::Staff))
+                    b.rowText(s, Color::Grey, "Check the area's path in CONFIG files.");
+                return true;
+            }
+            return false;
         }
-        closedir(d);
-    }
-
-    if (!found) {
-        if (want == 0) {
-            b.rowText(s, Color::Grey, "Nothing in here yet.");
-            return true;
+        if (!pe) {
+            if (want == 0) {
+                b.rowText(s, Color::Grey, "Nothing in here yet.");
+                return true;
+            }
+            if (want == seen) { b.rowRule(s); return true; }
+            // The subsystem's own prompt is the last thing the list emits.
+            // The core hands the session back to this plugin when rows()
+            // returns false, and draws no shell prompt, so if this is not
+            // here the caller is left with no idea what to type.
+            if (want == seen + 1) { filesPrompt(s); return true; }
+            return false;
         }
-        if (want == seen) { b.rowRule(s); return true; }
-        // The subsystem's own prompt is the last thing the list emits. The
-        // core hands the session back to this plugin when rows() returns
-        // false, and draws no shell prompt, so if this is not here the
-        // caller is left with no idea what to type.
-        if (want == seen + 1) { filesPrompt(s); return true; }
-        return false;
+        return pageRowDraw(s, at, want, *pe);
     }
+}
 
-    char full[192];
-    snprintf(full, sizeof(full), "%s/%s", dir, fname);
-    struct stat st;
-    unsigned long kb = 0;
-    if (stat(full, &st) == 0) kb = (static_cast<unsigned long>(st.st_size) + 1023u) / 1024u;
-
-    char desc[kDescMax + 1];
+// pageRowDraw: one row of a file listing, from the page.
+bool pageRowDraw(Session& s, uint8_t at, uint16_t want, const PageEnt& pe) {
+    Bbs& b = Bbs::instance();
+    char buf[96];
 #ifdef BBS_HAS_CAMERA
-    {
-        // A photo in a handle folder has its description in that folder's
-        // FILES.BBS, like any file in any folder.
-        const char* slash = strrchr(fname, '/');
-        if (slash) {
-            char sub[192];
-            snprintf(sub, sizeof(sub), "%s/%.*s", dir, static_cast<int>(slash - fname), fname);
-            findDesc(sub, slash + 1, desc, sizeof(desc));
-        } else {
-            findDesc(dir, fname, desc, sizeof(desc));
-        }
-    }
+    char fname[kDescMax + 1];
+    snprintf(fname, sizeof(fname), "%s", pe.name);
 #else
-    findDesc(dir, fname, desc, sizeof(desc));
+    char fname[40];
+    snprintf(fname, sizeof(fname), "%.39s", pe.name);
 #endif
-
+    const unsigned long kb = (static_cast<unsigned long>(pe.size) + 1023u) / 1024u;
+    const char* desc = pe.desc;
     // Name, size, then whatever width is left for the description. A 40
     // column terminal gets 18 characters of it and an 80 column one gets 58,
     // rather than both being cut to the narrow case: 18 characters is meaner
@@ -1249,6 +1508,7 @@ void listArea(Bbs& b, Session& s, uint8_t area) {
     g_where[slotOf(s)] = Where::Area;
     g_at[slotOf(s)]    = area;
     s.term.cls(s.tl);
+    pageDrop();                          // a listing reads the folder as it is now (1.1.2)
     b.startPluginList(s, g_index);
 }
 
@@ -1383,18 +1643,16 @@ void onKey(Session& s, int k, uint32_t now) {
             if (!pendPath(area, pd, sizeof(pd)) ||
                 !areaPath(area, dir, sizeof(dir))) { backToArea(b, s); return; }
 
-            // The description lives beside the file while it waits, in the
-            // staging folder's own FILES.BBS. Same format, same code, and a
-            // sysop with the card in a laptop can read both.
-            if (answer[0]) setDesc(pd, g_pend[slot], answer);
-
             // Somebody who can approve does not queue behind themselves.
             // Making a sysop approve their own upload is ceremony, not
-            // review, and ceremony is what stops people using a thing.
+            // review, and ceremony is what stops people using a thing. Its
+            // description goes straight into the area (1.1.2): it went into
+            // the staging folder first and was taken out again, which left
+            // an empty FILES.BBS behind there that P then listed.
             if (mayDel(s, area)) {
                 if (doApproveQuiet(b, s, area, g_pend[slot])) {
                     if (answer[0]) setDesc(dir, g_pend[slot], answer);
-                    setDesc(pd, g_pend[slot], "");       // no longer waiting
+                    pageDrop();
                     s.term.color(s.tl, Color::LightGreen);
                     char msg[80];
                     snprintf(msg, sizeof(msg), "%.40s is live.", g_pend[slot]);
@@ -1404,6 +1662,10 @@ void onKey(Session& s, int k, uint32_t now) {
                     s.term.text(s.tl, "Could not make it live. It is still waiting.");
                 }
             } else {
+                // The description lives beside the file while it waits, in
+                // the staging folder's own FILES.BBS. Same format, same
+                // code, and a sysop with the card in a laptop can read both.
+                if (answer[0]) setDesc(pd, g_pend[slot], answer);
                 s.term.color(s.tl, Color::Yellow);
                 s.term.text(s.tl,
                     "Thanks. Staff will look at it before anyone else sees it.");
@@ -1414,7 +1676,34 @@ void onKey(Session& s, int k, uint32_t now) {
         case AskDescText: {
             char dir[128];
             if (!areaPath(at, dir, sizeof(dir))) { backToArea(b, s); return; }
+#ifdef BBS_HAS_CAMERA
+            // The photo areas' FILES.BBS has one writer, on the runner
+            // (1.1.2): this is queued there like the camera's own, and a
+            // photo in a handle folder is described in that folder's file.
+            if (at == kAreaPhotos || at == kAreaTimed) {
+                char sub[24] = "";
+                const char* nm = g_pend[slot];
+                const char* slash = strchr(nm, '/');
+                if (slash) {
+                    snprintf(sub, sizeof(sub), "%.*s", static_cast<int>(slash - nm < 23 ? slash - nm : 23), nm);
+                    nm = slash + 1;
+                }
+                if (at == kAreaTimed) {
+                    // The timed shots' folder sits under Photos by its own name.
+                    snprintf(sub, sizeof(sub), "%.23s", g_area[at].path + strlen(camrules::kPhotosDir) +
+                             (g_area[at].path[strlen(camrules::kPhotosDir)] == '/' ? 1 : 0));
+                }
+                const bool queued = files::photoDesc(sub, nm, answer);
+                pageDrop();
+                s.term.color(s.tl, queued ? Color::LightGreen : Color::LightRed);
+                s.term.text(s.tl, queued ? (answer[0] ? "Described." : "Description cleared.")
+                                         : "The board is busy. Try again in a moment.");
+                backToArea(b, s);
+                return;
+            }
+#endif
             bool ok = setDesc(dir, g_pend[slot], answer);
+            pageDrop();
             s.term.color(s.tl, ok ? Color::LightGreen : Color::LightRed);
             s.term.text(s.tl, ok ? (answer[0] ? "Described." : "Description cleared.")
                                  : "Could not write the description file.");
@@ -1686,8 +1975,7 @@ uint16_t countPending(uint8_t i) {
     uint16_t n = 0;
     struct dirent* e;
     while ((e = readdir(d)) != nullptr) {
-        if (e->d_name[0] == '.') continue;
-        if (ieq(e->d_name, kPendList)) continue;
+        if (notUpload(e->d_name)) continue;
         ++n;
     }
     closedir(d);
@@ -2003,7 +2291,15 @@ void onBytes(Session& s, const uint8_t* in, size_t n, uint32_t now) {
 
 // tick: timeouts and retries only. The transfer is driven by the far end
 // answering, so this is what notices when it stops answering.
+#ifdef BBS_HAS_CAMERA
+void editTick();                         // the photos' descriptions (below)
+#endif
+
 void tick(uint32_t now) {
+    pageRelease();                       // the listing's page, once nobody lists (1.1.2)
+#ifdef BBS_HAS_CAMERA
+    editTick();
+#endif
     if (!g_x.s) return;
     xferDrive(*g_x.s, nullptr, 0, now);
 }
@@ -2403,8 +2699,7 @@ void listPending(Bbs& b, Session& s, uint8_t area) {
         if (d) {
             struct dirent* e;
             while ((e = readdir(d)) != nullptr) {
-                if (e->d_name[0] == '.') continue;
-                if (ieq(e->d_name, kPendList)) continue;
+                if (notUpload(e->d_name)) continue;
                 unsigned long kb = 0;
                 snprintf(full, sizeof(full), "%s/%.48s", pd, e->d_name);
                 if (stat(full, &st) == 0)
@@ -2743,16 +3038,169 @@ bool files::sendPhoto(Bbs& b, Session& s, const char* rel, bool xmodem, uint32_t
     return true;
 }
 
-bool files::photoDesc(const char* dir, const char* name, const char* text) {
-    return setDesc(dir, name, text, ".ctmp");
+// ===========================================================================
+// One writer for the photos' FILES.BBS (1.1.2).
+//
+// The camera's worker wrote the Photos folders' FILES.BBS itself, and so did
+// the loop (DESC in the Photos area), two tasks on one FAT file with
+// CONFIG_FATFS_FS_LOCK at 0: the last rename won and a description was lost,
+// and the EEXIST fallback removed the live file while the other side might
+// have had it open. Now the camera asks, through photoDesc and photoTidy,
+// and never touches the file: its asks, and the loop's own for those areas,
+// go into one small queue, and one job of this plugin's on the background
+// runner makes them, one at a time. Every other area's FILES.BBS has only
+// ever had the loop as its writer, and still does.
+// ===========================================================================
+namespace {
+enum : uint8_t { EDIT_SET = 1, EDIT_TIDY = 2 };
+struct Edit {
+    uint8_t kind = 0;
+    char    sub[24] = {};              // the handle folder under Photos, "" for Photos itself
+    char    name[64] = {};
+    char    text[kDescMax + 1] = {};
+};
+constexpr uint8_t kEdits = 4;
+// On the heap (PSRAM where the board has it) only while edits wait: 552
+// bytes of static DRAM on the two boards that have the least of it.
+Edit*       g_edit      = nullptr;     // under the runner's lock
+uint8_t     g_editHead  = 0;           // under the runner's lock
+uint8_t     g_editCount = 0;
+runner::Job g_editJob;
+
+void photoFolder(char* out, size_t n, const char* sub) {
+    if (sub && *sub) snprintf(out, n, "%s/%s/%.23s", plat::sdBase(), camrules::kPhotosDir, sub);
+    else             snprintf(out, n, "%s/%s", plat::sdBase(), camrules::kPhotosDir);
 }
 
-bool files::photoDescDrop(const char* dir, bool (*gone)(void* ctx, const char* name), void* ctx) {
-    char cur[160];
-    snprintf(cur, sizeof(cur), "%s/%s", dir, BBS_FILES_DESC);
-    struct stat st;
-    if (stat(cur, &st) != 0) return true;            // no descriptions to tidy
-    return setDesc(dir, nullptr, "", ".ctmp", gone, ctx);
+// The names a folder holds, as hashes, for a tidy: one read of the folder.
+struct Present { uint32_t* h; size_t n, cap; bool desc, other; };
+
+uint32_t foldName(const char* s) { return bbsu::foldHash(s); }
+
+bool presentAdd(void* ctx, const char* name, bool dir, uint32_t) {
+    Present& p = *static_cast<Present*>(ctx);
+    if (ieq(name, BBS_FILES_DESC)) { p.desc = true; return true; }
+    p.other = true;
+    if (dir) return true;
+    if (p.n == p.cap) {
+        const size_t cap = p.cap ? p.cap * 2 : 64;
+        uint32_t* g = static_cast<uint32_t*>(plat::camAlloc(cap * sizeof(uint32_t)));
+        if (!g) return false;
+        if (p.h) { memcpy(g, p.h, p.n * sizeof(uint32_t)); plat::camFree(p.h); }
+        p.h = g;
+        p.cap = cap;
+    }
+    p.h[p.n++] = foldName(name);
+    return true;
+}
+
+bool notPresent(void* ctx, const char* name) {
+    const Present& p = *static_cast<const Present*>(ctx);
+    const uint32_t h = foldName(name);
+    for (size_t i = 0; i < p.n; ++i) if (p.h[i] == h) return false;
+    return true;                                     // its file has gone: drop the line
+}
+
+void editRun(const Edit& e) {
+    char dir[160];
+    photoFolder(dir, sizeof(dir), e.sub);
+    if (e.kind == EDIT_SET) {
+        setDesc(dir, e.name, e.text, ".ctmp");
+        return;
+    }
+    // TIDY: the lines of files that are gone, and a handle folder the
+    // camera emptied goes, with its FILES.BBS if that is all it holds.
+    char rel[96];
+    if (e.sub[0]) snprintf(rel, sizeof(rel), "%s/%.23s", camrules::kPhotosDir, e.sub);
+    else          snprintf(rel, sizeof(rel), "%s", camrules::kPhotosDir);
+    Present p{ nullptr, 0, 0, false, false };
+    if (!plat::sdList(rel, presentAdd, &p)) { plat::camFree(p.h); return; }
+    if (p.desc) setDesc(dir, nullptr, "", ".ctmp", notPresent, &p);
+    if (e.sub[0] && p.n == 0) {
+        char fb[200];
+        snprintf(fb, sizeof(fb), "%s/%s", dir, BBS_FILES_DESC);
+        remove(fb);
+        rmdir(dir);                                  // only goes when empty
+    }
+    plat::camFree(p.h);
+}
+
+void editWork(runner::Job&) {
+    for (;;) {
+        Edit e;
+        plat::runLock();
+        if (!g_editCount) { plat::runUnlock(); break; }
+        e = g_edit[g_editHead];
+        g_editHead = static_cast<uint8_t>((g_editHead + 1) % kEdits);
+        --g_editCount;
+        plat::runUnlock();
+        editRun(e);
+        runner::breathe();
+    }
+}
+
+bool editQueue(uint8_t kind, const char* sub, const char* name, const char* text) {
+    Edit e;
+    e.kind = kind;
+    snprintf(e.sub, sizeof(e.sub), "%.23s", sub ? sub : "");
+    snprintf(e.name, sizeof(e.name), "%.63s", name ? name : "");
+    snprintf(e.text, sizeof(e.text), "%.*s", static_cast<int>(kDescMax), text ? text : "");
+    // The queue is made outside the lock (no allocating inside a critical
+    // section), and taken inside it only if nobody made one meanwhile; it
+    // can also be freed between the look and the lock, hence the second go.
+    Edit* spare = nullptr;
+    for (uint8_t tries = 0; tries < 2; ++tries) {
+        plat::runLock();
+        if (!g_edit && spare) { g_edit = spare; spare = nullptr; }
+        if (g_edit) {
+            const bool room = g_editCount < kEdits;
+            if (room) {
+                g_edit[(g_editHead + g_editCount) % kEdits] = e;
+                ++g_editCount;
+            }
+            plat::runUnlock();
+            if (spare) plat::camFree(spare);
+            if (!room) plat::log("files: a photo's description was not written: the queue was full");
+            return room;
+        }
+        plat::runUnlock();
+        void* mem = plat::camAlloc(sizeof(Edit) * kEdits);
+        if (!mem) break;
+        spare = static_cast<Edit*>(mem);
+        for (uint8_t i = 0; i < kEdits; ++i) new (&spare[i]) Edit();
+    }
+    if (spare) plat::camFree(spare);
+    plat::log("files: a photo's description was not written: no memory for the queue");
+    return false;
+}
+}   // namespace
+
+namespace {
+// editTick: post the edit job while edits wait and it is not out. The
+// loop's: the camera queues from the runner and the runner's queue is the
+// loop's to post to.
+void editTick() {
+    if (runner::done(g_editJob)) runner::collect(g_editJob);
+    if (!runner::idle(g_editJob)) return;
+    plat::runLock();
+    const bool waiting = g_editCount != 0;
+    Edit* drop = nullptr;
+    if (!waiting && g_edit) { drop = g_edit; g_edit = nullptr; g_editHead = 0; }
+    plat::runUnlock();
+    if (drop) plat::camFree(drop);                 // nothing waits: back to the heap
+    if (!waiting) return;
+    g_editJob.work = editWork;
+    g_editJob.name = "files descriptions";
+    runner::post(g_editJob);
+}
+}   // namespace
+
+bool files::photoDesc(const char* sub, const char* name, const char* text) {
+    return editQueue(EDIT_SET, sub, name, text);
+}
+
+bool files::photoTidy(const char* sub) {
+    return editQueue(EDIT_TIDY, sub, "", "");
 }
 #endif
 

@@ -66,8 +66,24 @@
  *
  *               The socket is non-blocking and driven from tick(), so a
  *               directory that is slow or gone never holds up a caller.
- *               The address is resolved once at start, when nobody is
- *               connected, and only looked up again after a failure.
+ *               The name is looked up on the background runner (1.1.2),
+ *               never on the loop, before each round: lwIP answers from its
+ *               own cache until the record's TTL runs out, so the network is
+ *               asked only when the record says to. The last good address
+ *               is kept through a lookup that fails and through a directory
+ *               that does not answer, and a name that stops connecting three
+ *               times in a row is looked up again. It was a blocking
+ *               getaddrinfo on the loop at every start and after every
+ *               failed connect: seconds with every caller waiting.
+ *
+ * Presence:     A caller arriving or leaving (and SHOW, HIDE, LURK, a guest)
+ *               makes the directory's count wrong at once, so a heartbeat
+ *               goes as soon as the directory allows (1.1.2): the changes of
+ *               two seconds are one heartbeat, and it waits no longer than
+ *               the gap the directory asks between posts (nudge_seconds, 30
+ *               by default, the project directory's own minimum). One that
+ *               lands while a post is out is sent after it; a board backing
+ *               off after failures still sends it.
  *
  * Libraries:    none (libc, BSD sockets)
  * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
@@ -99,6 +115,7 @@
 #include "../core/clock.h"
 #include "../core/sysconfig.h"
 #include "../core/backup.h"          // sdCardKept: the card's size, for the sd badge
+#include "../core/runner.h"         // the name lookup, off the loop (1.1.2)
 #include "../platform/platform.h"
 #include "chat.h"
 #include "camera.h"            // the camera feature, on a camera board
@@ -124,7 +141,18 @@ constexpr const char kName[]      = "announce";
 constexpr uint8_t    kMaxServers  = 4;      // post to this many directories
 constexpr uint8_t    kUrlMax      = 96;
 constexpr uint8_t    kNameMax     = 40;
-constexpr uint16_t   kNudgeDef    = 60;     // seconds: shortest gap a caller change may force
+// The shortest gap between two heartbeats a caller change may bring about,
+// in seconds: the project directory refuses a post from an address that
+// posted less than MIN_SECONDS (30) before, and a refused one starts that
+// clock again, so going sooner is slower. 32 rather than 30: the board
+// times the gap from when its round began and the directory from when the
+// post arrived, which is later by the connection's setup, so 30 on the
+// board's clock can be 29.9 on the directory's and draw a 429. 0: never
+// push on a change.
+constexpr uint16_t   kNudgeDef    = 32;
+constexpr uint8_t    kRetries     = 3;      // a caller change nobody listed is sent again this often
+constexpr uint32_t   kCoalesceMs  = 2000;   // caller changes this close together are one heartbeat
+constexpr uint8_t    kReresolve   = 3;      // failed posts in a row before the name is looked up again
 constexpr size_t     kTokenMin    = 16;     // shortest token worth believing
 constexpr uint8_t    kTokenMax    = 40;
 constexpr uint8_t    kDescMax     = 120;
@@ -216,8 +244,11 @@ struct Server {
     char     host[kUrlMax] = {};
     char     path[kUrlMax] = {};
     uint16_t port          = 80;
-    uint32_t addr          = 0;        // resolved, 0 = needs a lookup
+    uint32_t addr          = 0;        // the last good address, 0 never found
     bool     used          = false;
+    bool     lookup        = false;    // wants a lookup on the runner
+    bool     lookupFailed  = false;    // the last lookup found nothing
+    uint8_t  fails         = 0;        // posts in a row that got nowhere
     char     result[48]    = "never sent";
 };
 
@@ -242,6 +273,31 @@ bool     g_publicSet = false;              // public_port is in the file
 uint16_t g_interval = kIntervalDef;
 uint32_t g_lastRound = 0;                  // when the last round of posts began
 uint16_t g_nudgeSecs = kNudgeDef;          // 0 = never push on a caller change
+uint32_t g_intervalMs = 0;                 // g_interval in ms (a host test may set it directly)
+
+// A caller change waiting to be sent (1.1.2): the directory's count is wrong
+// until it is. g_wantAt is the end of its two second gathering; the round it
+// starts takes whatever the count is by then.
+bool     g_want     = false;
+uint32_t g_wantAt   = 0;
+// A round that carried a caller change and listed nowhere (a 429 from the
+// directory's per-address limit, which two boards behind one address hit,
+// or a directory briefly away) wants the change again after the gap, up to
+// kRetries times, rather than leaving it to the next timed heartbeat ten
+// minutes on. A new change starts the count again.
+bool     g_carry    = false;
+uint8_t  g_retry    = 0;
+// What a sysop sees in ANNOUNCE (1.1.2): when the last round went, what came
+// back, and how the board is backing off after failures.
+uint32_t g_lastSentMs    = 0;              // millis the last round began, 0 never
+uint32_t g_lastSentEpoch = 0;
+char     g_lastResult[48] = "nothing sent yet";
+bool     g_roundOk  = false;               // a directory said yes this round
+bool     g_roundMiss = false;              // and one did not
+bool     g_inRound  = false;
+uint8_t  g_backoff  = 0;                   // rounds in a row with nothing listed
+uint16_t g_sentBusy = 0, g_sentNodes = 0;  // what the last payload said
+uint32_t g_waitAddr = 0;                   // millis a post began waiting on a lookup, 0 not
 
 // ---------------------------------------------------------------------------
 // One buffer, three jobs in turn (1.0.1). It holds the payload while it is
@@ -438,8 +494,16 @@ void readKey(void* ctx, const char* key, const char* value) {
     }
     else if (!strcmp(key, "interval")) {
         long m = strtol(value, nullptr, 10);
-        if (m >= 1 && m <= 1440) g_interval = static_cast<uint16_t>(m);
+        if (m >= 1 && m <= 1440) { g_interval = static_cast<uint16_t>(m); g_intervalMs = g_interval * 60000u; }
     }
+#ifdef BBS_HOST
+    // The host alone: the interval in milliseconds, so a test can run a
+    // day's heartbeats in minutes against a stand-in directory (1.1.2).
+    else if (!strcmp(key, "interval_ms_test")) {
+        long v = strtol(value, nullptr, 10);
+        if (v >= 50 && v <= 86400000L) g_intervalMs = static_cast<uint32_t>(v);
+    }
+#endif
     else if (!strcmp(key, "share_activity")) {
         g_activity = !strcasecmp(value, "yes") || !strcasecmp(value, "on") ||
                      !strcasecmp(value, "true") || !strcmp(value, "1");
@@ -596,8 +660,10 @@ bool buildBody() {
     j.raw(",\"description\":"); j.str(g_desc);
     j.raw(",\"host\":");        j.str(g_host);
     j.raw(",\"port\":");        j.unum(g_public);
-    j.raw(",\"nodes\":");       j.unum(bbs.publicNodes());
-    j.raw(",\"busy\":");        j.unum(bbs.publicBusy());
+    g_sentNodes = bbs.publicNodes();
+    g_sentBusy  = bbs.publicBusy();
+    j.raw(",\"nodes\":");       j.unum(g_sentNodes);
+    j.raw(",\"busy\":");        j.unum(g_sentBusy);
     // Closed to callers (1.1.1, Rob): still listed, shown as temporarily
     // closed, rather than dropping off the directory and starting its wait
     // again. Left out while open, as "sd" is while no card is in.
@@ -663,21 +729,89 @@ bool buildRequest(const Server& s) {
 }
 
 // ---------------------------------------------------------------------------
-// resolve: one blocking lookup, done when the board is quiet. Steady state
-// never resolves, so a slow DNS server cannot stall a caller mid sentence.
+// The name lookup, on the background runner (1.1.2).
+//
+// getaddrinfo blocks: lwIP asks each DNS server in turn, four tries apiece
+// a second apart, so a lookup that fails is seconds. It ran on the loop at
+// every start (every CONFIG save) and after every failed connect, and a
+// comment above it said steady state never did, which was not so: a refused
+// connect zeroed the address and the next heartbeat looked it up on the loop
+// (internal/audit-1.1.2-2026-09-26.md, item 1).
+//
+// Now the runner asks, one server at a time, and the loop reads the answer
+// once the job is done. The address found is kept until a lookup finds
+// another: a lookup that fails keeps it, and so does a directory that does
+// not answer.
 // ---------------------------------------------------------------------------
-bool resolve(Server& s) {
+struct Lookup {
+    runner::Job job;
+    char        host[kUrlMax] = {};   // in
+    uint8_t     server = 0;           // in: which g_servers entry asked
+    uint32_t    addr   = 0;           // out
+    bool        ok     = false;       // out
+};
+Lookup g_look;
+
+void lookupWork(runner::Job&) {
+    g_look.ok = false;
+    g_look.addr = 0;
+#ifdef BBS_HOST
+    // A test takes the DNS away (hostio.txt's "nodns") to see the board
+    // keep its address and come back when it returns.
+    if (plat::hostNoDns()) return;
+#endif
     addrinfo hints = {};
     hints.ai_family   = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
     addrinfo* res = nullptr;
-    if (getaddrinfo(s.host, nullptr, &hints, &res) != 0 || !res) {
-        snprintf(s.result, sizeof(s.result), "cannot find %.20s", s.host);
-        return false;
-    }
-    s.addr = reinterpret_cast<sockaddr_in*>(res->ai_addr)->sin_addr.s_addr;
+    if (getaddrinfo(g_look.host, nullptr, &hints, &res) != 0 || !res) return;
+    g_look.addr = reinterpret_cast<sockaddr_in*>(res->ai_addr)->sin_addr.s_addr;
+    g_look.ok   = g_look.addr != 0;
     freeaddrinfo(res);
-    return true;
+}
+
+// lookupTick: collect an answer, and post the next server that wants one.
+// Loop only: a load and a compare when there is nothing to do.
+void lookupTick() {
+    if (runner::done(g_look.job)) {
+        const uint8_t i = g_look.server;
+        // The server list may have changed under the lookup (a CONFIG save):
+        // an answer is only kept for the name it was asked for.
+        if (i < g_count && !strcmp(g_servers[i].host, g_look.host)) {
+            Server& sv = g_servers[i];
+            if (g_look.ok) {
+                if (sv.addr != g_look.addr) {
+                    const uint8_t* b = reinterpret_cast<const uint8_t*>(&g_look.addr);
+                    plat::log("announce: %s is %u.%u.%u.%u", sv.host, b[0], b[1], b[2], b[3]);
+                }
+                sv.addr = g_look.addr;
+                sv.lookupFailed = false;
+            } else {
+                sv.lookupFailed = true;
+                plat::log("announce: cannot find %s%s", sv.host, sv.addr ? "; keeping the last address" : "");
+            }
+        }
+        runner::collect(g_look.job);
+    }
+    if (!runner::idle(g_look.job)) return;
+    for (uint8_t i = 0; i < g_count; ++i) {
+        Server& sv = g_servers[i];
+        if (!sv.lookup) continue;
+        sv.lookup = false;
+        snprintf(g_look.host, sizeof(g_look.host), "%s", sv.host);
+        g_look.server   = i;
+        g_look.job.work = lookupWork;
+        g_look.job.name = "announce lookup";
+        if (!runner::post(g_look.job)) sv.lookup = true;      // the runner is full: next tick
+        return;
+    }
+}
+
+// askLookup: every server's name, before a round. lwIP answers from its own
+// cache while the record's TTL runs, so this asks the network only when the
+// record says to, and the round goes on the last address meanwhile.
+void askLookup() {
+    for (uint8_t i = 0; i < g_count; ++i) g_servers[i].lookup = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -722,11 +856,20 @@ void saveToken() {
 // together is one update, not six, and a directory that rate limits at
 // thirty seconds would refuse the rest anyway.
 // ---------------------------------------------------------------------------
+// 1.1.2: as soon as the directory allows, and never lost. It returned at
+// once while a post was out, so a change that landed during one was never
+// sent at all, and it waited sixty seconds after the last round besides:
+// the directory ran behind the callers on a live board. Now a change is
+// wanted, gathered for two seconds, and sent at the first moment both that
+// and the directory's gap allow, after a post in flight if there is one.
+// Failures do not hold it: their back-off is for the timed heartbeat.
 void nudge(uint32_t now) {
-    if (!g_count || !g_nudgeSecs || g_stage != Stage::Idle) return;
-    uint32_t soonest = g_lastRound + static_cast<uint32_t>(g_nudgeSecs) * 1000u;
-    if (static_cast<int32_t>(now - soonest) >= 0) soonest = now;   // already allowed
-    if (static_cast<int32_t>(soonest - g_nextRun) < 0) g_nextRun = soonest;
+    if (!g_count || !g_nudgeSecs) return;
+    g_retry = 0;
+    if (!g_want) {
+        g_want   = true;
+        g_wantAt = now + kCoalesceMs;
+    }
 }
 
 // The count the directory publishes follows what the outside can see, so
@@ -758,8 +901,26 @@ const char* codeMeans(int code) {
 
 void finish(const char* how, bool ok) {
     if (g_fd >= 0) { close(g_fd); g_fd = -1; }
+    const bool posted = g_stage != Stage::Idle;
     g_stage = Stage::Idle;
-    if (g_at < kMaxServers) snprintf(g_servers[g_at].result, sizeof(g_servers[g_at].result), "%.39s", how);
+    if (g_at < kMaxServers) {
+        Server& sv = g_servers[g_at];
+        snprintf(sv.result, sizeof(sv.result), "%.39s", how);
+        // Every heartbeat's outcome, one line (1.1.2): what a sysop reading
+        // the console, or a soak on the bench, looks for.
+        plat::log("announce: %s: %s (busy %u of %u)%s", sv.host, how,
+                  static_cast<unsigned>(g_sentBusy), static_cast<unsigned>(g_sentNodes),
+                  posted ? "" : ", not sent");
+        snprintf(g_lastResult, sizeof(g_lastResult), "%.47s", how);
+        if (ok) {
+            sv.fails = 0;
+            g_roundOk = true;
+        } else g_roundMiss = true;
+        if (!ok && sv.fails < 255 && ++sv.fails >= kReresolve) {
+            sv.fails  = 0;
+            sv.lookup = true;                       // the address may have moved
+        }
+    }
     if (ok) ++g_okCount; else ++g_failCount;
 #ifdef BBS_HAS_LCD
     g_failRun = ok ? 0 : static_cast<uint8_t>(g_failRun < 255 ? g_failRun + 1 : 255);
@@ -780,7 +941,22 @@ void startPost(uint32_t now) {
         finish("payload too long", false);
         return;
     }
-    if (!s.addr && !resolve(s)) { finish(s.result, false); return; }
+    // The address comes from the runner (lookupTick). A round never waits
+    // on the loop for one: with none found yet it says so and goes on, and
+    // the next round has one. A lookup still out is given until the post
+    // would have timed out.
+    if (!s.addr) {
+        if (!g_waitAddr) g_waitAddr = now ? now : 1;
+        if (!s.lookupFailed && (s.lookup || !runner::idle(g_look.job)) && now - g_waitAddr < kTimeoutMs)
+            return;                                 // try this server again next tick
+        char why[48];
+        snprintf(why, sizeof(why), "cannot find %.20s", s.host);
+        if (!s.lookupFailed && runner::idle(g_look.job)) s.lookup = true;
+        g_waitAddr = 0;
+        finish(why, false);
+        return;
+    }
+    g_waitAddr = 0;
 
     g_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (g_fd < 0) { finish("no socket", false); return; }
@@ -793,8 +969,7 @@ void startPost(uint32_t now) {
     a.sin_addr.s_addr = s.addr;
     int r = connect(g_fd, reinterpret_cast<sockaddr*>(&a), sizeof(a));
     if (r < 0 && errno != EINPROGRESS) {
-        s.addr = 0;                                // look it up again next time
-        finish("no route", false);
+        finish("no route", false);                 // the address is kept (1.1.2)
         return;
     }
     g_sent    = 0;
@@ -825,8 +1000,7 @@ void service(uint32_t now) {
         int err = 0;
         socklen_t len = sizeof(err);
         if (getsockopt(g_fd, SOL_SOCKET, SO_ERROR, &err, &len) < 0 || err) {
-            g_servers[g_at].addr = 0;                 // look the name up again next time
-            finish("refused", false);
+            finish("refused", false);                 // kept; three in a row look it up again
             return;
         }
         g_stage = Stage::Sending;
@@ -876,6 +1050,16 @@ void service(uint32_t now) {
 
         if (!g_replyLen) { finish("no reply", false); return; }
         g_io[g_replyLen] = '\0';
+        // Headers that never reached their blank line are not a reply
+        // (1.1.2, the reliability suite): a buffer filled, or a connection
+        // closed, part way through them, and whatever header was cut reads
+        // as a shorter value. A token cut at twenty characters still passes
+        // kTokenMin and would be saved over the good one.
+        if (!strstr(g_io, "\r\n\r\n")) {
+            finish(static_cast<size_t>(g_replyLen) + 1 >= kReplyMax ? "reply too long" : "reply cut short",
+                   false);
+            return;
+        }
 
         const char* reply = g_io;
         int code = 0;                              // "HTTP/1.1 200 OK"
@@ -903,7 +1087,54 @@ void service(uint32_t now) {
     }
 }
 
+// roundDone: a round has been through every directory. Timed heartbeats
+// back off after a round that listed nowhere, 30 seconds and doubling, up to
+// the interval, so a directory that comes back is heard from again in
+// minutes rather than at the next interval; a listed round goes back to the
+// interval.
+void roundDone(uint32_t now) {
+    g_inRound = false;
+    // The caller change it carried, again once the gap allows, when any
+    // directory missed it: with two, one listing it left the other stale
+    // until the interval (code review, 1.1.2). The gap is timed from this
+    // round's start, which puts the retry just past the directory's 30 s from
+    // the refusal it restarted its clock on.
+    if (g_carry && g_roundMiss && g_nudgeSecs && g_retry < kRetries && !g_want) {
+        ++g_retry;
+        g_want   = true;
+        g_wantAt = now;
+    }
+    if (g_roundOk) {
+        g_backoff = 0;
+        if (!g_roundMiss) g_retry = 0;
+        g_nextRun = g_lastSentMs + g_intervalMs;
+    } else {
+        uint32_t wait = 30000u << (g_backoff < 5 ? g_backoff : 5);
+        if (wait > g_intervalMs) wait = g_intervalMs;
+        if (g_backoff < 255) ++g_backoff;
+        g_nextRun = now + wait;
+    }
+    if (!g_nextRun) g_nextRun = 1;
+}
+
+// beginRound: every directory, in turn, from the next tick.
+void beginRound(uint32_t now) {
+    g_at          = 0;
+    g_inRound     = true;
+    g_roundOk     = false;
+    g_roundMiss   = false;
+    g_carry       = g_want;             // this round carries the change, if one waited
+    g_want        = false;              // a change after this is sent by the next round
+    g_lastRound   = now;
+    g_lastSentMs  = now ? now : 1;
+    g_lastSentEpoch = clk::epoch();
+    g_waitAddr    = 0;
+    g_nextRun     = now + g_intervalMs;  // until the round says otherwise
+    askLookup();
+}
+
 void tick(uint32_t now) {
+    lookupTick();
     if (g_stage != Stage::Idle) { service(now); return; }
     // Held while the sysop password is still the published default (Rob,
     // 1.0.0). A listed board is one strangers will call, and the default is
@@ -916,11 +1147,17 @@ void tick(uint32_t now) {
     // closed or not.
     if (syscfg::get().sysopDefault) return;
     if (g_at < g_count) { startPost(now); return; }          // more directories to do
-    if (!g_count || !g_nextRun) return;
-    if (static_cast<int32_t>(now - g_nextRun) < 0) return;
-    g_nextRun  = now + static_cast<uint32_t>(g_interval) * 60000u;
-    g_lastRound = now;
-    g_at       = 0;                                          // round again
+    if (g_inRound) roundDone(now);
+    if (!g_count) return;
+    // A caller change, gathered and past the directory's gap: now. Not held
+    // by a back-off, which is for the timed heartbeat.
+    if (g_want && static_cast<int32_t>(now - g_wantAt) >= 0 &&
+        (!g_lastSentMs || now - g_lastSentMs >= static_cast<uint32_t>(g_nudgeSecs) * 1000u)) {
+        beginRound(now);
+        return;
+    }
+    if (!g_nextRun || static_cast<int32_t>(now - g_nextRun) < 0) return;
+    beginRound(now);
 }
 
 // ---------------------------------------------------------------------------
@@ -981,6 +1218,40 @@ void showStatus(Bbs& b, Session& s) {
     t.color(tl, Color::Grey);
     t.text(tl, buf);
     t.nl(tl);
+    // Alive, and when (1.1.2): the last one sent, what came back, and when
+    // the next goes, so a sysop can see it is working without a console.
+    {
+        const uint32_t now = plat::millis();
+        char when[16] = "never";
+        if (g_lastSentMs) {
+            if (g_lastSentEpoch && clk::valid()) clk::fmtEpoch(when, sizeof(when), "%H:%M:%S", g_lastSentEpoch);
+            else snprintf(when, sizeof(when), "%us ago", static_cast<unsigned>((now - g_lastSentMs) / 1000u));
+        }
+        snprintf(buf, sizeof(buf), "Last sent %s: %.40s", when, g_lastResult);
+        t.color(tl, g_roundOk || !g_lastSentMs ? Color::Grey : Color::Yellow);
+        t.text(tl, buf);
+        t.nl(tl);
+        if (syscfg::get().sysopDefault) {
+            snprintf(buf, sizeof(buf), "Next: held");
+        } else if (g_stage != Stage::Idle || (g_inRound && g_at < g_count)) {
+            snprintf(buf, sizeof(buf), "Next: going out now");
+        } else {
+            uint32_t next = g_nextRun;
+            if (g_want) {
+                uint32_t w = g_wantAt;
+                const uint32_t gap = g_lastSentMs + static_cast<uint32_t>(g_nudgeSecs) * 1000u;
+                if (g_lastSentMs && static_cast<int32_t>(gap - w) > 0) w = gap;
+                if (!next || static_cast<int32_t>(w - next) < 0) next = w;
+            }
+            const int32_t in = next ? static_cast<int32_t>(next - now) : 0;
+            const uint32_t secs = in > 0 ? static_cast<uint32_t>(in) / 1000u : 0;
+            snprintf(buf, sizeof(buf), "Next in %um %02us%s%s", static_cast<unsigned>(secs / 60u),
+                     static_cast<unsigned>(secs % 60u), g_want ? ", a caller change" : "",
+                     g_backoff ? ", backing off" : "");
+        }
+        t.text(tl, buf);
+        t.nl(tl);
+    }
     if (g_activity) {
         uint16_t calls = 0;
         uint32_t minutes = 0;
@@ -1043,8 +1314,7 @@ const Command kCommands[] = {
               // Start a round now, and put the timer where it belongs. Setting
               // it to now as well makes the timer fire the instant the round
               // finishes, so every manual send went out twice.
-              g_at      = 0;
-              g_nextRun = now + static_cast<uint32_t>(g_interval) * 60000u;
+              if (g_stage == Stage::Idle && !(g_inRound && g_at < g_count)) beginRound(now);
               s.term.color(s.tl, Color::LightGreen);
               s.term.text(s.tl, "Sending now.");
               b.prompt(s);
@@ -1086,6 +1356,7 @@ bool start(Bbs& bbs) {
     g_publicIn   = 0;
     g_activity   = false;
     g_nudgeSecs  = kNudgeDef;
+    g_intervalMs = static_cast<uint32_t>(kIntervalDef) * 60000u;
     // The listener is up before any plugin starts (bbsTask, and a CONFIG
     // save restarts the plugins with it still bound), so this is the port
     // callers reach right now. BBS_PORT only if that ever stops being true.
@@ -1100,10 +1371,16 @@ bool start(Bbs& bbs) {
     readServers("http://unleashedbbs.net/announce");         // the default, replaceable
     plugins::forEachKey(g_index, readKey, nullptr);
 
-    for (uint8_t i = 0; i < g_count; ++i) resolve(g_servers[i]);   // quiet board, safe to block
-    g_at       = 0;                                                // first heartbeat right away
-    g_lastRound = plat::millis();
-    g_nextRun  = plat::millis() + static_cast<uint32_t>(g_interval) * 60000u;
+    // The names are looked up on the runner (1.1.2): this was a blocking
+    // lookup of every server right here, and start runs at every CONFIG save.
+    // The first round goes at once and waits on the lookup for up to the
+    // post's own timeout.
+    g_want     = false;
+    g_carry    = false;
+    g_retry    = 0;
+    g_inRound  = false;
+    g_backoff  = 0;
+    beginRound(plat::millis());
     plat::log("announce: %u director%s, every %u min", static_cast<unsigned>(g_count),
               g_count == 1 ? "y" : "ies", static_cast<unsigned>(g_interval));
     return true;
@@ -1159,6 +1436,9 @@ void stop() {
     if (g_fd >= 0) { close(g_fd); g_fd = -1; }
     g_stage = Stage::Idle;
     g_at    = 0xFF;
+    g_inRound = false;
+    // A lookup still out answers into g_look; lookupTick keeps it only for
+    // a name the new list still has.
 }
 
 // ---------------------------------------------------------------------------

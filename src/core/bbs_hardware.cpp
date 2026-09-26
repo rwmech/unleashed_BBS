@@ -62,6 +62,7 @@
 #include "bbs_util.h"
 #include "backup.h"            // sdCardKept, sdCardGB
 #include "plugin.h"
+#include "space.h"             // the card's kept free space (1.1.2)
 #include "../platform/platform.h"
 #include "../plugins/camera.h" // camera::running, camera::found (camera boards)
 #include "../plugins/lights.h" // lights::wired
@@ -308,13 +309,22 @@ bool Bbs::hwRow(Session& s, uint8_t k, bool inSys) {
         }
     }
     if (cardMounted() && here()) {
-        // As the sd plugin last measured it: MEM, DASH and every write keep
-        // it fresh, and asking the card's FAT here could stop the board.
-        const plat::SdInfo& sd = sdCardKept();
-        char num[16];
-        fmtCommas(sd.freeKB / 1024u, num, sizeof(num));
-        snprintf(note, sizeof(note), "MB of %u", static_cast<unsigned>(sd.totalKB / 1024u));
-        statRow(s, "Card free", num, Color::LightGreen, note);
+        // The kept figure (core/space.h, 1.1.2), marked as one: measured on
+        // the runner, since asking the card's FAT here could stop the board.
+        // The total with its comma and its unit (1.1.2, from the bench:
+        // "29,537 MB of 29539" read as two different kinds of number).
+        const space::Fig c = space::get(plat::PART_CARD);
+        char tot[16];
+        fmtCommas(static_cast<uint32_t>(c.total / (1024ull * 1024ull)), tot, sizeof(tot));
+        snprintf(note, sizeof(note), "MB of %s MB", tot);
+        statKept(s, "Card free", c.valid,
+                 static_cast<uint32_t>((c.total > c.used ? c.total - c.used : 0) / (1024ull * 1024ull)),
+                 c.valid ? note : "MB");
+        return true;
+    }
+    // What the "." means, under it: SYS says it once under its storage.
+    if (cardMounted() && !inSys && here()) {
+        keptNote(s, "MEM FORCE");
         return true;
     }
     return false;

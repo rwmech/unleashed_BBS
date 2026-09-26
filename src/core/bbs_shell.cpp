@@ -47,6 +47,8 @@
 #include "calllog.h"
 #include "plugin.h"
 #include "silent.h"
+#include "space.h"            // the kept free-space figures (1.1.2)
+#include "runner.h"           // the background runner (1.1.2)
 #include "../platform/platform.h"
 
 #include <climits>
@@ -227,7 +229,7 @@ const Command* Bbs::coreCommands(uint8_t& count) {
           [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdBaud(s, a); b.prompt(s); },
           Menu::Account, 4 },
         { "MEM", "M", 0, CF_NONE, "[M]EM", "memory use",
-          [](Bbs& b, Session& s, const char*, uint32_t) { b.cmdMem(s); b.prompt(s); },
+          [](Bbs& b, Session& s, const char* arg, uint32_t) { b.cmdMemArg(s, arg); },
           Menu::Account, 5 },
         // No shortcut: "F" belongs to FILES, which is on the main menu.
         // Both tables declared it, the core registers first, and
@@ -305,7 +307,7 @@ const Command* Bbs::coreCommands(uint8_t& count) {
 
         // -- sysop ------------------------------------------------------------
         { "SYS", "", 0, CF_STAFF, "SYS", "radio, memory, storage, load",
-          [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Sys); },
+          [](Bbs& b, Session& s, const char* arg, uint32_t) { b.cmdSysArg(s, arg); },
           Menu::Sysop, 0 },
         // CALLS is public (Rob). It is a bar chart of calls per hour and
         // nothing else: no handles, no addresses, nobody's session. Knowing
@@ -607,6 +609,152 @@ void Bbs::statNum(Session& s, const char* label, uint32_t value, const char* not
     char num[16];
     fmtCommas(value, num, sizeof(num));
     statRow(s, label, num, Color::LightGreen, note);
+}
+
+// ---------------------------------------------------------------------------
+// statKept: a figure that is kept, not read now (1.1.2, core/space.h): the
+// value as statRow sets it, right-aligned in its nine columns so its digits
+// line up with a live figure's, then a "." in the column after, then the
+// note. The dot is the whole marker: quiet, the same on every terminal, and
+// keptNote says under the figures what it means. A figure never measured
+// yet is a dash with no dot, since there is nothing kept to be old.
+// ---------------------------------------------------------------------------
+void Bbs::statKept(Session& s, const char* label, bool known, uint32_t value, const char* note) {
+    char buf[40];
+    uint8_t col = 0;
+    snprintf(buf, sizeof(buf), "%-13.13s", label);
+    rowSeg(s, Color::Grey, buf, col);
+    char num[16];
+    if (known) fmtCommas(value, num, sizeof(num));
+    else       snprintf(num, sizeof(num), "-");
+    snprintf(buf, sizeof(buf), "%9s", num);
+    rowSeg(s, known ? Color::LightGreen : Color::DarkGrey, buf, col);
+    rowSeg(s, Color::DarkGrey, known ? "." : " ", col);
+    if (note) {
+        rowSeg(s, Color::DarkGrey, " ", col);
+        rowSeg(s, Color::DarkGrey, note, col);
+    }
+    rowEnd(s, col);
+}
+
+// keptNote: when the kept figures were taken, and how to take them again.
+// At 40 columns the short form; nothing measured yet says so.
+void Bbs::keptNote(Session& s, const char* force) {
+    char when[16], row[96], tail[40] = "";
+    space::asOf(when, sizeof(when));
+    const bool wide = rowWidth(s) >= 60;
+    // The command that measures them again, for staff only: FORCE is theirs.
+    if (wide && force && s.level != Access::None) snprintf(tail, sizeof(tail), " %s measures now.", force);
+    if (!when[0])
+        snprintf(row, sizeof(row), wide ? "Figures ending in . are not measured yet.%s"
+                                        : "Ending in .: not measured yet.%s", tail);
+    else if (wide)
+        snprintf(row, sizeof(row), "Figures ending in . are as of %s.%s", when, tail);
+    else
+        snprintf(row, sizeof(row), "Ending in .: as of %s.", when);
+    rowText(s, Color::DarkGrey, row);
+}
+
+// ---------------------------------------------------------------------------
+// startWait / serviceWait: the runner is doing something slow for this
+// caller (1.1.2). The caller sees text and a spinner, keys are dropped, and
+// the loop goes on serving everybody else; when the answer is in, the ending
+// waitFor names runs. A minute is the most a caller waits: a runner held by
+// a long job (a photo on a camera board) is told as such and the screen is
+// drawn from what is kept.
+// ---------------------------------------------------------------------------
+void Bbs::startWait(Session& s, WaitFor what, uint8_t arg, const char* text) {
+    s.waitFor    = what;
+    s.waitArg    = arg;
+    s.waitFrom   = plat::millis();
+    s.waitSpinAt = s.waitFrom;
+    s.ed = LineEditor();
+    s.st = SState::Waiting;
+    s.term.color(s.tl, Color::Grey);
+    s.term.text(s.tl, text);
+    s.term.text(s.tl, "  ");
+}
+
+void Bbs::serviceWait(Session& s, uint32_t now) {
+    bool ready = false;
+    switch (s.waitFor) {
+        case WaitFor::Space:   ready = !space::busy(); break;
+        case WaitFor::Screens: ready = screensTableReady(s); break;
+        default:               ready = true; break;
+    }
+    const bool late = now - s.waitFrom >= 60000u;
+    if (!ready && !late) {
+        if (static_cast<int32_t>(now - s.waitSpinAt) >= 0 && s.tl.empty()) {
+            s.term.left(s.tl, 1);
+            s.term.color(s.tl, Color::Yellow);
+            fx::spinFrame(s.term, s.tl, fx::Spin::Line, static_cast<uint8_t>(now / 150u));
+            s.waitSpinAt = now + 150;
+        }
+        return;
+    }
+    s.term.left(s.tl, 1);
+    s.term.ch(s.tl, ' ');
+    s.term.nl(s.tl);
+    const WaitFor what = s.waitFor;
+    s.waitFor = WaitFor::None;
+    if (late && !ready) {
+        s.term.color(s.tl, Color::Yellow);
+        s.term.text(s.tl, "The board is busy with a longer job; showing what is kept.");
+        s.term.nl(s.tl);
+    }
+    switch (what) {
+        case WaitFor::Space:
+            if (s.waitArg == 1) { startList(s, ListKind::Sys); return; }
+            s.st = SState::Shell;
+            cmdMem(s);
+            prompt(s);
+            return;
+        case WaitFor::Screens:
+            if (!ready) { screensTableGone(s); prompt(s); return; }
+            startList(s, ListKind::Screens);
+            return;
+        default:
+            prompt(s);
+            return;
+    }
+}
+
+// isForce: the argument is FORCE (any case), and nothing else.
+static bool isForce(const char* arg) {
+    if (!arg) return false;
+    while (*arg == ' ') ++arg;
+    const char* w = "force";
+    size_t i = 0;
+    for (; w[i]; ++i)
+        if (tolower(static_cast<unsigned char>(arg[i])) != w[i]) return false;
+    for (arg += i; *arg == ' '; ++arg) {}
+    return !*arg;
+}
+
+// cmdMemArg / cmdSysArg: MEM and SYS, and with FORCE, measured first.
+// Staff only for FORCE: a measure holds each flash partition's lock for as
+// long as it walks it, and a caller's screen playing from flash waits
+// behind it, so it is not a thing anybody may ask for over and over.
+void Bbs::cmdMemArg(Session& s, const char* arg) {
+    const bool force = isForce(arg);
+    if (force && s.level == Access::None) {
+        rowText(s, Color::Grey, "MEM FORCE is for staff: MEM shows the kept figures.");
+    } else if (force) {
+        space::refresh(true);
+        startWait(s, WaitFor::Space, 0, "Measuring the storage");
+        return;
+    }
+    cmdMem(s);
+    prompt(s);
+}
+
+void Bbs::cmdSysArg(Session& s, const char* arg) {
+    if (isForce(arg)) {
+        space::refresh(true);
+        startWait(s, WaitFor::Space, 1, "Measuring the storage");
+        return;
+    }
+    startList(s, ListKind::Sys);
 }
 
 // ---------------------------------------------------------------------------
@@ -1527,8 +1675,13 @@ void Bbs::snapFill(bool full) {
         d.heapLow  = heapLow_ != 0xFFFFFFFFu && heapLow_ < d.heapFree ? heapLow_ : d.heapFree;
     }
     d.stackLeast = stackLow_;
-    d.dataFree   = plugins::freeBytes();                     // kept a minute on the board
-    d.card       = sdDashCard(d.cardFreeKB, d.cardTotalKB);  // kept a minute by the sd plugin
+    {                                                        // kept (core/space.h, 1.1.2)
+        const space::Fig u = space::get(plat::PART_USER);
+        d.dataKnown = u.valid;
+        d.dataFree  = u.valid && u.total > u.used ? static_cast<uint32_t>(u.total - u.used) : 0;
+    }
+    d.card       = sdDashCard(d.cardFreeKB, d.cardTotalKB);  // the sd plugin's, from the same
+    d.cardKnown  = d.card && space::get(plat::PART_CARD).valid;
     d.bans       = 0;
     BanList::Entry e;
     for (uint8_t k = 0; k < BBS_BAN_SLOTS; ++k) if (bans_.at(k, now, e)) ++d.bans;
@@ -1674,15 +1827,18 @@ void Bbs::dashVitals(Session& s, uint8_t which) {
         }
         if (known) dashSeg(s, col, 1, "", awake ? "awake" : "SLEEPING", !awake);
     };
+    // Kept figures end in "." (core/space.h, 1.1.2), as on MEM and SYS.
     auto data = [&]() {
-        snprintf(v, sizeof(v), "%uK", static_cast<unsigned>(d.dataFree / 1024u));
+        if (d.dataKnown) snprintf(v, sizeof(v), "%uK.", static_cast<unsigned>(d.dataFree / 1024u));
+        else             snprintf(v, sizeof(v), "-");
         dashSeg(s, col, 2, "Data", v, false);
     };
     auto card = [&]() {
         if (!d.card)                          snprintf(v, sizeof(v), "none");
-        else if (d.cardFreeKB >= 1048576u)    snprintf(v, sizeof(v), "%u GB",
+        else if (!d.cardKnown)                snprintf(v, sizeof(v), "-");
+        else if (d.cardFreeKB >= 1048576u)    snprintf(v, sizeof(v), "%u GB.",
                                                        static_cast<unsigned>((d.cardFreeKB + 524288u) / 1048576u));
-        else                                  snprintf(v, sizeof(v), "%u MB",
+        else                                  snprintf(v, sizeof(v), "%u MB.",
                                                        static_cast<unsigned>(d.cardFreeKB / 1024u));
         dashSeg(s, col, 2, "Card", v, false);
     };
@@ -2123,24 +2279,31 @@ void Bbs::dashRight(Session& s, uint8_t& col, uint8_t which) {
             if (!awake) vc = Color::LightRed;
             break;
         }
-        case 6:
+        case 6: {
             label = "Data free";
-            fmtCommas(d.dataFree, value, sizeof(value));
-            snprintf(note, sizeof(note), "bytes");
+            char num[16];
+            if (d.dataKnown) { fmtCommas(d.dataFree, num, sizeof(num)); snprintf(value, sizeof(value), "%s.", num); }
+            else             { snprintf(value, sizeof(value), "-"); vc = Color::DarkGrey; }
+            snprintf(note, sizeof(note), "bytes, kept");
             break;
+        }
         case 7:
             label = "Card";
             if (!d.card) {
                 snprintf(value, sizeof(value), "none");
                 vc = Color::DarkGrey;
+            } else if (!d.cardKnown) {
+                snprintf(value, sizeof(value), "-");
+                vc = Color::DarkGrey;
+                snprintf(note, sizeof(note), "not measured yet");
             } else if (d.cardFreeKB >= 1048576u) {
-                snprintf(value, sizeof(value), "%u GB",
+                snprintf(value, sizeof(value), "%u GB.",
                          static_cast<unsigned>((d.cardFreeKB + 524288u) / 1048576u));
-                snprintf(note, sizeof(note), "free of %u",
+                snprintf(note, sizeof(note), "free of %u GB, kept",
                          static_cast<unsigned>((d.cardTotalKB + 524288u) / 1048576u));
             } else {
-                snprintf(value, sizeof(value), "%u MB", static_cast<unsigned>(d.cardFreeKB / 1024u));
-                snprintf(note, sizeof(note), "free of %u", static_cast<unsigned>(d.cardTotalKB / 1024u));
+                snprintf(value, sizeof(value), "%u MB.", static_cast<unsigned>(d.cardFreeKB / 1024u));
+                snprintf(note, sizeof(note), "free of %u MB, kept", static_cast<unsigned>(d.cardTotalKB / 1024u));
             }
             break;
         case 8:
@@ -2433,18 +2596,27 @@ void Bbs::cmdMem(Session& s) {
     snprintf(buf, sizeof(buf), "of %u", static_cast<unsigned>(BBS_MAX_NODES));
     fmtCommas(activeNodes(), num, sizeof(num));
     statRow(s, "Nodes busy", num, Color::LightGreen, buf);
-    statNum(s, "Disk free", plugins::freeBytes(), "bytes");
+    // The kept figures (core/space.h, 1.1.2), marked with a "." and dated
+    // underneath: measured on the runner at boot, at each staff login and
+    // on MEM FORCE, never on the loop.
+    {
+        const space::Fig u = space::get(plat::PART_USER);
+        const uint64_t uf = u.valid && u.total > u.used ? u.total - u.used : 0;
+        statKept(s, "Disk free", u.valid, static_cast<uint32_t>(uf), "bytes");
+    }
     // The card, when there is one. In megabytes rather than bytes: a figure
     // with seven digits on it is not a figure anybody reads, and the point
     // of the row is whether there is room, not how many bytes of room.
-    // The sd plugin's kept figure, never the card's FAT on every MEM: that
-    // read is 15 to 160 ms with the whole board waiting (backup.h).
-    const plat::SdInfo& sd = sdCardInfo();
-    if (sd.mounted) {
-        fmtCommas(sd.freeKB / 1024u, num, sizeof(num));
-        snprintf(buf, sizeof(buf), "MB of %u", static_cast<unsigned>(sd.totalKB / 1024u));
-        statRow(s, "Card free", num, Color::LightGreen, buf);
+    if (plat::sdBase()[0]) {
+        const space::Fig c = space::get(plat::PART_CARD);
+        char tot[16];
+        fmtCommas(static_cast<uint32_t>(c.total / (1024ull * 1024ull)), tot, sizeof(tot));
+        snprintf(buf, sizeof(buf), "MB of %s MB", tot);
+        statKept(s, "Card free", c.valid,
+                 static_cast<uint32_t>((c.total > c.used ? c.total - c.used : 0) / (1024ull * 1024ull)),
+                 c.valid ? buf : "MB");
     }
+    keptNote(s, "MEM FORCE");
     rowRule(s);
 }
 
@@ -2573,20 +2745,19 @@ bool Bbs::rowSys(Session& s) {
 
         case 13: rowSection(s, "storage"); return true;
         case 14: {
-            uint32_t total = 0, used = 0;
-            if (plat::fsInfo(total, used)) {
-                fmtCommas(used, num, sizeof(num));
-                char tot[16];
-                fmtCommas(total, tot, sizeof(tot));
-                snprintf(buf, sizeof(buf), "of %s", tot);
-                statRow(s, "Data used", num, used * 10u > total * 9u ? Color::LightRed : Color::LightGreen, buf);
-            } else {
-                statRow(s, "Data used", "-", Color::DarkGrey);
-            }
+            // The screens partition, kept (core/space.h, 1.1.2).
+            const space::Fig f = space::get(plat::PART_SCREENS);
+            char tot[16];
+            fmtCommas(static_cast<uint32_t>(f.total), tot, sizeof(tot));
+            snprintf(buf, sizeof(buf), "of %s", tot);
+            statKept(s, "Data used", f.valid, static_cast<uint32_t>(f.used), f.valid ? buf : nullptr);
             return true;
         }
-        case 15: statNum(s, "Data free", h.dataFree, "bytes"); return true;
-        case 16: statNum(s, "Held back", plugins::reserveBytes(), "for the board"); return true;
+        case 15: statKept(s, "Data free", h.dataKnown, h.dataFree, "bytes"); return true;
+        case 16:
+            statNum(s, "Held back", plugins::reserveBytes(), "for the board");
+            keptNote(s, "SYS FORCE");
+            return true;
 
         case 17: rowSection(s, "load"); return true;
         case 18:
@@ -2686,6 +2857,23 @@ bool Bbs::rowSys(Session& s) {
                     statNum(s, "Stack free", sf, note);
                 } else {
                     statRow(s, "Stack free", "n/a", Color::Grey, "not measured");
+                }
+            }
+            // The background runner (1.1.2): the least its stack has had
+            // free, out of what it has, which is how its size gets settled
+            // on the bench, and the longest job it has run.
+            {
+                const uint32_t rl = runner::stackLow();
+                char of[16], note[28];
+                fmtCommas(BBS_RUNNER_STACK, of, sizeof(of));
+                snprintf(note, sizeof(note), "least of %s", of);
+                if (rl) statNum(s, "Runner stack", rl, note);
+                else    statRow(s, "Runner stack", "-", Color::DarkGrey, runner::jobsDone() ? "not measured" : "not run yet");
+                if (runner::jobsDone()) {
+                    char nm[24];
+                    snprintf(nm, sizeof(nm), "ms, %.15s", runner::longestName());
+                    if (23 + strlen(nm) > rowWidth(s)) snprintf(nm, sizeof(nm), "ms");
+                    statNum(s, "Longest job", runner::longestMs(), nm);
                 }
             }
             return true;
@@ -2872,9 +3060,14 @@ bool Bbs::rowPlugins(Session& s) {
         return true;
     }
     if (k == plugins::count()) {
-        snprintf(buf, sizeof(buf), "Disk free %uK, reserve %uK",
-                 static_cast<unsigned>(plugins::freeBytes() / 1024u),
-                 static_cast<unsigned>(plugins::reserveBytes() / 1024u));
+        const space::Fig u = space::get(plat::PART_USER);
+        if (u.valid)
+            snprintf(buf, sizeof(buf), "Disk free %uK., reserve %uK",
+                     static_cast<unsigned>((u.total > u.used ? u.total - u.used : 0) / 1024u),
+                     static_cast<unsigned>(plugins::reserveBytes() / 1024u));
+        else
+            snprintf(buf, sizeof(buf), "Disk free -, reserve %uK",
+                     static_cast<unsigned>(plugins::reserveBytes() / 1024u));
         rowText(s, Color::Grey, buf);
         return true;
     }

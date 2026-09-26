@@ -198,6 +198,9 @@ int parseFile(const char* path, SysConfig& out, char* err, size_t errLen);
 // own: every byte added to SysConfig used to cost four, one of them each for
 // two probes that were only ever used for the length of one call.
 int check(const char* path, char* err, size_t errLen, uint8_t* maxUsers = nullptr);
+// checkWith: check, into the caller's own scratch rather than the shared one
+// (1.1.2): for a check made off the loop.
+int checkWith(const char* path, SysConfig& scratch, char* err, size_t errLen, uint8_t* maxUsers = nullptr);
 
 // get: the active configuration
 const SysConfig& get();

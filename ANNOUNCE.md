@@ -47,6 +47,7 @@ servers     = http://unleashedbbs.net/announce
 host        =                     ; a DNS name of your own, if you have one
 public_port =                     ; what callers dial through the router; empty: the board's port
 interval    = 10                  ; minutes between heartbeats, 1 to 1440
+nudge_seconds = 32                ; shortest gap a caller change may push, 0 never
 token       =                     ; left empty: the directory fills this in
 share_activity = no               ; send call counts so a directory can rank
 support     = lgbtq, literacy     ; causes you back, as slugs from the directory's /badges page
@@ -66,6 +67,7 @@ with already filled in.
 | `host` | the name you want listed. Leave it empty and the directory uses the address your heartbeat came from |
 | `public_port` | **Outside** on the CONFIG page: the port callers dial from the internet, when your router forwards a different number to the board. Leave it empty if the router forwards the same number as the board's `port`, and the board sends that: the port it is listening on, which follows `port` from the restart that moves it |
 | `interval` | minutes between heartbeats. Ten is plenty; a directory usually considers a board gone after three missed |
+| `nudge_seconds` | **Push secs** on the CONFIG page: the shortest gap, in seconds, between the last heartbeat and one a caller change sends early (see "When it sends" below). 32 as shipped (1.1.2; it was 60), 0 to 3600, and 0 never sends early |
 | `token` | leave it empty. The directory mints one on the first heartbeat and the board writes it back here itself |
 | `share_activity` | `yes` adds counts of calls and caller-minutes over the last day, so a directory can rank by how busy a board is. Counts only, never who |
 | `support` | causes you show support for, comma separated, as the slugs the directory publishes (unleashedbbs.com lists them at `/badges`). Up to 16, in at most 95 characters, which is the width of the CONFIG box |
@@ -94,7 +96,17 @@ A directory can show a few badges beside a board's name. Four of them the board 
 | `ANNOUNCE TEST` | prints the exact payload and sends nothing |
 | `ANNOUNCE NOW` | sends a heartbeat immediately instead of waiting |
 
-Sysop only by default, like everything else that changes how the board presents itself.
+Sysop only by default, like everything else that changes how the board presents itself. For staff, `ANNOUNCE` ends with when the last heartbeat went and what came back, and when the next is due: `Last sent 14:02: listed` and `Next in 9m 58s`, followed by `, a caller change` when one is waiting to go and `, backing off` after heartbeats that listed nowhere (1.1.2).
+
+### When it sends (1.1.2)
+
+- Every `interval` minutes, and once at start and after every `CONFIG` save.
+- **When the caller count moves.** A caller logging on or off, a guest arriving, and a staff member's `SHOW`, `HIDE` or `LURK` all change what the directory shows, so each sends a heartbeat. Changes within two seconds of each other are one heartbeat, and it goes no sooner than `nudge_seconds` after the last one: the project's directory refuses a second heartbeat from one address inside 30 seconds and restarts that clock on a refusal, so going sooner would only make it later. 32, not 30, because the board times the gap from when its heartbeat left and the directory from when it arrived. A change that lands while a heartbeat is on the wire goes in the next one rather than being lost.
+- **A caller change that nobody listed is sent again**, up to three times, `nudge_seconds` apart: a 429 from the directory (two boards behind one address hit its per-address limit), or a directory briefly away. A new change starts the count again.
+- **After failures**, the timed heartbeat backs off: 30 seconds, doubling each time, never longer than `interval`, so a directory that comes back hears from the board within minutes rather than at the next interval.
+- The directory's name is looked up in the background before each heartbeat (lwIP answers from its cache while the record's TTL runs). A lookup that fails keeps the address the board had, and says so on the console: `announce: cannot find unleashedbbs.net; keeping the last address`. A directory that refuses the connection or does not answer keeps its address too. Nothing in the lookup can hold the board: it used to run on the loop at every start, and a failing one is seconds.
+- A reply is only believed once its headers are complete. One cut short, or longer than the board's buffer, is a failure (`reply cut short`, `reply too long`), and nothing in it is kept: a token cut part way through would otherwise replace the good one.
+- **Every heartbeat's outcome is one console line**, with the count it carried: `announce: unleashedbbs.net: listed (busy 2 of 10)`, `announce: unleashedbbs.net: too often, will settle (busy 3 of 10)`, `announce: unleashedbbs.net: cannot find unleashedbbs.net (busy 0 of 10), not sent`.
 
 The listing is held, nothing sent at all, while the sysop password is still the published default: a listed board sends strangers somewhere, and a board anybody can be the sysop of is not somewhere to send them. That holds whether the board is closed or not.
 

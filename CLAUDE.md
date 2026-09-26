@@ -866,6 +866,121 @@ this tree.
     Target: a patch's targeted run in minutes.
   - Stays 1.2.0: silent assertions, the camera boards' PSRAM .bss move.
   - Parked: the badge pick-list.
+- **1.1.2 part 1 is built (1.1.2-dev.1, rel-1.1.2a, 2026-09-26), host-tested,
+  not on hardware.** Every item on the lag list and the bench list above, and
+  announce's join lag. CHANGELOG 1.1.2-dev.1 has what a sysop sees; the
+  design points worth keeping:
+  - **One background runner** (`src/core/runner.*`): a task started on the
+    first post, gone 3 s after the last, pinned to core 1 three priorities
+    under the BBS task, 8 KB stack from the heap (`BBS_RUNNER_STACK`), a
+    static queue of 8 `Job*`. A job's state is stored last by the runner, and
+    the loop reads its results only after `done()`. The one global
+    trampoline in `plat::taskStart` is gone; `plat::runLock/runWait/runWake`
+    are the three primitives under it, a portMUX and a task notification on
+    the board, a mutex and a condvar on the host.
+  - **A job that answers a caller keeps `Session::call` and the node, never
+    a `Session*`**: sessions are a static pool, so a pointer outlives the
+    caller who hung up and lands on the next one. `call` is a serial every
+    connection gets, never 0.
+  - **Read-side stalls moved to the runner; write-side stalls could not**, and
+    were fixed by writing less: a flash erase stops both cores, so a worker
+    only spreads it. Call figures went to `callstats.dat` (16 bytes an id,
+    updated in place with r+b), mail to in-place slots, the handle lookup to
+    a RAM index rebuilt only when the board rewrites `users.txt`.
+    **LittleFS still copies a file's tail from the block written to its end
+    on an in-place write** (CTZ lists), so an in-place write to a big file is
+    cheaper, not free. `mail.dat` is at most 64 records, 36 KB.
+  - **Free space is a kept figure** (`src/core/space.*`, Rob's call):
+    measured on the runner at boot and at each staff login, marked `.` on
+    screen with one "as of" line, `MEM FORCE` / `SYS FORCE` for staff. A
+    write or restore marks only its own partition stale, and a stale one is
+    measured at the next FORCE, staff login or boot, never on the loop.
+    `space::get` is the only reader; nothing calls `esp_littlefs_info` on
+    the loop any more.
+  - **The host now charges for opens**: `<data>/hostio.txt` gives every
+    `disk::open`/`disk::dir` a cost in microseconds (card and flash apart),
+    `log` prints each open, `nodns` fails lookups, and the host prints every
+    slow pass unthrottled. The lag tests drive each audited path at the
+    brief's sizes and assert no pass over 50 ms or count the opens; each was
+    run against main first. **The host still charges nothing for reads and
+    writes**, only opens, so a path that is slow by the byte (a big rewrite,
+    a CRC over a large file) needs its open count checked, not its time.
+  - **One open a pass is the rule for streaming many small files**: the
+    backup window's download ran the screens together, a dozen opens a pass,
+    61 ms at a LittleFS open's cost. `ZipExport::opened()` lets the caller
+    stop after one. A card backup writes one entry a pass for the same
+    reason.
+  - **Announce and the directory's 30 s** (Rob: "announce rock solid"). A
+    caller change is gathered 2 s and sent once `nudge_seconds` (32) have
+    passed since the last heartbeat began: the board times from sending and
+    the directory from receiving, and a refused post restarts the
+    directory's clock, so 30 on the board's side can be a 429. A change is
+    never dropped by a post in flight, and a round that carried one and
+    listed nowhere wants it again, up to three times. The directory fix
+    making the limit per board rather than per address is the site's, and
+    the firmware is right either way.
+  - **A reply's headers must be complete to be believed**: the suite's cut
+    reply found that a token cut at 20 characters passed `kTokenMin` and
+    would have been saved. Same shape as the split-token bug of 1.0.1.
+  - **What the code review found in the runner work, all fixed before the
+    commit, and each a shape that comes with moving work across passes:**
+    - A job that is DONE and not collected is still "out", so a tidy that
+      waits for "not out" before collecting never runs: the backup window
+      answered 503 until a reboot after any client left mid-scan. Collect,
+      then test.
+    - A cache filled in slices is a lock while it fills: two subject-list
+      scans took the shared table from each other every slice and neither
+      finished. The second waits for the first.
+    - A slot that is a file position moves when the file is compacted, so
+      every holder of one is remapped in the same step (mail).
+    - `fopen("w+b")` as the fallback for a failed `"r+b"` truncates; only
+      when the error is ENOENT.
+    - A file that belongs to another (callstats.dat to users.txt) is
+      refused alone in a restore.
+    - A refusal logged every pass, from callers that post every pass, is
+      its own lag: `runner::post` says so at most every 10 s and does not
+      try to start a task for a second after one would not start.
+  - **Time warnings go where the caller is** (found on TRA): `checkTimers`
+    warned only through `canNotify`, a caller at a prompt, so a caller in
+    the room was cut off at the limit with nothing said. Inside a plugin
+    the warning goes through `liftInput`/`restoreInput`, the door pages
+    already use, as `--> 5 minutes left on this call` with the bell (Rob's
+    wording, the room's voice); at a page break it goes under
+    `Press SPACE to continue`. `Bbs::markedLine` is the one "-->" line for
+    the core. The general shape again: a notice with one delivery path
+    reaches only the callers standing on that path.
+  - **A CONFIG save restarts the saved page's plugin and any whose section
+    hash moved** (`plugins::changed`), not every plugin; hashing the file
+    rather than trusting "the page saved" is what kept a hand edit of
+    another section live (the badge test's `mail_slots` found it).
+  - Left on the loop, knowingly: `SD MOUNT` (typed, documented to pause),
+    the card backup's writes (8 KB a pass), XMODEM's card writes, and the
+    login's SHA rounds (measure on the bench before moving them).
+  - **Open, for the bench and Rob:**
+    - Measuring on the runner does not free the loop if the loop wants the
+      same lock: `esp_littlefs_info` holds a partition's mutex for its walk
+      (about 85 ms) and FatFs's `f_getfree` holds the volume's. Every staff
+      login measures all four (Rob's rule), while callers may be playing
+      screens from flash or reading the forums on the card. Watch SYS's slow
+      passes right after a sysop login with two callers on; if it shows,
+      measure only the stale partitions at a login and the card only at
+      mount and FORCE.
+    - Non-photo `FILES.BBS` still has the loop as writer (DESC, approve) while
+      a page build on the runner may be reading it; with FS_LOCK 0 the worst
+      is one page of garbled descriptions. The photo areas go through the
+      queue.
+    - `Bbs::listHold` has no give-up: a list waiting on a runner that cannot
+      start holds with no message (the runner retries each second).
+    - `runner::kQueue` is 8 against ten kinds of job; at most eight can be
+      out at once today because pairs exclude each other.
+  - Sizes: static DRAM off the ELFs, against 1.1.1: esp32dev 163,800 (16,936
+    free, +2,464), Freenove 175,320 (5,416 free, +2,512), ESP32-CAM 176,776
+    (3,960 free, +2,512), S3 250,496 of 341,760 (+2,712). The largest new
+    statics are the forum walks (576) and read pointers (240+), the zip
+    jobs (2 x 164), the name lookup (128) and the kept figures (216); the
+    camera boards' description queue is on the heap only while edits wait.
+    The runner's 8 KB stack is heap, while it runs. Images: 1,251,616,
+    1,326,128, 1,379,664 and 1,291,632 bytes. Eleven envs, no warnings.
 - **1.1.2, from the 1.1.1 bench check on the ESP32-CAM (2026-09-25)**.
   1.1.1 shipped on Rob's go before this check finished; the regression was
   clean (internal/regression-1.1.1-final-2026-09-25.md).

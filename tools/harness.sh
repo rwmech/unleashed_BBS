@@ -36,9 +36,35 @@
 #                 --board espcam the AI-Thinker ESP32-CAM profile
 #                              (bbs_host_espcam), with --only=board_espcam
 #
+#                 --changed RANGE   work out --only from what a git range
+#                              touched, instead of naming it by hand. RANGE
+#                              is anything "git diff --name-only" accepts,
+#                              such as main..HEAD or HEAD~5..HEAD.
+#                              tools/changed_groups.py maps each changed
+#                              file to the tools/testclient.py groups (or
+#                              test names) it can affect, prints "file ->
+#                              groups" for each one, and then runs exactly
+#                              as if --only=<those groups> had been typed.
+#                              A file the table has no mapping for still
+#                              selects something: the widest sensible set,
+#                              which here means the whole suite, and the
+#                              file is named so that is not a silent
+#                              choice. A range that only touched docs or
+#                              non-test tooling says so and exits 0 without
+#                              building or running anything.
+#                 --changed-dry-run RANGE   the same selection, printed and
+#                              exited on before the host build starts, so
+#                              it can be checked with no board involved.
+#                              Setting BBS_CHANGED_DRY=1 alongside
+#                              --changed RANGE does the same thing; the two
+#                              forms exist so a script can use whichever is
+#                              easier to spell.
+#
 #               Examples:
 #                 tools/harness.sh --backup
 #                 tools/harness.sh --tag files --card --only=files
+#                 tools/harness.sh --changed main..HEAD
+#                 BBS_CHANGED_DRY=1 tools/harness.sh --changed main..HEAD
 #
 #                 --only takes a comma separated list, and a few words stand
 #                 for groups of tests that share a subsystem:
@@ -81,10 +107,15 @@ CARD=no
 FRESH=no
 BIN=bbs_host
 ARGS=""
+CHANGED_RANGE=""
+CHANGED_DRY=no
+case "${BBS_CHANGED_DRY:-}" in 1|yes) CHANGED_DRY=yes ;; esac
 while [ $# -gt 0 ]; do
     case "$1" in
         --tag)   TAG="$2"; shift 2 ;;
         --card)  CARD=yes; shift ;;
+        --changed)          CHANGED_RANGE="$2"; shift 2 ;;
+        --changed-dry-run)  CHANGED_RANGE="$2"; CHANGED_DRY=yes; shift 2 ;;
         --board)
             case "$2" in
                 s3)    BIN=bbs_host_s3;    export BBS_HOST_BOARD=s3 ;;
@@ -103,6 +134,36 @@ while [ $# -gt 0 ]; do
 done
 
 PROJ=$(cd "$(dirname "$0")/.." && pwd)
+
+# --changed: work out --only from a git range rather than typing it by
+# hand, and --changed-dry-run (or BBS_CHANGED_DRY=1 alongside --changed)
+# stops here, before anything is built, so the selection can be checked
+# with no board involved.
+if [ -n "$CHANGED_RANGE" ]; then
+    set +e
+    SEL=$(python3 "$PROJ/tools/changed_groups.py" "$CHANGED_RANGE")
+    RC=$?
+    set -e
+    echo "$SEL"
+    if [ $RC -ne 0 ]; then
+        echo "harness: tools/changed_groups.py could not read the range '$CHANGED_RANGE'"
+        exit 2
+    fi
+    WORDS=$(echo "$SEL" | grep '^GROUPS=' | tail -1 | cut -d= -f2)
+    if [ "$WORDS" = "NONE" ]; then
+        echo "harness: $CHANGED_RANGE touched nothing a test could see; not running"
+        exit 0
+    fi
+    if [ "$CHANGED_DRY" = yes ]; then
+        exit 0
+    fi
+    if [ "$WORDS" != "FULL" ]; then
+        ARGS="$ARGS --only=$WORDS"
+    fi
+    # FULL: no --only is added, which is the harness's own way of asking
+    # for the whole suite.
+fi
+
 DIR=/tmp/bbs-$TAG
 DATA=$DIR/data
 CARDDIR=$DIR/card

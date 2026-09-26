@@ -2965,7 +2965,7 @@ def test_hardware():
     ok &= check("staff also get the heap, free and lowest",
                 row(rows, "Heap free ") != "" and row(rows, "Heap low ") != "")
     if card:
-        ok &= check("and the card's free space", re.search(r"^Card free\s+[\d,]+ MB of \d+", row(rows, "Card free "), re.M)
+        ok &= check("and the card's free space", re.search(r"^Card free\s+[\d,]+\.? MB of [\d,]+ MB", row(rows, "Card free "), re.M)
                     is not None)
     ok &= check("and still nothing about the network",
                 not any(w in "\n".join(rows) for w in ("Address", "Wi-Fi", "Signal")))
@@ -3909,8 +3909,9 @@ def test_dash_card_age():
 
     On the board it is f_getfree: 15 to 25 ms, and 160 ms on a card pulled
     mid-write. Kept for three seconds, DASH 1 put that into the loop every
-    third frame. A minute now, and SD, a mount and an unmount still measure
-    at once. Checked by filling the card and asking again.
+    third frame. A minute then; since 1.1.2 a kept figure, measured on the
+    runner at boot and at a staff login, and MEM FORCE measures at once.
+    Checked by filling the card and asking again.
     """
     print("DASH: the card's free space, a minute old")
     card = card_dir()
@@ -3946,12 +3947,14 @@ def test_dash_card_age():
         ok = check("the dashboard shows the card's free space", before is not None)
         ok &= check("and a minute's figure, not a fresh read every few seconds",
                     before is not None and after == before)
+        # Since 1.1.2 every free-space figure is kept, SD's included, and
+        # MEM FORCE is what measures now (on the runner, with a spinner).
         s.buf.clear()
-        s.send(b"sd\r")
-        s.wait_for(b"SD card", 4)
+        s.send(b"mem force\r")
+        s.wait_for(b"Disk free", 20)
         s.pump(0.5)
         fresh = card_free(s)
-        ok &= check("SD measures at once, and the dashboard follows it",
+        ok &= check("MEM FORCE measures at once, and the dashboard follows it",
                     before is not None and fresh is not None and fresh <= before - 5)
     finally:
         blob.unlink()
@@ -4080,10 +4083,14 @@ def test_dash_opens_nothing():
         frames = bytes(s.buf).count(b"DASHBOARD")
         opened = []
         if logf.exists():
+            # hostio.txt is the host's own test knob (1.1.2), read by the
+            # host platform layer, not a file the board opens.
             opened = [p for p in logf.read_bytes()[mark:].decode(errors="replace").splitlines()
-                      if str(tmp) in p]
+                      if str(tmp) in p and not p.endswith("/hostio.txt")]
         ok = check("DASH 1 drew a frame a second", frames >= 3)
         ok &= check("and opened no file doing it", not opened)
+        if opened:
+            print("        opened:", "; ".join(sorted(set(opened))[:6]))
         if opened:
             print("        opened: " + ", ".join(sorted(set(p.replace(str(tmp), "") for p in opened))))
         s.send(b"q")
@@ -4365,6 +4372,11 @@ def test_room_private():
     a.pump(0.4)
     ok &= check("and it is back to the room, with the count",
                 b"Back to the room." in plain(a.buf))
+    # 1.1.2, from the bench: nothing went by but the partner's own leaving
+    # line, which the caller was shown, so there is no count to give. It
+    # said "1 room line went by: /sh 1 shows it."
+    ok &= check("and the leaving line it showed is not counted as one that went by",
+                b"went by" not in plain(a.buf))
 
     for x in (a, b, c):
         x.close()
@@ -4827,8 +4839,12 @@ def test_config_parser_rules():
     cfg_open(s, b"board", b"Hostname")
     s.buf.clear()
     s.send(DOWN + b"\x08" * 32 + b"TheRustyAntenna.local" + F1)
-    got = cfg_verdict(s, [b"Saved and live", b"saved, but", b"hostname must"])
-    ok = check("a hostname typed as name.local saves and goes live", got == b"Saved and live")
+    got = cfg_verdict(s, [b"Saved; hostname from the next restart", b"Saved and live", b"saved, but",
+                          b"hostname must"])
+    # 1.1.2: the hostname is announced over mDNS once, at start, so it is
+    # used from the next restart, and "Saved and live" said otherwise.
+    ok = check("a hostname typed as name.local saves, for the next restart",
+               got == b"Saved; hostname from the next restart")
     if local:
         ok &= check("stored as the bare name the parser takes",
                     (cfg_line("hostname") or "").split("=", 1)[-1].strip() == "therustyantenna")
@@ -4846,7 +4862,7 @@ def test_config_parser_rules():
 
     cfg_open(s, b"board", b"Hostname")
     s.send(DOWN + b"\x08" * 32 + b"unleashed" + F1)
-    cfg_verdict(s, [b"Saved and live", b"Nothing changed"])
+    cfg_verdict(s, [b"Saved; hostname", b"Saved and live", b"Nothing changed"])
 
     # The backup window cannot share the dial-in port. CONFIG offered
     # 1..65535 and wrote 6400; the reload then refused the whole file.
@@ -6555,7 +6571,7 @@ def test_camera():
     print("The camera")
     card = card_dir()
     if HOST_BOARD not in CAM_BOARD or not PASSWORD or card is None:
-        print("  SKIP  needs tools/harness.sh --board fncam --card")
+        print(f"  SKIP  needs tools/harness.sh --board {HOST_BOARD if HOST_BOARD in ('fncam', 'espcam') else 'fncam'} --card")
         return True
     s = cfg_sysop("CamSysop")
     (card / "photos").mkdir(exist_ok=True)
@@ -6986,7 +7002,7 @@ def test_announce_camera():
     card = card_dir()
     if card is None:
         s.close()
-        print("  SKIP  needs tools/harness.sh --board fncam --card")
+        print(f"  SKIP  needs tools/harness.sh --board {HOST_BOARD if HOST_BOARD in ('fncam', 'espcam') else 'fncam'} --card")
         return True
     camera_config(s)
     time.sleep(1.5)                                     # the survey, and its look for the sensor
@@ -7039,7 +7055,7 @@ def test_camera_silent():
     print("Silent mode: the camera's flash")
     card = card_dir()
     if HOST_BOARD not in CAM_BOARD or not PASSWORD or card is None:
-        print("  SKIP  needs tools/harness.sh --board fncam --card")
+        print(f"  SKIP  needs tools/harness.sh --board {HOST_BOARD if HOST_BOARD in ('fncam', 'espcam') else 'fncam'} --card")
         return True
     s = cfg_sysop("CamSilent")
 
@@ -8858,11 +8874,15 @@ def test_welcome_connecting():
                 line is not None and line.startswith("Connecting you"))
     ok &= check("with a blank line above it",
                 above is not None and above.strip() == "")
-    # The harness sets no board_name, so @BOARD@ falls back to the
-    # software's name here; on Rob's board it is whatever CONFIG says.
-    ok &= check("and says who it is connecting you to",
-                line is not None and "Connecting you to " in line
-                and "nleashed BBS" in line)
+    # The harness sets no board_name, so @BOARD@ falls back to the board's
+    # hostname (1.1.2): it was the software's name, and the welcome read
+    # "µnleashed BBS running µnleashed BBS". On Rob's board it is whatever
+    # CONFIG says.
+    host = ((cfg_line("hostname") or "").split("=", 1)[-1].strip() or "unleashed") \
+        if HOST in ("127.0.0.1", "localhost") else ""
+    ok &= check("and says who it is connecting you to, by hostname with no board name",
+                line is not None and "Connecting you to " + host in line
+                and "nleashed BBS" not in line)
     # At 300 baud the rest of the line is a second or more on its own, then
     # the spinner. Unpaced it was the spinner alone, about 0.9 s.
     ok &= check("typed at 300 baud rather than all at once (%.1f s)" % dt, dt > 1.6)
@@ -11088,6 +11108,1179 @@ def test_announce_closed():
     s.close()
     stop.set()
     th.join(3)
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# The caller count reaches the directory promptly (1.1.2, Rob: "when a
+# caller joins announce should send that out asap, it doesnt").
+#
+# Three ways a join was late or lost on 1.1.0 and 1.1.1, each a test:
+#   - a join within nudge_seconds (60) of the last round waited for the gap;
+#   - a join while a post was in flight was dropped (nudge() returned on
+#     g_stage != Idle), and the in-flight body was built before the join;
+#   - a post the directory refused (429, its 30 s per-address limit) was
+#     never retried, so the join waited for the next heartbeat, ten minutes
+#     on a board and sixty on the harness.
+# The real directory refuses a second post from one address inside 30 s
+# (DIRECTORY_MIN_SECONDS), so "at once" still has to keep 30 s between
+# posts, and a retry after a 429 must not come sooner than that either: a
+# refused post resets the directory's clock.
+# ---------------------------------------------------------------------------
+class NudgeDirectory:
+    """A stand-in directory that records (time, status, busy, body) per post
+    and can be told how to answer the next ones.
+
+    mode: "ok" (200 with a token), "down" (not listening at all), "half"
+    (reads the request and never answers), "500", "garbage" (a reply that
+    is not HTTP), "huge" (headers that never end), "cut" (headers closed
+    part way through the token). refuse: that many 429s first. hold: the
+    next post's reply waits that long. token: what it issues."""
+
+    def __init__(self, port):
+        import threading as _t
+        self.posts = []
+        self.conns = 0
+        self.refuse = 0
+        self.hold = 0.0
+        self.mode = "ok"
+        self.token = DIRECTORY_TOKEN
+        self.held = _t.Event()           # set once a held post has arrived
+        self.stop = _t.Event()
+        self.ready = _t.Event()
+        self.port = port
+        self.hung = []                   # connections "half" keeps open
+        self.th = _t.Thread(target=self._serve, daemon=True)
+        self.th.start()
+        self.ready.wait(5)
+
+    def _serve(self):
+        import json as _json
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", self.port))
+        srv.listen(4)
+        srv.settimeout(0.3)
+        self.ready.set()
+        try:
+            while not self.stop.is_set():
+                if self.mode == "down":
+                    srv.close()
+                    while self.mode == "down" and not self.stop.is_set():
+                        time.sleep(0.1)
+                    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    srv.bind(("127.0.0.1", self.port))
+                    srv.listen(4)
+                    srv.settimeout(0.3)
+                    continue
+                try:
+                    c, _ = srv.accept()
+                except socket.timeout:
+                    continue
+                self.conns += 1
+                c.settimeout(5)
+                keep = False
+                try:
+                    data = b""
+                    while b"\r\n\r\n" not in data:
+                        more = c.recv(4096)
+                        if not more:
+                            break
+                        data += more
+                    head, _, body = data.partition(b"\r\n\r\n")
+                    need = 0
+                    for line in head.split(b"\r\n"):
+                        if line.lower().startswith(b"content-length:"):
+                            need = int(line.split(b":")[1])
+                    while len(body) < need:
+                        more = c.recv(4096)
+                        if not more:
+                            break
+                        body += more
+                    try:
+                        busy = _json.loads(body.decode()).get("busy")
+                    except Exception:
+                        busy = None
+                    status = 200
+                    if self.refuse > 0:
+                        self.refuse -= 1
+                        status = 429
+                    elif self.mode == "500":
+                        status = 500
+                    self.posts.append((time.time(), status, busy, body, self.mode))
+                    hold, self.hold = self.hold, 0.0
+                    if hold:
+                        self.held.set()
+                        time.sleep(hold)
+                    tok = self.token.encode()
+                    if self.mode == "half":
+                        self.hung.append(c)     # never answered, never closed
+                        keep = True
+                        continue
+                    if self.mode == "garbage":
+                        reply = b"HELLO THERE\r\n\r\n"
+                    elif self.mode == "huge":
+                        reply = b"HTTP/1.1 200 OK\r\n" + b"X-Padding: " + b"z" * 4000 + b"\r\n"
+                    elif self.mode == "cut":
+                        reply = b"HTTP/1.1 200 OK\r\nX-Listing-Token: " + tok[:20]
+                    elif status == 429:
+                        reply = (b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 2\r\n"
+                                 b"Connection: close\r\n\r\n{}")
+                    elif status == 500:
+                        reply = (b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 2\r\n"
+                                 b"Connection: close\r\n\r\n{}")
+                    else:
+                        reply = (b"HTTP/1.1 200 OK\r\nX-Seen-Address: 203.0.113.9\r\n"
+                                 b"X-Listing-State: online\r\n"
+                                 b"X-Listing-Token: " + tok + b"\r\n"
+                                 b"Content-Length: 2\r\nConnection: close\r\n\r\nok")
+                    c.sendall(reply)
+                except OSError:
+                    pass
+                finally:
+                    if not keep:
+                        c.close()
+        finally:
+            srv.close()
+            for c in self.hung:
+                c.close()
+
+    def wait_post(self, after, secs, busy=None, status=None):
+        """The first post received after `after` (a time), optionally with
+        this busy figure or status, within secs. None if none came."""
+        end = time.time() + secs
+        while time.time() < end:
+            for p in list(self.posts):
+                if p[0] > after and (busy is None or p[2] == busy) and (status is None or p[1] == status):
+                    return p
+            time.sleep(0.1)
+        return None
+
+    def close(self):
+        self.stop.set()
+        self.th.join(3)
+
+
+def _nudge_guest(name, port=None):
+    """A caller at the [G]uest question, one key from being logged in."""
+    c = Caller(ansi=True, port=port)
+    c.wait_for(b"Enter your handle", 10)
+    c.send(name.encode() + b"\r")
+    c.wait_for(b"[G]uest", 6)
+    return c
+
+
+def _nudge_in(c):
+    c.send(b"g")
+    return c.wait_for(b"Main", 8)
+
+
+def _nudge_start(d, name):
+    """Log one guest in and wait for the round that carries them: a known
+    last round to measure from. Returns (caller, that post) or (caller, None)."""
+    c = _nudge_guest(name)
+    t = time.time()
+    _nudge_in(c)
+    return c, d.wait_post(t, 75)
+
+
+def test_announce_join_prompt():
+    """A join 31 s after the last post is on the directory within 6 s.
+    31 s: past the directory's own 30 s limit, inside the old 60 s gap."""
+    print("Directory: a join is sent promptly")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    d = NudgeDirectory(int(os.environ.get("BBS_DIR_PORT", "8099")))
+    ok = True
+    a = b = None
+    try:
+        a, first = _nudge_start(d, "NudgeOne")
+        ok &= check("a join reaches the directory", first is not None and first[1] == 200)
+        if first:
+            b = _nudge_guest("NudgeTwo")
+            time.sleep(max(0.0, first[0] + 31 - time.time()))
+            t = time.time()
+            _nudge_in(b)
+            p = d.wait_post(t, 6, busy=first[2] + 1)
+            ok &= check("a second join 31 s later is sent within 6 s",
+                        p is not None)
+            if p is None:
+                late = d.wait_post(t, 40, busy=first[2] + 1)
+                print("        it arrived after",
+                      f"{late[0] - t:.1f} s" if late else "more than 40 s")
+    finally:
+        for c in (a, b):
+            if c:
+                c.close()
+        d.close()
+    return ok
+
+
+def test_announce_join_in_flight():
+    """A join while a post is on the wire is sent after it, not dropped."""
+    print("Directory: a join during a post is not lost")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    d = NudgeDirectory(int(os.environ.get("BBS_DIR_PORT", "8099")))
+    ok = True
+    a = b = None
+    try:
+        # The count is of connected lines, so the second caller has to
+        # connect, not only log in, while the post hangs. The board gives a
+        # directory 10 s (kTimeoutMs), so the hold is 9 s and a guest gets
+        # in well inside it.
+        d.hold = 9.0                            # the next post hangs for 9 s
+        a = _nudge_guest("FlightOne")
+        _nudge_in(a)                            # its nudge is the held post
+        ok &= check("the first join's post arrives and is held", d.held.wait(75))
+        held = d.posts[-1] if d.posts else None
+        t = time.time()
+        b = _nudge_guest("FlightTwo")           # connects and joins while it hangs
+        _nudge_in(b)
+        ok &= check("the second join landed while the post was held",
+                    time.time() - t < 8.5)
+        p = d.wait_post(t, 90, busy=held[2] + 1) if held else None
+        ok &= check("the join during it is sent afterwards (within 90 s)", p is not None)
+    finally:
+        for c in (a, b):
+            if c:
+                c.close()
+        d.close()
+    return ok
+
+
+def test_announce_join_refused():
+    """A join the directory refuses (429) is sent again, 30 s or more later
+    and within 90 s, rather than waiting for the next heartbeat."""
+    print("Directory: a refused join is retried")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    d = NudgeDirectory(int(os.environ.get("BBS_DIR_PORT", "8099")))
+    ok = True
+    a = b = None
+    try:
+        a, first = _nudge_start(d, "RefuseOne")
+        ok &= check("a join reaches the directory", first is not None)
+        if first:
+            b = _nudge_guest("RefuseTwo")
+            time.sleep(max(0.0, first[0] + 61 - time.time()))   # past any gap
+            d.refuse = 1
+            t = time.time()
+            _nudge_in(b)
+            no = d.wait_post(t, 10)
+            ok &= check("the join is posted and refused", no is not None and no[1] == 429)
+            if no:
+                p = d.wait_post(no[0], 90, busy=first[2] + 1)
+                ok &= check("and posted again within 90 s", p is not None and p[1] == 200)
+                ok &= check("but not inside the directory's 30 s",
+                            p is None or p[0] - no[0] >= 29.5)
+    finally:
+        for c in (a, b):
+            if c:
+                c.close()
+        d.close()
+    return ok
+
+
+def board_pid(tmp):
+    """The pid of the host board running on a copy_data() directory."""
+    want = str(tmp / "data").encode()
+    for p in pathlib.Path("/proc").iterdir():
+        if not p.name.isdigit():
+            continue
+        try:
+            if want in (p / "cmdline").read_bytes():
+                return int(p.name)
+        except OSError:
+            continue
+    return None
+
+
+def open_fds(pid):
+    try:
+        return len(os.listdir(f"/proc/{pid}/fd"))
+    except OSError:
+        return -1
+
+
+def rss_kb(pid):
+    try:
+        m = re.search(r"^VmRSS:\s+(\d+)", pathlib.Path(f"/proc/{pid}/status").read_text(), re.M)
+        return int(m.group(1)) if m else -1
+    except OSError:
+        return -1
+
+
+def test_announce_reliable():
+    """Announce stays right through everything a network does (1.1.2).
+
+    Rob, after the join lag: "announce rock solid". One check each: a join
+    and a leave reach the directory in seconds; a name that will not
+    resolve, then does; a directory that goes away and comes back, with no
+    restart; a directory that takes the request and never answers, timed
+    out with its socket closed; a reply refused, not HTTP, too long, or cut
+    off mid-token; a token the directory issues again; a CONFIG save while a
+    post is out; closed and the largest payload together, and the published
+    default holding the listing; and a day of heartbeats with the socket
+    count and the memory flat. Every outcome is one console line, and
+    ANNOUNCE shows staff the last and the next.
+
+    On a copy of the board, against its own stand-in directory, with the
+    heartbeat in milliseconds (interval_ms_test, host only)."""
+    print("Directory: announce is reliable")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    port = PORT + 3910
+    dport = PORT + 3911
+    d = NudgeDirectory(dport)
+    long_desc = "D" * 120
+    edits = {("plugin:announce", "servers"): f"http://localhost:{dport}/announce",
+             ("plugin:announce", "interval"): "60",
+             ("plugin:announce", "nudge_seconds"): "1",
+             ("plugin:announce", "interval_ms_test"): "4000",
+             ("plugin:announce", "owner"): "O" * 40,
+             ("plugin:announce", "description"): long_desc,
+             ("plugin:announce", "token"): DIRECTORY_TOKEN}
+    # Started with no DNS at all: the name has never been found.
+    tmp = copy_data()
+    cfg = tmp / "data" / "user" / "system.cfg"
+    cfg.write_text(cfg_with(cfg.read_text(), edits))
+    (tmp / "data" / "hostio.txt").write_text("0 0 nodns\n")
+    proc = start_copy(tmp, (str(port),), {})
+    copy_log(tmp, f"listening on {port},", 10)
+    pid = board_pid(tmp)
+    ok = check("a copy of the board, announcing to its own directory", pid is not None)
+    g = s = None
+    try:
+        # ---- a name that has never resolved, then does --------------------
+        copy_log(tmp, "announce: localhost: cannot find localhost", 12)
+        ok &= check("a name that will not resolve is a failure, said on the console",
+                    "announce: localhost: cannot find localhost" in copy_text(tmp))
+        ok &= check("and nothing is posted", not d.posts)
+        hostio_clear(tmp / "data")
+        first = d.wait_post(0, 20)
+        ok &= check("posting starts once it resolves", first is not None and first[1] == 200)
+        time.sleep(1.5)
+        base_fds = open_fds(pid)
+
+        # ---- a join and a leave, in seconds ------------------------------
+        busy0 = first[2] if first else 0
+        g = _nudge_guest("RelyGuest", port=port)
+        t = time.time()
+        _nudge_in(g)
+        p = d.wait_post(t, 6, busy=busy0 + 1)
+        ok &= check("a join is on the directory within 6 s", p is not None)
+        t = time.time()
+        g.send(b"bye\r")
+        g.wait_closed(6)
+        g.close()
+        g = None
+        p = d.wait_post(t, 8, busy=busy0)
+        ok &= check("and the leave", p is not None)
+
+        # ---- the DNS goes away: the last address is kept ------------------
+        hostio_set(tmp / "data", 0, 0, "nodns")
+        mark = len(copy_text(tmp))
+        t = time.time()
+        ok &= check("with the DNS gone the board goes on posting to the address it had",
+                    d.wait_post(t, 12, status=200) is not None)
+        ok &= check("and says it is keeping it",
+                    "announce: cannot find localhost; keeping the last address" in copy_text(tmp)[mark:])
+        hostio_clear(tmp / "data")
+
+        # ---- the directory goes away and comes back -----------------------
+        d.mode = "down"
+        mark = len(copy_text(tmp))
+        time.sleep(9)
+        ok &= check("a directory that is not there is a failure on the console",
+                    re.search(r"announce: localhost: (refused|no route)", copy_text(tmp)[mark:]) is not None)
+        d.mode = "ok"
+        t = time.time()
+        ok &= check("and heartbeats resume when it is back, no restart",
+                    d.wait_post(t, 20, status=200) is not None)
+
+        # ---- a directory that never answers -------------------------------
+        d.mode = "half"
+        t = time.time()
+        mark = len(copy_text(tmp))
+        d.wait_post(t, 10)
+        time.sleep(12)
+        ok &= check("a post nobody answers times out",
+                    "announce: localhost: no answer" in copy_text(tmp)[mark:])
+        d.mode = "ok"
+        for c in d.hung:
+            c.close()
+        d.hung.clear()
+        d.wait_post(time.time(), 20, status=200)
+        time.sleep(1.0)
+        ok &= check("and leaves no socket behind (%d open, %d before)" % (open_fds(pid), base_fds),
+                    open_fds(pid) <= base_fds)
+
+        # ---- replies that are not a listing ------------------------------
+        for mode, said in (("500", "directory busy"), ("garbage", "refused"),
+                           ("huge", "reply too long"), ("cut", "reply cut short")):
+            d.mode = mode
+            mark = len(copy_text(tmp))
+            t = time.time()
+            d.wait_post(t, 10)
+            time.sleep(1.5)
+            ok &= check(f"a {mode} reply is a failure, said so ({said})",
+                        f"announce: localhost: {said}" in copy_text(tmp)[mark:])
+        d.mode = "ok"
+        ok &= check("a reply cut in the token left the token alone",
+                    f"token = {DIRECTORY_TOKEN}" in (tmp / "data" / "user" / "system.cfg").read_text())
+        ok &= check("and the board still posts", d.wait_post(time.time(), 20, status=200) is not None)
+
+        # ---- a token issued again ------------------------------------------
+        fresh = "f0e1d2c3b4a5968778695a4b3c2d1e0f"
+        d.token = fresh
+        d.wait_post(time.time(), 20, status=200)
+        time.sleep(1.0)
+        ok &= check("a token the directory issues again is saved",
+                    f"token = {fresh}" in (tmp / "data" / "user" / "system.cfg").read_text())
+        p = d.wait_post(time.time(), 20, status=200)
+        ok &= check("and sent from then on", p is not None and fresh.encode() in p[3])
+
+        # ---- a CONFIG save while a post is out ----------------------------
+        s, on = copy_sysop("RelySysop", port)
+        d.held.clear()
+        d.hold = 5.0
+        ok &= check("a post is held by the directory", d.held.wait(20))
+        cfg_open(s, b"announce", b"Every min")
+        s.buf.clear()
+        s.send(DOWN * 9 + b"\x08" * 4 + b"61" + F1)
+        ok &= check("CONFIG saves while it is out",
+                    cfg_verdict(s, [b"Saved and live", b"Nothing changed"]) == b"Saved and live")
+        time.sleep(6)
+        ok &= check("the board is still answering", port_answers(port))
+        ok &= check("and posting", d.wait_post(time.time(), 25, status=200) is not None)
+        time.sleep(1.0)
+        ok &= check("with no socket left over (%d open, %d before)" % (open_fds(pid) - 1, base_fds),
+                    open_fds(pid) - 1 <= base_fds)       # the sysop's own line is one
+
+        # ---- ANNOUNCE for staff: last and next -----------------------------
+        s.buf.clear()
+        s.send(b"announce\r")
+        s.wait_for(b"Next in", 6)
+        s.pump(0.4)
+        shown = plain(s.buf)
+        ok &= check("ANNOUNCE shows staff the last send, its result and the next",
+                    b"Last sent" in shown and b"listed" in shown and b"Next in" in shown)
+
+        # ---- closed and the largest payload, together ----------------------
+        text = (tmp / "data" / "user" / "system.cfg").read_text()
+        (tmp / "data" / "user" / "system.cfg").write_text(cfg_with(text, {("", "closed"): "yes"}))
+        cfg_open(s, b"announce", b"Every min")
+        s.buf.clear()
+        s.send(DOWN * 9 + b"\x08" * 4 + b"60" + F1)
+        cfg_verdict(s, [b"Saved and live", b"Nothing changed"])
+        p = d.wait_post(time.time(), 25, status=200)
+        import json as _json
+        try:
+            body = _json.loads(p[3].decode()) if p else {}
+        except ValueError:
+            body = {}
+        ok &= check("closed goes out as closed, with the longest fields whole",
+                    body.get("closed") is True and body.get("description") == long_desc
+                    and len(p[3]) <= announce_body_max())
+
+        # ---- a day of heartbeats -------------------------------------------
+        # The same sysop line: closed, the board would not take this account
+        # back, since it is not the one the harness's board set up.
+        text = (tmp / "data" / "user" / "system.cfg").read_text()
+        (tmp / "data" / "user" / "system.cfg").write_text(
+            cfg_with(text, {("plugin:announce", "interval_ms_test"): "100", ("", "closed"): "no"}))
+        cfg_open(s, b"announce", b"Every min")
+        s.buf.clear()
+        s.send(DOWN * 9 + b"\x08" * 4 + b"61" + F1)
+        cfg_verdict(s, [b"Saved and live", b"Nothing changed"])
+        s.close()
+        s = None
+        n0 = len(d.posts)
+        time.sleep(3)
+        fds0, rss0 = open_fds(pid), rss_kb(pid)
+        # A heartbeat is a few plugin ticks (connect, send, read), a second
+        # or so on the host whatever the interval, so a day's 144 take about
+        # two and a half minutes.
+        end = time.time() + 220
+        while time.time() < end and len(d.posts) - n0 < 144:
+            time.sleep(0.5)
+        beats = len(d.posts) - n0
+        time.sleep(0.5)
+        fds1, rss1 = open_fds(pid), rss_kb(pid)
+        ok &= check(f"a day's heartbeats, compressed ({beats} of 144)", beats >= 144)
+        ok &= check(f"with the sockets flat ({fds0} then {fds1})", fds1 <= fds0)
+        ok &= check(f"and the memory flat ({rss0} KB then {rss1} KB)", rss1 - rss0 < 256)
+        ok &= check("every one of them a console line",
+                    copy_text(tmp).count("announce: localhost: listed") >= 144)
+    finally:
+        for c in (g, s):
+            if c:
+                c.close()
+        stop_copy(proc, tmp)
+        d.close()
+
+    # ---- the published default holds the listing --------------------------
+    tmp, proc = lag_board(port, edits=edits)
+    try:
+        cfg = tmp / "data" / "user" / "system.cfg"
+        proc.kill()
+        proc.wait(5)
+        cfg.write_text("".join(l for l in cfg.read_text().splitlines(True)
+                               if not l.startswith("sysop_password")))
+        d = NudgeDirectory(dport)
+        proc = start_copy(tmp, (str(port),), {})
+        copy_log(tmp, f"listening on {port},", 10)
+        ok &= check("a board on the published default posts nothing", d.wait_post(0, 8) is None)
+    finally:
+        stop_copy(proc, tmp)
+        d.close()
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# 1.1.2: the lag work. Rule no. 1 says nothing a feature does may stall the
+# callers who are not using it, and 1.1.1's audit found paths that held the
+# loop for hundreds of milliseconds on a board: a stat or an open a row, a
+# rewrite of a whole file for one field, a lookup that walked every account.
+#
+# The host's filesystem costs nothing, so none of that ever showed here.
+# <data>/hostio.txt gives every disk::open and disk::dir the cost of a real
+# one (hostDiskOpen in host/platform_host.cpp), and "log" writes a console
+# line an open, so a test can both time a path and count what it opened.
+# The host prints every slow pass, unthrottled, as "host: slow pass <us>us in
+# <phase> node <n> doing <verb>", and a test asserts there is none for the
+# path it drives. Sizes are the realistic ones from the brief: 250 accounts,
+# 200 files, 2,000 forum records.
+#
+# Each runs on a copy of the board where it seeds data (copy_data), so the
+# harness board keeps its own accounts and card.
+# ---------------------------------------------------------------------------
+SLOW_RE = re.compile(r"host: slow pass (\d+)us in (\S+) node (\d+) doing (\S+)")
+
+
+def hostio_set(data_dir, card_us=0, flash_us=0, *words):
+    """What an open costs on this board from now: card and flash in us, and
+    "log" for a line an open, "nodns" for lookups that fail."""
+    (data_dir / "hostio.txt").write_text(f"{card_us} {flash_us} {' '.join(words)}\n")
+    time.sleep(0.7)                      # the board reads it every half second
+
+
+def hostio_clear(data_dir):
+    try:
+        (data_dir / "hostio.txt").unlink()
+    except FileNotFoundError:
+        pass
+    time.sleep(0.7)
+
+
+def slow_passes(text, doing=None):
+    """The slow passes in a console, as short descriptions; only those whose
+    slowest caller was doing `doing` when it is given."""
+    out = []
+    for m in SLOW_RE.finditer(text):
+        if doing is None or m.group(4).upper() == doing.upper():
+            out.append(f"{int(m.group(1)) // 1000} ms in {m.group(2)} doing {m.group(4)}")
+    return out
+
+
+def opens_of(text, name, mode=None):
+    """How many hostio lines opened a file called name (in any folder),
+    with this mode when one is given ("r", "w", "r+b", "dir")."""
+    n = 0
+    for m in re.finditer(r"hostio: (\S+) (\S+)", text):
+        if m.group(2).rsplit("/", 1)[-1] == name and (mode is None or m.group(1) == mode):
+            n += 1
+    return n
+
+
+def lag_board(port, card=None, edits=None, env=None):
+    """A copy of this board on port, with its own card when card is a path,
+    system.cfg edited with cfg_with edits. Returns (tmp, proc)."""
+    tmp = copy_data()
+    if edits:
+        cfg = tmp / "data" / "user" / "system.cfg"
+        cfg.write_text(cfg_with(cfg.read_text(), edits))
+    extra = dict(env or {})
+    if card is not None:
+        extra["BBS_SD_DIR"] = str(card)
+    proc = start_copy(tmp, (str(port),), extra)
+    copy_log(tmp, f"listening on {port},", 10)
+    return tmp, proc
+
+
+def copy_text(tmp):
+    p = tmp / "host.log"
+    return p.read_text(errors="replace") if p.exists() else ""
+
+
+def page_all(c, until, secs=30):
+    """A listing to its end, answering each [More] with c (continuous)."""
+    end = time.time() + secs
+    answered = 0
+    while time.time() < end:
+        if until in c.buf:
+            return True
+        seen = bytes(c.buf).count(b"[More]")
+        if seen > answered:
+            c.send(b"c")
+            answered = seen
+        c.pump(0.2)
+    return until in c.buf
+
+
+def test_time_warn_in_plugins():
+    """The time warnings reach a caller inside a plugin (1.1.2, found on TRA).
+
+    Only a caller at a prompt was ever warned, so Rob was cut off mid-chat
+    at his call limit with no notice at all. In the room it is the room's
+    voice, "--> 5 minutes left on this call", with the bell; in the forums
+    too, where a card is in; and it fits 40 columns."""
+    print("Time warnings inside the room and the forums")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    s = cfg_sysop("TimeKeeper")
+    a = ansi_login("TimeChatter")
+    na = a.node()
+    ok = True
+    try:
+        a.send(b"chat\r")
+        a.wait_for(b"here.", 4)
+        a.pump(0.4)
+        a.buf.clear()
+        # 60 minutes a call on the harness: 56 off leaves four, inside the
+        # five-minute warning. TIME re-arms the warnings, as it always has.
+        s.send(f"time {na} -56\r".encode())
+        ok &= check("in the room, the warning arrives in the room's voice",
+                    a.wait_for(b"minutes left on this call", 6))
+        a.pump(0.4)
+        shown = plain(a.buf)
+        ok &= check("marked --> from column 0",
+                    any(r.startswith("--> 4 minutes left on this call") for r in render_lines(a.buf)))
+        ok &= check("with the bell", b"\x07" in a.buf)
+        a.buf.clear()
+        s.send(f"time {na} -3\r".encode())
+        ok &= check("and the last minute's", a.wait_for(b"1 minute left on this call", 6) and
+                    any(r.startswith("--> 1 minute left on this call") for r in render_lines(a.buf)))
+        a.send(b"still here\r")
+        a.pump(0.6)
+        ok &= check("and the caller is still in the room, typing", b"still here" in plain(a.buf))
+        s.send(f"time {na} +59\r".encode())
+        s.pump(0.5)
+
+        # 40 columns: the room wraps its own voice inside 39.
+        naws(a, 40, 25)
+        a.pump(0.3)
+        a.buf.clear()
+        s.send(f"time {na} -56\r".encode())
+        a.wait_for(b"left on", 6)
+        a.pump(0.5)
+        rows = render_lines(a.buf, cols=40)
+        ok &= check("at 40 columns it fits 39",
+                    any("--> 4 minutes left on" in r for r in rows) and max(len(r.rstrip()) for r in rows) <= 39)
+        s.send(f"time {na} +56\r".encode())
+        s.pump(0.5)
+        naws(a, 80, 24)
+        a.send(b"/q\r")
+        a.wait_for(b"Main", 4)
+
+        if card_dir() is not None:
+            a.buf.clear()
+            a.send(b"forums\r")
+            a.wait_for(b"Forums>", 8)
+            a.pump(0.5)
+            a.buf.clear()
+            s.send(f"time {na} -56\r".encode())
+            ok &= check("in the forums too, marked",
+                        a.wait_for(b"left on this call", 6) and
+                        any(r.startswith("--> ") and "left on this call" in r for r in render_lines(a.buf)))
+            s.send(f"time {na} +56\r".encode())
+            s.pump(0.5)
+            a.send(b"q")
+            a.pump(0.5)
+    finally:
+        a.close()
+        s.close()
+    return ok
+
+
+def test_lag_screens():
+    """SCREENS lists every screen without holding the loop (1.1.2).
+
+    It stat'ed each flavour of each name on the card and in flash, and read
+    the card's manifest once a row, on the loop: about 120 opens for the
+    stock set, each a directory search on a FAT card. The table is built on
+    the runner now, and the caller waits on a spinner."""
+    print("Lag: SCREENS on a card")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    import shutil
+    import tempfile
+    card = pathlib.Path(tempfile.mkdtemp(prefix="bbs-lagcard-"))
+    tmp, proc = lag_board(PORT + 3900, card)
+    ok = True
+    s = None
+    try:
+        copy_log(tmp, "sd:", 6)
+        s, on = copy_sysop("LagScreens", PORT + 3900)
+        ok &= check("sysop on a copy with a card", on)
+        hostio_set(tmp / "data", 4000, 2000)
+        mark = len(copy_text(tmp))
+        s.buf.clear()
+        s.send(b"screens\r")
+        ok &= check("SCREENS lists the screens", s.wait_for(b"SCREENS VIEW", 20))
+        drain(s)
+        slow = slow_passes(copy_text(tmp)[mark:])          # the copy has this one caller
+        ok &= check("with no pass over 50 ms (" + (", ".join(slow[:3]) or "none") + ")", not slow)
+    finally:
+        if s:
+            s.close()
+        stop_copy(proc, tmp)
+        shutil.rmtree(card, ignore_errors=True)
+    return ok
+
+
+def test_lag_files():
+    """A file area of 200 files lists without holding the loop (1.1.2).
+
+    Each row reopened the folder and walked to its file, then searched
+    FILES.BBS for its description: a page of rows was hundreds of opens on
+    the loop. One walk a page now, on the runner, into a shared page cache,
+    and FILES.BBS read once a page."""
+    print("Lag: a file area of 200 files")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    import shutil
+    import tempfile
+    card = pathlib.Path(tempfile.mkdtemp(prefix="bbs-lagcard-"))
+    drop = card / "pub" / "drop"
+    drop.mkdir(parents=True)
+    desc = []
+    for i in range(200):
+        (drop / f"LAG{i:03d}.TXT").write_bytes(b"x" * (100 + i))
+        desc.append(f"LAG{i:03d}.TXT  File number {i} of the lag test")
+    (drop / "FILES.BBS").write_text("\n".join(desc) + "\n")
+    tmp, proc = lag_board(PORT + 3901, card)
+    ok = True
+    c = None
+    try:
+        c = ansi_login("LagFiles", port=PORT + 3901)
+        hostio_set(tmp / "data", 4000, 2000)
+        mark = len(copy_text(tmp))
+        c.buf.clear()
+        c.send(b"files 5\r")
+        ok &= check("the area opens", c.wait_for(b".TXT", 15))   # a file: an earlier test may rename the area
+        ok &= check("and lists to its last file", page_all(c, b"LAG199.TXT", 60))
+        ok &= check("with its description", b"File number 199 of the lag test" in plain(c.buf))
+        slow = slow_passes(copy_text(tmp)[mark:])          # the copy has this one caller
+        ok &= check("with no pass over 50 ms (" + (", ".join(slow[:3]) or "none") + ")", not slow)
+    finally:
+        if c:
+            c.close()
+        stop_copy(proc, tmp)
+        shutil.rmtree(card, ignore_errors=True)
+    return ok
+
+
+def test_lag_forums():
+    """A forum of 2,000 messages opens and reads without holding the loop.
+
+    The subject list walked the whole index in one pass, and the next
+    message in a subject was found by reopening INDEX.TXT for every record
+    in between; the read pointers were rewritten at every message. Walks
+    are sliced across passes now, open the index once, and the pointers
+    live in RAM until the caller leaves.
+
+    Laid out for the worst case: "Coffee" is message 1 and message 2,000,
+    and the 1,998 between are another subject, so reading Coffee's second
+    message walks the whole forum."""
+    print("Lag: a forum of 2,000 messages")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    import shutil
+    import tempfile
+    sys.path.insert(0, str(ROOT / "tools"))
+    import forum_check
+    card = pathlib.Path(tempfile.mkdtemp(prefix="bbs-lagcard-"))
+    import contextlib
+    with contextlib.redirect_stdout(io.StringIO()):
+        forum_check.build_forum(str(card / "p" / "forums" / "general"), 2000,
+                                lambda n: "Coffee" if n in (1, 2000) else "20m antennas")
+    tmp, proc = lag_board(PORT + 3902, card)
+    ok = True
+    c = None
+    try:
+        c = ansi_login("LagForums", port=PORT + 3902)
+        hostio_set(tmp / "data", 4000, 2000)
+        mark = len(copy_text(tmp))
+        c.buf.clear()
+        c.send(b"forums\r")
+        ok &= check("the forum list opens", c.wait_for(b"Forums>", 20))
+        c.pump(0.5)
+        c.buf.clear()
+        c.send(b"1\r")
+        ok &= check("the forum of 2,000 lists its subjects", c.wait_for(b"Coffee", 20))
+        c.pump(0.5)
+        c.buf.clear()
+        c.send(b"1\r")                                   # Coffee: numbered by its first message
+        ok &= check("its first subject opens", c.wait_for(b"Coffee", 20))
+        c.pump(0.5)
+        seen = bytearray(c.buf)
+        for _ in range(3):
+            if b"Message 2000 about Coffee" in seen:
+                break
+            c.buf.clear()                               # each Enter waits for its own answer
+            c.send(b"\r")
+            c.wait_for(b"[R]eply", 30)
+            c.pump(0.5)
+            seen += c.buf
+        ok &= check("and reads to its second message, 1,998 records on",
+                    b"Message 2000 about Coffee" in seen)
+        if b"Message 2000 about Coffee" not in seen:
+            print("        the screen ended:", " / ".join(render_lines(c.buf)[-8:]))
+        slow = slow_passes(copy_text(tmp)[mark:])          # the copy has this one caller
+        ok &= check("with no pass over 50 ms (" + (", ".join(slow[:3]) or "none") + ")", not slow)
+    finally:
+        if c:
+            c.close()
+        stop_copy(proc, tmp)
+        shutil.rmtree(card, ignore_errors=True)
+    return ok
+
+
+def test_lag_logins():
+    """250 accounts: the handle prompt and a logoff do not walk users.txt.
+
+    An unknown handle read users.txt to the end on the loop, and so did the
+    count behind the [R]egister offer; a logoff rewrote the whole file for
+    four figures. The handles are indexed in RAM now, rebuilt only when the
+    board rewrites users.txt, and the call figures are 16-byte records in
+    callstats.dat, updated in place."""
+    print("Lag: logins with 250 accounts")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    # One account with the test password, to copy its hash for the rest.
+    ansi_login("LagSeed").close()
+    tmp = copy_data()
+    users = tmp / "data" / "user" / "users.txt"
+    text = users.read_text(errors="replace")
+    blocks = re.findall(r"^\[([^\]]+)\]\n(.*?)(?=^\[|\Z)", text, re.M | re.S)
+    seed = next((b for h, b in blocks if h == "LagSeed"), "")
+    pw = re.search(r"^pass = (\S+)$", seed, re.M)
+    ids = [int(x) for x in re.findall(r"^id = (\d+)$", text, re.M)]
+    top = max(ids) if ids else 0
+    have = len(blocks)
+    add = []
+    for i in range(max(0, 245 - have)):
+        h = f"Lag{i:04d}"
+        add.append(f"\n[{h}]\nname = {h}\nemail = \naddress = \nphone = \nprofile = \n"
+                   f"pass = {pw.group(1) if pw else ''}\nlevel = user\ncreated = 1790000000\n"
+                   f"last_call = 0\nnickname = \ncalls = 3\nday = 0\nday_minutes = 0\nlocked = no\n"
+                   f"land = default\nid = {top + 1 + i}\nretired = no\nstaff_at = 0\nstaff_level = 0\n"
+                   f"staff_ip = \n")
+    users.write_text(text.rstrip("\n") + "\n" + "".join(add))
+    # The board's cap, as shipped: the harness's CONFIG tests leave it at 200.
+    cfg = tmp / "data" / "user" / "system.cfg"
+    cfg.write_text(cfg_with(cfg.read_text(), {("", "max_users"): "250"}))
+    last = f"Lag{max(0, 245 - have) - 1:04d}"
+    port = PORT + 3903
+    proc = start_copy(tmp, (str(port),), {})
+    copy_log(tmp, f"listening on {port},", 10)
+    ok = check(f"a board with {have + len(add)} accounts", have + len(add) >= 240)
+    c = None
+    try:
+        hostio_set(tmp / "data", 0, 3000, "log")
+        mark = len(copy_text(tmp))
+        c = Caller(ansi=True, port=port)
+        c.wait_for(b"Enter your handle", 10)
+        c.buf.clear()
+        c.send(b"NobodyByThatName\r")
+        ok &= check("an unknown handle is offered registration", c.wait_for(b"[R]egister", 8))
+        got = copy_text(tmp)[mark:]
+        ok &= check("without users.txt being read (%d opens)" % opens_of(got, "users.txt"),
+                    opens_of(got, "users.txt") == 0)
+        c.close()
+
+        c = Caller(ansi=True, port=port)
+        c.wait_for(b"Enter your handle", 10)
+        login(c, last, TEST_PW)
+        ok &= check("an account at the end of the file logs in", b"Main" in plain(c.buf))
+        mark = len(copy_text(tmp))
+        c.buf.clear()
+        c.send(b"bye\r")
+        c.wait_closed(12)
+        time.sleep(1.0)
+        got = copy_text(tmp)[mark:]
+        ok &= check("a logoff does not rewrite users.txt (%d)" % opens_of(got, "users.txt.new"),
+                    opens_of(got, "users.txt.new") == 0)
+        ok &= check("it updates the caller's record in callstats.dat in place",
+                    opens_of(got, "callstats.dat", "r+b") >= 1)
+        stats = tmp / "data" / "user" / "callstats.dat"
+        ok &= check("callstats.dat is whole 16-byte records",
+                    stats.exists() and stats.stat().st_size > 0 and stats.stat().st_size % 16 == 0)
+        slow = slow_passes(copy_text(tmp))
+        ok &= check("and nothing on the board took a pass over 50 ms (" + (", ".join(slow[:3]) or "none") + ")",
+                    not slow)
+    finally:
+        if c:
+            c.close()
+        stop_copy(proc, tmp)
+    return ok
+
+
+def test_mail_in_place():
+    """Mail is written in place, not by copying the mail file (1.1.2).
+
+    Every send, keep and delete rewrote mail.dat through mail.dat.tmp: 64
+    records of 564 bytes copied for one. A send takes a free slot, a delete
+    empties one, a keep flips a byte."""
+    print("Mail is written in place")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    a = ansi_login("InPlaceA")
+    b = ansi_login("InPlaceB")
+    ok = True
+    try:
+        hostio_set(DATA, 0, 0, "log")
+        mark = len(host_log())
+        a.buf.clear()
+        a.send(b"mail InPlaceB written in place\r")
+        ok &= check("a message is left", a.wait_for(b"Left for InPlaceB", 5))
+        mail_box(b)
+        b.buf.clear()
+        b.send(b"\r")
+        ok &= check("it is read", b.wait_for(b"[D]elete", 5))
+        b.send(b"s")
+        ok &= check("kept", b.wait_for(b"Kept", 4))
+        b.buf.clear()
+        b.send(b"1\r")
+        b.wait_for(b"[D]elete", 5)
+        b.send(b"d")
+        ok &= check("and deleted", b.wait_for(b"Deleted", 4))
+        b.send(b"q")
+        b.wait_for(b"Main", 4)
+        got = host_log()[mark:]
+        ok &= check("and mail.dat was never copied through mail.dat.tmp (%d)" % opens_of(got, "mail.dat.tmp"),
+                    opens_of(got, "mail.dat.tmp") == 0)
+        ok &= check("but written where it lies", opens_of(got, "mail.dat", "r+b") >= 2)
+    finally:
+        hostio_clear(DATA)
+        a.close()
+        b.close()
+    return ok
+
+
+def test_config_one_pass():
+    """CONFIG reads system.cfg once to open a page (1.1.2).
+
+    Each field's value was a search of system.cfg from the top, so a plugin
+    page of fourteen rows opened the file fourteen times on the loop."""
+    print("CONFIG reads system.cfg once a page")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    s = cfg_sysop("OnePass")
+    ok = True
+    try:
+        hostio_set(DATA, 0, 0, "log")
+        mark = len(host_log())
+        ok &= check("CONFIG announce opens", cfg_open(s, b"announce", b"Every min"))
+        n = opens_of(host_log()[mark:], "system.cfg")
+        ok &= check("with system.cfg opened at most twice (%d)" % n, n <= 2)
+        cfg_cancel(s)
+        mark = len(host_log())
+        ok &= check("CONFIG board opens", cfg_open(s, b"board", b"Hostname"))
+        n = opens_of(host_log()[mark:], "system.cfg")
+        ok &= check("the core page too (%d)" % n, n <= 2)
+        cfg_cancel(s)
+    finally:
+        hostio_clear(DATA)
+        s.close()
+    return ok
+
+
+def test_space_kept():
+    """Free-space figures are kept, marked, and measured again on FORCE.
+
+    MEM, SYS, DASH and the plugin write guard each asked the filesystem how
+    full it was, and on LittleFS that walks every block: 170 ms a figure on
+    a board. They are measured on the runner at boot and at a staff login
+    and kept; a kept figure ends in "." and one line says when it was taken.
+    MEM FORCE and SYS FORCE measure again, for staff, with a spinner."""
+    print("Free space: kept figures")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    c = ansi_login("SpaceCaller")
+    ok = True
+    c.buf.clear()
+    c.send(b"mem\r")
+    c.wait_for(b"Disk free", 5)
+    c.pump(0.6)
+    rows = render_lines(c.buf)
+    disk = next((r for r in rows if r.startswith("Disk free")), "")
+    ok &= check("MEM's disk figure ends in the kept mark", re.search(r"^Disk free\s+[\d,]+\. ", disk) is not None)
+    ok &= check("and one line says when it was taken",
+                any("Figures ending in . are as of" in r for r in rows))
+    ok &= check("a caller is not offered FORCE", not any("MEM FORCE" in r for r in rows))
+    c.buf.clear()
+    c.send(b"mem force\r")
+    ok &= check("MEM FORCE is for staff", c.wait_for(b"MEM FORCE is for staff", 5))
+    c.close()
+
+    s = cfg_sysop("SpaceSysop")
+    s.buf.clear()
+    s.send(b"mem\r")
+    s.wait_for(b"Disk free", 5)
+    s.pump(0.6)
+    ok &= check("staff are told how to measure now", b"MEM FORCE measures now." in plain(s.buf))
+    s.buf.clear()
+    s.send(b"mem force\r")
+    ok &= check("MEM FORCE measures, and says so", s.wait_for(b"Measuring the storage", 5))
+    ok &= check("then draws MEM", s.wait_for(b"Disk free", 20))
+    s.pump(0.6)
+    s.buf.clear()
+    s.send(b"sys force\r")
+    ok &= check("SYS FORCE measures", s.wait_for(b"Measuring the storage", 5))
+    ok &= check("then draws SYS with the kept figures", s.wait_for(b"Data free", 20))
+    ok &= check("and the line saying when", s.wait_for(b"SYS FORCE measures now.", 6))
+    drain(s)
+    s.close()
+    return ok
+
+
+def test_lag_backup_get():
+    """The backup window's download starts without holding the loop (1.1.2).
+
+    GET /backup.zip read every file once for its CRC before the 200 went
+    out, all in one pass: seconds on a board with its screens. The scan runs
+    on the runner and the headers follow it."""
+    print("Lag: the backup download")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    port, bport = PORT + 3904, PORT + 3905
+    tmp, proc = lag_board(port, edits={("", "backup_port"): str(bport)},
+                          env={"BBS_BACKUP_TEST_OPEN": "1"})
+    ok = True
+    s = None
+    try:
+        s, on = copy_sysop("LagBackup", port)
+        ok &= check("the window is open", on and s.wait_for(b"*** Backup open", 8))
+        hostio_set(tmp / "data", 0, 6000)
+        mark = len(copy_text(tmp))
+        status, data = http_call("GET", "/backup.zip", port=bport, timeout=60)
+        ok &= check("GET /backup.zip answers 200", status == 200)
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
+                good = z.testzip() is None and "users.txt" in z.namelist()
+        except zipfile.BadZipFile:
+            good = False
+        ok &= check("with a whole zip", good)
+        slow = slow_passes(copy_text(tmp)[mark:])
+        ok &= check("and no pass over 50 ms (" + (", ".join(slow[:3]) or "none") + ")", not slow)
+    finally:
+        if s:
+            s.close()
+        stop_copy(proc, tmp)
+    return ok
+
+
+def test_uploads_pending_bbs():
+    """P lists uploads, not the staging folder's own files (1.1.2, bench).
+
+    A description written for an upload landed in .pending/FILES.BBS, and
+    P listed FILES.BBS as an upload waiting, which A would then approve into
+    the area over the real one."""
+    print("Uploads: the staging folder's own files are not uploads")
+    card = card_dir()
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD or card is None:
+        print("  SKIP  needs the host build, the sysop and a card")
+        return True
+    pend = card / "pub" / "drop" / ".pending"
+    pend.mkdir(parents=True, exist_ok=True)
+    made = not (pend / "FILES.BBS").exists()
+    if made:
+        (pend / "FILES.BBS").write_text("GHOST.BIN  a description with no upload\n")
+    s = cfg_sysop("PendKeeper")
+    ok = check("staff open the drop box", enter_area(s, 5, b"[S5]"))   # by number: its name may change
+    try:
+        s.buf.clear()
+        s.send(b"p")
+        s.pump(1.5)
+        shown = plain(s.buf)
+        ok &= check("P does not list FILES.BBS", b"FILES.BBS" not in shown)
+        ok &= check("or UPLOADS.BBS", b"UPLOADS.BBS" not in shown)
+    finally:
+        leave_files(s)
+        s.close()
+        if made:
+            (pend / "FILES.BBS").unlink()
+    return ok
+
+
+def test_camera_one_at_a_time():
+    """One snapshot at a time, and the second caller is told whose (1.1.2).
+
+    Rob: "--> Camera in use by node <n>, try again in a minute", in the
+    room's voice, wrapped at a word inside 39 on a narrow screen."""
+    print("The camera: one snapshot at a time")
+    card = card_dir()
+    if HOST_BOARD not in CAM_BOARD or not PASSWORD or card is None:
+        print(f"  SKIP  needs tools/harness.sh --board {HOST_BOARD if HOST_BOARD in ('fncam', 'espcam') else 'fncam'} --card")
+        return True
+    s = cfg_sysop("CamKeeper")
+    camera_config(s, snap="users")
+    time.sleep(1.0)
+    a = ansi_login("CamFirst")
+    na = a.node()                         # read before the buffer is cleared below
+    b = ansi_login("CamSecond")
+    ok = True
+    try:
+        a.buf.clear()
+        b.buf.clear()
+        a.send(b"snapshot\r")
+        time.sleep(0.05)
+        b.send(b"snapshot\r")
+        want = f"--> Camera in use by node {na}, try again in a minute".encode()
+        b.wait_for(b"try again in a minute", 6)       # the marker is coloured apart from the words
+        b.pump(0.2)
+        ok &= check("the second caller is told whose it is", want in plain(b.buf))
+        if want not in plain(b.buf):
+            print("        they saw:", " / ".join(r for r in render_lines(b.buf) if r.strip())[-200:])
+        if a.wait_for(b"Download it now?", 12):
+            a.send(b"n")
+            a.wait_for(b"kept in the Photos area", 4)
+        # 40 columns: wrapped at a word, inside 39.
+        naws(b, 40, 25)
+        b.pump(0.3)
+        a.buf.clear()
+        b.buf.clear()
+        a.send(b"snapshot\r")
+        time.sleep(0.05)
+        b.send(b"snapshot\r")
+        b.wait_for(b"in a minute", 6)
+        rows = render_lines(b.buf, cols=40)
+        ok &= check("at 40 columns it wraps inside 39",
+                    any("--> Camera in use" in r for r in rows) and max(len(r.rstrip()) for r in rows) <= 39)
+        if a.wait_for(b"Download it now?", 12):
+            a.send(b"n")
+            a.wait_for(b"kept in the Photos area", 4)
+    finally:
+        camera_config(s)
+        for x in (a, b, s):
+            x.close()
     return ok
 
 
@@ -14199,23 +15392,25 @@ GROUPS = {
                   "survives_notice", "config_forum", "room_time", "bell", "codes_in",
                   "room_narrow", "room_private",
                   "long_help", "info_pages", "operator", "notices_in", "ring_mail",
-                  "sysop_account"],
+                  "sysop_account", "mail_in_place", "time_warn"],
     # The subsystems that own a session and draw their own screens.
-    "places":    ["forums", "files", "chat", "xfer", "notices_in", "backups_area"],
+    "places":    ["forums", "files", "chat", "xfer", "notices_in", "backups_area", "time_warn"],
     # Anything that reads or writes the card, and the backups (on the card
     # since 1.1.0, and restores across the board's two partitions).
     "storage":   ["files", "forums", "sd", "xfer", "backup", "restore", "card_screens", "rewrites",
-                  "screens_install", "lights_disk"],
+                  "screens_install", "lights_disk", "lag_", "uploads_pending"],
     # The shell, its lists and the screens the core draws.
     "shell":     ["menus", "sysinfo", "hardware", "page", "about", "config", "welcome", "paced", "seeded", "fx_codes",
                   "lights", "operator", "dash", "nodes_columns", "version_shown", "screens_command",
-                  "forms", "whois"],
+                  "forms", "whois", "space_kept", "config_one_pass", "time_warn"],
     # Logging in, accounts, staff.
     "login":     ["accounts", "handle_case", "guest", "sysop", "cosysop", "user_admin", "first_setup", "ban",
                   "closed_configured", "closed_fresh", "setup_abort",
-                  "boot_hold", "boot_notices", "cgnat"],
+                  "boot_hold", "boot_notices", "cgnat", "lag_logins"],
     # Terminal handling across the three flavours.
     "terminal":  ["ansi", "petscii", "ascii", "telnet_first", "link_line"],
+    # 1.1.2: every path the lag audit named, timed with hostio.txt.
+    "lag":       ["lag_", "mail_in_place", "config_one_pass", "space_kept", "uploads_pending"],
 }
 
 
@@ -14235,9 +15430,11 @@ ORDER_NAMES = [
     "test_handle_case",
     "test_user_admin", "test_guest",
     "test_privacy", "test_plugins", "test_about", "test_announce", "test_announce_closed",
+    "test_announce_join_prompt", "test_announce_join_in_flight", "test_announce_join_refused",
+    "test_announce_reliable",
     "test_announce_badges", "test_announce_directory",
     "test_chat", "test_room_commands", "test_room_new_commands", "test_room_private", "test_room_quit_logoff",
-    "test_room_time_staff_only", "test_bell", "test_codes_in_messages", "test_fx_codes", "test_room_narrow_effects",
+    "test_room_time_staff_only", "test_time_warn_in_plugins", "test_bell", "test_codes_in_messages", "test_fx_codes", "test_room_narrow_effects",
     "test_long_help",
     "test_info_pages",
     "test_mail", "test_prompt_survives_notice", "test_menus", "test_sysinfo", "test_hardware",
@@ -14297,6 +15494,11 @@ ORDER_NAMES = [
     "test_backups_area", "test_card_screens_manifest", "test_restore_checks",
     "test_restore_staff_report", "test_restore_ends_screens", "test_sd_no_reprobe",
     "test_rewrites_keep_old", "test_restore_waits_quiet", "test_screens_command", "test_screens_install",
+    # 1.1.2, the lag work: each drives one audited path with the cost of a
+    # real open and asserts no pass over 50 ms. Most run on copies.
+    "test_lag_screens", "test_lag_files", "test_lag_forums", "test_lag_logins", "test_lag_backup_get",
+    "test_mail_in_place", "test_config_one_pass", "test_space_kept", "test_uploads_pending_bbs",
+    "test_camera_one_at_a_time",
     # Destructive, and therefore last whatever else is running. The published
     # default's restore test puts the board back as it found it, and on a
     # --fresh board it needs to run before first_setup gives it a password.

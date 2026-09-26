@@ -62,6 +62,7 @@
 #include "../config.h"
 #include "../platform/platform.h"
 #include "ziparc.h"
+#include "runner.h"
 
 class BackupService {
 public:
@@ -119,7 +120,8 @@ public:
     // busy: the zip storage is somebody's: a window client, an upload the
     // window is still holding or putting live, or a card job.
     bool busy() const {
-        return job_ != Job::None || cfd_ >= 0 || st_ == St::Apply || st_ == St::Hold;
+        return job_ != Job::None || cfd_ >= 0 || st_ == St::Apply || st_ == St::Hold ||
+               abandon_ || zipJobOut();
     }
 
     // -- a restore waits for the board to go quiet (1.1.0) -------------------
@@ -182,7 +184,9 @@ public:
     const ziparc::ApplyReport&  cardApplied() { return importer().applied(); }
 
 private:
-    enum class St : uint8_t { Idle, Headers, Body, Extract, Approve, Apply, SendZip, Reply, Linger, Hold };
+    // Scan (1.1.2): the download's CRC scan is running on the runner, and
+    // the 200 goes out when it is done.
+    enum class St : uint8_t { Idle, Headers, Body, Extract, Approve, Apply, SendZip, Reply, Linger, Hold, Scan };
     void openUpload(const char* path);
     void finishApply();
     void finishWrite(bool ok);
@@ -201,6 +205,17 @@ private:
     int      lfd_       = -1;
     int      cfd_       = -1;
     St       st_        = St::Idle;
+    // The unpack on the background runner (1.1.2): posted, and whether it
+    // found no room once it measured. dotsSeen_: the card job's dots so far.
+    bool     unpackOut_    = false;
+    bool     unpackFailed_ = false;
+    uint8_t  dotsSeen_     = 0;
+    bool unpacked();
+    bool zipJobOut() const;
+    bool     abandon_      = false;   // a client or a card job went while a job had the zip
+    const char* unpackWhy() const;
+    static void unpackWork(runner::Job&);
+    static void scanWork(runner::Job&);
     uint32_t closesAt_  = 0;
     uint32_t lastIo_    = 0;
     uint32_t deadline_  = 0;     // hard stop for the current phase (slowloris guard)

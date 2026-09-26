@@ -63,6 +63,7 @@
 #include "../core/codes.h"
 #include "../core/sysconfig.h"
 #include "../core/users.h"
+#include "../core/fx.h"                // the walk's spinner (1.1.2)
 #include "../platform/platform.h"
 #include "forums_ptr.h"
 
@@ -793,6 +794,13 @@ void readKey(void* ctx, const char* key, const char* value) {
 // and remount the card, so changing idle_minutes stalled every caller for a
 // full SPI renegotiation. Nothing here may do synchronous work that a config
 // save should not pay for.
+// The walks and the read pointers in RAM (1.1.2), defined with the walks
+// below: start clears them, stop writes the pointers out.
+void walkResetAll();
+void walkFlushAll();
+void unreadNow(Session& s, uint8_t forum);
+void jumpFound(Bbs& b, Session& s, uint32_t num);
+
 bool start(Bbs& bbs) {
     g_bbs   = &bbs;
     g_index = plugins::indexOf("forums");
@@ -820,12 +828,15 @@ bool start(Bbs& bbs) {
 
     memset(g_where, 0, sizeof(g_where));
     memset(g_sel, 0, sizeof(g_sel));
+    walkResetAll();
     return true;
 }
 
 void stop() {
-    // Deliberately empty of card work. A plugin's own lifecycle is not the
-    // lifetime of what it opened, and the mount is board-level state.
+    // No card work but one: a read pointer still in RAM is written, so a
+    // CONFIG save (which stops and starts every plugin) loses nobody's
+    // place (1.1.2). The mount is board-level state and stays.
+    walkFlushAll();
     g_bbs = nullptr;
 }
 
@@ -930,134 +941,56 @@ constexpr uint32_t kScanMax = 2000;         // records walked for a listing
 // column lines up however large the IDs get.
 uint8_t g_subjNumW = 1;
 
-void scanSubjects(uint8_t i, const Ptr& p, uint8_t who) {
+// scanReset / scanAdd / scanDone: scanSubjects in three parts (1.1.2), for
+// the W_SCAN walk, which fills the table a slice at a time.
+void scanReset(uint8_t i, uint8_t who) {
     g_subjRows = 0;
     g_subjNumW = 1;
     g_subjFor  = i;
     claims::seize(claims::Res::Subjects, who);   // a cache, not a lock: refill for whoever asks
-    uint32_t newest = g_forum[i].newest;
-    if (!newest) return;
+}
 
-    char path[128];
-    indexPath(i, path, sizeof(path));
-    FILE* f = disk::open(path, "rb");
-    if (!f) return;
-
-    uint32_t floor = newest > kScanMax ? newest - kScanMax : 1;
-    for (uint32_t n = newest; n >= floor && n >= 1; --n) {
-        if (fseek(f, static_cast<long>(n) * kRec, SEEK_SET) != 0) break;
-        char rec[kRec];
-        if (fread(rec, 1, kRec, f) != kRec) break;
-        MsgRec m;
-        parseRec(rec, m);
-        if (m.num != n) continue;                 // a torn record, skipped
-        if (!m.live) continue;                    // deleted: not a subject
-
-        uint8_t k = 0;
-        for (; k < g_subjRows; ++k) if (g_subjRow[k].hash == m.hash) break;
-        if (k == g_subjRows) {
-            if (g_subjRows >= kMaxSubjects) continue;
-            g_subjRow[k] = SubjRow{};
-            g_subjRow[k].hash   = m.hash;
-            g_subjRow[k].newest = n;
-            // The newest message's subject text is the one shown, so a
-            // subject that was renamed displays as its latest form while
-            // still grouping by the hash it has always had.
-            snprintf(g_subjRow[k].subject, sizeof(g_subjRow[k].subject), "%s", m.subject);
-            ++g_subjRows;
-        }
-        ++g_subjRow[k].total;
-        // Walking newest to oldest, so the last write is the oldest message.
-        g_subjRow[k].first = n;
-        if (!seen(p, n)) ++g_subjRow[k].unread;
-        if (n == 1) break;                        // uint32 would wrap below 1
+void scanAdd(const MsgRec& m, uint32_t n, const Ptr& p) {
+    uint8_t k = 0;
+    for (; k < g_subjRows; ++k) if (g_subjRow[k].hash == m.hash) break;
+    if (k == g_subjRows) {
+        if (g_subjRows >= kMaxSubjects) return;
+        g_subjRow[k] = SubjRow{};
+        g_subjRow[k].hash   = m.hash;
+        g_subjRow[k].newest = n;
+        // The newest message's subject text is the one shown, so a
+        // subject that was renamed displays as its latest form while
+        // still grouping by the hash it has always had.
+        snprintf(g_subjRow[k].subject, sizeof(g_subjRow[k].subject), "%s", m.subject);
+        ++g_subjRows;
     }
-    fclose(f);
+    ++g_subjRow[k].total;
+    // Walking newest to oldest, so the last write is the oldest message.
+    g_subjRow[k].first = n;
+    if (!seen(p, n)) ++g_subjRow[k].unread;
+}
+
+void scanDone() {
     uint32_t hi = 0;
     for (uint8_t k = 0; k < g_subjRows; ++k)
         if (g_subjRow[k].first > hi) hi = g_subjRow[k].first;
+    g_subjNumW = 1;
     while (hi >= 10) { hi /= 10; ++g_subjNumW; }
 }
 
-// nextUnread: the next message this caller has not read, or 0.
+// nextInSubject, nextUnread and liveUnread are walks now (1.1.2): see
+// "The walks, a slice a pass" below. What they answered is unchanged:
 //
-// Forward from just above the mark, because reading is oldest-first: a
-// conversation read newest-first is not a conversation. Honours the subject
-// filter when one is set, which is what makes "read this thread to the end"
-// mean what it says.
-// nextInSubject: the next message in a conversation, read or not.
-//
-// **Opening a subject must show it even when there is nothing new in it**,
-// and that is not a nicety. Rob posted the first message on the board, which
-// by definition he had read, then opened the subject and got nothing: Enter
-// found no unread message and neither did the number. A board where you
-// cannot re-read what you just wrote is broken, and so is one where you
-// cannot go back and look at a conversation you have already followed.
-//
-// So inside a subject, reading walks the conversation in order regardless of
-// what has been read. Unread still drives what Enter does from the FORUM
-// list, which is the fast path, and every message shown is still marked
-// read. The distinction is: at the top level Enter means "what is new", and
-// inside a conversation it means "what is next".
-uint32_t nextInSubject(uint8_t i, uint32_t subject, uint32_t after) {
-    uint32_t newest = g_forum[i].newest;
-    for (uint32_t n = after + 1; n <= newest; ++n) {
-        MsgRec m;
-        if (!readRec(i, n, m) || !m.live) continue;
-        if (subject && m.hash != subject) continue;
-        return n;
-    }
-    return 0;
-}
-
-uint32_t nextUnread(uint8_t i, const Ptr& p, uint32_t subject, uint32_t after) {
-    uint32_t newest = g_forum[i].newest;
-    uint32_t from = after ? after + 1 : p.mark + 1;
-    for (uint32_t n = from; n <= newest; ++n) {
-        if (seen(p, n)) continue;
-        MsgRec m;
-        if (!readRec(i, n, m) || !m.live) continue;
-        if (subject && m.hash != subject) continue;
-        return n;
-    }
-    return 0;
-}
-
-// liveUnread: what this caller has not read, removed messages not counted.
-//
-// unreadUpTo() is pure arithmetic over message numbers, which was exact
-// while nothing could be removed. Once a post can be taken down it is not:
-// a removed message the caller never read would count as new, the forum
-// list would say "1 new", and Enter would find nothing, which is the
-// numbers-that-do-not-add-up failure this subsystem was designed against.
-//
-// Free when nothing was ever removed: the header's live count equals the
-// highest message number, every message above the mark is live, and the
-// arithmetic is exact. Only a forum that has had a removal walks the
-// records, and then only the ones this caller has not seen.
-uint32_t liveUnread(uint8_t i, const Ptr& p) {
-    uint32_t newest = g_forum[i].newest;
-    if (g_forum[i].total >= newest) return unreadUpTo(p, newest);
-
-    char path[128];
-    indexPath(i, path, sizeof(path));
-    FILE* f = disk::open(path, "rb");
-    if (!f) return unreadUpTo(p, newest);
-    uint32_t n0 = p.mark + 1;
-    if (newest > kScanMax && n0 < newest - kScanMax) n0 = newest - kScanMax;
-    uint32_t c = 0;
-    for (uint32_t n = n0; n <= newest; ++n) {
-        if (seen(p, n)) continue;
-        if (fseek(f, static_cast<long>(n) * kRec, SEEK_SET) != 0) break;
-        char rec[kRec];
-        if (fread(rec, 1, kRec, f) != kRec) break;
-        MsgRec m;
-        parseRec(rec, m);
-        if (m.num == n && m.live) ++c;
-    }
-    fclose(f);
-    return c;
-}
+// - the next message in a subject, read or not. Opening a subject must show
+//   it even when there is nothing new in it (Rob posted the first message on
+//   the board, which by definition he had read, then opened the subject and
+//   got nothing): inside a conversation Enter means "what is next", at the
+//   forum list it means "what is new".
+// - the next message not read, forward from above the mark, oldest first,
+//   honouring the subject filter.
+// - what this caller has not read, removed messages not counted. Exact
+//   arithmetic (unreadUpTo) while nothing was ever removed; only a forum
+//   that has had a removal walks the records it has not seen.
 
 // removeMessage: take message n out of forum i.
 //
@@ -1105,6 +1038,334 @@ uint32_t callerId(const Session& s) {
     UserRec u;
     if (users::lookup(s.user, u) != users::Lookup::Found) return 0;
     return u.id;
+}
+
+// ===========================================================================
+// The walks, a slice a pass (1.1.2).
+//
+// Every question the forums ask of the index that is not "message n" is a
+// walk along it: the next message in a subject, the next one this caller has
+// not read, the subjects of a forum, how many are unread once posts have
+// been removed. They were loops on the loop: nextInSubject and nextUnread
+// opened the index for every record (fopen, fseek, fread, fclose), with no
+// cap, on every Enter, so a subject whose next message was a thousand
+// records on cost seconds with the whole board waiting; scanSubjects read up
+// to 2,000 records in one draw; liveUnread up to 2,000 for each of sixteen
+// forums on the way in (internal/audit-1.1.2-2026-09-26.md, item 3).
+//
+// Now a walk is a small state per caller, advanced from the plugin's fast
+// tick: the index opened once a slice, at most kSlice records read, and the
+// place kept for the next slice. The common walk (the next message is the
+// next record) finishes in its first slice, so Enter feels the same; a long
+// one takes a few passes with a spinner on the prompt line, and every other
+// caller carries on. What the walk was for (show the message, draw the
+// list, jump) is its continuation, done when it finishes.
+//
+// All on the loop, not the background runner: the same file is appended to
+// by posting, on the loop, and a walk that took several passes on another
+// task would be reading records the loop was writing (CONFIG_FATFS_FS_LOCK
+// is 0). A slice is bounded instead, which is what Rule no. 1 asks.
+// ===========================================================================
+
+constexpr uint16_t kSlice     = 64;     // records read for one caller in one pass
+constexpr uint16_t kTickBudget = 128;   // records read for everybody in one pass
+constexpr uint32_t kSpinAfter = 250;    // ms before a walk shows it is working
+constexpr uint16_t kPtrCost   = 16;     // a forum's read pointer loaded, in records
+
+enum WalkKind : uint8_t {
+    W_NONE = 0,
+    W_SUBJECT,     // the next message in a subject, read or not
+    W_UNREAD,      // the next message not read, in one forum (subject filter)
+    W_ANY,         // the next message not read, in any forum this caller sees
+    W_SCAN,        // the subjects of a forum, into the shared table
+    W_COUNT,       // unread counts, removed posts not counted, for a set of forums
+};
+
+// What happens when the walk has its answer.
+enum WalkThen : uint8_t {
+    T_NONE = 0,
+    T_SHOW,        // show the message found, or say there is nothing
+    T_ENDSUBJ,     // after a subject ran out: the rest of the forum
+    T_DRAWSUBJ,    // draw the subject list
+    T_JUMP,        // a subject number was typed: open it
+    T_DRAWFORUMS,  // the counts on the way in: draw the forum list
+};
+
+struct Walk {
+    uint8_t  kind  = W_NONE;
+    uint8_t  then  = T_NONE;
+    uint8_t  forum = 0xFF;        // the forum being walked now
+    uint16_t mask  = 0;           // W_ANY, W_COUNT: forums still to walk
+    uint32_t subject = 0;         // W_SUBJECT, W_UNREAD: the subject, 0 none
+    uint32_t pos   = 0;           // the next record to look at
+    uint32_t end   = 0;           // the last one (inclusive); W_SCAN counts down to it
+    uint32_t acc   = 0;           // W_COUNT: unread so far in this forum
+    uint32_t arg   = 0;           // T_JUMP: the number typed
+    uint32_t found = 0;           // the answer: a message number, 0 none
+    uint32_t startedAt = 0;
+    uint32_t spinAt    = 0;
+    uint8_t  spin      = 0;
+    bool     fg        = false;   // the caller is waiting on it
+    bool     shown     = false;   // the spinner is on the line
+    uint16_t call      = 0;       // Session::call: the caller it is for
+};
+Walk g_walk[BBS_MAX_NODES + 2];
+uint8_t g_walkNext = 0;           // round robin: whose slice comes first
+
+// ---------------------------------------------------------------------------
+// Read pointers, in RAM for the forum a caller is in (1.1.2). Written to the
+// card when they leave the forum, the forums or the board, not at every
+// message read: that was a card write per message on the reading path.
+// ---------------------------------------------------------------------------
+Ptr      g_ptr[BBS_MAX_NODES + 2];
+uint8_t  g_ptrForum[BBS_MAX_NODES + 2];   // 0xFF: none loaded (set in start)
+bool     g_ptrDirty[BBS_MAX_NODES + 2] = {};
+uint32_t g_ptrUser[BBS_MAX_NODES + 2]  = {};
+// The call it was loaded for (code review, 1.1.2): a caller who left the
+// forums without leave() (a ring answered from inside) keeps their pointer
+// in the slot, and the next caller on that node must not read from it.
+uint16_t g_ptrCall[BBS_MAX_NODES + 2]  = {};
+
+void ptrFlush(uint8_t sl) {
+    if (g_ptrDirty[sl] && g_ptrForum[sl] != 0xFF && g_ptrUser[sl])
+        writePtr(g_ptrUser[sl], g_ptrForum[sl], g_ptr[sl]);
+    g_ptrDirty[sl] = false;
+}
+
+void ptrForget(uint8_t sl) {
+    ptrFlush(sl);
+    g_ptrForum[sl] = 0xFF;
+    g_ptrUser[sl]  = 0;
+}
+
+// ptrFor: this caller's pointer for this forum, loaded from the card when it
+// is not the one in RAM (the one that was is written first, if it changed).
+Ptr& ptrFor(const Session& s, uint8_t forum) {
+    uint8_t sl = slotOf(s);
+    if (g_ptrForum[sl] != forum || g_ptrCall[sl] != s.call) {
+        ptrFlush(sl);                          // the previous caller's, under their own id
+        g_ptrUser[sl]  = callerId(s);
+        g_ptrForum[sl] = forum;
+        g_ptrCall[sl]  = s.call;
+        readPtr(g_ptrUser[sl], forum, g_ptr[sl]);
+    }
+    return g_ptr[sl];
+}
+
+void ptrSeen(const Session& s, uint8_t forum, uint32_t n) {
+    Ptr& p = ptrFor(s, forum);
+    markSeen(p, n);
+    g_ptrDirty[slotOf(s)] = true;
+}
+
+void walkResetAll() {
+    memset(g_ptrForum, 0xFF, sizeof(g_ptrForum));
+    memset(g_ptrDirty, 0, sizeof(g_ptrDirty));
+    for (auto& w : g_walk) w = Walk();
+}
+
+void walkFlushAll() {
+    for (uint8_t sl = 0; sl < BBS_MAX_NODES + 2; ++sl) { ptrFlush(sl); g_walk[sl] = Walk(); }
+}
+
+// ---------------------------------------------------------------------------
+// Starting and stopping a walk.
+// ---------------------------------------------------------------------------
+void walkStop(uint8_t sl) {
+    g_walk[sl] = Walk();
+}
+
+bool walking(uint8_t sl) { return g_walk[sl].kind != W_NONE; }
+
+// firstForum: the lowest forum in a mask, 0xFF for none.
+uint8_t firstForum(uint16_t mask) {
+    for (uint8_t i = 0; i < kMaxForums; ++i) if (mask & (1u << i)) return i;
+    return 0xFF;
+}
+
+// walkForum: aim the walk at the forum in hand, for its kind.
+void walkAim(const Session& s, Walk& w) {
+    const uint8_t f = w.forum;
+    if (f == 0xFF) return;
+    const Ptr& p = ptrFor(s, f);
+    const uint32_t newest = g_forum[f].newest;
+    switch (w.kind) {
+        case W_ANY:
+            w.pos = p.mark + 1;
+            w.end = newest;
+            break;
+        case W_COUNT: {
+            w.acc = 0;
+            uint32_t n0 = p.mark + 1;
+            if (newest > kScanMax && n0 < newest - kScanMax) n0 = newest - kScanMax;
+            w.pos = n0;
+            w.end = newest;
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+void walkBegin(Session& s, uint8_t kind, uint8_t then, uint8_t forum, bool fg) {
+    uint8_t sl = slotOf(s);
+    Walk& w = g_walk[sl];
+    w = Walk();
+    w.kind  = kind;
+    w.then  = then;
+    w.forum = forum;
+    w.fg    = fg;
+    w.call  = s.call;
+    w.startedAt = plat::millis();
+    w.spinAt    = w.startedAt + kSpinAfter;
+}
+
+// walkScan: the W_SCAN walk, the table reset for this caller as it starts.
+void walkScanBegin(Session& s, uint8_t forum, uint8_t then) {
+    walkBegin(s, W_SCAN, then, forum, true);
+    Walk& w = g_walk[slotOf(s)];
+    // Not from under another caller's fill: the slice takes the table once
+    // theirs is done (see W_SCAN in walkSlice).
+    const uint8_t o = claims::owner(claims::Res::Subjects);
+    if (!(o != 0xFF && o != slotOf(s) && o < BBS_MAX_NODES + 2 && g_walk[o].kind == W_SCAN))
+        scanReset(forum, slotOf(s));
+    ptrFor(s, forum);
+    w.pos = g_forum[forum].newest;
+    w.end = w.pos > kScanMax ? w.pos - kScanMax : 1;
+}
+
+// ---------------------------------------------------------------------------
+// One slice of a walk: up to `budget` records read, the index opened once.
+// True when the walk has its answer.
+// ---------------------------------------------------------------------------
+bool walkSlice(Session& s, Walk& w, uint16_t& budget) {
+    uint8_t sl = slotOf(s);
+    for (;;) {
+        // The forums walked one after another (W_ANY, W_COUNT).
+        if (w.kind == W_ANY || w.kind == W_COUNT) {
+            if (w.forum == 0xFF) {
+                if (firstForum(w.mask) == 0xFF) return true;   // all walked
+                // Another forum's read pointer is a read of the card too:
+                // counted against the slice, so sixteen forums are not
+                // sixteen opens in one pass.
+                if (budget < kPtrCost) return false;
+                budget = static_cast<uint16_t>(budget - kPtrCost);
+                w.forum = firstForum(w.mask);
+                w.mask = static_cast<uint16_t>(w.mask & ~(1u << w.forum));
+                // Exact without reading when nothing was ever removed: the
+                // header's live count is its highest number (liveUnread's rule).
+                if (w.kind == W_COUNT && g_forum[w.forum].total >= g_forum[w.forum].newest) {
+                    setUnread(sl, w.forum, unreadUpTo(ptrFor(s, w.forum), g_forum[w.forum].newest));
+                    w.forum = 0xFF;
+                    continue;
+                }
+                walkAim(s, w);
+            }
+        }
+        if (!budget) return false;
+
+        const uint8_t f = w.forum;
+        const Ptr& p = ptrFor(s, f);
+        char path[128];
+        indexPath(f, path, sizeof(path));
+        FILE* fh = nullptr;
+        bool done = false;
+        uint16_t read = 0;
+        auto rec = [&](uint32_t n, MsgRec& m) -> bool {
+            if (!fh) {
+                fh = disk::open(path, "rb");
+                if (!fh) return false;
+            }
+            char r[kRec];
+            if (fseek(fh, static_cast<long>(n) * kRec, SEEK_SET) != 0 || fread(r, 1, kRec, fh) != kRec)
+                return false;
+            parseRec(r, m);
+            ++read;
+            return m.num == n;
+        };
+
+        switch (w.kind) {
+            case W_SUBJECT:
+            case W_UNREAD:
+            case W_ANY: {
+                const bool unread = w.kind != W_SUBJECT;
+                while (w.pos <= w.end) {
+                    if (unread && seen(p, w.pos)) { ++w.pos; continue; }    // no read: no cost
+                    if (read >= budget || read >= kSlice) break;
+                    MsgRec m;
+                    const uint32_t n = w.pos++;
+                    if (!rec(n, m) || !m.live) {
+                        if (!fh) { w.pos = w.end + 1; break; }              // no index: nothing here
+                        continue;
+                    }
+                    if (w.subject && m.hash != w.subject) continue;
+                    w.found = n;
+                    done = true;
+                    break;
+                }
+                if (!done && w.pos > w.end) {
+                    if (w.kind == W_ANY) { w.forum = 0xFF; if (fh) fclose(fh); budget = static_cast<uint16_t>(budget - read); continue; }
+                    done = true;
+                }
+                break;
+            }
+            case W_COUNT: {
+                while (w.pos <= w.end) {
+                    if (seen(p, w.pos)) { ++w.pos; continue; }
+                    if (read >= budget || read >= kSlice) break;
+                    MsgRec m;
+                    const uint32_t n = w.pos++;
+                    if (rec(n, m) && m.live) ++w.acc;
+                    else if (!fh) { w.pos = w.end + 1; break; }
+                }
+                if (w.pos > w.end) {
+                    setUnread(sl, f, w.acc);
+                    w.forum = 0xFF;
+                    if (fh) fclose(fh);
+                    budget = static_cast<uint16_t>(budget > read ? budget - read : 0);
+                    continue;                                               // the next forum
+                }
+                break;
+            }
+            case W_SCAN: {
+                // Backward from the newest, as scanSubjects always did: the
+                // newest subjects are what a caller cares about, and stopping
+                // early leaves them rather than the oldest. The table is the
+                // board's one shared cache: if somebody else took it since
+                // this scan began, it starts again for this caller.
+                if (!claims::holds(claims::Res::Subjects, sl) || g_subjFor != f) {
+                    // Another caller's fill still under way is waited for,
+                    // not taken: two fills spread over passes took the table
+                    // from each other every slice and neither ever ended
+                    // (code review, 1.1.2). A cache is a lock while it fills.
+                    const uint8_t o = claims::owner(claims::Res::Subjects);
+                    if (o != 0xFF && o != sl && o < BBS_MAX_NODES + 2 && g_walk[o].kind == W_SCAN) break;
+                    scanReset(f, sl);
+                    w.pos = g_forum[f].newest;
+                    w.end = w.pos > kScanMax ? w.pos - kScanMax : 1;
+                }
+                while (w.pos >= w.end && w.pos >= 1) {
+                    if (read >= budget || read >= kSlice) break;
+                    MsgRec m;
+                    const uint32_t n = w.pos;
+                    const bool ok = rec(n, m);
+                    if (w.pos == 1) { w.pos = 0; }                           // uint32 would wrap below 1
+                    else            { --w.pos; }
+                    if (!ok) { if (!fh) { w.pos = 0; break; } continue; }
+                    if (!m.live) continue;
+                    scanAdd(m, n, p);
+                }
+                if (w.pos < w.end || w.pos == 0) { scanDone(); done = true; }
+                break;
+            }
+            default:
+                done = true;
+                break;
+        }
+        if (fh) fclose(fh);
+        budget = static_cast<uint16_t>(budget > read ? budget - read : 0);
+        return done;
+    }
 }
 
 // rows: one row per pass for whichever list this caller is looking at.
@@ -1440,15 +1701,23 @@ void drawForums(Bbs& b, Session& s) {
     b.startPluginList(s, g_index);
 }
 
+void walkRun(Bbs& b, Session& s);
+
 void drawSubjects(Bbs& b, Session& s, uint8_t forum) {
     uint8_t sl = slotIdx(s);
     g_view[sl] = View::Subjects;
     g_at[sl]   = forum;
     g_subj[sl] = 0;
+    // The table is a walk now (1.1.2): drawn when it is filled, straight
+    // away for a forum that fits one slice.
+    walkScanBegin(s, forum, T_DRAWSUBJ);
+    walkRun(b, s);
+}
 
-    Ptr p;
-    readPtr(callerId(s), forum, p);
-    scanSubjects(forum, p, sl);
+// drawSubjectsNow: the list, once the scan walk has filled the table.
+void drawSubjectsNow(Bbs& b, Session& s) {
+    uint8_t sl = slotIdx(s);
+    const uint8_t forum = g_at[sl];
 
     char right[24];
     uint32_t unread = 0;
@@ -1550,10 +1819,8 @@ void showMessage(Bbs& b, Session& s, uint8_t forum, uint32_t n) {
     clk::fmtEpoch(when, sizeof(when), "%d %b %H:%M", m.epoch);
 
     // Read the pointer BEFORE marking, so the header can say whether this
-    // was new to this caller.
-    Ptr ptr;
-    readPtr(callerId(s), forum, ptr);
-    bool fresh = !seen(ptr, n);
+    // was new to this caller. The one in RAM (1.1.2).
+    bool fresh = !seen(ptrFor(s, forum), n);
 
     // Rob's layout:
     //
@@ -1622,16 +1889,18 @@ void showMessage(Bbs& b, Session& s, uint8_t forum, uint32_t n) {
     s.term.text(s.tl, "--> EOM <--");
     s.term.nl(s.tl);
 
-    markSeen(ptr, n);
-    writePtr(callerId(s), forum, ptr);
+    // Marked in RAM, written to the card when the caller leaves the forum
+    // (1.1.2): it was a card write for every message read.
+    ptrSeen(s, forum, n);
 
     // The forum's unread count follows what this caller has actually read,
     // so the list they come back to agrees with what just happened.
-    setUnread(sl, forum, liveUnread(forum, ptr));
+    unreadNow(s, forum);
     prompt(b, s);
 }
 
-// readNext: Enter. The whole fast path.
+// readNext: Enter. The whole fast path, as walks (1.1.2); the answer is
+// acted on in walkFinish.
 void readNext(Bbs& b, Session& s) {
     uint8_t sl = slotIdx(s);
     uint8_t forum = g_at[sl];
@@ -1642,49 +1911,29 @@ void readNext(Bbs& b, Session& s) {
     if (g_view[sl] == View::Forums || forum == 0xFF) {
         uint8_t vis[kMaxForums];
         uint8_t n = visibleForums(s, vis, kMaxForums);
-        for (uint8_t k = 0; k < n; ++k) {
-            Ptr p;
-            readPtr(callerId(s), vis[k], p);
-            uint32_t next = nextUnread(vis[k], p, 0, 0);
-            if (next) { showMessage(b, s, vis[k], next); return; }
-        }
-        notice(s, g_cMark, "--> Nothing new. # - Open a forum to browse it.");
-        noticeDone(b, s);
+        uint16_t mask = 0;
+        for (uint8_t k = 0; k < n; ++k) mask = static_cast<uint16_t>(mask | (1u << vis[k]));
+        walkBegin(s, W_ANY, T_SHOW, 0xFF, true);
+        g_walk[sl].mask = mask;
+        walkRun(b, s);
         return;
     }
 
-    Ptr p;
-    readPtr(callerId(s), forum, p);
     uint32_t from = (g_view[sl] == View::Reading) ? g_shown[sl] : 0;
-
     // Inside a conversation, walk it in order whether or not it has been
     // read. Only the forum-level Enter is about what is new.
     if (g_subj[sl]) {
-        uint32_t next = nextInSubject(forum, g_subj[sl], from);
-        if (next) { showMessage(b, s, forum, next); return; }
-        // The end of the conversation. Roll on to whatever else is unread in
-        // the forum rather than dead-ending with nothing but Q.
-        g_subj[sl] = 0;
-        uint32_t on = nextUnread(forum, p, 0, 0);
-        notice(s, g_cMark, on ? "--> That is the end of that subject."
-                              : "--> That is the end of that subject. Nothing else new here.");
-        if (on) { showMessage(b, s, forum, on); return; }
-        noticeDone(b, s);
+        walkBegin(s, W_SUBJECT, T_SHOW, forum, true);
+        g_walk[sl].subject = g_subj[sl];
+        g_walk[sl].pos     = from + 1;
+        g_walk[sl].end     = g_forum[forum].newest;
+        walkRun(b, s);
         return;
     }
-
-    uint32_t next = nextUnread(forum, p, g_subj[sl], from);
-    if (!next && g_subj[sl]) {
-        // A subject read to its end rolls on to the rest of the forum,
-        // rather than dead-ending with no way onward but Q.
-        g_subj[sl] = 0;
-        next = nextUnread(forum, p, 0, 0);
-        if (next) notice(s, g_cMark, "--> That is the end of that subject.");
-    }
-    if (next) { showMessage(b, s, forum, next); return; }
-
-    notice(s, g_cMark, "--> Nothing new here. L lists the subjects, # - Jump to one.");
-    noticeDone(b, s);
+    walkBegin(s, W_UNREAD, T_SHOW, forum, true);
+    g_walk[sl].pos = from ? from + 1 : ptrFor(s, forum).mark + 1;
+    g_walk[sl].end = g_forum[forum].newest;
+    walkRun(b, s);
 }
 
 // ===========================================================================
@@ -1842,11 +2091,8 @@ void finishPost(Bbs& b, Session& s, const char* body) {
         say(s, Color::LightRed, "--> That did not save. The card may be full.");
     } else {
         // The poster has read their own message by definition.
-        Ptr p;
-        readPtr(callerId(s), forum, p);
-        markSeen(p, m.num);
-        writePtr(callerId(s), forum, p);
-        setUnread(sl, forum, liveUnread(forum, p));
+        ptrSeen(s, forum, m.num);
+        unreadNow(s, forum);
 
         char msg[80];
         snprintf(msg, sizeof(msg), "--> Posted as message %lu.",
@@ -1918,6 +2164,8 @@ void listDone(Session& s, bool aborted) {
 
 void leave(Bbs& b, Session& s) {
     uint8_t sl = slotIdx(s);
+    walkStop(sl);
+    ptrForget(sl);                      // the read pointer, to the card (1.1.2)
     g_view[sl] = View::Forums;
     g_at[sl]   = 0xFF;
     s.term.nl(s.tl);
@@ -1996,9 +2244,7 @@ void removeShown(Bbs& b, Session& s) {
 
     // The subject table describes the forum as it was: stale for everybody.
     g_subjFor = 0xFF;
-    Ptr p;
-    readPtr(callerId(s), forum, p);
-    setUnread(sl, forum, liveUnread(forum, p));
+    unreadNow(s, forum);
 
     char msg[48];
     snprintf(msg, sizeof(msg), "--> Message #%lu removed.", static_cast<unsigned long>(n));
@@ -2023,12 +2269,20 @@ void jumpTo(Bbs& b, Session& s, uint32_t num) {
         return;
     }
     // The table may belong to another caller by now. Rescan rather than
-    // open whatever sits in somebody else's forum.
+    // open whatever sits in somebody else's forum: a walk (1.1.2), with the
+    // number carried to its end.
     if (!claims::holds(claims::Res::Subjects, sl) || g_subjFor != g_at[sl]) {
-        Ptr rp;
-        readPtr(callerId(s), g_at[sl], rp);
-        scanSubjects(g_at[sl], rp, sl);
+        walkScanBegin(s, g_at[sl], T_JUMP);
+        g_walk[sl].arg = num;
+        walkRun(b, s);
+        return;
     }
+    jumpFound(b, s, num);
+}
+
+// jumpFound: the subject with this number in the table, opened.
+void jumpFound(Bbs& b, Session& s, uint32_t num) {
+    uint8_t sl = slotIdx(s);
     for (uint8_t k = 0; k < g_subjRows; ++k) {
         if (g_subjRow[k].first == num) {
             g_subj[sl]  = g_subjRow[k].hash;
@@ -2039,6 +2293,113 @@ void jumpTo(Bbs& b, Session& s, uint32_t num) {
     }
     notice(s, g_cMark, "--> No subject with that number.");
     noticeDone(b, s);
+}
+
+// ---------------------------------------------------------------------------
+// walkFinish: a walk has its answer; do what it was for.
+// ---------------------------------------------------------------------------
+void walkFinish(Bbs& b, Session& s) {
+    uint8_t sl = slotOf(s);
+    Walk w = g_walk[sl];
+    walkStop(sl);
+    if (w.shown) s.term.eraseBack(s.tl, 1);            // the spinner off the line
+    switch (w.then) {
+        case T_SHOW:
+            if (w.found) { showMessage(b, s, w.kind == W_ANY ? w.forum : g_at[sl], w.found); return; }
+            if (w.kind == W_ANY) {
+                notice(s, g_cMark, "--> Nothing new. # - Open a forum to browse it.");
+                noticeDone(b, s);
+                return;
+            }
+            if (w.kind == W_SUBJECT) {
+                // The end of the conversation. Roll on to whatever else is
+                // unread in the forum rather than dead-ending with only Q.
+                g_subj[sl] = 0;
+                walkBegin(s, W_UNREAD, T_ENDSUBJ, g_at[sl], true);
+                g_walk[sl].pos = ptrFor(s, g_at[sl]).mark + 1;
+                g_walk[sl].end = g_forum[g_at[sl]].newest;
+                walkRun(b, s);
+                return;
+            }
+            notice(s, g_cMark, "--> Nothing new here. L lists the subjects, # - Jump to one.");
+            noticeDone(b, s);
+            return;
+        case T_ENDSUBJ:
+            notice(s, g_cMark, w.found ? "--> That is the end of that subject."
+                                       : "--> That is the end of that subject. Nothing else new here.");
+            if (w.found) { showMessage(b, s, g_at[sl], w.found); return; }
+            noticeDone(b, s);
+            return;
+        case T_DRAWSUBJ:
+            drawSubjectsNow(b, s);
+            return;
+        case T_JUMP:
+            jumpFound(b, s, w.arg);
+            return;
+        case T_DRAWFORUMS:
+            drawForums(b, s);
+            return;
+        default:
+            return;                                     // a count, in the background
+    }
+}
+
+// walkRun: a slice now, for the caller who just asked, so a walk that fits
+// one finishes before the pass is out and Enter feels the same as ever.
+void walkRun(Bbs& b, Session& s) {
+    uint16_t budget = kSlice;
+    Walk& w = g_walk[slotOf(s)];
+    if (w.kind != W_NONE && walkSlice(s, w, budget)) walkFinish(b, s);
+}
+
+// unreadNow: this caller's count for a forum, after they read, posted or
+// removed. Exact at once when nothing was ever removed from it; otherwise
+// that figure now and the count walked in the background, which puts the
+// exact one in when it is done.
+void unreadNow(Session& s, uint8_t forum) {
+    uint8_t sl = slotOf(s);
+    setUnread(sl, forum, unreadUpTo(ptrFor(s, forum), g_forum[forum].newest));
+    if (g_forum[forum].total >= g_forum[forum].newest) return;
+    if (walking(sl)) return;                            // one walk at a time; the next count corrects it
+    walkBegin(s, W_COUNT, T_NONE, 0xFF, false);
+    g_walk[sl].mask = static_cast<uint16_t>(1u << forum);
+}
+
+// walkSession: the caller a walk belongs to, or null when they have gone.
+Session* walkSession(uint8_t sl) {
+    Session* found = nullptr;
+    struct Ctx { uint8_t sl; uint16_t call; Session** out; } c{ sl, g_walk[sl].call, &found };
+    Bbs::instance().eachSession([](void* ctx, Session& x) {
+        Ctx* k = static_cast<Ctx*>(ctx);
+        if (slotOf(x) == k->sl && x.call == k->call && x.st != SState::Free) *k->out = &x;
+    }, &c);
+    return found;
+}
+
+// tick: the walks, a slice each, round robin, at most kTickBudget records
+// for everybody in one pass (PF_FAST: every 20 ms).
+void tick(uint32_t now) {
+    if (!g_bbs) return;
+    uint16_t budget = kTickBudget;
+    constexpr uint8_t kN = BBS_MAX_NODES + 2;
+    for (uint8_t k = 0; k < kN && budget; ++k) {
+        const uint8_t sl = static_cast<uint8_t>((g_walkNext + k) % kN);
+        Walk& w = g_walk[sl];
+        if (w.kind == W_NONE) continue;
+        Session* s = walkSession(sl);
+        if (!s || !g_bbs->owns(*s, g_index)) { walkStop(sl); continue; }
+        if (walkSlice(*s, w, budget)) { walkFinish(*g_bbs, *s); continue; }
+        // Still going: say so on the line after a moment, as every other
+        // wait on the board does.
+        if (w.fg && static_cast<int32_t>(now - w.spinAt) >= 0 && s->tl.empty()) {
+            if (!w.shown) { s->term.color(s->tl, Color::Yellow); s->term.ch(s->tl, ' '); w.shown = true; }
+            s->term.left(s->tl, 1);
+            s->term.color(s->tl, Color::Yellow);
+            fx::spinFrame(s->term, s->tl, fx::Spin::Line, ++w.spin);
+            w.spinAt = now + 150;
+        }
+    }
+    g_walkNext = static_cast<uint8_t>((g_walkNext + 1) % kN);
 }
 
 // ---------------------------------------------------------------------------
@@ -2095,6 +2456,19 @@ void onKey(Session& s, int key, uint32_t) {
     if (!g_bbs) return;
     Bbs& b = *g_bbs;
     uint8_t sl = slotIdx(s);
+
+    // A walk the caller is waiting on (1.1.2): ESC or Q stops it; anything
+    // else waits, as keys do at every other spinner on the board.
+    if (walking(sl) && g_walk[sl].fg) {
+        if (key == KEY_ESC || key == KEY_BREAK || key == 'q' || key == 'Q') {
+            if (g_walk[sl].shown) s.term.eraseBack(s.tl, 1);
+            walkStop(sl);
+            notice(s, g_cMark, "--> Stopped.");
+            noticeDone(b, s);
+        }
+        return;
+    }
+    if (walking(sl)) walkStop(sl);          // a count in the background: the key wins
 
     // A number being typed at the prompt. Digits, Backspace, Enter and ESC
     // mean something; a letter is ignored rather than taken as a command,
@@ -2354,17 +2728,21 @@ void enter(Bbs& b, Session& s) {
     // rather than held board-wide. A forum's count in the list and the sum
     // of its subjects' counts are the same number computed the same way,
     // because a forum claiming 12 whose subjects sum to 9 reads as broken.
-    for (uint8_t i = 0; i < g_forums; ++i) {
-        if (!g_forum[i].key[0]) continue;
-        Ptr p;
-        readPtr(callerId(s), i, p);
-        setUnread(sl, i, liveUnread(i, p));
-    }
+    //
+    // A walk since 1.1.2: exact arithmetic for a forum nothing was ever
+    // removed from, a walk of the unseen records only for one that had a
+    // removal, a slice a pass, and the list drawn when the counts are in.
+    walkStop(sl);
+    uint16_t mask = 0;
+    for (uint8_t i = 0; i < g_forums; ++i)
+        if (g_forum[i].key[0]) mask = static_cast<uint16_t>(mask | (1u << i));
 
     s.term.reset(s.tl);
     s.term.cls(s.tl);
     if (b.showScreen(s, "forums")) s.term.nl(s.tl);
-    drawForums(b, s);
+    walkBegin(s, W_COUNT, T_DRAWFORUMS, 0xFF, true);
+    g_walk[sl].mask = mask;
+    walkRun(b, s);
 }
 
 void onLogoff(Session& s) {
@@ -2387,6 +2765,9 @@ void onLogoff(Session& s) {
     s.compose[0] = '\0';
     g_bodyLen[sl]  = 0;
     g_bodyRows[sl] = 0;
+    // The read pointer in RAM goes to the card, and the walk stops (1.1.2).
+    walkStop(sl);
+    ptrForget(sl);
 }
 
 // FORUMS SCAN: what the board thinks is on the card.
@@ -2515,13 +2896,13 @@ const Plugin kForumsPlugin = {
     "0.1",
     0,                        // heapBytes
     64u * 1024u,              // storageBytes: room for an index to grow into
-    PF_CORE | PF_SD,          // not PF_ON: a sysop turns the boards on
+    PF_CORE | PF_SD | PF_FAST, // not PF_ON: a sysop turns the boards on; PF_FAST for the walks (1.1.2)
     PlugLevel::All,           // read
     PlugLevel::Users,         // write: posting wants an account
     PlugLevel::Co1,           // admin
     start,
     stop,
-    nullptr,                  // tick
+    tick,                     // the walks, a slice a pass (1.1.2)
     nullptr,                  // onConnect
     nullptr,                  // onLogin
     onLogoff,

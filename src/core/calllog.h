@@ -45,6 +45,10 @@
 #include <cstdint>
 #include "../config.h"
 
+// mirrorTick (1.1.2): the card copy of the calls, written on the background
+// runner from a small queue. Once a pass from Bbs::tick.
+namespace calllog { void mirrorTick(); }
+
 struct CallRec {
     char     user[BBS_USER_MAX + 1] = {};
     char     ip[16]  = {};
