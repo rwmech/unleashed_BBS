@@ -63,6 +63,7 @@
  */
 
 #include "info.h"
+#include "../core/disk.h"              // fopen and opendir that tell the drive light (1.1.1)
 #include "../config.h"
 #include "../core/bbs.h"
 #include "../core/bbs_util.h"
@@ -133,7 +134,7 @@ uint16_t g_textMask = 0;
 bool fileHasText(uint8_t n) {
     char p[96];
     if (!readPage(n, p, sizeof(p))) return false;
-    FILE* f = fopen(p, "rb");
+    FILE* f = disk::open(p, "rb");
     if (!f) return false;
     int c = fgetc(f);
     fclose(f);
@@ -174,7 +175,7 @@ uint16_t load(Session& s, uint8_t n) {
     s.compose[0] = '\0';
     char p[96];
     if (!readPage(n, p, sizeof(p))) return 0;
-    FILE* f = fopen(p, "rb");
+    FILE* f = disk::open(p, "rb");
     if (!f) return 0;
     size_t got = fread(s.compose, 1, BBS_COMPOSE_MAX, f);
     fclose(f);
@@ -416,7 +417,7 @@ void finish(Session& s, bool save) {
             // board rewrites: a power cut leaves the old page or the new
             // one, never half of each.
             snprintf(tmp, sizeof(tmp), "%s.tmp", path);
-            FILE* f = fopen(tmp, "wb");
+            FILE* f = disk::open(tmp, "wb");
             ok = f && fwrite(s.compose, 1, g_body.len, f) == g_body.len;
             if (f && fclose(f) != 0) ok = false;
             // Renamed over the old page first (1.1.0): userdata is LittleFS,

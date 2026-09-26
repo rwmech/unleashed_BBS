@@ -88,6 +88,7 @@
  * ===========================================================================
  */
 #include "../core/bbs.h"
+#include "../core/disk.h"              // fopen and opendir that tell the drive light (1.1.1)
 #include "../core/compose.h"
 #include "../core/codes.h"
 #include "../core/helptext.h"
@@ -204,22 +205,32 @@ char     g_room[20] = "Main";
 
 // Room colours. Bright enough to tell the parts of a line apart at a
 // glance, quiet enough to read for an hour. All seven are config keys.
-Color    g_cNode   = Color::Cyan;          // #2
-Color    g_cPunct  = Color::DarkGrey;      // : and the rank bracket
-Color    g_cHandle = Color::LightGreen;    // Daytona
-Color    g_cText   = Color::White;         // what they said
-Color    g_cOld    = Color::DarkGrey;      // history, on the way in
-Color    g_cNotice = Color::Yellow;        // *** joined, left, kicked
-Color    g_cRoom   = Color::Cyan;          // banner, /s and the like
-Color    g_cPriv   = Color::Purple;        // a line meant for one caller
+constexpr Color kDefNode = Color::Cyan;
+Color    g_cNode   = kDefNode;          // #2
+constexpr Color kDefPunct = Color::DarkGrey;
+Color    g_cPunct  = kDefPunct;      // : and the rank bracket
+constexpr Color kDefHandle = Color::LightGreen;
+Color    g_cHandle = kDefHandle;    // Daytona
+constexpr Color kDefText = Color::White;
+Color    g_cText   = kDefText;         // what they said
+constexpr Color kDefOld = Color::DarkGrey;
+Color    g_cOld    = kDefOld;      // history, on the way in
+constexpr Color kDefNotice = Color::Yellow;
+Color    g_cNotice = kDefNotice;        // *** joined, left, kicked
+constexpr Color kDefRoom = Color::Cyan;
+Color    g_cRoom   = kDefRoom;          // banner, /s and the like
+constexpr Color kDefPriv = Color::Purple;
+Color    g_cPriv   = kDefPriv;        // a line meant for one caller
 // The P in front of a private line. Bright and separate from g_cPriv on
 // purpose: the marker has to catch the eye in a scrolling room even when
 // the line itself is in a quiet colour, and the two jobs are not the same.
-Color    g_cPmark  = Color::LightRed;
+constexpr Color kDefPmark = Color::LightRed;
+Color    g_cPmark  = kDefPmark;
 // An action line, whole. Rob wants one colour across the lot rather than
 // the node/handle/text split a said line gets, because an action is one
 // sentence about somebody rather than a thing they typed.
-Color    g_cAction = Color::Yellow;
+constexpr Color kDefAction = Color::Yellow;
+Color    g_cAction = kDefAction;
 
 // Actions are rate limited separately from ordinary lines. The room's token
 // bucket is about flooding it with text; this is about the thing people
@@ -231,7 +242,8 @@ constexpr uint32_t kActWindow = 30000;      // ms
 uint8_t  g_actCount[BBS_MAX_NODES + 2] = {};
 uint32_t g_actSince[BBS_MAX_NODES + 2] = {};
 
-Color    g_cMark   = Color::Cyan;          // the --> on a line from the board
+constexpr Color kDefMark = Color::Cyan;
+Color    g_cMark   = kDefMark;          // the --> on a line from the board
 
 // kMark: what the board says, versus what a person said.
 //
@@ -357,7 +369,22 @@ char     g_away[kSlots][kAwayMax + 1] = {};    // away note, empty when here
 // forgets they are in it says something for one person that they meant for
 // the room, or worse the reverse. The input line carries a visible [>3]
 // while it is on, and leaving the room or the target leaving clears it.
+//
+// Since 1.1.1 it is also the room's private mode (Rob: "/p* ... should just
+// be who you're privately talking to"): while it is on, the caller sees the
+// conversation and what is about the two of them, and the room's other lines
+// are held in the ring (flush, aboutUs). g_privSince is where in the ring the
+// mode began, so ending it can say how many went by, and whether the ring
+// still holds them all. The 1.2.0 sysop chat is this mode, started by an
+// answered ring (converse), not a second one.
 uint8_t  g_sticky[kSlots];
+uint32_t g_privSince[kSlots];
+// kGone: set in g_sticky when the partner has left the room (partnerGone).
+// The mode and the [>n] stay until the caller says what next: their next
+// line is not sent anywhere, and /p* or /p<n>* moves on. Ending it the
+// moment the partner left would put a half-typed private into the room
+// on the next Enter, the accident the marker exists to prevent.
+constexpr uint8_t kGone = 0x80;
 
 // The sysop who answered this caller's ring (1.1.0), 0xFF for none. A room
 // whose write level shuts a caller out (a guest, when write = users) still
@@ -599,6 +626,7 @@ void tag(const Session& s, char* out, size_t n) {
 // a conversation with the sysop (an answered ring, 1.1.0) is the commonest
 // sticky there is.
 NodeStr stickyName(uint8_t to) {
+    to &= kGone - 1;                                  // the node, gone or not (partnerGone)
     if (to == 0) { NodeStr r{}; r.t[0] = 'S'; return r; }
     return nodeNum(to);
 }
@@ -750,22 +778,120 @@ void showLine(Session& s, const char* line, bool old) {
 // after the marker rather than above it. Harmless-looking while stickies
 // were rare; a ring answered by the sysop (1.1.0) starts both callers in
 // one, so it is fixed here rather than at each site.
+// inPrivate: in the room's private mode, talking to one node (g_sticky).
+bool inPrivate(const Session& s) {
+    return g_sticky[slotOf(s)] != 0xFF;
+}
+
+// aboutUs: a room line a caller in private mode is still shown (1.1.1). The
+// board's own lines that name either of the two, by the tag the room writes
+// them with ("*** #3:Daytona) left the room", a vote naming them), and
+// nothing a caller said: a room line from the partner is the room's too.
+// Pages, broadcasts and time warnings never come through the ring (the core
+// lifts the line for them), and privates never go into it, so this is the
+// whole of what the mode filters.
+bool aboutUs(const Session& s, const char* line) {
+    if (!line || line[0] == '#') return false;               // somebody talking
+    char me[8], them[8];
+    snprintf(me, sizeof(me), "#%s:", nodeName(s).t);
+    snprintf(them, sizeof(them), "#%s:", stickyName(g_sticky[slotOf(s)]).t);
+    return strstr(line, me) || strstr(line, them);
+}
+
 void flush(Session& s) {
     if (s.ownerData >= g_seq) return;
     if (s.tl.freeBytes() < 256) return;                      // slow line: next time
+    const bool priv = inPrivate(s);
     while (s.ownerData < g_seq) {
         const char* line = lineAt(s.ownerData);
         ++s.ownerData;
         if (!line) continue;                                 // older than the buffer
         if (squelched(s, line)) continue;                    // hidden by /sq
+        if (priv && !aboutUs(s, line)) continue;             // held: /sh has it
         showLine(s, line, false);
     }
 }
 
+// privateBegin: into the room's private mode with node `with`, or on to
+// another node while in it. The count of what goes by runs from wherever the
+// caller had read the room to, so a line held while they were typing is
+// counted rather than lost. Said once, on the way in, in the room's voice.
+void privateBegin(Session& s, uint8_t with) {
+    const uint8_t slot = slotOf(s);
+    const bool was = inPrivate(s);
+    g_sticky[slot] = with;
+    if (was) return;
+    g_privSince[slot] = s.ownerData;
+    // Rob's words. 49 columns with the marker, so it wraps at a word on a
+    // 40 column screen, under the words rather than under the arrow.
+    sayWrapped(s, g_cPriv, "You won't see other callers while talking directly", true);
+}
+
+// privateEnd: back to the room. What the room said meanwhile is not dumped
+// on the caller: they are told how much there was and that /sh replays it.
+// The ring may not hold it all by now, and then they are told that too,
+// rather than /sh quietly showing less than went by. lead, when given, is
+// said first ("They have left.").
+void privateEnd(Session& s, const char* lead) {
+    const uint8_t slot = slotOf(s);
+    if (!inPrivate(s)) return;
+    flush(s);                                 // anything about the two of them, first
+    uint32_t went = g_seq - g_privSince[slot];
+    uint32_t kept = went < g_histCount ? went : g_histCount;
+    g_sticky[slot]  = 0xFF;
+    s.ownerData     = g_seq;
+    char buf[112];
+    const char* back = lead ? lead : "Back to the room.";
+    if (!went)
+        snprintf(buf, sizeof(buf), "%s", back);
+    else if (kept == went)
+        snprintf(buf, sizeof(buf), "%s %lu room line%s went by: /sh %lu shows %s.", back,
+                 static_cast<unsigned long>(went), went == 1 ? "" : "s",
+                 static_cast<unsigned long>(went), went == 1 ? "it" : "them");
+    else
+        snprintf(buf, sizeof(buf), "%s %lu room lines went by; /sh %lu shows the last %lu.", back,
+                 static_cast<unsigned long>(went), static_cast<unsigned long>(kept),
+                 static_cast<unsigned long>(kept));
+    sayWrapped(s, g_cPriv, buf, true);
+}
+
+// partnerGone: everybody in private mode with node id is told, when id
+// leaves the room. Called after the room has been told, so the leaving line
+// (about their partner, so shown) comes first. The mode stays, marked
+// (kGone), with their half-typed line: a node number can be somebody else's
+// by the next line, and what they type next was meant for one person, so it
+// goes nowhere (the line handler) until they say otherwise.
+void partnerGone(uint8_t id) {
+    Bbs::instance().eachSession([](void* ctx, Session& o) {
+        const uint8_t gone = *static_cast<uint8_t*>(ctx);
+        if (!Bbs::instance().owns(o, g_index) || o.id == gone || g_sticky[slotOf(o)] != gone) return;
+        // Marked for everybody the room has, a caller reading mail in it
+        // too: their node number may be somebody else's before they are
+        // back (code review). Told now only if they are listening; the
+        // rest hear "They have gone" at their next line.
+        if (!listening(o)) {
+            g_sticky[slotOf(o)] = static_cast<uint8_t>(gone | kGone);
+            return;
+        }
+        wipeInput(o);
+        flush(o);                                            // the leaving line itself
+        g_sticky[slotOf(o)] = static_cast<uint8_t>(gone | kGone);
+        tell(o, Color::LightRed, "They have left. /p* goes back to the room.");
+        restoreInput(o);
+    }, &id);
+}
+
 // catchUpEmpty: somebody with nothing typed: take the marker off, print what
-// was said, put the marker back.
+// was said, put the marker back. In private mode, with nothing about the two
+// of them among it, the lines are only counted (flush skips them) and the
+// marker is left alone rather than redrawn for every line the room says.
 void catchUpEmpty(Session& s) {
     if (s.ownerData >= g_seq) return;
+    if (inPrivate(s)) {
+        bool any = false;
+        for (uint32_t q = s.ownerData; q < g_seq && !any; ++q) any = aboutUs(s, lineAt(q));
+        if (!any) { s.ownerData = g_seq; return; }
+    }
     wipeInput(s);
     flush(s);
     chatPrompt(s);
@@ -822,7 +948,7 @@ void loadBans() {
     memset(g_bans, 0, sizeof(g_bans));
     char path[96];
     if (!plugins::path(g_index, "bans", path, sizeof(path))) return;
-    FILE* f = fopen(path, "r");
+    FILE* f = disk::open(path, "r");
     if (!f) return;
     char line[BBS_USER_MAX + 4];
     uint8_t n = 0;
@@ -837,7 +963,7 @@ void loadBans() {
 void saveBans() {
     char path[96];
     if (!plugins::path(g_index, "bans", path, sizeof(path))) return;
-    FILE* f = fopen(path, "w");
+    FILE* f = disk::open(path, "w");
     if (!f) return;
     for (uint8_t i = 0; i < kBanMax; ++i)
         if (g_bans[i][0]) fprintf(f, "%s\n", g_bans[i]);
@@ -893,7 +1019,7 @@ void mailIndex() {
     memset(g_mailFl, 0, sizeof(g_mailFl));
     char path[96];
     if (!mailReadPath(path, sizeof(path))) return;
-    FILE* f = fopen(path, "rb");
+    FILE* f = disk::open(path, "rb");
     if (!f) return;
     MailRec r;
     uint8_t n = 0;
@@ -999,9 +1125,9 @@ bool mailRewrite(int16_t dropIdx, const MailRec* add, uint32_t nowEpoch,
     if (!mailPath(path, sizeof(path))) return false;
     snprintf(tmp, sizeof(tmp), "%s.tmp", path);
 
-    FILE* out = fopen(tmp, "wb");
+    FILE* out = disk::open(tmp, "wb");
     if (!out) return false;
-    FILE* in = fopen(path, "rb");
+    FILE* in = disk::open(path, "rb");
     uint8_t kept = 0;
     if (in) {
         MailRec r;
@@ -1117,7 +1243,7 @@ void mailDone(Session& s) {
 bool mailRecordAt(uint8_t slot, MailRec& r) {
     char path[96];
     if (!mailReadPath(path, sizeof(path))) return false;
-    FILE* f = fopen(path, "rb");
+    FILE* f = disk::open(path, "rb");
     if (!f) return false;
     bool found = false;
     int16_t seen = 0;
@@ -1344,7 +1470,7 @@ void mailBoxDraw(Session& s, bool clear) {
         bool have = mailReadPath(path, sizeof(path));
         uint8_t fromW = 1;
         if (have) {
-            FILE* f = fopen(path, "rb");
+            FILE* f = disk::open(path, "rb");
             MailRec r;
             for (int16_t seen = 0, got = 0; f && got < n && fread(&r, sizeof(r), 1, f) == 1;) {
                 if (!r.to[0]) continue;
@@ -1358,7 +1484,7 @@ void mailBoxDraw(Session& s, bool clear) {
         uint32_t t1 = plat::micros();
         uint8_t w = b.rowWidth(s);
         int previewW = static_cast<int>(w) - 1 - 2 - 1 - fromW - 1 - 6 - 2;
-        FILE* f = have ? fopen(path, "rb") : nullptr;
+        FILE* f = have ? disk::open(path, "rb") : nullptr;
         int16_t seen = 0;
         for (uint8_t i = 0; i < n; ++i) {
             MailRec r;
@@ -1665,8 +1791,10 @@ void leave(Session& s, const char* why) {
     tag(s, me, sizeof(me));
     snprintf(line, sizeof(line), "*** %.28s %s", me, why);
     wipeInput(s);                                            // drop the chat input line
+    g_sticky[slotOf(s)] = 0xFF;                              // their own private mode goes with them
     bbs.release(s);                                          // the prompt starts its own line
     post(line, &s);
+    partnerGone(s.id);                                       // and anyone talking only to them is let back
 }
 
 void roster(Session& s);          // defined with /s, used on the way in
@@ -1687,7 +1815,7 @@ void join(Bbs& bbs, Session& s, uint8_t stick = 0xFF, const char* say = nullptr)
     if (!bbs.own(s, g_index)) { bbs.prompt(s); return; }
     g_squelch[slotOf(s)] = 0;                                // a fresh visit hides nobody
     g_away[slotOf(s)][0] = '\0';
-    g_sticky[slotOf(s)]  = stick;                            // and talks to the room, or to one
+    g_sticky[slotOf(s)]  = 0xFF;                             // the room, until privateBegin below
     g_answered[slotOf(s)] = stick;
     bbs.setDoing(s, "CHAT");
 
@@ -1726,6 +1854,9 @@ void join(Bbs& bbs, Session& s, uint8_t stick = 0xFF, const char* say = nullptr)
     // character and an empty line looks like a board that has stopped.
     if (s.landing) tell(s, g_cRoom, "Welcome to the chat.");
     if (say) sayWrapped(s, Color::Yellow, say, true);
+    // Put here to talk to one node (an answered ring): the room's private
+    // mode from the first line, as /p<n>* would make it (1.1.1).
+    if (stick != 0xFF) privateBegin(s, stick);
 
     armInput(s);
 
@@ -1954,9 +2085,11 @@ void kickFromRoom(Session& target, const char* by, const char* why) {
         target.term.text(target.tl, why);
         target.term.nl(target.tl);
     }
+    g_sticky[slotOf(target)] = 0xFF;                   // as leave() does (1.1.1)
     Bbs::instance().release(target);
     snprintf(line, sizeof(line), "*** %.28s was removed by %.16s", who, by);
     notice(line, &target);
+    partnerGone(target.id);
     plat::log("chat: %s removed %s%s%s", by, target.user, why && *why ? " - " : "", why ? why : "");
 }
 
@@ -2250,18 +2383,25 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
         if (starOnly || starNode) {
             wipeInput(s);
             if (starOnly) {
-                g_sticky[slotOf(s)] = 0xFF;
-                tell(s, g_cPriv, "Back to the room.");
+                // Out of private mode (1.1.1): what the room said meanwhile
+                // is counted, not dumped.
+                if (inPrivate(s)) privateEnd(s, nullptr);
+                else              tell(s, g_cPriv, "Back to the room.");
             } else {
                 Session* to = inRoom(sid);
                 if (!to || to == &s) {
                     tell(s, Color::LightRed, "Nobody on that node.");
                 } else {
-                    g_sticky[slotOf(s)] = sid;
+                    // What the room said before this, first: it was said
+                    // while they were in the room, and is not held.
+                    flush(s);
                     snprintf(buf, sizeof(buf),
                              "Talking to #%s:%.16s only. /p* ends it.",
                              nodeName(*to).t, to->user);
-                    tell(s, g_cPriv, buf);
+                    // Wrapped: with the marker and a long handle it is
+                    // past 39 columns, and a C64 wraps it mid-word.
+                    sayWrapped(s, g_cPriv, buf, true);
+                    privateBegin(s, sid);
                 }
             }
             flush(s);
@@ -2355,10 +2495,24 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
         if (!show) {
             tell(s, g_cRoom, "Nothing said yet.");
         } else {
+            // As many as the output buffer holds, oldest first, then how
+            // many that was (1.1.1): a put() that does not fit is dropped
+            // whole, and the lines lost were the newest, the ones asked for.
+            // Private mode's end offers /sh for the whole ring, which at
+            // the default 48 lines is more than one buffer.
+            uint16_t shown = 0;
             for (uint16_t i = 0; i < show; ++i) {
+                if (s.tl.freeBytes() < 200) break;
                 uint16_t at = static_cast<uint16_t>((g_histNext + g_histMax - show + i) % g_histMax);
+                ++shown;
                 if (squelched(s, g_hist[at])) continue;
                 showLine(s, g_hist[at], true);
+            }
+            if (shown < show) {
+                snprintf(buf, sizeof(buf), "%u of %u shown: /sh %u for the rest.",
+                         static_cast<unsigned>(shown), static_cast<unsigned>(show),
+                         static_cast<unsigned>(show - shown));
+                tell(s, g_cRoom, buf);
             }
         }
         flush(s);
@@ -2989,10 +3143,10 @@ void onKey(Session& s, int k, uint32_t now) {
     // the marker exists to prevent.
     uint8_t stick = g_sticky[slotOf(s)];
     if (stick != 0xFF) {
-        if (!inRoom(stick)) {
+        if ((stick & kGone) || !inRoom(stick)) {
             wipeInput(s);
-            g_sticky[slotOf(s)] = 0xFF;
-            tell(s, Color::LightRed, "They have gone. Back to the room, that line was not sent.");
+            tell(s, Color::LightRed, "They have gone. That line was not sent.");
+            privateEnd(s, nullptr);
             flush(s);
             armInput(s);
             return;
@@ -3040,11 +3194,11 @@ void onRename(const char* oldHandle, const char* newHandle) {
     // either end, so a reply still shows who it came from.
     char path[96], tmp[112];
     if (!mailPath(path, sizeof(path))) return;
-    FILE* in = fopen(path, "rb");
+    FILE* in = disk::open(path, "rb");
     if (!in) return;                                  // no mailbox, nothing to do
 
     snprintf(tmp, sizeof(tmp), "%s.tmp", path);
-    FILE* out = fopen(tmp, "wb");
+    FILE* out = disk::open(tmp, "wb");
     if (!out) { fclose(in); return; }
 
     MailRec r;
@@ -3082,14 +3236,19 @@ void onLogoff(Session& s) {
     g_squelch[slot] = 0;
     g_away[slot][0] = '\0';
     g_answered[slot] = 0xFF;                // nobody inherits a way past the room's write level
+    g_sticky[slot]   = 0xFF;                // nor a private conversation (1.1.1)
     for (uint8_t i = 0; i < kSlots; ++i)                    // nobody inherits a squelch
         g_squelch[i] = static_cast<uint16_t>(g_squelch[i] & ~(1u << slot));
     if (g_voteTarget == s.id) voteClose("ended, they left");
-    if (!wasIn) return;                     // reading mail at the shell is not the room
+    if (!wasIn) {                           // reading mail at the shell is not the room
+        partnerGone(s.id);
+        return;
+    }
     char line[80], me[32];
     tag(s, me, sizeof(me));
     snprintf(line, sizeof(line), "*** %.28s logged off", me);
     post(line, &s);
+    partnerGone(s.id);                      // anyone talking only to them is let back
 }
 
 bool start(Bbs& bbs) {
@@ -3105,6 +3264,22 @@ bool start(Bbs& bbs) {
     g_mailSlots = kMailSlots;
     g_mailChars = kMailChars;
     g_mailDays  = kMailDays;
+    // The same for the room's name, its rate and its colours (1.1.1): a line
+    // taken out of the section kept the old value running, so a rate of 600
+    // stayed 600 after the line was gone, until a reboot.
+    g_rate = kRateDef;
+    snprintf(g_room, sizeof(g_room), "%s", "Main");
+    g_cNode = kDefNode;
+    g_cPunct = kDefPunct;
+    g_cHandle = kDefHandle;
+    g_cText = kDefText;
+    g_cOld = kDefOld;
+    g_cNotice = kDefNotice;
+    g_cRoom = kDefRoom;
+    g_cPriv = kDefPriv;
+    g_cPmark = kDefPmark;
+    g_cAction = kDefAction;
+    g_cMark = kDefMark;
     plugins::forEachKey(g_index, readKey, nullptr);
 
     // One allocation, at start, for the whole room buffer. If the board
@@ -3264,10 +3439,11 @@ bool converse(Session& s, uint8_t withNode, const char* say) {
         join(b, s, withNode, say);
         return b.owns(s, g_index);
     }
-    g_sticky[slot]   = withNode;
     g_answered[slot] = withNode;
+    flush(s);                                  // what the room said before this, as ever
     if (say) sayWrapped(s, Color::Yellow, say, true);
-    rearm(s);
+    privateBegin(s, withNode);                 // the room's private mode (1.1.1)
+    armInput(s);
     return true;
 }
 } // namespace chat

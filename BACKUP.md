@@ -31,7 +31,7 @@ No USB cable, no web browser, no reflashing. Just the BOOT button and `curl`. A 
 *** It holds the Wi-Fi password. Never forward this port.
 ```
 
-The port answers only local addresses: `10/8`, `172.16/12`, `192.168/16`, `127/8`, link-local `169.254/16`, and `100.64/10`, which is where Tailscale and carrier NAT put you. Anything else gets a 403 and the sysop console shows `*** Backup refused <ip>: not a local address`. A VPN still works. The check looks at the source address, so it is a guard rather than a wall: a router that rewrites the source of forwarded traffic to its own LAN address gets past it. Never forward the backup port.
+The port answers only local addresses: `10/8`, `172.16/12`, `192.168/16`, `127.0.0.1`, link-local `169.254/16`, and, when `CONFIG network` says so (`cgnat_local`, off as shipped, 1.1.1), `100.64/10`, which is where Tailscale and carrier NAT put you. It is the same rule the shell uses for "local". With it off, a sysop on Tailscale reaches the window through the board's LAN address or a subnet route, not its `100.x` one. Anything else gets a 403 and the sysop console shows `*** Backup refused <ip>: not a local address`. A VPN still works. The check looks at the source address, so it is a guard rather than a wall: a router that rewrites the source of forwarded traffic to its own LAN address gets past it. Never forward the backup port.
 
 The window stays open for `backup_window_minutes` (default 5), then closes by itself. It also closes if the sysop logs off. Outside the window the port is not listening at all.
 

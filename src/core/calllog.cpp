@@ -34,6 +34,7 @@
  */
 
 #include "calllog.h"
+#include "disk.h"              // fopen and opendir that tell the drive light (1.1.1)
 #include "../platform/platform.h"
 #include "clock.h"
 #include "../config.h"
@@ -90,7 +91,7 @@ void loadHeader() {
 
     char p[96];
     path(p, sizeof(p));
-    FILE* f = fopen(p, "rb");
+    FILE* f = disk::open(p, "rb");
     if (!f) return;
     Header h;
     if (fread(&h, sizeof(h), 1, f) == 1 && !memcmp(h.magic, kMagic, 4) &&
@@ -150,7 +151,7 @@ static void mirror(const CallRec& r) {
 
     char p[128];
     snprintf(p, sizeof(p), "%s/calls-%.7s.log", dir, month);
-    FILE* f = fopen(p, "a");
+    FILE* f = disk::open(p, "a");
     if (!f) {
         if (!g_mirrorWarned) {
             plat::log("calllog: cannot mirror to the card (%s)", p);
@@ -178,9 +179,9 @@ bool append(const CallRec& r) {
     loadHeader();
     char p[96];
     path(p, sizeof(p));
-    FILE* f = fopen(p, "r+b");
+    FILE* f = disk::open(p, "r+b");
     if (!f) {
-        f = fopen(p, "w+b");                      // first call ever
+        f = disk::open(p, "w+b");                      // first call ever
         if (!f) { plat::log("calllog: cannot create %s", p); return false; }
         g_hdr.next = g_hdr.count = 0;
         g_recentN  = 0;                            // nothing on file, nothing to copy
@@ -224,7 +225,7 @@ uint8_t countSince(uint32_t epoch) {
     if (!g_hdr.count) return 0;
     char p[96];
     path(p, sizeof(p));
-    FILE* f = fopen(p, "rb");
+    FILE* f = disk::open(p, "rb");
     if (!f) return 0;
     uint8_t n = 0;
     CallRec r;
@@ -247,7 +248,7 @@ bool get(uint8_t back, CallRec& out) {
     uint16_t slot = static_cast<uint16_t>((g_hdr.next + BBS_CALLLOG_SIZE - 1 - back) % BBS_CALLLOG_SIZE);
     char p[96];
     path(p, sizeof(p));
-    FILE* f = fopen(p, "rb");
+    FILE* f = disk::open(p, "rb");
     if (!f) return false;
     bool ok = fseek(f, slotOffset(slot), SEEK_SET) == 0 && fread(&out, sizeof(out), 1, f) == 1;
     fclose(f);

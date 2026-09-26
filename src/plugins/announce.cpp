@@ -170,9 +170,10 @@ constexpr uint8_t    kSystemMax   = 31;     // "ESP32-S3 · 16 MB · PSRAM" is 2
 //   support and interests, 16 entries in 95 characters,
 //     quoted and bracketed: 95 + 32 + 2 each                   258
 //   ,"sd":1024 while a card is mounted (1.1.0)                  10
+//   ,"closed":true while the board is closed (1.1.1)             14
 //                                                             -----
-//                                                             1,329
-//                                     (1,338 on a camera board)
+//                                                             1,343
+//                                     (1,352 on a camera board)
 //
 // Measured, not only added up: test_announce_badges gives the host board
 // exactly this and checks the heartbeat arrives whole. The spare 24 (15 on
@@ -180,7 +181,7 @@ constexpr uint8_t    kSystemMax   = 31;     // "ESP32-S3 · 16 MB · PSRAM" is 2
 // with no quote marks anywhere: every text at its longest and both lists
 // full is 984.
 // ---------------------------------------------------------------------------
-constexpr uint16_t   kBodyMax     = 1344;   // 1,329 and the terminator, with room to spare
+constexpr uint16_t   kBodyMax     = 1368;   // 1,343 and the terminator, with room to spare
 
 // The room buildBody writes into: kBodyMax, always, on a board. The host
 // build alone lets room_test in [plugin:announce] make it smaller, because
@@ -597,6 +598,10 @@ bool buildBody() {
     j.raw(",\"port\":");        j.unum(g_public);
     j.raw(",\"nodes\":");       j.unum(bbs.publicNodes());
     j.raw(",\"busy\":");        j.unum(bbs.publicBusy());
+    // Closed to callers (1.1.1, Rob): still listed, shown as temporarily
+    // closed, rather than dropping off the directory and starting its wait
+    // again. Left out while open, as "sd" is while no card is in.
+    if (syscfg::get().closed) j.raw(",\"closed\":true");
     j.raw(",\"uptime\":");      j.unum(plat::millis() / 1000u);
     j.raw(",\"interval\":");    j.unum(g_interval);
     j.raw(",\"tz\":");          j.num(clk::utcOffset());
@@ -904,9 +909,12 @@ void tick(uint32_t now) {
     // 1.0.0). A listed board is one strangers will call, and the default is
     // on the install page; the board stays off the list until it is changed.
     // A post already under way finishes above; nothing new starts.
-    // A board closed to callers (1.1.0) is held the same way: a listing
-    // sends strangers to a closed sign.
-    if (syscfg::get().sysopDefault || syscfg::get().closed) return;
+    // A board closed to callers is not held since 1.1.1 (Rob): it goes on
+    // sending, with "closed": true, and the directory shows it as
+    // temporarily closed. Held, a long close let the listing go stale and
+    // start its wait over. The published default above is never listed,
+    // closed or not.
+    if (syscfg::get().sysopDefault) return;
     if (g_at < g_count) { startPost(now); return; }          // more directories to do
     if (!g_count || !g_nextRun) return;
     if (static_cast<int32_t>(now - g_nextRun) < 0) return;
@@ -935,9 +943,9 @@ void showStatus(Bbs& b, Session& s) {
         t.nl(tl);
     } else if (syscfg::get().closed) {
         t.color(tl, Color::Yellow);
-        t.text(tl, "Held: the board is closed to callers.");
+        t.text(tl, "Closed: listed as temporarily closed.");
         t.nl(tl);
-        t.text(tl, "CONFIG board opens it, then it lists.");
+        t.text(tl, "CONFIG board opens it again.");
         t.nl(tl);
     }
     if (!g_count) {
@@ -1109,7 +1117,7 @@ const char* status() {
     static char line[64];
     if (!g_count) return nullptr;
     if (syscfg::get().sysopDefault) return "Directory: held, the sysop password is the default";
-    if (syscfg::get().closed)       return "Directory: held, the board is closed to callers";
+    if (syscfg::get().closed)       return "Directory: listed as temporarily closed";
     if (g_state[0] && g_publicIn) {
         snprintf(line, sizeof(line), "Directory: %.8s, public in %uh%02um  %u sent", g_state,
                  static_cast<unsigned>(g_publicIn / 3600u),

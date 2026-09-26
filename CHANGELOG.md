@@ -24,6 +24,112 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.1.1 (S3 1.1.2, FNCAM 1.0.6, ESPCAM 1.0.3), 2026-09-25
+
+The patch to 1.1.0, with what 1.1.0 left and what its first days found.
+Host-tested with targeted runs; the full regression follows.
+
+**Callers**
+- **Every caller is told how they are connected** (Rob), once the terminal
+  is known and before any screen: `--> Connection via Telnet is not
+  secure`, on the welcome, the busy line and the closed sign alike. 39
+  columns. Built from what the link is, so SSH (1.2.0) is one more row:
+  `--> Connection via SSH is Secure.`
+- **`/p<n>*` is a private conversation** (Rob: "it should just be who
+  you're privately talking to"). While it is on, the caller sees the two of
+  them: their privates both ways and the room's notices about either. The
+  room says `--> You won't see other callers while talking directly`,
+  wrapped at a word on 40 columns. What the room says meanwhile is held in
+  its ring, not shown and not lost: `/p*` says `Back to the room. 3 room
+  lines went by: /sh 3 shows them.`, or, when the room outran its ring,
+  how many `/sh` can still show. The partner leaving is shown, `They have
+  left. /p* goes back to the room.`, and the next line goes nowhere rather
+  than into the room. An answered ring puts both in it. The room's
+  private mode, so the 1.2.0 sysop chat is this and not a second thing.
+- The "Talking to #3:... only" line wraps at 40 columns.
+- `/sh` shows what the output buffer holds and says how many are left
+  (`20 of 48 shown: /sh 28 for the rest.`): the whole ring at once was
+  more than one buffer, and a put that does not fit is dropped, newest
+  first.
+- The chat room resets its line rate, room name and colours when its
+  settings are read again: a line taken out of the section kept the old
+  value running until a restart.
+- The name is µnleashed where a person reads it: Improv's firmware name
+  (UTF-8; the installer matches either spelling since site 1.3.8), the
+  photos' JPEG comment and the FX demo's marquee (a real µ on UTF-8, CP437's
+  on ANSI, a u on PETSCII and plain ASCII). The hostname, the default
+  password and announce's `software` stay ASCII.
+
+**Sysops**
+- **`SCREENS INSTALL`** (Rob): the card's own screens copied into flash so
+  they play with the card out. Checked whole first (names, sizes, count and
+  the partition's room in blocks) and refused whole; each put live by a
+  rename within the partition, its stock copy moved to `screens/.stock`;
+  callers let go of flash screens first; the card's manifest marks them the
+  sysop's. `SCREENS INSTALL STOCK` puts the stock set back. One step a pass
+  with a spinner, never a burst. Not beside a backup or a restore.
+- **100.64.0.0/10 is local only when CONFIG network says so** (Rob): new
+  `cgnat_local` (CGNAT/Tailscale LAN, `CGNAT` at 40), off as shipped, live.
+  It trusted everybody behind the same carrier NAT before. One rule for
+  "local" now (`guard.h` `localNet`), asked by the shell and the backup
+  port, which also takes 127.0.0.1 alone where it took all of 127/8. A
+  backup-window caller refused from 100.64/10 is told which setting it is
+  (`local network only; see CONFIG network, CGNAT.`), and so is the
+  console, for the window and for the published default.
+- **A closed board stays listed, marked closed** (Rob): heartbeats go on
+  with `"closed": true` and the directory shows it as temporarily closed;
+  1.1.0 held it and a long close restarted its waiting period. The
+  published default is still never announced. `ANNOUNCE` and `ANNOUNCE
+  TEST` show it.
+- **A TZ string the board cannot read is refused** (TZ-bad): newlib's
+  tzset gives up on one and runs unnamed UTC, silently. CONFIG refuses it
+  on the row; a file read at boot or restored drops that line, logged. A
+  file's line newlib reads correctly with something after it (a `;` note
+  by hand) is kept, as newlib would run it, and the tail named in the log.
+- CONFIG refuses `activity_led_gpio` on the card slot's pins on the
+  ESP32-CAM and the S3, as the next read would have dropped it.
+- The backup test build (`esp32dev_backuptest`) compiles without warnings.
+- The drive light on every storage path: users, the caller log and its
+  card mirror, system.cfg, the zip and backup staging, chat's mail, forums,
+  files, info, rings, reboots.log and the camera's photos (`core/disk.h`).
+- HARDWARE and SYS take what the board has running once, when the list
+  starts, so a card or camera arriving at `[More]` cannot repeat or skip
+  the capability line.
+- A WROOM backup restored onto the ESP32-CAM or the S3 carries
+  `activity_led_gpio` on the card slot's pins (2 is the ESP32-CAM's MISO):
+  that line is dropped at boot, logged, and the board's own LED kept. The
+  sd plugin's own pin settings are untouched.
+
+**Flash, every board** (Rob, from `internal/memory-2026-09-25-1.1.1.md`):
+IPv6, Wi-Fi SoftAP and WPA2-Enterprise off in `sdkconfig.defaults`. Every
+socket is IPv4, the board is only ever a station, and nothing sets an
+802.1X identity.
+
+**Tests and tools**
+- `tools/harness.sh`: a budget per test (900 s, `--test-timeout=N`) instead
+  of one hour for the whole run, which a card run of six groups outgrew; a
+  test that runs out or raises fails by name and the run goes on.
+- The lights tests follow the board profile (pins, range, what ships on).
+- `test_closed_configured` takes an explicit `closed = no` (a restore
+  writes one by design) as an open board.
+- `test_announce_directory` reads the board list at `/directory` (site
+  1.3.0 moved it); passes against the directory at 1.3.10.
+- The camera tests run on the ESP32-CAM profile too (its OV2640, its flash
+  on GPIO 4), and `board_espcam` exists, as `harness.sh --help` promised.
+- `make test`: `test_calllog` links again (`diskPulse` stubbed).
+- `copy_data` skips the board's own temp files, which could vanish mid
+  copy and take a test down.
+- New: `test_link_line`, `test_room_private`, `test_screens_install`,
+  `test_cgnat_local`, `test_announce_closed`, `test_config_tz_bad`,
+  `test_lights_disk`, `test_board_espcam`; checks in `test_busy`,
+  `test_hardware`, `test_fx_codes`, `test_camera`, `test_tzones`.
+
+**Not in 1.1.1**: the badge pick-list for announce (estimated at a day of
+its own: a scrolling checklist widget at 40, 80 and in plain ASCII, the
+generator from the directory's `badges.json` and the CONFIG hook), left for
+Rob to schedule. Newlib nano printf, silent assertions and `.bss` in PSRAM
+are 1.2.0.
+
 ## 1.1.1-dev.1 (FNCAM 1.0.5, ESPCAM 1.0.2: the picture), 2026-09-25
 
 The first outdoor photo on the Freenove came out white, median 247 of 255

@@ -35,8 +35,10 @@
  */
 
 #include "sysconfig.h"
+#include "disk.h"              // fopen and opendir that tell the drive light (1.1.1)
 #include "users.h"          // LAND_* and the landing names, kept in one place
 #include "silent.h"         // silent hours: the time rule, and told when the file is read
+#include "tzones.h"         // valid: a TZ string newlib can read (1.1.1)
 #include "../platform/platform.h"
 #include <cstdio>
 #include <cstdlib>
@@ -366,7 +368,24 @@ void keyValue(Ctx& c, const char* key, char* val) {
         else problem(c, "hostname must be a-z 0-9 - (1..31):", val);
     }
     else if (!strcmp(key, "board_name"))             copyStr(g.boardName, sizeof(g.boardName), val);
-    else if (!strcmp(key, "tz"))                     copyStr(g.tz, sizeof(g.tz), val);
+    else if (!strcmp(key, "tz")) {
+        // A string the C library cannot read ran the board on unnamed UTC,
+        // silently (1.1.1, TZ-bad; tzones::valid has the rule). A writer
+        // is refused, with the reason on its status line. A file read at
+        // boot or restored loses the line, logged, and keeps the clock it
+        // had, the way a pin the board owns is dropped (gpio above): a
+        // restore is not refused whole over its timezone.
+        if (tzones::valid(val))  copyStr(g.tz, sizeof(g.tz), val);
+        else if (c.bare)         problem(c, "not a TZ string the board can read", "");
+        else if (tzones::valid(val, false)) {
+            // Newlib reads the start and ignores the rest, and so the clock
+            // is right: kept, with the tail named, never dropped for it.
+            copyStr(g.tz, sizeof(g.tz), val);
+            plat::log("cfg: line %d tz = %.48s: the end of it is ignored", c.lineNo, val);
+        }
+        else plat::log("cfg: line %d tz = %.48s: not a TZ string the board can read, "
+                       "line ignored, the clock stays on %s", c.lineNo, val, g.tz);
+    }
     else if (!strcmp(key, "ntp_server"))             copyStr(g.ntpServer, sizeof(g.ntpServer), val);
     else if (!strcmp(key, "sysop_password"))         copyStr(g.sysopPass, sizeof(g.sysopPass), val);
     else if (!strcmp(key, "cosysop1_password"))      copyStr(g.coPass[0], sizeof(g.coPass[0]), val);
@@ -415,7 +434,33 @@ void keyValue(Ctx& c, const char* key, char* val) {
     else if (!strcmp(key, "day_minutes"))           { if (number(c, key, val, n)) g.dayMinutes  = static_cast<uint16_t>(n); }
     else if (!strcmp(key, "backup_window_minutes")) { if (number(c, key, val, n)) g.backupMinutes = static_cast<uint16_t>(n); }
     else if (!strcmp(key, "backup_button_gpio"))    { if (gpio(c, key, val, n)) g.backupGpio = static_cast<int8_t>(n); }
-    else if (!strcmp(key, "activity_led_gpio"))     { if (gpio(c, key, val, n)) g.ledGpio = static_cast<int8_t>(n); }
+    else if (!strcmp(key, "activity_led_gpio")) {
+        if (!gpio(c, key, val, n)) return;
+#if defined(BBS_HAS_SD_SLOT) && !defined(BBS_SD_SDMMC1)
+        // A card slot on the board, over SPI (the ESP32-CAM, the S3): its
+        // four lines are the sd plugin's settings, so pinProblem does not
+        // refuse them and CONFIG's pin-holder check names the sd plugin
+        // instead. A file read at boot or restored is another matter: a
+        // WROOM's system.cfg carries its LED on GPIO 2, the ESP32-CAM's
+        // card MISO, and the red LED went dark (1.1.1). That line is
+        // dropped and logged, and the board's own LED stays, as a pin the
+        // board owns outright is (gpio above). The sd plugin's own pin
+        // settings are untouched: only the LED is compared, and only with
+        // the slot's wiring, not with whatever CONFIG sd says.
+        const bool slot = n >= 0 &&
+            (n == BBS_SD_CS || n == BBS_SD_MOSI || n == BBS_SD_CLK || n == BBS_SD_MISO);
+        // CONFIG refuses it too, whether or not the sd plugin is on to hold
+        // it: the form would otherwise save a pin the next read drops.
+        if (slot && c.bare) { problem(c, "that pin is the SD card slot", ""); return; }
+        if (slot) {
+            plat::log("cfg: line %d activity_led_gpio = %ld: that pin is the SD card slot on this "
+                      "board, line ignored, the board's own LED (%d) kept",
+                      c.lineNo, n, static_cast<int>(BBS_LED_GPIO));
+            return;
+        }
+#endif
+        g.ledGpio = static_cast<int8_t>(n);
+    }
     else if (!strcmp(key, "max_users"))             { if (number(c, key, val, n)) g.maxUsers = static_cast<uint8_t>(n); }
     else if (!strcmp(key, "self_register"))         yesNo(c, key, val, g.selfRegister);
     else if (!strcmp(key, "guest"))                 yesNo(c, key, val, g.guestEnabled);
@@ -438,6 +483,7 @@ void keyValue(Ctx& c, const char* key, char* val) {
         yesNo(c, key, val, g.closed);
         if (c.problems == before) g.closedSet = true;
     }
+    else if (!strcmp(key, "cgnat_local"))           yesNo(c, key, val, g.cgnatLocal);
     else if (!strcmp(key, "silent_from") || !strcmp(key, "silent_until")) {
         // A form is told (a writer's trial); a file is read as no time and
         // the console says so, for the reason crossCheck gives below.
@@ -567,6 +613,8 @@ void logSummary() {
               g_cfg.whoMin, g_cfg.whoMax, g_cfg.ledGpio, g_cfg.selfRegister ? "yes" : "no", g_cfg.maxUsers,
               g_cfg.guestEnabled ? "yes" : "no", g_cfg.guestMinutes);
     plat::log("cfg: wifi %s", g_cfg.wifiSsid[0] ? g_cfg.wifiSsid : "not set in the file");
+    if (g_cfg.cgnatLocal)
+        plat::log("cfg: 100.64.0.0/10 (carrier NAT, Tailscale) counts as the local network");
     // Before 0.22.1 a '#' anywhere began a comment, so a hand-edited
     // "sysop_password = x   # note" meant x. It now means the whole line,
     // and BYE x becomes a plain logoff that counts toward a ban with
@@ -617,7 +665,7 @@ static void closedDefault(SysConfig& out) {
 int parseFile(const char* path, SysConfig& out, char* err, size_t errLen) {
     Ctx c{ &out, 0, err, errLen, 0 };
     if (err && errLen) err[0] = '\0';
-    FILE* f = fopen(path, "r");
+    FILE* f = disk::open(path, "r");
     if (!f) {                                       // no file: defaults, not a problem
         useDefaultSysop(out);
         closedDefault(out);
@@ -683,11 +731,11 @@ static void seed() {
     snprintf(live, sizeof(live), "%s/%s", plat::userBase(), BBS_CONFIG_FILE);
     snprintf(shipped, sizeof(shipped), "%s/%s", plat::fsBase(), BBS_CONFIG_FILE);
 
-    FILE* have = fopen(live, "r");
+    FILE* have = disk::open(live, "r");
     if (have) { fclose(have); return; }              // already ours, leave it
-    FILE* from = fopen(shipped, "r");
+    FILE* from = disk::open(shipped, "r");
     if (!from) return;                               // nothing to seed from
-    FILE* to = fopen(live, "w");
+    FILE* to = disk::open(live, "w");
     if (!to) { fclose(from); return; }
 
     char buf[256];
@@ -933,13 +981,13 @@ bool write(const KeyVal* pairs, uint8_t count, const char* section, char* err, s
     // never added at the end. Marked done up front for the second half.
     for (uint8_t i = 0; i < count; ++i) if (!pairs[i].value) done[i] = true;
 
-    FILE* out = fopen(tmp, "w");
+    FILE* out = disk::open(tmp, "w");
     if (!out) {
         snprintf(err, errLen, "cannot write the config file");
         return false;
     }
 
-    FILE* in = fopen(path, "r");
+    FILE* in = disk::open(path, "r");
     bool inSection = section == nullptr;        // the top of the file is the unnamed section
     bool seen      = inSection;
     if (in) {

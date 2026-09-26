@@ -96,7 +96,9 @@ A directory can show a few badges beside a board's name. Four of them the board 
 
 Sysop only by default, like everything else that changes how the board presents itself.
 
-The listing is held, nothing new sent, while the sysop password is still the published default and while the board is closed to callers (1.1.0, `CONFIG board`'s "Stop taking calls"): a listed board sends strangers somewhere, and neither is somewhere to send them. `ANNOUNCE` says which.
+The listing is held, nothing sent at all, while the sysop password is still the published default: a listed board sends strangers somewhere, and a board anybody can be the sysop of is not somewhere to send them. That holds whether the board is closed or not.
+
+A board closed to callers (`CONFIG board`'s "Stop taking calls") is not held since 1.1.1: it goes on sending heartbeats, each with `"closed": true`, and the directory shows it as temporarily closed. Open, the field is left out. In 1.1.0 a closed board was held, and a long close let the listing go stale and start its waiting period again. `ANNOUNCE` says `Closed: listed as temporarily closed.` and `ANNOUNCE TEST` shows the field.
 
 ## Why plain HTTP and not HTTPS
 
@@ -142,6 +144,7 @@ Connection: close
 | `port` | number | the port callers should dial |
 | `nodes` | number | how many caller lines the board has |
 | `busy` | number | how many are in use right now |
+| `closed` | boolean | `true` while the sysop has closed the board to callers (1.1.1): show it as temporarily closed. Left out while the board is open, so a directory that has never heard of it lists the board as it always did |
 | `uptime` | number | seconds since the board booted |
 | `tz` | number | minutes east of UTC, daylight saving already applied. Lets a directory describe this board's busy hours in the hours its own callers keep, instead of in UTC. 0 when the clock has never been set |
 | `interval` | number | minutes between heartbeats, so a directory knows when to call the board quiet rather than guessing |
@@ -158,7 +161,7 @@ Connection: close
 
 The six before `sd` are the badges, and every heartbeat carries all of them, empty lists included: a directory replaces them on each heartbeat, so a field left out is a badge taken down. A directory that does not know them ignores them.
 
-A plain payload is around 450 bytes. The largest this firmware can build is 1,329 (1,338 on a camera board): every text field at its longest with every character one that JSON has to escape, both lists full, every number at its widest, and `sd`. The board's buffer holds 1,343, so a payload is never refused for size; if one ever were, the board would log it and send nothing rather than a cut-off half. Nothing in it identifies a caller, and nothing ever should.
+A plain payload is around 450 bytes. The largest this firmware can build is 1,343 (1,352 on a camera board): every text field at its longest with every character one that JSON has to escape, both lists full, every number at its widest, `sd`, and `closed`. The board's buffer holds 1,367, so a payload is never refused for size; if one ever were, the board would log it and send nothing rather than a cut-off half. Nothing in it identifies a caller, and nothing ever should.
 
 ### Response
 

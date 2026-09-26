@@ -34,6 +34,7 @@
  */
 
 #include "users.h"
+#include "disk.h"              // fopen and opendir that tell the drive light (1.1.1)
 #include "sha256.h"
 #include "sysconfig.h"
 #include "bbs_util.h"                  // bbsu::foldHash, for the duplicate check
@@ -365,12 +366,12 @@ users::Result rewrite(const char* replaceHandle, const UserRec* replacement, con
     char live[96], tmp[96];
     path(live, sizeof(live), "");
     path(tmp, sizeof(tmp), ".new");
-    FILE* out = fopen(tmp, "w");
+    FILE* out = disk::open(tmp, "w");
     if (!out) return users::Result::IoError;
     fprintf(out, "# %s users. Edit through the backup zip, see USERS.md.\n\n", BBS_NAME);
 
     bool found = false;
-    FILE* in = fopen(live, "r");
+    FILE* in = disk::open(live, "r");
     if (!in && errno != ENOENT) {                    // readable but not openable: never overwrite
         fclose(out);
         remove(tmp);
@@ -445,7 +446,7 @@ const char* fieldPtr(const UserRec& u, const UserField& f) {
 Lookup lookup(const char* handle, UserRec& out) {
     char p[96];
     path(p, sizeof(p), "");
-    FILE* f = fopen(p, "r");
+    FILE* f = disk::open(p, "r");
     if (!f) return errno == ENOENT ? Lookup::Missing : Lookup::Error;
     Reader r(f);
     bool found = false;
@@ -475,7 +476,7 @@ __attribute__((noinline)) bool exists(const char* handle) {
 uint8_t count() {
     char p[96];
     path(p, sizeof(p), "");
-    FILE* f = fopen(p, "r");
+    FILE* f = disk::open(p, "r");
     if (!f) return 0;
     UserRec u;
     Reader r(f);
@@ -488,7 +489,7 @@ uint8_t count() {
 bool at(uint8_t index, UserRec& out) {
     char p[96];
     path(p, sizeof(p), "");
-    FILE* f = fopen(p, "r");
+    FILE* f = disk::open(p, "r");
     if (!f) return false;
     Reader r(f);
     uint16_t i = 0;
@@ -503,7 +504,7 @@ bool at(uint8_t index, UserRec& out) {
 uint8_t range(uint8_t start, uint8_t n, RangeFn fn, void* ctx) {
     char p[96];
     path(p, sizeof(p), "");
-    FILE* f = fopen(p, "r");
+    FILE* f = disk::open(p, "r");
     if (!f) return 0;
     UserRec u;                           // fn gets a reference for the call only
     Reader r(f);
@@ -537,7 +538,7 @@ Result add(const UserRec& u) {
 uint32_t maxId() {
     char p[96];
     path(p, sizeof(p), "");
-    FILE* f = fopen(p, "r");
+    FILE* f = disk::open(p, "r");
     if (!f) return 0;
     UserRec u;
     Reader r(f);
@@ -634,7 +635,7 @@ bool checkPassword(const UserRec& u, const char* password) {
 int validateFile(const char* p, Issues& iss) {
     if (iss.err && iss.errLen) iss.err[0] = '\0';
     if (iss.warn && iss.warnLen) iss.warn[0] = '\0';
-    FILE* f = fopen(p, "r");
+    FILE* f = disk::open(p, "r");
     if (!f) {
         if (iss.err && iss.errLen) snprintf(iss.err, iss.errLen, "cannot read users.txt");
         return ++iss.problems;

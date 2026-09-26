@@ -76,6 +76,7 @@
  */
 
 #include "../config.h"
+#include "../core/disk.h"              // fopen and opendir that tell the drive light (1.1.1)
 
 #ifdef BBS_HAS_CAMERA
 #include "camera.h"
@@ -905,7 +906,7 @@ void save(Job& j, const char* photos, const uint8_t* jpg, size_t len) {
     struct stat st;
     if (stat(dst, &st) == 0) { fail(j, "a photo with that name is already there"); return; }
 
-    FILE* fp = fopen(tmp, "wb");
+    FILE* fp = disk::open(tmp, "wb");
     if (!fp) { fail(j, "the card would not take the photo"); return; }
     FileOut fo{ fp, 0, true };
     bool ok = false;
@@ -939,7 +940,7 @@ void save(Job& j, const char* photos, const uint8_t* jpg, size_t len) {
             if (!said) plat::log("camera: the photo could not be re-encoded; saving it as the sensor gave it");
             said = true;
             fclose(fp);
-            fp = fopen(tmp, "wb");
+            fp = disk::open(tmp, "wb");
             fo = FileOut{ fp, 0, fp != nullptr };
         }
     }
@@ -1145,9 +1146,12 @@ void texts(Job& j, const struct tm& t, const char* who) {
     strftime(when, sizeof(when), "%Y-%m-%d %H:%M", &t);
     char full[24];
     strftime(full, sizeof(full), "%Y-%m-%d %H:%M:%S", &t);
-    snprintf(j.comment, sizeof(j.comment), "%s: %s, %s %s. unleashed BBS %s",
-             c.boardName[0] ? c.boardName : "unleashed BBS", full,
-             j.kind == K_CALLER ? "snapped by" : "taken by the board,", who, BBS_VERSION_SHOWN);
+    // UTF-8, micro sign and all (1.1.1): a JPEG comment is bytes, and every
+    // viewer that shows one reads UTF-8.
+    snprintf(j.comment, sizeof(j.comment), "%s: %s, %s %s. %s %s",
+             c.boardName[0] ? c.boardName : BBS_NAME, full,
+             j.kind == K_CALLER ? "snapped by" : "taken by the board,", who, BBS_NAME,
+             BBS_VERSION_SHOWN);
     if (j.kind == K_CALLER) snprintf(j.desc, sizeof(j.desc), "Taken by %s", who);
     else                    snprintf(j.desc, sizeof(j.desc), "Taken by the board (%s)", who);
     j.doMark = g_set.mark;

@@ -47,6 +47,7 @@
  */
 
 #include <cstdio>
+#include "../core/disk.h"              // fopen and opendir that tell the drive light (1.1.1)
 #include <cstring>
 #include <cstdlib>
 #include <sys/stat.h>
@@ -329,7 +330,7 @@ void indexPath(uint8_t i, char* out, size_t n) {
 bool readHeader(uint8_t i) {
     char path[128];
     indexPath(i, path, sizeof(path));
-    FILE* f = fopen(path, "rb");
+    FILE* f = disk::open(path, "rb");
     if (!f) return false;
     char buf[kRec + 1] = {};
     size_t got = fread(buf, 1, kRec, f);
@@ -374,8 +375,8 @@ bool writeHeader(uint8_t i) {
     rec[kOffCrLf]     = '\r';
     rec[kOffCrLf + 1] = '\n';
 
-    FILE* f = fopen(path, "r+b");
-    if (!f) f = fopen(path, "w+b");
+    FILE* f = disk::open(path, "r+b");
+    if (!f) f = disk::open(path, "w+b");
     if (!f) return false;
     bool ok = fwrite(rec, 1, kRec, f) == kRec;
     fflush(f);
@@ -489,7 +490,7 @@ bool readRec(uint8_t i, uint32_t n, MsgRec& m) {
     if (!n) return false;                       // record 0 is the header
     char path[128];
     indexPath(i, path, sizeof(path));
-    FILE* f = fopen(path, "rb");
+    FILE* f = disk::open(path, "rb");
     if (!f) return false;
     bool ok = false;
     if (fseek(f, static_cast<long>(n) * kRec, SEEK_SET) == 0) {
@@ -536,7 +537,7 @@ bool appendBody(uint8_t i, const char* text, uint16_t& seg, uint32_t& ofs, uint1
     // Find the newest segment that still has room.
     for (uint16_t s = 0; s < 9999; ++s) {
         segPath(i, s, path, sizeof(path));
-        FILE* f = fopen(path, "rb");
+        FILE* f = disk::open(path, "rb");
         if (!f) { seg = s; break; }
         fseek(f, 0, SEEK_END);
         long end = ftell(f);
@@ -544,7 +545,7 @@ bool appendBody(uint8_t i, const char* text, uint16_t& seg, uint32_t& ofs, uint1
         if (end >= 0 && static_cast<uint32_t>(end) < kSegMax) { seg = s; break; }
     }
     segPath(i, seg, path, sizeof(path));
-    FILE* f = fopen(path, "ab");
+    FILE* f = disk::open(path, "ab");
     if (!f) return false;
     fseek(f, 0, SEEK_END);
     long at = ftell(f);
@@ -567,7 +568,7 @@ bool readBody(uint8_t i, const MsgRec& m, char* out, size_t outN) {
     if (!m.len) return true;                       // a body may legitimately be empty
     char path[128];
     segPath(i, m.seg, path, sizeof(path));
-    FILE* f = fopen(path, "rb");
+    FILE* f = disk::open(path, "rb");
     if (!f) return false;
     bool ok = false;
     if (fseek(f, static_cast<long>(m.ofs), SEEK_SET) == 0) {
@@ -588,7 +589,7 @@ bool appendMessage(uint8_t i, MsgRec& m, const char* body) {
 
     char path[128];
     indexPath(i, path, sizeof(path));
-    FILE* f = fopen(path, "r+b");
+    FILE* f = disk::open(path, "r+b");
     if (!f) return false;
 
     uint32_t n = g_forum[i].newest + 1;
@@ -661,7 +662,7 @@ bool readPtr(uint32_t userId, uint8_t forum, Ptr& p) {
     if (!userId) return false;                     // guests keep no pointer
     char path[128];
     ptrPath(path, sizeof(path));
-    FILE* f = fopen(path, "rb");
+    FILE* f = disk::open(path, "rb");
     if (!f) return false;
     bool ok = false;
     if (fseek(f, ptrOffset(userId, forum), SEEK_SET) == 0) {
@@ -684,8 +685,8 @@ bool writePtr(uint32_t userId, uint8_t forum, const Ptr& p) {
     if (!userId) return true;                      // nothing to keep for a guest
     char path[128];
     ptrPath(path, sizeof(path));
-    FILE* f = fopen(path, "r+b");
-    if (!f) f = fopen(path, "w+b");
+    FILE* f = disk::open(path, "r+b");
+    if (!f) f = disk::open(path, "w+b");
     if (!f) return false;
 
     char rec[kPtrRec + 1];
@@ -939,7 +940,7 @@ void scanSubjects(uint8_t i, const Ptr& p, uint8_t who) {
 
     char path[128];
     indexPath(i, path, sizeof(path));
-    FILE* f = fopen(path, "rb");
+    FILE* f = disk::open(path, "rb");
     if (!f) return;
 
     uint32_t floor = newest > kScanMax ? newest - kScanMax : 1;
@@ -1040,7 +1041,7 @@ uint32_t liveUnread(uint8_t i, const Ptr& p) {
 
     char path[128];
     indexPath(i, path, sizeof(path));
-    FILE* f = fopen(path, "rb");
+    FILE* f = disk::open(path, "rb");
     if (!f) return unreadUpTo(p, newest);
     uint32_t n0 = p.mark + 1;
     if (newest > kScanMax && n0 < newest - kScanMax) n0 = newest - kScanMax;
@@ -1070,7 +1071,7 @@ bool removeMessage(uint8_t i, uint32_t n) {
     if (!readRec(i, n, m) || !m.live) return false;
     char path[128];
     indexPath(i, path, sizeof(path));
-    FILE* f = fopen(path, "r+b");
+    FILE* f = disk::open(path, "r+b");
     if (!f) return false;
     bool ok = fseek(f, static_cast<long>(n) * kRec + kOffFlags, SEEK_SET) == 0 &&
               fputc('X', f) != EOF;

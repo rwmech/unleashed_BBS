@@ -92,6 +92,40 @@ bool cardMounted() {
     return plat::sdBase()[0] && sdCardKept().mounted;
 }
 
+// The snapshot of what is running (Session::hwCaps, 1.1.1). The line is
+// worked out afresh for every row of the list, and a card or camera arriving
+// between two rows (a caller at [More]) changed how many lines it wrapped
+// to: one repeated or one skipped. Taken once when the list starts, the whole
+// listing reads the same one. The card's size goes in as the power of two it
+// is (sdCardGB rounds to 1, 2, 4 ... 1024), four bits.
+enum : uint16_t {
+    HC_TAKEN  = 0x8000,
+    HC_CARD   = 0x0001,
+    HC_CAMERA = 0x0002,
+    HC_LCD    = 0x0004,
+    HC_LIGHTS = 0x0008,
+    HC_GBSHIFT = 4,                                // bits 4-7: log2 of the GB
+};
+
+uint16_t capsNow() {
+    uint16_t c = HC_TAKEN;
+    if (cardMounted()) {
+        c |= HC_CARD;
+        uint16_t gb = sdCardGB(sdCardKept());
+        uint8_t  lg = 0;
+        while (gb > 1 && lg < 15) { gb >>= 1; ++lg; }
+        c |= static_cast<uint16_t>(lg << HC_GBSHIFT);
+    }
+#ifdef BBS_HAS_CAMERA
+    if (camera::running() && camera::found()) c |= HC_CAMERA;
+#endif
+#ifdef BBS_HAS_LCD
+    if (plugins::running(plugins::indexOf("panel"))) c |= HC_LCD;
+#endif
+    if (lights::wired()) c |= HC_LIGHTS;          // a pin, not just the plugin on
+    return c;
+}
+
 // capabilities: what this image and board have, and have running, as a
 // comma list: "32 GB SD card (SPI), camera (OV2640), LED lights". Only what
 // works now, the rule announce's features follow: a camera whose sensor did
@@ -99,7 +133,7 @@ bool cardMounted() {
 // wired, is not claimed. A card slot the board itself has is named empty
 // when no card is in; the reference board's card is optional wiring and is
 // named only when it is there.
-void capabilities(char* out, size_t n) {
+void capabilities(char* out, size_t n, uint16_t caps) {
     size_t len = 0;
     out[0] = '\0';
     auto add = [&](const char* item) {
@@ -114,9 +148,9 @@ void capabilities(char* out, size_t n) {
 #else
     const char* bus = "SPI";
 #endif
-    if (cardMounted()) {
+    if (caps & HC_CARD) {
         snprintf(item, sizeof(item), "%u GB SD card (%s)",
-                 static_cast<unsigned>(sdCardGB(sdCardKept())), bus);
+                 1u << ((caps >> HC_GBSHIFT) & 0x0F), bus);
         add(item);
     } else {
 #ifdef BBS_HAS_SD_SLOT
@@ -125,7 +159,7 @@ void capabilities(char* out, size_t n) {
 #endif
     }
 #ifdef BBS_HAS_CAMERA
-    if (camera::running() && camera::found()) {
+    if (caps & HC_CAMERA) {
         const char* sensor = plat::camSensor();
         if (sensor && *sensor) snprintf(item, sizeof(item), "camera (%s)", sensor);
         else                   snprintf(item, sizeof(item), "camera");
@@ -133,9 +167,9 @@ void capabilities(char* out, size_t n) {
     }
 #endif
 #ifdef BBS_HAS_LCD
-    if (plugins::running(plugins::indexOf("panel"))) add("LCD panel");
+    if (caps & HC_LCD) add("LCD panel");
 #endif
-    if (lights::wired()) add("LED lights");       // a pin, not just the plugin on
+    if (caps & HC_LIGHTS) add("LED lights");
     if (!len) snprintf(out, n, "none");
 }
 
@@ -237,7 +271,7 @@ bool Bbs::hwRow(Session& s, uint8_t k, bool inSys) {
     // What it has, word-wrapped under its label at the width.
     {
         char caps[160], line[96];
-        capabilities(caps, sizeof(caps));
+        capabilities(caps, sizeof(caps), (s.hwCaps & HC_TAKEN) ? s.hwCaps : capsNow());
         const uint8_t room = w > kValueCol + 10 ? static_cast<uint8_t>(w - kValueCol) : 10;
         const char* p = caps;
         bool first = true;
@@ -290,10 +324,18 @@ bool Bbs::hwRow(Session& s, uint8_t k, bool inSys) {
 // rowHardware: the HARDWARE list. A title, the section, a rule. The title
 // carries the version the board shows everywhere else.
 // ---------------------------------------------------------------------------
+void Bbs::hwSnap(Session& s) {
+    s.hwCaps = capsNow();
+}
+
 bool Bbs::rowHardware(Session& s) {
     constexpr uint8_t kDone = 200;                  // past the rule
     uint8_t i = s.listIdx++;
-    if (i == 0) { rowTitle(s, "Hardware", BBS_VERSION_SHOWN); return true; }
+    if (i == 0) {
+        hwSnap(s);                                  // one snapshot for the listing
+        rowTitle(s, "Hardware", BBS_VERSION_SHOWN);
+        return true;
+    }
     if (i >= kDone) return false;
     if (hwRow(s, static_cast<uint8_t>(i - 1), false)) return true;
     rowRule(s);

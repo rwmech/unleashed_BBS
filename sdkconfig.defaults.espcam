@@ -46,7 +46,7 @@
 # text is in the LICENSE file at the top of this repository.
 # ===========================================================================
 
-# PSRAM: the module's 4 MB, quad, on GPIO 16 and 17, at the default 40 MHz
+# PSRAM: the module's 8 MB chip, 4 MB of it mapped, quad, on GPIO 16 and 17, at the default 40 MHz
 # (80 needs the flash at 80 too).
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_USE_MALLOC=y

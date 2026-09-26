@@ -434,6 +434,9 @@ ABOUT_ASC = """--------------------------------------
 
  Built on ESP-IDF, FreeRTOS, lwIP and
  littlefs. Their notices ship with it.
+
+ HARDWARE shows what this board
+ is running on.
 --------------------------------------
 """
 
@@ -449,6 +452,10 @@ def make_about_seq():
     s += pet("grey", " Free software: GNU GPL v3 or later.\n")
     s += pet("grey", " Source and license: see the repo.\n")
     s += pet("cyan", " ESP-IDF, FreeRTOS, lwIP, littlefs.\n")
+    # Rob's line is 46 columns with the indent and a C64 line holds 39,
+    # so it breaks after "board", as the .asc does.
+    s += pet("yellow", " HARDWARE", "grey", " shows what this board\n")
+    s += pet("grey", " is running on.\n")
     s += pet_rule("cyan")
     return bytes(s)
 
@@ -463,7 +470,8 @@ def make_about_ans():
     b += sgr("0;37") + b" Free software: GNU General Public License v3 or later.\r\n"
     b += sgr("0;37") + b" Source and license: see the repository.\r\n\r\n"
     b += sgr("0;36") + b" Built on ESP-IDF, FreeRTOS, lwIP and littlefs; their notices\r\n"
-    b += sgr("0;36") + b" travel with the firmware.\r\n"
+    b += sgr("0;36") + b" travel with the firmware.\r\n\r\n"
+    b += sgr("1;33") + b" HARDWARE" + sgr("0;37") + b" shows what this board is running on.\r\n"
     b += sgr("0;34") + bytes([H_DOUBLE]) * 60 + sgr("0") + b"\r\n"
     return bytes(b)
 

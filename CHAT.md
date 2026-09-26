@@ -56,7 +56,7 @@ A line that starts with `/` is a command, not something you said.
 | `/? cmd` | one command in full, the same text `HELP cmd` gives at the main prompt. `/? staff` shows the moderation commands to staff |
 | `/s` | who is in the room, with any away notes |
 | `/p n text` | one line to node n only |
-| `/p n*` | **stick** the conversation to node n: every line you type goes to them alone, and the input line shows `[>n]` so you always know. `/p*` ends it. From DDial, where it existed because retyping `/p 3 ` in front of every line is nine keystrokes on a C64 |
+| `/p n*` | **a private conversation** with node n: every line you type goes to them alone, the input line shows `[>n]` so you always know, and you see only the two of you (1.1.1): their privates, yours, and the room's notices about either of you. The room says `--> You won't see other callers while talking directly`. What the room says meanwhile is held, not lost: `/p*` ends it and says how many lines went by, `Back to the room. 3 room lines went by: /sh 3 shows them.`, or, when the room said more than it keeps (`history`), how many of them `/sh` can still show. If they leave the room you are told, `They have left. /p* goes back to the room.`, and the next line you type goes nowhere rather than to the room. From DDial, where it existed because retyping `/p 3 ` in front of every line is nine keystrokes on a C64 |
 | `/sh [n]` | replay the last n lines the room said, 20 by default |
 | `/whois handle` | a caller's profile, the same public fields `WHOIS` shows at the main prompt. Email, address and phone stay hidden unless it is your own account or you hold `USERS` |
 | `/page n why` | page node n, as distinct from talking to them. A private line is part of a conversation; a page is "look at your screen". It reaches them wherever they are, the same as `PAGE` at the main prompt: in the room, part way through a line, it lifts their line, prints, and puts it back |
@@ -84,7 +84,7 @@ A page, a broadcast, `SHUTDOWN`'s countdown, "You have mail" and somebody loggin
 
 `/o can't find the drop box` rings the sysop, exactly as `OPERATOR` does at the main prompt: the same limits (one ring every 3 minutes, three a call, one at a time on the board), the same answers, and what you wrote left in the sysop's MAIL when nobody answers (a note, when the board has no sysop account or mail is off). While it rings the spinner is on your line and any key stops it.
 
-If the sysop answers, you stay in the room with a sticky private aimed at the sysop, `[>S]` on your input line, so what you type goes to them alone. `/p*` puts you back to talking to the room.
+If the sysop answers, you stay in the room in a private conversation with the sysop (`/p S*`), `[>S]` on your input line, so what you type goes to them alone and the room's other lines wait (1.1.1). `/p*` puts you back to talking to the room.
 
 **For the sysop**, a ring that arrives in the room is two lines in the room's voice and no question, because the keys in the room are the room's:
 

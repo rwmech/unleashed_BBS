@@ -142,4 +142,116 @@ inline const char* posixFor(const char* name) {
     return nullptr;
 }
 
+// ---------------------------------------------------------------------------
+// valid: a TZ string the board's C library can read (1.1.1, TZ-bad).
+//
+// newlib's tzset (tzset_r.c, the IDF's newlib 4.x) gives up part way
+// through a string it cannot read and leaves the board on "unnamed UTC",
+// with nothing said: a sysop who typed a Custom string one character wrong
+// ran their clock in UTC and found out from the log times. So CONFIG and
+// the parser ask this first. It follows newlib's own reading, and is a
+// little stricter where newlib is merely lenient, never looser:
+//
+//   std offset [dst [offset] [,rule[/time],rule[/time]]]
+//
+//   std, dst   1 to 10 letters, or <1 to 10 of A-Z a-z 0-9 + -> quoted
+//   offset     [+|-]hh[:mm[:ss]], hh 0 to 24, mm and ss 0 to 59
+//   rule       Mm.w.d (m 1-12, w 1-5, d 0-6), Jn (1-365) or n (0-365);
+//              left out, newlib uses the US rules, as here
+//   time       [+|-]hh[:mm[:ss]], hh 0 to 167
+//
+// Stricter: the whole string has to be read (newlib ignores what is left
+// over, which is where a typo usually is), a quoted name has to close its
+// bracket, and an offset's hours stop at 24.
+// ---------------------------------------------------------------------------
+namespace detail {
+
+inline bool tzAlpha(char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); }
+inline bool tzDigit(char c) { return c >= '0' && c <= '9'; }
+
+// tzNum: 1 to 3 digits as a number, no more than max.
+inline bool tzNum(const char*& p, unsigned max, unsigned& out) {
+    if (!tzDigit(*p)) return false;
+    unsigned v = 0;
+    uint8_t n = 0;
+    while (tzDigit(*p) && n < 3) { v = v * 10u + static_cast<unsigned>(*p - '0'); ++p; ++n; }
+    if (tzDigit(*p) || v > max) return false;
+    out = v;
+    return true;
+}
+
+inline bool tzName(const char*& p) {
+    uint8_t n = 0;
+    if (*p == '<') {
+        ++p;
+        while ((tzAlpha(*p) || tzDigit(*p) || *p == '+' || *p == '-') && n < 10) { ++p; ++n; }
+        if (!n || *p != '>') return false;
+        ++p;
+        return true;
+    }
+    while (tzAlpha(*p) && n < 10) { ++p; ++n; }
+    return n && !tzAlpha(*p);
+}
+
+// tzClock: [+|-]hh[:mm[:ss]], the hours no more than maxH.
+inline bool tzClock(const char*& p, unsigned maxH) {
+    if (*p == '+' || *p == '-') ++p;
+    unsigned v;
+    if (!tzNum(p, maxH, v)) return false;
+    for (uint8_t i = 0; i < 2 && *p == ':'; ++i) {
+        ++p;
+        if (!tzNum(p, 59, v)) return false;
+    }
+    return true;
+}
+
+inline bool tzRule(const char*& p) {
+    unsigned v;
+    if (*p == 'M') {
+        ++p;
+        if (!tzNum(p, 12, v) || v < 1 || *p++ != '.') return false;
+        if (!tzNum(p, 5, v) || v < 1 || *p++ != '.') return false;
+        if (!tzNum(p, 6, v)) return false;
+    } else if (*p == 'J') {
+        ++p;
+        if (!tzNum(p, 365, v) || v < 1) return false;
+    } else if (tzDigit(*p)) {
+        if (!tzNum(p, 365, v)) return false;
+    }
+    // else: no rule at all, and newlib puts the US one in its place
+    if (*p == '/') {
+        ++p;
+        if (!tzClock(p, 167)) return false;
+    }
+    return true;
+}
+
+} // namespace detail
+
+// whole = false asks what newlib itself asks: the start read, whatever
+// follows it ignored ("CST6CDT,M3.2.0,M11.1.0 ; Chicago" in a hand-edited
+// file). A file is read that way, so a line newlib would run right is not
+// dropped for its tail; CONFIG asks for the whole string.
+inline bool valid(const char* tz, bool whole = true) {
+    using namespace detail;
+    if (!tz) return false;
+    const char* p = tz;
+    if (*p == ':') ++p;                               // newlib skips one
+    if (!tzName(p) || !tzClock(p, 24)) return false;
+    if (!*p) return true;                             // standard time only
+    if (!tzName(p)) return !whole;                    // newlib: no summer time
+    if (*p && *p != ',') {                            // the summer offset
+        const char* back = p;
+        if (!tzClock(p, 24)) {
+            if (whole) return false;
+            p = back;                                 // newlib: an hour less
+        }
+    }
+    for (uint8_t i = 0; i < 2 && *p; ++i) {
+        if (*p == ',') ++p;
+        if (!tzRule(p)) return false;
+    }
+    return *p == '\0' || !whole;
+}
+
 } // namespace tzones

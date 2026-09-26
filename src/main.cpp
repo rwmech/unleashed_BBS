@@ -509,7 +509,10 @@ void handle() {
     case improv::C_INFO: {
         const SysConfig& c = syscfg::get();
         // The chip family, as the installer names it: "ESP32" or "ESP32-S3".
-        const char* s[] = { "unleashed BBS", BBS_VERSION_SHOWN, kImprovChip,
+        // The firmware's name as a person reads it, micro sign and all, in
+        // UTF-8 (1.1.1): the installer decodes it and matches either
+        // spelling from site 1.3.8.
+        const char* s[] = { BBS_NAME, BBS_VERSION_SHOWN, kImprovChip,
                             c.boardName[0] ? c.boardName : c.hostname };
         sendResult(improv::C_INFO, s, 4);
         break;

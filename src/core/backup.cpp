@@ -37,6 +37,7 @@
  */
 
 #include "backup.h"
+#include "disk.h"              // fopen and opendir that tell the drive light (1.1.1)
 #include "cardnames.h"
 #include "sysconfig.h"
 #include "guard.h"
@@ -267,17 +268,12 @@ bool BackupService::applyingScreens(bool& card) const {
 // Client
 // ===========================================================================
 
-// localAddr: 10/8, 172.16/12, 192.168/16, 127/8, 169.254/16 link-local and
-// 100.64/10, the shared space Tailscale and carrier NAT use, so a sysop on a
-// VPN is let in as the docs promise. The address is in network order, so
-// the first byte is the first octet on either endianness.
+// localAddr: the board's one rule for its own network (guard.h localNet,
+// 1.1.1), which the shell asks too: RFC 1918, link local, 127.0.0.1, and
+// 100.64/10 only when CONFIG network says so. It took all of 127/8 and
+// 100.64/10 always until then.
 static bool localAddr(uint32_t netOrder) {
-    const uint8_t* o = reinterpret_cast<const uint8_t*>(&netOrder);
-    return o[0] == 10 || o[0] == 127 ||
-           (o[0] == 172 && (o[1] & 0xF0) == 16) ||
-           (o[0] == 192 && o[1] == 168) ||
-           (o[0] == 169 && o[1] == 254) ||
-           (o[0] == 100 && (o[1] & 0xC0) == 64);
+    return localNet(netOrder, syscfg::get().cgnatLocal);
 }
 
 void BackupService::acceptClient(uint32_t now) {
@@ -286,17 +282,23 @@ void BackupService::acceptClient(uint32_t now) {
         socklen_t al = sizeof(a);
         int fd = accept(lfd_, reinterpret_cast<sockaddr*>(&a), &al);
         if (fd < 0) return;
+        a.sin_addr.s_addr = peerAddr(a.sin_addr.s_addr);   // the host's 127.0.0.3
         if (!localAddr(a.sin_addr.s_addr)) {
             // A forwarded port, or one UPnP opened without anybody asking,
             // must not hand the accounts and the Wi-Fi password to the
-            // internet. A VPN still works: it puts the caller on a private
-            // address.
+            // internet. A VPN on a private address still works; Tailscale's
+            // 100.64/10 only with CONFIG network's CGNAT row (1.1.1), and a
+            // sysop refused from there is told which setting it is.
             static const char no[] = "HTTP/1.1 403 Forbidden\r\nContent-Length: 20\r\nConnection: close\r\n\r\nlocal network only.\n";
-            send(fd, no, sizeof(no) - 1, MSG_DONTWAIT | MSG_NOSIGNAL);
+            static const char cg[] = "HTTP/1.1 403 Forbidden\r\nContent-Length: 47\r\nConnection: close\r\n\r\nlocal network only; see CONFIG network, CGNAT.\n";
+            const bool cgnat = cgnatAddr(a.sin_addr.s_addr);
+            if (cgnat) send(fd, cg, sizeof(cg) - 1, MSG_DONTWAIT | MSG_NOSIGNAL);
+            else       send(fd, no, sizeof(no) - 1, MSG_DONTWAIT | MSG_NOSIGNAL);
             ::close(fd);
             char ip[16];
             ipToText(a.sin_addr.s_addr, ip, sizeof(ip));
-            note("*** Backup refused %s: not a local address", ip);
+            if (cgnat) note("*** Backup refused %s: 100.64/10, see CONFIG network CGNAT", ip);
+            else       note("*** Backup refused %s: not a local address", ip);
             continue;
         }
         // One client at a time, and none while the zip storage is in use: a
@@ -512,7 +514,7 @@ void BackupService::route(uint32_t now) {
         stagingDir(dir, sizeof(dir));
         mkdir(dir, 0755);
         uploadPath(file, sizeof(file));
-        upload_ = fopen(file, "wb");
+        upload_ = disk::open(file, "wb");
         if (!upload_) { reply(507, "Insufficient Storage", "cannot open staging\n"); return; }
 
         bodyLeft_ = static_cast<uint32_t>(len);
@@ -757,7 +759,7 @@ BackupService::Start BackupService::cardBackup(const char* dir, const char* name
     snprintf(jobPath_, sizeof(jobPath_), "%s/%s", dir, name);
     char tmp[124];
     snprintf(tmp, sizeof(tmp), "%.112s.tmp", jobPath_);
-    jobOut_ = fopen(tmp, "wb");
+    jobOut_ = disk::open(tmp, "wb");
     if (!jobOut_) {
         exporter().abort();
         return Start::Failed;

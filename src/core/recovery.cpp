@@ -38,6 +38,7 @@
  */
 
 #include "recovery.h"
+#include "disk.h"              // fopen and opendir that tell the drive light (1.1.1)
 #include "netfallback.h"    // kBuiltinWifi: whether a factory reset leaves a network to rejoin
 #include "sysconfig.h"
 #include "../config.h"
@@ -204,7 +205,7 @@ bool lastGood(char (&ssid)[33], char (&pass)[65]) {
     ssid[0] = pass[0] = '\0';
     char path[96];
     lastPath(path, sizeof(path));
-    FILE* f = fopen(path, "r");
+    FILE* f = disk::open(path, "r");
     if (!f) return false;
     bool ok = readLine(f, ssid, sizeof(ssid)) && ssid[0] && readLine(f, pass, sizeof(pass));
     fclose(f);
@@ -239,7 +240,7 @@ void wifiJoined(const char* ssid, const char* pass) {
     char path[96], tmp[100];
     lastPath(path, sizeof(path));
     snprintf(tmp, sizeof(tmp), "%s.tmp", path);
-    FILE* f = fopen(tmp, "w");
+    FILE* f = disk::open(tmp, "w");
     bool ok = f != nullptr;
     if (f) {
         ok = fprintf(f, "%s\n%s\n", ssid, pass) > 0;

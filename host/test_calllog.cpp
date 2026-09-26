@@ -47,6 +47,7 @@ namespace plat {
 const char* logsBase() { return g_dir.c_str(); }
 const char* sdBase()   { return ""; }                  // no card: no mirror
 void log(const char* fmt, ...) { (void)fmt; }
+void diskPulse(DiskKind) {}                            // the drive light (core/disk.h, 1.1.1)
 }
 namespace clk {
 uint32_t todayStart() { return g_midnight; }

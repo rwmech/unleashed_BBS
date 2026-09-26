@@ -2490,7 +2490,10 @@ const char* signalWord(int8_t rssi, Color& c) {
 bool Bbs::rowSys(Session& s) {
     char buf[48], num[16];
     uint8_t i = s.listIdx++;
-    if (i == 0) snapFill(true);                  // with the heap walk, for the biggest block
+    if (i == 0) {
+        snapFill(true);                          // with the heap walk, for the biggest block
+        hwSnap(s);                               // and what it has running, once a listing
+    }
     // The hardware section (1.1.1), last, before the rule: HARDWARE's own
     // rows (bbs_hardware.cpp), as many lines as the width makes them, less
     // the heap rows "memory" already has. When hwRow is done, i jumps to
@@ -3113,8 +3116,10 @@ Access Bbs::staffPassword(Session& s, const char* pw, uint32_t now, bool* banned
     // From anywhere else it is a wrong password, ban count and all, because
     // anybody can read it on the install page.
     if (lv == Access::Sysop && syscfg::get().sysopDefault && !localAddr(s.ip)) {
-        plat::log("bbs: node %s default sysop password refused from %s (not local)",
-                  nodeName(s).t, s.ip);
+        uint32_t a = 0;
+        const bool cg = ipFromText(s.ip, a) && cgnatAddr(a);
+        plat::log("bbs: node %s default sysop password refused from %s (not local%s)",
+                  nodeName(s).t, s.ip, cg ? "; 100.64/10 is local only with CONFIG network CGNAT" : "");
         lv = Access::None;
     }
     if (lv != Access::None) {
@@ -3179,7 +3184,7 @@ void Bbs::fxNext(Session& s) {
         case 13: label(t, tl, "Blink"); t.color(tl, Color::LightRed);
                  fx::blink(t, tl, "ALERT", 4, 250); t.color(tl, Color::Grey);
                  fxCode(t, tl, "@BLINK:text@"); t.nl(tl); break;
-        case 14: label(t, tl, "Marquee"); fx::marquee(t, tl, "** UNLEASHED BBS **", 16, 80, 1);
+        case 14: label(t, tl, "Marquee"); fx::marquee(t, tl, "** " BBS_NAME " **", 16, 80, 1);
                  t.text(tl, "done"); t.nl(tl); break;
         case 15: label(t, tl, "Cursor"); fx::cursorBlink(t, tl, 5, 250);
                  t.text(tl, "ready"); t.nl(tl); break;

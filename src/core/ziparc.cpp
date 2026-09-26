@@ -36,6 +36,7 @@
  */
 
 #include "ziparc.h"
+#include "disk.h"              // fopen and opendir that tell the drive light (1.1.1)
 #include "backup.h"     // sdCardInfo
 #include "crc32.h"
 #include "sysconfig.h"
@@ -104,7 +105,7 @@ void ensureDir(const char* path) {
 
 // removeDir: delete regular files in a directory, then the directory
 void removeDir(const char* dir) {
-    DIR* d = opendir(dir);
+    DIR* d = disk::dir(dir);
     if (d) {
         struct dirent* e;
         char path[160];
@@ -141,9 +142,9 @@ uint32_t blocks(uint32_t n) {
 // half. The buffer is on the stack and small, because the backup path is
 // already the deepest the task has (bbs.h, stackWatch).
 bool copyFile(const char* src, const char* dst) {
-    FILE* in = fopen(src, "rb");
+    FILE* in = disk::open(src, "rb");
     if (!in) return false;
-    FILE* out = fopen(dst, "wb");
+    FILE* out = disk::open(dst, "wb");
     if (!out) { fclose(in); return false; }
     uint8_t buf[256];
     size_t n;
@@ -256,7 +257,7 @@ struct CfgPeek {
 };
 
 void peekCfg(const char* path, CfgPeek& out) {
-    FILE* f = fopen(path, "r");
+    FILE* f = disk::open(path, "r");
     if (!f) return;
     char line[176];
     while (fgets(line, sizeof(line), f)) {
@@ -400,7 +401,7 @@ size_t ZipExport::cfgRead(uint8_t* buf, size_t cap) {
     if (!f_) {
         char path[96];
         livePath(path, sizeof(path), BBS_CONFIG_FILE);
-        f_ = fopen(path, "r");
+        f_ = disk::open(path, "r");
         lineLen_ = linePos_ = 0;
         if (!f_) return 0;
     }
@@ -443,7 +444,7 @@ size_t ZipExport::readData(Entry& e, uint8_t* buf, size_t cap) {
                 char path[96];
                 if (e.src == Src::Snapshot) livePath(path, sizeof(path), BBS_USERS_FILE ".export");
                 else                        livePath(path, sizeof(path), e.name);
-                f_ = fopen(path, "rb");
+                f_ = disk::open(path, "rb");
                 if (!f_) return 0;
             }
             return fread(buf, 1, cap, f_);
@@ -534,7 +535,7 @@ void ZipExport::collect(bool screensOnly, bool snapshot) {
 
     uint8_t firstScreen = count_;
     livePath(path, sizeof(path), BBS_SCREEN_DIR);
-    DIR* d = opendir(path);
+    DIR* d = disk::dir(path);
     if (d) {
         struct dirent* e;
         while ((e = readdir(d)) != nullptr) {
@@ -823,9 +824,9 @@ bool ZipExport::snapshotUsers() {
     char src[96], dst[96];
     livePath(src, sizeof(src), BBS_USERS_FILE);
     livePath(dst, sizeof(dst), BBS_USERS_FILE ".export");
-    FILE* in = fopen(src, "rb");
+    FILE* in = disk::open(src, "rb");
     if (!in) return false;
-    FILE* out = fopen(dst, "wb");
+    FILE* out = disk::open(dst, "wb");
     if (!out) { fclose(in); return false; }
     uint8_t buf[256];
     size_t n;
@@ -925,7 +926,7 @@ bool ZipImport::open(const char* zipPath, char* err, size_t errLen, Mode mode,
     next_       = 0;
     applyPhase_ = applyIdx_ = 0;
 
-    zf_ = fopen(zipPath, "rb");
+    zf_ = disk::open(zipPath, "rb");
     if (!zf_) { snprintf(err, errLen, "upload not found"); return false; }
     fseek(zf_, 0, SEEK_END);
     long size = ftell(zf_);
@@ -1172,7 +1173,7 @@ bool ZipImport::extract(Item& it) {
 
     char path[112];
     stagePath(path, sizeof(path), it.name);
-    FILE* out = fopen(path, "wb");
+    FILE* out = disk::open(path, "wb");
     if (!out) { reject(it.name, "cannot write staging"); return false; }
 
     Pipe p{ zf_, it.csize, out, 0, it.usize, 0, false };
@@ -1283,7 +1284,7 @@ void ZipImport::countRemovals() {
     }
     char dir[96];
     livePath(dir, sizeof(dir), BBS_SCREEN_DIR);
-    DIR* d = opendir(dir);
+    DIR* d = disk::dir(dir);
     if (!d) return;
     struct dirent* e;
     char name[40];
@@ -1307,7 +1308,7 @@ void ZipImport::countRemovals() {
 bool ZipImport::removeOneStale() {
     char dir[96];
     livePath(dir, sizeof(dir), BBS_SCREEN_DIR);
-    DIR* d = opendir(dir);
+    DIR* d = disk::dir(dir);
     if (!d) return false;
     struct dirent* e;
     char name[40];
@@ -1347,8 +1348,8 @@ bool ZipImport::applyItem(Item& it) {
         livePath(dst, sizeof(dst), it.name);
         char tmp[140];
         snprintf(tmp, sizeof(tmp), "%.126s.new", dst);
-        FILE* in  = fopen(src, "r");
-        FILE* out = fopen(tmp, "w");
+        FILE* in  = disk::open(src, "r");
+        FILE* out = disk::open(tmp, "w");
         bool ok = in && out;
         char line[176], merged[176];
         unsigned dropped = 0;

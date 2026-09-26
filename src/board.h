@@ -38,7 +38,8 @@
  *                                      internal/PLAN-freenove-cam.md.
  *
  *               BBS_BOARD_AI_ESP32CAM  AI-Thinker ESP32-CAM: ESP32-D0WDQ6,
- *                                      4 MB flash, 4 MB PSRAM, an OV2640,
+ *                                      4 MB flash, PSRAM (8 MB chip, 4 MB
+ *                                      mapped), an OV2640,
  *                                      a micro SD slot (run over SPI)
  *                                      and a flash LED on GPIO 4.
  *
@@ -122,7 +123,7 @@
 // the version is shown, as BBS_VERSION_SHOWN (config.h) puts it. The
 // reference board defines neither.
 #define BBS_BOARD_TAG         "S3"
-#define BBS_BOARD_VERSION     "1.1.1"
+#define BBS_BOARD_VERSION     "1.1.2"
 
 // The internal heap a plugin may not take at start (config.h). 16 KB, not
 // the WROOM's 40: with PSRAM, Wi-Fi's and lwIP's buffers go there
@@ -229,7 +230,7 @@
 #define BBS_BOARD_PLUGINS     1       // the camera
 
 #define BBS_BOARD_TAG         "FNCAM"
-#define BBS_BOARD_VERSION     "1.0.5"
+#define BBS_BOARD_VERSION     "1.0.6"
 
 // PSRAM (sdkconfig.defaults.fncam). Wi-Fi's and lwIP's buffers go there.
 // The internal reserve stays the WROOM's 40 KB until the bench's MEM says
@@ -331,7 +332,8 @@
 // bench's is an Aideepen on an ESP32-CAM-MB programmer with a CH340G)
 //
 // ESP32-D0WDQ6 (read as revision v1.0 on the bench), 4 MB flash (d8/4016),
-// 4 MB PSRAM on GPIO 16 and 17, an OV2640 on the 24-pin ribbon (read over
+// PSRAM on GPIO 16 and 17 (an 8 MB chip, of which the ESP32 maps 4 MB),
+// an OV2640 on the 24-pin ribbon (read over
 // SCCB on 2026-09-25: one device at 0x30, PID 0x26, VER 0x42, MID 0x7FA2),
 // a micro SD slot on the SDMMC pins, a bright white flash LED on GPIO 4
 // (through a transistor), a small red LED on GPIO 33 (active low).
@@ -367,7 +369,7 @@
 #define BBS_BOARD_PLUGINS     1       // the camera
 
 #define BBS_BOARD_TAG         "ESPCAM"
-#define BBS_BOARD_VERSION     "1.0.2"
+#define BBS_BOARD_VERSION     "1.0.3"
 
 // PSRAM (sdkconfig.defaults.espcam). A build that lost the sdkconfig layer
 // would otherwise link quietly without it.

@@ -187,3 +187,19 @@ CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
 # the primary mechanism. This is belt and braces, so that a path which does
 # not run it cannot leave the radio asleep.
 CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=n
+
+# Flash trims that cost a caller nothing (1.1.1, Rob, from the optimize
+# report internal/memory-2026-09-25-1.1.1.md, sections 3.2 and 3.3).
+#
+# IPv6 off. Every socket the firmware opens is AF_INET (the listener, the
+# backup window, announce), nothing creates an IPv6 link-local address and
+# IPv6 autoconfig was already off, so no board has ever had an IPv6 address
+# to be called on. About 26 KB of flash and 1.8 KB of static DRAM.
+CONFIG_LWIP_IPV6=n
+# SoftAP and WPA2-Enterprise off. The board is only ever a station
+# (esp_wifi_set_mode(WIFI_MODE_STA), main.cpp), Improv runs over the serial
+# port, a captive portal was declined for good (2026-09-22), and nothing in
+# the firmware or CONFIG network sets an 802.1X identity or certificate, so
+# neither could be used. About 44 KB of flash.
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
+CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=n

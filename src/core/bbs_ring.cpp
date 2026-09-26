@@ -68,6 +68,7 @@
  */
 
 #include "bbs.h"
+#include "disk.h"              // fopen and opendir that tell the drive light (1.1.1)
 #include "bbs_util.h"
 #include "ring.h"
 #include "fx.h"
@@ -800,7 +801,7 @@ void Bbs::ringSaveNote(const ring::Note& n) {
     uint16_t total = 0;
     uint8_t  have  = 0;
     ring::Note x;
-    if (FILE* in = fopen(path, "r")) {
+    if (FILE* in = disk::open(path, "r")) {
         while (fgets(line, sizeof(line), in)) {
             if (ring::parseHeader(line, total)) continue;
             if (ring::parseNote(line, x) && have < 255) ++have;
@@ -809,7 +810,7 @@ void Bbs::ringSaveNote(const ring::Note& n) {
     }
     if (total < have) total = have;               // a header lost to a power cut
 
-    FILE* out = fopen(tmp, "w");
+    FILE* out = disk::open(tmp, "w");
     if (!out) {
         plat::log("bbs: ring note not saved, cannot write %s", tmp);
         return;
@@ -817,7 +818,7 @@ void Bbs::ringSaveNote(const ring::Note& n) {
     ring::formatHeader(static_cast<uint16_t>(total < 65535 ? total + 1 : total), line, sizeof(line));
     bool ok = fputs(line, out) >= 0;
     uint8_t skip = have >= ring::kNotesMax ? static_cast<uint8_t>(have - (ring::kNotesMax - 1)) : 0;
-    if (FILE* in = fopen(path, "r")) {
+    if (FILE* in = disk::open(path, "r")) {
         while (ok && fgets(line, sizeof(line), in)) {
             if (!ring::parseNote(line, x)) continue;
             if (skip) { --skip; continue; }        // the oldest go first
@@ -845,7 +846,7 @@ void Bbs::ringSaveNote(const ring::Note& n) {
 uint16_t Bbs::ringNoteCount() {
     char path[96], line[160];
     notesPath(path, sizeof(path));
-    FILE* f = fopen(path, "r");
+    FILE* f = disk::open(path, "r");
     if (!f) return 0;
     uint16_t total = 0;
     uint16_t count = 0;
@@ -870,7 +871,7 @@ uint16_t Bbs::ringNoteCount() {
 bool Bbs::ringNotes(Session& s) {
     char path[96], line[160];
     notesPath(path, sizeof(path));
-    FILE* f = fopen(path, "r");
+    FILE* f = disk::open(path, "r");
     if (!f) { ringNotesWaiting_ = 0; return false; }
 
     uint16_t total = 0;

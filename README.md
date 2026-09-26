@@ -154,7 +154,7 @@ This section used to carry a per-version snapshot (host test counts, image size,
 
 ### First boot: the sysop password
 
-- A new board has one published default password, the sysop's: `unleashed`. It is used while `system.cfg` has no `sysop_password` line, or one that spells `unleashed` out, which since 1.1.0 reads as the same thing (a restore on 1.0.0 or 1.0.1 could write one, and such a board heals at its next boot). It works only from the board's own network (RFC 1918, link-local, loopback and `100.64/10`). From anywhere else it is a wrong password.
+- A new board has one published default password, the sysop's: `unleashed`. It is used while `system.cfg` has no `sysop_password` line, or one that spells `unleashed` out, which since 1.1.0 reads as the same thing (a restore on 1.0.0 or 1.0.1 could write one, and such a board heals at its next boot). It works only from the board's own network (RFC 1918, link-local and loopback, and `100.64/10` when `CONFIG network`'s CGNAT row says so; off as shipped since 1.1.1). From anywhere else it is a wrong password.
 - Log in or sign up from a computer on the same network and the board asks for it straight away: "This board has not been set up yet." The right password makes you the sysop, shows a short setup screen, opens `CONFIG staff` to choose your own, then gives a paged tour of the rest of CONFIG. ESC (the left arrow on a Commodore) skips, and `BYE <password>` from the same network does it later.
 - The board refuses the published default as anybody's chosen password, and it keeps itself out of the directory listing until the default is changed.
 - A new board is closed to callers until you open it (1.1.0). Its first caller registers and runs the setup; everybody after that gets a "Closed by the sysop" sign, and only the sysop's own account gets in, from the login under that sign. When the passwords and settings are done, `CONFIG board`'s last row, "Stop taking calls" (`Closed` at 40 columns), set to no opens it. A board that had its own sysop password before 1.1.0 stays open when it is upgraded: closed only starts on a board still on the published default.
@@ -205,7 +205,7 @@ pio device monitor                               # then set Wi-Fi with Improv, s
 After that:
 
 - `pio run -t upload` for new firmware. Config, screens and logs stay as they are.
-- Config and screens change through the backup window ([BACKUP.md](BACKUP.md)), not by reflashing. With an SD card, `BACKUP SD` and `RESTORE SD` keep the same zip on the card from the sysop's prompt, `nightly = yes` on `CONFIG sd` makes one every night, and the sysop's `Backups` file area (`FILES 11`) downloads and uploads them over the line. A restore waits until nobody else is on. `SCREENS` lists every screen and where callers get it from.
+- Config and screens change through the backup window ([BACKUP.md](BACKUP.md)), not by reflashing. With an SD card, `BACKUP SD` and `RESTORE SD` keep the same zip on the card from the sysop's prompt, `nightly = yes` on `CONFIG sd` makes one every night, and the sysop's `Backups` file area (`FILES 11`) downloads and uploads them over the line. A restore waits until nobody else is on. `SCREENS` lists every screen and where callers get it from, and `SCREENS INSTALL` (1.1.1) copies your own screens from the card into flash so they survive the card being pulled; `SCREENS INSTALL STOCK` undoes it.
 - `flashall` / `uploadfs` rewrite the `storage` partition with `data/`, which is the screens. The accounts and the config are on `userdata` and stay put, so reflashing a board is no longer a reset.
 
 Flash layout (4 MB): two 1.5 MB OTA app slots and three data partitions.
@@ -279,7 +279,8 @@ src/core/sysconfig.*      system.cfg loader, validator, password redaction, acce
 src/core/backup.*         backup window: button, HTTP in the BBS loop, Y/N approval; the card jobs
 src/core/ziparc.*         backup zip export (stored) and import (stored/deflate, staged)
 src/core/bbs_backup.cpp   BACKUP SD, RESTORE SD and the nightly backup, as the sysop sees them; a restore waiting for a quiet board
-src/core/bbs_screens.cpp  SCREENS and SCREENS VIEW: every screen and where callers get it from
+src/core/bbs_screens.cpp  SCREENS, SCREENS VIEW and SCREENS INSTALL: every screen, where callers get it from, the card's into flash
+src/core/disk.h           fopen and opendir that tell the drive light
 src/core/cardnames.h      the backups' names on the card, and which nightly one to prune
 src/core/tzones.h         the timezones CONFIG board offers by name
 src/core/silent.*         silent mode: the switch and the silent hours, one byte every light asks

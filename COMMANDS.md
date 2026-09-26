@@ -24,6 +24,7 @@ Version 0.22.0. This file tracks every command and key the BBS understands, and 
   - Other ANSI terminals are detected automatically within about 2 s.
   - If there is no answer, the BBS shows `HIT DEL OR BACKSPACE`. INST/DEL on a C64 selects PETSCII, and Backspace on a PC selects ASCII.
   - PETSCII callers then answer `40 OR 80 COLUMNS (4/8)?`.
+- Once the terminal is known, before any screen, every caller is told how they are connected: `--> Connection via Telnet is not secure` (1.1.1). The busy line and the closed sign say it too. 39 columns, so it fits a C64.
 - A line whose far end disappears without hanging up (a C64 switched off, a pulled cable) is dropped within about 90 seconds, staff lines included.
 
 ## Logging in
@@ -158,7 +159,7 @@ A plugin that owns a session gets notices only if it offers the `liftInput` and 
 
 | What happened | The caller is told |
 |---|---|
-| The sysop answers | `The sysop answered. You're in the chat room, and what you type goes to the sysop only. /q leaves.` Both are in the room with a sticky private (`/p n*`) already aimed at each other: `[>S]` on the caller's input line, `[>3]` on the sysop's. `/p*` ends it; `/q` leaves the room. |
+| The sysop answers | `The sysop answered. You're in the chat room, and what you type goes to the sysop only. /q leaves.` Both are in the room in a private conversation (`/p n*`) already aimed at each other: `[>S]` on the caller's input line, `[>3]` on the sysop's, and the room's other lines wait until it ends (1.1.1). `/p*` ends it and says how many went by; `/q` leaves the room. |
 | The sysop declines | `The sysop can't talk right now. What you wrote is saved for them.` |
 | The sysop is on and has pages off (DND) | `The sysop is away. What you wrote is saved for them.`, at once |
 | No sysop is on, or the sysop is hidden (`HIDE`) or lurking | `The sysop isn't available. What you wrote is saved for them.`, at once |
@@ -284,6 +285,7 @@ All caller commands still work. Node arguments are `1`-`10`, `S` (sysop node) or
 | `UNBAN a.b.c.d` | `UNBAN` | Lift a ban. |
 | `SCREENS` | any staff | Every screen by name, one row each: the size of each of `.ans`, `.asc` and `.seq`, and where callers get that copy from. At 80 columns that reads `flash`, `card, seeded` (the stock copy the board put on the card) or `card, own` (one the sysop edited or imported); at 40 it is `F`, `C` or `O`, with the key under the list. Read from the folders when asked; nothing is kept (1.1.0). |
 | `SCREENS VIEW name[.ext] [FLASH]` | any staff | Plays one screen. With no extension, the one your terminal would get; with one, exactly that file, if your terminal can show it (`.asc` anywhere, `.ans` on ANSI, `.seq` on PETSCII; otherwise it says which kind the file is and which your terminal is). `FLASH` plays the stock copy even where the card overrides it. A name is a screen's name only: no paths. |
+| `SCREENS INSTALL [STOCK]` | sysop | Copies your own screens from the card into flash, so they play with the card out (1.1.1). Your own means every screen in the card's `screens` folder that is not the board's seeded stock copy and not already in flash byte for byte; a card's `CLOSED.ASC` goes in as `closed.asc`. The whole set is checked first, the way a restore checks a zip: a name that is not a screen's, an empty file, one over 64 KB, more than 64 of them or more than 256 KB, or more than the screens partition has room for, and nothing is installed: `Not enough room in flash: 96 KB needed, 52 KB free.` Then each goes in whole or not at all, a step at a time with a spinner, anybody reading a flash screen let go of it first. The stock copy each replaces is kept in flash in `screens/.stock`, and the card's manifest marks the installed ones as yours so a new firmware's stock screens never replace them on the card. `Installed 2 screens in flash. They play from flash with the card out. SCREENS INSTALL STOCK undoes it.` `SCREENS INSTALL STOCK` puts the stock set back from `.stock` and removes screens flash never had: `Stock screens back: 1 put back, 1 removed.` A firmware update does the same, since it rewrites the screens partition. Neither runs beside a backup or a restore. |
 | `USERS` | `USERS` | User manager: cursor list of accounts with edit, add and retire (ANSI, PETSCII; `D` retires, as `USER DEL` does). A paged list on plain ASCII. |
 | `USER ADD` | `USERS` | Add-account form: handle, password, fields, Level, Locked. |
 | `USER EDIT handle` | `USERS` | Edit-account form. Empty `New pass` (`New password` at 80 columns) keeps the password. Renames follow callers who are online. |
@@ -477,7 +479,7 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 |---|---|---|
 | `board_name` | empty | this board's own name, shown instead of the software's; empty falls back to the software name |
 | `hostname` | `unleashed` | DHCP and mDNS name (`unleashed.local`), `a-z 0-9 -`, applies at reboot |
-| `tz` | `UTC0` | POSIX TZ string, e.g. `CST6CDT,M3.2.0,M11.1.0`. See the Timezone note under this table |
+| `tz` | `UTC0` | POSIX TZ string, e.g. `CST6CDT,M3.2.0,M11.1.0`. See the Timezone note under this table. One the board's C library cannot read is refused by `CONFIG`, and a file's is dropped at boot with a console line and the clock kept on what it had (1.1.1) |
 | `ntp_server` | `pool.ntp.org` | clock source |
 | `sysop_password` | none set | sysop level. No line at all, or a line that spells it out (1.1.0), means the published default `unleashed` stands in, honoured from the board's own network only (see "First boot" in README.md); a blank line disables the level outright |
 | `cosysop1_password` | empty | co-sysop 1 level, empty = disabled |
@@ -485,6 +487,7 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `wifi_ssid` | empty | Wi-Fi network name, up to 32 characters; set by Improv, `CONFIG network` or by hand. Empty falls back to `include/secrets.h` on a build that has one. A network that has not joined within 60 s of boot is given up for the last one that did, kept by the board in `userdata/wifi.last` (1.1.0) |
 | `wifi_password` | empty | its passphrase, 8 to 64 characters, or empty for an open network. Used only from the next restart, never live |
 | `port` | `6400` | The port callers dial. Used from the next restart. It cannot be the backup window's port. Takes 1 to 65535; as shipped, `6400`. If callers reach the board from the internet, the forward on your router has to point at the new number too. mDNS, SYS, the console's `dial in` line, Improv's telnet link and announce's default all follow it |
+| `cgnat_local` | `no` | `yes`: `100.64.0.0/10`, the carrier-grade NAT range Tailscale also uses, counts as the board's own network (1.1.1, `CONFIG network`, **CGNAT/Tailscale LAN**, `CGNAT` at 40 columns). It trusts everybody behind the same carrier NAT, not only your own Tailscale devices, which is why it is off. It moves every "local" rule at once: the published default password's local-only rule, a second sysop taking sysop in place, and the backup window's port. Live, the one row on that page that is |
 | `idle_minutes` | `20` | shell idle hangup, 0 = never |
 | `landing` | `main` | where a caller goes after login when their account has not said: `main`, `chat` or `forums` |
 | `sysop_handle` | empty | the sysop's own account (1.1.0, `CONFIG board`, **Sysop**): missed rings are mailed to it, and it is asked for the sysop password at login. `CONFIG` refuses a handle with no live account and writes it in `users.txt`'s spelling. Empty: the last account to elevate to sysop, which the board keeps in `userdata/sysop.last` across a restart (a restore that brings back `users.txt` clears it, since it is an id into that file) |
@@ -510,7 +513,7 @@ Keys must appear above the first `[section]` line. Sections are `[access]` for t
 
 **Timezone** and **TZ string** (`tz`, on `CONFIG board` since 1.1.0): Timezone picks a zone by name from a list, and TZ string shows the rule behind it, which is what the board keeps. Pick **Custom** to type your own. As shipped, `UTC`.
 
-A TZ string is the POSIX form the board's C library reads. It starts with the zone's short name and its offset from UTC in hours, counted **west**, so US zones are positive and zones east of London are negative. A zone with daylight saving adds the summer name and when the clocks change: `EST5EDT,M3.2.0,M11.1.0` is US Eastern, changing on the second Sunday of March and the first Sunday of November.
+A TZ string is the POSIX form the board's C library reads. One it cannot read (a typo, a missing rule, `America/Chicago`, which is a zone name and not a rule) used to leave the board on UTC with nothing said; since 1.1.1 the row refuses it: `not a TZ string the board can read`. It starts with the zone's short name and its offset from UTC in hours, counted **west**, so US zones are positive and zones east of London are negative. A zone with daylight saving adds the summer name and when the clocks change: `EST5EDT,M3.2.0,M11.1.0` is US Eastern, changing on the second Sunday of March and the first Sunday of November.
 
 If your place is not in the list, a Linux computer can tell you its string: `tail -n 1 /usr/share/zoneinfo/Europe/Paris`, with your own area and city, prints it. The answer is only as current as that computer's time zone data, and the rules do change: British Columbia, Alberta and the Northwest Territories all stopped changing their clocks in 2026, and lists of these strings made before then give the old rules. If your government changes the rules, type the new string as Custom; the board does not update its list by itself.
 

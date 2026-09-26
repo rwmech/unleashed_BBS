@@ -222,6 +222,11 @@ struct Session {
     // padding before watchNext, which is where the two DASH bytes went too,
     // so the pair costs no Session anything (every byte there costs twelve).
     uint8_t      countdown   = 0;
+    // HARDWARE and SYS (1.1.1): what the board had running when the list
+    // started (Bbs::hwSnap), so a card or camera arriving while a caller
+    // sits at [More] cannot make the capability line repeat or skip. The
+    // last two bytes of that padding: still no cost to a Session.
+    uint16_t     hwCaps      = 0;
     uint32_t     watchNext   = 0;      // next redraw; 0 = drawing now
 
     // busy line countdown: when the next second is due (countdown is above)
@@ -582,6 +587,11 @@ private:
     void onDetected(Session& s, uint32_t now);
     void startIntro(Session& s);
     void startBusy(Session& s, uint32_t now);
+    // linkLine: how this caller is connected and whether it is encrypted,
+    // said before any screen (1.1.1, Rob): "--> Connection via Telnet is
+    // not secure". Every caller who is detected sees it, on the welcome,
+    // the busy line and the closed sign alike.
+    void linkLine(Session& s);
     // Closed to callers (1.1.0, CONFIG board "Stop taking calls"). A caller
     // gets the busy line's sign and countdown in the closed wording, and a
     // key opens a login that only the sysop's own account gets past
@@ -720,6 +730,9 @@ private:
     // inSys leaves out the heap rows SYS already has under "memory".
     bool rowHardware(Session& s);
     bool hwRow(Session& s, uint8_t k, bool inSys);
+    // hwSnap: what the board has running, kept in s.hwCaps as the list
+    // starts, so every line of one listing reads the same snapshot (1.1.1).
+    static void hwSnap(Session& s);
     bool rowCalls(Session& s);
     void cmdCalls(Session& s);   // padded when refreshing
     // rowText, rowRule, rowTitle and rowWidth are public: a plugin drawing
@@ -997,6 +1010,15 @@ private:
     // SCREENS VIEW to play one. Staff. Read from the folders when asked.
     void cmdScreens(Session& s, const char* arg);
     bool rowScreens(Session& s);
+    // SCREENS INSTALL [STOCK] (1.1.1): the card's own screens copied into
+    // flash so they survive the card being pulled, and the stock set put
+    // back. A job of one step a pass, never a burst (Rule no. 1), from
+    // tick. screensBusy: one is under way (a backup or restore waits for
+    // it, and it for them). screensDrop: the card is going (dropCardJob).
+    void serviceScreens(uint32_t now);
+    bool screensBusy() const;
+    void screensDrop();
+    void screensInstall(Session& s, bool stock);
     // restartPlugins: hand anybody inside a plugin home, stop them all and
     // start them again on the file as it is now. A CONFIG save and a
     // restore both end here (bbs_sysop.cpp).

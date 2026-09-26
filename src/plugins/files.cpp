@@ -81,6 +81,7 @@
  */
 
 #include "../core/plugin.h"
+#include "../core/disk.h"              // fopen and opendir that tell the drive light (1.1.1)
 #include "../core/bbs.h"
 #include "../core/claims.h"
 #include "../core/bbs_util.h"
@@ -374,7 +375,7 @@ bool pendPath(uint8_t i, char* out, size_t n);       // just below
 bool nthPending(uint8_t area, uint16_t want, char* out, size_t n) {
     char pd[160];
     if (!want || !pendPath(area, pd, sizeof(pd))) return false;
-    DIR* d = opendir(pd);
+    DIR* d = disk::dir(pd);
     if (!d) return false;
     uint16_t seen = 0;
     bool found = false;
@@ -448,7 +449,7 @@ bool nthFile(uint8_t area, uint16_t want, char* out, size_t n) {
 #ifdef BBS_HAS_CAMERA
     if (area == kAreaPhotos) { uint16_t seen = 0; return photoEntry(dir, want, out, n, seen); }
 #endif
-    DIR* d = opendir(dir);
+    DIR* d = disk::dir(dir);
     if (!d) return false;
     uint16_t seen = 0;
     bool found = false;
@@ -562,7 +563,7 @@ void findDesc(const char* dir, const char* file, char* out, size_t n) {
     out[0] = '\0';
     char p[160];
     snprintf(p, sizeof(p), "%s/%s", dir, BBS_FILES_DESC);
-    FILE* f = fopen(p, "r");
+    FILE* f = disk::open(p, "r");
     if (!f) return;
     char line[128];
     while (fgets(line, sizeof(line), f)) {
@@ -602,11 +603,11 @@ bool setDesc(const char* dir, const char* file, const char* text) {
     snprintf(tmp, sizeof(tmp), "%s/%s.tmp", dir, BBS_FILES_DESC);
 #endif
 
-    FILE* out = fopen(tmp, "w");
+    FILE* out = disk::open(tmp, "w");
     if (!out) return false;
     bool wrote = false;
 
-    FILE* in = fopen(cur, "r");
+    FILE* in = disk::open(cur, "r");
     if (in) {
         char line[128];
         while (fgets(line, sizeof(line), in)) {
@@ -736,7 +737,7 @@ void clearBackupsStaging() {
     if (claims::held(claims::Res::Transfer) || !pendPath(kAreaBackups, pd, sizeof(pd))) return;
     for (uint8_t guard = 0; guard < 32; ++guard) {       // one at a time: never remove mid-walk
         char victim[64] = "";
-        DIR* d = opendir(pd);
+        DIR* d = disk::dir(pd);
         if (!d) return;
         for (struct dirent* e = readdir(d); e; e = readdir(d)) {
             if (e->d_name[0] == '.') continue;
@@ -1094,7 +1095,7 @@ bool rows(Session& s) {
     // sixteen callers cannot hold sixteen open DIR handles against a FATFS
     // budget of twenty, and a held handle across a page break is a handle
     // held until somebody presses a key, which may be never.
-    DIR* d = opendir(dir);
+    DIR* d = disk::dir(dir);
     if (!d) {
         // The folder is made at start, so reaching this means it went away
         // afterwards: the card was pulled, or somebody deleted it on a PC.
@@ -1680,7 +1681,7 @@ bool pendPath(uint8_t i, char* out, size_t n) {
 uint16_t countPending(uint8_t i) {
     char pd[160];
     if (!pendPath(i, pd, sizeof(pd))) return 0;
-    DIR* d = opendir(pd);
+    DIR* d = disk::dir(pd);
     if (!d) return 0;
     uint16_t n = 0;
     struct dirent* e;
@@ -1793,7 +1794,7 @@ bool xferOpen(void* ctx, const char* name, uint32_t size) {
         return false;
     }
 
-    x->fp = fopen(full, "wb");
+    x->fp = disk::open(full, "wb");
     if (!x->fp) return false;
     x->made = true;
     snprintf(x->name, sizeof(x->name), "%.48s", name);
@@ -1910,7 +1911,7 @@ void xferEnd(Bbs& b, Session& s) {
         char pd[160], lf[192];
         if (pendPath(g_x.area, pd, sizeof(pd))) {
             snprintf(lf, sizeof(lf), "%s/%s", pd, kPendList);
-            FILE* f = fopen(lf, "a");
+            FILE* f = disk::open(lf, "a");
             if (f) {
                 fprintf(f, "%s\t%s\t%lu\t%lu\n", g_x.name, s.user,
                         static_cast<unsigned long>(time(nullptr)),
@@ -2086,7 +2087,7 @@ void startSend(Bbs& b, Session& s, const char* arg, uint32_t now) {
     if (*r == 'x' || *r == 'X') useY = false;
 
     snprintf(buf, sizeof(buf), "%s/%.48s", dir, name);
-    FILE* fp = fopen(buf, "rb");
+    FILE* fp = disk::open(buf, "rb");
     if (!fp) {
         s.term.color(s.tl, Color::LightRed);
         s.term.text(s.tl, "No such file in this area.");
@@ -2256,7 +2257,7 @@ void startRecv(Bbs& b, Session& s, const char* arg, uint32_t now) {
         backToArea(b, s);
         return;
     }
-    FILE* fp = fopen(buf, "wb");
+    FILE* fp = disk::open(buf, "wb");
     if (!fp) {
         s.term.color(s.tl, Color::LightRed);
         s.term.text(s.tl, "Could not open that name on the card.");
@@ -2398,7 +2399,7 @@ void listPending(Bbs& b, Session& s, uint8_t area) {
 
     b.rowTitle(s, "Waiting for approval");
     if (pendPath(area, pd, sizeof(pd))) {
-        DIR* d = opendir(pd);
+        DIR* d = disk::dir(pd);
         if (d) {
             struct dirent* e;
             while ((e = readdir(d)) != nullptr) {

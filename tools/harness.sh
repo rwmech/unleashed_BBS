@@ -60,6 +60,12 @@
 #               Results land in /tmp/bbs-<tag>/out.txt and the board's log
 #               in /tmp/bbs-<tag>/host.log.
 #
+#               Each test has a budget of its own (1.1.1): 900 s, or
+#               --test-timeout=N passed through to testclient.py, or
+#               BBS_TEST_TIMEOUT. A test that runs out, or raises, fails by
+#               name and the run goes on. The whole run's clock is only a
+#               backstop: BBS_HARNESS_TIMEOUT, four hours by default.
+#
 # Targets:      Linux host build (WSL)
 # See also:     CLAUDE.md
 #
@@ -237,16 +243,28 @@ sleep 1
 
 cd "$PROJ"
 set +e
-# 3600, not 1200. The full suite passed twenty minutes in 0.22.0 and the
-# limit killed it mid-test with no summary line, which reads like a hang
-# rather than a clock running out.
-BBS_DATA="$DATA" timeout 3600 python3 -u tools/testclient.py 127.0.0.1 "$PORT" $ARGS > "$OUT" 2>&1
+# The clock is per test now (1.1.1): testclient.py gives each test its own
+# budget (--test-timeout=N or BBS_TEST_TIMEOUT, 900 s), fails it by name if
+# it runs out, and goes on to the next. This outer clock was the only one,
+# an hour for the whole run, and a card run of six groups outgrew it: the
+# run was killed mid-test with no summary line and everything after it never
+# ran. It stays as a backstop against a wedged interpreter, long enough that
+# no real run meets it: BBS_HARNESS_TIMEOUT, four hours by default.
+BBS_DATA="$DATA" timeout "${BBS_HARNESS_TIMEOUT:-14400}" \
+    python3 -u tools/testclient.py 127.0.0.1 "$PORT" $ARGS > "$OUT" 2>&1
 RC=$?
 set -e
 kill $PID 2>/dev/null || true
+if [ $RC -eq 124 ]; then
+    echo "harness: the run outlasted BBS_HARNESS_TIMEOUT (${BBS_HARNESS_TIMEOUT:-14400} s) and was stopped" >> "$OUT"
+fi
 
 echo "tag $TAG  port $PORT  directory $DIRPORT  card $CARD"
-echo "$(grep -c '  PASS' "$OUT" 2>/dev/null || echo 0) passed, $(grep -c '  FAIL' "$OUT" 2>/dev/null || echo 0) failed"
+# grep -c prints 0 and fails when nothing matches, so "|| echo 0" printed a
+# second 0 on its own line: "25 passed, 0" then "0 failed".
+NPASS=$(grep -c '  PASS' "$OUT" 2>/dev/null) || true
+NFAIL=$(grep -c '  FAIL' "$OUT" 2>/dev/null) || true
+echo "${NPASS:-0} passed, ${NFAIL:-0} failed"
 grep -n 'FAIL' "$OUT" 2>/dev/null || true
 tail -1 "$OUT"
 echo "full output: $OUT"

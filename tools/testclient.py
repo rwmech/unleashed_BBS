@@ -691,6 +691,66 @@ def test_ansi():
     return ok
 
 
+def test_link_line():
+    """Every caller is told how they are connected before any screen (1.1.1).
+
+    Rob: "--> Connection via Telnet is not secure", right after detection
+    and before the welcome, on all three kinds of terminal, 39 columns so a
+    C64 does not wrap it. The busy line and the closed sign carry it too;
+    test_busy and test_closed_configured check those.
+    """
+    print("The connection line before the welcome (1.1.1)")
+    line = b"--> Connection via Telnet is not secure"
+    ok = check("the line is 39 columns", len(line) == 39)
+
+    def seen(c, pat, secs):
+        # The line is coloured part by part, so it is looked for with the
+        # escapes taken out.
+        end = time.time() + secs
+        while time.time() < end:
+            if pat in plain(c.buf):
+                return True
+            if not c.pump(0.1):
+                break
+        return pat in plain(c.buf)
+
+    a = Caller(ansi=True)
+    ok &= check("ANSI: said", seen(a, line, 8))
+    a.wait_for(b"Enter your handle", 10)
+    shown = plain(a.buf)
+    ok &= check("ANSI: after the terminal was detected",
+                -1 < shown.find(b"DETECTED") < shown.find(line))
+    ok &= check("ANSI: before the welcome screen",
+                -1 < shown.find(line) < shown.find("µnleashed BBS".encode()))
+    a.close()
+
+    p = Caller(ansi=False)
+    p.wait_for(b"HIT DEL OR BACKSPACE", 5)
+    p.send(b"\x14")
+    p.wait_for(b"40 OR 80 COLUMNS", 3)
+    p.send(b"4")
+    # A colour code sits between the parts, so the words are found part by
+    # part, in order.
+    ok &= check("PETSCII-40: the same words, in PETSCII",
+                p.wait_for(pet("not secure"), 8) and
+                -1 < p.buf.find(pet("-->")) < p.buf.find(pet("Connection via Telnet is "))
+                   < p.buf.find(pet("not secure")))
+    ok &= check("PETSCII-40: before the welcome",
+                p.wait_for(pet("No web. No cloud."), 8) and
+                -1 < p.buf.find(pet("Connection via")) < p.buf.find(pet("No web. No cloud.")))
+    p.close()
+
+    t = Caller(ansi=False)
+    t.wait_for(b"HIT DEL OR BACKSPACE", 5)
+    t.send(b"\x08")
+    ok &= check("ASCII: said too", t.wait_for(line, 8))
+    ok &= check("ASCII: before the welcome",
+                t.wait_for(b"No web. No cloud.", 8) and
+                -1 < t.buf.find(line) < t.buf.find(b"No web. No cloud."))
+    t.close()
+    return ok
+
+
 def test_telnet_first():
     print("Telnet client speaks first (PuTTY)")
     c = Caller(ansi=True, telnet=True)
@@ -1636,6 +1696,9 @@ def test_busy():
     over = Caller(ansi=True)                 # the caller past the last node
     ok = check("the caller past the last node gets the busy screen",
                over.wait_for(b"lines are busy", 5))
+    ok &= check("told how they are connected first (1.1.1)",
+                -1 < plain(over.buf).find(b"--> Connection via Telnet is not secure")
+                   < plain(over.buf).find(b"lines are busy"))
     ok &= check("countdown shown", over.wait_for(b"Disconnecting in", 5))
     t0 = time.time()
     eighth = Caller()                        # and the one after that is refused
@@ -2567,6 +2630,47 @@ def test_config_timezone():
     return ok
 
 
+def test_config_tz_bad():
+    """A TZ string the board cannot read is refused (1.1.1, TZ-bad).
+
+    newlib's tzset gives up on a string it cannot read and leaves the board
+    on unnamed UTC, silently: a Custom string one character wrong and the
+    clock ran in UTC with nothing said. CONFIG refuses it on the row now,
+    and a file read at boot or restored loses that one line, logged, and
+    keeps the clock it had, rather than being refused whole.
+    """
+    print("CONFIG board: a TZ string the board cannot read")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the local harness and the sysop")
+        return True
+    before = cfg_line("tz")
+    s = cfg_sysop40("CfgTzBad")
+    ok = True
+    for bad in (b"EST", b"CST6CDT,M3.2.0,M13.1.0", b"America/Chicago"):
+        cfg_open(s, b"board", b"TZ string")
+        s.buf.clear()
+        s.send(DOWN * BOARD_TZ + b"\x08" * 40 + bad + F1)
+        got = cfg_verdict(s, [b"not a TZ string", b"Saved and live", b"Nothing changed"])
+        ok &= check(f"{bad.decode()} refused on its row", got == b"not a TZ string")
+        cfg_cancel(s)
+    ok &= check("and nothing written", cfg_line("tz") == before)
+    s.close()
+
+    port = PORT + 3713
+    proc, tmp = restart_copy((str(port),), edits={("", "tz"): "CST6CDT,M3.2.0,M13.1.0",
+                                                  ("", "idle_minutes"): "19"})
+    try:
+        log = copy_log(tmp, f"listening on {port},")
+        ok &= check("a file's bad string is dropped at boot, by line and reason",
+                    re.search(r"tz = CST6CDT,M3\.2\.0,M13\.1\.0: not a TZ string the board can read, "
+                              r"line ignored", log) is not None)
+        ok &= check("and the rest of the file is read: no problem counted, idle 19",
+                    "problem(s)" not in log and "idle 19" in log)
+    finally:
+        stop_copy(proc, tmp)
+    return ok
+
+
 def test_config_cycle_numbers():
     """Plain ASCII: a cycle's choices numbered, and a number picks (1.1.0)."""
     print("CONFIG in plain ASCII: choices by number")
@@ -2883,6 +2987,30 @@ def test_hardware():
                 row(section, "Chip ") != "" and max(len(r.rstrip()) for r in section) <= 39)
     naws(s, 80, 24)
     drain(s)
+
+    # 1.1.1: the capability line is taken once, when the list starts. A card
+    # going while the caller sits at [More] used to change it half way
+    # through the listing, and with it how many lines it wrapped to.
+    if card:
+        o = ansi_login("SpecOther")
+        o.send(f"bye {PASSWORD}\r".encode())
+        o.wait_for(b"access on node", 5)
+        drain(o)
+        s.buf.clear()
+        s.send(b"\x08" * 4 + b"sys\r")          # whatever drain() left on the line
+        at_more = s.wait_for(b"[More] Y/n/c", 8)
+        o.buf.clear()
+        o.send(b"sd unmount\r")
+        o.wait_for(b"safe to pull", 6)
+        s.send(b"c")
+        read_list(s)
+        later = render_lines(s.buf, cols=250)
+        ok &= check("SYS: a card pulled at [More] does not change the listing under way",
+                    at_more and re.search(r"\d+ GB SD card", row(later, "Capabilities ")) is not None)
+        o.buf.clear()
+        o.send(b"sd mount\r")
+        o.wait_for(b"Mounted", 8)
+        o.close()
     s.close()
     return ok
 
@@ -4128,6 +4256,125 @@ def test_room_new_commands():
     return ok
 
 
+def test_room_private():
+    """/p<n>* is a private conversation (1.1.1, Rob: "/p* commands show the
+    other callers in the chat typing, it should just be who you're privately
+    talking to").
+
+    While it is on the caller sees the two of them and nothing else from the
+    room; the room's lines are held in the ring, and ending it says how many
+    went by and that /sh replays them, or how many the ring still has when
+    the conversation outlasted it. The partner leaving is shown, and the next
+    line goes nowhere until the caller says what next.
+    """
+    print("Chat room: sticky private is a private conversation")
+    if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    base = {"enabled": "yes", "read": "all", "write": "all", "admin": "sysop", "room": "Main"}
+    s = cfg_sysop("PrivSetter")
+    # A small ring, so outlasting it takes ten lines, and a rate that lets
+    # one caller say them without being told to slow down.
+    section_config(s, "plugin:chat", **dict(base, history="8", rate="600"))
+    s.close()
+    time.sleep(0.5)
+
+    a = ansi_login("PrivA")
+    b = ansi_login("PrivB")
+    c = ansi_login("PrivC")
+    na, nb = a.node(), b.node()
+    for x in (a, b, c):
+        x.send(b"chat\r")
+        x.wait_for(b"here.", 4)
+        x.pump(0.3)
+        x.buf.clear()
+
+    def said(x, words, n=1):
+        for i in range(n):
+            x.send((words % i if "%" in words else words).encode() + b"\r")
+            time.sleep(0.25)
+
+    ok = True
+    a.send(f"/p{nb}*\r".encode())
+    ok &= check("into it: the conversation is named", a.wait_for(b"ends it", 4))
+    a.pump(0.4)
+    ok &= check("and the room says the rest will not be seen, in its own voice",
+                b"--> You won't see other callers while talking directly" in plain(a.buf))
+    b.buf.clear()
+    a.buf.clear()
+    said(c, "room line %d", 3)
+    b.send(f"/p{na} just the two of us\r".encode())
+    ok &= check("the partner's private arrives", a.wait_for(b"just the two of us", 4))
+    a.send(b"a reply to you\r")
+    ok &= check("and the reply goes to them", b.wait_for(b"a reply to you", 4))
+    a.pump(0.8)
+    ok &= check("while the room's lines are not shown", b"room line" not in plain(a.buf))
+    ok &= check("the partner, not in private mode, still sees the room",
+                b"room line 2" in plain(b.buf))
+
+    a.buf.clear()
+    a.send(b"/p*\r")
+    a.wait_for(b"Back to the room", 4)
+    a.pump(0.4)
+    ok &= check("ending it says how many went by and that /sh shows them",
+                b"3 room lines went by: /sh 3 shows them." in plain(a.buf))
+    ok &= check("without dumping them", not any(f"room line {i}".encode() in plain(a.buf) for i in range(3)))
+    a.buf.clear()
+    a.send(b"/sh 3\r")
+    a.wait_for(b"room line 2", 4)
+    a.pump(0.4)
+    ok &= check("/sh 3 replays exactly those",
+                all(f"room line {i}".encode() in plain(a.buf) for i in range(3)))
+
+    # Outlasting the ring: ten lines through an eight-line ring.
+    a.send(f"/p{nb}*\r".encode())
+    a.wait_for(b"ends it", 4)
+    said(c, "overflow %d", 10)
+    a.pump(0.5)
+    a.buf.clear()
+    a.send(b"/p*\r")
+    a.wait_for(b"Back to the room", 4)
+    a.pump(0.4)
+    ok &= check("a conversation that outlasted the ring says so",
+                b"10 room lines went by; /sh 8 shows the last 8." in plain(a.buf))
+
+    # 40 columns: the notice wraps at a word, under the words.
+    naws(a, 40, 25)
+    a.buf.clear()
+    a.send(f"/p{nb}*\r".encode())
+    a.wait_for(b"ends it", 4)
+    a.pump(0.5)
+    rows = render_lines(a.buf, cols=40)
+    ok &= check("at 40 columns the notice wraps inside 39",
+                any("--> You won't see other callers" in r for r in rows) and
+                any(r.strip() == "talking directly" or r.strip().endswith("talking directly") for r in rows)
+                and max(len(r.rstrip()) for r in rows) <= 39)
+    naws(a, 80, 24)
+
+    # The partner leaving: shown, and the next line goes nowhere.
+    a.buf.clear()
+    c.buf.clear()
+    b.send(b"/q\r")
+    ok &= check("the partner leaving is shown", a.wait_for(b"left the room", 4))
+    a.pump(0.4)
+    ok &= check("with what to do next", b"They have left. /p* goes back to the room." in plain(a.buf))
+    a.send(b"meant only for them\r")
+    ok &= check("the next line is not sent", a.wait_for(b"not sent", 4))
+    c.pump(0.8)
+    ok &= check("and does not fall into the room", b"meant only for them" not in plain(c.buf))
+    a.pump(0.4)
+    ok &= check("and it is back to the room, with the count",
+                b"Back to the room." in plain(a.buf))
+
+    for x in (a, b, c):
+        x.close()
+    s = cfg_sysop("PrivSetter")
+    section_config(s, "plugin:chat", **base)
+    s.close()
+    time.sleep(0.5)
+    return ok
+
+
 def test_room_commands():
     """The room command set: /?, private lines, away, squelch, kicks, votes."""
     print("Chat room commands")
@@ -4355,6 +4602,16 @@ def test_config():
     # full no-card run registers 77 accounts by the time the backup test asks
     # whether sign-up is offered. At 77 the board rightly said no, and the
     # failure was reported against the backup.
+    # Tests before this one may have left it at 200 already (cfg_reload ends
+    # there), and a save that changes nothing is "Nothing changed": 199
+    # first, when it is 200, so the save being checked always changes it.
+    if cfg_value("max_users") == "200":
+        s.send(DOWN * 4 + b"\x08" * 4 + b"199" + F1)
+        s.wait_for(b"Saved and live", 5)
+        s.buf.clear()
+        s.send(b"config limits\r")
+        wait_label(s, b"Per call", 5)
+        s.buf.clear()
     s.send(DOWN * 4 + b"\x08" * 4 + b"200" + F1)        # Accounts -> 200
     ok &= check("the page saves", s.wait_for(b"Saved and live", 5))
     if HOST in ("127.0.0.1", "localhost"):
@@ -4967,6 +5224,60 @@ def grey(p):
     return p[0] == p[1] == p[2] and p[0] > 0
 
 
+# What the lights tests may take for granted, by board profile (1.1.1). They
+# were written on the reference board and asked for its pins, its range and
+# its defaults, and failed on every profile: the S3's lights ship on with an
+# RGB pixel on 38 and its flash is 26 to 37, the Freenove's free pins are the
+# serial bridge's in the harness, and the ESP32-CAM has no two free pins at
+# all (the camera, the card, the PSRAM and its two LEDs have them).
+#   on         the lights run as shipped (BBS_LIGHTS_ON)
+#   flash      two pins CONFIG refuses as the flash, and how it says so
+#   over       the first pin past the board's output range, and the words
+#   pins       two pins CONFIG takes for the drive light and the strip, or
+#              None where the board has not got two
+#   free       a plugin switched off for the test to free them ("serial")
+#   order      the drive light's and the strip's colour order as shipped
+#   file_pins  two pins the plugin itself takes from system.cfg, written by
+#              lights_config rather than CONFIG, so no other plugin's hold on
+#              a pin counts: only the board's own (on the Freenove, 14 is
+#              its card's clock)
+LIGHTS_BOARD = {
+    "":       dict(on=False, flash=(b"7", b"9"), flash_pat=b"flash chip",
+                   flash_says=b"Pins 6 to 11 are the flash chip.",
+                   over=b"34", over_says=b"Between -1 and 33",
+                   pins=(b"13", b"14"), free=None, order=("GRB", "GRB"), file_pins=(13, 14)),
+    "s3":     dict(on=True, flash=(b"30", b"33"), flash_pat=b"flash and PSRAM",
+                   flash_says=b"Pins 26 to 37 are flash and PSRAM.",
+                   over=b"49", over_says=b"Between -1 and 48",
+                   pins=(b"4", b"5"), free=None, order=("RGB", "GRB"), file_pins=(13, 14)),
+    "fncam":  dict(on=False, flash=(b"7", b"9"), flash_pat=b"flash chip",
+                   flash_says=b"Pins 6 to 11 are the flash chip.",
+                   over=b"34", over_says=b"Between -1 and 33",
+                   pins=(b"13", b"32"), free="serial", order=("GRB", "GRB"), file_pins=(13, 32)),
+    "espcam": dict(on=False, flash=(b"7", b"9"), flash_pat=b"flash chip",
+                   flash_says=b"Pins 6 to 11 are the flash chip.",
+                   over=b"34", over_says=b"Between -1 and 33",
+                   pins=None, free=None, order=("GRB", "GRB"), file_pins=(13, 14)),
+}
+LB = LIGHTS_BOARD.get(HOST_BOARD, LIGHTS_BOARD[""])
+
+# The harness's serial section, put back after a test frees its pins.
+SERIAL_HARNESS = {"enabled": "yes", "read": "all", "write": "staff", "admin": "sysop",
+                  "baud": "115200", "format": "8N1"}
+
+
+def lights_free(s, on):
+    """Switch off whatever holds the profile's lights pins for the test
+    (LB["free"]), or put it back. From a sysop line of its own: the file is
+    read again through CONFIG's cursor form, which a plain ASCII caller has
+    not got."""
+    if LB["free"] == "serial":
+        r = cfg_sysop("LightsFreer")
+        section_config(r, "plugin:serial", **(SERIAL_HARNESS if not on else {"enabled": "no"}))
+        r.close()
+        time.sleep(0.3)
+
+
 def test_config_lights():
     """CONFIG lights: the pins, the brightness ceiling and the round trip."""
     print("CONFIG lights")
@@ -5001,36 +5312,50 @@ def test_config_lights():
     s.buf.clear()
     s.send(b"lights\r")
     s.pump(0.8)
-    ok &= check("off as shipped: LIGHTS is not a command", b"Unknown" in plain(s.buf))
+    if LB["on"]:
+        ok &= check("on as shipped on this board: LIGHTS answers", b"Drive " in plain(s.buf))
+    else:
+        ok &= check("off as shipped: LIGHTS is not a command", b"Unknown" in plain(s.buf))
 
     # Rows: 0 Enabled, 1 Read, 2 Write, 3 Admin, 4 Drive pin, 5 Drive fx,
     # 6 Drive %, 7 Strip pin, 8 Strip, 9 Strip %, 10 Pixels.
     cfg_open(s, b"lights", b"Drive pin")
     s.buf.clear()
-    s.send(DOWN * 4 + b"\x08" * 3 + b"7" + F1)
-    got = cfg_verdict(s, [b"flash chip", b"Saved", b"Between"])
-    ok &= check("a pin on the flash chip is refused", got == b"flash chip")
-    ok &= check("in the copy's words", b"Pins 6 to 11 are the flash chip." in plain(s.buf))
+    s.send(DOWN * 4 + b"\x08" * 3 + LB["flash"][0] + F1)
+    got = cfg_verdict(s, [LB["flash_pat"], b"Saved", b"Between"])
+    ok &= check("a pin on the flash chip is refused", got == LB["flash_pat"])
+    ok &= check("in the copy's words", LB["flash_says"] in plain(s.buf))
     cfg_cancel(s)
 
     cfg_open(s, b"lights", b"Drive pin")
     s.buf.clear()
-    s.send(DOWN * 7 + b"\x08" * 3 + b"9" + F1)
-    got = cfg_verdict(s, [b"flash chip", b"Saved", b"Between"])
-    ok &= check("on either pin", got == b"flash chip")
+    s.send(DOWN * 7 + b"\x08" * 3 + LB["flash"][1] + F1)
+    got = cfg_verdict(s, [LB["flash_pat"], b"Saved", b"Between"])
+    ok &= check("on either pin", got == LB["flash_pat"])
     cfg_cancel(s)
 
     cfg_open(s, b"lights", b"Drive pin")
     s.buf.clear()
-    s.send(DOWN * 4 + b"\x08" * 3 + b"34" + F1)
-    got = cfg_verdict(s, [b"Between -1 and 33", b"Saved", b"Numbers only"])
+    s.send(DOWN * 4 + b"\x08" * 3 + LB["over"] + F1)
+    got = cfg_verdict(s, [LB["over_says"], b"Saved", b"Numbers only"])
     ok &= check("a pin that cannot drive a pixel is refused, -1 in the range",
-                got == b"Between -1 and 33")
+                got == LB["over_says"])
     cfg_cancel(s)
+
+    if LB["pins"] is None:
+        # The ESP32-CAM: every pin a pixel could use is the camera's, the
+        # card's, the PSRAM's or one of its two LEDs.
+        print("  SKIP  the round trip: this board has no two free pins for lights")
+        if local:
+            lights_config(s)
+        s.close()
+        return ok
+    pin1, pin2 = LB["pins"]
+    lights_free(s, True)
 
     cfg_open(s, b"lights", b"Drive pin")
     s.buf.clear()
-    s.send(DOWN * 4 + b"\x08" * 3 + b"13" + DOWN * 3 + b"\x08" * 3 + b"13" + F1)
+    s.send(DOWN * 4 + b"\x08" * 3 + pin1 + DOWN * 3 + b"\x08" * 3 + pin1 + F1)
     # At 80 it names the row by its long label (1.1.0).
     got = cfg_verdict(s, [b"That is the drive light GPIO", b"Saved", b"flash chip"])
     ok &= check("the strip cannot share the drive light's pin", got == b"That is the drive light GPIO")
@@ -5048,21 +5373,26 @@ def test_config_lights():
         cfg_cancel(s)
 
     # The round trip: on, both pins, both effects, both brightnesses.
+    # Enabled toggles with y: off to on on a board whose lights ship off,
+    # and the S3's ship on, so there it is left alone.
     cfg_open(s, b"lights", b"Drive pin")
     s.buf.clear()
-    s.send(b"y" + DOWN * 4 + b"\x08" * 3 + b"13" + DOWN + b"1" + DOWN + b"\x08" * 3 + b"25"
-           + DOWN + b"\x08" * 3 + b"14" + DOWN + b"h" + DOWN + b"\x08" * 3 + b"5" + F1)
-    got = cfg_verdict(s, [b"Saved and live", b"Saved", b"Between", b"flash chip"])
+    s.send((b"" if LB["on"] else b"y") + DOWN * 4 + b"\x08" * 3 + pin1 + DOWN + b"1" + DOWN
+           + b"\x08" * 3 + b"25" + DOWN + b"\x08" * 3 + pin2 + DOWN + b"h" + DOWN + b"\x08" * 3
+           + b"5" + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"Saved", b"Between", LB["flash_pat"]])
     ok &= check("the lights page saves live", got == b"Saved and live")
     if local:
-        want = {"enabled": "yes", "drive_pin": "13", "drive_fx": "1541", "drive_bright": "25",
-                "strip_pin": "14", "strip_fx": "hayes", "strip_bright": "5"}
+        want = {"enabled": "yes", "drive_pin": pin1.decode(), "drive_fx": "1541", "drive_bright": "25",
+                "strip_pin": pin2.decode(), "strip_fx": "hayes", "strip_bright": "5"}
+        if LB["on"]:
+            del want["enabled"]                     # untouched, so not written
         have = {k: (cfg_sec_line("plugin:lights", k) or "=").split("=", 1)[1].strip() for k in want}
         ok &= check("every row written as the plugin reads it", have == want)
     f = lights_read(s)
     ok &= check("and running as saved",
-                f.get("drive", {}).get("text", "").startswith("pin 13  1541  25%") and
-                f.get("strip", {}).get("text", "").startswith("pin 14  hayes  5%"))
+                f.get("drive", {}).get("text", "").startswith(f"pin {pin1.decode()}  1541  25%") and
+                f.get("strip", {}).get("text", "").startswith(f"pin {pin2.decode()}  hayes  5%"))
     ok &= check("LIGHTS labels the Hayes panel", b"HS" in plain(s.buf) and b"MR" in plain(s.buf))
 
     cfg_open(s, b"lights", b"Drive pin")
@@ -5083,7 +5413,8 @@ def test_config_lights():
     read_list(s)
     ok &= check("PLUGINS lists it running", b"lights" in plain(s.buf) and b"running" in plain(s.buf))
     if local:
-        lights_config(s)                               # off again for everything after
+        lights_config(s)                               # as shipped again for everything after
+    lights_free(s, False)
     s.close()
     return ok
 
@@ -5103,7 +5434,7 @@ def ascii_sysop(handle):
 
 # CONFIG sd in line mode: the rows after Read (Write, Admin, four pins, the
 # bus speed, Screens and, from 1.1.0, Nightly).
-SD_ROWS_AFTER_READ = 9
+SD_ROWS_AFTER_READ = 9 if os.environ.get("BBS_HOST_BOARD", "") != "fncam" else 5
 
 
 def ascii_form_seen(c, answers):
@@ -5166,19 +5497,28 @@ def test_config_lights_ascii():
     ok &= check("Backspace after a pick puts the value back",
                 got == 1 and (cfg_sec_line("plugin:sd", "read") or "").endswith("= sysop"))
 
+    if LB["pins"] is None:
+        print("  SKIP  the lights page: this board has no two free pins for lights")
+        c.close()
+        return ok
+    pin1, pin2 = LB["pins"]
+    lights_free(c, True)                          # the profile's pins, freed first
     c.buf.clear()
     c.send(b"config lights\r")
     wait_label(c, b"Enabled", 5)
     # Enabled, Read, Write, Admin, Drive pin, Drive fx, Drive %, Strip pin,
     # Strip, Strip %, and Pixels, which asks "open (y/N)?"; then, since
-    # 1.1.0, Strip len, Drive ord and Strip ord.
-    got = ascii_form(c, [b"y", b"", b"", b"", b"13", b"", b"", b"14", b"bb", b"", b"",
+    # 1.1.0, Strip len, Drive ord and Strip ord. Enabled is y, which on a
+    # board whose lights ship on (the S3) is yes already.
+    got = ascii_form(c, [b"y", b"", b"", b"", pin1, b"", b"", pin2, b"bb", b"", b"",
                          b"", b"", b""])
     ok &= check("the lights page saves in line mode", got == 0)
     ok &= check("with blinken's b pressed twice reaching boing",
                 (cfg_sec_line("plugin:lights", "strip_fx") or "").endswith("= boing"))
-    ok &= check("and a typed pin", (cfg_sec_line("plugin:lights", "strip_pin") or "").endswith("= 14"))
+    ok &= check("and a typed pin",
+                (cfg_sec_line("plugin:lights", "strip_pin") or "").endswith("= " + pin2.decode()))
     lights_config(c)
+    lights_free(c, False)
     c.close()
     return ok
 
@@ -5192,7 +5532,7 @@ def test_lights_frames():
         return True
     card = bool(os.environ.get("BBS_SD_DIR", ""))
     s = cfg_sysop("LightsFrames")
-    on = {"enabled": "yes", "drive_pin": 13, "strip_pin": 14}
+    on = {"enabled": "yes", "drive_pin": LB["file_pins"][0], "strip_pin": LB["file_pins"][1]}
 
     # Brightness. White on both outputs from LIGHTS TEST, drive at 30% and
     # the strip at 1%, so each output is plainly following its own setting.
@@ -5394,7 +5734,7 @@ def test_lights_manual():
         print("  SKIP  needs the host build and the sysop")
         return True
     s = cfg_sysop("LightsManual")
-    on = {"enabled": "yes", "drive_pin": 13, "strip_pin": 14}
+    on = {"enabled": "yes", "drive_pin": LB["file_pins"][0], "strip_pin": LB["file_pins"][1]}
     ok = check("switched on", lights_config(s, **on, strip_fx="manual"))
     px = lights_px(s)
     if not check("unset, every pixel is solid and cycling, out of step",
@@ -5622,7 +5962,7 @@ def test_lights_silent():
     s = cfg_sysop("LightsSilent")
     cols = ["red", "green", "blue", "amber", "cyan", "purple", "pink", "white", "yellow", "orange"]
     leds = {f"led{i + 1}": f"solid | {c}" for i, c in enumerate(cols)}
-    on = dict(enabled="yes", drive_pin=13, strip_pin=14, drive_fx="disk2", strip_fx="manual", **leds)
+    on = dict(enabled="yes", drive_pin=LB["file_pins"][0], strip_pin=LB["file_pins"][1], drive_fx="disk2", strip_fx="manual", **leds)
     ok = check("the lights on, the strip set by hand", lights_config(s, **on))
     time.sleep(1.3)                                # the save's write, and disk2's hold after it
     before = lights_read(s)
@@ -5683,6 +6023,54 @@ def test_lights_silent():
     return ok
 
 
+def test_lights_disk():
+    """The drive light on the board's own storage (1.1.1).
+
+    1.1.0 pulsed it from the screens and the sd plugin only, so the caller
+    log, users.txt and the rest of what the board reads and writes all day
+    never lit it. With a card in, a screen off the card lights it amber, and
+    then WHOIS (users.txt) must turn it the
+    flash's cool white, the newer access winning, where before it stayed
+    amber. disk2 holds it for a second after the last access.
+    """
+    print("Lights: the drive light on every storage path")
+    if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    if not os.environ.get("BBS_SD_DIR", ""):
+        print("  SKIP  needs a card: the card's amber is what flash has to take over from")
+        return True
+    s = cfg_sysop("DiskPulser")
+    ok = check("switched on", lights_config(s, enabled="yes", drive_pin=LB["file_pins"][0], strip_pin=LB["file_pins"][1],
+                                            drive_fx="disk2"))
+    amber, white = (25, 13, 0), (17, 20, 25)
+
+    def after(cmd, wait, leave=b""):
+        s.buf.clear()
+        s.send(b"about\r")                  # off the card first: amber
+        s.wait_for(b"GNU General Public License", 6)
+        drain(s)
+        first = lights_px(s, "drive")
+        s.buf.clear()
+        s.send(cmd + b"\r")
+        s.wait_for(wait, 6)
+        if leave:
+            s.send(leave)
+            s.pump(0.5)
+        drain(s)
+        return (first[0] if first else None), (lights_px(s, "drive") or [None])[0]
+
+    # WHOIS reads users.txt and nothing on the card. LAST is no use here: the
+    # newest calls are kept in RAM (calllog g_recent), and CONFIG asks the
+    # sd plugin for the card's figures, which reads the card's FAT.
+    was, now = after(b"whois DiskPulser", b"DiskPulser")
+    ok &= check("a card screen lights it amber", was == amber)
+    ok &= check("then WHOIS, reading users.txt on flash, turns it cool white", now == white)
+    lights_config(s)
+    s.close()
+    return ok
+
+
 def test_lights_count():
     """The strip's length is a setting (1.1.0, Rob: "could be 8 could be 10,
     could be 1, so variable would be better"): every effect drawn for the
@@ -5693,7 +6081,7 @@ def test_lights_count():
         print("  SKIP  needs the host build and the sysop")
         return True
     s = cfg_sysop("LightsCount")
-    on = {"enabled": "yes", "drive_pin": 13, "strip_pin": 14}
+    on = {"enabled": "yes", "drive_pin": LB["file_pins"][0], "strip_pin": LB["file_pins"][1]}
     ok = True
     for n in (1, 8, 10, 16):
         lights_config(s, **on, strip_fx="rainbow", strip_count=n)
@@ -5833,7 +6221,7 @@ def test_lights_wifi():
         print("  SKIP  needs the host build and the sysop")
         return True
     s = cfg_sysop("LightsWifi")
-    on = {"enabled": "yes", "drive_pin": 13, "strip_pin": 14}
+    on = {"enabled": "yes", "drive_pin": LB["file_pins"][0], "strip_pin": LB["file_pins"][1]}
     green, amber, red = (0, 20, 0), (25, 13, 0), (25, 0, 0)
 
     def rssi(v):
@@ -5889,12 +6277,13 @@ def test_lights_order():
         print("  SKIP  needs the host build and the sysop")
         return True
     s = cfg_sysop("LightsOrder")
-    on = {"enabled": "yes", "drive_pin": 13, "strip_pin": 14}
+    on = {"enabled": "yes", "drive_pin": LB["file_pins"][0], "strip_pin": LB["file_pins"][1]}
     lights_config(s, **on)
     f = lights_read(s)
-    ok = check("GRB as shipped, on both outputs",
-               f.get("drive", {}).get("text", "").endswith("GRB") and
-               f.get("strip", {}).get("text", "").endswith("GRB"))
+    dord, sord = LB["order"]
+    ok = check(f"{dord} and {sord} as shipped, on the drive light and the strip",
+               f.get("drive", {}).get("text", "").endswith(dord) and
+               f.get("strip", {}).get("text", "").endswith(sord))
     lights_config(s, **on, drive_order="RGB", strip_order="bgr")
     f = lights_read(s)
     ok &= check("each output its own, in any case",
@@ -5909,7 +6298,8 @@ def test_lights_order():
                 f.get("strip", {}).get("px") == [(25, 0, 0)] * 10)
     lights_config(s, **on, drive_order="XYZ")
     f = lights_read(s)
-    ok &= check("a word it does not know leaves GRB", f.get("drive", {}).get("text", "").endswith("GRB"))
+    ok &= check(f"a word it does not know leaves the board's own, {dord}",
+                f.get("drive", {}).get("text", "").endswith(dord))
 
     # CONFIG: 12 Drive ord, 13 Strip ord, cycles picked by their letter.
     cfg_open(s, b"lights", b"Drive pin")
@@ -6052,6 +6442,49 @@ def test_board_fncam():
     return ok
 
 
+def test_board_espcam():
+    """The AI-Thinker ESP32-CAM profile on the host (1.1.1): a WROOM's LED
+    line restored here.
+
+    The ESP32-CAM's card runs over SPI on the slot's own lines, and those are
+    the sd plugin's settings, so the parser's board pins do not name them.
+    A WROOM backup restored here carried activity_led_gpio = 2, this board's
+    card MISO, and the red LED on 33 went dark. The line is dropped and
+    logged at boot now and the board's own LED kept; CONFIG still refuses 2
+    because the sd plugin holds it. SKIPs on the reference board;
+    tools/harness.sh --board espcam --only=board_espcam runs it.
+    """
+    print("Board profile: AI-Thinker ESP32-CAM")
+    if HOST_BOARD != "espcam" or not PASSWORD:
+        print("  SKIP  needs tools/harness.sh --board espcam")
+        return True
+    log = host_log()
+    ok = check("the board's own LED is the red one on 33", "activity led gpio 33" in log)
+
+    s = cfg_sysop("BoardEspcam")
+    cfg_open(s, b"board", b"Hostname")
+    s.buf.clear()
+    s.send(DOWN * BOARD_LED + b"\x08" * 3 + b"2" + F1)
+    got = cfg_verdict(s, [b"Saved", b"sd, ", b"card", b"SD"])
+    ok &= check("CONFIG refuses the LED on GPIO 2, the card's MISO", got not in (None, b"Saved"))
+    cfg_cancel(s)
+    s.close()
+
+    port = PORT + 3712
+    proc, tmp = restart_copy((str(port),), edits={("", "activity_led_gpio"): "2",
+                                                  ("", "idle_minutes"): "17"})
+    try:
+        log = copy_log(tmp, f"listening on {port},")
+        ok &= check("a WROOM's LED on GPIO 2 is dropped at boot, by line and reason",
+                    "activity_led_gpio = 2: that pin is the SD card slot on this board, line ignored" in log)
+        ok &= check("and the board's own LED is kept", "activity led gpio 33" in log)
+        ok &= check("and the rest of the file is read: no problem counted, idle 17",
+                    "problem(s)" not in log and "idle 17" in log)
+    finally:
+        stop_copy(proc, tmp)
+    return ok
+
+
 def section_config(s, section, **keys):
     """[section] rewritten with exactly these keys (none: removed), then the
     board made to read it, as lights_config does for the lights."""
@@ -6096,6 +6529,24 @@ def photos(card):
     return sorted(str(p.relative_to(root)).replace("\\", "/") for p in root.rglob("*.JPG")) if root.exists() else []
 
 
+# The camera boards' host profiles (1.1.1): what test_camera and its
+# neighbours may take for granted on each. They were written on the
+# Freenove's and skipped everywhere else, so the ESP32-CAM, a camera board
+# since 1.1.1-dev.0, had no camera tests at all.
+#   sensor, top  the stub camera's sensor and the largest size it gives
+#   size         the size as shipped (BBS_CAM_SIZE)
+#   over         a size past the sensor's, for the clamp, or None when the
+#                sensor goes to the top of the list
+#   pin          a GPIO the camera's flash may use in pin and pixel mode:
+#                the Freenove's free 13, the ESP32-CAM's own flash LED on 4
+#                (13 is its card's CS there)
+CAM_BOARD = {
+    "fncam":  dict(sensor=b"GC0308", top=b"vga", size=b"vga", over=b"uxga", pin="13"),
+    "espcam": dict(sensor=b"OV2640", top=b"uxga", size=b"xga", over=None, pin="4"),
+}
+CB = CAM_BOARD.get(HOST_BOARD, CAM_BOARD["fncam"])
+
+
 def test_camera():
     """The camera (1.1.0, the Freenove WROVER CAM's profile): SNAPSHOT, the
     download offer, the flash pin, the limits, naming, retention and the
@@ -6103,7 +6554,7 @@ def test_camera():
     with no card: the camera is PF_SD."""
     print("The camera")
     card = card_dir()
-    if HOST_BOARD != "fncam" or not PASSWORD or card is None:
+    if HOST_BOARD not in CAM_BOARD or not PASSWORD or card is None:
         print("  SKIP  needs tools/harness.sh --board fncam --card")
         return True
     s = cfg_sysop("CamSysop")
@@ -6125,10 +6576,10 @@ def test_camera():
     got = snap(c)
     ok &= check("snapping is for staff as shipped", b"not open to you" in got)
 
-    camera_config(s, snap="users", flash_mode="pin", flash_pin="13", flash_lead="300")
+    camera_config(s, snap="users", flash_mode="pin", flash_pin=CB["pin"], flash_lead="300")
     time.sleep(1.0)
     log0 = host_log()
-    ok &= check("in pin mode the flash pin idles low from the start", "cam-pin 13 low" in log0)
+    ok &= check("in pin mode the flash pin idles low from the start", f"cam-pin {CB['pin']} low" in log0)
     s.buf.clear()
     got = snap(c)
     ok &= check("a snap tells the caller where they stand",
@@ -6146,11 +6597,13 @@ def test_camera():
     ok &= check("the photo is on the card, a JPEG", jpg[:2] == b"\xff\xd8" and jpg[-2:] == b"\xff\xd9")
     ok &= check("carrying who took it in a COM segment after SOI",
                 jpg[2:4] == b"\xff\xfe" and b"snapped by CamCaller" in jpg[:300])
+    ok &= check("and the board's name as a person reads it, in UTF-8 (1.1.1)",
+                "µnleashed BBS".encode() in jpg[:300])
     desc = (card / "photos" / "FILES.BBS").read_text(errors="replace") if (card / "photos" / "FILES.BBS").exists() else ""
     ok &= check("and FILES.BBS says so", f"{name} Taken by CamCaller" in desc)
     log1 = host_log()[len(log0):]
-    hi = re.search(r"\[\s*(\d+)\.(\d+)\] cam-pin 13 high", log1)
-    lo = re.search(r"\[\s*(\d+)\.(\d+)\] cam-pin 13 low", log1)
+    hi = re.search(r"\[\s*(\d+)\.(\d+)\] cam-pin " + CB["pin"] + r" high", log1)
+    lo = re.search(r"\[\s*(\d+)\.(\d+)\] cam-pin " + CB["pin"] + r" low", log1)
     ok &= check("the flash pin went high, then low", hi is not None and lo is not None and hi.start() < lo.start())
     if hi and lo:
         ms = (int(lo.group(1)) - int(hi.group(1))) * 1000 + int(lo.group(2)) - int(hi.group(2))
@@ -6165,30 +6618,32 @@ def test_camera():
     s.pump(0.3)
     cam = plain(s.buf)
     ok &= check("CAMERA: the sensor, the count, the card, the last photo",
-                b"Sensor GC0308, up to vga" in cam and b"Size vga" in cam and b"Photos 1" in cam and
+                b"Sensor " + CB["sensor"] + b", up to " + CB["top"] in cam and b"Size " + CB["size"] in cam and b"Photos 1" in cam and
                 b"Last " in cam and b"CamCaller" in cam)
     ok &= check("and the picture's correction, levels on as shipped", b"Levels auto, gamma 1.0" in cam)
 
     # A size the sensor cannot give (1.1.1): kept in the file, used as the
-    # largest it can, said once in the log. The host's sensor is the
-    # profile's GC0308, qvga and vga.
-    s.buf.clear()
-    s.send(b"camera set size uxga\r")
-    ok &= check("a saved uxga is taken", s.wait_for(b"live now", 4))
-    s.buf.clear()
-    s.send(b"camera\r")
-    s.wait_for(b"Card free", 4)
-    s.pump(0.3)
-    ok &= check("CAMERA says it is using vga, and what was saved", b"Size vga (saved uxga)" in plain(s.buf))
-    got = snap(s)
-    if b"Download it now?" in got:
-        s.send(b"n")
-        s.wait_for(b"kept in the Photos area", 4)
-    ok &= check("a snap at a saved uxga logs the clamp once",
-                host_log().count("camera: size uxga is more than the GC0308 gives; using vga") == 1)
-    s.buf.clear()
-    s.send(b"camera set size vga\r")
-    s.wait_for(b"live now", 4)
+    # largest it can, said once in the log. The Freenove's sensor is a
+    # GC0308, qvga and vga; the ESP32-CAM's OV2640 goes to the top of the
+    # list, so there is nothing past it to ask for.
+    if CB["over"]:
+        s.buf.clear()
+        s.send(b"camera set size uxga\r")
+        ok &= check("a saved uxga is taken", s.wait_for(b"live now", 4))
+        s.buf.clear()
+        s.send(b"camera\r")
+        s.wait_for(b"Card free", 4)
+        s.pump(0.3)
+        ok &= check("CAMERA says it is using vga, and what was saved", b"Size vga (saved uxga)" in plain(s.buf))
+        got = snap(s)
+        if b"Download it now?" in got:
+            s.send(b"n")
+            s.wait_for(b"kept in the Photos area", 4)
+        ok &= check("a snap at a saved uxga logs the clamp once",
+                    host_log().count("camera: size uxga is more than the GC0308 gives; using vga") == 1)
+        s.buf.clear()
+        s.send(b"camera set size " + CB["size"] + b"\r")
+        s.wait_for(b"live now", 4)
 
     # The FILES menu marks an area closed to callers "(staff)", and the
     # photo areas take that from the camera's Photos setting, not from
@@ -6317,29 +6772,29 @@ def test_camera():
 
     # The flash pin and the lights: in pin mode the pin is held, in pixel
     # mode it is shared with the drive light.
-    camera_config(s, snap="users", flash_mode="pin", flash_pin="13")
+    camera_config(s, snap="users", flash_mode="pin", flash_pin=CB["pin"])
     lights_config(s, enabled="yes")
     cfg_open(s, b"lights", b"Drive pin")
     s.buf.clear()
-    s.send(DOWN * 4 + b"\x08" * 3 + b"13" + F1)
-    got = cfg_verdict(s, [b"Taken: camera", b"Saved", b"Between", b"GPIO 13"])
-    ok &= check("in pin mode the camera holds its pin: the drive light may not have 13",
-                got in (b"Taken: camera", b"GPIO 13"))
+    s.send(DOWN * 4 + b"\x08" * 3 + CB["pin"].encode() + F1)
+    got = cfg_verdict(s, [b"Taken: camera", b"Saved", b"Between", ("GPIO " + CB["pin"]).encode()])
+    ok &= check("in pin mode the camera holds its pin: the drive light may not have it",
+                got in (b"Taken: camera", ("GPIO " + CB["pin"]).encode()))
     cfg_cancel(s)
-    camera_config(s, snap="users", flash_mode="pixel", flash_pin="13", flash_lead="1000")
+    camera_config(s, snap="users", flash_mode="pixel", flash_pin=CB["pin"], flash_lead="1000")
     cfg_open(s, b"lights", b"Drive pin")
     s.buf.clear()
-    s.send(DOWN * 4 + b"\x08" * 3 + b"13" + F1)
-    got = cfg_verdict(s, [b"Saved", b"Taken: camera", b"GPIO 13", b"Between"])
+    s.send(DOWN * 4 + b"\x08" * 3 + CB["pin"].encode() + F1)
+    got = cfg_verdict(s, [b"Saved", b"Taken: camera", ("GPIO " + CB["pin"]).encode(), b"Between"])
     cfg_cancel(s)
     ok &= check("in pixel mode the drive light may share it", got == b"Saved" and
-                lights_read(s).get("drive", {}).get("pin") == 13)
+                lights_read(s).get("drive", {}).get("pin") == int(CB["pin"]))
     cfg_open(s, b"board", b"Hostname")
     s.buf.clear()
-    s.send(DOWN * BOARD_LED + b"\x08" * 3 + b"13" + F1)
-    got = cfg_verdict(s, [b"Saved", b"Taken", b"GPIO 13", b"Between"])
+    s.send(DOWN * BOARD_LED + b"\x08" * 3 + CB["pin"].encode() + F1)
+    got = cfg_verdict(s, [b"Saved", b"Taken", ("GPIO " + CB["pin"]).encode(), b"Between"])
     cfg_cancel(s)
-    ok &= check("but nothing else may: the board LED on 13 is refused", got in (b"Taken", b"GPIO 13"))
+    ok &= check("but nothing else may: the board LED on it is refused", got in (b"Taken", ("GPIO " + CB["pin"]).encode()))
     p = ansi_login("CamPixel")                         # CamCaller is at the hour's limit
     p.buf.clear()
     p.send(b"snapshot\r")
@@ -6474,7 +6929,7 @@ def test_camera_failed_start():
     camClose, as a partial esp_camera_init does, so a failure path that
     forgets to close leaves the next snap refused for memory."""
     print("The camera: a failed start gives everything back")
-    if HOST_BOARD != "fncam" or not PASSWORD:
+    if HOST_BOARD not in CAM_BOARD or not PASSWORD:
         print("  SKIP  needs tools/harness.sh --board fncam")
         return True
     import shutil
@@ -6523,7 +6978,7 @@ def test_announce_camera():
         print("  SKIP  needs the host build and the sysop")
         return True
     s = cfg_sysop("CamBadge")
-    if HOST_BOARD != "fncam":
+    if HOST_BOARD not in CAM_BOARD:
         feats = announce_features(s)
         ok = check("no camera board, no camera feature", feats is not None and "camera" not in feats)
         s.close()
@@ -6583,7 +7038,7 @@ def test_camera_silent():
     and not a flash that never worked."""
     print("Silent mode: the camera's flash")
     card = card_dir()
-    if HOST_BOARD != "fncam" or not PASSWORD or card is None:
+    if HOST_BOARD not in CAM_BOARD or not PASSWORD or card is None:
         print("  SKIP  needs tools/harness.sh --board fncam --card")
         return True
     s = cfg_sysop("CamSilent")
@@ -6598,28 +7053,28 @@ def test_camera_silent():
     ok = check("silent on, by the switch", top_config(s, silent="yes"))
 
     # Pin mode: the pin stays low.
-    camera_config(s, snap="users", flash_mode="pin", flash_pin="13", flash_lead="1000")
+    camera_config(s, snap="users", flash_mode="pin", flash_pin=CB["pin"], flash_lead="1000")
     time.sleep(1.2)
     at = len(host_log())
     got = sysop_snap()
     ok &= check("pin mode, silent: the photo is taken", b"Photo saved" in got)
     log = host_log()[at:]
-    ok &= check("and the flash pin never went high", "cam-pin 13 high" not in log)
+    ok &= check("and the flash pin never went high", f"cam-pin {CB['pin']} high" not in log)
 
     # Pixel mode, the lights off: the camera would drive the pixel itself.
-    camera_config(s, snap="users", flash_mode="pixel", flash_pin="13", flash_lead="1000")
+    camera_config(s, snap="users", flash_mode="pixel", flash_pin=CB["pin"], flash_lead="1000")
     time.sleep(1.2)
     at = len(host_log())
     got = sysop_snap()
     ok &= check("pixel mode on its own pixel, silent: the photo is taken", b"Photo saved" in got)
     log = host_log()[at:]
     ok &= check("and the camera never started the pixel, nor lit it",
-                "pixels: output 0 on gpio 13" not in log and "pixels: output 0 white" not in log)
+                f"pixels: output 0 on gpio {CB['pin']}" not in log and "pixels: output 0 white" not in log)
 
     # Pixel mode on the lights' drive light: never white. The host logs a
     # one-pixel output turning white ("pixels: output 0 white"), which sees
     # a flash too short for two looks at LIGHTS to catch.
-    lights_config(s, enabled="yes", drive_pin=13)
+    lights_config(s, enabled="yes", drive_pin=int(CB["pin"]))
     time.sleep(0.5)
     p = ansi_login("CamQuiet")
 
@@ -6642,7 +7097,7 @@ def test_camera_silent():
     ok &= check("and the drive light never went white",
                 "pixels: output 0 white" not in log and all(px == (0, 0, 0) for px in seen))
     top_config(s, silent=None)
-    camera_config(s, snap="users", flash_mode="pixel", flash_pin="13", flash_lead="300")
+    camera_config(s, snap="users", flash_mode="pixel", flash_pin=CB["pin"], flash_lead="300")
     time.sleep(1.2)
     got, seen, log = drive_snap()
     ok &= check("silent off: the same snap turns the drive light white",
@@ -6651,13 +7106,13 @@ def test_camera_silent():
     lights_config(s)
 
     # The control: silent off, the same pin mode snap lights the pin.
-    camera_config(s, snap="users", flash_mode="pin", flash_pin="13", flash_lead="300")
+    camera_config(s, snap="users", flash_mode="pin", flash_pin=CB["pin"], flash_lead="300")
     time.sleep(1.2)
     at = len(host_log())
     got = sysop_snap()
     log = host_log()[at:]
     ok &= check("silent off: the same snap lights the flash pin",
-                b"Photo saved" in got and "cam-pin 13 high" in log)
+                b"Photo saved" in got and f"cam-pin {CB['pin']} high" in log)
 
     camera_config(s)
     section_config(s, "plugin:camera")
@@ -7123,7 +7578,12 @@ def copy_data():
     import shutil
     import tempfile
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="bbs-restart-"))
-    shutil.copytree(DATA, tmp / "data")
+    # A write under way on the live board (users.txt.new, system.tmp) is
+    # there when listed and gone by the copy, and copytree raised on it,
+    # which took test_operator_notes down in a 1.1.1 run. The board's own
+    # temp files are never part of what a restart reads.
+    shutil.copytree(DATA, tmp / "data",
+                    ignore=shutil.ignore_patterns("*.new", "*.tmp"))
     return tmp
 
 
@@ -7640,6 +8100,106 @@ def announce_port(s):
             break
     m = re.search(rb'"port":(\d+)', plain(s.buf))
     return int(m.group(1)) if m else None
+
+
+def test_cgnat_local():
+    """100.64/10 is local only when CONFIG network says so (1.1.1, Rob).
+
+    Both local-address rules counted 100.64/10, the carrier's shared space
+    as much as Tailscale's, as the board's own network, always. Now it is a
+    row on CONFIG network, off as shipped, read by the one rule the shell
+    and the backup port both ask. The host has no carrier NAT, so a caller
+    from 127.0.0.3 stands for 100.64.0.3 (guard.cpp peerAddr); 127.0.0.2 is
+    outside, as everywhere in this suite.
+
+    Checked both ways on the two things local decides on a configured board:
+    the backup window's port, and a second sysop taking sysop in place.
+    """
+    print("CGNAT and Tailscale: local only when CONFIG network says so")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the local harness and the sysop")
+        return True
+
+    def backup_status(source):
+        """The backup port's first answer line, called from source."""
+        try:
+            k = socket.create_connection((HOST, BACKUP_PORT), timeout=5,
+                                         source_address=(source, 0))
+        except OSError as e:
+            return str(e).encode()
+        try:
+            k.sendall(b"GET / HTTP/1.0\r\nHost: board\r\n\r\n")
+            k.settimeout(5)
+            data = b""
+            while b"\r\n" not in data:
+                more = k.recv(512)
+                if not more:
+                    break
+                data += more
+            return data.split(b"\r\n", 1)[0]
+        except OSError as e:
+            return str(e).encode()
+        finally:
+            k.close()
+
+    def in_place(source, handle):
+        """A second sysop, from source, while the sysop node is taken."""
+        c = Caller(ansi=True, source=source)
+        c.wait_for(b"Enter your handle", 10)
+        login(c, handle)
+        c.buf.clear()
+        c.send(f"bye {PASSWORD}\r".encode())
+        got = c.wait_for(b"Sysop access on node", 5)
+        c.close()
+        time.sleep(0.5)
+        return got
+
+    cfgp = USERDATA / "system.cfg"
+    orig = cfgp.read_text()
+    s = cfg_sysop("CgnatSysop")          # holds the sysop node, and so the window
+    s.pump(1.0)
+    ok = check("CONFIG network has the row, off as shipped",
+               cfg_open(s, b"network", b"Password") and cfg_value("cgnat_local") in ("", "no"))
+    s.buf.clear()
+    s.send(DOWN * 3)
+    s.pump(0.6)
+    ok &= check("its note says it trusts everyone behind the carrier's NAT",
+                b"Trusts everyone behind the same carrier NAT" in plain(s.buf))
+    cfg_cancel(s)
+
+    ok &= check("off: the backup port refuses 100.64.0.3", b"403" in backup_status("127.0.0.3"))
+    ok &= check("and outside, as ever", b"403" in backup_status("127.0.0.2"))
+    ok &= check("and answers the board's own network", b"403" not in backup_status("127.0.0.1")
+                and b"HTTP/1." in backup_status("127.0.0.1"))
+    ok &= check("off: a sysop from 100.64.0.3 is not given sysop in place",
+                not in_place("127.0.0.3", "CgnatFar"))
+    try:
+        cfg_open(s, b"network", b"Password")
+        s.buf.clear()
+        s.send(DOWN * 3 + b" " + F1)
+        ok &= check("on: saved and live, not from the next restart",
+                    cfg_verdict(s, [b"Saved and live", b"next restart", b"Nothing"]) == b"Saved and live")
+        ok &= check("written as cgnat_local = yes", cfg_value("cgnat_local") == "yes")
+        ok &= check("on: the backup port answers 100.64.0.3",
+                    b"HTTP/1." in backup_status("127.0.0.3") and b"403" not in backup_status("127.0.0.3"))
+        ok &= check("but still refuses outside", b"403" in backup_status("127.0.0.2"))
+        ok &= check("on: a sysop from 100.64.0.3 gets sysop in place",
+                    in_place("127.0.0.3", "CgnatNear"))
+    finally:
+        cfgp.write_text(orig)
+        cfg_reload(s)
+    ok &= check("put back: off again", not syscfg_cgnat_on())
+    s.close()
+    time.sleep(0.5)
+    return ok
+
+
+def syscfg_cgnat_on():
+    """Whether the board is running with 100.64/10 as local, from its log's
+    most recent config summary."""
+    lines = [l for l in host_log().splitlines() if l.startswith("[") and "cfg: " in l]
+    last = max((i for i, l in enumerate(lines) if "cfg: wifi" in l), default=-1)
+    return last >= 0 and last + 1 < len(lines) and "counts as the local network" in lines[last + 1]
 
 
 def test_config_announce_outside():
@@ -8800,7 +9360,9 @@ def test_closed_fresh():
     e.buf.clear()
     e.send(b"announce\r")
     e.pump(1.5)
-    ok &= check("ANNOUNCE: held while closed", b"Held: the board is closed to callers." in plain(e.buf))
+    # Still on its own password here, so listed as closed (1.1.1); the
+    # published default, never listed, is test_backup_published_default's.
+    ok &= check("ANNOUNCE: listed as temporarily closed", b"Closed: listed as temporarily closed." in plain(e.buf))
 
     f = Caller(ansi=True)
     ok &= check("with a password set it is still closed to others",
@@ -8872,8 +9434,21 @@ def test_closed_configured():
     if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
         print("  SKIP  needs the host build and the sysop")
         return True
-    ok = check("the board has its own sysop password and no closed line",
-               cfg_line("sysop_password") is not None and closed_value() is None)
+    # An open board, whatever ran before (1.1.1). test_backup_card's restore
+    # writes closed = no, by design (ziparc applyItem gives a restored file
+    # the live state), and this failed whenever it ran first: an explicit no
+    # is the same board as no line. A yes left by a test that failed half
+    # way is taken out and the file read again, so this starts open.
+    if closed_value() not in (None, "no"):
+        cfgp = USERDATA / "system.cfg"
+        cfgp.write_text("".join(l for l in cfgp.read_text().splitlines(keepends=True)
+                                if l.split("=", 1)[0].strip() != "closed" or "=" not in l))
+        r = cfg_sysop("ClosedSeeder")
+        cfg_reload(r)
+        r.close()
+        time.sleep(0.5)
+    ok = check("the board has its own sysop password and no closed line, or closed = no",
+               cfg_line("sysop_password") is not None and closed_value() in (None, "no"))
     ins = ansi_login("InsideJob")
     ok &= check("an account exists to be refused later", b"Main" in ins.buf)
     ins.close()
@@ -8895,12 +9470,22 @@ def test_closed_configured():
     s.buf.clear()
     s.send(b"announce\r")
     s.pump(1.5)
-    ok &= check("ANNOUNCE: held while closed", b"Held: the board is closed to callers." in plain(s.buf))
+    # 1.1.1 (Rob): a closed board stays listed and says it is closed, where
+    # 1.1.0 held it off the directory.
+    ok &= check("ANNOUNCE: listed as temporarily closed, not held",
+                b"Closed: listed as temporarily closed." in plain(s.buf) and b"Held" not in plain(s.buf))
+    s.buf.clear()
+    s.send(b"announce test\r")
+    s.pump(1.5)
+    ok &= check("ANNOUNCE TEST: the payload says closed", b'"closed":true' in plain(s.buf))
     s.close()
     time.sleep(1.0)
 
     o = Caller(ansi=True)
     ok &= check("a caller gets the closed sign", closed_sign(o))
+    ok &= check("told how they are connected before it (1.1.1)",
+                -1 < plain(o.buf).find(b"--> Connection via Telnet is not secure")
+                   < plain(o.buf).find(b"Closed by the sysop for now"))
     o.send(b"Outsider\r")
     ok &= check("a new handle is refused", o.wait_for(b"Closed by the sysop. Call again later.", 6))
     o.close()
@@ -8961,6 +9546,10 @@ def test_fx_codes():
                                               b"@OOPS:text@", b"@SCRAMBLE:text@",
                                               b"@NOISE@", b"@BLINK:text@", b"@BELL@")))
     ok &= check("and it ends by pointing at CODES", b"See CODES" in seen)
+    # 1.1.1: the marquee is the board's name as a person reads it, the
+    # micro sign one column and a real one on a UTF-8 terminal.
+    ok &= check("the marquee scrolls the name with a real micro sign",
+                "µnleashed BBS".encode() in seen and b"UNLEASHED BBS" not in seen)
     ok &= check("nothing runs past the right edge at 80 columns",
                 max_column(bytes(c.buf)) <= 80)
     c.close()
@@ -10431,6 +11020,77 @@ def test_announce():
     return ok
 
 
+def test_announce_closed():
+    """A closed board goes on sending heartbeats, marked closed (1.1.1, Rob).
+
+    1.1.0 held a closed board off the directory, so a long close let the
+    listing go stale and start its waiting period over. Now every heartbeat
+    while closed carries "closed": true and the directory shows the board as
+    temporarily closed; open, the field is left out. The published default
+    is still never announced, closed or not: test_backup_published_default
+    and test_first_setup hold that.
+    """
+    print("Directory: a closed board stays listed, marked closed")
+    import json as _json
+    import threading as _threading
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    got = []
+    stop = _threading.Event()
+    ready = _threading.Event()
+    port = int(os.environ.get("BBS_DIR_PORT", "8099"))
+    th = _threading.Thread(target=standin_directory, args=(port, got, stop),
+                           kwargs={"ready": ready}, daemon=True)
+    th.start()
+    ready.wait(5)
+
+    def beat(s):
+        """One heartbeat sent now, as the directory received it."""
+        got.clear()
+        s.buf.clear()
+        s.send(b"announce now\r")
+        s.wait_for(b"Sending now", 4)
+        for _ in range(40):
+            if got:
+                break
+            time.sleep(0.25)
+        try:
+            return _json.loads(got[-1][1].decode()) if got else None
+        except Exception:
+            return None
+
+    # One sysop line throughout: a closed board lets in only the sysop's
+    # account, and a new login here would meet the closed sign.
+    cfgp = USERDATA / "system.cfg"
+    s = cfg_sysop("ClosedLister")
+    ok = True
+    rec = beat(s)
+    ok &= check("open: a heartbeat goes out", rec is not None)
+    ok &= check("with no closed field", rec is not None and "closed" not in rec)
+    time.sleep(0.8)                      # the token the reply carried, written
+    orig = cfgp.read_text()
+    try:
+        lines = [l for l in orig.splitlines(keepends=True)
+                 if not ("=" in l and l.split("=", 1)[0].strip() == "closed")]
+        cfgp.write_text("closed = yes\n" + "".join(lines))
+        cfg_reload(s)
+        time.sleep(1.0)                  # the restart's own first heartbeat
+        rec = beat(s)
+        ok &= check("closed: heartbeats still go out", rec is not None)
+        ok &= check("saying closed: true", rec is not None and rec.get("closed") is True)
+    finally:
+        cfgp.write_text(orig)
+        cfg_reload(s)
+        time.sleep(1.0)
+    rec = beat(s)
+    ok &= check("open again: the field is gone", rec is not None and "closed" not in rec)
+    s.close()
+    stop.set()
+    th.join(3)
+    return ok
+
+
 # ---------------------------------------------------------------------------
 # The directory badges (1.0.1)
 # ---------------------------------------------------------------------------
@@ -10906,7 +11566,8 @@ def test_announce_directory():
         ok &= check("and the interests it knows, as codes, nonsense dropped",
                     b.get("interests") == ["c64", "elctr", "ham"])
 
-        page = get("/")[1]
+        # The board list is /directory since site 1.3.0; / is the front page.
+        page = get("/directory")[1]
         name = _html.escape(b.get("name", "?"), quote=False)
         at = page.find(f"<span class='bname'>{name}</span>")
         row = page[at:page.find("</tr>", at)] if at >= 0 else ""
@@ -13536,14 +14197,15 @@ GROUPS = {
     # a change to it can break either end.
     "messaging": ["mail", "forums", "chat", "room_commands", "room_new", "room_quit",
                   "survives_notice", "config_forum", "room_time", "bell", "codes_in",
-                  "room_narrow",
+                  "room_narrow", "room_private",
                   "long_help", "info_pages", "operator", "notices_in", "ring_mail",
                   "sysop_account"],
     # The subsystems that own a session and draw their own screens.
     "places":    ["forums", "files", "chat", "xfer", "notices_in", "backups_area"],
     # Anything that reads or writes the card, and the backups (on the card
     # since 1.1.0, and restores across the board's two partitions).
-    "storage":   ["files", "forums", "sd", "xfer", "backup", "restore", "card_screens", "rewrites"],
+    "storage":   ["files", "forums", "sd", "xfer", "backup", "restore", "card_screens", "rewrites",
+                  "screens_install", "lights_disk"],
     # The shell, its lists and the screens the core draws.
     "shell":     ["menus", "sysinfo", "hardware", "page", "about", "config", "welcome", "paced", "seeded", "fx_codes",
                   "lights", "operator", "dash", "nodes_columns", "version_shown", "screens_command",
@@ -13551,9 +14213,9 @@ GROUPS = {
     # Logging in, accounts, staff.
     "login":     ["accounts", "handle_case", "guest", "sysop", "cosysop", "user_admin", "first_setup", "ban",
                   "closed_configured", "closed_fresh", "setup_abort",
-                  "boot_hold", "boot_notices"],
+                  "boot_hold", "boot_notices", "cgnat"],
     # Terminal handling across the three flavours.
-    "terminal":  ["ansi", "petscii", "ascii", "telnet_first"],
+    "terminal":  ["ansi", "petscii", "ascii", "telnet_first", "link_line"],
 }
 
 
@@ -13568,13 +14230,13 @@ GROUPS = {
 # Anything not named here runs after everything that is, in the order it was
 # picked, which is the right default for a test added and not yet placed.
 ORDER_NAMES = [
-    "test_ansi", "test_telnet_first", "test_petscii", "test_ascii",
+    "test_ansi", "test_telnet_first", "test_petscii", "test_ascii", "test_link_line",
     "test_page", "test_sysop", "test_cosysop", "test_accounts", "test_accounts_form_notes",
     "test_handle_case",
     "test_user_admin", "test_guest",
-    "test_privacy", "test_plugins", "test_about", "test_announce",
+    "test_privacy", "test_plugins", "test_about", "test_announce", "test_announce_closed",
     "test_announce_badges", "test_announce_directory",
-    "test_chat", "test_room_commands", "test_room_new_commands", "test_room_quit_logoff",
+    "test_chat", "test_room_commands", "test_room_new_commands", "test_room_private", "test_room_quit_logoff",
     "test_room_time_staff_only", "test_bell", "test_codes_in_messages", "test_fx_codes", "test_room_narrow_effects",
     "test_long_help",
     "test_info_pages",
@@ -13590,18 +14252,19 @@ ORDER_NAMES = [
     "test_operator", "test_operator_ends", "test_notices_in_places",
     "test_operator_notes", "test_ring_mail", "test_sysop_account",
     "test_config_parser_rules", "test_config_guards", "test_config_semicolon",
-    "test_config_timezone", "test_config_cycle_numbers", "test_config_silent",
+    "test_config_timezone", "test_config_tz_bad", "test_config_cycle_numbers", "test_config_silent",
     "test_config_sd_plugin",
     "test_config_lights", "test_config_lights_ascii", "test_lights_frames", "test_lights_manual",
-    "test_lights_count", "test_lights_order", "test_lights_wifi", "test_lights_silent", "test_version_shown",
+    "test_lights_count", "test_lights_order", "test_lights_wifi", "test_lights_silent", "test_lights_disk",
+    "test_version_shown",
     # SKIPs on the reference board: tools/harness.sh --board s3 runs it.
     "test_board_s3", "test_board_s3_silent",
-    "test_board_fncam",
+    "test_board_fncam", "test_board_espcam",
     "test_camera",
     "test_camera_failed_start",
     "test_camera_silent",
     "test_announce_camera",
-    "test_config_wifi_live", "test_config_network", "test_config_announce_outside",
+    "test_config_wifi_live", "test_config_network", "test_cgnat_local", "test_config_announce_outside",
     "test_config_wifi_fallback", "test_boot_hold",
     "test_boot_hold_write_fails", "test_boot_hold_factory_fails", "test_sysop_spelled_default",
     "test_boot_notices", "test_dash_opens_nothing",
@@ -13633,7 +14296,7 @@ ORDER_NAMES = [
     # backup it has just taken, as test_backup_card does.
     "test_backups_area", "test_card_screens_manifest", "test_restore_checks",
     "test_restore_staff_report", "test_restore_ends_screens", "test_sd_no_reprobe",
-    "test_rewrites_keep_old", "test_restore_waits_quiet", "test_screens_command",
+    "test_rewrites_keep_old", "test_restore_waits_quiet", "test_screens_command", "test_screens_install",
     # Destructive, and therefore last whatever else is running. The published
     # default's restore test puts the board back as it found it, and on a
     # --fresh board it needs to run before first_setup gives it a password.
@@ -14825,6 +15488,139 @@ def test_screens_command():
     return ok
 
 
+def test_screens_install():
+    """SCREENS INSTALL and SCREENS INSTALL STOCK (1.1.1, Rob).
+
+    The card's own screens copied into flash, so they play with the card
+    out: checked whole first (refused whole, never half installed), each put
+    live by a rename within the screens partition with the stock copy moved
+    aside, the card's manifest marking them the sysop's, and STOCK putting
+    the stock set back. The card's screens folder is put on /dev/shm, a
+    filesystem of its own, as the card is on the board: nothing may be
+    renamed across the two (CLAUDE.md, 1.1.0 Phase 3b).
+    """
+    print("SCREENS INSTALL: the card's screens into flash, and back")
+    card = card_dir()
+    if not card or not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build, the sysop and a card")
+        return True
+    import shutil
+    import tempfile
+    cscr = card / "screens"
+    fscr = DATA / "screens"
+    stock_goodbye = (fscr / "goodbye.asc").read_bytes()
+    # The card as the test found it is kept whole beside the one it uses,
+    # and the one it uses holds the stock copies alone: an earlier test's
+    # own screens (RESTORE SD SCREENS imports some) would be installed too,
+    # and every count below would be theirs as well.
+    keep = pathlib.Path(tempfile.mkdtemp(prefix="bbs-cardkeep-"))
+    shutil.copytree(cscr, keep / "screens")
+    shm = None
+    if pathlib.Path("/dev/shm").is_dir() and not cscr.is_symlink():
+        shm = pathlib.Path(tempfile.mkdtemp(prefix="bbs-cardscr-", dir="/dev/shm"))
+        shutil.copytree(cscr, shm / "screens")
+        shutil.rmtree(cscr)
+        cscr.symlink_to(shm / "screens")
+    for f in list(cscr.iterdir()):
+        if f.name.startswith("."):
+            continue
+        stock = fscr / f.name.lower()
+        if not stock.exists() or stock.read_bytes() != f.read_bytes():
+            f.unlink()
+    ok = True
+    s = cfg_sysop("ScreenFitter")
+    try:
+        c = ansi_login("NotTheSysop")
+        c.send(f"bye {CO1}\r".encode())
+        c.wait_for(b"access on node", 5)
+        drain(c)
+        i, text = card_cmd(c, b"\x08" * 4 + b"screens install", [b"is the sysop's", b"Installed", b"Nothing"])
+        ok &= check("a co-sysop is refused: it is the sysop's", b"SCREENS INSTALL is the sysop's." in text)
+        c.close()
+
+        i, text = card_cmd(s, b"screens install", [b"Nothing to install", b"Installed"])
+        ok &= check("the seeded stock set alone: nothing to install",
+                    b"Nothing to install: flash has every screen of yours already." in text)
+
+        (cscr / "goodbye.asc").write_bytes(b"MY OWN GOODBYE\n")
+        (cscr / "CLOSED.ASC").write_bytes(b"MY CLOSED SIGN\n")       # a laptop's upper case
+        i, text = card_cmd(s, b"screens install", [b"Installed", b"Nothing", b"refused", b"room"])
+        ok &= check("two of the sysop's own go in", b"Installed 2 screens in flash." in text)
+        ok &= check("and it says what that means",
+                    b"They play from flash with the card out." in text and
+                    b"SCREENS INSTALL STOCK undoes it." in text)
+        ok &= check("flash has them, under lower case names",
+                    bytes_of(fscr / "goodbye.asc") == b"MY OWN GOODBYE\n" and
+                    bytes_of(fscr / "closed.asc") == b"MY CLOSED SIGN\n")
+        ok &= check("the stock copy it replaced kept aside, whole",
+                    bytes_of(fscr / ".stock" / "goodbye.asc") == stock_goodbye)
+        ok &= check("a screen flash never had marked empty there",
+                    bytes_of(fscr / ".stock" / "closed.asc") == b"")
+        ok &= check("nothing half made left over", not list(fscr.glob("*.new")))
+        seeded = (cscr / ".seeded").read_text() if (cscr / ".seeded").exists() else ""
+        ok &= check("the card's manifest marks them the sysop's",
+                    "goodbye.asc 00000000" in seeded and "closed.asc 00000000" in seeded)
+        i, text = card_cmd(s, b"screens install", [b"Nothing to install", b"Installed"])
+        ok &= check("again: nothing to install", b"Nothing to install" in text)
+
+        # Refused whole: one too big, or more than the partition holds.
+        (cscr / "rules.asc").write_bytes(b"MY RULES\n")
+        (cscr / "huge.asc").write_bytes(b"x" * 70000)
+        i, text = card_cmd(s, b"screens install", [b"Nothing was installed", b"Installed"])
+        ok &= check("one screen too big refuses the lot",
+                    b"huge.asc is too big" in text and b"Nothing was installed." in text)
+        ok &= check("and nothing of it went in", bytes_of(fscr / "rules.asc") != b"MY RULES\n")
+        (cscr / "huge.asc").unlink()
+        for k in range(4):
+            (cscr / f"big{k}.asc").write_bytes(b"y" * 60000)
+        i, text = card_cmd(s, b"screens install", [b"Nothing was installed", b"Installed"])
+        ok &= check("more than flash has room for refuses the lot",
+                    b"Not enough room in flash" in text and b"Nothing was installed." in text)
+        ok &= check("and nothing of it went in",
+                    bytes_of(fscr / "rules.asc") != b"MY RULES\n" and not (fscr / "big0.asc").exists())
+        for k in range(4):
+            (cscr / f"big{k}.asc").unlink()
+        (cscr / "rules.asc").unlink()
+
+        # With the card out, flash plays the sysop's own.
+        i, text = card_cmd(s, b"sd unmount", [b"safe to pull"])
+        g = Caller(ansi=False)
+        g.wait_for(b"HIT DEL OR BACKSPACE", 5)
+        g.send(b"\x08")
+        g.wait_for(b"Enter your handle", 10)
+        login(g, "ScreenGoer")
+        g.buf.clear()
+        g.send(b"g\r")
+        g.wait_for(b"Log off", 4)
+        g.send(b"y")
+        ok &= check("with the card out, the installed goodbye plays", g.wait_for(b"MY OWN GOODBYE", 8))
+        g.close()
+        card_cmd(s, b"sd mount", [b"Mounted"])
+
+        i, text = card_cmd(s, b"screens install stock", [b"Stock screens back", b"already", b"Could not"])
+        ok &= check("STOCK puts the stock set back",
+                    b"Stock screens back: 1 put back, 1 removed." in text)
+        ok &= check("the stock goodbye in flash again, the added one gone, nothing kept aside",
+                    bytes_of(fscr / "goodbye.asc") == stock_goodbye and not (fscr / "closed.asc").exists()
+                    and not (fscr / ".stock").exists())
+        i, text = card_cmd(s, b"screens install stock", [b"Stock screens back", b"already"])
+        ok &= check("and again: flash has them already", b"Flash has the stock screens already." in text)
+    finally:
+        # Flash back to its stock set if a check left it part way, then the
+        # card as it was found.
+        if (fscr / ".stock").exists():
+            card_cmd(s, b"screens install stock", [b"Stock screens back", b"already", b"Could not"])
+        s.close()
+        if shm is not None:
+            cscr.unlink()
+            shutil.rmtree(shm, ignore_errors=True)
+        else:
+            shutil.rmtree(cscr, ignore_errors=True)
+        shutil.copytree(keep / "screens", cscr)
+        shutil.rmtree(keep, ignore_errors=True)
+    return ok
+
+
 # ---------------------------------------------------------------------------
 # 1.1.0: the forms at 80 columns (internal/tty-ux-forms-80-2026-09-24.md),
 # and CONFIG's rows for every plugin, pins and topics.
@@ -15045,7 +15841,9 @@ def test_forms_ascii_wide():
                 c.wait_for(b"Wi-Fi password [set, - clears]: ", 4))
     c.send(b"-\r")
     c.pump(0.3)
-    c.send(b"\r")
+    c.send(b"\r")                                  # Port
+    c.pump(0.3)
+    c.send(b"\r")                                  # CGNAT/Tailscale LAN (1.1.1)
     c.wait_for(b"Save (Y/n)?", 4)
     c.buf.clear()
     c.send(b"y")
@@ -15498,6 +16296,47 @@ def test_config_warn_levels():
     return ok
 
 
+class TestTimeout(BaseException):
+    """A test that used up its budget (run_test)."""
+
+
+# The budget one test gets, in seconds (1.1.1). --test-timeout=N, or
+# BBS_TEST_TIMEOUT, or 900. The harness used to put one clock round the
+# whole run, an hour, and a card run of six groups outgrew it: it was killed
+# mid-test with no summary line, which reads like a hang, and every test
+# after the one that happened to be running when the hour ran out was never
+# run at all. A test that hangs now fails on its own, named, and the run
+# goes on; harness.sh keeps a far longer clock only as a backstop.
+TEST_BUDGET = int(next((a.split("=", 1)[1] for a in FLAGS if a.startswith("--test-timeout=")),
+                       os.environ.get("BBS_TEST_TIMEOUT", "900")))
+
+
+def run_test(name, f):
+    """One test, inside its budget. A test that runs out of time, or raises,
+    is a failure with its name on it, and the next test still runs: one
+    check that raised used to take every test after it down (0.21.9)."""
+    import signal
+    import traceback
+
+    def ring(signum, frame):
+        raise TestTimeout()
+
+    old = signal.signal(signal.SIGALRM, ring)
+    signal.alarm(TEST_BUDGET)
+    try:
+        return bool(f())
+    except TestTimeout:
+        print(f"  FAIL  {name} ran out of its {TEST_BUDGET} s budget (--test-timeout)")
+        return False
+    except Exception as e:                      # noqa: BLE001, a test's own bug is a failure
+        print(f"  FAIL  {name} raised {type(e).__name__}: {e}")
+        traceback.print_exc(limit=4)
+        return False
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)
+
+
 def run_order():
     """The declared sequence as callables, skipping any that do not exist."""
     g = globals()
@@ -15557,7 +16396,7 @@ def run_selected(only):
     # Every test runs even after one fails, because a targeted run is cheap
     # and knowing whether the damage is one test or five is worth more than
     # stopping early.
-    results = [f() for _, f in picked]
+    results = [run_test(n, f) for n, f in picked]
     return all(results)
 
 
@@ -15567,11 +16406,11 @@ if __name__ == "__main__":
         picked_ok = run_selected(ONLY)
         print("ALL PASS" if picked_ok else "FAILURES")
         sys.exit(0 if picked_ok else 1)
-    results = [f() for f in run_order()]
+    results = [run_test(f.__name__, f) for f in run_order()]
     if "--backup" in FLAGS:
-        results.append(test_backup())
+        results.append(run_test("test_backup", test_backup))
     if "--ban" in FLAGS:
-        results.append(test_ban())
+        results.append(run_test("test_ban", test_ban))
     print("ALL PASS" if all(results) else "FAILURES")
     sys.exit(0 if all(results) else 1)
 

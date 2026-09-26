@@ -60,6 +60,7 @@
  */
 
 #include "bbs.h"
+#include "disk.h"              // fopen and opendir that tell the drive light (1.1.1)
 #include "bbs_util.h"
 #include "cardnames.h"
 #include "clock.h"
@@ -151,7 +152,7 @@ uint8_t cardList(CardZip* out, uint16_t& total) {
     uint8_t n = 0;
     char dir[96];
     backupDir(dir, sizeof(dir));
-    DIR* d = opendir(dir);
+    DIR* d = disk::dir(dir);
     if (!d) return 0;
     for (struct dirent* e = readdir(d); e; e = readdir(d)) {
         if (!cardbak::listable(e->d_name)) continue;
@@ -204,6 +205,11 @@ void Bbs::cmdBackup(Session& s, const char* arg, uint32_t now) {
     }
     if (!plat::sdBase()[0]) {
         line(s, Color::LightRed, "No card mounted. Try SD MOUNT first.");  // BK-nocard
+        prompt(s);
+        return;
+    }
+    if (screensBusy()) {                      // SCREENS INSTALL (1.1.1): seconds
+        line(s, Color::Yellow, "Screens are being installed. Try again after."); // BK-screens
         prompt(s);
         return;
     }
@@ -289,6 +295,11 @@ void Bbs::cmdRestore(Session& s, const char* arg, uint32_t now) {
         prompt(s);
         return;
     }
+    if (screensBusy()) {                      // SCREENS INSTALL (1.1.1): seconds
+        line(s, Color::Yellow, "Screens are being installed. Try again after."); // BK-screens
+        prompt(s);
+        return;
+    }
 
     CardZip zips[kListMax];                   // 576 bytes, for the length of one command
     uint16_t total = 0;
@@ -340,7 +351,7 @@ void Bbs::cmdRestore(Session& s, const char* arg, uint32_t now) {
     if (!pick) {
         char dir[96];
         backupDir(dir, sizeof(dir));
-        DIR* d = cardbak::listable(target) ? opendir(dir) : nullptr;
+        DIR* d = cardbak::listable(target) ? disk::dir(dir) : nullptr;
         if (d) {
             for (struct dirent* e = readdir(d); e; e = readdir(d)) {
                 if (strcasecmp(e->d_name, target) || !cardbak::listable(e->d_name)) continue;
@@ -801,6 +812,7 @@ void Bbs::cardDone(Session& s, BackupService::Job was, bool watching, uint32_t n
 // the ScreenPlayer lesson from Block B, so the job lets go first.
 // ---------------------------------------------------------------------------
 void Bbs::dropCardJob() {
+    screensDrop();                    // SCREENS INSTALL reading off the card (1.1.1)
     BackupService::Job j = backup_.job();
     if (j == BackupService::Job::None || j == BackupService::Job::Apply) return;
     backup_.cardDrop();
@@ -835,7 +847,9 @@ void Bbs::serviceCard(uint32_t now) {
     if (backup_.applyingScreens(toCard))
         endScreens(toCard, toCard ? "Screen ended: the sysop is changing screens."
                                   : "Screen ended: the sysop is restoring a backup.");
-    backup_.applyTick();
+    // Never beside SCREENS INSTALL (1.1.1): both put screens into the same
+    // folder. It takes seconds; the restore goes on after it.
+    if (!screensBusy()) backup_.applyTick();
 
     BackupService::Job was = backup_.job();
     if (was == BackupService::Job::None) {
@@ -909,7 +923,7 @@ void Bbs::nightlyTick(uint32_t now) {
     clk::fmt(hour, sizeof(hour), "%H");
     uint32_t today = clk::dayKey(now);
     if (atoi(hour) != wanted || nightlyDay_ == today) return;
-    if (backup_.busy()) return;                   // the window or the sysop: try again in 30 s
+    if (backup_.busy() || screensBusy()) return;  // the window, the sysop or SCREENS INSTALL: try again in 30 s
     nightlyDay_ = today;
 
     if (!plat::sdBase()[0]) {
@@ -955,7 +969,7 @@ void Bbs::nightlyDone() {
     uint16_t left = 0;
     for (uint8_t guard = 0; guard < 32; ++guard) {
         cardbak::NightlyScan scan;
-        DIR* d = opendir(dir);
+        DIR* d = disk::dir(dir);
         if (!d) break;
         for (struct dirent* e = readdir(d); e; e = readdir(d)) scan.feed(e->d_name);
         closedir(d);
@@ -986,7 +1000,7 @@ void tidyCardBackups() {
     backupDir(dir, sizeof(dir));
     for (uint8_t guard = 0; guard < 32; ++guard) {    // one at a time: never remove mid-walk
         char victim[cardbak::kNameMax + 8] = "";
-        DIR* d = opendir(dir);
+        DIR* d = disk::dir(dir);
         if (!d) return;
         for (struct dirent* e = readdir(d); e; e = readdir(d)) {
             if (!cardbak::partial(e->d_name)) continue;

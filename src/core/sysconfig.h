@@ -167,6 +167,12 @@ struct SysConfig {
     bool     closed        = false;
     bool     closedSet     = false;
     bool     fromFile      = false;
+    // 100.64.0.0/10 counts as the board's own network (1.1.1, Rob, CONFIG
+    // network "CGNAT/Tailscale local"). Off as shipped: that range is the
+    // carrier's shared space, and yes trusts everybody behind the same
+    // carrier NAT, not only the sysop's own Tailscale. Read by the one
+    // local-address rule (guard.h localNet), wherever local is asked.
+    bool     cgnatLocal    = false;
 };
 
 namespace syscfg {
