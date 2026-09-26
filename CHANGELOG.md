@@ -24,6 +24,25 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.2.0-skins.6 (S3 1.1.3), 2026-09-26: a re-uploaded skin stays up
+
+Not a release. Found on the MF35 bench (board engineer's console): sending
+a new copy of the skin on the glass through the Skins area let it go at
+once, so the status layout was drawn whole, 30.5 ms in the plugins phase
+(the pass took 57.6 ms). The skin on the glass now stays until the new copy
+is read, as a skin change already did; a load already running is called
+off and started again so the new copy is the one read.
+- A skin's reads open through `disk::open` and `disk::dir`, like every
+  other storage path since 1.1.1, so the drive light sees them and the
+  host's per-open costs apply.
+- `test_board_s3_skin` re-uploads the skin on the glass with the card's
+  opens slowed and checks PANEL never shows status meanwhile; it fails on
+  skins.5 and passes now. S3 host profile 98/0, test_skin 218/0.
+- On the MF35 (1.2.0-skins.5): all five stock skins uploaded over the Skins
+  area and each switched to. Loads 329 to 383 ms on the runner with 4,544
+  bytes of its 8,192 stack spare; ten minutes idle with the pc skin up
+  showed no slow pass.
+
 ## 1.2.0-skins.5 (S3 1.1.3), 2026-09-26: the skins are 1.2.0's
 
 Not a release. Main's call: panel skins and the live widgets are part of

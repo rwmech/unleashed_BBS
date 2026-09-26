@@ -7183,6 +7183,25 @@ def test_board_s3_skin():
                 b"Skin e2e" in p or b"Skin flat" in p)
     p = settle(b"Skin flat")
     ok &= check("and it loads from the pair", b"Skin flat (End to end)" in p)
+    # A new copy of the skin on the glass, sent through the Skins area (seen
+    # on the MF35: the reload put the status layout up whole, 30 ms of the
+    # loop): the one on the glass stays until the new copy is read.
+    # The card's opens cost 0.5 s each here (hostio.txt), so the reload is
+    # long enough for PANEL to see what is on the glass meanwhile.
+    enter_area(s, 12, b"Skins")
+    area_key(s, b"u", "", b"Start your YMODEM send")
+    _seen.clear()
+    hostio_set(DATA, 500000, 0)
+    ymodem_send(s, "flat.txt", txt.replace(b"End to end", b"End again"))
+    s.pump(0.3)
+    settle_after_transfer(s)
+    leave_files(s)
+    p = panel_read(s)
+    ok &= check("a re-upload of the skin on the glass: that skin shown until the new copy is read, never status",
+                b"Skin flat (End to end)" in p and b"Skin status" not in p)
+    hostio_clear(DATA)
+    p = settle(b"Skin flat (End again)", 15)
+    ok &= check("and the new copy is read", b"Skin flat (End again)" in p)
     panel_config(s)
     settle(b"Skin status")
     s.close()

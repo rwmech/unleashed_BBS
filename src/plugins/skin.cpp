@@ -72,6 +72,7 @@
 #include "skin_jpeg.h"
 #include "lights.h"
 #include "../core/bbs.h"
+#include "../core/disk.h"      // opens that tell the drive light (and the host's costs)
 #include "../core/runner.h"
 #include "../platform/platform.h"
 
@@ -154,6 +155,9 @@ char     g_why[kWhyMax] = "";
 char     g_failName[kNameMax + 1] = "";
 uint16_t g_failW = 0, g_failH = 0;
 uint32_t g_failGen = 0;
+// The skin on the glass has a newer copy on the card (a re-upload through
+// the Skins area): read it again, and keep this one up until it is ready.
+bool     g_curStale = false;
 // The card: its comings and goings, and whether this one has been seeded.
 bool     g_cardWas  = false;
 uint32_t g_cardGen  = 1;
@@ -254,9 +258,8 @@ bool skinPath(const char* base, const char* name, bool txt, char* out, size_t n)
 // oversized file is seen as one), n its length. False on a read error: a
 // short read would otherwise parse as a shorter, different skin.
 bool readManifest(const char* path, char* buf, size_t& n) {
-    FILE* f = fopen(path, "rb");
+    FILE* f = disk::open(path, "rb");
     if (!f) return false;
-    plat::diskPulse(plat::DISK_CARD);
     n = fread(buf, 1, kFileMax + 1, f);
     const bool bad = ferror(f) != 0;
     fclose(f);
@@ -319,7 +322,7 @@ bool loadSkin(Job& j) {
     for (uint8_t i = 0; i < mm.nLamps; ++i) leds[kLampBase + i] = &mm.lamp[i].led;
 
     // background.jpg: checked for the ROM decoder, then decoded.
-    FILE* f = skinPath(j.base, j.name, false, path, sizeof(path)) ? fopen(path, "rb") : nullptr;
+    FILE* f = skinPath(j.base, j.name, false, path, sizeof(path)) ? disk::open(path, "rb") : nullptr;
     if (!f) { release(r); return jobFail(j, "no background.jpg (or %s.jpg) beside its skin.txt", j.name); }
     FileRead fr;
     fr.f = f;
@@ -375,7 +378,7 @@ void scanSkins(Job& j) {
     if (!j.base[0]) return;
     char dir[96];
     snprintf(dir, sizeof(dir), "%s/skins", j.base);
-    DIR* d = opendir(dir);
+    DIR* d = disk::dir(dir);
     if (!d) return;
     char names[kSkinsMax][kNameMax + 1];
     uint8_t n = 0;
@@ -444,7 +447,8 @@ void jobMain(runner::Job&) {
 // ---------------------------------------------------------------------------
 bool needLoad() {
     if (!g_up || builtIn(g_want)) return false;
-    if (g_cur.block && !strcmp(g_cur.name, g_want) && g_cur.w == g_w && g_cur.h == g_h) return false;
+    if (g_cur.block && !g_curStale && !strcmp(g_cur.name, g_want) && g_cur.w == g_w && g_cur.h == g_h)
+        return false;
     if (!strcmp(g_failName, g_want) && g_failW == g_w && g_failH == g_h && g_failGen == g_cardGen) return false;
     return true;
 }
@@ -531,6 +535,7 @@ void pollJob() {
     takeChoices(j.found);
     if (j.load) {
         const bool current = g_up && !strcmp(j.name, g_want) && j.w == g_w && j.h == g_h && !j.cancel.load();
+        if (current) g_curStale = false;          // this load answered it, either way
         if (j.ok && current) {
             release(g_cur);
             g_cur = j.result;
@@ -787,9 +792,14 @@ void skin::uploaded(const char* file) {
     char* dot = strrchr(name, '.');
     if (dot) *dot = '\0';
     if (!strcmp(name, g_failName)) g_failName[0] = '\0';
-    if (g_cur.block && !strcmp(name, g_cur.name) && !runner::pending(g_job.rj)) {
-        release(g_cur);
-        g_phase = PH_STATUS;
+    // The one on the glass stays there until the new copy is read, as a
+    // skin change does: letting it go at once put the status layout on the
+    // glass whole, some 30 ms of the loop on the MF35, for the length of the
+    // load. A load already running is called off and started again
+    // (reconcile) so the new copy is the one read.
+    if (g_cur.block && !strcmp(name, g_cur.name)) {
+        g_curStale = true;
+        if (runner::pending(g_job.rj) && g_job.load) g_job.cancel.store(true);
     }
     reconcile();
 }
