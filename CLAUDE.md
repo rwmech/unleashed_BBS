@@ -1880,6 +1880,22 @@ they are the process, and getting them wrong wastes Rob's time.
   and a firmware release tag reaches /install the same way. Assume it is
   on: a directory push or a release tag IS a deploy. Commit locally, tell
   Rob what changed, and push or tag only on his go for that one.
+  **The site split went live on 2026-09-26.** It is three repos on one
+  droplet:
+  - unleashed_directory 2.0.1 at unleashedbbs.net (public, GPL);
+  - unleashed_site at .com and .org (private, all rights reserved;
+    the droplet pulls it with a read-only deploy key);
+  - unleashed_documentation at .net/docs (public, CC BY-SA).
+
+  Autopublish runs both update.sh scripts, so a push to either main is a
+  deploy. The cutover scripts are in unleashed_site/deploy/cutover.
+  Four things only the droplet showed, all fixed:
+  - scripts committed from Windows without the executable bit;
+  - `caddy validate` as root creates a log file root-owned, and Caddy
+    then will not start (all three sites down for about a minute);
+  - `curl | grep -q` under pipefail fails on a match (curl error 23);
+  - a deploy check that GETs /announce tests nothing a board does.
+    Check it with a POST of {} and want 400.
 - **The Freenove camera board on COM13 may be flashed without asking**
   (Rob, 2026-09-25: "just flash, whatever, make it work"), for as long as
   the camera work runs. Telnet to it needs no permission either.
