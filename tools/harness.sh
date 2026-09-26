@@ -197,6 +197,8 @@ rm -f "$OUT"
 
 cd "$PROJ/host"
 make -s "$BIN"
+# The S3 profile has SSH (1.1.2): its tests call in with wolfSSH's client.
+if [ "$BIN" = bbs_host_s3 ]; then make -s ssh_call; fi
 
 # Kill only this tag's board. Matching on the process name would take down a
 # parallel run's board, which is the whole thing this file exists to stop.

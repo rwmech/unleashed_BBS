@@ -65,6 +65,10 @@ host/bbs_host
 host/bbs_host_s3
 host/bbs_host_fncam
 host/bbs_host_espcam
+# SSH on the host (1.1.2): wolfSSH built for the S3 profile, and its caller
+host/ssh_call
+host/wolfobj/
+host/libwolfssh_host.a
 # Every compiled test, by pattern rather than by name. Naming them one
 # at a time meant test_wrap's binary was committed the day it was
 # written, 72 KB of build output in the tree, and nothing noticed

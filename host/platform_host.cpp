@@ -53,6 +53,9 @@
 #include <zlib.h>
 #include <pthread.h>
 #include <atomic>
+#if defined(BBS_HAS_SSH) && BBS_HAS_SSH
+#include <sys/eventfd.h>
+#endif
 
 namespace {
 std::string g_fsBase   = "../data";
@@ -973,6 +976,87 @@ bool inflateRaw(InflateIn in, InflateOut out, void* ctx) {
     inflateEnd(&z);
     return ok;
 }
+
+#if defined(BBS_HAS_SSH) && BBS_HAS_SSH
+// ---------------------------------------------------------------------------
+// The SSH server's footing on the host (1.1.2): a thread for the task, a
+// Linux eventfd (the same call the IDF offers), and malloc standing in for
+// PSRAM, counted against BBS_HOST_PSRAM so a test can play a board whose
+// PSRAM is short (the refusal when it cannot hold another session).
+// ---------------------------------------------------------------------------
+namespace {
+std::atomic<int64_t> g_extHeld{0};
+struct ExtHead { size_t n; size_t pad; };   // 16 bytes: malloc's alignment kept
+}
+
+bool sideTask(void (*fn)(void*), void* arg, uint32_t stackBytes, const char* name) {
+    (void)stackBytes;
+    (void)name;
+    struct Tramp { void (*fn)(void*); void* arg; };
+    Tramp* tr = new Tramp{ fn, arg };
+    pthread_t t;
+    if (pthread_create(&t, nullptr, [](void* p) -> void* {
+            Tramp* x = static_cast<Tramp*>(p);
+            x->fn(x->arg);
+            delete x;
+            return nullptr;
+        }, tr) != 0) {
+        delete tr;
+        return false;
+    }
+    pthread_detach(t);
+    return true;
+}
+
+uint32_t sideStackFree() { return 0; }
+
+int wakeOpen(uint8_t) {
+    return eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+}
+
+void wakePost(int fd) {
+    uint64_t one = 1;
+    if (fd >= 0) (void)!write(fd, &one, sizeof(one));
+}
+
+bool wakeTake(int fd) {
+    uint64_t v = 0;
+    return fd >= 0 && read(fd, &v, sizeof(v)) == static_cast<ssize_t>(sizeof(v)) && v;
+}
+
+void* extAlloc(size_t n) {
+    ExtHead* h = static_cast<ExtHead*>(malloc(sizeof(ExtHead) + n));
+    if (!h) return nullptr;
+    h->n = n;
+    g_extHeld += static_cast<int64_t>(n);
+    return h + 1;
+}
+
+void* extRealloc(void* p, size_t n) {
+    if (!p) return extAlloc(n);
+    ExtHead* h = static_cast<ExtHead*>(p) - 1;
+    const size_t was = h->n;
+    ExtHead* g = static_cast<ExtHead*>(realloc(h, sizeof(ExtHead) + n));
+    if (!g) return nullptr;
+    g->n = n;
+    g_extHeld += static_cast<int64_t>(n) - static_cast<int64_t>(was);
+    return g + 1;
+}
+
+void extFree(void* p) {
+    if (!p) return;
+    ExtHead* h = static_cast<ExtHead*>(p) - 1;
+    g_extHeld -= static_cast<int64_t>(h->n);
+    free(h);
+}
+
+uint32_t extFreeBytes() {
+    const char* e = getenv("BBS_HOST_PSRAM");
+    int64_t total = e && *e ? atoll(e) : 8LL * 1024 * 1024;
+    int64_t left = total - g_extHeld.load();
+    return left > 0 ? static_cast<uint32_t>(left) : 0;
+}
+#endif  // BBS_HAS_SSH
 
 } // namespace plat
 

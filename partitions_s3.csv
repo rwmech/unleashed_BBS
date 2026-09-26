@@ -1,0 +1,69 @@
+# ===========================================================================
+#  unleashed BBS
+#  Electronic freedom on a microcontroller.
+# ===========================================================================
+#
+# File:         partitions_s3.csv
+# Module:       Build / flash partition table, the S3 boards (1.1.2)
+#
+# Purpose:      8 MB flash layout for the S3 envs only: the Waveshare's
+#               16 MB part and an 8 MB DevKitC-1 N8R8 both hold it. Rob,
+#               2026-09-26: the S3 is not held to the WROOM's 4 MB, and a
+#               clean layout rather than a patch on the old one, since no S3
+#               in the field needs its data kept. The ESP32 layout
+#               (partitions.csv) is untouched.
+#
+#                 ota_0/1   3 MB each  the app: SSH is +125 KB, and what
+#                                      follows it (TLS on the S3, the
+#                                      self-update) is the same class
+#                 logs     32 KB       the caller log ring, fixed in size
+#                 userdata 1,376 KB    users.txt, system.cfg, p/<plugin>/,
+#                                      ssh/ (the host keys), a restore's
+#                                      staging
+#                 storage  512 KB      the screens, SCREENS INSTALL's room
+#
+#               Rows in ascending offset order (IDF 5.3.1's gen_esp32part.py
+#               refuses an overlap with the row before), ending at exactly
+#               0x800000. "storage" stays the LAST filesystem partition, so
+#               PlatformIO's uploadfs can only ever reach the screens.
+#
+#               The first 1.1.2 install on an S3 is an erase: logs and
+#               userdata move, and a plain update would leave the old
+#               userdata blocks, password hashes and all, readable inside
+#               the new ota_1 (internal/ssh-research-2026-09-26.md 4.4).
+#
+#               A backup zip is still capped at 256 KB unpacked
+#               (BBS_ZIP_TOTAL_MAX): the second 256 KB of storage is for
+#               installed screens, and a storage filled past 256 KB makes a
+#               backup its restore refuses.
+#
+# Targets:      ESP32-S3 (ESP-IDF 5.3.1)
+# See also:     partitions.csv, platformio.ini, tools/release.py
+#
+# Copyright 2026 - Robert Mech
+# License:      GNU General Public License v3 or later
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 3 of the License, or (at your
+# option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program. If not, see <https://www.gnu.org/licenses/>. The full
+# text is in the LICENSE file at the top of this repository.
+# ===========================================================================
+
+nvs,       data, nvs,     0x9000,   0x6000
+otadata,   data, ota,     0xf000,   0x2000
+phy_init,  data, phy,     0x11000,  0x1000
+ota_0,     app,  ota_0,   0x20000,  0x300000
+ota_1,     app,  ota_1,   0x320000, 0x300000
+logs,      data, spiffs,  0x620000, 0x8000
+userdata,  data, spiffs,  0x628000, 0x158000
+storage,   data, spiffs,  0x780000, 0x80000

@@ -59,6 +59,9 @@ void Detector::start(uint32_t now) {
     tries_    = 0;
     type_     = TermType::Unknown;
     deadline_ = now + BBS_SETTLE_MS;
+#if BBS_HAS_SSH
+    ansiOnly_ = false;
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -214,6 +217,9 @@ Detector::Result Detector::tick(uint32_t now, ByteSink& out) {
             }
             if (static_cast<int32_t>(now - deadline_) >= 0) {
                 if (replies_ > 0) return finishAnsi(out);
+#if BBS_HAS_SSH
+                if (ansiOnly_) return finishAnsi(out);
+#endif
                 askKey(now, out, true);
             }
             return Result::Pending;

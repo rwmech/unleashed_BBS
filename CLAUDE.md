@@ -981,6 +981,103 @@ this tree.
     camera boards' description queue is on the heap only while edits wait.
     The runner's 8 KB stack is heap, while it runs. Images: 1,251,616,
     1,326,128, 1,379,664 and 1,291,632 bytes. Eleven envs, no warnings.
+- **1.1.2 part 3: SSH on the S3, a preview (rel-1.1.2c, 1.1.2-dev.3,
+  S3 1.1.3), built 2026-09-26, host-tested, not on the board.** Built to
+  internal/ssh-research-2026-09-26.md and Rob's decisions of the same day.
+  Merges after part 1 (rel-1.1.2a).
+  - `BBS_HAS_SSH`/`BBS_SSH_MAX` in the Waveshare's block of board.h (8);
+    config.h defaults it to 0 and holds the rest (`BBS_SSH_*`). wolfSSH
+    1.5.0 + wolfCrypt 5.9.4 vendored unchanged in `components/wolfssh/`
+    (the subset `user_settings.h` compiles, about 9 MB of source), an
+    empty component on every other target. Software crypto.
+  - **One port.** `Bbs::sshSniff` (bbs_ssh.cpp) looks at the first bytes
+    only while the detector is still settling (`Detector::settling`), so
+    once the probe is out nothing is SSH. `SSH-2.0-` hands the socket to
+    `sshd::claim`; the session's `fd` becomes the link's eventfd, state
+    `SState::SshWait` until the task has a shell, then the ordinary probe
+    with `Detector::ansiOnly` (no reply means CP437, never PETSCII).
+  - **The seam** (sshlink.h): per link two 4 KB SPSC rings in PSRAM and an
+    eventfd; the task (core 0, prio 2, 16 KB internal stack, sshd.cpp) owns
+    socket and crypto. `sessSend`, `readSession` (`sshRead`), `closeSession`
+    (`sshd::release`), the SNOOP mirror, `moveSession`, the backup window's
+    own-address lookup and the `wantWrite` FD_SET (an eventfd is always
+    writable; waiting on it would spin) know the link. loopDone/taskDone:
+    the task frees the rings only when both are set.
+  - **Authentication is the loop's** (`Bbs::sshAuth`), asked by the task
+    through `WOLFSSH_USERAUTH_WOULD_BLOCK` (wolfSSH keeps the packet and
+    asks again). Handle = SSH user name: an account needs its password
+    (lockout counted per wrong one, a connection ending on wrong ones is
+    one ban strike in closeSession); any other name gets `none` and the
+    ordinary prompt; a closed board with accounts admits only its account.
+    The task offers password only (`wolfSSH_SetUserAuthTypes`), three tries
+    a connection. `Bbs::sshLogin` re-reads the account after the welcome.
+  - **Slots full**: the loop itself sends `SSH-2.0-unleashedBBS` and one
+    plaintext DISCONNECT (reason 12, `--> All SSH ports are full`), shuts
+    the sending side and drops the node: no key exchange, no task. From the
+    clients' sources: OpenSSH processes DISCONNECT always, before strict
+    kex, at error level ("Received disconnect from ... :12: ..."); PuTTY's
+    common filter shows "Remote side sent disconnect message type 12 (too
+    many connections)" in its error box; pre-banner lines are debug-only in
+    OpenSSH and silently discarded by PuTTY, and a userauth banner costs a
+    key exchange. Not seen on a real client (the guard refuses ssh here).
+  - **Found building it, needs Rob: SyncTERM up to 1.9 cannot connect on a
+    shared port.** cryptlib's client reads the server's identification
+    before writing its own (session/ssh.c completeStartup: "If we're the
+    client we now have to send our SSH ID in response to what the server
+    sent us"), so it sends nothing during the settle, gets the telnet probe
+    as pre-ID lines (cryptlib tolerates 20), and fails on its own timeout
+    or at the key prompt's 60 s hangup, holding a node that long. OpenSSH
+    and PuTTY (SSH-2 only, its default) send first. Options: a separate
+    `ssh_port` listener (the 17th socket, research 3.4), or send our
+    identification to a caller that stays silent through the settle (a
+    visible `SSH-2.0-...` line to every raw telnet caller, the C64
+    included). SyncTERM 1.10 (DeuceSSH) is untried.
+  - Host keys in `<userdata>/ssh/host_ed25519` and `host_ecdsa` (DER, temp
+    and rename), made by the BBS task at `Bbs::begin` with the radio up;
+    fingerprints OpenSSH-style in SYS/HARDWARE for staff, `SSH` in every
+    caller's capabilities. Not in the backup zip (ziparc lists its files).
+  - wolfSSH with `NO_CERTS` still references `wc_KeyPemToDer`; sshd.cpp
+    answers it `NOT_COMPILED_IN` (only DER is loaded). wolfSSL's settings.h
+    has an unconditional `#warning` on Xtensa, silenced around the include.
+  - The 8 MB S3 layout (`partitions_s3.csv`), header 8 MB, Wi-Fi 10/10 and
+    RX BA window 10 on the S3. `release.py`: a `table` per family, offsets
+    and slot size read from it, the built partitions.bin checked against
+    it. **Site change owed (web agent):** server.py's `FLASH_PARTS` is one
+    global with storage at 0x3C0000; read each image set's offsets from its
+    own `partitions.bin` (32-byte entries, magic 0xAA50, label at offset
+    12, offset at 4, size at 8), update selftest.py's S3 offsets (storage
+    0x780000), and route an S3 on a version before 1.1.2 to Install with
+    erase, never Update.
+  - Host: `bbs_host_s3` links `libwolfssh_host.a` (host/Makefile builds it
+    from the vendored tree); `host/ssh_call` is wolfSSH's client on a pipe
+    for the tests (`SshCaller`), since the guard refuses `ssh`. The copy
+    board's PSRAM is `BBS_HOST_PSRAM` (the slots-full test).
+  - Sizes off the ELF: S3 image 1,404,400 (+134,160 on 1.1.1's
+    1,270,240), static DRAM 251,392 of 341,760 (+3,608). ESP32 images:
+    every application object and library the same size section for
+    section as main's, static DRAM identical (161,336 / 172,816 /
+    174,272); the linked .flash.text moves by -168 to +4 bytes, all of it
+    call relaxation in esp_littlefs's vfs_littlefs_* functions, which
+    varies between any two links (it moved between two of this branch's
+    own builds). The SSH sources are also filtered out of non-S3 builds in
+    src/CMakeLists.txt, so those link main's exact object set.
+  - Code review before the commit: two HIGH. (1) The SSH task could spin
+    with a zero select timeout (window never opened by the client, or the
+    socket full) and starve IDLE0 into the 30 s watchdog panic, a remote
+    reboot by anyone; fixed with `g_blocked` (wait on the socket), a streak
+    cap, a 10 ms pause after a pass over 50 ms, and a 10 s limit on a
+    hung-up link's last output. (2) The directory's `FLASH_PARTS` (above):
+    **the tag waits for it.** MEDIUM, fixed: lost wakes (post on every
+    push; the loop's read wakes the task when it makes room), the ban
+    bypass through a later "none" (`Session::sshPwOk`), unbounded login
+    questions (8 a connection) and handshakes (2 at once an address), a
+    dead caller's last post drained with its data (repost when gone), a
+    host key that would not read being replaced (now SSH stays off), the
+    closed board's own account meeting the closed sign after its SSH
+    login. Left, cosmetic: an SSH client past the busy line gets the
+    plaintext `BUSY`; SNOOP across link kinds shows raw or doubled 0xFF.
+    IDF 5.3.1's eventfd read never blocks (vfs_eventfd.c, event_read), so
+    `wakeTake` in the loop is safe.
 - **1.1.2, from the 1.1.1 bench check on the ESP32-CAM (2026-09-25)**.
   1.1.1 shipped on Rob's go before this check finished; the regression was
   clean (internal/regression-1.1.1-final-2026-09-25.md).
@@ -3037,7 +3134,7 @@ Queued for the next build (Rob's plan, in order):
   Shape: a second listener on its own port feeding the same session pool, with its own cap (`ssh_nodes = 2`). A caller is a caller once they are in.
   **The gotcha is plumbing, not memory.** SSH is not a socket that can be swapped in: it has a channel layer, a key exchange and window management above TCP. The seam exists, because output already goes through `ByteSink` and the telnet layer already sits between the socket and the session, but this is a genuine port and a phase of its own, not a config flag.
   An S3 with PSRAM moves the per-session buffers off internal DRAM and makes ten encrypted sessions plausible, the same argument that already governs the node count.
-  **Queued as an S3 option, not started** (Rob, 2026-09-24: "add an s3 ssh option but dont start that yet"). **Scheduled for 1.2.0** (Rob, 2026-09-25); the site says "coming in version 1.2.0" and its S3 seal reads SECURE* until a release with SSH is on disk. After 1.1.0, as its own phase, board-gated (`BBS_HAS_SSH`, S3 profiles only, the ESP32 image unchanged). It adds a way to connect, not lines: sockets stay capped at 16 on every chip, so it is still ten caller lines. SSH gives the terminal type and window size in its pty request, so SSH callers skip the detection probe. First step when it starts: a research pass on the library and its licence (wolfSSH may be GPLv3-only, which would move the combined firmware to GPLv3, and that is Rob's call; moot since 2026-09-24, when the project went GPLv3 or later, so a GPLv3 library now fits; the libssh ESP32 ports are LGPL, which fits, but their ESP-IDF 5.3.1 build without Arduino is unconfirmed), RAM per session and flash cost.
+  **Built as a preview in 1.1.2 part 3 (2026-09-26)**, on the telnet port rather than its own; see the 1.1.2 entry. The history below is kept. **Queued as an S3 option, not started** (Rob, 2026-09-24: "add an s3 ssh option but dont start that yet"). **Scheduled for 1.2.0** (Rob, 2026-09-25); the site says "coming in version 1.2.0" and its S3 seal reads SECURE* until a release with SSH is on disk. After 1.1.0, as its own phase, board-gated (`BBS_HAS_SSH`, S3 profiles only, the ESP32 image unchanged). It adds a way to connect, not lines: sockets stay capped at 16 on every chip, so it is still ten caller lines. SSH gives the terminal type and window size in its pty request, so SSH callers skip the detection probe. First step when it starts: a research pass on the library and its licence (wolfSSH may be GPLv3-only, which would move the combined firmware to GPLv3, and that is Rob's call; moot since 2026-09-24, when the project went GPLv3 or later, so a GPLv3 library now fits; the libssh ESP32 ports are LGPL, which fits, but their ESP-IDF 5.3.1 build without Arduino is unconfirmed), RAM per session and flash cost.
 
 - **Doors go horizontal: a second ESP32 on the serial port, not Lua in the core** (Rob, 2026-09-21). **This replaces the Lua plan and takes it off the roadmap.**
   Rob's framing: "Id rather go horizontal on this and plug in another device to the existing one which FEELS more legit like adding BBS hardware." He is right on both counts, the feeling and the engineering.

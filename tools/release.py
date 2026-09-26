@@ -100,15 +100,19 @@ NOTICES = "THIRD_PARTY_NOTICES.md"
 # generated sdkconfig's CONFIG_BOOTLOADER_OFFSET_IN_FLASH is checked
 # against it below). The ESP32 is first: its assets keep their plain names.
 #
+# "table" is the family's partition table: the S3s have their own 8 MB
+# layout since 1.1.2 (partitions_s3.csv), so the installer's offsets are
+# per family, read from the table, never typed beside it.
+#
 # "board" is the board profile's define (src/board.h), or None for the
 # reference build. A profile has a version of its own beside the core's,
 # and a family's version string is what BBS_VERSION_SHOWN makes of the two:
 # "1.1.0" for the ESP32, "1.1.0 (S3 1.0.0)" for the Waveshare S3.
 BUILDS = (
     {"dir": "esp32",   "env": "esp32dev_release",     "family": "ESP32",    "boot": 0x1000,
-     "board": None},
+     "board": None, "table": "partitions.csv"},
     {"dir": "esp32s3", "env": "ws_s3_lcd147_release", "family": "ESP32-S3", "boot": 0x0,
-     "board": "BBS_BOARD_WS_S3LCD147"},
+     "board": "BBS_BOARD_WS_S3LCD147", "table": "partitions_s3.csv"},
     # The Freenove ESP32-WROVER CAM (1.1.0). The same chipFamily as the
     # WROOM's, so ESP Web Tools cannot tell the two apart by reading the chip:
     # the site's picker asks which board. Either image on the other board
@@ -116,19 +120,20 @@ BUILDS = (
     # image here drives its SPI card pins (5, 18, 23) against the camera's
     # data lines, so the picker must not guess.
     {"dir": "esp32-fncam", "env": "freenove_wrover_cam_release", "family": "ESP32", "boot": 0x1000,
-     "board": "BBS_BOARD_FN_WROVER_CAM"},
+     "board": "BBS_BOARD_FN_WROVER_CAM", "table": "partitions.csv"},
     # The AI-Thinker ESP32-CAM (1.1.1). chipFamily ESP32 again, so the same
     # rule as the Freenove's: the site's picker asks which board. Its SPI card
     # (CS 13, MOSI 15, CLK 14, MISO 2) and XCLK on GPIO 0 are nothing like the
     # WROOM's or the Freenove's, so no other set is a safe guess for it.
     {"dir": "esp32-cam", "env": "esp32cam_aithinker_release", "family": "ESP32", "boot": 0x1000,
-     "board": "BBS_BOARD_AI_ESP32CAM"},
+     "board": "BBS_BOARD_AI_ESP32CAM", "table": "partitions.csv"},
 )
 
-# Offsets the installer writes to, from partitions.csv. Checked here against
-# the table itself, so a partition move cannot ship with stale offsets.
-EXPECT = {"otadata": 0xF000, "ota_0": 0x20000, "storage": 0x3C0000}
-SLOT_MAX = 0x180000          # ota_0 size: the largest firmware.bin that fits
+# Offsets every table keeps, because ESP-IDF and PlatformIO put them there
+# for any table (otadata after nvs, the first app at 0x20000). Everything
+# else, storage's offset and the app slot's size, comes from each family's
+# own table (1.1.2): typed beside the table, a count goes stale.
+FIXED = {"otadata": 0xF000, "ota_0": 0x20000}
 
 
 def die(msg):
@@ -182,22 +187,43 @@ def pio(*args, env=None):
         die(f"pio {' '.join(args)} failed")
 
 
-def check_partitions():
+def check_partitions(name="partitions.csv"):
+    """One family's table: {label: (offset, size)}, checked for what the
+    installer relies on. storage must be the last filesystem partition
+    (PlatformIO's uploadfs writes the last one, and the accounts must never
+    be in its way)."""
     table = {}
-    for line in (ROOT / "partitions.csv").read_text().splitlines():
+    order = []
+    for line in (ROOT / name).read_text().splitlines():
         line = line.split("#", 1)[0].strip()
         if not line:
             continue
         f = [x.strip() for x in line.split(",")]
         if len(f) >= 5:
             table[f[0]] = (int(f[3], 0), int(f[4], 0))
-    for name, off in EXPECT.items():
-        if name not in table or table[name][0] != off:
-            die(f"partitions.csv: {name} is not at 0x{off:X}; the installer's offsets "
-                "(directory server, firmware/README.md) must move with it")
-    if table["ota_0"][1] != SLOT_MAX:
-        die("partitions.csv: ota_0 changed size; update SLOT_MAX")
+            order.append((f[0], f[1], f[2]))
+    for label, off in FIXED.items():
+        if label not in table or table[label][0] != off:
+            die(f"{name}: {label} is not at 0x{off:X}; the installer writes it there")
+    if "storage" not in table:
+        die(f"{name}: no storage partition")
+    fs = [lab for lab, typ, sub in order if typ == "data" and sub in ("spiffs", "fat", "littlefs")]
+    if not fs or fs[-1] != "storage":
+        die(f"{name}: storage must be the last filesystem partition (uploadfs writes the last one)")
     return table
+
+
+def table_bin(data):
+    """The labels and offsets in a built partitions.bin (32-byte entries,
+    magic 0xAA50, label at 12): what the board will really boot with."""
+    out = {}
+    for i in range(0, len(data) - 31, 32):
+        e = data[i:i + 32]
+        if e[0:2] != b"\xaa\x50":
+            break
+        out[e[12:28].split(b"\0", 1)[0].decode("ascii", "replace")] = (
+            int.from_bytes(e[4:8], "little"), int.from_bytes(e[8:12], "little"))
+    return out
 
 
 def secrets_known():
@@ -253,6 +279,12 @@ def notices(fw):
          mc / "espressif__esp32-camera/LICENSE"),
         ("TJpgDec (ChaN), in the chip's ROM, camera images", "TJpgDec licence (BSD-style)",
          mc / "espressif__esp_jpeg/tjpgd/tjpgd.c"),
+        # In the ESP32-S3 image only (1.1.2): SSH. GPLv3 or later in every
+        # file header; the GPLv3 text is the project's own LICENSE.
+        ("wolfSSL / wolfCrypt 5.9.4 (wolfSSL Inc.), ESP32-S3 image", "GPL-3.0-or-later",
+         ROOT / "components/wolfssh/wolfssl/LICENSING"),
+        ("wolfSSH 1.5.0 (wolfSSL Inc.), ESP32-S3 image", "GPL-3.0-or-later",
+         ROOT / "components/wolfssh/wolfssh/LICENSING"),
     ]
     out = ["# Third-party notices",
            "",
@@ -339,8 +371,9 @@ def manifest(b):
     ESP Web Tools compares it with what Improv reports ("unleashed BBS",
     then the version as the board shows it) to decide whether to offer
     Update."""
-    offsets = {"partitions.bin": 0x8000, "ota_data_initial.bin": EXPECT["otadata"],
-               "firmware.bin": EXPECT["ota_0"], "storage.bin": EXPECT["storage"]}
+    t = b["parts"]
+    offsets = {"partitions.bin": 0x8000, "ota_data_initial.bin": t["otadata"][0],
+               "firmware.bin": t["ota_0"][0], "storage.bin": t["storage"][0]}
     m = {"name": "unleashed BBS", "version": b["version"], "new_install_prompt_erase": True,
          "builds": [{"chipFamily": b["family"],
                      "parts": [{"path": name,
@@ -362,7 +395,8 @@ def main():
     dirty = git("status", "--porcelain", "--untracked-files=no")
     if dirty and not a.allow_dirty:
         die("the working tree has uncommitted changes; commit, or --allow-dirty to test")
-    check_partitions()
+    for b in BUILDS:
+        b["parts"] = check_partitions(b["table"])
     check_notices()
 
     # The screens image, from data/screens only.
@@ -392,8 +426,13 @@ def main():
         for name, p in src.items():
             if not p.exists():
                 die(f"{b['env']} did not produce {p}")
-        if src["firmware.bin"].stat().st_size > SLOT_MAX:
+        if src["firmware.bin"].stat().st_size > b["parts"]["ota_0"][1]:
             die(f"{b['env']}: firmware.bin does not fit the OTA slot")
+        built = table_bin(src["partitions.bin"].read_bytes())
+        for label in ("otadata", "ota_0", "storage"):
+            if built.get(label) != b["parts"][label]:
+                die(f"{b['env']}: the built partitions.bin puts {label} at {built.get(label)}, "
+                    f"not {b['parts'][label]} as {b['table']} says")
         check_boot_offset(b)
         b["version"] = shown_version(ver, b["board"])
         blobs = {name: p.read_bytes() for name, p in src.items()}

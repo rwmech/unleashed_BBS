@@ -123,7 +123,15 @@
 // the version is shown, as BBS_VERSION_SHOWN (config.h) puts it. The
 // reference board defines neither.
 #define BBS_BOARD_TAG         "S3"
-#define BBS_BOARD_VERSION     "1.1.2"
+#define BBS_BOARD_VERSION     "1.1.3"
+
+// SSH (1.1.2 core, S3 1.1.3, a preview): encrypted logins on the board's
+// own port, beside telnet (src/core/sshd.h). Eight at once: this board's
+// 8 MB of PSRAM would hold far more at about 48 KB each, but eight is more
+// than a preview on ten nodes needs, and the lower figure bounds the one SSH
+// task's work. A board with 2 MB of PSRAM sets its own, lower, figure.
+#define BBS_HAS_SSH           1
+#define BBS_SSH_MAX           8
 
 // The internal heap a plugin may not take at start (config.h). 16 KB, not
 // the WROOM's 40: with PSRAM, Wi-Fi's and lwIP's buffers go there

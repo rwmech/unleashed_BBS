@@ -117,6 +117,27 @@ A glass terminal gets the board's ANSI mode. The ones that predate ANSI get plai
 
 macOS has not shipped `telnet` since 10.13 High Sierra. Use `nc`, install one with `brew install inetutils`, or run SyncTERM or MuffinTerm.
 
+## SSH (the S3 boards, 1.1.2 preview)
+
+A board built on an ESP32-S3 also answers SSH on the same port, encrypted,
+for the machines that can: `ssh -p 6400 <handle>@<board>`. Your handle is
+the SSH user name and your account password is the SSH password; any other
+name gets in without one and lands at the ordinary handle prompt. The
+ESP32 boards are telnet only. See [COMMANDS.md](COMMANDS.md).
+
+| Client | Notes |
+|---|---|
+| [OpenSSH](https://www.openssh.com/) | Linux, macOS, and Windows 10 and 11 (built in). `ssh -p 6400 handle@unleashed.local`. It sends its identification first, which is how the board knows it is SSH |
+| [PuTTY](https://www.chiark.greenend.org.uk/~sgtatham/putty/) | connection type SSH, port 6400. Sends first whenever it is set to SSH-2 only, which has been its default for years |
+| [SyncTERM](https://syncterm.bbsdev.net/) up to 1.9 | **does not connect over SSH yet.** Its SSH is cryptlib's, which waits to hear the server's identification before sending its own, so the board never sees `SSH-2.0-` and treats it as telnet; the client sees the terminal probe and gives up. Use telnet with it |
+| SyncTERM 1.10 | a new SSH library (DeuceSSH); not tried yet |
+| [Termius](https://termius.com/), [ConnectBot](https://connectbot.org/) | phone and tablet SSH clients; not tried yet |
+
+On the first call the client asks you to trust the board's host key. Staff
+can read its fingerprint in `SYS` or `HARDWARE` and compare. A board that
+has been erased or factory reset has a new key, and the client will say
+the key changed.
+
 ## Phones and tablets
 
 The phone in your pocket is a perfectly good terminal, and these all speak telnet rather than SSH only.
@@ -136,7 +157,7 @@ Termux plus `pkg install inetutils` works too, but it is UTF-8 only, so CP437 ar
 Honesty matters more than a long list:
 
 - **Verified on hardware:** PuTTY over the network, and a C64 through TeensyROM, including every PETSCII glyph the screens use.
-- **Verified on the host build:** ANSI with UTF-8 and CP437, PETSCII at 40 and 80 columns, plain ASCII, and telnet clients that negotiate first.
+- **Verified on the host build:** ANSI with UTF-8 and CP437, PETSCII at 40 and 80 columns, plain ASCII, and telnet clients that negotiate first. SSH (1.1.2) with wolfSSH's own client only: this machine does not let an OpenSSH client run, so OpenSSH, PuTTY and SyncTERM against the board are the bench's to try.
 - **Expected to work, not yet tried by us:** everything else on this page. The protocol is plain telnet and the detection falls back to asking, so the risk is low, but nobody has sat a Kaypro in front of it yet.
 
 If you get a machine onto the board that is not on this list, or one on this list turns out to need a trick, say so and it goes in.

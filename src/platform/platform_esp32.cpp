@@ -65,6 +65,9 @@
 #include "esp_partition.h"       // factoryErase
 #include "esp_task_wdt.h"        // factoryErase feeds the watchdog between partitions
 #include "soc/soc_caps.h"        // the RMT's block size and DMA, per chip
+#if defined(BBS_HAS_SSH) && BBS_HAS_SSH
+#include "esp_vfs_eventfd.h"       // the SSH links' wake descriptors (1.1.2)
+#endif
 #if SOC_USB_SERIAL_JTAG_SUPPORTED && CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
 #include "driver/usb_serial_jtag.h"      // the console on the S3's own USB
 #include "driver/usb_serial_jtag_vfs.h"
@@ -2124,6 +2127,75 @@ bool jpegRaw(const uint8_t* rgb565, uint16_t w, uint16_t h, uint8_t quality, Mar
     return done;
 }
 #endif  // BBS_HAS_CAMERA
+
+#if defined(BBS_HAS_SSH) && BBS_HAS_SSH
+// ---------------------------------------------------------------------------
+// The SSH server's footing (1.1.2, S3 only). The task sits on core 0 just
+// above idle: Wi-Fi (23), lwIP (18) and the timer task take the CPU from it
+// whenever they want, and core 1 stays the loop's. Its stack is internal:
+// a PSRAM stack would be allowed on the S3 only while the task never touched
+// flash, and the rule is easier kept by not needing it (research 3.3).
+// ---------------------------------------------------------------------------
+namespace {
+struct SideTramp { void (*fn)(void*); void* arg; };
+SideTramp g_side;
+void sideMain(void*) {
+    g_side.fn(g_side.arg);
+    vTaskDelete(nullptr);
+}
+bool g_wakeReg = false;
+}
+
+bool sideTask(void (*fn)(void*), void* arg, uint32_t stackBytes, const char* name) {
+    g_side.fn  = fn;
+    g_side.arg = arg;
+    BaseType_t ok = xTaskCreatePinnedToCore(sideMain, name, stackBytes, nullptr,
+                                            BBS_SSH_PRIO, nullptr, BBS_SSH_CORE);
+    return ok == pdPASS;
+}
+
+uint32_t sideStackFree() {
+    return static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr)) * sizeof(StackType_t);
+}
+
+int wakeOpen(uint8_t wakeMax) {
+    if (!g_wakeReg) {
+        esp_vfs_eventfd_config_t cfg = ESP_VFS_EVENTD_CONFIG_DEFAULT();
+        cfg.max_fds = wakeMax;
+        if (esp_vfs_eventfd_register(&cfg) != ESP_OK) return -1;
+        g_wakeReg = true;
+    }
+    return eventfd(0, 0);
+}
+
+void wakePost(int fd) {
+    uint64_t one = 1;
+    if (fd >= 0) (void)write(fd, &one, sizeof(one));
+}
+
+bool wakeTake(int fd) {
+    uint64_t v = 0;
+    return fd >= 0 && read(fd, &v, sizeof(v)) == static_cast<ssize_t>(sizeof(v)) && v;
+}
+
+void* extAlloc(size_t n) {
+    return heap_caps_malloc_prefer(n, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                   MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+
+void* extRealloc(void* p, size_t n) {
+    return heap_caps_realloc_prefer(p, n, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+
+void extFree(void* p) {
+    heap_caps_free(p);
+}
+
+uint32_t extFreeBytes() {
+    return static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+}
+#endif  // BBS_HAS_SSH
 
 } // namespace plat
 

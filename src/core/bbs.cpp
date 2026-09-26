@@ -52,6 +52,9 @@
 #include "silent.h"
 #include "../plugins/chat.h"
 #include "../platform/platform.h"
+#if BBS_HAS_SSH
+#include "sshd.h"
+#endif
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -109,6 +112,21 @@ private:
 // ---------------------------------------------------------------------------
 int sessSend(void* ctx, const uint8_t* d, size_t n) {
     Session* s = static_cast<Session*>(ctx);
+#if BBS_HAS_SSH
+    // An SSH caller: into the link's ring, for the SSH task to encrypt and
+    // send. A full ring takes what fits; the rest waits for the next pass.
+    if (s->link) {
+        int w = sshd::write(s->link, d, n);
+        if (w < 0) return -1;
+        Session* snoop = s->snooper;
+        if (w > 0 && snoop && snoop->fd >= 0 && snoop->st == SState::Snoop) {
+            if (snoop->link) sshd::write(snoop->link, d, static_cast<size_t>(w));
+            else send(snoop->fd, d, static_cast<size_t>(w), MSG_DONTWAIT | MSG_NOSIGNAL);
+        }
+        if (static_cast<size_t>(w) < n) s->wantWrite = true;
+        return w;
+    }
+#endif
     ssize_t r = send(s->fd, d, n, MSG_DONTWAIT | MSG_NOSIGNAL);
     if (r < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) { s->wantWrite = true; return 0; }
@@ -116,6 +134,10 @@ int sessSend(void* ctx, const uint8_t* d, size_t n) {
     }
     Session* w = s->snooper;
     if (r > 0 && w && w->fd >= 0 && w->st == SState::Snoop) {
+#if BBS_HAS_SSH
+        if (w->link) sshd::write(w->link, d, static_cast<size_t>(r));   // a sysop on SSH
+        else
+#endif
         send(w->fd, d, static_cast<size_t>(r), MSG_DONTWAIT | MSG_NOSIGNAL);   // best effort
     }
     if (static_cast<size_t>(r) < n) s->wantWrite = true;
@@ -228,6 +250,11 @@ bool Bbs::begin(uint16_t port) {
               static_cast<unsigned>(sizeof(Session)),
               static_cast<unsigned>(sizeof(Session) * kSessions),
               static_cast<unsigned>(h.freeBytes));
+#if BBS_HAS_SSH
+    // SSH on this same port (1.1.2). If it cannot start, telnet carries on
+    // as it always has and SYS says why.
+    sshd::begin();
+#endif
     return true;
 }
 
@@ -424,7 +451,13 @@ void Bbs::tick() {
         // or the output buffer is nearly full (a pasted burst must not
         // overflow the Timeline and lose output)
         if (!s->rxLen && s->tl.freeBytes() >= BBS_RX_ROOM) FD_SET(s->fd, &rfds);
+#if BBS_HAS_SSH
+        // An SSH link's descriptor is always writable, so waiting on it would
+        // spin; the SSH task drains the ring and the next pass pumps again.
+        if (s->wantWrite && !s->link) FD_SET(s->fd, &wfds);
+#else
         if (s->wantWrite) FD_SET(s->fd, &wfds);
+#endif
         if (s->fd > maxfd) maxfd = s->fd;
     }
     backup_.addFds(rfds, wfds, maxfd);
@@ -576,6 +609,10 @@ void Bbs::serviceBackup(uint32_t now) {
             char ip[16] = "0.0.0.0";
             sockaddr_in a;
             socklen_t al = sizeof(a);
+#if BBS_HAS_SSH
+            if (sysop_.link) ipToText(sysop_.link->local, ip, sizeof(ip));   // the SSH task has the socket
+            else
+#endif
             if (getsockname(sysop_.fd, reinterpret_cast<sockaddr*>(&a), &al) == 0) {
                 ipToText(a.sin_addr.s_addr, ip, sizeof(ip));
             }
@@ -815,6 +852,12 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
     s.lurk          = false;
     s.histPos       = -1;
     s.snooper       = nullptr;
+#if BBS_HAS_SSH
+    s.link          = nullptr;   // a telnet caller until the settle says otherwise
+    s.sniff         = 0;
+    s.sshAuthed     = false;
+    s.sshPwOk       = false;
+#endif
 
     if (role == Role::Caller) {                  // what the board has handled since boot
         ++callsBoot_;
@@ -903,6 +946,23 @@ void Bbs::closeSession(Session& s, const char* why, uint32_t now) {
     memset(s.pwB, 0, sizeof(s.pwB));
     memset(s.pwC, 0, sizeof(s.pwC));
     s.form.wipe();
+#if BBS_HAS_SSH
+    if (s.link) {
+        // The SSH task sends what is still in the ring, closes the socket
+        // and takes the slot back; fd was the link's wake descriptor, which
+        // the link keeps. A connection that ended on a wrong password and no
+        // right one counts once toward the address's ban, as a wrong staff
+        // password at BYE does; getting in afterwards under another name,
+        // with no password, does not undo it.
+        if (sshd::wrongPasswords(s.link) && !s.sshPwOk && bans_.fail(s.ipAddr, now))
+            plat::log("bbs: %s banned after failed SSH logins", s.ip);
+        const char* why = sshd::why(s.link);
+        if (*why) plat::log("bbs: node %s SSH ended: %s", nodeName(s).t, why);
+        sshd::release(s.link);
+        s.link = nullptr;
+        s.fd   = -1;
+    }
+#endif
     if (s.fd >= 0) close(s.fd);
     s.fd = -1;
     s.scr.close();
@@ -942,6 +1002,9 @@ void Bbs::moveSession(Session& from, Session& to, uint8_t newId, Role role) {
     to.role = role;
 
     from.fd       = -1;
+#if BBS_HAS_SSH
+    from.link     = nullptr;         // the link went with the caller
+#endif
     from.st       = SState::Free;
     from.loggedIn = false;
     from.snooper  = nullptr;
@@ -955,6 +1018,9 @@ void Bbs::moveSession(Session& from, Session& to, uint8_t newId, Role role) {
 // readSession: socket -> telnet filter -> detector or key events
 // ---------------------------------------------------------------------------
 void Bbs::readSession(Session& s, uint32_t now) {
+#if BBS_HAS_SSH
+    if (s.link) { sshRead(s, now); return; }
+#endif
     uint8_t raw[BBS_RX_CHUNK];
     uint8_t data[BBS_RX_CHUNK];
 
@@ -965,6 +1031,11 @@ void Bbs::readSession(Session& s, uint32_t now) {
         closeSession(s, errno == ECONNRESET ? "remote" : "read error", now);
         return;
     }
+#if BBS_HAS_SSH
+    // The connect settle: an SSH client's first bytes are "SSH-2.0-". One
+    // comparison for a telnet client, whose first byte is IAC or a key.
+    if (s.sniff != 0xFF && sshSniff(s, raw, static_cast<size_t>(n), now)) return;
+#endif
 
     plat::activityPulse(now);
     rxSeen_  = static_cast<uint16_t>(rxSeen_ | (1u << s.id));   // for the lights
@@ -1091,10 +1162,18 @@ void Bbs::serviceSession(Session& s, uint32_t now) {
         case SState::Intro:
             if (s.scr.active()) s.scr.pump(t, tl, vars);
             if (!s.scr.active()) {
+#if BBS_HAS_SSH
+                if (s.sshAuthed) { sshLogin(s, now); break; }   // the SSH login proved it
+#endif
                 loginHint(s);
                 askName(s);
             }
             break;
+#if BBS_HAS_SSH
+        case SState::SshWait:
+            sshWait(s, now);
+            return;
+#endif
         case SState::Shell:
             if (s.scr.active()) {
                 bool more = s.scr.pump(t, tl, vars);
@@ -1197,6 +1276,14 @@ void Bbs::onDetected(Session& s, uint32_t now) {
     s.term.setType(s.det.type(), s.det.charset(), s.det.cols(), s.det.rows());
 
     bool telnet = false;
+#if BBS_HAS_SSH
+    if (s.link) {
+        // SSH: no telnet at all, so no IAC is sent, read or doubled, and an
+        // XMODEM or YMODEM block crosses intact. The size is the pty's.
+        s.term.setIacEscape(false);
+        s.term.setGeometry(s.link->cols.load(), s.link->rows.load());
+    } else
+#endif
     if (s.term.isPet()) {
         telnet = s.tn.clientSpoke();          // raw C64 clients never see IAC
         s.tn.setEnabled(telnet);
@@ -1208,8 +1295,14 @@ void Bbs::onDetected(Session& s, uint32_t now) {
         }
         telnet = true;
     }
+#if BBS_HAS_SSH
+    if (!s.link) {
+#endif
     s.term.setIacEscape(telnet);
     if (s.term.isAnsi() && s.tn.hasSize()) s.term.setGeometry(s.tn.cols(), s.tn.rows());
+#if BBS_HAS_SSH
+    }
+#endif
 
     plat::log("bbs: node %s %s (telnet %s)", nodeName(s).t, s.term.name(), telnet ? "on" : "off");
     for (uint8_t i = 0; i < plugins::count(); ++i) {
@@ -1219,7 +1312,13 @@ void Bbs::onDetected(Session& s, uint32_t now) {
     // A closed board (1.1.0) shows every caller the busy line's sign, in
     // the closed wording, unless it has no accounts at all: then this is
     // the first caller on a fresh board, who registers and runs it.
+#if BBS_HAS_SSH
+    // The one account a closed board admits, already proved by its SSH
+    // password, goes straight in rather than past the closed sign.
+    if (s.role == Role::Busy || (closedTo(s) && users::count() > 0 && !s.sshAuthed)) startBusy(s, now);
+#else
     if (s.role == Role::Busy || (closedTo(s) && users::count() > 0)) startBusy(s, now);
+#endif
     else                                                              startIntro(s);
 }
 
@@ -1291,9 +1390,13 @@ void Bbs::closedRefuse(Session& s, uint32_t now) {
 // ---------------------------------------------------------------------------
 namespace {
 struct Link { const char* name; bool secure; };
-// linkOf: how this session reached the board. Telnet is the only door
-// until the SSH listener (1.2.0) marks its sessions.
+// linkOf: how this session reached the board: SSH on the boards that have
+// it (1.1.2), telnet everywhere else.
+#if BBS_HAS_SSH
+Link linkOf(const Session& s) { return s.link ? Link{ "SSH", true } : Link{ "Telnet", false }; }
+#else
 Link linkOf(const Session&) { return Link{ "Telnet", false }; }
+#endif
 } // namespace
 
 void Bbs::linkLine(Session& s) {

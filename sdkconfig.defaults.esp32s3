@@ -45,11 +45,14 @@
 # text is in the LICENSE file at the top of this repository.
 # ===========================================================================
 
-# Flash: 16 MB, DIO at 80 MHz, which is how Waveshare's own demo runs this
-# part. QIO is untried here and is a measured step for later. The partition
-# table stays the 4 MB one, so nothing else moves; the image header says
-# 16 MB, which is what the directory's system badge reports.
-CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+# Flash: DIO at 80 MHz, which is how Waveshare's own demo runs this part.
+# QIO is untried here and is a measured step for later. The image header
+# says 8 MB (1.1.2), the size of the S3 layout (partitions_s3.csv), so the
+# same image boots on the Waveshare's 16 MB part and on an 8 MB N8R8:
+# IDF 5.3.1 refuses to start when the header claims more flash than the
+# chip has (esp_flash_spi_init.c), and a larger chip is only a warning. The
+# directory's system badge reports the header's size, so it reads 8 MB.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 
@@ -76,6 +79,17 @@ CONFIG_SPIRAM_MEMTEST=n
 # the panel were both refused at start for want of internal heap while
 # eight megabytes of PSRAM sat idle.
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+# Wi-Fi's static buffers, 16/16 to 10/10 (1.1.2), and the block-ack window
+# to match the receive buffers, as the IDF advises. TRY_ALLOCATE_WIFI_LWIP
+# raises both defaults to 16, and PSRAM forces static TX buffers, all in
+# internal RAM: about 19 KB back (internal/memory-2026-09-25-1.1.1.md item
+# 7, measured on the Freenove, which runs 10/10), for the SSH task's stack
+# and its crypto. Ten is the WROOM's own RX figure and more TX than a
+# telnet board keeps in flight; frames past ten wait in the cache queue.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=10
+CONFIG_ESP_WIFI_RX_BA_WIN=10
 
 # The console on the S3's own USB (USB-Serial-JTAG), as the primary console.
 # The Waveshare stick has no USB-serial bridge: its USB-A plug goes straight

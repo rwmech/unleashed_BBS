@@ -52,6 +52,7 @@
 
 #pragma once
 #include <cstdint>
+#include "../config.h"
 #include "term.h"
 
 class Detector {
@@ -72,6 +73,16 @@ public:
     uint8_t  cols()    const { return cols_; }
     uint8_t  rows()    const { return rows_; }
 
+#if BBS_HAS_SSH
+    // settling: nothing has been sent yet, so a client that turns out to be
+    // an SSH client can still be handed over (1.1.2).
+    bool settling() const { return st_ == St::Settle; }
+    // ansiOnly: an SSH caller. Its terminal is an ANSI one whatever it says
+    // to the cursor probe, so no reply ends the probe as ANSI (CP437) rather
+    // than asking for DEL or BACKSPACE, the PETSCII and ASCII question.
+    void ansiOnly() { ansiOnly_ = true; }
+#endif
+
 private:
     enum class St : uint8_t { Settle, Probe, AskKey, AskCols, Done };
 
@@ -91,6 +102,9 @@ private:
     uint32_t nextDot_  = 0;
     uint8_t  dots_     = 0;
     uint8_t  tries_    = 0;
+#if BBS_HAS_SSH
+    bool     ansiOnly_ = false;
+#endif
 
     TermType type_ = TermType::Unknown;
     Charset  cs_   = Charset::Ascii;

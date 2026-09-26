@@ -90,6 +90,8 @@ Anything with a telnet client, and, with a modem emulator or a serial bridge, ve
 - **Unix and everything modern.** [telnet](https://www.gnu.org/software/inetutils/) and [nc](https://man.openbsd.org/nc.1) on Linux and BSD, [SyncTERM](https://syncterm.bbsdev.net/) anywhere, and `nc` or `brew install inetutils` on macOS, which has not shipped telnet since High Sierra.
 - **The phone in your pocket.** [TERMinator](https://play.google.com/store/apps/details?id=com.terminator.android) on Android or [iOS](https://apps.apple.com/us/app/terminator-bbs-terminal/id6759012939) is built for BBSes and handles CP437 art; [MuffinTerm](https://apps.apple.com/us/app/muffinterm/id1583236494) on iOS and macOS speaks ANSI, PETSCII and ATASCII.
 
+- **SSH, on the S3 boards** (1.1.2, a preview). `ssh -p 6400 handle@unleashed.local` from OpenSSH (Linux, macOS, Windows) or PuTTY, on the same port as telnet, encrypted. Your handle is the SSH user name and your account password the SSH password; any other name lands at the ordinary handle prompt. SyncTERM up to 1.9 cannot use it yet (its SSH waits for the server to speak first). Details in [COMMANDS.md](COMMANDS.md) and [CLIENTS.md](CLIENTS.md).
+
 Terminal type, character set and width are detected at connect time: ANSI with CP437 or UTF-8, PETSCII at 40 or 80 columns, or plain ASCII. Nothing needs configuring at the caller's end.
 
 ## Hardware integration
@@ -105,6 +107,7 @@ A carrier PCB with the module, a level shifter and screw terminals is the obviou
 A board other than the reference is a profile, not a fork: a PlatformIO environment that defines the board, and its defaults in `src/board.h`. Whatever only that board has is compiled only into its image, so the WROOM's build carries none of it. One so far (1.1.0), described with its pins and its measured memory in [ESP32_BOARD_CHOICE.md](ESP32_BOARD_CHOICE.md):
 
 - **Waveshare ESP32-S3-LCD-1.47** (`pio run -e ws_s3_lcd147`), the USB-A stick with an ESP32-S3R8, 16 MB of flash, 8 MB of PSRAM, a TF slot, one RGB pixel and a 1.47" display. The pixel is the drive light, the TF slot is the SD card, and the display is a status panel laid out like a phone's status bar: the board's name, where to dial and the uptime with the card's free space turning in the bar, status glyphs (a ring, the sysop's mail, uploads waiting, the listing, staff on), the Wi-Fi signal and the clock under it, who is on and the recent logins and logoffs, and the lights' strip as a row of square LEDs. `CONFIG panel` has its pins and geometry, and `PANEL` says what it is showing. The console, flashing and Improv all go through the chip's own USB, because the stick has no USB-serial bridge.
+  From 1.1.2 (S3 1.1.3) it also answers **SSH** on the telnet port (wolfSSH 1.5.0 on wolfCrypt 5.9.4, on a task of its own so no key exchange ever runs in the BBS loop), and it has **its own 8 MB flash layout** (`partitions_s3.csv`: two 3 MB program slots, 1,376 KB of userdata, 512 KB of screens), so the same image boots on an 8 MB S3. **The first 1.1.2 install on an S3 must be a new install, with an erase**: the data partitions moved, and an update would leave the old accounts' blocks behind in the new program slot. Accounts and settings on an S3 do not carry across that one install; take a backup first and restore it after.
 
 ### Getting it on Wi-Fi
 
@@ -190,6 +193,7 @@ The task watchdog restarts a board whose BBS loop has stopped for 30 seconds, wh
 - Tag `v<BBS_VERSION>` and `.github/workflows/release.yml` builds the release on a fresh checkout with `tools/release.py` and publishes it as a GitHub Release. The directory server's `deploy/update.sh` fetches the newest one, checks every file against `SHA256SUMS`, and `/install` offers it.
 - `python3 tools/release.py --allow-dirty` builds the same thing locally, to test before tagging. It writes `release/<version>/assets/` (the GitHub Release files) and `release/<version>/install/` (the directory server's `firmware/<version>/` layout, for copying across by hand).
 - A release carries four image sets, one per board: the reference ESP32 under plain names, then `esp32s3-*` (Waveshare ESP32-S3-LCD-1.47), `esp32-fncam-*` (Freenove ESP32-WROVER CAM) and `esp32-cam-*` (AI-Thinker ESP32-CAM, from 1.1.1-dev.0), each with its own `version.txt`. A tag with a suffix (`v1.1.1-dev.0`) is published as a pre-release.
+- Each set's flash offsets come from its own partition table (1.1.2): the S3's storage is at 0x780000 in `partitions_s3.csv`, the ESP32s' at 0x3C0000. `release.py` reads them from the table, checks the built `partitions.bin` against it, and writes each set's `manifest.json` from it.
 - A release never carries anybody's network or passwords: every `*_release` environment ignores `include/secrets.h`, the screens image is built from `data/screens` only, and `release.py` searches every image for any password or network name the machine knows and refuses on a match.
 
 ## Build and flash (PlatformIO)

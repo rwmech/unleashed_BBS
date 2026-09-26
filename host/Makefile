@@ -42,10 +42,23 @@ CPPFLAGS += -I../src
 # board (announce's room_test). Nothing may change behaviour on it otherwise.
 CPPFLAGS += -DBBS_HOST
 LDLIBS   += -lz -lpthread
+CC       ?= gcc
 ifeq ($(SAN),1)
 CXXFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer
 LDFLAGS  += -fsanitize=address,undefined
+WOLF_SAN  = -fsanitize=address,undefined -fno-omit-frame-pointer
 endif
+
+# wolfCrypt 5.9.4 and wolfSSH 1.5.0 (1.1.2), from the S3's own vendored copy
+# (components/wolfssh), for the profiles that have SSH. Built as upstream
+# ships it, warnings and all, with the same user_settings.h as the board
+# (which keeps wolfSSH's client on the host, for ssh_call).
+WOLF          = ../components/wolfssh
+WOLF_CPPFLAGS = -DWOLFSSL_USER_SETTINGS -I$(WOLF) -I$(WOLF)/wolfssl -I$(WOLF)/wolfssh
+WOLF_WC       = aes asn coding curve25519 ecc ed25519 error fe_low_mem ge_low_mem hash hmac kdf \
+                logging memory random sha256 sha512 signature sp_c32 sp_int wc_encrypt wc_port wolfmath
+WOLF_WS       = internal io log port ssh
+WOLF_OBJS     = $(patsubst %,wolfobj/wc_%.o,$(WOLF_WC)) $(patsubst %,wolfobj/ws_%.o,$(WOLF_WS))
 SRCS      = $(wildcard ../src/core/*.cpp) $(wildcard ../src/plugins/*.cpp) platform_host.cpp main_host.cpp
 
 HDRS      = $(wildcard ../src/core/*.h) $(wildcard ../src/plugins/*.h) ../src/config.h ../src/board.h \
@@ -58,8 +71,37 @@ bbs_host: $(SRCS) $(HDRS)
 # (1.1.0, src/board.h): the S3's pin rules, that board's defaults, and the
 # panel plugin with its glass in memory. tools/harness.sh --board s3 runs it;
 # the ordinary suite is written for the reference board and runs bbs_host.
-bbs_host_s3: $(SRCS) $(HDRS)
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_WS_S3LCD147 $(LDFLAGS) -o $@ $(SRCS) $(LDLIBS)
+#
+# It carries SSH (1.1.2), so it links wolfSSH: libwolfssh_host.a below.
+bbs_host_s3: $(SRCS) $(HDRS) libwolfssh_host.a
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_WS_S3LCD147 $(WOLF_CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) \
+	    libwolfssh_host.a $(LDLIBS)
+
+wolfobj/wc_%.o: $(WOLF)/wolfssl/wolfcrypt/src/%.c $(WOLF)/user_settings.h
+	@mkdir -p wolfobj
+	$(CC) -c -O1 -g -w $(WOLF_SAN) $(WOLF_CPPFLAGS) -o $@ $<
+
+wolfobj/ws_%.o: $(WOLF)/wolfssh/src/%.c $(WOLF)/user_settings.h
+	@mkdir -p wolfobj
+	$(CC) -c -O1 -g -w $(WOLF_SAN) $(WOLF_CPPFLAGS) -o $@ $<
+
+libwolfssh_host.a: $(WOLF_OBJS)
+	rm -f $@
+	ar rcs $@ $(WOLF_OBJS)
+
+# ssh_call: a caller that dials the host board over SSH with wolfSSH's own
+# client, for the tests (tools/testclient.py SshCaller). stdin goes to the
+# board, the board comes out on stdout. OpenSSH would be the better witness,
+# being somebody else's implementation, but this machine does not allow an
+# ssh client to run; wolfSSH's client and server are separate code paths.
+ssh_call: ssh_call.cpp libwolfssh_host.a
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(WOLF_CPPFLAGS) $(LDFLAGS) -o $@ ssh_call.cpp libwolfssh_host.a -lpthread
+
+# The SSH link's ring, the refusal packet and the fingerprint's encoding
+# (1.1.2): the loop and the SSH task meet in the ring, so a lost or doubled
+# byte there is a corrupted file transfer.
+test_sshlink: test_sshlink.cpp ../src/core/sshlink.h
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_sshlink.cpp -lpthread
 
 # The Freenove ESP32-WROVER CAM profile (1.1.0, src/board.h): its defaults
 # and the pins it owns, which syscfg::pinProblem refuses by name.
@@ -169,7 +211,7 @@ licence:
 	    echo "licence: GPL-2.0 SPDX line(s) above; the project is GPL-3.0-or-later"; exit 1; \
 	else echo "licence: no GPL-2.0 SPDX lines"; fi
 
-test: licence test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera
+test: licence test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera test_sshlink
 	./test_xmodem
 	./test_wrap
 	./test_forums_ptr
@@ -184,8 +226,10 @@ test: licence test_xmodem test_wrap test_forums_ptr test_compose test_codes test
 	./test_calllog
 	./test_silent
 	./test_camera
+	./test_sshlink
 
 clean:
+	rm -rf wolfobj libwolfssh_host.a ssh_call test_sshlink
 	rm -f bbs_host bbs_host_s3 bbs_host_fncam bbs_host_espcam test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera
 
 .PHONY: clean test licence

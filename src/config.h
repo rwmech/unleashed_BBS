@@ -55,7 +55,7 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "1.1.2-dev.1"
+#define BBS_VERSION         "1.1.2-dev.3"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // BBS_VERSION_SHOWN: the version as every place a person reads one shows it
@@ -391,3 +391,43 @@
 #define BBS_CARD_STEP_BYTES     8192     // zip bytes written to the card per loop pass
 #define BBS_RESTORE_ASK_MS      60000    // the sysop has this long to answer Y/N
 #define BBS_NIGHTLY_HOUR        3        // local hour the nightly backup is made
+
+// ---------------------------------------------------------------------------
+// SSH (1.1.2 preview): a board profile that can carry it sets BBS_HAS_SSH
+// (board.h: the S3s, which have the PSRAM and the flash). Everywhere else it
+// is 0 and none of the SSH code or library is compiled or linked.
+// ---------------------------------------------------------------------------
+#ifndef BBS_HAS_SSH
+#define BBS_HAS_SSH             0
+#endif
+#if BBS_HAS_SSH
+// The most SSH sessions at once, the board's own figure (board.h), from what
+// its PSRAM holds. The live limit is the lower of this and what PSRAM holds
+// at the moment a client connects (sshd::cap). SSH callers take ordinary
+// nodes, so this never adds lines, and a telnet caller is never refused
+// because of it.
+#ifndef BBS_SSH_MAX
+#define BBS_SSH_MAX             2
+#endif
+#define BBS_SSH_RING            4096     // each way, PSRAM, a power of two
+// What one session is budgeted in PSRAM: wolfSSH's own (about 14 KB steady,
+// 20 KB in a key exchange, research section 3.2), the two rings, and room
+// for its output packets. The PSRAM a connection must find free to be let
+// in is this plus BBS_SSH_PSRAM_KEEP, kept for everything else (the panel's
+// framebuffer, a camera, the backup inflater).
+#define BBS_SSH_PSRAM_EACH      (48u * 1024u)
+#define BBS_SSH_PSRAM_KEEP      (128u * 1024u)
+// Key exchange and login must be done in this long, or the connection goes
+// (OpenSSH's LoginGraceTime is 120 s; a caller typing a password is quick).
+#define BBS_SSH_LOGIN_MS        60000
+// The SSH task: its stack (internal RAM; research section 3.3 says 12 to
+// 16 KB, measured on the bench) and its priority, just above idle on core
+// 0, where Wi-Fi (23) and lwIP (18) take it over whenever they want the CPU.
+#define BBS_SSH_STACK           16384
+#define BBS_SSH_PRIO            2
+#define BBS_SSH_CORE            0
+// Channel window and largest packet the board accepts. 2 KB of window is
+// plenty for keystrokes and 1 KB transfer blocks (research section 3.2).
+#define BBS_SSH_WINDOW          2048
+#define BBS_SSH_PACKET          2048
+#endif

@@ -33,9 +33,13 @@ are reproduced at the end of this file.
 | [espressif/esp32-camera](https://github.com/espressif/esp32-camera) 2.1.7 | Apache-2.0 | The OV2640 driver and its own JPEG encoder (`conversions/jpge`), used to draw the watermark on a photo. Fetched for every ESP32 and S3 build (`src/idf_component.yml`) but linked only into a camera board's image (the Freenove ESP32-WROVER CAM); the reference WROOM and the Waveshare S3 carry none of it. |
 | [TJpgDec in the ESP32 and ESP32-S3 ROM, by ChaN](http://elm-chan.org/fsw/tjpgd/00index.html) | ChaN's own licence (BSD-style, permissive; the same terms as his FatFs) | Decodes a photo so the watermark can be drawn on it. Reached directly through the IDF's own ROM headers (`esp32/rom/tjpgd.h`, `esp32s3/rom/tjpgd.h`) on a camera board only; like miniz, it lives in the chip's ROM and is not part of any file we ship. |
 | [Spleen](https://github.com/fcambus/spleen) 2.2.0, by Frederic Cambus | BSD-2-Clause | The bitmap font on the display of a board that has one (the Waveshare ESP32-S3-LCD-1.47 image only). Converted to C arrays by `tools/mkfont.py`; the glyphs are unchanged. A camera board's watermark draws its text with the same font's 8x16 glyphs, compiled into every camera build; the two never share an image. |
+| [wolfSSL / wolfCrypt](https://github.com/wolfSSL/wolfssl) 5.9.4, by wolfSSL Inc. | GPL-3.0-or-later (every file header; the top-level LICENSING says GPLv3, with a GPLv2 exception for software it lists) | The cryptography under SSH: curve25519 and P-256 key exchange, Ed25519 and ECDSA host keys, AES-CTR and AES-GCM, SHA-2 and HMAC. The subset `components/wolfssh/user_settings.h` compiles, vendored unchanged from the `v5.9.4-stable` tag in `components/wolfssh/wolfssl/`, with its LICENSING and COPYING. In the ESP32-S3 image only; the ESP32 images carry none of it. |
+| [wolfSSH](https://github.com/wolfSSL/wolfssh) 1.5.0, by wolfSSL Inc. | GPL-3.0-or-later (every file header; LICENSING says GPLv3) | The SSH server: encrypted logins on the board's own port (1.1.2 preview). Vendored unchanged from the `v1.5.0-stable` tag in `components/wolfssh/wolfssh/`, with its LICENSING. In the ESP32-S3 image only, and in the Linux host build for its tests. |
 | [zlib](https://zlib.net/) | zlib license | Same decompression job in the Linux host test build only. Not in the firmware. |
 
-None of this software has been modified.
+None of this software has been modified. wolfSSL and wolfSSH are under the
+GNU General Public License version 3, the same licence as µnleashed BBS; its
+text is the [LICENSE](LICENSE) file.
 
 The build tools (PlatformIO, the GCC cross compiler, Python) are not part of the
 firmware and carry no obligations for a binary release.

@@ -66,6 +66,9 @@
 #include "../platform/platform.h"
 #include "../plugins/camera.h" // camera::running, camera::found (camera boards)
 #include "../plugins/lights.h" // lights::wired
+#if BBS_HAS_SSH
+#include "sshd.h"              // SSH: the sessions and the host keys (1.1.2)
+#endif
 
 #include <cstdio>
 #include <cstring>
@@ -171,6 +174,9 @@ void capabilities(char* out, size_t n, uint16_t caps) {
     if (caps & HC_LCD) add("LCD panel");
 #endif
     if (caps & HC_LIGHTS) add("LED lights");
+#if BBS_HAS_SSH
+    if (sshd::running()) add("SSH");
+#endif
     if (!len) snprintf(out, n, "none");
 }
 
@@ -327,6 +333,52 @@ bool Bbs::hwRow(Session& s, uint8_t k, bool inSys) {
         keptNote(s, "MEM FORCE");
         return true;
     }
+#if BBS_HAS_SSH
+    // SSH (1.1.2): the sessions in use against the cap, the lower of the
+    // board's figure and what PSRAM holds now, and each host key's
+    // fingerprint, so a sysop can publish them and a caller can check the
+    // one their client shows on the first call.
+    if (here()) {
+        if (sshd::running()) {
+            snprintf(val, sizeof(val), "%u of %u", static_cast<unsigned>(sshd::inUse()),
+                     static_cast<unsigned>(sshd::cap()));
+            snprintf(note, sizeof(note), "in use, most %u", static_cast<unsigned>(sshd::boardCap()));
+            statRow(s, "SSH", val, Color::LightGreen, fits(val, note) ? note : nullptr);
+        } else {
+            statRow(s, "SSH", "off", Color::LightRed, fits("off", sshd::offWhy()) ? sshd::offWhy() : nullptr);
+        }
+        return true;
+    }
+    if (sshd::running()) {
+        static const char* const kKeyLabel[2] = { "Ed25519", "ECDSA" };
+        for (uint8_t kk = 0; kk < 2; ++kk) {
+            const char* fp = sshd::fingerprint(kk);
+            if (!*fp) continue;
+            // Beside the label when it fits (13 + 50 columns), else under it
+            // in two halves: 50 characters are more than a 39-column row. A
+            // fingerprint is only ever read to be compared, and a break at a
+            // fixed place reads back the same.
+            if (kValueCol + strlen(fp) <= w) {
+                if (here()) {
+                    uint8_t col = 0;
+                    char lab[kValueCol + 1];
+                    snprintf(lab, sizeof(lab), "%-*s", static_cast<int>(kValueCol), kKeyLabel[kk]);
+                    rowSeg(s, Color::Grey, lab, col);
+                    rowSeg(s, Color::White, fp, col);
+                    rowEnd(s, col);
+                    return true;
+                }
+            } else {
+                if (here()) { statRow(s, kKeyLabel[kk], "host key", Color::Grey); return true; }
+                char half[32];
+                const size_t len = strlen(fp), cut = (len + 1) / 2;
+                snprintf(half, sizeof(half), "%.*s", static_cast<int>(cut), fp);
+                if (here()) { under(Color::White, half); return true; }
+                if (here()) { under(Color::White, fp + cut); return true; }
+            }
+        }
+    }
+#endif
     return false;
 }
 

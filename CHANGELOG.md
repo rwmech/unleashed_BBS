@@ -24,6 +24,109 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.1.2-dev.3 (S3 1.1.3): SSH on the S3, a preview, 2026-09-26
+
+Part 3 of 1.1.2. The ESP32 images (the WROOM, the Freenove, the ESP32-CAM)
+are unchanged: everything below is compiled only where a board profile
+sets `BBS_HAS_SSH`, which today is the Waveshare ESP32-S3-LCD-1.47.
+Host-tested; not yet on the board.
+
+**The first 1.1.2 install on an S3 must be a new install, with an erase.**
+The S3 has its own 8 MB flash layout now, and its data partitions moved.
+Accounts, settings and mail on an S3 do not survive that one install: take
+a backup first and restore it afterwards. The directory's system badge
+says `ESP32-S3 · 8 MB · PSRAM` from here on, since the image header is
+8 MB so that one image boots on 8 MB S3s too.
+
+**Callers**
+- **SSH on the board's own port** (`ssh -p 6400 handle@board`). The connect
+  settle already waited 300 ms for a telnet client to speak; a client whose
+  first bytes are `SSH-2.0-` is SSH, everything else telnet exactly as
+  before. No second listener and no second port forward. An SSH caller
+  takes an ordinary node.
+- The SSH user name is the handle. An account's handle takes that
+  account's password, checked by the board with the prompt's lockout, and
+  the caller arrives logged in (`Signed in over SSH as ...`, `ACCESS
+  GRANTED`) with no handle or password prompt. Any other name gets in with
+  no password to the ordinary handle prompt, to register or visit. Staff
+  rights still come only from `BYE <password>` or the sysop account's login
+  question.
+- `--> Connection via SSH is Secure.`, with "Secure." in bold yellow.
+- Three wrong passwords end a connection; each counts toward the handle's
+  lockout (5 in 15 minutes), and a connection that ends on wrong passwords
+  counts once toward the address's ban, which then holds telnet off too.
+- The size comes from the SSH client, a resize included; the character set
+  still from the probe, which over SSH never asks the PETSCII question.
+  There is no telnet on an SSH link, so XMODEM and YMODEM bytes cross
+  untouched.
+- **SSH slots**: 8 at once on the Waveshare, or fewer when PSRAM cannot hold
+  another session when a client connects. Past that the client is told
+  `--> All SSH ports are full` and the connection closes with no key
+  exchange (one SSH_MSG_DISCONNECT in the clear, reason 12): OpenSSH prints
+  `Received disconnect from ...: --> All SSH ports are full`, PuTTY shows
+  it in its error box. A telnet caller is never refused because of SSH.
+- Not yet for SyncTERM up to 1.9: its SSH (cryptlib) waits to hear the
+  server first, so it is never recognised on the shared port and sees the
+  terminal probe instead. OpenSSH and PuTTY send first and connect.
+
+**Sysops**
+- Host keys, Ed25519 and ECDSA P-256 (both, for SyncTERM 1.10's and the
+  older cryptlib's choices), made on the board at the first start and kept
+  in `userdata/ssh/`. Not in the backup zip: a downloaded backup cannot make
+  another board answer as this one. An erase or a factory reset makes new
+  ones.
+- `SYS` and `HARDWARE` show staff `SSH  n of m` (in use, and the cap now)
+  and both keys' fingerprints; every caller's `HARDWARE` lists `SSH` among
+  the capabilities. The console logs each SSH connection, refusal, login
+  and ending, and the SSH task's least stack free.
+
+**Under the bonnet**
+- wolfSSH 1.5.0 on wolfCrypt 5.9.4, vendored unchanged in
+  `components/wolfssh/` (the subset `user_settings.h` compiles), GPLv3 or
+  later, compiled for the S3 only. Software crypto: wolfCrypt's hardware
+  SHA and AES would share the peripherals with the Wi-Fi's mbedTLS under a
+  second lock.
+- The SSH task (core 0, priority 2, a 16 KB internal stack) owns the socket,
+  the key exchange and the crypto; the BBS loop never runs any of it. Each
+  link is a pair of 4 KB rings in PSRAM and an eventfd the loop's
+  `select()` waits on as it does a socket. Every wolfSSH allocation goes to
+  PSRAM first. Authentication is the loop's, asked for by the task.
+- The S3's own `partitions_s3.csv` (two 3 MB program slots, 1,376 KB of
+  userdata, 512 KB of screens, storage still last), its image header at
+  8 MB, and its Wi-Fi static buffers 16/16 to 10/10 with the block-ack
+  window at 10 (about 19 KB of internal RAM back).
+- `tools/release.py` takes each family's offsets from its own partition
+  table and checks the built `partitions.bin` against it.
+- Sizes, off the ELF: the S3 image 1,404,400 bytes (1.1.1: 1,270,240,
+  so +134,160, of a 3 MB slot now), static DRAM 251,392 of 341,760
+  (+3,608: eight links, the host keys, three Session fields). The ESP32
+  images' application objects and libraries match 1.1.1's section for
+  section and their static DRAM is identical (161,336, 172,816, 174,272);
+  only the Xtensa linker's call relaxation in esp_littlefs's VFS functions
+  moves by a few bytes between any two links.
+- Found by the code review and fixed before the commit: the SSH task could
+  spin without waiting (a client that never opens its window, or a socket
+  that stops taking output) and starve core 0's idle task into a watchdog
+  restart; it now waits on the socket, never runs a long streak without a
+  wait, pauses after a pass that held the CPU, and gives a hung-up link ten
+  seconds to take its last output. Wakes between the loop and the task
+  could be lost (a push into a part-full ring, room made in a full one).
+  "none" after wrong passwords undid the ban's count, and a connection
+  could ask the loop for users.txt lookups without end (eight questions a
+  connection now, two handshakes at once an address). A host key that
+  would not read was replaced with a new one; now SSH stays off and says
+  so. A closed board's own account signed in over SSH met the closed sign.
+
+**Tests**
+- `test_ssh_login`, `test_ssh_new_caller`, `test_ssh_resize`,
+  `test_ssh_host_keys`, `test_ssh_telnet_unchanged`, `test_ssh_full`,
+  `test_ssh_failed_logins`, `test_ssh_ymodem` (`--only=ssh`, with
+  `harness.sh --board s3`; each SKIPs on the reference board). They call in
+  with `host/ssh_call`, wolfSSH's own client: this machine does not let an
+  OpenSSH client run. The refusal is checked by a parser in the test that
+  shares nothing with the board. `host/test_sshlink` puts 4 MB through the
+  ring on two threads (`make test`).
+
 ## 1.1.2-dev.1 (S3 1.1.2, FNCAM 1.0.7, ESPCAM 1.0.4), 2026-09-26
 
 Part 1 of 1.1.2: the lag the 1.1.1 audit found

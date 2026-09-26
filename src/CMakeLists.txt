@@ -35,6 +35,12 @@
 # ===========================================================================
 
 FILE(GLOB_RECURSE app_sources ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/*.c)
+# SSH (1.1.2) is the S3's alone. Its two sources compile to nothing without
+# BBS_HAS_SSH; leaving them out of the list as well means an ESP32 build
+# links exactly the objects it linked before SSH existed.
+if(NOT IDF_TARGET STREQUAL "esp32s3")
+    list(FILTER app_sources EXCLUDE REGEX ".*/core/(sshd|bbs_ssh)[.]cpp$")
+endif()
 
 set(app_requires esp_wifi esp_netif esp_event nvs_flash esp_timer esp_hw_support heap lwip
                  esp_driver_gpio esp_driver_uart esp_rom
@@ -60,6 +66,9 @@ endif()
 # WROOM's image does not take on a component it never calls.
 if(IDF_TARGET STREQUAL "esp32s3")
     list(APPEND app_requires esp_driver_usb_serial_jtag esp_lcd esp_driver_ledc)
+    # SSH (1.1.2): wolfSSH and wolfCrypt, compiled for the S3 only
+    # (components/wolfssh registers an empty component everywhere else).
+    list(APPEND app_requires wolfssh)
 endif()
 
 idf_component_register(SRCS ${app_sources}

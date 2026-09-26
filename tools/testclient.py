@@ -631,6 +631,200 @@ def ansi_login(handle, pw=TEST_PW, port=None):
 
 
 # ---------------------------------------------------------------------------
+# SSH (1.1.2, the S3 profiles). host/ssh_call is wolfSSH's own client on a
+# pipe; this dresses it as a Caller, so the rest of the suite's helpers
+# (wait_for, login, the transfer clients) work over it unchanged. It answers
+# the cursor probe the way Caller(ansi=True) does, since the probe still runs
+# over SSH, and it speaks no telnet: nothing is escaped or answered.
+# ---------------------------------------------------------------------------
+SSH_CALL = ROOT / "host" / "ssh_call"
+
+
+class _SshPipe:
+    """Caller._answer writes its cursor reports through self.s.sendall."""
+    def __init__(self, proc):
+        self.proc = proc
+
+    def sendall(self, b):
+        try:
+            self.proc.stdin.write(b)
+            self.proc.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError):
+            pass
+
+    def close(self):
+        pass
+
+
+class SshCaller(Caller):
+    raw_link = True
+
+    def __init__(self, user="SshNobody", password=None, ansi=True, utf8=True, port=None,
+                 resize=None, key=None, source=None):
+        import fcntl
+        import subprocess
+        self.t0 = time.time()
+        args = [str(SSH_CALL), "-p", str(port or PORT), "-u", user]
+        if password is not None:
+            args += ["-w", password]
+        if resize:
+            args += ["-R", resize]
+        if key:
+            args += ["-k", key]
+        if source:
+            args += ["-b", source]
+        args.append(HOST)
+        self.proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE)
+        for f in (self.proc.stdout, self.proc.stderr):
+            fl = fcntl.fcntl(f.fileno(), fcntl.F_GETFL)
+            fcntl.fcntl(f.fileno(), fcntl.F_SETFL, fl | os.O_NONBLOCK)
+        self.s = _SshPipe(self.proc)
+        self.buf = bytearray()
+        self.err = bytearray()
+        self.ansi = ansi
+        self.utf8 = utf8
+        self.col = 1
+        self.first_probe = None
+
+    def _options(self, d):
+        pass                                   # no telnet on an SSH link
+
+    def _read_err(self):
+        try:
+            e = self.proc.stderr.read()
+            if e:
+                self.err += e
+        except (BlockingIOError, OSError, ValueError):
+            pass
+
+    def pump(self, secs):
+        end = time.time() + secs
+        while True:
+            self._read_err()
+            try:
+                d = self.proc.stdout.read()
+            except (BlockingIOError, OSError, ValueError):
+                d = None
+            if d:
+                self._answer(d)
+                self.buf += d
+            elif d == b"" and self.proc.poll() is not None:
+                self._read_err()
+                return False
+            if time.time() >= end:
+                return True
+            time.sleep(0.02)
+
+    def send(self, b):
+        self.s.sendall(b)
+
+    def said(self, pat, secs=10):
+        """Wait for pat on ssh_call's own stderr."""
+        end = time.time() + secs
+        while time.time() < end:
+            if pat in self.err:
+                return True
+            self.pump(0.1)
+        return pat in self.err
+
+    def hostkey(self):
+        m = re.search(rb"ssh_call: hostkey (\S+) (SHA256:\S+)", bytes(self.err))
+        return (m.group(1).decode(), m.group(2).decode()) if m else (None, None)
+
+    def close(self):
+        try:
+            self.proc.stdin.close()
+        except OSError:
+            pass
+        try:
+            self.proc.kill()
+            self.proc.wait(3)
+        except Exception:                      # noqa: BLE001, already gone
+            pass
+
+
+def ssh_ready():
+    """The S3 profile's host board, and ssh_call built: or why not."""
+    if os.environ.get("BBS_HOST_BOARD") != "s3":
+        return "needs tools/harness.sh --board s3"
+    if HOST not in ("127.0.0.1", "localhost"):
+        return "needs the host build"
+    if not SSH_CALL.exists():
+        return "host/ssh_call is not built (make ssh_call)"
+    return None
+
+
+def ssh_raw_hello(port, hello=b"SSH-2.0-TestClient_1.0\r\n", secs=5):
+    """Dial like an SSH client with a socket of our own, say our version,
+    and keep everything the board sends until it hangs up."""
+    c = socket.create_connection((HOST, port), timeout=3)
+    c.sendall(hello)
+    c.settimeout(0.3)
+    got = bytearray()
+    end = time.time() + secs
+    closed = False
+    while time.time() < end:
+        try:
+            d = c.recv(4096)
+            if not d:
+                closed = True
+                break
+            got += d
+        except socket.timeout:
+            continue
+        except OSError:
+            closed = True
+            break
+    c.close()
+    return bytes(got), closed
+
+
+def parse_ssh_hello(data):
+    """The server's identification line and the binary packets after it,
+    read from RFC 4253 section 6 with nothing shared with the board or
+    wolfSSH. Returns (ident, [(msg, payload), ...], leftover)."""
+    nl = data.find(b"\r\n")
+    if nl < 0:
+        return None, [], data
+    ident, rest = data[:nl], data[nl + 2:]
+    packets = []
+    while len(rest) >= 5:
+        plen = int.from_bytes(rest[:4], "big")
+        if plen < 5 or 4 + plen > len(rest) or (4 + plen) % 8:
+            break
+        pad = rest[4]
+        payload = rest[5:4 + plen - pad]
+        packets.append((payload[0] if payload else None, payload))
+        rest = rest[4 + plen:]
+    return ident, packets, rest
+
+
+def ssh_disconnect_reason(payload):
+    """SSH_MSG_DISCONNECT: uint32 reason, string description, string language."""
+    if not payload or payload[0] != 1 or len(payload) < 9:
+        return None, None
+    code = int.from_bytes(payload[1:5], "big")
+    n = int.from_bytes(payload[5:9], "big")
+    return code, payload[9:9 + n].decode("utf-8", "replace")
+
+
+def sys_fingerprints(s):
+    """The Ed25519 and ECDSA fingerprints SYS shows a sysop, from the rows."""
+    s.buf.clear()
+    s.send(b"sys\r")
+    read_list(s, 10)
+    rows = render_lines(s.buf, cols=250)
+    fps = {}
+    for r in rows:
+        m = re.match(r"^(Ed25519|ECDSA)\s+(SHA256:\S+)", r)
+        if m:
+            fps[m.group(1)] = m.group(2)
+    ssh = next((r for r in rows if r.startswith("SSH ")), "")
+    return fps, ssh, rows
+
+
+# ---------------------------------------------------------------------------
 def test_ansi():
     print("ANSI caller")
     c = Caller(ansi=True, utf8=True)
@@ -13284,8 +13478,15 @@ def _crc16(d):
     return crc
 
 
+# An SSH link (1.1.2) carries no telnet: nothing is doubled or padded, so
+# the transfer clients take the bytes as they are while this is on.
+_raw_link = {"on": False}
+
+
 def _unescape(buf):
     """Telnet IAC unescaping. 0xFF 0xFF is one data 0xFF."""
+    if _raw_link["on"]:
+        return bytes(buf)
     _note_options(buf)
     out = bytearray()
     i = 0
@@ -13334,6 +13535,8 @@ def _note_options(raw):
 
 
 def _escape(data):
+    if _raw_link["on"]:
+        return bytes(data)
     out = data.replace(b"\xff", b"\xff\xff")
     if not _binary["on"]:
         # NVT ASCII: a bare CR is followed by NUL. This is the byte that
@@ -15380,6 +15583,339 @@ def test_notices_in_places():
 # before a commit and the wrong one after every edit. These exist so the
 # cheap run is cheap enough to actually do.
 #
+# ---------------------------------------------------------------------------
+# SSH on the board's own port (1.1.2, the S3 profiles). Each SKIPs on the
+# reference board; tools/harness.sh --board s3 --only=ssh runs them.
+# ---------------------------------------------------------------------------
+def test_ssh_login():
+    """An account's SSH login (1.1.2): the password is the account's, checked
+    by the board, and the handle and password prompts are skipped. The link
+    line says Secure in bold yellow. The session is an ordinary node: WHO,
+    TERM and BYE to the sysop node all work over it, and SYS shows staff the
+    sessions and the host keys, the same keys the client was shown."""
+    print("SSH: an account logs in")
+    why = ssh_ready()
+    if why:
+        print("  SKIP  " + why)
+        return True
+    t = ansi_login("SshRob")                   # the account, made the ordinary way
+    t.close()
+
+    c = SshCaller(user="SshRob", password=TEST_PW)
+    ok = check("the client finished the key exchange and the login", c.said(b"ssh_call: open", 15))
+    ktype, kfp = c.hostkey()
+    ok &= check("and was shown a host key", kfp is not None)
+    ok &= check("the terminal probe still runs over SSH", c.wait_for(b"DETECTING TERMINAL", 8))
+    ok &= check("the link line: Connection via SSH is Secure.",
+                c.wait_for(b"Secure.", 10) and b"--> Connection via SSH is Secure." in plain(c.buf))
+    ok &= check("\"Secure.\" in bold yellow", b"33;1mSecure." in c.buf)
+    ok &= check("never \"not secure\"", b"Secure." in c.buf and b"not secure" not in plain(c.buf))
+    ok &= check("signed in by the SSH password", c.wait_for(b"Signed in over SSH as", 15)
+                and b"SshRob" in plain(c.buf))
+    ok &= check("ACCESS GRANTED, and the main prompt", c.wait_for(b"ACCESS GRANTED", 6) and c.wait_for(b"Main", 10))
+    shown = plain(c.buf)
+    ok &= check("the handle and password prompts never came",
+                b"Main" in shown and b"Enter your handle" not in shown and b"Password:" not in shown)
+
+    c.buf.clear()
+    c.send(b"term\r")
+    ok &= check("TERM: ANSI, UTF-8 by the probe, 80x24 from the pty request", c.wait_for(b"ANSI-UTF8 80x24", 5))
+    c.buf.clear()
+    c.send(b"w\r")
+    ok &= check("WHO lists the SSH caller", c.wait_for(b"Who's online", 5) and c.wait_for(b"SshRob", 3))
+
+    # The sysop node over SSH: moveSession carries the link with the caller.
+    read_list(c, 2)
+    c.buf.clear()
+    c.send(f"bye {PASSWORD}\r".encode())
+    ok &= check("BYE <password> moves the SSH caller to the sysop node", c.wait_for(b"SysOp node", 8))
+    c.wait_for(b"HELP for commands", 4)
+    c.pump(0.5)
+    fps, sshrow, rows = sys_fingerprints(c)
+    ok &= check("output still flows after the move: SYS draws", any(r.startswith("-- hardware") for r in rows))
+    ok &= check("SYS shows staff the SSH sessions in use", re.match(r"^SSH\s+\d+ of \d+", sshrow) is not None)
+    ok &= check("and both host keys' fingerprints", set(fps) == {"Ed25519", "ECDSA"})
+    want = {"ssh-ed25519": "Ed25519", "ecdsa-sha2-nistp256": "ECDSA"}.get(ktype)
+    ok &= check("the one the client was shown is the one SYS shows", want is not None and fps.get(want) == kfp)
+
+    c.buf.clear()
+    c.send(b"g\r")
+    c.wait_for(b"Log off (Y/N)?", 5)
+    c.send(b"y")
+    ok &= check("logging off closes the SSH connection", c.wait_closed(20) and b"Log off (Y/N)?" in c.buf)
+    ok &= check("and the client says the channel closed", b"ssh_call: closed:" in c.err)
+    c.close()
+
+    t = ansi_login("SshRobWatcher")
+    t.buf.clear()
+    t.send(b"hardware\r")
+    read_list(t)
+    text = plain(t.buf)
+    ok &= check("a caller's HARDWARE names SSH among the capabilities",
+                re.search(rb"Capabilities .*SSH", text) is not None or b", SSH" in text)
+    ok &= check("but not the sessions or the keys (staff only)",
+                b"Capabilities" in text and b"SHA256:" not in text and not re.search(rb"\nSSH\s+\d+ of", text))
+    t.close()
+    return ok
+
+
+def test_ssh_new_caller():
+    """A name with no account (1.1.2): no password is asked, and the caller
+    lands at the ordinary handle prompt, where a new caller registers or
+    visits. Nothing about the SSH name is taken as a handle."""
+    print("SSH: a caller with no account")
+    why = ssh_ready()
+    if why:
+        print("  SKIP  " + why)
+        return True
+    c = SshCaller(user="nobody-here")
+    ok = check("in without a password (SSH none)", c.said(b"ssh_call: open", 15))
+    ok &= check("the ordinary handle prompt", c.wait_for(b"Enter your handle", 15))
+    c.send(b"SshVisitor\r")
+    ok &= check("an unknown handle is offered a guest pass", c.wait_for(b"[G]uest", 8))
+    c.send(b"g")
+    ok &= check("and gets one", c.wait_for(b"GUEST ACCESS", 8) and c.wait_for(b"Main", 10))
+    c.close()
+    ok &= check("no account was made for the SSH name", b"GUEST ACCESS" in c.buf and not user_exists("nobody-here"))
+    return ok
+
+
+def test_ssh_resize():
+    """The pty's size, and a window-change later (1.1.2)."""
+    print("SSH: the terminal's size follows the client")
+    why = ssh_ready()
+    if why:
+        print("  SKIP  " + why)
+        return True
+    c = SshCaller(user="nobody-sized", resize="100:30@9000")
+    c.wait_for(b"Enter your handle", 15)
+    c.send(b"SshSized\r")
+    c.wait_for(b"[G]uest", 8)
+    c.send(b"g")
+    c.wait_for(b"Main", 10)
+    c.buf.clear()
+    c.send(b"term\r")
+    ok = check("80x24 from the pty request", c.wait_for(b"80x24", 5))
+    time.sleep(max(0.0, 9.5 - (time.time() - c.t0)))
+    c.pump(0.5)
+    c.buf.clear()
+    c.send(b"term\r")
+    ok &= check("100x30 after the window-change", c.wait_for(b"100x30", 5))
+    c.close()
+    return ok
+
+
+def test_ssh_host_keys():
+    """Both host keys, each on its own (1.1.2): SyncTERM on cryptlib has
+    only ECDSA, SyncTERM 1.10 only Ed25519. Kept in userdata/ssh/, and
+    never in the backup zip, so a downloaded backup cannot make another
+    board answer as this one."""
+    print("SSH: both host keys")
+    why = ssh_ready()
+    if why:
+        print("  SKIP  " + why)
+        return True
+    s = sysop_on("SshKeyKeeper")
+    fps, _, _ = sys_fingerprints(s)
+    ok = True
+    for key, label, typ in (("ed25519", "Ed25519", "ssh-ed25519"), ("ecdsa", "ECDSA", "ecdsa-sha2-nistp256")):
+        c = SshCaller(user="nobody-keys", key=key)
+        ok &= check(f"a client that takes only {typ} gets in", c.said(b"ssh_call: open", 15))
+        ktype, kfp = c.hostkey()
+        ok &= check(f"with the {label} key SYS shows", ktype == typ and kfp == fps.get(label))
+        c.close()
+    ok &= check("the keys are files in userdata/ssh",
+                (USERDATA / "ssh" / "host_ed25519").exists() and (USERDATA / "ssh" / "host_ecdsa").exists())
+    status, data = http_call("GET", "/backup.zip")
+    names = zipfile.ZipFile(io.BytesIO(data)).namelist() if status == 200 else []
+    ok &= check("the backup window's zip is there", status == 200 and "system.cfg" in names)
+    ok &= check("and carries no host key", not any("ssh" in n.lower() or "host_" in n for n in names))
+    s.close()
+    return ok
+
+
+def test_ssh_telnet_unchanged():
+    """Telnet on the shared port is as it was (1.1.2). A caller whose first
+    bytes look like the start of "SSH-2.0-" but are not is telnet; one that
+    speaks no telnet at all still gets the probe after the settle."""
+    print("SSH: telnet unchanged on the same port")
+    why = ssh_ready()
+    if why:
+        print("  SKIP  " + why)
+        return True
+    c = Caller(ansi=True)
+    c.send(b"SSH-1.99-oldclient\r\n")
+    ok = check("\"SSH-1.99-\" is not SSH-2.0: the telnet probe", c.wait_for(b"DETECTING TERMINAL", 5))
+    c.wait_for(b"not secure", 10)
+    ok &= check("and the caller goes on as telnet", b"Connection via Telnet is not secure" in plain(c.buf))
+    c.close()
+    q = Caller(ansi=True)
+    ok &= check("a silent caller still gets the probe", q.wait_for(b"DETECTING TERMINAL", 5))
+    ok &= check("after the settle, as before", q.first_probe is not None and 0.25 <= q.first_probe < 1.5)
+    q.close()
+    t = Caller(ansi=True, telnet=True)
+    ok &= check("a telnet client that speaks first: the probe at once",
+                t.wait_for(b"DETECTED", 5) and t.first_probe is not None and t.first_probe < 0.25)
+    t.close()
+    return ok
+
+
+def test_ssh_full():
+    """SSH slots full (1.1.2, Rob): the client is told "--> All SSH ports are
+    full" and the connection closes, with no key exchange: the board's
+    identification line and one SSH_MSG_DISCONNECT in the clear. The cap is
+    the lower of the board's figure and what PSRAM holds; this copy of the
+    board is given PSRAM for one session. A telnet caller is never refused
+    because of SSH."""
+    print("SSH: the slots full")
+    why = ssh_ready()
+    if why:
+        print("  SKIP  " + why)
+        return True
+    tmp = copy_data()
+    port = PORT + 3900
+    one = str(128 * 1024 + 48 * 1024 + 4096)    # KEEP + EACH + a little: room for one
+    proc = start_copy(tmp, (str(port),), {"BBS_HOST_PSRAM": one})
+    ok = True
+    try:
+        copy_log(tmp, "ssh: on the telnet port", 8)
+        a = SshCaller(user="nobody-first", port=port)
+        ok &= check("the first SSH caller gets in", a.said(b"ssh_call: open", 15)
+                    and a.wait_for(b"Enter your handle", 15))
+        data, closed = ssh_raw_hello(port)
+        ident, packets, rest = parse_ssh_hello(data)
+        ok &= check("the second is answered with the board's identification",
+                    ident == b"SSH-2.0-unleashedBBS")
+        ok &= check("then exactly one packet, a DISCONNECT", len(packets) == 1 and packets[0][0] == 1 and not rest)
+        code, text = ssh_disconnect_reason(packets[0][1]) if packets else (None, None)
+        ok &= check("reason 12, too many connections", code == 12)
+        ok &= check("saying \"--> All SSH ports are full\"", text == "--> All SSH ports are full")
+        ok &= check("no key exchange was started (no KEXINIT)", packets and all(p[0] != 20 for p in packets))
+        ok &= check("and the board hung up", closed)
+        log = copy_log(tmp, "refused: --> All SSH ports are full", 5)
+        ok &= check("the console says why", "refused: --> All SSH ports are full" in log)
+        t = Caller(ansi=True, port=port)
+        ok &= check("a telnet caller still gets in", t.wait_for(b"Enter your handle", 12))
+        t.close()
+        a.close()
+        time.sleep(1.0)
+        b = SshCaller(user="nobody-again", port=port)
+        ok &= check("the slot comes back when the first SSH caller goes", b.said(b"ssh_call: open", 15))
+        b.close()
+    finally:
+        stop_copy(proc, tmp)
+    return ok
+
+
+def test_ssh_failed_logins():
+    """Wrong SSH passwords (1.1.2) count toward the handle's lockout, and a
+    connection that ends on them counts once toward the address's ban,
+    which then holds telnet off too. On a copy of the board: the ban would
+    otherwise lock the rest of the suite out."""
+    print("SSH: wrong passwords, the lockout and the ban")
+    why = ssh_ready()
+    if why:
+        print("  SKIP  " + why)
+        return True
+    t = ansi_login("SshLockMe")                # made here, carried into the copy
+    t.close()
+    tmp = copy_data()
+    port = PORT + 3901
+    proc = start_copy(tmp, (str(port),))
+    ok = True
+    try:
+        copy_log(tmp, "ssh: on the telnet port", 8)
+        a = SshCaller(user="SshLockMe", password="wrong-one", port=port)
+        a.said(b"closed in the handshake", 20)
+        a.close()
+        log = copy_log(tmp, "wrong SSH password", 3)
+        ok &= check("a wrong password: the board refuses it and the login fails",
+                    b"closed in the handshake" in a.err and "wrong SSH password" in log)
+        ok &= check("three tries on one connection, each counted", log.count("wrong SSH password for 'SshLockMe'") == 3)
+        b = SshCaller(user="SshLockMe", password="wrong-two", port=port)
+        b.said(b"closed", 20)
+        b.close()
+        log = copy_log(tmp, "now locked", 3)
+        ok &= check("five wrong in all lock the handle, as at the prompt", "now locked" in log)
+        c = SshCaller(user="SshLockMe", password=TEST_PW, port=port)
+        c.said(b"closed in the handshake", 20)
+        c.close()
+        log = copy_log(tmp, "SSH login for locked 'SshLockMe'", 3)
+        ok &= check("then even the right password is refused",
+                    b"closed in the handshake" in c.err and "SSH login for locked 'SshLockMe'" in log)
+        log = copy_log(tmp, "banned after failed SSH logins", 5)
+        ok &= check("the third failed connection bans the address", "banned after failed SSH logins" in log)
+        v = Caller(ansi=True, port=port)
+        ok &= check("and the ban holds telnet off too", v.wait_closed(4) and b"DETECTING" not in v.buf)
+        v.close()
+    finally:
+        stop_copy(proc, tmp)
+    return ok
+
+
+def test_ssh_ymodem():
+    """File transfer over SSH (1.1.2): no telnet on the link, so a 0xFF is
+    never doubled and a CR never padded; YMODEM both ways, byte for byte."""
+    print("SSH: YMODEM both ways, bytes intact")
+    why = ssh_ready()
+    if why:
+        print("  SKIP  " + why)
+        return True
+    sd = os.environ.get("BBS_SD_DIR", "")
+    if not sd:
+        print("  SKIP  needs a card")
+        return True
+    body = bytes(range(256)) * 3 + bytes([0xFF, 0xFF, 0x0D, 0x0A, 0x00, 0x0D, 0x00]) * 9 + b"end"
+    area = os.path.join(sd, "pub", "c64")
+    os.makedirs(area, exist_ok=True)
+    with open(os.path.join(area, "SSHRAW.BIN"), "wb") as f:
+        f.write(body)
+    t = ansi_login("SshMover")
+    t.close()
+    s = SshCaller(user="SshMover", password=TEST_PW)
+    s.wait_for(b"Main", 25)
+    _raw_link["on"] = True
+    ok = True
+    try:
+        ok &= check("area opens over SSH", enter_area(s, 1, b"C64 Downloads"))
+        num = None
+        for line in plain(s.buf).split(b"\n"):
+            if b"SSHRAW.BIN" in line:
+                head = line.strip().split(b" ", 1)[0]
+                num = int(head) if head.isdigit() else None
+                break
+        ok &= check("SSHRAW.BIN listed", num is not None)
+        if num is not None:
+            ok &= check("download starts", file_num(s, num, b"Start your YMODEM receive"))
+            name, size, got = ymodem_receive(s)
+            ok &= check("the size in block 0", size == len(body))
+            ok &= check("every byte, 0xFF, CR and NUL included", got[:size] == body)
+            s.wait_for(b"Download complete", 8)
+            settle_after_transfer(s)
+        up = bytes([0xFF, 0x0D, 0x00, 0x0A, 0xFF, 0xFF]) * 40 + b"END"
+        drop = os.path.join(sd, "pub", "drop")
+        ok &= check("the drop box opens", enter_area(s, 5, b"Drop Box"))
+        ok &= check("upload starts", area_key(s, b"u", "", b"Start your YMODEM send"))
+        ok &= check("the board took it", ymodem_send(s, "SSHUP.BIN", up))
+        s.pump(1.0)
+        landed = b""
+        p = os.path.join(drop, ".pending", "SSHUP.BIN")
+        if os.path.exists(p):
+            with open(p, "rb") as f:
+                landed = f.read()
+        ok &= check("and it landed byte for byte", landed == up)
+    finally:
+        _raw_link["on"] = False
+        s.close()
+    return ok
+
+
+def user_exists(handle):
+    """An account by that handle in users.txt, any case."""
+    p = USERDATA / "users.txt"
+    return p.exists() and ("[%s]" % handle).lower() in p.read_text(errors="replace").lower()
+
+
 # Deliberately a little wider than the change usually is. A group that only
 # covered the exact file being edited would miss the thing that breaks, which
 # is almost always the subsystem next door: the file areas and the forums
@@ -15411,6 +15947,9 @@ GROUPS = {
     "terminal":  ["ansi", "petscii", "ascii", "telnet_first", "link_line"],
     # 1.1.2: every path the lag audit named, timed with hostio.txt.
     "lag":       ["lag_", "mail_in_place", "config_one_pass", "space_kept", "uploads_pending"],
+    # SSH on the S3 profiles (1.1.2): harness.sh --board s3 [--card]. Each
+    # SKIPs on the reference board.
+    "ssh":       ["ssh_"],
 }
 
 
@@ -15456,6 +15995,10 @@ ORDER_NAMES = [
     "test_version_shown",
     # SKIPs on the reference board: tools/harness.sh --board s3 runs it.
     "test_board_s3", "test_board_s3_silent",
+    # SSH (1.1.2): SKIP off the S3 profile. The failed logins run on a copy
+    # of the board, so their ban never reaches this one.
+    "test_ssh_login", "test_ssh_new_caller", "test_ssh_resize", "test_ssh_host_keys",
+    "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
     "test_board_fncam", "test_board_espcam",
     "test_camera",
     "test_camera_failed_start",
@@ -15479,7 +16022,7 @@ ORDER_NAMES = [
     "test_mail_rsd", "test_mailbox", "test_rename_follows",
     "test_staff_remembered", "test_shutdown",
     "test_list_abort_returns", "test_xfer",
-    "test_upload_no_binary", "test_ymodem",
+    "test_upload_no_binary", "test_ymodem", "test_ssh_ymodem",
     "test_dash_uploads",                 # leaves its upload waiting, as test_ymodem does
     "test_config_areas", "test_config_area_keeps_every_part",
     "test_mail_compose",

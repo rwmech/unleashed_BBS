@@ -647,6 +647,39 @@ using HistPixFn = void (*)(void* ctx, const uint8_t* rgb, size_t pixels);
 bool     jpegHist(const uint8_t* jpg, size_t len, HistPixFn fn, void* ctx);
 #endif  // BBS_HAS_CAMERA
 
+#if defined(BBS_HAS_SSH) && BBS_HAS_SSH
+// ---------------------------------------------------------------------------
+// The SSH server's footing (1.1.2, S3 only: src/core/sshd.cpp).
+//
+// sideTask:      run fn(arg) for ever on a task of its own, on core 0 just
+//                above idle (BBS_SSH_PRIO), so key exchange and crypto never
+//                run in the BBS loop and Wi-Fi and lwIP preempt it whenever
+//                they want the CPU. Internal stack. The host: a thread.
+// sideStackFree: the least free stack the calling task has had, bytes.
+// wakeOpen:      an eventfd, which the loop's select() waits on beside the
+//                sockets. It is a VFS descriptor, not an lwIP socket, so it
+//                costs none of the sixteen. -1 when none could be made.
+//                The board registers the eventfd driver on the first call,
+//                for wakeMax descriptors.
+// wakePost:      make it readable.
+// wakeTake:      make it unreadable again; true when it had been posted.
+// extAlloc:      a block of PSRAM first, internal RAM only when PSRAM has
+//                none; extRealloc and extFree to match. For wolfSSH's and
+//                wolfCrypt's every allocation and the session rings.
+// extFreeBytes:  PSRAM free now. The host plays a board: BBS_HOST_PSRAM
+//                bytes (8 MB when unset), less what extAlloc holds.
+// ---------------------------------------------------------------------------
+bool     sideTask(void (*fn)(void*), void* arg, uint32_t stackBytes, const char* name);
+uint32_t sideStackFree();
+int      wakeOpen(uint8_t wakeMax);
+void     wakePost(int fd);
+bool     wakeTake(int fd);
+void*    extAlloc(size_t n);
+void*    extRealloc(void* p, size_t n);
+void     extFree(void* p);
+uint32_t extFreeBytes();
+#endif  // BBS_HAS_SSH
+
 // ---------------------------------------------------------------------------
 // resetReason / resetWasCrash: why this boot happened, in words a sysop can
 // read. A crash that reboots cleanly is invisible, so the board has to say

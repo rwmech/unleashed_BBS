@@ -64,6 +64,9 @@
 #include "form.h"
 #include "ring.h"
 #include "../platform/platform.h"
+#if BBS_HAS_SSH
+#include "sshlink.h"                   // an SSH caller's link instead of a socket (1.1.2)
+#endif
 
 enum class SState : uint8_t {
     Free,      // slot unused
@@ -99,6 +102,9 @@ enum class SState : uint8_t {
     AskSysop,  // the sysop's account at login: "Sysop password:", Enter skips (1.1.0)
     Waiting,   // the background runner is doing something slow for this caller:
                // a spinner, keys dropped, then what waitFor says (1.1.2)
+#if BBS_HAS_SSH
+    SshWait,   // an SSH caller: the SSH task is running the key exchange and login (1.1.2)
+#endif
 };
 
 // What a session in SState::Waiting is waiting for, and what it does when
@@ -296,6 +302,17 @@ struct Session {
     bool         lurk        = false;  // staff: hidden and pages off
     int8_t       histPos     = -1;     // -1 = editing a fresh line
     Session*     snooper     = nullptr;// sysop session mirroring this output
+#if BBS_HAS_SSH
+    // SSH (1.1.2, S3 only). link replaces the socket: fd is then its wake
+    // descriptor, which select() waits on as it would the socket. sniff
+    // counts the bytes of "SSH-2.0-" seen during the connect settle.
+    // sshAuthed: the SSH login already proved the account, whose handle is
+    // in user, so the handle and password prompts are skipped.
+    ssh::Link*   link        = nullptr;
+    uint8_t      sniff       = 0;
+    bool         sshAuthed   = false;
+    bool         sshPwOk     = false;   // an SSH password was accepted on this call
+#endif
 
     Term         term;
     Telnet       tn;
@@ -603,6 +620,16 @@ private:
     void openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role role, uint32_t now);
     void closeSession(Session& s, const char* why, uint32_t now);
     void readSession(Session& s, uint32_t now);
+#if BBS_HAS_SSH
+    // SSH (1.1.2): the settle's sniff, the handoff, the link's input, the
+    // wait while the SSH task logs the caller in, the account check it asks
+    // for, and the login an SSH password already proved.
+    bool sshSniff(Session& s, const uint8_t* raw, size_t n, uint32_t now);
+    void sshRead(Session& s, uint32_t now);
+    void sshWait(Session& s, uint32_t now);
+    bool sshAuth(Session& s, uint8_t kind, const char* user, const char* pass, uint32_t now);
+    void sshLogin(Session& s, uint32_t now);
+#endif
     void processInput(Session& s, uint32_t now);
     void serviceSession(Session& s, uint32_t now);
     // screenEnded: a screen played in the shell has finished, or been cut
