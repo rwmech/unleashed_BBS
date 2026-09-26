@@ -270,10 +270,13 @@ src/core/bus.*            per-session message ring (PAGE, notices, broadcast, a 
 src/core/ring.h           OPERATOR's rules: rate limits and the notes file format
 src/core/bbs_ring.cpp     OPERATOR: ringing for the sysop, answering, missed rings to MAIL or notes
 src/core/guard.*          IP ban list, per-handle login lockout
-src/core/users.*          accounts in users.txt: field table, lookup, rewrite, password hashing
+src/core/users.*          accounts in users.txt: field table, handle index in RAM, rewrite, password hashing;
+                          call figures in callstats.dat, updated in place (1.1.2)
 src/core/sha256.*         SHA-256 for password hashes
 src/core/form.*           fill-in form widget (positional on ANSI/PETSCII, line prompts on ASCII)
 src/core/calllog.*        caller log ring file on the logs partition (LAST)
+src/core/runner.*         the background runner: one task below the BBS loop for every slow job (1.1.2)
+src/core/space.*          free-space figures, measured on the runner and kept (MEM FORCE, SYS FORCE)
 src/core/clock.*          wall clock formatting (NTP)
 src/core/sysconfig.*      system.cfg loader, validator, password redaction, access matrix
 src/core/backup.*         backup window: button, HTTP in the BBS loop, Y/N approval; the card jobs
