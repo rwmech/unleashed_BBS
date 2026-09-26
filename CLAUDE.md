@@ -743,6 +743,25 @@ this tree.
   with no one in it is skipped. The example Rob gave: "We meet every
   Tuesday at 10a". This reverses nothing: /M message slots stay rejected,
   because /i now does the job.
+- **1.1.2 scope, decided by Rob 2026-09-26** (discussed before coding):
+  - A read-only audit first of every path that can hold the loop over
+    50 ms (internal/audit-1.1.2-2026-09-26.md); the worst move onto one
+    shared background worker, SCREENS and SCREENS INSTALL first.
+  - The small printf (newlib nano, about 70 KB back on every board), after
+    the same audit lists every `%f`/`%ll` to fix first.
+  - **SSH on the S3 as a preview** (moved up from 1.2.0), `BBS_HAS_SSH`,
+    ESP32 images unchanged. Library and size from
+    internal/ssh-research-2026-09-26.md.
+  - **The S3 gets bigger program slots regardless** (Rob: "If base is
+    limited to 4mb, we have no reason s3 should follow that rule ... s3
+    can become the stronger version"). Sized to 8 MB, not 16, so the
+    DevKitC-1 N8R8 fits too. Data partitions stay where they are so a
+    non-erasing Update keeps accounts; new app slots sit above 4 MB.
+  - The S3's Wi-Fi buffers 16/16 to 10/10 for SSH's internal heap; SSH
+    session buffers in PSRAM.
+  - The uploads bug and the smaller bugs below.
+  - Stays 1.2.0: silent assertions, the camera boards' PSRAM .bss move.
+  - Parked: the badge pick-list.
 - **1.1.2, from the 1.1.1 bench check on the ESP32-CAM (2026-09-25)**.
   1.1.1 shipped on Rob's go before this check finished; the regression was
   clean (internal/regression-1.1.1-final-2026-09-25.md).
