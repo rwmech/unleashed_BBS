@@ -1198,6 +1198,16 @@ this tree.
     216-338, the FILES Screens area (34 files) 123-313, a sysop hanging up
     60-220. Internal heap drops to 12,731 free during a snap on the
     ESP32-CAM (57,499 idle).
+- **Queued for 1.1.3, from the 1.3.0 spec (2026-09-26).** F2 to F4 (chat
+  line cut short, own tag in private chat, LAST's node 10) went into
+  1.1.2 on Rob's go. Waiting:
+  - **F1 (screen-artist):** chatin, newuser and rules have no .seq, and
+    their .asc is 78 wide, so a 40-column PETSCII caller gets them
+    wrapped.
+  - **F5:** CALLS by hour is 28 rows; at 80 it should be two columns of
+    12 hours.
+  The six 1.3.0 decisions in internal/tty-ux-1.3.0-classics-2026-09-26.md
+  (branch specs-1.3.0) are with Rob for review. Nothing is settled.
 - **1.2.0: memory, from internal/memory-2026-09-25-1.1.1.md** (Rob,
   2026-09-25):
   - The small printf: **done in 1.1.2 part 2 (1.1.2-dev.4)**, see the 1.1.2
