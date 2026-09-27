@@ -1229,7 +1229,16 @@ this tree.
     - .NET beside the wordmark plus the header file (directory 2.0.3; live .net still showed 2.0.2);
     - the satellite pages and Adding to it (site 1.5.0 and 1.5.1);
     - SyncTERM links now go to SourceForge.
-  - **1.2.0 in progress:** the link rebase onto 1.1.2 has a WIP checkpoint pushed as rel-1.2.0-link-r3 (see its report). Next:
+  - **1.2.0 in progress:** the link rebase onto 1.1.2 is done but not green. The WIP checkpoint is 3b43496 on branch rel-1.2.0-link-r3 (local and pushed), in release-prep/wt-link.
+    - The review fixed a regression: saving CONFIG link alone left a caller in a door silent.
+    - Radio 73/0, make test passes, and every env builds with 0 warnings except esp32cam_aithinker. That one returned rc=1 with mbedtls errors and a Windows 0xC0000142, probably cut off by the wind-down.
+    - To pick up:
+      1. rebuild esp32cam_aithinker and its _release, and read DRAM per board off the ELF; stop if the ESP32-CAM is under about 2 KB free (it was 3,528);
+      2. run `harness.sh --jobs 12 --changed a3dcf01..HEAD`, then `--ext camsat --card --only=sats,radio`;
+      3. commit link.12 under a normal subject;
+      4. then the camsat multiboard merge.
+
+    After that:
     1. green the rebase and merge it;
     2. put skins (panel-skins 4128a5a) and the Makerfabs (board-mf35-skins) on top;
     3. merge camsat's multiboard into its main (CAMSAT_VERSION 1.1.0), with a camsat release script and a tag;
