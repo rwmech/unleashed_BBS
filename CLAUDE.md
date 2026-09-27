@@ -799,6 +799,14 @@ this tree.
     satellite must be on the same channel (in practice the same router).
     The board tells the sysop when that fails, never failing silently.
     Being built on the link lane for 1.2.0.
+  - **Names, settled by Rob 2026-09-27:**
+    - **sat**, plural **sats**, short for satellite, is every box on the link. SATS lists them.
+    - An **orbiter** feeds the board data: camera, remote control (GPIO), sensors, Home Assistant.
+    - A **door sat** is one a caller goes into, with **UPLINK name|n**. The program on it is still a door.
+    - **BEAM is rejected**; the site's selftest refuses it.
+    - camsat stays only as the firmware and repo name.
+    - Every word lives in src/core/satwords.h on the link branch.
+    - Sat kinds shown as coming, with no dates: remote control, Home Assistant, relay ("one hop, not a mesh"), custom, door. The feasibility note is internal/sat-types-2026-09-27.md on the link branch.
   - **Satellite install pages** (Rob, 2026-09-27): each satellite type
     gets its own install page on the main site, under /satellites, with
     a hub-and-spoke animation (the ESP32 as a globe, satellites
