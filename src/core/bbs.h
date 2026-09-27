@@ -1024,6 +1024,17 @@ private:
     void configListOpen(Session& s, uint8_t field, uint32_t now);
     bool configInList() const;
     void configListBack(Session& s, Color c, const char* msg, uint32_t now);
+    // CONFIG sats (1.2.0): the link's satellites, a button each, and a page
+    // for each built from linkp:: and saved through it (bbs_sysop.cpp).
+    bool configSatsName(const char* arg);
+    void configSatsOpen(Session& s, uint8_t focus, uint32_t now);
+    void configSatsButton(Session& s, uint8_t field, uint32_t now);
+    void configSatOpen(Session& s, uint8_t field, uint32_t now);
+    bool configSatSave(Session& s, char* err, size_t errLen);
+    void configSatBack(Session& s, Color c, const char* msg, uint32_t now);
+    void configSatLeave(Session& s, const char* cmd, uint32_t now);
+    bool configSatSub() const;
+    bool configSatsOn() const;
     // configReloadAll: reread system.cfg and restart the plugins, having
     // first handed home any caller sitting inside one. Shared by the page
     // and the sub-page so a save means the same thing from either.

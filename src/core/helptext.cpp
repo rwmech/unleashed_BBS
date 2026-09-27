@@ -35,6 +35,7 @@ const Entry kEntries[] = {
     { "WHO", "usage: WHO [n]\nWho is on each node: rank mark, handle,\nterminal, minutes on and idle time.\nWHO n redraws the list every n seconds\nuntil you press a key. W also works." },
     { "PAGE", "usage: PAGE n message\nSends one line to the caller on node n,\nwith a bell, wherever they are: the\nprompt, chat, forums, files or mail.\nA form or a transfer holds it until\nthey are done. DND refuses pages." },
     { "OPERATOR", "usage: OPERATOR [reason]\nRings for the sysop. If they answer,\nyou talk in the chat room, the two of\nyou. If not, what you wrote is saved\nfor them. O also works; /o in the room.\nSysop: O answers a waiting ring. The\nones you miss are left in your MAIL." },
+    { "SATS", "usage: SATS [n]\nThe camera satellites: the number to\ngive SNAPSHOT, each one's name, whether\nit is awake, asleep or not answering,\nand its last picture. Staff also see\nthe radio, and SATS n one in full." },
     { "G", "usage: G\nLogs off, asking Log off (Y/N)? first.\nBYE logs off without asking." },
     { "BYE", "usage: BYE [password]\nLogs off now. OFF, LOGOFF and QUIT too.\nBYE with a staff password raises your\naccess instead. A wrong password logs\nyou off; 3 wrong in 15 minutes lock\nyour address out for 15 minutes." },
     { "HELP", "usage: HELP [menu or command]\nThe menus. ? and H do the same.\nMenus: CHAT, ACCOUNT, STAFF, SYSOP,\nand ALL for every menu in turn.\nHELP with a command, such as HELP WHO,\nexplains that one command." },

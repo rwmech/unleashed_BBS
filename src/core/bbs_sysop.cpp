@@ -51,6 +51,9 @@
 #include "sysconfig.h"
 #include "tzones.h"
 #include "silent.h"
+#include "linkfam.h"
+#include "photos.h"
+#include "../plugins/link.h"   // CONFIG sats (1.2.0): the link's pairings
 #include "../platform/platform.h"
 // CONFIG draws the lights' pixel pages from the plugin's own word lists,
 // the way it already knows the file areas' and the forums' packed formats.
@@ -858,7 +861,10 @@ namespace {
 // names that is never written itself. It writes the TZ string row under it,
 // which is what goes in the file (cfgChanged).
 enum : uint8_t { CK_TEXT, CK_NUM, CK_YESNO, CK_LEVEL, CK_PASS, CK_SUB, CK_INFO, CK_PIN,
-                 CK_OPTNUM, CK_CYCLE, CK_PAGE, CK_ZONE };
+                 CK_OPTNUM, CK_CYCLE, CK_PAGE, CK_ZONE,
+                 // CONFIG sats (1.2.0): a satellite's button, and a button
+                 // that goes somewhere (another page, a LINK command).
+                 CK_SAT, CK_ACT };
 
 struct CfgField {
     const char* key;      // key in system.cfg
@@ -1042,7 +1048,8 @@ const CfgField kNetwork[] = {
 const CfgField kCameras[] = {
     { "camera", "Default", CK_TEXT, 0, 0, 16, "A name from CAMERA. Blank: built-in.",
       "Default camera",
-      "The camera SNAPSHOT uses: a name CAMERA lists. Blank: the built-in one, else the first up." },
+      // 73 columns: the status line holds 78 (tty-ux-sats; it was 90).
+      "The camera SNAPSHOT uses, by a name CAMERA lists. Blank: the built-in one." },
 };
 
 // isWifiKey: one of the two keys that are one setting (see configSave)
@@ -2111,6 +2118,294 @@ void cfgChanged(Form& f, uint8_t field, Term& t, Timeline& tl) {
     }
 }
 
+// ===========================================================================
+// CONFIG sats (1.2.0, internal/tty-ux-sats-2026-09-27.md section 1): the
+// satellites, a button each, and what each sends here. The values are the
+// link's (its pairings file), not system.cfg's, so the page is built from
+// linkp:: at open and a satellite's page saves through linkp::setSat.
+//
+// No static RAM of its own beyond a few bytes: the page is built into the
+// plugin page's tables (g_cfgPlugin, g_cfgKeys, with the labels in g_cfgSum),
+// which no plugin page is using while it is open, and a satellite's page
+// edits in g_cfgBuf, since the page under it is built again on the way back
+// (it has nothing a sysop types into).
+//
+// Buttons that leave end CONFIG: Pair a satellite runs LINK PAIR, which asks
+// on the sysop's own screen; Share and Unpair ask "(y/N)" there first
+// (linkp::ask), because an Enter walking the page to Save lands on them
+// (code review). Default and Settings open CONFIG cameras and CONFIG camsat
+// in its place.
+// ===========================================================================
+enum : uint8_t { SA_NONE = 0, SA_PAIR, SA_CAMERAS, SA_CAMSAT, SA_LINK, SA_SHARE, SA_UNPAIR };
+bool    g_satsPage = false;                 // the page on screen is CONFIG sats
+int8_t  g_satPeer  = -1;                    // the satellite whose page is open, -1 none
+uint8_t g_satAct[Form::kMaxFields] = {};    // SA_* for each button on the page on screen
+uint8_t g_satRow[Form::kMaxFields] = {};    // CONFIG sats: the pairing behind each row
+
+constexpr char kCamNos[] = "auto|2|3|4|5|6|7|8|9";
+
+// satState: a satellite's word, from the camera list when it is one.
+const char* satStateWord(uint8_t peer, bool up, bool wide) {
+    for (uint8_t i = 0; i < photos::cameras(); ++i) {
+        const photos::Camera* c = photos::camera(i);
+        if (!c || c->pairing != static_cast<int8_t>(peer)) continue;
+        photos::CamFacts f;
+        if (c->facts && c->facts(c->ctx, f)) {
+            if (f.state == photos::CST_ASLEEP) return "asleep";
+            if (f.state == photos::CST_BUSY) return "busy";
+        }
+        break;
+    }
+    return up ? "awake" : (wide ? "not answering" : "no answer");
+}
+
+// satNumber: the camera number a pairing has on this board, 0 none.
+uint8_t satNumber(uint8_t peer) {
+    for (uint8_t i = 0; i < photos::cameras(); ++i) {
+        const photos::Camera* c = photos::camera(i);
+        if (c && c->pairing == static_cast<int8_t>(peer)) return photos::numberOf(c);
+    }
+    return 0;
+}
+
+// buildSats: the page, into the plugin page's tables.
+uint8_t buildSats(const Term& term) {
+    const bool wide = term.cols() >= 60;
+    uint8_t n = 0;
+    auto row = [&](const char* key, const char* label, uint8_t kind, uint8_t act) {
+        if (n >= Form::kMaxFields) return;
+        snprintf(g_cfgKeys[n], sizeof(g_cfgKeys[0]), "%s", key);
+        snprintf(g_cfgSum[n], sizeof(g_cfgSum[0]), "%s", label);
+        g_cfgPlugin[n] = CfgField{ g_cfgKeys[n], g_cfgSum[n], kind, 0, 0, 0 };
+        g_satAct[n] = act;
+        g_cfgBuf[n][0] = '\0';
+        ++n;
+    };
+    if (!linkp::engine()) {
+        row("link", wide ? "Satellite link" : "Link", CK_ACT, SA_LINK);
+        snprintf(g_cfgBuf[n - 1], sizeof(g_cfgBuf[0]), "%s", wide ? "off: CONFIG link turns it on" : "off: CONFIG link");
+    } else {
+        for (uint8_t p = 0; p < ulink::Engine::kPeers; ++p) {
+            linkp::SatInfo li;
+            if (!linkp::satInfo(p, li)) continue;
+            char key[8], label[24];
+            snprintf(key, sizeof(key), "sat%u", p + 1u);
+            const uint8_t no = satNumber(p);
+            if (no) snprintf(label, sizeof(label), "Camera %u", no);
+            else    snprintf(label, sizeof(label), "%s %u", li.kind == ulink::KIND_DOORBOX ? "Door" : "Sat", p + 1u);
+            row(key, label, CK_SAT, SA_NONE);
+            g_satRow[n - 1] = p;
+            char share[24] = "not shared";
+            if (li.boards > 1) snprintf(share, sizeof(share), li.owned == 1 ? "shared by %u, owner" : "shared by %u", li.boards);
+            if (wide)
+                snprintf(g_cfgBuf[n - 1], sizeof(g_cfgBuf[0]), "%-16.16s  %-13s  %s", li.name,
+                         satStateWord(p, li.up, true), share);
+            else
+                snprintf(g_cfgBuf[n - 1], sizeof(g_cfgBuf[0]), "%-12.12s %s", li.name, satStateWord(p, li.up, false));
+        }
+        row("pair", wide ? "Pair a satellite" : "Pair new", CK_ACT, SA_PAIR);
+        snprintf(g_cfgBuf[n - 1], sizeof(g_cfgBuf[0]), "%s", wide ? "Open pairing for 2 minutes (LINK PAIR)" : "LINK PAIR, 2 minutes");
+    }
+    row("cameras", wide ? "Default camera" : "Default", CK_ACT, SA_CAMERAS);
+    snprintf(g_cfgBuf[n - 1], sizeof(g_cfgBuf[0]), "%s%s", syscfg::get().camera[0] ? syscfg::get().camera : "built-in",
+             wide ? " (CONFIG cameras)" : "");
+    if (plugins::indexOf("camsat") != 0xFF) {
+        row("camsat", wide ? "Satellite settings" : "Settings", CK_ACT, SA_CAMSAT);
+        snprintf(g_cfgBuf[n - 1], sizeof(g_cfgBuf[0]), "%s", wide ? "Size, sleep, timelapse, motion (CONFIG camsat)" : "CONFIG camsat");
+    }
+    if (linkp::engine()) {
+        row("chan", wide ? "Wi-Fi channel" : "Channel", CK_INFO, SA_NONE);
+        snprintf(g_cfgBuf[n - 1], sizeof(g_cfgBuf[0]), wide ? "%u, the router's. A shared satellite needs one channel."
+                                                             : "%u, the router's", linkp::channel());
+    }
+    for (uint8_t i = 0; i < n; ++i) g_cfgWas[i] = bbsu::hash(g_cfgBuf[i]);
+    g_cfgPluginPage = { "sats", "SATELLITES", "", g_cfgPlugin, n };
+    return n;
+}
+
+}  // namespace
+
+bool Bbs::configSatsName(const char* arg) {
+    return !strcasecmp(arg, "sats") || !strcasecmp(arg, "satellites") || !strcasecmp(arg, "sat");
+}
+
+// configSatsOpen: CONFIG sats, with the focus on row focus.
+void Bbs::configSatsOpen(Session& s, uint8_t focus, uint32_t now) {
+    g_cfgSection[0] = '\0';
+    g_satsPage = true;
+    g_satPeer  = -1;
+    const uint8_t n = buildSats(s.term);
+    g_cfgPage = &g_cfgPluginPage;
+    configOpenPage(s, focus < n ? focus : 0, now);
+    bool anySat = false;
+    for (uint8_t i = 0; i < n; ++i) anySat = anySat || g_cfgPlugin[i].kind == CK_SAT;
+    if (linkp::engine() && !anySat)
+        s.form.status(Form::pick(s.term, "None yet. Enter opens pairing.", "No satellite yet. Enter on Pair opens pairing."),
+                      Color::Grey, s.term, s.tl);
+}
+
+// configSatLeave: out of CONFIG and on to a LINK command, which asks what it
+// needs on the sysop's own screen.
+void Bbs::configSatLeave(Session& s, const char* cmd, uint32_t now) {
+    configRelease(s);
+    s.form.after(s.term, s.tl);
+    s.formKind = FormKind::None;
+    s.st = SState::Shell;
+    runCommand(s, cmd, now);
+}
+
+// configSatsButton: a button on CONFIG sats, or on a satellite's page.
+void Bbs::configSatsButton(Session& s, uint8_t field, uint32_t now) {
+    if (field >= Form::kMaxFields) return;
+    switch (g_satAct[field]) {
+        case SA_PAIR:    configSatLeave(s, "LINK PAIR", now); return;
+        case SA_CAMERAS: cmdConfig(s, "cameras", now); return;
+        case SA_CAMSAT:  cmdConfig(s, "camsat", now); return;
+        case SA_LINK:    cmdConfig(s, "link", now); return;
+        case SA_SHARE:
+        case SA_UNPAIR: {
+            const uint8_t peer = static_cast<uint8_t>(g_satPeer);
+            const uint8_t what = g_satAct[field] == SA_SHARE ? linkp::ASK_SHARE : linkp::ASK_UNPAIR;
+            configRelease(s);
+            s.form.after(s.term, s.tl);
+            s.formKind = FormKind::None;
+            s.st = SState::Shell;
+            s.term.nl(s.tl);
+            if (!linkp::ask(*this, s, peer, what)) prompt(s);
+            return;
+        }
+        default: break;
+    }
+    if (g_satPeer < 0 && g_cfgPage && field < g_cfgPage->count && g_cfgPage->fields[field].kind == CK_SAT)
+        configSatOpen(s, field, now);
+}
+
+// configSatOpen: one satellite's page. Name, camera number and what it sends
+// here are this board's to set; the rest is read only.
+void Bbs::configSatOpen(Session& s, uint8_t field, uint32_t now) {
+    const uint8_t peer = g_satRow[field];
+    linkp::SatInfo li;
+    if (!linkp::satInfo(peer, li)) { s.form.fail(field, "That satellite has gone", s.term, s.tl); return; }
+    g_satPeer  = static_cast<int8_t>(peer);
+    g_subField = field;
+    const bool wide = s.term.cols() >= 60;
+    for (uint8_t i = 0; i < Form::kMaxFields; ++i) { g_cfgBuf[i][0] = '\0'; g_satAct[i] = SA_NONE; }
+    snprintf(g_cfgBuf[0], sizeof(g_cfgBuf[0]), "%s", li.name);
+    if (li.camno) snprintf(g_cfgBuf[1], sizeof(g_cfgBuf[0]), "%u", li.camno);
+    else          snprintf(g_cfgBuf[1], sizeof(g_cfgBuf[0]), "auto");
+    snprintf(g_cfgBuf[2], sizeof(g_cfgBuf[0]), "%s", (li.recv & linkfam::RECV_TIMELAPSE) ? "yes" : "no");
+    snprintf(g_cfgBuf[3], sizeof(g_cfgBuf[0]), "%s", (li.recv & linkfam::RECV_MOTION) ? "yes" : "no");
+    for (uint8_t i = 0; i < 4; ++i) g_cfgWas[i] = bbsu::hash(g_cfgBuf[i]);
+    uint8_t n = 0;
+    addField(s, n, Form::pick(s.term, "Name", "Satellite name"), g_cfgBuf[0], 16, FF_NONE, nullptr);
+    s.fields[n - 1].note = Form::pick(s.term, "One word. SNAPSHOT garden takes one.",
+                                      "One word: what SNAPSHOT, SATS and CAMERA call it.");
+    addField(s, n, Form::pick(s.term, "Camera no", "Camera number"), g_cfgBuf[1], 4, FF_CYCLE, kCamNos);
+    s.fields[n - 1].note = Form::pick(s.term, "auto: the lowest free. 1 is built in.",
+                                      "auto takes the lowest free number. 1 is the board's own camera.");
+    addField(s, n, Form::pick(s.term, "Timelapse", "Receive timelapse"), g_cfgBuf[2], 3, FF_CYCLE, kYesNo);
+    s.fields[n - 1].note = Form::pick(s.term, "Snapshots always come here.",
+                                      "Yes: its timelapse pictures come here too. Snapshots always come here.");
+    addField(s, n, Form::pick(s.term, "Motion", "Receive motion"), g_cfgBuf[3], 3, FF_CYCLE, kYesNo);
+    s.fields[n - 1].note = Form::pick(s.term, "Yes: motion pictures come here too.",
+                                      "Yes: its motion pictures come here too. Snapshots always come here.");
+    // Read only, from here on: what the board knows of it.
+    uint8_t b = 4;
+    auto info = [&](const char* label, const char* wideLabel) {
+        if (b >= Form::kMaxFields || n >= Form::kMaxFields) return;
+        addField(s, n, Form::pick(s.term, label, wideLabel), g_cfgBuf[b], 0, FF_READONLY, nullptr);
+        ++b;
+    };
+    snprintf(g_cfgBuf[b], sizeof(g_cfgBuf[0]), "%s", ulink::kindName(li.kind));
+    info("Type", "Type");
+    snprintf(g_cfgBuf[b], sizeof(g_cfgBuf[0]), "%s", satStateWord(peer, li.up, wide));
+    info("Status", "Status");
+    const char* rate = li.slow ? "1 Mbps" : "24 Mbps";
+    if (!li.up)    snprintf(g_cfgBuf[b], sizeof(g_cfgBuf[0]), "not heard");
+    else if (wide) snprintf(g_cfgBuf[b], sizeof(g_cfgBuf[0]), "%d dBm here, %d there, %s", li.rssi, li.farRssi, rate);
+    else           snprintf(g_cfgBuf[b], sizeof(g_cfgBuf[0]), "%d dBm, %s", li.rssi, rate);
+    info("Signal", "Signal");
+    snprintf(g_cfgBuf[b], sizeof(g_cfgBuf[0]), "%s", li.owned == 0 ? li.owner : "this board");
+    info("Owner", "Owner");
+    for (uint8_t k = 0; k < li.nothers && b < Form::kMaxFields - 3; ++k) {
+        char l40[12], l80[24];
+        snprintf(l40, sizeof(l40), "Also on %u", k + 1u);
+        snprintf(l80, sizeof(l80), "Also paired with %u", k + 1u);
+        const ulink::SharedBoard& o = li.others[k];
+        snprintf(g_cfgBuf[b], sizeof(g_cfgBuf[0]), "%-13.13s %s%s", o.name, (o.flags & ulink::SB_OWNER) ? "owner, " : "",
+                 (o.flags & ulink::SB_HEARD) ? "heard" : "not heard");
+        // The label is copied: the form keeps a pointer, and these are on the stack.
+        snprintf(g_cfgSum[k], sizeof(g_cfgSum[0]), "%s", wide ? l80 : l40);
+        addField(s, n, g_cfgSum[k], g_cfgBuf[b], 0, FF_READONLY, nullptr);
+        ++b;
+    }
+    auto button = [&](const char* label, const char* wideLabel, const char* text, const char* wideText, uint8_t act) {
+        if (b >= Form::kMaxFields || n >= Form::kMaxFields) return;
+        snprintf(g_cfgBuf[b], sizeof(g_cfgBuf[0]), "%s", wide ? wideText : text);
+        g_satAct[n] = act;
+        addField(s, n, Form::pick(s.term, label, wideLabel), g_cfgBuf[b], 0, FF_ACTION, nullptr);
+        ++b;
+    };
+    if (li.owned != 0 && li.boards < ulink::Engine::kHosts)
+        button("Share", "Share with a board", "LINK SHARE, 2 minutes", "Open its pairing to one more board (LINK SHARE)", SA_SHARE);
+    button("Unpair", "Unpair from here", "forget it here", "Forget this satellite on this board (LINK FORGET)", SA_UNPAIR);
+    char title[40];
+    const uint8_t no = satNumber(peer);
+    if (no) snprintf(title, sizeof(title), "CAMERA %u: %s", no, li.name);
+    else    snprintf(title, sizeof(title), "SATELLITE %u: %s", peer + 1u, li.name);
+    for (char* p = title; *p; ++p) *p = static_cast<char>(toupper(static_cast<unsigned char>(*p)));
+    s.ed        = LineEditor();
+    s.formKind  = FormKind::ConfigArea;
+    s.st        = SState::Form;
+    s.lastInput = now;
+    s.form.begin(title, s.fields, n, s.term, s.tl);
+}
+
+// configSatSave: the satellite's page, through the link.
+bool Bbs::configSatSave(Session& s, char* err, size_t errLen) {
+    if (g_satPeer < 0) { snprintf(err, errLen, "nothing to save"); return false; }
+    bool changed = false;
+    for (uint8_t i = 0; i < 4; ++i) changed = changed || bbsu::hash(g_cfgBuf[i]) != g_cfgWas[i];
+    if (!changed) { snprintf(err, errLen, "Nothing changed"); return true; }
+    if (!inChoices(kCamNos, g_cfgBuf[1])) { s.form.fail(1, "Not one of the choices", s.term, s.tl); return false; }
+    if (!inChoices(kYesNo, g_cfgBuf[2])) { s.form.fail(2, "Not one of the choices", s.term, s.tl); return false; }
+    if (!inChoices(kYesNo, g_cfgBuf[3])) { s.form.fail(3, "Not one of the choices", s.term, s.tl); return false; }
+    const uint8_t camno = !strcmp(g_cfgBuf[1], "auto") ? 0 : static_cast<uint8_t>(atoi(g_cfgBuf[1]));
+    const uint8_t recv = static_cast<uint8_t>((yesWord(g_cfgBuf[2]) ? linkfam::RECV_TIMELAPSE : 0) |
+                                              (yesWord(g_cfgBuf[3]) ? linkfam::RECV_MOTION : 0));
+    char why[48];
+    if (!linkp::setSat(static_cast<uint8_t>(g_satPeer), g_cfgBuf[0], camno, recv, why, sizeof(why))) {
+        const uint8_t row = strstr(why, "amera") || strstr(why, "auto") ? 1 : 0;
+        s.form.fail(row, why, s.term, s.tl);
+        return false;
+    }
+    plat::log("bbs: %s set satellite %d: %s, camera %s, receives %s%s", s.user, g_satPeer + 1, g_cfgBuf[0], g_cfgBuf[1],
+              (recv & linkfam::RECV_TIMELAPSE) ? "timelapse " : "", (recv & linkfam::RECV_MOTION) ? "motion" : "");
+    linkp::SatInfo li;
+    const bool up = linkp::satInfo(static_cast<uint8_t>(g_satPeer), li) && li.up;
+    snprintf(err, errLen, "%s", up ? "Saved and live" : Form::pick(s.term, "Saved. It gets it when awake.",
+                                                                     "Saved. It gets what it sends here when it is awake."));
+    return true;
+}
+
+// configSatBack: back to CONFIG sats, on the row the satellite was.
+void Bbs::configSatBack(Session& s, Color c, const char* msg, uint32_t now) {
+    const uint8_t field = g_subField;
+    g_satPeer = -1;
+    if (!claims::holds(claims::Res::Config, s.id)) {
+        configRelease(s);
+        formDone(s, c, msg);
+        return;
+    }
+    configSatsOpen(s, field, now);
+    s.form.status(msg, c, s.term, s.tl);
+}
+
+bool Bbs::configSatSub() const { return g_satPeer >= 0; }
+bool Bbs::configSatsOn() const { return g_satsPage; }
+
+namespace {
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -2129,6 +2424,8 @@ void Bbs::configRelease(const Session& s) {
         g_subKey[0]  = '\0';
         g_subOrig[0] = '\0';
         g_listKey[0] = '\0';
+        g_satsPage   = false;
+        g_satPeer    = -1;
     }
 }
 
@@ -2164,6 +2461,15 @@ void Bbs::configPages(Session& s) {
         rowSeg(s, Color::Grey, clip(kPages[i].what, col), col);
         rowEnd(s, col);
     }
+    // CONFIG sats (1.2.0), built from the link rather than kPages: there
+    // while the link is compiled in, which it always is.
+    {
+        uint8_t col = 0;
+        snprintf(buf, sizeof(buf), " %-10.10s", "sats");
+        rowSeg(s, Color::Yellow, buf, col);
+        rowSeg(s, Color::Grey, clip("satellites: what each sends here", col), col);
+        rowEnd(s, col);
+    }
     for (uint8_t i = 0; i < plugins::count(); ++i) {
         uint8_t col = 0;
         snprintf(buf, sizeof(buf), " %-10.10s", plugins::at(i)->info.name);
@@ -2195,6 +2501,16 @@ void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now, uint8_t focus) {
         return;
     }
 
+    if (configSatsName(arg)) {
+        claims::take(claims::Res::Config, s.id);
+        g_cfgOwner = &s;
+        g_subComp  = nullptr;
+        g_listKey[0] = '\0';
+        configSatsOpen(s, focus, now);
+        return;
+    }
+    g_satsPage = false;
+    g_satPeer  = -1;
     const CfgPage* page = pageByName(arg);
     g_cfgSection[0] = '\0';
     if (!page) {                                          // a plugin's own section
@@ -2309,6 +2625,7 @@ void Bbs::configOpenPage(Session& s, uint8_t focus, uint32_t now) {
         if (f.kind == CK_ZONE)  { flags |= FF_CYCLE; choices = tzones::kZoneChoices; }
         // A PS_PAGE button: its text is the plugin's setting() for the key.
         if (f.kind == CK_PAGE)  flags |= FF_ACTION;
+        if (f.kind == CK_SAT || f.kind == CK_ACT) flags |= FF_ACTION;
         if (f.kind == CK_PASS)  flags |= FF_MASK;
         // A set password shows as its mask, and the mask is in the buffer:
         // the first key must start a new value rather than add to the stars.
@@ -2326,7 +2643,8 @@ void Bbs::configOpenPage(Session& s, uint8_t focus, uint32_t now) {
         // The words for this caller's width: the 20 column label and the 78
         // column note at 80, the short ones on a C64 (Form::pick).
         addField(s, n, Form::pick(s.term, f.label, f.wide), buf2,
-                 (f.kind == CK_SUB || f.kind == CK_PAGE) ? 0 : f.cap, flags, choices);
+                 (f.kind == CK_SUB || f.kind == CK_PAGE || f.kind == CK_SAT || f.kind == CK_ACT) ? 0 : f.cap,
+                 flags, choices);
         // On the session's own array, as addUserFields does: the Form's
         // pointer is not aimed at it until begin() below.
         const char* note = Form::pick(s.term, f.note, f.wideNote);
@@ -2426,6 +2744,7 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
         if (f.kind == CK_PAGE) continue;                             // and its list's rows
         if (f.kind == CK_ZONE) continue;                             // its TZ string is what is kept
         if (f.kind == CK_INFO) continue;                             // somebody else owns it
+        if (f.kind == CK_SAT || f.kind == CK_ACT) continue;          // buttons (CONFIG sats)
         if (f.kind == CK_PASS && !strcmp(v, kMasked)) continue;      // untouched
         // What a sysop types as their board's name is what they see it by,
         // "name.local", and the parser wants the bare name. Normalised
@@ -2758,6 +3077,7 @@ void Bbs::restartPlugins(uint32_t mask) {
 // ---------------------------------------------------------------------------
 void Bbs::configSubOpen(Session& s, uint8_t field, uint32_t now) {
     if (!claims::holds(claims::Res::Config, s.id) || !g_cfgPage) return;
+    if (g_satsPage) { configSatsButton(s, field, now); return; }
     if (field >= g_cfgPage->count || field >= Form::kMaxFields) return;
     const CfgField& f = g_cfgPage->fields[field];
     if (f.kind == CK_PAGE) { configListOpen(s, field, now); return; }
@@ -2834,6 +3154,7 @@ void Bbs::configSubOpen(Session& s, uint8_t field, uint32_t now) {
 // already ignores a record with nothing to point at.
 // ---------------------------------------------------------------------------
 bool Bbs::configSubSave(Session& s, char* err, size_t errLen) {
+    if (g_satPeer >= 0) return configSatSave(s, err, errLen);
     if (!g_subComp || !g_cfgPage) { snprintf(err, errLen, "nothing to save"); return false; }
     const CfgComposite* comp = g_subComp;
 
@@ -2898,6 +3219,7 @@ bool Bbs::configSubSave(Session& s, char* err, size_t errLen) {
 // still releases everything, nesting included.
 // ---------------------------------------------------------------------------
 void Bbs::configSubBack(Session& s, Color c, const char* msg, uint32_t now) {
+    if (g_satPeer >= 0) { configSatBack(s, c, msg, now); return; }
     uint8_t field = g_subField;
     g_subComp = nullptr;
     if (!g_cfgPage || !claims::holds(claims::Res::Config, s.id)) {  // page went away

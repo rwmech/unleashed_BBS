@@ -1838,7 +1838,8 @@ def test_about():
 class LinkPeer:
     """host/linkpeer, with every line it prints kept for the test to read."""
 
-    def __init__(self, pair=False, chan=1, port=None, state="linkpeer.state", board2=None, board2_chan=None):
+    def __init__(self, pair=False, chan=1, port=None, state="linkpeer.state", board2=None, board2_chan=None,
+                 kind=None):
         host = os.environ["BBS_LINK_PORT"]
         port = str(port or os.environ["BBS_LINK_PEER_PORT"])
         self.state = os.path.join(os.environ.get("BBS_DATA", "/tmp"), state)
@@ -1850,6 +1851,8 @@ class LinkPeer:
             args += ["--board2", str(board2)]
         if board2_chan:
             args += ["--board2-chan", str(board2_chan)]
+        if kind:
+            args += ["--kind", kind]
         import subprocess
         self.p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                   text=True)
@@ -2082,6 +2085,218 @@ def test_link_shared():
         if other:
             other.stop()
     return ok
+
+
+def camsat_ready():
+    if not link_ready():
+        return False
+    if "camsat" not in os.environ.get("BBS_HOST_EXT", "").split(","):
+        print("  SKIP  the camera satellite plugin is not built in (tools/harness.sh --ext camsat --card)")
+        return False
+    if not os.environ.get("BBS_SD_DIR"):
+        print("  SKIP  the camera satellite needs the card (--card)")
+        return False
+    return True
+
+
+# What a caller's SATS must never carry, checked by content, not by label
+# (Rob, 2026-09-27): a MAC, a channel, a key's fingerprint, a signal figure.
+SATS_SECRETS = [
+    (re.compile(rb"[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}"), "a MAC"),
+    (re.compile(rb"(?i)\bch(annel)?\s*\d"), "a channel"),
+    (re.compile(rb"[0-9A-F]{4} [0-9A-F]{4} [0-9A-F]{4} [0-9A-F]{4}"), "a key fingerprint"),
+    (re.compile(rb"dBm|RSSI|-\d\d\b"), "a signal figure"),
+    (re.compile(rb"Mbps|\bMb\b"), "a radio rate"),
+]
+
+
+def sats_leaks(buf):
+    txt = plain(buf)
+    return [what for rx, what in SATS_SECRETS if rx.search(txt)]
+
+
+def test_sats():
+    """SATS and CONFIG sats (1.2.0, tty-ux-sats). A camera satellite
+    (host/linkpeer --kind camsat) paired with the board: a caller's SATS
+    shows its number, name, status and last picture and nothing of the radio
+    or the keys; staff's shows the radio; SATS n in full; SNAPSHOT n takes a
+    picture from it; a busy satellite says how many are ahead; CONFIG sats
+    sets its number and what it sends here, and the satellite is told."""
+    print("SATS, and CONFIG sats")
+    if not camsat_ready() or not PASSWORD:
+        return True
+    base = int(os.environ["BBS_LINK_EXTRA_PORTS"].split(",")[0])
+    peer = LinkPeer(pair=True, chan=1, port=base + 50, state="camsat.state", kind="camsat")
+    s = sysop_on("SatKeeper")
+    ok = True
+    c = c40 = a = None
+    try:
+        drain(s)
+        s.send(b"link pair\r")
+        s.wait_for(b"Pairing is open", 6)
+        if not check("the board is asked to pair the camera", s.wait_for(b'Pair camsat "shelf"', 25)):
+            return False
+        s.send(b"y")
+        s.wait_for(b"Does the device show", 20)
+        s.send(b"y")
+        ok &= check("paired", s.wait_for(b"Paired and checked.", 8))
+        ok &= check("the satellite is sent this board's settings, and wants everything",
+                    peer.wait("settings 0 recv 3 owner 1", 25) is not None)
+        time.sleep(2.5)                                 # camsat lists it within a second
+
+        c = ansi_login("SatWatcher")
+        drain(c)
+        c.buf.clear()
+        c.send(b"sats\r")
+        ok &= check("SATS lists it for a caller", c.wait_for(b"shelf", 6) and c.wait_for(b"awake", 3))
+        m = re.search(rb"\n\s*(\d)[* ]\s+shelf", plain(c.buf))
+        ok &= check("with its number", m is not None)
+        num = m.group(1) if m else b"1"
+        leaks = sats_leaks(c.buf)
+        ok &= check("and nothing of the radio or the keys (%s)" % (", ".join(leaks) or "none"), not leaks)
+        c40 = ansi40_login("SatWatcher40")
+        drain(c40)
+        c40.buf.clear()
+        c40.send(b"sats\r")
+        c40.wait_for(b"shelf", 6)
+        c40.pump(0.5)
+        leaks = sats_leaks(c40.buf)
+        ok &= check("at 40 columns too (%s)" % (", ".join(leaks) or "none"), not leaks)
+        ok &= check("in 39 columns", all(len(r) <= 39 for r in render_lines(c40.buf, 40)))
+        a = Caller(ansi=False)
+        a.wait_for(b"HIT DEL OR BACKSPACE", 6)
+        a.send(b"\x08")
+        a.wait_for(b"Enter your handle", 8)
+        login(a, "SatAscii")
+        drain(a)
+        a.buf.clear()
+        a.send(b"sats\r")
+        a.wait_for(b"shelf", 6)
+        a.pump(0.5)
+        leaks = sats_leaks(a.buf)
+        ok &= check("and in plain ASCII (%s)" % (", ".join(leaks) or "none"), not leaks)
+        drain(c)
+        c.buf.clear()
+        c.send(b"sats " + num + b"\r")
+        c.wait_for(b"shelf", 6)
+        c.pump(0.5)
+        leaks = sats_leaks(c.buf)
+        ok &= check("SATS n for a caller is its one row, still nothing secret (%s)" % (", ".join(leaks) or "none"),
+                    not leaks and b"Satellite " + num + b":" not in c.buf)
+
+        drain(s)
+        s.buf.clear()
+        s.send(b"sats\r")
+        ok &= check("staff see the radio", s.wait_for(b"RSSI", 6) and s.wait_for(b"channel", 2))
+        drain(s)
+        s.buf.clear()
+        s.send(b"sats " + num + b"\r")
+        ok &= check("SATS n in full for staff: the MAC",
+                    s.wait_for(b"MAC", 6) and re.search(rb"[0-9A-F]{2}(:[0-9A-F]{2}){5}", plain(s.buf)) is not None)
+        ok &= check("and the key's fingerprint",
+                    re.search(rb"Key\s+[0-9A-F]{4} [0-9A-F]{4} [0-9A-F]{4} [0-9A-F]{4}", plain(s.buf)) is not None)
+        ok &= check("never the key itself", re.search(rb"[0-9a-fA-F]{32}", plain(s.buf)) is None)
+        # The leak check itself, on a view that has all of them: it would
+        # have seen them in a caller's.
+        found = sats_leaks(s.buf)
+        ok &= check("the leak check finds the MAC, channel, key and signal in staff's view (%s)" % ", ".join(found),
+                    len(found) >= 5)
+
+        drain(c)
+        c.buf.clear()
+        c.send(b"snapshot " + num + b"\r")
+        ok &= check("SNAPSHOT n takes one from the satellite",
+                    peer.wait("snap ", 10) is not None and c.wait_for(b"Photo saved", 15))
+        c.send(b"n")
+        drain(c)
+        peer.cmd("busy 1 2")
+        time.sleep(0.3)
+        c.buf.clear()
+        c.send(b"snapshot " + num + b"\r")
+        ok &= check("a busy satellite says how many are ahead",
+                    c.wait_for(b"camera is busy, 2 ahead of you", 15))
+
+        # CONFIG sats in plain ASCII: the satellite's page, its number and
+        # what it sends here.
+        p = ascii_sysop("SatConfig")
+        p.buf.clear()
+        p.send(b"config sats\r")
+        ok &= check("CONFIG sats lists the satellite as a button",
+                    p.wait_for(b"SATELLITES", 5) and p.wait_for(b"shelf", 5))
+        ok &= check("its own page", open_camera_button(p) and p.wait_for(b"SHELF", 5) and p.wait_for(b"Satellite name", 5))
+        p.pump(0.3)
+        # Name, Camera number (5 is "5"), Receive timelapse (2 is "no"),
+        # Receive motion, then the buttons are passed over.
+        got = ascii_form(p, [b"", b"5", b"2", b"", b"", b""])
+        ok &= check("saved", got in (0, 2))
+        ok &= check("the satellite is told this board no longer wants its timelapse",
+                    peer.wait("settings 0 recv 2", 10) is not None)
+        # Saving goes back to CONFIG sats, which asks its buttons again:
+        # walk it to its Save and leave it.
+        ok &= check("saving comes back to the satellites page", finish_line_form(p))
+        drain(c)
+        c.buf.clear()
+        c.send(b"sats\r")
+        c.wait_for(b"shelf", 6)
+        ok &= check("SATS shows its new number", re.search(rb"\n\s*5[* ]\s+shelf", plain(c.buf)) is not None)
+        # Unpair asks first (code review: an Enter walking to Save landed on
+        # it and forgot the satellite).
+        p.buf.clear()
+        p.send(b"config sats\r")
+        p.wait_for(b"SATELLITES", 5)
+        open_camera_button(p)
+        p.wait_for(b"Satellite name", 5)
+        p.pump(0.3)
+        for a in [b"", b"", b"", b"", b""]:          # name, number, timelapse, motion, Share
+            p.send(a + b"\r")
+            p.pump(0.3)
+        p.send(b"y")                                # Unpair
+        asks = p.wait_for(b"Unpair shelf", 6) and p.wait_for(b"(y/N)", 3)
+        if not asks:
+            print("\n".join(render_lines(p.buf)[-25:]))
+        ok &= check("Unpair asks on the sysop's screen first", asks)
+        p.send(b"n")
+        ok &= check("and N changes nothing", p.wait_for(b"Not changed.", 5))
+        drain(c)
+        c.buf.clear()
+        c.send(b"sats\r")
+        ok &= check("it is still there", c.wait_for(b"shelf", 6))
+        p.close()
+    finally:
+        for x in (c, c40, a):
+            if x:
+                x.close()
+        s.close()
+        peer.stop()
+    return ok
+
+
+def finish_line_form(p):
+    """A line-mode form still asking: Enter past each question to its
+    Save, and say Y. True once the form has ended."""
+    for _ in range(20):
+        if b"Save (Y/n)?" in p.buf:
+            p.buf.clear()
+            p.send(b"y")
+            return wait_any(p, [b"Nothing changed", b"Saved"], 5) >= 0
+        p.send(b"\r")
+        p.pump(0.3)
+    return False
+
+
+def open_camera_button(p):
+    """CONFIG sats in line mode: Y at the camera's button, Enter past any
+    other (the door box the radio tests paired is a satellite too)."""
+    for _ in range(10):
+        if not p.wait_for(b"open (y/N)?", 5):
+            return False
+        asked = [l for l in render_lines(p.buf) if "open (y/N)?" in l]
+        p.buf.clear()
+        if asked and asked[-1].lstrip().startswith("Camera"):
+            p.send(b"y")
+            return True
+        p.send(b"\r")
+    return False
 
 
 def wait_line(peer, pred, secs):
@@ -17306,6 +17521,7 @@ GROUPS = {
     "ssh":       ["ssh_"],
     # The radio link and what rides on it (1.2.0).
     "radio":     ["radio_link", "doors", "doors_petscii", "link_shared"],
+    "sats":      ["sats"],
 }
 
 
@@ -17350,7 +17566,7 @@ ORDER_NAMES = [
     "test_config_lights", "test_config_lights_ascii", "test_lights_frames", "test_lights_manual",
     "test_lights_count", "test_lights_order", "test_lights_wifi", "test_lights_silent", "test_lights_disk",
     # The radio link and doors (1.2.0): the pairing first, doors use it.
-    "test_radio_link", "test_doors", "test_doors_petscii", "test_link_shared",
+    "test_radio_link", "test_doors", "test_doors_petscii", "test_link_shared", "test_sats",
     "test_version_shown",
     # SKIPs on the reference board: tools/harness.sh --board s3 runs it.
     "test_board_s3", "test_board_s3_silent",

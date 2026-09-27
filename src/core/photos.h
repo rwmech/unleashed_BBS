@@ -128,15 +128,21 @@ void abandon(Writer& w);
 //                       with more, every camera numbered, one line each
 //   CAMERA n|name ...   that camera's own command (CAMERA 1 SET ...); with
 //                       one camera, CAMERA SET ... still reaches it
-// Numbered by order: the built-in camera (order 0) first, then satellites
-// by pairing number (order 1 + n). With one camera nothing changes for a
-// caller.
+// Numbered by a number of its own that does not move (1.2.0, tty-ux-sats):
+// the built-in camera is 1; a satellite has the number CONFIG sats set for it
+// (2 to 9), or "auto", the lowest free from 2 (from 1 on a board built with
+// no camera), in order. Listed in number order. With one camera nothing
+// changes for a caller.
+//   SATS [n]            the satellites (callers: name, status, last picture,
+//                       the number for SNAPSHOT; staff: the radio too), and
+//                       SATS n one of them in full
 //
 // A caller's limits are ONE budget across every camera (Rob, 2026-09-26):
 // 10 an hour means 10 on the board, not 10 per camera. A camera's snap asks
 // budget() for anybody but the sysop and calls spend() once its picture is
 // under way.
 // ---------------------------------------------------------------------------
+struct CamFacts;
 struct Camera {
     const char* name;      // shown and typed after SNAPSHOT: "camera", "garden"
     uint8_t     order;     // 0 the built-in camera, 1 + pairing number a satellite
@@ -150,15 +156,50 @@ struct Camera {
     void (*line)(void* ctx, char* out, size_t n);
     // command: CAMERA <this camera> <arg>. Null: CAMERA shows its line.
     void (*command)(void* ctx, Bbs& b, Session& s, const char* arg, uint32_t now);
+    // --- 1.2.0, appended (a camera that sets none of these still works) ----
+    // number: the camera number asked for, 2 to 9; 0 lets the board choose.
+    uint8_t     number = 0;
+    // pairing: a satellite's link pairing, -1 for a camera that is not one.
+    // SATS lists the cameras with one.
+    int8_t      pairing = -1;
+    // levels: who may see its photos and who may take one, for SATS's
+    // caller view. Null: everybody.
+    void (*levels)(void* ctx, PlugLevel& see, PlugLevel& snap) = nullptr;
+    // facts: what SATS shows of it beyond the radio. False: nothing known.
+    bool (*facts)(void* ctx, CamFacts& f) = nullptr;
+};
+
+// What SATS says a camera is doing.
+enum : uint8_t { CST_AWAKE = 0, CST_ASLEEP, CST_NOANSWER, CST_BUSY };
+
+// CamFacts: a camera's own account of itself, for SATS.
+struct CamFacts {
+    uint8_t  state = CST_AWAKE;   // CST_*
+    uint32_t lastAt = 0;          // its last picture, epoch seconds, 0 none
+    uint32_t pictures = 0;        // since the board started
+    uint32_t uptime = 0;          // seconds, 0 unknown
+    char     sensor[12] = {};     // "OV2640"
+    char     fw[13] = {};         // its firmware, "" unknown
+    bool     sleeps = false;      // deep sleep between pictures
+    uint16_t tlMin = 0;           // its timelapse, 0 0 none
+    uint8_t  tlSec = 0;
+    bool     motion = false;
+    uint16_t hold = 0;            // seconds between motion pictures
 };
 
 // addCamera: from a camera's start(), or when a satellite comes up; kept by
 // pointer, 8 at most. removeCamera: from its stop(), or when it goes.
 bool addCamera(const Camera& c);
 void removeCamera(const Camera& c);
-// cameras: how many; camera(i): the i-th by order, from 0.
+// cameras: how many; camera(i): the i-th in number order, from 0.
 uint8_t       cameras();
 const Camera* camera(uint8_t i);
+// numberOf: a camera's number (1 to 9), 0 for one that is not listed.
+uint8_t       numberOf(const Camera* c);
+// numberFree: n (2 to 9) is no other camera's to ask for. self may be null.
+bool          numberFree(uint8_t n, const Camera* self);
+// renumber: the numbers again, after a camera's number or pairing changed.
+void          renumber();
 
 // Budget: the tighter of a caller's windows (an account's by handle, a
 // guest's by address and by name), each at most kPerHour an hour and

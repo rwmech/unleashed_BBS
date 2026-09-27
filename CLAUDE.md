@@ -917,6 +917,33 @@ this tree.
       naming proposal (internal/naming-satellites-2026-09-27.md) found it.
       User-visible satellite words live in `src/core/satwords.h` until Rob
       picks the names.
+    - **SATS and CONFIG sats (link.9)**, to internal/tty-ux-sats-2026-09-27.md.
+      A caller's SATS never shows the radio, the keys, the other boards or
+      the firmware, and `test_sats` checks it by content, plus that the
+      check finds all five in staff's view (it first missed "Channel   6":
+      a leak check needs its own proof). Camera numbers are fixed (built-in
+      1, set 2 to 9, else lowest free). CONFIG sats is built from linkp::
+      into the plugin page's tables, no static RAM of its own. Share and
+      Unpair leave the form and ask (y/N) on the sysop's screen: the first
+      cut acted on the Enter, and an Enter is how a sysop walks a form to
+      Save (code review; the line-mode test could not see it, because line
+      mode already asks "open (y/N)?" for every button). `tools/harness.sh --ext camsat` tests a
+      plugin from its own repository end to end, with host/linkpeer as a
+      camera satellite.
+    - **The satellite's side is unleashed_camsat, branch multiboard**: a
+      SNAP queue (2 a board, 8 in all, round-robin), an EVENT group (300 ms,
+      one capture, one transfer a board, the owner's texts), owner-only
+      settings, per-board wants, its own awake timelapse clock, NVS boards
+      migrating the one-board pairing. The scheduling is a pure header
+      (`firmware/src/satsched.h`) with a host test. Named satsched.h, not
+      sched.h: pthread.h includes the C library's sched.h, and ours shadowed
+      it. **State kept for "the peer" had to become per peer**: the
+      satellite's 1 Mbps fallback was one entry for the radio, so sending
+      to two boards in turn reset it at every change of destination and the
+      fallback never held. Anything singular written for one board is a
+      suspect once there are five. A board whose link comes back after a reset
+      is tried at 24 Mbps at once, not after 30 s (a probe: a marginal path
+      falls back again within about a second).
 - **1.1.2 scope, decided by Rob 2026-09-26** (discussed before coding):
   - A read-only audit first of every path that can hold the loop over
     50 ms (internal/audit-1.1.2-2026-09-26.md); the worst move onto one

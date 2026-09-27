@@ -134,6 +134,7 @@ TAG=main
 CARD=no
 FRESH=no
 BIN=bbs_host
+EXT=""
 ARGS=""
 CHANGED_RANGE=""
 CHANGED_DRY=no
@@ -164,6 +165,11 @@ while [ $# -gt 0 ]; do
                 *)  echo "harness: no board profile called $2 (s3, fncam, espcam)"; exit 2 ;;
             esac
             shift 2 ;;
+        # Plugins from their own repositories (1.2.0), already fetched into
+        # ext/ (tools/plugins.py fetch NAME): the host board is built with
+        # them (host/Makefile's bbs_host_ext) and each is switched on. The
+        # camera satellite's tests need --ext camsat --card.
+        --ext)   EXT="$2"; BIN=bbs_host_ext; shift 2 ;;
         # A board as it leaves the web installer: no staff passwords in its
         # config, so it runs on the published default and offers setup.
         # Pair it with --only=first_setup or --only=backup_published; the
@@ -252,6 +258,7 @@ export BBS_LINK_PEER_PORT=$((PORT + 3001))
 # another tag's: PORT is 6500 to 6899, one a tag. (peer + 1 and + 2 did:
 # a neighbouring tag's radio took one, and its satellite never started.)
 export BBS_LINK_EXTRA_PORTS="$((PORT + 3500)),$((PORT + 3900)),$((PORT + 4300))"
+export BBS_HOST_EXT="$EXT"
 
 # Delete the previous result before building. A failed build exits here, and
 # leaving the last run's output behind means the next look at it shows a full
@@ -262,7 +269,14 @@ rm -f "$OUT"
 
 cd "$PROJ/host"
 if [ "$BUILD" = yes ]; then
-    make -s "$BIN"
+    if [ -n "$EXT" ]; then
+        for n in $(echo "$EXT" | tr ',' ' '); do
+            [ -f "$PROJ/ext/$n/unleashed-plugin.ini" ] || { echo "harness: ext/$n is missing: tools/plugins.py fetch $n"; exit 2; }
+        done
+        make -s EXT="$(echo "$EXT" | tr ',' ' ')" "$BIN"
+    else
+        make -s "$BIN"
+    fi
     # The S3 profile has SSH (1.1.2): its tests call in with wolfSSH's client.
     if [ "$BIN" = bbs_host_s3 ]; then make -s ssh_call; fi
     make -s linkpeer
@@ -366,6 +380,11 @@ enabled = yes
 [plugin:doors]
 enabled = yes
 CFG
+
+# Each plugin from its own repository, switched on (--ext).
+for n in $(echo "$EXT" | tr ',' ' '); do
+    printf '\n[plugin:%s]\nenabled = yes\n' "$n" >> "$DATA/user/system.cfg"
+done
 
 # SSH's own port (1.1.2) on the S3 profile, per tag like the others: 6422
 # for every run would have two tags' boards fighting over it.

@@ -87,6 +87,7 @@ release/
 host/obj-mbedtls/
 host/libmbedtls_host.a
 host/ext-gen/
+host/ext-gen-ext/
 /ext/
 host/linkpeer
 host/bbs_host_ext

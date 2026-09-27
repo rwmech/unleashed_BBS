@@ -179,6 +179,11 @@ struct Ctx {
     // the sysop pairing, if one is: their node, and where they are in it
     uint8_t          pairNode = 0xFF;
     uint8_t          pairStep = 0;     // 1 waiting, 2 asked, 3 paired: codes match?
+    // CONFIG sats' Share and Unpair, asked on the sysop's screen (code
+    // review, 1.2.0: an Enter on the button acted at once)
+    uint8_t          askNode = 0xFF;
+    uint8_t          askPeer = 0;
+    uint8_t          askWhat = 0;      // linkp::ASK_*
     ulink::PairInfo  asking;
     int              pairedAs = -1;
     // the runner's job
@@ -441,6 +446,14 @@ void uniqueName(const char* want, int self, char* out, size_t n) {
     char base[17];
     oneWord(want, base, sizeof(base));
     if (!base[0]) snprintf(base, sizeof(base), "%s", satwords::kSatShort);
+    // All digits would read as a camera number to SNAPSHOT.
+    bool digits = true;
+    for (const char* p = base; *p; ++p) digits = digits && *p >= '0' && *p <= '9';
+    if (digits) {
+        char tmp[17];
+        snprintf(tmp, sizeof(tmp), "%s-%.11s", satwords::kSatShort, base);
+        snprintf(base, sizeof(base), "%s", tmp);
+    }
     snprintf(out, n, "%s", base);
     for (unsigned k = 2; k < 10 && nameTaken(out, self); ++k) {
         char tail[4];
@@ -606,9 +619,33 @@ void pairTick() {
     }
 }
 
+void cmdShare(Bbs& b, Session& s, const char* arg);
+void cmdForget(Bbs& b, Session& s, const char* arg);
+
 void onKey(Session& s, int k, uint32_t now) {
     (void)now;
     Ctx* c = g_ctx;
+    if (c && s.id == c->askNode) {
+        Bbs& b = Bbs::instance();
+        c->askNode = 0xFF;
+        if (k == 'y' || k == 'Y') {
+            s.term.text(s.tl, "Y");
+            char arg[4];
+            snprintf(arg, sizeof(arg), "%u", c->askPeer + 1u);
+            s.st = SState::Shell;                 // released without a prompt: the command draws one
+            b.release(s);
+            s.term.nl(s.tl);
+            if (c->askWhat == linkp::ASK_SHARE) cmdShare(b, s, arg);
+            else                                cmdForget(b, s, arg);
+        } else {
+            s.term.text(s.tl, "N");
+            s.term.nl(s.tl);
+            s.term.color(s.tl, Color::Grey);
+            s.term.text(s.tl, "Not changed.");
+            b.release(s);
+        }
+        return;
+    }
     if (!c || s.id != c->pairNode) { Bbs::instance().release(s); return; }
     const bool yes = k == 'y' || k == 'Y';
     const bool stop = k == 'q' || k == 'Q' || k == KEY_ESC || k == KEY_BREAK;
@@ -629,9 +666,21 @@ void onKey(Session& s, int k, uint32_t now) {
             }
             return;
         case 4: {
+            const bool camera = c->pairedAs >= 0 && c->meta[c->pairedAs].kind == ulink::KIND_CAMSAT;
             if (c->pairedAs >= 0) {
                 c->meta[c->pairedAs].checked = yes;
                 savePeers();
+            }
+            // A camera satellite: where its settings on this board are
+            // (tty-ux-sats). Its number comes when it is listed, a second on.
+            if (camera) {
+                s.term.nl(s.tl);
+                s.term.color(s.tl, Color::LightGreen);
+                s.term.text(s.tl, yes ? "Paired and checked." : "Paired, codes not checked.");
+                pairEnd(&s, Color::Grey, Bbs::instance().rowWidth(s) >= 60
+                                             ? "CONFIG sats sets its number and what it sends here."
+                                             : "CONFIG sats: its number, what it sends.");
+                return;
             }
             pairEnd(&s, Color::LightGreen, yes ? "Paired and checked." : "Paired, codes not checked.");
             return;
@@ -645,6 +694,7 @@ void onKey(Session& s, int k, uint32_t now) {
 void onLogoff(Session& s) {
     Ctx* c = g_ctx.load();
     if (c && s.id == c->pairNode) pairEnd(nullptr, Color::Grey, "");
+    if (c && s.id == c->askNode) c->askNode = 0xFF;
 }
 
 // ---------------------------------------------------------------------------
@@ -1099,6 +1149,13 @@ void cmdName(Bbs& b, Session& s, const char* arg) {
         if (*p > 0x20 && *p < 0x7F) name[k++] = *p;
     }
     name[k] = '\0';
+    bool digits = name[0] != '\0';
+    for (const char* p = name; *p; ++p) digits = digits && *p >= '0' && *p <= '9';
+    if (digits) {
+        say(s, Color::LightRed, "Not all digits: SNAPSHOT 3 is a number.");
+        b.prompt(s);
+        return;
+    }
     if (nameTaken(name, n)) {
         say(s, Color::LightRed, "Already a camera's name. Pick another.");
         b.prompt(s);
@@ -1255,6 +1312,110 @@ const char* peerName(uint8_t peer) {
     return g_ctx.load()->meta[peer].name;
 }
 
+uint8_t peerRecv(uint8_t peer) {
+    Ctx* c = g_ctx;
+    if (!c || peer >= Engine::kPeers || !c->eng->peerUsed(peer)) return linkfam::RECV_ALL;
+    return c->meta[peer].recv;
+}
+
+uint8_t peerCamNo(uint8_t peer) {
+    Ctx* c = g_ctx;
+    if (!c || peer >= Engine::kPeers || !c->eng->peerUsed(peer)) return 0;
+    return c->meta[peer].camno;
+}
+
+uint8_t channel() { return g_ctx ? plat::linkRadioChannel() : 0; }
+
+bool satInfo(uint8_t peer, SatInfo& out) {
+    out = SatInfo();
+    Ctx* c = g_ctx;
+    if (!c || !c->eng || peer >= Engine::kPeers || !c->eng->peerUsed(peer)) return false;
+    Engine& e = *c->eng;
+    const Meta& m = c->meta[peer];
+    const ulink::PeerStats& st = e.peerStats(peer);
+    out.up = e.peerUp(peer);
+    snprintf(out.name, sizeof(out.name), "%s", m.name);
+    out.kind = m.kind;
+    out.mac = e.peerMac(peer);
+    out.rssi = st.rssi;
+    out.farRssi = st.farRssi;
+    out.lastHeard = st.lastHeard;
+    out.rx = st.rx;
+    out.tx = st.tx;
+    out.retries = st.retries;
+    out.drops = st.drops;
+    out.slow = plat::linkRadioPeerSlow(out.mac.b);
+    out.chan = out.up ? plat::linkRadioChannel() : m.chan;
+    out.recv = m.recv;
+    out.camno = m.camno;
+    out.checked = m.checked;
+    const Shared& sh = c->shared[peer];
+    out.boards = sh.n;
+    out.owned = static_cast<int8_t>(ownsIt(peer));
+    snprintf(out.owner, sizeof(out.owner), "%s", ownerName(peer));
+    for (uint8_t k = 0; k < sh.n && out.nothers < ulink::Engine::kHosts; ++k)
+        if (!(sh.b[k].flags & ulink::SB_YOU)) out.others[out.nothers++] = sh.b[k];
+    uint8_t d[32];
+    linkcrypto::sha256(e.peerKey(peer), linkcrypto::kKey, d);
+    snprintf(out.fp, sizeof(out.fp), "%02X%02X %02X%02X %02X%02X %02X%02X", d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
+    linkcrypto::wipe(d, sizeof(d));
+    return true;
+}
+
+bool ask(Bbs& b, Session& s, uint8_t peer, uint8_t what) {
+    Ctx* c = g_ctx;
+    if (!c || !c->eng || peer >= Engine::kPeers || !c->eng->peerUsed(peer) || c->askNode != 0xFF) return false;
+    if (!b.own(s, g_index)) return false;
+    c->askNode = s.id;
+    c->askPeer = peer;
+    c->askWhat = what;
+    const bool wide = b.rowWidth(s) >= 60;
+    char q[96];
+    if (what == ASK_SHARE)
+        snprintf(q, sizeof(q), wide ? "Open %s to one more board for 2 minutes? (y/N) " : "Share %s for 2 minutes? (y/N) ",
+                 c->meta[peer].name);
+    else
+        snprintf(q, sizeof(q), wide ? "Unpair %s? It is forgotten on this board. (y/N) " : "Unpair %s? (y/N) ",
+                 c->meta[peer].name);
+    s.term.color(s.tl, Color::Yellow);
+    s.term.text(s.tl, q);
+    s.term.color(s.tl, Color::White);
+    return true;
+}
+
+bool setSat(uint8_t peer, const char* name, uint8_t camno, uint8_t recv, char* why, size_t n) {
+    Ctx* c = g_ctx;
+    if (!c || !c->eng || peer >= Engine::kPeers || !c->eng->peerUsed(peer)) {
+        snprintf(why, n, "That satellite is not paired now");
+        return false;
+    }
+    for (const char* p = name; *p; ++p)
+        if (*p == ' ') { snprintf(why, n, "One word: SNAPSHOT takes it by name"); return false; }
+    if (!*name) { snprintf(why, n, "A satellite needs a name"); return false; }
+    bool digits = true;
+    for (const char* p = name; *p; ++p) digits = digits && *p >= '0' && *p <= '9';
+    if (digits) { snprintf(why, n, "Not all digits: SNAPSHOT 3 is a number"); return false; }
+    if (nameTaken(name, peer)) { snprintf(why, n, "Already a camera's name. Pick another"); return false; }
+    if (camno && (camno < 2 || camno > 9)) { snprintf(why, n, "2 to 9, or auto"); return false; }
+    for (uint8_t i = 0; camno && i < Engine::kPeers; ++i)
+        if (i != peer && c->eng->peerUsed(i) && c->meta[i].camno == camno) {
+            snprintf(why, n, "Camera %u is %s's. Pick another", camno, c->meta[i].name);
+            return false;
+        }
+    Meta& m = c->meta[peer];
+    const bool recvChanged = m.recv != (recv & linkfam::RECV_ALL) || m.camno != camno || strcmp(m.name, name);
+    snprintf(m.name, sizeof(m.name), "%s", name);
+    m.camno = camno;
+    m.recv = static_cast<uint8_t>(recv & linkfam::RECV_ALL);
+    savePeers();
+    // The camera family (camsat) sends SETTINGS when a satellite comes up;
+    // a change of what this board takes goes to it now.
+    if (recvChanged)
+        for (const linkp::Family* f : g_fam)
+            if (f && f->settingsChanged) f->settingsChanged(peer);
+    return true;
+}
+
 int peerOfKind(uint8_t kind, uint8_t n) {
     if (!g_ctx) return -1;
     for (uint8_t i = 0; i < Engine::kPeers; ++i) {
@@ -1270,7 +1431,9 @@ bool linkHwRow(char* val, size_t valN, char* note, size_t noteN, bool& warn) {
     Ctx* c = g_ctx;
     warn = false;
     if (!c || !c->eng) return false;
-    snprintf(val, valN, "on, ch %u", plat::linkRadioChannel());
+    // The comma: SYS joins the value and the note with a space, and plain
+    // ASCII read "ch 6 0 of 0" (tty-ux-sats).
+    snprintf(val, valN, "on, ch %u,", plat::linkRadioChannel());
     if (c->eng->peerCount() >= Engine::kPeers) {
         snprintf(note, noteN, "%u up, peers full", c->eng->peersUp());
         warn = true;

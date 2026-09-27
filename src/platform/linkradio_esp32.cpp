@@ -413,6 +413,11 @@ uint8_t linkRadioSlowPeers() {
     return n;
 }
 
+bool linkRadioPeerSlow(const uint8_t mac[6]) {
+    const Rate* r = rateOf(mac);
+    return r && r->slow;
+}
+
 bool linkRadioPsram() { return heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0; }
 
 void* linkAlloc(size_t n) {
