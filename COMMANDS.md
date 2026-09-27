@@ -1268,8 +1268,10 @@ levels.
 |---|---|---|
 | `LINK` | staff (the plugin's read level) | The paired devices, one row each: number, name, kind, up or down, the signal as the board hears it, and at 60 columns and wider when it was last heard and whether its code was checked. Then frames in and out, retries, drops by reason, the time the board spends on each frame (average and worst) and how full its two receive rings have been (the loop's and the picture fragments'). Says so when a device has dropped to the slower radio rate after failed sends, and when all 8 pairings are taken. |
 | `LINK PAIR` | sysop | Opens pairing for 2 minutes. Put the device in pairing mode (a satellite with no pairing is in it for 5 minutes after it boots); when it answers the board asks `Pair doorbox "shelf" 02:00:00:00:1a:2b, code 4821? (y/N)`. Y pairs it, and the board then asks whether the device shows the same code, which a device prints on its serial console: Y there marks the pairing checked. Q stops. |
-| `LINK FORGET n` | sysop | Forgets pairing n. The device has to be paired again. |
-| `LINK NAME n name` | sysop | Renames pairing n (16 characters). |
+| `LINK FORGET n` | sysop | Forgets pairing n (numbered from 1, as LINK lists them). A satellite that is up is told first, so it frees this board's place; one out of reach keeps counting this board until its owner revokes it or it is reset. The device has to be paired again. |
+| `LINK NAME n name` | sysop | Renames pairing n: one word of up to 16 characters, not a name another camera has, because `SNAPSHOT name` takes one word. |
+| `LINK SHARE n` | sysop, the satellite's owner | Lets one more board pair with satellite n for 2 minutes: run `LINK PAIR` on that board then. A satellite takes 5 boards at most, all on one Wi-Fi channel. Only the board that paired it first (its owner) may. |
+| `LINK REVOKE n board` | sysop, the satellite's owner | Takes another board off satellite n; board is its number under n in LINK, or its name. That board is told. |
 
 Pairings are kept in `p/link/peers` on the user partition and are not in a
 backup: a restored board pairs its devices again. SYS and HARDWARE have a
@@ -1285,7 +1287,7 @@ back. Off as shipped; needs the link on.
 | Command | Who | What it does |
 |---|---|---|
 | `DOORS` | users | The doors the boxes on the air offer, numbered. |
-| `DOORS n` | users | Goes through door n. Everything typed goes to the door, and everything it sends comes to the terminal as it is. Back at the prompt when the door finishes, when the call's time runs out (the door is told with fifteen seconds left and has ten to save), when the box goes quiet, or on **Ctrl-] three times in a row**, which always works. |
+| `DOORS n` | users | Goes through door n. Everything typed goes to the door, and everything it sends comes to the terminal as it is. Back at the prompt when the door finishes, when the call's time runs out (the door is told with fifteen seconds left and has ten to save), when the box goes quiet, or on **the break key three times within a second and a half** (Ctrl-C on a PC terminal, RUN/STOP on PETSCII), which always works and is named on the line the door opens with. |
 
 ### [access] matrix
 

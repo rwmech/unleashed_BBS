@@ -56,7 +56,8 @@ namespace linkfam {
 enum : uint8_t {
     CAM_SNAP = 1,        // H->P  6 bytes, then the optional text block (kSnap*)
     CAM_PICTURE,         // P->H  bulk: the 16-byte picture header, then the JPEG
-    CAM_SNAP_FAIL,       // P->H  3 bytes: u16 req, u8 code
+    CAM_SNAP_FAIL,       // P->H  3 bytes: u16 req, u8 code; CE_BUSY adds u8 place in
+                         //       the queue (1.2.0: 1 = next, 0xFF = queue full)
     CAM_STATUS,          // P->H  28 bytes: u8 sensor, u8 maxSize, u32 heap, u32 psram,
                          //       u32 uptime, u8 lastErr, u8 pad, char model[12]
     CAM_EVENT,           // P->H  5 bytes: u8 kind (CEV_*), u32 takenAt (0: no clock)
@@ -94,14 +95,30 @@ static_assert(kSnapMax <= 222, "a SNAP is one frame");
 //   6 u8 size   7 u8 quality   8 u8 flash   9 u8 sleep (0 awake, 1 deep sleep
 //   between shots)  10 u8 flip  11 u8 mirror  12 i8 bright  13 i8 contrast
 //  14 i8 saturation  15 i8 exposure  16 u8 wb  17 u8 effect  18 u8 levels
-//  19 u8 gammaIdx  20 u8 motionPin (0xFF none)  21 u8 pad[3]
+//  19 u8 gammaIdx  20 u8 motionPin (0xFF none)
+//  21 u8 recv: what the board sending it wants delivered (RECV_*), per
+//     board (1.2.0, one satellite and several boards)
+//  22 u8 in SETTINGS_OK: bit 0 set when the board it answers owns the
+//     satellite; bytes 0 to 20 are taken only from the owner, and echo the
+//     owner's to everyone
+//  23 u8 pad
 constexpr uint8_t kSettings = 24;
 enum : uint8_t {
     kSetTimelapseMin = 0, kSetTimelapseSec = 2, kSetMotion = 3, kSetHoldoff = 4, kSetSize = 6,
     kSetQuality = 7, kSetFlash = 8, kSetSleep = 9, kSetFlip = 10, kSetMirror = 11, kSetBright = 12,
     kSetContrast = 13, kSetSaturation = 14, kSetExposure = 15, kSetWb = 16, kSetEffect = 17,
-    kSetLevels = 18, kSetGamma = 19, kSetMotionPin = 20,
+    kSetLevels = 18, kSetGamma = 19, kSetMotionPin = 20, kSetRecv = 21, kSetOwner = 22,
 };
+// kSetRecv bits. A board that has never said gets both (a satellite paired
+// before 1.2.0 sent every picture to its one board).
+// RECV_SAID marks a board that says: bytes 21 to 23 were padding before
+// 1.2.0, so a 0 from an older board is not "wants nothing".
+enum : uint8_t { RECV_TIMELAPSE = 1, RECV_MOTION = 2, RECV_ALL = 3, RECV_SAID = 0x80 };
+// kSetOwner bits. SO_EVENTS: the satellite keeps its own timelapse clock and
+// asks by EVENT (1.2.0), so the board's own clock leaves it alone.
+enum : uint8_t { SO_OWNER = 1, SO_EVENTS = 0x80 };
+// CE_BUSY's place in the queue when the queue is full
+constexpr uint8_t kQueueFull = 0xFF;
 
 // The picture header, the first 16 bytes of a CAM_PICTURE message:
 //   0 u16 req      the SNAP's request id, 0 when the satellite started it

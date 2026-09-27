@@ -872,6 +872,28 @@ this tree.
     - At the 1.1.2 merge: the link's job goes on the runner by itself
       (`__has_include`); camera.cpp and files.cpp move onto photos.* then,
       not before, because 1.1.2a rewrote both.
+    - **One satellite, several boards (link.8, Rob's go 2026-09-27: "Having
+      one camera accessible by 5 boards would rock")**. Design record
+      `internal/link-multiboard-2026-09-27.md`, rules in LINK.md. 5 boards
+      a satellite, each its own key; the first is the owner (shares,
+      revokes, its camera settings used); one Wi-Fi channel for all, said
+      in words to a sysop whose board is on another. Lessons:
+      - **A clock that starts small hides `reached(now, 0)`.** pairAnswer
+        armed PAIR_DONE with 0, false for half the millisecond clock's
+        range: pairing on a board up 24.8 days never finished. linkpeer's
+        wall-clock millis found it; test_link now pairs at 0x90000000.
+      - **A window that serves someone new must keep serving everyone
+        else.** The first share hopped every channel for two minutes and
+        every session on every board died; the code review found it, not a
+        test, because no test kept a session open across a window. Each
+        review finding now has a test that fails on the code before it.
+      - **Every pairing state needs an end.** A share that stopped part
+        way (a No, a stray OFFER) wedged the satellite for good.
+    - **The door's way out is 0x03 three times** (link.8), not Ctrl-]:
+      0x1D is PETSCII cursor-right, and telnet clients keep Ctrl-]. The
+      naming proposal (internal/naming-satellites-2026-09-27.md) found it.
+      User-visible satellite words live in `src/core/satwords.h` until Rob
+      picks the names.
 - **1.1.2 scope, decided by Rob 2026-09-26** (discussed before coding):
   - A read-only audit first of every path that can hold the loop over
     50 ms (internal/audit-1.1.2-2026-09-26.md); the worst move onto one

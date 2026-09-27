@@ -1693,16 +1693,21 @@ def test_about():
 class LinkPeer:
     """host/linkpeer, with every line it prints kept for the test to read."""
 
-    def __init__(self, pair=False, chan=1):
+    def __init__(self, pair=False, chan=1, port=None, state="linkpeer.state", board2=None, board2_chan=None):
         host = os.environ["BBS_LINK_PORT"]
-        port = os.environ["BBS_LINK_PEER_PORT"]
-        self.state = os.path.join(os.environ.get("BBS_DATA", "/tmp"), "linkpeer.state")
+        port = str(port or os.environ["BBS_LINK_PEER_PORT"])
+        self.state = os.path.join(os.environ.get("BBS_DATA", "/tmp"), state)
         args = [str(pathlib.Path(__file__).resolve().parent.parent / "host" / "linkpeer"),
                 "--port", port, "--host", host, "--chan", str(chan), "--state", self.state]
         if pair:
             args.append("--pair")
+        if board2:
+            args += ["--board2", str(board2)]
+        if board2_chan:
+            args += ["--board2-chan", str(board2_chan)]
         import subprocess
-        self.p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        self.p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  text=True)
         self.lines = []
         self.t = threading.Thread(target=self._read, daemon=True)
         self.t.start()
@@ -1719,6 +1724,11 @@ class LinkPeer:
                     return line
             time.sleep(0.05)
         return None
+
+    def cmd(self, line):
+        """A line on linkpeer's stdin: "b2 pair", "b2 share 60", ..."""
+        self.p.stdin.write(line + "\n")
+        self.p.stdin.flush()
 
     def stop(self):
         self.p.terminate()
@@ -1806,6 +1816,7 @@ def test_doors():
         drain(c)
         c.send(b"doors 1\r")
         ok &= check("DOORS 1 opens Echo", c.wait_for(b"Opening Echo", 6) and c.wait_for(b"ECHO DOOR", 8))
+        ok &= check("and says how to get out on this keyboard", b"Ctrl-C three times brings you back." in c.buf)
         h = peer.wait("handoff 1 ", 5) or ""
         ok &= check("the door is handed the caller's handle", "handle=DoorGoer" in h)
         ok &= check("and the terminal the board measured", "term=ansi" in h and "cols=" in h and "rows=" in h)
@@ -1821,8 +1832,23 @@ def test_doors():
         c.send(b"doors 2\r")
         ok &= check("DOORS 2 opens Clock", c.wait_for(b"CLOCK DOOR", 8))
         c.send(b"\x1d\x1d\x1d")
-        ok &= check("Ctrl-] three times always gets out", c.wait_for(b"You left the door.", 6))
+        ok &= check("Ctrl-] is not the way out any more (telnet keeps it, PETSCII moves right on it)",
+                    not c.wait_for(b"You left the door.", 2))
+        c.send(b"\x03")
+        c.pump(1.8)
+        c.send(b"\x03\x03")
+        ok &= check("three Ctrl-Cs spread past a second and a half do not leave",
+                    not c.wait_for(b"You left the door.", 2))
+        c.send(b"\x03\x03\x03")
+        ok &= check("Ctrl-C three times in a row gets out", c.wait_for(b"You left the door.", 6))
         ok &= check("and the box is told", peer.wait("close 3", 6) is not None)
+        drain(c)
+        c.send(b"doors 2\r")
+        c.wait_for(b"CLOCK DOOR", 8)
+        drain(c)
+        c.send(b"\xff\xf4\xff\xf4\xff\xf4")          # IAC IP x3: Ctrl-C kept as a telnet command
+        ok &= check("a client that sends Ctrl-C as telnet's Interrupt Process gets out too",
+                    c.wait_for(b"You left the door.", 6))
         drain(c)
         c.send(b"doors 2\r")
         c.wait_for(b"CLOCK DOOR", 8)
@@ -1832,6 +1858,134 @@ def test_doors():
     finally:
         if c:
             c.close()
+        peer.stop()
+    return ok
+
+
+def test_link_shared():
+    """One satellite, several boards (1.2.0). This board owns the satellite
+    test_radio_link paired; linkpeer plays a second board (Phantom BBS).
+    LINK SHARE opens the satellite for it, LINK shows the other board, LINK
+    REVOKE takes it away. Then a second satellite, owned by a board on
+    channel 9, asks this board (on 6) to pair and is refused with the
+    reason, in words."""
+    print("One satellite, several boards")
+    if not link_ready() or not PASSWORD:
+        return True
+    extra = [int(x) for x in os.environ.get("BBS_LINK_EXTRA_PORTS", "").split(",") if x]
+    if len(extra) < 3:
+        print("  SKIP  the harness gives no extra link ports (BBS_LINK_EXTRA_PORTS)")
+        return True
+    peer = LinkPeer(pair=False, chan=4, board2=extra[0], board2_chan=6)
+    s = sysop_on("LinkSharer")
+    other = None
+    ok = True
+    try:
+        if not check("the satellite finds this board", peer.wait("link up", 25) is not None):
+            return False
+        time.sleep(1.0)
+        drain(s)
+        s.send(b"link share 9\r")
+        ok &= check("LINK SHARE wants a pairing number", s.wait_for(b"LINK SHARE n", 6))
+        drain(s)
+        s.send(b"link share 1\r")
+        ok &= check("LINK SHARE opens the satellite to one more board",
+                    s.wait_for(b"takes one more board for 2 minutes", 6))
+        ok &= check("the satellite opens its share window", peer.wait("share open 120", 10) is not None)
+        peer.cmd("b2 pair")
+        ok &= check("the second board pairs", peer.wait("b2 paired", 30) is not None)
+        ok &= check("and comes up", peer.wait("b2 up", 30) is not None)
+        ok &= check("the second board hears it does not own it",
+                    wait_line(peer, lambda l: l.startswith("b2 peers 2") and "6:Phantom BBS" in l, 20))
+        drain(s)
+        s.send(b"link\r")
+        ok &= check("LINK shows the satellite shared, this board the owner", s.wait_for(b"2, this board", 6))
+        ok &= check("and the other board under it", s.wait_for(b"Phantom BBS", 3) and b"heard" in s.buf)
+        drain(s)
+        s.send(b"link revoke 1 7\r")
+        ok &= check("a board that is not there is refused", s.wait_for(b"No board by that name", 6))
+        drain(s)
+        s.send(b"link revoke 1 1\r")
+        ok &= check("LINK REVOKE takes the other board away", s.wait_for(b"Revoked Phantom BBS.", 6))
+        ok &= check("and the other board is told", peer.wait("b2 unpaired", 10) is not None)
+        time.sleep(1.5)
+        drain(s)
+        s.buf.clear()
+        s.send(b"link\r")
+        s.wait_for(b"Frames in", 6)
+        ok &= check("LINK no longer lists it", b"Phantom BBS" not in s.buf and b"this board" not in s.buf)
+        peer.stop()
+        peer = None
+
+        # A second satellite, owned by a board on channel 9.
+        other = LinkPeer(pair=True, chan=9, port=extra[1], state="linkpeer2.state", board2=extra[2], board2_chan=9)
+        other.cmd("b2 pair")
+        ok &= check("a satellite pairs with a board on channel 9", other.wait("b2 up", 40) is not None)
+        drain(s)
+        s.send(b"link pair\r")
+        ok &= check("LINK PAIR opens here, on channel 6", s.wait_for(b"Pairing is open", 6))
+        other.cmd("b2 share 60")
+        ok &= check("its owner opens it to one more board", other.wait("share open 60", 10) is not None)
+        ok &= check("this board says why it will not pair",
+                    s.wait_for(b"works on channel 9 for its other boards and this board is on 6", 45))
+        ok &= check("and what to do", s.wait_for(b"one router.", 3) and s.wait_for(b"Not paired.", 3))
+        ok &= check("and pairs nothing", other.wait("b2 peers 2", 5) is None)
+    finally:
+        s.close()
+        if peer:
+            peer.stop()
+        if other:
+            other.stop()
+    return ok
+
+
+def wait_line(peer, pred, secs):
+    end = time.time() + secs
+    while time.time() < end:
+        if any(pred(l) for l in list(peer.lines)):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_doors_petscii():
+    """The way out of a door on a C64 (1.2.0). It was Ctrl-] three times,
+    and 0x1D is cursor-right on PETSCII: three moves right in a game threw
+    the caller out. RUN/STOP (0x03) three times is the way out now."""
+    print("Doors on a C64: cursor-right stays in, RUN/STOP gets out")
+    if not link_ready():
+        return True
+    peer = LinkPeer(pair=False, chan=4)
+    ok = True
+    p = None
+    try:
+        if not check("the paired door box finds the board", peer.wait("link up", 25) is not None):
+            return False
+        time.sleep(1.5)
+        p = Caller(ansi=False)
+        p.wait_for(b"HIT DEL OR BACKSPACE", 5)
+        p.send(b"\x14")
+        p.wait_for(b"40 OR 80 COLUMNS", 3)
+        p.send(b"4")
+        p.wait_for(pet("Enter your handle"), 10)
+        ok &= check("a C64 caller gets on", login(p, "PetDoorGoer", as_pet=True))
+        drain(p)
+        p.send(pet("doors") + b"\r")
+        ok &= check("DOORS names RUN/STOP as the way out", p.wait_for(pet("RUN/STOP three times leaves a door."), 6))
+        drain(p)
+        p.send(pet("doors 2") + b"\r")
+        ok &= check("the door opens", p.wait_for(b"CLOCK DOOR", 8))
+        ok &= check("and says RUN/STOP three times brings you back",
+                    pet("RUN/STOP three times brings you back.") in p.buf)
+        drain(p)
+        p.send(b"\x1d\x1d\x1d\x1d")
+        ok &= check("four cursor-rights in a door stay in the door", not p.wait_for(pet("You left the door."), 2))
+        p.send(b"\x03\x03\x03")
+        ok &= check("RUN/STOP three times gets out", p.wait_for(pet("You left the door."), 6))
+        ok &= check("and the box is told", peer.wait("close 3", 6) is not None)
+    finally:
+        if p:
+            p.close()
         peer.stop()
     return ok
 
@@ -16450,7 +16604,7 @@ GROUPS = {
     # SKIPs on the reference board.
     "ssh":       ["ssh_"],
     # The radio link and what rides on it (1.2.0).
-    "radio":     ["radio_link", "doors"],
+    "radio":     ["radio_link", "doors", "doors_petscii", "link_shared"],
 }
 
 
@@ -16494,7 +16648,7 @@ ORDER_NAMES = [
     "test_config_lights", "test_config_lights_ascii", "test_lights_frames", "test_lights_manual",
     "test_lights_count", "test_lights_order", "test_lights_wifi", "test_lights_silent", "test_lights_disk",
     # The radio link and doors (1.2.0): the pairing first, doors use it.
-    "test_radio_link", "test_doors",
+    "test_radio_link", "test_doors", "test_doors_petscii", "test_link_shared",
     "test_version_shown",
     # SKIPs on the reference board: tools/harness.sh --board s3 runs it.
     "test_board_s3", "test_board_s3_silent",
@@ -18631,7 +18785,9 @@ def run_selected(only):
     for n, f in sorted(globals().items(), key=lambda kv: order_index(kv[0])):
         if not n.startswith("test_") or not isinstance(f, types.FunctionType):
             continue
-        if any(w in n for w in wanted) and n not in seen:
+        # "=test_name" is that test exactly: for splitting the suite into
+        # runs side by side without a substring picking one twice.
+        if any((n == w[1:]) if w.startswith("=") else (w in n) for w in wanted) and n not in seen:
             seen.add(n)
             picked.append((n, f))
 
