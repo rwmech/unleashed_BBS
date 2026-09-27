@@ -1222,6 +1222,32 @@ this tree.
     216-338, the FILES Screens area (34 files) 123-313, a sysop hanging up
     60-220. Internal heap drops to 12,731 free during a snap on the
     ESP32-CAM (57,499 idle).
+- **Where it stopped (2026-09-27, evening).**
+  - **1.1.2 is released:** v1.1.2 at cfc76bb, a full GitHub release with 26 assets, tagged on host tests (Rob skipped the board soak). The site had not fetched it yet at 16:05. Rob runs the site's update.sh and adds it to his autopublish loop.
+  - **Web:** pushed and live after the next updates:
+    - the µ nav fix (directory 2.0.2, site 1.4.1);
+    - .NET beside the wordmark plus the header file (directory 2.0.3; live .net still showed 2.0.2);
+    - the satellite pages and Adding to it (site 1.5.0 and 1.5.1);
+    - SyncTERM links now go to SourceForge.
+  - **1.2.0 in progress:** the link rebase onto 1.1.2 has a WIP checkpoint pushed as rel-1.2.0-link-r3 (see its report). Next:
+    1. green the rebase and merge it;
+    2. put skins (panel-skins 4128a5a) and the Makerfabs (board-mf35-skins) on top;
+    3. merge camsat's multiboard into its main (CAMSAT_VERSION 1.1.0), with a camsat release script and a tag;
+    4. sanity runs on every board;
+    5. Rob's go on v1.2.0.
+  - **Ports:**
+    - COM12 is Rob's S3, now his; never open it;
+    - COM17 is the Makerfabs, on its native USB;
+    - COM20 is the ESP32-CAM, on 1.1.2 bench firmware;
+    - COM21 is PixelBBS, listed;
+    - COM22 is a live board;
+    - COM5 and COM7 are Rob's radio.
+  - **Open findings for 1.1.3:**
+    - a CONFIG save stall of 414 ms on the Freenove;
+    - Freenove heap low of 7,315 during snaps (the PSRAM-move question for Rob);
+    - squelch reads only one digit of the node;
+    - F1 and F5, and the Freenove findings queued below.
+  - **Rob's hands:** the PIR test (release-prep/camsat-bench/pir_test.sh), and a look at the Makerfabs lamps.
 - **Where it stopped (2026-09-26, night).**
   - **1.1.2 is code-complete on main** at 5b9f25b (1.1.2-dev.5, S3 1.1.3,
     FNCAM 1.0.8, ESPCAM 1.0.5): part 1, SSH, the small printf, test
