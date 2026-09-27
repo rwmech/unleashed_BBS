@@ -16,8 +16,9 @@
 //               is the data kind (camera, GPIO, sensors, Home Assistant); a
 //               **door sat** is the kind a caller goes into (the program on
 //               it stays a "door"). Going in is **UPLINK** (BEAM was
-//               rejected). The kinds' short names in LINK (camsat, doorbox)
-//               are not settled (internal/naming-satellites-2026-09-27.md).
+//               rejected). A sat's type is camera, door, gpio or sensor;
+//               "camsat" is only the camera satellite's firmware and
+//               repository name, never a type on screen.
 //
 //               Wire ids and the pairings file keep numbers, never these
 //               words, so changing one needs no migration.
@@ -53,10 +54,13 @@ constexpr const char kSats[]      = "satellites";
 constexpr const char kSatTitle[]  = "Satellites";   // list titles
 constexpr const char kSatShort[]  = "sat";
 
-// The kinds as shown (ulink::kindName returns these), in LINK's kind
-// column. Proposed: "camera" and "door"; kept as shipped until Rob picks.
-constexpr const char kKindCamera[] = "camsat";
-constexpr const char kKindDoor[]   = "doorbox";
+// The types as shown (ulink::kindName returns these), in LINK's kind
+// column and the pairing question. Settled by Rob, 2026-09-27. gpio and
+// sensor have no wire kind yet (internal/sat-types-2026-09-27.md).
+constexpr const char kKindCamera[] = "camera";
+constexpr const char kKindDoor[]   = "door";
+constexpr const char kKindGpio[]   = "gpio";
+constexpr const char kKindSensor[] = "sensor";
 constexpr const char kKindOther[]  = "device";
 
 // The two classes, in sentences. Settled.
