@@ -64,10 +64,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#include <strings.h>   // strcasecmp
 
 #include "../core/bbs.h"
 #include "../core/linkfam.h"
 #include "../core/plugin.h"
+#include "../core/satwords.h"
 #include "../platform/linkradio.h"   // linkAlloc: PSRAM where the board has it
 #include "../platform/platform.h"
 #include "link.h"
@@ -86,6 +88,7 @@ constexpr int32_t    kTimeUpSec = 15;             // TIMEUP this long before the
 constexpr uint32_t   kCloseMs   = 5000;           // a CLOSE the window would not take: tried this long
 // The way out: kLeaveKey kLeaveCount times in a row within kLeaveMs. What
 // the key is called follows the terminal (leaveKeyName).
+constexpr size_t     kBackRoom   = 384;   // timeline bytes for the way back (onMessage)
 constexpr uint8_t    kLeaveKey   = 0x03;
 constexpr uint8_t    kLeaveCount = 3;
 constexpr uint32_t   kLeaveMs    = 1500;
@@ -190,17 +193,28 @@ void endLink(Slot& sl, uint8_t closeReason) {
     sl.st = tryClose(sl) ? ST_FREE : ST_CLOSING;
 }
 
-// giveBack: the caller comes back to the prompt with a line saying why, and
-// the link session is ended (endLink).
-void giveBack(Slot& sl, Color col, const char* why, uint8_t closeReason) {
+// giveBack: the caller comes back to the prompt, the link session ended
+// (endLink). why, when there is one, says what happened in the board's voice
+// ("--> Time's up."), or is the door's own words (doorWords: FINISHED and
+// REFUSED text), printed as they came; then "--> Back home." either way.
+void giveBack(Slot& sl, Color col, const char* why, uint8_t closeReason, bool doorWords = false) {
     Session* s = sessionOf(sl.node);
     endLink(sl, closeReason);
     if (!s) return;
     bbs().setRawInput(*s, false);
     s->term.reset(s->tl);
     s->term.nl(s->tl);
-    s->term.color(s->tl, col);
-    s->term.text(s->tl, why);
+    if (why && *why) {
+        if (doorWords) {
+            s->term.color(s->tl, col);
+            s->term.text(s->tl, why);
+            s->term.reset(s->tl);
+            s->term.nl(s->tl);
+        } else {
+            bbs().markedLine(*s, col, why);
+        }
+    }
+    bbs().markedLine(*s, Color::LightGreen, satwords::kBackHome);
     bbs().release(*s);
 }
 
@@ -245,24 +259,33 @@ bool onMessage(uint8_t peer, uint16_t sess, uint8_t type, const uint8_t* p, size
     Session* s = sessionOf(sl->node);
     if (!s) { giveBack(*sl, Color::Grey, "", DC_HUNGUP); return true; }
 
+    // FINISHED and REFUSED end in the door's words, "--> Back home." and the
+    // prompt, about 165 bytes on ANSI. Taken only with room for them, as DATA
+    // is: a slow caller's last screen can leave the timeline nearly full, and
+    // a put() that does not fit is dropped, prompt and all. Refused, the
+    // message is sent again.
+    if ((type == DOOR_FINISHED || type == DOOR_REFUSED) && s->tl.freeBytes() < kBackRoom) return false;
+
     switch (type) {
         case DOOR_OPEN_OK:
             if (sl->st == ST_OPENING) {
                 sl->st = ST_IN;
-                s->term.nl(s->tl);
                 bbs().setRawInput(*s, true);
             }
             return true;
         case DOOR_REFUSED: {
-            char why[80] = "The door said no.";
+            char why[80];
+            snprintf(why, sizeof(why), "%s", satwords::kWhyNo);
+            bool words = false;
             if (n > 1) {
                 size_t k = n - 1 > 60 ? 60 : n - 1;
                 for (size_t i = 0; i < k; ++i) why[i] = (p[1 + i] >= 0x20 && p[1 + i] < 0x7F) ? static_cast<char>(p[1 + i]) : '?';
                 why[k] = '\0';
+                words = true;
             } else if (n == 1 && p[0] == DR_FULL) {
-                snprintf(why, sizeof(why), "That door is full. Try again in a while.");
+                snprintf(why, sizeof(why), "%s", satwords::kWhyFull);
             }
-            giveBack(*sl, Color::Yellow, why, 0);
+            giveBack(*sl, Color::Yellow, why, 0, words);
             return true;
         }
         case DOOR_DATA: {
@@ -273,13 +296,13 @@ bool onMessage(uint8_t peer, uint16_t sess, uint8_t type, const uint8_t* p, size
             return true;
         }
         case DOOR_FINISHED: {
-            char why[80] = "Back from the door.";
+            char why[80] = "";
             if (n > 1) {
                 size_t k = n - 1 > 60 ? 60 : n - 1;
                 for (size_t i = 0; i < k; ++i) why[i] = (p[1 + i] >= 0x20 && p[1 + i] < 0x7F) ? static_cast<char>(p[1 + i]) : '?';
                 why[k] = '\0';
             }
-            giveBack(*sl, Color::LightGreen, why, 0);
+            giveBack(*sl, Color::LightGreen, why, 0, true);
             return true;
         }
         default:
@@ -290,7 +313,7 @@ bool onMessage(uint8_t peer, uint16_t sess, uint8_t type, const uint8_t* p, size
 void onReset(uint8_t peer, uint16_t sess, uint8_t reason) {
     (void)reason;
     Slot* sl = slotOfSession(peer, sess);
-    if (sl) giveBack(*sl, Color::Yellow, "The door has gone away.", 0);
+    if (sl) giveBack(*sl, Color::Yellow, satwords::kWhySignal, 0);
 }
 
 void onPeerState(uint8_t peer, bool up) {
@@ -305,7 +328,7 @@ void onPeerState(uint8_t peer, bool up) {
     if (!up) {
         for (Door& d : g_ctx->doors) if (d.used && d.peer == peer) d.used = false;
         for (Slot& sl : g_ctx->slots)
-            if (sl.st != ST_FREE && sl.peer == peer) giveBack(sl, Color::Yellow, "The door box went quiet.", 0);
+            if (sl.st != ST_FREE && sl.peer == peer) giveBack(sl, Color::Yellow, satwords::kWhySignal, 0);
     }
 }
 
@@ -368,41 +391,54 @@ size_t handoff(const Session& s, uint16_t sess, uint32_t now, char* out, size_t 
 // ---------------------------------------------------------------------------
 // Going in
 // ---------------------------------------------------------------------------
-void cmdDoors(Bbs& b, Session& s, const char* arg, uint32_t now) {
+// linkOff: DOORS or UPLINK with the link off. True when it said so.
+bool linkOff(Bbs& b, Session& s) {
+    if (linkp::engine() && g_ctx) return false;
+    char m[48];
+    snprintf(m, sizeof(m), "No %s: the link is off.", satwords::kDoorSats);
+    s.term.color(s.tl, Color::Cyan);
+    s.term.text(s.tl, m);
+    b.prompt(s);
+    return true;
+}
+
+// listDoors: the doors on the air, numbered as DOORS n and UPLINK n take
+// them; only one sat's when peer is not 0xFF (UPLINK name, a sat with more
+// than one door).
+void listDoors(Bbs& b, Session& s, uint8_t peer) {
     ulink::Engine* e = linkp::engine();
     Ctx* c = g_ctx;
-    s.term.color(s.tl, Color::Cyan);
-    if (!e || !c) {
-        s.term.text(s.tl, "No door boxes: the link is off.");
-        b.prompt(s);
-        return;
+    b.rowTitle(s, peer == 0xFF ? "Doors" : linkp::peerName(peer));
+    uint8_t shown = 0;
+    for (uint8_t i = 0; i < kMaxDoors; ++i) {
+        const Door& d = c->doors[i];
+        if (!d.used || !e->peerUp(d.peer) || (peer != 0xFF && d.peer != peer)) continue;
+        char line[64];
+        snprintf(line, sizeof(line), " %2u  %s", static_cast<unsigned>(i + 1), d.name);
+        b.rowText(s, Color::White, line);
+        ++shown;
     }
-    while (*arg == ' ') ++arg;
-    if (!*arg) {
-        b.rowTitle(s, "Doors");
-        uint8_t shown = 0;
-        for (uint8_t i = 0; i < kMaxDoors; ++i) {
-            const Door& d = c->doors[i];
-            if (!d.used || !e->peerUp(d.peer)) continue;
-            char line[64];
-            snprintf(line, sizeof(line), " %2u  %s", static_cast<unsigned>(i + 1), d.name);
-            b.rowText(s, Color::White, line);
-            ++shown;
-        }
-        if (!shown) b.rowText(s, Color::Grey, "No door box is on the air.");
-        else {
-            char how[48];
-            b.rowText(s, Color::Grey, "DOORS n opens one.");
-            snprintf(how, sizeof(how), "%s three times leaves a door.", leaveKeyName(s));
-            b.rowText(s, Color::Grey, how);
-        }
-        b.rowRule(s);
-        b.prompt(s);
-        return;
+    if (!shown) {
+        char m[40];
+        snprintf(m, sizeof(m), "No %s is on the air.", satwords::kDoorSat);
+        b.rowText(s, Color::Grey, m);
+    } else {
+        char how[48];
+        b.rowText(s, Color::Grey, satwords::kGoesIn);
+        snprintf(how, sizeof(how), satwords::kHomeIs, leaveKeyName(s));
+        b.rowText(s, Color::Grey, how);
     }
-    long n = strtol(arg, nullptr, 10);
+    b.rowRule(s);
+    b.prompt(s);
+}
+
+// enterDoor: the caller into door n (1-based), as DOORS n and UPLINK take it.
+void enterDoor(Bbs& b, Session& s, long n, uint32_t now) {
+    ulink::Engine* e = linkp::engine();
+    Ctx* c = g_ctx;
     if (n < 1 || n > kMaxDoors || !c->doors[n - 1].used || !e->peerUp(c->doors[n - 1].peer)) {
-        s.term.text(s.tl, "No door by that number. DOORS lists them.");
+        s.term.color(s.tl, Color::Cyan);
+        s.term.text(s.tl, satwords::kNoDoorN);
         b.prompt(s);
         return;
     }
@@ -411,7 +447,7 @@ void cmdDoors(Bbs& b, Session& s, const char* arg, uint32_t now) {
     for (Slot& x : c->slots) if (x.st == ST_FREE) { sl = &x; break; }
     const uint16_t sess = sl ? e->openSession(d.peer, ulink::FAM_DOOR) : 0;
     if (!sess) {
-        s.term.text(s.tl, "The link is busy. Try again in a moment.");
+        b.markedLine(s, Color::Yellow, satwords::kBusy);
         b.prompt(s);
         return;
     }
@@ -426,7 +462,7 @@ void cmdDoors(Bbs& b, Session& s, const char* arg, uint32_t now) {
         // Nothing went: forget the session. OPEN went and the board could
         // not take the caller: the box is told, so it does not sit waiting.
         endLink(*sl, sent == 1 ? DC_TAKENBACK : 0);
-        s.term.text(s.tl, "The link is busy. Try again in a moment.");
+        b.markedLine(s, Color::Yellow, satwords::kBusy);
         b.prompt(s);
         return;
     }
@@ -441,12 +477,69 @@ void cmdDoors(Bbs& b, Session& s, const char* arg, uint32_t now) {
     snprintf(doing, sizeof(doing), "DOOR");
     b.setDoing(s, doing);
     char line[64];
-    snprintf(line, sizeof(line), "Opening %s...", d.name);
-    s.term.text(s.tl, line);
-    s.term.nl(s.tl);
-    s.term.color(s.tl, Color::Grey);
-    snprintf(line, sizeof(line), "%s three times brings you back.", leaveKeyName(s));
-    s.term.text(s.tl, line);
+    snprintf(line, sizeof(line), satwords::kUplinking, linkp::peerName(d.peer));
+    b.markedLine(s, Color::White, line);
+    snprintf(line, sizeof(line), satwords::kHomeIs, leaveKeyName(s));
+    b.markedLine(s, Color::Grey, line);
+}
+
+void cmdDoors(Bbs& b, Session& s, const char* arg, uint32_t now) {
+    if (linkOff(b, s)) return;
+    while (*arg == ' ') ++arg;
+    if (!*arg) { listDoors(b, s, 0xFF); return; }
+    enterDoor(b, s, strtol(arg, nullptr, 10), now);
+}
+
+// cmdUplink: UPLINK alone lists the doors (as DOORS); UPLINK n goes into
+// door n; UPLINK name goes into the door of that name, or to the sat of that
+// name: straight in when it has one door, its doors listed when it has more.
+// A door's name wins over a sat's, since it is the more exact of the two.
+void cmdUplink(Bbs& b, Session& s, const char* arg, uint32_t now) {
+    if (linkOff(b, s)) return;
+    while (*arg == ' ') ++arg;
+    char want[32];
+    size_t k = 0;
+    for (; arg[k] && k < sizeof(want) - 1; ++k) want[k] = arg[k];
+    while (k && want[k - 1] == ' ') --k;
+    want[k] = '\0';
+    if (!want[0]) { listDoors(b, s, 0xFF); return; }
+    ulink::Engine* e = linkp::engine();
+    Ctx* c = g_ctx;
+    bool digits = true;
+    for (const char* q = want; *q; ++q) if (*q < '0' || *q > '9') digits = false;
+    if (digits) {
+        // A number, unless no door has it and a door is called it ("2048").
+        const long n = strtol(want, nullptr, 10);
+        bool named = false;
+        for (const Door& d : c->doors) named |= d.used && e->peerUp(d.peer) && !strcasecmp(d.name, want);
+        if (!named) { enterDoor(b, s, n, now); return; }
+    }
+    for (uint8_t i = 0; i < kMaxDoors; ++i) {
+        const Door& d = c->doors[i];
+        if (d.used && e->peerUp(d.peer) && !strcasecmp(d.name, want)) { enterDoor(b, s, i + 1, now); return; }
+    }
+    uint8_t peer = 0xFF, doors = 0, first = 0;
+    for (uint8_t i = 0; i < kMaxDoors; ++i) {
+        const Door& d = c->doors[i];
+        if (!d.used || !e->peerUp(d.peer) || strcasecmp(linkp::peerName(d.peer), want)) continue;
+        if (!doors++) { peer = d.peer; first = i; }
+    }
+    if (doors == 1) { enterDoor(b, s, first + 1, now); return; }
+    if (doors > 1) { listDoors(b, s, peer); return; }
+    char m[64];
+    // A sat by that name with no doors on the air (an orbiter, or a door sat
+    // whose list has not come yet) is there: say so, not that it is not.
+    for (uint8_t i = 0; i < ulink::Engine::kPeers; ++i) {
+        const char* nm = linkp::peerName(i);
+        if (!nm[0] || strcasecmp(nm, want)) continue;
+        snprintf(m, sizeof(m), satwords::kNoDoors, nm);
+        b.markedLine(s, Color::Yellow, m);
+        b.prompt(s);
+        return;
+    }
+    snprintf(m, sizeof(m), satwords::kNoSuch, want);
+    b.markedLine(s, Color::Yellow, m);
+    b.prompt(s);
 }
 
 // Keys from a caller in a door: as bytes (raw input), straight to the box.
@@ -464,7 +557,7 @@ void onBytes(Session& s, const uint8_t* b, size_t n, uint32_t now) {
         // only the third in a row, in time, takes the caller back.
         if (b[i] == kLeaveKey) {
             if (!sl->escapes || now - sl->escAt > kLeaveMs) { sl->escapes = 0; sl->escAt = now; }
-            if (++sl->escapes >= kLeaveCount) { giveBack(*sl, Color::Grey, "You left the door.", DC_TAKENBACK); return; }
+            if (++sl->escapes >= kLeaveCount) { giveBack(*sl, Color::Grey, "", DC_TAKENBACK); return; }
         } else {
             sl->escapes = 0;
         }
@@ -482,7 +575,7 @@ void onKey(Session& s, int k, uint32_t now) {
     // Keys arrive as bytes once the door has opened; before that, only a way out.
     Slot* sl = slotOfNode(s.id);
     if (!sl) { bbs().release(s); return; }
-    if (k == KEY_ESC || k == KEY_BREAK) giveBack(*sl, Color::Grey, "Stopped.", DC_TAKENBACK);
+    if (k == KEY_ESC || k == KEY_BREAK) giveBack(*sl, Color::Grey, satwords::kWhyStopped, DC_TAKENBACK);
 }
 
 void onLogoff(Session& s) {
@@ -508,9 +601,9 @@ void tick(uint32_t now) {
             continue;
         }
         Session* s = sessionOf(sl.node);
-        if (!s || !e) { giveBack(sl, Color::Grey, "The link stopped.", 0); continue; }
+        if (!s || !e) { giveBack(sl, Color::Grey, satwords::kWhyClosing, 0); continue; }
         if (sl.st == ST_OPENING) {
-            if (now - sl.at > kOpenMs) giveBack(sl, Color::Yellow, "The door did not answer.", DC_TAKENBACK);
+            if (now - sl.at > kOpenMs) giveBack(sl, Color::Yellow, satwords::kWhyNoAnswer, DC_TAKENBACK);
             continue;
         }
         flush(sl);
@@ -523,7 +616,7 @@ void tick(uint32_t now) {
         const int32_t secs = bbs().callSecondsLeft(*s, now);
         if (secs < 0) continue;
         if (sl.st == ST_TIMEUP) {
-            if (now - sl.at > kGraceMs) giveBack(sl, Color::Yellow, "Time's up.", DC_TIMEUP);
+            if (now - sl.at > kGraceMs) giveBack(sl, Color::Yellow, satwords::kWhyTime, DC_TIMEUP);
             continue;
         }
         if (secs <= kTimeUpSec) {
@@ -560,7 +653,7 @@ void stop() {
     ulink::Engine* e = linkp::engine();
     for (Slot& sl : g_ctx->slots) {
         if (sl.st == ST_FREE) continue;
-        if (sl.st != ST_CLOSING) giveBack(sl, Color::Grey, "The doors are closing.", DC_CLOSING);
+        if (sl.st != ST_CLOSING) giveBack(sl, Color::Grey, satwords::kWhyClosing, DC_CLOSING);
         // No tick left to retry a CLOSE the window would not take: a RESET
         // needs no window, and the box hears the session has ended.
         if (sl.st == ST_CLOSING && e) e->resetSession(sl.peer, sl.sess, ulink::R_CLOSED);
@@ -571,7 +664,10 @@ void stop() {
 }
 
 const Command kCommands[] = {
-    { "DOORS", "", 0, CF_READ, "DOORS [n]", "games and more, on a door box", cmdDoors, Menu::Main, 40 },
+    // DOORS and UPLINK are one HELP row, the way G | BYE is: UPLINK is its
+    // own entry, hidden from the menu, so it dispatches.
+    { satwords::kVerbDoors, "", 0, CF_READ, satwords::kDoorsUsage, satwords::kDoorsHelp, cmdDoors, Menu::Main, 40 },
+    { satwords::kVerbEnter, "", 0, CF_READ, "UPLINK [n]", "go into a door, by number or name", cmdUplink, Menu::Hidden, 41 },
 };
 
 }  // namespace

@@ -520,6 +520,10 @@ public:
     // background runner). The list asks for the same row next pass.
     void listHold(Session& s) { s.listHeld = true; }
     void rowText(Session& s, Color c, const char* text, bool newline = true);
+    // markedLine: "--> text" from column 0, wrapped at the row width with the
+    // text's own column kept; in the room, the room's voice (chat::roomSay).
+    // Public (1.2.0) so a plugin speaks in the board's voice, not a copy of it.
+    void markedLine(Session& s, Color c, const char* text);
     void rowRule(Session& s);
     void rowTitle(Session& s, const char* title, const char* right = nullptr);
     // The same bar in a colour of the caller's choosing. rowTitle is this
@@ -800,9 +804,6 @@ private:
     // on this call", with the bell. False when not now: the caller is asked
     // again next pass.
     bool warnElsewhere(Session& s, const char* msg);
-    // markedLine: "--> text" from column 0, wrapped at the row width with the
-    // text's own column kept; in the room, the room's voice (chat::roomSay).
-    void markedLine(Session& s, Color c, const char* text);
     void redrawInput(Session& s);
     void deliverMail(Session& s);
     // deliverMail's three shapes (1.1.0): at the prompt, inside a plugin

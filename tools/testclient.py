@@ -1956,48 +1956,91 @@ def test_doors():
         time.sleep(1.5)                      # it answers the board's LIST_ASK
         c = ansi_login("DoorGoer")
         drain(c)
+        c.buf.clear()
         c.send(b"doors\r")
         ok &= check("DOORS lists the box's doors", c.wait_for(b"Echo", 6) and c.wait_for(b"Clock", 2))
+        ok &= check("and says UPLINK goes in, and where home is",
+                    c.wait_for(b"UPLINK n or a name goes in.", 3) and c.wait_for(b"Home is Ctrl-C three times.", 2))
         drain(c)
+        c.buf.clear()
+        c.send(b"help\r")
+        ok &= check("HELP has one row for DOORS and UPLINK", c.wait_for(b"DOORS | UPLINK", 6))
+        drain(c)
+        c.buf.clear()
         c.send(b"doors 9\r")
-        ok &= check("a door that is not there says so", c.wait_for(b"No door by that number", 6))
+        ok &= check("a door that is not there says so", c.wait_for(b"No such door. DOORS lists them.", 6))
         drain(c)
+        c.buf.clear()
         c.send(b"doors 1\r")
-        ok &= check("DOORS 1 opens Echo", c.wait_for(b"Opening Echo", 6) and c.wait_for(b"ECHO DOOR", 8))
-        ok &= check("and says how to get out on this keyboard", b"Ctrl-C three times brings you back." in c.buf)
+        ok &= check("DOORS 1 uplinks to the sat", wait_plain(c, b"--> Uplinking to shelf...", 6) and c.wait_for(b"ECHO DOOR", 8))
+        ok &= check("and says where home is on this keyboard", b"--> Home is Ctrl-C three times." in plain(c.buf))
         h = peer.wait("handoff 1 ", 5) or ""
         ok &= check("the door is handed the caller's handle", "handle=DoorGoer" in h)
         ok &= check("and the terminal the board measured", "term=ansi" in h and "cols=" in h and "rows=" in h)
         ok &= check("and the time left and the node", "minutes=" in h and "node=" in h)
         ok &= check("the handoff line starts as specified", h.startswith("handoff 1 UNLEASHED-DOOR 1 "))
         drain(c)
+        c.buf.clear()
         c.send(b"hello")
         ok &= check("keys go to the door and its output comes back", c.wait_for(b"HELLO", 6))
         c.send(b"q")
         ok &= check("the door finishing brings the caller back", c.wait_for(b"Echo says bye.", 6))
+        ok &= check("and the board says so", wait_plain(c, b"--> Back home.", 6))
         ok &= check("to the prompt", c.wait_for(b"Main", 6))
         drain(c)
+        c.buf.clear()
+        c.send(b"uplink echo\r")
+        ok &= check("UPLINK takes a door's name", wait_plain(c, b"--> Uplinking to shelf...", 6) and c.wait_for(b"ECHO DOOR", 8))
+        c.send(b"q")
+        wait_plain(c, b"--> Back home.", 6)
+        drain(c)
+        c.buf.clear()
+        c.send(b"uplink SHELF\r")
+        ok &= check("UPLINK a sat with two doors lists them, in any case",
+                    c.wait_for(b"Echo", 6) and c.wait_for(b"Clock", 2) and c.wait_for(b"UPLINK n or a name goes in.", 2))
+        ok &= check("and does not go in", not c.wait_for(b"ECHO DOOR", 1.5))
+        drain(c)
+        c.buf.clear()
+        c.send(b"uplink nowhere\r")
+        ok &= check("UPLINK a name that is nothing says so", c.wait_for(b"No door or sat called nowhere.", 6))
+        drain(c)
+        c.buf.clear()
+        c.send(b"help uplink\r")
+        ok &= check("HELP UPLINK explains it", wait_plain(c, b"usage: UPLINK [n or name]", 6) and b"No command" not in plain(c.buf))
+        drain(c)
+        c.buf.clear()
+        c.send(b"uplink 2\r")
+        ok &= check("UPLINK n goes into door n", c.wait_for(b"CLOCK DOOR", 8))
+        c.send(b"\x03\x03\x03")
+        wait_plain(c, b"--> Back home.", 6)
+        peer.wait("close 3", 6)
+        peer.lines.clear()                   # the Ctrl-C checks below wait for a close of their own
+        drain(c)
+        c.buf.clear()
         c.send(b"doors 2\r")
         ok &= check("DOORS 2 opens Clock", c.wait_for(b"CLOCK DOOR", 8))
         c.send(b"\x1d\x1d\x1d")
         ok &= check("Ctrl-] is not the way out any more (telnet keeps it, PETSCII moves right on it)",
-                    not c.wait_for(b"You left the door.", 2))
+                    not wait_plain(c, b"--> Back home.", 2))
         c.send(b"\x03")
         c.pump(1.8)
         c.send(b"\x03\x03")
         ok &= check("three Ctrl-Cs spread past a second and a half do not leave",
-                    not c.wait_for(b"You left the door.", 2))
+                    not wait_plain(c, b"--> Back home.", 2))
         c.send(b"\x03\x03\x03")
-        ok &= check("Ctrl-C three times in a row gets out", c.wait_for(b"You left the door.", 6))
+        ok &= check("Ctrl-C three times in a row gets out", wait_plain(c, b"--> Back home.", 6))
         ok &= check("and the box is told", peer.wait("close 3", 6) is not None)
         drain(c)
+        c.buf.clear()
         c.send(b"doors 2\r")
         c.wait_for(b"CLOCK DOOR", 8)
         drain(c)
+        c.buf.clear()
         c.send(b"\xff\xf4\xff\xf4\xff\xf4")          # IAC IP x3: Ctrl-C kept as a telnet command
         ok &= check("a client that sends Ctrl-C as telnet's Interrupt Process gets out too",
-                    c.wait_for(b"You left the door.", 6))
+                    wait_plain(c, b"--> Back home.", 6))
         drain(c)
+        c.buf.clear()
         c.send(b"doors 2\r")
         c.wait_for(b"CLOCK DOOR", 8)
         c.close()
@@ -2308,6 +2351,22 @@ def wait_line(peer, pred, secs):
     return False
 
 
+def pet_plain(data):
+    """PETSCII output without its colour and control bytes (0x00-0x1F and
+    0x80-0x9F), for reading a line that changes colour part way."""
+    return bytes(x for x in bytes(data) if 0x20 <= x < 0x80 or x >= 0xA0)
+
+
+def wait_pet_plain(c, pat, secs=6):
+    end = time.time() + secs
+    while time.time() < end:
+        if pat in pet_plain(c.buf):
+            return True
+        if not c.pump(0.1):
+            break
+    return pat in pet_plain(c.buf)
+
+
 def test_doors_petscii():
     """The way out of a door on a C64 (1.2.0). It was Ctrl-] three times,
     and 0x1D is cursor-right on PETSCII: three moves right in a game threw
@@ -2331,17 +2390,36 @@ def test_doors_petscii():
         ok &= check("a C64 caller gets on", login(p, "PetDoorGoer", as_pet=True))
         drain(p)
         p.send(pet("doors") + b"\r")
-        ok &= check("DOORS names RUN/STOP as the way out", p.wait_for(pet("RUN/STOP three times leaves a door."), 6))
+        ok &= check("DOORS names RUN/STOP as the way home", p.wait_for(pet("Home is RUN/STOP three times."), 6))
         drain(p)
         p.send(pet("doors 2") + b"\r")
         ok &= check("the door opens", p.wait_for(b"CLOCK DOOR", 8))
-        ok &= check("and says RUN/STOP three times brings you back",
-                    pet("RUN/STOP three times brings you back.") in p.buf)
+        ok &= check("and says home is RUN/STOP three times",
+                    pet("--> Home is RUN/STOP three times.") in pet_plain(p.buf))
+        ok &= check("and says it is uplinking", pet("--> Uplinking to shelf...") in pet_plain(p.buf))
+        # The board's lines fit a 40-column screen, 39 at most, with the
+        # longest sat name (16) and the longest key name: read from satwords.h
+        # itself, so a longer line there fails here.
+        words = {}
+        for m in re.finditer(r'constexpr const char (k\w+)\[\]\s*=\s*"([^"]*)"',
+                             (pathlib.Path(__file__).resolve().parent.parent / "src" / "core" / "satwords.h").read_text()):
+            words[m.group(1)] = m.group(2)
+        widest = []
+        for k in ("kUplinking", "kHomeIs", "kBackHome", "kGoesIn", "kNoDoorN", "kWhyTime",
+                  "kWhySignal", "kWhyNoAnswer", "kWhyFull", "kWhyNo", "kWhyClosing", "kBusy"):
+            f = words.get(k, "")
+            line = (f.replace("%.20s", "x" * 20).replace("%s", "RUN/STOP" if k == "kHomeIs" else "x" * 16))
+            if k not in ("kGoesIn", "kNoDoorN"):
+                line = "--> " + line
+            if not f or len(line) > 39:
+                widest.append("%s (%d)" % (k, len(line)))
+        ok &= check("every door line in satwords.h fits 39 columns%s" % (": " + ", ".join(widest) if widest else ""),
+                    not widest)
         drain(p)
         p.send(b"\x1d\x1d\x1d\x1d")
-        ok &= check("four cursor-rights in a door stay in the door", not p.wait_for(pet("You left the door."), 2))
+        ok &= check("four cursor-rights in a door stay in the door", not wait_pet_plain(p, pet("--> Back home."), 2))
         p.send(b"\x03\x03\x03")
-        ok &= check("RUN/STOP three times gets out", p.wait_for(pet("You left the door."), 6))
+        ok &= check("RUN/STOP three times gets out", wait_pet_plain(p, pet("--> Back home."), 6))
         ok &= check("and the box is told", peer.wait("close 3", 6) is not None)
     finally:
         if p:

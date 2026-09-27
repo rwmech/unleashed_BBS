@@ -944,6 +944,16 @@ this tree.
       suspect once there are five. A board whose link comes back after a reset
       is tried at 24 Mbps at once, not after 30 s (a probe: a marginal path
       falls back again within about a second).
+    - **The words, settled by Rob 2026-09-27 (link.10)**: sat, sats;
+      **orbiter** for the data kind (camera, GPIO, sensors, Home
+      Assistant); **door sat** for the kind a caller goes into; **UPLINK**
+      is the verb (`UPLINK n`, `UPLINK name`), BEAM rejected. No shortcut.
+      The board's lines: `--> Uplinking to shed...`, `--> Home is Ctrl-C
+      three times.`, `--> Back home.`, each within 39 columns. All in
+      `src/core/satwords.h`; LINK's kind column (camsat, doorbox) is still
+      open. `Bbs::markedLine` went public for it. What other sats would
+      take: internal/sat-types-2026-09-27.md (relay, GPIO, Home Assistant,
+      custom; nothing in 1.2.0, an LR bench test first).
 - **1.1.2 scope, decided by Rob 2026-09-26** (discussed before coding):
   - A read-only audit first of every path that can hold the loop over
     50 ms (internal/audit-1.1.2-2026-09-26.md); the worst move onto one
