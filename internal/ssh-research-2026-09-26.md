@@ -166,8 +166,8 @@ Ranked by fit for this board: what it gives for what it costs.
 
 ### 1.3 The others
 
-- **CycloneSSH** (`Oryx-Embedded/CycloneSSH`, `ssh/ssh_server.c`:
-  `SPDX-License-Identifier: GPL-2.0-or-later`, so licence-compatible).
+- **CycloneSSH** (`Oryx-Embedded/CycloneSSH`, whose `ssh/ssh_server.c`
+  carries an SPDX line of GPL-2.0-or-later, so licence-compatible).
   `ssh/ssh.h` includes `core/net.h` from CycloneTCP; no lwIP shim was found
   in the repository. Oryx's own ESP32-S3 crypto benchmark is the best
   published timing source for §6 and is cited there.

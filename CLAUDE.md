@@ -1226,6 +1226,12 @@ this tree.
   - **1.1.2 is code-complete on main** at 5b9f25b (1.1.2-dev.5, S3 1.1.3,
     FNCAM 1.0.8, ESPCAM 1.0.5): part 1, SSH, the small printf, test
     speed and the F2-F4 fixes. Full host run 3,881/0.
+  - **1.1.2 release commit (2026-09-27, rel-1.1.2e)**: dev.6 (the login,
+    logoff, LAST and announce fix below) plus BBS_VERSION 1.1.2, boards
+    unchanged. Rob dropped the board soak: 1.1.2 tags on the host tests
+    and the code review, and the full regression follows the tag (a
+    patch never waits for one). The dev.6 fix is host-tested only; the
+    first bench after the tag reads the `opens` figure off the console.
   - **Before the tag:**
     - Finish the bench. Its interim notes are in
       release-prep/bench-1.1.2-interim-2026-09-26.md: the S3 on COM12

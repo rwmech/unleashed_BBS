@@ -24,6 +24,47 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.1.2 (S3 1.1.3, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-27
+
+A patch: the board no longer stalls everybody while one caller does
+something slow, SSH on the Waveshare S3 as a preview, and about 70 KB of
+flash back on every board. Released on the host tests and a code review of
+each part; the full regression follows the tag, and anything it finds goes
+into 1.1.3. The bench checked the runner, SSH and ordinary use on the S3
+and the Freenove; the login and logoff fix (dev.6) is host-tested only.
+The dev entries below have the detail.
+
+**Before you install**
+- **On the Waveshare ESP32-S3-LCD-1.47 the first 1.1.2 install is a new
+  install, with an erase.** The S3 has its own 8 MB layout now. Accounts,
+  settings and mail on an S3 do not survive it: take a backup first and
+  restore it afterwards. The ESP32 boards (the WROOM, the Freenove, the
+  ESP32-CAM) update as usual and keep everything.
+
+**What a sysop sees**
+- **No stalls from one caller's slow work** (rule no. 1). Logging in and
+  off, LAST, CALLS, SCREENS and SCREENS INSTALL, file listings, the forums,
+  restores, the backup window's download, CONFIG, free-space figures and
+  the directory announce all either moved onto a background task or stopped
+  holding the board: on the bench logins were 64 to 247 ms each and
+  announce rounds up to 285 ms, and every other caller waited through them.
+- **SSH on the S3, a preview**: `ssh -p 6400 handle@board`, on the board's
+  own port, an account's handle and password; or its own port, 6422.
+- **The directory hears about callers within seconds**, not at the next
+  heartbeat, and ANNOUNCE shows staff what was last sent and what came back.
+- **About 70 KB less flash on every board** (newlib's small printf).
+- **Time warnings reach a caller inside the room, the forums and the file
+  areas**, not only at the prompt.
+- **Fixes**: a room line arrives whole; your own private line carries your
+  tag; LAST shows node 10 as 10; an upload's staging folder no longer lists
+  its own files as uploads; an external reset is no longer called a
+  watchdog; a hostname change says it applies at the next restart; a board
+  with no name no longer calls itself by the software's; HARDWARE's card
+  free has its thousands separator and unit; one snapshot at a time, and
+  the second caller is told whose.
+- **The console says more when something is slow**: every slow pass names
+  its phase, node and command, and now how many files it opened.
+
 ## 1.1.2-dev.6, 2026-09-27
 
 The last blocker on 1.1.2's tag: logins, logoffs, LAST and announce's
