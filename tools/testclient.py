@@ -1910,7 +1910,7 @@ def test_radio_link():
         drain(s)
         s.send(b"link pair\r")
         ok &= check("LINK PAIR opens a window", s.wait_for(b"Pairing is open", 6))
-        ok &= check("the board asks, naming the device", s.wait_for(b'Pair doorbox "shelf"', 20))
+        ok &= check("the board asks, naming the device", s.wait_for(b'Pair door "shelf"', 20))
         m = re.search(rb"code (\d{4})\? \(y/N\)", s.buf)
         ok &= check("with a 4-digit code", m is not None)
         s.send(b"y")
@@ -2177,7 +2177,7 @@ def test_sats():
         drain(s)
         s.send(b"link pair\r")
         s.wait_for(b"Pairing is open", 6)
-        if not check("the board is asked to pair the camera", s.wait_for(b'Pair camsat "shelf"', 25)):
+        if not check("the board is asked to pair the camera", s.wait_for(b'Pair camera "shelf"', 25)):
             return False
         s.send(b"y")
         s.wait_for(b"Does the device show", 20)

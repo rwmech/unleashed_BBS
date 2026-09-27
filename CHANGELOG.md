@@ -29,13 +29,18 @@ A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E
 The µnleashed link, its lane (rel-1.2.0-link, rebased onto main at b278284,
 after 1.1.2 part 1 and SSH). Host-tested; not yet flashed.
 
+**1.2.0-link.11: a sat's type is camera or door**
+- LINK's kind column and the pairing question say `camera` and `door`
+  (Rob, 2026-09-27; `Pair camera "garden" ...`), from satwords.h, which
+  also holds `gpio` and `sensor` for the types to come. "camsat" stays
+  only as the camera satellite's firmware and repository name.
+
 **1.2.0-link.10: the settled words**
 - Rob's names (2026-09-27): "sat" and "sats"; an **orbiter** is a sat that
   feeds the board data (camera, GPIO, sensors, Home Assistant); a **door
   sat** is one a caller goes into. What callers read says "door sat" where
   it said "door box" (DOORS, and the line when one goes quiet). All of it
-  in `src/core/satwords.h`. LINK's kind column still says camsat and
-  doorbox until those short names are picked.
+  in `src/core/satwords.h`.
 - **UPLINK** goes into a door sat (Rob's verb; BEAM was rejected):
   `UPLINK n`, `UPLINK name` (a door, or a sat: straight in with one door,
   its doors listed with more), `UPLINK` alone lists them. HELP has one row,

@@ -950,8 +950,9 @@ this tree.
       is the verb (`UPLINK n`, `UPLINK name`), BEAM rejected. No shortcut.
       The board's lines: `--> Uplinking to shed...`, `--> Home is Ctrl-C
       three times.`, `--> Back home.`, each within 39 columns. All in
-      `src/core/satwords.h`; LINK's kind column (camsat, doorbox) is still
-      open. `Bbs::markedLine` went public for it. What other sats would
+      `src/core/satwords.h`. A sat's type is camera, door, gpio or sensor
+      (LINK's kind column, link.11); "camsat" is only the firmware and repo
+      name. `Bbs::markedLine` went public for it. What other sats would
       take: internal/sat-types-2026-09-27.md (relay, GPIO, Home Assistant,
       custom; nothing in 1.2.0, an LR bench test first).
 - **1.1.2 scope, decided by Rob 2026-09-26** (discussed before coding):

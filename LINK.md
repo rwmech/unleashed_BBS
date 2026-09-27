@@ -220,7 +220,7 @@ ownership of it.
    - `k_link`, the first 16: this pairing's long-term key;
    - the 4-digit code: the last two as a little-endian number, mod 10000.
 6. The host shows the sysop
-   `Pair camsat "garden" 24:6f:28:aa:bb:cc, code 4821? (y/N)`, and the
+   `Pair camera "garden" 24:6f:28:aa:bb:cc, code 4821? (y/N)`, and the
    peer shows the same code (its console, an LED pattern).
 7. On Y, host to peer `PAIR_DONE`, and peer to host `PAIR_ACK`: each a
    sealed empty message under `k_link` (packet number 0, each direction
