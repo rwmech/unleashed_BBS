@@ -437,6 +437,29 @@ One layout on every transport. Little-endian throughout.
   ceiling (8 fragments a 20 ms tick); the runner lifts it at the 1.1.2
   merge. The same soak saw one or two slow passes a picture, worst 105 ms:
   the card writes, running from the tick until the runner is there.
+- **Measured at link.7, with the runner** (camsat bench, 2026-09-27: the
+  Waveshare S3 on 1.1.2-dev.5 plus link.7, the ESP32-CAM satellite waking
+  from deep sleep for a timelapse about every 67 s, XGA JPEGs of 77-83 KB):
+  - **A two-hour soak: 106 of 106 pictures filed**, none failed, none lost.
+    37 to 80 KB/s, median 75: most pictures in 1.0-1.1 s, the slowest
+    2.2 s. One retry a picture (the first fragment after a wake), no
+    drops. The board counted **3 slow passes in two hours**, all in the
+    first two and a half minutes (worst 155 ms, the first pictures onto
+    the card); after that the loop's worst in any 10 s was 2-5 ms, average
+    0.6-1.0 ms. Internal heap steady at 35,963, 26,563 at its lowest
+    during a picture. A second soak (9 of 9, 61-70 KB/s) agreed.
+  - **Robustness runs, all filed or refused cleanly, no crash on either
+    end:** 20 SNAPSHOTs in a row, more than the 16-entry session tables
+    (20 of 20, 68-82 KB/s, up to 16 retries on a picture and no drops);
+    a CONFIG camsat save mid-picture (5 of 5, no panic once the part-file
+    had one owner, the picture reported not filed and the next one filed);
+    the satellite reset mid-picture (the next one filed, 72-74 KB/s) and
+    held in reset for 10 minutes (it came back and filed, 82 KB/s).
+  - **The board reset mid-picture**: the satellite fell back to 1 Mbps
+    and held it for 30 s after the board came back, so the first pictures
+    after a board reset went at 46-47 KB/s. Since link.9 the satellite
+    goes back to 24 Mbps as soon as the board's link is up again (a probe:
+    a path that really is marginal falls back within about a second).
 - **Order.** Fragments of a bulk message are written in order into the
   receiver's window and handed on as an in-order stream. With four frames
   outstanding at the MAC a loss can put fragments out of order; the window

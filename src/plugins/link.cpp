@@ -66,6 +66,7 @@
 #include "../core/bbs.h"
 #include "../core/bbs_util.h"
 #include "../core/clock.h"
+#include "../core/disk.h"
 #include "../core/linkcrypto.h"
 #include "../core/linkfam.h"
 #include "../core/photos.h"
@@ -336,7 +337,7 @@ void savePeers() {
         return;
     }
     snprintf(tmp, sizeof(tmp), "%s.tmp", path);
-    FILE* f = fopen(tmp, "w");
+    FILE* f = disk::open(tmp, "w");
     if (!f) return;
     fprintf(f, "%s\n# unleashed link pairings: mac kind checked paired recv camno chan key name\n", kPeersHeader);
     for (uint8_t i = 0; i < Engine::kPeers; ++i) {
@@ -367,7 +368,7 @@ void loadPeers() {
     Ctx* c = g_ctx;
     char path[128];
     if (!plugins::readPath(g_index, kPeersFile, path, sizeof(path))) return;
-    FILE* f = fopen(path, "r");
+    FILE* f = disk::open(path, "r");
     if (!f) return;
     char line[160];
     bool v2 = false;
@@ -802,9 +803,20 @@ bool start(Bbs& bbs) {
 void stop() {
     Ctx* c = g_ctx.load();
     if (!c) { plat::linkRadioStop(); return; }
-    // The doors plugin stops first (registry order) and closes its sessions,
-    // which queues a CLOSE each. Give them to the radio before it goes: a
-    // few polls, a few milliseconds, once, at a restart or a shutdown.
+    // Every family is told each peer is gone before the engine goes. Since
+    // 1.1.2 a CONFIG save restarts only the plugins whose settings moved, so
+    // a save of CONFIG link alone stops and starts the link under a running
+    // doors (or camsat): without this, a caller in a door kept sending to a
+    // session the new engine never had, and heard nothing until the home
+    // key. Told now, doors gives them back ("Lost the signal") and forgets
+    // the door list, and its CLOSEs are queued for the polls below. At a
+    // full restart or a shutdown the doors plugin has already stopped
+    // (registry order) and its family is gone, so it hears nothing twice.
+    for (uint8_t i = 0; i < Engine::kPeers; ++i)
+        if (c->eng->peerUsed(i) && c->eng->peerUp(i))
+            for (const linkp::Family* f : g_fam) if (f && f->peerState) f->peerState(i, false);
+    // Give the queued CLOSEs to the radio before it goes: a few polls, a
+    // few milliseconds, once, at a restart or a shutdown.
     for (uint8_t i = 0; i < 4; ++i) {
         c->eng->poll();
         plat::linkRadioWait(5);
@@ -835,7 +847,9 @@ void tick(uint32_t now) {
     Ctx* c = g_ctx.load();
     if (!c || !c->eng) return;
     c->eng->poll();
-    if (c->saveDue) { c->saveDue = false; savePeers(); }
+    // One flash write a pass (1.1.2): the caller log and the call figures
+    // wait for a pass that has written nothing, and so do the pairings.
+    if (c->saveDue && !disk::tally().writes) { c->saveDue = false; savePeers(); }
 
     // Hand the slow work off.
 #ifdef LINK_HAS_RUNNER

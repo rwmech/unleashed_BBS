@@ -26,8 +26,37 @@ A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E
 
 ## 1.2.0-link (in development, not released), 2026-09-26
 
-The µnleashed link, its lane (rel-1.2.0-link, rebased onto main at b278284,
-after 1.1.2 part 1 and SSH). Host-tested; not yet flashed.
+The µnleashed link, its lane (rel-1.2.0-link-r3, rebased onto main at
+a3dcf01, after the v1.1.2 tag). Host-tested; the camera satellite has run
+on the bench since link.4 (LINK.md has the figures).
+
+**1.2.0-link.12: on 1.1.2**
+- Rebased onto main at a3dcf01 (v1.1.2 at cfc76bb): the login and logoff
+  split across passes, the per-pass open count, the small printf, the
+  test lanes. The link's formats pass `tools/check_formats.py`, and so do
+  camsat's. `--only==test_x` (an exact name) is kept beside 1.1.2's
+  `--tests=`; `harness.sh --ext` builds under 1.1.2's `--no-build` rule.
+- **Found by the code review of the rebase, where the link met 1.1.2:**
+  - A CONFIG link save now gives a caller in a door back ("--> Lost the
+    signal."). 1.1.2 restarts only the plugins whose settings moved, so the
+    link restarted under a running doors, and a caller in a door sent keys
+    to a session the new link never had, hearing nothing until the home
+    key. The link tells every family its peers are gone before it stops.
+    `test_doors` checks it, and failed without the fix.
+  - The pairings file opens through `disk::open` (the drive light, the
+    pass's open count) and waits for a pass that has written nothing to
+    flash, like the caller log and the call figures.
+  - `harness.sh --jobs` builds `host/linkpeer` with the boards and reaps
+    one a lane left behind; the door and sharing tests say they need
+    `test_radio_link`'s pairing (NEEDS); `host/linkpeer` keeps the board's
+    fast clock (`BBS_FAST_TIMERS`), or on a x4 lane the board heard its
+    pings a quarter as often and dropped it.
+  - `tools/release.py` checks a carried plugin's formats for newlib nano;
+    `tools/changed_groups.py` maps the link's files to `radio`, `sats` and
+    `camera` rather than the whole suite.
+- LINK.md has the camsat bench's link.7 figures: a two-hour soak of 106
+  of 106 pictures at a median 75 KB/s with 3 slow passes, all at the
+  start, and the robustness runs.
 
 **1.2.0-link.11: a sat's type is camera or door**
 - LINK's kind column and the pairing question say `camera` and `door`
@@ -235,6 +264,80 @@ after 1.1.2 part 1 and SSH). Host-tested; not yet flashed.
   `host/linkpeer` is a pretend door box on the host's UDP radio for the
   tests (`--only=radio`). `host/test_link` runs in `make test`: 118 checks,
   clean under ASan and UBSan.
+
+**1.2.0-link.6: one SNAPSHOT for every camera**
+- The camsat engineer's registry, approved 2026-09-26: `photos::Camera`,
+  added and removed by whatever takes pictures. The built-in camera is
+  camera 1, then satellites by pairing. `SNAPSHOT` and `CAMERA` are the
+  core's (`src/core/cameras.cpp`), there while the board has a camera and
+  gone with the last one.
+  - `SNAPSHOT` takes CONFIG cameras' Default (a new core page, key
+    `camera`), else the built-in camera, else the first that is up.
+    `SNAPSHOT n` or `SNAPSHOT name` picks one.
+  - `CAMERA` with one camera is that camera's own view and `CAMERA SET`, as
+    before. With more it lists them; `CAMERA n ...` reaches camera n.
+- A caller's snap limits are one budget across every camera (Rob), kept by
+  the core and carried across a rename by the core. The built-in camera
+  checks its plugin levels itself now, since its commands left its table.
+- `Bbs::hasCommands` and `dropCommands` take one command table out by
+  pointer; the core's tables survive a CONFIG reload.
+- `test_camera_registry` (camera boards, with a card).
+- The engine tells the far end when it closes a session (RESET CLOSED,
+  two seconds after, from the tombstone), so a peer that never closes its
+  own side no longer fills its 16 (camsat's 6.5-minute soak on link.5:
+  54 KB/s, 0 retries, 39 of 39 timelapse pictures, but a satellite that did
+  not close its side refused every SNAP after the 16th). `test_link` has
+  it: 24 host-opened sessions, the peer closing none.
+
+**1.2.0-link.5: the bench's figures, and the code review**
+- The camsat bench (2026-09-26, the S3 on Rob's router and an ESP32-CAM)
+  set the radio: 802.11g 24 Mbps per peer, down to 1 Mbps after three
+  MAC failures in a row and back after 30 s clean; four frames
+  outstanding (+53%); DISCOVER listens 20 ms a channel; Long Range stays
+  off (it raised the board's own gateway pings to 29-55 ms).
+- Picture fragments never touch the loop: the radio sorts them into their
+  own ring and the runner's job takes them, opens them and feeds the sink,
+  staying 50 ms after the last one. The loop taking eight a pass lost half
+  a picture at 24 Mbps; on the task path the bench saw no slow passes.
+- Pairing is commit then reveal (`PAIR_NONCE`, `PAIR_REVEAL`): the host
+  commits to its nonce before it sees the device's, so nobody in the middle
+  can steer two exchanges to one code. The key and code are bound to both
+  public keys.
+- HELLO and HELLO_ACK carry an HMAC tag under the pairing key, so only a
+  paired device is answered, and a random boot epoch, so a device that
+  restarted ends its old sessions at once. The host answers nothing while
+  it is off its router; a device believes only BEACON's channel; a
+  sleeping satellite rescans after three failed sends.
+- Doors: a CLOSE the box's full window will not take is retried for 5 s
+  after the caller is back at the prompt; the doors stop before the link,
+  and the link sends what is queued before its radio goes.
+- The link plugin: a stopped link's runner job neither sends nor delivers
+  (a CONFIG save while a picture arrives); a finished job of a stopped link
+  is collected and freed; the pairings file checks `fclose`; heap declared
+  20 KB. `LINK` shows both rings and devices on the slow rate. The start
+  line gives the channel only once the board has joined its router.
+- **The first real pictures** (camsat on c948de3: 5 of 5 filed, XGA, about
+  87 KB, but 17 KB/s and about 16 retries a picture) found two engine
+  faults:
+  - a session closed with `closeAfter` straight after its picture was
+    forgotten before its last ACK had gone, and the sender's resend was
+    answered "no such session": filed here, reported failed there. A
+    closed session now goes only after the ACK it owes, and leaves a
+    tombstone (8, 30 s) that ACKs a resend again and answers anything new
+    with RESET, never opening it as a new session. `test_link` has the case
+    (8 pictures, each session closed at once, 30% loss), failing without it;
+  - the ACKs a bulk sender waits for went out at the loop's next tick, up
+    to 20 ms after the fragments landed: with a 16-fragment window that
+    wait, not the radio, set the speed. The runner now sends the ACKs that
+    are due as soon as it has taken fragments, and when it has made half a
+    window of room. To be measured on the bench against camsat's 440 KB/s.
+- A plugin from its own repository gets no flash whatever flags it claims,
+  and a second plugin with a name already taken is not started.
+- Photos refuses a backslash or a colon in a name from a satellite.
+- CAMERA family: SNAP carries the watermark text and the JPEG comment
+  (the satellite does the pixel work), every picture is a host SNAP (EVENT
+  asks for one), SETTINGS is 24 bytes (`src/core/linkfam.h`).
+
 ## 1.1.2 (S3 1.1.3, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-27
 
 A patch: the board no longer stalls everybody while one caller does
@@ -722,79 +825,6 @@ that out asap, it doesnt")
   what the path opened.
 - `tools/harness.sh --changed <range>` works out the test groups from the
   files a git range touched (`tools/changed_groups.py`).
-
-**1.2.0-link.6: one SNAPSHOT for every camera**
-- The camsat engineer's registry, approved 2026-09-26: `photos::Camera`,
-  added and removed by whatever takes pictures. The built-in camera is
-  camera 1, then satellites by pairing. `SNAPSHOT` and `CAMERA` are the
-  core's (`src/core/cameras.cpp`), there while the board has a camera and
-  gone with the last one.
-  - `SNAPSHOT` takes CONFIG cameras' Default (a new core page, key
-    `camera`), else the built-in camera, else the first that is up.
-    `SNAPSHOT n` or `SNAPSHOT name` picks one.
-  - `CAMERA` with one camera is that camera's own view and `CAMERA SET`, as
-    before. With more it lists them; `CAMERA n ...` reaches camera n.
-- A caller's snap limits are one budget across every camera (Rob), kept by
-  the core and carried across a rename by the core. The built-in camera
-  checks its plugin levels itself now, since its commands left its table.
-- `Bbs::hasCommands` and `dropCommands` take one command table out by
-  pointer; the core's tables survive a CONFIG reload.
-- `test_camera_registry` (camera boards, with a card).
-- The engine tells the far end when it closes a session (RESET CLOSED,
-  two seconds after, from the tombstone), so a peer that never closes its
-  own side no longer fills its 16 (camsat's 6.5-minute soak on link.5:
-  54 KB/s, 0 retries, 39 of 39 timelapse pictures, but a satellite that did
-  not close its side refused every SNAP after the 16th). `test_link` has
-  it: 24 host-opened sessions, the peer closing none.
-
-**1.2.0-link.5: the bench's figures, and the code review**
-- The camsat bench (2026-09-26, the S3 on Rob's router and an ESP32-CAM)
-  set the radio: 802.11g 24 Mbps per peer, down to 1 Mbps after three
-  MAC failures in a row and back after 30 s clean; four frames
-  outstanding (+53%); DISCOVER listens 20 ms a channel; Long Range stays
-  off (it raised the board's own gateway pings to 29-55 ms).
-- Picture fragments never touch the loop: the radio sorts them into their
-  own ring and the runner's job takes them, opens them and feeds the sink,
-  staying 50 ms after the last one. The loop taking eight a pass lost half
-  a picture at 24 Mbps; on the task path the bench saw no slow passes.
-- Pairing is commit then reveal (`PAIR_NONCE`, `PAIR_REVEAL`): the host
-  commits to its nonce before it sees the device's, so nobody in the middle
-  can steer two exchanges to one code. The key and code are bound to both
-  public keys.
-- HELLO and HELLO_ACK carry an HMAC tag under the pairing key, so only a
-  paired device is answered, and a random boot epoch, so a device that
-  restarted ends its old sessions at once. The host answers nothing while
-  it is off its router; a device believes only BEACON's channel; a
-  sleeping satellite rescans after three failed sends.
-- Doors: a CLOSE the box's full window will not take is retried for 5 s
-  after the caller is back at the prompt; the doors stop before the link,
-  and the link sends what is queued before its radio goes.
-- The link plugin: a stopped link's runner job neither sends nor delivers
-  (a CONFIG save while a picture arrives); a finished job of a stopped link
-  is collected and freed; the pairings file checks `fclose`; heap declared
-  20 KB. `LINK` shows both rings and devices on the slow rate. The start
-  line gives the channel only once the board has joined its router.
-- **The first real pictures** (camsat on c948de3: 5 of 5 filed, XGA, about
-  87 KB, but 17 KB/s and about 16 retries a picture) found two engine
-  faults:
-  - a session closed with `closeAfter` straight after its picture was
-    forgotten before its last ACK had gone, and the sender's resend was
-    answered "no such session": filed here, reported failed there. A
-    closed session now goes only after the ACK it owes, and leaves a
-    tombstone (8, 30 s) that ACKs a resend again and answers anything new
-    with RESET, never opening it as a new session. `test_link` has the case
-    (8 pictures, each session closed at once, 30% loss), failing without it;
-  - the ACKs a bulk sender waits for went out at the loop's next tick, up
-    to 20 ms after the fragments landed: with a 16-fragment window that
-    wait, not the radio, set the speed. The runner now sends the ACKs that
-    are due as soon as it has taken fragments, and when it has made half a
-    window of room. To be measured on the bench against camsat's 440 KB/s.
-- A plugin from its own repository gets no flash whatever flags it claims,
-  and a second plugin with a name already taken is not started.
-- Photos refuses a backslash or a colon in a name from a satellite.
-- CAMERA family: SNAP carries the watermark text and the JPEG comment
-  (the satellite does the pixel work), every picture is a host SNAP (EVENT
-  asks for one), SETTINGS is 24 bytes (`src/core/linkfam.h`).
 
 ## 1.1.1 (S3 1.1.2, FNCAM 1.0.6, ESPCAM 1.0.3), 2026-09-25
 

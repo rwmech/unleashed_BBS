@@ -254,9 +254,14 @@ fi
 export BBS_LINK_PORT=$((PORT + 3000))
 export BBS_LINK_PEER_PORT=$((PORT + 3001))
 # Three more for test_link_shared's second board and second satellite
-# (1.2.0), each in a block of its own 400 wide, so no tag's port lands on
-# another tag's: PORT is 6500 to 6899, one a tag. (peer + 1 and + 2 did:
-# a neighbouring tag's radio took one, and its satellite never started.)
+# (1.2.0), each in a block of its own 400 wide, so none of these three lands
+# on another tag's (PORT is 6500 to 6899, one a tag; peer + 1 and + 2 did:
+# a neighbouring tag's radio took one, and its satellite never started).
+# The radio's pair above does not have that property: tag X's peer (+3001)
+# is tag X+1's radio (+3000), the same exposure the TCP offsets have
+# between adjacent tags. Tag-derived runs side by side want tags whose
+# ports differ by more than one; harness.sh --jobs chooses its own ports
+# (tools/parallel.py port_offsets reads every PORT + N here) and is clear.
 export BBS_LINK_EXTRA_PORTS="$((PORT + 3500)),$((PORT + 3900)),$((PORT + 4300))"
 export BBS_HOST_EXT="$EXT"
 

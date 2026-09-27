@@ -200,6 +200,18 @@ TABLE = [
     # Plugins.
     # -----------------------------------------------------------------
     ("src/plugins/announce*", ["announce", "login", "lag_announce_calls"]),
+    # The link and what rides on it (1.2.0). "sats" needs a build with
+    # camsat (harness.sh --ext camsat --card); a run without it skips it.
+    ("src/plugins/link*", ["radio", "sats", "config"]),
+    ("src/plugins/doors*", ["radio"]),
+    ("src/core/link*", ["radio", "sats"]),
+    ("src/core/linkfam.h", ["radio", "sats"]),
+    ("src/core/satwords.h", ["radio", "sats"]),
+    ("src/core/photos*", ["camera", "sats", "board_fncam", "board_espcam", "storage"]),
+    ("src/core/cameras*", ["camera", "sats", "board_fncam", "board_espcam"]),
+    ("src/platform/linkradio*", ["radio", "sats"]),
+    ("host/linkpeer.cpp", ["radio", "sats"]),
+    ("host/linkradio_host.cpp", ["radio", "sats"]),
     ("src/plugins/camera*", ["camera", "board_fncam", "board_espcam"]),
     ("src/plugins/chat*", ["messaging", "places", "rename_follows"]),
     ("src/plugins/example*", ["plugins"]),

@@ -95,10 +95,25 @@ using namespace linkfam;
 
 namespace {
 
+// nowMs: on the board's clock. BBS_FAST_TIMERS (1.1.2's fast host clock,
+// harness.sh --jobs lanes) runs the board's millis K times the wall's; the
+// peer runs the same, the same rule as host/platform_host.cpp's fastFactor,
+// or on a x4 lane the board's 20 s quiet limit is 5 s of the peer's pings.
+uint32_t fastFactor() {
+    static const uint32_t k = [] {
+        const char* e = getenv("BBS_FAST_TIMERS");
+        const unsigned long v = e && *e ? strtoul(e, nullptr, 10) : 0;
+        if (v == 0) return 1u;
+        if (v == 1) return 4u;
+        return static_cast<uint32_t>(v > 20 ? 20 : v);
+    }();
+    return k;
+}
+
 uint32_t nowMs() {
     timeval tv;
     gettimeofday(&tv, nullptr);
-    return static_cast<uint32_t>(tv.tv_sec * 1000ull + tv.tv_usec / 1000);
+    return static_cast<uint32_t>((tv.tv_sec * 1000ull + tv.tv_usec / 1000) * fastFactor());
 }
 
 Mac macOf(uint16_t port) {

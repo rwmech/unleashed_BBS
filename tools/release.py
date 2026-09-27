@@ -386,6 +386,14 @@ def ext_plugins(b):
     r = subprocess.run([sys.executable, str(tool), "fetch", "--release", *names], cwd=ROOT)
     if r.returncode:
         die(f"{b['env']}: its plugins did not pass tools/plugins.py --release")
+    # newlib nano's formats (1.1.2) in each plugin's board sources too:
+    # check_formats() above saw src/ only, before these were fetched.
+    tool = str(ROOT / "tools" / "check_formats.py")
+    for n in names:
+        r = subprocess.run([sys.executable, tool, str(ROOT / "ext" / n / "bbs")], cwd=ROOT,
+                           capture_output=True, text=True)
+        if r.returncode:
+            die(f"{b['env']}: plugin {n} has printf formats newlib nano cannot print:\n" + r.stdout.strip())
     out = []
     for n in names:
         ini = (ROOT / "ext" / n / "unleashed-plugin.ini").read_text(encoding="utf-8")

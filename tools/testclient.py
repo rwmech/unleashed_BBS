@@ -2040,6 +2040,38 @@ def test_doors():
         ok &= check("a client that sends Ctrl-C as telnet's Interrupt Process gets out too",
                     wait_plain(c, b"--> Back home.", 6))
         drain(c)
+        # A save of CONFIG link alone restarts the link and not doors (1.1.2
+        # restarts only the plugins whose settings moved). A caller in a door
+        # was left sending to a session the new link never had, hearing
+        # nothing: they are given back now, and can go in again.
+        if PASSWORD and HOST in ("127.0.0.1", "localhost"):
+            c.buf.clear()
+            c.send(b"doors 2\r")
+            c.wait_for(b"CLOCK DOOR", 8)
+            c.buf.clear()
+            peer.lines.clear()                                 # its "link up" after the restart is the one wanted
+            s = ascii_sysop("LinkSaver")
+            s.buf.clear()
+            s.send(b"config link\r")
+            wait_label(s, b"Enabled", 5)
+            ascii_form(s, [b"", b"", b"", b"5"])            # Admin: sysop to co1
+            ok &= check("a CONFIG link save gives a caller in a door back",
+                        wait_plain(c, b"--> Lost the signal.", 8) and wait_plain(c, b"--> Back home.", 3))
+            s.buf.clear()
+            s.send(b"config link\r")
+            wait_label(s, b"Enabled", 5)
+            ascii_form(s, [b"", b"", b"", b"6"])            # and back to sysop
+            ok &= check("CONFIG link is as it was", (cfg_sec_line("plugin:link", "admin") or "= sysop").endswith("= sysop"))
+            s.close()
+            drain(c)
+            c.buf.clear()
+            peer.wait("link up", 10)
+            time.sleep(1.5)                                    # the door list comes again
+            c.send(b"doors 2\r")
+            ok &= check("and the door opens again after", c.wait_for(b"CLOCK DOOR", 10))
+            c.send(b"\x03\x03\x03")
+            wait_plain(c, b"--> Back home.", 6)
+            drain(c)
         c.buf.clear()
         c.send(b"doors 2\r")
         c.wait_for(b"CLOCK DOOR", 8)
@@ -19774,6 +19806,11 @@ NEEDS = {
     # "staff WHOIS shows private fields" reads Acct, whom test_accounts
     # registers with an email and a profile.
     "test_user_admin": ["test_accounts"],
+    # The link (1.2.0): the door sat and the shared satellite use the pairing
+    # test_radio_link makes (linkpeer.state and the board's p/link/peers).
+    "test_doors": ["test_radio_link"],
+    "test_doors_petscii": ["test_radio_link"],
+    "test_link_shared": ["test_radio_link"],
 }
 
 

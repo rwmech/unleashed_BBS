@@ -884,6 +884,14 @@ this tree.
       Open, for Rob: the S3's internal heap was 26-36 KB free with a
       satellite snapping on link.6 against 65 KB on link.5's old layout
       (camsat bench); the SSH preview's share is the suspect.
+    - **Rebased again, onto main at a3dcf01 after the v1.1.2 tag (link.12,
+      2026-09-27)**, pushed as rel-1.2.0-link-r3 for the merge. The
+      conflicts were in the build and test plumbing (host/Makefile's
+      formats target, harness.sh's --no-build rule, release.py's nano
+      check, testclient's pick_selected), not in the link. The link's and
+      camsat's formats pass check_formats.py. Delete the generated
+      `sdkconfig.<env>` files after such a rebase: board.h refuses a
+      stale one.
     - Retries count only while the far end is heard and only for a
       session's oldest message: the first version failed a session behind
       one lost frame, and a channel hop killed sessions that should pause.
