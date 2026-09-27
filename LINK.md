@@ -2,7 +2,7 @@
 µnleashed BBS: LINK.md
 
 The µnleashed link: one protocol that lets a board talk to small devices
-nearby (a camera satellite, a door box) over ESP-NOW or a serial line.
+nearby (a camera satellite, a door sat) over ESP-NOW or a serial line.
 Also how a plugin kept in its own git repository is built into a board's
 firmware.
 
@@ -51,7 +51,7 @@ in the core, so every board can use it, the bare ESP32-WROOM-32E included.
 |---|---|---|---|
 | LINK | 0 | any | discovery, pairing, hello, heartbeat, acknowledgements |
 | CAMERA | 1 | board and a camera satellite | snap requests, JPEG pictures, status, timelapse and motion events |
-| DOOR | 2 | board and a door box | a caller handed to a door, bytes both ways, "finished", "time's up" |
+| DOOR | 2 | board and a door sat | a caller handed to a door, bytes both ways, "finished", "time's up" |
 | reserved | 3-127 | | future core families |
 | plugin | 128-239 | | families registered by plugins, assigned in this file |
 | experimental | 240-254 | | anybody's, never in a release |
@@ -61,7 +61,7 @@ A family id is assigned by adding a row to this table, the same way a
 PROTOCOL.md field is. Two plugins claiming one id is refused at start, by
 name, in the console and in `PLUGINS`.
 
-The satellite and the door box are **peers**. The board is always the
+The satellite and the door sat are **peers**. The board is always the
 **host**. A peer never talks to another peer through the link.
 
 The core side is `src/core/link.*` (the protocol engine, no ESP-IDF and no
@@ -409,7 +409,7 @@ One layout on every transport. Little-endian throughout.
 - **Window.** A sender may have at most `win` fragments (bulk) or messages
   (streams, 4) unacknowledged. The receiver states `win` in `HELLO`,
   `HELLO_ACK` and every `ACK`, and states 0 when it has no room, which is
-  how a slow caller's terminal throttles a door box. 16 fragments for bulk
+  how a slow caller's terminal throttles a door sat. 16 fragments for bulk
   on a board without PSRAM (3.5 KB of window), 64 on one with it (14 KB, in
   PSRAM; link.7, after the camsat bench found the S3 paced by a 16-fragment
   window at 72-88 KB/s with no retries). The SACK bitmap covers 32 past the
@@ -602,10 +602,10 @@ tables are 8 KB of static DRAM.)
 
 ## Family 2: DOOR
 
-A door box is a device that runs doors: games and utilities a caller is
+A door sat is a device that runs doors: games and utilities a caller is
 handed to and comes back from. The BBS stays in charge of the caller the
 whole time. Several callers can be in one box at once, each in their own
-session. The host side is the core `doors` plugin; door boxes live in
+session. The host side is the core `doors` plugin; door sats live in
 their own repositories.
 
 | Type | Name | Dir | Payload |
@@ -708,8 +708,13 @@ def handoff(line):
   CLOSE that cannot go becomes a RESET, which needs no window, and the
   link sends what is queued before its radio goes.
 - If the box goes silent (retries run out, or the peer drops), the board
-  takes the caller back with "The door has gone away." or "The door box
-  went quiet."
+  takes the caller back with "--> Lost the signal." and "--> Back home."
+- The words: `UPLINK` (or `DOORS n`) goes in with `--> Uplinking to
+  <sat>...` and `--> Home is Ctrl-C three times.` (RUN/STOP on PETSCII);
+  every way back ends in `--> Back home.`, after the reason in the board's
+  voice or the door's own FINISHED or REFUSED words as they came. All of
+  them are in `src/core/satwords.h`, and each fits 39 columns with a
+  16-character sat name.
 - The session number the board uses to track the door is kept in
   `Session::ownerData`, which is the owning plugin's scratch word, so the
   door framework adds nothing to the `Session` struct.
@@ -718,7 +723,7 @@ def handoff(line):
 
 ## The serial transport
 
-The same frames on a UART, so a door box can sit on a cable where there is
+The same frames on a UART, so a door sat can sit on a cable where there is
 no radio, or be a PC or a Raspberry Pi with a USB serial adapter.
 
 - Each frame is COBS-encoded and ends with a single 0x00. A reader resyncs
@@ -1038,7 +1043,7 @@ the directory's fetcher reads it.
   a peer that goes away and one that comes back new. The wire against a
   published CRC-16, CCM against RFC 3610, HKDF against RFC 5869. Clean
   under ASan and UBSan.
-- `host/linkpeer`: a pretend door box (Echo and Clock) on the host board's
+- `host/linkpeer`: a pretend door sat (Echo and Clock) on the host board's
   UDP radio, built from the same engine. `tools/harness.sh` switches the
   link and doors on and gives the board and the box a port each;
   `--only=radio` runs `test_radio_link` (pairing through LINK PAIR, the

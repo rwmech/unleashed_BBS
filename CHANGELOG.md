@@ -29,6 +29,26 @@ A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E
 The µnleashed link, its lane (rel-1.2.0-link, rebased onto main at b278284,
 after 1.1.2 part 1 and SSH). Host-tested; not yet flashed.
 
+**1.2.0-link.10: the settled words**
+- Rob's names (2026-09-27): "sat" and "sats"; an **orbiter** is a sat that
+  feeds the board data (camera, GPIO, sensors, Home Assistant); a **door
+  sat** is one a caller goes into. What callers read says "door sat" where
+  it said "door box" (DOORS, and the line when one goes quiet). All of it
+  in `src/core/satwords.h`. LINK's kind column still says camsat and
+  doorbox until those short names are picked.
+- **UPLINK** goes into a door sat (Rob's verb; BEAM was rejected):
+  `UPLINK n`, `UPLINK name` (a door, or a sat: straight in with one door,
+  its doors listed with more), `UPLINK` alone lists them. HELP has one row,
+  `DOORS | UPLINK  games up on the sats`. No shortcut, and no clash with any
+  verb, shortcut or room command. The board speaks in its own voice on the
+  way: `--> Uplinking to shed...`, `--> Home is Ctrl-C three times.` and,
+  however a caller comes back, `--> Back home.` (after `--> Time's up.` or
+  `--> Lost the signal.`, or the door's own words). All within 39 columns.
+- `Bbs::markedLine` is public, so a plugin speaks in the board's voice
+  rather than a copy of it.
+- internal/sat-types-2026-09-27.md: what a relay, a GPIO, a Home Assistant
+  and a third party's sat would each need.
+
 **1.2.0-link.9: SATS, CONFIG sats and camera numbers that stay put**
 - **SATS [n]**, for callers and staff (tty-ux-sats; Rob: "as long as
   nothing security wise is revealed to regular users"). A caller sees each

@@ -610,7 +610,7 @@ template for writing your own ([PLUGINS.md](PLUGINS.md)):
 | `panel` | the board's own display as a status panel (boards with one only) | `sysop` throughout |
 | `camera` | photos from the board's own camera, into their own file areas (camera boards only) | `read = all`, `write = staff`, `admin = sysop` |
 | `link` | 1.2.0. The µnleashed link: ESP-NOW to paired devices beside the board ([LINK.md](LINK.md)) | `read = staff`, `write = staff`, `admin = sysop` |
-| `doors` | 1.2.0. Doors on a door box over the link | `read = users`, `write = users`, `admin = sysop` |
+| `doors` | 1.2.0. Doors on a door sat over the link | `read = users`, `write = users`, `admin = sysop` |
 
 Chat, `sd` and `info` are on by default, even with no section in `system.cfg`; `enabled = no` turns any of them off. `files` is also on by default once a card is mounted and an area is configured. `sd` on a board with no card costs one failed mount at boot and then nothing. `forums`, the serial bridge, `announce`, `lights` and `camera` wait to be switched on: `forums` because a sysop sets the topic areas up first, the serial bridge and the lights because they need wiring, `announce` because it is the one thing that talks out, and `camera` because even a board built with one should have a sysop's say before it starts taking photos. On a board whose pixel and display are part of the board (the Waveshare S3), `lights` and `panel` are on as shipped. Turning any of them off costs nothing: no commands, no hooks, no memory.
 
@@ -1260,7 +1260,7 @@ the new one.
 #### link
 
 1.2.0. The board's end of the µnleashed link, ESP-NOW to devices beside it
-(a camera satellite, a door box). [LINK.md](LINK.md) is the whole of it.
+(a camera satellite, a door sat). [LINK.md](LINK.md) is the whole of it.
 Off as shipped; `[plugin:link] enabled = yes` or CONFIG link turns it on,
 and the radio starts with it. It has no settings of its own beyond the
 levels.
@@ -1282,15 +1282,18 @@ backup: a restored board pairs its devices again. SYS and HARDWARE have a
 
 #### doors
 
-1.2.0. Doors run on a door box, another device on the link (LINK.md,
+1.2.0. Doors run on a door sat, another device on the link (LINK.md,
 "Family 2"). The board hands a caller over with one line saying who they
 are, what terminal they have and how long they have left, and takes them
 back. Off as shipped; needs the link on.
 
 | Command | Who | What it does |
 |---|---|---|
-| `DOORS` | users | The doors the boxes on the air offer, numbered. |
-| `DOORS n` | users | Goes through door n. Everything typed goes to the door, and everything it sends comes to the terminal as it is. Back at the prompt when the door finishes, when the call's time runs out (the door is told with fifteen seconds left and has ten to save), when the box goes quiet, or on **the break key three times within a second and a half** (Ctrl-C on a PC terminal, RUN/STOP on PETSCII), which always works and is named on the line the door opens with. |
+| `DOORS` | users | The doors the door sats on the air offer, numbered. One HELP row with UPLINK: `DOORS \| UPLINK`. |
+| `DOORS n` | users | The same as `UPLINK n`. |
+| `UPLINK` | users | The same as `DOORS`. No shortcut letter. |
+| `UPLINK n` | users | Goes into door n: `--> Uplinking to shed...`, then `--> Home is Ctrl-C three times.` Everything typed goes to the door, and everything it sends comes to the terminal as it is. Back at the prompt, with `--> Back home.`, when the door finishes (its own words first), when the call's time runs out (the door is told with fifteen seconds left and has ten to save; `--> Time's up.`), when the sat goes quiet (`--> Lost the signal.`), or on **the home key: the break key three times within a second and a half** (Ctrl-C on a PC terminal, RUN/STOP on PETSCII), which always works. |
+| `UPLINK name` | users | Goes into the door of that name, or to the sat of that name: straight in when it has one door, its doors listed when it has more. Any case. A door's name is tried before a sat's. |
 
 ### [access] matrix
 
