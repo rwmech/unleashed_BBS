@@ -833,6 +833,13 @@ At `1.2.0-link.8` (one satellite, several boards): esp32dev 164,648
 Freenove 175,960 (4,776 free), ESP32-CAM 177,432 (**3,304** free), S3
 254,952. The satellite's side of sharing is in unleashed_camsat.
 
+At `1.2.0-link.9` (SATS, CONFIG sats, fixed camera numbers): esp32dev
+164,688 (16,048 free, +40), Freenove 176,016 (4,720 free, +56), ESP32-CAM
+177,488 (**3,248** free, +56), S3 255,008 (+56). Images (firmware.bin):
+1,320,688, 1,399,984, 1,455,616 and 1,495,744 bytes. SATS and CONFIG sats
+are code, not statics: the page's state is a handful of bytes beside
+CONFIG's own.
+
 The ESP32-CAM is the one to watch: 3.5 KB of static RAM and 91% of its
 program slot. The camera boards' PSRAM move (1.3.0) is what buys it room.
 
@@ -859,6 +866,15 @@ program slot. The camera boards' PSRAM move (1.3.0) is what buys it room.
   `3 own` at 40), a row for each other board under it (`heard` or `not
   heard`) while the list fits the screen, and a footnote naming a board
   that is not heard, or saying this board's router moved.
+- **`SATS [n]`** (callers as the cameras' levels allow, 1.2.0): the camera
+  satellites, a row each: its number for SNAPSHOT, name, awake, asleep or
+  not answering, its last picture. Never the radio, the keys, the other
+  boards or the firmware. Staff also see channel, signal, rate, boards and
+  uptime, and `SATS n` one in full (MAC, fingerprint and other boards need
+  NODES). LINK is the radio and pairing; SATS is the satellites at work.
+- **CONFIG sats** (sysop): a satellite's name, camera number and what this
+  board receives from it (timelapse, motion), stored in the pairings file
+  (`recv`, `camno`) and sent to the satellite at once.
 - **`DOORS`** (users): the doors the boxes on the air offer, numbered;
   **`DOORS n`** goes through one. The break key three times within 1.5 s
   (0x03: Ctrl-C, RUN/STOP on PETSCII) always comes back; the key still

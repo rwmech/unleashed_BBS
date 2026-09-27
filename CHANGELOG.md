@@ -29,6 +29,59 @@ A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E
 The µnleashed link, its lane (rel-1.2.0-link, rebased onto main at b278284,
 after 1.1.2 part 1 and SSH). Host-tested; not yet flashed.
 
+**1.2.0-link.9: SATS, CONFIG sats and camera numbers that stay put**
+- **SATS [n]**, for callers and staff (tty-ux-sats; Rob: "as long as
+  nothing security wise is revealed to regular users"). A caller sees each
+  satellite they may see or snap: its number for SNAPSHOT, name, type,
+  awake, asleep or not answering, and its last picture, and nothing of the
+  radio, the keys, the other boards or the firmware. `test_sats` checks
+  that by content (a MAC, a channel, a key fingerprint, a signal figure, a
+  rate) at 80, 40 and plain ASCII, and checks the check finds all five in
+  staff's view. Staff get the radio, and `SATS n` one in full, the MAC,
+  the fingerprint and the other boards' names needing NODES as well. No
+  shortcut: S would be SNAPSHOT's if anything's.
+- **Camera numbers do not move**: the built-in camera is 1, a satellite
+  keeps the number CONFIG sats sets (2 to 9) or takes the lowest free.
+  SNAPSHOT, CAMERA and SATS agree.
+- **CONFIG sats**: a button a satellite, and a page each for its name,
+  number and whether this board receives its timelapse and motion
+  pictures (sent to the satellite at once). Pair, Share and Unpair run
+  the LINK commands; Default and Settings open CONFIG cameras and CONFIG
+  camsat. Share and Unpair leave the form and ask `(y/N)` on the sysop's
+  screen first. Not yet as the spec has it: Default and Settings do not
+  come back to CONFIG sats, and the other boards are read-only rows (LINK
+  REVOKE revokes).
+- **Fixed by the code review, before the commit:** Share and Unpair acted
+  on a plain Enter, which is how a sysop walks the form to Save; a name of
+  all digits could never be picked by name (refused, and a device's own
+  such name gets `sat-` in front); SATS on a board with none said "none
+  open to you"; two satellites asking for one number swapped it at every
+  renumber; a camera number saved showed the old one until the next
+  second. On the satellite (unleashed_camsat): an older board took every
+  timelapse twice, a busy camera lost a motion picture, a board that gave
+  up a queued SNAP still had it taken, a board gone mid-group held up the
+  rest, another board's SNAP could light the owner's flash, and a full NVS
+  could lose the pairing in the upgrade.
+- On the satellite (unleashed_camsat, from its bench): a picture given up
+  mid-way (a CONFIG save during it) has its part-file closed and removed on
+  the runner, not the loop (a 51 to 87 ms slow pass on the card); a sensor
+  that reads PID 0xFF twice after an EN reset gets a third try, powered down
+  500 ms and given 300 ms to wake; the rate to each board is kept per board,
+  since sending to two in turn reset it at every change and a fallback to
+  1 Mbps never held; and a board that answers after a reset is back at
+  24 Mbps at once rather than after 30 s at 1 Mbps (tried, and a marginal
+  path falls back again within about a second).
+- The link row in SYS and HARDWARE has its comma (`on, ch 6, 1 of 1 up`).
+- For the camera satellite's side (unleashed_camsat, branch multiboard):
+  `linkp::satInfo`, `peerRecv`, `peerCamNo`, `Family::settingsChanged`,
+  and `photos::Camera`'s `number`, `pairing`, `levels`, `facts`.
+- host/linkpeer plays a camera satellite (`--kind camsat`: STATUS,
+  SETTINGS_OK with the owner bit, a small JPEG a SNAP, `busy N P`), and
+  `tools/harness.sh --ext camsat` builds the board with a plugin from its
+  own repository: `test_sats` runs the camsat plugin end to end.
+- Static DRAM +40 on esp32dev (164,688, 16,048 free), +56 on the camera
+  boards (the ESP32-CAM at 3,248 free) and the S3.
+
 **1.2.0-link.8: one satellite, several boards; the door's way out**
 - **A satellite pairs with up to 5 boards** (Rob: "Having one camera
   accessible by 5 boards would rock"), each its own pairing and key. The

@@ -35,6 +35,14 @@
 //
 //               and it prints what happened, each line starting "b2 ".
 //
+//               As a camera satellite (--kind camsat, 1.2.0) it speaks the
+//               CAMERA family far enough for the board's camsat plugin, SATS
+//               and CONFIG sats to be tested with no radio: STATUS when a
+//               board comes up, SETTINGS_OK for SETTINGS (what each board
+//               wants, whether it owns it), and a small made-up JPEG for each
+//               SNAP. "busy N P" on stdin refuses the next N SNAPs with
+//               CE_BUSY and P requests ahead (255 full).
+//
 //   linkpeer --port P --host H [--chan C] [--state FILE] [--pair] [--name N]
 //            [--kind doorbox|camsat] [--board2 Q] [--board2-chan C]
 //
@@ -168,6 +176,14 @@ bool     g_b2yes = false;
 bool     g_b2asked = false;
 uint16_t g_hostPort = 0;
 
+// The camera satellite, when --kind camsat.
+bool     g_cam = false;
+uint8_t  g_recv[Engine::kHosts] = { 3, 3, 3, 3, 3 };
+uint8_t  g_busyLeft = 0, g_busyPlace = 0;
+uint8_t  g_pic[kPictureHeader + 400];
+bool     g_picBusy = false;
+uint32_t g_snaps = 0;
+
 // The pairings, one line a board: mac key ord name. A line with only a mac
 // and a key is the one-board format before 1.2.0's sharing.
 void save() {
@@ -225,7 +241,58 @@ Caller* callerOf(uint8_t peer, uint16_t sess) {
     return nullptr;
 }
 
+// camMessage: the CAMERA family, the satellite's side.
+bool camMessage(uint8_t peer, uint16_t sess, uint8_t type, const uint8_t* p, size_t n) {
+    switch (type) {
+        case CAM_SETTINGS: {
+            if (n >= 22 && (p[kSetRecv] & RECV_SAID)) g_recv[peer] = static_cast<uint8_t>(p[kSetRecv] & RECV_ALL);
+            const bool owner = static_cast<int>(peer) == g_eng->ownerIndex();
+            printf("settings %u recv %u owner %u\n", peer, g_recv[peer], owner ? 1u : 0u);
+            fflush(stdout);
+            uint8_t b[kSettings] = {};
+            memcpy(b, p, n < 21 ? n : 21);
+            b[kSetRecv] = static_cast<uint8_t>(g_recv[peer] | RECV_SAID);
+            b[kSetOwner] = static_cast<uint8_t>((owner ? SO_OWNER : 0) | SO_EVENTS);
+            g_eng->send(peer, sess, FAM_CAMERA, CAM_SETTINGS_OK, b, sizeof(b));
+            g_eng->closeAfter(peer, sess);
+            return true;
+        }
+        case CAM_SNAP: {
+            if (n < 6) return true;
+            const uint16_t req = static_cast<uint16_t>(p[0] | p[1] << 8);
+            if (g_busyLeft || g_picBusy) {
+                if (g_busyLeft) --g_busyLeft;
+                const uint8_t f[4] = { p[0], p[1], CE_BUSY, g_busyPlace };
+                g_eng->send(peer, sess, FAM_CAMERA, CAM_SNAP_FAIL, f, sizeof(f));
+                g_eng->closeAfter(peer, sess);
+                printf("snap %u busy %u\n", req, g_busyPlace);
+                fflush(stdout);
+                return true;
+            }
+            // A made-up JPEG: SOI, a comment, padding, EOI.
+            memset(g_pic, 0, sizeof(g_pic));
+            g_pic[0] = p[0];
+            g_pic[1] = p[1];
+            g_pic[2] = p[5];
+            g_pic[4] = 64; g_pic[6] = 48;                     // 64 x 48
+            uint8_t* j = g_pic + kPictureHeader;
+            const size_t jn = sizeof(g_pic) - kPictureHeader;
+            memset(j, 0x55, jn);
+            j[0] = 0xFF; j[1] = 0xD8; j[jn - 2] = 0xFF; j[jn - 1] = 0xD9;
+            const int r = g_eng->sendBulk(peer, sess, FAM_CAMERA, CAM_PICTURE, g_pic, sizeof(g_pic));
+            g_picBusy = r == 1;
+            printf("snap %u from %u %s\n", req, peer, r == 1 ? "sending" : "refused");
+            fflush(stdout);
+            ++g_snaps;
+            return true;
+        }
+        default:
+            return true;
+    }
+}
+
 bool onMessage(void*, uint8_t peer, uint16_t sess, uint8_t family, uint8_t type, const uint8_t* p, size_t n) {
+    if (family == FAM_CAMERA && g_cam) return camMessage(peer, sess, type, p, n);
     if (family != FAM_DOOR) return true;
     switch (type) {
         case DOOR_LIST_ASK:
@@ -334,7 +401,15 @@ void b2Start(uint16_t port, uint8_t chan, uint16_t satPort) {
 
 void command(char* line) {
     line[strcspn(line, "\r\n")] = '\0';
-    if (!strcmp(line, "pair")) { g_eng->startPairing(KIND_DOORBOX, "shelf", "test 1.0"); say("pairing"); return; }
+    if (!strcmp(line, "pair")) { g_eng->startPairing(g_cam ? KIND_CAMSAT : KIND_DOORBOX, "shelf", "test 1.0"); say("pairing"); return; }
+    if (!strncmp(line, "busy ", 5)) {
+        unsigned a = 0, b = 0;
+        sscanf(line + 5, "%u %u", &a, &b);
+        g_busyLeft = static_cast<uint8_t>(a);
+        g_busyPlace = static_cast<uint8_t>(b);
+        say("busy %u %u", a, b);
+        return;
+    }
     if (!g_b2 || strncmp(line, "b2 ", 3)) return;
     const char* c = line + 3;
     if (!strcmp(c, "pair"))                 { g_b2yes = true; g_b2->openPairing(120000); say("b2 pairing open"); }
@@ -380,13 +455,34 @@ int main(int argc, char** argv) {
         say("paired slot %u", slot);
         save();
     };
-    ev.peerState = [](void*, uint8_t slot, bool up) { say("link %s %u", up ? "up" : "down", slot); };
+    ev.peerState = [](void*, uint8_t slot, bool up) {
+        say("link %s %u", up ? "up" : "down", slot);
+        // A camera says what it is when a board comes up (STATUS).
+        if (up && g_cam) {
+            const uint16_t sess = g_eng->openSession(slot, FAM_CAMERA);
+            if (sess) {
+                uint8_t b[28] = {};
+                b[0] = 1;
+                b[1] = CS_UXGA;
+                b[10] = 60;                                   // up a minute
+                snprintf(reinterpret_cast<char*>(b + 16), 12, "OV2640");
+                g_eng->send(slot, sess, FAM_CAMERA, CAM_STATUS, b, sizeof(b));
+                g_eng->closeAfter(slot, sess);
+            }
+        }
+    };
+    ev.bulkSent = [](void*, uint8_t slot, uint16_t sess, uint8_t, bool ok) {
+        g_picBusy = false;
+        g_eng->closeAfter(slot, sess);
+        say("picture %s", ok ? "taken" : "not delivered");
+    };
     ev.channel = [](void*, uint8_t ch) { say("channel %u", ch); };
     ev.unpaired = [](void*, uint8_t slot) { say("unpaired %u", slot); save(); };
     ev.shareOpened = [](void*, uint32_t s) { say("share open %u", static_cast<unsigned>(s)); };
     ev.pairAsk = [](void*, const PairInfo& who) { say("code %04u from %s", static_cast<unsigned>(who.code), who.name); };
     g_eng = new Engine(Role::Peer, g_io, ev, 16, win);
-    g_eng->setIdentity(kind, "test 1.0", 1u << FAM_DOOR);
+    g_cam = kind == KIND_CAMSAT;
+    g_eng->setIdentity(kind, "test 1.0", 1u << (g_cam ? FAM_CAMERA : FAM_DOOR));
     if (board2) b2Start(board2, chan2 ? chan2 : chan, port);
     fcntl(0, F_SETFL, fcntl(0, F_GETFL, 0) | O_NONBLOCK);
     if (pair || !load()) {

@@ -107,6 +107,7 @@ uint8_t  linkRadioBulkHigh();      // the most the bulk ring has held
 uint32_t linkRadioSendFails();     // send callbacks that said FAIL
 uint32_t linkRadioChannelMoves();  // home channel changes seen (the router hopped)
 uint8_t  linkRadioSlowPeers();     // peers sent at 1 Mbps just now (fallen back)
+bool     linkRadioPeerSlow(const uint8_t mac[6]);   // this one is (SATS, 1.2.0)
 
 // linkRadioPsram: the board has PSRAM for the link's buffers, so the bulk
 // window can be 64 fragments rather than 16.

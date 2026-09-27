@@ -68,7 +68,7 @@ python3 tools/plugins.py fetch hello --lock "$TMP/plugins.lock" >/dev/null
 cd "$PROJ/host"
 check "the host board builds with it (make EXT=hello bbs_host_ext)" make -s EXT=hello bbs_host_ext
 check "the descriptor is in the image" bash -c "nm bbs_host_ext | grep -q kHelloPlugin"
-check "ext_plugins.h names it" grep -q "X(kHelloPlugin)" ext-gen/ext_plugins.h
+check "ext_plugins.h names it" grep -q "X(kHelloPlugin)" ext-gen-ext/ext_plugins.h
 
 # Start it on a data folder of its own and read the console.
 DATA=$TMP/data

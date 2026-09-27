@@ -327,6 +327,16 @@ static const photos::Camera kCam = {
 photos::addCamera(kCam);     // 8 cameras at most; SNAPSHOT exists while there is one
 ```
 
+Appended in 1.2.0, and a camera that sets none of them still works:
+`number` (the camera number it asks for, 2 to 9; 0 lets the board choose),
+`pairing` (a satellite's link pairing; SATS lists the cameras with one),
+`levels` (who may see its photos and who may take one, for SATS's caller
+view) and `facts` (a `photos::CamFacts`: its state, last picture, uptime,
+sensor, schedule). Numbers do not move: the built-in camera is 1, a camera
+that asks gets its number when it is free, the rest take the lowest free.
+`photos::numberOf(cam)` says what a camera got; `photos::renumber()` after
+changing `number`.
+
 `snap` applies its own levels. For anybody but the sysop it asks
 `photos::budget(s, now)` before it starts and calls `photos::spend(s, now)`
 once the picture is under way: the limits are one count across every
@@ -350,11 +360,22 @@ f.bulkData  = onBulkData;        // its bytes in order: ON THE BACKGROUND RUNNER
 f.bulkEnd   = onBulkEnd;         // whole and checked, or abandoned
 f.reset     = onReset;           // the far end or the retries ended a session
 f.peerState = onPeerState;       // a device came up or went down
+f.settingsChanged = onChanged;   // CONFIG sats changed what this board takes from it (1.2.0)
 linkp::registerFamily(f);        // in start(); unregisterFamily(130) in stop()
 ```
 
 To send, borrow the engine for the length of a call and never keep the
 pointer: a CONFIG save can stop and start the link.
+
+What the board knows of a pairing (1.2.0): `linkp::satInfo(peer, info)`
+(name, kind, signal, channel, the boards sharing it and its owner, and the
+key's fingerprint, never the key), `linkp::peerRecv(peer)` (what this board
+takes: `RECV_TIMELAPSE`, `RECV_MOTION`) and `linkp::peerCamNo(peer)`.
+
+A plugin in its own repository is tested on the host with
+`tools/harness.sh --ext NAME` once `tools/plugins.py fetch NAME` has put it
+in `ext/` (a lock line with a local path and `-` takes a working tree): the
+board is built with it and it is switched on.
 
 ```c
 if (ulink::Engine* e = linkp::engine()) {

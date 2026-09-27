@@ -274,6 +274,7 @@ uint8_t  linkRadioBulkHigh()     { std::lock_guard<std::mutex> g(g_mx); return g
 uint32_t linkRadioSendFails()    { return 0; }
 uint32_t linkRadioChannelMoves() { std::lock_guard<std::mutex> g(g_mx); return g_moves; }
 uint8_t  linkRadioSlowPeers()    { return 0; }
+bool     linkRadioPeerSlow(const uint8_t*) { return false; }
 
 // The host plays a board without PSRAM, unless BBS_LINK_PSRAM=1 says otherwise.
 bool linkRadioPsram() {

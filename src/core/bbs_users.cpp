@@ -510,6 +510,8 @@ void Bbs::formSave(Session& s, uint32_t now) {
 // ---------------------------------------------------------------------------
 void Bbs::formOpen(Session& s, uint8_t field, uint32_t now) {
     if (s.formKind == FormKind::Config) configSubOpen(s, field, now);
+    // A satellite's page (CONFIG sats, 1.2.0) is the one sub-page with buttons.
+    else if (s.formKind == FormKind::ConfigArea && configSatSub()) configSatsButton(s, field, now);
 }
 
 void Bbs::formCancel(Session& s, uint32_t now) {
