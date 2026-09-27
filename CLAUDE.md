@@ -789,6 +789,21 @@ this tree.
     terminal and minutes, "finished" and "time's up", several callers per
     box) over the link, and over serial later. The building-game door
     (IDEAS.local.md, private) gets its own repo later: **not built now**.
+  - **One satellite, many boards** (Rob, 2026-09-27: "Having one camera
+    accessable by 5 boards would rock ... make it happen and im sure we
+    have a CONFIG SATS in it"). Up to 5 boards per satellite, each with
+    its own keys, removable and revocable. There is also CONFIG sats,
+    one page for every paired satellite (name, status, pair and unpair,
+    what this board receives), taking in CONFIG cameras and CONFIG
+    camsat. ESP-NOW shares the Wi-Fi channel, so every board sharing a
+    satellite must be on the same channel (in practice the same router).
+    The board tells the sysop when that fails, never failing silently.
+    Being built on the link lane for 1.2.0.
+  - **Satellite install pages** (Rob, 2026-09-27): each satellite type
+    gets its own install page on the main site, under /satellites, with
+    a hub-and-spoke animation (the ESP32 as a globe, satellites
+    orbiting) and "How it works". "Build one" says a camera can be added
+    later with a satellite.
   - **Recommended hardware changes:** the Waveshare S3 plus a camera
     satellite is the best setup today (Rob). The site and the board
     picks are redone once the satellite works.
