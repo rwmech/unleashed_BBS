@@ -1247,6 +1247,19 @@ this tree.
     wrapped.
   - **F5:** CALLS by hour is 28 rows; at 80 it should be two columns of
     12 hours.
+  - **From the Freenove bench (2026-09-27):**
+    - FILES' area menu takes each digit as its own key, so Photos (12)
+      and Timelapse (13) can't be opened by number. A plain-ASCII
+      caller has no route to them from the menu.
+    - At boot the camera clamps the UXGA size to VGA before the sensor
+      is probed ("more than the GC0308 gives"), so the first snap after
+      every boot is 640x480 on an OV2640.
+    - The first timelapse shot after every boot is refused for memory
+      (internal free 46,371 of 48,640 at 7.8 s): the timer fires
+      before the heap settles.
+    - COM21's CH340 drops off USB under radio and camera load, even on
+      the powered hub. The board itself never resets. Hardware, not
+      firmware.
   The six 1.3.0 decisions in internal/tty-ux-1.3.0-classics-2026-09-26.md
   (branch specs-1.3.0) are with Rob for review. Nothing is settled.
 - **1.2.0: memory, from internal/memory-2026-09-25-1.1.1.md** (Rob,
