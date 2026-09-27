@@ -65,7 +65,7 @@ Disk free 612K, reserve 32K
 | `example` | the template, and what the tests drive |
 | `camera` | photos from the board's own camera (camera boards only, `BBS_HAS_CAMERA`): `SNAPSHOT` for a caller, a timelapse of its own, into the Photos and Timelapse file areas. Needs a card and a board wired for a sensor, so it neither starts nor exists in the binary on any other board. Its own doc: COMMANDS.md, `camera` under Plugins. |
 | `link` | 1.2.0. The µnleashed link: ESP-NOW to devices beside the board (a camera satellite, a door box), paired by the sysop (`LINK PAIR`), every frame sealed with AES-CCM. Off until switched on. `PF_FAST`. The family table other plugins speak through (below). Its own doc: [LINK.md](LINK.md). |
-| `doors` | 1.2.0. Doors on a door box over the link: `DOORS` lists them, `DOORS n` hands the caller over with the handoff line in LINK.md and takes them back when the door finishes, the time runs out, or they press Ctrl-] three times. Off until switched on. |
+| `doors` | 1.2.0. Doors on a door box over the link: `DOORS` lists them, `DOORS n` hands the caller over with the handoff line in LINK.md and takes them back when the door finishes, the time runs out, or they press the break key three times within 1.5 s (Ctrl-C, RUN/STOP on PETSCII). Off until switched on. |
 
 ## Writing one
 

@@ -230,6 +230,13 @@ struct End {
     PairInfo pairedWho;
     bool refuse = false;                 // message(): say "no room"
     uint32_t clockSeen = 0;
+    // one satellite, several boards
+    int refusals = 0;
+    uint8_t refusedChan = 0;
+    std::vector<SharedBoard> shared;
+    int peersLists = 0;
+    std::vector<uint8_t> unpairedSlots;
+    uint32_t shareSecs = 0;
 
     End(Air& a, uint8_t last, Role role, uint8_t bulkWin, uint64_t seed)
         : node(a, last, seed), win(static_cast<size_t>(bulkWin) * kPayloadMax) {
@@ -270,6 +277,18 @@ struct End {
         ev.pairAsk = [](void* c, const PairInfo& w) { End& e = *static_cast<End*>(c); e.asked = true; e.askedWho = w; };
         ev.paired = [](void* c, uint8_t, const PairInfo& w) { End& e = *static_cast<End*>(c); e.paired = true; e.pairedWho = w; };
         ev.clock = [](void* c, uint32_t t) { static_cast<End*>(c)->clockSeen = t; };
+        ev.pairRefused = [](void* c, const PairInfo&, uint8_t ch) {
+            End& e = *static_cast<End*>(c);
+            ++e.refusals;
+            e.refusedChan = ch;
+        };
+        ev.peersList = [](void* c, uint8_t, const SharedBoard* b, uint8_t n) {
+            End& e = *static_cast<End*>(c);
+            e.shared.assign(b, b + n);
+            ++e.peersLists;
+        };
+        ev.unpaired = [](void* c, uint8_t slot) { static_cast<End*>(c)->unpairedSlots.push_back(slot); };
+        ev.shareOpened = [](void* c, uint32_t s) { static_cast<End*>(c)->shareSecs = s; };
         eng = new Engine(role, node, ev, bulkWin, win.data());
     }
     ~End() { delete eng; }
@@ -999,9 +1018,269 @@ int main() {
         int downs = peer.downs;
         peer.node.failStreak = 3;
         run(air, { &host, &peer }, 50);
-        check("three MAC failures in a row and it looks for the host straight away", peer.downs == downs + 1);
+        // At least once: the test's radio keeps saying "failed", so a peer
+        // that found the host again in the same 50 ms may look again.
+        check("three MAC failures in a row and it looks for the host straight away", peer.downs > downs);
         peer.node.failStreak = 0;
         check("and finds it again", runUntil(air, { &host, &peer }, 10000, [&] { return peer.eng->hostUp(); }));
+    }
+
+    printf("One satellite, several boards (1.2.0)\n");
+    {
+        Air air;
+        End a(air, 1, Role::Host, 16, 91);
+        End b(air, 3, Role::Host, 16, 92);
+        End c(air, 4, Role::Host, 16, 93);
+        End peer(air, 2, Role::Peer, 16, 94);
+        check("paired and up with its first board", pairUp(air, a, peer, 6));
+        std::vector<End*> all{ &a, &b, &c, &peer };
+        b.node.chan = 6;
+        c.node.chan = 6;
+        b.eng->setBoardName("Board B");
+        c.eng->setBoardName("Board C");
+
+        // Nobody but the owner opens a share window, and nobody opens one
+        // without asking: a board with the window shut is never asked.
+        check("the first board is the owner", peer.eng->ownerIndex() == 0);
+        check("its name came with it", !strcmp(peer.eng->peerName(0), "Test Board"));
+        check("the owner asks the satellite to pair one more", a.eng->sharePairing(0, 120));
+        check("the satellite opens a share window",
+              runUntil(air, all, 3000, [&] { return peer.shareSecs == 120; }));
+        peer.paired = false;
+        b.eng->openPairing(120000);
+        check("the second board is asked", runUntil(air, all, 20000, [&] { return b.asked; }));
+        check("it names the satellite", !strcmp(b.askedWho.name, "shelf"));
+        b.eng->pairAnswer(true);
+        check("both ends finish pairing", runUntil(air, all, 20000, [&] { return b.paired && peer.paired; }));
+        check("the second board's key is not the first's", memcmp(b.pairedWho.key, a.pairedWho.key, 16) != 0);
+        check("the satellite is up with both boards",
+              runUntil(air, all, 30000, [&] { return peer.eng->hostUp(0) && peer.eng->hostUp(1) &&
+                                                       a.eng->peerUp(0) && b.eng->peerUp(0); }));
+        check("and stayed on their channel", peer.node.chan == 6);
+        check("the first board is still the owner, the second is not",
+              peer.eng->ownerIndex() == 0 && peer.eng->peerOrd(1) > peer.eng->peerOrd(0));
+        check("the window closed behind it", !c.asked);
+
+        // PEERS: each board is told who else shares the satellite.
+        check("each board gets the list of boards",
+              runUntil(air, all, 10000, [&] { return a.shared.size() == 2 && b.shared.size() == 2; }));
+        auto flagsOf = [](const std::vector<SharedBoard>& v, const Mac& m) {
+            for (auto& s : v) if (s.mac == m) return static_cast<int>(s.flags);
+            return -1;
+        };
+        check("the owner is marked as the owner, to both",
+              (flagsOf(a.shared, a.node.mac) & SB_OWNER) && (flagsOf(b.shared, a.node.mac) & SB_OWNER) &&
+              !(flagsOf(b.shared, b.node.mac) & SB_OWNER));
+        check("each board is told which entry is itself",
+              (flagsOf(a.shared, a.node.mac) & SB_YOU) && (flagsOf(b.shared, b.node.mac) & SB_YOU) &&
+              !(flagsOf(a.shared, b.node.mac) & SB_YOU));
+        bool named = false;
+        for (auto& s : a.shared) if (s.mac == b.node.mac) named = !strcmp(s.name, "Board B");
+        check("and the other board's name", named);
+
+        // Sessions to and from each board.
+        auto sendOn = [&](End& from, uint8_t slot, uint16_t s, const char* fmt, int n) {
+            for (int i = 0; i < n;) {
+                char m[16];
+                snprintf(m, sizeof(m), fmt, i);
+                int r = from.eng->send(slot, s, FAM_DOOR, 5, m, strlen(m));
+                if (r == 1) { ++i; continue; }
+                if (r < 0) return false;
+                run(air, all, 1);
+            }
+            return true;
+        };
+        uint16_t sa = a.eng->openSession(0, FAM_DOOR);
+        uint16_t sb = b.eng->openSession(0, FAM_DOOR);
+        check("both boards send to the satellite",
+              sa && sb && sendOn(a, 0, sa, "a%02d", 3) && sendOn(b, 0, sb, "b%02d", 3) &&
+              runUntil(air, all, 5000, [&] { return peer.msgs.size() == 6; }));
+        uint16_t pa = peer.eng->openSession(0, FAM_DOOR);
+        uint16_t pb = peer.eng->openSession(1, FAM_DOOR);
+        check("and the satellite answers each on its own",
+              pa && pb && sendOn(peer, 0, pa, "x%02d", 2) && sendOn(peer, 1, pb, "y%02d", 3) &&
+              runUntil(air, all, 5000, [&] { return a.msgs.size() == 2 && b.msgs.size() == 3; }) &&
+              a.msgs[0] == "2/5/x00" && b.msgs[0] == "2/5/y00");
+
+        // Only the owner opens a window or revokes.
+        peer.shareSecs = 0;
+        b.eng->sharePairing(0, 60);
+        run(air, all, 2000);
+        check("a board that is not the owner cannot open a share window", peer.shareSecs == 0);
+        b.eng->revoke(0, a.node.mac);
+        run(air, all, 2000);
+        check("nor revoke another board", peer.eng->peerUsed(0) && peer.unpairedSlots.empty());
+
+        // A board on another channel is refused, and told why.
+        c.node.chan = 11;
+        check("the owner opens another window", a.eng->sharePairing(0, 60) &&
+              runUntil(air, all, 3000, [&] { return peer.shareSecs == 60; }));
+        c.eng->openPairing(60000);
+        check("a board on another channel says why it will not pair",
+              runUntil(air, all, 20000, [&] { return c.refusals > 0; }) && c.refusedChan == 6);
+        check("and it is never asked", !c.asked);
+        run(air, all, 62000);
+        check("the window ends by itself, back on the boards' channel",
+              peer.node.chan == 6 && runUntil(air, all, 20000, [&] {
+                  return peer.eng->hostUp(0) && peer.eng->hostUp(1); }));
+        c.node.chan = 6;
+
+        // One router moves alone: the others stay served.
+        b.node.chan = 1;
+        run(air, all, 20000);
+        check("the board that moved is lost, the other stays up",
+              !peer.eng->hostUp(1) && peer.eng->hostUp(0) && peer.node.chan == 6);
+        check("and the owner hears the other is not heard",
+              runUntil(air, all, 10000, [&] { return !(flagsOf(a.shared, b.node.mac) & SB_HEARD); }));
+        b.node.chan = 6;
+        check("it is found again when it comes back",
+              runUntil(air, all, 45000, [&] { return peer.eng->hostUp(1) && b.eng->peerUp(0); }));
+
+        // Both routers move together: the satellite looks for them.
+        a.node.chan = 11; b.node.chan = 11;
+        check("everyone moving together: the satellite follows",
+              runUntil(air, all, 60000, [&] { return peer.node.chan == 11 && peer.eng->hostUp(0) && peer.eng->hostUp(1); }));
+        a.node.chan = 6; b.node.chan = 6;
+        runUntil(air, all, 60000, [&] { return peer.eng->hostUp(0) && peer.eng->hostUp(1) && peer.node.chan == 6; });
+
+        // A board lets go (UNPAIR): the satellite forgets it, the owner stays.
+        peer.unpairedSlots.clear();
+        b.eng->forget(0);
+        check("a board unpairs: the satellite forgets it",
+              runUntil(air, all, 5000, [&] { return !peer.unpairedSlots.empty(); }) &&
+              peer.unpairedSlots[0] == 1 && !peer.eng->peerUsed(1));
+        check("and the board has let it go", runUntil(air, all, 5000, [&] { return !b.eng->peerUsed(0); }));
+        check("the owner is still up", peer.eng->hostUp(0) && a.eng->peerUp(0));
+        check("and hears the list shrink",
+              runUntil(air, all, 10000, [&] { return a.shared.size() == 1; }));
+    }
+
+    printf("Pairing on a board up for more than 24.8 days (the millisecond clock past 2^31)\n");
+    {
+        const uint32_t was = g_now;
+        g_now = 0x90000000u;
+        Air air;
+        End host(air, 1, Role::Host, 16, 141);
+        End peer(air, 2, Role::Peer, 16, 142);
+        check("a device pairs and comes up", pairUp(air, host, peer, 6));
+        g_now = was;
+    }
+
+    printf("A share window does not take the satellite from its boards (code review)\n");
+    {
+        Air air;
+        End a(air, 1, Role::Host, 16, 121);
+        End b(air, 3, Role::Host, 16, 122);
+        End peer(air, 2, Role::Peer, 16, 123);
+        check("paired and up with its first board", pairUp(air, a, peer, 6));
+        std::vector<End*> all{ &a, &b, &peer };
+        b.node.chan = 6;
+        uint16_t sa = a.eng->openSession(0, FAM_DOOR);
+        check("the owner opens a two-minute share window",
+              sa && a.eng->sharePairing(0, 120) && runUntil(air, all, 3000, [&] { return peer.shareSecs == 120; }));
+        // A caller in a door the whole time: a message every two seconds.
+        int sent = 0;
+        size_t before = peer.msgs.size();
+        for (int t = 0; t < 70; ++t) {
+            char m[16];
+            snprintf(m, sizeof(m), "w%02d", sent);
+            if (a.eng->send(0, sa, FAM_DOOR, 5, m, strlen(m)) == 1) ++sent;
+            run(air, all, 2000);
+        }
+        check("every message on the owner's session arrives through the window",
+              runUntil(air, all, 10000, [&] { return peer.msgs.size() - before == static_cast<size_t>(sent); }) &&
+              sent == 70);
+        check("and the session was never given up", a.resets.empty() && peer.resets.empty());
+        check("the owner never lost the satellite", a.downs == 0);
+        check("the window ended by itself", !b.asked && peer.eng->hostUp(0) && peer.node.chan == 6);
+        // The sysop at the new board says No: the window still ends, and the
+        // owner can open another.
+        peer.shareSecs = 0;
+        check("another window", a.eng->sharePairing(0, 20) && runUntil(air, all, 3000, [&] { return peer.shareSecs == 20; }));
+        b.eng->openPairing(60000);
+        check("the new board is asked", runUntil(air, all, 20000, [&] { return b.asked; }));
+        b.eng->pairAnswer(false);
+        run(air, all, 60000);
+        peer.shareSecs = 0;
+        check("a No does not wedge the satellite: the owner opens another window after",
+              a.eng->sharePairing(0, 30) && runUntil(air, all, 5000, [&] { return peer.shareSecs == 30; }));
+        check("and it is still up with its owner", peer.eng->hostUp(0) && a.eng->peerUp(0));
+    }
+
+    printf("A sleeping sender with two boards, one lost, keeps the other (code review)\n");
+    {
+        Air air;
+        End a(air, 1, Role::Host, 16, 131);
+        End b(air, 3, Role::Host, 16, 132);
+        End peer(air, 2, Role::Peer, 16, 133);
+        check("paired and up with its first board", pairUp(air, a, peer, 6));
+        std::vector<End*> all{ &a, &b, &peer };
+        b.node.chan = 6;
+        a.eng->sharePairing(0, 120);
+        runUntil(air, all, 3000, [&] { return peer.shareSecs == 120; });
+        b.eng->openPairing(60000);
+        runUntil(air, all, 20000, [&] { return b.asked; });
+        b.eng->pairAnswer(true);
+        check("two boards up", runUntil(air, all, 30000, [&] { return peer.eng->hostUp(0) && peer.eng->hostUp(1); }));
+        peer.eng->setFastRescan(true);
+        b.node.chan = 1;                                   // B's router moves
+        run(air, all, 15000);
+        int downs = peer.downs;
+        peer.node.failStreak = 3;                          // B's HELLOs fail at the MAC
+        run(air, all, 3000);
+        peer.node.failStreak = 0;
+        check("the good board is not dropped for the lost one's failures",
+              peer.eng->hostUp(0) && peer.downs == downs && peer.node.chan == 6);
+    }
+
+    printf("The owner revokes a board; five boards at most\n");
+    {
+        Air air;
+        End peer(air, 2, Role::Peer, 16, 101);
+        std::vector<End*> hosts;
+        for (uint8_t i = 0; i < 6; ++i) hosts.push_back(new End(air, static_cast<uint8_t>(10 + i), Role::Host, 16, 110 + i));
+        check("paired and up with its first board", pairUp(air, *hosts[0], peer, 6));
+        std::vector<End*> all(hosts);
+        all.push_back(&peer);
+        int joined = 1;
+        for (uint8_t i = 1; i < 5; ++i) {
+            End& h = *hosts[i];
+            h.node.chan = 6;
+            peer.shareSecs = 0;
+            peer.paired = false;
+            hosts[0]->eng->sharePairing(0, 120);
+            if (!runUntil(air, all, 3000, [&] { return peer.shareSecs == 120; })) break;
+            h.eng->openPairing(120000);
+            if (!runUntil(air, all, 20000, [&] { return h.asked; })) break;
+            h.eng->pairAnswer(true);
+            if (!runUntil(air, all, 30000, [&] { return h.paired && peer.paired && h.eng->peerUp(0) && peer.eng->hostUp(i); })) break;
+            ++joined;
+        }
+        check("five boards pair with one satellite", joined == 5);
+        check("all five are up at once",
+              runUntil(air, all, 30000, [&] {
+                  for (uint8_t i = 0; i < 5; ++i) if (!peer.eng->hostUp(i) || !hosts[i]->eng->peerUp(0)) return false;
+                  return true; }));
+        peer.shareSecs = 0;
+        hosts[0]->eng->sharePairing(0, 120);
+        run(air, all, 3000);
+        check("a sixth is not offered: the satellite is full", peer.shareSecs == 0);
+        hosts[5]->node.chan = 6;
+        hosts[5]->eng->openPairing(20000);
+        run(air, all, 20000);
+        check("and a sixth board is never asked", !hosts[5]->asked);
+
+        peer.unpairedSlots.clear();
+        check("the owner revokes the third board", hosts[0]->eng->revoke(0, hosts[2]->node.mac));
+        check("the satellite forgets it",
+              runUntil(air, all, 5000, [&] { return !peer.unpairedSlots.empty(); }) && !peer.eng->peerUsed(2));
+        check("the others stay up",
+              runUntil(air, all, 10000, [&] {
+                  return peer.eng->hostUp(0) && peer.eng->hostUp(1) && peer.eng->hostUp(3) && peer.eng->hostUp(4); }));
+        check("the revoked board is told, and lets the satellite go",
+              runUntil(air, all, 5000, [&] { return !hosts[2]->unpairedSlots.empty(); }) &&
+              !hosts[2]->eng->peerUsed(0));
+        for (End* h : hosts) delete h;
     }
 
     printf("\n%d passed, %d failed\n", passes, fails);

@@ -32,8 +32,12 @@
 //               Session::ownerData, which is this plugin's while it owns the
 //               caller. Everything else is allocated when the plugin starts.
 //
-//               The way out for a caller whatever the door does: Ctrl-]
-//               three times in a row (0x1D, telnet's own escape character).
+//               The way out for a caller whatever the door does: the break
+//               key three times within a second and a half (kLeaveKey, 0x03:
+//               Ctrl-C on a PC terminal, RUN/STOP on PETSCII). Not Ctrl-]:
+//               0x1D is cursor-right on PETSCII, so three moves right threw a
+//               C64 caller out of the game, and telnet clients keep Ctrl-] as
+//               their own escape, so it never reaches the board.
 //
 // Targets:      ESP32 and ESP32-S3 (ESP-IDF 5.3.1) and the Linux host build
 // See also:     LINK.md, src/plugins/link.h, src/core/linkfam.h, COMMANDS.md
@@ -80,6 +84,11 @@ constexpr uint32_t   kOpenMs    = 5000;
 constexpr uint32_t   kGraceMs   = 10000;
 constexpr int32_t    kTimeUpSec = 15;             // TIMEUP this long before the core hangs up
 constexpr uint32_t   kCloseMs   = 5000;           // a CLOSE the window would not take: tried this long
+// The way out: kLeaveKey kLeaveCount times in a row within kLeaveMs. What
+// the key is called follows the terminal (leaveKeyName).
+constexpr uint8_t    kLeaveKey   = 0x03;
+constexpr uint8_t    kLeaveCount = 3;
+constexpr uint32_t   kLeaveMs    = 1500;
 
 struct Door {
     bool    used;
@@ -106,7 +115,8 @@ struct Slot {
     uint32_t at;              // opening: when OPEN went; timeup: when TIMEUP went; closing: since
     uint8_t  warned;          // 0, 5 or 1: the last WARN sent
     uint8_t  cols, rows;
-    uint8_t  escapes;         // Ctrl-] in a row
+    uint8_t  escapes;         // kLeaveKey in a row
+    uint32_t escAt;           // when the first of them came
     uint8_t  held;            // keys waiting in keys[]
     uint8_t  keys[kKeyBuf];
 };
@@ -120,6 +130,12 @@ Ctx*    g_ctx   = nullptr;
 uint8_t g_index = 0xFF;
 
 Bbs& bbs() { return Bbs::instance(); }
+
+// leaveKeyName: what the leave key is called on this caller's keyboard.
+const char* leaveKeyName(const Session& s) {
+    const TermType t = s.term.type();
+    return (t == TermType::Pet40 || t == TermType::Pet80) ? "RUN/STOP" : "Ctrl-C";
+}
 
 Session* sessionOf(uint8_t node) {
     struct Find { uint8_t node; Session* s; } fd{ node, nullptr };
@@ -374,7 +390,12 @@ void cmdDoors(Bbs& b, Session& s, const char* arg, uint32_t now) {
             ++shown;
         }
         if (!shown) b.rowText(s, Color::Grey, "No door box is on the air.");
-        else        b.rowText(s, Color::Grey, "DOORS n opens one. Ctrl-] three times leaves.");
+        else {
+            char how[48];
+            b.rowText(s, Color::Grey, "DOORS n opens one.");
+            snprintf(how, sizeof(how), "%s three times leaves a door.", leaveKeyName(s));
+            b.rowText(s, Color::Grey, how);
+        }
         b.rowRule(s);
         b.prompt(s);
         return;
@@ -422,6 +443,10 @@ void cmdDoors(Bbs& b, Session& s, const char* arg, uint32_t now) {
     char line[64];
     snprintf(line, sizeof(line), "Opening %s...", d.name);
     s.term.text(s.tl, line);
+    s.term.nl(s.tl);
+    s.term.color(s.tl, Color::Grey);
+    snprintf(line, sizeof(line), "%s three times brings you back.", leaveKeyName(s));
+    s.term.text(s.tl, line);
 }
 
 // Keys from a caller in a door: as bytes (raw input), straight to the box.
@@ -432,12 +457,14 @@ void flush(Slot& sl) {
 }
 
 void onBytes(Session& s, const uint8_t* b, size_t n, uint32_t now) {
-    (void)now;
     Slot* sl = slotOfNode(s.id);
     if (!sl) { bbs().setRawInput(s, false); bbs().release(s); return; }
     for (size_t i = 0; i < n; ++i) {
-        if (b[i] == 0x1D) {
-            if (++sl->escapes >= 3) { giveBack(*sl, Color::Grey, "You left the door.", DC_TAKENBACK); return; }
+        // The way out. The key still goes to the door, which may use it:
+        // only the third in a row, in time, takes the caller back.
+        if (b[i] == kLeaveKey) {
+            if (!sl->escapes || now - sl->escAt > kLeaveMs) { sl->escapes = 0; sl->escAt = now; }
+            if (++sl->escapes >= kLeaveCount) { giveBack(*sl, Color::Grey, "You left the door.", DC_TAKENBACK); return; }
         } else {
             sl->escapes = 0;
         }

@@ -29,6 +29,46 @@ A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E
 The µnleashed link, its lane (rel-1.2.0-link, rebased onto main at b278284,
 after 1.1.2 part 1 and SSH). Host-tested; not yet flashed.
 
+**1.2.0-link.8: one satellite, several boards; the door's way out**
+- **A satellite pairs with up to 5 boards** (Rob: "Having one camera
+  accessible by 5 boards would rock"), each its own pairing and key. The
+  design record is `internal/link-multiboard-2026-09-27.md`; LINK.md,
+  "One satellite, several boards", has the rules. New link frames:
+  PAIR_OPEN, UNPAIR (both ways), REVOKE and PEERS; PAIR_HELLO carries the
+  satellite's channel so a board on another one says why it will not pair.
+- LINK: pairings numbered from 1; `LINK SHARE n` and `LINK REVOKE n board`
+  (the owner); `LINK FORGET n` tells the satellite first; a Shared column,
+  the other boards under a shared satellite, and a footnote for one not
+  heard or a router that moved. At 40 columns the footer is four short
+  lines (two of its lines were 41 and 47 characters, and wrapped on a C64).
+  Names are one word and unique, because SNAPSHOT takes a camera by name.
+- The pairings file is version 2 (recv, camno and chan); version 1 reads.
+- **The way out of a door is 0x03 three times within 1.5 s**: Ctrl-C on a
+  PC terminal, RUN/STOP on PETSCII, and the board's break everywhere else.
+  It was Ctrl-] (0x1D), which is cursor-right on PETSCII (three moves right
+  in a game threw a C64 caller out) and which telnet clients keep as their
+  own escape. The door's arrival line names the key for the caller's
+  terminal. The telnet layer turns IAC IP and IAC BRK into 0x03.
+- **Fixed, found on the way:** pairing on a board up for more than 24.8
+  days never finished (PAIR_DONE waited on `reached(now, 0)`, false for half
+  the millisecond clock's range). linkpeer runs on wall-clock milliseconds,
+  which is how it showed.
+- **Fixed by the code review, before the commit:** a share window hopped
+  every channel and starved the boards it already served (every session
+  died at about 80 s); a share that stopped part way wedged the satellite
+  until a power cycle; a lost board's failed sends made a sleeping
+  satellite drop its good board; a PEERS that did not fit the queue was
+  lost; a clear BEACON could rename a board in every other board's view;
+  a forgotten pairing's queued frames could go to the next device in its
+  slot. Each has a test that fails on the code before the fix.
+- host/linkpeer plays a second board (`--board2`, driven by lines on
+  stdin), so the harness tests sharing, revoking and the channel refusal
+  (`test_link_shared`).
+- Sizes off the ELFs: static DRAM esp32dev 164,648 (16,088 free, +280 on
+  link.7), Freenove 175,960 (4,776 free), ESP32-CAM 177,432 (3,304 free), S3 254,952 of
+  341,760. Images 1,311,568 / 1,384,944 / 1,440,240 / 1,486,480. The full suite
+  as 16 tagged runs side by side: 3,540 checks, with and without a card.
+
 **1.2.0-link.7: on 1.1.2, and one filing for every picture**
 - Rebased onto main (1.1.2-dev.3): the link's job runs on the background
   runner by itself now (`__has_include("core/runner.h")` found it), so
@@ -86,8 +126,11 @@ after 1.1.2 part 1 and SSH). Host-tested; not yet flashed.
   caller over with one line a door can read in ten lines of Python
   (`UNLEASHED-DOOR 1 node=3 ... handle=Big+Dave ... term=pet40 minutes=42`),
   and takes them back when the door finishes, when their time runs out
-  (TIMEUP with ten seconds' grace), when the box goes quiet, or on Ctrl-]
-  three times. Several callers share one box. Nothing a box sends is ever
+  (TIMEUP with ten seconds' grace), when the box goes quiet, or on the
+  break key three times within a second and a half (Ctrl-C on a PC
+  terminal, RUN/STOP on a C64; the door's arrival line names it). Not
+  Ctrl-], as first built: 0x1D is cursor-right on PETSCII, and telnet
+  clients keep Ctrl-] as their own escape. Several callers share one box. Nothing a box sends is ever
   read by the board as input.
 
 **Plugins in their own repositories**

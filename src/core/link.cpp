@@ -34,6 +34,7 @@
 // text is in the LICENSE file at the top of this repository.
 // ===========================================================================
 #include "link.h"
+#include "satwords.h"
 
 #include <cstdio>
 #include <cstring>
@@ -144,6 +145,7 @@ bool clearType(uint8_t family, uint8_t type) {
         case T_DISCOVER: case T_BEACON: case T_HELLO: case T_HELLO_ACK:
         case T_PAIR_HELLO: case T_PAIR_OFFER: case T_PAIR_NONCE: case T_PAIR_REVEAL:
             return true;
+        // PAIR_OPEN, UNPAIR, REVOKE and PEERS are sealed: they act on a pairing.
         default:
             return false;
     }
@@ -196,11 +198,12 @@ size_t cobsDecode(const uint8_t* in, size_t n, uint8_t* out, size_t cap) {
 bool Mac::operator==(const Mac& o) const { return memcmp(b, o.b, 6) == 0; }
 bool Mac::zero() const { static const uint8_t z[6] = {}; return memcmp(b, z, 6) == 0; }
 
+// The words shown are satwords.h's, the one table of them (1.2.0).
 const char* kindName(uint8_t kind) {
     switch (kind) {
-        case KIND_CAMSAT:  return "camsat";
-        case KIND_DOORBOX: return "doorbox";
-        default:           return "device";
+        case KIND_CAMSAT:  return satwords::kKindCamera;
+        case KIND_DOORBOX: return satwords::kKindDoor;
+        default:           return satwords::kKindOther;
     }
 }
 
@@ -216,7 +219,10 @@ const char* dropName(uint8_t d) {
 // The tables
 // ===========================================================================
 namespace {
-enum : uint8_t { PS_IDLE, PS_SCAN, PS_HELLO, PS_WAITUP, PS_UP };   // a peer's link state
+// A peer's link state with each of its boards. LOST: not heard on the
+// channel the others are on (1.2.0: a satellite shared by several boards
+// stays with the ones it can hear, and tries a lost one now and then).
+enum : uint8_t { PS_IDLE, PS_SCAN, PS_HELLO, PS_WAITUP, PS_UP, PS_LOST };
 // Pairing, commit then reveal (LINK.md, "Pairing and keys"):
 //   host: KEYGEN (runner) -> OFFERING (answer HELLO with OFFER, NONCE with
 //         REVEAL; the code is known once NONCE came) -> ASKING the sysop ->
@@ -289,6 +295,16 @@ struct Engine::Peer {
     uint32_t  beaconAt = 0;
     uint32_t  downSince = 0;
     PeerStats st;
+    // peer role, each board's own (1.2.0: a satellite of several boards)
+    uint32_t  helloAt = 0;
+    uint32_t  pingAt = 0;
+    uint8_t   pingMiss = 0;
+    uint32_t  retryAt = 0;            // LOST: when to try it again on this channel
+    uint8_t   ord = 0;                // the order it was paired in: the lowest owns
+    char      name[17] = {};          // the board's name
+    // host role
+    bool      leaving = false;        // forget(): UNPAIR is queued, forget once it has gone
+    uint32_t  leaveBy = 0;
 };
 
 struct Engine::Sess {
@@ -391,6 +407,18 @@ struct Engine::Pair {
     uint8_t   kind = KIND_UNKNOWN;
     char      name[17] = {};
     char      fw[13] = {};
+    // peer: a share window the owner opened (PAIR_OPEN), not a first pairing
+    bool      share = false;
+    uint32_t  shareUntil = 0;
+    // host: the device last told it is on another channel, so it is told once
+    Mac       refused;
+    // peer: every state is bounded (peerTimers): when it began
+    uint8_t   lastSt = PAIR_NONE;
+    uint32_t  stAt = 0;
+    // peer, sharing: a frame on another channel every 2 s, and back
+    uint32_t  hopAt = 0;
+    uint8_t   hopCh = 0;
+    uint32_t  backAt = 0;
 };
 
 // ===========================================================================
@@ -398,7 +426,7 @@ struct Engine::Pair {
 // ===========================================================================
 Engine::Engine(Role role, Io& io, const Events& ev, uint8_t bulkWin, uint8_t* bulkMem)
     : role_(role), io_(io), ev_(ev),
-      npeers_(role == Role::Host ? kPeers : 1),
+      npeers_(role == Role::Host ? kPeers : kHosts),
       bulkWin_(bulkWin > kBulkWinMax ? kBulkWinMax : (bulkWin < 2 ? 2 : bulkWin)),
       bulkMem_(bulkMem) {
     peers_ = new (std::nothrow) Peer[npeers_];
@@ -592,8 +620,37 @@ void Engine::peerDown(uint8_t pi) {
     bool was = p.up;
     p.up = false;
     p.downSince = io_.millis();
-    if (role_ == Role::Peer) { p.state = PS_SCAN; scanAt_ = 0; }
+    if (role_ == Role::Peer) hostLost(pi, io_.millis());
     if (was && ev_.peerState) ev_.peerState(ev_.ctx, pi, false);
+}
+
+// anyHostUp: peer, another board of this satellite is up (on this channel).
+bool Engine::anyHostUp(int except) const {
+    for (uint8_t i = 0; i < npeers_; ++i)
+        if (static_cast<int>(i) != except && peers_[i].used && peers_[i].state == PS_UP) return true;
+    return false;
+}
+
+// hostLost: peer, a board stopped answering. With another board up on this
+// channel, stay: it is tried again with HELLO here, then now and then (LOST),
+// because the radio cannot be on two channels and the others are being
+// served. With none up, look for them all again.
+void Engine::hostLost(uint8_t pi, uint32_t now) {
+    Peer& p = peers_[pi];
+    p.pingMiss = 0;
+    if (anyHostUp(pi)) {
+        p.state = PS_HELLO;
+        p.helloAt = 0;
+        p.retryAt = now;
+        return;
+    }
+    for (uint8_t i = 0; i < npeers_; ++i) {
+        if (!peers_[i].used) continue;
+        peers_[i].state = PS_SCAN;
+        peers_[i].helloAt = 0;
+        peers_[i].pingMiss = 0;
+    }
+    scanAt_ = 0;
 }
 
 void Engine::derivePending(Peer& p, const uint8_t np[16], const uint8_t nh[16]) {
@@ -716,6 +773,10 @@ bool Engine::transmitOne() {
         } else if (c.peer != 0xFF) {
             if (c.sealed && !peers_[c.peer].haveSess) continue;
             sendFrame(nullptr, c.peer, h, c.data, c.sealed);
+            // forget(): the satellite has been told; this board forgets it now.
+            // A moment later, not in this pass: the radio may still hold the
+            // frame, and deleting its peer now could lose it (code review).
+            if (c.type == T_UNPAIR && peers_[c.peer].leaving) peers_[c.peer].leaveBy = io_.millis() + 200;
         } else {
             sendFrame(c.broadcast ? nullptr : &c.mac, 0xFF, h, c.data, false);
         }
@@ -928,20 +989,33 @@ void Engine::onFrame(const uint8_t* f, size_t n, const Mac& from, int8_t rssi) {
                 c->pairKey = true;
             }
             if (pr.st != PAIR_DONE_) {
+                // A slot of its own: the board it re-pairs with, or a free
+                // one, after the boards it already has (1.2.0).
+                int slot = pix;
+                compactOrd();
+                uint8_t ord = 0;
+                for (uint8_t i = 0; i < npeers_; ++i)
+                    if (peers_[i].used && peers_[i].ord >= ord) ord = static_cast<uint8_t>(peers_[i].ord + 1);
+                if (slot < 0) for (uint8_t i = 0; i < npeers_; ++i) if (!peers_[i].used) { slot = i; break; }
+                if (slot < 0) { closePairing(); return; }        // full: startPairing refuses this first
                 pr.st = PAIR_DONE_;
                 pr.resendAt = io_.millis() + 5000;         // stay here while the host takes the ACK
                 scanAt_ = 0;
-                Peer& hp = peers_[0];
+                Peer& hp = peers_[slot];
+                const uint8_t keepOrd = (pix >= 0) ? hp.ord : ord;
                 hp = Peer();
                 hp.used = true;
                 hp.mac = from;
+                hp.ord = keepOrd;
+                snprintf(hp.name, sizeof(hp.name), "%s", pr.info.name);
                 memcpy(hp.kLink, pr.key, sizeof(pr.key));
-                hp.state = PS_SCAN;
+                hp.state = anyHostUp(slot) ? PS_HELLO : PS_SCAN;
                 hostChan_ = io_.channel();
                 io_.addPeer(from);
+                peersDirty_ = 0xFF;
                 PairInfo who = pr.info;
                 memcpy(who.key, pr.key, sizeof(who.key));
-                if (ev_.paired) ev_.paired(ev_.ctx, 0, who);
+                if (ev_.paired) ev_.paired(ev_.ctx, static_cast<uint8_t>(slot), who);
                 linkcrypto::wipe(&who, sizeof(who));
             }
             return;
@@ -1003,12 +1077,15 @@ void Engine::onFrame(const uint8_t* f, size_t n, const Mac& from, int8_t rssi) {
     if (role_ == Role::Peer && p.state == PS_UP) {
         // Any sealed frame from the host proves it is there: the next PING
         // can wait its full interval.
-        pingMiss_ = 0;
-        pingAt_ = io_.millis() + kPingMs;
+        p.pingMiss = 0;
+        p.pingAt = io_.millis() + kPingMs;
     }
-    if (role_ == Role::Peer && h.chan && h.chan != io_.channel()) {
+    if (role_ == Role::Peer && h.chan && h.chan != io_.channel() && !anyHostUp(pi) && !pair_->share) {
         // The host moved (or we are on a neighbour and heard it through the
-        // skirt): go where it says it is.
+        // skirt): go where it says it is. Not while another board is up
+        // here: the radio serves the boards it can hear, all on one channel
+        // (1.2.0), and one board's router moving must not take the
+        // satellite away from the rest.
         io_.setChannel(h.chan);
         hostChan_ = h.chan;
     }
@@ -1066,8 +1143,24 @@ void Engine::onClear(const Header& h, const uint8_t* p, const Mac& from) {
                 return;
             }
             case T_PAIR_HELLO: {
-                // kind, name[16], fw[12], pub[65]
+                // kind, name[16], fw[12], pub[65], and from 1.2.0 its home
+                // channel: 0 unpaired, else the channel its boards are on
                 if (!pr.open || reached(now, pr.until) || h.len < 94) return;
+                if (h.len >= 95 && p[94] && p[94] != io_.channel()) {
+                    // A satellite shared with boards on another channel: it
+                    // could not serve this one and them both. Not answered,
+                    // and the sysop told why, once a device.
+                    if (!(pr.refused == from)) {
+                        pr.refused = from;
+                        PairInfo who;
+                        who.mac = from;
+                        who.kind = p[0];
+                        copyName(who.name, sizeof(who.name), p + 1, 16);
+                        copyName(who.fw, sizeof(who.fw), p + 17, 12);
+                        if (ev_.pairRefused) ev_.pairRefused(ev_.ctx, who, p[94]);
+                    }
+                    return;
+                }
                 if (pr.st == PAIR_OFFERING && from == pr.info.mac) {
                     // Still scanning: it has not heard the OFFER on this channel yet.
                     if (!pr.offerAt || reached(now, pr.offerAt + 100)) {
@@ -1083,9 +1176,11 @@ void Engine::onClear(const Header& h, const uint8_t* p, const Mac& from) {
                 }
                 if (pr.st != PAIR_NONE) return;          // one device at a time
                 const uint32_t until = pr.until;
+                const Mac refused = pr.refused;
                 pr = Pair();
                 pr.open = true;
                 pr.until = until;
+                pr.refused = refused;
                 pr.info.mac = from;
                 pr.info.kind = p[0];
                 copyName(pr.info.name, sizeof(pr.info.name), p + 1, 16);
@@ -1114,11 +1209,16 @@ void Engine::onClear(const Header& h, const uint8_t* p, const Mac& from) {
         }
     }
 
-    // Peer
-    Peer& hp = peers_[0];
+    // Peer: the board it came from, one of up to kHosts (1.2.0).
+    static Peer none;
+    Peer& hp = pix >= 0 ? peers_[pix] : none;
+    const uint8_t hi = pix >= 0 ? static_cast<uint8_t>(pix) : 0;
     switch (h.type) {
         case T_BEACON: {
-            if (!hp.used || !(from == hp.mac) || h.len < 2) return;
+            // The board's name comes from its pairing OFFER, never from a
+            // BEACON: a BEACON is clear, and a spoofed one would rename the
+            // board in every other board's PEERS (code review, 1.2.0).
+            if (!hp.used || h.len < 2) return;
             if (hp.state != PS_SCAN) return;
             // BEACON's channel is the one to trust: a MAC-layer ACK only says
             // some radio heard a frame, never where the host is (bench).
@@ -1126,12 +1226,18 @@ void Engine::onClear(const Header& h, const uint8_t* p, const Mac& from) {
             if (ch != io_.channel()) io_.setChannel(ch);
             hostChan_ = ch;
             if (ev_.channel) ev_.channel(ev_.ctx, ch);
-            hp.state = PS_HELLO;
-            helloAt_ = 0;                                  // send HELLO now
+            // Found one board: the others share its channel (they must), so
+            // every board still being looked for is greeted here too.
+            for (uint8_t i = 0; i < npeers_; ++i) {
+                if (!peers_[i].used || peers_[i].state != PS_SCAN) continue;
+                peers_[i].state = PS_HELLO;
+                peers_[i].helloAt = 0;                     // send HELLO now
+                peers_[i].pingMiss = 0;
+            }
             return;
         }
         case T_HELLO_ACK: {
-            if (!hp.used || !(from == hp.mac) || h.len < kHelloAckLen + 8) return;
+            if (!hp.used || h.len < kHelloAckLen + 8) return;
             if (hp.state != PS_HELLO && hp.state != PS_WAITUP) return;
             if (memcmp(p, hp.np, 16) != 0) return;         // not an answer to our HELLO
             // Once only per HELLO: a replayed or duplicated ACK must not put
@@ -1156,18 +1262,23 @@ void Engine::onClear(const Header& h, const uint8_t* p, const Mac& from) {
             // sessions this end had with it are gone on its side.
             {
                 const uint32_t ep = get32(p + 33);
-                if (hp.epoch && ep != hp.epoch) farRestarted(0);
+                if (hp.epoch && ep != hp.epoch) farRestarted(hi);
                 hp.epoch = ep;
             }
             hp.state = PS_WAITUP;
             // Prove the key at once: a PING under it makes the host switch.
-            pingAt_ = 0;
-            helloAt_ = now;
+            hp.pingAt = 0;
+            hp.helloAt = now;
             return;
         }
         case T_PAIR_OFFER: {
             // pub_h[65], commit[16], name[16], chan
             if (pr.st != PAIR_HELLOING || h.len < 98) return;
+            // Shared: only a board on the channel the others are on (a board
+            // that does not know the rule could still offer from another).
+            bool haveBoards = false;
+            for (uint8_t i = 0; i < npeers_; ++i) haveBoards |= peers_[i].used;
+            if (haveBoards && hostChan_ && p[97] && p[97] != hostChan_) return;
             pr.info.mac = from;
             memcpy(pr.pubTheirs, p, linkcrypto::kPub);
             memcpy(pr.commit, p + 65, 16);
@@ -1247,12 +1358,13 @@ void Engine::onLinkMsg(uint8_t pi, const Header& h, const uint8_t* p) {
             return;
         case T_PONG:
             if (role_ != Role::Peer) return;
-            pingMiss_ = 0;
+            pe.pingMiss = 0;
             if (pe.state != PS_UP) {
                 pe.state = PS_UP;
                 pe.up = true;
-                pingAt_ = now + kPingMs;
-                if (ev_.peerState) ev_.peerState(ev_.ctx, 0, true);
+                pe.pingAt = now + kPingMs;
+                peersDirty_ = 0xFF;                        // it hears who else shares us
+                if (ev_.peerState) ev_.peerState(ev_.ctx, pi, true);
             }
             if (h.len >= 5) {
                 uint32_t t = get32(p);
@@ -1266,7 +1378,7 @@ void Engine::onLinkMsg(uint8_t pi, const Header& h, const uint8_t* p) {
             if (h.len < 3) return;
             if (get16(p) == 0) {
                 // Session 0 is the link: the host asks for a new key.
-                if (role_ == Role::Peer && p[2] == R_REKEY && pe.state == PS_UP) { pe.state = PS_HELLO; helloAt_ = 0; }
+                if (role_ == Role::Peer && p[2] == R_REKEY && pe.state == PS_UP) { pe.state = PS_HELLO; pe.helloAt = 0; }
                 return;
             }
             Sess* s = findSess(pi, get16(p));
@@ -1277,8 +1389,107 @@ void Engine::onLinkMsg(uint8_t pi, const Header& h, const uint8_t* p) {
             emit(DE_RESET, pi, id, fam, p[2]);
             return;
         }
+        // -- one satellite, several boards (1.2.0) ---------------------------
+        case T_PAIR_OPEN: {
+            // The owner lets one more board pair, for u16 seconds.
+            if (role_ != Role::Peer || h.len < 2 || static_cast<int>(pi) != ownerIndex()) return;
+            uint8_t used = 0;
+            for (uint8_t i = 0; i < npeers_; ++i) used += peers_[i].used;
+            if (used >= npeers_ || pair_->st != PAIR_NONE) return;
+            uint16_t secs = get16(p);
+            if (secs > 600) secs = 600;
+            startPairing(kind_, selfName_, fw_);
+            pair_->share = true;
+            pair_->shareUntil = now + secs * 1000u;
+            if (ev_.shareOpened) ev_.shareOpened(ev_.ctx, secs);
+            return;
+        }
+        case T_UNPAIR:
+            // Peer: the board that sent it is done with us. Host: the
+            // satellite let this board go (its owner revoked it).
+            if (role_ == Role::Peer) { forgetHost(pi); return; }
+            removePeer(pi);
+            if (ev_.unpaired) ev_.unpaired(ev_.ctx, pi);
+            return;
+        case T_REVOKE: {
+            // The owner has another board forgotten.
+            if (role_ != Role::Peer || h.len < 6 || static_cast<int>(pi) != ownerIndex()) return;
+            Mac m;
+            memcpy(m.b, p, 6);
+            const int ix = peerIndex(m);
+            if (ix >= 0 && ix != static_cast<int>(pi)) forget(static_cast<uint8_t>(ix));   // told, then forgotten
+            return;
+        }
+        case T_PEERS: {
+            // Host: the satellite's boards, this one among them.
+            if (role_ != Role::Host || h.len < 1 || !ev_.peersList) return;
+            SharedBoard b[kHosts];
+            uint8_t n = p[0] > kHosts ? kHosts : p[0];
+            if (h.len < 1 + static_cast<size_t>(n) * kPeersEntry) n = static_cast<uint8_t>((h.len - 1) / kPeersEntry);
+            for (uint8_t i = 0; i < n; ++i) {
+                const uint8_t* e = p + 1 + i * kPeersEntry;
+                b[i].flags = e[0];
+                memcpy(b[i].mac.b, e + 1, 6);
+                copyName(b[i].name, sizeof(b[i].name), e + 7, 16);
+            }
+            ev_.peersList(ev_.ctx, pi, b, n);
+            return;
+        }
         default:
             return;
+    }
+}
+
+// forgetHost: peer, a board is forgotten (UNPAIR, REVOKE): its sessions end,
+// its keys are wiped, and the owner of the stored pairings is told.
+void Engine::forgetHost(uint8_t pi) {
+    if (pi >= npeers_ || !peers_[pi].used) return;
+    for (uint8_t k = 0; k < kSessions; ++k)
+        if (sess_[k].used && sess_[k].peer == pi) failSess(sess_[k], R_CLOSED, false);
+    for (Tomb& t : tombs_) if (t.used && t.peer == pi) t.used = false;
+    for (uint8_t i = 0; i < kCtrl; ++i) if (ctrl_[i].used && ctrl_[i].peer == pi) ctrl_[i].used = false;
+    const bool wasUp = peers_[pi].up;
+    io_.delPeer(peers_[pi].mac);
+    linkcrypto::wipe(&peers_[pi], sizeof(Peer));
+    peers_[pi] = Peer();
+    peersDirty_ = 0xFF;
+    if (wasUp && ev_.peerState) ev_.peerState(ev_.ctx, pi, false);
+    if (ev_.unpaired) ev_.unpaired(ev_.ctx, pi);
+}
+
+// sendPeers: peer, tell board pi who shares this satellite.
+bool Engine::sendPeers(uint8_t pi) {
+    uint8_t b[1 + kHosts * kPeersEntry];
+    uint8_t n = 0;
+    const int owner = ownerIndex();
+    for (uint8_t i = 0; i < npeers_; ++i) {
+        const Peer& q = peers_[i];
+        if (!q.used) continue;
+        uint8_t* e = b + 1 + n * kPeersEntry;
+        e[0] = static_cast<uint8_t>((static_cast<int>(i) == owner ? SB_OWNER : 0) |
+                                    (q.state == PS_UP ? SB_HEARD : 0) |
+                                    (i == pi ? SB_YOU : 0));
+        memcpy(e + 1, q.mac.b, 6);
+        putName(e + 7, 16, q.name);
+        ++n;
+    }
+    b[0] = n;
+    return queueCtrl(pi, nullptr, T_PEERS, b, 1 + n * kPeersEntry, true);
+}
+
+// compactOrd: peer, the boards' order as 0, 1, 2 ... so the next one's
+// (highest plus one) can never wrap to 0 and make a new board the owner.
+void Engine::compactOrd() {
+    uint8_t next = 0, done = 0;
+    for (;;) {
+        int best = -1;
+        for (uint8_t i = 0; i < npeers_; ++i) {
+            if (!peers_[i].used || (done & (1u << i))) continue;
+            if (best < 0 || peers_[i].ord < peers_[best].ord) best = i;
+        }
+        if (best < 0) return;
+        peers_[best].ord = next++;
+        done = static_cast<uint8_t>(done | (1u << best));
     }
 }
 
@@ -1711,6 +1922,7 @@ void Engine::hostTimers(uint32_t now) {
     for (uint8_t i = 0; i < npeers_; ++i) {
         Peer& p = peers_[i];
         if (!p.used) continue;
+        if (p.leaving && reached(now, p.leaveBy)) { removePeer(i); continue; }   // forget(), UNPAIR never went
         if (p.up && reached(now, p.st.lastHeard + kHostQuietMs)) peerDown(i);
         // A peer gone for a minute takes its sessions with it.
         if (!p.up && p.downSince && reached(now, p.downSince + 60000)) {
@@ -1756,24 +1968,63 @@ void Engine::hostTimers(uint32_t now) {
 }
 
 void Engine::peerTimers(uint32_t now) {
-    Peer& hp = peers_[0];
     Pair& pr = *pair_;
+    uint8_t used = 0;
+    for (uint8_t i = 0; i < npeers_; ++i) used += peers_[i].used;
 
-    // Pairing: PAIR_HELLO on each channel in turn, a quarter second each,
-    // until a host offers.
+    // Every pairing state is bounded (code review, 1.2.0): a share window
+    // ends at its time whatever state it reached (a sysop's N, a host window
+    // that closed, a stray OFFER), plus 30 s to finish once the codes are
+    // being checked; a first pairing stuck part way starts again.
+    if (pr.st != pr.lastSt) { pr.lastSt = pr.st; pr.stAt = now; }
+    if (pr.share && pr.st != PAIR_NONE && pr.st != PAIR_DONE_) {
+        const bool late = pr.st == PAIR_WAITDONE || pr.st == PAIR_COMPUTING || pr.st == PAIR_NONCING;
+        if (reached(now, pr.shareUntil + (late ? 30000u : 0u))) endShare();
+    } else if (!pr.share && (pr.st == PAIR_SHARED || pr.st == PAIR_NONCING || pr.st == PAIR_WAITDONE ||
+                             pr.st == PAIR_COMPUTING) && reached(now, pr.stAt + 30000u)) {
+        char name[17], fw[13];
+        snprintf(name, sizeof(name), "%s", pr.name);
+        snprintf(fw, sizeof(fw), "%s", pr.fw);
+        const uint8_t kind = pr.kind;
+        startPairing(kind, name, fw);
+    }
+
+    // A short trip to another channel while sharing (below) comes back here.
+    if (pr.backAt && reached(now, pr.backAt)) {
+        pr.backAt = 0;
+        if (hostChan_) io_.setChannel(hostChan_);
+    }
+
+    // Pairing: PAIR_HELLO until a host offers. Byte 94 is the channel this
+    // satellite's boards are on (0 with none), so a board on another one can
+    // say why it will not pair (1.2.0).
     if (pr.st == PAIR_HELLOING) {
-        if (!scanAt_ || reached(now, scanAt_)) {
-            scanCh_ = static_cast<uint8_t>(scanCh_ % 13 + 1);
-            io_.setChannel(scanCh_);
-            scanAt_ = now + 250;
-            uint8_t b[94];
-            b[0] = pr.kind;
-            putName(b + 1, 16, pr.name);
-            putName(b + 17, 12, pr.fw);
-            memcpy(b + 29, pr.pubMine, linkcrypto::kPub);
-            queueCtrl(0xFF, nullptr, T_PAIR_HELLO, b, sizeof(b), false);
+        if (!pr.share) {
+            // A first pairing: nobody to serve, so every channel in turn, a
+            // quarter second each.
+            if (!scanAt_ || reached(now, scanAt_)) {
+                scanCh_ = static_cast<uint8_t>(scanCh_ % 13 + 1);
+                io_.setChannel(scanCh_);
+                scanAt_ = now + 250;
+                sendPairHello(used ? hostChan_ : 0);
+            }
+            return;
         }
-        return;
+        // A share: the new board must be on the boards' channel, so ask
+        // there, and go on serving the boards. Every two seconds one frame
+        // on another channel, for 25 ms, so a board elsewhere can say why it
+        // will not pair.
+        if (!scanAt_ || reached(now, scanAt_)) {
+            scanAt_ = now + 250;
+            if (!pr.backAt) sendPairHello(hostChan_);
+        }
+        if (!pr.backAt && (!pr.hopAt || reached(now, pr.hopAt))) {
+            pr.hopAt = now + 2000;
+            do pr.hopCh = static_cast<uint8_t>(pr.hopCh % 13 + 1); while (pr.hopCh == hostChan_);
+            io_.setChannel(pr.hopCh);
+            sendPairHello(hostChan_);
+            pr.backAt = now + 25;
+        }
     }
     // Our nonce, until the host reveals its own.
     if (pr.st == PAIR_NONCING) {
@@ -1781,91 +2032,192 @@ void Engine::peerTimers(uint32_t now) {
             pr.resendAt = now + 250;
             queueCtrl(0xFF, &pr.info.mac, T_PAIR_NONCE, pr.np, 16, false);
         }
+        if (!pr.share) return;
+    }
+    if (!pr.share && (pr.st == PAIR_HELLOING || pr.st == PAIR_SHARED || pr.st == PAIR_COMPUTING ||
+                      pr.st == PAIR_WAITDONE))
+        return;
+
+    // Scanning: every board is being looked for (none is known to be on
+    // this channel). One radio, so one scan for them all. Not during a
+    // share, which keeps the radio on the boards' channel.
+    bool any = false, scanning = true;
+    for (uint8_t i = 0; i < npeers_; ++i) {
+        Peer& q = peers_[i];
+        if (!q.used || q.leaving) continue;
+        any = true;
+        if (q.state == PS_IDLE) q.state = PS_SCAN;
+        if (q.state != PS_SCAN) scanning = false;
+    }
+    if (!any) {
+        for (uint8_t i = 0; i < npeers_; ++i)
+            if (peers_[i].used && peers_[i].leaving && reached(now, peers_[i].leaveBy)) forgetHost(i);
         return;
     }
-    if (pr.st == PAIR_SHARED || pr.st == PAIR_COMPUTING || pr.st == PAIR_WAITDONE) return;
-    if (!hp.used) return;
 
-    switch (hp.state) {
-        case PS_IDLE:
-            hp.state = PS_SCAN;
-            scanAt_ = 0;
-            // fallthrough
-        case PS_SCAN:
-            // Just paired: the host is on this channel, and it has to hear
-            // our PAIR_ACK before it will answer a DISCOVER. Stay and ask
-            // here for a few seconds rather than wander off scanning.
-            if (pr.st == PAIR_DONE_) {
-                if (!reached(now, pr.resendAt)) {
-                    if (!scanAt_ || reached(now, scanAt_)) {
-                        scanAt_ = now + 100;
-                        queueCtrl(0xFF, nullptr, T_DISCOVER, nullptr, 0, false);
-                    }
-                    return;
+    if (scanning && !pr.share) {
+        // Just paired: the host is on this channel, and it has to hear our
+        // PAIR_ACK before it will answer a DISCOVER. Stay and ask here for a
+        // few seconds rather than wander off scanning.
+        if (pr.st == PAIR_DONE_) {
+            if (!reached(now, pr.resendAt)) {
+                if (!scanAt_ || reached(now, scanAt_)) {
+                    scanAt_ = now + 100;
+                    queueCtrl(0xFF, nullptr, T_DISCOVER, nullptr, 0, false);
                 }
-                closePairing();
-                scanAt_ = 0;
+                return;
             }
-            if (!scanAt_ || reached(now, scanAt_)) {
-                // The last channel that worked first, then 1 to 13.
-                if (!scanAt_ && hostChan_) scanCh_ = hostChan_;
-                else scanCh_ = static_cast<uint8_t>(scanCh_ % 13 + 1);
-                io_.setChannel(scanCh_);
-                scanAt_ = now + kDwellMs;
-                queueCtrl(0xFF, nullptr, T_DISCOVER, nullptr, 0, false);
-            }
-            return;
-        case PS_HELLO:
-        case PS_WAITUP:
-            if (!helloAt_ || reached(now, helloAt_ + 1000)) {
-                if (helloAt_ && ++pingMiss_ > 3) { pingMiss_ = 0; hp.state = PS_SCAN; scanAt_ = 0; return; }
-                io_.random(hp.np, 16);
-                hp.ackUsed = false;
-                hp.state = PS_HELLO;
-                hp.haveSess = false;
-                uint8_t b[kHelloLen + 8];
-                memcpy(b, hp.np, 16);
-                b[16] = kVersion;
-                b[17] = kind_;
-                putName(b + 18, 12, fw_);
-                put32(b + 30, families_);
-                b[34] = bulkWin_;
-                put32(b + 35, epoch_);
-                helloTag(hp.kLink, DIR_PEER, T_HELLO, b, kHelloLen, b + kHelloLen);
-                queueCtrl(0, nullptr, T_HELLO, b, sizeof(b), false);
-                helloAt_ = now;
-            }
-            if (hp.state == PS_WAITUP && (!pingAt_ || reached(now, pingAt_))) {
-                pingAt_ = now + 300;
-                uint8_t b[9];
-                put32(b, now / 1000);
-                put32(b + 4, io_.heapFree());
-                b[8] = static_cast<uint8_t>(hp.st.rssi);
-                queueCtrl(0, nullptr, T_PING, b, sizeof(b), true);
-            }
-            return;
-        case PS_UP:
-            // A sleeping sender does not wait out PING's misses: three MAC
-            // failures in a row and it looks for the host at once (bench,
-            // 2026-09-26). The MAC ACK only says a radio heard it, never that
-            // the host is still there, so success proves nothing either way.
-            if (fastRescan_ && io_.macFailStreak() >= 3) { pingMiss_ = 0; peerDown(0); return; }
-            if (reached(now, pingAt_)) {
-                if (pingMiss_ >= kPingMisses) { pingMiss_ = 0; peerDown(0); return; }
-                // Unanswered, the next one goes after a second, not five.
-                pingAt_ = now + 1000;
-                ++pingMiss_;
-                uint8_t b[9];
-                put32(b, now / 1000);
-                put32(b + 4, io_.heapFree());
-                b[8] = static_cast<uint8_t>(hp.st.rssi);
-                queueCtrl(0, nullptr, T_PING, b, sizeof(b), true);
-            }
-            if (hp.txPn > 0x7FFFFFFFu) { hp.state = PS_HELLO; helloAt_ = 0; }   // rekey long before a wrap
-            return;
-        default:
-            return;
+            closePairing();
+            scanAt_ = 0;
+        }
+        if (!scanAt_ || reached(now, scanAt_)) {
+            // The last channel that worked first, then 1 to 13.
+            if (!scanAt_ && hostChan_) scanCh_ = hostChan_;
+            else scanCh_ = static_cast<uint8_t>(scanCh_ % 13 + 1);
+            io_.setChannel(scanCh_);
+            scanAt_ = now + kDwellMs;
+            queueCtrl(0xFF, nullptr, T_DISCOVER, nullptr, 0, false);
+        }
+        return;
     }
+
+    // Another board just paired while the rest were up (a share): its
+    // PAIR_ACK has had its few seconds, and it is greeted like the rest.
+    if (pr.st == PAIR_DONE_ && reached(now, pr.resendAt)) {
+        closePairing();
+        for (uint8_t i = 0; i < npeers_; ++i)
+            if (peers_[i].used && peers_[i].state != PS_UP) { peers_[i].state = PS_HELLO; peers_[i].helloAt = 0; peers_[i].pingMiss = 0; }
+    }
+
+    uint8_t up = 0;
+    for (uint8_t i = 0; i < npeers_; ++i) up += peers_[i].used && peers_[i].state == PS_UP;
+
+    for (uint8_t i = 0; i < npeers_; ++i) {
+        Peer& hp = peers_[i];
+        if (!hp.used) continue;
+        if (hp.leaving) {                                     // forget(): told, or it never went
+            if (reached(now, hp.leaveBy)) forgetHost(i);
+            continue;
+        }
+        switch (hp.state) {
+            case PS_SCAN:
+                // The others are here: this one is looked for here too.
+                hp.state = PS_HELLO;
+                hp.helloAt = 0;
+                hp.pingMiss = 0;
+                // fallthrough
+            case PS_HELLO:
+            case PS_WAITUP:
+                if (pr.st == PAIR_DONE_) break;                 // its ACK first
+                if (!hp.helloAt || reached(now, hp.helloAt + 1000)) {
+                    if (hp.helloAt && ++hp.pingMiss > 3) {
+                        hp.pingMiss = 0;
+                        if (anyHostUp(i) || pr.share) {
+                            // Not on the channel the others are on: tried
+                            // again now and then, and the others are told
+                            // (PEERS: not heard).
+                            hp.state = PS_LOST;
+                            hp.retryAt = now + kHostRetryMs;
+                            peersDirty_ = 0xFF;
+                        } else {
+                            hostLost(i, now);                   // nobody here: look again
+                            return;
+                        }
+                        break;
+                    }
+                    io_.random(hp.np, 16);
+                    hp.ackUsed = false;
+                    hp.state = PS_HELLO;
+                    hp.haveSess = false;
+                    uint8_t b[kHelloLen + 8];
+                    memcpy(b, hp.np, 16);
+                    b[16] = kVersion;
+                    b[17] = kind_;
+                    putName(b + 18, 12, fw_);
+                    put32(b + 30, families_);
+                    b[34] = bulkWin_;
+                    put32(b + 35, epoch_);
+                    helloTag(hp.kLink, DIR_PEER, T_HELLO, b, kHelloLen, b + kHelloLen);
+                    queueCtrl(i, nullptr, T_HELLO, b, sizeof(b), false);
+                    hp.helloAt = now;
+                }
+                if (hp.state == PS_WAITUP && (!hp.pingAt || reached(now, hp.pingAt))) {
+                    hp.pingAt = now + 300;
+                    uint8_t b[9];
+                    put32(b, now / 1000);
+                    put32(b + 4, io_.heapFree());
+                    b[8] = static_cast<uint8_t>(hp.st.rssi);
+                    queueCtrl(i, nullptr, T_PING, b, sizeof(b), true);
+                }
+                break;
+            case PS_LOST:
+                if (!anyHostUp(i) && !pr.share) { hostLost(i, now); return; }   // the others went: look for all
+                if (reached(now, hp.retryAt)) {
+                    hp.state = PS_HELLO;
+                    hp.helloAt = 0;
+                    hp.pingMiss = 0;
+                }
+                break;
+            case PS_UP:
+                // A sleeping sender does not wait out PING's misses: three
+                // MAC failures in a row and it looks for its host at once
+                // (bench, 2026-09-26). Only with one board paired: the
+                // radio's count cannot say which board failed, and a lost
+                // board's HELLOs fail too (code review, 1.2.0).
+                if (fastRescan_ && used == 1 && up <= 1 && io_.macFailStreak() >= 3) { hp.pingMiss = 0; peerDown(i); return; }
+                if (reached(now, hp.pingAt)) {
+                    if (hp.pingMiss >= kPingMisses) { hp.pingMiss = 0; peerDown(i); return; }
+                    // Unanswered, the next one goes after a second, not five.
+                    hp.pingAt = now + 1000;
+                    ++hp.pingMiss;
+                    uint8_t b[9];
+                    put32(b, now / 1000);
+                    put32(b + 4, io_.heapFree());
+                    b[8] = static_cast<uint8_t>(hp.st.rssi);
+                    queueCtrl(i, nullptr, T_PING, b, sizeof(b), true);
+                }
+                if (hp.txPn > 0x7FFFFFFFu) { hp.state = PS_HELLO; hp.helloAt = 0; }   // rekey long before a wrap
+                break;
+            default:
+                break;
+        }
+    }
+
+    // Who shares this satellite, to each board up, when that changed. A bit
+    // a board, cleared only once its PEERS is queued: a full queue tries
+    // again next time.
+    if (peersDirty_) {
+        for (uint8_t i = 0; i < npeers_; ++i) {
+            const uint8_t bit = static_cast<uint8_t>(1u << i);
+            if (!(peersDirty_ & bit)) continue;
+            if (!peers_[i].used) { peersDirty_ = static_cast<uint8_t>(peersDirty_ & ~bit); continue; }
+            if (peers_[i].state != PS_UP || peers_[i].leaving) continue;
+            if (sendPeers(i)) peersDirty_ = static_cast<uint8_t>(peersDirty_ & ~bit);
+        }
+    }
+}
+
+// endShare: peer, a share window is over, however far it got: back to the
+// boards' channel, and every board not up is greeted again.
+void Engine::endShare() {
+    closePairing();
+    scanAt_ = 0;
+    if (hostChan_) io_.setChannel(hostChan_);
+    for (uint8_t i = 0; i < npeers_; ++i)
+        if (peers_[i].used && peers_[i].state != PS_UP) { peers_[i].state = PS_HELLO; peers_[i].helloAt = 0; peers_[i].pingMiss = 0; }
+}
+
+// sendPairHello: peer, one PAIR_HELLO, broadcast on the channel the radio is
+// on. home is byte 94: the boards' channel, 0 with none.
+void Engine::sendPairHello(uint8_t home) {
+    Pair& pr = *pair_;
+    uint8_t b[95];
+    b[0] = pr.kind;
+    putName(b + 1, 16, pr.name);
+    putName(b + 17, 12, pr.fw);
+    memcpy(b + 29, pr.pubMine, linkcrypto::kPub);
+    b[94] = home;
+    queueCtrl(0xFF, nullptr, T_PAIR_HELLO, b, sizeof(b), false);
 }
 
 // ===========================================================================
@@ -1909,7 +2261,8 @@ void Engine::poll() {
         if (!transmitOne()) break;
 }
 
-int Engine::addPeer(const Mac& mac, const uint8_t key[linkcrypto::kKey], uint8_t kind) {
+int Engine::addPeer(const Mac& mac, const uint8_t key[linkcrypto::kKey], uint8_t kind, uint8_t ord,
+                    const char* name) {
     if (!ok()) return -1;
     Guard g(io_);
     int at = peerIndex(mac);
@@ -1920,6 +2273,8 @@ int Engine::addPeer(const Mac& mac, const uint8_t key[linkcrypto::kKey], uint8_t
     p.used = true;
     p.mac = mac;
     p.kind = kind;
+    p.ord = ord;
+    if (name) snprintf(p.name, sizeof(p.name), "%s", name);
     memcpy(p.kLink, key, sizeof(p.kLink));
     p.state = PS_SCAN;
     io_.addPeer(mac);
@@ -1932,6 +2287,9 @@ void Engine::removePeer(uint8_t pi) {
     for (uint8_t k = 0; k < kSessions; ++k)
         if (sess_[k].used && sess_[k].peer == pi) failSess(sess_[k], R_CLOSED, false);
     for (Tomb& t : tombs_) if (t.used && t.peer == pi) t.used = false;
+    // Nothing queued for the slot goes after it: a clear frame would go to a
+    // zeroed MAC, or to the next device paired into it.
+    for (uint8_t i = 0; i < kCtrl; ++i) if (ctrl_[i].used && ctrl_[i].peer == pi) ctrl_[i].used = false;
     if (peers_[pi].up && ev_.peerState) ev_.peerState(ev_.ctx, pi, false);
     io_.delPeer(peers_[pi].mac);
     linkcrypto::wipe(&peers_[pi], sizeof(Peer));
@@ -1949,7 +2307,51 @@ const uint8_t* Engine::peerKey(uint8_t pi) const {
 }
 uint8_t Engine::peerCount() const { uint8_t n = 0; for (uint8_t i = 0; i < npeers_; ++i) n += peers_[i].used; return n; }
 uint8_t Engine::peersUp() const { uint8_t n = 0; for (uint8_t i = 0; i < npeers_; ++i) n += peers_[i].used && peers_[i].up; return n; }
-bool Engine::hostUp() const { return role_ == Role::Peer && peers_[0].used && peers_[0].up; }
+bool Engine::hostUp() const { return role_ == Role::Peer && peersUp() > 0; }
+bool Engine::hostUp(uint8_t slot) const {
+    return role_ == Role::Peer && slot < npeers_ && peers_[slot].used && peers_[slot].up;
+}
+uint8_t Engine::peerOrd(uint8_t pi) const { return pi < npeers_ ? peers_[pi].ord : 0; }
+const char* Engine::peerName(uint8_t pi) const { return pi < npeers_ ? peers_[pi].name : ""; }
+
+int Engine::ownerIndex() const {
+    int best = -1;
+    for (uint8_t i = 0; i < npeers_; ++i)
+        if (peers_[i].used && (best < 0 || peers_[i].ord < peers_[best].ord)) best = i;
+    return best;
+}
+
+bool Engine::sharePairing(uint8_t pi, uint16_t seconds) {
+    Guard g(io_);
+    if (role_ != Role::Host || pi >= npeers_ || !peers_[pi].used || !peers_[pi].haveSess) return false;
+    uint8_t b[2];
+    put16(b, seconds);
+    return queueCtrl(pi, nullptr, T_PAIR_OPEN, b, sizeof(b), true);
+}
+
+bool Engine::revoke(uint8_t pi, const Mac& board) {
+    Guard g(io_);
+    if (role_ != Role::Host || pi >= npeers_ || !peers_[pi].used || !peers_[pi].haveSess) return false;
+    return queueCtrl(pi, nullptr, T_REVOKE, board.b, 6, true);
+}
+
+void Engine::forget(uint8_t pi) {
+    Guard g(io_);
+    if (pi >= npeers_ || !peers_[pi].used) return;
+    // Told first, when it can be: a sealed UNPAIR needs this pairing's keys,
+    // so the pairing is forgotten here once it has gone (transmitOne), or
+    // after 3 s whatever happened (timers). Nothing else is sent to it
+    // meanwhile. A satellite forgets a board this way when its owner
+    // revokes it, so the revoked board hears it too.
+    if (peers_[pi].haveSess && peers_[pi].up &&
+        queueCtrl(pi, nullptr, T_UNPAIR, nullptr, 0, true)) {
+        peers_[pi].leaving = true;
+        peers_[pi].leaveBy = io_.millis() + 3000;
+        return;
+    }
+    if (role_ == Role::Peer) forgetHost(pi);
+    else removePeer(pi);
+}
 
 int Engine::peerIndex(const Mac& mac) const {
     for (uint8_t i = 0; i < npeers_; ++i) if (peers_[i].used && peers_[i].mac == mac) return i;
@@ -1988,7 +2390,10 @@ void Engine::pairAnswer(bool yes) {
     if (pr.st != PAIR_ASKING) return;
     if (!yes) { closePairing(); return; }
     pr.st = PAIR_CONFIRMING;
-    pr.resendAt = 0;
+    // Now, not 0: reached(now, 0) is false for half of every 49.7 days of
+    // the millisecond clock, and PAIR_DONE would never go on a board up for
+    // more than 24.8 days (found by linkpeer's wall-clock millis, 1.2.0).
+    pr.resendAt = io_.millis();
     // The Y gives the device time to finish whatever was left of the window:
     // it pairs on PAIR_DONE, and a window closing before its PAIR_ACK came
     // would leave it paired and the board not.
@@ -2084,8 +2489,13 @@ bool Engine::pairCompute() {
 void Engine::startPairing(uint8_t kind, const char* name, const char* fw) {
     Guard g(io_);
     closePairing();
+    // Every board slot taken: no pairing at all (1.2.0: kHosts boards).
+    uint8_t used = 0;
+    for (uint8_t i = 0; i < npeers_; ++i) used += peers_[i].used;
+    if (used >= npeers_) return;
     Pair& pr = *pair_;
     pr.kind = kind;
+    if (name != selfName_) snprintf(selfName_, sizeof(selfName_), "%s", name ? name : "");
     snprintf(pr.name, sizeof(pr.name), "%s", name ? name : "");
     snprintf(pr.fw, sizeof(pr.fw), "%s", fw ? fw : "");
     if (!linkcrypto::keypair(rngThunk, &io_, pr.priv, pr.pubMine)) return;
@@ -2104,7 +2514,7 @@ void Engine::setIdentity(uint8_t kind, const char* fw, uint32_t families) {
 
 uint16_t Engine::openSession(uint8_t pi, uint8_t family) {
     Guard g(io_);
-    if (!ok() || pi >= npeers_ || !peers_[pi].used) return 0;
+    if (!ok() || pi >= npeers_ || !peers_[pi].used || peers_[pi].leaving) return 0;
     for (int tries = 0; tries < 0x7FFF; ++tries) {
         uint16_t id = nextSess_;
         if (role_ == Role::Host) nextSess_ = static_cast<uint16_t>(nextSess_ >= 0x7FFF ? 1 : nextSess_ + 1);

@@ -174,7 +174,8 @@ came from. mbedTLS does the work, with the ESP32's AES hardware
   (present in 5.3.1, "doesn't occur when scanning"), logs it and counts it.
   It cannot warn its peers, because they are still on the old channel.
   They notice by silence: a peer sends `PING` every 5 s, and after a miss
-  the next one goes after 1 s; after three misses it rescans. A door caller
+  the next one goes after 1 s; after three misses it rescans (with more
+  than one board: see "One satellite, several boards"). A door caller
   sees a pause of a few seconds while the box finds the host again; nothing
   is lost, because every unacknowledged frame is sent again.
 - **A sleeping sender rescans at once.** A peer that wakes, sends and
@@ -249,9 +250,55 @@ folder, one line per peer (MAC, kind, checked, paired-at, `k_link` in hex,
 name), written through a temp file and a rename within the partition. It is **not** in the backup zip, the same as `wifi.last`: a
 restored board pairs its devices again.
 
-**Forgetting** (`LINK FORGET n`) deletes the ESP-NOW peer and the block. The
-peer finds out when its `HELLO` is no longer answered, and goes back to
-pairing mode only by its own physical act.
+**Forgetting** (`LINK FORGET n`) tells the satellite first when it is up
+(a sealed `UNPAIR`), so it frees this board's slot, then deletes the
+ESP-NOW peer and the block. A satellite out of reach finds out when its
+`HELLO` is no longer answered, and keeps counting this board until its
+owner revokes it or it is reset. It goes back to pairing mode only by its
+own physical act.
+
+**The pairings file**, version 2 (1.2.0; a first line `#link-peers 2` says
+so): `mac kind checked pairedAt recv camno chan key name`. `recv` is what
+this board takes from a shared camera (1 timelapse, 2 motion), `camno` its
+camera number here (0 auto), `chan` the channel it was last up on. A file
+without the header is version 1 (`mac kind checked pairedAt key name`) and
+still reads, as recv 3, camno 0, chan unknown.
+
+### One satellite, several boards (1.2.0)
+
+A satellite holds up to **5 boards**, each its own pairing with its own
+`k_link`, so one board never holds a key that opens another's traffic.
+The design record is `internal/link-multiboard-2026-09-27.md`.
+
+- **The owner** is the board it paired with first (the lowest order in its
+  table; a board that unpairs hands ownership to the next). Only the owner
+  opens the satellite to another board, revokes one, or has its camera
+  settings used; the others choose only what they receive.
+- **Sharing** (`LINK SHARE n` on the owner, a sealed `PAIR_OPEN`): the
+  satellite takes one more board for up to 2 minutes (it caps a request at
+  10). The new board's sysop runs `LINK PAIR` and the exchange above runs
+  as usual. The satellite stays on its boards' channel the whole window and
+  goes on serving them; every 2 s it sends one `PAIR_HELLO` on another
+  channel for 25 ms, so a board elsewhere can say why it will not pair. The
+  window ends at its time whatever state it reached (a No, a window that
+  closed, a stray OFFER), with 30 s more to finish once the codes are being
+  compared.
+- **One channel for every board.** A satellite has one radio. `PAIR_HELLO`
+  byte 94 carries the channel its boards are on (0 with none), and a board
+  on another channel does not answer; its sysop is told: "This satellite
+  works on channel 1 for its other boards and this board is on 6. Boards
+  sharing a satellite must be on one Wi-Fi channel, which usually means one
+  router." A board whose router moves on its own is marked not heard to
+  the others (`PEERS`), retried every 30 s, and the satellite stays with
+  the boards it can hear; if every board moves it scans and follows, as
+  with one board.
+- **Leaving**: `LINK FORGET n` on any board sends `UNPAIR`. **Revoking**:
+  `LINK REVOKE n board` on the owner sends `REVOKE mac`; the satellite
+  tells the revoked board (`UNPAIR`, the other way) and forgets it. The
+  physical reset forgets everything.
+- **Who else shares it**: the satellite sends each board `PEERS` when that
+  changes and when the board comes up, and LINK shows the other boards
+  under it by name, the owner marked, and which are not heard.
 
 ---
 
@@ -481,12 +528,16 @@ needs no edit here.
 | 6 | PONG | H→P | yes | `u32 unix time (0: no NTP), u8 channel` |
 | 7 | ACK | both | yes | `u16 session, u16 seq expected, u8 bulk, u16 bulk seq, u16 fragments in order, u32 SACK, u16 win` |
 | 8 | RESET | both | yes | `u16 session, u8 reason` (`CLOSED`, `RETRIES`, `REFUSED`, `BUSY`, `BADCRC`, `UNKNOWN`, `ABORTED`, `RESTART`, `REKEY`) |
-| 16 | PAIR_HELLO | P→H broadcast | no | `u8 kind, char name[16], char fw[12], pubP[65]` |
+| 16 | PAIR_HELLO | P→H broadcast | no | `u8 kind, char name[16], char fw[12], pubP[65]`, and from 1.2.0 `u8 home`: the channel its boards are on, 0 with none |
 | 17 | PAIR_OFFER | H→P | no | `pubH[65], commit[16], char board[16], u8 channel` |
 | 18 | PAIR_DONE | H→P | yes, `k_link` | empty |
 | 19 | PAIR_ACK | P→H | yes, `k_link` | empty |
 | 20 | PAIR_NONCE | P→H | no | `np[16]` |
 | 21 | PAIR_REVEAL | H→P | no | `nh[16]` |
+| 22 | PAIR_OPEN | H→P | yes | `u16 seconds`; from the owner only: take one more board (1.2.0) |
+| 23 | UNPAIR | both | yes | empty. H→P: this board lets the satellite go. P→H: the satellite lets this board go (its owner revoked it) |
+| 24 | REVOKE | H→P | yes | `mac[6]`; from the owner only: forget that board |
+| 25 | PEERS | P→H | yes | `u8 count`, then per board `u8 flags` (1 owner, 2 up now, 4 this is you), `mac[6]`, `char name[16]` |
 
 ---
 
@@ -505,11 +556,11 @@ tables are 8 KB of static DRAM.)
 |---|---|---|---|
 | 1 | SNAP | H→P | request id, frame size, quality, flash (off, on, auto), reason (caller, timelapse, test, motion); then optionally the watermark switch, board name, date, who, and the JPEG comment |
 | 2 | PICTURE | P→H, bulk | the request id, reason, width, height, taken-at (0: no clock), then the JPEG |
-| 3 | SNAP_FAIL | P→H | request id, reason code (no sensor, no memory, busy, flash fault, capture) |
+| 3 | SNAP_FAIL | P→H | request id, reason code (no sensor, no memory, busy, flash fault, capture); busy adds the place in the queue (1.2.0: 1 next, 255 full) |
 | 4 | STATUS | P→H | sensor model, largest frame size, free heap and PSRAM, uptime, last error; sent after HELLO and every 60 s |
 | 5 | EVENT | P→H | motion, or its timer while it deep-sleeps: a request for a SNAP |
-| 6 | SETTINGS | H→P | the camera page: timelapse, motion and hold-off, size, quality, flash, deep sleep, the picture settings, the motion pin |
-| 7 | SETTINGS_OK | P→H | the same, as it now runs them (it may clamp) |
+| 6 | SETTINGS | H→P | the camera page: timelapse, motion and hold-off, size, quality, flash, deep sleep, the picture settings, the motion pin; byte 21 what this board receives (1 timelapse, 2 motion; bit 7 set says it says, as bytes 21 to 23 were padding before 1.2.0) |
+| 7 | SETTINGS_OK | P→H | the same, as it now runs them (it may clamp); byte 22 bit 0 set when the board it answers owns it, bit 7 when it keeps its own timelapse clock (the board's own clock then leaves it alone) |
 
 - **Motion and deep sleep.** The satellite sends EVENT; the host answers
   with a SNAP (reason motion or timelapse, the texts filled) under the
@@ -534,6 +585,13 @@ tables are 8 KB of static DRAM.)
 - A caller's snap from a satellite shows the camera's usual spinner while
   it waits, and the same limits per handle apply: one count across every
   camera on the board, not one per camera (Rob).
+- **Several boards** (1.2.0). SETTINGS bytes 0 to 20 are taken only from
+  the owner; every board sends byte 21, what it wants delivered, and the
+  satellite echoes the owner's settings to all. A SNAP goes to the board
+  that asked. A timelapse or motion picture is one capture, sent to each
+  board that wants it, one after another. Requests queue two a board and
+  eight in all, served in turn; a full queue answers `SNAP_FAIL` busy with
+  its place, so the caller is told how many are ahead.
 - **One SNAPSHOT.** A satellite does not bring verbs of its own: the camsat
   plugin adds a `photos::Camera` for each satellite that is up (order 1 +
   its pairing number, so the built-in camera stays camera 1), and the
@@ -700,6 +758,16 @@ The link moves data. It never moves authority.
   caller back after the grace period, whatever the box does.
 - **Door output is output.** It goes to the caller's terminal and is never
   parsed by the board as keys, commands or codes.
+- **For door authors: the leave key reaches you.** The caller's way out is
+  0x03 three times within 1.5 s, and every 0x03 is also passed to the door.
+  A door run on a terminal device in cooked mode turns the first one into
+  an interrupt signal: read raw, or treat a single Ctrl-C as nothing, so a
+  caller's habit does not end a game unsaved.
+- **A shared satellite gives no board another's keys.** Each board's
+  pairing has its own `k_link`. Sharing and revoking come only from the
+  owner, sealed; `PEERS` names the other boards and says nothing of their
+  traffic. A board's name reaches the others only from its pairing OFFER,
+  never from a clear BEACON.
 - **Pictures are data.** The board names the file, checks the size before
   accepting it, writes to a temp name and files it only when the CRC-32
   checks. A satellite cannot write anywhere but Photos, and only through
@@ -760,6 +828,11 @@ off the ELFs:
 | AI-Thinker ESP32-CAM | 177,192 | **3,544** | +416 | 1,429,460 (90.9%) |
 | Waveshare S3 (8 MB layout) | 254,672 of 341,760 (`_bss_end - 0x3FC88000`) | 87,088 | +4,176, SSH's included | 1,476,040 of a 3 MB slot (46.9%) |
 
+At `1.2.0-link.8` (one satellite, several boards): esp32dev 164,648
+(16,088 free, +280: the pairings' sharing state, the doors' leave window),
+Freenove 175,960 (4,776 free), ESP32-CAM 177,432 (**3,304** free), S3
+254,952. The satellite's side of sharing is in unleashed_camsat.
+
 The ESP32-CAM is the one to watch: 3.5 KB of static RAM and 91% of its
 program slot. The camera boards' PSRAM move (1.3.0) is what buys it room.
 
@@ -776,10 +849,22 @@ program slot. The camera boards' PSRAM move (1.3.0) is what buys it room.
   high-water mark.
 - **`LINK PAIR`** (sysop): opens the 2-minute window and asks the pairing
   question on the sysop's own screen.
-- **`LINK FORGET n`**, **`LINK NAME n name`** (sysop).
+- **`LINK FORGET n`**, **`LINK NAME n name`** (sysop). Pairings are numbered
+  from 1. A name is one word, unique among the board's cameras, because
+  SNAPSHOT takes one by name.
+- **`LINK SHARE n`** (sysop, owner): open satellite n to one more board for
+  2 minutes. **`LINK REVOKE n board`** (sysop, owner): board is its number
+  under n in LINK, or its name.
+- **LINK and a shared satellite**: a Shared column (`3, this board` at 80,
+  `3 own` at 40), a row for each other board under it (`heard` or `not
+  heard`) while the list fits the screen, and a footnote naming a board
+  that is not heard, or saying this board's router moved.
 - **`DOORS`** (users): the doors the boxes on the air offer, numbered;
-  **`DOORS n`** goes through one. Ctrl-] three times in a row always comes
-  back.
+  **`DOORS n`** goes through one. The break key three times within 1.5 s
+  (0x03: Ctrl-C, RUN/STOP on PETSCII) always comes back; the key still
+  reaches the door. Not 0x1D, which is cursor-right on PETSCII. A client
+  that sends Ctrl-C or Break as a telnet command (IAC IP, IAC BRK) has it
+  turned into 0x03 by the board's telnet layer.
 - **SYS**, one line in the network section:
   `Link      on, ch 6, 2 of 3 up, 0 drops`, and `, peers full` when all
   8 pairings are taken.
@@ -942,7 +1027,8 @@ the directory's fetcher reads it.
   link and doors on and gives the board and the box a port each;
   `--only=radio` runs `test_radio_link` (pairing through LINK PAIR, the
   codes, LINK, SYS) and `test_doors` (the handoff line, keys and output,
-  FINISHED, Ctrl-], a caller hanging up in a door).
+  FINISHED, the break key, a caller hanging up in a door), and
+  `test_doors_petscii` (cursor-right stays in a door, RUN/STOP gets out).
 - `tools/test_ext_plugin.sh`: plugins in their own repositories, above.
   The board's side of the same path was proved by building `esp32dev`
   with `custom_ext_plugins = hello` and `hello  tools/testplugin  -` in the

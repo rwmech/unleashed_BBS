@@ -79,6 +79,11 @@ enum : uint8_t { F_REL = 0x01, F_SEC = 0x02 };
 enum : uint8_t {
     T_DISCOVER = 1, T_BEACON, T_HELLO, T_HELLO_ACK, T_PING, T_PONG, T_ACK, T_RESET,
     T_PAIR_HELLO = 16, T_PAIR_OFFER, T_PAIR_DONE, T_PAIR_ACK, T_PAIR_NONCE, T_PAIR_REVEAL,
+    // One satellite, several boards (1.2.0, internal/link-multiboard-2026-09-27.md):
+    T_PAIR_OPEN,      // 22 H->P sealed: u16 seconds; the owner lets one more board pair
+    T_UNPAIR,         // 23 H->P sealed: empty; forget the board that sent it
+    T_REVOKE,         // 24 H->P sealed: mac[6]; the owner has that board forgotten
+    T_PEERS,          // 25 P->H sealed: u8 count, then per board u8 flags, mac[6], name[16]
 };
 enum : uint8_t { DIR_HOST = 'H', DIR_PEER = 'P' };
 
@@ -199,6 +204,16 @@ struct PairInfo {
     uint8_t  key[linkcrypto::kKey] = {};   // k_link, only in Events::paired
 };
 
+// One of the boards a shared satellite is paired with, as its PEERS says.
+// SB_HEARD: the satellite's link with that board is up right now.
+enum : uint8_t { SB_OWNER = 1, SB_HEARD = 2, SB_YOU = 4 };
+struct SharedBoard {
+    uint8_t flags = 0;               // SB_*
+    Mac     mac;
+    char    name[17] = {};
+};
+constexpr uint8_t kPeersEntry = 1 + 6 + 16;    // flags, mac, name
+
 // What the engine tells its owner. ctx is passed back. Every call is from
 // poll(), on the loop, except bulkData and bulkFinish (pumpBulk) and, when
 // the radio sorts bulk fragments to Io::recvBulk, bulkBegin (pumpRx): those
@@ -237,6 +252,20 @@ struct Events {
     void (*channel)(void* ctx, uint8_t ch) = nullptr;
     // Peer: the host's clock, from PONG (unix seconds; never 0).
     void (*clock)(void* ctx, uint32_t unix) = nullptr;
+    // -- one satellite, several boards (1.2.0), appended --------------------
+    // Host: a device asked to pair from another channel than this board's:
+    // it is already paired with boards on theirChan, and every board a
+    // satellite serves must be on one channel. Not answered; told once per
+    // device per window, for the sysop.
+    void (*pairRefused)(void* ctx, const PairInfo& who, uint8_t theirChan) = nullptr;
+    // Host: a shared satellite's list of its boards (PEERS), this one
+    // included (SB_YOU).
+    void (*peersList)(void* ctx, uint8_t peer, const SharedBoard* boards, uint8_t n) = nullptr;
+    // Peer: a board was forgotten (its UNPAIR, or the owner's REVOKE): the
+    // owner wipes its stored pairing for slot `peer`.
+    void (*unpaired)(void* ctx, uint8_t peer) = nullptr;
+    // Peer: the owner opened pairing for another board, for seconds.
+    void (*shareOpened)(void* ctx, uint32_t seconds) = nullptr;
 };
 
 // Counters for LINK and SYS.
@@ -258,8 +287,11 @@ struct PeerStats {
 
 class Engine {
 public:
-    // Sizes. A host holds up to kPeers pairings (Rob: 8); a peer holds one.
+    // Sizes. A host holds up to kPeers pairings (Rob: 8); a peer up to
+    // kHosts boards (1.2.0, Rob: 5), all on one Wi-Fi channel.
     static constexpr uint8_t  kPeers         = 8;
+    static constexpr uint8_t  kHosts         = 5;
+    static constexpr uint32_t kHostRetryMs   = 30000; // a peer tries an unheard board this often
     static constexpr uint8_t  kSessions      = 16;
     static constexpr uint8_t  kTxMsgs        = 12;
     static constexpr uint8_t  kCtrl          = 8;
@@ -310,8 +342,26 @@ public:
 
     // -- peers ----------------------------------------------------------------
     // addPeer: a stored pairing, at start. Returns its index, or -1 when full.
-    int  addPeer(const Mac& mac, const uint8_t key[linkcrypto::kKey], uint8_t kind);
+    // On a peer, ord is the order the board was paired in (the lowest is the
+    // owner) and name the board's name, both as the owner stored them.
+    int  addPeer(const Mac& mac, const uint8_t key[linkcrypto::kKey], uint8_t kind,
+                 uint8_t ord = 0, const char* name = nullptr);
     void removePeer(uint8_t peer);
+    // Peer: the order a board was paired in, and its name (from its OFFER or
+    // BEACON). ownerIndex: the owner's slot, -1 with none.
+    uint8_t     peerOrd(uint8_t peer) const;
+    const char* peerName(uint8_t peer) const;
+    int         ownerIndex() const;
+
+    // Host, a shared satellite (1.2.0):
+    // sharePairing: ask the satellite (this board must own it) to pair one
+    // more board for seconds. False when it cannot be sent now.
+    bool sharePairing(uint8_t peer, uint16_t seconds);
+    // forget: tell the satellite to forget this board (UNPAIR), then forget
+    // it here once that has gone, or at once when it is not up.
+    void forget(uint8_t peer);
+    // revoke: the owner has the satellite forget another board.
+    bool revoke(uint8_t peer, const Mac& board);
     bool peerUsed(uint8_t peer) const;
     bool peerUp(uint8_t peer) const;
     uint8_t peerKind(uint8_t peer) const;
@@ -395,8 +445,9 @@ public:
     uint32_t dropsTotal() const;
     uint32_t frameUsAvg() const { return usAvg_; }
     uint32_t frameUsMax() const { return usMax_; }
-    uint8_t  hostChannel() const { return hostChan_; }   // peer: the host's, as last heard
-    bool     hostUp() const;                             // peer: is its link session up
+    uint8_t  hostChannel() const { return hostChan_; }   // peer: the hosts', as last heard
+    bool     hostUp() const;                             // peer: is any board's session up
+    bool     hostUp(uint8_t slot) const;                 // peer: that board's
 
     // ok: every table was allocated. An engine that is not ok does nothing.
     bool     ok() const;
@@ -447,7 +498,7 @@ private:
     Role        role_;
     Io&         io_;
     Events      ev_;
-    Peer*       peers_;          // kPeers on a host, 1 on a peer
+    Peer*       peers_;          // kPeers on a host, kHosts on a peer
     uint8_t     npeers_;
     Sess*       sess_;
     TxMsg*      tx_;
@@ -466,14 +517,22 @@ private:
     uint8_t     kind_ = KIND_UNKNOWN;
     char        fw_[13] = {};
     uint32_t    families_ = 0;
-    // peer: scanning
+    // peer: scanning, one radio for every board (the HELLO and PING timers
+    // are each board's, in Peer)
     uint8_t     scanCh_ = 0;
     uint32_t    scanAt_ = 0;
-    uint32_t    pingAt_ = 0;
-    uint8_t     pingMiss_ = 0;
-    uint32_t    helloAt_ = 0;
     char        boardName_[17] = {};
     uint32_t    pairUntil_ = 0;
+    // peer: its own name for pairing (startPairing), kept for a share window
+    char        selfName_[17] = {};
+    uint8_t     peersDirty_ = 0;                         // a bit a board: send it PEERS
+    void        hostLost(uint8_t pi, uint32_t now);
+    bool        sendPeers(uint8_t pi);
+    void        endShare();
+    void        compactOrd();
+    void        sendPairHello(uint8_t home);
+    bool        anyHostUp(int except = -1) const;
+    void        forgetHost(uint8_t pi);
     std::atomic<bool> pumping_{ false };                 // pumpBulk is running
     bool        onRunner_ = false;                       // inside pumpRx, under the lock
     bool        fastRescan_ = false;

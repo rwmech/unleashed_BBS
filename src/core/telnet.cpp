@@ -206,6 +206,12 @@ size_t Telnet::filter(const uint8_t* in, size_t n, uint8_t* out, ByteSink& reply
                 if (b == T_IAC) { out[o++] = 0xFF; st_ = S_DATA; lastCR_ = false; break; }
                 if (b >= T_WILL && b <= T_DONT) { cmd_ = b; st_ = S_OPT; break; }
                 if (b == T_SB) { sbLen_ = 0; st_ = S_SB; break; }
+                // Interrupt Process and Break: what a client sends for Ctrl-C
+                // or a Break key when it keeps them as telnet commands (BSD
+                // telnet's localchars). The board's break is 0x03 everywhere,
+                // the way out of a door included (1.2.0). Not in binary mode,
+                // where 0x03 would be a byte of a file.
+                if ((b == 244 || b == 243) && !binary_) { out[o++] = 0x03; lastCR_ = false; st_ = S_DATA; break; }
                 st_ = S_DATA;               // NOP, GA, AYT, etc.
                 break;
             case S_OPT:

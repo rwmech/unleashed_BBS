@@ -64,8 +64,12 @@
 #include <strings.h>
 
 #include "../core/bbs.h"
+#include "../core/bbs_util.h"
 #include "../core/clock.h"
 #include "../core/linkcrypto.h"
+#include "../core/linkfam.h"
+#include "../core/photos.h"
+#include "../core/satwords.h"
 #include "../core/plugin.h"
 #include "../platform/linkradio.h"
 #include "../platform/platform.h"
@@ -107,6 +111,16 @@ struct Meta {                          // what the board knows of a pairing beyo
     uint8_t  kind;
     bool     checked;
     uint32_t pairedAt;
+    uint8_t  recv;                     // RECV_*: what this board takes from a shared camera (1.2.0)
+    uint8_t  camno;                    // its camera number here, 0 = auto
+    uint8_t  chan;                     // the channel it was last up on, 0 unknown
+};
+
+// Who shares a satellite, from its PEERS (1.2.0). RAM only: the satellite
+// sends it again whenever it changes and each time the link comes up.
+struct Shared {
+    uint8_t             n;
+    ulink::SharedBoard  b[Engine::kHosts];
 };
 
 struct Ctx;
@@ -160,6 +174,8 @@ struct Ctx {
     Engine*          eng = nullptr;
     uint8_t*         win = nullptr;
     Meta             meta[Engine::kPeers] = {};
+    Shared           shared[Engine::kPeers] = {};
+    bool             saveDue = false;  // the pairings file, written from tick, not from an event
     // the sysop pairing, if one is: their node, and where they are in it
     uint8_t          pairNode = 0xFF;
     uint8_t          pairStep = 0;     // 1 waiting, 2 asked, 3 paired: codes match?
@@ -173,6 +189,12 @@ struct Ctx {
     Job              job;
 #endif
 };
+
+// savePeersSoon: the pairings file is written on the next tick. For events,
+// which the engine raises inside its poll.
+void savePeersSoon() {
+    if (Ctx* c = g_ctx.load()) c->saveDue = true;
+}
 
 int rngRunner(void*, unsigned char* out, size_t n) {
     for (size_t i = 0; i < n; i += 4) {
@@ -256,9 +278,16 @@ void evReset(void* cx, uint8_t peer, uint16_t sess, uint8_t family, uint8_t reas
 void evPeerState(void* cx, uint8_t peer, bool up) {
     Ctx* c = g_ctx.load();
     if (!c || cx != c) return;
-    if (peer < Engine::kPeers)
+    if (peer < Engine::kPeers) {
         plat::log("link: %s \"%s\" %s", ulink::kindName(c->meta[peer].kind), c->meta[peer].name,
                   up ? "is up" : "went quiet");
+        // Where it was last heard, for LINK's footnote when this board's
+        // router moves and a shared satellite stays with its other boards.
+        if (up && c->meta[peer].chan != plat::linkRadioChannel()) {
+            c->meta[peer].chan = plat::linkRadioChannel();
+            savePeersSoon();
+        }
+    }
     for (const linkp::Family* f : g_fam) if (f && f->peerState) f->peerState(peer, up);
 }
 
@@ -285,8 +314,14 @@ bool hexKey(const char* s, uint8_t key[linkcrypto::kKey]) {
     return true;
 }
 
-// One line a pairing: mac kind checked pairedAt key name. The name last,
-// because it may have spaces.
+// One line a pairing. Version 2 (1.2.0, a header line says so):
+//   mac kind checked pairedAt recv camno chan key name
+// recv is what this board takes from a shared camera (RECV_*), camno its
+// camera number here (0 auto), chan the channel it was last up on. Version
+// 1 (no header): mac kind checked pairedAt key name. The name last, because
+// a name written before 1.2.0 may have spaces.
+constexpr const char kPeersHeader[] = "#link-peers 2";
+
 void savePeers() {
     Ctx* c = g_ctx;
     if (!c || !c->eng) return;
@@ -298,15 +333,16 @@ void savePeers() {
     snprintf(tmp, sizeof(tmp), "%s.tmp", path);
     FILE* f = fopen(tmp, "w");
     if (!f) return;
-    fprintf(f, "# unleashed link pairings: mac kind checked paired key name\n");
+    fprintf(f, "%s\n# unleashed link pairings: mac kind checked paired recv camno chan key name\n", kPeersHeader);
     for (uint8_t i = 0; i < Engine::kPeers; ++i) {
         if (!c->eng->peerUsed(i)) continue;
         char mac[18], key[33];
         macText(c->eng->peerMac(i), mac, sizeof(mac));
         const uint8_t* k = c->eng->peerKey(i);
         for (size_t b = 0; b < linkcrypto::kKey; ++b) snprintf(key + 2 * b, 3, "%02x", k[b]);
-        fprintf(f, "%s %u %u %u %s %s\n", mac, c->meta[i].kind, c->meta[i].checked ? 1u : 0u,
-                static_cast<unsigned>(c->meta[i].pairedAt), key, c->meta[i].name);
+        const Meta& m = c->meta[i];
+        fprintf(f, "%s %u %u %u %u %u %u %s %s\n", mac, m.kind, m.checked ? 1u : 0u,
+                static_cast<unsigned>(m.pairedAt), m.recv, m.camno, m.chan, key, m.name);
         linkcrypto::wipe(key, sizeof(key));
     }
     // fclose flushes what is left and can fail on its own (a full partition),
@@ -329,12 +365,20 @@ void loadPeers() {
     FILE* f = fopen(path, "r");
     if (!f) return;
     char line[160];
+    bool v2 = false;
     while (fgets(line, sizeof(line), f)) {
+        if (!strncmp(line, kPeersHeader, sizeof(kPeersHeader) - 1)) { v2 = true; continue; }
         if (line[0] == '#' || line[0] == '\n') continue;
         char mac[24] = {}, key[40] = {};
-        unsigned kind = 0, checked = 0, at = 0;
+        unsigned kind = 0, checked = 0, at = 0, recv = linkfam::RECV_ALL, camno = 0, chan = 0;
         int used = 0;
-        if (sscanf(line, "%23s %u %u %u %39s %n", mac, &kind, &checked, &at, key, &used) < 5) continue;
+        if (v2) {
+            if (sscanf(line, "%23s %u %u %u %u %u %u %39s %n", mac, &kind, &checked, &at, &recv, &camno, &chan, key,
+                       &used) < 8)
+                continue;
+        } else if (sscanf(line, "%23s %u %u %u %39s %n", mac, &kind, &checked, &at, key, &used) < 5) {
+            continue;
+        }
         Mac m;
         uint8_t k[linkcrypto::kKey];
         if (!macParse(mac, m) || strlen(key) != 32 || !hexKey(key, k)) continue;
@@ -349,6 +393,9 @@ void loadPeers() {
         me.kind = static_cast<uint8_t>(kind);
         me.checked = checked != 0;
         me.pairedAt = at;
+        me.recv = static_cast<uint8_t>(recv & linkfam::RECV_ALL);
+        me.camno = static_cast<uint8_t>(camno <= 9 ? camno : 0);
+        me.chan = static_cast<uint8_t>(chan <= 14 ? chan : 0);
     }
     linkcrypto::wipe(line, sizeof(line));
     fclose(f);
@@ -363,14 +410,58 @@ void evPairAsk(void* cx, const ulink::PairInfo& who) {
     c->asking = who;
 }
 
+// nameTaken: another pairing, or the board's built-in camera, already has
+// this name (ignoring case). SNAPSHOT and SATS take a satellite by name, and
+// the first match would win.
+bool nameTaken(const char* name, int self) {
+    Ctx* c = g_ctx.load();
+    if (!c) return false;
+    for (uint8_t i = 0; i < Engine::kPeers; ++i)
+        if (static_cast<int>(i) != self && c->eng->peerUsed(i) && !strcasecmp(c->meta[i].name, name)) return true;
+    for (uint8_t i = 0; i < photos::cameras(); ++i) {
+        const photos::Camera* cam = photos::camera(i);
+        if (cam && cam->order == 0 && !strcasecmp(cam->name, name)) return true;
+    }
+    return false;
+}
+
+// oneWord: a name as SNAPSHOT can take it: printable, a space becomes '-'.
+void oneWord(const char* in, char* out, size_t n) {
+    size_t k = 0;
+    for (; *in && k + 1 < n; ++in) {
+        const char ch = *in;
+        if (ch == ' ') out[k++] = '-';
+        else if (ch > 0x20 && ch < 0x7F) out[k++] = ch;
+    }
+    out[k] = '\0';
+}
+
+// uniqueName: want, made one word and unique (a "-2", "-3" on the end).
+void uniqueName(const char* want, int self, char* out, size_t n) {
+    char base[17];
+    oneWord(want, base, sizeof(base));
+    if (!base[0]) snprintf(base, sizeof(base), "%s", satwords::kSatShort);
+    snprintf(out, n, "%s", base);
+    for (unsigned k = 2; k < 10 && nameTaken(out, self); ++k) {
+        char tail[4];
+        snprintf(tail, sizeof(tail), "-%u", k);
+        const size_t keep = n - 1 - strlen(tail) < strlen(base) ? n - 1 - strlen(tail) : strlen(base);
+        snprintf(out, n, "%.*s%s", static_cast<int>(keep), base, tail);
+    }
+}
+
 void evPaired(void* cx, uint8_t peer, const ulink::PairInfo& who) {
     Ctx* c = g_ctx.load();
     if (!c || cx != c || peer >= Engine::kPeers) return;
     Meta& m = c->meta[peer];
-    snprintf(m.name, sizeof(m.name), "%s", who.name[0] ? who.name : ulink::kindName(who.kind));
+    m = Meta();
+    uniqueName(who.name[0] ? who.name : ulink::kindName(who.kind), peer, m.name, sizeof(m.name));
     m.kind = who.kind;
     m.checked = false;
     m.pairedAt = clk::valid() ? clk::epoch() : 0;
+    m.recv = linkfam::RECV_ALL;
+    m.chan = plat::linkRadioChannel();
+    c->shared[peer] = Shared();
     c->pairedAs = peer;
     savePeers();
     char mac[18];
@@ -409,6 +500,78 @@ void pairEnd(Session* s, Color col, const char* text) {
     s->term.color(s->tl, col);
     s->term.text(s->tl, text);
     Bbs::instance().release(*s);
+}
+
+// ---------------------------------------------------------------------------
+// One satellite, several boards (1.2.0)
+// ---------------------------------------------------------------------------
+// A satellite shared with boards on another channel asked to pair: the
+// engine refuses it, and the sysop pairing here is told why, in words.
+void evPairRefused(void* cx, const ulink::PairInfo& who, uint8_t theirChan) {
+    Ctx* c = g_ctx.load();
+    if (!c || cx != c) return;
+    char mac[18];
+    macText(who.mac, mac, sizeof(mac));
+    plat::log("link: %s \"%s\" %s works on channel %u for its other boards; this board is on %u: not paired",
+              ulink::kindName(who.kind), who.name, mac, theirChan, plat::linkRadioChannel());
+    Session* s = pairSession();
+    if (!s || c->pairStep != 1) return;
+    const unsigned mine = plat::linkRadioChannel();
+    char a[96], b[96];
+    s->term.nl(s->tl);
+    if (Bbs::instance().rowWidth(*s) >= 60) {
+        snprintf(a, sizeof(a), "This %s works on channel %u for its other boards and this board is on %u.",
+                 satwords::kSat, static_cast<unsigned>(theirChan), mine);
+        Bbs::instance().rowText(*s, Color::LightRed, a);
+        Bbs::instance().rowText(*s, Color::Grey, "Boards sharing a satellite must be on one Wi-Fi channel, which usually means");
+        Bbs::instance().rowText(*s, Color::Grey, "one router.", false);
+    } else {
+        snprintf(a, sizeof(a), "This %s works on channel %u for", satwords::kSat, static_cast<unsigned>(theirChan));
+        snprintf(b, sizeof(b), "its other boards; this board is on %u.", mine);
+        Bbs::instance().rowText(*s, Color::LightRed, a);
+        Bbs::instance().rowText(*s, Color::LightRed, b);
+        Bbs::instance().rowText(*s, Color::Grey, "Boards sharing a satellite must be on");
+        Bbs::instance().rowText(*s, Color::Grey, "one Wi-Fi channel: usually one router.", false);
+    }
+    pairEnd(s, Color::Grey, "Not paired.");
+}
+
+void evPeersList(void* cx, uint8_t peer, const ulink::SharedBoard* boards, uint8_t n) {
+    Ctx* c = g_ctx.load();
+    if (!c || cx != c || peer >= Engine::kPeers) return;
+    Shared& sh = c->shared[peer];
+    sh.n = n > Engine::kHosts ? Engine::kHosts : n;
+    for (uint8_t i = 0; i < sh.n; ++i) sh.b[i] = boards[i];
+}
+
+// The satellite let this board go: its owner revoked it.
+void evUnpaired(void* cx, uint8_t peer) {
+    Ctx* c = g_ctx.load();
+    if (!c || cx != c || peer >= Engine::kPeers) return;
+    plat::log("link: \"%s\" let this board go (its owner revoked it)", c->meta[peer].name);
+    c->meta[peer] = Meta();
+    c->shared[peer] = Shared();
+    savePeersSoon();
+}
+
+// ownsIt: this board owns satellite peer, from its PEERS. Unknown (no PEERS
+// yet): -1.
+int ownsIt(uint8_t peer) {
+    Ctx* c = g_ctx.load();
+    if (!c || peer >= Engine::kPeers || !c->shared[peer].n) return -1;
+    const Shared& sh = c->shared[peer];
+    for (uint8_t i = 0; i < sh.n; ++i)
+        if (sh.b[i].flags & ulink::SB_YOU) return (sh.b[i].flags & ulink::SB_OWNER) ? 1 : 0;
+    return -1;
+}
+
+// ownerName: the owner's name from PEERS, "" unknown.
+const char* ownerName(uint8_t peer) {
+    Ctx* c = g_ctx.load();
+    if (!c || peer >= Engine::kPeers) return "";
+    const Shared& sh = c->shared[peer];
+    for (uint8_t i = 0; i < sh.n; ++i) if (sh.b[i].flags & ulink::SB_OWNER) return sh.b[i].name;
+    return "";
 }
 
 void pairTick() {
@@ -557,6 +720,9 @@ bool start(Bbs& bbs) {
     ev.peerState = evPeerState;
     ev.pairAsk   = evPairAsk;
     ev.paired    = evPaired;
+    ev.pairRefused = evPairRefused;
+    ev.peersList = evPeersList;
+    ev.unpaired  = evUnpaired;
     c->eng = c->win ? new (std::nothrow) Engine(ulink::Role::Host, c->radio, ev, win, c->win) : nullptr;
     if (!c->eng || !c->eng->ok()) {
         freeCtx(c);
@@ -619,6 +785,7 @@ void tick(uint32_t now) {
     Ctx* c = g_ctx.load();
     if (!c || !c->eng) return;
     c->eng->poll();
+    if (c->saveDue) { c->saveDue = false; savePeers(); }
 
     // Hand the slow work off.
 #ifdef LINK_HAS_RUNNER
@@ -664,34 +831,81 @@ void ago(uint32_t ms, char* out, size_t n) {
     else               snprintf(out, n, "%uh", static_cast<unsigned>(s / 3600));
 }
 
+// sharedText: a pairing's sharing, from its PEERS. 40: "3 own" or "2"; 80:
+// "3, this board" or "2, Porch BBS". Empty when not shared or not known.
+void sharedText(uint8_t i, bool wide, char* out, size_t n) {
+    Ctx* c = g_ctx;
+    out[0] = '\0';
+    const Shared& sh = c->shared[i];
+    if (sh.n < 2) return;
+    const int own = ownsIt(i);
+    if (wide) snprintf(out, n, "%u, %.16s", sh.n, own == 1 ? "this board" : ownerName(i));
+    else      snprintf(out, n, "%u%s", sh.n, own == 1 ? " own" : "");
+}
+
+// otherRows: under a shared satellite, a row for each other board.
+void otherRows(Bbs& b, Session& s, uint8_t i, bool wide) {
+    Ctx* c = g_ctx;
+    const Shared& sh = c->shared[i];
+    if (sh.n < 2) return;
+    for (uint8_t k = 0; k < sh.n; ++k) {
+        const ulink::SharedBoard& o = sh.b[k];
+        if (o.flags & ulink::SB_YOU) continue;
+        const bool owner = o.flags & ulink::SB_OWNER;
+        const bool heard = o.flags & ulink::SB_HEARD;
+        char line[80];
+        if (wide)
+            snprintf(line, sizeof(line), "      %-16.16s  %s%s", o.name, owner ? "owner, " : "",
+                     heard ? "heard" : "not heard");
+        else
+            snprintf(line, sizeof(line), "      %-12.12s %s%s", o.name, owner ? "owner, " : "",
+                     heard ? "heard" : "not heard");
+        b.rowText(s, heard ? Color::Grey : Color::Yellow, line);
+    }
+}
+
 void cmdList(Bbs& b, Session& s) {
     Ctx* c = g_ctx;
     Engine& e = *c->eng;
-    char right[24], line[96];
+    char right[24], line[112];
     snprintf(right, sizeof(right), "channel %u", plat::linkRadioChannel());
     b.rowTitle(s, "Radio link", right);
     const bool wide = b.rowWidth(s) >= 60;
+    // Sub-rows only while the whole list fits the screen (less 8 for the
+    // title, the footer and the prompt); past that SATS n lists a
+    // satellite's boards.
+    uint8_t rows = 0;
+    for (uint8_t i = 0; i < Engine::kPeers; ++i)
+        if (e.peerUsed(i)) rows = static_cast<uint8_t>(rows + 1 + (c->shared[i].n > 1 ? c->shared[i].n - 1 : 0));
+    const uint8_t height = s.term.rows() ? s.term.rows() : 24;
+    const bool subRows = rows + 8 <= height;
     if (!e.peerCount()) {
         b.rowText(s, Color::Grey, "No devices paired. LINK PAIR pairs one.");
     } else {
-        b.rowText(s, Color::Cyan, wide ? " #  Name             Kind     State  RSSI  Heard  Checked"
-                                       : " #  Name       Kind    State RSSI");
+        b.rowText(s, Color::Cyan, wide ? " #  Name             Kind     State  RSSI  Heard  Checked  Shared, owner"
+                                       : " #  Name       Kind    State RSSI Brd");
         const uint32_t now = plat::millis();
         for (uint8_t i = 0; i < Engine::kPeers; ++i) {
             if (!e.peerUsed(i)) continue;
             const ulink::PeerStats& st = e.peerStats(i);
-            char heard[8] = "-";
+            char heard[8] = "-", shared[24];
             if (st.lastHeard) ago(now - st.lastHeard, heard, sizeof(heard));
+            sharedText(i, wide, shared, sizeof(shared));
             if (wide) {
-                snprintf(line, sizeof(line), " %u  %-16.16s %-8s %-6s %4d  %-5s  %s", i, c->meta[i].name,
+                snprintf(line, sizeof(line), " %u  %-16.16s %-8s %-6s %4d  %-5s  %-7s  %s", i + 1u, c->meta[i].name,
                          ulink::kindName(c->meta[i].kind), e.peerUp(i) ? "up" : "down",
-                         static_cast<int>(st.rssi), heard, c->meta[i].checked ? "yes" : "no");
+                         static_cast<int>(st.rssi), heard, c->meta[i].checked ? "yes" : "no", shared);
             } else {
-                snprintf(line, sizeof(line), " %u  %-10.10s %-7.7s %-5s %4d", i, c->meta[i].name,
-                         ulink::kindName(c->meta[i].kind), e.peerUp(i) ? "up" : "down", static_cast<int>(st.rssi));
+                snprintf(line, sizeof(line), " %u  %-10.10s %-7.7s %-5s %4d %s", i + 1u, c->meta[i].name,
+                         ulink::kindName(c->meta[i].kind), e.peerUp(i) ? "up" : "down", static_cast<int>(st.rssi),
+                         shared);
             }
+            // rowText does not cut a line on a list, so the row is cut here.
+            line[b.rowWidth(s) < sizeof(line) ? b.rowWidth(s) : sizeof(line) - 1] = '\0';
             b.rowText(s, e.peerUp(i) ? Color::LightGreen : Color::Grey, line);
+            if (subRows && e.peerUp(i)) otherRows(b, s, i, wide);
         }
+        if (!subRows && rows > e.peerCount()) b.rowText(s, Color::Grey, "SATS n lists a satellite's boards.");
     }
     uint32_t rx = 0, tx = 0, re = 0;
     for (uint8_t i = 0; i < Engine::kPeers; ++i) {
@@ -700,34 +914,94 @@ void cmdList(Bbs& b, Session& s) {
         tx += e.peerStats(i).tx;
         re += e.peerStats(i).retries;
     }
-    snprintf(line, sizeof(line), "Frames in %u, out %u, retried %u, dropped %u.", static_cast<unsigned>(rx),
-             static_cast<unsigned>(tx), static_cast<unsigned>(re), static_cast<unsigned>(e.dropsTotal()));
-    b.rowText(s, Color::Grey, line);
+    char a[16], bb[16], r[16], d[16], fr[16], fw[16];
+    bbsu::fmtCommas(rx, a, sizeof(a));
+    bbsu::fmtCommas(tx, bb, sizeof(bb));
+    bbsu::fmtCommas(re, r, sizeof(r));
+    bbsu::fmtCommas(e.dropsTotal(), d, sizeof(d));
+    bbsu::fmtCommas(e.frameUsAvg(), fr, sizeof(fr));
+    bbsu::fmtCommas(e.frameUsMax(), fw, sizeof(fw));
+    if (wide) {
+        snprintf(line, sizeof(line), "Frames in %s, out %s, retried %s, dropped %s.", a, bb, r, d);
+        b.rowText(s, Color::Grey, line);
+    } else {
+        // Four short lines at 40: the two long ones wrapped on a C64.
+        snprintf(line, sizeof(line), "Frames in %s, out %s.", a, bb);
+        b.rowText(s, Color::Grey, line);
+        snprintf(line, sizeof(line), "Retried %s, dropped %s.", r, d);
+        b.rowText(s, Color::Grey, line);
+    }
     if (e.dropsTotal()) {
         char* p = line;
         size_t left = sizeof(line);
         int w = snprintf(p, left, "Dropped:");
-        for (uint8_t d = 0; d < ulink::D_COUNT && w > 0 && static_cast<size_t>(w) < left; ++d) {
-            if (!e.drops(d)) continue;
+        for (uint8_t k = 0; k < ulink::D_COUNT && w > 0 && static_cast<size_t>(w) < left; ++k) {
+            if (!e.drops(k)) continue;
             p += w;
             left -= static_cast<size_t>(w);
-            w = snprintf(p, left, " %s %u", ulink::dropName(d), static_cast<unsigned>(e.drops(d)));
+            w = snprintf(p, left, " %s %u", ulink::dropName(k), static_cast<unsigned>(e.drops(k)));
         }
+        line[b.rowWidth(s) < sizeof(line) ? b.rowWidth(s) : sizeof(line) - 1] = '\0';
         b.rowText(s, Color::Grey, line);
     }
     // Rule no. 1, read off the board: the cost per frame and how full each
     // receive ring has been (LINK.md, "Where the work runs").
-    snprintf(line, sizeof(line), wide ? "Per frame %u us, worst %u. Rings high %u/%u, bulk %u/%u."
-                                      : "Frame %uus, worst %u. Ring %u/%u, %u/%u",
-             static_cast<unsigned>(e.frameUsAvg()), static_cast<unsigned>(e.frameUsMax()),
-             static_cast<unsigned>(plat::linkRadioRingHigh()), static_cast<unsigned>(kCtrlSlots),
-             static_cast<unsigned>(plat::linkRadioBulkHigh()), static_cast<unsigned>(g_bulkWin));
-    b.rowText(s, Color::Grey, line);
+    if (wide) {
+        snprintf(line, sizeof(line), "Per frame %s us, worst %s. Rings high %u/%u, bulk %u/%u.", fr, fw,
+                 static_cast<unsigned>(plat::linkRadioRingHigh()), static_cast<unsigned>(kCtrlSlots),
+                 static_cast<unsigned>(plat::linkRadioBulkHigh()), static_cast<unsigned>(g_bulkWin));
+        b.rowText(s, Color::Grey, line);
+    } else {
+        snprintf(line, sizeof(line), "Frame %sus, worst %s.", fr, fw);
+        b.rowText(s, Color::Grey, line);
+        snprintf(line, sizeof(line), "Rings high %u/%u, bulk %u/%u.", static_cast<unsigned>(plat::linkRadioRingHigh()),
+                 static_cast<unsigned>(kCtrlSlots), static_cast<unsigned>(plat::linkRadioBulkHigh()),
+                 static_cast<unsigned>(g_bulkWin));
+        b.rowText(s, Color::Grey, line);
+    }
     if (const uint8_t slow = plat::linkRadioSlowPeers()) {
         snprintf(line, sizeof(line), wide ? "%u device%s at 1 Mbps after failed sends, 24 again after 30 s clean."
                                           : "%u device%s at 1 Mbps (failed sends).",
                  static_cast<unsigned>(slow), slow == 1 ? "" : "s");
         b.rowText(s, Color::Yellow, line);
+    }
+    // A shared satellite: one channel for all its boards, said plainly.
+    for (uint8_t i = 0; i < Engine::kPeers; ++i) {
+        if (!e.peerUsed(i) || c->shared[i].n < 2) continue;
+        const char* nm = c->meta[i].name;
+        if (!e.peerUp(i)) {
+            const unsigned was = c->meta[i].chan, now = plat::linkRadioChannel();
+            if (!was || was == now) continue;
+            if (wide) {
+                snprintf(line, sizeof(line), "%s is shared with %u board%s; all must be on one Wi-Fi channel. This board",
+                         nm, c->shared[i].n - 1u, c->shared[i].n == 2 ? "" : "s");
+                b.rowText(s, Color::Yellow, line);
+                snprintf(line, sizeof(line), "is on %u now: %s was last heard on %u.", now, nm, was);
+                b.rowText(s, Color::Yellow, line);
+            } else {
+                snprintf(line, sizeof(line), "%s is shared with %u board%s; all", nm, c->shared[i].n - 1u,
+                         c->shared[i].n == 2 ? "" : "s");
+                b.rowText(s, Color::Yellow, line);
+                b.rowText(s, Color::Yellow, "must be on one Wi-Fi channel. This");
+                snprintf(line, sizeof(line), "board is on %u, %s was on %u.", now, nm, was);
+                b.rowText(s, Color::Yellow, line);
+            }
+            continue;
+        }
+        for (uint8_t k = 0; k < c->shared[i].n; ++k) {
+            const ulink::SharedBoard& o = c->shared[i].b[k];
+            if ((o.flags & ulink::SB_YOU) || (o.flags & ulink::SB_HEARD)) continue;
+            if (wide) {
+                snprintf(line, sizeof(line), "%s is not heard: all of %s's boards must be on one Wi-Fi channel.",
+                         o.name, nm);
+                b.rowText(s, Color::Yellow, line);
+            } else {
+                snprintf(line, sizeof(line), "%s is not heard: all of", o.name);
+                b.rowText(s, Color::Yellow, line);
+                snprintf(line, sizeof(line), "%s's boards need one channel.", nm);
+                b.rowText(s, Color::Yellow, line);
+            }
+        }
     }
     if (e.peerCount() >= Engine::kPeers) b.rowText(s, Color::Yellow, "All 8 pairings are taken: LINK FORGET frees one.");
     b.rowRule(s);
@@ -758,44 +1032,155 @@ void cmdPair(Bbs& b, Session& s) {
     say(s, Color::Grey, "Put the device in pairing mode. Q stops.");
 }
 
-void cmdForget(Bbs& b, Session& s, const char* arg) {
+// pairingArg: "n" (from LINK, counted from 1) to a pairing index, -1 when
+// there is no such pairing. rest, if given, is what follows the number.
+int pairingArg(const char* arg, const char** rest = nullptr) {
     Ctx* c = g_ctx;
     char* end = nullptr;
-    long n = strtol(arg, &end, 10);
-    if (!*arg || end == arg || n < 0 || n >= Engine::kPeers || !c->eng->peerUsed(static_cast<uint8_t>(n))) {
+    const long n = strtol(arg, &end, 10);
+    if (!*arg || end == arg || n < 1 || n > Engine::kPeers || !c->eng->peerUsed(static_cast<uint8_t>(n - 1))) return -1;
+    if (rest) {
+        while (*end == ' ') ++end;
+        *rest = end;
+    }
+    return static_cast<int>(n - 1);
+}
+
+void cmdForget(Bbs& b, Session& s, const char* arg) {
+    Ctx* c = g_ctx;
+    const int n = pairingArg(arg);
+    if (n < 0) {
         say(s, Color::LightRed, "LINK FORGET n, with n from LINK.");
         b.prompt(s);
         return;
     }
-    char buf[64];
-    snprintf(buf, sizeof(buf), "Forgot %s.", c->meta[n].name);
-    plat::log("link: forgot peer %ld \"%s\"", n, c->meta[n].name);
-    c->eng->removePeer(static_cast<uint8_t>(n));
-    c->meta[n] = Meta();
+    const uint8_t i = static_cast<uint8_t>(n);
+    const bool told = c->eng->peerUp(i);
+    const bool shared = c->shared[i].n > 1;
+    char name[17], buf[96];
+    snprintf(name, sizeof(name), "%s", c->meta[i].name);
+    plat::log("link: forgot peer %u \"%s\"%s", i + 1u, name, told ? "" : " (out of reach)");
+    // Told first when it is up (UNPAIR), so a shared satellite frees this
+    // board's slot and its other boards hear it.
+    c->eng->forget(i);
+    c->meta[i] = Meta();
+    c->shared[i] = Shared();
     savePeers();
+    if (told)
+        snprintf(buf, sizeof(buf), "Forgot %s. It was told.", name);
+    else if (b.rowWidth(s) >= 60)
+        snprintf(buf, sizeof(buf), shared ? "Forgot %s here. Out of reach, it still counts this board: revoke or reset."
+                                          : "Forgot %s here. It was out of reach.", name);
+    else
+        snprintf(buf, sizeof(buf), "Forgot here. %s was out of reach.", name);
     say(s, Color::LightGreen, buf);
     b.prompt(s);
 }
 
 void cmdName(Bbs& b, Session& s, const char* arg) {
     Ctx* c = g_ctx;
-    char* end = nullptr;
-    long n = strtol(arg, &end, 10);
-    while (end && *end == ' ') ++end;
-    if (!*arg || end == arg || n < 0 || n >= Engine::kPeers || !c->eng->peerUsed(static_cast<uint8_t>(n)) ||
-        !end || !*end) {
+    const char* rest = nullptr;
+    const int n = pairingArg(arg, &rest);
+    if (n < 0 || !rest || !*rest) {
         say(s, Color::LightRed, "LINK NAME n name, with n from LINK.");
         b.prompt(s);
         return;
     }
+    // One word: SNAPSHOT and SATS take a satellite by name, and a name with
+    // a space could never be picked.
     char name[17];
     size_t k = 0;
-    for (const char* p = end; *p && k + 1 < sizeof(name); ++p)
-        if (*p >= 0x20 && *p < 0x7F) name[k++] = *p;
+    for (const char* p = rest; *p && k + 1 < sizeof(name); ++p) {
+        if (*p == ' ') {
+            say(s, Color::LightRed, "One word: SNAPSHOT takes it by name.");
+            b.prompt(s);
+            return;
+        }
+        if (*p > 0x20 && *p < 0x7F) name[k++] = *p;
+    }
     name[k] = '\0';
+    if (nameTaken(name, n)) {
+        say(s, Color::LightRed, "Already a camera's name. Pick another.");
+        b.prompt(s);
+        return;
+    }
     snprintf(c->meta[n].name, sizeof(c->meta[n].name), "%s", name);
     savePeers();
     say(s, Color::LightGreen, "Renamed.");
+    b.prompt(s);
+}
+
+// LINK SHARE n: the owner lets one more board pair with satellite n, for two
+// minutes (PAIR_OPEN). Only the owner may; the satellite checks that too.
+void cmdShare(Bbs& b, Session& s, const char* arg) {
+    Ctx* c = g_ctx;
+    const int n = pairingArg(arg);
+    if (n < 0) {
+        say(s, Color::LightRed, "LINK SHARE n, with n from LINK.");
+        b.prompt(s);
+        return;
+    }
+    const uint8_t i = static_cast<uint8_t>(n);
+    const bool wide = b.rowWidth(s) >= 60;
+    const char* nm = c->meta[i].name;
+    char buf[112];
+    if (ownsIt(i) == 0) {
+        snprintf(buf, sizeof(buf), wide ? "Only %s's owner, %s, can share it." : "Only %s's owner shares it.", nm,
+                 ownerName(i));
+    } else if (c->shared[i].n >= Engine::kHosts) {
+        snprintf(buf, sizeof(buf), wide ? "%s has %u boards, the most one satellite takes. Revoke one first."
+                                        : "%s has %u boards, the most.", nm, static_cast<unsigned>(Engine::kHosts));
+    } else if (!c->eng->peerUp(i) || !c->eng->sharePairing(i, static_cast<uint16_t>(kPairMs / 1000))) {
+        snprintf(buf, sizeof(buf), "%s is not answering. Try later.", nm);
+    } else {
+        plat::log("link: \"%s\" takes one more board for 2 minutes", nm);
+        snprintf(buf, sizeof(buf), wide ? "%s takes one more board for 2 minutes: run LINK PAIR on that board now."
+                                        : "Open for 2 min. LINK PAIR there now.", nm);
+        say(s, Color::LightGreen, buf);
+        b.prompt(s);
+        return;
+    }
+    say(s, Color::LightRed, buf);
+    b.prompt(s);
+}
+
+// LINK REVOKE n board: the owner has another board forgotten by satellite n.
+// board is its number among the other boards under n in LINK, or its name.
+void cmdRevoke(Bbs& b, Session& s, const char* arg) {
+    Ctx* c = g_ctx;
+    const char* rest = nullptr;
+    const int n = pairingArg(arg, &rest);
+    if (n < 0 || !rest || !*rest) {
+        say(s, Color::LightRed, "LINK REVOKE n board, with n from LINK.");
+        b.prompt(s);
+        return;
+    }
+    const uint8_t i = static_cast<uint8_t>(n);
+    const Shared& sh = c->shared[i];
+    const ulink::SharedBoard* who = nullptr;
+    char* end = nullptr;
+    const long k = strtol(rest, &end, 10);
+    uint8_t seen = 0;
+    for (uint8_t j = 0; j < sh.n && !who; ++j) {
+        if (sh.b[j].flags & ulink::SB_YOU) continue;
+        ++seen;
+        if ((end != rest && *end == '\0' && k == seen) || !strcasecmp(sh.b[j].name, rest)) who = &sh.b[j];
+    }
+    char buf[96];
+    if (ownsIt(i) != 1) {
+        snprintf(buf, sizeof(buf), "Only %s's owner revokes a board.", c->meta[i].name);
+    } else if (!who) {
+        snprintf(buf, sizeof(buf), "No board by that name on %s. LINK lists them.", c->meta[i].name);
+    } else if (!c->eng->peerUp(i) || !c->eng->revoke(i, who->mac)) {
+        snprintf(buf, sizeof(buf), "%s is not answering. Try later.", c->meta[i].name);
+    } else {
+        plat::log("link: revoked \"%s\" from \"%s\"", who->name, c->meta[i].name);
+        snprintf(buf, sizeof(buf), "Revoked %s.", who->name);
+        say(s, Color::LightGreen, buf);
+        b.prompt(s);
+        return;
+    }
+    say(s, Color::LightRed, buf);
     b.prompt(s);
 }
 
@@ -808,19 +1193,23 @@ void cmdLink(Bbs& b, Session& s, const char* arg, uint32_t) {
     };
     const bool sysop = s.level == Access::Sysop;
     if (!*arg) { cmdList(b, s); return; }
-    if (word("PAIR") || word("FORGET") || word("NAME")) {
+    static const char* const kSysopWords[] = { "PAIR", "FORGET", "NAME", "SHARE", "REVOKE" };
+    for (const char* w : kSysopWords) {
+        if (!word(w)) continue;
         if (!sysop) { say(s, Color::LightRed, "Only the sysop pairs and forgets devices."); b.prompt(s); return; }
-        if (word("PAIR"))   { cmdPair(b, s); return; }
-        const char* rest = arg + (word("FORGET") ? 6 : 4);
+        const char* rest = arg + strlen(w);
         while (*rest == ' ') ++rest;
-        if (word("FORGET")) cmdForget(b, s, rest);
-        else                cmdName(b, s, rest);
+        if (!strcmp(w, "PAIR"))        cmdPair(b, s);
+        else if (!strcmp(w, "FORGET")) cmdForget(b, s, rest);
+        else if (!strcmp(w, "NAME"))   cmdName(b, s, rest);
+        else if (!strcmp(w, "SHARE"))  cmdShare(b, s, rest);
+        else                           cmdRevoke(b, s, rest);
         return;
     }
-    say(s, Color::LightRed, "LINK, LINK PAIR, LINK FORGET n or LINK NAME n name.");
+    say(s, Color::LightRed, b.rowWidth(s) >= 60 ? "LINK, LINK PAIR, FORGET n, NAME n name, SHARE n or REVOKE n board."
+                                                : "LINK [PAIR|FORGET|NAME|SHARE|REVOKE]");
     b.prompt(s);
 }
-
 const Command kCommands[] = {
     { "LINK", "", 0, CF_READ, "LINK [PAIR]", "the radio link: devices, pairing", cmdLink, Menu::Staff, 60 },
 };
