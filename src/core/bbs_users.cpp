@@ -356,10 +356,12 @@ void Bbs::formSave(Session& s, uint32_t now) {
             users::setPassword(s.edit, s.pwA);
             s.edit.land    = landValue(s.landBuf);
             s.edit.created = clk::epoch();
-            users::Result r = users::add(s.edit);
+            uint32_t newId = 0;
+            users::Result r = users::add(s.edit, &newId);
             if (r == users::Result::Exists) { s.form.fail(0, "That handle was just taken", t, tl); return; }
             if (r == users::Result::Full)   { s.form.fail(0, "Sign-ups are closed: BBS is full", t, tl); return; }
             if (r != users::Result::Ok)     { s.form.fail(0, "Could not save, try again", t, tl); return; }
+            s.edit.id = newId;            // the call's figures go under it (1.1.2)
             plat::log("bbs: node %u new account '%s'", s.id, s.edit.handle);
             s.form.after(t, tl);
             s.formKind = FormKind::None;

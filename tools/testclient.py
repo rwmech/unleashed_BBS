@@ -12545,6 +12545,393 @@ def test_lag_logins():
     return ok
 
 
+# ---------------------------------------------------------------------------
+# 1.1.2, the S3 bench: every login, every logoff and LAST were slow passes
+# (64-94, 55-186 and 70-88 ms) with two callers on. These drive each at the
+# bench's sizes, a caller log of 45 to 70 calls and a card, with the costs a
+# board pays and the host does not: an open (a card's directory search, a
+# LittleFS path walk), a flash write (a 4 KB block copied at the close, both
+# cores stopped), and the password's thousand rounds of SHA-256 (hash=, about
+# 27 ms of an S3's time). The figures are the bench's, not a board's own
+# measure; the board's is its slow-pass line, which names the opens now.
+# ---------------------------------------------------------------------------
+CALLS_IO = (3000, 4500, "write=25000", "hash=27000", "log")
+PASS_RE = re.compile(r"host: (?:slow )?pass (\d+)us in (\S+) node (\d+) doing (\S+)")
+
+
+def seed_calls(logs_dir, n, handle="Seeded"):
+    """calls.log as n calls from today would leave it: a ring of fifty, the
+    oldest overwritten once n passes fifty. Records are the board's 52-byte
+    CallRec: handle[21], ip[16], node, term, charset, flags, pad, start, secs."""
+    import struct
+    size = 50
+    now = int(time.time())
+    body = bytearray(52 * size)
+    for i in range(n):
+        user = f"{handle}{i:02d}".encode()[:20].ljust(21, b"\0")
+        ip = b"192.168.0.75".ljust(16, b"\0")
+        rec = user + ip + struct.pack("<BBBBxxxII", 1 + i % 10, 2, 0, 0, now - 30 * (n - i), 120)
+        slot = i % size
+        body[52 * slot:52 * slot + 52] = rec
+    hdr = b"CLG1" + struct.pack("<HH", n % size, min(n, size))
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    (logs_dir / "calls.log").write_bytes(hdr + bytes(body))
+
+
+def read_calls(logs_dir):
+    """(next, count, [handle of each slot]) from a calls.log."""
+    import struct
+    data = (logs_dir / "calls.log").read_bytes()
+    nxt, cnt = struct.unpack("<HH", data[4:8])
+    users = []
+    for slot in range(50):
+        rec = data[8 + 52 * slot:8 + 52 * slot + 52]
+        users.append(rec[:21].split(b"\0")[0].decode(errors="replace") if len(rec) == 52 else "")
+    return nxt, cnt, users
+
+
+def account_id(tmp, handle):
+    text = (tmp / "data" / "user" / "users.txt").read_text(errors="replace")
+    m = re.search(r"^\[" + re.escape(handle) + r"\]\n(.*?)(?=^\[|\Z)", text, re.M | re.S)
+    idm = re.search(r"^id = (\d+)$", m.group(1), re.M) if m else None
+    return int(idm.group(1)) if idm else 0
+
+
+def stat_calls(tmp, uid):
+    """The calls figure in callstats.dat for this id, -1 when it has none."""
+    import struct
+    p = tmp / "data" / "user" / "callstats.dat"
+    if not p.exists():
+        return -1
+    data = p.read_bytes()
+    rec = data[16 * uid:16 * uid + 16]
+    if len(rec) < 16:
+        return -1
+    rid, _last, _day, calls, _mins = struct.unpack("<IIIHH", rec)
+    return calls if rid == uid else -1
+
+
+def calls_board(port, n, edits=None):
+    """A copy of this board with a card and n calls in its log."""
+    import tempfile
+    card = pathlib.Path(tempfile.mkdtemp(prefix="bbs-lagcard-"))
+    tmp = copy_data()
+    seed_calls(tmp / "data" / "logs", n)
+    if edits:
+        cfg = tmp / "data" / "user" / "system.cfg"
+        cfg.write_text(cfg_with(cfg.read_text(), edits))
+    proc = start_copy(tmp, (str(port),), {"BBS_SD_DIR": str(card), "BBS_PASS_LOG_US": "5000"})
+    copy_log(tmp, f"listening on {port},", 10)
+    copy_log(tmp, "sd:", 6)
+    return tmp, proc, card
+
+
+def worst_pass(text):
+    """The longest pass the board logged in text, in ms, 0 when none passed 5."""
+    got = [int(m.group(1)) for m in PASS_RE.finditer(text)]
+    return max(got) // 1000 if got else 0
+
+
+def test_lag_login_calls():
+    """A login makes no pass over 50 ms (1.1.2, the S3 bench: 64-94 ms each).
+
+    One pass did it all: the account read, the thousand rounds, the account
+    read twice more (remembered staff access, the landing), the caller log
+    counted for "Nth caller today" on the first login of a day, and every
+    flavour of motd looked for on the card and in flash. The rounds run a
+    slice a pass now behind the spinner, the account is read once, the day's
+    count is the board's own work in a pass of its own, and the motd and the
+    landing each get a pass. What was typed after the password still reaches
+    the prompt."""
+    print("Lag: logins at the bench's sizes")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    import shutil
+    ansi_login("LagLogin").close()
+    ansi_login("LagLoginSys").close()
+    probe = copy_data()
+    sys_id = account_id(probe, "LagLoginSys")
+    shutil.rmtree(probe, ignore_errors=True)
+    port = PORT + 3906
+    tmp, proc, card = calls_board(port, 45, {("", "sysop_id"): str(sys_id),
+                                             ("", "sysop_handle"): "LagLoginSys"})
+    ok = check("the sysop's account is known", sys_id > 0)
+    c = None
+    trio = []
+    try:
+        hostio_set(tmp / "data", *CALLS_IO)
+        # A caller's login, the first since the board started, with a
+        # command typed straight after the password.
+        c = Caller(ansi=True, port=port)
+        c.wait_for(b"Enter your handle", 10)
+        c.send(b"LagLogin\r")
+        c.wait_for(b"Password:", 8)
+        mark = len(copy_text(tmp))
+        c.buf.clear()
+        c.send(TEST_PW.encode() + b"\r" + b"who\r")
+        ok &= check("the password is taken", c.wait_for(b"ACCESS GRANTED", 8))
+        ok &= check("the login lands at the prompt", c.wait_for(b"Main", 8))
+        ok &= check("and the command typed after the password ran there",
+                    c.wait_for(b"Who's online", 8) and b"Unknown" not in plain(c.buf))
+        c.pump(0.8)
+        got = copy_text(tmp)[mark:]
+        slow = slow_passes(got)
+        ok &= check("a login: no pass over 50 ms (worst %d ms; %s)" % (worst_pass(got), ", ".join(slow[:3]) or "none"),
+                    not slow)
+        ok &= check("the caller log is not read at a login (%d)" % opens_of(got, "calls.log"),
+                    opens_of(got, "calls.log") == 0)
+        ok &= check("the account is read once for the password (%d)" % opens_of(got, "users.txt"),
+                    opens_of(got, "users.txt") == 1)
+        c.close()
+        c = None
+
+        # The sysop's own account: asked for the sysop password (Enter skips).
+        c = Caller(ansi=True, port=port)
+        c.wait_for(b"Enter your handle", 10)
+        mark = len(copy_text(tmp))
+        ok &= check("the sysop's account logs in", login(c, "LagLoginSys", TEST_PW))
+        c.pump(0.8)
+        got = copy_text(tmp)[mark:]
+        ok &= check("it was asked for the sysop password", b"Sysop password: " in c.buf)
+        slow = slow_passes(got)
+        ok &= check("the sysop's login: no pass over 50 ms (worst %d ms; %s)" % (worst_pass(got), ", ".join(slow[:3]) or "none"),
+                    not slow)
+        c.close()
+        c = None
+
+        # A wrong password, then the right one, on the same line.
+        c = Caller(ansi=True, port=port)
+        c.wait_for(b"Enter your handle", 10)
+        c.send(b"LagLogin\r")
+        c.wait_for(b"Password:", 8)
+        mark = len(copy_text(tmp))
+        c.buf.clear()
+        c.send(b"notmypassword\r")
+        ok &= check("a wrong password is refused", c.wait_for(b"ACCESS DENIED", 8))
+        c.pump(1.5)
+        c.send(TEST_PW.encode() + b"\r")
+        ok &= check("and the right one is let in on the same line", c.wait_for(b"ACCESS GRANTED", 8))
+        c.wait_for(b"Main", 8)
+        c.pump(0.5)
+        got = copy_text(tmp)[mark:]
+        slow = slow_passes(got)
+        ok &= check("neither made a pass over 50 ms (worst %d ms; %s)" % (worst_pass(got), ", ".join(slow[:3]) or "none"),
+                    not slow)
+        c.close()
+        c = None
+
+        # Three at once: one check runs at a time, so two wait their turn,
+        # and the first caller hangs up with theirs under way. Neither the
+        # check nor its claim may be left behind to hold the others.
+        for h in ("LagLoginSys", "LagLogin", "LagLogin"):
+            x = Caller(ansi=True, port=port)
+            trio.append(x)
+            x.wait_for(b"Enter your handle", 10)
+            x.send(h.encode() + b"\r")
+            x.wait_for(b"Password:", 8)
+            x.buf.clear()
+        mark = len(copy_text(tmp))
+        trio[0].send(TEST_PW.encode() + b"\r")
+        trio[1].send(TEST_PW.encode() + b"\r")
+        trio[2].send(b"notmypassword\r")
+        trio[0].close()
+        ok &= check("behind a caller who hung up mid-check, the right password is let in",
+                    trio[1].wait_for(b"ACCESS GRANTED", 8))
+        ok &= check("and a wrong one beside it is refused", trio[2].wait_for(b"ACCESS DENIED", 8))
+        trio[1].wait_for(b"Main", 8)
+        trio[1].pump(0.5)
+        got = copy_text(tmp)[mark:]
+        slow = slow_passes(got)
+        ok &= check("three checks at once: no pass over 50 ms (worst %d ms; %s)" % (worst_pass(got), ", ".join(slow[:3]) or "none"),
+                    not slow)
+    finally:
+        for x in trio:
+            x.close()
+        if c:
+            c.close()
+        stop_copy(proc, tmp)
+        shutil.rmtree(card, ignore_errors=True)
+    return ok
+
+
+def test_lag_logoff_calls():
+    """A logoff makes no pass over 50 ms (1.1.2, the S3 bench: 55-186 ms).
+
+    It wrote the caller log with a seek in the middle, which on LittleFS
+    copies the block twice, and then read the account back through users.txt
+    to write its call figures, a third copy, all in one pass. The log is
+    written front to back once, the figures by id in a later pass, and the
+    ring comes out exactly as before: here a full one, wrapped, so the slot
+    written is in the middle of the file."""
+    print("Lag: logoffs at the bench's sizes")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    import shutil
+    ansi_login("LagLogoffA").close()
+    ansi_login("LagLogoffB").close()
+    port = PORT + 3907
+    tmp, proc, card = calls_board(port, 70)            # fifty kept, next slot 20
+    ok = True
+    a = b = None
+    try:
+        ida, idb = account_id(tmp, "LagLogoffA"), account_id(tmp, "LagLogoffB")
+        a = ansi_login("LagLogoffA", port=port)
+        b = ansi_login("LagLogoffB", port=port)
+        # No record yet is no calls yet: the main board may not have counted
+        # the call that made the account by the time the copy was taken.
+        before = (max(stat_calls(tmp, ida), 0), max(stat_calls(tmp, idb), 0))
+        hostio_set(tmp / "data", *CALLS_IO)
+        mark = len(copy_text(tmp))
+        a.send(b"bye\r")
+        b.send(b"bye\r")
+        a.wait_closed(15)
+        b.wait_closed(15)
+        time.sleep(1.5)
+        a = b = None
+        got = copy_text(tmp)[mark:]
+        slow = slow_passes(got)
+        ok &= check("two logoffs together: no pass over 50 ms (worst %d ms; %s)" % (worst_pass(got), ", ".join(slow[:3]) or "none"),
+                    not slow)
+        ok &= check("the caller log written once a call (%d)" % opens_of(got, "calls.log", "r+b"),
+                    opens_of(got, "calls.log", "r+b") == 2)
+        ok &= check("users.txt not read to count a call (%d)" % opens_of(got, "users.txt"),
+                    opens_of(got, "users.txt") == 0)
+        ok &= check("callstats.dat opened once a call (%d)" % opens_of(got, "callstats.dat"),
+                    opens_of(got, "callstats.dat") == 2)
+        nxt, cnt, users = read_calls(tmp / "data" / "logs")
+        ok &= check("the ring's header moved on by two (next %d, count %d)" % (nxt, cnt), nxt == 22 and cnt == 50)
+        ok &= check("the two calls are in slots 20 and 21 (%s, %s)" % (users[20], users[21]),
+                    sorted(users[20:22]) == ["LagLogoffA", "LagLogoffB"])
+        ok &= check("and the calls around them are untouched (%s, %s, %s)" % (users[19], users[22], users[0]),
+                    users[19] == "Seeded69" and users[22] == "Seeded22" and users[0] == "Seeded50")
+        after = (stat_calls(tmp, ida), stat_calls(tmp, idb))
+        ok &= check("each account's call count went up by one (%s to %s)" % (before, after),
+                    after[0] == before[0] + 1 and after[1] == before[1] + 1)
+        c = ansi_login("LagLogoffA", port=port)
+        c.buf.clear()
+        c.send(b"last\r")
+        page_all(c, b"Main", 20)
+        rows = [r for r in render_lines(c.buf) if "LagLogoff" in r or "Seeded" in r]
+        ok &= check("LAST reads the two newest first, then the seeded ones",
+                    len(rows) >= 3 and "LagLogoff" in rows[0] and "LagLogoff" in rows[1] and "Seeded69" in rows[2])
+        c.close()
+    finally:
+        for x in (a, b):
+            if x:
+                x.close()
+        stop_copy(proc, tmp)
+        shutil.rmtree(card, ignore_errors=True)
+    return ok
+
+
+def test_lag_last_calls():
+    """LAST lists fifty calls without a pass over 50 ms (1.1.2, the bench:
+    70-88 ms once the log held about thirty).
+
+    Every row past the five kept in RAM opened the caller log for its one
+    record. One handle a pass now, closed at the pass's end."""
+    print("Lag: LAST with fifty calls")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    import shutil
+    ansi_login("LagLast").close()
+    port = PORT + 3908
+    tmp, proc, card = calls_board(port, 50)
+    ok = True
+    c = None
+    try:
+        c = ansi_login("LagLast", port=port)
+        hostio_set(tmp / "data", *CALLS_IO)
+        mark = len(copy_text(tmp))
+        c.buf.clear()
+        c.send(b"last\r")
+        ok &= check("LAST lists to the oldest call", page_all(c, b"Seeded00", 30))
+        c.wait_for(b"Main", 8)
+        got = copy_text(tmp)[mark:]
+        pages = bytes(c.buf).count(b"[More]") + 1
+        slow = slow_passes(got)
+        ok &= check("with no pass over 50 ms (worst %d ms; %s)" % (worst_pass(got), ", ".join(slow[:3]) or "none"),
+                    not slow)
+        ok &= check("and the caller log opened no more than once a page (%d opens, %d pages)"
+                    % (opens_of(got, "calls.log"), pages), opens_of(got, "calls.log") <= pages)
+        names = [m.group(0) for m in re.finditer(r"Seeded\d\d", plain(c.buf).decode(errors="replace"))]
+        ok &= check("all fifty, newest first", names == [f"Seeded{i:02d}" for i in range(49, -1, -1)])
+    finally:
+        if c:
+            c.close()
+        stop_copy(proc, tmp)
+        shutil.rmtree(card, ignore_errors=True)
+    return ok
+
+
+def test_lag_announce_calls():
+    """An announce round with share_activity makes no pass over 50 ms (1.1.2,
+    the Freenove bench: 60 to 285 ms a round, growing with the caller log).
+
+    The day's calls and caller-minutes are counted from the caller log on
+    every heartbeat, and 1.1.2 sends one on every caller change. The count
+    read each record past the five kept in RAM with an open of its own: up to
+    about fifty opens in one pass. One open a pass now, for every walk of the
+    log (LAST, CALLS, this), closed at the pass's end."""
+    print("Lag: an announce round with fifty calls")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    import json as _json
+    import shutil
+    port, dport = PORT + 3909, PORT + 3910
+    d = NudgeDirectory(dport)
+    tmp, proc, card = calls_board(port, 50, {
+        ("plugin:announce", "servers"): f"http://127.0.0.1:{dport}/announce",
+        ("plugin:announce", "share_activity"): "yes",
+        ("plugin:announce", "interval"): "60",
+    })
+    ok = True
+    s = None
+    try:
+        first = d.wait_post(0, 20)
+        ok &= check("the board announces to its directory", first is not None)
+        s, on = copy_sysop("LagAnnounce", port)
+        ok &= check("sysop on the copy", on)
+        hostio_set(tmp / "data", *CALLS_IO)
+        mark = len(copy_text(tmp))
+        t = time.time()
+        s.buf.clear()
+        s.send(b"announce now\r")
+        s.wait_for(b"Sending now", 4)
+        post = d.wait_post(t, 20)
+        ok &= check("ANNOUNCE NOW sends a heartbeat", post is not None)
+        rec = {}
+        if post:
+            try:
+                rec = _json.loads(post[3].decode())
+            except Exception:
+                rec = {}
+        ok &= check("with the day's fifty calls and their minutes (%s, %s)"
+                    % (rec.get("calls24"), rec.get("minutes24")),
+                    rec.get("calls24") == 50 and rec.get("minutes24") == 100)
+        s.buf.clear()
+        s.send(b"announce\r")                    # the status counts them again
+        ok &= check("ANNOUNCE shows the activity it shares", s.wait_for(b"Sharing activity: 50 calls", 6))
+        s.pump(0.8)
+        got = copy_text(tmp)[mark:]
+        slow = slow_passes(got)
+        ok &= check("no pass over 50 ms (worst %d ms; %s)" % (worst_pass(got), ", ".join(slow[:3]) or "none"),
+                    not slow)
+        ok &= check("the caller log opened once a count, not once a call (%d)" % opens_of(got, "calls.log"),
+                    opens_of(got, "calls.log") <= 2)
+    finally:
+        if s:
+            s.close()
+        stop_copy(proc, tmp)
+        shutil.rmtree(card, ignore_errors=True)
+        d.close()
+    return ok
+
+
 def test_mail_in_place():
     """Mail is written in place, not by copying the mail file (1.1.2).
 
@@ -12665,6 +13052,7 @@ def test_space_kept():
     drain(s)
     s.close()
     return ok
+
 
 
 def test_lag_backup_get():
@@ -16544,7 +16932,8 @@ GROUPS = {
     # Logging in, accounts, staff.
     "login":     ["accounts", "handle_case", "guest", "sysop", "cosysop", "user_admin", "first_setup", "ban",
                   "closed_configured", "closed_fresh", "setup_abort",
-                  "boot_hold", "boot_notices", "cgnat", "lag_logins"],
+                  "boot_hold", "boot_notices", "cgnat", "lag_logins",
+                  "lag_login_calls", "lag_logoff_calls", "lag_last_calls"],
     # Terminal handling across the three flavours.
     "terminal":  ["ansi", "petscii", "ascii", "telnet_first", "link_line"],
     # 1.1.2: every path the lag audit named, timed with hostio.txt.
@@ -16643,7 +17032,9 @@ ORDER_NAMES = [
     "test_rewrites_keep_old", "test_restore_waits_quiet", "test_screens_command", "test_screens_install",
     # 1.1.2, the lag work: each drives one audited path with the cost of a
     # real open and asserts no pass over 50 ms. Most run on copies.
-    "test_lag_screens", "test_lag_files", "test_lag_forums", "test_lag_logins", "test_lag_backup_get",
+    "test_lag_screens", "test_lag_files", "test_lag_forums", "test_lag_logins",
+    "test_lag_login_calls", "test_lag_logoff_calls", "test_lag_last_calls", "test_lag_announce_calls",
+    "test_lag_backup_get",
     "test_mail_in_place", "test_config_one_pass", "test_space_kept", "test_uploads_pending_bbs",
     "test_camera_one_at_a_time",
     # Destructive, and therefore last whatever else is running. The published

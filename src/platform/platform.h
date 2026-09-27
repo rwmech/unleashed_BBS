@@ -132,6 +132,13 @@ uint32_t heapFree();
 // board's.
 uint32_t stackFree();
 
+// markLoop / onLoop (1.1.2): which task is the BBS loop. begin() marks the
+// task it runs on; disk::open asks, so the loop's tally of what a pass
+// opened counts the loop's own opens and never the runner's. A read of the
+// current task's handle, and a compare.
+void markLoop();
+bool onLoop();
+
 // stackSize: the BBS task's whole stack in bytes, what stackFree is out of.
 // 0 where it is not known.
 uint32_t stackSize();
@@ -330,6 +337,11 @@ void hostDiskOpen(const char* path, const char* mode);
 // hostNoDns (host build only): hostio.txt says "nodns", so a name lookup
 // fails the way a DNS server that has gone away makes one fail (1.1.2).
 bool hostNoDns();
+// hostRounds (host build only): the password's SHA-256 rounds, charged at
+// what hostio.txt's "hash=N" says a thousand of them cost on a board (1.1.2).
+// The host's processor does them in a fraction of a millisecond, so without
+// this a test could never see them in a pass.
+void hostRounds(uint32_t rounds);
 #endif
 
 // ---------------------------------------------------------------------------

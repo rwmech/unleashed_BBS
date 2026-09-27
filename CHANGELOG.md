@@ -24,6 +24,75 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.1.2-dev.6, 2026-09-27
+
+The last blocker on 1.1.2's tag: logins, logoffs, LAST and announce's
+activity figures were each a slow pass on the bench (the S3: logins 64-94
+ms, logoffs 55-186, LAST 70-88; the Freenove: logins 69-247, logoffs
+78-231, an announce round 60-285 ms growing with the caller log). Core
+only, so the board versions do not move. Host-tested; not yet on hardware.
+
+- **A login is five short passes, not one long one.** The account read and
+  the start of the password check; the thousand SHA-256 rounds, 100 a pass
+  behind the spinner that already took 650 ms of the caller's time (about
+  27 ms of work in one piece at 240 MHz); the verdict and the greeting; the
+  motd, looked for in each flavour on the card and in flash; the landing.
+  One check at a time on the board (a claim), so a second caller's waits a
+  few passes. What a caller types straight after the password is kept for
+  the prompt, as before. The boot log says what a check costs on the board:
+  `users: a password check is N us of work`.
+- **A login reads the account once.** Remembered staff access, the sysop's
+  own-account question, the ring notes and the landing all read users.txt
+  again (two opens each, with callstats.dat); they use the record the
+  password was checked against. "The Nth caller today" is worked out by the
+  board once a second when the day turns, never by the first login of a day.
+- **The caller log is written with one block copy, not two.** The record
+  went in at its slot and a seek back wrote the header; on LittleFS a seek
+  in the middle of a write ends it, so every hang-up copied the log's block
+  twice, a 4 KB erase each with both cores stopped. It is written front to
+  back now, the records ahead of the slot carried across from a second
+  handle, and LittleFS still commits it whole at the close. And one a
+  pass: two callers hanging up together (two BYEs, a SHUTDOWN, a Wi-Fi
+  drop) paid two in one pass; a record arriving in a pass that has already
+  written flash waits in a queue of four for the next one that has not (a
+  fifth writes the oldest at once: nothing is dropped from the log).
+- **A call's figures are counted a pass later, by id.** The logoff read the
+  account through users.txt to add one call to callstats.dat. The id is
+  kept from the login, and the record is read, added to and written back in
+  one open, in the first pass that has written nothing else to flash (a
+  queue of four; a fifth writes the oldest at once, never drops one).
+- **What the code review found, fixed before the commit.** A restore can
+  give an id taken at a login to somebody else, so a restore now drops the
+  queued figures (they were for the file it replaces) and a call that
+  logged in before it is counted by handle, as before. A missing
+  callstats.dat with accounts on the board is made from users.txt at the
+  next hang-up, not started empty with one record. The caller log is only
+  made afresh when it is not there: `w+b` after an open that failed for
+  another reason would have emptied it. A password waiting its turn behind
+  another node's check is wiped when its caller hangs up.
+- **Every walk of the caller log opens it once a pass.** LAST, CALLS and
+  announce's `calls24`/`minutes24` read a record at a time and opened the
+  file for each one past the newest five: up to fifty opens in a pass. The
+  first read in a pass opens it and the loop's tail closes it.
+- **The slow-pass line names the files.** `opens N (W to write) Tus`: how
+  many the loop opened in that pass, how many to write on flash, and the
+  time in the opens themselves. The next bench reads the cause off the log.
+- Host model (tests only): `hostio.txt` takes `write=N` (a flash write's
+  block copy) and `hash=N` (a thousand rounds' cost), and screens are
+  opened through `disk::open`, so their probes are charged too.
+- Tests: `test_lag_login_calls`, `test_lag_logoff_calls`,
+  `test_lag_last_calls` and `test_lag_announce_calls`, at the bench's sizes
+  (45 to 70 calls, a card), each failing on 1.1.2-dev.5 first under the same
+  costs (login 79 ms, logoff 68, LAST 138, announce 208) and passing here
+  (worst 15, 34, under 5, under 5). The login test also runs three checks
+  at once with the first caller hanging up mid-check (worst 21 ms).
+  `test_calllog` checks the ring's layout across a wrap.
+- Static DRAM off the ELF: WROOM 164,216 (16,520 free, +416), Freenove
+  175,752 (4,984 free, +432), ESP32-CAM 177,208 (3,528 free, +432), S3
+  254,288 of 341,760 (+416): the caller-log and call-figure queues, the
+  password check's running state and the open tally. Images: 1,185,136,
+  1,259,936, 1,313,056 and 1,361,760 bytes. Eleven envs, no warnings.
+
 ## 1.1.2-dev.5, 2026-09-26
 
 Three small fixes found by the 1.3.0 spec work, before 1.1.2's tag. Core

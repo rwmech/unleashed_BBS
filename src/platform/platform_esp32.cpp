@@ -189,6 +189,11 @@ uint32_t heapFree() {
     return static_cast<uint32_t>(heap_caps_get_free_size(BBS_HEAP_CAPS));
 }
 
+// markLoop / onLoop: see platform.h (1.1.2).
+static TaskHandle_t g_loopTask = nullptr;
+void markLoop() { g_loopTask = xTaskGetCurrentTaskHandle(); }
+bool onLoop()   { return g_loopTask && xTaskGetCurrentTaskHandle() == g_loopTask; }
+
 uint32_t stackFree() {
     // Bytes. The kernel reports in StackType_t units, and in the IDF's
     // Xtensa port StackType_t is uint8_t (portSTACK_TYPE, portmacro.h), so

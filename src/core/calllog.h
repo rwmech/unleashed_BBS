@@ -67,8 +67,15 @@ struct CallRec {
 
 namespace calllog {
 
-// append: write one record at the ring head
+// append: write one record at the ring head. In a pass that has already
+// written flash (or behind a record still waiting) it waits in a queue of
+// four and writeOne writes it from the loop's tail (1.1.2); a full queue
+// writes its oldest at once, so nothing is dropped.
 bool append(const CallRec& r);
+
+// writeOne: the oldest waiting record, if any; true when there was one.
+// Bbs::tick's tail, in a pass that has written nothing else to flash.
+bool writeOne();
 
 // count: records stored (up to BBS_CALLLOG_SIZE)
 uint8_t count();
@@ -89,6 +96,11 @@ uint8_t countSince(uint32_t epoch);
 // up. A day that rolls over, or a timezone that moves midnight, is seen as
 // a new start and counted afresh.
 uint16_t today();
+
+// passEnd: the loop's tail, every pass (1.1.2). get() and countSince() read
+// through one handle a pass, opened by the first of them; this closes it, so
+// no handle outlives the pass that opened it.
+void passEnd();
 
 // kRecent: how many of the newest calls are kept in RAM. get() answers these
 // without the file, which is what the dashboard's last calls read.

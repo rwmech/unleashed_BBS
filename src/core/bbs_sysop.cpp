@@ -222,6 +222,20 @@ bool Bbs::isSysopAccount(uint32_t id) {
     return sysopAccount(u) && u.id == id;
 }
 
+// isSysopAccount(record): see bbs.h. sysopAccount's answer, from the
+// record: the configured account is this one while it is live; the
+// fallback is this one while nothing is configured and it is marked sysop.
+// The fallback while an id IS configured depends on whether that account is
+// live, which only the file knows, and goes to the id form.
+bool Bbs::isSysopAccount(const UserRec& u) {
+    if (!u.id) return false;
+    const uint32_t cfgId = syscfg::get().sysopId;
+    if (u.id == cfgId) return !u.retired;
+    if (u.id != sysopLast_) return false;
+    if (cfgId) return isSysopAccount(u.id);
+    return !u.retired && u.level >= static_cast<uint8_t>(Access::Sysop);
+}
+
 // linkSysop: see bbs.h. Written the way CONFIG board writes it, handle and
 // id together, and read back at once so the rest of the setup sees it.
 void Bbs::linkSysop(const Session& s) {
@@ -283,8 +297,12 @@ void Bbs::restoreStaff(Session& s) {
     // permanent.
     if (!clk::valid()) return;
 
+    // The account the password was just checked against, when the session
+    // still holds it (1.1.2): at the login, which is the only caller, it
+    // always does. Read again otherwise.
     UserRec u;
-    if (!users::find(s.user, u)) return;
+    if (s.edit.id && s.edit.id == s.acctId && bbsu::ieq(s.edit.handle, s.user)) u = s.edit;
+    else if (!users::find(s.user, u)) return;
     if (!u.staffLevel || !u.staffAt || !u.staffIp[0]) return;
 
     uint32_t nowEpoch = clk::epoch();

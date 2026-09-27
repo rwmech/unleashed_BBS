@@ -235,8 +235,10 @@ uint8_t range(uint8_t start, uint8_t n, RangeFn fn, void* ctx);
 
 enum class Result : uint8_t { Ok, Exists, Full, NotFound, IoError };
 
-// add: new account (fails when the handle exists or max_users is reached)
-Result add(const UserRec& u);
+// add: new account (fails when the handle exists or max_users is reached).
+// idOut, when given, gets the id the account was written with (1.1.2): the
+// sign-up keeps it for the call's figures instead of looking itself up.
+Result add(const UserRec& u, uint32_t* idOut = nullptr);
 
 // update: replace the account named originalHandle (handle may change)
 Result update(const char* originalHandle, const UserRec& u);
@@ -256,6 +258,24 @@ Result remove(const char* handle);
 // setPassword / checkPassword: salted SHA-256, BBS_PASS_ROUNDS rounds
 void setPassword(UserRec& u, const char* password);
 bool checkPassword(const UserRec& u, const char* password);
+
+// The login's password check, a slice a pass (1.1.2). BBS_PASS_ROUNDS of
+// SHA-256 are about 27 ms of work at 240 MHz, and in one piece they were
+// half of every login's slow pass on the bench. checkBegin takes the check
+// for this node (a claim: one check at a time on the board) and does the
+// first round with the typed password, which it keeps no copy of; checkStep
+// does kCheckRounds more and says Working until the verdict. Busy means
+// another node's check has it: ask again next pass. A dropped caller's claim
+// is released with all its others, so a check never outlives its caller.
+enum class Check : uint8_t { Busy, Working, Yes, No };
+constexpr uint16_t kCheckRounds = 100;
+Check checkBegin(const UserRec& u, const char* typed, uint8_t node);
+Check checkStep(uint8_t node);
+
+// checkMeasure: how long a whole check takes on this board, in microseconds,
+// timed once at boot, for the console (1.1.2). The bench reads the cost off
+// the board rather than guessing it again.
+uint32_t checkMeasure();
 
 // Issues: what a parse found. problems reject the file, warnings do not
 // (an unknown key is dropped the next time the file is written). Both
@@ -288,5 +308,25 @@ void reindex();
 // boot of 1.1.2, a restore of an older zip), and says how many it copied.
 bool     statsPut(uint32_t id, uint16_t calls, uint32_t lastCall, uint32_t dayKey, uint16_t dayMinutes);
 uint16_t statsMigrate();
+
+// statsAdd / statsTick: a finished call counted into its account's record
+// (1.1.2). A logoff already writes the caller log, and each LittleFS write
+// is a block copied with both cores stopped, so the figures wait in a small
+// queue and statsTick writes one, from the loop's tail, in a pass that has
+// written nothing else. calls goes up by one, lastCall is set when it is not
+// 0, and minutes count toward dayKey's day when countMinutes says so. One
+// open: the record is read and written back in place. A full queue writes
+// at once rather than lose a call. statsTick says whether it wrote.
+void statsAdd(uint32_t id, uint32_t lastCall, uint32_t dayKey, uint16_t minutes, bool countMinutes);
+bool statsTick();
+
+// restored / idGen (1.1.2): a restore has put another users.txt or
+// callstats.dat live. Ids are never reused within one users.txt's history,
+// but a restored one may give an id taken before it to somebody else, or to
+// nobody yet. restored() drops the queued figures (they were for the file
+// the restore replaces) and moves idGen on; a session whose login saw an
+// older idGen finds its account by handle at the logoff, as before 1.1.2.
+void    restored();
+uint8_t idGen();
 
 } // namespace users

@@ -676,6 +676,18 @@ void Bbs::startWait(Session& s, WaitFor what, uint8_t arg, const char* text) {
 }
 
 void Bbs::serviceWait(Session& s, uint32_t now) {
+    // The login's steps (1.1.2): no text and no spinner of their own. The
+    // password's spinner is already playing, and the other two are a pass.
+    switch (s.waitFor) {
+        case WaitFor::Password: passwordStep(s, now); return;
+        case WaitFor::Arrive:   arriveNow(s); return;
+        case WaitFor::Land:
+            s.waitFor = WaitFor::None;
+            s.st      = SState::Shell;
+            landAfterLogin(s);
+            return;
+        default: break;
+    }
     bool ready = false;
     switch (s.waitFor) {
         case WaitFor::Space:   ready = !space::busy(); break;

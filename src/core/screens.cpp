@@ -39,6 +39,7 @@
 #include "sysconfig.h"
 #include "../config.h"
 #include "../platform/platform.h"
+#include "disk.h"              // the drive light, and the host's cost of an open (1.1.2)
 #include <cstring>
 #include <cstdlib>
 #include <sys/stat.h>
@@ -117,10 +118,13 @@ bool ScreenPlayer::open(const char* name, const Term& t, bool flashOnly) {
     for (size_t r = 0; r < 2; ++r) {
         if (!dirs[r] || !dirs[r][0]) continue;
         snprintf(path, sizeof(path), "%s/%s%s", dirs[r], name, list[i].ext);
-        FILE* f = fopen(path, "rb");
+        // disk::open (1.1.2): the drive light, as before, and on the host
+        // the cost of a real open, so a test sees what the probes cost. Each
+        // miss here is a directory search on the card or a path walk in
+        // flash, and a screen nobody supplied is up to six of them.
+        FILE* f = disk::open(path, "rb");
         if (f) {
             fromCard_ = (r == 0);
-            plat::diskPulse(fromCard_ ? plat::DISK_CARD : plat::DISK_FLASH);   // the drive light
             f_        = f;
             mode_     = static_cast<Mode>(list[i].mode);
             inTok_    = false;
@@ -184,10 +188,9 @@ bool ScreenPlayer::find(const char* name, const Term& t, const char* want, bool 
 
 bool ScreenPlayer::openFound(const Found& f) {
     close();
-    FILE* file = fopen(f.path, "rb");
+    FILE* file = disk::open(f.path, "rb");         // and the drive light (1.1.2)
     if (!file) return false;
     fromCard_ = f.card;
-    plat::diskPulse(fromCard_ ? plat::DISK_CARD : plat::DISK_FLASH);   // the drive light
     f_        = file;
     mode_     = static_cast<Mode>(f.mode);
     inTok_    = false;

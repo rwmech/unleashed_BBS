@@ -113,6 +113,12 @@ enum class WaitFor : uint8_t {
     None,
     Space,      // the free-space figures (MEM FORCE, SYS FORCE): arg 0 MEM, 1 SYS
     Screens,    // SCREENS's table, built on the runner: then the list
+    // The login, a step a pass (1.1.2). Keys typed meanwhile are kept, not
+    // dropped: they were typed for the prompt the login ends at. Everything
+    // from Password on keeps keys; add a kind that drops them above it.
+    Password,   // the password's rounds, a slice a pass (users::checkStep)
+    Arrive,     // the greeting is out: the motd or newuser screen next pass
+    Land,       // no screen to play: the caller's landing next pass
 };
 
 enum class Role : uint8_t {
@@ -207,10 +213,20 @@ struct Session {
     bool         loggedIn    = false;
     uint32_t     loginAt     = 0;
     uint32_t     loginEpoch  = 0;
+    // acctId: the account this call is on, from the login (1.1.2), 0 for a
+    // guest. The call's figures are counted under it at the logoff without
+    // reading users.txt to find the handle again, and an id never changes,
+    // so a rename during the call counts in the right place.
+    uint32_t     acctId      = 0;
     uint16_t     dayUsedMin  = 0;      // minutes used earlier today
     int16_t      timeAdjMin  = 0;      // sysop TIME adjustments
     uint8_t      timeWarned  = 0;      // 0 none, 1 five-minute, 2 one-minute
     bool         idleWarned  = false;
+    // acctGen: users::idGen() when acctId was taken. A restore moves it on,
+    // because the restored accounts may give that id to somebody else, and
+    // the logoff then finds the account by handle as it did before 1.1.2.
+    // In the padding before busyLoginUntil: costs no bytes.
+    uint8_t      acctGen     = 0;
     uint32_t     busyLoginUntil = 0;   // busy-line login deadline
     bool         guest       = false;  // logged in as GUEST: no account, nothing saved
     uint8_t      rank        = 0;      // staff rank of the account (Access value), for
@@ -608,6 +624,11 @@ public:
     // all, answer at once, and only "the fallback, while an id is
     // configured" reads users.txt to see whether the configured one is live.
     bool isSysopAccount(uint32_t id);
+    // isSysopAccount(record): the same answer for an account already read,
+    // such as the one a login just checked the password of (1.1.2): no read
+    // at all unless the fallback is being asked about while a configured id
+    // is set, which only the file can settle.
+    bool isSysopAccount(const UserRec& u);
 
 private:
     Bbs() = default;
@@ -685,8 +706,11 @@ private:
     void inputError(Session& s, uint8_t used, const char* longMsg, const char* shortMsg);
     void askPassword(Session& s);
     void onPassword(Session& s, uint32_t now);
+    void passwordStep(Session& s, uint32_t now);      // the check's rounds, a slice a pass (1.1.2)
+    void passwordVerdict(Session& s, bool ok, uint32_t now);
     void completeLogin(Session& s, uint32_t now);
-    void arrive(Session& s);                          // motd or newuser, then landing
+    void arrive(Session& s);                          // motd or newuser, then landing: next pass
+    void arriveNow(Session& s);                       // what arrive() asked for
     bool offerSetup(Session& s);                      // unconfigured board, local caller
     void askSetup(Session& s);
     void onSetupPassword(Session& s, uint32_t now);

@@ -210,6 +210,12 @@ uint32_t heapFree() {
 //
 // Not instrumented under SAN=1: this reads stack below the live frames on
 // purpose, which is exactly what AddressSanitizer exists to object to.
+// markLoop / onLoop: see platform.h (1.1.2). The loop's thread.
+static pthread_t        g_loopThread;
+static std::atomic<bool> g_loopMarked{ false };
+void markLoop() { g_loopThread = pthread_self(); g_loopMarked.store(true); }
+bool onLoop()   { return g_loopMarked.load() && pthread_equal(pthread_self(), g_loopThread); }
+
 __attribute__((no_sanitize_address))
 uint32_t stackFree() {
     if (!g_stackLo) return 0;
@@ -469,18 +475,25 @@ bool measure(Part p, uint64_t& total, uint64_t& used) {
 // can count what a path opened. No file, no cost and no lines.
 // ---------------------------------------------------------------------------
 namespace {
-std::atomic<uint32_t> g_ioCard{ 0 }, g_ioFlash{ 0 };
+std::atomic<uint32_t> g_ioCard{ 0 }, g_ioFlash{ 0 }, g_ioWrite{ 0 }, g_ioHash{ 0 };
 std::atomic<bool>     g_ioLog{ false }, g_ioNoDns{ false };
 std::atomic<uint32_t> g_ioReadAt{ 0 };
 
 // hostIoRead: hostio.txt, at most every half second. "card_us flash_us",
-// then words: "log" (a line an open), "nodns" (lookups fail).
+// then words: "log" (a line an open), "nodns" (lookups fail), "hash=N"
+// (1.1.2): what a thousand of the password's SHA-256 rounds cost on the
+// board, in microseconds (hostRounds), and "write=N"
+// (1.1.2): N more microseconds for a flash file opened to be written. On
+// LittleFS a written file is committed whole at its close, which copies a
+// block, and a block is a 4 KB erase with both cores stopped. Charged at the
+// open because the host has no close to hang it on; the pass pays it either
+// way.
 void hostIoRead() {
     const uint32_t now = millis();
     const uint32_t was = g_ioReadAt.load();
     if (was && now - was < 500) return;
     g_ioReadAt.store(now ? now : 1);
-    unsigned c = 0, f = 0;
+    unsigned c = 0, f = 0, w = 0, hs = 0;
     bool logOn = false, noDns = false;
     std::string cfg = g_fsBase + "/hostio.txt";
     if (FILE* h = fopen(cfg.c_str(), "r")) {
@@ -489,11 +502,15 @@ void hostIoRead() {
             if (sscanf(line, "%u %u", &c, &f) < 2) c = f = 0;
             logOn = strstr(line, "log") != nullptr;
             noDns = strstr(line, "nodns") != nullptr;
+            if (const char* wr = strstr(line, "write=")) w = static_cast<unsigned>(strtoul(wr + 6, nullptr, 10));
+            if (const char* hr = strstr(line, "hash="))  hs = static_cast<unsigned>(strtoul(hr + 5, nullptr, 10));
         }
         fclose(h);
     }
     g_ioCard.store(c);
     g_ioFlash.store(f);
+    g_ioWrite.store(w);
+    g_ioHash.store(hs);
     g_ioLog.store(logOn);
     g_ioNoDns.store(noDns);
 }
@@ -504,11 +521,19 @@ bool hostNoDns() {
     return g_ioNoDns.load();
 }
 
+void hostRounds(uint32_t rounds) {
+    hostIoRead();
+    const uint64_t us = static_cast<uint64_t>(g_ioHash.load()) * rounds / 1000u;
+    if (us) usleep(static_cast<useconds_t>(us));
+}
+
 void hostDiskOpen(const char* path, const char* mode) {
     hostIoRead();
     const bool card = g_sdMount && !strncmp(path, g_sdBase.c_str(), g_sdBase.size());
     if (g_ioLog.load()) log("hostio: %s %s", mode, path);
-    const uint32_t us = card ? g_ioCard.load() : g_ioFlash.load();
+    uint32_t us = card ? g_ioCard.load() : g_ioFlash.load();
+    const bool writes = mode[0] == 'w' || mode[0] == 'a' || strchr(mode, '+') != nullptr;
+    if (!card && writes) us += g_ioWrite.load();
     if (us) usleep(us);
 }
 

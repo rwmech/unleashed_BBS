@@ -1232,13 +1232,39 @@ this tree.
       wiped to 1.1.2, the Freenove, the announce soak, logins at 70-105
       ms vs 50-69 on 1.1.1, the S3's heap with SSH on and off, and new
       connections after an upload.
-    - **Rule no. 1 finding from the S3 bench, a blocker until measured:**
-      with 2 callers on, every login is a slow pass (64-94 ms, rising as
-      the caller log fills), logoffs 55-186 ms, LAST 70-88 ms. Wrong
-      passwords are never slow, so it is not the hashing. The suspect is
-      the caller log read at login and written at logoff, not yet proven
-      (the console gives one "session" figure per pass). First job
-      tomorrow: split that figure, find the cost, fix it off the loop.
+    - **Rule no. 1 finding from the S3 bench:** every login a slow pass
+      (64-94 ms), logoffs 55-186, LAST 70-88, and on the Freenove every
+      announce round 60-285 ms. **Fixed in 1.1.2-dev.6 (rel-1.1.2e),
+      host-tested, bench to confirm.** The causes, none of them the one
+      suspected alone: the login re-read the account three times and did
+      the 1,000 SHA rounds (about 27 ms, under 50 so wrong passwords never
+      showed it) and the motd probes all in one pass; the caller log's
+      append seeked mid-write, which on LittleFS copies the block twice;
+      every caller-log walk (LAST, CALLS, announce's activity) opened the
+      file once a record. Now: the login is five passes (rounds 100 a
+      pass, one check at a time by claim), one open a pass for any walk
+      of the log, one block copy an append, the call figures a pass later
+      by id. **LittleFS rule worth keeping: a seek while writing ends the
+      write, so the next write copies the block again; write a file front
+      to back in one run.** The slow-pass line now says `opens N (W to
+      write)`, and boot logs what a password check costs, so the bench
+      reads both off the console. Host model at the bench's sizes, dev.5
+      against dev.6: login 79 to 15 ms, two logoffs 68 to 34, LAST 138 to
+      under 5, announce 208 to under 5. Two hang-ups in one pass paid two
+      block copies, so a caller-log record in a pass that already wrote
+      flash waits (queue of 4, `calllog::writeOne` from the tail), and the
+      call figures wait behind it. Code review: a restore can give a login's
+      id to somebody else (`users::restored`/`idGen`: the queue dropped,
+      that call counted by handle); a missing callstats.dat is migrated,
+      once a boot, not restarted at one record; the caller log is only made
+      afresh on ENOENT. **The Freenove's higher logins are the card**: the
+      motd is looked for on the card first, a FAT directory search per
+      missed flavour, and a loop open on the card waits for the volume lock
+      while the camera worker saves (1.4 to 10.9 s a snap); its 120 ms
+      logins fell inside the camera test's snaps. The motd and landing now
+      have passes of their own, but a card open during a save can still
+      wait: the bench reads it off the new `opens` figure. Static DRAM
+      +416 to +432 (ESP32-CAM 3,528 free).
     - Ordinary use was clean: 5 callers for 5 minutes, no slow pass,
       echo p50 4 ms and p95 12 ms, internal heap low 49,439. SSH holds
       about 110-200 bytes a connection plus its 16 KB task stack; the

@@ -181,6 +181,7 @@ Bbs& Bbs::instance() {
 // begin: wire the session table, bind the single dial-in port
 // ---------------------------------------------------------------------------
 bool Bbs::begin(uint16_t port) {
+    plat::markLoop();                 // the loop's task: its opens are the ones tallied (1.1.2)
     noteBoot();                       // why we are here, before anything else
 
     // Every account gets an identity before anything can refer to one.
@@ -191,6 +192,15 @@ bool Bbs::begin(uint16_t port) {
     // The call figures, out of users.txt into a file of their own (1.1.2):
     // once, on the first boot of this firmware; nothing on every one after.
     users::statsMigrate();
+    // What a login's password check costs on this board (1.1.2), timed once
+    // before anybody can call, so the bench reads it off the console. The
+    // check itself runs a slice a pass (users::checkStep).
+    plat::log("users: a password check is %lu us of work, done %u rounds a pass",
+              static_cast<unsigned long>(users::checkMeasure()),
+              static_cast<unsigned>(users::kCheckRounds));
+    // The caller log's header and newest calls, read now rather than by the
+    // first caller to log off or ask LAST (1.1.2).
+    calllog::count();
 
     // The ring notes waiting from before the restart, counted once so the
     // dashboard can say so without opening the file.
@@ -476,6 +486,7 @@ void Bbs::tick() {
     uint32_t now   = plat::millis();
     uint32_t work0 = plat::micros();        // time the work, not the wait
     if (r <= 0) { FD_ZERO(&rfds); FD_ZERO(&wfds); }
+    disk::tally() = disk::Tally();          // what this pass opens (1.1.2)
 
     // Phase timing. Each mark is one plat::micros(), which is an esp_timer
     // read and costs well under a microsecond against an average pass of 58,
@@ -544,7 +555,23 @@ void Bbs::tick() {
     if (!stackCheckAt_ || now - stackCheckAt_ >= 1000) {     // the full read, once a second
         stackCheckAt_ = now ? now : 1;
         stackWatch(nullptr, nullptr);
+        // Today's count of calls (1.1.2): worked out here when the day turns
+        // (or the clock first comes right), in a pass of the board's own,
+        // rather than by whoever logs in first that day. One read of the
+        // caller log, then a compare a second.
+        calllog::today();
     }
+    // Last in the pass, after everything that may write or read (1.1.2). A
+    // finished call's figures, in a pass that has written nothing else to
+    // flash: each write is a block copied with both cores stopped, and the
+    // logoff that queued this one wrote the caller log in its own pass. A
+    // hang-up's caller-log record waiting from a pass that had already
+    // written goes first, and each write counts in the tally, so only one of
+    // the two ever runs in a pass. Then the caller log's read handle for the
+    // pass, closed.
+    if (!disk::tally().writes) calllog::writeOne();
+    if (!disk::tally().writes) users::statsTick();
+    calllog::passEnd();
     usTail = plat::micros() - mark;
 
     uint32_t dt = plat::micros() - work0;
@@ -572,6 +599,21 @@ void Bbs::tick() {
     // these is read off a log rather than reasoned about. Rate limited to one
     // line a second: a board stalling every pass must not spend the rest of
     // its time describing it.
+#ifdef BBS_HOST
+    // A test's finer view (1.1.2): BBS_PASS_LOG_US=n logs every pass over n
+    // microseconds that is not already a slow pass, so a lag test can say
+    // how long the passes it drove took, not only that none reached 50 ms.
+    static const uint32_t passLogUs = [] {
+        const char* e = getenv("BBS_PASS_LOG_US");
+        return e && *e ? static_cast<uint32_t>(strtoul(e, nullptr, 10)) : 0u;
+    }();
+    if (passLogUs && dt > passLogUs && dt <= BBS_SLOW_PASS_US)
+        plat::log("host: pass %luus in %s node %u doing %s, opens %u (%u to write) %luus",
+                  static_cast<unsigned long>(dt), phase, static_cast<unsigned>(slowest),
+                  slowDoing && *slowDoing ? slowDoing : "-",
+                  static_cast<unsigned>(disk::tally().opens), static_cast<unsigned>(disk::tally().writes),
+                  static_cast<unsigned long>(disk::tally().us));
+#endif
     if (dt > BBS_SLOW_PASS_US) {
         ++slowCount_;
         slowAt_ = now ? now : 1;
@@ -580,14 +622,20 @@ void Bbs::tick() {
         // doing (1.1.2): the tests' pass timer. A test reads these lines for
         // the one path it drives, so the one-a-second limit below cannot
         // hide the pass it is looking for behind one it is not.
-        plat::log("host: slow pass %luus in %s node %u doing %s",
+        plat::log("host: slow pass %luus in %s node %u doing %s, opens %u (%u to write) %luus",
                   static_cast<unsigned long>(dt), phase, static_cast<unsigned>(slowest),
-                  slowDoing && *slowDoing ? slowDoing : "-");
+                  slowDoing && *slowDoing ? slowDoing : "-",
+                  static_cast<unsigned>(disk::tally().opens), static_cast<unsigned>(disk::tally().writes),
+                  static_cast<unsigned long>(disk::tally().us));
 #endif
         if (!slowLogAt_ || now - slowLogAt_ >= 1000) {
             slowLogAt_ = now ? now : 1;
+            // The opens (1.1.2): how many files the loop opened in this pass,
+            // how many of them to write (on flash, a block copied at the close
+            // with both cores stopped), and the time the opens alone took.
             plat::log("bbs: slow pass %luus in %s (node %u %s): accept %lu session %lu "
-                      "backup %lu plugins %lu tail %lu, %lu slow since boot",
+                      "backup %lu plugins %lu tail %lu, opens %u (%u to write) %luus, "
+                      "%lu slow since boot",
                       static_cast<unsigned long>(dt), phase,
                       static_cast<unsigned>(slowest),
                       slowDoing && *slowDoing ? slowDoing : "-",
@@ -596,6 +644,9 @@ void Bbs::tick() {
                       static_cast<unsigned long>(usBack),
                       static_cast<unsigned long>(usPlug),
                       static_cast<unsigned long>(usTail),
+                      static_cast<unsigned>(disk::tally().opens),
+                      static_cast<unsigned>(disk::tally().writes),
+                      static_cast<unsigned long>(disk::tally().us),
                       static_cast<unsigned long>(slowCount_));
         }
     }
@@ -902,6 +953,7 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
     s.det.start(now);
 
     s.owner         = 0xFF;
+    s.acctId        = 0;                 // nobody's figures until a login says whose (1.1.2)
     plat::HeapStats h = plat::heap();
     s.heapAtOpen = h.freeBytes;
     if (role == Role::Busy) {
@@ -956,7 +1008,7 @@ void Bbs::closeSession(Session& s, const char* why, uint32_t now) {
         r.secs    = secs;
         calllog::append(r);
 
-        saveCallStats(s, now);
+        saveCallStats(s, now);            // queued: written by a later pass (1.1.2)
         if (s.role == Role::Caller) {
             if (s.visible && !s.lurk) {             // hidden co-sysops leave quietly
                 char msg[BBS_USER_MAX + 32];
@@ -971,6 +1023,10 @@ void Bbs::closeSession(Session& s, const char* why, uint32_t now) {
     memset(s.pwB, 0, sizeof(s.pwB));
     memset(s.pwC, 0, sizeof(s.pwC));
     s.form.wipe();
+    // And the line editor (1.1.2): a password waiting its turn behind
+    // another node's check sits there across passes, and a caller who hangs
+    // up meanwhile must not leave it in the slot for the next one.
+    s.ed = LineEditor();
 #if BBS_HAS_SSH
     if (s.link) {
         // The SSH task sends what is still in the ring, closes the socket
@@ -1093,6 +1149,10 @@ void Bbs::processInput(Session& s, uint32_t now) {
     while (s.rxPos < s.rxLen) {
         if (s.st == SState::Free) { s.rxLen = s.rxPos = 0; return; }
         if (s.st != SState::Detect && s.tl.freeBytes() < BBS_RX_ROOM) return;
+        // The login's steps (1.1.2): what was typed after the password is
+        // for the prompt the login ends at, so it waits in the buffer, as
+        // it did when the login was one pass, rather than being dropped.
+        if (s.st == SState::Waiting && s.waitFor >= WaitFor::Password) return;
         // A plugin in raw mode gets what is left of the buffer in one go,
         // undecoded. One call rather than a byte at a time, because a
         // transfer wants blocks and calling a protocol engine 1,024 times
@@ -1932,10 +1992,9 @@ void Bbs::askPassword(Session& s) {
 // DRAM for the same reason in the other direction.
 // ---------------------------------------------------------------------------
 __attribute__((noinline))
-static users::Lookup readForLogin(const char* handle, const char* typed, UserRec& edit, bool& ok) {
+static users::Lookup readForLogin(const char* handle, UserRec& edit) {
     UserRec fresh;
     users::Lookup found = users::lookup(handle, fresh);
-    ok = found == users::Lookup::Found && users::checkPassword(fresh, typed);
     if (found == users::Lookup::Found) edit = fresh;
     return found;
 }
@@ -1945,34 +2004,99 @@ static users::Lookup readForLogin(const char* handle, const char* typed, UserRec
 // ACCESS GRANTED, or ACCESS DENIED flashes and clears for another try on
 // the same line. Three misses per call hang up, five per handle in
 // 15 minutes lock it (RAM only).
+//
+// Over several passes since 1.1.2. This pass reads the account, answers a
+// lock or a missing account at once, and starts the check; the rounds run
+// a slice a pass (passwordStep) behind the spinner, which was always going
+// to take 650 ms of the caller's time; the verdict and the greeting come in
+// the pass that finishes them, and the motd and the landing each in a pass
+// after that (arrive). In one piece the bench measured it at 64 to 94 ms,
+// every login, with other callers waiting on it.
 // ---------------------------------------------------------------------------
 void Bbs::onPassword(Session& s, uint32_t now) {
     Term& t = s.term;
     Timeline& tl = s.tl;
-    static constexpr char kDenied[] = "ACCESS DENIED";
 
     uint8_t stars = s.ed.shown();
     t.color(tl, Color::Grey);
     fx::spinner(t, tl, fx::Spin::Line, 650, 90);
-    bool ok = false;
-    users::Lookup found = readForLogin(s.user, s.ed.text(), s.edit, ok);
-    s.ed = LineEditor();                             // wipe the typed password
+    users::Lookup found = readForLogin(s.user, s.edit);
     fx::rubout(t, tl, stars, 20);
 
     if (found == users::Lookup::Found && (s.edit.locked || logins_.locked(s.user, now))) {
+        s.ed = LineEditor();                         // wipe the typed password
         hangup(s, s.edit.locked ? "This account is locked. Ask the sysop."
                                 : "Too many wrong passwords. Try again later.", now);
         return;
     }
     if (found == users::Lookup::Missing) {           // deleted while typing
+        s.ed = LineEditor();
         hangup(s, "That account is gone.", now);
         return;
     }
     if (found == users::Lookup::Error) {
+        s.ed = LineEditor();
         hangup(s, "Accounts are unavailable. Try again shortly.", now);
         return;
     }
-    // s.edit already holds the account: readForLogin copied it there.
+    // s.edit already holds the account: readForLogin copied it there. The
+    // typed password stays in the editor until the check has taken its
+    // first round from it, which is this pass unless another node's check
+    // is running (one at a time); passwordStep wipes it either way.
+    s.waitFor  = WaitFor::Password;
+    s.waitArg  = 0;                                  // 0: not begun, 1: the rounds are running
+    s.waitFrom = now;
+    s.st       = SState::Waiting;
+    passwordStep(s, now);
+}
+
+// ---------------------------------------------------------------------------
+// passwordStep: the check's next slice, from serviceWait, and the verdict
+// when it is in. Begun here too, so a caller whose check had to wait for
+// another node's begins it the moment that one ends.
+// ---------------------------------------------------------------------------
+void Bbs::passwordStep(Session& s, uint32_t now) {
+    users::Check c;
+    if (!s.waitArg) {
+        // A check whose caller has stopped waiting for it (hung up on by the
+        // board, say, and lingering over the goodbye) is not held for them:
+        // their claim would otherwise go only when the session closes, which
+        // can be twenty seconds away.
+        const uint8_t o = claims::owner(claims::Res::Password);
+        if (o != 0xFF && o != s.id) {
+            bool waiting = false;
+            for (const Session* h : all_)
+                if (h->id == o && h->st == SState::Waiting && h->waitFor == WaitFor::Password) waiting = true;
+            if (!waiting) claims::release(claims::Res::Password, o);
+        }
+        c = users::checkBegin(s.edit, s.ed.text(), s.id);
+        if (c == users::Check::Busy) return;         // another node's: next pass
+        s.ed = LineEditor();                         // wipe the typed password
+        s.waitArg = 1;
+        if (c == users::Check::Working) return;      // the rounds from the next pass
+    } else {
+        c = users::checkStep(s.id);
+        if (c == users::Check::Working) return;
+        if (c == users::Check::Busy) {
+            // The check is no longer this node's, which nothing should do
+            // while it waits on it. Not a wrong password, so not counted as
+            // one: the caller is asked to call again.
+            plat::log("bbs: node %s lost its password check", nodeName(s).t);
+            s.waitFor = WaitFor::None;
+            hangup(s, "The board lost track of that. Please call again.", now);
+            return;
+        }
+    }
+    s.waitFor = WaitFor::None;
+    s.st      = SState::AskPass;                     // what the verdict was always given
+    passwordVerdict(s, c == users::Check::Yes, now);
+}
+
+// passwordVerdict: what onPassword did with the answer, unchanged.
+void Bbs::passwordVerdict(Session& s, bool ok, uint32_t now) {
+    Term& t = s.term;
+    Timeline& tl = s.tl;
+    static constexpr char kDenied[] = "ACCESS DENIED";
 
     // Closed while this caller typed (1.1.0): the handle was let through
     // before, and the account is asked again now, before anything is said.
@@ -2026,6 +2150,8 @@ void Bbs::completeLogin(Session& s, uint32_t now) {
     s.rank       = s.guest ? 0 : s.edit.level;
     s.loginAt    = now;
     s.loginEpoch = clk::epoch();
+    s.acctId     = s.guest ? 0 : s.edit.id;         // the call's figures go here (1.1.2)
+    s.acctGen    = users::idGen();                  // unless a restore moves the ids on
     s.timeWarned = 0;
 
     char buf[96];          // full sentences need more room than fragments did
@@ -2107,7 +2233,10 @@ void Bbs::completeLogin(Session& s, uint32_t now) {
     // Only that account (1.1.0): marks are never taken off, and a plain login
     // to any account ever marked would read the notes and clear them before
     // the sysop saw them. An elevation shows them too (staffArrival).
-    if (!s.guest && s.rank >= static_cast<uint8_t>(Access::Sysop) && isSysopAccount(s.edit.id))
+    // Asked in the order that costs nothing (1.1.2): notes waiting is a
+    // count kept in RAM, and the account is the one in hand.
+    if (!s.guest && ringNotesWaiting_ && s.rank >= static_cast<uint8_t>(Access::Sysop) &&
+        isSysopAccount(s.edit))
         ringNotes(s);
     // The "[H]ELP for commands." line used to be printed here, to everybody.
     // It belongs to the main prompt and only to the main prompt: telling
@@ -2143,12 +2272,28 @@ void Bbs::completeLogin(Session& s, uint32_t now) {
 // ---------------------------------------------------------------------------
 // arrive: the end of a login. A caller who just registered gets the short
 // rules; everybody else gets whatever the board has to say today.
+//
+// In the next pass (1.1.2), and the landing in the pass after that when
+// there is no screen. Finding a screen is up to six opens, one per flavour
+// the terminal takes on the card and then in flash, and a board that ships
+// no motd pays all of them every login; landing in the room or the forums
+// opens more. Each in a pass of its own keeps each pass short. Keys typed
+// meanwhile wait for the prompt (processInput).
 // ---------------------------------------------------------------------------
 void Bbs::arrive(Session& s) {
+    s.waitFor  = WaitFor::Arrive;
+    s.waitArg  = 0;
+    s.waitFrom = plat::millis();
+    s.st       = SState::Waiting;
+}
+
+void Bbs::arriveNow(Session& s) {
     const char* first = s.newAccount ? "newuser" : "motd";
     s.newAccount = false;
-    if (!playScreen(s, first)) landAfterLogin(s);
-    else s.pendingLand = true;       // the screen finishes, then they land
+    s.waitFor = WaitFor::None;
+    if (playScreen(s, first)) { s.pendingLand = true; return; }   // the screen finishes, then they land
+    s.waitFor = WaitFor::Land;                                     // nothing to play: land next pass
+    s.st      = SState::Waiting;
 }
 
 // ---------------------------------------------------------------------------
@@ -2280,7 +2425,7 @@ bool Bbs::offerSysop(Session& s) {
     if (c.sysopDefault || !c.sysopPass[0]) return false;
     if (!s.edit.id || !bbsu::ieq(s.edit.handle, s.user)) return false;
     if (sysop_.st != SState::Free && !localAddr(s.ip)) return false;
-    if (!isSysopAccount(s.edit.id)) return false;
+    if (!isSysopAccount(s.edit)) return false;       // the record in hand (1.1.2)
     askSysop(s);
     return true;
 }
@@ -2381,9 +2526,13 @@ void Bbs::setupConfig(Session& s, uint32_t now) {
 // before the landing command runs: landing in the forums or the chat room is
 // a whole command dispatch, and a record held here would sit under it.
 // ---------------------------------------------------------------------------
-__attribute__((noinline)) static uint8_t accountLanding(const char* handle) {
+__attribute__((noinline)) static uint8_t accountLanding(const Session& s) {
+    // The account the login just read, when it is still this caller's
+    // (1.1.2): read again only if the session's record has since been put
+    // to another use, which only a form after the login can do.
+    if (s.edit.id && s.edit.id == s.acctId && bbsu::ieq(s.edit.handle, s.user)) return s.edit.land;
     UserRec u;
-    return users::find(handle, u) ? u.land : static_cast<uint8_t>(LAND_DEFAULT);
+    return users::find(s.user, u) ? u.land : static_cast<uint8_t>(LAND_DEFAULT);
 }
 
 // ---------------------------------------------------------------------------
@@ -2402,7 +2551,7 @@ __attribute__((noinline)) static uint8_t accountLanding(const char* handle) {
 void Bbs::landAfterLogin(Session& s) {
     uint8_t want = syscfg::get().landing;
     if (!s.guest) {
-        uint8_t mine = accountLanding(s.user);
+        uint8_t mine = accountLanding(s);
         if (mine != LAND_DEFAULT) want = mine;
     }
 
@@ -2573,6 +2722,14 @@ void Bbs::serviceShutdown(uint32_t now) {
     }
 }
 
+// accountIdNow: the id a handle has in the accounts live now, 0 for none.
+// Only after a restore moved the ids on (1.1.2), so the record is on this
+// frame alone and never on saveCallStats's ordinary path.
+__attribute__((noinline)) static uint32_t accountIdNow(const char* handle) {
+    UserRec u;
+    return users::find(handle, u) ? u.id : 0;
+}
+
 // ---------------------------------------------------------------------------
 // saveCallStats: at logoff, count the call and the day's minutes
 // ---------------------------------------------------------------------------
@@ -2580,18 +2737,22 @@ void Bbs::saveCallStats(Session& s, uint32_t now) {
     // One 16-byte record in place since 1.1.2 (users::statsPut), not users.txt
     // parsed and written back whole: that was every account on every
     // hang-up, 28 block erases at 250 accounts, each one stopping both cores.
-    UserRec u;
-    if (s.guest || s.role == Role::Busy || !users::find(s.user, u)) return;
+    //
+    // And queued, under the id the login read (1.1.2): the account is not
+    // looked up again, and the record is read, added to and written back in
+    // one open by a later pass (users::statsTick), because this pass has
+    // just written the caller log and each write is a block copied.
+    //
+    // A restore since the login (users::idGen moved on) may have given that
+    // id to somebody else, or to nobody yet: then the account is found by
+    // handle in the accounts now live, as it was before 1.1.2.
+    if (s.guest || s.role == Role::Busy || !s.acctId) return;
+    const uint32_t id = s.acctGen == users::idGen() ? s.acctId : accountIdNow(s.user);
+    if (!id) return;
     uint32_t mins = ((now - s.loginAt) / 1000u + 59u) / 60u;
-    uint32_t day  = clk::dayKey(now);
-    if (u.dayKey != day) { u.dayKey = day; u.dayMinutes = 0; }
-    if (s.role == Role::Caller && !unlimited(s)) {
-        uint32_t total = u.dayMinutes + mins;
-        u.dayMinutes = static_cast<uint16_t>(total > 0xFFFF ? 0xFFFF : total);
-    }
-    if (u.calls < 0xFFFF) ++u.calls;
-    if (s.loginEpoch) u.lastCall = s.loginEpoch;
-    users::statsPut(u.id, u.calls, u.lastCall, u.dayKey, u.dayMinutes);
+    users::statsAdd(id, s.loginEpoch, clk::dayKey(now),
+                    static_cast<uint16_t>(mins > 0xFFFF ? 0xFFFF : mins),
+                    s.role == Role::Caller && !unlimited(s));
 }
 
 uint16_t Bbs::dayMinutesUsed(const char* handle, uint32_t now) {

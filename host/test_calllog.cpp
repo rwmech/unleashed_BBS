@@ -50,6 +50,8 @@ const char* sdBase()   { return ""; }                  // no card: no mirror
 void log(const char* fmt, ...) { (void)fmt; }
 void diskPulse(DiskKind) {}                            // the drive light (core/disk.h, 1.1.1)
 void hostDiskOpen(const char*, const char*) {}         // the host's cost per open (1.1.2)
+bool onLoop() { return false; }                        // disk.h's tally of the loop's opens (1.1.2)
+uint32_t micros() { return 0; }
 void runLock() {}                                      // the card mirror's queue (1.1.2)
 void runUnlock() {}
 }
@@ -105,7 +107,10 @@ int main() {
         check("newest first, all seven, the newest five from RAM and the rest from the file", order);
 
         // Take the file away. The newest five must still come back, because
-        // they never came from it; the sixth must not, because it did.
+        // they never came from it; the sixth must not, because it did. At a
+        // pass's end, where the loop closes the read handle (1.1.2): one
+        // still open would read the file it had.
+        calllog::passEnd();
         unlink(logPath().c_str());
         bool ram = true;
         for (unsigned back = 0; back < calllog::kRecent; ++back)
@@ -118,6 +123,7 @@ int main() {
     {
         // A fresh log for this part. The count starts from a file pass the
         // first time it is asked for a midnight, and is only added to after.
+        calllog::passEnd();
         unlink(logPath().c_str());
         g_midnight = 0;
         check("no clock, no count", calllog::today() == 0);
@@ -129,6 +135,7 @@ int main() {
         calllog::append(call("yesterday", 4999));
         check("calls from midnight on are counted as they are logged, one before is not",
               calllog::today() == 2);
+        calllog::passEnd();
         unlink(logPath().c_str());
         check("and the count comes from RAM, not the file", calllog::today() == 2);
         g_midnight = 6000;                       // the day turned (or the timezone moved)
@@ -155,6 +162,73 @@ int main() {
         g_dir = saved;
     }
 
+    printf("Caller log: written front to back, around the ring (1.1.2)\n");
+    {
+        // append() writes the header first and carries the records ahead of
+        // the slot across from a second handle, so the writing handle never
+        // seeks (a seek on LittleFS copies the block again). What it leaves
+        // must be exactly the ring the old seek-and-write left: every slot,
+        // the header, and the order LAST reads, across the wrap and past it.
+        calllog::passEnd();
+        unlink(logPath().c_str());
+        g_midnight = 0;
+        char who[24];
+        for (unsigned i = 0; i < 123; ++i) {
+            snprintf(who, sizeof(who), "ring%03u", i);
+            calllog::append(call(who, 20000u + i));
+            calllog::passEnd();
+        }
+        check("fifty kept after 123 calls", calllog::count() == BBS_CALLLOG_SIZE);
+        CallRec r;
+        bool order = true;
+        for (unsigned back = 0; back < BBS_CALLLOG_SIZE; ++back) {
+            snprintf(who, sizeof(who), "ring%03u", 122u - back);
+            order &= calllog::get(static_cast<uint8_t>(back), r) && !strcmp(r.user, who) &&
+                     r.start == 20000u + 122u - back;
+        }
+        calllog::passEnd();
+        check("newest first, every one of them, through the one read handle", order);
+
+        // The file itself, as the next boot will read it.
+        FILE* f = fopen(logPath().c_str(), "rb");
+        unsigned char hdr[8] = {};
+        bool raw = f && fread(hdr, 1, 8, f) == 8 && !memcmp(hdr, "CLG1", 4);
+        const unsigned next  = hdr[4] | (hdr[5] << 8);
+        const unsigned count = hdr[6] | (hdr[7] << 8);
+        check("the header says next 23 and count 50", raw && next == 123u % BBS_CALLLOG_SIZE &&
+                                                       count == BBS_CALLLOG_SIZE);
+        bool slots = f != nullptr;
+        for (unsigned slot = 0; f && slot < BBS_CALLLOG_SIZE; ++slot) {
+            // slot k holds the newest call that went to it: 100 + k before
+            // the head, 50 + k from the head on
+            const unsigned want = slot < next ? 100u + slot : 50u + slot;
+            snprintf(who, sizeof(who), "ring%03u", want);
+            slots &= fread(&r, sizeof(r), 1, f) == 1 && !strcmp(r.user, who);
+        }
+        long size = -1;
+        if (f) { fseek(f, 0, SEEK_END); size = ftell(f); fclose(f); }
+        check("every slot holds the call that belongs in it", slots);
+        check("and the file is the ring's size, no more",
+              size == static_cast<long>(8 + BBS_CALLLOG_SIZE * sizeof(CallRec)));
+    }
+
+    printf("Caller log: a file shorter than its header\n");
+    {
+        // Not a file this code writes, but a partition can hold anything: a
+        // header that claims more than the file has is written the old way,
+        // with the seek, and the call is still logged and read back.
+        calllog::passEnd();
+        FILE* f = fopen(logPath().c_str(), "r+b");
+        bool cut = f && ftruncate(fileno(f), 8 + 3 * static_cast<long>(sizeof(CallRec))) == 0;
+        if (f) fclose(f);
+        check("cut to three records under a header of fifty", cut);
+        bool wrote = calllog::append(call("aftercut", 30000));
+        calllog::passEnd();
+        CallRec r;
+        check("the call is logged anyway", wrote && calllog::get(0, r) && !strcmp(r.user, "aftercut"));
+    }
+
+    calllog::passEnd();
     unlink(logPath().c_str());
     rmdir(g_dir.c_str());
     printf("%d passed, %d failed\n", passes, fails);

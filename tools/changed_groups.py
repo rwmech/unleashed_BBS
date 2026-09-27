@@ -152,16 +152,16 @@ TABLE = [
     ("src/core/bbs_sysop*", ["login", "shell", "staff_remembered", "shutdown"]),
     ("src/core/bbs_users*", ["login", "shell"]),
     ("src/core/bus*", ["messaging", "places", "shell"]),
-    ("src/core/calllog*", ["shell", "login"]),
+    ("src/core/calllog*", ["shell", "login", "lag_logoff_calls", "lag_last_calls", "lag_announce_calls"]),
     ("src/core/cardnames*", ["storage"]),
-    ("src/core/claims*", ["messaging", "storage", "shell"]),
+    ("src/core/claims*", ["messaging", "storage", "shell", "login"]),
     ("src/core/clock*", ["shell", "login"]),
     ("src/core/codes*", ["messaging", "shell"]),
     # compose.h and composer.*: one shared editor, one entry.
     ("src/core/compose*", ["messaging"]),
     ("src/core/crc32*", ["storage"]),
     ("src/core/detect*", ["terminal"]),
-    ("src/core/disk*", ["storage"]),
+    ("src/core/disk*", ["storage", "lag"]),
     ("src/core/editor*", ["terminal", "login", "shell", "idle_login"]),
     ("src/core/form*", ["shell", "login"]),
     ("src/core/fx*", ["shell", "login", "messaging"]),
@@ -174,7 +174,7 @@ TABLE = [
     # runner.*: the background task every slow job moved onto in 1.1.2, so
     # everything that posts to it.
     ("src/core/runner*", ["storage", "messaging", "places", "shell", "login", "announce", "camera", "lag"]),
-    ("src/core/screens*", ["shell", "storage", "login", "motd", "exit_screen", "privacy"]),
+    ("src/core/screens*", ["shell", "storage", "login", "motd", "exit_screen", "privacy", "lag"]),
     ("src/core/sha256*", ["login"]),
     # space.*: the kept free-space figures (1.1.2): MEM, SYS, DASH,
     # HARDWARE and every plugin's write guard read them.
@@ -184,7 +184,7 @@ TABLE = [
     ("src/core/silent*", ["shell", "silent"]),
     ("src/core/sysconfig*", ["shell", "login"]),
     ("src/core/tzones*", ["shell"]),
-    ("src/core/users*", ["login", "messaging", "rename_follows", "lag_logins"]),
+    ("src/core/users*", ["login", "messaging", "rename_follows", "lag_logins", "lag_login_calls", "lag_logoff_calls", "lag_last_calls"]),
     ("src/core/xmodem*", ["storage", "binary", "upload_no_binary", "ymodem", "list_abort"]),
     # SSH (1.1.2): compiled only where BBS_HAS_SSH, so its tests SKIP off the
     # S3 profile; run them with harness.sh --board s3 [--card] --only=ssh.
@@ -199,7 +199,7 @@ TABLE = [
     # -----------------------------------------------------------------
     # Plugins.
     # -----------------------------------------------------------------
-    ("src/plugins/announce*", ["announce", "login"]),
+    ("src/plugins/announce*", ["announce", "login", "lag_announce_calls"]),
     ("src/plugins/camera*", ["camera", "board_fncam", "board_espcam"]),
     ("src/plugins/chat*", ["messaging", "places", "rename_follows"]),
     ("src/plugins/example*", ["plugins"]),

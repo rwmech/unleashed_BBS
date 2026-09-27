@@ -61,6 +61,7 @@ enum class Res : uint8_t {
     Transfer,          // the XMODEM/YMODEM engine: one board-wide
     Subjects,          // the forums' shared subject table
     Info,              // writing an information page: one at a time
+    Password,          // the login's password check, a slice a pass (1.1.2)
     Count
 };
 

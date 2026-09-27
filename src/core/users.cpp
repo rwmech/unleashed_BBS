@@ -38,6 +38,7 @@
 #include "sha256.h"
 #include "sysconfig.h"
 #include "bbs_util.h"                  // bbsu::foldHash, for the duplicate check
+#include "claims.h"                    // the login's password check: one at a time (1.1.2)
 #include "../platform/platform.h"
 
 #include <cstdio>
@@ -159,6 +160,9 @@ void hashPassword(const uint8_t salt[8], const char* pw, uint8_t out[32]) {
         memcpy(buf + 32, salt, 8);
         Sha256::digest(buf, sizeof(buf), out);
     }
+#ifdef BBS_HOST
+    plat::hostRounds(BBS_PASS_ROUNDS);          // what they cost on a board (1.1.2)
+#endif
 }
 
 // escape / unescape: backslash and newline in one-line values
@@ -780,7 +784,7 @@ uint8_t range(uint8_t start, uint8_t n, RangeFn fn, void* ctx) {
     return done;
 }
 
-Result add(const UserRec& u) {
+Result add(const UserRec& u, uint32_t* idOut) {
     if (exists(u.handle)) return Result::Exists;
     if (count() >= syscfg::get().maxUsers) return Result::Full;
 
@@ -793,7 +797,9 @@ Result add(const UserRec& u) {
     // rather than issued twice.
     UserRec withId = u;
     if (!withId.id) withId.id = maxId() + 1;
-    return rewrite(nullptr, nullptr, &withId);
+    const Result r = rewrite(nullptr, nullptr, &withId);
+    if (idOut) *idOut = r == Result::Ok ? withId.id : 0;
+    return r;
 }
 
 // maxId / assignIds: see users.h for why the counter is derived.
@@ -899,6 +905,121 @@ bool statsPut(uint32_t id, uint16_t calls, uint32_t lastCall, uint32_t dayKey, u
     return ok;
 }
 
+// ---------------------------------------------------------------------------
+// statsBump: one finished call into its account's record, in one open: the
+// record read where it lies, changed, and written back over itself. The
+// sums the logoff used to make on a whole account read through users.txt
+// (two opens) are made here on the 16 bytes that hold them. A hole or
+// another id's record starts from nothing, as a new account's block would.
+// ---------------------------------------------------------------------------
+namespace {
+struct StatAdd {
+    uint32_t id;
+    uint32_t lastCall;
+    uint32_t dayKey;
+    uint16_t minutes;
+    bool     countMinutes;
+};
+
+bool statsBump(const StatAdd& a) {
+    if (!a.id) return false;
+    char p[96];
+    statsPath(p, sizeof(p));
+    FILE* f = disk::open(p, "r+b");
+    if (!f && errno == ENOENT) {
+        // No file while accounts exist is a migration that failed (at boot,
+        // or after a restore): made now, from users.txt, so every account
+        // keeps its figures. Creating it with this one record instead would
+        // make every other account's next call its first, and statsMigrate
+        // would never try again. A broken state, so the walk is paid here,
+        // once a boot: a migration that keeps failing (userdata full) must
+        // not walk users.txt on the loop at every hang-up.
+        static bool tried = false;
+        if (!tried) { tried = true; statsMigrate(); }
+        f = disk::open(p, "r+b");
+        if (!f && errno == ENOENT) {
+            char up[96];
+            path(up, sizeof(up), "");
+            struct stat st;
+            // Still none: made fresh only when there are no accounts to copy
+            // from. With accounts, the migration failed again; this call's
+            // figures are the one thing lost, and the next boot tries again.
+            if (stat(up, &st) == 0) return false;
+            f = disk::open(p, "w+b");
+        }
+    }
+    if (!f) return false;                            // never "w+b" over a file that is there
+    const long at = static_cast<long>(a.id) * static_cast<long>(sizeof(StatRec));
+    StatRec r{};
+    if (fseek(f, at, SEEK_SET) != 0 || fread(&r, sizeof(r), 1, f) != 1 || r.id != a.id) r = StatRec{};
+    r.id = a.id;
+    if (r.dayKey != a.dayKey) { r.dayKey = a.dayKey; r.dayMinutes = 0; }
+    if (a.countMinutes) {
+        const uint32_t total = static_cast<uint32_t>(r.dayMinutes) + a.minutes;
+        r.dayMinutes = static_cast<uint16_t>(total > 0xFFFF ? 0xFFFF : total);
+    }
+    if (r.calls < 0xFFFF) ++r.calls;
+    if (a.lastCall) r.lastCall = a.lastCall;
+    // The seek between the read and the write is the one C asks for on an
+    // update stream; on LittleFS it is inside the read's cache, so the write
+    // is the file's one block copy, committed whole at the close.
+    bool ok = fseek(f, at, SEEK_SET) == 0 && fwrite(&r, sizeof(r), 1, f) == 1;
+    ok = (fclose(f) == 0) && ok;
+    if (!ok) plat::diskPulse(plat::DISK_ERROR);
+    return ok;
+}
+
+// The calls waiting to be counted. Four: a burst of hang-ups is written
+// one a pass behind it, and a fifth before the first is written sends the
+// oldest to the file at once rather than dropping any.
+constexpr uint8_t kStatQ = 4;
+StatAdd g_sq[kStatQ];
+uint8_t g_sqHead = 0;
+uint8_t g_sqN    = 0;
+} // namespace
+
+void statsAdd(uint32_t id, uint32_t lastCall, uint32_t dayKey, uint16_t minutes, bool countMinutes) {
+    if (!id) return;
+    if (g_sqN == kStatQ) {                           // full: the oldest now, in order
+        statsBump(g_sq[g_sqHead]);
+        g_sqHead = static_cast<uint8_t>((g_sqHead + 1) % kStatQ);
+        --g_sqN;
+    }
+    g_sq[(g_sqHead + g_sqN) % kStatQ] = StatAdd{ id, lastCall, dayKey, minutes, countMinutes };
+    ++g_sqN;
+}
+
+bool statsTick() {
+    if (!g_sqN) return false;
+    const StatAdd a = g_sq[g_sqHead];
+    g_sqHead = static_cast<uint8_t>((g_sqHead + 1) % kStatQ);
+    --g_sqN;
+    if (!statsBump(a)) plat::log("users: the call figures for id %lu could not be written",
+                                 static_cast<unsigned long>(a.id));
+    return true;
+}
+
+// idGen / restored: see users.h (1.1.2).
+namespace {
+uint8_t g_idGen = 0;
+} // namespace
+
+uint8_t idGen() {
+    return g_idGen;
+}
+
+void restored() {
+    // The queued calls were for the figures file on its way out: a restore
+    // replaces it whole (the zip's own, or one made from the zip's
+    // users.txt), so they would be lost with it anyway, and written late
+    // they would land in the restored file under ids that may now be
+    // somebody else's. Before 1.1.2 they were written at the hang-up, into
+    // the file the restore then replaced: the same outcome.
+    g_sqHead = 0;
+    g_sqN    = 0;
+    ++g_idGen;
+}
+
 // statsMigrate: make callstats.dat from users.txt's figures, when there is
 // none. The first boot of 1.1.2, and after a restore of a zip without one.
 // Written beside the live name and renamed in, so a failure half way leaves
@@ -950,6 +1071,73 @@ void setPassword(UserRec& u, const char* password) {
     toHex(salt, 8, u.pass);
     u.pass[16] = '$';
     toHex(h, 32, u.pass + 17);
+}
+
+// ---------------------------------------------------------------------------
+// The login's check, a slice a pass (1.1.2): see users.h. The same sums as
+// hashPassword, the first with the typed password and the rest kCheckRounds
+// at a time, on one node's behalf at once (claims::Res::Password). What is
+// kept between passes is the running hash, never the password.
+// ---------------------------------------------------------------------------
+namespace {
+struct CheckState {
+    uint8_t  salt[8];
+    uint8_t  want[32];
+    uint8_t  h[32];
+    uint16_t done;          // rounds done, of BBS_PASS_ROUNDS
+};
+CheckState g_chk;
+
+void checkEnd(uint8_t node) {
+    memset(&g_chk, 0, sizeof(g_chk));
+    claims::release(claims::Res::Password, node);
+}
+} // namespace
+
+Check checkBegin(const UserRec& u, const char* typed, uint8_t node) {
+    if (!claims::take(claims::Res::Password, node)) return Check::Busy;
+    memset(&g_chk, 0, sizeof(g_chk));
+    if (strlen(u.pass) != 81 || u.pass[16] != '$' ||
+        !fromHex(u.pass, g_chk.salt, 8) || !fromHex(u.pass + 17, g_chk.want, 32)) {
+        checkEnd(node);
+        return Check::No;
+    }
+    Sha256 sh;
+    sh.update(g_chk.salt, 8);
+    sh.update(reinterpret_cast<const uint8_t*>(typed), strlen(typed));
+    sh.finish(g_chk.h);
+    g_chk.done = 1;
+    return Check::Working;
+}
+
+Check checkStep(uint8_t node) {
+    if (!claims::holds(claims::Res::Password, node)) return Check::Busy;
+    uint16_t n = static_cast<uint16_t>(BBS_PASS_ROUNDS - g_chk.done);
+    if (n > kCheckRounds) n = kCheckRounds;
+    uint8_t buf[40];
+    for (uint16_t r = 0; r < n; ++r) {
+        memcpy(buf, g_chk.h, 32);
+        memcpy(buf + 32, g_chk.salt, 8);
+        Sha256::digest(buf, sizeof(buf), g_chk.h);
+    }
+    memset(buf, 0, sizeof(buf));
+#ifdef BBS_HOST
+    plat::hostRounds(n);                        // what they cost on a board
+#endif
+    g_chk.done = static_cast<uint16_t>(g_chk.done + n);
+    if (g_chk.done < BBS_PASS_ROUNDS) return Check::Working;
+    uint8_t diff = 0;
+    for (int i = 0; i < 32; ++i) diff |= static_cast<uint8_t>(g_chk.want[i] ^ g_chk.h[i]);
+    checkEnd(node);
+    return diff == 0 ? Check::Yes : Check::No;
+}
+
+uint32_t checkMeasure() {
+    const uint8_t salt[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+    uint8_t out[32];
+    const uint32_t t0 = plat::micros();
+    hashPassword(salt, "measure", out);
+    return plat::micros() - t0;
 }
 
 bool checkPassword(const UserRec& u, const char* password) {

@@ -1503,8 +1503,14 @@ bool ZipImport::applyItem(Item& it) {
         // The index is of the file that was live: stale from this moment,
         // not from the end of the apply several passes on (code review).
         users::reindex();
+        // Ids taken before now may be somebody else's in these accounts, and
+        // the queued call figures were for the file on its way out (1.1.2).
+        users::restored();
     }
-    else if (!strcmp(it.name, BBS_STATS_FILE)) applied_.stats = true;
+    else if (!strcmp(it.name, BBS_STATS_FILE)) {
+        applied_.stats = true;
+        users::restored();                        // the same, whichever goes first
+    }
     else if (validInfoName(it.name))           ++applied_.pages;
     else                                  ++applied_.screens;
     return true;

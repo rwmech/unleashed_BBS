@@ -40,6 +40,7 @@
 #include "clock.h"
 #include "../config.h"
 #include <sys/stat.h>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 
@@ -71,6 +72,30 @@ void path(char* out, size_t n) {
 
 long slotOffset(uint16_t slot) {
     return static_cast<long>(sizeof(Header) + slot * sizeof(CallRec));
+}
+
+// ---------------------------------------------------------------------------
+// The pass's read handle (1.1.2). LAST drew a row a record and opened the
+// file for each one past the five kept in RAM: a page was fifteen opens in
+// one pass, 70 to 88 ms on the bench. Now the first read in a pass opens
+// it, every read after that in the same pass uses it, and passEnd closes it
+// from the loop's tail, so a handle is never held across a pass (or across
+// a [More], which can be for ever). A write closes it first: it must not
+// read the file from before.
+// ---------------------------------------------------------------------------
+FILE* g_rd = nullptr;
+
+FILE* reader() {
+    if (!g_rd) {
+        char p[96];
+        path(p, sizeof(p));
+        g_rd = disk::open(p, "rb");
+    }
+    return g_rd;
+}
+
+void readerClose() {
+    if (g_rd) { fclose(g_rd); g_rd = nullptr; }
 }
 
 // endStrings: a record's strings ended, whatever the bytes said
@@ -219,28 +244,86 @@ void mirrorQueue(const CallRec& r) {
 }
 
 // ---------------------------------------------------------------------------
-// append: record into slot "next", then rewrite the header
+// append: the record into slot "next", and the header that says so.
+//
+// Written front to back in one run since 1.1.2. The record went in at its
+// slot and then a seek back wrote the header at the front, and on LittleFS a
+// seek in the middle of writing ends that write: the file's block was copied
+// to a new one for the record, and copied again to another for the header.
+// Two 4 KB erases on every hang-up, both cores stopped for each. Now the
+// header goes first and the records ahead of the slot are carried across
+// from a second, read-only handle on the same file, so the writing handle
+// never seeks: one block copied, and LittleFS brings the records after the
+// slot across itself at the close, which commits the whole file at once (a
+// power cut leaves the old log or the new one, never half). The reader costs
+// an open; the erase it saves costs far more.
+//
+// A file shorter than its header says (it cannot be, written this way, but
+// a partition can hold anything) is written the old way, with the seek,
+// because the run would have nothing to carry across.
 // ---------------------------------------------------------------------------
-bool append(const CallRec& r) {
+static bool writeRec(const CallRec& r) {
     loadHeader();
+    readerClose();                               // not the file from before this write
     char p[96];
     path(p, sizeof(p));
-    FILE* f = disk::open(p, "r+b");
-    if (!f) {
-        f = disk::open(p, "w+b");                      // first call ever
-        if (!f) { plat::log("calllog: cannot create %s", p); return false; }
-        g_hdr.next = g_hdr.count = 0;
-        g_recentN  = 0;                            // nothing on file, nothing to copy
-    }
 
-    bool ok = fseek(f, slotOffset(g_hdr.next), SEEK_SET) == 0 &&
-              fwrite(&r, sizeof(r), 1, f) == 1;
-    if (ok) {
-        g_hdr.next = static_cast<uint16_t>((g_hdr.next + 1) % BBS_CALLLOG_SIZE);
-        if (g_hdr.count < BBS_CALLLOG_SIZE) ++g_hdr.count;
-        ok = fseek(f, 0, SEEK_SET) == 0 && fwrite(&g_hdr, sizeof(g_hdr), 1, f) == 1;
+    Header h = g_hdr;
+    const uint16_t slot = h.next;
+    h.next = static_cast<uint16_t>((h.next + 1) % BBS_CALLLOG_SIZE);
+    if (h.count < BBS_CALLLOG_SIZE) ++h.count;
+
+    bool ok = false;
+    FILE* in = disk::open(p, "rb");
+    long have = -1;
+    if (in && fseek(in, 0, SEEK_END) == 0) have = ftell(in);
+    if (in && have >= slotOffset(slot) && fseek(in, slotOffset(0), SEEK_SET) == 0) {
+        FILE* f = disk::open(p, "r+b");
+        if (f) {
+            ok = fwrite(&h, sizeof(h), 1, f) == 1;
+            // The records ahead of the slot, as they lie, a record at a time
+            // through the stack.
+            CallRec carry;
+            for (uint16_t i = 0; ok && i < slot; ++i) {
+                if (fread(&carry, sizeof(carry), 1, in) != 1) {
+                    // A read that fails half way cannot be undone: the header
+                    // is written. What it carries is a blank record, which
+                    // LAST shows as nobody, rather than a shifted log.
+                    carry = CallRec();
+                    plat::log("calllog: a record could not be read while writing; left blank");
+                }
+                ok = fwrite(&carry, sizeof(carry), 1, f) == 1;
+            }
+            // The reader is done before the writer commits. LittleFS keeps an
+            // open reader on the old blocks (they stay reserved while it is
+            // open, lfs.c's DUSTY handling), so it never reads the new file,
+            // and closing it first frees them the moment the writer commits.
+            fclose(in);
+            in = nullptr;
+            ok = ok && fwrite(&r, sizeof(r), 1, f) == 1;
+            ok = (fclose(f) == 0) && ok;
+        }
+        if (in) fclose(in);
+    } else {
+        if (in) fclose(in);
+        FILE* f = disk::open(p, "r+b");
+        if (!f) {
+            // Only a log that is not there is made afresh: "w+b" over one
+            // that could not be opened for another reason (no memory, no
+            // handle free) would empty the sysop's security record.
+            if (errno != ENOENT) { plat::log("calllog: cannot open %s", p); return false; }
+            f = disk::open(p, "w+b");                  // first call ever
+            if (!f) { plat::log("calllog: cannot create %s", p); return false; }
+            h.next    = 1;
+            h.count   = 1;
+            g_recentN = 0;                         // nothing on file, nothing to copy
+        }
+        const uint16_t at = static_cast<uint16_t>((h.next + BBS_CALLLOG_SIZE - 1) % BBS_CALLLOG_SIZE);
+        ok = fseek(f, 0, SEEK_SET) == 0 && fwrite(&h, sizeof(h), 1, f) == 1 &&
+             fseek(f, slotOffset(at), SEEK_SET) == 0 && fwrite(&r, sizeof(r), 1, f) == 1;
+        ok = (fclose(f) == 0) && ok;
     }
-    fclose(f);
+    if (ok) g_hdr = h;
     if (ok) {
         // The copy follows the file, and only a record the file took: a
         // failed write must not show on the dashboard as a call LAST has
@@ -261,6 +344,45 @@ bool append(const CallRec& r) {
     return ok;
 }
 
+// ---------------------------------------------------------------------------
+// append: one flash write a pass (1.1.2). Each write above is a block copied
+// with both cores stopped, and two callers hanging up in the same pass (a
+// SHUTDOWN, a Wi-Fi drop, two BYEs typed together) paid two in one pass. A
+// record that arrives in a pass that has already written flash, or behind
+// one still waiting, waits in a small queue, oldest first, and writeOne
+// writes one from the loop's tail in a pass that has written nothing else.
+// A fifth before the first is written sends the oldest to the file at once:
+// the log is the sysop's security record, and nothing is dropped from it.
+// LAST and DASH show a waiting call a pass or two later, when it is written.
+// ---------------------------------------------------------------------------
+namespace {
+constexpr uint8_t kPendQ = 4;
+CallRec g_pend[kPendQ];
+uint8_t g_pendHead = 0;
+uint8_t g_pendN    = 0;
+} // namespace
+
+bool append(const CallRec& r) {
+    if (!g_pendN && !disk::tally().writes) return writeRec(r);
+    if (g_pendN == kPendQ) {                         // full: the oldest now, in order
+        writeRec(g_pend[g_pendHead]);
+        g_pendHead = static_cast<uint8_t>((g_pendHead + 1) % kPendQ);
+        --g_pendN;
+    }
+    g_pend[(g_pendHead + g_pendN) % kPendQ] = r;
+    ++g_pendN;
+    return true;
+}
+
+bool writeOne() {
+    if (!g_pendN) return false;
+    const CallRec r = g_pend[g_pendHead];
+    g_pendHead = static_cast<uint8_t>((g_pendHead + 1) % kPendQ);
+    --g_pendN;
+    writeRec(r);
+    return true;
+}
+
 uint8_t count() {
     loadHeader();
     return static_cast<uint8_t>(g_hdr.count);
@@ -269,18 +391,15 @@ uint8_t count() {
 uint8_t countSince(uint32_t epoch) {
     loadHeader();
     if (!g_hdr.count) return 0;
-    char p[96];
-    path(p, sizeof(p));
-    FILE* f = disk::open(p, "rb");
+    FILE* f = reader();                            // the pass's handle (1.1.2)
     if (!f) return 0;
     uint8_t n = 0;
     CallRec r;
-    fseek(f, slotOffset(0), SEEK_SET);
+    if (fseek(f, slotOffset(0), SEEK_SET) != 0) return 0;
     for (uint16_t i = 0; i < g_hdr.count; ++i) {
         if (fread(&r, sizeof(r), 1, f) != 1) break;
         if (r.start && r.start >= epoch) ++n;
     }
-    fclose(f);
     return n;
 }
 
@@ -292,14 +411,15 @@ bool get(uint8_t back, CallRec& out) {
         return true;
     }
     uint16_t slot = static_cast<uint16_t>((g_hdr.next + BBS_CALLLOG_SIZE - 1 - back) % BBS_CALLLOG_SIZE);
-    char p[96];
-    path(p, sizeof(p));
-    FILE* f = disk::open(p, "rb");
+    FILE* f = reader();                            // one open a pass, not one a row (1.1.2)
     if (!f) return false;
     bool ok = fseek(f, slotOffset(slot), SEEK_SET) == 0 && fread(&out, sizeof(out), 1, f) == 1;
-    fclose(f);
     endStrings(out);
     return ok;
+}
+
+void passEnd() {
+    readerClose();
 }
 
 uint16_t today() {
