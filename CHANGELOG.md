@@ -66,10 +66,15 @@ refusal for board pins nobody else has.
 - **release.py**: a board pre-release tag (`v1.1.2-ws43b.1`) builds that
   board's set only; the set is `tag_only`, so no plain release carries it
   until the profile merges into one.
-- On the bench (COM23): boots, joins Wi-Fi, takes a telnet login and the
-  first-boot setup, mounts an 8 GB card, the panel draws, and touch works
-  (Rob). The host tests for the profile passed before the test rule; the
-  layout and lights changes after it are built and not yet tested.
+- Tested (functional only, on Rob's OK). Host: the WS43B profile 28/0
+  without a card and 29/0 with one, the Waveshare stick's 71/0 both ways,
+  the lights and CONFIG groups on the reference board 396/0 and 453/0,
+  `make test` clean. Bench on COM23: boot and Wi-Fi rejoin after a
+  SHUTDOWN and reset, telnet and SSH (6400 and 6422) logins, the card and
+  FILES, PANEL at one and seven callers (the flow, five recent rows), the
+  band word for closed and for a shutdown countdown, the panel's sleep,
+  and switchboard kept across a reboot. Touch and the glass itself are
+  Rob's eyes and fingers.
 
 ## 1.1.2 (S3 1.1.3, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-27
 

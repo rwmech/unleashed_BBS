@@ -6719,8 +6719,11 @@ def panel_read(s):
 def test_board_ws43b():
     """The Waveshare ESP32-S3-Touch-LCD-4.3B board profile on the host
     (1.1.2, WS43B): the RGB panel's 400 x 240 picture, its tall landscape
-    layout (six callers, seven recent, a fourth system figure), touch, the
-    chip's temperature, the lights drawn with no pin, and its CONFIG page.
+    layout (internal/tty-ux-panel-ws43b-2026-09-28.md: two columns of six,
+    callers flowing into the right one, "Calls N today" heading, heap, peak
+    and chip temperature), the band word, touch and the tapped page's hold,
+    the light bar clear of the glass's edge, the switchboard default, and
+    its CONFIG page.
     SKIPs on the reference board; tools/harness.sh --board ws43b
     --only=board_ws43b runs it. A tap is a file called "tap" in the data
     directory (host/platform_host.cpp, touchPoll)."""
@@ -6756,16 +6759,16 @@ def test_board_ws43b():
     ok &= check("the strip drawn with the lights' ten, nothing wired", b"strip: 10 LEDs" in p)
     ok &= check("the sysop's own line listed first", re.search(rb"(?m)^\s*S\] BoardWS43B \d+m\s*$", p) is not None)
 
-    # Five callers and the sysop: six named in the left column (the tall
-    # layout), none folded into "+N more", which the stick's three rows
-    # would have needed.
-    callers = [ansi_login(f"WsCall{i}") for i in range(5)]
+    # Six callers and the sysop, seven on: the left column's six rows full
+    # and the seventh flowing into the right column, none folded into
+    # "+N more"; the recent list takes the five right-hand rows left.
+    callers = [ansi_login(f"WsCall{i}") for i in range(6)]
     time.sleep(1.2)
     p2 = panel_read(s)
     named = re.findall(rb"(?m)^\s*\d+\) WsCall\d \d+m\s*$", p2)
-    ok &= check("six caller rows: the sysop and five callers all named", len(named) == 5 and b"more" not in p2)
+    ok &= check("seven on: the sysop and six callers all named", len(named) == 6 and b"more" not in p2)
     ev = re.findall(PANEL_EVENT, p2)
-    ok &= check("and the recent column holds their five logins", len(ev) >= 5)
+    ok &= check("and the recent list keeps the five rows the callers left", len(ev) == 5)
     for c in callers:
         c.close()
     time.sleep(1.0)
@@ -6783,6 +6786,13 @@ def test_board_ws43b():
     p3 = panel_read(s)
     ok &= check("a tap is seen and counted", b"Touch seen, 1 taps" in p3 and not tap.exists())
     ok &= check("and turns the header's slot on", bool(before) and bool(after) and after != before)
+    # A tapped page holds 10 s, not 3: still the same page after 5 s. The
+    # page by kind, because the uptime page's minutes can tick meanwhile.
+    def kind(sl):
+        return "addr" if sl.startswith("127.0.0.1:") else "up" if sl.startswith("up ") else "name"
+    time.sleep(5.0)
+    later = slot()
+    ok &= check("and holds the page it turned to past the usual 3 s", kind(later) == kind(after))
 
     shot = DATA / "panel.ppm"
     if shot.exists():
@@ -6799,6 +6809,14 @@ def test_board_ws43b():
         px = lambda x, y: tuple(data[len(head) + (y * W + x) * 3:len(head) + (y * W + x) * 3 + 3])
         ok &= check("the header's bar in its blue", px(1, 1) == (24, 44, 120))
         ok &= check("and the body black", px(1, 150) == (0, 0, 0))
+        # The light bar: ten 32 px segments from x 40 at y 219..230, the
+        # switchboard's idle dial blue on every one (the sysop's line has
+        # no lamp), and black under it to the edge of the glass.
+        seg = [px(40 + 36 * i + 16, 225) for i in range(10)]
+        ok &= check("the light bar's ten segments lit in dim blue with nobody on",
+                    all(c[2] > 30 and c[2] > c[0] for c in seg))
+        ok &= check("and clear of the glass's bottom edge",
+                    all(px(56, y) == (0, 0, 0) for y in range(232, 240)))
 
     # CONFIG panel: the controller, the light and the sleep; no SPI rows.
     ok &= check("CONFIG has a panel page", cfg_open(s, b"panel", b"Driver"))
@@ -6829,6 +6847,21 @@ def test_board_ws43b():
         ok &= check("CONFIG sd shows the chip select on the expander",
                     cfg_open(s, b"sd", b"Chip select") and b"expander EXIO4" in plain(s.buf))
         cfg_cancel(s)
+
+    # The strip's default on this board is switchboard (board.h), whole.
+    ok &= check("CONFIG lights opens", cfg_open(s, b"lights", b"Drive pin"))
+    s.pump(1.0)
+    ok &= check("with the strip on switchboard, the word whole", b"switchboard" in plain(s.buf))
+    cfg_cancel(s)
+
+    # The band word: CLOSED to callers while the board is closed, and gone
+    # again when it opens.
+    top_config(s, closed="yes")
+    time.sleep(1.0)
+    ok &= check("a closed board says so in the band", b"CLOSED to callers" in panel_read(s))
+    top_config(s, closed=None)
+    time.sleep(1.0)
+    ok &= check("and the word goes when it opens", b"CLOSED to callers" not in panel_read(s))
     s.close()
     return ok
 
