@@ -114,7 +114,7 @@ LANE_OVERHEAD = 3.0          # a lane's board start and data copy
 # that, and it read as forty unrelated failures.
 PORT_BLOCKS = [(11000, 21500), (21500, 32000)]
 PROFILE_BIN = {"": "bbs_host", "s3": "bbs_host_s3", "fncam": "bbs_host_fncam",
-               "espcam": "bbs_host_espcam"}
+               "espcam": "bbs_host_espcam", "mf35": "bbs_host_mf35"}
 
 
 # ---------------------------------------------------------------------------
@@ -426,8 +426,8 @@ def build(boards):
     import fcntl
     import zlib
     targets = sorted({PROFILE_BIN[b] for b in boards})
-    if "s3" in boards:
-        targets.append("ssh_call")                # the S3's SSH tests call in with it
+    if "s3" in boards or "mf35" in boards:
+        targets.append("ssh_call")                # the SSH profiles' tests call in with it
     t0 = time.time()
     lock = open("/tmp/bbs-parallel-build-%08x.lock" % zlib.crc32(str(ROOT).encode()), "w")
     fcntl.flock(lock, fcntl.LOCK_EX)

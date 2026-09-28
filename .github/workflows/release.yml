@@ -63,4 +63,4 @@ jobs:
           case "${ver}" in *-*) kind="--prerelease" ;; esac
           gh release create "${GITHUB_REF_NAME}" release/"${ver}"/assets/* ${kind} \
             --title "µnleashed BBS ${ver}" \
-            --notes "Flash it from https://unleashedbbs.com/install. The ESP32 (WROOM) images carry their plain names; the Waveshare ESP32-S3-LCD-1.47 images an esp32s3- prefix, the Freenove ESP32-WROVER CAM images esp32-fncam- and the AI-Thinker ESP32-CAM images esp32-cam-; each set's version.txt says its version. SHA256SUMS lists every file."
+            --notes "Flash it from https://unleashedbbs.com/install. The ESP32 (WROOM) images carry their plain names; the Waveshare ESP32-S3-LCD-1.47 images an esp32s3- prefix, the Freenove ESP32-WROVER CAM images esp32-fncam-, the AI-Thinker ESP32-CAM images esp32-cam- and the Makerfabs ESP32-S3 Parallel TFT 3.5-inch v1.0 images esp32s3-mf35-; a board pre-release (vX.Y.Z-<board>.N) carries that board's set only; each set's version.txt says its version. SHA256SUMS lists every file."

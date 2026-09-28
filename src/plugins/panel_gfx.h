@@ -394,6 +394,19 @@ constexpr Icon kIconChip    = { 0x0000, 0x0660, 0x0660, 0x07E0, 0x0FF0, 0x7FFE, 
                                 0x1C38, 0x7C3E, 0x7FFE, 0x0FF0, 0x07E0, 0x0660, 0x0660, 0x0000 };
 constexpr Icon kIconHandset = { 0x0000, 0x0600, 0x0E00, 0x1C00, 0x3C00, 0x7E00, 0x6700, 0x0380,
                                 0x01C0, 0x00E6, 0x007E, 0x003C, 0x0038, 0x0070, 0x0060, 0x0000 };
+// The big glass's (480 x 320, internal/tty-ux-panel-mf35-2026-09-26.md): the
+// traffic arrows, a camera, an hourglass, and the card and the clock the
+// Waveshare's revision 0 named and never drew.
+constexpr Icon kIconTraffic = { 0x0000, 0x0C00, 0x1E00, 0x3F00, 0x6D80, 0x0C00, 0x0C0C, 0x0C0C,
+                                0x0C0C, 0x0C0C, 0x000C, 0x00DB, 0x007E, 0x003C, 0x0018, 0x0000 };
+constexpr Icon kIconCamera  = { 0x0000, 0x0000, 0x07E0, 0x7FFE, 0x6006, 0x63C6, 0x6666, 0x6C36,
+                                0x6C36, 0x6666, 0x63C6, 0x6006, 0x7FFE, 0x0000, 0x0000, 0x0000 };
+constexpr Icon kIconHourglass = { 0x0000, 0x3FFC, 0x1818, 0x1818, 0x0C30, 0x0660, 0x03C0, 0x0180,
+                                  0x0180, 0x03C0, 0x0660, 0x0DB0, 0x1BD8, 0x1FF8, 0x3FFC, 0x0000 };
+constexpr Icon kIconCard    = { 0x0000, 0x3FE0, 0x3030, 0x3018, 0x300C, 0x354C, 0x354C, 0x300C,
+                                0x300C, 0x300C, 0x300C, 0x300C, 0x300C, 0x3FFC, 0x3FFC, 0x0000 };
+constexpr Icon kIconClock   = { 0x0000, 0x07E0, 0x1C38, 0x300C, 0x318C, 0x6186, 0x6186, 0x61F6,
+                                0x61F6, 0x6006, 0x300C, 0x300C, 0x1C38, 0x07E0, 0x0000, 0x0000 };
 
 // bits: paint the set bits of w x h rows (top bit leftmost) in fg, leaving
 // the rest as the caller cleared it.
@@ -644,7 +657,7 @@ inline bool orientFromWord(const char* v, uint8_t& out) {
     return false;
 }
 
-constexpr int kRamCols = 240, kRamRows = 320;   // the ST7789's memory, unturned
+constexpr int kRamCols = 240, kRamRows = 320;   // the ST7789's memory, unturned (the default)
 
 // Scan: how the platform draws one orientation: the rotation it is given,
 // the MADCTL bits that makes, the picture's size and the gaps the window is
@@ -658,8 +671,11 @@ struct Scan {
 };
 
 // scanFor: one orientation of a glass w x h whose gaps with the plug up are
-// xoff, yoff, wired mirrored or not.
-inline Scan scanFor(uint8_t orient, bool mirror, uint16_t w, uint16_t h, uint16_t xoff, uint16_t yoff) {
+// xoff, yoff, wired mirrored or not, on a controller whose memory is ramCols
+// x ramRows unturned (the ST7789's 240 x 320 unless a profile says otherwise:
+// the ILI9488's is 320 x 480, board.h BBS_LCD_RAM_SHORT/LONG).
+inline Scan scanFor(uint8_t orient, bool mirror, uint16_t w, uint16_t h, uint16_t xoff, uint16_t yoff,
+                    int ramCols = kRamCols, int ramRows = kRamRows) {
     Scan s;
     switch (orient) {
         case ORIENT_LEFT:  s.rotation = mirror ? 270 : 90;  break;
@@ -681,11 +697,11 @@ inline Scan scanFor(uint8_t orient, bool mirror, uint16_t w, uint16_t h, uint16_
     // Where the glass is in memory, from its gaps with the plug up (MV 0,
     // MX the mirror, MY 0).
     auto clamp0 = [](int v) { return static_cast<uint16_t>(v < 0 ? 0 : v); };
-    const int col = mirror ? kRamCols - w - xoff : xoff;
+    const int col = mirror ? ramCols - w - xoff : xoff;
     const int row = yoff;
     // A gap along an axis run backwards is measured from its other end.
-    const uint16_t colGap = clamp0(s.mx ? kRamCols - w - col : col);
-    const uint16_t rowGap = clamp0(s.my ? kRamRows - h - row : row);
+    const uint16_t colGap = clamp0(s.mx ? ramCols - w - col : col);
+    const uint16_t rowGap = clamp0(s.my ? ramRows - h - row : row);
     if (s.mv) { s.w = h; s.h = w; s.xgap = rowGap; s.ygap = colGap; }
     else      { s.w = w; s.h = h; s.xgap = colGap; s.ygap = rowGap; }
     return s;
@@ -905,5 +921,240 @@ struct Dirty {
         return true;
     }
 };
+
+// area: w x h as a count of pixels.
+inline int32_t area(const Rect& r) { return empty(r) ? 0 : static_cast<int32_t>(r.w) * r.h; }
+
+// DirtyCheap: the same queue, but a full queue merges only the pair whose
+// union grows least, rather than uniting all of it. On a 480 x 320 glass the
+// union of the dot, a caller row and the LED row is most of the glass: 0.8 s
+// of bands during which nothing else moves (internal/tty-ux-panel-mf35-
+// 2026-09-26.md, "Motion"). Kept apart from Dirty so the Waveshare's queue
+// is what shipped.
+struct DirtyCheap : Dirty {
+    void add(const Rect& r) {
+        if (empty(r)) return;
+        for (uint8_t i = 0; i < n; ++i)
+            if (contains(q[i], r)) return;
+        uint8_t k = 0;
+        for (uint8_t i = 0; i < n; ++i)
+            if (!contains(r, q[i])) q[k++] = q[i];
+        n = k;
+        if (n == kMax) {
+            // The pair (i, j), r among them as index n, whose union adds the
+            // fewest pixels over the two it replaces.
+            Rect all[kMax + 1];
+            for (uint8_t i = 0; i < n; ++i) all[i] = q[i];
+            all[n] = r;
+            const uint8_t m = static_cast<uint8_t>(n + 1);
+            uint8_t bi = 0, bj = 1;
+            int32_t best = INT32_MAX;
+            for (uint8_t i = 0; i < m; ++i)
+                for (uint8_t j = static_cast<uint8_t>(i + 1); j < m; ++j) {
+                    const int32_t grow = area(unite(all[i], all[j])) - area(all[i]) - area(all[j]);
+                    if (grow < best) { best = grow; bi = i; bj = j; }
+                }
+            all[bi] = unite(all[bi], all[bj]);
+            n = 0;
+            for (uint8_t i = 0; i < m; ++i)
+                if (i != bj) q[n++] = all[i];
+            return;
+        }
+        q[n++] = r;
+    }
+};
+
+// ---------------------------------------------------------------------------
+// The big glass: 480 x 320 landscape and 320 x 480 portrait, the Makerfabs
+// 3.5" board's (internal/tty-ux-panel-mf35-2026-09-26.md, part 1, the status
+// skin). A fixed node board of eleven rows, the calls and the recent list,
+// the traffic sweep and six system cells, under the Waveshare's header.
+// Chosen by the glass's size; the Waveshare's two layouts never reach it.
+// ---------------------------------------------------------------------------
+constexpr uint8_t kBigRows   = 11;    // the sysop line, then nodes 1 to 10
+constexpr uint8_t kRecent    = 4;
+constexpr uint8_t kCells     = 6;
+constexpr int     kGraphUp   = 28;    // the sweep's heights above and below its axis
+constexpr int     kGraphDown = 27;
+constexpr int     kGraphCols = 160;   // the longest sweep, landscape
+
+// The big glass's own fields, numbered on from the Waveshare's.
+enum BigField : uint8_t { F_NAME = F_COUNT, F_WORD, F_DBM, F_PIPS, F_CALLS, F_TRAF,
+                          F_CELL, F_ROW = F_CELL + kCells, F_RECENT = F_ROW + kBigRows,
+                          F_BIG_COUNT = F_RECENT + kRecent };
+
+// The system cells, in reading order: A then B, three rows.
+enum Cell : uint8_t { C_HEAP, C_SLOW, C_CARD, C_PEAK, C_UP, C_CAMERA };
+
+struct BigLayout {
+    bool    on = false;               // the glass is big enough
+    bool    land = false;
+    Rect    name, slot, word, dbm;    // the header's additions (bar, band, glyphs, antenna,
+                                      // clock and track are the Layout's)
+    Rect    head;                     // "Callers 4/11" with its icon and column labels
+    int16_t colDoing = 0, colOnEnd = 0, colTerm = 0;   // where the labels and columns are
+    Rect    row[kBigRows];            // each row's text, x 14 on
+    Rect    pips;                     // the pip column, one field
+    Rect    colRule, midRule;         // landscape's vertical rule, portrait's middle one
+    Rect    calls;                    // "Calls 23 today" with its icon
+    Rect    recent[kRecent];
+    Rect    traf, graph;              // the rate label and the sweep
+    int16_t axis = 0;                 // the sweep's axis row
+    Rect    cell[kCells];
+    Rect    foot;                     // the rule over the LEDs
+    Rect    leds;
+};
+
+inline bool bigGlass(uint16_t w, uint16_t h) {
+    return (w >= 400 && h >= 300) || (w >= 300 && h >= 400);
+}
+
+// bigLayout: the big layouts, and a Layout with the parts the Waveshare's
+// drawing shares (the header's rows, the glyph strip, antenna, clock, track,
+// heading and LEDs) filled in, so that code draws them unchanged.
+inline BigLayout bigLayout(uint16_t w, uint16_t h, Layout& L) {
+    BigLayout B;
+    L = Layout();
+    if (!bigGlass(w, h)) return B;
+    B.on   = true;
+    B.land = w >= h;
+    L.land = B.land;
+    L.bar    = R(0, 0, w, 22);
+    L.band   = R(0, 22, w, 20);
+    L.track  = R(0, 42, w, 1);
+    L.glyphs = R(4, 24, 120, 16);
+    L.clock  = R(w - 44, 24, 5 * kSmallW, kSmallH);
+    B.dbm    = R(L.clock.x - 6 - 32, 24, 32, 16);       // "-100" at worst: four glyphs
+    L.ant    = R(B.dbm.x - 4 - kAntennaW, 24, kAntennaW, kAntennaH);
+    if (B.land) {
+        B.name = R(4, 3, 26 * kSmallW, 16);
+        B.slot = R(w - 4 - 24 * kSmallW, 3, 24 * kSmallW, 16);
+        B.word = R(134, 24, L.ant.x - 8 - 134, 16);
+    } else {
+        B.name = R(4, 3, 16 * kSmallW, 16);
+        B.slot = R(w - 4 - 21 * kSmallW, 3, 21 * kSmallW, 16);
+        B.word = Rect();                                   // no room beside the glyphs
+    }
+    L.slot = B.slot;
+    // The node board, the same in both: heading at 48, rows at 68 + 20k.
+    L.headIcon = R(6, 48, 16, 16);
+    L.head     = R(26, 48, 116, 16);
+    B.head     = R(6, 48, 296, 16);
+    B.colDoing = 150;
+    B.colOnEnd = 254;                                      // one past "ON"'s right edge
+    B.colTerm  = 262;
+    for (uint8_t k = 0; k < kBigRows; ++k) B.row[k] = R(14, 68 + kPitch * k, 288, 16);
+    B.pips = R(6, 68, 6, kPitch * (kBigRows - 1) + 16);
+    if (B.land) {
+        B.colRule = R(308, 48, 1, 236);
+        B.calls   = R(316, 48, 160, 16);
+        for (uint8_t j = 0; j < kRecent; ++j) B.recent[j] = R(316, 68 + kPitch * j, 160, 16);
+        B.traf  = R(316, 148, 160, 16);
+        B.graph = R(316, 168, 160, 56);
+        for (uint8_t c = 0; c < kCells; ++c)
+            B.cell[c] = R(c % 2 ? 398 : 316, 228 + kPitch * (c / 2), 78, 16);
+        B.foot = R(4, 290, 472, 1);
+        L.leds = R(0, 296, w, 16);
+    } else {
+        B.midRule = R(4, 290, w - 8, 1);
+        B.calls   = R(6, 296, 148, 16);
+        for (uint8_t j = 0; j < kRecent; ++j) B.recent[j] = R(6, 316 + kPitch * j, 148, 16);
+        B.traf  = R(166, 296, 150, 16);
+        B.graph = R(166, 316, 148, 56);
+        for (uint8_t c = 0; c < kCells; ++c)
+            B.cell[c] = R(c % 2 ? 166 : 6, 396 + kPitch * (c / 2), 148, 16);
+        B.foot = R(4, 456, w - 8, 1);
+        L.leds = R(0, 462, w, 16);
+    }
+    B.axis = static_cast<int16_t>(B.graph.y + kGraphUp);
+    B.leds = L.leds;
+    Rect* all[] = { &B.name, &B.slot, &B.word, &B.dbm, &B.head, &B.pips, &B.colRule, &B.midRule, &B.calls,
+                    &B.traf, &B.graph, &B.foot, &B.leds, &L.bar, &L.band, &L.track, &L.glyphs, &L.clock,
+                    &L.ant, &L.slot, &L.headIcon, &L.head, &L.leds };
+    for (Rect* r : all) *r = clip(*r, w, h);
+    for (Rect& r : B.row) r = clip(r, w, h);
+    for (Rect& r : B.recent) r = clip(r, w, h);
+    for (Rect& r : B.cell) r = clip(r, w, h);
+    return B;
+}
+
+// bigFieldBox: what a big-glass field clears and sends. The Waveshare's
+// fields that the big glass shares (slot, clock, glyphs, antenna, heading)
+// are in fieldBox, from the Layout bigLayout filled in; the heading here is
+// the whole heading row with its column labels.
+inline Rect bigFieldBox(const BigLayout& B, const Layout& L, uint8_t f) {
+    if (f == F_HEAD) return B.head;
+    if (f < F_COUNT) return f == F_SYS || f >= F_LIST ? Rect() : fieldBox(L, f);
+    switch (f) {
+        case F_NAME:  return B.name;
+        case F_WORD:  return B.word;
+        case F_DBM:   return B.dbm;
+        case F_PIPS:  return B.pips;
+        case F_CALLS: return B.calls;
+        case F_TRAF:  return B.traf;
+        default: break;
+    }
+    if (f >= F_CELL && f < F_CELL + kCells)       return B.cell[f - F_CELL];
+    if (f >= F_ROW && f < F_ROW + kBigRows)       return B.row[f - F_ROW];
+    if (f >= F_RECENT && f < F_RECENT + kRecent)  return B.recent[f - F_RECENT];
+    return Rect();
+}
+
+// bigLedAt: LED i of n in the big glass's row: a cell of min(22, 240 / n), the
+// LED clamp(cell - 6, 8, 14) square, the row centred, so the whole row is at
+// most 240 x 16 = 3,840 px, one band.
+inline Led bigLedAt(const Rect& box, uint8_t i, uint8_t n) {
+    Led out;
+    if (!n || i >= n || empty(box)) return out;
+    int cell = 240 / n;
+    if (cell > 22) cell = 22;
+    int side = cell - 6;
+    if (side < 8) side = 8;
+    if (side > 14) side = 14;
+    if (side > cell - 1) side = cell - 1;
+    const int x0 = box.x + (box.w - cell * n) / 2;
+    const int cx = x0 + i * cell;
+    out.cell = R(cx, box.y, cell, box.h);
+    out.led  = R(cx + (cell - side) / 2, box.y + (box.h - side) / 2, side, side);
+    return out;
+}
+
+// bitLen: how many bits v needs; 0 for 0.
+inline int bitLen(uint32_t v) {
+    int n = 0;
+    while (v) { ++n; v >>= 1; }
+    return n;
+}
+
+// graphHeight: a rate's column in the sweep, H at most: a fixed log scale,
+// 17 doublings to full at 128 KB/s, so the graph never rescales.
+inline int graphHeight(uint32_t rate, int H) {
+    const int h = (bitLen(rate) * H + 16) / 17;
+    return h < H ? h : H;
+}
+
+// fmtRate: bytes a second in at most four glyphs: 0, 340, 1.2K, 12K, 1.2M.
+inline void fmtRate(uint32_t v, char* out, size_t n) {
+    if (v < 1000u)            snprintf(out, n, "%u", static_cast<unsigned>(v));
+    else if (v < 10000u)      snprintf(out, n, "%u.%uK", static_cast<unsigned>(v / 1000u),
+                                       static_cast<unsigned>(v % 1000u / 100u));
+    else if (v < 1000000u)    snprintf(out, n, "%uK", static_cast<unsigned>(v / 1000u));
+    else if (v < 10000000u)   snprintf(out, n, "%u.%uM", static_cast<unsigned>(v / 1000000u),
+                                       static_cast<unsigned>(v % 1000000u / 100000u));
+    else                      snprintf(out, n, "%uM", static_cast<unsigned>(v / 1000000u));
+}
+
+// sweepBox: the rectangle one sample of the sweep sends: the column at head
+// and the two cleared ahead of it, cut at the graph's right edge (the part
+// past it wraps to the left and is the second rectangle, wrap).
+inline Rect sweepBox(const Rect& g, int head, Rect& wrap) {
+    wrap = Rect();
+    const int cols = g.w;
+    if (cols <= 0) return Rect();
+    const int n = 3 < cols ? 3 : cols;
+    const int first = cols - head < n ? cols - head : n;
+    if (first < n) wrap = R(g.x, g.y, n - first, g.h);
+    return R(g.x + head, g.y, first, g.h);
+}
 
 } // namespace panelgfx

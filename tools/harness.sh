@@ -35,6 +35,8 @@
 #                              (bbs_host_fncam), with --only=board_fncam
 #                 --board espcam the AI-Thinker ESP32-CAM profile
 #                              (bbs_host_espcam), with --only=board_espcam
+#                 --board mf35 the Makerfabs ESP32-S3 Parallel TFT 3.5" profile
+#                              (bbs_host_mf35), with --only=board_mf35
 #
 #                 --changed RANGE   work out --only from what a git range
 #                              touched, instead of naming it by hand. RANGE
@@ -161,7 +163,11 @@ while [ $# -gt 0 ]; do
                 s3)    BIN=bbs_host_s3;    export BBS_HOST_BOARD=s3 ;;
                 fncam) BIN=bbs_host_fncam; export BBS_HOST_BOARD=fncam ;;
                 espcam) BIN=bbs_host_espcam; export BBS_HOST_BOARD=espcam ;;
-                *)  echo "harness: no board profile called $2 (s3, fncam, espcam)"; exit 2 ;;
+                # The Makerfabs has 2 MB of PSRAM, 1.71 MB free with its
+                # framebuffer on the 1.1.1 bench: SSH is counted against that.
+                mf35)  BIN=bbs_host_mf35;  export BBS_HOST_BOARD=mf35
+                       export BBS_HOST_PSRAM="${BBS_HOST_PSRAM:-1700000}" ;;
+                *)  echo "harness: no board profile called $2 (s3, fncam, espcam, mf35)"; exit 2 ;;
             esac
             shift 2 ;;
         # A board as it leaves the web installer: no staff passwords in its
@@ -253,9 +259,10 @@ rm -f "$OUT"
 cd "$PROJ/host"
 if [ "$BUILD" = yes ]; then
     make -s "$BIN"
-    # The S3 profile has SSH (1.1.2): its tests call in with wolfSSH's client.
-    if [ "$BIN" = bbs_host_s3 ]; then make -s ssh_call; fi
-elif [ ! -x "$BIN" ] || { [ "$BIN" = bbs_host_s3 ] && [ ! -x ssh_call ]; }; then
+    # The SSH profiles (1.1.2: the S3, the Makerfabs): their tests call in
+    # with wolfSSH's client.
+    case "$BIN" in bbs_host_s3|bbs_host_mf35) make -s ssh_call ;; esac
+elif [ ! -x "$BIN" ] || { case "$BIN" in bbs_host_s3|bbs_host_mf35) [ ! -x ssh_call ] ;; *) false ;; esac; }; then
     echo "harness: --no-build, and host/$BIN (or ssh_call) has not been built"
     exit 2
 fi
@@ -349,9 +356,9 @@ page0 = House rules | all
 page1 = Staff notes | staff
 CFG
 
-# SSH's own port (1.1.2) on the S3 profile, per tag like the others: 6422
+# SSH's own port (1.1.2) on the SSH profiles, per tag like the others: 6422
 # for every run would have two tags' boards fighting over it.
-if [ "$BIN" = bbs_host_s3 ]; then
+if [ "$BIN" = bbs_host_s3 ] || [ "$BIN" = bbs_host_mf35 ]; then
     sed -i "s/^backup_port = .*/&\nssh_port = $((PORT + 1500))/" "$DATA/user/system.cfg"
 fi
 

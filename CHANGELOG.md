@@ -24,6 +24,46 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.1.2 (MF35 1.1.0), 2026-09-28, hardware preview
+
+The Makerfabs board on the 1.1.2 core, for the combined
+`v1.1.2-hardware-preview`. The core is 1.1.2 unchanged apart from one
+missing include; every other board's image is the one 1.1.2 shipped.
+**Not on hardware**: built and code-reviewed only, the board being offline.
+It has not been through the full regression.
+
+**The Makerfabs ESP32-S3 Parallel TFT with Touch 3.5" (ILI9488), hardware
+v1.0** (`BBS_BOARD_MF_S3PAR35`, `pio run -e makerfabs_s3_par35`, MF35 1.1.0)
+- The 1.1.1 preview's profile (MF35 1.0.0, tag `v1.1.1-mf35.1`) brought
+  onto 1.1.2 as it was: the N16R2 (16 MB flash, 2 MB quad PSRAM), the CP2104
+  console on UART0 (`sdkconfig.defaults.mf35`), the micro SD slot on SPI,
+  the 480 x 320 ILI9488 on esp_lcd's 16-bit i80 bus with its status skin,
+  and the pin rules. v1.0 only: the v2.0 sibling in that preview (octal
+  PSRAM, never on a bench) is not carried here.
+- **SSH**, as on the Waveshare S3: callers on the telnet port 6400 and on
+  `ssh_port` 6422, Ed25519 and ECDSA host keys made at first start, up to
+  **eight sessions at once**. They fit its 2 MB of PSRAM: the panel's
+  framebuffer is 300 KB, the 1.1.1 bench read 1.71 MB free with it up, and
+  eight sessions at their 48 KB budget plus the 128 KB kept back come to
+  512 KB. The live limit still falls if PSRAM is short when a client
+  connects.
+- **The S3's 8 MB flash layout** (`partitions_s3.csv`): two 3 MB program
+  slots, 1,376 KB of userdata, 512 KB of screens. **The first install over
+  the 1.1.1 preview must be a new install, with an erase**, as on the
+  Waveshare: the data partitions moved. Take a backup first.
+- Fixed in the core for any SSH board whose console is a UART: the SSH
+  links' wake code used `read` and `write` without `<unistd.h>`, which the
+  Waveshare's build only got through its USB console's headers. And an SSH
+  caller's typing now lights their node's pip on a panel, as a telnet
+  caller's does (`Bbs::sshRead`). **Both touch shared code the Waveshare's
+  image is built from, so the S3's own board version (S3 1.1.3) must bump
+  when this lane merges**; it is left alone here so the lanes merge cleanly.
+- The board's name is `Makerfabs S3 Parallel TFT 3.5" v1.0` (35 characters),
+  so HARDWARE's Board row fits 40 columns; it was 44 and wrapped.
+- `tools/release.py --tag v1.1.2-mf35.1` builds its set alone
+  (`esp32s3-mf35-*`, `tag_only`). Host: `harness.sh --board mf35` now
+  builds with SSH and runs the SSH tests beside `test_board_mf35`.
+
 ## 1.1.2 (S3 1.1.3, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-27
 
 A patch: the board no longer stalls everybody while one caller does
