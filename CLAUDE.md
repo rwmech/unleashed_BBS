@@ -2300,6 +2300,10 @@ they are the process, and getting them wrong wastes Rob's time.
   disclosure is written once, in each README's "How it was built" and on
   the site's author page. The 1.0.0 history rewrite removed the trailer
   from every earlier commit. Every agent that commits is told this.
+- **Blanket approval for the websites and local bench boards** (Rob, 2026-09-28).
+  - Pushes to the directory, site and docs repos go live without asking, after code review and the site's own checks.
+  - Flashing, rebooting and bench work on local bench boards need no ask, as long as SHUTDOWN warns callers over telnet before a running board goes down.
+  - Still Rob's call: his live boards (UHQ, TRA, COM22), his own S3, release tags, and host-suite, load and soak test plans (below).
 - **Every testing plan needs Rob's explicit OK first** (Rob, 2026-09-28: "ask for explicit confirmation of any testing plans, load, code or otherwise. Code reviews are exempt and always should be performed on the code before going to QA testing.").
   - This covers harness runs, `make test`, targeted and full suites, bench and functional checks, soaks, and load or latency runs. An agent stops at "ready to test" and reports a proposed plan.
   - Code review always runs on new code, before any testing, with no approval needed.
