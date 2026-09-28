@@ -808,8 +808,9 @@ this tree.
     without POLL it is taps on INT (the legacy driver, the camera's SCCB).
     Never let the legacy `driver/i2c.h` code compile into an image that uses
     `i2c_master`: the IDF refuses both drivers in one image.
-  - **switchboard is the Touch-LCD-2's version** on both glasses (dark free
-    lamps while anybody WHO shows is on).
+  - **switchboard is the 4.3B's version** (Rob's pick, 1.1.2-hw.2): a free
+    line stays dim dial blue whoever is on. The merge first took the
+    Touch-LCD-2's (free lamps dark while anybody WHO shows is on).
   - `plat::chipTemp` is tenths of a degree; the system row's warm step is
     `BBS_PANEL_TEMP_WARM` (65 on WS2, 60 elsewhere).
   - The Makerfabs' big-glass band word is `F_BWORD`; `F_WORD` is the 4.3B's.
