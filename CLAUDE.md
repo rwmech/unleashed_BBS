@@ -2141,6 +2141,11 @@ they are the process, and getting them wrong wastes Rob's time.
   disclosure is written once, in each README's "How it was built" and on
   the site's author page. The 1.0.0 history rewrite removed the trailer
   from every earlier commit. Every agent that commits is told this.
+- **Every testing plan needs Rob's explicit OK first** (Rob, 2026-09-28: "ask for explicit confirmation of any testing plans, load, code or otherwise. Code reviews are exempt and always should be performed on the code before going to QA testing.").
+  - This covers harness runs, `make test`, targeted and full suites, bench and functional checks, soaks, and load or latency runs. An agent stops at "ready to test" and reports a proposed plan.
+  - Code review always runs on new code, before any testing, with no approval needed.
+  - Building, checking for warnings and reading sizes are not testing.
+  - Flashing a new board to see that it boots is bring-up, not testing.
 - **Proposal before new code.** Confirm the approach, get a go-ahead, then
   write it. A bug I introduced myself is still a proposal, just a short one.
 - **Batch board work, do not drift into it.** Rob asks for board features while other work is in flight. They go in the queue below, and they get built together as one version with one regression run and one flash. Wandering off to implement or investigate a queued item mid-task is how a session ends with six half-finished things and nothing flashed.
