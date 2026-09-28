@@ -289,7 +289,13 @@ struct Verdict {
 // check: may one more be taken now? When not, nextAt is when: the snap that
 // has to leave the window for the count to drop below the limit, plus the
 // window. The day's limit wins when both are hit, since it is the later.
-inline Verdict check(const Window& w0, uint32_t now) {
+// perHour and perDay are the board's (CONFIG photos, 1.2.0), 1 to kPerDay:
+// the window holds kPerDay, so no limit goes past it.
+inline Verdict check(const Window& w0, uint32_t now, uint8_t perHour, uint8_t perDay) {
+    if (perDay < 1) perDay = 1;
+    if (perDay > kPerDay) perDay = kPerDay;
+    if (perHour < 1) perHour = 1;
+    if (perHour > kPerDay) perHour = kPerDay;
     Window w = w0;
     age(w, now);
     Verdict v;
@@ -298,18 +304,21 @@ inline Verdict check(const Window& w0, uint32_t now) {
         if (now - w.at[i] < kHour) { if (firstHour == w.n) firstHour = i; ++v.hour; }
     }
     v.day = w.n;
-    if (v.day >= kPerDay) {
+    if (v.day >= perDay) {
         v.ok = false;
         v.byDay = true;
-        v.nextAt = w.at[w.n - kPerDay] + kDay;
+        v.nextAt = w.at[w.n - perDay] + kDay;
     }
-    if (v.hour >= kPerHour) {
-        uint32_t at = w.at[firstHour + (v.hour - kPerHour)] + kHour;
+    if (v.hour >= perHour) {
+        uint32_t at = w.at[firstHour + (v.hour - perHour)] + kHour;
         if (v.ok || at > v.nextAt) { v.nextAt = at; v.byDay = false; }
         v.ok = false;
     }
     return v;
 }
+
+// check at the shipped limits, kPerHour and kPerDay.
+inline Verdict check(const Window& w0, uint32_t now) { return check(w0, now, kPerHour, kPerDay); }
 
 // record: one taken now.
 inline void record(Window& w, uint32_t now) {

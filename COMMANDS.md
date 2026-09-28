@@ -501,6 +501,13 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `port` | `6400` | The port callers dial. Used from the next restart. It cannot be the backup window's port. Takes 1 to 65535; as shipped, `6400`. If callers reach the board from the internet, the forward on your router has to point at the new number too. mDNS, SYS, the console's `dial in` line, Improv's telnet link and announce's default all follow it |
 | `cgnat_local` | `no` | `yes`: `100.64.0.0/10`, the carrier-grade NAT range Tailscale also uses, counts as the board's own network (1.1.1, `CONFIG network`, **CGNAT/Tailscale LAN**, `CGNAT` at 40 columns). It trusts everybody behind the same carrier NAT, not only your own Tailscale devices, which is why it is off. It moves every "local" rule at once: the published default password's local-only rule, a second sysop taking sysop in place, and the backup window's port. Live, the one row on that page that is |
 | `camera` | empty | The camera a bare `SNAPSHOT` uses, by the name `CAMERA` shows (1.2.0, `CONFIG photos`, **Default camera**; `CONFIG cameras` still opens it). Empty, or a name not on the air just now: the built-in camera, else the first that is up |
+| `photos_per_hour` | `10` | Each caller's snaps an hour, every camera together (1.2.0, `CONFIG photos`, **Snaps an hour**, `Per hour` at 40). 1 to 20; the sysop has no limit |
+| `photos_per_day` | `20` | And a day (**Snaps a day**, `Per day`), 1 to 20. A caller's rolling window holds 20, so no limit goes past it |
+| `photos_keep` | `30` | Days a caller's photo is kept, 0 for ever (**Keep photos, days**). Was the camera's `keep` before 1.2.0 |
+| `photos_max` | `200` | The most callers' photos kept, oldest out first, 0 no limit (**Keep at most**). Was the camera's `max` |
+| `photos_floor` | empty | MB the card keeps free, the oldest photos going first; empty is a tenth of the card, 512 MB at most (**Card kept free, MB**). Was the camera's `floor` |
+| `photos_tl_keep` | `7` | Days a timelapse photo is kept (**Keep timelapse, days**). Was the camera's `tl_keep` |
+| `photos_tl_max` | `200` | The most timelapse photos kept (**Timelapse at most**). Was the camera's `tl_max` |
 | `idle_minutes` | `20` | shell idle hangup, 0 = never |
 | `landing` | `main` | where a caller goes after login when their account has not said: `main`, `chat` or `forums` |
 | `sysop_handle` | empty | the sysop's own account (1.1.0, `CONFIG board`, **Sysop**): missed rings are mailed to it, and it is asked for the sysop password at login. `CONFIG` refuses a handle with no live account and writes it in `users.txt`'s spelling. Empty: the last account to elevate to sysop, which the board keeps in `userdata/sysop.last` across a restart (a restore that brings back `users.txt` clears it, since it is an id into that file) |
@@ -522,6 +529,8 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `max_users` | `250` | account limit, 1..250. Not a space limit: `userdata` holds roughly 1,380 accounts. The cap is that the list indices are `uint8_t`, which reaches into every list on the board, so raising it is its own piece of work. The SD card does not help and is not meant to: accounts stay on internal flash so they survive the card failing. |
 | `guest` | `yes` | `no`: unknown handles are not offered `[G]uest` |
 | `guest_minutes` | `15` | per guest call, 0 = unlimited; guests have no daily limit |
+
+**The photo system's keys moved out of the camera in 1.2.0** (`CONFIG photos`: Rob's naming, one word per thing). A board whose file still has the camera's `keep`, `max`, `floor`, `tl_keep` or `tl_max` in `[plugin:camera]` runs with those, and `CONFIG photos` shows them, until a `photos_` line is written for them: the first save of `CONFIG photos` writes a `photos_` key for each old line and drops the old lines, so a file never keeps both. Where both are there anyway (a line put back by hand), the `photos_` line wins. A restore of an older backup is read the same way. `CAMERA SET` refuses the old keys, and `CONFIG camera` no longer shows them.
 
 Keys must appear above the first `[section]` line. Sections are `[access]` for the staff matrix and `[plugin:name]` for each plugin (see [PLUGINS.md](PLUGINS.md)).
 
@@ -1049,16 +1058,11 @@ size       = vga        ; qvga | vga | svga | xga | hd | sxga | uxga | qxga, wha
 quality    = 10         ; 4 to 40, lower is better
 names      = date       ; date | date+handle | by handle
 watermark  = yes
-keep       = 30         ; days callers' photos are kept; 0 keeps them forever
-max        = 200        ; callers' photos kept; 0 no limit
-floor      =            ; MB kept free on the card; empty: a tenth of it, 512 MB at most
 flash_mode = off        ; off | pixel | pin, as shipped on the Freenove board
 flash_pin  = 13
 flash_lead = 0          ; ms the flash is on before the shot
 tl_min     = 0          ; minutes between the board's own photos, 0 to 1440
 tl_sec     = 0          ; and seconds, 0 to 59; both 0 is off, under 10 s is 10
-tl_keep    = 7          ; days
-tl_max     = 200
 pic_flip   = no
 pic_mirror = no
 pic_bright = 0          ; -2 to 2
@@ -1110,14 +1114,15 @@ pic_gamma  = 1.0        ; 0.6 | 0.7 | 0.8 | 0.9 | 1.0 | 1.1 | 1.2 | 1.4 | 1.6
   when
   it cannot be drawn (no codec, or a bad frame) the photo is saved unmarked
   rather than not saved at all.
-- **Keep days** and **Max snaps**: retention for callers' own photos (the
-  Photos folder and its handle folders, counted as one group); 0 is
-  forever / no limit. 30 days and 200 photos as shipped: a file area lists
-  254 rows at most, so a folder kept under that stays listable whole.
-- **Floor MB**: space the camera keeps free on the card. Empty, as shipped,
-  is a tenth of the card, 512 MB at most; a number is exact. While the card
-  is under it, the oldest photos are removed to make room, the timelapse's
-  before the callers'. **Nothing that is not exactly a photo the camera
+- **Retention is `CONFIG photos`' since 1.2.0** (`photos_keep`,
+  `photos_max`, `photos_floor`, `photos_tl_keep`, `photos_tl_max`, in the
+  core keys above), the rules unchanged: callers' own photos (the Photos
+  folder and its handle folders, counted as one group) are kept 30 days and
+  200 photos as shipped, 0 being forever / no limit (a file area lists 254
+  rows at most, so a folder kept under that stays listable whole). The
+  floor, empty as shipped, is a tenth of the card, 512 MB at most; a number
+  is exact. While the card is under it, the oldest photos are removed to
+  make room, the timelapse's before the callers'. **Nothing that is not exactly a photo the camera
   wrote** (`PREFIX-YYYYMMDD-HHMMSS.JPG`, its own prefix or a system
   folder's) is ever counted or touched, so a sysop's own files on the card
   are never at risk. If removing every photo the camera owns still would not
@@ -1153,9 +1158,9 @@ pic_gamma  = 1.0        ; 0.6 | 0.7 | 0.8 | 0.9 | 1.0 | 1.1 | 1.2 | 1.4 | 1.6
   figure because a form's number stops at 65,535 and a day is 86,400
   seconds. Anything under 10 seconds in all is taken as 10: the sensor has
   to come up and take a frame each time, which is a second or two by itself.
-- **Keep days** and **Max shots**: retention for the timelapse's own group,
-  separate from callers' photos, so a fast series can never crowd out what
-  callers took. 7 days and 200 shots as shipped.
+- The timelapse's own retention is `CONFIG photos`' (`photos_tl_keep`,
+  `photos_tl_max`, 7 days and 200 shots as shipped): a group separate from
+  callers' photos, so a fast series can never crowd out what callers took.
 Timed photos go in `Photos/timelapse/`, area 13 below, never inside Photos
 itself.
 

@@ -980,6 +980,20 @@ this tree.
       name. `Bbs::markedLine` went public for it. What other sats would
       take: internal/sat-types-2026-09-27.md (relay, GPIO, Home Assistant,
       custom; nothing in 1.2.0, an LR bench test first).
+    - **CONFIG photos, CONFIG sat <name> and the same-second clash
+      (photo-names, link.13 and .14, 2026-09-28).** The limits
+      (`photos_per_hour`, `photos_per_day`) and retention (`photos_keep`,
+      `photos_max`, `photos_floor`, `photos_tl_keep`, `photos_tl_max`) are
+      top-level keys. The coordinator's migration rule: the camera's old
+      `[plugin:camera]` lines are read while no `photos_` line stands for
+      them (syscfg folds them at parse, so a restore of an old backup works
+      too); the first CONFIG photos save writes every `photos_` key and
+      drops the old lines, so a file never keeps both, and a `photos_` line
+      wins where both are there. CONFIG camera hides them, CAMERA SET
+      refuses them. CONFIG sat <name|n> opens one sat; a camera sat's page
+      has Camera settings (camsat's page, listed in CONFIG only while off).
+      The same-second clash: the next second's stamp, up to five on
+      (`photos::fileAs`, `camrules::laterName`); plugin API 1.1.
 - **1.1.2 scope, decided by Rob 2026-09-26** (discussed before coding):
   - A read-only audit first of every path that can hold the loop over
     50 ms (internal/audit-1.1.2-2026-09-26.md); the worst move onto one

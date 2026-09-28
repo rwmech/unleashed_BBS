@@ -128,6 +128,23 @@ struct SysConfig {
     // The camera a bare SNAPSHOT uses (1.2.0): a camera's name, blank for the
     // built-in camera or else the first that is up (photos.h).
     char     camera[17]    = "";
+    // The photo system (1.2.0, CONFIG photos; Rob's naming of 2026-09-28):
+    // each caller's snaps an hour and a day across every camera, and how
+    // long photos are kept. The retention was the built-in camera's own
+    // (keep, max, floor, tl_keep and tl_max in [plugin:camera]); a file that
+    // has no photos_ line for one still has it read from there, and CONFIG
+    // photos writes the photos_ keys and drops the old lines in one save.
+    uint8_t  photosPerHour = 10;                 // 1..20: a caller's window holds 20
+    uint8_t  photosPerDay  = 20;
+    uint16_t photosKeep    = 30;                 // days, 0 no limit (callers' photos)
+    uint32_t photosMax     = 200;                // files, 0 no limit
+    int32_t  photosFloor   = -1;                 // MB kept free on the card; -1 a tenth, up to 512
+    uint16_t photosTlKeep  = 7;                  // days (the timelapse)
+    uint32_t photosTlMax   = 200;
+    // Which of those the file gave by an old camera line (bits: 4 keep,
+    // 8 max, 16 floor, 32 tl_keep, 64 tl_max). CONFIG photos writes the
+    // photos_ key for each and drops the old lines only while this is set.
+    uint8_t  photosOld     = 0;
     uint16_t coPerms[2]    = { static_cast<uint16_t>(PERM_ALL & ~PERM_UNBAN),
                                static_cast<uint16_t>(PERM_NODES | PERM_BROADCAST | PERM_TIME | PERM_BANS |
                                                      PERM_NOLIMITS | PERM_DASH) };
@@ -280,6 +297,12 @@ const char* pinProblem(long pin);
 // words its own refusals, so it never names the flash chip for a pin the
 // chip simply does not have.
 const char* pinSentence(long pin);
+
+// photoOldKey (1.2.0): is key one of [plugin:camera]'s lines whose meaning
+// moved to the photo system (keep, max, floor, tl_keep, tl_max)? Read as the
+// photos_ key's value while the file has none; CONFIG photos drops them, the
+// camera's page does not show them, and CAMERA SET refuses them.
+bool photoOldKey(const char* key);
 
 // trial: would the parser accept the live configuration with these pairs
 // applied on top? Every rule a line meets on its way in is applied: the '#'

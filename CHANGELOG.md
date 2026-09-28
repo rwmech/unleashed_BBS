@@ -30,6 +30,24 @@ The µnleashed link, its lane (rel-1.2.0-link-r3, rebased onto main at
 a3dcf01, after the v1.1.2 tag). Host-tested; the camera satellite has run
 on the bench since link.4 (LINK.md has the figures).
 
+**1.2.0-link.14: the photo system's limits and retention on CONFIG photos**
+- **CONFIG photos holds each caller's snaps an hour and a day** (1 to 20,
+  10 and 20 as shipped, every camera together; they were fixed) **and
+  retention** (`photos_keep`, `photos_max`, `photos_floor`,
+  `photos_tl_keep`, `photos_tl_max`), which was the built-in camera's
+  (`keep`, `max`, `floor`, `tl_keep`, `tl_max` in `[plugin:camera]`).
+- **Nothing a sysop set is lost.** A file with the camera's old lines runs
+  with them and CONFIG photos shows them; its first save writes the
+  `photos_` key for each and drops the old lines, so a file never keeps both. A
+  `photos_` line wins over an old one put back by hand, and a restore of an
+  older backup is read the same way. CONFIG camera no longer shows them and
+  CAMERA SET refuses them.
+- `photos::Budget` carries the limits (API 1.1), so a camera sat says "3 of
+  5 this hour" by the board's figures.
+- Tests: `test_photos_config` (the old lines shown, the save migrating them,
+  the new line winning, the parser's range), limits in `test_camera`, and in
+  `test_sats` a picture whose second is taken lands on the first free one.
+
 **1.2.0-link.13: two cameras in one second; the CONFIG names**
 - **A second picture in the same second is kept.** The built-in camera
   and a camera sat that stamp a picture in the same second asked for the

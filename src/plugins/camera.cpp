@@ -1322,7 +1322,7 @@ void cmdSnapshot(Bbs& b, Session& s, const char*, uint32_t now) {
             char at[8], buf[96];
             clk::fmtEpoch(at, sizeof(at), "%H:%M", v.nextAt);
             snprintf(buf, sizeof(buf), "That is %u %s; the next one is allowed at %s.",
-                     static_cast<unsigned>(v.byDay ? camrules::kPerDay : camrules::kPerHour),
+                     static_cast<unsigned>(v.byDay ? v.perDay : v.perHour),
                      v.byDay ? "today" : "this hour", at);
             refuse(b, s, buf);
             return;
@@ -1385,8 +1385,8 @@ void cmdSnapshot(Bbs& b, Session& s, const char*, uint32_t now) {
         recordFor(s, epoch);
         char buf[80];
         snprintf(buf, sizeof(buf), "Snapshot %u of %u this hour, %u of %u today.",
-                 static_cast<unsigned>(v.hour + 1), static_cast<unsigned>(camrules::kPerHour),
-                 static_cast<unsigned>(v.day + 1), static_cast<unsigned>(camrules::kPerDay));
+                 static_cast<unsigned>(v.hour + 1), static_cast<unsigned>(v.perHour),
+                 static_cast<unsigned>(v.day + 1), static_cast<unsigned>(v.perDay));
         say(s, Color::Grey, buf);
         s.term.nl(s.tl);
     }
@@ -1454,6 +1454,9 @@ void cmdCamera(Bbs& b, Session& s, const char* arg, uint32_t) {
         while (*p && *p != ' ' && k + 1 < sizeof(key)) key[k++] = *p++;
         while (*p == ' ') ++p;
         Settings trial = g_set;
+        // Retention moved to the photo system (1.2.0): written here it would
+        // be a line CONFIG photos overrides and then deletes.
+        if (syscfg::photoOldKey(key)) { refuse(b, s, "That is CONFIG photos now, for every camera."); return; }
         if (!key[0] || !apply(trial, key, p)) { refuse(b, s, "CAMERA SET <key> <value>: not a value the camera takes."); return; }
         syscfg::KeyVal kv{ key, p };
         char err[64] = "";
@@ -1594,12 +1597,10 @@ const PluginSetting kSettings[] = {
       camrules::kSchemes, "Name snaps" },
     { "watermark", "Watermark", PS_YESNO, 0, 0, 3, "Board, date and who, in a corner.", nullptr,
       "Watermark" },
-    { "keep",      "Keep days", PS_NUM,   0, 3650, 4, "Callers' photos; 0 keeps them.", nullptr,
-      "Keep snaps (days)", "Callers' photos older than this are removed; 0 keeps them." },
-    { "max",       "Max snaps", PS_NUM,   0, 60000, 5, "Callers' photos kept; 0 no limit.", nullptr,
-      "Max caller snaps" },
-    { "floor",     "Floor MB",  PS_OPTNUM, 0, 60000, 5, "Card space kept free; empty: auto.", nullptr,
-      "Card floor (MB)", "Space the camera leaves free on the card. Empty: a tenth, 512 MB at most." },
+    // keep, max and floor, and tl_keep and tl_max below, are CONFIG photos'
+    // since 1.2.0 (photos_keep and the rest): retention is the photo
+    // system's, a camera sat's photos included. apply() still reads them, as
+    // syscfg does, for a file written before.
     { "flash",     "Flash",     PS_PAGE,  0, 0, 12, "The light for a photo.", nullptr, "Flash" },
     { "tl",        "Timelapse", PS_PAGE,  0, 0, 16, "A photo every so often.", nullptr, "Timelapse" },
     { "pic",       "Picture",   PS_PAGE,  0, 0, 12, "Levels, brightness, colour, turn.", nullptr, "Picture settings" },
@@ -1618,10 +1619,6 @@ const PluginSetting kSettings[] = {
       "Every (minutes)", "Minutes between the board's own photos, with the seconds below. Both 0 is off." },
     { "tl_sec",    "and sec",   PS_NUM,   0, 59, 2, "Seconds; the least is 10 in all.", nullptr,
       "and seconds", "Seconds on top of the minutes. The shortest interval is 10 seconds." },
-    { "tl_keep",   "Keep days", PS_NUM,   0, 3650, 4, "Timed photos; 0 keeps them.", nullptr,
-      "Keep shots (days)", "Timed photos older than this are removed; 0 keeps them." },
-    { "tl_max",    "Max shots", PS_NUM,   0, 60000, 5, "Timed photos kept; 0 no limit.", nullptr,
-      "Max timelapse shots" },
 
     // The picture's page
     { "pic_flip",     "Flip",     PS_YESNO, 0, 0, 3, nullptr, nullptr, "Upside down" },
@@ -1701,6 +1698,18 @@ bool start(Bbs& bbs) {
     g_index = plugins::indexOf(kName);
     g_set = Settings();
     plugins::forEachKey(g_index, readKey, nullptr);
+    // Retention is the photo system's (CONFIG photos, 1.2.0). Its own old
+    // lines are still read by the parser above, so a file that has them is
+    // not refused, but what counts is syscfg's: the photos_ line, or the old
+    // line standing in for it, or the default.
+    {
+        const SysConfig& c = syscfg::get();
+        g_set.keepDays = c.photosKeep;
+        g_set.maxSnaps = c.photosMax;
+        g_set.floorMb  = c.photosFloor;
+        g_set.tlKeep   = c.photosTlKeep;
+        g_set.tlMax    = c.photosTlMax;
+    }
     g_set.tlEvery = static_cast<uint32_t>(g_set.tlMin) * 60u + g_set.tlSec;
     if (g_set.tlEvery > camrules::kTlMax) g_set.tlEvery = camrules::kTlMax;
     if (g_set.tlEvery && g_set.tlEvery < camrules::kTlMin) g_set.tlEvery = camrules::kTlMin;

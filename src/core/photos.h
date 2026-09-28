@@ -223,6 +223,10 @@ struct Budget {
     uint8_t  day    = 0;       // and in the last day
     uint32_t nextAt = 0;       // refused: the first moment one is allowed
     bool     byDay  = false;   // refused by the day's limit, else the hour's
+    // The board's limits the verdict was against (CONFIG photos, 1.2.0), for
+    // a camera to say ("That is 5 today"). Appended: API 1.1.
+    uint8_t  perHour = 10;
+    uint8_t  perDay  = 20;
 };
 Budget budget(const Session& s, uint32_t now);
 void   spend(const Session& s, uint32_t now);

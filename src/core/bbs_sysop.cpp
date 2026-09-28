@@ -1047,11 +1047,35 @@ const CfgField kNetwork[] = {
 // a sat is a device). Which camera a bare SNAPSHOT takes: a name CAMERA
 // shows; blank, or a name that is not on the air, is the built-in camera,
 // else the first that is up. The gallery's auto-show rows join it.
+// The limits and the retention joined it (1.2.0): they were constants and
+// the built-in camera's own settings, and a camera sat's photos are the
+// same system's. Labels 9 at 40 and 20 at 80, notes 38 and 78.
 const CfgField kPhotos[] = {
     { "camera", "Default", CK_TEXT, 0, 0, 16, "A name from CAMERA. Blank: built-in.",
       "Default camera",
       // 73 columns: the status line holds 78 (tty-ux-sats; it was 90).
       "The camera SNAPSHOT uses, by a name CAMERA lists. Blank: the built-in one." },
+    { "photos_per_hour", "Per hour", CK_NUM, 0, 0, 2, "Each caller's snaps an hour. 1 to 20.",
+      "Snaps an hour",
+      "Each caller's snaps an hour, every camera together. 1 to 20. Sysop: no limit." },
+    { "photos_per_day", "Per day", CK_NUM, 0, 0, 2, "Each caller's snaps a day. 1 to 20.",
+      "Snaps a day",
+      "Each caller's snaps a day, all cameras together. 1 to 20. The sysop: no limit." },
+    { "photos_keep", "Keep days", CK_NUM, 0, 0, 4, "Days a caller's photo is kept. 0: all.",
+      "Keep photos, days",
+      "Days a caller's photo is kept before it goes. 0 keeps them all." },
+    { "photos_max", "Keep most", CK_NUM, 0, 0, 5, "The most callers' photos kept. 0: all.",
+      "Keep at most",
+      "The most callers' photos kept, oldest out first. 0 keeps them all." },
+    { "photos_floor", "Floor MB", CK_NUM, 0, 0, 5, "MB kept free. Blank: a tenth, to 512.",
+      "Card kept free, MB",
+      "MB the card keeps free: the oldest photos go first. Blank: a tenth, up to 512." },
+    { "photos_tl_keep", "TL days", CK_NUM, 0, 0, 4, "Timelapse photos: days kept. 0: all.",
+      "Keep timelapse, days",
+      "Days a timelapse photo is kept before it goes. 0 keeps them all." },
+    { "photos_tl_max", "TL most", CK_NUM, 0, 0, 5, "Most timelapse photos kept. 0: all.",
+      "Timelapse at most",
+      "The most timelapse photos kept, oldest out first. 0 keeps them all." },
 };
 
 // isWifiKey: one of the two keys that are one setting (see configSave)
@@ -1461,6 +1485,15 @@ void cfgLiveValue(const char* key, char* out, size_t n) {
     else if (!strcmp(key, "landing"))               snprintf(out, n, "%s", users::landKey(c.landing));
     else if (!strcmp(key, "sysop_handle"))          snprintf(out, n, "%s", c.sysopHandle);
     else if (!strcmp(key, "camera"))                snprintf(out, n, "%s", c.camera);
+    // What the board runs with: the photos_ line, else the old camera line
+    // it stands in for (sysconfig.cpp, oldPhotoKey), else the default.
+    else if (!strcmp(key, "photos_per_hour"))       snprintf(out, n, "%u", c.photosPerHour);
+    else if (!strcmp(key, "photos_per_day"))        snprintf(out, n, "%u", c.photosPerDay);
+    else if (!strcmp(key, "photos_keep"))           snprintf(out, n, "%u", c.photosKeep);
+    else if (!strcmp(key, "photos_max"))            snprintf(out, n, "%lu", static_cast<unsigned long>(c.photosMax));
+    else if (!strcmp(key, "photos_floor"))          { if (c.photosFloor >= 0) snprintf(out, n, "%ld", static_cast<long>(c.photosFloor)); }
+    else if (!strcmp(key, "photos_tl_keep"))        snprintf(out, n, "%u", c.photosTlKeep);
+    else if (!strcmp(key, "photos_tl_max"))         snprintf(out, n, "%lu", static_cast<unsigned long>(c.photosTlMax));
     else if (!strcmp(key, "activity_led_gpio"))     snprintf(out, n, "%d", c.ledGpio);
     else if (!strcmp(key, "silent"))                snprintf(out, n, "%s", c.silent ? "yes" : "no");
     else if (!strcmp(key, "closed"))                snprintf(out, n, "%s", c.closed ? "yes" : "no");
@@ -1667,6 +1700,9 @@ void collectKey(void* ctx, const char* key, const char* value) {
         return;
     }
     if (cfgDeclared(g->pl, key)) return;                   // enabled, read, write, admin
+    // The camera's old photo keys belong to CONFIG photos now (1.2.0): not
+    // listed on the camera's page, where a save would write them back.
+    if (!strcmp(g->pl->info.name, "camera") && syscfg::photoOldKey(key)) return;
     if (g->n >= Form::kMaxFields - kCoreRows) return;      // the core rows come first
     for (uint8_t i = 0; i < g->n; ++i) if (!strcmp(g_cfgKeys[i], key)) return;
     snprintf(g_cfgKeys[g->n], sizeof(g_cfgKeys[0]), "%.23s", key);
@@ -2989,6 +3025,31 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
     }
     if (!n) { snprintf(err, errLen, "Nothing changed"); return true; }
 
+    // CONFIG photos (1.2.0): a save writes the photos_ key for each old
+    // camera line the board is running on (SysConfig::photosOld), changed or
+    // not, so the old lines it then drops take nothing with them. A board
+    // never keeps both (the coordinator's rule, 2026-09-28). Only those:
+    // writing all seven would pin the shipped defaults in every file, and
+    // a board with no old lines has nothing to drop, so no second write.
+    const bool photosPage = g_cfgPage->fields == kPhotos;
+    const uint8_t photosOld = photosPage ? syscfg::get().photosOld : 0;
+    bool photosAll = true;                          // every key an old line stands for is in pairs
+    for (uint8_t i = 0; photosOld && i < count; ++i) {
+        const char* k = g_cfgPage->fields[i].key;
+        const uint8_t bit = !strcmp(k, "photos_keep") ? 4u : !strcmp(k, "photos_max") ? 8u :
+                            !strcmp(k, "photos_floor") ? 16u : !strcmp(k, "photos_tl_keep") ? 32u :
+                            !strcmp(k, "photos_tl_max") ? 64u : 0u;
+        if (!(photosOld & bit)) continue;
+        bool have = false;
+        for (uint8_t q = 0; q < n; ++q) if (!strcmp(pairs[q].key, k)) have = true;
+        if (have) continue;
+        if (n >= sizeof(pairs) / sizeof(pairs[0])) { photosAll = false; continue; }
+        pairs[n].key   = k;
+        pairs[n].value = g_cfgBuf[i];
+        from[n]        = i;
+        ++n;
+    }
+
     // A board on the published default is closed with no closed line (see
     // SysConfig::closed), and that default goes the moment the sysop
     // password stops being the published one. Pinned here, by the first
@@ -3026,6 +3087,16 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
         }
     }
     if (!syscfg::write(pairs, n, g_cfgSection[0] ? g_cfgSection : nullptr, err, errLen)) return false;
+    // Then the old camera lines, now that their values are photos_ lines.
+    // A second write: should it fail, both are in the file for a while and
+    // the photos_ line wins (sysconfig.cpp), until the next photos save.
+    if (photosOld && photosAll) {
+        const syscfg::KeyVal drop[] = { { "keep", nullptr }, { "max", nullptr }, { "floor", nullptr },
+                                        { "tl_keep", nullptr }, { "tl_max", nullptr } };
+        char derr[48] = "";
+        if (!syscfg::write(drop, 5, "plugin:camera", derr, sizeof(derr)))
+            plat::log("config: the camera's old photo lines stay (%s); the photos_ lines win", derr);
+    }
     bool ok = configReloadAll(err, errLen);
     // Neither the radio nor the listener is touched until a restart (see
     // kNetwork), so "live" would be a promise the board is not keeping.

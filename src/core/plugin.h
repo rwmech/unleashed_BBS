@@ -86,7 +86,8 @@ struct Command;
 //   1.0  1.2.0: the first numbered API. Bbs::callSecondsLeft; the link's
 //        families (plugins/link.h).
 //   1.1  1.2.0-link.13: photos::fileAs, freeName and kLater (a picture whose
-//        name another camera took in the same second).
+//        name another camera took in the same second); photos::Budget's
+//        perHour and perDay (link.14, CONFIG photos' limits).
 //
 // A plugin says what it was written against, in one of its sources:
 //   UNLEASHED_PLUGIN_API(1, 0);

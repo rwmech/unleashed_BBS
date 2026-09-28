@@ -157,6 +157,21 @@ int main() {
     ::check("\"the next one is allowed at\" is the oldest in the window plus the hour",
             !v.ok && v.nextAt == T0 + 3600);
 
+    printf("Limits the board sets (CONFIG photos, 1.2.0): 3 an hour, 5 a day\n");
+    Window w3;
+    for (int i = 0; i < 3; ++i) record(w3, T0 + i * 60);
+    v = check(w3, T0 + 300, 3, 5);
+    ::check("the fourth in the hour is refused at 3", !v.ok && !v.byDay && v.hour == 3);
+    ::check("and allowed an hour after the first", v.nextAt == T0 + 3600);
+    for (int i = 0; i < 2; ++i) record(w3, T0 + 7200 + i * 60);
+    v = check(w3, T0 + 7200 + 300, 3, 5);
+    ::check("the sixth in the day is refused at 5, by the day", !v.ok && v.byDay && v.day == 5);
+    ::check("until a day after the day's first", v.nextAt == T0 + 86400);
+    v = check(w3, T0 + 7200 + 300, 3, 0);
+    ::check("a day limit of 0 is read as 1, never as none", !v.ok && v.byDay);
+    v = check(w3, T0 + 7200 + 300, 50, 50);
+    ::check("and one past the window's 20 as 20", v.ok && v.day == 5);
+
     printf("Retention\n");
     auto items = [](std::vector<Item> v) { sortByKey(v.data(), v.size()); return v; };
     Policy pol[2] = { { 30, 0 }, { 7, 0 } };

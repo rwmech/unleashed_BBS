@@ -607,10 +607,12 @@ Budget budget(const Session& s, uint32_t now) {
     uint8_t kind[2]; uint32_t key[2];
     const uint8_t n = whoKeys(s, kind, key);
     Budget v;
+    v.perHour = syscfg::get().photosPerHour;
+    v.perDay  = syscfg::get().photosPerDay;
     for (uint8_t i = 0; i < n; ++i) {
         Who* w = whoSlot(kind[i], key[i], now, false);
         if (!w) continue;
-        const camrules::Verdict x = camrules::check(w->w, now);
+        const camrules::Verdict x = camrules::check(w->w, now, v.perHour, v.perDay);
         if (x.hour > v.hour) v.hour = x.hour;
         if (x.day > v.day)   v.day = x.day;
         if (!x.ok && (v.ok || x.nextAt > v.nextAt)) { v.nextAt = x.nextAt; v.byDay = x.byDay; }
