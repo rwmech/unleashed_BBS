@@ -264,6 +264,13 @@ test_calllog: test_calllog.cpp ../src/core/calllog.cpp ../src/core/calllog.h
 test_silent: test_silent.cpp ../src/core/silent.h
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_silent.cpp
 
+# CONFIG photos' keys against the camera's old lines (1.2.0-link.15): a
+# photos_ line wins over [plugin:camera]'s keep, max, floor, tl_keep and
+# tl_max in either order in the file, and an old line stands in only where
+# the file has no photos_ line. syscfg::parseFile alone, on a temporary file.
+test_photos_cfg: test_photos_cfg.cpp ../src/core/sysconfig.cpp ../src/core/sysconfig.h
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_photos_cfg.cpp ../src/core/sysconfig.cpp
+
 # The camera's rules and its watermark (1.1.0): names, limits, retention,
 # the timelapse's schedule, the download offer, the JPEG comment, and the
 # watermark drawn a strip at a time, all with no sensor and no card.
@@ -305,7 +312,7 @@ formats:
 	@python3 ../tools/check_formats.py --self-test
 	@python3 ../tools/check_formats.py ../src
 
-test: licence formats test_link test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera test_sshlink
+test: licence formats test_link test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera test_photos_cfg test_sshlink
 	./test_link
 	./test_xmodem
 	./test_wrap
@@ -321,10 +328,11 @@ test: licence formats test_link test_xmodem test_wrap test_forums_ptr test_compo
 	./test_calllog
 	./test_silent
 	./test_camera
+	./test_photos_cfg
 	./test_sshlink
 
 clean:
 	rm -rf wolfobj libwolfssh_host.a ssh_call test_sshlink
-	rm -f bbs_host bbs_host_s3 bbs_host_fncam bbs_host_espcam bbs_host_ext linkpeer test_link test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera
+	rm -f bbs_host bbs_host_s3 bbs_host_fncam bbs_host_espcam bbs_host_ext linkpeer test_link test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera test_photos_cfg
 
 .PHONY: clean test licence formats FORCE mbedtls-check

@@ -1122,10 +1122,17 @@ pic_gamma  = 1.0        ; 0.6 | 0.7 | 0.8 | 0.9 | 1.0 | 1.1 | 1.2 | 1.4 | 1.6
   rows at most, so a folder kept under that stays listable whole). The
   floor, empty as shipped, is a tenth of the card, 512 MB at most; a number
   is exact. While the card is under it, the oldest photos are removed to
-  make room, the timelapse's before the callers'. **Nothing that is not exactly a photo the camera
-  wrote** (`PREFIX-YYYYMMDD-HHMMSS.JPG`, its own prefix or a system
-  folder's) is ever counted or touched, so a sysop's own files on the card
-  are never at risk. If removing every photo the camera owns still would not
+  make room, the timelapse's before the callers'. **It applies to every
+  camera's photos** since 1.2.0-link.15, a camera sat's included: the board
+  prunes Photos itself, in the background, after any picture is filed, when
+  a camera starts, when these settings change, and once a day. A sat's
+  `motion/` pictures (`MO-`) are the board's own shots too: kept by the
+  timelapse's days and count until they have settings of their own, and
+  first to go for the floor. A sat, like the built-in camera, takes no
+  picture while the card is under its floor. **Nothing that is
+  not exactly a photo a camera wrote** (`PREFIX-YYYYMMDD-HHMMSS.JPG`, its
+  own prefix or a system folder's) is ever counted or touched, so a sysop's
+  own files on the card are never at risk. If removing every photo the camera owns still would not
   reach the floor, none of them is removed for it: `SNAPSHOT` is refused
   instead (`The card is too full for another photo.`) until space is freed
   some other way.

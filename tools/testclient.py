@@ -2365,6 +2365,18 @@ def test_sats():
         ok &= check("CONFIG sat <name> opens that sat's page, in any case",
                     p.wait_for(b"SHELF", 5) and p.wait_for(b"Satellite name", 5))
         p.pump(0.3)
+        # The door box the radio tests paired is called "shelf" too, and a
+        # name opens the first sat that has it: after the radio group that is
+        # the door's page, which has no camera settings. The camera's own
+        # page by its number (5, set above). Saving a sat's page goes back to
+        # CONFIG sats, which asks its own questions: both are walked out.
+        finish_line_form(p)
+        finish_line_form(p)
+        drain(p)
+        p.buf.clear()
+        p.send(b"config sat 5\r")
+        p.wait_for(b"Satellite name", 5)
+        p.pump(0.3)
         # Name, number, timelapse, motion; then Y at Camera settings.
         for a in [b"", b"", b"", b""]:
             p.send(a + b"\r")
@@ -6149,8 +6161,8 @@ def test_photos_config():
                     cfg_sec_line("plugin:camera", "tl_max") is None and
                     cfg_sec_line("plugin:camera", "floor") is None)
         # (That a photos_ line wins over an old one put back by hand is the
-        # parser's, and the page reads the file first, so it cannot show it;
-        # it wants a host unit test on syscfg::parseFile. Not written yet.)
+        # parser's, and the page reads the file first, so it cannot show it:
+        # host/test_photos_cfg.cpp tests syscfg::parseFile for it.)
         # The parser's rule, not a copy of it: the hour is 1 to 20.
         ok &= check("CONFIG photos opens a third time", cfg_open(s, b"photos", b"Default"))
         s.buf.clear()
@@ -7771,12 +7783,19 @@ def test_camera():
     ok &= check("staff are told", s.wait_for(b"Node", 3) and b"took a photo" in plain(s.buf))
     ok &= check("the log line names the photo and the times", re.search(r"camera: " + re.escape(name) + r" .* up \d+ ms", host_log()) is not None)
 
-    # CAMERA, staff's view
-    s.buf.clear()
-    s.send(b"camera\r")
-    s.wait_for(b"Card free", 4)
-    s.pump(0.3)
-    cam = plain(s.buf)
+    # CAMERA, staff's view. The count is the photo system's since 1.2.0-
+    # link.15, taken two seconds after the last picture filed (a burst is one
+    # count): asked again until it has this one.
+    until = time.time() + 8
+    while True:
+        s.buf.clear()
+        s.send(b"camera\r")
+        s.wait_for(b"Card free", 4)
+        s.pump(0.3)
+        cam = plain(s.buf)
+        if b"Photos 1" in cam or time.time() > until:
+            break
+        time.sleep(0.5)
     ok &= check("CAMERA: the sensor, the count, the card, the last photo",
                 b"Sensor " + CB["sensor"] + b", up to " + CB["top"] in cam and b"Size " + CB["size"] in cam and b"Photos 1" in cam and
                 b"Last " in cam and b"CamCaller" in cam)
@@ -7907,12 +7926,21 @@ def test_camera():
     if b"Download it now?" in got:
         s.send(b"n")
         s.wait_for(b"kept in the Photos area", 4)
-    time.sleep(0.5)
-    kept = [p for p in photos(card) if not p.startswith("timelapse/")]
+    # The prune is the photo system's own job since 1.2.0-link.15, posted
+    # two seconds after the last picture filed (so a burst is one prune), and
+    # the FILES.BBS tidy a job after it: waited for, not slept past.
+    def pruned():
+        k = [p for p in photos(card) if not p.startswith("timelapse/")]
+        d = (card / "photos" / "FILES.BBS").read_text(errors="replace") if (card / "photos" / "FILES.BBS").exists() else ""
+        return k, d
+    until = time.time() + 10
+    kept, desc = pruned()
+    while time.time() < until and (len(kept) != 2 or (card / "photos" / "CamCaller").exists() or name in desc):
+        time.sleep(0.25)
+        kept, desc = pruned()
     ok &= check(f"max 2: two callers' photos kept ({len(kept)})", len(kept) == 2)
     ok &= check("the sysop's own garden.jpg is never removed", (card / "photos" / "garden.jpg").exists())
     ok &= check("an emptied handle folder goes with its last photo", not (card / "photos" / "CamCaller").exists())
-    desc = (card / "photos" / "FILES.BBS").read_text(errors="replace") if (card / "photos" / "FILES.BBS").exists() else ""
     ok &= check("and a removed photo's FILES.BBS line goes with it", name not in desc)
 
     # The timelapse: the board's own, in its own folder, pruned on its own.
@@ -7924,7 +7952,13 @@ def test_camera():
         tl = [p for p in photos(card) if p.startswith("timelapse/TL-")]
     ok &= check("a timed shot lands in timelapse/ as TL-date", len(tl) == 1)
     time.sleep(11)
+    # The second shot's prune comes two seconds after it is filed (1.2.0-
+    # link.15): waited for.
+    until = time.time() + 8
     tl = [p for p in photos(card) if p.startswith("timelapse/TL-")]
+    while time.time() < until and len(tl) != 1:
+        time.sleep(0.25)
+        tl = [p for p in photos(card) if p.startswith("timelapse/TL-")]
     kept2 = [p for p in photos(card) if not p.startswith("timelapse/")]
     ok &= check("its own count keeps one, and the callers' photos are untouched",
                 len(tl) == 1 and len(kept2) == 2)

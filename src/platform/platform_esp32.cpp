@@ -618,12 +618,17 @@ bool sdList(const char* rel, SdListFn fn, void* ctx) {
     FF_DIR d;
     if (f_opendir(&d, path) != FR_OK) return false;
     FILINFO fi;
-    while (f_readdir(&d, &fi) == FR_OK && fi.fname[0]) {
+    // A read that fails part way is not the end of the folder (1.2.0-link.15:
+    // the photo system's prune never takes a partial folder for a whole one).
+    bool whole = true;
+    for (;;) {
+        if (f_readdir(&d, &fi) != FR_OK) { whole = false; break; }
+        if (!fi.fname[0]) break;
         if (fi.fname[0] == '.') continue;
         if (!fn(ctx, fi.fname, (fi.fattrib & AM_DIR) != 0, static_cast<uint32_t>(fi.fsize))) break;
     }
     f_closedir(&d);
-    return true;
+    return whole;
 }
 
 // ---------------------------------------------------------------------------

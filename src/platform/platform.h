@@ -295,7 +295,8 @@ bool sdSpace(uint64_t& total, uint64_t& freeBytes);
 // FatFs's own directory entry carries the size, so no entry is looked up
 // again (a stat on FAT searches the folder from the top, which made a walk of
 // a thousand photos a million entry reads). Dot entries are left out. False
-// when the folder cannot be opened. The runner's: a big folder is a long
+// when the folder cannot be opened, or a read failed part way (1.2.0-link.15),
+// so a partial folder is never taken for a whole one. The runner's: a big folder is a long
 // read. (The camera's until 1.1.2.)
 using SdListFn = bool (*)(void* ctx, const char* name, bool dir, uint32_t size);
 bool sdList(const char* rel, SdListFn fn, void* ctx);

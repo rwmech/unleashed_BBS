@@ -130,6 +130,56 @@ bool freeName(const char* rel, char* out, size_t cap);
 void abandon(Writer& w);
 
 // ---------------------------------------------------------------------------
+// Keeping Photos in bounds (1.2.0-link.15, Rob: "pruning for every camera").
+// CONFIG photos' retention (photos_keep, photos_max, photos_floor and the
+// timelapse's photos_tl_keep and photos_tl_max) is applied here, to every
+// picture in Photos whichever camera took it, built in or a sat. It was the
+// built-in camera's own survey until link.14, so a board whose only camera
+// was a sat never pruned at all.
+//
+// The rules are camera_rules.h's (choose), unchanged: callers' photos (the
+// Photos folder and its handle folders) are one group; timelapse/ (TL-) and
+// motion/ (MO-) are groups of their own, both kept by the timelapse's
+// limits (motion has none of its own yet), and so is any folder a camera
+// names through systemFolder. Only a name of exactly a camera's shape is
+// ever counted or removed. The floor takes the system groups first.
+//
+// The prune is a job on the background runner, never the loop's (Rule no.
+// 1): the walk of the card, the space figure and the removals are the
+// runner's. The loop only posts it (tick), and reads what it found (tally)
+// once it is done. It runs after every picture filed (fileAs, whichever
+// camera), when a camera starts providing Photos, when CONFIG photos'
+// retention changes, and once a day. FILES.BBS lines of removed photos go
+// through the file areas' queue (files::photoTidy), as before.
+// ---------------------------------------------------------------------------
+struct Tally {
+    uint32_t callers = 0, system = 0;     // photos kept, callers' and the board's own
+    uint64_t callerBytes = 0, systemBytes = 0;
+    uint64_t oldest = 0;                  // nameKey of the oldest kept (YYYYMMDDhhmmss)
+    uint64_t cardTotal = 0, cardFree = 0;
+    uint64_t floor = 0;
+    bool     floorMet = true;             // false: a snap is refused, "too full"
+    bool     known = false;               // a prune has run since the card was seen
+    bool     whole = true;                // the walk saw every photo (a big card may not fit)
+    uint32_t removed = 0;                 // by the last prune
+};
+
+// pruneSoon: a prune is wanted. Any task (fileAs calls it on the runner).
+void pruneSoon();
+// systemFolder: a folder of the board's own shots (camera::snapSystem) as a
+// group of its own, keepDays and maxFiles its limits (0 none). timelapse and
+// motion are always groups, both with CONFIG photos' timelapse limits (the
+// board's own shots), and are not changed by this. False when the table is full. Loop only.
+bool systemFolder(const char* folder, const char* prefix, uint16_t keepDays, uint32_t maxFiles);
+// pruning: a prune is queued or running. Loop only.
+bool pruning();
+// tally: what the last finished prune found. Loop only.
+const Tally& tally();
+// tick: the loop's, from Bbs::tick. Collects a finished prune, posts one
+// that is wanted. Never touches the card.
+void tick(uint32_t now);
+
+// ---------------------------------------------------------------------------
 // The board's cameras (1.2.0, approved 2026-09-26): one SNAPSHOT verb for
 // every camera the board has, built in or on the link. The verbs are the
 // core's (cameras.cpp) and exist while at least one camera is registered:

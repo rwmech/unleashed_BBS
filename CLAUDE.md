@@ -994,6 +994,26 @@ this tree.
       has Camera settings (camsat's page, listed in CONFIG only while off).
       The same-second clash: the next second's stamp, up to five on
       (`photos::fileAs`, `camrules::laterName`); plugin API 1.1.
+    - **Pruning for every camera (photo-names, link.15, Rob's decision
+      2026-09-28).** Retention moved from the camera's survey into
+      `photos::` (Tally, pruneSoon, systemFolder, tally, tick): a job on the
+      runner posted by `photos::tick` from `Bbs::tick`, after every
+      `fileAs`, a new provider, a retention change and once a day, only
+      while something provides Photos. The camera reads `photos::tally()`.
+      motion/ (MO-) is a group of its own kept by the timelapse's limits
+      until CONFIG photos has its own (code review: unlimited, a PIR fills
+      the card in days and every prune gets long). A prune is posted 2 s
+      after the last filing, with the runner free and no registered camera
+      busy (a sat is busy from its ask to its last fragment), never between
+      two slices of a transfer; its FILES.BBS tidies go to the file areas'
+      queue from the loop as it has room, one slot kept for a description
+      (`files::photoEditRoom`); camsat refuses under the floor (API 1.2). The removal pass matches a photo by its folder's name, not
+      its place in the card's list; a walk that could not see every photo
+      judges the floor by the card's free space. Unit test
+      `host/test_photos_cfg.cpp` (the `photos_` line wins). Static DRAM off
+      the ELF: WROOM 165,656 (15,080 free, +504 on link.14), Freenove
+      176,544 (4,192 free, +56), ESP32-CAM 177,952 (2,784 free), S3 256,000
+      of 341,760 (+504).
 - **1.1.2 scope, decided by Rob 2026-09-26** (discussed before coding):
   - A read-only audit first of every path that can hold the loop over
     50 ms (internal/audit-1.1.2-2026-09-26.md); the worst move onto one

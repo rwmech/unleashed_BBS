@@ -55,8 +55,9 @@ bool running();
 // running(): a board whose camera will not start does not claim the badge.
 bool found();
 
-// busy: a picture is being taken or written, or old ones removed. The
-// card is in use by the camera's worker until this is false.
+// busy: a picture is being taken or written. The card is in use by the
+// camera's worker until this is false. (Old photos are removed by the photo
+// system's own job since 1.2.0-link.15: runner::busy covers it.)
 bool busy();
 
 // photosLevels: who may see and download photos (CONFIG camera, Photos),
@@ -66,10 +67,12 @@ void photosLevels(PlugLevel& see, PlugLevel& remove);
 // snapSystem: a picture the board takes by itself, into Photos/<folder>/ as
 // <PREFIX>-YYYYMMDD-HHMMSS.JPG, kept for keepDays days (0 forever) and at
 // most maxFiles of them (0 no limit), pruned on its own so a fast series
-// can never take a caller's photos with it. The timelapse is
-// snapSystem("timelapse", "TL", ...); a motion sensor would be
-// snapSystem("motion", "MO", ...). Folder and prefix are short plain
-// words. False, doing nothing, when the camera is busy, off or has no card:
+// can never take a caller's photos with it (photos::systemFolder, the photo
+// system's pruning for every camera). The timelapse is
+// snapSystem("timelapse", "TL", ...) and a motion sensor's
+// snapSystem("motion", "MO", ...): those two are always groups,
+// both with CONFIG photos' timelapse limits, whatever is passed here.
+// Folder and prefix are short plain words. False, doing nothing, when the camera is busy, off or has no card:
 // a system shot that finds the camera busy is simply skipped.
 bool snapSystem(const char* folder, const char* prefix, uint16_t keepDays, uint32_t maxFiles);
 

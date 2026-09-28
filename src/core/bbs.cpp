@@ -47,6 +47,7 @@
 #include "clock.h"
 #include "sysconfig.h"
 #include "calllog.h"
+#include "photos.h"            // retention for every camera, on the runner (1.2.0)
 #include "plugin.h"
 #include "recovery.h"
 #include "silent.h"
@@ -561,6 +562,7 @@ void Bbs::tick() {
     plat::activityTick(now);
     space::tick();                   // a free-space measure the runner finished (1.1.2)
     calllog::mirrorTick();           // the caller log's card copy, on the runner (1.1.2)
+    photos::tick(now);               // Photos kept in bounds, for every camera: the runner prunes (1.2.0)
     board::silentTick(now);          // the switch and the hours: a compare, and a look once a second
     heapWatch(now);
     serviceShutdown(now);
