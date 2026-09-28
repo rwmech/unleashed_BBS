@@ -35,6 +35,8 @@
 #                              (bbs_host_fncam), with --only=board_fncam
 #                 --board espcam the AI-Thinker ESP32-CAM profile
 #                              (bbs_host_espcam), with --only=board_espcam
+#                 --board wseth  the Waveshare ESP32-S3-ETH profile
+#                              (bbs_host_wseth), with --only=board_wseth
 #
 #                 --changed RANGE   work out --only from what a git range
 #                              touched, instead of naming it by hand. RANGE
@@ -161,7 +163,8 @@ while [ $# -gt 0 ]; do
                 s3)    BIN=bbs_host_s3;    export BBS_HOST_BOARD=s3 ;;
                 fncam) BIN=bbs_host_fncam; export BBS_HOST_BOARD=fncam ;;
                 espcam) BIN=bbs_host_espcam; export BBS_HOST_BOARD=espcam ;;
-                *)  echo "harness: no board profile called $2 (s3, fncam, espcam)"; exit 2 ;;
+                wseth) BIN=bbs_host_wseth; export BBS_HOST_BOARD=wseth ;;
+                *)  echo "harness: no board profile called $2 (s3, fncam, espcam, wseth)"; exit 2 ;;
             esac
             shift 2 ;;
         # A board as it leaves the web installer: no staff passwords in its

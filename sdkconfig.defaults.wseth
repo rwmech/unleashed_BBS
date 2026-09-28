@@ -1,0 +1,85 @@
+# ===========================================================================
+#  unleashed BBS
+#  Electronic freedom on a microcontroller.
+# ===========================================================================
+#
+# File:         sdkconfig.defaults.wseth
+# Module:       Build / ESP-IDF defaults, Waveshare ESP32-S3-ETH layer
+#
+# Purpose:      What the Waveshare ESP32-S3-ETH build (ETH 1.0.0) changes
+#               from sdkconfig.defaults and sdkconfig.defaults.esp32s3.
+#               platformio.ini names this file for the board's environments
+#               through SDKCONFIG_DEFAULTS (board_build.cmake_extra_args).
+#               IDF 5.3.1 reads each listed file's ".esp32s3" twin straight
+#               after it (tools/cmake/kconfig.cmake), so the list
+#               "sdkconfig.defaults;sdkconfig.defaults.wseth" is read as
+#               sdkconfig.defaults, sdkconfig.defaults.esp32s3 (the S3's
+#               PSRAM, console and Wi-Fi buffers, shared with the stick),
+#               then this file, which wins.
+#
+#               Not an sdkconfig.defaults.esp32s3 edit: that file reaches
+#               the Waveshare stick too, and this board's W5500 and camera
+#               are nothing to do with it.
+#
+#               PlatformIO only watches sdkconfig.defaults for changes:
+#               delete sdkconfig.ws_s3eth* after editing here, and check the
+#               generated file. A value outside its Kconfig range is
+#               discarded, not clamped.
+#
+# Targets:      ESP32-S3 (ESP-IDF 5.3.1)
+# See also:     sdkconfig.defaults.esp32s3, platformio.ini, src/board.h,
+#               release-prep/wseth/pins.md
+#
+# Copyright 2026 - Robert Mech
+# License:      GNU General Public License v3 or later
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 3 of the License, or (at your
+# option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program. If not, see <https://www.gnu.org/licenses/>. The full
+# text is in the LICENSE file at the top of this repository.
+# ===========================================================================
+
+# The W5500's driver: in IDF 5.3.1's own esp_eth (components/esp_eth/src/
+# spi/w5500), off by default. SPI Ethernet support itself is already on in
+# every build (ETH_USE_SPI_ETHERNET defaults to y); this is the one chip.
+CONFIG_ETH_SPI_ETHERNET_W5500=y
+
+# An address DHCP takes back while the cable stays in (a NAK, a lease run
+# out) is reported lost after this many seconds, and only then does Wi-Fi
+# take over (main.cpp, ethWatch). The IDF's 120 would leave the board dark
+# for two minutes; 10 is past a lease renewal's own retries on a LAN.
+CONFIG_ESP_NETIF_IP_LOST_TIMER_INTERVAL=10
+
+# The camera driver (espressif/esp32-camera) with the sensors this board is
+# sold with. Every sensor is on by default and their register tables are
+# initialised data (the Freenove's plan measured all seventeen at 9,800
+# bytes of static DRAM against 1,768 for the OV2640 alone). The bench's
+# board carries an OV2640; Waveshare's wiki and factory demo name the
+# OV5640 as the camera it is sold with too, so both.
+CONFIG_OV7670_SUPPORT=n
+CONFIG_OV7725_SUPPORT=n
+CONFIG_NT99141_SUPPORT=n
+CONFIG_OV2640_SUPPORT=y
+CONFIG_OV3660_SUPPORT=n
+CONFIG_OV5640_SUPPORT=y
+CONFIG_GC2145_SUPPORT=n
+CONFIG_GC032A_SUPPORT=n
+CONFIG_GC0308_SUPPORT=n
+CONFIG_BF3005_SUPPORT=n
+CONFIG_BF20A6_SUPPORT=n
+CONFIG_SC101IOT_SUPPORT=n
+CONFIG_SC030IOT_SUPPORT=n
+CONFIG_SC031GS_SUPPORT=n
+CONFIG_HM1055_SUPPORT=n
+CONFIG_HM0360_SUPPORT=n
+CONFIG_MEGA_CCM_SUPPORT=n

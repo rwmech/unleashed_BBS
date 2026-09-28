@@ -275,7 +275,7 @@ bool pinExists(long pin) {
 // card slot, its PSRAM. Only a profile that names them has any, so the
 // reference board's rule is the chip's alone.
 #if defined(BBS_PINS_PSRAM) || defined(BBS_PINS_CONSOLE) || defined(BBS_PINS_CARD) || \
-    defined(BBS_PINS_CAMERA) || defined(BBS_PINS_STRAP)
+    defined(BBS_PINS_CAMERA) || defined(BBS_PINS_STRAP) || defined(BBS_PINS_ETH)
 #define BBS_HAS_BOARD_PINS 1
 struct BoardPins { const int8_t* pins; uint8_t count; const char* problem; const char* sentence; };
 #ifdef BBS_PINS_PSRAM
@@ -292,6 +292,9 @@ constexpr int8_t kPinsCamera[]  = { BBS_PINS_CAMERA };
 #endif
 #ifdef BBS_PINS_STRAP
 constexpr int8_t kPinsStrap[]   = { BBS_PINS_STRAP };
+#endif
+#ifdef BBS_PINS_ETH
+constexpr int8_t kPinsEth[]     = { BBS_PINS_ETH };
 #endif
 #define BBS_PINROW(a, p, s) { a, static_cast<uint8_t>(sizeof(a)), p, s }
 // Both columns fit a form's status line: a core key shows the problem
@@ -311,6 +314,9 @@ constexpr BoardPins kBoardPins[] = {
 #endif
 #ifdef BBS_PINS_STRAP
     BBS_PINROW(kPinsStrap,   "a strapping pin, low at boot",        "That is a strapping pin."),
+#endif
+#ifdef BBS_PINS_ETH
+    BBS_PINROW(kPinsEth,     "that pin is the Ethernet chip's",     "That pin is the Ethernet chip's."),
 #endif
 };
 #undef BBS_PINROW
@@ -490,6 +496,9 @@ void keyValue(Ctx& c, const char* key, char* val) {
         if (c.problems == before) g.closedSet = true;
     }
     else if (!strcmp(key, "cgnat_local"))           yesNo(c, key, val, g.cgnatLocal);
+#ifdef BBS_HAS_ETH
+    else if (!strcmp(key, "ethernet"))              yesNo(c, key, val, g.ethernet);
+#endif
     else if (!strcmp(key, "silent_from") || !strcmp(key, "silent_until")) {
         // A form is told (a writer's trial); a file is read as no time and
         // the console says so, for the reason crossCheck gives below.

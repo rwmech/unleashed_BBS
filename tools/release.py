@@ -66,6 +66,9 @@ Design:       Each release environment (esp32dev_release, ws_s3_lcd147_release,
 Usage:        python3 tools/release.py                build and check
               python3 tools/release.py --allow-dirty  from a working tree
               python3 tools/release.py --tag v1.0.0   the tag must match
+              python3 tools/release.py --board esp32s3-eth
+                                                      one set only, the way a
+                                                      "tag_only" board is built
 
 Libraries:    Python 3 standard library; PlatformIO on the PATH
 Targets:      developer PC, GitHub Actions (ubuntu-latest)
@@ -127,6 +130,15 @@ BUILDS = (
     # WROOM's or the Freenove's, so no other set is a safe guess for it.
     {"dir": "esp32-cam", "env": "esp32cam_aithinker_release", "family": "ESP32", "boot": 0x1000,
      "board": "BBS_BOARD_AI_ESP32CAM", "table": "partitions.csv"},
+    # The Waveshare ESP32-S3-ETH (ETH 1.0.0, 1.1.2). chipFamily ESP32-S3,
+    # the stick's, so the site's picker asks which board: the stick's image
+    # here would drive its panel's pins into this board's camera bus, and
+    # this one's would bring the W5500 up on the stick's SD and panel pins.
+    # "tag_only": left out of an ordinary release, and built only when named
+    # (--board esp32s3-eth, for a board pre-release), until the profile
+    # merges into a release and loses the flag.
+    {"dir": "esp32s3-eth", "env": "ws_s3eth_release", "family": "ESP32-S3", "boot": 0x0,
+     "board": "BBS_BOARD_WS_S3ETH", "table": "partitions_s3.csv", "tag_only": True},
 )
 
 # Offsets every table keeps, because ESP-IDF and PlatformIO put them there
@@ -408,15 +420,23 @@ def main():
     ap.add_argument("--allow-dirty", action="store_true",
                     help="build from a working tree with uncommitted changes")
     ap.add_argument("--tag", help="the git tag being released; must be v<BBS_VERSION>")
+    ap.add_argument("--board", help="build only this set (a BUILDS dir, such as esp32s3-eth): "
+                                    "how a tag_only board is built, locally or for a board pre-release")
     a = ap.parse_args()
 
     ver = version()
     if a.tag and a.tag != f"v{ver}":
         die(f"tag {a.tag} does not match BBS_VERSION {ver}")
+    # A "tag_only" set is never in an ordinary release: only asked for by name.
+    builds = [b for b in BUILDS if (b["dir"] == a.board if a.board else not b.get("tag_only"))]
+    if not builds:
+        die(f"no set called {a.board}; the sets are {', '.join(b['dir'] for b in BUILDS)}")
+    # One set's run writes a folder of its own, never over the full release's.
+    relname = f"{ver}-{a.board}" if a.board else ver
     dirty = git("status", "--porcelain", "--untracked-files=no")
     if dirty and not a.allow_dirty:
         die("the working tree has uncommitted changes; commit, or --allow-dirty to test")
-    for b in BUILDS:
+    for b in builds:
         b["parts"] = check_partitions(b["table"])
     check_notices()
     check_formats()
@@ -436,7 +456,7 @@ def main():
     # Every family's five parts, built and checked before anything is
     # written: a release is all of its families or none of them.
     families = []
-    for b in BUILDS:
+    for b in builds:
         pio("run", "-e", b["env"], env=env)
         pio("run", "-e", b["env"], "-t", "buildfs", env=env)
         build = ROOT / ".pio" / "build" / b["env"]
@@ -478,7 +498,7 @@ def main():
         if b"sysop_password" in blobs["storage.bin"]:
             die(f"{b['dir']}/storage.bin carries a system.cfg; the screens image must be screens only")
 
-    out = ROOT / "release" / ver
+    out = ROOT / "release" / relname
     if out.exists():
         shutil.rmtree(out)
     assets = out / "assets"
@@ -511,11 +531,11 @@ def main():
     commit = git("rev-parse", "--short", "HEAD") + ("-dirty" if dirty else "")
     write(install / "release.txt", f"version {ver}\ncommit {commit}\n", "ascii")
 
-    print(f"release {ver} ({commit})")
+    print(f"release {relname} ({commit})")
     for line in sums:
         print("  " + line)
     print(f"assets:  {assets}")
-    print(f"install: {install}  (copy to firmware/{ver}/ on the directory server)")
+    print(f"install: {install}  (copy to firmware/{relname}/ on the directory server)")
 
 
 if __name__ == "__main__":

@@ -46,6 +46,8 @@ sdkconfig.*
 !sdkconfig.defaults.fncam
 # The AI-Thinker ESP32-CAM's layer, named to it in platformio.ini (1.1.1).
 !sdkconfig.defaults.espcam
+# The Waveshare ESP32-S3-ETH's layer, named to it in platformio.ini (1.1.2).
+!sdkconfig.defaults.wseth
 include/secrets.h
 data/system.cfg
 data/calls.log

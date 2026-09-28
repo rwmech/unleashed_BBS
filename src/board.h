@@ -467,6 +467,144 @@
 #endif  // BBS_BOARD_AI_ESP32CAM
 
 // ===========================================================================
+// Waveshare ESP32-S3-ETH (ETH 1.0.0, 1.1.2)
+//
+// ESP32-S3R8 (read as revision v0.2 on the bench: 8 MB octal PSRAM in the
+// package), a 16 MB W25Q128 beside it, native USB only (USB-C to GPIO 19
+// and 20), a WIZnet W5500 10/100 Ethernet controller on SPI with an RJ45, a
+// 24-pin DVP camera connector (an OV2640 on the bench's board), a TF slot
+// wired for SPI, one WS2812B, a BOOT button on GPIO 0, and a header for an
+// optional PoE module (not fitted on the bench's). No display.
+//
+// Every pin is from Waveshare's schematic (ESP32-S3-ETH-Schematic.pdf,
+// 2024-12-21, net names quoted in release-prep/wseth/pins.md) and checked
+// against their wiki's tables and the factory image the board shipped with
+// (an Arduino 2.0.11 build of their ESP32-S3-ETH-Camera demo, read off the
+// board before the first flash).
+//
+// The camera's power is switched: GPIO 8 drives the gate of a P-channel
+// MOSFET (Q3, APM2307) through 1 MΩ, with 10 MΩ pulling it up, so the
+// camera's 2.8 V and 1.5 V regulators are off until GPIO 8 is driven low.
+// That is exactly what esp32-camera's PWDN line does (high, then low, at
+// every bring-up), so the pin is the camera's PWDN here. The OV2640's own
+// PWDN is tied low on the board and its RESET is an RC on the board.
+// ===========================================================================
+#if defined(BBS_BOARD_WS_S3ETH)
+
+#if defined(ESP_PLATFORM) && !CONFIG_IDF_TARGET_ESP32S3
+#error "BBS_BOARD_WS_S3ETH is an ESP32-S3 board: build it for the esp32s3 target"
+#endif
+#if defined(BBS_BOARD_WS_S3LCD147) || defined(BBS_BOARD_FN_WROVER_CAM) || defined(BBS_BOARD_AI_ESP32CAM)
+#error "one board profile at a time"
+#endif
+#ifndef BBS_CHIP_S3
+#define BBS_CHIP_S3 1                 // the host's stand-in
+#endif
+
+#define BBS_BOARD_NAME        "Waveshare ESP32-S3-ETH"
+#define BBS_BOARD_PLUGINS     1       // the camera
+
+#define BBS_BOARD_TAG         "ETH"
+#define BBS_BOARD_VERSION     "1.0.0"
+
+// PSRAM (sdkconfig.defaults.esp32s3: octal, as on the S3 stick). A build
+// that lost the layer would otherwise link quietly without it.
+#define BBS_HAS_PSRAM         1
+#if defined(ESP_PLATFORM) && !CONFIG_SPIRAM
+#error "BBS_BOARD_WS_S3ETH needs PSRAM: sdkconfig.defaults.esp32s3 was not applied (delete sdkconfig.ws_s3eth*)"
+#endif
+
+// SSH as on the Waveshare S3 stick: the same chip, the same PSRAM.
+#define BBS_HAS_SSH           1
+#define BBS_SSH_MAX           8
+// The internal heap a plugin may not take at start, as on the stick.
+#define BBS_HEAP_RESERVE      16384
+
+// Ethernet (1.1.2, this board only): the W5500 on SPI3, the primary
+// interface, with Wi-Fi as the fallback (main.cpp, "Ethernet first").
+//   BBS_ETH_SPI_HOST  the SPI host, SPI3: the card is on SPI2 (the sd
+//                     plugin's SDSPI_HOST_DEFAULT), on pins of its own
+//   BBS_ETH_MHZ       the SPI clock. The W5500's datasheet guarantees 33.3
+//                     and IDF's own example runs 16 to 36; 20 is inside
+//                     both, and a 10/100 link is the limit, not the bus
+#if defined(ESP_PLATFORM) && !CONFIG_ETH_SPI_ETHERNET_W5500
+#error "BBS_BOARD_WS_S3ETH needs the W5500 driver: sdkconfig.defaults.wseth was not applied (delete sdkconfig.ws_s3eth*)"
+#endif
+#define BBS_HAS_ETH           1
+#define BBS_ETH_SPI_HOST      2       // SPI3_HOST
+#define BBS_ETH_MHZ           20
+#define BBS_ETH_MOSI          11
+#define BBS_ETH_MISO          12
+#define BBS_ETH_SCLK          13
+#define BBS_ETH_CS            14
+#define BBS_ETH_INT           10
+#define BBS_ETH_RST           9
+
+// No plain LED: the W5500 drives the RJ45's LINK and ACT lamps itself, and
+// GPIO 2 (the reference board's LED) is the camera's HREF here.
+#define BBS_LED_GPIO          -1
+
+// The lights plugin on the board's WS2812B (RGB_DIN, GPIO 21 through R15),
+// on from the first boot because the pixel is on the board. GRB, the part's
+// own order, until LIGHTS TEST on the bench says otherwise.
+#define BBS_LIGHTS_ON         1
+#define BBS_LIGHTS_DRIVE_PIN  21
+
+// The TF slot over SPI, the schematic's nets: SD_CS GPIO 4 (through R7),
+// SD_MOSI 6 (the slot's CMD), SD_CLK 7, SD_MISO 5 (its D0), each pulled up
+// with 10 kΩ. D1 and D2 are not wired, so SPI (or SDMMC one-bit) is all the
+// slot can do. Its own pins: nothing shared with the W5500.
+#define BBS_HAS_SD_SLOT       1
+#define BBS_SD_CS             4
+#define BBS_SD_MOSI           6
+#define BBS_SD_CLK            7
+#define BBS_SD_MISO           5
+
+// The serial bridge on header GPIO 16 (RX) and 17 (TX), the reference
+// board's own numbers, off until enabled. Not 43 and 44: UART0, where the
+// ROM prints its banner at every reset. GPIO 16 is also the camera's VSYNC
+// if R29 is fitted instead of R19 (it is not, on the boards Waveshare ship).
+
+// The camera. The schematic's Y2 to Y9 are the driver's D0 to D7.
+#define BBS_HAS_CAMERA        1
+#define BBS_CAM_SENSOR        "OV2640"
+#define BBS_CAM_SIZES         "qvga|vga|svga|xga|hd|sxga|uxga"
+#define BBS_CAM_SIZE          3       // xga
+#define BBS_CAM_FLASH_PIN     -1      // no flash LED on this board
+#define BBS_CAM_FLASH         0
+#define BBS_CAM_PWDN          8       // the camera's power switch, see above
+#define BBS_CAM_PWDN_IS_POWER 1       // so camClose drives it high: the camera off between snaps
+#define BBS_CAM_RESET         -1
+#define BBS_CAM_XCLK          3
+#define BBS_CAM_SIOD          48
+#define BBS_CAM_SIOC          47
+#define BBS_CAM_D7            18      // Y9
+#define BBS_CAM_D6            15      // Y8
+#define BBS_CAM_D5            38      // Y7
+#define BBS_CAM_D4            40      // Y6
+#define BBS_CAM_D3            42      // Y5
+#define BBS_CAM_D2            46      // Y4
+#define BBS_CAM_D1            45      // Y3
+#define BBS_CAM_D0            41      // Y2
+#define BBS_CAM_VSYNC         1       // through R19
+#define BBS_CAM_HREF          2
+#define BBS_CAM_PCLK          39
+
+// Pins the board owns (syscfg::pinProblem refuses them with the reason).
+// 26 to 37 (flash and octal PSRAM) and 19, 20 (USB) are the S3's rule. The
+// card's four are the sd plugin's settings, held by it as on the WROOM. What
+// is left for a sysop: 0 (BOOT), 16, 17, 21 (the pixel), 43 and 44. The
+// core's two pin keys (activity_led_gpio, backup_button_gpio) are held to
+// 0-39 on every chip, so 43 and 44 are for the plugins' pins only.
+#define BBS_PINS_ETH          BBS_ETH_MOSI, BBS_ETH_MISO, BBS_ETH_SCLK, BBS_ETH_CS, \
+                              BBS_ETH_INT, BBS_ETH_RST
+#define BBS_PINS_CAMERA       BBS_CAM_PWDN, BBS_CAM_XCLK, BBS_CAM_SIOD, BBS_CAM_SIOC, BBS_CAM_D7, \
+                              BBS_CAM_D6, BBS_CAM_D5, BBS_CAM_D4, BBS_CAM_D3, BBS_CAM_D2, \
+                              BBS_CAM_D1, BBS_CAM_D0, BBS_CAM_VSYNC, BBS_CAM_HREF, BBS_CAM_PCLK
+
+#endif  // BBS_BOARD_WS_S3ETH
+
+// ===========================================================================
 // The reference board, the bare ESP32-WROOM-32E: every default a profile
 // did not set. These are the values the WROOM has always had, so a build
 // with no profile is byte for byte what it was.

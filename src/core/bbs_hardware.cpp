@@ -109,6 +109,9 @@ enum : uint16_t {
     HC_LCD    = 0x0004,
     HC_LIGHTS = 0x0008,
     HC_GBSHIFT = 4,                                // bits 4-7: log2 of the GB
+    HC_ETHLINK = 0x0100,                           // the wired port has a link (1.1.2)
+    HC_ETH100  = 0x0200,                           // at 100 Mb/s
+    HC_ETHON   = 0x0400,                           // the chip was started (not ethernet = no)
 };
 
 uint16_t capsNow() {
@@ -127,6 +130,12 @@ uint16_t capsNow() {
     if (plugins::running(plugins::indexOf("panel"))) c |= HC_LCD;
 #endif
     if (lights::wired()) c |= HC_LIGHTS;          // a pin, not just the plugin on
+#ifdef BBS_HAS_ETH
+    const plat::EthInfo e = plat::ethInfo();
+    if (e.started) c |= HC_ETHON;
+    if (e.link) c |= HC_ETHLINK;
+    if (e.link && e.mbps >= 100) c |= HC_ETH100;
+#endif
     return c;
 }
 
@@ -147,6 +156,13 @@ void capabilities(char* out, size_t n, uint16_t caps) {
         if (len >= n) len = n - 1;                  // cut, never past the end
     };
     char item[48];
+#ifdef BBS_HAS_ETH
+    // The wired port first (1.1.2): it is what callers come in on. Named
+    // with no link too, as the card slot is named empty: it is the board's.
+    if (caps & HC_ETHLINK)     add((caps & HC_ETH100) ? "Ethernet 100 Mb/s" : "Ethernet 10 Mb/s");
+    else if (caps & HC_ETHON)  add("Ethernet, no link");
+    else                       add("Ethernet, off");
+#endif
 #ifdef BBS_SD_SDMMC1
     const char* bus = "SDMMC";
 #else

@@ -56,6 +56,9 @@
 #if defined(BBS_HAS_SSH) && BBS_HAS_SSH
 #include <sys/eventfd.h>
 #endif
+#ifdef BBS_HAS_ETH
+#include <arpa/inet.h>             // htonl: the host Ethernet's address
+#endif
 
 namespace {
 std::string g_fsBase   = "../data";
@@ -282,8 +285,41 @@ NetInfo netInfo() {
         n.channel = 1;
         n.valid   = true;
     }
+#ifdef BBS_HAS_ETH
+    const EthInfo e = ethInfo();
+    n.ethLink = e.link;
+    n.ethFull = e.full;
+    n.ethMbps = e.mbps;
+    if (e.up) {
+        n.onEth = true;
+        snprintf(n.ip, sizeof(n.ip), "127.0.0.1");
+    }
+#endif
     return n;
 }
+
+#ifdef BBS_HAS_ETH
+// Ethernet on the host (1.1.2, the ESP32-S3-ETH profile): a wire at 100 Mb/s
+// full duplex with an address, which is how the board runs on a LAN. The
+// environment plays the other cases for the tests: BBS_HOST_ETH=nolink (no
+// cable), noip (a link and no DHCP answer), off (as ethernet = no leaves it).
+bool ethBegin(const char*) { return true; }
+
+EthInfo ethInfo() {
+    EthInfo i;
+    const char* v = getenv("BBS_HOST_ETH");
+    if (v && !strcmp(v, "off")) return i;
+    i.started = true;
+    if (v && !strcmp(v, "nolink")) return i;
+    i.link = true;
+    i.full = true;
+    i.mbps = 100;
+    if (v && !strcmp(v, "noip")) return i;
+    i.up = true;
+    i.ip = htonl(0x7F000001u);
+    return i;
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // fsInfo: the host has a whole disk, so pretend it is the board's storage
