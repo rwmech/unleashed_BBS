@@ -24,16 +24,26 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
-## 1.1.2 (MF35 1.1.0), 2026-09-28, hardware preview
+## 1.1.2 (MF35 1.1.1), 2026-09-28, hardware preview
 
 The Makerfabs board on the 1.1.2 core, for the combined
 `v1.1.2-hardware-preview`. The core is 1.1.2 unchanged apart from one
 missing include; every other board's image is the one 1.1.2 shipped.
-**Not on hardware**: built and code-reviewed only, the board being offline.
-It has not been through the full regression.
+**On hardware**: a bench smoke test on the v1.0 board (boot, Wi-Fi, telnet,
+SSH on 6422 and 6400, HARDWARE, PANEL, the card). It has not been through
+the full regression.
+
+- **MF35 1.1.1: the SD card mounts again.** 1.1.0 on the bench said "no
+  card: not enough memory" with 1.7 MB of PSRAM free. The IDF's VFS table
+  holds 8, and this board fills it with two consoles (UART0 and the USB
+  secondary), lwIP's sockets, three LittleFS partitions and SSH's eventfd,
+  so the card's FAT was the ninth; `esp_vfs_register` reports a full table
+  as ESP_ERR_NO_MEM. `sdkconfig.defaults.mf35` sets `CONFIG_VFS_MAX_COUNT`
+  to 12 (16 bytes), and board.h refuses to build on a stale sdkconfig
+  that still says 8.
 
 **The Makerfabs ESP32-S3 Parallel TFT with Touch 3.5" (ILI9488), hardware
-v1.0** (`BBS_BOARD_MF_S3PAR35`, `pio run -e makerfabs_s3_par35`, MF35 1.1.0)
+v1.0** (`BBS_BOARD_MF_S3PAR35`, `pio run -e makerfabs_s3_par35`, MF35 1.1.1)
 - The 1.1.1 preview's profile (MF35 1.0.0, tag `v1.1.1-mf35.1`) brought
   onto 1.1.2 as it was: the N16R2 (16 MB flash, 2 MB quad PSRAM), the CP2104
   console on UART0 (`sdkconfig.defaults.mf35`), the micro SD slot on SPI,

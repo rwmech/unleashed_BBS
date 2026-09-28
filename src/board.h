@@ -286,7 +286,7 @@
 #define BBS_BOARD_PLUGINS     1       // the panel
 
 #define BBS_BOARD_TAG         "MF35"
-#define BBS_BOARD_VERSION     "1.1.0"
+#define BBS_BOARD_VERSION     "1.1.1"
 
 // SSH (1.1.2 core, MF35 1.1.0, a preview), as on the Waveshare S3: the shared
 // port 6400 and ssh_port 6422, host keys in userdata/ssh. Eight at once, the
@@ -307,6 +307,11 @@
 #define BBS_PSRAM_QUAD        1       // pinProblem: 33 to 37 are free on this part
 #if defined(ESP_PLATFORM) && !(CONFIG_SPIRAM && CONFIG_SPIRAM_MODE_QUAD)
 #error "BBS_BOARD_MF_S3PAR35 needs quad PSRAM: sdkconfig.defaults.mf35 was not applied (delete sdkconfig.makerfabs_s3_par35*)"
+#endif
+// Two consoles plus SSH fill the IDF's 8 VFS slots, and the card's FAT then
+// fails to mount (sdkconfig.defaults.mf35). A stale sdkconfig keeps 8.
+#if defined(ESP_PLATFORM) && CONFIG_VFS_MAX_COUNT < 9
+#error "BBS_BOARD_MF_S3PAR35 needs CONFIG_VFS_MAX_COUNT above 8 (sdkconfig.defaults.mf35): delete sdkconfig.makerfabs_s3_par35*"
 #endif
 
 // The Waveshare S3's reserve, for the same reason: Wi-Fi's and lwIP's
