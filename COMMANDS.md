@@ -126,7 +126,7 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | `PRIVACY` | | What the board knows about you: that telnet is not encrypted, how your password is stored, what the sysop can see, and the one rule that matters. Plays `screens/privacy.*`, so a sysop can rewrite it. The same screen is offered during sign-up. |
 | `PROFILE` | | Form to change your name, email, From, phone and profile. Not for guests. |
 | `PASSWORD` | | Form: current password, then the new one twice. Not for guests. |
-| `SNAPSHOT` | | Camera boards only. Takes a photo with the board's camera; refused with no SD card in, before the clock is set, over your limit (10 an hour, 20 a day, rolling; the sysop is exempt), or while the card is under its space floor. As shipped only staff may actually take one (the Snap setting); anyone else is told it isn't open to them. Offers `Download it now? [Y]es [X]modem [N]o` afterwards when you may download from Photos and nothing else is transferring. Hidden alias `SNAP`. One photo at a time on the whole board (1.1.2): while one is being taken, anybody else is told `--> Camera in use by node 3, try again in a minute` (`by the board` for a timed one), wrapped at a word on 40 columns. Settings, naming and retention: see `camera` under Plugins below. |
+| `SNAPSHOT [n\|name]` | | Boards with a camera, built in or a satellite on the link (1.2.0: one verb for every camera, and no `SNAPSHOT` at all on a board with none). Bare, it uses CONFIG cameras' Default, else the built-in camera, else the first that is up; `SNAPSHOT 2` or `SNAPSHOT garden` picks one as `CAMERA` and `SATS` number and name them: the built-in camera is 1, and a satellite keeps the number CONFIG sats gives it (auto: the lowest free), so a number never moves when another satellite is paired or forgotten. A satellite that is busy says how many are ahead: `--> The garden camera is busy, 2 ahead of you. Try again in a moment.` Your limits below are one count across every camera. Takes a photo; refused with no SD card in, before the clock is set, over your limit (10 an hour, 20 a day, rolling; the sysop is exempt), or while the card is under its space floor. As shipped only staff may actually take one (the Snap setting); anyone else is told it isn't open to them. Offers `Download it now? [Y]es [X]modem [N]o` afterwards when you may download from Photos and nothing else is transferring. Hidden alias `SNAP`. One photo at a time on the whole board (1.1.2): while one is being taken, anybody else is told `--> Camera in use by node 3, try again in a minute` (`by the board` for a timed one), wrapped at a word on 40 columns. Settings, naming and retention: see `camera` under Plugins below. |
 | `PAGE n message` | | Send a one-line message to node n: a bell, a flashing ` PAGE ` tag that rubs out, then the message. It reaches them wherever they are (see "Notices" below). |
 | `OPERATOR [reason]` | `O` | Ring for the sysop. Without a reason it asks `What do you need the sysop for?`, and nothing typed sends nothing. If the sysop can be asked, you see `Ringing the sysop` and a spinner for up to 45 seconds, and any key stops it; if they answer you are both put in the chat room, and what you type goes to the sysop only. Otherwise what you wrote is saved as a note for them. One ring every 3 minutes, three a call, one at a time on the whole board. See "Ringing for the sysop" below. |
 | `DND` | | Toggle do-not-disturb: pages to you are refused. |
@@ -287,7 +287,8 @@ All caller commands still work. Node arguments are `1`-`10`, `S` (sysop node) or
 | `BANS` | `BANS` | Active IP bans and minutes remaining. |
 | `PLUGINS` | any staff | Every plugin compiled in: version, whether it is running, and why not. Also free disk space (the kept figure, see `MEM`) and the reserve. |
 | `SYS` | any staff | The whole board on one screen, in groups: network (SSID, signal in dBm with a word for what it means, channel, address, port), memory (heap free, the lowest it has been, the biggest block, session size), storage (used, free, what is held back for the board), load (uptime, why the board last restarted, clock, whether the board is in silent mode and why, scheduler work per pass in microseconds, worst pass **and which phase of the loop it happened in**, how many passes have run over 50 ms since boot, passes since boot) and traffic (nodes busy and the peak, calls answered since boot, records in the caller log, plugins running, active IP bans), then hardware (1.1.1): `HARDWARE`'s rows, drawn by the same code, without the heap rows memory already has. The storage figures are kept, as `MEM`'s are, marked `.` with the line saying when; `SYS FORCE` measures them first, with a spinner. Load also shows the background runner (1.1.2): the least its stack has had free, out of what it has, and the longest job it has run and what it was. Any staff level can run it, though it is grouped with the sysop tools below. |
-| `CAMERA` | any staff | Camera boards only. What is stored (callers' photos and timed ones counted separately, with their card space), the card's free space against its floor, the last photo taken and who took it, and (for anybody but the sysop) your own limits used this hour and today. `CAMERA SET key value` (sysop only) changes a camera setting live, written to `system.cfg`, the same keys as `CONFIG camera`. Hidden alias `CAM`. |
+| `SATS [n]` | everybody the cameras' levels allow | The camera satellites (1.2.0), for callers: each one's number for SNAPSHOT (`*` the default), name, type, whether it is awake, asleep or not answering, and its last picture. Nothing of the radio, the keys, the other boards or the firmware. Staff see a summary with the channel, signal, rate, the boards sharing it and its uptime (the MAC and the key's fingerprint at 132 columns), and `SATS n` one satellite in full: status, signal both ways, channel, rate, MAC, frames, losses, sensor, schedule, pictures, the key's fingerprint, the owner and the other boards. The MAC, the fingerprint and the other boards' names need the NODES permission as well. No shortcut. **SATS against LINK:** SATS is what the satellites are doing, for anybody; LINK is the sysop's radio and pairing tool. |
+| `CAMERA [n\|name] ...` | any staff | Boards with a camera (1.2.0: every camera, built in or a satellite). With one camera, `CAMERA` is that camera's own view, as below, and `CAMERA SET` still reaches it. With more, `CAMERA` lists them numbered (a `*` marks SNAPSHOT's default, then up, busy or down and a short status) and `CAMERA n ...` is camera n's own view and commands. The built-in camera's view: what is stored (callers' photos and timed ones counted separately, with their card space), the card's free space against its floor, the last photo taken and who took it, and (for anybody but the sysop) your own limits used this hour and today. `CAMERA SET key value` (sysop only) changes a camera setting live, written to `system.cfg`, the same keys as `CONFIG camera`. Hidden alias `CAM`. |
 | `FILES` / `F` | all | **Goes into the file area**, the way `CHAT` goes into the room, rather than printing a list and returning. A screen plays on the way in if the board has `screens/files`, then the areas appear as a numbered menu laid out in as many columns as the terminal has room for. A digit opens an area (`0` is ten), `Q` goes back one level and `Q` again leaves. An area numbered past 10 (the sysop's Backups, and on a camera board Photos and Timelapse too) is `#`, the number and Enter at the menu (1.1.0), or the cursor keys. `FILES n` enters and opens that area in one go. Only on a board with a card: the plugin does not start without one, so on a cardless board the command does not exist rather than offering an empty file area. |
 | `FORUMS` | all | **Goes into the message boards**, the way `FILES` and `CHAT` go into theirs. Three levels: topic areas the sysop sets up (`CONFIG forums`), subjects that callers start inside them, and the messages in each subject. A screen plays on the way in if the board has `screens/forums`. Only on a board with a card, the same as `FILES`: the plugin does not start without one, so on a cardless board the command does not exist rather than offering empty boards. `FORUMS SCAN` needs the forums plugin's admin level (`co1` by default) and prints what the board thinks is on the card. |
 | `SD` | sysop | SD card status: type, mount point, free space (kept, see `MEM`), and where screens are coming from. With no card it says which pins it tried, because "no card found" without them sends you to re-seat a card that was never the problem. |
@@ -499,6 +500,7 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `wifi_password` | empty | its passphrase, 8 to 64 characters, or empty for an open network. Used only from the next restart, never live |
 | `port` | `6400` | The port callers dial. Used from the next restart. It cannot be the backup window's port. Takes 1 to 65535; as shipped, `6400`. If callers reach the board from the internet, the forward on your router has to point at the new number too. mDNS, SYS, the console's `dial in` line, Improv's telnet link and announce's default all follow it |
 | `cgnat_local` | `no` | `yes`: `100.64.0.0/10`, the carrier-grade NAT range Tailscale also uses, counts as the board's own network (1.1.1, `CONFIG network`, **CGNAT/Tailscale LAN**, `CGNAT` at 40 columns). It trusts everybody behind the same carrier NAT, not only your own Tailscale devices, which is why it is off. It moves every "local" rule at once: the published default password's local-only rule, a second sysop taking sysop in place, and the backup window's port. Live, the one row on that page that is |
+| `camera` | empty | The camera a bare `SNAPSHOT` uses, by the name `CAMERA` shows (1.2.0, `CONFIG cameras`, **Default camera**). Empty, or a name not on the air just now: the built-in camera, else the first that is up |
 | `idle_minutes` | `20` | shell idle hangup, 0 = never |
 | `landing` | `main` | where a caller goes after login when their account has not said: `main`, `chat` or `forums` |
 | `sysop_handle` | empty | the sysop's own account (1.1.0, `CONFIG board`, **Sysop**): missed rings are mailed to it, and it is asked for the sysop password at login. `CONFIG` refuses a handle with no live account and writes it in `users.txt`'s spelling. Empty: the last account to elevate to sysop, which the board keeps in `userdata/sysop.last` across a restart (a restore that brings back `users.txt` clears it, since it is an id into that file) |
@@ -591,7 +593,8 @@ board, is the only way.
 
 ### Plugins
 
-Eight plugins ship with the firmware, plus an `example` plugin that is the
+Ten plugins ship with the firmware on every board, the panel and the
+camera besides on the boards that have them, plus an `example` plugin that is the
 template for writing your own ([PLUGINS.md](PLUGINS.md)):
 
 | Plugin | What it does | Defaults |
@@ -606,6 +609,8 @@ template for writing your own ([PLUGINS.md](PLUGINS.md)):
 | `lights` | a disk light and a strip of 1 to 16 pixels (WS2812B) for a board in a case | `sysop` throughout |
 | `panel` | the board's own display as a status panel (boards with one only) | `sysop` throughout |
 | `camera` | photos from the board's own camera, into their own file areas (camera boards only) | `read = all`, `write = staff`, `admin = sysop` |
+| `link` | 1.2.0. The µnleashed link: ESP-NOW to paired devices beside the board ([LINK.md](LINK.md)) | `read = staff`, `write = staff`, `admin = sysop` |
+| `doors` | 1.2.0. Doors on a door sat over the link | `read = users`, `write = users`, `admin = sysop` |
 
 Chat, `sd` and `info` are on by default, even with no section in `system.cfg`; `enabled = no` turns any of them off. `files` is also on by default once a card is mounted and an area is configured. `sd` on a board with no card costs one failed mount at boot and then nothing. `forums`, the serial bridge, `announce`, `lights` and `camera` wait to be switched on: `forums` because a sysop sets the topic areas up first, the serial bridge and the lights because they need wiring, `announce` because it is the one thing that talks out, and `camera` because even a board built with one should have a sysop's say before it starts taking photos. On a board whose pixel and display are part of the board (the Waveshare S3), `lights` and `panel` are on as shipped. Turning any of them off costs nothing: no commands, no hooks, no memory.
 
@@ -1207,10 +1212,12 @@ it where it is. If somebody else is already transferring, they are told so
 and where to find it instead. The board's own shots are never offered:
 nobody is waiting on those.
 
-**Photos (area 12)** and **Timelapse (area 13)**, camera boards only, above
-the eight configured file areas and the board's own three (Screens 9, Logs
-10, Backups 11). Their levels are the camera's own settings (Snap, Photos
-and the plugin's admin level), never a `files` area's `read | up | down |
+**Photos (area 12)** and **Timelapse (area 13)**, above the eight
+configured file areas and the board's own three (Screens 9, Logs 10,
+Backups 11). On any board with a camera, built in or a satellite on the
+link (1.2.0), and shown only while one is running. Their levels are the
+camera's own settings (Snap, Photos and the plugin's admin level; with a
+built-in camera and a satellite both, the more open of the two), never a `files` area's `read | up | down |
 del` line, and `CONFIG files` does not offer them. Seeing and downloading
 follow **Photos**; uploading is the sysop alone, always (a caller adds a
 photo only through `SNAPSHOT`, never by uploading one); removing follows the
@@ -1249,6 +1256,44 @@ an ESP32-CAM, **take the SD card out first** and put it back after: GPIO2
 is both the card's MISO and a download-mode strap, and a seated card holds
 it high at reset, so the board boots its old firmware instead of taking
 the new one.
+
+#### link
+
+1.2.0. The board's end of the µnleashed link, ESP-NOW to devices beside it
+(a camera satellite, a door sat). [LINK.md](LINK.md) is the whole of it.
+Off as shipped; `[plugin:link] enabled = yes` or CONFIG link turns it on,
+and the radio starts with it. It has no settings of its own beyond the
+levels.
+
+| Command | Who | What it does |
+|---|---|---|
+| `LINK` | staff (the plugin's read level) | The paired devices, one row each: number (from 1), name, kind, up or down, the signal as the board hears it, and at 60 columns and wider when it was last heard, whether its code was checked, and for a shared satellite how many boards share it and which owns it, with the other boards under it. **LINK is the sysop's radio and pairing tool; SATS is what the satellites are doing, for anybody.** Then frames in and out, retries, drops by reason, the time the board spends on each frame (average and worst) and how full its two receive rings have been (the loop's and the picture fragments'). Says so when a device has dropped to the slower radio rate after failed sends, and when all 8 pairings are taken. |
+| `LINK PAIR` | sysop | Opens pairing for 2 minutes. Put the device in pairing mode (a satellite with no pairing is in it for 5 minutes after it boots); when it answers the board asks `Pair door "shelf" 02:00:00:00:1a:2b, code 4821? (y/N)`. Y pairs it, and the board then asks whether the device shows the same code, which a device prints on its serial console: Y there marks the pairing checked. Q stops. |
+| `LINK FORGET n` | sysop | Forgets pairing n (numbered from 1, as LINK lists them). A satellite that is up is told first, so it frees this board's place; one out of reach keeps counting this board until its owner revokes it or it is reset. The device has to be paired again. |
+| `LINK NAME n name` | sysop | Renames pairing n: one word of up to 16 characters, not a name another camera has, because `SNAPSHOT name` takes one word. |
+| `LINK SHARE n` | sysop, the satellite's owner | Lets one more board pair with satellite n for 2 minutes: run `LINK PAIR` on that board then. A satellite takes 5 boards at most, all on one Wi-Fi channel. Only the board that paired it first (its owner) may. |
+| `LINK REVOKE n board` | sysop, the satellite's owner | Takes another board off satellite n; board is its number under n in LINK, or its name. That board is told. |
+
+**CONFIG sats** (sysop, 1.2.0; also `CONFIG satellites`): each satellite as a button (`Camera 2  garden  awake  shared by 3, owner`), then Pair a satellite (runs LINK PAIR), Default camera and Satellite settings (open CONFIG cameras and CONFIG camsat), and the Wi-Fi channel. A satellite's page sets its **name** (one word, unique), its **camera number** (auto, or 2 to 9) and whether this board **receives its timelapse** and **its motion** pictures (snapshots always come), and shows its type, status, signal, owner and the other boards. Share (the owner) and Unpair leave CONFIG, ask `(y/N)` on the sysop's screen, and on Y run LINK SHARE or LINK FORGET. What this board receives goes to the satellite at once.
+
+Pairings are kept in `p/link/peers` on the user partition and are not in a
+backup: a restored board pairs its devices again. SYS and HARDWARE have a
+`Radio link` row for staff (`on, ch 6,` and how many devices are up).
+
+#### doors
+
+1.2.0. Doors run on a door sat, another device on the link (LINK.md,
+"Family 2"). The board hands a caller over with one line saying who they
+are, what terminal they have and how long they have left, and takes them
+back. Off as shipped; needs the link on.
+
+| Command | Who | What it does |
+|---|---|---|
+| `DOORS` | users | The doors the door sats on the air offer, numbered. One HELP row with UPLINK: `DOORS \| UPLINK`. |
+| `DOORS n` | users | The same as `UPLINK n`. |
+| `UPLINK` | users | The same as `DOORS`. No shortcut letter. |
+| `UPLINK n` | users | Goes into door n: `--> Uplinking to shed...`, then `--> Home is Ctrl-C three times.` Everything typed goes to the door, and everything it sends comes to the terminal as it is. Back at the prompt, with `--> Back home.`, when the door finishes (its own words first), when the call's time runs out (the door is told with fifteen seconds left and has ten to save; `--> Time's up.`), when the sat goes quiet (`--> Lost the signal.`), or on **the home key: the break key three times within a second and a half** (Ctrl-C on a PC terminal, RUN/STOP on PETSCII), which always works. |
+| `UPLINK name` | users | Goes into the door of that name, or to the sat of that name: straight in when it has one door, its doors listed when it has more. Any case. A door's name is tried before a sat's. |
 
 ### [access] matrix
 

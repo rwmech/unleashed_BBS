@@ -49,7 +49,8 @@ Docs:
 |---|---|
 | [COMMANDS.md](COMMANDS.md) | every command, key, limit and `system.cfg` setting |
 | [USERS.md](USERS.md) | signing up, logging in, guests, managing accounts |
-| [PLUGINS.md](PLUGINS.md) | writing and running plugins |
+| [PLUGINS.md](PLUGINS.md) | writing and running plugins, and plugins kept in their own repositories |
+| [LINK.md](LINK.md) | the µnleashed link (1.2.0): ESP-NOW to a camera satellite or a door box beside the board |
 | [BACKUP.md](BACKUP.md) | downloading and uploading config, accounts and screens as a `.zip`, and `BACKUP SD` / `RESTORE SD` to keep it on the SD card |
 | [SCREENS.md](SCREENS.md) | screen formats, naming rules and upload limits |
 | [CHAT.md](CHAT.md) | the chat room, room commands and messages |

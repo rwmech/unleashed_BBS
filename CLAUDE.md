@@ -835,6 +835,145 @@ this tree.
     voting booth, credits, FILE_ID.DIZ) and the camera boards' PSRAM
     memory move. The entries below that say "1.2.0" for those items now
     mean 1.3.0.
+  - **The link lane (rel-1.2.0-link, 2026-09-26)**: LINK.md is the spec,
+    written first. Rob's decisions on it the same day: our own AES-128-CCM
+    on every frame, header as associated data, ESP-NOW peers unencrypted
+    (the 5.3.1 receive callback cannot say whether a frame was decrypted,
+    and MACs spoof); 8 pairings; pairings out of the backup; a core `doors`
+    plugin; shared photo filing with files owning FILES.BBS; camsat in
+    every image, off by default; a serial box trusted by the wire.
+    - Built: the engine (`src/core/link.*`, `ulink::` because `link` is
+      POSIX's), the crypto (`linkcrypto.*`), the families' layouts
+      (`linkfam.h`), the radio (`src/platform/linkradio*`, UDP on the host),
+      the `link` and `doors` plugins, `src/core/photos.*`, and plugins in
+      their own repositories (`plugins.lock`, `tools/plugins.py`,
+      `tools/pio_plugins.py`, `ext_plugins.h`, `UNLEASHED_PLUGIN_API`).
+    - **The first bench number moved the design**: mbedtls_ccm costs 320 us
+      a frame on an ESP32 and 1,000 us on an S3 (camsat bench), against
+      Rob's 100 us line for work on the loop. linkcrypto now does the same
+      CCM as one CBC and one CTR call: 78 us to seal and 78 to open on the
+      S3 in the real -Os build (963 for mbedtls_ccm in the same image). The
+      per-block peripheral lock was the cost, not the hardware. The ESP32:
+      93.6 / 94.7 us.
+    - **The second bench round moved it again (Rob adopted, 2026-09-26)**:
+      a whole control frame on the loop is 150-184 us, over the line, but
+      control frames are a few a second so they stay; a loop taking eight
+      frames a pass lost half a picture at 24 Mbps, so **bulk fragments
+      never touch the loop**: the radio sorts them into a second ring
+      (by `nfrag`, unauthenticated, a routing decision only) and the runner
+      job opens and sinks them (`pumpRx`, `pumpBulk`) under the engine's
+      recursive lock. Also: 11g 24 Mbps per peer with a 1 Mbps fallback
+      after three MAC failures (back after 30 s clean), four frames
+      outstanding, DISCOVER dwell 20 ms, the host silent while off its
+      router, BEACON the only channel a peer trusts, a sleeping sender's
+      fast rescan, LR off (gateway pings 29-55 ms). LINK.md has the table.
+    - Code review (1.2.0-link.5): pairing became commit-then-reveal; HELLO
+      is HMAC-tagged with a boot epoch; a stopped link's runner job is
+      fenced off (`Radio::live`, the graves); doors retry CLOSE (ST_CLOSING)
+      and stop before the link; an external plugin's `PF_CORE` is ignored
+      and duplicate names refused.
+    - **The first real pictures (camsat, link.4)**: 5 of 5 filed but 17 KB/s.
+      A session closed straight after its picture lost its last ACK, and the
+      satellite reported a filed picture as failed; now a closed session
+      waits for the ACK it owes and leaves a tombstone. Bulk ACKs waited for
+      the loop's tick; the runner sends them now. Both in link.5.
+    - **One SNAPSHOT (link.6, approved 2026-09-26)**: `photos::Camera` is
+      the camera registry; the core owns SNAPSHOT and CAMERA
+      (`src/core/cameras.cpp`), the built-in camera is 1, satellites follow
+      by pairing, CONFIG cameras sets the default, and a caller's limits
+      are ONE budget across all cameras (Rob). camera.cpp lost its command
+      table and its limits table to the core: a small edit, but it touches
+      a file 1.1.2a rewrote, so it is a merge point.
+    - **Rebased onto main at b278284 (link.7, 2026-09-26)**, after 1.1.2
+      part 1 and SSH; the pre-rebase history is kept on origin as
+      rel-1.2.0-link (the rebased branch is local only: replacing it there
+      is a force push, Rob's call). The link's job found
+      `core/runner.h` by itself. The camera now files through `photos::`
+      and provides Photos; the file areas ask `photos::present`/`levels`,
+      so Photos (12) and Timelapse (13) are on every board, shown while a
+      camera or satellite runs. Bulk window 64 with PSRAM, 16 without.
+      Open, for Rob: the S3's internal heap was 26-36 KB free with a
+      satellite snapping on link.6 against 65 KB on link.5's old layout
+      (camsat bench); the SSH preview's share is the suspect.
+    - **Rebased again, onto main at a3dcf01 after the v1.1.2 tag (link.12,
+      2026-09-27)**, pushed as rel-1.2.0-link-r3 for the merge. The
+      conflicts were in the build and test plumbing (host/Makefile's
+      formats target, harness.sh's --no-build rule, release.py's nano
+      check, testclient's pick_selected), not in the link. The link's and
+      camsat's formats pass check_formats.py. Delete the generated
+      `sdkconfig.<env>` files after such a rebase: board.h refuses a
+      stale one.
+    - Retries count only while the far end is heard and only for a
+      session's oldest message: the first version failed a session behind
+      one lost frame, and a channel hop killed sessions that should pause.
+      The simulated radio in `host/test_link.cpp` found both.
+    - Measured on the WROOM (link.4): 142 bytes static, 34,293 flash, ~15 KB
+      heap while on. Tests: test_link (115, ASan/UBSan; TSan cannot link in
+      this WSL), `--only=radio` (a pretend door box, `host/linkpeer`),
+      `tools/test_ext_plugin.sh` (13).
+    - At the 1.1.2 merge: the link's job goes on the runner by itself
+      (`__has_include`); camera.cpp and files.cpp move onto photos.* then,
+      not before, because 1.1.2a rewrote both.
+    - **One satellite, several boards (link.8, Rob's go 2026-09-27: "Having
+      one camera accessible by 5 boards would rock")**. Design record
+      `internal/link-multiboard-2026-09-27.md`, rules in LINK.md. 5 boards
+      a satellite, each its own key; the first is the owner (shares,
+      revokes, its camera settings used); one Wi-Fi channel for all, said
+      in words to a sysop whose board is on another. Lessons:
+      - **A clock that starts small hides `reached(now, 0)`.** pairAnswer
+        armed PAIR_DONE with 0, false for half the millisecond clock's
+        range: pairing on a board up 24.8 days never finished. linkpeer's
+        wall-clock millis found it; test_link now pairs at 0x90000000.
+      - **A window that serves someone new must keep serving everyone
+        else.** The first share hopped every channel for two minutes and
+        every session on every board died; the code review found it, not a
+        test, because no test kept a session open across a window. Each
+        review finding now has a test that fails on the code before it.
+      - **Every pairing state needs an end.** A share that stopped part
+        way (a No, a stray OFFER) wedged the satellite for good.
+    - **The door's way out is 0x03 three times** (link.8), not Ctrl-]:
+      0x1D is PETSCII cursor-right, and telnet clients keep Ctrl-]. The
+      naming proposal (internal/naming-satellites-2026-09-27.md) found it.
+      User-visible satellite words live in `src/core/satwords.h` until Rob
+      picks the names.
+    - **SATS and CONFIG sats (link.9)**, to internal/tty-ux-sats-2026-09-27.md.
+      A caller's SATS never shows the radio, the keys, the other boards or
+      the firmware, and `test_sats` checks it by content, plus that the
+      check finds all five in staff's view (it first missed "Channel   6":
+      a leak check needs its own proof). Camera numbers are fixed (built-in
+      1, set 2 to 9, else lowest free). CONFIG sats is built from linkp::
+      into the plugin page's tables, no static RAM of its own. Share and
+      Unpair leave the form and ask (y/N) on the sysop's screen: the first
+      cut acted on the Enter, and an Enter is how a sysop walks a form to
+      Save (code review; the line-mode test could not see it, because line
+      mode already asks "open (y/N)?" for every button). `tools/harness.sh --ext camsat` tests a
+      plugin from its own repository end to end, with host/linkpeer as a
+      camera satellite.
+    - **The satellite's side is unleashed_camsat, branch multiboard**: a
+      SNAP queue (2 a board, 8 in all, round-robin), an EVENT group (300 ms,
+      one capture, one transfer a board, the owner's texts), owner-only
+      settings, per-board wants, its own awake timelapse clock, NVS boards
+      migrating the one-board pairing. The scheduling is a pure header
+      (`firmware/src/satsched.h`) with a host test. Named satsched.h, not
+      sched.h: pthread.h includes the C library's sched.h, and ours shadowed
+      it. **State kept for "the peer" had to become per peer**: the
+      satellite's 1 Mbps fallback was one entry for the radio, so sending
+      to two boards in turn reset it at every change of destination and the
+      fallback never held. Anything singular written for one board is a
+      suspect once there are five. A board whose link comes back after a reset
+      is tried at 24 Mbps at once, not after 30 s (a probe: a marginal path
+      falls back again within about a second).
+    - **The words, settled by Rob 2026-09-27 (link.10)**: sat, sats;
+      **orbiter** for the data kind (camera, GPIO, sensors, Home
+      Assistant); **door sat** for the kind a caller goes into; **UPLINK**
+      is the verb (`UPLINK n`, `UPLINK name`), BEAM rejected. No shortcut.
+      The board's lines: `--> Uplinking to shed...`, `--> Home is Ctrl-C
+      three times.`, `--> Back home.`, each within 39 columns. All in
+      `src/core/satwords.h`. A sat's type is camera, door, gpio or sensor
+      (LINK's kind column, link.11); "camsat" is only the firmware and repo
+      name. `Bbs::markedLine` went public for it. What other sats would
+      take: internal/sat-types-2026-09-27.md (relay, GPIO, Home Assistant,
+      custom; nothing in 1.2.0, an LR bench test first).
 - **1.1.2 scope, decided by Rob 2026-09-26** (discussed before coding):
   - A read-only audit first of every path that can hold the loop over
     50 ms (internal/audit-1.1.2-2026-09-26.md); the worst move onto one

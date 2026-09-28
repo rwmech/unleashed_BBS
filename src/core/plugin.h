@@ -74,6 +74,31 @@ class Bbs;
 struct Session;
 struct Command;
 
+// ---------------------------------------------------------------------------
+// The plugin API's version (1.2.0), for plugins built from their own
+// repositories (LINK.md, "Plugins in their own repositories").
+//
+// MINOR goes up whenever something is added that a plugin may use: a field
+// appended to Plugin or PluginSetting, a Bbs method, a namespace plugins::
+// call. Adding is the only change the descriptor rules allow. MAJOR goes up
+// only for a break, which those rules exist to prevent.
+//
+//   1.0  1.2.0: the first numbered API. Bbs::callSecondsLeft; the link's
+//        families (plugins/link.h).
+//
+// A plugin says what it was written against, in one of its sources:
+//   UNLEASHED_PLUGIN_API(1, 0);
+// and a core too old for it fails to compile with a sentence saying so,
+// instead of with an error about a positional field.
+// ---------------------------------------------------------------------------
+#define BBS_PLUGIN_API_MAJOR 1
+#define BBS_PLUGIN_API_MINOR 0
+#define UNLEASHED_PLUGIN_API(major, minor)                                                     \
+    static_assert((major) == BBS_PLUGIN_API_MAJOR,                                             \
+                  "this plugin is for another major version of the unleashed plugin API");    \
+    static_assert((minor) <= BBS_PLUGIN_API_MINOR,                                             \
+                  "this plugin needs a newer unleashed core: update the firmware it builds into")
+
 // Access ladder for a plugin's read / write / admin lines
 enum class PlugLevel : uint8_t { All, Users, Staff, Co2, Co1, Sysop, Nobody };
 

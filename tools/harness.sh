@@ -134,6 +134,7 @@ TAG=main
 CARD=no
 FRESH=no
 BIN=bbs_host
+EXT=""
 ARGS=""
 CHANGED_RANGE=""
 CHANGED_DRY=no
@@ -164,6 +165,11 @@ while [ $# -gt 0 ]; do
                 *)  echo "harness: no board profile called $2 (s3, fncam, espcam)"; exit 2 ;;
             esac
             shift 2 ;;
+        # Plugins from their own repositories (1.2.0), already fetched into
+        # ext/ (tools/plugins.py fetch NAME): the host board is built with
+        # them (host/Makefile's bbs_host_ext) and each is switched on. The
+        # camera satellite's tests need --ext camsat --card.
+        --ext)   EXT="$2"; BIN=bbs_host_ext; shift 2 ;;
         # A board as it leaves the web installer: no staff passwords in its
         # config, so it runs on the published default and offers setup.
         # Pair it with --only=first_setup or --only=backup_published; the
@@ -242,6 +248,22 @@ if [ -n "$FAST" ]; then
 else
     unset BBS_FAST_TIMERS
 fi
+# The unleashed link (1.2.0): the host's radio is UDP on 127.0.0.1, on a port
+# from the tag like every other, and the pretend door box (host/linkpeer)
+# listens on the next one. test_radio_link and test_doors use them.
+export BBS_LINK_PORT=$((PORT + 3000))
+export BBS_LINK_PEER_PORT=$((PORT + 3001))
+# Three more for test_link_shared's second board and second satellite
+# (1.2.0), each in a block of its own 400 wide, so none of these three lands
+# on another tag's (PORT is 6500 to 6899, one a tag; peer + 1 and + 2 did:
+# a neighbouring tag's radio took one, and its satellite never started).
+# The radio's pair above does not have that property: tag X's peer (+3001)
+# is tag X+1's radio (+3000), the same exposure the TCP offsets have
+# between adjacent tags. Tag-derived runs side by side want tags whose
+# ports differ by more than one; harness.sh --jobs chooses its own ports
+# (tools/parallel.py port_offsets reads every PORT + N here) and is clear.
+export BBS_LINK_EXTRA_PORTS="$((PORT + 3500)),$((PORT + 3900)),$((PORT + 4300))"
+export BBS_HOST_EXT="$EXT"
 
 # Delete the previous result before building. A failed build exits here, and
 # leaving the last run's output behind means the next look at it shows a full
@@ -252,11 +274,19 @@ rm -f "$OUT"
 
 cd "$PROJ/host"
 if [ "$BUILD" = yes ]; then
-    make -s "$BIN"
+    if [ -n "$EXT" ]; then
+        for n in $(echo "$EXT" | tr ',' ' '); do
+            [ -f "$PROJ/ext/$n/unleashed-plugin.ini" ] || { echo "harness: ext/$n is missing: tools/plugins.py fetch $n"; exit 2; }
+        done
+        make -s EXT="$(echo "$EXT" | tr ',' ' ')" "$BIN"
+    else
+        make -s "$BIN"
+    fi
     # The S3 profile has SSH (1.1.2): its tests call in with wolfSSH's client.
     if [ "$BIN" = bbs_host_s3 ]; then make -s ssh_call; fi
-elif [ ! -x "$BIN" ] || { [ "$BIN" = bbs_host_s3 ] && [ ! -x ssh_call ]; }; then
-    echo "harness: --no-build, and host/$BIN (or ssh_call) has not been built"
+    make -s linkpeer
+elif [ ! -x "$BIN" ] || { [ "$BIN" = bbs_host_s3 ] && [ ! -x ssh_call ]; } || [ ! -x linkpeer ]; then
+    echo "harness: --no-build, and host/$BIN (or ssh_call, or linkpeer) has not been built"
     exit 2
 fi
 
@@ -347,7 +377,19 @@ topic2 = news | Board News | What the sysop is up to | all | sysop | users | sys
 # get the same answer for it as for a page that does not exist.
 page0 = House rules | all
 page1 = Staff notes | staff
+
+# The unleashed link and doors (1.2.0), on the host's UDP radio.
+[plugin:link]
+enabled = yes
+
+[plugin:doors]
+enabled = yes
 CFG
+
+# Each plugin from its own repository, switched on (--ext).
+for n in $(echo "$EXT" | tr ',' ' '); do
+    printf '\n[plugin:%s]\nenabled = yes\n' "$n" >> "$DATA/user/system.cfg"
+done
 
 # SSH's own port (1.1.2) on the S3 profile, per tag like the others: 6422
 # for every run would have two tags' boards fighting over it.

@@ -89,6 +89,7 @@
 #include "../core/claims.h"
 #include "../core/clock.h"
 #include "../core/fx.h"
+#include "../core/photos.h"            // the cameras' verbs and the shared budget (1.2.0)
 #include "../core/plugin.h"
 #include "../core/runner.h"            // the worker is a job on the background runner (1.1.2)
 #include "../core/bbs_util.h"          // wrap: the busy line at the width
@@ -267,24 +268,10 @@ void readKey(void*, const char* key, const char* value) {
 }
 
 // ---------------------------------------------------------------------------
-// Per caller limits (camera_rules.h): a small table of windows in RAM, one a
-// caller: an account's by its handle, carried to the new name when it is
-// renamed (onRename), so a rename does not start the count again; a guest's
-// by address and by handle both, so a guest cannot start again by
-// reconnecting under another name or from another address. Keyed by handle
-// rather than by the account's id so a snap reads nothing on the loop
-// (users.txt is on the flash). A reboot forgets it (COMMANDS.md says so).
-// Taken from the heap once, at the first start, and kept across restarts.
+// Per caller limits: one budget across every camera the board has (1.2.0,
+// Rob), kept by the core (photos::budget and spend, cameras.cpp), which
+// also carries an account's window across a rename.
 // ---------------------------------------------------------------------------
-enum : uint8_t { WHO_FREE = 0, WHO_ACCOUNT, WHO_ADDR, WHO_GUESTNAME };
-struct Who {
-    uint8_t          kind = WHO_FREE;
-    uint32_t         key  = 0;
-    camrules::Window w;
-};
-constexpr uint8_t kWho = 24;
-Who* g_who = nullptr;
-
 // The photo each node was offered, so a timed shot or somebody else's
 // finishing while a caller decides is never the one sent. Beside the limits,
 // on the heap.
@@ -292,66 +279,8 @@ constexpr uint8_t kSlots = BBS_MAX_NODES + 2;
 struct Offer { char rel[112]; };
 Offer* g_offer = nullptr;
 
-uint32_t fnv(const char* s) {
-    uint32_t h = 2166136261u;
-    for (; *s; ++s) { h ^= static_cast<uint8_t>(tolower(static_cast<unsigned char>(*s))); h *= 16777619u; }
-    return h;
-}
-
-// whoFor: this caller's windows, one or two (a guest's address and name).
-uint8_t whoKeys(const Session& s, uint8_t kind[2], uint32_t key[2]) {
-    if (!s.guest) {
-        kind[0] = WHO_ACCOUNT;
-        key[0]  = fnv(s.user);
-        return 1;
-    }
-    kind[0] = WHO_ADDR;      key[0] = s.ipAddr;
-    kind[1] = WHO_GUESTNAME; key[1] = fnv(s.user);
-    return 2;
-}
-
-Who* whoSlot(uint8_t kind, uint32_t key, uint32_t now, bool make) {
-    if (!g_who) return nullptr;
-    Who* freeOne = nullptr;
-    Who* stalest = &g_who[0];
-    for (uint8_t i = 0; i < kWho; ++i) {
-        Who& w = g_who[i];
-        camrules::age(w.w, now);
-        if (w.kind == kind && w.key == key) return &w;
-        if (w.kind == WHO_FREE || !w.w.n) { if (!freeOne) freeOne = &w; continue; }
-        if (w.w.at[w.w.n - 1] < stalest->w.at[stalest->w.n ? stalest->w.n - 1 : 0]) stalest = &w;
-    }
-    if (!make) return nullptr;
-    Who* w = freeOne ? freeOne : stalest;
-    *w = Who();
-    w->kind = kind;
-    w->key  = key;
-    return w;
-}
-
-// verdictFor: the tighter of the caller's windows.
-camrules::Verdict verdictFor(const Session& s, uint32_t now) {
-    uint8_t kind[2]; uint32_t key[2];
-    uint8_t n = whoKeys(s, kind, key);
-    camrules::Verdict v;
-    for (uint8_t i = 0; i < n; ++i) {
-        Who* w = whoSlot(kind[i], key[i], now, false);
-        if (!w) continue;
-        camrules::Verdict x = camrules::check(w->w, now);
-        if (x.hour > v.hour) v.hour = x.hour;
-        if (x.day > v.day)   v.day = x.day;
-        if (!x.ok && (v.ok || x.nextAt > v.nextAt)) { v.nextAt = x.nextAt; v.byDay = x.byDay; }
-        if (!x.ok) v.ok = false;
-    }
-    return v;
-}
-
-void recordFor(const Session& s, uint32_t now) {
-    uint8_t kind[2]; uint32_t key[2];
-    uint8_t n = whoKeys(s, kind, key);
-    for (uint8_t i = 0; i < n; ++i)
-        if (Who* w = whoSlot(kind[i], key[i], now, true)) camrules::record(w->w, now);
-}
+photos::Budget verdictFor(const Session& s, uint32_t now) { return photos::budget(s, now); }
+void recordFor(const Session& s, uint32_t now) { photos::spend(s, now); }
 
 // ---------------------------------------------------------------------------
 // System folders (snapSystem): each its own group for pruning. The
@@ -568,16 +497,6 @@ bool tables(Job& j, const uint8_t* pic, size_t len, uint8_t (*lut)[256]) {
     j.msFix = plat::millis() - t0;
     j.fixed = !campic::identity(lut);
     return j.fixed;
-}
-
-// mkdirs: the folders of a path under Photos, made as needed.
-void mkdirs(const char* dir, const char* rel) {
-    mkdir(dir, 0755);
-    char p[192];
-    const char* slash = strrchr(rel, '/');
-    if (!slash) return;
-    snprintf(p, sizeof(p), "%s/%.*s", dir, static_cast<int>(slash - rel), rel);
-    mkdir(p, 0755);
 }
 
 // A photo the survey found: where it is, so the second pass can find it.
@@ -853,20 +772,21 @@ uint8_t* shoot(Job& j, size_t& len) {
     return copy;
 }
 
-// save: write the picture under the temporary name and rename it into
-// place. Never over a photo that is there already (FatFs refuses a rename
-// onto a name, and the camera never removes one to make room).
+// save: write the picture through the shared filing (photos.h, 1.2.0, the
+// path a camera satellite's pictures take too): a temporary name in Photos,
+// then one rename into place, and its FILES.BBS line asked of the file
+// areas. Never over a photo that is there already (FatFs refuses a rename
+// onto a name, and nothing removes one to make room).
 void save(Job& j, const char* photos, const uint8_t* jpg, size_t len) {
     uint32_t t0 = plat::millis();
-    mkdirs(photos, j.rel);
-    char tmp[192], dst[256];
-    snprintf(tmp, sizeof(tmp), "%s/%s", photos, camrules::kTmpName);
+    char dst[256];
     snprintf(dst, sizeof(dst), "%s/%s", photos, j.rel);
     struct stat st;
     if (stat(dst, &st) == 0) { fail(j, "a photo with that name is already there"); return; }
 
-    FILE* fp = disk::open(tmp, "wb");
-    if (!fp) { fail(j, "the card would not take the photo"); return; }
+    photos::Writer pw;
+    if (!photos::open(pw, camrules::kTmpName)) { fail(j, "the card would not take the photo"); return; }
+    FILE* fp = pw.f;
     FileOut fo{ fp, 0, true };
     bool ok = false;
     if (j.doMark) {
@@ -899,7 +819,7 @@ void save(Job& j, const char* photos, const uint8_t* jpg, size_t len) {
             if (!said) plat::log("camera: the photo could not be re-encoded; saving it as the sensor gave it");
             said = true;
             fclose(fp);
-            fp = disk::open(tmp, "wb");
+            fp = pw.f = disk::open(pw.tmp, "wb");
             fo = FileOut{ fp, 0, fp != nullptr };
         }
     }
@@ -908,36 +828,16 @@ void save(Job& j, const char* photos, const uint8_t* jpg, size_t len) {
         camrules::ComSink sink(fileOut, &fo, j.comment);
         ok = sink.put(jpg, len) && fo.ok;
     }
-    if (fp) {
-        if (fflush(fp) != 0) ok = false;
-        fsync(fileno(fp));
-        if (fclose(fp) != 0) ok = false;
-    } else {
-        ok = false;
-    }
-    if (!ok || rename(tmp, dst) != 0) {
-        remove(tmp);
+    pw.ok = ok && fp != nullptr;
+    // Who took a caller's photo goes in its folder's FILES.BBS, as any file
+    // is described. Not the board's own: their names say whose they are, and
+    // a thousand-line FILES.BBS rewritten for every timed shot is card wear
+    // and seconds of the card's time for nothing.
+    if (!photos::file(pw, j.rel, j.kind == K_CALLER ? j.desc : nullptr)) {
         fail(j, "the card would not take the photo");
         return;
     }
     j.bytes  = static_cast<uint32_t>(fo.written);
-    // Who took a caller's photo, in its folder's FILES.BBS, as any file is
-    // described. Not the board's own: their names say whose they are, and a
-    // thousand-line FILES.BBS rewritten for every timed shot is card wear
-    // and seconds of the card's time for nothing.
-    if (j.kind == K_CALLER) {
-        // Asked of the file areas, FILES.BBS's one writer (1.1.2): the
-        // handle folder under Photos, or Photos itself.
-        char rel[112];
-        snprintf(rel, sizeof(rel), "%s", j.rel);
-        char* slash = strrchr(rel, '/');
-        if (slash) {
-            *slash = '\0';
-            files::photoDesc(rel, slash + 1, j.desc);
-        } else {
-            files::photoDesc("", rel, j.desc);
-        }
-    }
     j.msSave = plat::millis() - t0;
 }
 
@@ -1410,7 +1310,7 @@ void cmdSnapshot(Bbs& b, Session& s, const char*, uint32_t now) {
     if (!clk::valid()) { refuse(b, s, "The board's clock is not set yet, and a photo is named by it."); return; }
     const uint32_t epoch = clk::epoch();
     const bool sysop = plugins::mayUse(s, PlugLevel::Sysop);
-    camrules::Verdict v;
+    photos::Budget v;
     if (!sysop) {
         v = verdictFor(s, epoch);
         if (!v.ok) {
@@ -1509,14 +1409,6 @@ void onKey(Session& s, int k, uint32_t now) {
     }
     say(s, Color::Grey, "It is kept in the Photos area.");
     b.release(s);
-}
-
-// onRename: an account's window follows its new handle.
-void onRename(const char* oldHandle, const char* newHandle) {
-    if (!g_who) return;
-    const uint32_t from = fnv(oldHandle), to = fnv(newHandle);
-    for (uint8_t i = 0; i < kWho; ++i)
-        if (g_who[i].kind == WHO_ACCOUNT && g_who[i].key == from) g_who[i].key = to;
 }
 
 void onLogoff(Session& s) {
@@ -1632,7 +1524,7 @@ void cmdCamera(Bbs& b, Session& s, const char* arg, uint32_t) {
         b.rowText(s, Color::White, buf);
     }
     if (!plugins::mayUse(s, PlugLevel::Sysop)) {
-        camrules::Verdict v = verdictFor(s, clk::epoch());
+        photos::Budget v = verdictFor(s, clk::epoch());
         snprintf(buf, sizeof(buf), "You: %u this hour, %u today", static_cast<unsigned>(v.hour),
                  static_cast<unsigned>(v.day));
         b.rowText(s, Color::Grey, buf);
@@ -1641,14 +1533,41 @@ void cmdCamera(Bbs& b, Session& s, const char* arg, uint32_t) {
     b.prompt(s);
 }
 
-const Command kCommands[] = {
-    { "SNAPSHOT", "", 0, CF_READ, "SNAPSHOT", "take a photo with the board's camera", cmdSnapshot,
-      Menu::Account, 45 },
-    { "SNAP", "", 0, CF_READ | CF_HIDDEN, "", "", cmdSnapshot, Menu::Hidden, 99 },
-    { "CAMERA", "", 0, CF_WRITE, "CAMERA [SET]", "the camera: photos kept, space, last", cmdCamera,
-      Menu::Staff, 60 },
-    { "CAM", "", 0, CF_WRITE | CF_HIDDEN, "", "", cmdCamera, Menu::Hidden, 99 },
-};
+// ---------------------------------------------------------------------------
+// This camera in the board's list (1.2.0, photos.h): SNAPSHOT and CAMERA are
+// the core's now, one pair for every camera. The levels the plugin's own
+// command table used to apply (read for SNAPSHOT, write for CAMERA) are
+// checked here instead.
+// ---------------------------------------------------------------------------
+bool camUp(void*) { return camera::running(); }
+bool camBusy(void*) { return camera::busy(); }
+
+void camSnap(void*, Bbs& b, Session& s, uint32_t now) {
+    if (!plugins::mayUse(s, plugins::levelFor(g_index, 0))) { refuse(b, s, "Taking photos is not open to you here."); return; }
+    cmdSnapshot(b, s, "", now);
+}
+
+const char* status();
+
+void camLine(void*, char* out, size_t n) {
+    const char* st = status();
+    snprintf(out, n, "%s", st ? st : "");
+}
+
+void camCommand(void*, Bbs& b, Session& s, const char* arg, uint32_t now) {
+    if (!plugins::mayUse(s, plugins::levelFor(g_index, 1))) { refuse(b, s, "The camera's details are for staff."); return; }
+    cmdCamera(b, s, arg, now);
+}
+
+const photos::Camera kCam = { "camera", 0, nullptr, camUp, camBusy, camSnap, camLine, camCommand };
+
+// This camera as a provider of the Photos area (photos.h): the file areas
+// ask photos::present and photos::levels, not the camera, so a satellite's
+// pictures and this camera's share one area at the more open of the two
+// cameras' levels.
+bool provRunning() { return camera::running(); }
+void provLevels(PlugLevel& see, PlugLevel& rm) { camera::photosLevels(see, rm); }
+const photos::Provider kProv = { "camera", provRunning, provLevels };
 
 // ---------------------------------------------------------------------------
 // CONFIG camera. Labels are 9 characters at 40 columns; the wide ones for
@@ -1780,9 +1699,7 @@ bool start(Bbs& bbs) {
     g_set.tlEvery = static_cast<uint32_t>(g_set.tlMin) * 60u + g_set.tlSec;
     if (g_set.tlEvery > camrules::kTlMax) g_set.tlEvery = camrules::kTlMax;
     if (g_set.tlEvery && g_set.tlEvery < camrules::kTlMin) g_set.tlEvery = camrules::kTlMin;
-    if (!g_who) {                                        // once: a CONFIG save keeps the counts
-        g_who = static_cast<Who*>(plat::camAlloc(sizeof(Who) * kWho));
-        if (g_who) for (uint8_t i = 0; i < kWho; ++i) new (&g_who[i]) Who();
+    if (!g_offer) {                                      // once, kept across restarts
         g_offer = static_cast<Offer*>(plat::camAlloc(sizeof(Offer) * kSlots));
         if (g_offer) memset(g_offer, 0, sizeof(Offer) * kSlots);
     }
@@ -1801,10 +1718,14 @@ bool start(Bbs& bbs) {
     const uint8_t p = g_job.ph.load();
     if (p == PH_DONE || p == PH_FAILED) { g_job.waiting = false; finish(plat::millis()); }
     if (!jobBusy()) g_surveyWanted = true;
+    photos::addCamera(kCam);                           // SNAPSHOT and CAMERA reach it
+    photos::provide(kProv);                            // and Photos is there while it runs
     return true;
 }
 
 void stop() {
+    photos::removeCamera(kCam);
+    photos::withdraw(kProv);
     g_running = false;
     flashSet(g_job, false);                            // never left on by a plugin that stopped
 }
@@ -1867,15 +1788,15 @@ extern const Plugin kCameraPlugin = {
     onLogoff,
     onKey,
     status,
-    kCommands,
-    sizeof(kCommands) / sizeof(kCommands[0]),
+    nullptr,                 // commands: SNAPSHOT and CAMERA are the core's (kCam)
+    0,
     kSettings,
     sizeof(kSettings) / sizeof(kSettings[0]),
     setting,
     nullptr,                 // rows
     nullptr,                 // onPresence
     nullptr,                 // onBytes
-    onRename,
+    nullptr,                 // onRename: the core carries the snap limits (photos::renamed)
     nullptr,                 // listDone
     nullptr,                 // liftInput
     nullptr,                 // restoreInput

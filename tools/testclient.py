@@ -1828,6 +1828,638 @@ def test_about():
     return ok
 
 
+# ---------------------------------------------------------------------------
+# The unleashed link (1.2.0): a pretend door box (host/linkpeer) on the host
+# board's UDP radio. tools/harness.sh switches the link and doors plugins on
+# and sets BBS_LINK_PORT (the board's) and BBS_LINK_PEER_PORT (the box's).
+# The pairing test leaves its pairing on both ends, in the board's
+# p/link/peers and the box's state file, and the doors test uses it.
+# ---------------------------------------------------------------------------
+class LinkPeer:
+    """host/linkpeer, with every line it prints kept for the test to read."""
+
+    def __init__(self, pair=False, chan=1, port=None, state="linkpeer.state", board2=None, board2_chan=None,
+                 kind=None):
+        host = os.environ["BBS_LINK_PORT"]
+        port = str(port or os.environ["BBS_LINK_PEER_PORT"])
+        self.state = os.path.join(os.environ.get("BBS_DATA", "/tmp"), state)
+        args = [str(pathlib.Path(__file__).resolve().parent.parent / "host" / "linkpeer"),
+                "--port", port, "--host", host, "--chan", str(chan), "--state", self.state]
+        if pair:
+            args.append("--pair")
+        if board2:
+            args += ["--board2", str(board2)]
+        if board2_chan:
+            args += ["--board2-chan", str(board2_chan)]
+        if kind:
+            args += ["--kind", kind]
+        import subprocess
+        self.p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  text=True)
+        self.lines = []
+        self.t = threading.Thread(target=self._read, daemon=True)
+        self.t.start()
+
+    def _read(self):
+        for line in self.p.stdout:
+            self.lines.append(line.strip())
+
+    def wait(self, prefix, secs=15):
+        end = time.time() + secs
+        while time.time() < end:
+            for line in self.lines:
+                if line.startswith(prefix):
+                    return line
+            time.sleep(0.05)
+        return None
+
+    def cmd(self, line):
+        """A line on linkpeer's stdin: "b2 pair", "b2 share 60", ..."""
+        self.p.stdin.write(line + "\n")
+        self.p.stdin.flush()
+
+    def stop(self):
+        self.p.terminate()
+        try:
+            self.p.wait(3)
+        except Exception:
+            self.p.kill()
+
+
+def link_ready():
+    if not os.environ.get("BBS_LINK_PORT") or not os.environ.get("BBS_LINK_PEER_PORT"):
+        print("  SKIP  no link radio on this board (tools/harness.sh sets BBS_LINK_PORT)")
+        return False
+    if not (pathlib.Path(__file__).resolve().parent.parent / "host" / "linkpeer").exists():
+        print("  SKIP  host/linkpeer is not built (make linkpeer)")
+        return False
+    return True
+
+
+def test_radio_link():
+    print("The radio link: pairing a device")
+    if not link_ready() or not PASSWORD:
+        return True
+    peer = LinkPeer(pair=True, chan=1)
+    s = sysop_on("LinkKeeper")
+    ok = True
+    try:
+        drain(s)
+        s.send(b"link\r")
+        ok &= check("LINK shows the radio and its channel", s.wait_for(b"Radio link", 6) and s.wait_for(b"channel", 2))
+        drain(s)
+        s.send(b"link pair\r")
+        ok &= check("LINK PAIR opens a window", s.wait_for(b"Pairing is open", 6))
+        ok &= check("the board asks, naming the device", s.wait_for(b'Pair door "shelf"', 20))
+        m = re.search(rb"code (\d{4})\? \(y/N\)", s.buf)
+        ok &= check("with a 4-digit code", m is not None)
+        s.send(b"y")
+        ok &= check("then asks whether the device shows the same code", s.wait_for(b"Does the device show", 20))
+        line = peer.wait("paired code", 10)
+        ok &= check("the device paired and printed its code", line is not None)
+        ok &= check("the two codes match", m is not None and line is not None and line.endswith(m.group(1).decode()))
+        s.send(b"y")
+        ok &= check("Y marks it checked", s.wait_for(b"Paired and checked.", 6))
+        ok &= check("the link comes up on the device", peer.wait("link up", 20) is not None)
+        time.sleep(1.0)
+        drain(s)
+        s.send(b"link\r")
+        ok &= check("LINK lists it, up", s.wait_for(b"shelf", 6) and s.wait_for(b"up", 2))
+        drain(s)
+        s.send(b"link forget 7\r")
+        ok &= check("LINK FORGET refuses a pairing that is not there", s.wait_for(b"LINK FORGET n", 6))
+        drain(s)
+        s.send(b"sys\r")
+        ok &= check("SYS has a Radio link row", s.wait_for(b"Radio link", 8))
+        s.send(b"q")
+        c = ansi_login("LinkCaller")
+        drain(c)
+        c.send(b"link pair\r")
+        ok &= check("a caller cannot pair (staff level)", not c.wait_for(b"Pairing is open", 3))
+        c.close()
+    finally:
+        s.close()
+        peer.stop()
+    return ok
+
+
+def test_doors():
+    print("Doors over the link")
+    if not link_ready():
+        return True
+    peer = LinkPeer(pair=False, chan=4)
+    ok = True
+    c = None
+    try:
+        if not check("the paired door box finds the board", peer.wait("link up", 25) is not None):
+            return False
+        time.sleep(1.5)                      # it answers the board's LIST_ASK
+        c = ansi_login("DoorGoer")
+        drain(c)
+        c.buf.clear()
+        c.send(b"doors\r")
+        ok &= check("DOORS lists the box's doors", c.wait_for(b"Echo", 6) and c.wait_for(b"Clock", 2))
+        ok &= check("and says UPLINK goes in, and where home is",
+                    c.wait_for(b"UPLINK n or a name goes in.", 3) and c.wait_for(b"Home is Ctrl-C three times.", 2))
+        drain(c)
+        c.buf.clear()
+        c.send(b"help\r")
+        ok &= check("HELP has one row for DOORS and UPLINK", c.wait_for(b"DOORS | UPLINK", 6))
+        drain(c)
+        c.buf.clear()
+        c.send(b"doors 9\r")
+        ok &= check("a door that is not there says so", c.wait_for(b"No such door. DOORS lists them.", 6))
+        drain(c)
+        c.buf.clear()
+        c.send(b"doors 1\r")
+        ok &= check("DOORS 1 uplinks to the sat", wait_plain(c, b"--> Uplinking to shelf...", 6) and c.wait_for(b"ECHO DOOR", 8))
+        ok &= check("and says where home is on this keyboard", b"--> Home is Ctrl-C three times." in plain(c.buf))
+        h = peer.wait("handoff 1 ", 5) or ""
+        ok &= check("the door is handed the caller's handle", "handle=DoorGoer" in h)
+        ok &= check("and the terminal the board measured", "term=ansi" in h and "cols=" in h and "rows=" in h)
+        ok &= check("and the time left and the node", "minutes=" in h and "node=" in h)
+        ok &= check("the handoff line starts as specified", h.startswith("handoff 1 UNLEASHED-DOOR 1 "))
+        drain(c)
+        c.buf.clear()
+        c.send(b"hello")
+        ok &= check("keys go to the door and its output comes back", c.wait_for(b"HELLO", 6))
+        c.send(b"q")
+        ok &= check("the door finishing brings the caller back", c.wait_for(b"Echo says bye.", 6))
+        ok &= check("and the board says so", wait_plain(c, b"--> Back home.", 6))
+        ok &= check("to the prompt", c.wait_for(b"Main", 6))
+        drain(c)
+        c.buf.clear()
+        c.send(b"uplink echo\r")
+        ok &= check("UPLINK takes a door's name", wait_plain(c, b"--> Uplinking to shelf...", 6) and c.wait_for(b"ECHO DOOR", 8))
+        c.send(b"q")
+        wait_plain(c, b"--> Back home.", 6)
+        drain(c)
+        c.buf.clear()
+        c.send(b"uplink SHELF\r")
+        ok &= check("UPLINK a sat with two doors lists them, in any case",
+                    c.wait_for(b"Echo", 6) and c.wait_for(b"Clock", 2) and c.wait_for(b"UPLINK n or a name goes in.", 2))
+        ok &= check("and does not go in", not c.wait_for(b"ECHO DOOR", 1.5))
+        drain(c)
+        c.buf.clear()
+        c.send(b"uplink nowhere\r")
+        ok &= check("UPLINK a name that is nothing says so", c.wait_for(b"No door or sat called nowhere.", 6))
+        drain(c)
+        c.buf.clear()
+        c.send(b"help uplink\r")
+        ok &= check("HELP UPLINK explains it", wait_plain(c, b"usage: UPLINK [n or name]", 6) and b"No command" not in plain(c.buf))
+        drain(c)
+        c.buf.clear()
+        c.send(b"uplink 2\r")
+        ok &= check("UPLINK n goes into door n", c.wait_for(b"CLOCK DOOR", 8))
+        c.send(b"\x03\x03\x03")
+        wait_plain(c, b"--> Back home.", 6)
+        peer.wait("close 3", 6)
+        peer.lines.clear()                   # the Ctrl-C checks below wait for a close of their own
+        drain(c)
+        c.buf.clear()
+        c.send(b"doors 2\r")
+        ok &= check("DOORS 2 opens Clock", c.wait_for(b"CLOCK DOOR", 8))
+        c.send(b"\x1d\x1d\x1d")
+        ok &= check("Ctrl-] is not the way out any more (telnet keeps it, PETSCII moves right on it)",
+                    not wait_plain(c, b"--> Back home.", 2))
+        c.send(b"\x03")
+        c.pump(1.8)
+        c.send(b"\x03\x03")
+        ok &= check("three Ctrl-Cs spread past a second and a half do not leave",
+                    not wait_plain(c, b"--> Back home.", 2))
+        c.send(b"\x03\x03\x03")
+        ok &= check("Ctrl-C three times in a row gets out", wait_plain(c, b"--> Back home.", 6))
+        ok &= check("and the box is told", peer.wait("close 3", 6) is not None)
+        drain(c)
+        c.buf.clear()
+        c.send(b"doors 2\r")
+        c.wait_for(b"CLOCK DOOR", 8)
+        drain(c)
+        c.buf.clear()
+        c.send(b"\xff\xf4\xff\xf4\xff\xf4")          # IAC IP x3: Ctrl-C kept as a telnet command
+        ok &= check("a client that sends Ctrl-C as telnet's Interrupt Process gets out too",
+                    wait_plain(c, b"--> Back home.", 6))
+        drain(c)
+        # A save of CONFIG link alone restarts the link and not doors (1.1.2
+        # restarts only the plugins whose settings moved). A caller in a door
+        # was left sending to a session the new link never had, hearing
+        # nothing: they are given back now, and can go in again.
+        if PASSWORD and HOST in ("127.0.0.1", "localhost"):
+            c.buf.clear()
+            c.send(b"doors 2\r")
+            c.wait_for(b"CLOCK DOOR", 8)
+            c.buf.clear()
+            peer.lines.clear()                                 # its "link up" after the restart is the one wanted
+            s = ascii_sysop("LinkSaver")
+            s.buf.clear()
+            s.send(b"config link\r")
+            wait_label(s, b"Enabled", 5)
+            ascii_form(s, [b"", b"", b"", b"5"])            # Admin: sysop to co1
+            ok &= check("a CONFIG link save gives a caller in a door back",
+                        wait_plain(c, b"--> Lost the signal.", 8) and wait_plain(c, b"--> Back home.", 3))
+            s.buf.clear()
+            s.send(b"config link\r")
+            wait_label(s, b"Enabled", 5)
+            ascii_form(s, [b"", b"", b"", b"6"])            # and back to sysop
+            ok &= check("CONFIG link is as it was", (cfg_sec_line("plugin:link", "admin") or "= sysop").endswith("= sysop"))
+            s.close()
+            drain(c)
+            c.buf.clear()
+            peer.wait("link up", 10)
+            time.sleep(1.5)                                    # the door list comes again
+            c.send(b"doors 2\r")
+            ok &= check("and the door opens again after", c.wait_for(b"CLOCK DOOR", 10))
+            c.send(b"\x03\x03\x03")
+            wait_plain(c, b"--> Back home.", 6)
+            drain(c)
+        c.buf.clear()
+        c.send(b"doors 2\r")
+        c.wait_for(b"CLOCK DOOR", 8)
+        c.close()
+        c = None
+        ok &= check("a caller hanging up in a door closes it on the box", peer.wait("close 1", 10) is not None)
+    finally:
+        if c:
+            c.close()
+        peer.stop()
+    return ok
+
+
+def test_link_shared():
+    """One satellite, several boards (1.2.0). This board owns the satellite
+    test_radio_link paired; linkpeer plays a second board (Phantom BBS).
+    LINK SHARE opens the satellite for it, LINK shows the other board, LINK
+    REVOKE takes it away. Then a second satellite, owned by a board on
+    channel 9, asks this board (on 6) to pair and is refused with the
+    reason, in words."""
+    print("One satellite, several boards")
+    if not link_ready() or not PASSWORD:
+        return True
+    extra = [int(x) for x in os.environ.get("BBS_LINK_EXTRA_PORTS", "").split(",") if x]
+    if len(extra) < 3:
+        print("  SKIP  the harness gives no extra link ports (BBS_LINK_EXTRA_PORTS)")
+        return True
+    peer = LinkPeer(pair=False, chan=4, board2=extra[0], board2_chan=6)
+    s = sysop_on("LinkSharer")
+    other = None
+    ok = True
+    try:
+        if not check("the satellite finds this board", peer.wait("link up", 25) is not None):
+            return False
+        time.sleep(1.0)
+        drain(s)
+        s.send(b"link share 9\r")
+        ok &= check("LINK SHARE wants a pairing number", s.wait_for(b"LINK SHARE n", 6))
+        drain(s)
+        s.send(b"link share 1\r")
+        ok &= check("LINK SHARE opens the satellite to one more board",
+                    s.wait_for(b"takes one more board for 2 minutes", 6))
+        ok &= check("the satellite opens its share window", peer.wait("share open 120", 10) is not None)
+        peer.cmd("b2 pair")
+        ok &= check("the second board pairs", peer.wait("b2 paired", 30) is not None)
+        ok &= check("and comes up", peer.wait("b2 up", 30) is not None)
+        ok &= check("the second board hears it does not own it",
+                    wait_line(peer, lambda l: l.startswith("b2 peers 2") and "6:Phantom BBS" in l, 20))
+        drain(s)
+        s.send(b"link\r")
+        ok &= check("LINK shows the satellite shared, this board the owner", s.wait_for(b"2, this board", 6))
+        ok &= check("and the other board under it", s.wait_for(b"Phantom BBS", 3) and b"heard" in s.buf)
+        drain(s)
+        s.send(b"link revoke 1 7\r")
+        ok &= check("a board that is not there is refused", s.wait_for(b"No board by that name", 6))
+        drain(s)
+        s.send(b"link revoke 1 1\r")
+        ok &= check("LINK REVOKE takes the other board away", s.wait_for(b"Revoked Phantom BBS.", 6))
+        ok &= check("and the other board is told", peer.wait("b2 unpaired", 10) is not None)
+        time.sleep(1.5)
+        drain(s)
+        s.buf.clear()
+        s.send(b"link\r")
+        s.wait_for(b"Frames in", 6)
+        ok &= check("LINK no longer lists it", b"Phantom BBS" not in s.buf and b"this board" not in s.buf)
+        peer.stop()
+        peer = None
+
+        # A second satellite, owned by a board on channel 9.
+        other = LinkPeer(pair=True, chan=9, port=extra[1], state="linkpeer2.state", board2=extra[2], board2_chan=9)
+        other.cmd("b2 pair")
+        ok &= check("a satellite pairs with a board on channel 9", other.wait("b2 up", 40) is not None)
+        drain(s)
+        s.send(b"link pair\r")
+        ok &= check("LINK PAIR opens here, on channel 6", s.wait_for(b"Pairing is open", 6))
+        other.cmd("b2 share 60")
+        ok &= check("its owner opens it to one more board", other.wait("share open 60", 10) is not None)
+        ok &= check("this board says why it will not pair",
+                    s.wait_for(b"works on channel 9 for its other boards and this board is on 6", 45))
+        ok &= check("and what to do", s.wait_for(b"one router.", 3) and s.wait_for(b"Not paired.", 3))
+        ok &= check("and pairs nothing", other.wait("b2 peers 2", 5) is None)
+    finally:
+        s.close()
+        if peer:
+            peer.stop()
+        if other:
+            other.stop()
+    return ok
+
+
+def camsat_ready():
+    if not link_ready():
+        return False
+    if "camsat" not in os.environ.get("BBS_HOST_EXT", "").split(","):
+        print("  SKIP  the camera satellite plugin is not built in (tools/harness.sh --ext camsat --card)")
+        return False
+    if not os.environ.get("BBS_SD_DIR"):
+        print("  SKIP  the camera satellite needs the card (--card)")
+        return False
+    return True
+
+
+# What a caller's SATS must never carry, checked by content, not by label
+# (Rob, 2026-09-27): a MAC, a channel, a key's fingerprint, a signal figure.
+SATS_SECRETS = [
+    (re.compile(rb"[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}"), "a MAC"),
+    (re.compile(rb"(?i)\bch(annel)?\s*\d"), "a channel"),
+    (re.compile(rb"[0-9A-F]{4} [0-9A-F]{4} [0-9A-F]{4} [0-9A-F]{4}"), "a key fingerprint"),
+    (re.compile(rb"dBm|RSSI|-\d\d\b"), "a signal figure"),
+    (re.compile(rb"Mbps|\bMb\b"), "a radio rate"),
+]
+
+
+def sats_leaks(buf):
+    txt = plain(buf)
+    return [what for rx, what in SATS_SECRETS if rx.search(txt)]
+
+
+def test_sats():
+    """SATS and CONFIG sats (1.2.0, tty-ux-sats). A camera satellite
+    (host/linkpeer --kind camsat) paired with the board: a caller's SATS
+    shows its number, name, status and last picture and nothing of the radio
+    or the keys; staff's shows the radio; SATS n in full; SNAPSHOT n takes a
+    picture from it; a busy satellite says how many are ahead; CONFIG sats
+    sets its number and what it sends here, and the satellite is told."""
+    print("SATS, and CONFIG sats")
+    if not camsat_ready() or not PASSWORD:
+        return True
+    base = int(os.environ["BBS_LINK_EXTRA_PORTS"].split(",")[0])
+    peer = LinkPeer(pair=True, chan=1, port=base + 50, state="camsat.state", kind="camsat")
+    s = sysop_on("SatKeeper")
+    ok = True
+    c = c40 = a = None
+    try:
+        drain(s)
+        s.send(b"link pair\r")
+        s.wait_for(b"Pairing is open", 6)
+        if not check("the board is asked to pair the camera", s.wait_for(b'Pair camera "shelf"', 25)):
+            return False
+        s.send(b"y")
+        s.wait_for(b"Does the device show", 20)
+        s.send(b"y")
+        ok &= check("paired", s.wait_for(b"Paired and checked.", 8))
+        ok &= check("the satellite is sent this board's settings, and wants everything",
+                    peer.wait("settings 0 recv 3 owner 1", 25) is not None)
+        time.sleep(2.5)                                 # camsat lists it within a second
+
+        c = ansi_login("SatWatcher")
+        drain(c)
+        c.buf.clear()
+        c.send(b"sats\r")
+        ok &= check("SATS lists it for a caller", c.wait_for(b"shelf", 6) and c.wait_for(b"awake", 3))
+        m = re.search(rb"\n\s*(\d)[* ]\s+shelf", plain(c.buf))
+        ok &= check("with its number", m is not None)
+        num = m.group(1) if m else b"1"
+        leaks = sats_leaks(c.buf)
+        ok &= check("and nothing of the radio or the keys (%s)" % (", ".join(leaks) or "none"), not leaks)
+        c40 = ansi40_login("SatWatcher40")
+        drain(c40)
+        c40.buf.clear()
+        c40.send(b"sats\r")
+        c40.wait_for(b"shelf", 6)
+        c40.pump(0.5)
+        leaks = sats_leaks(c40.buf)
+        ok &= check("at 40 columns too (%s)" % (", ".join(leaks) or "none"), not leaks)
+        ok &= check("in 39 columns", all(len(r) <= 39 for r in render_lines(c40.buf, 40)))
+        a = Caller(ansi=False)
+        a.wait_for(b"HIT DEL OR BACKSPACE", 6)
+        a.send(b"\x08")
+        a.wait_for(b"Enter your handle", 8)
+        login(a, "SatAscii")
+        drain(a)
+        a.buf.clear()
+        a.send(b"sats\r")
+        a.wait_for(b"shelf", 6)
+        a.pump(0.5)
+        leaks = sats_leaks(a.buf)
+        ok &= check("and in plain ASCII (%s)" % (", ".join(leaks) or "none"), not leaks)
+        drain(c)
+        c.buf.clear()
+        c.send(b"sats " + num + b"\r")
+        c.wait_for(b"shelf", 6)
+        c.pump(0.5)
+        leaks = sats_leaks(c.buf)
+        ok &= check("SATS n for a caller is its one row, still nothing secret (%s)" % (", ".join(leaks) or "none"),
+                    not leaks and b"Satellite " + num + b":" not in c.buf)
+
+        drain(s)
+        s.buf.clear()
+        s.send(b"sats\r")
+        ok &= check("staff see the radio", s.wait_for(b"RSSI", 6) and s.wait_for(b"channel", 2))
+        drain(s)
+        s.buf.clear()
+        s.send(b"sats " + num + b"\r")
+        ok &= check("SATS n in full for staff: the MAC",
+                    s.wait_for(b"MAC", 6) and re.search(rb"[0-9A-F]{2}(:[0-9A-F]{2}){5}", plain(s.buf)) is not None)
+        ok &= check("and the key's fingerprint",
+                    re.search(rb"Key\s+[0-9A-F]{4} [0-9A-F]{4} [0-9A-F]{4} [0-9A-F]{4}", plain(s.buf)) is not None)
+        ok &= check("never the key itself", re.search(rb"[0-9a-fA-F]{32}", plain(s.buf)) is None)
+        # The leak check itself, on a view that has all of them: it would
+        # have seen them in a caller's.
+        found = sats_leaks(s.buf)
+        ok &= check("the leak check finds the MAC, channel, key and signal in staff's view (%s)" % ", ".join(found),
+                    len(found) >= 5)
+
+        drain(c)
+        c.buf.clear()
+        c.send(b"snapshot " + num + b"\r")
+        ok &= check("SNAPSHOT n takes one from the satellite",
+                    peer.wait("snap ", 10) is not None and c.wait_for(b"Photo saved", 15))
+        c.send(b"n")
+        drain(c)
+        peer.cmd("busy 1 2")
+        time.sleep(0.3)
+        c.buf.clear()
+        c.send(b"snapshot " + num + b"\r")
+        ok &= check("a busy satellite says how many are ahead",
+                    c.wait_for(b"camera is busy, 2 ahead of you", 15))
+
+        # CONFIG sats in plain ASCII: the satellite's page, its number and
+        # what it sends here.
+        p = ascii_sysop("SatConfig")
+        p.buf.clear()
+        p.send(b"config sats\r")
+        ok &= check("CONFIG sats lists the satellite as a button",
+                    p.wait_for(b"SATELLITES", 5) and p.wait_for(b"shelf", 5))
+        ok &= check("its own page", open_camera_button(p) and p.wait_for(b"SHELF", 5) and p.wait_for(b"Satellite name", 5))
+        p.pump(0.3)
+        # Name, Camera number (5 is "5"), Receive timelapse (2 is "no"),
+        # Receive motion, then the buttons are passed over.
+        got = ascii_form(p, [b"", b"5", b"2", b"", b"", b""])
+        ok &= check("saved", got in (0, 2))
+        ok &= check("the satellite is told this board no longer wants its timelapse",
+                    peer.wait("settings 0 recv 2", 10) is not None)
+        # Saving goes back to CONFIG sats, which asks its buttons again:
+        # walk it to its Save and leave it.
+        ok &= check("saving comes back to the satellites page", finish_line_form(p))
+        drain(c)
+        c.buf.clear()
+        c.send(b"sats\r")
+        c.wait_for(b"shelf", 6)
+        ok &= check("SATS shows its new number", re.search(rb"\n\s*5[* ]\s+shelf", plain(c.buf)) is not None)
+        # Unpair asks first (code review: an Enter walking to Save landed on
+        # it and forgot the satellite).
+        p.buf.clear()
+        p.send(b"config sats\r")
+        p.wait_for(b"SATELLITES", 5)
+        open_camera_button(p)
+        p.wait_for(b"Satellite name", 5)
+        p.pump(0.3)
+        for a in [b"", b"", b"", b"", b""]:          # name, number, timelapse, motion, Share
+            p.send(a + b"\r")
+            p.pump(0.3)
+        p.send(b"y")                                # Unpair
+        asks = p.wait_for(b"Unpair shelf", 6) and p.wait_for(b"(y/N)", 3)
+        if not asks:
+            print("\n".join(render_lines(p.buf)[-25:]))
+        ok &= check("Unpair asks on the sysop's screen first", asks)
+        p.send(b"n")
+        ok &= check("and N changes nothing", p.wait_for(b"Not changed.", 5))
+        drain(c)
+        c.buf.clear()
+        c.send(b"sats\r")
+        ok &= check("it is still there", c.wait_for(b"shelf", 6))
+        p.close()
+    finally:
+        for x in (c, c40, a):
+            if x:
+                x.close()
+        s.close()
+        peer.stop()
+    return ok
+
+
+def finish_line_form(p):
+    """A line-mode form still asking: Enter past each question to its
+    Save, and say Y. True once the form has ended."""
+    for _ in range(20):
+        if b"Save (Y/n)?" in p.buf:
+            p.buf.clear()
+            p.send(b"y")
+            return wait_any(p, [b"Nothing changed", b"Saved"], 5) >= 0
+        p.send(b"\r")
+        p.pump(0.3)
+    return False
+
+
+def open_camera_button(p):
+    """CONFIG sats in line mode: Y at the camera's button, Enter past any
+    other (the door box the radio tests paired is a satellite too)."""
+    for _ in range(10):
+        if not p.wait_for(b"open (y/N)?", 5):
+            return False
+        asked = [l for l in render_lines(p.buf) if "open (y/N)?" in l]
+        p.buf.clear()
+        if asked and asked[-1].lstrip().startswith("Camera"):
+            p.send(b"y")
+            return True
+        p.send(b"\r")
+    return False
+
+
+def wait_line(peer, pred, secs):
+    end = time.time() + secs
+    while time.time() < end:
+        if any(pred(l) for l in list(peer.lines)):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def pet_plain(data):
+    """PETSCII output without its colour and control bytes (0x00-0x1F and
+    0x80-0x9F), for reading a line that changes colour part way."""
+    return bytes(x for x in bytes(data) if 0x20 <= x < 0x80 or x >= 0xA0)
+
+
+def wait_pet_plain(c, pat, secs=6):
+    end = time.time() + secs
+    while time.time() < end:
+        if pat in pet_plain(c.buf):
+            return True
+        if not c.pump(0.1):
+            break
+    return pat in pet_plain(c.buf)
+
+
+def test_doors_petscii():
+    """The way out of a door on a C64 (1.2.0). It was Ctrl-] three times,
+    and 0x1D is cursor-right on PETSCII: three moves right in a game threw
+    the caller out. RUN/STOP (0x03) three times is the way out now."""
+    print("Doors on a C64: cursor-right stays in, RUN/STOP gets out")
+    if not link_ready():
+        return True
+    peer = LinkPeer(pair=False, chan=4)
+    ok = True
+    p = None
+    try:
+        if not check("the paired door box finds the board", peer.wait("link up", 25) is not None):
+            return False
+        time.sleep(1.5)
+        p = Caller(ansi=False)
+        p.wait_for(b"HIT DEL OR BACKSPACE", 5)
+        p.send(b"\x14")
+        p.wait_for(b"40 OR 80 COLUMNS", 3)
+        p.send(b"4")
+        p.wait_for(pet("Enter your handle"), 10)
+        ok &= check("a C64 caller gets on", login(p, "PetDoorGoer", as_pet=True))
+        drain(p)
+        p.send(pet("doors") + b"\r")
+        ok &= check("DOORS names RUN/STOP as the way home", p.wait_for(pet("Home is RUN/STOP three times."), 6))
+        drain(p)
+        p.send(pet("doors 2") + b"\r")
+        ok &= check("the door opens", p.wait_for(b"CLOCK DOOR", 8))
+        ok &= check("and says home is RUN/STOP three times",
+                    pet("--> Home is RUN/STOP three times.") in pet_plain(p.buf))
+        ok &= check("and says it is uplinking", pet("--> Uplinking to shelf...") in pet_plain(p.buf))
+        # The board's lines fit a 40-column screen, 39 at most, with the
+        # longest sat name (16) and the longest key name: read from satwords.h
+        # itself, so a longer line there fails here.
+        words = {}
+        for m in re.finditer(r'constexpr const char (k\w+)\[\]\s*=\s*"([^"]*)"',
+                             (pathlib.Path(__file__).resolve().parent.parent / "src" / "core" / "satwords.h").read_text()):
+            words[m.group(1)] = m.group(2)
+        widest = []
+        for k in ("kUplinking", "kHomeIs", "kBackHome", "kGoesIn", "kNoDoorN", "kWhyTime",
+                  "kWhySignal", "kWhyNoAnswer", "kWhyFull", "kWhyNo", "kWhyClosing", "kBusy"):
+            f = words.get(k, "")
+            line = (f.replace("%.20s", "x" * 20).replace("%s", "RUN/STOP" if k == "kHomeIs" else "x" * 16))
+            if k not in ("kGoesIn", "kNoDoorN"):
+                line = "--> " + line
+            if not f or len(line) > 39:
+                widest.append("%s (%d)" % (k, len(line)))
+        ok &= check("every door line in satwords.h fits 39 columns%s" % (": " + ", ".join(widest) if widest else ""),
+                    not widest)
+        drain(p)
+        p.send(b"\x1d\x1d\x1d\x1d")
+        ok &= check("four cursor-rights in a door stay in the door", not wait_pet_plain(p, pet("--> Back home."), 2))
+        p.send(b"\x03\x03\x03")
+        ok &= check("RUN/STOP three times gets out", wait_pet_plain(p, pet("--> Back home."), 6))
+        ok &= check("and the box is told", peer.wait("close 3", 6) is not None)
+    finally:
+        if p:
+            p.close()
+        peer.stop()
+    return ok
+
+
 def test_version_shown():
     """The version everywhere a person reads one (1.1.0, Rob: "version the S3
     slightly different ... since we have the core versions and s3 versions
@@ -7284,6 +7916,62 @@ def test_board_s3_silent():
         ok &= check("after the whole glass went out again", bands(p) - b1 >= 11)
         ok &= check("and the header's blue is on it", shot_bar() == (24, 44, 120))
     top_config(s, silent_from=None, silent_until=None)
+    s.close()
+    return ok
+
+
+def test_camera_registry():
+    """One SNAPSHOT for every camera (1.2.0): the verbs are the core's and
+    reach the built-in camera by number or name; a camera that is not there
+    is said so; a caller's budget is one count however the camera is named;
+    SNAPSHOT is gone again when the last camera is. SKIPs off a camera
+    board or with no card."""
+    print("The cameras: one SNAPSHOT")
+    card = card_dir()
+    if HOST_BOARD not in CAM_BOARD or not PASSWORD or card is None:
+        print("  SKIP  needs tools/harness.sh --board fncam --card")
+        return True
+    s = cfg_sysop("RegSysop")
+    camera_config(s, snap="users")
+    time.sleep(1.0)
+    c = ansi_login("RegCaller")
+
+    def snapped(cmd):
+        c.buf.clear()
+        c.send(cmd + b"\r")
+        wait_any(c, [b"Download it now?", b"No camera", b"No such camera", b"not taking", b"not open to you",
+                     b"allowed at", b"busy"], 12)
+        c.pump(0.4)
+        got = plain(c.buf)
+        if b"Download it now?" in got:
+            c.send(b"n")
+            c.wait_for(b"kept in the Photos area", 4)
+        return got
+
+    got = snapped(b"snapshot")
+    m = re.search(rb"Snapshot (\d+) of 10 this hour", got)
+    first = int(m.group(1)) if m else 0
+    ok = check("SNAPSHOT takes one with the board's camera", m is not None)
+    got = snapped(b"snapshot 1")
+    ok &= check("SNAPSHOT 1 is the same camera, and the same count",
+                f"Snapshot {first + 1} of 10 this hour".encode() in got)
+    got = snapped(b"snapshot camera")
+    ok &= check("and so is SNAPSHOT camera, by name", f"Snapshot {first + 2} of 10 this hour".encode() in got)
+    got = snapped(b"snapshot 7")
+    ok &= check("a camera the board does not have is said so, with the ones it has (CAMERA is staff's)",
+                b"No such camera. Try: 1 camera." in got)
+    s.buf.clear()
+    s.send(b"snapshot 7\r")
+    ok &= check("and staff are pointed at CAMERA", s.wait_for(b"CAMERA lists them", 4))
+    s.buf.clear()
+    s.send(b"camera camera\r")
+    ok &= check("CAMERA camera is the built-in camera's own view", s.wait_for(b"Card free", 4))
+    camera_config(s, enabled="no")
+    time.sleep(1.0)
+    c.buf.clear()
+    c.send(b"snapshot\r")
+    ok &= check("with the last camera gone, SNAPSHOT is not a command", c.wait_for(b"Unknown command", 4))
+    c.close()
     s.close()
     return ok
 
@@ -16941,6 +17629,9 @@ GROUPS = {
     # SSH on the S3 profiles (1.1.2): harness.sh --board s3 [--card]. Each
     # SKIPs on the reference board.
     "ssh":       ["ssh_"],
+    # The radio link and what rides on it (1.2.0).
+    "radio":     ["radio_link", "doors", "doors_petscii", "link_shared"],
+    "sats":      ["sats"],
 }
 
 
@@ -16984,6 +17675,8 @@ ORDER_NAMES = [
     "test_config_sd_plugin",
     "test_config_lights", "test_config_lights_ascii", "test_lights_frames", "test_lights_manual",
     "test_lights_count", "test_lights_order", "test_lights_wifi", "test_lights_silent", "test_lights_disk",
+    # The radio link and doors (1.2.0): the pairing first, doors use it.
+    "test_radio_link", "test_doors", "test_doors_petscii", "test_link_shared", "test_sats",
     "test_version_shown",
     # SKIPs on the reference board: tools/harness.sh --board s3 runs it.
     "test_board_s3", "test_board_s3_silent",
@@ -16994,6 +17687,7 @@ ORDER_NAMES = [
     "test_ssh_dedicated_port", "test_ssh_socket_budget",
     "test_board_fncam", "test_board_espcam",
     "test_camera",
+    "test_camera_registry",
     "test_camera_failed_start",
     "test_camera_silent",
     "test_announce_camera",
@@ -19112,6 +19806,11 @@ NEEDS = {
     # "staff WHOIS shows private fields" reads Acct, whom test_accounts
     # registers with an email and a profile.
     "test_user_admin": ["test_accounts"],
+    # The link (1.2.0): the door sat and the shared satellite use the pairing
+    # test_radio_link makes (linkpeer.state and the board's p/link/peers).
+    "test_doors": ["test_radio_link"],
+    "test_doors_petscii": ["test_radio_link"],
+    "test_link_shared": ["test_radio_link"],
 }
 
 
@@ -19232,7 +19931,9 @@ def pick_selected(only):
     for n, f in sorted(globals().items(), key=lambda kv: order_index(kv[0])):
         if not n.startswith("test_") or not isinstance(f, types.FunctionType):
             continue
-        if any(w in n for w in wanted):
+        # "=test_name" is that test exactly, not every test it is part of
+        # the name of (--tests= is the same for a list of them).
+        if any((n == w[1:]) if w.startswith("=") else (w in n) for w in wanted):
             picked.append((n, f))
     return picked
 

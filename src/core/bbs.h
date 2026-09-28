@@ -435,6 +435,11 @@ public:
     // static). plugin is the plugin's index, 0xFF for the core table.
     // False when the registry is full.
     bool registerCommands(const Command* list, uint8_t count, uint8_t plugin = 0xFF);
+    // hasCommands / dropCommands: one table, by its pointer (1.2.0: the
+    // cameras' verbs, there while the board has a camera and gone when it
+    // has none, so SNAPSHOT is "Unknown command" on a board without one).
+    bool hasCommands(const Command* list) const;
+    void dropCommands(const Command* list);
     // dropPluginCommands: take every plugin's table back out, keeping the
     // core's. Called before the plugins are restarted by a config reload.
     void dropPluginCommands(uint32_t mask = 0xFFFFFFFFu);
@@ -515,6 +520,10 @@ public:
     // background runner). The list asks for the same row next pass.
     void listHold(Session& s) { s.listHeld = true; }
     void rowText(Session& s, Color c, const char* text, bool newline = true);
+    // markedLine: "--> text" from column 0, wrapped at the row width with the
+    // text's own column kept; in the room, the room's voice (chat::roomSay).
+    // Public (1.2.0) so a plugin speaks in the board's voice, not a copy of it.
+    void markedLine(Session& s, Color c, const char* text);
     void rowRule(Session& s);
     void rowTitle(Session& s, const char* title, const char* right = nullptr);
     // The same bar in a colour of the caller's choosing. rowTitle is this
@@ -534,6 +543,10 @@ public:
     // Public because secondsLeft and unlimited are not, and a plugin has no
     // business reaching for either: this is the question they actually have.
     int32_t minutesLeft(const Session& s, uint32_t now) const;
+    // callSecondsLeft: the same in seconds, -1 for no limit (1.2.0). For a
+    // plugin that must act before the core hangs up at 0: the doors plugin
+    // tells a door its time is up with a few seconds' grace to save.
+    int32_t callSecondsLeft(const Session& s, uint32_t now) const;
 
     // Shell handlers a plugin may reuse, so the room and the main prompt
     // cannot drift into two answers for one question.
@@ -634,7 +647,10 @@ private:
     Bbs() = default;
 
     static constexpr uint8_t kSessions      = BBS_MAX_NODES + 2;   // + busy + sysop
-    static constexpr uint8_t kCommandTables = 12;                  // core + plugins
+    // core + the cameras' verbs (photos.cpp) + every plugin (1.2.0: was 12,
+    // a count written beside the plugin table; the link, doors and external
+    // plugins took the table past it)
+    static constexpr uint8_t kCommandTables = 2 + BBS_MAX_PLUGINS;
 
     // -- connections (bbs.cpp) ---------------------------------------------
     void acceptAll(uint32_t now);
@@ -788,9 +804,6 @@ private:
     // on this call", with the bell. False when not now: the caller is asked
     // again next pass.
     bool warnElsewhere(Session& s, const char* msg);
-    // markedLine: "--> text" from column 0, wrapped at the row width with the
-    // text's own column kept; in the room, the room's voice (chat::roomSay).
-    void markedLine(Session& s, Color c, const char* text);
     void redrawInput(Session& s);
     void deliverMail(Session& s);
     // deliverMail's three shapes (1.1.0): at the prompt, inside a plugin
@@ -1012,6 +1025,17 @@ private:
     void configListOpen(Session& s, uint8_t field, uint32_t now);
     bool configInList() const;
     void configListBack(Session& s, Color c, const char* msg, uint32_t now);
+    // CONFIG sats (1.2.0): the link's satellites, a button each, and a page
+    // for each built from linkp:: and saved through it (bbs_sysop.cpp).
+    bool configSatsName(const char* arg);
+    void configSatsOpen(Session& s, uint8_t focus, uint32_t now);
+    void configSatsButton(Session& s, uint8_t field, uint32_t now);
+    void configSatOpen(Session& s, uint8_t field, uint32_t now);
+    bool configSatSave(Session& s, char* err, size_t errLen);
+    void configSatBack(Session& s, Color c, const char* msg, uint32_t now);
+    void configSatLeave(Session& s, const char* cmd, uint32_t now);
+    bool configSatSub() const;
+    bool configSatsOn() const;
     // configReloadAll: reread system.cfg and restart the plugins, having
     // first handed home any caller sitting inside one. Shared by the page
     // and the sub-page so a save means the same thing from either.

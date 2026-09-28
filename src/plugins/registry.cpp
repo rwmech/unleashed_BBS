@@ -45,6 +45,15 @@ extern const Plugin kFilesPlugin;
 extern const Plugin kForumsPlugin;
 extern const Plugin kInfoPlugin;
 extern const Plugin kLightsPlugin;
+extern const Plugin kLinkPlugin;         // the unleashed link (1.2.0, LINK.md)
+extern const Plugin kDoorsPlugin;        // doors over it
+// Plugins built in from their own repositories (1.2.0): ext_plugins.h is
+// written by the build (src/CMakeLists.txt, host/Makefile) and config.h
+// includes it. BBS_EXT_PLUGINS(X) calls X once for each descriptor, so this
+// file never changes for a new one.
+#define BBS_EXT_DECLARE(sym) extern const Plugin sym;
+BBS_EXT_PLUGINS(BBS_EXT_DECLARE)
+#undef BBS_EXT_DECLARE
 #ifdef BBS_HAS_LCD
 extern const Plugin kPanelPlugin;        // a board with a display (board.h)
 #endif
@@ -71,6 +80,14 @@ const Plugin* const kPlugins[] = {
 #ifdef BBS_HAS_CAMERA
     &kCameraPlugin,
 #endif
+    // doors before link: plugins stop in this order, so the doors close their
+    // sessions (a CLOSE each) while the link is still there to send them,
+    // and the link's stop() flushes them to the radio.
+    &kDoorsPlugin,
+    &kLinkPlugin,
+#define BBS_EXT_LIST(sym) &sym,
+    BBS_EXT_PLUGINS(BBS_EXT_LIST)
+#undef BBS_EXT_LIST
 };
 
 const uint8_t kPluginCount = sizeof(kPlugins) / sizeof(kPlugins[0]);

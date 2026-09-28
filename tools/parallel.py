@@ -403,7 +403,9 @@ def reap(tag):
             continue
         try:
             argv0 = (d / "cmdline").read_bytes().split(b"\0")[0]
-            if not os.path.basename(argv0).startswith(b"bbs_host"):
+            base = os.path.basename(argv0)
+            # linkpeer too (1.2.0): one left behind holds its UDP port.
+            if not (base.startswith(b"bbs_host") or base == b"linkpeer"):
                 continue
             env = (d / "environ").read_bytes().split(b"\0")
         except OSError:
@@ -428,6 +430,10 @@ def build(boards):
     targets = sorted({PROFILE_BIN[b] for b in boards})
     if "s3" in boards:
         targets.append("ssh_call")                # the S3's SSH tests call in with it
+    # The link's tests (1.2.0) talk to host/linkpeer, the far end: built with
+    # the board, so a lane never tests this board against an old build of it
+    # (harness.sh --no-build refuses a tree without one).
+    targets.append("linkpeer")
     t0 = time.time()
     lock = open("/tmp/bbs-parallel-build-%08x.lock" % zlib.crc32(str(ROOT).encode()), "w")
     fcntl.flock(lock, fcntl.LOCK_EX)
