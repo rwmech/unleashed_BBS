@@ -1582,6 +1582,12 @@ this tree.
     added later. A CONFIG page (name to settle: Credits, or something
     better) with conversion rates and a price per item.
   - **Not wanted:** upload/download ratios, QWK offline mail.
+- **Prices (Rob, 2026-09-28):** a classic ESP32 dev board is about $15,
+  and the boards with a full display start from around $60. The site is
+  being corrected. The firmware repo still says "$5" or "five dollar" in
+  tools/mkscreens.py and the privacy screen it generates, and in USERS.md,
+  PUBLIC.md and ESP32_BOARD_CHOICE.md; fix those in the next firmware
+  batch (the screens through screen-artist).
 - **Packet radio (Rob, KE9CXN, 2026-09-28).** A HAM RADIO section on the
   site, with a "Packet Radio Node" page from Rob's own write-up
   (release-prep/cloud/packet-radio-page.md). The chain is any 2 m FM radio
