@@ -768,9 +768,18 @@ this tree.
   that ground: the KEYESTUDIO ESP32-S3 PRO (N16R8), whose on-board SD slot
   sits on GPIO 35-37, inside the octal PSRAM bus, so PSRAM and the card
   slot cannot both work.
-- **The Waveshare ESP32-S3-ETH, ETH 1.0.0 on 1.1.2** (board-wseth,
+- **The Waveshare ESP32-S3-ETH, ETH 1.0.1 on 1.1.2** (board-wseth,
   2026-09-28, COM25). Pins and sources in `release-prep/wseth/pins.md`,
   the factory flash in `release-prep/wseth/factory-16MB.bin`.
+  - **An S3 camera needs 17 KB of internal DMA, not the ESP32's 33** (ETH
+    1.0.1). `kCamDmaBlock` was the ESP32's I2S figure, and every snap on
+    this board was refused for memory with the largest block at 27-31 KB
+    (SSH's task stack is internal). The S3 takes 16 x 1 KB for JPEG and
+    up to `CAMERA_DMA_BUFFER_SIZE_MAX` for raw frames, so an S3 camera
+    board sets that to 16384 in its layer and platform.h asserts it. The
+    Freenove's 40 KB reserve pool made it worse here. Any other S3 camera
+    lane (WS2, MF35) needs the same line. Snaps then took about 5 s.
+  - The camera on the bench's board is an OV5640 (the wiki is right).
   - **Ethernet first, Wi-Fi as the fallback, board-gated** (`BBS_HAS_ETH`).
     IDF 5.3.1's own W5500 driver (in-tree, `CONFIG_ETH_SPI_ETHERNET_W5500`
     in `sdkconfig.defaults.wseth` only; `esp_eth` is required only when

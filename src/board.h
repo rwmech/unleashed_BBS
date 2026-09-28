@@ -472,7 +472,8 @@
 // ESP32-S3R8 (read as revision v0.2 on the bench: 8 MB octal PSRAM in the
 // package), a 16 MB W25Q128 beside it, native USB only (USB-C to GPIO 19
 // and 20), a WIZnet W5500 10/100 Ethernet controller on SPI with an RJ45, a
-// 24-pin DVP camera connector (an OV2640 on the bench's board), a TF slot
+// 24-pin DVP camera connector (an OV5640 on the bench's board, found at
+// bring-up; the schematic's sheet says OV2640, and both work), a TF slot
 // wired for SPI, one WS2812B, a BOOT button on GPIO 0, and a header for an
 // optional PoE module (not fitted on the bench's). No display.
 //
@@ -505,7 +506,7 @@
 #define BBS_BOARD_PLUGINS     1       // the camera
 
 #define BBS_BOARD_TAG         "ETH"
-#define BBS_BOARD_VERSION     "1.0.0"
+#define BBS_BOARD_VERSION     "1.0.1"
 
 // PSRAM (sdkconfig.defaults.esp32s3: octal, as on the S3 stick). A build
 // that lost the layer would otherwise link quietly without it.
@@ -565,9 +566,11 @@
 // ROM prints its banner at every reset. GPIO 16 is also the camera's VSYNC
 // if R29 is fitted instead of R19 (it is not, on the boards Waveshare ship).
 
-// The camera. The schematic's Y2 to Y9 are the driver's D0 to D7.
+// The camera. The schematic's Y2 to Y9 are the driver's D0 to D7. Sold with
+// an OV5640 (the wiki, the factory demo and the bench's board: PID 0x5640
+// at 0x3C); an OV2640 on the same connector works too.
 #define BBS_HAS_CAMERA        1
-#define BBS_CAM_SENSOR        "OV2640"
+#define BBS_CAM_SENSOR        "OV5640"
 #define BBS_CAM_SIZES         "qvga|vga|svga|xga|hd|sxga|uxga"
 #define BBS_CAM_SIZE          3       // xga
 #define BBS_CAM_FLASH_PIN     -1      // no flash LED on this board

@@ -24,16 +24,20 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
-## Waveshare ESP32-S3-ETH, ETH 1.0.0 on core 1.1.2 (board pre-release), 2026-09-28
+## Waveshare ESP32-S3-ETH, ETH 1.0.1 on core 1.1.2 (board pre-release), 2026-09-28
 
-A new board, shown as `1.1.2 (ETH 1.0.0)`: the Waveshare ESP32-S3-ETH, an
+A new board, shown as `1.1.2 (ETH 1.0.1)`: the Waveshare ESP32-S3-ETH, an
 ESP32-S3R8 with 16 MB of flash, 8 MB of PSRAM, a W5500 10/100 Ethernet port,
-an OV2640 camera, a TF slot and one WS2812B. Built and code-reviewed, and
-brought up on the bench (2026-09-28): the W5500 links at 100 Mb/s full
-duplex, DHCP answers in about 1 s, the board listens on the wire, and
-telnet setup and login and SSH on 6400 and 6422 all work over Ethernet,
-with the card mounted. The Wi-Fi fallback, the camera and the rest of the
-functional checks are still to run.
+an OV5640 camera, a TF slot and one WS2812B. Built, code-reviewed and on
+the bench (2026-09-28): the W5500 links at 100 Mb/s full duplex, DHCP
+answers in about 1 s, and telnet setup and login and SSH on 6400 and 6422
+all work over Ethernet, with the card mounted. Two SNAPSHOTs filed (about
+5 s each, the camera powered up cold each time), and CONFIG network's
+Ethernet row switched No then Yes, each restart on the right interface.
+ETH 1.0.1 fixed the snap: the camera's internal DMA check used the ESP32's
+33 KB figure where the S3 needs 17 KB (CAMERA_DMA_BUFFER_SIZE_MAX 16 KB on
+this board), and every snap was refused for memory. The cable-pull
+fallback is still to run; host tests go to a cloud run.
 
 - **Ethernet first, Wi-Fi as the fallback.** The board takes an address
   over DHCP on the wire and serves telnet, SSH, mDNS, NTP and announce there.
@@ -47,7 +51,7 @@ functional checks are still to run.
   `standby, the fallback`, Radio `standby, calls on Ethernet` rather than a
   false "SLEEPING"), DASH shows `Eth 100M` in Wi-Fi's place, HARDWARE lists
   `Ethernet 100 Mb/s` (or `no link`, or `off`), and the directory's system badge
-  reads `ESP32-S3 · 8 MB · Ethernet · ETH 1.0.0`.
+  reads `ESP32-S3 · 8 MB · Ethernet · ETH 1.0.1`.
 - The camera (Photos and Timelapse, as on the other camera boards), the SD
   card over SPI, SSH as on the Waveshare stick, the lights on the board's
   WS2812B (GPIO 21). The camera's power is switched by GPIO 8, which the

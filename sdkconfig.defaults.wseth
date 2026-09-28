@@ -60,6 +60,15 @@ CONFIG_ETH_SPI_ETHERNET_W5500=y
 # for two minutes; 10 is past a lease renewal's own retries on a LAN.
 CONFIG_ESP_NETIF_IP_LOST_TIMER_INTERVAL=10
 
+# The camera's internal DMA buffer (ETH 1.0.1). On the S3 esp32-camera takes
+# 16 x 1 KB for JPEG (target/esp32s3/ll_cam.c, ll_cam_dma_sizes) and up to
+# this figure for raw frames; 16 KB caps both, so one bring-up needs 17 KB
+# of internal DMA memory, not the ESP32's 33 (platform.h, kCamDmaBlock).
+# The bench's first SNAPSHOT was refused with the largest block at 31,744
+# against the ESP32 figure; a 40 KB reserve pool, the Freenove's answer,
+# made it 27,648 (the SSH task's stack lands in it) and was taken out.
+CONFIG_CAMERA_DMA_BUFFER_SIZE_MAX=16384
+
 # The camera driver (espressif/esp32-camera) with the sensors this board is
 # sold with. Every sensor is on by default and their register tables are
 # initialised data (the Freenove's plan measured all seventeen at 9,800
