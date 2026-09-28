@@ -836,7 +836,9 @@ this tree.
     orbiting) and "How it works". "Build one" says a camera can be added
     later with a satellite.
   - **Recommended hardware changes:** the Waveshare S3 plus a camera
-    satellite is the best setup today (Rob). The site and the board
+    satellite is the best setup today (Rob). **The best-looking display
+    so far is the Waveshare 4.3B** (Rob, 2026-09-28), which is the
+    display pick when the board picks are redone. The site and the board
     picks are redone once the satellite works.
   - Bench: the ESP32-CAM without a card on COM15 as the satellite, and
     the Waveshare S3 on COM12 as its BBS.
