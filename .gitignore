@@ -46,6 +46,8 @@ sdkconfig.*
 !sdkconfig.defaults.fncam
 # The AI-Thinker ESP32-CAM's layer, named to it in platformio.ini (1.1.1).
 !sdkconfig.defaults.espcam
+# The Waveshare ESP32-S3-Touch-LCD-4.3B's layer (WS43B, 1.1.2).
+!sdkconfig.defaults.ws43b
 include/secrets.h
 data/system.cfg
 data/calls.log
@@ -69,6 +71,7 @@ host/bbs_host_espcam
 host/ssh_call
 host/wolfobj/
 host/libwolfssh_host.a
+host/bbs_host_ws43b
 # Every compiled test, by pattern rather than by name. Naming them one
 # at a time meant test_wrap's binary was committed the day it was
 # written, 72 KB of build output in the tree, and nothing noticed

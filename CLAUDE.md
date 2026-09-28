@@ -768,6 +768,34 @@ this tree.
   that ground: the KEYESTUDIO ESP32-S3 PRO (N16R8), whose on-board SD slot
   sits on GPIO 35-37, inside the octal PSRAM bus, so PSRAM and the card
   slot cannot both work.
+- **The Waveshare ESP32-S3-Touch-LCD-4.3B, WS43B 1.0.0** (board-ws43b from
+  v1.1.2, 2026-09-28, COM23; one of three boards in Rob's
+  `v1.1.2-hardware-preview`). CHANGELOG has what a sysop sees. Worth keeping:
+  - **An RGB panel needs no frame buffer.** `flags.no_fb` and an IRAM
+    `on_bounce_empty` that doubles a 400 x 240 PSRAM picture into four-line
+    bounce buffers: a quarter of the PSRAM traffic, no 768 KB buffer, and
+    12.8 KB of internal RAM. The demos' ten-line buffers (32 KB) left the
+    largest free block at 11 KB on the bench; four lines left 27.6 KB, with
+    heap free 57 K and low 50.7 K, close to the stick's.
+  - **XIP from PSRAM is what makes the RGB bus safe with LittleFS.** With
+    code and rodata in PSRAM, IDF 5.3.1 keeps the cache on through a flash
+    write (`SPI_FLASH_CACHE_NO_DISABLE`), so the refill can read PSRAM; the
+    IDF's own comment says a PSRAM read with the cache off crashes.
+  - **The refill interrupt runs on core 1**, the core that started the
+    panel. Idle SYS on the bench: loop avg 881 us of work, near the stick's
+    ~1,000; measuring it under callers waits for Rob's go.
+  - **The CH422G has one direction bit for all eight IO pins**, so the
+    isolated inputs cannot be read without letting go of the backlight, both
+    resets and the card's chip select. Not read.
+  - **Rob's rules from this lane (2026-09-28):** no testing of any kind
+    without his explicit go (code review always runs first and is exempt;
+    building and flashing to see a board boot are not tests); no performance
+    testing until builds are live; questions for Rob go to the coordinator,
+    photos to Discord. Screen work goes through tty-ux first.
+  - **The idle strip is not a sweep** (Rob, on the glass: the Larson
+    scanner "looks like shit" there). switchboard is a lamp a line: a
+    caller's line in rank colour, a free line dim steady blue flickering
+    with RX and TX.
 - **1.2.0: the µnleashed link, camera satellites and the door framework**
   (Rob, 2026-09-26). 1.1.2 stays a patch and ships first; this is 1.2.0,
   built in parallel lanes now and merged after 1.1.2.

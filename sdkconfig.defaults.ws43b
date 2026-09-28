@@ -1,0 +1,66 @@
+# ===========================================================================
+#  unleashed BBS
+#  Electronic freedom on a microcontroller.
+# ===========================================================================
+#
+# File:         sdkconfig.defaults.ws43b
+# Module:       Build / ESP-IDF defaults, Waveshare ESP32-S3-Touch-LCD-4.3B layer
+#
+# Purpose:      What the Waveshare ESP32-S3-Touch-LCD-4.3B build changes from
+#               sdkconfig.defaults and sdkconfig.defaults.esp32s3.
+#               platformio.ini names this file for the board's environments
+#               through SDKCONFIG_DEFAULTS (board_build.cmake_extra_args).
+#               IDF 5.3.1 still reads "<file>.<target>" after each file it is
+#               given (tools/cmake/kconfig.cmake), so the order is
+#               sdkconfig.defaults, sdkconfig.defaults.esp32s3, then this
+#               file, and a later value wins.
+#
+#               The part: ESP32-S3-WROOM-1-N16R8, 8 MB octal PSRAM and native
+#               USB only, which is the S3 layer's own; everything that layer
+#               says stands. This one adds only what the RGB panel needs.
+#               Sources in src/board.h, BBS_BOARD_WS_S3TOUCH43B.
+#
+#               PlatformIO keeps the generated sdkconfig.<env>, a value it
+#               already holds wins over this file, and it does not watch this
+#               file: delete sdkconfig.ws_s3touch43b* after editing here, and
+#               check the generated file. A value outside its Kconfig range is
+#               discarded, not clamped.
+#
+# Targets:      ESP32-S3 (ESP-IDF 5.3.1)
+# See also:     sdkconfig.defaults.esp32s3, platformio.ini, src/board.h
+#
+# Copyright 2026 - Robert Mech
+# License:      GNU General Public License v3 or later
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 3 of the License, or (at your
+# option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program. If not, see <https://www.gnu.org/licenses/>. The full
+# text is in the LICENSE file at the top of this repository.
+# ===========================================================================
+
+# The program and its constants run from PSRAM (XIP), copied there from
+# flash at boot, as every Waveshare demo for this board runs. The reason is
+# the panel: an RGB panel is fed from PSRAM continuously, and a flash write
+# (every LittleFS write) otherwise turns the cache off for its length, which
+# starves the panel (the glass tears or drifts) and would crash an interrupt
+# that reads PSRAM. With code and rodata in PSRAM, IDF 5.3.1's flash driver
+# leaves the cache on through a write (spi_flash_os_func_app.c,
+# SPI_FLASH_CACHE_NO_DISABLE). About 1.3 MB of the 8 MB is taken by the copy.
+CONFIG_SPIRAM_XIP_FROM_PSRAM=y
+
+# The RGB driver's interrupt in IRAM, so its bounce buffers are refilled
+# whatever the cache is doing, and the DMA restarted at every VSYNC so that
+# a refill that was ever late costs one frame, never a picture that stays
+# shifted (the IDF's own advice for RGB panels, esp_lcd Kconfig).
+CONFIG_LCD_RGB_ISR_IRAM_SAFE=y
+CONFIG_LCD_RGB_RESTART_IN_VSYNC=y

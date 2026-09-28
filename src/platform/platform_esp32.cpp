@@ -67,6 +67,8 @@
 #include "soc/soc_caps.h"        // the RMT's block size and DMA, per chip
 #if defined(BBS_HAS_SSH) && BBS_HAS_SSH
 #include "esp_vfs_eventfd.h"       // the SSH links' wake descriptors (1.1.2)
+#include <unistd.h>                // their read and write (wakePost, wakeTake), not
+                                   // left to arrive through the console's headers
 #endif
 #if SOC_USB_SERIAL_JTAG_SUPPORTED && CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
 #include "driver/usb_serial_jtag.h"      // the console on the S3's own USB
@@ -93,7 +95,7 @@
 #endif
 #include <new>
 #endif
-#ifdef BBS_HAS_LCD
+#if defined(BBS_HAS_LCD) && !defined(BBS_LCD_RGB)
 #include "esp_lcd_panel_io.h"            // the panel: esp_lcd over SPI
 #include "esp_lcd_io_spi.h"
 #include "esp_lcd_panel_ops.h"
@@ -432,6 +434,11 @@ bool sdMount(const SdPins& pins, char* err, size_t errLen) {
     if (g_mount) return true;                      // already up, nothing to do
     // Whatever was cached describes a card that is not this one.
     sdInfoStale();
+#ifdef BBS_SD_CS_EXPANDER
+    // The card's chip select is the board's expander pin, held low from the
+    // expander's first write: the driver is given no CS (board.h).
+    if (!boardExpander()) return fail("the board's I2C expander did not answer");
+#endif
 #ifdef BBS_SD_SDMMC1
     // A slot wired for SDMMC (board.h, BBS_SD_SDMMC1): the SDMMC host, one
     // data line, on the profile's pins. On the ESP32 the host's slot 1 is on
@@ -536,7 +543,8 @@ bool sdMount(const SdPins& pins, char* err, size_t errLen) {
         plat::log("sd: mount failed at %u kHz: %s (0x%x)",
                   static_cast<unsigned>(host.max_freq_khz), esp_err_to_name(e),
                   static_cast<unsigned>(e));
-#ifdef BBS_SD_SDMMC1
+#if defined(BBS_SD_SDMMC1) || defined(BBS_SD_CS_EXPANDER)
+        // No CS pin a sysop could have got wrong: the slot's own wiring.
         if (e == ESP_ERR_TIMEOUT || e == ESP_ERR_NOT_FOUND)
             return fail("no card found: check it is seated");
 #else
@@ -1359,7 +1367,7 @@ uint8_t pixelsFrame(uint8_t out, uint8_t* rgb, uint8_t cap) {
     return n;
 }
 
-#ifdef BBS_HAS_LCD
+#if defined(BBS_HAS_LCD) && !defined(BBS_LCD_RGB)   // an RGB panel: platform_esp32_rgb.cpp
 // ===========================================================================
 // The panel (BBS_HAS_LCD): an ST7789 through the IDF's esp_lcd, on SPI3.
 //

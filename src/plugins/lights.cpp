@@ -122,7 +122,7 @@ constexpr uint8_t kPctDef   = 10;
 // ---------------------------------------------------------------------------
 enum : uint8_t { DF_PC, DF_1541, DF_DISK2, DF_BREATHE, DF_OFF };
 enum : uint8_t { SF_NODES, SF_HAYES, SF_BLINKEN, SF_SCANNER, SF_C64, SF_BOING, SF_VU,
-                 SF_RAINBOW, SF_MANUAL, SF_OFF, SF_WIFI };
+                 SF_RAINBOW, SF_MANUAL, SF_OFF, SF_WIFI, SF_SWITCH };
 enum : uint8_t { LF_SOLID, LF_BLINK, LF_BREATHE, LF_FLICKER, LF_SPARKLE, LF_TRAFFIC,
                  LF_NODE, LF_OFF };
 enum : uint8_t { LC_RANDOM = 10, LC_CYCLE = 11 };
@@ -142,7 +142,11 @@ constexpr int wordIndex(const char* list, const char* w, int at = 0) {
 static_assert(wordIndex(lights::kDriveFx, "off") == DF_OFF, "kDriveFx and DF_ disagree");
 static_assert(wordIndex(lights::kStripFx, "manual") == SF_MANUAL &&
               wordIndex(lights::kStripFx, "off") == SF_OFF &&
-              wordIndex(lights::kStripFx, "wifi") == SF_WIFI, "kStripFx and SF_ disagree");
+              wordIndex(lights::kStripFx, "wifi") == SF_WIFI &&
+              wordIndex(lights::kStripFx, "switchboard") == SF_SWITCH, "kStripFx and SF_ disagree");
+constexpr bool stripFxOk(int v) { return v >= 0 && v <= static_cast<int>(SF_SWITCH); }
+static_assert(stripFxOk(BBS_LIGHTS_STRIP_FX),
+              "BBS_LIGHTS_STRIP_FX is not one of kStripFx");
 static_assert(wordIndex(lights::kLedFx, "node") == LF_NODE &&
               wordIndex(lights::kLedFx, "off") == LF_OFF, "kLedFx and LF_ disagree");
 static_assert(wordIndex(lights::kColours, "random") == LC_RANDOM &&
@@ -167,6 +171,7 @@ constexpr Rgb kAmber     = { 255, 130,   0 };   // the card
 constexpr Rgb kCoolWhite = { 170, 200, 255 };   // the board's own flash
 constexpr Rgb kRed       = { 255,   0,   0 };   // an error, and every lamp on a panel
 constexpr Rgb kWhite     = { 255, 255, 255 };
+constexpr Rgb kDialRgb   = { 127, 212, 255 };   // the site's dial: switchboard's free lines
 
 // Manual mode's palette, in kColours order up to white.
 constexpr Rgb kPalette[] = {
@@ -219,7 +224,7 @@ bool    g_flash    = false;     // the camera is taking a picture (lights::flash
 #endif
 int8_t  g_stripPin = -1;
 uint8_t g_driveFx  = DF_PC;
-uint8_t g_stripFx  = SF_NODES;
+uint8_t g_stripFx  = BBS_LIGHTS_STRIP_FX;
 uint8_t g_drivePct = kPctDef;
 uint8_t g_stripPct = kPctDef;
 uint8_t g_count    = lights::kPixelsDefault;   // pixels on the strip, 1 to kStrip
@@ -238,6 +243,7 @@ constexpr uint8_t kDark[kStrip * 3] = {};
 #ifdef BBS_HAS_LCD
 bool    g_panel    = false;                    // the panel shows the strip
 uint8_t g_shown[kStrip * 3];                   // the strip's last frame, for it
+uint8_t g_shownDrive[3];                       // and the drive light's
 bool    g_running  = false;                    // between start and stop
 #endif
 
@@ -572,7 +578,8 @@ void drawStrip(uint32_t now, uint8_t* f, uint16_t rx, uint16_t tx, uint32_t byte
     const uint8_t n   = g_count;
     memset(f, 0, kStrip * 3u);
     Lines lines{};
-    const bool needLines = g_stripFx == SF_NODES || g_stripFx == SF_HAYES || g_stripFx == SF_MANUAL;
+    const bool needLines = g_stripFx == SF_NODES || g_stripFx == SF_HAYES || g_stripFx == SF_MANUAL ||
+                           g_stripFx == SF_SWITCH;
     if (needLines) gather(lines);
     const uint16_t moved = static_cast<uint16_t>(rx | tx);
     // A hue step that goes round the wheel once along the strip, near
@@ -711,6 +718,30 @@ void drawStrip(uint32_t now, uint8_t* f, uint16_t rx, uint16_t tx, uint32_t byte
             break;
         }
 
+        case SF_SWITCH: {
+            // switchboard (1.1.2, the 4.3" board's default; Rob: "more
+            // meaning or better looks", and no sweep). A lamp a line, as
+            // nodes: a line with a caller on it in the caller's rank colour,
+            // dipping on traffic; a free line dim and steady in the site's
+            // dial blue, the even lamps flickering up with bytes in and the
+            // odd ones with bytes out, as a modem's RD and SD did. So with
+            // nobody on the bar is quiet but alive, and every caller is a
+            // bright lamp among dim ones. The sysop's line has no lamp here,
+            // as in nodes: the strip is the caller lines.
+            const bool rd = blip(g_rd, rx != 0);
+            const bool sd = blip(g_sd, tx != 0);
+            for (uint8_t i = 0; i < n; ++i) {
+                bool dip = blip(g_cell[i], (moved >> (i + 1)) & 1u);
+                if (lines.mark[i]) {
+                    Rgb c = kTermRgb[static_cast<uint8_t>(bbsu::markColor(lines.mark[i]))];
+                    put(f, i, c, dip ? 60 : 255, pct);
+                } else {
+                    put(f, i, kDialRgb, ((i & 1u) ? sd : rd) ? 200 : 90, pct);
+                }
+            }
+            break;
+        }
+
         case SF_MANUAL:
             // led1 to ledN; a pixel past the strip's end is not drawn, even
             // with a setting of its own in the file.
@@ -818,6 +849,7 @@ void tick(uint32_t now) {
     if (g_stripOn) plat::pixelsShow(kOutStrip, strip, g_count);
 #ifdef BBS_HAS_LCD
     memcpy(g_shown, strip, sizeof(g_shown));
+    memcpy(g_shownDrive, drive, sizeof(g_shownDrive));
 #endif
 }
 
@@ -841,7 +873,17 @@ namespace {
 // panel reads it from its own tick, on the same task.
 void lights::wantPanel(bool on) {
     g_panel = on;
-    if (!on) memset(g_shown, 0, sizeof(g_shown));
+    if (!on) {
+        memset(g_shown, 0, sizeof(g_shown));
+        memset(g_shownDrive, 0, sizeof(g_shownDrive));
+    }
+}
+
+bool lights::panelDrive(uint8_t* rgb, uint8_t& pct) {
+    pct = g_drivePct;
+    if (!g_running || !rgb) return false;
+    memcpy(rgb, g_shownDrive, sizeof(g_shownDrive));
+    return true;
 }
 
 uint8_t lights::panelFrame(uint8_t* rgb, uint8_t cap, uint8_t& pct) {
@@ -866,7 +908,7 @@ void defaults() {
     g_drivePin = BBS_LIGHTS_DRIVE_PIN;
     g_stripPin = -1;
     g_driveFx  = DF_PC;
-    g_stripFx  = SF_NODES;
+    g_stripFx  = BBS_LIGHTS_STRIP_FX;           // nodes, unless the board says (board.h)
     g_drivePct = g_stripPct = kPctDef;
     g_count    = lights::kPixelsDefault;
     g_driveOrd = BBS_LIGHTS_DRIVE_ORDER;
@@ -919,7 +961,7 @@ bool start(Bbs& bbs) {
     g_rssi = 0; g_rssiAt = 0;
     g_darkDrive = g_darkStrip = false;
 
-    char a[10], b[10];
+    char a[12], b[12];
     plat::log("lights: drive %s on gpio %d at %u%%, strip %s on gpio %d at %u%%, %u pixels",
               wordOf(lights::kDriveFx, g_driveFx, a, sizeof(a)), g_drivePin,
               static_cast<unsigned>(g_drivePct),
@@ -951,7 +993,7 @@ void stop() {
 // ---------------------------------------------------------------------------
 const char* status() {
     static char line[48];
-    char a[10], b[10];
+    char a[12], b[12];
     snprintf(line, sizeof(line), "Lights: drive %s, strip %s",
              g_driveOn ? wordOf(lights::kDriveFx, g_driveFx, a, sizeof(a)) : "off",
              g_stripOn ? wordOf(lights::kStripFx, g_stripFx, b, sizeof(b)) : "off");
@@ -1051,7 +1093,7 @@ void cmdLights(Bbs& b, Session& s, const char* a, uint32_t now) {
         b.prompt(s);
         return;
     }
-    char fa[10], fb[10];
+    char fa[12], fb[12];
     b.rowTitle(s, "Lights", board::silent() ? "silent" : g_testAt ? "testing" : nullptr);
     showOutput(s, "Drive", g_drivePin, g_driveOn, wordOf(lights::kDriveFx, g_driveFx, fa, sizeof(fa)),
                g_drivePct, kOutDrive, false, g_driveOrd);
@@ -1094,7 +1136,7 @@ constexpr PluginSetting kSettings[] = {
     { "strip_pin",    "Strip pin", PS_PIN,  -1, BBS_GPIO_OUT_MAX, 2, "10 pixels need their own 5 V supply.", nullptr,
       "Strip GPIO",
       "Ten pixels on this GPIO. Give them their own 5 V feed: 600 mA at full white." },
-    { "strip_fx",     "Strip",     PS_CYCLE, 0,  0, 7, "nodes: one pixel for each caller line.",
+    { "strip_fx",     "Strip",     PS_CYCLE, 0,  0, 11, "nodes: one pixel for each caller line.",
       lights::kStripFx, "Strip effect",
       "nodes: one pixel per caller line, in the caller's rank colour. manual: Pixels." },
     { "strip_bright", "Strip %",   PS_NUM,   1, kPctMax, 3, "White at 10 is 60 mA; at 30, 180 mA.", nullptr,
@@ -1151,7 +1193,7 @@ static_assert(countLed() <= Form::kMaxFields, "the Pixels page is full");
 // not been given it yet. A pixel's is its packed "effect | colour", which is
 // also what its button shows and its page opens on.
 void setting(const char* key, char* out, size_t n) {
-    char a[10], b[10];
+    char a[12], b[12];
     if (!g_defaulted) defaults();
     if      (!strcmp(key, "drive_pin"))    snprintf(out, n, "%d", g_drivePin);
     else if (!strcmp(key, "strip_pin"))    snprintf(out, n, "%d", g_stripPin);

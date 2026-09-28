@@ -387,7 +387,7 @@ outside it and no way to approve a file that is waiting somewhere else.
 |---|---|
 | `ANNOUNCE` | Whether this board is listed in a directory, when each one last answered, and the public address the directory sees, then when the last heartbeat went and what came back, and when the next is due (1.1.2): `Last sent 14:02: listed`, `Next in 9m 58s`, with `a caller change` or `backing off` after it when either applies. `ANNOUNCE TEST` prints the exact payload and sends nothing; `ANNOUNCE NOW` sends a heartbeat immediately. A caller arriving or leaving, and `SHOW`, `HIDE` and `LURK`, send one within seconds. Off until switched on: see [ANNOUNCE.md](ANNOUNCE.md). |
 | `LIGHTS` | The lights plugin's two outputs: each one's pin, effect, brightness and colour order, and the colours it was last sent, in hex. `LIGHTS TEST` shows red, green, blue and then white on every pixel, a second each, for checking the wiring and the order. In silent mode every pixel is dark, the title says `silent` and `LIGHTS TEST` is refused. Off until switched on (on as shipped on the Waveshare S3): see `lights` under Plugins below. |
-| `PANEL` | Boards with a display only (the Waveshare ESP32-S3-LCD-1.47): what the panel is running on (controller, size and offsets as turned, where the USB plug is, pins, SPI clock) and everything it is showing, as text, top to bottom: the bar's current page, the band's glyphs in words, the antenna's fill, the clock, the heading, each list row (a recent row as `login`, `guest`, `logoff`, `page` or `ring`, then its time and handle), the system row, and the number of LEDs in its strip. `Dark:` and why, when it is not lit. See `panel` under Plugins below. |
+| `PANEL` | Boards with a display only (the Waveshare ESP32-S3-LCD-1.47 and ESP32-S3-Touch-LCD-4.3B): what the panel is running on (controller, size and offsets as turned, where the USB plug is, pins, SPI clock) and everything it is showing, as text, top to bottom: the bar's current page, the band's glyphs in words, the antenna's fill, the clock, the heading, each list row (a recent row as `login`, `guest`, `logoff`, `page` or `ring`, then its time and handle), the system row, and the number of LEDs in its strip. `Dark:` and why, when it is not lit. See `panel` under Plugins below. |
 | `SHUTDOWN [n]` | Take the board off the air on purpose. Announces to every node, counts down n seconds (5 to 3600, default 60), then hangs up on everyone including you, each with the ordinary send-off. `SHUTDOWN CANCEL` stops a countdown and says so. Afterwards the board keeps answering and tells callers it has been shut down, rather than refusing connections in a way that looks like a crash. A physical reboot brings it back. Any transfer running when the countdown ends is lost, and the warning says so. |
 | `BACKUP SD` | The zip the backup window gives, onto the SD card: `unleashed-YYYYMMDD-HHMM.zip` in the card's `backup` folder, with a dot a file while it writes and then `Saved: 14 files, 31 KB.` It holds the Wi-Fi password as typed, and says so. `BACKUP SD SCREENS` writes `screens-YYYYMMDD-HHMM.zip`, the screens alone. Two in one minute would share a name, so the second is refused. `BACKUP` on its own explains the difference from the backup window (1.1.0). |
 | `RESTORE SD [SCREENS] [n]` | On its own, the card's backups, newest first and numbered. With a number or a zip's name, checks it exactly as an upload through the backup window is checked, shows what it would replace (a full restore always shows `Replaces`, `Accounts`, `Removes` and `Staff`) and asks `Restore now? (y/N)`; N or 60 seconds is `Not restored.` With anybody else on the board, Y waits for them to leave (`Waiting for 2 callers to leave. F applies it now, N gives up.`), `F` puts it back at once with a warning to them, and after `backup_window_minutes` it gives up: `Not restored: callers stayed on.` New callers get the busy line meanwhile. `SCREENS` puts only the zip's screens back, onto the card's `screens` folder, and never removes anything; deleting them from the card undoes it (1.1.0). The zips are also the sysop's Backups file area, `FILES` 11, to download and upload over the line. Details: [BACKUP.md](BACKUP.md#backups-on-the-sd-card). |
@@ -788,7 +788,7 @@ drive_pin    = 13       ; -1 is off, as shipped
 drive_fx     = pc       ; pc | 1541 | disk2 | breathe | off
 drive_bright = 10       ; percent, 1 to 100 (past 30: see Power, below)
 strip_pin    = 14       ; -1 is off, as shipped
-strip_fx     = nodes    ; nodes | hayes | blinken | scanner | c64 | boing | vu | rainbow | manual | off | wifi
+strip_fx     = nodes    ; nodes | hayes | blinken | scanner | c64 | boing | vu | rainbow | manual | off | wifi | switchboard
 strip_bright = 10       ; percent, 1 to 100 (past 30: see Power, below)
 led3         = sparkle | random   ; manual mode: led1 to led16, effect | colour
 strip_count  = 10       ; pixels on the strip, 1 to 16
@@ -855,6 +855,12 @@ strip_order  = GRB      ; GRB | RGB | BRG | RBG | GBR | BGR
     excellent), amber from -75 (fair), red below it (weak). The last lit
     pixel breathes a little so the meter reads as live. Not joined to a
     network, one red pixel breathes slowly.
+  - `switchboard` (1.1.2, the default on the Waveshare ESP32-S3-Touch-LCD-4.3B;
+    `nodes` everywhere else): a lamp a line, as `nodes`. A line with a
+    caller on it is the caller's rank colour; a free line is dim and steady
+    in the site's dial blue, the even lamps flickering up with bytes in and
+    the odd ones with bytes out, as a modem's RD and SD lamps did. The
+    sysop's line has no lamp, as in `nodes`.
 - **Drive %** and **Strip %**: brightness, as a percentage of full, 1 to
   100, each output its own, 10 as shipped (1.1.0; it was capped at 30). Past
   30 is allowed and is your call, and CONFIG asks you to confirm first,
@@ -1017,6 +1023,37 @@ backlight = 60     ; percent, 0 dark
 - A save restarts the plugin like any other; a panel whose settings did not
   change stays lit through it. A new turn resets the panel and keeps it dark
   until the whole new picture has been drawn.
+
+On the **Waveshare ESP32-S3-Touch-LCD-4.3B** (1.1.2, WS43B 1.0.0) the panel
+is an 800 x 480 ST7262 on the S3's RGB bus, and the page is shorter, because
+the bus, the size and the timing are the board's wiring:
+
+```
+[plugin:panel]
+enabled   = yes
+backlight = 100    ; 0 off, anything else on: the backlight has no dimmer
+sleep     = 0      ; minutes with no tap before the backlight goes off; 0 never
+```
+
+- **Driver** names the controller, ST7262.
+- **Light** (`backlight`) is on or off: the boost that lights the panel has
+  an enable on the board's I2C expander and no dimming input.
+- **Sleep min** (`sleep`, 0 to 240) turns the backlight off after that many
+  minutes with no tap; a tap or a ring turns it back on. Silent mode keeps it
+  dark whatever is tapped.
+- The picture is drawn at 400 by 240 and shown at twice the size. It is the
+  landscape layout grown for the glass
+  (internal/tty-ux-panel-ws43b-2026-09-28.md): a taller bar with the rotating
+  slot in the large face, `SHUTTING DOWN` or `CLOSED to callers` in the band
+  while the board is in either state, two columns of a heading and six rows
+  (`Callers n/m` on the left, `Calls n today` on the right), callers running
+  on from the left column into the right before any are folded into `+N
+  more`, a system row of free heap, peak and the chip's own temperature (the
+  die, not the room), and the lights as a light bar with the drive light's
+  lamp at its left.
+- **A tap** on the glass (GT911 touch) turns the bar's slot to its next page
+  at once and holds it ten seconds, long enough to read the address off it;
+  on a sleeping panel the tap only wakes it. `PANEL` counts the taps.
 
 A value out of range is logged and the default is kept. An upload with a bad value is rejected, so it never replaces a working config.
 

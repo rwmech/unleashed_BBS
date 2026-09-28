@@ -35,6 +35,8 @@
 #                              (bbs_host_fncam), with --only=board_fncam
 #                 --board espcam the AI-Thinker ESP32-CAM profile
 #                              (bbs_host_espcam), with --only=board_espcam
+#                 --board ws43b  the Waveshare ESP32-S3-Touch-LCD-4.3B profile
+#                              (bbs_host_ws43b), with --only=board_ws43b
 #
 #                 --changed RANGE   work out --only from what a git range
 #                              touched, instead of naming it by hand. RANGE
@@ -161,7 +163,8 @@ while [ $# -gt 0 ]; do
                 s3)    BIN=bbs_host_s3;    export BBS_HOST_BOARD=s3 ;;
                 fncam) BIN=bbs_host_fncam; export BBS_HOST_BOARD=fncam ;;
                 espcam) BIN=bbs_host_espcam; export BBS_HOST_BOARD=espcam ;;
-                *)  echo "harness: no board profile called $2 (s3, fncam, espcam)"; exit 2 ;;
+                ws43b) BIN=bbs_host_ws43b; export BBS_HOST_BOARD=ws43b ;;
+                *)  echo "harness: no board profile called $2 (s3, fncam, espcam, ws43b)"; exit 2 ;;
             esac
             shift 2 ;;
         # A board as it leaves the web installer: no staff passwords in its
@@ -254,8 +257,8 @@ cd "$PROJ/host"
 if [ "$BUILD" = yes ]; then
     make -s "$BIN"
     # The S3 profile has SSH (1.1.2): its tests call in with wolfSSH's client.
-    if [ "$BIN" = bbs_host_s3 ]; then make -s ssh_call; fi
-elif [ ! -x "$BIN" ] || { [ "$BIN" = bbs_host_s3 ] && [ ! -x ssh_call ]; }; then
+    if [ "$BIN" = bbs_host_s3 ] || [ "$BIN" = bbs_host_ws43b ]; then make -s ssh_call; fi
+elif [ ! -x "$BIN" ] || { [ "$BIN" != bbs_host ] && [ "$BIN" != bbs_host_fncam ] && [ "$BIN" != bbs_host_espcam ] && [ ! -x ssh_call ]; }; then
     echo "harness: --no-build, and host/$BIN (or ssh_call) has not been built"
     exit 2
 fi
@@ -351,7 +354,7 @@ CFG
 
 # SSH's own port (1.1.2) on the S3 profile, per tag like the others: 6422
 # for every run would have two tags' boards fighting over it.
-if [ "$BIN" = bbs_host_s3 ]; then
+if [ "$BIN" = bbs_host_s3 ] || [ "$BIN" = bbs_host_ws43b ]; then
     sed -i "s/^backup_port = .*/&\nssh_port = $((PORT + 1500))/" "$DATA/user/system.cfg"
 fi
 

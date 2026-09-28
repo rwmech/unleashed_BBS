@@ -191,6 +191,14 @@ void readKey(void* ctx, const char* key, const char* value) {
     (void)pin;
     if (!strcmp(key, "cs") || !strcmp(key, "mosi") || !strcmp(key, "clk") || !strcmp(key, "miso"))
         plat::log("sd: %s = %s is an SPI pin; this board's slot is SDMMC, ignored", key, value);
+#elif defined(BBS_SD_CS_EXPANDER)
+    // Chip select is the expander's (board.h), not a GPIO: a cs line from
+    // another board's system.cfg is said once and ignored.
+    if      (!strcmp(key, "cs"))
+        plat::log("sd: cs = %s ignored; this board's chip select is on its expander", value);
+    else if (!strcmp(key, "mosi")) pin(g_pins.mosi, false);
+    else if (!strcmp(key, "clk"))  pin(g_pins.clk,  false);
+    else if (!strcmp(key, "miso")) pin(g_pins.miso, true);
 #else
     if      (!strcmp(key, "cs"))   pin(g_pins.cs,   false);
     else if (!strcmp(key, "mosi")) pin(g_pins.mosi, false);
@@ -596,6 +604,9 @@ void showStatus(Bbs& b, Session& s) {
 #ifdef BBS_SD_SDMMC1
         snprintf(buf, sizeof(buf), "  slot SDMMC 1-bit, CLK %d CMD %d D0 %d",
                  BBS_SDMMC_CLK, BBS_SDMMC_CMD, BBS_SDMMC_D0);
+#elif defined(BBS_SD_CS_EXPANDER)
+        snprintf(buf, sizeof(buf), "  wired CS on the expander, MOSI %d CLK %d MISO %d",
+                 g_pins.mosi, g_pins.clk, g_pins.miso);
 #else
         snprintf(buf, sizeof(buf), "  wired CS %d MOSI %d CLK %d MISO %d",
                  g_pins.cs, g_pins.mosi, g_pins.clk, g_pins.miso);
@@ -733,7 +744,14 @@ const PluginSetting kSettings[] = {
       nullptr, "Card slot (SDMMC)" },
     { "speed",   "Bus kHz",  PS_NUM,   400, 40000, 5, nullptr, nullptr, "SDMMC bus speed, kHz" },
 #else
+#ifdef BBS_SD_CS_EXPANDER
+    // Chip select is the board's expander pin, held low (board.h): shown,
+    // never set.
+    { "cs",      "CS pin",   PS_INFO,  0, 0, 20, "The board's expander holds it low.",
+      nullptr, "Chip select" },
+#else
     { "cs",      "CS pin",   PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, nullptr, nullptr, "Chip select GPIO" },
+#endif
     { "mosi",    "MOSI pin", PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, nullptr, nullptr, "MOSI GPIO" },
     { "clk",     "CLK pin",  PS_PIN,   0, BBS_GPIO_OUT_MAX, 2, nullptr, nullptr, "Clock GPIO" },
     { "miso",    "MISO pin", PS_PIN,   0, BBS_GPIO_MAX, 2, nullptr, nullptr, "MISO GPIO" },
@@ -754,6 +772,12 @@ void setting(const char* key, char* out, size_t n) {
 #ifdef BBS_SD_SDMMC1
     if (!strcmp(key, "slot")) {
         snprintf(out, n, "SDMMC 1-bit %d %d %d", BBS_SDMMC_CLK, BBS_SDMMC_CMD, BBS_SDMMC_D0);
+        return;
+    }
+#endif
+#ifdef BBS_SD_CS_EXPANDER
+    if (!strcmp(key, "cs")) {
+        snprintf(out, n, "expander EXIO4");
         return;
     }
 #endif
