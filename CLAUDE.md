@@ -1231,6 +1231,7 @@ this tree.
   - they ship together as ONE pre-release, **v1.1.2-hardware-preview**, built from a branch that combines the three lanes;
   - **no performance testing until they are live on the site**, only functional checks;
   - the ETH board is listed as "most stable connection" (Rob: "nothing beats wired"). "Fastest" waits for measurements after it's live.
+  - every new or changed screen layout goes through the design agents first (tty-ux to specify, screen-artist for art), then gets built to the spec.
 - **Where it stopped (2026-09-27, evening).**
   - **1.1.2 is released:** v1.1.2 at cfc76bb, a full GitHub release with 26 assets, tagged on host tests (Rob skipped the board soak). The site had not fetched it yet at 16:05. Rob runs the site's update.sh and adds it to his autopublish loop.
   - **Web:** pushed and live after the next updates:
