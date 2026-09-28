@@ -1231,6 +1231,8 @@ this tree.
   - they ship together as ONE pre-release, **v1.1.2-hardware-preview**, built from a branch that combines the three lanes;
   - **no performance testing until they are live on the site**, only functional checks;
   - the ETH board is listed as "most stable connection" (Rob: "nothing beats wired"). "Fastest" waits for measurements after it's live.
+  - **Every ESP32-S3 board runs SSH on 1.1.2** (Rob). BBS_HAS_SSH is on in every S3 profile: the three new boards, and the Makerfabs, rebuilt on 1.1.2 as MF35 1.1.0 and added to the hardware preview. The site calls this the "next generation BBS" under its header, and every board-choice page opens by recommending an S3 board for encrypted (SSH) point-to-point connections.
+  - Standing OK from Rob for small site edits: the site selftest and headless screenshots before a push.
   - every new or changed screen layout goes through the design agents first (tty-ux to specify, screen-artist for art), then gets built to the spec.
 - **Where it stopped (2026-09-27, evening).**
   - **1.1.2 is released:** v1.1.2 at cfc76bb, a full GitHub release with 26 assets, tagged on host tests (Rob skipped the board soak). The site had not fetched it yet at 16:05. Rob runs the site's update.sh and adds it to his autopublish loop.
