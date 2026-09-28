@@ -1580,6 +1580,12 @@ this tree.
     added later. A CONFIG page (name to settle: Credits, or something
     better) with conversion rates and a price per item.
   - **Not wanted:** upload/download ratios, QWK offline mail.
+- **A packet radio setup page on the site** (Rob, 2026-09-28, not for any
+  particular release): how to reach a board over packet radio for TTY
+  logins. Rob worked out the setup in another chat; get his notes from
+  him when it's scheduled rather than reconstructing it. It goes on the
+  site with the other "how to connect" pages, and it's `explain`'s copy,
+  checked against the firmware for what a TTY caller actually gets.
 - **Long term: push photos out to social media** (Rob, 2026-09-24, "a future
   long term possibility"). Every snapshot, or a chosen few, sent onward so
   a board can post to Bluesky, Mastodon, X or Discord, advertising the
