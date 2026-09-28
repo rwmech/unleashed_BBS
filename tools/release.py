@@ -81,6 +81,9 @@ Usage:        python3 tools/release.py                build and check
                                                       one board's set only
               python3 tools/release.py --tag v1.1.2-ws2.1
                                                       one board's set only
+              python3 tools/release.py --board esp32s3-eth
+                                                      one set only, the way a
+                                                      "tag_only" board is built
 
 Libraries:    Python 3 standard library; PlatformIO on the PATH
 Targets:      developer PC, GitHub Actions (ubuntu-latest)
@@ -166,11 +169,67 @@ BUILDS = (
     # flag when the profile merges into a release.
     {"dir": "esp32s3-ws2", "env": "ws_s3touch2_release", "family": "ESP32-S3", "boot": 0x0,
      "board": "BBS_BOARD_WS_S3TOUCH2", "table": "partitions_s3.csv", "tag_only": True},
+    # The Waveshare ESP32-S3-ETH (ETH 1.0.0, 1.1.2). chipFamily ESP32-S3,
+    # the stick's, so the site's picker asks which board: the stick's image
+    # here would drive its panel's pins into this board's camera bus, and
+    # this one's would bring the W5500 up on the stick's SD and panel pins.
+    # "tag_only": left out of an ordinary release, and built only when named
+    # (--board esp32s3-eth, for a board pre-release), until the profile
+    # merges into a release and loses the flag.
+    {"dir": "esp32s3-eth", "env": "ws_s3eth_release", "family": "ESP32-S3", "boot": 0x0,
+     "board": "BBS_BOARD_WS_S3ETH", "table": "partitions_s3.csv", "tag_only": True},
 )
 
 # A board pre-release's key, the word in its tag after the core version
 # (v1.1.2-ws2.1), and the one set it carries.
-BOARD_TAGS = {"ws43b": "esp32s3-ws43b", "ws2": "esp32s3-ws2"}
+BOARD_TAGS = {"ws43b": "esp32s3-ws43b", "ws2": "esp32s3-ws2", "eth": "esp32s3-eth"}
+
+# A combined preview: several boards' sets under one pre-release tag, the
+# core version's X.Y.Z then the name (v1.1.2-hardware-preview, Rob,
+# 2026-09-28: the three new Waveshare boards and the Makerfabs, shipped
+# together). No other set is built, so nothing already released changes.
+PREVIEW_TAGS = {
+    "hardware-preview": ("esp32s3-ws43b", "esp32s3-ws2", "esp32s3-eth"),
+}
+
+
+def select(ver, tag, board):
+    """Which sets a run builds, and the folder it writes (release/<relname>/).
+
+    No tag, or v<BBS_VERSION>: every set that is not tag_only, into
+    release/<BBS_VERSION>/. v<X.Y.Z>-<preview>: that preview's sets, into
+    release/<the tag less its v>/, the folder the workflow publishes from.
+    v<BBS_VERSION or X.Y.Z>-<board>.<n>: that board's set alone, likewise.
+    --board DIR (no tag): one set, into release/<BBS_VERSION>-DIR/, so a
+    local build of one board never writes over a full release's folder.
+    """
+    dirs = {b["dir"] for b in BUILDS}
+    for name, want in list(BOARD_TAGS.items()) + [(n, d) for n, ds in PREVIEW_TAGS.items() for d in ds]:
+        if want not in dirs:
+            die(f"release.py: {name} names a set, {want}, that BUILDS does not have")
+    core = ver.split("-")[0]                  # 1.1.2-hw.1 -> 1.1.2
+    if board:
+        if tag:
+            die("--board builds one set locally; a tag says its own sets, so give one or the other")
+        builds = tuple(b for b in BUILDS if b["dir"] == board)
+        if not builds:
+            die(f"no set called {board}; the sets are {', '.join(b['dir'] for b in BUILDS)}")
+        return builds, f"{ver}-{board}"
+    if not tag or tag == f"v{ver}":
+        return tuple(b for b in BUILDS if not b.get("tag_only")), ver
+    m = re.match(r"^v" + re.escape(core) + r"-([a-z][a-z0-9-]*[a-z0-9])$", tag)
+    if m and m.group(1) in PREVIEW_TAGS:
+        want = PREVIEW_TAGS[m.group(1)]
+        builds = tuple(b for b in BUILDS if b["dir"] in want)
+        print(f"release: the {m.group(1)} pre-release, {tag[1:]}: {', '.join(b['dir'] for b in builds)}")
+        return builds, tag[1:]
+    m = re.match(r"^v(?:" + re.escape(ver) + "|" + re.escape(core) + r")-([a-z0-9]+)\.(\d{1,3})$", tag)
+    if m and m.group(1) in BOARD_TAGS:
+        builds = tuple(b for b in BUILDS if b["dir"] == BOARD_TAGS[m.group(1)])
+        print(f"release: a board pre-release, {tag[1:]}: the {builds[0]['dir']} set only")
+        return builds, tag[1:]
+    die(f"tag {tag} does not match BBS_VERSION {ver}, nor v{core}-<preview> for a preview in "
+        f"{sorted(PREVIEW_TAGS)}, nor v{core}-<board>.<n> for a board in {sorted(BOARD_TAGS)}")
 
 # Offsets every table keeps, because ESP-IDF and PlatformIO put them there
 # for any table (otadata after nvs, the first app at 0x20000). Everything
@@ -452,19 +511,12 @@ def main():
                     help="build from a working tree with uncommitted changes")
     ap.add_argument("--tag", help="the git tag being released: v<BBS_VERSION>, or "
                                   "v<BBS_VERSION>-<board>.<n> for one board's pre-release")
+    ap.add_argument("--board", help="build only this set (a BUILDS dir, such as esp32s3-eth): "
+                                    "how a tag_only board is built, locally or for a board pre-release")
     a = ap.parse_args()
 
     ver = version()
-    builds = tuple(b for b in BUILDS if not b.get("tag_only"))
-    relname = ver                     # what the release is called: firmware/<relname>/
-    if a.tag and a.tag != f"v{ver}":
-        m = re.match(r"^v" + re.escape(ver) + r"-([a-z0-9]+)\.(\d{1,3})$", a.tag)
-        if not m or m.group(1) not in BOARD_TAGS:
-            die(f"tag {a.tag} does not match BBS_VERSION {ver}, nor v{ver}-<board>.<n> "
-                f"for a board in {sorted(BOARD_TAGS)}")
-        builds = tuple(b for b in BUILDS if b["dir"] == BOARD_TAGS[m.group(1)])
-        relname = a.tag[1:]
-        print(f"release: a board pre-release, {relname}: the {builds[0]['dir']} set only")
+    builds, relname = select(ver, a.tag, a.board)
     dirty = git("status", "--porcelain", "--untracked-files=no")
     if dirty and not a.allow_dirty:
         die("the working tree has uncommitted changes; commit, or --allow-dirty to test")

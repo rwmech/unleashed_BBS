@@ -507,6 +507,7 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `day_minutes` | `480` | per-day limit, 0 = unlimited |
 | `backup_port` | `8080` | HTTP port while the backup window is open; never the same as `port` |
 | `ssh_port` | `6422` | S3 boards only (1.1.2): SSH's own port, where the board speaks first, for SyncTERM 1.9 and older. `0` turns it off; SSH still works on `port`. Never the same as `port` or `backup_port` (a file read at boot runs without it and says why). Used from the next restart. `CONFIG network`, last row: **SSH port (SyncTERM)**, `SSH port` at 40 columns |
+| `ethernet` | `yes` | Boards with an Ethernet port only (the Waveshare ESP32-S3-ETH, 1.1.2). `yes`: the wire first, over DHCP; Wi-Fi joins only when Ethernet has had no address for 10 s from boot or 3 s after losing it, and stands down again when it comes back. Callers on the interface that went away are dropped; the listeners answer on both. `no`: Wi-Fi alone, the Ethernet chip left off. Used from the next restart. SYS shows the interface in use (`Ethernet 100 Mb/s full duplex`, Wi-Fi `standby`), HARDWARE lists it. `CONFIG network`, last row: **Ethernet first**, `Ethernet` at 40 columns |
 | `backup_window_minutes` | `5` | how long one button press keeps the window open (1..60) |
 | `backup_button_gpio` | `0` | button pin, active low (BOOT on dev boards), -1 = no window. Refused: 6 to 11 (flash) and pins the chip does not have (20, 24, 28 to 31 on the WROOM) |
 | `who_refresh_min` | `1` | lowest `WHO n` / `DASH n` refresh, seconds |

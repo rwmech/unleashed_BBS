@@ -114,7 +114,7 @@ LANE_OVERHEAD = 3.0          # a lane's board start and data copy
 # that, and it read as forty unrelated failures.
 PORT_BLOCKS = [(11000, 21500), (21500, 32000)]
 PROFILE_BIN = {"": "bbs_host", "s3": "bbs_host_s3", "fncam": "bbs_host_fncam",
-               "espcam": "bbs_host_espcam"}
+               "espcam": "bbs_host_espcam", "wseth": "bbs_host_wseth"}
 
 
 # ---------------------------------------------------------------------------

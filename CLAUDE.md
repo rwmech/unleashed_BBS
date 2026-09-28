@@ -831,6 +831,58 @@ this tree.
     and a strip effect with meaning (`switchboard`, shared with the 4.3B:
     nodes while callers are on, dim steady lamps flickering with real
     traffic when nobody is; Rob rejected the KITT sweep; round lamps here).
+- **The Waveshare ESP32-S3-ETH, ETH 1.0.1 on 1.1.2** (board-wseth,
+  2026-09-28, COM25). Pins and sources in `release-prep/wseth/pins.md`,
+  the factory flash in `release-prep/wseth/factory-16MB.bin`.
+  - **An S3 camera needs 17 KB of internal DMA, not the ESP32's 33** (ETH
+    1.0.1). `kCamDmaBlock` was the ESP32's I2S figure, and every snap on
+    this board was refused for memory with the largest block at 27-31 KB
+    (SSH's task stack is internal). The S3 takes 16 x 1 KB for JPEG and
+    up to `CAMERA_DMA_BUFFER_SIZE_MAX` for raw frames, so an S3 camera
+    board sets that to 16384 in its layer and platform.h asserts it. The
+    Freenove's 40 KB reserve pool made it worse here. Any other S3 camera
+    lane (WS2, MF35) needs the same line. Snaps then took about 5 s.
+  - The camera on the bench's board is an OV5640 (the wiki is right).
+  - **Ethernet first, Wi-Fi as the fallback, board-gated** (`BBS_HAS_ETH`).
+    IDF 5.3.1's own W5500 driver (in-tree, `CONFIG_ETH_SPI_ETHERNET_W5500`
+    in `sdkconfig.defaults.wseth` only; `esp_eth` is required only when
+    that is on). Its own netif `ETH_DEF` (mDNS's predefined Ethernet
+    follows it), route priority 128 over the station's 100. The radio
+    always starts (Improv, the fallback, the 1.2.0 link) but is held
+    (`s_ethHold`): it dials only after the wire has had no address for
+    10 s from boot or 3 s after losing it, and is disconnected when the
+    wire is back, except while Improv's trial or scan has it. Listeners
+    are INADDR_ANY, so a switch moves no listener; callers on the lost
+    interface drop. `ethernet = no` is Wi-Fi alone.
+  - **The camera's power is a P-FET on GPIO 8** (gate pulled up by 10 MΩ,
+    pulled down by GPIO 8 through 1 MΩ): off at reset, on while GPIO 8 is
+    low. esp32-camera's PWDN does exactly that at each bring-up, so
+    `BBS_CAM_PWDN 8`. Found in the schematic and confirmed by an ESPHome
+    user's report; Waveshare's wiki does not mention it.
+  - **The directory cuts the system badge at 40 characters.** "ESP32-S3 ·
+    8 MB · PSRAM · Ethernet · ETH 1.0.0" is 46, so this board's badge
+    drops PSRAM for Ethernet (`plat::hardware`); HARDWARE still shows it.
+  - **The 1.2.0 link needs the radio started, and it is**: on Ethernet
+    the station is started and unassociated, so ESP-NOW would have to set
+    its own channel (nothing to follow), which the link lane should know.
+  - **Bring-up on COM25 (2026-09-28)**: link 100 Mb/s full at 2.1 s,
+    DHCP address at 3.1 s, listening at 3.2 s, NTP, SSH on both ports and
+    the card up by 3.8 s; setup, telnet login and SSH login over the wire.
+    Static DRAM 265,456 of 341,760 (the stick 254,288), image 1,427,712.
+    SYS's Radio row read "min SLEEPING" on the wire (the unjoined
+    station's idle default); it says "standby" there now.
+  - **The other boards' images**: every application object and library
+    identical to v1.1.2's, built at the same path, except `main.cpp.o`'s
+    `app_main`, where 8 immediates differ: the `__LINE__` numbers that
+    `ESP_ERROR_CHECK` bakes in, moved 24-25 lines by the ETH blocks above
+    it. A comparison across worktrees is meaningless (`__FILE__` paths),
+    and linked images move by call relaxation between any two links.
+    `release-prep/wseth/objsnap.py` does the comparison.
+  - The code review's socket answer: the W5500 netif, mDNS (raw PCBs,
+    `MDNS_NETWORKING_SOCKET` off) and SNTP take no lwIP sockets, so the
+    16-socket budget and `busyFits` are the stick's. The older line in
+    this file that the listener, mDNS and SNTP take three is out of date:
+    only the listener is a socket.
 - **1.2.0: the µnleashed link, camera satellites and the door framework**
   (Rob, 2026-09-26). 1.1.2 stays a patch and ships first; this is 1.2.0,
   built in parallel lanes now and merged after 1.1.2.

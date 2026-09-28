@@ -130,6 +130,14 @@ bbs_host_ws2: $(SRCS) $(HDRS) libwolfssh_host.a
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_WS_S3TOUCH2 $(WOLF_CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) \
 	    libwolfssh_host.a $(LDLIBS)
 
+# The Waveshare ESP32-S3-ETH profile (ETH 1.0.0, 1.1.2, src/board.h): an S3
+# with SSH, so it links wolfSSH as bbs_host_s3 does, and Ethernet, which the
+# host plays as a wire with an address (platform_host.cpp, BBS_HOST_ETH).
+# tools/harness.sh --board wseth runs it with --only=board_wseth.
+bbs_host_wseth: $(SRCS) $(HDRS) libwolfssh_host.a
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_WS_S3ETH $(WOLF_CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) \
+	    libwolfssh_host.a $(LDLIBS)
+
 # The panel's drawing: glyphs, layout, lamps and the queue of what to send.
 # Pure code with no platform, checked pixel by pixel with no display.
 test_panel: test_panel.cpp ../src/plugins/panel_gfx.h ../src/plugins/panel_font.h
@@ -255,6 +263,6 @@ test: licence formats test_xmodem test_wrap test_forums_ptr test_compose test_co
 
 clean:
 	rm -rf wolfobj libwolfssh_host.a ssh_call test_sshlink
-	rm -f bbs_host bbs_host_s3 bbs_host_ws43b bbs_host_fncam bbs_host_espcam bbs_host_ws2 test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera
+	rm -f bbs_host bbs_host_s3 bbs_host_ws43b bbs_host_fncam bbs_host_espcam bbs_host_ws2 bbs_host_wseth test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera
 
 .PHONY: clean test licence formats

@@ -118,13 +118,15 @@ TABLE = [
     # Same version-bump exception as src/config.h below: BBS_BOARD_VERSION
     # is bumped with a board's own changes and a pure bump of it changes no
     # board's behaviour, so VERSION_ONLY downgrades that case too.
-    ("src/board.h", ["board_s3", "board_fncam", "board_espcam", "board_ws43b", "board_ws2", "shell"]),
+    ("src/board.h", ["board_s3", "board_fncam", "board_espcam", "board_ws43b", "board_ws2", "board_wseth",
+                     "shell"]),
     ("sdkconfig.defaults.esp32s3", ["board_s3"]),
     ("sdkconfig.defaults.ws43b", ["board_ws43b"]),
     ("src/platform/platform_esp32_rgb.cpp", ["board_ws43b"]),
     ("sdkconfig.defaults.fncam", ["board_fncam"]),
     ("sdkconfig.defaults.espcam", ["board_espcam"]),
     ("sdkconfig.defaults.ws2", ["board_ws2"]),
+    ("sdkconfig.defaults.wseth", ["board_wseth"]),
 
     # -----------------------------------------------------------------
     # Core: files load-bearing enough that scoping them would be a guess.
@@ -203,7 +205,7 @@ TABLE = [
     # Plugins.
     # -----------------------------------------------------------------
     ("src/plugins/announce*", ["announce", "login", "lag_announce_calls"]),
-    ("src/plugins/camera*", ["camera", "board_fncam", "board_espcam", "board_ws2"]),
+    ("src/plugins/camera*", ["camera", "board_fncam", "board_espcam", "board_ws2", "board_wseth"]),
     ("src/plugins/chat*", ["messaging", "places", "rename_follows"]),
     ("src/plugins/example*", ["plugins"]),
     ("src/plugins/files*", ["storage", "places", "lag"]),

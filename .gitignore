@@ -50,6 +50,8 @@ sdkconfig.*
 !sdkconfig.defaults.ws43b
 # The Waveshare ESP32-S3-Touch-LCD-2's layer (WS2 1.0.0).
 !sdkconfig.defaults.ws2
+# The Waveshare ESP32-S3-ETH's layer, named to it in platformio.ini (1.1.2).
+!sdkconfig.defaults.wseth
 include/secrets.h
 data/system.cfg
 data/calls.log
@@ -75,6 +77,7 @@ host/ssh_call
 host/wolfobj/
 host/libwolfssh_host.a
 host/bbs_host_ws43b
+host/bbs_host_wseth
 # Every compiled test, by pattern rather than by name. Naming them one
 # at a time meant test_wrap's binary was committed the day it was
 # written, 72 KB of build output in the tree, and nothing noticed

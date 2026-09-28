@@ -111,6 +111,13 @@
 #ifdef BBS_HAS_CHIP_TEMP
 #include "driver/temperature_sensor.h"   // the chip's own sensor, for the panel
 #endif
+#ifdef BBS_HAS_ETH
+#include "esp_eth.h"                     // the W5500 (1.1.2): IDF 5.3.1's own driver
+#include "esp_eth_mac_spi.h"
+#include "esp_mac.h"                     // its address, from the chip's efuse
+#include "esp_event.h"
+#include "esp_log.h"
+#endif
 extern "C" {
 #include "miniz.h"
 }
@@ -339,8 +346,16 @@ void hardware(char* out, size_t n) {
         snprintf(size, sizeof(size), "%s%u MB", kDot, static_cast<unsigned>(flash / (1024u * 1024u)));
     else if (flash)
         snprintf(size, sizeof(size), "%s%u KB", kDot, static_cast<unsigned>(flash / 1024u));
+#ifdef BBS_HAS_ETH
+    // The wired port in PSRAM's place (1.1.2): the directory cuts this badge
+    // at 40 characters, and "ESP32-S3 · 8 MB · Ethernet · ETH 1.0.0", with
+    // the board's version that announce adds, is 38. Ethernet is what sets
+    // the board apart; its PSRAM is on the HARDWARE screen.
+    snprintf(out, n, "%s%s%sEthernet", model, size, kDot);
+#else
     const bool psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0;
     snprintf(out, n, "%s%s%s%s", model, size, psram ? kDot : "", psram ? "PSRAM" : "");
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -883,8 +898,185 @@ NetInfo netInfo() {
     if (nif && esp_netif_get_ip_info(nif, &ip) == ESP_OK && ip.ip.addr) {
         snprintf(n.ip, sizeof(n.ip), IPSTR, IP2STR(&ip.ip));
     }
+#ifdef BBS_HAS_ETH
+    // On the wire, the address is the wire's: Wi-Fi stands by unjoined then
+    // (main.cpp), and the address callers reach is the one shown.
+    const EthInfo e = ethInfo();
+    n.ethLink = e.link;
+    n.ethFull = e.full;
+    n.ethMbps = e.mbps;
+    if (e.up) {
+        esp_ip4_addr_t a;
+        a.addr = e.ip;
+        n.onEth = true;
+        snprintf(n.ip, sizeof(n.ip), IPSTR, IP2STR(&a));
+    }
+#endif
     return n;
 }
+
+#ifdef BBS_HAS_ETH
+// ===========================================================================
+// Ethernet: the W5500 (1.1.2). See platform.h. IDF 5.3.1's own driver
+// (components/esp_eth/src/spi/w5500, CONFIG_ETH_SPI_ETHERNET_W5500 in the
+// board's sdkconfig layer), on SPI3 with the board's pins (board.h).
+//
+// The events arrive on the default event loop's task; the loop reads what
+// they left through ethInfo. Every field is one word written whole, so a
+// read on the other core sees the old value or the new one, never half.
+// ===========================================================================
+namespace {
+esp_eth_handle_t  g_eth       = nullptr;
+bool              g_ethStarted = false;   // esp_eth_start succeeded: ethInfo's "started"
+volatile bool     g_ethLink   = false;
+volatile bool     g_ethUp     = false;
+volatile bool     g_ethFull   = false;
+volatile uint16_t g_ethMbps   = 0;
+volatile uint32_t g_ethIp     = 0;
+
+void onEthEvent(void*, esp_event_base_t base, int32_t id, void* data) {
+    if (base == ETH_EVENT && id == ETHERNET_EVENT_CONNECTED) {
+        esp_eth_handle_t h = *static_cast<esp_eth_handle_t*>(data);
+        eth_speed_t  sp = ETH_SPEED_10M;
+        eth_duplex_t dx = ETH_DUPLEX_HALF;
+        esp_eth_ioctl(h, ETH_CMD_G_SPEED, &sp);
+        esp_eth_ioctl(h, ETH_CMD_G_DUPLEX_MODE, &dx);
+        g_ethMbps = sp == ETH_SPEED_100M ? 100 : 10;
+        g_ethFull = dx == ETH_DUPLEX_FULL;
+        g_ethLink = true;
+        plat::log("eth: link up, %u Mb/s %s duplex", static_cast<unsigned>(g_ethMbps),
+                  g_ethFull ? "full" : "half");
+    } else if (base == ETH_EVENT && id == ETHERNET_EVENT_DISCONNECTED) {
+        // The address lwIP holds lingers until its lost-IP timer runs out,
+        // but nothing reaches it with the cable out: down is down now.
+        g_ethLink = false;
+        g_ethUp   = false;
+        plat::log("eth: link down");
+    } else if (base == IP_EVENT && id == IP_EVENT_ETH_GOT_IP) {
+        auto* e = static_cast<ip_event_got_ip_t*>(data);
+        g_ethIp = e->ip_info.ip.addr;
+        g_ethUp = g_ethLink;
+        plat::log("eth: address " IPSTR, IP2STR(&e->ip_info.ip));
+    } else if (base == IP_EVENT && id == IP_EVENT_ETH_LOST_IP) {
+        g_ethUp = false;
+        g_ethIp = 0;
+        plat::log("eth: address lost");
+    }
+}
+}   // namespace
+
+bool ethBegin(const char* hostname) {
+    auto fail = [](const char* what, esp_err_t e) {
+        plat::log("eth: %s failed (%s); running on Wi-Fi alone", what, esp_err_to_name(e));
+        return false;
+    };
+    // The W5500's interrupt line is a GPIO interrupt, through the IDF's ISR
+    // service. Already installed is fine: whoever did it first, it serves all.
+    esp_err_t e = gpio_install_isr_service(0);
+    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) return fail("the GPIO interrupt service", e);
+
+    spi_bus_config_t bus = {};
+    bus.mosi_io_num   = BBS_ETH_MOSI;
+    bus.miso_io_num   = BBS_ETH_MISO;
+    bus.sclk_io_num   = BBS_ETH_SCLK;
+    bus.quadwp_io_num = -1;
+    bus.quadhd_io_num = -1;
+    const spi_host_device_t host = static_cast<spi_host_device_t>(BBS_ETH_SPI_HOST);
+    e = spi_bus_initialize(host, &bus, SPI_DMA_CH_AUTO);
+    if (e != ESP_OK) return fail("the SPI bus", e);
+
+    spi_device_interface_config_t dev = {};
+    dev.mode           = 0;
+    dev.clock_speed_hz = BBS_ETH_MHZ * 1000 * 1000;
+    dev.spics_io_num   = BBS_ETH_CS;
+    dev.queue_size     = 20;
+    eth_w5500_config_t wcfg = ETH_W5500_DEFAULT_CONFIG(host, &dev);
+    wcfg.int_gpio_num = BBS_ETH_INT;
+
+    eth_mac_config_t mcfg = ETH_MAC_DEFAULT_CONFIG();
+    // The receive task beside Wi-Fi and lwIP on core 0 (this is app_main,
+    // which runs there), never on the BBS loop's core: at priority 15 it
+    // would take the loop's core for every frame.
+    mcfg.flags |= ETH_MAC_FLAG_PIN_TO_CORE;
+    eth_phy_config_t pcfg = ETH_PHY_DEFAULT_CONFIG();
+    pcfg.reset_gpio_num = BBS_ETH_RST;
+
+    esp_eth_mac_t* mac = esp_eth_mac_new_w5500(&wcfg, &mcfg);
+    esp_eth_phy_t* phy = mac ? esp_eth_phy_new_w5500(&pcfg) : nullptr;
+    if (!mac || !phy) {
+        if (phy) phy->del(phy);
+        if (mac) mac->del(mac);
+        spi_bus_free(host);
+        return fail("the W5500 driver", ESP_FAIL);
+    }
+    esp_eth_config_t ecfg = ETH_DEFAULT_CONFIG(mac, phy);
+    e = esp_eth_driver_install(&ecfg, &g_eth);
+    if (e != ESP_OK) {
+        // No answer from the chip lands here (its version register is read
+        // at init): a board with its W5500 unfitted or dead. The MAC's init
+        // may already have hooked the INT pin's interrupt to the object
+        // about to be freed, and the driver's error path leaves it there: an
+        // edge on the pin would then run into freed memory.
+        gpio_isr_handler_remove(static_cast<gpio_num_t>(BBS_ETH_INT));
+        gpio_reset_pin(static_cast<gpio_num_t>(BBS_ETH_INT));
+        phy->del(phy);
+        mac->del(mac);
+        spi_bus_free(host);
+        g_eth = nullptr;
+        return fail("the W5500", e);
+    }
+    // The W5500 has no address of its own: the chip's Ethernet one, from
+    // its efuse (the base MAC plus 3 on the S3), so it is this board's, stable.
+    uint8_t addr[6];
+    if (esp_read_mac(addr, ESP_MAC_ETH) == ESP_OK) esp_eth_ioctl(g_eth, ETH_CMD_S_MAC_ADDR, addr);
+
+    // Its own netif, "ETH_DEF" as mDNS expects, and the default route over
+    // Wi-Fi's while both are up (an Improv trial on a wired board): 128
+    // against the station's 100.
+    esp_netif_inherent_config_t inh = ESP_NETIF_INHERENT_DEFAULT_ETH();
+    inh.route_prio = 128;
+    esp_netif_config_t ncfg = {};
+    ncfg.base  = &inh;
+    ncfg.stack = ESP_NETIF_NETSTACK_DEFAULT_ETH;
+    esp_netif_t* nif = esp_netif_new(&ncfg);
+    if (!nif) {
+        esp_eth_driver_uninstall(g_eth);    // deinits the MAC and PHY, frees neither
+        phy->del(phy);
+        mac->del(mac);
+        spi_bus_free(host);
+        g_eth = nullptr;
+        return fail("the Ethernet netif", ESP_ERR_NO_MEM);
+    }
+    esp_netif_set_hostname(nif, hostname);
+    // A failure from here on leaves the driver installed and unused: the
+    // board runs on Wi-Fi alone, and rare enough not to tear down.
+    // esp_netif_attach calls the glue's post_attach without testing it, so
+    // a glue that could not be made is caught here, not as a boot crash.
+    esp_eth_netif_glue_handle_t glue = esp_eth_new_netif_glue(g_eth);
+    if (!glue) return fail("the Ethernet netif glue", ESP_ERR_NO_MEM);
+    e = esp_netif_attach(nif, glue);
+    if (e != ESP_OK) return fail("attaching the Ethernet netif", e);
+    esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &onEthEvent, nullptr);
+    esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &onEthEvent, nullptr);
+    esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_LOST_IP, &onEthEvent, nullptr);
+    e = esp_eth_start(g_eth);
+    if (e != ESP_OK) return fail("starting Ethernet", e);
+    g_ethStarted = true;
+    plat::log("eth: W5500 started, waiting for a link");
+    return true;
+}
+
+EthInfo ethInfo() {
+    EthInfo i;
+    i.started = g_ethStarted;
+    i.link    = g_ethLink;
+    i.up      = g_ethUp;
+    i.full    = g_ethFull;
+    i.mbps    = g_ethMbps;
+    i.ip      = g_ethIp;
+    return i;
+}
+#endif  // BBS_HAS_ETH
 
 void log(const char* fmt, ...) {
     char buf[160];
@@ -2068,6 +2260,9 @@ bool camOpen(const CamCfg& c, char* err, size_t errLen) {
         // everything it holds goes back: the DMA block, cam_task, the SCCB
         // bus and XCLK's LEDC channel.
         if (esp_camera_sensor_get()) esp_camera_deinit();
+#ifdef BBS_CAM_PWDN_IS_POWER
+        gpio_set_level(static_cast<gpio_num_t>(BBS_CAM_PWDN), 1);   // the camera's power off again
+#endif
         camMemLog("after the failed start");
         // No sensor on the bus is ESP_ERR_NOT_SUPPORTED in 2.1.7 (camera_
         // probe: "Detected camera not supported"), not NOT_DETECTED. A DMA
@@ -2155,6 +2350,13 @@ void camRelease() {
 void camClose() {
     camRelease();
     if (g_camUp) esp_camera_deinit();
+#ifdef BBS_CAM_PWDN_IS_POWER
+    // A board whose PWDN line switches the camera's supply (board.h): off
+    // between snaps, as it was at reset. The driver drives the line low at
+    // every bring-up and never high again, so a camera once used would stay
+    // powered, and it sits on strapping pins across a reset.
+    gpio_set_level(static_cast<gpio_num_t>(BBS_CAM_PWDN), 1);
+#endif
     g_camUp = false;
 }
 

@@ -7124,6 +7124,71 @@ def test_board_ws2():
     return ok
 
 
+def test_board_wseth():
+    """The Waveshare ESP32-S3-ETH profile on the host (ETH 1.0.0, 1.1.2):
+    Ethernet first, and the pins the board owns.
+
+    The host's Ethernet is a wire at 100 Mb/s with an address (platform_host;
+    BBS_HOST_ETH plays the other cases). SYS names the interface in use,
+    HARDWARE lists Ethernet among the capabilities, CONFIG network has the
+    Ethernet row, and the W5500's and the camera's pins are refused by name.
+    SKIPs on the reference board; tools/harness.sh --board wseth
+    --only=board_wseth runs it.
+    """
+    print("Board profile: Waveshare ESP32-S3-ETH")
+    if HOST_BOARD != "wseth" or not PASSWORD:
+        print("  SKIP  needs tools/harness.sh --board wseth")
+        return True
+    s = cfg_sysop("BoardEth")
+    s.buf.clear()
+    s.send(b"sys\r")
+    read_list(s)
+    text = plain(s.buf)
+    ok = check("SYS says the board is on Ethernet, 100 Mb/s full duplex",
+               re.search(rb"\nEthernet +100 Mb/s full duplex", text) is not None)
+    ok &= check("and Wi-Fi is the fallback, standing by",
+                re.search(rb"\nWi-Fi +standby the fallback", text) is not None)
+
+    s.buf.clear()
+    s.send(b"hardware\r")
+    read_list(s)
+    ok &= check("HARDWARE lists Ethernet among the capabilities",
+                b"Ethernet 100 Mb/s" in plain(s.buf))
+
+    ok &= check("CONFIG network has the Ethernet row",
+                cfg_open(s, b"network", b"Network") and b"Ethernet" in plain(s.buf))
+    cfg_cancel(s)
+
+    # The board page's activity LED: the W5500's and the camera's pins are
+    # refused with their reasons. The key is held to 0-39 on every chip, so
+    # the camera's 38 stands for its lines above it. Every pin at or under 39
+    # is the board's or held by a plugin, so none is taken and nothing is
+    # written.
+    before = cfg_line("activity_led_gpio")
+    for pin, why in ((b"11", b"Ethernet chip's"), (b"14", b"Ethernet chip's"),
+                     (b"9", b"Ethernet chip's"), (b"2", b"camera's"), (b"8", b"camera's"),
+                     (b"38", b"camera's"), (b"33", b"flash and PSRAM")):
+        cfg_open(s, b"board", b"Hostname")
+        s.buf.clear()
+        s.send(DOWN * BOARD_LED + b"\x08" * 3 + pin + F1)
+        got = cfg_verdict(s, [why, b"Saved", b"no such pin", b"camera", b"Ethernet", b"flash and PSRAM"])
+        ok &= check(f"the LED on GPIO {pin.decode()} refused: {why.decode()}", got == why)
+        cfg_cancel(s)
+    ok &= check("and nothing is written", cfg_line("activity_led_gpio") == before)
+
+    # A plugin's pin meets the same rule, up to the S3's 48: the drive light
+    # on the camera's SIOD (48) and on the W5500's clock (13).
+    for pin, why in ((b"48", b"camera's"), (b"13", b"Ethernet chip's")):
+        cfg_open(s, b"lights", b"Drive pin")
+        s.buf.clear()
+        s.send(DOWN * 4 + b"\x08" * 3 + pin + F1)
+        got = cfg_verdict(s, [b"Saved", b"camera's", b"Ethernet chip's", b"no such pin", b"Between"])
+        ok &= check(f"the drive light on GPIO {pin.decode()} refused: {why.decode()}", got == why)
+        cfg_cancel(s)
+    s.close()
+    return ok
+
+
 def section_config(s, section, **keys):
     """[section] rewritten with exactly these keys (none: removed), then the
     board made to read it, as lights_config does for the lights."""
@@ -8237,7 +8302,8 @@ def start_copy(tmp, extra_args=(), env_extra=None):
     # The same build as the board under test: a profile's copy restarts as
     # that profile, with its pin rules and defaults.
     binary = {"s3": "bbs_host_s3", "fncam": "bbs_host_fncam",
-              "espcam": "bbs_host_espcam", "ws2": "bbs_host_ws2"}.get(HOST_BOARD, "bbs_host")
+              "espcam": "bbs_host_espcam", "ws43b": "bbs_host_ws43b", "ws2": "bbs_host_ws2",
+              "wseth": "bbs_host_wseth"}.get(HOST_BOARD, "bbs_host")
     return subprocess.Popen([str(ROOT / "host" / binary), str(tmp / "data"), *extra_args],
                             stdout=log, stderr=subprocess.STDOUT, env=env)
 
@@ -17264,7 +17330,7 @@ ORDER_NAMES = [
     "test_ssh_login", "test_ssh_new_caller", "test_ssh_resize", "test_ssh_host_keys",
     "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
     "test_ssh_dedicated_port", "test_ssh_socket_budget",
-    "test_board_fncam", "test_board_espcam", "test_board_ws43b", "test_board_ws2",
+    "test_board_fncam", "test_board_espcam", "test_board_ws43b", "test_board_ws2", "test_board_wseth",
     "test_camera",
     "test_camera_failed_start",
     "test_camera_silent",
@@ -19342,6 +19408,7 @@ PROFILE_TESTS = {
     "espcam": ["test_board_espcam"],
     "ws43b":  ["test_board_ws43b"],
     "ws2":    ["test_board_ws2"],
+    "wseth":  ["test_board_wseth"],
 }
 # The profiles whose lanes also run with a card (harness.sh --board s3
 # --card --only=ssh is how SSH's YMODEM was tested).

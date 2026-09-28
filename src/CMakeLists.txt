@@ -81,6 +81,14 @@ endif()
 idf_component_register(SRCS ${app_sources}
                        INCLUDE_DIRS "." "../include"
                        REQUIRES ${app_requires})
+# The W5500 (1.1.2, the ESP32-S3-ETH): only a build whose sdkconfig layer
+# turns its driver on (sdkconfig.defaults.wseth) links esp_eth, so every other
+# board's image is as it was. After the register, not in app_requires: IDF
+# collects REQUIRES before the config exists, so a CONFIG_ test in that list
+# is never true there (esp_netif's own CMakeLists uses this same pattern).
+if(CONFIG_ETH_SPI_ETHERNET_W5500)
+    idf_component_optional_requires(PRIVATE esp_eth)
+endif()
 # The camera boards' watermark re-encodes with the camera driver's own JPEG
 # encoder (conversions/jpge), whose header the driver keeps private. The
 # driver is in every ESP32 and S3 build (src/idf_component.yml) and linked
