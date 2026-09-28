@@ -797,6 +797,28 @@ this tree.
   that ground: the KEYESTUDIO ESP32-S3 PRO (N16R8), whose on-board SD slot
   sits on GPIO 35-37, inside the octal PSRAM bus, so PSRAM and the card
   slot cannot both work.
+- **The hardware preview branch, 1.1.2-hw.1** (rel-1.1.2-hwpreview,
+  2026-09-28): v1.1.2 plus the four lanes merged in order (board-ws43b,
+  board-ws2, board-wseth, board-mf35-112), for Rob's
+  `v1.1.2-hardware-preview` tag. WS43B 1.0.1, WS2 1.0.2, ETH 1.0.2 (the VFS
+  table), MF35 1.1.1. CHANGELOG 1.1.2-hw.1 has the list. What the merge
+  settled, worth keeping:
+  - **Two touch mechanisms, one capability**: `BBS_HAS_TOUCH` plus
+    `BBS_TOUCH_POLL` for the 4.3B's polled GT911 (the new I2C driver);
+    without POLL it is taps on INT (the legacy driver, the camera's SCCB).
+    Never let the legacy `driver/i2c.h` code compile into an image that uses
+    `i2c_master`: the IDF refuses both drivers in one image.
+  - **switchboard is the Touch-LCD-2's version** on both glasses (dark free
+    lamps while anybody WHO shows is on).
+  - `plat::chipTemp` is tenths of a degree; the system row's warm step is
+    `BBS_PANEL_TEMP_WARM` (65 on WS2, 60 elsewhere).
+  - The Makerfabs' big-glass band word is `F_BWORD`; `F_WORD` is the 4.3B's.
+  - release.py's `PREVIEW_TAGS` maps `v<X.Y.Z>-<name>` to sets; a plain
+    `v<BBS_VERSION>` never builds a tag_only set.
+  - **Not built in that session**: the cloud environment's network policy
+    refused `api.registry.platformio.org`, so no env was compiled and no
+    DRAM figure read. Build every env (delete `sdkconfig.<env>` first) and
+    run `release.py --tag v1.1.2-hardware-preview` locally before the tag.
 - **The Waveshare ESP32-S3-Touch-LCD-4.3B, WS43B 1.0.0** (board-ws43b from
   v1.1.2, 2026-09-28, COM23; one of three boards in Rob's
   `v1.1.2-hardware-preview`). CHANGELOG has what a sysop sees. Worth keeping:

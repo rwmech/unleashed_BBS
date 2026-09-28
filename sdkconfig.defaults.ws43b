@@ -64,3 +64,11 @@ CONFIG_SPIRAM_XIP_FROM_PSRAM=y
 # shifted (the IDF's own advice for RGB panels, esp_lcd Kconfig).
 CONFIG_LCD_RGB_ISR_IRAM_SAFE=y
 CONFIG_LCD_RGB_RESTART_IN_VSYNC=y
+
+# The VFS table, 8 to 12 (1.1.2-hw.1, the Makerfabs' fix, MF35 1.1.1). The
+# console, lwIP's sockets, the three LittleFS partitions, SSH's eventfd and
+# the SD card's FAT fill the IDF's 8 exactly on an S3 with SSH, with nothing
+# spare: one more descriptor-backed driver and the card's mount fails with
+# ESP_ERR_NO_MEM, which esp_vfs_register returns for a full table (vfs.c,
+# s_vfs_count >= VFS_MAX_COUNT). 4 bytes a slot.
+CONFIG_VFS_MAX_COUNT=12

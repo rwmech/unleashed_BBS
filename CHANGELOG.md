@@ -24,6 +24,64 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.1.2-hw.1 (WS43B 1.0.1, WS2 1.0.2, ETH 1.0.2, MF35 1.1.1), 2026-09-28: the hardware preview
+
+Four new S3 boards on the 1.1.2 core, merged from their lanes (board-ws43b,
+board-ws2, board-wseth, board-mf35-112) onto v1.1.2 for one pre-release,
+`v1.1.2-hardware-preview`. Not through the full regression: host smoke runs
+only, and **no firmware image was built in the session that merged it**
+(the build host could not reach PlatformIO's registry), so every env still
+has to be built, with 0 warnings and DRAM read off the ELF, before the tag.
+
+- **The boards**, each detailed in its own entry below: the Waveshare
+  ESP32-S3-Touch-LCD-4.3B (`esp32s3-ws43b`), ESP32-S3-Touch-LCD-2
+  (`esp32s3-ws2`) and ESP32-S3-ETH (`esp32s3-eth`), and the Makerfabs
+  ESP32-S3 Parallel TFT 3.5" v1.0 (`esp32s3-mf35`). All four run SSH.
+- **The core moves to 1.1.2-hw.1** because shared code changed: the lights'
+  `switchboard` strip effect (a new CONFIG choice on every board; the
+  shipped boards' defaults are unchanged) and `strip_fx` names up to 11
+  characters. The two lanes built switchboard differently; the Touch-LCD-2's
+  is kept: `nodes` while anybody WHO shows is on (the sysop's line included,
+  so the strip never says "waiting" beside "Callers 1/11"), and dim steady
+  dial-blue lamps that flicker with traffic while nobody is. On the 4.3B
+  that means a free line's lamp is dark while a caller is on, where the
+  4.3B's own version kept it dim blue.
+- **The S3 camera's DMA block** (ETH's fix, also in WS2): `kCamDmaBlock` is
+  17 KB on an S3 (16 x 1 KB for JPEG, CAMERA_DMA_BUFFER_SIZE_MAX 16 KB in the
+  board's layer, a static_assert tying the two), not the ESP32's 33 KB that
+  refused every snap. Both S3 camera boards (WS2, ETH) carry it; the 4.3B
+  and the Makerfabs have no camera.
+- **The VFS table, 8 to 12** (the Makerfabs' fix, MF35 1.1.1), now in the
+  4.3B's, the Touch-LCD-2's and the ETH's sdkconfig layers too, each with a
+  board.h `#error` on a stale sdkconfig: with a card mounted every S3 with
+  SSH sat at 8 of 8. WS43B 1.0.0 to 1.0.1, WS2 1.0.1 to 1.0.2, ETH 1.0.1 to
+  1.0.2. The Waveshare LCD-1.47 and every board that shipped in v1.1.2 are
+  left as released (queued for 1.1.3).
+- **Two touch controllers, told apart**: the 4.3B polls its GT911 over the
+  new I2C driver (`BBS_TOUCH_POLL`, `platform_esp32_rgb.cpp`), the
+  Touch-LCD-2 counts its CST816's taps on INT over the legacy driver (the
+  camera's SCCB needs it). The legacy driver is never compiled into the
+  4.3B's image. `plat::chipTemp` is one function, in tenths of a degree.
+- **The 4.3B's tap**: a tap that landed while the slot was already fading
+  (the board's own turn) was counted and then held the usual 3 s, not 10;
+  every tap now marks the next page's long hold. `test_board_ws43b` failed
+  on it about half the time, on the lane as well.
+- **camera.cpp**: the caller-snap count the Touch-LCD-2's panel reads is
+  compiled only on a board with a panel, so the Freenove's and the
+  ESP32-CAM's camera code is as released.
+- **release.py**: `v1.1.2-hardware-preview` (the core's X.Y.Z and a name in
+  `PREVIEW_TAGS`) builds exactly the four preview sets into
+  `release/1.1.2-hardware-preview/`; a plain `v<BBS_VERSION>` builds the
+  four released boards and none of the preview's; a board's own tag
+  (`v1.1.2-ws2.1`) builds its set alone; `--board DIR` builds one set into
+  `release/<version>-DIR/`. Every earlier check stays.
+- One board profile at a time is now also checked by a count of every
+  `BBS_BOARD_` define in board.h. The ETH lane's committed host binary
+  (`host/bbs_host_wseth`, 9 MB) is left out and ignored.
+- Tested (smoke, host): `make test` clean; `--only=board_<b>` without a card
+  on each profile: WS43B 28/0 (three runs), WS2 25/0, ETH 14/0, MF35 24/0;
+  the lights and config groups on the reference board: see the commit.
+
 ## 1.1.2 (WS43B 1.0.0), 2026-09-28: the Waveshare ESP32-S3-Touch-LCD-4.3B
 
 A new board, as a board profile on the 1.1.2 core (branch board-ws43b, from

@@ -319,7 +319,7 @@
 #define BBS_BOARD_PLUGINS     1       // the panel
 
 #define BBS_BOARD_TAG         "WS43B"
-#define BBS_BOARD_VERSION     "1.0.0"
+#define BBS_BOARD_VERSION     "1.0.1"
 
 // PSRAM (sdkconfig.defaults.ws43b over the S3 layer): the panel's frame
 // buffer, and the program and its constants run from it (XIP), so a flash
@@ -328,6 +328,12 @@
 #define BBS_HAS_PSRAM         1
 #if defined(ESP_PLATFORM) && !(CONFIG_SPIRAM && CONFIG_SPIRAM_FETCH_INSTRUCTIONS && CONFIG_SPIRAM_RODATA)
 #error "BBS_BOARD_WS_S3TOUCH43B needs PSRAM with XIP: sdkconfig.defaults.ws43b was not applied (delete sdkconfig.ws_s3touch43b*)"
+#endif
+// The IDF's 8 VFS slots are full with a card mounted on an S3 with SSH
+// (the console, lwIP, three LittleFS partitions, SSH's eventfd, the card's
+// FAT): 12 in sdkconfig.defaults.ws43b, as on the Makerfabs. A stale sdkconfig keeps 8.
+#if defined(ESP_PLATFORM) && CONFIG_VFS_MAX_COUNT < 12
+#error "BBS_BOARD_WS_S3TOUCH43B needs CONFIG_VFS_MAX_COUNT of 12 (sdkconfig.defaults.ws43b): delete sdkconfig.ws_s3touch43b*"
 #endif
 
 // SSH as on the Waveshare stick: the same S3 image machinery, one define.
@@ -916,9 +922,9 @@
 #define BBS_BOARD_PLUGINS     2       // the panel and the camera
 
 // "WS2": Waveshare, 2 inch, beside the LCD-1.47's "S3" (which is older than
-// the rule) and the 4.3B's "WS43B". Shown as 1.1.2 (WS2 1.0.1).
+// the rule) and the 4.3B's "WS43B". Shown as 1.1.2-hw.1 (WS2 1.0.2).
 #define BBS_BOARD_TAG         "WS2"
-#define BBS_BOARD_VERSION     "1.0.1"
+#define BBS_BOARD_VERSION     "1.0.2"
 
 // SSH as on the LCD-1.47: the same S3R8 and the same 8 MB of PSRAM.
 #define BBS_HAS_SSH           1
@@ -933,6 +939,12 @@
 #endif
 #if defined(ESP_PLATFORM) && !CONFIG_OV5640_SUPPORT
 #error "BBS_BOARD_WS_S3TOUCH2 ships with an OV5640: sdkconfig.defaults.ws2 was not applied (delete sdkconfig.ws_s3touch2*)"
+#endif
+// The IDF's 8 VFS slots are full with a card mounted on an S3 with SSH
+// (the console, lwIP, three LittleFS partitions, SSH's eventfd, the card's
+// FAT): 12 in sdkconfig.defaults.ws2, as on the Makerfabs. A stale sdkconfig keeps 8.
+#if defined(ESP_PLATFORM) && CONFIG_VFS_MAX_COUNT < 12
+#error "BBS_BOARD_WS_S3TOUCH2 needs CONFIG_VFS_MAX_COUNT of 12 (sdkconfig.defaults.ws2): delete sdkconfig.ws_s3touch2*"
 #endif
 
 // The internal heap a plugin may not take at start: the LCD-1.47's 16 KB,
@@ -1100,7 +1112,7 @@
 #define BBS_BOARD_PLUGINS     1       // the camera
 
 #define BBS_BOARD_TAG         "ETH"
-#define BBS_BOARD_VERSION     "1.0.1"
+#define BBS_BOARD_VERSION     "1.0.2"
 
 // PSRAM (sdkconfig.defaults.esp32s3: octal, as on the S3 stick). A build
 // that lost the layer would otherwise link quietly without it.
@@ -1124,6 +1136,12 @@
 //                     both, and a 10/100 link is the limit, not the bus
 #if defined(ESP_PLATFORM) && !CONFIG_ETH_SPI_ETHERNET_W5500
 #error "BBS_BOARD_WS_S3ETH needs the W5500 driver: sdkconfig.defaults.wseth was not applied (delete sdkconfig.ws_s3eth*)"
+#endif
+// The IDF's 8 VFS slots are full with a card mounted on an S3 with SSH
+// (the console, lwIP, three LittleFS partitions, SSH's eventfd, the card's
+// FAT): 12 in sdkconfig.defaults.wseth, as on the Makerfabs. A stale sdkconfig keeps 8.
+#if defined(ESP_PLATFORM) && CONFIG_VFS_MAX_COUNT < 12
+#error "BBS_BOARD_WS_S3ETH needs CONFIG_VFS_MAX_COUNT of 12 (sdkconfig.defaults.wseth): delete sdkconfig.ws_s3eth*"
 #endif
 #define BBS_HAS_ETH           1
 #define BBS_ETH_SPI_HOST      2       // SPI3_HOST

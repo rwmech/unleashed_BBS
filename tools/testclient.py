@@ -6754,7 +6754,7 @@ def test_board_ws43b():
     s.pump(0.6)
     hw = plain(s.buf)
     ok = check("HARDWARE names the board and its version",
-               b"ESP32-S3-Touch-LCD-4.3B" in hw and b"WS43B 1.0.0" in hw)
+               b"ESP32-S3-Touch-LCD-4.3B" in hw and ("WS43B " + board_profile("ws43b")[1]).encode() in hw)
 
     p = panel_read(s)
     ok &= check("PANEL: lit, the 800 x 480 ST7262 drawn at 400 x 240",
@@ -6791,7 +6791,10 @@ def test_board_ws43b():
     before = slot()
     tap = DATA / "tap"
     tap.write_bytes(b"")
-    time.sleep(1.0)
+    # The turn is a fade, 16 steps of 60 ms, after the next 50 ms poll: read
+    # the page once it has finished, not while the old one is still fading
+    # out (a read at 1 s caught that about half the time).
+    time.sleep(2.0)
     after = slot()
     p3 = panel_read(s)
     ok &= check("a tap is seen and counted", b"Touch seen, 1 taps" in p3 and not tap.exists())
@@ -6819,12 +6822,14 @@ def test_board_ws43b():
         px = lambda x, y: tuple(data[len(head) + (y * W + x) * 3:len(head) + (y * W + x) * 3 + 3])
         ok &= check("the header's bar in its blue", px(1, 1) == (24, 44, 120))
         ok &= check("and the body black", px(1, 150) == (0, 0, 0))
-        # The light bar: ten 32 px segments from x 40 at y 219..230, the
-        # switchboard's idle dial blue on every one (the sysop's line has
-        # no lamp), and black under it to the edge of the glass.
+        # The light bar: ten 32 px segments from x 40 at y 219..230, and
+        # black under it to the edge of the glass. switchboard (1.1.2-hw.1,
+        # the Touch-LCD-2's refinement, shared by both glasses): with anybody
+        # WHO shows on, the sysop here, it is nodes, so the ten caller lines
+        # are dark lamps (the sysop's line has none), not the idle dial blue.
         seg = [px(40 + 36 * i + 16, 225) for i in range(10)]
-        ok &= check("the light bar's ten segments lit in dim blue with nobody on",
-                    all(c[2] > 30 and c[2] > c[0] for c in seg))
+        ok &= check("the light bar's ten segments dark with only the sysop on",
+                    not any(c[2] > 30 and c[2] > c[0] for c in seg))
         ok &= check("and clear of the glass's bottom edge",
                     all(px(56, y) == (0, 0, 0) for y in range(232, 240)))
 

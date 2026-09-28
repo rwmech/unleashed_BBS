@@ -1765,11 +1765,15 @@ void touchTick(uint32_t now) {
         return;
     }
     g_wakeAt = now ? now : 1;
-    if (!g_ringShown && g_dir == 0) {                      // mid-fade: it is turning already
+    if (g_ringShown) return;                               // a ring keeps the slot
+    // The page the slot turns to holds kTapHoldMs whether this tap starts
+    // the turn or lands in one the board began itself: a tap mid-fade used to
+    // be counted and then held for the usual 3 s only.
+    g_nextLong = true;
+    if (g_dir == 0) {                                      // mid-fade: it is turning already
         g_dir = 1;
         g_fade = 1;
         g_stepAt = now;
-        g_nextLong = true;
     }
 }
 
