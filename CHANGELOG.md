@@ -24,7 +24,24 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
-## 1.1.2 (WS2 1.0.0), 2026-09-28, board pre-release
+## 1.1.2 (WS2 1.0.1), 2026-09-28, board pre-release
+
+WS2 1.0.1: the S3 camera's DMA check. Every SNAPSHOT was refused for memory,
+because the check asked for the ESP32's 33 KB block; on the S3 esp32-camera
+takes 16 x 1 KB for JPEG and at most CAMERA_DMA_BUFFER_SIZE_MAX for raw
+frames, which `sdkconfig.defaults.ws2` now sets to 16 KB, so a bring-up needs
+17 KB (`kCamDmaBlock`, with a static_assert tying the two). The ETH lane's fix,
+applied the same way.
+
+And the card at boot: it mounts before the panel starts, and the panel's CS
+(GPIO45, a strapping pin pulled low at reset) left the ST7789 listening, so
+it answered the card's traffic on its bidirectional SDA and every boot mount
+failed with ESP_ERR_INVALID_CRC (a later SD MOUNT worked). The panel's CS is
+held high while the card uses the bus without the panel (`panelQuiet`). On
+the bench after both: the card mounted at boot (7.4 GB SDHC), FILES listed
+Photos and Timelapse, and two SNAPSHOTs filed in Photos at about 4.8 s each.
+
+### WS2 1.0.0
 
 A new board, as a pre-release that carries its image set and nothing else.
 The core is 1.1.2 unchanged. The panel and lights changes below are

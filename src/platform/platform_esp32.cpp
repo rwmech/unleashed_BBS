@@ -490,12 +490,29 @@ void cardQuiet() {
     gpio_set_direction(static_cast<gpio_num_t>(BBS_SD_CS), GPIO_MODE_OUTPUT);
 }
 
+void panelQuiet();                                     // below
+
 // sharedDown: `who` off the bus, and the bus freed when nobody is left.
 void sharedDown(uint8_t who) {
     if (!(g_sharedUsers & who)) return;
     g_sharedUsers = static_cast<uint8_t>(g_sharedUsers & ~who);
     if (!g_sharedUsers) spi_bus_free(kSharedHost);
     else if (who == SHARED_CARD) cardQuiet();          // the panel goes on without it
+    else panelQuiet();                                 // the card goes on without the panel
+}
+
+// panelQuiet: the panel's chip select held high while the card talks on the
+// bus before the panel has started (WS2 1.0.1). The card mounts first at
+// boot (sd is PF_EARLY), and the panel's CS is a strapping pin pulled low at
+// reset, so the controller took the card's traffic for its own; its SDA is
+// bidirectional, and a read command it made of those bytes drove the MOSI
+// line against us. On the bench the boot mount failed with
+// ESP_ERR_INVALID_CRC every time and SD MOUNT with the panel up succeeded.
+// esp_lcd takes the pin over when the panel starts.
+void panelQuiet() {
+    if (BBS_LCD_CS < 0 || (g_sharedUsers & SHARED_PANEL)) return;
+    gpio_set_level(static_cast<gpio_num_t>(BBS_LCD_CS), 1);
+    gpio_set_direction(static_cast<gpio_num_t>(BBS_LCD_CS), GPIO_MODE_OUTPUT);
 }
 
 // sharedCmd: the SPI card host's own command, under the mutex (see above).
@@ -580,6 +597,7 @@ bool sdMount(const SdPins& pins, char* err, size_t errLen) {
     {
         const char* why = nullptr;
         if (!sharedUp(SHARED_CARD, pins.mosi, pins.miso, pins.clk, why)) return fail(why);
+        panelQuiet();                                  // before the panel is up (boot)
     }
     dev.gpio_cs = static_cast<gpio_num_t>(pins.cs);
     dev.host_id = kSharedHost;
@@ -1974,7 +1992,7 @@ bool camOpen(const CamCfg& c, char* err, size_t errLen) {
     if (g_camUp) camClose();
     if (!heap_caps_get_total_size(MALLOC_CAP_SPIRAM)) return fail("no PSRAM on this board");
     // Measured here, on the worker, with its own stack already taken: the
-    // driver's one 32 KB DMA buffer is its first large allocation and the
+    // driver's one DMA buffer (kCamDmaBlock) is its first large allocation and the
     // one that fails, and a failure costs a sensor probe and a bus set up
     // and torn down for nothing. The loop's check before the worker started
     // could not see the worker's stack come out of the same memory.

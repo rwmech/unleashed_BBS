@@ -1011,7 +1011,7 @@ void runWork(runner::Job&) { worker(nullptr); }
 constexpr uint32_t kSnapInternal = plat::kCamInternal + kWorkerStack + 512;
 
 // roomToSnap: whether internal RAM can take a snap now. The largest DMA
-// block and the internal total both: the camera's 32 KB has to be one
+// block and the internal total both: the camera's DMA block has to be one
 // piece, and the worker's stack and the driver's task come out of the same
 // memory around it. A refusal is logged with the figures; the board's own
 // shots (the timelapse) only the first of a run, so a board short of RAM

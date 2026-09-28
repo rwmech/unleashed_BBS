@@ -663,7 +663,20 @@ using MarkOutFn  = bool (*)(void* ctx, const uint8_t* p, size_t n);
 // the driver's object beside it; then cam_task's 4 KB stack, its queues,
 // the SCCB bus and the sensor's state. The block is rounded up to cover
 // the descriptors and the heap's own headers.
+//
+// The S3 (ETH 1.0.1, WS2 1.0.1, 1.1.2) takes 16 x 1 KB for JPEG
+// (target/esp32s3/ll_cam.c, ll_cam_dma_sizes) and at most
+// CAMERA_DMA_BUFFER_SIZE_MAX for raw frames, which an S3 camera board's
+// sdkconfig layer sets to 16 KB. The ESP32's figure there refused every snap
+// on the ESP32-S3-ETH, whose largest internal DMA block sits near 28-31 KB
+// with SSH running.
+#if defined(BBS_CHIP_S3) && defined(ESP_PLATFORM)
+static_assert(CONFIG_CAMERA_DMA_BUFFER_SIZE_MAX <= 16384,
+              "an S3 camera board sets CAMERA_DMA_BUFFER_SIZE_MAX to 16384 in its sdkconfig layer");
+constexpr uint32_t kCamDmaBlock = 16384u + 1024u;
+#else
 constexpr uint32_t kCamDmaBlock = 32768u + 1024u;
+#endif
 constexpr uint32_t kCamInternal = kCamDmaBlock + 4096u + 2048u;
 
 bool     camOpen(const CamCfg& c, char* err, size_t errLen);

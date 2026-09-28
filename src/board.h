@@ -519,9 +519,9 @@
 #define BBS_BOARD_PLUGINS     2       // the panel and the camera
 
 // "WS2": Waveshare, 2 inch, beside the LCD-1.47's "S3" (which is older than
-// the rule) and the 4.3B's "WS43B". Shown as 1.1.2 (WS2 1.0.0).
+// the rule) and the 4.3B's "WS43B". Shown as 1.1.2 (WS2 1.0.1).
 #define BBS_BOARD_TAG         "WS2"
-#define BBS_BOARD_VERSION     "1.0.0"
+#define BBS_BOARD_VERSION     "1.0.1"
 
 // SSH as on the LCD-1.47: the same S3R8 and the same 8 MB of PSRAM.
 #define BBS_HAS_SSH           1

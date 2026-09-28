@@ -46,6 +46,13 @@
 # text is in the LICENSE file at the top of this repository.
 # ===========================================================================
 
+# The camera's internal DMA buffer (WS2 1.0.1, as the ESP32-S3-ETH's 1.0.1).
+# On the S3 esp32-camera takes 16 x 1 KB for JPEG (target/esp32s3/ll_cam.c,
+# ll_cam_dma_sizes) and up to this figure for raw frames; 16 KB caps both, so
+# a bring-up needs 17 KB of internal DMA memory, not the ESP32's 33
+# (platform.h, kCamDmaBlock, which asserts this).
+CONFIG_CAMERA_DMA_BUFFER_SIZE_MAX=16384
+
 # The camera driver (espressif/esp32-camera 2.1.7, src/idf_component.yml)
 # with the sensors this board's 24-pin connector is sold with: Waveshare
 # ship an OV5640 and name the OV2640 as the other that fits (wiki). Every

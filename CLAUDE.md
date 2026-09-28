@@ -787,6 +787,18 @@ this tree.
     and the two drivers cannot share an image. Touch is asked once at start
     on port 0 and then read as taps from INT by an ISR: no I2C on the loop.
   - Only GPIO 18 is free for a sysop; 43/44 are the console port to CONFIG.
+  - **WS2 1.0.1: every snap was refused for memory**, as on the ETH board:
+    `kCamDmaBlock` asked for the ESP32's 33 KB. On the S3 the driver takes
+    16 x 1 KB for JPEG and at most CAMERA_DMA_BUFFER_SIZE_MAX (16 KB in the
+    board's layer) for raw, so an S3 camera board asks for 17 KB, and a
+    static_assert refuses an S3 camera build whose layer does not set it.
+  - **A shared bus needs every other device's CS high before the first
+    card clock.** The panel's CS is GPIO45, a strap pulled low at reset,
+    and the card mounts before the panel starts; the ST7789 took the card's
+    traffic as commands and drove its bidirectional SDA (MOSI) back: CRC
+    errors on every boot mount. `panelQuiet` holds it high. Open: a sysop
+    who turns the panel off and gives 45 to another plugin loses it at the
+    next SD MOUNT (refusing 45 by name would refuse the panel's own CS).
   - Rob's panel notes, for every glass: the temperature with a CPU icon,
     and a strip effect with meaning (`switchboard`, shared with the 4.3B:
     nodes while callers are on, dim steady lamps flickering with real
