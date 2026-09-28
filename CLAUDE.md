@@ -805,6 +805,12 @@ this tree.
     - it costs a few KB of flash (the FAT library's formatter is already linked).
 
     Mounting still never formats on its own (format_if_mount_failed stays false). A card that won't mount is more often somebody's files than a blank card.
+  - **CONFIG names for cameras and sats, settled by Rob 2026-09-28** ("we cant have config camera and config cameras thats confusing"). One word per thing: the camera is the hardware, photos are the system, a sat is a device.
+    - **CONFIG photos:** the photo system on every board. The auto-show (show new, 10 s) and which kinds trigger it (snaps, motion, timelapse), the default camera, per-caller snap limits, retention.
+    - **CONFIG camera:** only the built-in camera's own hardware settings, and only on boards that have one.
+    - **CONFIG sats:** the list of paired sats.
+    - **CONFIG sat <name>:** one device, including a camera sat's own camera settings.
+    - CONFIG cameras goes; its name stays as a quiet alias for CONFIG photos.
   - **Swipe photo gallery, 1.2.0** (Rob, 2026-09-28: "swiping left or right to show the last pictures from the camera or sat camera. Most boards with displays can do this. Implement in 1.2").
     - On touch panels (the 4.3B, the 2", and the Makerfabs if it has touch), swiping steps through the latest photos from any camera, built-in or sat.
     - Decoding uses the skins' JPEG path on the worker, never the loop.
