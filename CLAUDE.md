@@ -1586,12 +1586,21 @@ this tree.
   (Rob's is a TH-9800), a Digirig Mobile, then a Pi running Direwolf and
   linbpq, then the board over telnet on the LAN. The ESP32 never touches
   the radio.
-  **Firmware owed, not scheduled:** linbpq's applications interface
-  connects over TCP and sends the caller's callsign as the first line.
-  The board should take that line as the caller's identity, so an RF
-  caller logs in by callsign. That needs a design: trust only a local
-  relay address, map callsigns to accounts, and mark the call as RF in
-  the caller log. The page says the board side is coming.
+  **Firmware, 1.2.0 (Rob: "add a config hamradio and make it a 1.2
+  piece").** linbpq's applications interface connects over TCP and sends
+  the caller's callsign as the first line; the board takes that line as
+  the caller's identity, so an RF caller logs in by callsign.
+  **CONFIG hamradio** holds:
+  - a switch;
+  - the station callsign, the sysop's own;
+  - the relay's address, the only address whose first line is believed
+    (anything else is an ordinary telnet caller);
+  - how a callsign maps to an account: a callsign field on the account,
+    or a guest named by the call.
+
+  The call is marked RF in the caller log and in WHO. The spec comes
+  first, through tty-ux for the CONFIG page. The site page says the
+  board side is coming in 1.2.0.
 - **Long term: push photos out to social media** (Rob, 2026-09-24, "a future
   long term possibility"). Every snapshot, or a chosen few, sent onward so
   a board can post to Bluesky, Mastodon, X or Discord, advertising the
