@@ -778,11 +778,16 @@ uint8_t* shoot(Job& j, size_t& len) {
 // areas. Never over a photo that is there already (FatFs refuses a rename
 // onto a name, and nothing removes one to make room).
 void save(Job& j, const char* photos, const uint8_t* jpg, size_t len) {
+    (void)photos;
     uint32_t t0 = plat::millis();
-    char dst[256];
-    snprintf(dst, sizeof(dst), "%s/%s", photos, j.rel);
-    struct stat st;
-    if (stat(dst, &st) == 0) { fail(j, "a photo with that name is already there"); return; }
+    // Its name, or one of the next seconds' (photos::kLater), must be free
+    // before the work starts: a satellite may have filed a picture in the
+    // same second (1.2.0).
+    char free_[sizeof(j.rel)];
+    if (!photos::freeName(j.rel, free_, sizeof(free_))) {
+        fail(j, "a photo with that name is already there");
+        return;
+    }
 
     photos::Writer pw;
     if (!photos::open(pw, camrules::kTmpName)) { fail(j, "the card would not take the photo"); return; }
@@ -833,7 +838,7 @@ void save(Job& j, const char* photos, const uint8_t* jpg, size_t len) {
     // is described. Not the board's own: their names say whose they are, and
     // a thousand-line FILES.BBS rewritten for every timed shot is card wear
     // and seconds of the card's time for nothing.
-    if (!photos::file(pw, j.rel, j.kind == K_CALLER ? j.desc : nullptr)) {
+    if (!photos::fileAs(pw, j.rel, sizeof(j.rel), j.kind == K_CALLER ? j.desc : nullptr)) {
         fail(j, "the card would not take the photo");
         return;
     }

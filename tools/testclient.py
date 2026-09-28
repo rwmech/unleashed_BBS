@@ -2301,8 +2301,9 @@ def test_sats():
         ok &= check("its own page", open_camera_button(p) and p.wait_for(b"SHELF", 5) and p.wait_for(b"Satellite name", 5))
         p.pump(0.3)
         # Name, Camera number (5 is "5"), Receive timelapse (2 is "no"),
-        # Receive motion, then the buttons are passed over.
-        got = ascii_form(p, [b"", b"5", b"2", b"", b"", b""])
+        # Receive motion, then the buttons (Camera settings, Share, Unpair)
+        # are passed over.
+        got = ascii_form(p, [b"", b"5", b"2", b"", b"", b"", b""])
         ok &= check("saved", got in (0, 2))
         ok &= check("the satellite is told this board no longer wants its timelapse",
                     peer.wait("settings 0 recv 2", 10) is not None)
@@ -2322,7 +2323,7 @@ def test_sats():
         open_camera_button(p)
         p.wait_for(b"Satellite name", 5)
         p.pump(0.3)
-        for a in [b"", b"", b"", b"", b""]:          # name, number, timelapse, motion, Share
+        for a in [b"", b"", b"", b"", b"", b""]:     # name, number, timelapse, motion, Camera, Share
             p.send(a + b"\r")
             p.pump(0.3)
         p.send(b"y")                                # Unpair
@@ -2336,6 +2337,49 @@ def test_sats():
         c.buf.clear()
         c.send(b"sats\r")
         ok &= check("it is still there", c.wait_for(b"shelf", 6))
+
+        # The CONFIG names Rob settled (2026-09-28): photos is the system,
+        # camera the hardware, sats the list, sat <name> one device.
+        drain(p)
+        p.buf.clear()
+        p.send(b"config\r")
+        p.wait_for(b"CONFIG page", 5)
+        p.pump(0.6)
+        pages = plain(p.buf)
+        ok &= check("CONFIG lists photos, not cameras",
+                    re.search(rb"\n\s*photos\s", pages) is not None and re.search(rb"\n\s*cameras\s", pages) is None)
+        ok &= check("and not camsat, which each camera sat's page reaches",
+                    re.search(rb"\n\s*camsat\s", pages) is None)
+        drain(p)
+        p.buf.clear()
+        p.send(b"config cameras\r")
+        ok &= check("CONFIG cameras still opens it, as PHOTOS", p.wait_for(b"PHOTOS", 5))
+        finish_line_form(p)
+        drain(p)
+        p.buf.clear()
+        p.send(b"config sat SHELF\r")
+        ok &= check("CONFIG sat <name> opens that sat's page, in any case",
+                    p.wait_for(b"SHELF", 5) and p.wait_for(b"Satellite name", 5))
+        p.pump(0.3)
+        # Name, number, timelapse, motion; then Y at Camera settings.
+        for a in [b"", b"", b"", b""]:
+            p.send(a + b"\r")
+            p.pump(0.3)
+        ok &= check("a camera sat's page has its camera settings",
+                    p.wait_for(b"open (y/N)?", 5) and "Camera" in (render_lines(p.buf)[-1] if render_lines(p.buf) else ""))
+        p.buf.clear()
+        p.send(b"y")
+        ok &= check("which open CONFIG camsat's page", p.wait_for(b"CAMSAT", 6) or p.wait_for(b"Camera satellite", 2))
+        finish_line_form(p)
+        drain(p)
+        p.buf.clear()
+        p.send(b"config camsat\r")
+        ok &= check("CONFIG camsat still opens it", p.wait_for(b"CAMSAT", 6) or p.wait_for(b"Camera satellite", 2))
+        finish_line_form(p)
+        drain(p)
+        p.buf.clear()
+        p.send(b"config sat nowhere\r")
+        ok &= check("CONFIG sat with no such name says so", p.wait_for(b"No sat called nowhere.", 5))
         p.close()
     finally:
         for x in (c, c40, a):

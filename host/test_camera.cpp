@@ -113,6 +113,25 @@ int main() {
     check("but not under SNAP", !nameKey("TL-20260924-171200.JPG", "SNAP", true, k));
     check("lower-case .jpg is taken (a card copied on a laptop)", nameKey("SNAP-20260924-171204.jpg", "SNAP", true, k));
 
+    printf("Two cameras in one second: the second takes the next second (1.2.0)\n");
+    char nb[160];
+    check("a system name moves a second on",
+          laterName("timelapse/TL-20260924-171200.JPG", nb, sizeof(nb)) && !strcmp(nb, "timelapse/TL-20260924-171201.JPG"));
+    check("a caller's name keeps its handle",
+          laterName("SNAP-20260924-171204-bob.JPG", nb, sizeof(nb)) && !strcmp(nb, "SNAP-20260924-171205-bob.JPG"));
+    check("and its folder", laterName("bob/SNAP-20260924-171204.JPG", nb, sizeof(nb)) &&
+                             !strcmp(nb, "bob/SNAP-20260924-171205.JPG"));
+    check("across a minute", laterName("MO-20260924-171259.JPG", nb, sizeof(nb)) && !strcmp(nb, "MO-20260924-171300.JPG"));
+    check("across midnight", laterName("MO-20260930-235959.JPG", nb, sizeof(nb)) && !strcmp(nb, "MO-20261001-000000.JPG"));
+    check("across a year", laterName("MO-20261231-235959.JPG", nb, sizeof(nb)) && !strcmp(nb, "MO-20270101-000000.JPG"));
+    check("into a leap day", laterName("MO-20280228-235959.JPG", nb, sizeof(nb)) && !strcmp(nb, "MO-20280229-000000.JPG"));
+    check("past one", laterName("MO-20270228-235959.JPG", nb, sizeof(nb)) && !strcmp(nb, "MO-20270301-000000.JPG"));
+    check("the later name still counts, under its prefix",
+          laterName("TL-20260924-171200.JPG", nb, sizeof(nb)) && nameKey(nb, "TL", false, k) && k == 20260924171201ull);
+    check("a name with no stamp has no later one", !laterName("garden.jpg", nb, sizeof(nb)));
+    check("nor does a dash in a folder make one", !laterName("a-20260924-171200/x.JPG", nb, sizeof(nb)));
+    check("nor into too small a buffer", !laterName("TL-20260924-171200.JPG", nb, 22));
+
     printf("Limits: 10 an hour, 20 a day, rolling\n");
     Window w;
     const uint32_t T0 = 1790000000u;

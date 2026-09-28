@@ -30,6 +30,31 @@ The µnleashed link, its lane (rel-1.2.0-link-r3, rebased onto main at
 a3dcf01, after the v1.1.2 tag). Host-tested; the camera satellite has run
 on the bench since link.4 (LINK.md has the figures).
 
+**1.2.0-link.13: two cameras in one second; the CONFIG names**
+- **A second picture in the same second is kept.** The built-in camera
+  and a camera sat that stamp a picture in the same second asked for the
+  same name, and the second picture was thrown away: at every timelapse
+  slot, since both start a slot on the same second. (Two sats cannot
+  clash: the camsat plugin takes one picture at a time, and so does the
+  built-in camera.) It is filed under
+  the next second's stamp now, up to five seconds on (Rob's rule, the
+  gallery spec): `photos::fileAs`, `camrules::laterName`. The name keeps
+  its shape, so retention and the listings need nothing new, and the
+  caller is offered the name it was filed under. The built-in camera uses
+  it; the camera satellite plugin does from camsat's photo-names branch.
+  The plugin API is 1.1 for it (`photos::fileAs`), so a camsat that uses
+  it refuses by name to build into an older core. The host refuses a
+  rename onto a name the way the card's FatFs does.
+- **The CONFIG names Rob settled (2026-09-28): one word per thing.**
+  CONFIG photos is the photo system (the default camera now, the gallery's
+  auto-show rows to come); CONFIG cameras still opens it, unlisted. CONFIG
+  camera is the built-in camera's hardware. CONFIG sats lists the sats;
+  CONFIG sat <name> opens one, and a camera sat's page has a Camera
+  settings button (the camsat plugin's page, which every camera sat this
+  board owns runs). CONFIG camsat still opens it, unlisted while it is
+  running; while it is off, CONFIG and CONFIG sats show it, since its page
+  is where it is switched on. `CONFIG sat 2` takes a camera number too.
+
 **1.2.0-link.12: on 1.1.2**
 - Rebased onto main at a3dcf01 (v1.1.2 at cfc76bb): the login and logoff
   split across passes, the per-pass open count, the small printf, the

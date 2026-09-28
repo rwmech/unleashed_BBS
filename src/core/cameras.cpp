@@ -198,7 +198,7 @@ const Camera* pick(const char* arg, size_t len) {
 
 bool isUp(const Camera* c) { return c && (!c->up || c->up(c->ctx)); }
 
-// byDefault: CONFIG cameras' choice when it is up, else the built-in camera,
+// byDefault: CONFIG photos' choice when it is up, else the built-in camera,
 // else the first that is up, else the first there is (which says why not).
 const Camera* byDefault() {
     const char* want = syscfg::get().camera;

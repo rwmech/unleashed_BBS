@@ -400,7 +400,7 @@ void keyValue(Ctx& c, const char* key, char* val) {
         if (*val && !users::validHandle(val)) problem(c, "sysop_handle is not a handle:", val);
         else copyStr(g.sysopHandle, sizeof(g.sysopHandle), val);
     }
-    // The camera SNAPSHOT uses (1.2.0, CONFIG cameras): a camera's name, or
+    // The camera SNAPSHOT uses (1.2.0, CONFIG photos): a camera's name, or
     // blank. Not checked against the cameras: a satellite may be off the air
     // when the file is read, and a name that matches nothing is the default.
     else if (!strcmp(key, "camera"))                copyStr(g.camera, sizeof(g.camera), val);

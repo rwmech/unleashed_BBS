@@ -618,8 +618,9 @@ tables are 8 KB of static DRAM.)
 - **One SNAPSHOT.** A satellite does not bring verbs of its own: the camsat
   plugin adds a `photos::Camera` for each satellite that is up (order 1 +
   its pairing number, so the built-in camera stays camera 1), and the
-  core's `SNAPSHOT [n|name]` and `CAMERA [n|name]` reach it. CONFIG cameras
-  picks the default (PLUGINS.md, "A camera").
+  core's `SNAPSHOT [n|name]` and `CAMERA [n|name]` reach it. CONFIG photos
+  picks the default (PLUGINS.md, "A camera"); CONFIG sat <name> is one
+  satellite, with its camera settings.
 
 ---
 

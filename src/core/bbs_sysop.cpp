@@ -1042,10 +1042,12 @@ const CfgField kNetwork[] = {
 #endif
 };
 
-// The cameras (1.2.0): which one a bare SNAPSHOT takes. A name CAMERA
+// CONFIG photos (1.2.0; CONFIG cameras until Rob's naming of 2026-09-28,
+// "one word per thing": the camera is the hardware, photos are the system,
+// a sat is a device). Which camera a bare SNAPSHOT takes: a name CAMERA
 // shows; blank, or a name that is not on the air, is the built-in camera,
-// else the first that is up.
-const CfgField kCameras[] = {
+// else the first that is up. The gallery's auto-show rows join it.
+const CfgField kPhotos[] = {
     { "camera", "Default", CK_TEXT, 0, 0, 16, "A name from CAMERA. Blank: built-in.",
       "Default camera",
       // 73 columns: the status line holds 78 (tty-ux-sats; it was 90).
@@ -1088,8 +1090,9 @@ const CfgPage kPages[] = {
     // before that and in a sysop's fingers.
     CFG_PAGE("network",  "NETWORK",         "Wi-Fi and port, next restart",    kNetwork),
     // 1.2.0: one SNAPSHOT for every camera the board has (photos.h). Its
-    // own page, last, so no row on the pages above moves.
-    CFG_PAGE("cameras",  "CAMERAS",         "which camera SNAPSHOT uses",      kCameras),
+    // own page, last, so no row on the pages above moves. "cameras" still
+    // opens it (pageByName), unlisted.
+    CFG_PAGE("photos",   "PHOTOS",          "SNAPSHOT's default camera",       kPhotos),
 };
 constexpr uint8_t kPageCount = sizeof(kPages) / sizeof(kPages[0]);
 
@@ -1602,6 +1605,7 @@ void cfgSummary(const char* packed, uint8_t namePart, char* out, size_t n) {
 // shows one name for one page.
 const CfgPage* pageByName(const char* name) {
     if (!strcasecmp(name, "wifi")) name = "network";
+    if (!strcasecmp(name, "cameras")) name = "photos";      // its name before 1.2.0's naming
     for (uint8_t i = 0; i < kPageCount; ++i)
         if (!strcasecmp(kPages[i].name, name)) return &kPages[i];
     return nullptr;
@@ -2133,8 +2137,8 @@ void cfgChanged(Form& f, uint8_t field, Term& t, Timeline& tl) {
 // Buttons that leave end CONFIG: Pair a satellite runs LINK PAIR, which asks
 // on the sysop's own screen; Share and Unpair ask "(y/N)" there first
 // (linkp::ask), because an Enter walking the page to Save lands on them
-// (code review). Default and Settings open CONFIG cameras and CONFIG camsat
-// in its place.
+// (code review). Default camera opens CONFIG photos, and a camera sat's
+// Camera settings CONFIG camsat, in its place.
 // ===========================================================================
 enum : uint8_t { SA_NONE = 0, SA_PAIR, SA_CAMERAS, SA_CAMSAT, SA_LINK, SA_SHARE, SA_UNPAIR };
 bool    g_satsPage = false;                 // the page on screen is CONFIG sats
@@ -2206,13 +2210,17 @@ uint8_t buildSats(const Term& term) {
         row("pair", wide ? "Pair a satellite" : "Pair new", CK_ACT, SA_PAIR);
         snprintf(g_cfgBuf[n - 1], sizeof(g_cfgBuf[0]), "%s", wide ? "Open pairing for 2 minutes (LINK PAIR)" : "LINK PAIR, 2 minutes");
     }
-    row("cameras", wide ? "Default camera" : "Default", CK_ACT, SA_CAMERAS);
-    snprintf(g_cfgBuf[n - 1], sizeof(g_cfgBuf[0]), "%s%s", syscfg::get().camera[0] ? syscfg::get().camera : "built-in",
-             wide ? " (CONFIG cameras)" : "");
-    if (plugins::indexOf("camsat") != 0xFF) {
-        row("camsat", wide ? "Satellite settings" : "Settings", CK_ACT, SA_CAMSAT);
-        snprintf(g_cfgBuf[n - 1], sizeof(g_cfgBuf[0]), "%s", wide ? "Size, sleep, timelapse, motion (CONFIG camsat)" : "CONFIG camsat");
+    // The camera sats' plugin, while it is off: it is switched on on its
+    // own page, which the list does not show (code review of 1.2.0's naming:
+    // hiding it hid the switch).
+    const uint8_t cs = plugins::indexOf("camsat");
+    if (cs != 0xFF && !plugins::running(cs)) {
+        row("camsat", wide ? "Camera sats" : "Camera sats", CK_ACT, SA_CAMSAT);
+        snprintf(g_cfgBuf[n - 1], sizeof(g_cfgBuf[0]), "%s", wide ? "off: Enter turns camera sats on (CONFIG camsat)" : "off: turn them on");
     }
+    row("photos", wide ? "Default camera" : "Default", CK_ACT, SA_CAMERAS);
+    snprintf(g_cfgBuf[n - 1], sizeof(g_cfgBuf[0]), "%s%s", syscfg::get().camera[0] ? syscfg::get().camera : "built-in",
+             wide ? " (CONFIG photos)" : "");
     if (linkp::engine()) {
         row("chan", wide ? "Wi-Fi channel" : "Channel", CK_INFO, SA_NONE);
         snprintf(g_cfgBuf[n - 1], sizeof(g_cfgBuf[0]), wide ? "%u, the router's. A shared satellite needs one channel."
@@ -2226,7 +2234,8 @@ uint8_t buildSats(const Term& term) {
 }  // namespace
 
 bool Bbs::configSatsName(const char* arg) {
-    return !strcasecmp(arg, "sats") || !strcasecmp(arg, "satellites") || !strcasecmp(arg, "sat");
+    return !strcasecmp(arg, "sats") || !strcasecmp(arg, "satellites") || !strcasecmp(arg, "sat") ||
+           !strncasecmp(arg, "sat ", 4);
 }
 
 // configSatsOpen: CONFIG sats, with the focus on row focus.
@@ -2259,7 +2268,7 @@ void Bbs::configSatsButton(Session& s, uint8_t field, uint32_t now) {
     if (field >= Form::kMaxFields) return;
     switch (g_satAct[field]) {
         case SA_PAIR:    configSatLeave(s, "LINK PAIR", now); return;
-        case SA_CAMERAS: cmdConfig(s, "cameras", now); return;
+        case SA_CAMERAS: cmdConfig(s, "photos", now); return;
         case SA_CAMSAT:  cmdConfig(s, "camsat", now); return;
         case SA_LINK:    cmdConfig(s, "link", now); return;
         case SA_SHARE:
@@ -2346,6 +2355,18 @@ void Bbs::configSatOpen(Session& s, uint8_t field, uint32_t now) {
         addField(s, n, Form::pick(s.term, label, wideLabel), g_cfgBuf[b], 0, FF_ACTION, nullptr);
         ++b;
     };
+    // A camera sat's camera settings (CONFIG camsat, reached here since
+    // 1.2.0's naming: "CONFIG sat <name>" is one device). They are the
+    // camsat plugin's, so every camera sat this board owns runs them; a sat
+    // another board owns runs its owner's.
+    const uint8_t cs = plugins::indexOf("camsat");
+    if (li.kind == ulink::KIND_CAMSAT && cs != 0xFF) {
+        const bool on = plugins::running(cs);
+        button("Camera", "Camera settings", on ? "size, sleep, timelapse" : "off: turn them on",
+               !on ? "off: Enter turns camera sats on (CONFIG camsat)"
+                   : li.owned == 0 ? "Its owner's are the ones it runs (CONFIG camsat)"
+                                   : "Size, sleep, timelapse, motion: all camera sats here", SA_CAMSAT);
+    }
     if (li.owned != 0 && li.boards < ulink::Engine::kHosts)
         button("Share", "Share with a board", "LINK SHARE, 2 minutes", "Open its pairing to one more board (LINK SHARE)", SA_SHARE);
     button("Unpair", "Unpair from here", "forget it here", "Forget this satellite on this board (LINK FORGET)", SA_UNPAIR);
@@ -2467,10 +2488,15 @@ void Bbs::configPages(Session& s) {
         uint8_t col = 0;
         snprintf(buf, sizeof(buf), " %-10.10s", "sats");
         rowSeg(s, Color::Yellow, buf, col);
-        rowSeg(s, Color::Grey, clip("satellites: what each sends here", col), col);
+        rowSeg(s, Color::Grey, clip("the sats; CONFIG sat <name> opens one", col), col);
         rowEnd(s, col);
     }
     for (uint8_t i = 0; i < plugins::count(); ++i) {
+        // The camera sats' settings are reached from each one's page
+        // (CONFIG sat <name>, 1.2.0's naming); CONFIG camsat still opens
+        // them, unlisted, like CONFIG cameras and CONFIG wifi. Listed while
+        // it is off, because its page is where it is switched on.
+        if (!strcmp(plugins::at(i)->info.name, "camsat") && plugins::running(i)) continue;
         uint8_t col = 0;
         snprintf(buf, sizeof(buf), " %-10.10s", plugins::at(i)->info.name);
         rowSeg(s, Color::Yellow, buf, col);
@@ -2502,11 +2528,53 @@ void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now, uint8_t focus) {
     }
 
     if (configSatsName(arg)) {
+        // CONFIG sat <name> (1.2.0): that device's page, the way the sats
+        // page's button opens it; Back returns to the list. The name is the
+        // one LINK and SATS show, in any case.
+        const char* want = !strncasecmp(arg, "sat ", 4) ? arg + 4 : "";
+        while (*want == ' ') ++want;
+        int row = -1;
+        if (*want) {
+            if (!linkp::engine()) {
+                say(s.term, s.tl, Color::LightRed, "The link is off: CONFIG link.");
+                prompt(s);
+                return;
+            }
+            // By name, or by the camera number SNAPSHOT, CAMERA and SATS use.
+            const long num = strtol(want, nullptr, 10);
+            bool digits = true;
+            for (const char* q = want; *q; ++q) digits = digits && *q >= '0' && *q <= '9';
+            g_satsPage = true;
+            g_satPeer  = -1;
+            const uint8_t n = buildSats(s.term);
+            for (uint8_t i = 0; i < n && row < 0; ++i) {
+                linkp::SatInfo li;
+                if (g_cfgPlugin[i].kind != CK_SAT || !linkp::satInfo(g_satRow[i], li)) continue;
+                if (digits ? satNumber(g_satRow[i]) == num : !strcasecmp(li.name, want)) row = i;
+            }
+            g_satsPage = false;
+            if (row < 0) {
+                snprintf(buf, sizeof(buf), s.term.cols() >= 60 ? "No sat called %.20s. CONFIG sats lists them."
+                                                                : "No sat called %.20s.", want);
+                say(s.term, s.tl, Color::LightRed, buf);
+                prompt(s);
+                return;
+            }
+        }
         claims::take(claims::Res::Config, s.id);
         g_cfgOwner = &s;
         g_subComp  = nullptr;
         g_listKey[0] = '\0';
-        configSatsOpen(s, focus, now);
+        if (row < 0) { configSatsOpen(s, focus, now); return; }
+        g_cfgSection[0] = '\0';
+        g_satsPage = true;
+        g_satPeer  = -1;
+        buildSats(s.term);
+        g_cfgPage = &g_cfgPluginPage;
+        configSatOpen(s, static_cast<uint8_t>(row), now);
+        // Gone between the look and the open: the list, not a CONFIG held
+        // with nothing on the screen.
+        if (g_satPeer < 0) configSatsOpen(s, 0, now);
         return;
     }
     g_satsPage = false;

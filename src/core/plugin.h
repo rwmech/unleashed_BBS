@@ -85,6 +85,8 @@ struct Command;
 //
 //   1.0  1.2.0: the first numbered API. Bbs::callSecondsLeft; the link's
 //        families (plugins/link.h).
+//   1.1  1.2.0-link.13: photos::fileAs, freeName and kLater (a picture whose
+//        name another camera took in the same second).
 //
 // A plugin says what it was written against, in one of its sources:
 //   UNLEASHED_PLUGIN_API(1, 0);
@@ -92,7 +94,7 @@ struct Command;
 // instead of with an error about a positional field.
 // ---------------------------------------------------------------------------
 #define BBS_PLUGIN_API_MAJOR 1
-#define BBS_PLUGIN_API_MINOR 0
+#define BBS_PLUGIN_API_MINOR 1
 #define UNLEASHED_PLUGIN_API(major, minor)                                                     \
     static_assert((major) == BBS_PLUGIN_API_MAJOR,                                             \
                   "this plugin is for another major version of the unleashed plugin API");    \

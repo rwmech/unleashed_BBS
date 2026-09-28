@@ -113,6 +113,19 @@ bool write(Writer& w, const uint8_t* p, size_t n);
 // (under Photos). False when rel is taken or the card refused; the temporary
 // file is gone either way. desc, if not null, becomes its FILES.BBS line.
 bool file(Writer& w, const char* rel, const char* desc);
+// kLater: how many seconds on a picture's stamp may move when its own name
+// is taken (Rob, the gallery spec: "up to five").
+constexpr uint8_t kLater = 5;
+// fileAs (1.2.0): file, and when rel's name is taken (another camera in the
+// same second: the built-in one and a satellite, two motion satellites),
+// under the next second's stamp, up to kLater on (camera_rules.h laterName).
+// rel is rewritten to the name it was filed under (cap is rel's size), so the
+// caller offers and logs the right one. file() is the plain name or nothing.
+bool fileAs(Writer& w, char* rel, size_t cap, const char* desc);
+// freeName: the first of rel and its kLater later seconds not on the card
+// yet, into out; false when all are taken. A check before the work of a
+// picture; fileAs decides again at the rename, which is what counts.
+bool freeName(const char* rel, char* out, size_t cap);
 // abandon: close and remove the temporary file.
 void abandon(Writer& w);
 
@@ -120,7 +133,7 @@ void abandon(Writer& w);
 // The board's cameras (1.2.0, approved 2026-09-26): one SNAPSHOT verb for
 // every camera the board has, built in or on the link. The verbs are the
 // core's (cameras.cpp) and exist while at least one camera is registered:
-//   SNAPSHOT            the default camera: CONFIG cameras "Default" when it
+//   SNAPSHOT            the default camera: CONFIG photos "Default" when it
 //                       names one that is up, else the built-in camera, else
 //                       the first that is up
 //   SNAPSHOT n|name     that one

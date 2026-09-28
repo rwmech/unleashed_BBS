@@ -24,6 +24,14 @@
  *                 quantumrob/SNAP-20260924-171204.JPG   by handle
  *                 timelapse/TL-20260924-171200.JPG      a system snap
  *
+ *               Two cameras can take a picture in the same second (a
+ *               built-in camera and a satellite, two motion satellites, two
+ *               callers' snaps named by date alone). The second is filed
+ *               under the next second's stamp, up to five seconds on
+ *               (laterName, photos::fileAs), never over the first: the name
+ *               keeps its shape, so nameKey and retention need nothing new
+ *               (1.2.0, Rob's rule from the gallery spec).
+ *
  *               Only a name of exactly that shape is ever counted or
  *               removed. A sysop's own garden.jpg in the folder, or a file
  *               called SNAP-holiday.JPG, is neither. The timestamp in the
@@ -31,7 +39,7 @@
  *               keeps a two-second mtime from a clock that may have been
  *               wrong, and a laptop copying the card rewrites it.
  *
- * Interfaces:   safeHandle, stampOf, callerName, systemName, nameKey,
+ * Interfaces:   safeHandle, stampOf, callerName, systemName, laterName, nameKey,
  *               Window/check/record, Item/Policy/choose, tlDue, offerFor,
  *               jpegWhole, ComSink
  *
@@ -173,6 +181,41 @@ inline bool systemName(const char* folder, const char* prefix, const struct tm& 
     stampOf(t, st);
     int w = snprintf(out, n, "%s/%s-%s.JPG", folder, prefix, st);
     return w > 0 && static_cast<size_t>(w) < n;
+}
+
+// laterName: rel with its stamp one second later, into out: the name a
+// picture takes when another took its own in the same second. The stamp is
+// the first -YYYYMMDD-HHMMSS after the last slash; the rest of the name
+// (prefix, handle, extension) is kept. Across a minute, an hour, a day, a
+// month and a year as the calendar has them. False when rel has no stamp or
+// out is too small.
+inline bool laterName(const char* rel, char* out, size_t cap) {
+    if (!rel) return false;
+    const char* base = strrchr(rel, '/');
+    base = base ? base + 1 : rel;
+    const char* d = nullptr;
+    for (const char* p = strchr(base, '-'); p; p = strchr(p + 1, '-')) {
+        bool ok = true;
+        for (int i = 1; i <= 15 && ok; ++i)
+            ok = (i == 9) ? p[i] == '-' : (p[i] >= '0' && p[i] <= '9');
+        if (ok) { d = p + 1; break; }
+    }
+    if (!d) return false;
+    auto num = [&](int at, int len) {
+        int v = 0;
+        for (int i = 0; i < len; ++i) v = v * 10 + (d[at + i] - '0');
+        return v;
+    };
+    int y = num(0, 4), mo = num(4, 2), dd = num(6, 2), h = num(9, 2), mi = num(11, 2), s = num(13, 2);
+    if (mo < 1 || mo > 12 || dd < 1 || dd > 31 || h > 23 || mi > 59 || s > 59) return false;
+    const bool leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    static const uint8_t kDays[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    const int dim = kDays[mo - 1] + (mo == 2 && leap ? 1 : 0);
+    if (++s > 59) { s = 0; if (++mi > 59) { mi = 0; if (++h > 23) { h = 0; if (++dd > dim) { dd = 1; if (++mo > 12) { mo = 1; ++y; } } } } }
+    if (y > 9999) return false;
+    const int w = snprintf(out, cap, "%.*s%04d%02d%02d-%02d%02d%02d%s", static_cast<int>(d - rel), rel, y, mo, dd, h, mi,
+                           s, d + 15);
+    return w > 0 && static_cast<size_t>(w) < cap;
 }
 
 // keyOf: a time as the sortable number its name carries, YYYYMMDDHHMMSS.
