@@ -1582,6 +1582,17 @@ this tree.
     added later. A CONFIG page (name to settle: Credits, or something
     better) with conversion rates and a price per item.
   - **Not wanted:** upload/download ratios, QWK offline mail.
+- **Browser SSH from the directory: research queued, after 2026-09-30**
+  (Rob, 2026-09-28). A "Connect (SSH)" button on listings whose board
+  forwards its SSH port. The SSH client must run IN the browser (xterm.js
+  plus an in-browser SSH implementation), so the droplet's WebSocket relay
+  only ever carries ciphertext. Server-side web SSH (webssh2, Guacamole)
+  is ruled out: it puts the droplet in the middle, the same trust problem
+  that parked the fTelnet idea. The relay connects only to listed boards'
+  announced host and SSH port (never an open proxy) and is rate-limited.
+  The research reports on the client library's maturity, size, licence,
+  host-key trust on first use in a browser, and the effort, before
+  anything is built.
 - **Prices (Rob, 2026-09-28):** a classic ESP32 dev board is about $15,
   and the boards with a full display start from around $60. The site is
   being corrected. The firmware repo still says "$5" or "five dollar" in
