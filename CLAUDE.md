@@ -1580,12 +1580,18 @@ this tree.
     added later. A CONFIG page (name to settle: Credits, or something
     better) with conversion rates and a price per item.
   - **Not wanted:** upload/download ratios, QWK offline mail.
-- **A packet radio setup page on the site** (Rob, 2026-09-28, not for any
-  particular release): how to reach a board over packet radio for TTY
-  logins. Rob worked out the setup in another chat; get his notes from
-  him when it's scheduled rather than reconstructing it. It goes on the
-  site with the other "how to connect" pages, and it's `explain`'s copy,
-  checked against the firmware for what a TTY caller actually gets.
+- **Packet radio (Rob, KE9CXN, 2026-09-28).** A HAM RADIO section on the
+  site, with a "Packet Radio Node" page from Rob's own write-up
+  (release-prep/cloud/packet-radio-page.md). The chain is any 2 m FM radio
+  (Rob's is a TH-9800), a Digirig Mobile, then a Pi running Direwolf and
+  linbpq, then the board over telnet on the LAN. The ESP32 never touches
+  the radio.
+  **Firmware owed, not scheduled:** linbpq's applications interface
+  connects over TCP and sends the caller's callsign as the first line.
+  The board should take that line as the caller's identity, so an RF
+  caller logs in by callsign. That needs a design: trust only a local
+  relay address, map callsigns to accounts, and mark the call as RF in
+  the caller log. The page says the board side is coming.
 - **Long term: push photos out to social media** (Rob, 2026-09-24, "a future
   long term possibility"). Every snapshot, or a chosen few, sent onward so
   a board can post to Bluesky, Mastodon, X or Discord, advertising the
