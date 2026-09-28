@@ -1524,6 +1524,16 @@ this tree.
     - COM21's CH340 drops off USB under radio and camera load, even on
       the powered hub. The board itself never resets. Hardware, not
       firmware.
+  - **From the WS2 bench (2026-09-28):**
+    - The core CONFIG pin rows (the LED on the board page and others) stop
+      at 39 on every S3 build, so GPIO 40 to 48 can't be chosen. They
+      should follow `BBS_GPIO_OUT_MAX`.
+    - The host treats 1 and 3 as UART0 whatever the profile; on the S3 it's
+      43 and 44.
+    - The shared login and shell tests assume the WROOM's pins: serial on
+      16/17, LED 2, flash pin 7, missing 20/28/29/31. They cause all 19
+      failures when those groups run on the WS2 profile. They should read
+      the profile's pins.
   The six 1.3.0 decisions in internal/tty-ux-1.3.0-classics-2026-09-26.md
   (branch specs-1.3.0) are with Rob for review. Nothing is settled.
 - **1.2.0: memory, from internal/memory-2026-09-25-1.1.1.md** (Rob,
