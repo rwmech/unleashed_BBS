@@ -868,8 +868,13 @@ At `1.2.0-link.9` (SATS, CONFIG sats, fixed camera numbers): esp32dev
 are code, not statics: the page's state is a handful of bytes beside
 CONFIG's own.
 
-The ESP32-CAM is the one to watch: 3.5 KB of static RAM and 91% of its
-program slot. The camera boards' PSRAM move (1.3.0) is what buys it room.
+At `1.2.0-link.12`, on 1.1.2 (the small printf gave about 70 KB of flash
+back): esp32dev 165,104 (15,632 free), Freenove 176,440 (4,296 free),
+ESP32-CAM 177,912 (**2,824** free), S3 255,432 of 341,760. Images
+1,255,824, 1,335,104, 1,390,288 and 1,430,928 bytes.
+
+The ESP32-CAM is the one to watch: under 3 KB of static RAM at link.12
+(3.5 KB at link.7). The camera boards' PSRAM move (1.3.0) is what buys it room.
 
 ---
 

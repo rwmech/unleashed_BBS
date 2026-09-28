@@ -57,6 +57,15 @@ on the bench since link.4 (LINK.md has the figures).
 - LINK.md has the camsat bench's link.7 figures: a two-hour soak of 106
   of 106 pictures at a median 75 KB/s with 3 slow passes, all at the
   start, and the robustness runs.
+- internal/link-redundancy-2026-09-28.md: what keeps the link up today,
+  and store-and-forward on the satellite proposed for 1.2.0.
+- Tests: the full host suite in 12 lanes (`--changed a3dcf01..HEAD`),
+  4,101 checks, 0 failed; `--ext camsat --card --only=sats,radio` 99/0;
+  `make test` passes. Eleven envs, no warnings.
+- Static DRAM off the ELF, against 1.1.2: WROOM 165,104 (15,632 free,
+  +888), Freenove 176,440 (4,296 free, +688), ESP32-CAM 177,912 (2,824
+  free, +704), S3 255,432 of 341,760 (+1,144). Images: 1,255,824,
+  1,335,104, 1,390,288 and 1,430,928 bytes.
 
 **1.2.0-link.11: a sat's type is camera or door**
 - LINK's kind column and the pairing question say `camera` and `door`
