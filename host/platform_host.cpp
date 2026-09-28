@@ -772,15 +772,23 @@ std::vector<uint16_t> g_glass;
 
 bool lcdBegin(const LcdCfg& c, char* err, size_t errLen) {
     lcdEnd();
+#ifdef BBS_LCD_RGB
+    // An RGB panel's bus is the board's wiring: only the picture's size.
+    if (!c.width || !c.height) {
+        snprintf(err, errLen, "the panel needs a size");
+        return false;
+    }
+#else
     if (c.mosi < 0 || c.sclk < 0 || c.dc < 0 || !c.width || !c.height) {
         snprintf(err, errLen, "the panel needs MOSI, SCLK and D/C");
         return false;
     }
+#endif
     g_lcdCfg = c;
     g_lcdUp  = true;
     g_lcdBl  = c.backlight;
     g_glass.assign(static_cast<size_t>(c.width) * c.height, 0);
-    log("panel: ST7789 %ux%u, rotation %u, %u MHz (host glass)", static_cast<unsigned>(c.width),
+    log("panel: %ux%u, rotation %u, %u MHz (host glass)", static_cast<unsigned>(c.width),
         static_cast<unsigned>(c.height), static_cast<unsigned>(c.rotation), static_cast<unsigned>(c.mhz));
     return true;
 }
@@ -818,6 +826,38 @@ void lcdBacklight(uint8_t pct) { g_lcdBl = g_lcdUp ? pct : 0; }
 void* psramAlloc(size_t n) { return malloc(n); }
 void  psramFree(void* p)  { free(p); }
 #endif  // BBS_HAS_LCD
+
+#if defined(BBS_SD_CS_EXPANDER) || defined(BBS_LCD_RGB)
+// The host has no expander to bring up.
+bool boardExpander() { return true; }
+#endif
+
+#ifdef BBS_HAS_TOUCH
+// touchPoll on the host: a tap is a file called "tap" in the data directory.
+// Seen, it is removed and reported as a finger down, and the next poll
+// reports the finger lifted, as the GT911 reports a tap.
+bool touchPoll(bool& down) {
+    static bool lift = false;
+    down = false;
+    if (lift) {
+        lift = false;
+        return true;
+    }
+    const std::string p = g_fsBase + "/tap";
+    if (remove(p.c_str()) != 0) return false;
+    down = true;
+    lift = true;
+    return true;
+}
+#endif
+
+#ifdef BBS_HAS_CHIP_TEMP
+// chipTemp on the host: a steady 42, so the panel's figure can be read.
+bool chipTemp(int& celsius) {
+    celsius = 42;
+    return true;
+}
+#endif
 
 #ifdef BBS_HAS_CAMERA
 // ---------------------------------------------------------------------------

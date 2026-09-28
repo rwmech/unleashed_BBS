@@ -43,8 +43,20 @@
  *                                      a micro SD slot (run over SPI)
  *                                      and a flash LED on GPIO 4.
  *
+ *               BBS_BOARD_WS_S3TOUCH43B  Waveshare ESP32-S3-Touch-LCD-4.3B:
+ *                                      ESP32-S3-WROOM-1-N16R8, an 800 x 480
+ *                                      RGB panel with GT911 touch, a CH422G
+ *                                      expander, a TF slot, an RTC, RS485
+ *                                      and CAN. Pins in its block below.
+ *
  *               Capabilities a profile may define:
  *                 BBS_HAS_LCD       a panel the panel plugin drives
+ *                 BBS_LCD_RGB       that panel is on the S3's RGB bus, its
+ *                                   frame buffer in PSRAM, not an SPI one
+ *                 BBS_HAS_TOUCH     a touch controller on the panel
+ *                 BBS_HAS_CHIP_TEMP the panel shows the chip's temperature
+ *                 BBS_SD_CS_EXPANDER the card's chip select is an expander
+ *                                   pin held low, not a GPIO
  *                 BBS_CHIP_S3       the chip is an ESP32-S3 (pin rules,
  *                                   RMT sizing, the console on native USB)
  *                 BBS_HAS_PSRAM     the board has PSRAM its build turns on
@@ -217,6 +229,194 @@
 #endif  // BBS_BOARD_WS_S3LCD147
 
 // ===========================================================================
+// Waveshare ESP32-S3-Touch-LCD-4.3B ("Development Board B", in its case)
+//
+// ESP32-S3-WROOM-1-N16R8 (read on the bench as ESP32-S3 QFN56 rev v0.2,
+// 16 MB flash, 8 MB octal PSRAM), native USB only (303A:1001), a 4.3"
+// 800 x 480 ST7262 panel on a 16-bit RGB bus, a GT911 touch controller, a
+// CH422G I2C expander, a TF slot on SPI, a PCF85063A RTC, RS485, CAN and two
+// isolated inputs and outputs. Every pin below is from Waveshare's own
+// schematic (ESP32-S3-Touch-LCD-4.3B-Sch.pdf) cross-checked against their
+// demos for this exact board (github.com/waveshareteam/ESP32-S3-Touch-LCD-
+// 4.3B at 04cc7ee: waveshare_rgb_lcd_port.h, CH422G.h, 03_SD_Test, 04_RTC_
+// Test); the table with a source for each pin is release-prep/ws43b/pins.md.
+// The schematic, the wiki and the demos agree on every pin this profile
+// drives. The one disagreement, the Arduino demos' "USB_SEL" on EXIO5, is
+// copied from the plain 4.3 board: the B has no USB/CAN switch, and EXIO5 is
+// its second isolated input.
+//
+// The board uses every GPIO the module brings out, so there is no activity
+// LED, no pixel for the lights, and no BOOT button for the firmware: GPIO0
+// is the BOOT key and the panel's G3 line at once, driven by the RGB bus
+// while the panel runs. The BOOT-hold reset and the backup window's button
+// are off, as on the ESP32-CAM.
+//
+// The CH422G has one direction bit for all eight of its IO pins, so reading
+// the isolated inputs would let go of the backlight, both resets and the
+// card's chip select together. The firmware keeps it an output port and does
+// not read DI0 and DI1.
+// ===========================================================================
+#if defined(BBS_BOARD_WS_S3TOUCH43B)
+
+#if defined(ESP_PLATFORM) && !CONFIG_IDF_TARGET_ESP32S3
+#error "BBS_BOARD_WS_S3TOUCH43B is an ESP32-S3 board: build it for the esp32s3 target"
+#endif
+#if defined(BBS_BOARD_WS_S3LCD147)
+#error "one board profile at a time"
+#endif
+#ifndef BBS_CHIP_S3
+#define BBS_CHIP_S3 1                 // the host's stand-in, see above
+#endif
+
+#define BBS_BOARD_NAME        "Waveshare ESP32-S3-Touch-LCD-4.3B"
+#define BBS_HAS_LCD           1
+#define BBS_BOARD_PLUGINS     1       // the panel
+
+#define BBS_BOARD_TAG         "WS43B"
+#define BBS_BOARD_VERSION     "1.0.0"
+
+// PSRAM (sdkconfig.defaults.ws43b over the S3 layer): the panel's frame
+// buffer, and the program and its constants run from it (XIP), so a flash
+// write does not stop the glass being fed. A build that lost the layer would
+// otherwise link quietly without it.
+#define BBS_HAS_PSRAM         1
+#if defined(ESP_PLATFORM) && !(CONFIG_SPIRAM && CONFIG_SPIRAM_FETCH_INSTRUCTIONS && CONFIG_SPIRAM_RODATA)
+#error "BBS_BOARD_WS_S3TOUCH43B needs PSRAM with XIP: sdkconfig.defaults.ws43b was not applied (delete sdkconfig.ws_s3touch43b*)"
+#endif
+
+// SSH as on the Waveshare stick: the same S3 image machinery, one define.
+#define BBS_HAS_SSH           1
+#define BBS_SSH_MAX           8
+
+// The internal heap a plugin may not take at start, the stick's figure
+// (Wi-Fi's and lwIP's buffers are in PSRAM on an S3 with it).
+#define BBS_HEAP_RESERVE      16384
+
+// Nothing free for an LED or a button (above).
+#define BBS_LED_GPIO          -1
+#define BBS_BOOT_GPIO         -1
+#define BBS_BACKUP_GPIO       -1
+
+// The lights plugin on, with no pin for either output: nothing is wired to
+// light, but the panel draws the strip's effect as its row of square LEDs
+// whether or not a strip is wired, and that row is part of the panel.
+#define BBS_LIGHTS_ON         1
+// And its default effect switchboard (11 in lights::kStripFx): a lamp a
+// line, a caller's in rank colour and a free one dim steady blue that
+// flickers with traffic, so the glass's light bar means something with
+// callers and is alive without them (Rob, 2026-09-28).
+#define BBS_LIGHTS_STRIP_FX   11
+
+// The TF slot, SPI only (D1 and D2 go to pull-ups and nowhere else): MOSI 11,
+// CLK 12, MISO 13, and chip select on the expander's EXIO4, held low for good
+// as Waveshare's own SD demo holds it, the card being the only device on that
+// bus. So the sd plugin's CS is "none" (-1) and the driver runs with no CS.
+#define BBS_HAS_SD_SLOT       1
+#define BBS_SD_CS_EXPANDER    1
+#define BBS_SD_CS             -1
+#define BBS_SD_MOSI           11
+#define BBS_SD_CLK            12
+#define BBS_SD_MISO           13
+
+// The serial bridge on the RS485 transceiver (an SP3485 that turns itself
+// round from the TX line, so there is no direction pin): RXD 43, TXD 44.
+// Those are UART0's default pins, free here because the console is the
+// chip's own USB. Off until a sysop enables it.
+#define BBS_SERIAL_RX         43
+#define BBS_SERIAL_TX         44
+
+// The panel, an 800 x 480 ST7262 on the RGB bus: data in the order esp_lcd
+// wants it (B3-B7, G2-G7, R3-R7), the clock, the syncs and DE. Timing as
+// every Waveshare demo for this panel: 16 MHz, falling edge, H and V pulse
+// 4, back porch 8, front porch 8, which is 39 frames a second.
+//
+// The panel plugin draws a 400 x 240 picture and the platform shows it at
+// twice the size: the 8 x 16 text is 16 x 32 on the glass, about 3.7 mm
+// tall, readable across a desk. BBS_LCD_WIDTH and HEIGHT are that picture.
+// The picture is in PSRAM and goes to the panel through two bounce buffers
+// in internal RAM, refilled from an interrupt with every pixel doubled
+// (platform_esp32_rgb.cpp), so no 768 KB frame buffer exists at all. Four
+// lines a buffer, not the demos' ten: 12.8 KB of internal RAM rather than
+// 32, measured on the bench as the difference between a 11 KB and a 30 KB
+// largest free block, for an interrupt every 205 us instead of 512.
+#define BBS_LCD_RGB           1
+#define BBS_LCD_DRIVER        "ST7262"
+#define BBS_LCD_SCALE         2
+#define BBS_LCD_PHYS_W        800
+#define BBS_LCD_PHYS_H        480
+#define BBS_RGB_DATA          14, 38, 18, 17, 10, 39, 0, 45, 48, 47, 21, 1, 2, 42, 41, 40
+#define BBS_RGB_PCLK          7
+#define BBS_RGB_HSYNC         46
+#define BBS_RGB_VSYNC         3
+#define BBS_RGB_DE            5
+#define BBS_RGB_PCLK_HZ       16000000
+#define BBS_RGB_HPW           4
+#define BBS_RGB_HBP           8
+#define BBS_RGB_HFP           8
+#define BBS_RGB_VPW           4
+#define BBS_RGB_VBP           8
+#define BBS_RGB_VFP           8
+#define BBS_RGB_BOUNCE_LINES  4
+#define BBS_LCD_WIDTH         400
+#define BBS_LCD_HEIGHT        240
+#define BBS_LCD_LIST_MAX      12      // two columns of six at 400 x 240
+// The panel plugin's settings that an RGB panel has no use for, as the
+// plugin's defaults() reads them.
+#define BBS_LCD_MOSI          -1
+#define BBS_LCD_SCLK          -1
+#define BBS_LCD_CS            -1
+#define BBS_LCD_DC            -1
+#define BBS_LCD_RST           -1
+#define BBS_LCD_BL            -1
+#define BBS_LCD_XOFF          0
+#define BBS_LCD_YOFF          0
+#define BBS_LCD_ORIENT        0
+#define BBS_LCD_INVERT        0
+#define BBS_LCD_BGR           0
+#define BBS_LCD_MIRROR        0
+#define BBS_LCD_MHZ           10
+#define BBS_LCD_BACKLIGHT     100     // on or off only: the boost's enable is an expander pin
+
+// The I2C bus: the touch controller, the expander and the RTC. 400 kHz, as
+// the demos run it, with 4.7K pull-ups on the board.
+#define BBS_I2C_SDA           8
+#define BBS_I2C_SCL           9
+
+// The GT911 touch controller at 0x5D: INT on GPIO4, reset on EXIO1. INT is
+// held low while reset rises, which is what picks 0x5D, and then let go
+// (Waveshare's Arduino sequence; their IDF demo leaves it driven low).
+#define BBS_HAS_TOUCH         1
+#define BBS_TOUCH_INT         4
+#define BBS_TOUCH_ADDR        0x5D
+
+// The CH422G's IO port, one bit a pin (EXIOn is bit n): touch reset EXIO1,
+// the backlight's boost and the panel's DISP EXIO2, the panel's reset
+// EXIO3, the card's chip select EXIO4. EXIO0 and EXIO5 are the isolated
+// inputs' collectors and are written low, as the demos write them: high
+// would fight the opto-coupler when an input is on.
+#define BBS_EX_TP_RST         0x02
+#define BBS_EX_BACKLIGHT      0x04
+#define BBS_EX_LCD_RST        0x08
+#define BBS_EX_SD_CS          0x10
+
+// The S3's own temperature sensor, shown on the panel's system row. It
+// measures the die, not the room: a figure to watch for a board in a closed
+// case, not a thermometer.
+#define BBS_HAS_CHIP_TEMP     1
+
+// Pins the board owns (syscfg::pinProblem refuses them with the reason).
+//   LCD      the RGB bus, the touch controller's INT and the I2C pair (GPIO0,
+//            the BOOT key, is the bus's G3)
+//   WIRED    the RTC's interrupt (6) and the CAN transceiver (15, 16)
+// The card's three lines and RS485's two are the sd plugin's and the serial
+// bridge's settings, held by them, as on the other boards.
+#define BBS_PINS_LCD          BBS_RGB_DATA, BBS_RGB_PCLK, BBS_RGB_HSYNC, BBS_RGB_VSYNC, BBS_RGB_DE, \
+                              BBS_TOUCH_INT, BBS_I2C_SDA, BBS_I2C_SCL
+#define BBS_PINS_WIRED        6, 15, 16
+
+#endif  // BBS_BOARD_WS_S3TOUCH43B
+
+// ===========================================================================
 // Freenove ESP32-WROVER CAM (the FNK0060 kit, pinout revision 3.0)
 //
 // ESP32-WROVER-E (ESP32-D0WD-V3, read as revision v3.1 on the bench), 4 MB
@@ -238,7 +438,7 @@
 #if defined(ESP_PLATFORM) && !CONFIG_IDF_TARGET_ESP32
 #error "BBS_BOARD_FN_WROVER_CAM is an ESP32 board: build it for the esp32 target"
 #endif
-#if defined(BBS_BOARD_WS_S3LCD147)
+#if defined(BBS_BOARD_WS_S3LCD147) || defined(BBS_BOARD_WS_S3TOUCH43B)
 #error "one board profile at a time"
 #endif
 
@@ -377,7 +577,7 @@
 #if defined(ESP_PLATFORM) && !CONFIG_IDF_TARGET_ESP32
 #error "BBS_BOARD_AI_ESP32CAM is an ESP32 board: build it for the esp32 target"
 #endif
-#if defined(BBS_BOARD_WS_S3LCD147) || defined(BBS_BOARD_FN_WROVER_CAM)
+#if defined(BBS_BOARD_WS_S3LCD147) || defined(BBS_BOARD_FN_WROVER_CAM) || defined(BBS_BOARD_WS_S3TOUCH43B)
 #error "one board profile at a time"
 #endif
 
@@ -491,6 +691,9 @@
 #endif
 #ifndef BBS_LIGHTS_DRIVE_ORDER
 #define BBS_LIGHTS_DRIVE_ORDER 0      // GRB, the WS2812B's own order
+#endif
+#ifndef BBS_LIGHTS_STRIP_FX
+#define BBS_LIGHTS_STRIP_FX   0       // nodes, in lights::kStripFx's order
 #endif
 #ifndef BBS_SD_CS
 #define BBS_SD_CS             5       // the wiring page: CS D5, MOSI D23,

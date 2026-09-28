@@ -275,7 +275,8 @@ bool pinExists(long pin) {
 // card slot, its PSRAM. Only a profile that names them has any, so the
 // reference board's rule is the chip's alone.
 #if defined(BBS_PINS_PSRAM) || defined(BBS_PINS_CONSOLE) || defined(BBS_PINS_CARD) || \
-    defined(BBS_PINS_CAMERA) || defined(BBS_PINS_STRAP)
+    defined(BBS_PINS_CAMERA) || defined(BBS_PINS_STRAP) || defined(BBS_PINS_LCD) || \
+    defined(BBS_PINS_WIRED)
 #define BBS_HAS_BOARD_PINS 1
 struct BoardPins { const int8_t* pins; uint8_t count; const char* problem; const char* sentence; };
 #ifdef BBS_PINS_PSRAM
@@ -292,6 +293,12 @@ constexpr int8_t kPinsCamera[]  = { BBS_PINS_CAMERA };
 #endif
 #ifdef BBS_PINS_STRAP
 constexpr int8_t kPinsStrap[]   = { BBS_PINS_STRAP };
+#endif
+#ifdef BBS_PINS_LCD
+constexpr int8_t kPinsLcd[]     = { BBS_PINS_LCD };
+#endif
+#ifdef BBS_PINS_WIRED
+constexpr int8_t kPinsWired[]   = { BBS_PINS_WIRED };
 #endif
 #define BBS_PINROW(a, p, s) { a, static_cast<uint8_t>(sizeof(a)), p, s }
 // Both columns fit a form's status line: a core key shows the problem
@@ -311,6 +318,12 @@ constexpr BoardPins kBoardPins[] = {
 #endif
 #ifdef BBS_PINS_STRAP
     BBS_PINROW(kPinsStrap,   "a strapping pin, low at boot",        "That is a strapping pin."),
+#endif
+#ifdef BBS_PINS_LCD
+    BBS_PINROW(kPinsLcd,     "that pin is the display's",           "That pin is the display's."),
+#endif
+#ifdef BBS_PINS_WIRED
+    BBS_PINROW(kPinsWired,   "that pin is wired on the board",      "That pin is wired on the board."),
 #endif
 };
 #undef BBS_PINROW

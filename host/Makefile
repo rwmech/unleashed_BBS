@@ -77,6 +77,14 @@ bbs_host_s3: $(SRCS) $(HDRS) libwolfssh_host.a
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_WS_S3LCD147 $(WOLF_CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) \
 	    libwolfssh_host.a $(LDLIBS)
 
+# The Waveshare ESP32-S3-Touch-LCD-4.3B profile (1.1.2, WS43B): the RGB
+# panel's picture at 400 x 240, touch as a file called "tap" in the data
+# directory, and SSH as on the stick. tools/harness.sh --board ws43b runs it
+# with --only=board_ws43b.
+bbs_host_ws43b: $(SRCS) $(HDRS) libwolfssh_host.a
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_WS_S3TOUCH43B $(WOLF_CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) \
+	    libwolfssh_host.a $(LDLIBS)
+
 wolfobj/wc_%.o: $(WOLF)/wolfssl/wolfcrypt/src/%.c $(WOLF)/user_settings.h
 	@mkdir -p wolfobj
 	$(CC) -c -O1 -g -w $(WOLF_SAN) $(WOLF_CPPFLAGS) -o $@ $<
@@ -239,6 +247,6 @@ test: licence formats test_xmodem test_wrap test_forums_ptr test_compose test_co
 
 clean:
 	rm -rf wolfobj libwolfssh_host.a ssh_call test_sshlink
-	rm -f bbs_host bbs_host_s3 bbs_host_fncam bbs_host_espcam test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera
+	rm -f bbs_host bbs_host_s3 bbs_host_ws43b bbs_host_fncam bbs_host_espcam test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera
 
 .PHONY: clean test licence formats

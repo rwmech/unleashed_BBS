@@ -24,6 +24,53 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.1.2 (WS43B 1.0.0), 2026-09-28: the Waveshare ESP32-S3-Touch-LCD-4.3B
+
+A new board, as a board profile on the 1.1.2 core (branch board-ws43b, from
+v1.1.2), for a board pre-release. The core stays 1.1.2; the board says
+`1.1.2 (WS43B 1.0.0)`. The other boards' images change only by what every
+board shares: a switchboard effect in the lights, the panel's layout code
+(the stick's two layouts are unchanged, pixel for pixel), and a new CONFIG
+refusal for board pins nobody else has.
+
+- **The board**: ESP32-S3-WROOM-1-N16R8, 16 MB flash, 8 MB octal PSRAM,
+  native USB only, a 4.3" 800 x 480 ST7262 on the RGB bus, GT911 touch, a
+  CH422G I2C expander, a TF slot on SPI, a PCF85063A RTC, RS485, CAN and two
+  isolated inputs and outputs. Every pin from Waveshare's schematic,
+  cross-checked against their demos for this board (`src/board.h`). The
+  Arduino demos' `USB_SEL` on EXIO5 is the plain 4.3 board's; on the B it is
+  an isolated input.
+- **The panel on an RGB bus**: no frame buffer in the driver. The bounce
+  buffers (two of four lines, 12.8 KB of internal RAM) are refilled from an
+  interrupt out of a 400 x 240 picture in PSRAM, every pixel doubled, so the
+  interrupt reads a quarter of what a full frame would and 768 KB of PSRAM is
+  never allocated. The program runs from PSRAM (`SPIRAM_XIP_FROM_PSRAM`), so a
+  flash write no longer turns the cache off under the panel.
+- **The layout** (internal/tty-ux-panel-ws43b-2026-09-28.md): the landscape
+  layout grown for the glass, with a large-face header slot, a band word for
+  shutting down and closed, two equal columns, callers flowing into the right
+  column, `nobody on`, a system row of heap, peak and the chip's temperature,
+  and the lights as a light bar with the drive light's lamp.
+- **Touch**: a tap turns the header's page and holds it ten seconds, or
+  wakes a panel the new `sleep` setting put to sleep. Polled every 50 ms over
+  I2C, backed off to every ten seconds if the controller stops answering.
+- **The card's chip select** is an expander pin held low, as Waveshare's own
+  demo holds it: the sd plugin shows it and does not take it as a setting.
+- **The serial bridge** defaults to the RS485 port (43, 44). No activity LED
+  and no BOOT-hold reset: the board has no free GPIO, and GPIO0 is the
+  panel's G3.
+- **Lights**: `switchboard`, a new strip effect (a lamp a line: a caller's
+  line in rank colour, a free line dim steady blue that flickers with traffic), the default on this board and a new choice in CONFIG
+  lights on every board (whose defaults are unchanged); `BBS_LIGHTS_STRIP_FX`
+  picks a board's default.
+- **release.py**: a board pre-release tag (`v1.1.2-ws43b.1`) builds that
+  board's set only; the set is `tag_only`, so no plain release carries it
+  until the profile merges into one.
+- On the bench (COM23): boots, joins Wi-Fi, takes a telnet login and the
+  first-boot setup, mounts an 8 GB card, the panel draws, and touch works
+  (Rob). The host tests for the profile passed before the test rule; the
+  layout and lights changes after it are built and not yet tested.
+
 ## 1.1.2 (S3 1.1.3, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-27
 
 A patch: the board no longer stalls everybody while one caller does

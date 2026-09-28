@@ -551,7 +551,35 @@ bool     lcdDraw(const uint16_t* fb, uint16_t stride, uint16_t x, uint16_t y, ui
 void     lcdBacklight(uint8_t pct);
 void*    psramAlloc(size_t n);
 void     psramFree(void* p);
+
+// An RGB panel (BBS_LCD_RGB, platform_esp32_rgb.cpp) answers the same calls:
+// the width and height are the picture the plugin draws, shown at
+// BBS_LCD_SCALE; lcdReady is true while the panel is up (a draw is a copy
+// into the picture on the glass, never a wait); the backlight is on or off.
 #endif  // BBS_HAS_LCD
+
+#if defined(BBS_SD_CS_EXPANDER) || defined(BBS_LCD_RGB)
+// boardExpander: the board's I2C bus and its CH422G expander up, the port
+// driven as the board wants it at rest (the card selected, the resets let
+// go, the backlight off). Once; true at once after that. The sd plugin's
+// mount and the panel's start both call it, whichever comes first.
+bool boardExpander();
+#endif
+
+#ifdef BBS_HAS_TOUCH
+// touchPoll: the touch controller's latest report, if it has a new one:
+// true with down saying whether a finger is on the glass, false when there is
+// nothing new (nothing changed since the last report) or no controller
+// answered. One short I2C exchange (about 150 us), so the panel plugin polls
+// it at most every 50 ms from its tick.
+bool touchPoll(bool& down);
+#endif
+
+#ifdef BBS_HAS_CHIP_TEMP
+// chipTemp: the chip's own temperature, whole degrees C: the die, not the
+// room. False when the sensor would not start.
+bool chipTemp(int& celsius);
+#endif
 
 #ifdef BBS_HAS_CAMERA
 // ---------------------------------------------------------------------------

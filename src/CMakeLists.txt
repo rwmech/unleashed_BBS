@@ -66,6 +66,11 @@ endif()
 # WROOM's image does not take on a component it never calls.
 if(IDF_TARGET STREQUAL "esp32s3")
     list(APPEND app_requires esp_driver_usb_serial_jtag esp_lcd esp_driver_ledc)
+    # The RGB panel boards (WS43B, 1.1.2): the touch controller and the
+    # expander on the new I2C master driver, and the chip's temperature
+    # sensor. Linked only by platform_esp32_rgb.cpp, which is empty on any
+    # other board.
+    list(APPEND app_requires esp_driver_i2c esp_driver_tsens)
     # SSH (1.1.2): wolfSSH and wolfCrypt, compiled for the S3 only
     # (components/wolfssh registers an empty component everywhere else).
     list(APPEND app_requires wolfssh)

@@ -394,6 +394,11 @@ constexpr Icon kIconChip    = { 0x0000, 0x0660, 0x0660, 0x07E0, 0x0FF0, 0x7FFE, 
                                 0x1C38, 0x7C3E, 0x7FFE, 0x0FF0, 0x07E0, 0x0660, 0x0660, 0x0000 };
 constexpr Icon kIconHandset = { 0x0000, 0x0600, 0x0E00, 0x1C00, 0x3C00, 0x7E00, 0x6700, 0x0380,
                                 0x01C0, 0x00E6, 0x007E, 0x003C, 0x0038, 0x0070, 0x0060, 0x0000 };
+// A memory module, wide and toothed where the chip is square and pinned:
+// the free heap on the tall glass, whose chip icon is the chip's own
+// temperature (internal/tty-ux-panel-ws43b-2026-09-28.md, revision 1).
+constexpr Icon kIconRam     = { 0x0000, 0x0000, 0xFFFF, 0xFFFF, 0xC003, 0xD99B, 0xD99B, 0xD99B,
+                                0xC003, 0xFFFF, 0xFFFF, 0x6C36, 0x6C36, 0x0000, 0x0000, 0x0000 };
 
 // bits: paint the set bits of w x h rows (top bit leftmost) in fg, leaving
 // the rest as the caller cleared it.
@@ -555,11 +560,11 @@ struct Led {
     Rect led;          // the LED itself, its glow edge included
 };
 
-inline Led ledAt(const Rect& box, uint8_t i, uint8_t n) {
+inline Led ledAt(const Rect& box, uint8_t i, uint8_t n, int maxCell = 16) {
     Led out;
     if (!n || i >= n || empty(box)) return out;
     int cell = box.w / n;
-    if (cell > 16) cell = 16;
+    if (cell > maxCell) cell = maxCell;
     if (cell < 2) return out;
     int side = cell - 4;
     if (side < 6) side = 6;
@@ -571,13 +576,32 @@ inline Led ledAt(const Rect& box, uint8_t i, uint8_t n) {
     return out;
 }
 
-// drawLed: one LED in its cell, lit in col, or off when col is 0.
-inline void drawLed(Canvas& c, const Led& l, uint16_t col) {
+// segAt: segment i of n in a light bar (the tall glass, revision 1): as wide
+// as n fit with 4 px between them, 48 at most so a short strip is not
+// slabs, the row centred, the segment filling the box's height. The same
+// Led as ledAt, cell and lamp one rectangle.
+inline Led segAt(const Rect& box, uint8_t i, uint8_t n) {
+    Led out;
+    if (!n || i >= n || empty(box)) return out;
+    int w = (box.w - 4 * (n - 1)) / n;
+    if (w > 48) w = 48;
+    if (w < 2) return out;
+    const int x0 = box.x + (box.w - (n * w + 4 * (n - 1))) / 2;
+    out.cell = R(x0 + i * (w + 4), box.y, w, box.h);
+    out.led  = out.cell;
+    return out;
+}
+
+// drawLed: one LED in its cell, lit in col, or off when col is 0. A gleam
+// is a lit lamp's top row mixed halfway to white, which makes a flat
+// rectangle read as a lamp cap (the light bar only).
+inline void drawLed(Canvas& c, const Led& l, uint16_t col, bool gleam = false) {
     fill(c, l.cell, tok::kBg);
     const Rect& s = l.led;
     if (col) {
         fill(c, s, scale(col, 1, 3));
         fill(c, R(s.x + 1, s.y + 1, s.w - 2, s.h - 2), col);
+        if (gleam) fill(c, R(s.x + 1, s.y + 1, s.w - 2, 1), mix(col, tok::kWhite, 1, 2));
     } else {
         fill(c, R(s.x + 1, s.y + 1, s.w - 2, s.h - 2), tok::kRule);
         fill(c, R(s.x + 2, s.y + 2, s.w - 4, s.h - 4), tok::kSurface);
@@ -695,11 +719,19 @@ inline Scan scanFor(uint8_t orient, bool mirror, uint16_t w, uint16_t h, uint16_
 // Layout: where each figure goes for a panel of w x h, portrait (the
 // Waveshare stick's 172 x 320, hanging from a port) or landscape.
 // ---------------------------------------------------------------------------
-constexpr uint8_t kListMax   = 10;    // list slots on a portrait panel
+// List slots: ten on the Waveshare stick, portrait or landscape. A board
+// with a taller landscape glass says more (board.h, BBS_LCD_LIST_MAX).
+#ifndef BBS_LCD_LIST_MAX
+#define BBS_LCD_LIST_MAX 10
+#endif
+constexpr uint8_t kListMax   = BBS_LCD_LIST_MAX;
 constexpr int     kPitch     = 20;    // a list row: 16 of glyph, 4 of air
 
-enum Field : uint8_t { F_SLOT, F_CLOCK, F_GLYPHS, F_ANT, F_HEAD, F_SYS, F_LIST,
+enum Field : uint8_t { F_SLOT, F_CLOCK, F_GLYPHS, F_ANT, F_HEAD, F_SYS, F_HEAD2, F_WORD, F_LIST,
                        F_COUNT = F_LIST + kListMax };
+
+// What a cell of the system row shows, in the order the layout names them.
+enum SysKind : uint8_t { SYS_HEAP, SYS_TODAY, SYS_PEAK, SYS_TEMP };
 
 struct Layout {
     bool    land = false;
@@ -709,15 +741,28 @@ struct Layout {
     Rect    list[kListMax];           // each slot's 16 px row
     uint8_t slots       = 0;          // how many there are
     uint8_t callerSlots = 0;          // how many can hold callers: all in portrait,
-                                      // the left column's in landscape
-    bool    gaps = false;             // portrait: each slot owns the 4 px above it,
-                                      // where the rule under the callers goes
+                                      // the left column's in landscape, all on tall
+    bool    gaps = false;             // each slot owns the 4 px above it, where
+                                      // the rule under the callers goes
     Rect    colRule;                  // landscape: between the two columns
     Rect    rule1, rule2;             // above and below the system row
     Rect    sys;                      // the system row
-    int16_t sysAt[3] = {};            // where its figures start: heap, calls, peak
-    uint8_t sysFigs = 0;              // 2 portrait, 3 landscape
+    int16_t sysAt[4] = {};            // where its cells start
+    uint8_t sysKind[4] = {};          // and what each shows (SysKind)
+    uint8_t sysFigs = 0;              // 2 portrait, 3 landscape and tall
     Rect    leds;                     // the strip
+    // The tall landscape glass only (the 4.3" board's 400 x 240,
+    // internal/tty-ux-panel-ws43b-2026-09-28.md); off on the stick, whose
+    // two layouts these leave pixel for pixel as they were.
+    bool    tall     = false;
+    bool    bigSlot  = false;         // the header's slot in the 16 x 32 face
+    bool    flow     = false;         // callers run on into the right column
+    uint8_t leftSlots = 0;            // the left column's rows, where they flow from
+    Rect    head2Icon, head2;         // the right column's heading, "Calls 23 today"
+    uint8_t ledCell  = 16;            // the largest LED cell (squares)
+    bool    ledBar   = false;         // the strip as a light bar's segments, not squares
+    Rect    drive;                    // the drive light's lamp, left of the bar
+    Rect    word;                     // the band's word: shutting down, or closed
 };
 
 inline Layout layout(uint16_t w, uint16_t h) {
@@ -749,7 +794,62 @@ inline Layout layout(uint16_t w, uint16_t h) {
         L.gaps  = true;
         L.sysAt[0] = 4;
         L.sysAt[1] = 76;
+        L.sysKind[0] = SYS_HEAP;
+        L.sysKind[1] = SYS_TODAY;
         L.sysFigs  = 2;
+    } else if (w >= 380 && h >= 220 && h < 300) {
+        // The tall landscape glass (internal/tty-ux-panel-ws43b-2026-09-28.md,
+        // "Every box"): a 34 px bar with the slot in the big face, the band
+        // and track under it, two equal columns of a heading and six rows,
+        // the callers flowing on from the left column into the right, then
+        // one rule, a three-cell system row and the LEDs. Bounded below 300
+        // so a bigger glass's own layout cannot be shadowed by this one.
+        L.tall    = true;
+        L.bigSlot = true;
+        L.flow    = true;
+        L.gaps    = true;
+        L.bar     = R(0, 0, w, 34);
+        L.slot    = R(4, 1, (w - 8) / kBigW * kBigW, kBigH);
+        L.band    = R(0, 34, w, 20);
+        L.track   = R(0, 54, w, 1);
+        L.clock   = R(w - 44, 36, 5 * kSmallW, kSmallH);
+        L.ant     = R(L.clock.x - 10, 36, kAntennaW, kAntennaH);
+        L.glyphs  = R(4, 36, 110, 16);
+        const int colW = (w - 8 - 12) / 2;                   // 190 at 400: 4 + 190 + 5 + 1 + 6 + 190 + 4
+        const int x2   = 4 + colW + 12;
+        L.headIcon  = R(4, 60, 16, 16);
+        L.head      = R(24, 60, colW - 20, 16);
+        L.head2Icon = R(x2, 60, 16, 16);
+        L.head2     = R(x2 + 20, 60, colW - 20, 16);
+        L.colRule   = R(4 + colW + 5, 60, 1, 136);
+        L.rule1   = R(4, 198, w - 8, 1);
+        L.sys     = R(4, 200, w - 8, 16);
+        L.rule2   = Rect();
+        // The foot (revision 1): the drive lamp at the left, the strip as a
+        // light bar filling the rest, both 12 tall at 219..230. The spec had
+        // them 14 tall at 222..235; on the glass, in Waveshare's case, the
+        // bottom of that row was cut off (Rob's photo, 2026-09-28), so the
+        // foot now keeps 9 px (18 on the glass) clear of the bottom edge.
+        L.drive   = R(4, 219, 20, 12);
+        L.leds    = R(40, 219, w - 44, 12);
+        L.ledBar  = true;
+        // The band's word, in the space between the glyphs and the antenna.
+        L.word    = R(122, 36, L.ant.x - 8 - 122, 16);
+        // As many rows as end above rule1's air: the last needs its 16 px,
+        // not a whole pitch (the stick's own fit). Six at 240.
+        const int rows = (L.rule1.y - 2 - 80 - 16) / kPitch + 1;
+        int n = 0;
+        for (int c = 0; c < 2; ++c)
+            for (int k = 0; k < rows && n < kListMax; ++k, ++n)
+                L.list[n] = R(c ? x2 : 4, 80 + kPitch * k, colW, 16);
+        L.leftSlots = static_cast<uint8_t>(rows < kListMax ? rows : kListMax);
+        L.slots = L.callerSlots = static_cast<uint8_t>(n);
+        const int cell = (w - 8) / 3;                         // 132 at 400
+        for (int i = 0; i < 3; ++i) L.sysAt[i] = static_cast<int16_t>(4 + cell * i);
+        L.sysKind[0] = SYS_HEAP;
+        L.sysKind[1] = SYS_PEAK;
+        L.sysKind[2] = SYS_TEMP;
+        L.sysFigs  = 3;
     } else {
         // Landscape: two columns under the heading, callers on the left
         // and the recent events on the right, then a full-width system row
@@ -773,10 +873,14 @@ inline Layout layout(uint16_t w, uint16_t h) {
         L.sysAt[0] = 4;
         L.sysAt[1] = 96;
         L.sysAt[2] = 208;
+        L.sysKind[0] = SYS_HEAP;
+        L.sysKind[1] = SYS_TODAY;
+        L.sysKind[2] = SYS_PEAK;
         L.sysFigs  = 3;
     }
     Rect* all[] = { &L.bar, &L.band, &L.track, &L.slot, &L.glyphs, &L.ant, &L.clock, &L.headIcon, &L.head,
-                    &L.colRule, &L.rule1, &L.rule2, &L.sys, &L.leds };
+                    &L.colRule, &L.rule1, &L.rule2, &L.sys, &L.leds, &L.head2Icon, &L.head2,
+                    &L.drive, &L.word };
     for (Rect* r : all) *r = clip(*r, w, h);
     for (Rect& r : L.list) r = clip(r, w, h);
     return L;
@@ -798,6 +902,8 @@ inline Rect fieldBox(const Layout& L, uint8_t f) {
         case F_GLYPHS: return L.glyphs;
         case F_ANT:    return L.ant;
         case F_HEAD:   return unite(L.headIcon, L.head);
+        case F_HEAD2:  return unite(L.head2Icon, L.head2);
+        case F_WORD:   return L.word;
         case F_SYS:    return L.sys;
         default:       return f >= F_LIST && f < F_COUNT ? listBox(L, static_cast<uint8_t>(f - F_LIST)) : Rect();
     }
@@ -828,7 +934,14 @@ inline Alloc allocate(const Layout& L, uint8_t on) {
         a.names = static_cast<uint8_t>(cap - 1);
         a.more  = static_cast<uint8_t>(on - a.names);
     }
-    if (L.land) {
+    if (L.flow) {
+        // The tall glass: callers down the left column and on into the
+        // right; the recent list takes what they leave of the right column,
+        // under a rule once callers are in it too.
+        a.recent0 = a.callers > L.leftSlots ? a.callers : L.leftSlots;
+        a.recentN = static_cast<uint8_t>(L.slots - a.recent0);
+        a.rule    = a.callers > L.leftSlots && a.callers < L.slots;
+    } else if (L.land) {
         a.recent0 = cap;
         a.recentN = static_cast<uint8_t>(L.slots - cap);
     } else {

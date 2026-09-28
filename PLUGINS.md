@@ -184,8 +184,8 @@ Three more, from the lights plugin (1.1.0):
 
 ```c
 { "drive_pin", "Drive pin", PS_PIN,  -1, 33, 2, "The disk light: one pixel. -1 is off." },
-{ "strip_fx",  "Strip",     PS_CYCLE, 0,  0, 7, "nodes: one pixel for each caller line.",
-  "nodes|hayes|blinken|scanner|c64|boing|vu|rainbow|manual|off" },
+{ "strip_fx",  "Strip",     PS_CYCLE, 0,  0, 11, "nodes: one pixel for each caller line.",
+  "nodes|hayes|blinken|scanner|c64|boing|vu|rainbow|manual|off|wifi|switchboard" },
 { "led",       "Pixels",    PS_PAGE,  0,  0, 0, "Manual: each pixel its own effect." },
 ```
 
