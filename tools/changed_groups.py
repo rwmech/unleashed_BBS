@@ -119,14 +119,15 @@ TABLE = [
     # is bumped with a board's own changes and a pure bump of it changes no
     # board's behaviour, so VERSION_ONLY downgrades that case too.
     ("src/board.h", ["board_s3", "board_fncam", "board_espcam", "board_ws43b", "board_ws2", "board_wseth",
-                     "shell"]),
-    ("sdkconfig.defaults.esp32s3", ["board_s3"]),
+                     "board_mf35", "shell"]),
+    ("sdkconfig.defaults.esp32s3", ["board_s3", "board_mf35"]),
     ("sdkconfig.defaults.ws43b", ["board_ws43b"]),
     ("src/platform/platform_esp32_rgb.cpp", ["board_ws43b"]),
     ("sdkconfig.defaults.fncam", ["board_fncam"]),
     ("sdkconfig.defaults.espcam", ["board_espcam"]),
     ("sdkconfig.defaults.ws2", ["board_ws2"]),
     ("sdkconfig.defaults.wseth", ["board_wseth"]),
+    ("sdkconfig.defaults.mf35", ["board_mf35"]),
 
     # -----------------------------------------------------------------
     # Core: files load-bearing enough that scoping them would be a guess.
@@ -187,7 +188,7 @@ TABLE = [
     # silent.cpp/.h: the switch and hours, which config, lights and the
     # camera's flash LED and the S3 backlight all read.
     ("src/core/silent*", ["shell", "silent"]),
-    ("src/core/sysconfig*", ["shell", "login"]),
+    ("src/core/sysconfig*", ["shell", "login", "board_mf35"]),
     ("src/core/tzones*", ["shell"]),
     ("src/core/users*", ["login", "messaging", "rename_follows", "lag_logins", "lag_login_calls", "lag_logoff_calls", "lag_last_calls"]),
     ("src/core/xmodem*", ["storage", "binary", "upload_no_binary", "ymodem", "list_abort"]),
@@ -197,7 +198,7 @@ TABLE = [
     ("src/core/sshlink*", ["ssh", "board_s3"]),
     ("src/core/bbs_ssh*", ["ssh", "board_s3", "login", "terminal"]),
     ("components/wolfssh/*", ["ssh"]),
-    ("partitions_s3.csv", ["board_s3"]),
+    ("partitions_s3.csv", ["board_s3", "board_mf35"]),
     ("host/ssh_call.cpp", ["ssh"]),
     ("src/core/ziparc*", ["storage", "partitions"]),
 
@@ -212,7 +213,7 @@ TABLE = [
     ("src/plugins/forums*", ["messaging", "places", "storage", "partitions", "lag_forums"]),
     ("src/plugins/info*", ["messaging"]),
     ("src/plugins/lights*", ["shell", "storage"]),
-    ("src/plugins/panel*", ["board_s3", "board_ws43b", "board_ws2", "shell"]),
+    ("src/plugins/panel*", ["board_s3", "board_ws43b", "board_ws2", "board_mf35", "shell"]),
     ("src/plugins/registry*", ["plugins", "shell"]),
     ("src/plugins/sd*", ["storage"]),
     ("src/plugins/serialbridge*", ["serial"]),

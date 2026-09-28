@@ -763,6 +763,35 @@ this tree.
   wrong pin garbled every panel command and the glass stayed white.
   Cross-check the schematic against the firmware the vendor actually
   ships before trusting a pin.
+  **The Makerfabs on 1.1.2, MF35 1.1.0** (board-mf35-112 from v1.1.2,
+  2026-09-28, for the combined `v1.1.2-hardware-preview`; board offline, so
+  built and reviewed only). The 1.1.1 preview's v1.0 profile, panel driver
+  and release set ported from 9823748 (no skins, no 1.2.0 work, and the
+  never-benched v2.0 sibling left out), with SSH on as on the Waveshare:
+  shared 6400 and `ssh_port` 6422, host keys, `BBS_SSH_MAX` 8, the S3's 8 MB
+  layout (an erase over the 1.1.1 preview). **2 MB of quad PSRAM holds
+  eight**: the framebuffer is 300 KB, 1.1.1's bench read 1.71 MB free with
+  it, and eight at the 48 KB budget plus the 128 KB kept back is 512 KB.
+  Internal RAM is the thing to watch (the SSH task's 16 KB stack). **A
+  1.1.2 bug the port found:** `platform_esp32.cpp`'s SSH wake code called
+  `read`/`write` with no `<unistd.h>`; the Waveshare got it through the
+  USB-Serial-JTAG console's headers, so the first SSH board with its
+  console on a UART did not compile. Any S3 lane with a UART console needs
+  the same include.
+  **And a full VFS table, found on the bench (MF35 1.1.1):** two consoles
+  (UART0 plus the USB-Serial-JTAG secondary), lwIP, three LittleFS
+  partitions and SSH's eventfd are the IDF's 8 VFS slots, so the card's FAT
+  was a ninth and its mount failed as ESP_ERR_NO_MEM ("no card: not enough
+  memory" with 1.7 MB of PSRAM free). `CONFIG_VFS_MAX_COUNT=12` in
+  sdkconfig.defaults.mf35, with a board.h `#error` against a stale
+  sdkconfig. An S3 lane with two consoles, SSH and a card needs the same.
+  Bench smoke passed on COM17: SSH on both ports, PSRAM 1.71 MB free with
+  the framebuffer, internal heap low 56,943.
+  **Queued for 1.1.3 (code review):** every other S3 profile (one USB
+  console) is at exactly 8 of 8 with a card mounted, so the next VFS user
+  takes the card down. Move `CONFIG_VFS_MAX_COUNT=12` into the shared S3
+  layer with a generic board.h guard, and have the sd plugin's
+  ESP_ERR_NO_MEM message name the full VFS table as well as memory.
   **Boards are chosen to maximise what the BBS can do, not to work around
   vendor wiring** (Rob: "not work around dumb vendor BS"). Rejected on
   that ground: the KEYESTUDIO ESP32-S3 PRO (N16R8), whose on-board SD slot

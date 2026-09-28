@@ -117,6 +117,15 @@ test_sshlink: test_sshlink.cpp ../src/core/sshlink.h
 bbs_host_fncam: $(SRCS) $(HDRS)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_FN_WROVER_CAM $(LDFLAGS) -o $@ $(SRCS) $(LDLIBS)
 
+# The Makerfabs ESP32-S3 Parallel TFT 3.5" v1.0 profile (MF35 1.1.0,
+# src/board.h): the S3's pin rules with quad PSRAM, that board's defaults and
+# the panel on a 480 x 320 ILI9488. It carries SSH (MF35 1.1.0), so it links
+# wolfSSH as bbs_host_s3 does.
+# tools/harness.sh --board mf35 runs it with --only=board_mf35 (and =ssh).
+bbs_host_mf35: $(SRCS) $(HDRS) libwolfssh_host.a
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_MF_S3PAR35 $(WOLF_CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) \
+	    libwolfssh_host.a $(LDLIBS)
+
 # The AI-Thinker ESP32-CAM profile (1.1.1, src/board.h).
 # tools/harness.sh --board espcam runs it with --only=board_espcam.
 bbs_host_espcam: $(SRCS) $(HDRS)
@@ -263,6 +272,6 @@ test: licence formats test_xmodem test_wrap test_forums_ptr test_compose test_co
 
 clean:
 	rm -rf wolfobj libwolfssh_host.a ssh_call test_sshlink
-	rm -f bbs_host bbs_host_s3 bbs_host_ws43b bbs_host_fncam bbs_host_espcam bbs_host_ws2 bbs_host_wseth test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera
+	rm -f bbs_host bbs_host_s3 bbs_host_ws43b bbs_host_fncam bbs_host_espcam bbs_host_ws2 bbs_host_wseth bbs_host_mf35 test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera
 
 .PHONY: clean test licence formats

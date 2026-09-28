@@ -20,9 +20,11 @@ Purpose:      Builds a public release: the five flash images the web
               ESP32-S3-LCD-1.47 profile; the Freenove ESP32-WROVER CAM, a
               second ESP32 image (1.1.0); and the AI-Thinker ESP32-CAM, a
               third (1.1.1). A board profile is a build, so another board is
-              another row with its own directory. A fifth, the Waveshare
-              ESP32-S3-Touch-LCD-2 (WS2), is tag_only: built by its board
-              pre-release tag alone.
+              another row with its own directory. Four more are tag_only
+              (the hardware preview's boards: the Waveshare
+              ESP32-S3-Touch-LCD-4.3B, ESP32-S3-Touch-LCD-2 and ESP32-S3-ETH,
+              and the Makerfabs Parallel TFT 3.5"), built by a preview or
+              board pre-release tag, or --board, alone.
 
 Output:       release/<version>/assets/    flat, for a GitHub Release, the
                                            shape deploy/fetch_release.py in
@@ -59,9 +61,17 @@ Versions:     The core version is BBS_VERSION, shared by every board. A board
               not bumped for it; the board profile's own version says which
               build it is. A set marked tag_only is built by nothing else.
 
+              A combined preview (Rob, 2026-09-28): several boards' sets
+              under one pre-release tag, the core's X.Y.Z then the preview's
+              name, v1.1.2-hardware-preview (PREVIEW_TAGS below): the
+              Waveshare ESP32-S3-Touch-LCD-4.3B, ESP32-S3-Touch-LCD-2 and
+              ESP32-S3-ETH, and the Makerfabs Parallel TFT 3.5" v1.0, and
+              nothing else. A plain v<BBS_VERSION> tag never builds them.
+
 Design:       Each release environment (esp32dev_release, ws_s3_lcd147_release,
               freenove_wrover_cam_release, esp32cam_aithinker_release,
-              ws_s3touch43b_release)
+              ws_s3touch43b_release, ws_s3touch2_release, ws_s3eth_release,
+              makerfabs_s3_par35_release)
               defines BBS_RELEASE, which makes main.cpp ignore include/secrets.h
               even when it is present. The screens image is built from data/screens only,
               never from data/, because data/system.cfg on a developer's
@@ -77,13 +87,13 @@ Design:       Each release environment (esp32dev_release, ws_s3_lcd147_release,
 Usage:        python3 tools/release.py                build and check
               python3 tools/release.py --allow-dirty  from a working tree
               python3 tools/release.py --tag v1.0.0   the tag must match
-              python3 tools/release.py --tag v1.1.2-ws43b.1
-                                                      one board's set only
+              python3 tools/release.py --tag v1.1.2-hardware-preview
+                                                      the preview's four sets
               python3 tools/release.py --tag v1.1.2-ws2.1
                                                       one board's set only
               python3 tools/release.py --board esp32s3-eth
-                                                      one set only, the way a
-                                                      "tag_only" board is built
+                                                      one set only, locally,
+                                                      into a folder of its own
 
 Libraries:    Python 3 standard library; PlatformIO on the PATH
 Targets:      developer PC, GitHub Actions (ubuntu-latest)
@@ -178,18 +188,31 @@ BUILDS = (
     # merges into a release and loses the flag.
     {"dir": "esp32s3-eth", "env": "ws_s3eth_release", "family": "ESP32-S3", "boot": 0x0,
      "board": "BBS_BOARD_WS_S3ETH", "table": "partitions_s3.csv", "tag_only": True},
+    # The Makerfabs ESP32-S3 Parallel TFT 3.5", hardware v1.0 (MF35 1.1.0,
+    # SSH on, the S3's 8 MB layout). chipFamily ESP32-S3, the Waveshare's, so
+    # the site's picker asks which board: the Waveshare's image here looks for
+    # octal PSRAM on a quad part, and this one's looks for quad on the
+    # Waveshare's octal. Not for the v2.0 board (octal PSRAM, another bus).
+    #
+    # "tag_only": built only by that board's own pre-release tag
+    # (v1.1.2-mf35.1), never by a plain vX.Y.Z, so a board reaches a full
+    # release only when somebody decides it should: the entry loses the flag
+    # when the profile merges into a release.
+    {"dir": "esp32s3-mf35", "env": "makerfabs_s3_par35_release", "family": "ESP32-S3", "boot": 0x0,
+     "board": "BBS_BOARD_MF_S3PAR35", "table": "partitions_s3.csv", "tag_only": True},
 )
 
 # A board pre-release's key, the word in its tag after the core version
 # (v1.1.2-ws2.1), and the one set it carries.
-BOARD_TAGS = {"ws43b": "esp32s3-ws43b", "ws2": "esp32s3-ws2", "eth": "esp32s3-eth"}
+BOARD_TAGS = {"ws43b": "esp32s3-ws43b", "ws2": "esp32s3-ws2", "eth": "esp32s3-eth",
+              "mf35": "esp32s3-mf35"}
 
 # A combined preview: several boards' sets under one pre-release tag, the
 # core version's X.Y.Z then the name (v1.1.2-hardware-preview, Rob,
 # 2026-09-28: the three new Waveshare boards and the Makerfabs, shipped
 # together). No other set is built, so nothing already released changes.
 PREVIEW_TAGS = {
-    "hardware-preview": ("esp32s3-ws43b", "esp32s3-ws2", "esp32s3-eth"),
+    "hardware-preview": ("esp32s3-ws43b", "esp32s3-ws2", "esp32s3-eth", "esp32s3-mf35"),
 }
 
 
