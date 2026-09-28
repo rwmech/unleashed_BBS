@@ -67,6 +67,7 @@
 #include "soc/soc_caps.h"        // the RMT's block size and DMA, per chip
 #if defined(BBS_HAS_SSH) && BBS_HAS_SSH
 #include "esp_vfs_eventfd.h"       // the SSH links' wake descriptors (1.1.2)
+#include <unistd.h>                // read and write on those descriptors
 #endif
 #if SOC_USB_SERIAL_JTAG_SUPPORTED && CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
 #include "driver/usb_serial_jtag.h"      // the console on the S3's own USB

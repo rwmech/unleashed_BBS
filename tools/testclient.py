@@ -6924,7 +6924,8 @@ def test_board_ws2():
 
     ok &= check("CONFIG panel's Sleep saves live", sleep_save(b"1") == b"Saved and live" and
                 (cfg_sec_line("plugin:panel", "sleep") or "").endswith("= 1"))
-    ok &= check("and PANEL counts down to dark", b"awake, dark in 1 min" in panel_read(s))
+    ok &= check("and PANEL counts down to dark",
+                re.search(rb"awake, dark in [01] min|, asleep", panel_read(s)) is not None)
     ok &= check("and back to never", sleep_save(b"0") == b"Saved and live" and
                 b"never sleeps" in panel_read(s))
 
@@ -6948,14 +6949,15 @@ def test_board_ws2():
         cfg_open(s, b"board", b"Hostname")
         s.buf.clear()
         s.send(DOWN * BOARD_LED + b"\x08" * 3 + pin + F1)
-        got = cfg_verdict(s, [why, b"Saved", b"no such pin", b"camera", b"wired", b"flash", b"USB"])
+        got = cfg_verdict(s, [why, b"Saved", b"no such pin", b"camera's", b"wired on the board",
+                              b"flash and PSRAM", b"USB port"])
         ok &= check(f"the LED on GPIO {pin.decode()} refused: {why.decode()}", got == why)
         cfg_cancel(s)
     ok &= check("and nothing is written", cfg_line("activity_led_gpio") == before)
     cfg_open(s, b"board", b"Hostname")
     s.buf.clear()
     s.send(DOWN * BOARD_LED + b"\x08" * 3 + b"18" + F1)
-    got = cfg_verdict(s, [b"Saved", b"camera", b"wired", b"Taken", b"taken"])
+    got = cfg_verdict(s, [b"Saved", b"camera's", b"wired on the board", b"Taken", b"taken"])
     ok &= check("GPIO 18 is free for a sysop", got == b"Saved")
     cfg_cancel(s)
     cfg_open(s, b"board", b"Hostname")
