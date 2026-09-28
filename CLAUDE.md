@@ -799,6 +799,12 @@ this tree.
     satellite must be on the same channel (in practice the same router).
     The board tells the sysop when that fails, never failing silently.
     Being built on the link lane for 1.2.0.
+  - **`SD FORMAT`, 1.2.0** (Rob, 2026-09-28). A sysop command that formats the card FAT32:
+    - it shows the card's size first and asks the sysop to type YES;
+    - it runs on the runner with a spinner, never on the loop;
+    - it costs a few KB of flash (the FAT library's formatter is already linked).
+
+    Mounting still never formats on its own (format_if_mount_failed stays false). A card that won't mount is more often somebody's files than a blank card.
   - **Swipe photo gallery, 1.2.0** (Rob, 2026-09-28: "swiping left or right to show the last pictures from the camera or sat camera. Most boards with displays can do this. Implement in 1.2").
     - On touch panels (the 4.3B, the 2", and the Makerfabs if it has touch), swiping steps through the latest photos from any camera, built-in or sat.
     - Decoding uses the skins' JPEG path on the worker, never the loop.
