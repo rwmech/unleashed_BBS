@@ -796,6 +796,41 @@ this tree.
     scanner "looks like shit" there). switchboard is a lamp a line: a
     caller's line in rank colour, a free line dim steady blue flickering
     with RX and TX.
+- **The Waveshare ESP32-S3-Touch-LCD-2, WS2 1.0.0** (board-ws2 from
+  v1.1.2, 2026-09-28, COM24; ships in the combined
+  `v1.1.2-hardware-preview`). The first board with a panel AND a camera.
+  Pins from Waveshare's schematic PinOut table and netlist, which match its
+  demo on every pin (release-prep/ws2/pins.md); panel layout from
+  release-prep/ws2/tty-ux-panel-ws2-2026-09-28.md. What it taught:
+  - **The panel and the TF slot share SPI wires** (MOSI 38, SCLK 39).
+    `BBS_SPI_SHARED` puts both on SPI2, raised once. A card command holds
+    the bus from start to end, a write's busy wait included, so every card
+    command runs under a mutex that lcdDraw only TRIES: a band is skipped
+    to a later tick rather than the loop waiting behind the card (Rule
+    no. 1). The slot's CS is driven high while the panel talks with no card
+    mounted. CONFIG needs the panel's `pinShares` for the two shared pins,
+    or saving either page is refused.
+  - **I2C on IDF 5.3 means the legacy driver** wherever the camera is:
+    esp32-camera 2.1.7 builds its SCCB on `driver/i2c.h` below IDF 5.4,
+    and the two drivers cannot share an image. Touch is asked once at start
+    on port 0 and then read as taps from INT by an ISR: no I2C on the loop.
+  - Only GPIO 18 is free for a sysop; 43/44 are the console port to CONFIG.
+  - **WS2 1.0.1: every snap was refused for memory**, as on the ETH board:
+    `kCamDmaBlock` asked for the ESP32's 33 KB. On the S3 the driver takes
+    16 x 1 KB for JPEG and at most CAMERA_DMA_BUFFER_SIZE_MAX (16 KB in the
+    board's layer) for raw, so an S3 camera board asks for 17 KB, and a
+    static_assert refuses an S3 camera build whose layer does not set it.
+  - **A shared bus needs every other device's CS high before the first
+    card clock.** The panel's CS is GPIO45, a strap pulled low at reset,
+    and the card mounts before the panel starts; the ST7789 took the card's
+    traffic as commands and drove its bidirectional SDA (MOSI) back: CRC
+    errors on every boot mount. `panelQuiet` holds it high. Open: a sysop
+    who turns the panel off and gives 45 to another plugin loses it at the
+    next SD MOUNT (refusing 45 by name would refuse the panel's own CS).
+  - Rob's panel notes, for every glass: the temperature with a CPU icon,
+    and a strip effect with meaning (`switchboard`, shared with the 4.3B:
+    nodes while callers are on, dim steady lamps flickering with real
+    traffic when nobody is; Rob rejected the KITT sweep; round lamps here).
 - **1.2.0: the µnleashed link, camera satellites and the door framework**
   (Rob, 2026-09-26). 1.1.2 stays a patch and ships first; this is 1.2.0,
   built in parallel lanes now and merged after 1.1.2.

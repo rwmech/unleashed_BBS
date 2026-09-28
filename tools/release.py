@@ -20,7 +20,9 @@ Purpose:      Builds a public release: the five flash images the web
               ESP32-S3-LCD-1.47 profile; the Freenove ESP32-WROVER CAM, a
               second ESP32 image (1.1.0); and the AI-Thinker ESP32-CAM, a
               third (1.1.1). A board profile is a build, so another board is
-              another row with its own directory.
+              another row with its own directory. A fifth, the Waveshare
+              ESP32-S3-Touch-LCD-2 (WS2), is tag_only: built by its board
+              pre-release tag alone.
 
 Output:       release/<version>/assets/    flat, for a GitHub Release, the
                                            shape deploy/fetch_release.py in
@@ -53,9 +55,9 @@ Versions:     The core version is BBS_VERSION, shared by every board. A board
               in"): a new board ships first as a pre-release carrying ONLY
               its own image set, so no other board's preview rule can pick it
               up. Its tag is the core version, then the board's key and a
-              number: v1.1.2-ws43b.1 (BOARD_TAGS below). The core version is
+              number: v1.1.2-ws2.1 (BOARD_TAGS below). The core version is
               not bumped for it; the board profile's own version says which
-              build it is.
+              build it is. A set marked tag_only is built by nothing else.
 
 Design:       Each release environment (esp32dev_release, ws_s3_lcd147_release,
               freenove_wrover_cam_release, esp32cam_aithinker_release,
@@ -76,6 +78,8 @@ Usage:        python3 tools/release.py                build and check
               python3 tools/release.py --allow-dirty  from a working tree
               python3 tools/release.py --tag v1.0.0   the tag must match
               python3 tools/release.py --tag v1.1.2-ws43b.1
+                                                      one board's set only
+              python3 tools/release.py --tag v1.1.2-ws2.1
                                                       one board's set only
 
 Libraries:    Python 3 standard library; PlatformIO on the PATH
@@ -150,11 +154,23 @@ BUILDS = (
     # when the profile merges into a release.
     {"dir": "esp32s3-ws43b", "env": "ws_s3touch43b_release", "family": "ESP32-S3", "boot": 0x0,
      "board": "BBS_BOARD_WS_S3TOUCH43B", "table": "partitions_s3.csv", "tag_only": True},
+    # The Waveshare ESP32-S3-Touch-LCD-2 (WS2 1.0.0). chipFamily ESP32-S3,
+    # the LCD-1.47's, and the same S3R8 and 8 MB layout, so either image boots
+    # on the other; but the 1.47's drives its panel on pins that are this
+    # board's camera and IMU lines, and this one's the other way round, so
+    # the site's picker asks which board.
+    #
+    # "tag_only": built only by its board pre-release tag (v1.1.2-ws2.1),
+    # never by a plain vX.Y.Z, so a board reaches
+    # a full release only when somebody decides it should: the entry loses the
+    # flag when the profile merges into a release.
+    {"dir": "esp32s3-ws2", "env": "ws_s3touch2_release", "family": "ESP32-S3", "boot": 0x0,
+     "board": "BBS_BOARD_WS_S3TOUCH2", "table": "partitions_s3.csv", "tag_only": True},
 )
 
 # A board pre-release's key, the word in its tag after the core version
-# (v1.1.2-ws43b.1), and the one set it carries.
-BOARD_TAGS = {"ws43b": "esp32s3-ws43b"}
+# (v1.1.2-ws2.1), and the one set it carries.
+BOARD_TAGS = {"ws43b": "esp32s3-ws43b", "ws2": "esp32s3-ws2"}
 
 # Offsets every table keeps, because ESP-IDF and PlatformIO put them there
 # for any table (otadata after nvs, the first app at 0x20000). Everything
@@ -452,7 +468,7 @@ def main():
     dirty = git("status", "--porcelain", "--untracked-files=no")
     if dirty and not a.allow_dirty:
         die("the working tree has uncommitted changes; commit, or --allow-dirty to test")
-    for b in BUILDS:
+    for b in builds:
         b["parts"] = check_partitions(b["table"])
     check_notices()
     check_formats()

@@ -216,11 +216,41 @@ int main() {
         s.listing = Status::LIST_ONLINE;
         s.staff = Status::STAFF_SYSOP;
         p = pack(s, 4);
-        bool order = p.n == G_COUNT;
+        bool order = p.n == G_COUNT - 1;
         for (uint8_t i = 0; i < p.n && order; ++i) if (p.which[i] != i) order = false;
         check("all nine, in the report's order", order);
         check("all nine end short of the antenna: under 114, in 104",
               p.end < 114 && p.end - 4 == 104 && p.end <= layout(172, 320).glyphs.x + layout(172, 320).glyphs.w);
+        // A camera board's tenth (WS2 1.0.0): last, and all ten inside the
+        // 240 glass's strip, 118 px.
+        s.camera = true;
+        p = pack(s, 4);
+        // Round lamps (WS2 1.0.0): cells never overlap, and every disc sits
+        // inside its cell and the row, at every strip length.
+        {
+            const Rect row = R(4, 298, 232, 16);
+            bool fits = true;
+            for (uint8_t n = 1; n <= 16; ++n)
+                for (uint8_t i = 0; i < n; ++i) {
+                    const Led l = ledAtRound(row, i, n);
+                    if (empty(l.cell) || !contains(row, l.cell) || !contains(l.cell, l.led)) fits = false;
+                    if (i && ledAtRound(row, i - 1, n).cell.x + ledAtRound(row, i - 1, n).cell.w > l.cell.x)
+                        fits = false;
+                }
+            check("round lamps: 1 to 16 in the 240 glass's row, none over another, each in its cell", fits);
+            const Led ten = ledAtRound(row, 0, 10);
+            check("ten lamps: cells of 23 from x 5, discs 14 across on rows 299 to 312",
+                  ten.cell.x == 5 && ten.cell.w == 23 && ten.led.w == 14 && ten.led.y == 299);
+            check("a disc 14 across is 6 8 10 12 14 ... wide",
+                  discRow(14, 0) == 6 && discRow(14, 1) == 8 && discRow(14, 2) == 10 && discRow(14, 3) == 12 &&
+                  discRow(14, 4) == 14 && discRow(14, 13) == 6);
+        }
+        check("the camera packs tenth, last, in live",
+              p.n == G_COUNT && p.which[G_COUNT - 1] == G_CAMERA && p.colour[G_COUNT - 1] == kLive);
+        check("all ten end inside the 240 glass's strip: 118 from 4",
+              p.end - 4 == 118 && p.end <= layout(240, 320).glyphs.x + layout(240, 320).glyphs.w);
+        s.camera = false;
+        p = pack(s, 4);
         bool apart = true;
         for (uint8_t i = 1; i < p.n; ++i)
             if (p.x[i] != p.x[i - 1] + p.glyph[i - 1]->w + kGlyphGap) apart = false;

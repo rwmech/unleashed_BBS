@@ -470,6 +470,8 @@ Stats    g_stats;                          // what the last job saw
 char     g_last[112]  = {};                // the last photo, and who took it
 char     g_lastBy[BBS_USER_MAX + 8] = {};
 uint32_t g_lastAt = 0;
+uint16_t g_callerSnaps = 0;                // callers' snaps saved since boot (camera::callerSnaps)
+char     g_lastCaller[BBS_USER_MAX + 1] = {};
 uint32_t g_surveyDay = 0;                  // the local day the last survey ran
 bool     g_surveyWanted = false;
 // Whether a sensor answered, this boot: the directory's camera badge
@@ -1009,7 +1011,7 @@ void runWork(runner::Job&) { worker(nullptr); }
 constexpr uint32_t kSnapInternal = plat::kCamInternal + kWorkerStack + 512;
 
 // roomToSnap: whether internal RAM can take a snap now. The largest DMA
-// block and the internal total both: the camera's 32 KB has to be one
+// block and the internal total both: the camera's DMA block has to be one
 // piece, and the worker's stack and the driver's task come out of the same
 // memory around it. A refusal is logged with the figures; the board's own
 // shots (the timelapse) only the first of a run, so a board short of RAM
@@ -1237,6 +1239,12 @@ void finish(uint32_t now) {
             snprintf(g_last, sizeof(g_last), "%.111s", j.rel);
             snprintf(g_lastBy, sizeof(g_lastBy), "%.21s", j.kind == K_CALLER ? j.handle : "the board");
             g_lastAt = clk::epoch();
+            if (j.kind == K_CALLER) {
+                // A guest's handle without its *: the handle the panel names.
+                snprintf(g_lastCaller, sizeof(g_lastCaller), "%.*s", BBS_USER_MAX,
+                         j.handle[0] == '*' ? j.handle + 1 : j.handle);
+                g_callerSnaps = static_cast<uint16_t>(g_callerSnaps + 1);
+            }
             // Two lines: plat::log keeps 160 characters, and one line cut
             // the memory figures off the end.
             plat::log("camera: %s %ux%u %u bytes%s, up %u ms, shot %u ms, saved %u ms, all %u ms, "
@@ -1830,6 +1838,15 @@ bool camera::found() { return g_sensor.load() == SENSOR_FOUND; }
 bool camera::busy() {
     const uint8_t p = g_job.ph.load();
     return p != PH_IDLE && p != PH_DONE && p != PH_FAILED;
+}
+
+bool camera::shooting() {
+    return camera::busy() && g_job.kind != K_SURVEY;
+}
+
+uint16_t camera::callerSnaps(const char*& who) {
+    who = g_lastCaller;
+    return g_callerSnaps;
 }
 
 void camera::photosLevels(PlugLevel& see, PlugLevel& removeLevel) {

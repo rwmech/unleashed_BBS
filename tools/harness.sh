@@ -37,6 +37,8 @@
 #                              (bbs_host_espcam), with --only=board_espcam
 #                 --board ws43b  the Waveshare ESP32-S3-Touch-LCD-4.3B profile
 #                              (bbs_host_ws43b), with --only=board_ws43b
+#                 --board ws2  the Waveshare ESP32-S3-Touch-LCD-2 profile
+#                              (bbs_host_ws2), with --only=board_ws2
 #
 #                 --changed RANGE   work out --only from what a git range
 #                              touched, instead of naming it by hand. RANGE
@@ -164,7 +166,8 @@ while [ $# -gt 0 ]; do
                 fncam) BIN=bbs_host_fncam; export BBS_HOST_BOARD=fncam ;;
                 espcam) BIN=bbs_host_espcam; export BBS_HOST_BOARD=espcam ;;
                 ws43b) BIN=bbs_host_ws43b; export BBS_HOST_BOARD=ws43b ;;
-                *)  echo "harness: no board profile called $2 (s3, fncam, espcam, ws43b)"; exit 2 ;;
+                ws2)   BIN=bbs_host_ws2;   export BBS_HOST_BOARD=ws2 ;;
+                *)  echo "harness: no board profile called $2 (s3, fncam, espcam, ws43b, ws2)"; exit 2 ;;
             esac
             shift 2 ;;
         # A board as it leaves the web installer: no staff passwords in its
@@ -352,9 +355,9 @@ page0 = House rules | all
 page1 = Staff notes | staff
 CFG
 
-# SSH's own port (1.1.2) on the S3 profile, per tag like the others: 6422
+# SSH's own port (1.1.2) on the S3 profiles, per tag like the others: 6422
 # for every run would have two tags' boards fighting over it.
-if [ "$BIN" = bbs_host_s3 ] || [ "$BIN" = bbs_host_ws43b ]; then
+if [ "$BIN" = bbs_host_s3 ] || [ "$BIN" = bbs_host_ws43b ] || [ "$BIN" = bbs_host_ws2 ]; then
     sed -i "s/^backup_port = .*/&\nssh_port = $((PORT + 1500))/" "$DATA/user/system.cfg"
 fi
 

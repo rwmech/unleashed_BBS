@@ -66,11 +66,13 @@ endif()
 # WROOM's image does not take on a component it never calls.
 if(IDF_TARGET STREQUAL "esp32s3")
     list(APPEND app_requires esp_driver_usb_serial_jtag esp_lcd esp_driver_ledc)
-    # The RGB panel boards (WS43B, 1.1.2): the touch controller and the
-    # expander on the new I2C master driver, and the chip's temperature
-    # sensor. Linked only by platform_esp32_rgb.cpp, which is empty on any
-    # other board.
-    list(APPEND app_requires esp_driver_i2c esp_driver_tsens)
+    # Touch panel controllers and the chip's temperature sensor. The
+    # 4.3B (WS43B) talks to its touch controller and expander on the new I2C
+    # master driver, linked only by platform_esp32_rgb.cpp; the Touch-LCD-2
+    # (WS2) asks its controller over the legacy driver, because the camera's
+    # SCCB uses it on IDF 5.3 and the two I2C drivers cannot mix in one
+    # image. Each is linked only where a board profile calls it.
+    list(APPEND app_requires driver esp_driver_i2c esp_driver_tsens)
     # SSH (1.1.2): wolfSSH and wolfCrypt, compiled for the S3 only
     # (components/wolfssh registers an empty component everywhere else).
     list(APPEND app_requires wolfssh)

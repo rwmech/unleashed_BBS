@@ -92,9 +92,6 @@
 #include "driver/i2c_master.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#if defined(BBS_HAS_CHIP_TEMP)
-#include "driver/temperature_sensor.h"
-#endif
 
 #include <cstdio>
 #include <cstring>
@@ -444,29 +441,8 @@ bool touchPoll(bool& down) {
     return true;
 }
 
-#if defined(BBS_HAS_CHIP_TEMP)
-// chipTemp: the die's temperature, whole degrees C. The sensor is installed
-// on the first call and read in a few microseconds after that. The 20 to
-// 100 C range (2 C error), not the -10 to 80 one: a die in a closed case
-// runs in the fifties, and the panel's warning bands start at 60 and 75, so
-// the range has to reach past them rather than fail at 80 and leave the last
-// figure standing.
-bool chipTemp(int& celsius) {
-    static temperature_sensor_handle_t t = nullptr;
-    static bool tried = false;
-    if (!t) {
-        if (tried) return false;
-        tried = true;
-        temperature_sensor_config_t c = TEMPERATURE_SENSOR_CONFIG_DEFAULT(20, 100);
-        if (temperature_sensor_install(&c, &t) != ESP_OK) { t = nullptr; return false; }
-        if (temperature_sensor_enable(t) != ESP_OK) { temperature_sensor_uninstall(t); t = nullptr; return false; }
-    }
-    float f = 0;
-    if (temperature_sensor_get_celsius(t, &f) != ESP_OK) return false;
-    celsius = static_cast<int>(f < 0 ? f - 0.5f : f + 0.5f);
-    return true;
-}
-#endif
+// chipTemp is platform_esp32.cpp's, shared with the Touch-LCD-2 (tenths of a
+// degree, installed at the panel's start for 20 to 100 C).
 
 }   // namespace plat
 

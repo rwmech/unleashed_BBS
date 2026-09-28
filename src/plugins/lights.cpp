@@ -476,6 +476,8 @@ struct Lines {
     bool oh;               // a line is off hook: somebody is on one, the busy line too
     bool cd;               // a caller has carrier: connected and past detection
     bool slow;             // every such caller has BAUD at 2400 or under
+    bool shown;            // somebody is on whom WHO shows, the sysop's line and a
+                           // node past the strip's end included (switchboard)
 };
 
 void gather(Lines& l) {
@@ -487,6 +489,9 @@ void gather(Lines& l) {
         Ctx& c = *static_cast<Ctx*>(p);
         if (s.st == SState::Free) return;
         if (s.role == Role::Busy) { c.l->oh = true; return; }
+        // Anybody logged in whom WHO shows, as the panel's list names them.
+        // Never a hidden or lurking one: the lights must not give them away.
+        if (s.loggedIn && s.visible && !s.lurk) c.l->shown = true;
         if (s.role != Role::Caller || !s.id) return;    // the sysop's line is not one
         c.l->oh = true;
         if (s.st != SState::Detect) {
@@ -720,23 +725,31 @@ void drawStrip(uint32_t now, uint8_t* f, uint16_t rx, uint16_t tx, uint32_t byte
 
         case SF_SWITCH: {
             // switchboard (1.1.2, the 4.3" board's default; Rob: "more
-            // meaning or better looks", and no sweep). A lamp a line, as
-            // nodes: a line with a caller on it in the caller's rank colour,
-            // dipping on traffic; a free line dim and steady in the site's
-            // dial blue, the even lamps flickering up with bytes in and the
-            // odd ones with bytes out, as a modem's RD and SD did. So with
-            // nobody on the bar is quiet but alive, and every caller is a
-            // bright lamp among dim ones. The sysop's line has no lamp here,
-            // as in nodes: the strip is the caller lines.
-            const bool rd = blip(g_rd, rx != 0);
-            const bool sd = blip(g_sd, tx != 0);
-            for (uint8_t i = 0; i < n; ++i) {
-                bool dip = blip(g_cell[i], (moved >> (i + 1)) & 1u);
-                if (lines.mark[i]) {
+            // meaning or better looks", and no sweep). With anybody on it
+            // is exactly nodes: one lamp a line, the caller's rank colour,
+            // dipping on traffic. With nobody on, the lamps are dim and
+            // steady and flicker only with real traffic (below).
+            // "Anybody on" is anybody WHO shows, the sysop's line and a node
+            // past the strip's end included: the panel says "Callers 1/11"
+            // for them, and the strip must not say "waiting" beside it.
+            if (lines.shown) {
+                for (uint8_t i = 0; i < n; ++i) {
+                    bool dip = blip(g_cell[i], (moved >> (i + 1)) & 1u);
+                    if (!lines.mark[i]) continue;
                     Rgb c = kTermRgb[static_cast<uint8_t>(bbsu::markColor(lines.mark[i]))];
                     put(f, i, c, dip ? 60 : 255, pct);
-                } else {
-                    put(f, i, kDialRgb, ((i & 1u) ? sd : rd) ? 200 : 90, pct);
+                }
+                break;
+            }
+            {
+                // Nobody on (Rob: no sweep): every lamp dim and steady in
+                // dial blue, the even ones flickering up with bytes in and
+                // the odd ones with bytes out, as a modem's RD and SD did.
+                const bool rd = blip(g_rd, rx != 0);
+                const bool sd = blip(g_sd, tx != 0);
+                for (uint8_t i = 0; i < n; ++i) {
+                    const bool lit = (i & 1u) ? sd : rd;
+                    put(f, i, kDialRgb, lit ? 160 : 40, pct);
                 }
             }
             break;

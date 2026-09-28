@@ -27,6 +27,14 @@
  *                             whether or not a strip is wired
  *
  *               The spec is internal/tty-ux-panel-2026-09-24.md, revision 2.
+ *               The Waveshare ESP32-S3-Touch-LCD-2's 240 x 320 (WS2 1.0.0)
+ *               follows release-prep/ws2/tty-ux-panel-ws2-2026-09-28.md: a
+ *               third figure in the system row (the chip's temperature), a
+ *               camera glyph in the band while a picture is taken, a
+ *               caller's snap in the recent list, and a tap on the glass
+ *               (BBS_HAS_TOUCH) that turns the header to its next page or
+ *               wakes a glass put to sleep (CONFIG panel's Sleep, in the row
+ *               Driver has on a board with no touch).
  *               Compiled only for a board profile with BBS_HAS_LCD
  *               (board.h): on any other board this file is empty, the
  *               plugin is not in the registry and CONFIG has no page for it.
@@ -116,6 +124,9 @@
 #include "../core/silent.h"
 #include "../core/sysconfig.h"
 #include "../platform/platform.h"
+#ifdef BBS_HAS_CAMERA
+#include "camera.h"             // shooting(), callerSnaps(): the band's glyph and the recent list
+#endif
 
 #include <cstdio>
 #include <cstdlib>
@@ -133,12 +144,22 @@ using namespace panelgfx::tok;
 #define BBS_LCD_DRIVER "ST7789"
 #endif
 
+// The chip temperature's warm step on the system row, whole degrees C
+// (board.h may say; 60 unless it does).
+#ifndef BBS_PANEL_TEMP_WARM
+#define BBS_PANEL_TEMP_WARM 60
+#endif
+
 #ifdef BBS_HOST
 // Host only: the glass the platform keeps, written to a PPM file, so a
 // person can look at the layout without a panel (PANEL SHOT).
 bool hostPanelShot(const char* path);
 // And the backlight as the platform was last told it, percent.
 int hostLcdBacklight();
+#if defined(BBS_HAS_TOUCH) && !defined(BBS_TOUCH_POLL)
+// And a tap on the glass (PANEL TAP), taken by the next tick.
+void hostTouchTap();
+#endif
 #endif
 
 namespace {
@@ -166,11 +187,8 @@ constexpr int      kSteps     = 8;        // steps out, and as many back in
 constexpr uint32_t kSlowMs    = 60000;    // the hourglass: a slow pass this last minute
 constexpr uint32_t kCardErrMs = 10000;    // a failed card read: red as long as the drive light blinks
 constexpr uint8_t  kEvents    = 10;       // the recent list's ring
-#ifdef BBS_HAS_TOUCH
+#if defined(BBS_HAS_TOUCH) && defined(BBS_TOUCH_POLL)
 constexpr uint32_t kTouchMs   = 50;       // the touch controller, twenty times a second
-#endif
-#ifdef BBS_HAS_CHIP_TEMP
-constexpr uint32_t kTempMs    = 5000;     // the chip's temperature
 #endif
 
 // ---------------------------------------------------------------------------
@@ -248,6 +266,31 @@ uint8_t        g_filesIdx = 0xFF, g_annIdx = 0xFF;
 
 uint16_t       g_heapK     = 0;
 
+#ifdef BBS_HAS_CHIP_TEMP
+// The chip's temperature for the system row (WS2 1.0.0), tenths of a
+// degree, read with the heap every kHeapMs.
+int            g_tempT     = 0;
+bool           g_tempOk    = false;
+#endif
+#ifdef BBS_HAS_CAMERA
+// Callers' snaps as the camera last counted them, for the recent list.
+uint16_t       g_snapSeen  = 0;
+bool           g_snapInit  = false;
+#endif
+#ifdef BBS_HAS_TOUCH
+// Taps and sleep (WS2 1.0.0). Asleep is the backlight off and nothing else:
+// the panel goes on drawing, but for the header's rotation, held on its
+// first page, and the dot, held still. A tap wakes it, and so does a live
+// ring, which is the one thing the glass exists to make unmissable.
+uint16_t       g_sleepMin  = 0;             // CONFIG's Sleep, minutes, 0 never
+bool           g_asleep    = false;
+#ifndef BBS_TOUCH_POLL
+uint32_t       g_touchAt   = 0;             // the sleep timer's start: the last tap, wake or ring
+bool           g_touchTried = false;        // touchBegin, once a boot
+char           g_touchWhy[48] = "";         // why the controller did not answer, for PANEL
+#endif
+#endif
+
 // Calls today, as the system row says it. The core's figure is the caller
 // log's count of calls that have ended, plus the one arriving, so callers on
 // together are each told "1st"; the panel takes it at every login and keeps
@@ -258,7 +301,7 @@ uint32_t       g_todayDay = 0;
 
 // The recent events, newest first. The kind, not the verb, so the icon says
 // it and the line has its width for the time and the handle.
-enum Ev : uint8_t { EV_LOGIN, EV_GUEST, EV_LOGOFF, EV_PAGE, EV_RING };
+enum Ev : uint8_t { EV_LOGIN, EV_GUEST, EV_LOGOFF, EV_PAGE, EV_RING, EV_SNAP };
 struct Event {
     uint8_t kind;
     char    text[6 + BBS_USER_MAX + 1];     // "HH:MM " and a handle
@@ -270,22 +313,18 @@ uint16_t       g_pageSeen = 0;
 // The dot on the track.
 int16_t        g_dotX = 0;
 
-#ifdef BBS_HAS_TOUCH
-// Touch (1.1.2, the 4.3" board): a tap wakes a sleeping backlight, and on a
-// lit panel turns the header's slot on to its next page at once. The
-// backlight sleeps after sleep minutes with no tap (0, as shipped, never),
-// and a ring wakes it: somebody wanting the sysop is what the glass is for.
-uint16_t       g_sleepMin = 0;
-bool           g_asleep   = false;
+#if defined(BBS_HAS_TOUCH) && defined(BBS_TOUCH_POLL)
+// Touch (1.1.2, the 4.3" board's polled GT911): a tap wakes a sleeping
+// backlight, and on a lit panel turns the header's slot on to its next page
+// at once. The backlight sleeps after sleep minutes with no tap (0, as
+// shipped, never), and a ring wakes it: somebody wanting the sysop is what
+// the glass is for. g_sleepMin and g_asleep are shared with the tap boards,
+// above.
 uint32_t       g_wakeAt   = 0;            // millis of the last tap or ring
 bool           g_touchDown = false;       // a finger was on the glass at the last report
 uint32_t       g_touchAt  = 0;
 uint32_t       g_taps     = 0;            // since start, for PANEL
 bool           g_touchSeen = false;       // the controller has sent a report
-#endif
-#ifdef BBS_HAS_CHIP_TEMP
-int            g_tempC    = -1000;        // the chip's temperature; -1000 not read
-uint32_t       g_tempAt   = 0;
 #endif
 
 // defaults: every setting as the board profile ships it (board.h). From
@@ -310,7 +349,7 @@ void defaults() {
     g_cfg.mhz    = BBS_LCD_MHZ;
     g_cfg.backlight = BBS_LCD_BACKLIGHT;
 #ifdef BBS_HAS_TOUCH
-    g_sleepMin   = 0;
+    g_sleepMin   = 0;                          // never, as shipped
 #endif
 }
 
@@ -546,8 +585,16 @@ void pageText(uint8_t page, uint32_t now, char* out, size_t n, uint16_t& col) {
     } else {
         char up[16];
         fmtUptime(now / 1000u, up, sizeof(up));
-        if (g_free[0]) snprintf(out, n, "up %s  %s", up, g_free);
-        else           snprintf(out, n, "up %s", up);
+        // The long form on a wide portrait glass where it fits (29 glyphs
+        // at 240, WS2 1.0.0), which says the card's figure is what is free;
+        // the short one everywhere else, as it was.
+        if (g_free[0]) {
+            snprintf(out, n, "up %s, %s free", up, g_free);
+            if (g_layout.land || g_layout.slot.w < 232 || glyphs(out) > fit)
+                snprintf(out, n, "up %s  %s", up, g_free);
+        } else {
+            snprintf(out, n, "up %s", up);
+        }
     }
 }
 
@@ -575,6 +622,9 @@ void slotTick(uint32_t now) {
         g_nextLong = g_holdLong = false;                         // a tap before the ring is spent
         g_stepAt = now;
     }
+#ifdef BBS_HAS_TOUCH
+    if (g_asleep) g_stepAt = now;                          // asleep: the name, held
+#endif
     if (g_dir == 0) {
         if (now - g_stepAt >= (g_holdLong ? kTapHoldMs : kHoldMs)) {
             g_dir = 1; g_fade = 1; g_stepAt = now;
@@ -608,9 +658,9 @@ void statusWords(const Status& s, char* out, size_t n) {
     static const char* const kCard[]    = { "no card", "card", "card error" };
     static const char* const kListing[] = { "", " listed", " waiting", " unlisted" };
     static const char* const kStaff[]   = { "", " co-sysop", " sysop" };
-    snprintf(out, n, "%s%s%s%s%s%s%s%s%s", kCard[s.card], s.ring ? " ring" : "", s.mail ? " mail" : "",
+    snprintf(out, n, "%s%s%s%s%s%s%s%s%s%s", kCard[s.card], s.ring ? " ring" : "", s.mail ? " mail" : "",
              s.upload ? " uploads" : "", s.backup ? " backup" : "", kListing[s.listing],
-             kStaff[s.staff], s.warn ? " restart" : "", s.slow ? " slow" : "");
+             kStaff[s.staff], s.warn ? " restart" : "", s.slow ? " slow" : "", s.camera ? " camera" : "");
 }
 
 uint8_t bellAt(const Packed& p) {
@@ -734,6 +784,7 @@ const char* evWord(uint8_t kind) {
         case EV_GUEST:  return "guest";
         case EV_LOGOFF: return "logoff";
         case EV_PAGE:   return "page";
+        case EV_SNAP:   return "snap";
         default:        return "ring";
     }
 }
@@ -752,9 +803,12 @@ void recentRow(uint8_t k, uint8_t j, bool rule) {
     const Rect& r = g_layout.list[k];
     const uint16_t shade = age == 0 ? kInk : age == 1 ? kDim : kFaint;
     const bool bell = e.kind == EV_PAGE || e.kind == EV_RING;
+    // A caller's snap (a camera board): dial, what you can go and get, on
+    // the newest row, then shading with age like a login.
     const uint16_t kindCol = e.kind == EV_LOGIN ? kLive : e.kind == EV_GUEST ? kWarm
-                           : e.kind == EV_LOGOFF ? kDim : kBusy;
-    icon(g_canvas, r.x, r.y, bell ? kIconBell : e.kind == EV_LOGOFF ? kIconLogoff : kIconLogin,
+                           : e.kind == EV_LOGOFF ? kDim : e.kind == EV_SNAP ? kDial : kBusy;
+    icon(g_canvas, r.x, r.y, bell ? kIconBell : e.kind == EV_LOGOFF ? kIconLogoff
+                           : e.kind == EV_SNAP ? kIconCamera : kIconLogin,
          (age == 0 || bell) ? kindCol : shade);
     text(g_canvas, r.x + 20, r.y, e.text, shade, kBg, false, r.w - 20);
 }
@@ -855,21 +909,26 @@ void drawHead2(unsigned today) {
 // drawSys: the system row's cells, as the layout names them (sysKind): free
 // heap, calls today, the most lines busy at once since boot, and the chip's
 // temperature. The heap's colour is its warning: ink at 40 K and up, warm to
-// 20 K, risk below. The temperature: ink to 59 C, warm to 74, risk from 75,
-// "--C" dim before a reading. Each cell is an icon and its figure, cut at the
-// next cell; the key is the figures two spaces apart, which on the stick is
-// exactly what it always was.
+// 20 K, risk below. The temperature: ink below the board's warm step
+// (BBS_PANEL_TEMP_WARM: 60 C, 65 on the Touch-LCD-2, whose S3R8 is rated to
+// 65 C ambient), warm to 74, risk from 75, "--C" dim before a reading. With
+// a temperature on the row the heap is a memory stick, so two chips side by
+// side do not read as one figure twice (both panel specs). Each cell is an
+// icon and its figure, cut at the next cell; the key is the figures two
+// spaces apart, which on the stick is exactly what it always was.
 void drawSys(uint16_t heapK, uint16_t today, uint8_t peak, int tempC) {
     const Layout& L = g_layout;
     char figs[4][24];
     uint16_t cols[4];
     const Icon* icons[4];
+    bool hasTemp = false;
+    for (uint8_t i = 0; i < L.sysFigs && i < 4; ++i) if (L.sysKind[i] == SYS_TEMP) hasTemp = true;
     for (uint8_t i = 0; i < L.sysFigs && i < 4; ++i) {
         switch (L.sysKind[i]) {
             case SYS_HEAP:
                 snprintf(figs[i], sizeof(figs[i]), "%uK", heapK);
                 cols[i]  = heapK >= 40 ? kInk : heapK >= 20 ? kWarm : kRisk;
-                icons[i] = L.tall ? &kIconRam : &kIconChip;   // on the tall glass the chip is the chip's own
+                icons[i] = hasTemp ? &kIconRam : &kIconChip;  // then the chip is the chip's own
                 break;
             case SYS_TODAY:
                 snprintf(figs[i], sizeof(figs[i]), "%u today", today);
@@ -884,8 +943,11 @@ void drawSys(uint16_t heapK, uint16_t today, uint8_t peak, int tempC) {
             default:
                 if (tempC > -1000) snprintf(figs[i], sizeof(figs[i]), "%dC", tempC);
                 else               snprintf(figs[i], sizeof(figs[i]), "--C");
-                cols[i]  = tempC <= -1000 ? kDim : tempC < 60 ? kInk : tempC < 75 ? kWarm : kRisk;
-                icons[i] = &kIconChip;                        // the S3's own sensor
+                cols[i]  = tempC <= -1000 ? kDim : tempC < BBS_PANEL_TEMP_WARM ? kInk
+                         : tempC < 75 ? kWarm : kRisk;
+                // The S3's own sensor: a chip on the tall glass, a CPU on the
+                // Touch-LCD-2 (each board's spec).
+                icons[i] = L.tall ? &kIconChip : &kIconCpu;
                 break;
         }
     }
@@ -1009,6 +1071,20 @@ void refreshText(uint32_t now) {
         g_pageSeen = pg.count;
         if (!hiding(pg.from)) event(pg.ring ? EV_RING : EV_PAGE, pg.from);
     }
+#ifdef BBS_HAS_CAMERA
+    // A caller's snap saved: an event, unless the caller is hidden or
+    // lurking. The board's own shots (the timelapse) never are: at one a
+    // minute they would push every login off the list.
+    {
+        const char* who = "";
+        const uint16_t n = camera::callerSnaps(who);
+        if (!g_snapInit) { g_snapInit = true; g_snapSeen = n; }
+        if (n != g_snapSeen) {
+            g_snapSeen = n;
+            if (!hiding(who)) event(EV_SNAP, who);
+        }
+    }
+#endif
 
     if (!g_netAt || now - g_netAt >= kNetMs) {
         g_netAt = now ? now : 1;
@@ -1019,6 +1095,9 @@ void refreshText(uint32_t now) {
     if (!g_heapAt || now - g_heapAt >= kHeapMs) {
         g_heapAt = now ? now : 1;
         g_heapK = static_cast<uint16_t>(plat::heapFree() / 1024u);
+#ifdef BBS_HAS_CHIP_TEMP
+        g_tempOk = plat::chipTemp(g_tempT);
+#endif
     }
 
     const uint32_t slow = b.slowPasses();
@@ -1036,6 +1115,9 @@ void refreshText(uint32_t now) {
     s.staff   = staff;
     s.warn    = b.crashBoot() && !g_bootSeen;
     s.slow    = g_slowAt && now - g_slowAt < kSlowMs;
+#ifdef BBS_HAS_CAMERA
+    s.camera  = camera::shooting();
+#endif
     drawGlyphs(s);
 
     drawClock();
@@ -1044,14 +1126,12 @@ void refreshText(uint32_t now) {
     if (g_todayDay && clk::dayKey(now) != g_todayDay) { g_today = 0; g_todayDay = 0; }
     drawHead2(g_today);
     drawWord();
-    int tempC = -1000;
+    int tempC = -1000;                                     // "--C": no sensor, or a failed read
 #ifdef BBS_HAS_CHIP_TEMP
-    if (!g_tempAt || now - g_tempAt >= kTempMs) {
-        g_tempAt = now ? now : 1;
-        int c = 0;
-        g_tempC = plat::chipTemp(c) ? c : -1000;           // a failed read shows "--C", never a stale figure
+    if (g_tempOk) {                                        // tenths, read with the heap every kHeapMs
+        tempC = g_tempT > 0 ? (g_tempT + 5) / 10 : 0;
+        if (tempC > 99) tempC = 99;
     }
-    tempC = g_tempC;
 #endif
     drawSys(g_heapK, g_today, b.peakNodes(), tempC);
 }
@@ -1069,6 +1149,15 @@ uint8_t refreshLeds() {
         fill(g_canvas, box, kBg);
         g_ledN = n;
         g_dirty.add(box);
+#ifdef BBS_PANEL_LED_ROUND
+        // The rule above the row underlines LEDs, so with none it goes
+        // (WS2 1.0.0, with its round lamps: the lights switched off leave a
+        // margin, not a rule over nothing).
+        if (!empty(g_layout.rule2)) {
+            fill(g_canvas, g_layout.rule2, n ? kRule : kBg);
+            g_dirty.add(g_layout.rule2);
+        }
+#endif
     }
     uint8_t moved = 0;
     Rect cells[plat::kPixelMax];
@@ -1077,8 +1166,13 @@ uint8_t refreshLeds() {
                                  glassLevel(rgbs[i * 3 + 2], pct));
         if (!all && col == g_ledCol[i]) continue;
         g_ledCol[i] = col;
+#ifdef BBS_PANEL_LED_ROUND
+        const Led l = ledAtRound(box, i, n);               // round lamps (board.h)
+        drawLamp(g_canvas, l, col);
+#else
         const Led l = g_layout.ledBar ? segAt(box, i, n) : ledAt(box, i, n, g_layout.ledCell);
         drawLed(g_canvas, l, col, g_layout.ledBar);
+#endif
         cells[moved++] = l.cell;
     }
     // The drive light's lamp, on a glass that has one (the tall glass, whose
@@ -1109,6 +1203,9 @@ uint8_t refreshLeds() {
 // busy strip has the glass to itself.
 void dotStep(uint8_t leds) {
     if (leds > 1 || empty(g_layout.track)) return;
+#ifdef BBS_HAS_TOUCH
+    if (g_asleep) return;                                  // asleep: nobody sees it move
+#endif
     const Rect was = dotBox(g_dotX);
     g_dotX = static_cast<int16_t>(g_dotX + 1 >= g_canvas.w ? 0 : g_dotX + 1);
     const Rect now = dotBox(g_dotX);
@@ -1133,7 +1230,7 @@ void oweLight() {
     g_owedAt    = g_bands;
 }
 
-#ifdef BBS_HAS_TOUCH
+#if defined(BBS_HAS_TOUCH) && defined(BBS_TOUCH_POLL)
 // wake: the backlight back on if the sleep took it, and the sleep's clock
 // started again. A light still owed to a first frame is left to flush().
 void wake(uint32_t now) {
@@ -1192,6 +1289,9 @@ void flush() {
     if (g_lightOwed && g_bands != g_owedAt && empty(g_dirty.cur)) {
         g_lightOwed = false;
         g_stale     = false;
+#ifdef BBS_HAS_TOUCH
+        if (!g_asleep)                                     // asleep: the frame is there for the wake
+#endif
         light(g_run.backlight);
     }
     Rect r;
@@ -1202,6 +1302,55 @@ void flush() {
     else
         g_dirty.add(r);                                    // try it again next tick
 }
+
+#if defined(BBS_HAS_TOUCH) && !defined(BBS_TOUCH_POLL)
+// ---------------------------------------------------------------------------
+// Taps and sleep (WS2 1.0.0, the spec's "A tap on the glass")
+// ---------------------------------------------------------------------------
+// wake: the backlight back, the header from its first page. Owed light
+// (a frame not yet whole) is left to flush, which lights it when it is.
+void wake(uint32_t now) {
+    g_asleep = false;
+    g_touchAt = now ? now : 1;
+    g_page = PAGE_NAME;
+    g_fade = 0;
+    g_dir  = 0;
+    g_stepAt = now;
+    if (!g_lightOwed) light(g_run.backlight);
+}
+
+void sleepNow() {
+    g_asleep = true;
+    g_page = PAGE_NAME;
+    g_fade = 0;
+    g_dir  = 0;
+    light(0);
+}
+
+// touchTick: the taps since the last tick, and the sleep timer. Pages the
+// board turns fade; a page a person turns cuts, at once, which is the tap's
+// only acknowledgement.
+void touchTick(uint32_t now) {
+    const uint16_t taps = plat::touchTaps();
+    const bool ring = Bbs::instance().ringing() != nullptr;
+    if (taps) {
+        g_touchAt = now ? now : 1;
+        if (g_asleep) { wake(now); return; }              // the tap is spent on waking
+        if (!ring) {                                       // a ring keeps the slot
+            g_page = static_cast<uint8_t>((g_page + 1) % PAGES);
+            g_fade = 0;
+            g_dir  = 0;
+            g_stepAt = now;
+        }
+    }
+    if (ring) {                                            // a ring wakes the glass, and holds the timer
+        if (g_asleep) wake(now);
+        g_touchAt = now ? now : 1;
+        return;
+    }
+    if (!g_asleep && g_sleepMin && now - g_touchAt >= static_cast<uint32_t>(g_sleepMin) * 60000u) sleepNow();
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // Hooks
@@ -1216,6 +1365,22 @@ bool start(Bbs& bbs) {
     legacy();
     g_up = false;
     g_lightOwed = false;
+#if defined(BBS_HAS_TOUCH) && !defined(BBS_TOUCH_POLL)
+    // Once a boot: the controller asked who it is and told to pulse INT,
+    // and the interrupt that counts the taps (a few ms, a plugin's start).
+    if (!g_touchTried) {
+        g_touchTried = true;
+        if (!plat::touchBegin(g_touchWhy, sizeof(g_touchWhy)))
+            plat::log("panel: %s; taps still count if it pulses INT anyway", g_touchWhy);
+    }
+    plat::touchTaps();                                 // none from before this start
+    g_asleep  = false;
+    g_touchAt = plat::millis();
+    if (!g_touchAt) g_touchAt = 1;
+#endif
+#ifdef BBS_HAS_CHIP_TEMP
+    g_tempOk = plat::chipTemp(g_tempT);                // the sensor installed here, not in the loop
+#endif
 
 #ifdef BBS_LCD_RGB
     // An RGB panel is the picture the profile names, never turned, and has
@@ -1295,7 +1460,7 @@ bool start(Bbs& bbs) {
     g_bands = 0;
     g_dark = quiet;
     if (owe) oweLight();
-#ifdef BBS_HAS_TOUCH
+#if defined(BBS_HAS_TOUCH) && defined(BBS_TOUCH_POLL)
     g_asleep    = false;
     g_wakeAt    = plat::millis() ? plat::millis() : 1;
     g_touchDown = false;
@@ -1330,6 +1495,10 @@ void tick(uint32_t now) {
             g_lightOwed = false;
             light(0);
         }
+#if defined(BBS_HAS_TOUCH) && !defined(BBS_TOUCH_POLL)
+        plat::touchTaps();                                 // silent: a tap does nothing
+        g_touchAt = now ? now : 1;
+#endif
         return;
     }
     if (g_dark) {
@@ -1339,14 +1508,16 @@ void tick(uint32_t now) {
         redrawAll();
         g_textAt = g_stripAt = 0;
         oweLight();
-#ifdef BBS_HAS_TOUCH
+#if defined(BBS_HAS_TOUCH) && defined(BBS_TOUCH_POLL)
         g_asleep = false;                                  // silent ending is a wake
         g_wakeAt = now ? now : 1;
 #endif
     }
 #ifdef BBS_HAS_TOUCH
     touchTick(now);
+#ifdef BBS_TOUCH_POLL
     sleepTick(now);
+#endif
 #endif
     if (!g_textAt || now - g_textAt >= kTextMs) {
         g_textAt = now ? now : 1;
@@ -1405,6 +1576,15 @@ void cmdPanel(Bbs& b, Session& s, const char* a, uint32_t now) {
         b.prompt(s);
         return;
     }
+#if defined(BBS_HAS_TOUCH) && !defined(BBS_TOUCH_POLL)
+    // Host only: a tap on the glass, taken by the panel's next tick.
+    if (ieq(a, "tap")) {
+        hostTouchTap();
+        line(s, Color::Grey, "Tapped.");
+        b.prompt(s);
+        return;
+    }
+#endif
 #endif
     if (*a) {
         line(s, Color::LightRed, "PANEL, on its own.");
@@ -1454,6 +1634,25 @@ void cmdPanel(Bbs& b, Session& s, const char* a, uint32_t now) {
     if (g_up && g_dark) snprintf(buf, sizeof(buf), "Backlight %d%%, silent mode", bl);
     else                snprintf(buf, sizeof(buf), "Backlight %d%%", bl);
     line(s, Color::Grey, buf);
+#if defined(BBS_HAS_TOUCH) && !defined(BBS_TOUCH_POLL)
+    // The touch controller and the sleep timer (WS2 1.0.0).
+    {
+        const uint8_t id = plat::touchChip();
+        char chip[16];
+        if (id) snprintf(chip, sizeof(chip), "CST816 0x%02X", static_cast<unsigned>(id));
+        else    snprintf(chip, sizeof(chip), "no answer");
+        if (g_asleep)
+            snprintf(buf, sizeof(buf), "Touch %s, asleep", chip);
+        else if (!g_sleepMin)
+            snprintf(buf, sizeof(buf), "Touch %s, awake, never sleeps", chip);
+        else {
+            const uint32_t gone = (plat::millis() - g_touchAt) / 60000u;
+            const uint32_t left = gone >= g_sleepMin ? 0u : g_sleepMin - gone;
+            snprintf(buf, sizeof(buf), "Touch %s, awake, dark in %u min", chip, static_cast<unsigned>(left));
+        }
+        line(s, Color::Grey, buf);
+    }
+#endif
     snprintf(buf, sizeof(buf), "%u bands sent", static_cast<unsigned>(g_bands));
     line(s, Color::Grey, buf);
     if (g_up) {
@@ -1516,8 +1715,15 @@ void setting(const char* key, char* out, size_t n) {
 }
 #else
 constexpr PluginSetting kSettings[] = {
+#ifdef BBS_HAS_TOUCH
+    // A touch board's (WS2 1.0.0): the page is at its twelve rows, so Sleep
+    // takes Driver's; PANEL still says the driver.
+    { "sleep",     "Sleep min", PS_NUM,   0, 240, 3, "Minutes to dark; 0 never. A tap wakes.", nullptr,
+      "Sleep after, minutes" },
+#else
     { "driver",    "Driver",    PS_INFO,  0, 0,   8, "The panel's controller chip.", nullptr,
       "Controller chip" },
+#endif
     { "pin",       "Pins",      PS_PAGE,  0, 0,   0, "The panel's SPI and control pins.", nullptr,
       "Panel pins" },
     { "width",     "Width",     PS_NUM,   1, kRamLong,     3, "Pixels across, with the USB plug up.",
@@ -1569,6 +1775,9 @@ static_assert(kCoreRows + (kSettingCount - countPins()) <= Form::kMaxFields, "th
 void setting(const char* key, char* out, size_t n) {
     if (!g_defaulted) defaults();
     if      (!strcmp(key, "driver"))    snprintf(out, n, "ST7789");
+#ifdef BBS_HAS_TOUCH
+    else if (!strcmp(key, "sleep"))     snprintf(out, n, "%u", static_cast<unsigned>(g_sleepMin));
+#endif
     else if (!strcmp(key, "pin"))       snprintf(out, n, "%d %d %d %d %d %d", g_cfg.mosi, g_cfg.sclk,
                                                  g_cfg.cs, g_cfg.dc, g_cfg.rst, g_cfg.bl);
     else if (!strcmp(key, "pin1_mosi")) snprintf(out, n, "%d", g_cfg.mosi);
@@ -1590,6 +1799,23 @@ void setting(const char* key, char* out, size_t n) {
     else out[0] = '\0';
 }
 #endif  // BBS_LCD_RGB
+
+#ifdef BBS_SPI_SHARED
+#ifndef BBS_HAS_CAMERA
+#error "BBS_SPI_SHARED: the panel shares its pins through pinShares, which only a camera board compiles"
+#endif
+// pinShares (plugin.h): on a board whose panel and card share one SPI bus
+// (board.h, BBS_SPI_SHARED), the panel's MOSI and clock are the card's
+// MOSI and clock, the same wires, and CONFIG must not refuse either page
+// for naming them. Only that pair: every other pin is still held.
+bool pinShares(const char* key, const char* otherPlugin, const char* otherKey,
+               const char* (*onPage)(const char* key)) {
+    (void)onPage;
+    if (strcmp(otherPlugin, "sd")) return false;
+    return (!strcmp(key, "pin1_mosi") && !strcmp(otherKey, "mosi")) ||
+           (!strcmp(key, "pin2_sclk") && !strcmp(otherKey, "clk"));
+}
+#endif
 
 } // namespace
 
@@ -1616,6 +1842,12 @@ extern const Plugin kPanelPlugin = {
     nullptr,                 // onBytes
     nullptr,                 // onRename
     nullptr,                 // listDone
+#ifdef BBS_SPI_SHARED
+    nullptr,                 // liftInput
+    nullptr,                 // restoreInput
+    nullptr,                 // waiting
+    pinShares,
+#endif
 };
 
 #endif  // BBS_HAS_LCD
