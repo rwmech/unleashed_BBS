@@ -6941,8 +6941,11 @@ def test_board_ws2():
     # The pins the board owns: the camera's, the touch and IMU bus, the
     # touch INT, the IMU's INT1 and the battery divider. 18 is the one free.
     want = ((b"8", b"camera's"), (b"12", b"camera's"), (b"17", b"camera's"), (b"21", b"camera's"),
-            (b"47", b"wired on the board"), (b"48", b"wired on the board"), (b"46", b"wired on the board"),
-            (b"3", b"wired on the board"), (b"5", b"wired on the board"),
+            # 46-48: the core LED row's range ends at 39 on every S3 build, so
+            # CONFIG says that first (follow-up). 3: the host's console
+            # stand-in is the WROOM's UART0, 1 and 3 (on the S3 it is 43/44).
+            (b"47", b"Between -1 and 39"), (b"48", b"Between -1 and 39"), (b"46", b"Between -1 and 39"),
+            (b"3", b"console port"), (b"5", b"wired on the board"),
             (b"30", b"flash and PSRAM"), (b"19", b"USB port"))
     before = cfg_line("activity_led_gpio")
     for pin, why in want:
@@ -6950,7 +6953,7 @@ def test_board_ws2():
         s.buf.clear()
         s.send(DOWN * BOARD_LED + b"\x08" * 3 + pin + F1)
         got = cfg_verdict(s, [why, b"Saved", b"no such pin", b"camera's", b"wired on the board",
-                              b"flash and PSRAM", b"USB port"])
+                              b"flash and PSRAM", b"USB port", b"Between -1", b"console port"])
         ok &= check(f"the LED on GPIO {pin.decode()} refused: {why.decode()}", got == why)
         cfg_cancel(s)
     ok &= check("and nothing is written", cfg_line("activity_led_gpio") == before)
