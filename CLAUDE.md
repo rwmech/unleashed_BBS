@@ -809,7 +809,13 @@ this tree.
     - On touch panels (the 4.3B, the 2", and the Makerfabs if it has touch), swiping steps through the latest photos from any camera, built-in or sat.
     - Decoding uses the skins' JPEG path on the worker, never the loop.
     - The spec is internal/tty-ux-panel-gallery-2026-09-28.md; it's built once the new board profiles merge into 1.2.0.
-    - ESP-NOW redundancy (Rob): the design note is internal/link-redundancy-2026-09-28.md on the link branch. Store-and-forward of sat pictures across an outage is the likely 1.2.0 item.
+    - **Rob's decisions on the spec:**
+      - no slots and no ring: the viewer reads the Photos folder on the card, one file per swipe, with a slideshow that steps through the files and a progress indicator while a file loads;
+      - "Photos should feel like a separate system, not bolted on to the display": the viewer is its own mode with its own frame;
+      - the auto-show ("show new photos instantly", 10 s) and its triggers live in CONFIG camera;
+      - the photo-name clash only needs a simple fix;
+      - the other defaults as recommended.
+    - **ESP-NOW redundancy** (internal/link-redundancy-2026-09-28.md). **Store-and-forward is 1.2.1** (Rob): the sat keeps pictures in PSRAM (camera sats rarely have a card) while no board can take them. **The sysop is notified when photos are lost for lack of connectivity.**
   - **Names, settled by Rob 2026-09-27:**
     - **sat**, plural **sats**, short for satellite, is every box on the link. SATS lists them.
     - An **orbiter** feeds the board data: camera, remote control (GPIO), sensors, Home Assistant.
