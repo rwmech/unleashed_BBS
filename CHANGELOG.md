@@ -24,6 +24,10 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.1.2-hw.2 (WS43B 1.0.1, WS2 1.0.2, ETH 1.0.2, MF35 1.1.1), 2026-09-28: the switchboard lamps
+
+- **switchboard keeps every free line lit** (Rob's pick of the two versions the merge met). A free line is dim, steady dial blue, flickering up with RX on the even lamps and TX on the odd ones; a caller's line is the caller's rank colour, dipping on traffic; the sysop's line has no lamp. It no longer goes dark when somebody is on. This is the 4.3B lane's version, now for every board whose strip is set to switchboard.
+
 ## 1.1.2-hw.1 (WS43B 1.0.1, WS2 1.0.2, ETH 1.0.2, MF35 1.1.1), 2026-09-28: the hardware preview
 
 Four new S3 boards on the 1.1.2 core, merged from their lanes (board-ws43b,
