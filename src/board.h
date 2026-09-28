@@ -329,9 +329,9 @@
 #if defined(ESP_PLATFORM) && !(CONFIG_SPIRAM && CONFIG_SPIRAM_FETCH_INSTRUCTIONS && CONFIG_SPIRAM_RODATA)
 #error "BBS_BOARD_WS_S3TOUCH43B needs PSRAM with XIP: sdkconfig.defaults.ws43b was not applied (delete sdkconfig.ws_s3touch43b*)"
 #endif
-// The IDF's 8 VFS slots are full with a card mounted on an S3 with SSH
-// (the console, lwIP, three LittleFS partitions, SSH's eventfd, the card's
-// FAT): 12 in sdkconfig.defaults.ws43b, as on the Makerfabs. A stale sdkconfig keeps 8.
+// With SSH and a card mounted an S3 fills the IDF's 8 VFS slots, with no
+// headroom (the Makerfabs' review): 12 in sdkconfig.defaults.ws43b, as on the
+// Makerfabs. A stale sdkconfig keeps 8.
 #if defined(ESP_PLATFORM) && CONFIG_VFS_MAX_COUNT < 12
 #error "BBS_BOARD_WS_S3TOUCH43B needs CONFIG_VFS_MAX_COUNT of 12 (sdkconfig.defaults.ws43b): delete sdkconfig.ws_s3touch43b*"
 #endif
@@ -940,9 +940,9 @@
 #if defined(ESP_PLATFORM) && !CONFIG_OV5640_SUPPORT
 #error "BBS_BOARD_WS_S3TOUCH2 ships with an OV5640: sdkconfig.defaults.ws2 was not applied (delete sdkconfig.ws_s3touch2*)"
 #endif
-// The IDF's 8 VFS slots are full with a card mounted on an S3 with SSH
-// (the console, lwIP, three LittleFS partitions, SSH's eventfd, the card's
-// FAT): 12 in sdkconfig.defaults.ws2, as on the Makerfabs. A stale sdkconfig keeps 8.
+// With SSH and a card mounted an S3 fills the IDF's 8 VFS slots, with no
+// headroom (the Makerfabs' review): 12 in sdkconfig.defaults.ws2, as on the
+// Makerfabs. A stale sdkconfig keeps 8.
 #if defined(ESP_PLATFORM) && CONFIG_VFS_MAX_COUNT < 12
 #error "BBS_BOARD_WS_S3TOUCH2 needs CONFIG_VFS_MAX_COUNT of 12 (sdkconfig.defaults.ws2): delete sdkconfig.ws_s3touch2*"
 #endif
@@ -1137,9 +1137,9 @@
 #if defined(ESP_PLATFORM) && !CONFIG_ETH_SPI_ETHERNET_W5500
 #error "BBS_BOARD_WS_S3ETH needs the W5500 driver: sdkconfig.defaults.wseth was not applied (delete sdkconfig.ws_s3eth*)"
 #endif
-// The IDF's 8 VFS slots are full with a card mounted on an S3 with SSH
-// (the console, lwIP, three LittleFS partitions, SSH's eventfd, the card's
-// FAT): 12 in sdkconfig.defaults.wseth, as on the Makerfabs. A stale sdkconfig keeps 8.
+// With SSH and a card mounted an S3 fills the IDF's 8 VFS slots, with no
+// headroom (the Makerfabs' review): 12 in sdkconfig.defaults.wseth, as on the
+// Makerfabs. A stale sdkconfig keeps 8.
 #if defined(ESP_PLATFORM) && CONFIG_VFS_MAX_COUNT < 12
 #error "BBS_BOARD_WS_S3ETH needs CONFIG_VFS_MAX_COUNT of 12 (sdkconfig.defaults.wseth): delete sdkconfig.ws_s3eth*"
 #endif
@@ -1266,6 +1266,9 @@
 #define BBS_SERIAL_RX         16      // UART2's usual pins on a WROOM-32E
 #define BBS_SERIAL_TX         17
 #endif
+#ifndef BBS_HAS_LCD
+#define BBS_PANEL_BIG         0
+#endif
 #ifdef BBS_HAS_LCD
 #ifndef BBS_LCD_DRIVER
 #define BBS_LCD_DRIVER        "ST7789"  // the panel's controller, unless a profile says
@@ -1274,6 +1277,10 @@
 #define BBS_LCD_RAM_SHORT     240       // (an RGB panel has none; the figures go unused)
 #define BBS_LCD_RAM_LONG      320
 #endif
+// The big glass (the Makerfabs' 480 x 320): its own layout and fields in the
+// panel plugin, and the core's per-line traffic bits it reads (Bbs::
+// takePanelTraffic). Nothing else pays for either.
+#define BBS_PANEL_BIG         (BBS_LCD_RAM_LONG >= 400)
 #ifndef BBS_LCD_MHZ_NOTE                // CONFIG panel's note on the SPI clock, 38 at most
 #define BBS_LCD_MHZ_NOTE      "10 is safe; the panel's limit is 62.5."
 #endif

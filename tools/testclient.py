@@ -892,11 +892,16 @@ class SshCaller(Caller):
             pass
 
 
+# Every host profile built with BBS_HAS_SSH (src/board.h): the Waveshare
+# stick, the three hardware-preview Waveshares and the Makerfabs.
+SSH_BOARDS = ("s3", "ws43b", "ws2", "wseth", "mf35")
+
+
 def ssh_ready():
-    """An SSH profile's host board (the Waveshare S3 or the Makerfabs, which
-    carry BBS_HAS_SSH), and ssh_call built: or why not."""
-    if os.environ.get("BBS_HOST_BOARD") not in ("s3", "mf35"):
-        return "needs tools/harness.sh --board s3 (or mf35)"
+    """An SSH profile's host board (SSH_BOARDS, the profiles that carry
+    BBS_HAS_SSH), and ssh_call built: or why not."""
+    if os.environ.get("BBS_HOST_BOARD") not in SSH_BOARDS:
+        return "needs tools/harness.sh --board s3 (or another SSH board: ws43b, ws2, wseth, mf35)"
     if HOST not in ("127.0.0.1", "localhost"):
         return "needs the host build"
     if not SSH_CALL.exists():
@@ -19550,9 +19555,19 @@ PROFILE_TESTS = {
                "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
     "fncam":  ["test_board_fncam"],
     "espcam": ["test_board_espcam"],
-    "ws43b":  ["test_board_ws43b"],
-    "ws2":    ["test_board_ws2"],
-    "wseth":  ["test_board_wseth"],
+    # The hardware preview's Waveshares carry SSH too (1.1.2-hw.1).
+    "ws43b":  ["test_board_ws43b",
+               "test_ssh_login", "test_ssh_new_caller", "test_ssh_resize", "test_ssh_host_keys",
+               "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
+    "ws2":    ["test_board_ws2",
+               "test_ssh_login", "test_ssh_new_caller", "test_ssh_resize", "test_ssh_host_keys",
+               "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
+    "wseth":  ["test_board_wseth",
+               "test_ssh_login", "test_ssh_new_caller", "test_ssh_resize", "test_ssh_host_keys",
+               "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
     # The Makerfabs carries SSH too (MF35 1.1.0), on 2 MB of PSRAM.
     "mf35":   ["test_board_mf35",
                "test_ssh_login", "test_ssh_new_caller", "test_ssh_resize", "test_ssh_host_keys",
@@ -19561,7 +19576,7 @@ PROFILE_TESTS = {
 }
 # The profiles whose lanes also run with a card (harness.sh --board s3
 # --card --only=ssh is how SSH's YMODEM was tested).
-PROFILE_CARD = ["s3", "mf35"]
+PROFILE_CARD = ["s3", "ws43b", "ws2", "wseth", "mf35"]
 
 # Tests that time something against the board's clock and so cannot run on
 # the host's fast clock (BBS_FAST_TIMERS). On a fast board they SKIP, saying

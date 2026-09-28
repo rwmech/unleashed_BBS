@@ -75,6 +75,13 @@ has to be built, with 0 warnings and DRAM read off the ELF, before the tag.
   four released boards and none of the preview's; a board's own tag
   (`v1.1.2-ws2.1`) builds its set alone; `--board DIR` builds one set into
   `release/<version>-DIR/`. Every earlier check stays.
+- From the merge's code review: the three Waveshares' SSH tests are in
+  their host profiles (`PROFILE_TESTS`, `PROFILE_CARD`, `ssh_ready`), as the
+  S3 stick's and the Makerfabs' were; the core's per-line traffic bits for
+  the Makerfabs' big glass are compiled only there (`BBS_PANEL_BIG`), not on
+  every panel board; the Touch-LCD-2 draws its own memory-stick icon again
+  (`kIconStick`), which the merge had swapped for the 4.3B's; and the VFS
+  comments say what was counted rather than a list that did not add up.
 - One board profile at a time is now also checked by a count of every
   `BBS_BOARD_` define in board.h. The ETH lane's committed host binary
   (`host/bbs_host_wseth`, 9 MB) is left out and ignored.

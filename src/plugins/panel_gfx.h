@@ -395,13 +395,15 @@ constexpr Icon kIconChip    = { 0x0000, 0x0660, 0x0660, 0x07E0, 0x0FF0, 0x7FFE, 
 constexpr Icon kIconHandset = { 0x0000, 0x0600, 0x0E00, 0x1C00, 0x3C00, 0x7E00, 0x6700, 0x0380,
                                 0x01C0, 0x00E6, 0x007E, 0x003C, 0x0038, 0x0070, 0x0060, 0x0000 };
 // A memory module, wide and toothed where the chip is square and pinned:
-// the free heap beside the chip's own temperature, so the two read apart
-// (internal/tty-ux-panel-ws43b-2026-09-28.md revision 1, and the
-// Touch-LCD-2's release-prep/ws2/tty-ux-panel-ws2-2026-09-28.md revision 2).
+// the free heap beside the chip's own temperature on the tall glass, so the
+// two read apart (internal/tty-ux-panel-ws43b-2026-09-28.md revision 1).
 constexpr Icon kIconRam     = { 0x0000, 0x0000, 0xFFFF, 0xFFFF, 0xC003, 0xD99B, 0xD99B, 0xD99B,
                                 0xC003, 0xFFFF, 0xFFFF, 0x6C36, 0x6C36, 0x0000, 0x0000, 0x0000 };
-// The Touch-LCD-2's (WS2 1.0.0): the chip's temperature as a CPU, and a
-// caller's snap in the recent list.
+// The Touch-LCD-2's (WS2 1.0.0): its own memory stick (release-prep/ws2/
+// tty-ux-panel-ws2-2026-09-28.md revision 2, shorter body, longer pins), the
+// chip's temperature as a CPU, and a caller's snap in the recent list.
+constexpr Icon kIconStick   = { 0x0000, 0x0000, 0xFFFF, 0xFFFF, 0xC003, 0xD99B, 0xD99B, 0xC003,
+                                0xFFFF, 0xFFFF, 0x6C36, 0x6C36, 0x6C36, 0x0000, 0x0000, 0x0000 };
 constexpr Icon kIconCpu     = { 0x0660, 0x0660, 0x0660, 0x1FF8, 0x1FF8, 0xF81F, 0xF81F, 0x1998,
                                 0x1998, 0xF81F, 0xF81F, 0x1FF8, 0x1FF8, 0x0660, 0x0660, 0x0660 };
 constexpr Icon kIconCamera  = { 0x07E0, 0x07E0, 0x7FFE, 0xFFFF, 0xC003, 0xC003, 0xC3C3, 0xC7E3,

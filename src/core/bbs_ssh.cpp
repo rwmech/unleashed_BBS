@@ -304,7 +304,7 @@ void Bbs::sshRead(Session& s, uint32_t now) {
     }
     plat::activityPulse(now);
     rxSeen_  = static_cast<uint16_t>(rxSeen_ | (1u << s.id));   // for the lights
-#ifdef BBS_HAS_LCD
+#if BBS_PANEL_BIG
     panelMoved_ = static_cast<uint16_t>(panelMoved_ | (1u << s.id));   // the panel's pips, as readSession
 #endif
     rxBytes_ += static_cast<uint32_t>(m);

@@ -166,7 +166,7 @@ void hostTouchTap();
 // and figures are compiled only for a profile whose controller is that big,
 // so the Waveshare's image carries none of it
 // (internal/tty-ux-panel-mf35-2026-09-26.md, the status skin).
-#define PANEL_BIG (BBS_LCD_RAM_LONG >= 400)
+#define PANEL_BIG BBS_PANEL_BIG          // board.h
 
 namespace {
 
@@ -1006,7 +1006,9 @@ void drawSys(uint16_t heapK, uint16_t today, uint8_t peak, int tempC) {
             case SYS_HEAP:
                 snprintf(figs[i], sizeof(figs[i]), "%uK", heapK);
                 cols[i]  = heapK >= 40 ? kInk : heapK >= 20 ? kWarm : kRisk;
-                icons[i] = hasTemp ? &kIconRam : &kIconChip;  // then the chip is the chip's own
+                // With a temperature beside it the heap is a memory stick,
+                // each glass's own (the chip is then the chip's own).
+                icons[i] = !hasTemp ? &kIconChip : L.tall ? &kIconRam : &kIconStick;
                 break;
             case SYS_TODAY:
                 snprintf(figs[i], sizeof(figs[i]), "%u today", today);

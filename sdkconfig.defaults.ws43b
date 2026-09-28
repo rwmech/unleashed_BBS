@@ -66,9 +66,10 @@ CONFIG_LCD_RGB_ISR_IRAM_SAFE=y
 CONFIG_LCD_RGB_RESTART_IN_VSYNC=y
 
 # The VFS table, 8 to 12 (1.1.2-hw.1, the Makerfabs' fix, MF35 1.1.1). The
-# console, lwIP's sockets, the three LittleFS partitions, SSH's eventfd and
-# the SD card's FAT fill the IDF's 8 exactly on an S3 with SSH, with nothing
-# spare: one more descriptor-backed driver and the card's mount fails with
-# ESP_ERR_NO_MEM, which esp_vfs_register returns for a full table (vfs.c,
-# s_vfs_count >= VFS_MAX_COUNT). 4 bytes a slot.
+# Makerfabs failed at 8 because its second console took the slot its card
+# needed; its review counted every other S3 profile with SSH at 8 of 8 once
+# the card is mounted: working, with no headroom, so one more VFS user (a
+# driver, a second console) and the card's mount fails with ESP_ERR_NO_MEM,
+# which esp_vfs_register returns for a full table (vfs.c, s_vfs_count >=
+# VFS_MAX_COUNT). 4 bytes a slot. The LCD-1.47 stays at 8 as released.
 CONFIG_VFS_MAX_COUNT=12
