@@ -43,6 +43,15 @@
  *                                      a micro SD slot (run over SPI)
  *                                      and a flash LED on GPIO 4.
  *
+ *               BBS_BOARD_WS_S3TOUCH2  Waveshare ESP32-S3-Touch-LCD-2: the
+ *                                      ESP32-S3R8 again (16 MB flash, 8 MB
+ *                                      octal PSRAM), a 2" 240 x 320 ST7789T3
+ *                                      with CST816D touch, a camera (OV5640
+ *                                      as sold), a TF slot on the panel's
+ *                                      SPI bus, a QMI8658 IMU and a Li-ion
+ *                                      charger. The first board with a panel
+ *                                      and a camera both.
+ *
  *               Capabilities a profile may define:
  *                 BBS_HAS_LCD       a panel the panel plugin drives
  *                 BBS_CHIP_S3       the chip is an ESP32-S3 (pin rules,
@@ -61,6 +70,14 @@
  *                                   float: the ESP32-CAM's flash LED)
  *                 BBS_LED_ACTIVE_LOW the board's own LED (BBS_LED_GPIO)
  *                                   lights on a low pin
+ *                 BBS_SPI_SHARED    the panel and the card are two devices
+ *                                   on one SPI bus (SPI2), raised once for
+ *                                   both; a panel band is never waited for
+ *                                   behind a card command
+ *                 BBS_HAS_TOUCH     a touch controller on the glass, read
+ *                                   as taps on its INT line (BBS_TOUCH_*)
+ *                 BBS_HAS_CHIP_TEMP the chip's own temperature sensor, on
+ *                                   the panel
  *
  * Libraries:    none
  * Targets:      ESP32-WROOM-32E, ESP32-S3 (ESP-IDF 5.3.1) and the Linux host
@@ -467,6 +484,185 @@
 #endif  // BBS_BOARD_AI_ESP32CAM
 
 // ===========================================================================
+// Waveshare ESP32-S3-Touch-LCD-2 (the 2-inch one, board lane board-ws2)
+//
+// ESP32-S3R8 (read as QFN56 revision v0.2, embedded PSRAM 8 MB AP_3v3 on
+// the bench), 16 MB flash (W25Q128JVSI), native USB-C only. A 2" 240 x 320
+// IPS on an ST7789T3 with a CST816D touch controller, a 24-pin camera
+// connector (sold with an OV5640; the OV2640 fits too), a TF slot, a
+// QMI8658 IMU, an ETA6098 Li-ion charger with its battery on a divider to
+// GPIO 5. Every pin below is from Waveshare's schematic (its PinOut table
+// and netlist, ESP32-S3-Touch-LCD-2-SchDoc.pdf, 2025-01-18) and was checked
+// against Waveshare's own demo for this board (ESP32-S3-Touch-LCD-2-Demo:
+// ESP-IDF 05_lvgl_camera, 01_sd_card_test, 04_lvgl_battery, 02_lvgl_qmi8658;
+// Arduino 01_factory). The table and its sources: release-prep/ws2/pins.md.
+//
+// The panel and the card share one SPI bus: MOSI 38 and SCLK 39 go to both,
+// MISO 40 to the card only. So the two are devices on SPI2 (BBS_SPI_SHARED,
+// platform_esp32.cpp), not a bus each as on the LCD-1.47.
+// ===========================================================================
+#if defined(BBS_BOARD_WS_S3TOUCH2)
+
+#if defined(ESP_PLATFORM) && !CONFIG_IDF_TARGET_ESP32S3
+#error "BBS_BOARD_WS_S3TOUCH2 is an ESP32-S3 board: build it for the esp32s3 target"
+#endif
+#if defined(BBS_BOARD_WS_S3LCD147) || defined(BBS_BOARD_FN_WROVER_CAM) || defined(BBS_BOARD_AI_ESP32CAM)
+#error "one board profile at a time"
+#endif
+#ifndef BBS_CHIP_S3
+#define BBS_CHIP_S3 1                 // the host's stand-in
+#endif
+
+#define BBS_BOARD_NAME        "Waveshare ESP32-S3-Touch-LCD-2"
+#define BBS_HAS_LCD           1
+#define BBS_HAS_CAMERA        1
+#define BBS_BOARD_PLUGINS     2       // the panel and the camera
+
+// "WS2": Waveshare, 2 inch, beside the LCD-1.47's "S3" (which is older than
+// the rule) and the 4.3B's "WS43B". Shown as 1.1.2 (WS2 1.0.0).
+#define BBS_BOARD_TAG         "WS2"
+#define BBS_BOARD_VERSION     "1.0.0"
+
+// SSH as on the LCD-1.47: the same S3R8 and the same 8 MB of PSRAM.
+#define BBS_HAS_SSH           1
+#define BBS_SSH_MAX           8
+
+// PSRAM (sdkconfig.defaults.esp32s3 and this board's own layer,
+// sdkconfig.defaults.ws2): the camera needs it, and a build that lost the
+// layer would otherwise link quietly without it.
+#define BBS_HAS_PSRAM         1
+#if defined(ESP_PLATFORM) && !CONFIG_SPIRAM
+#error "BBS_BOARD_WS_S3TOUCH2 needs PSRAM: the S3 sdkconfig layer was not applied (delete sdkconfig.ws_s3touch2*)"
+#endif
+#if defined(ESP_PLATFORM) && !CONFIG_OV5640_SUPPORT
+#error "BBS_BOARD_WS_S3TOUCH2 ships with an OV5640: sdkconfig.defaults.ws2 was not applied (delete sdkconfig.ws_s3touch2*)"
+#endif
+
+// The internal heap a plugin may not take at start: the LCD-1.47's 16 KB,
+// for the same reason (Wi-Fi's and lwIP's buffers in PSRAM).
+#define BBS_HEAP_RESERVE      16384
+
+// No LED the firmware can drive: LED1 is the charger's (its STAT pin) and
+// LED2 the power's. No WS2812 either. The lights plugin is on all the same,
+// with no pin: the glass's row of LEDs is its strip, the only one this board
+// will have (the panel spec: a rule over nothing otherwise). -1 drives
+// nothing.
+#define BBS_LED_GPIO          -1
+#define BBS_LIGHTS_ON         1
+// And its default effect switchboard (11 in lights::kStripFx), drawn as
+// round lamps: Rob, on both new glasses, "meaningful": a lamp a line in the
+// caller's rank colour while callers are on (nodes), and with nobody on dim
+// steady lamps that flicker only with real traffic (no sweep). The 4.3B's
+// effect, so the two boards match. The LCD-1.47 keeps nodes and its squares.
+#define BBS_LIGHTS_STRIP_FX   11
+#define BBS_PANEL_LED_ROUND   1
+
+// The TF slot, SPI mode, on the panel's bus: CS 41 (the slot's CD/D3),
+// MOSI 38, CLK 39, MISO 40.
+#define BBS_HAS_SD_SLOT       1
+#define BBS_SD_CS             41
+#define BBS_SD_MOSI           38
+#define BBS_SD_CLK            39
+#define BBS_SD_MISO           40
+#define BBS_SPI_SHARED        1
+
+// The serial bridge: no pins as shipped. With the camera, the card, the
+// panel, the touch and IMU bus and the battery sense wired, what is left is
+// GPIO 18 alone: UART0's 43 and 44 are on the header too, but they are the
+// console port CONFIG keeps free (and 43 carries the ROM's boot banner).
+#define BBS_SERIAL_RX         -1
+#define BBS_SERIAL_TX         -1
+
+// The panel: ST7789T3, 240 x 320, the controller's whole RAM, portrait (no
+// swap, no gap, RGB order, colours inverted: Waveshare's 05_lvgl_camera).
+// Mirrored in X: the demo passes no mirror, but on the glass (Rob's photo,
+// 2026-09-28, the first flash) every line read back to front without it,
+// as on the LCD-1.47. Touch is read as taps only, so no coordinate needs
+// the same flip. No reset line: the panel's RESET is on an
+// RC, reached from IO0 only through a resistor the board leaves unfitted
+// (R16, NC/0R), so it is reset by command. Backlight on IO1 through an
+// SS8050, active high. The demo clocks the panel at 80 MHz; 40 is the
+// fastest this firmware offers, and a 10 KB band is then about 2 ms on the
+// wire, the longest the shared bus is ever held by the panel.
+#define BBS_LCD_MOSI          38
+#define BBS_LCD_SCLK          39
+#define BBS_LCD_CS            45
+#define BBS_LCD_DC            42
+#define BBS_LCD_RST           -1
+#define BBS_LCD_BL            1
+#define BBS_LCD_WIDTH         240
+#define BBS_LCD_HEIGHT        320
+#define BBS_LCD_XOFF          0
+#define BBS_LCD_YOFF          0
+#define BBS_LCD_ORIENT        0       // "up" is the demo's portrait here; which edge the USB is on, the glass will say
+#define BBS_LCD_INVERT        1
+#define BBS_LCD_BGR           0
+#define BBS_LCD_MIRROR        1       // the glass reads back to front without it
+#define BBS_LCD_MHZ           40
+#define BBS_LCD_BACKLIGHT     60      // percent
+
+// The touch controller, CST816D, on the I2C bus it shares with the IMU:
+// SDA 48, SCL 47, at 0x15; its INT on 46, its reset not wired. The panel
+// reads taps from INT alone (an edge a touch), so nothing on the BBS loop
+// ever waits on the bus. The IMU (QMI8658, 0x6B, INT1 on 3) and the battery
+// divider (GPIO 5, ADC1 channel 4, a third of the cell) are wired and not
+// yet used.
+#define BBS_HAS_TOUCH         1
+#define BBS_TOUCH_SDA         48
+#define BBS_TOUCH_SCL         47
+#define BBS_TOUCH_INT         46
+#define BBS_TOUCH_ADDR        0x15
+
+// The chip's own temperature sensor, on the panel's header rotation.
+#define BBS_HAS_CHIP_TEMP     1
+
+// The camera: Waveshare's pins (the demo's camera_pins block, and the
+// schematic's CAM_* nets). PWDN 17, no RESET (the demo: "software reset
+// will be performed"). The OV5640 gives JPEG itself, up to 2592 x 1944;
+// CONFIG offers up to QXGA (2048 x 1536). XGA as shipped, as on the
+// ESP32-CAM: a snap re-encodes for the watermark on the runner, and XGA
+// keeps that to a few seconds. No flash on the board, and no flash pin as
+// shipped: a switched-on camera holds its pin in CONFIG whatever the mode,
+// so a default of 18 would take the one free GPIO. A sysop who wires a
+// flash to 18 sets it in CONFIG camera.
+#define BBS_CAM_SENSOR        "OV5640"
+#define BBS_CAM_SIZES         "qvga|vga|svga|xga|hd|sxga|uxga|qxga"
+#define BBS_CAM_SIZE          3       // xga
+#define BBS_CAM_FLASH_PIN     -1
+#define BBS_CAM_FLASH         0
+#define BBS_CAM_PWDN          17
+#define BBS_CAM_RESET         -1
+#define BBS_CAM_XCLK          8
+#define BBS_CAM_SIOD          21
+#define BBS_CAM_SIOC          16
+#define BBS_CAM_D7            2       // Y9
+#define BBS_CAM_D6            7       // Y8
+#define BBS_CAM_D5            10      // Y7
+#define BBS_CAM_D4            14      // Y6
+#define BBS_CAM_D3            11      // Y5
+#define BBS_CAM_D2            15      // Y4
+#define BBS_CAM_D1            13      // Y3
+#define BBS_CAM_D0            12      // Y2
+#define BBS_CAM_VSYNC         6
+#define BBS_CAM_HREF          4
+#define BBS_CAM_PCLK          9
+
+// Pins the board owns (syscfg::pinProblem refuses them with the reason).
+// The panel's six and the card's four are those plugins' settings, as on
+// the LCD-1.47. 19 and 20 (the USB) and 26-37 (flash and octal PSRAM) the
+// S3's own rule refuses already, and CONFIG keeps 43 and 44 as the console
+// port. What is left for a sysop: GPIO 18.
+//   CAMERA   every wired camera line, PWDN included
+//   ONBOARD  the touch and IMU bus (47, 48), the touch INT (46), the IMU's
+//            INT1 (3) and the battery divider (5)
+#define BBS_PINS_CAMERA       BBS_CAM_PWDN, BBS_CAM_XCLK, BBS_CAM_SIOD, BBS_CAM_SIOC, BBS_CAM_D7, \
+                              BBS_CAM_D6, BBS_CAM_D5, BBS_CAM_D4, BBS_CAM_D3, BBS_CAM_D2, \
+                              BBS_CAM_D1, BBS_CAM_D0, BBS_CAM_VSYNC, BBS_CAM_HREF, BBS_CAM_PCLK
+#define BBS_PINS_ONBOARD      BBS_TOUCH_SDA, BBS_TOUCH_SCL, BBS_TOUCH_INT, 3, 5
+
+#endif  // BBS_BOARD_WS_S3TOUCH2
+
+// ===========================================================================
 // The reference board, the bare ESP32-WROOM-32E: every default a profile
 // did not set. These are the values the WROOM has always had, so a build
 // with no profile is byte for byte what it was.
@@ -491,6 +687,9 @@
 #endif
 #ifndef BBS_LIGHTS_DRIVE_ORDER
 #define BBS_LIGHTS_DRIVE_ORDER 0      // GRB, the WS2812B's own order
+#endif
+#ifndef BBS_LIGHTS_STRIP_FX
+#define BBS_LIGHTS_STRIP_FX   0       // nodes, in lights::kStripFx's order
 #endif
 #ifndef BBS_SD_CS
 #define BBS_SD_CS             5       // the wiring page: CS D5, MOSI D23,

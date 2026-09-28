@@ -394,6 +394,15 @@ constexpr Icon kIconChip    = { 0x0000, 0x0660, 0x0660, 0x07E0, 0x0FF0, 0x7FFE, 
                                 0x1C38, 0x7C3E, 0x7FFE, 0x0FF0, 0x07E0, 0x0660, 0x0660, 0x0000 };
 constexpr Icon kIconHandset = { 0x0000, 0x0600, 0x0E00, 0x1C00, 0x3C00, 0x7E00, 0x6700, 0x0380,
                                 0x01C0, 0x00E6, 0x007E, 0x003C, 0x0038, 0x0070, 0x0060, 0x0000 };
+// The Touch-LCD-2's (WS2 1.0.0, release-prep/ws2/tty-ux-panel-ws2-2026-09-28.md,
+// revision 2): the chip's temperature as a CPU, the heap beside it as a
+// memory stick so the two read apart, and a caller's snap in the recent list.
+constexpr Icon kIconCpu     = { 0x0660, 0x0660, 0x0660, 0x1FF8, 0x1FF8, 0xF81F, 0xF81F, 0x1998,
+                                0x1998, 0xF81F, 0xF81F, 0x1FF8, 0x1FF8, 0x0660, 0x0660, 0x0660 };
+constexpr Icon kIconRam     = { 0x0000, 0x0000, 0xFFFF, 0xFFFF, 0xC003, 0xD99B, 0xD99B, 0xC003,
+                                0xFFFF, 0xFFFF, 0x6C36, 0x6C36, 0x6C36, 0x0000, 0x0000, 0x0000 };
+constexpr Icon kIconCamera  = { 0x07E0, 0x07E0, 0x7FFE, 0xFFFF, 0xC003, 0xC003, 0xC3C3, 0xC7E3,
+                                0xC7E3, 0xC7E3, 0xC7E3, 0xC3C3, 0xC003, 0xC003, 0xFFFF, 0x7FFE };
 
 // bits: paint the set bits of w x h rows (top bit leftmost) in fg, leaving
 // the rest as the caller cleared it.
@@ -434,6 +443,10 @@ constexpr Glyph kGlyphWarn   = { 9, 9,  { 0x0800, 0x1C00, 0x1400, 0x3600, 0x3600
                                           0xFF80 } };
 constexpr Glyph kGlyphSlow   = { 7, 9,  { 0xFE00, 0x4400, 0x6C00, 0x3800, 0x1000, 0x2800, 0x4400, 0x7C00,
                                           0xFE00 } };
+// A camera board's (WS2 1.0.0): a picture being taken. A silhouette with
+// the lens cut out, 2 px of ink at its thinnest.
+constexpr Glyph kGlyphCamera = { 11, 10, { 0x0E00, 0x1F00, 0xFFE0, 0xF1E0, 0xE0E0, 0xE0E0, 0xE0E0, 0xF1E0,
+                                           0xFFE0, 0xFFE0 } };
 
 // The status row's state: what the panel read this pass, in packing order.
 // Everything that decides a pixel of the row is in here, so two equal
@@ -451,9 +464,13 @@ struct Status {
     uint8_t staff   = STAFF_NONE;
     bool    warn    = false;   // the last restart was not a clean one
     bool    slow    = false;   // a slow pass in the last minute
+    bool    camera  = false;   // a picture is being taken (a camera board)
 };
 
-enum Slot : uint8_t { G_SD, G_BELL, G_MAIL, G_UPLOAD, G_LOCK, G_TOWER, G_STAFF, G_WARN, G_SLOW, G_COUNT };
+// The camera packs last: a timelapse lights it at every interval, and last
+// is the one place where it coming and going moves no other glyph.
+enum Slot : uint8_t { G_SD, G_BELL, G_MAIL, G_UPLOAD, G_LOCK, G_TOWER, G_STAFF, G_WARN, G_SLOW, G_CAMERA,
+                      G_COUNT };
 
 struct Packed {
     uint8_t         n = 0;
@@ -493,6 +510,7 @@ inline Packed pack(const Status& s, int x0) {
         add(G_STAFF, kGlyphStaff, s.staff == Status::STAFF_SYSOP ? tok::kRisk : tok::kYellow);
     if (s.warn)   add(G_WARN, kGlyphWarn, tok::kRisk);
     if (s.slow)   add(G_SLOW, kGlyphSlow, tok::kWarm);
+    if (s.camera) add(G_CAMERA, kGlyphCamera, tok::kLive);
     return p;
 }
 
@@ -569,6 +587,64 @@ inline Led ledAt(const Rect& box, uint8_t i, uint8_t n) {
     out.cell = R(cx, box.y, cell, box.h);
     out.led  = R(cx + (cell - side) / 2, box.y + (box.h - side) / 2, side, side);
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// Round lamps (WS2 1.0.0, the panel spec's revision 2, a board's
+// BBS_PANEL_LED_ROUND): the same row as round lamps in cells of up to 24
+// px, the disc 14 across in a cell of 17 or more, 12 in 15 or 16, 10 below,
+// always 3 px of air between two. The led rect is the disc's square.
+// ---------------------------------------------------------------------------
+inline Led ledAtRound(const Rect& box, uint8_t i, uint8_t n) {
+    Led out;
+    if (!n || i >= n || empty(box)) return out;
+    int cell = box.w / n;
+    if (cell > 24) cell = 24;
+    if (cell < 13) return ledAt(box, i, n);                // too tight for a lamp: the square
+    const int d = cell >= 17 ? 14 : cell >= 15 ? 12 : 10;
+    const int x0 = box.x + (box.w - cell * n) / 2;
+    const int cx = x0 + i * cell;
+    out.cell = R(cx, box.y, cell, box.h);
+    out.led  = R(cx + cell / 2 - d / 2, box.y + (box.h - d) / 2, d, d);
+    return out;
+}
+
+// discRow: how wide row r of a disc d across is (d even): twice the half
+// width rounded, the widest h with (2h - 1)^2 <= d^2 - (2r + 1 - d)^2.
+// 14 gives 6 8 10 12 14 14 14 14 14 14 12 10 8 6.
+inline int discRow(int d, int r) {
+    const int k = 2 * r + 1 - d, v = d * d - k * k;
+    int h = 0;
+    while ((2 * (h + 1) - 1) * (2 * (h + 1) - 1) <= v) ++h;
+    return 2 * h;
+}
+
+// disc: a disc d across, centred in the square at x, y of side side.
+inline void disc(Canvas& c, int x, int y, int side, int d, uint16_t col) {
+    if (d <= 0) return;
+    const int top = y + (side - d) / 2;
+    for (int r = 0; r < d; ++r) {
+        const int w = discRow(d, r);
+        fill(c, R(x + (side - w) / 2, top + r, w, 1), col);
+    }
+}
+
+// drawLamp: one round lamp in its cell. Lit: the disc at a third as the
+// glow, the disc 2 smaller in the colour, and a 2 x 2 gleam, half white, 3
+// px up and left of the centre (14 and 12 across). Off: the disc 2 smaller
+// in the rule's grey round a near-black one 4 smaller, so a lit lamp swells.
+inline void drawLamp(Canvas& c, const Led& l, uint16_t col) {
+    fill(c, l.cell, tok::kBg);
+    const Rect& s = l.led;
+    const int d = s.w;
+    if (col) {
+        disc(c, s.x, s.y, d, d, scale(col, 1, 3));
+        disc(c, s.x, s.y, d, d - 2, col);
+        if (d >= 12) fill(c, R(s.x + d / 2 - 4, s.y + d / 2 - 4, 2, 2), mix(col, tok::kWhite, 1, 2));
+    } else {
+        disc(c, s.x, s.y, d, d - 2, tok::kRule);
+        disc(c, s.x, s.y, d, d - 4, tok::kSurface);
+    }
 }
 
 // drawLed: one LED in its cell, lit in col, or off when col is 0.
@@ -726,11 +802,20 @@ inline Layout layout(uint16_t w, uint16_t h) {
     L.bar   = R(0, 0, w, 22);
     L.band  = R(0, 22, w, 20);
     L.track = R(0, 42, w, 1);
-    L.slot  = R(2, 3, (w - 4) / kSmallW * kSmallW, kSmallH);
+    // The slot as many glyphs as fit in w - 4. On a wide portrait glass (240,
+    // WS2 1.0.0) centred, x 4, the left edge every other row keeps; x 2 as it
+    // always was elsewhere (the 21 an IPv4 address and port need at 172).
+    const bool widePortrait = w < h && w >= 232;
+    const int fit = (w - 4) / kSmallW;
+    L.slot  = R(widePortrait ? (w - kSmallW * fit) / 2 : 2, 3, kSmallW * fit, kSmallH);
     L.clock = R(w - 44, 24, 5 * kSmallW, kSmallH);
     L.ant   = R(L.clock.x - 10, 24, kAntennaW, kAntennaH);
-    int gw  = L.ant.x - 4 - 4;                                  // the glyphs end short of the antenna
-    L.glyphs = R(4, 24, gw < 110 ? gw : 110, 16);
+    // The glyphs end short of the antenna, and at 110; at 122 on a wide
+    // portrait glass (WS2 1.0.0), for all ten, the camera's included (118 px
+    // from x 4).
+    const int cap = widePortrait ? 122 : 110;
+    int gw  = L.ant.x - 4 - 4;
+    L.glyphs = R(4, 24, gw < cap ? gw : cap, 16);
     L.headIcon = R(4, 48, 16, 16);
     if (!L.land) {
         // Portrait: the ten slots from 68, then the rules, the system row
@@ -750,6 +835,13 @@ inline Layout layout(uint16_t w, uint16_t h) {
         L.sysAt[0] = 4;
         L.sysAt[1] = 76;
         L.sysFigs  = 2;
+        // A wider portrait glass (240, WS2 1.0.0) takes a third figure,
+        // right-flush to the column the clock and the time-on end at.
+        if (L.sys.w >= 224) {
+            L.sysAt[1] = 82;
+            L.sysAt[2] = static_cast<int16_t>(L.sys.x + L.sys.w - 44);
+            L.sysFigs  = 3;
+        }
     } else {
         // Landscape: two columns under the heading, callers on the left
         // and the recent events on the right, then a full-width system row

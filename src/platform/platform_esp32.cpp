@@ -101,6 +101,14 @@
 #include "esp_lcd_panel_commands.h"
 #include "driver/ledc.h"                 // its backlight, dimmed by PWM
 #endif
+#ifdef BBS_HAS_TOUCH
+#include "driver/i2c.h"                  // the touch controller, once at start: the legacy
+                                         // driver, which the camera's SCCB (esp32-camera 2.1.7
+                                         // on IDF 5.3) uses too; the two drivers cannot mix
+#endif
+#ifdef BBS_HAS_CHIP_TEMP
+#include "driver/temperature_sensor.h"   // the chip's own sensor, for the panel
+#endif
 extern "C" {
 #include "miniz.h"
 }
@@ -404,6 +412,101 @@ void chipInfo(ChipInfo& o) {
 // Everything here is blocking, which is why nothing in this file is ever
 // called from the BBS loop. See the note in platform.h.
 // ---------------------------------------------------------------------------
+#ifdef BBS_SPI_SHARED
+// ---------------------------------------------------------------------------
+// The panel and the card on one SPI bus (board.h, BBS_SPI_SHARED: the
+// Waveshare ESP32-S3-Touch-LCD-2, whose panel and TF slot share MOSI and
+// SCLK). One host, SPI2 (the card's default), raised by whichever of the two
+// starts first with the card's MISO and a transfer size a panel band fits,
+// and freed when the last lets it go.
+//
+// The SPI driver already takes turns between the two devices, but a card
+// command holds the bus from start to end, and a write's busy wait inside
+// one can run to hundreds of milliseconds. The panel's bands are sent from
+// the BBS loop, which must never wait for that (Rule no. 1). Its bring-up
+// and teardown (lcdBegin, lcdEnd: a plugin start, a CONFIG save) may wait
+// out one card command; they are allowed to block anyway. So every card
+// command goes through sharedCmd, which holds g_sharedMux for the command,
+// and lcdDraw only TRIES the mutex: when a card command is running on
+// another task, the band is skipped and the panel sends it on a later tick.
+// The panel holds the mutex only while its band is being queued (the three
+// address commands, microseconds); the band's DMA then runs on its own, and
+// a card command that follows waits for it on the runner, about 2 ms at
+// 40 MHz. The loop's own card reads (a screen played from the card) take the
+// mutex as any card command does; they cannot meet the panel's, which is on
+// the same task.
+// ---------------------------------------------------------------------------
+namespace {
+constexpr spi_host_device_t kSharedHost  = SDSPI_DEFAULT_HOST;       // SPI2
+constexpr int               kSharedBytes = 320 * 16 * 2;              // a panel band (kBandPixels)
+enum : uint8_t { SHARED_CARD = 1, SHARED_PANEL = 2 };
+uint8_t           g_sharedUsers = 0;
+int8_t            g_sharedMosi = -1, g_sharedMiso = -1, g_sharedSclk = -1;
+SemaphoreHandle_t g_sharedMux = nullptr;
+StaticSemaphore_t g_sharedMuxBuf;
+
+// sharedUp: `who` on the bus. The bus is raised if nobody holds it, with
+// miso (or the board's card MISO, for the panel, which reads nothing), and
+// otherwise must be on the same MOSI and clock, since both ends are wired to
+// one pair. why says what was wrong.
+bool sharedUp(uint8_t who, int mosi, int miso, int sclk, const char*& why) {
+    if (!g_sharedMux) g_sharedMux = xSemaphoreCreateMutexStatic(&g_sharedMuxBuf);
+    if (g_sharedUsers) {
+        if (mosi != g_sharedMosi || sclk != g_sharedSclk || (miso >= 0 && miso != g_sharedMiso)) {
+            why = "the panel and the card share one SPI bus: give both the same MOSI, clock and MISO pins";
+            return false;
+        }
+        g_sharedUsers = static_cast<uint8_t>(g_sharedUsers | who);
+        return true;
+    }
+    spi_bus_config_t bus = {};
+    bus.mosi_io_num     = mosi;
+    bus.miso_io_num     = miso >= 0 ? miso : BBS_SD_MISO;
+    bus.sclk_io_num     = sclk;
+    bus.quadwp_io_num   = -1;
+    bus.quadhd_io_num   = -1;
+    bus.max_transfer_sz = kSharedBytes;
+    if (spi_bus_initialize(kSharedHost, &bus, SPI_DMA_CH_AUTO) != ESP_OK) {
+        why = "the SPI bus would not start: check the pin numbers";
+        return false;
+    }
+    g_sharedMosi  = static_cast<int8_t>(mosi);
+    g_sharedMiso  = static_cast<int8_t>(bus.miso_io_num);
+    g_sharedSclk  = static_cast<int8_t>(sclk);
+    g_sharedUsers = who;
+    return true;
+}
+
+// cardQuiet: the slot's chip select held high while the panel talks on the
+// bus and the card is not mounted (none at boot, or SD UNMOUNT), so a card
+// already in SPI mode ignores the panel's bytes. A card never yet put into
+// SPI mode listens on its CMD line (MOSI) whatever CS says; the next
+// mount's reset (CMD0 with CS low) brings it round from whatever it made of
+// them. The card driver takes the pin over again at the next mount.
+void cardQuiet() {
+    if (BBS_SD_CS < 0) return;
+    gpio_set_level(static_cast<gpio_num_t>(BBS_SD_CS), 1);
+    gpio_set_direction(static_cast<gpio_num_t>(BBS_SD_CS), GPIO_MODE_OUTPUT);
+}
+
+// sharedDown: `who` off the bus, and the bus freed when nobody is left.
+void sharedDown(uint8_t who) {
+    if (!(g_sharedUsers & who)) return;
+    g_sharedUsers = static_cast<uint8_t>(g_sharedUsers & ~who);
+    if (!g_sharedUsers) spi_bus_free(kSharedHost);
+    else if (who == SHARED_CARD) cardQuiet();          // the panel goes on without it
+}
+
+// sharedCmd: the SPI card host's own command, under the mutex (see above).
+esp_err_t sharedCmd(int slot, sdmmc_command_t* cmd) {
+    xSemaphoreTake(g_sharedMux, portMAX_DELAY);
+    const esp_err_t e = sdspi_host_do_transaction(slot, cmd);
+    xSemaphoreGive(g_sharedMux);
+    return e;
+}
+}   // namespace
+#endif  // BBS_SPI_SHARED
+
 static sdmmc_card_t* g_card  = nullptr;
 static bool          g_mount = false;
 static uint32_t      g_speed = 0;
@@ -463,6 +566,22 @@ bool sdMount(const SdPins& pins, char* err, size_t errLen) {
     // The chip's weak pull-ups on top of whatever the board fits. They are
     // released at reset, so GPIO 2's does not reach the download-mode strap.
     slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+#elif defined(BBS_SPI_SHARED)
+    // The panel's bus (above): raised here if the panel has not raised it,
+    // and every card command through sharedCmd.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    sdspi_device_config_t dev = SDSPI_DEVICE_CONFIG_DEFAULT();
+#pragma GCC diagnostic pop
+    host.max_freq_khz   = pins.speedKHz ? pins.speedKHz : 20000;
+    host.do_transaction = sharedCmd;
+    {
+        const char* why = nullptr;
+        if (!sharedUp(SHARED_CARD, pins.mosi, pins.miso, pins.clk, why)) return fail(why);
+    }
+    dev.gpio_cs = static_cast<gpio_num_t>(pins.cs);
+    dev.host_id = kSharedHost;
 #else
     // The bus is configured with MOSI, MISO and CLK, so a change to any of
     // them needs it rebuilt. CS is a device setting and does not.
@@ -527,6 +646,9 @@ bool sdMount(const SdPins& pins, char* err, size_t errLen) {
         // Put the bus back down. A failed mount that leaves the bus up holds
         // the old pins and makes the next attempt, with corrected wiring,
         // fail identically.
+#ifdef BBS_SPI_SHARED
+        sharedDown(SHARED_CARD);
+#endif
         if (g_busUp) { spi_bus_free(SDSPI_DEFAULT_HOST); g_busUp = false; }
         // Three different evenings, so three different messages. The error
         // code goes in the log as well: the first cut mapped everything that
@@ -570,6 +692,9 @@ void sdUnmount() {
     sdInfoStale();                                 // the figures die with the card
     esp_vfs_fat_sdcard_unmount(BBS_SD_MOUNT, g_card);
     // The bus comes down with it, but only if this code raised it.
+#ifdef BBS_SPI_SHARED
+    sharedDown(SHARED_CARD);                       // and the panel is not on it
+#endif
     if (g_busUp) { spi_bus_free(SDSPI_DEFAULT_HOST); g_busUp = false; }
     g_card  = nullptr;
     g_mount = false;
@@ -1365,7 +1490,8 @@ uint8_t pixelsFrame(uint8_t out, uint8_t* rgb, uint8_t cap) {
 //
 // SPI3 because the SD card's SPI mode takes SPI2 (SDSPI_DEFAULT_HOST), and
 // the S3 has exactly those two for general use; Waveshare's demo puts the
-// panel on SPI3 as well.
+// panel on SPI3 as well. A board whose panel and card share their wires
+// (BBS_SPI_SHARED) has them both on SPI2 instead (sharedUp, above).
 //
 // Never waiting in the loop. esp_lcd sends colour data as a queued DMA
 // transaction and returns, but the address commands in front of it are
@@ -1381,6 +1507,13 @@ namespace {
 // A band: 16 rows of a 320-pixel line, 10 KB. About 8 ms on the wire at
 // 10 MHz and 2 ms at 40, one per plugin tick.
 constexpr uint32_t kBandPixels = 320u * 16u;
+#ifdef BBS_SPI_SHARED
+static_assert(kBandPixels * 2u <= static_cast<uint32_t>(kSharedBytes),
+              "the shared bus is raised for one panel band");
+constexpr spi_host_device_t kLcdHost = kSharedHost;    // with the card (above)
+#else
+constexpr spi_host_device_t kLcdHost = SPI3_HOST;
+#endif
 
 struct Lcd {
     esp_lcd_panel_io_handle_t io     = nullptr;
@@ -1440,6 +1573,13 @@ bool lcdBegin(const LcdCfg& c, char* err, size_t errLen) {
     if (err && errLen) err[0] = '\0';
     esp_err_t e;
 
+#ifdef BBS_SPI_SHARED
+    {
+        const char* why = nullptr;
+        if (!sharedUp(SHARED_PANEL, c.mosi, -1, c.sclk, why)) return lcdFail(err, errLen, why, ESP_ERR_INVALID_ARG);
+        if (!(g_sharedUsers & SHARED_CARD)) cardQuiet();
+    }
+#else
     spi_bus_config_t bus = {};
     bus.mosi_io_num     = c.mosi;
     bus.miso_io_num     = -1;
@@ -1449,6 +1589,7 @@ bool lcdBegin(const LcdCfg& c, char* err, size_t errLen) {
     bus.max_transfer_sz = static_cast<int>(kBandPixels * 2u);
     e = spi_bus_initialize(SPI3_HOST, &bus, SPI_DMA_CH_AUTO);
     if (e != ESP_OK) return lcdFail(err, errLen, "the SPI bus would not start: check the pins", e);
+#endif
     g_lcd.busUp = true;
 
     esp_lcd_panel_io_spi_config_t io = {};
@@ -1460,7 +1601,7 @@ bool lcdBegin(const LcdCfg& c, char* err, size_t errLen) {
     io.on_color_trans_done = lcdDone;
     io.lcd_cmd_bits      = 8;
     io.lcd_param_bits    = 8;
-    e = esp_lcd_new_panel_io_spi(static_cast<esp_lcd_spi_bus_handle_t>(SPI3_HOST), &io, &g_lcd.io);
+    e = esp_lcd_new_panel_io_spi(static_cast<esp_lcd_spi_bus_handle_t>(kLcdHost), &io, &g_lcd.io);
     if (e != ESP_OK) return lcdFail(err, errLen, "the panel would not take the SPI bus", e);
 
     esp_lcd_panel_dev_config_t pc = {};
@@ -1530,8 +1671,9 @@ bool lcdBegin(const LcdCfg& c, char* err, size_t errLen) {
     g_lcd.cfg  = c;
     g_lcd.busy = false;
     lcdBlSet(c.backlight);
-    log("panel: ST7789 %ux%u, rotation %u, %u MHz, on SPI3", static_cast<unsigned>(c.width),
-        static_cast<unsigned>(c.height), static_cast<unsigned>(c.rotation), static_cast<unsigned>(c.mhz));
+    log("panel: ST7789 %ux%u, rotation %u, %u MHz, on SPI%d", static_cast<unsigned>(c.width),
+        static_cast<unsigned>(c.height), static_cast<unsigned>(c.rotation), static_cast<unsigned>(c.mhz),
+        static_cast<int>(kLcdHost) + 1);
     return true;
 }
 
@@ -1559,7 +1701,11 @@ void lcdEnd() {
         g_lcd.io = nullptr;
     }
     if (g_lcd.busUp) {
+#ifdef BBS_SPI_SHARED
+        sharedDown(SHARED_PANEL);
+#else
         spi_bus_free(SPI3_HOST);
+#endif
         g_lcd.busUp = false;
     }
     heap_caps_free(g_lcd.stage);
@@ -1579,6 +1725,11 @@ uint32_t lcdBandPixels() {
 bool lcdDraw(const uint16_t* fb, uint16_t stride, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     if (!lcdReady() || !fb || !w || !h) return false;
     if (static_cast<uint32_t>(w) * h > kBandPixels) return false;
+#ifdef BBS_SPI_SHARED
+    // A card command on another task holds the bus: this band waits for a
+    // later tick rather than the loop waiting for the card (see sharedCmd).
+    if (xSemaphoreTake(g_sharedMux, 0) != pdTRUE) return false;
+#endif
     uint16_t* out = g_lcd.stage;
     for (uint16_t r = 0; r < h; ++r) {
         memcpy(out, fb + static_cast<size_t>(y + r) * stride + x, static_cast<size_t>(w) * 2u);
@@ -1586,6 +1737,9 @@ bool lcdDraw(const uint16_t* fb, uint16_t stride, uint16_t x, uint16_t y, uint16
     }
     g_lcd.busy = true;
     esp_err_t e = esp_lcd_panel_draw_bitmap(g_lcd.panel, x, y, x + w, y + h, g_lcd.stage);
+#ifdef BBS_SPI_SHARED
+    xSemaphoreGive(g_sharedMux);
+#endif
     if (e != ESP_OK) {
         g_lcd.busy = false;
         return false;
@@ -1604,7 +1758,125 @@ void* psramAlloc(size_t n) {
 void psramFree(void* p) {
     heap_caps_free(p);
 }
+
+#ifdef BBS_HAS_TOUCH
+// ---------------------------------------------------------------------------
+// Touch (BBS_HAS_TOUCH): taps counted from the controller's INT line. The
+// CST816's INT goes low for a moment at each report while a finger is down,
+// about every 10 ms, so an edge that follows the last by less than
+// kTapGapMs is the same touch. I2C only at start, on port 0 (the camera's
+// SCCB has port 1, esp32-camera's default), with the driver removed again.
+// ---------------------------------------------------------------------------
+namespace {
+volatile uint16_t g_taps     = 0;
+volatile int64_t  g_tapLast  = 0;
+portMUX_TYPE      g_tapMux   = portMUX_INITIALIZER_UNLOCKED;   // the ISR and touchTaps
+bool              g_touchIsr = false;
+uint8_t           g_touchId  = 0;
+constexpr i2c_port_t kTouchPort = I2C_NUM_0;
+
+void IRAM_ATTR touchEdge(void*) {
+    const int64_t now = esp_timer_get_time();
+    portENTER_CRITICAL_ISR(&g_tapMux);
+    if (now - g_tapLast >= static_cast<int64_t>(kTapGapMs) * 1000) g_taps = static_cast<uint16_t>(g_taps + 1);
+    g_tapLast = now;
+    portEXIT_CRITICAL_ISR(&g_tapMux);
+}
+
+// The CST816's registers (Hynitron's CST816S register map, which the D
+// shares): 0xA7 ChipID, 0xFA IrqCtl (0x40 EnTouch: pulse while touched;
+// 0x20 EnChange: pulse when the touch changes), 0xFE DisAutoSleep.
+constexpr uint8_t kRegChipId  = 0xA7;
+constexpr uint8_t kRegIrqCtl  = 0xFA;
+constexpr uint8_t kIrqTouch   = 0x60;
+}   // namespace
+
+bool touchBegin(char* err, size_t errLen) {
+    if (err && errLen) err[0] = '\0';
+    // The interrupt first: the taps count whether or not I2C answers below.
+    if (!g_touchIsr) {
+        gpio_config_t io = {};
+        io.pin_bit_mask  = 1ULL << BBS_TOUCH_INT;
+        io.mode          = GPIO_MODE_INPUT;
+        io.pull_up_en    = GPIO_PULLUP_ENABLE;
+        io.intr_type     = GPIO_INTR_NEGEDGE;
+        gpio_config(&io);
+        const esp_err_t svc = gpio_install_isr_service(0);
+        if ((svc == ESP_OK || svc == ESP_ERR_INVALID_STATE) &&
+            gpio_isr_handler_add(static_cast<gpio_num_t>(BBS_TOUCH_INT), touchEdge, nullptr) == ESP_OK)
+            g_touchIsr = true;
+        else
+            log("touch: the interrupt on gpio %d would not start", BBS_TOUCH_INT);
+    }
+    // Once: who it is, and INT pulsing on a touch. A few ms, a plugin's start.
+    i2c_config_t c = {};
+    c.mode             = I2C_MODE_MASTER;
+    c.sda_io_num       = BBS_TOUCH_SDA;
+    c.scl_io_num       = BBS_TOUCH_SCL;
+    c.sda_pullup_en    = GPIO_PULLUP_ENABLE;
+    c.scl_pullup_en    = GPIO_PULLUP_ENABLE;
+    c.master.clk_speed = 400000;
+    bool ok = i2c_param_config(kTouchPort, &c) == ESP_OK &&
+              i2c_driver_install(kTouchPort, I2C_MODE_MASTER, 0, 0, 0) == ESP_OK;
+    if (ok) {
+        uint8_t reg = kRegChipId, id = 0;
+        ok = i2c_master_write_read_device(kTouchPort, BBS_TOUCH_ADDR, &reg, 1, &id, 1, pdMS_TO_TICKS(50)) == ESP_OK;
+        if (ok) {
+            g_touchId = id;
+            const uint8_t w[2] = { kRegIrqCtl, kIrqTouch };
+            if (i2c_master_write_to_device(kTouchPort, BBS_TOUCH_ADDR, w, 2, pdMS_TO_TICKS(50)) != ESP_OK)
+                log("touch: chip 0x%02x would not take its interrupt setting", static_cast<unsigned>(id));
+        }
+        i2c_driver_delete(kTouchPort);
+    }
+    if (!ok) {
+        if (err && errLen) snprintf(err, errLen, "the touch controller did not answer at 0x%02x",
+                                    static_cast<unsigned>(BBS_TOUCH_ADDR));
+        return false;
+    }
+    log("touch: CST816 chip 0x%02x at 0x%02x, taps on gpio %d", static_cast<unsigned>(g_touchId),
+        static_cast<unsigned>(BBS_TOUCH_ADDR), BBS_TOUCH_INT);
+    return true;
+}
+
+uint8_t touchChip() { return g_touchId; }
+
+// touchTaps: taken and cleared as one, under the ISR's lock, so an edge
+// between the two is never lost.
+uint16_t touchTaps() {
+    portENTER_CRITICAL(&g_tapMux);
+    const uint16_t n = g_taps;
+    g_taps = 0;
+    portEXIT_CRITICAL(&g_tapMux);
+    return n;
+}
+#endif  // BBS_HAS_TOUCH
 #endif  // BBS_HAS_LCD
+
+#ifdef BBS_HAS_CHIP_TEMP
+// chipTemp: the S3's own sensor, installed at the first call (the panel's
+// start) for 20 to 100 C: the die runs above the air round it, and the
+// panel's warm and risk steps (65, 75) sit inside that range, with an error
+// under 2 C (the IDF's table for the S3).
+bool chipTemp(int& tenthsC) {
+    static temperature_sensor_handle_t h = nullptr;
+    static bool tried = false;
+    if (!h) {
+        if (tried) return false;
+        tried = true;
+        temperature_sensor_config_t c = TEMPERATURE_SENSOR_CONFIG_DEFAULT(20, 100);
+        if (temperature_sensor_install(&c, &h) != ESP_OK || temperature_sensor_enable(h) != ESP_OK) {
+            h = nullptr;
+            log("temp: the chip's sensor would not start");
+            return false;
+        }
+    }
+    float c = 0;
+    if (temperature_sensor_get_celsius(h, &c) != ESP_OK) return false;
+    tenthsC = static_cast<int>(c * 10.0f + (c < 0 ? -0.5f : 0.5f));
+    return true;
+}
+#endif
 
 // ===========================================================================
 // inflateRaw: ROM tinfl with a 32 KB circular dictionary
@@ -1903,6 +2175,19 @@ CamMeter camMeter(uint16_t& a, uint16_t& b) {
         b = static_cast<uint16_t>(gain);
         return CAM_METER_EXPOSURE;
     }
+#if CONFIG_OV5640_SUPPORT
+    // The OV5640 (the Touch-LCD-2's camera, WS2 1.0.0): exposure in 0x3500
+    // to 0x3502, bits 19:4 whole lines, and gain in 0x350A-0x350B, ten bits
+    // (OV5640 datasheet, the AEC/AGC registers). Its driver's get_reg reads
+    // 16 bits for a mask over 0xFF and 24 for one over 0xFFFF.
+    if (g_camPid == OV5640_PID) {
+        const int exp = s->get_reg(s, 0x3500, 0xFFFFF), gain = s->get_reg(s, 0x350A, 0x3FF);
+        if (exp < 0 || gain < 0) return CAM_METER_NONE;
+        a = static_cast<uint16_t>(exp >> 4);
+        b = static_cast<uint16_t>(gain);
+        return CAM_METER_EXPOSURE;
+    }
+#endif
     return CAM_METER_NONE;
 }
 

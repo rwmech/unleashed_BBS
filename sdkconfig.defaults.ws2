@@ -1,0 +1,71 @@
+# ===========================================================================
+#  unleashed BBS
+#  Electronic freedom on a microcontroller.
+# ===========================================================================
+#
+# File:         sdkconfig.defaults.ws2
+# Module:       Build / ESP-IDF defaults, Waveshare ESP32-S3-Touch-LCD-2 layer
+#
+# Purpose:      What the Waveshare ESP32-S3-Touch-LCD-2 build changes from
+#               sdkconfig.defaults and the S3 layer. platformio.ini names it
+#               for the board's environments through SDKCONFIG_DEFAULTS
+#               (board_build.cmake_extra_args); IDF 5.3.1's project.cmake
+#               takes that list in place of the default one and still adds
+#               each file's .esp32s3 twin, so the order read is
+#               sdkconfig.defaults, sdkconfig.defaults.esp32s3, this.
+#
+#               The chip is the LCD-1.47's (ESP32-S3R8: 8 MB octal PSRAM),
+#               so the S3 layer's PSRAM, console and Wi-Fi buffers stand as
+#               they are. This layer adds only the camera's sensors.
+#
+#               PlatformIO only watches sdkconfig.defaults for changes:
+#               delete sdkconfig.ws_s3touch2* after editing here, and check
+#               the generated file. A value outside its Kconfig range is
+#               discarded, not clamped.
+#
+# Targets:      Waveshare ESP32-S3-Touch-LCD-2 (ESP-IDF 5.3.1)
+# See also:     sdkconfig.defaults, sdkconfig.defaults.esp32s3,
+#               platformio.ini, src/board.h
+#
+# Copyright 2026 - Robert Mech
+# License:      GNU General Public License v3 or later
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 3 of the License, or (at your
+# option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program. If not, see <https://www.gnu.org/licenses/>. The full
+# text is in the LICENSE file at the top of this repository.
+# ===========================================================================
+
+# The camera driver (espressif/esp32-camera 2.1.7, src/idf_component.yml)
+# with the sensors this board's 24-pin connector is sold with: Waveshare
+# ship an OV5640 and name the OV2640 as the other that fits (wiki). Every
+# sensor is on by default and their register tables are initialised data,
+# so the rest are off, as on the other camera boards. OV5640 autofocus
+# stays off (its default): the module Waveshare sell is fixed focus.
+CONFIG_OV7670_SUPPORT=n
+CONFIG_OV7725_SUPPORT=n
+CONFIG_NT99141_SUPPORT=n
+CONFIG_OV2640_SUPPORT=y
+CONFIG_OV3660_SUPPORT=n
+CONFIG_OV5640_SUPPORT=y
+CONFIG_GC2145_SUPPORT=n
+CONFIG_GC032A_SUPPORT=n
+CONFIG_GC0308_SUPPORT=n
+CONFIG_BF3005_SUPPORT=n
+CONFIG_BF20A6_SUPPORT=n
+CONFIG_SC101IOT_SUPPORT=n
+CONFIG_SC030IOT_SUPPORT=n
+CONFIG_SC031GS_SUPPORT=n
+CONFIG_HM1055_SUPPORT=n
+CONFIG_HM0360_SUPPORT=n
+CONFIG_MEGA_CCM_SUPPORT=n

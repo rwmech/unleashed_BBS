@@ -66,6 +66,11 @@ endif()
 # WROOM's image does not take on a component it never calls.
 if(IDF_TARGET STREQUAL "esp32s3")
     list(APPEND app_requires esp_driver_usb_serial_jtag esp_lcd esp_driver_ledc)
+    # A touch panel's controller, asked once at start over the legacy I2C
+    # driver (the camera's SCCB uses it on IDF 5.3, and the two I2C drivers
+    # cannot mix), and the chip's temperature sensor (the Touch-LCD-2's
+    # panel). Linked only where a board profile calls them.
+    list(APPEND app_requires driver esp_driver_tsens)
     # SSH (1.1.2): wolfSSH and wolfCrypt, compiled for the S3 only
     # (components/wolfssh registers an empty component everywhere else).
     list(APPEND app_requires wolfssh)

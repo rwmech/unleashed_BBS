@@ -46,6 +46,8 @@ sdkconfig.*
 !sdkconfig.defaults.fncam
 # The AI-Thinker ESP32-CAM's layer, named to it in platformio.ini (1.1.1).
 !sdkconfig.defaults.espcam
+# The Waveshare ESP32-S3-Touch-LCD-2's layer (WS2 1.0.0).
+!sdkconfig.defaults.ws2
 include/secrets.h
 data/system.cfg
 data/calls.log
@@ -65,6 +67,7 @@ host/bbs_host
 host/bbs_host_s3
 host/bbs_host_fncam
 host/bbs_host_espcam
+host/bbs_host_ws2
 # SSH on the host (1.1.2): wolfSSH built for the S3 profile, and its caller
 host/ssh_call
 host/wolfobj/

@@ -24,6 +24,62 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.1.2 (WS2 1.0.0), 2026-09-28, board pre-release
+
+A new board, as a pre-release that carries its image set and nothing else.
+The core is 1.1.2 unchanged. The panel and lights changes below are
+gated on this board's glass and defines: the LCD-1.47 draws exactly as it
+did. It has booted on one board on the bench; it has not
+been through the regression.
+
+**The Waveshare ESP32-S3-Touch-LCD-2** (`BBS_BOARD_WS_S3TOUCH2`,
+`pio run -e ws_s3touch2`, WS2 1.0.0)
+- The glass is mirrored in X, as the LCD-1.47's is (seen on the first
+  flash); touch is read as taps only, so no coordinate needed the flip.
+- ESP32-S3R8 (8 MB octal PSRAM, the LCD-1.47's chip), 16 MB flash, native
+  USB-C. The LCD-1.47's 8 MB layout (`partitions_s3.csv`) and S3 layer;
+  `sdkconfig.defaults.ws2` adds the camera's sensors (OV5640 and OV2640).
+  SSH as on the LCD-1.47.
+- Pins from Waveshare's schematic (its PinOut table and netlist) checked
+  against Waveshare's own demo for the board: `release-prep/ws2/pins.md`.
+  The camera's fifteen, the touch and IMU bus (47, 48), the touch INT (46),
+  the IMU's INT1 (3) and the battery divider (5) are refused by name
+  (`BBS_PINS_ONBOARD`, "that pin is wired on the board"). GPIO 18 is the one
+  a sysop can use; the camera ships with no flash pin so it does not hold
+  it.
+- **The panel and the TF card share an SPI bus** (MOSI 38, clock 39, MISO
+  40): `BBS_SPI_SHARED` raises SPI2 once for both. Every card command runs
+  under a mutex the panel only tries, so a band is sent on a later tick
+  rather than the BBS loop waiting behind a card write. The card's chip
+  select is held high while the panel talks and no card is mounted. CONFIG
+  lets the two share those pins (the panel's `pinShares`).
+- **The panel at 240 x 320**, an ST7789T3 at 40 MHz, specified in
+  `release-prep/ws2/tty-ux-panel-ws2-2026-09-28.md`: the header slot
+  centred, a longer uptime page, a third system figure (the chip's own
+  temperature sensor, `41C`, with a CPU icon, the heap's icon a memory
+  stick beside it), the glyph strip widened to 122 px for a camera glyph
+  packed last while a picture is taken, a caller's snap in the recent list
+  (`EV_SNAP`), round lamps for the strip, and the rule over the strip
+  cleared when there are no LEDs. The lights plugin ships on with no pin
+  and `switchboard` as its effect (`BBS_LIGHTS_STRIP_FX`, the 4.3B's: a
+  lamp a line in the caller's rank colour while anybody is on; dim steady
+  lamps that flicker with real traffic while nobody is; no sweep, Rob's
+  call), since the glass is this board's only strip.
+- **Touch**: the CST816D is asked once at start over I2C (who it is, and
+  to pulse INT on a touch) and then read as taps from its INT line by an
+  interrupt, so nothing on the loop touches I2C. A tap cuts the header to
+  its next page; CONFIG panel's **Sleep** (in Driver's row on a touch board,
+  0 never as shipped) darkens the glass after that many minutes, and a tap
+  or a ring wakes it. `PANEL TAP` taps the host's glass.
+- **The camera**: the OV5640 (JPEG from the sensor, sizes to QXGA, XGA as
+  shipped). Its exposure and gain are read to decide when a frame has
+  settled, as the OV2640's are.
+- Not used yet: the QMI8658 IMU and the battery divider.
+- `tools/release.py`: the board's set is `esp32s3-ws2`, `tag_only`, with
+  the board pre-release tag logic (`--tag v1.1.2-ws2.1`).
+- Host: `bbs_host_ws2`, `tools/harness.sh --board ws2`, `test_board_ws2`,
+  and round lamps and the tenth glyph in `test_panel`.
+
 ## 1.1.2 (S3 1.1.3, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-27
 
 A patch: the board no longer stalls everybody while one caller does

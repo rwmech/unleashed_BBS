@@ -59,6 +59,16 @@ bool found();
 // card is in use by the camera's worker until this is false.
 bool busy();
 
+// shooting: busy with a picture, a caller's or the board's own, and not only
+// counting or pruning Photos. What a board's panel shows as its camera glyph
+// (WS2 1.0.0). RAM only.
+bool shooting();
+
+// callerSnaps: how many callers' snaps have been saved since boot, and who
+// took the last (a handle, "" before the first). The panel compares the
+// count, as it does bus::lastPage's, to add the snap to its recent list.
+uint16_t callerSnaps(const char*& who);
+
 // photosLevels: who may see and download photos (CONFIG camera, Photos),
 // and who may remove them (the plugin's admin level). For the Photos area.
 void photosLevels(PlugLevel& see, PlugLevel& remove);

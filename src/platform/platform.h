@@ -551,7 +551,37 @@ bool     lcdDraw(const uint16_t* fb, uint16_t stride, uint16_t x, uint16_t y, ui
 void     lcdBacklight(uint8_t pct);
 void*    psramAlloc(size_t n);
 void     psramFree(void* p);
+
+#ifdef BBS_HAS_TOUCH
+// ---------------------------------------------------------------------------
+// The glass's touch controller (BBS_HAS_TOUCH, board.h), read as taps: an
+// interrupt on its INT line counts them, and the panel takes the count from
+// its tick. Nothing on the BBS loop touches the I2C bus.
+//
+// touchBegin:  the INT line's interrupt, and once, at a plugin's start
+//              (blocking, a few ms), the controller asked over I2C who it
+//              is and told to pulse INT on a touch. False with a reason in
+//              err when it did not answer; the taps still count if INT
+//              pulses anyway. Beginning again is harmless.
+// touchChip:   the chip ID it answered with, 0 for none.
+// touchTaps:   taps since the last call: INT falling edges at least
+//              kTapGapMs apart, since a held finger pulses INT about every
+//              10 ms. Taken under the ISR's lock, safe from the loop.
+//              The interrupt stays for the life of the boot.
+// ---------------------------------------------------------------------------
+constexpr uint32_t kTapGapMs = 250;
+bool     touchBegin(char* err, size_t errLen);
+uint8_t  touchChip();
+uint16_t touchTaps();
+#endif  // BBS_HAS_TOUCH
 #endif  // BBS_HAS_LCD
+
+#ifdef BBS_HAS_CHIP_TEMP
+// chipTemp: the chip's own temperature sensor, in tenths of a degree C.
+// False before it has started or when a read fails. A register read and a
+// conversion, microseconds: safe from the loop, a few times a minute.
+bool chipTemp(int& tenthsC);
+#endif
 
 #ifdef BBS_HAS_CAMERA
 // ---------------------------------------------------------------------------

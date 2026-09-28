@@ -817,7 +817,30 @@ void lcdBacklight(uint8_t pct) { g_lcdBl = g_lcdUp ? pct : 0; }
 
 void* psramAlloc(size_t n) { return malloc(n); }
 void  psramFree(void* p)  { free(p); }
+
+#ifdef BBS_HAS_TOUCH
+// Touch on the host: no controller. A tap is PANEL TAP's (hostTouchTap,
+// below the namespace), so a test can press the glass.
+namespace {
+uint16_t g_hostTaps = 0;
+bool     g_touchUp  = false;
+}
+bool touchBegin(char* err, size_t errLen) {
+    if (err && errLen) err[0] = '\0';
+    g_touchUp = true;
+    log("touch: CST816 on the host: taps from PANEL TAP");
+    return true;
+}
+uint8_t  touchChip() { return g_touchUp ? 0xB6 : 0; }
+uint16_t touchTaps() { const uint16_t n = g_hostTaps; g_hostTaps = 0; return n; }
+#endif
 #endif  // BBS_HAS_LCD
+
+#ifdef BBS_HAS_CHIP_TEMP
+// The chip's temperature on the host: a steady 41.5 C, so the panel's page
+// has a figure to show and a test a figure to read.
+bool chipTemp(int& tenthsC) { tenthsC = 415; return true; }
+#endif
 
 #ifdef BBS_HAS_CAMERA
 // ---------------------------------------------------------------------------
@@ -1169,4 +1192,12 @@ bool hostPanelShot(const char* path) {
     fclose(f);
     return true;
 }
+
+#ifdef BBS_HAS_TOUCH
+// hostTouchTap: a tap on the host's glass (PANEL TAP), taken by the panel's
+// next tick as a real one would be.
+void hostTouchTap() {
+    ++plat::g_hostTaps;
+}
+#endif
 #endif
