@@ -6822,14 +6822,13 @@ def test_board_ws43b():
         px = lambda x, y: tuple(data[len(head) + (y * W + x) * 3:len(head) + (y * W + x) * 3 + 3])
         ok &= check("the header's bar in its blue", px(1, 1) == (24, 44, 120))
         ok &= check("and the body black", px(1, 150) == (0, 0, 0))
-        # The light bar: ten 32 px segments from x 40 at y 219..230, and
-        # black under it to the edge of the glass. switchboard (1.1.2-hw.1,
-        # the Touch-LCD-2's refinement, shared by both glasses): with anybody
-        # WHO shows on, the sysop here, it is nodes, so the ten caller lines
-        # are dark lamps (the sysop's line has none), not the idle dial blue.
+        # The light bar: ten 32 px segments from x 40 at y 219..230, the
+        # switchboard's idle dial blue on every free line (Rob, 1.1.2-hw.2:
+        # the 4.3B's version for every board, whoever is on; the sysop's line
+        # has no lamp), and black under it to the edge of the glass.
         seg = [px(40 + 36 * i + 16, 225) for i in range(10)]
-        ok &= check("the light bar's ten segments dark with only the sysop on",
-                    not any(c[2] > 30 and c[2] > c[0] for c in seg))
+        ok &= check("the light bar's ten free lines lit in dim blue",
+                    all(c[2] > 30 and c[2] > c[0] for c in seg))
         ok &= check("and clear of the glass's bottom edge",
                     all(px(56, y) == (0, 0, 0) for y in range(232, 240)))
 
