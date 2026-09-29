@@ -1256,6 +1256,7 @@ this tree.
     - motion pictures through the same path;
     - the space limits (FAT32's 4 GB cap, plain AVI's 1-2 GB, OpenDML for long periods) to be worked out then;
   - **ham radio**, below.
+  - **ZMODEM** (Rob, 2026-09-29: "lets make this a 1.3 feature"), on every board. Space is not the limit: a file-backed sender answers ZRPOS by seeking and resending, so it needs no retransmit window (PLAN-FILES.md Phase 7's buffer concern does not apply); share the XMODEM engine's 1 KB block buffer in a union (one transfer board-wide), estimated a few hundred bytes of static DRAM, which fits the ESP32-CAM's 2,720; code estimated 8-15 KB against 175 KB free on the ESP32-CAM's slot. The real work is streaming through the caller's timeline (IAC doubling plus ZDLE), ZRPOS resume and the ZCRCW/ZCRCQ handshakes; test against lrzsz and SyncTERM, never only a client written beside it. Have `optimize` measure the union's static delta on the ESP32-CAM build before building.
 - **Ham radio, the settled design (Rob, 2026-09-29), for 1.3.0.**
   - **The chain:** radio -> Digirig -> OPi (Direwolf, linbpq and a thin gateway service) -> an ESP32 docking radio on USB -> ESP-NOW -> the board.
   - **One account database, the board's. Accounts are created only over telnet or SSH.**
