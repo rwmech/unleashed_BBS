@@ -8614,16 +8614,16 @@ def test_board_s3_skin():
     p = settle(b"Skin status")
     ok &= check("back to the built-in", b"Skin status" in p and re.search(rb"Callers \d+/\d+", p) is not None)
 
-    # Through the BBS, as a sysop would: the Skins file area (12 here) takes
+    # Through the BBS, as a sysop would: the Skins file area (14 here) takes
     # a skin's pair, <name>.txt and <name>.jpg, straight in, and the panel
     # offers it at once.
     txt = (src / "e2e" / "skin.txt").read_bytes()
     jpg = (src / "e2e" / "background.jpg").read_bytes()
-    ok &= check("FILES 12 opens Skins", enter_area(s, 12, b"Skins"))
+    ok &= check("FILES 14 opens Skins", enter_area(s, 14, b"Skins"))
     ok &= check("a name that is not a skin's is refused before anything is sent",
                 area_key(s, b"u", "notes.zip", b"Skins takes <name>.txt and <name>.jpg"))
     for fn, data in (("flat.txt", txt), ("flat.jpg", jpg)):
-        enter_area(s, 12, b"Skins")
+        enter_area(s, 14, b"Skins")
         ok &= check(f"U takes YMODEM for {fn}", area_key(s, b"u", "", b"Start your YMODEM send"))
         ok &= check("and says it goes straight in", s.wait_for(b"It goes straight in.", 3))
         _seen.clear()
@@ -8654,7 +8654,7 @@ def test_board_s3_skin():
     # loop): the one on the glass stays until the new copy is read.
     # The card's opens cost 0.5 s each here (hostio.txt), so the reload is
     # long enough for PANEL to see what is on the glass meanwhile.
-    enter_area(s, 12, b"Skins")
+    enter_area(s, 14, b"Skins")
     area_key(s, b"u", "", b"Start your YMODEM send")
     _seen.clear()
     hostio_set(DATA, 500000, 0)
@@ -20598,7 +20598,7 @@ FRESH_TESTS = ["test_backup_published_default", "test_first_setup",
 # The board profiles and the tests written for each. They SKIP on the
 # reference board; parallel.py runs them again on the profile's own build.
 PROFILE_TESTS = {
-    "s3":     ["test_board_s3", "test_board_s3_silent",
+    "s3":     ["test_board_s3", "test_board_s3_silent", "test_board_s3_skin",
                # SSH (1.1.2) is compiled into the S3 profile only.
                "test_ssh_login", "test_ssh_new_caller", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
