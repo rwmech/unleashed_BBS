@@ -356,6 +356,10 @@ uint32_t g_lastAt = 0;
 // The survey at start (the card's half-written photo cleared, the sensor
 // looked for once a boot). Counting and pruning are the photo system's
 // (photos::tick) since 1.2.0-link.15, for every camera.
+#ifdef BBS_HAS_LCD
+uint16_t g_callerSnaps = 0;                // callers' snaps saved since boot (camera::callerSnaps)
+char     g_lastCaller[BBS_USER_MAX + 1] = {};
+#endif
 bool     g_surveyWanted = false;
 // Whether a sensor answered, this boot: the directory's camera badge
 // (announce's "camera" feature) is claimed only on SENSOR_FOUND. Written by
@@ -696,7 +700,7 @@ void runWork(runner::Job&) { worker(nullptr); }
 constexpr uint32_t kSnapInternal = plat::kCamInternal + kWorkerStack + 512;
 
 // roomToSnap: whether internal RAM can take a snap now. The largest DMA
-// block and the internal total both: the camera's 32 KB has to be one
+// block and the internal total both: the camera's DMA block has to be one
 // piece, and the worker's stack and the driver's task come out of the same
 // memory around it. A refusal is logged with the figures; the board's own
 // shots (the timelapse) only the first of a run, so a board short of RAM
@@ -911,6 +915,14 @@ void finish(uint32_t now) {
             snprintf(g_last, sizeof(g_last), "%.111s", j.rel);
             snprintf(g_lastBy, sizeof(g_lastBy), "%.21s", j.kind == K_CALLER ? j.handle : "the board");
             g_lastAt = clk::epoch();
+#ifdef BBS_HAS_LCD
+            if (j.kind == K_CALLER) {
+                // A guest's handle without its *: the handle the panel names.
+                snprintf(g_lastCaller, sizeof(g_lastCaller), "%.*s", BBS_USER_MAX,
+                         j.handle[0] == '*' ? j.handle + 1 : j.handle);
+                g_callerSnaps = static_cast<uint16_t>(g_callerSnaps + 1);
+            }
+#endif
             // Two lines: plat::log keeps 160 characters, and one line cut
             // the memory figures off the end.
             // What pruning removed is the photo system's own line now.
@@ -1532,6 +1544,17 @@ bool camera::busy() {
     const uint8_t p = g_job.ph.load();
     return p != PH_IDLE && p != PH_DONE && p != PH_FAILED;
 }
+
+bool camera::shooting() {
+    return camera::busy() && g_job.kind != K_SURVEY;
+}
+
+#ifdef BBS_HAS_LCD
+uint16_t camera::callerSnaps(const char*& who) {
+    who = g_lastCaller;
+    return g_callerSnaps;
+}
+#endif
 
 void camera::photosLevels(PlugLevel& see, PlugLevel& removeLevel) {
     see = g_set.photos;

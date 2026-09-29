@@ -67,6 +67,11 @@
 #include "soc/soc_caps.h"        // the RMT's block size and DMA, per chip
 #if defined(BBS_HAS_SSH) && BBS_HAS_SSH
 #include "esp_vfs_eventfd.h"       // the SSH links' wake descriptors (1.1.2)
+// read and write on those descriptors (wakePost, wakeTake). The Waveshare's
+// build got <unistd.h> only by way of the USB-Serial-JTAG console's headers
+// below, so an SSH board with its console on a UART (the Makerfabs) failed
+// to compile without it.
+#include <unistd.h>
 #endif
 #if SOC_USB_SERIAL_JTAG_SUPPORTED && CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
 #include "driver/usb_serial_jtag.h"      // the console on the S3's own USB
@@ -93,13 +98,31 @@
 #endif
 #include <new>
 #endif
-#ifdef BBS_HAS_LCD
-#include "esp_lcd_panel_io.h"            // the panel: esp_lcd over SPI
+#if defined(BBS_HAS_LCD) && !defined(BBS_LCD_RGB)
+#include "esp_lcd_panel_io.h"            // the panel: esp_lcd over SPI or i80
 #include "esp_lcd_io_spi.h"
+#ifdef BBS_LCD_I80
+#include "esp_lcd_io_i80.h"              // a parallel panel (board.h, BBS_LCD_I80)
+#endif
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_st7789.h"
 #include "esp_lcd_panel_commands.h"
 #include "driver/ledc.h"                 // its backlight, dimmed by PWM
+#endif
+#if defined(BBS_HAS_TOUCH) && !defined(BBS_TOUCH_POLL)
+#include "driver/i2c.h"                  // the touch controller, once at start: the legacy
+                                         // driver, which the camera's SCCB (esp32-camera 2.1.7
+                                         // on IDF 5.3) uses too; the two drivers cannot mix
+#endif
+#ifdef BBS_HAS_CHIP_TEMP
+#include "driver/temperature_sensor.h"   // the chip's own sensor, for the panel
+#endif
+#ifdef BBS_HAS_ETH
+#include "esp_eth.h"                     // the W5500 (1.1.2): IDF 5.3.1's own driver
+#include "esp_eth_mac_spi.h"
+#include "esp_mac.h"                     // its address, from the chip's efuse
+#include "esp_event.h"
+#include "esp_log.h"
 #endif
 extern "C" {
 #include "miniz.h"
@@ -329,8 +352,16 @@ void hardware(char* out, size_t n) {
         snprintf(size, sizeof(size), "%s%u MB", kDot, static_cast<unsigned>(flash / (1024u * 1024u)));
     else if (flash)
         snprintf(size, sizeof(size), "%s%u KB", kDot, static_cast<unsigned>(flash / 1024u));
+#ifdef BBS_HAS_ETH
+    // The wired port in PSRAM's place (1.1.2): the directory cuts this badge
+    // at 40 characters, and "ESP32-S3 · 8 MB · Ethernet · ETH 1.0.0", with
+    // the board's version that announce adds, is 38. Ethernet is what sets
+    // the board apart; its PSRAM is on the HARDWARE screen.
+    snprintf(out, n, "%s%s%sEthernet", model, size, kDot);
+#else
     const bool psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0;
     snprintf(out, n, "%s%s%s%s", model, size, psram ? kDot : "", psram ? "PSRAM" : "");
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -404,6 +435,118 @@ void chipInfo(ChipInfo& o) {
 // Everything here is blocking, which is why nothing in this file is ever
 // called from the BBS loop. See the note in platform.h.
 // ---------------------------------------------------------------------------
+#ifdef BBS_SPI_SHARED
+// ---------------------------------------------------------------------------
+// The panel and the card on one SPI bus (board.h, BBS_SPI_SHARED: the
+// Waveshare ESP32-S3-Touch-LCD-2, whose panel and TF slot share MOSI and
+// SCLK). One host, SPI2 (the card's default), raised by whichever of the two
+// starts first with the card's MISO and a transfer size a panel band fits,
+// and freed when the last lets it go.
+//
+// The SPI driver already takes turns between the two devices, but a card
+// command holds the bus from start to end, and a write's busy wait inside
+// one can run to hundreds of milliseconds. The panel's bands are sent from
+// the BBS loop, which must never wait for that (Rule no. 1). Its bring-up
+// and teardown (lcdBegin, lcdEnd: a plugin start, a CONFIG save) may wait
+// out one card command; they are allowed to block anyway. So every card
+// command goes through sharedCmd, which holds g_sharedMux for the command,
+// and lcdDraw only TRIES the mutex: when a card command is running on
+// another task, the band is skipped and the panel sends it on a later tick.
+// The panel holds the mutex only while its band is being queued (the three
+// address commands, microseconds); the band's DMA then runs on its own, and
+// a card command that follows waits for it on the runner, about 2 ms at
+// 40 MHz. The loop's own card reads (a screen played from the card) take the
+// mutex as any card command does; they cannot meet the panel's, which is on
+// the same task.
+// ---------------------------------------------------------------------------
+namespace {
+constexpr spi_host_device_t kSharedHost  = SDSPI_DEFAULT_HOST;       // SPI2
+constexpr int               kSharedBytes = 320 * 16 * 2;              // a panel band (kBandPixels)
+enum : uint8_t { SHARED_CARD = 1, SHARED_PANEL = 2 };
+uint8_t           g_sharedUsers = 0;
+int8_t            g_sharedMosi = -1, g_sharedMiso = -1, g_sharedSclk = -1;
+SemaphoreHandle_t g_sharedMux = nullptr;
+StaticSemaphore_t g_sharedMuxBuf;
+
+// sharedUp: `who` on the bus. The bus is raised if nobody holds it, with
+// miso (or the board's card MISO, for the panel, which reads nothing), and
+// otherwise must be on the same MOSI and clock, since both ends are wired to
+// one pair. why says what was wrong.
+bool sharedUp(uint8_t who, int mosi, int miso, int sclk, const char*& why) {
+    if (!g_sharedMux) g_sharedMux = xSemaphoreCreateMutexStatic(&g_sharedMuxBuf);
+    if (g_sharedUsers) {
+        if (mosi != g_sharedMosi || sclk != g_sharedSclk || (miso >= 0 && miso != g_sharedMiso)) {
+            why = "the panel and the card share one SPI bus: give both the same MOSI, clock and MISO pins";
+            return false;
+        }
+        g_sharedUsers = static_cast<uint8_t>(g_sharedUsers | who);
+        return true;
+    }
+    spi_bus_config_t bus = {};
+    bus.mosi_io_num     = mosi;
+    bus.miso_io_num     = miso >= 0 ? miso : BBS_SD_MISO;
+    bus.sclk_io_num     = sclk;
+    bus.quadwp_io_num   = -1;
+    bus.quadhd_io_num   = -1;
+    bus.max_transfer_sz = kSharedBytes;
+    if (spi_bus_initialize(kSharedHost, &bus, SPI_DMA_CH_AUTO) != ESP_OK) {
+        why = "the SPI bus would not start: check the pin numbers";
+        return false;
+    }
+    g_sharedMosi  = static_cast<int8_t>(mosi);
+    g_sharedMiso  = static_cast<int8_t>(bus.miso_io_num);
+    g_sharedSclk  = static_cast<int8_t>(sclk);
+    g_sharedUsers = who;
+    return true;
+}
+
+// cardQuiet: the slot's chip select held high while the panel talks on the
+// bus and the card is not mounted (none at boot, or SD UNMOUNT), so a card
+// already in SPI mode ignores the panel's bytes. A card never yet put into
+// SPI mode listens on its CMD line (MOSI) whatever CS says; the next
+// mount's reset (CMD0 with CS low) brings it round from whatever it made of
+// them. The card driver takes the pin over again at the next mount.
+void cardQuiet() {
+    if (BBS_SD_CS < 0) return;
+    gpio_set_level(static_cast<gpio_num_t>(BBS_SD_CS), 1);
+    gpio_set_direction(static_cast<gpio_num_t>(BBS_SD_CS), GPIO_MODE_OUTPUT);
+}
+
+void panelQuiet();                                     // below
+
+// sharedDown: `who` off the bus, and the bus freed when nobody is left.
+void sharedDown(uint8_t who) {
+    if (!(g_sharedUsers & who)) return;
+    g_sharedUsers = static_cast<uint8_t>(g_sharedUsers & ~who);
+    if (!g_sharedUsers) spi_bus_free(kSharedHost);
+    else if (who == SHARED_CARD) cardQuiet();          // the panel goes on without it
+    else panelQuiet();                                 // the card goes on without the panel
+}
+
+// panelQuiet: the panel's chip select held high while the card talks on the
+// bus before the panel has started (WS2 1.0.1). The card mounts first at
+// boot (sd is PF_EARLY), and the panel's CS is a strapping pin pulled low at
+// reset, so the controller took the card's traffic for its own; its SDA is
+// bidirectional, and a read command it made of those bytes drove the MOSI
+// line against us. On the bench the boot mount failed with
+// ESP_ERR_INVALID_CRC every time and SD MOUNT with the panel up succeeded.
+// esp_lcd takes the pin over when the panel starts.
+void panelQuiet() {
+    if (BBS_LCD_CS < 0 || (g_sharedUsers & SHARED_PANEL)) return;
+    gpio_set_level(static_cast<gpio_num_t>(BBS_LCD_CS), 1);
+    gpio_set_direction(static_cast<gpio_num_t>(BBS_LCD_CS), GPIO_MODE_OUTPUT);
+}
+
+// sharedCmd: the SPI card host's own command, under the mutex (see above).
+esp_err_t sharedCmd(int slot, sdmmc_command_t* cmd) {
+    xSemaphoreTake(g_sharedMux, portMAX_DELAY);
+    const esp_err_t e = sdspi_host_do_transaction(slot, cmd);
+    xSemaphoreGive(g_sharedMux);
+    return e;
+}
+}   // namespace
+#endif  // BBS_SPI_SHARED
+
 static sdmmc_card_t* g_card  = nullptr;
 static bool          g_mount = false;
 static uint32_t      g_speed = 0;
@@ -432,6 +575,11 @@ bool sdMount(const SdPins& pins, char* err, size_t errLen) {
     if (g_mount) return true;                      // already up, nothing to do
     // Whatever was cached describes a card that is not this one.
     sdInfoStale();
+#ifdef BBS_SD_CS_EXPANDER
+    // The card's chip select is the board's expander pin, held low from the
+    // expander's first write: the driver is given no CS (board.h).
+    if (!boardExpander()) return fail("the board's I2C expander did not answer");
+#endif
 #ifdef BBS_SD_SDMMC1
     // A slot wired for SDMMC (board.h, BBS_SD_SDMMC1): the SDMMC host, one
     // data line, on the profile's pins. On the ESP32 the host's slot 1 is on
@@ -463,6 +611,23 @@ bool sdMount(const SdPins& pins, char* err, size_t errLen) {
     // The chip's weak pull-ups on top of whatever the board fits. They are
     // released at reset, so GPIO 2's does not reach the download-mode strap.
     slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+#elif defined(BBS_SPI_SHARED)
+    // The panel's bus (above): raised here if the panel has not raised it,
+    // and every card command through sharedCmd.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    sdspi_device_config_t dev = SDSPI_DEVICE_CONFIG_DEFAULT();
+#pragma GCC diagnostic pop
+    host.max_freq_khz   = pins.speedKHz ? pins.speedKHz : 20000;
+    host.do_transaction = sharedCmd;
+    {
+        const char* why = nullptr;
+        if (!sharedUp(SHARED_CARD, pins.mosi, pins.miso, pins.clk, why)) return fail(why);
+        panelQuiet();                                  // before the panel is up (boot)
+    }
+    dev.gpio_cs = static_cast<gpio_num_t>(pins.cs);
+    dev.host_id = kSharedHost;
 #else
     // The bus is configured with MOSI, MISO and CLK, so a change to any of
     // them needs it rebuilt. CS is a device setting and does not.
@@ -527,6 +692,9 @@ bool sdMount(const SdPins& pins, char* err, size_t errLen) {
         // Put the bus back down. A failed mount that leaves the bus up holds
         // the old pins and makes the next attempt, with corrected wiring,
         // fail identically.
+#ifdef BBS_SPI_SHARED
+        sharedDown(SHARED_CARD);
+#endif
         if (g_busUp) { spi_bus_free(SDSPI_DEFAULT_HOST); g_busUp = false; }
         // Three different evenings, so three different messages. The error
         // code goes in the log as well: the first cut mapped everything that
@@ -536,7 +704,8 @@ bool sdMount(const SdPins& pins, char* err, size_t errLen) {
         plat::log("sd: mount failed at %u kHz: %s (0x%x)",
                   static_cast<unsigned>(host.max_freq_khz), esp_err_to_name(e),
                   static_cast<unsigned>(e));
-#ifdef BBS_SD_SDMMC1
+#if defined(BBS_SD_SDMMC1) || defined(BBS_SD_CS_EXPANDER)
+        // No CS pin a sysop could have got wrong: the slot's own wiring.
         if (e == ESP_ERR_TIMEOUT || e == ESP_ERR_NOT_FOUND)
             return fail("no card found: check it is seated");
 #else
@@ -570,6 +739,9 @@ void sdUnmount() {
     sdInfoStale();                                 // the figures die with the card
     esp_vfs_fat_sdcard_unmount(BBS_SD_MOUNT, g_card);
     // The bus comes down with it, but only if this code raised it.
+#ifdef BBS_SPI_SHARED
+    sharedDown(SHARED_CARD);                       // and the panel is not on it
+#endif
     if (g_busUp) { spi_bus_free(SDSPI_DEFAULT_HOST); g_busUp = false; }
     g_card  = nullptr;
     g_mount = false;
@@ -737,8 +909,185 @@ NetInfo netInfo() {
     if (nif && esp_netif_get_ip_info(nif, &ip) == ESP_OK && ip.ip.addr) {
         snprintf(n.ip, sizeof(n.ip), IPSTR, IP2STR(&ip.ip));
     }
+#ifdef BBS_HAS_ETH
+    // On the wire, the address is the wire's: Wi-Fi stands by unjoined then
+    // (main.cpp), and the address callers reach is the one shown.
+    const EthInfo e = ethInfo();
+    n.ethLink = e.link;
+    n.ethFull = e.full;
+    n.ethMbps = e.mbps;
+    if (e.up) {
+        esp_ip4_addr_t a;
+        a.addr = e.ip;
+        n.onEth = true;
+        snprintf(n.ip, sizeof(n.ip), IPSTR, IP2STR(&a));
+    }
+#endif
     return n;
 }
+
+#ifdef BBS_HAS_ETH
+// ===========================================================================
+// Ethernet: the W5500 (1.1.2). See platform.h. IDF 5.3.1's own driver
+// (components/esp_eth/src/spi/w5500, CONFIG_ETH_SPI_ETHERNET_W5500 in the
+// board's sdkconfig layer), on SPI3 with the board's pins (board.h).
+//
+// The events arrive on the default event loop's task; the loop reads what
+// they left through ethInfo. Every field is one word written whole, so a
+// read on the other core sees the old value or the new one, never half.
+// ===========================================================================
+namespace {
+esp_eth_handle_t  g_eth       = nullptr;
+bool              g_ethStarted = false;   // esp_eth_start succeeded: ethInfo's "started"
+volatile bool     g_ethLink   = false;
+volatile bool     g_ethUp     = false;
+volatile bool     g_ethFull   = false;
+volatile uint16_t g_ethMbps   = 0;
+volatile uint32_t g_ethIp     = 0;
+
+void onEthEvent(void*, esp_event_base_t base, int32_t id, void* data) {
+    if (base == ETH_EVENT && id == ETHERNET_EVENT_CONNECTED) {
+        esp_eth_handle_t h = *static_cast<esp_eth_handle_t*>(data);
+        eth_speed_t  sp = ETH_SPEED_10M;
+        eth_duplex_t dx = ETH_DUPLEX_HALF;
+        esp_eth_ioctl(h, ETH_CMD_G_SPEED, &sp);
+        esp_eth_ioctl(h, ETH_CMD_G_DUPLEX_MODE, &dx);
+        g_ethMbps = sp == ETH_SPEED_100M ? 100 : 10;
+        g_ethFull = dx == ETH_DUPLEX_FULL;
+        g_ethLink = true;
+        plat::log("eth: link up, %u Mb/s %s duplex", static_cast<unsigned>(g_ethMbps),
+                  g_ethFull ? "full" : "half");
+    } else if (base == ETH_EVENT && id == ETHERNET_EVENT_DISCONNECTED) {
+        // The address lwIP holds lingers until its lost-IP timer runs out,
+        // but nothing reaches it with the cable out: down is down now.
+        g_ethLink = false;
+        g_ethUp   = false;
+        plat::log("eth: link down");
+    } else if (base == IP_EVENT && id == IP_EVENT_ETH_GOT_IP) {
+        auto* e = static_cast<ip_event_got_ip_t*>(data);
+        g_ethIp = e->ip_info.ip.addr;
+        g_ethUp = g_ethLink;
+        plat::log("eth: address " IPSTR, IP2STR(&e->ip_info.ip));
+    } else if (base == IP_EVENT && id == IP_EVENT_ETH_LOST_IP) {
+        g_ethUp = false;
+        g_ethIp = 0;
+        plat::log("eth: address lost");
+    }
+}
+}   // namespace
+
+bool ethBegin(const char* hostname) {
+    auto fail = [](const char* what, esp_err_t e) {
+        plat::log("eth: %s failed (%s); running on Wi-Fi alone", what, esp_err_to_name(e));
+        return false;
+    };
+    // The W5500's interrupt line is a GPIO interrupt, through the IDF's ISR
+    // service. Already installed is fine: whoever did it first, it serves all.
+    esp_err_t e = gpio_install_isr_service(0);
+    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) return fail("the GPIO interrupt service", e);
+
+    spi_bus_config_t bus = {};
+    bus.mosi_io_num   = BBS_ETH_MOSI;
+    bus.miso_io_num   = BBS_ETH_MISO;
+    bus.sclk_io_num   = BBS_ETH_SCLK;
+    bus.quadwp_io_num = -1;
+    bus.quadhd_io_num = -1;
+    const spi_host_device_t host = static_cast<spi_host_device_t>(BBS_ETH_SPI_HOST);
+    e = spi_bus_initialize(host, &bus, SPI_DMA_CH_AUTO);
+    if (e != ESP_OK) return fail("the SPI bus", e);
+
+    spi_device_interface_config_t dev = {};
+    dev.mode           = 0;
+    dev.clock_speed_hz = BBS_ETH_MHZ * 1000 * 1000;
+    dev.spics_io_num   = BBS_ETH_CS;
+    dev.queue_size     = 20;
+    eth_w5500_config_t wcfg = ETH_W5500_DEFAULT_CONFIG(host, &dev);
+    wcfg.int_gpio_num = BBS_ETH_INT;
+
+    eth_mac_config_t mcfg = ETH_MAC_DEFAULT_CONFIG();
+    // The receive task beside Wi-Fi and lwIP on core 0 (this is app_main,
+    // which runs there), never on the BBS loop's core: at priority 15 it
+    // would take the loop's core for every frame.
+    mcfg.flags |= ETH_MAC_FLAG_PIN_TO_CORE;
+    eth_phy_config_t pcfg = ETH_PHY_DEFAULT_CONFIG();
+    pcfg.reset_gpio_num = BBS_ETH_RST;
+
+    esp_eth_mac_t* mac = esp_eth_mac_new_w5500(&wcfg, &mcfg);
+    esp_eth_phy_t* phy = mac ? esp_eth_phy_new_w5500(&pcfg) : nullptr;
+    if (!mac || !phy) {
+        if (phy) phy->del(phy);
+        if (mac) mac->del(mac);
+        spi_bus_free(host);
+        return fail("the W5500 driver", ESP_FAIL);
+    }
+    esp_eth_config_t ecfg = ETH_DEFAULT_CONFIG(mac, phy);
+    e = esp_eth_driver_install(&ecfg, &g_eth);
+    if (e != ESP_OK) {
+        // No answer from the chip lands here (its version register is read
+        // at init): a board with its W5500 unfitted or dead. The MAC's init
+        // may already have hooked the INT pin's interrupt to the object
+        // about to be freed, and the driver's error path leaves it there: an
+        // edge on the pin would then run into freed memory.
+        gpio_isr_handler_remove(static_cast<gpio_num_t>(BBS_ETH_INT));
+        gpio_reset_pin(static_cast<gpio_num_t>(BBS_ETH_INT));
+        phy->del(phy);
+        mac->del(mac);
+        spi_bus_free(host);
+        g_eth = nullptr;
+        return fail("the W5500", e);
+    }
+    // The W5500 has no address of its own: the chip's Ethernet one, from
+    // its efuse (the base MAC plus 3 on the S3), so it is this board's, stable.
+    uint8_t addr[6];
+    if (esp_read_mac(addr, ESP_MAC_ETH) == ESP_OK) esp_eth_ioctl(g_eth, ETH_CMD_S_MAC_ADDR, addr);
+
+    // Its own netif, "ETH_DEF" as mDNS expects, and the default route over
+    // Wi-Fi's while both are up (an Improv trial on a wired board): 128
+    // against the station's 100.
+    esp_netif_inherent_config_t inh = ESP_NETIF_INHERENT_DEFAULT_ETH();
+    inh.route_prio = 128;
+    esp_netif_config_t ncfg = {};
+    ncfg.base  = &inh;
+    ncfg.stack = ESP_NETIF_NETSTACK_DEFAULT_ETH;
+    esp_netif_t* nif = esp_netif_new(&ncfg);
+    if (!nif) {
+        esp_eth_driver_uninstall(g_eth);    // deinits the MAC and PHY, frees neither
+        phy->del(phy);
+        mac->del(mac);
+        spi_bus_free(host);
+        g_eth = nullptr;
+        return fail("the Ethernet netif", ESP_ERR_NO_MEM);
+    }
+    esp_netif_set_hostname(nif, hostname);
+    // A failure from here on leaves the driver installed and unused: the
+    // board runs on Wi-Fi alone, and rare enough not to tear down.
+    // esp_netif_attach calls the glue's post_attach without testing it, so
+    // a glue that could not be made is caught here, not as a boot crash.
+    esp_eth_netif_glue_handle_t glue = esp_eth_new_netif_glue(g_eth);
+    if (!glue) return fail("the Ethernet netif glue", ESP_ERR_NO_MEM);
+    e = esp_netif_attach(nif, glue);
+    if (e != ESP_OK) return fail("attaching the Ethernet netif", e);
+    esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &onEthEvent, nullptr);
+    esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &onEthEvent, nullptr);
+    esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_LOST_IP, &onEthEvent, nullptr);
+    e = esp_eth_start(g_eth);
+    if (e != ESP_OK) return fail("starting Ethernet", e);
+    g_ethStarted = true;
+    plat::log("eth: W5500 started, waiting for a link");
+    return true;
+}
+
+EthInfo ethInfo() {
+    EthInfo i;
+    i.started = g_ethStarted;
+    i.link    = g_ethLink;
+    i.up      = g_ethUp;
+    i.full    = g_ethFull;
+    i.mbps    = g_ethMbps;
+    i.ip      = g_ethIp;
+    return i;
+}
+#endif  // BBS_HAS_ETH
 
 void log(const char* fmt, ...) {
     char buf[160];
@@ -1364,13 +1713,17 @@ uint8_t pixelsFrame(uint8_t out, uint8_t* rgb, uint8_t cap) {
     return n;
 }
 
-#ifdef BBS_HAS_LCD
+#if defined(BBS_HAS_LCD) && !defined(BBS_LCD_RGB)   // an RGB panel: platform_esp32_rgb.cpp
 // ===========================================================================
-// The panel (BBS_HAS_LCD): an ST7789 through the IDF's esp_lcd, on SPI3.
+// The panel (BBS_HAS_LCD) through the IDF's esp_lcd: an ST7789 on SPI3 (the
+// Waveshare), or an ILI9488 on a 16-bit i80 parallel bus, the S3's LCD_CAM
+// peripheral (the Makerfabs Parallel TFT, BBS_LCD_I80).
 //
 // SPI3 because the SD card's SPI mode takes SPI2 (SDSPI_DEFAULT_HOST), and
 // the S3 has exactly those two for general use; Waveshare's demo puts the
-// panel on SPI3 as well.
+// panel on SPI3 as well. A board whose panel and card share their wires
+// (BBS_SPI_SHARED) has them both on SPI2 instead (sharedUp, above). The i80
+// bus shares nothing with either.
 //
 // Never waiting in the loop. esp_lcd sends colour data as a queued DMA
 // transaction and returns, but the address commands in front of it are
@@ -1380,19 +1733,45 @@ uint8_t pixelsFrame(uint8_t out, uint8_t* rgb, uint8_t cap) {
 // internal DMA memory, allocated here at begin, because the SPI driver
 // copies anything it cannot DMA from (PSRAM, where the framebuffer is) into
 // a buffer it allocates per transaction, which would be heap in the loop.
+// The i80 path keeps the same staging buffer, for the same reason and so the
+// two paths send a band the same way.
 // ===========================================================================
+#if defined(BBS_LCD_ILI9488) && !defined(BBS_LCD_I80)
+#error "the ILI9488 is driven on a 16-bit i80 bus only (board.h, BBS_LCD_I80)"
+#endif
 namespace {
 
+#ifdef BBS_LCD_I80
+// A band: 12 rows of a 480-pixel line, RGB565 as the framebuffer holds it
+// (COLMOD 0x55 over 16 bits), 11.25 KB of internal DMA memory. About 0.3 ms on
+// the bus at a 20 MHz WR clock, one per plugin tick.
+constexpr uint32_t kBandPixels = 480u * 12u;
+constexpr uint32_t kBpp        = 2u;
+#else
 // A band: 16 rows of a 320-pixel line, 10 KB. About 8 ms on the wire at
 // 10 MHz and 2 ms at 40, one per plugin tick.
 constexpr uint32_t kBandPixels = 320u * 16u;
+constexpr uint32_t kBpp        = 2u;
+#ifdef BBS_SPI_SHARED
+static_assert(kBandPixels * 2u <= static_cast<uint32_t>(kSharedBytes),
+              "the shared bus is raised for one panel band");
+constexpr spi_host_device_t kLcdHost = kSharedHost;    // with the card (above)
+#else
+constexpr spi_host_device_t kLcdHost = SPI3_HOST;
+#endif
+#endif
 
 struct Lcd {
     esp_lcd_panel_io_handle_t io     = nullptr;
-    esp_lcd_panel_handle_t    panel  = nullptr;
-    uint16_t*                 stage  = nullptr;
+    esp_lcd_panel_handle_t    panel  = nullptr;   // the ST7789's esp_lcd driver; unused for the ILI9488
+#ifdef BBS_LCD_I80
+    esp_lcd_i80_bus_handle_t  i80    = nullptr;   // the parallel bus
+#endif
+    uint8_t*                  stage  = nullptr;   // kBandPixels x kBpp bytes
+    bool                      up     = false;     // set up and on: bands may be drawn
     bool                      busUp  = false;
     bool                      blUp   = false;
+    int8_t                    blPin  = -1;      // the backlight's pin while blUp
     volatile bool             busy   = false;   // a band is on the wire
     LcdCfg                    cfg;
 };
@@ -1409,7 +1788,30 @@ bool lcdDone(esp_lcd_panel_io_handle_t, esp_lcd_panel_io_event_data_t*, void*) {
 // generic ST7789 init sends only sleep-out, MADCTL, COLMOD and RAMCTRL, which
 // lights the panel with the controller's defaults; these are what the panel
 // maker tuned it to. Register values, sent as the demo sends them.
-struct LcdInit { uint8_t cmd; uint8_t n; uint8_t data[14]; };
+struct LcdInit { uint8_t cmd; uint8_t n; uint8_t data[15]; };
+#ifdef BBS_LCD_ILI9488
+// The ILI9488's own settings after its software reset: the gamma curves,
+// power, VCOM, interface, frame rate, inversion, display function, entry
+// mode and adjust control. The values the common ILI9488 drivers send for a
+// TN glass like this one (the IDF component registry's atanisoft/
+// esp_lcd_ili9488 "default" table, which Makerfabs' own IDF board support
+// uses for their ILI9488 boards, and LovyanGFX's Panel_ILI9488, which their
+// Parallel TFT demos run). Register values as they send them; MADCTL and
+// COLMOD follow in lcdBegin.
+const LcdInit kLcdInit[] = {
+    { 0xE0, 15, { 0x00, 0x03, 0x09, 0x08, 0x16, 0x0A, 0x3F, 0x78, 0x4C, 0x09, 0x0A, 0x08, 0x16, 0x1A, 0x0F } },
+    { 0xE1, 15, { 0x00, 0x16, 0x19, 0x03, 0x0F, 0x05, 0x32, 0x45, 0x46, 0x04, 0x0E, 0x0D, 0x35, 0x37, 0x0F } },
+    { 0xC0, 2,  { 0x17, 0x15 } },                                     // power control 1
+    { 0xC1, 1,  { 0x41 } },                                           // power control 2
+    { 0xC5, 3,  { 0x00, 0x12, 0x80 } },                               // VCOM
+    { 0xB0, 1,  { 0x00 } },                                           // interface mode: SDO on
+    { 0xB1, 1,  { 0xA0 } },                                           // frame rate, 60 Hz
+    { 0xB4, 1,  { 0x02 } },                                           // inversion: 2-dot
+    { 0xB6, 3,  { 0x02, 0x02, 0x3B } },                               // display function
+    { 0xB7, 1,  { 0xC6 } },                                           // entry mode
+    { 0xF7, 4,  { 0xA9, 0x51, 0x2C, 0x02 } },                         // adjust control 3
+};
+#else
 const LcdInit kLcdInit[] = {
     { 0xB2, 5,  { 0x0C, 0x0C, 0x00, 0x33, 0x33 } },                   // porch
     { 0xB7, 1,  { 0x75 } },                                           // gate voltages
@@ -1423,12 +1825,21 @@ const LcdInit kLcdInit[] = {
     { 0xE0, 14, { 0xD0, 0x0D, 0x14, 0x0D, 0x0D, 0x09, 0x38, 0x44, 0x4E, 0x3A, 0x17, 0x18, 0x2F, 0x30 } },
     { 0xE1, 14, { 0xD0, 0x09, 0x0F, 0x08, 0x07, 0x14, 0x37, 0x44, 0x4D, 0x38, 0x15, 0x16, 0x2C, 0x2E } },
 };
+#endif
 
 void lcdBlSet(uint8_t pct) {
-    if (!g_lcd.blUp) return;
+    if (!g_lcd.blUp) {
+        log("panel: backlight asked for %u%%, but it has no pin running", static_cast<unsigned>(pct));
+        return;
+    }
     uint32_t duty = pct >= 100 ? 8191u : static_cast<uint32_t>(pct) * 8191u / 100u;
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+    // Said on the console at every change (start, silent, a CONFIG save:
+    // never per frame), with the duty given to the LEDC, so a dark glass can
+    // be told from a backlight that was never asked for.
+    log("panel: backlight gpio %d at %u%%, PWM duty %u of 8191, active high", g_lcd.blPin,
+        static_cast<unsigned>(pct), static_cast<unsigned>(duty));
 }
 
 bool lcdFail(char* err, size_t n, const char* why, esp_err_t e) {
@@ -1438,6 +1849,39 @@ bool lcdFail(char* err, size_t n, const char* why, esp_err_t e) {
     return false;
 }
 
+#ifdef BBS_LCD_ILI9488
+// iliMadctl: the ILI9488's MADCTL for a rotation and the glass's mirror, the
+// same four turns and the same mirror rule as the ST7789 path below (and as
+// panelgfx::scanFor works them out): MY 0x80, MX 0x40, MV 0x20, BGR 0x08.
+uint8_t iliMadctl(const LcdCfg& c) {
+    bool swap = false, mx = false, my = false;
+    switch (c.rotation) {
+        case 90:  swap = true;  mx = true;  break;
+        case 180: mx = true;    my = true;  break;
+        case 270: swap = true;  my = true;  break;
+        default:  break;
+    }
+    if (c.mirror) {
+        if (swap) my = !my;
+        else      mx = !mx;
+    }
+    return static_cast<uint8_t>((my ? 0x80 : 0) | (mx ? 0x40 : 0) | (swap ? 0x20 : 0) | (c.bgr ? 0x08 : 0));
+}
+
+// iliWindow: the column and row addresses of a rectangle, the gaps added.
+esp_err_t iliWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+    const uint16_t x0 = static_cast<uint16_t>(x + g_lcd.cfg.xoff), x1 = static_cast<uint16_t>(x0 + w - 1);
+    const uint16_t y0 = static_cast<uint16_t>(y + g_lcd.cfg.yoff), y1 = static_cast<uint16_t>(y0 + h - 1);
+    const uint8_t ca[4] = { static_cast<uint8_t>(x0 >> 8), static_cast<uint8_t>(x0), static_cast<uint8_t>(x1 >> 8),
+                            static_cast<uint8_t>(x1) };
+    const uint8_t ra[4] = { static_cast<uint8_t>(y0 >> 8), static_cast<uint8_t>(y0), static_cast<uint8_t>(y1 >> 8),
+                            static_cast<uint8_t>(y1) };
+    esp_err_t e = esp_lcd_panel_io_tx_param(g_lcd.io, 0x2A, ca, 4);        // CASET
+    if (e == ESP_OK) e = esp_lcd_panel_io_tx_param(g_lcd.io, 0x2B, ra, 4); // RASET
+    return e;
+}
+#endif
+
 }   // namespace
 
 bool lcdBegin(const LcdCfg& c, char* err, size_t errLen) {
@@ -1445,15 +1889,60 @@ bool lcdBegin(const LcdCfg& c, char* err, size_t errLen) {
     if (err && errLen) err[0] = '\0';
     esp_err_t e;
 
+#ifdef BBS_LCD_I80
+    // The i80 bus: WR is LcdCfg's mosi and RD its sclk (board.h). RD is only
+    // for reading the panel, which nothing does: held high, idle.
+    if (c.sclk >= 0) {
+        gpio_config_t g = {};
+        g.pin_bit_mask = 1ULL << c.sclk;
+        g.mode = GPIO_MODE_OUTPUT;
+        gpio_config(&g);
+        gpio_set_level(static_cast<gpio_num_t>(c.sclk), 1);
+    }
+    esp_lcd_i80_bus_config_t bus = {};
+    static const int kData[] = { BBS_LCD_DATA_PINS };
+    static_assert(sizeof(kData) / sizeof(kData[0]) == 16, "a 16-bit bus names sixteen data pins");
+    bus.dc_gpio_num = static_cast<gpio_num_t>(c.dc);
+    bus.wr_gpio_num = static_cast<gpio_num_t>(c.mosi);
+    bus.clk_src     = LCD_CLK_SRC_DEFAULT;
+    for (int i = 0; i < 16; ++i) bus.data_gpio_nums[i] = static_cast<gpio_num_t>(kData[i]);
+    bus.bus_width          = 16;
+    bus.max_transfer_bytes = kBandPixels * kBpp;
+    e = esp_lcd_new_i80_bus(&bus, &g_lcd.i80);
+    if (e != ESP_OK) return lcdFail(err, errLen, "the parallel bus would not start: check the pins", e);
+    g_lcd.busUp = true;
+
+    esp_lcd_panel_io_i80_config_t io = {};
+    io.cs_gpio_num       = static_cast<gpio_num_t>(c.cs);
+    io.pclk_hz           = static_cast<uint32_t>(c.mhz) * 1000u * 1000u;
+    io.trans_queue_depth = 2;
+    io.on_color_trans_done = lcdDone;
+    io.lcd_cmd_bits      = 8;
+    io.lcd_param_bits    = 8;
+    io.dc_levels.dc_idle_level  = 0;
+    io.dc_levels.dc_cmd_level   = 0;
+    io.dc_levels.dc_dummy_level = 0;
+    io.dc_levels.dc_data_level  = 1;
+    e = esp_lcd_new_panel_io_i80(g_lcd.i80, &io, &g_lcd.io);
+    if (e != ESP_OK) return lcdFail(err, errLen, "the panel would not take the parallel bus", e);
+#else
+#ifdef BBS_SPI_SHARED
+    {
+        const char* why = nullptr;
+        if (!sharedUp(SHARED_PANEL, c.mosi, -1, c.sclk, why)) return lcdFail(err, errLen, why, ESP_ERR_INVALID_ARG);
+        if (!(g_sharedUsers & SHARED_CARD)) cardQuiet();
+    }
+#else
     spi_bus_config_t bus = {};
     bus.mosi_io_num     = c.mosi;
     bus.miso_io_num     = -1;
     bus.sclk_io_num     = c.sclk;
     bus.quadwp_io_num   = -1;
     bus.quadhd_io_num   = -1;
-    bus.max_transfer_sz = static_cast<int>(kBandPixels * 2u);
+    bus.max_transfer_sz = static_cast<int>(kBandPixels * kBpp);
     e = spi_bus_initialize(SPI3_HOST, &bus, SPI_DMA_CH_AUTO);
     if (e != ESP_OK) return lcdFail(err, errLen, "the SPI bus would not start: check the pins", e);
+#endif
     g_lcd.busUp = true;
 
     esp_lcd_panel_io_spi_config_t io = {};
@@ -1465,9 +1954,42 @@ bool lcdBegin(const LcdCfg& c, char* err, size_t errLen) {
     io.on_color_trans_done = lcdDone;
     io.lcd_cmd_bits      = 8;
     io.lcd_param_bits    = 8;
-    e = esp_lcd_new_panel_io_spi(static_cast<esp_lcd_spi_bus_handle_t>(SPI3_HOST), &io, &g_lcd.io);
+    e = esp_lcd_new_panel_io_spi(static_cast<esp_lcd_spi_bus_handle_t>(kLcdHost), &io, &g_lcd.io);
     if (e != ESP_OK) return lcdFail(err, errLen, "the panel would not take the SPI bus", e);
+#endif
 
+#ifdef BBS_LCD_ILI9488
+    // No esp_lcd driver for the ILI9488 in IDF 5.3.1, and only a handful of
+    // commands are needed, so they are sent here. A reset pin when there is
+    // one, else the software reset (this board's RESET is the chip's EN).
+    // The reset, sleep-out and display-on waits are the datasheet's (5 ms
+    // after a reset before a command, 120 ms before sleep-out, 5 ms after
+    // it): this is a plugin's start, never the loop.
+    if (c.rst >= 0) {
+        gpio_config_t g = {};
+        g.pin_bit_mask = 1ULL << c.rst;
+        g.mode = GPIO_MODE_OUTPUT;
+        gpio_config(&g);
+        gpio_set_level(static_cast<gpio_num_t>(c.rst), 0);
+        vTaskDelay(pdMS_TO_TICKS(10));
+        gpio_set_level(static_cast<gpio_num_t>(c.rst), 1);
+    } else {
+        e = esp_lcd_panel_io_tx_param(g_lcd.io, 0x01, nullptr, 0);         // SWRESET
+        if (e != ESP_OK) return lcdFail(err, errLen, "the panel did not answer its reset", e);
+    }
+    vTaskDelay(pdMS_TO_TICKS(120));
+    for (const LcdInit& in : kLcdInit) {
+        e = esp_lcd_panel_io_tx_param(g_lcd.io, in.cmd, in.data, in.n);
+        if (e != ESP_OK) return lcdFail(err, errLen, "the panel refused its settings", e);
+    }
+    const uint8_t mad = iliMadctl(c), colmod = 0x55;                      // RGB565 over 16 bits
+    e = esp_lcd_panel_io_tx_param(g_lcd.io, 0x36, &mad, 1);                 // MADCTL
+    if (e == ESP_OK) e = esp_lcd_panel_io_tx_param(g_lcd.io, 0x3A, &colmod, 1);   // COLMOD
+    if (e == ESP_OK) e = esp_lcd_panel_io_tx_param(g_lcd.io, c.invert ? 0x21 : 0x20, nullptr, 0);
+    if (e == ESP_OK) e = esp_lcd_panel_io_tx_param(g_lcd.io, 0x11, nullptr, 0);   // SLPOUT
+    if (e != ESP_OK) return lcdFail(err, errLen, "the panel refused its settings", e);
+    vTaskDelay(pdMS_TO_TICKS(120));
+#else
     esp_lcd_panel_dev_config_t pc = {};
     pc.reset_gpio_num = c.rst;
     pc.rgb_ele_order  = c.bgr ? LCD_RGB_ELEMENT_ORDER_BGR : LCD_RGB_ELEMENT_ORDER_RGB;
@@ -1509,8 +2031,9 @@ bool lcdBegin(const LcdCfg& c, char* err, size_t errLen) {
     esp_lcd_panel_swap_xy(g_lcd.panel, swap);
     esp_lcd_panel_mirror(g_lcd.panel, mx, my);
     esp_lcd_panel_set_gap(g_lcd.panel, c.xoff, c.yoff);
+#endif
 
-    g_lcd.stage = static_cast<uint16_t*>(heap_caps_malloc(kBandPixels * 2u, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+    g_lcd.stage = static_cast<uint8_t*>(heap_caps_malloc(kBandPixels * kBpp, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
     if (!g_lcd.stage) return lcdFail(err, errLen, "no DMA memory for the panel's band", ESP_ERR_NO_MEM);
 
     // The backlight, on LEDC at 5 kHz as the demo runs it. Only once the
@@ -1528,21 +2051,37 @@ bool lcdBegin(const LcdCfg& c, char* err, size_t errLen) {
         ch.channel    = LEDC_CHANNEL_0;
         ch.timer_sel  = LEDC_TIMER_0;
         ch.duty       = 0;
-        if (ledc_timer_config(&t) == ESP_OK && ledc_channel_config(&ch) == ESP_OK) g_lcd.blUp = true;
-        else log("panel: the backlight on gpio %d would not start", c.bl);
+        if (ledc_timer_config(&t) == ESP_OK && ledc_channel_config(&ch) == ESP_OK) {
+            g_lcd.blUp  = true;
+            g_lcd.blPin = c.bl;
+        } else {
+            log("panel: the backlight on gpio %d would not start", c.bl);
+        }
     }
+#ifdef BBS_LCD_ILI9488
+    esp_lcd_panel_io_tx_param(g_lcd.io, 0x29, nullptr, 0);                // DISPON
+#else
     esp_lcd_panel_disp_on_off(g_lcd.panel, true);
+#endif
     g_lcd.cfg  = c;
     g_lcd.busy = false;
+    g_lcd.up   = true;
     lcdBlSet(c.backlight);
-    log("panel: ST7789 %ux%u, rotation %u, %u MHz, on SPI3", static_cast<unsigned>(c.width),
-        static_cast<unsigned>(c.height), static_cast<unsigned>(c.rotation), static_cast<unsigned>(c.mhz));
+#ifdef BBS_LCD_I80
+    log("panel: %s %ux%u, rotation %u, %u MHz, on a 16-bit parallel bus", BBS_LCD_DRIVER,
+        static_cast<unsigned>(c.width), static_cast<unsigned>(c.height), static_cast<unsigned>(c.rotation),
+        static_cast<unsigned>(c.mhz));
+#else
+    log("panel: %s %ux%u, rotation %u, %u MHz, on SPI%d", BBS_LCD_DRIVER, static_cast<unsigned>(c.width),
+        static_cast<unsigned>(c.height), static_cast<unsigned>(c.rotation), static_cast<unsigned>(c.mhz),
+        static_cast<int>(kLcdHost) + 1);
+#endif
     return true;
 }
 
 bool lcdSame(const LcdCfg& c) {
     const LcdCfg& o = g_lcd.cfg;
-    return g_lcd.panel && o.mosi == c.mosi && o.sclk == c.sclk && o.cs == c.cs && o.dc == c.dc &&
+    return g_lcd.up && o.mosi == c.mosi && o.sclk == c.sclk && o.cs == c.cs && o.dc == c.dc &&
            o.rst == c.rst && o.bl == c.bl && o.width == c.width && o.height == c.height &&
            o.xoff == c.xoff && o.yoff == c.yoff && o.rotation == c.rotation &&
            o.invert == c.invert && o.bgr == c.bgr && o.mirror == c.mirror && o.mhz == c.mhz;
@@ -1552,29 +2091,48 @@ void lcdEnd() {
     if (g_lcd.blUp) {
         lcdBlSet(0);
         ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
-        g_lcd.blUp = false;
+        g_lcd.blUp  = false;
+        g_lcd.blPin = -1;
     }
     if (g_lcd.panel) {
         esp_lcd_panel_disp_on_off(g_lcd.panel, false);   // waits out a band in flight
         esp_lcd_panel_del(g_lcd.panel);
         g_lcd.panel = nullptr;
     }
+#ifdef BBS_LCD_ILI9488
+    if (g_lcd.io && g_lcd.up) {
+        // A command waits out a band in flight, as the ST7789 path's does.
+        esp_lcd_panel_io_tx_param(g_lcd.io, 0x28, nullptr, 0);            // DISPOFF
+        esp_lcd_panel_io_tx_param(g_lcd.io, 0x10, nullptr, 0);            // SLPIN
+    }
+#endif
     if (g_lcd.io) {
         esp_lcd_panel_io_del(g_lcd.io);
         g_lcd.io = nullptr;
     }
     if (g_lcd.busUp) {
+#ifdef BBS_LCD_I80
+        esp_lcd_del_i80_bus(g_lcd.i80);
+        g_lcd.i80 = nullptr;
+        // RD was a plain output held high: give it back, or a pin moved in
+        // CONFIG leaves the old one driven.
+        if (g_lcd.cfg.sclk >= 0) gpio_reset_pin(static_cast<gpio_num_t>(g_lcd.cfg.sclk));
+#elif defined(BBS_SPI_SHARED)
+        sharedDown(SHARED_PANEL);
+#else
         spi_bus_free(SPI3_HOST);
+#endif
         g_lcd.busUp = false;
     }
     heap_caps_free(g_lcd.stage);
     g_lcd.stage = nullptr;
+    g_lcd.up    = false;
     g_lcd.busy  = false;
     g_lcd.cfg   = LcdCfg();
 }
 
 bool lcdReady() {
-    return g_lcd.panel && g_lcd.stage && !g_lcd.busy;
+    return g_lcd.up && g_lcd.stage && !g_lcd.busy;
 }
 
 uint32_t lcdBandPixels() {
@@ -1584,13 +2142,31 @@ uint32_t lcdBandPixels() {
 bool lcdDraw(const uint16_t* fb, uint16_t stride, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     if (!lcdReady() || !fb || !w || !h) return false;
     if (static_cast<uint32_t>(w) * h > kBandPixels) return false;
-    uint16_t* out = g_lcd.stage;
+#ifdef BBS_SPI_SHARED
+    // A card command on another task holds the bus: this band waits for a
+    // later tick rather than the loop waiting for the card (see sharedCmd).
+    if (xSemaphoreTake(g_sharedMux, 0) != pdTRUE) return false;
+#endif
+    uint16_t* out = reinterpret_cast<uint16_t*>(g_lcd.stage);
     for (uint16_t r = 0; r < h; ++r) {
         memcpy(out, fb + static_cast<size_t>(y + r) * stride + x, static_cast<size_t>(w) * 2u);
         out += w;
     }
+#ifdef BBS_LCD_ILI9488
+    // The framebuffer's RGB565 as it sits in memory: on the 16-bit bus a
+    // pixel is one WR cycle, its low byte on D0 to D7, which is the ILI9488's
+    // 16-bit RGB565 order (D15 to D11 red).
+    if (iliWindow(x, y, w, h) != ESP_OK) return false;
+    g_lcd.busy = true;
+    esp_err_t e = esp_lcd_panel_io_tx_color(g_lcd.io, 0x2C, g_lcd.stage,                 // RAMWR
+                                            static_cast<size_t>(w) * h * kBpp);
+#else
     g_lcd.busy = true;
     esp_err_t e = esp_lcd_panel_draw_bitmap(g_lcd.panel, x, y, x + w, y + h, g_lcd.stage);
+#ifdef BBS_SPI_SHARED
+    xSemaphoreGive(g_sharedMux);
+#endif
+#endif
     if (e != ESP_OK) {
         g_lcd.busy = false;
         return false;
@@ -1609,7 +2185,125 @@ void* psramAlloc(size_t n) {
 void psramFree(void* p) {
     heap_caps_free(p);
 }
+
+#if defined(BBS_HAS_TOUCH) && !defined(BBS_TOUCH_POLL)
+// ---------------------------------------------------------------------------
+// Touch (BBS_HAS_TOUCH): taps counted from the controller's INT line. The
+// CST816's INT goes low for a moment at each report while a finger is down,
+// about every 10 ms, so an edge that follows the last by less than
+// kTapGapMs is the same touch. I2C only at start, on port 0 (the camera's
+// SCCB has port 1, esp32-camera's default), with the driver removed again.
+// ---------------------------------------------------------------------------
+namespace {
+volatile uint16_t g_taps     = 0;
+volatile int64_t  g_tapLast  = 0;
+portMUX_TYPE      g_tapMux   = portMUX_INITIALIZER_UNLOCKED;   // the ISR and touchTaps
+bool              g_touchIsr = false;
+uint8_t           g_touchId  = 0;
+constexpr i2c_port_t kTouchPort = I2C_NUM_0;
+
+void IRAM_ATTR touchEdge(void*) {
+    const int64_t now = esp_timer_get_time();
+    portENTER_CRITICAL_ISR(&g_tapMux);
+    if (now - g_tapLast >= static_cast<int64_t>(kTapGapMs) * 1000) g_taps = static_cast<uint16_t>(g_taps + 1);
+    g_tapLast = now;
+    portEXIT_CRITICAL_ISR(&g_tapMux);
+}
+
+// The CST816's registers (Hynitron's CST816S register map, which the D
+// shares): 0xA7 ChipID, 0xFA IrqCtl (0x40 EnTouch: pulse while touched;
+// 0x20 EnChange: pulse when the touch changes), 0xFE DisAutoSleep.
+constexpr uint8_t kRegChipId  = 0xA7;
+constexpr uint8_t kRegIrqCtl  = 0xFA;
+constexpr uint8_t kIrqTouch   = 0x60;
+}   // namespace
+
+bool touchBegin(char* err, size_t errLen) {
+    if (err && errLen) err[0] = '\0';
+    // The interrupt first: the taps count whether or not I2C answers below.
+    if (!g_touchIsr) {
+        gpio_config_t io = {};
+        io.pin_bit_mask  = 1ULL << BBS_TOUCH_INT;
+        io.mode          = GPIO_MODE_INPUT;
+        io.pull_up_en    = GPIO_PULLUP_ENABLE;
+        io.intr_type     = GPIO_INTR_NEGEDGE;
+        gpio_config(&io);
+        const esp_err_t svc = gpio_install_isr_service(0);
+        if ((svc == ESP_OK || svc == ESP_ERR_INVALID_STATE) &&
+            gpio_isr_handler_add(static_cast<gpio_num_t>(BBS_TOUCH_INT), touchEdge, nullptr) == ESP_OK)
+            g_touchIsr = true;
+        else
+            log("touch: the interrupt on gpio %d would not start", BBS_TOUCH_INT);
+    }
+    // Once: who it is, and INT pulsing on a touch. A few ms, a plugin's start.
+    i2c_config_t c = {};
+    c.mode             = I2C_MODE_MASTER;
+    c.sda_io_num       = BBS_TOUCH_SDA;
+    c.scl_io_num       = BBS_TOUCH_SCL;
+    c.sda_pullup_en    = GPIO_PULLUP_ENABLE;
+    c.scl_pullup_en    = GPIO_PULLUP_ENABLE;
+    c.master.clk_speed = 400000;
+    bool ok = i2c_param_config(kTouchPort, &c) == ESP_OK &&
+              i2c_driver_install(kTouchPort, I2C_MODE_MASTER, 0, 0, 0) == ESP_OK;
+    if (ok) {
+        uint8_t reg = kRegChipId, id = 0;
+        ok = i2c_master_write_read_device(kTouchPort, BBS_TOUCH_ADDR, &reg, 1, &id, 1, pdMS_TO_TICKS(50)) == ESP_OK;
+        if (ok) {
+            g_touchId = id;
+            const uint8_t w[2] = { kRegIrqCtl, kIrqTouch };
+            if (i2c_master_write_to_device(kTouchPort, BBS_TOUCH_ADDR, w, 2, pdMS_TO_TICKS(50)) != ESP_OK)
+                log("touch: chip 0x%02x would not take its interrupt setting", static_cast<unsigned>(id));
+        }
+        i2c_driver_delete(kTouchPort);
+    }
+    if (!ok) {
+        if (err && errLen) snprintf(err, errLen, "the touch controller did not answer at 0x%02x",
+                                    static_cast<unsigned>(BBS_TOUCH_ADDR));
+        return false;
+    }
+    log("touch: CST816 chip 0x%02x at 0x%02x, taps on gpio %d", static_cast<unsigned>(g_touchId),
+        static_cast<unsigned>(BBS_TOUCH_ADDR), BBS_TOUCH_INT);
+    return true;
+}
+
+uint8_t touchChip() { return g_touchId; }
+
+// touchTaps: taken and cleared as one, under the ISR's lock, so an edge
+// between the two is never lost.
+uint16_t touchTaps() {
+    portENTER_CRITICAL(&g_tapMux);
+    const uint16_t n = g_taps;
+    g_taps = 0;
+    portEXIT_CRITICAL(&g_tapMux);
+    return n;
+}
+#endif  // BBS_HAS_TOUCH && !BBS_TOUCH_POLL (the 4.3B polls its GT911: platform_esp32_rgb.cpp)
 #endif  // BBS_HAS_LCD
+
+#ifdef BBS_HAS_CHIP_TEMP
+// chipTemp: the S3's own sensor, installed at the first call (the panel's
+// start) for 20 to 100 C: the die runs above the air round it, and the
+// panel's warm and risk steps (65, 75) sit inside that range, with an error
+// under 2 C (the IDF's table for the S3).
+bool chipTemp(int& tenthsC) {
+    static temperature_sensor_handle_t h = nullptr;
+    static bool tried = false;
+    if (!h) {
+        if (tried) return false;
+        tried = true;
+        temperature_sensor_config_t c = TEMPERATURE_SENSOR_CONFIG_DEFAULT(20, 100);
+        if (temperature_sensor_install(&c, &h) != ESP_OK || temperature_sensor_enable(h) != ESP_OK) {
+            h = nullptr;
+            log("temp: the chip's sensor would not start");
+            return false;
+        }
+    }
+    float c = 0;
+    if (temperature_sensor_get_celsius(h, &c) != ESP_OK) return false;
+    tenthsC = static_cast<int>(c * 10.0f + (c < 0 ? -0.5f : 0.5f));
+    return true;
+}
+#endif
 
 // ===========================================================================
 // inflateRaw: ROM tinfl with a 32 KB circular dictionary
@@ -1706,7 +2400,7 @@ bool camOpen(const CamCfg& c, char* err, size_t errLen) {
     if (g_camUp) camClose();
     if (!heap_caps_get_total_size(MALLOC_CAP_SPIRAM)) return fail("no PSRAM on this board");
     // Measured here, on the worker, with its own stack already taken: the
-    // driver's one 32 KB DMA buffer is its first large allocation and the
+    // driver's one DMA buffer (kCamDmaBlock) is its first large allocation and the
     // one that fails, and a failure costs a sensor probe and a bus set up
     // and torn down for nothing. The loop's check before the worker started
     // could not see the worker's stack come out of the same memory.
@@ -1775,6 +2469,9 @@ bool camOpen(const CamCfg& c, char* err, size_t errLen) {
         // everything it holds goes back: the DMA block, cam_task, the SCCB
         // bus and XCLK's LEDC channel.
         if (esp_camera_sensor_get()) esp_camera_deinit();
+#ifdef BBS_CAM_PWDN_IS_POWER
+        gpio_set_level(static_cast<gpio_num_t>(BBS_CAM_PWDN), 1);   // the camera's power off again
+#endif
         camMemLog("after the failed start");
         // No sensor on the bus is ESP_ERR_NOT_SUPPORTED in 2.1.7 (camera_
         // probe: "Detected camera not supported"), not NOT_DETECTED. A DMA
@@ -1862,6 +2559,13 @@ void camRelease() {
 void camClose() {
     camRelease();
     if (g_camUp) esp_camera_deinit();
+#ifdef BBS_CAM_PWDN_IS_POWER
+    // A board whose PWDN line switches the camera's supply (board.h): off
+    // between snaps, as it was at reset. The driver drives the line low at
+    // every bring-up and never high again, so a camera once used would stay
+    // powered, and it sits on strapping pins across a reset.
+    gpio_set_level(static_cast<gpio_num_t>(BBS_CAM_PWDN), 1);
+#endif
     g_camUp = false;
 }
 
@@ -1908,6 +2612,19 @@ CamMeter camMeter(uint16_t& a, uint16_t& b) {
         b = static_cast<uint16_t>(gain);
         return CAM_METER_EXPOSURE;
     }
+#if CONFIG_OV5640_SUPPORT
+    // The OV5640 (the Touch-LCD-2's camera, WS2 1.0.0): exposure in 0x3500
+    // to 0x3502, bits 19:4 whole lines, and gain in 0x350A-0x350B, ten bits
+    // (OV5640 datasheet, the AEC/AGC registers). Its driver's get_reg reads
+    // 16 bits for a mask over 0xFF and 24 for one over 0xFFFF.
+    if (g_camPid == OV5640_PID) {
+        const int exp = s->get_reg(s, 0x3500, 0xFFFFF), gain = s->get_reg(s, 0x350A, 0x3FF);
+        if (exp < 0 || gain < 0) return CAM_METER_NONE;
+        a = static_cast<uint16_t>(exp >> 4);
+        b = static_cast<uint16_t>(gain);
+        return CAM_METER_EXPOSURE;
+    }
+#endif
     return CAM_METER_NONE;
 }
 

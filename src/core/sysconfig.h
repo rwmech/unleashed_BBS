@@ -199,6 +199,12 @@ struct SysConfig {
     // like port. Never the same as port or backup_port (crossCheck).
     uint16_t sshPort       = BBS_SSH_PORT;
 #endif
+#ifdef BBS_HAS_ETH
+    // Ethernet first, Wi-Fi as the fallback (1.1.2, a board with a wired
+    // port: main.cpp). No runs the board on Wi-Fi alone and leaves the
+    // Ethernet chip untouched. Read at boot, like the network.
+    bool     ethernet      = true;
+#endif
 };
 
 namespace syscfg {

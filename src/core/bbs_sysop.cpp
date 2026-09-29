@@ -1040,6 +1040,14 @@ const CfgField kNetwork[] = {
       "SSH port (SyncTERM)",
       "SSH that speaks first, for SyncTERM 1.9 and older. 0 off. Next restart." },
 #endif
+#ifdef BBS_HAS_ETH
+    // The wired port (1.1.2, a board with Ethernet), last so no row moves.
+    // Yes: Ethernet first, Wi-Fi only while it has no link or address. No:
+    // Wi-Fi alone. Next restart, like the rest of the page.
+    { "ethernet",      "Ethernet", CK_YESNO, 0, 0, 4, "No uses Wi-Fi alone. Next restart.",
+      "Ethernet first",
+      "Yes: wired, with Wi-Fi when it has no link. No: Wi-Fi only. Next restart." },
+#endif
 };
 
 // CONFIG photos (1.2.0; CONFIG cameras until Rob's naming of 2026-09-28,
@@ -1512,6 +1520,9 @@ void cfgLiveValue(const char* key, char* out, size_t n) {
     else if (!strcmp(key, "backup_port"))           snprintf(out, n, "%u", c.backupPort);
 #if BBS_HAS_SSH
     else if (!strcmp(key, "ssh_port"))              snprintf(out, n, "%u", c.sshPort);
+#endif
+#ifdef BBS_HAS_ETH
+    else if (!strcmp(key, "ethernet"))              snprintf(out, n, "%s", c.ethernet ? "yes" : "no");
 #endif
     else if (!strcmp(key, "backup_window_minutes")) snprintf(out, n, "%u", c.backupMinutes);
     else if (!strcmp(key, "backup_button_gpio"))    snprintf(out, n, "%d", c.backupGpio);

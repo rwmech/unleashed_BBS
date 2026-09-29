@@ -145,6 +145,14 @@ bbs_host_s3: $(SRCS) $(HDRS) libwolfssh_host.a $(MBED_LIB)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_WS_S3LCD147 $(WOLF_CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) \
 	    libwolfssh_host.a $(MBED_LIB) $(LDLIBS)
 
+# The Waveshare ESP32-S3-Touch-LCD-4.3B profile (1.1.2, WS43B): the RGB
+# panel's picture at 400 x 240, touch as a file called "tap" in the data
+# directory, and SSH as on the stick. tools/harness.sh --board ws43b runs it
+# with --only=board_ws43b.
+bbs_host_ws43b: $(SRCS) $(HDRS) libwolfssh_host.a $(MBED_LIB)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_WS_S3TOUCH43B $(WOLF_CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) \
+	    libwolfssh_host.a $(MBED_LIB) $(LDLIBS)
+
 wolfobj/wc_%.o: $(WOLF)/wolfssl/wolfcrypt/src/%.c $(WOLF)/user_settings.h
 	@mkdir -p wolfobj
 	$(CC) -c -O1 -g -w $(WOLF_SAN) $(WOLF_CPPFLAGS) -o $@ $<
@@ -177,10 +185,35 @@ test_sshlink: test_sshlink.cpp ../src/core/sshlink.h
 bbs_host_fncam: $(SRCS) $(HDRS) $(MBED_LIB)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_FN_WROVER_CAM $(LDFLAGS) -o $@ $(SRCS) $(MBED_LIB) $(LDLIBS)
 
+# The Makerfabs ESP32-S3 Parallel TFT 3.5" v1.0 profile (MF35 1.1.0,
+# src/board.h): the S3's pin rules with quad PSRAM, that board's defaults and
+# the panel on a 480 x 320 ILI9488. It carries SSH (MF35 1.1.0), so it links
+# wolfSSH as bbs_host_s3 does.
+# tools/harness.sh --board mf35 runs it with --only=board_mf35 (and =ssh).
+bbs_host_mf35: $(SRCS) $(HDRS) libwolfssh_host.a $(MBED_LIB)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_MF_S3PAR35 $(WOLF_CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) \
+	    libwolfssh_host.a $(MBED_LIB) $(LDLIBS)
+
 # The AI-Thinker ESP32-CAM profile (1.1.1, src/board.h).
 # tools/harness.sh --board espcam runs it with --only=board_espcam.
 bbs_host_espcam: $(SRCS) $(HDRS) $(MBED_LIB)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_AI_ESP32CAM $(LDFLAGS) -o $@ $(SRCS) $(MBED_LIB) $(LDLIBS)
+
+# The Waveshare ESP32-S3-Touch-LCD-2 profile (WS2 1.0.0, src/board.h): the
+# panel at 240 x 320 with taps (PANEL TAP), the camera, the card on the
+# panel's bus, and SSH as on the LCD-1.47. tools/harness.sh --board ws2 runs
+# it with --only=board_ws2.
+bbs_host_ws2: $(SRCS) $(HDRS) libwolfssh_host.a $(MBED_LIB)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_WS_S3TOUCH2 $(WOLF_CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) \
+	    libwolfssh_host.a $(MBED_LIB) $(LDLIBS)
+
+# The Waveshare ESP32-S3-ETH profile (ETH 1.0.0, 1.1.2, src/board.h): an S3
+# with SSH, so it links wolfSSH as bbs_host_s3 does, and Ethernet, which the
+# host plays as a wire with an address (platform_host.cpp, BBS_HOST_ETH).
+# tools/harness.sh --board wseth runs it with --only=board_wseth.
+bbs_host_wseth: $(SRCS) $(HDRS) libwolfssh_host.a $(MBED_LIB)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_WS_S3ETH $(WOLF_CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) \
+	    libwolfssh_host.a $(MBED_LIB) $(LDLIBS)
 
 # The panel's drawing: glyphs, layout, lamps and the queue of what to send.
 # Pure code with no platform, checked pixel by pixel with no display.
@@ -333,6 +366,6 @@ test: licence formats test_link test_xmodem test_wrap test_forums_ptr test_compo
 
 clean:
 	rm -rf wolfobj libwolfssh_host.a ssh_call test_sshlink
-	rm -f bbs_host bbs_host_s3 bbs_host_fncam bbs_host_espcam bbs_host_ext linkpeer test_link test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera test_photos_cfg
+	rm -f bbs_host bbs_host_s3 bbs_host_ws43b bbs_host_fncam bbs_host_espcam bbs_host_ws2 bbs_host_wseth bbs_host_mf35 bbs_host_ext linkpeer test_link test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera test_photos_cfg
 
 .PHONY: clean test licence formats FORCE mbedtls-check

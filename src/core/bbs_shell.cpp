@@ -1827,6 +1827,13 @@ void Bbs::dashVitals(Session& s, uint8_t which) {
     bool known = d.power[0] && d.power[0] != '?';
     bool awake = !known || d.power[0] == 'n';                 // "none"
     auto wifi = [&](bool full) {
+#ifdef BBS_HAS_ETH
+        if (d.net.onEth) {                                    // on the wire (1.1.2)
+            snprintf(v, sizeof(v), "%uM", static_cast<unsigned>(d.net.ethMbps));
+            dashSeg(s, col, 2, "Eth", v, false);
+            return;
+        }
+#endif
         if (d.net.valid && d.net.rssi) snprintf(v, sizeof(v), "%d dBm", static_cast<int>(d.net.rssi));
         else                           snprintf(v, sizeof(v), "-");
         dashSeg(s, col, 2, "WiFi", v, !awake);
@@ -2295,6 +2302,15 @@ void Bbs::dashRight(Session& s, uint8_t& col, uint8_t which) {
             break;
         }
         case 5: {
+#ifdef BBS_HAS_ETH
+            if (d.net.onEth) {                                // on the wire (1.1.2)
+                label = "Ethernet";
+                snprintf(value, sizeof(value), "%u Mb/s", static_cast<unsigned>(d.net.ethMbps));
+                snprintf(note, sizeof(note), "%s duplex", d.net.ethFull ? "full" : "half");
+                vc = Color::LightGreen;
+                break;
+            }
+#endif
             label = "Signal";
             int8_t rssi = d.net.valid ? d.net.rssi : 0;
             const char* word = signalWord(rssi, vc);
@@ -2724,8 +2740,37 @@ bool Bbs::rowSys(Session& s) {
         case 0:  rowTitle(s, "System", BBS_VERSION_SHOWN); return true;
 
         case 1:  rowSection(s, "network"); return true;
+#ifdef BBS_HAS_ETH
+        // A board with a wired port (1.1.2): which interface callers reach
+        // it on. On the wire, Wi-Fi is the fallback, standing by unjoined.
+        case 2:
+            if (net.onEth) {
+                snprintf(num, sizeof(num), "%u Mb/s", static_cast<unsigned>(net.ethMbps));
+                statRow(s, "Ethernet", num, Color::LightGreen, net.ethFull ? "full duplex" : "half duplex");
+            } else {
+                const char* ssid = net.ssid[0] ? net.ssid : "-";
+                // The chip's state, not the setting: ethernet = no with no
+                // Wi-Fi network set runs the wire anyway (main.cpp).
+                const char* note = !plat::ethInfo().started ? "Ethernet off"
+                                 : net.ethLink              ? "Ethernet: no IP"
+                                                            : "no Ethernet link";
+                // statRow never cuts, so a note that would wrap the row (a
+                // long network name at 40 columns) is left off instead.
+                const size_t len = strlen(ssid);
+                const size_t used = 13 + (len > 9 ? len : 9) + 1 + strlen(note);
+                statRow(s, "Wi-Fi", ssid, Color::White, used <= rowWidth(s) ? note : nullptr);
+            }
+            return true;
+#else
         case 2:  statRow(s, "Wi-Fi", net.ssid[0] ? net.ssid : "-", Color::White); return true;
+#endif
         case 3: {
+#ifdef BBS_HAS_ETH
+            if (net.onEth) {
+                statRow(s, "Wi-Fi", "standby", Color::Grey, "the fallback");
+                return true;
+            }
+#endif
             int8_t rssi = net.valid ? net.rssi : 0;
             Color c = Color::Grey;
             const char* word = signalWord(rssi, c);
@@ -2747,6 +2792,13 @@ bool Bbs::rowSys(Session& s) {
             // been chased twice from the outside, and once it was diagnosed
             // wrongly with confident arithmetic. A board that says which
             // mode it is in turns the next one into a reading.
+#ifdef BBS_HAS_ETH
+            // On the wire the station stands by unjoined, and the driver's
+            // power save is its idle default: no caller's packets go by
+            // radio, so "SLEEPING" would be a false alarm. Wi-Fi sets it off
+            // again the moment it joins (main.cpp, noSleep).
+            if (net.onEth) { statRow(s, "Radio", "standby", Color::Grey, "calls on Ethernet"); return true; }
+#endif
             const char* ps = snap_.power;
             // "?" is the driver not saying, not a radio asleep
             if (!ps || !*ps || *ps == '?') { statRow(s, "Radio", "-", Color::Grey); return true; }

@@ -15,12 +15,16 @@ Purpose:      Builds a public release: the five flash images the web
               Run by the GitHub Action on a version tag, and by hand to test
               a release before tagging.
 
-              Four builds (BUILDS below): the ESP32, the reference
+              Eight builds (BUILDS below): the ESP32, the reference
               WROOM-32E; the ESP32-S3, built for the Waveshare
               ESP32-S3-LCD-1.47 profile; the Freenove ESP32-WROVER CAM, a
               second ESP32 image (1.1.0); and the AI-Thinker ESP32-CAM, a
               third (1.1.1). A board profile is a build, so another board is
-              another row with its own directory.
+              another row with its own directory. Four more, the 1.1.2
+              hardware preview's boards (the Waveshare
+              ESP32-S3-Touch-LCD-4.3B, ESP32-S3-Touch-LCD-2 and ESP32-S3-ETH,
+              and the Makerfabs Parallel TFT 3.5"), were tag_only until they
+              merged into 1.2.0 and are ordinary sets since: eight in all.
 
 Output:       release/<version>/assets/    flat, for a GitHub Release, the
                                            shape deploy/fetch_release.py in
@@ -49,8 +53,27 @@ Versions:     The core version is BBS_VERSION, shared by every board. A board
               A tag names the core version; a tag with a suffix
               (v1.1.0-dev.8) is published as a pre-release by the workflow.
 
+              A board pre-release (Rob, 2026-09-26, "How a new board comes
+              in"): a new board ships first as a pre-release carrying ONLY
+              its own image set, so no other board's preview rule can pick it
+              up. Its tag is the core version, then the board's key and a
+              number: v1.1.2-ws2.1 (BOARD_TAGS below). The core version is
+              not bumped for it; the board profile's own version says which
+              build it is. A set marked tag_only is built by nothing else.
+
+              A combined preview (Rob, 2026-09-28): several boards' sets
+              under one pre-release tag, the core's X.Y.Z then the preview's
+              name, v1.1.2-hardware-preview (PREVIEW_TAGS below): the
+              Waveshare ESP32-S3-Touch-LCD-4.3B, ESP32-S3-Touch-LCD-2 and
+              ESP32-S3-ETH, and the Makerfabs Parallel TFT 3.5" v1.0, and
+              nothing else. Since those four merged into 1.2.0, a plain
+              v<BBS_VERSION> tag builds them too, with every other set; a
+              preview or board tag still builds only its own sets.
+
 Design:       Each release environment (esp32dev_release, ws_s3_lcd147_release,
-              freenove_wrover_cam_release, esp32cam_aithinker_release)
+              freenove_wrover_cam_release, esp32cam_aithinker_release,
+              ws_s3touch43b_release, ws_s3touch2_release, ws_s3eth_release,
+              makerfabs_s3_par35_release)
               defines BBS_RELEASE, which makes main.cpp ignore include/secrets.h
               even when it is present. The screens image is built from data/screens only,
               never from data/, because data/system.cfg on a developer's
@@ -66,6 +89,13 @@ Design:       Each release environment (esp32dev_release, ws_s3_lcd147_release,
 Usage:        python3 tools/release.py                build and check
               python3 tools/release.py --allow-dirty  from a working tree
               python3 tools/release.py --tag v1.0.0   the tag must match
+              python3 tools/release.py --tag v1.1.2-hardware-preview
+                                                      the preview's four sets
+              python3 tools/release.py --tag v1.1.2-ws2.1
+                                                      one board's set only
+              python3 tools/release.py --board esp32s3-eth
+                                                      one set only, locally,
+                                                      into a folder of its own
 
 Libraries:    Python 3 standard library; PlatformIO on the PATH
 Targets:      developer PC, GitHub Actions (ubuntu-latest)
@@ -127,7 +157,90 @@ BUILDS = (
     # WROOM's or the Freenove's, so no other set is a safe guess for it.
     {"dir": "esp32-cam", "env": "esp32cam_aithinker_release", "family": "ESP32", "boot": 0x1000,
      "board": "BBS_BOARD_AI_ESP32CAM", "table": "partitions.csv"},
+    # The Waveshare ESP32-S3-Touch-LCD-4.3B (WS43B, 1.1.2). chipFamily
+    # ESP32-S3, the Waveshare stick's, so the site's picker asks which board:
+    # the stick's image here would drive its SPI panel and card pins into
+    # this board's RGB bus, and this one's would bring an I2C expander up on
+    # the stick's panel pins.
+    #
+    # The four hardware-preview boards were "tag_only" (built by their
+    # pre-release tags alone) until the profiles merged into 1.2.0; a set
+    # marked so is left out of a plain vX.Y.Z. None is now.
+    {"dir": "esp32s3-ws43b", "env": "ws_s3touch43b_release", "family": "ESP32-S3", "boot": 0x0,
+     "board": "BBS_BOARD_WS_S3TOUCH43B", "table": "partitions_s3.csv"},
+    # The Waveshare ESP32-S3-Touch-LCD-2 (WS2 1.0.0). chipFamily ESP32-S3,
+    # the LCD-1.47's, and the same S3R8 and 8 MB layout, so either image boots
+    # on the other; but the 1.47's drives its panel on pins that are this
+    # board's camera and IMU lines, and this one's the other way round, so
+    # the site's picker asks which board.
+    {"dir": "esp32s3-ws2", "env": "ws_s3touch2_release", "family": "ESP32-S3", "boot": 0x0,
+     "board": "BBS_BOARD_WS_S3TOUCH2", "table": "partitions_s3.csv"},
+    # The Waveshare ESP32-S3-ETH (ETH 1.0.0, 1.1.2). chipFamily ESP32-S3,
+    # the stick's, so the site's picker asks which board: the stick's image
+    # here would drive its panel's pins into this board's camera bus, and
+    # this one's would bring the W5500 up on the stick's SD and panel pins.
+    {"dir": "esp32s3-eth", "env": "ws_s3eth_release", "family": "ESP32-S3", "boot": 0x0,
+     "board": "BBS_BOARD_WS_S3ETH", "table": "partitions_s3.csv"},
+    # The Makerfabs ESP32-S3 Parallel TFT 3.5", hardware v1.0 (MF35 1.1.0,
+    # SSH on, the S3's 8 MB layout). chipFamily ESP32-S3, the Waveshare's, so
+    # the site's picker asks which board: the Waveshare's image here looks for
+    # octal PSRAM on a quad part, and this one's looks for quad on the
+    # Waveshare's octal. Not for the v2.0 board (octal PSRAM, another bus).
+    {"dir": "esp32s3-mf35", "env": "makerfabs_s3_par35_release", "family": "ESP32-S3", "boot": 0x0,
+     "board": "BBS_BOARD_MF_S3PAR35", "table": "partitions_s3.csv"},
 )
+
+# A board pre-release's key, the word in its tag after the core version
+# (v1.1.2-ws2.1), and the one set it carries.
+BOARD_TAGS = {"ws43b": "esp32s3-ws43b", "ws2": "esp32s3-ws2", "eth": "esp32s3-eth",
+              "mf35": "esp32s3-mf35"}
+
+# A combined preview: several boards' sets under one pre-release tag, the
+# core version's X.Y.Z then the name (v1.1.2-hardware-preview, Rob,
+# 2026-09-28: the three new Waveshare boards and the Makerfabs, shipped
+# together). No other set is built, so nothing already released changes.
+PREVIEW_TAGS = {
+    "hardware-preview": ("esp32s3-ws43b", "esp32s3-ws2", "esp32s3-eth", "esp32s3-mf35"),
+}
+
+
+def select(ver, tag, board):
+    """Which sets a run builds, and the folder it writes (release/<relname>/).
+
+    No tag, or v<BBS_VERSION>: every set that is not tag_only, into
+    release/<BBS_VERSION>/. v<X.Y.Z>-<preview>: that preview's sets, into
+    release/<the tag less its v>/, the folder the workflow publishes from.
+    v<BBS_VERSION or X.Y.Z>-<board>.<n>: that board's set alone, likewise.
+    --board DIR (no tag): one set, into release/<BBS_VERSION>-DIR/, so a
+    local build of one board never writes over a full release's folder.
+    """
+    dirs = {b["dir"] for b in BUILDS}
+    for name, want in list(BOARD_TAGS.items()) + [(n, d) for n, ds in PREVIEW_TAGS.items() for d in ds]:
+        if want not in dirs:
+            die(f"release.py: {name} names a set, {want}, that BUILDS does not have")
+    core = ver.split("-")[0]                  # 1.1.2-hw.1 -> 1.1.2
+    if board:
+        if tag:
+            die("--board builds one set locally; a tag says its own sets, so give one or the other")
+        builds = tuple(b for b in BUILDS if b["dir"] == board)
+        if not builds:
+            die(f"no set called {board}; the sets are {', '.join(b['dir'] for b in BUILDS)}")
+        return builds, f"{ver}-{board}"
+    if not tag or tag == f"v{ver}":
+        return tuple(b for b in BUILDS if not b.get("tag_only")), ver
+    m = re.match(r"^v" + re.escape(core) + r"-([a-z][a-z0-9-]*[a-z0-9])$", tag)
+    if m and m.group(1) in PREVIEW_TAGS:
+        want = PREVIEW_TAGS[m.group(1)]
+        builds = tuple(b for b in BUILDS if b["dir"] in want)
+        print(f"release: the {m.group(1)} pre-release, {tag[1:]}: {', '.join(b['dir'] for b in builds)}")
+        return builds, tag[1:]
+    m = re.match(r"^v(?:" + re.escape(ver) + "|" + re.escape(core) + r")-([a-z0-9]+)\.(\d{1,3})$", tag)
+    if m and m.group(1) in BOARD_TAGS:
+        builds = tuple(b for b in BUILDS if b["dir"] == BOARD_TAGS[m.group(1)])
+        print(f"release: a board pre-release, {tag[1:]}: the {builds[0]['dir']} set only")
+        return builds, tag[1:]
+    die(f"tag {tag} does not match BBS_VERSION {ver}, nor v{core}-<preview> for a preview in "
+        f"{sorted(PREVIEW_TAGS)}, nor v{core}-<board>.<n> for a board in {sorted(BOARD_TAGS)}")
 
 # Offsets every table keeps, because ESP-IDF and PlatformIO put them there
 # for any table (otadata after nvs, the first app at 0x20000). Everything
@@ -368,6 +481,8 @@ def check_nano(b):
     cfg = ROOT / f"sdkconfig.{b['env']}"
     if "CONFIG_NEWLIB_NANO_FORMAT=y" not in cfg.read_text(encoding="utf-8"):
         die(f"{cfg.name} does not say CONFIG_NEWLIB_NANO_FORMAT=y; delete it and build again")
+
+
 def ext_plugins(b):
     """The plugins from their own repositories this build carries (1.2.0,
     LINK.md): each fetched at its locked commit with tools/plugins.py
@@ -440,16 +555,18 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("Purpose:")[0])
     ap.add_argument("--allow-dirty", action="store_true",
                     help="build from a working tree with uncommitted changes")
-    ap.add_argument("--tag", help="the git tag being released; must be v<BBS_VERSION>")
+    ap.add_argument("--tag", help="the git tag being released: v<BBS_VERSION>, or "
+                                  "v<BBS_VERSION>-<board>.<n> for one board's pre-release")
+    ap.add_argument("--board", help="build only this set (a BUILDS dir, such as esp32s3-eth): "
+                                    "how a tag_only board is built, locally or for a board pre-release")
     a = ap.parse_args()
 
     ver = version()
-    if a.tag and a.tag != f"v{ver}":
-        die(f"tag {a.tag} does not match BBS_VERSION {ver}")
+    builds, relname = select(ver, a.tag, a.board)
     dirty = git("status", "--porcelain", "--untracked-files=no")
     if dirty and not a.allow_dirty:
         die("the working tree has uncommitted changes; commit, or --allow-dirty to test")
-    for b in BUILDS:
+    for b in builds:
         b["parts"] = check_partitions(b["table"])
     check_notices()
     check_formats()
@@ -469,7 +586,7 @@ def main():
     # Every family's five parts, built and checked before anything is
     # written: a release is all of its families or none of them.
     families = []
-    for b in BUILDS:
+    for b in builds:
         b["plugins"] = ext_plugins(b)
         pio("run", "-e", b["env"], env=env)
         pio("run", "-e", b["env"], "-t", "buildfs", env=env)
@@ -512,7 +629,7 @@ def main():
         if b"sysop_password" in blobs["storage.bin"]:
             die(f"{b['dir']}/storage.bin carries a system.cfg; the screens image must be screens only")
 
-    out = ROOT / "release" / ver
+    out = ROOT / "release" / relname
     if out.exists():
         shutil.rmtree(out)
     assets = out / "assets"
@@ -545,17 +662,17 @@ def main():
     commit = git("rev-parse", "--short", "HEAD") + ("-dirty" if dirty else "")
     # Every plugin built in from its own repository, per family, with the
     # commit it was built from (1.2.0): what went into an image is on record.
-    rel = [f"version {ver}", f"commit {commit}"]
+    rel = [f"version {relname}", f"commit {commit}"]
     for b, _ in families:
         for name, pver, pcommit in b.get("plugins", []):
             rel.append(f"plugin {b['dir']} {name} {pver} {pcommit}")
     write(install / "release.txt", "\n".join(rel) + "\n", "ascii")
 
-    print(f"release {ver} ({commit})")
+    print(f"release {relname} ({commit})")
     for line in sums:
         print("  " + line)
     print(f"assets:  {assets}")
-    print(f"install: {install}  (copy to firmware/{ver}/ on the directory server)")
+    print(f"install: {install}  (copy to firmware/{relname}/ on the directory server)")
 
 
 if __name__ == "__main__":

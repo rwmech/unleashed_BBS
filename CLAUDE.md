@@ -763,11 +763,178 @@ this tree.
   wrong pin garbled every panel command and the glass stayed white.
   Cross-check the schematic against the firmware the vendor actually
   ships before trusting a pin.
+  **The Makerfabs on 1.1.2, MF35 1.1.0** (board-mf35-112 from v1.1.2,
+  2026-09-28, for the combined `v1.1.2-hardware-preview`; board offline, so
+  built and reviewed only). The 1.1.1 preview's v1.0 profile, panel driver
+  and release set ported from 9823748 (no skins, no 1.2.0 work, and the
+  never-benched v2.0 sibling left out), with SSH on as on the Waveshare:
+  shared 6400 and `ssh_port` 6422, host keys, `BBS_SSH_MAX` 8, the S3's 8 MB
+  layout (an erase over the 1.1.1 preview). **2 MB of quad PSRAM holds
+  eight**: the framebuffer is 300 KB, 1.1.1's bench read 1.71 MB free with
+  it, and eight at the 48 KB budget plus the 128 KB kept back is 512 KB.
+  Internal RAM is the thing to watch (the SSH task's 16 KB stack). **A
+  1.1.2 bug the port found:** `platform_esp32.cpp`'s SSH wake code called
+  `read`/`write` with no `<unistd.h>`; the Waveshare got it through the
+  USB-Serial-JTAG console's headers, so the first SSH board with its
+  console on a UART did not compile. Any S3 lane with a UART console needs
+  the same include.
+  **And a full VFS table, found on the bench (MF35 1.1.1):** two consoles
+  (UART0 plus the USB-Serial-JTAG secondary), lwIP, three LittleFS
+  partitions and SSH's eventfd are the IDF's 8 VFS slots, so the card's FAT
+  was a ninth and its mount failed as ESP_ERR_NO_MEM ("no card: not enough
+  memory" with 1.7 MB of PSRAM free). `CONFIG_VFS_MAX_COUNT=12` in
+  sdkconfig.defaults.mf35, with a board.h `#error` against a stale
+  sdkconfig. An S3 lane with two consoles, SSH and a card needs the same.
+  Bench smoke passed on COM17: SSH on both ports, PSRAM 1.71 MB free with
+  the framebuffer, internal heap low 56,943.
+  **Queued for 1.1.3 (code review):** every other S3 profile (one USB
+  console) is at exactly 8 of 8 with a card mounted, so the next VFS user
+  takes the card down. Move `CONFIG_VFS_MAX_COUNT=12` into the shared S3
+  layer with a generic board.h guard, and have the sd plugin's
+  ESP_ERR_NO_MEM message name the full VFS table as well as memory.
   **Boards are chosen to maximise what the BBS can do, not to work around
   vendor wiring** (Rob: "not work around dumb vendor BS"). Rejected on
   that ground: the KEYESTUDIO ESP32-S3 PRO (N16R8), whose on-board SD slot
   sits on GPIO 35-37, inside the octal PSRAM bus, so PSRAM and the card
   slot cannot both work.
+- **The hardware preview branch, 1.1.2-hw.1** (rel-1.1.2-hwpreview,
+  2026-09-28): v1.1.2 plus the four lanes merged in order (board-ws43b,
+  board-ws2, board-wseth, board-mf35-112), for Rob's
+  `v1.1.2-hardware-preview` tag. WS43B 1.0.1, WS2 1.0.2, ETH 1.0.2 (the VFS
+  table), MF35 1.1.1. CHANGELOG 1.1.2-hw.1 has the list. What the merge
+  settled, worth keeping:
+  - **Two touch mechanisms, one capability**: `BBS_HAS_TOUCH` plus
+    `BBS_TOUCH_POLL` for the 4.3B's polled GT911 (the new I2C driver);
+    without POLL it is taps on INT (the legacy driver, the camera's SCCB).
+    Never let the legacy `driver/i2c.h` code compile into an image that uses
+    `i2c_master`: the IDF refuses both drivers in one image.
+  - **switchboard is the 4.3B's version** (Rob's pick, 1.1.2-hw.2): a free
+    line stays dim dial blue whoever is on. The merge first took the
+    Touch-LCD-2's (free lamps dark while anybody WHO shows is on).
+  - `plat::chipTemp` is tenths of a degree; the system row's warm step is
+    `BBS_PANEL_TEMP_WARM` (65 on WS2, 60 elsewhere).
+  - The Makerfabs' big-glass band word is `F_BWORD`; `F_WORD` is the 4.3B's.
+  - release.py's `PREVIEW_TAGS` maps `v<X.Y.Z>-<name>` to sets; a plain
+    `v<BBS_VERSION>` never builds a tag_only set.
+  - **Not built in that session**: the cloud environment's network policy
+    refused `api.registry.platformio.org`, so no env was compiled and no
+    DRAM figure read. Build every env (delete `sdkconfig.<env>` first) and
+    run `release.py --tag v1.1.2-hardware-preview` locally before the tag.
+- **The Waveshare ESP32-S3-Touch-LCD-4.3B, WS43B 1.0.0** (board-ws43b from
+  v1.1.2, 2026-09-28, COM23; one of three boards in Rob's
+  `v1.1.2-hardware-preview`). CHANGELOG has what a sysop sees. Worth keeping:
+  - **An RGB panel needs no frame buffer.** `flags.no_fb` and an IRAM
+    `on_bounce_empty` that doubles a 400 x 240 PSRAM picture into four-line
+    bounce buffers: a quarter of the PSRAM traffic, no 768 KB buffer, and
+    12.8 KB of internal RAM. The demos' ten-line buffers (32 KB) left the
+    largest free block at 11 KB on the bench; four lines left 27.6 KB, with
+    heap free 57 K and low 50.7 K, close to the stick's.
+  - **XIP from PSRAM is what makes the RGB bus safe with LittleFS.** With
+    code and rodata in PSRAM, IDF 5.3.1 keeps the cache on through a flash
+    write (`SPI_FLASH_CACHE_NO_DISABLE`), so the refill can read PSRAM; the
+    IDF's own comment says a PSRAM read with the cache off crashes.
+  - **The refill interrupt runs on core 1**, the core that started the
+    panel. Idle SYS on the bench: loop avg 881 us of work, near the stick's
+    ~1,000; measuring it under callers waits for Rob's go.
+  - **The CH422G has one direction bit for all eight IO pins**, so the
+    isolated inputs cannot be read without letting go of the backlight, both
+    resets and the card's chip select. Not read.
+  - **Rob's rules from this lane (2026-09-28):** no testing of any kind
+    without his explicit go (code review always runs first and is exempt;
+    building and flashing to see a board boot are not tests); no performance
+    testing until builds are live; questions for Rob go to the coordinator,
+    photos to Discord. Screen work goes through tty-ux first.
+  - **The idle strip is not a sweep** (Rob, on the glass: the Larson
+    scanner "looks like shit" there). switchboard is a lamp a line: a
+    caller's line in rank colour, a free line dim steady blue flickering
+    with RX and TX.
+- **The Waveshare ESP32-S3-Touch-LCD-2, WS2 1.0.0** (board-ws2 from
+  v1.1.2, 2026-09-28, COM24; ships in the combined
+  `v1.1.2-hardware-preview`). The first board with a panel AND a camera.
+  Pins from Waveshare's schematic PinOut table and netlist, which match its
+  demo on every pin (release-prep/ws2/pins.md); panel layout from
+  release-prep/ws2/tty-ux-panel-ws2-2026-09-28.md. What it taught:
+  - **The panel and the TF slot share SPI wires** (MOSI 38, SCLK 39).
+    `BBS_SPI_SHARED` puts both on SPI2, raised once. A card command holds
+    the bus from start to end, a write's busy wait included, so every card
+    command runs under a mutex that lcdDraw only TRIES: a band is skipped
+    to a later tick rather than the loop waiting behind the card (Rule
+    no. 1). The slot's CS is driven high while the panel talks with no card
+    mounted. CONFIG needs the panel's `pinShares` for the two shared pins,
+    or saving either page is refused.
+  - **I2C on IDF 5.3 means the legacy driver** wherever the camera is:
+    esp32-camera 2.1.7 builds its SCCB on `driver/i2c.h` below IDF 5.4,
+    and the two drivers cannot share an image. Touch is asked once at start
+    on port 0 and then read as taps from INT by an ISR: no I2C on the loop.
+  - Only GPIO 18 is free for a sysop; 43/44 are the console port to CONFIG.
+  - **WS2 1.0.1: every snap was refused for memory**, as on the ETH board:
+    `kCamDmaBlock` asked for the ESP32's 33 KB. On the S3 the driver takes
+    16 x 1 KB for JPEG and at most CAMERA_DMA_BUFFER_SIZE_MAX (16 KB in the
+    board's layer) for raw, so an S3 camera board asks for 17 KB, and a
+    static_assert refuses an S3 camera build whose layer does not set it.
+  - **A shared bus needs every other device's CS high before the first
+    card clock.** The panel's CS is GPIO45, a strap pulled low at reset,
+    and the card mounts before the panel starts; the ST7789 took the card's
+    traffic as commands and drove its bidirectional SDA (MOSI) back: CRC
+    errors on every boot mount. `panelQuiet` holds it high. Open: a sysop
+    who turns the panel off and gives 45 to another plugin loses it at the
+    next SD MOUNT (refusing 45 by name would refuse the panel's own CS).
+  - Rob's panel notes, for every glass: the temperature with a CPU icon,
+    and a strip effect with meaning (`switchboard`, shared with the 4.3B:
+    nodes while callers are on, dim steady lamps flickering with real
+    traffic when nobody is; Rob rejected the KITT sweep; round lamps here).
+- **The Waveshare ESP32-S3-ETH, ETH 1.0.1 on 1.1.2** (board-wseth,
+  2026-09-28, COM25). Pins and sources in `release-prep/wseth/pins.md`,
+  the factory flash in `release-prep/wseth/factory-16MB.bin`.
+  - **An S3 camera needs 17 KB of internal DMA, not the ESP32's 33** (ETH
+    1.0.1). `kCamDmaBlock` was the ESP32's I2S figure, and every snap on
+    this board was refused for memory with the largest block at 27-31 KB
+    (SSH's task stack is internal). The S3 takes 16 x 1 KB for JPEG and
+    up to `CAMERA_DMA_BUFFER_SIZE_MAX` for raw frames, so an S3 camera
+    board sets that to 16384 in its layer and platform.h asserts it. The
+    Freenove's 40 KB reserve pool made it worse here. Any other S3 camera
+    lane (WS2, MF35) needs the same line. Snaps then took about 5 s.
+  - The camera on the bench's board is an OV5640 (the wiki is right).
+  - **Ethernet first, Wi-Fi as the fallback, board-gated** (`BBS_HAS_ETH`).
+    IDF 5.3.1's own W5500 driver (in-tree, `CONFIG_ETH_SPI_ETHERNET_W5500`
+    in `sdkconfig.defaults.wseth` only; `esp_eth` is required only when
+    that is on). Its own netif `ETH_DEF` (mDNS's predefined Ethernet
+    follows it), route priority 128 over the station's 100. The radio
+    always starts (Improv, the fallback, the 1.2.0 link) but is held
+    (`s_ethHold`): it dials only after the wire has had no address for
+    10 s from boot or 3 s after losing it, and is disconnected when the
+    wire is back, except while Improv's trial or scan has it. Listeners
+    are INADDR_ANY, so a switch moves no listener; callers on the lost
+    interface drop. `ethernet = no` is Wi-Fi alone.
+  - **The camera's power is a P-FET on GPIO 8** (gate pulled up by 10 MΩ,
+    pulled down by GPIO 8 through 1 MΩ): off at reset, on while GPIO 8 is
+    low. esp32-camera's PWDN does exactly that at each bring-up, so
+    `BBS_CAM_PWDN 8`. Found in the schematic and confirmed by an ESPHome
+    user's report; Waveshare's wiki does not mention it.
+  - **The directory cuts the system badge at 40 characters.** "ESP32-S3 ·
+    8 MB · PSRAM · Ethernet · ETH 1.0.0" is 46, so this board's badge
+    drops PSRAM for Ethernet (`plat::hardware`); HARDWARE still shows it.
+  - **The 1.2.0 link needs the radio started, and it is**: on Ethernet
+    the station is started and unassociated, so ESP-NOW would have to set
+    its own channel (nothing to follow), which the link lane should know.
+  - **Bring-up on COM25 (2026-09-28)**: link 100 Mb/s full at 2.1 s,
+    DHCP address at 3.1 s, listening at 3.2 s, NTP, SSH on both ports and
+    the card up by 3.8 s; setup, telnet login and SSH login over the wire.
+    Static DRAM 265,456 of 341,760 (the stick 254,288), image 1,427,712.
+    SYS's Radio row read "min SLEEPING" on the wire (the unjoined
+    station's idle default); it says "standby" there now.
+  - **The other boards' images**: every application object and library
+    identical to v1.1.2's, built at the same path, except `main.cpp.o`'s
+    `app_main`, where 8 immediates differ: the `__LINE__` numbers that
+    `ESP_ERROR_CHECK` bakes in, moved 24-25 lines by the ETH blocks above
+    it. A comparison across worktrees is meaningless (`__FILE__` paths),
+    and linked images move by call relaxation between any two links.
+    `release-prep/wseth/objsnap.py` does the comparison.
+  - The code review's socket answer: the W5500 netif, mDNS (raw PCBs,
+    `MDNS_NETWORKING_SOCKET` off) and SNTP take no lwIP sockets, so the
+    16-socket budget and `busyFits` are the stick's. The older line in
+    this file that the listener, mDNS and SNTP take three is out of date:
+    only the listener is a socket.
 - **1.2.0: the µnleashed link, camera satellites and the door framework**
   (Rob, 2026-09-26). 1.1.2 stays a patch and ships first; this is 1.2.0,
   built in parallel lanes now and merged after 1.1.2.
@@ -1432,6 +1599,12 @@ this tree.
   - **Every ESP32-S3 board runs SSH on 1.1.2** (Rob). BBS_HAS_SSH is on in every S3 profile: the three new boards, and the Makerfabs, rebuilt on 1.1.2 as MF35 1.1.0 and added to the hardware preview. The site calls this the "next generation BBS" under its header, and every board-choice page opens by recommending an S3 board for encrypted (SSH) point-to-point connections.
   - Standing OK from Rob for small site edits: the site selftest and headless screenshots before a push.
   - every new or changed screen layout goes through the design agents first (tty-ux to specify, screen-artist for art), then gets built to the spec.
+- **The hardware preview merged into main (1.2.0-link.16, 2026-09-29)**, after photo-names (link.15). PR #1.
+  - **A plain vX.Y.Z builds all eight image sets**: the four preview sets lost `tag_only`. A preview tag (`v1.2.0-hardware-preview`) or a board tag (`v1.2.0-ws2.1`) still builds only its own. The workflow's release notes now fit either kind.
+  - Seams fixed in the merge: the four new host profiles link mbedtls for the link; `ws_s3eth` runs `pio_plugins.py` like every other env.
+  - Static DRAM off the ELFs: WROOM 15,080 free, Freenove 4,192, **ESP32-CAM 2,720**, S3 85,560, WS43B 82,952, MF35 86,048, WS2 71,904, ETH 75,472.
+  - **Open, for Rob:** the link never runs on a wired ETH board. Wi-Fi stands by unjoined while the cable has an address (main.cpp ethWatch), and the link drops DISCOVER until the station is associated, so sats never pair, and nothing tells the sysop. Either keep Wi-Fi joined beside the wire when the link is on (Ethernet's route_prio above the station's), or have SATS and CONFIG sats say so.
+  - **Open:** the panel counts only the built-in camera's caller snaps (`camera::callerSnaps`), so a sat's snap never reaches a panel's recent list; the counter belongs in photos::. And the ETH camera has no host camera tests (not in testclient's CAM_BOARD; it needs its flash pin from the schematic).
 - **Where it stopped (2026-09-27, evening).**
   - **1.1.2 is released:** v1.1.2 at cfc76bb, a full GitHub release with 26 assets, tagged on host tests (Rob skipped the board soak). The site had not fetched it yet at 16:05. Rob runs the site's update.sh and adds it to his autopublish loop.
   - **Web:** pushed and live after the next updates:

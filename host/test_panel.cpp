@@ -216,11 +216,41 @@ int main() {
         s.listing = Status::LIST_ONLINE;
         s.staff = Status::STAFF_SYSOP;
         p = pack(s, 4);
-        bool order = p.n == G_COUNT;
+        bool order = p.n == G_COUNT - 1;
         for (uint8_t i = 0; i < p.n && order; ++i) if (p.which[i] != i) order = false;
         check("all nine, in the report's order", order);
         check("all nine end short of the antenna: under 114, in 104",
               p.end < 114 && p.end - 4 == 104 && p.end <= layout(172, 320).glyphs.x + layout(172, 320).glyphs.w);
+        // A camera board's tenth (WS2 1.0.0): last, and all ten inside the
+        // 240 glass's strip, 118 px.
+        s.camera = true;
+        p = pack(s, 4);
+        // Round lamps (WS2 1.0.0): cells never overlap, and every disc sits
+        // inside its cell and the row, at every strip length.
+        {
+            const Rect row = R(4, 298, 232, 16);
+            bool fits = true;
+            for (uint8_t n = 1; n <= 16; ++n)
+                for (uint8_t i = 0; i < n; ++i) {
+                    const Led l = ledAtRound(row, i, n);
+                    if (empty(l.cell) || !contains(row, l.cell) || !contains(l.cell, l.led)) fits = false;
+                    if (i && ledAtRound(row, i - 1, n).cell.x + ledAtRound(row, i - 1, n).cell.w > l.cell.x)
+                        fits = false;
+                }
+            check("round lamps: 1 to 16 in the 240 glass's row, none over another, each in its cell", fits);
+            const Led ten = ledAtRound(row, 0, 10);
+            check("ten lamps: cells of 23 from x 5, discs 14 across on rows 299 to 312",
+                  ten.cell.x == 5 && ten.cell.w == 23 && ten.led.w == 14 && ten.led.y == 299);
+            check("a disc 14 across is 6 8 10 12 14 ... wide",
+                  discRow(14, 0) == 6 && discRow(14, 1) == 8 && discRow(14, 2) == 10 && discRow(14, 3) == 12 &&
+                  discRow(14, 4) == 14 && discRow(14, 13) == 6);
+        }
+        check("the camera packs tenth, last, in live",
+              p.n == G_COUNT && p.which[G_COUNT - 1] == G_CAMERA && p.colour[G_COUNT - 1] == kLive);
+        check("all ten end inside the 240 glass's strip: 118 from 4",
+              p.end - 4 == 118 && p.end <= layout(240, 320).glyphs.x + layout(240, 320).glyphs.w);
+        s.camera = false;
+        p = pack(s, 4);
         bool apart = true;
         for (uint8_t i = 1; i < p.n; ++i)
             if (p.x[i] != p.x[i - 1] + p.glyph[i - 1]->w + kGlyphGap) apart = false;
@@ -557,6 +587,97 @@ int main() {
         check("so is a portrait list slot with its air, and the LED row",
               static_cast<uint32_t>(listBox(P, 0).w) * listBox(P, 0).h <= 320u * 16u &&
               static_cast<uint32_t>(P.leds.w) * P.leds.h <= 320u * 16u);
+    }
+
+    // ------------------------------------------------------------------
+    // The big glass (MF35 1.0.0, internal/tty-ux-panel-mf35-2026-09-26.md):
+    // 480 x 320 and 320 x 480, chosen by size; the Waveshare's never.
+    // ------------------------------------------------------------------
+    printf("The big glass\n");
+    {
+        Layout L;
+        check("the Waveshare's glass never takes the big layout",
+              !bigLayout(172, 320, L).on && !bigLayout(320, 172, L).on);
+        for (int turn = 0; turn < 2; ++turn) {
+            const uint16_t W = turn ? 320 : 480, H = turn ? 480 : 320;
+            const BigLayout B = bigLayout(W, H, L);
+            char what[96];
+            snprintf(what, sizeof(what), "%u x %u takes the big layout, %s", W, H, turn ? "portrait" : "landscape");
+            check(what, B.on && B.land == !turn);
+            // Every field on the glass, and no two sharing a pixel.
+            std::vector<Rect> boxes;
+            for (uint8_t f = 0; f < F_BIG_COUNT; ++f) {
+                const Rect r = bigFieldBox(B, L, f);
+                if (!empty(r)) boxes.push_back(r);
+            }
+            boxes.push_back(B.graph);
+            boxes.push_back(L.leds);
+            bool on = true, apart = true;
+            for (size_t i = 0; i < boxes.size(); ++i) {
+                const Rect& a = boxes[i];
+                if (a.x < 0 || a.y < 0 || a.x + a.w > W || a.y + a.h > H) on = false;
+                for (size_t j = i + 1; j < boxes.size(); ++j) {
+                    const Rect& b = boxes[j];
+                    if (a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h) {
+                        apart = false;
+                        printf("    overlap: %d,%d %dx%d and %d,%d %dx%d\n", a.x, a.y, a.w, a.h, b.x, b.y, b.w, b.h);
+                    }
+                }
+            }
+            snprintf(what, sizeof(what), "every field on the %s glass", turn ? "portrait" : "landscape");
+            check(what, on);
+            snprintf(what, sizeof(what), "and no two fields overlap (%s)", turn ? "portrait" : "landscape");
+            check(what, apart);
+            bool rows = true;
+            for (uint8_t k = 0; k < kBigRows; ++k)
+                if (B.row[k].y != 68 + kPitch * k || B.row[k].x + B.row[k].w != 302) rows = false;
+            check("eleven rows at a 20 px pitch, each ending by x 301", rows);
+            check("the sweep's axis leaves 28 above and 27 below",
+                  B.axis - B.graph.y == kGraphUp && B.graph.y + B.graph.h - 1 - B.axis == kGraphDown);
+        }
+        // The LED row: at most one band, no cell overlapping, for 1 to 16.
+        bool band = true, apart = true;
+        const Rect box = R(0, 296, 480, 16);
+        for (uint8_t n = 1; n <= 16; ++n) {
+            const Led first = bigLedAt(box, 0, n), last = bigLedAt(box, static_cast<uint8_t>(n - 1), n);
+            const Rect row = unite(first.cell, last.cell);
+            if (static_cast<uint32_t>(row.w) * row.h > 3840u) band = false;
+            for (uint8_t i = 0; i + 1 < n; ++i)
+                if (bigLedAt(box, i, n).cell.x + bigLedAt(box, i, n).cell.w > bigLedAt(box, i + 1, n).cell.x)
+                    apart = false;
+        }
+        check("the LED row is one 3,840 px band at any length from 1 to 16", band);
+        check("and its cells never overlap", apart);
+        // The sweep's fixed log scale.
+        check("the sweep: 0 B/s is no column, 1 is 2 px, 5 is 5 px",
+              graphHeight(0, kGraphUp) == 0 && graphHeight(1, kGraphUp) == 2 && graphHeight(5, kGraphUp) == 5);
+        check("and 128 KB/s is the full 28, never more",
+              graphHeight(131071, kGraphUp) == 28 && graphHeight(0xFFFFFFFFu, kGraphUp) == 28 &&
+              graphHeight(0xFFFFFFFFu, kGraphDown) == 27);
+        char r1[8], r2[8], r3[8], r4[8], r5[8];
+        fmtRate(0, r1, sizeof(r1));
+        fmtRate(340, r2, sizeof(r2));
+        fmtRate(1234, r3, sizeof(r3));
+        fmtRate(12345, r4, sizeof(r4));
+        fmtRate(1234567, r5, sizeof(r5));
+        check("rates in four glyphs: 0, 340, 1.2K, 12K, 1.2M",
+              !strcmp(r1, "0") && !strcmp(r2, "340") && !strcmp(r3, "1.2K") && !strcmp(r4, "12K") &&
+              !strcmp(r5, "1.2M"));
+        const Rect g = R(316, 168, 160, 56);
+        Rect wrap;
+        const Rect mid = sweepBox(g, 10, wrap);
+        check("a sample sends its column and the two ahead", mid.x == 326 && mid.w == 3 && empty(wrap));
+        const Rect end = sweepBox(g, 159, wrap);
+        check("and wraps to the left edge at the right one",
+              end.x == 475 && end.w == 1 && wrap.x == 316 && wrap.w == 2 && wrap.h == 56);
+        // A full queue merges its cheapest pair, not everything.
+        DirtyCheap q;
+        for (int i = 0; i < Dirty::kMax; ++i) q.add(R((i % 12) * 40, (i / 12) * 150, 10, 10));
+        q.add(R(470, 310, 10, 10));
+        int32_t biggest = 0;
+        for (uint8_t i = 0; i < q.n; ++i) if (area(q.q[i]) > biggest) biggest = area(q.q[i]);
+        check("a full queue of small rectangles stays small: none over 20% of the glass",
+              q.n == Dirty::kMax && biggest < 480 * 320 / 5);
     }
 
     printf("%d passed, %d failed\n", passes, fails);

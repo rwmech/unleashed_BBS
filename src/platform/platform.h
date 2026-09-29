@@ -219,8 +219,44 @@ struct NetInfo {
     uint8_t channel  = 0;
     int8_t  rssi     = 0;
     bool    valid    = false;
+#ifdef BBS_HAS_ETH
+    // A board with a wired port (1.1.2). onEth: Ethernet has an address and
+    // is the interface in use, and ip is its address; Wi-Fi then stands by
+    // unjoined, so ssid and the signal are empty. ethLink: the cable has a
+    // link, whether or not DHCP has answered yet.
+    bool     onEth   = false;
+    bool     ethLink = false;
+    bool     ethFull = false;
+    uint16_t ethMbps = 0;
+#endif
 };
 NetInfo netInfo();
+
+#ifdef BBS_HAS_ETH
+// ---------------------------------------------------------------------------
+// Ethernet (BBS_HAS_ETH boards only: a W5500 on SPI, board.h's BBS_ETH_*).
+//
+// ethBegin: the chip, its driver and its own netif, DHCP with the hostname,
+// started. Once, at boot, after esp_netif_init and the default event loop
+// and before Wi-Fi starts. Non-blocking: the link and the address arrive as
+// events, and ethInfo reads what they left. The driver's receive task is
+// pinned to core 0 beside Wi-Fi and lwIP, so frames are never handled on
+// the BBS loop's core. False when the chip does not answer; the board then
+// runs on Wi-Fi alone, as with ethernet = no.
+// ethInfo: link, address and speed as the last events left them: plain
+// reads, cheap enough for every pass. up is an address on a live link.
+// ---------------------------------------------------------------------------
+struct EthInfo {
+    bool     started = false;   // ethBegin succeeded
+    bool     link    = false;
+    bool     up      = false;
+    bool     full    = false;
+    uint16_t mbps    = 0;
+    uint32_t ip      = 0;       // network order, 0 none
+};
+bool    ethBegin(const char* hostname);
+EthInfo ethInfo();
+#endif
 
 // ---------------------------------------------------------------------------
 // The SD card (the sd plugin). Optional: a board with no card is a complete
@@ -552,7 +588,61 @@ bool     lcdDraw(const uint16_t* fb, uint16_t stride, uint16_t x, uint16_t y, ui
 void     lcdBacklight(uint8_t pct);
 void*    psramAlloc(size_t n);
 void     psramFree(void* p);
+
+// An RGB panel (BBS_LCD_RGB, platform_esp32_rgb.cpp) answers the same calls:
+// the width and height are the picture the plugin draws, shown at
+// BBS_LCD_SCALE; lcdReady is true while the panel is up (a draw is a copy
+// into the picture on the glass, never a wait); the backlight is on or off.
+
+#ifdef BBS_HAS_TOUCH
+#ifdef BBS_TOUCH_POLL
+// touchPoll (the 4.3B's GT911, BBS_TOUCH_POLL, platform_esp32_rgb.cpp): the
+// touch controller's latest report, if it has a new one: true with down
+// saying whether a finger is on the glass, false when there is nothing new
+// (nothing changed since the last report) or no controller answered. One
+// short I2C exchange (about 150 us), so the panel plugin polls it at most
+// every 50 ms from its tick.
+bool touchPoll(bool& down);
+#else
+// ---------------------------------------------------------------------------
+// The glass's touch controller (BBS_HAS_TOUCH, board.h), read as taps: an
+// interrupt on its INT line counts them, and the panel takes the count from
+// its tick. Nothing on the BBS loop touches the I2C bus.
+//
+// touchBegin:  the INT line's interrupt, and once, at a plugin's start
+//              (blocking, a few ms), the controller asked over I2C who it
+//              is and told to pulse INT on a touch. False with a reason in
+//              err when it did not answer; the taps still count if INT
+//              pulses anyway. Beginning again is harmless.
+// touchChip:   the chip ID it answered with, 0 for none.
+// touchTaps:   taps since the last call: INT falling edges at least
+//              kTapGapMs apart, since a held finger pulses INT about every
+//              10 ms. Taken under the ISR's lock, safe from the loop.
+//              The interrupt stays for the life of the boot.
+// ---------------------------------------------------------------------------
+constexpr uint32_t kTapGapMs = 250;
+bool     touchBegin(char* err, size_t errLen);
+uint8_t  touchChip();
+uint16_t touchTaps();
+#endif  // BBS_TOUCH_POLL
+#endif  // BBS_HAS_TOUCH
 #endif  // BBS_HAS_LCD
+
+#if defined(BBS_SD_CS_EXPANDER) || defined(BBS_LCD_RGB)
+// boardExpander: the board's I2C bus and its CH422G expander up, the port
+// driven as the board wants it at rest (the card selected, the resets let
+// go, the backlight off). Once; true at once after that. The sd plugin's
+// mount and the panel's start both call it, whichever comes first.
+bool boardExpander();
+#endif
+
+#ifdef BBS_HAS_CHIP_TEMP
+// chipTemp: the chip's own temperature sensor (the die, not the room), in
+// tenths of a degree C. False before it has started or when a read fails.
+// A register read and a conversion, microseconds: safe from the loop, a few
+// times a minute.
+bool chipTemp(int& tenthsC);
+#endif
 
 #ifdef BBS_HAS_CAMERA
 // ---------------------------------------------------------------------------
@@ -634,7 +724,20 @@ using MarkOutFn  = bool (*)(void* ctx, const uint8_t* p, size_t n);
 // the driver's object beside it; then cam_task's 4 KB stack, its queues,
 // the SCCB bus and the sensor's state. The block is rounded up to cover
 // the descriptors and the heap's own headers.
+//
+// The S3 (ETH 1.0.1, WS2 1.0.1, 1.1.2) takes 16 x 1 KB for JPEG
+// (target/esp32s3/ll_cam.c, ll_cam_dma_sizes) and at most
+// CAMERA_DMA_BUFFER_SIZE_MAX for raw frames, which an S3 camera board's
+// sdkconfig layer sets to 16 KB. The ESP32's figure there refused every snap
+// on the ESP32-S3-ETH, whose largest internal DMA block sits near 28-31 KB
+// with SSH running.
+#if defined(BBS_CHIP_S3) && defined(ESP_PLATFORM)
+static_assert(CONFIG_CAMERA_DMA_BUFFER_SIZE_MAX <= 16384,
+              "an S3 camera board sets CAMERA_DMA_BUFFER_SIZE_MAX to 16384 in its sdkconfig layer");
+constexpr uint32_t kCamDmaBlock = 16384u + 1024u;
+#else
 constexpr uint32_t kCamDmaBlock = 32768u + 1024u;
+#endif
 constexpr uint32_t kCamInternal = kCamDmaBlock + 4096u + 2048u;
 
 bool     camOpen(const CamCfg& c, char* err, size_t errLen);

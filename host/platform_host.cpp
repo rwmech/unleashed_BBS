@@ -56,6 +56,9 @@
 #if defined(BBS_HAS_SSH) && BBS_HAS_SSH
 #include <sys/eventfd.h>
 #endif
+#ifdef BBS_HAS_ETH
+#include <arpa/inet.h>             // htonl: the host Ethernet's address
+#endif
 
 namespace {
 std::string g_fsBase   = "../data";
@@ -282,8 +285,41 @@ NetInfo netInfo() {
         n.channel = 1;
         n.valid   = true;
     }
+#ifdef BBS_HAS_ETH
+    const EthInfo e = ethInfo();
+    n.ethLink = e.link;
+    n.ethFull = e.full;
+    n.ethMbps = e.mbps;
+    if (e.up) {
+        n.onEth = true;
+        snprintf(n.ip, sizeof(n.ip), "127.0.0.1");
+    }
+#endif
     return n;
 }
+
+#ifdef BBS_HAS_ETH
+// Ethernet on the host (1.1.2, the ESP32-S3-ETH profile): a wire at 100 Mb/s
+// full duplex with an address, which is how the board runs on a LAN. The
+// environment plays the other cases for the tests: BBS_HOST_ETH=nolink (no
+// cable), noip (a link and no DHCP answer), off (as ethernet = no leaves it).
+bool ethBegin(const char*) { return true; }
+
+EthInfo ethInfo() {
+    EthInfo i;
+    const char* v = getenv("BBS_HOST_ETH");
+    if (v && !strcmp(v, "off")) return i;
+    i.started = true;
+    if (v && !strcmp(v, "nolink")) return i;
+    i.link = true;
+    i.full = true;
+    i.mbps = 100;
+    if (v && !strcmp(v, "noip")) return i;
+    i.up = true;
+    i.ip = htonl(0x7F000001u);
+    return i;
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // fsInfo: the host has a whole disk, so pretend it is the board's storage
@@ -772,15 +808,28 @@ std::vector<uint16_t> g_glass;
 
 bool lcdBegin(const LcdCfg& c, char* err, size_t errLen) {
     lcdEnd();
-    if (c.mosi < 0 || c.sclk < 0 || c.dc < 0 || !c.width || !c.height) {
+#ifdef BBS_LCD_RGB
+    // An RGB panel's bus is the board's wiring: only the picture's size.
+    if (!c.width || !c.height) {
+        snprintf(err, errLen, "the panel needs a size");
+        return false;
+    }
+#else
+#ifdef BBS_LCD_I80
+    const bool clockless = false;                   // RD may be -1 on a parallel bus
+#else
+    const bool clockless = c.sclk < 0;
+#endif
+    if (c.mosi < 0 || clockless || c.dc < 0 || !c.width || !c.height) {
         snprintf(err, errLen, "the panel needs MOSI, SCLK and D/C");
         return false;
     }
+#endif
     g_lcdCfg = c;
     g_lcdUp  = true;
     g_lcdBl  = c.backlight;
     g_glass.assign(static_cast<size_t>(c.width) * c.height, 0);
-    log("panel: ST7789 %ux%u, rotation %u, %u MHz (host glass)", static_cast<unsigned>(c.width),
+    log("panel: %s %ux%u, rotation %u, %u MHz (host glass)", BBS_LCD_DRIVER, static_cast<unsigned>(c.width),
         static_cast<unsigned>(c.height), static_cast<unsigned>(c.rotation), static_cast<unsigned>(c.mhz));
     return true;
 }
@@ -802,7 +851,13 @@ void lcdEnd() {
 
 bool lcdReady() { return g_lcdUp; }
 
+// The board's band (platform_esp32.cpp): 12 rows of 480 on the parallel
+// ILI9488, 16 rows of 320 on the Waveshare's SPI ST7789.
+#ifdef BBS_LCD_I80
+uint32_t lcdBandPixels() { return 480u * 12u; }
+#else
 uint32_t lcdBandPixels() { return 320u * 16u; }
+#endif
 
 bool lcdDraw(const uint16_t* fb, uint16_t stride, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     if (!g_lcdUp || !fb || static_cast<uint32_t>(w) * h > lcdBandPixels()) return false;
@@ -817,7 +872,55 @@ void lcdBacklight(uint8_t pct) { g_lcdBl = g_lcdUp ? pct : 0; }
 
 void* psramAlloc(size_t n) { return malloc(n); }
 void  psramFree(void* p)  { free(p); }
+
+#if defined(BBS_HAS_TOUCH) && !defined(BBS_TOUCH_POLL)
+// Touch on the host: no controller. A tap is PANEL TAP's (hostTouchTap,
+// below the namespace), so a test can press the glass.
+namespace {
+uint16_t g_hostTaps = 0;
+bool     g_touchUp  = false;
+}
+bool touchBegin(char* err, size_t errLen) {
+    if (err && errLen) err[0] = '\0';
+    g_touchUp = true;
+    log("touch: CST816 on the host: taps from PANEL TAP");
+    return true;
+}
+uint8_t  touchChip() { return g_touchUp ? 0xB6 : 0; }
+uint16_t touchTaps() { const uint16_t n = g_hostTaps; g_hostTaps = 0; return n; }
+#endif
 #endif  // BBS_HAS_LCD
+
+#if defined(BBS_SD_CS_EXPANDER) || defined(BBS_LCD_RGB)
+// The host has no expander to bring up.
+bool boardExpander() { return true; }
+#endif
+
+#if defined(BBS_HAS_TOUCH) && defined(BBS_TOUCH_POLL)
+// touchPoll on the host (the 4.3B's GT911): a tap is a file called "tap" in
+// the data directory. Seen, it is removed and reported as a finger down, and
+// the next poll reports the finger lifted, as the GT911 reports a tap.
+bool touchPoll(bool& down) {
+    static bool lift = false;
+    down = false;
+    if (lift) {
+        lift = false;
+        return true;
+    }
+    const std::string p = g_fsBase + "/tap";
+    if (remove(p.c_str()) != 0) return false;
+    down = true;
+    lift = true;
+    return true;
+}
+#endif
+
+#ifdef BBS_HAS_CHIP_TEMP
+// The chip's temperature on the host: a steady 41.5 C, so the panel's page
+// has a figure to show and a test a figure to read (42C where a board shows
+// whole degrees).
+bool chipTemp(int& tenthsC) { tenthsC = 415; return true; }
+#endif
 
 #ifdef BBS_HAS_CAMERA
 // ---------------------------------------------------------------------------
@@ -1169,4 +1272,12 @@ bool hostPanelShot(const char* path) {
     fclose(f);
     return true;
 }
+
+#if defined(BBS_HAS_TOUCH) && !defined(BBS_TOUCH_POLL)
+// hostTouchTap: a tap on the host's glass (PANEL TAP), taken by the panel's
+// next tick as a real one would be.
+void hostTouchTap() {
+    ++plat::g_hostTaps;
+}
+#endif
 #endif

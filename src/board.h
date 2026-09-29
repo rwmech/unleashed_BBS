@@ -30,6 +30,14 @@
  *                                      internal/board-waveshare-s3-lcd147-
  *                                      2026-09-24.md.
  *
+ *               BBS_BOARD_MF_S3PAR35  Makerfabs ESP32-S3 Parallel TFT with
+ *                                      Touch 3.5", hardware v1.0: ESP32-S3-
+ *                                      WROOM-1-N16R2, 16 MB flash, 2 MB quad
+ *                                      PSRAM, a CP2104 and native USB, a TF
+ *                                      slot and a 480 x 320 ILI9488 on a
+ *                                      16-bit parallel bus. Pins from
+ *                                      Makerfabs' schematic (its block below).
+ *
  *               BBS_BOARD_FN_WROVER_CAM  Freenove ESP32-WROVER CAM (FNK0060,
  *                                      pinout 3.0): ESP32-WROVER-E, 4 MB
  *                                      flash, 8 MB PSRAM, a camera (an
@@ -43,8 +51,53 @@
  *                                      a micro SD slot (run over SPI)
  *                                      and a flash LED on GPIO 4.
  *
+ *               BBS_BOARD_WS_S3TOUCH43B  Waveshare ESP32-S3-Touch-LCD-4.3B:
+ *                                      ESP32-S3-WROOM-1-N16R8, an 800 x 480
+ *                                      RGB panel with GT911 touch, a CH422G
+ *                                      expander, a TF slot, an RTC, RS485
+ *                                      and CAN. Pins in its block below.
+ *
+ *               BBS_BOARD_WS_S3TOUCH2  Waveshare ESP32-S3-Touch-LCD-2: the
+ *                                      ESP32-S3R8 again (16 MB flash, 8 MB
+ *                                      octal PSRAM), a 2" 240 x 320 ST7789T3
+ *                                      with CST816D touch, a camera (OV5640
+ *                                      as sold), a TF slot on the panel's
+ *                                      SPI bus, a QMI8658 IMU and a Li-ion
+ *                                      charger. The first board with a panel
+ *                                      and a camera both.
+ *
+ *               BBS_BOARD_WS_S3ETH     Waveshare ESP32-S3-ETH: the ESP32-S3R8,
+ *                                      16 MB flash, a W5500 Ethernet
+ *                                      controller (Ethernet first, Wi-Fi the
+ *                                      fallback), a camera connector, a TF
+ *                                      slot and one WS2812B. No display.
+ *
+ *               BBS_BOARD_MF_S3PAR35   Makerfabs ESP32-S3 Parallel TFT with
+ *                                      Touch 3.5", hardware v1.0: the
+ *                                      N16R2 (2 MB quad PSRAM), a 480 x 320
+ *                                      ILI9488 on a 16-bit i80 bus, a micro
+ *                                      SD slot, the console on a CP2104.
+ *
  *               Capabilities a profile may define:
  *                 BBS_HAS_LCD       a panel the panel plugin drives
+ *                 BBS_LCD_RGB       that panel is on the S3's RGB bus, its
+ *                                   frame buffer in PSRAM, not an SPI one
+ *                 BBS_HAS_TOUCH     a touch controller on the glass: read
+ *                                   as taps on its INT line (BBS_TOUCH_*),
+ *                                   or polled over I2C with BBS_TOUCH_POLL
+ *                 BBS_TOUCH_POLL    the controller is polled for reports
+ *                                   (the 4.3B's GT911, touchPoll)
+ *                 BBS_HAS_CHIP_TEMP the chip's own temperature sensor, on
+ *                                   the panel
+ *                 BBS_SD_CS_EXPANDER the card's chip select is an expander
+ *                                   pin held low, not a GPIO
+ *                 BBS_LCD_ILI9488   that panel is an ILI9488, not the default
+ *                                   ST7789; BBS_LCD_RAM_SHORT/LONG its memory
+ *                 BBS_LCD_I80       on a 16-bit i80 parallel bus
+ *                                   (BBS_LCD_DATA_PINS), not SPI
+ *                 BBS_PSRAM_QUAD    an S3 whose PSRAM is quad: 33 to 37 are
+ *                                   free pins, not the PSRAM's
+ *                 BBS_PINS_LCDBUS   the panel's parallel data bus
  *                 BBS_CHIP_S3       the chip is an ESP32-S3 (pin rules,
  *                                   RMT sizing, the console on native USB)
  *                 BBS_HAS_PSRAM     the board has PSRAM its build turns on
@@ -61,6 +114,10 @@
  *                                   float: the ESP32-CAM's flash LED)
  *                 BBS_LED_ACTIVE_LOW the board's own LED (BBS_LED_GPIO)
  *                                   lights on a low pin
+ *                 BBS_SPI_SHARED    the panel and the card are two devices
+ *                                   on one SPI bus (SPI2), raised once for
+ *                                   both; a panel band is never waited for
+ *                                   behind a card command
  *
  * Libraries:    none
  * Targets:      ESP32-WROOM-32E, ESP32-S3 (ESP-IDF 5.3.1) and the Linux host
@@ -137,7 +194,8 @@
 // own port, beside telnet (src/core/sshd.h). Eight at once: this board's
 // 8 MB of PSRAM would hold far more at about 48 KB each, but eight is more
 // than a preview on ten nodes needs, and the lower figure bounds the one SSH
-// task's work. A board with 2 MB of PSRAM sets its own, lower, figure.
+// task's work. Eight fits 2 MB too, beside a 300 KB framebuffer (the
+// Makerfabs block below); a board with less sets its own, lower, figure.
 #define BBS_HAS_SSH           1
 #define BBS_SSH_MAX           8
 
@@ -217,6 +275,368 @@
 #endif  // BBS_BOARD_WS_S3LCD147
 
 // ===========================================================================
+// Waveshare ESP32-S3-Touch-LCD-4.3B ("Development Board B", in its case)
+//
+// ESP32-S3-WROOM-1-N16R8 (read on the bench as ESP32-S3 QFN56 rev v0.2,
+// 16 MB flash, 8 MB octal PSRAM), native USB only (303A:1001), a 4.3"
+// 800 x 480 ST7262 panel on a 16-bit RGB bus, a GT911 touch controller, a
+// CH422G I2C expander, a TF slot on SPI, a PCF85063A RTC, RS485, CAN and two
+// isolated inputs and outputs. Every pin below is from Waveshare's own
+// schematic (ESP32-S3-Touch-LCD-4.3B-Sch.pdf) cross-checked against their
+// demos for this exact board (github.com/waveshareteam/ESP32-S3-Touch-LCD-
+// 4.3B at 04cc7ee: waveshare_rgb_lcd_port.h, CH422G.h, 03_SD_Test, 04_RTC_
+// Test); the table with a source for each pin is release-prep/ws43b/pins.md.
+// The schematic, the wiki and the demos agree on every pin this profile
+// drives. The one disagreement, the Arduino demos' "USB_SEL" on EXIO5, is
+// copied from the plain 4.3 board: the B has no USB/CAN switch, and EXIO5 is
+// its second isolated input.
+//
+// The board uses every GPIO the module brings out, so there is no activity
+// LED, no pixel for the lights, and no BOOT button for the firmware: GPIO0
+// is the BOOT key and the panel's G3 line at once, driven by the RGB bus
+// while the panel runs. The BOOT-hold reset and the backup window's button
+// are off, as on the ESP32-CAM.
+//
+// The CH422G has one direction bit for all eight of its IO pins, so reading
+// the isolated inputs would let go of the backlight, both resets and the
+// card's chip select together. The firmware keeps it an output port and does
+// not read DI0 and DI1.
+// ===========================================================================
+#if defined(BBS_BOARD_WS_S3TOUCH43B)
+
+#if defined(ESP_PLATFORM) && !CONFIG_IDF_TARGET_ESP32S3
+#error "BBS_BOARD_WS_S3TOUCH43B is an ESP32-S3 board: build it for the esp32s3 target"
+#endif
+#if defined(BBS_BOARD_WS_S3LCD147)
+#error "one board profile at a time"
+#endif
+#ifndef BBS_CHIP_S3
+#define BBS_CHIP_S3 1                 // the host's stand-in, see above
+#endif
+
+#define BBS_BOARD_NAME        "Waveshare ESP32-S3-Touch-LCD-4.3B"
+#define BBS_HAS_LCD           1
+#define BBS_BOARD_PLUGINS     1       // the panel
+
+#define BBS_BOARD_TAG         "WS43B"
+#define BBS_BOARD_VERSION     "1.0.1"
+
+// PSRAM (sdkconfig.defaults.ws43b over the S3 layer): the panel's frame
+// buffer, and the program and its constants run from it (XIP), so a flash
+// write does not stop the glass being fed. A build that lost the layer would
+// otherwise link quietly without it.
+#define BBS_HAS_PSRAM         1
+#if defined(ESP_PLATFORM) && !(CONFIG_SPIRAM && CONFIG_SPIRAM_FETCH_INSTRUCTIONS && CONFIG_SPIRAM_RODATA)
+#error "BBS_BOARD_WS_S3TOUCH43B needs PSRAM with XIP: sdkconfig.defaults.ws43b was not applied (delete sdkconfig.ws_s3touch43b*)"
+#endif
+// With SSH and a card mounted an S3 fills the IDF's 8 VFS slots, with no
+// headroom (the Makerfabs' review): 12 in sdkconfig.defaults.ws43b, as on the
+// Makerfabs. A stale sdkconfig keeps 8.
+#if defined(ESP_PLATFORM) && CONFIG_VFS_MAX_COUNT < 12
+#error "BBS_BOARD_WS_S3TOUCH43B needs CONFIG_VFS_MAX_COUNT of 12 (sdkconfig.defaults.ws43b): delete sdkconfig.ws_s3touch43b*"
+#endif
+
+// SSH as on the Waveshare stick: the same S3 image machinery, one define.
+#define BBS_HAS_SSH           1
+#define BBS_SSH_MAX           8
+
+// The internal heap a plugin may not take at start, the stick's figure
+// (Wi-Fi's and lwIP's buffers are in PSRAM on an S3 with it).
+#define BBS_HEAP_RESERVE      16384
+
+// Nothing free for an LED or a button (above).
+#define BBS_LED_GPIO          -1
+#define BBS_BOOT_GPIO         -1
+#define BBS_BACKUP_GPIO       -1
+
+// The lights plugin on, with no pin for either output: nothing is wired to
+// light, but the panel draws the strip's effect as its row of square LEDs
+// whether or not a strip is wired, and that row is part of the panel.
+#define BBS_LIGHTS_ON         1
+// And its default effect switchboard (11 in lights::kStripFx): a lamp a
+// line, a caller's in rank colour and a free one dim steady blue that
+// flickers with traffic, so the glass's light bar means something with
+// callers and is alive without them (Rob, 2026-09-28).
+#define BBS_LIGHTS_STRIP_FX   11
+
+// The TF slot, SPI only (D1 and D2 go to pull-ups and nowhere else): MOSI 11,
+// CLK 12, MISO 13, and chip select on the expander's EXIO4, held low for good
+// as Waveshare's own SD demo holds it, the card being the only device on that
+// bus. So the sd plugin's CS is "none" (-1) and the driver runs with no CS.
+#define BBS_HAS_SD_SLOT       1
+#define BBS_SD_CS_EXPANDER    1
+#define BBS_SD_CS             -1
+#define BBS_SD_MOSI           11
+#define BBS_SD_CLK            12
+#define BBS_SD_MISO           13
+
+// The serial bridge on the RS485 transceiver (an SP3485 that turns itself
+// round from the TX line, so there is no direction pin): RXD 43, TXD 44.
+// Those are UART0's default pins, free here because the console is the
+// chip's own USB. Off until a sysop enables it.
+#define BBS_SERIAL_RX         43
+#define BBS_SERIAL_TX         44
+
+// The panel, an 800 x 480 ST7262 on the RGB bus: data in the order esp_lcd
+// wants it (B3-B7, G2-G7, R3-R7), the clock, the syncs and DE. Timing as
+// every Waveshare demo for this panel: 16 MHz, falling edge, H and V pulse
+// 4, back porch 8, front porch 8, which is 39 frames a second.
+//
+// The panel plugin draws a 400 x 240 picture and the platform shows it at
+// twice the size: the 8 x 16 text is 16 x 32 on the glass, about 3.7 mm
+// tall, readable across a desk. BBS_LCD_WIDTH and HEIGHT are that picture.
+// The picture is in PSRAM and goes to the panel through two bounce buffers
+// in internal RAM, refilled from an interrupt with every pixel doubled
+// (platform_esp32_rgb.cpp), so no 768 KB frame buffer exists at all. Four
+// lines a buffer, not the demos' ten: 12.8 KB of internal RAM rather than
+// 32, measured on the bench as the difference between a 11 KB and a 30 KB
+// largest free block, for an interrupt every 205 us instead of 512.
+#define BBS_LCD_RGB           1
+#define BBS_LCD_DRIVER        "ST7262"
+#define BBS_LCD_SCALE         2
+#define BBS_LCD_PHYS_W        800
+#define BBS_LCD_PHYS_H        480
+#define BBS_RGB_DATA          14, 38, 18, 17, 10, 39, 0, 45, 48, 47, 21, 1, 2, 42, 41, 40
+#define BBS_RGB_PCLK          7
+#define BBS_RGB_HSYNC         46
+#define BBS_RGB_VSYNC         3
+#define BBS_RGB_DE            5
+#define BBS_RGB_PCLK_HZ       16000000
+#define BBS_RGB_HPW           4
+#define BBS_RGB_HBP           8
+#define BBS_RGB_HFP           8
+#define BBS_RGB_VPW           4
+#define BBS_RGB_VBP           8
+#define BBS_RGB_VFP           8
+#define BBS_RGB_BOUNCE_LINES  4
+#define BBS_LCD_WIDTH         400
+#define BBS_LCD_HEIGHT        240
+#define BBS_LCD_LIST_MAX      12      // two columns of six at 400 x 240
+// The panel plugin's settings that an RGB panel has no use for, as the
+// plugin's defaults() reads them.
+#define BBS_LCD_MOSI          -1
+#define BBS_LCD_SCLK          -1
+#define BBS_LCD_CS            -1
+#define BBS_LCD_DC            -1
+#define BBS_LCD_RST           -1
+#define BBS_LCD_BL            -1
+#define BBS_LCD_XOFF          0
+#define BBS_LCD_YOFF          0
+#define BBS_LCD_ORIENT        0
+#define BBS_LCD_INVERT        0
+#define BBS_LCD_BGR           0
+#define BBS_LCD_MIRROR        0
+#define BBS_LCD_MHZ           10
+#define BBS_LCD_BACKLIGHT     100     // on or off only: the boost's enable is an expander pin
+
+// The I2C bus: the touch controller, the expander and the RTC. 400 kHz, as
+// the demos run it, with 4.7K pull-ups on the board.
+#define BBS_I2C_SDA           8
+#define BBS_I2C_SCL           9
+
+// The GT911 touch controller at 0x5D: INT on GPIO4, reset on EXIO1. INT is
+// held low while reset rises, which is what picks 0x5D, and then let go
+// (Waveshare's Arduino sequence; their IDF demo leaves it driven low).
+#define BBS_HAS_TOUCH         1
+#define BBS_TOUCH_POLL        1       // polled over I2C (touchPoll), not taps on INT
+#define BBS_TOUCH_INT         4
+#define BBS_TOUCH_ADDR        0x5D
+
+// The CH422G's IO port, one bit a pin (EXIOn is bit n): touch reset EXIO1,
+// the backlight's boost and the panel's DISP EXIO2, the panel's reset
+// EXIO3, the card's chip select EXIO4. EXIO0 and EXIO5 are the isolated
+// inputs' collectors and are written low, as the demos write them: high
+// would fight the opto-coupler when an input is on.
+#define BBS_EX_TP_RST         0x02
+#define BBS_EX_BACKLIGHT      0x04
+#define BBS_EX_LCD_RST        0x08
+#define BBS_EX_SD_CS          0x10
+
+// The S3's own temperature sensor, shown on the panel's system row. It
+// measures the die, not the room: a figure to watch for a board in a closed
+// case, not a thermometer.
+#define BBS_HAS_CHIP_TEMP     1
+
+// Pins the board owns (syscfg::pinProblem refuses them with the reason).
+//   LCD      the RGB bus, the touch controller's INT and the I2C pair (GPIO0,
+//            the BOOT key, is the bus's G3)
+//   WIRED    the RTC's interrupt (6) and the CAN transceiver (15, 16)
+// The card's three lines and RS485's two are the sd plugin's and the serial
+// bridge's settings, held by them, as on the other boards.
+#define BBS_PINS_LCD          BBS_RGB_DATA, BBS_RGB_PCLK, BBS_RGB_HSYNC, BBS_RGB_VSYNC, BBS_RGB_DE, \
+                              BBS_TOUCH_INT, BBS_I2C_SDA, BBS_I2C_SCL
+#define BBS_PINS_WIRED        6, 15, 16
+
+#endif  // BBS_BOARD_WS_S3TOUCH43B
+
+// ===========================================================================
+// Makerfabs ESP32-S3 Parallel TFT with Touch 3.5" (ILI9488), hardware v1.0
+//
+// ESP32-S3-WROOM-1-N16R2: 16 MB quad flash and 2 MB QUAD PSRAM in the chip's
+// package (read on the bench, COM18: ESP32-S3 QFN56 v0.1, "Embedded PSRAM
+// 2MB (AP_3v3)", flash c8/4018). Two USB-C: "USB-TTL", a CP2104 on UART0 (43,
+// 44) with DTR/RTS auto-reset, which is the console, the flashing port and
+// Improv's port; and "USB", the chip's own (19, 20). A 3.5" 480 x 320 ILI9488
+// on a 16-bit i80 parallel bus, an FT6236 capacitive touch controller on I2C
+// (38, 39, INT 40), a micro SD slot on SPI, FLASH and RST buttons, a green
+// power LED wired to 3V3, and two Mabee (Grove) sockets: J1 on IO17 and IO18,
+// J2 the I2C.
+//
+// Every pin is from Makerfabs' own schematic for this revision, "ESP32-S3
+// Parallel TFT with Touch v1.0(3.5'' ili9488).sch" in github.com/Makerfabs/
+// Makerfabs-ESP32-S3-Parallel-TFT-with-Touch (hardware/, commit d4c75c6),
+// read as a netlist, and from the firmware Makerfabs shipped for it
+// (firmware/SD16_3.5 in the same commit). The board says "v1.0" on its back.
+//
+// A trap in that schematic, and the reason for the second source: its module
+// symbol is an ESP32-S2-SOLO's, so two nets carry the S2's pin names. The
+// net "IO33/DB0" is the S3's IO47 and "IO34/LCD_RD" its IO48: Makerfabs'
+// firmware drives D0 on 47 and RD on 48, and their v2.0 schematic renames
+// exactly those two nets IO47/DB0 and IO48/LCD_RD. Every other net name is
+// the S3's own.
+//
+// This revision runs WR, D/C and CS over IO35 to IO37, which are OCTAL
+// PSRAM's pins. It works because the v1.0 carries the quad N16R2, whose PSRAM
+// shares the flash's pins (26 to 32) and leaves 33 to 37 free
+// (BBS_PSRAM_QUAD below). Makerfabs' v2.0 moved those three to 18, 17 and 46
+// to carry an octal N16R8: another image, another profile, not this one.
+//
+// The card (1, 2, 41, 42) and the panel share no pin and no bus: the card is
+// on SPI2, the panel on the LCD_CAM peripheral's i80 bus.
+// ===========================================================================
+#if defined(BBS_BOARD_MF_S3PAR35)
+
+#if defined(ESP_PLATFORM) && !CONFIG_IDF_TARGET_ESP32S3
+#error "BBS_BOARD_MF_S3PAR35 is an ESP32-S3 board: build it for the esp32s3 target"
+#endif
+#if defined(BBS_BOARD_WS_S3LCD147)
+#error "one board profile at a time"
+#endif
+#ifndef BBS_CHIP_S3
+#define BBS_CHIP_S3 1                 // the host's stand-in, see above
+#endif
+
+// 35 characters: HARDWARE's Board row puts it under the version at 40
+// columns, where 44 ("Makerfabs ESP32-S3 Parallel TFT 3.5" (v1.0)") wrapped.
+#define BBS_BOARD_NAME        "Makerfabs S3 Parallel TFT 3.5\" v1.0"
+#define BBS_HAS_LCD           1
+#define BBS_BOARD_PLUGINS     1       // the panel
+
+#define BBS_BOARD_TAG         "MF35"
+#define BBS_BOARD_VERSION     "1.1.1"
+
+// SSH (1.1.2 core, MF35 1.1.0, a preview), as on the Waveshare S3: the shared
+// port 6400 and ssh_port 6422, host keys in userdata/ssh. Eight at once, the
+// Waveshare's figure, and it fits the 2 MB here: the panel's framebuffer is
+// 480 x 320 x 2 = 300 KB, and the 1.1.1 bench read 1.71 MB of PSRAM free with
+// it up. Eight sessions at their 48 KB budget (BBS_SSH_PSRAM_EACH) plus the
+// 128 KB kept back (BBS_SSH_PSRAM_KEEP) is 512 KB, which leaves over 1.1 MB.
+// sshd::cap() still lowers the figure live if PSRAM is short at a connect.
+// The limit that bites first is internal RAM (the SSH task's 16 KB stack),
+// not PSRAM: read the internal heap's low on the bench with SSH callers on.
+#define BBS_HAS_SSH           1
+#define BBS_SSH_MAX           8
+
+// PSRAM (sdkconfig.defaults.mf35: quad, where the S3 layer says octal). A
+// build that lost the layer would find no PSRAM, or with octal would drive
+// the panel's bus pins as PSRAM.
+#define BBS_HAS_PSRAM         1
+#define BBS_PSRAM_QUAD        1       // pinProblem: 33 to 37 are free on this part
+#if defined(ESP_PLATFORM) && !(CONFIG_SPIRAM && CONFIG_SPIRAM_MODE_QUAD)
+#error "BBS_BOARD_MF_S3PAR35 needs quad PSRAM: sdkconfig.defaults.mf35 was not applied (delete sdkconfig.makerfabs_s3_par35*)"
+#endif
+// Two consoles plus SSH fill the IDF's 8 VFS slots, and the card's FAT then
+// fails to mount (sdkconfig.defaults.mf35). A stale sdkconfig keeps 8.
+#if defined(ESP_PLATFORM) && CONFIG_VFS_MAX_COUNT < 9
+#error "BBS_BOARD_MF_S3PAR35 needs CONFIG_VFS_MAX_COUNT above 8 (sdkconfig.defaults.mf35): delete sdkconfig.makerfabs_s3_par35*"
+#endif
+
+// The Waveshare S3's reserve, for the same reason: Wi-Fi's and lwIP's
+// buffers go to PSRAM (the S3 layer's TRY_ALLOCATE_WIFI_LWIP).
+#define BBS_HEAP_RESERVE      16384
+
+// No LED the firmware can drive: LED1 is not fitted and the power LED is on
+// 3V3. The lights plugin ships off with no pin, as on the WROOM.
+#define BBS_LED_GPIO          -1
+
+// The card slot in SPI mode: CS IO1, MOSI IO2, SCLK IO42, MISO IO41 (the
+// schematic's IO1/CS, IO2/MOSI, IO42/SCLK, IO41/MISO). DAT1 and DAT2 are
+// pulled up on the board; there is no card-detect line.
+#define BBS_HAS_SD_SLOT       1
+#define BBS_SD_CS             1
+#define BBS_SD_MOSI           2
+#define BBS_SD_CLK            42
+#define BBS_SD_MISO           41
+
+// The serial bridge on J1, the Mabee GPIO socket: IO17 RX, IO18 TX, off until
+// enabled. Both also feed the NC7WZ07 buffer to the speaker header (SPK),
+// whose inputs load them no more than a probe, and IO18 has a 10K pull-up.
+#define BBS_SERIAL_RX         17
+#define BBS_SERIAL_TX         18
+
+// The panel: ILI9488, 320 x 480 as the controller's memory runs, on a 16-bit
+// i80 bus. D0 to D15 are IO47, 21, 14, 13, 12, 11, 10, 9, 3, 8, 16, 15, 7, 6,
+// 5 and 4 (the schematic's DB0 to DB15, D0 read as IO47 above); WR IO35, RD
+// IO48, D/C IO36 (LCD_RS), CS IO37. The panel's RESET is the chip's EN, so
+// there is no reset pin: it is reset by command. RD is held high: nothing
+// reads it.
+//
+// The backlight: IO45 through 1K to an AO3400's gate, pulled down 10K, so on
+// when high, off from reset. IO45 is a strapping pin, and its pull-down is
+// the level it wants: it is driven low from the start-up code
+// (BBS_PINS_HOLD_LOW) until the panel's PWM takes it.
+//
+// Over 16-bit parallel the ILI9488 takes RGB565 (COLMOD 0x55), so the
+// framebuffer goes to the glass as it is. 20 MHz is Makerfabs' own WR clock
+// (their LovyanGFX config, freq_write 20000000).
+//
+// Upright portrait on this glass is MX set, as on the Waveshare's (the IDF
+// ILI9488 component's default MADCTL, MX | BGR, and LovyanGFX's rotation 0):
+// mirror yes. Landscape, 480 x 320, with the USB-C edge at the bottom, as
+// shipped (Rob, on the glass, 2026-09-26).
+//
+// CONFIG panel's "USB plug" names where the USB-C edge is, as on the
+// Waveshare, but this glass sits the other way round against its board, so
+// each word is mapped to the panel's own turn (panel_gfx.h, Orient: up,
+// left, right, down): plug up is its "left", plug down its "right", as seen
+// on the bench. Plug left and right are the two portraits; which of them is
+// which has not been seen yet.
+#define BBS_LCD_ILI9488       1
+#define BBS_LCD_I80           1       // the pins below: WR and RD, not MOSI and SCLK
+#define BBS_LCD_DRIVER        "ILI9488"
+#define BBS_LCD_RAM_SHORT     320
+#define BBS_LCD_RAM_LONG      480
+#define BBS_LCD_DATA_PINS     47, 21, 14, 13, 12, 11, 10, 9, 3, 8, 16, 15, 7, 6, 5, 4
+#define BBS_LCD_MOSI          35      // WR
+#define BBS_LCD_SCLK          48      // RD
+#define BBS_LCD_CS            37
+#define BBS_LCD_DC            36
+#define BBS_LCD_RST           -1
+#define BBS_LCD_BL            45
+#define BBS_LCD_WIDTH         320
+#define BBS_LCD_HEIGHT        480
+#define BBS_LCD_XOFF          0
+#define BBS_LCD_YOFF          0
+#define BBS_LCD_ORIENT        3       // the USB plug down: landscape
+#define BBS_LCD_PLUG_SCANS    1, 0, 3, 2   // the turn for plug up, left, right, down
+#define BBS_LCD_INVERT        0
+#define BBS_LCD_BGR           1
+#define BBS_LCD_MIRROR        1
+#define BBS_LCD_MHZ           20
+#define BBS_LCD_MHZ_NOTE      "20 as Makerfabs run it; 10 if unsure."
+#define BBS_LCD_BACKLIGHT     60
+
+// Pins the board owns. 43 and 44 are UART0 to the CP2104. The panel's data
+// bus is the board's (the six control pins are the panel plugin's settings
+// and are held by it). 46 is a strapping pin, unconnected here.
+#define BBS_PINS_CONSOLE      43, 44
+#define BBS_PINS_LCDBUS       BBS_LCD_DATA_PINS
+#define BBS_PINS_STRAP        46
+#define BBS_PINS_HOLD_LOW     45
+
+#endif  // BBS_BOARD_MF_S3PAR35
+
+// ===========================================================================
 // Freenove ESP32-WROVER CAM (the FNK0060 kit, pinout revision 3.0)
 //
 // ESP32-WROVER-E (ESP32-D0WD-V3, read as revision v3.1 on the bench), 4 MB
@@ -238,7 +658,7 @@
 #if defined(ESP_PLATFORM) && !CONFIG_IDF_TARGET_ESP32
 #error "BBS_BOARD_FN_WROVER_CAM is an ESP32 board: build it for the esp32 target"
 #endif
-#if defined(BBS_BOARD_WS_S3LCD147)
+#if defined(BBS_BOARD_WS_S3LCD147) || defined(BBS_BOARD_WS_S3TOUCH43B) || defined(BBS_BOARD_MF_S3PAR35)
 #error "one board profile at a time"
 #endif
 
@@ -377,7 +797,7 @@
 #if defined(ESP_PLATFORM) && !CONFIG_IDF_TARGET_ESP32
 #error "BBS_BOARD_AI_ESP32CAM is an ESP32 board: build it for the esp32 target"
 #endif
-#if defined(BBS_BOARD_WS_S3LCD147) || defined(BBS_BOARD_FN_WROVER_CAM)
+#if defined(BBS_BOARD_WS_S3LCD147) || defined(BBS_BOARD_FN_WROVER_CAM) || defined(BBS_BOARD_WS_S3TOUCH43B) || defined(BBS_BOARD_MF_S3PAR35)
 #error "one board profile at a time"
 #endif
 
@@ -467,6 +887,347 @@
 #endif  // BBS_BOARD_AI_ESP32CAM
 
 // ===========================================================================
+// Waveshare ESP32-S3-Touch-LCD-2 (the 2-inch one, board lane board-ws2)
+//
+// ESP32-S3R8 (read as QFN56 revision v0.2, embedded PSRAM 8 MB AP_3v3 on
+// the bench), 16 MB flash (W25Q128JVSI), native USB-C only. A 2" 240 x 320
+// IPS on an ST7789T3 with a CST816D touch controller, a 24-pin camera
+// connector (sold with an OV5640; the OV2640 fits too), a TF slot, a
+// QMI8658 IMU, an ETA6098 Li-ion charger with its battery on a divider to
+// GPIO 5. Every pin below is from Waveshare's schematic (its PinOut table
+// and netlist, ESP32-S3-Touch-LCD-2-SchDoc.pdf, 2025-01-18) and was checked
+// against Waveshare's own demo for this board (ESP32-S3-Touch-LCD-2-Demo:
+// ESP-IDF 05_lvgl_camera, 01_sd_card_test, 04_lvgl_battery, 02_lvgl_qmi8658;
+// Arduino 01_factory). The table and its sources: release-prep/ws2/pins.md.
+//
+// The panel and the card share one SPI bus: MOSI 38 and SCLK 39 go to both,
+// MISO 40 to the card only. So the two are devices on SPI2 (BBS_SPI_SHARED,
+// platform_esp32.cpp), not a bus each as on the LCD-1.47.
+// ===========================================================================
+#if defined(BBS_BOARD_WS_S3TOUCH2)
+
+#if defined(ESP_PLATFORM) && !CONFIG_IDF_TARGET_ESP32S3
+#error "BBS_BOARD_WS_S3TOUCH2 is an ESP32-S3 board: build it for the esp32s3 target"
+#endif
+#if defined(BBS_BOARD_WS_S3LCD147) || defined(BBS_BOARD_FN_WROVER_CAM) || defined(BBS_BOARD_AI_ESP32CAM)
+#error "one board profile at a time"
+#endif
+#ifndef BBS_CHIP_S3
+#define BBS_CHIP_S3 1                 // the host's stand-in
+#endif
+
+#define BBS_BOARD_NAME        "Waveshare ESP32-S3-Touch-LCD-2"
+#define BBS_HAS_LCD           1
+#define BBS_HAS_CAMERA        1
+#define BBS_BOARD_PLUGINS     2       // the panel and the camera
+
+// "WS2": Waveshare, 2 inch, beside the LCD-1.47's "S3" (which is older than
+// the rule) and the 4.3B's "WS43B". Shown as 1.1.2-hw.1 (WS2 1.0.2).
+#define BBS_BOARD_TAG         "WS2"
+#define BBS_BOARD_VERSION     "1.0.2"
+
+// SSH as on the LCD-1.47: the same S3R8 and the same 8 MB of PSRAM.
+#define BBS_HAS_SSH           1
+#define BBS_SSH_MAX           8
+
+// PSRAM (sdkconfig.defaults.esp32s3 and this board's own layer,
+// sdkconfig.defaults.ws2): the camera needs it, and a build that lost the
+// layer would otherwise link quietly without it.
+#define BBS_HAS_PSRAM         1
+#if defined(ESP_PLATFORM) && !CONFIG_SPIRAM
+#error "BBS_BOARD_WS_S3TOUCH2 needs PSRAM: the S3 sdkconfig layer was not applied (delete sdkconfig.ws_s3touch2*)"
+#endif
+#if defined(ESP_PLATFORM) && !CONFIG_OV5640_SUPPORT
+#error "BBS_BOARD_WS_S3TOUCH2 ships with an OV5640: sdkconfig.defaults.ws2 was not applied (delete sdkconfig.ws_s3touch2*)"
+#endif
+// With SSH and a card mounted an S3 fills the IDF's 8 VFS slots, with no
+// headroom (the Makerfabs' review): 12 in sdkconfig.defaults.ws2, as on the
+// Makerfabs. A stale sdkconfig keeps 8.
+#if defined(ESP_PLATFORM) && CONFIG_VFS_MAX_COUNT < 12
+#error "BBS_BOARD_WS_S3TOUCH2 needs CONFIG_VFS_MAX_COUNT of 12 (sdkconfig.defaults.ws2): delete sdkconfig.ws_s3touch2*"
+#endif
+
+// The internal heap a plugin may not take at start: the LCD-1.47's 16 KB,
+// for the same reason (Wi-Fi's and lwIP's buffers in PSRAM).
+#define BBS_HEAP_RESERVE      16384
+
+// No LED the firmware can drive: LED1 is the charger's (its STAT pin) and
+// LED2 the power's. No WS2812 either. The lights plugin is on all the same,
+// with no pin: the glass's row of LEDs is its strip, the only one this board
+// will have (the panel spec: a rule over nothing otherwise). -1 drives
+// nothing.
+#define BBS_LED_GPIO          -1
+#define BBS_LIGHTS_ON         1
+// And its default effect switchboard (11 in lights::kStripFx), drawn as
+// round lamps: Rob, on both new glasses, "meaningful": a lamp a line in the
+// caller's rank colour while callers are on (nodes), and with nobody on dim
+// steady lamps that flicker only with real traffic (no sweep). The 4.3B's
+// effect, so the two boards match. The LCD-1.47 keeps nodes and its squares.
+#define BBS_LIGHTS_STRIP_FX   11
+#define BBS_PANEL_LED_ROUND   1
+
+// The TF slot, SPI mode, on the panel's bus: CS 41 (the slot's CD/D3),
+// MOSI 38, CLK 39, MISO 40.
+#define BBS_HAS_SD_SLOT       1
+#define BBS_SD_CS             41
+#define BBS_SD_MOSI           38
+#define BBS_SD_CLK            39
+#define BBS_SD_MISO           40
+#define BBS_SPI_SHARED        1
+
+// The serial bridge: no pins as shipped. With the camera, the card, the
+// panel, the touch and IMU bus and the battery sense wired, what is left is
+// GPIO 18 alone: UART0's 43 and 44 are on the header too, but they are the
+// console port CONFIG keeps free (and 43 carries the ROM's boot banner).
+#define BBS_SERIAL_RX         -1
+#define BBS_SERIAL_TX         -1
+
+// The panel: ST7789T3, 240 x 320, the controller's whole RAM, portrait (no
+// swap, no gap, RGB order, colours inverted: Waveshare's 05_lvgl_camera).
+// Mirrored in X: the demo passes no mirror, but on the glass (Rob's photo,
+// 2026-09-28, the first flash) every line read back to front without it,
+// as on the LCD-1.47. Touch is read as taps only, so no coordinate needs
+// the same flip. No reset line: the panel's RESET is on an
+// RC, reached from IO0 only through a resistor the board leaves unfitted
+// (R16, NC/0R), so it is reset by command. Backlight on IO1 through an
+// SS8050, active high. The demo clocks the panel at 80 MHz; 40 is the
+// fastest this firmware offers, and a 10 KB band is then about 2 ms on the
+// wire, the longest the shared bus is ever held by the panel.
+#define BBS_LCD_MOSI          38
+#define BBS_LCD_SCLK          39
+#define BBS_LCD_CS            45
+#define BBS_LCD_DC            42
+#define BBS_LCD_RST           -1
+#define BBS_LCD_BL            1
+#define BBS_LCD_WIDTH         240
+#define BBS_LCD_HEIGHT        320
+#define BBS_LCD_XOFF          0
+#define BBS_LCD_YOFF          0
+#define BBS_LCD_ORIENT        0       // "up" is the demo's portrait here; which edge the USB is on, the glass will say
+#define BBS_LCD_INVERT        1
+#define BBS_LCD_BGR           0
+#define BBS_LCD_MIRROR        1       // the glass reads back to front without it
+#define BBS_LCD_MHZ           40
+#define BBS_LCD_BACKLIGHT     60      // percent
+
+// The touch controller, CST816D, on the I2C bus it shares with the IMU:
+// SDA 48, SCL 47, at 0x15; its INT on 46, its reset not wired. The panel
+// reads taps from INT alone (an edge a touch), so nothing on the BBS loop
+// ever waits on the bus. The IMU (QMI8658, 0x6B, INT1 on 3) and the battery
+// divider (GPIO 5, ADC1 channel 4, a third of the cell) are wired and not
+// yet used.
+#define BBS_HAS_TOUCH         1
+#define BBS_TOUCH_SDA         48
+#define BBS_TOUCH_SCL         47
+#define BBS_TOUCH_INT         46
+#define BBS_TOUCH_ADDR        0x15
+
+// The chip's own temperature sensor, on the panel's header rotation.
+#define BBS_HAS_CHIP_TEMP     1
+#define BBS_PANEL_TEMP_WARM   65      // warm from 65 C: the S3R8 is rated to 65 C ambient
+
+// The camera: Waveshare's pins (the demo's camera_pins block, and the
+// schematic's CAM_* nets). PWDN 17, no RESET (the demo: "software reset
+// will be performed"). The OV5640 gives JPEG itself, up to 2592 x 1944;
+// CONFIG offers up to QXGA (2048 x 1536). XGA as shipped, as on the
+// ESP32-CAM: a snap re-encodes for the watermark on the runner, and XGA
+// keeps that to a few seconds. No flash on the board, and no flash pin as
+// shipped: a switched-on camera holds its pin in CONFIG whatever the mode,
+// so a default of 18 would take the one free GPIO. A sysop who wires a
+// flash to 18 sets it in CONFIG camera.
+#define BBS_CAM_SENSOR        "OV5640"
+#define BBS_CAM_SIZES         "qvga|vga|svga|xga|hd|sxga|uxga|qxga"
+#define BBS_CAM_SIZE          3       // xga
+#define BBS_CAM_FLASH_PIN     -1
+#define BBS_CAM_FLASH         0
+#define BBS_CAM_PWDN          17
+#define BBS_CAM_RESET         -1
+#define BBS_CAM_XCLK          8
+#define BBS_CAM_SIOD          21
+#define BBS_CAM_SIOC          16
+#define BBS_CAM_D7            2       // Y9
+#define BBS_CAM_D6            7       // Y8
+#define BBS_CAM_D5            10      // Y7
+#define BBS_CAM_D4            14      // Y6
+#define BBS_CAM_D3            11      // Y5
+#define BBS_CAM_D2            15      // Y4
+#define BBS_CAM_D1            13      // Y3
+#define BBS_CAM_D0            12      // Y2
+#define BBS_CAM_VSYNC         6
+#define BBS_CAM_HREF          4
+#define BBS_CAM_PCLK          9
+
+// Pins the board owns (syscfg::pinProblem refuses them with the reason).
+// The panel's six and the card's four are those plugins' settings, as on
+// the LCD-1.47. 19 and 20 (the USB) and 26-37 (flash and octal PSRAM) the
+// S3's own rule refuses already, and CONFIG keeps 43 and 44 as the console
+// port. What is left for a sysop: GPIO 18.
+//   CAMERA   every wired camera line, PWDN included
+//   ONBOARD  the touch and IMU bus (47, 48), the touch INT (46), the IMU's
+//            INT1 (3) and the battery divider (5)
+#define BBS_PINS_CAMERA       BBS_CAM_PWDN, BBS_CAM_XCLK, BBS_CAM_SIOD, BBS_CAM_SIOC, BBS_CAM_D7, \
+                              BBS_CAM_D6, BBS_CAM_D5, BBS_CAM_D4, BBS_CAM_D3, BBS_CAM_D2, \
+                              BBS_CAM_D1, BBS_CAM_D0, BBS_CAM_VSYNC, BBS_CAM_HREF, BBS_CAM_PCLK
+#define BBS_PINS_ONBOARD      BBS_TOUCH_SDA, BBS_TOUCH_SCL, BBS_TOUCH_INT, 3, 5
+
+#endif  // BBS_BOARD_WS_S3TOUCH2
+
+// ===========================================================================
+// Waveshare ESP32-S3-ETH (ETH 1.0.0, 1.1.2)
+//
+// ESP32-S3R8 (read as revision v0.2 on the bench: 8 MB octal PSRAM in the
+// package), a 16 MB W25Q128 beside it, native USB only (USB-C to GPIO 19
+// and 20), a WIZnet W5500 10/100 Ethernet controller on SPI with an RJ45, a
+// 24-pin DVP camera connector (an OV5640 on the bench's board, found at
+// bring-up; the schematic's sheet says OV2640, and both work), a TF slot
+// wired for SPI, one WS2812B, a BOOT button on GPIO 0, and a header for an
+// optional PoE module (not fitted on the bench's). No display.
+//
+// Every pin is from Waveshare's schematic (ESP32-S3-ETH-Schematic.pdf,
+// 2024-12-21, net names quoted in release-prep/wseth/pins.md) and checked
+// against their wiki's tables and the factory image the board shipped with
+// (an Arduino 2.0.11 build of their ESP32-S3-ETH-Camera demo, read off the
+// board before the first flash).
+//
+// The camera's power is switched: GPIO 8 drives the gate of a P-channel
+// MOSFET (Q3, APM2307) through 1 MΩ, with 10 MΩ pulling it up, so the
+// camera's 2.8 V and 1.5 V regulators are off until GPIO 8 is driven low.
+// That is exactly what esp32-camera's PWDN line does (high, then low, at
+// every bring-up), so the pin is the camera's PWDN here. The OV2640's own
+// PWDN is tied low on the board and its RESET is an RC on the board.
+// ===========================================================================
+#if defined(BBS_BOARD_WS_S3ETH)
+
+#if defined(ESP_PLATFORM) && !CONFIG_IDF_TARGET_ESP32S3
+#error "BBS_BOARD_WS_S3ETH is an ESP32-S3 board: build it for the esp32s3 target"
+#endif
+#if defined(BBS_BOARD_WS_S3LCD147) || defined(BBS_BOARD_FN_WROVER_CAM) || defined(BBS_BOARD_AI_ESP32CAM)
+#error "one board profile at a time"
+#endif
+#ifndef BBS_CHIP_S3
+#define BBS_CHIP_S3 1                 // the host's stand-in
+#endif
+
+#define BBS_BOARD_NAME        "Waveshare ESP32-S3-ETH"
+#define BBS_BOARD_PLUGINS     1       // the camera
+
+#define BBS_BOARD_TAG         "ETH"
+#define BBS_BOARD_VERSION     "1.0.2"
+
+// PSRAM (sdkconfig.defaults.esp32s3: octal, as on the S3 stick). A build
+// that lost the layer would otherwise link quietly without it.
+#define BBS_HAS_PSRAM         1
+#if defined(ESP_PLATFORM) && !CONFIG_SPIRAM
+#error "BBS_BOARD_WS_S3ETH needs PSRAM: sdkconfig.defaults.esp32s3 was not applied (delete sdkconfig.ws_s3eth*)"
+#endif
+
+// SSH as on the Waveshare S3 stick: the same chip, the same PSRAM.
+#define BBS_HAS_SSH           1
+#define BBS_SSH_MAX           8
+// The internal heap a plugin may not take at start, as on the stick.
+#define BBS_HEAP_RESERVE      16384
+
+// Ethernet (1.1.2, this board only): the W5500 on SPI3, the primary
+// interface, with Wi-Fi as the fallback (main.cpp, "Ethernet first").
+//   BBS_ETH_SPI_HOST  the SPI host, SPI3: the card is on SPI2 (the sd
+//                     plugin's SDSPI_HOST_DEFAULT), on pins of its own
+//   BBS_ETH_MHZ       the SPI clock. The W5500's datasheet guarantees 33.3
+//                     and IDF's own example runs 16 to 36; 20 is inside
+//                     both, and a 10/100 link is the limit, not the bus
+#if defined(ESP_PLATFORM) && !CONFIG_ETH_SPI_ETHERNET_W5500
+#error "BBS_BOARD_WS_S3ETH needs the W5500 driver: sdkconfig.defaults.wseth was not applied (delete sdkconfig.ws_s3eth*)"
+#endif
+// With SSH and a card mounted an S3 fills the IDF's 8 VFS slots, with no
+// headroom (the Makerfabs' review): 12 in sdkconfig.defaults.wseth, as on the
+// Makerfabs. A stale sdkconfig keeps 8.
+#if defined(ESP_PLATFORM) && CONFIG_VFS_MAX_COUNT < 12
+#error "BBS_BOARD_WS_S3ETH needs CONFIG_VFS_MAX_COUNT of 12 (sdkconfig.defaults.wseth): delete sdkconfig.ws_s3eth*"
+#endif
+#define BBS_HAS_ETH           1
+#define BBS_ETH_SPI_HOST      2       // SPI3_HOST
+#define BBS_ETH_MHZ           20
+#define BBS_ETH_MOSI          11
+#define BBS_ETH_MISO          12
+#define BBS_ETH_SCLK          13
+#define BBS_ETH_CS            14
+#define BBS_ETH_INT           10
+#define BBS_ETH_RST           9
+
+// No plain LED: the W5500 drives the RJ45's LINK and ACT lamps itself, and
+// GPIO 2 (the reference board's LED) is the camera's HREF here.
+#define BBS_LED_GPIO          -1
+
+// The lights plugin on the board's WS2812B (RGB_DIN, GPIO 21 through R15),
+// on from the first boot because the pixel is on the board. GRB, the part's
+// own order, until LIGHTS TEST on the bench says otherwise.
+#define BBS_LIGHTS_ON         1
+#define BBS_LIGHTS_DRIVE_PIN  21
+
+// The TF slot over SPI, the schematic's nets: SD_CS GPIO 4 (through R7),
+// SD_MOSI 6 (the slot's CMD), SD_CLK 7, SD_MISO 5 (its D0), each pulled up
+// with 10 kΩ. D1 and D2 are not wired, so SPI (or SDMMC one-bit) is all the
+// slot can do. Its own pins: nothing shared with the W5500.
+#define BBS_HAS_SD_SLOT       1
+#define BBS_SD_CS             4
+#define BBS_SD_MOSI           6
+#define BBS_SD_CLK            7
+#define BBS_SD_MISO           5
+
+// The serial bridge on header GPIO 16 (RX) and 17 (TX), the reference
+// board's own numbers, off until enabled. Not 43 and 44: UART0, where the
+// ROM prints its banner at every reset. GPIO 16 is also the camera's VSYNC
+// if R29 is fitted instead of R19 (it is not, on the boards Waveshare ship).
+
+// The camera. The schematic's Y2 to Y9 are the driver's D0 to D7. Sold with
+// an OV5640 (the wiki, the factory demo and the bench's board: PID 0x5640
+// at 0x3C); an OV2640 on the same connector works too.
+#define BBS_HAS_CAMERA        1
+#define BBS_CAM_SENSOR        "OV5640"
+#define BBS_CAM_SIZES         "qvga|vga|svga|xga|hd|sxga|uxga"
+#define BBS_CAM_SIZE          3       // xga
+#define BBS_CAM_FLASH_PIN     -1      // no flash LED on this board
+#define BBS_CAM_FLASH         0
+#define BBS_CAM_PWDN          8       // the camera's power switch, see above
+#define BBS_CAM_PWDN_IS_POWER 1       // so camClose drives it high: the camera off between snaps
+#define BBS_CAM_RESET         -1
+#define BBS_CAM_XCLK          3
+#define BBS_CAM_SIOD          48
+#define BBS_CAM_SIOC          47
+#define BBS_CAM_D7            18      // Y9
+#define BBS_CAM_D6            15      // Y8
+#define BBS_CAM_D5            38      // Y7
+#define BBS_CAM_D4            40      // Y6
+#define BBS_CAM_D3            42      // Y5
+#define BBS_CAM_D2            46      // Y4
+#define BBS_CAM_D1            45      // Y3
+#define BBS_CAM_D0            41      // Y2
+#define BBS_CAM_VSYNC         1       // through R19
+#define BBS_CAM_HREF          2
+#define BBS_CAM_PCLK          39
+
+// Pins the board owns (syscfg::pinProblem refuses them with the reason).
+// 26 to 37 (flash and octal PSRAM) and 19, 20 (USB) are the S3's rule. The
+// card's four are the sd plugin's settings, held by it as on the WROOM. What
+// is left for a sysop: 0 (BOOT), 16, 17, 21 (the pixel), 43 and 44. The
+// core's two pin keys (activity_led_gpio, backup_button_gpio) are held to
+// 0-39 on every chip, so 43 and 44 are for the plugins' pins only.
+#define BBS_PINS_ETH          BBS_ETH_MOSI, BBS_ETH_MISO, BBS_ETH_SCLK, BBS_ETH_CS, \
+                              BBS_ETH_INT, BBS_ETH_RST
+#define BBS_PINS_CAMERA       BBS_CAM_PWDN, BBS_CAM_XCLK, BBS_CAM_SIOD, BBS_CAM_SIOC, BBS_CAM_D7, \
+                              BBS_CAM_D6, BBS_CAM_D5, BBS_CAM_D4, BBS_CAM_D3, BBS_CAM_D2, \
+                              BBS_CAM_D1, BBS_CAM_D0, BBS_CAM_VSYNC, BBS_CAM_HREF, BBS_CAM_PCLK
+
+#endif  // BBS_BOARD_WS_S3ETH
+
+// One board profile at a time. Each block above checks the profiles written
+// before it; this counts them all, so a profile added later is never missed.
+#if (defined(BBS_BOARD_WS_S3LCD147) + defined(BBS_BOARD_WS_S3TOUCH43B) + defined(BBS_BOARD_MF_S3PAR35) + \
+     defined(BBS_BOARD_FN_WROVER_CAM) + defined(BBS_BOARD_AI_ESP32CAM) + defined(BBS_BOARD_WS_S3TOUCH2) + \
+     defined(BBS_BOARD_WS_S3ETH)) > 1
+#error "one board profile at a time"
+#endif
+
+// ===========================================================================
 // The reference board, the bare ESP32-WROOM-32E: every default a profile
 // did not set. These are the values the WROOM has always had, so a build
 // with no profile is byte for byte what it was.
@@ -492,6 +1253,9 @@
 #ifndef BBS_LIGHTS_DRIVE_ORDER
 #define BBS_LIGHTS_DRIVE_ORDER 0      // GRB, the WS2812B's own order
 #endif
+#ifndef BBS_LIGHTS_STRIP_FX
+#define BBS_LIGHTS_STRIP_FX   0       // nodes, in lights::kStripFx's order
+#endif
 #ifndef BBS_SD_CS
 #define BBS_SD_CS             5       // the wiring page: CS D5, MOSI D23,
 #define BBS_SD_MOSI           23      // CLK D18, MISO D19
@@ -501,6 +1265,25 @@
 #ifndef BBS_SERIAL_RX
 #define BBS_SERIAL_RX         16      // UART2's usual pins on a WROOM-32E
 #define BBS_SERIAL_TX         17
+#endif
+#ifndef BBS_HAS_LCD
+#define BBS_PANEL_BIG         0
+#endif
+#ifdef BBS_HAS_LCD
+#ifndef BBS_LCD_DRIVER
+#define BBS_LCD_DRIVER        "ST7789"  // the panel's controller, unless a profile says
+#endif
+#ifndef BBS_LCD_RAM_SHORT               // its memory, unturned: the ST7789's 240 x 320
+#define BBS_LCD_RAM_SHORT     240       // (an RGB panel has none; the figures go unused)
+#define BBS_LCD_RAM_LONG      320
+#endif
+// The big glass (the Makerfabs' 480 x 320): its own layout and fields in the
+// panel plugin, and the core's per-line traffic bits it reads (Bbs::
+// takePanelTraffic). Nothing else pays for either.
+#define BBS_PANEL_BIG         (BBS_LCD_RAM_LONG >= 400)
+#ifndef BBS_LCD_MHZ_NOTE                // CONFIG panel's note on the SPI clock, 38 at most
+#define BBS_LCD_MHZ_NOTE      "10 is safe; the panel's limit is 62.5."
+#endif
 #endif
 
 // ---------------------------------------------------------------------------

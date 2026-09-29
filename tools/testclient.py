@@ -191,7 +191,8 @@ BBS_VERSION = bbs_version()
 # (the way tools/release.py reads them), so a board bump does not leave the
 # suite asserting the last one.
 BOARD_DEFINES = {"s3": "BBS_BOARD_WS_S3LCD147", "fncam": "BBS_BOARD_FN_WROVER_CAM",
-                 "espcam": "BBS_BOARD_AI_ESP32CAM"}
+                 "espcam": "BBS_BOARD_AI_ESP32CAM", "ws43b": "BBS_BOARD_WS_S3TOUCH43B",
+                 "ws2": "BBS_BOARD_WS_S3TOUCH2", "wseth": "BBS_BOARD_WS_S3ETH", "mf35": "BBS_BOARD_MF_S3PAR35"}
 
 
 def board_profile(name):
@@ -891,10 +892,16 @@ class SshCaller(Caller):
             pass
 
 
+# Every host profile built with BBS_HAS_SSH (src/board.h): the Waveshare
+# stick, the three hardware-preview Waveshares and the Makerfabs.
+SSH_BOARDS = ("s3", "ws43b", "ws2", "wseth", "mf35")
+
+
 def ssh_ready():
-    """The S3 profile's host board, and ssh_call built: or why not."""
-    if os.environ.get("BBS_HOST_BOARD") != "s3":
-        return "needs tools/harness.sh --board s3"
+    """An SSH profile's host board (SSH_BOARDS, the profiles that carry
+    BBS_HAS_SSH), and ssh_call built: or why not."""
+    if os.environ.get("BBS_HOST_BOARD") not in SSH_BOARDS:
+        return "needs tools/harness.sh --board s3 (or another SSH board: ws43b, ws2, wseth, mf35)"
     if HOST not in ("127.0.0.1", "localhost"):
         return "needs the host build"
     if not SSH_CALL.exists():
@@ -3946,8 +3953,10 @@ def board_name(board):
         block = m.group(1) if m else ""
     else:
         block = text
-    m = re.search(r'#define\s+BBS_BOARD_NAME\s+"([^"]+)"', block)
-    return m.group(1) if m else ""
+    # A C string: an escaped quote inside it (the Makerfabs's 3.5\") is
+    # part of the name, not its end.
+    m = re.search(r'#define\s+BBS_BOARD_NAME\s+"((?:[^"\\]|\\.)+)"', block)
+    return re.sub(r'\\(.)', r'\1', m.group(1)) if m else ""
 
 
 def test_hardware():
@@ -6430,6 +6439,12 @@ LIGHTS_BOARD = {
                    flash_says=b"Pins 6 to 11 are the flash chip.",
                    over=b"34", over_says=b"Between -1 and 33",
                    pins=None, free=None, order=("GRB", "GRB"), file_pins=(13, 14)),
+    # The Touch-LCD-2 (WS2 1.0.0): on, with no pin (the glass is its strip);
+    # 18 is its one free GPIO, so there are not two for CONFIG to give out.
+    "ws2":    dict(on=True, flash=(b"30", b"33"), flash_pat=b"flash and PSRAM",
+                   flash_says=b"Pins 26 to 37 are flash and PSRAM.",
+                   over=b"49", over_says=b"Between -1 and 48",
+                   pins=None, free=None, order=("GRB", "GRB"), file_pins=(18, 43)),
 }
 LB = LIGHTS_BOARD.get(HOST_BOARD, LIGHTS_BOARD[""])
 
@@ -7508,7 +7523,7 @@ def led_centres(bx, by, bw, bh, n):
             for i in range(n)]
 
 
-PANEL_EVENT = rb"(?m)^\s*(login|guest|logoff|page|ring) (\S+) (\S+)\s*$"
+PANEL_EVENT = rb"(?m)^\s*(login|guest|logoff|page|ring|snap) (\S+) (\S+)\s*$"
 
 
 def panel_read(s):
@@ -7518,6 +7533,160 @@ def panel_read(s):
     s.wait_for(b"bands sent", 4)
     s.pump(0.4)
     return plain(s.buf)
+
+
+def test_board_ws43b():
+    """The Waveshare ESP32-S3-Touch-LCD-4.3B board profile on the host
+    (1.1.2, WS43B): the RGB panel's 400 x 240 picture, its tall landscape
+    layout (internal/tty-ux-panel-ws43b-2026-09-28.md: two columns of six,
+    callers flowing into the right one, "Calls N today" heading, heap, peak
+    and chip temperature), the band word, touch and the tapped page's hold,
+    the light bar clear of the glass's edge, the switchboard default, and
+    its CONFIG page.
+    SKIPs on the reference board; tools/harness.sh --board ws43b
+    --only=board_ws43b runs it. A tap is a file called "tap" in the data
+    directory (host/platform_host.cpp, touchPoll)."""
+    print("Board profile: Waveshare ESP32-S3-Touch-LCD-4.3B")
+    if os.environ.get("BBS_HOST_BOARD") != "ws43b" or not PASSWORD:
+        print("  SKIP  needs tools/harness.sh --board ws43b")
+        return True
+    s = cfg_sysop("BoardWS43B")
+
+    def fields(p):
+        text = p.decode("latin-1").splitlines()
+        at = next((i for i, ln in enumerate(text) if "bands sent" in ln), None)
+        return [ln.strip() for ln in text[at + 1:]] if at is not None else []
+
+    s.buf.clear()
+    s.send(b"hardware\r")
+    s.wait_for(b"Board", 4)
+    s.pump(0.6)
+    hw = plain(s.buf)
+    ok = check("HARDWARE names the board and its version",
+               b"ESP32-S3-Touch-LCD-4.3B" in hw and ("WS43B " + board_profile("ws43b")[1]).encode() in hw)
+
+    p = panel_read(s)
+    ok &= check("PANEL: lit, the 800 x 480 ST7262 drawn at 400 x 240",
+                b"lit" in p and b"ST7262 800x480, drawn 400x240" in p)
+    ok &= check("touch quiet, and no sleep as shipped", b"Touch quiet, 0 taps, never sleeps" in p)
+    ok &= check("no SPI pins line: the bus is the board's", b"Pins " not in p)
+    f0 = fields(p)
+    sysrow = next((ln for ln in f0 if "peak " in ln), "")
+    ok &= check("the system row: heap, peak and the chip's temperature",
+                re.search(r"^\d+K\s+peak \d+\s+42C$", sysrow) is not None)
+    ok &= check("and calls today heads the right column", any(re.match(r"Calls \d+ today$", ln) for ln in f0))
+    ok &= check("the strip drawn with the lights' ten, nothing wired", b"strip: 10 LEDs" in p)
+    ok &= check("the sysop's own line listed first", re.search(rb"(?m)^\s*S\] BoardWS43B \d+m\s*$", p) is not None)
+
+    # Six callers and the sysop, seven on: the left column's six rows full
+    # and the seventh flowing into the right column, none folded into
+    # "+N more"; the recent list takes the five right-hand rows left.
+    callers = [ansi_login(f"WsCall{i}") for i in range(6)]
+    time.sleep(1.2)
+    p2 = panel_read(s)
+    named = re.findall(rb"(?m)^\s*\d+\) WsCall\d \d+m\s*$", p2)
+    ok &= check("seven on: the sysop and six callers all named", len(named) == 6 and b"more" not in p2)
+    ev = re.findall(PANEL_EVENT, p2)
+    ok &= check("and the recent list keeps the five rows the callers left", len(ev) == 5)
+    for c in callers:
+        c.close()
+    time.sleep(1.0)
+
+    # A tap turns the header's slot on at once: the next page comes within a
+    # second rather than three and a half.
+    def slot():
+        f = fields(panel_read(s))
+        return f[0] if f else ""
+    before = slot()
+    tap = DATA / "tap"
+    tap.write_bytes(b"")
+    # The turn is a fade, 16 steps of 60 ms, after the next 50 ms poll: read
+    # the page once it has finished, not while the old one is still fading
+    # out (a read at 1 s caught that about half the time).
+    time.sleep(2.0)
+    after = slot()
+    p3 = panel_read(s)
+    ok &= check("a tap is seen and counted", b"Touch seen, 1 taps" in p3 and not tap.exists())
+    ok &= check("and turns the header's slot on", bool(before) and bool(after) and after != before)
+    # A tapped page holds 10 s, not 3: still the same page after 5 s. The
+    # page by kind, because the uptime page's minutes can tick meanwhile.
+    def kind(sl):
+        return "addr" if sl.startswith("127.0.0.1:") else "up" if sl.startswith("up ") else "name"
+    time.sleep(5.0)
+    later = slot()
+    ok &= check("and holds the page it turned to past the usual 3 s", kind(later) == kind(after))
+
+    shot = DATA / "panel.ppm"
+    if shot.exists():
+        shot.unlink()
+    s.buf.clear()
+    s.send(b"panel shot\r")
+    s.wait_for(b"Written", 4)
+    W, H = 400, 240
+    head = f"P6\n{W} {H}\n255\n".encode()
+    data = shot.read_bytes() if shot.exists() else b""
+    ok &= check("PANEL SHOT writes the 400 x 240 picture",
+                data.startswith(head) and len(data) == len(head) + W * H * 3)
+    if data:
+        px = lambda x, y: tuple(data[len(head) + (y * W + x) * 3:len(head) + (y * W + x) * 3 + 3])
+        ok &= check("the header's bar in its blue", px(1, 1) == (24, 44, 120))
+        ok &= check("and the body black", px(1, 150) == (0, 0, 0))
+        # The light bar: ten 32 px segments from x 40 at y 219..230, the
+        # switchboard's idle dial blue on every free line (Rob, 1.1.2-hw.2:
+        # the 4.3B's version for every board, whoever is on; the sysop's line
+        # has no lamp), and black under it to the edge of the glass.
+        seg = [px(40 + 36 * i + 16, 225) for i in range(10)]
+        ok &= check("the light bar's ten free lines lit in dim blue",
+                    all(c[2] > 30 and c[2] > c[0] for c in seg))
+        ok &= check("and clear of the glass's bottom edge",
+                    all(px(56, y) == (0, 0, 0) for y in range(232, 240)))
+
+    # CONFIG panel: the controller, the light and the sleep; no SPI rows.
+    ok &= check("CONFIG has a panel page", cfg_open(s, b"panel", b"Driver"))
+    s.pump(1.0)
+    page = plain(s.buf)
+    ok &= check("naming the ST7262, with the light and the sleep",
+                all(w in page for w in (b"ST7262", b"Backlight, 0 off", b"Sleep after, minutes")))
+    ok &= check("and none of the SPI panel's rows",
+                not any(w in page for w in (b"Panel pins", b"USB plug", b"SPI clock", b"X offset")))
+    ok &= check("in 80 columns", max_column(s.buf) <= 79)
+    # Rows 0-3 core, then Light and Sleep: the cursor passes over Driver,
+    # which is information and nothing to edit.
+    s.buf.clear()
+    s.send(DOWN * 5 + b"\x08" * 3 + b"5" + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"Between", b"Saved"])
+    ok &= check("the sleep saves live", got == b"Saved and live" and
+                (cfg_sec_line("plugin:panel", "sleep") or "").endswith("= 5"))
+    cfg_cancel(s)
+    ok &= check("and PANEL says so", b"sleep 5 min" in panel_read(s))
+    cfg_open(s, b"panel", b"Driver")
+    s.buf.clear()
+    s.send(DOWN * 5 + b"\x08" * 3 + b"0" + F1)
+    cfg_verdict(s, [b"Saved and live", b"Between", b"Saved"])
+    cfg_cancel(s)
+
+    # The card's chip select is the expander's: shown, not a setting.
+    if os.environ.get("BBS_SD_DIR", ""):
+        ok &= check("CONFIG sd shows the chip select on the expander",
+                    cfg_open(s, b"sd", b"Chip select") and b"expander EXIO4" in plain(s.buf))
+        cfg_cancel(s)
+
+    # The strip's default on this board is switchboard (board.h), whole.
+    ok &= check("CONFIG lights opens", cfg_open(s, b"lights", b"Drive pin"))
+    s.pump(1.0)
+    ok &= check("with the strip on switchboard, the word whole", b"switchboard" in plain(s.buf))
+    cfg_cancel(s)
+
+    # The band word: CLOSED to callers while the board is closed, and gone
+    # again when it opens.
+    top_config(s, closed="yes")
+    time.sleep(1.0)
+    ok &= check("a closed board says so in the band", b"CLOSED to callers" in panel_read(s))
+    top_config(s, closed=None)
+    time.sleep(1.0)
+    ok &= check("and the word goes when it opens", b"CLOSED to callers" not in panel_read(s))
+    s.close()
+    return ok
 
 
 def test_board_fncam():
@@ -7657,6 +7826,320 @@ def test_board_espcam():
     return ok
 
 
+def test_board_ws2():
+    """The Waveshare ESP32-S3-Touch-LCD-2 profile on the host (WS2 1.0.0):
+    the panel at 240 x 320 on the card's SPI bus, a tap on the glass, the
+    Sleep row, the chip's temperature in the system row, and the pins the
+    board owns. SKIPs on the reference board; tools/harness.sh --board ws2
+    --only=board_ws2 runs it (with --card for the card's half of the bus)."""
+    print("Board profile: Waveshare ESP32-S3-Touch-LCD-2")
+    if HOST_BOARD != "ws2" or not PASSWORD:
+        print("  SKIP  needs tools/harness.sh --board ws2")
+        return True
+    s = cfg_sysop("BoardWs2")
+
+    def fields(p):
+        text = p.decode("latin-1").splitlines()
+        at = next((i for i, ln in enumerate(text) if "bands sent" in ln), None)
+        return [ln.strip() for ln in text[at + 1:]] if at is not None else []
+
+    p = panel_read(s)
+    ok = check("PANEL: lit, portrait 240 x 320, the controller's whole RAM",
+               b"lit" in p and b"ST7789 240x320 at 0,0, USB up" in p)
+    ok &= check("on the schematic's pins, MOSI and clock the card's, at 40 MHz",
+                b"Pins 38 39 45 42 -1 1, 40 MHz" in p)
+    ok &= check("the touch controller answered, and the glass never sleeps as shipped",
+                b"Touch CST816 0xB6, awake, never sleeps" in p)
+    f0 = fields(p)
+    sysrow = next((x for x in f0 if re.match(r"^\d+K  \d+ today  ", x)), "")
+    ok &= check("the system row's third figure is the chip's temperature: 42C on the host",
+                sysrow.endswith("  42C"))
+    ok &= check("the lights draw the glass's ten LEDs with no pin wired", b"strip: 10 LEDs" in p)
+    band = f0[1] if len(f0) > 1 else ""
+    ok &= check("no camera in the band while no picture is being taken", "camera" not in band)
+
+    # A tap cuts the header to its next page (name, address, uptime). The
+    # board turns it on its own every 3.5 s, so a turn of its own between the
+    # two looks is tried again, twice at most.
+    order = ["name", "addr", "up"]
+
+    def page_of(f):
+        slot = f[0] if f else ""
+        return "addr" if slot.startswith("127.0.0.1:") else "up" if slot.startswith("up ") else "name"
+
+    cut = False
+    for _ in range(3):
+        a = page_of(fields(panel_read(s)))
+        s.buf.clear()
+        s.send(b"panel tap\r")
+        s.wait_for(b"Tapped", 4)
+        s.pump(0.3)
+        if page_of(fields(panel_read(s))) == order[(order.index(a) + 1) % 3]:
+            cut = True
+            break
+    ok &= check("a tap turns the header to its next page", cut)
+
+    # Sleep, in the row Driver has on a board with no touch: rows 0-3 core,
+    # 4 Sleep. A minute, then back to never.
+    def sleep_save(value):
+        cfg_open(s, b"panel", b"Sleep")
+        s.buf.clear()
+        s.send(DOWN * 4 + b"\x08" * 3 + value + F1)
+        got = cfg_verdict(s, [b"Saved and live", b"Between", b"Nothing changed"])
+        cfg_cancel(s)
+        return got
+
+    ok &= check("CONFIG panel's Sleep saves live", sleep_save(b"1") == b"Saved and live" and
+                (cfg_sec_line("plugin:panel", "sleep") or "").endswith("= 1"))
+    ok &= check("and PANEL counts down to dark",
+                re.search(rb"awake, dark in [01] min|, asleep", panel_read(s)) is not None)
+    ok &= check("and back to never", sleep_save(b"0") == b"Saved and live" and
+                b"never sleeps" in panel_read(s))
+
+    # Saving the panel's page checks all its pins (it shares two, pinShares):
+    # its MOSI and clock are the card's own wires and must not be refused.
+    cfg_open(s, b"panel", b"Sleep")
+    s.buf.clear()
+    s.send(DOWN * 15 + b"\x08" * 3 + b"70" + F1)
+    got = cfg_verdict(s, [b"Saved and live", b"Taken", b"taken", b"Between"])
+    ok &= check("the panel's page saves with the card on the same MOSI and clock", got == b"Saved and live")
+    cfg_cancel(s)
+
+    # The pins the board owns: the camera's, the touch and IMU bus, the
+    # touch INT, the IMU's INT1 and the battery divider. 18 is the one free.
+    want = ((b"8", b"camera's"), (b"12", b"camera's"), (b"17", b"camera's"), (b"21", b"camera's"),
+            # 46-48: the core LED row's range ends at 39 on every S3 build, so
+            # CONFIG says that first (follow-up). 3: the host's console
+            # stand-in is the WROOM's UART0, 1 and 3 (on the S3 it is 43/44).
+            (b"47", b"Between -1 and 39"), (b"48", b"Between -1 and 39"), (b"46", b"Between -1 and 39"),
+            (b"3", b"console port"), (b"5", b"wired on the board"),
+            (b"30", b"flash and PSRAM"), (b"19", b"USB port"))
+    before = cfg_line("activity_led_gpio")
+    for pin, why in want:
+        cfg_open(s, b"board", b"Hostname")
+        s.buf.clear()
+        s.send(DOWN * BOARD_LED + b"\x08" * 3 + pin + F1)
+        got = cfg_verdict(s, [why, b"Saved", b"no such pin", b"camera's", b"wired on the board",
+                              b"flash and PSRAM", b"USB port", b"Between -1", b"console port"])
+        ok &= check(f"the LED on GPIO {pin.decode()} refused: {why.decode()}", got == why)
+        cfg_cancel(s)
+    ok &= check("and nothing is written", cfg_line("activity_led_gpio") == before)
+    cfg_open(s, b"board", b"Hostname")
+    s.buf.clear()
+    s.send(DOWN * BOARD_LED + b"\x08" * 3 + b"18" + F1)
+    got = cfg_verdict(s, [b"Saved", b"camera's", b"wired on the board", b"Taken", b"taken"])
+    ok &= check("GPIO 18 is free for a sysop", got == b"Saved")
+    cfg_cancel(s)
+    cfg_open(s, b"board", b"Hostname")
+    s.buf.clear()
+    s.send(DOWN * BOARD_LED + b"\x08" * 3 + b"-1" + F1)
+    got = cfg_verdict(s, [b"Saved", b"Between"])
+    cfg_cancel(s)
+    ok &= check("and the LED goes back to none", got == b"Saved" and
+                (cfg_line("activity_led_gpio") or "").endswith("= -1"))
+    s.close()
+    return ok
+
+
+def test_board_wseth():
+    """The Waveshare ESP32-S3-ETH profile on the host (ETH 1.0.0, 1.1.2):
+    Ethernet first, and the pins the board owns.
+
+    The host's Ethernet is a wire at 100 Mb/s with an address (platform_host;
+    BBS_HOST_ETH plays the other cases). SYS names the interface in use,
+    HARDWARE lists Ethernet among the capabilities, CONFIG network has the
+    Ethernet row, and the W5500's and the camera's pins are refused by name.
+    SKIPs on the reference board; tools/harness.sh --board wseth
+    --only=board_wseth runs it.
+    """
+    print("Board profile: Waveshare ESP32-S3-ETH")
+    if HOST_BOARD != "wseth" or not PASSWORD:
+        print("  SKIP  needs tools/harness.sh --board wseth")
+        return True
+    s = cfg_sysop("BoardEth")
+    s.buf.clear()
+    s.send(b"sys\r")
+    read_list(s)
+    text = plain(s.buf)
+    ok = check("SYS says the board is on Ethernet, 100 Mb/s full duplex",
+               re.search(rb"\nEthernet +100 Mb/s full duplex", text) is not None)
+    ok &= check("and Wi-Fi is the fallback, standing by",
+                re.search(rb"\nWi-Fi +standby the fallback", text) is not None)
+
+    s.buf.clear()
+    s.send(b"hardware\r")
+    read_list(s)
+    ok &= check("HARDWARE lists Ethernet among the capabilities",
+                b"Ethernet 100 Mb/s" in plain(s.buf))
+
+    ok &= check("CONFIG network has the Ethernet row",
+                cfg_open(s, b"network", b"Network") and b"Ethernet" in plain(s.buf))
+    cfg_cancel(s)
+
+    # The board page's activity LED: the W5500's and the camera's pins are
+    # refused with their reasons. The key is held to 0-39 on every chip, so
+    # the camera's 38 stands for its lines above it. Every pin at or under 39
+    # is the board's or held by a plugin, so none is taken and nothing is
+    # written.
+    before = cfg_line("activity_led_gpio")
+    for pin, why in ((b"11", b"Ethernet chip's"), (b"14", b"Ethernet chip's"),
+                     (b"9", b"Ethernet chip's"), (b"2", b"camera's"), (b"8", b"camera's"),
+                     (b"38", b"camera's"), (b"33", b"flash and PSRAM")):
+        cfg_open(s, b"board", b"Hostname")
+        s.buf.clear()
+        s.send(DOWN * BOARD_LED + b"\x08" * 3 + pin + F1)
+        got = cfg_verdict(s, [why, b"Saved", b"no such pin", b"camera", b"Ethernet", b"flash and PSRAM"])
+        ok &= check(f"the LED on GPIO {pin.decode()} refused: {why.decode()}", got == why)
+        cfg_cancel(s)
+    ok &= check("and nothing is written", cfg_line("activity_led_gpio") == before)
+
+    # A plugin's pin meets the same rule, up to the S3's 48: the drive light
+    # on the camera's SIOD (48) and on the W5500's clock (13).
+    for pin, why in ((b"48", b"camera's"), (b"13", b"Ethernet chip's")):
+        cfg_open(s, b"lights", b"Drive pin")
+        s.buf.clear()
+        s.send(DOWN * 4 + b"\x08" * 3 + pin + F1)
+        got = cfg_verdict(s, [b"Saved", b"camera's", b"Ethernet chip's", b"no such pin", b"Between"])
+        ok &= check(f"the drive light on GPIO {pin.decode()} refused: {why.decode()}", got == why)
+        cfg_cancel(s)
+    s.close()
+    return ok
+
+
+def test_board_mf35():
+    """The Makerfabs ESP32-S3 Parallel TFT 3.5" v1.0 profile on the host (MF35 1.1.0,
+    with SSH, whose own tests run in the same lane): its defaults, the pins
+    it owns and the panel on a 480 x 320 ILI9488.
+    SKIPs on the reference board; tools/harness.sh --board mf35
+    --only=board_mf35 runs it. Before the profile the define built the
+    reference board: no panel, the WROOM's card pins, 43 and 44 free."""
+    print("Board profile: Makerfabs ESP32-S3 Parallel TFT 3.5\" (v1.0)")
+    if HOST_BOARD != "mf35" or not PASSWORD:
+        print("  SKIP  needs tools/harness.sh --board mf35")
+        return True
+    tag, ver = board_profile("mf35")
+    s = cfg_sysop("BoardMf35")
+
+    s.buf.clear()
+    s.send(b"hardware\r")
+    s.wait_for(b"Heap low", 5)
+    s.pump(0.4)
+    hw = plain(s.buf)
+    ok = check("HARDWARE names the board and its profile's version",
+               f"{tag} {ver}".encode() in hw and board_name("mf35").encode() in hw and
+               f"({tag} {ver})".encode() in hw)
+
+    p = panel_read(s)
+    ok &= check("PANEL: lit, the ILI9488 landscape at 480 x 320, the USB plug down",
+                b"lit" in p and b"ILI9488 480x320 at 0,0, USB down" in p)
+    ok &= check("on the v1.0 schematic's WR, RD, CS, D/C, no reset pin and the backlight on 45, "
+                "at Makerfabs' 20 MHz", b"Pins 35 48 37 36 -1 45, 20 MHz" in p)
+    ok &= check("Callers N/M, as the directory counts them",
+                re.search(rb"(?m)^\s*Callers (\d+)/(\d+)\s*$", p) is not None)
+
+    # The big glass's status skin (internal/tty-ux-panel-mf35-2026-09-26.md):
+    # PANEL lists its fields top to bottom, left column then right.
+    def fields(p):
+        text = p.decode("latin-1").splitlines()
+        at = next((i for i, ln in enumerate(text) if "bands sent" in ln), None)
+        return [ln.strip() for ln in text[at + 1:]] if at is not None else []
+
+    f0 = fields(p)
+    ok &= check("the board's name first, then the slot: the address or the .local name",
+                len(f0) > 1 and bool(re.match(r"(127\.0\.0\.1:\d+|\S+\.local:\d+)$", f0[1])))
+    ok &= check("the sysop's own line on row S, with what they are doing and their terminal",
+                re.search(rb"(?m)^\s*S\] BoardMf35 [A-Z]+ \d+m UTF8\s*$", p) is not None)
+    ok &= check("the node board's free lines, 1 to 10, each saying so",
+                all(re.search(rb"(?m)^\s*" + str(k).encode() + rb" free\s*$", p) for k in range(1, 11)))
+    ok &= check("Calls N today, and the traffic in and out",
+                re.search(rb"(?m)^\s*Calls \d+ today\s*$", p) is not None and
+                re.search(rb"(?m)^\s*\S+ in \S+ out\s*$", p) is not None)
+    ok &= check("the system cells: slow passes, peak, uptime",
+                re.search(rb"(?m)^\s*\d+ slow\s*$", p) is not None and
+                re.search(rb"(?m)^\s*peak \d+\s*$", p) is not None)
+
+    c = ansi_login("BigCaller")
+    c.send(b"who\r")
+    time.sleep(1.2)
+    p2 = panel_read(s)
+    row = re.search(rb"(?m)^\s*(\d+)\) BigCaller (\S+) (\d+)m (\S+)\s*$", p2)
+    ok &= check("a caller logging on takes their own node's row, with doing, time on and terminal",
+                row is not None and row.group(1) == c.node().encode())
+    c.close()
+    time.sleep(1.5)
+    p3 = panel_read(s)
+    ok &= check("and leaving frees it again", re.search(rb"BigCaller \S+ \d+m", p3) is None)
+
+    shot = DATA / "panel.ppm"
+    if shot.exists():
+        shot.unlink()
+    s.buf.clear()
+    s.send(b"panel shot\r")
+    s.wait_for(b"Written", 4)
+    W, H = 480, 320
+    head = f"P6\n{W} {H}\n255\n".encode()
+    data = shot.read_bytes() if shot.exists() else b""
+    ok &= check("PANEL SHOT: the whole 480 x 320 glass was sent",
+                data.startswith(head) and len(data) == len(head) + W * H * 3)
+    if len(data) == len(head) + W * H * 3:
+        px = lambda x, y: tuple(data[len(head) + (y * W + x) * 3:len(head) + (y * W + x) * 3 + 3])
+        ok &= check("the header's bar in its blue, right across", px(1, 1) == (24, 44, 120) and
+                    px(W - 2, 1) == (24, 44, 120))
+        ok &= check("the column rule at x 308 and the rule over the LEDs at y 290",
+                    px(308, 150) == (40, 44, 56) and px(240, 290) == (40, 44, 56))
+        ok &= check("and the sweep's axis at y 196", px(400, 196) == (40, 44, 56))
+
+    # Plug left: the portrait glass, 320 x 480, the same blocks placed again.
+    cfg = USERDATA / "system.cfg"
+    before = cfg.read_text()
+    section_config(s, "plugin:panel", enabled="yes", orientation="left")
+    time.sleep(1.0)
+    pp = panel_read(s)
+    ok &= check("turned to plug left, the portrait glass: 320 x 480",
+                b"ILI9488 320x480" in pp and b"USB left" in pp and
+                re.search(rb"(?m)^\s*S\] BoardMf35 [A-Z]+ \d+m UTF8\s*$", pp) is not None)
+    shotp = DATA / "panel_portrait.ppm"
+    if shotp.exists():
+        shotp.unlink()
+    s.buf.clear()
+    s.send(b"panel shot panel_portrait.ppm\r")
+    s.wait_for(b"Written", 4)
+    headp = b"P6\n320 480\n255\n"
+    datap = shotp.read_bytes() if shotp.exists() else b""
+    ok &= check("and PANEL SHOT sends the whole portrait glass",
+                datap.startswith(headp) and len(datap) == len(headp) + 320 * 480 * 3)
+    cfg.write_text(before)
+    cfg_reload(s)
+
+    # The Pins page with this board's own: 43 and 44 are the console, 46 a
+    # strapping pin, 47 the panel's data bus (D0), and 26 to 32 the flash
+    # and PSRAM (quad PSRAM: 33 to 37 are free, and the v1.0 strobes are on
+    # them).
+    opened = cfg_open(s, b"panel", b"Driver")
+    s.pump(1.0)
+    ok &= check("CONFIG has a panel page naming the ILI9488", opened and b"ILI9488" in plain(s.buf))
+    cfg_cancel(s)
+    cfg_open(s, b"panel", b"Driver")
+    s.buf.clear()
+    s.send(DOWN * 4 + b"\r")
+    ok &= check("Pins opens a page of its own", s.wait_for(b"PINS", 6))
+    s.pump(0.6)
+    ok &= check("its first two are the parallel bus's strobes",
+                b"WR strobe GPIO" in plain(s.buf) and b"RD strobe GPIO" in plain(s.buf))
+    for pin, want in ((b"43", b"That pin is the console and Improv."),
+                      (b"46", b"That is a strapping pin."),
+                      (b"47", b"That pin is the panel's data bus."),
+                      (b"30", b"Pins 26 to 32 are flash and PSRAM.")):
+        s.buf.clear()
+        s.send(b"\x08" * 3 + pin + F1)
+        got = cfg_verdict(s, [want, b"Saved", b"Between"])
+        ok &= check(f"WR on {pin.decode()} refused: {want.decode()}", got == want)
+    cfg_cancel(s)
+    cfg_cancel(s)
+    s.close()
+    return ok
+
+
 def section_config(s, section, **keys):
     """[section] rewritten with exactly these keys (none: removed), then the
     board made to read it, as lights_config does for the lights."""
@@ -7715,6 +8198,7 @@ def photos(card):
 CAM_BOARD = {
     "fncam":  dict(sensor=b"GC0308", top=b"vga", size=b"vga", over=b"uxga", pin="13"),
     "espcam": dict(sensor=b"OV2640", top=b"uxga", size=b"xga", over=None, pin="4"),
+    "ws2":    dict(sensor=b"OV5640", top=b"qxga", size=b"xga", over=None, pin="18"),
 }
 CB = CAM_BOARD.get(HOST_BOARD, CAM_BOARD["fncam"])
 
@@ -8847,7 +9331,8 @@ def start_copy(tmp, extra_args=(), env_extra=None):
     # The same build as the board under test: a profile's copy restarts as
     # that profile, with its pin rules and defaults.
     binary = {"s3": "bbs_host_s3", "fncam": "bbs_host_fncam",
-              "espcam": "bbs_host_espcam"}.get(HOST_BOARD, "bbs_host")
+              "espcam": "bbs_host_espcam", "ws43b": "bbs_host_ws43b", "ws2": "bbs_host_ws2",
+              "wseth": "bbs_host_wseth", "mf35": "bbs_host_mf35"}.get(HOST_BOARD, "bbs_host")
     return subprocess.Popen([str(ROOT / "host" / binary), str(tmp / "data"), *extra_args],
                             stdout=log, stderr=subprocess.STDOUT, env=env)
 
@@ -17874,12 +18359,13 @@ ORDER_NAMES = [
     "test_version_shown",
     # SKIPs on the reference board: tools/harness.sh --board s3 runs it.
     "test_board_s3", "test_board_s3_silent",
-    # SSH (1.1.2): SKIP off the S3 profile. The failed logins run on a copy
-    # of the board, so their ban never reaches this one.
+    # SSH (1.1.2): SKIP off an SSH profile (s3, mf35). The failed logins run
+    # on a copy of the board, so their ban never reaches this one.
     "test_ssh_login", "test_ssh_new_caller", "test_ssh_resize", "test_ssh_host_keys",
     "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
     "test_ssh_dedicated_port", "test_ssh_socket_budget",
-    "test_board_fncam", "test_board_espcam",
+    "test_board_fncam", "test_board_espcam", "test_board_ws43b", "test_board_ws2", "test_board_wseth",
+    "test_board_mf35",
     "test_camera",
     "test_camera_registry",
     "test_camera_failed_start",
@@ -19956,10 +20442,28 @@ PROFILE_TESTS = {
                "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
     "fncam":  ["test_board_fncam"],
     "espcam": ["test_board_espcam"],
+    # The hardware preview's Waveshares carry SSH too (1.1.2-hw.1).
+    "ws43b":  ["test_board_ws43b",
+               "test_ssh_login", "test_ssh_new_caller", "test_ssh_resize", "test_ssh_host_keys",
+               "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
+    "ws2":    ["test_board_ws2",
+               "test_ssh_login", "test_ssh_new_caller", "test_ssh_resize", "test_ssh_host_keys",
+               "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
+    "wseth":  ["test_board_wseth",
+               "test_ssh_login", "test_ssh_new_caller", "test_ssh_resize", "test_ssh_host_keys",
+               "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
+    # The Makerfabs carries SSH too (MF35 1.1.0), on 2 MB of PSRAM.
+    "mf35":   ["test_board_mf35",
+               "test_ssh_login", "test_ssh_new_caller", "test_ssh_resize", "test_ssh_host_keys",
+               "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
 }
 # The profiles whose lanes also run with a card (harness.sh --board s3
 # --card --only=ssh is how SSH's YMODEM was tested).
-PROFILE_CARD = ["s3"]
+PROFILE_CARD = ["s3", "ws43b", "ws2", "wseth", "mf35"]
 
 # Tests that time something against the board's clock and so cannot run on
 # the host's fast clock (BBS_FAST_TIMERS). On a fast board they SKIP, saying
@@ -19986,6 +20490,9 @@ REALTIME = {
     "test_lights_frames":
         "samples the strip's animation and LIGHTS TEST's one-second steps at "
         "real moments (t0 + 3.3 s)",
+    "test_board_ws43b":
+        "reads the panel 5 real seconds after a tap to see the tapped page "
+        "held its 10 s; at x4 the hold is 2.5 s and the page has moved on",
 }
 
 # What a test needs to have run before it, on the same board. parallel.py

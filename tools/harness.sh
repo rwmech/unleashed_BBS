@@ -35,6 +35,14 @@
 #                              (bbs_host_fncam), with --only=board_fncam
 #                 --board espcam the AI-Thinker ESP32-CAM profile
 #                              (bbs_host_espcam), with --only=board_espcam
+#                 --board ws43b  the Waveshare ESP32-S3-Touch-LCD-4.3B profile
+#                              (bbs_host_ws43b), with --only=board_ws43b
+#                 --board ws2  the Waveshare ESP32-S3-Touch-LCD-2 profile
+#                              (bbs_host_ws2), with --only=board_ws2
+#                 --board wseth  the Waveshare ESP32-S3-ETH profile
+#                              (bbs_host_wseth), with --only=board_wseth
+#                 --board mf35 the Makerfabs ESP32-S3 Parallel TFT 3.5" profile
+#                              (bbs_host_mf35), with --only=board_mf35
 #
 #                 --changed RANGE   work out --only from what a git range
 #                              touched, instead of naming it by hand. RANGE
@@ -162,7 +170,14 @@ while [ $# -gt 0 ]; do
                 s3)    BIN=bbs_host_s3;    export BBS_HOST_BOARD=s3 ;;
                 fncam) BIN=bbs_host_fncam; export BBS_HOST_BOARD=fncam ;;
                 espcam) BIN=bbs_host_espcam; export BBS_HOST_BOARD=espcam ;;
-                *)  echo "harness: no board profile called $2 (s3, fncam, espcam)"; exit 2 ;;
+                ws43b) BIN=bbs_host_ws43b; export BBS_HOST_BOARD=ws43b ;;
+                ws2)   BIN=bbs_host_ws2;   export BBS_HOST_BOARD=ws2 ;;
+                wseth) BIN=bbs_host_wseth; export BBS_HOST_BOARD=wseth ;;
+                # The Makerfabs has 2 MB of PSRAM, 1.71 MB free with its
+                # framebuffer on the 1.1.1 bench: SSH is counted against that.
+                mf35)  BIN=bbs_host_mf35;  export BBS_HOST_BOARD=mf35
+                       export BBS_HOST_PSRAM="${BBS_HOST_PSRAM:-1700000}" ;;
+                *)  echo "harness: no board profile called $2 (s3, fncam, espcam, ws43b, ws2, wseth, mf35)"; exit 2 ;;
             esac
             shift 2 ;;
         # Plugins from their own repositories (1.2.0), already fetched into
@@ -282,10 +297,11 @@ if [ "$BUILD" = yes ]; then
     else
         make -s "$BIN"
     fi
-    # The S3 profile has SSH (1.1.2): its tests call in with wolfSSH's client.
-    if [ "$BIN" = bbs_host_s3 ]; then make -s ssh_call; fi
+    # The SSH profiles (1.1.2: every S3 board): their tests call in with
+    # wolfSSH's client.
+    case "$BIN" in bbs_host_s3|bbs_host_ws43b|bbs_host_ws2|bbs_host_wseth|bbs_host_mf35) make -s ssh_call ;; esac
     make -s linkpeer
-elif [ ! -x "$BIN" ] || { [ "$BIN" = bbs_host_s3 ] && [ ! -x ssh_call ]; } || [ ! -x linkpeer ]; then
+elif [ ! -x "$BIN" ] || { case "$BIN" in bbs_host_s3|bbs_host_ws43b|bbs_host_ws2|bbs_host_wseth|bbs_host_mf35) [ ! -x ssh_call ] ;; *) false ;; esac; } || [ ! -x linkpeer ]; then
     echo "harness: --no-build, and host/$BIN (or ssh_call, or linkpeer) has not been built"
     exit 2
 fi
@@ -391,11 +407,11 @@ for n in $(echo "$EXT" | tr ',' ' '); do
     printf '\n[plugin:%s]\nenabled = yes\n' "$n" >> "$DATA/user/system.cfg"
 done
 
-# SSH's own port (1.1.2) on the S3 profile, per tag like the others: 6422
+# SSH's own port (1.1.2) on the SSH profiles, per tag like the others: 6422
 # for every run would have two tags' boards fighting over it.
-if [ "$BIN" = bbs_host_s3 ]; then
-    sed -i "s/^backup_port = .*/&\nssh_port = $((PORT + 1500))/" "$DATA/user/system.cfg"
-fi
+case "$BIN" in bbs_host_s3|bbs_host_ws43b|bbs_host_ws2|bbs_host_wseth|bbs_host_mf35)
+        sed -i "s/^backup_port = .*/&\nssh_port = $((PORT + 1500))/" "$DATA/user/system.cfg" ;;
+esac
 
 if [ "$FRESH" = yes ]; then
     sed -i -E '/^(sysop|cosysop1|cosysop2)_password = /d' "$DATA/user/system.cfg"

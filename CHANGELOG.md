@@ -30,6 +30,19 @@ The µnleashed link, its lane (rel-1.2.0-link-r3, rebased onto main at
 a3dcf01, after the v1.1.2 tag). Host-tested; the camera satellite has run
 on the bench since link.4 (LINK.md has the figures).
 
+**1.2.0-link.16: the hardware preview merged in**
+- **The four boards of v1.1.2-hardware-preview join 1.2.0**: the Waveshare
+  ESP32-S3-Touch-LCD-4.3B (WS43B 1.0.1), ESP32-S3-Touch-LCD-2 (WS2 1.0.2)
+  and ESP32-S3-ETH (ETH 1.0.2), and the Makerfabs Parallel TFT 3.5"
+  (MF35 1.1.1), with the camera DMA and VFS fixes and the switchboard lamps.
+  Their history is under the 1.1.2-hw entries below.
+- **A plain vX.Y.Z release builds all eight image sets.** The four were
+  tag_only while they were a preview; a preview or board tag
+  (`v1.2.0-hardware-preview`, `v1.2.0-ws2.1`) still builds only its own.
+- The ETH profile builds its plugins from their own repositories like
+  every other board (`custom_ext_plugins`), and its camera files through
+  `photos::` as the others do.
+
 **1.2.0-link.15: pruning for every camera**
 - **CONFIG photos' retention now applies to every camera's photos**, a
   camera sat's included (Rob's decision). Until link.14 only the built-in
@@ -437,6 +450,283 @@ on the bench since link.4 (LINK.md has the figures).
 - CAMERA family: SNAP carries the watermark text and the JPEG comment
   (the satellite does the pixel work), every picture is a host SNAP (EVENT
   asks for one), SETTINGS is 24 bytes (`src/core/linkfam.h`).
+## 1.1.2-hw.2 (WS43B 1.0.1, WS2 1.0.2, ETH 1.0.2, MF35 1.1.1), 2026-09-28: the switchboard lamps
+
+- **switchboard keeps every free line lit** (Rob's pick of the two versions the merge met). A free line is dim, steady dial blue, flickering up with RX on the even lamps and TX on the odd ones; a caller's line is the caller's rank colour, dipping on traffic; the sysop's line has no lamp. It no longer goes dark when somebody is on. This is the 4.3B lane's version, now for every board whose strip is set to switchboard.
+
+## 1.1.2-hw.1 (WS43B 1.0.1, WS2 1.0.2, ETH 1.0.2, MF35 1.1.1), 2026-09-28: the hardware preview
+
+Four new S3 boards on the 1.1.2 core, merged from their lanes (board-ws43b,
+board-ws2, board-wseth, board-mf35-112) onto v1.1.2 for one pre-release,
+`v1.1.2-hardware-preview`. Not through the full regression: host smoke runs
+only, and **no firmware image was built in the session that merged it**
+(the build host could not reach PlatformIO's registry), so every env still
+has to be built, with 0 warnings and DRAM read off the ELF, before the tag.
+
+- **The boards**, each detailed in its own entry below: the Waveshare
+  ESP32-S3-Touch-LCD-4.3B (`esp32s3-ws43b`), ESP32-S3-Touch-LCD-2
+  (`esp32s3-ws2`) and ESP32-S3-ETH (`esp32s3-eth`), and the Makerfabs
+  ESP32-S3 Parallel TFT 3.5" v1.0 (`esp32s3-mf35`). All four run SSH.
+- **The core moves to 1.1.2-hw.1** because shared code changed: the lights'
+  `switchboard` strip effect (a new CONFIG choice on every board; the
+  shipped boards' defaults are unchanged) and `strip_fx` names up to 11
+  characters. The two lanes built switchboard differently; the Touch-LCD-2's
+  is kept: `nodes` while anybody WHO shows is on (the sysop's line included,
+  so the strip never says "waiting" beside "Callers 1/11"), and dim steady
+  dial-blue lamps that flicker with traffic while nobody is. On the 4.3B
+  that means a free line's lamp is dark while a caller is on, where the
+  4.3B's own version kept it dim blue.
+- **The S3 camera's DMA block** (ETH's fix, also in WS2): `kCamDmaBlock` is
+  17 KB on an S3 (16 x 1 KB for JPEG, CAMERA_DMA_BUFFER_SIZE_MAX 16 KB in the
+  board's layer, a static_assert tying the two), not the ESP32's 33 KB that
+  refused every snap. Both S3 camera boards (WS2, ETH) carry it; the 4.3B
+  and the Makerfabs have no camera.
+- **The VFS table, 8 to 12** (the Makerfabs' fix, MF35 1.1.1), now in the
+  4.3B's, the Touch-LCD-2's and the ETH's sdkconfig layers too, each with a
+  board.h `#error` on a stale sdkconfig: with a card mounted every S3 with
+  SSH sat at 8 of 8. WS43B 1.0.0 to 1.0.1, WS2 1.0.1 to 1.0.2, ETH 1.0.1 to
+  1.0.2. The Waveshare LCD-1.47 and every board that shipped in v1.1.2 are
+  left as released (queued for 1.1.3).
+- **Two touch controllers, told apart**: the 4.3B polls its GT911 over the
+  new I2C driver (`BBS_TOUCH_POLL`, `platform_esp32_rgb.cpp`), the
+  Touch-LCD-2 counts its CST816's taps on INT over the legacy driver (the
+  camera's SCCB needs it). The legacy driver is never compiled into the
+  4.3B's image. `plat::chipTemp` is one function, in tenths of a degree.
+- **The 4.3B's tap**: a tap that landed while the slot was already fading
+  (the board's own turn) was counted and then held the usual 3 s, not 10;
+  every tap now marks the next page's long hold. `test_board_ws43b` failed
+  on it about half the time, on the lane as well.
+- **camera.cpp**: the caller-snap count the Touch-LCD-2's panel reads is
+  compiled only on a board with a panel, so the Freenove's and the
+  ESP32-CAM's camera code is as released.
+- **release.py**: `v1.1.2-hardware-preview` (the core's X.Y.Z and a name in
+  `PREVIEW_TAGS`) builds exactly the four preview sets into
+  `release/1.1.2-hardware-preview/`; a plain `v<BBS_VERSION>` builds the
+  four released boards and none of the preview's; a board's own tag
+  (`v1.1.2-ws2.1`) builds its set alone; `--board DIR` builds one set into
+  `release/<version>-DIR/`. Every earlier check stays.
+- From the merge's code review: the three Waveshares' SSH tests are in
+  their host profiles (`PROFILE_TESTS`, `PROFILE_CARD`, `ssh_ready`), as the
+  S3 stick's and the Makerfabs' were; the core's per-line traffic bits for
+  the Makerfabs' big glass are compiled only there (`BBS_PANEL_BIG`), not on
+  every panel board; the Touch-LCD-2 draws its own memory-stick icon again
+  (`kIconStick`), which the merge had swapped for the 4.3B's; and the VFS
+  comments say what was counted rather than a list that did not add up.
+- One board profile at a time is now also checked by a count of every
+  `BBS_BOARD_` define in board.h. The ETH lane's committed host binary
+  (`host/bbs_host_wseth`, 9 MB) is left out and ignored.
+- Tested (smoke, host): `make test` clean; `--only=board_<b>` without a card
+  on each profile: WS43B 28/0 (three runs), WS2 25/0, ETH 14/0, MF35 24/0;
+  the lights and config groups on the reference board: see the commit.
+
+## 1.1.2 (WS43B 1.0.0), 2026-09-28: the Waveshare ESP32-S3-Touch-LCD-4.3B
+
+A new board, as a board profile on the 1.1.2 core (branch board-ws43b, from
+v1.1.2), for a board pre-release. The core stays 1.1.2; the board says
+`1.1.2 (WS43B 1.0.0)`. The other boards' images change only by what every
+board shares: a switchboard effect in the lights, the panel's layout code
+(the stick's two layouts are unchanged, pixel for pixel), and a new CONFIG
+refusal for board pins nobody else has.
+
+- **The board**: ESP32-S3-WROOM-1-N16R8, 16 MB flash, 8 MB octal PSRAM,
+  native USB only, a 4.3" 800 x 480 ST7262 on the RGB bus, GT911 touch, a
+  CH422G I2C expander, a TF slot on SPI, a PCF85063A RTC, RS485, CAN and two
+  isolated inputs and outputs. Every pin from Waveshare's schematic,
+  cross-checked against their demos for this board (`src/board.h`). The
+  Arduino demos' `USB_SEL` on EXIO5 is the plain 4.3 board's; on the B it is
+  an isolated input.
+- **The panel on an RGB bus**: no frame buffer in the driver. The bounce
+  buffers (two of four lines, 12.8 KB of internal RAM) are refilled from an
+  interrupt out of a 400 x 240 picture in PSRAM, every pixel doubled, so the
+  interrupt reads a quarter of what a full frame would and 768 KB of PSRAM is
+  never allocated. The program runs from PSRAM (`SPIRAM_XIP_FROM_PSRAM`), so a
+  flash write no longer turns the cache off under the panel.
+- **The layout** (internal/tty-ux-panel-ws43b-2026-09-28.md): the landscape
+  layout grown for the glass, with a large-face header slot, a band word for
+  shutting down and closed, two equal columns, callers flowing into the right
+  column, `nobody on`, a system row of heap, peak and the chip's temperature,
+  and the lights as a light bar with the drive light's lamp.
+- **Touch**: a tap turns the header's page and holds it ten seconds, or
+  wakes a panel the new `sleep` setting put to sleep. Polled every 50 ms over
+  I2C, backed off to every ten seconds if the controller stops answering.
+- **The card's chip select** is an expander pin held low, as Waveshare's own
+  demo holds it: the sd plugin shows it and does not take it as a setting.
+- **The serial bridge** defaults to the RS485 port (43, 44). No activity LED
+  and no BOOT-hold reset: the board has no free GPIO, and GPIO0 is the
+  panel's G3.
+- **Lights**: `switchboard`, a new strip effect (a lamp a line: a caller's
+  line in rank colour, a free line dim steady blue that flickers with traffic), the default on this board and a new choice in CONFIG
+  lights on every board (whose defaults are unchanged); `BBS_LIGHTS_STRIP_FX`
+  picks a board's default.
+- **release.py**: a board pre-release tag (`v1.1.2-ws43b.1`) builds that
+  board's set only; the set is `tag_only`, so no plain release carries it
+  until the profile merges into one.
+- Tested (functional only, on Rob's OK). Host: the WS43B profile 28/0
+  without a card and 29/0 with one, the Waveshare stick's 71/0 both ways,
+  the lights and CONFIG groups on the reference board 396/0 and 453/0,
+  `make test` clean. Bench on COM23: boot and Wi-Fi rejoin after a
+  SHUTDOWN and reset, telnet and SSH (6400 and 6422) logins, the card and
+  FILES, PANEL at one and seven callers (the flow, five recent rows), the
+  band word for closed and for a shutdown countdown, the panel's sleep,
+  and switchboard kept across a reboot. Touch and the glass itself are
+  Rob's eyes and fingers.
+## 1.1.2 (WS2 1.0.1), 2026-09-28, board pre-release
+
+WS2 1.0.1: the S3 camera's DMA check. Every SNAPSHOT was refused for memory,
+because the check asked for the ESP32's 33 KB block; on the S3 esp32-camera
+takes 16 x 1 KB for JPEG and at most CAMERA_DMA_BUFFER_SIZE_MAX for raw
+frames, which `sdkconfig.defaults.ws2` now sets to 16 KB, so a bring-up needs
+17 KB (`kCamDmaBlock`, with a static_assert tying the two). The ETH lane's fix,
+applied the same way.
+
+And the card at boot: it mounts before the panel starts, and the panel's CS
+(GPIO45, a strapping pin pulled low at reset) left the ST7789 listening, so
+it answered the card's traffic on its bidirectional SDA and every boot mount
+failed with ESP_ERR_INVALID_CRC (a later SD MOUNT worked). The panel's CS is
+held high while the card uses the bus without the panel (`panelQuiet`). On
+the bench after both: the card mounted at boot (7.4 GB SDHC), FILES listed
+Photos and Timelapse, and two SNAPSHOTs filed in Photos at about 4.8 s each.
+
+### WS2 1.0.0
+
+A new board, as a pre-release that carries its image set and nothing else.
+The core is 1.1.2 unchanged. The panel and lights changes below are
+gated on this board's glass and defines: the LCD-1.47 draws exactly as it
+did. It has booted on one board on the bench; it has not
+been through the regression.
+
+**The Waveshare ESP32-S3-Touch-LCD-2** (`BBS_BOARD_WS_S3TOUCH2`,
+`pio run -e ws_s3touch2`, WS2 1.0.0)
+- The glass is mirrored in X, as the LCD-1.47's is (seen on the first
+  flash); touch is read as taps only, so no coordinate needed the flip.
+- ESP32-S3R8 (8 MB octal PSRAM, the LCD-1.47's chip), 16 MB flash, native
+  USB-C. The LCD-1.47's 8 MB layout (`partitions_s3.csv`) and S3 layer;
+  `sdkconfig.defaults.ws2` adds the camera's sensors (OV5640 and OV2640).
+  SSH as on the LCD-1.47.
+- Pins from Waveshare's schematic (its PinOut table and netlist) checked
+  against Waveshare's own demo for the board: `release-prep/ws2/pins.md`.
+  The camera's fifteen, the touch and IMU bus (47, 48), the touch INT (46),
+  the IMU's INT1 (3) and the battery divider (5) are refused by name
+  (`BBS_PINS_ONBOARD`, "that pin is wired on the board"). GPIO 18 is the one
+  a sysop can use; the camera ships with no flash pin so it does not hold
+  it.
+- **The panel and the TF card share an SPI bus** (MOSI 38, clock 39, MISO
+  40): `BBS_SPI_SHARED` raises SPI2 once for both. Every card command runs
+  under a mutex the panel only tries, so a band is sent on a later tick
+  rather than the BBS loop waiting behind a card write. The card's chip
+  select is held high while the panel talks and no card is mounted. CONFIG
+  lets the two share those pins (the panel's `pinShares`).
+- **The panel at 240 x 320**, an ST7789T3 at 40 MHz, specified in
+  `release-prep/ws2/tty-ux-panel-ws2-2026-09-28.md`: the header slot
+  centred, a longer uptime page, a third system figure (the chip's own
+  temperature sensor, `41C`, with a CPU icon, the heap's icon a memory
+  stick beside it), the glyph strip widened to 122 px for a camera glyph
+  packed last while a picture is taken, a caller's snap in the recent list
+  (`EV_SNAP`), round lamps for the strip, and the rule over the strip
+  cleared when there are no LEDs. The lights plugin ships on with no pin
+  and `switchboard` as its effect (`BBS_LIGHTS_STRIP_FX`, the 4.3B's: a
+  lamp a line in the caller's rank colour while anybody is on; dim steady
+  lamps that flicker with real traffic while nobody is; no sweep, Rob's
+  call), since the glass is this board's only strip.
+- **Touch**: the CST816D is asked once at start over I2C (who it is, and
+  to pulse INT on a touch) and then read as taps from its INT line by an
+  interrupt, so nothing on the loop touches I2C. A tap cuts the header to
+  its next page; CONFIG panel's **Sleep** (in Driver's row on a touch board,
+  0 never as shipped) darkens the glass after that many minutes, and a tap
+  or a ring wakes it. `PANEL TAP` taps the host's glass.
+- **The camera**: the OV5640 (JPEG from the sensor, sizes to QXGA, XGA as
+  shipped). Its exposure and gain are read to decide when a frame has
+  settled, as the OV2640's are.
+- Not used yet: the QMI8658 IMU and the battery divider.
+- `tools/release.py`: the board's set is `esp32s3-ws2`, `tag_only`, with
+  the board pre-release tag logic (`--tag v1.1.2-ws2.1`).
+- Host: `bbs_host_ws2`, `tools/harness.sh --board ws2`, `test_board_ws2`,
+  and round lamps and the tenth glyph in `test_panel`.
+## Waveshare ESP32-S3-ETH, ETH 1.0.1 on core 1.1.2 (board pre-release), 2026-09-28
+
+A new board, shown as `1.1.2 (ETH 1.0.1)`: the Waveshare ESP32-S3-ETH, an
+ESP32-S3R8 with 16 MB of flash, 8 MB of PSRAM, a W5500 10/100 Ethernet port,
+an OV5640 camera, a TF slot and one WS2812B. Built, code-reviewed and on
+the bench (2026-09-28): the W5500 links at 100 Mb/s full duplex, DHCP
+answers in about 1 s, and telnet setup and login and SSH on 6400 and 6422
+all work over Ethernet, with the card mounted. Two SNAPSHOTs filed (about
+5 s each, the camera powered up cold each time), and CONFIG network's
+Ethernet row switched No then Yes, each restart on the right interface.
+ETH 1.0.1 fixed the snap: the camera's internal DMA check used the ESP32's
+33 KB figure where the S3 needs 17 KB (CAMERA_DMA_BUFFER_SIZE_MAX 16 KB on
+this board), and every snap was refused for memory. The cable-pull
+fallback is still to run; host tests go to a cloud run.
+
+- **Ethernet first, Wi-Fi as the fallback.** The board takes an address
+  over DHCP on the wire and serves telnet, SSH, mDNS, NTP and announce there.
+  Wi-Fi stays set up but does not join while the wire works: if Ethernet has
+  no address 10 s after boot, or 3 s after losing it, Wi-Fi joins, and when
+  the wire comes back Wi-Fi stands down again. Callers on the interface that
+  went away are dropped; new calls arrive on the other. Improv still sets
+  the Wi-Fi network, and its trial still uses the radio while the wire is up.
+  `ethernet = no` (CONFIG network, **Ethernet first**) runs on Wi-Fi alone.
+- SYS names the interface in use (`Ethernet 100 Mb/s full duplex`, Wi-Fi
+  `standby, the fallback`, Radio `standby, calls on Ethernet` rather than a
+  false "SLEEPING"), DASH shows `Eth 100M` in Wi-Fi's place, HARDWARE lists
+  `Ethernet 100 Mb/s` (or `no link`, or `off`), and the directory's system badge
+  reads `ESP32-S3 · 8 MB · Ethernet · ETH 1.0.1`.
+- The camera (Photos and Timelapse, as on the other camera boards), the SD
+  card over SPI, SSH as on the Waveshare stick, the lights on the board's
+  WS2812B (GPIO 21). The camera's power is switched by GPIO 8, which the
+  firmware drives as the camera's PWDN line.
+- The W5500's pins (9 to 14) and the camera's are refused by name in every
+  pin setting. Other boards' images are unchanged: every change is behind
+  the board's own define.
+- First install is an erase, as on every S3 since 1.1.2.
+## 1.1.2 (MF35 1.1.1), 2026-09-28, hardware preview
+
+The Makerfabs board on the 1.1.2 core, for the combined
+`v1.1.2-hardware-preview`. The core is 1.1.2 unchanged apart from one
+missing include; every other board's image is the one 1.1.2 shipped.
+**On hardware**: a bench smoke test on the v1.0 board (boot, Wi-Fi, telnet,
+SSH on 6422 and 6400, HARDWARE, PANEL, the card). It has not been through
+the full regression.
+
+- **MF35 1.1.1: the SD card mounts again.** 1.1.0 on the bench said "no
+  card: not enough memory" with 1.7 MB of PSRAM free. The IDF's VFS table
+  holds 8, and this board fills it with two consoles (UART0 and the USB
+  secondary), lwIP's sockets, three LittleFS partitions and SSH's eventfd,
+  so the card's FAT was the ninth; `esp_vfs_register` reports a full table
+  as ESP_ERR_NO_MEM. `sdkconfig.defaults.mf35` sets `CONFIG_VFS_MAX_COUNT`
+  to 12 (16 bytes), and board.h refuses to build on a stale sdkconfig
+  that still says 8.
+
+**The Makerfabs ESP32-S3 Parallel TFT with Touch 3.5" (ILI9488), hardware
+v1.0** (`BBS_BOARD_MF_S3PAR35`, `pio run -e makerfabs_s3_par35`, MF35 1.1.1)
+- The 1.1.1 preview's profile (MF35 1.0.0, tag `v1.1.1-mf35.1`) brought
+  onto 1.1.2 as it was: the N16R2 (16 MB flash, 2 MB quad PSRAM), the CP2104
+  console on UART0 (`sdkconfig.defaults.mf35`), the micro SD slot on SPI,
+  the 480 x 320 ILI9488 on esp_lcd's 16-bit i80 bus with its status skin,
+  and the pin rules. v1.0 only: the v2.0 sibling in that preview (octal
+  PSRAM, never on a bench) is not carried here.
+- **SSH**, as on the Waveshare S3: callers on the telnet port 6400 and on
+  `ssh_port` 6422, Ed25519 and ECDSA host keys made at first start, up to
+  **eight sessions at once**. They fit its 2 MB of PSRAM: the panel's
+  framebuffer is 300 KB, the 1.1.1 bench read 1.71 MB free with it up, and
+  eight sessions at their 48 KB budget plus the 128 KB kept back come to
+  512 KB. The live limit still falls if PSRAM is short when a client
+  connects.
+- **The S3's 8 MB flash layout** (`partitions_s3.csv`): two 3 MB program
+  slots, 1,376 KB of userdata, 512 KB of screens. **The first install over
+  the 1.1.1 preview must be a new install, with an erase**, as on the
+  Waveshare: the data partitions moved. Take a backup first.
+- Fixed in the core for any SSH board whose console is a UART: the SSH
+  links' wake code used `read` and `write` without `<unistd.h>`, which the
+  Waveshare's build only got through its USB console's headers. And an SSH
+  caller's typing now lights their node's pip on a panel, as a telnet
+  caller's does (`Bbs::sshRead`). **Both touch shared code the Waveshare's
+  image is built from, so the S3's own board version (S3 1.1.3) must bump
+  when this lane merges**; it is left alone here so the lanes merge cleanly.
+- The board's name is `Makerfabs S3 Parallel TFT 3.5" v1.0` (35 characters),
+  so HARDWARE's Board row fits 40 columns; it was 44 and wrapped.
+- `tools/release.py --tag v1.1.2-mf35.1` builds its set alone
+  (`esp32s3-mf35-*`, `tag_only`). Host: `harness.sh --board mf35` now
+  builds with SSH and runs the SSH tests beside `test_board_mf35`.
 
 ## 1.1.2 (S3 1.1.3, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-27
 

@@ -30,7 +30,7 @@ Version 0.22.0. This file tracks every command and key the BBS understands, and 
   - Staff rights never come from an account password alone, over SSH as over telnet: `BYE <password>`, or the sysop account's question at login.
   - Three wrong passwords end the connection. Each wrong one counts toward the handle's lockout (5 in 15 minutes lock it for 15 minutes, as at the prompt), and a connection that ends on wrong passwords with no right one counts once toward the address's ban (3 in 15 minutes ban it for 15 minutes, telnet included).
   - The terminal's size comes from the client (the pty request, and a resize later); the character set still comes from the probe, so SyncTERM gets CP437 and OpenSSH or PuTTY UTF-8. An SSH caller is always ANSI: no PETSCII or ASCII question. There is no telnet on an SSH link, so XMODEM and YMODEM bytes cross untouched.
-  - Up to 8 SSH callers at once on the Waveshare, or fewer when the board's PSRAM cannot hold another session at the moment one connects (about 48 KB each, with 128 KB kept back). Beyond that the client is told `--> All SSH ports are full` and the connection closes, before any key exchange: OpenSSH prints `Received disconnect from <board> port 6400:12: --> All SSH ports are full`, PuTTY shows it in its error box. A telnet caller is never refused because of SSH.
+  - Up to 8 SSH callers at once on the S3 boards (the Waveshare and the Makerfabs), or fewer when the board's PSRAM cannot hold another session at the moment one connects (about 48 KB each, with 128 KB kept back). Beyond that the client is told `--> All SSH ports are full` and the connection closes, before any key exchange: OpenSSH prints `Received disconnect from <board> port 6400:12: --> All SSH ports are full`, PuTTY shows it in its error box. A telnet caller is never refused because of SSH.
   - The board's host keys (Ed25519 and ECDSA P-256) are made on it at the first start and kept in userdata (`ssh/`). Staff see their fingerprints in `SYS` and `HARDWARE`, to publish or to check against what a client shows the first time. They are not in the backup zip, so a downloaded backup cannot make another board answer as this one; a factory reset or an erase makes new ones, and a returning caller's client then warns that the key changed.
   - **SSH also has a port of its own, 6422 as shipped** (`ssh_port`, `CONFIG network`, **SSH port (SyncTERM)**; 0 turns it off). There the board speaks first: it sends its SSH identification the moment a client connects, with no terminal detection. **Use it for SyncTERM 1.9 and older**, whose SSH (cryptlib) waits to hear the server before it says anything, so on the shared port it only ever hears the telnet probe and gives up. OpenSSH (Linux, macOS, Windows), PuTTY and Termius send first and work on either port. The same slots, logins and `--> All SSH ports are full` on both. mDNS advertises it as `_ssh._tcp`. See [CLIENTS.md](CLIENTS.md).
   - With every node, the sysop node and the busy line in use, a caller on the SSH port is told `--> All lines are busy`. When SSH's port is on, the busy line is the first thing the board gives up for sockets: lwIP has 16 in all, and with the second listener the busy line is offered only while the sysop node is free, which keeps two for the backup window and one for announce.
@@ -388,7 +388,7 @@ outside it and no way to approve a file that is waiting somewhere else.
 |---|---|
 | `ANNOUNCE` | Whether this board is listed in a directory, when each one last answered, and the public address the directory sees, then when the last heartbeat went and what came back, and when the next is due (1.1.2): `Last sent 14:02: listed`, `Next in 9m 58s`, with `a caller change` or `backing off` after it when either applies. `ANNOUNCE TEST` prints the exact payload and sends nothing; `ANNOUNCE NOW` sends a heartbeat immediately. A caller arriving or leaving, and `SHOW`, `HIDE` and `LURK`, send one within seconds. Off until switched on: see [ANNOUNCE.md](ANNOUNCE.md). |
 | `LIGHTS` | The lights plugin's two outputs: each one's pin, effect, brightness and colour order, and the colours it was last sent, in hex. `LIGHTS TEST` shows red, green, blue and then white on every pixel, a second each, for checking the wiring and the order. In silent mode every pixel is dark, the title says `silent` and `LIGHTS TEST` is refused. Off until switched on (on as shipped on the Waveshare S3): see `lights` under Plugins below. |
-| `PANEL` | Boards with a display only (the Waveshare ESP32-S3-LCD-1.47): what the panel is running on (controller, size and offsets as turned, where the USB plug is, pins, SPI clock) and everything it is showing, as text, top to bottom: the bar's current page, the band's glyphs in words, the antenna's fill, the clock, the heading, each list row (a recent row as `login`, `guest`, `logoff`, `page` or `ring`, then its time and handle), the system row, and the number of LEDs in its strip. `Dark:` and why, when it is not lit. See `panel` under Plugins below. |
+| `PANEL` | Boards with a display only (the Waveshare ESP32-S3-LCD-1.47, ESP32-S3-Touch-LCD-4.3B and ESP32-S3-Touch-LCD-2, and the Makerfabs ESP32-S3 Parallel TFT 3.5" v1.0): what the panel is running on (controller, size and offsets as turned, where the USB plug is, pins, bus clock) and everything it is showing, as text, top to bottom: the bar's current page, the band's glyphs in words, the antenna's fill, the clock, the heading, each list row (a recent row as `login`, `guest`, `logoff`, `page` or `ring`, then its time and handle), the system row, and the number of LEDs in its strip. On the Touch-LCD-2 a recent row can also be `snap` (a caller's photo), the system row ends with the chip's temperature (`41C`), and a line under the backlight's says whether the touch controller answered and when the glass goes dark (`Touch CST816 0xB6, awake, never sleeps`). On the Makerfabs's 480 x 320 glass the fields are its own, in reading order: the board's name, the slot, the glyphs, the band's word, the antenna, the dBm, the clock, the heading, each of the eleven node rows (`S] handle DOING 12m CP437`, or the bare node number when the line is free), the calls today, the four recent events, the traffic (`14 in 1.2K out`) and the system cells. `Dark:` and why, when it is not lit. See `panel` under Plugins below. |
 | `SHUTDOWN [n]` | Take the board off the air on purpose. Announces to every node, counts down n seconds (5 to 3600, default 60), then hangs up on everyone including you, each with the ordinary send-off. `SHUTDOWN CANCEL` stops a countdown and says so. Afterwards the board keeps answering and tells callers it has been shut down, rather than refusing connections in a way that looks like a crash. A physical reboot brings it back. Any transfer running when the countdown ends is lost, and the warning says so. |
 | `BACKUP SD` | The zip the backup window gives, onto the SD card: `unleashed-YYYYMMDD-HHMM.zip` in the card's `backup` folder, with a dot a file while it writes and then `Saved: 14 files, 31 KB.` It holds the Wi-Fi password as typed, and says so. `BACKUP SD SCREENS` writes `screens-YYYYMMDD-HHMM.zip`, the screens alone. Two in one minute would share a name, so the second is refused. `BACKUP` on its own explains the difference from the backup window (1.1.0). |
 | `RESTORE SD [SCREENS] [n]` | On its own, the card's backups, newest first and numbered. With a number or a zip's name, checks it exactly as an upload through the backup window is checked, shows what it would replace (a full restore always shows `Replaces`, `Accounts`, `Removes` and `Staff`) and asks `Restore now? (y/N)`; N or 60 seconds is `Not restored.` With anybody else on the board, Y waits for them to leave (`Waiting for 2 callers to leave. F applies it now, N gives up.`), `F` puts it back at once with a warning to them, and after `backup_window_minutes` it gives up: `Not restored: callers stayed on.` New callers get the busy line meanwhile. `SCREENS` puts only the zip's screens back, onto the card's `screens` folder, and never removes anything; deleting them from the card undoes it (1.1.0). The zips are also the sysop's Backups file area, `FILES` 11, to download and upload over the line. Details: [BACKUP.md](BACKUP.md#backups-on-the-sd-card). |
@@ -516,6 +516,7 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `day_minutes` | `480` | per-day limit, 0 = unlimited |
 | `backup_port` | `8080` | HTTP port while the backup window is open; never the same as `port` |
 | `ssh_port` | `6422` | S3 boards only (1.1.2): SSH's own port, where the board speaks first, for SyncTERM 1.9 and older. `0` turns it off; SSH still works on `port`. Never the same as `port` or `backup_port` (a file read at boot runs without it and says why). Used from the next restart. `CONFIG network`, last row: **SSH port (SyncTERM)**, `SSH port` at 40 columns |
+| `ethernet` | `yes` | Boards with an Ethernet port only (the Waveshare ESP32-S3-ETH, 1.1.2). `yes`: the wire first, over DHCP; Wi-Fi joins only when Ethernet has had no address for 10 s from boot or 3 s after losing it, and stands down again when it comes back. Callers on the interface that went away are dropped; the listeners answer on both. `no`: Wi-Fi alone, the Ethernet chip left off. Used from the next restart. SYS shows the interface in use (`Ethernet 100 Mb/s full duplex`, Wi-Fi `standby`), HARDWARE lists it. `CONFIG network`, last row: **Ethernet first**, `Ethernet` at 40 columns |
 | `backup_window_minutes` | `5` | how long one button press keeps the window open (1..60) |
 | `backup_button_gpio` | `0` | button pin, active low (BOOT on dev boards), -1 = no window. Refused: 6 to 11 (flash) and pins the chip does not have (20, 24, 28 to 31 on the WROOM) |
 | `who_refresh_min` | `1` | lowest `WHO n` / `DASH n` refresh, seconds |
@@ -802,7 +803,7 @@ drive_pin    = 13       ; -1 is off, as shipped
 drive_fx     = pc       ; pc | 1541 | disk2 | breathe | off
 drive_bright = 10       ; percent, 1 to 100 (past 30: see Power, below)
 strip_pin    = 14       ; -1 is off, as shipped
-strip_fx     = nodes    ; nodes | hayes | blinken | scanner | c64 | boing | vu | rainbow | manual | off | wifi
+strip_fx     = nodes    ; nodes | hayes | blinken | scanner | c64 | boing | vu | rainbow | manual | off | wifi | switchboard
 strip_bright = 10       ; percent, 1 to 100 (past 30: see Power, below)
 led3         = sparkle | random   ; manual mode: led1 to led16, effect | colour
 strip_count  = 10       ; pixels on the strip, 1 to 16
@@ -869,6 +870,12 @@ strip_order  = GRB      ; GRB | RGB | BRG | RBG | GBR | BGR
     excellent), amber from -75 (fair), red below it (weak). The last lit
     pixel breathes a little so the meter reads as live. Not joined to a
     network, one red pixel breathes slowly.
+  - `switchboard` (1.1.2, the default on the Waveshare ESP32-S3-Touch-LCD-4.3B
+    and ESP32-S3-Touch-LCD-2; `nodes` everywhere else): `nodes` while anybody
+    is on, so the lit count is the callers on; with nobody on, every lamp dim
+    and steady in the site's dial blue, the even lamps flickering up with
+    bytes in and the odd ones with bytes out, as a modem's RD and SD lamps
+    did.
 - **Drive %** and **Strip %**: brightness, as a percentage of full, 1 to
   100, each output its own, 10 as shipped (1.1.0; it was capped at 30). Past
   30 is allowed and is your call, and CONFIG asks you to confirm first,
@@ -1032,12 +1039,68 @@ backlight = 60     ; percent, 0 dark
   change stays lit through it. A new turn resets the panel and keeps it dark
   until the whole new picture has been drawn.
 
+On the **Waveshare ESP32-S3-Touch-LCD-4.3B** (1.1.2, WS43B 1.0.0) the panel
+is an 800 x 480 ST7262 on the S3's RGB bus, and the page is shorter, because
+the bus, the size and the timing are the board's wiring:
+
+```
+[plugin:panel]
+enabled   = yes
+backlight = 100    ; 0 off, anything else on: the backlight has no dimmer
+sleep     = 0      ; minutes with no tap before the backlight goes off; 0 never
+```
+
+- **Driver** names the controller, ST7262.
+- **Light** (`backlight`) is on or off: the boost that lights the panel has
+  an enable on the board's I2C expander and no dimming input.
+- **Sleep min** (`sleep`, 0 to 240) turns the backlight off after that many
+  minutes with no tap; a tap or a ring turns it back on. Silent mode keeps it
+  dark whatever is tapped.
+- The picture is drawn at 400 by 240 and shown at twice the size. It is the
+  landscape layout grown for the glass
+  (internal/tty-ux-panel-ws43b-2026-09-28.md): a taller bar with the rotating
+  slot in the large face, `SHUTTING DOWN` or `CLOSED to callers` in the band
+  while the board is in either state, two columns of a heading and six rows
+  (`Callers n/m` on the left, `Calls n today` on the right), callers running
+  on from the left column into the right before any are folded into `+N
+  more`, a system row of free heap, peak and the chip's own temperature (the
+  die, not the room), and the lights as a light bar with the drive light's
+  lamp at its left.
+- **A tap** on the glass (GT911 touch) turns the bar's slot to its next page
+  at once and holds it ten seconds, long enough to read the address off it;
+  on a sleeping panel the tap only wakes it. `PANEL` counts the taps.
+
+**The Waveshare ESP32-S3-Touch-LCD-2** (WS2 1.0.0, a board pre-release) has
+the same panel on a 2" 240 by 320 glass with touch and a camera, drawn to
+`release-prep/ws2/tty-ux-panel-ws2-2026-09-28.md`:
+
+- The width goes to whole handles in the lists and a longer uptime page
+  (`up 3h 14m, 7.4 GB free`). The system row has three figures: the free
+  heap (a memory stick), the calls today, and the chip's own temperature
+  (a CPU), `41C`, amber from 65 and red from 75, `--C` with no reading.
+- A camera glyph at the end of the band while a picture is being taken,
+  the caller's or the timelapse's, and a caller's snap in the recent list
+  with a camera icon. The timelapse's shots are never listed.
+- The strip is round lamps, and the lights plugin ships on with no pin
+  and the `switchboard` effect (a lamp a line in the caller's rank colour
+  while anybody is on; dim steady lamps that flicker with real traffic
+  while nobody is), since the glass is the only strip this board has.
+- **A tap on the glass** turns the header to its next page at once (the
+  board's own turns fade; a tap cuts). CONFIG panel's first row is
+  **Sleep** (`sleep = 0`, minutes to dark, 0 never, as shipped) in place of
+  Driver: after that long with no tap the backlight goes off, the panel goes
+  on drawing, and a tap or a caller ringing the sysop lights it again. In
+  silent mode a tap does nothing.
+- The panel and the SD card share their SPI wires on this board. A panel
+  band is never waited for behind a card command: it goes on a later tick.
+  CONFIG lets the panel's MOSI and clock be the card's.
+
 A value out of range is logged and the default is kept. An upload with a bad value is rejected, so it never replaces a working config.
 
 #### camera
 
-Camera boards only (the Freenove ESP32-WROVER CAM and the AI-Thinker
-ESP32-CAM, as shipped). `SNAPSHOT`
+Camera boards only (the Freenove ESP32-WROVER CAM, the AI-Thinker
+ESP32-CAM and the Waveshare ESP32-S3-Touch-LCD-2's OV5640, as shipped). `SNAPSHOT`
 takes a photo for a caller; the board can also take one of its own on a
 timer (the timelapse), or on request from another plugin later (a motion
 sensor). Bringing the sensor up, taking the frame, drawing the watermark and

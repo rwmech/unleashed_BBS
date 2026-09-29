@@ -64,9 +64,10 @@ constexpr char kOrders[] = "GRB|RGB|BRG|RBG|GBR|BGR";
 // Drive light styles. pc is the default.
 constexpr char kDriveFx[] = "pc|1541|disk2|breathe|off";
 
-// Strip effects. nodes is the default. wifi was appended in 1.1.0, after
-// off: a word's place is the number the plugin works with.
-constexpr char kStripFx[] = "nodes|hayes|blinken|scanner|c64|boing|vu|rainbow|manual|off|wifi";
+// Strip effects. nodes is the default (a board profile may name another,
+// board.h BBS_LIGHTS_STRIP_FX). wifi was appended in 1.1.0, after off, and
+// switchboard in 1.1.2: a word's place is the number the plugin works with.
+constexpr char kStripFx[] = "nodes|hayes|blinken|scanner|c64|boing|vu|rainbow|manual|off|wifi|switchboard";
 
 // Manual mode, one pixel: an effect and a colour. An unset pixel is solid
 // and cycling, which is what a strip switched to manual on a fresh board
@@ -98,6 +99,10 @@ bool wired();
 // ---------------------------------------------------------------------------
 void    wantPanel(bool on);
 uint8_t panelFrame(uint8_t* rgb, uint8_t cap, uint8_t& pct);
+// panelDrive: the drive light's last frame as RGB (three bytes), and its
+// brightness: the lamp a board with no drive pin can show on its glass (the
+// 4.3" board, 1.1.2). False while the lights plugin is not running.
+bool    panelDrive(uint8_t* rgb, uint8_t& pct);
 #endif
 
 #ifdef BBS_HAS_CAMERA
