@@ -24,6 +24,44 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.2.0 (S3 1.1.4, WS43B 1.0.2, WS2 1.0.3, ETH 1.0.2, MF35 1.1.2, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-29: the hardware release
+
+**Out early for testing: this release has not been through the full
+regression yet.** It shipped on smoke tests (every image built, `make test`,
+the targeted groups with and without a card); the full run follows the tag
+and 1.2.1 patches what it finds.
+
+What a sysop sees, gathered from the link entries below:
+
+- **Sats.** The µnleashed link pairs this board with small ESP32 boxes over
+  ESP-NOW, encrypted, on every board including the WROOM. A **camera sat**
+  (the unleashed_camsat firmware on an ESP32-CAM, no card needed) adds a
+  camera to any board anywhere in radio range, and up to five boards can
+  share one. A **door sat** is one a caller goes into with `UPLINK n` or
+  `UPLINK name`, and home is Ctrl-C three times. `SATS` lists them; `CONFIG
+  sats` pairs, shares and unpairs them, and `CONFIG sat <name>` sets one up.
+  Every board on a sat has to be on the same Wi-Fi channel, and the board
+  says so when one isn't.
+- **One SNAPSHOT for every camera.** `SNAPSHOT n` picks the camera: the
+  built-in one is 1, sats 2 to 9. A sat snap shows `Contacting camera sat
+  #n...`, waits in line when the sat is busy, and a failure is one line
+  naming the camera. Each sat has an error log in the card's Logs area.
+- **CONFIG photos** holds the photo system: per-caller snap limits (one
+  budget across every camera), retention and pruning for every camera, the
+  default camera. `CONFIG camera` is only the built-in camera's hardware.
+  Two pictures in one second both keep.
+- **Four more boards in the full release**: the Waveshare ESP32-S3-Touch-LCD-4.3B,
+  ESP32-S3-Touch-LCD-2 and ESP32-S3-ETH, and the Makerfabs ESP32-S3 Parallel
+  TFT 3.5-inch, all with SSH. A plain release now carries all eight image
+  sets.
+- **Panel skins** on the boards with a display, from the Skins file area
+  (14), and every camera's snaps in the panel's recent list.
+- **Plugins from their own repositories** can be built into the firmware
+  (`plugins.lock`, `tools/plugins.py`).
+- **On the ETH board, sats can't pair while it runs on the wire** (Wi-Fi
+  stands by unjoined); SATS and CONFIG sats say so. Wi-Fi beside the wire is
+  1.2.1.
+
 ## 1.2.0-link (in development, not released), 2026-09-26
 
 The µnleashed link, its lane (rel-1.2.0-link-r3, rebased onto main at

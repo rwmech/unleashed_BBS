@@ -1241,6 +1241,7 @@ this tree.
     - store-and-forward (folded into camera sat 2, 1.3.0+);
     - ham radio (1.3.0).
   - **Ship process:** flash every bench board to the release candidate (SHUTDOWN first), Rob confirms they connect, then tag v1.2.0 and the camsat release together.
+  - **What happened (2026-09-29):** Rob moved the bench flashes after the tag ("we can flash later, get it on the site with the compiled versions"). The release commit is link.18 renamed 1.2.0, with the board versions unchanged; it was tagged on link.18's smoke runs (all 19 envs built, `make test`, the targeted groups with and without a card, the ETH profile). The Action builds the eight image sets from the tag. camsat had no release pipeline (no workflow, no tags), and the site's fetcher already expects a `camsat` set, so its first release follows separately.
 - **1.2.1 queue:**
   - the swipe gallery;
   - **the ETH board joins Wi-Fi alongside the wire** (Rob: "if both are supported, just keep the connection through wire"), so its radio follows the router's channel and sats pair, with Ethernet still the route for callers;
