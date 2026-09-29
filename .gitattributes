@@ -40,3 +40,6 @@
 *.p40 binary
 *.p80 binary
 *.asc -text
+*.jpg binary
+*.png binary
+*.rgb binary

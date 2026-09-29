@@ -94,6 +94,9 @@
 #include "files.h"
 #include "../core/photos.h"   // whether Photos is there, and its levels (1.2.0)
 #include "camera_rules.h"     // its folder
+#ifdef BBS_HAS_LCD
+#include "skin.h"             // the Skins area (1.2.0): a skin uploaded is read again
+#endif
 
 #include <cerrno>
 #include <cstdio>
@@ -131,13 +134,25 @@ const char* const kName = "files";
 // an area of their own, Timelapse at 13, the same levels: a series of a few
 // hundred timed shots inside Photos would bury the callers' photos, and
 // every row of a listing walks its folder from the top.
+//
+// Skins (1.2.0, boards with a display) is the card's skins folder, after
+// the others: the sysop's alone to send to, staff may look. A skin's two
+// files uploaded there as a pair, <name>.txt and <name>.jpg, go in at once
+// with no approval, as a backup does, and the panel reads the list again.
 constexpr uint8_t kCfgAreas    = 8;
 // Since 1.2.0 on every board: Photos is there while anything that takes
 // pictures is (photos::present), the built-in camera or a camera satellite
 // on the link, so a board with no camera of its own has one to show too.
-constexpr uint8_t kMaxAreas    = kCfgAreas + 5;
+constexpr uint8_t kBaseAreas   = kCfgAreas + 5;
 constexpr uint8_t kAreaPhotos  = kCfgAreas + 3;   // shows as 12
 constexpr uint8_t kAreaTimed   = kCfgAreas + 4;   // shows as 13
+#ifdef BBS_HAS_LCD
+constexpr uint8_t kAreaSkins   = kBaseAreas;      // shows as 14
+constexpr uint8_t kMaxAreas    = kBaseAreas + 1;
+#else
+constexpr uint8_t kAreaSkins   = 0xFF;            // no such area
+constexpr uint8_t kMaxAreas    = kBaseAreas;
+#endif
 constexpr uint8_t kAreaScreens = kCfgAreas;       // shows as 9
 constexpr uint8_t kAreaLogs    = kCfgAreas + 1;   // shows as 10
 constexpr uint8_t kAreaBackups = kCfgAreas + 2;   // shows as 11
@@ -174,6 +189,32 @@ constexpr uint32_t kMaxUploadBytes = 4u * 1024u * 1024u;
 // XMODEM-1K, which the importer allows for, so an XMODEM upload may run
 // that much over while it arrives.
 constexpr uint32_t kMaxBackupBytes = BBS_ZIP_MAX_BYTES + 1024u;
+
+// direct: an area whose uploads go in the moment they are whole, with no
+// approval: the sysop's own Backups (1.1.0) and Skins (1.2.0), which only the
+// sysop can send to, where making the sysop approve their own file is
+// ceremony. They still land in staging first, so a transfer that breaks off
+// never leaves half a file where it would be read.
+bool direct(uint8_t area) {
+    return area == kAreaBackups || area == kAreaSkins;
+}
+
+// skinFile: a name the Skins area takes: a skin's manifest or picture as a
+// pair beside the folders, <name>.txt or <name>.jpg (SKINS.md), the name as
+// a skin's folder would be.
+bool skinFile(const char* f) {
+#ifdef BBS_HAS_LCD
+    char stem[40];
+    snprintf(stem, sizeof(stem), "%.39s", f);
+    char* dot = strrchr(stem, '.');
+    if (!dot || (!ieq(dot, ".txt") && !ieq(dot, ".jpg"))) return false;
+    *dot = '\0';
+    return skin::validName(stem);
+#else
+    (void)f;
+    return false;
+#endif
+}
 
 // capFor: the most an upload into this area may be
 uint32_t capFor(uint8_t area) {
@@ -724,14 +765,14 @@ void readKey(void* ctx, const char* key, const char* value) {
 // count in the first place.
 void recountPending();
 
-// clearBackupsStaging: Backups takes nothing for approval, so anything in
-// its staging folder at start is half a zip from a transfer the board
-// restarted in the middle of (1.1.0). Left there it would count as an
-// upload awaiting approval for ever, and twenty of them would refuse every
-// upload to Backups. Only while no transfer is running.
-void clearBackupsStaging() {
+// clearBackupsStaging: Backups (and Skins, 1.2.0) take nothing for
+// approval, so anything in their staging folder at start is half a file from
+// a transfer the board restarted in the middle of (1.1.0). Left there it
+// would count as an upload awaiting approval for ever, and twenty of them
+// would refuse every upload. Only while no transfer is running.
+void clearStaging(uint8_t area) {
     char pd[160];
-    if (claims::held(claims::Res::Transfer) || !pendPath(kAreaBackups, pd, sizeof(pd))) return;
+    if (area == 0xFF || claims::held(claims::Res::Transfer) || !pendPath(area, pd, sizeof(pd))) return;
     for (uint8_t guard = 0; guard < 32; ++guard) {       // one at a time: never remove mid-walk
         char victim[64] = "";
         DIR* d = disk::dir(pd);
@@ -746,8 +787,13 @@ void clearBackupsStaging() {
         char full[224];
         snprintf(full, sizeof(full), "%s/%s", pd, victim);
         if (remove(full) != 0) return;
-        plat::log("files: removed %s, half an upload to Backups", victim);
+        plat::log("files: removed %s, half an upload to %s", victim, g_area[area].name);
     }
+}
+
+void clearBackupsStaging() {
+    clearStaging(kAreaBackups);
+    clearStaging(kAreaSkins);
 }
 
 bool start(Bbs& bbs) {
@@ -793,6 +839,16 @@ bool start(Bbs& bbs) {
     bk.down  = PlugLevel::Sysop;
     bk.up    = PlugLevel::Sysop;
     bk.del   = PlugLevel::Sysop;
+
+#ifdef BBS_HAS_LCD
+    // The panel's skins (1.2.0): the folder skin.cpp reads. Staff may look;
+    // only the sysop sends, and what the sysop sends goes straight in.
+    Area& sk = g_area[kAreaSkins];
+    snprintf(sk.path, sizeof(sk.path), "%s", "skins");
+    snprintf(sk.name, sizeof(sk.name), "%s", "Skins");
+    sk.read = sk.down = PlugLevel::Staff;
+    sk.up   = sk.del  = PlugLevel::Sysop;
+#endif
 
     // The camera's photos (1.1.0). Its levels are the camera's, asked for
     // each time (photoMay), so these stay the fallbacks and are never read.
@@ -1945,8 +2001,8 @@ uint16_t countPending(uint8_t i) {
 
 void recountPending() {
     g_pending = 0;
-    for (uint8_t i = 0; i < g_areas; ++i)                // Backups has nothing to approve
-        if (g_area[i].path[0] && i != kAreaBackups) g_pending = static_cast<uint16_t>(g_pending + countPending(i));
+    for (uint8_t i = 0; i < g_areas; ++i)                // Backups and Skins have nothing to approve
+        if (g_area[i].path[0] && !direct(i)) g_pending = static_cast<uint16_t>(g_pending + countPending(i));
 }
 
 // The engine asks for file data through this and never learns what a file
@@ -2011,6 +2067,11 @@ bool xferOpen(void* ctx, const char* name, uint32_t size) {
         snprintf(g_why, sizeof(g_why), "Backups takes a .zip, 27 characters at most.");
         return false;
     }
+    // Skins takes a skin's pair, and only that (1.2.0).
+    if (x->area == kAreaSkins && !skinFile(name)) {
+        snprintf(g_why, sizeof(g_why), "Skins takes <name>.txt and <name>.jpg, name 1-24 of A-Z 0-9 _ -.");
+        return false;
+    }
     uint32_t cap = x->area == kAreaBackups ? static_cast<uint32_t>(BBS_ZIP_MAX_BYTES) : kMaxUploadBytes;
     if (size > cap) {
         if (x->area == kAreaBackups)                     // RS-toobig's words
@@ -2027,7 +2088,9 @@ bool xferOpen(void* ctx, const char* name, uint32_t size) {
     }
     if (!areaPath(x->area, dir, sizeof(dir))) return false;
     snprintf(full, sizeof(full), "%s/%.48s", dir, name);
-    if (stat(full, &st) == 0) {
+    // A skin sent again replaces the one there: that is how a sysop
+    // corrects one. Everywhere else a name already taken is refused.
+    if (x->area != kAreaSkins && stat(full, &st) == 0) {
         snprintf(g_why, sizeof(g_why), "%.40s is already in this section", name);
         return false;
     }
@@ -2055,11 +2118,19 @@ bool xferOpen(void* ctx, const char* name, uint32_t size) {
 // the sysop can upload there, and making the sysop approve their own backup
 // is ceremony. It still lands in staging first, so a transfer that breaks
 // off never leaves half a zip where RESTORE SD would list it.
-bool placeBackup(const char* name) {
+bool placeBackup(uint8_t area, const char* name) {
     char dir[128], pd[160], from[224], to[224];
-    if (!areaPath(kAreaBackups, dir, sizeof(dir)) || !pendPath(kAreaBackups, pd, sizeof(pd))) return false;
+    if (!areaPath(area, dir, sizeof(dir)) || !pendPath(area, pd, sizeof(pd))) return false;
     snprintf(from, sizeof(from), "%s/%.48s", pd, name);
     snprintf(to,   sizeof(to),   "%s/%.48s", dir, name);
+    if (rename(from, to) == 0) return true;
+    // A skin's file replacing the one there (1.2.0): FatFs will not rename
+    // over a file, so the old one goes first, with the new one whole in
+    // staging; a failure after that leaves it there for P and A.
+    if (area != kAreaSkins) return false;
+    struct stat st;
+    if (stat(to, &st) != 0) return false;
+    remove(to);
     return rename(from, to) == 0;
 }
 
@@ -2067,9 +2138,9 @@ bool placeBackup(const char* name) {
 // file out of staging with it. Other areas keep one for staff to look at;
 // here nobody reviews staging, and a leftover name would refuse the retry.
 void dropPartial(const Xfer& x) {
-    if (x.sending || x.area != kAreaBackups || !x.made) return;
+    if (x.sending || !direct(x.area) || !x.made) return;
     char pd[160], full[224];
-    if (!pendPath(kAreaBackups, pd, sizeof(pd))) return;
+    if (!pendPath(x.area, pd, sizeof(pd))) return;
     snprintf(full, sizeof(full), "%s/%.48s", pd, x.name);
     remove(full);
 }
@@ -2131,17 +2202,21 @@ void xferEnd(Bbs& b, Session& s) {
               static_cast<unsigned long>(g_eng.bytes()),
               static_cast<unsigned>(g_eng.errors()));
 
-    // Backups: in the area at once, or the half file gone (1.1.0).
-    bool direct = !g_x.sending && g_x.area == kAreaBackups;
+    // Backups and Skins: in the area at once, or the half file gone (1.1.0).
+    bool direct = !g_x.sending && ::direct(g_x.area);
     if (direct && g_eng.done()) {
-        if (placeBackup(g_x.name)) {
+        if (placeBackup(g_x.area, g_x.name)) {
+            const bool sk = g_x.area == kAreaSkins;
             s.term.color(s.tl, Color::LightGreen);
-            snprintf(buf, sizeof(buf), "In Backups: %.27s", g_x.name);
+            snprintf(buf, sizeof(buf), "In %s: %.27s", sk ? "Skins" : "Backups", g_x.name);
             s.term.text(s.tl, buf);
             s.term.nl(s.tl);
             s.term.color(s.tl, Color::Grey);
-            s.term.text(s.tl, "RESTORE SD lists it.");
-            plat::log("files: %s put %s in Backups", s.user, g_x.name);
+            s.term.text(s.tl, sk ? "CONFIG panel offers it once its .txt and .jpg are both in." : "RESTORE SD lists it.");
+            plat::log("files: %s put %s in %s", s.user, g_x.name, sk ? "Skins" : "Backups");
+#ifdef BBS_HAS_LCD
+            if (sk) skin::uploaded(g_x.name);
+#endif
         } else {
             // Still whole in staging, where P lists it and A puts it in.
             s.term.color(s.tl, Color::LightRed);
@@ -2425,7 +2500,7 @@ void startRecv(Bbs& b, Session& s, const char* arg, uint32_t now) {
         backToArea(b, s);
         return;
     }
-    if (at != kAreaBackups && countPending(at) >= kMaxPendPerArea) {
+    if (!direct(at) && countPending(at) >= kMaxPendPerArea) {
         s.term.color(s.tl, Color::LightRed);
         s.term.text(s.tl, "This area has all the uploads it can hold until staff clear some.");
         backToArea(b, s);
@@ -2438,9 +2513,10 @@ void startRecv(Bbs& b, Session& s, const char* arg, uint32_t now) {
     // wire and therefore needs one here.
     char name[kDescMax + 1] = {};
     bool useY = !argName(arg, name, sizeof(name));
-    // Backups: straight in, no approval, and only what RESTORE SD takes.
-    const bool backups = at == kAreaBackups;
-    const char* after  = backups ? "It goes straight in. RESTORE SD lists it."
+    // Backups and Skins: straight in, no approval, and only what each takes.
+    const bool backups = direct(at);
+    const char* after  = at == kAreaSkins ? "It goes straight in. Send the skin's .txt and .jpg."
+                       : backups ? "It goes straight in. RESTORE SD lists it."
                                  : "It waits for staff approval before anyone else sees it.";
 
     if (useY) {
@@ -2478,16 +2554,22 @@ void startRecv(Bbs& b, Session& s, const char* arg, uint32_t now) {
         backToArea(b, s);
         return;
     }
-    if (backups && !cardbak::listable(name)) {
+    if (at == kAreaBackups && !cardbak::listable(name)) {
         s.term.color(s.tl, Color::LightRed);
         s.term.text(s.tl, "Backups takes a .zip, 27 characters at most.");
+        backToArea(b, s);
+        return;
+    }
+    if (at == kAreaSkins && !skinFile(name)) {
+        s.term.color(s.tl, Color::LightRed);
+        s.term.text(s.tl, "Skins takes <name>.txt and <name>.jpg, name 1-24 of A-Z 0-9 _ -.");
         backToArea(b, s);
         return;
     }
 
     struct stat st;
     snprintf(buf, sizeof(buf), "%s/%s", dir, name);
-    if (stat(buf, &st) == 0) {
+    if (at != kAreaSkins && stat(buf, &st) == 0) {      // a skin sent again replaces its file
         s.term.color(s.tl, Color::LightRed);
         s.term.text(s.tl, "There is already a file by that name here.");
         backToArea(b, s);
@@ -2693,6 +2775,8 @@ void filesHelp(Bbs& b, Session& s, uint8_t area) {
     b.rowText(s, Color::Grey, "Downloads offer YMODEM, or X for plain XMODEM.");
     if (up && area == kAreaBackups)
         b.rowText(s, Color::Grey, "A .zip sent here is in at once.");
+    else if (up && area == kAreaSkins)
+        b.rowText(s, Color::Grey, "A skin's .txt and .jpg sent here are in at once.");
     else if (up)
         b.rowText(s, Color::Grey,
                   "Uploads wait for staff before anyone else can see them.");
@@ -2846,6 +2930,9 @@ void doErase(Bbs& b, Session& s, const char* a) {
           }
           plat::log("files: %s erased %s from area %u",
                     s.user, name, static_cast<unsigned>(at + 1));
+#ifdef BBS_HAS_LCD
+          if (at == kAreaSkins) skin::uploaded(name);   // the list again, and that skin off the glass
+#endif
           s.term.color(s.tl, Color::LightGreen);
           snprintf(buf, sizeof(buf), "%s erased.", name);
           s.term.text(s.tl, buf);

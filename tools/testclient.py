@@ -5849,6 +5849,7 @@ WIDE_LABEL = {
     b"Topic 1": b"Forum topic 1", b"Strip pin": b"Strip GPIO",
     b"LED gpio": b"Onboard LED GPIO", b"Board LED": b"Onboard LED GPIO",
     b"Password": b"Wi-Fi password", b"Driver": b"Controller chip",
+    b"Skin": b"Panel skin",
 }
 
 
@@ -8511,6 +8512,168 @@ def test_camera():
     return ok
 
 
+def panel_config(s, **keys):
+    """[plugin:panel] rewritten with exactly these keys (none: removed), then
+    the board made to read it, as lights_config does for the lights."""
+    path = USERDATA / "system.cfg"
+    out, skip = [], False
+    for line in path.read_text().splitlines():
+        t = line.strip()
+        if t.startswith("["):
+            skip = t.lower() == "[plugin:panel]"
+        if not skip:
+            out.append(line)
+    if keys:
+        out.append("[plugin:panel]")
+        out += [f"{k} = {v}" for k, v in keys.items()]
+    path.write_text("\n".join(out) + "\n")
+    return cfg_reload(s)
+
+
+def test_board_s3_skin():
+    """Panel skins on the Waveshare S3's glass (1.2.0): a skin from the card
+    loaded on the worker and drawn in place of the status layout; the skins
+    CONFIG offers; one that is wrong refused with its line and the status
+    skin shown instead; one not on the card said so; back to status. Needs
+    tools/harness.sh --board s3 --card; the skins are host/skins/e2e's, made
+    for this glass with the USB plug up (172 x 320)."""
+    print("Panel skins: the Waveshare S3's glass")
+    card = os.environ.get("BBS_SD_DIR", "")
+    if os.environ.get("BBS_HOST_BOARD") != "s3" or not PASSWORD or not card:
+        print("  SKIP  needs tools/harness.sh --board s3 --card")
+        return True
+    src = ROOT / "host" / "skins" / "e2e"
+    for name in ("e2e", "broken"):
+        dst = pathlib.Path(card) / "skins" / name
+        dst.mkdir(parents=True, exist_ok=True)
+        for fn in ("skin.txt", "background.jpg"):
+            (dst / fn).write_bytes((src / name / fn).read_bytes())
+    s = cfg_sysop("S3Skin")
+    W, H = 172, 320
+    head = f"P6\n{W} {H}\n255\n".encode()
+
+    def shot():
+        f = DATA / "panel.ppm"
+        if f.exists():
+            f.unlink()
+        s.buf.clear()
+        s.send(b"panel shot\r")
+        s.wait_for(b"Written", 4)
+        data = f.read_bytes() if f.exists() else b""
+        return data if len(data) == len(head) + W * H * 3 else b""
+
+    def px(data, x, y):
+        at = len(head) + (y * W + x) * 3
+        return tuple(data[at:at + 3])
+
+    def near(c, want, tol=14):
+        return len(c) == 3 and all(abs(c[i] - want[i]) <= tol for i in range(3))
+
+    def settle(want, secs=6):
+        until = time.time() + secs
+        p = b""
+        while time.time() < until:
+            p = panel_read(s)
+            if want in p:
+                return p
+            time.sleep(0.4)
+        return p
+
+    ok = panel_config(s, skin="e2e")
+    p = settle(b"Skin e2e")
+    ok &= check("skin = e2e: loaded from the card and on the glass", b"Skin e2e" in p)
+    ok &= check("CONFIG's choices: the built-in and the card's good skin, not the broken one",
+                re.search(rb"Skins status e2e\s", p) is not None)
+    time.sleep(1.0)                                    # the copy and its bands
+    d = shot()
+    ok &= check("PANEL SHOT: the skin's art where nothing is drawn over it",
+                bool(d) and near(px(d, 150, 140), (32, 64, 96)) and near(px(d, 150, 200), (96, 48, 32)))
+    # #FFFF00 through the RGB565 framebuffer comes back as 248, 252, 0.
+    ys = [y for y in range(8, 72) for x in range(8, 164) if px(d, x, y) == (248, 252, 0)] if d else []
+    ok &= check("the status lines written in the skin's yellow, inside its rectangle", len(ys) > 50)
+    ok &= check("on the rectangle's own black", bool(d) and px(d, 160, 70) == (0, 0, 0))
+    c = px(d, 20, 300) if d else ()
+    ok &= check("the drive lens lit over the art (the lights' idle glow at the least)",
+                bool(d) and (c[0] > 96 or c[1] > 48))
+
+    panel_config(s, skin="broken")
+    p = settle(b"line 3")
+    ok &= check("a skin.txt that is wrong: the status skin shown, the fault named by its line",
+                b"Skin status" in p and b"Not broken: skin.txt line 3: drive style 'amiga'" in p)
+    d = shot()
+    ok &= check("and the glass is the status layout again", bool(d) and px(d, 1, 1) == (24, 44, 120))
+
+    panel_config(s, skin="nothere")
+    p = settle(b"nothere")
+    ok &= check("a skin not on the card: said so", b"Not nothere: no skins/nothere/ or skins/nothere.txt on the card" in p)
+    ok &= check("and offered anyway, so the page can be saved", re.search(rb"Skins status e2e nothere", p) is not None)
+
+    panel_config(s, skin="e2e")
+    settle(b"Skin e2e")
+    panel_config(s)                                    # no skin line: the built-in
+    p = settle(b"Skin status")
+    ok &= check("back to the built-in", b"Skin status" in p and re.search(rb"Callers \d+/\d+", p) is not None)
+
+    # Through the BBS, as a sysop would: the Skins file area (12 here) takes
+    # a skin's pair, <name>.txt and <name>.jpg, straight in, and the panel
+    # offers it at once.
+    txt = (src / "e2e" / "skin.txt").read_bytes()
+    jpg = (src / "e2e" / "background.jpg").read_bytes()
+    ok &= check("FILES 12 opens Skins", enter_area(s, 12, b"Skins"))
+    ok &= check("a name that is not a skin's is refused before anything is sent",
+                area_key(s, b"u", "notes.zip", b"Skins takes <name>.txt and <name>.jpg"))
+    for fn, data in (("flat.txt", txt), ("flat.jpg", jpg)):
+        enter_area(s, 12, b"Skins")
+        ok &= check(f"U takes YMODEM for {fn}", area_key(s, b"u", "", b"Start your YMODEM send"))
+        ok &= check("and says it goes straight in", s.wait_for(b"It goes straight in.", 3))
+        _seen.clear()
+        ok &= check(f"the board takes {fn}", ymodem_send(s, fn, data))
+        s.pump(1.0)
+        _seen.extend(bytes(s.buf))
+        ok &= check("and says where it went", f"In Skins: {fn}".encode() in plain(bytes(_seen)))
+        settle_after_transfer(s)
+    leave_files(s)
+    ok &= check("both on the card beside the folders, no approval waiting",
+                (pathlib.Path(card) / "skins" / "flat.jpg").read_bytes() == jpg and
+                not (pathlib.Path(card) / "skins" / ".pending" / "flat.jpg").exists())
+    p = settle(b"Skins status e2e flat")
+    ok &= check("CONFIG offers the uploaded skin at once", re.search(rb"Skins status e2e flat\s", p) is not None)
+    # From one skin to another (1.2.0): the one on the glass stays until the
+    # new one is ready, never the status layout between (it cost the loop
+    # 24 ms on the MF35 to draw it whole).
+    panel_config(s, skin="e2e")
+    settle(b"Skin e2e")
+    panel_config(s, skin="flat")
+    p = panel_read(s)
+    ok &= check("changing skin: the old one is shown until the new one is ready, never status",
+                b"Skin e2e" in p or b"Skin flat" in p)
+    p = settle(b"Skin flat")
+    ok &= check("and it loads from the pair", b"Skin flat (End to end)" in p)
+    # A new copy of the skin on the glass, sent through the Skins area (seen
+    # on the MF35: the reload put the status layout up whole, 30 ms of the
+    # loop): the one on the glass stays until the new copy is read.
+    # The card's opens cost 0.5 s each here (hostio.txt), so the reload is
+    # long enough for PANEL to see what is on the glass meanwhile.
+    enter_area(s, 12, b"Skins")
+    area_key(s, b"u", "", b"Start your YMODEM send")
+    _seen.clear()
+    hostio_set(DATA, 500000, 0)
+    ymodem_send(s, "flat.txt", txt.replace(b"End to end", b"End again"))
+    s.pump(0.3)
+    settle_after_transfer(s)
+    leave_files(s)
+    p = panel_read(s)
+    ok &= check("a re-upload of the skin on the glass: that skin shown until the new copy is read, never status",
+                b"Skin flat (End to end)" in p and b"Skin status" not in p)
+    hostio_clear(DATA)
+    p = settle(b"Skin flat (End again)", 15)
+    ok &= check("and the new copy is read", b"Skin flat (End again)" in p)
+    panel_config(s)
+    settle(b"Skin status")
+    s.close()
+    return ok
+
+
 def test_board_s3_silent():
     """Silent mode on the Waveshare S3 (1.1.0): the panel's backlight off and
     nothing sent to the glass while it lasts, the onboard pixel dark, and
@@ -8999,25 +9162,25 @@ def test_board_s3():
     # CONFIG panel: every row. This caller is 80 columns, so the rows carry
     # their long labels (1.1.0, the forms at 80); the 40 column page is
     # checked at the end of this test, on a caller that is 40 wide.
-    ok &= check("CONFIG has a panel page", cfg_open(s, b"panel", b"Driver"))
+    ok &= check("CONFIG has a panel page", cfg_open(s, b"panel", b"Skin"))
     s.pump(1.0)                                   # sixteen rows take a moment to cascade in
     page = plain(s.buf)
-    missing = [w.decode() for w in (b"ST7789", b"Panel pins", b"Width, pixels", b"Height, pixels",
+    missing = [w.decode() for w in (b"Panel skin", b"Panel pins", b"Width, pixels", b"Height, pixels",
                                     b"X offset in RAM", b"Y offset in RAM", b"USB plug points",
                                     b"Invert colours", b"Mirror the picture", b"Colour order",
                                     b"SPI clock, MHz", b"Backlight %") if w not in page]
-    ok &= check("naming the controller, with every row" + (f" (missing {missing})" if missing else ""),
+    ok &= check("the skin first, then every row" + (f" (missing {missing})" if missing else ""),
                 not missing)
     ok &= check("in 80 columns", max_column(s.buf) <= 79)
     cfg_cancel(s)
 
     # The Pins page, and the S3's rules on it: 26 to 37 are the flash and
     # PSRAM, 19 and 20 the USB, 22 to 25 do not exist, and 6 to 11, the
-    # WROOM's flash, are ordinary pins. Rows 0-3 core, then Pins: the cursor
-    # passes over Driver, which is information and nothing to edit.
-    cfg_open(s, b"panel", b"Driver")
+    # WROOM's flash, are ordinary pins. Rows 0-3 core, 4 the skin (1.2.0, in
+    # the row Driver had, which the cursor passed over), then Pins.
+    cfg_open(s, b"panel", b"Skin")
     s.buf.clear()
-    s.send(DOWN * 4 + b"\r")
+    s.send(DOWN * 5 + b"\r")
     ok &= check("Pins opens a page of its own", s.wait_for(b"PINS", 6))
     s.pump(0.6)
     page = plain(s.buf)
@@ -9042,9 +9205,9 @@ def test_board_s3():
     ok &= check("and the panel follows it", b"Pins 7 40 42 41 39 48" in panel_read(s))
 
     def pins_save(value):
-        cfg_open(s, b"panel", b"Driver")
+        cfg_open(s, b"panel", b"Skin")
         s.buf.clear()
-        s.send(DOWN * 4 + b"\r")
+        s.send(DOWN * 5 + b"\r")
         s.wait_for(b"PINS", 6)
         s.pump(0.6)
         s.buf.clear()
@@ -9057,22 +9220,22 @@ def test_board_s3():
     ok &= check("a pin past the WROOM's 33 is in range on the S3", pins_save(b"47") == b"Saved and live")
     ok &= check("and back on 45", pins_save(b"45") == b"Saved and live")
 
-    # Brightness on the main page: rows 4 Pins, 5 Width ... 14 Bright %.
-    cfg_open(s, b"panel", b"Driver")
+    # Brightness on the main page: rows 4 Skin, 5 Pins, 6 Width ... 15 Bright %.
+    cfg_open(s, b"panel", b"Skin")
     s.buf.clear()
-    s.send(DOWN * 14 + b"\x08" * 3 + b"80" + F1)
+    s.send(DOWN * 15 + b"\x08" * 3 + b"80" + F1)
     got = cfg_verdict(s, [b"Saved and live", b"Between", b"Saved"])
     ok &= check("the backlight saves live", got == b"Saved and live" and
                 (cfg_sec_line("plugin:panel", "backlight") or "").endswith("= 80"))
     ok &= check("and the panel is still lit", b"lit" in panel_read(s))
 
-    # The USB plug (1.1.0): CONFIG's row 9, a cycle picked by its first
+    # The USB plug (1.1.0): CONFIG's row 10, a cycle picked by its first
     # letter. Left and right draw the landscape layout at 320 x 172 with the
     # 34 on the y axis; the file holds the word.
     def turn(key):
-        cfg_open(s, b"panel", b"Driver")
+        cfg_open(s, b"panel", b"Skin")
         s.buf.clear()
-        s.send(DOWN * 9 + key + F1)
+        s.send(DOWN * 10 + key + F1)
         got = cfg_verdict(s, [b"Saved and live", b"Nothing changed", b"Between"])
         s.pump(0.8)                                   # a reset and a whole frame
         return got
@@ -9150,17 +9313,17 @@ def test_board_s3():
     # The panel's page as a C64 sees it: the nine column labels, inside 40
     # columns, the Pins page too.
     n = cfg_sysop40("BoardS3At40")
-    cfg_open(n, b"panel", b"Driver")
+    cfg_open(n, b"panel", b"Skin")
     n.pump(1.0)
     page = plain(n.buf)
-    missing = [w.decode() for w in (b"ST7789", b"Pins", b"Width", b"Height", b"X offset", b"Y offset",
+    missing = [w.decode() for w in (b"Skin", b"Pins", b"Width", b"Height", b"X offset", b"Y offset",
                                     b"USB plug", b"Invert", b"Mirror", b"Colours", b"SPI MHz",
                                     b"Bright %") if w not in page]
     ok &= check("at 40, every row by its short label" + (f" (missing {missing})" if missing else ""),
                 not missing)
     ok &= check("in 40 columns", max_column(n.buf) <= 39)
     n.buf.clear()
-    n.send(DOWN * 4 + b"\r")
+    n.send(DOWN * 5 + b"\r")
     n.wait_for(b"PINS", 6)
     n.pump(0.6)
     ok &= check("and the Pins page, with the six, inside 40 columns",
@@ -18358,7 +18521,7 @@ ORDER_NAMES = [
     "test_radio_link", "test_doors", "test_doors_petscii", "test_link_shared", "test_sats",
     "test_version_shown",
     # SKIPs on the reference board: tools/harness.sh --board s3 runs it.
-    "test_board_s3", "test_board_s3_silent",
+    "test_board_s3", "test_board_s3_silent", "test_board_s3_skin",
     # SSH (1.1.2): SKIP off an SSH profile (s3, mf35). The failed logins run
     # on a copy of the board, so their ban never reaches this one.
     "test_ssh_login", "test_ssh_new_caller", "test_ssh_resize", "test_ssh_host_keys",

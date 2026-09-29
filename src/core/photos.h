@@ -128,6 +128,13 @@ bool fileAs(Writer& w, char* rel, size_t cap, const char* desc);
 bool freeName(const char* rel, char* out, size_t cap);
 // abandon: close and remove the temporary file.
 void abandon(Writer& w);
+// callerSnaps (1.2.0): callers' pictures filed since boot, by every camera,
+// built in or a sat, and who took the last one: the handle without a guest's
+// * ("" before the first). A picture filed with a FILES.BBS line (fileAs's
+// desc) is a caller's, and its line reads "Taken by <handle>", which both
+// cameras write. The panel compares the count, as it does bus::lastPage's,
+// to put the snap in its recent list. Loop only: who is the loop's copy.
+uint16_t callerSnaps(const char*& who);
 
 // ---------------------------------------------------------------------------
 // Keeping Photos in bounds (1.2.0-link.15, Rob: "pruning for every camera").

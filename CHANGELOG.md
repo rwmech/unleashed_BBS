@@ -30,6 +30,23 @@ The µnleashed link, its lane (rel-1.2.0-link-r3, rebased onto main at
 a3dcf01, after the v1.1.2 tag). Host-tested; the camera satellite has run
 on the bench since link.4 (LINK.md has the figures).
 
+**1.2.0-link.17 (S3 1.1.4, WS43B 1.0.2, WS2 1.0.3, MF35 1.1.2): panel skins**
+- **Panel skins join 1.2.0**, from the panel-skins lane (1.2.0-skins.6, its
+  history under the skins entries below): CONFIG panel's Skin row, the
+  Skins file area, PANEL's skin lines, the five stock skins seeded onto the
+  card. On all four boards with a display. The stock skins are drawn for
+  480 x 320, so they are offered on the Makerfabs; the other glasses offer
+  `status` and any card skin drawn for their size.
+- **The Skins file area is 14 on a board with a display**, after Photos (12)
+  and Timelapse (13), which every board has since 1.2.0.
+- **CONFIG panel on the Touch-LCD-2** has Sleep and Skin both, and gives up
+  X offset and Y offset for them (its 240 x 320 glass fills the controller,
+  so both are 0; system.cfg still takes them). The 4.3B's page gains Skin.
+- **A sat's snap shows in the panel's recent list.** The count of callers'
+  snaps moved from the camera plugin to the photo system
+  (`photos::callerSnaps`), which counts every caller's picture filed, by the
+  built-in camera or a sat.
+
 **1.2.0-link.16: the hardware preview merged in**
 - **The four boards of v1.1.2-hardware-preview join 1.2.0**: the Waveshare
   ESP32-S3-Touch-LCD-4.3B (WS43B 1.0.1), ESP32-S3-Touch-LCD-2 (WS2 1.0.2)
@@ -944,6 +961,176 @@ figures)
 - `login()` in the test client no longer takes the sign-up form's "Main"
   for the prompt.
 
+## 1.2.0-skins.6 (S3 1.1.3), 2026-09-26: a re-uploaded skin stays up
+
+Not a release. Found on the MF35 bench (board engineer's console): sending
+a new copy of the skin on the glass through the Skins area let it go at
+once, so the status layout was drawn whole, 30.5 ms in the plugins phase
+(the pass took 57.6 ms). The skin on the glass now stays until the new copy
+is read, as a skin change already did; a load already running is called
+off and started again so the new copy is the one read.
+- A skin's reads open through `disk::open` and `disk::dir`, like every
+  other storage path since 1.1.1, so the drive light sees them and the
+  host's per-open costs apply.
+- `test_board_s3_skin` re-uploads the skin on the glass with the card's
+  opens slowed and checks PANEL never shows status meanwhile; it fails on
+  skins.5 and passes now. S3 host profile 98/0, test_skin 218/0.
+- On the MF35 (1.2.0-skins.5): all five stock skins uploaded over the Skins
+  area and each switched to. Loads 329 to 383 ms on the runner with 4,544
+  bytes of its 8,192 stack spare; ten minutes idle with the pc skin up
+  showed no slow pass.
+
+## 1.2.0-skins.5 (S3 1.1.3), 2026-09-26: the skins are 1.2.0's
+
+Not a release. Main's call: panel skins and the live widgets are part of
+the 1.2.0 hardware release, and 1.1.2 is a patch that ships without them,
+so this lane stays out of the 1.1.2 tag. The version and every "(1.1.2)"
+this lane wrote on a skin feature say 1.2.0 now; what is 1.1.2's (the
+runner, the S3's 8 MB layout, SSH) keeps its number. SKINS.md says the S3
+layout now has room to embed the stock set, which is still to do.
+
+## 1.1.2-skins.4 (S3 1.1.3), 2026-09-26: skins on 1.1.2-dev.3, and the review
+
+Not a release: the panel-skins lane brought onto main at 1.1.2-dev.3 (SSH,
+the background runner) as one commit, and the code review's findings
+fixed. Rob approved all five scenes as drawn.
+- A skin's load is a job on the background runner (`core/runner.h`), not a
+  task of its own: the per-task trampoline this lane added is gone, and SD
+  UNMOUNT and a remount wait for it through `runner::busy()` like any other
+  job. The card meter reads the runner's kept figure (`core/space.h`).
+- The callers graph could paint above its own box when a visible sysop
+  left (old samples against fewer lines): every fraction is held to its box.
+- A graph was redrawn whole on every sample; it is hashed by its column
+  heights now, so a flat sweep costs nothing. No widget unit may draw more
+  than 16,384 pixels at once (the reader refuses it, with the unit named),
+  and the widgets hold back while the glass is behind, as the LEDs do.
+- The lamp state for the sysop's line is `sysop` (it was `nodeS`, which
+  read as "nodes" in the any-case reader); `node1`..`node16` are read in
+  any case. mkskin.py refuses a colour with a sign in it, as the board does.
+- The traffic rate after a long gap is worked out in 64 bits; a new skin
+  resets the scene in place rather than through a 1.3 KB temporary.
+- SKINS.md says what the `online` word, the node and `online` lamps and the
+  `card` lamp count, and the unit limit, the graph's 240 samples and a
+  list's 32 rows.
+- The panel's JPEG decoder is its own file (`platform_esp32_jpeg.cpp`),
+  and the host's TJpgDec object has its own name under the sanitisers, so
+  a plain build after an ASan one no longer links an instrumented object.
+- Host: test_skin 218/0 under ASan, mkskin selftest 100/100, S3 host
+  profile (board_s3, with a card) 96/0, storage with a card 462/0.
+- Sizes off the ELF, no warnings: S3 image 1,468,256 (+40,448 on dev.3's
+  1,427,808), static DRAM 259,592 of 341,760 (+5,720 on 253,872); WROOM
+  163,800, identical to dev.3; Freenove 175,328 (+8 on 175,320).
+
+## 1.1.2-skins.3 (S3 1.1.3), 2026-09-26: the other four stock skins, live
+
+Not a release: a checkpoint on the panel-skins lane, host-tested only. Rob
+approved the Beige tower's layout and the doing column (the verb only).
+- The Breadbin, Beige lid, Cream and wood and Front panel skins rebuilt to
+  the tty-ux spec: a monitor listing who is on (and who is ringing), a
+  40-column switchboard with the free lines dim, a TV scrolling the events
+  with the channel readout as callers on and the tuning meter as the Wi-Fi,
+  and a front panel whose status, DATA and address lamps are the board and
+  its lines, with the events on green-bar paper. A modem on three desks
+  lights MR, AA, CD, RI, RD, SD as a real one did.
+- Contrast fixed on the C64 field (5.99:1) and the TV (7.47:1).
+- The host renders' sample board has ten lines, as every board does.
+- SKINS.md's stock table and example follow.
+
+## 1.1.2-skins.2 (S3 1.1.3), 2026-09-26: live widgets on a skin
+
+Not a release: a checkpoint on the panel-skins lane, host-tested only.
+Rob, on the first skins: "we need some more info, not just the more or
+less static image".
+- skin.txt gains live widgets, each placed as often as its limit allows:
+  `field` (one value with an optional label), `digits` (a seven-segment
+  display), `nodes` (who is on, a row a line), `events` (the last logins,
+  logoffs, pages and rings), `meter` (traffic, heap, card, callers or
+  signal), `graph` (a two-minute sweep of traffic or callers) and `lamp` (a
+  lens lit by a state: a line in use, the sysop on, ring, mail, closed,
+  listed, the card, rx, tx, disk, error). New line words `online`, `lines`,
+  `lastcaller`, `rssi`, `peak`, `version`; a third face, `size=tiny`
+  (Spleen 6 x 12).
+- Widgets redraw only when what they show changed (a hash per unit), at
+  most 16,384 pixels a pass, carried on from where the last pass stopped.
+  Figures come from RAM; traffic and callers are sampled twice a second.
+- `tools/mkskin.py` reads the same grammar (94 shared cases) and its
+  preview draws the widgets with sample data. SKINS.md documents all of it.
+- The Beige tower stock skin is rebuilt as a waiting-for-caller screen, to
+  the tty-ux spec in `internal/tty-ux-skin-widgets-2026-09-26.md`. The
+  other four stock skins are unchanged until Rob has seen it.
+- Host: test_skin 212/0 under ASan.
+
+## 1.1.2-skins.1 (S3 1.1.3), 2026-09-26: panel skins, a lane for 1.1.2
+
+Not a release: the panel-skins lane, from 1.1.1, to merge with the Makerfabs
+3.5" board and then into 1.1.2. Host-tested; not yet on a panel.
+
+- **Panel skins** ([SKINS.md](SKINS.md)). A board with a display can show
+  a picture of a machine in place of its drawn status layout. The board's
+  real lamps are lit on the picture: the drive light in the skin's own
+  style (`pc`, `1541`, `disk2`, `breathe`, from the same disk state and
+  error blink as a wired one), an activity lamp for traffic, and up to 16
+  strip LEDs in whatever effect the lights plugin runs, wired or not. The
+  status lines go in a rectangle of the skin's choosing, with an optional
+  clock. A skin is a folder on the card, `skins/<name>/`, holding
+  `background.jpg` (the panel's size) and `skin.txt`. The manifest's
+  grammar is strict, and every fault is reported with its line.
+- **The Skins file area** (12, or 14 with a camera): the sysop sends a skin
+  as the pair `<name>.txt` and `<name>.jpg` over YMODEM, straight in with no
+  approval, and CONFIG offers it at once. A file sent again replaces the
+  one there, and a skin on the glass is reloaded from it. The loader reads
+  a skin's folder first, then the pair. `mkskin.py pair` makes one.
+- **Chosen in `CONFIG panel`**, the `Skin` row (`Panel skin` at 80 columns),
+  in the row Driver had, the page being full. It offers `status` (the
+  built-in, as shipped) and the card's skins drawn for this glass's size.
+  `PANEL` names the skin on the glass, why the one set is not showing, and
+  what CONFIG offers.
+- **Nothing slow on the loop** (Rule no. 1). Reading, parsing, checking and
+  decoding are a worker's, into a PSRAM block of its own. The loop copies
+  the picture in 32 rows a tick, then redraws only the LEDs and lines that
+  changed, 8,192 LED pixels a frame at most, the rest in turn on the next
+  frames. It stops queueing LEDs while the panel's send queue is backed up.
+  A skin that cannot be used shows the status layout, says why on the
+  console and in `PANEL`, and is read again at the next CONFIG save, when a
+  card comes or goes, or when a file for it arrives; never every tick. The
+  console gives each load's time and the worker's least free stack.
+- **The decoder is the ESP32-S3's ROM TJpgDec** (`esp32s3/rom/tjpgd.h`,
+  `jd_prepare` at `0x40000858`): no flash. Its limits (baseline, YCbCr,
+  8-bit, 4:4:4/4:2:2/4:2:0, 512-byte segments) are checked first, on the
+  board and on the host alike, with the reason in words. The host decodes
+  with TJpgDec R0.03 in `host/tjpgd`.
+- **`tools/mkskin.py`**: `check`, `leds` (skin.txt lines from key colours
+  painted on a copy of the art, `-o` for plain ASCII), `preview` (lit, as
+  the panel draws it), `jpeg` (cropped to fill, never stretched unless
+  asked), `pair`, `pack`, and `selftest` (the board's cases, which the two
+  readers must agree on).
+- **Five stock skins** in `skins/stock/`, painted by
+  `tools/mkskins_stock.py` with no maker's name or logo: a beige tower, a
+  breadbin with its drive, a beige computer with a lid and two floppy
+  drives, a cream computer with its drive and a wood-grain TV, and a front
+  panel whose 16 address lamps are the strip. They come to about 105 KB of
+  JPEG. The code that seeds them onto a card, and keeps them current without
+  touching a skin the sysop changed, is in (`skin_seed.h`). The set itself
+  is embedded with 1.1.2's S3 layout (3 MB app slots); until then it ships
+  as a zip.
+- **Fixed on the way:** the panel's two Spleen faces were a copy in every
+  file that drew text (a namespace-scope `constexpr` array has internal
+  linkage). They are `inline constexpr` now: one copy an image.
+- **`plat::taskStart` carries its own function and argument per task**,
+  and is built for display boards too. It held one global slot, which a
+  camera snap and a skin load at once would have shared. 1.1.2's shared
+  runner replaces it.
+- `lights::panelDrive`: the drive light's frame in a given style, for a
+  skin.
+- Size, off the ELF against 1.1.1: the Waveshare S3 image +24,208 bytes
+  (1,294,432) and static DRAM +2,576 (250,360 of 341,760); the Freenove
+  +608 bytes, static DRAM the same; the WROOM +416 bytes, +8 static DRAM.
+  No warnings on any of the three.
+- Tests: `host/test_skin` (159 checks: the shared cases, a 100,000-case
+  fuzz, the JPEG rules against Pillow's files, the drawing's invariants and
+  the LED budget, the seeding rule, the stock skins drawn) and
+  `test_board_s3_skin` on the host board (24: loaded, drawn and read back,
+  refused with its line, the Skins area's upload).
 ## 1.1.2-dev.3 (S3 1.1.3): SSH on the S3, a preview, 2026-09-26
 
 Part 3 of 1.1.2. The ESP32 images (the WROOM, the Freenove, the ESP32-CAM)

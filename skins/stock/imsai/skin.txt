@@ -1,0 +1,46 @@
+skin 1
+panel 480 320
+name Front panel
+; the printout: events, newest at the bottom
+events 28 6 210 84 size=tiny colour=#2A2A30 order=oldest
+; the readout
+field 270 16 144 name colour=#6CFFE0
+clock 424 16 colour=#6CFFE0
+field 270 32 194 address colour=#6CFFE0
+field 270 48 194 callers colour=#6CFFE0
+; status: RUN WAIT INT HLTA INP OUT DISK MAIL
+lamp 272 78 8 run colour=#FF2410 halo=5
+lamp 299 78 8 closed colour=#FF2410 halo=5
+lamp 326 78 8 ring colour=#FF2410 halo=5 blink=yes
+lamp 353 78 8 error colour=#FF2410 halo=5 blink=yes
+lamp 380 78 8 rx colour=#FF2410 halo=5
+lamp 407 78 8 tx colour=#FF2410 halo=5
+drive 434 78 8 1541 halo=5
+lamp 461 78 8 mail colour=#FF2410 halo=5
+; programmed output: the lights plugin's strip, pixels 1 to 8
+; (the strip's pixels 9 and 10 have no lamp here)
+strip 8
+led 1 30 136 8 halo=5
+led 2 56 136 8 halo=5
+led 3 82 136 8 halo=5
+led 4 108 136 8 halo=5
+led 5 144 136 8 halo=5
+led 6 170 136 8 halo=5
+led 7 196 136 8 halo=5
+led 8 222 136 8 halo=5
+; data: OPS DIR CARD on D2 D1 D0; D7 to D3 dark
+lamp 392 136 8 staff colour=#FF2410 halo=5
+lamp 418 136 8 listed colour=#FF2410 halo=5
+lamp 444 136 8 card colour=#FF2410 halo=5
+; the lines, line n on address bit n-1, the sysop's on A15
+lamp 430 196 8 node1 colour=#FF2410 halo=5
+lamp 404 196 8 node2 colour=#FF2410 halo=5
+lamp 378 196 8 node3 colour=#FF2410 halo=5
+lamp 352 196 8 node4 colour=#FF2410 halo=5
+lamp 326 196 8 node5 colour=#FF2410 halo=5
+lamp 300 196 8 node6 colour=#FF2410 halo=5
+lamp 274 196 8 node7 colour=#FF2410 halo=5
+lamp 248 196 8 node8 colour=#FF2410 halo=5
+lamp 212 196 8 node9 colour=#FF2410 halo=5
+lamp 186 196 8 node10 colour=#FF2410 halo=5
+lamp 30 196 8 sysop colour=#FF2410 halo=5

@@ -53,6 +53,7 @@ Docs:
 | [LINK.md](LINK.md) | the µnleashed link (1.2.0): ESP-NOW to a camera satellite or a door box beside the board |
 | [BACKUP.md](BACKUP.md) | downloading and uploading config, accounts and screens as a `.zip`, and `BACKUP SD` / `RESTORE SD` to keep it on the SD card |
 | [SCREENS.md](SCREENS.md) | screen formats, naming rules and upload limits |
+| [SKINS.md](SKINS.md) | panel skins for a board with a display: the folder, `skin.txt`, the picture, making one with `tools/mkskin.py` |
 | [CHAT.md](CHAT.md) | the chat room, room commands and messages |
 | [CLIENTS.md](CLIENTS.md) | every machine that can call in, and what it needs |
 | [PUBLIC.md](PUBLIC.md) | putting your board on the internet, and what that risks |

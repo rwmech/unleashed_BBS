@@ -60,7 +60,8 @@ WOLF_WC       = aes asn coding curve25519 ecc ed25519 error fe_low_mem ge_low_me
                 logging memory random sha256 sha512 signature sp_c32 sp_int wc_encrypt wc_port wolfmath
 WOLF_WS       = internal io log port ssh
 WOLF_OBJS     = $(patsubst %,wolfobj/wc_%.o,$(WOLF_WC)) $(patsubst %,wolfobj/ws_%.o,$(WOLF_WS))
-SRCS      = $(wildcard ../src/core/*.cpp) $(wildcard ../src/plugins/*.cpp) platform_host.cpp linkradio_host.cpp main_host.cpp
+SRCS      = $(wildcard ../src/core/*.cpp) $(wildcard ../src/plugins/*.cpp) platform_host.cpp linkradio_host.cpp main_host.cpp \
+            jpeg_host.cpp
 
 # ---------------------------------------------------------------------------
 # mbedTLS for the host (1.2.0). The link (src/core/linkcrypto.cpp) seals its
@@ -132,8 +133,21 @@ $(EXTGEN)/ext_plugins.h: FORCE
 
 FORCE:
 
-bbs_host: $(SRCS) $(HDRS) $(MBED_LIB)
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) $(MBED_LIB) $(LDLIBS)
+# ChaN's TJpgDec (host/tjpgd, R0.03, set up as the ESP32-S3's ROM copy is):
+# the panel's JPEG decoder on the host (1.2.0, panel skins). C, so compiled
+# as C; linked into every host board, used only by those with a panel.
+TJPGD     = tjpgd.o
+ifeq ($(SAN),1)
+# Its own name under the sanitisers, so a later plain build never links an
+# instrumented object (undefined __asan_* at the link).
+TJPGD     = tjpgd_san.o
+TJSAN     = -fsanitize=address,undefined -fno-omit-frame-pointer
+endif
+$(TJPGD): tjpgd/tjpgd.c tjpgd/tjpgd.h tjpgd/tjpgdcnf.h
+	$(CC) -std=c99 -O1 -g -Wall -Wextra $(TJSAN) -c -o $@ tjpgd/tjpgd.c
+
+bbs_host: $(SRCS) $(HDRS) $(TJPGD) $(MBED_LIB)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) $(TJPGD) $(MBED_LIB) $(LDLIBS)
 
 # The same host board built as the Waveshare ESP32-S3-LCD-1.47 profile
 # (1.1.0, src/board.h): the S3's pin rules, that board's defaults, and the
@@ -141,17 +155,17 @@ bbs_host: $(SRCS) $(HDRS) $(MBED_LIB)
 # the ordinary suite is written for the reference board and runs bbs_host.
 #
 # It carries SSH (1.1.2), so it links wolfSSH: libwolfssh_host.a below.
-bbs_host_s3: $(SRCS) $(HDRS) libwolfssh_host.a $(MBED_LIB)
+bbs_host_s3: $(SRCS) $(HDRS) $(TJPGD) libwolfssh_host.a $(MBED_LIB)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_WS_S3LCD147 $(WOLF_CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) \
-	    libwolfssh_host.a $(MBED_LIB) $(LDLIBS)
+	    $(TJPGD) libwolfssh_host.a $(MBED_LIB) $(LDLIBS)
 
 # The Waveshare ESP32-S3-Touch-LCD-4.3B profile (1.1.2, WS43B): the RGB
 # panel's picture at 400 x 240, touch as a file called "tap" in the data
 # directory, and SSH as on the stick. tools/harness.sh --board ws43b runs it
 # with --only=board_ws43b.
-bbs_host_ws43b: $(SRCS) $(HDRS) libwolfssh_host.a $(MBED_LIB)
+bbs_host_ws43b: $(SRCS) $(HDRS) $(TJPGD) libwolfssh_host.a $(MBED_LIB)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_WS_S3TOUCH43B $(WOLF_CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) \
-	    libwolfssh_host.a $(MBED_LIB) $(LDLIBS)
+	    $(TJPGD) libwolfssh_host.a $(MBED_LIB) $(LDLIBS)
 
 wolfobj/wc_%.o: $(WOLF)/wolfssl/wolfcrypt/src/%.c $(WOLF)/user_settings.h
 	@mkdir -p wolfobj
@@ -182,38 +196,47 @@ test_sshlink: test_sshlink.cpp ../src/core/sshlink.h
 # The Freenove ESP32-WROVER CAM profile (1.1.0, src/board.h): its defaults
 # and the pins it owns, which syscfg::pinProblem refuses by name.
 # tools/harness.sh --board fncam runs it with --only=board_fncam.
-bbs_host_fncam: $(SRCS) $(HDRS) $(MBED_LIB)
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_FN_WROVER_CAM $(LDFLAGS) -o $@ $(SRCS) $(MBED_LIB) $(LDLIBS)
+bbs_host_fncam: $(SRCS) $(HDRS) $(TJPGD) $(MBED_LIB)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_FN_WROVER_CAM $(LDFLAGS) -o $@ $(SRCS) $(TJPGD) $(MBED_LIB) $(LDLIBS)
 
 # The Makerfabs ESP32-S3 Parallel TFT 3.5" v1.0 profile (MF35 1.1.0,
 # src/board.h): the S3's pin rules with quad PSRAM, that board's defaults and
 # the panel on a 480 x 320 ILI9488. It carries SSH (MF35 1.1.0), so it links
 # wolfSSH as bbs_host_s3 does.
 # tools/harness.sh --board mf35 runs it with --only=board_mf35 (and =ssh).
-bbs_host_mf35: $(SRCS) $(HDRS) libwolfssh_host.a $(MBED_LIB)
+bbs_host_mf35: $(SRCS) $(HDRS) $(TJPGD) libwolfssh_host.a $(MBED_LIB)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_MF_S3PAR35 $(WOLF_CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) \
-	    libwolfssh_host.a $(MBED_LIB) $(LDLIBS)
+	    $(TJPGD) libwolfssh_host.a $(MBED_LIB) $(LDLIBS)
 
 # The AI-Thinker ESP32-CAM profile (1.1.1, src/board.h).
 # tools/harness.sh --board espcam runs it with --only=board_espcam.
-bbs_host_espcam: $(SRCS) $(HDRS) $(MBED_LIB)
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_AI_ESP32CAM $(LDFLAGS) -o $@ $(SRCS) $(MBED_LIB) $(LDLIBS)
+bbs_host_espcam: $(SRCS) $(HDRS) $(TJPGD) $(MBED_LIB)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_AI_ESP32CAM $(LDFLAGS) -o $@ $(SRCS) $(TJPGD) $(MBED_LIB) $(LDLIBS)
 
 # The Waveshare ESP32-S3-Touch-LCD-2 profile (WS2 1.0.0, src/board.h): the
 # panel at 240 x 320 with taps (PANEL TAP), the camera, the card on the
 # panel's bus, and SSH as on the LCD-1.47. tools/harness.sh --board ws2 runs
 # it with --only=board_ws2.
-bbs_host_ws2: $(SRCS) $(HDRS) libwolfssh_host.a $(MBED_LIB)
+bbs_host_ws2: $(SRCS) $(HDRS) $(TJPGD) libwolfssh_host.a $(MBED_LIB)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_WS_S3TOUCH2 $(WOLF_CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) \
-	    libwolfssh_host.a $(MBED_LIB) $(LDLIBS)
+	    $(TJPGD) libwolfssh_host.a $(MBED_LIB) $(LDLIBS)
 
 # The Waveshare ESP32-S3-ETH profile (ETH 1.0.0, 1.1.2, src/board.h): an S3
 # with SSH, so it links wolfSSH as bbs_host_s3 does, and Ethernet, which the
 # host plays as a wire with an address (platform_host.cpp, BBS_HOST_ETH).
 # tools/harness.sh --board wseth runs it with --only=board_wseth.
-bbs_host_wseth: $(SRCS) $(HDRS) libwolfssh_host.a $(MBED_LIB)
+bbs_host_wseth: $(SRCS) $(HDRS) $(TJPGD) libwolfssh_host.a $(MBED_LIB)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_WS_S3ETH $(WOLF_CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) \
-	    libwolfssh_host.a $(MBED_LIB) $(LDLIBS)
+	    $(TJPGD) libwolfssh_host.a $(MBED_LIB) $(LDLIBS)
+
+# Panel skins (1.2.0): the manifest's grammar thrown at hard (the shared
+# cases in skins/cases.txt, then a fuzz), the JPEG check, the LEDs and the
+# lines drawn over a real decoded picture, and the stock set's seeding, with
+# no panel. A picture of each skin lands in skins/out/ for a person to look
+# at. From the pure headers and the host decoder.
+test_skin: test_skin.cpp ../src/plugins/skin_manifest.h ../src/plugins/skin_jpeg.h ../src/plugins/skin_draw.h \
+           ../src/plugins/skin_seed.h ../src/plugins/panel_gfx.h ../src/plugins/panel_font.h $(TJPGD)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_skin.cpp $(TJPGD)
 
 # The panel's drawing: glyphs, layout, lamps and the queue of what to send.
 # Pure code with no platform, checked pixel by pixel with no display.
@@ -325,8 +348,8 @@ linkpeer: linkpeer.cpp ../src/core/link.cpp ../src/core/link.h ../src/core/linkc
 
 # The host board with plugins from their own repositories built in, beside
 # bbs_host rather than over it: make EXT="hello" bbs_host_ext
-bbs_host_ext: $(SRCS) $(HDRS) $(MBED_LIB)
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) $(MBED_LIB) $(LDLIBS)
+bbs_host_ext: $(SRCS) $(HDRS) $(TJPGD) $(MBED_LIB)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) $(TJPGD) $(MBED_LIB) $(LDLIBS)
 
 # The project is GPL-3.0-or-later (1.1.0-dev.11). A tracked file whose SPDX
 # line still says GPL-2.0 was added on an old header; release.py refuses it
@@ -345,8 +368,9 @@ formats:
 	@python3 ../tools/check_formats.py --self-test
 	@python3 ../tools/check_formats.py ../src
 
-test: licence formats test_link test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera test_photos_cfg test_sshlink
+test: licence formats test_link test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera test_photos_cfg test_sshlink test_skin
 	./test_link
+	./test_skin
 	./test_xmodem
 	./test_wrap
 	./test_forums_ptr
@@ -366,6 +390,7 @@ test: licence formats test_link test_xmodem test_wrap test_forums_ptr test_compo
 
 clean:
 	rm -rf wolfobj libwolfssh_host.a ssh_call test_sshlink
+	rm -f tjpgd.o tjpgd_san.o test_skin
 	rm -f bbs_host bbs_host_s3 bbs_host_ws43b bbs_host_fncam bbs_host_espcam bbs_host_ws2 bbs_host_wseth bbs_host_mf35 bbs_host_ext linkpeer test_link test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera test_photos_cfg
 
 .PHONY: clean test licence formats FORCE mbedtls-check

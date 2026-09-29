@@ -1,0 +1,11 @@
+skin 1
+panel 172 320
+name End to end
+drive 20 300 10 pc halo=4
+activity 60 300 10 colour=#00FF00 halo=4
+strip 2
+led 1 100 300 8
+led 2 130 300 8
+text 8 8 156 64 colour=#FFFF00 background=#000000
+lines name callers who
+clock 8 100 colour=#FFFFFF

@@ -889,6 +889,7 @@ bool touchBegin(char* err, size_t errLen) {
 uint8_t  touchChip() { return g_touchUp ? 0xB6 : 0; }
 uint16_t touchTaps() { const uint16_t n = g_hostTaps; g_hostTaps = 0; return n; }
 #endif
+// jpegDecode: host/jpeg_host.cpp, with the TJpgDec it carries.
 #endif  // BBS_HAS_LCD
 
 #if defined(BBS_SD_CS_EXPANDER) || defined(BBS_LCD_RGB)

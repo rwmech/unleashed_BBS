@@ -129,6 +129,34 @@ void abandon(Writer& w) {
 }
 
 namespace {
+// Callers' snaps filed (callerSnaps). Written by whichever task files the
+// picture (the camera's worker, the runner for a sat) and read by the loop,
+// each under the runner's lock: a count and a handle copied.
+uint16_t g_snaps = 0;
+char     g_snapWho[BBS_USER_MAX + 1] = {};
+char     g_snapShown[BBS_USER_MAX + 1] = {};   // the loop's copy
+
+void snapFiled(const char* desc) {
+    static const char kBy[] = "Taken by ";
+    const char* h = strncmp(desc, kBy, sizeof(kBy) - 1) ? "" : desc + sizeof(kBy) - 1;
+    if (*h == '*') ++h;                        // a guest: the handle the panel names
+    plat::runLock();
+    snprintf(g_snapWho, sizeof(g_snapWho), "%.*s", BBS_USER_MAX, h);
+    g_snaps = static_cast<uint16_t>(g_snaps + 1);
+    plat::runUnlock();
+}
+}  // namespace
+
+uint16_t callerSnaps(const char*& who) {
+    plat::runLock();
+    const uint16_t n = g_snaps;
+    memcpy(g_snapShown, g_snapWho, sizeof(g_snapShown));
+    plat::runUnlock();
+    who = g_snapShown;
+    return n;
+}
+
+namespace {
 bool fileIn(Writer& w, char* rel, size_t cap, const char* desc, uint8_t later);
 void justFiled();                         // a picture went in: a prune, a little after
 }
@@ -227,6 +255,7 @@ bool fileIn(Writer& w, char* rel, size_t cap, const char* desc, uint8_t later) {
         return false;
     }
     justFiled();                                     // one more picture: retention, for every camera
+    if (desc && *desc) snapFiled(desc);              // a caller's: the panel's recent list
     if (strcmp(name, rel)) snprintf(rel, cap, "%s", name);
     w.tmp[0] = '\0';
     // Its FILES.BBS line is asked of the file areas, that file's one writer

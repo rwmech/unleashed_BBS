@@ -103,6 +103,13 @@ uint8_t panelFrame(uint8_t* rgb, uint8_t cap, uint8_t& pct);
 // brightness: the lamp a board with no drive pin can show on its glass (the
 // 4.3" board, 1.1.2). False while the lights plugin is not running.
 bool    panelDrive(uint8_t* rgb, uint8_t& pct);
+// panelDrive: the drive light's frame now, drawn in style (the kDriveFx
+// numbers, pc 0 to breathe 3) rather than the plugin's own setting, for a
+// panel skin whose lens is a 1541's or a Disk II's. The same disk state and
+// error blink the wired light shows. rgb takes 3 bytes; pct is the drive
+// light's brightness. False, and rgb untouched, while the plugin is not
+// running.
+bool    panelDrive(uint8_t style, uint32_t now, uint8_t* rgb, uint8_t& pct);
 #endif
 
 #ifdef BBS_HAS_CAMERA
