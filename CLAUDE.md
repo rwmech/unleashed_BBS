@@ -1247,6 +1247,7 @@ this tree.
   - **the ETH board joins Wi-Fi alongside the wire** (Rob: "if both are supported, just keep the connection through wire"), so its radio follows the router's channel and sats pair, with Ethernet still the route for callers;
   - stop wolfSSH advertising the aes192 ciphers it doesn't have (found by the web-SSH research; harmless today);
   - the ETH board's host camera tests.
+  - **SyncTERM's system password at the login's "Sysop password:"** (Rob, 2026-09-29, queued). Alt+L on a telnet entry sends user, CR, password, CR, system password, CR in one burst ([SyncTERM manual](https://syncterm.bbsdev.net/Manual.html)); `askSysop` drops keys held from before the question (bbs.cpp ~2471), so the third line is thrown away, while at `Main:` typeahead is kept, which is why `bye <password>` in that field works. Fix: take a held line as the answer, but a wrong one from typeahead is never a ban strike (only a line typed after the question counts), so "dash" typed ahead still cannot ban the sysop's own address. Test with a burst the way SyncTERM sends it.
 - **1.3.0 plan (Rob, 2026-09-29):**
   - the features sat (above);
   - **camera sat 2:**
