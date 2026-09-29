@@ -23,6 +23,38 @@ Prior art check (done, corrected 2026-09-24): no BBS software ran on an ESP32 th
 
 ## Settled decisions
 
+- **Core value: the microcontroller is the point** (Rob, 2026-09-29: "I
+  know I can do all this on a RPI, the microcontroller is what makes this
+  not a computer. So this is a core value to the project."). BBS logic
+  (logins, accounts, policy, screens, features) lives on the
+  microcontroller: the core, or ESP32 sats. A Raspberry Pi or any computer
+  is never required, and core work is never offloaded to one.
+  - A Pi may exist only as an optional, purpose-built **space station**
+    for one big job (a packet-radio gateway, a large door system), talking
+    to the board over ESP-NOW through a small ESP32 **docking radio** on
+    its USB, like any other paired device.
+  - For ham radio the Pi is only the radio's modem (Direwolf, linbpq).
+- **Displays require an ESP32-S3** (Rob, 2026-09-29: "any displays
+  require an S3, done"). The panel, the gallery, skins and the new-photo
+  auto-show are S3-only, behind `BBS_HAS_LCD`. No screen code for the
+  classic ESP32 boards. S3-only list so far: displays, SSH, Ethernet (the
+  ETH board), the voting booth, full-resolution OV5640 with autofocus.
+  A feature that's S3-only is left out of the base build entirely, not
+  just switched off, because a switched-off plugin still costs flash and
+  its statics.
+- **Extras go on sats, not in the core** (Rob, 2026-09-29). The core
+  carries what a BBS must have. Heavier extras (credits, the voting
+  booth, games) run on a **features sat**, a second cheap ESP32 that is
+  both a door (UPLINK) and an orbiter. The board pays once, in 1.3.0, for
+  a small interface:
+  - EVENT: board to sat, call figures;
+  - PUBLISH: sat to board, a screen file;
+  - GRANT: sat to board, minutes or a snap; off by default, capped and
+    logged.
+
+  Open: whether oneliners and top 10 stay in the core (cheap, file-based,
+  core BBS identity; my recommendation) or go on the sat. Plan:
+  release-prep/plans/features-sat-plan-2026-09-29.md.
 - **Rule no. 1: the online experience without lag is paramount** (Rob,
   2026-09-24). Nothing a feature does may stall the callers who are not
   using it. Slow work (a JPEG encode, a card scan, a restore, a network
@@ -1189,6 +1221,64 @@ this tree.
       the ELF: WROOM 165,656 (15,080 free, +504 on link.14), Freenove
       176,544 (4,192 free, +56), ESP32-CAM 177,952 (2,784 free), S3 256,000
       of 341,760 (+504).
+- **1.2.0, final scope (Rob, 2026-09-29), shipping today.**
+  - **In it:**
+    - the link, sats, doors and UPLINK, SATS and CONFIG sats / sat <name>;
+    - one SNAPSHOT for every camera, CONFIG photos, and pruning for every camera;
+    - the four S3 boards (WS43B, WS2, ETH, MF35) promoted to full release;
+    - panel skins;
+    - switchboard lights;
+    - external plugins;
+    - the snapshot UX: `SNAP n`, "Contacting camera sat #n..." with the spinner, busy messages in the same style, failures naming the camera;
+    - sat errors appended to `camsat-<n>-errors.log` in the card's Logs area (Rob: "we overthought this", no mail);
+    - SATS and CONFIG sats saying plainly that an ETH board on the wire can't pair sats.
+  - **Main merged both branches at 334f230** (1.2.0-link.16). All 19 envs build with 0 warnings. Static DRAM free: ESP32-CAM 2,720, Freenove 4,192, WROOM about 15,080.
+  - **Out of it:**
+    - SD FORMAT, dropped (format off-board; about 2 KB is not zero);
+    - the pre-tag regression: Rob chose smoke tests, and the full regression runs after the tag, cloud first. I argued for running it before the tag in the cloud, and Rob said no;
+    - the PIR test (later, Rob's hands);
+    - the swipe gallery (1.2.1+);
+    - store-and-forward (folded into camera sat 2, 1.3.0+);
+    - ham radio (1.3.0).
+  - **Ship process:** flash every bench board to the release candidate (SHUTDOWN first), Rob confirms they connect, then tag v1.2.0 and the camsat release together.
+- **1.2.1 queue:**
+  - the swipe gallery;
+  - **the ETH board joins Wi-Fi alongside the wire** (Rob: "if both are supported, just keep the connection through wire"), so its radio follows the router's channel and sats pair, with Ethernet still the route for callers;
+  - stop wolfSSH advertising the aes192 ciphers it doesn't have (found by the web-SSH research; harmless today);
+  - the ETH board's host camera tests.
+- **1.3.0 plan (Rob, 2026-09-29):**
+  - the features sat (above);
+  - **camera sat 2:**
+    - timelapse frames appended to an MJPEG-AVI on the card, split by day, month or year, with an option to keep the original photos too, downloaded from FILES;
+    - store-and-forward: sats send late frames with their capture times;
+    - motion pictures through the same path;
+    - the space limits (FAT32's 4 GB cap, plain AVI's 1-2 GB, OpenDML for long periods) to be worked out then;
+  - **ham radio**, below.
+- **Ham radio, the settled design (Rob, 2026-09-29), for 1.3.0.**
+  - **The chain:** radio -> Digirig -> OPi (Direwolf, linbpq and a thin gateway service) -> an ESP32 docking radio on USB -> ESP-NOW -> the board.
+  - **One account database, the board's. Accounts are created only over telnet or SSH.**
+    - An account with a callsign sets an RF passphrase in PROFILE, shown only for ham accounts and stored readable: it crosses the air in plain text, and the challenge needs single characters.
+    - RF login is BPQ-style: the board asks for 5 random character positions and the caller answers with those characters.
+    - Other callsigns are guests (read, chat, WHO): the ham port is the demo and the QSO.
+    - No main password ever goes over the air. No staff over RF.
+  - **RF mode:** ASCII only, no transfers, short pages.
+  - **Ham lines** run 0-3, default 0, reserved from the 10.
+  - **New core work:** inbound caller sessions over the link, the challenge and guest exchange, RF mode, CONFIG hamradio. About 50 B static and 4-5 KB flash. LINK.md reserves the numbers in 1.2.0.
+  - **Examples use `N0CALL`,** never Rob's callsign.
+  - The site marks it "planned, a while off".
+- **Browser SSH from the directory: researched** (research/web-ssh branch, internal/research-web-ssh-2026-09-28.md).
+  - Buildable, 9-13 days, with Microsoft's MIT dev-tunnels-ssh client running in the browser and a stdlib asyncio relay beside server.py.
+  - Two decisions come first:
+    - the board must learn each web visitor's real address (the PROXY protocol, accepted only from the relay's address), or one droplet address gets banned;
+    - the directory's "never makes outbound connections" promise needs rewording.
+  - Not before 1.2.0.
+- **Cloud work.** Rob's cloud sessions (claude.ai/code, on the $250 credit) can run anything that doesn't need a board: host test suites, research, merges, site cleanup. They can't build firmware images, because PlatformIO's registry is blocked there.
+  - Prompts go in release-prep/cloud/*.md, and Rob pastes them.
+  - Agent `isolation: "remote"` ran locally instead.
+  - After 1.2.0, the plan is:
+    - one claude.ai routine that Rob creates, which I fire with RemoteTrigger;
+    - a `cloud-queue` branch of task and status files as the semaphore;
+    - regular cloud host regressions.
 - **1.1.2 scope, decided by Rob 2026-09-26** (discussed before coding):
   - A read-only audit first of every path that can hold the loop over
     50 ms (internal/audit-1.1.2-2026-09-26.md); the worst move onto one
