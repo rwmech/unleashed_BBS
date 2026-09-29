@@ -54,6 +54,7 @@
 #include "linkfam.h"
 #include "photos.h"
 #include "../plugins/link.h"   // CONFIG sats (1.2.0): the link's pairings
+#include "satwords.h"
 #include "../platform/platform.h"
 // CONFIG draws the lights' pixel pages from the plugin's own word lists,
 // the way it already knows the file areas' and the forums' packed formats.
@@ -2232,6 +2233,12 @@ uint8_t buildSats(const Term& term) {
         g_cfgBuf[n][0] = '\0';
         ++n;
     };
+    // On the wire (1.2.0): Wi-Fi is unjoined and the link cannot reach a
+    // sat, so the page says so first. The real fix is 1.2.1's.
+    if (linkp::onWire()) {
+        row("wire", wide ? "Satellite link" : "Link", CK_INFO, SA_NONE);
+        snprintf(g_cfgBuf[n - 1], sizeof(g_cfgBuf[0]), "%s", wide ? satwords::kOnWireShort : satwords::kOnWireRow);
+    }
     if (!linkp::engine()) {
         row("link", wide ? "Satellite link" : "Link", CK_ACT, SA_LINK);
         snprintf(g_cfgBuf[n - 1], sizeof(g_cfgBuf[0]), "%s", wide ? "off: CONFIG link turns it on" : "off: CONFIG link");
@@ -2295,7 +2302,9 @@ void Bbs::configSatsOpen(Session& s, uint8_t focus, uint32_t now) {
     configOpenPage(s, focus < n ? focus : 0, now);
     bool anySat = false;
     for (uint8_t i = 0; i < n; ++i) anySat = anySat || g_cfgPlugin[i].kind == CK_SAT;
-    if (linkp::engine() && !anySat)
+    if (linkp::onWire())
+        s.form.status(Form::pick(s.term, satwords::kOnWireShort, satwords::kOnWire), Color::Yellow, s.term, s.tl);
+    else if (linkp::engine() && !anySat)
         s.form.status(Form::pick(s.term, "None yet. Enter opens pairing.", "No satellite yet. Enter on Pair opens pairing."),
                       Color::Grey, s.term, s.tl);
 }

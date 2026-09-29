@@ -1340,6 +1340,14 @@ uint8_t peerCamNo(uint8_t peer) {
 
 uint8_t channel() { return g_ctx ? plat::linkRadioChannel() : 0; }
 
+bool onWire() {
+#ifdef BBS_HAS_ETH
+    return plat::ethInfo().up;
+#else
+    return false;
+#endif
+}
+
 bool satInfo(uint8_t peer, SatInfo& out) {
     out = SatInfo();
     Ctx* c = g_ctx;

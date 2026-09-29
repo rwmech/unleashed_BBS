@@ -74,6 +74,7 @@ constexpr size_t   kPayloadMax  = kFrameMax - kHdr - kTag;      // 222
 constexpr size_t   kPreamble    = 8;                            // u32 total, u32 crc32, on fragment 0
 constexpr uint32_t kBulkMax     = 512u * 1024u;                 // the largest bulk message anybody takes
 
+// 3 is reserved for 1.3.0's inbound caller sessions (LINK.md): never reuse it.
 enum : uint8_t { FAM_LINK = 0, FAM_CAMERA = 1, FAM_DOOR = 2 };
 enum : uint8_t { F_REL = 0x01, F_SEC = 0x02 };
 enum : uint8_t {
@@ -145,6 +146,7 @@ struct Mac {
 enum class Role : uint8_t { Host, Peer };
 
 // Peer kinds, as HELLO and PAIR_HELLO carry them.
+// 3 is reserved for 1.3.0's gateway kind (LINK.md): never reuse it.
 enum : uint8_t { KIND_UNKNOWN = 0, KIND_CAMSAT = 1, KIND_DOORBOX = 2 };
 const char* kindName(uint8_t kind);
 

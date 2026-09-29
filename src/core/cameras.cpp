@@ -483,6 +483,10 @@ void cmdSats(Bbs& b, Session& s, const char* arg, uint32_t now) {
         snprintf(right, sizeof(right), wide ? "channel %u, %u of %u up" : "ch %u, %u of %u up",
                  static_cast<unsigned>(linkp::channel()), static_cast<unsigned>(up), static_cast<unsigned>(sats));
         b.rowTitle(s, satwords::kSatTitle, right);
+        // On the wire, the link cannot reach a sat: say so before the list
+        // says they are not answering (1.2.0; the real fix is 1.2.1's).
+        if (linkp::onWire())
+            b.rowText(s, Color::Yellow, w > sizeof(satwords::kOnWire) ? satwords::kOnWire : satwords::kOnWireShort);
     } else {
         b.rowTitle(s, satwords::kSatTitle, wide ? "SNAPSHOT n takes one" : "SNAPSHOT n");
     }
@@ -547,7 +551,7 @@ void cmdSats(Bbs& b, Session& s, const char* arg, uint32_t now) {
 }
 
 const Command kVerbs[] = {
-    { "SNAPSHOT", "", 0, 0, "SNAPSHOT [n]", "take a photo with the board's camera", cmdSnapshot,
+    { "SNAPSHOT", "", 0, 0, "SNAPSHOT [n]", "take a photo; n picks the camera", cmdSnapshot,
       Menu::Account, 45 },
     { "SNAP", "", 0, CF_HIDDEN, "", "", cmdSnapshot, Menu::Hidden, 99 },
     { "CAMERA", "", 0, CF_STAFF, "CAMERA [n]", "the cameras: photos kept, space, last", cmdCamera,

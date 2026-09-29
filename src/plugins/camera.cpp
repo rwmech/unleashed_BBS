@@ -971,15 +971,23 @@ void finish(uint32_t now) {
         return;
     }
     snprintf(buf, sizeof(buf), "Photo saved: %.111s (FILES, area 12)", j.rel);
+    // At 40 the area goes on a line of its own, so the name is never cut.
+    if (strlen(buf) > b.rowWidth(*s)) snprintf(buf, sizeof(buf), "Photo saved: %.111s", j.rel);
     say(*s, Color::LightGreen, buf);
     s->term.nl(s->tl);
+    if (!strstr(buf, "area 12")) {
+        say(*s, Color::Grey, "It is in FILES, area 12.");
+        s->term.nl(s->tl);
+    }
     const uint8_t fi = plugins::indexOf("files");
     const bool filesOn = fi != 0xFF && plugins::running(fi);
     camrules::Offer o = camrules::offerFor(true, true, filesOn && plugins::mayUse(*s, g_set.photos),
                                            claims::held(claims::Res::Transfer));
     if (o == camrules::Offer::Ask && g_offer && s->id < kSlots) {
         snprintf(g_offer[s->id].rel, sizeof(g_offer[0].rel), "%.111s", j.rel);
-        say(*s, Color::Cyan, "Download it now?  [Y]es  [X]modem  [N]o ");
+        // 40 wide with its space, which wraps a 40-column screen.
+        say(*s, Color::Cyan, b.rowWidth(*s) < 48 ? "Download it now? [Y]es [X]modem [N]o "
+                                                  : "Download it now?  [Y]es  [X]modem  [N]o ");
         s->term.color(s->tl, Color::White);
         s->ownerData = 1;                               // awaiting the answer
         return;
@@ -1146,7 +1154,7 @@ void cmdSnapshot(Bbs& b, Session& s, const char*, uint32_t now) {
     if (!sysop) {
         recordFor(s, epoch);
         char buf[80];
-        snprintf(buf, sizeof(buf), "Snapshot %u of %u this hour, %u of %u today.",
+        snprintf(buf, sizeof(buf), b.rowWidth(s) < 48 ? "Snapshot %u/%u this hour, %u/%u today." : "Snapshot %u of %u this hour, %u of %u today.",
                  static_cast<unsigned>(v.hour + 1), static_cast<unsigned>(v.perHour),
                  static_cast<unsigned>(v.day + 1), static_cast<unsigned>(v.perDay));
         say(s, Color::Grey, buf);

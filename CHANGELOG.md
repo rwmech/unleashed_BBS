@@ -30,6 +30,48 @@ The µnleashed link, its lane (rel-1.2.0-link-r3, rebased onto main at
 a3dcf01, after the v1.1.2 tag). Host-tested; the camera satellite has run
 on the bench since link.4 (LINK.md has the figures).
 
+**1.2.0-link.18: a camera sat says what it is doing**
+- **`SNAPSHOT n` picks the camera**, as it already did: the built-in camera
+  is 1, the camera sats 2 to 9 (SATS lists them). HELP's row says so
+  (`take a photo; n picks the camera`), and `HELP SNAPSHOT` is new.
+- **While a sat takes a caller's photo**: `--> Contacting camera sat #2...`
+  with the spinner.
+- **A busy sat is a wait, not a refusal.** With other boards' pictures ahead
+  on the sat, the caller sees `--> Camera sat #2 is busy, 2 ahead of
+  you...` with the spinner and the board asks again every 2 s, within the
+  60 s a picture has to start. With the board's own one picture on the air,
+  the next caller waits their turn in a line of four (`... 1 ahead of
+  you...`); any key leaves it (`--> Stopped.`). At 40 columns the lines say
+  `Sat #2` instead of `Camera sat #2`.
+- **Failures are one line naming the camera**: `didn't answer.`, `took too
+  long.`, `'s picture came damaged.`, `'s camera gave no picture.`, `is
+  full, try again soon.`, `is busy, try again soon.` (it stayed busy for the
+  whole minute), anything else as `Camera sat #2: <reason>.`
+- **Each sat has a log on the card**: `camsat-<n>-errors.log` in the Logs
+  area (FILES 10), one tab-separated line a failure and a picture: when, the
+  sat's number and name, what happened, and the caller's handle or
+  `timelapse`/`motion`. Written on the runner, never the loop; at 64 KB it
+  becomes `camsat-<n>-errors.old` and a new one starts. No card: the console
+  only, as before.
+- **On Ethernet the link cannot reach a sat** (Wi-Fi stands by unjoined, and
+  ESP-NOW needs it): SATS (staff) and CONFIG sats say `The link needs Wi-Fi.
+  This board is on Ethernet, so sats can't pair.` (`On Ethernet: the link
+  needs Wi-Fi.` at 40). The fix, Wi-Fi alongside the wire, is 1.2.1's.
+- **LINK.md reserves family 3 (CALLIN) and kind 3 (gateway)** for 1.3.0's
+  inbound caller sessions, so nothing in 1.2 reuses them.
+- At 40 columns the snapshot count reads `Snapshot 1/10 this hour, 1/20
+  today.` and `Photo saved:` puts `It is in FILES, area 12.` on its own line,
+  and the download question drops its double spaces, on the built-in camera
+  and the sats both: each was 40 or more wide.
+- A caller's snapshot from a sat is counted when the picture is filed, so a
+  busy, full or silent sat costs nothing; a key stops a picture the sat has
+  not started (`--> Stopped.`), and a caller who hangs up while a busy sat is
+  being asked again gives the air to the next in line.
+- With another sat's picture on the air, the wait is said as the board's:
+  `--> Camera sats busy here, 1 ahead of you...`.
+- Plugin API 1.3 (satwords' camera sat lines, `linkp::onWire`); camsat 1.1.0
+  needs it.
+
 **1.2.0-link.17 (S3 1.1.4, WS43B 1.0.2, WS2 1.0.3, MF35 1.1.2): panel skins**
 - **Panel skins join 1.2.0**, from the panel-skins lane (1.2.0-skins.6, its
   history under the skins entries below): CONFIG panel's Skin row, the

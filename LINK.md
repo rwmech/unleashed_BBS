@@ -52,7 +52,8 @@ in the core, so every board can use it, the bare ESP32-WROOM-32E included.
 | LINK | 0 | any | discovery, pairing, hello, heartbeat, acknowledgements |
 | CAMERA | 1 | board and a camera satellite | snap requests, JPEG pictures, status, timelapse and motion events |
 | DOOR | 2 | board and a door sat | a caller handed to a door, bytes both ways, "finished", "time's up" |
-| reserved | 3-127 | | future core families |
+| CALLIN | 3 | board and a gateway sat | **reserved, 1.3.0**: inbound caller sessions, a station bringing a caller in. Nothing in 1.2 sends or takes it |
+| reserved | 4-127 | | future core families |
 | plugin | 128-239 | | families registered by plugins, assigned in this file |
 | experimental | 240-254 | | anybody's, never in a release |
 | invalid | 255 | | never sent |
@@ -60,6 +61,18 @@ in the core, so every board can use it, the bare ESP32-WROOM-32E included.
 A family id is assigned by adding a row to this table, the same way a
 PROTOCOL.md field is. Two plugins claiming one id is refused at start, by
 name, in the console and in `PLUGINS`.
+
+A peer's **kind**, as HELLO and PAIR_HELLO carry it (`KIND_*` in
+`src/core/link.h`, its word in `src/core/satwords.h`), is assigned the same
+way:
+
+| Kind | Id | Shown as | What |
+|---|---|---|---|
+| unknown | 0 | device | never paired as anything else |
+| camsat | 1 | camera | a camera sat (unleashed_camsat) |
+| doorbox | 2 | door | a door sat |
+| gateway | 3 | (no word yet) | **reserved, 1.3.0**: a station that brings callers in over family 3. Nothing in 1.2 pairs one |
+| reserved | 4-254 | | future kinds (gpio and sensor have words, no id yet) |
 
 The satellite and the door sat are **peers**. The board is always the
 **host**. A peer never talks to another peer through the link.

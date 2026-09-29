@@ -104,4 +104,31 @@ constexpr const char kWhyClosing[] = "The doors are closing.";
 constexpr const char kWhyStopped[] = "Stopped.";
 constexpr const char kBusy[]       = "The link is busy. Try again soon.";
 
+// A camera sat taking a caller's photo (1.2.0-link.18, Rob). "--> " is added
+// by the camera sat plugin; %s is kCamSat, or kCamSatShort when the line
+// would not fit the caller's row with its arrow (and the spinner, on the two
+// that end in "..."); %u is the camera number SNAPSHOT takes (2 to 9).
+// test_sats measures them at 40: every line a caller is shown fits 39.
+constexpr const char kCamSat[]      = "Camera sat";
+constexpr const char kCamSatShort[] = "Sat";
+constexpr const char kSnapContact[] = "Contacting camera sat #%u...";   // fits at 40 as it is
+constexpr const char kSnapWait[]    = "%s #%u is busy, %u ahead of you...";
+constexpr const char kSnapNoAnswer[] = "%s #%u didn't answer.";
+constexpr const char kSnapSlow[]    = "%s #%u took too long.";
+constexpr const char kSnapDamaged[] = "%s #%u's picture came damaged.";
+constexpr const char kSnapNoPic[]   = "%s #%u's camera gave no picture.";
+constexpr const char kSnapFull[]    = "%s #%u is full, try again soon.";
+constexpr const char kSnapBusy[]    = "%s #%u is busy, try again soon.";
+constexpr const char kSnapOther[]   = "%s #%u: %s.";                   // any other reason, cut to fit
+// This board's one picture is another sat's: the wait is the board's, not
+// the sat's. %s is kCamSat or kCamSatShort (so "Camera sats", "Sats").
+constexpr const char kSnapWaitHere[] = "%ss busy here, %u ahead of you...";
+constexpr const char kSnapHereFull[] = "%ss busy here, try again soon.";
+
+// The link on a board that is on its wire (BBS_HAS_ETH, Ethernet up): Wi-Fi
+// stands by unjoined, and ESP-NOW needs it joined (1.2.1 fixes it).
+constexpr const char kOnWire[]      = "The link needs Wi-Fi. This board is on Ethernet, so sats can't pair.";
+constexpr const char kOnWireShort[] = "On Ethernet: the link needs Wi-Fi.";
+constexpr const char kOnWireRow[]   = "needs Wi-Fi, on Ethernet";       // CONFIG sats' row value at 40
+
 }  // namespace satwords

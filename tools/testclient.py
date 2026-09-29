@@ -2291,6 +2291,8 @@ def test_sats():
         ok &= check("SNAPSHOT n takes one from the satellite",
                     peer.wait("snap ", 10) is not None and c.wait_for(b"Photo saved", 15))
         c.pump(0.5)
+        ok &= check("saying which sat it is asking, in the board's voice",
+                    b"--> Contacting camera sat #" + num + b"..." in plain(c.buf))
         first = re.search(rb"Photo saved: (\S+)", plain(c.buf))
         c.send(b"n")
         drain(c)
@@ -2299,8 +2301,76 @@ def test_sats():
         time.sleep(0.3)
         c.buf.clear()
         c.send(b"snapshot " + num + b"\r")
-        ok &= check("a busy satellite says how many are ahead",
-                    c.wait_for(b"camera is busy, 2 ahead of you", 15))
+        ok &= check("a sat busy with other boards' pictures says how many are ahead, and waits",
+                    c.wait_for(b"Camera sat #" + num + b" is busy, 2 ahead of you...", 15))
+        ok &= check("then asks again and gets the picture", c.wait_for(b"Photo saved", 20))
+        c.pump(0.3)
+        c.send(b"n")
+        drain(c)
+
+        # A full sat: one line, the camera by its number, then the prompt;
+        # the short form at 40 columns.
+        peer.cmd("busy 1 255")
+        time.sleep(0.3)
+        c.buf.clear()
+        c.send(b"snapshot " + num + b"\r")
+        ok &= check("a full sat says so in one line",
+                    c.wait_for(b"Camera sat #" + num + b" is full, try again soon.", 15))
+        ok &= check("in the board's voice", b"--> Camera sat #" + num + b" is full" in plain(c.buf))
+        drain(c)
+        peer.cmd("busy 1 255")
+        time.sleep(0.3)
+        c40.buf.clear()
+        c40.send(b"snapshot " + num + b"\r")
+        ok &= check("at 40 columns, the short form",
+                    c40.wait_for(b"Sat #" + num + b" is full, try again soon.", 15))
+        drain(c40)
+        ok &= check("and every line in 39 columns", all(len(r) <= 39 for r in render_lines(c40.buf, 40)))
+
+        # A key stops a picture the busy sat has not started.
+        peer.cmd("busy 1 2")
+        time.sleep(0.3)
+        c.buf.clear()
+        c.send(b"snapshot " + num + b"\r")
+        c.wait_for(b"2 ahead of you", 15)
+        c.send(b"x")
+        ok &= check("a key stops a picture the sat has not started", c.wait_for(b"Stopped.", 6))
+        drain(c)
+
+        # Two callers at once: the second waits its turn with the spinner,
+        # then gets its own picture.
+        c.buf.clear()
+        c40.buf.clear()
+        c.send(b"snapshot " + num + b"\r")
+        c40.send(b"snapshot " + num + b"\r")
+        ok &= check("the second caller waits in line, told how many are ahead",
+                    c40.wait_for(b"Sat #" + num + b" is busy, 1 ahead of you...", 10))
+        ok &= check("the first caller's picture comes", c.wait_for(b"Photo saved", 20))
+        ok &= check("then the second's", c40.wait_for(b"Photo saved", 25))
+        c.pump(0.3)
+        c40.pump(0.3)
+        c.send(b"n")
+        c40.send(b"n")
+        drain(c)
+        drain(c40)
+        ok &= check("the wait fits 39 columns too", all(len(r) <= 39 for r in render_lines(c40.buf, 40)))
+
+        # The sat's own log on the card, in the Logs area: the full one with
+        # who asked, and the pictures that came.
+        card = card_dir()
+        if card:
+            log = card / "logs" / ("camsat-%s-errors.log" % num.decode())
+            deadline = time.time() + 5
+            body = b""
+            while time.time() < deadline:
+                body = log.read_bytes() if log.exists() else b""
+                if b"queue is full" in body and b"bytes in" in body:
+                    break
+                time.sleep(0.2)
+            ok &= check("the sat's log on the card names the failure and who asked",
+                        re.search(rb"\tsat " + num + rb" shelf\tthe satellite's queue is full\tSatWatcher", body)
+                        is not None)
+            ok &= check("and the pictures that came", b"bytes in" in body)
 
         # CONFIG sats in plain ASCII: the satellite's page, its number and
         # what it sends here.
@@ -7975,6 +8045,19 @@ def test_board_wseth():
 
     ok &= check("CONFIG network has the Ethernet row",
                 cfg_open(s, b"network", b"Network") and b"Ethernet" in plain(s.buf))
+    cfg_cancel(s)
+
+    # On the wire the link cannot reach a sat (1.2.0; 1.2.1 joins Wi-Fi as
+    # well): SATS and CONFIG sats say so to staff.
+    s.buf.clear()
+    s.send(b"sats\r")
+    read_list(s)
+    # SATS is a command only while a camera is on (the host's is off here).
+    if b"Unknown command" not in plain(s.buf):
+        ok &= check("SATS tells staff the link needs Wi-Fi on the wire",
+                    b"The link needs Wi-Fi. This board is on Ethernet, so sats can't pair." in plain(s.buf))
+    ok &= check("CONFIG sats says so too",
+                cfg_open(s, b"sats", b"SATELLITES") and b"needs Wi-Fi" in plain(s.buf))
     cfg_cancel(s)
 
     # The board page's activity LED: the W5500's and the camera's pins are
