@@ -43,6 +43,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <strings.h>
 #include <cctype>
 #include <ctime>
 #ifdef ESP_PLATFORM
@@ -120,6 +121,9 @@ struct Ctx {
     char*      err;
     size_t     errLen;
     int        lineNo;
+    // photos_ keys this read has set (bit per key, kPhotoOld's order), so
+    // an old camera line of the same meaning is not read over one (1.2.0).
+    uint8_t    photoSet = 0;
     // A trial for a writer (syscfg::trial) rather than a file being read:
     // the message is the rule alone, short enough for a form's status line,
     // with no line number and no echo of the value the writer just typed.
@@ -181,6 +185,15 @@ const NumKey kNumKeys[] = {
     { "who_refresh_max",       1,  60 },
     { "port",                  1,  65535 },
     { "backup_port",           1,  65535 },
+    // The photo system (1.2.0, CONFIG photos). A caller's window holds
+    // camrules::kPerDay (20), so no limit goes past it.
+    { "photos_per_hour",       1,  20 },
+    { "photos_per_day",        1,  20 },
+    { "photos_keep",           0,  3650 },          // days, 0 = no limit
+    { "photos_max",            0,  60000 },         // files, 0 = no limit
+    { "photos_floor",          0,  60000 },         // MB; empty = a tenth of the card
+    { "photos_tl_keep",        0,  3650 },
+    { "photos_tl_max",         0,  60000 },
 #if BBS_HAS_SSH
     { "ssh_port",              0,  65535 },         // 0 = no SSH port of its own
 #endif
@@ -400,10 +413,22 @@ void keyValue(Ctx& c, const char* key, char* val) {
         if (*val && !users::validHandle(val)) problem(c, "sysop_handle is not a handle:", val);
         else copyStr(g.sysopHandle, sizeof(g.sysopHandle), val);
     }
-    // The camera SNAPSHOT uses (1.2.0, CONFIG cameras): a camera's name, or
+    // The camera SNAPSHOT uses (1.2.0, CONFIG photos): a camera's name, or
     // blank. Not checked against the cameras: a satellite may be off the air
     // when the file is read, and a name that matches nothing is the default.
     else if (!strcmp(key, "camera"))                copyStr(g.camera, sizeof(g.camera), val);
+    // The photo system (1.2.0). Each marks itself set, so the old camera
+    // key of the same meaning is not read over it (parseFile, oldPhotoKey).
+    else if (!strcmp(key, "photos_per_hour")) { if (number(c, key, val, n)) { g.photosPerHour = static_cast<uint8_t>(n); c.photoSet |= 1u; } }
+    else if (!strcmp(key, "photos_per_day"))  { if (number(c, key, val, n)) { g.photosPerDay = static_cast<uint8_t>(n); c.photoSet |= 2u; } }
+    else if (!strcmp(key, "photos_keep"))     { if (number(c, key, val, n)) { g.photosKeep = static_cast<uint16_t>(n); c.photoSet |= 4u; } }
+    else if (!strcmp(key, "photos_max"))      { if (number(c, key, val, n)) { g.photosMax = static_cast<uint32_t>(n); c.photoSet |= 8u; } }
+    else if (!strcmp(key, "photos_floor")) {
+        if (!*val) { g.photosFloor = -1; c.photoSet |= 16u; }             // empty: a tenth of the card
+        else if (number(c, key, val, n)) { g.photosFloor = static_cast<int32_t>(n); c.photoSet |= 16u; }
+    }
+    else if (!strcmp(key, "photos_tl_keep"))  { if (number(c, key, val, n)) { g.photosTlKeep = static_cast<uint16_t>(n); c.photoSet |= 32u; } }
+    else if (!strcmp(key, "photos_tl_max"))   { if (number(c, key, val, n)) { g.photosTlMax = static_cast<uint32_t>(n); c.photoSet |= 64u; } }
     else if (!strcmp(key, "sysop_id")) {
         // An account id: digits, 0 for none. Not number(), whose ranges are
         // a long's, and an id is a uint32_t.
@@ -710,6 +735,59 @@ static void closedDefault(SysConfig& out) {
     if (!out.closedSet) out.closed = out.sysopDefault;
 }
 
+// oldPhotoKey (1.2.0): a line of [plugin:camera] whose meaning moved to
+// the photo system, read as the photos_ key's value while the file has no
+// photos_ line of its own for it. A board whose sysop set retention on the
+// built-in camera before CONFIG photos existed keeps it, and so does a
+// restore of an older backup. Bad values are left to the camera plugin,
+// which reads the same line and says why; the default stands here.
+struct PhotoOld { const char* key; uint8_t bit; long lo; long hi; };
+// Their values while the file is read: a few words, not a second SysConfig
+// on the stack of a reload.
+struct PhotoVals {
+    uint16_t photosKeep = 0;  uint32_t photosMax = 0;  int32_t photosFloor = -1;
+    uint16_t photosTlKeep = 0; uint32_t photosTlMax = 0;
+};
+const PhotoOld kPhotoOld[] = {
+    { "keep",    4u,  0, 3650 }, { "max",    8u,  0, 60000 }, { "floor", 16u, 0, 60000 },
+    { "tl_keep", 32u, 0, 3650 }, { "tl_max", 64u, 0, 60000 },
+};
+
+static void oldPhotoKey(PhotoVals& g, uint8_t& fromOld, char* l) {
+    char* eq = strchr(l, '=');
+    if (!eq) return;
+    *eq = '\0';
+    char* key = trim(l);
+    char* val = trim(eq + 1);
+    if (char* semi = strchr(val, ';')) { *semi = '\0'; val = trim(val); }   // a plugin value ends at ';'
+    for (const PhotoOld& o : kPhotoOld) {
+        if (strcasecmp(key, o.key)) continue;
+        long n = -1;
+        if (*val) {
+            char* end = nullptr;
+            n = strtol(val, &end, 10);
+            if (end && *end) return;
+            if (n < o.lo || n > o.hi) return;
+        } else if (o.bit != 16u) {
+            return;                                // only the floor may be empty
+        }
+        switch (o.bit) {
+            case 4u:  g.photosKeep   = static_cast<uint16_t>(n); break;
+            case 8u:  g.photosMax    = static_cast<uint32_t>(n); break;
+            case 16u: g.photosFloor  = static_cast<int32_t>(n);  break;   // empty: -1
+            case 32u: g.photosTlKeep = static_cast<uint16_t>(n); break;
+            case 64u: g.photosTlMax  = static_cast<uint32_t>(n); break;
+        }
+        fromOld |= o.bit;
+        return;
+    }
+}
+
+bool photoOldKey(const char* key) {
+    for (const PhotoOld& o : kPhotoOld) if (!strcmp(o.key, key)) return true;
+    return false;
+}
+
 int parseFile(const char* path, SysConfig& out, char* err, size_t errLen) {
     Ctx c{ &out, 0, err, errLen, 0 };
     if (err && errLen) err[0] = '\0';
@@ -723,7 +801,10 @@ int parseFile(const char* path, SysConfig& out, char* err, size_t errLen) {
     char line[160];
     bool inAccess = false;
     bool inPlugin = false;
+    bool inCamera = false;                          // [plugin:camera]: the photo keys it held
     bool sawSysop = false;                          // any sysop_password line at all
+    PhotoVals old;                                  // the old camera keys' values, applied last
+    uint8_t fromOld = 0;
     while (fgets(line, sizeof(line), f)) {
         ++c.lineNo;
         if (!strchr(line, '\n') && !feof(f)) {      // overlong line: skip the rest of it
@@ -739,9 +820,11 @@ int parseFile(const char* path, SysConfig& out, char* err, size_t errLen) {
         if (*l == '[') {
             inAccess = ieq(l, "[access]");
             inPlugin = !inAccess && !strncmp(l, "[plugin:", 8);   // read by plugin.cpp
+            inCamera = inPlugin && !strcasecmp(l, "[plugin:camera]");
             if (!inAccess && !inPlugin) problem(c, "unknown section", l);
             continue;
         }
+        if (inCamera) { oldPhotoKey(old, fromOld, l); continue; }
         if (inPlugin) continue;                     // a plugin's own keys
         if (inAccess) { accessRow(c, l); continue; }
 
@@ -763,6 +846,15 @@ int parseFile(const char* path, SysConfig& out, char* err, size_t errLen) {
     // this way, such a board heals at its next boot with nothing rewritten.
     if (!sawSysop || !strcmp(out.sysopPass, BBS_DEFAULT_SYSOP)) useDefaultSysop(out);
     closedDefault(out);
+    // An old camera line stands for its photos_ key only where the file has
+    // no photos_ line for it: the new key always wins (1.2.0).
+    const uint8_t useOld = fromOld & static_cast<uint8_t>(~c.photoSet);
+    if (useOld & 4u)  out.photosKeep   = old.photosKeep;
+    if (useOld & 8u)  out.photosMax    = old.photosMax;
+    if (useOld & 16u) out.photosFloor  = old.photosFloor;
+    if (useOld & 32u) out.photosTlKeep = old.photosTlKeep;
+    if (useOld & 64u) out.photosTlMax  = old.photosTlMax;
+    out.photosOld = useOld;
     crossCheck(c, out);
     out.fromFile = true;
     return c.problems;

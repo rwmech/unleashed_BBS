@@ -126,7 +126,7 @@ Commands are case-insensitive. The letter in brackets is a shortcut: `W` is the 
 | `PRIVACY` | | What the board knows about you: that telnet is not encrypted, how your password is stored, what the sysop can see, and the one rule that matters. Plays `screens/privacy.*`, so a sysop can rewrite it. The same screen is offered during sign-up. |
 | `PROFILE` | | Form to change your name, email, From, phone and profile. Not for guests. |
 | `PASSWORD` | | Form: current password, then the new one twice. Not for guests. |
-| `SNAPSHOT [n\|name]` | | Boards with a camera, built in or a satellite on the link (1.2.0: one verb for every camera, and no `SNAPSHOT` at all on a board with none). Bare, it uses CONFIG cameras' Default, else the built-in camera, else the first that is up; `SNAPSHOT 2` or `SNAPSHOT garden` picks one as `CAMERA` and `SATS` number and name them: the built-in camera is 1, and a satellite keeps the number CONFIG sats gives it (auto: the lowest free), so a number never moves when another satellite is paired or forgotten. A satellite that is busy says how many are ahead: `--> The garden camera is busy, 2 ahead of you. Try again in a moment.` Your limits below are one count across every camera. Takes a photo; refused with no SD card in, before the clock is set, over your limit (10 an hour, 20 a day, rolling; the sysop is exempt), or while the card is under its space floor. As shipped only staff may actually take one (the Snap setting); anyone else is told it isn't open to them. Offers `Download it now? [Y]es [X]modem [N]o` afterwards when you may download from Photos and nothing else is transferring. Hidden alias `SNAP`. One photo at a time on the whole board (1.1.2): while one is being taken, anybody else is told `--> Camera in use by node 3, try again in a minute` (`by the board` for a timed one), wrapped at a word on 40 columns. Settings, naming and retention: see `camera` under Plugins below. |
+| `SNAPSHOT [n\|name]` | | Boards with a camera, built in or a satellite on the link (1.2.0: one verb for every camera, and no `SNAPSHOT` at all on a board with none). Bare, it uses CONFIG photos' Default, else the built-in camera, else the first that is up; `SNAPSHOT 2` or `SNAPSHOT garden` picks one as `CAMERA` and `SATS` number and name them: the built-in camera is 1, and a satellite keeps the number CONFIG sats gives it (auto: the lowest free), so a number never moves when another satellite is paired or forgotten. A satellite that is busy says how many are ahead: `--> The garden camera is busy, 2 ahead of you. Try again in a moment.` Your limits below are one count across every camera. Takes a photo; refused with no SD card in, before the clock is set, over your limit (10 an hour, 20 a day, rolling; the sysop is exempt), or while the card is under its space floor. As shipped only staff may actually take one (the Snap setting); anyone else is told it isn't open to them. Offers `Download it now? [Y]es [X]modem [N]o` afterwards when you may download from Photos and nothing else is transferring. Hidden alias `SNAP`. One photo at a time on the whole board (1.1.2): while one is being taken, anybody else is told `--> Camera in use by node 3, try again in a minute` (`by the board` for a timed one), wrapped at a word on 40 columns. Settings, naming and retention: see `camera` under Plugins below. |
 | `PAGE n message` | | Send a one-line message to node n: a bell, a flashing ` PAGE ` tag that rubs out, then the message. It reaches them wherever they are (see "Notices" below). |
 | `OPERATOR [reason]` | `O` | Ring for the sysop. Without a reason it asks `What do you need the sysop for?`, and nothing typed sends nothing. If the sysop can be asked, you see `Ringing the sysop` and a spinner for up to 45 seconds, and any key stops it; if they answer you are both put in the chat room, and what you type goes to the sysop only. Otherwise what you wrote is saved as a note for them. One ring every 3 minutes, three a call, one at a time on the whole board. See "Ringing for the sysop" below. |
 | `DND` | | Toggle do-not-disturb: pages to you are refused. |
@@ -500,7 +500,14 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `wifi_password` | empty | its passphrase, 8 to 64 characters, or empty for an open network. Used only from the next restart, never live |
 | `port` | `6400` | The port callers dial. Used from the next restart. It cannot be the backup window's port. Takes 1 to 65535; as shipped, `6400`. If callers reach the board from the internet, the forward on your router has to point at the new number too. mDNS, SYS, the console's `dial in` line, Improv's telnet link and announce's default all follow it |
 | `cgnat_local` | `no` | `yes`: `100.64.0.0/10`, the carrier-grade NAT range Tailscale also uses, counts as the board's own network (1.1.1, `CONFIG network`, **CGNAT/Tailscale LAN**, `CGNAT` at 40 columns). It trusts everybody behind the same carrier NAT, not only your own Tailscale devices, which is why it is off. It moves every "local" rule at once: the published default password's local-only rule, a second sysop taking sysop in place, and the backup window's port. Live, the one row on that page that is |
-| `camera` | empty | The camera a bare `SNAPSHOT` uses, by the name `CAMERA` shows (1.2.0, `CONFIG cameras`, **Default camera**). Empty, or a name not on the air just now: the built-in camera, else the first that is up |
+| `camera` | empty | The camera a bare `SNAPSHOT` uses, by the name `CAMERA` shows (1.2.0, `CONFIG photos`, **Default camera**; `CONFIG cameras` still opens it). Empty, or a name not on the air just now: the built-in camera, else the first that is up |
+| `photos_per_hour` | `10` | Each caller's snaps an hour, every camera together (1.2.0, `CONFIG photos`, **Snaps an hour**, `Per hour` at 40). 1 to 20; the sysop has no limit |
+| `photos_per_day` | `20` | And a day (**Snaps a day**, `Per day`), 1 to 20. A caller's rolling window holds 20, so no limit goes past it |
+| `photos_keep` | `30` | Days a caller's photo is kept, 0 for ever (**Keep photos, days**). Was the camera's `keep` before 1.2.0 |
+| `photos_max` | `200` | The most callers' photos kept, oldest out first, 0 no limit (**Keep at most**). Was the camera's `max` |
+| `photos_floor` | empty | MB the card keeps free, the oldest photos going first; empty is a tenth of the card, 512 MB at most (**Card kept free, MB**). Was the camera's `floor` |
+| `photos_tl_keep` | `7` | Days a timelapse photo is kept (**Keep timelapse, days**). Was the camera's `tl_keep` |
+| `photos_tl_max` | `200` | The most timelapse photos kept (**Timelapse at most**). Was the camera's `tl_max` |
 | `idle_minutes` | `20` | shell idle hangup, 0 = never |
 | `landing` | `main` | where a caller goes after login when their account has not said: `main`, `chat` or `forums` |
 | `sysop_handle` | empty | the sysop's own account (1.1.0, `CONFIG board`, **Sysop**): missed rings are mailed to it, and it is asked for the sysop password at login. `CONFIG` refuses a handle with no live account and writes it in `users.txt`'s spelling. Empty: the last account to elevate to sysop, which the board keeps in `userdata/sysop.last` across a restart (a restore that brings back `users.txt` clears it, since it is an id into that file) |
@@ -522,6 +529,8 @@ On a running board, edit `system.cfg` through the backup zip ([BACKUP.md](BACKUP
 | `max_users` | `250` | account limit, 1..250. Not a space limit: `userdata` holds roughly 1,380 accounts. The cap is that the list indices are `uint8_t`, which reaches into every list on the board, so raising it is its own piece of work. The SD card does not help and is not meant to: accounts stay on internal flash so they survive the card failing. |
 | `guest` | `yes` | `no`: unknown handles are not offered `[G]uest` |
 | `guest_minutes` | `15` | per guest call, 0 = unlimited; guests have no daily limit |
+
+**The photo system's keys moved out of the camera in 1.2.0** (`CONFIG photos`: Rob's naming, one word per thing). A board whose file still has the camera's `keep`, `max`, `floor`, `tl_keep` or `tl_max` in `[plugin:camera]` runs with those, and `CONFIG photos` shows them, until a `photos_` line is written for them: the first save of `CONFIG photos` writes a `photos_` key for each old line and drops the old lines, so a file never keeps both. Where both are there anyway (a line put back by hand), the `photos_` line wins. A restore of an older backup is read the same way. `CAMERA SET` refuses the old keys, and `CONFIG camera` no longer shows them.
 
 Keys must appear above the first `[section]` line. Sections are `[access]` for the staff matrix and `[plugin:name]` for each plugin (see [PLUGINS.md](PLUGINS.md)).
 
@@ -1049,16 +1058,11 @@ size       = vga        ; qvga | vga | svga | xga | hd | sxga | uxga | qxga, wha
 quality    = 10         ; 4 to 40, lower is better
 names      = date       ; date | date+handle | by handle
 watermark  = yes
-keep       = 30         ; days callers' photos are kept; 0 keeps them forever
-max        = 200        ; callers' photos kept; 0 no limit
-floor      =            ; MB kept free on the card; empty: a tenth of it, 512 MB at most
 flash_mode = off        ; off | pixel | pin, as shipped on the Freenove board
 flash_pin  = 13
 flash_lead = 0          ; ms the flash is on before the shot
 tl_min     = 0          ; minutes between the board's own photos, 0 to 1440
 tl_sec     = 0          ; and seconds, 0 to 59; both 0 is off, under 10 s is 10
-tl_keep    = 7          ; days
-tl_max     = 200
 pic_flip   = no
 pic_mirror = no
 pic_bright = 0          ; -2 to 2
@@ -1110,17 +1114,25 @@ pic_gamma  = 1.0        ; 0.6 | 0.7 | 0.8 | 0.9 | 1.0 | 1.1 | 1.2 | 1.4 | 1.6
   when
   it cannot be drawn (no codec, or a bad frame) the photo is saved unmarked
   rather than not saved at all.
-- **Keep days** and **Max snaps**: retention for callers' own photos (the
-  Photos folder and its handle folders, counted as one group); 0 is
-  forever / no limit. 30 days and 200 photos as shipped: a file area lists
-  254 rows at most, so a folder kept under that stays listable whole.
-- **Floor MB**: space the camera keeps free on the card. Empty, as shipped,
-  is a tenth of the card, 512 MB at most; a number is exact. While the card
-  is under it, the oldest photos are removed to make room, the timelapse's
-  before the callers'. **Nothing that is not exactly a photo the camera
-  wrote** (`PREFIX-YYYYMMDD-HHMMSS.JPG`, its own prefix or a system
-  folder's) is ever counted or touched, so a sysop's own files on the card
-  are never at risk. If removing every photo the camera owns still would not
+- **Retention is `CONFIG photos`' since 1.2.0** (`photos_keep`,
+  `photos_max`, `photos_floor`, `photos_tl_keep`, `photos_tl_max`, in the
+  core keys above), the rules unchanged: callers' own photos (the Photos
+  folder and its handle folders, counted as one group) are kept 30 days and
+  200 photos as shipped, 0 being forever / no limit (a file area lists 254
+  rows at most, so a folder kept under that stays listable whole). The
+  floor, empty as shipped, is a tenth of the card, 512 MB at most; a number
+  is exact. While the card is under it, the oldest photos are removed to
+  make room, the timelapse's before the callers'. **It applies to every
+  camera's photos** since 1.2.0-link.15, a camera sat's included: the board
+  prunes Photos itself, in the background, after any picture is filed, when
+  a camera starts, when these settings change, and once a day. A sat's
+  `motion/` pictures (`MO-`) are the board's own shots too: kept by the
+  timelapse's days and count until they have settings of their own, and
+  first to go for the floor. A sat, like the built-in camera, takes no
+  picture while the card is under its floor. **Nothing that is
+  not exactly a photo a camera wrote** (`PREFIX-YYYYMMDD-HHMMSS.JPG`, its
+  own prefix or a system folder's) is ever counted or touched, so a sysop's
+  own files on the card are never at risk. If removing every photo the camera owns still would not
   reach the floor, none of them is removed for it: `SNAPSHOT` is refused
   instead (`The card is too full for another photo.`) until space is freed
   some other way.
@@ -1153,9 +1165,9 @@ pic_gamma  = 1.0        ; 0.6 | 0.7 | 0.8 | 0.9 | 1.0 | 1.1 | 1.2 | 1.4 | 1.6
   figure because a form's number stops at 65,535 and a day is 86,400
   seconds. Anything under 10 seconds in all is taken as 10: the sensor has
   to come up and take a frame each time, which is a second or two by itself.
-- **Keep days** and **Max shots**: retention for the timelapse's own group,
-  separate from callers' photos, so a fast series can never crowd out what
-  callers took. 7 days and 200 shots as shipped.
+- The timelapse's own retention is `CONFIG photos`' (`photos_tl_keep`,
+  `photos_tl_max`, 7 days and 200 shots as shipped): a group separate from
+  callers' photos, so a fast series can never crowd out what callers took.
 Timed photos go in `Photos/timelapse/`, area 13 below, never inside Photos
 itself.
 
@@ -1274,7 +1286,11 @@ levels.
 | `LINK SHARE n` | sysop, the satellite's owner | Lets one more board pair with satellite n for 2 minutes: run `LINK PAIR` on that board then. A satellite takes 5 boards at most, all on one Wi-Fi channel. Only the board that paired it first (its owner) may. |
 | `LINK REVOKE n board` | sysop, the satellite's owner | Takes another board off satellite n; board is its number under n in LINK, or its name. That board is told. |
 
-**CONFIG sats** (sysop, 1.2.0; also `CONFIG satellites`): each satellite as a button (`Camera 2  garden  awake  shared by 3, owner`), then Pair a satellite (runs LINK PAIR), Default camera and Satellite settings (open CONFIG cameras and CONFIG camsat), and the Wi-Fi channel. A satellite's page sets its **name** (one word, unique), its **camera number** (auto, or 2 to 9) and whether this board **receives its timelapse** and **its motion** pictures (snapshots always come), and shows its type, status, signal, owner and the other boards. Share (the owner) and Unpair leave CONFIG, ask `(y/N)` on the sysop's screen, and on Y run LINK SHARE or LINK FORGET. What this board receives goes to the satellite at once.
+**CONFIG sats** (sysop, 1.2.0; also `CONFIG satellites`): each sat as a button (`Camera 2  garden  awake  shared by 3, owner`), then Pair a satellite (runs LINK PAIR), Default camera (opens CONFIG photos), and the Wi-Fi channel. **CONFIG sat <name>** opens one sat's page directly (any case; `No sat called x.` otherwise). A sat's page sets its **name** (one word, unique), its **camera number** (auto, or 2 to 9) and whether this board **receives its timelapse** and **its motion** pictures (snapshots always come), and shows its type, status, signal, owner and the other boards. A camera sat's page has **Camera settings**, the camsat plugin's page (size, sleep, timelapse, motion and the rest; every camera sat this board owns runs them, and a sat another board owns runs its owner's); `CONFIG camsat` still opens it, unlisted. Share (the owner) and Unpair leave CONFIG, ask `(y/N)` on the sysop's screen, and on Y run LINK SHARE or LINK FORGET. What this board receives goes to the satellite at once.
+
+**The CONFIG names for cameras and sats** (Rob, 2026-09-28: one word per thing): `CONFIG photos` is the photo system (the default camera; the gallery's auto-show rows join it), `CONFIG camera` the built-in camera's hardware, `CONFIG sats` the list, `CONFIG sat <name>` one device. `CONFIG cameras` and `CONFIG camsat` still open their pages, unlisted.
+
+**Two cameras in the same second** (1.2.0): the built-in camera and a camera sat stamp a picture the same second (every timelapse slot starts on the same second for both). The second is filed under the next second's stamp, up to five seconds on, never over the first; only if all six names are taken is it refused, as before.
 
 Pairings are kept in `p/link/peers` on the user partition and are not in a
 backup: a restored board pairs its devices again. SYS and HARDWARE have a

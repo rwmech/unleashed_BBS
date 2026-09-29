@@ -3155,6 +3155,13 @@ bool files::photoTidy(const char* sub) {
     return editQueue(EDIT_TIDY, sub, "", "");
 }
 
+bool files::photoEditRoom() {
+    plat::runLock();
+    const bool room = g_editCount + 1 < kEdits;      // one slot always kept for a description
+    plat::runUnlock();
+    return room;
+}
+
 extern const Plugin kFilesPlugin = {
     // PF_SD: the files are on the card, so this does not start without one.
     // PF_ON so a sysop who adds an area to system.cfg gets it on the next

@@ -30,6 +30,97 @@ The µnleashed link, its lane (rel-1.2.0-link-r3, rebased onto main at
 a3dcf01, after the v1.1.2 tag). Host-tested; the camera satellite has run
 on the bench since link.4 (LINK.md has the figures).
 
+**1.2.0-link.15: pruning for every camera**
+- **CONFIG photos' retention now applies to every camera's photos**, a
+  camera sat's included (Rob's decision). Until link.14 only the built-in
+  camera pruned Photos and Timelapse, after its own snaps, so a board whose
+  camera was a sat kept every picture until the card filled.
+- **Same rules, same settings.** Callers' photos are one group, timelapse/
+  another with the timelapse's limits, and the floor takes the board's own
+  shots first. A sat's motion/ pictures are a group of their own, kept by
+  the timelapse's limits until they have their own, and first to go for the
+  floor. A camera sat takes no picture while the card is under its floor, as
+  the built-in camera already did (plugin API 1.2: `photos::tally`). Only a name of a
+  camera's exact shape is ever counted or removed, as before.
+- **Never on the loop** (Rule no. 1): the prune is the photo system's job on
+  the background runner (`photos::tick` posts it), after any picture is
+  filed, when a camera starts, when CONFIG photos' retention changes, and
+  once a day. A removed photo's FILES.BBS line still goes through the file
+  areas' queue.
+- The camera's own survey now only clears a half-written photo and looks for
+  the sensor at start; CAMERA's counts are the photo system's (every
+  camera's photos). The console's "N old photos removed" line is
+  `photos:` rather than `camera:`, and the snap line no longer ends in
+  "N removed".
+- A walk that could not see every photo (a card with more than 16,384, or
+  memory short) still prunes by age and count but never for the floor,
+  which would have taken callers' photos while an unseen timelapse folder
+  stood; the floor then goes by the card's own free space. The prune's
+  tables are in PSRAM on any board that has it, not only camera boards.
+- A prune that emptied more than four callers' folders lost the FILES.BBS
+  tidies past the fourth (the file areas' queue holds four); they are now
+  handed over as the queue has room.
+- A prune starts two seconds after the last picture filed, with the runner
+  free and no camera taking or bringing in a picture, so a burst of
+  pictures is one prune after it and a sat's transfer is never held up by
+  one. While the card is under its floor the board recounts every five
+  minutes, so its own shots resume once space is freed. FILES.BBS tidies
+  always leave a queue slot for a new picture's description.
+- `plat::sdList` says false when a folder's read fails part way, so a
+  partial folder is never taken for a whole one.
+- Tests: `host/test_photos_cfg.cpp`, `syscfg::parseFile` alone: a `photos_`
+  line wins over the camera's old line in either order, an old line stands
+  in only where there is none (fails five checks with the rule removed).
+  `test_camera` waits for the count and the prune instead of sleeping past
+  them. `test_sats` opens the camera sat's page by its number: after the
+  radio group a door sat is called "shelf" too, and the name opened the
+  door's page (it failed the same way on link.14 when run after radio).
+- Plugin API 1.2 (`photos::Tally`, `tally`, `pruneSoon`, `pruning`,
+  `systemFolder`); camsat needs it for its floor check.
+
+**1.2.0-link.14: the photo system's limits and retention on CONFIG photos**
+- **CONFIG photos holds each caller's snaps an hour and a day** (1 to 20,
+  10 and 20 as shipped, every camera together; they were fixed) **and
+  retention** (`photos_keep`, `photos_max`, `photos_floor`,
+  `photos_tl_keep`, `photos_tl_max`), which was the built-in camera's
+  (`keep`, `max`, `floor`, `tl_keep`, `tl_max` in `[plugin:camera]`).
+- **Nothing a sysop set is lost.** A file with the camera's old lines runs
+  with them and CONFIG photos shows them; its first save writes the
+  `photos_` key for each and drops the old lines, so a file never keeps both. A
+  `photos_` line wins over an old one put back by hand, and a restore of an
+  older backup is read the same way. CONFIG camera no longer shows them and
+  CAMERA SET refuses them.
+- `photos::Budget` carries the limits (API 1.1), so a camera sat says "3 of
+  5 this hour" by the board's figures.
+- Tests: `test_photos_config` (the old lines shown, the save migrating them,
+  the new line winning, the parser's range), limits in `test_camera`, and in
+  `test_sats` a picture whose second is taken lands on the first free one.
+
+**1.2.0-link.13: two cameras in one second; the CONFIG names**
+- **A second picture in the same second is kept.** The built-in camera
+  and a camera sat that stamp a picture in the same second asked for the
+  same name, and the second picture was thrown away: at every timelapse
+  slot, since both start a slot on the same second. (Two sats cannot
+  clash: the camsat plugin takes one picture at a time, and so does the
+  built-in camera.) It is filed under
+  the next second's stamp now, up to five seconds on (Rob's rule, the
+  gallery spec): `photos::fileAs`, `camrules::laterName`. The name keeps
+  its shape, so retention and the listings need nothing new, and the
+  caller is offered the name it was filed under. The built-in camera uses
+  it; the camera satellite plugin does from camsat's photo-names branch.
+  The plugin API is 1.1 for it (`photos::fileAs`), so a camsat that uses
+  it refuses by name to build into an older core. The host refuses a
+  rename onto a name the way the card's FatFs does.
+- **The CONFIG names Rob settled (2026-09-28): one word per thing.**
+  CONFIG photos is the photo system (the default camera now, the gallery's
+  auto-show rows to come); CONFIG cameras still opens it, unlisted. CONFIG
+  camera is the built-in camera's hardware. CONFIG sats lists the sats;
+  CONFIG sat <name> opens one, and a camera sat's page has a Camera
+  settings button (the camsat plugin's page, which every camera sat this
+  board owns runs). CONFIG camsat still opens it, unlisted while it is
+  running; while it is off, CONFIG and CONFIG sats show it, since its page
+  is where it is switched on. `CONFIG sat 2` takes a camera number too.
+
 **1.2.0-link.12: on 1.1.2**
 - Rebased onto main at a3dcf01 (v1.1.2 at cfc76bb): the login and logoff
   split across passes, the per-pass open count, the small printf, the

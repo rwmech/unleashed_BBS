@@ -1042,14 +1042,40 @@ const CfgField kNetwork[] = {
 #endif
 };
 
-// The cameras (1.2.0): which one a bare SNAPSHOT takes. A name CAMERA
+// CONFIG photos (1.2.0; CONFIG cameras until Rob's naming of 2026-09-28,
+// "one word per thing": the camera is the hardware, photos are the system,
+// a sat is a device). Which camera a bare SNAPSHOT takes: a name CAMERA
 // shows; blank, or a name that is not on the air, is the built-in camera,
-// else the first that is up.
-const CfgField kCameras[] = {
+// else the first that is up. The gallery's auto-show rows join it.
+// The limits and the retention joined it (1.2.0): they were constants and
+// the built-in camera's own settings, and a camera sat's photos are the
+// same system's. Labels 9 at 40 and 20 at 80, notes 38 and 78.
+const CfgField kPhotos[] = {
     { "camera", "Default", CK_TEXT, 0, 0, 16, "A name from CAMERA. Blank: built-in.",
       "Default camera",
       // 73 columns: the status line holds 78 (tty-ux-sats; it was 90).
       "The camera SNAPSHOT uses, by a name CAMERA lists. Blank: the built-in one." },
+    { "photos_per_hour", "Per hour", CK_NUM, 0, 0, 2, "Each caller's snaps an hour. 1 to 20.",
+      "Snaps an hour",
+      "Each caller's snaps an hour, every camera together. 1 to 20. Sysop: no limit." },
+    { "photos_per_day", "Per day", CK_NUM, 0, 0, 2, "Each caller's snaps a day. 1 to 20.",
+      "Snaps a day",
+      "Each caller's snaps a day, all cameras together. 1 to 20. The sysop: no limit." },
+    { "photos_keep", "Keep days", CK_NUM, 0, 0, 4, "Days a caller's photo is kept. 0: all.",
+      "Keep photos, days",
+      "Days a caller's photo is kept before it goes. 0 keeps them all." },
+    { "photos_max", "Keep most", CK_NUM, 0, 0, 5, "The most callers' photos kept. 0: all.",
+      "Keep at most",
+      "The most callers' photos kept, oldest out first. 0 keeps them all." },
+    { "photos_floor", "Floor MB", CK_NUM, 0, 0, 5, "MB kept free. Blank: a tenth, to 512.",
+      "Card kept free, MB",
+      "MB the card keeps free: the oldest photos go first. Blank: a tenth, up to 512." },
+    { "photos_tl_keep", "TL days", CK_NUM, 0, 0, 4, "Timelapse photos: days kept. 0: all.",
+      "Keep timelapse, days",
+      "Days a timelapse photo is kept before it goes. 0 keeps them all." },
+    { "photos_tl_max", "TL most", CK_NUM, 0, 0, 5, "Most timelapse photos kept. 0: all.",
+      "Timelapse at most",
+      "The most timelapse photos kept, oldest out first. 0 keeps them all." },
 };
 
 // isWifiKey: one of the two keys that are one setting (see configSave)
@@ -1088,8 +1114,9 @@ const CfgPage kPages[] = {
     // before that and in a sysop's fingers.
     CFG_PAGE("network",  "NETWORK",         "Wi-Fi and port, next restart",    kNetwork),
     // 1.2.0: one SNAPSHOT for every camera the board has (photos.h). Its
-    // own page, last, so no row on the pages above moves.
-    CFG_PAGE("cameras",  "CAMERAS",         "which camera SNAPSHOT uses",      kCameras),
+    // own page, last, so no row on the pages above moves. "cameras" still
+    // opens it (pageByName), unlisted.
+    CFG_PAGE("photos",   "PHOTOS",          "SNAPSHOT's default camera",       kPhotos),
 };
 constexpr uint8_t kPageCount = sizeof(kPages) / sizeof(kPages[0]);
 
@@ -1458,6 +1485,15 @@ void cfgLiveValue(const char* key, char* out, size_t n) {
     else if (!strcmp(key, "landing"))               snprintf(out, n, "%s", users::landKey(c.landing));
     else if (!strcmp(key, "sysop_handle"))          snprintf(out, n, "%s", c.sysopHandle);
     else if (!strcmp(key, "camera"))                snprintf(out, n, "%s", c.camera);
+    // What the board runs with: the photos_ line, else the old camera line
+    // it stands in for (sysconfig.cpp, oldPhotoKey), else the default.
+    else if (!strcmp(key, "photos_per_hour"))       snprintf(out, n, "%u", c.photosPerHour);
+    else if (!strcmp(key, "photos_per_day"))        snprintf(out, n, "%u", c.photosPerDay);
+    else if (!strcmp(key, "photos_keep"))           snprintf(out, n, "%u", c.photosKeep);
+    else if (!strcmp(key, "photos_max"))            snprintf(out, n, "%lu", static_cast<unsigned long>(c.photosMax));
+    else if (!strcmp(key, "photos_floor"))          { if (c.photosFloor >= 0) snprintf(out, n, "%ld", static_cast<long>(c.photosFloor)); }
+    else if (!strcmp(key, "photos_tl_keep"))        snprintf(out, n, "%u", c.photosTlKeep);
+    else if (!strcmp(key, "photos_tl_max"))         snprintf(out, n, "%lu", static_cast<unsigned long>(c.photosTlMax));
     else if (!strcmp(key, "activity_led_gpio"))     snprintf(out, n, "%d", c.ledGpio);
     else if (!strcmp(key, "silent"))                snprintf(out, n, "%s", c.silent ? "yes" : "no");
     else if (!strcmp(key, "closed"))                snprintf(out, n, "%s", c.closed ? "yes" : "no");
@@ -1602,6 +1638,7 @@ void cfgSummary(const char* packed, uint8_t namePart, char* out, size_t n) {
 // shows one name for one page.
 const CfgPage* pageByName(const char* name) {
     if (!strcasecmp(name, "wifi")) name = "network";
+    if (!strcasecmp(name, "cameras")) name = "photos";      // its name before 1.2.0's naming
     for (uint8_t i = 0; i < kPageCount; ++i)
         if (!strcasecmp(kPages[i].name, name)) return &kPages[i];
     return nullptr;
@@ -1663,6 +1700,9 @@ void collectKey(void* ctx, const char* key, const char* value) {
         return;
     }
     if (cfgDeclared(g->pl, key)) return;                   // enabled, read, write, admin
+    // The camera's old photo keys belong to CONFIG photos now (1.2.0): not
+    // listed on the camera's page, where a save would write them back.
+    if (!strcmp(g->pl->info.name, "camera") && syscfg::photoOldKey(key)) return;
     if (g->n >= Form::kMaxFields - kCoreRows) return;      // the core rows come first
     for (uint8_t i = 0; i < g->n; ++i) if (!strcmp(g_cfgKeys[i], key)) return;
     snprintf(g_cfgKeys[g->n], sizeof(g_cfgKeys[0]), "%.23s", key);
@@ -2133,8 +2173,8 @@ void cfgChanged(Form& f, uint8_t field, Term& t, Timeline& tl) {
 // Buttons that leave end CONFIG: Pair a satellite runs LINK PAIR, which asks
 // on the sysop's own screen; Share and Unpair ask "(y/N)" there first
 // (linkp::ask), because an Enter walking the page to Save lands on them
-// (code review). Default and Settings open CONFIG cameras and CONFIG camsat
-// in its place.
+// (code review). Default camera opens CONFIG photos, and a camera sat's
+// Camera settings CONFIG camsat, in its place.
 // ===========================================================================
 enum : uint8_t { SA_NONE = 0, SA_PAIR, SA_CAMERAS, SA_CAMSAT, SA_LINK, SA_SHARE, SA_UNPAIR };
 bool    g_satsPage = false;                 // the page on screen is CONFIG sats
@@ -2206,13 +2246,17 @@ uint8_t buildSats(const Term& term) {
         row("pair", wide ? "Pair a satellite" : "Pair new", CK_ACT, SA_PAIR);
         snprintf(g_cfgBuf[n - 1], sizeof(g_cfgBuf[0]), "%s", wide ? "Open pairing for 2 minutes (LINK PAIR)" : "LINK PAIR, 2 minutes");
     }
-    row("cameras", wide ? "Default camera" : "Default", CK_ACT, SA_CAMERAS);
-    snprintf(g_cfgBuf[n - 1], sizeof(g_cfgBuf[0]), "%s%s", syscfg::get().camera[0] ? syscfg::get().camera : "built-in",
-             wide ? " (CONFIG cameras)" : "");
-    if (plugins::indexOf("camsat") != 0xFF) {
-        row("camsat", wide ? "Satellite settings" : "Settings", CK_ACT, SA_CAMSAT);
-        snprintf(g_cfgBuf[n - 1], sizeof(g_cfgBuf[0]), "%s", wide ? "Size, sleep, timelapse, motion (CONFIG camsat)" : "CONFIG camsat");
+    // The camera sats' plugin, while it is off: it is switched on on its
+    // own page, which the list does not show (code review of 1.2.0's naming:
+    // hiding it hid the switch).
+    const uint8_t cs = plugins::indexOf("camsat");
+    if (cs != 0xFF && !plugins::running(cs)) {
+        row("camsat", wide ? "Camera sats" : "Camera sats", CK_ACT, SA_CAMSAT);
+        snprintf(g_cfgBuf[n - 1], sizeof(g_cfgBuf[0]), "%s", wide ? "off: Enter turns camera sats on (CONFIG camsat)" : "off: turn them on");
     }
+    row("photos", wide ? "Default camera" : "Default", CK_ACT, SA_CAMERAS);
+    snprintf(g_cfgBuf[n - 1], sizeof(g_cfgBuf[0]), "%s%s", syscfg::get().camera[0] ? syscfg::get().camera : "built-in",
+             wide ? " (CONFIG photos)" : "");
     if (linkp::engine()) {
         row("chan", wide ? "Wi-Fi channel" : "Channel", CK_INFO, SA_NONE);
         snprintf(g_cfgBuf[n - 1], sizeof(g_cfgBuf[0]), wide ? "%u, the router's. A shared satellite needs one channel."
@@ -2226,7 +2270,8 @@ uint8_t buildSats(const Term& term) {
 }  // namespace
 
 bool Bbs::configSatsName(const char* arg) {
-    return !strcasecmp(arg, "sats") || !strcasecmp(arg, "satellites") || !strcasecmp(arg, "sat");
+    return !strcasecmp(arg, "sats") || !strcasecmp(arg, "satellites") || !strcasecmp(arg, "sat") ||
+           !strncasecmp(arg, "sat ", 4);
 }
 
 // configSatsOpen: CONFIG sats, with the focus on row focus.
@@ -2259,7 +2304,7 @@ void Bbs::configSatsButton(Session& s, uint8_t field, uint32_t now) {
     if (field >= Form::kMaxFields) return;
     switch (g_satAct[field]) {
         case SA_PAIR:    configSatLeave(s, "LINK PAIR", now); return;
-        case SA_CAMERAS: cmdConfig(s, "cameras", now); return;
+        case SA_CAMERAS: cmdConfig(s, "photos", now); return;
         case SA_CAMSAT:  cmdConfig(s, "camsat", now); return;
         case SA_LINK:    cmdConfig(s, "link", now); return;
         case SA_SHARE:
@@ -2346,6 +2391,18 @@ void Bbs::configSatOpen(Session& s, uint8_t field, uint32_t now) {
         addField(s, n, Form::pick(s.term, label, wideLabel), g_cfgBuf[b], 0, FF_ACTION, nullptr);
         ++b;
     };
+    // A camera sat's camera settings (CONFIG camsat, reached here since
+    // 1.2.0's naming: "CONFIG sat <name>" is one device). They are the
+    // camsat plugin's, so every camera sat this board owns runs them; a sat
+    // another board owns runs its owner's.
+    const uint8_t cs = plugins::indexOf("camsat");
+    if (li.kind == ulink::KIND_CAMSAT && cs != 0xFF) {
+        const bool on = plugins::running(cs);
+        button("Camera", "Camera settings", on ? "size, sleep, timelapse" : "off: turn them on",
+               !on ? "off: Enter turns camera sats on (CONFIG camsat)"
+                   : li.owned == 0 ? "Its owner's are the ones it runs (CONFIG camsat)"
+                                   : "Size, sleep, timelapse, motion: all camera sats here", SA_CAMSAT);
+    }
     if (li.owned != 0 && li.boards < ulink::Engine::kHosts)
         button("Share", "Share with a board", "LINK SHARE, 2 minutes", "Open its pairing to one more board (LINK SHARE)", SA_SHARE);
     button("Unpair", "Unpair from here", "forget it here", "Forget this satellite on this board (LINK FORGET)", SA_UNPAIR);
@@ -2467,10 +2524,15 @@ void Bbs::configPages(Session& s) {
         uint8_t col = 0;
         snprintf(buf, sizeof(buf), " %-10.10s", "sats");
         rowSeg(s, Color::Yellow, buf, col);
-        rowSeg(s, Color::Grey, clip("satellites: what each sends here", col), col);
+        rowSeg(s, Color::Grey, clip("the sats; CONFIG sat <name> opens one", col), col);
         rowEnd(s, col);
     }
     for (uint8_t i = 0; i < plugins::count(); ++i) {
+        // The camera sats' settings are reached from each one's page
+        // (CONFIG sat <name>, 1.2.0's naming); CONFIG camsat still opens
+        // them, unlisted, like CONFIG cameras and CONFIG wifi. Listed while
+        // it is off, because its page is where it is switched on.
+        if (!strcmp(plugins::at(i)->info.name, "camsat") && plugins::running(i)) continue;
         uint8_t col = 0;
         snprintf(buf, sizeof(buf), " %-10.10s", plugins::at(i)->info.name);
         rowSeg(s, Color::Yellow, buf, col);
@@ -2502,11 +2564,53 @@ void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now, uint8_t focus) {
     }
 
     if (configSatsName(arg)) {
+        // CONFIG sat <name> (1.2.0): that device's page, the way the sats
+        // page's button opens it; Back returns to the list. The name is the
+        // one LINK and SATS show, in any case.
+        const char* want = !strncasecmp(arg, "sat ", 4) ? arg + 4 : "";
+        while (*want == ' ') ++want;
+        int row = -1;
+        if (*want) {
+            if (!linkp::engine()) {
+                say(s.term, s.tl, Color::LightRed, "The link is off: CONFIG link.");
+                prompt(s);
+                return;
+            }
+            // By name, or by the camera number SNAPSHOT, CAMERA and SATS use.
+            const long num = strtol(want, nullptr, 10);
+            bool digits = true;
+            for (const char* q = want; *q; ++q) digits = digits && *q >= '0' && *q <= '9';
+            g_satsPage = true;
+            g_satPeer  = -1;
+            const uint8_t n = buildSats(s.term);
+            for (uint8_t i = 0; i < n && row < 0; ++i) {
+                linkp::SatInfo li;
+                if (g_cfgPlugin[i].kind != CK_SAT || !linkp::satInfo(g_satRow[i], li)) continue;
+                if (digits ? satNumber(g_satRow[i]) == num : !strcasecmp(li.name, want)) row = i;
+            }
+            g_satsPage = false;
+            if (row < 0) {
+                snprintf(buf, sizeof(buf), s.term.cols() >= 60 ? "No sat called %.20s. CONFIG sats lists them."
+                                                                : "No sat called %.20s.", want);
+                say(s.term, s.tl, Color::LightRed, buf);
+                prompt(s);
+                return;
+            }
+        }
         claims::take(claims::Res::Config, s.id);
         g_cfgOwner = &s;
         g_subComp  = nullptr;
         g_listKey[0] = '\0';
-        configSatsOpen(s, focus, now);
+        if (row < 0) { configSatsOpen(s, focus, now); return; }
+        g_cfgSection[0] = '\0';
+        g_satsPage = true;
+        g_satPeer  = -1;
+        buildSats(s.term);
+        g_cfgPage = &g_cfgPluginPage;
+        configSatOpen(s, static_cast<uint8_t>(row), now);
+        // Gone between the look and the open: the list, not a CONFIG held
+        // with nothing on the screen.
+        if (g_satPeer < 0) configSatsOpen(s, 0, now);
         return;
     }
     g_satsPage = false;
@@ -2921,6 +3025,31 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
     }
     if (!n) { snprintf(err, errLen, "Nothing changed"); return true; }
 
+    // CONFIG photos (1.2.0): a save writes the photos_ key for each old
+    // camera line the board is running on (SysConfig::photosOld), changed or
+    // not, so the old lines it then drops take nothing with them. A board
+    // never keeps both (the coordinator's rule, 2026-09-28). Only those:
+    // writing all seven would pin the shipped defaults in every file, and
+    // a board with no old lines has nothing to drop, so no second write.
+    const bool photosPage = g_cfgPage->fields == kPhotos;
+    const uint8_t photosOld = photosPage ? syscfg::get().photosOld : 0;
+    bool photosAll = true;                          // every key an old line stands for is in pairs
+    for (uint8_t i = 0; photosOld && i < count; ++i) {
+        const char* k = g_cfgPage->fields[i].key;
+        const uint8_t bit = !strcmp(k, "photos_keep") ? 4u : !strcmp(k, "photos_max") ? 8u :
+                            !strcmp(k, "photos_floor") ? 16u : !strcmp(k, "photos_tl_keep") ? 32u :
+                            !strcmp(k, "photos_tl_max") ? 64u : 0u;
+        if (!(photosOld & bit)) continue;
+        bool have = false;
+        for (uint8_t q = 0; q < n; ++q) if (!strcmp(pairs[q].key, k)) have = true;
+        if (have) continue;
+        if (n >= sizeof(pairs) / sizeof(pairs[0])) { photosAll = false; continue; }
+        pairs[n].key   = k;
+        pairs[n].value = g_cfgBuf[i];
+        from[n]        = i;
+        ++n;
+    }
+
     // A board on the published default is closed with no closed line (see
     // SysConfig::closed), and that default goes the moment the sysop
     // password stops being the published one. Pinned here, by the first
@@ -2958,6 +3087,16 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
         }
     }
     if (!syscfg::write(pairs, n, g_cfgSection[0] ? g_cfgSection : nullptr, err, errLen)) return false;
+    // Then the old camera lines, now that their values are photos_ lines.
+    // A second write: should it fail, both are in the file for a while and
+    // the photos_ line wins (sysconfig.cpp), until the next photos save.
+    if (photosOld && photosAll) {
+        const syscfg::KeyVal drop[] = { { "keep", nullptr }, { "max", nullptr }, { "floor", nullptr },
+                                        { "tl_keep", nullptr }, { "tl_max", nullptr } };
+        char derr[48] = "";
+        if (!syscfg::write(drop, 5, "plugin:camera", derr, sizeof(derr)))
+            plat::log("config: the camera's old photo lines stay (%s); the photos_ lines win", derr);
+    }
     bool ok = configReloadAll(err, errLen);
     // Neither the radio nor the listener is touched until a restart (see
     // kNetwork), so "live" would be a promise the board is not keeping.

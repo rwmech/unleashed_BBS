@@ -17,14 +17,15 @@
  * Design:       Rule no. 1 (Rob): the online experience without lag is
  *               paramount. So NOTHING the camera does that can take time
  *               runs on the BBS loop. The sensor's bring-up, the capture,
- *               the watermark's re-encode, the card write and the pruning
- *               all run on a worker task (plat::taskStart) on the loop's
- *               own core below the loop's priority: whenever the loop has
+ *               the watermark's re-encode and the card write all run on a
+ *               worker (a job on the background runner) on the loop's own
+ *               core below the loop's priority: whenever the loop has
  *               anything to do, it runs and the worker waits. The loop only
  *               moves a job between phases, turns the flash on and off
  *               (never in silent mode: the photo is taken without it), and
- *               animates the caller's spinner. Card space is read by the
- *               worker too, and kept.
+ *               animates the caller's spinner. Counting what is kept, the
+ *               card's space and pruning are the photo system's own job on
+ *               the runner (photos.h, 1.2.0-link.15), for every camera.
  *
  *               One job at a time, board-wide, and the job is the lock
  *               rather than a claim keyed by node: a caller who hangs up in
@@ -37,9 +38,11 @@
  *                 Ready    -> Go        loop: the flash is on and has led
  *                 Go       -> Exposed   worker: the frame is taken
  *                 Exposed  -> Writing   loop: the flash is off
- *                 Writing  -> Done      worker: saved (or Failed), pruned
+ *                 Writing  -> Done      worker: saved (or Failed)
  *                 Done     -> Idle      loop: the caller is told
- *               A survey job (at start, once a day) is Working -> Done.
+ *               A survey job (at start) is Working -> Done. Pruning is
+ *               the photo system's, for every camera (photos::tick,
+ *               1.2.0-link.15).
  *
  *               The camera is brought up for each picture and down after,
  *               never left running: that gives the 32 KB of internal DMA
@@ -109,9 +112,6 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
-
-using camrules::Item;
-using camrules::Policy;
 
 namespace {
 
@@ -283,36 +283,10 @@ photos::Budget verdictFor(const Session& s, uint32_t now) { return photos::budge
 void recordFor(const Session& s, uint32_t now) { photos::spend(s, now); }
 
 // ---------------------------------------------------------------------------
-// System folders (snapSystem): each its own group for pruning. The
-// timelapse is one; a motion sensor would be another.
+// System folders (snapSystem): each its own group for pruning, which is the
+// photo system's since 1.2.0-link.15 (photos::systemFolder), for every
+// camera. The timelapse is one; a motion sensor's is another.
 // ---------------------------------------------------------------------------
-constexpr uint8_t kSysMax = 4;
-struct SysFolder {
-    char     folder[16] = {};
-    char     prefix[8]  = {};
-    Policy   pol;
-};
-SysFolder g_sys[kSysMax];
-uint8_t   g_sysCount = 0;
-
-// sysFolder: the group for a folder, registering it the first time.
-int sysGroup(const char* folder, const char* prefix, uint16_t keep, uint32_t max) {
-    for (uint8_t i = 0; i < g_sysCount; ++i) {
-        if (!strcmp(g_sys[i].folder, folder)) {
-            g_sys[i].pol.days  = keep;
-            g_sys[i].pol.count = max;
-            return i + 1;
-        }
-    }
-    if (g_sysCount >= kSysMax) return -1;
-    SysFolder& f = g_sys[g_sysCount];
-    snprintf(f.folder, sizeof(f.folder), "%s", folder);
-    snprintf(f.prefix, sizeof(f.prefix), "%s", prefix);
-    f.pol.days  = keep;
-    f.pol.count = max;
-    return ++g_sysCount;
-}
-
 // plainWord: a folder or prefix snapSystem may be given: letters and digits.
 bool plainWord(const char* w, size_t max) {
     size_t n = strlen(w);
@@ -327,23 +301,12 @@ bool plainWord(const char* w, size_t max) {
 enum Ph : uint8_t { PH_IDLE, PH_WORKING, PH_READY, PH_GO, PH_EXPOSED, PH_WRITING, PH_DONE, PH_FAILED };
 enum Kind : uint8_t { K_CALLER, K_SYSTEM, K_SURVEY };
 
-struct Stats {
-    uint32_t callers = 0, system = 0;
-    uint64_t callerBytes = 0, systemBytes = 0;
-    uint64_t oldest = 0;                   // nameKey of the oldest kept
-    uint64_t cardTotal = 0, cardFree = 0;
-    uint64_t floor = 0;
-    bool     floorMet = true;
-    bool     known = false;
-};
-
 struct Job {
     std::atomic<uint8_t> ph{ PH_IDLE };
     uint8_t   kind = K_SURVEY;
     bool      probe = false;               // a survey that also looks for the sensor
     uint8_t   node = 0xFF;                 // the caller waiting on it
     bool      waiting = false;             // and still there (loop only)
-    uint8_t   group = 0;
     char      rel[112]    = {};            // under the Photos folder
     char      comment[200] = {};
     char      markText[96] = {};
@@ -358,12 +321,6 @@ struct Job {
     // the picture (camera_pic.h), copied when the job starts
     bool      levels = true;
     uint8_t   gammaT = 10;                 // tenths
-    // pruning, copied when the job starts
-    Policy    pol[kSysMax + 1];
-    char      sysFolder[kSysMax][16] = {};
-    char      sysPrefix[kSysMax][8]  = {};
-    uint8_t   groups = 1;
-    int32_t   floorMb = -1;
     // results
     char      err[72] = {};
     uint32_t  bytes = 0;
@@ -380,8 +337,6 @@ struct Job {
     uint8_t   lo[3] = {}, hi[3] = {};      // the levels chosen
     uint32_t  stackFree = 0;
     uint32_t  freeUp = 0, dmaUp = 0;       // internal RAM with the camera up
-    uint32_t  removed = 0;
-    Stats     stats;
     // loop side
     uint32_t  startedAt = 0, phaseAt = 0, spinAt = 0;
     uint8_t   spin = 0;
@@ -395,11 +350,12 @@ struct Job {
 };
 Job g_job;
 
-Stats    g_stats;                          // what the last job saw
 char     g_last[112]  = {};                // the last photo, and who took it
 char     g_lastBy[BBS_USER_MAX + 8] = {};
 uint32_t g_lastAt = 0;
-uint32_t g_surveyDay = 0;                  // the local day the last survey ran
+// The survey at start (the card's half-written photo cleared, the sensor
+// looked for once a boot). Counting and pruning are the photo system's
+// (photos::tick) since 1.2.0-link.15, for every camera.
 bool     g_surveyWanted = false;
 // Whether a sensor answered, this boot: the directory's camera badge
 // (announce's "camera" feature) is claimed only on SENSOR_FOUND. Written by
@@ -497,183 +453,6 @@ bool tables(Job& j, const uint8_t* pic, size_t len, uint8_t (*lut)[256]) {
     j.msFix = plat::millis() - t0;
     j.fixed = !campic::identity(lut);
     return j.fixed;
-}
-
-// A photo the survey found: where it is, so the second pass can find it.
-struct Found {
-    uint64_t key;
-    uint32_t bytes;
-    uint32_t nameHash;
-    uint16_t dirIdx;                       // 0 the Photos folder, else a subfolder's number
-    uint8_t  group;
-    bool     del;
-};
-
-uint32_t nameHash(const char* s) {
-    uint32_t h = 2166136261u;
-    for (; *s; ++s) { h ^= static_cast<uint8_t>(*s); h *= 16777619u; }
-    return h;
-}
-
-// groupOf: which group a subfolder of Photos is, and the prefix its photos
-// carry. A subfolder that is not a system folder is a caller's (by handle).
-// Not case sensitive, as FAT is not.
-uint8_t groupOf(const Job& j, const char* sub, const char*& prefix) {
-    for (uint8_t i = 0; i + 1 < j.groups; ++i)
-        if (!strcasecmp(j.sysFolder[i], sub)) { prefix = j.sysPrefix[i]; return static_cast<uint8_t>(i + 1); }
-    prefix = camrules::kSnapPrefix;
-    return 0;
-}
-
-// walk: every photo the camera wrote, one level deep, calling
-// fn(sub, name, key, bytes, dirIdx, group) for each; sub is "" for the
-// Photos folder itself. plat::sdList reads each folder once, sizes and all:
-// no entry is looked up by name, which on FAT is a search of the folder.
-// dirIdx numbers the subfolders in the order the card holds them, the same
-// on both passes because only the worker adds to the folder.
-struct Sub { char name[64]; };
-
-template <typename Fn>
-void walk(const Job& j, Fn fn) {
-    struct Top {
-        const Job* j;
-        Fn*        fn;
-        Sub*       subs;
-        uint16_t   nSubs, capSubs;
-    };
-    constexpr uint16_t kSubsMax = 256;
-    Sub* subs = static_cast<Sub*>(plat::camAlloc(sizeof(Sub) * kSubsMax));
-    Top top{ &j, &fn, subs, 0, subs ? kSubsMax : static_cast<uint16_t>(0) };
-    plat::sdList(camrules::kPhotosDir, [](void* ctx, const char* name, bool dir, uint32_t size) {
-        Top* t = static_cast<Top*>(ctx);
-        if (dir) {
-            if (t->nSubs < t->capSubs) snprintf(t->subs[t->nSubs++].name, sizeof(Sub::name), "%.63s", name);
-            return true;
-        }
-        uint64_t key = 0;
-        if (camrules::nameKey(name, camrules::kSnapPrefix, true, key)) (*t->fn)("", name, key, size, 0, 0);
-        return true;
-    }, &top);
-    for (uint16_t i = 0; i < top.nSubs; ++i) {
-        struct In { Fn* fn; const char* sub; const char* prefix; uint16_t idx; uint8_t g; };
-        In in{ &fn, subs[i].name, nullptr, static_cast<uint16_t>(i + 1), 0 };
-        in.g = groupOf(j, subs[i].name, in.prefix);
-        char rel[96];
-        snprintf(rel, sizeof(rel), "%s/%.63s", camrules::kPhotosDir, subs[i].name);
-        plat::sdList(rel, [](void* ctx, const char* name, bool dir, uint32_t size) {
-            In* x = static_cast<In*>(ctx);
-            uint64_t key = 0;
-            if (!dir && camrules::nameKey(name, x->prefix, false, key)) (*x->fn)(x->sub, name, key, size, x->idx, x->g);
-            return true;
-        }, &in);
-        plat::taskSleep(0);
-    }
-    plat::camFree(subs);
-}
-
-// survey: count what is kept, measure the card, and prune by age, count
-// and the floor (camera_rules.h, choose). Two passes over the folder, the
-// first to decide and the second to remove, so no name is held in memory.
-void survey(Job& j, const char* photos) {
-    constexpr size_t kMaxFound = 16384;
-    size_t cap = 256, n = 0;
-    Found* f = static_cast<Found*>(plat::camAlloc(cap * sizeof(Found)));
-    walk(j, [&](const char*, const char* name, uint64_t key, uint32_t bytes, uint16_t dir, uint8_t g) {
-        if (!f || n >= kMaxFound) return;
-        if (n == cap) {
-            Found* g2 = static_cast<Found*>(plat::camAlloc(cap * 2 * sizeof(Found)));
-            if (!g2) return;
-            memcpy(g2, f, cap * sizeof(Found));
-            plat::camFree(f);
-            f = g2;
-            cap *= 2;
-        }
-        f[n++] = Found{ key, bytes, nameHash(name), dir, g, false };
-    });
-
-    // The card's space. When it cannot be read, no floor is applied: a
-    // free space of "unknown" read as 0 would take every photo there is.
-    uint64_t total = 0, freeB = 0;
-    const bool space = plat::sdSpace(total, freeB);
-    uint64_t floor = space ? camrules::floorBytes(total, j.floorMb) : 0;
-
-    Item* it = n ? static_cast<Item*>(plat::camAlloc(n * sizeof(Item))) : nullptr;
-    bool met = true;
-    if (it) {
-        for (size_t i = 0; i < n; ++i) { it[i].key = f[i].key; it[i].bytes = f[i].bytes; it[i].group = f[i].group; it[i].del = false; }
-        // sort the pair together: by key, carrying Found along
-        for (size_t i = 1; i < n; ++i) {
-            Item vi = it[i]; Found vf = f[i];
-            size_t k = i;
-            while (k && it[k - 1].key > vi.key) { it[k] = it[k - 1]; f[k] = f[k - 1]; --k; }
-            it[k] = vi; f[k] = vf;
-            if ((i & 255) == 0) plat::taskSleep(0);
-        }
-        uint64_t cut[kSysMax + 1];
-        time_t now = time(nullptr);
-        for (uint8_t g = 0; g < j.groups; ++g) cut[g] = j.pol[g].days ? camrules::cutoffKey(now, j.pol[g].days) : 0;
-        met = camrules::choose(it, n, j.pol, cut, j.groups, freeB, floor);
-        for (size_t i = 0; i < n; ++i) f[i].del = it[i].del;
-        plat::camFree(it);
-    } else if (space && freeB < floor) {
-        met = false;                                   // nothing of the camera's to take
-    }
-
-    // The second pass removes what was marked. Then, in each caller's folder
-    // it removed from: one rewrite of FILES.BBS without their lines, and the
-    // folder itself when nothing else is left in it. Never a folder the
-    // camera took nothing from, and never a system folder.
-    uint32_t removed = 0;
-    size_t   marked  = 0;
-    for (size_t i = 0; i < n; ++i) marked += f[i].del ? 1 : 0;
-    if (marked) {
-        constexpr uint16_t kTouchedMax = 64;           // folders a pass may tidy
-        struct Touched { char name[64]; uint16_t idx; };
-        Touched* touched = static_cast<Touched*>(plat::camAlloc(sizeof(Touched) * kTouchedMax));
-        uint16_t nt = 0;
-        walk(j, [&](const char* sub, const char* name, uint64_t key, uint32_t, uint16_t dir, uint8_t g) {
-            uint32_t h = nameHash(name);
-            for (size_t i = 0; i < n; ++i) {
-                if (!f[i].del || f[i].key != key || f[i].dirIdx != dir || f[i].nameHash != h) continue;
-                char path[256];
-                if (sub[0]) snprintf(path, sizeof(path), "%s/%.60s/%.60s", photos, sub, name);
-                else        snprintf(path, sizeof(path), "%s/%.60s", photos, name);
-                if (remove(path) == 0) {
-                    ++removed;
-                    f[i].del = false; f[i].bytes = 0; f[i].key = 0;
-                    bool seen = false;
-                    for (uint16_t t = 0; t < nt; ++t) seen |= touched[t].idx == dir;
-                    if (g == 0 && !seen && touched && nt < kTouchedMax) {
-                        snprintf(touched[nt].name, sizeof(touched[nt].name), "%.63s", sub);
-                        touched[nt++].idx = dir;
-                    }
-                }
-                break;
-            }
-        });
-        // Each folder a photo went from is tidied by the file areas, which
-        // are FILES.BBS's one writer (1.1.2): its lines for photos that have
-        // gone, and a handle folder left empty removed. Asked, not done.
-        for (uint16_t t = 0; t < nt; ++t) files::photoTidy(touched[t].name);
-        plat::camFree(touched);
-        if (space) plat::sdSpace(total, freeB);
-    }
-
-    Stats st;
-    st.known = true;
-    st.cardTotal = total;
-    st.cardFree  = freeB;
-    st.floor     = floor;
-    st.floorMet  = met;
-    for (size_t i = 0; i < n; ++i) {
-        if (!f[i].key) continue;                       // removed
-        if (f[i].group == 0) { ++st.callers; st.callerBytes += f[i].bytes; }
-        else                 { ++st.system;  st.systemBytes += f[i].bytes; }
-        if (!st.oldest || f[i].key < st.oldest) st.oldest = f[i].key;
-    }
-    j.stats   = st;
-    j.removed = removed;
-    plat::camFree(f);
 }
 
 void fail(Job& j, const char* why) {
@@ -778,11 +557,16 @@ uint8_t* shoot(Job& j, size_t& len) {
 // areas. Never over a photo that is there already (FatFs refuses a rename
 // onto a name, and nothing removes one to make room).
 void save(Job& j, const char* photos, const uint8_t* jpg, size_t len) {
+    (void)photos;
     uint32_t t0 = plat::millis();
-    char dst[256];
-    snprintf(dst, sizeof(dst), "%s/%s", photos, j.rel);
-    struct stat st;
-    if (stat(dst, &st) == 0) { fail(j, "a photo with that name is already there"); return; }
+    // Its name, or one of the next seconds' (photos::kLater), must be free
+    // before the work starts: a satellite may have filed a picture in the
+    // same second (1.2.0).
+    char free_[sizeof(j.rel)];
+    if (!photos::freeName(j.rel, free_, sizeof(free_))) {
+        fail(j, "a photo with that name is already there");
+        return;
+    }
 
     photos::Writer pw;
     if (!photos::open(pw, camrules::kTmpName)) { fail(j, "the card would not take the photo"); return; }
@@ -833,7 +617,7 @@ void save(Job& j, const char* photos, const uint8_t* jpg, size_t len) {
     // is described. Not the board's own: their names say whose they are, and
     // a thousand-line FILES.BBS rewritten for every timed shot is card wear
     // and seconds of the card's time for nothing.
-    if (!photos::file(pw, j.rel, j.kind == K_CALLER ? j.desc : nullptr)) {
+    if (!photos::fileAs(pw, j.rel, sizeof(j.rel), j.kind == K_CALLER ? j.desc : nullptr)) {
         fail(j, "the card would not take the photo");
         return;
     }
@@ -863,7 +647,8 @@ void worker(void*) {
             if (up) plat::log("camera: sensor %s found at start", plat::camSensor());
             else    plat::log("camera: no sensor at start: %s", why[0] ? why : "the camera would not start");
         }
-        survey(j, photos);
+        // Counting and pruning are the photo system's (photos::tick),
+        // asked for when this camera starts providing Photos.
         j.msAll = plat::millis() - t0;
         j.stackFree = plat::taskStackFree();
         j.ph.store(PH_DONE);
@@ -881,7 +666,9 @@ void worker(void*) {
     save(j, photos, jpg, len);
     plat::camFree(jpg);
     if (j.ph.load() == PH_FAILED) return;
-    survey(j, photos);
+    // Filing it asked the photo system for a prune (photos::fileAs), which
+    // runs as its own job on the runner after this one: every camera's
+    // pictures are kept in bounds the same way (1.2.0-link.15).
     j.msAll = plat::millis() - t0;
     j.stackFree = plat::taskStackFree();
     j.ph.store(PH_DONE);
@@ -968,15 +755,6 @@ void snapshotCfg(Job& j) {
     j.levels = g_set.levels;
     j.gammaT = campic::gammaTenths(g_set.gamma);
     j.jq = campic::reencodeQuality(g_set.quality);      // 90 at the shipped 10
-    j.pol[0].days  = g_set.keepDays;
-    j.pol[0].count = g_set.maxSnaps;
-    j.groups = static_cast<uint8_t>(1 + g_sysCount);
-    for (uint8_t i = 0; i < g_sysCount; ++i) {
-        j.pol[i + 1] = g_sys[i].pol;
-        snprintf(j.sysFolder[i], sizeof(j.sysFolder[i]), "%s", g_sys[i].folder);
-        snprintf(j.sysPrefix[i], sizeof(j.sysPrefix[i]), "%s", g_sys[i].prefix);
-    }
-    j.floorMb = g_set.floorMb;
 }
 
 bool startJob(uint8_t kind, uint32_t now) {
@@ -988,7 +766,6 @@ bool startJob(uint8_t kind, uint32_t now) {
     j.msFix = 0; j.settleFrames = 0; j.meterA = j.meterB = 0; j.meterKind = 0; j.fixed = false;
     j.srcBytes = 0; j.qUsed = 0;
     j.freeUp = j.dmaUp = 0;
-    j.removed = 0;
     j.startedAt = j.phaseAt = j.spinAt = now;
     j.flashOn = j.flashOwn = j.flashDark = false;
     // roomToSnap walks the heap, so only while the answer is still unknown:
@@ -1130,22 +907,18 @@ void finish(uint32_t now) {
     sizeChoicesNow();                                  // the sensor may have said its sizes
     flashSet(j, false);
     if (ok) {
-        if (j.stats.known && !j.stats.floorMet && (!g_stats.known || g_stats.floorMet))
-            plat::log("camera: the card is under its floor and Photos cannot free enough: photos refused");
-        g_stats = j.stats;
         if (j.kind != K_SURVEY) {
             snprintf(g_last, sizeof(g_last), "%.111s", j.rel);
             snprintf(g_lastBy, sizeof(g_lastBy), "%.21s", j.kind == K_CALLER ? j.handle : "the board");
             g_lastAt = clk::epoch();
             // Two lines: plat::log keeps 160 characters, and one line cut
             // the memory figures off the end.
-            plat::log("camera: %s %ux%u %u bytes%s, up %u ms, shot %u ms, saved %u ms, all %u ms, "
-                      "%u removed",
+            // What pruning removed is the photo system's own line now.
+            plat::log("camera: %s %ux%u %u bytes%s, up %u ms, shot %u ms, saved %u ms, all %u ms",
                       j.rel, static_cast<unsigned>(j.w), static_cast<unsigned>(j.h),
                       static_cast<unsigned>(j.bytes), j.marked ? " marked" : "",
                       static_cast<unsigned>(j.msUp), static_cast<unsigned>(j.msShot),
-                      static_cast<unsigned>(j.msSave), static_cast<unsigned>(j.msAll),
-                      static_cast<unsigned>(j.removed));
+                      static_cast<unsigned>(j.msSave), static_cast<unsigned>(j.msAll));
             plat::log("camera: worker stack %u free; internal %u free and largest DMA %u with the camera "
                       "up, largest DMA %u now",
                       static_cast<unsigned>(j.stackFree), static_cast<unsigned>(j.freeUp),
@@ -1170,8 +943,6 @@ void finish(uint32_t now) {
                       static_cast<unsigned>(j.lo[2]), static_cast<unsigned>(j.hi[2]),
                       static_cast<unsigned>(j.gammaT / 10), static_cast<unsigned>(j.gammaT % 10),
                       j.fixed ? "corrected" : "as it came", static_cast<unsigned>(j.msFix));
-        } else if (j.removed) {
-            plat::log("camera: %u old photos removed", static_cast<unsigned>(j.removed));
         }
     } else {
         plat::log("camera: %s failed: %s", j.kind == K_SURVEY ? "survey" : j.rel, j.err);
@@ -1221,7 +992,7 @@ void finish(uint32_t now) {
 
 // ---------------------------------------------------------------------------
 // tick: every 20 ms (PF_FAST). Moves the job on, drives the flash and the
-// spinner, and starts the timed shots and the daily survey. Never waits.
+// spinner, and starts the timed shots and the survey at start. Never waits.
 // ---------------------------------------------------------------------------
 void tick(uint32_t now) {
     Job& j = g_job;
@@ -1239,14 +1010,8 @@ void tick(uint32_t now) {
             startJob(K_SURVEY, now);
             return;
         }
+        // The daily count and prune are the photo system's (photos::tick).
         if (clock) {
-            uint32_t day = static_cast<uint32_t>((t.tm_year + 1900) * 1000 + t.tm_yday);
-            if (g_surveyDay && day != g_surveyDay && plat::sdBase()[0]) {
-                g_surveyDay = day;
-                startJob(K_SURVEY, now);
-                return;
-            }
-            if (!g_surveyDay) g_surveyDay = day;
             uint32_t local = static_cast<uint32_t>(t.tm_hour * 3600 + t.tm_min * 60 + t.tm_sec) +
                              static_cast<uint32_t>(t.tm_yday) * camrules::kDay;
             if (camrules::tlDue(local, g_set.tlEvery, g_tlSlot, g_tlPrimed))
@@ -1317,14 +1082,14 @@ void cmdSnapshot(Bbs& b, Session& s, const char*, uint32_t now) {
             char at[8], buf[96];
             clk::fmtEpoch(at, sizeof(at), "%H:%M", v.nextAt);
             snprintf(buf, sizeof(buf), "That is %u %s; the next one is allowed at %s.",
-                     static_cast<unsigned>(v.byDay ? camrules::kPerDay : camrules::kPerHour),
+                     static_cast<unsigned>(v.byDay ? v.perDay : v.perHour),
                      v.byDay ? "today" : "this hour", at);
             refuse(b, s, buf);
             return;
         }
     }
-    if (g_stats.known && !g_stats.floorMet) {
-        g_surveyWanted = true;                         // count again: space may have been freed
+    if (photos::tally().known && !photos::tally().floorMet) {
+        photos::pruneSoon();                           // count again: space may have been freed
         refuse(b, s, "The card is too full for another photo.");
         return;
     }
@@ -1380,8 +1145,8 @@ void cmdSnapshot(Bbs& b, Session& s, const char*, uint32_t now) {
         recordFor(s, epoch);
         char buf[80];
         snprintf(buf, sizeof(buf), "Snapshot %u of %u this hour, %u of %u today.",
-                 static_cast<unsigned>(v.hour + 1), static_cast<unsigned>(camrules::kPerHour),
-                 static_cast<unsigned>(v.day + 1), static_cast<unsigned>(camrules::kPerDay));
+                 static_cast<unsigned>(v.hour + 1), static_cast<unsigned>(v.perHour),
+                 static_cast<unsigned>(v.day + 1), static_cast<unsigned>(v.perDay));
         say(s, Color::Grey, buf);
         s.term.nl(s.tl);
     }
@@ -1449,6 +1214,9 @@ void cmdCamera(Bbs& b, Session& s, const char* arg, uint32_t) {
         while (*p && *p != ' ' && k + 1 < sizeof(key)) key[k++] = *p++;
         while (*p == ' ') ++p;
         Settings trial = g_set;
+        // Retention moved to the photo system (1.2.0): written here it would
+        // be a line CONFIG photos overrides and then deletes.
+        if (syscfg::photoOldKey(key)) { refuse(b, s, "That is CONFIG photos now, for every camera."); return; }
         if (!key[0] || !apply(trial, key, p)) { refuse(b, s, "CAMERA SET <key> <value>: not a value the camera takes."); return; }
         syscfg::KeyVal kv{ key, p };
         char err[64] = "";
@@ -1489,27 +1257,29 @@ void cmdCamera(Bbs& b, Session& s, const char* arg, uint32_t) {
         snprintf(buf, sizeof(buf), "Levels %s, gamma %s", g_set.levels ? "auto" : "off", gw);
     }
     b.rowText(s, Color::White, buf);
-    if (!g_stats.known) {
-        b.rowText(s, Color::Grey, jobBusy() ? "Counting the photos on the card..." : "No count yet.");
+    // What the photo system's last prune counted: every camera's photos.
+    const photos::Tally& st = photos::tally();
+    if (!st.known) {
+        b.rowText(s, Color::Grey, jobBusy() || photos::pruning() ? "Counting the photos on the card..." : "No count yet.");
     } else {
         char cb[16], sb[16], fb[16], fl[16];
-        mb(cb, sizeof(cb), g_stats.callerBytes);
-        mb(sb, sizeof(sb), g_stats.systemBytes);
-        mb(fb, sizeof(fb), g_stats.cardFree);
-        mb(fl, sizeof(fl), g_stats.floor);
-        snprintf(buf, sizeof(buf), "Photos %u (%s), timed %u (%s)", static_cast<unsigned>(g_stats.callers), cb,
-                 static_cast<unsigned>(g_stats.system), sb);
+        mb(cb, sizeof(cb), st.callerBytes);
+        mb(sb, sizeof(sb), st.systemBytes);
+        mb(fb, sizeof(fb), st.cardFree);
+        mb(fl, sizeof(fl), st.floor);
+        snprintf(buf, sizeof(buf), "Photos %u (%s), timed %u (%s)", static_cast<unsigned>(st.callers), cb,
+                 static_cast<unsigned>(st.system), sb);
         b.rowText(s, Color::White, buf);
-        if (g_stats.oldest) {
+        if (st.oldest) {
             // The key is YYYYMMDDhhmmss; its date half fits 32 bits, and it
             // has to: the board's printf is newlib nano (1.1.2), which has
             // no %ll and would print "lu" and shift every argument after it.
-            unsigned d = static_cast<unsigned>(g_stats.oldest / 1000000ull);
+            unsigned d = static_cast<unsigned>(st.oldest / 1000000ull);
             snprintf(buf, sizeof(buf), "Oldest kept %04u-%02u-%02u", d / 10000, (d / 100) % 100, d % 100);
             b.rowText(s, Color::White, buf);
         }
-        snprintf(buf, sizeof(buf), "Card free %s, floor %s%s", fb, fl, g_stats.floorMet ? "" : " (UNDER)");
-        b.rowText(s, g_stats.floorMet ? Color::White : Color::LightRed, buf);
+        snprintf(buf, sizeof(buf), "Card free %s, floor %s%s", fb, fl, st.floorMet ? "" : " (UNDER)");
+        b.rowText(s, st.floorMet ? Color::White : Color::LightRed, buf);
     }
     if (g_last[0]) {
         char at[20];
@@ -1589,12 +1359,10 @@ const PluginSetting kSettings[] = {
       camrules::kSchemes, "Name snaps" },
     { "watermark", "Watermark", PS_YESNO, 0, 0, 3, "Board, date and who, in a corner.", nullptr,
       "Watermark" },
-    { "keep",      "Keep days", PS_NUM,   0, 3650, 4, "Callers' photos; 0 keeps them.", nullptr,
-      "Keep snaps (days)", "Callers' photos older than this are removed; 0 keeps them." },
-    { "max",       "Max snaps", PS_NUM,   0, 60000, 5, "Callers' photos kept; 0 no limit.", nullptr,
-      "Max caller snaps" },
-    { "floor",     "Floor MB",  PS_OPTNUM, 0, 60000, 5, "Card space kept free; empty: auto.", nullptr,
-      "Card floor (MB)", "Space the camera leaves free on the card. Empty: a tenth, 512 MB at most." },
+    // keep, max and floor, and tl_keep and tl_max below, are CONFIG photos'
+    // since 1.2.0 (photos_keep and the rest): retention is the photo
+    // system's, a camera sat's photos included. apply() still reads them, as
+    // syscfg does, for a file written before.
     { "flash",     "Flash",     PS_PAGE,  0, 0, 12, "The light for a photo.", nullptr, "Flash" },
     { "tl",        "Timelapse", PS_PAGE,  0, 0, 16, "A photo every so often.", nullptr, "Timelapse" },
     { "pic",       "Picture",   PS_PAGE,  0, 0, 12, "Levels, brightness, colour, turn.", nullptr, "Picture settings" },
@@ -1613,10 +1381,6 @@ const PluginSetting kSettings[] = {
       "Every (minutes)", "Minutes between the board's own photos, with the seconds below. Both 0 is off." },
     { "tl_sec",    "and sec",   PS_NUM,   0, 59, 2, "Seconds; the least is 10 in all.", nullptr,
       "and seconds", "Seconds on top of the minutes. The shortest interval is 10 seconds." },
-    { "tl_keep",   "Keep days", PS_NUM,   0, 3650, 4, "Timed photos; 0 keeps them.", nullptr,
-      "Keep shots (days)", "Timed photos older than this are removed; 0 keeps them." },
-    { "tl_max",    "Max shots", PS_NUM,   0, 60000, 5, "Timed photos kept; 0 no limit.", nullptr,
-      "Max timelapse shots" },
 
     // The picture's page
     { "pic_flip",     "Flip",     PS_YESNO, 0, 0, 3, nullptr, nullptr, "Upside down" },
@@ -1696,6 +1460,18 @@ bool start(Bbs& bbs) {
     g_index = plugins::indexOf(kName);
     g_set = Settings();
     plugins::forEachKey(g_index, readKey, nullptr);
+    // Retention is the photo system's (CONFIG photos, 1.2.0). Its own old
+    // lines are still read by the parser above, so a file that has them is
+    // not refused, but what counts is syscfg's: the photos_ line, or the old
+    // line standing in for it, or the default.
+    {
+        const SysConfig& c = syscfg::get();
+        g_set.keepDays = c.photosKeep;
+        g_set.maxSnaps = c.photosMax;
+        g_set.floorMb  = c.photosFloor;
+        g_set.tlKeep   = c.photosTlKeep;
+        g_set.tlMax    = c.photosTlMax;
+    }
     g_set.tlEvery = static_cast<uint32_t>(g_set.tlMin) * 60u + g_set.tlSec;
     if (g_set.tlEvery > camrules::kTlMax) g_set.tlEvery = camrules::kTlMax;
     if (g_set.tlEvery && g_set.tlEvery < camrules::kTlMin) g_set.tlEvery = camrules::kTlMin;
@@ -1703,7 +1479,10 @@ bool start(Bbs& bbs) {
         g_offer = static_cast<Offer*>(plat::camAlloc(sizeof(Offer) * kSlots));
         if (g_offer) memset(g_offer, 0, sizeof(Offer) * kSlots);
     }
-    sysGroup(camrules::kTlFolder, camrules::kTlPrefix, g_set.tlKeep, g_set.tlMax);
+    // The timelapse's retention is the photo system's group (photos.h), with
+    // CONFIG photos' limits; a start (a CONFIG save among them) asks for a
+    // prune, since what it keeps may have changed.
+    photos::pruneSoon();
     // The flash pin idles low from the start, so a relay never clicks at boot.
     if (g_set.flash == FLASH_PIN && g_set.flashPin >= 0) plat::pinOut(g_set.flashPin, false);
     g_tlPrimed = false;
@@ -1713,8 +1492,8 @@ bool start(Bbs& bbs) {
     plat::log("camera: on, %s, largest internal DMA block %u", g_set.mark ? "watermarked" : "unmarked",
               static_cast<unsigned>(plat::camDmaLargest()));
     // A job still running from before a CONFIG save carries on; a finished
-    // one is told on the next tick. The survey counts what is on the card
-    // and clears a photo a power cut left half written.
+    // one is told on the next tick. The survey clears a photo a power cut
+    // left half written (the counting is the photo system's).
     const uint8_t p = g_job.ph.load();
     if (p == PH_DONE || p == PH_FAILED) { g_job.waiting = false; finish(plat::millis()); }
     if (!jobBusy()) g_surveyWanted = true;
@@ -1735,9 +1514,10 @@ const char* status() {
     if (jobBusy()) return "taking a photo";
     const char* sen = g_sensor.load() == SENSOR_FOUND ? plat::camSensor()
                     : g_sensor.load() == SENSOR_MISSING ? "no sensor" : "sensor not seen yet";
-    if (!g_stats.known) { snprintf(line, sizeof(line), "%s, no count yet", sen); return line; }
-    snprintf(line, sizeof(line), "%s, %u photos, %u timed", sen, static_cast<unsigned>(g_stats.callers),
-             static_cast<unsigned>(g_stats.system));
+    const photos::Tally& st = photos::tally();
+    if (!st.known) { snprintf(line, sizeof(line), "%s, no count yet", sen); return line; }
+    snprintf(line, sizeof(line), "%s, %u photos, %u timed", sen, static_cast<unsigned>(st.callers),
+             static_cast<unsigned>(st.system));
     return line;
 }
 
@@ -1762,13 +1542,13 @@ bool camera::snapSystem(const char* folder, const char* prefix, uint16_t keepDay
     if (!g_running || !plat::sdBase()[0] || jobBusy()) return false;
     if (!plainWord(folder, 15) || !plainWord(prefix, 7)) return false;
     if (!roomToSnap(true)) return false;
-    if (g_stats.known && !g_stats.floorMet) return false;
-    int g = sysGroup(folder, prefix, keepDays, maxFiles);
+    if (photos::tally().known && !photos::tally().floorMet) return false;
+    // Its folder a group of its own for retention, the photo system's.
+    if (!photos::systemFolder(folder, prefix, keepDays, maxFiles)) return false;
     struct tm t;
-    if (g < 0 || !localNow(t)) return false;
+    if (!localNow(t)) return false;
     Job& j = g_job;
     j.kind = K_SYSTEM;
-    j.group = static_cast<uint8_t>(g);
     if (!camrules::systemName(folder, prefix, t, j.rel, sizeof(j.rel))) return false;
     snprintf(j.handle, sizeof(j.handle), "%s", folder);
     texts(j, t, folder);

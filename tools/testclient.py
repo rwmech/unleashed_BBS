@@ -2280,10 +2280,14 @@ def test_sats():
         drain(c)
         c.buf.clear()
         c.send(b"snapshot " + num + b"\r")
+        t_first = time.time()
         ok &= check("SNAPSHOT n takes one from the satellite",
                     peer.wait("snap ", 10) is not None and c.wait_for(b"Photo saved", 15))
+        c.pump(0.5)
+        first = re.search(rb"Photo saved: (\S+)", plain(c.buf))
         c.send(b"n")
         drain(c)
+        ok &= clash_check(c, num, first.group(1).decode() if first else "", t_first)
         peer.cmd("busy 1 2")
         time.sleep(0.3)
         c.buf.clear()
@@ -2301,8 +2305,9 @@ def test_sats():
         ok &= check("its own page", open_camera_button(p) and p.wait_for(b"SHELF", 5) and p.wait_for(b"Satellite name", 5))
         p.pump(0.3)
         # Name, Camera number (5 is "5"), Receive timelapse (2 is "no"),
-        # Receive motion, then the buttons are passed over.
-        got = ascii_form(p, [b"", b"5", b"2", b"", b"", b""])
+        # Receive motion, then the buttons (Camera settings, Share, Unpair)
+        # are passed over.
+        got = ascii_form(p, [b"", b"5", b"2", b"", b"", b"", b""])
         ok &= check("saved", got in (0, 2))
         ok &= check("the satellite is told this board no longer wants its timelapse",
                     peer.wait("settings 0 recv 2", 10) is not None)
@@ -2322,7 +2327,7 @@ def test_sats():
         open_camera_button(p)
         p.wait_for(b"Satellite name", 5)
         p.pump(0.3)
-        for a in [b"", b"", b"", b"", b""]:          # name, number, timelapse, motion, Share
+        for a in [b"", b"", b"", b"", b"", b""]:     # name, number, timelapse, motion, Camera, Share
             p.send(a + b"\r")
             p.pump(0.3)
         p.send(b"y")                                # Unpair
@@ -2336,6 +2341,61 @@ def test_sats():
         c.buf.clear()
         c.send(b"sats\r")
         ok &= check("it is still there", c.wait_for(b"shelf", 6))
+
+        # The CONFIG names Rob settled (2026-09-28): photos is the system,
+        # camera the hardware, sats the list, sat <name> one device.
+        drain(p)
+        p.buf.clear()
+        p.send(b"config\r")
+        p.wait_for(b"CONFIG page", 5)
+        p.pump(0.6)
+        pages = plain(p.buf)
+        ok &= check("CONFIG lists photos, not cameras",
+                    re.search(rb"\n\s*photos\s", pages) is not None and re.search(rb"\n\s*cameras\s", pages) is None)
+        ok &= check("and not camsat, which each camera sat's page reaches",
+                    re.search(rb"\n\s*camsat\s", pages) is None)
+        drain(p)
+        p.buf.clear()
+        p.send(b"config cameras\r")
+        ok &= check("CONFIG cameras still opens it, as PHOTOS", p.wait_for(b"PHOTOS", 5))
+        finish_line_form(p)
+        drain(p)
+        p.buf.clear()
+        p.send(b"config sat SHELF\r")
+        ok &= check("CONFIG sat <name> opens that sat's page, in any case",
+                    p.wait_for(b"SHELF", 5) and p.wait_for(b"Satellite name", 5))
+        p.pump(0.3)
+        # The door box the radio tests paired is called "shelf" too, and a
+        # name opens the first sat that has it: after the radio group that is
+        # the door's page, which has no camera settings. The camera's own
+        # page by its number (5, set above). Saving a sat's page goes back to
+        # CONFIG sats, which asks its own questions: both are walked out.
+        finish_line_form(p)
+        finish_line_form(p)
+        drain(p)
+        p.buf.clear()
+        p.send(b"config sat 5\r")
+        p.wait_for(b"Satellite name", 5)
+        p.pump(0.3)
+        # Name, number, timelapse, motion; then Y at Camera settings.
+        for a in [b"", b"", b"", b""]:
+            p.send(a + b"\r")
+            p.pump(0.3)
+        ok &= check("a camera sat's page has its camera settings",
+                    p.wait_for(b"open (y/N)?", 5) and "Camera" in (render_lines(p.buf)[-1] if render_lines(p.buf) else ""))
+        p.buf.clear()
+        p.send(b"y")
+        ok &= check("which open CONFIG camsat's page", p.wait_for(b"CAMSAT", 6) or p.wait_for(b"Camera satellite", 2))
+        finish_line_form(p)
+        drain(p)
+        p.buf.clear()
+        p.send(b"config camsat\r")
+        ok &= check("CONFIG camsat still opens it", p.wait_for(b"CAMSAT", 6) or p.wait_for(b"Camera satellite", 2))
+        finish_line_form(p)
+        drain(p)
+        p.buf.clear()
+        p.send(b"config sat nowhere\r")
+        ok &= check("CONFIG sat with no such name says so", p.wait_for(b"No sat called nowhere.", 5))
         p.close()
     finally:
         for x in (c, c40, a):
@@ -2343,6 +2403,57 @@ def test_sats():
                 x.close()
         s.close()
         peer.stop()
+    return ok
+
+
+def clash_check(c, num, first_name, t_first):
+    """Two cameras in one second (1.2.0): a picture whose name is taken is
+    filed under the next second's stamp, up to five on, never over the one
+    there and never thrown away. The names a snap in the next few seconds
+    could take are put on the card first; the satellite's picture has to
+    land on the first free second after them, and the caller is told that
+    name. The board's clock and its zone come from the first picture's
+    name, so the test needs neither."""
+    import datetime
+    card = os.environ.get("BBS_SD_DIR", "")
+    m = re.match(r"SNAP-(\d{8}-\d{6})\.JPG$", first_name)
+    if not card:
+        print("  SKIP  the same-second test needs a card")
+        return True
+    if not m:
+        return check("the first picture has a by-date name to work from (%r)" % first_name, False)
+    fmt = "%Y%m%d-%H%M%S"
+    base = datetime.datetime.strptime(m.group(1), fmt)
+    photos = pathlib.Path(card) / "photos"
+    ok = True
+    time.sleep(1.2)                               # past the first picture's second
+    est = base + datetime.timedelta(seconds=int(time.time() - t_first))
+    taken = [est + datetime.timedelta(seconds=k) for k in range(-1, 4)]
+    made = []
+    for t in taken:
+        f = photos / ("SNAP-%s.JPG" % t.strftime(fmt))
+        if not f.exists():
+            f.write_bytes(b"\xff\xd8another camera's\xff\xd9")
+            made.append(f)
+    expect = "SNAP-%s.JPG" % (taken[-1] + datetime.timedelta(seconds=1)).strftime(fmt)
+    c.buf.clear()
+    c.send(b"snapshot " + num + b"\r")
+    got = c.wait_for(b"Photo saved", 15)
+    c.pump(0.5)
+    said = re.search(rb"Photo saved: (\S+)", plain(c.buf))
+    said = said.group(1).decode() if said else ""
+    ok &= check("a picture whose second is taken is saved all the same", got)
+    ok &= check("under the first free second after them (%s, told %s)" % (expect, said or "nothing"),
+                said == expect and (photos / expect).exists())
+    ok &= check("the ones already there untouched",
+                all(f.read_bytes() == b"\xff\xd8another camera's\xff\xd9" for f in made))
+    c.send(b"n")
+    drain(c)
+    for f in made + [photos / expect] + ([photos / said] if said else []):
+        try:
+            f.unlink()
+        except OSError:
+            pass
     return ok
 
 
@@ -6004,6 +6115,67 @@ def cfg_sec_line(section, key):
     return None
 
 
+def test_photos_config():
+    """CONFIG photos holds the photo system (1.2.0, Rob's naming of
+    2026-09-28): the default camera, each caller's snaps an hour and a day,
+    and retention, which was the built-in camera's (keep, max, floor, tl_keep
+    and tl_max in [plugin:camera]). A board whose file still has those old
+    lines runs with them, and CONFIG photos shows them; its first save writes
+    every photos_ key and drops the old lines, so the file never has both.
+    On every board: the photo system is the core's, camera or no camera."""
+    print("CONFIG photos: the limits and retention, and the old camera lines")
+    if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    path = USERDATA / "system.cfg"
+    before = path.read_text()
+    ok = True
+    s = cfg_sysop("PhotoCfg")
+    try:
+        # A board set up before CONFIG photos: retention on the camera.
+        text = before.rstrip("\n") + "\n\n[plugin:camera]\nkeep = 9\ntl_max = 77\nfloor = 300\n"
+        path.write_text(text)
+        ok &= check("the board reads the file again", cfg_reload(s))
+        ok &= check("CONFIG photos opens", cfg_open(s, b"photos", b"Default"))
+        rows = render_lines(s.buf)
+        def row(label):
+            return next((r for r in rows if label in r), "")
+        ok &= check("it shows the old camera line's keep, 9", re.search(r"\b9\b", row("Keep photos")) is not None)
+        ok &= check("and its timelapse limit, 77", "77" in row("Timelapse at most"))
+        ok &= check("and its floor, 300", "300" in row("Card kept free"))
+        ok &= check("and the defaults where the file says nothing: 10 an hour",
+                    re.search(r"\b10\b", row("Snaps an hour")) is not None)
+        # One change: the hour's limit to 5.
+        s.buf.clear()
+        s.send(DOWN + b"\x08" * 3 + b"5" + F1)
+        ok &= check("saved", cfg_verdict(s, [b"Saved and live", b"Nothing changed"]) == b"Saved and live")
+        ok &= check("the change is written", (cfg_line("photos_per_hour") or "").endswith("= 5"))
+        ok &= check("and a photos_ key for each old line, its value kept",
+                    (cfg_line("photos_keep") or "").endswith("= 9") and
+                    (cfg_line("photos_tl_max") or "").endswith("= 77") and
+                    (cfg_line("photos_floor") or "").endswith("= 300"))
+        ok &= check("but no line for a default nobody set (a later default still reaches the board)",
+                    cfg_line("photos_per_day") is None and cfg_line("photos_max") is None)
+        ok &= check("and the old camera lines are gone",
+                    cfg_sec_line("plugin:camera", "keep") is None and
+                    cfg_sec_line("plugin:camera", "tl_max") is None and
+                    cfg_sec_line("plugin:camera", "floor") is None)
+        # (That a photos_ line wins over an old one put back by hand is the
+        # parser's, and the page reads the file first, so it cannot show it:
+        # host/test_photos_cfg.cpp tests syscfg::parseFile for it.)
+        # The parser's rule, not a copy of it: the hour is 1 to 20.
+        ok &= check("CONFIG photos opens a third time", cfg_open(s, b"photos", b"Default"))
+        s.buf.clear()
+        s.send(DOWN + b"\x08" * 3 + b"21" + F1)
+        ok &= check("21 an hour is refused", cfg_verdict(s, [b"Between 1 and 20", b"Saved and live"]) == b"Between 1 and 20")
+        cfg_cancel(s)
+    finally:
+        path.write_text(before)
+        cfg_reload(s)
+        s.close()
+    return ok
+
+
 def test_config_semicolon():
     """A ';' in a plugin value is refused, not written and cut (1.0.0).
 
@@ -7611,12 +7783,19 @@ def test_camera():
     ok &= check("staff are told", s.wait_for(b"Node", 3) and b"took a photo" in plain(s.buf))
     ok &= check("the log line names the photo and the times", re.search(r"camera: " + re.escape(name) + r" .* up \d+ ms", host_log()) is not None)
 
-    # CAMERA, staff's view
-    s.buf.clear()
-    s.send(b"camera\r")
-    s.wait_for(b"Card free", 4)
-    s.pump(0.3)
-    cam = plain(s.buf)
+    # CAMERA, staff's view. The count is the photo system's since 1.2.0-
+    # link.15, taken two seconds after the last picture filed (a burst is one
+    # count): asked again until it has this one.
+    until = time.time() + 8
+    while True:
+        s.buf.clear()
+        s.send(b"camera\r")
+        s.wait_for(b"Card free", 4)
+        s.pump(0.3)
+        cam = plain(s.buf)
+        if b"Photos 1" in cam or time.time() > until:
+            break
+        time.sleep(0.5)
     ok &= check("CAMERA: the sensor, the count, the card, the last photo",
                 b"Sensor " + CB["sensor"] + b", up to " + CB["top"] in cam and b"Size " + CB["size"] in cam and b"Photos 1" in cam and
                 b"Last " in cam and b"CamCaller" in cam)
@@ -7747,12 +7926,21 @@ def test_camera():
     if b"Download it now?" in got:
         s.send(b"n")
         s.wait_for(b"kept in the Photos area", 4)
-    time.sleep(0.5)
-    kept = [p for p in photos(card) if not p.startswith("timelapse/")]
+    # The prune is the photo system's own job since 1.2.0-link.15, posted
+    # two seconds after the last picture filed (so a burst is one prune), and
+    # the FILES.BBS tidy a job after it: waited for, not slept past.
+    def pruned():
+        k = [p for p in photos(card) if not p.startswith("timelapse/")]
+        d = (card / "photos" / "FILES.BBS").read_text(errors="replace") if (card / "photos" / "FILES.BBS").exists() else ""
+        return k, d
+    until = time.time() + 10
+    kept, desc = pruned()
+    while time.time() < until and (len(kept) != 2 or (card / "photos" / "CamCaller").exists() or name in desc):
+        time.sleep(0.25)
+        kept, desc = pruned()
     ok &= check(f"max 2: two callers' photos kept ({len(kept)})", len(kept) == 2)
     ok &= check("the sysop's own garden.jpg is never removed", (card / "photos" / "garden.jpg").exists())
     ok &= check("an emptied handle folder goes with its last photo", not (card / "photos" / "CamCaller").exists())
-    desc = (card / "photos" / "FILES.BBS").read_text(errors="replace") if (card / "photos" / "FILES.BBS").exists() else ""
     ok &= check("and a removed photo's FILES.BBS line goes with it", name not in desc)
 
     # The timelapse: the board's own, in its own folder, pruned on its own.
@@ -7764,7 +7952,13 @@ def test_camera():
         tl = [p for p in photos(card) if p.startswith("timelapse/TL-")]
     ok &= check("a timed shot lands in timelapse/ as TL-date", len(tl) == 1)
     time.sleep(11)
+    # The second shot's prune comes two seconds after it is filed (1.2.0-
+    # link.15): waited for.
+    until = time.time() + 8
     tl = [p for p in photos(card) if p.startswith("timelapse/TL-")]
+    while time.time() < until and len(tl) != 1:
+        time.sleep(0.25)
+        tl = [p for p in photos(card) if p.startswith("timelapse/TL-")]
     kept2 = [p for p in photos(card) if not p.startswith("timelapse/")]
     ok &= check("its own count keeps one, and the callers' photos are untouched",
                 len(tl) == 1 and len(kept2) == 2)
@@ -17670,7 +17864,7 @@ ORDER_NAMES = [
     # save of 200 then finds nothing changed.
     "test_operator", "test_operator_ends", "test_notices_in_places",
     "test_operator_notes", "test_ring_mail", "test_sysop_account",
-    "test_config_parser_rules", "test_config_guards", "test_config_semicolon",
+    "test_config_parser_rules", "test_config_guards", "test_config_semicolon", "test_photos_config",
     "test_config_timezone", "test_config_tz_bad", "test_config_cycle_numbers", "test_config_silent",
     "test_config_sd_plugin",
     "test_config_lights", "test_config_lights_ascii", "test_lights_frames", "test_lights_manual",

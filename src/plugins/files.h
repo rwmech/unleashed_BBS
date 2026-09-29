@@ -65,5 +65,11 @@ bool sendPhoto(Bbs& b, Session& s, const char* rel, bool xmodem, uint32_t now);
 // worker asks; it never writes the file itself.
 bool photoDesc(const char* sub, const char* name, const char* text);
 bool photoTidy(const char* sub);
+// photoEditRoom (1.2.0-link.15): the queue has room for one more tidy now,
+// with one slot always left for a picture's description (a camera files
+// from the runner and cannot wait). The photo system asks before each tidy
+// it hands over from a prune, a few a pass, rather than losing the fifth to
+// a full queue.
+bool photoEditRoom();
 
 } // namespace files

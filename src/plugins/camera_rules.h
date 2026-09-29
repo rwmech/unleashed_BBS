@@ -24,6 +24,14 @@
  *                 quantumrob/SNAP-20260924-171204.JPG   by handle
  *                 timelapse/TL-20260924-171200.JPG      a system snap
  *
+ *               Two cameras can take a picture in the same second (a
+ *               built-in camera and a satellite, two motion satellites, two
+ *               callers' snaps named by date alone). The second is filed
+ *               under the next second's stamp, up to five seconds on
+ *               (laterName, photos::fileAs), never over the first: the name
+ *               keeps its shape, so nameKey and retention need nothing new
+ *               (1.2.0, Rob's rule from the gallery spec).
+ *
  *               Only a name of exactly that shape is ever counted or
  *               removed. A sysop's own garden.jpg in the folder, or a file
  *               called SNAP-holiday.JPG, is neither. The timestamp in the
@@ -31,7 +39,7 @@
  *               keeps a two-second mtime from a clock that may have been
  *               wrong, and a laptop copying the card rewrites it.
  *
- * Interfaces:   safeHandle, stampOf, callerName, systemName, nameKey,
+ * Interfaces:   safeHandle, stampOf, callerName, systemName, laterName, nameKey,
  *               Window/check/record, Item/Policy/choose, tlDue, offerFor,
  *               jpegWhole, ComSink
  *
@@ -175,6 +183,41 @@ inline bool systemName(const char* folder, const char* prefix, const struct tm& 
     return w > 0 && static_cast<size_t>(w) < n;
 }
 
+// laterName: rel with its stamp one second later, into out: the name a
+// picture takes when another took its own in the same second. The stamp is
+// the first -YYYYMMDD-HHMMSS after the last slash; the rest of the name
+// (prefix, handle, extension) is kept. Across a minute, an hour, a day, a
+// month and a year as the calendar has them. False when rel has no stamp or
+// out is too small.
+inline bool laterName(const char* rel, char* out, size_t cap) {
+    if (!rel) return false;
+    const char* base = strrchr(rel, '/');
+    base = base ? base + 1 : rel;
+    const char* d = nullptr;
+    for (const char* p = strchr(base, '-'); p; p = strchr(p + 1, '-')) {
+        bool ok = true;
+        for (int i = 1; i <= 15 && ok; ++i)
+            ok = (i == 9) ? p[i] == '-' : (p[i] >= '0' && p[i] <= '9');
+        if (ok) { d = p + 1; break; }
+    }
+    if (!d) return false;
+    auto num = [&](int at, int len) {
+        int v = 0;
+        for (int i = 0; i < len; ++i) v = v * 10 + (d[at + i] - '0');
+        return v;
+    };
+    int y = num(0, 4), mo = num(4, 2), dd = num(6, 2), h = num(9, 2), mi = num(11, 2), s = num(13, 2);
+    if (mo < 1 || mo > 12 || dd < 1 || dd > 31 || h > 23 || mi > 59 || s > 59) return false;
+    const bool leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    static const uint8_t kDays[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    const int dim = kDays[mo - 1] + (mo == 2 && leap ? 1 : 0);
+    if (++s > 59) { s = 0; if (++mi > 59) { mi = 0; if (++h > 23) { h = 0; if (++dd > dim) { dd = 1; if (++mo > 12) { mo = 1; ++y; } } } } }
+    if (y > 9999) return false;
+    const int w = snprintf(out, cap, "%.*s%04d%02d%02d-%02d%02d%02d%s", static_cast<int>(d - rel), rel, y, mo, dd, h, mi,
+                           s, d + 15);
+    return w > 0 && static_cast<size_t>(w) < cap;
+}
+
 // keyOf: a time as the sortable number its name carries, YYYYMMDDHHMMSS.
 inline uint64_t keyOf(const struct tm& t) {
     return (((((static_cast<uint64_t>(t.tm_year + 1900) * 100 + static_cast<uint64_t>(t.tm_mon + 1)) * 100 +
@@ -246,7 +289,13 @@ struct Verdict {
 // check: may one more be taken now? When not, nextAt is when: the snap that
 // has to leave the window for the count to drop below the limit, plus the
 // window. The day's limit wins when both are hit, since it is the later.
-inline Verdict check(const Window& w0, uint32_t now) {
+// perHour and perDay are the board's (CONFIG photos, 1.2.0), 1 to kPerDay:
+// the window holds kPerDay, so no limit goes past it.
+inline Verdict check(const Window& w0, uint32_t now, uint8_t perHour, uint8_t perDay) {
+    if (perDay < 1) perDay = 1;
+    if (perDay > kPerDay) perDay = kPerDay;
+    if (perHour < 1) perHour = 1;
+    if (perHour > kPerDay) perHour = kPerDay;
     Window w = w0;
     age(w, now);
     Verdict v;
@@ -255,18 +304,21 @@ inline Verdict check(const Window& w0, uint32_t now) {
         if (now - w.at[i] < kHour) { if (firstHour == w.n) firstHour = i; ++v.hour; }
     }
     v.day = w.n;
-    if (v.day >= kPerDay) {
+    if (v.day >= perDay) {
         v.ok = false;
         v.byDay = true;
-        v.nextAt = w.at[w.n - kPerDay] + kDay;
+        v.nextAt = w.at[w.n - perDay] + kDay;
     }
-    if (v.hour >= kPerHour) {
-        uint32_t at = w.at[firstHour + (v.hour - kPerHour)] + kHour;
+    if (v.hour >= perHour) {
+        uint32_t at = w.at[firstHour + (v.hour - perHour)] + kHour;
         if (v.ok || at > v.nextAt) { v.nextAt = at; v.byDay = false; }
         v.ok = false;
     }
     return v;
 }
+
+// check at the shipped limits, kPerHour and kPerDay.
+inline Verdict check(const Window& w0, uint32_t now) { return check(w0, now, kPerHour, kPerDay); }
 
 // record: one taken now.
 inline void record(Window& w, uint32_t now) {
