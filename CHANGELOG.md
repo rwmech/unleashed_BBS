@@ -41,7 +41,8 @@ on the bench since link.4 (LINK.md has the figures).
   and Timelapse (13), which every board has since 1.2.0.
 - **CONFIG panel on the Touch-LCD-2** has Sleep and Skin both, and gives up
   X offset and Y offset for them (its 240 x 320 glass fills the controller,
-  so both are 0; system.cfg still takes them). The 4.3B's page gains Skin.
+  so both are 0; system.cfg still takes them). The 4.3B's page gains Skin, last,
+  so none of its rows move.
 - **A sat's snap shows in the panel's recent list.** The count of callers'
   snaps moved from the camera plugin to the photo system
   (`photos::callerSnaps`), which counts every caller's picture filed, by the
