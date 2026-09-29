@@ -487,9 +487,9 @@ def ext_plugins(b):
     """The plugins from their own repositories this build carries (1.2.0,
     LINK.md): each fetched at its locked commit with tools/plugins.py
     --release, which refuses a local path, a working tree, a checkout that
-    is not the locked commit, a licence the firmware cannot carry, and a
-    copyright line naming Anthropic or Claude. Returns [(name, version,
-    commit)] for release.txt."""
+    is not the locked commit, a licence the firmware cannot carry, and the
+    notice lines check_notices() refuses. Returns [(name, version, commit)]
+    for release.txt."""
     tool = ROOT / "tools" / "plugins.py"
     r = subprocess.run([sys.executable, str(tool), "env", b["env"]], cwd=ROOT,
                        capture_output=True, text=True)
