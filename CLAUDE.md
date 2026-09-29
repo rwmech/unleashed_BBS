@@ -1266,7 +1266,12 @@ this tree.
   - **New core work:** inbound caller sessions over the link, the challenge and guest exchange, RF mode, CONFIG hamradio. About 50 B static and 4-5 KB flash. LINK.md reserves the numbers in 1.2.0.
   - **Examples use `N0CALL`,** never Rob's callsign.
   - The site marks it "planned, a while off".
-- **Browser SSH from the directory: researched** (research/web-ssh branch, internal/research-web-ssh-2026-09-28.md).
+- **Browser SSH: TABLED for future work** (Rob, 2026-09-29: "we havent built a webssh ... table it"). Only research exists. Rob's notes for when it's picked up:
+  - the relay doesn't have to sit in the directory, .com or anywhere in particular, so the "outbound connections" concern may not apply;
+  - bans are already timed (3 wrong logins in 15 min ban an address for 15 min), and staff can lift one early with `UNBAN a.b.c.d` and list them with `BANS`;
+  - add an **allow-list** of addresses that are never banned, such as the relay's.
+
+  The research, for reference (research/web-ssh branch, internal/research-web-ssh-2026-09-28.md):
   - Buildable, 9-13 days, with Microsoft's MIT dev-tunnels-ssh client running in the browser and a stdlib asyncio relay beside server.py.
   - Two decisions come first:
     - the board must learn each web visitor's real address (the PROXY protocol, accepted only from the relay's address), or one droplet address gets banned;
