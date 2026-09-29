@@ -452,7 +452,7 @@ void readKey(void* ctx, const char* key, const char* v) {
     // An RGB panel's bus, size and timing are the board's wiring: the SPI
     // panel's keys, in a system.cfg brought from another board, are not this
     // board's to take.
-    if (strcmp(key, "backlight") && strcmp(key, "sleep")) return;
+    if (strcmp(key, "backlight") && strcmp(key, "sleep") && strcmp(key, "skin")) return;
 #endif
     if      (!strcmp(key, kPin1Key)) pinKey(g_cfg.mosi, key, v, false);
     else if (!strcmp(key, kPin2Key)) pinKey(g_cfg.sclk, key, v, kPin2Optional);
@@ -2197,8 +2197,17 @@ void tick(uint32_t now) {
         g_skinOwned = false;
         redrawAll();
         if (g_lightOwed) g_owedAt = g_bands;
+        // Every figure and the strip on this pass, as after silent mode, or
+        // the glass shows the empty fields redrawAll left until they are due.
+        g_textAt  = now ? now : 1;
+        g_stripAt = 0;
+#if PANEL_BIG
+        g_gAt = 0;                                       // the traffic graph starts afresh
+#endif
+        refreshText(now, nullptr);
+    } else if (textDue) {
+        refreshText(now, nullptr);
     }
-    if (textDue) refreshText(now, nullptr);
     slotTick(now);
     bellTick(now);
     antTick(now);
@@ -2407,15 +2416,16 @@ constexpr PluginSetting kSettings[] = {
       "Controller chip" },
     { "backlight", "Light",     PS_NUM,   0, 100, 3, "On or off only: 0 is off.", nullptr,
       "Backlight, 0 off" },
-    // The skin (1.2.0): the card's skins for this glass, listed by skin.cpp's
-    // worker, or the built-in layout.
-    { "skin",      "Skin",      PS_CYCLE, 0, 0,   skin::kNameMax, "status, or a folder in skins/ on SD.",
-      skin::g_choices, "Panel skin", "status is the built-in layout; the rest are folders in skins/ on the SD card." },
 #ifdef BBS_HAS_TOUCH
     { "sleep",     "Sleep min", PS_NUM,   0, 240, 3, "Dark after this long; a tap wakes it.", nullptr,
       "Sleep after, minutes",
       "Minutes with no tap before the backlight goes off; 0 never. A tap or a ring wakes it." },
 #endif
+    // Last, so no row the 4.3B's page had moves.
+    // The skin (1.2.0): the card's skins for this glass, listed by skin.cpp's
+    // worker, or the built-in layout.
+    { "skin",      "Skin",      PS_CYCLE, 0, 0,   skin::kNameMax, "status, or a folder in skins/ on SD.",
+      skin::g_choices, "Panel skin", "status is the built-in layout; the rest are folders in skins/ on the SD card." },
 };
 constexpr size_t kSettingCount = sizeof(kSettings) / sizeof(kSettings[0]);
 static_assert(kCoreRows + kSettingCount <= Form::kMaxFields, "the panel page is full");
@@ -2449,9 +2459,9 @@ constexpr PluginSetting kSettings[] = {
     { "height",    "Height",    PS_NUM,   1, kRamLong,     3, "Pixels down, with the USB plug up.",
       nullptr, "Height, pixels" },
 #ifndef BBS_HAS_TOUCH
-    // A touch board's page (WS2) has Sleep and Skin both and no room for
-    // these: its glass fills the controller's RAM, so they are 0, and
-    // system.cfg still takes them.
+    // A touch board's page (WS2) has Sleep and Skin both, and the twelve
+    // rows would be thirteen with these; both go, since its glass fills the
+    // controller's RAM and they are 0. system.cfg still takes them.
     { "xoff",      "X offset",  PS_NUM,   0, kRamLong - 1, 3, "Glass's first column in the chip's RAM",
       nullptr, "X offset in RAM" },
     { "yoff",      "Y offset",  PS_NUM,   0, kRamLong - 1, 3, "Glass's first row in the chip's RAM.",

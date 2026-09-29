@@ -138,10 +138,13 @@ char     g_snapShown[BBS_USER_MAX + 1] = {};   // the loop's copy
 
 void snapFiled(const char* desc) {
     static const char kBy[] = "Taken by ";
-    const char* h = strncmp(desc, kBy, sizeof(kBy) - 1) ? "" : desc + sizeof(kBy) - 1;
+    if (strncmp(desc, kBy, sizeof(kBy) - 1)) return;   // not a caller's line
+    const char* h = desc + sizeof(kBy) - 1;
     if (*h == '*') ++h;                        // a guest: the handle the panel names
-    plat::runLock();
-    snprintf(g_snapWho, sizeof(g_snapWho), "%.*s", BBS_USER_MAX, h);
+    char who[sizeof(g_snapWho)];
+    snprintf(who, sizeof(who), "%.*s", BBS_USER_MAX, h);
+    plat::runLock();                           // a copy and a count, nothing more
+    memcpy(g_snapWho, who, sizeof(g_snapWho));
     g_snaps = static_cast<uint16_t>(g_snaps + 1);
     plat::runUnlock();
 }

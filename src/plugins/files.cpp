@@ -341,15 +341,19 @@ bool photoMay(const Session& s, uint8_t which) {
 
 // The photos' description queue lives in PSRAM on a board that has it.
 void* photoAlloc(size_t n) {
-#ifdef BBS_HAS_CAMERA
+#if defined(BBS_HAS_CAMERA)
     return plat::camAlloc(n);
+#elif defined(BBS_HAS_LCD)
+    return plat::psramAlloc(n);                // a sat's photos on a panel board (1.2.0)
 #else
     return malloc(n);
 #endif
 }
 void photoFree(void* p) {
-#ifdef BBS_HAS_CAMERA
+#if defined(BBS_HAS_CAMERA)
     plat::camFree(p);
+#elif defined(BBS_HAS_LCD)
+    plat::psramFree(p);
 #else
     free(p);
 #endif

@@ -7901,7 +7901,7 @@ def test_board_ws2():
     # its MOSI and clock are the card's own wires and must not be refused.
     cfg_open(s, b"panel", b"Sleep")
     s.buf.clear()
-    s.send(DOWN * 15 + b"\x08" * 3 + b"70" + F1)
+    s.send(DOWN * 14 + b"\x08" * 3 + b"70" + F1)      # Sleep, Skin, then no X and Y offsets (1.2.0)
     got = cfg_verdict(s, [b"Saved and live", b"Taken", b"taken", b"Between"])
     ok &= check("the panel's page saves with the card on the same MOSI and clock", got == b"Saved and live")
     cfg_cancel(s)
@@ -8116,13 +8116,14 @@ def test_board_mf35():
     # strapping pin, 47 the panel's data bus (D0), and 26 to 32 the flash
     # and PSRAM (quad PSRAM: 33 to 37 are free, and the v1.0 strobes are on
     # them).
-    opened = cfg_open(s, b"panel", b"Driver")
-    s.pump(1.0)
-    ok &= check("CONFIG has a panel page naming the ILI9488", opened and b"ILI9488" in plain(s.buf))
+    # The page's first row is the skin (1.2.0, in the row Driver had), so the
+    # controller is PANEL's to name.
+    opened = cfg_open(s, b"panel", b"Skin")
     cfg_cancel(s)
-    cfg_open(s, b"panel", b"Driver")
+    ok &= check("CONFIG has a panel page, and PANEL names the ILI9488", opened and b"ILI9488" in panel_read(s))
+    cfg_open(s, b"panel", b"Skin")
     s.buf.clear()
-    s.send(DOWN * 4 + b"\r")
+    s.send(DOWN * 5 + b"\r")
     ok &= check("Pins opens a page of its own", s.wait_for(b"PINS", 6))
     s.pump(0.6)
     ok &= check("its first two are the parallel bus's strobes",
