@@ -99,3 +99,17 @@ CONFIG_ESP_WIFI_RX_BA_WIN=10
 # "if you also want to input ... please select
 # CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG").
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# The VFS table, 8 to 12, for every S3 (1.2.1; the Makerfabs' fix of MF35
+# 1.1.1, until then in four boards' own layers and not the LCD-1.47's). Two
+# consoles (UART0 and the USB-Serial-JTAG secondary), lwIP's sockets, the
+# three LittleFS partitions and SSH's eventfd (1.1.2) filled the IDF's 8 on
+# the Makerfabs, so the SD card's FAT was the ninth and its mount failed with
+# ESP_ERR_NO_MEM, which esp_vfs_register returns for a full table (vfs.c,
+# s_vfs_count >= VFS_MAX_COUNT): "no card: not enough memory" with 1.7 MB of
+# PSRAM free (the bench, 2026-09-28). Every one-console S3 with SSH is at 8
+# of 8 once the card is mounted, so the next VFS user would take the card
+# down. Here rather than per board: ESP-IDF reads this layer for every
+# esp32s3 build, and board.h refuses an S3 image built without it. 4 bytes a
+# slot of static DRAM.
+CONFIG_VFS_MAX_COUNT=12

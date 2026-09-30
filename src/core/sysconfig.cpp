@@ -178,8 +178,13 @@ const NumKey kNumKeys[] = {
     { "day_minutes",           0,  1440 },          // 0 = unlimited
     { "guest_minutes",         0,  1440 },          // 0 = unlimited (Bbs::secondsLeft)
     { "backup_window_minutes", 1,  60 },
-    { "backup_button_gpio",   -1,  39 },            // -1 = no button
-    { "activity_led_gpio",    -1,  39 },            // -1 = no LED
+    // The chip's pins (board.h), which pinProblem then narrows to the ones
+    // this board has free. 39 until 1.2.1, which left the S3's 40 to 48
+    // out of reach. The chip's highest, not its highest output, for the LED
+    // too: on the ESP32 that keeps 34 to 39, which a file written before
+    // this may carry, from turning into a refused system.cfg.
+    { "backup_button_gpio",   -1,  BBS_GPIO_MAX },  // -1 = no button
+    { "activity_led_gpio",    -1,  BBS_GPIO_MAX },  // -1 = no LED
     { "max_users",             1,  BBS_MAX_USERS },
     { "who_refresh_min",       1,  60 },
     { "who_refresh_max",       1,  60 },

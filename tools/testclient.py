@@ -2065,6 +2065,10 @@ def test_doors():
             ok &= check("a CONFIG link save gives a caller in a door back",
                         wait_plain(c, b"--> Lost the signal.", 8) and wait_plain(c, b"--> Back home.", 3))
             s.buf.clear()
+            # The second save restarts the link again: without this the wait
+            # below was met by the first restart's "link up" and DOORS 2 went
+            # in before the second's door list was back (the 1.2.0 full run).
+            peer.lines.clear()
             s.send(b"config link\r")
             wait_label(s, b"Enabled", 5)
             ascii_form(s, [b"", b"", b"", b"6"])            # and back to sysop
@@ -2073,7 +2077,15 @@ def test_doors():
             drain(c)
             c.buf.clear()
             peer.wait("link up", 10)
-            time.sleep(1.5)                                    # the door list comes again
+            # The door list comes again: waited for on DOORS, not slept past.
+            until = time.time() + 10
+            while time.time() < until:
+                c.buf.clear()
+                c.send(b"doors\r")
+                if c.wait_for(b"Clock", 2):
+                    break
+            drain(c)
+            c.buf.clear()
             c.send(b"doors 2\r")
             ok &= check("and the door opens again after", c.wait_for(b"CLOCK DOOR", 10))
             c.send(b"\x03\x03\x03")
@@ -2231,9 +2243,13 @@ def test_sats():
         c.buf.clear()
         c.send(b"sats\r")
         ok &= check("SATS lists it for a caller", c.wait_for(b"shelf", 6) and c.wait_for(b"awake", 3))
-        m = re.search(rb"\n\s*(\d)[* ]\s+shelf", plain(c.buf))
+        # Its name as the board gave it, the way its number is read: a door
+        # box the radio tests left paired as "shelf" makes this one
+        # "shelf-2" (link.cpp uniqueName), which is the board doing its job.
+        m = re.search(rb"\n\s*(\d)[* ]\s+(shelf(?:-\d)?)\b", plain(c.buf))
         ok &= check("with its number", m is not None)
         num = m.group(1) if m else b"1"
+        satname = m.group(2) if m else b"shelf"
         leaks = sats_leaks(c.buf)
         ok &= check("and nothing of the radio or the keys (%s)" % (", ".join(leaks) or "none"), not leaks)
         c40 = ansi40_login("SatWatcher40")
@@ -2368,7 +2384,8 @@ def test_sats():
                     break
                 time.sleep(0.2)
             ok &= check("the sat's log on the card names the failure and who asked",
-                        re.search(rb"\tsat " + num + rb" shelf\tthe satellite's queue is full\tSatWatcher", body)
+                        re.search(rb"\tsat " + num + rb" " + re.escape(satname) +
+                                  rb"\tthe satellite's queue is full\tSatWatcher", body)
                         is not None)
             ok &= check("and the pictures that came", b"bytes in" in body)
 
@@ -6026,6 +6043,55 @@ BOARD_ZONE = 2
 BOARD_TZ   = 3
 BOARD_LED  = 6
 
+# The pins the shared CONFIG tests use, per host profile (1.2.1). They were
+# the WROOM's (the LED on 2, the bridge on 16 and 17, the flash on 6 to 11,
+# the card's clock on 18), so the login and shell groups run on the WS2's
+# profile failed 19 checks that were about the test, not the board (the
+# WS2 bench, 2026-09-28). Each from board.h and syscfg::pinProblem:
+#   led        the LED's value as the profile ships it
+#   led_free   a pin CONFIG saves for the LED, to leave -1 from
+#   btn_free   a pin CONFIG saves for the backup button, off BOOT
+#   flash      pins the flash (or flash and PSRAM) owns, for the LED, the
+#              backup button and a card pin, and the word the refusal says
+#   missing    pins the chip has not got: the LED, three for the button, one
+#              for the drive light, one for a hand-edited file
+#   console    UART0's TX, the console port CONFIG refuses
+#   serial     the bridge's RX and TX as shipped (None: no pins)
+#   sd_clock   the card's clock as a CONFIG sd setting, with its label
+#              (None: the profile's card is not on settings CONFIG shows)
+#   sd_rows    CONFIG sd has pin rows (an SPI slot on settings)
+# None is a fact this table does not know for the profile: the check that
+# needs it SKIPs and says so, rather than asserting the WROOM's.
+_S3_FLASH   = dict(flash=(b"30", b"31", b"30"), flash_pat=b"flash and PSRAM",
+                   missing=(b"24", (b"22", b"23", b"25"), b"24", "23"), console=b"43")
+_WROOM_PINS = dict(flash=(b"6", b"11", b"7"), flash_pat=b"flash chip",
+                   missing=(b"24", (b"20", b"28", b"31"), b"29", "30"), console=b"1")
+PIN_BOARD = {
+    "":       dict(_WROOM_PINS, led=b"2", led_free=b"2", btn_free=b"4", serial=(b"16", b"17"),
+                   sd_clock=(b"18", b"Clock GPIO"), sd_rows=True),
+    "fncam":  dict(_WROOM_PINS, led=b"-1", led_free=b"13", btn_free=b"13", serial=(b"33", b"32"),
+                   sd_clock=None, sd_rows=False),
+    "espcam": dict(_WROOM_PINS, led=b"33", led_free=b"33", btn_free=None, serial=None,
+                   sd_clock=None, sd_rows=None),
+    "s3":     dict(_S3_FLASH, led=b"-1", led_free=b"4", btn_free=b"4", serial=(b"2", b"1"),
+                   sd_clock=(b"14", b"Clock GPIO"), sd_rows=True),
+    "ws2":    dict(_S3_FLASH, led=b"-1", led_free=b"18", btn_free=b"18", serial=None,
+                   sd_clock=None, sd_rows=None),
+    "ws43b":  dict(_S3_FLASH, led=b"-1", led_free=None, btn_free=None, serial=(b"43", b"44"),
+                   sd_clock=None, sd_rows=None),
+    "wseth":  dict(_S3_FLASH, led=b"-1", led_free=None, btn_free=None, serial=None,
+                   sd_clock=None, sd_rows=None),
+    "mf35":   dict(_S3_FLASH, led=b"-1", led_free=None, btn_free=None, serial=(b"17", b"18"),
+                   sd_clock=None, sd_rows=None),
+}
+PB = PIN_BOARD.get(HOST_BOARD, PIN_BOARD[""])
+
+
+def pin_skip(what):
+    """A check this profile's pins cannot make (PIN_BOARD), said as a SKIP."""
+    print(f"  SKIP  {what}: not known for the {HOST_BOARD or 'reference'} profile")
+    return True
+
 
 def cfg_sysop(handle):
     """An ANSI caller elevated to the sysop node, ready for CONFIG."""
@@ -6238,17 +6304,26 @@ def test_config_parser_rules():
     cfg_cancel(s)
 
     # -1 is "no pin" to the parser and was "Numbers only" to CONFIG. The LED
-    # is the seventh row since 1.1.0, when the Timezone became two rows.
-    cfg_open(s, b"board", b"Hostname")
-    s.buf.clear()
-    s.send(DOWN * BOARD_LED + b"\x08" * 3 + b"-1" + F1)
-    got = cfg_verdict(s, [b"Saved and live", b"Numbers only", b"Between", b"saved, but"])
-    ok &= check("the LED pin takes -1, no LED, as the parser does", got == b"Saved and live")
-    if local:
-        ok &= check("written as -1", (cfg_line("activity_led_gpio") or "").endswith("= -1"))
-    cfg_open(s, b"board", b"Hostname")
-    s.send(DOWN * BOARD_LED + b"\x08" * 3 + b"2" + F1)
-    cfg_verdict(s, [b"Saved and live", b"Nothing changed"])
+    # is the seventh row since 1.1.0, when the Timezone became two rows. A
+    # profile that ships the LED at -1 is moved to a free pin first, or the
+    # save of -1 is "Nothing changed" (PIN_BOARD).
+    if PB["led_free"] is None:
+        ok &= pin_skip("the LED pin takes -1")
+    else:
+        if PB["led"] == b"-1":
+            cfg_open(s, b"board", b"Hostname")
+            s.send(DOWN * BOARD_LED + b"\x08" * 3 + PB["led_free"] + F1)
+            cfg_verdict(s, [b"Saved and live", b"Nothing changed"])
+        cfg_open(s, b"board", b"Hostname")
+        s.buf.clear()
+        s.send(DOWN * BOARD_LED + b"\x08" * 3 + b"-1" + F1)
+        got = cfg_verdict(s, [b"Saved and live", b"Numbers only", b"Between", b"saved, but"])
+        ok &= check("the LED pin takes -1, no LED, as the parser does", got == b"Saved and live")
+        if local:
+            ok &= check("written as -1", (cfg_line("activity_led_gpio") or "").endswith("= -1"))
+        cfg_open(s, b"board", b"Hostname")
+        s.send(DOWN * BOARD_LED + b"\x08" * 3 + PB["led"] + F1)
+        cfg_verdict(s, [b"Saved and live", b"Nothing changed"])
 
     # The staff page's two co-sysop rows, told apart inside the nine
     # column label. They both read "Co-sysop " before. At 80 (1.1.0) there
@@ -6314,26 +6389,29 @@ def test_config_guards():
     before = cfg_line("activity_led_gpio") if local else None
     cfg_open(s, b"board", b"Hostname")
     s.buf.clear()
-    s.send(DOWN * BOARD_LED + b"\x08" * 3 + b"6" + F1)
-    got = cfg_verdict(s, [b"flash chip", b"Saved"])
-    ok &= check("the LED cannot be put on a flash pin", got == b"flash chip")
+    s.send(DOWN * BOARD_LED + b"\x08" * 3 + PB["flash"][0] + F1)
+    got = cfg_verdict(s, [PB["flash_pat"], b"Saved"])
+    ok &= check("the LED cannot be put on a flash pin", got == PB["flash_pat"])
     cfg_cancel(s)
     if local:
         ok &= check("and nothing is written", cfg_line("activity_led_gpio") == before)
     cfg_open(s, b"backup", b"Open for")
     s.buf.clear()
-    s.send(DOWN * 2 + b"\x08" * 3 + b"11" + F1)
-    got = cfg_verdict(s, [b"flash chip", b"Saved"])
-    ok &= check("nor the backup button", got == b"flash chip")
+    s.send(DOWN * 2 + b"\x08" * 3 + PB["flash"][1] + F1)
+    got = cfg_verdict(s, [PB["flash_pat"], b"Saved"])
+    ok &= check("nor the backup button", got == PB["flash_pat"])
     cfg_cancel(s)
 
     # And a plugin's pins, through the same rule: the SD card's CS.
-    cfg_open(s, b"sd", b"CS pin")
-    s.buf.clear()
-    s.send(DOWN * 4 + b"\x08" * 3 + b"7" + F1)
-    got = cfg_verdict(s, [b"flash chip", b"Saved", b"Between"])
-    ok &= check("nor an SD card pin", got == b"flash chip")
-    cfg_cancel(s)
+    if not PB["sd_rows"]:
+        ok &= pin_skip("an SD card pin on a flash pin")
+    else:
+        cfg_open(s, b"sd", b"CS pin")
+        s.buf.clear()
+        s.send(DOWN * 4 + b"\x08" * 3 + PB["flash"][2] + F1)
+        got = cfg_verdict(s, [PB["flash_pat"], b"Saved", b"Between"])
+        ok &= check("nor an SD card pin", got == PB["flash_pat"])
+        cfg_cancel(s)
     s.close()
     return ok
 
@@ -11878,6 +11956,60 @@ def test_last_node_ten():
     ok &= check("and every row fits 39", max((len(r.rstrip()) for r in rows), default=0) <= 39)
     drain(v)
     v.close()
+    return ok
+
+
+def test_room_squelch_ten():
+    """/sq 10 hides node 10, and /sq 1 does not (1.2.1).
+
+    squelched() read one character of a line's "#n:" tag, so "#10:" was
+    node 1: /sq 10 hid nothing and /sq 1 hid node 10 as well."""
+    print("Chat: squelch on a two-digit node")
+    if MAX_NODES < 10:
+        print("  SKIP  this profile has fewer than ten nodes")
+        return True
+    fillers = [Caller(ansi=True) for _ in range(MAX_NODES - 2)]
+    time.sleep(0.5 + MAX_NODES * 0.05)       # every node has to finish detection
+    w = ansi_login("SqWatcher")
+    ten = ansi_login("SqTen")
+    ok = check("the watcher is on node 9 and the speaker on 10", w.node() == "9" and ten.node() == "10")
+    fillers[0].close()
+    time.sleep(0.5)
+    one = ansi_login("SqOne")
+    ok &= check("and another speaker on node 1", one.node() == "1")
+    for c in (w, ten, one):
+        drain(c)
+        c.send(b"chat\r")
+        c.wait_for(b"here.", 4)
+        drain(c)
+    try:
+        w.buf.clear()
+        w.send(b"/sq 1\r")
+        ok &= check("/sq 1 hides node 1", w.wait_for(b"Node 1 hidden", 4))
+        w.buf.clear()
+        ten.send(b"from node ten\r")
+        ok &= check("and node 10 is still heard", w.wait_for(b"from node ten", 4))
+        w.buf.clear()
+        one.send(b"from node one\r")
+        w.pump(1.0)
+        ok &= check("node 1 is not", b"from node one" not in w.buf)
+        w.send(b"/sq 1\r")
+        w.wait_for(b"Node 1 back", 4)
+        w.buf.clear()
+        w.send(b"/sq 10\r")
+        ok &= check("/sq 10 hides node 10", w.wait_for(b"Node 10 hidden", 4))
+        w.buf.clear()
+        ten.send(b"ten again\r")
+        w.pump(1.0)
+        ok &= check("its lines are hidden", b"ten again" not in w.buf)
+        one.send(b"one again\r")
+        ok &= check("and node 1 is heard", w.wait_for(b"one again", 4))
+    finally:
+        for c in (w, ten, one):
+            c.close()
+        for f in fillers[1:]:
+            f.close()
+        time.sleep(0.5)
     return ok
 
 
@@ -18686,7 +18818,7 @@ GROUPS = {
     # a change to it can break either end.
     "messaging": ["mail", "forums", "chat", "room_commands", "room_new", "room_quit",
                   "survives_notice", "config_forum", "room_time", "bell", "codes_in",
-                  "room_narrow", "room_private",
+                  "room_narrow", "room_private", "room_squelch",
                   "long_help", "info_pages", "operator", "notices_in", "ring_mail",
                   "sysop_account", "mail_in_place", "time_warn"],
     # The subsystems that own a session and draw their own screens.
@@ -18738,7 +18870,7 @@ ORDER_NAMES = [
     "test_announce_badges", "test_announce_directory",
     "test_chat", "test_room_commands", "test_room_new_commands", "test_room_private", "test_room_quit_logoff",
     "test_room_time_staff_only", "test_time_warn_in_plugins", "test_bell", "test_codes_in_messages", "test_fx_codes", "test_room_narrow_effects",
-    "test_room_narrow_whole_line", "test_room_private_own_tag", "test_last_node_ten",
+    "test_room_narrow_whole_line", "test_room_private_own_tag", "test_last_node_ten", "test_room_squelch_ten",
     "test_long_help",
     "test_info_pages",
     "test_mail", "test_prompt_survives_notice", "test_menus", "test_sysinfo", "test_hardware",
@@ -18806,7 +18938,7 @@ ORDER_NAMES = [
     # 1.1.0 Phase 5, the backups lane. Before the destructive ones below,
     # never after test_ban. The Backups area restores this board from a
     # backup it has just taken, as test_backup_card does.
-    "test_backups_area", "test_card_screens_manifest", "test_restore_checks",
+    "test_backups_area", "test_files_typed_number", "test_card_screens_manifest", "test_restore_checks",
     "test_restore_staff_report", "test_restore_ends_screens", "test_sd_no_reprobe",
     "test_rewrites_keep_old", "test_restore_waits_quiet", "test_screens_command", "test_screens_install",
     # 1.1.2, the lag work: each drives one audited path with the cost of a
@@ -19016,38 +19148,40 @@ def test_config_pin_exists():
     before = cfg_line("activity_led_gpio") if local else None
     cfg_open(s, b"board", b"Hostname")
     s.buf.clear()
-    s.send(DOWN * BOARD_LED + b"\x08" * 3 + b"24" + F1)
-    got = cfg_verdict(s, [b"no such pin", b"Saved", b"flash chip"])
-    ok = check("the LED cannot be put on GPIO 24", got == b"no such pin")
+    led_gone, btn_gone, drive_gone, file_gone = PB["missing"]
+    s.send(DOWN * BOARD_LED + b"\x08" * 3 + led_gone + F1)
+    got = cfg_verdict(s, [b"no such pin", b"Saved", PB["flash_pat"]])
+    ok = check(f"the LED cannot be put on GPIO {led_gone.decode()}", got == b"no such pin")
     cfg_cancel(s)
     if local:
         ok &= check("and nothing is written", cfg_line("activity_led_gpio") == before)
 
-    for pin in (b"20", b"28", b"31"):
+    for pin in btn_gone:
         cfg_open(s, b"backup", b"Open for")
         s.buf.clear()
         s.send(DOWN * 2 + b"\x08" * 3 + pin + F1)
-        got = cfg_verdict(s, [b"no such pin", b"Saved", b"flash chip"])
+        got = cfg_verdict(s, [b"no such pin", b"Saved", PB["flash_pat"]])
         ok &= check(f"nor the backup button on GPIO {pin.decode()}", got == b"no such pin")
         cfg_cancel(s)
 
     # A plugin's pin goes through the same rule, and says the same sentence.
     cfg_open(s, b"lights", b"Drive pin")
     s.buf.clear()
-    s.send(DOWN * 4 + b"\x08" * 3 + b"29" + F1)
-    got = cfg_verdict(s, [b"Saved", b"no such pin", b"flash chip", b"Between"])
-    ok &= check("nor a plugin's pin: the drive light on GPIO 29", got == b"no such pin")
+    s.send(DOWN * 4 + b"\x08" * 3 + drive_gone + F1)
+    got = cfg_verdict(s, [b"Saved", b"no such pin", PB["flash_pat"], b"Between"])
+    ok &= check(f"nor a plugin's pin: the drive light on GPIO {drive_gone.decode()}", got == b"no such pin")
     cfg_cancel(s)
     s.close()
 
     # A hand-edited file at boot: the line is refused and says why.
     if local:
         port = PORT + 3703
-        proc, tmp = restart_copy((str(port),), edits={("", "activity_led_gpio"): "30"})
+        proc, tmp = restart_copy((str(port),), edits={("", "activity_led_gpio"): file_gone})
         try:
             log = copy_log(tmp, f"listening on {port},")
-            ok &= check("a hand-edited GPIO 30 is refused at boot, by line and reason",
-                        "this chip has no such pin: 30" in log and "activity led gpio 30" not in log)
+            ok &= check(f"a hand-edited GPIO {file_gone} is refused at boot, by line and reason",
+                        f"this chip has no such pin: {file_gone}" in log and
+                        f"activity led gpio {file_gone}" not in log)
         finally:
             stop_copy(proc, tmp)
     return ok
@@ -19118,6 +19252,78 @@ def copy_sysop(handle, port):
     s.wait_for(b"Sysop", 3)
     s.pump(0.4)
     return s, ok
+
+
+def test_files_typed_number():
+    """FILES opens an area past 10 by its digits and Enter (1.2.1).
+
+    The area menu took each digit as its own key, so Photos (12) and
+    Timelapse (13) could not be opened by number, and plain ASCII has no
+    cursor to reach them with. A digit that could start a longer number the
+    caller can open now waits for the rest and Enter; one that cannot opens
+    its area at once, as before. Played with the sysop's Backups (11) on a
+    plain ASCII line, where the cursor is no way in."""
+    print("FILES: an area past 10 by number")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    if card_dir() is None:
+        print("  SKIP  needs a card")
+        return True
+    ok = True
+    a = ascii_sysop("TypedArea")
+    try:
+        a.buf.clear()
+        a.send(b"files\r")
+        a.wait_for(b"File areas", 5)
+        a.pump(0.8)
+        a.buf.clear()
+        a.send(b"1")
+        ok &= check("1, with 10 and 11 there, asks for the rest", a.wait_for(b"Section number:", 4))
+        a.send(b"1\r")
+        ok &= check("and 1 1 Enter opens Backups", a.wait_for(b"Backups", 5))
+        a.pump(0.6)
+        leave_files(a)
+        a.buf.clear()
+        a.send(b"files\r")
+        a.wait_for(b"File areas", 5)
+        a.pump(0.8)
+        a.buf.clear()
+        a.send(b"1\r")
+        ok &= check("1 Enter opens area 1", a.wait_for(b"C64 Downloads", 5))
+        a.pump(0.6)
+        leave_files(a)
+        a.buf.clear()
+        a.send(b"files\r")
+        a.wait_for(b"File areas", 5)
+        a.pump(0.8)
+        a.buf.clear()
+        a.send(b"2")
+        ok &= check("2, which starts no longer number, opens its area at once",
+                    a.wait_for(b"Empty Area", 5) and b"Section number:" not in plain(a.buf))
+        a.pump(0.6)
+        leave_files(a)
+    finally:
+        a.close()
+    time.sleep(1.0)                  # the sysop node holds one caller
+
+    # An ordinary caller sees no area past 10 here: 1 is area 1 at once.
+    c = ansi_login("TypedAreaCaller")
+    try:
+        drain(c)
+        c.buf.clear()
+        c.send(b"files\r")
+        c.wait_for(b"File areas", 5)
+        c.pump(0.8)
+        c.buf.clear()
+        c.send(b"1")
+        ok &= check("a caller with no area past 10 gets area 1 on the key",
+                    c.wait_for(b"C64 Downloads", 5) and b"Section number:" not in plain(c.buf))
+        c.pump(0.6)
+        leave_files(c)
+    finally:
+        c.close()
+    return ok
 
 
 def test_backups_area():
@@ -20434,16 +20640,21 @@ def test_config_serial_rows():
     lines = render_lines(s.buf)
     rx, tx = form_row(lines, "RX GPIO"), form_row(lines, "TX GPIO")
     baud, fmt = form_row(lines, "Baud rate"), form_row(lines, "Bits, parity, stop")
-    ok = check("the page has the pins, as the bridge runs them", rx[22:24] == "16" and tx[22:24] == "17")
+    if PB["serial"] is None:
+        ok = pin_skip("the page has the pins, as the bridge runs them")
+    else:
+        want_rx, want_tx = (p.decode() for p in PB["serial"])
+        ok = check("the page has the pins, as the bridge runs them",
+                   rx[22:26].split()[:1] == [want_rx] and tx[22:26].split()[:1] == [want_tx])
     ok &= check("and the speed and the format", baud[22:28] == "115200" and fmt[22:25] == "8N1")
     # Rows: 0 Enabled, 1 Read, 2 Write, 3 Admin, 4 RX, 5 TX, 6 Baud, 7 Format.
     s.buf.clear()
-    s.send(DOWN * 4 + b"\x08" * 3 + b"1" + F1)
+    s.send(DOWN * 4 + b"\x08" * 3 + PB["console"] + F1)
     got = cfg_verdict(s, [b"console port", b"Saved", b"Between"])
     ok &= check("RX on the console's pin is refused", got == b"console port")
     # Whole, at 80: the blink that shows a refusal used to stop at 60.
     ok &= check("in a sentence the status line shows whole",
-                b"GPIO 1 is the console port: flashing and Improv need it. Pick another."
+                b"GPIO " + PB["console"] + b" is the console port: flashing and Improv need it. Pick another."
                 in plain(s.buf))
     cfg_cancel(s)
     cfg_open(s, b"serial", b"Enabled")
@@ -20542,15 +20753,19 @@ def test_config_pin_holders():
     local = HOST in ("127.0.0.1", "localhost")
     s = cfg_sysop("PinHold")
     before = cfg_line("activity_led_gpio") if local else None
-    cfg_open(s, b"board", b"Hostname")
-    s.buf.clear()
-    s.send(DOWN * BOARD_LED + b"\x08" * 3 + b"18" + F1)
-    got = cfg_verdict(s, [b"GPIO 18 is taken: CONFIG sd, Clock GPIO. Pick another.", b"Saved", b"no such pin"])
-    ok = check("the LED cannot take the SD card's clock, and says whose it is",
-               got == b"GPIO 18 is taken: CONFIG sd, Clock GPIO. Pick another.")
-    cfg_cancel(s)
-    if local:
-        ok &= check("and nothing is written", cfg_line("activity_led_gpio") == before)
+    if PB["sd_clock"] is None:
+        ok = pin_skip("the LED cannot take the SD card's clock")
+    else:
+        clk, label = PB["sd_clock"]
+        says = b"GPIO " + clk + b" is taken: CONFIG sd, " + label + b". Pick another."
+        cfg_open(s, b"board", b"Hostname")
+        s.buf.clear()
+        s.send(DOWN * BOARD_LED + b"\x08" * 3 + clk + F1)
+        got = cfg_verdict(s, [says, b"Saved", b"no such pin"])
+        ok = check("the LED cannot take the SD card's clock, and says whose it is", got == says)
+        cfg_cancel(s)
+        if local:
+            ok &= check("and nothing is written", cfg_line("activity_led_gpio") == before)
 
     cfg_open(s, b"board", b"Hostname")
     s.buf.clear()
@@ -20560,34 +20775,45 @@ def test_config_pin_holders():
     cfg_cancel(s)
 
     # The backup button is BOOT itself unless another is wired, so it alone
-    # may have GPIO 0: moved off it and back again, both save.
-    cfg_open(s, b"backup", b"Open for")
-    s.buf.clear()
-    s.send(DOWN * 2 + b"\x08" * 3 + b"4" + F1)
-    first = cfg_verdict(s, [b"Saved and live", b"BOOT", b"taken", b"saved, but"])
-    cfg_open(s, b"backup", b"Open for")
-    s.buf.clear()
-    s.send(DOWN * 2 + b"\x08" * 3 + b"0" + F1)
-    back = cfg_verdict(s, [b"Saved and live", b"BOOT", b"taken", b"saved, but"])
-    ok &= check("the backup button may be BOOT", first == b"Saved and live" and back == b"Saved and live")
+    # may have GPIO 0: moved off it (to a pin this profile has free) and back
+    # again, both save.
+    if PB["btn_free"] is None:
+        ok &= pin_skip("the backup button may be BOOT")
+    else:
+        cfg_open(s, b"backup", b"Open for")
+        s.buf.clear()
+        s.send(DOWN * 2 + b"\x08" * 3 + PB["btn_free"] + F1)
+        first = cfg_verdict(s, [b"Saved and live", b"BOOT", b"taken", b"saved, but"])
+        cfg_open(s, b"backup", b"Open for")
+        s.buf.clear()
+        s.send(DOWN * 2 + b"\x08" * 3 + b"0" + F1)
+        back = cfg_verdict(s, [b"Saved and live", b"BOOT", b"taken", b"saved, but"])
+        ok &= check("the backup button may be BOOT", first == b"Saved and live" and back == b"Saved and live")
 
-    # The serial bridge is on in the test board, and holds 16 and 17.
-    cfg_open(s, b"sd", b"CS pin")
-    s.buf.clear()
-    s.send(DOWN * 6 + b"\x08" * 3 + b"17" + F1)          # the card's clock onto the bridge's TX
-    got = cfg_verdict(s, [b"GPIO 17 is taken: CONFIG serial, TX GPIO", b"Saved", b"Between"])
-    ok &= check("a plugin cannot take another plugin's pin",
-                got == b"GPIO 17 is taken: CONFIG serial, TX GPIO")
-    cfg_cancel(s)
+    # The serial bridge is on in the test board, and holds its RX and TX.
+    if PB["serial"] is None or not PB["sd_rows"]:
+        ok &= pin_skip("a plugin cannot take another plugin's pin")
+    else:
+        brx, btx = PB["serial"]
+        says = b"GPIO " + btx + b" is taken: CONFIG serial, TX GPIO"
+        cfg_open(s, b"sd", b"CS pin")
+        s.buf.clear()
+        s.send(DOWN * 6 + b"\x08" * 3 + btx + F1)       # the card's clock onto the bridge's TX
+        got = cfg_verdict(s, [says, b"Saved", b"Between"])
+        ok &= check("a plugin cannot take another plugin's pin", got == says)
+        cfg_cancel(s)
     s.close()
     time.sleep(1.0)              # the sysop node holds one caller
+    if PB["serial"] is None:
+        ok &= pin_skip("switching a plugin on with a held pin is refused, at 40 too")
+        return ok
 
     # At 40 the same refusal, inside the 38 column status line. Switching the
     # lights on with a pin the bridge holds is when the lights would take it.
     t = cfg_sysop40("PinHold40")
     cfg_open(t, b"lights", b"Drive pin")
     t.buf.clear()
-    t.send(b"y" + DOWN * 4 + b"\x08" * 3 + b"16" + F1)
+    t.send(b"y" + DOWN * 4 + b"\x08" * 3 + PB["serial"][0] + F1)
     got = cfg_verdict(t, [b"Taken: serial, RX pin", b"Saved", b"That is the"])
     ok &= check("switching a plugin on with a held pin is refused, at 40 too",
                 got == b"Taken: serial, RX pin")
@@ -20898,6 +21124,11 @@ REALTIME = {
     "test_board_ws43b":
         "reads the panel 5 real seconds after a tap to see the tapped page "
         "held its 10 s; at x4 the hold is 2.5 s and the page has moved on",
+    "test_board_ws2":
+        "reads the header's page on either side of a tap; the page turns by "
+        "itself every 3 s plus a 16-step fade (panel.cpp kHoldMs, kStepMs), "
+        "about 1 real second at x4, so the board's own turn lands between "
+        "the reads and the tap moves a page further (the 1.2.0 full run)",
 }
 
 # What a test needs to have run before it, on the same board. parallel.py

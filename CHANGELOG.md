@@ -55,6 +55,46 @@ Host-tested only so far; the board versions move when their own code does.
   is ignored once; within 15 minutes the question then waits for you to
   type it.
 
+The 1.1.3 queue and the 1.2.0 full run's findings (1.2.1-dev.3):
+
+- **`/sq 10` hides node 10.** The room read one character of a line's
+  `#n:` tag, so a line from node 10 was node 1's: `/sq 10` hid nothing and
+  `/sq 1` hid node 10 as well.
+- **CONFIG's core pin rows reach GPIO 40 to 48 on the S3s** (the LED and
+  the backup button stopped at 39). They follow the chip's highest pin, so
+  the ESP32 images are unchanged; `pinProblem` still refuses what each
+  profile owns.
+- **The VFS table is 12 on every S3**, in the shared S3 layer
+  (`sdkconfig.defaults.esp32s3`) rather than four boards' own, and the
+  LCD-1.47 gets it too: with SSH and a card an S3 was at 8 of 8. One board.h
+  guard refuses an S3 image built without it. The card's out-of-memory
+  message names a full VFS table as well as memory.
+- **FILES opens areas past 10 by number.** A digit that could start a
+  longer number the caller can open (1, with Photos at 12) waits for the
+  rest and Enter; one that cannot opens its area at once, as before. Plain
+  ASCII reaches Photos and Timelapse by number. `#` still works.
+- **The camera's first snap after a boot is the size CONFIG saved.** Its
+  size was chosen from the board's list before any sensor had answered, so
+  an OV2640 on the Freenove came up at VGA with UXGA saved; the worker now
+  brings it up again at the size the sensor gives, once a boot at most.
+- **The first timed shot after a boot is not lost.** It fell due before
+  the heap had settled and was refused for memory, and with it that slot's
+  picture. A timed shot is held now: none in the board's first 30 s, then
+  tried once a second for up to a minute (or half the interval), then
+  dropped with a line on the console.
+- **SSH offers only the ciphers it has** (S3): wolfSSH's list named
+  aes192-gcm and aes192-ctr, which this build of wolfCrypt leaves out.
+- Tests: `test_doors` waits for the second restart's door list,
+  `test_board_ws2` runs on the real clock, `test_sats` reads the sat's name
+  from SATS, the skin unit test's GCC 13 warning is gone, `plugins.lock`
+  pins camsat v1.1.0, the host's S3 profiles refuse 43 and 44 as the
+  console, and the shared CONFIG pin tests read the profile's pins
+  (`PIN_BOARD`). New: `test_room_squelch_ten`, `test_files_typed_number`.
+- Static DRAM off the ELF: the camera boards pay 8 bytes for the held timed
+  shot (ESP32-CAM 2,688 free, Freenove 4,160), the S3s without a camera 16
+  for the four VFS slots the LCD-1.47 gains (79,784 free); the WROOM is
+  unchanged (15,080).
+
 ## 1.2.0 (S3 1.1.4, WS43B 1.0.2, WS2 1.0.3, ETH 1.0.2, MF35 1.1.2, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-29: the hardware release
 
 **Out early for testing: this release has not been through the full

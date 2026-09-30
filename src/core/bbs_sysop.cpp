@@ -2004,10 +2004,15 @@ bool cfgWarnQuestion(const Term& t, char* q, size_t qn, uint8_t* row) {
 // The console's pins: UART0, which flashing, the serial monitor and Improv
 // all use, on every chip this firmware builds for. The serial bridge refused
 // them for itself; a pixel or an LED on one breaks the same things. The host
-// has no chip and stands in for the WROOM.
+// has no chip and stands in for the WROOM, or for the S3 when it is built as
+// an S3 profile (1.2.1: it said 1 and 3 whatever the profile, where the S3's
+// UART0 is 43 and 44).
 #ifdef ESP_PLATFORM
 constexpr long kConsoleTx = U0TXD_GPIO_NUM;
 constexpr long kConsoleRx = U0RXD_GPIO_NUM;
+#elif defined(BBS_CHIP_S3)
+constexpr long kConsoleTx = 43;
+constexpr long kConsoleRx = 44;
 #else
 constexpr long kConsoleTx = 1;
 constexpr long kConsoleRx = 3;

@@ -321,6 +321,12 @@ struct Job {
     // the picture (camera_pic.h), copied when the job starts
     bool      levels = true;
     uint8_t   gammaT = 10;                 // tenths
+    // The size CONFIG saved, and whether the sensor's own sizes were known
+    // when the job started (1.2.1). Before the first bring-up of a boot they
+    // are the profile's list, a guess, so the worker sizes again once the
+    // sensor has said. In the padding before err: no bytes.
+    uint8_t   savedSize = 0;
+    bool      sizeGuess = false;
     // results
     char      err[72] = {};
     uint32_t  bytes = 0;
@@ -368,6 +374,19 @@ enum : uint8_t { SENSOR_UNKNOWN, SENSOR_FOUND, SENSOR_MISSING };
 std::atomic<uint8_t> g_sensor{ SENSOR_UNKNOWN };
 uint32_t g_tlSlot = 0;
 bool     g_tlPrimed = false;
+// A timed shot that has fallen due and not been taken yet (1.2.1), since
+// when (0: none), and which second of its wait it was last tried in. The first
+// one after a boot fell due before the heap had settled and was refused for
+// memory, and with it that slot's picture: 46,371 internal free of 48,640
+// at 7.8 s on the Freenove.
+uint32_t g_tlHeldAt = 0;
+uint8_t  g_tlTried  = 0;          // 1 + the second last tried in, 0 none: zeroed, so .bss
+// No timed shot in a board's first 30 s, while start-up work (the survey's
+// worker, the runner's stack, Wi-Fi) still holds internal RAM; a held one is
+// tried once a second for up to a minute, or half the interval when that is
+// shorter, and then goes, said once.
+constexpr uint32_t kTlSettleMs = 30000;
+constexpr uint32_t kTlHoldMs   = 60000;
 
 // photosDir: the Photos folder on the card, or false with no card.
 bool photosDir(char* out, size_t n) {
@@ -484,6 +503,27 @@ uint8_t* shoot(Job& j, size_t& len) {
     }
     g_sensor.store(SENSOR_FOUND);
     sensorSizes();
+    // The first snap of a boot was sized from the profile's list, before any
+    // sensor had answered (1.2.1): an OV2640 in a GC0308 board's socket came
+    // up at VGA with UXGA saved. Now the sensor has said, so a size that
+    // comes out different is brought up again at it. Once a boot at most,
+    // on the worker, never the loop.
+    if (j.sizeGuess) {
+        const uint8_t use = campic::clampSize(j.savedSize, sizeCount());
+        if (strcmp(campic::kSizes[use].word, j.sizeWord) != 0) {
+            plat::log("camera: the sensor gives %s; bringing it up again at that",
+                      campic::kSizes[use].word);
+            plat::camClose();
+            snprintf(j.sizeWord, sizeof(j.sizeWord), "%s", campic::kSizes[use].word);
+            j.cam.size = j.sizeWord;
+            if (!plat::camOpen(j.cam, why, sizeof(why))) {
+                g_sensor.store(SENSOR_MISSING);
+                plat::camClose();
+                fail(j, why[0] ? why : "the camera would not start");
+                return nullptr;
+            }
+        }
+    }
     j.freeUp = plat::camInternalFree();                // what the camera left while it runs
     j.dmaUp  = plat::camDmaLargest();
     const uint8_t* buf = nullptr;
@@ -726,7 +766,11 @@ void snapshotCfg(Job& j) {
     // once for each saved size and sensor, not at every snap.
     const uint8_t count = sizeCount();
     const uint8_t use   = campic::clampSize(g_set.size, count);
-    if (use != g_set.size) {
+    j.savedSize = g_set.size;
+    j.sizeGuess = !g_sizeFound.load();
+    // Only once the sensor has said what it gives: before that the count is
+    // the profile's list, and the worker sizes again after the bring-up.
+    if (use != g_set.size && !j.sizeGuess) {
         static uint16_t said = 0xFFFF;
         const uint16_t now = static_cast<uint16_t>(g_set.size << 8 | count);
         if (said != now) {
@@ -1001,6 +1045,33 @@ void finish(uint32_t now) {
 }
 
 // ---------------------------------------------------------------------------
+// tlHeld: the timed shot that is due, tried once a second until it is taken
+// or its wait is over (g_tlHeldAt, 1.2.1). snapSystem says no for memory, a
+// job already running, a card under its floor; each is worth a second look
+// a second later, and none of them is worth losing the slot's picture over.
+// ---------------------------------------------------------------------------
+void tlHeld(uint32_t now) {
+    if (now < kTlSettleMs) return;                      // the board is still coming up
+    // The wait is counted from when the shot could first be tried: a shot
+    // due in the first seconds waits out the start-up, then its minute.
+    const uint32_t from  = g_tlHeldAt < kTlSettleMs ? kTlSettleMs : g_tlHeldAt;
+    const uint32_t held  = now - from;
+    uint32_t bound = static_cast<uint32_t>(g_set.tlEvery) * 500u;   // half the interval
+    if (!bound || bound > kTlHoldMs) bound = kTlHoldMs;
+    if (held > bound) {
+        plat::log("camera: a timed shot waited %u s and was not taken",
+                  static_cast<unsigned>(held / 1000u));
+        g_tlHeldAt = 0;
+        return;
+    }
+    const uint8_t sec = static_cast<uint8_t>(held / 1000u > 250u ? 250u : held / 1000u);
+    if (g_tlTried && sec + 1u <= g_tlTried) return;     // once a second
+    g_tlTried = static_cast<uint8_t>(sec + 1u);
+    if (camera::snapSystem(camrules::kTlFolder, camrules::kTlPrefix, g_set.tlKeep, g_set.tlMax))
+        g_tlHeldAt = 0;
+}
+
+// ---------------------------------------------------------------------------
 // tick: every 20 ms (PF_FAST). Moves the job on, drives the flash and the
 // spinner, and starts the timed shots and the survey at start. Never waits.
 // ---------------------------------------------------------------------------
@@ -1024,9 +1095,13 @@ void tick(uint32_t now) {
         if (clock) {
             uint32_t local = static_cast<uint32_t>(t.tm_hour * 3600 + t.tm_min * 60 + t.tm_sec) +
                              static_cast<uint32_t>(t.tm_yday) * camrules::kDay;
-            if (camrules::tlDue(local, g_set.tlEvery, g_tlSlot, g_tlPrimed))
-                camera::snapSystem(camrules::kTlFolder, camrules::kTlPrefix, g_set.tlKeep, g_set.tlMax);
+            if (camrules::tlDue(local, g_set.tlEvery, g_tlSlot, g_tlPrimed)) {
+                if (g_tlHeldAt) plat::log("camera: a timed shot was not taken before the next was due");
+                g_tlHeldAt = now ? now : 1;
+                g_tlTried  = 0;
+            }
         }
+        if (g_tlHeldAt) tlHeld(now);
         return;
     }
 
@@ -1496,6 +1571,7 @@ bool start(Bbs& bbs) {
     // The flash pin idles low from the start, so a relay never clicks at boot.
     if (g_set.flash == FLASH_PIN && g_set.flashPin >= 0) plat::pinOut(g_set.flashPin, false);
     g_tlPrimed = false;
+    g_tlHeldAt = 0;                                    // a new interval: nothing held over
     g_running  = true;
     // What a snap will find, for the bench: the sensor needs one 32 KB block
     // of internal DMA memory. One walk of the heap, at start only.

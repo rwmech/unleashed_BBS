@@ -740,6 +740,14 @@ bool begin() {
     wolfSSH_CTX_SetWindowPacketSize(g_ctx, BBS_SSH_WINDOW, BBS_SSH_PACKET);
     wolfSSH_SetUserAuth(g_ctx, userAuth);
     wolfSSH_SetUserAuthTypes(g_ctx, authTypes);
+    // The ciphers offered, the built ones only (1.2.1). wolfSSH's canned
+    // list names aes192-gcm and aes192-ctr whatever wolfCrypt was built
+    // with, and user_settings.h has NO_AES_192: a client that picked one
+    // would fail the key exchange. The vendored source stays untouched; the
+    // list is ours, and wolfSSH keeps the pointer, so it is static.
+    static const char kCiphers[] =
+        "aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes128-ctr";
+    wolfSSH_CTX_SetAlgoListCipher(g_ctx, kCiphers);
     wolfSSH_SetIORecv(g_ctx, ioRecv);
     wolfSSH_SetIOSend(g_ctx, ioSend);
 
