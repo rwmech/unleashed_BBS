@@ -2478,6 +2478,15 @@ void Bbs::askSysop(Session& s) {
     // holding the sysop's account password: one held answer an address a
     // ban window (BanList::aheadTake), and past that they are dropped again.
     s.sysopAhead = false;
+    // Line endings held on their own are not an answer (1.2.1, code review):
+    // a double Enter at the password, a client's CR LF (SSH has no telnet
+    // filter to eat the LF, and Term::feed takes 0x0A as Enter), or a
+    // SyncTERM entry with no system password that still sends its CR would
+    // each skip the question. They go, and the question waits for a typed
+    // answer with the held try unspent, as in 1.2.0.
+    while (s.rxPos < s.rxLen &&
+           (s.rxBuf[s.rxPos] == 0x0D || s.rxBuf[s.rxPos] == 0x0A || s.rxBuf[s.rxPos] == 0x00))
+        ++s.rxPos;
     if (s.rxPos < s.rxLen) {
         if (bans_.aheadTake(s.ipAddr, plat::millis())) s.sysopAhead = true;
         else s.rxLen = s.rxPos = 0;

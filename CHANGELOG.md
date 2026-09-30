@@ -45,6 +45,16 @@ Host-tested only so far; the board versions move when their own code does.
   password clears it; an empty held line or ESC gives it back. Costs no
   static RAM (both new fields sit in padding).
 
+- **A held Enter alone does not answer the sysop question** (1.2.1-dev.2,
+  from the code review of dev.1). A double Enter at the password, a
+  client's CR LF (over SSH there is no telnet filter to eat the LF), or a
+  SyncTERM entry with an empty system password that still sends its CR
+  skipped the question and left the sysop at Main needing BYE. Held line
+  endings are dropped now and the question waits for a typed answer, with
+  the held try unspent. And, as it stands: a wrong stored system password
+  is ignored once; within 15 minutes the question then waits for you to
+  type it.
+
 ## 1.2.0 (S3 1.1.4, WS43B 1.0.2, WS2 1.0.3, ETH 1.0.2, MF35 1.1.2, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-29: the hardware release
 
 **Out early for testing: this release has not been through the full

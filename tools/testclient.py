@@ -5138,11 +5138,26 @@ def test_sysop_burst_wrong():
 
     try:
         failed0 = console().count("staff password failed")
+        # An empty third line (SyncTERM with no system password still sends
+        # its CR, or a double Enter): nothing to answer with, so the question
+        # waits for a typed answer and the held try is not spent.
+        c = _burst(port, "AcctBurstNo", b"")
+        ok &= check("an empty third line logs in", c.wait_for(b"ACCESS GRANTED", 8))
+        ok &= check("and is asked", c.wait_for(b"Sysop password: ", 8))
+        mark = c.buf.rfind(b"Sysop password: ")
+        c.pump(1.5)
+        ok &= check("a held Enter alone does not answer it: the question waits",
+                    b"Main" not in c.buf[mark:] and b"SysOp node" not in c.buf[mark:])
+        c.send(b"\r")
+        ok &= check("a typed Enter still skips it", wait_any_after(c, [b"Main"], mark, 8) == 0)
+        c.close()
+        time.sleep(0.4)
+
         c = _burst(port, "AcctBurstNo", b"dash")
         ok &= check("the burst logs in", c.wait_for(b"ACCESS GRANTED", 8))
         ok &= check("the question is asked", c.wait_for(b"Sysop password: ", 8))
         mark = c.buf.rfind(b"Sysop password: ")
-        ok &= check("a wrong held line lands at Main", wait_any_after(c, [b"Main"], mark, 8) == 0)
+        ok &= check("a wrong held line lands at Main (so the empty burst left the held try unspent)", wait_any_after(c, [b"Main"], mark, 8) == 0)
         c.pump(0.4)
         ok &= check("as an ordinary caller", b"SysOp node" not in plain(c.buf))
         ok &= check("with nothing said about it", b"not the sysop password" not in plain(c.buf))
