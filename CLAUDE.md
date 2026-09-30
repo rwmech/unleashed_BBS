@@ -824,6 +824,33 @@ this tree.
   takes the card down. Move `CONFIG_VFS_MAX_COUNT=12` into the shared S3
   layer with a generic board.h guard, and have the sd plugin's
   ESP_ERR_NO_MEM message name the full VFS table as well as memory.
+  **The Makerfabs v2.0, MF35V2 1.0.0 on 1.2.0** (board-mf35v2 from v1.2.0,
+  2026-09-30, COM29 on its USB-NATIVE port; merges into 1.2.1). The model
+  was confirmed from Rob's photos before any pin was trusted (silkscreen
+  "... ili9488 v2.0", module "MCN16R8"). What this lane taught:
+  - **The console follows the cable Rob uses, and Improv follows the
+    console.** The 9823748 profile put the console on UART0 like the v1.0;
+    with the board cabled to USB-NATIVE that leaves the native port an
+    output-only secondary, so Improv never hears the browser. The v2.0 runs
+    the S3 layer's USB-Serial-JTAG console; its layer adds only the VFS
+    table. 43 and 44 are refused as the CP2104's wires (BBS_PINS_WIRED).
+  - **Touch was on the board all along**: an FT6236 on the flex (P2: SDA 38,
+    SCL 39, INT 40, RST on EN, 0x38). It runs on the Touch-LCD-2's taps path
+    (legacy I2C at the panel's start, taps from INT) with `BBS_TOUCH_FT6236`
+    choosing the chip ID register (0xA3) and skipping the CST816's IRQ write,
+    and `BBS_TOUCH_CHIP` naming it. The bench chip answered ID 0x64 (the
+    FT6336 family's), not 0x36: FocalTech's parts are sold under each other's
+    names. Taps carry no position, so the panel's turn cannot misplace them.
+  - The v2.0 schematic still carries the S2 module symbol's pin names (IO47
+    and IO48 on symbol pins "IO33"/"IO34"). An Eagle .sch is XML: read it as
+    a netlist (`release-prep/mf35v2/netlist.py`), not by eye.
+  - Other boards' images: same-worktree builds before and after, every
+    object compared; the only difference is the ELF's own SHA-256 in the
+    app descriptor and the image digest (65 bytes), from moved debug line
+    numbers. `release-prep/mf35v2/objcmp.py` and `objdiff.py` do it.
+  - Static DRAM 266,720 of 341,760 (75,040 free); image 1,507,216. Bench:
+    internal heap 49,203 free, low 37,843 after setup; SSH on 6400 and 6422
+    with host/ssh_call from WSL (it reaches the LAN).
   **Boards are chosen to maximise what the BBS can do, not to work around
   vendor wiring** (Rob: "not work around dumb vendor BS"). Rejected on
   that ground: the KEYESTUDIO ESP32-S3 PRO (N16R8), whose on-board SD slot

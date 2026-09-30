@@ -188,12 +188,19 @@ BUILDS = (
     # Waveshare's octal. Not for the v2.0 board (octal PSRAM, another bus).
     {"dir": "esp32s3-mf35", "env": "makerfabs_s3_par35_release", "family": "ESP32-S3", "boot": 0x0,
      "board": "BBS_BOARD_MF_S3PAR35", "table": "partitions_s3.csv"},
+    # And its hardware v2.0 (MF35V2 1.0.0, on 1.2.0): octal N16R8, the
+    # strobes moved, the console on the chip's own USB. The v1.0's image here
+    # looks for quad PSRAM on an octal part and drives WR, D/C and CS on
+    # octal PSRAM's pins. tag_only until the profile merges into a release
+    # (1.2.1); that merge drops it.
+    {"dir": "esp32s3-mf35v2", "env": "makerfabs_s3_par35v2_release", "family": "ESP32-S3", "boot": 0x0,
+     "board": "BBS_BOARD_MF_S3PAR35V2", "table": "partitions_s3.csv", "tag_only": True},
 )
 
 # A board pre-release's key, the word in its tag after the core version
 # (v1.1.2-ws2.1), and the one set it carries.
 BOARD_TAGS = {"ws43b": "esp32s3-ws43b", "ws2": "esp32s3-ws2", "eth": "esp32s3-eth",
-              "mf35": "esp32s3-mf35"}
+              "mf35": "esp32s3-mf35", "mf35v2": "esp32s3-mf35v2"}
 
 # A combined preview: several boards' sets under one pre-release tag, the
 # core version's X.Y.Z then the name (v1.1.2-hardware-preview, Rob,

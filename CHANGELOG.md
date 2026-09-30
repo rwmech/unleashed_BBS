@@ -24,6 +24,40 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## MF35V2 1.0.0 on 1.2.0, 2026-09-30: the Makerfabs Parallel TFT 3.5" v2.0 (board lane)
+
+A board lane from v1.2.0 (branch board-mf35v2), merged into 1.2.1. The core
+stays 1.2.0; the board says `1.2.0 (MF35V2 1.0.0)`. On the bench (COM29), not
+yet in a release: its image set is `esp32s3-mf35v2`, tag_only until the merge.
+
+- **The board Makerfabs sell now**: the ESP32-S3 Parallel TFT with Touch 3.5"
+  hardware v2.0 (ESP32-S3-WROOM-1-N16R8, 8 MB octal PSRAM), a profile of its
+  own (`BBS_BOARD_MF_S3PAR35V2`, envs `makerfabs_s3_par35v2` and `_release`).
+  The v1.0's image does not run it: the v2.0 moved the panel's WR, D/C and CS
+  to 18, 17 and 46 because 35 to 37 are octal PSRAM's pins.
+- Everything the v1.0 has on 1.2.0: the 480 x 320 status skin and the panel
+  skins, SSH on 6400 and 6422 (eight at once), the S3's 8 MB layout (the first
+  install is an erase), the link, and the VFS table at 12.
+- **The console is the chip's own USB** (the port marked USB-NATIVE), not the
+  v1.0's CP2104: that is where Improv and the installer's Update answer. The
+  USB-TTL port still flashes but carries no console.
+- **Touch**: the FT6236 on the glass's flex (I2C 38/39, INT 40, address 0x38)
+  is read as taps, as on the Touch-LCD-2: a tap wakes the glass and turns the
+  header, and CONFIG panel's sleep timer applies. PANEL names the chip.
+- Landscape with the USB edge at the bottom by default (Rob's choice).
+- Pins from Makerfabs' v2.0 schematic, read as a netlist, cross-checked against
+  their SD16_3.5 firmware, touch_keyboard_v2 and their IDF board config
+  (release-prep/mf35v2/pins.md). CONFIG refuses 43 and 44 (the CP2104's), 38,
+  39 and 40 (touch), 19 and 20 (the USB, also on the J1 socket) and the panel's
+  data bus.
+- Static DRAM 266,720 of 341,760 (75,040 free), image 1,507,216 bytes. The
+  Waveshare stick's and the v1.0's code and data are unchanged (only the
+  ELF's own hash in each image moved, with the debug line numbers).
+- On the bench: 8 MB PSRAM found, the card mounted over SPI, the FT6236
+  answered (chip ID 0x64), the panel up at 20 MHz, Wi-Fi by Improv, first-boot
+  setup, telnet and SSH logins on both ports. Internal heap 49,203 free, 37,843
+  at its lowest. The glass itself is for Rob to confirm.
+
 ## 1.2.0 (S3 1.1.4, WS43B 1.0.2, WS2 1.0.3, ETH 1.0.2, MF35 1.1.2, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-29: the hardware release
 
 **Out early for testing: this release has not been through the full

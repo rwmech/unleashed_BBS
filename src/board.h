@@ -78,6 +78,12 @@
  *                                      ILI9488 on a 16-bit i80 bus, a micro
  *                                      SD slot, the console on a CP2104.
  *
+ *               BBS_BOARD_MF_S3PAR35V2 the same board, hardware v2.0: the
+ *                                      N16R8 (8 MB octal PSRAM), the panel's
+ *                                      strobes moved off the PSRAM's pins,
+ *                                      FT6236 touch, the console on the
+ *                                      chip's own USB.
+ *
  *               Capabilities a profile may define:
  *                 BBS_HAS_LCD       a panel the panel plugin drives
  *                 BBS_LCD_RGB       that panel is on the S3's RGB bus, its
@@ -87,6 +93,9 @@
  *                                   or polled over I2C with BBS_TOUCH_POLL
  *                 BBS_TOUCH_POLL    the controller is polled for reports
  *                                   (the 4.3B's GT911, touchPoll)
+ *                 BBS_TOUCH_FT6236  the taps controller is a FocalTech
+ *                                   FT6236, not the default CST816
+ *                                   (BBS_TOUCH_CHIP its name)
  *                 BBS_HAS_CHIP_TEMP the chip's own temperature sensor, on
  *                                   the panel
  *                 BBS_SD_CS_EXPANDER the card's chip select is an expander
@@ -635,6 +644,171 @@
 #define BBS_PINS_HOLD_LOW     45
 
 #endif  // BBS_BOARD_MF_S3PAR35
+
+// ===========================================================================
+// Makerfabs ESP32-S3 Parallel TFT with Touch 3.5" (ILI9488), hardware v2.0
+//
+// What Makerfabs sell now (SKU ESP32S335D). The bench board (COM29, MF35V2
+// 1.0.0 on 1.2.0) says "ESP32-S3 Parallel TFT with Touch 3.5" ili9488 v2.0"
+// on its silkscreen and "MCN16R8" on the module, and esptool reads ESP32-S3
+// QFN56 rev v0.2, 8 MB embedded PSRAM (AP_3v3), 16 MB flash (46/4018).
+// ESP32-S3-WROOM-1-N16R8: the v1.0's board with the panel's three strobes
+// moved off octal PSRAM's pins (33 to 37). Two USB-C: "USB-TTL", a CP2104
+// (IC1) on UART0 (43, 44) with DTR/RTS auto-reset, and "USB-NATIVE", the
+// chip's own (19, 20).
+//
+// Every pin is from Makerfabs' v2.0 schematic, "ESP32-S3 Parallel TFT with
+// Touch 3.5'' ili9488 v2.0.sch" (github.com/Makerfabs/Makerfabs-ESP32-S3-
+// Parallel-TFT-with-Touch, hardware/, at 7670a17, read as a netlist),
+// cross-checked against the firmware Makerfabs ship for it at the same
+// commit: firmware/SD16_3.5, example/touch_keyboard_v2 (Parallel16_9488.h)
+// and IDF/matouch's 3-5-ili9488-ft6236 board config. They agree on every
+// pin this profile drives. The table, each pin with its source, is
+// release-prep/mf35v2/pins.md.
+//
+// The v1.0's schematic trap is still in this one: the module symbol is an
+// ESP32-S2-SOLO's, and the nets "IO47/DB0" and "IO48/LCD_RD" land on its
+// pins named IO33 and IO34. Every Makerfabs firmware drives D0 on 47 and RD
+// on 48, and the net names say so; the symbol's pin names are the S2's.
+//
+// The console is the chip's own USB (USB-Serial-JTAG), the S3 layer's
+// default, not the v1.0's UART0: the bench board is cabled to USB-NATIVE,
+// and a console on UART0 leaves the native port output-only, so Improv and
+// the web installer's Update would not answer there. The USB-TTL port still
+// flashes (the ROM's own UART download, auto-reset) but carries no console.
+//
+// Touch: an FT6236 capacitive controller on the glass's flex, connector P2
+// (1 VDD, 2 SDA, 3 SCL, 4 INT, 5 RST, 6 GND): SDA IO38, SCL IO39, INT IO40,
+// each with a 10K pull-up on the board, RST on the chip's EN. Address 0x38
+// (Makerfabs' FT6236.h). The same I2C pair goes to J2, the Mabee I2C
+// socket. An NS2009 resistive controller's footprint (U8) shares the bus
+// and INT for the resistive variant; this board is the capacitive one.
+// ===========================================================================
+#if defined(BBS_BOARD_MF_S3PAR35V2)
+
+#if defined(ESP_PLATFORM) && !CONFIG_IDF_TARGET_ESP32S3
+#error "BBS_BOARD_MF_S3PAR35V2 is an ESP32-S3 board: build it for the esp32s3 target"
+#endif
+#ifndef BBS_CHIP_S3
+#define BBS_CHIP_S3 1                 // the host's stand-in, see above
+#endif
+
+// 35 characters, as the v1.0's: HARDWARE's Board row at 40 columns.
+#define BBS_BOARD_NAME        "Makerfabs S3 Parallel TFT 3.5\" v2.0"
+#define BBS_HAS_LCD           1
+#define BBS_BOARD_PLUGINS     1       // the panel
+
+#define BBS_BOARD_TAG         "MF35V2"
+#define BBS_BOARD_VERSION     "1.0.0"
+
+// SSH as on the v1.0 and the Waveshare: the shared port 6400 and ssh_port
+// 6422. Eight at once; 8 MB of PSRAM holds them beside the 300 KB
+// framebuffer with room to spare (the v1.0 fitted them in 2 MB).
+#define BBS_HAS_SSH           1
+#define BBS_SSH_MAX           8
+
+// PSRAM: the N16R8's 8 MB, octal, as the S3 layer has it. 33 to 37 are the
+// PSRAM's here, and pinProblem refuses them as on the Waveshare. A build
+// that picked up the v1.0's quad layer would find no PSRAM.
+#define BBS_HAS_PSRAM         1
+#if defined(ESP_PLATFORM) && !(CONFIG_SPIRAM && CONFIG_SPIRAM_MODE_OCT)
+#error "BBS_BOARD_MF_S3PAR35V2 needs octal PSRAM: the S3 layer was not applied (delete sdkconfig.makerfabs_s3_par35v2*)"
+#endif
+// One console, lwIP, three LittleFS partitions, SSH's eventfd and the card's
+// FAT are the IDF's 8 VFS slots exactly: 12 in sdkconfig.defaults.mf35v2, as
+// on the v1.0 and the 4.3B. A stale sdkconfig keeps 8.
+#if defined(ESP_PLATFORM) && CONFIG_VFS_MAX_COUNT < 12
+#error "BBS_BOARD_MF_S3PAR35V2 needs CONFIG_VFS_MAX_COUNT of 12 (sdkconfig.defaults.mf35v2): delete sdkconfig.makerfabs_s3_par35v2*"
+#endif
+
+// The Waveshare S3's reserve: Wi-Fi's and lwIP's buffers go to PSRAM.
+#define BBS_HEAP_RESERVE      16384
+
+// No LED the firmware can drive: LED1 is not fitted (its transistor's gate
+// is on TXD through a resistor that is not fitted either) and the power LED
+// is on 3V3. The lights plugin ships off with no pin, as on the v1.0.
+#define BBS_LED_GPIO          -1
+
+// The card slot in SPI mode, as on the v1.0: CS IO1, MOSI IO2, SCLK IO42,
+// MISO IO41 (the schematic's IO1/CS, IO2/MOSI, IO42/SCLK, IO41/MISO; DAT1
+// and DAT2 pulled up, no card-detect line).
+#define BBS_HAS_SD_SLOT       1
+#define BBS_SD_CS             1
+#define BBS_SD_MOSI           2
+#define BBS_SD_CLK            42
+#define BBS_SD_MISO           41
+
+// No serial bridge pins as shipped. J1, the Mabee GPIO socket, is IO19 and
+// IO20, the chip's own USB D- and D+ (the same nets, through 33R, as the
+// USB-NATIVE port), which is this board's console: pinProblem refuses both.
+// The CP2104's UART0 (43, 44) is refused below. A sysop gives the bridge its
+// pins in CONFIG serial.
+#define BBS_SERIAL_RX         -1
+#define BBS_SERIAL_TX         -1
+
+// The panel, as the v1.0's but for the strobes: WR IO18 (the net IO18/
+// LCD_WR, 10K pull-up), RD IO48, D/C IO17 (IO17/LCD_RS), CS IO46 (IO46/
+// LCD_CS, 10K pull-down: a strapping pin, and low is what it wants at
+// boot). D0 to D15 are the v1.0's, and so are the backlight (IO45 through
+// 1K to an AO3400, 10K pull-down) and the reset on EN. IM1 is strapped to
+// 3V3 through a 0R: the 16-bit bus. 20 MHz is Makerfabs' own WR clock
+// (Parallel16_9488.h, freq_write 20000000).
+//
+// The glass's turn is taken to be the v1.0's until it is seen: landscape,
+// 480 x 320, with the USB-C edge at the bottom (Rob's choice for this board,
+// 2026-09-30: "I prefer the display with the USB pointing down").
+#define BBS_LCD_ILI9488       1
+#define BBS_LCD_I80           1       // the pins below: WR and RD, not MOSI and SCLK
+#define BBS_LCD_DRIVER        "ILI9488"
+#define BBS_LCD_RAM_SHORT     320
+#define BBS_LCD_RAM_LONG      480
+#define BBS_LCD_DATA_PINS     47, 21, 14, 13, 12, 11, 10, 9, 3, 8, 16, 15, 7, 6, 5, 4
+#define BBS_LCD_MOSI          18      // WR
+#define BBS_LCD_SCLK          48      // RD
+#define BBS_LCD_CS            46
+#define BBS_LCD_DC            17
+#define BBS_LCD_RST           -1
+#define BBS_LCD_BL            45
+#define BBS_LCD_WIDTH         320
+#define BBS_LCD_HEIGHT        480
+#define BBS_LCD_XOFF          0
+#define BBS_LCD_YOFF          0
+#define BBS_LCD_ORIENT        3       // the USB plug down: landscape
+#define BBS_LCD_PLUG_SCANS    1, 0, 3, 2   // the v1.0's turns for plug up, left, right, down
+#define BBS_LCD_INVERT        0
+#define BBS_LCD_BGR           1
+#define BBS_LCD_MIRROR        1
+#define BBS_LCD_MHZ           20
+#define BBS_LCD_MHZ_NOTE      "20 as Makerfabs run it; 10 if unsure."
+#define BBS_LCD_BACKLIGHT     60
+
+// Touch as taps on INT (the legacy I2C driver, asked once at the panel's
+// start, as the Touch-LCD-2's CST816). Nothing else in this image uses I2C.
+// Taps carry no position, so the panel's turn does not reach them. The
+// FT6236's INT is low while a finger is down in its default mode, so one
+// tap is one falling edge; its chip ID is at 0xA3.
+#define BBS_HAS_TOUCH         1
+#define BBS_TOUCH_FT6236      1
+#define BBS_TOUCH_CHIP        "FT6236"
+#define BBS_TOUCH_SDA         38
+#define BBS_TOUCH_SCL         39
+#define BBS_TOUCH_INT         40
+#define BBS_TOUCH_ADDR        0x38
+
+// Pins the board owns.
+//   WIRED    43 and 44, UART0 to the CP2104: its TXD drives 44 whenever the
+//            USB-TTL port is powered, and the ROM prints on 43 at reset
+//   ONBOARD  the touch controller's I2C pair and INT
+//   LCDBUS   the panel's data bus (its six control pins are the panel
+//            plugin's settings and are held by it)
+// 45 (the backlight) is held low from start-up until the panel's PWM takes
+// it. 46 is the panel's CS, a setting held by the panel plugin.
+#define BBS_PINS_WIRED        43, 44
+#define BBS_PINS_ONBOARD      BBS_TOUCH_SDA, BBS_TOUCH_SCL, BBS_TOUCH_INT
+#define BBS_PINS_LCDBUS       BBS_LCD_DATA_PINS
+#define BBS_PINS_HOLD_LOW     45
+
+#endif  // BBS_BOARD_MF_S3PAR35V2
 
 // ===========================================================================
 // Freenove ESP32-WROVER CAM (the FNK0060 kit, pinout revision 3.0)
@@ -1223,7 +1397,7 @@
 // before it; this counts them all, so a profile added later is never missed.
 #if (defined(BBS_BOARD_WS_S3LCD147) + defined(BBS_BOARD_WS_S3TOUCH43B) + defined(BBS_BOARD_MF_S3PAR35) + \
      defined(BBS_BOARD_FN_WROVER_CAM) + defined(BBS_BOARD_AI_ESP32CAM) + defined(BBS_BOARD_WS_S3TOUCH2) + \
-     defined(BBS_BOARD_WS_S3ETH)) > 1
+     defined(BBS_BOARD_WS_S3ETH) + defined(BBS_BOARD_MF_S3PAR35V2)) > 1
 #error "one board profile at a time"
 #endif
 
@@ -1284,6 +1458,9 @@
 #ifndef BBS_LCD_MHZ_NOTE                // CONFIG panel's note on the SPI clock, 38 at most
 #define BBS_LCD_MHZ_NOTE      "10 is safe; the panel's limit is 62.5."
 #endif
+#endif
+#if defined(BBS_HAS_TOUCH) && !defined(BBS_TOUCH_CHIP)
+#define BBS_TOUCH_CHIP        "CST816"  // the taps controller's name (the Touch-LCD-2's)
 #endif
 
 // ---------------------------------------------------------------------------
