@@ -8217,11 +8217,12 @@ def test_board_ws2():
     # The pins the board owns: the camera's, the touch and IMU bus, the
     # touch INT, the IMU's INT1 and the battery divider. 18 is the one free.
     want = ((b"8", b"camera's"), (b"12", b"camera's"), (b"17", b"camera's"), (b"21", b"camera's"),
-            # 46-48: the core LED row's range ends at 39 on every S3 build, so
-            # CONFIG says that first (follow-up). 3: the host's console
-            # stand-in is the WROOM's UART0, 1 and 3 (on the S3 it is 43/44).
-            (b"47", b"Between -1 and 39"), (b"48", b"Between -1 and 39"), (b"46", b"Between -1 and 39"),
-            (b"3", b"console port"), (b"5", b"wired on the board"),
+            # 46-48 and 3 are the touch bus, its INT and the IMU's INT1, the
+            # board's own. Until 1.2.1 this list asserted two bugs: the LED
+            # row stopped at 39 ("Between -1 and 39") and the host's console
+            # was the WROOM's 1 and 3 on every profile ("console port" for 3).
+            (b"47", b"wired on the board"), (b"48", b"wired on the board"), (b"46", b"wired on the board"),
+            (b"3", b"wired on the board"), (b"5", b"wired on the board"),
             (b"30", b"flash and PSRAM"), (b"19", b"USB port"))
     before = cfg_line("activity_led_gpio")
     for pin, why in want:
@@ -20689,8 +20690,16 @@ def test_config_serial_rows():
         ok = pin_skip("the page has the pins, as the bridge runs them")
     else:
         want_rx, want_tx = (p.decode() for p in PB["serial"])
+
+        def shows(row, want):
+            # The value at column 22, and no digit straight after it. The
+            # dev.3 cut split rx[22:26] on spaces, and at 80 the rest of the
+            # box is dots (" RX GPIO              16......"), so it read
+            # "16.." as the value.
+            end = 22 + len(want)
+            return row[22:end] == want and not row[end:end + 1].isdigit()
         ok = check("the page has the pins, as the bridge runs them",
-                   rx[22:26].split()[:1] == [want_rx] and tx[22:26].split()[:1] == [want_tx])
+                   shows(rx, want_rx) and shows(tx, want_tx))
     ok &= check("and the speed and the format", baud[22:28] == "115200" and fmt[22:25] == "8N1")
     # Rows: 0 Enabled, 1 Read, 2 Write, 3 Admin, 4 RX, 5 TX, 6 Baud, 7 Format.
     s.buf.clear()

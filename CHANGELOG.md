@@ -110,6 +110,11 @@ The 1.1.3 queue and the 1.2.0 full run's findings (1.2.1-dev.3):
   (36, shown indented two by SD), and `/sq` answers
   `Node 10 hidden. Joins, leaves show.` or `Node 10 back.` at 40 (39 and 17
   with the marker, where the 80-column sentence is 51).
+- Tests only (1.2.1-dev.6, from the targeted run on dev.5): `test_board_ws2`
+  asserted the two bugs dev.3 fixed (the LED row stopping at 39, and 1 and
+  3 as the console on every host profile) and now expects GPIO 46-48 and 3
+  refused as the board's own; `test_config_serial_rows` read the dot-filled
+  rest of an 80-column box as part of the value.
 - Static DRAM off the ELF: the camera boards pay 8 bytes for the held timed
   shot (ESP32-CAM 2,688 free, Freenove 4,160), the S3s without a camera 16
   for the four VFS slots the LCD-1.47 gains (79,784 free); the WROOM is
