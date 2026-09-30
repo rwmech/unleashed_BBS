@@ -356,6 +356,10 @@ lines and 512 characters, which is what the mail record has room for. The line c
 
 Message bodies are **word-wrapped at your terminal's width when they are read**, not at the width they were typed. A message written at 72 columns on SyncTERM reads on a C64, and one written at 35 columns does not sit in a stripe down an 80 column screen.
 
+**A message longer than your screen stops at `[More] Y/n/c`** (1.2.1), like every list on the board: `Y`, Space or Enter the next page, `C` the rest without stopping, `N` or `Q` stops there and asks the reading question (the message still counts as read). It is drawn a row at a time as your terminal takes it, so a slow line is paced rather than overrun, and a body of any length the forum format holds (9,999 characters) is shown whole; one written on this board is at most 1,536.
+
+**A post is confirmed once it is on the card** (1.2.1): `Posted as message N.` comes when the board has written it, usually at once, with a spinner if the card takes a moment. The number it gives is there to read straight away. Behind a long job on the board's background worker, such as a camera snap, it can take a few seconds; after 10 seconds ESC or Q hands you back while the post still lands. A removal is the same.
+
 **Unread counts are per caller and they add up.** A forum's count is the sum of its subjects' counts, both computed the same way, because a forum claiming twelve whose subjects sum to nine reads as a broken board. Guests keep no read pointer, having no account for one to belong to.
 
 **Everything else about files happens inside `FILES`, not here.** It is a

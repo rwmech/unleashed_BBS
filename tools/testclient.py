@@ -14078,6 +14078,247 @@ def test_lag_forums():
     return ok
 
 
+SEG_OPEN_RE = re.compile(r"hostio: \S+ \S+/M\d{4}\.TXT")
+
+
+def test_forums_segments():
+    """A post opens one body segment however many a forum holds (1.2.1).
+
+    Every post opened M0000.TXT and every full segment after it to find the
+    one with room, so the opens grew with each 128 KB a forum held: 21 card
+    opens on the loop for a forum of 20 segments. The header names the
+    current segment now (seg=), and the runner writes the post.
+
+    Laid out with three full segments and a header from before 1.2.1 (no
+    seg=): the first post looks for its segment once, the old way, and
+    writes it down; the posts after it open one segment each, and two when
+    the current one fills and rolls on. The host charges nothing for card
+    latency, so the opens are what is counted, not the time. On the old
+    build the second post opens four segments.
+
+    And the poster reads their own post the moment "Posted" is said: the
+    write is on the runner now, and the answer must not come before it."""
+    print("Forums: a post opens one body segment")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    import contextlib
+    import shutil
+    import tempfile
+    sys.path.insert(0, str(ROOT / "tools"))
+    import forum_check
+    card = pathlib.Path(tempfile.mkdtemp(prefix="bbs-segcard-"))
+    fdir = card / "p" / "forums" / "general"
+    with contextlib.redirect_stdout(io.StringIO()):
+        forum_check.build_forum(str(fdir), 3)
+    full = 128 * 1024
+    m0 = fdir / "M0000.TXT"
+    m0.write_bytes(m0.read_bytes().ljust(full, b"."))
+    for k in (1, 2):
+        (fdir / f"M{k:04d}.TXT").write_bytes(b"x" * full)
+    port = PORT + 3912
+    tmp, proc = lag_board(port, card)
+    ok = True
+    c = None
+
+    def header():
+        return (fdir / "INDEX.TXT").read_bytes()[:128]
+
+    def seg_of(num):
+        data = (fdir / "INDEX.TXT").read_bytes()
+        n = int(num)
+        rec = data[n * 128:(n + 1) * 128]
+        return forum_check.field(rec, "segment") if len(rec) == 128 else None
+
+    def post_counted(subject, line):
+        mark = len(copy_text(tmp))
+        num = forum_post(c, subject, [line])
+        c.pump(0.3)
+        return num, len(SEG_OPEN_RE.findall(copy_text(tmp)[mark:]))
+
+    try:
+        c = ansi_login("SegPoster", port=port)
+        drain(c)
+        c.buf.clear()
+        c.send(b"forums\r")
+        ok &= check("the forum list opens", c.wait_for(b"Forums>", 20))
+        c.pump(0.5)
+        c.buf.clear()
+        c.send(b"1\r")
+        ok &= check("the forum of three full segments opens", wait_plain(c, b"Forums>General>", 20))
+        c.pump(0.5)
+        hostio_set(tmp / "data", 0, 0, "log")
+        time.sleep(0.7)                                  # hostio.txt is read every half second
+
+        n1, o1 = post_counted("Segments one", "The first post after the upgrade.")
+        ok &= check("a post lands after the three messages", n1 == "4")
+        ok &= check(f"it looks for its segment once, the old way ({o1} opens)", 1 <= o1 <= 5)
+        ok &= check("in the first segment with room", n1 is not None and seg_of(n1) == 3)
+        ok &= check("and the header now names it", b"seg=0003" in header())
+
+        n2, o2 = post_counted("Segments two", "The second post.")
+        ok &= check(f"the next post opens one segment ({o2})", n2 == "5" and o2 == 1)
+
+        # Fill the current one behind the board's back: the next post rolls on.
+        m3 = fdir / "M0003.TXT"
+        m3.write_bytes(m3.read_bytes().ljust(full, b"."))
+        n3, o3 = post_counted("Segments three", "This one rolls on.")
+        ok &= check(f"a full segment rolls to the next, one open more ({o3})",
+                    n3 == "6" and o3 == 2 and seg_of(n3) == 4)
+        ok &= check("and the header follows it", b"seg=0004" in header())
+
+        n4, o4 = post_counted("Segments four", "And back to one open.")
+        ok &= check(f"then one open a post again ({o4})", n4 == "7" and o4 == 1)
+        hostio_clear(tmp / "data")
+
+        # Read your own post: the number said is there to open straight away.
+        c.buf.clear()
+        c.send(b"l")
+        c.wait_for(b"Segments four", 10)
+        c.pump(0.5)
+        num = subject_number(c.buf, "Segments four")
+        ok &= check("the new subject is listed with its number", num == n4)
+        c.buf.clear()
+        c.send(((num or "7") + "\r").encode())
+        ok &= check("the poster reads their own post straight away",
+                    c.wait_for(b"And back to one open.", 10))
+
+        # And the files are still the format, read by a program that shares
+        # no code with the board.
+        forum_check.fails = 0
+        forum_check.checks = 0
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = forum_check.check_forum(str(fdir))
+        ok &= check("forum_check reads the forum as the format says", rc == 0)
+    finally:
+        if c:
+            c.close()
+        stop_copy(proc, tmp)
+        shutil.rmtree(card, ignore_errors=True)
+    return ok
+
+
+def _long_body(words=1200, per=20):
+    """w0001 w0002 ... in paragraphs: every word numbered, so a reader can
+    say which arrived, in what order, and whether any came twice."""
+    ws = [f"w{i:04d}" for i in range(1, words + 1)]
+    return "\n".join(" ".join(ws[i:i + per]) for i in range(0, words, per)).encode()
+
+
+def test_forums_long_read():
+    """A body over the old 1,728-byte limit reads whole, paged (1.2.1).
+
+    The reader read a body into a 1,729-byte buffer on the stack and drew
+    all of it in one pass into the caller's 3 KB output buffer, so a longer
+    body was cut, and one near it on a slow terminal could overrun the
+    buffer. It reads the card a window at a time now and draws a row at a
+    time through the list machinery, paged at [More].
+
+    A message of 7,199 bytes, every word numbered, read at 80 and 40 columns
+    on ANSI and on PETSCII: every word must arrive, in order, once, then
+    --> EOM <-- and the reading question. On the old build the words stop at
+    w0288."""
+    print("Forums: a long message reads whole, at 40 and 80 columns")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    import contextlib
+    import shutil
+    import tempfile
+    sys.path.insert(0, str(ROOT / "tools"))
+    import forum_check
+    card = pathlib.Path(tempfile.mkdtemp(prefix="bbs-longcard-"))
+    fdir = card / "p" / "forums" / "general"
+    with contextlib.redirect_stdout(io.StringIO()):
+        forum_check.build_forum(str(fdir), 1, lambda n: "Long read")
+    body = _long_body()
+    (fdir / "M0000.TXT").write_bytes(body + b"\n")
+    idx = bytearray((fdir / "INDEX.TXT").read_bytes())
+    idx[128 + 56:128 + 62] = b"000000"                   # offset
+    idx[128 + 63:128 + 67] = b"%04d" % len(body)         # length
+    (fdir / "INDEX.TXT").write_bytes(bytes(idx))
+    port = PORT + 3913
+    tmp, proc = lag_board(port, card)
+    ok = check(f"a body of {len(body):,} bytes, over the old 1,728", 1728 < len(body) <= 9999)
+    want = list(range(1, 1201))
+
+    def ansi(width):
+        c = Caller(ansi=True, port=port)
+        if width == 40:
+            c.send(NAWS40)
+        c.wait_for(b"Enter your handle", 10)
+        return c, (lambda t: t.encode()), False
+
+    def petscii(width):
+        c = Caller(ansi=False, port=port)
+        c.wait_for(b"HIT DEL OR BACKSPACE", 6)
+        c.send(b"\x14")
+        c.wait_for(b"40 OR 80 COLUMNS", 5)
+        c.send(b"4" if width == 40 else b"8")
+        c.wait_for(pet("Enter your handle"), 10)
+        return c, pet, True
+
+    slow = []
+    try:
+        for label, make, width in (("ANSI at 80", ansi, 80), ("ANSI at 40", ansi, 40),
+                                   ("PETSCII at 40", petscii, 40), ("PETSCII at 80", petscii, 80)):
+            c, enc, is_pet = make(width)
+            try:
+                handle = "Long" + label.split()[0].title() + str(width)
+                if not login(c, handle, as_pet=is_pet):
+                    ok &= check(f"{label}: logs in", False)
+                    continue
+                drain(c)
+                c.buf.clear()
+                c.send(enc("forums") + b"\r")
+                c.wait_for(enc("Forums>"), 20)
+                c.pump(0.5)
+                c.buf.clear()
+                c.send(b"1\r")                                  # the forum
+                c.wait_for(enc("Long read"), 20)
+                c.pump(0.5)
+                # The card's opens cost what a real card's do while it reads
+                # (hostio.txt, read every half second), and only then: the
+                # login's own opens are not what this measures.
+                hostio_set(tmp / "data", 4000, 2000)
+                time.sleep(0.7)
+                mark = len(copy_text(tmp))
+                c.buf.clear()
+                c.send(b"1\r")                                  # the subject: numbered by its message
+                more, answered = enc("[More]"), 0
+                eom, ask = enc("--> EOM <--"), enc("[R]eply")
+                end = time.time() + 60
+                while time.time() < end:
+                    c.pump(0.2)
+                    text = bytes(c.buf)
+                    seen = text.count(more)
+                    if seen > answered:
+                        c.send(enc("y"))                        # the next page
+                        answered = seen
+                    at = text.rfind(eom)
+                    if at >= 0 and text.find(ask, at) >= 0:
+                        break
+                slow += [label + ": " + x for x in slow_passes(copy_text(tmp)[mark:])]
+                hostio_clear(tmp / "data")
+                text = bytes(c.buf)
+                got = [int(x) for x in re.findall(rb"[wW](\d{4})", text)]
+                ok &= check(f"{label}: every word arrives, in order, once ({len(got)} of 1,200)",
+                            got == want)
+                if got != want:
+                    print("        the screen ended:", " / ".join(render_lines(c.buf)[-6:]))
+                ok &= check(f"{label}: paged at [More]", answered >= 1)
+                at = text.rfind(eom)
+                ok &= check(f"{label}: then --> EOM <-- and the reading question",
+                            at > text.find(b"1200") >= 0 and text.find(ask, at) > at)
+            finally:
+                c.close()
+        ok &= check("reading with no pass over 50 ms (" + (", ".join(slow[:3]) or "none") + ")", not slow)
+    finally:
+        stop_copy(proc, tmp)
+        shutil.rmtree(card, ignore_errors=True)
+    return ok
+
+
 def test_lag_logins():
     """250 accounts: the handle prompt and a logoff do not walk users.txt.
 
@@ -18640,7 +18881,7 @@ ORDER_NAMES = [
     "test_dash_uploads",                 # leaves its upload waiting, as test_ymodem does
     "test_config_areas", "test_config_area_keeps_every_part",
     "test_mail_compose",
-    "test_forums", "test_forums_remove", "test_forums_scan_staff", "test_config_forum_levels", "test_partitions",
+    "test_forums", "test_forums_remove", "test_forums_scan_staff", "test_forums_segments", "test_forums_long_read", "test_config_forum_levels", "test_partitions",
     # Backups on the card and restores across the partitions (1.1.0). The
     # card one restores this board from a backup it has just taken, which is
     # the board as it was a minute before, so it sits with the restores.

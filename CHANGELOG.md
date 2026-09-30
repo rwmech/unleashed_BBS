@@ -24,6 +24,49 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.2.1 (in development)
+
+### The forums (lane B, 1.2.1-forums.1), 2026-09-30, built, not yet tested
+
+Forum phase 0 from `internal/fidonet-zmodem-2026-09-29.md`: worth doing
+without FidoNet, and what FidoNet stands on.
+
+- **A long message reads whole.** A body over 1,728 bytes could not be
+  shown: the reader read it into a 1,729-byte buffer on the stack. It reads
+  the card a window at a time now, so any body the format can hold (9,999
+  bytes, its four-digit length field) is shown. Writing a post is unchanged:
+  32 lines and 1,536 characters.
+- **A message is drawn a row at a time**, through the same list machinery
+  as every other list on the board, instead of all at once into the
+  caller's 3 KB output buffer. A slow terminal is paced rather than
+  overrun, and **a message longer than the screen stops at
+  `[More] Y/n/c`**, the way the lists do; `C` reads the rest without
+  stopping, `Q` stops (the message still counts as read).
+- **A post opens one body segment.** Every post opened each full 128 KB
+  body file from `M0000.TXT` up to find the one with room, so a busy forum
+  cost more card opens with every 128 KB it held. The forum's header now
+  names the current segment (`seg=` in `INDEX.TXT`'s record 0; the index
+  format itself is unchanged). A forum from before 1.2.1 is looked through
+  once, at its first post, and the answer written down. Older firmware
+  reads the new header and ignores the key.
+- **Every forum write goes through one queue on the background runner**:
+  posts, removals, read pointers and a new forum's header. The loop never
+  writes a forum file, so a post costs other callers nothing, and the
+  FidoNet tosser planned for 1.4.0 joins the same queue rather than being a
+  second writer (the card's FAT files have no locking between tasks). A post
+  is confirmed once it is on the card, usually in a pass or two, with the
+  spinner after a quarter of a second; behind a long runner job (a camera
+  snap) it can take seconds, and after 10 s `ESC` hands the caller back
+  while the post still lands.
+- Fixed on the way: a read pointer write that failed to open `PTRS.TXT`
+  fell back to creating it afresh, which on a card that refused one open
+  would have emptied every caller's read pointers; now only a file that is
+  not there is created. The same for a forum's header. A forum whose header
+  is unreadable gets one that counts the records the index holds, rather
+  than `newest=0`, which would have put the next post over message 1.
+- Fixed on the way: a forum or subject list whose closing prompt was the
+  row that filled the screen drew `[More]` under the prompt.
+
 ## 1.2.0 (S3 1.1.4, WS43B 1.0.2, WS2 1.0.3, ETH 1.0.2, MF35 1.1.2, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-29: the hardware release
 
 **Out early for testing: this release has not been through the full

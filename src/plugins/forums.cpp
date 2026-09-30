@@ -48,10 +48,14 @@
 
 #include <cstdio>
 #include "../core/disk.h"              // fopen and opendir that tell the drive light (1.1.1)
+#include <cerrno>
 #include <cstring>
 #include <cstdlib>
+#include <new>
+#include <type_traits>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>                    // fsync: a record on the card before the header names it
 
 #include "../config.h"
 #include "../core/bbs.h"
@@ -64,6 +68,7 @@
 #include "../core/sysconfig.h"
 #include "../core/users.h"
 #include "../core/fx.h"                // the walk's spinner (1.1.2)
+#include "../core/runner.h"            // the one writer (1.2.1)
 #include "../platform/platform.h"
 #include "forums_ptr.h"
 
@@ -312,9 +317,14 @@ void makeDirs(const char* full) {
     mkdir(buf, 0755);
 }
 
-void forumDir(uint8_t i, char* out, size_t n) {
-    snprintf(out, n, "%s/p/forums/%s", plat::sdBase(), g_forum[i].key);
+// Paths by the forum's key, not its slot (1.2.1): the writer on the runner
+// works from the key it was handed, because a CONFIG save can renumber the
+// topics while a write waits, and g_forum is the loop's.
+void keyDir(const char* key, char* out, size_t n) {
+    snprintf(out, n, "%s/p/forums/%s", plat::sdBase(), key);
 }
+
+void forumDir(uint8_t i, char* out, size_t n) { keyDir(g_forum[i].key, out, n); }
 
 void indexPath(uint8_t i, char* out, size_t n) {
     char dir[96];
@@ -322,67 +332,87 @@ void indexPath(uint8_t i, char* out, size_t n) {
     snprintf(out, n, "%s/INDEX.TXT", dir);
 }
 
-// readHeader: record 0, the only record that is not a message.
+// ---------------------------------------------------------------------------
+// The header: record 0, the only record that is not a message.
 //
 // Tab separated key=value padded to 128 bytes, so a key can be added later
 // without moving anything: nothing depends on where a field sits, only on
 // the line being exactly 128 bytes. That is deliberate, and it is the one
 // place in this format where a change later is cheap.
-bool readHeader(uint8_t i) {
-    char path[128];
-    indexPath(i, path, sizeof(path));
-    FILE* f = disk::open(path, "rb");
-    if (!f) return false;
-    char buf[kRec + 1] = {};
-    size_t got = fread(buf, 1, kRec, f);
-    fclose(f);
-    if (got != kRec || strncmp(buf, kMagic, sizeof(kMagic) - 1) != 0) return false;
+//
+// seg= (1.2.1) is the first key added that way: the body segment the next
+// post goes into, so a post opens that one segment instead of every full
+// one from M0000 up (internal/fidonet-zmodem-2026-09-29.md, "found on the
+// way"). A header written before 1.2.1 has none; the first post after the
+// upgrade looks for the segment once, the old way, and writes it down.
+// Firmware older than 1.2.1 reads a header with seg= and ignores the key.
+// ---------------------------------------------------------------------------
+struct Head {
+    uint32_t count  = 0;
+    uint32_t newest = 0;
+    uint16_t seg    = 0;
+    bool     hasSeg = false;
+};
 
-    g_forum[i].total  = 0;
-    g_forum[i].newest = 0;
+// parseHead: a 128-byte header record, false when it is not one.
+bool parseHead(const char* rec, Head& h) {
+    h = Head();
+    if (strncmp(rec, kMagic, sizeof(kMagic) - 1) != 0) return false;
+    char buf[kRec + 1];
+    memcpy(buf, rec, kRec);
+    buf[kRec] = '\0';
     for (char* p = buf; p && *p; ) {
         char* tab = strchr(p, '\t');
         if (tab) *tab = '\0';
-        if (!strncmp(p, "count=", 6))   g_forum[i].total  = strtoul(p + 6, nullptr, 10);
-        if (!strncmp(p, "newest=", 7))  g_forum[i].newest = strtoul(p + 7, nullptr, 10);
+        if (!strncmp(p, "count=", 6))  h.count  = strtoul(p + 6, nullptr, 10);
+        if (!strncmp(p, "newest=", 7)) h.newest = strtoul(p + 7, nullptr, 10);
+        if (!strncmp(p, "seg=", 4)) {
+            h.seg    = static_cast<uint16_t>(strtoul(p + 4, nullptr, 10));
+            h.hasSeg = true;
+        }
         p = tab ? tab + 1 : nullptr;
     }
     return true;
 }
 
-// writeHeader: create or refresh record 0.
-//
-// Written through a temp file and a rename only when the index does not yet
-// exist; refreshing an existing header rewrites those 128 bytes in place,
-// because the header is the first record and a partial write of it is
-// detectable (the magic is the first five bytes) while a partial rename of
-// a multi-megabyte index would not be.
-bool writeHeader(uint8_t i) {
-    char path[128];
-    indexPath(i, path, sizeof(path));
-
-    char rec[kRec + 1];
-    int n = snprintf(rec, sizeof(rec),
-                     "%s\ttopic=%s\tcount=%06lu\tnewest=%06lu\t",
-                     kMagic, g_forum[i].key,
-                     static_cast<unsigned long>(g_forum[i].total),
-                     static_cast<unsigned long>(g_forum[i].newest));
-    if (n < 0) return false;
-    // Pad to exactly 126 and close with CR LF. A header that is not 128
-    // bytes would put every message in the file at the wrong offset, which
-    // is the one failure this format cannot survive, so it is built to a
-    // fixed width rather than assembled and hoped over.
+// buildHead: the header for a forum, exactly 128 bytes. Pads to 126 and
+// closes with CR LF: a header that is not 128 bytes would put every message
+// in the file at the wrong offset, which is the one failure this format
+// cannot survive, so it is built to a fixed width rather than assembled and
+// hoped over. seg= only when known: writing a guess would send the next post
+// to the wrong segment.
+void buildHead(char* rec, const char* key, const Head& h) {
+    char tmp[kRec + 16];
+    int n = h.hasSeg
+        ? snprintf(tmp, sizeof(tmp), "%s\ttopic=%s\tcount=%06lu\tnewest=%06lu\tseg=%04u\t",
+                   kMagic, key, static_cast<unsigned long>(h.count),
+                   static_cast<unsigned long>(h.newest), static_cast<unsigned>(h.seg))
+        : snprintf(tmp, sizeof(tmp), "%s\ttopic=%s\tcount=%06lu\tnewest=%06lu\t",
+                   kMagic, key, static_cast<unsigned long>(h.count),
+                   static_cast<unsigned long>(h.newest));
+    if (n < 0) n = 0;
+    if (n > kOffCrLf) n = kOffCrLf;
+    memcpy(rec, tmp, static_cast<size_t>(n));
     for (size_t k = static_cast<size_t>(n); k < kOffCrLf; ++k) rec[k] = ' ';
     rec[kOffCrLf]     = '\r';
     rec[kOffCrLf + 1] = '\n';
+}
 
-    FILE* f = disk::open(path, "r+b");
-    if (!f) f = disk::open(path, "w+b");
+// readHeader: the loop's copy of a forum's figures, at start. A read, never
+// a write: the header has one writer, the runner (1.2.1).
+bool readHeader(uint8_t i) {
+    char path[128];
+    indexPath(i, path, sizeof(path));
+    FILE* f = disk::open(path, "rb");
     if (!f) return false;
-    bool ok = fwrite(rec, 1, kRec, f) == kRec;
-    fflush(f);
+    char buf[kRec] = {};
+    size_t got = fread(buf, 1, kRec, f);
     fclose(f);
-    return ok;
+    Head h;
+    if (got != kRec || !parseHead(buf, h)) return false;
+    g_forum[i].total  = h.count;
+    g_forum[i].newest = h.newest;
+    return true;
 }
 
 // ===========================================================================
@@ -515,15 +545,22 @@ bool readRec(uint8_t i, uint32_t n, MsgRec& m) {
 // costs nothing to find.
 // ---------------------------------------------------------------------------
 constexpr uint32_t kSegMax  = 128u * 1024u;   // roll a body file at 128 KB
-constexpr uint16_t kBodyMax = 1728;           // 24 lines x 72 columns
+constexpr uint16_t kSegLast = 9999;           // M9999.TXT: four digits in the record
+// The longest body the format can say, not a buffer size: the length field
+// is four decimal digits. It was 1,728 (kBodyMax, 24 lines x 72), and a body
+// had to fit a stack buffer that size to be read at all. The reader reads a
+// body from the card in slices now (1.2.1), so the format's limit is the
+// only one. A post written here is still at most BBS_COMPOSE_MAX (1,536):
+// this is for bodies the board did not write, a foreign tosser's later.
+constexpr uint16_t kBodyCap = 9999;
 
-void segPath(uint8_t i, uint16_t seg, char* out, size_t n) {
-    char dir[96];
-    forumDir(i, dir, sizeof(dir));
+void segPath(const char* dir, uint16_t seg, char* out, size_t n) {
     snprintf(out, n, "%s/M%04u.TXT", dir, static_cast<unsigned>(seg));
 }
 
-// appendBody: the text, and where it landed.
+// appendBody: the text into segment `seg` of the forum in `dir`, rolling on
+// to the next segment when that one is full (seg comes back as the one
+// used), and where it landed. The runner's (1.2.1).
 //
 // Returns false without writing anything if the card is full or the file
 // cannot be opened, so the caller can refuse the post rather than write an
@@ -532,81 +569,51 @@ void segPath(uint8_t i, uint16_t seg, char* out, size_t n) {
 // A power cut between the two leaves an orphan body, which is invisible and
 // harmless; the other order leaves an index entry pointing at nothing, which
 // is a message that exists and cannot be read.
-bool appendBody(uint8_t i, const char* text, uint16_t& seg, uint32_t& ofs, uint16_t& len) {
-    seg = 0;
+//
+// One open for the common post, two when it rolls. The segment the header
+// names can be full (the post before filled it) but never further behind
+// than that, so the roll is a step, never a search.
+bool appendBody(const char* dir, const char* text, uint16_t n, uint16_t& seg, uint32_t& ofs) {
     char path[128];
-    // Find the newest segment that still has room.
-    for (uint16_t s = 0; s < 9999; ++s) {
-        segPath(i, s, path, sizeof(path));
+    for (uint8_t tries = 0; tries < 3; ++tries) {
+        segPath(dir, seg, path, sizeof(path));
+        FILE* f = disk::open(path, "ab");
+        if (!f) return false;
+        fseek(f, 0, SEEK_END);
+        long at = ftell(f);
+        if (at < 0) { fclose(f); return false; }
+        if (static_cast<uint32_t>(at) >= kSegMax && seg < kSegLast) {
+            fclose(f);                          // full: the next one
+            ++seg;
+            continue;
+        }
+        bool ok = fwrite(text, 1, n, f) == n;
+        ok = ok && fputc('\n', f) != EOF;
+        ok = fflush(f) == 0 && ok;
+        if (fclose(f) != 0) ok = false;
+        if (!ok) return false;
+        ofs = static_cast<uint32_t>(at);
+        return true;
+    }
+    return false;
+}
+
+// findSeg: the newest segment with room, looked for the way every post did
+// before 1.2.1 (from M0000 up). Only for a header with no seg= in it, so
+// once a forum, on the runner.
+uint16_t findSeg(const char* dir) {
+    char path[128];
+    for (uint16_t s = 0; s < kSegLast; ++s) {
+        segPath(dir, s, path, sizeof(path));
         FILE* f = disk::open(path, "rb");
-        if (!f) { seg = s; break; }
+        if (!f) return s;
         fseek(f, 0, SEEK_END);
         long end = ftell(f);
         fclose(f);
-        if (end >= 0 && static_cast<uint32_t>(end) < kSegMax) { seg = s; break; }
+        if (end >= 0 && static_cast<uint32_t>(end) < kSegMax) return s;
+        if ((s & 15) == 15) runner::breathe();
     }
-    segPath(i, seg, path, sizeof(path));
-    FILE* f = disk::open(path, "ab");
-    if (!f) return false;
-    fseek(f, 0, SEEK_END);
-    long at = ftell(f);
-    if (at < 0) { fclose(f); return false; }
-    size_t n = strlen(text);
-    if (n > kBodyMax) n = kBodyMax;
-    bool ok = fwrite(text, 1, n, f) == n;
-    ok = ok && fputc('\n', f) != EOF;
-    fflush(f);
-    fclose(f);
-    if (!ok) return false;
-    ofs = static_cast<uint32_t>(at);
-    len = static_cast<uint16_t>(n);
-    return true;
-}
-
-// readBody: the text of one message into a caller-supplied buffer.
-bool readBody(uint8_t i, const MsgRec& m, char* out, size_t outN) {
-    out[0] = '\0';
-    if (!m.len) return true;                       // a body may legitimately be empty
-    char path[128];
-    segPath(i, m.seg, path, sizeof(path));
-    FILE* f = disk::open(path, "rb");
-    if (!f) return false;
-    bool ok = false;
-    if (fseek(f, static_cast<long>(m.ofs), SEEK_SET) == 0) {
-        size_t want = m.len < outN - 1 ? m.len : outN - 1;
-        size_t got = fread(out, 1, want, f);
-        out[got] = '\0';
-        ok = got == want;
-    }
-    fclose(f);
-    return ok;
-}
-
-// ---------------------------------------------------------------------------
-// appendMessage: the one write path, and the order it happens in.
-// ---------------------------------------------------------------------------
-bool appendMessage(uint8_t i, MsgRec& m, const char* body) {
-    if (!appendBody(i, body, m.seg, m.ofs, m.len)) return false;
-
-    char path[128];
-    indexPath(i, path, sizeof(path));
-    FILE* f = disk::open(path, "r+b");
-    if (!f) return false;
-
-    uint32_t n = g_forum[i].newest + 1;
-    m.num = n;
-    char rec[kRec];
-    buildRec(m, rec);
-    bool ok = fseek(f, static_cast<long>(n) * kRec, SEEK_SET) == 0 &&
-              fwrite(rec, 1, kRec, f) == kRec;
-    fflush(f);
-    fclose(f);
-    if (!ok) return false;
-
-    g_forum[i].newest = n;
-    ++g_forum[i].total;
-    writeHeader(i);        // the header trails the message, never leads it
-    return true;
+    return kSegLast;
 }
 
 // ===========================================================================
@@ -658,9 +665,15 @@ long ptrOffset(uint32_t userId, uint8_t forum) {
            static_cast<long>(forum) * kPtrRec;
 }
 
+bool queuedPtr(uint32_t userId, uint8_t forum, Ptr& p);   // the writer, below
+
 bool readPtr(uint32_t userId, uint8_t forum, Ptr& p) {
     p = Ptr{};
     if (!userId) return false;                     // guests keep no pointer
+    // One on its way to the card is newer than the card (1.2.1): a caller who
+    // leaves a forum and comes straight back must not be handed the pointer
+    // from before, and be shown what they just read as new.
+    if (queuedPtr(userId, forum, p)) return true;
     char path[128];
     ptrPath(path, sizeof(path));
     FILE* f = disk::open(path, "rb");
@@ -682,12 +695,17 @@ bool readPtr(uint32_t userId, uint8_t forum, Ptr& p) {
     return ok;
 }
 
+// writePtr: the runner's (1.2.1), through the write queue below.
 bool writePtr(uint32_t userId, uint8_t forum, const Ptr& p) {
     if (!userId) return true;                      // nothing to keep for a guest
     char path[128];
     ptrPath(path, sizeof(path));
     FILE* f = disk::open(path, "r+b");
-    if (!f) f = disk::open(path, "w+b");
+    // "w+b" truncates, so only for a file that is not there. It was the
+    // fallback for any failed "r+b", which on a card that refused one open
+    // would have emptied every caller's read pointers in every forum. The
+    // rule CLAUDE.md wrote down after the mail slots found it (1.1.2).
+    if (!f && errno == ENOENT) f = disk::open(path, "w+b");
     if (!f) return false;
 
     char rec[kPtrRec + 1];
@@ -703,9 +721,400 @@ bool writePtr(uint32_t userId, uint8_t forum, const Ptr& p) {
     // hole is correct rather than merely tolerated.
     bool ok = fseek(f, ptrOffset(userId, forum), SEEK_SET) == 0 &&
               fwrite(rec, 1, kPtrRec, f) == kPtrRec;
-    fflush(f);
-    fclose(f);
+    ok = fflush(f) == 0 && ok;
+    if (fclose(f) != 0) ok = false;
     return ok;
+}
+
+// ===========================================================================
+// One writer for every forum file (1.2.1).
+//
+// Every write the forums make, a post, a removal, a read pointer, a new
+// forum's header, goes into this one queue, and one job of this plugin's on
+// the background runner makes them, one at a time, in the order they came.
+// The loop never writes a forum file.
+//
+// Why, in order of how much it matters:
+//
+// - **One writer.** CONFIG_FATFS_FS_LOCK is 0, so two tasks writing one FAT
+//   file corrupt it (runner.h). The forums had one writer, the loop, only
+//   because nothing else wrote them; the FidoNet tosser planned for 1.4.0
+//   is a second one, on the runner, writing the same INDEX.TXT and M####.TXT.
+//   It joins this queue rather than racing it, the photos' FILES.BBS shape
+//   (files.cpp, "One writer for the photos' FILES.BBS").
+// - **Rule no. 1.** A post was three to four card opens and writes on the
+//   loop, plus one open for every full body segment the forum held (the
+//   segment search this build also removes). On the runner the loop pays
+//   none of it: every other caller carries on while the card writes.
+//
+// What the poster sees: the post is confirmed when the runner has written
+// it, not in the same pass. The job normally runs within a pass or two (a
+// few milliseconds of card time), and after 250 ms the line shows the
+// spinner every other wait on the board shows. It can wait longer behind
+// another runner job: the runner runs one job at a time, so a camera snap
+// under way (seconds; a UXGA snap on the Freenove is about 14 s) holds a
+// post until it ends. After 10 s ESC or Q hands the caller back and the post
+// still lands. Nothing is lost by waiting: the text was copied when it was
+// queued.
+//
+// Readers stay on the loop and need no lock: the index record for N+1 is
+// written (and fsync'd) before the header or the loop's `newest` moves to
+// N+1, and a reader never looks past `newest`. A reader's own FAT file
+// object may hold a stale copy of a sector the runner just wrote; the only
+// thing that can be stale in it is a record's live flag, read a moment
+// before a removal, which is the answer the caller would have had a moment
+// earlier anyway.
+//
+// Read-your-own-write: a post's figures (its number, the forum's newest and
+// count) come back with it and are put into g_forum before the poster is
+// told, so the message is there to read the moment "Posted" is on screen. A
+// read pointer still in the queue is found by readPtr before the card is.
+//
+// The queue is on the heap only while writes wait (1 KB, PSRAM where the
+// board has it), so it costs no static DRAM, which the ESP32-CAM does not
+// have. A post's text is copied into a block of its own for the same reason.
+// ===========================================================================
+enum : uint8_t { OP_POST = 1, OP_REMOVE, OP_PTR, OP_SEED };
+enum : uint8_t { RES_OK = 0, RES_IO, RES_GONE };
+
+// A post as the runner writes it: the record's fields and the text after
+// the struct, in one block.
+struct PostData {
+    MsgRec   m;
+    uint16_t len = 0;
+    char*       body()       { return reinterpret_cast<char*>(this + 1); }
+    const char* body() const { return reinterpret_cast<const char*>(this + 1); }
+};
+
+struct Op {
+    uint8_t   kind  = 0;
+    uint8_t   forum = 0xFF;          // the topic slot when queued: PTRS.TXT's column
+    uint8_t   node  = 0xFF;          // the slot waiting for the answer, 0xFF nobody
+    uint8_t   res   = RES_IO;        // the runner's answer
+    uint16_t  call  = 0;             // Session::call of whoever waits: never a Session*
+    uint16_t  ticket = 0;            // which of their waits: see g_ticket
+    char      key[kKeyMax + 1] = {}; // the forum's folder: the runner works from this
+    bool      head  = false;         // the runner read the header: newest/total mean something
+    uint32_t  num   = 0;             // REMOVE: which; POST: the number it got
+    uint32_t  user  = 0;             // PTR: whose
+    Ptr       ptr;                   // PTR: the pointer
+    PostData* post  = nullptr;       // POST: the loop frees it when the answer is in
+    uint32_t  newest = 0;            // the header after the op
+    uint32_t  total  = 0;
+};
+static_assert(std::is_trivially_copyable<Op>::value, "an Op is copied in and out under the lock");
+
+constexpr uint8_t kOps = 16;         // twelve callers' pointers at a CONFIG save, and posts beside them
+Op*         g_ops     = nullptr;     // under the runner's lock
+uint8_t     g_opHead  = 0;           // under the runner's lock
+uint8_t     g_opCount = 0;           // under the runner's lock: queued, done or not
+uint8_t     g_opDone  = 0;           // under the runner's lock: of those, from the head, written
+runner::Job g_opJob;
+// A number for each write a caller waits on, kept in their W_WRITE walk. The
+// node and the call say it is still the same caller; this says it is still
+// the same wait. A caller who stopped waiting (ESC after 10 s) and posted
+// again would otherwise be told the first post's number for the second.
+uint16_t    g_ticket  = 0;           // the loop's
+uint16_t nextTicket() { if (!++g_ticket) ++g_ticket; return g_ticket; }
+
+// The queue's memory, the way the photos' description queue has it.
+void* opAlloc(size_t n) {
+#if defined(BBS_HAS_CAMERA)
+    return plat::camAlloc(n);
+#elif defined(BBS_HAS_LCD)
+    return plat::psramAlloc(n);
+#else
+    return malloc(n);
+#endif
+}
+void opFree(void* p) {
+    if (!p) return;
+#if defined(BBS_HAS_CAMERA)
+    plat::camFree(p);
+#elif defined(BBS_HAS_LCD)
+    plat::psramFree(p);
+#else
+    free(p);
+#endif
+}
+
+bool queuedPtr(uint32_t userId, uint8_t forum, Ptr& p) {
+    bool found = false;
+    plat::runLock();
+    if (g_ops) {
+        for (uint8_t k = 0; k < g_opCount; ++k) {          // the newest one wins
+            const Op& o = g_ops[(g_opHead + k) % kOps];
+            if (o.kind == OP_PTR && o.user == userId && o.forum == forum) { p = o.ptr; found = true; }
+        }
+    }
+    plat::runUnlock();
+    return found;
+}
+
+// ---------------------------------------------------------------------------
+// The runner's half. Nothing here reads g_forum, a Session or the timeline.
+// ---------------------------------------------------------------------------
+
+void runSeed(Op& op);
+
+// runPost: body, record, header, in that order, two opens (three when the
+// segment rolls). The header is read from the card, not from RAM: the card
+// is the one truth when there is one writer, and the number a post takes is
+// the header's newest plus one at the moment it is written.
+void runPost(Op& op) {
+    const PostData* pd = op.post;
+    if (!pd) return;
+    char dir[96], path[128];
+    keyDir(op.key, dir, sizeof(dir));
+    snprintf(path, sizeof(path), "%s/INDEX.TXT", dir);
+    FILE* ix = disk::open(path, "r+b");
+    if (!ix && errno == ENOENT) {
+        // No forum yet (its seed was refused, or has not run): make it now,
+        // as the seed would, rather than refuse the post.
+        Op seed = op;
+        runSeed(seed);
+        if (seed.res == RES_OK) ix = disk::open(path, "r+b");
+    }
+    if (!ix) return;
+    char rec[kRec];
+    Head h;
+    if (fread(rec, 1, kRec, ix) != kRec || !parseHead(rec, h)) { fclose(ix); return; }
+    op.head   = true;
+    op.newest = h.newest;
+    op.total  = h.count;
+
+    uint16_t seg = h.hasSeg ? h.seg : findSeg(dir);
+    uint32_t ofs = 0;
+    if (!appendBody(dir, pd->body(), pd->len, seg, ofs)) { fclose(ix); return; }
+
+    MsgRec m = pd->m;
+    m.num = h.newest + 1;
+    m.seg = seg;
+    m.ofs = ofs;
+    m.len = pd->len;
+    buildRec(m, rec);
+    bool ok = fseek(ix, static_cast<long>(m.num) * kRec, SEEK_SET) == 0 &&
+              fwrite(rec, 1, kRec, ix) == kRec && fflush(ix) == 0;
+    // The record on the card before the header names it. They are one open
+    // now, where they were two, and a header that reached the card first
+    // would name a record a power cut had lost.
+    if (ok) fsync(fileno(ix));
+    if (ok) {
+        Head nh = h;
+        nh.newest = m.num;
+        nh.count  = h.count + 1;
+        nh.seg    = seg;
+        nh.hasSeg = true;
+        buildHead(rec, op.key, nh);
+        ok = fseek(ix, 0, SEEK_SET) == 0 && fwrite(rec, 1, kRec, ix) == kRec;
+        ok = fflush(ix) == 0 && ok;
+    }
+    if (fclose(ix) != 0) ok = false;
+    // A header that did not save leaves the record unnamed, and the next post
+    // takes its slot: nothing points at it, so nothing is half there. Said as
+    // a failure, because nobody can read it.
+    if (!ok) return;
+    op.num    = m.num;
+    op.newest = m.num;
+    op.total  = h.count + 1;
+    op.res    = RES_OK;
+}
+
+// runRemove: one byte, the live flag, then the header's live count.
+void runRemove(Op& op) {
+    char path[128];
+    char dir[96];
+    keyDir(op.key, dir, sizeof(dir));
+    snprintf(path, sizeof(path), "%s/INDEX.TXT", dir);
+    FILE* ix = disk::open(path, "r+b");
+    if (!ix) return;
+    char rec[kRec];
+    Head h;
+    if (fread(rec, 1, kRec, ix) != kRec || !parseHead(rec, h)) { fclose(ix); return; }
+    op.head   = true;
+    op.newest = h.newest;
+    op.total  = h.count;
+    MsgRec m;
+    bool ok = op.num && op.num <= h.newest &&
+              fseek(ix, static_cast<long>(op.num) * kRec, SEEK_SET) == 0 &&
+              fread(rec, 1, kRec, ix) == kRec;
+    if (ok) { parseRec(rec, m); ok = m.num == op.num; }
+    if (!ok)     { fclose(ix); return; }
+    if (!m.live) { fclose(ix); op.res = RES_GONE; return; }      // another moderator was first
+
+    ok = fseek(ix, static_cast<long>(op.num) * kRec + kOffFlags, SEEK_SET) == 0 &&
+         fputc('X', ix) != EOF && fflush(ix) == 0;
+    if (ok) fsync(fileno(ix));
+    if (ok) {
+        if (h.count) --h.count;                  // the header's count is LIVE messages
+        buildHead(rec, op.key, h);
+        ok = fseek(ix, 0, SEEK_SET) == 0 && fwrite(rec, 1, kRec, ix) == kRec;
+        ok = fflush(ix) == 0 && ok;
+    }
+    if (fclose(ix) != 0) ok = false;
+    op.total = h.count;
+    if (ok) op.res = RES_OK;
+}
+
+// runSeed: a forum's folder and header, when start() found none. Does
+// nothing to a forum whose header reads (start's read may have failed for a
+// reason that has passed), and on an index whose header is gone, writes one
+// that counts the records the file holds, rather than newest=0: a header of
+// 0 would put the next post over message 1.
+void runSeed(Op& op) {
+    char dir[96], path[128];
+    keyDir(op.key, dir, sizeof(dir));
+    makeDirs(dir);
+    snprintf(path, sizeof(path), "%s/INDEX.TXT", dir);
+    FILE* ix = disk::open(path, "r+b");
+    const int why = ix ? 0 : errno;
+    char rec[kRec];
+    Head h;
+    if (!ix) {
+        if (why != ENOENT) return;
+        ix = disk::open(path, "w+b");
+        if (!ix) return;
+        h.hasSeg = true;                         // a new forum: segment 0
+    } else {
+        const bool read = fread(rec, 1, kRec, ix) == kRec;
+        if (read && parseHead(rec, h)) {
+            fclose(ix);
+            op.head = true;
+            op.newest = h.newest;
+            op.total  = h.count;
+            op.res    = RES_OK;
+            return;
+        }
+        long size = (fseek(ix, 0, SEEK_END) == 0) ? ftell(ix) : -1;
+        if (size >= static_cast<long>(2 * kRec)) h.newest = static_cast<uint32_t>(size / kRec - 1);
+        h.count = h.newest;                      // a guess, and the removals are not known
+        plat::log("forums: %s had no header; wrote one for %lu records", op.key,
+                  static_cast<unsigned long>(h.newest));
+    }
+    buildHead(rec, op.key, h);
+    bool ok = fseek(ix, 0, SEEK_SET) == 0 && fwrite(rec, 1, kRec, ix) == kRec;
+    ok = fflush(ix) == 0 && ok;
+    if (fclose(ix) != 0) ok = false;
+    if (!ok) return;
+    op.head   = true;
+    op.newest = h.newest;
+    op.total  = h.count;
+    op.res    = RES_OK;
+}
+
+void opRun(Op& op) {
+    op.res = RES_IO;
+    switch (op.kind) {
+        case OP_POST:   runPost(op);   break;
+        case OP_REMOVE: runRemove(op); break;
+        case OP_PTR:    op.res = writePtr(op.user, op.forum, op.ptr) ? RES_OK : RES_IO; break;
+        case OP_SEED:   runSeed(op);   break;
+        default:        break;
+    }
+}
+
+// opsWork: every op not yet written, in order. An op stays in its slot while
+// it is written: the loop only takes done ones off the head and adds at the
+// tail, so the first op not done is always at head + done.
+void opsWork(runner::Job&) {
+    for (;;) {
+        plat::runLock();
+        if (!g_ops || g_opDone >= g_opCount) { plat::runUnlock(); break; }
+        const uint8_t at = static_cast<uint8_t>((g_opHead + g_opDone) % kOps);
+        Op op = g_ops[at];
+        plat::runUnlock();
+        opRun(op);
+        plat::runLock();
+        g_ops[at] = op;
+        ++g_opDone;
+        plat::runUnlock();
+        runner::breathe();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The loop's half.
+// ---------------------------------------------------------------------------
+
+// opsKick: the job out, if it is not. Called as an op is queued, so a write
+// starts the pass it was asked for, and from the tick for anything left.
+void opsKick() {
+    if (runner::done(g_opJob)) runner::collect(g_opJob);
+    if (!runner::idle(g_opJob)) return;
+    plat::runLock();
+    const bool waiting = g_ops && g_opDone < g_opCount;
+    plat::runUnlock();
+    if (!waiting) return;
+    g_opJob.work = opsWork;
+    g_opJob.name = "forum writes";
+    runner::post(g_opJob);          // refused: the tick asks again
+}
+
+// opQueue: an op on the end of the queue, false when it will not fit (the
+// caller says so). The ring is made outside the lock (nothing is allocated
+// inside a critical section) and taken inside it only if nobody made one
+// meanwhile, the photos' queue's shape.
+bool opQueue(const Op& op) {
+    Op* spare = nullptr;
+    bool room = false, have = false;
+    for (uint8_t tries = 0; tries < 2 && !have; ++tries) {
+        plat::runLock();
+        if (!g_ops && spare) { g_ops = spare; spare = nullptr; g_opHead = 0; g_opCount = 0; g_opDone = 0; }
+        if (g_ops) {
+            have = true;
+            // A read pointer may not take the last two slots: twelve of them
+            // at a CONFIG save must not be what refuses somebody's post. A
+            // lost pointer costs a caller seeing messages as new again; a
+            // refused seed would leave a new forum unable to take a post.
+            room = g_opCount < (op.kind == OP_PTR ? kOps - 2 : kOps);
+            if (room) {
+                g_ops[(g_opHead + g_opCount) % kOps] = op;
+                ++g_opCount;
+            }
+        }
+        plat::runUnlock();
+        if (have) break;
+        void* mem = opAlloc(sizeof(Op) * kOps);
+        if (!mem) break;
+        spare = static_cast<Op*>(mem);
+        for (uint8_t i = 0; i < kOps; ++i) new (&spare[i]) Op();
+    }
+    opFree(spare);
+    if (!have) plat::log("forums: a write was not queued: no memory for the queue");
+    else if (!room) plat::log("forums: a write was not queued: the queue is full");
+    if (room) opsKick();
+    return room;
+}
+
+void opDeliver(Op& op);    // below, with the walks it finishes
+
+// opsTick: the answers that are in, handed out, then the job out again for
+// anything still waiting, or the ring back to the heap when nothing is.
+void opsTick() {
+    if (runner::done(g_opJob)) runner::collect(g_opJob);
+    for (uint8_t k = 0; k < kOps; ++k) {
+        Op op;
+        bool got = false;
+        plat::runLock();
+        if (g_ops && g_opDone) {
+            op = g_ops[g_opHead];
+            g_ops[g_opHead] = Op();
+            g_opHead = static_cast<uint8_t>((g_opHead + 1) % kOps);
+            --g_opCount;
+            --g_opDone;
+            got = true;
+        }
+        plat::runUnlock();
+        if (!got) break;
+        opDeliver(op);
+    }
+    if (!runner::idle(g_opJob)) return;
+    plat::runLock();
+    Op* drop = nullptr;
+    if (g_ops && !g_opCount) { drop = g_ops; g_ops = nullptr; g_opHead = 0; g_opDone = 0; }
+    plat::runUnlock();
+    opFree(drop);
+    opsKick();
 }
 
 // ---------------------------------------------------------------------------
@@ -809,21 +1218,20 @@ bool start(Bbs& bbs) {
 
     plugins::forEachKey(g_index, readKey, nullptr);
 
-    // Create each forum's folder and seed its header. Both are cheap and
-    // both are skipped when they already exist, which is what makes this
-    // safe to run on every config save.
-    char dir[96];
-    snprintf(dir, sizeof(dir), "%s/p/forums", plat::sdBase());
-    makeDirs(dir);
-
+    // Each forum's figures from its header. A forum with no header yet (a
+    // new one, or one whose read failed) gets its folder and header from the
+    // writer (1.2.1): start() writes nothing to the card itself. The seed
+    // does nothing to a header it finds readable, which is what makes this
+    // safe to run on every config save, and its answer puts the figures in.
     for (uint8_t i = 0; i < g_forums; ++i) {
         if (!g_forum[i].key[0]) continue;
-        forumDir(i, dir, sizeof(dir));
-        makeDirs(dir);
-        if (!readHeader(i)) {
-            if (!writeHeader(i))
-                plat::log("forums: could not write the header for %s", g_forum[i].key);
-        }
+        if (readHeader(i)) continue;
+        Op op;
+        op.kind  = OP_SEED;
+        op.forum = i;
+        snprintf(op.key, sizeof(op.key), "%s", g_forum[i].key);
+        if (!opQueue(op))
+            plat::log("forums: could not queue the header for %s", g_forum[i].key);
     }
 
     memset(g_where, 0, sizeof(g_where));
@@ -833,10 +1241,13 @@ bool start(Bbs& bbs) {
 }
 
 void stop() {
-    // No card work but one: a read pointer still in RAM is written, so a
-    // CONFIG save (which stops and starts every plugin) loses nobody's
-    // place (1.1.2). The mount is board-level state and stays.
+    // No card work but one: a read pointer still in RAM is queued for the
+    // writer, so a CONFIG save (which stops and starts every plugin) loses
+    // nobody's place (1.1.2). The mount is board-level state and stays.
+    // The writes already queued go on without the plugin: the runner owns
+    // them now, and their answers are handed out at the next start's tick.
     walkFlushAll();
+    opsKick();
     g_bbs = nullptr;
 }
 
@@ -992,29 +1403,12 @@ void scanDone() {
 //   arithmetic (unreadUpTo) while nothing was ever removed; only a forum
 //   that has had a removal walks the records it has not seen.
 
-// removeMessage: take message n out of forum i.
-//
-// One byte: the live flag at kOffFlags goes from '.' to 'X'. A single byte
-// cannot be half written, so there is no torn state to recover from, and
-// nothing moves: the index is never compacted, every other message keeps its
-// number, and every read pointer keeps meaning what it meant. The body stays
-// in its segment file, so a removal is recoverable from the card by hand.
-bool removeMessage(uint8_t i, uint32_t n) {
-    MsgRec m;
-    if (!readRec(i, n, m) || !m.live) return false;
-    char path[128];
-    indexPath(i, path, sizeof(path));
-    FILE* f = disk::open(path, "r+b");
-    if (!f) return false;
-    bool ok = fseek(f, static_cast<long>(n) * kRec + kOffFlags, SEEK_SET) == 0 &&
-              fputc('X', f) != EOF;
-    fflush(f);
-    fclose(f);
-    if (!ok) return false;
-    if (g_forum[i].total) --g_forum[i].total;
-    writeHeader(i);        // the header's count is LIVE messages
-    return true;
-}
+// Removing a message is one byte: the live flag at kOffFlags goes from '.'
+// to 'X'. A single byte cannot be half written, so there is no torn state to
+// recover from, and nothing moves: the index is never compacted, every other
+// message keeps its number, and every read pointer keeps meaning what it
+// meant. The body stays in its segment file, so a removal is recoverable
+// from the card by hand. The writer does it (runRemove, 1.2.1).
 
 // ===========================================================================
 // Drawing.
@@ -1061,16 +1455,22 @@ uint32_t callerId(const Session& s) {
 // caller carries on. What the walk was for (show the message, draw the
 // list, jump) is its continuation, done when it finishes.
 //
-// All on the loop, not the background runner: the same file is appended to
-// by posting, on the loop, and a walk that took several passes on another
-// task would be reading records the loop was writing (CONFIG_FATFS_FS_LOCK
-// is 0). A slice is bounded instead, which is what Rule no. 1 asks.
+// On the loop, bounded by the slice, which is what Rule no. 1 asks. The
+// writes are the runner's since 1.2.1 (the writer, above), and a walk reads
+// only records up to `newest`, which moves on the loop once the runner has
+// written them, so a walk and a write never want the same record.
+//
+// W_WRITE (1.2.1) is not a walk of the index at all: it is a caller waiting
+// for the writer's answer, which borrows the walks' spinner, their key rule
+// and their call check rather than growing a second copy of each. opDeliver
+// finishes it.
 // ===========================================================================
 
 constexpr uint16_t kSlice     = 64;     // records read for one caller in one pass
 constexpr uint16_t kTickBudget = 128;   // records read for everybody in one pass
 constexpr uint32_t kSpinAfter = 250;    // ms before a walk shows it is working
 constexpr uint16_t kPtrCost   = 16;     // a forum's read pointer loaded, in records
+constexpr uint32_t kWriteGiveMs = 10000; // a write waited on this long: ESC may stop waiting
 
 enum WalkKind : uint8_t {
     W_NONE = 0,
@@ -1079,6 +1479,7 @@ enum WalkKind : uint8_t {
     W_ANY,         // the next message not read, in any forum this caller sees
     W_SCAN,        // the subjects of a forum, into the shared table
     W_COUNT,       // unread counts, removed posts not counted, for a set of forums
+    W_WRITE,       // waiting for the writer (1.2.1): reads nothing
 };
 
 // What happens when the walk has its answer.
@@ -1089,6 +1490,8 @@ enum WalkThen : uint8_t {
     T_DRAWSUBJ,    // draw the subject list
     T_JUMP,        // a subject number was typed: open it
     T_DRAWFORUMS,  // the counts on the way in: draw the forum list
+    T_POSTED,      // W_WRITE: a post's answer (found = its number, 0 not saved)
+    T_REMOVED,     // W_WRITE: a removal's answer (found = the number, arg = RES_*)
 };
 
 struct Walk {
@@ -1096,7 +1499,7 @@ struct Walk {
     uint8_t  then  = T_NONE;
     uint8_t  forum = 0xFF;        // the forum being walked now
     uint16_t mask  = 0;           // W_ANY, W_COUNT: forums still to walk
-    uint32_t subject = 0;         // W_SUBJECT, W_UNREAD: the subject, 0 none
+    uint32_t subject = 0;         // W_SUBJECT, W_UNREAD: the subject, 0 none; W_WRITE: the ticket
     uint32_t pos   = 0;           // the next record to look at
     uint32_t end   = 0;           // the last one (inclusive); W_SCAN counts down to it
     uint32_t acc   = 0;           // W_COUNT: unread so far in this forum
@@ -1126,9 +1529,19 @@ uint32_t g_ptrUser[BBS_MAX_NODES + 2]  = {};
 // in the slot, and the next caller on that node must not read from it.
 uint16_t g_ptrCall[BBS_MAX_NODES + 2]  = {};
 
+// ptrFlush: a changed pointer to the writer (1.2.1), which puts it on the
+// card; readPtr finds it in the queue until it is there. A queue that will
+// not take it loses the change: the caller is shown those messages as new
+// again next time, the failure direction the pointer already accepts.
 void ptrFlush(uint8_t sl) {
-    if (g_ptrDirty[sl] && g_ptrForum[sl] != 0xFF && g_ptrUser[sl])
-        writePtr(g_ptrUser[sl], g_ptrForum[sl], g_ptr[sl]);
+    if (g_ptrDirty[sl] && g_ptrForum[sl] != 0xFF && g_ptrUser[sl]) {
+        Op op;
+        op.kind  = OP_PTR;
+        op.forum = g_ptrForum[sl];
+        op.user  = g_ptrUser[sl];
+        op.ptr   = g_ptr[sl];
+        if (!opQueue(op)) plat::log("forums: a read pointer was not saved");
+    }
     g_ptrDirty[sl] = false;
 }
 
@@ -1240,6 +1653,7 @@ void walkScanBegin(Session& s, uint8_t forum, uint8_t then) {
 // ---------------------------------------------------------------------------
 bool walkSlice(Session& s, Walk& w, uint16_t& budget) {
     uint8_t sl = slotOf(s);
+    if (w.kind == W_WRITE) return false;       // the writer's answer finishes it, not a slice
     for (;;) {
         // The forums walked one after another (W_ANY, W_COUNT).
         if (w.kind == W_ANY || w.kind == W_COUNT) {
@@ -1374,10 +1788,14 @@ bool walkSlice(Session& s, Walk& w, uint16_t& budget) {
 // Sixteen forums at 132 columns is about 3,326 bytes of frame against a
 // 3,072 byte timeline, and Term::ch returns void, so a frame that does not
 // fit loses characters off the end with nothing able to report it.
+bool readRow(Bbs& b, Session& s);      // a message, a row at a time (1.2.1), below
+
 bool rows(Session& s) {
     Bbs& b = *g_bbs;
     uint8_t sl = slotIdx(s);
     uint8_t w  = b.rowWidth(s);
+
+    if (g_view[sl] == View::Reading) return readRow(b, s);
 
     if (g_view[sl] == View::Subjects) {
         // Drawing somebody else's table would print their forum's subjects
@@ -1399,6 +1817,11 @@ bool rows(Session& s) {
             for (uint8_t x = 0; x < g_subjRows; ++x) here += g_subjRow[x].unread;
             listStatus(s, here, "Nothing new in this forum.");
             prompt(*g_bbs, s, false);
+            // The prompt is the last row, and the pager counts it: when it
+            // was the row that filled the page, the core drew [More] under
+            // the prompt, on a list with nothing left to show (1.2.1, found
+            // making the reader a list). Nothing follows it, so no page.
+            s.nonstop = true;
             ++s.listIdx;
             return true;
         }
@@ -1462,6 +1885,7 @@ bool rows(Session& s) {
         g_bbs->rowRule(s);
         listStatus(s, newTotal, "Nothing new since your last call.");
         prompt(*g_bbs, s, false);
+        s.nonstop = true;             // no [More] under the prompt: see the subject list's
         ++s.listIdx;
         return true;
     }
@@ -1801,7 +2225,55 @@ void field(Bbs& b, Session& s, const char* label, Color c, const char* value) {
 // to. This is the one place the "screen clears" rule from the file manager
 // deliberately does not apply, and it needs saying out loud because somebody
 // will try to make it consistent.
+//
+// **A row at a time since 1.2.1**, through the core's list machinery like
+// every other list here. It was drawn whole in one pass into the caller's
+// 3 KB output buffer, from a 1,729-byte buffer on the BBS task's stack, so
+// no body over 1,728 bytes could be shown and one near that on a slow
+// terminal could overrun the buffer. Now the header, each wrapped line of
+// the body, the EOM and the question are rows: drawn while the buffer has
+// room, so a slow terminal is paced rather than overrun and every other
+// caller carries on, and paged at [More] like every other list, which a
+// long message on a 25-row screen needs. The body is read from the card a
+// window at a time into the caller's compose buffer (free while they read:
+// nobody writes a message and reads one at once, the information pages'
+// argument), so any length the format can say is shown, and it costs no
+// per-caller state: the reader's place lives at the head of that buffer.
 // ---------------------------------------------------------------------------
+enum : uint8_t { RD_TOP = 0, RD_RULE, RD_SUBJ, RD_BY, RD_DATE, RD_RULE2, RD_BODY,
+                 RD_EOM, RD_PROMPT, RD_END };
+
+struct Reader {
+    uint8_t  phase = RD_TOP;
+    bool     fresh = false;        // new to this caller: "New Message" in the rule
+    bool     bad   = false;        // the card would not give the rest of the body
+    uint8_t  forum = 0xFF;
+    uint16_t seg   = 0;
+    uint16_t len   = 0;            // body bytes, at most kBodyCap
+    uint16_t rd    = 0;            // body bytes drawn
+    uint16_t wOfs  = 0;            // the body offset the window starts at
+    uint16_t wLen  = 0;            // body bytes in the window
+    uint32_t ofs   = 0;            // the body's offset in its segment
+    uint32_t num   = 0;
+    uint32_t epoch = 0;
+    codes::Painter pt;             // colour and code count carry across rows
+    char     handle[kHandle + 1]   = {};
+    char     subject[kSubject + 1] = {};
+};
+static_assert(std::is_trivially_copyable<Reader>::value, "the reader is copied in and out of compose");
+
+constexpr size_t   kReaderAt = (sizeof(Reader) + 7) & ~static_cast<size_t>(7);
+constexpr size_t   kWindow   = sizeof(Session::compose) - kReaderAt - 1;   // the NUL after it
+// Body bytes kept ahead of the one being drawn. A wrapped row takes at most
+// the row buffer (160) of text and codes, so a window that holds this much
+// past the place always holds the whole of the next row; it is refilled
+// from the place when it does not.
+constexpr uint16_t kLook     = 512;
+static_assert(kWindow >= 2u * kLook, "the window holds a row ahead with room to spare");
+
+void readerGet(const Session& s, Reader& r) { memcpy(&r, s.compose, sizeof(r)); }
+void readerPut(Session& s, const Reader& r) { memcpy(s.compose, &r, sizeof(r)); }
+
 void showMessage(Bbs& b, Session& s, uint8_t forum, uint32_t n) {
     MsgRec m;
     if (!readRec(forum, n, m)) {
@@ -1815,88 +2287,180 @@ void showMessage(Bbs& b, Session& s, uint8_t forum, uint32_t n) {
     g_view[sl]  = View::Reading;
     g_at[sl]    = forum;
 
-    char when[24] = "";
-    clk::fmtEpoch(when, sizeof(when), "%d %b %H:%M", m.epoch);
-
+    Reader r;
     // Read the pointer BEFORE marking, so the header can say whether this
     // was new to this caller. The one in RAM (1.1.2).
-    bool fresh = !seen(ptrFor(s, forum), n);
+    r.fresh = !seen(ptrFor(s, forum), n);
+    r.forum = forum;
+    r.num   = m.num;
+    r.epoch = m.epoch;
+    r.seg   = m.seg;
+    r.ofs   = m.ofs;
+    r.len   = m.len > kBodyCap ? kBodyCap : m.len;
+    snprintf(r.handle, sizeof(r.handle), "%s", m.handle);
+    snprintf(r.subject, sizeof(r.subject), "%s", m.subject);
+    r.pt.begin(g_cBody, !s.bellOff);
+    readerPut(s, r);
 
-    // Rob's layout:
-    //
-    //   == New Message: ID #4 ---------------
-    //   Subject: Wrapping test
-    //   By:      quantumrob
-    //   Date:    22 Sep 12:32
-    //   -------------------------------------
-    //   the body
-    //
-    //   --> EOM <--
-    //
-    //   [R]eply  [Enter] Next  [P]ost  [Q] Back:
-    //
-    // All of it from column 0 (Rob: "not sure why these all start indented,
-    // stop that").
-    //
-    // Two newlines first: one ends the prompt line the key was pressed on,
-    // the second is the blank line he asked for above the header.
-    s.term.nl(s.tl);
-    s.term.nl(s.tl);
-    headRule(b, s, fresh, m.num);
-    field(b, s, "Subject: ", g_cHead, m.subject);
-    field(b, s, "By:      ", g_cWho,  m.handle);
-    field(b, s, "Date:    ", g_cWhen, when);
-    plainRule(b, s);
-
-    char body[kBodyMax + 1];
-    if (!readBody(forum, m, body, sizeof(body))) {
-        say(s, Color::LightRed, "(the text of this message could not be read)");
-        s.term.nl(s.tl);
-    } else {
-        // Wrapped at THIS reader's width, not the writer's. The guard is
-        // generous: 1,536 characters
-        // at 35 columns is about 45 lines before any paragraph breaks, and
-        // the old limit of 40 would have cut the end off a full post on a C64.
-        // Through the @-code renderer, whose wrap measures what is shown
-        // rather than what was typed. A colour lasts to the end of the
-        // writer's own line, across however many rows this reader's width
-        // turns it into, and not into the next paragraph. The reserve is
-        // what the rest of the body still needs, so an effect near the top
-        // cannot eat the room the words below it have to print in.
-        uint8_t w = b.rowWidth(s);
-        if (!w) w = 1;
-        char line[160];
-        const char* p = body;
-        uint8_t guard = 0;
-        codes::Painter pt;
-        pt.begin(g_cBody, !s.bellOff);
-        while ((p = codes::wrap(p, line, sizeof(line), w, pt)) != nullptr
-               && ++guard < 96) {
-            pt.reserve = strlen(p) + 96;          // the rest, the EOM and the prompt
-            codes::row(s.term, s.tl, line, w, pt);
-            s.term.nl(s.tl);
-            if (p[-1] == '\n') codes::endParagraph(pt);
-            if (!*p) break;
-        }
-    }
-
-    // Rob: "at the end of messages (all) add --> EOM <--". The reading loop
-    // does not clear between messages, so a marker at the end of each one
-    // is what says where one stops and the next begins. A blank line
-    // before it (Rob: "Need a linefeed before EOM").
-    s.term.nl(s.tl);
-    s.term.color(s.tl, g_cTitle);
-    s.term.text(s.tl, "--> EOM <--");
-    s.term.nl(s.tl);
-
-    // Marked in RAM, written to the card when the caller leaves the forum
-    // (1.1.2): it was a card write for every message read.
+    // Marked when it opens, in RAM, written to the card when the caller
+    // leaves the forum (1.1.2). A caller who stops a long one at [More] has
+    // still been shown it.
     ptrSeen(s, forum, n);
 
     // The forum's unread count follows what this caller has actually read,
     // so the list they come back to agrees with what just happened.
     unreadNow(s, forum);
-    prompt(b, s);
+
+    s.listIdx = 0;
+    b.startPluginList(s, g_index);
+}
+
+// readerFill: the window, from the place, when the next row may not be in
+// it. One open of the segment, at most kWindow bytes. A short read keeps
+// what came and ends the body there, said as such.
+void readerFill(Session& s, Reader& r) {
+    const uint32_t have = static_cast<uint32_t>(r.wOfs) + r.wLen;
+    const uint32_t need = static_cast<uint32_t>(r.rd) + kLook;
+    if (r.rd >= r.wOfs && (have >= r.len || need <= have)) return;
+    char* win = s.compose + kReaderAt;
+    const size_t left = static_cast<size_t>(r.len - r.rd);
+    const size_t want = left < kWindow ? left : kWindow;
+    char dir[96], path[128];
+    forumDir(r.forum, dir, sizeof(dir));
+    segPath(dir, r.seg, path, sizeof(path));
+    size_t got = 0;
+    if (FILE* f = disk::open(path, "rb")) {
+        if (fseek(f, static_cast<long>(r.ofs + r.rd), SEEK_SET) == 0) got = fread(win, 1, want, f);
+        fclose(f);
+    }
+    win[got] = '\0';
+    r.wOfs = r.rd;
+    r.wLen = static_cast<uint16_t>(got);
+    if (got < want) {
+        r.bad = true;
+        r.len = static_cast<uint16_t>(r.rd + got);   // what there is, and no more
+    }
+}
+
+// bodyRow: one wrapped row of the body. False when the body is done.
+bool bodyRow(Bbs& b, Session& s, Reader& r) {
+    if (r.rd >= r.len) return false;
+    readerFill(s, r);
+    const char* win = s.compose + kReaderAt;
+    const char* p   = win + (r.rd - r.wOfs);
+    if (p >= win + r.wLen || !*p) return false;     // the end, or a NUL in the text
+    // Wrapped at THIS reader's width, not the writer's, through the @-code
+    // renderer, whose wrap measures what is shown rather than what was
+    // typed. A colour lasts to the end of the writer's own line, across
+    // however many rows this reader's width turns it into, and not into the
+    // next paragraph.
+    uint8_t w = b.rowWidth(s);
+    if (!w) w = 1;
+    char line[160];
+    // The reserve is what an effect must leave for the rest of this row: the
+    // rows after it are drawn in later passes, each only once the buffer has
+    // room, so the whole body no longer has to fit behind the effect.
+    r.pt.reserve = 384;
+    const char* next = codes::wrap(p, line, sizeof(line), w, r.pt);
+    if (!next || next <= p) return false;
+    codes::row(s.term, s.tl, line, w, r.pt);
+    s.term.nl(s.tl);
+    if (next[-1] == '\n') codes::endParagraph(r.pt);
+    r.rd = static_cast<uint16_t>(r.rd + (next - p));
+    return true;
+}
+
+// readRow: the reading view's rows() (1.2.1). One row a call, so the pager
+// counts the screen right.
+bool readRow(Bbs& b, Session& s) {
+    Reader r;
+    readerGet(s, r);
+    bool drew = true;
+    for (bool again = true; again; ) {
+        again = false;
+        switch (r.phase) {
+            case RD_TOP:
+                // Rob's layout:
+                //
+                //   == New Message: ID #4 ---------------
+                //   Subject: Wrapping test
+                //   By:      quantumrob
+                //   Date:    22 Sep 12:32
+                //   -------------------------------------
+                //   the body
+                //
+                //   --> EOM <--
+                //
+                //   [R]eply  [Enter] Next  [P]ost  [Q] Back:
+                //
+                // All of it from column 0 (Rob: "not sure why these all start
+                // indented, stop that"). Two newlines first: one ends the
+                // prompt line the key was pressed on, the second is the blank
+                // line he asked for above the header.
+                s.term.nl(s.tl);
+                s.term.nl(s.tl);
+                r.phase = RD_RULE;
+                break;
+            case RD_RULE:
+                headRule(b, s, r.fresh, r.num);
+                r.phase = RD_SUBJ;
+                break;
+            case RD_SUBJ:
+                field(b, s, "Subject: ", g_cHead, r.subject);
+                r.phase = RD_BY;
+                break;
+            case RD_BY:
+                field(b, s, "By:      ", g_cWho, r.handle);
+                r.phase = RD_DATE;
+                break;
+            case RD_DATE: {
+                char when[24] = "";
+                clk::fmtEpoch(when, sizeof(when), "%d %b %H:%M", r.epoch);
+                field(b, s, "Date:    ", g_cWhen, when);
+                r.phase = RD_RULE2;
+                break;
+            }
+            case RD_RULE2:
+                plainRule(b, s);
+                r.phase = RD_BODY;
+                break;
+            case RD_BODY:
+                if (bodyRow(b, s, r)) break;
+                if (r.bad) {
+                    say(s, Color::LightRed, r.rd ? "(the rest of this message could not be read)"
+                                                 : "(the text of this message could not be read)");
+                    s.term.nl(s.tl);
+                    r.phase = RD_EOM;
+                    break;
+                }
+                r.phase = RD_EOM;
+                again = true;                          // nothing drawn: the EOM in this row
+                break;
+            case RD_EOM:
+                // Rob: "at the end of messages (all) add --> EOM <--". The
+                // reading loop does not clear between messages, so a marker
+                // at the end of each one is what says where one stops and
+                // the next begins. A blank line before it (Rob: "Need a
+                // linefeed before EOM").
+                s.term.nl(s.tl);
+                s.term.color(s.tl, g_cTitle);
+                s.term.text(s.tl, "--> EOM <--");
+                s.term.nl(s.tl);
+                r.phase = RD_PROMPT;
+                break;
+            case RD_PROMPT:
+                prompt(b, s);
+                s.nonstop = true;                      // nothing after the prompt to page
+                r.phase = RD_END;
+                break;
+            default:
+                drew = false;
+                break;
+        }
+    }
+    readerPut(s, r);
+    if (drew) ++s.listIdx;
+    return drew;
 }
 
 // readNext: Enter. The whole fast path, as walks (1.1.2); the answer is
@@ -2072,37 +2636,55 @@ bool bodyAdd(Session& s, const char* line) {
     return true;
 }
 
+// finishPost: /s. The post goes to the writer (1.2.1) and the caller waits
+// for its answer (W_WRITE, then T_POSTED in walkFinish): "Posted as message
+// N" is said once it is on the card and the forum's figures say so, never
+// before, so the poster can read it the moment they are told.
 void finishPost(Bbs& b, Session& s, const char* body) {
+    (void)b;
     uint8_t sl = slotIdx(s);
     uint8_t forum = g_at[sl];
 
-    MsgRec m;
-    m.authorId = callerId(s);
-    snprintf(m.handle, sizeof(m.handle), "%.*s", kHandle, s.user);
-    m.epoch = clk::epoch();
-    snprintf(m.subject, sizeof(m.subject), "%.*s", kSubject, g_draftSubject[sl]);
-    // A reply carries its parent's hash rather than rehashing the text, so
-    // renaming a subject cannot split a thread and two subjects that happen
-    // to read alike cannot be merged into one.
-    m.hash = g_replying[sl] ? g_replyHash[sl] : subjectHash(m.subject);
+    size_t len = strlen(body);
+    if (len > kBodyCap) len = kBodyCap;           // never past the format's four digits
 
-    s.term.nl(s.tl);
-    if (!appendMessage(forum, m, body)) {
-        say(s, Color::LightRed, "--> That did not save. The card may be full.");
-    } else {
-        // The poster has read their own message by definition.
-        ptrSeen(s, forum, m.num);
-        unreadNow(s, forum);
-
-        char msg[80];
-        snprintf(msg, sizeof(msg), "--> Posted as message %lu.",
-                 static_cast<unsigned long>(m.num));
-        say(s, Color::LightGreen, msg);
-        g_subjFor = 0xFF;                       // the tally is stale now
-        claims::release(claims::Res::Subjects, slotOf(s));
+    // The text is copied: the writer must never read a Session, and this
+    // caller's compose buffer is the next caller's if they hang up now.
+    PostData* pd = static_cast<PostData*>(opAlloc(sizeof(PostData) + len + 1));
+    if (pd) {
+        new (pd) PostData();
+        MsgRec& m = pd->m;
+        m.authorId = callerId(s);
+        snprintf(m.handle, sizeof(m.handle), "%.*s", kHandle, s.user);
+        m.epoch = clk::epoch();
+        snprintf(m.subject, sizeof(m.subject), "%.*s", kSubject, g_draftSubject[sl]);
+        // A reply carries its parent's hash rather than rehashing the text, so
+        // renaming a subject cannot split a thread and two subjects that happen
+        // to read alike cannot be merged into one.
+        m.hash = g_replying[sl] ? g_replyHash[sl] : subjectHash(m.subject);
+        pd->len = static_cast<uint16_t>(len);
+        memcpy(pd->body(), body, len);
+        pd->body()[len] = '\0';
     }
-    g_replying[sl] = false;
-    prompt(b, s);
+    Op op;
+    op.kind   = OP_POST;
+    op.forum  = forum;
+    op.node   = sl;
+    op.call   = s.call;
+    op.ticket = nextTicket();
+    op.post   = pd;
+    snprintf(op.key, sizeof(op.key), "%s", g_forum[forum].key);
+    if (!pd || !opQueue(op)) {
+        // Nothing lost: the message is still in the editor, and /s asks again.
+        opFree(pd);
+        s.term.nl(s.tl);
+        say(s, g_cMark, "--> The board cannot take that just now. /s tries again.");
+        bodyPrompt(s);
+        return;
+    }
+    s.term.nl(s.tl);
+    walkBegin(s, W_WRITE, T_POSTED, forum, true);
+    g_walk[sl].subject = op.ticket;
 }
 
 void startPost(Bbs& b, Session& s, bool reply) {
@@ -2234,22 +2816,25 @@ void removeShown(Bbs& b, Session& s) {
         noticeDone(b, s);
         return;
     }
-    if (!removeMessage(forum, n)) {
-        notice(s, Color::LightRed, "--> That did not save. Is the card still in?");
-        prompt(b, s);
+    // To the writer (1.2.1), and the answer in walkFinish (T_REMOVED), which
+    // logs it: only a removal that happened is written to the log.
+    Op op;
+    op.kind  = OP_REMOVE;
+    op.forum = forum;
+    op.node  = sl;
+    op.call  = s.call;
+    op.ticket = nextTicket();
+    op.num   = n;
+    snprintf(op.key, sizeof(op.key), "%s", g_forum[forum].key);
+    if (!opQueue(op)) {
+        notice(s, Color::LightRed, "--> The board cannot take that just now. D tries again.");
+        noticeDone(b, s);
         return;
     }
-    plat::log("forums: %s removed #%lu from %s", s.user,
-              static_cast<unsigned long>(n), g_forum[forum].key);
-
-    // The subject table describes the forum as it was: stale for everybody.
-    g_subjFor = 0xFF;
-    unreadNow(s, forum);
-
-    char msg[48];
-    snprintf(msg, sizeof(msg), "--> Message #%lu removed.", static_cast<unsigned long>(n));
-    notice(s, Color::LightGreen, msg);
-    prompt(b, s);
+    s.term.nl(s.tl);
+    s.term.nl(s.tl);
+    walkBegin(s, W_WRITE, T_REMOVED, forum, true);
+    g_walk[sl].subject = op.ticket;
 }
 
 // jumpTo: act on a number typed at the prompt.
@@ -2339,9 +2924,78 @@ void walkFinish(Bbs& b, Session& s) {
         case T_DRAWFORUMS:
             drawForums(b, s);
             return;
+        case T_POSTED:
+            // The forum's figures already say it (opDeliver put them in
+            // before this), so the message can be read the moment it is
+            // said. The poster has read their own message by definition.
+            if (w.found) {
+                ptrSeen(s, w.forum, w.found);
+                unreadNow(s, w.forum);
+                char msg[80];
+                snprintf(msg, sizeof(msg), "--> Posted as message %lu.",
+                         static_cast<unsigned long>(w.found));
+                say(s, Color::LightGreen, msg);
+                claims::release(claims::Res::Subjects, sl);
+            } else {
+                say(s, Color::LightRed, "--> That did not save. The card may be full.");
+            }
+            g_replying[sl] = false;
+            prompt(b, s);
+            return;
+        case T_REMOVED:
+            if (w.found) {
+                plat::log("forums: %s removed #%lu from %s", s.user,
+                          static_cast<unsigned long>(w.found), g_forum[w.forum].key);
+                unreadNow(s, w.forum);
+                char msg[48];
+                snprintf(msg, sizeof(msg), "--> Message #%lu removed.",
+                         static_cast<unsigned long>(w.found));
+                say(s, Color::LightGreen, msg);
+            } else {
+                say(s, w.arg == RES_GONE ? g_cMark : Color::LightRed,
+                    w.arg == RES_GONE ? "--> That message was removed already."
+                                      : "--> That did not save. Is the card still in?");
+            }
+            prompt(b, s);
+            return;
         default:
             return;                                     // a count, in the background
     }
+}
+
+Session* walkSession(uint8_t sl);
+
+// opDeliver: one of the writer's answers (1.2.1). The forum's figures first,
+// by its key (a CONFIG save may have renumbered the topics since), so
+// whoever reads next finds what was written; then the caller waiting for it,
+// if they are still the caller on that node and still waiting.
+void opDeliver(Op& op) {
+    if (op.head) {
+        for (uint8_t i = 0; i < g_forums; ++i) {
+            if (!g_forum[i].key[0] || strcmp(g_forum[i].key, op.key) != 0) continue;
+            // newest never goes back: answers come in the order they were
+            // written, but start() may have read a later header in between.
+            if (op.newest > g_forum[i].newest) g_forum[i].newest = op.newest;
+            g_forum[i].total = op.total;
+        }
+    }
+    if ((op.kind == OP_POST || op.kind == OP_REMOVE) && op.res == RES_OK)
+        g_subjFor = 0xFF;                               // the subject tally is stale for everybody
+    if (op.kind == OP_PTR && op.res != RES_OK) plat::log("forums: a read pointer did not save");
+    if (op.kind == OP_SEED && op.res != RES_OK) plat::log("forums: could not write the header for %s", op.key);
+    opFree(op.post);
+    op.post = nullptr;
+
+    if (op.node >= BBS_MAX_NODES + 2 || !g_bbs) return;
+    Walk& w = g_walk[op.node];
+    // Gone, or stopped waiting for this one. W_WRITE keeps its ticket where a
+    // subject walk keeps its subject.
+    if (w.kind != W_WRITE || w.call != op.call || w.subject != op.ticket) return;
+    Session* s = walkSession(op.node);
+    if (!s || !g_bbs->owns(*s, g_index)) { walkStop(op.node); return; }
+    w.found = op.res == RES_OK ? op.num : 0;
+    w.arg   = op.res;
+    walkFinish(*g_bbs, *s);
 }
 
 // walkRun: a slice now, for the caller who just asked, so a walk that fits
@@ -2380,6 +3034,7 @@ Session* walkSession(uint8_t sl) {
 // for everybody in one pass (PF_FAST: every 20 ms).
 void tick(uint32_t now) {
     if (!g_bbs) return;
+    opsTick();                         // the writer's answers first: a post waited on is done
     uint16_t budget = kTickBudget;
     constexpr uint8_t kN = BBS_MAX_NODES + 2;
     for (uint8_t k = 0; k < kN && budget; ++k) {
@@ -2387,7 +3042,14 @@ void tick(uint32_t now) {
         Walk& w = g_walk[sl];
         if (w.kind == W_NONE) continue;
         Session* s = walkSession(sl);
-        if (!s || !g_bbs->owns(*s, g_index)) { walkStop(sl); continue; }
+        // Still ours: in the forums, or, for a count in the background, in
+        // one of the forums' own lists. A message is a list since 1.2.1, and
+        // the count its opening starts (unreadNow) used to be stopped at the
+        // first tick because the session was in the core's list state.
+        const bool ours = s && (g_bbs->owns(*s, g_index) ||
+                                (!w.fg && s->owner == g_index &&
+                                 (s->st == SState::List || s->st == SState::More)));
+        if (!ours) { walkStop(sl); continue; }
         if (walkSlice(*s, w, budget)) { walkFinish(*g_bbs, *s); continue; }
         // Still going: say so on the line after a moment, as every other
         // wait on the board does.
@@ -2419,6 +3081,10 @@ void hookRestore(Session& s) {
     if (!g_bbs) return;
     Bbs& b = *g_bbs;
     uint8_t sl = slotIdx(s);
+    // A walk or a write the caller is waiting on draws its own answer and
+    // prompt when it ends; a prompt drawn here would be a second one, above
+    // it. The spinner starts again on the new line.
+    if (walking(sl) && g_walk[sl].fg) { g_walk[sl].shown = false; return; }
     switch (g_ask[sl]) {
         case AskSubject: {
             char q[40];
@@ -2460,7 +3126,21 @@ void onKey(Session& s, int key, uint32_t) {
     // A walk the caller is waiting on (1.1.2): ESC or Q stops it; anything
     // else waits, as keys do at every other spinner on the board.
     if (walking(sl) && g_walk[sl].fg) {
-        if (key == KEY_ESC || key == KEY_BREAK || key == 'q' || key == 'Q') {
+        const bool out = key == KEY_ESC || key == KEY_BREAK || key == 'q' || key == 'Q';
+        // A write cannot be taken back once queued (1.2.1), so waiting for one
+        // is not stopped by a key: the answer is milliseconds away. Only when
+        // it has waited long (behind a camera snap on the runner, say) does
+        // ESC or Q hand the caller back, and the write still lands.
+        if (g_walk[sl].kind == W_WRITE) {
+            if (!out || plat::millis() - g_walk[sl].startedAt < kWriteGiveMs) return;
+            if (g_walk[sl].shown) s.term.eraseBack(s.tl, 1);
+            walkStop(sl);
+            g_replying[sl] = false;
+            say(s, g_cMark, "--> Still saving. It lands when the card is free.");
+            prompt(b, s);
+            return;
+        }
+        if (out) {
             if (g_walk[sl].shown) s.term.eraseBack(s.tl, 1);
             walkStop(sl);
             notice(s, g_cMark, "--> Stopped.");
