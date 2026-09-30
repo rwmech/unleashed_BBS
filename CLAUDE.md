@@ -1242,7 +1242,8 @@ this tree.
     - ham radio (1.3.0).
   - **Ship process:** flash every bench board to the release candidate (SHUTDOWN first), Rob confirms they connect, then tag v1.2.0 and the camsat release together.
   - **What happened (2026-09-29):** Rob moved the bench flashes after the tag ("we can flash later, get it on the site with the compiled versions"). The release commit is link.18 renamed 1.2.0, with the board versions unchanged; it was tagged on link.18's smoke runs (all 19 envs built, `make test`, the targeted groups with and without a card, the ETH profile). The Action builds the eight image sets from the tag. camsat had no release pipeline (no workflow, no tags), and the site's fetcher already expects a `camsat` set, so its first release follows separately.
-- **1.2.1 queue:**
+- **1.2.1 queue:** (Rob, 2026-09-30: development starts as soon as he confirms the Makerfabs v2.0 on the glass; the plan as posted to Discord is release-prep's plan-1.2.1.md)
+  - **the Makerfabs ESP32-S3 Parallel TFT with Touch 3.5" v2.0 (MF35V2)**, board lane board-mf35v2 from v1.2.0, on COM29 (native USB; the silkscreen and module "MCN16R8" confirmed from Rob's photo): merges into 1.2.1 and goes on the installer when 1.2.1 ships. Rob wants the glass with the USB pointing down as the default;
   - the swipe gallery;
   - **the ETH board joins Wi-Fi alongside the wire** (Rob: "if both are supported, just keep the connection through wire"), so its radio follows the router's channel and sats pair, with Ethernet still the route for callers;
   - stop wolfSSH advertising the aes192 ciphers it doesn't have (found by the web-SSH research; harmless today);
