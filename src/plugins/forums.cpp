@@ -356,18 +356,38 @@ struct Head {
     bool     hasSeg = false;
 };
 
-// parseHead: a 128-byte header record, false when it is not one.
-bool parseHead(const char* rec, Head& h) {
+// headNum: a header value that is all digits up to its tab, false if not.
+bool headNum(const char* s, uint32_t& v) {
+    if (*s < '0' || *s > '9') return false;
+    char* end = nullptr;
+    const unsigned long n = strtoul(s, &end, 10);
+    while (*end == ' ' || *end == '\r' || *end == '\n') ++end;   // the padding, the CR LF
+    if (*end) return false;
+    v = static_cast<uint32_t>(n);
+    return true;
+}
+
+// parseHead: a 128-byte header record, false when it is not one. `size` is
+// the index file's length: a header is believed only if it fits the file it
+// heads (code review, 1.2.1-forums.3). newest= and count= are required and
+// numeric, newest names a record the file holds, and count is at most
+// newest. A missing or garbled newest parsed as 0, and the next post wrote
+// over message 1; newest=999999 on a small file sent a post 128 MB into it
+// and a recount through a million records. Anything else is torn, and a
+// torn header is rebuilt from the records (runSeed).
+bool parseHead(const char* rec, long size, Head& h) {
     h = Head();
     if (strncmp(rec, kMagic, sizeof(kMagic) - 1) != 0) return false;
+    if (size < static_cast<long>(kRec)) return false;
     char buf[kRec + 1];
     memcpy(buf, rec, kRec);
     buf[kRec] = '\0';
+    bool haveCount = false, haveNewest = false;
     for (char* p = buf; p && *p; ) {
         char* tab = strchr(p, '\t');
         if (tab) *tab = '\0';
-        if (!strncmp(p, "count=", 6))  h.count  = strtoul(p + 6, nullptr, 10);
-        if (!strncmp(p, "newest=", 7)) h.newest = strtoul(p + 7, nullptr, 10);
+        if (!strncmp(p, "count=", 6))  haveCount  = headNum(p + 6, h.count);
+        if (!strncmp(p, "newest=", 7)) haveNewest = headNum(p + 7, h.newest);
         if (!strncmp(p, "seg=", 4)) {
             // Past M9999 is not a segment: a record's segment field has four
             // digits, and 34463 would be written as 3446, sending the body to
@@ -382,7 +402,20 @@ bool parseHead(const char* rec, Head& h) {
         }
         p = tab ? tab + 1 : nullptr;
     }
-    return true;
+    const uint32_t records = static_cast<uint32_t>(size / kRec - 1);
+    return haveCount && haveNewest && h.newest <= records && h.count <= h.newest;
+}
+
+// Reading a header from an open index: RH_OK, RH_TORN (it came back and is
+// not one), or RH_ERR (the card would not give it: never taken for torn).
+enum : uint8_t { RH_OK = 0, RH_TORN, RH_ERR };
+uint8_t headRead(FILE* ix, Head& h, long& size) {
+    size = (fseek(ix, 0, SEEK_END) == 0) ? ftell(ix) : -1;
+    if (size < 0 || fseek(ix, 0, SEEK_SET) != 0) return RH_ERR;
+    char rec[kRec];
+    const size_t got = fread(rec, 1, kRec, ix);
+    if (got != kRec && ferror(ix)) return RH_ERR;
+    return (got == kRec && parseHead(rec, size, h)) ? RH_OK : RH_TORN;
 }
 
 // buildHead: the header for a forum, exactly 128 bytes. Pads to 126 and
@@ -415,11 +448,11 @@ bool readHeader(uint8_t i) {
     indexPath(i, path, sizeof(path));
     FILE* f = disk::open(path, "rb");
     if (!f) return false;
-    char buf[kRec] = {};
-    size_t got = fread(buf, 1, kRec, f);
-    fclose(f);
     Head h;
-    if (got != kRec || !parseHead(buf, h)) return false;
+    long size = 0;
+    const uint8_t r = headRead(f, h, size);
+    fclose(f);
+    if (r != RH_OK) return false;               // the seed looks again, on the runner
     g_forum[i].total  = h.count;
     g_forum[i].newest = h.newest;
     return true;
@@ -868,6 +901,25 @@ bool queuedPtr(uint32_t userId, uint8_t forum, Ptr& p) {
 
 void runSeed(Op& op);
 
+// headWrite: the header into an open index, which it closes. A write that
+// fails is tried once more through a fresh open: FatFs keeps a write error
+// on the file object, so a second try on the same one cannot succeed (code
+// review, 1.2.1-forums.3).
+bool headWrite(FILE* ix, const char* path, const char* key, const Head& h) {
+    char rec[kRec];
+    buildHead(rec, key, h);
+    bool ok = fseek(ix, 0, SEEK_SET) == 0 && fwrite(rec, 1, kRec, ix) == kRec;
+    ok = fflush(ix) == 0 && ok;
+    if (fclose(ix) != 0) ok = false;
+    if (ok) return true;
+    FILE* f = disk::open(path, "r+b");
+    if (!f) return false;
+    ok = fwrite(rec, 1, kRec, f) == kRec;        // "r+b" opens at 0
+    ok = fflush(f) == 0 && ok;
+    if (fclose(f) != 0) ok = false;
+    return ok;
+}
+
 // runPost: body, record, header, in that order, two opens (three when the
 // segment rolls). The header is read from the card, not from RAM: the card
 // is the one truth when there is one writer, and the number a post takes is
@@ -887,9 +939,20 @@ void runPost(Op& op) {
         if (seed.res == RES_OK) ix = disk::open(path, "r+b");
     }
     if (!ix) return;
-    char rec[kRec];
     Head h;
-    if (fread(rec, 1, kRec, ix) != kRec || !parseHead(rec, h)) { fclose(ix); return; }
+    long size = 0;
+    uint8_t got = headRead(ix, h, size);
+    if (got == RH_TORN) {
+        // A torn header is rebuilt from the records, as a seed would at
+        // start, and the post goes on after them: never over message 1.
+        fclose(ix);
+        Op seed = op;
+        runSeed(seed);
+        ix = seed.res == RES_OK ? disk::open(path, "r+b") : nullptr;
+        if (!ix) return;
+        got = headRead(ix, h, size);
+    }
+    if (got != RH_OK) { fclose(ix); return; }
     op.head   = true;
     op.newest = h.newest;
     op.total  = h.count;
@@ -898,6 +961,7 @@ void runPost(Op& op) {
     uint32_t ofs = 0;
     if (!appendBody(dir, pd->body(), pd->len, seg, ofs)) { fclose(ix); return; }
 
+    char rec[kRec];
     MsgRec m = pd->m;
     m.num = h.newest + 1;
     m.seg = seg;
@@ -911,21 +975,22 @@ void runPost(Op& op) {
     // would name a record a power cut had lost. A sync that fails writes no
     // header: the record stays unnamed and the post is said not to have saved.
     if (ok) ok = fsync(fileno(ix)) == 0;
-    if (ok) {
-        Head nh = h;
-        nh.newest = m.num;
-        nh.count  = h.count + 1;
-        nh.seg    = seg;
-        nh.hasSeg = true;
-        buildHead(rec, op.key, nh);
-        ok = fseek(ix, 0, SEEK_SET) == 0 && fwrite(rec, 1, kRec, ix) == kRec;
-        ok = fflush(ix) == 0 && ok;
+    if (!ok) { fclose(ix); return; }
+    Head nh = h;
+    nh.newest = m.num;
+    nh.count  = h.count + 1;
+    nh.seg    = seg;
+    nh.hasSeg = true;
+    if (!headWrite(ix, path, op.key, nh)) {
+        // The record is on the card and unnamed, and the header may be half
+        // one thing and half the other: said as not saved (nobody can read
+        // it), and recounted from the card when the answer is handed out, so
+        // a header left torn is rebuilt now rather than at the next post
+        // (code review, 1.2.1-forums.3).
+        op.stale = true;
+        plat::log("forums: %s: a post's header did not save; recounting", op.key);
+        return;
     }
-    if (fclose(ix) != 0) ok = false;
-    // A header that did not save leaves the record unnamed, and the next post
-    // takes its slot: nothing points at it, so nothing is half there. Said as
-    // a failure, because nobody can read it.
-    if (!ok) return;
     op.num    = m.num;
     op.newest = m.num;
     op.total  = h.count + 1;
@@ -937,12 +1002,13 @@ void runPost(Op& op) {
 // Once the flag is on the card (written and synced) the message IS removed,
 // whatever happens to the header after it, so that is what the moderator is
 // told (code review, 1.2.1-forums.2). A header that will not take the new
-// count, twice, is marked stale and recounted from the records by a seed op
-// queued when the answer is handed out: the card's count feeds the "nothing
-// was ever removed" shortcut, and one too high would count the removed
-// message as unread for every caller (the 0.21.7 shape). A flag that did not
-// sync is said as not saved, and recounted too, because it may still have
-// reached the card.
+// count, twice (the second through a fresh open), is marked stale and
+// recounted from the records by a seed op queued when the answer is handed
+// out: the card's count feeds the "nothing was ever removed" shortcut, and
+// one too high would count the removed message as unread for every caller
+// (the 0.21.7 shape). A flag that did not sync is said as not saved, and
+// recounted too, because it may still have reached the card. A torn header
+// is recounted, which rebuilds it.
 void runRemove(Op& op) {
     char path[128];
     char dir[96];
@@ -950,12 +1016,18 @@ void runRemove(Op& op) {
     snprintf(path, sizeof(path), "%s/INDEX.TXT", dir);
     FILE* ix = disk::open(path, "r+b");
     if (!ix) return;
-    char rec[kRec];
     Head h;
-    if (fread(rec, 1, kRec, ix) != kRec || !parseHead(rec, h)) { fclose(ix); return; }
+    long size = 0;
+    const uint8_t got = headRead(ix, h, size);
+    if (got != RH_OK) {
+        fclose(ix);
+        if (got == RH_TORN) op.stale = true;
+        return;
+    }
     op.head   = true;
     op.newest = h.newest;
     op.total  = h.count;
+    char rec[kRec];
     MsgRec m;
     bool ok = op.num && op.num <= h.newest &&
               fseek(ix, static_cast<long>(op.num) * kRec, SEEK_SET) == 0 &&
@@ -973,13 +1045,7 @@ void runRemove(Op& op) {
         return;
     }
     if (h.count) --h.count;                      // the header's count is LIVE messages
-    bool headed = false;
-    for (uint8_t tries = 0; tries < 2 && !headed; ++tries) {
-        buildHead(rec, op.key, h);
-        headed = fseek(ix, 0, SEEK_SET) == 0 && fwrite(rec, 1, kRec, ix) == kRec &&
-                 fflush(ix) == 0;
-    }
-    if (fclose(ix) != 0) headed = false;
+    const bool headed = headWrite(ix, path, op.key, h);
     op.total = h.count;                          // the truth: the flag is down
     op.res   = RES_OK;
     if (!headed) {
@@ -990,7 +1056,9 @@ void runRemove(Op& op) {
 }
 
 // countLive: the live records 1..newest, read front to back, on the runner.
-// -1 on a read error; a file that ends early counts what it holds.
+// -1 on a read error; a file that ends early counts what it holds. newest is
+// bounded by the file's size (parseHead, or the rebuild's own arithmetic),
+// so this never walks records the file does not have.
 long countLive(FILE* ix, uint32_t newest) {
     if (fseek(ix, kRec, SEEK_SET) != 0) return -1;
     long live = 0;
@@ -1008,11 +1076,12 @@ long countLive(FILE* ix, uint32_t newest) {
 // runSeed: a forum's folder and header, when start() found none. Does
 // nothing to a forum whose header reads (start's read may have failed for a
 // reason that has passed), unless asked to recount it (op.recount, after a
-// removal whose header did not save).
+// write whose header did not save).
 //
-// A header that is torn (128 bytes came back without the magic, or the file
-// is shorter than a header) is rebuilt from the file: newest from its size,
-// so the next post cannot land over message 1, and the count from the live
+// A header that is torn (it came back without the magic, or with newest= or
+// count= missing, garbled or larger than the file holds, or the file is
+// shorter than a header) is rebuilt from the file: newest from its size, so
+// the next post cannot land over message 1, and the count from the live
 // flags, so the "nothing was ever removed" shortcut stays honest. A read
 // ERROR is never taken for a torn header (code review, 1.2.1-forums.2): a
 // card that failed one read must not have its good header replaced.
@@ -1023,21 +1092,22 @@ void runSeed(Op& op) {
     snprintf(path, sizeof(path), "%s/INDEX.TXT", dir);
     FILE* ix = disk::open(path, "r+b");
     const int why = ix ? 0 : errno;
-    char rec[kRec];
     Head h;
+    bool counted = false, good = false;
     if (!ix) {
         if (why != ENOENT) return;
         ix = disk::open(path, "w+b");
         if (!ix) return;
         h.hasSeg = true;                         // a new forum: segment 0
     } else {
-        const size_t got = fread(rec, 1, kRec, ix);
-        if (got != kRec && ferror(ix)) {
+        long size = 0;
+        const uint8_t got = headRead(ix, h, size);
+        if (got == RH_ERR) {
             fclose(ix);
             plat::log("forums: %s: the header would not read; left as it is", op.key);
             return;
         }
-        const bool good = got == kRec && parseHead(rec, h);
+        good = got == RH_OK;
         if (good && !op.recount) {
             fclose(ix);
             op.head = true;
@@ -1048,8 +1118,6 @@ void runSeed(Op& op) {
         }
         if (!good) {
             h = Head();                          // seg= unknown: the next post looks for it
-            long size = (fseek(ix, 0, SEEK_END) == 0) ? ftell(ix) : -1;
-            if (size < 0) { fclose(ix); return; }
             if (size >= static_cast<long>(2 * kRec)) h.newest = static_cast<uint32_t>(size / kRec - 1);
         }
         const long live = countLive(ix, h.newest);
@@ -1059,15 +1127,15 @@ void runSeed(Op& op) {
             return;
         }
         h.count = static_cast<uint32_t>(live);
+        counted = true;
+    }
+    if (!headWrite(ix, path, op.key, h)) return;
+    // Said once it is on the card, not before (code review, 1.2.1-forums.3):
+    // a test reading the card at this line must find the header it names.
+    if (counted)
         plat::log("forums: %s: %s the header, %lu records, %lu live", op.key,
                   good ? "recounted" : "rebuilt",
                   static_cast<unsigned long>(h.newest), static_cast<unsigned long>(h.count));
-    }
-    buildHead(rec, op.key, h);
-    bool ok = fseek(ix, 0, SEEK_SET) == 0 && fwrite(rec, 1, kRec, ix) == kRec;
-    ok = fflush(ix) == 0 && ok;
-    if (fclose(ix) != 0) ok = false;
-    if (!ok) return;
     op.head   = true;
     op.newest = h.newest;
     op.total  = h.count;
@@ -2312,8 +2380,8 @@ void field(Bbs& b, Session& s, const char* label, Color c, const char* value) {
 // argument), so any length the format can say is shown, and it costs no
 // per-caller state: the reader's place lives at the head of that buffer.
 // ---------------------------------------------------------------------------
-enum : uint8_t { RD_TOP = 0, RD_RULE, RD_SUBJ, RD_BY, RD_DATE, RD_RULE2, RD_BODY,
-                 RD_EOM, RD_PROMPT, RD_END };
+enum : uint8_t { RD_TOP = 0, RD_TOP2, RD_RULE, RD_SUBJ, RD_BY, RD_DATE, RD_RULE2, RD_BODY,
+                 RD_GAP, RD_EOM, RD_GAP2, RD_PROMPT, RD_END };
 
 struct Reader {
     uint8_t  phase = RD_TOP;
@@ -2468,8 +2536,12 @@ bool readRow(Bbs& b, Session& s) {
                 // All of it from column 0 (Rob: "not sure why these all start
                 // indented, stop that"). Two newlines first: one ends the
                 // prompt line the key was pressed on, the second is the blank
-                // line he asked for above the header.
+                // line he asked for above the header. A row each: one line
+                // a row is what keeps the pager's count true.
                 s.term.nl(s.tl);
+                r.phase = RD_TOP2;
+                break;
+            case RD_TOP2:
                 s.term.nl(s.tl);
                 r.phase = RD_RULE;
                 break;
@@ -2502,31 +2574,56 @@ bool readRow(Bbs& b, Session& s) {
                     say(s, Color::LightRed, r.rd ? "(the rest of this message could not be read)"
                                                  : "(the text of this message could not be read)");
                     s.term.nl(s.tl);
-                    r.phase = RD_EOM;
+                    r.phase = RD_EOM;              // the note stands for the blank line
                     break;
                 }
-                r.phase = RD_EOM;
-                again = true;                          // nothing drawn: the EOM in this row
+                r.phase = RD_GAP;
+                again = true;                          // nothing drawn: the gap in this row
                 break;
-            case RD_EOM:
-                // Rob: "at the end of messages (all) add --> EOM <--". The
-                // reading loop does not clear between messages, so a marker
-                // at the end of each one is what says where one stops and
-                // the next begins. A blank line before it (Rob: "Need a
-                // linefeed before EOM").
+            // Rob: "at the end of messages (all) add --> EOM <--". The reading
+            // loop does not clear between messages, so a marker at the end of
+            // each one is what says where one stops and the next begins. A
+            // blank line before it (Rob: "Need a linefeed before EOM"), and one
+            // before the question. **One line a row** (code review,
+            // 1.2.1-forums.3): the pager counts rows, and the EOM row drew two
+            // lines, so a page could hold one line more than the screen and
+            // scroll an unread one off the top.
+            case RD_GAP: {
+                // The ending (blank, EOM, blank, then the question on the line
+                // a [More] would take) stays on one page: with fewer than three
+                // rows left on this one, the page ends here and the ending
+                // opens the next, so a [More] never stops with only the ending
+                // behind it. The page size is the core's (Bbs::pageRows, which
+                // is private, so its rule is repeated here).
+                const uint8_t tr = s.term.rows();
+                const uint8_t page = static_cast<uint8_t>(tr > 8 ? tr - 2 : 6);
+                if (!s.nonstop && s.pageLines + 3 > page) {
+                    s.pageLines = page;                // the pager's [More], before the ending
+                    break;                             // counted, drawn nothing, same phase next
+                }
                 s.term.nl(s.tl);
+                r.phase = RD_EOM;
+                break;
+            }
+            case RD_EOM:
                 s.term.color(s.tl, g_cTitle);
                 s.term.text(s.tl, "--> EOM <--");
                 s.term.nl(s.tl);
-                // No page break from here: [More] stopping with only the
-                // reading question behind it is a stop for nothing.
+                r.phase = RD_GAP2;
+                break;
+            case RD_GAP2:
+                s.term.nl(s.tl);
+                // No page break before the question: it has no newline of
+                // its own, so it takes the line a [More] would have, and a
+                // [More] with only the question behind it stops for nothing.
                 s.nonstop = true;
                 r.phase = RD_PROMPT;
                 break;
             case RD_PROMPT:
-                prompt(b, s);
+                prompt(b, s, false);
                 r.phase = RD_END;
                 break;
+
             default:
                 drew = false;
                 break;

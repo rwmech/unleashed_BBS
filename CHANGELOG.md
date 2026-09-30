@@ -88,6 +88,29 @@ From the code review of 1.2.1-forums.1:
   header written after it.
 - A message's `[More]` never stops with only the reading question left.
 
+### The forums (lane B, 1.2.1-forums.3), 2026-09-30, built, not yet tested
+
+From the code review of 1.2.1-forums.2:
+
+- **A header is believed only if it fits its file.** `newest=` and
+  `count=` must be there and be numbers, `newest` must name a record the
+  index holds, and `count` cannot be more than `newest`. A missing or
+  garbled `newest` read as 0, so the next post went over message 1; a huge
+  one sent the post far past the end of the file. Anything else is taken as
+  torn and rebuilt from the records, now also when a post finds it.
+- **No page of a message is taller than the screen.** Every row the reader
+  draws is one line, so the pager's count is the screen's: two rows drew two
+  lines each, and a page could scroll an unread line off the top of a
+  24-row screen. The end of a message (the blank, `--> EOM <--`, the blank
+  and the question) stays together on one page.
+- A post whose header will not save has that header recounted from the
+  records in the background, as a removal's already was, so a header left
+  torn does not wait for the next post to be rebuilt.
+- The second try at a header that failed to save goes through a fresh
+  open of the file: the card's file system keeps a write error on the file
+  it happened to, so a retry on the same one could never work.
+- The "rebuilt the header" line is logged after the header is on the card.
+
 ## 1.2.0 (S3 1.1.4, WS43B 1.0.2, WS2 1.0.3, ETH 1.0.2, MF35 1.1.2, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-29: the hardware release
 
 **Out early for testing: this release has not been through the full

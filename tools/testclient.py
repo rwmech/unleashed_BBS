@@ -14454,6 +14454,98 @@ def test_forums_seg_range():
     return ok
 
 
+def test_forums_page_fit():
+    """No page of a message is taller than the screen (1.2.1-forums.3).
+
+    The reader's rows are what the pager counts, and the EOM row drew two
+    lines (a blank and the marker) for one row, as did the row before the
+    header; with the page break under the question suppressed, a page could
+    hold a line more than a 24-row screen and scroll an unread line off the
+    top (code review of 1.2.1-forums.2). Every row is one line now.
+
+    Five messages of 11 to 15 body lines, so the EOM, the blank before the
+    question and the question each land on a page's last counted row at 24
+    rows: every body line must arrive once, in order, and between one [More]
+    and the next, or the end, no more than 23 new lines may go by."""
+    print("Forums: no page of a message is taller than the screen")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    import contextlib
+    import shutil
+    import tempfile
+    sys.path.insert(0, str(ROOT / "tools"))
+    import forum_check
+    card = pathlib.Path(tempfile.mkdtemp(prefix="bbs-pagefit-"))
+    fdir = card / "p" / "forums" / "general"
+    with contextlib.redirect_stdout(io.StringIO()):
+        forum_check.build_forum(str(fdir), 5, lambda n: f"Page fit {n}")
+    lines_of = {n: 10 + n for n in range(1, 6)}
+    bodies, idx = b"", bytearray((fdir / "INDEX.TXT").read_bytes())
+    for n in range(1, 6):
+        body = "\n".join(f"Line {k:02d} of message {n}" for k in range(1, lines_of[n] + 1)).encode()
+        at = n * 128
+        idx[at + 56:at + 62] = b"%06d" % len(bodies)
+        idx[at + 63:at + 67] = b"%04d" % len(body)
+        bodies += body + b"\n"
+    (fdir / "M0000.TXT").write_bytes(bodies)
+    (fdir / "INDEX.TXT").write_bytes(bytes(idx))
+    port = PORT + 3916
+    tmp, proc = lag_board(port, card)
+    ok = True
+    try:
+        for label, narrow in (("at 80", False), ("at 40", True)):
+            c = Caller(ansi=True, port=port)
+            try:
+                if narrow:
+                    c.send(NAWS40)
+                c.wait_for(b"Enter your handle", 10)
+                if not login(c, "PageFit" + ("40" if narrow else "80")):
+                    ok &= check(f"{label}: logs in", False)
+                    continue
+                drain(c)
+                c.buf.clear()
+                c.send(b"forums\r")
+                c.wait_for(b"Forums>", 20)
+                c.pump(0.5)
+                c.buf.clear()
+                c.send(b"1\r")
+                wait_plain(c, b"Forums>General>", 20)
+                c.pump(0.5)
+                for n in range(1, 6):
+                    c.buf.clear()
+                    c.send(b"%d\r" % n)                       # the subject: numbered by its message
+                    answered, end = 0, time.time() + 20
+                    while time.time() < end:
+                        c.pump(0.2)
+                        text = bytes(c.buf)
+                        seen = text.count(b"[More]")
+                        if seen > answered:
+                            c.send(b"y")
+                            answered = seen
+                        at = text.rfind(b"--> EOM <--")
+                        if at >= 0 and text.find(b"[R]eply", at) >= 0:
+                            break
+                    text = bytes(c.buf)
+                    got = [int(x) for x in re.findall(rb"Line (\d\d) of message %d" % n, text)]
+                    tallest = max(part.count(b"\n") for part in text.split(b"[More]"))
+                    ok &= check(f"{label}, {lines_of[n]} lines: every line, in order, once",
+                                got == list(range(1, lines_of[n] + 1)))
+                    ok &= check(f"{label}, {lines_of[n]} lines: no page over 23 new lines ({tallest})",
+                                tallest <= 23)
+                    ok &= check(f"{label}, {lines_of[n]} lines: no [More] with only the question behind it",
+                                text.rfind(b"[More]") < text.rfind(b"--> EOM <--"))
+                    c.send(b"q")                               # back to the subjects
+                    wait_plain(c, b"Forums>General>", 10)
+                    c.pump(0.3)
+            finally:
+                c.close()
+    finally:
+        stop_copy(proc, tmp)
+        shutil.rmtree(card, ignore_errors=True)
+    return ok
+
+
 def test_lag_logins():
     """250 accounts: the handle prompt and a logoff do not walk users.txt.
 
@@ -19016,7 +19108,7 @@ ORDER_NAMES = [
     "test_dash_uploads",                 # leaves its upload waiting, as test_ymodem does
     "test_config_areas", "test_config_area_keeps_every_part",
     "test_mail_compose",
-    "test_forums", "test_forums_remove", "test_forums_scan_staff", "test_forums_segments", "test_forums_long_read", "test_forums_header_rebuild", "test_forums_seg_range", "test_config_forum_levels", "test_partitions",
+    "test_forums", "test_forums_remove", "test_forums_scan_staff", "test_forums_segments", "test_forums_long_read", "test_forums_header_rebuild", "test_forums_seg_range", "test_forums_page_fit", "test_config_forum_levels", "test_partitions",
     # Backups on the card and restores across the partitions (1.1.0). The
     # card one restores this board from a backup it has just taken, which is
     # the board as it was a minute before, so it sits with the restores.
