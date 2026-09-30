@@ -6055,7 +6055,10 @@ BOARD_LED  = 6
 #              backup button and a card pin, and the word the refusal says
 #   missing    pins the chip has not got: the LED, three for the button, one
 #              for the drive light, one for a hand-edited file
-#   console    UART0's TX, the console port CONFIG refuses
+#   console    UART0's TX where the console is UART0 (board.h
+#              BBS_CONSOLE_UART0), the console port CONFIG refuses; None
+#              on an S3 whose console is its own USB, where 43 is free
+#              (the 4.3B ships its RS485 bridge there)
 #   serial     the bridge's RX and TX as shipped (None: no pins)
 #   sd_clock   the card's clock as a CONFIG sd setting, with its label
 #              (None: the profile's card is not on settings CONFIG shows)
@@ -6063,7 +6066,7 @@ BOARD_LED  = 6
 # None is a fact this table does not know for the profile: the check that
 # needs it SKIPs and says so, rather than asserting the WROOM's.
 _S3_FLASH   = dict(flash=(b"30", b"31", b"30"), flash_pat=b"flash and PSRAM",
-                   missing=(b"24", (b"22", b"23", b"25"), b"24", "23"), console=b"43")
+                   missing=(b"24", (b"22", b"23", b"25"), b"24", "23"), console=None)
 _WROOM_PINS = dict(flash=(b"6", b"11", b"7"), flash_pat=b"flash chip",
                    missing=(b"24", (b"20", b"28", b"31"), b"29", "30"), console=b"1")
 PIN_BOARD = {
@@ -6081,7 +6084,8 @@ PIN_BOARD = {
                    sd_clock=None, sd_rows=None),
     "wseth":  dict(_S3_FLASH, led=b"-1", led_free=None, btn_free=None, serial=None,
                    sd_clock=None, sd_rows=None),
-    "mf35":   dict(_S3_FLASH, led=b"-1", led_free=None, btn_free=None, serial=(b"17", b"18"),
+    # The Makerfabs' console is UART0, on 43 and 44 (BBS_PINS_CONSOLE).
+    "mf35":   dict(_S3_FLASH, console=b"43", led=b"-1", led_free=None, btn_free=None, serial=(b"17", b"18"),
                    sd_clock=None, sd_rows=None),
 }
 PB = PIN_BOARD.get(HOST_BOARD, PIN_BOARD[""])
@@ -19323,6 +19327,36 @@ def test_files_typed_number():
         leave_files(c)
     finally:
         c.close()
+
+    # A co-sysop sees Logs (10, staff's) and nothing past it on a board with
+    # no camera: 10 is the 0 key, so 1 is still area 1 at once (code review
+    # of dev.3: the first cut counted area 10 as a longer number).
+    if not CO1:
+        print("  SKIP  no co-sysop password on this board")
+        return ok
+    c = ansi_login("TypedAreaCo")
+    try:
+        drain(c)
+        c.send(f"bye {CO1}\r".encode())
+        c.wait_for(b"Co-sysop 1 access", 4)
+        drain(c)
+        c.buf.clear()
+        c.send(b"files\r")
+        c.wait_for(b"File areas", 5)
+        c.pump(0.8)
+        menu = plain(c.buf)
+        if re.search(rb"\b1[1-9]  \S", menu):
+            print("  SKIP  this board shows the co-sysop an area past 10")
+        else:
+            ok &= check("the co-sysop is shown Logs as 10", re.search(rb"\b10  Logs", menu) is not None)
+            c.buf.clear()
+            c.send(b"1")
+            ok &= check("and, with nothing past 10, gets area 1 on the key",
+                        c.wait_for(b"C64 Downloads", 5) and b"Section number:" not in plain(c.buf))
+            c.pump(0.6)
+        leave_files(c)
+    finally:
+        c.close()
     return ok
 
 
@@ -20649,14 +20683,30 @@ def test_config_serial_rows():
     ok &= check("and the speed and the format", baud[22:28] == "115200" and fmt[22:25] == "8N1")
     # Rows: 0 Enabled, 1 Read, 2 Write, 3 Admin, 4 RX, 5 TX, 6 Baud, 7 Format.
     s.buf.clear()
-    s.send(DOWN * 4 + b"\x08" * 3 + PB["console"] + F1)
-    got = cfg_verdict(s, [b"console port", b"Saved", b"Between"])
-    ok &= check("RX on the console's pin is refused", got == b"console port")
-    # Whole, at 80: the blink that shows a refusal used to stop at 60.
-    ok &= check("in a sentence the status line shows whole",
-                b"GPIO " + PB["console"] + b" is the console port: flashing and Improv need it. Pick another."
-                in plain(s.buf))
-    cfg_cancel(s)
+    if PB["console"] is None:
+        # The console is the chip's own USB: UART0's 43 is free, and the
+        # 4.3B's bridge ships on it (1.2.1, code review). Not refused as the
+        # console; put back if it saved.
+        s.send(DOWN * 4 + b"\x08" * 3 + b"43" + F1)
+        got = cfg_verdict(s, [b"console port", b"Saved and live", b"Nothing changed", b"Between",
+                              b"taken", b"Taken", b"saved, but"])
+        ok &= check("with the console on USB, 43 is not the console port", got not in (None, b"console port"))
+        if got == b"Saved and live" and PB["serial"]:
+            cfg_open(s, b"serial", b"Enabled")
+            s.send(DOWN * 4 + b"\x08" * 3 + PB["serial"][0] + F1)
+            cfg_verdict(s, [b"Saved and live", b"Nothing changed"])
+        elif got != b"Nothing changed":
+            cfg_cancel(s)
+    else:
+        s.send(DOWN * 4 + b"\x08" * 3 + PB["console"] + F1)
+        got = cfg_verdict(s, [b"console port", b"console and Improv", b"Saved", b"Between"])
+        ok &= check("RX on the console's pin is refused", got in (b"console port", b"console and Improv"))
+        # Whole, at 80: the blink that shows a refusal used to stop at 60.
+        if got == b"console port":
+            ok &= check("in a sentence the status line shows whole",
+                        b"GPIO " + PB["console"] + b" is the console port: flashing and Improv need it. Pick another."
+                        in plain(s.buf))
+        cfg_cancel(s)
     cfg_open(s, b"serial", b"Enabled")
     s.buf.clear()
     s.send(DOWN * 6 + b"9" + F1)

@@ -110,15 +110,15 @@ void readKey(void* ctx, const char* key, const char* value) {
 }
 
 // badPin: pins that are not ours to use. The ranges are the chip's
-// (board.h); the console UART is the ESP32's 1 and 3. An S3 build's console
-// is the chip's own USB on the Waveshare, where UART0 is free, and UART0
-// (43, 44) on the Makerfabs, whose profile refuses them (BBS_PINS_CONSOLE).
+// (board.h), and the console's pins where the console is UART0
+// (BBS_CONSOLE_UART0, the rule CONFIG's pin check uses too): the ESP32's 1
+// and 3, the Makerfabs' 43 and 44. An S3 on its own USB has UART0 free.
 bool badPin(int pin, bool output) {
     if (pin < 0 || pin > BBS_GPIO_MAX) return true;
     if (syscfg::pinProblem(pin)) return true;                // internal flash
     if (output && pin > BBS_GPIO_OUT_MAX) return true;       // input only
-#ifndef BBS_CHIP_S3
-    if (pin == 1 || pin == 3) return true;                   // the console UART
+#if BBS_CONSOLE_UART0
+    if (pin == BBS_CONSOLE_TX || pin == BBS_CONSOLE_RX) return true;   // the console UART
 #endif
     return false;
 }

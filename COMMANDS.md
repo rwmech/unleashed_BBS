@@ -429,7 +429,9 @@ topics become one button, Topics, to a page of all sixteen.
 A pin (`PS_PIN` on a plugin's page, the LED and the backup button on the
 core's) is refused when something else on the board already holds it (1.1.0):
 GPIO 0, which is BOOT (the backup button alone may be BOOT, since it usually
-is); the console's pins, 1 and 3 on the WROOM; the other core pin; and every
+is); the console's pins where the console is UART0 (1 and 3 on the ESP32
+boards, 43 and 44 on the Makerfabs; the Waveshare S3s' console is their own
+USB, so UART0 is free there, 1.2.1); the other core pin; and every
 pin of every plugin that is switched on, the SD card's four, the serial
 bridge's two and the lights' two among them. `sd` is on as shipped, card or
 no card, because it tries the card on those pins at every start: on a board
@@ -787,7 +789,7 @@ format = 8N1
 ```
 
 - It uses the second UART, never the console, so flashing and `pio device monitor` keep working.
-- Pins 6 to 11 (flash), 1 and 3 (console), and pins the chip does not have (20, 24, 28 to 31 on the WROOM) are refused, and a transmit pin must not be 34 to 39, which are input only.
+- Pins 6 to 11 (flash), 1 and 3 (the console; on an S3 whose console is UART0, 43 and 44), and pins the chip does not have (20, 24, 28 to 31 on the WROOM) are refused, and a transmit pin must not be 34 to 39, which are input only.
 - One operator at a time. Watchers see the same stream, and a terminal that cannot keep up is told how much it skipped instead of holding up the device.
 - While you are in the serial session or the chat room, the idle timeout pauses; your call time limit still counts.
 

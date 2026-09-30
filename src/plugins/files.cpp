@@ -1012,8 +1012,11 @@ bool pastTen(Session& s) {
 // plain ASCII, which has no cursor, can reach every area by number. When
 // it cannot, the digit opens area d at once, as it always has, so a caller
 // with areas 1 to 8 never waits for an Enter.
+//
+// From 11 up, as pastTen: 10 is '0', a key of its own, so a co-sysop who
+// sees 1 to 10 and nothing past (Logs is staff's) gets area 1 on the key.
 bool startsMore(Session& s, uint8_t d) {
-    for (uint8_t i = 0; i < g_areas; ++i) {
+    for (uint8_t i = 10; i < g_areas; ++i) {
         const unsigned shown = i + 1u;
         if (shown / 10u == d && mayRead(s, i)) return true;
     }

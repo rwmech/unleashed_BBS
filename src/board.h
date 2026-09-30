@@ -1286,3 +1286,32 @@
 #define BBS_GPIO_MAX          39
 #define BBS_GPIO_OUT_MAX      33
 #endif
+
+// ---------------------------------------------------------------------------
+// The console (1.2.1). BBS_CONSOLE_UART0 is 1 where the console is UART0,
+// which flashing, the serial monitor and Improv then use, so a pin setting
+// on BBS_CONSOLE_TX or BBS_CONSOLE_RX would break them: the classic ESP32
+// boards (1 and 3), and an S3 whose console is a UART, the Makerfabs (43 and
+// 44). An S3 whose console is the chip's own USB (the Waveshares) has UART0
+// free, and the 4.3B ships its RS485 bridge on 43 and 44. On the board the
+// generated sdkconfig says which; the host, with no sdkconfig, takes it from
+// the profile: a classic chip, or an S3 that lists BBS_PINS_CONSOLE.
+// ---------------------------------------------------------------------------
+#if defined(ESP_PLATFORM)
+#if defined(CONFIG_ESP_CONSOLE_UART_NUM) && CONFIG_ESP_CONSOLE_UART_NUM == 0
+#define BBS_CONSOLE_UART0     1
+#else
+#define BBS_CONSOLE_UART0     0
+#endif
+#elif !defined(BBS_CHIP_S3) || defined(BBS_PINS_CONSOLE)
+#define BBS_CONSOLE_UART0     1
+#else
+#define BBS_CONSOLE_UART0     0
+#endif
+#if defined(BBS_CHIP_S3)
+#define BBS_CONSOLE_TX        43      // UART0's default pins
+#define BBS_CONSOLE_RX        44
+#else
+#define BBS_CONSOLE_TX        1
+#define BBS_CONSOLE_RX        3
+#endif

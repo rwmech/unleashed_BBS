@@ -90,6 +90,16 @@ The 1.1.3 queue and the 1.2.0 full run's findings (1.2.1-dev.3):
   pins camsat v1.1.0, the host's S3 profiles refuse 43 and 44 as the
   console, and the shared CONFIG pin tests read the profile's pins
   (`PIN_BOARD`). New: `test_room_squelch_ten`, `test_files_typed_number`.
+- From the code review of dev.3 (1.2.1-dev.4):
+  - FILES: Logs (10) no longer counts as a longer number, so a co-sysop
+    with areas 1 to 10 gets area 1 on the key again.
+  - CONFIG refuses UART0's pins as "the console port" only where the
+    console is UART0: the ESP32 boards and the Makerfabs. The Waveshare S3s
+    run their console on the chip's own USB, and the 4.3B's RS485 bridge
+    ships on 43 and 44, which CONFIG serial refused as its own console.
+  - The camera's held timed shot retries without walking the heap from the
+    loop, says a worker that would not start once rather than every second,
+    and goes when the timelapse is switched off.
 - Static DRAM off the ELF: the camera boards pay 8 bytes for the held timed
   shot (ESP32-CAM 2,688 free, Freenove 4,160), the S3s without a camera 16
   for the four VFS slots the LCD-1.47 gains (79,784 free); the WROOM is
