@@ -2504,8 +2504,16 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
             uint16_t bit = static_cast<uint16_t>(1u << id);
             g_squelch[slotOf(s)] ^= bit;
             bool on = (g_squelch[slotOf(s)] & bit) != 0;
-            snprintf(buf, sizeof(buf), "Node %u %s. Joining and leaving still show.",
-                     static_cast<unsigned>(id), on ? "hidden" : "back");
+            // 51 columns with the marker at node 10, so a short form at 40
+            // (1.2.1): "--> Node 10 hidden. Joins, leaves show." is 39.
+            if (s.term.cols() >= 60)
+                snprintf(buf, sizeof(buf), "Node %u %s. Joining and leaving still show.",
+                         static_cast<unsigned>(id), on ? "hidden" : "back");
+            else if (on)
+                snprintf(buf, sizeof(buf), "Node %u hidden. Joins, leaves show.",
+                         static_cast<unsigned>(id));
+            else
+                snprintf(buf, sizeof(buf), "Node %u back.", static_cast<unsigned>(id));
             tell(s, on ? Color::Yellow : Color::LightGreen, buf);
         }
         flush(s);

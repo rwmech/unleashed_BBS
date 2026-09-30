@@ -12008,6 +12008,17 @@ def test_room_squelch_ten():
         ok &= check("its lines are hidden", b"ten again" not in w.buf)
         one.send(b"one again\r")
         ok &= check("and node 1 is heard", w.wait_for(b"one again", 4))
+        # At 40 the answer has a short form: 51 columns with the marker at 80.
+        naws(w, 40, 25)
+        w.pump(0.3)
+        w.buf.clear()
+        w.send(b"/sq 10\r")
+        ok &= check("at 40 /sq 10 answers in its short form", w.wait_for(b"Node 10 back.", 4))
+        w.buf.clear()
+        w.send(b"/sq 10\r")
+        w.wait_for(b"Node 10 hidden", 4)
+        w.pump(0.3)
+        ok &= check("inside 39 columns", 0 < len(row_reach(w.buf, "Node 10 hidden")) <= 39)
     finally:
         for c in (w, ten, one):
             c.close()

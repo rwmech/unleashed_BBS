@@ -382,6 +382,11 @@ bool     g_tlPrimed = false;
 uint32_t g_tlHeldAt = 0;
 uint8_t  g_tlTried  = 0;          // 1 + the second last tried in, 0 none: zeroed, so .bss
 bool     g_tlPostSaid = false;     // this held shot has said the worker would not start
+// The held shot's job is on the worker (1.2.1-dev.5): the hold stays until
+// finish() says how it went, and a refusal for memory keeps it. And when it
+// last weighed the whole heap: 1 + the second of its wait, 0 = weigh next.
+bool     g_tlInFlight = false;
+uint8_t  g_tlWalked   = 0;
 // No timed shot in a board's first 30 s, while start-up work (the survey's
 // worker, the runner's stack, Wi-Fi) still holds internal RAM; a held one is
 // tried once a second for up to a minute, or half the interval when that is
@@ -1002,6 +1007,16 @@ void finish(uint32_t now) {
 
     Session* s = waiter();
     const uint8_t kind = j.kind, node = j.node;
+    // The held timed shot (tlHeld): filed, or refused for anything but
+    // memory, and the hold is done. Refused for memory (the largest block,
+    // which the counter could not see), it stays while inside its bound,
+    // weighs the heap at its next try, and a slot that runs out is said once
+    // by tlHeld ("waited ... and was not taken").
+    if (kind == K_SYSTEM && g_tlInFlight) {
+        g_tlInFlight = false;
+        if (!ok && strstr(j.err, "memory")) g_tlWalked = 0;
+        else                                g_tlHeldAt = 0;
+    }
     j.node = 0xFF;
     j.waiting = false;
     j.ph.store(PH_IDLE);
@@ -1059,6 +1074,7 @@ void finish(uint32_t now) {
 bool snapTimed(bool walk);                             // below, with snapSystem
 
 void tlHeld(uint32_t now) {
+    if (g_tlInFlight) return;                           // on the worker: finish() says
     // The timelapse turned off (CAMERA SET tl 0, which is live) while a shot
     // was held: the shot goes with it (code review of dev.3).
     if (!g_set.tlEvery) { g_tlHeldAt = 0; return; }
@@ -1080,11 +1096,15 @@ void tlHeld(uint32_t now) {
     // The first try weighs the heap as every timed shot did before 1.2.1
     // (roomToSnap: the largest free block, a walk of the heap). A retry
     // must not walk it once a second from the loop (the 0.19.2 heapWatch
-    // shape, code review of dev.3): it asks the free counter only, and the
-    // worker's bring-up checks the largest block, as it does for every snap.
-    const bool first = !g_tlTried;
+    // shape, code review of dev.3), so it weighs it again only every 5 s of
+    // the wait, or after the worker refused for memory, and asks the free
+    // counter in between; the worker's bring-up checks the largest block, as
+    // it does for every snap. A counter that passes over a fragmented heap
+    // costs one refused job, and finish() keeps the hold (dev.5).
+    const bool walk = !g_tlWalked || sec + 1u >= g_tlWalked + 5u;
     g_tlTried = static_cast<uint8_t>(sec + 1u);
-    if (snapTimed(first)) g_tlHeldAt = 0;
+    if (walk) g_tlWalked = static_cast<uint8_t>(sec + 1u);
+    if (snapTimed(walk)) g_tlInFlight = true;          // the hold goes when it is filed
 }
 
 // ---------------------------------------------------------------------------
@@ -1116,6 +1136,7 @@ void tick(uint32_t now) {
                 g_tlHeldAt = now ? now : 1;
                 g_tlTried  = 0;
                 g_tlPostSaid = false;
+                g_tlWalked   = 0;
             }
         }
         if (g_tlHeldAt) tlHeld(now);
@@ -1589,6 +1610,7 @@ bool start(Bbs& bbs) {
     if (g_set.flash == FLASH_PIN && g_set.flashPin >= 0) plat::pinOut(g_set.flashPin, false);
     g_tlPrimed = false;
     g_tlHeldAt = 0;                                    // a new interval: nothing held over
+    g_tlInFlight = false;
     g_running  = true;
     // What a snap will find, for the bench: the sensor needs one 32 KB block
     // of internal DMA memory. One walk of the heap, at start only.

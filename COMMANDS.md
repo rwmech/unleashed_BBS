@@ -431,7 +431,9 @@ core's) is refused when something else on the board already holds it (1.1.0):
 GPIO 0, which is BOOT (the backup button alone may be BOOT, since it usually
 is); the console's pins where the console is UART0 (1 and 3 on the ESP32
 boards, 43 and 44 on the Makerfabs; the Waveshare S3s' console is their own
-USB, so UART0 is free there, 1.2.1); the other core pin; and every
+USB, so UART0 is free there, 1.2.1; on the Waveshare S3s, GPIO 43 shows the
+chip's boot messages for a moment at every reset, so avoid it for a LED or a
+relay); the other core pin; and every
 pin of every plugin that is switched on, the SD card's four, the serial
 bridge's two and the lights' two among them. `sd` is on as shipped, card or
 no card, because it tries the card on those pins at every start: on a board

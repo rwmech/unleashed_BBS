@@ -100,6 +100,16 @@ The 1.1.3 queue and the 1.2.0 full run's findings (1.2.1-dev.3):
   - The camera's held timed shot retries without walking the heap from the
     loop, says a worker that would not start once rather than every second,
     and goes when the timelapse is switched off.
+- From the review of dev.4 (1.2.1-dev.5): a held timed shot the worker
+  refuses for memory (the largest block, which the free counter cannot see)
+  keeps its hold inside its minute, and the retries weigh the whole heap
+  every 5 s of the wait rather than never. COMMANDS.md says that GPIO 43 on
+  the Waveshare S3s carries the boot messages at every reset.
+- Every caller-visible line 1.2.1 added or changed fits 39 columns at 40:
+  the card's out-of-memory reason is `no memory or VFS table full: see MEM`
+  (36, shown indented two by SD), and `/sq` answers
+  `Node 10 hidden. Joins, leaves show.` or `Node 10 back.` at 40 (39 and 17
+  with the marker, where the 80-column sentence is 51).
 - Static DRAM off the ELF: the camera boards pay 8 bytes for the held timed
   shot (ESP32-CAM 2,688 free, Freenove 4,160), the S3s without a camera 16
   for the four VFS slots the LCD-1.47 gains (79,784 free); the WROOM is

@@ -1296,6 +1296,9 @@
 // free, and the 4.3B ships its RS485 bridge on 43 and 44. On the board the
 // generated sdkconfig says which; the host, with no sdkconfig, takes it from
 // the profile: a classic chip, or an S3 that lists BBS_PINS_CONSOLE.
+// On the Waveshare S3s, GPIO 43 shows the chip's boot messages for a moment
+// at every reset (CONFIG_BOOT_ROM_LOG_ALWAYS_ON): avoid it for a LED or a
+// relay. CONFIG does not refuse it, since the 4.3B's RS485 bridge is there.
 // ---------------------------------------------------------------------------
 #if defined(ESP_PLATFORM)
 #if defined(CONFIG_ESP_CONSOLE_UART_NUM) && CONFIG_ESP_CONSOLE_UART_NUM == 0
