@@ -5054,6 +5054,147 @@ def test_sysop_account():
     return ok
 
 
+def _burst_board(offset, handle):
+    """A copy of this board whose sysop's account is `handle` (1.2.1): the
+    SyncTERM burst tests. A copy, because the wrong burst is about the ban
+    count on 127.0.0.1, which must never reach this board."""
+    tmp = copy_data()
+    user = tmp / "data" / "user"
+    for name in ("sysop.last",):
+        for p in user.rglob(name):
+            p.unlink()
+    cfgp = user / "system.cfg"
+    cfgp.write_text("".join(ln for ln in cfgp.read_text().splitlines(True)
+                            if ln.split("=", 1)[0].strip() not in ("sysop_handle", "sysop_id")))
+    port = PORT + offset
+    proc = start_copy(tmp, (str(port),))
+    copy_log(tmp, f"listening on {port},")
+    # Elevating once makes the account the sysop's (sysop.last).
+    c = caller_on(port)
+    c.wait_for(b"Enter your handle", 10)
+    login(c, handle)
+    drain(c)
+    c.send(f"bye {PASSWORD}\r".encode())
+    c.wait_for(b"HELP for commands", 6)
+    c.close()
+    time.sleep(0.6)
+    return tmp, proc, port
+
+
+def _burst(port, handle, third):
+    """SyncTERM's autologin: handle, password and system password in ONE
+    send, the way Alt+L sends them (1.2.1)."""
+    c = caller_on(port)
+    c.wait_for(b"Enter your handle", 10)
+    c.buf.clear()
+    c.send(handle.encode() + b"\r" + TEST_PW.encode() + b"\r" + third + b"\r")
+    return c
+
+
+def test_sysop_burst():
+    """SyncTERM's system password answers the login's sysop question (1.2.1).
+
+    Alt+L on a telnet entry sends user, CR, password, CR, system password,
+    CR in one burst. Until 1.2.1 askSysop dropped keys held from before the
+    question, so the system password was thrown away and Rob's autologin
+    stopped at "Sysop password:". A held line is the answer now."""
+    print("Sysop: SyncTERM's burst reaches the SysOp node")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and a sysop password")
+        return True
+    tmp, proc, port = _burst_board(3912, "AcctBurst")
+    ok = True
+    try:
+        c = _burst(port, "AcctBurst", PASSWORD.encode())
+        ok &= check("the burst logs in", c.wait_for(b"ACCESS GRANTED", 8))
+        ok &= check("the question is asked", c.wait_for(b"Sysop password: ", 8))
+        ok &= check("and the held third line answers it: the SysOp node", c.wait_for(b"SysOp node", 8))
+        ok &= check("no wrong password said", b"not the sysop password" not in plain(c.buf))
+        c.close()
+    finally:
+        stop_copy(proc, tmp)
+    return ok
+
+
+def test_sysop_burst_wrong():
+    """A wrong third line in the burst is a skip, never a ban strike (1.2.1).
+
+    What is held when the question appears may be a command typed straight
+    after the password ("dash"), so a wrong one lands at Main, says nothing
+    and counts nothing toward banning the address. Only a line typed after
+    the question counts. One held answer an address a ban window: a second
+    wrong burst inside it is dropped, the old way, and waits for a typed
+    answer, so the burst is no way round the ban."""
+    print("Sysop: a wrong third line in the burst is not counted")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and a sysop password")
+        return True
+    tmp, proc, port = _burst_board(3913, "AcctBurstNo")
+    ok = True
+
+    def console():
+        p = tmp / "host.log"
+        return p.read_text(errors="replace") if p.exists() else ""
+
+    try:
+        failed0 = console().count("staff password failed")
+        c = _burst(port, "AcctBurstNo", b"dash")
+        ok &= check("the burst logs in", c.wait_for(b"ACCESS GRANTED", 8))
+        ok &= check("the question is asked", c.wait_for(b"Sysop password: ", 8))
+        mark = c.buf.rfind(b"Sysop password: ")
+        ok &= check("a wrong held line lands at Main", wait_any_after(c, [b"Main"], mark, 8) == 0)
+        c.pump(0.4)
+        ok &= check("as an ordinary caller", b"SysOp node" not in plain(c.buf))
+        ok &= check("with nothing said about it", b"not the sysop password" not in plain(c.buf))
+        ok &= check("and the held line is not run as a command", b"Unknown" not in plain(c.buf[mark:]))
+        lines = render_lines(c.buf)
+        asked = [ln for ln in lines if "Sysop password:" in ln]
+        ok &= check("the stars are rubbed out", bool(asked) and "*" not in asked[-1])
+        text = console()
+        ok &= check("logged as typed ahead, not counted", "typed ahead did not match" in text)
+        ok &= check("no ban strike", text.count("staff password failed") == failed0)
+        c.close()
+        time.sleep(0.4)
+
+        # A second wrong burst in the same window: its held line is dropped
+        # and the question waits for an answer typed after it.
+        c = _burst(port, "AcctBurstNo", b"guess2")
+        ok &= check("a second burst logs in", c.wait_for(b"ACCESS GRANTED", 8))
+        ok &= check("and is asked", c.wait_for(b"Sysop password: ", 8))
+        mark = c.buf.rfind(b"Sysop password: ")
+        c.pump(1.5)
+        ok &= check("its held line is dropped: the question still waits",
+                    b"Main" not in c.buf[mark:] and b"SysOp node" not in c.buf[mark:])
+        ok &= check("still no ban strike", console().count("staff password failed") == failed0)
+        c.buf.clear()
+        c.send(b"nope\r")
+        ok &= check("a line typed after the question is counted, as BYE counts it",
+                    c.wait_for(b"not the sysop password", 5) and c.wait_for(b"Main", 8))
+        ok &= check("one strike", console().count("staff password failed") == failed0 + 1)
+        c.close()
+        time.sleep(0.4)
+
+        # The right password typed clears the address, and a burst works again.
+        c = caller_on(port)
+        c.wait_for(b"Enter your handle", 10)
+        c.send(b"AcctBurstNo\r")
+        c.wait_for(b"Password:", 8)
+        c.send(TEST_PW.encode() + b"\r")
+        c.wait_for(b"Sysop password: ", 8)
+        c.pump(0.4)
+        c.buf.clear()
+        c.send(PASSWORD.encode() + b"\r")
+        ok &= check("the right one typed makes them the sysop", c.wait_for(b"SysOp node", 6))
+        c.close()
+        time.sleep(0.6)
+        c = _burst(port, "AcctBurstNo", PASSWORD.encode())
+        ok &= check("and a right burst after it is taken", c.wait_for(b"SysOp node", 10))
+        c.close()
+    finally:
+        stop_copy(proc, tmp)
+    return ok
+
+
 def test_dash_waiting():
     """The dashboard's waiting row asks the plugins (1.1.0): unread mail from
     chat, through the waiting hook, with nothing in the core that knows
@@ -18596,6 +18737,8 @@ ORDER_NAMES = [
     # save of 200 then finds nothing changed.
     "test_operator", "test_operator_ends", "test_notices_in_places",
     "test_operator_notes", "test_ring_mail", "test_sysop_account",
+    # SyncTERM's autologin burst (1.2.1): each on a copy of the board.
+    "test_sysop_burst", "test_sysop_burst_wrong",
     "test_config_parser_rules", "test_config_guards", "test_config_semicolon", "test_photos_config",
     "test_config_timezone", "test_config_tz_bad", "test_config_cycle_numbers", "test_config_silent",
     "test_config_sd_plugin",

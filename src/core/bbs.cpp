@@ -883,6 +883,7 @@ void Bbs::openSession(Session& s, int fd, const char* ip, uint32_t ipAddr, Role 
     s.pendingKnowMore = false;
     s.newAccount      = false;
     s.setupStage      = 0;      // static pool: a half-finished setup is not inherited
+    s.sysopAhead      = false;  // nor a held answer to the sysop question
     // Both of these were added in 0.18.0 and neither was reset here, which
     // matters because sessions come from a static pool. A caller who drops
     // the line while the motd is playing leaves pendingLand set, and the
@@ -2465,10 +2466,22 @@ void Bbs::askSysop(Session& s) {
     t.text(tl, "Sysop password: ");       // 16 columns and 24 stars fit a C64's 40
     t.color(tl, Color::White);
     s.ed.begin(BBS_PASS_MAX, LineEditor::F_MASK | LineEditor::F_STAY);
-    // Keys typed ahead of the question were meant for the prompt, not as a
-    // password: "dash" typed straight after logging in would otherwise be a
-    // failed staff password, counted toward banning the sysop's own address.
-    s.rxLen = s.rxPos = 0;
+    // Keys typed ahead of the question (1.2.1). SyncTERM's autologin sends
+    // the handle, the password and the system password in one burst, so the
+    // third line is already here, held since the login's first pass: it is
+    // taken as the answer. Until 1.2.1 held keys were dropped, because they
+    // may equally be a command typed straight after logging in ("dash"), and
+    // a failed staff password is counted toward banning the address. So a
+    // wrong held answer is a skip and never counted: only a line typed
+    // after the question can be (onSysopPassword). Uncounted guesses need a
+    // limit of their own, or the burst is a way round the ban for anybody
+    // holding the sysop's account password: one held answer an address a
+    // ban window (BanList::aheadTake), and past that they are dropped again.
+    s.sysopAhead = false;
+    if (s.rxPos < s.rxLen) {
+        if (bans_.aheadTake(s.ipAddr, plat::millis())) s.sysopAhead = true;
+        else s.rxLen = s.rxPos = 0;
+    }
     s.st        = SState::AskSysop;
     s.lastInput = plat::millis();
 }
@@ -2485,14 +2498,30 @@ void Bbs::onSysopPassword(Session& s, uint32_t now) {
     Timeline& tl = s.tl;
     bool empty = !s.ed.text()[0];
     bool banned = false;
-    Access lv = empty ? Access::None : staffPassword(s, s.ed.text(), now, &banned);
+    // A line typed ahead of the question (1.2.1): the same check, not counted.
+    const bool ahead = s.sysopAhead;
+    s.sysopAhead = false;
+    const uint8_t stars = s.ed.shown();
+    Access lv = empty ? Access::None : staffPassword(s, s.ed.text(), now, &banned, !ahead);
     s.ed = LineEditor();                             // wipe what was typed
-    t.nl(tl);
     if (empty) {                                     // Enter on nothing: skip
+        if (ahead) bans_.aheadGive(s.ipAddr);        // and a held one is given back
+        t.nl(tl);
         t.nl(tl);
         arrive(s);
         return;
     }
+    if (ahead && lv == Access::None) {
+        // Held and wrong: a skip, said as nothing. The stars go, so the line
+        // reads as the question left unanswered, and no "not the sysop
+        // password": what was held may never have been meant as one.
+        t.eraseBack(tl, stars);
+        t.nl(tl);
+        t.nl(tl);
+        arrive(s);
+        return;
+    }
+    t.nl(tl);
     if (lv == Access::Sysop) {
         // Taken while the question was up, and this caller is outside: BYE
         // would log them off here, which is no answer to a right password.
@@ -3786,15 +3815,20 @@ void Bbs::onKey(Session& s, int k, uint32_t now) {
         }
 
         case SState::AskSysop: {
-            // Keys held from before the question was asked were dropped by
-            // askSysop; anything after it is an answer, and is kept even
-            // while the question is still printing, or a quick typist loses
-            // the first letters (the setup question's lesson). Enter on
-            // nothing and ESC both skip: this one is a convenience, and a
-            // stray Enter costs only the BYE the sysop would type anyway.
+            // Keys held from before the question are the answer too since
+            // 1.2.1 (askSysop, sysopAhead); anything after it is an answer,
+            // and is kept even while the question is still printing, or a
+            // quick typist loses the first letters (the setup question's
+            // lesson). Enter on nothing and ESC both skip: this one is a
+            // convenience, and a stray Enter costs only the BYE the sysop
+            // would type anyway. A skip gives a held answer's try back.
             if (!tl.empty()) tl.skipDelays();
             LineEditor::Res r = s.ed.key(k, t, tl);
-            if (r == LineEditor::Res::Abort) { s.ed = LineEditor(); t.nl(tl); t.nl(tl); arrive(s); return; }
+            if (r == LineEditor::Res::Abort) {
+                if (s.sysopAhead) bans_.aheadGive(s.ipAddr);
+                s.sysopAhead = false;
+                s.ed = LineEditor(); t.nl(tl); t.nl(tl); arrive(s); return;
+            }
             if (r == LineEditor::Res::Done) onSysopPassword(s, now);
             return;
         }

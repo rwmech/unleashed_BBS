@@ -24,6 +24,27 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.2.1 (in development)
+
+Host-tested only so far; the board versions move when their own code does.
+
+- **SyncTERM's autologin reaches the sysop node** (1.2.1-dev.1). Alt+L on a
+  telnet entry sends the handle, the password and the entry's system
+  password in one burst. The sysop's own account is asked `Sysop password:`
+  at login, and until now the question dropped every key held from before
+  it, so the system password was thrown away and the autologin stopped
+  there. A line already held when the question appears is taken as the
+  answer, and a right one elevates exactly as a typed one does. A wrong held
+  line is a skip: nothing is said, the stars are rubbed out, and it is never
+  counted toward the address's ban, because what was held may be a command
+  typed straight after the password. Only a line typed after the question
+  counts, as before. An uncounted guess needs a limit of its own, or the
+  burst would be a way round the ban for anybody holding the sysop's account
+  password: one held answer an address a ban window (15 minutes), after which
+  held keys are dropped as they were and the question waits. A right staff
+  password clears it; an empty held line or ESC gives it back. Costs no
+  static RAM (both new fields sit in padding).
+
 ## 1.2.0 (S3 1.1.4, WS43B 1.0.2, WS2 1.0.3, ETH 1.0.2, MF35 1.1.2, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-29: the hardware release
 
 **Out early for testing: this release has not been through the full

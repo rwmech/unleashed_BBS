@@ -52,6 +52,9 @@ public:
     struct Entry {
         uint32_t ip        = 0;
         uint8_t  fails     = 0;
+        // ahead (1.2.1): a held answer to the login's sysop question was
+        // tried in this window. In the padding after fails: no bytes.
+        uint8_t  ahead     = 0;
         uint32_t firstFail = 0;
         uint32_t until     = 0;     // 0 = not banned
     };
@@ -65,10 +68,21 @@ public:
     // clear: forget ip (correct password or UNBAN). False if not listed.
     bool clear(uint32_t ip);
 
+    // aheadTake: may a line typed ahead of the login's "Sysop password:"
+    // be taken as the answer (1.2.1)? One a window per address, counted
+    // here. A held answer that is wrong is never a failure, so without a
+    // limit a burst would be a way round the ban for anybody who holds the
+    // sysop's account password. False while banned or once used.
+    bool aheadTake(uint32_t ip, uint32_t now);
+
+    // aheadGive: the held answer was empty or withdrawn (ESC): give it back.
+    void aheadGive(uint32_t ip);
+
     // at: entry i if it is an active ban (for BANS)
     bool at(uint8_t i, uint32_t now, Entry& out) const;
 
 private:
+    Entry* slotFor(uint32_t ip);                 // the address's entry, made if need be
     Entry slots_[BBS_BAN_SLOTS];
 };
 

@@ -67,7 +67,7 @@ bool BanList::banned(uint32_t ip, uint32_t now) {
 // ---------------------------------------------------------------------------
 // fail: count inside the window; reuse the stalest slot when full
 // ---------------------------------------------------------------------------
-bool BanList::fail(uint32_t ip, uint32_t now) {
+BanList::Entry* BanList::slotFor(uint32_t ip) {
     Entry* slot   = nullptr;
     Entry* empty  = nullptr;
     Entry* oldest = nullptr;      // oldest non-banned entry, evicted when full
@@ -81,12 +81,24 @@ bool BanList::fail(uint32_t ip, uint32_t now) {
         *slot = Entry();
         slot->ip = ip;
     }
+    return slot;
+}
+
+// A window starts at the first thing counted in it, a failure or a held
+// answer, and both are forgotten together when it runs out.
+static void windowFrom(BanList::Entry& e, uint32_t now) {
+    if ((!e.fails && !e.ahead) || now - e.firstFail > BBS_BAN_WINDOW_MS) {
+        e.fails     = 0;
+        e.ahead     = 0;
+        e.firstFail = now;
+    }
+}
+
+bool BanList::fail(uint32_t ip, uint32_t now) {
+    Entry* slot = slotFor(ip);
     if (slot->until) return false;                // already banned
 
-    if (!slot->fails || now - slot->firstFail > BBS_BAN_WINDOW_MS) {
-        slot->fails     = 0;
-        slot->firstFail = now;
-    }
+    windowFrom(*slot, now);
     if (++slot->fails >= BBS_BAN_TRIES) {
         slot->until = now + BBS_BAN_MS;
         if (!slot->until) slot->until = 1;       // 0 means "not banned"
@@ -100,6 +112,28 @@ bool BanList::clear(uint32_t ip) {
         if (e.ip == ip) { e = Entry(); return true; }
     }
     return false;
+}
+
+// ---------------------------------------------------------------------------
+// aheadTake / aheadGive: the login's sysop question taking a line typed
+// ahead of it (1.2.1). See guard.h.
+// ---------------------------------------------------------------------------
+bool BanList::aheadTake(uint32_t ip, uint32_t now) {
+    Entry* slot = slotFor(ip);
+    if (slot->until) return false;
+    windowFrom(*slot, now);
+    if (slot->ahead) return false;
+    slot->ahead = 1;
+    return true;
+}
+
+void BanList::aheadGive(uint32_t ip) {
+    for (auto& e : slots_) {
+        if (e.ip != ip) continue;
+        e.ahead = 0;
+        if (!e.fails && !e.until) e = Entry();   // nothing else to remember
+        return;
+    }
 }
 
 bool BanList::at(uint8_t i, uint32_t now, Entry& out) const {

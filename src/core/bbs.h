@@ -189,6 +189,10 @@ struct Session {
     bool         pendingKnowMore = false; // rules screen leads to the warning
     bool         newAccount      = false; // first call: show newuser, not motd
     uint8_t      setupStage      = 0;     // first-boot setup: 1 CONFIG staff next, 2 newsysop next
+    // sysopAhead (1.2.1): the answer at the login's "Sysop password:" began
+    // before the question was asked (SyncTERM's autologin burst), so a wrong
+    // one is a skip, never a ban strike. In the padding before heapAtOpen.
+    bool         sysopAhead      = false;
     uint32_t     heapAtOpen  = 0;
     char         user[BBS_USER_MAX + 1] = {};
 
@@ -745,7 +749,9 @@ private:
     void setupConfig(Session& s, uint32_t now);       // CONFIG staff, as part of setup
     // The sysop's account at login (1.1.0): "Sysop password:" there and
     // then, Enter skips. Through staffPassword, so every rule BYE applies
-    // applies here. Never granted by the account password alone.
+    // applies here. Never granted by the account password alone. A line
+    // already held when it is asked is taken as the answer (1.2.1, for
+    // SyncTERM's autologin), and a wrong held one is a skip, not a strike.
     bool offerSysop(Session& s);
     void askSysop(Session& s);
     void onSysopPassword(Session& s, uint32_t now);
@@ -991,8 +997,11 @@ private:
     // the published default honoured from the board's own network only; a
     // right one clears the address's ban count. Access::None for a wrong
     // one, which is logged and counted toward the address's ban, and
-    // *banned says whether that count just banned it.
-    Access staffPassword(Session& s, const char* pw, uint32_t now, bool* banned);
+    // *banned says whether that count just banned it. count false (1.2.1):
+    // a line typed ahead of the login's question, checked by the same rules
+    // but never counted, because it was not typed as an answer.
+    Access staffPassword(Session& s, const char* pw, uint32_t now, bool* banned,
+                         bool count = true);
     void fxNext(Session& s);
 
     // -- sysop (bbs_sysop.cpp) -----------------------------------------------
