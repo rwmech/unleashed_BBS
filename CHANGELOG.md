@@ -67,6 +67,27 @@ without FidoNet, and what FidoNet stands on.
 - Fixed on the way: a forum or subject list whose closing prompt was the
   row that filled the screen drew `[More]` under the prompt.
 
+### The forums (lane B, 1.2.1-forums.2), 2026-09-30, built, not yet tested
+
+From the code review of 1.2.1-forums.1:
+
+- **A rebuilt header counts the live messages.** A forum whose header is
+  torn got one whose count was the number of records, which forgets
+  removals, so every caller was told the removed messages were unread. The
+  count is read from the records' live flags now. A header that simply
+  failed to read is left alone and the error logged: only 128 bytes without
+  the forum's magic, or a file shorter than a header, is rebuilt.
+- **A removal is reported as done once it is**: when the message's flag is
+  on the card but the header's count would not save, the moderator was told
+  "That did not save". It says removed now, and the header is recounted
+  from the records in the background so the card agrees.
+- **A `seg=` past M9999 in a header is ignored** and the post looks for its
+  segment, rather than writing the body to a file its record could not
+  name.
+- A record or a removal flag whose sync to the card fails no longer has the
+  header written after it.
+- A message's `[More]` never stops with only the reading question left.
+
 ## 1.2.0 (S3 1.1.4, WS43B 1.0.2, WS2 1.0.3, ETH 1.0.2, MF35 1.1.2, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-29: the hardware release
 
 **Out early for testing: this release has not been through the full

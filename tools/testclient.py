@@ -14319,6 +14319,141 @@ def test_forums_long_read():
     return ok
 
 
+def _forum_head(fdir, text):
+    """Replace a forum's header (record 0) with text, padded to 128."""
+    idx = bytearray((fdir / "INDEX.TXT").read_bytes())
+    head = text.encode().ljust(126, b" ")[:126] + b"\r\n"
+    idx[0:128] = head
+    (fdir / "INDEX.TXT").write_bytes(bytes(idx))
+
+
+def test_forums_header_rebuild():
+    """A torn header is rebuilt with the live count, not the record count.
+
+    A forum of six messages, two of them removed, with a header whose magic
+    is gone. The rebuild took newest from the file's size and set the count
+    to the same number, which forgets the removals: the count feeds the
+    "nothing was ever removed" shortcut, so every caller was told the two
+    removed messages were unread (the 0.21.7 shape; code review of
+    1.2.1-forums.1). The count comes from the live flags now, read on the
+    runner, and the next post lands after message 6, never over message 1."""
+    print("Forums: a torn header is rebuilt with the live count")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    import contextlib
+    import shutil
+    import tempfile
+    sys.path.insert(0, str(ROOT / "tools"))
+    import forum_check
+    card = pathlib.Path(tempfile.mkdtemp(prefix="bbs-tornhead-"))
+    fdir = card / "p" / "forums" / "general"
+    with contextlib.redirect_stdout(io.StringIO()):
+        forum_check.build_forum(str(fdir), 6)
+    idx = bytearray((fdir / "INDEX.TXT").read_bytes())
+    for n in (2, 5):                                    # removed: the live flag is X
+        idx[n * 128 + 7] = ord("X")
+    idx[0:5] = b"#XXXX"                                 # the magic torn
+    (fdir / "INDEX.TXT").write_bytes(bytes(idx))
+    port = PORT + 3914
+    tmp, proc = lag_board(port, card)
+    ok = True
+    c = None
+    try:
+        log = copy_log(tmp, "rebuilt the header", 10)
+        ok &= check("the board rebuilds the header: 6 records, 4 live",
+                    "rebuilt the header, 6 records, 4 live" in log)
+        head = (fdir / "INDEX.TXT").read_bytes()[:128]
+        ok &= check("the card's header says count 4, newest 6",
+                    head.startswith(b"#UBF1") and b"count=000004" in head and b"newest=000006" in head)
+        c = ansi_login("TornReader", port=port)
+        drain(c)
+        c.buf.clear()
+        c.send(b"forums\r")
+        ok &= check("the forum list opens", c.wait_for(b"Forums>", 20))
+        c.pump(0.8)
+        ok &= check(f"a new caller has 4 unread, not 6 ({new_count(c.buf)})", new_count(c.buf) == 4)
+        c.buf.clear()
+        c.send(b"1\r")
+        wait_plain(c, b"Forums>General>", 20)
+        c.pump(0.5)
+        num = forum_post(c, "After the rebuild", ["Lands after message six."])
+        ok &= check(f"the next post is message 7, not over message 1 ({num})", num == "7")
+        forum_check.fails = 0
+        forum_check.checks = 0
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = forum_check.check_forum(str(fdir))
+        ok &= check("forum_check agrees: the count is the live messages", rc == 0)
+    finally:
+        if c:
+            c.close()
+        stop_copy(proc, tmp)
+        shutil.rmtree(card, ignore_errors=True)
+    return ok
+
+
+def test_forums_seg_range():
+    """A header's seg= past M9999 is not believed.
+
+    A record's segment field has four digits, so seg=34463 read as a segment
+    sent the body to M34463.TXT and wrote 3446 into the record, and the
+    message read back from the wrong file (code review of 1.2.1-forums.1).
+    Out of range is unknown now: the post looks for its segment the old way
+    and lands in the first one with room."""
+    print("Forums: seg= out of range in a header")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    import contextlib
+    import shutil
+    import tempfile
+    sys.path.insert(0, str(ROOT / "tools"))
+    import forum_check
+    card = pathlib.Path(tempfile.mkdtemp(prefix="bbs-segrange-"))
+    fdir = card / "p" / "forums" / "general"
+    with contextlib.redirect_stdout(io.StringIO()):
+        forum_check.build_forum(str(fdir), 3)
+    _forum_head(fdir, "#UBF1\ttopic=general\tcount=000003\tnewest=000003\tseg=34463\t")
+    port = PORT + 3915
+    tmp, proc = lag_board(port, card)
+    ok = True
+    c = None
+    try:
+        c = ansi_login("SegRange", port=port)
+        drain(c)
+        c.buf.clear()
+        c.send(b"forums\r")
+        c.wait_for(b"Forums>", 20)
+        c.pump(0.5)
+        c.buf.clear()
+        c.send(b"1\r")
+        ok &= check("the forum opens", wait_plain(c, b"Forums>General>", 20))
+        c.pump(0.5)
+        num = forum_post(c, "Out of range", ["Where does this land?"])
+        ok &= check("the post saves as message 4", num == "4")
+        data = (fdir / "INDEX.TXT").read_bytes()
+        rec = data[4 * 128:5 * 128]
+        seg = forum_check.field(rec, "segment") if len(rec) == 128 else None
+        ok &= check(f"in segment 0, the first with room ({seg})", seg == 0)
+        ok &= check("and no M34463.TXT or M3446.TXT on the card",
+                    not (fdir / "M34463.TXT").exists() and not (fdir / "M3446.TXT").exists())
+        ok &= check("the header now names segment 0", b"seg=0000" in data[:128])
+        c.buf.clear()
+        c.send(b"l")
+        c.wait_for(b"Out of range", 10)
+        c.pump(0.5)
+        sub = subject_number(c.buf, "Out of range")
+        c.buf.clear()
+        c.send(((sub or "4") + "\r").encode())
+        ok &= check("and it reads back", c.wait_for(b"Where does this land?", 10))
+    finally:
+        if c:
+            c.close()
+        stop_copy(proc, tmp)
+        shutil.rmtree(card, ignore_errors=True)
+    return ok
+
+
 def test_lag_logins():
     """250 accounts: the handle prompt and a logoff do not walk users.txt.
 
@@ -18881,7 +19016,7 @@ ORDER_NAMES = [
     "test_dash_uploads",                 # leaves its upload waiting, as test_ymodem does
     "test_config_areas", "test_config_area_keeps_every_part",
     "test_mail_compose",
-    "test_forums", "test_forums_remove", "test_forums_scan_staff", "test_forums_segments", "test_forums_long_read", "test_config_forum_levels", "test_partitions",
+    "test_forums", "test_forums_remove", "test_forums_scan_staff", "test_forums_segments", "test_forums_long_read", "test_forums_header_rebuild", "test_forums_seg_range", "test_config_forum_levels", "test_partitions",
     # Backups on the card and restores across the partitions (1.1.0). The
     # card one restores this board from a backup it has just taken, which is
     # the board as it was a minute before, so it sits with the restores.

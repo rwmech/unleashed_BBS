@@ -347,6 +347,8 @@ void indexPath(uint8_t i, char* out, size_t n) {
 // upgrade looks for the segment once, the old way, and writes it down.
 // Firmware older than 1.2.1 reads a header with seg= and ignores the key.
 // ---------------------------------------------------------------------------
+constexpr uint16_t kSegLast = 9999;           // M9999.TXT: four digits in the record
+
 struct Head {
     uint32_t count  = 0;
     uint32_t newest = 0;
@@ -367,8 +369,16 @@ bool parseHead(const char* rec, Head& h) {
         if (!strncmp(p, "count=", 6))  h.count  = strtoul(p + 6, nullptr, 10);
         if (!strncmp(p, "newest=", 7)) h.newest = strtoul(p + 7, nullptr, 10);
         if (!strncmp(p, "seg=", 4)) {
-            h.seg    = static_cast<uint16_t>(strtoul(p + 4, nullptr, 10));
-            h.hasSeg = true;
+            // Past M9999 is not a segment: a record's segment field has four
+            // digits, and 34463 would be written as 3446, sending the body to
+            // the wrong file (code review, 1.2.1-forums.2). Unknown, so the
+            // next post looks for it.
+            char* end = nullptr;
+            const unsigned long v = strtoul(p + 4, &end, 10);
+            if (end != p + 4 && v <= kSegLast) {
+                h.seg    = static_cast<uint16_t>(v);
+                h.hasSeg = true;
+            }
         }
         p = tab ? tab + 1 : nullptr;
     }
@@ -545,7 +555,6 @@ bool readRec(uint8_t i, uint32_t n, MsgRec& m) {
 // costs nothing to find.
 // ---------------------------------------------------------------------------
 constexpr uint32_t kSegMax  = 128u * 1024u;   // roll a body file at 128 KB
-constexpr uint16_t kSegLast = 9999;           // M9999.TXT: four digits in the record
 // The longest body the format can say, not a buffer size: the length field
 // is four decimal digits. It was 1,728 (kBodyMax, 24 lines x 72), and a body
 // had to fit a stack buffer that size to be read at all. The reader reads a
@@ -795,6 +804,8 @@ struct Op {
     uint16_t  ticket = 0;            // which of their waits: see g_ticket
     char      key[kKeyMax + 1] = {}; // the forum's folder: the runner works from this
     bool      head  = false;         // the runner read the header: newest/total mean something
+    bool      recount = false;       // SEED: count the live records even if the header reads
+    bool      stale = false;         // the runner's: the header on the card may be wrong, recount it
     uint32_t  num   = 0;             // REMOVE: which; POST: the number it got
     uint32_t  user  = 0;             // PTR: whose
     Ptr       ptr;                   // PTR: the pointer
@@ -897,8 +908,9 @@ void runPost(Op& op) {
               fwrite(rec, 1, kRec, ix) == kRec && fflush(ix) == 0;
     // The record on the card before the header names it. They are one open
     // now, where they were two, and a header that reached the card first
-    // would name a record a power cut had lost.
-    if (ok) fsync(fileno(ix));
+    // would name a record a power cut had lost. A sync that fails writes no
+    // header: the record stays unnamed and the post is said not to have saved.
+    if (ok) ok = fsync(fileno(ix)) == 0;
     if (ok) {
         Head nh = h;
         nh.newest = m.num;
@@ -921,6 +933,16 @@ void runPost(Op& op) {
 }
 
 // runRemove: one byte, the live flag, then the header's live count.
+//
+// Once the flag is on the card (written and synced) the message IS removed,
+// whatever happens to the header after it, so that is what the moderator is
+// told (code review, 1.2.1-forums.2). A header that will not take the new
+// count, twice, is marked stale and recounted from the records by a seed op
+// queued when the answer is handed out: the card's count feeds the "nothing
+// was ever removed" shortcut, and one too high would count the removed
+// message as unread for every caller (the 0.21.7 shape). A flag that did not
+// sync is said as not saved, and recounted too, because it may still have
+// reached the card.
 void runRemove(Op& op) {
     char path[128];
     char dir[96];
@@ -942,25 +964,58 @@ void runRemove(Op& op) {
     if (!ok)     { fclose(ix); return; }
     if (!m.live) { fclose(ix); op.res = RES_GONE; return; }      // another moderator was first
 
-    ok = fseek(ix, static_cast<long>(op.num) * kRec + kOffFlags, SEEK_SET) == 0 &&
-         fputc('X', ix) != EOF && fflush(ix) == 0;
-    if (ok) fsync(fileno(ix));
-    if (ok) {
-        if (h.count) --h.count;                  // the header's count is LIVE messages
-        buildHead(rec, op.key, h);
-        ok = fseek(ix, 0, SEEK_SET) == 0 && fwrite(rec, 1, kRec, ix) == kRec;
-        ok = fflush(ix) == 0 && ok;
+    bool down = fseek(ix, static_cast<long>(op.num) * kRec + kOffFlags, SEEK_SET) == 0 &&
+                fputc('X', ix) != EOF && fflush(ix) == 0;
+    if (down) down = fsync(fileno(ix)) == 0;
+    if (!down) {
+        fclose(ix);
+        op.stale = true;                         // the X may have landed all the same
+        return;
     }
-    if (fclose(ix) != 0) ok = false;
-    op.total = h.count;
-    if (ok) op.res = RES_OK;
+    if (h.count) --h.count;                      // the header's count is LIVE messages
+    bool headed = false;
+    for (uint8_t tries = 0; tries < 2 && !headed; ++tries) {
+        buildHead(rec, op.key, h);
+        headed = fseek(ix, 0, SEEK_SET) == 0 && fwrite(rec, 1, kRec, ix) == kRec &&
+                 fflush(ix) == 0;
+    }
+    if (fclose(ix) != 0) headed = false;
+    op.total = h.count;                          // the truth: the flag is down
+    op.res   = RES_OK;
+    if (!headed) {
+        op.stale = true;
+        plat::log("forums: %s: #%lu removed, but the header did not save; recounting",
+                  op.key, static_cast<unsigned long>(op.num));
+    }
+}
+
+// countLive: the live records 1..newest, read front to back, on the runner.
+// -1 on a read error; a file that ends early counts what it holds.
+long countLive(FILE* ix, uint32_t newest) {
+    if (fseek(ix, kRec, SEEK_SET) != 0) return -1;
+    long live = 0;
+    char rec[kRec];
+    for (uint32_t n = 1; n <= newest; ++n) {
+        if (fread(rec, 1, kRec, ix) != kRec) return ferror(ix) ? -1 : live;
+        MsgRec m;
+        parseRec(rec, m);
+        if (m.num == n && m.live) ++live;
+        if ((n & 63) == 0) runner::breathe();
+    }
+    return live;
 }
 
 // runSeed: a forum's folder and header, when start() found none. Does
 // nothing to a forum whose header reads (start's read may have failed for a
-// reason that has passed), and on an index whose header is gone, writes one
-// that counts the records the file holds, rather than newest=0: a header of
-// 0 would put the next post over message 1.
+// reason that has passed), unless asked to recount it (op.recount, after a
+// removal whose header did not save).
+//
+// A header that is torn (128 bytes came back without the magic, or the file
+// is shorter than a header) is rebuilt from the file: newest from its size,
+// so the next post cannot land over message 1, and the count from the live
+// flags, so the "nothing was ever removed" shortcut stays honest. A read
+// ERROR is never taken for a torn header (code review, 1.2.1-forums.2): a
+// card that failed one read must not have its good header replaced.
 void runSeed(Op& op) {
     char dir[96], path[128];
     keyDir(op.key, dir, sizeof(dir));
@@ -976,8 +1031,14 @@ void runSeed(Op& op) {
         if (!ix) return;
         h.hasSeg = true;                         // a new forum: segment 0
     } else {
-        const bool read = fread(rec, 1, kRec, ix) == kRec;
-        if (read && parseHead(rec, h)) {
+        const size_t got = fread(rec, 1, kRec, ix);
+        if (got != kRec && ferror(ix)) {
+            fclose(ix);
+            plat::log("forums: %s: the header would not read; left as it is", op.key);
+            return;
+        }
+        const bool good = got == kRec && parseHead(rec, h);
+        if (good && !op.recount) {
             fclose(ix);
             op.head = true;
             op.newest = h.newest;
@@ -985,11 +1046,22 @@ void runSeed(Op& op) {
             op.res    = RES_OK;
             return;
         }
-        long size = (fseek(ix, 0, SEEK_END) == 0) ? ftell(ix) : -1;
-        if (size >= static_cast<long>(2 * kRec)) h.newest = static_cast<uint32_t>(size / kRec - 1);
-        h.count = h.newest;                      // a guess, and the removals are not known
-        plat::log("forums: %s had no header; wrote one for %lu records", op.key,
-                  static_cast<unsigned long>(h.newest));
+        if (!good) {
+            h = Head();                          // seg= unknown: the next post looks for it
+            long size = (fseek(ix, 0, SEEK_END) == 0) ? ftell(ix) : -1;
+            if (size < 0) { fclose(ix); return; }
+            if (size >= static_cast<long>(2 * kRec)) h.newest = static_cast<uint32_t>(size / kRec - 1);
+        }
+        const long live = countLive(ix, h.newest);
+        if (live < 0) {
+            fclose(ix);
+            plat::log("forums: %s: the records would not read; the header is left as it is", op.key);
+            return;
+        }
+        h.count = static_cast<uint32_t>(live);
+        plat::log("forums: %s: %s the header, %lu records, %lu live", op.key,
+                  good ? "recounted" : "rebuilt",
+                  static_cast<unsigned long>(h.newest), static_cast<unsigned long>(h.count));
     }
     buildHead(rec, op.key, h);
     bool ok = fseek(ix, 0, SEEK_SET) == 0 && fwrite(rec, 1, kRec, ix) == kRec;
@@ -2446,11 +2518,13 @@ bool readRow(Bbs& b, Session& s) {
                 s.term.color(s.tl, g_cTitle);
                 s.term.text(s.tl, "--> EOM <--");
                 s.term.nl(s.tl);
+                // No page break from here: [More] stopping with only the
+                // reading question behind it is a stop for nothing.
+                s.nonstop = true;
                 r.phase = RD_PROMPT;
                 break;
             case RD_PROMPT:
                 prompt(b, s);
-                s.nonstop = true;                      // nothing after the prompt to page
                 r.phase = RD_END;
                 break;
             default:
@@ -2985,6 +3059,16 @@ void opDeliver(Op& op) {
     if (op.kind == OP_SEED && op.res != RES_OK) plat::log("forums: could not write the header for %s", op.key);
     opFree(op.post);
     op.post = nullptr;
+    // The card's header may be wrong (a removal whose header did not save):
+    // recount it from the records, on the runner, like any other write.
+    if (op.stale) {
+        Op rc;
+        rc.kind    = OP_SEED;
+        rc.recount = true;
+        rc.forum   = op.forum;
+        snprintf(rc.key, sizeof(rc.key), "%s", op.key);
+        if (!opQueue(rc)) plat::log("forums: %s: the recount was not queued", op.key);
+    }
 
     if (op.node >= BBS_MAX_NODES + 2 || !g_bbs) return;
     Walk& w = g_walk[op.node];
