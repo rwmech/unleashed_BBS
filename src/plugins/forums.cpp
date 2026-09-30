@@ -817,7 +817,9 @@ bool writePtr(uint32_t userId, uint8_t forum, const Ptr& p) {
 // have. A post's text is copied into a block of its own for the same reason.
 // ===========================================================================
 enum : uint8_t { OP_POST = 1, OP_REMOVE, OP_PTR, OP_SEED };
-enum : uint8_t { RES_OK = 0, RES_IO, RES_GONE };
+// RES_MAYBE is the loop's, never the runner's: a post that failed with the
+// header stale (opDeliver), whose record a recount may yet name.
+enum : uint8_t { RES_OK = 0, RES_IO, RES_GONE, RES_MAYBE };
 
 // A post as the runner writes it: the record's fields and the text after
 // the struct, in one block.
@@ -982,11 +984,13 @@ void runPost(Op& op) {
     nh.seg    = seg;
     nh.hasSeg = true;
     if (!headWrite(ix, path, op.key, nh)) {
-        // The record is on the card and unnamed, and the header may be half
-        // one thing and half the other: said as not saved (nobody can read
-        // it), and recounted from the card when the answer is handed out, so
-        // a header left torn is rebuilt now rather than at the next post
-        // (code review, 1.2.1-forums.3).
+        // The record is on the card, and the header may have taken the new
+        // count or not, or be torn. It is recounted from the card when the
+        // answer is handed out (code review, 1.2.1-forums.3), and a rebuild
+        // may name this record, which makes the post readable after all. So
+        // the poster is told it MAY not have saved, never that it did not
+        // (RES_MAYBE, 1.2.1-forums.4): a caller told "did not save" posts it
+        // again, and the forum has it twice.
         op.stale = true;
         plat::log("forums: %s: a post's header did not save; recounting", op.key);
         return;
@@ -2114,6 +2118,15 @@ void say(Session& s, Color c, const char* text) {
     }
 }
 
+// fitText: the wide form of a line when it fits this caller's row, else the
+// short one, which is 39 columns or fewer so it is one line at 40 (1.2.1-
+// forums.4, Rob: "esp wordwrap related"). The room's lines do the same.
+// say() would wrap the wide one at 40, but a notice that takes two lines on
+// a C64 reads as two notices, and a row the pager counts must be one line.
+const char* fitText(Session& s, const char* wide, const char* narrow) {
+    return strlen(wide) <= Bbs::instance().rowWidth(s) ? wide : narrow;
+}
+
 // notice: the board answering a key pressed at the prompt.
 //
 // Rob, three times in one sitting: "Linefeed before --> That is the end",
@@ -2571,10 +2584,15 @@ bool readRow(Bbs& b, Session& s) {
             case RD_BODY:
                 if (bodyRow(b, s, r)) break;
                 if (r.bad) {
-                    say(s, Color::LightRed, r.rd ? "(the rest of this message could not be read)"
-                                                 : "(the text of this message could not be read)");
+                    // One line at 40 (36 and 32 columns), because the pager
+                    // counts this row as one; then the ending through RD_GAP,
+                    // whose fit check keeps it on one page (code review,
+                    // 1.2.1-forums.4).
+                    say(s, Color::LightRed, r.rd ? "(the rest of this could not be read)"
+                                                 : "(this message could not be read)");
                     s.term.nl(s.tl);
-                    r.phase = RD_EOM;              // the note stands for the blank line
+                    r.bad   = false;               // said once
+                    r.phase = RD_GAP;
                     break;
                 }
                 r.phase = RD_GAP;
@@ -2849,7 +2867,8 @@ void finishPost(Bbs& b, Session& s, const char* body) {
         // Nothing lost: the message is still in the editor, and /s asks again.
         opFree(pd);
         s.term.nl(s.tl);
-        say(s, g_cMark, "--> The board cannot take that just now. /s tries again.");
+        say(s, g_cMark, fitText(s, "--> The board cannot take that just now. /s tries again.",
+                                   "--> Busy just now. /s tries again."));
         bodyPrompt(s);
         return;
     }
@@ -2998,7 +3017,8 @@ void removeShown(Bbs& b, Session& s) {
     op.num   = n;
     snprintf(op.key, sizeof(op.key), "%s", g_forum[forum].key);
     if (!opQueue(op)) {
-        notice(s, Color::LightRed, "--> The board cannot take that just now. D tries again.");
+        notice(s, Color::LightRed, fitText(s, "--> The board cannot take that just now. D tries again.",
+                                              "--> Busy just now. D tries again."));
         noticeDone(b, s);
         return;
     }
@@ -3108,7 +3128,15 @@ void walkFinish(Bbs& b, Session& s) {
                 say(s, Color::LightGreen, msg);
                 claims::release(claims::Res::Subjects, sl);
             } else {
-                say(s, Color::LightRed, "--> That did not save. The card may be full.");
+                // Maybe: the record reached the card and its header did not,
+                // and the recount may make it readable. Look before posting
+                // it again. 35 columns at 40, the long form from 59.
+                say(s, Color::LightRed,
+                    w.arg == RES_MAYBE
+                        ? fitText(s, "--> That may not have saved. Look before posting it again.",
+                                     "--> It may have saved. Check first.")
+                        : fitText(s, "--> That did not save. The card may be full.",
+                                     "--> Not saved. Is the card full?"));
             }
             g_replying[sl] = false;
             prompt(b, s);
@@ -3125,7 +3153,8 @@ void walkFinish(Bbs& b, Session& s) {
             } else {
                 say(s, w.arg == RES_GONE ? g_cMark : Color::LightRed,
                     w.arg == RES_GONE ? "--> That message was removed already."
-                                      : "--> That did not save. Is the card still in?");
+                                      : fitText(s, "--> That did not save. Is the card still in?",
+                                                   "--> Not saved. Is the card in?"));
             }
             prompt(b, s);
             return;
@@ -3175,7 +3204,8 @@ void opDeliver(Op& op) {
     Session* s = walkSession(op.node);
     if (!s || !g_bbs->owns(*s, g_index)) { walkStop(op.node); return; }
     w.found = op.res == RES_OK ? op.num : 0;
-    w.arg   = op.res;
+    w.arg   = (op.kind == OP_POST && op.res != RES_OK && op.stale)
+            ? static_cast<uint32_t>(RES_MAYBE) : static_cast<uint32_t>(op.res);
     walkFinish(*g_bbs, *s);
 }
 
@@ -3317,7 +3347,8 @@ void onKey(Session& s, int key, uint32_t) {
             if (g_walk[sl].shown) s.term.eraseBack(s.tl, 1);
             walkStop(sl);
             g_replying[sl] = false;
-            say(s, g_cMark, "--> Still saving. It lands when the card is free.");
+            say(s, g_cMark, fitText(s, "--> Still saving. It lands when the card is free.",
+                                       "--> Still saving. It will land."));
             prompt(b, s);
             return;
         }

@@ -14466,7 +14466,13 @@ def test_forums_page_fit():
     Five messages of 11 to 15 body lines, so the EOM, the blank before the
     question and the question each land on a page's last counted row at 24
     rows: every body line must arrive once, in order, and between one [More]
-    and the next, or the end, no more than 23 new lines may go by."""
+    and the next, or the end, no more than 23 new lines may go by.
+
+    And every line the reader draws fits a row (1.2.1-forums.4, Rob: "esp
+    wordwrap related"): no screen line of a message is wider than the row, at
+    40 or 80. Two more messages reach the error notes, which were 44 columns
+    and took two lines at 40 for one row: one whose body ends early on the
+    card, one whose body is not there at all."""
     print("Forums: no page of a message is taller than the screen")
     if HOST not in ("127.0.0.1", "localhost"):
         print("  SKIP  needs the host build")
@@ -14479,15 +14485,22 @@ def test_forums_page_fit():
     card = pathlib.Path(tempfile.mkdtemp(prefix="bbs-pagefit-"))
     fdir = card / "p" / "forums" / "general"
     with contextlib.redirect_stdout(io.StringIO()):
-        forum_check.build_forum(str(fdir), 5, lambda n: f"Page fit {n}")
+        forum_check.build_forum(str(fdir), 7, lambda n: f"Page fit {n}")
+    # 1 to 5: 11 to 15 lines. 6: five lines on the card, the record claiming
+    # 4,000 bytes more (the rest cannot be read). 7: a body past the end of
+    # the segment (none of it can be read).
     lines_of = {n: 10 + n for n in range(1, 6)}
+    lines_of.update({6: 5, 7: 0})
+    note_of = {6: b"(the rest of this could not be read)", 7: b"(this message could not be read)"}
     bodies, idx = b"", bytearray((fdir / "INDEX.TXT").read_bytes())
-    for n in range(1, 6):
+    for n in range(1, 7):
         body = "\n".join(f"Line {k:02d} of message {n}" for k in range(1, lines_of[n] + 1)).encode()
         at = n * 128
         idx[at + 56:at + 62] = b"%06d" % len(bodies)
-        idx[at + 63:at + 67] = b"%04d" % len(body)
-        bodies += body + b"\n"
+        idx[at + 63:at + 67] = b"%04d" % (len(body) + (4000 if n == 6 else 0))
+        bodies += body + (b"" if n == 6 else b"\n")
+    idx[7 * 128 + 56:7 * 128 + 62] = b"%06d" % (len(bodies) + 100)
+    idx[7 * 128 + 63:7 * 128 + 67] = b"0200"
     (fdir / "M0000.TXT").write_bytes(bodies)
     (fdir / "INDEX.TXT").write_bytes(bytes(idx))
     port = PORT + 3916
@@ -14512,7 +14525,7 @@ def test_forums_page_fit():
                 c.send(b"1\r")
                 wait_plain(c, b"Forums>General>", 20)
                 c.pump(0.5)
-                for n in range(1, 6):
+                for n in range(1, 8):
                     c.buf.clear()
                     c.send(b"%d\r" % n)                       # the subject: numbered by its message
                     answered, end = 0, time.time() + 20
@@ -14535,6 +14548,14 @@ def test_forums_page_fit():
                                 tallest <= 23)
                     ok &= check(f"{label}, {lines_of[n]} lines: no [More] with only the question behind it",
                                 text.rfind(b"[More]") < text.rfind(b"--> EOM <--"))
+                    width = 40 if narrow else 80
+                    wide = [ln for ln in render_lines(c.buf, cols=width) if len(ln.rstrip()) > width - 1]
+                    ok &= check(f"{label}, message {n}: no line wider than the row ({len(wide)})", not wide)
+                    if n in note_of:
+                        note = note_of[n].decode()
+                        whole = [ln for ln in render_lines(c.buf, cols=width) if note in ln]
+                        ok &= check(f"{label}, message {n}: the note is said, on one line",
+                                    len(whole) == 1 and len(note) <= 39)
                     c.send(b"q")                               # back to the subjects
                     wait_plain(c, b"Forums>General>", 10)
                     c.pump(0.3)

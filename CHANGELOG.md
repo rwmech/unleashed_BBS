@@ -111,6 +111,19 @@ From the code review of 1.2.1-forums.2:
   it happened to, so a retry on the same one could never work.
 - The "rebuilt the header" line is logged after the header is on the card.
 
+### The forums (lane B, 1.2.1-forums.4), 2026-09-30, built, not yet tested
+
+- **A post whose header did not save is told it may not have**, not that
+  it did not: the background recount can make it readable after all, and a
+  caller told "did not save" posts it again. `--> That may not have saved.
+  Look before posting it again.` (at 40 columns: `--> It may have saved.
+  Check first.`).
+- **Every line the forums' new answers print is one line at 40 columns**
+  (Rob: "esp wordwrap related"): the long form where it fits the row, a
+  short one of 39 columns or fewer where it does not, the way the room's
+  lines do. The reader's error notes are one line everywhere, and the end of
+  a message that could not be read keeps to one page like any other.
+
 ## 1.2.0 (S3 1.1.4, WS43B 1.0.2, WS2 1.0.3, ETH 1.0.2, MF35 1.1.2, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-29: the hardware release
 
 **Out early for testing: this release has not been through the full
