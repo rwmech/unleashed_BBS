@@ -57,6 +57,14 @@ yet in a release: its image set is `esp32s3-mf35v2`, tag_only until the merge.
   answered (chip ID 0x64), the panel up at 20 MHz, Wi-Fi by Improv, first-boot
   setup, telnet and SSH logins on both ports. Internal heap 49,203 free, 37,843
   at its lowest. The glass itself is for Rob to confirm.
+- A build left with a stale sdkconfig whose console is UART0 is refused by
+  name (board.h), rather than building an image whose Improv never answers
+  on USB-NATIVE.
+- **MF35 1.1.3 (the v1.0), in the same lane:** CONFIG refuses 38, 39 and 40,
+  the FT6236's I2C pair and INT on the v1.0's glass flex too ("That pin is
+  wired on the board"). Nothing drove them, so a sysop could give them to the
+  serial bridge or the lights and fight the touch controller. Only the pin
+  check and the version string change in that image.
 
 ## 1.2.0 (S3 1.1.4, WS43B 1.0.2, WS2 1.0.3, ETH 1.0.2, MF35 1.1.2, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-29: the hardware release
 

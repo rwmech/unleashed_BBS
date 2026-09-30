@@ -59,9 +59,10 @@
 # there. The USB-TTL port (the CP2104 on UART0) still flashes through the
 # ROM's own download mode; it shows the ROM's boot lines and nothing else.
 
-# The VFS table, 8 to 12, as on the v1.0 (MF35 1.1.1) and the 4.3B. One
-# console, lwIP's sockets, the three LittleFS partitions, SSH's eventfd and
-# the SD card's FAT are the IDF's 8 exactly, so the next VFS user would take
+# The VFS table, 8 to 12, as on the v1.0 (MF35 1.1.1) and the 4.3B. The
+# console's two slots (/dev/console and the USB-Serial-JTAG device), lwIP's
+# sockets, the three LittleFS partitions, SSH's eventfd and the SD card's
+# FAT are the IDF's 8 exactly, so the next VFS user would take
 # the card down with ESP_ERR_NO_MEM ("no card: not enough memory"). 4 bytes
 # a slot.
 CONFIG_VFS_MAX_COUNT=12

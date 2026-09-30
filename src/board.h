@@ -532,7 +532,7 @@
 #define BBS_BOARD_PLUGINS     1       // the panel
 
 #define BBS_BOARD_TAG         "MF35"
-#define BBS_BOARD_VERSION     "1.1.2"
+#define BBS_BOARD_VERSION     "1.1.3"
 
 // SSH (1.1.2 core, MF35 1.1.0, a preview), as on the Waveshare S3: the shared
 // port 6400 and ssh_port 6422, host keys in userdata/ssh. Eight at once, the
@@ -637,8 +637,12 @@
 
 // Pins the board owns. 43 and 44 are UART0 to the CP2104. The panel's data
 // bus is the board's (the six control pins are the panel plugin's settings
-// and are held by it). 46 is a strapping pin, unconnected here.
+// and are held by it). 46 is a strapping pin, unconnected here. 38, 39 and
+// 40 are the FT6236's I2C pair and INT on the glass's flex (MF35 1.1.3): not
+// driven by this profile, but wired, so a pin handed out there (the serial
+// bridge's TX on 40) would fight the controller.
 #define BBS_PINS_CONSOLE      43, 44
+#define BBS_PINS_ONBOARD      38, 39, 40
 #define BBS_PINS_LCDBUS       BBS_LCD_DATA_PINS
 #define BBS_PINS_STRAP        46
 #define BBS_PINS_HOLD_LOW     45
@@ -714,11 +718,18 @@
 #if defined(ESP_PLATFORM) && !(CONFIG_SPIRAM && CONFIG_SPIRAM_MODE_OCT)
 #error "BBS_BOARD_MF_S3PAR35V2 needs octal PSRAM: the S3 layer was not applied (delete sdkconfig.makerfabs_s3_par35v2*)"
 #endif
-// One console, lwIP, three LittleFS partitions, SSH's eventfd and the card's
-// FAT are the IDF's 8 VFS slots exactly: 12 in sdkconfig.defaults.mf35v2, as
-// on the v1.0 and the 4.3B. A stale sdkconfig keeps 8.
+// The console (two slots: /dev/console and the USB-Serial-JTAG device), lwIP,
+// three LittleFS partitions, SSH's eventfd and the card's FAT are the IDF's 8
+// VFS slots exactly: 12 in sdkconfig.defaults.mf35v2, as on the v1.0 and the
+// 4.3B. A stale sdkconfig keeps 8.
 #if defined(ESP_PLATFORM) && CONFIG_VFS_MAX_COUNT < 12
 #error "BBS_BOARD_MF_S3PAR35V2 needs CONFIG_VFS_MAX_COUNT of 12 (sdkconfig.defaults.mf35v2): delete sdkconfig.makerfabs_s3_par35v2*"
+#endif
+// The console on the chip's own USB (the S3 layer's, below). A stale
+// sdkconfig with the v1.0's UART0 console builds cleanly and then Improv never
+// answers on the USB-NATIVE port.
+#if defined(ESP_PLATFORM) && !CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+#error "BBS_BOARD_MF_S3PAR35V2 needs the console on USB-Serial-JTAG (the S3 layer): delete sdkconfig.makerfabs_s3_par35v2*"
 #endif
 
 // The Waveshare S3's reserve: Wi-Fi's and lwIP's buffers go to PSRAM.

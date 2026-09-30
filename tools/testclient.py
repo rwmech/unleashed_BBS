@@ -8257,7 +8257,7 @@ def test_board_mf35v2():
 
     # The Pins page with this board's own: 43 and 44 are the CP2104's wires,
     # 38 the touch controller's SDA, 47 the panel's data bus (D0), 19 the
-    # USB, and 33 octal PSRAM (the v1.0's WR pin, free there).
+    # USB, and 35 octal PSRAM (the v1.0's WR pin, free there).
     cfg_open(s, b"panel", b"Skin")
     s.buf.clear()
     s.send(DOWN * 5 + b"\r")
