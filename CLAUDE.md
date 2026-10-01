@@ -824,6 +824,7 @@ this tree.
   takes the card down. Move `CONFIG_VFS_MAX_COUNT=12` into the shared S3
   layer with a generic board.h guard, and have the sd plugin's
   ESP_ERR_NO_MEM message name the full VFS table as well as memory.
+  **When a new board's panel stays dark, flash the vendor's reference firmware first** (Rob, 2026-10-01: "flash the reference version, confirm it works then take the working code out of the RI"), from the factory backup, and confirm the glass lights. Then port the reference implementation's whole bring-up path (reset and power pins, the bus and its mode, the init list and delays, the panel timing and the order of calls), not just its init table. The Guition 4848S040 matched the table byte for byte and still stayed black.
   **Boards are chosen to maximise what the BBS can do, not to work around
   vendor wiring** (Rob: "not work around dumb vendor BS"). Rejected on
   that ground: the KEYESTUDIO ESP32-S3 PRO (N16R8), whose on-board SD slot
