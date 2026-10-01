@@ -746,7 +746,7 @@ pass.
   screen's last page says `It is a cheap hobby board, and it is
   conversation.`, in all three flavours of each.
 
-### The lanes meet (1.2.1-dev.14; S3 1.1.7, WS43B 1.0.5, WS2 1.0.6, MF35 1.1.5, MF35V2 1.0.2, G4848 1.0.3, ETH 1.0.7, FNCAM 1.0.10, ESPCAM 1.0.7)
+### The lanes meet (1.2.1-dev.15; S3 1.1.8, WS43B 1.0.6, WS2 1.0.7, MF35 1.1.6, MF35V2 1.0.3, G4848 1.0.4, ETH 1.0.7, FNCAM 1.0.10, ESPCAM 1.0.7)
 
 Five lanes merged onto dev.13, in order, on rel-1.2.1-int: rel-1.2.1e (the
 connection line, the signs, CALLS in two panes), rel-1.2.1f (the 40 column
@@ -766,16 +766,39 @@ sysop sees that is new here, beyond the lanes' own entries:
   glass, and no host test shows one there yet), and every panel board has
   both 1.2.1 lines in `PANEL`: the photo show's, then the load line and the
   drive icon.
+- **The load line and the photo viewer share the glass without contending
+  for a row**: the duty is sampled before the photo takes the glass, so the
+  rail is current the moment the photo hands it back, and the whole glass is
+  redrawn then. Left open from the gradient's own lane, one glass and
+  self-healing within a lap: on the square, a ring banner starting or ending
+  repaints the row above the rail and takes the top row of a red stretch
+  with it until the dot comes round.
+- From the gradient's review, a pattern worth the name: **both hold stamps
+  were kept for ever, and "not yet" only holds while two times are within
+  2^31 ms**, so after 24.86 days of uptime the test flips positive again and
+  a board with one old slow pass would have painted its whole rail thick
+  red. The same shape as the pairing clock already in CLAUDE.md, and it
+  became reachable only when the timer was promoted to the thing that
+  drives the colour. A run-out hold is retired inside the 250 ms sample.
 - **CONFIG keeps the G4848's card pins for the card** (from the board
   lane's review): 42, 47 and 48 are the card's and the panel's setup line,
   so no page but CONFIG sd may give them out, whether or not the sd plugin
   is on (`GPIO 47 is the card's and panel's.`). With sd off they were
   free to give to another plugin, and the panel's next start would have
   taken them back with nothing said.
-- Board versions: the load line and drive icon moved every panel board's
-  own code after lane D's bump, so S3 1.1.7, WS43B 1.0.5, WS2 1.0.6,
-  MF35V2 1.0.2 and G4848 1.0.3; the MF35 is 1.1.5, because lane D and the
-  G4848 lane each set 1.1.4 for different code. FNCAM 1.0.10 and ESPCAM
+- **A board version never goes backwards.** The load line's gradient
+  arrived on its own lane with that lane's numbers (S3 1.1.5, WS43B 1.0.3,
+  WS2 1.0.4, MF35 1.1.5, G4848 1.0.3), some of them behind what the
+  integration had already given the same boards, and the 4.3B on the bench
+  was already reporting 1.0.5. Where both sides moved one board's panel
+  code, the higher number wins and then moves once more, so every panel
+  board's version names this build and no earlier one: S3 1.1.8, WS43B
+  1.0.6, WS2 1.0.7, MF35 1.1.6, MF35V2 1.0.3 (the gradient draws on its
+  glass too, and its block is newer than the lane), G4848 1.0.4 (1.0.3 on
+  both sides for different code).
+- Board versions, the first round: the load line and drive icon moved every
+  panel board's own code after lane D's bump; the MF35 was 1.1.5 because lane D and the
+  G4848 lane each set 1.1.4 for different code; FNCAM 1.0.10 and ESPCAM
   1.0.7: the camera plugin they build moved twice with no bump of theirs,
   lane D's photo filing and eth.8/9's power phases (which do nothing on a
   board whose camera is not power-switched). ETH 1.0.7: the lane benched
@@ -815,6 +838,67 @@ Images are the release builds. Against 1.2.0 the ESP32 boards are 32 to 80
 bytes down (WROOM 15,080 to 15,048 free, Freenove 4,192 to 4,112, ESP32-CAM
 2,720 to 2,640); the ESP32-CAM is still the floor. dev.10's longer version
 string cost 8 bytes on the ESP32 boards and the Makerfabs (alignment).
+
+## 1.2.0-panel.1, 2026-10-01: the load line sweeps, and red is drawn thicker (board lane, every panel board)
+
+On its lane S3 1.1.5, WS43B 1.0.3, MF35 1.1.5, WS2 1.0.4, G4848 1.0.3; the
+versions this code ships under are 1.2.1-dev.15's, below. Built to
+internal/tty-ux-panel-load-line-2026-10-01.md revision 1, after Rob saw the
+built line on the Guition's glass and asked for two changes.
+
+- **The load line is a gradient, not four flat colours.** The shown figure
+  is a duty, 0 to 100, and its colour is a position on a two-leg ramp: flat
+  idle blue under 15% (a display board idles at 8 to 9%, so a board doing
+  nothing must not show a tint of green), blue to green from 15 to 40, green
+  to yellow from 40 to 75. The four old edges all keep their place and
+  change from "which of four" to "how far along", so full yellow now means
+  one point off Rule no. 1 rather than merely 40%. 20% and 35% are different
+  shades at arm's length, which was Rob's test. The dot runs the same ramp
+  from its brighter idle blue, so it stays ahead of its rail while the board
+  is quiet and the two meet exactly at green.
+- **Red and a long pass are hard steps over the top**, in that order. Red
+  (75% and over, any slow pass, or a pass over 50 ms) is held 2 s from its
+  last trigger and is never the end of a blend: a fade in would make 70%
+  look like a warning and a fade out would draw a recovery that did not
+  happen. A pass of 25 to 50 ms is full yellow for 1 s, not the low blend,
+  because a 30 ms pass on a 5% board is the line's whole job.
+- **The fall is continuous**: two samples under the shown figure, then 20
+  points a sample, which is the old ladder's speed in the new units (the
+  whole sweep in three steps, 0.75 s). It runs under a held red as well, so
+  the hold's end reveals wherever the real duty got to: one slow pass on an
+  idle board ends at blue, and one during a genuine 60% spell ends at the
+  amber it earned.
+- **Red is drawn thicker** (Rob: "red would stick out more then being
+  thicker"). The dot's body has always covered the row above the rail and
+  the row below it, so the thick mark costs one colour decision and nothing
+  else: both extra rows are the same flat red, the mark is 4 px tall on
+  every glass but the 4.3B's 3, and a lap of the dot wipes it like any other
+  trail. A red stretch therefore carries a notch along the header band's
+  last row, which is the point.
+- **Bug, fixed with it:** a touch wake greyed the rail's own rows only, so
+  the two edge rows kept the last lap's red for up to a lap afterwards. The
+  wake now puts all three back.
+- **PANEL** reports the shade instead of a level:
+  `Load      27% rising green, longest pass 3 ms, 19 s a lap`, with
+  `idle blue`, `amber`, `RED`, `long pass` and `RED held` the others. Nothing
+  about the thickness: that is red's own emphasis rather than a state, and a
+  line explaining it would imply a sysop could turn it off.
+- From the code review: a hold that had run out kept its millis stamp for
+  ever, and `(until - now) > 0` as a signed difference reads positive again
+  after 24.86 days, so a board that had one slow pass and then ran quietly
+  for a month would have painted its whole rail thick red; a run-out hold is
+  zeroed at the sample now, inside the window the comparison is valid in.
+  And the thick rows follow the rail's own colour rather than the override
+  flag, so the two cannot disagree where a run of gap samples outlasts the
+  hold with the duty still over 75.
+- Known and left, in the layout's comment: the band's last row IS the row
+  above the rail, so the square's ring banner starting or ending takes the
+  top row of a red stretch with it until the dot comes round, within a lap.
+- Static DRAM is +5 bytes before padding on the panel boards (the shown duty
+  and the override byte in, the level byte out, the long pass's hold new).
+- Images that change: every panel board (the stick, the 4.3B, the 2", the
+  MF35, the G4848). The boards without a panel are untouched but for the
+  version string.
 
 ## G4848 1.0.2 on 1.2.0, 2026-10-01: the load line and the drive icon (board lane, every panel board)
 

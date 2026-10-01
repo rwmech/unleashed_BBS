@@ -993,6 +993,73 @@ this tree.
       A behaviour that is fine as decoration has to be re-read when it
       becomes data.
     - Skins' `load` source is queued for the skin format's next minor.
+  - **The load line's gradient and thick red (1.2.0-panel.1; S3 1.1.5,
+    WS43B 1.0.3, MF35 1.1.5, WS2 1.0.4, G4848 1.0.3)**, from the spec's
+    revision 1 after Rob saw the four flat levels on the glass. The level
+    ladder is gone: the shown figure is a duty, 0 to 100, on a two-leg ramp
+    (flat idle blue under 15, blue to green to 40, green to yellow to 75),
+    with red and a long pass hard steps over it. The four old edges all keep
+    their place and change meaning from "which of four" to "how far along".
+    What it settled, each worth keeping:
+    - **A named colour marks the TOP of its band, not the bottom.** That one
+      re-reading is what buys the sweep without moving any edge: full yellow
+      now means one point off Rule no. 1, which is a better signal than
+      yellow at 40%, and nothing a sysop learned about the edges changed.
+    - **Red is never a blend endpoint, in either direction.** A fade in would
+      make 70% look like a warning and a fade out would draw a recovery that
+      did not happen. It steps in and steps out, which is also why it does
+      not walk back through yellow and green: after one slow pass on an idle
+      board the line is red for 2 s and then blue, and that reads as "that
+      happened, it is over".
+    - **The easing runs under the held red**, so the real duty is tracked
+      beneath it and the hold's end reveals where it got to. A hold that
+      also froze the value would have made every red end at red.
+    - **The thick mark was already being drawn.** `dotErase` has always put
+      back the row above the rail and the row below it, because that is the
+      dot's own body, so "an extra pixel above and below for red" is a
+      colour decision inside one function: no second rectangle, no dirty-rect
+      change, no state saying how thick the trail was, and the one-lap
+      lifetime comes free from the dot's footprint. The rule for a future
+      glass is in the Layout's own comment: **the rail owns one row above and
+      one below, and a layout that cannot spare them moves the rail down a
+      pixel** rather than thickening only where there is room, or the same
+      event reads two ways on two boards.
+    - **Bug the spec found by auditing the clearing paths, not a test:**
+      `railGrey` (the touch wake) filled the rail's rows only, so the two
+      edge rows kept the last lap's red for up to a lap after a wake.
+      `redrawAll` covers them (the band owns the row above, the glass's kBg
+      the one below), and start, silent mode ending, a skin handing back and
+      the photo viewer handing back all reach `redrawAll`, so that was the
+      only hole. Same shape as every other "a path that writes less than the
+      footprint" bug here.
+    - `mix` interpolates the packed RGB565 tokens, while the spec's
+      checkpoint table was computed from their nominal hex, so three of its
+      ten shades land one 565 step out on one or two channels: the smallest
+      change the glass can show. Interpolating nominal triples instead would
+      mean a second copy of the palette, which is worse.
+    - The enum went rather than becoming a word lookup: PANEL's words read
+      the same three edge constants the ramp does, so no threshold lives in
+      two places and the glass has nothing to read.
+    - **The code review's one real find, and it is a shape worth keeping:
+      `static_cast<int32_t>(until - now) > 0` is only "not yet" while the two
+      are within 2^31 ms.** A hold stamp kept for ever reads negative for
+      24.86 days and then POSITIVE again for the next 24.86, so a board that
+      had one slow pass and then ran quietly for a month would have shown a
+      solid thick red rail. The parent build was safe only because the same
+      test was ANDed with a level no stale timer could produce; promoting the
+      timer to the thing that drives the colour is what exposed it. **A
+      deadline compared this way must be retired to 0 once it passes**, and
+      the retiring has to happen inside a clock that is guaranteed to run
+      (here the 250 ms sample). No host test could see it: nothing runs the
+      panel for 24 days of millis, and the fast clock shortens the fuse
+      rather than revealing it.
+    - And: the thick rows key off the rail's own colour, not the override
+      byte, because the gap branch can leave a duty over 75 standing after
+      the hold runs out and the two would then disagree. One source for "is
+      this red" rather than two that have to agree.
+    - Static DRAM +5 before padding on the panel boards, not the spec's
+      claimed "2 bytes back": it counted the level byte out and the shown
+      duty in but not the override byte or the long pass's own hold.
   - **No IMU and no PMU** (Rob asked about auto-rotation and an AXP2101):
     a boot-time scan of the touch bus (19/45) finds only the GT911, at
     0x14 and 0x5D; nothing at 0x34 or 0x68-0x6B, nothing in the factory
@@ -1523,7 +1590,7 @@ this tree.
     - **Test gaps for later** (the reviewer's list): a read pointer found in the queue by `readPtr`; ESC after 10 s of waiting for a write; KICK of a caller mid-wait; a CONFIG save with a post queued.
   - **SyncTERM's system password at the login's "Sysop password:"** (Rob, 2026-09-29, queued; **2026-09-30: first priority of 1.2.1, so his autologin works; not started until he says; flash Agentville (COM27) with it once fixed**). Alt+L on a telnet entry sends user, CR, password, CR, system password, CR in one burst ([SyncTERM manual](https://syncterm.bbsdev.net/Manual.html)); `askSysop` drops keys held from before the question (bbs.cpp ~2471), so the third line is thrown away, while at `Main:` typeahead is kept, which is why `bye <password>` in that field works. Fix: take a held line as the answer, but a wrong one from typeahead is never a ban strike (only a line typed after the question counts), so "dash" typed ahead still cannot ban the sysop's own address. Test with a burst the way SyncTERM sends it.
     **Built in 1.2.1-dev.1 (lane A, rel-1.2.1a), host tests written, not yet run.** `askSysop` keeps what is held and marks the answer `Session::sysopAhead`; `staffPassword(..., count)` checks it by BYE's rules without counting; a wrong held line rubs its stars out and lands at Main with nothing said. **The limit the requirement did not state and needs:** an uncounted guess costs nothing, so without one a burst is an unlimited guessing path for anybody who has sniffed the sysop's account password (which crosses telnet in the clear): at roughly one login every 2 s a node, ten nodes, that is thousands of guesses an hour against 3 per 15 minutes. So one held answer an address a ban window (`BanList::aheadTake`, in `Entry`'s padding): past it, held keys are dropped as in 1.2.0. A right staff password clears it; an empty held line or ESC gives it back. Left open: a burst split by TCP exactly between the password's CR and the third line has its third line read after the question, so it counts if wrong (a right one still works). Tests `test_sysop_burst`, `test_sysop_burst_wrong` (login group, copies of the board, PORT + 3917/3918 since the dev.9 merge: the forums lane had taken 3912-3916, and the bare numbers the tests passed to their helper were invisible to parallel.py's offset scan). **Rob approved the limit (2026-09-30).** Code review of dev.1: the ban window now starts at a held guess too (guard.cpp `windowFrom`), so the allowance is still exactly one per window; and a held lone Enter (double Enter, CR LF over SSH, an empty system password) answered the question, fixed in dev.2 by dropping held line endings before deciding (the token is not spent, the question waits).
-- **1.2.1-dev.14, the lanes meet (rel-1.2.1-int, 2026-10-01).** rel-1.2.1e, rel-1.2.1f, rel-1.2.1d, board-g4848 and rel-1.2.1c-r2 merged onto dev.13 in that order, each a merge commit labelled int.1 to int.5 so no two commits share a version, rel-1.2.1c-r2 again at eth.9 (int.6, the camera's power sequencing; ETH 1.0.7 here, since the lane's benched 1.0.6 had no lane D camera lines) and rel-1.2.1d again at photo.5 (int.7, CHANGELOG and CLAUDE.md only: lane D's bench on the 2"), then dev.14 for the merge points. **A lane that moves while an integration is in flight is merged again rather than rebased onto:** a second merge commit from the same branch costs nothing and keeps what was already reviewed, where a reset would throw away the resolutions. board-g4848 came from v1.2.0, so every list rel-1.2.1 had grown with the MF35V2 conflicted with its G4848 line in the same place (14 files, all unions), and the git merge interleaved test_board_mf35v2 and test_board_g4848 into one region, rebuilt as two functions. **A lane from an older base misses the per-profile tables the newer one grew** (testclient's PIN_BOARD, and eth.7's sd_tried and sd_move): the G4848 fell back to the WROOM's pins, CS 5 being one of its RGB data lines, without a conflict to say so; check every per-profile table by hand at such a merge. The MF35 is 1.1.5 (lane D and the G4848 lane each set 1.1.4); the panel boards bumped again for the load line (S3 1.1.7, WS43B 1.0.5, WS2 1.0.6, MF35V2 1.0.2, G4848 1.0.3), and the two ESP32 camera boards for the camera plugin's changes from lane D and eth.8/9 (FNCAM 1.0.10, ESPCAM 1.0.7). The G4848's card pins shared with the panel's setup (42, 47, 48, `BBS_PINS_PANEL_CARD`) are refused to every CONFIG page but sd's (`pinTaken`, after the holder loops so that with sd on its hold names CONFIG sd), the board lane's queued item; no test asks for the refusal yet. CONFIG sd may still move MOSI or CLK off 47/48, which darkens the panel at its next start with a card mounted (left, a review LOW). Lane D's viewer frames the G4848 by `shapeOf(g_run.width, g_run.height)`, so the square rule needed no profile change. **Open from the merge review, for the bench:** whether a UXGA photo's decode (PSRAM picture and scaler ring) starves the G4848's no-bounce RGB DMA (a dropped frame, flicker); SYS's worst pass when a photo ends on the square (a 460 KB redraw); the skin's tick waits while a photo has the glass (CONFIG panel's skin list can be stale for up to 3 minutes). The 1.2.2 hamburger's Show snaps / Hide snaps toggle must write `photos_show`; main's 1.2.2 entry says the toggle and is not on this branch, so the key goes into that entry when main and rel-1.2.1 meet. Sizes: CHANGELOG 1.2.1-dev.14.
+- **1.2.1-dev.14, the lanes meet (rel-1.2.1-int, 2026-10-01).** rel-1.2.1e, rel-1.2.1f, rel-1.2.1d, board-g4848 and rel-1.2.1c-r2 merged onto dev.13 in that order, each a merge commit labelled int.1 to int.5 so no two commits share a version, rel-1.2.1c-r2 again at eth.9 (int.6, the camera's power sequencing; ETH 1.0.7 here, since the lane's benched 1.0.6 had no lane D camera lines) rel-1.2.1d again at photo.5 (int.7, CHANGELOG and CLAUDE.md only: lane D's bench on the 2") and board-g4848 again at c6ae3ea (the load line's gradient and thick red), the last carrying the final bump in its own commit, dev.15. **A board version never goes backwards:** that lane's numbers were behind the integration's for the boards both sides had touched (it said WS43B 1.0.3 where the bench board was already reporting 1.0.5), so every board whose panel code moved on both sides took the higher number and then one more (S3 1.1.8, WS43B 1.0.6, WS2 1.0.7, MF35 1.1.6, MF35V2 1.0.3, G4848 1.0.4). **The load line and lane D's viewer do not contend for a row:** loadTick samples before the photo branch, so the rail is current at hand-back, where redrawAll repaints the glass. **A lane that moves while an integration is in flight is merged again rather than rebased onto:** a second merge commit from the same branch costs nothing and keeps what was already reviewed, where a reset would throw away the resolutions. board-g4848 came from v1.2.0, so every list rel-1.2.1 had grown with the MF35V2 conflicted with its G4848 line in the same place (14 files, all unions), and the git merge interleaved test_board_mf35v2 and test_board_g4848 into one region, rebuilt as two functions. **A lane from an older base misses the per-profile tables the newer one grew** (testclient's PIN_BOARD, and eth.7's sd_tried and sd_move): the G4848 fell back to the WROOM's pins, CS 5 being one of its RGB data lines, without a conflict to say so; check every per-profile table by hand at such a merge. The MF35 is 1.1.5 (lane D and the G4848 lane each set 1.1.4); the panel boards bumped again for the load line (S3 1.1.7, WS43B 1.0.5, WS2 1.0.6, MF35V2 1.0.2, G4848 1.0.3), and the two ESP32 camera boards for the camera plugin's changes from lane D and eth.8/9 (FNCAM 1.0.10, ESPCAM 1.0.7). The G4848's card pins shared with the panel's setup (42, 47, 48, `BBS_PINS_PANEL_CARD`) are refused to every CONFIG page but sd's (`pinTaken`, after the holder loops so that with sd on its hold names CONFIG sd), the board lane's queued item; no test asks for the refusal yet. CONFIG sd may still move MOSI or CLK off 47/48, which darkens the panel at its next start with a card mounted (left, a review LOW). Lane D's viewer frames the G4848 by `shapeOf(g_run.width, g_run.height)`, so the square rule needed no profile change. **Open from the merge review, for the bench:** whether a UXGA photo's decode (PSRAM picture and scaler ring) starves the G4848's no-bounce RGB DMA (a dropped frame, flicker); SYS's worst pass when a photo ends on the square (a 460 KB redraw); the skin's tick waits while a photo has the glass (CONFIG panel's skin list can be stale for up to 3 minutes). The 1.2.2 hamburger's Show snaps / Hide snaps toggle must write `photos_show`; main's 1.2.2 entry says the toggle and is not on this branch, so the key goes into that entry when main and rel-1.2.1 meet. Sizes: CHANGELOG 1.2.1-dev.14.
 - **1.3.0 plan (Rob, 2026-09-29):**
   - the features sat (above);
   - **camera sat 2:**

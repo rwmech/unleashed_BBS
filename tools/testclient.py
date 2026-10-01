@@ -9091,8 +9091,8 @@ def test_board_g4848():
     # internal/tty-ux-panel-load-line-2026-10-01.md): a 480 px rail at 25 px
     # a second is a 19 s lap; the drive's state and its style's word.
     ok &= check("PANEL: the load line, a 19 s lap",
-                re.search(rb"(?m)^\s*Load {6}(\d+% (blue|green|yellow|red), longest pass \d+ ms|no reading yet), "
-                          rb"19 s a lap\s*$", p) is not None)
+                re.search(rb"(?m)^\s*Load {6}(\d+% (idle blue|rising green|amber|RED|RED held|long pass), "
+                          rb"longest pass \d+ ms|no reading yet), 19 s a lap\s*$", p) is not None)
     ok &= check("and the drive, its state and style",
                 re.search(rb"(?m)^\s*Drive {5}(idle|card|flash|error|off), style (pc|1541|disk2|breathe|off)\s*$",
                           p) is not None)

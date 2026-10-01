@@ -25,7 +25,8 @@ Purpose:      Builds a public release: the five flash images the web
               ESP32-S3-Touch-LCD-4.3B, ESP32-S3-Touch-LCD-2 and ESP32-S3-ETH,
               and the Makerfabs Parallel TFT 3.5"), were tag_only until they
               merged into 1.2.0 and are ordinary sets since, and the
-              Makerfabs v2.0 (1.2.1) joined them: nine in all.
+              Makerfabs v2.0 and the Guition 4848S040 (both 1.2.1) joined
+              them: ten in all.
 
 Output:       release/<version>/assets/    flat, for a GitHub Release, the
                                            shape deploy/fetch_release.py in
