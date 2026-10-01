@@ -1017,6 +1017,9 @@ bool camGrab(const uint8_t*& buf, size_t& len, uint16_t& w, uint16_t& h) {
 
 void camRelease() {}
 void camClose() { g_camUp = false; g_camHeld = false; }
+uint32_t camPowerWaitMs() { return 0; }    // no power switch on the host's camera
+bool camRestart(const CamCfg& c, char* err, size_t errLen) { camClose(); return camOpen(c, err, errLen); }
+bool camNoSensor() { return false; }
 uint32_t camDmaLargest() { return g_camHeld ? 0 : envMs("BBS_CAM_DMA", 65536); }
 uint32_t camInternalFree() { return envMs("BBS_CAM_INTERNAL", 98304) - (g_camHeld ? 40000u : 0u); }
 bool camRaw() { return false; }            // the host's frames are JPEG-shaped

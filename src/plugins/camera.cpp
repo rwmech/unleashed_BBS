@@ -298,7 +298,12 @@ bool plainWord(const char* w, size_t max) {
 // ---------------------------------------------------------------------------
 // The job
 // ---------------------------------------------------------------------------
-enum Ph : uint8_t { PH_IDLE, PH_WORKING, PH_READY, PH_GO, PH_EXPOSED, PH_WRITING, PH_DONE, PH_FAILED };
+// PH_HOLDING: posted only once the camera's supply has been off long enough
+// (plat::camPowerWaitMs, a board whose PWDN line is a power switch; the loop
+// waits, the runner is not held). PH_REPOWER: the worker found no sensor on
+// such a board and asks for one more try after a full off (1.2.1-eth.9).
+enum Ph : uint8_t { PH_IDLE, PH_WORKING, PH_READY, PH_GO, PH_EXPOSED, PH_WRITING, PH_DONE, PH_FAILED,
+                    PH_HOLDING, PH_REPOWER };
 enum Kind : uint8_t { K_CALLER, K_SYSTEM, K_SURVEY };
 
 struct Job {
@@ -327,6 +332,7 @@ struct Job {
     // sensor has said. In the padding before err: no bytes.
     uint8_t   savedSize = 0;
     bool      sizeGuess = false;
+    bool      repowered = false;           // the one retry after a full power-off is spent
     // results
     char      err[72] = {};
     uint32_t  bytes = 0;
@@ -502,8 +508,16 @@ uint8_t* shoot(Job& j, size_t& len) {
     uint32_t t0 = plat::millis();
     char why[72] = "";
     if (!plat::camOpen(j.cam, why, sizeof(why))) {
-        g_sensor.store(SENSOR_MISSING);
         plat::camClose();
+        // A power-switched sensor that did not answer: once more after a
+        // full off, which the loop waits out (PH_REPOWER, then PH_HOLDING).
+        if (!j.repowered && plat::camNoSensor()) {
+            j.repowered = true;
+            plat::log("camera: no sensor answered; once more after its power has been off");
+            j.ph.store(PH_REPOWER);
+            return nullptr;
+        }
+        g_sensor.store(SENSOR_MISSING);
         fail(j, why[0] ? why : "the camera would not start");
         return nullptr;
     }
@@ -519,10 +533,9 @@ uint8_t* shoot(Job& j, size_t& len) {
         if (strcmp(campic::kSizes[use].word, j.sizeWord) != 0) {
             plat::log("camera: the sensor gives %s; bringing it up again at that",
                       campic::kSizes[use].word);
-            plat::camClose();
             snprintf(j.sizeWord, sizeof(j.sizeWord), "%s", campic::kSizes[use].word);
             j.cam.size = j.sizeWord;
-            if (!plat::camOpen(j.cam, why, sizeof(why))) {
+            if (!plat::camRestart(j.cam, why, sizeof(why))) {
                 g_sensor.store(SENSOR_MISSING);
                 plat::camClose();
                 fail(j, why[0] ? why : "the camera would not start");
@@ -694,6 +707,14 @@ void worker(void*) {
             const bool up = plat::camOpen(j.cam, why, sizeof(why));
             if (up) sensorSizes();
             plat::camClose();
+            // A power-switched sensor that did not answer: once more after a
+            // full off, as a snap does (re-review of eth.9). Still a survey.
+            if (!up && !j.repowered && plat::camNoSensor()) {
+                j.repowered = true;
+                plat::log("camera: no sensor at start; once more after its power has been off");
+                j.ph.store(PH_REPOWER);
+                return;
+            }
             g_sensor.store(up ? SENSOR_FOUND : SENSOR_MISSING);
             if (up) plat::log("camera: sensor %s found at start", plat::camSensor());
             else    plat::log("camera: no sensor at start: %s", why[0] ? why : "the camera would not start");
@@ -812,9 +833,26 @@ void snapshotCfg(Job& j) {
     j.jq = campic::reencodeQuality(g_set.quality);      // 90 at the shipped 10
 }
 
+// postJob: the job onto the runner, or false (and idle) when it would not
+// start. Once a held timed shot, which is tried again every second (code
+// review of dev.3): unthrottled, a runner that would not start put a line on
+// the console every second for a minute.
+bool postJob(Job& j) {
+    j.ph.store(PH_WORKING);
+    g_run.work = runWork;
+    g_run.name = "camera";
+    if (runner::post(g_run)) return true;
+    j.ph.store(PH_IDLE);
+    const bool retry = j.kind == K_SYSTEM && g_tlHeldAt;
+    if (!retry || !g_tlPostSaid) plat::log("camera: the worker would not start");
+    if (retry) g_tlPostSaid = true;
+    return false;
+}
+
 bool startJob(uint8_t kind, uint32_t now) {
     Job& j = g_job;
     j.kind = kind;
+    j.repowered = false;
     j.err[0] = '\0';
     j.bytes = 0; j.w = j.h = 0; j.marked = false; j.raw = false;
     j.msUp = j.msShot = j.msSave = j.msAll = 0;
@@ -830,20 +868,13 @@ bool startJob(uint8_t kind, uint32_t now) {
     j.flashPin  = g_set.flashPin;
     j.flashLead = g_set.lead;
     snapshotCfg(j);
-    j.ph.store(PH_WORKING);
-    g_run.work = runWork;
-    g_run.name = "camera";
-    if (!runner::post(g_run)) {
-        j.ph.store(PH_IDLE);
-        // Once a held timed shot, which is tried again every second (code
-        // review of dev.3): unthrottled, a runner that would not start
-        // put a line on the console every second for a minute.
-        const bool retry = kind == K_SYSTEM && g_tlHeldAt;
-        if (!retry || !g_tlPostSaid) plat::log("camera: the worker would not start");
-        if (retry) g_tlPostSaid = true;
-        return false;
+    // The camera's supply still has its off time to run (a board whose PWDN
+    // line is a power switch): held in its own phase, posted by tick.
+    if (plat::camPowerWaitMs()) {
+        j.ph.store(PH_HOLDING);
+        return true;
     }
-    return true;
+    return postJob(j);
 }
 
 // Local time and the photo's texts.
@@ -1144,6 +1175,20 @@ void tick(uint32_t now) {
         }
         if (g_tlHeldAt) tlHeld(now);
         return;
+    }
+
+    // The power switch's off time (1.2.1-eth.9): the job is posted once it
+    // has run, with the spinner going meanwhile (spinTo below). A retry the
+    // worker asked for waits for the worker to have returned, then the same.
+    if (ph == PH_REPOWER) {
+        if (runner::idle(g_run)) j.ph.store(PH_HOLDING);
+    } else if (ph == PH_HOLDING) {
+        if (runner::idle(g_run) && !plat::camPowerWaitMs() && !postJob(j)) {
+            // A timed shot goes back to its hold, tried again each second,
+            // as startJob's own refusal leaves it; a caller is told.
+            if (j.kind == K_SYSTEM) g_tlInFlight = false;
+            else fail(j, "the camera's worker would not start");
+        }
     }
 
     Session* s = waiter();
@@ -1634,6 +1679,15 @@ void stop() {
     photos::removeCamera(kCam);
     photos::withdraw(kProv);
     g_running = false;
+    // A job waiting out the camera's power-off time is not on the runner
+    // yet, and only tick would post it: it ends here, told at the next
+    // start (a CONFIG save restarts the plugin at once). A job still on the
+    // runner that asks for a retry after this stays REPOWER until the next
+    // start, which posts it: harmless, since the core has handed the caller
+    // back and waiter() asks whether the plugin still owns them.
+    const uint8_t p = g_job.ph.load();
+    if (p == PH_HOLDING || (p == PH_REPOWER && runner::idle(g_run)))
+        fail(g_job, "the camera was switched off");
     flashSet(g_job, false);                            // never left on by a plugin that stopped
 }
 

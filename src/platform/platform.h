@@ -783,6 +783,19 @@ bool     camOpen(const CamCfg& c, char* err, size_t errLen);
 bool     camGrab(const uint8_t*& buf, size_t& len, uint16_t& w, uint16_t& h);
 void     camRelease();
 void     camClose();
+// camPowerWaitMs: on a board whose PWDN line switches the camera's supply
+// (board.h BBS_CAM_PWDN_IS_POWER, 1.2.1-eth.9), how long the supply must
+// stay off before a bring-up may switch it on again; 0 when it may now, and
+// always 0 on every other board. A counter read, for the loop: the camera
+// holds a job in its own phase until this says 0, so the wait never sits on
+// the shared runner. camNoSensor: the last camOpen on such a board found no
+// sensor, worth one more try after a full off; false on every other board.
+uint32_t camPowerWaitMs();
+bool     camNoSensor();
+// camRestart: the sensor down and up again at new settings (the first snap
+// of a boot, brought up again at the size the sensor really gives), with a
+// power-switched supply left on between, so it waits no off time.
+bool     camRestart(const CamCfg& c, char* err, size_t errLen);
 uint32_t camDmaLargest();
 uint32_t camInternalFree();
 bool     camRaw();
