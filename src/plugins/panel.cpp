@@ -373,18 +373,35 @@ uint16_t       g_pageSeen = 0;
 int16_t        g_dotX = 0;
 bool           g_stood = false;             // the dot stood aside last frame: it moves this one
 
-// The load line (1.2.1, internal/tty-ux-panel-load-line-2026-10-01.md): the
-// loop's duty, sampled every kLoadMs, as a level the dot wears and paints the
-// rail with as it passes. The rail is the history; nothing else keeps it.
-enum Level : uint8_t { LV_NONE, LV_BLUE, LV_GREEN, LV_YELLOW, LV_RED };
+// The load line (1.2.1, internal/tty-ux-panel-load-line-2026-10-01.md, with
+// its revision 1): the loop's duty, sampled every kLoadMs, as a shade the dot
+// wears and paints the rail with as it passes. The rail is the history;
+// nothing else keeps it.
+//
+// The shown duty is a position on a two-leg ramp, blue to green to yellow,
+// and the three edges below are its anchors: the named colours mark the TOP
+// of their band, so the sweep leaves blue at kEdgeGreen, arrives at green at
+// kEdgeAmber and is full yellow one point short of kEdgeRed. Red is never a
+// ramp endpoint: it is the Rule no. 1 signal and steps in and out.
 constexpr uint32_t kLoadMs     = 250;       // a sample
 constexpr uint32_t kRedHoldMs  = 2000;      // red stays this long after its last trigger
+constexpr uint32_t kYellowHoldMs = 1000;    // and a long pass's yellow this long: 25 px of rail
 constexpr uint32_t kLoadGapUs  = 1000000;   // a sample over this: no duty, red on a slow pass
 constexpr uint32_t kYellowPassUs = 25000;   // a pass this long is yellow; over BBS_SLOW_PASS_US red
-uint8_t        g_level    = LV_NONE;
-uint8_t        g_fall     = 0;              // samples in a row below the shown level
+constexpr uint8_t  kEdgeGreen  = 15;        // under this the rail is flat idle blue
+constexpr uint8_t  kEdgeAmber  = 40;        // leg 1 ends here, at full kLive
+constexpr uint8_t  kEdgeRed    = 75;        // and leg 2 here, where red steps in
+constexpr uint8_t  kFallStep   = 20;        // points of duty the shown value sheds a sample
+constexpr uint8_t  kNoLoad     = 0xFF;      // no reading yet: a grey rail, and not duty 0
+// The hard step in force, red before the long pass. Decided at the sample,
+// so no colour on the glass moves faster than the 4 Hz sample.
+enum : uint8_t { OV_NONE, OV_YELLOW, OV_RED };
+uint8_t        g_load    = kNoLoad;        // the duty the glass is drawing, eased down
+uint8_t        g_fall     = 0;              // samples in a row below the shown duty
+uint8_t        g_over     = OV_NONE;
 bool           g_loadInit = false;
-uint32_t       g_loadAt = 0, g_loadW = 0, g_loadT = 0, g_loadSlow = 0, g_redUntil = 0;
+uint32_t       g_loadAt = 0, g_loadW = 0, g_loadT = 0, g_loadSlow = 0;
+uint32_t       g_redUntil = 0, g_yellowUntil = 0;
 uint8_t        g_duty   = 0;                // the last sample's, for PANEL
 uint32_t       g_peakUs = 0;
 uint8_t        g_diskShown = 0xFF;          // the HDD light as painted (lights::DK_), 0xFF none
@@ -613,20 +630,59 @@ bool ringBanner();
 void ringEnd();
 #endif
 
-// The level's colours: the rail behind the dot, and the dot itself. The rail
-// carries green, yellow and red at full strength and idle blue at kTrack, so
-// an idle board looks as it always did; grey is no reading yet.
-uint16_t railColour(uint8_t lv) {
-    switch (lv) {
-        case LV_BLUE:   return kTrack;
-        case LV_GREEN:  return kLive;
-        case LV_YELLOW: return kYellow;
-        case LV_RED:    return kRisk;
-        default:        return kRule;
-    }
+// rampColour: a shown duty as a colour, on two legs. blue is where leg 1
+// starts: kTrack for the rail and kDial for the dot, so the dot stays
+// brighter than its rail while the board idles and the two meet at green.
+// Under kEdgeGreen it is flat blue, because a display board idles at 8 to 9%
+// duty and a board doing nothing must not show a tint of green.
+uint16_t rampColour(uint8_t duty, uint16_t blue) {
+    if (duty >= kEdgeRed)   return kRisk;
+    if (duty >= kEdgeAmber) return mix(kLive, kYellow, duty - kEdgeAmber, kEdgeRed - kEdgeAmber);
+    if (duty >= kEdgeGreen) return mix(blue, kLive, duty - kEdgeGreen, kEdgeAmber - kEdgeGreen);
+    return blue;
 }
-uint16_t dotColour(uint8_t lv) {
-    return lv == LV_GREEN ? kLive : lv == LV_YELLOW ? kYellow : lv == LV_RED ? kRisk : kDial;
+
+// The rail behind the dot, and the dot itself. An override is a flat step
+// over the ramp, red first; the rail alone shows grey for no reading yet,
+// which is not duty 0, while the dot keeps its idle kDial.
+uint16_t railColour() {
+    if (g_over == OV_RED)    return kRisk;
+    if (g_over == OV_YELLOW) return kYellow;
+    if (g_load == kNoLoad)  return kRule;
+    return rampColour(g_load, kTrack);
+}
+uint16_t dotColour() {
+    if (g_over == OV_RED)    return kRisk;
+    if (g_over == OV_YELLOW) return kYellow;
+    return rampColour(g_load == kNoLoad ? 0 : g_load, kDial);
+}
+
+// loadWord: the shade PANEL names, from the shown duty and the override in
+// force, off the same three edges the ramp uses, so no threshold is written
+// twice. Nothing about the thickness: that is red's own emphasis rather
+// than a state, and a line explaining it would imply a sysop could turn it
+// off. The duty over kEdgeRed with no override standing cannot happen (such
+// a sample arms red), so RED is there for the reader rather than the glass.
+// nullptr is "no reading yet", which is the rail's grey and not duty 0.
+const char* loadWord() {
+    if (g_over == OV_RED)      return "RED held";
+    if (g_over == OV_YELLOW)   return "long pass";
+    if (g_load == kNoLoad)    return nullptr;
+    if (g_load >= kEdgeRed)   return "RED";
+    if (g_load >= kEdgeAmber) return "amber";
+    if (g_load >= kEdgeGreen) return "rising green";
+    return "idle blue";
+}
+
+// bandAbove: what the row immediately over the rail belongs to.
+uint16_t bandAbove() {
+#if BBS_PANEL_SQUARE
+    // Under the ring banner that row is the banner's, not the band's: put
+    // back kBar, or the dot leaves a band-blue stripe.
+    return ringBanner() ? kBar : kBand;
+#else
+    return kBand;
+#endif
 }
 
 // The dot's footprint at x: its tail two pixels behind it on the rail, its
@@ -638,26 +694,29 @@ Rect dotBox(int x) {
 }
 
 // dotErase: the rows the dot crosses put back without it, the rail in the
-// current level's colour: the pixels the old footprint leaves are the ones
-// the dot just passed, so this is the whole trail.
+// shown duty's colour: the pixels the old footprint leaves are the ones the
+// dot just passed, so this is the whole trail.
+//
+// Red is drawn thicker (revision 1). The dot's body has always covered the
+// row above the rail and the row below it, so those two rows are already
+// written on every pass and the thick mark is a colour decision here and
+// nothing else: no second rectangle, no change to dotBox or to the dirty
+// rect, and no state saying how thick the trail was. Both extra rows are the
+// same flat kRisk, so the mark reads as one bar rather than three stacked
+// ones, and it cannot outlive one lap of the dot.
 void dotErase(const Rect& r) {
     const Rect& t = g_layout.track;
     const int y = t.y;
-#if BBS_PANEL_SQUARE
-    // Under the ring banner the row above the track is the banner's, not
-    // the band's: put back kBar, or the dot leaves a band-blue stripe.
-    fill(g_canvas, R(r.x, y - 1, r.w, 1), ringBanner() ? kBar : kBand);
-#else
-    fill(g_canvas, R(r.x, y - 1, r.w, 1), kBand);
-#endif
-    fill(g_canvas, R(r.x, y, r.w, t.h), railColour(g_level));
-    fill(g_canvas, R(r.x, y + t.h, r.w, 1), kBg);
+    const bool red = g_over == OV_RED;
+    fill(g_canvas, R(r.x, y - 1, r.w, 1), red ? kRisk : bandAbove());
+    fill(g_canvas, R(r.x, y, r.w, t.h), railColour());
+    fill(g_canvas, R(r.x, y + t.h, r.w, 1), red ? kRisk : kBg);
 }
 
 void dotDraw(int x) {
     const Rect& t = g_layout.track;
     const int y = t.y;
-    const uint16_t c = dotColour(g_level);
+    const uint16_t c = dotColour();
     if (t.h >= 2) {
         fill(g_canvas, R(x - 3, y, 1, 2), scale(c, 1, 6));
         fill(g_canvas, R(x - 2, y, 1, 2), scale(c, 2, 6));
@@ -677,9 +736,15 @@ void dotDraw(int x) {
 void railGrey() {
     const Rect& t = g_layout.track;
     if (empty(t)) return;
+    // The two edge rows as well as the rail, because the dot owns them and a
+    // thick red stretch from before the sleep would otherwise survive the
+    // wake until the dot came round to it, up to a lap later.
+    fill(g_canvas, R(t.x, t.y - 1, t.w, 1), bandAbove());
     fill(g_canvas, t, kRule);
+    fill(g_canvas, R(t.x, t.y + t.h, t.w, 1), kBg);
     dotDraw(g_dotX);
-    g_dirty.add(unite(t, clip(dotBox(g_dotX), g_canvas.w, g_canvas.h)));
+    g_dirty.add(unite(R(t.x, t.y - 1, t.w, t.h + 2),
+                      clip(dotBox(g_dotX), g_canvas.w, g_canvas.h)));
 }
 #endif
 
@@ -715,18 +780,28 @@ void paintDisk(uint8_t st) {
 }
 
 // loadTick: a sample of the loop's duty every kLoadMs, on micros (the host's
-// fast clock scales millis only), into the level: up at once, down one level
-// a sample after two samples below it, red held kRedHoldMs from its last
-// trigger. A sample spanning over a second (a pass that long) gives no duty,
-// only red when it held a slow pass.
+// fast clock scales millis only), into the shown duty: up at once, down
+// kFallStep points a sample after two samples below it, with red held
+// kRedHoldMs and a long pass's yellow kYellowHoldMs from their last trigger.
+// A sample spanning over a second (a pass that long) gives no duty, only red
+// when it held a slow pass.
 void loadReset() {
-    g_level = LV_NONE;
+    g_load = kNoLoad;
     g_fall = 0;
+    g_over = OV_NONE;
     g_loadInit = false;
-    g_loadAt = g_redUntil = 0;
+    g_loadAt = g_redUntil = g_yellowUntil = 0;
     g_duty = 0;
     g_peakUs = 0;
     g_stood = false;
+}
+
+// overrides: which hard step is in force, red before the long pass. Read
+// once a sample, so a hold ends on a sample boundary like everything else.
+void overrides(uint32_t now) {
+    if (g_redUntil && static_cast<int32_t>(g_redUntil - now) > 0)            g_over = OV_RED;
+    else if (g_yellowUntil && static_cast<int32_t>(g_yellowUntil - now) > 0) g_over = OV_YELLOW;
+    else                                                                     g_over = OV_NONE;
 }
 
 void loadTick(uint32_t now) {
@@ -750,32 +825,38 @@ void loadTick(uint32_t now) {
         // worst thing the line is for, so it is red (code review, 1.2.1).
         if (slowNew || peak > BBS_SLOW_PASS_US) {
             g_peakUs = peak;
-            g_level = LV_RED;
-            g_fall = 0;
             g_redUntil = (now + kRedHoldMs) ? now + kRedHoldMs : 1;
         }
+        // g_load and g_fall are left alone: a sample that measured nothing
+        // decides nothing about the duty.
+        overrides(now);
         return;
     }
     uint32_t duty = dW >= dT ? 100u : dW * 100u / dT;
     if (duty > 100u) duty = 100u;
     g_duty = static_cast<uint8_t>(duty);
     g_peakUs = peak;
-    uint8_t lv = LV_BLUE;
-    if (duty >= 75u || slowNew || peak > BBS_SLOW_PASS_US) lv = LV_RED;
-    else if (duty >= 40u || peak >= kYellowPassUs)        lv = LV_YELLOW;
-    else if (duty >= 15u)                                 lv = LV_GREEN;
-    if (lv == LV_RED) g_redUntil = (now + kRedHoldMs) ? now + kRedHoldMs : 1;
-    if (lv >= g_level) {
-        g_level = lv;
+    // The two hard overrides, armed with their holds. Red's trigger set
+    // already covers a pass over BBS_SLOW_PASS_US, so no pass is ever both,
+    // and a long pass reads full yellow rather than the low blend: a 30 ms
+    // pass on a 5% board is the line's whole job.
+    if (duty >= kEdgeRed || slowNew || peak > BBS_SLOW_PASS_US)
+        g_redUntil = (now + kRedHoldMs) ? now + kRedHoldMs : 1;
+    else if (peak >= kYellowPassUs)
+        g_yellowUntil = (now + kYellowHoldMs) ? now + kYellowHoldMs : 1;
+    // The shown duty rises at once and falls kFallStep a sample once two
+    // samples in a row have come in under it. The easing runs under a held
+    // red too, so the hold's end reveals wherever the real duty got to: one
+    // slow pass on an idle board ends at blue, and one during a genuine 60%
+    // spell ends at the amber it earned.
+    const uint8_t d = static_cast<uint8_t>(duty);
+    if (g_load == kNoLoad || d >= g_load) {
+        g_load = d;
         g_fall = 0;
-        return;
+    } else if (++g_fall >= 2) {
+        g_load = static_cast<uint8_t>(g_load - d > kFallStep ? g_load - kFallStep : d);
     }
-    const bool held = g_level == LV_RED && g_redUntil && static_cast<int32_t>(g_redUntil - now) > 0;
-    if (held) { g_fall = 0; return; }
-    if (++g_fall >= 2) {
-        g_level = static_cast<uint8_t>(g_level - 1 > lv ? g_level - 1 : lv);
-        if (g_level == LV_NONE) g_level = LV_BLUE;
-    }
+    overrides(now);
 }
 
 #if PANEL_BIG
@@ -2729,14 +2810,14 @@ void cmdPanel(Bbs& b, Session& s, const char* a, uint32_t now) {
 #endif
     if (g_up) {
         // The load line and the drive glyph (1.2.1), as the glass shows them.
-        static const char* const kLevel[] = { "no reading yet", "blue", "green", "yellow", "red" };
         const unsigned lap = (static_cast<unsigned>(g_layout.track.w) * 2u + 25u) / 50u;   // 25 px a second
-        char ld[72];                               // longer than buf: "100% yellow, longest pass 1234 ms"
-        if (g_level == LV_NONE)
+        char ld[76];                           // longer than buf: "100% rising green, longest pass 1234 ms"
+        const char* shade = loadWord();
+        if (!shade)
             snprintf(ld, sizeof(ld), "Load      no reading yet, %u s a lap", lap);
         else
             snprintf(ld, sizeof(ld), "Load      %u%% %s, longest pass %u ms, %u s a lap",
-                     static_cast<unsigned>(g_duty), kLevel[g_level < 5 ? g_level : 0],
+                     static_cast<unsigned>(g_duty), shade,
                      static_cast<unsigned>((g_peakUs + 500u) / 1000u), lap);
         line(s, Color::Grey, ld);
         uint8_t style = 0;

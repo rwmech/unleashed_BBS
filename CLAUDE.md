@@ -960,6 +960,53 @@ this tree.
       A behaviour that is fine as decoration has to be re-read when it
       becomes data.
     - Skins' `load` source is queued for the skin format's next minor.
+  - **The load line's gradient and thick red (1.2.0-g4848.1; S3 1.1.5,
+    WS43B 1.0.3, MF35 1.1.5, WS2 1.0.4, G4848 1.0.3)**, from the spec's
+    revision 1 after Rob saw the four flat levels on the glass. The level
+    ladder is gone: the shown figure is a duty, 0 to 100, on a two-leg ramp
+    (flat idle blue under 15, blue to green to 40, green to yellow to 75),
+    with red and a long pass hard steps over it. The four old edges all keep
+    their place and change meaning from "which of four" to "how far along".
+    What it settled, each worth keeping:
+    - **A named colour marks the TOP of its band, not the bottom.** That one
+      re-reading is what buys the sweep without moving any edge: full yellow
+      now means one point off Rule no. 1, which is a better signal than
+      yellow at 40%, and nothing a sysop learned about the edges changed.
+    - **Red is never a blend endpoint, in either direction.** A fade in would
+      make 70% look like a warning and a fade out would draw a recovery that
+      did not happen. It steps in and steps out, which is also why it does
+      not walk back through yellow and green: after one slow pass on an idle
+      board the line is red for 2 s and then blue, and that reads as "that
+      happened, it is over".
+    - **The easing runs under the held red**, so the real duty is tracked
+      beneath it and the hold's end reveals where it got to. A hold that
+      also froze the value would have made every red end at red.
+    - **The thick mark was already being drawn.** `dotErase` has always put
+      back the row above the rail and the row below it, because that is the
+      dot's own body, so "an extra pixel above and below for red" is a
+      colour decision inside one function: no second rectangle, no dirty-rect
+      change, no state saying how thick the trail was, and the one-lap
+      lifetime comes free from the dot's footprint. The rule for a future
+      glass is in the Layout's own comment: **the rail owns one row above and
+      one below, and a layout that cannot spare them moves the rail down a
+      pixel** rather than thickening only where there is room, or the same
+      event reads two ways on two boards.
+    - **Bug the spec found by auditing the clearing paths, not a test:**
+      `railGrey` (the touch wake) filled the rail's rows only, so the two
+      edge rows kept the last lap's red for up to a lap after a wake.
+      `redrawAll` covers them (the band owns the row above, the glass's kBg
+      the one below), and start, silent mode ending, a skin handing back and
+      the photo viewer handing back all reach `redrawAll`, so that was the
+      only hole. Same shape as every other "a path that writes less than the
+      footprint" bug here.
+    - `mix` interpolates the packed RGB565 tokens, while the spec's
+      checkpoint table was computed from their nominal hex, so three of its
+      ten shades land one 565 step out on one or two channels: the smallest
+      change the glass can show. Interpolating nominal triples instead would
+      mean a second copy of the palette, which is worse.
+    - The enum went rather than becoming a word lookup: PANEL's words read
+      the same three edge constants the ramp does, so no threshold lives in
+      two places and the glass has nothing to read.
   - **No IMU and no PMU** (Rob asked about auto-rotation and an AXP2101):
     a boot-time scan of the touch bus (19/45) finds only the GT911, at
     0x14 and 0x5D; nothing at 0x34 or 0x68-0x6B, nothing in the factory
