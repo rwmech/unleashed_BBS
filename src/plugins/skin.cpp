@@ -650,7 +650,7 @@ LedState ledState(uint32_t now) {
             else if (s.id >= 1 && s.id <= kNodeLines)  bit = 1u << (s.id - 1);
             else                                       return;
             x.on |= bit;
-            if (s.lastInput && static_cast<int32_t>(x.now - s.lastInput) < 150) x.hot |= bit;   // signed: may be ahead (1.2.1)
+            if (s.lastInput && plat::since(x.now, s.lastInput) < 150u) x.hot |= bit;   // may be ahead (1.2.1)
         }, &cx);
         st.blink = (now / 250u) % 2u == 0;           // 2 Hz, the status layout's bell
         st.nodeOn  = cx.on;

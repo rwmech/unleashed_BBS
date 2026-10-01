@@ -62,6 +62,18 @@ struct HeapStats {
 // ---------------------------------------------------------------------------
 uint32_t millis();
 
+// since: milliseconds from the stamp at to now (1.2.1). Unsigned, so a real
+// gap keeps the clock's whole 49.7 days, but a stamp up to about 65 s AHEAD
+// of now reads as 0 rather than as 49 days: one taken from millis() later in
+// the pass than the pass's own now, on another task, or by a plugin's
+// start() during a CONFIG save. A signed difference fixes that and breaks
+// the other way, any real gap past 24.8 days turning negative (the review of
+// dev.7). Every elapsed-time test that can see such a stamp goes through this.
+inline uint32_t since(uint32_t now, uint32_t at) {
+    const uint32_t d = now - at;
+    return d > 0xFFFF0000u ? 0u : d;
+}
+
 // ---------------------------------------------------------------------------
 // random32: hardware RNG on ESP32, libc rand on host
 // ---------------------------------------------------------------------------

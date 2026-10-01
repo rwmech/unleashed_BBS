@@ -536,11 +536,10 @@ void drawDrive(uint32_t now, uint8_t* f, uint8_t fx) {
     put(f, 0, kBlack, 0, g_drivePct);
     if (fx == DF_OFF) return;
     // The disk stamps are plat::millis() from whichever task touched the
-    // storage, so one can be ahead of this tick's now (1.2.1): 0 then.
-    auto ago = [now](uint32_t at) -> uint32_t {
-        const int32_t d = static_cast<int32_t>(now - at);
-        return d < 0 ? 0u : static_cast<uint32_t>(d);
-    };
+    // storage, so one can be ahead of this tick's now (1.2.1): plat::since
+    // reads that as 0, and keeps a quiet month after an error a month, not
+    // a fresh error (g_errorAt is never cleared).
+    auto ago = [now](uint32_t at) { return plat::since(now, at); };
     uint32_t since = ago(g_accessAt);
     bool lit = false;
     if (g_accessed) {

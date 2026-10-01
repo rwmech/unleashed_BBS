@@ -364,10 +364,10 @@ void BackupService::service(const fd_set& r, const fd_set& w, uint32_t now) {
     // other way round, and dropping it then is what left a job out.
     if (cfd_ >= 0 && st_ != St::Approve && st_ != St::Extract && st_ != St::Apply && st_ != St::Hold &&
         st_ != St::Scan) {
-        // Signed (1.2.1): decide() stamps lastIo_ from plat::millis() inside a
+        // plat::since (1.2.1): decide() stamps lastIo_ from plat::millis() inside a
         // pass, after this now. Held states skip the check today, so it is
         // only the shape, made safe before a state is added.
-        if (static_cast<int32_t>(now - lastIo_) > static_cast<int32_t>(BBS_BACKUP_IDLE_MS))
+        if (plat::since(now, lastIo_) > BBS_BACKUP_IDLE_MS)
             dropClient("idle timeout");
         else if (static_cast<int32_t>(now - deadline_) >= 0)     dropClient("too slow");
     }

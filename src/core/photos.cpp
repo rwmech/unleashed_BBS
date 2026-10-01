@@ -714,10 +714,10 @@ void tidyTick(uint32_t now) {
     }
     // Not handed over in a minute (the file areas off, or no card for them):
     // dropped, as above.
-    // Signed (1.2.1): collected() stamps g_tidySince from plat::millis() a
+    // plat::since (1.2.1): collected() stamps g_tidySince from plat::millis() a
     // moment before this runs with the tick's earlier now, and unsigned that
     // was 4.29e9 ms: every tidy dropped the moment a prune came back.
-    if (g_tidyAt < g_tidyN && static_cast<int32_t>(now - g_tidySince) >= 60000) {
+    if (g_tidyAt < g_tidyN && plat::since(now, g_tidySince) >= 60000u) {
         plat::log("photos: %u FILES.BBS tidies not made", static_cast<unsigned>(g_tidyN - g_tidyAt));
         g_tidyAt = g_tidyN;
     }

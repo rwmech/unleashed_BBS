@@ -34,6 +34,7 @@
  */
 
 #include "guard.h"
+#include "../platform/platform.h"
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -87,11 +88,11 @@ BanList::Entry* BanList::slotFor(uint32_t ip) {
 // A window starts at the first thing counted in it, a failure or a held
 // answer, and both are forgotten together when it runs out.
 static void windowFrom(BanList::Entry& e, uint32_t now) {
-    // Signed (1.2.1): aheadTake's stamp is plat::millis() (askSysop) and a
-    // fail() in the same pass passes the pass's earlier now; unsigned, that
-    // window read as 49 days old and reset, giving the held try back.
-    if ((!e.fails && !e.ahead) ||
-        static_cast<int32_t>(now - e.firstFail) > static_cast<int32_t>(BBS_BAN_WINDOW_MS)) {
+    // plat::since (1.2.1): aheadTake's stamp is plat::millis() (askSysop) and
+    // a fail() in the same pass passes the pass's earlier now; a plain
+    // difference read that window as 49 days old and gave the held try back,
+    // and a signed one would keep a month-old entry as fresh.
+    if ((!e.fails && !e.ahead) || plat::since(now, e.firstFail) > BBS_BAN_WINDOW_MS) {
         e.fails     = 0;
         e.ahead     = 0;
         e.firstFail = now;

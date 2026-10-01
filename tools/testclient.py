@@ -20708,13 +20708,32 @@ def test_config_serial_rows():
         # 4.3B's bridge ships on it (1.2.1, code review). Not refused as the
         # console; put back if it saved.
         s.send(DOWN * 4 + b"\x08" * 3 + b"43" + F1)
-        got = cfg_verdict(s, [b"console port", b"Saved and live", b"Nothing changed", b"Between",
-                              b"taken", b"Taken", b"saved, but"])
+        # A profile that ships no bridge pins (the WS2) answers "Saved, not
+        # running": the bridge has an RX now and still no TX. Either way it
+        # is saved, and put back to what the profile ships.
+        got = cfg_verdict(s, [b"console port", b"Saved and live", b"Saved, not running", b"Nothing changed",
+                              b"Between", b"taken", b"Taken", b"saved, but"])
         ok &= check("with the console on USB, 43 is not the console port", got not in (None, b"console port"))
-        if got == b"Saved and live" and PB["serial"]:
+        if got in (b"Saved and live", b"Saved, not running") and PB["serial"]:
             cfg_open(s, b"serial", b"Enabled")
             s.send(DOWN * 4 + b"\x08" * 3 + PB["serial"][0] + F1)
-            cfg_verdict(s, [b"Saved and live", b"Nothing changed"])
+            cfg_verdict(s, [b"Saved and live", b"Saved, not running", b"Nothing changed"])
+        elif got in (b"Saved and live", b"Saved, not running"):
+            # No pin shipped, and CONFIG's RX row starts at 0, so -1 cannot be
+            # typed back: the line is taken out of the file and the board
+            # reads it again.
+            if HOST in ("127.0.0.1", "localhost"):
+                path = USERDATA / "system.cfg"
+                out, cur = [], None
+                for line in path.read_text().splitlines(True):
+                    t = line.strip()
+                    if t.startswith("["):
+                        cur = t[1:t.find("]")] if "]" in t else None
+                    elif cur == "plugin:serial" and t.split("=", 1)[0].strip() == "rx":
+                        continue
+                    out.append(line)
+                path.write_text("".join(out))
+                cfg_reload(s)
         elif got != b"Nothing changed":
             cfg_cancel(s)
     else:
@@ -20730,12 +20749,14 @@ def test_config_serial_rows():
     cfg_open(s, b"serial", b"Enabled")
     s.buf.clear()
     s.send(DOWN * 6 + b"9" + F1)
-    got = cfg_verdict(s, [b"Saved and live", b"Not one of", b"saved, but"])
-    ok &= check("the baud rate is picked from its list and saved", got == b"Saved and live" and
+    # With no pins the bridge does not run (the WS2), so its save says so.
+    saved = (b"Saved and live",) if PB["serial"] else (b"Saved and live", b"Saved, not running")
+    got = cfg_verdict(s, [b"Saved and live", b"Saved, not running", b"Not one of", b"saved, but"])
+    ok &= check("the baud rate is picked from its list and saved", got in saved and
                 (cfg_sec_line("plugin:serial", "baud") or "").endswith("= 9600"))
     cfg_open(s, b"serial", b"Enabled")
     s.send(DOWN * 6 + b"1" + b"1" + b"1" + F1)   # 1200, 19200, 115200
-    cfg_verdict(s, [b"Saved and live", b"Nothing changed"])
+    cfg_verdict(s, [b"Saved and live", b"Saved, not running", b"Nothing changed"])
     ok &= check("and put back", (cfg_sec_line("plugin:serial", "baud") or "").endswith("= 115200"))
     s.close()
     return ok

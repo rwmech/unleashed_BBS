@@ -258,10 +258,10 @@ void adjustRate(const uint8_t* mac) {
             r->slowAt = now;
         }
     } else if (r->slow && now - r->slowAt >= kCleanMs &&
-               static_cast<int32_t>(now - r->lastFail.load()) >= static_cast<int32_t>(kCleanMs)) {
-        // Signed (1.2.1): the send callback on the Wi-Fi task stores lastFail
-        // and may do so after this read its now; unsigned, a failure that
-        // landed in between read as 30 s clean and the rate went back up.
+               plat::since(now, r->lastFail.load()) >= kCleanMs) {
+        // plat::since (1.2.1): the send callback on the Wi-Fi task stores
+        // lastFail and may do so after this read its now; a plain difference
+        // read a failure landing in between as 30 s clean.
         if (setRate(mac, true)) {
             r->slow = false;
             r->fails.store(0);

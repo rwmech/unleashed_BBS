@@ -134,6 +134,21 @@ The 1.1.3 queue and the 1.2.0 full run's findings (1.2.1-dev.3):
     the drive light and a skin's node lamps could miss a frame; the SSH
     task could take one pass without waiting; the backup window's idle
     check (safe today, its held states skip it).
+- Tests only (1.2.1-dev.8): on the WS2, which ships no bridge pins,
+  `test_config_serial_rows` took the board's "Saved, not running" for RX on
+  43 as a refusal, then left RX on 43 and expected the baud save to be
+  live. It accepts that answer now and puts RX back to the profile's -1.
+  The WS2's board.h comments said CONFIG kept 43 and 44 as the console; it
+  has not since dev.4 (the console is USB), and they say so.
+- **One rule for elapsed time, `plat::since(now, at)`** (1.2.1-dev.8, the
+  review of dev.7). The signed differences dev.7 used fixed a stamp a moment
+  ahead of now and broke the other way: any real gap past 24.8 days turned
+  negative. One storage error, then 24.8 quiet days, and the drive light
+  (and a skin's lens) blinked red for 24.8 days; a ban entry of one or two
+  wrong passwords stopped ageing out. `since` is unsigned with a 65 s skew
+  allowance: a stamp up to that far ahead is 0, and a real gap keeps the
+  clock's 49.7 days. Every site dev.7 touched uses it. Unit test
+  `host/test_since.cpp`, in `make test`.
 - Static DRAM off the ELF: the camera boards pay 8 bytes for the held timed
   shot (ESP32-CAM 2,688 free, Freenove 4,160), the S3s without a camera 16
   for the four VFS slots the LCD-1.47 gains (79,784 free); the WROOM is

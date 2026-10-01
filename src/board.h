@@ -967,8 +967,10 @@
 
 // The serial bridge: no pins as shipped. With the camera, the card, the
 // panel, the touch and IMU bus and the battery sense wired, what is left is
-// GPIO 18 alone: UART0's 43 and 44 are on the header too, but they are the
-// console port CONFIG keeps free (and 43 carries the ROM's boot banner).
+// GPIO 18 alone. UART0's 43 and 44 are on the header too; the console is
+// the chip's own USB, so CONFIG takes them since 1.2.1 (B\x08_CONSOLE_UART0),
+// but 43 carries the ROM's boot banner at every reset: not for a LED or a
+// relay.
 #define BBS_SERIAL_RX         -1
 #define BBS_SERIAL_TX         -1
 
@@ -1050,8 +1052,9 @@
 // Pins the board owns (syscfg::pinProblem refuses them with the reason).
 // The panel's six and the card's four are those plugins' settings, as on
 // the LCD-1.47. 19 and 20 (the USB) and 26-37 (flash and octal PSRAM) the
-// S3's own rule refuses already, and CONFIG keeps 43 and 44 as the console
-// port. What is left for a sysop: GPIO 18.
+// S3's own rule refuses already. What is left for a sysop: GPIO 18, and
+// UART0's 43 and 44 on the header since 1.2.1 (the console is USB), 43 with
+// the ROM's boot banner on it at every reset.
 //   CAMERA   every wired camera line, PWDN included
 //   ONBOARD  the touch and IMU bus (47, 48), the touch INT (46), the IMU's
 //            INT1 (3) and the battery divider (5)
