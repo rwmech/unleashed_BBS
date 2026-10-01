@@ -124,6 +124,16 @@ From the code review of 1.2.1-forums.2:
   lines do. The reader's error notes are one line everywhere, and the end of
   a message that could not be read keeps to one page like any other.
 
+### 1.2.1-forums.5, 2026-09-30, a core fix found by the forum tests' run
+
+- **`SCREENS` could answer "The list could not be made" at once.** Its
+  wait for the list compared two clock readings without a sign, and the
+  wait's start is stamped a moment after the pass's own clock is read, so
+  the first look could see a difference of minus one millisecond as four
+  billion and give up on the spot. Intermittent on a board; frequent on the
+  test host's fast clock. `MEM FORCE` and `SYS FORCE` share the same wait
+  and the same fix.
+
 ## 1.2.0 (S3 1.1.4, WS43B 1.0.2, WS2 1.0.3, ETH 1.0.2, MF35 1.1.2, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-29: the hardware release
 
 **Out early for testing: this release has not been through the full
