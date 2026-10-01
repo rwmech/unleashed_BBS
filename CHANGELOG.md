@@ -352,6 +352,15 @@ The three bench-only ESP32 envs (`esp32dev_backuptest`, `esp32dev_diag`,
   row's own note now (`cfg_walk_to`), and passes 11 of 11 with and without
   a card.
 
+### The ETH board: tests only (1.2.1-eth.5)
+
+No firmware change. `tools/harness.sh` keeps a `BBS_HOST_SSID` that is set
+but empty, so `BBS_HOST_SSID= tools/harness.sh --board wseth
+--only=board_wseth` runs the board with its station not joined. The camera
+test's "in pixel mode the drive light may share it" SKIPs, saying why, on
+a profile with no free pin to share (the ESP32-S3-ETH under the harness:
+the serial bridge holds 16 and 17, 21 is the lights' own, 0 is BOOT).
+
 ### The ETH board: the re-review of eth.3 (1.2.1-eth.4, ETH 1.0.4)
 
 - The switch back to the last good network gives way to Improv: a trial or

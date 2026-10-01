@@ -256,7 +256,9 @@ export BBS_DIR_PORT=$DIRPORT
 # The host has no radio. This makes it report being on a network, the way a
 # board that joined through include/secrets.h does, so CONFIG wifi's
 # fallback to the live network can be tested (test_config_wifi_live).
-export BBS_HOST_SSID=HostNet
+# Set but empty (BBS_HOST_SSID= tools/harness.sh ...) plays a station that is
+# not joined, for test_board_wseth's Wi-Fi-beside-the-wire half (1.2.1).
+export BBS_HOST_SSID="${BBS_HOST_SSID-HostNet}"
 # A ring for the sysop rings for 45 s on a board. Ten here, so the suite can
 # watch one run out without sitting through the rest (host build only; see
 # ring::ringMs). Long enough that a scripted sysop always answers first.

@@ -8629,11 +8629,15 @@ def photos(card):
 #                GPIO 16 (release-prep/wseth/pins.md: free are 0, 16, 17,
 #                21 the pixel, 43 and 44; the board LED key stops at 39 and
 #                21 is the lights' own drive pin, so 16)
+#   share        False where the profile leaves no free pin the drive light
+#                may share with the flash in pixel mode: on the ESP32-S3-ETH
+#                the harness's serial bridge holds 16 and 17, 21 is the
+#                lights' own, 0 is BOOT and 43/44 are past the LED key's 39
 CAM_BOARD = {
     "fncam":  dict(sensor=b"GC0308", top=b"vga", size=b"vga", over=b"uxga", pin="13"),
     "espcam": dict(sensor=b"OV2640", top=b"uxga", size=b"xga", over=None, pin="4"),
     "ws2":    dict(sensor=b"OV5640", top=b"qxga", size=b"xga", over=None, pin="18"),
-    "wseth":  dict(sensor=b"OV5640", top=b"uxga", size=b"xga", over=None, pin="16"),
+    "wseth":  dict(sensor=b"OV5640", top=b"uxga", size=b"xga", over=None, pin="16", share=False),
 }
 CB = CAM_BOARD.get(HOST_BOARD, CAM_BOARD["fncam"])
 
@@ -8895,13 +8899,16 @@ def test_camera():
                 got in (b"Taken: camera", ("GPIO " + CB["pin"]).encode()))
     cfg_cancel(s)
     camera_config(s, snap="users", flash_mode="pixel", flash_pin=CB["pin"], flash_lead="1000")
-    cfg_open(s, b"lights", b"Drive pin")
-    s.buf.clear()
-    s.send(DOWN * 4 + b"\x08" * 3 + CB["pin"].encode() + F1)
-    got = cfg_verdict(s, [b"Saved", b"Taken: camera", ("GPIO " + CB["pin"]).encode(), b"Between"])
-    cfg_cancel(s)
-    ok &= check("in pixel mode the drive light may share it", got == b"Saved" and
-                lights_read(s).get("drive", {}).get("pin") == int(CB["pin"]))
+    if CB.get("share", True):
+        cfg_open(s, b"lights", b"Drive pin")
+        s.buf.clear()
+        s.send(DOWN * 4 + b"\x08" * 3 + CB["pin"].encode() + F1)
+        got = cfg_verdict(s, [b"Saved", b"Taken: camera", ("GPIO " + CB["pin"]).encode(), b"Between"])
+        cfg_cancel(s)
+        ok &= check("in pixel mode the drive light may share it", got == b"Saved" and
+                    lights_read(s).get("drive", {}).get("pin") == int(CB["pin"]))
+    else:
+        print("  SKIP  in pixel mode the drive light may share it: no free pin on this profile to share")
     cfg_open(s, b"board", b"Hostname")
     s.buf.clear()
     s.send(DOWN * BOARD_LED + b"\x08" * 3 + CB["pin"].encode() + F1)
