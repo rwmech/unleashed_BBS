@@ -352,6 +352,16 @@ The three bench-only ESP32 envs (`esp32dev_backuptest`, `esp32dev_diag`,
   row's own note now (`cfg_walk_to`), and passes 11 of 11 with and without
   a card.
 
+### The ETH board: the re-review of eth.3 (1.2.1-eth.4, ETH 1.0.4)
+
+- The switch back to the last good network gives way to Improv: a trial or
+  a scan started part way through it owns the radio, and the switch no
+  longer sets the station back under the network being provisioned.
+- When the switch runs out of time or the radio refuses it, the board
+  dials again rather than leaving the station idle until a reboot.
+- With `wifi_with_ethernet = no`, a wire that comes back during the switch
+  keeps Wi-Fi standing by: the switch no longer dials past it.
+
 ### The ETH board: the code review of eth.2 (1.2.1-eth.3, ETH 1.0.4)
 
 - **The redial waits by reason.** A failure that cannot fix itself (a wrong

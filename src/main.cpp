@@ -934,15 +934,26 @@ static void fbBegin() {
 // fbStep: one try of the switch; false when none is under way.
 static bool fbStep() {
     if (!s_fbAt) return false;
+    // Improv wins (1.2.1-eth.4): a trial or a scan started mid-step owns the
+    // radio and s_hold, and a set_config here would switch the station off
+    // the network being provisioned.
+    if (imp::g_trial || imp::g_scanning) {
+        s_fbAt = 0;
+        ESP_LOGW(TAG, "wifi: going back to \"%s\" given up; Improv has the radio", s_fbSsid);
+        return false;
+    }
     const esp_err_t e = wifiUse(s_fbSsid, s_fbPass);
     if (e == ESP_ERR_WIFI_STATE && plat::since(plat::millis(), s_fbAt) < 5000) return true;   // next pass
     s_fbAt = 0;
     s_hold = false;
     if (e != ESP_OK) {
         ESP_LOGW(TAG, "wifi: the radio refused \"%s\" (%s)", s_fbSsid, esp_err_to_name(e));
-        return false;
     }
-    if (s_ssid[0]) esp_wifi_connect();
+    // Every way out dials whatever the radio is set to now (the old network
+    // when set_config refused or the 5 s ran out): fbBegin's disconnect was
+    // swallowed under s_hold, so nothing else would. Never while the wire
+    // holds Wi-Fi down (wifi_with_ethernet = no, the wire back mid-step).
+    if (s_ssid[0] && !s_ethHold) esp_wifi_connect();
     return false;
 }
 #endif
