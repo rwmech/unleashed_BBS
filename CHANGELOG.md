@@ -126,7 +126,11 @@ Built and sized, not yet tested on the host or a board.
   the session phase with the sysop in CAMERA, which is `CAMERA SET` rewriting
   system.cfg; the nearest decode had finished 1.7 s earlier and no decode
   appears in any loop pass. That is the write-side-on-the-loop class the
-  1.1.2 audit left knowingly, beside the Freenove's 414 ms CONFIG save.
+  1.1.2 audit left knowingly, beside the Freenove's 414 ms CONFIG save. It
+  is not every save: the same `CAMERA SET` cost nothing on a fresh boot
+  minutes later, 1 slow pass before it and 1 after, so what varies is the
+  filesystem's state and not the code path. A write that needs a block
+  erased costs what an erase costs; one that does not is free.
 - **Tests (1.2.1-photo.3)**: `host/test_panel_photo.cpp` (`make test`) checks
   the frame on all seven glasses, the decoder's scale for every camera size,
   the caption and the scaler against the host's TJpgDec at all four scales,
