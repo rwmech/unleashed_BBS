@@ -1043,14 +1043,16 @@ def test_ansi():
 def test_link_line():
     """Every caller is told how they are connected before any screen (1.1.1).
 
-    Rob: "--> Connection via Telnet is not secure", right after detection
-    and before the welcome, on all three kinds of terminal, 39 columns so a
-    C64 does not wrap it. The busy line and the closed sign carry it too;
-    test_busy and test_closed_configured check those.
+    Rob: "--> This connection is not securely encrypted" (his wording,
+    1.2.1; "Connection via Telnet is not secure" before), right after
+    detection and before the welcome, on all three kinds of terminal. Under
+    47 columns it is "--> Connection not securely encrypted", so a C64 does
+    not wrap it. The busy line and the closed sign carry it too; test_busy
+    and test_closed_configured check those.
     """
     print("The connection line before the welcome (1.1.1)")
-    line = b"--> Connection via Telnet is not secure"
-    ok = check("the line is 39 columns", len(line) == 39)
+    line = b"--> This connection is not securely encrypted"
+    ok = True
 
     def seen(c, pat, secs):
         # The line is coloured part by part, so it is looked for with the
@@ -1080,13 +1082,14 @@ def test_link_line():
     p.send(b"4")
     # A colour code sits between the parts, so the words are found part by
     # part, in order.
-    ok &= check("PETSCII-40: the same words, in PETSCII",
-                p.wait_for(pet("not secure"), 8) and
-                -1 < p.buf.find(pet("-->")) < p.buf.find(pet("Connection via Telnet is "))
-                   < p.buf.find(pet("not secure")))
+    ok &= check("PETSCII-40: the short form, in PETSCII",
+                p.wait_for(pet("not securely encrypted"), 8) and
+                -1 < p.buf.find(pet("-->")) < p.buf.find(pet("Connection "))
+                   < p.buf.find(pet("not securely encrypted")) and
+                p.buf.find(pet("This connection")) < 0)
     ok &= check("PETSCII-40: before the welcome",
                 p.wait_for(pet("No web. No cloud."), 8) and
-                -1 < p.buf.find(pet("Connection via")) < p.buf.find(pet("No web. No cloud.")))
+                -1 < p.buf.find(pet("Connection ")) < p.buf.find(pet("No web. No cloud.")))
     p.close()
 
     t = Caller(ansi=False)
@@ -2876,7 +2879,7 @@ def test_busy():
     ok = check("the caller past the last node gets the busy screen",
                over.wait_for(b"lines are busy", 5))
     ok &= check("told how they are connected first (1.1.1)",
-                -1 < plain(over.buf).find(b"--> Connection via Telnet is not secure")
+                -1 < plain(over.buf).find(b"--> This connection is not securely encrypted")
                    < plain(over.buf).find(b"lines are busy"))
     ok &= check("countdown shown", over.wait_for(b"Disconnecting in", 5))
     t0 = time.time()
@@ -4007,7 +4010,7 @@ def test_sysinfo():
     read_list(s)
     calls = plain(s.buf)
     ok &= check("CALLS draws the day", b"Calls by hour" in calls and b"Busiest" in calls)
-    ok &= check("CALLS counts the calls logged", re.search(rb"\d+ calls", calls) is not None)
+    ok &= check("CALLS counts the calls logged", re.search(rb"\d+ calls?", calls) is not None)
 
     g = ansi_login("NotStaff")
     g.buf.clear()
@@ -4027,6 +4030,216 @@ def test_sysinfo():
                 b"Calls by hour" in pub and b"Unknown" not in pub)
     g.close()
     s.close()
+    return ok
+
+
+def test_calls_one_screen():
+    """CALLS fits one screen at 40, 80 and 132 (1.2.1, F5).
+
+    It was one column of 24 hours, 28 list rows, so it paged at every width
+    and the page break cut the day in the evening. Two panes of 12 now
+    (internal/tty-ux-calls-hours-2026-10-01.md): no [More] on a 24 row
+    screen, every hour 00 to 23 there, the divider on the same column every
+    row, and no row past rowWidth."""
+    print("CALLS: the whole day on one screen")
+    # A call of its own first, so the log is never empty and the checks
+    # below always run: a login, a logoff, and the record's write.
+    seed = ansi_login("CallsSeed")
+    drain(seed)
+    seed.send(b"bye\r")
+    seed.wait_closed(8)
+    seed.close()
+    time.sleep(1.0)
+    c = ansi_login("CallsWide")
+    ok = True
+    try:
+        for cols in (80, 40, 132):
+            naws(c, cols, 24)
+            drain(c)
+            c.buf.clear()
+            c.send(b"calls\r")
+            c.wait_for(b"Calls by hour", 5)
+            c.pump(1.0)
+            text = plain(c.buf)
+            if b"Nothing logged with a clock yet" in text:
+                # Only a board with no clock: the host always has one.
+                ok &= check(f"at {cols}, the seeded call is in the chart", False)
+                return ok
+            ok &= check(f"at {cols}, no [More]", b"[More]" not in text)
+            w = cols - 1
+            p = (w - 3) // 2
+            rows = render_lines(c.buf, cols=cols)
+            hours = [r for r in rows if re.match(r"\d\d [ \d-]", r)]
+            left = sorted(int(r[0:2]) for r in hours)
+            right = sorted(int(r[p + 3:p + 5]) for r in hours if r[p + 3:p + 5].isdigit())
+            ok &= check(f"at {cols}, twelve rows carry every hour 00 to 23",
+                        len(hours) == 12 and left == list(range(12)) and right == list(range(12, 24)))
+            ok &= check(f"at {cols}, the divider on column {p + 1} of every hour row",
+                        all(len(r) > p + 1 and r[p + 1] in "│|³" for r in hours))
+            ok &= check(f"at {cols}, no row past {w} columns",
+                        max((len(r.rstrip()) for r in rows), default=0) <= w)
+            ok &= check(f"at {cols}, the totals say board time",
+                        b"Busiest" in text and b"Board time. The log keeps" in text)
+    finally:
+        c.close()
+    return ok
+
+
+def test_ssh_signup_no_privacy_offer():
+    """Signing up over SSH: the warning says encrypted, and no privacy offer
+    (1.2.1). screens/privacy opens "TELNET IS NOT ENCRYPTED", so offering it
+    to an SSH caller said the opposite of the line before; the warning is
+    read under a pause and the form opens. The privacy screen that follows
+    the connection is 1.2.2's."""
+    print("SSH: the sign-up warning, and no privacy offer")
+    why = ssh_ready()
+    if why:
+        print("  SKIP  " + why)
+        return True
+    c = SshCaller(user="nobody-signs")
+    ok = check("the ordinary handle prompt", c.wait_for(b"Enter your handle", 15))
+    c.send(b"SshSigner\r")
+    ok &= check("an unknown handle may register", c.wait_for(b"[R]egister", 8))
+    c.send(b"r")
+    taken = [b"That handle is online right now.", b"ew handle?"]
+    paged = False
+    for _ in range(8):                       # the house rules, a page at a time
+        hit = wait_any(c, [b"encrypted. Still", b"continue", b"CONTINUE"], 6)
+        if hit != 1 and hit != 2:
+            break
+        if not paged:                        # calls.3: held while the rules play
+            paged = True
+            d, which = handle_then("SshSigner", taken)
+            ok &= check("the handle is held while the rules are read", which == 0)
+            d.close()
+        c.buf = bytearray()
+        c.send(b" ")
+    ok &= check("the warning says the line is encrypted",
+                b"onnection is encrypted. Still, use a password" in plain(c.buf)
+                or b"Encrypted. Still, use a password" in plain(c.buf))
+    c.pump(0.8)
+    ok &= check("and offers no privacy screen", b"know more" not in plain(c.buf))
+    ok &= check("a pause to read it", b"continue" in plain(c.buf) or b"CONTINUE" in plain(c.buf))
+    # calls.3: the pause has no Y/N question behind it, and handleOnline did
+    # not count it, so a guest could take the handle while it was read.
+    d, which = handle_then("SshSigner", taken)
+    ok &= check("and held during the pause: a guest is refused it", which == 0)
+    d.close()
+    c.send(b" ")
+    ok &= check("then the sign-up form", c.wait_for(b"NEW ACCOUNT", 8))
+    c.send(b"\x1b")
+    c.close()
+    return ok
+
+
+def test_signs_name_board():
+    """The built-in closed and busy signs name the board, not the software
+    (1.2.1): its name, else its hostname, as @BOARD@. A name of 40 is cut to
+    the screen at 40 columns by columns, so a µ at the edge is a whole
+    character, never a lone 0xC2 printing as "?". Played on a copy of this
+    board with no screens/busy: open with every node taken for the busy sign
+    (a closed sign drops its caller after the countdown, so it cannot hold a
+    node), then closed."""
+    print("The built-in signs name the board")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    tmp = copy_data()
+    cfgp = tmp / "data" / "user" / "system.cfg"
+    port = PORT + 3919
+    for f in (tmp / "data" / "screens").glob("busy.*"):
+        f.unlink()
+
+    def config(name, closed=True):
+        keep = [l for l in cfgp.read_text(encoding="utf-8").splitlines(True)
+                if l.split("=", 1)[0].strip() not in ("closed", "board_name")]
+        top = ("closed = yes\n" if closed else "closed = no\n") + \
+              ("board_name = %s\n" % name if name else "")
+        cfgp.write_text(top + "".join(keep), encoding="utf-8")
+
+    def above(rows, pat):
+        at = next((k for k, r in enumerate(rows) if pat in r), None)
+        return rows[at - 1].strip() if at else None
+
+    host = (cfg_value("hostname") or "").strip() or "unleashed"
+    ok = True
+    config(None, closed=False)
+    proc = start_copy(tmp, (str(port),))
+    try:
+        copy_log(tmp, f"listening on {port},")
+        # A closed board with no accounts shows no sign (its first caller
+        # sets it up), and a lane's board may have none yet: seed one.
+        seed = ansi_login("SignsSeed", port=port)
+        seed.send(b"bye\r")
+        seed.wait_closed(12)
+        seed.close()
+        fillers = [Caller(ansi=True, port=port) for _ in range(MAX_NODES)]
+        time.sleep(0.5 + MAX_NODES * 0.05)
+        over = Caller(ansi=True, port=port)
+        over.wait_for(b"lines are busy", 10)
+        over.pump(0.3)
+        ok &= check("the busy sign is headed by the hostname (no board name set)",
+                    above(render_lines(over.buf), "Sorry, all lines are busy.") == host)
+        over.close()
+        for f in fillers:
+            f.close()
+    finally:
+        proc.kill()
+        proc.wait(5)
+    config(None)
+    proc = start_copy(tmp, (str(port),))
+    try:
+        copy_log(tmp, f"listening on {port},")
+        c = Caller(ansi=True, port=port)
+        c.wait_for(b"Closed by the sysop for now", 10)
+        c.pump(0.3)
+        ok &= check("and so is the closed sign",
+                    above(render_lines(c.buf), "Closed by the sysop for now") == host)
+        c.close()
+    finally:
+        proc.kill()
+        proc.wait(5)
+
+    # Cut at 40 columns, on a C64: a name of 40, then one with a µ at the edge.
+    for name, want, what in (("Q" * 40, "Q" * 39, "a name of 40 is cut to 39 at 40 columns"),
+                             ("R" * 38 + "\u00b5", "R" * 38 + "u",
+                              "a µ at the cut is shown whole (u on PETSCII), not a lone byte")):
+        config(name)
+        proc = start_copy(tmp, (str(port),))
+        try:
+            copy_log(tmp, f"listening on {port},")
+            p = Caller(ansi=False, port=port)
+            p.wait_for(b"HIT DEL OR BACKSPACE", 5)
+            p.send(b"\x14")
+            p.wait_for(b"40 OR 80 COLUMNS", 3)
+            p.send(b"4")
+            p.wait_for(pet("Closed by the sysop for now"), 10)
+            p.pump(0.3)
+            ok &= check(what, pet(want) in p.buf and pet(want + want[-1]) not in p.buf
+                        and b"?" not in p.buf[p.buf.find(pet(want[:10])):p.buf.find(pet("Closed by"))])
+            p.close()
+        finally:
+            proc.kill()
+            proc.wait(5)
+
+    # Cut when the file is read (calls.3): board_name holds 40 bytes, so 39 R
+    # and a µ (41) was stored as 39 R and a lone 0xC2, a "?" at 80 columns.
+    config("R" * 39 + "µ")
+    proc = start_copy(tmp, (str(port),))
+    try:
+        copy_log(tmp, f"listening on {port},")
+        c = Caller(ansi=True, port=port)
+        c.wait_for(b"Closed by the sysop for now", 10)
+        c.pump(0.3)
+        head = above(render_lines(c.buf), "Closed by the sysop for now")
+        ok &= check("a name cut inside a µ keeps its 39 R and shows no ?",
+                    head == "R" * 39)
+        c.close()
+    finally:
+        proc.kill()
+        proc.wait(5)
+    import shutil
+    shutil.rmtree(tmp, ignore_errors=True)
     return ok
 
 
@@ -11836,7 +12049,7 @@ def test_closed_configured():
     o = Caller(ansi=True)
     ok &= check("a caller gets the closed sign", closed_sign(o))
     ok &= check("told how they are connected before it (1.1.1)",
-                -1 < plain(o.buf).find(b"--> Connection via Telnet is not secure")
+                -1 < plain(o.buf).find(b"--> This connection is not securely encrypted")
                    < plain(o.buf).find(b"Closed by the sysop for now"))
     o.send(b"Outsider\r")
     ok &= check("a new handle is refused", o.wait_for(b"Closed by the sysop. Call again later.", 6))
@@ -15416,7 +15629,7 @@ def test_lag_announce_calls():
         return True
     import json as _json
     import shutil
-    port, dport = PORT + 3909, PORT + 3910
+    port, dport = PORT + 3909, PORT + 3920
     d = NudgeDirectory(dport)
     tmp, proc, card = calls_board(port, 50, {
         ("plugin:announce", "servers"): f"http://127.0.0.1:{dport}/announce",
@@ -18488,7 +18701,7 @@ def test_operator_ends():
         print("OPERATOR: no answer, stopped, hung up, the room, a form")
         print("  SKIP  needs the host build and a sysop password")
         return True
-    return on_ring_board(PORT + 3708, operator_ends_body)
+    return on_ring_board(PORT + 3922, operator_ends_body)
 
 
 def operator_ends_body(tmp):
@@ -18841,10 +19054,12 @@ def test_ssh_login():
     ktype, kfp = c.hostkey()
     ok &= check("and was shown a host key", kfp is not None)
     ok &= check("the terminal probe still runs over SSH", c.wait_for(b"DETECTING TERMINAL", 8))
-    ok &= check("the link line: Connection via SSH is Secure.",
-                c.wait_for(b"Secure.", 10) and b"--> Connection via SSH is Secure." in plain(c.buf))
-    ok &= check("\"Secure.\" in bold yellow", b"33;1mSecure." in c.buf)
-    ok &= check("never \"not secure\"", b"Secure." in c.buf and b"not secure" not in plain(c.buf))
+    ok &= check("the link line: This connection is securely encrypted",
+                c.wait_for(b"securely encrypted", 10) and
+                (b"onnection is securely encrypted" in plain(c.buf)
+                 or b"Connection securely encrypted" in plain(c.buf)))
+    ok &= check("\"securely encrypted\" in bold yellow", b"33;1msecurely encrypted" in c.buf)
+    ok &= check("never \"not securely\"", b"not securely" not in plain(c.buf))
     ok &= check("signed in by the SSH password", c.wait_for(b"Signed in over SSH as", 15)
                 and b"SshRob" in plain(c.buf))
     ok &= check("ACCESS GRANTED, and the main prompt", c.wait_for(b"ACCESS GRANTED", 6) and c.wait_for(b"Main", 10))
@@ -18982,7 +19197,7 @@ def test_ssh_telnet_unchanged():
     c.send(b"SSH-1.99-oldclient\r\n")
     ok = check("\"SSH-1.99-\" is not SSH-2.0: the telnet probe", c.wait_for(b"DETECTING TERMINAL", 5))
     c.wait_for(b"not secure", 10)
-    ok &= check("and the caller goes on as telnet", b"Connection via Telnet is not secure" in plain(c.buf))
+    ok &= check("and the caller goes on as telnet", b"not securely encrypted" in plain(c.buf))
     c.close()
     q = Caller(ansi=True)
     ok &= check("a silent caller still gets the probe", q.wait_for(b"DETECTING TERMINAL", 5))
@@ -19170,7 +19385,8 @@ def test_ssh_dedicated_port():
     ok = check("a banner-first client hears the board first on the SSH port",
                c.said(b"heard the board's identification first", 10))
     ok &= check("and logs in", c.said(b"ssh_call: open", 15) and c.wait_for(b"Signed in over SSH as", 15))
-    ok &= check("\"Secure.\" there too", b"Connection via SSH is Secure." in plain(c.buf))
+    ok &= check("\"securely encrypted\" there too", b"onnection is securely encrypted" in plain(c.buf)
+                or b"Connection securely encrypted" in plain(c.buf))
     ok &= check("to the main prompt", c.wait_for(b"Main", 10))
     c.close()
 
@@ -19460,7 +19676,7 @@ GROUPS = {
     "storage":   ["files", "forums", "sd", "xfer", "backup", "restore", "card_screens", "rewrites",
                   "screens_install", "lights_disk", "lag_", "uploads_pending"],
     # The shell, its lists and the screens the core draws.
-    "shell":     ["menus", "sysinfo", "hardware", "page", "about", "config", "welcome", "paced", "seeded", "fx_codes",
+    "shell":     ["menus", "sysinfo", "calls_one", "signs_name", "hardware", "page", "about", "config", "welcome", "paced", "seeded", "fx_codes",
                   "lights", "operator", "dash", "nodes_columns", "version_shown", "screens_command",
                   "forms", "whois", "space_kept", "config_one_pass", "time_warn", "last_node"],
     # Logging in, accounts, staff.
@@ -19505,7 +19721,7 @@ ORDER_NAMES = [
     "test_room_narrow_whole_line", "test_room_private_own_tag", "test_last_node_ten", "test_room_squelch_ten",
     "test_long_help",
     "test_info_pages",
-    "test_mail", "test_prompt_survives_notice", "test_menus", "test_sysinfo", "test_hardware",
+    "test_mail", "test_prompt_survives_notice", "test_menus", "test_sysinfo", "test_calls_one_screen", "test_signs_name_board", "test_hardware",
     "test_config",
     # The dashboard (1.1.0). test_dash_pick kicks its own caller and nobody
     # else's; test_dash_waiting leaves mail only for its own sysop account.
@@ -19530,7 +19746,7 @@ ORDER_NAMES = [
     "test_board_s3", "test_board_s3_silent", "test_board_s3_skin",
     # SSH (1.1.2): SKIP off an SSH profile (s3, mf35). The failed logins run
     # on a copy of the board, so their ban never reaches this one.
-    "test_ssh_login", "test_ssh_new_caller", "test_ssh_resize", "test_ssh_host_keys",
+    "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
     "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
     "test_ssh_dedicated_port", "test_ssh_socket_budget",
     "test_board_fncam", "test_board_espcam", "test_board_ws43b", "test_board_ws2", "test_board_wseth",
@@ -19807,7 +20023,7 @@ def test_config_pin_exists():
 
     # A hand-edited file at boot: the line is refused and says why.
     if local:
-        port = PORT + 3703
+        port = PORT + 3921
         proc, tmp = restart_copy((str(port),), edits={("", "activity_led_gpio"): file_gone})
         try:
             log = copy_log(tmp, f"listening on {port},")
@@ -21782,32 +21998,32 @@ FRESH_TESTS = ["test_backup_published_default", "test_first_setup",
 PROFILE_TESTS = {
     "s3":     ["test_board_s3", "test_board_s3_silent", "test_board_s3_skin",
                # SSH (1.1.2) is compiled into the S3 profile only.
-               "test_ssh_login", "test_ssh_new_caller", "test_ssh_resize", "test_ssh_host_keys",
+               "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
                "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
     "fncam":  ["test_board_fncam"],
     "espcam": ["test_board_espcam"],
     # The hardware preview's Waveshares carry SSH too (1.1.2-hw.1).
     "ws43b":  ["test_board_ws43b",
-               "test_ssh_login", "test_ssh_new_caller", "test_ssh_resize", "test_ssh_host_keys",
+               "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
                "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
     "ws2":    ["test_board_ws2",
-               "test_ssh_login", "test_ssh_new_caller", "test_ssh_resize", "test_ssh_host_keys",
+               "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
                "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
     "wseth":  ["test_board_wseth",
-               "test_ssh_login", "test_ssh_new_caller", "test_ssh_resize", "test_ssh_host_keys",
+               "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
                "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
     # The Makerfabs carries SSH too (MF35 1.1.0), on 2 MB of PSRAM.
     "mf35":   ["test_board_mf35",
-               "test_ssh_login", "test_ssh_new_caller", "test_ssh_resize", "test_ssh_host_keys",
+               "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
                "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
     # And its hardware v2.0 (MF35V2 1.0.0), SSH on 8 MB of octal PSRAM.
     "mf35v2": ["test_board_mf35v2",
-               "test_ssh_login", "test_ssh_new_caller", "test_ssh_resize", "test_ssh_host_keys",
+               "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
                "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
 }

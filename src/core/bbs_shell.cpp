@@ -3050,55 +3050,107 @@ void Bbs::cmdCalls(Session& s) {
 // ---------------------------------------------------------------------------
 // rowCalls: calls per hour as a bar chart. The busiest hours are picked out
 // so a glance says when the board is worth being around for.
+//
+// Two panes of 12 (1.2.1, internal/tty-ux-calls-hours-2026-10-01.md): row k
+// is hour k on the left and hour k + 12 on the right, so the whole day is 16
+// list rows at 40 and 15 at 80 and 132, one screen everywhere. It was one
+// column of 24, 28 rows, which paged at every width and scrolled its own
+// title and the small hours away; and its bar room was w - 10 against the 8
+// columns a row spent outside the bar, so every row stopped 2 short of the
+// rule. A pane is "HH NN bar": the count, D digits from the log's size, then
+// the bar. One peak for all 24 hours, so the halves compare; an empty hour
+// is a dim "-". The panes need w >= 35 (a 10 cell bar); narrower, one column
+// of the same rows, which pages. No row writes the terminal's last column.
 // ---------------------------------------------------------------------------
+namespace {
+constexpr uint8_t kCallDigits = BBS_CALLLOG_SIZE >= 10000 ? 5 : BBS_CALLLOG_SIZE >= 1000 ? 4 :
+                                BBS_CALLLOG_SIZE >= 100 ? 3 : BBS_CALLLOG_SIZE >= 10 ? 2 : 1;
+constexpr uint8_t kCallPrefix = kCallDigits + 4;          // "HH NN "
+}
+
 bool Bbs::rowCalls(Session& s) {
-    char buf[32];
+    char buf[48];
     uint8_t i = s.listIdx++;
+    const uint8_t w = rowWidth(s);
+    const bool two = w >= 35;
+    const uint8_t hourRows = two ? 12 : 24;
+    // Two panes: P each, a gutter of 3 (space, divider, space) between.
+    const uint8_t pane = two ? static_cast<uint8_t>((w - 3) / 2) : w;
+    const uint8_t room = pane > kCallPrefix ? static_cast<uint8_t>(pane - kCallPrefix) : 1;   // a NAWS of a handful
 
     uint16_t peak = 0;
     uint8_t  peakAt = 0;
     for (uint8_t k = 0; k < 24; ++k) if (callHours_[k] > peak) { peak = callHours_[k]; peakAt = k; }
 
     if (i == 0) {
-        snprintf(buf, sizeof(buf), "%u calls", static_cast<unsigned>(callsCounted_));
+        snprintf(buf, sizeof(buf), "%u call%s", static_cast<unsigned>(callsCounted_),
+                 callsCounted_ == 1 ? "" : "s");
         rowTitle(s, "Calls by hour", buf);
         return true;
     }
     if (i == 1 && !callsCounted_) {
-        s.listIdx = 25;                                    // no bars worth drawing
+        s.listIdx = static_cast<uint8_t>(hourRows + 1);    // no bars worth drawing
         rowText(s, Color::DarkGrey, "Nothing logged with a clock yet.");
         return true;
     }
-    if (i >= 1 && i <= 24) {
-        uint8_t hour = static_cast<uint8_t>(i - 1);
-        uint16_t v = callHours_[hour];
-        uint8_t room = static_cast<uint8_t>(rowWidth(s) - 10);         // hour + count columns
-        uint8_t bar  = peak ? static_cast<uint8_t>((static_cast<uint32_t>(v) * room) / peak) : 0;
-        if (v && !bar) bar = 1;                                        // one call still shows
-
-        uint8_t col = 0;
+    // One hour's pane from col: the hour, the count (or "-"), the bar, and
+    // padding out to the pane's width when another pane follows it.
+    auto hourPane = [&](uint8_t hour, uint8_t& col, bool pad) {
+        const uint16_t v = callHours_[hour];
+        const bool top = v && v == peak;
         snprintf(buf, sizeof(buf), "%02u ", static_cast<unsigned>(hour));
         rowSeg(s, v ? Color::LightBlue : Color::DarkGrey, buf, col);
-        s.term.color(s.tl, v == peak && peak ? Color::Yellow : Color::LightGreen);
+        if (v) snprintf(buf, sizeof(buf), "%*u ", kCallDigits, static_cast<unsigned>(v));
+        else   snprintf(buf, sizeof(buf), "%*s ", kCallDigits, "-");
+        rowSeg(s, !v ? Color::DarkGrey : top ? Color::Yellow : Color::LightGrey, buf, col);
+        // Floor, not rounding (1 and 2 calls must not read as 1 and 3), and
+        // a call still shows.
+        uint8_t bar = peak ? static_cast<uint8_t>((static_cast<uint32_t>(v) * room) / peak) : 0;
+        if (v && !bar) bar = 1;
+        s.term.color(s.tl, top ? Color::Yellow : Color::LightGreen);
         for (uint8_t k = 0; k < bar; ++k) { s.term.glyph(s.tl, Glyph::Block); ++col; }
-        for (uint8_t k = bar; k < room; ++k) { s.term.ch(s.tl, ' '); ++col; }
-        snprintf(buf, sizeof(buf), " %4u", static_cast<unsigned>(v));
-        rowSeg(s, v ? Color::LightGrey : Color::DarkGrey, buf, col);
+        if (pad) for (uint8_t k = bar; k < room; ++k) { s.term.ch(s.tl, ' '); ++col; }
+    };
+    if (i >= 1 && i <= hourRows) {
+        const uint8_t row = static_cast<uint8_t>(i - 1);
+        uint8_t col = 0;
+        hourPane(row, col, two);
+        if (two) {
+            s.term.ch(s.tl, ' ');
+            s.term.color(s.tl, Color::DarkGrey);
+            s.term.glyph(s.tl, Glyph::VLine);
+            s.term.ch(s.tl, ' ');
+            col = static_cast<uint8_t>(col + 3);
+            hourPane(static_cast<uint8_t>(row + 12), col, false);
+        }
         rowEnd(s, col);
         return true;
     }
-    if (i == 25) { rowRule(s); return true; }
-    if (i == 26) {
-        if (!callsCounted_) return false;
-        snprintf(buf, sizeof(buf), "Busiest %02u:00 with %u", static_cast<unsigned>(peakAt),
-                 static_cast<unsigned>(peak));
-        rowText(s, Color::Cyan, buf);
+    if (i == hourRows + 1) { rowRule(s); return true; }
+    if (!callsCounted_) return false;
+    // The totals: the busiest hour, and the note, right-aligned to end where
+    // the title's right text does (col w - 2), on one row when both fit with
+    // two spaces between, else the note's short form on a row of its own.
+    char note[48];
+    snprintf(note, sizeof(note), "Board time. The log keeps %u calls.", static_cast<unsigned>(BBS_CALLLOG_SIZE));
+    snprintf(buf, sizeof(buf), "Busiest %02u:00 with %u call%s", static_cast<unsigned>(peakAt),
+             static_cast<unsigned>(peak), peak == 1 ? "" : "s");
+    const size_t a = strlen(buf), b = strlen(note);
+    const bool one = a + 2 + b <= static_cast<size_t>(w - 1);
+    if (i == hourRows + 2) {
+        uint8_t col = 0;
+        rowSeg(s, Color::Cyan, buf, col);
+        if (one) {
+            s.term.color(s.tl, Color::DarkGrey);
+            for (size_t k = a; k < static_cast<size_t>(w - 1) - b; ++k) { s.term.ch(s.tl, ' '); ++col; }
+            rowSeg(s, Color::DarkGrey, note, col);
+        }
+        rowEnd(s, col);
         return true;
     }
-    if (i == 27) {
-        if (!callsCounted_) return false;
-        snprintf(buf, sizeof(buf), "Last %u calls kept", static_cast<unsigned>(BBS_CALLLOG_SIZE));
-        rowText(s, Color::DarkGrey, buf);
+    if (i == hourRows + 3 && !one) {
+        snprintf(note, sizeof(note), "Board time. The log keeps %u.", static_cast<unsigned>(BBS_CALLLOG_SIZE));
+        rowText(s, Color::DarkGrey, note);
         return true;
     }
     return false;

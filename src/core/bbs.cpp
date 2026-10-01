@@ -1488,13 +1488,16 @@ void Bbs::closedRefuse(Session& s, uint32_t now) {
 }
 
 // ---------------------------------------------------------------------------
-// linkLine: "--> Connection via Telnet is not secure" (1.1.1, Rob).
+// linkLine: whether the line is encrypted (1.1.1, Rob; his wording 1.2.1).
 //
 // Said to every caller once the terminal is known, before any screen, so
-// nobody types a password without having been told. The wording is built
-// from what the link is rather than written out, so SSH (1.2.0) is a new
-// row in linkOf and nothing else: "--> Connection via SSH is Secure.",
-// with "Secure." in bright yellow. 39 columns, so it fits a C64.
+// nobody types a password without having been told. Telnet:
+// "--> This connection is not securely encrypted", the words in light red;
+// SSH: "--> This connection is securely encrypted", "securely encrypted" in
+// bright yellow as "Secure." was. Those are 45 and 41 with the marker, so a
+// terminal under 47 and 43 columns gets "--> Connection not securely encrypted" (37) and
+// "--> Connection securely encrypted" (33): a C64 never wraps it. Until
+// 1.2.1 it was "Connection via Telnet is not secure" / "... SSH is Secure.".
 // ---------------------------------------------------------------------------
 namespace {
 struct Link { const char* name; bool secure; };
@@ -1511,20 +1514,32 @@ void Bbs::linkLine(Session& s) {
     Term& t = s.term;
     Timeline& tl = s.tl;
     const Link l = linkOf(s);
+    // The long form when the marker, it and two columns to spare fit.
+    const bool wide = t.cols() > (l.secure ? 42 : 46);
     t.color(tl, Color::Cyan);
     t.text(tl, "--> ");
     t.color(tl, Color::Grey);
-    t.text(tl, "Connection via ");
-    t.text(tl, l.name);
-    t.text(tl, " is ");
+    t.text(tl, wide ? "This connection is " : "Connection ");
     if (l.secure) {
         t.color(tl, Color::Yellow);
-        t.text(tl, "Secure.");
+        t.text(tl, "securely encrypted");
     } else {
         t.color(tl, Color::LightRed);
-        t.text(tl, "not secure");
+        t.text(tl, "not securely encrypted");
     }
     t.nl(tl);
+}
+
+// signName: the board's name for the built-in busy and closed signs (1.2.1):
+// the board's own, else its hostname, as @BOARD@ (screens.cpp). They printed
+// BBS_NAME, the software's name, which is not who answered the call. Cut to
+// the screen, since a name may be 40 characters.
+static void signName(Term& t, Timeline& tl) {
+    const SysConfig& c = syscfg::get();
+    const char* name = c.boardName[0] ? c.boardName : (c.hostname[0] ? c.hostname : BBS_HOSTNAME);
+    // Cut by columns, not bytes: a byte cut through a µ leaves a lone 0xC2,
+    // which prints as "?" (the "??nleashed" shape; code review of calls.1).
+    t.textCols(tl, name, static_cast<uint8_t>(t.cols() > 1 ? t.cols() - 1 : 39));
 }
 
 // ---------------------------------------------------------------------------
@@ -1589,7 +1604,7 @@ void Bbs::startBusy(Session& s, uint32_t now) {
         // know their own board's closed sign has a door in it.
         if (s.scr.open("closed", t)) return;
         t.color(tl, Color::White);
-        t.text(tl, BBS_NAME);
+        signName(t, tl);
         t.nl(tl);
         t.color(tl, Color::LightRed);
         t.text(tl, "Closed by the sysop for now.");
@@ -1604,7 +1619,7 @@ void Bbs::startBusy(Session& s, uint32_t now) {
     }
     if (!s.scr.open("busy", t)) {
         t.color(tl, Color::White);
-        t.text(tl, BBS_NAME);
+        signName(t, tl);
         t.nl(tl);
         t.color(tl, Color::LightRed);
         t.text(tl, "Sorry, all lines are busy.");
@@ -1845,18 +1860,33 @@ void Bbs::showRules(Session& s) {
 }
 
 // ---------------------------------------------------------------------------
-// askKnowMore: before anybody types a password, say plainly that the link
-// is not encrypted, and offer the whole story to those who want it.
+// askKnowMore: before anybody types a password, say plainly whether the link
+// is encrypted, and offer the whole story to those who want it. It told an
+// SSH caller "not encrypted" until 1.2.1 (the copy deck); it follows the link
+// now, as linkLine does, and the advice holds either way.
 // ---------------------------------------------------------------------------
 void Bbs::askKnowMore(Session& s) {
     Term& t = s.term;
     Timeline& tl = s.tl;
+    const bool secure = linkOf(s).secure;
     t.color(tl, Color::Yellow);
-    t.text(tl, t.cols() >= 64 ? "This connection is not encrypted. Use a password"
-                              : "Not encrypted. Use a password");
+    if (secure)
+        t.text(tl, t.cols() >= 64 ? "This connection is encrypted. Still, use a password"
+                                  : "Encrypted. Still, use a password");
+    else
+        t.text(tl, t.cols() >= 64 ? "This connection is not encrypted. Use a password"
+                                  : "Not encrypted. Use a password");
     t.nl(tl);
     t.text(tl, t.cols() >= 64 ? "you do not use anywhere else." : "you use nowhere else.");
     t.nl(tl);
+    // No privacy offer over SSH (1.2.1): screens/privacy opens "TELNET IS
+    // NOT ENCRYPTED", the opposite of what was just said. A pause to read
+    // the warning, then the form; a privacy screen that follows the
+    // connection is 1.2.2's.
+    if (secure) {
+        pauseFor(s, AfterKey::SignupForm);
+        return;
+    }
     t.color(tl, Color::LightGreen);
     t.text(tl, "Would you like to know more? ");
     t.color(tl, Color::White);
@@ -1964,6 +1994,14 @@ bool Bbs::handleOnline(const Session& s, const char* handle) const {
         if (o->st == SState::AskRegister) return true;            // choosing R or G
         if (o->st == SState::AskKnowMore) return true;            // reading the disclosure
         if (o->st == SState::Form && o->formKind == FormKind::Signup) return true;
+        // On the way to the form without being at it (1.2.1-calls.3): a
+        // pause in front of the warning or the form (SSH has no Y/N
+        // question, so its registrant sits here), or the rules or privacy
+        // screen still playing towards one, page breaks included.
+        if (o->st == SState::AnyKey &&
+            (o->afterKey == AfterKey::SignupForm || o->afterKey == AfterKey::KnowMore))
+            return true;
+        if (o->pendingForm == FormKind::Signup || o->pendingKnowMore) return true;
     }
     return false;
 }

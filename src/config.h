@@ -55,7 +55,7 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "1.2.1-dev.13"
+#define BBS_VERSION         "1.2.1-int.1"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // BBS_VERSION_SHOWN: the version as every place a person reads one shows it
@@ -393,7 +393,9 @@
 #define BBS_ZIP_INFO_MAX        8192
 // LittleFS gives every file of more than a few hundred bytes at least one
 // whole 4 KB block, so free space is counted in blocks when a restore asks
-// whether it fits: 33 stock screens of 1 to 3 KB each take 33 blocks, not 9.
+// whether it fits: the stock set is 12 screens in up to three flavours, 33
+// files (36 once every screen has its .seq), of 1 to 3 KB each, and they
+// take a block each: 36 blocks, not 10.
 #define BBS_FS_BLOCK            4096
 
 // Backups on the SD card (1.1.0): BACKUP SD, RESTORE SD, the nightly one.

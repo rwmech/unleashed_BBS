@@ -1968,6 +1968,11 @@ void join(Bbs& bbs, Session& s, uint8_t stick = 0xFF, const char* say = nullptr)
     mark(s);
     t.color(tl, g_cRoom);
     snprintf(line, sizeof(line), "%.19s: %u here. /s who, /q quits.", g_room, roomCount());
+    // At 40 a room name past 4 characters wrapped it (1.2.1): the short form
+    // when the long one does not fit, 39 with the marker for a 19 character
+    // name and 10 here. The roster under it says who.
+    if (sizeof(kMark) - 1 + strlen(line) > Bbs::instance().rowWidth(s))
+        snprintf(line, sizeof(line), "%.19s (%u). /q quits.", g_room, roomCount());
     t.text(tl, line);
     t.nl(tl);
 

@@ -26,6 +26,37 @@ A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E
 
 ## 1.2.1 (in development)
 
+- **CALLS fits one screen** (1.2.1-calls.1). Two panes of 12 hours, 00 to 11
+  on the left and 12 to 23 on the right, at 40 columns and up: 16 rows at 40
+  and 15 at 80 and 132, where it was 28 and paged at every width. The count
+  sits beside its hour, an hour with no calls is a dim `-`, both halves share
+  one scale, and the totals say the hours are the board's time. The bar no
+  longer stops two columns short of the rule.
+- **The chat room's opening line fits 40 columns** with a long room name:
+  `Basement Workshop (3). /q quits.` where the full line would wrap.
+- **The connection line says encrypted or not** (Rob's wording): `--> This
+  connection is not securely encrypted` over telnet and `--> This connection
+  is securely encrypted` over SSH, "securely encrypted" in bold yellow. Under
+  47 columns: `--> Connection not securely encrypted` and `--> Connection
+  securely encrypted`. It was "Connection via Telnet is not secure".
+- **An SSH caller signing up is no longer told the line is not encrypted.**
+  The warning before the password follows the connection: `This connection
+  is encrypted. Still, use a password you do not use anywhere else.`
+- **The built-in busy and closed signs name the board**, its name or else
+  its hostname as `@BOARD@` does, not the software.
+- From the review of calls.1 (1.2.1-calls.2): an SSH caller signing up is
+  not offered the privacy screen, which opens with telnet's warning; the
+  warning is read under a pause and the form opens (a privacy screen that
+  follows the connection is 1.2.2's). The signs cut a long board name by
+  columns, so a µ at the edge is never a lone byte printing as `?`.
+- From the review of calls.2 (1.2.1-calls.3): a handle being registered is
+  held through the whole way to the form, so nobody can take it as a guest
+  while the registrant reads the rules, the privacy screen or SSH's pause.
+  A board name over 40 bytes is cut at a whole character when system.cfg is
+  read, so a µ at the cut no longer leaves a `?`.
+- 1.2.1-calls.4 is test-only: the signs test registers an account of its
+  own, because a closed board with no accounts shows no sign.
+
 Host-tested only so far; the board versions move when their own code does.
 
 Merged in 1.2.1-dev.9 (rel-1.2.1): the core lane (dev.1 to dev.8), the

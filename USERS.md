@@ -38,6 +38,10 @@ you do not use anywhere else.
 Would you like to know more? [Y/N]
 ```
 
+Over SSH (the S3 boards) the first line follows the connection: `This
+connection is encrypted. Still, use a password` (1.2.1; it said "not
+encrypted" to SSH callers too).
+
 `N` opens the form. `Y` plays `screens/privacy.*` first, which is the full disclosure: telnet carries everything in the clear, the password is salted and hashed with SHA-256 a thousand rounds so the stored file gives nothing away, the sysop can see handles, addresses, times, the last command run and can watch a node live, and the honest summary of what any of that is worth. The board is conversation and nothing critical, and the one real risk is a password reused from somewhere else.
 
 The form opens when the screen finishes either way.
