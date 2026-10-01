@@ -341,6 +341,17 @@ no other profile does), where it had passed on any answer but the console.
 The three bench-only ESP32 envs (`esp32dev_backuptest`, `esp32dev_diag`,
 `esp32dev_wdttest`) build with no warnings too, so all 21 envs do.
 
+### Tests only (1.2.1-dev.12)
+
+- `test_board_mf35v2` reached CONFIG panel's Pins page by pressing DOWN
+  five times, copied from the v1.0's test. The v2.0 has touch, so its page
+  has Sleep above Skin and five rows down is Skin: the page never opened and
+  the five pin checks after it failed with and without a card (the approved
+  run on dev.10). A fault in the board lane's test from the start, not the
+  merge: the page and the board are right. It walks to the row by the
+  row's own note now (`cfg_walk_to`), and passes 11 of 11 with and without
+  a card.
+
 ### Sizes
 
 Static DRAM off the ELFs at 1.2.1-dev.10, the 18 board and release envs

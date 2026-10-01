@@ -6177,6 +6177,22 @@ def cfg_open(s, page, expect):
     return ok
 
 
+def cfg_walk_to(s, note, tries=16):
+    """Move the focus down a CONFIG page until the status line shows `note`,
+    the row's own note (Form::statusForFocus draws it as the focus lands),
+    and say whether it got there. Not a count of rows: a page's rows differ
+    by profile (a touch board's panel page has Sleep above Skin), and the
+    MF35V2's test copied the v1.0's DOWN * 5 and landed on Skin (1.2.1-dev.12).
+    """
+    for _ in range(tries):
+        s.buf.clear()
+        s.send(DOWN)
+        s.pump(0.3)
+        if note in plain(s.buf):
+            return True
+    return False
+
+
 def cfg_verdict(s, pats, secs=6):
     """Wait for one of pats after F1 and say which, or None for none of them.
 
@@ -8505,10 +8521,13 @@ def test_board_mf35v2():
 
     # The Pins page with this board's own: 43 and 44 are the CP2104's wires,
     # 38 the touch controller's SDA, 47 the panel's data bus (D0), 19 the
-    # USB, and 35 octal PSRAM (the v1.0's WR pin, free there).
+    # USB, and 35 octal PSRAM (the v1.0's WR pin, free there). Walked to by
+    # the Pins row's note: this page has Sleep (touch) above Skin, so the
+    # v1.0's DOWN * 5 stops on Skin.
     cfg_open(s, b"panel", b"Skin")
+    ok &= check("the panel page has its Pins row", cfg_walk_to(s, b"The panel's SPI and control pins."))
     s.buf.clear()
-    s.send(DOWN * 5 + b"\r")
+    s.send(b"\r")
     ok &= check("Pins opens a page of its own", s.wait_for(b"PINS", 6))
     s.pump(0.6)
     for pin, want in ((b"43", b"That pin is wired on the board."),
