@@ -701,7 +701,10 @@ struct Scene {
         m = nm;
         bg = nbg;
         memset(map, 0, sizeof(map));
-        memset(shown, 0, sizeof(shown));
+        // Through void*: Rgb has member initialisers, so GCC 13 calls a
+        // memset of it -Wclass-memaccess (the test_skin warning in the 1.2.0
+        // full run). It is three uint8_t; the bytes are the whole of it.
+        memset(static_cast<void*>(shown), 0, sizeof(shown));
         forget();
         pending = false;
     }

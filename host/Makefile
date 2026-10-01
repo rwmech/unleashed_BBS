@@ -320,6 +320,11 @@ test_calllog: test_calllog.cpp ../src/core/calllog.cpp ../src/core/calllog.h
 test_silent: test_silent.cpp ../src/core/silent.h
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_silent.cpp
 
+# plat::since (1.2.1): a stamp a little ahead of now is 0, a real gap keeps
+# the clock's whole 49.7 days, across the wrap too.
+test_since: test_since.cpp ../src/platform/platform.h
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_since.cpp
+
 # CONFIG photos' keys against the camera's old lines (1.2.0-link.15): a
 # photos_ line wins over [plugin:camera]'s keep, max, floor, tl_keep and
 # tl_max in either order in the file, and an old line stands in only where
@@ -368,7 +373,7 @@ formats:
 	@python3 ../tools/check_formats.py --self-test
 	@python3 ../tools/check_formats.py ../src
 
-test: licence formats test_link test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera test_photos_cfg test_sshlink test_skin
+test: licence formats test_link test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_since test_camera test_photos_cfg test_sshlink test_skin
 	./test_link
 	./test_skin
 	./test_xmodem
@@ -384,6 +389,7 @@ test: licence formats test_link test_xmodem test_wrap test_forums_ptr test_compo
 	./test_panel
 	./test_calllog
 	./test_silent
+	./test_since
 	./test_camera
 	./test_photos_cfg
 	./test_sshlink
@@ -391,6 +397,6 @@ test: licence formats test_link test_xmodem test_wrap test_forums_ptr test_compo
 clean:
 	rm -rf wolfobj libwolfssh_host.a ssh_call test_sshlink
 	rm -f tjpgd.o tjpgd_san.o test_skin
-	rm -f bbs_host bbs_host_s3 bbs_host_ws43b bbs_host_fncam bbs_host_espcam bbs_host_ws2 bbs_host_wseth bbs_host_mf35 bbs_host_ext linkpeer test_link test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_camera test_photos_cfg
+	rm -f bbs_host bbs_host_s3 bbs_host_ws43b bbs_host_fncam bbs_host_espcam bbs_host_ws2 bbs_host_wseth bbs_host_mf35 bbs_host_ext linkpeer test_link test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_since test_camera test_photos_cfg
 
 .PHONY: clean test licence formats FORCE mbedtls-check

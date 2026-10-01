@@ -2001,16 +2001,25 @@ bool cfgWarnQuestion(const Term& t, char* q, size_t qn, uint8_t* row) {
 // nothing.
 // ---------------------------------------------------------------------------
 
-// The console's pins: UART0, which flashing, the serial monitor and Improv
-// all use, on every chip this firmware builds for. The serial bridge refused
-// them for itself; a pixel or an LED on one breaks the same things. The host
-// has no chip and stands in for the WROOM.
-#ifdef ESP_PLATFORM
+// The console's pins, where the console is UART0 (board.h,
+// BBS_CONSOLE_UART0): flashing, the serial monitor and Improv use them
+// there, so a pixel or an LED on one breaks those, and the serial bridge
+// refuses them for itself too. Not every chip's console is UART0: an S3 on
+// its own USB (the Waveshares) has UART0 free, and the 4.3B ships its RS485
+// bridge on 43 and 44, which this refused as "the console port" until 1.2.1
+// (code review). Where the console is not UART0 both are -2, which no
+// pin setting can hold (-1 is "none").
+#if !BBS_CONSOLE_UART0
+constexpr long kConsoleTx = -2;
+constexpr long kConsoleRx = -2;
+#elif defined(ESP_PLATFORM)
 constexpr long kConsoleTx = U0TXD_GPIO_NUM;
 constexpr long kConsoleRx = U0RXD_GPIO_NUM;
+static_assert(U0TXD_GPIO_NUM == BBS_CONSOLE_TX && U0RXD_GPIO_NUM == BBS_CONSOLE_RX,
+              "board.h's console pins are not this chip's UART0");
 #else
-constexpr long kConsoleTx = 1;
-constexpr long kConsoleRx = 3;
+constexpr long kConsoleTx = BBS_CONSOLE_TX;
+constexpr long kConsoleRx = BBS_CONSOLE_RX;
 #endif
 // BOOT is GPIO 0 on the ESP32 and the S3 alike. The BOOT-hold reset reads it
 // at start-up whatever backup_button_gpio says (recovery.h), and the backup

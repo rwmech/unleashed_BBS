@@ -163,6 +163,13 @@
 #if !CONFIG_NEWLIB_NANO_FORMAT
 #error "the nano printf in sdkconfig.defaults was not applied: delete sdkconfig.<env> and build again"
 #endif
+// The VFS table (1.2.1): 12 on every S3, from sdkconfig.defaults.esp32s3.
+// With SSH and a card mounted an S3 fills the IDF's default 8, and a card
+// that is the ninth user fails to mount as ESP_ERR_NO_MEM. A stale
+// sdkconfig.<env> keeps 8.
+#if CONFIG_IDF_TARGET_ESP32S3 && CONFIG_VFS_MAX_COUNT < 12
+#error "an S3 build needs CONFIG_VFS_MAX_COUNT of 12 (sdkconfig.defaults.esp32s3): delete sdkconfig.<env> and build again"
+#endif
 #endif
 
 // ===========================================================================
@@ -328,12 +335,6 @@
 #define BBS_HAS_PSRAM         1
 #if defined(ESP_PLATFORM) && !(CONFIG_SPIRAM && CONFIG_SPIRAM_FETCH_INSTRUCTIONS && CONFIG_SPIRAM_RODATA)
 #error "BBS_BOARD_WS_S3TOUCH43B needs PSRAM with XIP: sdkconfig.defaults.ws43b was not applied (delete sdkconfig.ws_s3touch43b*)"
-#endif
-// With SSH and a card mounted an S3 fills the IDF's 8 VFS slots, with no
-// headroom (the Makerfabs' review): 12 in sdkconfig.defaults.ws43b, as on the
-// Makerfabs. A stale sdkconfig keeps 8.
-#if defined(ESP_PLATFORM) && CONFIG_VFS_MAX_COUNT < 12
-#error "BBS_BOARD_WS_S3TOUCH43B needs CONFIG_VFS_MAX_COUNT of 12 (sdkconfig.defaults.ws43b): delete sdkconfig.ws_s3touch43b*"
 #endif
 
 // SSH as on the Waveshare stick: the same S3 image machinery, one define.
@@ -544,11 +545,6 @@
 #define BBS_PSRAM_QUAD        1       // pinProblem: 33 to 37 are free on this part
 #if defined(ESP_PLATFORM) && !(CONFIG_SPIRAM && CONFIG_SPIRAM_MODE_QUAD)
 #error "BBS_BOARD_MF_S3PAR35 needs quad PSRAM: sdkconfig.defaults.mf35 was not applied (delete sdkconfig.makerfabs_s3_par35*)"
-#endif
-// Two consoles plus SSH fill the IDF's 8 VFS slots, and the card's FAT then
-// fails to mount (sdkconfig.defaults.mf35). A stale sdkconfig keeps 8.
-#if defined(ESP_PLATFORM) && CONFIG_VFS_MAX_COUNT < 9
-#error "BBS_BOARD_MF_S3PAR35 needs CONFIG_VFS_MAX_COUNT above 8 (sdkconfig.defaults.mf35): delete sdkconfig.makerfabs_s3_par35*"
 #endif
 
 // The Waveshare S3's reserve, for the same reason: Wi-Fi's and lwIP's
@@ -940,12 +936,6 @@
 #if defined(ESP_PLATFORM) && !CONFIG_OV5640_SUPPORT
 #error "BBS_BOARD_WS_S3TOUCH2 ships with an OV5640: sdkconfig.defaults.ws2 was not applied (delete sdkconfig.ws_s3touch2*)"
 #endif
-// With SSH and a card mounted an S3 fills the IDF's 8 VFS slots, with no
-// headroom (the Makerfabs' review): 12 in sdkconfig.defaults.ws2, as on the
-// Makerfabs. A stale sdkconfig keeps 8.
-#if defined(ESP_PLATFORM) && CONFIG_VFS_MAX_COUNT < 12
-#error "BBS_BOARD_WS_S3TOUCH2 needs CONFIG_VFS_MAX_COUNT of 12 (sdkconfig.defaults.ws2): delete sdkconfig.ws_s3touch2*"
-#endif
 
 // The internal heap a plugin may not take at start: the LCD-1.47's 16 KB,
 // for the same reason (Wi-Fi's and lwIP's buffers in PSRAM).
@@ -977,8 +967,10 @@
 
 // The serial bridge: no pins as shipped. With the camera, the card, the
 // panel, the touch and IMU bus and the battery sense wired, what is left is
-// GPIO 18 alone: UART0's 43 and 44 are on the header too, but they are the
-// console port CONFIG keeps free (and 43 carries the ROM's boot banner).
+// GPIO 18 alone. UART0's 43 and 44 are on the header too; the console is
+// the chip's own USB, so CONFIG takes them since 1.2.1 (B\x08_CONSOLE_UART0),
+// but 43 carries the ROM's boot banner at every reset: not for a LED or a
+// relay.
 #define BBS_SERIAL_RX         -1
 #define BBS_SERIAL_TX         -1
 
@@ -1060,8 +1052,9 @@
 // Pins the board owns (syscfg::pinProblem refuses them with the reason).
 // The panel's six and the card's four are those plugins' settings, as on
 // the LCD-1.47. 19 and 20 (the USB) and 26-37 (flash and octal PSRAM) the
-// S3's own rule refuses already, and CONFIG keeps 43 and 44 as the console
-// port. What is left for a sysop: GPIO 18.
+// S3's own rule refuses already. What is left for a sysop: GPIO 18, and
+// UART0's 43 and 44 on the header since 1.2.1 (the console is USB), 43 with
+// the ROM's boot banner on it at every reset.
 //   CAMERA   every wired camera line, PWDN included
 //   ONBOARD  the touch and IMU bus (47, 48), the touch INT (46), the IMU's
 //            INT1 (3) and the battery divider (5)
@@ -1136,12 +1129,6 @@
 //                     both, and a 10/100 link is the limit, not the bus
 #if defined(ESP_PLATFORM) && !CONFIG_ETH_SPI_ETHERNET_W5500
 #error "BBS_BOARD_WS_S3ETH needs the W5500 driver: sdkconfig.defaults.wseth was not applied (delete sdkconfig.ws_s3eth*)"
-#endif
-// With SSH and a card mounted an S3 fills the IDF's 8 VFS slots, with no
-// headroom (the Makerfabs' review): 12 in sdkconfig.defaults.wseth, as on the
-// Makerfabs. A stale sdkconfig keeps 8.
-#if defined(ESP_PLATFORM) && CONFIG_VFS_MAX_COUNT < 12
-#error "BBS_BOARD_WS_S3ETH needs CONFIG_VFS_MAX_COUNT of 12 (sdkconfig.defaults.wseth): delete sdkconfig.ws_s3eth*"
 #endif
 #define BBS_HAS_ETH           1
 #define BBS_ETH_SPI_HOST      2       // SPI3_HOST
@@ -1301,4 +1288,36 @@
 #else
 #define BBS_GPIO_MAX          39
 #define BBS_GPIO_OUT_MAX      33
+#endif
+
+// ---------------------------------------------------------------------------
+// The console (1.2.1). BBS_CONSOLE_UART0 is 1 where the console is UART0,
+// which flashing, the serial monitor and Improv then use, so a pin setting
+// on BBS_CONSOLE_TX or BBS_CONSOLE_RX would break them: the classic ESP32
+// boards (1 and 3), and an S3 whose console is a UART, the Makerfabs (43 and
+// 44). An S3 whose console is the chip's own USB (the Waveshares) has UART0
+// free, and the 4.3B ships its RS485 bridge on 43 and 44. On the board the
+// generated sdkconfig says which; the host, with no sdkconfig, takes it from
+// the profile: a classic chip, or an S3 that lists BBS_PINS_CONSOLE.
+// On the Waveshare S3s, GPIO 43 shows the chip's boot messages for a moment
+// at every reset (CONFIG_BOOT_ROM_LOG_ALWAYS_ON): avoid it for a LED or a
+// relay. CONFIG does not refuse it, since the 4.3B's RS485 bridge is there.
+// ---------------------------------------------------------------------------
+#if defined(ESP_PLATFORM)
+#if defined(CONFIG_ESP_CONSOLE_UART_NUM) && CONFIG_ESP_CONSOLE_UART_NUM == 0
+#define BBS_CONSOLE_UART0     1
+#else
+#define BBS_CONSOLE_UART0     0
+#endif
+#elif !defined(BBS_CHIP_S3) || defined(BBS_PINS_CONSOLE)
+#define BBS_CONSOLE_UART0     1
+#else
+#define BBS_CONSOLE_UART0     0
+#endif
+#if defined(BBS_CHIP_S3)
+#define BBS_CONSOLE_TX        43      // UART0's default pins
+#define BBS_CONSOLE_RX        44
+#else
+#define BBS_CONSOLE_TX        1
+#define BBS_CONSOLE_RX        3
 #endif

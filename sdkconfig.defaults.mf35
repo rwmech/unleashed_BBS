@@ -62,11 +62,4 @@ CONFIG_SPIRAM_MODE_QUAD=y
 # shows the log too, and takes no input.
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 
-# The VFS table, 8 to 12 (MF35 1.1.1). Two consoles (UART0 and the
-# USB-Serial-JTAG secondary), lwIP's sockets, the three LittleFS partitions
-# and SSH's eventfd (1.1.2) fill the IDF's 8, so the SD card's FAT was the
-# ninth and its mount failed with ESP_ERR_NO_MEM, which esp_vfs_register
-# returns for a full table (vfs.c, s_vfs_count >= VFS_MAX_COUNT): "no card:
-# not enough memory" with 1.7 MB of PSRAM free. Found on the bench,
-# 2026-09-28. The Waveshare has one console and fits. 4 bytes a slot.
-CONFIG_VFS_MAX_COUNT=12
+# The VFS table is 12 on every S3 (sdkconfig.defaults.esp32s3, 1.2.1).

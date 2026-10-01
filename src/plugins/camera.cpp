@@ -321,6 +321,12 @@ struct Job {
     // the picture (camera_pic.h), copied when the job starts
     bool      levels = true;
     uint8_t   gammaT = 10;                 // tenths
+    // The size CONFIG saved, and whether the sensor's own sizes were known
+    // when the job started (1.2.1). Before the first bring-up of a boot they
+    // are the profile's list, a guess, so the worker sizes again once the
+    // sensor has said. In the padding before err: no bytes.
+    uint8_t   savedSize = 0;
+    bool      sizeGuess = false;
     // results
     char      err[72] = {};
     uint32_t  bytes = 0;
@@ -368,6 +374,25 @@ enum : uint8_t { SENSOR_UNKNOWN, SENSOR_FOUND, SENSOR_MISSING };
 std::atomic<uint8_t> g_sensor{ SENSOR_UNKNOWN };
 uint32_t g_tlSlot = 0;
 bool     g_tlPrimed = false;
+// A timed shot that has fallen due and not been taken yet (1.2.1), since
+// when (0: none), and which second of its wait it was last tried in. The first
+// one after a boot fell due before the heap had settled and was refused for
+// memory, and with it that slot's picture: 46,371 internal free of 48,640
+// at 7.8 s on the Freenove.
+uint32_t g_tlHeldAt = 0;
+uint8_t  g_tlTried  = 0;          // 1 + the second last tried in, 0 none: zeroed, so .bss
+bool     g_tlPostSaid = false;     // this held shot has said the worker would not start
+// The held shot's job is on the worker (1.2.1-dev.5): the hold stays until
+// finish() says how it went, and a refusal for memory keeps it. And when it
+// last weighed the whole heap: 1 + the second of its wait, 0 = weigh next.
+bool     g_tlInFlight = false;
+uint8_t  g_tlWalked   = 0;
+// No timed shot in a board's first 30 s, while start-up work (the survey's
+// worker, the runner's stack, Wi-Fi) still holds internal RAM; a held one is
+// tried once a second for up to a minute, or half the interval when that is
+// shorter, and then goes, said once.
+constexpr uint32_t kTlSettleMs = 30000;
+constexpr uint32_t kTlHoldMs   = 60000;
 
 // photosDir: the Photos folder on the card, or false with no card.
 bool photosDir(char* out, size_t n) {
@@ -484,6 +509,27 @@ uint8_t* shoot(Job& j, size_t& len) {
     }
     g_sensor.store(SENSOR_FOUND);
     sensorSizes();
+    // The first snap of a boot was sized from the profile's list, before any
+    // sensor had answered (1.2.1): an OV2640 in a GC0308 board's socket came
+    // up at VGA with UXGA saved. Now the sensor has said, so a size that
+    // comes out different is brought up again at it. Once a boot at most,
+    // on the worker, never the loop.
+    if (j.sizeGuess) {
+        const uint8_t use = campic::clampSize(j.savedSize, sizeCount());
+        if (strcmp(campic::kSizes[use].word, j.sizeWord) != 0) {
+            plat::log("camera: the sensor gives %s; bringing it up again at that",
+                      campic::kSizes[use].word);
+            plat::camClose();
+            snprintf(j.sizeWord, sizeof(j.sizeWord), "%s", campic::kSizes[use].word);
+            j.cam.size = j.sizeWord;
+            if (!plat::camOpen(j.cam, why, sizeof(why))) {
+                g_sensor.store(SENSOR_MISSING);
+                plat::camClose();
+                fail(j, why[0] ? why : "the camera would not start");
+                return nullptr;
+            }
+        }
+    }
     j.freeUp = plat::camInternalFree();                // what the camera left while it runs
     j.dmaUp  = plat::camDmaLargest();
     const uint8_t* buf = nullptr;
@@ -726,7 +772,11 @@ void snapshotCfg(Job& j) {
     // once for each saved size and sensor, not at every snap.
     const uint8_t count = sizeCount();
     const uint8_t use   = campic::clampSize(g_set.size, count);
-    if (use != g_set.size) {
+    j.savedSize = g_set.size;
+    j.sizeGuess = !g_sizeFound.load();
+    // Only once the sensor has said what it gives: before that the count is
+    // the profile's list, and the worker sizes again after the bring-up.
+    if (use != g_set.size && !j.sizeGuess) {
         static uint16_t said = 0xFFFF;
         const uint16_t now = static_cast<uint16_t>(g_set.size << 8 | count);
         if (said != now) {
@@ -782,7 +832,12 @@ bool startJob(uint8_t kind, uint32_t now) {
     g_run.name = "camera";
     if (!runner::post(g_run)) {
         j.ph.store(PH_IDLE);
-        plat::log("camera: the worker would not start");
+        // Once a held timed shot, which is tried again every second (code
+        // review of dev.3): unthrottled, a runner that would not start
+        // put a line on the console every second for a minute.
+        const bool retry = kind == K_SYSTEM && g_tlHeldAt;
+        if (!retry || !g_tlPostSaid) plat::log("camera: the worker would not start");
+        if (retry) g_tlPostSaid = true;
         return false;
     }
     return true;
@@ -952,6 +1007,16 @@ void finish(uint32_t now) {
 
     Session* s = waiter();
     const uint8_t kind = j.kind, node = j.node;
+    // The held timed shot (tlHeld): filed, or refused for anything but
+    // memory, and the hold is done. Refused for memory (the largest block,
+    // which the counter could not see), it stays while inside its bound,
+    // weighs the heap at its next try, and a slot that runs out is said once
+    // by tlHeld ("waited ... and was not taken").
+    if (kind == K_SYSTEM && g_tlInFlight) {
+        g_tlInFlight = false;
+        if (!ok && strstr(j.err, "memory")) g_tlWalked = 0;
+        else                                g_tlHeldAt = 0;
+    }
     j.node = 0xFF;
     j.waiting = false;
     j.ph.store(PH_IDLE);
@@ -1001,6 +1066,48 @@ void finish(uint32_t now) {
 }
 
 // ---------------------------------------------------------------------------
+// tlHeld: the timed shot that is due, tried once a second until it is taken
+// or its wait is over (g_tlHeldAt, 1.2.1). snapSystem says no for memory, a
+// job already running, a card under its floor; each is worth a second look
+// a second later, and none of them is worth losing the slot's picture over.
+// ---------------------------------------------------------------------------
+bool snapTimed(bool walk);                             // below, with snapSystem
+
+void tlHeld(uint32_t now) {
+    if (g_tlInFlight) return;                           // on the worker: finish() says
+    // The timelapse turned off (CAMERA SET tl 0, which is live) while a shot
+    // was held: the shot goes with it (code review of dev.3).
+    if (!g_set.tlEvery) { g_tlHeldAt = 0; return; }
+    if (now < kTlSettleMs) return;                      // the board is still coming up
+    // The wait is counted from when the shot could first be tried: a shot
+    // due in the first seconds waits out the start-up, then its minute.
+    const uint32_t from  = g_tlHeldAt < kTlSettleMs ? kTlSettleMs : g_tlHeldAt;
+    const uint32_t held  = now - from;
+    uint32_t bound = static_cast<uint32_t>(g_set.tlEvery) * 500u;   // half the interval
+    if (!bound || bound > kTlHoldMs) bound = kTlHoldMs;
+    if (held > bound) {
+        plat::log("camera: a timed shot waited %u s and was not taken",
+                  static_cast<unsigned>(held / 1000u));
+        g_tlHeldAt = 0;
+        return;
+    }
+    const uint8_t sec = static_cast<uint8_t>(held / 1000u > 250u ? 250u : held / 1000u);
+    if (g_tlTried && sec + 1u <= g_tlTried) return;     // once a second
+    // The first try weighs the heap as every timed shot did before 1.2.1
+    // (roomToSnap: the largest free block, a walk of the heap). A retry
+    // must not walk it once a second from the loop (the 0.19.2 heapWatch
+    // shape, code review of dev.3), so it weighs it again only every 5 s of
+    // the wait, or after the worker refused for memory, and asks the free
+    // counter in between; the worker's bring-up checks the largest block, as
+    // it does for every snap. A counter that passes over a fragmented heap
+    // costs one refused job, and finish() keeps the hold (dev.5).
+    const bool walk = !g_tlWalked || sec + 1u >= g_tlWalked + 5u;
+    g_tlTried = static_cast<uint8_t>(sec + 1u);
+    if (walk) g_tlWalked = static_cast<uint8_t>(sec + 1u);
+    if (snapTimed(walk)) g_tlInFlight = true;          // the hold goes when it is filed
+}
+
+// ---------------------------------------------------------------------------
 // tick: every 20 ms (PF_FAST). Moves the job on, drives the flash and the
 // spinner, and starts the timed shots and the survey at start. Never waits.
 // ---------------------------------------------------------------------------
@@ -1024,9 +1131,15 @@ void tick(uint32_t now) {
         if (clock) {
             uint32_t local = static_cast<uint32_t>(t.tm_hour * 3600 + t.tm_min * 60 + t.tm_sec) +
                              static_cast<uint32_t>(t.tm_yday) * camrules::kDay;
-            if (camrules::tlDue(local, g_set.tlEvery, g_tlSlot, g_tlPrimed))
-                camera::snapSystem(camrules::kTlFolder, camrules::kTlPrefix, g_set.tlKeep, g_set.tlMax);
+            if (camrules::tlDue(local, g_set.tlEvery, g_tlSlot, g_tlPrimed)) {
+                if (g_tlHeldAt) plat::log("camera: a timed shot was not taken before the next was due");
+                g_tlHeldAt = now ? now : 1;
+                g_tlTried  = 0;
+                g_tlPostSaid = false;
+                g_tlWalked   = 0;
+            }
         }
+        if (g_tlHeldAt) tlHeld(now);
         return;
     }
 
@@ -1496,6 +1609,8 @@ bool start(Bbs& bbs) {
     // The flash pin idles low from the start, so a relay never clicks at boot.
     if (g_set.flash == FLASH_PIN && g_set.flashPin >= 0) plat::pinOut(g_set.flashPin, false);
     g_tlPrimed = false;
+    g_tlHeldAt = 0;                                    // a new interval: nothing held over
+    g_tlInFlight = false;
     g_running  = true;
     // What a snap will find, for the bench: the sensor needs one 32 KB block
     // of internal DMA memory. One walk of the heap, at start only.
@@ -1531,6 +1646,31 @@ const char* status() {
     return line;
 }
 
+// systemSnap: snapSystem, with the heap weighed whole (walk) or by the free
+// counter alone, for the held timed shot's retries (tlHeld).
+bool systemSnap(const char* folder, const char* prefix, uint16_t keepDays, uint32_t maxFiles, bool walk) {
+    if (!g_running || !plat::sdBase()[0] || jobBusy()) return false;
+    if (!plainWord(folder, 15) || !plainWord(prefix, 7)) return false;
+    if (walk ? !roomToSnap(true) : plat::camInternalFree() < kSnapInternal) return false;
+    if (photos::tally().known && !photos::tally().floorMet) return false;
+    // Its folder a group of its own for retention, the photo system's.
+    if (!photos::systemFolder(folder, prefix, keepDays, maxFiles)) return false;
+    struct tm t;
+    if (!localNow(t)) return false;
+    Job& j = g_job;
+    j.kind = K_SYSTEM;
+    if (!camrules::systemName(folder, prefix, t, j.rel, sizeof(j.rel))) return false;
+    snprintf(j.handle, sizeof(j.handle), "%s", folder);
+    texts(j, t, folder);
+    j.node = 0xFF;
+    j.waiting = false;
+    return startJob(K_SYSTEM, plat::millis());
+}
+
+bool snapTimed(bool walk) {
+    return systemSnap(camrules::kTlFolder, camrules::kTlPrefix, g_set.tlKeep, g_set.tlMax, walk);
+}
+
 }   // namespace
 
 // ---------------------------------------------------------------------------
@@ -1554,22 +1694,7 @@ void camera::photosLevels(PlugLevel& see, PlugLevel& removeLevel) {
 }
 
 bool camera::snapSystem(const char* folder, const char* prefix, uint16_t keepDays, uint32_t maxFiles) {
-    if (!g_running || !plat::sdBase()[0] || jobBusy()) return false;
-    if (!plainWord(folder, 15) || !plainWord(prefix, 7)) return false;
-    if (!roomToSnap(true)) return false;
-    if (photos::tally().known && !photos::tally().floorMet) return false;
-    // Its folder a group of its own for retention, the photo system's.
-    if (!photos::systemFolder(folder, prefix, keepDays, maxFiles)) return false;
-    struct tm t;
-    if (!localNow(t)) return false;
-    Job& j = g_job;
-    j.kind = K_SYSTEM;
-    if (!camrules::systemName(folder, prefix, t, j.rel, sizeof(j.rel))) return false;
-    snprintf(j.handle, sizeof(j.handle), "%s", folder);
-    texts(j, t, folder);
-    j.node = 0xFF;
-    j.waiting = false;
-    return startJob(K_SYSTEM, plat::millis());
+    return systemSnap(folder, prefix, keepDays, maxFiles, true);
 }
 
 extern const Plugin kCameraPlugin = {

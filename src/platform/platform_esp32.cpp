@@ -719,8 +719,12 @@ bool sdMount(const SdPins& pins, char* err, size_t errLen) {
         // everything that was not a timeout and told the sysop to try a
         // lower bus speed, which is advice that cannot work: the mount had
         // not got as far as the bus. Three attempts were spent on it.
+        // ESP_ERR_NO_MEM is also what esp_vfs_register says for a full VFS
+        // table (vfs.c, s_vfs_count >= VFS_MAX_COUNT), which is how the
+        // Makerfabs lost its card with 1.7 MB free (1.2.1: both are named).
+        // 36 columns: SD shows it indented two, inside a C64's 39.
         if (e == ESP_ERR_NO_MEM)
-            return fail("not enough memory to mount the card: see MEM");
+            return fail("no memory or VFS table full: see MEM");
         char why[72];
         snprintf(why, sizeof(why), "card answered then failed (%s)", esp_err_to_name(e));
         return fail(why);

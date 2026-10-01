@@ -24,6 +24,136 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.2.1 (in development)
+
+Host-tested only so far; the board versions move when their own code does.
+
+- **SyncTERM's autologin reaches the sysop node** (1.2.1-dev.1). Alt+L on a
+  telnet entry sends the handle, the password and the entry's system
+  password in one burst. The sysop's own account is asked `Sysop password:`
+  at login, and until now the question dropped every key held from before
+  it, so the system password was thrown away and the autologin stopped
+  there. A line already held when the question appears is taken as the
+  answer, and a right one elevates exactly as a typed one does. A wrong held
+  line is a skip: nothing is said, the stars are rubbed out, and it is never
+  counted toward the address's ban, because what was held may be a command
+  typed straight after the password. Only a line typed after the question
+  counts, as before. An uncounted guess needs a limit of its own, or the
+  burst would be a way round the ban for anybody holding the sysop's account
+  password: one held answer an address a ban window (15 minutes), after which
+  held keys are dropped as they were and the question waits. A right staff
+  password clears it; an empty held line or ESC gives it back. Costs no
+  static RAM (both new fields sit in padding).
+
+- **A held Enter alone does not answer the sysop question** (1.2.1-dev.2,
+  from the code review of dev.1). A double Enter at the password, a
+  client's CR LF (over SSH there is no telnet filter to eat the LF), or a
+  SyncTERM entry with an empty system password that still sends its CR
+  skipped the question and left the sysop at Main needing BYE. Held line
+  endings are dropped now and the question waits for a typed answer, with
+  the held try unspent. And, as it stands: a wrong stored system password
+  is ignored once; within 15 minutes the question then waits for you to
+  type it.
+
+The 1.1.3 queue and the 1.2.0 full run's findings (1.2.1-dev.3):
+
+- **`/sq 10` hides node 10.** The room read one character of a line's
+  `#n:` tag, so a line from node 10 was node 1's: `/sq 10` hid nothing and
+  `/sq 1` hid node 10 as well.
+- **CONFIG's core pin rows reach GPIO 40 to 48 on the S3s** (the LED and
+  the backup button stopped at 39). They follow the chip's highest pin, so
+  the ESP32 images are unchanged; `pinProblem` still refuses what each
+  profile owns.
+- **The VFS table is 12 on every S3**, in the shared S3 layer
+  (`sdkconfig.defaults.esp32s3`) rather than four boards' own, and the
+  LCD-1.47 gets it too: with SSH and a card an S3 was at 8 of 8. One board.h
+  guard refuses an S3 image built without it. The card's out-of-memory
+  message names a full VFS table as well as memory.
+- **FILES opens areas past 10 by number.** A digit that could start a
+  longer number the caller can open (1, with Photos at 12) waits for the
+  rest and Enter; one that cannot opens its area at once, as before. Plain
+  ASCII reaches Photos and Timelapse by number. `#` still works.
+- **The camera's first snap after a boot is the size CONFIG saved.** Its
+  size was chosen from the board's list before any sensor had answered, so
+  an OV2640 on the Freenove came up at VGA with UXGA saved; the worker now
+  brings it up again at the size the sensor gives, once a boot at most.
+- **The first timed shot after a boot is not lost.** It fell due before
+  the heap had settled and was refused for memory, and with it that slot's
+  picture. A timed shot is held now: none in the board's first 30 s, then
+  tried once a second for up to a minute (or half the interval), then
+  dropped with a line on the console.
+- **SSH offers only the ciphers it has** (S3): wolfSSH's list named
+  aes192-gcm and aes192-ctr, which this build of wolfCrypt leaves out.
+- Tests: `test_doors` waits for the second restart's door list,
+  `test_board_ws2` runs on the real clock, `test_sats` reads the sat's name
+  from SATS, the skin unit test's GCC 13 warning is gone, `plugins.lock`
+  pins camsat v1.1.0, the host's S3 profiles refuse 43 and 44 as the
+  console, and the shared CONFIG pin tests read the profile's pins
+  (`PIN_BOARD`). New: `test_room_squelch_ten`, `test_files_typed_number`.
+- From the code review of dev.3 (1.2.1-dev.4):
+  - FILES: Logs (10) no longer counts as a longer number, so a co-sysop
+    with areas 1 to 10 gets area 1 on the key again.
+  - CONFIG refuses UART0's pins as "the console port" only where the
+    console is UART0: the ESP32 boards and the Makerfabs. The Waveshare S3s
+    run their console on the chip's own USB, and the 4.3B's RS485 bridge
+    ships on 43 and 44, which CONFIG serial refused as its own console.
+  - The camera's held timed shot retries without walking the heap from the
+    loop, says a worker that would not start once rather than every second,
+    and goes when the timelapse is switched off.
+- From the review of dev.4 (1.2.1-dev.5): a held timed shot the worker
+  refuses for memory (the largest block, which the free counter cannot see)
+  keeps its hold inside its minute, and the retries weigh the whole heap
+  every 5 s of the wait rather than never. COMMANDS.md says that GPIO 43 on
+  the Waveshare S3s carries the boot messages at every reset.
+- Every caller-visible line 1.2.1 added or changed fits 39 columns at 40:
+  the card's out-of-memory reason is `no memory or VFS table full: see MEM`
+  (36, shown indented two by SD), and `/sq` answers
+  `Node 10 hidden. Joins, leaves show.` or `Node 10 back.` at 40 (39 and 17
+  with the marker, where the 80-column sentence is 51).
+- Tests only (1.2.1-dev.6, from the targeted run on dev.5): `test_board_ws2`
+  asserted the two bugs dev.3 fixed (the LED row stopping at 39, and 1 and
+  3 as the console on every host profile) and now expects GPIO 46-48 and 3
+  refused as the board's own; `test_config_serial_rows` read the dot-filled
+  rest of an 80-column box as part of the value.
+- **A stamp taken after the pass's clock read** (1.2.1-dev.7, the sweep after
+  lane B's serviceWait fix). A time stamped from `plat::millis()` part way
+  through a pass, or on another task, is ahead of the `now` read at the top
+  of the pass, and an unsigned `now - stamp` then reads as 49 days. Made
+  signed where it could happen:
+  - Photos: every FILES.BBS tidy a prune handed back was dropped at once
+    as "not made" (the tidies' minute was stamped in the same tick).
+  - Doors: a close begun from a key gave up at once rather than retrying
+    CLOSE for 5 s.
+  - The panel (touch boards): a CONFIG save put the glass to sleep straight
+    away with Sleep set, and turned the header a page.
+  - The link radio: a send failure landing between the rate check's clock
+    read and its load counted as 30 s clean, and the rate went back up.
+  - The ban window (the sysop question's held try, stamped mid-pass) could
+    read as expired and give the try back.
+  - WHO and NODES could show 49 days idle for a caller who had just typed;
+    the drive light and a skin's node lamps could miss a frame; the SSH
+    task could take one pass without waiting; the backup window's idle
+    check (safe today, its held states skip it).
+- Tests only (1.2.1-dev.8): on the WS2, which ships no bridge pins,
+  `test_config_serial_rows` took the board's "Saved, not running" for RX on
+  43 as a refusal, then left RX on 43 and expected the baud save to be
+  live. It accepts that answer now and puts RX back to the profile's -1.
+  The WS2's board.h comments said CONFIG kept 43 and 44 as the console; it
+  has not since dev.4 (the console is USB), and they say so.
+- **One rule for elapsed time, `plat::since(now, at)`** (1.2.1-dev.8, the
+  review of dev.7). The signed differences dev.7 used fixed a stamp a moment
+  ahead of now and broke the other way: any real gap past 24.8 days turned
+  negative. One storage error, then 24.8 quiet days, and the drive light
+  (and a skin's lens) blinked red for 24.8 days; a ban entry of one or two
+  wrong passwords stopped ageing out. `since` is unsigned with a 65 s skew
+  allowance: a stamp up to that far ahead is 0, and a real gap keeps the
+  clock's 49.7 days. Every site dev.7 touched uses it. Unit test
+  `host/test_since.cpp`, in `make test`.
+- Static DRAM off the ELF: the camera boards pay 8 bytes for the held timed
+  shot (ESP32-CAM 2,688 free, Freenove 4,160), the S3s without a camera 16
+  for the four VFS slots the LCD-1.47 gains (79,784 free); the WROOM is
+  unchanged (15,080).
+
 ## 1.2.0 (S3 1.1.4, WS43B 1.0.2, WS2 1.0.3, ETH 1.0.2, MF35 1.1.2, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-29: the hardware release
 
 **Out early for testing: this release has not been through the full

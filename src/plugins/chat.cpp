@@ -447,18 +447,25 @@ uint8_t slotOf(const Session& s) {
     return s.id < kSlots ? s.id : 0;
 }
 
-// idOfChar: the node a line tag names, 0xFF when it is not one of ours
-uint8_t idOfChar(char c) {
-    if (c == 'S' || c == 's') return 0;
-    if (c >= '1' && c <= '9') return static_cast<uint8_t>(c - '0');
-    return 0xFF;
+// idOfTag: the node a line's tag names ("S:" or up to two digits and the
+// colon, after the '#'), 0xFF when it is not one of ours. It read one
+// character until 1.2.1, so "#10:" was node 1: /sq 10 hid nothing, and
+// /sq 1 hid node 10 as well.
+uint8_t idOfTag(const char* p) {
+    if ((p[0] == 'S' || p[0] == 's') && p[1] == ':') return 0;
+    uint8_t id = 0, n = 0;
+    while (n < 2 && p[n] >= '0' && p[n] <= '9') {
+        id = static_cast<uint8_t>(id * 10 + (p[n] - '0'));
+        ++n;
+    }
+    return (n && p[n] == ':') ? id : 0xFF;
 }
 
 // squelched: is this line from somebody the caller has hidden? Only lines
 // from a caller can be hidden; the room's own notices always get through.
 bool squelched(const Session& s, const char* line) {
     if (line[0] != '#') return false;
-    uint8_t from = idOfChar(line[1]);
+    uint8_t from = idOfTag(line + 1);
     if (from == 0xFF || from >= kSlots) return false;
     return (g_squelch[slotOf(s)] >> from) & 1u;
 }
@@ -2497,8 +2504,16 @@ bool roomCommand(Session& s, const char* p, uint32_t now) {
             uint16_t bit = static_cast<uint16_t>(1u << id);
             g_squelch[slotOf(s)] ^= bit;
             bool on = (g_squelch[slotOf(s)] & bit) != 0;
-            snprintf(buf, sizeof(buf), "Node %u %s. Joining and leaving still show.",
-                     static_cast<unsigned>(id), on ? "hidden" : "back");
+            // 51 columns with the marker at node 10, so a short form at 40
+            // (1.2.1): "--> Node 10 hidden. Joins, leaves show." is 39.
+            if (s.term.cols() >= 60)
+                snprintf(buf, sizeof(buf), "Node %u %s. Joining and leaving still show.",
+                         static_cast<unsigned>(id), on ? "hidden" : "back");
+            else if (on)
+                snprintf(buf, sizeof(buf), "Node %u hidden. Joins, leaves show.",
+                         static_cast<unsigned>(id));
+            else
+                snprintf(buf, sizeof(buf), "Node %u back.", static_cast<unsigned>(id));
             tell(s, on ? Color::Yellow : Color::LightGreen, buf);
         }
         flush(s);

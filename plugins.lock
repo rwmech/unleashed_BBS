@@ -16,6 +16,7 @@
 # ===========================================================================
 
 # The camera satellite (Rob, 2026-09-26: in every official image, off by
-# default). Pinned here, and named in the release environments'
-# custom_ext_plugins, once unleashed_camsat has its first commit:
-# camsat  https://github.com/rwmech/unleashed_camsat  <commit>
+# default). Pinned at v1.1.0 (1.2.1), so harness.sh --ext camsat fetches it
+# by itself. No environment names it in custom_ext_plugins yet, so no image
+# changes: building it into the release images is its own decision.
+camsat  https://github.com/rwmech/unleashed_camsat  2dbbf54360e623bd683c1c7a9532e7559119bc2a

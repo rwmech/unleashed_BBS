@@ -1005,6 +1005,24 @@ bool pastTen(Session& s) {
     return false;
 }
 
+// startsMore: could the digit d (1 to 9) be the first of a longer area
+// number this caller can open, 12 for Photos, 13 for Timelapse? Then one
+// key cannot mean the area d (1.2.1): the digit starts a number typed on
+// the prompt line and Enter takes it, the forums' way since 0.21.6, and
+// plain ASCII, which has no cursor, can reach every area by number. When
+// it cannot, the digit opens area d at once, as it always has, so a caller
+// with areas 1 to 8 never waits for an Enter.
+//
+// From 11 up, as pastTen: 10 is '0', a key of its own, so a co-sysop who
+// sees 1 to 10 and nothing past (Logs is staff's) gets area 1 on the key.
+bool startsMore(Session& s, uint8_t d) {
+    for (uint8_t i = 10; i < g_areas; ++i) {
+        const unsigned shown = i + 1u;
+        if (shown / 10u == d && mayRead(s, i)) return true;
+    }
+    return false;
+}
+
 void areaMenu(Bbs& b, Session& s) {
     Term& t = s.term;
     Timeline& tl = s.tl;
@@ -1846,8 +1864,10 @@ void onKey(Session& s, int k, uint32_t now) {
         s.term.cls(s.tl);
         b.rowTitle(s, "File sections");
         b.rowText(s, Color::White, "1 2 3    a number opens that section");
-        if (pastTen(s))
-            b.rowText(s, Color::White, "#        a number past 10, then Enter");
+        if (pastTen(s)) {
+            b.rowText(s, Color::White, "12       past 10: digits, then Enter");
+            b.rowText(s, Color::White, "#        the same, asked first");
+        }
         if (canPoint(s))
             b.rowText(s, Color::White, "cursors  move the bar, Enter opens");
         b.rowText(s, Color::White, "?        this");
@@ -1882,7 +1902,17 @@ void onKey(Session& s, int k, uint32_t now) {
     if (k >= '0' && k <= '9') {
         // One keypress per area, and '0' means ten: the two built-in areas
         // sit at 9 and 10, so without that the Logs area would be reachable
-        // by cursor but not by number, and plain ASCII has no cursor.
+        // by cursor but not by number, and plain ASCII has no cursor. A
+        // digit that could begin a longer number this caller can open (1,
+        // with Photos at 12) starts that number instead, and Enter takes it
+        // (startsMore, 1.2.1). Only at the menu: inside an area a digit is a
+        // file number, handled above.
+        if (k != '0' && g_where[slot] == Where::Menu &&
+            startsMore(s, static_cast<uint8_t>(k - '0'))) {
+            askFor(s, AskArea);
+            s.ed.key(k, s.term, s.tl);
+            return;
+        }
         uint8_t want = k == '0' ? 10 : static_cast<uint8_t>(k - '0');
         if (want >= 1 && want <= g_areas && g_area[want - 1].path[0] &&
             mayRead(s, static_cast<uint8_t>(want - 1))) {

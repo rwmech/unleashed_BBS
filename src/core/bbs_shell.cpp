@@ -1392,7 +1392,9 @@ uint8_t Bbs::nodeCells(Session& v, const Session& o, NodePlan plan) {
     Color handleC = &o == &v ? Color::White : (hidden ? Color::DarkGrey : Color::LightGreen);
     Color doingC  = hidden ? Color::DarkGrey : Color::Cyan;
 
-    uint32_t idleMs = now - o.lastInput;
+    // lastInput can be stamped from plat::millis() later in this pass than
+    // now (1.2.1): idle 0 then, not 49 days.
+    uint32_t idleMs = plat::since(now, o.lastInput);
     char idle[8];
     fmtIdle(idle, sizeof(idle), idleMs);
     Color idleC = idleMs > 300000u ? Color::DarkGrey : Color::Grey;
@@ -3402,7 +3404,7 @@ void Bbs::cmdBye(Session& s, const char* arg, uint32_t now) {
 
 // staffPassword: see bbs.h. BYE's rules, taken out of cmdBye so the sysop
 // account's login question (onSysopPassword) cannot drift from them.
-Access Bbs::staffPassword(Session& s, const char* pw, uint32_t now, bool* banned) {
+Access Bbs::staffPassword(Session& s, const char* pw, uint32_t now, bool* banned, bool count) {
     if (banned) *banned = false;
     Access lv = syscfg::passwordLevel(pw);
     // The published default is honoured from the board's own network only.
@@ -3418,6 +3420,11 @@ Access Bbs::staffPassword(Session& s, const char* pw, uint32_t now, bool* banned
     if (lv != Access::None) {
         bans_.clear(s.ipAddr);
         return lv;
+    }
+    if (!count) {                                    // typed ahead: said, not counted
+        plat::log("bbs: node %s staff password typed ahead did not match, from %s (not counted)",
+                  nodeName(s).t, s.ip);
+        return Access::None;
     }
     plat::log("bbs: node %s staff password failed from %s", nodeName(s).t, s.ip);
     if (bans_.fail(s.ipAddr, now)) {
