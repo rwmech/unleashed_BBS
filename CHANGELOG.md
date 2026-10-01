@@ -154,6 +154,7 @@ The 1.1.3 queue and the 1.2.0 full run's findings (1.2.1-dev.3):
   allowance: a stamp up to that far ahead is 0, and a real gap keeps the
   clock's 49.7 days. Every site dev.7 touched uses it. Unit test
   `host/test_since.cpp`, in `make test`.
+
 ### The forums (1.2.1-forums.1 to forums.5)
 
 Forum phase 0 from `internal/fidonet-zmodem-2026-09-29.md`: worth doing
@@ -264,6 +265,7 @@ From the code review of 1.2.1-forums.2:
   test host's fast clock. `MEM FORCE` and `SYS FORCE` share the same wait
   and the same fix. At the 1.2.1-dev.9 merge the comparison became
   `plat::since(now, s.waitFrom)`, the core's one rule for elapsed time.
+
 ### The boards: MF35V2 1.0.0 and MF35 1.1.3
 
 From the board lane board-mf35v2 (branched from v1.2.0, built and benched
@@ -277,7 +279,8 @@ there as `1.2.0 (MF35V2 1.0.0)`), merged at 1.2.1-dev.9. Its image set,
   to 18, 17 and 46 because 35 to 37 are octal PSRAM's pins.
 - Everything the v1.0 has: the 480 x 320 status skin and the panel
   skins, SSH on 6400 and 6422 (eight at once), the S3's 8 MB layout (the first
-  install is an erase), the link, and the VFS table at 12 (the shared S3 layer's, since the merge).
+  install is an erase), the link, and the VFS table at 12 (the shared S3
+  layer's, since the merge).
 - **The console is the chip's own USB** (the port marked USB-NATIVE), not the
   v1.0's CP2104: that is where Improv and the installer's Update answer. The
   USB-TTL port still flashes but carries no console.
@@ -290,8 +293,8 @@ there as `1.2.0 (MF35V2 1.0.0)`), merged at 1.2.1-dev.9. Its image set,
   (release-prep/mf35v2/pins.md). CONFIG refuses 43 and 44 (the CP2104's), 38,
   39 and 40 (touch), 19 and 20 (the USB, also on the J1 socket) and the panel's
   data bus.
-- Static DRAM 266,720 of 341,760 (75,040 free), image 1,507,216 bytes. The
-  Waveshare stick's and the v1.0's code and data are unchanged (only the
+- On the lane (1.2.0): static DRAM 266,720 of 341,760 (75,040 free), image
+  1,507,216 bytes. The Waveshare stick's and the v1.0's code and data are unchanged (only the
   ELF's own hash in each image moved, with the debug line numbers).
 - On the bench: 8 MB PSRAM found, the card mounted over SPI, the FT6236
   answered (chip ID 0x64), the panel up at 20 MHz, Wi-Fi by Improv, first-boot
@@ -308,10 +311,24 @@ there as `1.2.0 (MF35V2 1.0.0)`), merged at 1.2.1-dev.9. Its image set,
 
 ### Sizes
 
-Lane figures before the merge, off the ELF: the camera boards pay 8 bytes for the held timed
-  shot (ESP32-CAM 2,688 free, Freenove 4,160), the S3s without a camera 16
-  for the four VFS slots the LCD-1.47 gains (79,784 free); the WROOM is
-  unchanged (15,080).
+Static DRAM off the ELFs at 1.2.1-dev.9, every env built with no warnings
+(each _release env the same as its bench env):
+
+| Board | Static DRAM | Free | Image |
+|---|---|---|---|
+| ESP32 (WROOM) | 165,680 of 180,736 | 15,056 | 1,273,648 |
+| Freenove (FNCAM 1.0.8) | 176,616 of 180,736 | 4,120 | 1,349,904 |
+| ESP32-CAM (ESPCAM 1.0.5) | 178,088 of 180,736 | 2,648 | 1,405,424 |
+| Waveshare LCD-1.47 (S3 1.1.4) | 262,024 of 341,760 | 79,736 | 1,490,736 |
+| Waveshare 4.3B (WS43B 1.0.2) | 264,616 of 341,760 | 77,144 | 1,507,440 |
+| Waveshare Touch-LCD-2 (WS2 1.0.3) | 275,648 of 341,760 | 66,112 | 1,578,656 |
+| Waveshare ETH (ETH 1.0.2) | 266,360 of 341,760 | 75,400 | 1,516,208 |
+| Makerfabs 3.5" v1.0 (MF35 1.1.3) | 261,496 of 341,760 | 80,264 | 1,501,760 |
+| Makerfabs 3.5" v2.0 (MF35V2 1.0.0) | 266,752 of 341,760 | 75,008 | 1,513,648 |
+
+Images are the release builds. Against 1.2.0 the ESP32 boards are 24 to 72
+bytes down (WROOM 15,080 to 15,056 free, Freenove 4,192 to 4,120, ESP32-CAM
+2,720 to 2,648); the ESP32-CAM is still the floor.
 
 ## 1.2.0 (S3 1.1.4, WS43B 1.0.2, WS2 1.0.3, ETH 1.0.2, MF35 1.1.2, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-29: the hardware release
 
