@@ -205,6 +205,16 @@ struct SysConfig {
     // Ethernet chip untouched. Read at boot, like the network.
     bool     ethernet      = true;
 #endif
+#ifdef BBS_HAS_LCD
+    // A new photo on the panel (1.2.1, CONFIG photos, plugins/panel_photo.h;
+    // Rob: "Snap happens, show pic on screen for 1 minute"). Whether it
+    // shows, and for which kinds: a caller's snap (any camera, a sat's too),
+    // a motion shot, a timelapse frame. Read live at each new photo.
+    bool     photosShow       = true;
+    bool     photosShowSnaps  = true;
+    bool     photosShowMotion = true;
+    bool     photosShowTl     = false;       // one a minute would hold the glass for good
+#endif
 };
 
 namespace syscfg {

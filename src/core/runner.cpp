@@ -189,6 +189,15 @@ bool busy() {
     return b;
 }
 
+#ifdef BBS_HAS_LCD
+bool waiting() {
+    plat::runLock();
+    const bool w = g_count != 0;
+    plat::runUnlock();
+    return w;
+}
+#endif
+
 const char* current()       { return g_current.load(); }
 void        breathe()       { plat::taskSleep(0); }
 uint32_t    stackLow()      { return g_stackLow.load(); }

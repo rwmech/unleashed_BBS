@@ -1055,7 +1055,8 @@ const CfgField kNetwork[] = {
 // "one word per thing": the camera is the hardware, photos are the system,
 // a sat is a device). Which camera a bare SNAPSHOT takes: a name CAMERA
 // shows; blank, or a name that is not on the air, is the built-in camera,
-// else the first that is up. The gallery's auto-show rows join it.
+// else the first that is up. The new-photo show's rows (1.2.1) joined it,
+// on a board with a display.
 // The limits and the retention joined it (1.2.0): they were constants and
 // the built-in camera's own settings, and a camera sat's photos are the
 // same system's. Labels 9 at 40 and 20 at 80, notes 38 and 78.
@@ -1085,6 +1086,26 @@ const CfgField kPhotos[] = {
     { "photos_tl_max", "TL most", CK_NUM, 0, 0, 5, "Most timelapse photos kept. 0: all.",
       "Timelapse at most",
       "The most timelapse photos kept, oldest out first. 0 keeps them all." },
+#ifdef BBS_HAS_LCD
+    // A new photo on the panel (1.2.1, Rob: "Snap happens, show pic on
+    // screen for 1 minute"; plugins/panel_photo.h), display boards only, so
+    // a WROOM's page is as it was. Last, so no row above moves. Read at each
+    // new photo, so a save is live with no restart. Three yes/no rows rather
+    // than one choice: CONFIG has no multi-choice kind, and a cycle through
+    // seven combinations is seven presses to "motion only" (the gallery spec).
+    { "photos_show", "On panel", CK_YESNO, 0, 0, 4, "Yes: a new photo shows for a minute.",
+      "New photos on panel",
+      "A new photo shows on the display for a minute; a newer one replaces it." },
+    { "photos_show_snaps", "Snaps", CK_YESNO, 0, 0, 4, "A SNAPSHOT: any camera, any caller.",
+      "Show new snaps",
+      "A SNAPSHOT from any camera, built in or a sat, a caller's or your own." },
+    { "photos_show_motion", "Motion", CK_YESNO, 0, 0, 4, "A shot a motion sensor set off.",
+      "Show motion shots",
+      "A picture a motion sensor set off, on any camera or sat." },
+    { "photos_show_tl", "Timelapse", CK_YESNO, 0, 0, 4, "Each frame as it comes: often.",
+      "Show timelapse",
+      "Every timelapse frame as it arrives: often, so no as shipped." },
+#endif
 };
 
 // isWifiKey: one of the two keys that are one setting (see configSave)
@@ -1503,6 +1524,12 @@ void cfgLiveValue(const char* key, char* out, size_t n) {
     else if (!strcmp(key, "photos_floor"))          { if (c.photosFloor >= 0) snprintf(out, n, "%ld", static_cast<long>(c.photosFloor)); }
     else if (!strcmp(key, "photos_tl_keep"))        snprintf(out, n, "%u", c.photosTlKeep);
     else if (!strcmp(key, "photos_tl_max"))         snprintf(out, n, "%lu", static_cast<unsigned long>(c.photosTlMax));
+#ifdef BBS_HAS_LCD
+    else if (!strcmp(key, "photos_show"))           snprintf(out, n, "%s", c.photosShow ? "yes" : "no");
+    else if (!strcmp(key, "photos_show_snaps"))     snprintf(out, n, "%s", c.photosShowSnaps ? "yes" : "no");
+    else if (!strcmp(key, "photos_show_motion"))    snprintf(out, n, "%s", c.photosShowMotion ? "yes" : "no");
+    else if (!strcmp(key, "photos_show_tl"))        snprintf(out, n, "%s", c.photosShowTl ? "yes" : "no");
+#endif
     else if (!strcmp(key, "activity_led_gpio"))     snprintf(out, n, "%d", c.ledGpio);
     else if (!strcmp(key, "silent"))                snprintf(out, n, "%s", c.silent ? "yes" : "no");
     else if (!strcmp(key, "closed"))                snprintf(out, n, "%s", c.closed ? "yes" : "no");

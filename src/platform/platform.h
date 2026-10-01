@@ -650,10 +650,18 @@ uint16_t touchTaps();
 // 0 when the picture was decoded whole; otherwise the decoder's own result
 // code (TJpgDec's JRESULT: 1 put stopped it, 2 the input ran out, 3 or 4 out
 // of memory, 6 to 8 a format it cannot do).
+// scale (1.2.1, the panel's new-photo show): the picture handed over at
+// 1 / (1 << scale), 0 to 3, TJpgDec's own descaling (JD_USE_SCALE is 1 in the
+// S3 ROM's build, esp32s3/rom/tjpgd.h, and in the host's). The output is then
+// exactly (width >> scale) x (height >> scale); width and height are still
+// the file's own. At 1/8 the decoder skips the IDCT; at 1/2 and 1/4 it does
+// the whole decode and keeps every other or fourth pixel, so the time saved
+// is the output's, not the Huffman decode's.
 // ---------------------------------------------------------------------------
 using JpegRead = size_t (*)(void* ctx, uint8_t* buf, size_t n);
 using JpegPut  = bool (*)(void* ctx, uint16_t x, uint16_t y, uint16_t w, uint16_t h, const uint8_t* rgb);
-int      jpegDecode(JpegRead rd, JpegPut put, void* ctx, uint16_t& width, uint16_t& height);
+int      jpegDecode(JpegRead rd, JpegPut put, void* ctx, uint16_t& width, uint16_t& height,
+                    uint8_t scale = 0);
 #endif  // BBS_HAS_LCD
 
 #if defined(BBS_SD_CS_EXPANDER) || defined(BBS_LCD_RGB)

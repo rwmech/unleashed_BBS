@@ -114,6 +114,7 @@
 
 #include "panel_gfx.h"
 #include "panel_feed.h"
+#include "panel_photo.h"        // a new photo on the glass (1.2.1)
 #include "lights.h"
 #include "skin.h"
 #include "../core/bbs.h"
@@ -266,6 +267,9 @@ int16_t        g_legacyRot = -1;
 // skin is drawn whole the first pass it does not.
 char           g_skin[skin::kNameMax + 1] = "status";
 bool           g_skinOwned = false;
+// A new photo (1.2.1, panel_photo.h) had the glass last pass: the status
+// skin, or the skin, is drawn whole the first pass it does not.
+bool           g_photoOwned = false;
 
 // The framebuffer, in PSRAM, kept across restarts of the plugin while its
 // size does not change: a CONFIG save restarts every plugin.
@@ -1904,6 +1908,10 @@ void touchTick(uint32_t now) {
         return;
     }
     g_wakeAt = now ? now : 1;
+    if (photoshow::showing()) {                            // a tap ends a new photo's show (1.2.1)
+        photoshow::dismiss();
+        return;
+    }
     if (g_ringShown) return;                               // a ring keeps the slot
     // The page the slot turns to holds kTapHoldMs whether this tap starts
     // the turn or lands in one the board began itself: a tap mid-fade used to
@@ -1988,7 +1996,9 @@ void touchTick(uint32_t now) {
     if (taps) {
         g_touchAt = now ? now : 1;
         if (g_asleep) { wake(now); return; }              // the tap is spent on waking
-        if (!ring) {                                       // a ring keeps the slot
+        if (photoshow::showing()) {                        // a tap ends a new photo's show (1.2.1)
+            photoshow::dismiss();
+        } else if (!ring) {                                // a ring keeps the slot
             g_page = static_cast<uint8_t>((g_page + 1) % PAGES);
             g_fade = 0;
             g_dir  = 0;
@@ -2007,6 +2017,28 @@ void touchTick(uint32_t now) {
         plat::since(now, g_touchAt) >= static_cast<uint32_t>(g_sleepMin) * 60000u) sleepNow();
 }
 #endif
+
+// photoAwake: a new photo on the glass (1.2.1) wakes a panel its Sleep put
+// dark, and holds the sleep clock while it shows: sleep is dark while
+// nothing happens, and a photo is something (the gallery spec). The light is
+// owed, not switched on, so it comes on once the photo is whole on the glass
+// rather than on whatever the glass held. Silent is another matter: the show
+// never runs while silent.
+void photoAwake(uint32_t now) {
+#ifdef BBS_HAS_TOUCH
+    if (g_asleep) {
+        g_asleep = false;
+        oweLight();
+    }
+#ifdef BBS_TOUCH_POLL
+    g_wakeAt = now ? now : 1;
+#else
+    g_touchAt = now ? now : 1;
+#endif
+#else
+    (void)now;
+#endif
+}
 
 // ---------------------------------------------------------------------------
 // Hooks
@@ -2135,6 +2167,10 @@ bool start(Bbs& bbs) {
     // back from its copy after a CONFIG save that left the glass alone.
     g_skinOwned = false;
     skin::want(g_skin, g_run.width, g_run.height);
+    // A new photo (1.2.1): framed for this glass, from now on. A show that
+    // was up before a CONFIG save ended at the stop; it does not come back.
+    g_photoOwned = false;
+    photoshow::begin(g_run.width, g_run.height, hiding);
     return true;
 }
 
@@ -2142,6 +2178,8 @@ bool start(Bbs& bbs) {
 // start a moment later, and the panel keeps its framebuffer and its bus
 // across it; a panel switched off stays dark.
 void stop() {
+    photoshow::end();                                      // off the glass, its PSRAM let go
+    g_photoOwned = false;
     skin::stop();
     lights::wantPanel(false);
     if (g_up) light(0);
@@ -2156,6 +2194,8 @@ void tick(uint32_t now) {
     // What happens meanwhile (a login, a ring) is still kept by the hooks,
     // so the picture that comes back is the board as it is then.
     if (board::silent()) {
+        photoshow::quiet();                                // no photo shows, none saved up for after
+        g_photoOwned = false;                              // silent's end draws the glass whole, once
         if (!g_dark) {
             g_dark = true;
             g_stale = true;
@@ -2187,8 +2227,42 @@ void tick(uint32_t now) {
     sleepTick(now);
 #endif
 #endif
-    const bool textDue = !g_textAt || now - g_textAt >= kTextMs;
+    bool textDue = !g_textAt || now - g_textAt >= kTextMs;
     if (textDue) g_textAt = now ? now : 1;
+
+    // A new photo (1.2.1, panel_photo.h): filed by any camera, it has the
+    // glass for a minute and the panel draws nothing of its own meanwhile;
+    // the events it would list are still kept by the hooks and the counts
+    // refreshText compares, so the glass that comes back is the board as it
+    // is then. A ring, or the board shutting down, takes the glass from it.
+    {
+        Bbs& b = Bbs::instance();
+        const bool blocked = b.ringing() != nullptr || (b.listening() && !b.answering());
+        if (photoshow::tick(g_canvas, g_dirty, now, blocked)) {
+            photoAwake(now);
+            // The photo threw away the queue it found: a light owed waits
+            // for the photo's own whole frame, as for a skin's.
+            if (g_lightOwed && (photoshow::copying() || photoshow::started())) g_owedAt = g_bands;
+            g_photoOwned = true;
+            flush();
+            return;
+        }
+        if (g_photoOwned) {
+            // Back from a photo: the whole glass again, every figure on this
+            // pass, as after silent mode; a skin copies its picture back.
+            g_photoOwned = false;
+            redrawAll();
+            skin::redraw();
+            if (g_lightOwed) g_owedAt = g_bands;
+            textDue   = true;
+            g_textAt  = now ? now : 1;
+            g_stripAt = 0;
+            g_stepAt  = now;                               // the header's page holds afresh
+#if PANEL_BIG
+            g_gAt = 0;                                     // the traffic graph starts afresh
+#endif
+        }
+    }
 
     // A skin from the card, when one is set and ready: it draws the glass
     // and the status skin below draws nothing. Its figures are the same
@@ -2373,6 +2447,19 @@ void cmdPanel(Bbs& b, Session& s, const char* a, uint32_t now) {
         line(s, Color::Grey, buf);
     }
 #endif
+    // A new photo on the glass (1.2.1): whether one shows and of which kinds,
+    // what the show is doing, and the last decode, so the bench reads its
+    // time off PANEL as well as the console. Above "bands sent", as the
+    // backlight's line is.
+    {
+        char pb[64];
+        photoshow::status(pb, sizeof(pb));
+        line(s, Color::Grey, pb);
+        if (photoshow::last()[0]) {
+            snprintf(pb, sizeof(pb), "Last photo %.52s", photoshow::last());
+            line(s, Color::Grey, pb);
+        }
+    }
     snprintf(buf, sizeof(buf), "%u bands sent", static_cast<unsigned>(g_bands));
     line(s, Color::Grey, buf);
     if (g_up && !skin::live()) {                   // a skin's glass has no fields to list

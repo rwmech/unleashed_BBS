@@ -100,6 +100,13 @@ struct Writer {
     bool     ok = false;
     uint32_t bytes = 0;
     char     tmp[160] = {};
+#ifdef BBS_HAS_LCD
+    // camera (1.2.1, appended, display boards only): the filing camera's
+    // name as SNAPSHOT and CAMERA list it, for the panel's caption (lastFiled
+    // below). Set after open(), which clears it. Null: the panel tells the
+    // built-in camera by its temporary name and a sat by which one is busy.
+    const char* camera = nullptr;
+#endif
 };
 
 // open: a temporary file in Photos. tmpName is a dot name, one per writer
@@ -135,6 +142,30 @@ void abandon(Writer& w);
 // cameras write. The panel compares the count, as it does bus::lastPage's,
 // to put the snap in its recent list. Loop only: who is the loop's copy.
 uint16_t callerSnaps(const char*& who);
+
+#ifdef BBS_HAS_LCD
+// ---------------------------------------------------------------------------
+// The photo just filed (1.2.1, display boards only): what the panel's
+// new-photo show (plugins/panel_photo.h) puts on the glass. fileAs notes
+// every picture filed, whichever camera and whichever task, in one record
+// under the runner's lock; the panel reads the serial every tick (an atomic
+// load) and copies the record only when it moved. Nothing else reads it.
+// ---------------------------------------------------------------------------
+enum : uint8_t { FILED_SNAP = 0, FILED_TIMELAPSE, FILED_MOTION, FILED_OTHER };
+
+struct Filed {
+    uint16_t serial = 0;                  // 0: none since boot
+    uint8_t  kind = FILED_OTHER;          // a caller's snap (it has a "Taken by" line), timelapse/, motion/
+    bool     builtIn = false;             // the built-in camera's (its temporary name, camera_rules.h)
+    char     rel[160] = {};               // under Photos, as filed
+    char     camera[17] = {};             // Writer::camera, "" when the camera did not say
+    char     who[BBS_USER_MAX + 1] = {};  // a snap: the caller's handle, without a guest's *
+};
+
+// filedSerial: the record's serial, any task. lastFiled: the record, copied.
+uint16_t filedSerial();
+void     lastFiled(Filed& out);
+#endif
 
 // ---------------------------------------------------------------------------
 // Keeping Photos in bounds (1.2.0-link.15, Rob: "pruning for every camera").

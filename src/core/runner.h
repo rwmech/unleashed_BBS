@@ -67,6 +67,8 @@
 #include <atomic>
 #include <cstdint>
 
+#include "../config.h"   // BBS_HAS_LCD
+
 namespace runner {
 
 // A job's state. Only the loop moves IDLE/DONE to QUEUED (post) and DONE to
@@ -100,6 +102,14 @@ inline void collect(Job& j) { uint8_t want = DONE; j.st.compare_exchange_strong(
 // busy: anything queued or running. What SD UNMOUNT asks before taking the
 // card away from under a job.
 bool busy();
+
+#ifdef BBS_HAS_LCD
+// waiting (1.2.1, display boards only): another job is queued behind the
+// one running. The panel's photo decode (plugins/panel_photo.h) asks it a
+// row of blocks at a time and steps aside, to be posted again, so a second
+// or two of decoding never holds up a caller's FILES page or forum walk.
+bool waiting();
+#endif
 
 // current: the running job's name, "" when none. For SYS.
 const char* current();

@@ -73,8 +73,9 @@ int decOut(JDEC* jd, void* bitmap, JRECT* r) {
 
 namespace plat {
 
-int jpegDecode(JpegRead rd, JpegPut put, void* ctx, uint16_t& width, uint16_t& height) {
+int jpegDecode(JpegRead rd, JpegPut put, void* ctx, uint16_t& width, uint16_t& height, uint8_t scale) {
     width = height = 0;
+    if (scale > 3) return JDR_PAR;
     void* pool = malloc(kPool);
     JDEC  jd;
     int   rc = JDR_MEM1;
@@ -84,7 +85,7 @@ int jpegDecode(JpegRead rd, JpegPut put, void* ctx, uint16_t& width, uint16_t& h
         if (rc == JDR_OK) {
             width  = static_cast<uint16_t>(jd.width);
             height = static_cast<uint16_t>(jd.height);
-            rc = jd_decomp(&jd, decOut, 0);
+            rc = jd_decomp(&jd, decOut, scale);    // R0.03 with JD_USE_SCALE 1, as the board's ROM
         }
     }
     free(pool);

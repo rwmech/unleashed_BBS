@@ -32,6 +32,75 @@ Merged in 1.2.1-dev.9 (rel-1.2.1): the core lane (dev.1 to dev.8), the
 forums lane (forums.1 to forums.5) and the Makerfabs v2.0 board lane. The
 boards it moved have their versions bumped in 1.2.1-dev.10.
 
+### A new photo on the panel (1.2.1-photo.1, lane D; S3 1.1.6, WS43B 1.0.4, MF35 1.1.4, MF35V2 1.0.1, WS2 1.0.5)
+
+Built and sized, not yet tested on the host or a board.
+
+- **A photo shows on the display the moment it is filed** (Rob, 2026-09-30:
+  "Snap happens, show pic on screen for 1 minute, if a new one comes in
+  update, after 1 minute stop"). On every board with a panel, a picture
+  filed in Photos by any camera, the built-in one or a camera sat, takes the
+  glass for a minute: the whole picture, fitted inside the glass and never
+  cropped or enlarged, on a slate mat with a thin black keyline, `PHOTOS
+  NEW` (or `TIMELAPSE NEW`) across the top, a violet strip under it that
+  shrinks as the minute runs out, and a caption: the kind's icon, the
+  camera's number and name as `SNAPSHOT` takes them, the caller who took a
+  snap, and when (`today 14:32`). A newer photo replaces it and starts the
+  minute again; while the newer one is being decoded the one on the glass
+  stays, so the glass never drops back to the status panel between two. A
+  minute after the last, the status panel (or the skin) comes back, drawn
+  whole. A tap on a touch board ends it early. A ring, or the board shutting
+  down, ends it at once and has the glass; the photo does not come back
+  after. Silent mode shows nothing, and a photo filed while silent is not
+  saved up for when it ends. A board whose panel Sleep has put it dark wakes
+  for the photo and goes dark again its Sleep minutes after the show.
+- **What each glass draws**: the Waveshare LCD-1.47 portrait 172 x 320 a
+  4:3 photo at 162 x 121 with the caption on two rows (camera and who, then
+  when), landscape 320 x 172 at 157 x 118; the Touch-LCD-2 240 x 320 at
+  230 x 172; the 4.3B at its drawn 400 x 240, 248 x 186; both Makerfabs at
+  480 x 320, 354 x 266. A 480 x 480 glass (the G4848, in its own lane) is
+  framed by the same rule at 456 x 342, the caption under the picture like a
+  label on a print.
+- **CONFIG photos** gains four rows on a board with a display, after the
+  others so none moves: **New photos on panel** (`photos_show`, yes),
+  **Show new snaps** (`photos_show_snaps`, yes: a caller's or your own
+  `SNAPSHOT`, any camera, a sat's included), **Show motion shots**
+  (`photos_show_motion`, yes) and **Show timelapse** (`photos_show_tl`, no:
+  a frame a minute would hold the glass for ever). Read at each new photo,
+  so a save is live. The WROOM, the Freenove, the ESP32-CAM and the ETH
+  board have no panel and no rows; there the keys are unknown and ignored.
+- **`PANEL`** says it in two lines above `bands sent`: `Photos on, snaps
+  motion: showing, 41 s left` (or `loading one`, or `3 shown`, or `Photos
+  off`), and `Last photo 1024x768 at 1/2, 412 ms`, or why the last one was
+  not shown. The console logs each decode: its size, the scale, the time,
+  the PSRAM it took and the runner's spare stack.
+- **Rule no. 1.** The card read and the decode are one job on the
+  background runner: the ROM's JPEG decoder at the largest of 1/1, 1/2, 1/4
+  and 1/8 still at least the drawn size (`plat::jpegDecode` takes a scale
+  now), then an area average down to it, streamed through a ring of 24
+  accumulator rows. The picture and the ring are PSRAM, the ring for the
+  decode only and the picture until it is in the framebuffer: 39 to 188 KB
+  of picture and 30 to 68 KB of ring on today's boards (Makerfabs: 256 KB at
+  most, beside the 300 KB framebuffer). The loop draws the frame 32 glass
+  rows a pass and queues the glass once, sent a band a pass as always. The
+  decode stays out of everybody else's way on the runner too: it is not
+  posted while a camera is taking or bringing in a picture (the runner is the
+  camera's worker and a sat's sink), it is called off and posted again if one
+  starts, and it steps aside at the next row of blocks whenever another job
+  is queued behind it (a FILES page, a forum walk), four times at most before
+  it runs to the end (`runner::waiting`, display boards only). A newer photo
+  waiting holds the one on the glass past its minute, three minutes at most.
+- **For the swipe gallery later**: the frame, the fit, the scaler and the
+  decode job are its own (`src/plugins/panel_photo.h`); only stepping
+  through the card and the touch positions are left to build.
+- Under it: `photos::lastFiled` and `filedSerial`, display boards only (the
+  photo just filed by any camera, its kind and camera, one record under the
+  runner's lock), and `photos::Writer::camera`, appended, for a camera to
+  name itself: the built-in camera does (the Touch-LCD-2); camsat does not
+  yet, so a sat is told by which one is busy as its photo is taken in, or by
+  being the only one. Static DRAM grows only on the display boards; every image without
+  a display is the same, object for object.
+
 ### Login and the core (1.2.1-dev.1 to dev.8)
 
 - **SyncTERM's autologin reaches the sysop node** (1.2.1-dev.1). Alt+L on a
