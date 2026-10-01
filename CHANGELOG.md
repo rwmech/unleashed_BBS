@@ -351,6 +351,11 @@ The three bench-only ESP32 envs (`esp32dev_backuptest`, `esp32dev_diag`,
   word. The rules are three pages at 40 rather than two, with a page number
   on the title row. Screen files only: the `.ans` and `.asc` are byte for
   byte as before, and the stock set is 36 screens.
+- **The screens stop saying five dollars** (1.2.1-screens.2). A classic
+  ESP32 board is nearer fifteen, and a board with a display starts around
+  sixty. Rule 5 is now `IT IS A SMALL, CHEAP BOARD.`, and the privacy
+  screen's last page says `It is a cheap hobby board, and it is
+  conversation.`, in all three flavours of each.
 
 ### Sizes
 
