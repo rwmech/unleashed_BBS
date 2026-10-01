@@ -24,6 +24,48 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## G4848 1.0.2 on 1.2.0, 2026-10-01: the load line and the drive icon (board lane, every panel board)
+
+Built to internal/tty-ux-panel-load-line-2026-10-01.md, after Rob still saw
+the drive lamp as a dead LED at the start of the light bar. Every board with
+a panel; the other boards' versions move with 1.2.1's.
+
+- **The drive lamp leaves the foot.** On the 4.3B and the G4848 the light
+  bar now spans the foot alone: ten 35 px segments from x 7 on the 4.3B, 43
+  px from x 7 on the G4848.
+- **A drive icon in the header's row of glyphs**, right after the card: an
+  11 x 9 drive whose 3 x 3 light shows what the drive light is doing, at
+  full level whatever the light's brightness: amber for the card, cool white
+  for internal flash, dark at rest, blinking red on an error, by the drive
+  light's own style (pc, 1541, disk2, breathe). Faint when the lights are
+  off or the style is `off`. A row that would pass the strip's end with
+  every glyph on (the stick, the 2") packs at 2 px instead of 3.
+  `lights::panelDisk()` is the state, read on the strip's 40 ms clock.
+- **The rail under the header is a load line.** 2 px tall (the 4.3B keeps
+  its 1, which the glass doubles). Every 250 ms the panel takes the loop's
+  share of the time it spent working (`Bbs::takeLoad`, two counters summing
+  each pass, display boards only): blue under 15%, green to 40%, yellow to
+  75% or a pass of 25 ms, red above or for any slow pass, held 2 s. The dot
+  wears the level and paints the rail as it goes, so one lap (7 to 19 s by
+  the glass) is the history, newest left of the dot. Grey is no reading yet:
+  after a start, silent mode, a skin and a touch-sleep wake.
+- **The dot keeps moving under a busy strip**: it stood aside every frame
+  rainbow or scanner queued the strip, and would have recorded nothing; now
+  at most one frame in two.
+- From the code review: a single pass of most of a second (a sample over
+  1 s) gives no duty figure but still turns the line red, since it is the
+  worst thing the line is for; the 2" turned landscape gets the 122 px
+  glyph strip it needs (its camera glyph ran past 110 before the drive
+  icon, unsent and never cleared); the drive icon's state starts afresh at
+  each lights start and stop.
+- **PANEL** shows both, above `bands sent`:
+  `Load      9% blue, longest pass 3 ms, 7 s a lap` and
+  `Drive     idle, style pc`.
+- Images that change: every panel board (the stick, the 4.3B, the 2", the
+  MF35, the G4848) in panel.cpp, lights.cpp and bbs.cpp; the boards without
+  a panel in lights.cpp alone (the drive's state is kept for the panel only
+  under `BBS_HAS_LCD`, so their objects should match).
+
 ## G4848 1.0.1 and MF35 1.1.4 on 1.2.0, 2026-10-01: the square panel layout (board lane)
 
 The G4848's glass drawn whole, to internal/tty-ux-panel-g4848-2026-10-01.md

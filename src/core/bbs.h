@@ -426,6 +426,16 @@ public:
     bool     crashBoot()  const { return bootCrash_; }
     uint8_t  peakNodes()  const { return peakNodes_; }
     uint16_t callsToday() const { return panelToday_; }
+    // takeLoad: the loop's work so far, microseconds summed over every pass
+    // (a running total that wraps every 71 minutes of work; take a
+    // difference), and the longest pass since the last call, which it
+    // resets: the panel's load line (1.2.1, internal/tty-ux-panel-load-line-
+    // 2026-10-01.md).
+    void takeLoad(uint32_t& workUs, uint32_t& peakUs) {
+        workUs = loadWorkUs_;
+        peakUs = loadPeakUs_;
+        loadPeakUs_ = 0;
+    }
 #if BBS_PANEL_BIG
     // takePanelTraffic: the lines that read or wrote bytes since the panel
     // last asked, a bit per Session::id, and clears them: the big glass's
@@ -1278,6 +1288,8 @@ private:
     uint16_t  bootCrashes_ = 0;      // how many are in the reboot log
     uint8_t   peakNodes_   = 0;      // most nodes busy at once since boot
 #ifdef BBS_HAS_LCD
+    uint32_t  loadWorkUs_  = 0;      // takeLoad(): every pass's work, summed
+    uint32_t  loadPeakUs_  = 0;      // and the longest since the panel looked
     uint16_t  panelToday_  = 0;      // callsToday(), for the board's display
 #if BBS_PANEL_BIG
     uint16_t  panelMoved_  = 0;      // takePanelTraffic()

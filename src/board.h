@@ -1281,7 +1281,7 @@
 #define BBS_BOARD_PLUGINS     1       // the panel
 
 #define BBS_BOARD_TAG         "G4848"
-#define BBS_BOARD_VERSION     "1.0.1"
+#define BBS_BOARD_VERSION     "1.0.2"
 
 // SSH as on every S3 board: the shared port 6400 and ssh_port 6422. Eight at
 // once, beside two 300 KB and 450 KB picture buffers in 8 MB of PSRAM.

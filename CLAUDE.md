@@ -942,6 +942,24 @@ this tree.
       lane D) and the square stock skins (screen-artist). The stock skins
       are not in any image (`stockFiles` is empty); a sysop copies them to
       the card.
+  - **The load line and the drive icon (G4848 1.0.2, every panel board),
+    built to internal/tty-ux-panel-load-line-2026-10-01.md** after Rob
+    still saw the drive lamp as a dead LED ("LED issue persists"). The lamp
+    leaves the foot; an 11 x 9 HDD glyph after the card shows the drive
+    light's state (`lights::panelDisk`, the style's own decision on its
+    last frame, at full level); the header's rail goes 2 px and the dot
+    paints it with the loop's load level, sampled every 250 ms from two
+    core counters (`Bbs::takeLoad`, `BBS_HAS_LCD` only). What it taught:
+    - **A lamp that shows a level needs the state, not the pixel.** Three
+      rounds went into drawing the drive light's frame on glass (gleam,
+      floor); the frame is a brightness for a pixel in a case, 10% as
+      shipped, and on glass that is a dead LED whatever the drawing does.
+      The icon takes the decision behind the frame instead.
+    - **The dot stood aside every frame under a busy strip**, harmless while
+      it was only the "alive" cue, fatal once it is the pen of a time line.
+      A behaviour that is fine as decoration has to be re-read when it
+      becomes data.
+    - Skins' `load` source is queued for the skin format's next minor.
   - **No IMU and no PMU** (Rob asked about auto-rotation and an AXP2101):
     a boot-time scan of the touch bus (19/45) finds only the GT911, at
     0x14 and 0x5D; nothing at 0x34 or 0x68-0x6B, nothing in the factory

@@ -110,6 +110,13 @@ bool    panelDrive(uint8_t* rgb, uint8_t& pct);
 // light's brightness. False, and rgb untouched, while the plugin is not
 // running.
 bool    panelDrive(uint8_t style, uint32_t now, uint8_t* rgb, uint8_t& pct);
+// panelDisk: the drive light's state as the panel's HDD icon shows it (1.2.1,
+// internal/tty-ux-panel-load-line-2026-10-01.md): the plugin's own style's
+// decision on its last frame, at full level whatever its brightness. DK_OFF
+// while the plugin is not running or its style is off. style, when given,
+// takes the drive light's style (the kDriveFx numbers, pc 0 to off 4).
+enum : uint8_t { DK_IDLE, DK_CARD, DK_FLASH, DK_ERR_ON, DK_ERR_OFF, DK_OFF };
+uint8_t panelDisk(uint8_t* style = nullptr);
 #endif
 
 #ifdef BBS_HAS_CAMERA

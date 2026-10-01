@@ -199,7 +199,7 @@ int main() {
 
     // --- the status row ------------------------------------------------------
     {
-        const Glyph* all[] = { &kGlyphSd, &kGlyphSdNone, &kGlyphBell, &kGlyphMail, &kGlyphUpload,
+        const Glyph* all[] = { &kGlyphSd, &kGlyphSdNone, &kGlyphHdd, &kGlyphBell, &kGlyphMail, &kGlyphUpload,
                                &kGlyphLock, &kGlyphTower, &kGlyphStaff, &kGlyphWarn, &kGlyphSlow };
         bool tidy = true;
         for (const Glyph* g : all) {
@@ -210,8 +210,26 @@ int main() {
 
         Status s;
         Packed p = pack(s, 4);
-        check("a quiet board shows one glyph: the card, hollow and dim with none",
-              p.n == 1 && p.which[0] == G_SD && p.glyph[0] == &kGlyphSdNone && p.colour[0] == kDim);
+        check("a quiet board shows two glyphs: the card, hollow and dim with none, and the drive",
+              p.n == 2 && p.which[0] == G_SD && p.glyph[0] == &kGlyphSdNone && p.colour[0] == kDim &&
+              p.which[1] == G_HDD && p.glyph[1] == &kGlyphHdd && p.colour[1] == kDim);
+        {
+            // The drive (1.2.1): 11 x 9, 3 px after the card, its light a 3 x 3
+            // window inside it, on the front face's right; faint when off.
+            const Rect lit = hddLight(p, 24);
+            check("the drive's light is 3 x 3 inside the drive glyph",
+                  p.x[1] == p.x[0] + p.glyph[0]->w + kGlyphGap && lit.w == 3 && lit.h == 3 &&
+                  lit.x >= p.x[1] && lit.x + 3 <= p.x[1] + kGlyphHdd.w && lit.y >= 24 + (16 - 9) / 2 &&
+                  lit.y + 3 <= 24 + (16 - 9) / 2 + 9);
+            bool hollow = true;              // the light's window is not ink: the panel fills it
+            for (int r = 0; r < 3; ++r)
+                for (int c = 0; c < 3; ++c)
+                    if (kGlyphHdd.rows[kHddLightY + r] & (0x8000u >> (kHddLightX + c))) hollow = false;
+            check("and the glyph leaves that window unpainted", hollow);
+            Status off;
+            off.driveOff = true;
+            check("a drive not reporting is faint", pack(off, 4).colour[1] == kFaint);
+        }
         s.card = Status::CARD_IN;
         p = pack(s, 4);
         check("with a card it is filled, in dial", p.glyph[0] == &kGlyphSd && p.colour[0] == kDial);
@@ -224,9 +242,14 @@ int main() {
         p = pack(s, 4);
         bool order = p.n == G_COUNT - 1;
         for (uint8_t i = 0; i < p.n && order; ++i) if (p.which[i] != i) order = false;
-        check("all nine, in the report's order", order);
-        check("all nine end short of the antenna: under 114, in 104",
-              p.end < 114 && p.end - 4 == 104 && p.end <= layout(172, 320).glyphs.x + layout(172, 320).glyphs.w);
+        check("all ten, in the report's order", order);
+        const Layout stick = layout(172, 320);
+        check("at 3 px they would run to 122, past the stick's strip at 114",
+              p.end - 4 == 118 && p.end > stick.glyphs.x + stick.glyphs.w);
+        p = pack(s, 4, stick.glyphs.x + stick.glyphs.w);
+        check("so they pack again at 2 px: 109, inside the strip",
+              p.end - 4 == 109 && p.end <= stick.glyphs.x + stick.glyphs.w && p.x[1] == p.x[0] + p.glyph[0]->w + 2);
+        p = pack(s, 4);
         // A camera board's tenth (WS2 1.0.0): last, and all ten inside the
         // 240 glass's strip, 118 px.
         s.camera = true;
@@ -253,8 +276,16 @@ int main() {
         }
         check("the camera packs tenth, last, in live",
               p.n == G_COUNT && p.which[G_COUNT - 1] == G_CAMERA && p.colour[G_COUNT - 1] == kLive);
-        check("all ten end inside the 240 glass's strip: 118 from 4",
-              p.end - 4 == 118 && p.end <= layout(240, 320).glyphs.x + layout(240, 320).glyphs.w);
+        {
+            const Layout two = layout(240, 320);
+            const Packed q = pack(s, 4, two.glyphs.x + two.glyphs.w);
+            check("all eleven fit the 240 glass's strip at 2 px: 122 from 4",
+                  q.n == G_COUNT && q.end - 4 == 122 && q.end <= two.glyphs.x + two.glyphs.w);
+            const Layout turned = layout(320, 240);
+            check("and turned landscape, whose strip is 122 too (the stick's stays 110)",
+                  turned.glyphs.w == 122 && pack(s, 4, 4 + turned.glyphs.w).end <= 4 + turned.glyphs.w &&
+                  layout(320, 172).glyphs.w == 110);
+        }
         s.camera = false;
         p = pack(s, 4);
         bool apart = true;
@@ -270,15 +301,16 @@ int main() {
         check("the person is the sysop's red, or a co-sysop's yellow",
               p.colour[G_STAFF] == kRisk &&
               pack(Status{ Status::CARD_NONE, false, false, false, false, 0, Status::STAFF_CO, false, false }, 4)
-                  .colour[1] == kYellow);
+                  .colour[2] == kYellow);
         Status t;
         t.listing = Status::LIST_WAITING;
         Status u;
         u.listing = Status::LIST_TROUBLE;
         check("the tower: live online, warm waiting, risk otherwise",
-              p.colour[G_TOWER] == kLive && pack(t, 4).colour[1] == kWarm && pack(u, 4).colour[1] == kRisk);
+              p.colour[G_TOWER] == kLive && pack(t, 4).colour[2] == kWarm && pack(u, 4).colour[2] == kRisk);
 
         Glass g(172, 64, kBand);
+        p = pack(s, 4, 114);                                 // as drawGlyphs packs it on the stick
         for (uint8_t i = 0; i < p.n; ++i) drawGlyphAt(g.c, p, i, 24);
         bool within = true;
         for (int y = 0; y < 64; ++y)
@@ -412,8 +444,8 @@ int main() {
         }
         snprintf(what, sizeof(what), "%ux%u: no two fields overlap, nor the rules, the rail or the LEDs", w, h);
         check(what, apart);
-        snprintf(what, sizeof(what), "%ux%u: the header is two rows and a rail, 43 px", w, h);
-        check(what, L.bar.h == 22 && L.band.y == 22 && L.band.h == 20 && L.track.y == 42 && L.track.h == 1);
+        snprintf(what, sizeof(what), "%ux%u: the header is two rows and a 2 px rail, 44 px", w, h);
+        check(what, L.bar.h == 22 && L.band.y == 22 && L.band.h == 20 && L.track.y == 42 && L.track.h == 2);
         snprintf(what, sizeof(what), "%ux%u: the antenna 10 left of the clock, the clock 4 from the edge", w, h);
         check(what, L.ant.x == (turn ? 266 : 118) && L.ant.y == 24 && L.ant.w == 6 && L.ant.h == 16 &&
                     L.clock.x == (turn ? 276 : 128) && L.clock.x + L.clock.w == w - 4);
@@ -709,7 +741,6 @@ int main() {
         }
         boxes.push_back(B.graph);
         boxes.push_back(L.leds);
-        boxes.push_back(L.drive);
         bool on = true, apart = true;
         for (size_t i = 0; i < boxes.size(); ++i) {
             const Rect& a = boxes[i];
@@ -737,6 +768,8 @@ int main() {
               B.axis - B.graph.y == kGraphUp && B.graph.y + B.graph.h - 1 - B.axis == kGraphDown);
         check("the foot under the rule at 440, inside the glass with 16 px to spare",
               B.foot.y == 440 && L.leds.y > B.foot.y && L.leds.y + L.leds.h <= 464 && L.ledBar);
+        check("no drive lamp (1.2.1): the bar spans the foot, 4 to 476, and the rail is 2 px",
+              empty(L.drive) && L.leds.x == 4 && L.leds.w == 472 && L.track.y == 42 && L.track.h == 2);
         // The light bar: one band at any length from 1 to 16, never overlapping.
         bool band = true, lapart = true;
         for (uint8_t n = 1; n <= 16; ++n) {

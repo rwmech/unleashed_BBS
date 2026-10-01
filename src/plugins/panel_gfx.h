@@ -463,6 +463,13 @@ constexpr Glyph kGlyphSlow   = { 7, 9,  { 0xFE00, 0x4400, 0x6C00, 0x3800, 0x1000
 // the lens cut out, 2 px of ink at its thinnest.
 constexpr Glyph kGlyphCamera = { 11, 10, { 0x0E00, 0x1F00, 0xFFE0, 0xF1E0, 0xE0E0, 0xE0E0, 0xE0E0, 0xF1E0,
                                            0xFFE0, 0xFFE0 } };
+// The drive (1.2.1, internal/tty-ux-panel-load-line-2026-10-01.md): a 3.5"
+// drive's slab from the front, top face, seam, front face with its light at
+// the right. The light's 3 x 3 window (rows 5 to 7, columns 7 to 9) is not in
+// the bitmap: it is painted on its own (kHddLight*), black at rest.
+constexpr Glyph kGlyphHdd    = { 11, 9, { 0x7FC0, 0xFFE0, 0xFFE0, 0x8020, 0xFFE0, 0xFE20, 0xFE20, 0xFE20,
+                                          0x7FC0 } };
+constexpr int kHddLightX = 7, kHddLightY = 5, kHddLightS = 3;   // within the glyph
 
 // The status row's state: what the panel read this pass, in packing order.
 // Everything that decides a pixel of the row is in here, so two equal
@@ -481,12 +488,14 @@ struct Status {
     bool    warn    = false;   // the last restart was not a clean one
     bool    slow    = false;   // a slow pass in the last minute
     bool    camera  = false;   // a picture is being taken (a camera board)
+    bool    driveOff = false;  // the drive is not reporting (lights off, or drive_fx off)
 };
 
 // The camera packs last: a timelapse lights it at every interval, and last
-// is the one place where it coming and going moves no other glyph.
-enum Slot : uint8_t { G_SD, G_BELL, G_MAIL, G_UPLOAD, G_LOCK, G_TOWER, G_STAFF, G_WARN, G_SLOW, G_CAMERA,
-                      G_COUNT };
+// is the one place where it coming and going moves no other glyph. The drive
+// always packs, right after the card: internal flash is always there.
+enum Slot : uint8_t { G_SD, G_HDD, G_BELL, G_MAIL, G_UPLOAD, G_LOCK, G_TOWER, G_STAFF, G_WARN, G_SLOW,
+                      G_CAMERA, G_COUNT };
 
 struct Packed {
     uint8_t         n = 0;
@@ -500,8 +509,11 @@ struct Packed {
 // pack: the glyphs a status shows, left to right from x0, with their
 // colours. The bell's slot is always one of them while ringing, whatever its
 // blink phase, so the row does not shuffle at 2 Hz: the blink is drawn over
-// it on its own.
-inline Packed pack(const Status& s, int x0) {
+// it on its own. With right (the strip's right edge), a row that would pass
+// it is packed again with 2 px between glyphs (1.2.1: the drive glyph made
+// the stick's and the 2"'s rows full with every glyph lit); decided from the
+// status alone, so equal statuses still draw equal rows.
+inline Packed packAt(const Status& s, int x0, int gap) {
     Packed p;
     auto add = [&](uint8_t which, const Glyph& g, uint16_t col) {
         p.which[p.n] = which;
@@ -510,11 +522,12 @@ inline Packed pack(const Status& s, int x0) {
         p.x[p.n] = static_cast<int16_t>(x0);
         x0 += g.w;
         p.end = static_cast<int16_t>(x0);
-        x0 += kGlyphGap;
+        x0 += gap;
         ++p.n;
     };
     add(G_SD, s.card == Status::CARD_NONE ? kGlyphSdNone : kGlyphSd,
         s.card == Status::CARD_IN ? tok::kDial : s.card == Status::CARD_ERROR ? tok::kRisk : tok::kDim);
+    add(G_HDD, kGlyphHdd, s.driveOff ? tok::kFaint : tok::kDim);
     if (s.ring)   add(G_BELL, kGlyphBell, tok::kBusy);
     if (s.mail)   add(G_MAIL, kGlyphMail, tok::kBusy);
     if (s.upload) add(G_UPLOAD, kGlyphUpload, tok::kWarm);
@@ -528,6 +541,23 @@ inline Packed pack(const Status& s, int x0) {
     if (s.slow)   add(G_SLOW, kGlyphSlow, tok::kWarm);
     if (s.camera) add(G_CAMERA, kGlyphCamera, tok::kLive);
     return p;
+}
+
+inline Packed pack(const Status& s, int x0, int right = 0) {
+    Packed p = packAt(s, x0, kGlyphGap);
+    if (right > 0 && p.end > right) p = packAt(s, x0, 2);
+    return p;
+}
+
+// hddLight: the drive glyph's light window on the glass, from a packed row,
+// or an empty box when the row has none.
+inline Rect hddLight(const Packed& p, int y) {
+    for (uint8_t i = 0; i < p.n; ++i)
+        if (p.which[i] == G_HDD) {                 // centred in the 16 px row, as glyphBox does
+            const int top = y + (16 - kGlyphHdd.h) / 2;
+            return R(p.x[i] + kHddLightX, top + kHddLightY, kHddLightS, kHddLightS);
+        }
+    return Rect();
 }
 
 // glyphBox: one packed glyph's box, vertically centred in a 16 px row at y.
@@ -880,7 +910,7 @@ inline Layout layout(uint16_t w, uint16_t h) {
     L.land  = w >= h;
     L.bar   = R(0, 0, w, 22);
     L.band  = R(0, 22, w, 20);
-    L.track = R(0, 42, w, 1);
+    L.track = R(0, 42, w, 2);                     // the load line: 2 px (1.2.1); the tall glass's is 1
     // The slot as many glyphs as fit in w - 4. On a wide portrait glass (240,
     // WS2 1.0.0) centred, x 4, the left edge every other row keeps; x 2 as it
     // always was elsewhere (the 21 an IPv4 address and port need at 172).
@@ -891,8 +921,9 @@ inline Layout layout(uint16_t w, uint16_t h) {
     L.ant   = R(L.clock.x - 10, 24, kAntennaW, kAntennaH);
     // The glyphs end short of the antenna, and at 110; at 122 on a wide
     // portrait glass (WS2 1.0.0), for all ten, the camera's included (118 px
-    // from x 4).
-    const int cap = widePortrait ? 122 : 110;
+    // from x 4). The 2" turned landscape too (1.2.1): with the drive glyph
+    // its eleven run to 122 at 2 px, past 110; its antenna is at 266.
+    const int cap = (widePortrait || (w >= 232 && h >= 232)) ? 122 : 110;
     int gw  = L.ant.x - 4 - 4;
     L.glyphs = R(4, 24, gw < cap ? gw : cap, 16);
     L.headIcon = R(4, 48, 16, 16);
@@ -957,13 +988,14 @@ inline Layout layout(uint16_t w, uint16_t h) {
         L.rule1   = R(4, 198, w - 8, 1);
         L.sys     = R(4, 200, w - 8, 16);
         L.rule2   = Rect();
-        // The foot (revision 1): the drive lamp at the left, the strip as a
-        // light bar filling the rest, both 12 tall at 219..230. The spec had
+        // The foot (revision 1): the strip as a light bar, 12 tall at
+        // 219..230 (until 1.2.1 a drive lamp sat at its left). The spec had
         // them 14 tall at 222..235; on the glass, in Waveshare's case, the
         // bottom of that row was cut off (Rob's photo, 2026-09-28), so the
         // foot now keeps 9 px (18 on the glass) clear of the bottom edge.
-        L.drive   = R(4, 219, 20, 12);
-        L.leds    = R(40, 219, w - 44, 12);
+        // No drive lamp (1.2.1): it is the HDD glyph in the band now, and
+        // the bar spans the foot, 35 px segments from x 7 at 400.
+        L.leds    = R(4, 219, w - 8, 12);
         L.ledBar  = true;
         // The band's word, in the space between the glyphs and the antenna.
         L.word    = R(122, 36, L.ant.x - 8 - 122, 16);
@@ -1278,7 +1310,7 @@ inline void bigSquare(uint16_t w, uint16_t h, BigLayout& B, Layout& L) {
     // The header: the big glass's, unchanged.
     L.bar    = R(0, 0, w, 22);
     L.band   = R(0, 22, w, 20);
-    L.track  = R(0, 42, w, 1);
+    L.track  = R(0, 42, w, 2);                    // the load line, 2 px (1.2.1)
     L.glyphs = R(4, 24, 120, 16);
     L.clock  = R(w - 44, 24, 5 * kSmallW, kSmallH);
     B.dbm    = R(L.clock.x - 6 - 32, 24, 32, 16);
@@ -1315,8 +1347,9 @@ inline void bigSquare(uint16_t w, uint16_t h, BigLayout& B, Layout& L) {
     B.cell[C_SLOW] = R(364, 416, 112, 16);
     // The foot: a rule at 440, the drive lamp and a light bar under the names.
     B.foot   = R(4, 440, 472, 1);
-    L.drive  = R(6, 448, 24, 16);
-    L.leds   = R(46, 448, 430, 16);
+    // No drive lamp (1.2.1, the HDD glyph in the band): the bar spans the
+    // foot rule, 43 px segments from x 7.
+    L.leds   = R(4, 448, 472, 16);
     L.ledBar = true;
     B.leds   = L.leds;
     (void)h;
@@ -1339,7 +1372,7 @@ inline BigLayout bigLayout(uint16_t w, uint16_t h, Layout& L) {
     L.land = B.land;
     L.bar    = R(0, 0, w, 22);
     L.band   = R(0, 22, w, 20);
-    L.track  = R(0, 42, w, 1);
+    L.track  = R(0, 42, w, 2);                    // the load line, 2 px (1.2.1)
     L.glyphs = R(4, 24, 120, 16);
     L.clock  = R(w - 44, 24, 5 * kSmallW, kSmallH);
     B.dbm    = R(L.clock.x - 6 - 32, 24, 32, 16);       // "-100" at worst: four glyphs

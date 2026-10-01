@@ -245,6 +245,11 @@ bool    g_panel    = false;                    // the panel shows the strip
 uint8_t g_shown[kStrip * 3];                   // the strip's last frame, for it
 uint8_t g_shownDrive[3];                       // and the drive light's
 bool    g_running  = false;                    // between start and stop
+// The drive light's state as the panel's HDD icon shows it (lights.h, DK_):
+// what drawDrive decided last (g_diskNow, any caller) and what the plugin's
+// own frame decided (g_shownDisk, the panel's).
+uint8_t g_diskNow   = lights::DK_OFF;
+uint8_t g_shownDisk = lights::DK_OFF;
 #endif
 
 // ---------------------------------------------------------------------------
@@ -534,6 +539,11 @@ void noteDisk() {
 // style the skin names (lights::panelDrive), from the same disk state.
 void drawDrive(uint32_t now, uint8_t* f, uint8_t fx) {
     put(f, 0, kBlack, 0, g_drivePct);
+#ifdef BBS_HAS_LCD
+    // The state behind the frame, for the panel's HDD icon: idle unless one
+    // of the returns below says otherwise.
+    g_diskNow = fx == DF_OFF ? lights::DK_OFF : lights::DK_IDLE;
+#endif
     if (fx == DF_OFF) return;
     uint32_t since = now - g_accessAt;
     bool lit = false;
@@ -554,12 +564,19 @@ void drawDrive(uint32_t now, uint8_t* f, uint8_t fx) {
     }
     if (lit) {
         put(f, 0, g_accessKind == plat::DISK_CARD ? kAmber : kCoolWhite, 255, g_drivePct);
+#ifdef BBS_HAS_LCD
+        g_diskNow = g_accessKind == plat::DISK_CARD ? lights::DK_CARD : lights::DK_FLASH;
+#endif
         return;
     }
     // A storage error blinks red, slowly, in every style: on half a second,
     // dark half a second, so it reads as a warning rather than as a dim.
     if (g_errored && now - g_errorAt < kErrorShow) {
-        if (((now - g_errorAt) / kErrorHalf) % 2u == 0) put(f, 0, kRed, 255, g_drivePct);
+        const bool on = ((now - g_errorAt) / kErrorHalf) % 2u == 0;
+        if (on) put(f, 0, kRed, 255, g_drivePct);
+#ifdef BBS_HAS_LCD
+        g_diskNow = on ? lights::DK_ERR_ON : lights::DK_ERR_OFF;
+#endif
         return;
     }
     if (fx == DF_BREATHE) {
@@ -850,6 +867,9 @@ void tick(uint32_t now) {
     uint8_t strip[kStrip * 3];
     if (!g_testAt || !drawTest(now, drive, strip)) {
         drawDrive(now, drive, g_driveFx);
+#ifdef BBS_HAS_LCD
+        g_shownDisk = g_diskNow;                   // the plugin's own style, for the HDD icon
+#endif
         drawStrip(now, strip, rx, tx, bytes);
     }
 #ifdef BBS_HAS_CAMERA
@@ -894,6 +914,11 @@ bool lights::panelDrive(uint8_t* rgb, uint8_t& pct) {
     if (!g_running || !rgb) return false;
     memcpy(rgb, g_shownDrive, sizeof(g_shownDrive));
     return true;
+}
+
+uint8_t lights::panelDisk(uint8_t* style) {
+    if (style) *style = g_driveFx;
+    return g_running ? g_shownDisk : static_cast<uint8_t>(DK_OFF);
 }
 
 uint8_t lights::panelFrame(uint8_t* rgb, uint8_t cap, uint8_t& pct) {
@@ -989,6 +1014,7 @@ bool start(Bbs& bbs) {
               static_cast<unsigned>(g_stripPct), static_cast<unsigned>(g_count));
 #ifdef BBS_HAS_LCD
     memset(g_shown, 0, sizeof(g_shown));
+    g_diskNow = g_shownDisk = lights::DK_IDLE;     // no stale state from the last run
     g_running = true;
 #endif
     return true;       // on with nothing wired is still on: LIGHTS says so
@@ -1005,6 +1031,7 @@ void stop() {
 #ifdef BBS_HAS_LCD
     g_running = false;
     memset(g_shown, 0, sizeof(g_shown));
+    g_diskNow = g_shownDisk = lights::DK_OFF;
 #endif
 }
 

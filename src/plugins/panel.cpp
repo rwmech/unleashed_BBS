@@ -371,6 +371,23 @@ uint16_t       g_pageSeen = 0;
 
 // The dot on the track.
 int16_t        g_dotX = 0;
+bool           g_stood = false;             // the dot stood aside last frame: it moves this one
+
+// The load line (1.2.1, internal/tty-ux-panel-load-line-2026-10-01.md): the
+// loop's duty, sampled every kLoadMs, as a level the dot wears and paints the
+// rail with as it passes. The rail is the history; nothing else keeps it.
+enum Level : uint8_t { LV_NONE, LV_BLUE, LV_GREEN, LV_YELLOW, LV_RED };
+constexpr uint32_t kLoadMs     = 250;       // a sample
+constexpr uint32_t kRedHoldMs  = 2000;      // red stays this long after its last trigger
+constexpr uint32_t kLoadGapUs  = 1000000;   // a sample over this: no duty, red on a slow pass
+constexpr uint32_t kYellowPassUs = 25000;   // a pass this long is yellow; over BBS_SLOW_PASS_US red
+uint8_t        g_level    = LV_NONE;
+uint8_t        g_fall     = 0;              // samples in a row below the shown level
+bool           g_loadInit = false;
+uint32_t       g_loadAt = 0, g_loadW = 0, g_loadT = 0, g_loadSlow = 0, g_redUntil = 0;
+uint8_t        g_duty   = 0;                // the last sample's, for PANEL
+uint32_t       g_peakUs = 0;
+uint8_t        g_diskShown = 0xFF;          // the HDD light as painted (lights::DK_), 0xFF none
 
 #if defined(BBS_HAS_TOUCH) && defined(BBS_TOUCH_POLL)
 // Touch (1.1.2, the 4.3" board's polled GT911): a tap wakes a sleeping
@@ -596,14 +613,36 @@ bool ringBanner();
 void ringEnd();
 #endif
 
-// The dot's footprint at x: its tail two pixels behind it on the rail, the
-// dot itself 3 x 3 across the band's last row, the rail and the first row
-// of the body.
-Rect dotBox(int x) { return R(x - 3, g_layout.track.y - 1, 5, 3); }
+// The level's colours: the rail behind the dot, and the dot itself. The rail
+// carries green, yellow and red at full strength and idle blue at kTrack, so
+// an idle board looks as it always did; grey is no reading yet.
+uint16_t railColour(uint8_t lv) {
+    switch (lv) {
+        case LV_BLUE:   return kTrack;
+        case LV_GREEN:  return kLive;
+        case LV_YELLOW: return kYellow;
+        case LV_RED:    return kRisk;
+        default:        return kRule;
+    }
+}
+uint16_t dotColour(uint8_t lv) {
+    return lv == LV_GREEN ? kLive : lv == LV_YELLOW ? kYellow : lv == LV_RED ? kRisk : kDial;
+}
 
-// dotErase: the rows the dot crosses put back as they are without it.
+// The dot's footprint at x: its tail two pixels behind it on the rail, its
+// body over the band's last row, the rail and the row under it. On a 2 px
+// rail (every glass but the 4.3B) the body is 4 x 4 with a 2 x 2 white core.
+Rect dotBox(int x) {
+    const Rect& t = g_layout.track;
+    return t.h >= 2 ? R(x - 3, t.y - 1, 6, 4) : R(x - 3, t.y - 1, 5, 3);
+}
+
+// dotErase: the rows the dot crosses put back without it, the rail in the
+// current level's colour: the pixels the old footprint leaves are the ones
+// the dot just passed, so this is the whole trail.
 void dotErase(const Rect& r) {
-    const int y = g_layout.track.y;
+    const Rect& t = g_layout.track;
+    const int y = t.y;
 #if BBS_PANEL_SQUARE
     // Under the ring banner the row above the track is the banner's, not
     // the band's: put back kBar, or the dot leaves a band-blue stripe.
@@ -611,16 +650,132 @@ void dotErase(const Rect& r) {
 #else
     fill(g_canvas, R(r.x, y - 1, r.w, 1), kBand);
 #endif
-    fill(g_canvas, R(r.x, y, r.w, 1), kTrack);
-    fill(g_canvas, R(r.x, y + 1, r.w, 1), kBg);
+    fill(g_canvas, R(r.x, y, r.w, t.h), railColour(g_level));
+    fill(g_canvas, R(r.x, y + t.h, r.w, 1), kBg);
 }
 
 void dotDraw(int x) {
-    const int y = g_layout.track.y;
-    dot(g_canvas, x - 3, y, scale(kDial, 1, 6));
-    dot(g_canvas, x - 2, y, scale(kDial, 2, 6));
-    fill(g_canvas, R(x - 1, y - 1, 3, 3), kDial);
+    const Rect& t = g_layout.track;
+    const int y = t.y;
+    const uint16_t c = dotColour(g_level);
+    if (t.h >= 2) {
+        fill(g_canvas, R(x - 3, y, 1, 2), scale(c, 1, 6));
+        fill(g_canvas, R(x - 2, y, 1, 2), scale(c, 2, 6));
+        fill(g_canvas, R(x - 1, y - 1, 4, 4), c);
+        fill(g_canvas, R(x, y, 2, 2), kWhite);
+        return;
+    }
+    dot(g_canvas, x - 3, y, scale(c, 1, 6));
+    dot(g_canvas, x - 2, y, scale(c, 2, 6));
+    fill(g_canvas, R(x - 1, y - 1, 3, 3), c);
     dot(g_canvas, x, y, kWhite);
+}
+
+#ifdef BBS_HAS_TOUCH
+// railGrey: the whole rail back to "no reading" (a wake from sleep, whose
+// held dot left what is ahead of it older than a lap), and the dot on it.
+void railGrey() {
+    const Rect& t = g_layout.track;
+    if (empty(t)) return;
+    fill(g_canvas, t, kRule);
+    dotDraw(g_dotX);
+    g_dirty.add(unite(t, clip(dotBox(g_dotX), g_canvas.w, g_canvas.h)));
+}
+#endif
+
+// The drive glyph's light (the HDD icon, 1.2.1): the lights plugin's state
+// at full level, not the drive light's brightness, which is for a pixel in a
+// case. Dark at rest, red for an error, as the wired light blinks it.
+// styleWord: drive style n's word from lights::kDriveFx, the one list.
+void styleWord(uint8_t n, char* out, size_t cap) {
+    const char* p = lights::kDriveFx;
+    while (n && *p) { if (*p++ == '|') --n; }
+    size_t k = 0;
+    while (p[k] && p[k] != '|' && k + 1 < cap) { out[k] = p[k]; ++k; }
+    out[k] = 0;
+    if (!k) snprintf(out, cap, "?");
+}
+
+uint16_t diskColour(uint8_t st) {
+    switch (st) {
+        case lights::DK_CARD:   return rgb(0xFF, 0x82, 0x00);   // the lights' amber
+        case lights::DK_FLASH:  return rgb(0xAA, 0xC8, 0xFF);   // and cool white
+        case lights::DK_ERR_ON: return kRisk;                   // the SD glyph's error red
+        default:                return kBg;
+    }
+}
+
+// paintDisk: the light window filled for a state, and queued: 9 px.
+void paintDisk(uint8_t st) {
+    g_diskShown = st;
+    const Rect r = hddLight(g_packed, g_layout.glyphs.y);
+    if (empty(r)) return;
+    fill(g_canvas, r, diskColour(st));
+    g_dirty.add(r);
+}
+
+// loadTick: a sample of the loop's duty every kLoadMs, on micros (the host's
+// fast clock scales millis only), into the level: up at once, down one level
+// a sample after two samples below it, red held kRedHoldMs from its last
+// trigger. A sample spanning over a second (a pass that long) gives no duty,
+// only red when it held a slow pass.
+void loadReset() {
+    g_level = LV_NONE;
+    g_fall = 0;
+    g_loadInit = false;
+    g_loadAt = g_redUntil = 0;
+    g_duty = 0;
+    g_peakUs = 0;
+    g_stood = false;
+}
+
+void loadTick(uint32_t now) {
+    if (g_loadAt && now - g_loadAt < kLoadMs) return;
+    g_loadAt = now ? now : 1;
+    Bbs& b = Bbs::instance();
+    uint32_t work = 0, peak = 0;
+    b.takeLoad(work, peak);
+    const uint32_t t = plat::micros(), slow = b.slowPasses();
+    const uint32_t dW = work - g_loadW, dT = t - g_loadT;
+    const bool slowNew = slow != g_loadSlow;
+    const bool first = !g_loadInit;
+    g_loadW = work;
+    g_loadT = t;
+    g_loadSlow = slow;
+    g_loadInit = true;
+    if (first || !dT) return;
+    if (dT > kLoadGapUs) {
+        // A sample this long is one pass of most of a second (start and
+        // silent reset through first): no duty from it, but the pass is the
+        // worst thing the line is for, so it is red (code review, 1.2.1).
+        if (slowNew || peak > BBS_SLOW_PASS_US) {
+            g_peakUs = peak;
+            g_level = LV_RED;
+            g_fall = 0;
+            g_redUntil = (now + kRedHoldMs) ? now + kRedHoldMs : 1;
+        }
+        return;
+    }
+    uint32_t duty = dW >= dT ? 100u : dW * 100u / dT;
+    if (duty > 100u) duty = 100u;
+    g_duty = static_cast<uint8_t>(duty);
+    g_peakUs = peak;
+    uint8_t lv = LV_BLUE;
+    if (duty >= 75u || slowNew || peak > BBS_SLOW_PASS_US) lv = LV_RED;
+    else if (duty >= 40u || peak >= kYellowPassUs)        lv = LV_YELLOW;
+    else if (duty >= 15u)                                 lv = LV_GREEN;
+    if (lv == LV_RED) g_redUntil = (now + kRedHoldMs) ? now + kRedHoldMs : 1;
+    if (lv >= g_level) {
+        g_level = lv;
+        g_fall = 0;
+        return;
+    }
+    const bool held = g_level == LV_RED && g_redUntil && static_cast<int32_t>(g_redUntil - now) > 0;
+    if (held) { g_fall = 0; return; }
+    if (++g_fall >= 2) {
+        g_level = static_cast<uint8_t>(g_level - 1 > lv ? g_level - 1 : lv);
+        if (g_level == LV_NONE) g_level = LV_BLUE;
+    }
 }
 
 #if PANEL_BIG
@@ -640,7 +795,7 @@ void redrawAll() {
     fill(g_canvas, R(0, 0, g_canvas.w, g_canvas.h), kBg);
     fill(g_canvas, L.bar, kBar);
     fill(g_canvas, L.band, kBand);
-    fill(g_canvas, L.track, kTrack);
+    fill(g_canvas, L.track, kRule);                    // the load line: no reading yet
     fill(g_canvas, L.colRule, kRule);
     fill(g_canvas, L.rule1, kRule);
     fill(g_canvas, L.rule2, kRule);
@@ -649,6 +804,7 @@ void redrawAll() {
 #endif
     if (g_dotX >= g_canvas.w) g_dotX = 0;
     dotDraw(g_dotX);
+    g_diskShown = 0xFF;
     invalidate();
     g_dirty.clear();
     g_dirty.add(R(0, 0, g_canvas.w, g_canvas.h));
@@ -760,7 +916,8 @@ void statusWords(const Status& s, char* out, size_t n) {
     static const char* const kCard[]    = { "no card", "card", "card error" };
     static const char* const kListing[] = { "", " listed", " waiting", " unlisted" };
     static const char* const kStaff[]   = { "", " co-sysop", " sysop" };
-    snprintf(out, n, "%s%s%s%s%s%s%s%s%s%s", kCard[s.card], s.ring ? " ring" : "", s.mail ? " mail" : "",
+    snprintf(out, n, "%s%s%s%s%s%s%s%s%s%s%s", kCard[s.card], s.driveOff ? " drive off" : "",
+             s.ring ? " ring" : "", s.mail ? " mail" : "",
              s.upload ? " uploads" : "", s.backup ? " backup" : "", kListing[s.listing],
              kStaff[s.staff], s.warn ? " restart" : "", s.slow ? " slow" : "", s.camera ? " camera" : "");
 }
@@ -778,10 +935,11 @@ void drawGlyphs(const Status& s) {
     statusWords(s, key, sizeof(key));
     if (!changed(F_GLYPHS, key)) return;
     begin(F_GLYPHS, kBand);
-    g_packed = pack(s, g_layout.glyphs.x);
+    g_packed = pack(s, g_layout.glyphs.x, g_layout.glyphs.x + g_layout.glyphs.w);
     const uint8_t bell = bellAt(g_packed);
     for (uint8_t i = 0; i < g_packed.n; ++i)
         if (i != bell || g_bellLit) drawGlyphAt(g_canvas, g_packed, i, g_layout.glyphs.y);
+    paintDisk(lights::panelDisk());                       // the fill erased the drive's light
 }
 
 // bellTick: while the band shows the bell, it blinks at 2 Hz by redrawing
@@ -799,6 +957,17 @@ void bellTick(uint32_t now) {
     fill(g_canvas, b, kBand);
     if (lit) drawGlyphAt(g_canvas, g_packed, bell, g_layout.glyphs.y);
     g_dirty.add(b);
+}
+
+// diskTick: the drive's light, when the lights plugin's state for it moved:
+// the 3 x 3 window alone, never the row. At most 25 a second through a long
+// pc flicker, read on the strip's 40 ms clock.
+void diskTick() {
+#if BBS_PANEL_SQUARE
+    if (ringBanner()) return;                          // the ring banner has the band
+#endif
+    const uint8_t st = lights::panelDisk();
+    if (st != g_diskShown) paintDisk(st);
 }
 
 // antTick: the antenna, sampled four times a second and redrawn when its
@@ -1352,6 +1521,7 @@ void refreshText(uint32_t now, skin::Figures* fig) {
     s.staff   = staff;
     s.warn    = b.crashBoot() && !g_bootSeen;
     s.slow    = g_slowAt && now - g_slowAt < kSlowMs;
+    s.driveOff = lights::panelDisk() == lights::DK_OFF;
 #ifdef BBS_HAS_CAMERA
     s.camera  = camera::shooting();
 #endif
@@ -2001,25 +2171,34 @@ uint8_t refreshLeds() {
 }
 
 // dotStep: the dot one pixel along the rail, wrapping at the right edge.
-// It stands aside on a pass where the strip queued more than one LED, so a
-// busy strip has the glass to itself.
+// It stands aside on a frame where the strip queued more than one LED, so a
+// busy strip has the glass to itself, but never two frames running (1.2.1):
+// the dot is the load line's pen, and a dot that never moved under rainbow
+// or scanner recorded nothing. Under a busy strip it runs at half speed.
 void dotStep(uint8_t leds) {
-    if (leds > 1 || empty(g_layout.track)) return;
+    if (empty(g_layout.track)) return;
 #ifdef BBS_HAS_TOUCH
     if (g_asleep) return;                                  // asleep: nobody sees it move
 #endif
     int step = 1;
+    bool aside = leds > 1;
 #if PANEL_BIG
     // The big glass: 2 px every 80 ms, the same speed in half the
     // transactions, and aside while the queue holds three or more, because
     // there the queue is what runs out first.
     if (g_bigOn) {
         const uint32_t now = plat::millis();
-        if (g_dirty.n >= 3 || (g_dotAt && now - g_dotAt < kDotMs)) return;
+        if (g_dotAt && now - g_dotAt < kDotMs) return;
         g_dotAt = now ? now : 1;
+        aside = g_dirty.n >= 3;
         step = 2;
     }
 #endif
+    if (aside && !g_stood) {
+        g_stood = true;
+        return;
+    }
+    g_stood = false;
     const Rect was = dotBox(g_dotX);
     g_dotX = static_cast<int16_t>(g_dotX + step >= g_canvas.w ? 0 : g_dotX + step);
     const Rect now = dotBox(g_dotX);
@@ -2052,6 +2231,7 @@ void wake(uint32_t now) {
     if (!g_asleep) return;
     g_asleep = false;
     if (!g_lightOwed) light(g_run.backlight);
+    if (!g_skinOwned) railGrey();                          // the held dot: ahead of it is older than a lap
 }
 
 // touchTick: the controller polled every kTouchMs. A tap is a finger coming
@@ -2135,6 +2315,7 @@ void wake(uint32_t now) {
     g_dir  = 0;
     g_stepAt = now;
     if (!g_lightOwed) light(g_run.backlight);
+    if (!g_skinOwned) railGrey();                          // the held dot: ahead of it is older than a lap
 }
 
 void sleepNow() {
@@ -2183,6 +2364,7 @@ bool start(Bbs& bbs) {
     legacy();
     g_up = false;
     g_lightOwed = false;
+    loadReset();
 #if defined(BBS_HAS_TOUCH) && !defined(BBS_TOUCH_POLL)
     // Once a boot: the controller asked who it is and told to pulse INT,
     // and the interrupt that counts the taps (a few ms, a plugin's start).
@@ -2323,6 +2505,7 @@ void tick(uint32_t now) {
             g_stale = true;
             g_lightOwed = false;
             light(0);
+            loadReset();                                   // not sampled; the first after is a baseline
         }
 #if defined(BBS_HAS_TOUCH) && !defined(BBS_TOUCH_POLL)
         plat::touchTaps();                                 // silent: a tap does nothing
@@ -2351,6 +2534,7 @@ void tick(uint32_t now) {
 #endif
     const bool textDue = !g_textAt || now - g_textAt >= kTextMs;
     if (textDue) g_textAt = now ? now : 1;
+    loadTick(now);                                         // a skin too: the dot is right at hand-back
 
     // A skin from the card, when one is set and ready: it draws the glass
     // and the status skin below draws nothing. Its figures are the same
@@ -2388,6 +2572,7 @@ void tick(uint32_t now) {
     antTick(now);
     if (!g_stripAt || now - g_stripAt >= kStripMs) {
         g_stripAt = now ? now : 1;
+        diskTick();                                        // the HDD glyph's light, on the strip's clock
         dotStep(refreshLeds());
     }
     flush();
@@ -2542,6 +2727,26 @@ void cmdPanel(Bbs& b, Session& s, const char* a, uint32_t now) {
         line(s, Color::Grey, buf);
     }
 #endif
+    if (g_up) {
+        // The load line and the drive glyph (1.2.1), as the glass shows them.
+        static const char* const kLevel[] = { "no reading yet", "blue", "green", "yellow", "red" };
+        const unsigned lap = (static_cast<unsigned>(g_layout.track.w) * 2u + 25u) / 50u;   // 25 px a second
+        char ld[72];                               // longer than buf: "100% yellow, longest pass 1234 ms"
+        if (g_level == LV_NONE)
+            snprintf(ld, sizeof(ld), "Load      no reading yet, %u s a lap", lap);
+        else
+            snprintf(ld, sizeof(ld), "Load      %u%% %s, longest pass %u ms, %u s a lap",
+                     static_cast<unsigned>(g_duty), kLevel[g_level < 5 ? g_level : 0],
+                     static_cast<unsigned>((g_peakUs + 500u) / 1000u), lap);
+        line(s, Color::Grey, ld);
+        uint8_t style = 0;
+        const uint8_t st = lights::panelDisk(&style);
+        static const char* const kDisk[] = { "idle", "card", "flash", "error", "error", "off" };
+        char word[12];
+        styleWord(style, word, sizeof(word));
+        snprintf(buf, sizeof(buf), "Drive     %s, style %s", st <= lights::DK_OFF ? kDisk[st] : "off", word);
+        line(s, Color::Grey, buf);
+    }
     snprintf(buf, sizeof(buf), "%u bands sent", static_cast<unsigned>(g_bands));
     line(s, Color::Grey, buf);
     if (g_up && !skin::live()) {                   // a skin's glass has no fields to list

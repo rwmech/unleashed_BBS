@@ -7703,11 +7703,12 @@ def test_board_ws43b():
         px = lambda x, y: tuple(data[len(head) + (y * W + x) * 3:len(head) + (y * W + x) * 3 + 3])
         ok &= check("the header's bar in its blue", px(1, 1) == (24, 44, 120))
         ok &= check("and the body black", px(1, 150) == (0, 0, 0))
-        # The light bar: ten 32 px segments from x 40 at y 219..230, the
+        # The light bar: ten 35 px segments from x 7 at y 219..230 (1.2.1:
+        # the drive lamp is the HDD glyph in the band now), the
         # switchboard's idle dial blue on every free line (Rob, 1.1.2-hw.2:
         # the 4.3B's version for every board, whoever is on; the sysop's line
         # has no lamp), and black under it to the edge of the glass.
-        seg = [px(40 + 36 * i + 16, 225) for i in range(10)]
+        seg = [px(7 + 39 * i + 17, 225) for i in range(10)]
         ok &= check("the light bar's ten free lines lit in dim blue",
                     all(c[2] > 30 and c[2] > c[0] for c in seg))
         ok &= check("and clear of the glass's bottom edge",
@@ -8260,6 +8261,15 @@ def test_board_g4848():
     ok &= check("the big glass's node board: lines 1 to 10, each free",
                 all(re.search(rb"(?m)^\s*" + str(k).encode() + rb" free\s*$", p) for k in range(1, 11)))
     ok &= check("and Calls N today", re.search(rb"(?m)^\s*Calls \d+ today\s*$", p) is not None)
+    # The load line and the drive glyph (1.2.1,
+    # internal/tty-ux-panel-load-line-2026-10-01.md): a 480 px rail at 25 px
+    # a second is a 19 s lap; the drive's state and its style's word.
+    ok &= check("PANEL: the load line, a 19 s lap",
+                re.search(rb"(?m)^\s*Load {6}(\d+% (blue|green|yellow|red), longest pass \d+ ms|no reading yet), "
+                          rb"19 s a lap\s*$", p) is not None)
+    ok &= check("and the drive, its state and style",
+                re.search(rb"(?m)^\s*Drive {5}(idle|card|flash|error|off), style (pc|1541|disk2|breathe|off)\s*$",
+                          p) is not None)
 
     tap = DATA / "tap"
     tap.write_bytes(b"")
