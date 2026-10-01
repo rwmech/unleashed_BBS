@@ -6757,6 +6757,11 @@ def grey(p):
 #              lights_config rather than CONFIG, so no other plugin's hold on
 #              a pin counts: only the board's own (on the Freenove, 14 is
 #              its card's clock)
+# A profile with no row here SKIPs the lights tests and says so (1.2.1-dev.13),
+# as PIN_BOARD's unknown facts do: it used to fall back to the reference
+# board's row, and the 4.3B failed 50-odd checks on the WROOM's pins and its
+# lights-off default from the day it was added (1.1.2), none of them the
+# board's. Add a row, from board.h, when a profile's lights are checked.
 LIGHTS_BOARD = {
     "":       dict(on=False, flash=(b"7", b"9"), flash_pat=b"flash chip",
                    flash_says=b"Pins 6 to 11 are the flash chip.",
@@ -6780,8 +6785,27 @@ LIGHTS_BOARD = {
                    flash_says=b"Pins 26 to 37 are flash and PSRAM.",
                    over=b"49", over_says=b"Between -1 and 48",
                    pins=None, free=None, order=("GRB", "GRB"), file_pins=(18, 43)),
+    # The Touch-LCD-4.3B (WS43B): on, with no pin, as the WS2 (the glass's
+    # square LEDs are its strip, switchboard as shipped). Octal PSRAM, so 26
+    # to 37 are refused. Nothing is free for CONFIG to give two pins
+    # ("Nothing free for an LED or a button", board.h): the RGB bus, the
+    # touch, the card and the expander's I2C have the rest. 43 and 44 are
+    # the RS485 bridge's, a plugin's hold, which file pins do not meet.
+    "ws43b":  dict(on=True, flash=(b"30", b"33"), flash_pat=b"flash and PSRAM",
+                   flash_says=b"Pins 26 to 37 are flash and PSRAM.",
+                   over=b"49", over_says=b"Between -1 and 48",
+                   pins=None, free=None, order=("GRB", "GRB"), file_pins=(43, 44)),
 }
-LB = LIGHTS_BOARD.get(HOST_BOARD, LIGHTS_BOARD[""])
+LB = LIGHTS_BOARD.get(HOST_BOARD)
+
+
+def lights_unknown():
+    """True, after saying SKIP, where LIGHTS_BOARD has no row for this
+    profile: its pins and defaults are not known to these tests."""
+    if LB is None:
+        print(f"  SKIP  the lights: no LIGHTS_BOARD row for the {HOST_BOARD} profile")
+        return True
+    return False
 
 # The harness's serial section, put back after a test frees its pins.
 SERIAL_HARNESS = {"enabled": "yes", "read": "all", "write": "staff", "admin": "sysop",
@@ -6793,7 +6817,7 @@ def lights_free(s, on):
     (LB["free"]), or put it back. From a sysop line of its own: the file is
     read again through CONFIG's cursor form, which a plain ASCII caller has
     not got."""
-    if LB["free"] == "serial":
+    if LB and LB["free"] == "serial":
         r = cfg_sysop("LightsFreer")
         section_config(r, "plugin:serial", **(SERIAL_HARNESS if not on else {"enabled": "no"}))
         r.close()
@@ -6803,6 +6827,8 @@ def lights_free(s, on):
 def test_config_lights():
     """CONFIG lights: the pins, the brightness ceiling and the round trip."""
     print("CONFIG lights")
+    if lights_unknown():
+        return True
     local = HOST in ("127.0.0.1", "localhost")
     s = cfg_sysop("CfgLights")
     ok = check("the lights page opens", cfg_open(s, b"lights", b"Drive pin"))
@@ -6956,7 +6982,12 @@ def ascii_sysop(handle):
 
 # CONFIG sd in line mode: the rows after Read (Write, Admin, four pins, the
 # bus speed, Screens and, from 1.1.0, Nightly).
-SD_ROWS_AFTER_READ = 9 if os.environ.get("BBS_HOST_BOARD", "") != "fncam" else 5
+# The Freenove's SDMMC slot has no pin rows (its slot row is information,
+# not asked), and the 4.3B's chip select is the expander's (information too),
+# so it has three pin rows, not four (1.2.1-dev.13: the 4.3B's four
+# failures in test_config_cycle_numbers and three in test_config_lights_ascii
+# were the ninth Enter answering "Save (Y/n)?").
+SD_ROWS_AFTER_READ = {"fncam": 5, "ws43b": 8}.get(os.environ.get("BBS_HOST_BOARD", ""), 9)
 
 
 def ascii_form_seen(c, answers):
@@ -7019,8 +7050,8 @@ def test_config_lights_ascii():
     ok &= check("Backspace after a pick puts the value back",
                 got == 1 and (cfg_sec_line("plugin:sd", "read") or "").endswith("= sysop"))
 
-    if LB["pins"] is None:
-        print("  SKIP  the lights page: this board has no two free pins for lights")
+    if LB is None or LB["pins"] is None:
+        print("  SKIP  the lights page: no two free pins for lights known on this profile")
         c.close()
         return ok
     pin1, pin2 = LB["pins"]
@@ -7051,6 +7082,8 @@ def test_lights_frames():
     print("Lights: frames")
     if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
         print("  SKIP  needs the host build and the sysop")
+        return True
+    if lights_unknown():
         return True
     card = bool(os.environ.get("BBS_SD_DIR", ""))
     s = cfg_sysop("LightsFrames")
@@ -7254,6 +7287,8 @@ def test_lights_manual():
     print("Lights: manual mode")
     if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
         print("  SKIP  needs the host build and the sysop")
+        return True
+    if lights_unknown():
         return True
     s = cfg_sysop("LightsManual")
     on = {"enabled": "yes", "drive_pin": LB["file_pins"][0], "strip_pin": LB["file_pins"][1]}
@@ -7481,6 +7516,8 @@ def test_lights_silent():
     if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
         print("  SKIP  needs the host build and the sysop")
         return True
+    if lights_unknown():
+        return True
     s = cfg_sysop("LightsSilent")
     cols = ["red", "green", "blue", "amber", "cyan", "purple", "pink", "white", "yellow", "orange"]
     leds = {f"led{i + 1}": f"solid | {c}" for i, c in enumerate(cols)}
@@ -7559,6 +7596,8 @@ def test_lights_disk():
     if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
         print("  SKIP  needs the host build and the sysop")
         return True
+    if lights_unknown():
+        return True
     if not os.environ.get("BBS_SD_DIR", ""):
         print("  SKIP  needs a card: the card's amber is what flash has to take over from")
         return True
@@ -7601,6 +7640,8 @@ def test_lights_count():
     print("Lights: the strip's length")
     if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
         print("  SKIP  needs the host build and the sysop")
+        return True
+    if lights_unknown():
         return True
     s = cfg_sysop("LightsCount")
     on = {"enabled": "yes", "drive_pin": LB["file_pins"][0], "strip_pin": LB["file_pins"][1]}
@@ -7742,6 +7783,8 @@ def test_lights_wifi():
     if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
         print("  SKIP  needs the host build and the sysop")
         return True
+    if lights_unknown():
+        return True
     s = cfg_sysop("LightsWifi")
     on = {"enabled": "yes", "drive_pin": LB["file_pins"][0], "strip_pin": LB["file_pins"][1]}
     green, amber, red = (0, 20, 0), (25, 13, 0), (25, 0, 0)
@@ -7797,6 +7840,8 @@ def test_lights_order():
     print("Lights: colour order")
     if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
         print("  SKIP  needs the host build and the sysop")
+        return True
+    if lights_unknown():
         return True
     s = cfg_sysop("LightsOrder")
     on = {"enabled": "yes", "drive_pin": LB["file_pins"][0], "strip_pin": LB["file_pins"][1]}
