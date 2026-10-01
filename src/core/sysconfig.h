@@ -204,6 +204,13 @@ struct SysConfig {
     // port: main.cpp). No runs the board on Wi-Fi alone and leaves the
     // Ethernet chip untouched. Read at boot, like the network.
     bool     ethernet      = true;
+    // Wi-Fi beside the wire (1.2.1): with ethernet = yes and a network set,
+    // the station joins Wi-Fi as well, so the radio follows the router's
+    // channel and the link's sats pair. Callers still come in on the wire,
+    // which keeps the default route while it has an address. No: the 1.1.2
+    // behaviour, Wi-Fi standing by unjoined until the wire has no address.
+    // Read at boot, like ethernet.
+    bool     wifiWithEth   = true;
 #endif
 };
 

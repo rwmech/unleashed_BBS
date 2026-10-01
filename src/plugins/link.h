@@ -103,9 +103,11 @@ uint8_t peerRecv(uint8_t peer);
 uint8_t peerCamNo(uint8_t peer);
 // channel: the radio's channel, 0 with the link off.
 uint8_t channel();
-// onWire: the board is on Ethernet (BBS_HAS_ETH, an address on the wire), so
-// Wi-Fi stands by unjoined and ESP-NOW cannot reach a sat (1.2.1 fixes it).
-// Always false on a board with no wired port.
+// onWire: the board is on Ethernet (BBS_HAS_ETH, an address on the wire) and
+// its Wi-Fi is not joined, so ESP-NOW cannot reach a sat. From 1.2.1 Wi-Fi
+// joins beside the wire, so this is the case where it could not
+// (wifi_with_ethernet = no, no network set, a wrong password). Always false
+// on a board with no wired port.
 bool onWire();
 
 // SatInfo: everything the board knows of one pairing, for SATS and CONFIG

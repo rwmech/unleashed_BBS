@@ -8283,30 +8283,55 @@ def test_board_wseth():
     text = plain(s.buf)
     ok = check("SYS says the board is on Ethernet, 100 Mb/s full duplex",
                re.search(rb"\nEthernet +100 Mb/s full duplex", text) is not None)
-    ok &= check("and Wi-Fi is the fallback, standing by",
-                re.search(rb"\nWi-Fi +standby the fallback", text) is not None)
+    # Wi-Fi beside the wire (1.2.1). The host's station is joined while
+    # BBS_HOST_SSID is set, which tools/harness.sh always does; a run
+    # without it plays a station that could not join (the harness's
+    # system.cfg names a network, so SYS says "not joined", not "no network
+    # set"). "standby" is wifi_with_ethernet = no's word and is not seen.
+    joined = bool(os.environ.get("BBS_HOST_SSID"))
+    if joined:
+        ok &= check("and Wi-Fi joined beside it",
+                    re.search(rb"\nWi-Fi +" + re.escape(os.environ["BBS_HOST_SSID"].encode()) +
+                              rb" beside the wire", text) is not None)
+        ok &= check("with its own address on its own row",
+                    re.search(rb"\nWi-Fi IP +127\.0\.0\.1", text) is not None)
+    else:
+        ok &= check("and Wi-Fi beside it, not joined",
+                    re.search(rb"\nWi-Fi +not joined CONFIG network", text) is not None)
+        ok &= check("the radio standing by",
+                    re.search(rb"\nRadio +standby calls on Ethernet", text) is not None)
+    ok &= check("the address is the wire's",
+                re.search(rb"\nAddress +127\.0\.0\.1 Ethernet", text) is not None)
 
     s.buf.clear()
     s.send(b"hardware\r")
     read_list(s)
     ok &= check("HARDWARE lists Ethernet among the capabilities",
                 b"Ethernet 100 Mb/s" in plain(s.buf))
+    ok &= check("and Wi-Fi beside it while joined" if joined else "and no Wi-Fi while not joined",
+                (re.search(rb"Ethernet 100 Mb/s,\s+Wi-Fi", plain(s.buf)) is not None) == joined)
 
     ok &= check("CONFIG network has the Ethernet row",
                 cfg_open(s, b"network", b"Network") and b"Ethernet" in plain(s.buf))
+    ok &= check("and the Wi-Fi beside the wire row (1.2.1)", b"Wi-Fi beside wire" in plain(s.buf)
+                or b"Wi-Fi too" in plain(s.buf))
     cfg_cancel(s)
 
-    # On the wire the link cannot reach a sat (1.2.0; 1.2.1 joins Wi-Fi as
-    # well): SATS and CONFIG sats say so to staff.
+    # On the wire with Wi-Fi not joined the link cannot reach a sat (1.2.0).
+    # From 1.2.1 Wi-Fi joins beside the wire, so SATS and CONFIG sats tell
+    # staff only when it could not, and say nothing while it is joined.
     s.buf.clear()
     s.send(b"sats\r")
     read_list(s)
+    notice = b"On Ethernet, but Wi-Fi hasn't joined: sats can't pair. See CONFIG network."
     # SATS is a command only while a camera is on (the host's is off here).
     if b"Unknown command" not in plain(s.buf):
-        ok &= check("SATS tells staff the link needs Wi-Fi on the wire",
-                    b"The link needs Wi-Fi. This board is on Ethernet, so sats can't pair." in plain(s.buf))
-    ok &= check("CONFIG sats says so too",
-                cfg_open(s, b"sats", b"SATELLITES") and b"needs Wi-Fi" in plain(s.buf))
+        ok &= check("SATS says nothing of the wire while Wi-Fi is joined" if joined
+                    else "SATS tells staff Wi-Fi hasn't joined beside the wire",
+                    (notice in plain(s.buf)) != joined)
+    opened = cfg_open(s, b"sats", b"SATELLITES")
+    ok &= check("nor does CONFIG sats" if joined else "CONFIG sats says so too",
+                opened and (b"Wi-Fi not joined" in plain(s.buf)) != joined)
     cfg_cancel(s)
 
     # The board page's activity LED: the W5500's and the camera's pins are
@@ -8580,11 +8605,16 @@ def photos(card):
 #                sensor goes to the top of the list
 #   pin          a GPIO the camera's flash may use in pin and pixel mode:
 #                the Freenove's free 13, the ESP32-CAM's own flash LED on 4
-#                (13 is its card's CS there)
+#                (13 is its card's CS there), the WS2's only free pin 18,
+#                and on the ESP32-S3-ETH, which has no flash LED, header
+#                GPIO 16 (release-prep/wseth/pins.md: free are 0, 16, 17,
+#                21 the pixel, 43 and 44; the board LED key stops at 39 and
+#                21 is the lights' own drive pin, so 16)
 CAM_BOARD = {
     "fncam":  dict(sensor=b"GC0308", top=b"vga", size=b"vga", over=b"uxga", pin="13"),
     "espcam": dict(sensor=b"OV2640", top=b"uxga", size=b"xga", over=None, pin="4"),
     "ws2":    dict(sensor=b"OV5640", top=b"qxga", size=b"xga", over=None, pin="18"),
+    "wseth":  dict(sensor=b"OV5640", top=b"uxga", size=b"xga", over=None, pin="16"),
 }
 CB = CAM_BOARD.get(HOST_BOARD, CAM_BOARD["fncam"])
 

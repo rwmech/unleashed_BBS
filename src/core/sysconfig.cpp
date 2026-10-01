@@ -558,6 +558,7 @@ void keyValue(Ctx& c, const char* key, char* val) {
     else if (!strcmp(key, "cgnat_local"))           yesNo(c, key, val, g.cgnatLocal);
 #ifdef BBS_HAS_ETH
     else if (!strcmp(key, "ethernet"))              yesNo(c, key, val, g.ethernet);
+    else if (!strcmp(key, "wifi_with_ethernet"))    yesNo(c, key, val, g.wifiWithEth);
 #endif
     else if (!strcmp(key, "silent_from") || !strcmp(key, "silent_until")) {
         // A form is told (a writer's trial); a file is read as no time and

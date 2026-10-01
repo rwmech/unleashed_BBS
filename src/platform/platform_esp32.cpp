@@ -914,8 +914,11 @@ NetInfo netInfo() {
         snprintf(n.ip, sizeof(n.ip), IPSTR, IP2STR(&ip.ip));
     }
 #ifdef BBS_HAS_ETH
-    // On the wire, the address is the wire's: Wi-Fi stands by unjoined then
-    // (main.cpp), and the address callers reach is the one shown.
+    // On the wire, the address is the wire's: the one the board gives out
+    // (main.cpp, netPick). The station's own, while it is joined beside it
+    // (1.2.1), is staIp; a station not joined may still hold a lease for
+    // the IDF's lost-IP time, which is not an address anyone reaches.
+    if (n.valid) snprintf(n.staIp, sizeof(n.staIp), "%s", n.ip);
     const EthInfo e = ethInfo();
     n.ethLink = e.link;
     n.ethFull = e.full;

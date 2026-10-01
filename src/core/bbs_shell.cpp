@@ -50,6 +50,9 @@
 #include "space.h"            // the kept free-space figures (1.1.2)
 #include "runner.h"           // the background runner (1.1.2)
 #include "../platform/platform.h"
+#ifdef BBS_HAS_ETH
+#include "netfallback.h"      // kBuiltinWifi: SYS's Wi-Fi row on the wire (1.2.1)
+#endif
 
 #include <climits>
 #include <cstring>
@@ -2778,8 +2781,22 @@ bool Bbs::rowSys(Session& s) {
 #endif
         case 3: {
 #ifdef BBS_HAS_ETH
+            // On the wire (1.2.1): Wi-Fi joined beside it, or why not. The
+            // 1.1.2 words stay for wifi_with_ethernet = no, where standing
+            // by is the design.
             if (net.onEth) {
-                statRow(s, "Wi-Fi", "standby", Color::Grey, "the fallback");
+                if (net.valid) {
+                    const char* ssid = net.ssid[0] ? net.ssid : "-";
+                    const size_t len = strlen(ssid);
+                    const size_t used = 13 + (len > 9 ? len : 9) + 1 + 15;
+                    statRow(s, "Wi-Fi", ssid, Color::White, used <= rowWidth(s) ? "beside the wire" : nullptr);
+                } else if (!syscfg::get().wifiWithEth) {
+                    statRow(s, "Wi-Fi", "standby", Color::Grey, "the fallback");
+                } else if (!syscfg::get().wifiSsid[0] && !kBuiltinWifi) {
+                    statRow(s, "Wi-Fi", "-", Color::Grey, "no network set");
+                } else {
+                    statRow(s, "Wi-Fi", "not joined", Color::Yellow, "CONFIG network");
+                }
                 return true;
             }
 #endif
@@ -2792,6 +2809,20 @@ bool Bbs::rowSys(Session& s) {
             return true;
         }
         case 4:
+#ifdef BBS_HAS_ETH
+            // Joined beside the wire: the station's signal, with its channel,
+            // which is the one the link's sats follow.
+            if (net.onEth && net.valid) {
+                Color c = Color::Grey;
+                const char* word = signalWord(net.rssi, c);
+                char note[24];
+                if (net.rssi) snprintf(num, sizeof(num), "%d dBm", static_cast<int>(net.rssi));
+                else          snprintf(num, sizeof(num), "-");
+                snprintf(note, sizeof(note), "%s, ch %u", word, static_cast<unsigned>(net.channel));
+                statRow(s, "Signal", num, c, note);
+                return true;
+            }
+#endif
             if (net.channel) snprintf(num, sizeof(num), "%u", static_cast<unsigned>(net.channel));
             else             snprintf(num, sizeof(num), "-");
             statRow(s, "Channel", num, Color::LightGreen);
@@ -2809,7 +2840,20 @@ bool Bbs::rowSys(Session& s) {
             // power save is its idle default: no caller's packets go by
             // radio, so "SLEEPING" would be a false alarm. Wi-Fi sets it off
             // again the moment it joins (main.cpp, noSleep).
-            if (net.onEth) { statRow(s, "Radio", "standby", Color::Grey, "calls on Ethernet"); return true; }
+            // Joined beside the wire (1.2.1), the station's own address is
+            // this row, and its power save is the one noSleep set.
+            if (net.onEth && !net.valid) { statRow(s, "Radio", "standby", Color::Grey, "calls on Ethernet"); return true; }
+            if (net.onEth) {
+                const char* ps = snap_.power;
+                const bool awake = !ps || !*ps || *ps == '?' || ps[0] == 'n';
+                const char* ip   = net.staIp[0] ? net.staIp : "-";
+                const char* note = awake ? "awake" : "SLEEPING";
+                const size_t len = strlen(ip);
+                const size_t used = 13 + (len > 9 ? len : 9) + 1 + strlen(note);
+                statRow(s, "Wi-Fi IP", ip, awake ? Color::White : Color::LightRed,
+                        used <= rowWidth(s) ? note : nullptr);
+                return true;
+            }
 #endif
             const char* ps = snap_.power;
             // "?" is the driver not saying, not a radio asleep
@@ -2820,7 +2864,13 @@ bool Bbs::rowSys(Session& s) {
                     awake ? "power save off" : "SLEEPING, expect ~1s lag");
             return true;
         }
-        case 5:  statRow(s, "Address", net.ip[0] ? net.ip : "-", Color::White); return true;
+        case 5:
+#ifdef BBS_HAS_ETH
+            // The wire's while it has one: the address the board gives out.
+            if (net.onEth) { statRow(s, "Address", net.ip[0] ? net.ip : "-", Color::White, "Ethernet"); return true; }
+#endif
+            statRow(s, "Address", net.ip[0] ? net.ip : "-", Color::White);
+            return true;
         case 6:
             // The port it is answering on, not the configured one: a port
             // changed in CONFIG waits for a restart, and until then this is
