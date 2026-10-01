@@ -1149,7 +1149,7 @@
 // The serial bridge: no pins as shipped. With the camera, the card, the
 // panel, the touch and IMU bus and the battery sense wired, what is left is
 // GPIO 18 alone. UART0's 43 and 44 are on the header too; the console is
-// the chip's own USB, so CONFIG takes them since 1.2.1 (B\x08_CONSOLE_UART0),
+// the chip's own USB, so CONFIG takes them since 1.2.1 (BBS_CONSOLE_UART0),
 // but 43 carries the ROM's boot banner at every reset: not for a LED or a
 // relay.
 #define BBS_SERIAL_RX         -1

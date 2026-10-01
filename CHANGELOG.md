@@ -330,10 +330,21 @@ Each board whose own behaviour moved in 1.2.1 has its version bumped (Rob):
 - MF35 1.1.3 and MF35V2 1.0.0 are unchanged: both moved already in their
   own lane.
 
+### The merge review's low items (1.2.1-dev.11)
+
+Comments, docs and a test, no firmware behaviour: platformio.ini's MF35V2
+note no longer says its layer holds the VFS table; a board.h comment (the
+WS2's serial pins) where a heredoc had left a backspace escape in place of
+"BS" names `BBS_CONSOLE_UART0` again, the only such escape in the tree; and `test_config_serial_rows`
+asserts that the Makerfabs v2.0 refuses 43 as wired on the board (and that
+no other profile does), where it had passed on any answer but the console.
+The three bench-only ESP32 envs (`esp32dev_backuptest`, `esp32dev_diag`,
+`esp32dev_wdttest`) build with no warnings too, so all 21 envs do.
+
 ### Sizes
 
-Static DRAM off the ELFs at 1.2.1-dev.10, every env built with no warnings
-(each _release env the same as its bench env):
+Static DRAM off the ELFs at 1.2.1-dev.10, the 18 board and release envs
+built with no warnings (each _release env the same as its bench env):
 
 | Board | Static DRAM | Free | Image |
 |---|---|---|---|

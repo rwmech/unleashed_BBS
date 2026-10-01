@@ -6066,6 +6066,8 @@ BOARD_LED  = 6
 #   sd_clock   the card's clock as a CONFIG sd setting, with its label
 #              (None: the profile's card is not on settings CONFIG shows)
 #   sd_rows    CONFIG sd has pin rows (an SPI slot on settings)
+#   wired43    (optional) 43 is wired to a part on the board, so CONFIG
+#              refuses it as "wired on the board" (BBS_PINS_WIRED)
 # None is a fact this table does not know for the profile: the check that
 # needs it SKIPs and says so, rather than asserting the WROOM's.
 _S3_FLASH   = dict(flash=(b"30", b"31", b"30"), flash_pat=b"flash and PSRAM",
@@ -6092,9 +6094,9 @@ PIN_BOARD = {
                    sd_clock=None, sd_rows=None),
     # Its v2.0 (1.2.1, the board-mf35v2 merge): the console is the chip's own
     # USB, so not UART0's; 43 and 44 are refused all the same, as wired to the
-    # CP2104 (BBS_PINS_WIRED). No bridge pins as shipped.
+    # CP2104 (BBS_PINS_WIRED: wired43). No bridge pins as shipped.
     "mf35v2": dict(_S3_FLASH, led=b"-1", led_free=None, btn_free=None, serial=None,
-                   sd_clock=None, sd_rows=None),
+                   sd_clock=None, sd_rows=None, wired43=True),
 }
 PB = PIN_BOARD.get(HOST_BOARD, PIN_BOARD[""])
 
@@ -21260,12 +21262,17 @@ def test_config_serial_rows():
         s.send(DOWN * 4 + b"\x08" * 3 + b"43" + F1)
         # A profile that ships no bridge pins (the WS2) answers "Saved, not
         # running": the bridge has an RX now and still no TX. Either way it
-        # is saved, and put back to what the profile ships. The Makerfabs
-        # v2.0 refuses 43 as wired to its CP2104, which is not the console
-        # rule either (cancelled below).
+        # is saved, and put back to what the profile ships. A profile whose
+        # 43 is wired to something on the board (PIN_BOARD's wired43: the
+        # Makerfabs v2.0's CP2104) must refuse it as that, never as the
+        # console and never by saving it (cancelled below).
         got = cfg_verdict(s, [b"console port", b"Saved and live", b"Saved, not running", b"Nothing changed",
                               b"Between", b"taken", b"Taken", b"saved, but", b"wired on the board"])
         ok &= check("with the console on USB, 43 is not the console port", got not in (None, b"console port"))
+        if PB.get("wired43"):
+            ok &= check("43 is refused as wired on the board", got == b"wired on the board")
+        else:
+            ok &= check("43 is not refused as wired on the board", got != b"wired on the board")
         if got in (b"Saved and live", b"Saved, not running") and PB["serial"]:
             cfg_open(s, b"serial", b"Enabled")
             s.send(DOWN * 4 + b"\x08" * 3 + PB["serial"][0] + F1)
