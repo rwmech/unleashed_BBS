@@ -115,7 +115,8 @@ LANE_OVERHEAD = 3.0          # a lane's board start and data copy
 PORT_BLOCKS = [(11000, 21500), (21500, 32000)]
 PROFILE_BIN = {"": "bbs_host", "s3": "bbs_host_s3", "fncam": "bbs_host_fncam",
                "espcam": "bbs_host_espcam", "ws43b": "bbs_host_ws43b", "ws2": "bbs_host_ws2",
-               "wseth": "bbs_host_wseth", "mf35": "bbs_host_mf35"}
+               "wseth": "bbs_host_wseth", "mf35": "bbs_host_mf35",
+               "g4848": "bbs_host_g4848"}
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +430,7 @@ def build(boards):
     import fcntl
     import zlib
     targets = sorted({PROFILE_BIN[b] for b in boards})
-    if any(b in boards for b in ("s3", "ws43b", "ws2", "wseth", "mf35")):
+    if any(b in boards for b in ("s3", "ws43b", "ws2", "wseth", "mf35", "g4848")):
         targets.append("ssh_call")                # the SSH profiles' tests call in with it
     # The link's tests (1.2.0) talk to host/linkpeer, the far end: built with
     # the board, so a lane never tests this board against an old build of it

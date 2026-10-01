@@ -81,7 +81,7 @@
  */
 #include "../config.h"
 
-#if defined(ESP_PLATFORM) && defined(BBS_LCD_RGB)
+#if defined(ESP_PLATFORM) && defined(BBS_LCD_RGB) && !defined(BBS_RGB_ST7701)   // the ST7701 boards: platform_esp32_st7701.cpp
 
 #include "platform.h"
 #include "esp_attr.h"

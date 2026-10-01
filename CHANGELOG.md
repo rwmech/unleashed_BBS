@@ -24,6 +24,62 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## G4848 1.0.0 on 1.2.0, 2026-09-30: the Guition ESP32-4848S040 (board lane)
+
+A board lane from v1.2.0 (branch board-g4848), to merge into 1.2.1. The core
+stays 1.2.0; the board says `1.2.0 (G4848 1.0.0)`. On the bench (COM30), not
+yet in a release: its image set is `esp32s3-g4848`, tag_only until the merge.
+
+- **A new board**: the Guition ESP32-4848S040, the 4" square 480 x 480 wall
+  panel, sold on Amazon as the "AITRIP ESP32-S3 4.0 inch" display board.
+  ESP32-S3-WROOM-1-N16R8 (8 MB octal PSRAM), an ST7701S IPS panel on the RGB
+  bus, GT911 touch, a TF slot, a CH340 on the one USB-C port. A profile of its
+  own (`BBS_BOARD_GT_4848S040`, envs `guition_4848s040` and `_release`).
+- Identified from the board itself: esptool's readout, and the factory
+  firmware, whose ST7701 init table (decoded from its image) is byte for byte
+  the table in Espressif's ESP32_Display_Panel board header for the
+  ESP32-4848S040C_I_Y_3. Pins from that header and the vendor's pin table,
+  which agree (release-prep/g4848/pins.md).
+- **The panel**: the ST7701 is set up once over its 3-wire SPI, which shares
+  its clock and data with the TF slot, so the setup goes out on the card's own
+  SPI bus as a second device (the bus held for it, and the panel's chip select
+  held high from start-up so the card's traffic never reaches it). Then the
+  RGB DMA streams a 480 x 480 framebuffer from PSRAM by itself, at 12 MHz (45
+  frames a second): no refill interrupt, so the refresh costs the loop
+  nothing. The status screen is the Makerfabs' 480 x 320 big layout, drawn in
+  the middle of the square glass with 80 black rows above and below; a square
+  layout of its own is for tty-ux.
+- The backlight dims (PWM on GPIO 38): CONFIG panel's Light is a percentage
+  here, 60 as shipped. Touch is polled as on the 4.3B: a tap wakes the glass
+  and turns the header. The GT911 is asked for at 0x5D, then 0x14.
+- The console, flashing and Improv are UART0 through the CH340, with no
+  USB-Serial-JTAG console at all: the chip's USB pins are the touch
+  controller's SDA and the panel's G1 on this board.
+- SSH on 6400 and 6422 (eight at once), the S3's 8 MB layout (the first
+  install is an erase), the link, the VFS table at 12. No BOOT-hold reset or
+  backup-window button: GPIO 0 is a panel data line.
+- CONFIG refuses 43 and 44 (the console), the RGB bus, the panel's SPI CS (39),
+  the backlight (38) and the touch pair (19, 45). 1, 2 and 40 are free: on this
+  no-relay board they go to the rear 2x4 header (the relay variant's relay
+  lines) and nothing on the board drives them.
+- A build left with a stale sdkconfig (the S3 layer's USB console, no XIP, the
+  VFS table at 8) is refused by name in board.h.
+- Static DRAM 267,656 of 341,760 (74,104 free), image 1,514,768 bytes. The
+  4.3B's and the LCD-1.47's objects are identical to v1.2.0's, built in the
+  same worktree before and after; their images differ only in the app
+  descriptor (version string, build time, the ELF's hash) and the digest.
+- On the bench (COM30, 192.168.0.124): 8 MB octal PSRAM with the program in
+  it, the ST7701S set up and the RGB bus at 12 MHz, the GT911 at 0x5D, Wi-Fi
+  by Improv, first-boot setup, telnet and SSH logins on 6400 and 6422. Loop
+  average 496 us of work with the panel running; internal heap 58,711 free,
+  48,679 at its lowest. The glass itself is for Rob to confirm.
+- Open: the bench card, a 1 GB SDSC, does not mount ("card answered then
+  failed"): it refuses CRC on/off (CMD59), which IDF 5.3.1's SPI init treats
+  as fatal. The factory firmware has no SD code to compare with; a known-good
+  SDHC card is next. And the CH340 drops off USB for a moment about 6 s into
+  every boot, as the panel starts and its backlight comes on; the board keeps
+  running.
+
 ## 1.2.0 (S3 1.1.4, WS43B 1.0.2, WS2 1.0.3, ETH 1.0.2, MF35 1.1.2, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-29: the hardware release
 
 **Out early for testing: this release has not been through the full

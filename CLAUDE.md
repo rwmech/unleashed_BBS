@@ -824,6 +824,70 @@ this tree.
   takes the card down. Move `CONFIG_VFS_MAX_COUNT=12` into the shared S3
   layer with a generic board.h guard, and have the sd plugin's
   ESP_ERR_NO_MEM message name the full VFS table as well as memory.
+  **The Guition ESP32-4848S040, G4848 1.0.0 on 1.2.0** (board-g4848 from
+  v1.2.0, 2026-09-30, COM30 through its CH340; merges into 1.2.1). Sold as
+  "AITRIP ESP32-S3 4.0 inch", a 480 x 480 ST7701S on the RGB bus, GT911,
+  N16R8. The case hides the silkscreen, so the model came from the factory
+  image, backed up first (release-prep/g4848/factory-16MB.bin). What this
+  lane taught:
+  - **A factory image is a source, not only a backup.** It was Arduino
+    with Espressif's ESP32_Display_Panel; its ST7701 init table sat in
+    .data as 16-byte `{cmd, data*, len, delay}` records, and decoded it
+    matched the library's JINGCAI_ESP32_4848S040C_I_Y_3 header byte for
+    byte. The one parameter not in .data (CD) pointed into .bss: a
+    zero-valued literal, which confirmed the header's `{0x00}`.
+  - **An ST7701 is two buses.** Its 3-wire SPI (9-bit words) shares SCK and
+    SDA with the TF slot here. The setup goes out as a second device on
+    SPI2, the card's own bus, with the bus acquired (sdspi takes it per
+    command, so the wait is one card command), words packed nine bits at a
+    time into one transaction per command; with no card the bus is raised
+    and freed around it. Its CS is held high from a constructor, the WS2's
+    lesson. `spi_bus_get_attr` (esp_private) confirms the card's bus is on
+    the panel's pins before anything is sent.
+  - **RGB without a refill interrupt.** The 4.3B's bounce fill doubles a
+    400 x 240 picture; at scale 1 that copy would be CPU work 45 times a
+    second. Here the driver keeps a 480 x 480 framebuffer in PSRAM and the
+    DMA streams it (no bounce buffers), 12 MHz rather than the vendor's 26
+    to hold the stream to 23 MB/s beside XIP. Its own file,
+    platform_esp32_st7701.cpp, so the 4.3B's object is untouched.
+  - **The big layout on a square glass**: the RAM figures 320/480 turn on
+    BBS_PANEL_BIG, the picture is 480 x 320, and lcdDraw puts it 80 rows
+    down. No layout code changed; a square layout is a tty-ux spec to come.
+  - The console is UART0 with `CONFIG_ESP_CONSOLE_SECONDARY_NONE`: the
+    chip's USB pads are GPIO 19 (touch SDA) and 20 (panel G1).
+  - GPIO 1, 2 and 40 are L1 to L3 to the rear 2x4 header (the Y_3's relay
+    lines) through 0R links; on this no-relay board they are a sysop's.
+  - The RGB CONFIG row's backlight note is `BBS_LCD_BL_NOTE` now, defaulting
+    to the 4.3B's literal in board.h, and panel.cpp changed only within its
+    line, so no other board's object moves.
+  - **A pin held by a constructor needs gpio_config, not
+    gpio_set_direction**: the latter does not select the pad's GPIO
+    function, and GPIO 39's IO MUX function 0 is JTAG's MTCK.
+  - **Stashing a lane to build a before-image wipes every build folder,
+    twice**: the stash and the pop each change platformio.ini, and
+    PlatformIO wipes .pio/build whole on a changed project checksum. Save
+    the objects and images out first (objsave.py; the lane's images are in
+    release-prep/g4848/img/), and expect a full rebuild after the pop.
+  - Bench (COM30, 192.168.0.124): loop average 496 us of work with the RGB
+    DMA running, internal heap 58,711 free and 48,679 low; SSH on both
+    ports. Open: the bench's 1 GB SDSC card refuses CMD59 (fatal in IDF
+    5.3.1's SPI init; not bent for one card), and the CH340 drops off USB
+    for a moment about 6 s into every boot, as the backlight comes on.
+  - Static DRAM 267,656 of 341,760 (74,104 free); image 1,514,768.
+  - **For the 1.2.1 merge, from the lane's code review:**
+    - 47 and 48 are the card's and the ST7701's SPI both, held only as sd
+      settings: with sd off, another plugin could be given them and the
+      panel's setup would drive them. They reach no header, so the risk is
+      small; the fix is a pinProblem list for pins a panel shares with the
+      card, the sd plugin's own check exempt.
+    - The release workflow's notes should name the `esp32s3-g4848-` prefix
+      when tag_only goes.
+    - The relay sibling (Y_3) would run this image too, its relays on 1, 2
+      and 40 floating from reset; holding them low at start-up is Rob's call
+      (on this board they reach only the header).
+    - On the glass: COLMOD is the vendor's 0x60 (the review caught the first
+      cut's 0x50); look for banding in red, green, blue and grey, and for
+      flicker at 45 Hz (the vendor runs 98).
   **Boards are chosen to maximise what the BBS can do, not to work around
   vendor wiring** (Rob: "not work around dumb vendor BS"). Rejected on
   that ground: the KEYESTUDIO ESP32-S3 PRO (N16R8), whose on-board SD slot

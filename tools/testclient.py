@@ -192,7 +192,8 @@ BBS_VERSION = bbs_version()
 # suite asserting the last one.
 BOARD_DEFINES = {"s3": "BBS_BOARD_WS_S3LCD147", "fncam": "BBS_BOARD_FN_WROVER_CAM",
                  "espcam": "BBS_BOARD_AI_ESP32CAM", "ws43b": "BBS_BOARD_WS_S3TOUCH43B",
-                 "ws2": "BBS_BOARD_WS_S3TOUCH2", "wseth": "BBS_BOARD_WS_S3ETH", "mf35": "BBS_BOARD_MF_S3PAR35"}
+                 "ws2": "BBS_BOARD_WS_S3TOUCH2", "wseth": "BBS_BOARD_WS_S3ETH", "mf35": "BBS_BOARD_MF_S3PAR35",
+                 "g4848": "BBS_BOARD_GT_4848S040"}
 
 
 def board_profile(name):
@@ -893,15 +894,15 @@ class SshCaller(Caller):
 
 
 # Every host profile built with BBS_HAS_SSH (src/board.h): the Waveshare
-# stick, the three hardware-preview Waveshares and the Makerfabs.
-SSH_BOARDS = ("s3", "ws43b", "ws2", "wseth", "mf35")
+# stick, the three hardware-preview Waveshares, the Makerfabs and the Guition.
+SSH_BOARDS = ("s3", "ws43b", "ws2", "wseth", "mf35", "g4848")
 
 
 def ssh_ready():
     """An SSH profile's host board (SSH_BOARDS, the profiles that carry
     BBS_HAS_SSH), and ssh_call built: or why not."""
     if os.environ.get("BBS_HOST_BOARD") not in SSH_BOARDS:
-        return "needs tools/harness.sh --board s3 (or another SSH board: ws43b, ws2, wseth, mf35)"
+        return "needs tools/harness.sh --board s3 (or another SSH board: ws43b, ws2, wseth, mf35, g4848)"
     if HOST not in ("127.0.0.1", "localhost"):
         return "needs the host build"
     if not SSH_CALL.exists():
@@ -8225,6 +8226,91 @@ def test_board_mf35():
     return ok
 
 
+def test_board_g4848():
+    """The Guition ESP32-4848S040 profile on the host (G4848 1.0.0, on 1.2.0,
+    with SSH, whose own tests run in the same lane): its defaults, the pins it
+    owns, and the panel: a 480 x 480 ST7701S on the RGB bus drawn with the big
+    glass's 480 x 320 landscape layout, touch polled as on the 4.3B.
+    SKIPs on the reference board; tools/harness.sh --board g4848
+    --only=board_g4848 runs it. A tap is a file called "tap" in the data
+    directory (host/platform_host.cpp, touchPoll)."""
+    print("Board profile: Guition ESP32-4848S040")
+    if HOST_BOARD != "g4848" or not PASSWORD:
+        print("  SKIP  needs tools/harness.sh --board g4848")
+        return True
+    tag, ver = board_profile("g4848")
+    s = cfg_sysop("BoardG4848")
+
+    s.buf.clear()
+    s.send(b"hardware\r")
+    s.wait_for(b"Heap low", 5)
+    s.pump(0.4)
+    hw = plain(s.buf)
+    ok = check("HARDWARE names the board and its profile's version",
+               board_name("g4848").encode() in hw and f"({tag} {ver})".encode() in hw)
+
+    p = panel_read(s)
+    ok &= check("PANEL: lit, the 480 x 480 ST7701S drawn at 480 x 320",
+                b"lit" in p and b"ST7701S 480x480, drawn 480x320" in p)
+    ok &= check("touch quiet, and no sleep as shipped", b"Touch quiet, 0 taps, never sleeps" in p)
+    ok &= check("the big glass's node board: lines 1 to 10, each free",
+                all(re.search(rb"(?m)^\s*" + str(k).encode() + rb" free\s*$", p) for k in range(1, 11)))
+    ok &= check("and Calls N today", re.search(rb"(?m)^\s*Calls \d+ today\s*$", p) is not None)
+
+    tap = DATA / "tap"
+    tap.write_bytes(b"")
+    time.sleep(2.0)
+    ok &= check("a tap is seen and counted", b"Touch seen, 1 taps" in panel_read(s) and not tap.exists())
+
+    shot = DATA / "panel.ppm"
+    if shot.exists():
+        shot.unlink()
+    s.buf.clear()
+    s.send(b"panel shot\r")
+    s.wait_for(b"Written", 4)
+    W, H = 480, 320
+    head = f"P6\n{W} {H}\n255\n".encode()
+    data = shot.read_bytes() if shot.exists() else b""
+    ok &= check("PANEL SHOT writes the 480 x 320 picture",
+                data.startswith(head) and len(data) == len(head) + W * H * 3)
+    if len(data) == len(head) + W * H * 3:
+        px = lambda x, y: tuple(data[len(head) + (y * W + x) * 3:len(head) + (y * W + x) * 3 + 3])
+        ok &= check("the header's bar in its blue, right across", px(1, 1) == (24, 44, 120) and
+                    px(W - 2, 1) == (24, 44, 120))
+
+    # CONFIG panel: the RGB board's page, the light a dimmer here.
+    ok &= check("CONFIG has a panel page", cfg_open(s, b"panel", b"Driver"))
+    s.pump(1.0)
+    page = plain(s.buf)
+    ok &= check("naming the ST7701S, with the light and the sleep",
+                all(w in page for w in (b"ST7701S", b"Backlight, 0 off", b"Sleep after, minutes")))
+    ok &= check("and none of the SPI panel's rows",
+                not any(w in page for w in (b"Panel pins", b"USB plug", b"SPI clock", b"X offset")))
+    cfg_cancel(s)
+
+    # The pins the board owns, refused on CONFIG serial's RX row (rows: 0
+    # Enabled, 1 Read, 2 Write, 3 Admin, 4 RX): the panel's clock, its
+    # backlight, the touch controller's SCL, and the octal PSRAM.
+    for pin, want in ((b"21", b"That pin is the display's."),
+                      (b"38", b"That pin is the display's."),
+                      (b"45", b"That pin is the display's."),
+                      (b"35", b"Pins 26 to 37 are flash and PSRAM.")):
+        cfg_open(s, b"serial", b"Enabled")
+        s.buf.clear()
+        s.send(DOWN * 4 + b"\x08" * 3 + pin + F1)
+        got = cfg_verdict(s, [want, b"Saved", b"Between"])
+        ok &= check(f"RX on {pin.decode()} refused: {want.decode()}", got == want)
+        cfg_cancel(s)
+
+    # The strip's default on this board is switchboard (board.h).
+    ok &= check("CONFIG lights opens", cfg_open(s, b"lights", b"Drive pin"))
+    s.pump(1.0)
+    ok &= check("with the strip on switchboard", b"switchboard" in plain(s.buf))
+    cfg_cancel(s)
+    s.close()
+    return ok
+
+
 def section_config(s, section, **keys):
     """[section] rewritten with exactly these keys (none: removed), then the
     board made to read it, as lights_config does for the lights."""
@@ -9579,7 +9665,8 @@ def start_copy(tmp, extra_args=(), env_extra=None):
     # that profile, with its pin rules and defaults.
     binary = {"s3": "bbs_host_s3", "fncam": "bbs_host_fncam",
               "espcam": "bbs_host_espcam", "ws43b": "bbs_host_ws43b", "ws2": "bbs_host_ws2",
-              "wseth": "bbs_host_wseth", "mf35": "bbs_host_mf35"}.get(HOST_BOARD, "bbs_host")
+              "wseth": "bbs_host_wseth", "mf35": "bbs_host_mf35",
+              "g4848": "bbs_host_g4848"}.get(HOST_BOARD, "bbs_host")
     return subprocess.Popen([str(ROOT / "host" / binary), str(tmp / "data"), *extra_args],
                             stdout=log, stderr=subprocess.STDOUT, env=env)
 
@@ -18612,7 +18699,7 @@ ORDER_NAMES = [
     "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
     "test_ssh_dedicated_port", "test_ssh_socket_budget",
     "test_board_fncam", "test_board_espcam", "test_board_ws43b", "test_board_ws2", "test_board_wseth",
-    "test_board_mf35",
+    "test_board_mf35", "test_board_g4848",
     "test_camera",
     "test_camera_registry",
     "test_camera_failed_start",
@@ -20707,10 +20794,15 @@ PROFILE_TESTS = {
                "test_ssh_login", "test_ssh_new_caller", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
                "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
+    # The Guition ESP32-4848S040 (G4848 1.0.0), SSH as every S3 board.
+    "g4848":  ["test_board_g4848",
+               "test_ssh_login", "test_ssh_new_caller", "test_ssh_resize", "test_ssh_host_keys",
+               "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
 }
 # The profiles whose lanes also run with a card (harness.sh --board s3
 # --card --only=ssh is how SSH's YMODEM was tested).
-PROFILE_CARD = ["s3", "ws43b", "ws2", "wseth", "mf35"]
+PROFILE_CARD = ["s3", "ws43b", "ws2", "wseth", "mf35", "g4848"]
 
 # Tests that time something against the board's clock and so cannot run on
 # the host's fast clock (BBS_FAST_TIMERS). On a fast board they SKIP, saying

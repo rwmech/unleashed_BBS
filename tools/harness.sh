@@ -43,6 +43,8 @@
 #                              (bbs_host_wseth), with --only=board_wseth
 #                 --board mf35 the Makerfabs ESP32-S3 Parallel TFT 3.5" profile
 #                              (bbs_host_mf35), with --only=board_mf35
+#                 --board g4848 the Guition ESP32-4848S040 profile
+#                              (bbs_host_g4848), with --only=board_g4848
 #
 #                 --changed RANGE   work out --only from what a git range
 #                              touched, instead of naming it by hand. RANGE
@@ -177,7 +179,8 @@ while [ $# -gt 0 ]; do
                 # framebuffer on the 1.1.1 bench: SSH is counted against that.
                 mf35)  BIN=bbs_host_mf35;  export BBS_HOST_BOARD=mf35
                        export BBS_HOST_PSRAM="${BBS_HOST_PSRAM:-1700000}" ;;
-                *)  echo "harness: no board profile called $2 (s3, fncam, espcam, ws43b, ws2, wseth, mf35)"; exit 2 ;;
+                g4848) BIN=bbs_host_g4848; export BBS_HOST_BOARD=g4848 ;;
+                *)  echo "harness: no board profile called $2 (s3, fncam, espcam, ws43b, ws2, wseth, mf35, g4848)"; exit 2 ;;
             esac
             shift 2 ;;
         # Plugins from their own repositories (1.2.0), already fetched into
@@ -299,9 +302,9 @@ if [ "$BUILD" = yes ]; then
     fi
     # The SSH profiles (1.1.2: every S3 board): their tests call in with
     # wolfSSH's client.
-    case "$BIN" in bbs_host_s3|bbs_host_ws43b|bbs_host_ws2|bbs_host_wseth|bbs_host_mf35) make -s ssh_call ;; esac
+    case "$BIN" in bbs_host_s3|bbs_host_ws43b|bbs_host_ws2|bbs_host_wseth|bbs_host_mf35|bbs_host_g4848) make -s ssh_call ;; esac
     make -s linkpeer
-elif [ ! -x "$BIN" ] || { case "$BIN" in bbs_host_s3|bbs_host_ws43b|bbs_host_ws2|bbs_host_wseth|bbs_host_mf35) [ ! -x ssh_call ] ;; *) false ;; esac; } || [ ! -x linkpeer ]; then
+elif [ ! -x "$BIN" ] || { case "$BIN" in bbs_host_s3|bbs_host_ws43b|bbs_host_ws2|bbs_host_wseth|bbs_host_mf35|bbs_host_g4848) [ ! -x ssh_call ] ;; *) false ;; esac; } || [ ! -x linkpeer ]; then
     echo "harness: --no-build, and host/$BIN (or ssh_call, or linkpeer) has not been built"
     exit 2
 fi
@@ -409,7 +412,7 @@ done
 
 # SSH's own port (1.1.2) on the SSH profiles, per tag like the others: 6422
 # for every run would have two tags' boards fighting over it.
-case "$BIN" in bbs_host_s3|bbs_host_ws43b|bbs_host_ws2|bbs_host_wseth|bbs_host_mf35)
+case "$BIN" in bbs_host_s3|bbs_host_ws43b|bbs_host_ws2|bbs_host_wseth|bbs_host_mf35|bbs_host_g4848)
         sed -i "s/^backup_port = .*/&\nssh_port = $((PORT + 1500))/" "$DATA/user/system.cfg" ;;
 esac
 

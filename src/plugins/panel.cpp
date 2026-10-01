@@ -2414,7 +2414,7 @@ const Command kCommands[] = {
 constexpr PluginSetting kSettings[] = {
     { "driver",    "Driver",    PS_INFO,  0, 0,   8, "The panel's controller chip.", nullptr,
       "Controller chip" },
-    { "backlight", "Light",     PS_NUM,   0, 100, 3, "On or off only: 0 is off.", nullptr,
+    { "backlight", "Light",     PS_NUM,   0, 100, 3, BBS_LCD_BL_NOTE, nullptr,
       "Backlight, 0 off" },
 #ifdef BBS_HAS_TOUCH
     { "sleep",     "Sleep min", PS_NUM,   0, 240, 3, "Dark after this long; a tap wakes it.", nullptr,
