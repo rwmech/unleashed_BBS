@@ -32,7 +32,9 @@ newer copy.
   (`_` for ESC on PETSCII) and, here, one CONFIG row named for the width
   (`Closed` at 40, `Stop taking calls` at 80). Where a 40 copy is shorter,
   the screen says so and lists what is left out.
-- No new @-codes. Every code used is in SCREENS.md.
+- One new @-code, Rob's: `@SECURE:ssh text|telnet text@`, which 1.2.2's
+  firmware adds. It is in rules, newuser and privacy, measured at its
+  longer variant. Every other code used is in SCREENS.md.
 
 ## Phrases the test suite reads
 
@@ -52,20 +54,32 @@ them.
 | closed (built in) | `Closed by the sysop` |
 | copyright, 40 | `Robert Mech  GPLv3+` (two spaces) |
 
+Three test phrases change with Rob's direction, so the tests move with
+the copy (firmware lane, not this deck):
+
+| Where | Test reads today | Becomes |
+|---|---|---|
+| welcome, PETSCII (testclient ~1088) | `No web. No cloud.` | `The next-generation BBS software` |
+| connection line (~1051, 2861, 11473, 17924-17927, 18065, 18253) | `--> Connection via Telnet is not secure`, `Connection via SSH is Secure.`, `33;1mSecure.` | `--> This connection is not securely encrypted`, `--> This connection is securely encrypted` |
+| sign-up warning (~12896, 17243) | `not encrypted` | `not securely encrypted` (`anywhere else` stays) |
+
 ## What changed in the language, and why
 
 The site's voice is the target: plain, warm, about your own community, and
-honest about telnet in the way the site and `/docs/privacy` are. Five
+honest about telnet in the way the site and `/docs/privacy` are. Six
 changes run through the whole deck.
 
-- **Telnet, not "nothing here".** The old copy said "Nothing here is
-  encrypted" in the rules and newuser. Since 1.1.2 every ESP32-S3 board
-  takes SSH, and over SSH that sentence is false. The screens are the same
-  on every board and cannot know how a caller came in, so they now say what
-  is true everywhere: telnet is plain text, SSH is encrypted where a board
-  has it, and the line the board prints before the welcome
-  (`--> Connection via Telnet is not secure`, or `via SSH is Secure.`)
-  says which one this caller is on.
+- **Telnet, not "nothing here", and the screen knows which.** The old
+  copy said "Nothing here is encrypted" in the rules and newuser. Since
+  1.1.2 every ESP32-S3 board takes SSH, and over SSH that sentence is
+  false. With Rob's `@SECURE` code (1.2.2) the screens say which one this
+  caller is on: "This connection is securely encrypted" or "is not
+  securely encrypted", the same words as the connection line and the
+  sign-up warning (section "The connection line and the sign-up warning").
+- **Transparency, not fear** (Rob, 2026-10-01). No screen says the sysop
+  sees everything or that staff watch a node. Lines can be monitored, the
+  sysop's included, and in practice rarely are: said once, with the help
+  desk as the model, and not repeated on every screen.
 - **Rob's framing for the risk**, the one `/docs/privacy` uses: open
   communication is radio; listening takes somebody on the path, with tools,
   on purpose; it is a conversation in a cafe, not a website that records
@@ -92,8 +106,8 @@ hands over to the handle prompt.
 **Shown:** every call, before login.
 
 **Changes:**
-- The tagline takes the site's promise (no ads, no feed, nobody in the
-  middle). Rob decides: see "For Rob" at the end.
+- The tagline is the site's "The next-generation BBS software" (Rob's
+  pick, 2026-10-01), the same at both widths.
 - "@BOARD@ running @BBS@" is split into two lines. With no board name,
   `@BOARD@` falls back to the software's name, and the old line read
   "µnleashed BBS running µnleashed BBS v1.1.1" (CLAUDE.md, 1.1.2 list).
@@ -102,7 +116,7 @@ hands over to the handle prompt.
 
 ```80 welcome
   E L E C T R O N I C   F R E E D O M
-  no ads  *  no feed  *  nobody in the middle  *  real hardware
+  The next-generation BBS software
   ----
     * Node @NODE@ of @NODES@      * Terminal @TERM@      * @DATE@ @TIME@
     * @BOARD@
@@ -117,7 +131,7 @@ Connecting you to @BOARD@
 
 ```40 welcome
  E L E C T R O N I C   F R E E D O M
- No ads, no feed, nobody in the middle.
+ The next-generation BBS software
 ----
  Node @NODE@ of @NODES@   @TERM@
  @DATE@ @TIME@
@@ -130,17 +144,16 @@ Connecting you to @BOARD@
 Connecting you to @BOARD@
 ```
 
-**40 is shorter:** "real hardware" and the label "Terminal" are left out,
-and the copyright is the short form the test expects. The tagline is 38
-characters, so centred it ends in column 39, the most SCREENS.md allows.
+**40 is shorter:** the label "Terminal" is left out, and the copyright is
+the short form the test expects.
 
-**Words:** 59 at 80, 49 at 40, about what the screen carried before. Cut for slow lines:
+**Words:** 53 at 80, 45 at 40, about what the screen carried before. Cut for slow lines:
 nothing more to cut. The 300 baud line "Connecting you to @BOARD@" is
 Rob's and stays, and it is the only paced line.
 
 **For the artist:** a board name over 21 characters makes "Connecting you
-to @BOARD@" wrap at 40. It can't move: the test reads "Connecting you
-to" followed by the name.
+to @BOARD@" wrap at 40. Rob keeps names up to 40 characters and accepts
+the wrap (2026-10-01).
 
 ---
 
@@ -359,27 +372,50 @@ files are in the library.
 
 ## rules
 
-**For:** the terms of the place, before anybody types a password. Six
-rules, the honest ones first. The encryption warning and the offer of the
-privacy screen follow it, immediately in front of the password, which is
-where they do the most good.
+**For:** the terms of the place, before anybody types a password. Four
+rules now, in Rob's order: respect, privacy, the hardware, and chaotic
+neutral. The connection warning and the offer of the privacy screen follow
+it, immediately in front of the password.
 
 **Shown:** when a caller presses R to register. Two pages at 80, three
 at 40.
 
-**Changes:**
-- Rule 2 was "NOTHING HERE IS ENCRYPTED", which an SSH caller on an S3
-  board reads as false. It is now "TELNET IS AN OPEN LINE", with the radio
-  framing and one sentence about SSH.
-- Rule 3 said a reused password was handed "to everyone between you and
-  this board". That overstates it, and Rob's framing is that being able
-  to listen is not listening. It now says "to whoever heard it".
-- Rule 4 gains the cafe test from the site. The heading is now "THE SYSOP
-  CAN SEE IT ALL", which is accurate rather than ominous: the caller log
-  and SNOOP are real, and nobody reads everything.
-- Rule 5 drops the price and the floppy comparison and uses the site's
-  "stick of gum". The heading is "IT IS A SMALL BOARD" (rel-1.2.1f had
-  "IT IS A SMALL, CHEAP BOARD").
+**Rob's direction (2026-10-01), and how the copy follows it:**
+- **Rule 1 is respect.** Argue all you like; harassment, bullying and
+  being a jerk get you banned; keep it constructive. The heading keeps
+  "NO HATE" because the test reads it and it still says the same thing.
+  **I chose "jerk", not the word Rob used.** These are stock rules on every
+  board, and the site has a /kids page and a /teachers page that send
+  classrooms to build one. A school board should not have to edit its house
+  rules before the first lesson, and a sysop who wants the stronger word can
+  type it in.
+- **"The sysop sees everything" is gone.** Rules 2, 3 and the old 4 are one
+  rule, "UNDERSTAND THE PRIVACY". It says what is true without the big
+  brother tone: SSH gets you to the board securely and telnet does not, a
+  line can be monitored, the sysop's included, and in practice it rarely
+  is. The support model is there by analogy ("the way a help desk can"),
+  not spelled out. "Use a password you use nowhere else" stays inside it,
+  still the one that matters.
+- **The rule knows the connection.** Its first line is
+  `THIS CONNECTION @SECURE:IS|IS NOT@ SECURELY ENCRYPTED.`, using the new
+  screen code 1.2.2 adds. The form is `@SECURE:ssh text|telnet text@`.
+  Only the two words that differ sit inside the code, so the code stays
+  short (see the hand-backs: the player's token buffer is 16 bytes today),
+  and the line breaks at 40 outside it. The two variants a caller sees are
+  below the blocks.
+- **Rule 3 is "IT RUNS ON A MICROCONTROLLER":** an ESP32 or ESP32-S3 that
+  fits in your hand, performance first, the odd hiccup, and where to report
+  one.
+- **The issues address:** `https://github.com/rwmech/unleashed_BBS/issues`
+  is 46 characters and does not fit 40 columns. Without the scheme,
+  `github.com/rwmech/unleashed_BBS/issues` is 38: it fits a 39-column line
+  only flush left, not inside the rule's four-column hang (42). So at 40
+  it stands on its own line at column 1, and at 80 it sits in the hang.
+  Terminal users type an address rather than click it, and GitHub takes
+  it without the scheme. The bare host would also fit, but it lands on the
+  code page, not the form, and a caller with a bug wants the form.
+- **"Chaotic neutral" stays** as rule 4, now "Past all that, do as you
+  like." "Get along" moved into rule 1's "play nice".
 
 ```80 rules
   THE HOUSE RULES
@@ -387,35 +423,33 @@ at 40.
   You are about to make an account. This is the whole deal, and it is
   shorter than the thing you clicked through this morning.
 
-  1.  NO HATE.
-        Argue with anybody about anything. Come after a person for who they
-        are and you are off the board. No warning, no appeal, no long
-        conversation about it.
+  1.  RESPECT. NO HATE.
+        Argue with anybody about anything, as hard as you like. Harassment,
+        bullying and being a jerk will get you banned. Keep it constructive,
+        and play nice with others.
 
-  2.  TELNET IS AN OPEN LINE.
-        Over telnet, every word you type crosses the network as plain text,
-        your password included. It is like radio: somebody on the path,
-        listening on purpose, could hear it. SSH, where the board has it, is
-        encrypted.
+  2.  UNDERSTAND THE PRIVACY.
+        THIS CONNECTION @SECURE:IS|IS NOT@ SECURELY ENCRYPTED.
+        SSH carries what you type to the board securely. Telnet does not:
+        it goes as plain text, like radio, and someone on the path could
+        listen in if they set out to. A sysop can look in on a line as well,
+        the way a help desk can, but in practice it rarely happens.
 
-  3.  USE A PASSWORD YOU USE NOWHERE ELSE.
-        This is the one that matters. If what you type here is also the
-        password on your mail, you have handed your mail to whoever heard
-        it. Make one up. It does not have to be clever. It has to be new.
+        Use a password you use nowhere else. That is still the one that
+        matters. Make one up. It does not have to be clever. It has to be
+        new.
 <FF>
   THE HOUSE RULES
   ----
-  4.  THE SYSOP CAN SEE IT ALL.
-        Calls are logged, and staff can watch a node. Chat and mail are not
-        private. Say what you would say at a table in a cafe.
+  3.  IT RUNS ON A MICROCONTROLLER.
+        The whole BBS is one ESP32 or ESP32-S3, on a board that fits in
+        your hand. Performance is our number one goal, but now and then it
+        may hiccup. If it drops you, call back. If it keeps happening, file
+        a bug report at:
+        github.com/rwmech/unleashed_BBS/issues
 
-  5.  IT IS A SMALL BOARD.
-        The whole BBS is one microcontroller about the size of a stick of
-        gum, on a shelf somewhere. Be patient with it. If it drops you, call
-        back.
-
-  6.  CHAOTIC NEUTRAL.
-        Past all that, do as you like. Get along.
+  4.  CHAOTIC NEUTRAL.
+        Past all that, do as you like.
 
   ----
   Still here? Good. Pick a handle and a password nobody else has ever
@@ -430,51 +464,48 @@ This is the whole deal, and it is
 shorter than the thing you clicked
 through this morning.
 
-1.  NO HATE.
+1.  RESPECT. NO HATE.
     Argue with anybody about
-    anything. Come after a person for
-    who they are and you are off the
-    board. No warning, no appeal, no
-    long conversation about it.
-
-2.  TELNET IS AN OPEN LINE.
-    Over telnet, every word you type
-    crosses the network as plain
-    text, your password included. It
-    is like radio: somebody on the
-    path, listening on purpose, could
-    hear it. SSH, where the board has
-    it, is encrypted.
+    anything, as hard as you like.
+    Harassment, bullying and being a
+    jerk will get you banned. Keep it
+    constructive, and play nice with
+    others.
 <FF>
 THE HOUSE RULES            Page 2 of 3
 ----
-3.  USE A PASSWORD YOU USE
-    NOWHERE ELSE.
-    This is the one that matters. If
-    what you type here is also the
-    password on your mail, you have
-    handed your mail to whoever heard
-    it. Make one up. It does not have
-    to be clever. It has to be new.
+2.  UNDERSTAND THE PRIVACY.
+    THIS CONNECTION @SECURE:IS|IS NOT@
+    SECURELY ENCRYPTED.
+    SSH carries what you type to the
+    board securely. Telnet does not:
+    it goes as plain text, like radio,
+    and someone on the path could
+    listen in if they set out to. A
+    sysop can look in on a line as
+    well, the way a help desk can, but
+    in practice it rarely happens.
 
-4.  THE SYSOP CAN SEE IT ALL.
-    Calls are logged, and staff can
-    watch a node. Chat and mail are
-    not private. Say what you would
-    say at a table in a cafe.
+    Use a password you use nowhere
+    else. That is still the one that
+    matters. Make one up. It does not
+    have to be clever. It has to be
+    new.
 <FF>
 THE HOUSE RULES            Page 3 of 3
 ----
-5.  IT IS A SMALL BOARD.
-    The whole BBS is one
-    microcontroller about the size of
-    a stick of gum, on a shelf
-    somewhere. Be patient with it. If
-    it drops you, call back.
+3.  IT RUNS ON A MICROCONTROLLER.
+    The whole BBS is one ESP32 or
+    ESP32-S3, on a board that fits in
+    your hand. Performance is our
+    number one goal, but now and then
+    it may hiccup. If it drops you,
+    call back. If it keeps happening,
+    file a bug report at:
+github.com/rwmech/unleashed_BBS/issues
 
-6.  CHAOTIC NEUTRAL.
+4.  CHAOTIC NEUTRAL.
     Past all that, do as you like.
-    Get along.
 
 ----
 Still here? Good. Pick a handle and a
@@ -482,12 +513,23 @@ password nobody else has ever seen,
 and welcome aboard.
 ```
 
-**Same words** at both widths. Pages at 40: 22, 16 and 17 rows, against
-the 22-row budget.
+What each caller reads on rule 2's first line:
 
-**Words:** 244 (was 252), titles aside. Cut for slow lines: nothing more. Each rule is
-a sentence or two. The opening joke and "Chaotic neutral" are the board's
-personality, and Rob's.
+| Connection | Line |
+|---|---|
+| telnet | `THIS CONNECTION IS NOT SECURELY ENCRYPTED.` |
+| SSH | `THIS CONNECTION IS SECURELY ENCRYPTED.` |
+
+The rest of the rule is the same for both. An SSH caller still reads why
+telnet is different, which matters because their next call may come in
+over telnet.
+
+**Same words** at both widths. Pages at 40: 14, 19 and 19 rows; at 80,
+20 and 15. The budget is 22.
+
+**Words:** 227, titles aside (was 252 for six rules on rel-1.2.1f). Cut
+for slow lines: the old rule 4 is gone, rules 2 and 3 are one, and
+"Chaotic neutral" is one sentence.
 
 ---
 
@@ -499,12 +541,14 @@ and the three things worth typing first.
 **Shown:** once, in place of the motd, right after a registration
 succeeds. Followed by "[H]ELP for commands." and the prompt.
 
-**Changes:**
-- "Nothing here is encrypted" becomes "Telnet is plain text", for the
-  same reason as rule 2.
-- "The sysop reads the logs" becomes "Staff can watch a node". There is a
-  caller log, but nobody keeps a chat log, so the old line implied a record
-  that does not exist. SNOOP is what makes chat not private.
+**Changes, to match the revised rules:**
+- The first bullet is rule 1: "No hate. Respect everyone and play nice."
+  ("No hate" is a test anchor and stays.)
+- The second is rule 2's line, connection-aware with `@SECURE`.
+- The third is the password, on its own: it is still the one that matters.
+- "Chat and mail are not private. Staff can watch a node." is gone, for
+  the same reason the old rule 4 went. PRIVACY, a line below, is there for
+  anybody who wants the whole story.
 
 ```80 newuser
   YOU ARE ON THE BOARD
@@ -513,9 +557,9 @@ succeeds. Followed by "[H]ELP for commands." and the prompt.
 
   The short version, now that you have joined:
 
-      * No hate. That is the one that gets you removed.
-      * Telnet is plain text. Never reuse a password.
-      * Chat and mail are not private. Staff can watch a node.
+      * No hate. Respect everyone and play nice.
+      * This connection @SECURE:is|is not@ securely encrypted.
+      * Use a password you use nowhere else.
       * Be patient. It is a microcontroller, not a data centre.
 
   ----
@@ -532,12 +576,11 @@ Node @NODE@ of @NODES@ is yours.
 
 The short version, now that you
 have joined:
-* No hate. That is the one that gets
-  you removed.
-* Telnet is plain text. Never reuse a
-  password.
-* Chat and mail are not private.
-  Staff can watch a node.
+* No hate. Respect everyone and play
+  nice.
+* This connection @SECURE:is|is not@
+  securely encrypted.
+* Use a password you use nowhere else.
 * Be patient. It is a microcontroller,
   not a data centre.
 ----
@@ -548,9 +591,12 @@ CHAT     find out whether anyone else
          is awake
 ```
 
-**Same words** at both widths. 40 is 21 rows, its budget.
+The `@SECURE` text is lower case here, so the code must keep its
+argument's case (hand-backs).
 
-**Words:** 79 (was 79).
+**Same words** at both widths.
+
+**Words:** 70 (was 79). 40 is 20 rows, against a budget of 21.
 
 ---
 
@@ -563,18 +609,21 @@ shows all of it.
 
 **Shown:** on joining the room, and again on `/welcome`.
 
-**Change, a factual one:** the old copy said `/p` "crosses the wire in
-the clear and the sysop has the log". No chat log exists: the room keeps
-its last lines in a ring in memory (`history`, in CONFIG chat), and
-nothing of the room is written to disk. Staff can SNOOP a node, and that
-is the real reason `/p` is not private.
+**Changes:**
+- The old copy said `/p` "crosses the wire in the clear and the sysop has
+  the log". No chat log exists: the room keeps its last lines in a ring in
+  memory (`history`, in CONFIG chat), and nothing of the room is written to
+  disk.
+- The first revision said "staff can watch any node", which is the tone
+  Rob ruled out on 2026-10-01. A `/p` line is "quieter, though not a
+  sealed letter": honest that it is not private, without anyone watching.
 
 ```80 chatin
   ENTERING CHAT
   ----
   Everyone in the room sees what you type. /p sends a line to one person,
-  which is quieter but not private: staff can watch any node. The room
-  remembers its last lines in memory, and nothing more.
+  which is quieter, though not a sealed letter. The room remembers its last
+  lines in memory, and nothing more.
 
       * /s        who else is here
       * /p n      a line to one person
@@ -590,10 +639,9 @@ ENTERING CHAT
 ----
 Everyone in the room sees what you
 type. /p sends a line to one person,
-which is quieter but not private:
-staff can watch any node. The room
-remembers its last lines in memory,
-and nothing more.
+which is quieter, though not a sealed
+letter. The room remembers its last
+lines in memory, and nothing more.
 
 /s        who else is here
 /p n      a line to one person
@@ -603,11 +651,10 @@ and nothing more.
 ----
 ```
 
-**Same words** at both widths. On PETSCII, `_` is shown as the
-left arrow, the Commodore's ESC, as on rel-1.2.1f. 40 is 15 rows, against a
-budget of 16.
+**Same words** at both widths. On PETSCII, `_` is shown as the left
+arrow, the Commodore's ESC, as on rel-1.2.1f.
 
-**Words:** 64 (was 70).
+**Words:** 61 (was 70). 40 is 14 rows, against a budget of 16.
 
 ---
 
@@ -622,13 +669,15 @@ is, what it would take, the comparison both ways, what to do.
 more?", and any time on `PRIVACY`. Four pages, numbered.
 
 **Changes:**
-- Page 1 drops "a C64 cannot do encryption" and points at the
-  connection line, which already tells every caller whether they are on
-  telnet or SSH.
+- Page 1 drops "a C64 cannot do encryption", and its last line is the
+  same connection-aware `@SECURE` line as rule 2, so an SSH caller reading
+  the telnet explainer is told their own line is encrypted.
 - Page 2 opens with radio, and ends with "being able to listen is not
   listening".
 - Page 3 is the cafe, then the website for contrast, then what this board
-  knows. "Low risk, not no risk" is now its heading, so the "not zero" half
+  knows, in the tone Rob set for the rules: the board logs calls, a sysop
+  can look in on a line the way a help desk can, and in practice it rarely
+  happens. "Mail waits in a file" and "your last command" are cut. "Low risk, not no risk" is now its heading, so the "not zero" half
   cannot be skimmed past.
 - Page 4 is the password, what to do, and the long version on the web. "A
   hash is not magic" is folded into one clause ("unless the password is a
@@ -650,8 +699,8 @@ more?", and any time on `PRIVACY`. Four pages, numbered.
   That is the price of letting a 1982 computer call in. Plenty of machines
   that call here cannot encrypt at all.
 
-  Some boards also take SSH, which is encrypted. The line before the
-  welcome said which way you came in.
+  Boards on an ESP32-S3 also take SSH, which is encrypted.
+  This connection @SECURE:is|is not@ securely encrypted.
 
                                                               Page 1 of 4
 <FF>
@@ -681,10 +730,9 @@ more?", and any time on `PRIVACY`. Four pages, numbered.
   no ads and no trackers, and what you write stays on it.
 
   WHAT THIS BOARD KNOWS
-  The sysop sees your handle, where you called from, when, for how long,
-  and your last command. Staff can watch a node. Mail waits in a file until
-  it is read. That is true of any machine you use. Here you know whose it
-  is.
+  The board logs each call: your handle, where you called from, when, and
+  for how long. A sysop can look in on a line, the way a help desk can,
+  though in practice it rarely happens. Here you know whose machine it is.
 
                                                               Page 3 of 4
 <FF>
@@ -724,9 +772,9 @@ That is the price of letting a 1982
 computer call in. Plenty of machines
 that call here cannot encrypt at all.
 
-Some boards also take SSH, which is
-encrypted. The line before the welcome
-said which way you came in.
+Boards on an ESP32-S3 also take SSH,
+which is encrypted. This connection
+@SECURE:is|is not@ securely encrypted.
 
 Page 1 of 4
 <FF>
@@ -765,12 +813,12 @@ has no ads and no trackers, and what
 you write stays on it.
 
 WHAT THIS BOARD KNOWS
-The sysop sees your handle, where you
-called from, when, for how long, and
-your last command. Staff can watch a
-node. Mail waits in a file until it
-is read. That is true of any machine
-you use. Here you know whose it is.
+The board logs each call: your
+handle, where you called from, when,
+and for how long. A sysop can look in
+on a line, the way a help desk can,
+though in practice it rarely happens.
+Here you know whose machine it is.
 
 Page 3 of 4
 <FF>
@@ -804,7 +852,7 @@ the line the screen exists for ("Use a password you use nowhere else.").
 "Say what you would say in public." may share the green. That is the
 artist's call.
 
-**Words:** 376 (was about 350): longer by the radio and the cafe, which
+**Words:** 371 (was about 350): longer by the radio and the cafe, which
 is what Rob asked this screen to say.
 
 **Checked against the source:** salted SHA-256, 1,000 rounds (CLAUDE.md,
@@ -1129,6 +1177,54 @@ key colour.
 
 ---
 
+## The connection line and the sign-up warning (firmware strings)
+
+Not screen files: these are printed by the firmware, and Rob's wording for
+them is fixed. CLAUDE.md puts both in 1.2.1 (lane rel-1.2.1e), ahead of the
+screens. The copy:
+
+**The connection line** (`Bbs::linkLine`), after detection and before the
+welcome, on every call, the busy line and the closed sign included:
+
+| | 80 columns | 40 columns |
+|---|---|---|
+| telnet | `--> This connection is not securely encrypted` | `--> This connection is not securely`<br>`    encrypted` |
+| SSH | `--> This connection is securely encrypted` | `--> This connection is securely`<br>`    encrypted` |
+
+Rob's words are 45 and 41 columns, and the old line was held to 39 so a
+40-column screen never wrapped it. At 40 it breaks before "encrypted",
+with the continuation under the text, not under the arrow. No words are
+cut. Colour as now: the telnet line's "not securely encrypted" in light
+red, the SSH line's "securely encrypted" in bold yellow, where "Secure."
+was.
+
+**The sign-up warning** (`Bbs::askKnowMore`), after the rules and
+immediately before the password. It must follow the connection, as the
+line above does:
+
+```80 signup
+--> This connection is not securely encrypted
+Use a password you do not use anywhere else.
+Would you like to know more? [Y/N]
+```
+
+```40 signup
+--> This connection is not securely
+    encrypted
+Use a password you use nowhere else.
+Would you like to know more? [Y/N]
+```
+
+Over SSH the first line is `--> This connection is securely encrypted`
+(40: `--> This connection is securely` / `    encrypted`), and the other two
+lines stay. The password advice holds on any connection, and the privacy
+screen still answers "know more" honestly for an SSH caller.
+
+The 40 password line keeps today's shorter wording, which the firmware
+already uses at under 64 columns.
+
+---
+
 ## Facts used, and where they came from
 
 | Fact | Source | Checked |
@@ -1137,7 +1233,10 @@ key colour.
 | The 40-column label of the closed row is "Closed", 80 is "Stop taking calls"; it is the last row of CONFIG board | same file, `kBoard` | 2026-10-01 |
 | Room commands /s, /p n, /welcome, /help (= /?), /q | `src/plugins/chat.cpp`, the room's help and alias table | 2026-10-01 |
 | The room writes no log; its history is a RAM ring | chat.cpp: `history` setting, `calloc` at start, no file but `mail.dat` and the ban list | 2026-10-01 |
-| Every caller sees "--> Connection via Telnet is not secure" or "via SSH is Secure." before the welcome | `Bbs::linkLine` in `startIntro`, bbs.cpp | 2026-10-01 |
+| Every caller sees a connection line before the welcome (today "--> Connection via Telnet is not secure" or "via SSH is Secure.") | `Bbs::linkLine` in `startIntro`, bbs.cpp | 2026-10-01 |
+| The screen player's token buffer is 16 bytes and folded to upper case | `tok_[16]`, `src/core/screens.h` | 2026-10-01 |
+| The issues address is 46 characters with `https://`, 38 without | counted | 2026-10-01 |
+| The repo has Issues and Discussions on, and the labels `bug`, `enhancement`, `question` | GitHub API, repos/rwmech/unleashed_BBS and its labels | 2026-10-01 |
 | SSH on every ESP32-S3 board | CLAUDE.md (1.1.2, "Every ESP32-S3 board runs SSH"), `/docs/privacy` | 2026-10-01 |
 | Ten caller lines | `BBS_MAX_NODES 10`, config.h | 2026-10-01 |
 | Repo public at github.com/rwmech/unleashed_BBS | fetched | 2026-10-01 |
@@ -1148,24 +1247,22 @@ key colour.
 
 ## For Rob
 
-- **The welcome tagline.** "No web. No cloud. No browser." is yours and
-  has been on every board since the start. The site's promise is "no
-  ads, no feed, no platform in the middle", and that is what this deck
-  proposes ("No ads, no feed, nobody in the middle."). Keep yours, take
-  the site's, or keep yours at 40 and the site's at 80.
-- **Rule 2's heading:** "TELNET IS AN OPEN LINE" replaces "NOTHING HERE IS
-  ENCRYPTED", which is false for an SSH caller. The test reads only "HOUSE
-  RULES" and "NO HATE", so any heading works.
-- **Rule 5's heading:** "IT IS A SMALL BOARD" here, against rel-1.2.1f's
-  "IT IS A SMALL, CHEAP BOARD". Either works. The floppy comparison is gone
-  from both because it is false on the S3s.
-- **Prices:** none on any screen, in either version. The brief gives
-  display boards "from about $60". The site has a range: the
-  Waveshare 1.47, whose screen is a status strip, about $20; the Makerfabs
-  3.5 inch about $30 ("a full display starts from about $30" since site
-  1.5.9); the big Waveshare touch boards from about $60. So "from about $60"
-  is true only of the big touch boards. If a price ever goes on a screen,
-  the site's "from about $15" is the one that holds.
+Settled on 2026-10-01 and followed here: the tagline ("The next-generation
+BBS software"), board names up to 40 characters with the wrap accepted, the
+four house rules, the connection line's wording and the sign-up warning
+following the connection. Still open:
+
+- **"Jerk", not the word you used, in rule 1.** I chose the milder word
+  because the stock rules ship to every board, classrooms included (the
+  site's /kids and /teachers send them here). Say so if you want it
+  stronger. A sysop can always rewrite their own.
+- **The issues address** is `github.com/rwmech/unleashed_BBS/issues`
+  without `https://`: 38 characters, flush left on its own line at 40.
+  With the scheme it is 46 and does not fit.
+- **Prices:** none on any screen, in either version. The brief gave
+  display boards "from about $60"; the site has the Waveshare 1.47 at about
+  $20, the Makerfabs 3.5 inch at about $30, and the big Waveshare touch
+  boards from about $60.
 - **A stock closed screen:** I recommend none, because the built-in words
   are right. A stock file would replace the sysop's "any key logs in"
   line unless it carries it.
@@ -1178,17 +1275,24 @@ key colour.
 
 ## Hand-backs (code, not copy)
 
-- **The sign-up warning is wrong over SSH.** `Bbs::askKnowMore`
-  (bbs.cpp, 1.2.1f around line 1855) always prints "This connection is not
-  encrypted. Use a password you do not use anywhere else." A caller on SSH
-  on an S3 board is told something false immediately before typing a
-  password. It should follow `linkLine`'s answer. Over SSH, perhaps:
-  "This connection is encrypted. Still, use a password you do not use
-  anywhere else."
-- **The built-in closed sign names the software**, not the board
-  (`BBS_NAME` in `startBusy`).
+- **`@SECURE:ssh text|telnet text@` for 1.2.2.** Three things the screen
+  player does today that this code cannot live with:
+  - `tok_` is 16 bytes, and `SECURE:is|is not` is 16 characters before
+    its terminator;
+  - tokens are folded to upper case, and newuser and privacy use the code
+    in lower case;
+  - the argument has a space and a `|`.
+  So the code wants its own path: case kept, a space and one `|` allowed,
+  and a limit that covers about 24 characters of argument. The deck keeps
+  every use to the words that differ, `IS|IS NOT` or `is|is not`, to keep
+  it small. An unknown code prints as typed, so a 1.2.1 board playing a
+  1.2.2 screen would show the code itself. Ship the screens with the
+  firmware that knows the code.
+- **`Bbs::askKnowMore` follows the connection** with Rob's wording (the
+  section above). CLAUDE.md has it in 1.2.1, lane rel-1.2.1e, with the
+  connection line and the closed sign's board name.
+- **The tests move with the copy** (table under "Phrases the test suite
+  reads"): the welcome tagline, the connection line and the sign-up
+  warning.
 - **busy.ans's right border** is padded for a one-digit `@NODES@`, so it
   is one column out at 10 lines (screen-artist).
-- **A long board name wraps at 40** wherever `@BOARD@` shares a line. The
-  deck keeps it alone wherever a test does not fix the line. Capping
-  `board_name` at 38 would close it for good, and that is Rob's call.
