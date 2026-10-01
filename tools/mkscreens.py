@@ -12,7 +12,8 @@ Module:       Tools / stock screen generator
 Purpose:      Generates the stock µnleashed BBS display files in data/screens/:
                  welcome.seq/.ans/.asc, busy.seq/.ans/.asc,
                  goodbye.seq/.ans/.asc, about.seq/.ans/.asc,
-                 files.seq/.ans/.asc, codes.seq/.ans/.asc, and the first
+                 files.seq/.ans/.asc, codes.seq/.ans/.asc, rules.seq/.ans/.asc,
+                 newuser.seq/.ans/.asc, chatin.seq/.ans/.asc, and the first
                  boot pair setup.seq/.ans/.asc and newsysop.seq/.ans/.asc.
                  No motd ships: add motd.asc/.ans/.seq to show one after login.
                  Hand-drawn art from PETSCII/ANSI editors can replace any of
@@ -562,8 +563,8 @@ PRIVACY_PAGES = [
         ("t", "what is on it. That is true everywhere."),
         ("t", "Here you at least know who they are."),
         ("", ""),
-        ("t", "Honestly? It is a hobby board on a five"),
-        ("t", "dollar chip, and it is conversation."),
+        ("t", "Honestly? It is a cheap hobby board,"),
+        ("t", "and it is conversation."),
         ("", ""),
         ("g", "Use a password you use nowhere else."),
         ("", ""),
@@ -637,8 +638,7 @@ PRIVACY_PAGES_ANSI = [
         ("t", "Assume whoever owns the machine can read what is on it."),
         ("t", "That is true everywhere. Here you at least know who they are."),
         ("", ""),
-        ("t", "Honestly? It is a hobby board on a five dollar chip,"),
-        ("t", "and it is conversation."),
+        ("t", "Honestly? It is a cheap hobby board, and it is conversation."),
         ("", ""),
         ("g", "Use a password you use nowhere else."),
         ("", ""),
@@ -779,7 +779,7 @@ RULES_P2 = [
     ("i", "Do not type anything you would not say out loud in the"),
     ("i", "room."),
     ("", ""),
-    ("n", "5.  IT IS A FIVE DOLLAR CHIP."),
+    ("n", "5.  IT IS A SMALL, CHEAP BOARD."),
     ("i", "The whole board is a microcontroller with less memory"),
     ("i", "than a floppy disk, sitting on a shelf somewhere. Be"),
     ("i", "patient with it. If it drops you, call back."),
@@ -898,6 +898,276 @@ def make_chatin_ans():
 
 def make_chatin_asc():
     return b"@CLS@" + ascii_page(CHATIN)
+
+
+# ==========================================================================
+# rules, newuser and chatin at 40 columns (1.2.1): the .seq a PETSCII caller
+# gets instead of the 78 column .asc, which a C64 wrapped into every other
+# line. The same words as RULES_P1/P2, NEWUSER and CHATIN above, broken for
+# 38 columns by hand and held to them by pet40_check(): only line breaks,
+# page breaks and the name of one key may differ.
+#
+# Same family as setup and newsysop: a white title over a cyan 0xC0 rule,
+# yellow headings, light grey body, keys in the light green CODES taught.
+#
+# Line kinds:
+#   't'   title; "TITLE|folio" puts the folio at the right of the rule
+#   'r'   rule                     'n'  heading       'nc' heading, wrapped
+#   'd'   body                     'h'  body hung 4 columns under "1.  "
+#   'k'   key line: label, two or more spaces, text; 'kc' its continuation
+#   'b'   an item on a rail; 'bc' its continuation
+#   ''    blank
+#
+# The rail is box drawing from the range the locked mixed-case charset keeps
+# (0xAB, 0xAD, 0xDD): a tee per item and a vertical joining an item's lines,
+# ending in a corner on the last. A C64 cell has no gap between rows, so the
+# verticals meet and the list hangs off one unbroken line, which no 7-bit
+# terminal can draw and CP437 only draws with a gap at the font's leading.
+#
+# Rules pages at three, not two. Each ANSI page is 30 and 25 rows once its
+# 72 column lines are broken at 38, so a break goes between rules, never
+# inside one, and the pages come out 21, 19 and 17 rows. The folio is the
+# one thing added: two pages became three, and a caller pressing SPACE
+# should know how many more there are.
+#
+# Budgets, asserted. A rules page is followed by a blank row and "PRESS
+# SPACE TO CONTINUE", so 23 rows fill a 25 row screen; 22 is the house
+# figure. newuser is followed by "[H]ELP for commands.", a blank row and the
+# prompt, so 21 leaves one row spare for a notice. chatin is followed by the
+# room's own line, who is here and what was just said, and a room scrolls:
+# it is kept short so a quiet room still shows the whole of it.
+# ==========================================================================
+PET_TEE, PET_CORNER, PET_VERT = 0xAB, 0xAD, 0xDD   # ├ └ │ in both charsets
+PET40_WIDTH = 38          # one inside the 39 SCREENS.md allows
+PET40_HANG = 4            # "1.  " and "3.  USE A ..." hang their text here
+
+RULES40 = [
+    [   ("t", "THE HOUSE RULES|Page 1 of 3"),
+        ("r", ""),
+        ("d", "You are about to make an account. This"),
+        ("d", "is the whole deal, and it is shorter"),
+        ("d", "than the thing you clicked through"),
+        ("d", "this morning."),
+        ("", ""),
+        ("n", "1.  NO HATE."),
+        ("h", "Argue with anybody about anything."),
+        ("h", "Come after a person for who they"),
+        ("h", "are and you are off the board. No"),
+        ("h", "warning, no appeal, no long"),
+        ("h", "conversation about it."),
+        ("", ""),
+        ("n", "2.  NOTHING HERE IS ENCRYPTED."),
+        ("h", "This is telnet, the way it was in"),
+        ("h", "1969. Every word you type crosses"),
+        ("h", "the network in the clear, your"),
+        ("h", "password included. Anyone sharing"),
+        ("h", "a wire or an access point with you"),
+        ("h", "can read the lot.") ],
+
+    [   ("t", "THE HOUSE RULES|Page 2 of 3"),
+        ("r", ""),
+        ("n", "3.  USE A PASSWORD YOU USE"),
+        ("nc", "NOWHERE ELSE."),
+        ("h", "This is the one that matters. If"),
+        ("h", "what you type here is also the"),
+        ("h", "password on your mail, you have"),
+        ("h", "just handed your mail to everyone"),
+        ("h", "between you and this board. Make"),
+        ("h", "one up. It does not have to be"),
+        ("h", "clever. It has to be new."),
+        ("", ""),
+        ("n", "4.  THE SYSOP SEES EVERYTHING."),
+        ("h", "Calls are logged. Chat is not"),
+        ("h", "private and neither is mail on"),
+        ("h", "this board. Nothing here is a"),
+        ("h", "secret keeper. Do not type"),
+        ("h", "anything you would not say out"),
+        ("h", "loud in the room.") ],
+
+    [   ("t", "THE HOUSE RULES|Page 3 of 3"),
+        ("r", ""),
+        ("n", "5.  IT IS A SMALL, CHEAP BOARD."),
+        ("h", "The whole board is a"),
+        ("h", "microcontroller with less memory"),
+        ("h", "than a floppy disk, sitting on a"),
+        ("h", "shelf somewhere. Be patient with"),
+        ("h", "it. If it drops you, call back."),
+        ("", ""),
+        ("n", "6.  CHAOTIC NEUTRAL."),
+        ("h", "Past all that, do as you like."),
+        ("h", "Get along."),
+        ("", ""),
+        ("r", ""),
+        ("d", "Still here? Good. Pick a handle and a"),
+        ("d", "password nobody else has ever seen,"),
+        ("d", "and welcome aboard.") ],
+]
+
+NEWUSER40 = [
+    ("t", "YOU ARE ON THE BOARD"),
+    ("r", ""),
+    ("d", "Welcome aboard, @USER@."),
+    ("d", "Node @NODE@ of @NODES@ is yours."),
+    ("", ""),
+    ("n", "The short version, now that you"),
+    ("n", "have joined:"),
+    ("b", "No hate. That is the one that gets"),
+    ("bc", "you removed."),
+    ("b", "Nothing here is encrypted. Never"),
+    ("bc", "reuse a password."),
+    ("b", "Chat and mail are not private. The"),
+    ("bc", "sysop reads the logs."),
+    ("b", "Be patient. It is a microcontroller,"),
+    ("bc", "not a data centre."),
+    ("r", ""),
+    ("k", "?        the command list"),
+    ("k", "PRIVACY  the long version of rule two,"),
+    ("kc", "any time you like"),
+    ("k", "CHAT     find out whether anyone else"),
+    ("kc", "is awake"),
+]
+
+# ESC is the left arrow on a Commodore (Term maps 0x5F to KEY_ESC), and the
+# player prints 0x5F as that arrow, so the key is named the way it is shown.
+CHATIN40 = [
+    ("t", "ENTERING CHAT"),
+    ("r", ""),
+    ("d", "Everyone in the room sees what you"),
+    ("d", "type. `/p` sends a line to one person,"),
+    ("d", "which is quieter but not private: it"),
+    ("d", "crosses the wire in the clear and the"),
+    ("d", "sysop has the log. Nothing here is"),
+    ("d", "kept once the buffer rolls over."),
+    ("", ""),
+    ("k", "/s        who else is here"),
+    ("k", "/p n      a line to one person"),
+    ("k", "/welcome  read this again"),
+    ("k", "/help     the rest of the commands"),
+    ("k", "/q        leave, or press `_`"),
+    ("r", ""),
+]
+
+PET40_KEY_SAYS = {"_": "ESC"}      # a key named for the C64, and its 80 name
+PET40_LABEL_RE = re.compile(r"^(\S+(?: \S)?)( {2,})(.*)$")
+
+
+def pet40_words(lines, subs=None):
+    """The words of a screen in order, titles and rules aside: what the 40
+    and 80 column copies must agree on whatever their line breaks."""
+    words = []
+    for kind, text in lines:
+        if kind in ("t", "r", ""):
+            continue
+        for w in text.replace("`", "").split():
+            words.append((subs or {}).get(w, w))
+    return words
+
+
+def pet40_check(pages, source, rows):
+    """Same words as the 80 column copy, every line inside 38 columns with
+    the tokens at their widest, every page inside its row budget."""
+    flat = [line for page in pages for line in page]
+    assert pet40_words(flat, PET40_KEY_SAYS) == pet40_words(source), "words differ"
+    titles = {t.split("|")[0] for k, t in flat if k == "t"}
+    assert titles == {t for k, t in source if k == "t"}, f"title differs: {titles}"
+    for page in pages:
+        assert len(page) <= rows, f"{len(page)} rows > {rows}: {page[0]!r}"
+        label = 0
+        for kind, text in page:
+            plain = doc_plain(text).replace("@NODES@", "10").replace("@NODE@", "10")
+            assert "@" not in plain, f"stray @ in {text!r}"
+            if kind == "t" and "|" in text:
+                title, folio = plain.split("|")
+                width = len(title) + 2 + len(folio)
+            elif kind == "k":
+                label = len(PET40_LABEL_RE.match(plain).group(1)) + \
+                    len(PET40_LABEL_RE.match(plain).group(2))
+                width = len(plain)
+            elif kind == "kc":
+                width = label + len(plain)
+            else:
+                width = {"h": PET40_HANG, "nc": PET40_HANG,
+                         "b": 2, "bc": 2}.get(kind, 0) + len(plain)
+            assert width <= PET40_WIDTH, f"{width} > {PET40_WIDTH}: {text!r}"
+
+
+def pet40_keyed(text, base):
+    """Body text with its `keys` in the key colour, back to base after."""
+    out, cur = bytearray(), base
+    for is_key, piece in doc_pieces(text):
+        want = DOC_PET["key"] if is_key else base
+        if want != cur:
+            out += pet(want)
+            cur = want
+        out += pet_text(piece)
+    return bytes(out)
+
+
+def pet40_page(page):
+    """One page. Every row leads with its own colour and ends in a CR, so no
+    row takes its colour from the one above it."""
+    body, rule = DOC_PET["d"], DOC_PET["rule"]
+    # The rail: the last item of a run gets the corner, and its own wrapped
+    # line hangs free under it with no vertical.
+    last_item = max((i for i, (k, _) in enumerate(page) if k == "b"), default=-1)
+    out, label = bytearray(), 0
+    for i, (kind, text) in enumerate(page):
+        if kind == "":
+            out += pet("cr")
+        elif kind == "r":
+            out += pet_rule(rule)
+        elif kind == "t":
+            title, _, folio = text.partition("|")
+            out += pet(DOC_PET["t"], title)
+            if folio:
+                gap = PET40_WIDTH - len(title) - len(folio)
+                out += pet(DOC_PET["m"], " " * gap + folio)
+            out += pet("cr")
+        elif kind in ("n", "nc"):
+            indent = " " * (PET40_HANG if kind == "nc" else 0)
+            out += pet(DOC_PET["n"], indent + text, "cr")
+        elif kind in ("d", "h"):
+            indent = " " * (PET40_HANG if kind == "h" else 0)
+            out += pet(body, indent) + pet40_keyed(text, body) + pet("cr")
+        elif kind == "k":
+            lab, gap, rest = PET40_LABEL_RE.match(text).groups()
+            label = len(lab) + len(gap)
+            out += pet(DOC_PET["key"], lab + gap, body) + pet40_keyed(rest, body) + pet("cr")
+        elif kind == "kc":
+            out += pet(body, " " * label) + pet40_keyed(text, body) + pet("cr")
+        elif kind in ("b", "bc"):
+            if kind == "b":
+                glyph = PET_CORNER if i == last_item else PET_TEE
+            else:
+                glyph = 0x20 if i > last_item else PET_VERT
+            out += pet(rule) + bytes([glyph, 0x20]) + pet(body) + pet40_keyed(text, body) + pet("cr")
+        else:
+            raise ValueError(f"unknown line kind {kind!r}")
+    return bytes(out)
+
+
+def pet40_seq(pages):
+    """Pages joined by the player's page break, cleared once at the top, and
+    left in the state Term::reset leaves: reverse off, light grey."""
+    out = bytearray(pet("clr", "lower"))
+    out += FF.join(pet40_page(p) for p in pages)
+    out += pet("off", "lgrey")
+    return bytes(out)
+
+
+def make_rules_seq():
+    pet40_check(RULES40, RULES_P1 + RULES_P2, DOC_ROWS)
+    return pet40_seq(RULES40)
+
+
+def make_newuser_seq():
+    pet40_check([NEWUSER40], NEWUSER, 21)
+    return pet40_seq([NEWUSER40])
+
+
+def make_chatin_seq():
+    pet40_check([CHATIN40], CHATIN, 16)
+    return pet40_seq([CHATIN40])
 
 
 # ==========================================================================
@@ -1694,10 +1964,13 @@ def main():
         "about.seq": make_about_seq(),
         "about.ans": make_about_ans(),
         "about.asc": ABOUT_ASC.encode("ascii"),
+        "rules.seq": make_rules_seq(),
         "rules.ans": make_rules_ans(),
         "rules.asc": make_rules_asc(),
+        "newuser.seq": make_newuser_seq(),
         "newuser.ans": make_newuser_ans(),
         "newuser.asc": make_newuser_asc(),
+        "chatin.seq": make_chatin_seq(),
         "chatin.ans": make_chatin_ans(),
         "chatin.asc": make_chatin_asc(),
         "files.ans": make_files_ans(),
