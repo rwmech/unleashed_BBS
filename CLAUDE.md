@@ -1292,9 +1292,47 @@ this tree.
     **The per-line information is what he values most**, in his words "the
     line info is helpful esp when coms are going across": the caller lamps and
     their RX/TX flicker are the reason to look at the glass, so a layout
-    change must give them more room, never less. tty-ux specifies the 4.3B
-    against the square layout first, element by element, and says what the
-    800x480 panel's 2:1 drawn aspect can and cannot borrow from a square one.
+    change must give them more room, never less.
+    **Specified in internal/tty-ux-panel-ws43b-align-2026-10-01.md**, and it
+    is an alignment pass, not a redesign (Rob, seeing both: "the ws43 is close
+    I think it just needs tweak to better align"). He named the caller block,
+    the in and out figures and the right-hand status corner. Eleven numbers,
+    three fields, no new arrangement, 240 bytes, drawing only.
+    - **Two of the three are missing rather than misaligned**: the 4.3B has no
+      traffic figures and no dBm reading at all, because both sit inside
+      `#if PANEL_BIG` and `BBS_PANEL_BIG` is 0 there (board.h keys it off
+      `BBS_LCD_RAM_LONG >= 400`, and this board leaves the RAM figures at the
+      ST7789's 240x320). Do NOT just switch `BBS_PANEL_BIG` on: `bigGlass(400,
+      240)` is false, so the whole big field set would compile unused. The
+      gate's new name and shape are the builder's.
+    - **The per-line traffic pip is the thing he values**, and it costs no
+      space: a 6x6 `kDial` square beside any line that moved bytes since the
+      last look, twice a second, in a gutter taken from the existing margin.
+      The square glass has it (`bigPips`), the 4.3B has nothing per line.
+      12 caller slots before and after.
+    - **A real alignment defect the arithmetic found, and Rob can see it:** the
+      4.3B's glyph strip is 10 px narrower than the square's, so `pack()`
+      drops to a 2 px gap whenever several glyphs are lit while the square
+      stays at 3. Widening the box to 120 fixes both the spacing and the band
+      word's left edge on both glasses.
+    - **`in` and `out` become `RX` and `TX`** (Rob, 2026-10-01, after asking
+      what they meant: his asking is the evidence the label was unclear).
+      `in` is `Bbs::bytesIn()`, bytes read from callers' sockets; `out` is
+      `Bbs::bytesOut()`, bytes written to them; board-wide, sampled every 4 s.
+      `RX 1.2K  TX 340`, RX and TX in `kDim`, the figures keeping their dial
+      and live colours. `drawTraffic` is one function, so the square changes
+      with it, which is the right outcome.
+    - **What a 2:1 canvas cannot borrow**, so nobody tries: the square's
+      five-column caller row (182 px is 22 glyphs and node+mark+handle+ON is
+      21 of them, so DOING, LEFT and TERM do not fit, and shrinking the handle
+      is worse than leaving them to WHO), its fixed 11-row node board, and its
+      traffic sweep (20 px over 17 doublings is 1.2 px a doubling).
+    - **Open, flagged not caused:** neither glass has a free corner for the
+      1.2.2 hamburger, and this pass spends the 4.3B's band dead space, so the
+      hamburger cannot live in the band. The reservation offered is the bar's
+      top-right, a 32x32 target with a 16x16 icon, which costs a long board
+      name two glyphs on the 4.3B. The corner is the hamburger spec's to
+      settle.
   - **A hamburger menu on the panel (Rob, 2026-10-01)**, on every touch board (4.3B, 2", both Makerfabs, the G4848): a corner icon opens a menu with Shut down (no login; tap again to confirm, since physical access is already full trust), Reboot, Theme (each tap cycles the 1.2.2 themes) and a Show snaps / Hide snaps toggle (the same setting as 1.2.1 lane D's "show new photos on the panel"). Not on the 1.47" stick (`S3` profile): no touch, and a menu would take the whole glass; if ever, through its BOOT button. tty-ux specifies it per glass size first.
   - **Decided (Rob, 2026-10-01, from internal/research-ble-keyboard-2026-10-01.md): a keyboard sat, not Bluetooth on the board.** A cheap ESP32 with a USB or BLE keyboard sends keys over CALLIN; the big panels (G4848, both Makerfabs, later the 4.3B through a text-mode bounce fill) show an 80x24 terminal on the hidden sysop node, one sysop password to unlock then an idle lock. Built after the 1.2.3 stream-line core (line kinds: socket, SSH, serial, CALLIN, console, generalising `Session::link`). Why not BLE on the board, measured: NimBLE plus the HID host is +178 KB image and +24.6 KB static internal RAM, the 4.3B's internal heap would sit under its reserve until the session pool moves to PSRAM, Wi-Fi gets about half the radio while a keyboard is connected (about 50 ms added latency for every caller, a Rule no. 1 failure), and compiling Bluetooth in turns `ESP_WIFI_STA_DISCONNECTED_PM_ENABLE` back on. BLE on the board stays a much-later, opt-in idea.
   - **Research: a Bluetooth keyboard with the panel as a local terminal** (Rob: "less doable, research this"), large panels only. The S3 is BLE-only (no Classic BT), so BLE HID keyboards only; costs to weigh: the BLE stack's flash and RAM, radio coexistence with Wi-Fi and ESP-NOW (Rule no. 1), and a terminal emulator on the panel. A feasibility report first: internal/research-ble-keyboard-2026-10-01.md.

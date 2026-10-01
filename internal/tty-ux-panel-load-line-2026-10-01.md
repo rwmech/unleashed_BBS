@@ -579,3 +579,208 @@ Makerfabs.
 Flash under 1 KB in all; static RAM 8 bytes in the core and about 17 in
 the panel and lights, display boards only. Nothing changes on a board
 without a display.
+
+## Revision 1, 2026-10-01: a gradient, and red drawn thicker
+
+Rob has seen the built line on the Guition's glass and asked for two
+changes. Both are decided; this section specifies them. Read against
+`release-prep/wt-g4848`, branch board-g4848, head **c69cb59**, which is the
+built line: `Level`, `loadTick`, `railColour`, `dotColour`, `dotErase`,
+`dotDraw` and `railGrey` in `panel.cpp:376-779`, and `mix`/`scale`/the
+tokens in `panel_gfx.h:68-121`.
+
+Nothing above is withdrawn except the four-level `Level` ladder and the two
+colour functions, which this replaces. The metric, the sample, the 250 ms
+clock, the dot's speed, the lap, the dot's shape, the HDD glyph, the feet
+and every box stay exactly as specified and built.
+
+### 1. The sweep
+
+`Level` goes. The shown load is a **duty, 0 to 100**, and the colour is a
+position on a two-leg ramp, with red and the long pass as hard overrides
+over the top. The named colours now mark the **top** of their band instead
+of the bottom, which is what buys the sweep: the four existing edges (15,
+40, 25 ms, 75) all keep their place and change from "which of four" to
+"how far along".
+
+| Duty | Colour | Why that anchor |
+|---|---|---|
+| 0 to 14 | flat blue: rail `kTrack`, dot `kDial` | unchanged. Display boards idle at 8 to 9% duty, so a board doing nothing must not show a tint of green. That is the whole reason 15 is the edge |
+| 15 to 39 | `mix(blue, kLive, duty - 15, 25)` | leg 1: leaves blue at 15, arrives at green at 40 |
+| 40 to 74 | `mix(kLive, kYellow, duty - 40, 35)` | leg 2. Full yellow at 74 means "one point off Rule no. 1", a better signal than yellow at 40 |
+| 75 and over | `kRisk` E06C6C, flat, **thick** | a step in and a step out. Never an end of a `mix` |
+
+Rail shades, nominal 8-bit before RGB565 quantisation, so the builder can
+check a frame against the glass:
+
+| Duty | 15 | 20 | 27 | 35 | 40 | 50 | 60 | 70 | 74 | 75 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Rail | 4C7F99 | 4F9293 | 54AC8A | 5AC980 | 5DDC7A | 8BD971 | BAD769 | E8D460 | FCD35D | E06C6C |
+
+- The dot runs the same two legs from `kDial` 7FD4FF instead of `kTrack`
+  (leg 1 only; both legs share `kLive` and `kYellow`), so the dot stays
+  brighter than its rail at idle and the two converge at green. That is
+  exactly what c69cb59 does at the four flat levels; the mix extends it.
+- 20% is 4F9293 and 35% is 5AC980: different shades at arm's length, which
+  is Rob's test.
+- Two calls, not four cases: `rampColour(uint8_t duty, uint16_t blue)`,
+  called as `rampColour(g_shown, kTrack)` for the rail and
+  `rampColour(g_shown, kDial)` for the dot. `mix` already exists
+  (`panel_gfx.h:107`) and is the only arithmetic.
+- No reading yet is still `kRule` 2C2C38, as built. It is not duty 0.
+
+### The two overrides
+
+| Override | Trigger | Shown | Held | Leaves |
+|---|---|---|---|---|
+| red | duty >= 75, or a new slow pass, or `peak > BBS_SLOW_PASS_US` (50,000 us) | `kRisk`, thick | `kRedHoldMs` 2,000 ms from its last trigger | as a **step** to whatever the ramp eased to |
+| long pass | `peak >= kYellowPassUs` (25,000 us) and not red | full `kYellow` FFD35C, ordinary thickness | `kYellowHoldMs` **1,000 ms** | as a step to the ramp |
+
+- Precedence: red, then long pass, then the ramp. Red's trigger set already
+  covers a pass over 50 ms, so no pass is ever both.
+- The long pass must read **full yellow, not the low blend**: a 30 ms pass
+  on a 5% board is the line's whole job, and a blue-green tint would hide
+  it. It needs a hold, or one sample paints a 6 px nick nobody reads.
+  1,000 ms is 25 px, and it is not a new number: it is what c69cb59 gives
+  today, where `LV_YELLOW` is raised and then takes two samples to arm and
+  two to fall.
+- **Red is never a mix endpoint, in either direction.** It is the Rule
+  no. 1 signal; a fade in would make 70% look like a warning, and a fade
+  out would draw a recovery curve that did not happen. The step out is also
+  why red does not walk back through yellow and green: after one slow pass
+  on an idle board the line is red for 2 s and then blue, which reads as
+  "that happened, it is over".
+
+### Falling, with a continuous value
+
+The ladder's "two samples below, then one level a sample" becomes two
+samples below, then one step a sample, in points of duty:
+
+- `g_shown` rises to `duty` at the sample. Unchanged (`lv >= g_level`
+  today).
+- A sample with `duty < g_shown` increments `g_fall`. From `g_fall >= 2`,
+  every sample moves `g_shown` down by at most **`kFallStep` = 20** points,
+  never past `duty`. Any rise clears `g_fall`, as now.
+- 20 points a sample is the ladder's own speed in the new units: the whole
+  sweep, 74 down to 14, is three steps, 0.75 s after the two-sample arm,
+  which is the "at least 0.75 s" already specified and built.
+- The easing runs **while red is held**, so `g_shown` tracks the real duty
+  under the red and the hold's end reveals wherever it got to. One slow
+  pass under an idle board therefore ends at blue; a slow pass during a
+  genuine 60% spell ends at the leg-2 amber it earned.
+- Nothing changes between samples, so no colour moves faster than 4 Hz.
+  Unchanged.
+- The gap sample (`dT > kLoadGapUs`) still yields no duty and still paints
+  red only when it held a slow pass. It leaves `g_shown` and `g_fall`
+  untouched: a sample that measured nothing decides nothing.
+
+### 2. Red drawn thicker
+
+Rob: "add an extra pixel above and below for red, just wipe it out on the
+next pass but red would stick out more then being thicker."
+
+**The dot already has that height; the trail does not.** `dotBox` is
+`R(x - 3, y - 1, 6, 4)` on a 2 px rail and `R(x - 3, y - 1, 5, 3)` on the
+4.3B's 1 px rail, and `dotErase` writes exactly rows `y - 1`, the rail, and
+`y + track.h` on every pass (`panel.cpp:635-655`). So "the rail plus one
+above and one below" is precisely the footprint the dot has always had. The
+change is one colour decision inside `dotErase` and nothing else: no new
+rectangle, no change to `dotBox`, no change to the dirty rect, no new
+state.
+
+The mark is `track.h + 2` tall: 4 px on five layouts, 3 on the 4.3B.
+
+| Glass | Rail y, h | Mark rows | Row above | Row below | Clear? | Mark on glass |
+|---|---|---|---|---|---|---|
+| stick 1.47" portrait 172x320 | 42, 2 | 41 to 44 | band's last row; glyphs, antenna and clock end at 39 | air to 47, headIcon at 48 | yes | 0.41 mm |
+| stick landscape 320x172 | 42, 2 | 41 to 44 | band's last row | air to 47, right column at 48 | yes | 0.41 mm |
+| Touch-LCD-2 240x320 | 42, 2 | 41 to 44 | band's last row | air to 47 | yes | 0.51 mm |
+| 4.3B 400x240 drawn | 54, 1 | 53 to 55 | band's last row; glyphs and the word end at 51 | air to 59, headIcon at 60 | yes | 0.70 mm (3 drawn px = 6 physical) |
+| Makerfabs 480x320 and 320x480 | 42, 2 | 41 to 44 | band's last row | air to 47 | yes | 0.62 mm |
+| Guition 480x480 | 42, 2 | 41 to 44 | band's last row, or the ring banner's: `B.ring` is rows 0 to 41 | air to 47 | yes | 0.60 mm |
+
+- **Every glass has the clearance, so there is no per-board design and no
+  rail moves.** Nothing is overwritten: the band's content is `kSmallH` 16
+  or `kAntennaH` 16 tall from y 24 (y 36 on the 4.3B), ending at row 39
+  (51), two rows clear of the mark's top. The tall glass's `L.word`
+  (`panel_gfx.h:1001`) is rows 36 to 51, also clear.
+- The rule for a future glass, stated so a new board lane does not guess:
+  **the rail owns one row above and one row below it, and a layout that
+  cannot give them moves the rail down a pixel, never thickens only where
+  there is room.** A mark that is 4 px on four boards and 2 px on a fifth
+  is a different reading of the same event, which is worse than a rail one
+  pixel lower. Say so in the board's layout comment either way.
+- **Both extra rows are the same `kRisk` E06C6C, flat.** At 0.10 to
+  0.23 mm a pixel a dimmer edge does not read as a halo, it reads as blur,
+  and the point is a hard thicker mark. Flat is also one fill colour and
+  makes the 0.6 mm bar read as one line instead of three stacked ones.
+- Consequence, intended: a red stretch eats the band's last row, so the
+  header band carries a red notch along it. That is what makes it stick
+  out, and it is where the dot's own body has always sat.
+
+### The clearing rule
+
+| Path | Rows y-1, the rail, y+h | Covered today? |
+|---|---|---|
+| the dot's own lap | `dotErase(was)` writes all three, every pass, across the old footprint's 6 (or 5) px | yes, unchanged. A red fringe cannot outlive one lap, whatever the level does mid-lap |
+| `redrawAll` (`panel.cpp:793`) | whole glass `kBg`, then `L.bar`, `L.band`, `L.track` | yes |
+| start, silent mode ending, a skin handing back, the viewer handing back after a photo | all reach `redrawAll` | yes |
+| **`railGrey`** (`panel.cpp:677`), the touch wake | fills `t` only, so rows y-1 and y+h keep the last lap's red | **no. The one fix** |
+
+- `railGrey` gains the two edge rows: `R(t.x, t.y - 1, t.w, 1)` in `kBand`
+  (`kBar` under the square's ring banner, exactly as `dotErase` already
+  decides it) and `R(t.x, t.y + t.h, t.w, 1)` in `kBg`, then `dotDraw` and
+  the dirty rect as now. One extra band row each way, at a wake only.
+- That is the whole clearing story: nothing else writes those rows, so no
+  red can be stranded.
+
+### PANEL
+
+One line changes its wording. There is no level to name, so it reports the
+duty, the shade's leg and any override in force:
+
+```
+Load      9% idle blue, longest pass 2 ms, 19 s a lap
+Load      27% rising green, longest pass 3 ms, 7 s a lap
+Load      62% amber, longest pass 11 ms, 19 s a lap
+Load      18% RED held, longest pass 61 ms, 19 s a lap
+Load      no reading yet, 19 s a lap
+```
+
+- The words come from `g_shown` alone: under 15 `idle blue`, 15 to 39
+  `rising green`, 40 to 74 `amber`, with `RED held` or `long pass` instead
+  while an override is in force. The percentage is the sample's, as now.
+- **Nothing about the thickness.** PANEL says what the glass shows; the
+  thickness is red's own emphasis rather than a separate state, and a line
+  explaining it would imply a sysop could turn it off.
+- The idle figure is still what sets the blue edge on the Guition and the
+  Makerfabs at the bench, as revision 0 said.
+
+### What this costs
+
+- Flash: about 150 bytes. One `rampColour`, two `mix` calls, the words.
+  `mix` and `scale` are already linked.
+- Static RAM: **none new, 2 bytes back.** `g_level`, `g_fall` and the
+  `Level` enum become `g_shown` and `g_fall`; the holds are `g_redUntil`
+  (exists) plus one new `g_yellowUntil`.
+- Bands: unchanged. The gradient is a colour inside a rectangle already
+  sent, and the thick red is two rows already written.
+- Work on the loop: two `mix` calls a dot step, about 1 us.
+
+### Order
+
+- `rampColour` and the two mixes, replacing `railColour` and `dotColour`.
+  One function, and the sweep is on the glass at once.
+- `g_shown`, `kFallStep`, the two holds and the gap rule in `loadTick`.
+- `dotErase`'s two edge rows in `kRisk` while red.
+- `railGrey`'s two edge rows.
+- PANEL's words.
+
+### Back to the builder, not decided here
+
+- Whether `Level`/`LV_*` is deleted or kept as an internal word lookup for
+  PANEL is the builder's call. Two conditions: the glass never reads it,
+  and no threshold lives in two places.
+- The host tests that match `kLevel[]`'s words ("blue", "green", "yellow",
+  "red") in PANEL's output need the new wording. A test plan is Rob's call,
+  not this spec's.
