@@ -24,7 +24,42 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
-## 1.2.1 (in development)
+## 1.2.1 (S3 1.1.8, WS43B 1.0.6, WS2 1.0.7, ETH 1.0.7, MF35 1.1.6, MF35V2 1.0.3, G4848 1.0.4, FNCAM 1.0.10, ESPCAM 1.0.7), 2026-10-01
+
+**Two new boards, and a patch release that is mostly things a sysop looks
+at.** It ships on the code reviews and a day's use on the bench boards; the
+full test run follows the tag, and anything it finds goes into 1.2.2.
+
+What a caller or a sysop sees, across the seven lanes merged into it:
+
+- **The Guition ESP32-S3-4848S040** (sold as AITRIP and others), a 4"
+  480 x 480 square panel, and **the Makerfabs Parallel TFT 3.5" v2.0** are
+  both on the installer: a plain `v1.2.1` builds all ten image sets.
+- **A new photo shows itself on the panel.** Any camera files one, built in
+  or on a satellite, and it has the glass for a minute, a newer one
+  replacing it; `CONFIG photos` switches it off (`photos_show`) and chooses
+  which kinds take the glass.
+- **The panel's header carries a load line and a drive icon.** The rail
+  under the header sweeps a colour gradient with the loop's own duty, idle
+  blue through green and amber to a thicker red for a slow pass, so a lap of
+  the dot is the board's recent history; the drive glyph shows what the
+  drive light is doing, which on glass a dim LED could not.
+- **The board says whether your connection is encrypted**, in Rob's words:
+  `--> This connection is not securely encrypted` over telnet, and the
+  reverse over SSH, with the sign-up warning following the connection.
+- **CALLS fits one screen**, two panes of twelve hours.
+- **`rules`, `newuser` and `chatin` have a PETSCII flavour**, so a 40
+  column Commodore caller no longer gets 78 column text wrapped in two, and
+  the stock screens stop calling the board a five dollar part.
+- **The ETH board joins Wi-Fi beside the wire**, so its radio follows the
+  router's channel and satellites pair while Ethernet still carries the
+  callers, and **it sequences its camera's power itself**, which is what
+  made a snap a few seconds after the last one find no sensor.
+- The forums' long bodies, the squelch's two digits, SyncTERM's system
+  password at the login, and the rest of the 1.1.3 queue: the sections
+  below have each lane's detail.
+
+### CALLS, the connection line and the signs (1.2.1-calls.1 to calls.4)
 
 - **CALLS fits one screen** (1.2.1-calls.1). Two panes of 12 hours, 00 to 11
   on the left and 12 to 23 on the right, at 40 columns and up: 16 rows at 40
@@ -746,7 +781,7 @@ pass.
   screen's last page says `It is a cheap hobby board, and it is
   conversation.`, in all three flavours of each.
 
-### The lanes meet (1.2.1-dev.15; S3 1.1.8, WS43B 1.0.6, WS2 1.0.7, MF35 1.1.6, MF35V2 1.0.3, G4848 1.0.4, ETH 1.0.7, FNCAM 1.0.10, ESPCAM 1.0.7)
+### The lanes meet (1.2.1-dev.14 and dev.15)
 
 Five lanes merged onto dev.13, in order, on rel-1.2.1-int: rel-1.2.1e (the
 connection line, the signs, CALLS in two panes), rel-1.2.1f (the 40 column
@@ -772,7 +807,11 @@ sysop sees that is new here, beyond the lanes' own entries:
   redrawn then. Left open from the gradient's own lane, one glass and
   self-healing within a lap: on the square, a ring banner starting or ending
   repaints the row above the rail and takes the top row of a red stretch
-  with it until the dot comes round.
+  with it until the dot comes round, and a red lap while the banner is up
+  leaves a short nick along the banner's bottom edge the same way.
+  **The rail does not record the photo show's own cost**: the dot stands
+  still while the photo has the glass, so the viewer's loop cost is read off
+  `PANEL`'s longest pass and SYS's slow passes, not off the glass.
 - From the gradient's review, a pattern worth the name: **both hold stamps
   were kept for ever, and "not yet" only holds while two times are within
   2^31 ms**, so after 24.86 days of uptime the test flips positive again and
@@ -815,7 +854,30 @@ sysop sees that is new here, beyond the lanes' own entries:
   `test_panel_photo_show` from photos, the runner and the panel plugin. The
   G4848 has no LIGHTS_BOARD row yet, so its lights tests SKIP and say so.
 
-SIZES_DEV14
+#### Sizes at 1.2.1
+
+Static DRAM off the ELFs, the 23 envs built with no warnings (each
+`_release` env the same as its bench env but for the image):
+
+| Board | Static DRAM | Free | Image |
+|---|---|---|---|
+| ESP32 (WROOM) | 165,680 of 180,736 | 15,056 | 1,274,320 |
+| Freenove (FNCAM 1.0.10) | 176,616 of 180,736 | 4,120 | 1,351,248 |
+| ESP32-CAM (ESPCAM 1.0.7) | 178,088 of 180,736 | 2,648 | 1,406,848 |
+| Waveshare LCD-1.47 (S3 1.1.8) | 263,152 of 341,760 | 78,608 | 1,502,544 |
+| Waveshare 4.3B (WS43B 1.0.6) | 265,736 of 341,760 | 76,024 | 1,519,344 |
+| Waveshare Touch-LCD-2 (WS2 1.0.7) | 276,784 of 341,760 | 64,976 | 1,592,032 |
+| Waveshare ETH (ETH 1.0.7) | 266,512 of 341,760 | 75,248 | 1,521,232 |
+| Makerfabs 3.5" v1.0 (MF35 1.1.6) | 262,624 of 341,760 | 79,136 | 1,513,408 |
+| Makerfabs 3.5" v2.0 (MF35V2 1.0.3) | 267,880 of 341,760 | 73,880 | 1,525,728 |
+| Guition 4848S040 (G4848 1.0.4) | 269,928 of 341,760 | 71,832 | 1,543,296 |
+
+**The ESP32-CAM is still the floor at 2,648 bytes free**, 8 bytes up on
+1.2.1-dev.10's 2,640 because `1.2.1` is a shorter string than the dev
+labels; the Freenove has 4,120 and the WROOM 15,056. The panel boards paid
+about 24 bytes for the load line (the gradient's own measurement is +5
+before padding) and lane D's photo show; the Touch-LCD-2, the one board
+with a camera and a panel both, is the largest S3 image at 1,592,032.
 
 ### Sizes
 
