@@ -1325,9 +1325,10 @@
 
 // The TF slot in SPI mode: CS 42, MOSI 47, CLK 48, MISO 41. MOSI and CLK are
 // also the ST7701's 3-wire SPI (SDA and SCK), whose CS is 39: held high from
-// start-up so the card's traffic never reaches the panel, and the panel's
-// setup is sent on the card's own SPI bus as a second device (platform_esp32_
-// st7701.cpp).
+// start-up so the card's traffic never reaches the panel. The panel's setup
+// is bit-banged on 39, 48 and 47 as the factory firmware does it, with the
+// card's bus held and its two pins lent for the length of it
+// (platform_esp32_st7701.cpp).
 #define BBS_HAS_SD_SLOT       1
 #define BBS_SD_CS             42
 #define BBS_SD_MOSI           47

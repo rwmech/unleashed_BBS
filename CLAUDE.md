@@ -836,14 +836,28 @@ this tree.
     matched the library's JINGCAI_ESP32_4848S040C_I_Y_3 header byte for
     byte. The one parameter not in .data (CD) pointed into .bss: a
     zero-valued literal, which confirmed the header's `{0x00}`.
-  - **An ST7701 is two buses.** Its 3-wire SPI (9-bit words) shares SCK and
-    SDA with the TF slot here. The setup goes out as a second device on
-    SPI2, the card's own bus, with the bus acquired (sdspi takes it per
-    command, so the wait is one card command), words packed nine bits at a
-    time into one transaction per command; with no card the bus is raised
-    and freed around it. Its CS is held high from a constructor, the WS2's
-    lesson. `spi_bus_get_attr` (esp_private) confirms the card's bus is on
-    the panel's pins before anything is sent.
+  - **An ST7701 is two buses, and its 3-wire link is bit-banged.** The
+    first build sent the 9-bit words through SPI2's peripheral (a second
+    device on the card's bus) and the glass stayed black with the backlight
+    lit: the chip never answered (every read-back 0xFFFF). The factory
+    image's own line config (flash 0x2f4a38, just ahead of its init table)
+    is `{GPIO 39, GPIO 48, GPIO 47}` for ESP32_Display_Panel's
+    `esp_lcd_panel_io_3wire_spi`, which bit-bangs GPIOs. Bit-banged the same
+    way (mode 0, about 100 kHz, CS low per command), the panel lit first
+    time. **When a vendor's working code drives a link a particular way,
+    copy the way, not just the bytes.** The setup holds the card's bus (a
+    device of its own, acquired) and lends 47 and 48 to the GPIOs, then
+    routes SPI2's clock and data back (the SDHC card mounted at boot still
+    works after). The chip's status cannot be read back here: RDDPM reads
+    0xFFFF even on the lit glass, so the panel's SDA output does not reach
+    GPIO 47, and "panel up" on the console proves only the RGB driver; the
+    glass is the proof. CS 39 is held high from a constructor, the WS2's
+    lesson.
+  - **The backlight fades in over 300 ms** (LEDC hardware fade, only from
+    dark; any other change stops it and sets the duty at once). Stepping
+    0 to 60% in one go dropped the CH340 off USB at every boot, and Improv
+    runs over that port in the first seconds: with the fade the port stayed
+    up through a whole boot.
   - **RGB without a refill interrupt.** The 4.3B's bounce fill doubles a
     400 x 240 picture; at scale 1 that copy would be CPU work 45 times a
     second. Here the driver keeps a 480 x 480 framebuffer in PSRAM and the
@@ -868,26 +882,43 @@ this tree.
     PlatformIO wipes .pio/build whole on a changed project checksum. Save
     the objects and images out first (objsave.py; the lane's images are in
     release-prep/g4848/img/), and expect a full rebuild after the pop.
-  - Bench (COM30, 192.168.0.124): loop average 496 us of work with the RGB
-    DMA running, internal heap 58,711 free and 48,679 low; SSH on both
-    ports. Open: the bench's 1 GB SDSC card refuses CMD59 (fatal in IDF
-    5.3.1's SPI init; not bent for one card), and the CH340 drops off USB
-    for a moment about 6 s into every boot, as the backlight comes on.
-  - Static DRAM 267,656 of 341,760 (74,104 free); image 1,514,768.
-  - **For the 1.2.1 merge, from the lane's code review:**
-    - 47 and 48 are the card's and the ST7701's SPI both, held only as sd
-      settings: with sd off, another plugin could be given them and the
-      panel's setup would drive them. They reach no header, so the risk is
-      small; the fix is a pinProblem list for pins a panel shares with the
-      card, the sd plugin's own check exempt.
+  - Bench (COM30, 192.168.0.124), on the glass by Rob: status screen
+    upright, colours right, taps turn the header. Internal heap 55,767
+    free and 48,863 low with the card mounted, no slow pass; SSH on both
+    ports; an 8 GB SDHC card mounts and reads after the panel's setup. The
+    bench's first card, a 1 GB SDSC, refuses CMD59 (fatal in IDF 5.3.1's
+    SPI init; not bent for one card).
+  - Static DRAM 268,160 of 341,760 (73,600 free); image 1,519,120 (the
+    LEDC fade driver is 504 of DRAM and about 4 KB of flash).
+  - The square layout waits for a tty-ux spec for 480 x 480 (Rob,
+    2026-10-01: "widescreen with black bars above and below").
+  - **No IMU and no PMU** (Rob asked about auto-rotation and an AXP2101):
+    a boot-time scan of the touch bus (19/45) finds only the GT911, at
+    0x14 and 0x5D; nothing at 0x34 or 0x68-0x6B, nothing in the factory
+    strings, and every GPIO is accounted for, so there is no other bus.
+    The battery connector is the IP5306's, which has no bus here. The scan
+    stays, one console line a boot.
+  - **For the 1.2.1 merge, from the lane's two code reviews:**
+    - 42, 47 and 48 are the card's and (47, 48) the ST7701's link both,
+      held only as sd settings: with sd off, another plugin could be given
+      them and the panel's setup would drive them (it drives 42 high as
+      well, whether or not sd owns it). They reach no header, so the risk
+      is small; the fix is a pinProblem list for pins a panel shares with
+      the card, the sd plugin's own check exempt.
     - The release workflow's notes should name the `esp32s3-g4848-` prefix
       when tag_only goes.
     - The relay sibling (Y_3) would run this image too, its relays on 1, 2
-      and 40 floating from reset; holding them low at start-up is Rob's call
-      (on this board they reach only the header).
-    - On the glass: COLMOD is the vendor's 0x60 (the review caught the first
-      cut's 0x50); look for banding in red, green, blue and grey, and for
-      flicker at 45 Hz (the vendor runs 98).
+      and 40 floating from reset; holding them low at start-up is Rob's
+      call (on this board they reach only the header). And a WROOM backup
+      restored here carries `activity_led_gpio = 2`, which blinks the
+      header's L2 and on the Y_3 would click a relay.
+    - The panel's first start blocks the loop about 260 ms (two 120 ms
+      waits in the ST7701's setup, plus waiting out one card command for the
+      bus): once a boot, at start-up or when CONFIG switches the panel on,
+      as on the 4.3B.
+    - COLMOD is the vendor's 0x60 (the first review caught the first cut's
+      0x50). Flicker at 45 Hz (the vendor runs 98) has not been looked for
+      on purpose yet.
   **Boards are chosen to maximise what the BBS can do, not to work around
   vendor wiring** (Rob: "not work around dumb vendor BS"). Rejected on
   that ground: the KEYESTUDIO ESP32-S3 PRO (N16R8), whose on-board SD slot

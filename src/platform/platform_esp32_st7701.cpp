@@ -19,13 +19,14 @@
  *               The ST7701 is told how to drive its glass over a 3-wire SPI
  *               once, at the panel's first start: 9-bit words, a D/C bit and
  *               then 8, clocked on the rising edge with CS low for a command
- *               and its parameters. Its SCK and SDA are the TF slot's CLK and
- *               MOSI, so the words go out on the card's own SPI bus (SPI2) as
- *               a second device with the ST7701's CS (39), packed nine bits
- *               to a word into one transaction per command. The bus is
- *               acquired for the whole setup, so a card command on another
- *               task waits for it rather than meeting it. With no card
- *               mounted the bus is raised for the setup and freed after. CS
+ *               and its parameters, bit-banged on GPIOs as the factory
+ *               firmware's own driver does it (ESP32_Display_Panel's 3-wire
+ *               IO; an SPI peripheral sending the same words was never
+ *               answered). Its SCK and SDA are the TF slot's CLK and MOSI,
+ *               so with a card's SPI2 bus up the bus is held for the whole
+ *               setup (a card command on another task waits) and the two
+ *               pins are taken off its signals and given back after. The
+ *               chip's status cannot be read back on this board. CS
  *               39 is held high from start-up (a constructor, below), so the
  *               card's traffic at its boot mount is never taken for the
  *               panel's. The sequence is Espressif's own ST7701 driver's:
@@ -94,6 +95,9 @@
 #include "driver/i2c_master.h"
 #include "driver/ledc.h"
 #include "driver/spi_master.h"
+#include "esp_rom_gpio.h"
+#include "esp_rom_sys.h"
+#include "soc/spi_periph.h"
 #include "esp_private/spi_common_internal.h"      // spi_bus_get_attr: the card's bus pins
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -188,114 +192,140 @@ constexpr Cmd kInit[] = {
     { 0x29, 0,  { 0 }, 0 },                                        // display on
 };
 
-// One command's 9-bit words, packed MSB first: (1 + 16) x 9 = 153 bits.
-// Static, in internal RAM and word-aligned, for the SPI driver's DMA (the
-// card's bus runs with DMA).
-alignas(4) DRAM_ATTR uint8_t g_words[20];
+// The 3-wire link, bit-banged on GPIOs, as the factory firmware drives it
+// (ESP32_Display_Panel's esp_lcd_panel_io_3wire_spi: its line config in the
+// factory image is CS 39, SCL 48, SDA 47, each a plain GPIO). Mode 0: SCL
+// idles low, SDA is set while SCL is low and taken on the rising edge, CS
+// low for a command and its parameters. Words of 9 bits: D/C (0 a command,
+// 1 a parameter), then the byte MSB first. About 100 kHz.
+//
+// The first cut sent the same words through SPI2's peripheral on the card's
+// bus and the chip never answered (every read 0xFFFF, the glass black with
+// the backlight lit). The vendor's own driver does not use a peripheral, and
+// this does what it does.
+constexpr gpio_num_t kCs  = static_cast<gpio_num_t>(BBS_RGB_SPI_CS);
+constexpr gpio_num_t kScl = static_cast<gpio_num_t>(BBS_RGB_SPI_SCK);
+constexpr gpio_num_t kSda = static_cast<gpio_num_t>(BBS_RGB_SPI_SDA);
+constexpr uint32_t   kHalfUs = 5;
 
-// send: one command and its parameters, in one transaction (CS low for all
-// of it), and the wait after it.
-esp_err_t send(spi_device_handle_t dev, uint8_t cmd, const uint8_t* data, uint8_t n, uint32_t delayMs) {
-    memset(g_words, 0, sizeof(g_words));
-    size_t bit = 0;
-    auto put = [&](bool dc, uint8_t v) {
-        const uint16_t w = static_cast<uint16_t>((dc ? 0x100 : 0) | v);
-        for (int b = 8; b >= 0; --b, ++bit)
-            if (w & (1u << b)) g_words[bit >> 3] = static_cast<uint8_t>(g_words[bit >> 3] | (0x80u >> (bit & 7)));
-    };
-    put(false, cmd);
-    for (uint8_t i = 0; i < n; ++i) put(true, data[i]);
-    spi_transaction_t t = {};
-    t.length    = bit;
-    t.tx_buffer = g_words;
-    const esp_err_t e = spi_device_polling_transmit(dev, &t);
-    if (e == ESP_OK && delayMs) vTaskDelay(pdMS_TO_TICKS(delayMs));
-    return e;
+void bit(bool v) {
+    gpio_set_level(kSda, v);
+    esp_rom_delay_us(kHalfUs);
+    gpio_set_level(kScl, 1);
+    esp_rom_delay_us(kHalfUs);
+    gpio_set_level(kScl, 0);
 }
+
+void word9(bool dc, uint8_t v) {
+    bit(dc);
+    for (int b = 7; b >= 0; --b) bit((v >> b) & 1);
+}
+
+// send: one command and its parameters, CS low for all of it, and the wait
+// after it.
+void send(uint8_t cmd, const uint8_t* data, uint8_t n, uint32_t delayMs) {
+    gpio_set_level(kCs, 0);
+    esp_rom_delay_us(kHalfUs);
+    word9(false, cmd);
+    for (uint8_t i = 0; i < n; ++i) word9(true, data[i]);
+    esp_rom_delay_us(kHalfUs);
+    gpio_set_level(kCs, 1);
+    esp_rom_delay_us(kHalfUs * 2);
+    if (delayMs) vTaskDelay(pdMS_TO_TICKS(delayMs));
+}
+
+// No read-back: the chip's status cannot be read on this board. RDDPM and
+// RDDCOLMOD clocked back on SDA read 0xFFFF (the pull-up) even with the
+// glass lit by this very setup, so the panel's SDA output evidently does not
+// come back to GPIO 47, and a status line would say "nothing answered" about
+// a working panel.
 
 // csQuiet: the ST7701's chip select driven high as a plain GPIO.
 void csQuiet() {
-    gpio_set_level(static_cast<gpio_num_t>(BBS_RGB_SPI_CS), 1);
-    gpio_set_direction(static_cast<gpio_num_t>(BBS_RGB_SPI_CS), GPIO_MODE_OUTPUT);
+    gpio_set_level(kCs, 1);
+    gpio_set_direction(kCs, GPIO_MODE_OUTPUT);
 }
 
 bool g_ctlDone = false;       // the ST7701 has been set up this boot
 
-// st7701Setup: the whole sequence, on the card's SPI bus if a card has
-// raised it, or on SPI2 raised for the purpose and freed after. Blocks about
-// 260 ms (two 120 ms waits): a plugin's start only. why says what failed.
+// st7701Setup: the whole sequence on the three GPIOs. SCL and SDA are the TF
+// slot's CLK and MOSI, so while a card's SPI2 bus is up they are taken off
+// its signals for the setup, with the bus held (a device of its own, no CS,
+// acquired: a card command on another task waits), and given back after.
+// With no bus, the pins are left as reset GPIOs for the sd plugin's next
+// mount. The slot's CS is held high throughout so a card ignores the words.
+// Blocks about 260 ms (two 120 ms waits): a plugin's start only.
 bool st7701Setup(const char*& why, esp_err_t& err) {
     constexpr spi_host_device_t kHost = SPI2_HOST;               // the sd plugin's (SDSPI_DEFAULT_HOST)
-    bool ours = false;
-    spi_device_interface_config_t dc = {};
-    dc.mode           = 0;                                       // idle low, sampled on the rising edge
-    dc.clock_speed_hz = 1000000;
-    dc.spics_io_num   = BBS_RGB_SPI_CS;
-    dc.queue_size     = 1;
-    spi_device_handle_t dev = nullptr;
-    // Asked first rather than learned from spi_bus_add_device's refusal,
-    // which logs an error line for what is only "no card mounted".
-    err = spi_bus_get_attr(kHost) ? spi_bus_add_device(kHost, &dc, &dev) : ESP_ERR_INVALID_STATE;
-    if (err == ESP_ERR_INVALID_STATE) {
-        // No bus: no card is mounted. Raise it on the panel's two pins, with
-        // the slot's chip select held high so a card in it ignores the
-        // words. gpio_config, as for 39: GPIO 42's IO MUX function 0 is
-        // JTAG's MTMS, and nothing may have claimed it yet this boot.
+    err = ESP_OK;
+    spi_device_handle_t hold = nullptr;
+    const spi_bus_attr_t* bus = spi_bus_get_attr(kHost);
+    if (bus) {
+        if (bus->bus_cfg.mosi_io_num != BBS_RGB_SPI_SDA || bus->bus_cfg.sclk_io_num != BBS_RGB_SPI_SCK) {
+            why = "the card's SPI pins were moved off the panel's (47 and 48)";
+            err = ESP_ERR_INVALID_STATE;
+            return false;
+        }
+        spi_device_interface_config_t dc = {};
+        dc.clock_speed_hz = 1000000;
+        dc.spics_io_num   = -1;
+        dc.queue_size     = 1;
+        err = spi_bus_add_device(kHost, &dc, &hold);
+        if (err == ESP_OK) err = spi_device_acquire_bus(hold, portMAX_DELAY);
+        if (err != ESP_OK) {
+            if (hold) spi_bus_remove_device(hold);
+            why = "the card's SPI bus could not be held for the panel's setup";
+            return false;
+        }
+    } else {
+        // No bus: no card is mounted. gpio_config, as for 39: GPIO 42's IO
+        // MUX function 0 is JTAG's MTMS.
         //
-        // 47 and 48 reach only the TF slot and the panel's flex (no header
-        // or connector carries them), and are the sd plugin's settings, so
-        // pinProblem cannot refuse them to other plugins without refusing
-        // them to the card: with sd off, a sysop could give them to another
-        // plugin, and this setup would drive them. A rule for pins a panel
-        // shares with the card, the sd plugin exempt, is queued for 1.2.1.
+        // 42, 47 and 48 are the sd plugin's settings, so pinProblem cannot
+        // refuse them to other plugins without refusing them to the card:
+        // with sd off, a sysop could give them to another plugin, and this
+        // setup would drive them. A rule for pins a panel shares with the
+        // card, the sd plugin exempt, is queued for 1.2.1.
         gpio_set_level(static_cast<gpio_num_t>(BBS_SD_CS), 1);
         gpio_config_t cs = {};
         cs.pin_bit_mask = 1ULL << BBS_SD_CS;
         cs.mode         = GPIO_MODE_OUTPUT;
         gpio_config(&cs);
         gpio_set_level(static_cast<gpio_num_t>(BBS_SD_CS), 1);
-        spi_bus_config_t bus = {};
-        bus.mosi_io_num     = BBS_RGB_SPI_SDA;
-        bus.miso_io_num     = -1;
-        bus.sclk_io_num     = BBS_RGB_SPI_SCK;
-        bus.quadwp_io_num   = -1;
-        bus.quadhd_io_num   = -1;
-        bus.max_transfer_sz = sizeof(g_words);
-        err = spi_bus_initialize(kHost, &bus, SPI_DMA_DISABLED);
-        if (err != ESP_OK) { why = "the panel's SPI bus would not start"; return false; }
-        ours = true;
-        err = spi_bus_add_device(kHost, &dc, &dev);
-    } else if (err == ESP_OK) {
-        // The card's bus: it must be on the panel's wires, or the setup would
-        // go out on pins the ST7701 is not on.
-        const spi_bus_attr_t* a = spi_bus_get_attr(kHost);
-        if (!a || a->bus_cfg.mosi_io_num != BBS_RGB_SPI_SDA || a->bus_cfg.sclk_io_num != BBS_RGB_SPI_SCK) {
-            spi_bus_remove_device(dev);
-            csQuiet();
-            why = "the card's SPI pins were moved off the panel's (47 and 48)";
-            err = ESP_ERR_INVALID_STATE;
-            return false;
-        }
     }
-    if (err != ESP_OK) {
-        if (ours) spi_bus_free(kHost);
-        csQuiet();
-        why = "the panel's SPI device would not register";
-        return false;
-    }
-    err = spi_device_acquire_bus(dev, portMAX_DELAY);
-    if (err == ESP_OK) {
-        err = send(dev, 0x01, nullptr, 0, 120);                        // SWRESET
-        for (const Cmd& c : kInit) {
-            if (err != ESP_OK) break;
-            err = send(dev, c.cmd, c.data, c.n, c.delayMs);
-        }
-        spi_device_release_bus(dev);
-    }
-    spi_bus_remove_device(dev);
-    if (ours) spi_bus_free(kHost);
+
+    // The two shared pins as GPIOs: SCL low, SDA driven (and an input, as
+    // SPI2 has its MOSI). With a card's bus up, this takes them off SPI2's
+    // signals.
+    gpio_set_level(kScl, 0);
+    gpio_set_level(kSda, 1);
+    gpio_config_t io = {};
+    io.pin_bit_mask = (1ULL << BBS_RGB_SPI_SCK);
+    io.mode         = GPIO_MODE_OUTPUT;
+    gpio_config(&io);
+    io.pin_bit_mask = (1ULL << BBS_RGB_SPI_SDA);
+    io.mode         = GPIO_MODE_INPUT_OUTPUT;
+    io.pull_up_en   = GPIO_PULLUP_ENABLE;
+    gpio_config(&io);
+    esp_rom_gpio_connect_out_signal(BBS_RGB_SPI_SCK, SIG_GPIO_OUT_IDX, false, false);
+    esp_rom_gpio_connect_out_signal(BBS_RGB_SPI_SDA, SIG_GPIO_OUT_IDX, false, false);
     csQuiet();
-    if (err != ESP_OK) { why = "the panel's setup would not send"; return false; }
+
+    send(0x01, nullptr, 0, 120);                                   // SWRESET
+    for (const Cmd& c : kInit) send(c.cmd, c.data, c.n, c.delayMs);
+
+    if (bus) {
+        // Back to the card: SPI2's clock and data out on the same pins, as
+        // spi_bus_initialize routed them (MOSI also its input, for 3-wire).
+        esp_rom_gpio_connect_out_signal(BBS_RGB_SPI_SCK, spi_periph_signal[kHost].spiclk_out, false, false);
+        esp_rom_gpio_connect_out_signal(BBS_RGB_SPI_SDA, spi_periph_signal[kHost].spid_out, false, false);
+        spi_device_release_bus(hold);
+        spi_bus_remove_device(hold);
+    } else {
+        gpio_reset_pin(kScl);
+        gpio_reset_pin(kSda);
+    }
+    csQuiet();
     return true;
 }
 
@@ -306,6 +336,7 @@ struct Rgb {
     esp_lcd_panel_handle_t panel = nullptr;
     bool                   up    = false;
     bool                   blUp  = false;      // the LEDC channel has the pin
+    bool                   fade  = false;      // the LEDC fade is installed
     uint8_t                pct   = 0;          // the backlight as last set
     LcdCfg                 cfg;
 };
@@ -337,6 +368,10 @@ bool blBegin() {
         log("panel: the backlight's PWM would not start");
         return false;
     }
+    // The hardware fade, for coming on from dark (lcdBacklight). Already
+    // installed by somebody else is fine.
+    const esp_err_t f = ledc_fade_func_install(0);
+    g_rgb.fade = f == ESP_OK || f == ESP_ERR_INVALID_STATE;
     g_rgb.blUp = true;
     return true;
 }
@@ -383,6 +418,38 @@ void tpBegin() {
         log("panel: the touch controller's I2C bus would not start (%s)", esp_err_to_name(e));
         g_bus = nullptr;
         return;
+    }
+    // Once a boot: who else is on the touch bus, one line (an IMU or a PMU
+    // would answer here: none is documented, Rob asked). Probing an empty
+    // address is a NACK, microseconds each.
+    {
+        char seen[112 * 5 + 1] = "";
+        size_t at = 0;
+        for (uint16_t a = 0x08; a < 0x78; ++a)
+            if (i2c_master_probe(g_bus, a, 10) == ESP_OK && at + 6 < sizeof(seen))
+                at += static_cast<size_t>(snprintf(seen + at, sizeof(seen) - at, " 0x%02X", a));
+        log("panel: I2C on %d/%d answered at%s", BBS_I2C_SDA, BBS_I2C_SCL, at ? seen : " none");
+        // An ID register for the parts Rob asked about, where something
+        // answered at their address: AXP2101 at 0x34 (0x03, 0x4A), IMUs at
+        // 0x68/0x69 (MPU/ICM 0x75, BMI 0x00) and 0x6A/0x6B (QMI8658 0x00,
+        // LSM6 0x0F).
+        const struct { uint8_t addr, reg; } kIds[] = {
+            { 0x34, 0x03 }, { 0x68, 0x75 }, { 0x68, 0x00 }, { 0x69, 0x75 }, { 0x69, 0x00 },
+            { 0x6A, 0x00 }, { 0x6A, 0x0F }, { 0x6B, 0x00 }, { 0x6B, 0x0F } };
+        for (const auto& id : kIds) {
+            if (i2c_master_probe(g_bus, id.addr, 10) != ESP_OK) continue;
+            i2c_device_config_t d = {};
+            d.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+            d.device_address  = id.addr;
+            d.scl_speed_hz    = 400000;
+            i2c_master_dev_handle_t h = nullptr;
+            if (i2c_master_bus_add_device(g_bus, &d, &h) != ESP_OK) continue;
+            uint8_t v = 0;
+            const bool ok = i2c_master_transmit_receive(h, &id.reg, 1, &v, 1, 20) == ESP_OK;
+            i2c_master_bus_rm_device(h);
+            log("panel: I2C 0x%02X register 0x%02X = %s0x%02X", id.addr, id.reg, ok ? "" : "(no read) ",
+                static_cast<unsigned>(v));
+        }
     }
     const uint16_t kAddrs[2] = { BBS_TOUCH_ADDR, BBS_TOUCH_ADDR2 };
     for (uint16_t a : kAddrs) {
@@ -536,6 +603,19 @@ void lcdBacklight(uint8_t pct) {
     if (!g_rgb.blUp) { g_rgb.pct = 0; return; }
     if (want == g_rgb.pct) return;
     const uint32_t duty = kBlMax * want / 100u;
+    // Coming on from dark, the hardware fades it up over 300 ms, started and
+    // left to run (NO_WAIT): a backlight stepped from 0 to 60% in one go
+    // pulled the supply hard enough to drop the CH340 off USB at every boot.
+    // Any other change (dimming, sleep, silent) stops a fade still running
+    // and sets the duty at once, so nothing here waits on one.
+    if (g_rgb.fade && g_rgb.pct == 0 && want > 0) {
+        if (ledc_set_fade_with_time(LEDC_LOW_SPEED_MODE, kBlChan, duty, 300) == ESP_OK &&
+            ledc_fade_start(LEDC_LOW_SPEED_MODE, kBlChan, LEDC_FADE_NO_WAIT) == ESP_OK) {
+            g_rgb.pct = want;
+            return;
+        }
+    }
+    if (g_rgb.fade) ledc_fade_stop(LEDC_LOW_SPEED_MODE, kBlChan);
     if (ledc_set_duty(LEDC_LOW_SPEED_MODE, kBlChan, duty) == ESP_OK &&
         ledc_update_duty(LEDC_LOW_SPEED_MODE, kBlChan) == ESP_OK)
         g_rgb.pct = want;
