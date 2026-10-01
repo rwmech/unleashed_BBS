@@ -42,6 +42,17 @@ Prior art check (done, corrected 2026-09-24): no BBS software ran on an ESP32 th
   A feature that's S3-only is left out of the base build entirely, not
   just switched off, because a switched-off plugin still costs flash and
   its statics.
+  **But S3-only features are still shown on the base ESP32, greyed out, with
+  an upgrade note** (Rob, 2026-10-01: "the display screen stuff can still be
+  shown on the ESP32 Base, but grayed out and maybe a plug to show that an
+  esp32-s3 upgrade gets more features. we want to push for ESP32-S3
+  everywhere but still have unencrypted cheap ESP32 bare with as much
+  features as possible"). The code stays out; the sysop's menus still show
+  the setting dimmed with one line such as "Display colours need an ESP32-S3
+  board with a screen" (CONFIG theme's panel colours, SSH in CONFIG network,
+  the panel page). Strings only, a few bytes of flash and no RAM. Sysop
+  screens only, never a caller's, and never nagging. The base ESP32 keeps
+  every feature it can run.
 - **Extras go on sats, not in the core** (Rob, 2026-09-29). The core
   carries what a BBS must have. Heavier extras (credits, the voting
   booth, games) run on a **features sat**, a second cheap ESP32 that is
