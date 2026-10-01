@@ -29,7 +29,8 @@ A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E
 Host-tested only so far; the board versions move when their own code does.
 
 Merged in 1.2.1-dev.9 (rel-1.2.1): the core lane (dev.1 to dev.8), the
-forums lane (forums.1 to forums.5) and the Makerfabs v2.0 board lane.
+forums lane (forums.1 to forums.5) and the Makerfabs v2.0 board lane. The
+boards it moved have their versions bumped in 1.2.1-dev.10.
 
 ### Login and the core (1.2.1-dev.1 to dev.8)
 
@@ -309,26 +310,47 @@ there as `1.2.0 (MF35V2 1.0.0)`), merged at 1.2.1-dev.9. Its image set,
   serial bridge or the lights and fight the touch controller. Only the pin
   check and the version string change in that image.
 
+### Board versions (1.2.1-dev.10)
+
+Each board whose own behaviour moved in 1.2.1 has its version bumped (Rob):
+
+- **S3 1.1.5** (Waveshare ESP32-S3-LCD-1.47): the VFS table is 12, from the
+  shared S3 layer, so SSH and a card no longer fill it; and CONFIG no longer
+  refuses 43 and 44 as the console, which is the chip's own USB here.
+- **WS43B 1.0.3** (Waveshare 4.3B): 43 and 44 are no longer refused as the
+  console, so CONFIG serial takes the RS485 bridge's own pins.
+- **WS2 1.0.4** (Waveshare Touch-LCD-2): 43 and 44 are a sysop's to use, no
+  longer refused as the console (the console is USB).
+- **ETH 1.0.3** (Waveshare ETH): 43 and 44 likewise.
+- **FNCAM 1.0.9** (Freenove): the first timed shot after a boot is held
+  rather than lost, and the camera is brought up again at the size the
+  sensor really gives, so the first snap is the size CONFIG saved.
+- **ESPCAM 1.0.6** (AI-Thinker ESP32-CAM): the held timed shot and the
+  size reopen, as on the Freenove.
+- MF35 1.1.3 and MF35V2 1.0.0 are unchanged: both moved already in their
+  own lane.
+
 ### Sizes
 
-Static DRAM off the ELFs at 1.2.1-dev.9, every env built with no warnings
+Static DRAM off the ELFs at 1.2.1-dev.10, every env built with no warnings
 (each _release env the same as its bench env):
 
 | Board | Static DRAM | Free | Image |
 |---|---|---|---|
-| ESP32 (WROOM) | 165,680 of 180,736 | 15,056 | 1,273,648 |
-| Freenove (FNCAM 1.0.8) | 176,616 of 180,736 | 4,120 | 1,349,904 |
-| ESP32-CAM (ESPCAM 1.0.5) | 178,088 of 180,736 | 2,648 | 1,405,424 |
-| Waveshare LCD-1.47 (S3 1.1.4) | 262,024 of 341,760 | 79,736 | 1,490,736 |
-| Waveshare 4.3B (WS43B 1.0.2) | 264,616 of 341,760 | 77,144 | 1,507,440 |
-| Waveshare Touch-LCD-2 (WS2 1.0.3) | 275,648 of 341,760 | 66,112 | 1,578,656 |
-| Waveshare ETH (ETH 1.0.2) | 266,360 of 341,760 | 75,400 | 1,516,208 |
-| Makerfabs 3.5" v1.0 (MF35 1.1.3) | 261,496 of 341,760 | 80,264 | 1,501,760 |
-| Makerfabs 3.5" v2.0 (MF35V2 1.0.0) | 266,752 of 341,760 | 75,008 | 1,513,648 |
+| ESP32 (WROOM) | 165,688 of 180,736 | 15,048 | 1,273,648 |
+| Freenove (FNCAM 1.0.9) | 176,624 of 180,736 | 4,112 | 1,349,904 |
+| ESP32-CAM (ESPCAM 1.0.6) | 178,096 of 180,736 | 2,640 | 1,405,424 |
+| Waveshare LCD-1.47 (S3 1.1.5) | 262,024 of 341,760 | 79,736 | 1,490,736 |
+| Waveshare 4.3B (WS43B 1.0.3) | 264,616 of 341,760 | 77,144 | 1,507,456 |
+| Waveshare Touch-LCD-2 (WS2 1.0.4) | 275,648 of 341,760 | 66,112 | 1,578,656 |
+| Waveshare ETH (ETH 1.0.3) | 266,360 of 341,760 | 75,400 | 1,516,208 |
+| Makerfabs 3.5" v1.0 (MF35 1.1.3) | 261,504 of 341,760 | 80,256 | 1,501,760 |
+| Makerfabs 3.5" v2.0 (MF35V2 1.0.0) | 266,760 of 341,760 | 75,000 | 1,513,648 |
 
-Images are the release builds. Against 1.2.0 the ESP32 boards are 24 to 72
-bytes down (WROOM 15,080 to 15,056 free, Freenove 4,192 to 4,120, ESP32-CAM
-2,720 to 2,648); the ESP32-CAM is still the floor.
+Images are the release builds. Against 1.2.0 the ESP32 boards are 32 to 80
+bytes down (WROOM 15,080 to 15,048 free, Freenove 4,192 to 4,112, ESP32-CAM
+2,720 to 2,640); the ESP32-CAM is still the floor. dev.10's longer version
+string cost 8 bytes on the ESP32 boards and the Makerfabs (alignment).
 
 ## 1.2.0 (S3 1.1.4, WS43B 1.0.2, WS2 1.0.3, ETH 1.0.2, MF35 1.1.2, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-29: the hardware release
 

@@ -204,7 +204,7 @@
 // the version is shown, as BBS_VERSION_SHOWN (config.h) puts it. The
 // reference board defines neither.
 #define BBS_BOARD_TAG         "S3"
-#define BBS_BOARD_VERSION     "1.1.4"
+#define BBS_BOARD_VERSION     "1.1.5"
 
 // SSH (1.1.2 core, S3 1.1.3, a preview): encrypted logins on the board's
 // own port, beside telnet (src/core/sshd.h). Eight at once: this board's
@@ -335,7 +335,7 @@
 #define BBS_BOARD_PLUGINS     1       // the panel
 
 #define BBS_BOARD_TAG         "WS43B"
-#define BBS_BOARD_VERSION     "1.0.2"
+#define BBS_BOARD_VERSION     "1.0.3"
 
 // PSRAM (sdkconfig.defaults.ws43b over the S3 layer): the panel's frame
 // buffer, and the program and its constants run from it (XIP), so a flash
@@ -843,7 +843,7 @@
 #define BBS_BOARD_PLUGINS     1       // the camera
 
 #define BBS_BOARD_TAG         "FNCAM"
-#define BBS_BOARD_VERSION     "1.0.8"
+#define BBS_BOARD_VERSION     "1.0.9"
 
 // PSRAM (sdkconfig.defaults.fncam). Wi-Fi's and lwIP's buffers go there.
 // The internal reserve stays the WROOM's 40 KB until the bench's MEM says
@@ -982,7 +982,7 @@
 #define BBS_BOARD_PLUGINS     1       // the camera
 
 #define BBS_BOARD_TAG         "ESPCAM"
-#define BBS_BOARD_VERSION     "1.0.5"
+#define BBS_BOARD_VERSION     "1.0.6"
 
 // PSRAM (sdkconfig.defaults.espcam). A build that lost the sdkconfig layer
 // would otherwise link quietly without it.
@@ -1101,7 +1101,7 @@
 // "WS2": Waveshare, 2 inch, beside the LCD-1.47's "S3" (which is older than
 // the rule) and the 4.3B's "WS43B". Shown as 1.1.2-hw.1 (WS2 1.0.2).
 #define BBS_BOARD_TAG         "WS2"
-#define BBS_BOARD_VERSION     "1.0.3"
+#define BBS_BOARD_VERSION     "1.0.4"
 
 // SSH as on the LCD-1.47: the same S3R8 and the same 8 MB of PSRAM.
 #define BBS_HAS_SSH           1
@@ -1286,7 +1286,7 @@
 #define BBS_BOARD_PLUGINS     1       // the camera
 
 #define BBS_BOARD_TAG         "ETH"
-#define BBS_BOARD_VERSION     "1.0.2"
+#define BBS_BOARD_VERSION     "1.0.3"
 
 // PSRAM (sdkconfig.defaults.esp32s3: octal, as on the S3 stick). A build
 // that lost the layer would otherwise link quietly without it.
