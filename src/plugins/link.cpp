@@ -1342,7 +1342,10 @@ uint8_t channel() { return g_ctx ? plat::linkRadioChannel() : 0; }
 
 bool onWire() {
 #ifdef BBS_HAS_ETH
-    return plat::ethInfo().up;
+    // On the wire with the station unjoined (1.2.1): Wi-Fi beside the wire
+    // turned off, no network set, or one that will not join. Joined, the
+    // radio is on the router's channel and the link works as anywhere.
+    return plat::ethInfo().up && !plat::netInfo().valid;
 #else
     return false;
 #endif

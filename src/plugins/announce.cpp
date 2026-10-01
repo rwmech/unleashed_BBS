@@ -336,6 +336,14 @@ uint16_t g_sent     = 0;
 uint16_t g_bodyLen  = 0;
 uint16_t g_reqLen   = 0;
 char     g_seenIp[46] = {};            // what the directory says our address is
+#ifdef BBS_HAS_ETH
+// The board's own end of the last post that connected (1.2.1), so ANNOUNCE
+// can say which interface the directory hears it on: the wire's while the
+// wire has an address (main.cpp's netPick keeps the default route there),
+// Wi-Fi's otherwise. Network order, 0 not yet.
+uint32_t g_fromIp  = 0;
+bool     g_fromEth = false;         // and it was the wire's, as the post went
+#endif
 char     g_state[16]  = {};            // pending, online, offline, queued
 uint32_t g_publicIn   = 0;             // seconds until a pending listing shows
 uint32_t g_okCount  = 0;
@@ -1003,6 +1011,15 @@ void service(uint32_t now) {
             finish("refused", false);                 // kept; three in a row look it up again
             return;
         }
+#ifdef BBS_HAS_ETH
+        sockaddr_in me = {};
+        socklen_t mlen = sizeof(me);
+        if (getsockname(g_fd, reinterpret_cast<sockaddr*>(&me), &mlen) == 0) {
+            const plat::EthInfo e = plat::ethInfo();
+            g_fromIp  = me.sin_addr.s_addr;
+            g_fromEth = e.up && e.ip == g_fromIp;
+        }
+#endif
         g_stage = Stage::Sending;
     }
 
@@ -1268,6 +1285,20 @@ void showStatus(Bbs& b, Session& s) {
         t.text(tl, buf);
         t.nl(tl);
     }
+#ifdef BBS_HAS_ETH
+    // Which of the two interfaces the posts leave by (1.2.1): the directory
+    // lists the address it hears, so a wire and a Wi-Fi behind different
+    // routers would list different ones. 37 columns at most.
+    if (g_fromIp) {
+        const uint8_t* q = reinterpret_cast<const uint8_t*>(&g_fromIp);
+        snprintf(buf, sizeof(buf), "Sent from %u.%u.%u.%u, %s", static_cast<unsigned>(q[0]),
+                 static_cast<unsigned>(q[1]), static_cast<unsigned>(q[2]), static_cast<unsigned>(q[3]),
+                 g_fromEth ? "Ethernet" : "Wi-Fi");
+        t.color(tl, Color::Grey);
+        t.text(tl, buf);
+        t.nl(tl);
+    }
+#endif
     b.prompt(s);
 }
 
@@ -1352,6 +1383,9 @@ bool start(Bbs& bbs) {
     }
 #endif
     g_seenIp[0]  = '\0';
+#ifdef BBS_HAS_ETH
+    g_fromIp     = 0;
+#endif
     g_state[0]   = '\0';
     g_publicIn   = 0;
     g_activity   = false;

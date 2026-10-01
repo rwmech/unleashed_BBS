@@ -577,6 +577,7 @@ void keyValue(Ctx& c, const char* key, char* val) {
     else if (!strcmp(key, "cgnat_local"))           yesNo(c, key, val, g.cgnatLocal);
 #ifdef BBS_HAS_ETH
     else if (!strcmp(key, "ethernet"))              yesNo(c, key, val, g.ethernet);
+    else if (!strcmp(key, "wifi_with_ethernet"))    yesNo(c, key, val, g.wifiWithEth);
 #endif
 #ifdef BBS_HAS_LCD
     // A new photo on the panel (1.2.1, CONFIG photos): display boards only.

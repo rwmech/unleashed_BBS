@@ -1263,7 +1263,10 @@ def test_sysop():
     r.buf.clear()
     r.send(b"dash\r")
     ok &= check("DASH shows the dashboard", r.wait_for(b"DASHBOARD", 4) and r.wait_for(b"last calls", 4))
-    ok &= check("DASH shows Wi-Fi and a Doing column", r.wait_for(b"WiFi", 4) and b"Doing" in r.buf)
+    # A wired board on the wire shows its Ethernet there (1.1.2), not Wi-Fi.
+    net = b"Eth" if HOST_BOARD == "wseth" else b"WiFi"
+    ok &= check("DASH shows " + ("Ethernet" if HOST_BOARD == "wseth" else "Wi-Fi") + " and a Doing column",
+                r.wait_for(net, 4) and b"Doing" in r.buf)
     if r.wait_for(b"[More] Y/n/c", 2):
         r.send(b"c")
     ok &= check("DASH lists callers and last calls", r.wait_for(b"last calls", 4) and b"Xavier" in r.buf)
@@ -6281,6 +6284,10 @@ BOARD_LED  = 6
 #   sd_rows    CONFIG sd has pin rows (an SPI slot on settings)
 #   wired43    (optional) 43 is wired to a part on the board, so CONFIG
 #              refuses it as "wired on the board" (BBS_PINS_WIRED)
+#   sd_tried   (optional) the card's CS and MOSI as SD's "no card" line names
+#              them; the reference board's where a row has none
+#   sd_move    (optional) a CS pin a hand edit may move the card to that is
+#              free under the harness and not the shipped CS (test_sd_no_reprobe)
 # None is a fact this table does not know for the profile: the check that
 # needs it SKIPs and says so, rather than asserting the WROOM's.
 _S3_FLASH   = dict(flash=(b"30", b"31", b"30"), flash_pat=b"flash and PSRAM",
@@ -6289,7 +6296,8 @@ _WROOM_PINS = dict(flash=(b"6", b"11", b"7"), flash_pat=b"flash chip",
                    missing=(b"24", (b"20", b"28", b"31"), b"29", "30"), console=b"1")
 PIN_BOARD = {
     "":       dict(_WROOM_PINS, led=b"2", led_free=b"2", btn_free=b"4", serial=(b"16", b"17"),
-                   sd_clock=(b"18", b"Clock GPIO"), sd_rows=True),
+                   sd_clock=(b"18", b"Clock GPIO"), sd_rows=True,
+                   sd_tried=(b"CS 5", b"MOSI 23"), sd_move="4"),
     "fncam":  dict(_WROOM_PINS, led=b"-1", led_free=b"13", btn_free=b"13", serial=(b"33", b"32"),
                    sd_clock=None, sd_rows=False),
     "espcam": dict(_WROOM_PINS, led=b"33", led_free=b"33", btn_free=None, serial=None,
@@ -6300,8 +6308,11 @@ PIN_BOARD = {
                    sd_clock=None, sd_rows=None),
     "ws43b":  dict(_S3_FLASH, led=b"-1", led_free=None, btn_free=None, serial=(b"43", b"44"),
                    sd_clock=None, sd_rows=None),
+    # The ESP32-S3-ETH's slot (board.h): CS 4, MOSI 6. Its card already sits
+    # on 4, and the harness's serial bridge holds 16 and 17, so a moved CS
+    # goes to 43, free on this board since its console is the chip's USB.
     "wseth":  dict(_S3_FLASH, led=b"-1", led_free=None, btn_free=None, serial=None,
-                   sd_clock=None, sd_rows=None),
+                   sd_clock=None, sd_rows=None, sd_tried=(b"CS 4", b"MOSI 6"), sd_move="43"),
     # The Makerfabs' console is UART0, on 43 and 44 (BBS_PINS_CONSOLE).
     "mf35":   dict(_S3_FLASH, console=b"43", led=b"-1", led_free=None, btn_free=None, serial=(b"17", b"18"),
                    sd_clock=None, sd_rows=None),
@@ -6314,9 +6325,10 @@ PIN_BOARD = {
     # to the CH340 (BBS_PINS_CONSOLE 43, 44), the card an SPI slot on the sd
     # plugin's settings (CS 42, MOSI 47, CLK 48, MISO 41). No LED and no
     # bridge pins as shipped; which pin CONFIG would save for an LED or a
-    # button (1, 2 and 40 go to the header) is not checked here yet.
+    # button (1, 2 and 40 go to the header) is not checked here yet. A hand
+    # edit moves the card's CS to 40, one of the header's free three.
     "g4848":  dict(_S3_FLASH, console=b"43", led=b"-1", led_free=None, btn_free=None, serial=None,
-                   sd_clock=None, sd_rows=True),
+                   sd_clock=None, sd_rows=True, sd_tried=(b"CS 42", b"MOSI 47"), sd_move="40"),
 }
 PB = PIN_BOARD.get(HOST_BOARD, PIN_BOARD[""])
 
@@ -8770,30 +8782,55 @@ def test_board_wseth():
     text = plain(s.buf)
     ok = check("SYS says the board is on Ethernet, 100 Mb/s full duplex",
                re.search(rb"\nEthernet +100 Mb/s full duplex", text) is not None)
-    ok &= check("and Wi-Fi is the fallback, standing by",
-                re.search(rb"\nWi-Fi +standby the fallback", text) is not None)
+    # Wi-Fi beside the wire (1.2.1). The host's station is joined while
+    # BBS_HOST_SSID is set, which tools/harness.sh always does; a run
+    # without it plays a station that could not join (the harness's
+    # system.cfg names a network, so SYS says "not joined", not "no network
+    # set"). "standby" is wifi_with_ethernet = no's word and is not seen.
+    joined = bool(os.environ.get("BBS_HOST_SSID"))
+    if joined:
+        ok &= check("and Wi-Fi joined beside it",
+                    re.search(rb"\nWi-Fi +" + re.escape(os.environ["BBS_HOST_SSID"].encode()) +
+                              rb" beside the wire", text) is not None)
+        ok &= check("with its own address on its own row",
+                    re.search(rb"\nWi-Fi IP +127\.0\.0\.1", text) is not None)
+    else:
+        ok &= check("and Wi-Fi beside it, not joined",
+                    re.search(rb"\nWi-Fi +not joined CONFIG network", text) is not None)
+        ok &= check("the radio standing by",
+                    re.search(rb"\nRadio +standby calls on Ethernet", text) is not None)
+    ok &= check("the address is the wire's",
+                re.search(rb"\nAddress +127\.0\.0\.1 Ethernet", text) is not None)
 
     s.buf.clear()
     s.send(b"hardware\r")
     read_list(s)
     ok &= check("HARDWARE lists Ethernet among the capabilities",
                 b"Ethernet 100 Mb/s" in plain(s.buf))
+    ok &= check("and Wi-Fi beside it while joined" if joined else "and no Wi-Fi while not joined",
+                (re.search(rb"Ethernet 100 Mb/s,\s+Wi-Fi", plain(s.buf)) is not None) == joined)
 
     ok &= check("CONFIG network has the Ethernet row",
                 cfg_open(s, b"network", b"Network") and b"Ethernet" in plain(s.buf))
+    ok &= check("and the Wi-Fi beside the wire row (1.2.1)", b"Wi-Fi beside wire" in plain(s.buf)
+                or b"Wi-Fi too" in plain(s.buf))
     cfg_cancel(s)
 
-    # On the wire the link cannot reach a sat (1.2.0; 1.2.1 joins Wi-Fi as
-    # well): SATS and CONFIG sats say so to staff.
+    # On the wire with Wi-Fi not joined the link cannot reach a sat (1.2.0).
+    # From 1.2.1 Wi-Fi joins beside the wire, so SATS and CONFIG sats tell
+    # staff only when it could not, and say nothing while it is joined.
     s.buf.clear()
     s.send(b"sats\r")
     read_list(s)
+    notice = b"On Ethernet, but Wi-Fi hasn't joined: sats can't pair. See CONFIG network."
     # SATS is a command only while a camera is on (the host's is off here).
     if b"Unknown command" not in plain(s.buf):
-        ok &= check("SATS tells staff the link needs Wi-Fi on the wire",
-                    b"The link needs Wi-Fi. This board is on Ethernet, so sats can't pair." in plain(s.buf))
-    ok &= check("CONFIG sats says so too",
-                cfg_open(s, b"sats", b"SATELLITES") and b"needs Wi-Fi" in plain(s.buf))
+        ok &= check("SATS says nothing of the wire while Wi-Fi is joined" if joined
+                    else "SATS tells staff Wi-Fi hasn't joined beside the wire",
+                    (notice in plain(s.buf)) != joined)
+    opened = cfg_open(s, b"sats", b"SATELLITES")
+    ok &= check("nor does CONFIG sats" if joined else "CONFIG sats says so too",
+                opened and (b"Wi-Fi not joined" in plain(s.buf)) != joined)
     cfg_cancel(s)
 
     # The board page's activity LED: the W5500's and the camera's pins are
@@ -9203,11 +9240,20 @@ def photos(card):
 #                sensor goes to the top of the list
 #   pin          a GPIO the camera's flash may use in pin and pixel mode:
 #                the Freenove's free 13, the ESP32-CAM's own flash LED on 4
-#                (13 is its card's CS there)
+#                (13 is its card's CS there), the WS2's only free pin 18,
+#                and on the ESP32-S3-ETH, which has no flash LED, header
+#                GPIO 16 (release-prep/wseth/pins.md: free are 0, 16, 17,
+#                21 the pixel, 43 and 44; the board LED key stops at 39 and
+#                21 is the lights' own drive pin, so 16)
+#   share        False where the profile leaves no free pin the drive light
+#                may share with the flash in pixel mode: on the ESP32-S3-ETH
+#                the harness's serial bridge holds 16 and 17, 21 is the
+#                lights' own, 0 is BOOT and 43/44 are past the LED key's 39
 CAM_BOARD = {
     "fncam":  dict(sensor=b"GC0308", top=b"vga", size=b"vga", over=b"uxga", pin="13"),
     "espcam": dict(sensor=b"OV2640", top=b"uxga", size=b"xga", over=None, pin="4"),
     "ws2":    dict(sensor=b"OV5640", top=b"qxga", size=b"xga", over=None, pin="18"),
+    "wseth":  dict(sensor=b"OV5640", top=b"uxga", size=b"xga", over=None, pin="16", share=False),
 }
 CB = CAM_BOARD.get(HOST_BOARD, CAM_BOARD["fncam"])
 
@@ -9469,13 +9515,16 @@ def test_camera():
                 got in (b"Taken: camera", ("GPIO " + CB["pin"]).encode()))
     cfg_cancel(s)
     camera_config(s, snap="users", flash_mode="pixel", flash_pin=CB["pin"], flash_lead="1000")
-    cfg_open(s, b"lights", b"Drive pin")
-    s.buf.clear()
-    s.send(DOWN * 4 + b"\x08" * 3 + CB["pin"].encode() + F1)
-    got = cfg_verdict(s, [b"Saved", b"Taken: camera", ("GPIO " + CB["pin"]).encode(), b"Between"])
-    cfg_cancel(s)
-    ok &= check("in pixel mode the drive light may share it", got == b"Saved" and
-                lights_read(s).get("drive", {}).get("pin") == int(CB["pin"]))
+    if CB.get("share", True):
+        cfg_open(s, b"lights", b"Drive pin")
+        s.buf.clear()
+        s.send(DOWN * 4 + b"\x08" * 3 + CB["pin"].encode() + F1)
+        got = cfg_verdict(s, [b"Saved", b"Taken: camera", ("GPIO " + CB["pin"]).encode(), b"Between"])
+        cfg_cancel(s)
+        ok &= check("in pixel mode the drive light may share it", got == b"Saved" and
+                    lights_read(s).get("drive", {}).get("pin") == int(CB["pin"]))
+    else:
+        print("  SKIP  in pixel mode the drive light may share it: no free pin on this profile to share")
     cfg_open(s, b"board", b"Hostname")
     s.buf.clear()
     s.send(DOWN * BOARD_LED + b"\x08" * 3 + CB["pin"].encode() + F1)
@@ -18470,7 +18519,8 @@ def test_sd():
         # which pins it tried, because "no card found" with no pin numbers
         # sends somebody to re-seat a card that was never the problem.
         ok &= check("it says there is no card", b"no card" in shown)
-        ok &= check("and which pins it tried", b"CS 5" in shown and b"MOSI 23" in shown)
+        cs, mosi = PB.get("sd_tried", PIN_BOARD[""]["sd_tried"])
+        ok &= check("and which pins it tried", cs in shown and mosi in shown)
         ok &= check("and that the board is fine without one", b"runs fine without" in shown)
 
         s.buf.clear()
@@ -21053,7 +21103,8 @@ def test_sd_no_reprobe():
         # An SDMMC board's pins are its wiring, not settings (the Freenove
         # CAM): the bus speed is what moves there.
         sdmmc = HOST_BOARD == "fncam"
-        cfg.write_text(cfg_with(text, {("plugin:sd", "speed" if sdmmc else "cs"): "10000" if sdmmc else "4"}))
+        move = PB.get("sd_move", PIN_BOARD[""]["sd_move"])
+        cfg.write_text(cfg_with(text, {("plugin:sd", "speed" if sdmmc else "cs"): "10000" if sdmmc else move}))
         cfg_reload(s)
         ok &= check("and a save that moves a pin looks once, on the new pin" if not sdmmc else
                     "and a save that moves the bus speed looks once", tries() == 2)

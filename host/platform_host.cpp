@@ -286,6 +286,7 @@ NetInfo netInfo() {
         n.valid   = true;
     }
 #ifdef BBS_HAS_ETH
+    if (n.valid) snprintf(n.staIp, sizeof(n.staIp), "%s", n.ip);   // BBS_HOST_SSID: joined beside the wire
     const EthInfo e = ethInfo();
     n.ethLink = e.link;
     n.ethFull = e.full;

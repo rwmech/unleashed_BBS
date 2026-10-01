@@ -471,6 +471,182 @@ The three bench-only ESP32 envs (`esp32dev_backuptest`, `esp32dev_diag`,
   row's own note now (`cfg_walk_to`), and passes 11 of 11 with and without
   a card.
 
+### The ETH board: tests read the profile, and the bench (1.2.1-eth.7)
+
+No firmware change. After the merge of dev.13 (1.2.1-eth.6), the checks
+that failed on the ESP32-S3-ETH profile because they asked for the
+reference board's facts read the profile's instead:
+
+- `test_sysop`: DASH's network cell is Ethernet's on the wire (as since
+  1.1.2), so the check looks for `Eth` there and `WiFi` elsewhere.
+- `test_sd` and `test_sd_no_reprobe`: PIN_BOARD gains `sd_tried` (the CS
+  and MOSI the "no card" line names: CS 4, MOSI 6 on this board) and
+  `sd_move` (a CS a hand edit can move the card to: 43 here, since the
+  shipped CS is 4 and the harness's serial bridge holds 16 and 17). Rows
+  without them keep the reference board's values.
+- `test_lights_disk` SKIPs on this profile since dev.13 (no LIGHTS_BOARD
+  row), and the camera's pixel-mode share check SKIPs (eth.5).
+
+On the profile, `test_sysop`, `test_sd`, `test_sd_no_reprobe`,
+`test_lights_disk` and `test_camera`: 43 passed, 0 failed without a card,
+97 passed, 0 failed with one.
+
+On the bench (eth.4 on COM25, wire up, run from the main session with
+Rob's go): a wrong Wi-Fi password failed with reason 15 (4-way handshake
+timeout), and the waits read 30, 60, 120, 240, then 300 s, the cap. The
+router answered every other try with reason 205 (connection failed), which
+got the steady 15 s without resetting the doubling. No STA_CONNECTED came
+before a failure, so the reset at association waits for a completed
+handshake, as designed. The first drops after the reset were reason 203,
+"Association refused temporarily, comeback 1100 TUs" (the access point's
+PMF comeback), then 205. With the wire up the "60 s to join, or back to
+the old one" switch-back was held, as designed, so the board never went
+back to the old network. With the right password back (SHUTDOWN first,
+then RESET), both interfaces rejoined: the wire on .119, Wi-Fi on .122.
+
+### The ETH board: tests only (1.2.1-eth.5)
+
+No firmware change. `tools/harness.sh` keeps a `BBS_HOST_SSID` that is set
+but empty, so `BBS_HOST_SSID= tools/harness.sh --board wseth
+--only=board_wseth` runs the board with its station not joined. The camera
+test's "in pixel mode the drive light may share it" SKIPs, saying why, on
+a profile with no free pin to share (the ESP32-S3-ETH under the harness:
+the serial bridge holds 16 and 17, 21 is the lights' own, 0 is BOOT).
+
+### The ETH board: the re-review of eth.3 (1.2.1-eth.4, ETH 1.0.4)
+
+- The switch back to the last good network gives way to Improv: a trial or
+  a scan started part way through it owns the radio, and the switch no
+  longer sets the station back under the network being provisioned.
+- When the switch runs out of time or the radio refuses it, the board
+  dials again rather than leaving the station idle until a reboot.
+- With `wifi_with_ethernet = no`, a wire that comes back during the switch
+  keeps Wi-Fi standing by: the switch no longer dials past it.
+
+### The ETH board: the code review of eth.2 (1.2.1-eth.3, ETH 1.0.4)
+
+- **The redial waits by reason.** A failure that cannot fix itself (a wrong
+  password, a handshake timing out, a security the access point does not
+  offer) still backs off 30 s, doubling to 5 minutes. An access point that
+  has gone (not found, beacons lost, the AP leaving, a router rebooting) is
+  tried every 15 s, said once on the console, because the sats need the
+  station associated: a 90 s router reboot used to leave Wi-Fi off for
+  about 3.5 minutes. The first drop after a join still redials at once.
+- **The backoff resets at association too**, not only at a new address: a
+  reconnect that keeps its lease never raises one, so the wait crept
+  towards 5 minutes over days of short drops.
+- **The fallback to the last good network waits for the wire properly.**
+  It read the wire's state from the event task, which clears it a pass
+  before the loop notices, so a network still on its trial was given up
+  the moment a cable was pulled. It reads the loop's own state now, and the
+  switch back is made a pass at a time instead of in a loop that could
+  hold every caller for up to 5 s.
+- A redial stamped by the Wi-Fi task while the loop was taking the last
+  one is no longer lost (a compare-and-swap).
+- The first route pick, if the event queue refuses it, is now left to the
+  next address event rather than made on the loop's task, where it could
+  race the event task and leave mDNS answering on the wrong interface.
+
+### The ETH board: the code review of eth.1 (1.2.1-eth.2, ETH 1.0.4)
+
+- **Internal heap for the camera.** With Wi-Fi joined beside the wire a
+  snap still needs 32,256 bytes of internal heap and a 17 KB DMA block.
+  Wi-Fi's static buffers go 10/10 to 6/6, with the block-ack window 6 to
+  match, and mDNS allocates from PSRAM: about 14 KB back, on this board
+  only (sdkconfig.defaults.wseth).
+- **The redial backs off on the wire.** A Wi-Fi network that will not
+  answer used to be redialled every 2-3 s for ever, with a console line and
+  a supplicant round each time. While the wire has an address, the first
+  drop after a join redials at once and each further failure waits: 30 s,
+  doubling to 5 minutes, one line a step. A join resets it; the wire going
+  dials at once. Not during Improv's trial.
+- **No loop stall from the fallback.** Going back to the last good network
+  (`imp::switchTo`) can spin the loop for up to 5 s while the station is
+  connecting. It is not judged while the wire carries the board beside
+  Wi-Fi; when the wire goes, the network gets its minute from then.
+- **mDNS stops answering 0.0.0.0** when the wire loses its address with the
+  cable still in: the wire's answers are off until it has one again.
+- The first route pick, posted to the event loop, is checked, and made
+  directly if the queue refuses it.
+
+Static DRAM off the ELFs, no warnings: ETH 266,400 of 341,760 (75,360
+free), release image 1,518,336; WROOM unchanged from eth.1 (165,680,
+1,273,584). On the bench (COM25), the release image with its network given
+over Improv, a minute after a clean boot with Wi-Fi joined beside the wire:
+internal heap free 63,439, low 41,123, biggest block 31,744, against
+49,815, 27,359 and 24,576 on eth.1's bench image, also joined. With the
+wire alone (no network yet) it read 63,839, 41,751 and 31,744.
+
+### The ETH board: Wi-Fi beside the wire (1.2.1-eth.1, ETH 1.0.4)
+
+Lane C, branch rel-1.2.1c. Built and sized; not yet through the host suite.
+
+- **Wi-Fi joins beside the wire.** With `ethernet = yes` and a network set,
+  the Waveshare ESP32-S3-ETH now joins Wi-Fi as well as the wire, instead of
+  standing Wi-Fi by unjoined. The radio then follows the router's channel,
+  so the link's DISCOVER and pairing work and sats pair on a wired board
+  (Rob: "if both are supported, just keep the connection through wire").
+  `wifi_with_ethernet = no` (CONFIG network's last row, "Wi-Fi too" at 40,
+  "Wi-Fi beside wire" at 80, ETH only, next restart) is the 1.1.2
+  behaviour: Wi-Fi stands by until the wire has no address. A board on
+  `ethernet = no` that came up on the wire for want of a network joins the
+  network Improv gives it too.
+- **The wire stays the callers' interface.** Listeners stay on every
+  interface (INADDR_ANY), so a cable in or out, or Wi-Fi joining or
+  leaving, moves no listener and drops no caller on the other interface;
+  accepted calls answer from the interface their address belongs to (the
+  IDF's source-routing hook). The default route is now set by the board on
+  each change, on the event loop's task: the wire while it has an address,
+  else the station. esp_netif's own choice went by route priority among
+  interfaces that were up, and the wire is up with a link before DHCP
+  answers, so a cable into a dead switch held the default on an interface
+  with no address and NTP, DNS and announce had no route while Wi-Fi was
+  joined. That hole was in 1.1.2's fallback too and is closed for both
+  settings.
+- **mDNS gives out the wire's address.** The mdns component answers on two
+  interfaces of one subnet with both addresses; the station's answers are
+  switched off while the wire has an address and on again (with an
+  announcement) when the wire goes, so `<hostname>.local` sends callers to
+  the wire, and to Wi-Fi only when the wire is down.
+- **SYS shows both interfaces** on the wire: Ethernet and its speed, the
+  Wi-Fi network "beside the wire" (or why not: "no network set", "not
+  joined", or "standby" with `wifi_with_ethernet = no`), the station's
+  signal and channel, the wire's address marked "Ethernet", and the
+  station's own as "Wi-Fi IP". **HARDWARE** lists "Wi-Fi" after Ethernet
+  while the station is joined (the interface, never the network).
+- **SATS and CONFIG sats** drop the "On Ethernet: the link needs Wi-Fi"
+  notice while the station is joined. They keep it, reworded, when it could
+  not join (no network, a wrong password, or Wi-Fi beside the wire turned
+  off): "On Ethernet, but Wi-Fi hasn't joined: sats can't pair. See CONFIG
+  network." (`linkp::onWire` now means the wire is up and the station is
+  not joined.)
+- **ANNOUNCE** says which interface the heartbeats leave by: "Sent from
+  192.168.0.40, Ethernet". The directory lists the address it hears, which
+  is the wire's router while the wire is up.
+- **The ETH board's camera tests run on the host**: `wseth` is in
+  testclient's `CAM_BOARD` (OV5640, up to uxga, xga as shipped, flash pin
+  16: the board has no flash LED, and 16 is a header pin the schematic
+  leaves free). `test_board_wseth` checks both interfaces in SYS and
+  HARDWARE, and that SATS and CONFIG sats are quiet while Wi-Fi is joined
+  (the harness's `BBS_HOST_SSID`) and say so when it is not.
+
+Static DRAM off the ELFs, no warnings: ETH (`ws_s3eth` and `_release`)
+266,392 of 341,760 (75,368 free, +32 on dev.10: `NetInfo::staIp` in SYS's
+snapshot and the route's few statics), release image 1,517,776 (+1,568).
+WROOM (`esp32dev`) 165,680 (15,056 free, 8 down: the one-character-shorter
+version string), image 1,273,584 (64 down: that and satwords' shorter
+lines). The other boards were not built in the lane: the rest of the
+change is `BBS_HAS_ETH` only, so they should move the same way and no
+further.
+
+On the bench (COM25, a bench build with the Wi-Fi fallback compiled in):
+the board joined both, `Ethernet 100 Mb/s` and `Wi-Fi <network> beside the
+wire` on channel 1 at -49 dBm, the wire's address given as the board's;
+telnet answered on the wire's address and on the Wi-Fi one; SATS no longer
+says sats can't pair. Built without a network (the plain image), SYS said
+`Wi-Fi - no network set` and SATS gave the reworded notice. Idle, no slow
+pass.
+
 ### Tests only (1.2.1-dev.13)
 
 - **The 4.3B's 60 failures in its login and shell groups were the tests'**,

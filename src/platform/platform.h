@@ -233,9 +233,12 @@ struct NetInfo {
     bool    valid    = false;
 #ifdef BBS_HAS_ETH
     // A board with a wired port (1.1.2). onEth: Ethernet has an address and
-    // is the interface in use, and ip is its address; Wi-Fi then stands by
-    // unjoined, so ssid and the signal are empty. ethLink: the cable has a
-    // link, whether or not DHCP has answered yet.
+    // is the interface in use, and ip is its address. Wi-Fi then joins
+    // beside it (1.2.1, wifi_with_ethernet) or stands by unjoined: valid,
+    // ssid and the signal are the station's either way, and staIp its own
+    // address while valid. ethLink: the cable has a link, whether or not
+    // DHCP has answered yet.
+    char     staIp[16] = {};
     bool     onEth   = false;
     bool     ethLink = false;
     bool     ethFull = false;
