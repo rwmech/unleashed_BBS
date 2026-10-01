@@ -578,6 +578,15 @@ void keyValue(Ctx& c, const char* key, char* val) {
 #ifdef BBS_HAS_ETH
     else if (!strcmp(key, "ethernet"))              yesNo(c, key, val, g.ethernet);
 #endif
+#ifdef BBS_HAS_LCD
+    // A new photo on the panel (1.2.1, CONFIG photos): display boards only.
+    // Elsewhere the lines are unknown keys, logged and ignored, so a file
+    // restored from a display board to a WROOM is read whole.
+    else if (!strcmp(key, "photos_show"))           yesNo(c, key, val, g.photosShow);
+    else if (!strcmp(key, "photos_show_snaps"))     yesNo(c, key, val, g.photosShowSnaps);
+    else if (!strcmp(key, "photos_show_motion"))    yesNo(c, key, val, g.photosShowMotion);
+    else if (!strcmp(key, "photos_show_tl"))        yesNo(c, key, val, g.photosShowTl);
+#endif
     else if (!strcmp(key, "silent_from") || !strcmp(key, "silent_until")) {
         // A form is told (a writer's trial); a file is read as no time and
         // the console says so, for the reason crossCheck gives below.

@@ -8535,6 +8535,211 @@ def test_board_ws2():
     return ok
 
 
+def _photo_cfg(tmp, top=None, sections=None):
+    """The copy's system.cfg: top keys set (None removes the line) and
+    whole sections rewritten (an empty dict removes the section)."""
+    path = tmp / "data" / "user" / "system.cfg"
+    lines = path.read_text().splitlines()
+    for section, keys in (sections or {}).items():
+        out, skip = [], False
+        for line in lines:
+            t = line.strip()
+            if t.startswith("["):
+                skip = t.lower() == "[" + section + "]"
+            if not skip:
+                out.append(line)
+        if keys:
+            out.append("[" + section + "]")
+            out += [f"{k} = {v}" for k, v in keys.items()]
+        lines = out
+    if top:
+        cut = next((i for i, ln in enumerate(lines) if ln.strip().startswith("[")), len(lines))
+        head = [ln for ln in lines[:cut] if ln.split("=", 1)[0].strip() not in top]
+        head += [f"{k} = {v}" for k, v in top.items() if v is not None]
+        lines = head + lines[cut:]
+    path.write_text("\n".join(lines) + "\n")
+
+
+def _copy_text(tmp):
+    """The copy's console as it stands now."""
+    p = tmp / "host.log"
+    return p.read_text(errors="replace") if p.exists() else ""
+
+
+def _photo_line(s):
+    """PANEL's new-photo line (1.2.1) and the whole read."""
+    p = panel_read(s)
+    m = re.search(rb"Photos (?:on|off)[^\r\n]*", p)
+    return (m.group(0).decode() if m else ""), p
+
+
+def _photo_wait(s, want, secs):
+    """PANEL's photo line once it says want, or the last one read."""
+    end = time.time() + secs
+    line = ""
+    while True:
+        line, _ = _photo_line(s)
+        if want in line or time.time() > end:
+            return line
+        time.sleep(0.3)
+
+
+def _photo_snap(c):
+    """A snap from caller c, the download question answered no."""
+    got = snap(c)
+    if b"Download it now?" in got:
+        c.send(b"n")
+        c.wait_for(b"Main", 4)
+    drain(c)
+    return got
+
+
+def test_panel_photo_show():
+    """A new photo on the panel (1.2.1, lane D; Rob: "Snap happens, show pic
+    on screen for 1 minute, if a new one comes in update, after 1 minute
+    stop"), on the Touch-LCD-2 profile, the one display board with a camera
+    of its own, read off PANEL's photo line. A copy of the board whose stub
+    camera gives a real XGA JPEG (BBS_CAM_HOST_JPEG): a snap shows, decoded
+    at 1/4 into 230 x 172; a newer one restarts the minute; a minute after
+    the last the status comes back; a tap ends a show; a ring ends one and
+    has the glass; silent shows nothing and saves nothing up; photos_show
+    off shows nothing; a timelapse frame does not show as shipped; a CONFIG
+    panel save ends a show. Every wait is the board's own clock
+    (board_secs), so it runs on the fast clock too."""
+    print("The panel: a new photo for a minute")
+    if HOST_BOARD != "ws2" or not PASSWORD:
+        print("  SKIP  needs tools/harness.sh --board ws2")
+        return True
+    import shutil
+    import tempfile
+    card = pathlib.Path(tempfile.mkdtemp(prefix="bbs-photocard-"))
+    tmp = copy_data()
+    _photo_cfg(tmp, top={"photos_per_hour": "20", "photos_per_day": "20", "photos_show": None,
+                         "photos_show_snaps": None, "photos_show_motion": None, "photos_show_tl": None,
+                         "silent": None},
+               sections={"plugin:camera": {"enabled": "yes", "snap": "users"}, "plugin:panel": {}})
+    port = PORT + 3930
+    jpeg = ROOT / "host" / "photos" / "xga_420.jpg"
+    proc = start_copy(tmp, (str(port),), {"BBS_SD_DIR": str(card), "BBS_CAM_HOST_JPEG": str(jpeg)})
+    ok = True
+    s = c = None
+    try:
+        copy_log(tmp, f"listening on {port},")
+        s, on = copy_sysop("PhotoDesk", port)
+        ok &= check("the sysop on the copy", on)
+        c = ansi_login("PhotoCam", port=port)
+        time.sleep(board_secs(2))                        # the camera's look for its sensor
+        line, _ = _photo_line(s)
+        ok &= check("PANEL: photos on as shipped, snaps and motion, none shown yet",
+                    line == "Photos on, snaps motion: 0 shown")
+
+        # A snap shows, decoded at 1/4 into the Touch-LCD-2's 230 x 172.
+        got = _photo_snap(c)
+        ok &= check("the caller's snap is taken", b"Download it now?" in got or b"kept in the Photos area" in got)
+        line = _photo_wait(s, "showing", board_secs(10))
+        ok &= check("and shows on the panel", "showing" in line)
+        _, p = _photo_line(s)
+        ok &= check("decoded at 1/4", b"Last photo 1024x768 at 1/4" in p)
+        log = copy_log(tmp, "panel: photo 1024x768 decoded at 1/4 into 230x172", 4)
+        ok &= check("the console says the size, the scale and the PSRAM",
+                    re.search(r"panel: photo 1024x768 decoded at 1/4 into 230x172 in \d+ ms, \d+ bytes of PSRAM", log)
+                    is not None)
+
+        # A newer photo restarts the minute.
+        time.sleep(board_secs(40))
+        _photo_snap(c)
+        time.sleep(board_secs(35))                       # 75 s after the first, 35 after the second
+        line, _ = _photo_line(s)
+        ok &= check("a newer photo restarts the minute: still showing past the first one's", "showing" in line)
+        line = _photo_wait(s, "2 shown", board_secs(45))
+        ok &= check("a minute after the last, the status is back", line.endswith(": 2 shown"))
+        _, p = _photo_line(s)
+        ok &= check("and its fields with it", re.search(rb"(?m)^\s*Callers \d+/\d+\s*$", p) is not None)
+
+        # A tap ends a show early.
+        _photo_snap(c)
+        _photo_wait(s, "showing", board_secs(10))
+        s.buf.clear()
+        s.send(b"panel tap\r")
+        s.wait_for(b"Tapped", 4)
+        line = _photo_wait(s, "3 shown", board_secs(3))
+        ok &= check("a tap ends the show at once", line.endswith(": 3 shown"))
+
+        # A ring ends a show and has the glass.
+        _photo_snap(c)
+        _photo_wait(s, "showing", board_secs(10))
+        drain(c)
+        c.buf.clear()
+        s.buf.clear()
+        c.send(b"o photo test\r")
+        c.wait_for(b"Ringing the sysop", 4)
+        asked = s.wait_for(b"[Q] Later: ", 6)
+        s.pump(0.3)
+        s.send(b"q")
+        s.wait_for(b"Still ringing", 4)
+        line = _photo_wait(s, "4 shown", board_secs(3))
+        _, p = _photo_line(s)
+        ok &= check("a ring ends the show", asked and line.endswith(": 4 shown"))
+        ok &= check("and the header says who is ringing", re.search(rb"PhotoCam is ringing", p) is not None)
+        c.send(b" ")                                     # any key stops a ring
+        c.wait_for(b"Main", 4)
+        drain(c)
+
+        # Silent: nothing shows, and nothing is saved up for when it ends.
+        _photo_cfg(tmp, top={"silent": "yes"})
+        cfg_reload(s)
+        _photo_snap(c)
+        time.sleep(board_secs(4))
+        line, p = _photo_line(s)
+        ok &= check("silent: no photo shows", "showing" not in line and b"silent" in p)
+        _photo_cfg(tmp, top={"silent": None})
+        cfg_reload(s)
+        time.sleep(board_secs(2))
+        line, _ = _photo_line(s)
+        ok &= check("and silent ended, the photo taken meanwhile is not shown", line.endswith(": 4 shown"))
+
+        # photos_show = no: the sysop's switch.
+        _photo_cfg(tmp, top={"photos_show": "no"})
+        cfg_reload(s)
+        line, _ = _photo_line(s)
+        ok &= check("photos_show = no: PANEL says Photos off", line == "Photos off")
+        before = _copy_text(tmp).count("decoded at")
+        _photo_snap(c)
+        time.sleep(board_secs(4))
+        line, _ = _photo_line(s)
+        ok &= check("and a snap is not shown or decoded",
+                    line == "Photos off" and _copy_text(tmp).count("decoded at") == before)
+        _photo_cfg(tmp, top={"photos_show": None})
+        cfg_reload(s)
+
+        # A timelapse frame does not show as shipped.
+        _photo_cfg(tmp, sections={"plugin:camera": {"enabled": "yes", "snap": "users", "tl_min": "0", "tl_sec": "10"}})
+        cfg_reload(s)
+        log = copy_log(tmp, "timelapse/TL-", board_secs(60))
+        ok &= check("a timelapse frame is filed", "timelapse/TL-" in log)
+        time.sleep(board_secs(3))
+        line, _ = _photo_line(s)
+        ok &= check("and not shown: timelapse is off as shipped", "showing" not in line and line.endswith(": 4 shown"))
+        _photo_cfg(tmp, sections={"plugin:camera": {"enabled": "yes", "snap": "users"}})
+        cfg_reload(s)
+
+        # A CONFIG panel save ends a show.
+        time.sleep(board_secs(2))
+        _photo_snap(c)
+        _photo_wait(s, "showing", board_secs(10))
+        _photo_cfg(tmp, sections={"plugin:panel": {"backlight": "61"}})
+        cfg_reload(s)
+        line = _photo_wait(s, "shown", board_secs(3))
+        ok &= check("a CONFIG panel save ends the show", "showing" not in line and line.endswith(" shown"))
+    finally:
+        for x in (c, s):
+            if x:
+                x.close()
+        stop_copy(proc, tmp)
+        shutil.rmtree(card, ignore_errors=True)
+    return ok
+
+
 def test_board_wseth():
     """The Waveshare ESP32-S3-ETH profile on the host (ETH 1.0.0, 1.1.2):
     Ethernet first, and the pins the board owns.
@@ -19751,6 +19956,7 @@ ORDER_NAMES = [
     "test_ssh_dedicated_port", "test_ssh_socket_budget",
     "test_board_fncam", "test_board_espcam", "test_board_ws43b", "test_board_ws2", "test_board_wseth",
     "test_board_mf35", "test_board_mf35v2",
+    "test_panel_photo_show",
     "test_camera",
     "test_camera_registry",
     "test_camera_failed_start",
@@ -22008,7 +22214,7 @@ PROFILE_TESTS = {
                "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
                "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
-    "ws2":    ["test_board_ws2",
+    "ws2":    ["test_board_ws2", "test_panel_photo_show",
                "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
                "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],

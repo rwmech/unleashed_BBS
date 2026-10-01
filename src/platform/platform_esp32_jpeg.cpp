@@ -87,8 +87,9 @@ UINT decOut(JDEC* jd, void* bitmap, JRECT* r) {
 
 }   // namespace
 
-int jpegDecode(JpegRead rd, JpegPut put, void* ctx, uint16_t& width, uint16_t& height) {
+int jpegDecode(JpegRead rd, JpegPut put, void* ctx, uint16_t& width, uint16_t& height, uint8_t scale) {
     width = height = 0;
+    if (scale > 3) return JDR_PAR;                 // TJpgDec's own answer to it
     void* pool = heap_caps_malloc(kPool, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     JDEC* jd   = static_cast<JDEC*>(heap_caps_malloc(sizeof(JDEC), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     int rc = JDR_MEM1;
@@ -98,7 +99,7 @@ int jpegDecode(JpegRead rd, JpegPut put, void* ctx, uint16_t& width, uint16_t& h
         if (rc == JDR_OK) {
             width  = static_cast<uint16_t>(jd->width);
             height = static_cast<uint16_t>(jd->height);
-            rc = jd_decomp(jd, decOut, 0);
+            rc = jd_decomp(jd, decOut, scale);     // the ROM's build descales (JD_USE_SCALE 1)
         }
     }
     heap_caps_free(jd);

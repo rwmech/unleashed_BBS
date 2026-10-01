@@ -159,6 +159,56 @@ uint16_t callerSnaps(const char*& who) {
     return n;
 }
 
+#ifdef BBS_HAS_LCD
+namespace {
+// The photo just filed (photos.h, Filed): written by whichever task files
+// it (the runner, for every camera since 1.1.2), read by the loop, the
+// record under the runner's lock and its serial an atomic, so the loop's
+// every-tick look is one load and the copy is made only when it moved.
+Filed                 g_filed;
+std::atomic<uint16_t> g_filedSerial{ 0 };
+
+// filedNote: the record for a picture just filed as name (under Photos).
+// Its kind from what the filing said: a caller's line ("Taken by"), else
+// its folder. Built outside the lock; only the copy is inside it.
+void filedNote(const Writer& w, const char* name, const char* desc) {
+    Filed f;
+    static const char kBy[] = "Taken by ";
+    const char* slash = strchr(name, '/');
+    char sub[16] = "";
+    if (slash) snprintf(sub, sizeof(sub), "%.*s", static_cast<int>(slash - name < 15 ? slash - name : 15), name);
+    if (desc && !strncmp(desc, kBy, sizeof(kBy) - 1)) {
+        f.kind = FILED_SNAP;
+        const char* h = desc + sizeof(kBy) - 1;
+        if (*h == '*') ++h;                    // a guest: the handle, as callerSnaps keeps it
+        snprintf(f.who, sizeof(f.who), "%.*s", BBS_USER_MAX, h);
+    } else if (slash && !strcasecmp(sub, camrules::kTlFolder)) {
+        f.kind = FILED_TIMELAPSE;
+    } else if (slash && !strcasecmp(sub, camrules::kMotionFolder)) {
+        f.kind = FILED_MOTION;
+    }
+    const size_t tl = strlen(w.tmp), kl = strlen(camrules::kTmpName);
+    f.builtIn = tl >= kl && !strcmp(w.tmp + tl - kl, camrules::kTmpName);
+    snprintf(f.rel, sizeof(f.rel), "%s", name);
+    if (w.camera) snprintf(f.camera, sizeof(f.camera), "%.16s", w.camera);
+    plat::runLock();                           // a copy and a count, nothing more
+    f.serial = static_cast<uint16_t>(g_filed.serial + 1u);
+    if (!f.serial) f.serial = 1;               // 0 means none
+    g_filed = f;
+    g_filedSerial.store(f.serial);
+    plat::runUnlock();
+}
+}  // namespace
+
+uint16_t filedSerial() { return g_filedSerial.load(); }
+
+void lastFiled(Filed& out) {
+    plat::runLock();
+    out = g_filed;
+    plat::runUnlock();
+}
+#endif
+
 namespace {
 bool fileIn(Writer& w, char* rel, size_t cap, const char* desc, uint8_t later);
 void justFiled();                         // a picture went in: a prune, a little after
@@ -259,6 +309,9 @@ bool fileIn(Writer& w, char* rel, size_t cap, const char* desc, uint8_t later) {
     }
     justFiled();                                     // one more picture: retention, for every camera
     if (desc && *desc) snapFiled(desc);              // a caller's: the panel's recent list
+#ifdef BBS_HAS_LCD
+    filedNote(w, name, desc);                        // the panel's new-photo show (1.2.1)
+#endif
     if (strcmp(name, rel)) snprintf(rel, cap, "%s", name);
     w.tmp[0] = '\0';
     // Its FILES.BBS line is asked of the file areas, that file's one writer

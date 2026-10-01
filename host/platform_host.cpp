@@ -991,6 +991,26 @@ bool camGrab(const uint8_t*& buf, size_t& len, uint16_t& w, uint16_t& h) {
     len = sizeof(kFakeJpeg);
     w = 800;
     h = 600;
+    // BBS_CAM_HOST_JPEG=<file> (1.2.1): a real JPEG as the frame, so a snap
+    // files a picture the panel's new-photo show can decode (the made-up
+    // frame above has no picture in it). Read once, kept for the run.
+    static std::string s_real;
+    static bool s_tried = false;
+    if (!s_tried) {
+        s_tried = true;
+        if (const char* p = getenv("BBS_CAM_HOST_JPEG")) {
+            if (FILE* f = fopen(p, "rb")) {
+                char chunk[4096];
+                size_t n;
+                while ((n = fread(chunk, 1, sizeof(chunk), f)) > 0) s_real.append(chunk, n);
+                fclose(f);
+            }
+        }
+    }
+    if (!s_real.empty()) {
+        buf = reinterpret_cast<const uint8_t*>(s_real.data());
+        len = s_real.size();
+    }
     return true;
 }
 

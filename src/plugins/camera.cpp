@@ -618,6 +618,9 @@ void save(Job& j, const char* photos, const uint8_t* jpg, size_t len) {
 
     photos::Writer pw;
     if (!photos::open(pw, camrules::kTmpName)) { fail(j, "the card would not take the photo"); return; }
+#ifdef BBS_HAS_LCD
+    pw.camera = kName;                                 // the panel's caption names it (1.2.1)
+#endif
     FILE* fp = pw.f;
     FileOut fo{ fp, 0, true };
     bool ok = false;
