@@ -2,8 +2,9 @@
 # µnleashed BBS: what GitHub's "New issue" page offers beside the two forms.
 # Copyright 2026 - Robert Mech
 # Questions go to Discussions or the guides, so the issue list stays bugs
-# and ideas. Blank issues are off: the forms ask for what we need to help.
-blank_issues_enabled: false
+# and ideas. Blank issues are on as well (Rob, 2026-10-01), for anything the
+# forms don't fit; the forms still ask for what we need to help.
+blank_issues_enabled: true
 contact_links:
   - name: Ask a question
     url: https://github.com/rwmech/unleashed_BBS/discussions
