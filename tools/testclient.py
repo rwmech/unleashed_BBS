@@ -8229,8 +8229,10 @@ def test_board_mf35():
 def test_board_g4848():
     """The Guition ESP32-4848S040 profile on the host (G4848 1.0.0, on 1.2.0,
     with SSH, whose own tests run in the same lane): its defaults, the pins it
-    owns, and the panel: a 480 x 480 ST7701S on the RGB bus drawn with the big
-    glass's 480 x 320 landscape layout, touch polled as on the 4.3B.
+    owns, and the panel: a 480 x 480 ST7701S on the RGB bus drawn whole in
+    the square layout (internal/tty-ux-panel-g4848-2026-10-01.md): the node
+    board across the width with LEFT, the deck under it, the chip's
+    temperature, a light bar at the foot; touch polled as on the 4.3B.
     SKIPs on the reference board; tools/harness.sh --board g4848
     --only=board_g4848 runs it. A tap is a file called "tap" in the data
     directory (host/platform_host.cpp, touchPoll)."""
@@ -8250,8 +8252,10 @@ def test_board_g4848():
                board_name("g4848").encode() in hw and f"({tag} {ver})".encode() in hw)
 
     p = panel_read(s)
-    ok &= check("PANEL: lit, the 480 x 480 ST7701S drawn at 480 x 320",
-                b"lit" in p and b"ST7701S 480x480, drawn 480x320" in p)
+    ok &= check("PANEL: lit, the 480 x 480 ST7701S drawn whole",
+                b"lit" in p and b"ST7701S 480x480, drawn 480x480" in p)
+    ok &= check("the node board's heading", re.search(rb"(?m)^\s*Callers \d+/\d+\s*$", p) is not None)
+    ok &= check("the chip's temperature as a cell", re.search(rb"(?m)^\s*\d+C\s*$", p) is not None)
     ok &= check("touch quiet, and no sleep as shipped", b"Touch quiet, 0 taps, never sleeps" in p)
     ok &= check("the big glass's node board: lines 1 to 10, each free",
                 all(re.search(rb"(?m)^\s*" + str(k).encode() + rb" free\s*$", p) for k in range(1, 11)))
@@ -8268,15 +8272,50 @@ def test_board_g4848():
     s.buf.clear()
     s.send(b"panel shot\r")
     s.wait_for(b"Written", 4)
-    W, H = 480, 320
+    W, H = 480, 480
     head = f"P6\n{W} {H}\n255\n".encode()
     data = shot.read_bytes() if shot.exists() else b""
-    ok &= check("PANEL SHOT writes the 480 x 320 picture",
+    ok &= check("PANEL SHOT writes the whole 480 x 480 glass",
                 data.startswith(head) and len(data) == len(head) + W * H * 3)
     if len(data) == len(head) + W * H * 3:
         px = lambda x, y: tuple(data[len(head) + (y * W + x) * 3:len(head) + (y * W + x) * 3 + 3])
         ok &= check("the header's bar in its blue, right across", px(1, 1) == (24, 44, 120) and
                     px(W - 2, 1) == (24, 44, 120))
+        ok &= check("the deck's rule at y 290 and the foot's at y 440",
+                    px(240, 290) == (40, 44, 56) and px(240, 440) == (40, 44, 56))
+        ok &= check("the deck's column rule at x 240", px(240, 350) == (40, 44, 56))
+        ok &= check("and the glass black under the foot", px(240, 470) == (0, 0, 0))
+
+    # A ring takes the whole header (the banner): PANEL says so, as the glass
+    # does, first; and when it ends the header's own fields come back.
+    def fields(p):
+        text = p.decode("latin-1").splitlines()
+        at = next((i for i, ln in enumerate(text) if "bands sent" in ln), None)
+        return [ln.strip() for ln in text[at + 1:]] if at is not None else []
+
+    b = ansi_login("PanelCaller")
+    time.sleep(1.0)
+    drain(b)
+    b.buf.clear()
+    s.buf.clear()
+    b.send(b"o panel test\r")
+    b.wait_for(b"Ringing the sysop", 4)
+    asked = s.wait_for(b"[Q] Later: ", 6)
+    s.pump(0.3)
+    s.send(b"q")
+    s.wait_for(b"Still ringing", 4)
+    s.pump(0.6)
+    fr = fields(panel_read(s))
+    ok &= check("a ring: the banner says who is ringing, the verb kept whole",
+                asked and bool(fr) and re.match(r"PanelCall\w* is ringing$", fr[0]) is not None)
+    b.send(b" ")                                   # any key stops a ring
+    b.wait_for(b"Main", 4)
+    time.sleep(1.5)
+    fr = fields(panel_read(s))
+    ok &= check("when it ends the header's own fields come back",
+                bool(fr) and "is ringing" not in fr[0] and len(fr) > 2)
+    b.close()
+    time.sleep(1.0)
 
     # CONFIG panel: the RGB board's page, the light a dimmer here.
     ok &= check("CONFIG has a panel page", cfg_open(s, b"panel", b"Driver"))

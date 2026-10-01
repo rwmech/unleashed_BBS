@@ -184,6 +184,17 @@ bool builtIn(const char* s) {
     return !s || !*s || detail::ieq(s, kBuiltIn);
 }
 
+#if BBS_PANEL_SQUARE
+// fitsGlass: a skin drawn for w x h goes on a gw x gh glass: its own size,
+// or a 480 x 320 skin framed on the 480 x 480 square, 80 rows down, so the
+// stock skins stay offered there (internal/tty-ux-panel-g4848-2026-10-01.md,
+// "Skins on the square").
+bool fitsGlass(uint16_t w, uint16_t h, uint16_t gw, uint16_t gh) {
+    return (w == gw && h == gh) || (gw == 480 && gh == 480 && w == 480 && h == 320);
+}
+constexpr uint16_t kFrameY = 80;           // a framed skin's first row on the glass
+#endif
+
 void setWhy(const char* fmt, const char* a, const char* b) {
     snprintf(g_why, sizeof(g_why), fmt, a, b);
 }
@@ -287,17 +298,31 @@ bool loadSkin(Job& j) {
         free(m);
         return m ? jobFail(j, "skin.txt %.70s", why) : jobFail(j, "out of memory");
     }
+#if BBS_PANEL_SQUARE
+    if (!fitsGlass(m->w, m->h, j.w, j.h)) {
+#else
     if (m->w != j.w || m->h != j.h) {
+#endif
         char was[16], is[16];
         snprintf(was, sizeof(was), "%ux%u", static_cast<unsigned>(m->w), static_cast<unsigned>(m->h));
         snprintf(is, sizeof(is), "%ux%u", static_cast<unsigned>(j.w), static_cast<unsigned>(j.h));
         free(m);
         return jobFail(j, "drawn for a %s panel; this one is %s", was, is);
     }
+    // The skin's own size from here on: the glass's, or on the square a
+    // 480 x 320 skin's, which is framed on it.
+#if BBS_PANEL_SQUARE
+    const uint16_t skinW = m->w, skinH = m->h;
+#define SKW skinW
+#define SKH skinH
+#else
+#define SKW j.w
+#define SKH j.h
+#endif
 
     // The block: the manifest, the background, then each LED's weights.
     const size_t head = (sizeof(Manifest) + 7u) & ~static_cast<size_t>(7u);
-    const size_t bgBytes = static_cast<size_t>(j.w) * j.h * 2u;
+    const size_t bgBytes = static_cast<size_t>(SKW) * SKH * 2u;
     size_t mapBytes = 0;
     if (m->drive.on)    mapBytes += ledMapBytes(m->drive);
     if (m->activity.on) mapBytes += ledMapBytes(m->activity);
@@ -311,8 +336,8 @@ bool loadSkin(Job& j) {
     r.block = block;
     r.m     = reinterpret_cast<const Manifest*>(block);
     r.bg    = reinterpret_cast<uint16_t*>(block + head);
-    r.w     = j.w;
-    r.h     = j.h;
+    r.w     = SKW;
+    r.h     = SKH;
     snprintf(r.name, sizeof(r.name), "%.24s", j.name);
     const Manifest& mm = *r.m;
     const Led* leds[kSceneLeds] = {};
@@ -332,18 +357,18 @@ bool loadSkin(Job& j) {
         release(r);
         return jobFail(j, "background.jpg: %.62s", why);
     }
-    if (info.w != j.w || info.h != j.h) {
+    if (info.w != SKW || info.h != SKH) {
         char was[16], is[16];
         snprintf(was, sizeof(was), "%ux%u", static_cast<unsigned>(info.w), static_cast<unsigned>(info.h));
-        snprintf(is, sizeof(is), "%ux%u", static_cast<unsigned>(j.w), static_cast<unsigned>(j.h));
+        snprintf(is, sizeof(is), "%ux%u", static_cast<unsigned>(SKW), static_cast<unsigned>(SKH));
         fclose(f);
         release(r);
         return jobFail(j, "background.jpg is %s; the panel is %s", was, is);
     }
     rewind(f);
     fr.bg = r.bg;
-    fr.w  = j.w;
-    fr.h  = j.h;
+    fr.w  = SKW;
+    fr.h  = SKH;
     uint16_t dw = 0, dh = 0;
     const int rc = plat::jpegDecode(fileRead, putRows, &fr, dw, dh);
     fclose(f);
@@ -354,7 +379,7 @@ bool loadSkin(Job& j) {
     }
     // The decoder's own reading of the size, held to the check's: a picture
     // it reads as smaller would leave part of the block never written.
-    if (dw != j.w || dh != j.h) {
+    if (dw != SKW || dh != SKH) {
         release(r);
         return jobFail(j, "background.jpg: the decoder reads another size than its header");
     }
@@ -370,6 +395,8 @@ bool loadSkin(Job& j) {
     }
     return true;
 }
+#undef SKW
+#undef SKH
 
 // scanSkins: the folders under skins/ that hold a skin.txt drawn for this
 // panel's size, in name order, into j.found.
@@ -401,7 +428,11 @@ void scanSkins(Job& j) {
         char pic[160];
         if (!skinPath(j.base, name, false, pic, sizeof(pic))) continue;
         char why[kWhyMax];
+#if BBS_PANEL_SQUARE
+        if (!parse(txt, len, *m, why, sizeof(why)) || !fitsGlass(m->w, m->h, j.w, j.h)) continue;
+#else
         if (!parse(txt, len, *m, why, sizeof(why)) || m->w != j.w || m->h != j.h) continue;
+#endif
         // In name order, as CONFIG steps through them.
         uint8_t at = n;
         while (at > 0 && strcmp(names[at - 1], name) > 0) {
@@ -447,8 +478,13 @@ void jobMain(runner::Job&) {
 // ---------------------------------------------------------------------------
 bool needLoad() {
     if (!g_up || builtIn(g_want)) return false;
+#if BBS_PANEL_SQUARE
+    if (g_cur.block && !g_curStale && !strcmp(g_cur.name, g_want) && fitsGlass(g_cur.w, g_cur.h, g_w, g_h))
+        return false;
+#else
     if (g_cur.block && !g_curStale && !strcmp(g_cur.name, g_want) && g_cur.w == g_w && g_cur.h == g_h)
         return false;
+#endif
     if (!strcmp(g_failName, g_want) && g_failW == g_w && g_failH == g_h && g_failGen == g_cardGen) return false;
     return true;
 }
@@ -700,7 +736,11 @@ void skin::want(const char* name, uint16_t w, uint16_t h) {
         release(g_cur);                      // the loop's alone: a job fills its own
         g_phase = PH_STATUS;
         if (validName(name) || builtIn(name)) g_why[0] = '\0';
+#if BBS_PANEL_SQUARE
+    } else if (g_cur.block && fitsGlass(g_cur.w, g_cur.h, w, h)) {
+#else
     } else if (g_cur.block && g_cur.w == w && g_cur.h == h) {
+#endif
         // The same skin: back from its copy. Another: the one loaded goes
         // back on the glass while the new one loads, and the new one takes
         // over when it is ready (startJob, pollJob).
@@ -730,11 +770,12 @@ void skin::redraw() {
 
 skin::Figures& skin::figures() { return g_fig; }
 
-bool skin::tick(panelgfx::Canvas& c, panelgfx::Dirty& d, uint32_t now, bool fresh) {
-    pollJob();
-    pollCard();
-    reconcile();
-    if (g_phase == PH_STATUS || !g_cur.block) return false;
+// drawSkin: the loaded skin on canvas c, its changes queued on d: the copy
+// of its background, then its widgets and LEDs. skin::tick's work after the
+// job's polling, called with the glass, or on the square with the framed
+// part of it (which must not poll the job again: a skin of another size
+// landing between two polls would be dropped as "the glass changed").
+static bool drawSkin(panelgfx::Canvas& c, panelgfx::Dirty& d, uint32_t now, bool fresh) {
     if (c.w != g_cur.w || c.h != g_cur.h || !c.px) {         // the glass changed under it
         release(g_cur);
         g_phase = PH_STATUS;
@@ -776,6 +817,52 @@ bool skin::tick(panelgfx::Canvas& c, panelgfx::Dirty& d, uint32_t now, bool fres
     return true;
 }
 
+
+bool skin::tick(panelgfx::Canvas& c, panelgfx::Dirty& d, uint32_t now, bool fresh) {
+    pollJob();
+    pollCard();
+    reconcile();
+    if (g_phase == PH_STATUS || !g_cur.block) return false;
+#if BBS_PANEL_SQUARE
+    // A 480 x 320 skin on the square, framed: drawn into the glass's rows 80
+    // to 399 as a canvas of its own size (the same stride, so a pointer 80
+    // rows on), its queue moved 80 rows down into the panel's. When its copy
+    // starts, the mat: rows 0 to 79 and 400 to 479 black, with a 1 px rule at
+    // 79 and at 400. No status parts in the bands: a skin is a whole picture.
+    if (c.px && c.w == g_cur.w && c.h == 480 && g_cur.h == 320) {
+        static panelgfx::Dirty framed;
+        framed.clear();
+        if (g_phase == PH_COPY && !g_copyRow) {
+            panelgfx::fill(c, panelgfx::R(0, 0, c.w, kFrameY), panelgfx::tok::kBg);
+            panelgfx::fill(c, panelgfx::R(0, kFrameY + 320, c.w, c.h - kFrameY - 320), panelgfx::tok::kBg);
+            panelgfx::fill(c, panelgfx::R(0, kFrameY - 1, c.w, 1), panelgfx::tok::kRule);
+            panelgfx::fill(c, panelgfx::R(0, kFrameY + 320, c.w, 1), panelgfx::tok::kRule);
+            d.clear();                                       // the status skin's queue: overwritten
+        }
+        const bool copying = g_phase == PH_COPY;
+        panelgfx::Canvas sub;
+        sub.px = c.px + static_cast<size_t>(kFrameY) * c.w;
+        sub.w  = c.w;
+        sub.h  = 320;
+        const bool owns = drawSkin(sub, framed, now, fresh);
+        if (copying && g_phase == PH_ACTIVE) {
+            // The copy is done: the whole glass, mat and picture, as one
+            // rectangle, as the unframed copy queues it, so the panel lights
+            // the glass only once all of it has been sent (flush()).
+            d.clear();
+            d.add(panelgfx::R(0, 0, c.w, c.h));
+            return owns;
+        }
+        for (uint8_t i = 0; i < framed.n; ++i) {
+            const panelgfx::Rect& r = framed.q[i];
+            d.add(panelgfx::R(r.x, r.y + kFrameY, r.w, r.h));
+        }
+        return owns;
+    }
+#endif
+    return drawSkin(c, d, now, fresh);
+}
+
 bool skin::live() { return g_phase != PH_STATUS && g_cur.block; }
 
 const char* skin::title() {
@@ -805,6 +892,10 @@ void skin::uploaded(const char* file) {
 }
 
 bool skin::copying() { return g_phase == PH_COPY && g_cur.block; }
+
+#if BBS_PANEL_SQUARE
+bool skin::framed() { return live() && g_cur.h != g_h; }
+#endif
 
 const char* skin::choices() { return g_choices; }
 

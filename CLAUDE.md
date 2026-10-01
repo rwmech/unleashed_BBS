@@ -890,8 +890,58 @@ this tree.
     SPI init; not bent for one card).
   - Static DRAM 268,160 of 341,760 (73,600 free); image 1,519,120 (the
     LEDC fade driver is 504 of DRAM and about 4 KB of flash).
-  - The square layout waits for a tty-ux spec for 480 x 480 (Rob,
-    2026-10-01: "widescreen with black bars above and below").
+  - **The square layout (G4848 1.0.1, MF35 1.1.4), built to
+    internal/tty-ux-panel-g4848-2026-10-01.md steps 1 to 6** after Rob saw
+    "widescreen with black bars above and below". `BBS_PANEL_SQUARE`
+    (board.h, any 480 x 480 big glass) gates everything new, so other
+    boards compile as they did: the 4.3B's objects compare identical with
+    debug info stripped (`release-prep/g4848/objcmp3.py`; added lines move
+    only DWARF line tables, and panel.cpp has no `__LINE__` users), the
+    MF35's differ in panel.cpp alone plus the version string. What it
+    taught:
+    - **A shared struct is gated, not extended.** BigLayout's new fields,
+      kRecent 6, kGraphCols 228 and F_RING exist only on the square;
+      changing them for everyone would have moved the MF35's code.
+    - **A skin framed is a sub-canvas, not a shifted scene**: the same
+      stride, a pointer 80 rows on, and its own dirty queue moved 80 rows
+      down into the panel's after each tick (skin.cpp). The scene and its
+      LED maps never learn they are framed. The mat is painted when the
+      copy starts, which is also every redraw after silent.
+    - **Switchboard's free lamps go dark on a closed or shutting-down
+      board, on every board** (Rob, 2026-10-01: every board with a strip,
+      wired or on a panel). lights.cpp changes in every image; at the
+      1.2.1 merge each board rides on the version rel-1.2.1 already gave
+      it (S3 1.1.5, WS43B 1.0.3, FNCAM 1.0.9, ESPCAM 1.0.6, WS2 1.0.4,
+      ETH 1.0.3, MF35V2 1.0.0), the MF35 takes this lane's 1.1.4 over
+      rel-1.2.1's 1.1.3, and the WROOM moves with the core.
+    - **A lamp's gleam scales with the lamp.** drawLed put a half-white
+      line on every lit lamp's second row whatever its brightness, so the
+      drive light idling at 10% read as a whitish line over black (Rob:
+      "that first light in the LED strip", the drive lamp left of the bar;
+      the 4.3B draws it the same way). With the gleam scaled, the idling
+      drive lamp (amber at kIdleGlow 24 and 10%, about 11 on glass) went
+      black on black, and Rob saw it "completely missing": the half-white
+      gleam had been the only visible part of it. A lit lamp now has a
+      floor of 40 in its brightest channel, hue kept; the free lines' dim
+      blue (about 51) is above it. **Fixing how a thing looks can remove
+      the only reason it was visible**; look at what is left.
+    - **A test that checks under a board's define must see board.h.**
+      `host/test_panel.cpp` included only panel_gfx.h, so
+      `-DBBS_BOARD_GT_4848S040` never set BBS_PANEL_SQUARE and its square
+      block compiled away: a passing test that checked nothing (the code
+      review found it). It includes config.h now, with an `#error` if the
+      profile's define arrives without the square.
+    - **A framed picture still lights only when whole.** flush() lights the
+      glass when the rectangle being sent empties, safe only while a whole
+      frame is one rectangle; the framed skin queued the mat as two and the
+      picture as a third, so a missed band could light the glass early. It
+      now queues the whole glass once, at the copy's end.
+    - Static DRAM +616 against the spec's ~300: the ring field's and two
+      recent rows' keys (240), the framed skin's queue (~200), the longer
+      sweep (136). Not built: the photo show's square geometry (1.2.1
+      lane D) and the square stock skins (screen-artist). The stock skins
+      are not in any image (`stockFiles` is empty); a sysop copies them to
+      the card.
   - **No IMU and no PMU** (Rob asked about auto-rotation and an AXP2101):
     a boot-time scan of the touch bus (19/45) finds only the GT911, at
     0x14 and 0x5D; nothing at 0x34 or 0x68-0x6B, nothing in the factory
@@ -912,10 +962,13 @@ this tree.
       call (on this board they reach only the header). And a WROOM backup
       restored here carries `activity_led_gpio = 2`, which blinks the
       header's L2 and on the Y_3 would click a relay.
-    - The panel's first start blocks the loop about 260 ms (two 120 ms
-      waits in the ST7701's setup, plus waiting out one card command for the
-      bus): once a boot, at start-up or when CONFIG switches the panel on,
-      as on the 4.3B.
+    - The panel's first start blocks the loop for 343 ms, measured off the
+      boot log (lights done at 5,648, panel started at 5,991): the ST7701's
+      setup about 280 ms (two 120 ms waits and the bit-banged words), the
+      touch bus about 30 ms (with the I2C scan, which release images leave
+      out), the RGB start about 15 ms, plus waiting out one card command
+      for the bus. Once a boot, at start-up or when CONFIG switches the
+      panel on, as on the 4.3B.
     - COLMOD is the vendor's 0x60 (the first review caught the first cut's
       0x50). Flicker at 45 Hz (the vendor runs 98) has not been looked for
       on purpose yet.

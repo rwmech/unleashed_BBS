@@ -100,6 +100,11 @@ const char* title();       // the running skin's name line, "" for none
 // list is read again, and a skin of that name reloaded from the card.
 void        uploaded(const char* file);
 const char* why();
+#if BBS_PANEL_SQUARE
+// framed: the skin on the glass is a 480 x 320 one shown framed on the
+// square, 80 rows down (PANEL says so).
+bool        framed();
+#endif
 
 // validName: a folder name a skin may have: 1 to 24 of A-Z a-z 0-9 _ -, and
 // not the built-in's.

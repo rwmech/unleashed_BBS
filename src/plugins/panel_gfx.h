@@ -685,10 +685,30 @@ inline void drawLamp(Canvas& c, const Led& l, uint16_t col) {
 inline void drawLed(Canvas& c, const Led& l, uint16_t col, bool gleam = false) {
     fill(c, l.cell, tok::kBg);
     const Rect& s = l.led;
+    if (col && gleam) {
+        // A lamp (the light bar and the drive lamp) that is lit is never
+        // darker than a glow a person can see: the drive light idling at 10%
+        // comes out near black on glass, and the lamp vanished once its
+        // gleam stopped being half white (Rob, the G4848, 1.2.1). Brought up
+        // to a floor of 40 in its brightest channel, hue kept; the free
+        // lines' dim blue (about 51) is above it and stays as it was.
+        const Rgb8 v0 = unpack(col);
+        const int top = v0.r > v0.g ? (v0.r > v0.b ? v0.r : v0.b) : (v0.g > v0.b ? v0.g : v0.b);
+        if (top > 0 && top < 40) col = scale(col, 40, top);
+    }
     if (col) {
         fill(c, s, scale(col, 1, 3));
         fill(c, R(s.x + 1, s.y + 1, s.w - 2, s.h - 2), col);
-        if (gleam) fill(c, R(s.x + 1, s.y + 1, s.w - 2, 1), mix(col, tok::kWhite, 1, 2));
+        if (gleam) {
+            // The gleam as bright as the lamp: half way to white on a lamp at
+            // full brightness, as it always was, and next to nothing on a
+            // faint one. At a fixed half-white, a lamp glowing faintly (the
+            // drive light idling at 10%) showed a whitish line over a black
+            // body (Rob, on the G4848's glass and the 4.3B's, 1.2.1).
+            const Rgb8 v = unpack(col);
+            const int lum = v.r > v.g ? (v.r > v.b ? v.r : v.b) : (v.g > v.b ? v.g : v.b);
+            fill(c, R(s.x + 1, s.y + 1, s.w - 2, 1), mix(col, tok::kWhite, lum, 2 * 255));
+        }
     } else {
         fill(c, R(s.x + 1, s.y + 1, s.w - 2, s.h - 2), tok::kRule);
         fill(c, R(s.x + 2, s.y + 2, s.w - 4, s.h - 4), tok::kSurface);
@@ -1181,19 +1201,38 @@ struct DirtyCheap : Dirty {
 // Chosen by the glass's size; the Waveshare's two layouts never reach it.
 // ---------------------------------------------------------------------------
 constexpr uint8_t kBigRows   = 11;    // the sysop line, then nodes 1 to 10
+#if BBS_PANEL_SQUARE
+constexpr uint8_t kRecent    = 6;     // the square's deck holds six (internal/tty-ux-panel-g4848-2026-10-01.md)
+#else
 constexpr uint8_t kRecent    = 4;
+#endif
 constexpr uint8_t kCells     = 6;
 constexpr int     kGraphUp   = 28;    // the sweep's heights above and below its axis
 constexpr int     kGraphDown = 27;
+#if BBS_PANEL_SQUARE
+constexpr int     kGraphCols = 228;   // the square's sweep, 15.2 minutes (g_gHead is a uint8_t)
+#else
 constexpr int     kGraphCols = 160;   // the longest sweep, landscape
+#endif
 
 // The big glass's own fields, numbered on from the Waveshare's.
+#if BBS_PANEL_SQUARE
+// The square adds the ring banner across the bar and band, appended.
+enum BigField : uint8_t { F_NAME = F_COUNT, F_BWORD, F_DBM, F_PIPS, F_CALLS, F_TRAF,
+                          F_CELL, F_ROW = F_CELL + kCells, F_RECENT = F_ROW + kBigRows,
+                          F_RING = F_RECENT + kRecent, F_BIG_COUNT };
+#else
 enum BigField : uint8_t { F_NAME = F_COUNT, F_BWORD, F_DBM, F_PIPS, F_CALLS, F_TRAF,
                           F_CELL, F_ROW = F_CELL + kCells, F_RECENT = F_ROW + kBigRows,
                           F_BIG_COUNT = F_RECENT + kRecent };
+#endif
 
-// The system cells, in reading order: A then B, three rows.
+// The system cells, in reading order: A then B, three rows. On the square the
+// sixth, never built as the camera, is the chip's temperature.
 enum Cell : uint8_t { C_HEAP, C_SLOW, C_CARD, C_PEAK, C_UP, C_CAMERA };
+#if BBS_PANEL_SQUARE
+constexpr uint8_t C_TEMP = C_CAMERA;
+#endif
 
 struct BigLayout {
     bool    on = false;               // the glass is big enough
@@ -1202,6 +1241,11 @@ struct BigLayout {
                                       // clock and track are the Layout's)
     Rect    head;                     // "Callers 4/11" with its icon and column labels
     int16_t colDoing = 0, colOnEnd = 0, colTerm = 0;   // where the labels and columns are
+#if BBS_PANEL_SQUARE
+    int16_t handleW = 12 * kSmallW;   // the handle's column: 20 glyphs on the square
+    int16_t colLeftEnd = 0;           // one past LEFT's right edge, 0 none
+    Rect    ring;                     // the ring banner: the bar and band as one block
+#endif
     Rect    row[kBigRows];            // each row's text, x 14 on
     Rect    pips;                     // the pip column, one field
     Rect    colRule, midRule;         // landscape's vertical rule, portrait's middle one
@@ -1221,11 +1265,76 @@ inline bool bigGlass(uint16_t w, uint16_t h) {
 // bigLayout: the big layouts, and a Layout with the parts the Waveshare's
 // drawing shares (the header's rows, the glyph strip, antenna, clock, track,
 // heading and LEDs) filled in, so that code draws them unchanged.
+#if BBS_PANEL_SQUARE
+// bigSquare: the 480 x 480 glass (internal/tty-ux-panel-g4848-2026-10-01.md,
+// "Every box"): the big glass's header as it is, the node board across the
+// full width with whole handles and a LEFT column, then the MF35's right
+// column as a deck under it (calls and six recent on the left, the traffic,
+// sweep and six cells on the right), and a light bar with the drive lamp at
+// the foot. Every box absolute, which is why it is exactly 480.
+inline void bigSquare(uint16_t w, uint16_t h, BigLayout& B, Layout& L) {
+    B.land = true;
+    L.land = true;
+    // The header: the big glass's, unchanged.
+    L.bar    = R(0, 0, w, 22);
+    L.band   = R(0, 22, w, 20);
+    L.track  = R(0, 42, w, 1);
+    L.glyphs = R(4, 24, 120, 16);
+    L.clock  = R(w - 44, 24, 5 * kSmallW, kSmallH);
+    B.dbm    = R(L.clock.x - 6 - 32, 24, 32, 16);
+    L.ant    = R(B.dbm.x - 4 - kAntennaW, 24, kAntennaW, kAntennaH);
+    B.name   = R(4, 3, 26 * kSmallW, 16);
+    B.slot   = R(w - 4 - 24 * kSmallW, 3, 24 * kSmallW, 16);
+    B.word   = R(134, 24, L.ant.x - 8 - 134, 16);
+    L.slot   = B.slot;
+    B.ring   = R(0, 0, w, 42);
+    // The node board: heading at 48, rows at 68 + 20k across 462 px.
+    L.headIcon = R(6, 48, 16, 16);
+    L.head     = R(26, 48, 198, 16);
+    B.head     = R(6, 48, 470, 16);
+    B.handleW    = 20 * kSmallW;                           // BBS_USER_MAX, whole
+    B.colDoing   = 232;
+    B.colOnEnd   = 352;
+    B.colLeftEnd = 400;
+    B.colTerm    = 424;
+    for (uint8_t k = 0; k < kBigRows; ++k) B.row[k] = R(14, 68 + kPitch * k, 462, 16);
+    B.pips = R(6, 68, 6, kPitch * (kBigRows - 1) + 16);
+    // The deck: a rule at 290, the column rule at 240.
+    B.midRule = R(4, 290, 472, 1);
+    B.colRule = R(240, 296, 1, 136);
+    B.calls   = R(6, 296, 228, 16);
+    for (uint8_t j = 0; j < kRecent; ++j) B.recent[j] = R(6, 316 + kPitch * j, 228, 16);
+    B.traf  = R(248, 296, 228, 16);
+    B.graph = R(248, 316, kGraphCols, 56);
+    // The cells: health, then storage and load, then time.
+    B.cell[C_HEAP] = R(248, 376, 112, 16);
+    B.cell[C_TEMP] = R(364, 376, 112, 16);
+    B.cell[C_CARD] = R(248, 396, 112, 16);
+    B.cell[C_PEAK] = R(364, 396, 112, 16);
+    B.cell[C_UP]   = R(248, 416, 112, 16);
+    B.cell[C_SLOW] = R(364, 416, 112, 16);
+    // The foot: a rule at 440, the drive lamp and a light bar under the names.
+    B.foot   = R(4, 440, 472, 1);
+    L.drive  = R(6, 448, 24, 16);
+    L.leds   = R(46, 448, 430, 16);
+    L.ledBar = true;
+    B.leds   = L.leds;
+    (void)h;
+}
+#endif
+
 inline BigLayout bigLayout(uint16_t w, uint16_t h, Layout& L) {
     BigLayout B;
     L = Layout();
     if (!bigGlass(w, h)) return B;
     B.on   = true;
+#if BBS_PANEL_SQUARE
+    if (w == 480 && h == 480) {
+        bigSquare(w, h, B, L);
+        B.axis = static_cast<int16_t>(B.graph.y + kGraphUp);
+        return B;
+    }
+#endif
     B.land = w >= h;
     L.land = B.land;
     L.bar    = R(0, 0, w, 22);
@@ -1306,6 +1415,9 @@ inline Rect bigFieldBox(const BigLayout& B, const Layout& L, uint8_t f) {
     if (f >= F_CELL && f < F_CELL + kCells)       return B.cell[f - F_CELL];
     if (f >= F_ROW && f < F_ROW + kBigRows)       return B.row[f - F_ROW];
     if (f >= F_RECENT && f < F_RECENT + kRecent)  return B.recent[f - F_RECENT];
+#if BBS_PANEL_SQUARE
+    if (f == F_RING) return B.ring;
+#endif
     return Rect();
 }
 

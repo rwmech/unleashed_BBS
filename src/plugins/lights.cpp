@@ -733,13 +733,20 @@ void drawStrip(uint32_t now, uint8_t* f, uint16_t rx, uint16_t tx, uint32_t byte
             // as in nodes: the strip is the caller lines.
             const bool rd = blip(g_rd, rx != 0);
             const bool sd = blip(g_sd, tx != 0);
+            // A free lamp is dial blue because a caller can dial into it; on
+            // a board that is closed or shutting down that is not so, and the
+            // free lamps go dark (1.2.1, Rob: every board with a strip, wired
+            // or drawn on a panel). Dark, not amber: amber is the drive
+            // light's idle glow.
+            Bbs& bb = Bbs::instance();
+            const bool shut = (bb.listening() && !bb.answering()) || syscfg::get().closed;
             for (uint8_t i = 0; i < n; ++i) {
                 bool dip = blip(g_cell[i], (moved >> (i + 1)) & 1u);
                 if (lines.mark[i]) {
                     Rgb c = kTermRgb[static_cast<uint8_t>(bbsu::markColor(lines.mark[i]))];
                     put(f, i, c, dip ? 60 : 255, pct);
                 } else {
-                    put(f, i, kDialRgb, ((i & 1u) ? sd : rd) ? 200 : 90, pct);
+                    put(f, i, kDialRgb, shut ? 0 : ((i & 1u) ? sd : rd) ? 200 : 90, pct);
                 }
             }
             break;

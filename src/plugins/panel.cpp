@@ -590,6 +590,12 @@ void cutGlyphs(const char* s, int k, char* out, size_t n) {
     out[len] = '\0';
 }
 
+#if BBS_PANEL_SQUARE
+// The square's ring banner (below, with the big glass's parts).
+bool ringBanner();
+void ringEnd();
+#endif
+
 // The dot's footprint at x: its tail two pixels behind it on the rail, the
 // dot itself 3 x 3 across the band's last row, the rail and the first row
 // of the body.
@@ -598,7 +604,13 @@ Rect dotBox(int x) { return R(x - 3, g_layout.track.y - 1, 5, 3); }
 // dotErase: the rows the dot crosses put back as they are without it.
 void dotErase(const Rect& r) {
     const int y = g_layout.track.y;
+#if BBS_PANEL_SQUARE
+    // Under the ring banner the row above the track is the banner's, not
+    // the band's: put back kBar, or the dot leaves a band-blue stripe.
+    fill(g_canvas, R(r.x, y - 1, r.w, 1), ringBanner() ? kBar : kBand);
+#else
     fill(g_canvas, R(r.x, y - 1, r.w, 1), kBand);
+#endif
     fill(g_canvas, R(r.x, y, r.w, 1), kTrack);
     fill(g_canvas, R(r.x, y + 1, r.w, 1), kBg);
 }
@@ -619,6 +631,7 @@ void bigSlotTick(uint32_t now);
 void bigDbm(int rssi, uint32_t now);
 void refreshBig(uint32_t now);
 #endif
+
 
 // redrawAll: the whole glass from nothing: the header's two rows, the rail,
 // the rules, and every field and LED redrawn on the next pass.
@@ -758,6 +771,9 @@ uint8_t bellAt(const Packed& p) {
 }
 
 void drawGlyphs(const Status& s) {
+#if BBS_PANEL_SQUARE
+    if (ringBanner()) return;                          // the ring banner has the header
+#endif
     char key[kKey];
     statusWords(s, key, sizeof(key));
     if (!changed(F_GLYPHS, key)) return;
@@ -771,6 +787,9 @@ void drawGlyphs(const Status& s) {
 // bellTick: while the band shows the bell, it blinks at 2 Hz by redrawing
 // its own 9 x 11 cell, not the row.
 void bellTick(uint32_t now) {
+#if BBS_PANEL_SQUARE
+    if (ringBanner()) return;                          // the ring banner has the header
+#endif
     const uint8_t bell = bellAt(g_packed);
     const bool lit = bell == 0xFF || ((now / kBlinkMs) & 1u) == 0;
     if (lit == g_bellLit) return;
@@ -785,6 +804,9 @@ void bellTick(uint32_t now) {
 // antTick: the antenna, sampled four times a second and redrawn when its
 // height, its colour or whether the board is joined changes.
 void antTick(uint32_t now) {
+#if BBS_PANEL_SQUARE
+    if (ringBanner()) return;                          // the ring banner has the header
+#endif
     if (g_rssiAt && now - g_rssiAt < kRssiMs) return;
     g_rssiAt = now ? now : 1;
     const int rssi = plat::wifiRssi();
@@ -804,6 +826,9 @@ void antTick(uint32_t now) {
 }
 
 void drawClock() {
+#if BBS_PANEL_SQUARE
+    if (ringBanner()) return;                          // the ring banner has the header
+#endif
     char buf[8];
     const bool ok = clk::valid();
     if (ok) clk::fmt(buf, sizeof(buf), "%H:%M");
@@ -1377,6 +1402,30 @@ int16_t   g_slotW = 0;                      // the slot's text width as last sen
 uint32_t  g_dotAt = 0;
 uint16_t  g_moved = 0;                      // lines that moved bytes, a bit per Session::id
 
+#if BBS_PANEL_SQUARE
+// ringBanner: the square's ring banner has the bar and band, so the header's
+// own fields (the name, slot, glyph strip, band word, antenna, dBm and
+// clock) are not drawn while a ring shows; their keys are left as they were
+// and invalidated when it ends.
+bool ringBanner() {
+    return g_bigOn && Bbs::instance().ringing() != nullptr;
+}
+
+// ringEnd: the bar and band put back and every field on them drawn again on
+// the next pass: two bands.
+void ringEnd() {
+    const Layout& L = g_layout;
+    fill(g_canvas, L.bar, kBar);
+    fill(g_canvas, L.band, kBand);
+    g_dirty.add(g_big.ring);
+    const uint8_t fields[] = { F_SLOT, F_CLOCK, F_GLYPHS, F_ANT, F_NAME, F_BWORD, F_DBM, F_RING };
+    for (uint8_t f : fields) { g_shown[f][0] = '\x01'; g_shown[f][1] = '\0'; }
+    g_slotW  = g_big.slot.w;
+    g_packed = Packed();
+    g_textAt = g_rssiAt = g_dbmAt = 0;                     // the next pass draws them
+}
+#endif
+
 // graphColumn: one column of the sweep from the ring; blank leaves only the
 // axis, the gap ahead of the head that says where "now" is.
 void graphColumn(int col, bool blank) {
@@ -1475,10 +1524,27 @@ void bigSlotTick(uint32_t now) {
     char buf[64];
     if (const char* who = Bbs::instance().ringing()) {
         char h[BBS_USER_MAX * 2 + 1];
+#if BBS_PANEL_SQUARE
+        // The square: the bar and band as one block, the words in 16 x 32
+        // across it, centred and steady (the banner is the bell), readable
+        // from across a room. The header's own fields stand aside meanwhile.
+        cutGlyphs(who, 18, h, sizeof(h));                  // " is ringing" stays whole: 29 at most
+        snprintf(buf, sizeof(buf), "%s is ringing", h);
+        char key[kKey];
+        snprintf(key, sizeof(key), "%s", buf);
+        if (changed(F_RING, key)) {
+            begin(F_RING, kBar);
+            const Rect& r = g_big.ring;
+            int w = textWidth(buf, true);
+            if (w > r.w) w = r.w - r.w % kBigW;
+            text(g_canvas, r.x + (r.w - w) / 2, 5, buf, kBusy, kBar, true, w);
+        }
+#else
         const int fit = g_big.slot.w / kSmallW - 11;
         cutGlyphs(who, fit > 1 ? fit : 1, h, sizeof(h));
         snprintf(buf, sizeof(buf), "%s is ringing", h);
         bigSlot(buf, kBusy);
+#endif
         g_ringShown = true;
         return;
     }
@@ -1487,10 +1553,22 @@ void bigSlotTick(uint32_t now) {
         g_page = 0;
         g_fade = 0;
         g_dir  = 0;
+        g_nextLong = g_holdLong = false;                   // a tap before the ring is spent
         g_stepAt = now;
+#if BBS_PANEL_SQUARE
+        ringEnd();
+#endif
     }
+#ifdef BBS_HAS_TOUCH
+    if (g_asleep) g_stepAt = now;                          // asleep: the page held
+#endif
     if (g_dir == 0) {
-        if (now - g_stepAt >= kHoldMs) { g_dir = 1; g_fade = 1; g_stepAt = now; }
+        // A page a tap turned to holds kTapHoldMs, long enough to dial it
+        // (the small layouts' rule; the big glass held 3 s before 1.2.1).
+        if (now - g_stepAt >= (g_holdLong ? kTapHoldMs : kHoldMs)) {
+            g_dir = 1; g_fade = 1; g_stepAt = now;
+            g_holdLong = false;
+        }
     } else if (now - g_stepAt >= kStepMs) {
         g_stepAt = now;
         if (g_dir > 0) {
@@ -1498,7 +1576,11 @@ void bigSlotTick(uint32_t now) {
             else { g_page = static_cast<uint8_t>((g_page + 1) % 2); g_dir = -1; g_fade = kSteps - 1; }
         } else {
             if (g_fade > 0) --g_fade;
-            if (g_fade == 0) g_dir = 0;
+            if (g_fade == 0) {                                   // the hold starts now
+                g_dir = 0;
+                g_holdLong = g_nextLong;                         // a tapped page holds longer
+                g_nextLong = false;
+            }
         }
     }
     uint16_t col = kDial;
@@ -1561,18 +1643,41 @@ void bigRow(uint8_t k, const Session* s, uint32_t now) {
         fmtOnFor(now - s->loginAt, on, sizeof(on));
         const char* doing = s->doing[0] ? s->doing : "-";
         const bool idle = now - s->lastInput >= kIdleMs;
+#if BBS_PANEL_SQUARE
+        // LEFT: how long this call has (Bbs::minutesLeft), "-" for none; warm
+        // at 5 minutes and risk at 1, the board's own warning points, so the
+        // glass turns as the caller is told. In the key, so it moves with ON.
+        const int32_t left = Bbs::instance().minutesLeft(*s, now);
+        char lw[8];
+        if (left < 0) snprintf(lw, sizeof(lw), "-");
+        else          fmtOnFor(static_cast<uint32_t>(left) * 60000u, lw, sizeof(lw));
+        const uint16_t lc = left < 0 ? kFaint : left <= 1 ? kRisk : left <= 5 ? kWarm : kDim;
+        snprintf(key, sizeof(key), "%s%c %s %s %s %s %s\x1F%d%04X", lab.t, mark, s->user, doing, on, lw,
+                 s->term.shortName(), idle ? 1 : 0, static_cast<unsigned>(lc));
+#else
         snprintf(key, sizeof(key), "%s%c %s %s %s %s\x1F%d", lab.t, mark, s->user, doing, on,
                  s->term.shortName(), idle ? 1 : 0);
+#endif
         if (!changed(static_cast<uint8_t>(F_ROW + k), key)) return;
         begin(static_cast<uint8_t>(F_ROW + k), kBg);
         const uint16_t rc = rankColour(mark);
         const char markS[2] = { mark, '\0' };
         text(g_canvas, x0, r.y, lab.t, rc, kBg, false, 16);
         text(g_canvas, x0 + 16, r.y, markS, rc, kBg, false, 8);
+#if BBS_PANEL_SQUARE
+        text(g_canvas, 46, r.y, s->user, kInk, kBg, false, g_big.handleW);
+#else
         text(g_canvas, 46, r.y, s->user, kInk, kBg, false, 12 * kSmallW);
+#endif
         text(g_canvas, g_big.colDoing, r.y, doing, idle ? kFaint : kStruct, kBg, false, 9 * kSmallW);
         const int tw = textWidth(on, false);
         text(g_canvas, g_big.colOnEnd - tw, r.y, on, kDim, kBg, false, tw);
+#if BBS_PANEL_SQUARE
+        if (g_big.colLeftEnd) {
+            const int lwid = textWidth(lw, false);
+            text(g_canvas, g_big.colLeftEnd - lwid, r.y, lw, lc, kBg, false, lwid);
+        }
+#endif
         text(g_canvas, g_big.colTerm, r.y, s->term.shortName(), kFaint, kBg, false, 5 * kSmallW);
         return;
     }
@@ -1593,11 +1698,29 @@ void bigRow(uint8_t k, const Session* s, uint32_t now) {
     // the eleven rows are at idle. The same words for hidden staff as for an
     // empty line, so nothing is given away.
     const char* what = k ? "free" : "sysop line";
+#if BBS_PANEL_SQUARE
+    // A board that is not taking calls says so on every free line, from
+    // across the room: closed in warm (a fresh board starts closed), not
+    // answering in risk while it shuts down. Row S keeps "sysop line": the
+    // first account still comes in on a closed board.
+    uint16_t wc = k ? scale(kFaint, 2, 3) : kFaint;
+    if (k) {
+        Bbs& bb = Bbs::instance();
+        if (bb.listening() && !bb.answering()) { what = "not answering"; wc = scale(kRisk, 2, 3); }
+        else if (syscfg::get().closed)         { what = "closed";        wc = scale(kWarm, 2, 3); }
+    }
+    snprintf(key, sizeof(key), "%s %s\x1F""f%04X", lab.t, what, static_cast<unsigned>(wc));
+    if (!changed(static_cast<uint8_t>(F_ROW + k), key)) return;
+    begin(static_cast<uint8_t>(F_ROW + k), kBg);
+    text(g_canvas, x0, r.y, lab.t, kFaint, kBg, false, 16);
+    text(g_canvas, 46, r.y, what, wc, kBg, false, g_big.handleW);
+#else
     snprintf(key, sizeof(key), "%s %s\x1F""f", lab.t, what);
     if (!changed(static_cast<uint8_t>(F_ROW + k), key)) return;
     begin(static_cast<uint8_t>(F_ROW + k), kBg);
     text(g_canvas, x0, r.y, lab.t, kFaint, kBg, false, 16);
     text(g_canvas, 46, r.y, what, k ? scale(kFaint, 2, 3) : kFaint, kBg, false, 12 * kSmallW);
+#endif
 }
 
 // bigPips: a 6 x 6 pip beside each line that moved bytes since the last
@@ -1623,6 +1746,10 @@ void bigHead(unsigned on, unsigned of) {
     text(g_canvas, r.x + 20, r.y, key, col, kBg, false, g_big.colDoing - 8 - (r.x + 20));
     text(g_canvas, g_big.colDoing, r.y, "DOING", kFaint, kBg, false, 5 * kSmallW);
     text(g_canvas, g_big.colOnEnd - 2 * kSmallW, r.y, "ON", kFaint, kBg, false, 2 * kSmallW);
+#if BBS_PANEL_SQUARE
+    if (g_big.colLeftEnd)
+        text(g_canvas, g_big.colLeftEnd - 4 * kSmallW, r.y, "LEFT", kFaint, kBg, false, 4 * kSmallW);
+#endif
     text(g_canvas, g_big.colTerm, r.y, "TERM", kFaint, kBg, false, 4 * kSmallW);
 }
 
@@ -1662,9 +1789,12 @@ void bigRecent(uint8_t j) {
     begin(f, kBg);
     const uint16_t shade = age == 0 ? kInk : age == 1 ? kDim : kFaint;
     const bool bell = e.kind == EV_PAGE || e.kind == EV_RING;
+    // A caller's snap is the camera in dial, as the small layouts draw it
+    // (recentRow): before 1.2.1 it fell through to an orange login.
     const uint16_t kindCol = e.kind == EV_LOGIN ? kLive : e.kind == EV_GUEST ? kWarm
-                           : e.kind == EV_LOGOFF ? kDim : kBusy;
-    icon(g_canvas, r.x, r.y, bell ? kIconBell : e.kind == EV_LOGOFF ? kIconLogoff : kIconLogin,
+                           : e.kind == EV_LOGOFF ? kDim : e.kind == EV_SNAP ? kDial : kBusy;
+    icon(g_canvas, r.x, r.y, bell ? kIconBell : e.kind == EV_LOGOFF ? kIconLogoff
+                           : e.kind == EV_SNAP ? kIconCamera : kIconLogin,
          (age == 0 || bell) ? kindCol : shade);
     text(g_canvas, r.x + 20, r.y, e.text, shade, kBg, false, r.w - 20);
 }
@@ -1681,11 +1811,33 @@ void bigCell(uint8_t c, const Icon& ic, const char* fig, uint16_t col) {
 
 // bigWord: the band's word for the two board states that have no glyph.
 void bigWord() {
+#if BBS_PANEL_SQUARE
+    if (ringBanner()) return;                          // the ring banner has the header
+#endif
     Bbs& b = Bbs::instance();
     const char* w = "";
     uint16_t col = kWarm;
+#if BBS_PANEL_SQUARE
+    // The square counts the shutdown down, once a second, and says what is
+    // left to do when the count is out and the board still runs.
+    char cnt[32];
+    if (b.listening() && !b.answering()) {
+        const uint32_t left = b.shutdownLeftMs(plat::millis());
+        if (left) {
+            const uint32_t sec = (left + 999u) / 1000u;
+            snprintf(cnt, sizeof(cnt), "SHUTTING DOWN in %u:%02u", static_cast<unsigned>(sec / 60u),
+                     static_cast<unsigned>(sec % 60u));
+            w = cnt;
+        } else {
+            w = "SHUT DOWN, restart the board";
+        }
+        col = kRisk;
+    }
+    else if (syscfg::get().closed)       { w = "CLOSED to callers"; }
+#else
     if (b.listening() && !b.answering()) { w = "SHUTTING DOWN"; col = kRisk; }
     else if (syscfg::get().closed)       { w = "CLOSED to callers"; }
+#endif
     char key[kKey];
     snprintf(key, sizeof(key), "%s", w);
     if (!changed(F_BWORD, key[0] ? key : "\x1F-")) return;
@@ -1694,6 +1846,9 @@ void bigWord() {
 }
 
 void bigName() {
+#if BBS_PANEL_SQUARE
+    if (ringBanner()) return;                          // the ring banner has the header
+#endif
     const SysConfig& c = syscfg::get();
     char buf[64];
     cutWords(c.boardName[0] ? c.boardName : BBS_NAME, g_big.name.w / kSmallW, buf, sizeof(buf));
@@ -1741,7 +1896,22 @@ void refreshBig(uint32_t now) {
 
     char fig[16];
     snprintf(fig, sizeof(fig), "%uK", static_cast<unsigned>(g_heapK));
-    bigCell(C_HEAP, kIconChip, fig, g_heapK >= 40 ? kInk : g_heapK >= 20 ? kWarm : kRisk);
+    // Memory wears the RAM stick and the chip is the chip's temperature, so
+    // the two never share a picture (the 4.3B spec's revision 1).
+    bigCell(C_HEAP, kIconRam, fig, g_heapK >= 40 ? kInk : g_heapK >= 20 ? kWarm : kRisk);
+#if BBS_PANEL_SQUARE && defined(BBS_HAS_CHIP_TEMP)
+    {
+        int tempC = -1000;                                 // "--C": a failed read
+        if (g_tempOk) {
+            tempC = g_tempT > 0 ? (g_tempT + 5) / 10 : 0;
+            if (tempC > 99) tempC = 99;
+        }
+        if (tempC > -1000) snprintf(fig, sizeof(fig), "%dC", tempC);
+        else               snprintf(fig, sizeof(fig), "--C");
+        bigCell(C_TEMP, kIconChip, fig, tempC <= -1000 ? kDim : tempC < BBS_PANEL_TEMP_WARM ? kInk
+                                        : tempC < 75 ? kWarm : kRisk);
+    }
+#endif
     snprintf(fig, sizeof(fig), "%u slow", static_cast<unsigned>(b.slowPasses()));
     bigCell(C_SLOW, kIconHourglass, fig, g_slowAt && now - g_slowAt < kSlowMs ? kWarm : kInk);
     const bool cardErr = g_errAt && now - g_errAt < kCardErrMs;
@@ -1788,7 +1958,9 @@ uint8_t refreshLeds() {
         drawLamp(g_canvas, l, col);
 #else
         Led l = g_layout.ledBar ? segAt(box, i, n) : ledAt(box, i, n, g_layout.ledCell);
-#if PANEL_BIG
+#if PANEL_BIG && BBS_PANEL_SQUARE
+        if (g_bigOn && !g_layout.ledBar) l = bigLedAt(box, i, n);   // the square: segAt's light bar
+#elif PANEL_BIG
         if (g_bigOn) l = bigLedAt(box, i, n);              // the big glass's own row
 #endif
         drawLed(g_canvas, l, col, g_layout.ledBar);
@@ -1817,7 +1989,10 @@ uint8_t refreshLeds() {
     // frame, as the spec budgets it.
     if (all) return moved;
     Rect row = box;
-#if PANEL_BIG
+#if PANEL_BIG && BBS_PANEL_SQUARE
+    if (g_bigOn && n && !g_layout.ledBar)
+        row = unite(bigLedAt(box, 0, n).cell, bigLedAt(box, static_cast<uint8_t>(n - 1), n).cell);
+#elif PANEL_BIG
     if (g_bigOn && n) row = unite(bigLedAt(box, 0, n).cell, bigLedAt(box, static_cast<uint8_t>(n - 1), n).cell);
 #endif
     if (moved > 3) g_dirty.add(row);
@@ -2308,6 +2483,13 @@ void cmdPanel(Bbs& b, Session& s, const char* a, uint32_t now) {
     line(s, Color::Grey, buf);
 #endif
     // The skin on the glass, and why the one set is not, when it is not.
+#if BBS_PANEL_SQUARE
+    if (skin::framed()) {                          // a 480 x 320 skin on the square
+        char tb[64];
+        snprintf(tb, sizeof(tb), "Skin %.24s (480 x 320, framed)", skin::running());
+        line(s, Color::Grey, tb);
+    } else
+#endif
     if (skin::title()[0]) {
         char tb[64];
         snprintf(tb, sizeof(tb), "Skin %.24s (%.24s)", skin::running(), skin::title());
@@ -2375,6 +2557,11 @@ void cmdPanel(Bbs& b, Session& s, const char* a, uint32_t now) {
         if (g_bigOn) {
             // The big glass, top to bottom and left to right.
             static const uint8_t kBigOrder[] = { F_NAME, F_SLOT, F_GLYPHS, F_BWORD, F_ANT, F_DBM, F_CLOCK, F_HEAD };
+#if BBS_PANEL_SQUARE
+            // A ring on the square: the banner is the header, as on the glass.
+            if (ringBanner()) { say(F_RING); say(F_HEAD); }
+            else
+#endif
             for (uint8_t f : kBigOrder) say(f);
             for (uint8_t k = 0; k < kBigRows; ++k) say(static_cast<uint8_t>(F_ROW + k));
             say(F_CALLS);

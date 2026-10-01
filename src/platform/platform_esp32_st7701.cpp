@@ -419,9 +419,11 @@ void tpBegin() {
         g_bus = nullptr;
         return;
     }
-    // Once a boot: who else is on the touch bus, one line (an IMU or a PMU
-    // would answer here: none is documented, Rob asked). Probing an empty
-    // address is a NACK, microseconds each.
+#ifndef BBS_RELEASE
+    // Development builds only, once a boot: who else is on the touch bus, one
+    // line. It answered Rob's question on the bench (2026-10-01): only the
+    // GT911, at 0x14 and 0x5D; no IMU (0x68-0x6B) and no AXP2101 (0x34). About
+    // 30 ms of the panel's start; release images leave it out.
     {
         char seen[112 * 5 + 1] = "";
         size_t at = 0;
@@ -451,6 +453,7 @@ void tpBegin() {
                 static_cast<unsigned>(v));
         }
     }
+#endif  // !BBS_RELEASE
     const uint16_t kAddrs[2] = { BBS_TOUCH_ADDR, BBS_TOUCH_ADDR2 };
     for (uint16_t a : kAddrs) {
         if (i2c_master_probe(g_bus, a, 20) != ESP_OK) continue;

@@ -617,6 +617,13 @@ public:
     // ----------------------------------------------------------------------
     bool listening() const { return lfd_ >= 0; }
     bool answering() const { return lfd_ >= 0 && !shutEnds_ && !shutDone_; }
+    // shutdownLeftMs: how long SHUTDOWN's countdown has to run, 0 with none
+    // running or once it has run out (the square panel's band word, 1.2.1).
+    uint32_t shutdownLeftMs(uint32_t now) const {
+        if (!shutEnds_ || shutDone_) return 0;
+        const int32_t left = static_cast<int32_t>(shutEnds_ - now);
+        return left > 0 ? static_cast<uint32_t>(left) : 0;
+    }
     void takeTraffic(uint16_t& rx, uint16_t& tx) {
         rx = rxSeen_;
         tx = txSeen_;

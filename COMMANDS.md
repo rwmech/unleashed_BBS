@@ -875,7 +875,10 @@ strip_order  = GRB      ; GRB | RGB | BRG | RBG | GBR | BGR
     is on, so the lit count is the callers on; with nobody on, every lamp dim
     and steady in the site's dial blue, the even lamps flickering up with
     bytes in and the odd ones with bytes out, as a modem's RD and SD lamps
-    did.
+    did. A free lamp is blue because a caller can dial into that line, so
+    while the board is closed (CONFIG board's "Stop taking calls") or a
+    SHUTDOWN is counting down, the free lamps are dark (1.2.1), on a wired
+    strip and on a panel's light bar alike.
 - **Drive %** and **Strip %**: brightness, as a percentage of full, 1 to
   100, each output its own, 10 as shipped (1.1.0; it was capped at 30). Past
   30 is allowed and is your call, and CONFIG asks you to confirm first,

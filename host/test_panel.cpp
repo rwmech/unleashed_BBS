@@ -16,7 +16,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+// config.h first, as panel.cpp has it, so a board's -D (test_panel_g4848)
+// reaches board.h and BBS_PANEL_SQUARE is what the firmware sees.
+#include "../src/config.h"
 #include "../src/plugins/panel_gfx.h"
+#if defined(BBS_BOARD_GT_4848S040) && !BBS_PANEL_SQUARE
+#error "test_panel_g4848 must see BBS_PANEL_SQUARE, or its square checks never compile"
+#endif
 
 using namespace panelgfx;
 using namespace panelgfx::tok;
@@ -598,6 +604,10 @@ int main() {
         Layout L;
         check("the Waveshare's glass never takes the big layout",
               !bigLayout(172, 320, L).on && !bigLayout(320, 172, L).on);
+        // The MF35's two layouts, as the MF35 builds them: under the square's
+        // defines its deck holds six recent rows, which those layouts were
+        // never drawn for (kRecent is the square's there).
+#if !BBS_PANEL_SQUARE
         for (int turn = 0; turn < 2; ++turn) {
             const uint16_t W = turn ? 320 : 480, H = turn ? 480 : 320;
             const BigLayout B = bigLayout(W, H, L);
@@ -635,6 +645,7 @@ int main() {
             check("the sweep's axis leaves 28 above and 27 below",
                   B.axis - B.graph.y == kGraphUp && B.graph.y + B.graph.h - 1 - B.axis == kGraphDown);
         }
+#endif
         // The LED row: at most one band, no cell overlapping, for 1 to 16.
         bool band = true, apart = true;
         const Rect box = R(0, 296, 480, 16);
@@ -679,6 +690,69 @@ int main() {
         check("a full queue of small rectangles stays small: none over 20% of the glass",
               q.n == Dirty::kMax && biggest < 480 * 320 / 5);
     }
+
+#if BBS_PANEL_SQUARE
+    // ------------------------------------------------------------------
+    // The square (G4848, internal/tty-ux-panel-g4848-2026-10-01.md): built
+    // as test_panel_g4848, with that profile's defines.
+    // ------------------------------------------------------------------
+    printf("The square glass\n");
+    {
+        Layout L;
+        const BigLayout B = bigLayout(480, 480, L);
+        check("480 x 480 takes the big layout's square branch", B.on && !empty(B.ring) && B.handleW == 160);
+        std::vector<Rect> boxes;
+        for (uint8_t f = 0; f < F_BIG_COUNT; ++f) {
+            if (f == F_RING) continue;                       // the banner covers the header by design
+            const Rect r = bigFieldBox(B, L, f);
+            if (!empty(r)) boxes.push_back(r);
+        }
+        boxes.push_back(B.graph);
+        boxes.push_back(L.leds);
+        boxes.push_back(L.drive);
+        bool on = true, apart = true;
+        for (size_t i = 0; i < boxes.size(); ++i) {
+            const Rect& a = boxes[i];
+            if (a.x < 0 || a.y < 0 || a.x + a.w > 480 || a.y + a.h > 480) on = false;
+            for (size_t j = i + 1; j < boxes.size(); ++j) {
+                const Rect& b = boxes[j];
+                if (a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h) {
+                    apart = false;
+                    printf("    overlap: %d,%d %dx%d and %d,%d %dx%d\n", a.x, a.y, a.w, a.h, b.x, b.y, b.w, b.h);
+                }
+            }
+        }
+        check("every field on the square glass", on);
+        check("and no two fields overlap", apart);
+        bool rows = true;
+        for (uint8_t k = 0; k < kBigRows; ++k)
+            if (B.row[k].y != 68 + kPitch * k || B.row[k].x != 14 || B.row[k].x + B.row[k].w != 476) rows = false;
+        check("eleven rows at a 20 px pitch across the width, 14 to 475", rows);
+        check("the last row ends above the deck's rule at 290", B.row[kBigRows - 1].y + 16 <= B.midRule.y);
+        check("the columns in order: handle, DOING, ON, LEFT, TERM, inside the row",
+              46 + B.handleW <= B.colDoing && B.colDoing + 9 * kSmallW <= B.colOnEnd &&
+              B.colOnEnd < B.colLeftEnd && B.colLeftEnd <= B.colTerm && B.colTerm + 5 * kSmallW <= 476);
+        check("six recent rows and a 228-column sweep", kRecent == 6 && B.graph.w == kGraphCols && kGraphCols == 228);
+        check("the sweep's axis leaves 28 above and 27 below",
+              B.axis - B.graph.y == kGraphUp && B.graph.y + B.graph.h - 1 - B.axis == kGraphDown);
+        check("the foot under the rule at 440, inside the glass with 16 px to spare",
+              B.foot.y == 440 && L.leds.y > B.foot.y && L.leds.y + L.leds.h <= 464 && L.ledBar);
+        // The light bar: one band at any length from 1 to 16, never overlapping.
+        bool band = true, lapart = true;
+        for (uint8_t n = 1; n <= 16; ++n) {
+            const Rect row = unite(segAt(L.leds, 0, n).cell, segAt(L.leds, static_cast<uint8_t>(n - 1), n).cell);
+            if (static_cast<uint32_t>(row.w) * row.h > 480u * 24u) band = false;
+            for (uint8_t i = 0; i + 1 < n; ++i)
+                if (segAt(L.leds, i, n).cell.x + segAt(L.leds, i, n).cell.w > segAt(L.leds, i + 1, n).cell.x)
+                    lapart = false;
+        }
+        check("the light bar is one band at any length from 1 to 16", band);
+        check("and its segments never overlap", lapart);
+        check("the ring banner is the bar and band, 42 rows, two bands",
+              B.ring.x == 0 && B.ring.y == 0 && B.ring.w == 480 && B.ring.h == 42 &&
+              29 * kBigW <= B.ring.w);
+    }
+#endif
 
     printf("%d passed, %d failed\n", passes, fails);
     return fails ? 1 : 0;

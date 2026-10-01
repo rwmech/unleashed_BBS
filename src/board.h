@@ -533,7 +533,7 @@
 #define BBS_BOARD_PLUGINS     1       // the panel
 
 #define BBS_BOARD_TAG         "MF35"
-#define BBS_BOARD_VERSION     "1.1.2"
+#define BBS_BOARD_VERSION     "1.1.4"     // the big glass's tap hold, snap and RAM icon (board-g4848)
 
 // SSH (1.1.2 core, MF35 1.1.0, a preview), as on the Waveshare S3: the shared
 // port 6400 and ssh_port 6422, host keys in userdata/ssh. Eight at once, the
@@ -1261,10 +1261,10 @@
 // its UI toggles 40, 1 and 2. The table with every source is
 // release-prep/g4848/pins.md.
 //
-// The glass is square and the panel plugin's big layout (the Makerfabs'
-// 480 x 320 landscape) is drawn in its middle: the picture is 480 x 320,
-// shown 80 rows down, with 80 black rows above and below. A square layout of
-// its own is a tty-ux job for later.
+// The glass is square and drawn whole: the panel plugin's square layout
+// (BBS_PANEL_SQUARE, internal/tty-ux-panel-g4848-2026-10-01.md), the node
+// board across the full width and the Makerfabs' right column under it. A
+// 480 x 320 skin is shown framed, 80 rows down.
 // ===========================================================================
 #if defined(BBS_BOARD_GT_4848S040)
 
@@ -1281,7 +1281,7 @@
 #define BBS_BOARD_PLUGINS     1       // the panel
 
 #define BBS_BOARD_TAG         "G4848"
-#define BBS_BOARD_VERSION     "1.0.0"
+#define BBS_BOARD_VERSION     "1.0.1"
 
 // SSH as on every S3 board: the shared port 6400 and ssh_port 6422. Eight at
 // once, beside two 300 KB and 450 KB picture buffers in 8 MB of PSRAM.
@@ -1374,12 +1374,13 @@
 #define BBS_RGB_SPI_SCK       48
 #define BBS_RGB_SPI_SDA       47
 #define BBS_RGB_BL            38      // the backlight, LEDC PWM, high is on
-// The picture the plugin draws: the big glass's 480 x 320 landscape
-// (BBS_PANEL_BIG, from the RAM figures below), shown BBS_RGB_YOFF rows down.
+// The picture the plugin draws: the whole glass, 480 x 480, in the square
+// layout (BBS_PANEL_BIG from the RAM figures below, BBS_PANEL_SQUARE from the
+// size). BBS_RGB_YOFF is where the platform puts it: 0, the glass.
 #define BBS_LCD_WIDTH         480
-#define BBS_LCD_HEIGHT        320
-#define BBS_RGB_YOFF          80
-#define BBS_LCD_RAM_SHORT     320     // the big layout's figures: an RGB panel has no RAM
+#define BBS_LCD_HEIGHT        480
+#define BBS_RGB_YOFF          0
+#define BBS_LCD_RAM_SHORT     480     // the big layout's figures: an RGB panel has no RAM
 #define BBS_LCD_RAM_LONG      480
 // The panel plugin's settings that an RGB panel has no use for.
 #define BBS_LCD_MOSI          -1
@@ -1408,6 +1409,12 @@
 #define BBS_TOUCH_ADDR2       0x14
 #define BBS_I2C_SDA           19
 #define BBS_I2C_SCL           45
+
+// The S3's own temperature sensor, a cell of the square's system block. The
+// WROOM-1 N16R8 is rated to 65 C ambient, and an 86 box puts it behind a
+// backlight in a wall: warm from 65, as on the Touch-LCD-2.
+#define BBS_HAS_CHIP_TEMP     1
+#define BBS_PANEL_TEMP_WARM   65
 
 // Pins the board owns (syscfg::pinProblem refuses them with the reason).
 //   CONSOLE  43, 44: UART0 to the CH340, the console and Improv
@@ -1476,6 +1483,7 @@
 #endif
 #ifndef BBS_HAS_LCD
 #define BBS_PANEL_BIG         0
+#define BBS_PANEL_SQUARE      0
 #endif
 #ifdef BBS_HAS_LCD
 #ifndef BBS_LCD_DRIVER
@@ -1489,6 +1497,11 @@
 // panel plugin, and the core's per-line traffic bits it reads (Bbs::
 // takePanelTraffic). Nothing else pays for either.
 #define BBS_PANEL_BIG         (BBS_LCD_RAM_LONG >= 400)
+// The square glass (480 x 480, the G4848, internal/tty-ux-panel-g4848-
+// 2026-10-01.md): the big layout's square branch, its LEFT column, six recent
+// events, a 228-column sweep, the ring banner and framed 480 x 320 skins.
+// Exactly 480: every box of it is absolute. Off, the MF35's code is as it was.
+#define BBS_PANEL_SQUARE      (BBS_PANEL_BIG && BBS_LCD_WIDTH == 480 && BBS_LCD_HEIGHT == 480)
 #ifndef BBS_LCD_MHZ_NOTE                // CONFIG panel's note on the SPI clock, 38 at most
 #define BBS_LCD_MHZ_NOTE      "10 is safe; the panel's limit is 62.5."
 #endif
