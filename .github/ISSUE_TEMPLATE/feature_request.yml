@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# µnleashed BBS: the feature request form on GitHub's "New issue" page.
+# Copyright 2026 - Robert Mech
+name: Suggest a feature
+description: An idea for something a µnleashed board could do.
+title: "Idea: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you. Ideas from people who call boards and people who run
+        them are both welcome, and you don't need to know how it would be
+        built. Tell us what you'd like and why.
+
+        The roadmap at https://unleashedbbs.com/roadmap lists what is
+        already planned, in case your idea is on it.
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+      description: What you'd like a board to do, in your own words.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it would help
+      description: >-
+        Who it is for (callers, sysops, a club, a classroom) and what it
+        would let them do. An example from a real board, or from a BBS you
+        remember, helps a lot.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: who
+    attributes:
+      label: You are
+      options:
+        - A caller
+        - A sysop
+        - Both
+    validations:
+      required: false
+
+  - type: input
+    id: board
+    attributes:
+      label: Which board, if it matters
+      description: >-
+        Some ideas only make sense on a board with a screen, a camera or
+        an SD card. The Board line of HARDWARE shows which one you have.
+      placeholder: "Waveshare ESP32-S3-Touch-LCD-4.3B"
+    validations:
+      required: false
+
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: Optional. Sketches, screenshots or links to how something similar works elsewhere.
+    validations:
+      required: false
