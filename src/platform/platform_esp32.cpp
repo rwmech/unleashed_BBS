@@ -2405,6 +2405,61 @@ void camMemLog(const char* when) {
               static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL)));
 }
 
+#ifdef BBS_CAM_PWDN_IS_POWER
+// ---------------------------------------------------------------------------
+// The camera's supply, on a board whose PWDN line is a power switch (board.h,
+// the ESP32-S3-ETH's Q3 on GPIO 8; 1.2.1-eth.8). Sequenced here, not by the
+// driver: esp32-camera 2.1.7 holds PWDN high (off) for 10 ms and probes the
+// bus 30 ms after it goes low (esp_camera.c 198-226). 10 ms does not empty
+// the two LDOs' output capacitors, and the sensor's RESET is an RC to the
+// always-on 3V3, so it is never pulsed after the board's first power-up: a
+// sensor switched off a few seconds earlier came back from a part-emptied
+// supply with no reset, and the probe found nothing. Measured on COM25
+// (eth.4), snaps 1, 2, 3 and 5 s after the last one's download question:
+// 4/4, 2/4, 4/4, 4/4 saved, and one more of six failed at about 3.5 s off
+// earlier, all "no camera found". So:
+//   off   a supply switched off is left off for kCamOffMs before it comes
+//         on again (5 s: every snap with at least that much off time
+//         probed), counted with plat::since from the switch-off; the board's
+//         own reset counts as a switch-off at 0
+//   on    then kCamSettleMs before the driver probes (the OV5640 asks
+//         about 20 ms from power to SCCB)
+// Both waits are vTaskDelay on the camera's worker (the runner), which
+// already takes seconds for a snap; never the loop (Rule no. 1). A snap
+// asked for straight after another waits out the off time behind its
+// spinner, and so does any runner job queued behind it.
+// ---------------------------------------------------------------------------
+constexpr uint32_t kCamOffMs    = 5000;
+constexpr uint32_t kCamSettleMs = 50;
+bool     g_camPowered = false;   // GPIO 8 low: the supply on
+uint32_t g_camOffAt   = 0;       // millis the supply went off; the reset is 0
+
+void camPowerOff() {
+    gpio_set_level(static_cast<gpio_num_t>(BBS_CAM_PWDN), 1);
+    if (g_camPowered) g_camOffAt = plat::millis();
+    g_camPowered = false;
+}
+
+void camPowerOn() {
+    static bool pinSet = false;
+    if (!pinSet) {
+        gpio_config_t conf = {};
+        conf.pin_bit_mask = 1ULL << BBS_CAM_PWDN;
+        conf.mode = GPIO_MODE_OUTPUT;
+        gpio_set_level(static_cast<gpio_num_t>(BBS_CAM_PWDN), 1);   // off until the hold is done
+        gpio_config(&conf);
+        gpio_set_level(static_cast<gpio_num_t>(BBS_CAM_PWDN), 1);
+        pinSet = true;
+    }
+    if (g_camPowered) return;
+    const uint32_t off = plat::since(plat::millis(), g_camOffAt);
+    if (off < kCamOffMs) vTaskDelay(pdMS_TO_TICKS(kCamOffMs - off));
+    gpio_set_level(static_cast<gpio_num_t>(BBS_CAM_PWDN), 0);
+    g_camPowered = true;
+    vTaskDelay(pdMS_TO_TICKS(kCamSettleMs));
+}
+#endif
+
 }   // namespace
 
 bool camOpen(const CamCfg& c, char* err, size_t errLen) {
@@ -2426,7 +2481,11 @@ bool camOpen(const CamCfg& c, char* err, size_t errLen) {
     }
 
     camera_config_t cfg = {};
+#ifdef BBS_CAM_PWDN_IS_POWER
+    cfg.pin_pwdn     = -1;            // the supply is ours to sequence (camPowerOn)
+#else
     cfg.pin_pwdn     = BBS_CAM_PWDN;
+#endif
     cfg.pin_reset    = BBS_CAM_RESET;
     cfg.pin_xclk     = BBS_CAM_XCLK;
     cfg.pin_sccb_sda = BBS_CAM_SIOD;
@@ -2461,21 +2520,42 @@ bool camOpen(const CamCfg& c, char* err, size_t errLen) {
     // bring-up, then as it was, and only its own tag.
     const esp_log_level_t gpioWas = esp_log_level_get("gpio");
     esp_log_level_set("gpio", ESP_LOG_NONE);
-    esp_err_t e = esp_camera_init(&cfg);
-    if (e == ESP_ERR_NOT_SUPPORTED && !g_camRaw) {
-        // Either nothing answered on the bus, or a sensor answered that
-        // cannot give JPEG ("JPEG format is not supported on this sensor"):
-        // the same code for both, so ask again for RGB565, which every
-        // sensor the driver knows gives. Only the second is then a camera.
-        if (esp_camera_sensor_get()) esp_camera_deinit();
-        cfg.pixel_format = PIXFORMAT_RGB565;
-        cfg.xclk_freq_hz = kCamRawXclk;
-        e = esp_camera_init(&cfg);
-        if (e == ESP_OK) {
-            g_camRaw = true;
-            plat::log("camera: the sensor gives no JPEG: raw frames, encoded on the worker");
+    auto initOnce = [&]() {
+#ifdef BBS_CAM_PWDN_IS_POWER
+        camPowerOn();
+#endif
+        esp_err_t r = esp_camera_init(&cfg);
+        if (r == ESP_ERR_NOT_SUPPORTED && !g_camRaw && cfg.pixel_format == PIXFORMAT_JPEG) {
+            // Either nothing answered on the bus, or a sensor answered that
+            // cannot give JPEG ("JPEG format is not supported on this sensor"):
+            // the same code for both, so ask again for RGB565, which every
+            // sensor the driver knows gives. Only the second is then a camera.
+            if (esp_camera_sensor_get()) esp_camera_deinit();
+            cfg.pixel_format = PIXFORMAT_RGB565;
+            cfg.xclk_freq_hz = kCamRawXclk;
+            r = esp_camera_init(&cfg);
+            if (r == ESP_OK) {
+                g_camRaw = true;
+                plat::log("camera: the sensor gives no JPEG: raw frames, encoded on the worker");
+            } else {
+                cfg.pixel_format = PIXFORMAT_JPEG;     // a retry asks for JPEG again
+                cfg.xclk_freq_hz = 20000000;
+            }
         }
+        return r;
+    };
+    esp_err_t e = initOnce();
+#ifdef BBS_CAM_PWDN_IS_POWER
+    // Nothing on the bus: once more after a full power-off (the hold), in
+    // case the supply came up from a part-emptied state after all.
+    if (e == ESP_ERR_CAMERA_NOT_DETECTED || e == ESP_ERR_NOT_SUPPORTED || e == ESP_ERR_NOT_FOUND) {
+        if (esp_camera_sensor_get()) esp_camera_deinit();
+        plat::log("camera: no sensor answered (0x%x); power off, wait, and once more",
+                  static_cast<unsigned>(e));
+        camPowerOff();
+        e = initOnce();
     }
+#endif
     esp_log_level_set("gpio", gpioWas);
     if (e != ESP_OK) {
         plat::log("camera: init failed: %s (0x%x)", esp_err_to_name(e), static_cast<unsigned>(e));
@@ -2486,7 +2566,7 @@ bool camOpen(const CamCfg& c, char* err, size_t errLen) {
         // bus and XCLK's LEDC channel.
         if (esp_camera_sensor_get()) esp_camera_deinit();
 #ifdef BBS_CAM_PWDN_IS_POWER
-        gpio_set_level(static_cast<gpio_num_t>(BBS_CAM_PWDN), 1);   // the camera's power off again
+        camPowerOff();                                              // the camera's power off again
 #endif
         camMemLog("after the failed start");
         // No sensor on the bus is ESP_ERR_NOT_SUPPORTED in 2.1.7 (camera_
@@ -2577,10 +2657,10 @@ void camClose() {
     if (g_camUp) esp_camera_deinit();
 #ifdef BBS_CAM_PWDN_IS_POWER
     // A board whose PWDN line switches the camera's supply (board.h): off
-    // between snaps, as it was at reset. The driver drives the line low at
-    // every bring-up and never high again, so a camera once used would stay
-    // powered, and it sits on strapping pins across a reset.
-    gpio_set_level(static_cast<gpio_num_t>(BBS_CAM_PWDN), 1);
+    // between snaps, as it was at reset, and stamped so the next bring-up
+    // leaves it off long enough (camPowerOn). It sits on strapping pins
+    // across a reset, so it is never left on.
+    camPowerOff();
 #endif
     g_camUp = false;
 }

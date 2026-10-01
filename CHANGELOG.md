@@ -352,6 +352,24 @@ The three bench-only ESP32 envs (`esp32dev_backuptest`, `esp32dev_diag`,
   row's own note now (`cfg_walk_to`), and passes 11 of 11 with and without
   a card.
 
+### The ETH board: the camera's power (1.2.1-eth.8, ETH 1.0.5)
+
+- **A snap taken soon after the last one no longer finds "no camera".** The
+  board switches the camera's supply off between snaps (its PWDN line is a
+  power switch), and the camera driver switched it back on after only
+  10 ms off. That cannot empty the supply, and the sensor's reset line is
+  never pulsed after the board's first power-up, so a sensor switched off
+  a few seconds earlier sometimes came back without a reset and did not
+  answer. Measured on the bench with eth.4, snaps 1, 2, 3 and 5 s after the
+  last: 4/4, 2/4, 4/4 and 4/4 saved, every failure "no camera found". The
+  board now sequences the supply itself: off for at least 5 s since it went
+  off, then on, then 50 ms before the sensor is looked for, and one retry
+  after a full power-off if nothing answers. The waits run on the camera's
+  background job behind its spinner, never on the BBS loop; a snap asked
+  for straight after another waits out the rest of the 5 s.
+- Only this board has the power switch (`BBS_CAM_PWDN_IS_POWER`); the other
+  camera boards' images are unchanged apart from the version string.
+
 ### The ETH board: tests read the profile, and the bench (1.2.1-eth.7)
 
 No firmware change. After the merge of dev.13 (1.2.1-eth.6), the checks
