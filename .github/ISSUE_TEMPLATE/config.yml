@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# µnleashed BBS: what GitHub's "New issue" page offers beside the two forms.
+# Copyright 2026 - Robert Mech
+# Questions go to Discussions or the guides, so the issue list stays bugs
+# and ideas. Blank issues are off: the forms ask for what we need to help.
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a question
+    url: https://github.com/rwmech/unleashed_BBS/discussions
+    about: How do I...? Is this normal? Ask in Discussions (Q&A), where other sysops and callers can answer too.
+  - name: Read the guides
+    url: https://unleashedbbs.net/docs
+    about: Joining a board, setting one up, opening it to the internet, and adding a card, lights or a camera.
+  - name: Build one
+    url: https://unleashedbbs.com
+    about: What µnleashed is, which board to buy, and the installer that runs in your browser.
