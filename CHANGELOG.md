@@ -142,6 +142,26 @@ Built and sized, not yet tested on the host or a board.
   DRAM (15,048 free, as at dev.10), and the image moves only by link
   relaxation (-64 bytes on esp32dev, 0 on its release). The Freenove,
   ESP32-CAM and ETH were not rebuilt.
+- **On the bench (2026-10-01, the Touch-LCD-2 on its own hub, the photo.3
+  release image).** A snap at each of the camera's seven sizes showed on the
+  glass, every one decoded and framed, with no refusal and no photo missed.
+  Decoded on the runner, off the loop: 640x480 at 1/2 in 427 ms, 800x600 at
+  1/2 in 621 ms, 1024x768 at 1/4 in 895 ms, 1280x720 at 1/4 in 1,009 ms,
+  1280x1024 at 1/4 in 1,719 ms, 1600x1200 at 1/4 in 2,591 ms and 2048x1536
+  at 1/8 in 1,651 ms. The picture took 103,500 to 128,800 bytes of PSRAM
+  (the fit's own figures: 230x172 for 4:3, 230x129 for 16:9, 230x184 for
+  5:4), the runner had 4,088 bytes of stack spare at every decode, and
+  internal heap low moved 44 bytes across the whole run (15,319 to 15,275).
+  **Rule no. 1 holds:** two slow passes happened during the run and neither
+  is the show's. Both are 118 ms with 105 ms of it inside two file opens, in
+  the session phase with the sysop in CAMERA, which is `CAMERA SET` rewriting
+  system.cfg; the nearest decode had finished 1.7 s earlier and no decode
+  appears in any loop pass. That is the write-side-on-the-loop class the
+  1.1.2 audit left knowingly, beside the Freenove's 414 ms CONFIG save. It
+  is not every save: the same `CAMERA SET` cost nothing on a fresh boot
+  minutes later, 1 slow pass before it and 1 after, so what varies is the
+  filesystem's state and not the code path. A write that needs a block
+  erased costs what an erase costs; one that does not is free.
 - **Tests (1.2.1-photo.3)**: `host/test_panel_photo.cpp` (`make test`) checks
   the frame on all seven glasses, the decoder's scale for every camera size,
   the caption and the scaler against the host's TJpgDec at all four scales,
