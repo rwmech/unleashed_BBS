@@ -341,6 +341,17 @@ no other profile does), where it had passed on any answer but the console.
 The three bench-only ESP32 envs (`esp32dev_backuptest`, `esp32dev_diag`,
 `esp32dev_wdttest`) build with no warnings too, so all 21 envs do.
 
+### Screens at 40 columns (1.2.1-screens.1)
+
+- **`rules`, `newuser` and `chatin` have a PETSCII flavour.** They shipped
+  `.ans` and `.asc` only, and the `.asc` is 78 columns, so a 40 column
+  Commodore caller had every line wrapped in two. `tools/mkscreens.py` now
+  writes `rules.seq`, `newuser.seq` and `chatin.seq` from the same words,
+  broken for 38 columns and checked against the 80 column copy word for
+  word. The rules are three pages at 40 rather than two, with a page number
+  on the title row. Screen files only: the `.ans` and `.asc` are byte for
+  byte as before, and the stock set is 36 screens.
+
 ### Sizes
 
 Static DRAM off the ELFs at 1.2.1-dev.10, the 18 board and release envs
