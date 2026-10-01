@@ -212,16 +212,18 @@ way.
 - the target: an S3 board errors unless built for `esp32s3`
   (`#if defined(ESP_PLATFORM) && !CONFIG_IDF_TARGET_ESP32S3`), an ESP32
   board unless built for `esp32`;
-- one profile at a time: the block checks the profiles before it, and the
-  catch-all after the last block adds every `defined(BBS_BOARD_*)` and
-  errors above one. **Add yours to that sum.**
+- one profile at a time: the catch-all after the last block adds every
+  `defined(BBS_BOARD_*)` and errors above one. That sum is the real
+  guard (some blocks also check a few earlier profiles by hand). **Add
+  yours to the sum.**
 - on an S3 board, `#ifndef BBS_CHIP_S3` / `#define BBS_CHIP_S3 1`: the
   host build has no `sdkconfig.h`, and this is how it gets the S3's pin
   rules;
 - one `#error` for each setting your sdkconfig layer must have made, so a
   stale `sdkconfig.<env>` fails the build instead of shipping without it.
   The existing ones: `CONFIG_SPIRAM` for PSRAM, `CONFIG_SPIRAM_MODE_QUAD`
-  for a quad part, `CONFIG_VFS_MAX_COUNT < 12`,
+  for a quad part, `CONFIG_VFS_MAX_COUNT` (`< 12`; the Makerfabs checks
+  `< 9`),
   `CONFIG_SPIRAM_FETCH_INSTRUCTIONS && CONFIG_SPIRAM_RODATA` for an RGB
   panel, a camera sensor's `CONFIG_*_SUPPORT`, and Ethernet's driver. Each
   says "delete sdkconfig.<env>" in its message.
@@ -261,8 +263,9 @@ bus, `BBS_PSRAM_QUAD` for an S3 with quad PSRAM.
 the serial bridge (`BBS_SERIAL_RX`, `BBS_SERIAL_TX`), the lights
 (`BBS_LIGHTS_ON`, `BBS_LIGHTS_DRIVE_PIN`, `BBS_LIGHTS_DRIVE_ORDER`), and
 the panel's, touch's, camera's and Ethernet's own pins. Anything you do
-not define takes the reference board's default from the end of board.h,
-so define every pin the board uses.
+not define takes the reference board's default, from the end of board.h
+(or, for `BBS_BOOT_GPIO` and `BBS_BACKUP_GPIO`, from `src/config.h`), so
+define every pin the board uses.
 
 **The pins the board owns**, which CONFIG must refuse to a sysop, by
 name, with a reason: `BBS_PINS_PSRAM`, `BBS_PINS_CONSOLE`,
@@ -275,11 +278,12 @@ you: on the S3, 26 to 37 (flash and octal PSRAM; 26 to 32 with
 `BBS_PSRAM_QUAD`) and 19 and 20 (the USB port); on the ESP32, 6 to 11.
 
 **The console.** The S3 layer puts the console on the chip's own USB
-(`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`). A board whose USB socket goes to
-a USB-serial chip on UART0 (the Makerfabs' CP2104, every classic ESP32
-board) sets `CONFIG_ESP_CONSOLE_UART_DEFAULT=y` in its own layer and lists
-the UART0 pins in `BBS_PINS_CONSOLE` (43 and 44 on an S3, 1 and 3 on an
-ESP32), so neither CONFIG nor the serial bridge plugin can take them.
+(`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`). An S3 board whose USB socket
+goes to a USB-serial chip on UART0 (the Makerfabs' CP2104) sets
+`CONFIG_ESP_CONSOLE_UART_DEFAULT=y` in its own layer; a classic ESP32 has
+the UART0 console by default. Either way, list the UART0 pins in
+`BBS_PINS_CONSOLE` (43 and 44 on an S3, 1 and 3 on an ESP32), so neither
+CONFIG nor the serial bridge plugin can take them.
 Web flashing and Improv go through whichever port the console is on.
 
 ## 5. The sdkconfig layer
@@ -322,8 +326,8 @@ What the existing layers set, and when you need the same:
 - **An S3 camera: `CONFIG_CAMERA_DMA_BUFFER_SIZE_MAX=16384`.** The S3's
   camera driver takes at most that for raw frames, and the firmware asks
   internal RAM for 17 KB, not the ESP32's 33. Without it every snap is
-  refused for memory. `src/platform/platform.h` `static_assert`s it on
-  every S3 build, and the sensor's own `CONFIG_<SENSOR>_SUPPORT=y` with
+  refused for memory. `src/platform/platform.h` `static_assert`s it (at
+  most 16384) on every S3 build with a camera, and the sensor's own `CONFIG_<SENSOR>_SUPPORT=y` with
   the others set to `n` belongs here too.
 - **Anything the profile turns on only for itself**, like the ESP-ETH
   board's `CONFIG_ETH_SPI_ETHERNET_W5500=y` (and `src/CMakeLists.txt`
@@ -495,7 +499,7 @@ capabilities with no hardware. Every place a profile is named:
 | `host/Makefile` | a `bbs_host_<key>` target (copy `bbs_host_wseth`; S3 profiles link `libwolfssh_host.a` and `$(WOLF_CPPFLAGS)` for SSH), and the name in `clean` |
 | `tools/harness.sh` | a `--board <key>` case setting `BIN` and `BBS_HOST_BOARD`, the key in its error message and usage comment, and, for an S3, the three `case` lists of SSH profiles |
 | `tools/parallel.py` | `PROFILE_BIN`, and the SSH tuple for an S3 |
-| `tools/testclient.py` | `BOARD_DEFINES` (key to define); `SSH_BOARDS` for an S3; `PROFILE_TESTS` and, if it has a card, `PROFILE_CARD`; `ORDER_NAMES`; `CAM_BOARD` and `LIGHTS_BOARD` if it has a camera or lights; and `test_board_<key>()` |
+| `tools/testclient.py` | `BOARD_DEFINES` (key to define); `SSH_BOARDS` for an S3; `PROFILE_TESTS`; `PROFILE_CARD` if its profile tests need a card (every S3 profile is there, for SSH's YMODEM tests); `ORDER_NAMES`; optionally `CAM_BOARD` and `LIGHTS_BOARD`, which only matter to run the camera and lights tests on the profile by hand; and `test_board_<key>()` |
 | `tools/changed_groups.py` | `board_<key>` on the `src/board.h` row, a row for `sdkconfig.defaults.<key>`, and the camera or panel rows if it has one |
 
 **`test_board_<key>`** checks what is specific to your board, from the
@@ -549,7 +553,8 @@ python3 tools/release.py --board esp32s3-acme
 
 It refuses a dirty tree, checks the partition table, the formats and the
 licence lines, builds the release env, checks that `1.2.0 (ACME 1.0.0)`
-is in the image, and searches every file for leaked secrets.
+is in the image, and searches every built image for this machine's
+Wi-Fi names and passwords.
 
 ## Bench proof
 

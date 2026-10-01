@@ -89,13 +89,16 @@ sudo apt-get install -y g++ make python3 zlib1g-dev lrzsz
 ```
 
 The host build links mbedTLS 3.6.0, the version ESP-IDF 5.3.1 carries.
-Once PlatformIO has built any environment, `host/Makefile` finds it on its
-own. Without PlatformIO, clone it and point the build at it:
+`host/Makefile` finds it in PlatformIO's ESP-IDF package when that is
+installed as `~/.platformio/packages/framework-espidf@3.50301.0`.
+Otherwise, point `MBEDTLS_DIR` at a copy: PlatformIO's (the
+`components/mbedtls/mbedtls` folder inside its ESP-IDF package), or a
+clone:
 
 ```
-git clone --depth 1 --branch v3.6.0 https://github.com/Mbed-TLS/mbedtls /opt/mbedtls
-git -C /opt/mbedtls submodule update --init --depth 1
-export MBEDTLS_DIR=/opt/mbedtls
+git clone --depth 1 --branch v3.6.0 https://github.com/Mbed-TLS/mbedtls ~/mbedtls
+git -C ~/mbedtls submodule update --init --depth 1
+export MBEDTLS_DIR=~/mbedtls
 ```
 
 Then:
@@ -106,14 +109,14 @@ bash tools/harness.sh --jobs 8 --changed origin/main..HEAD   # the groups your c
 bash tools/harness.sh --jobs 8                    # the whole suite: with and without a card, every board profile
 ```
 
-- Run the scripts with `bash`: some are stored without the executable bit.
+- Run the scripts with `bash`: they are stored without the executable bit.
 - `--changed RANGE` works out which test groups your files can affect and
   runs those. `--changed-dry-run RANGE` only prints the choice.
 - Results land in `/tmp/bbs-<tag>/out.txt`. A failure that passes when the
   test runs alone (`--tests=test_name`) is usually test order or the 4x
   fast clock the lanes use, not the board; say which in the PR.
-- [README.md](README.md) has the board build (`pio run -e esp32dev`) and
-  the rest of the layout.
+- [README.md](README.md) has the board build (`pio run -t flashall`, the
+  reference board `esp32dev` by default) and the rest of the layout.
 
 ## Sign your work: the Developer Certificate of Origin
 
@@ -180,7 +183,8 @@ By making a contribution to this project, I certify that:
 - **The firmware is GPL-3.0-or-later**, and so is everything you send.
   Every source file carries `SPDX-License-Identifier: GPL-3.0-or-later`.
   `make -C host test` and `tools/release.py` refuse a GPL-2.0 SPDX line,
-  so a file started from an old header fails the build.
+  so a file started from an old header fails `make -C host test` and the
+  release.
 - **Your copyright is yours.** On a file you write, add your own line
   beside the licence, in the same form as the project's:
 
@@ -195,15 +199,16 @@ By making a contribution to this project, I certify that:
   that combines with GPL-3.0 (Apache-2.0, MIT, BSD, ISC and the like).
   Say where it came from in the PR.
 - **Nothing names an AI company or tool as an author.** No copyright,
-  licence or author line in any file may name Anthropic or Claude (or any
-  other AI tool), and no file may carry a "Co-Authored-By" or "Generated
-  with" line naming one. `tools/release.py` refuses to build a release
-  from a tree that does.
+  licence or author line in any file may name one, and no file may carry
+  a "Co-Authored-By" or "Generated with" line naming one.
+  `tools/release.py` refuses to build a release from a tree whose
+  copyright, licence, author, Co-Authored-By or Generated-with line names
+  Anthropic or Claude.
 
 ## AI tools
 
-You may use AI tools, Claude Code included. Two of this repository's
-guides are written for somebody working with Claude Code, and
+You may use AI tools, Claude Code included. The board and sat guides are
+written for somebody working with Claude Code, and
 `.claude/agents/` holds the project's own agents (code-review, bbs-qa and
 the rest), which your Claude Code can use too.
 

@@ -32,6 +32,12 @@ is the route through them. The camera sat,
 worked example throughout: a whole sat, firmware and board-side plugin, in
 a repository of its own.
 
+It is written for somebody working with Claude Code, as
+[ADDING_A_BOARD.md](ADDING_A_BOARD.md) is. Point it at LINK.md, this page
+and camsat's repository, and use the project's agents in `.claude/agents/`
+(`code-review` before the PR). It can read the link and camsat far faster
+than you can; it cannot see your sat, so the bench is yours.
+
 ## What kind of sat
 
 There are two kinds, and which one you are building decides how much of
@@ -56,7 +62,8 @@ The words are settled and live in `src/core/satwords.h`: **sat**, **sats**,
 sat's type shown on screen is `camera`, `door`, `gpio`, `sensor` or
 `device`; "camsat" is only the camera sat's firmware and repository name,
 never a word a caller sees. Every line the board prints about a sat fits
-39 columns with a 16-character sat name.
+39 columns with a 16-character sat name, except the two that echo what
+the caller typed.
 
 ## The link, in one page
 
@@ -74,9 +81,9 @@ first.
 - **Pairing.** P-256 ECDH with commit-then-reveal, and a 4-digit code
   both ends show. On the board the sysop types `LINK PAIR` (a 2-minute
   window) and confirms
-  `Pair camera "garden" <mac>, code 1234? (y/N)`. On the sat, pairing
-  starts from a button (3 s) or by itself for 5 minutes after boot while
-  it holds no pairing. A board holds 8 pairings; a sat holds up to 5
+  `Pair camera "garden" <mac>, code 1234? (y/N)`. On the sat: one with a
+  pairing button holds it for 3 s; one without, like camsat, is in
+  pairing mode for 5 minutes after boot while it holds no pairing. A board holds 8 pairings; a sat holds up to 5
   boards, the first being its owner (who shares, revokes, and whose
   settings are used).
 - **Channels.** ESP-NOW rides the board's Wi-Fi channel. The board never
@@ -127,8 +134,8 @@ exactly that commit into `firmware/core/`: `src/core/link.h`, `link.cpp`,
 `linkcrypto.h`, `linkcrypto.cpp`, `linkfam.h`, `satwords.h` and `crc32.h`
 (camsat also takes the picture helpers it shares with the board). The sat
 and the board then run the same link code, not two copies of it. A local
-path and `-` in core.lock build against a working tree for development; a
-release refuses both.
+path with `-` as the commit builds against that working tree, for
+development; a release refuses a local path.
 
 **The sat's side of the link.** The sat runs `ulink::Engine` over its own
 ESP-NOW radio (camsat's `firmware/src/radio.*` is the one to start from;
@@ -222,7 +229,8 @@ with hooks and commands. Three things are particular to a sat's:
 **What may need the core, as a PR to unleashed_BBS:**
 
 - a **family id** (a row in LINK.md's table). In 1.2.0 the board's family
-  table holds 4 families, two of them taken (CAMERA and DOOR), and HELLO
+  table holds 4 families: DOOR is taken by the core's doors plugin, and
+  CAMERA by camsat's plugin when it is built in. HELLO
   carries a peer's families as a 32-bit mask, so how a plugin family in
   128 to 239 is advertised is not settled yet. Ask in your issue before
   you pick an id;
@@ -250,7 +258,8 @@ python3 tools/plugins.py check mysat    # the manifest, the API, every SPDX line
 
 `check` refuses a name that differs from the lock, an API the core does
 not have, a licence that does not combine with GPL-3.0, a source file with
-no SPDX line, and any copyright or licence line naming an AI company.
+no SPDX line, and any copyright or licence line naming Anthropic or
+Claude.
 
 A PlatformIO environment names the plugins it builds in with
 `custom_ext_plugins = mysat`; `tools/pio_plugins.py` fetches them before
@@ -265,7 +274,7 @@ setup):
 
 ```
 make -C host EXT="mysat" bbs_host_ext                         # the board with your plugin
-bash tools/harness.sh --tag mysat --ext mysat --card --only=radio
+bash tools/harness.sh --tag mysat --ext mysat --card --only=radio,sats
 ```
 
 - `--ext NAME` builds the host board with the plugin and switches it on.
@@ -299,7 +308,7 @@ project's site fetches:
 - `tools/release.py` refuses a tag that is not the version in
   `firmware/src/board.h` (camsat's `CAMSAT_VERSION`), a dirty tree, a
   core.lock on a local path or not a full commit, a GPL-2.0 SPDX line, and
-  any AI company named in a notice line. It builds the firmware and checks
+  a notice line naming Anthropic or Claude. It builds the firmware and checks
   the version is in the image.
 - The assets: `bootloader.bin` (at 0x1000), `partitions.bin` (0x8000),
   `firmware.bin` (0x10000), `version.txt`, `THIRD_PARTY_NOTICES.md` and
