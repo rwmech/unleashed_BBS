@@ -111,6 +111,14 @@ Built and sized, not yet tested on the host or a board.
   DRAM (15,048 free, as at dev.10), and the image moves only by link
   relaxation (-64 bytes on esp32dev, 0 on its release). The Freenove,
   ESP32-CAM and ETH were not rebuilt.
+- **Tests (1.2.1-photo.3)**: `host/test_panel_photo.cpp` (`make test`) checks
+  the frame on all seven glasses, the decoder's scale for every camera size,
+  the caption and the scaler against the host's TJpgDec at all four scales,
+  on JPEG fixtures in `host/photos/` (made by its `mkfixtures.py`).
+  `test_panel_photo_show` (the Touch-LCD-2 profile) snaps through a copy of
+  the board whose stub camera gives a real JPEG (`BBS_CAM_HOST_JPEG`, the
+  host only) and reads PANEL's photo line. The viewer's pure half moved into
+  `src/plugins/panel_photo_fit.h` for the unit test; no behaviour moved.
 
 ### Login and the core (1.2.1-dev.1 to dev.8)
 

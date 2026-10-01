@@ -245,6 +245,12 @@ test_skin: test_skin.cpp ../src/plugins/skin_manifest.h ../src/plugins/skin_jpeg
            ../src/plugins/skin_seed.h ../src/plugins/panel_gfx.h ../src/plugins/panel_font.h $(TJPGD)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_skin.cpp $(TJPGD)
 
+# The new-photo show's pure half (1.2.1, panel_photo_fit.h): the frame on
+# every glass, the decoder's scale, the caption, and the scaler against the
+# host decoder on camera-sized JPEGs (photos/, made by photos/mkfixtures.py).
+test_panel_photo: test_panel_photo.cpp ../src/plugins/panel_photo_fit.h ../src/plugins/panel_gfx.h ../src/plugins/panel_font.h $(TJPGD)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_panel_photo.cpp $(TJPGD)
+
 # The panel's drawing: glyphs, layout, lamps and the queue of what to send.
 # Pure code with no platform, checked pixel by pixel with no display.
 test_panel: test_panel.cpp ../src/plugins/panel_gfx.h ../src/plugins/panel_font.h
@@ -380,9 +386,10 @@ formats:
 	@python3 ../tools/check_formats.py --self-test
 	@python3 ../tools/check_formats.py ../src
 
-test: licence formats test_link test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_since test_camera test_photos_cfg test_sshlink test_skin
+test: licence formats test_link test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_since test_camera test_photos_cfg test_sshlink test_skin test_panel_photo
 	./test_link
 	./test_skin
+	./test_panel_photo
 	./test_xmodem
 	./test_wrap
 	./test_forums_ptr
@@ -403,7 +410,7 @@ test: licence formats test_link test_xmodem test_wrap test_forums_ptr test_compo
 
 clean:
 	rm -rf wolfobj libwolfssh_host.a ssh_call test_sshlink
-	rm -f tjpgd.o tjpgd_san.o test_skin
+	rm -f tjpgd.o tjpgd_san.o test_skin test_panel_photo
 	rm -f bbs_host bbs_host_s3 bbs_host_ws43b bbs_host_fncam bbs_host_espcam bbs_host_ws2 bbs_host_wseth bbs_host_mf35 bbs_host_mf35v2 bbs_host_ext linkpeer test_link test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_since test_camera test_photos_cfg
 
 .PHONY: clean test licence formats FORCE mbedtls-check
