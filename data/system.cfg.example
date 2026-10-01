@@ -54,6 +54,12 @@ port = 6400
 # the wire first, with Wi-Fi joining only while it has no link or address;
 # no runs the board on Wi-Fi alone. Used from the next restart. CONFIG network.
 # ethernet = yes
+#
+# The same boards (1.2.1): yes joins Wi-Fi beside the wire whenever a network
+# is set, so the sats can pair; the wire stays the address the board gives
+# out. no keeps Wi-Fi standing by until the wire has no address, as above.
+# Used from the next restart. CONFIG network.
+# wifi_with_ethernet = yes
 
 # yes: 100.64.0.0/10 (carrier-grade NAT, and Tailscale) counts as the local
 # network: the published default password, a second sysop in place and the

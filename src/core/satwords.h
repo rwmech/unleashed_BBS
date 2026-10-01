@@ -125,10 +125,13 @@ constexpr const char kSnapOther[]   = "%s #%u: %s.";                   // any ot
 constexpr const char kSnapWaitHere[] = "%ss busy here, %u ahead of you...";
 constexpr const char kSnapHereFull[] = "%ss busy here, try again soon.";
 
-// The link on a board that is on its wire (BBS_HAS_ETH, Ethernet up): Wi-Fi
-// stands by unjoined, and ESP-NOW needs it joined (1.2.1 fixes it).
-constexpr const char kOnWire[]      = "The link needs Wi-Fi. This board is on Ethernet, so sats can't pair.";
-constexpr const char kOnWireShort[] = "On Ethernet: the link needs Wi-Fi.";
-constexpr const char kOnWireRow[]   = "needs Wi-Fi, on Ethernet";       // CONFIG sats' row value at 40
+// The link on a board that is on its wire (BBS_HAS_ETH, Ethernet up) with
+// its Wi-Fi not joined (linkp::onWire): ESP-NOW needs the station joined.
+// From 1.2.1 Wi-Fi joins beside the wire, so this is the case where it could
+// not, and CONFIG network is where each cause is put right. 74, 34 and 16
+// columns: the status line holds 78 and 38.
+constexpr const char kOnWire[]      = "On Ethernet, but Wi-Fi hasn't joined: sats can't pair. See CONFIG network.";
+constexpr const char kOnWireShort[] = "Wi-Fi not joined: sats can't pair.";
+constexpr const char kOnWireRow[]   = "Wi-Fi not joined";               // CONFIG sats' row value at 40
 
 }  // namespace satwords

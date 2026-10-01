@@ -1048,6 +1048,12 @@ const CfgField kNetwork[] = {
     { "ethernet",      "Ethernet", CK_YESNO, 0, 0, 4, "No uses Wi-Fi alone. Next restart.",
       "Ethernet first",
       "Yes: wired, with Wi-Fi when it has no link. No: Wi-Fi only. Next restart." },
+    // Wi-Fi beside the wire (1.2.1), after Ethernet so no row moves. Yes:
+    // the station joins too, for the link's sats; callers stay on the wire.
+    // No: Wi-Fi stands by until the wire has no address, as in 1.1.2.
+    { "wifi_with_ethernet", "Wi-Fi too", CK_YESNO, 0, 0, 4, "Yes joins Wi-Fi too, for sats.",
+      "Wi-Fi beside wire",
+      "Yes: Wi-Fi joins too, so sats pair; callers stay on the wire. Next restart." },
 #endif
 };
 
@@ -1524,6 +1530,7 @@ void cfgLiveValue(const char* key, char* out, size_t n) {
 #endif
 #ifdef BBS_HAS_ETH
     else if (!strcmp(key, "ethernet"))              snprintf(out, n, "%s", c.ethernet ? "yes" : "no");
+    else if (!strcmp(key, "wifi_with_ethernet"))    snprintf(out, n, "%s", c.wifiWithEth ? "yes" : "no");
 #endif
     else if (!strcmp(key, "backup_window_minutes")) snprintf(out, n, "%u", c.backupMinutes);
     else if (!strcmp(key, "backup_button_gpio"))    snprintf(out, n, "%d", c.backupGpio);
@@ -2242,8 +2249,9 @@ uint8_t buildSats(const Term& term) {
         g_cfgBuf[n][0] = '\0';
         ++n;
     };
-    // On the wire (1.2.0): Wi-Fi is unjoined and the link cannot reach a
-    // sat, so the page says so first. The real fix is 1.2.1's.
+    // On the wire with Wi-Fi not joined (1.2.0; from 1.2.1 Wi-Fi joins
+    // beside the wire, so only when it could not): the link cannot reach a
+    // sat, so the page says so first.
     if (linkp::onWire()) {
         row("wire", wide ? "Satellite link" : "Link", CK_INFO, SA_NONE);
         snprintf(g_cfgBuf[n - 1], sizeof(g_cfgBuf[0]), "%s", wide ? satwords::kOnWireShort : satwords::kOnWireRow);

@@ -352,6 +352,76 @@ The three bench-only ESP32 envs (`esp32dev_backuptest`, `esp32dev_diag`,
   row's own note now (`cfg_walk_to`), and passes 11 of 11 with and without
   a card.
 
+### The ETH board: Wi-Fi beside the wire (1.2.1-eth.1, ETH 1.0.4)
+
+Lane C, branch rel-1.2.1c. Built and sized; not yet through the host suite.
+
+- **Wi-Fi joins beside the wire.** With `ethernet = yes` and a network set,
+  the Waveshare ESP32-S3-ETH now joins Wi-Fi as well as the wire, instead of
+  standing Wi-Fi by unjoined. The radio then follows the router's channel,
+  so the link's DISCOVER and pairing work and sats pair on a wired board
+  (Rob: "if both are supported, just keep the connection through wire").
+  `wifi_with_ethernet = no` (CONFIG network's last row, "Wi-Fi too" at 40,
+  "Wi-Fi beside wire" at 80, ETH only, next restart) is the 1.1.2
+  behaviour: Wi-Fi stands by until the wire has no address. A board on
+  `ethernet = no` that came up on the wire for want of a network joins the
+  network Improv gives it too.
+- **The wire stays the callers' interface.** Listeners stay on every
+  interface (INADDR_ANY), so a cable in or out, or Wi-Fi joining or
+  leaving, moves no listener and drops no caller on the other interface;
+  accepted calls answer from the interface their address belongs to (the
+  IDF's source-routing hook). The default route is now set by the board on
+  each change, on the event loop's task: the wire while it has an address,
+  else the station. esp_netif's own choice went by route priority among
+  interfaces that were up, and the wire is up with a link before DHCP
+  answers, so a cable into a dead switch held the default on an interface
+  with no address and NTP, DNS and announce had no route while Wi-Fi was
+  joined. That hole was in 1.1.2's fallback too and is closed for both
+  settings.
+- **mDNS gives out the wire's address.** The mdns component answers on two
+  interfaces of one subnet with both addresses; the station's answers are
+  switched off while the wire has an address and on again (with an
+  announcement) when the wire goes, so `<hostname>.local` sends callers to
+  the wire, and to Wi-Fi only when the wire is down.
+- **SYS shows both interfaces** on the wire: Ethernet and its speed, the
+  Wi-Fi network "beside the wire" (or why not: "no network set", "not
+  joined", or "standby" with `wifi_with_ethernet = no`), the station's
+  signal and channel, the wire's address marked "Ethernet", and the
+  station's own as "Wi-Fi IP". **HARDWARE** lists "Wi-Fi" after Ethernet
+  while the station is joined (the interface, never the network).
+- **SATS and CONFIG sats** drop the "On Ethernet: the link needs Wi-Fi"
+  notice while the station is joined. They keep it, reworded, when it could
+  not join (no network, a wrong password, or Wi-Fi beside the wire turned
+  off): "On Ethernet, but Wi-Fi hasn't joined: sats can't pair. See CONFIG
+  network." (`linkp::onWire` now means the wire is up and the station is
+  not joined.)
+- **ANNOUNCE** says which interface the heartbeats leave by: "Sent from
+  192.168.0.40, Ethernet". The directory lists the address it hears, which
+  is the wire's router while the wire is up.
+- **The ETH board's camera tests run on the host**: `wseth` is in
+  testclient's `CAM_BOARD` (OV5640, up to uxga, xga as shipped, flash pin
+  16: the board has no flash LED, and 16 is a header pin the schematic
+  leaves free). `test_board_wseth` checks both interfaces in SYS and
+  HARDWARE, and that SATS and CONFIG sats are quiet while Wi-Fi is joined
+  (the harness's `BBS_HOST_SSID`) and say so when it is not.
+
+Static DRAM off the ELFs, no warnings: ETH (`ws_s3eth` and `_release`)
+266,392 of 341,760 (75,368 free, +32 on dev.10: `NetInfo::staIp` in SYS's
+snapshot and the route's few statics), release image 1,517,776 (+1,568).
+WROOM (`esp32dev`) 165,680 (15,056 free, 8 down: the one-character-shorter
+version string), image 1,273,584 (64 down: that and satwords' shorter
+lines). The other boards were not built in the lane: the rest of the
+change is `BBS_HAS_ETH` only, so they should move the same way and no
+further.
+
+On the bench (COM25, a bench build with the Wi-Fi fallback compiled in):
+the board joined both, `Ethernet 100 Mb/s` and `Wi-Fi <network> beside the
+wire` on channel 1 at -49 dBm, the wire's address given as the board's;
+telnet answered on the wire's address and on the Wi-Fi one; SATS no longer
+says sats can't pair. Built without a network (the plain image), SYS said
+`Wi-Fi - no network set` and SATS gave the reworded notice. Idle, no slow
+pass.
+
 ### Sizes
 
 Static DRAM off the ELFs at 1.2.1-dev.10, the 18 board and release envs

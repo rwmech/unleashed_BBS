@@ -113,6 +113,7 @@ enum : uint16_t {
     HC_ETHLINK = 0x0100,                           // the wired port has a link (1.1.2)
     HC_ETH100  = 0x0200,                           // at 100 Mb/s
     HC_ETHON   = 0x0400,                           // the chip was started (not ethernet = no)
+    HC_WIFI    = 0x0800,                           // a wired board's station is joined (1.2.1)
 };
 
 uint16_t capsNow() {
@@ -136,6 +137,7 @@ uint16_t capsNow() {
     if (e.started) c |= HC_ETHON;
     if (e.link) c |= HC_ETHLINK;
     if (e.link && e.mbps >= 100) c |= HC_ETH100;
+    if (plat::netInfo().valid) c |= HC_WIFI;       // once a listing, beside the wire or instead of it
 #endif
     return c;
 }
@@ -163,6 +165,9 @@ void capabilities(char* out, size_t n, uint16_t caps) {
     if (caps & HC_ETHLINK)     add((caps & HC_ETH100) ? "Ethernet 100 Mb/s" : "Ethernet 10 Mb/s");
     else if (caps & HC_ETHON)  add("Ethernet, no link");
     else                       add("Ethernet, off");
+    // Both interfaces when both are up (1.2.1): Wi-Fi joins beside the wire.
+    // The interface only, never the network, as everything public here.
+    if (caps & HC_WIFI)        add("Wi-Fi");
 #endif
 #ifdef BBS_SD_SDMMC1
     const char* bus = "SDMMC";

@@ -483,8 +483,9 @@ void cmdSats(Bbs& b, Session& s, const char* arg, uint32_t now) {
         snprintf(right, sizeof(right), wide ? "channel %u, %u of %u up" : "ch %u, %u of %u up",
                  static_cast<unsigned>(linkp::channel()), static_cast<unsigned>(up), static_cast<unsigned>(sats));
         b.rowTitle(s, satwords::kSatTitle, right);
-        // On the wire, the link cannot reach a sat: say so before the list
-        // says they are not answering (1.2.0; the real fix is 1.2.1's).
+        // On the wire with Wi-Fi not joined, the link cannot reach a sat:
+        // say so before the list says they are not answering (1.2.0; from
+        // 1.2.1 Wi-Fi joins beside the wire, so only when it could not).
         if (linkp::onWire())
             b.rowText(s, Color::Yellow, w > sizeof(satwords::kOnWire) ? satwords::kOnWire : satwords::kOnWireShort);
     } else {
