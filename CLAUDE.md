@@ -2684,6 +2684,12 @@ they are the process, and getting them wrong wastes Rob's time.
   disclosure is written once, in each README's "How it was built" and on
   the site's author page. The 1.0.0 history rewrite removed the trailer
   from every earlier commit. Every agent that commits is told this.
+- **Outside contributions (Rob, 2026-10-01)**, for the board-and-sat contributor guide:
+  - **DCO, and contributors keep their copyright.** A PR's commits carry `Signed-off-by` (the Developer Certificate of Origin), the code is GPL-3.0-or-later, and a contributor may put their own copyright line on files they write. This amends the rule above for contributed files only: Rob's and our own lines still name Robert Mech alone, and nothing anywhere names Anthropic or Claude as a copyright holder (release.py's check stays). Rob no longer holds every copyright once a PR is merged, so a future relicence needs contributors' agreement.
+  - **A contributor's commits may carry Claude Code's Co-Authored-By line** ("it's their commit"). The no-AI-line rule above covers Rob's and our own commits.
+  - **Boards are accepted only benched by the contributor, with proof**: photos of both sides, the esptool chip readout, `pins.md` with two sources a pin, SYS and HARDWARE captures, the host tests passing on the board's profile. They ship as a board pre-release first. "Maximise what the BBS can do, not work around vendor wiring" still applies.
+  - **Where:** a high-level page on the site (the plan, the files, the flow) and detailed guides in the repo (ADDING_A_BOARD.md, ADDING_A_SAT.md, CONTRIBUTING.md).
+- **Every guide is kept current, and says what it applies to** (Rob, 2026-10-01: "keep this guide up to date as we make changes ... this should be the case for all guides and guides should also have a 'Applies to versions'"). Every guide, in the repo, on the site and on the docs site, opens with an "Applies to versions" line listing the firmware (and site or camsat) versions it is true for. A change that makes a guide wrong updates the guide in the same change, the way COMMANDS.md and CHANGELOG already are, and moves its "Applies to versions". At each release, check every guide's line.
 - **Blanket approval for the websites and local bench boards** (Rob, 2026-09-28).
   - Pushes to the directory, site and docs repos go live without asking, after code review and the site's own checks.
   - Flashing, rebooting and bench work on local bench boards need no ask, as long as SHUTDOWN warns callers over telnet before a running board goes down.
