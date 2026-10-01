@@ -22,6 +22,8 @@
 
 # µnleashed BBS: announcing your board
 
+**Applies to versions:** firmware 1.2.0.
+
 A board nobody can find is a board nobody calls. The `announce` plugin sends a small heartbeat to a directory server every few minutes saying "I am here, this is my name, this is who runs me". The directory keeps a list of what is up right now.
 
 It solves a second problem at the same time. The directory records the address the heartbeat arrived from, so a board on a home connection whose address changes stays findable without dynamic DNS. That is the cheapest DDNS there is, and it costs a couple of hundred bytes every ten minutes.
