@@ -4167,6 +4167,12 @@ def test_signs_name_board():
     proc = start_copy(tmp, (str(port),))
     try:
         copy_log(tmp, f"listening on {port},")
+        # A closed board with no accounts shows no sign (its first caller
+        # sets it up), and a lane's board may have none yet: seed one.
+        seed = ansi_login("SignsSeed", port=port)
+        seed.send(b"bye\r")
+        seed.wait_closed(12)
+        seed.close()
         fillers = [Caller(ansi=True, port=port) for _ in range(MAX_NODES)]
         time.sleep(0.5 + MAX_NODES * 0.05)
         over = Caller(ansi=True, port=port)

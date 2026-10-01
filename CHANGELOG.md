@@ -54,6 +54,8 @@ A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E
   while the registrant reads the rules, the privacy screen or SSH's pause.
   A board name over 40 bytes is cut at a whole character when system.cfg is
   read, so a µ at the cut no longer leaves a `?`.
+- 1.2.1-calls.4 is test-only: the signs test registers an account of its
+  own, because a closed board with no accounts shows no sign.
 
 Host-tested only so far; the board versions move when their own code does.
 
