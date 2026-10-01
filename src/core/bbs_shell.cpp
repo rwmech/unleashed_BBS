@@ -694,7 +694,17 @@ void Bbs::serviceWait(Session& s, uint32_t now) {
         case WaitFor::Screens: ready = screensTableReady(s); break;
         default:               ready = true; break;
     }
-    const bool late = now - s.waitFrom >= 60000u;
+    // plat::since (1.2.1-forums.5, the helper from the dev.9 merge): `now`
+    // is the pass's clock, read at the top of the pass, and startWait stamps
+    // waitFrom from plat::millis() later in the same pass, so the first look
+    // can find waitFrom a millisecond ahead of now. A plain unsigned
+    // difference was 4,294,967,295 ms: the wait was "late" on its first
+    // look, and SCREENS said "The list could not be made" before its table
+    // was built (found by test_screens_command failing after
+    // test_forums_segments, which only moved the timing; the 4x host clock
+    // makes the tick land there more often). since() reads a stamp ahead of
+    // now as 0, and keeps a real gap's whole 49.7 days.
+    const bool late = plat::since(now, s.waitFrom) >= 60000u;
     if (!ready && !late) {
         if (static_cast<int32_t>(now - s.waitSpinAt) >= 0 && s.tl.empty()) {
             s.term.left(s.tl, 1);

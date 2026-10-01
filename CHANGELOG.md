@@ -28,6 +28,11 @@ A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E
 
 Host-tested only so far; the board versions move when their own code does.
 
+Merged in 1.2.1-dev.9 (rel-1.2.1): the core lane (dev.1 to dev.8), the
+forums lane (forums.1 to forums.5) and the Makerfabs v2.0 board lane.
+
+### Login and the core (1.2.1-dev.1 to dev.8)
+
 - **SyncTERM's autologin reaches the sysop node** (1.2.1-dev.1). Alt+L on a
   telnet entry sends the handle, the password and the entry's system
   password in one burst. The sysop's own account is asked `Sysop password:`
@@ -116,7 +121,7 @@ The 1.1.3 queue and the 1.2.0 full run's findings (1.2.1-dev.3):
   refused as the board's own; `test_config_serial_rows` read the dot-filled
   rest of an 80-column box as part of the value.
 - **A stamp taken after the pass's clock read** (1.2.1-dev.7, the sweep after
-  lane B's serviceWait fix). A time stamped from `plat::millis()` part way
+  the forums lane's serviceWait fix, below). A time stamped from `plat::millis()` part way
   through a pass, or on another task, is ahead of the `now` read at the top
   of the pass, and an unsigned `now - stamp` then reads as 49 days. Made
   signed where it could happen:
@@ -149,7 +154,120 @@ The 1.1.3 queue and the 1.2.0 full run's findings (1.2.1-dev.3):
   allowance: a stamp up to that far ahead is 0, and a real gap keeps the
   clock's 49.7 days. Every site dev.7 touched uses it. Unit test
   `host/test_since.cpp`, in `make test`.
-- Static DRAM off the ELF: the camera boards pay 8 bytes for the held timed
+### The forums (1.2.1-forums.1 to forums.5)
+
+Forum phase 0 from `internal/fidonet-zmodem-2026-09-29.md`: worth doing
+without FidoNet, and what FidoNet stands on.
+
+#### 1.2.1-forums.1, 2026-09-30, built, not yet tested
+
+- **A long message reads whole.** A body over 1,728 bytes could not be
+  shown: the reader read it into a 1,729-byte buffer on the stack. It reads
+  the card a window at a time now, so any body the format can hold (9,999
+  bytes, its four-digit length field) is shown. Writing a post is unchanged:
+  32 lines and 1,536 characters.
+- **A message is drawn a row at a time**, through the same list machinery
+  as every other list on the board, instead of all at once into the
+  caller's 3 KB output buffer. A slow terminal is paced rather than
+  overrun, and **a message longer than the screen stops at
+  `[More] Y/n/c`**, the way the lists do; `C` reads the rest without
+  stopping, `Q` stops (the message still counts as read).
+- **A post opens one body segment.** Every post opened each full 128 KB
+  body file from `M0000.TXT` up to find the one with room, so a busy forum
+  cost more card opens with every 128 KB it held. The forum's header now
+  names the current segment (`seg=` in `INDEX.TXT`'s record 0; the index
+  format itself is unchanged). A forum from before 1.2.1 is looked through
+  once, at its first post, and the answer written down. Older firmware
+  reads the new header and ignores the key.
+- **Every forum write goes through one queue on the background runner**:
+  posts, removals, read pointers and a new forum's header. The loop never
+  writes a forum file, so a post costs other callers nothing, and the
+  FidoNet tosser planned for 1.4.0 joins the same queue rather than being a
+  second writer (the card's FAT files have no locking between tasks). A post
+  is confirmed once it is on the card, usually in a pass or two, with the
+  spinner after a quarter of a second; behind a long runner job (a camera
+  snap) it can take seconds, and after 10 s `ESC` hands the caller back
+  while the post still lands.
+- Fixed on the way: a read pointer write that failed to open `PTRS.TXT`
+  fell back to creating it afresh, which on a card that refused one open
+  would have emptied every caller's read pointers; now only a file that is
+  not there is created. The same for a forum's header. A forum whose header
+  is unreadable gets one that counts the records the index holds, rather
+  than `newest=0`, which would have put the next post over message 1.
+- Fixed on the way: a forum or subject list whose closing prompt was the
+  row that filled the screen drew `[More]` under the prompt.
+
+#### 1.2.1-forums.2, 2026-09-30, built, not yet tested
+
+From the code review of 1.2.1-forums.1:
+
+- **A rebuilt header counts the live messages.** A forum whose header is
+  torn got one whose count was the number of records, which forgets
+  removals, so every caller was told the removed messages were unread. The
+  count is read from the records' live flags now. A header that simply
+  failed to read is left alone and the error logged: only 128 bytes without
+  the forum's magic, or a file shorter than a header, is rebuilt.
+- **A removal is reported as done once it is**: when the message's flag is
+  on the card but the header's count would not save, the moderator was told
+  "That did not save". It says removed now, and the header is recounted
+  from the records in the background so the card agrees.
+- **A `seg=` past M9999 in a header is ignored** and the post looks for its
+  segment, rather than writing the body to a file its record could not
+  name.
+- A record or a removal flag whose sync to the card fails no longer has the
+  header written after it.
+- A message's `[More]` never stops with only the reading question left.
+
+#### 1.2.1-forums.3, 2026-09-30, built, not yet tested
+
+From the code review of 1.2.1-forums.2:
+
+- **A header is believed only if it fits its file.** `newest=` and
+  `count=` must be there and be numbers, `newest` must name a record the
+  index holds, and `count` cannot be more than `newest`. A missing or
+  garbled `newest` read as 0, so the next post went over message 1; a huge
+  one sent the post far past the end of the file. Anything else is taken as
+  torn and rebuilt from the records, now also when a post finds it.
+- **No page of a message is taller than the screen.** Every row the reader
+  draws is one line, so the pager's count is the screen's: two rows drew two
+  lines each, and a page could scroll an unread line off the top of a
+  24-row screen. The end of a message (the blank, `--> EOM <--`, the blank
+  and the question) stays together on one page.
+- A post whose header will not save has that header recounted from the
+  records in the background, as a removal's already was, so a header left
+  torn does not wait for the next post to be rebuilt.
+- The second try at a header that failed to save goes through a fresh
+  open of the file: the card's file system keeps a write error on the file
+  it happened to, so a retry on the same one could never work.
+- The "rebuilt the header" line is logged after the header is on the card.
+
+#### 1.2.1-forums.4, 2026-09-30, built, not yet tested
+
+- **A post whose header did not save is told it may not have**, not that
+  it did not: the background recount can make it readable after all, and a
+  caller told "did not save" posts it again. `--> That may not have saved.
+  Look before posting it again.` (at 40 columns: `--> It may have saved.
+  Check first.`).
+- **Every line the forums' new answers print is one line at 40 columns**
+  (Rob: "esp wordwrap related"): the long form where it fits the row, a
+  short one of 39 columns or fewer where it does not, the way the room's
+  lines do. The reader's error notes are one line everywhere, and the end of
+  a message that could not be read keeps to one page like any other.
+
+#### 1.2.1-forums.5, 2026-09-30, a core fix found by the forum tests' run
+
+- **`SCREENS` could answer "The list could not be made" at once.** Its
+  wait for the list compared two clock readings without a sign, and the
+  wait's start is stamped a moment after the pass's own clock is read, so
+  the first look could see a difference of minus one millisecond as four
+  billion and give up on the spot. Intermittent on a board; frequent on the
+  test host's fast clock. `MEM FORCE` and `SYS FORCE` share the same wait
+  and the same fix. At the 1.2.1-dev.9 merge the comparison became
+  `plat::since(now, s.waitFrom)`, the core's one rule for elapsed time.
+@@BOARDS@@
+### Sizes
+
+Lane figures before the merge, off the ELF: the camera boards pay 8 bytes for the held timed
   shot (ESP32-CAM 2,688 free, Freenove 4,160), the S3s without a camera 16
   for the four VFS slots the LCD-1.47 gains (79,784 free); the WROOM is
   unchanged (15,080).
