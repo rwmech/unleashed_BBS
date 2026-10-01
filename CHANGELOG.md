@@ -24,7 +24,7 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
-## 1.2.0-g4848.1, 2026-10-01: the load line sweeps, and red is drawn thicker (board lane, every panel board)
+## 1.2.0-panel.1, 2026-10-01: the load line sweeps, and red is drawn thicker (board lane, every panel board)
 
 S3 1.1.5, WS43B 1.0.3, MF35 1.1.5, WS2 1.0.4, G4848 1.0.3. Built to
 internal/tty-ux-panel-load-line-2026-10-01.md revision 1, after Rob saw the
@@ -64,11 +64,25 @@ built line on the Guition's glass and asked for two changes.
   wake now puts all three back.
 - **PANEL** reports the shade instead of a level:
   `Load      27% rising green, longest pass 3 ms, 19 s a lap`, with
-  `idle blue`, `amber`, `long pass` and `RED held` the others. Nothing about
-  the thickness: that is red's own emphasis rather than a state, and a line
-  explaining it would imply a sysop could turn it off.
+  `idle blue`, `amber`, `RED`, `long pass` and `RED held` the others. Nothing
+  about the thickness: that is red's own emphasis rather than a state, and a
+  line explaining it would imply a sysop could turn it off.
+- From the code review: a hold that had run out kept its millis stamp for
+  ever, and `(until - now) > 0` as a signed difference reads positive again
+  after 24.86 days, so a board that had one slow pass and then ran quietly
+  for a month would have painted its whole rail thick red; a run-out hold is
+  zeroed at the sample now, inside the window the comparison is valid in.
+  And the thick rows follow the rail's own colour rather than the override
+  flag, so the two cannot disagree where a run of gap samples outlasts the
+  hold with the duty still over 75.
+- Known and left, in the layout's comment: the band's last row IS the row
+  above the rail, so the square's ring banner starting or ending takes the
+  top row of a red stretch with it until the dot comes round, within a lap.
+- Static DRAM is +5 bytes before padding on the panel boards (the shown duty
+  and the override byte in, the level byte out, the long pass's hold new).
 - Images that change: every panel board (the stick, the 4.3B, the 2", the
-  MF35, the G4848). The boards without a panel are untouched.
+  MF35, the G4848). The boards without a panel are untouched but for the
+  version string.
 
 ## G4848 1.0.2 on 1.2.0, 2026-10-01: the load line and the drive icon (board lane, every panel board)
 

@@ -960,7 +960,7 @@ this tree.
       A behaviour that is fine as decoration has to be re-read when it
       becomes data.
     - Skins' `load` source is queued for the skin format's next minor.
-  - **The load line's gradient and thick red (1.2.0-g4848.1; S3 1.1.5,
+  - **The load line's gradient and thick red (1.2.0-panel.1; S3 1.1.5,
     WS43B 1.0.3, MF35 1.1.5, WS2 1.0.4, G4848 1.0.3)**, from the spec's
     revision 1 after Rob saw the four flat levels on the glass. The level
     ladder is gone: the shown figure is a duty, 0 to 100, on a two-leg ramp
@@ -1007,6 +1007,26 @@ this tree.
     - The enum went rather than becoming a word lookup: PANEL's words read
       the same three edge constants the ramp does, so no threshold lives in
       two places and the glass has nothing to read.
+    - **The code review's one real find, and it is a shape worth keeping:
+      `static_cast<int32_t>(until - now) > 0` is only "not yet" while the two
+      are within 2^31 ms.** A hold stamp kept for ever reads negative for
+      24.86 days and then POSITIVE again for the next 24.86, so a board that
+      had one slow pass and then ran quietly for a month would have shown a
+      solid thick red rail. The parent build was safe only because the same
+      test was ANDed with a level no stale timer could produce; promoting the
+      timer to the thing that drives the colour is what exposed it. **A
+      deadline compared this way must be retired to 0 once it passes**, and
+      the retiring has to happen inside a clock that is guaranteed to run
+      (here the 250 ms sample). No host test could see it: nothing runs the
+      panel for 24 days of millis, and the fast clock shortens the fuse
+      rather than revealing it.
+    - And: the thick rows key off the rail's own colour, not the override
+      byte, because the gap branch can leave a duty over 75 standing after
+      the hold runs out and the two would then disagree. One source for "is
+      this red" rather than two that have to agree.
+    - Static DRAM +5 before padding on the panel boards, not the spec's
+      claimed "2 bytes back": it counted the level byte out and the shown
+      duty in but not the override byte or the long pass's own hold.
   - **No IMU and no PMU** (Rob asked about auto-rotation and an AXP2101):
     a boot-time scan of the touch bus (19/45) finds only the GT911, at
     0x14 and 0x5D; nothing at 0x34 or 0x68-0x6B, nothing in the factory

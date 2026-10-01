@@ -885,6 +885,15 @@ struct Layout {
                                       // thickens only where there is room, or
                                       // the same event reads two ways on two
                                       // boards.
+                                      // Known and left: the band's last row IS
+                                      // the row above the rail, so anything
+                                      // that repaints the band full width (the
+                                      // square's ring banner starting and
+                                      // ending) takes the top row of a red
+                                      // stretch with it until the dot comes
+                                      // round, within a lap. Cosmetic, one
+                                      // glass, self-healing; not worth a
+                                      // second restore path.
     Rect    slot, glyphs, ant, clock; // what sits on them
     Rect    headIcon, head;           // "Callers 4/11" and its icon
     Rect    list[kListMax];           // each slot's 16 px row

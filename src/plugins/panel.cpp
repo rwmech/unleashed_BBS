@@ -648,7 +648,7 @@ uint16_t rampColour(uint8_t duty, uint16_t blue) {
 uint16_t railColour() {
     if (g_over == OV_RED)    return kRisk;
     if (g_over == OV_YELLOW) return kYellow;
-    if (g_load == kNoLoad)  return kRule;
+    if (g_load == kNoLoad)   return kRule;
     return rampColour(g_load, kTrack);
 }
 uint16_t dotColour() {
@@ -661,16 +661,17 @@ uint16_t dotColour() {
 // force, off the same three edges the ramp uses, so no threshold is written
 // twice. Nothing about the thickness: that is red's own emphasis rather
 // than a state, and a line explaining it would imply a sysop could turn it
-// off. The duty over kEdgeRed with no override standing cannot happen (such
-// a sample arms red), so RED is there for the reader rather than the glass.
+// off. A duty over kEdgeRed with no override standing is rare but reachable
+// (such a sample arms red, and only a run of gap samples can outlast the
+// hold with the figure still up there), so RED has its own word.
 // nullptr is "no reading yet", which is the rail's grey and not duty 0.
 const char* loadWord() {
     if (g_over == OV_RED)      return "RED held";
     if (g_over == OV_YELLOW)   return "long pass";
-    if (g_load == kNoLoad)    return nullptr;
-    if (g_load >= kEdgeRed)   return "RED";
-    if (g_load >= kEdgeAmber) return "amber";
-    if (g_load >= kEdgeGreen) return "rising green";
+    if (g_load == kNoLoad)     return nullptr;
+    if (g_load >= kEdgeRed)    return "RED";
+    if (g_load >= kEdgeAmber)  return "amber";
+    if (g_load >= kEdgeGreen)  return "rising green";
     return "idle blue";
 }
 
@@ -707,9 +708,16 @@ Rect dotBox(int x) {
 void dotErase(const Rect& r) {
     const Rect& t = g_layout.track;
     const int y = t.y;
-    const bool red = g_over == OV_RED;
+    // Thick BECAUSE the rail is red, not because an override says so (code
+    // review): the gap branch can leave a duty over kEdgeRed standing after
+    // the hold runs out, and then the rail is red from the ramp while
+    // g_over is clear. One source, so the two can never disagree. kRisk is
+    // reachable no other way: both legs blend across a high green channel
+    // (0xD3 to 0xDC) and kRisk's is 0x6C.
+    const uint16_t rail = railColour();
+    const bool red = rail == kRisk;
     fill(g_canvas, R(r.x, y - 1, r.w, 1), red ? kRisk : bandAbove());
-    fill(g_canvas, R(r.x, y, r.w, t.h), railColour());
+    fill(g_canvas, R(r.x, y, r.w, t.h), rail);
     fill(g_canvas, R(r.x, y + t.h, r.w, 1), red ? kRisk : kBg);
 }
 
@@ -798,10 +806,20 @@ void loadReset() {
 
 // overrides: which hard step is in force, red before the long pass. Read
 // once a sample, so a hold ends on a sample boundary like everything else.
+//
+// A hold that has run out is RETIRED to 0 here, and that is the whole reason
+// this is a function rather than two tests at the draw sites (code review).
+// `static_cast<int32_t>(until - now) > 0` only means "not yet" while the two
+// are within 2^31 ms of each other: a kept-forever stamp reads negative for
+// 24.86 days and then positive again for the next 24.86, so a board that had
+// one slow pass and then ran quietly for a month would have painted its
+// whole rail thick red. Zeroing inside the window the sample guarantees is
+// what makes the idiom safe, and it leaves a non-zero timer meaning exactly
+// "in force".
 void overrides(uint32_t now) {
-    if (g_redUntil && static_cast<int32_t>(g_redUntil - now) > 0)            g_over = OV_RED;
-    else if (g_yellowUntil && static_cast<int32_t>(g_yellowUntil - now) > 0) g_over = OV_YELLOW;
-    else                                                                     g_over = OV_NONE;
+    if (g_redUntil && static_cast<int32_t>(g_redUntil - now) <= 0)    g_redUntil = 0;
+    if (g_yellowUntil && static_cast<int32_t>(g_yellowUntil - now) <= 0) g_yellowUntil = 0;
+    g_over = g_redUntil ? OV_RED : g_yellowUntil ? OV_YELLOW : OV_NONE;
 }
 
 void loadTick(uint32_t now) {
@@ -818,7 +836,7 @@ void loadTick(uint32_t now) {
     g_loadT = t;
     g_loadSlow = slow;
     g_loadInit = true;
-    if (first || !dT) return;
+    if (first || !dT) { overrides(now); return; }           // a hold still retires on this pass
     if (dT > kLoadGapUs) {
         // A sample this long is one pass of most of a second (start and
         // silent reset through first): no duty from it, but the pass is the
