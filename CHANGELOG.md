@@ -49,6 +49,11 @@ A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E
   warning is read under a pause and the form opens (a privacy screen that
   follows the connection is 1.2.2's). The signs cut a long board name by
   columns, so a µ at the edge is never a lone byte printing as `?`.
+- From the review of calls.2 (1.2.1-calls.3): a handle being registered is
+  held through the whole way to the form, so nobody can take it as a guest
+  while the registrant reads the rules, the privacy screen or SSH's pause.
+  A board name over 40 bytes is cut at a whole character when system.cfg is
+  read, so a µ at the cut no longer leaves a `?`.
 
 Host-tested only so far; the board versions move when their own code does.
 

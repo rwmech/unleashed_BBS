@@ -4101,10 +4101,17 @@ def test_ssh_signup_no_privacy_offer():
     c.send(b"SshSigner\r")
     ok &= check("an unknown handle may register", c.wait_for(b"[R]egister", 8))
     c.send(b"r")
+    taken = [b"That handle is online right now.", b"ew handle?"]
+    paged = False
     for _ in range(8):                       # the house rules, a page at a time
         hit = wait_any(c, [b"encrypted. Still", b"continue", b"CONTINUE"], 6)
         if hit != 1 and hit != 2:
             break
+        if not paged:                        # calls.3: held while the rules play
+            paged = True
+            d, which = handle_then("SshSigner", taken)
+            ok &= check("the handle is held while the rules are read", which == 0)
+            d.close()
         c.buf = bytearray()
         c.send(b" ")
     ok &= check("the warning says the line is encrypted",
@@ -4113,6 +4120,11 @@ def test_ssh_signup_no_privacy_offer():
     c.pump(0.8)
     ok &= check("and offers no privacy screen", b"know more" not in plain(c.buf))
     ok &= check("a pause to read it", b"continue" in plain(c.buf) or b"CONTINUE" in plain(c.buf))
+    # calls.3: the pause has no Y/N question behind it, and handleOnline did
+    # not count it, so a guest could take the handle while it was read.
+    d, which = handle_then("SshSigner", taken)
+    ok &= check("and held during the pause: a guest is refused it", which == 0)
+    d.close()
     c.send(b" ")
     ok &= check("then the sign-up form", c.wait_for(b"NEW ACCOUNT", 8))
     c.send(b"\x1b")
@@ -4203,6 +4215,23 @@ def test_signs_name_board():
         finally:
             proc.kill()
             proc.wait(5)
+
+    # Cut when the file is read (calls.3): board_name holds 40 bytes, so 39 R
+    # and a µ (41) was stored as 39 R and a lone 0xC2, a "?" at 80 columns.
+    config("R" * 39 + "µ")
+    proc = start_copy(tmp, (str(port),))
+    try:
+        copy_log(tmp, f"listening on {port},")
+        c = Caller(ansi=True, port=port)
+        c.wait_for(b"Closed by the sysop for now", 10)
+        c.pump(0.3)
+        head = above(render_lines(c.buf), "Closed by the sysop for now")
+        ok &= check("a name cut inside a µ keeps its 39 R and shows no ?",
+                    head == "R" * 39)
+        c.close()
+    finally:
+        proc.kill()
+        proc.wait(5)
     import shutil
     shutil.rmtree(tmp, ignore_errors=True)
     return ok
@@ -15549,7 +15578,7 @@ def test_lag_announce_calls():
         return True
     import json as _json
     import shutil
-    port, dport = PORT + 3909, PORT + 3910
+    port, dport = PORT + 3909, PORT + 3920
     d = NudgeDirectory(dport)
     tmp, proc, card = calls_board(port, 50, {
         ("plugin:announce", "servers"): f"http://127.0.0.1:{dport}/announce",
@@ -18621,7 +18650,7 @@ def test_operator_ends():
         print("OPERATOR: no answer, stopped, hung up, the room, a form")
         print("  SKIP  needs the host build and a sysop password")
         return True
-    return on_ring_board(PORT + 3708, operator_ends_body)
+    return on_ring_board(PORT + 3922, operator_ends_body)
 
 
 def operator_ends_body(tmp):
@@ -19943,7 +19972,7 @@ def test_config_pin_exists():
 
     # A hand-edited file at boot: the line is refused and says why.
     if local:
-        port = PORT + 3703
+        port = PORT + 3921
         proc, tmp = restart_copy((str(port),), edits={("", "activity_led_gpio"): file_gone})
         try:
             log = copy_log(tmp, f"listening on {port},")

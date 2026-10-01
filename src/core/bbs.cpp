@@ -1994,6 +1994,14 @@ bool Bbs::handleOnline(const Session& s, const char* handle) const {
         if (o->st == SState::AskRegister) return true;            // choosing R or G
         if (o->st == SState::AskKnowMore) return true;            // reading the disclosure
         if (o->st == SState::Form && o->formKind == FormKind::Signup) return true;
+        // On the way to the form without being at it (1.2.1-calls.3): a
+        // pause in front of the warning or the form (SSH has no Y/N
+        // question, so its registrant sits here), or the rules or privacy
+        // screen still playing towards one, page breaks included.
+        if (o->st == SState::AnyKey &&
+            (o->afterKey == AfterKey::SignupForm || o->afterKey == AfterKey::KnowMore))
+            return true;
+        if (o->pendingForm == FormKind::Signup || o->pendingKnowMore) return true;
     }
     return false;
 }

@@ -157,6 +157,25 @@ void copyStr(char* dst, size_t cap, const char* src) {
     dst[cap - 1] = '\0';
 }
 
+// copyText: copyStr for text a person reads (board_name, 1.2.1-calls.3). A
+// cut at the buffer's end can land inside a UTF-8 character, and the lone
+// lead byte left behind prints as "?" on every terminal ('R' x 39 then a
+// micro sign was stored as 39 R and 0xC2). Back off to the last whole
+// character. Not for passwords, network keys or names matched byte for
+// byte: those keep copyStr, so what was stored before still matches.
+void copyText(char* dst, size_t cap, const char* src) {
+    copyStr(dst, cap, src);
+    const size_t n = strlen(dst);
+    if (!src[n]) return;                                   // not cut: as written
+    size_t k = n;                                          // back over continuation bytes
+    while (k > 0 && n - k < 3 && (static_cast<unsigned char>(dst[k - 1]) & 0xC0) == 0x80) --k;
+    if (k == 0) return;
+    const unsigned char lead = static_cast<unsigned char>(dst[k - 1]);
+    if (lead < 0xC0) return;                               // ASCII or a stray byte: leave it
+    const size_t need = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : 2;
+    if (n - (k - 1) < need) dst[k - 1] = '\0';             // incomplete: drop it whole
+}
+
 bool ieq(const char* a, const char* b) {
     while (*a && *b) {
         if (toupper(static_cast<unsigned char>(*a)) != toupper(static_cast<unsigned char>(*b))) return false;
@@ -420,7 +439,7 @@ void keyValue(Ctx& c, const char* key, char* val) {
         if (syscfg::validHostname(val)) copyStr(g.hostname, sizeof(g.hostname), val);
         else problem(c, "hostname must be a-z 0-9 - (1..31):", val);
     }
-    else if (!strcmp(key, "board_name"))             copyStr(g.boardName, sizeof(g.boardName), val);
+    else if (!strcmp(key, "board_name"))             copyText(g.boardName, sizeof(g.boardName), val);
     else if (!strcmp(key, "tz")) {
         // A string the C library cannot read ran the board on unnamed UTC,
         // silently (1.1.1, TZ-bad; tzones::valid has the rule). A writer
