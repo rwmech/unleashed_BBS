@@ -535,7 +535,13 @@ void noteDisk() {
 void drawDrive(uint32_t now, uint8_t* f, uint8_t fx) {
     put(f, 0, kBlack, 0, g_drivePct);
     if (fx == DF_OFF) return;
-    uint32_t since = now - g_accessAt;
+    // The disk stamps are plat::millis() from whichever task touched the
+    // storage, so one can be ahead of this tick's now (1.2.1): 0 then.
+    auto ago = [now](uint32_t at) -> uint32_t {
+        const int32_t d = static_cast<int32_t>(now - at);
+        return d < 0 ? 0u : static_cast<uint32_t>(d);
+    };
+    uint32_t since = ago(g_accessAt);
     bool lit = false;
     if (g_accessed) {
         switch (fx) {
@@ -544,7 +550,7 @@ void drawDrive(uint32_t now, uint8_t* f, uint8_t fx) {
                 // A run of reads longer than one flash flickers, the way a
                 // PC/XT's light did through a long load: mostly on, now and
                 // then a frame off.
-                if (lit && now - g_burstAt > kPcHold && (rnd() & 3u) == 0) lit = false;
+                if (lit && ago(g_burstAt) > kPcHold && (rnd() & 3u) == 0) lit = false;
                 break;
             case DF_1541:    lit = since < k1541Hold;    break;   // solid for the whole access
             case DF_DISK2:   lit = since < kDisk2Hold;   break;   // and the motor runs on
@@ -558,8 +564,8 @@ void drawDrive(uint32_t now, uint8_t* f, uint8_t fx) {
     }
     // A storage error blinks red, slowly, in every style: on half a second,
     // dark half a second, so it reads as a warning rather than as a dim.
-    if (g_errored && now - g_errorAt < kErrorShow) {
-        if (((now - g_errorAt) / kErrorHalf) % 2u == 0) put(f, 0, kRed, 255, g_drivePct);
+    if (g_errored && ago(g_errorAt) < kErrorShow) {
+        if ((ago(g_errorAt) / kErrorHalf) % 2u == 0) put(f, 0, kRed, 255, g_drivePct);
         return;
     }
     if (fx == DF_BREATHE) {

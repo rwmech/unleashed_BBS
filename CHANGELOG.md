@@ -115,6 +115,25 @@ The 1.1.3 queue and the 1.2.0 full run's findings (1.2.1-dev.3):
   3 as the console on every host profile) and now expects GPIO 46-48 and 3
   refused as the board's own; `test_config_serial_rows` read the dot-filled
   rest of an 80-column box as part of the value.
+- **A stamp taken after the pass's clock read** (1.2.1-dev.7, the sweep after
+  lane B's serviceWait fix). A time stamped from `plat::millis()` part way
+  through a pass, or on another task, is ahead of the `now` read at the top
+  of the pass, and an unsigned `now - stamp` then reads as 49 days. Made
+  signed where it could happen:
+  - Photos: every FILES.BBS tidy a prune handed back was dropped at once
+    as "not made" (the tidies' minute was stamped in the same tick).
+  - Doors: a close begun from a key gave up at once rather than retrying
+    CLOSE for 5 s.
+  - The panel (touch boards): a CONFIG save put the glass to sleep straight
+    away with Sleep set, and turned the header a page.
+  - The link radio: a send failure landing between the rate check's clock
+    read and its load counted as 30 s clean, and the rate went back up.
+  - The ban window (the sysop question's held try, stamped mid-pass) could
+    read as expired and give the try back.
+  - WHO and NODES could show 49 days idle for a caller who had just typed;
+    the drive light and a skin's node lamps could miss a frame; the SSH
+    task could take one pass without waiting; the backup window's idle
+    check (safe today, its held states skip it).
 - Static DRAM off the ELF: the camera boards pay 8 bytes for the held timed
   shot (ESP32-CAM 2,688 free, Freenove 4,160), the S3s without a camera 16
   for the four VFS slots the LCD-1.47 gains (79,784 free); the WROOM is

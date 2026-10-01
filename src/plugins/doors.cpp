@@ -592,7 +592,10 @@ void tick(uint32_t now) {
         if (sl.st == ST_CLOSING) {
             if (tryClose(sl)) {
                 sl.st = ST_FREE;
-            } else if (now - sl.at > kCloseMs) {
+            } else if (static_cast<int32_t>(now - sl.at) > static_cast<int32_t>(kCloseMs)) {
+                // Signed (1.2.1): closeSlot stamps sl.at from plat::millis(),
+                // after this pass's now, so a close begun from a key was
+                // given up on at once instead of retried.
                 // The box is not taking anything on this session: forget it
                 // here. It finds out from its own side (the session resets).
                 if (e) e->closeSession(sl.peer, sl.sess);
@@ -603,7 +606,7 @@ void tick(uint32_t now) {
         Session* s = sessionOf(sl.node);
         if (!s || !e) { giveBack(sl, Color::Grey, satwords::kWhyClosing, 0); continue; }
         if (sl.st == ST_OPENING) {
-            if (now - sl.at > kOpenMs) giveBack(sl, Color::Yellow, satwords::kWhyNoAnswer, DC_TAKENBACK);
+            if (static_cast<int32_t>(now - sl.at) > static_cast<int32_t>(kOpenMs)) giveBack(sl, Color::Yellow, satwords::kWhyNoAnswer, DC_TAKENBACK);
             continue;
         }
         flush(sl);
@@ -616,7 +619,7 @@ void tick(uint32_t now) {
         const int32_t secs = bbs().callSecondsLeft(*s, now);
         if (secs < 0) continue;
         if (sl.st == ST_TIMEUP) {
-            if (now - sl.at > kGraceMs) giveBack(sl, Color::Yellow, satwords::kWhyTime, DC_TIMEUP);
+            if (static_cast<int32_t>(now - sl.at) > static_cast<int32_t>(kGraceMs)) giveBack(sl, Color::Yellow, satwords::kWhyTime, DC_TIMEUP);
             continue;
         }
         if (secs <= kTimeUpSec) {

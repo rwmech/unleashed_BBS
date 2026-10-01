@@ -307,6 +307,14 @@ uint8_t        g_page      = PAGE_NAME;
 int8_t         g_fade      = 0;             // 0 the text, kSteps gone into the bar
 int8_t         g_dir       = 0;             // 0 holding, 1 fading out, -1 fading in
 uint32_t       g_stepAt    = 0;             // millis the hold or the last step began
+// stepped: how long since g_stepAt, 0 while it is ahead of now (1.2.1).
+// start() stamps it from plat::millis(), and a CONFIG save restarts the
+// plugins inside a pass, so the tick after it saw a stamp in its future and
+// turned the header at once.
+inline uint32_t stepped(uint32_t now) {
+    const int32_t d = static_cast<int32_t>(now - g_stepAt);
+    return d < 0 ? 0u : static_cast<uint32_t>(d);
+}
 bool           g_ringShown = false;         // the slot says who is ringing
 bool           g_nextLong  = false;         // a tap turned the page: the next hold is kTapHoldMs
 bool           g_holdLong  = false;         // this hold is
@@ -715,11 +723,11 @@ void slotTick(uint32_t now) {
     if (g_asleep) g_stepAt = now;                          // asleep: the name, held
 #endif
     if (g_dir == 0) {
-        if (now - g_stepAt >= (g_holdLong ? kTapHoldMs : kHoldMs)) {
+        if (stepped(now) >= (g_holdLong ? kTapHoldMs : kHoldMs)) {
             g_dir = 1; g_fade = 1; g_stepAt = now;
             g_holdLong = false;
         }
-    } else if (now - g_stepAt >= kStepMs) {
+    } else if (stepped(now) >= kStepMs) {
         g_stepAt = now;
         if (g_dir > 0) {
             if (g_fade < kSteps) ++g_fade;
@@ -1490,8 +1498,8 @@ void bigSlotTick(uint32_t now) {
         g_stepAt = now;
     }
     if (g_dir == 0) {
-        if (now - g_stepAt >= kHoldMs) { g_dir = 1; g_fade = 1; g_stepAt = now; }
-    } else if (now - g_stepAt >= kStepMs) {
+        if (stepped(now) >= kHoldMs) { g_dir = 1; g_fade = 1; g_stepAt = now; }
+    } else if (stepped(now) >= kStepMs) {
         g_stepAt = now;
         if (g_dir > 0) {
             if (g_fade < kSteps) ++g_fade;
@@ -1560,7 +1568,8 @@ void bigRow(uint8_t k, const Session* s, uint32_t now) {
         char on[8];
         fmtOnFor(now - s->loginAt, on, sizeof(on));
         const char* doing = s->doing[0] ? s->doing : "-";
-        const bool idle = now - s->lastInput >= kIdleMs;
+        // lastInput may be stamped from plat::millis() after this pass's now.
+        const bool idle = static_cast<int32_t>(now - s->lastInput) >= static_cast<int32_t>(kIdleMs);
         snprintf(key, sizeof(key), "%s%c %s %s %s %s\x1F%d", lab.t, mark, s->user, doing, on,
                  s->term.shortName(), idle ? 1 : 0);
         if (!changed(static_cast<uint8_t>(F_ROW + k), key)) return;
@@ -1915,7 +1924,11 @@ void touchTick(uint32_t now) {
 void sleepTick(uint32_t now) {
     if (Bbs::instance().ringing()) { wake(now); return; }
     if (!g_sleepMin || g_asleep || g_lightOwed) return;
-    if (now - g_wakeAt >= static_cast<uint32_t>(g_sleepMin) * 60000u) {
+    // Signed (1.2.1): start() stamps g_wakeAt from plat::millis(), and a
+    // CONFIG save restarts the plugins inside a pass, so the panel's tick in
+    // that pass saw a wake in its future, and slept at once.
+    const int32_t awake = static_cast<int32_t>(now - g_wakeAt);
+    if (awake >= 0 && static_cast<uint32_t>(awake) >= static_cast<uint32_t>(g_sleepMin) * 60000u) {
         g_asleep = true;
         light(0);
     }
@@ -1991,7 +2004,12 @@ void touchTick(uint32_t now) {
         g_touchAt = now ? now : 1;
         return;
     }
-    if (!g_asleep && g_sleepMin && now - g_touchAt >= static_cast<uint32_t>(g_sleepMin) * 60000u) sleepNow();
+    // Signed (1.2.1): start() stamps g_touchAt from plat::millis(), and a
+    // CONFIG save restarts the plugins inside a pass, so this tick saw the
+    // stamp in its future and the glass went dark straight after the save.
+    const int32_t still = static_cast<int32_t>(now - g_touchAt);
+    if (!g_asleep && g_sleepMin && still >= 0 &&
+        static_cast<uint32_t>(still) >= static_cast<uint32_t>(g_sleepMin) * 60000u) sleepNow();
 }
 #endif
 

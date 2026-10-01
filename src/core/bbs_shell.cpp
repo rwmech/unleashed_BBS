@@ -1392,7 +1392,10 @@ uint8_t Bbs::nodeCells(Session& v, const Session& o, NodePlan plan) {
     Color handleC = &o == &v ? Color::White : (hidden ? Color::DarkGrey : Color::LightGreen);
     Color doingC  = hidden ? Color::DarkGrey : Color::Cyan;
 
-    uint32_t idleMs = now - o.lastInput;
+    // lastInput can be stamped from plat::millis() later in this pass than
+    // now (1.2.1): idle 0 then, not 49 days.
+    const int32_t idleD = static_cast<int32_t>(now - o.lastInput);
+    uint32_t idleMs = idleD < 0 ? 0u : static_cast<uint32_t>(idleD);
     char idle[8];
     fmtIdle(idle, sizeof(idle), idleMs);
     Color idleC = idleMs > 300000u ? Color::DarkGrey : Color::Grey;

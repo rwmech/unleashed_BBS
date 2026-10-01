@@ -640,7 +640,8 @@ void taskMain(void*) {
             if (st == LState::Open && inPending(i)) busy = true;
             if (st == LState::Handshake && l.auth.load(std::memory_order_acquire) >= ssh::AUTH_YES)
                 busy = true;
-            if (st == LState::Open && g_hungAt[i] && now - g_hungAt[i] > 10000u) busy = true;
+            if (st == LState::Open && g_hungAt[i] &&
+                static_cast<int32_t>(now - g_hungAt[i]) > 10000) busy = true;   // signed: stamped after now (1.2.1)
         }
         // Never a pass without a wait in a long run of them, and a pause
         // after a pass that held the CPU (a key exchange): this task is above
