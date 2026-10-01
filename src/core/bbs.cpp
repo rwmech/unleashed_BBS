@@ -1494,8 +1494,8 @@ void Bbs::closedRefuse(Session& s, uint32_t now) {
 // nobody types a password without having been told. Telnet:
 // "--> This connection is not securely encrypted", the words in light red;
 // SSH: "--> This connection is securely encrypted", "securely encrypted" in
-// bright yellow as "Secure." was. Those are 46 and 42 with the marker, so a
-// terminal under that gets "--> Connection not securely encrypted" (37) and
+// bright yellow as "Secure." was. Those are 45 and 41 with the marker, so a
+// terminal under 47 and 43 columns gets "--> Connection not securely encrypted" (37) and
 // "--> Connection securely encrypted" (33): a C64 never wraps it. Until
 // 1.2.1 it was "Connection via Telnet is not secure" / "... SSH is Secure.".
 // ---------------------------------------------------------------------------
@@ -1514,7 +1514,7 @@ void Bbs::linkLine(Session& s) {
     Term& t = s.term;
     Timeline& tl = s.tl;
     const Link l = linkOf(s);
-    // The long form when the marker, it and one column to spare fit.
+    // The long form when the marker, it and two columns to spare fit.
     const bool wide = t.cols() > (l.secure ? 42 : 46);
     t.color(tl, Color::Cyan);
     t.text(tl, "--> ");
@@ -1537,10 +1537,9 @@ void Bbs::linkLine(Session& s) {
 static void signName(Term& t, Timeline& tl) {
     const SysConfig& c = syscfg::get();
     const char* name = c.boardName[0] ? c.boardName : (c.hostname[0] ? c.hostname : BBS_HOSTNAME);
-    char line[48];
-    const int room = t.cols() > 1 ? t.cols() - 1 : 39;
-    snprintf(line, sizeof(line), "%.*s", room, name);
-    t.text(tl, line);
+    // Cut by columns, not bytes: a byte cut through a µ leaves a lone 0xC2,
+    // which prints as "?" (the "??nleashed" shape; code review of calls.1).
+    t.textCols(tl, name, static_cast<uint8_t>(t.cols() > 1 ? t.cols() - 1 : 39));
 }
 
 // ---------------------------------------------------------------------------
@@ -1880,6 +1879,14 @@ void Bbs::askKnowMore(Session& s) {
     t.nl(tl);
     t.text(tl, t.cols() >= 64 ? "you do not use anywhere else." : "you use nowhere else.");
     t.nl(tl);
+    // No privacy offer over SSH (1.2.1): screens/privacy opens "TELNET IS
+    // NOT ENCRYPTED", the opposite of what was just said. A pause to read
+    // the warning, then the form; a privacy screen that follows the
+    // connection is 1.2.2's.
+    if (secure) {
+        pauseFor(s, AfterKey::SignupForm);
+        return;
+    }
     t.color(tl, Color::LightGreen);
     t.text(tl, "Would you like to know more? ");
     t.color(tl, Color::White);

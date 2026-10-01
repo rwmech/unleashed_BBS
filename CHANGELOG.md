@@ -44,6 +44,11 @@ A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E
   is encrypted. Still, use a password you do not use anywhere else.`
 - **The built-in busy and closed signs name the board**, its name or else
   its hostname as `@BOARD@` does, not the software.
+- From the review of calls.1 (1.2.1-calls.2): an SSH caller signing up is
+  not offered the privacy screen, which opens with telnet's warning; the
+  warning is read under a pause and the form opens (a privacy screen that
+  follows the connection is 1.2.2's). The signs cut a long board name by
+  columns, so a µ at the edge is never a lone byte printing as `?`.
 
 Host-tested only so far; the board versions move when their own code does.
 
