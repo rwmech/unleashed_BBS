@@ -627,7 +627,8 @@ void makeWant(const photos::Filed& f) {
 
 void post() {
     Job& j = g_job;
-    snprintf(j.path, sizeof(j.path), "%s", g_want.path);
+    static_assert(sizeof(j.path) == sizeof(g_want.path), "one path size");
+    memcpy(j.path, g_want.path, sizeof(j.path));        // same size, always terminated
     j.w = g_w;
     j.h = g_h;
     j.cancel.store(false);
@@ -672,7 +673,7 @@ void take() {
     const bool again = (g_requeue && j.cancel.load()) || (j.yielded && !j.cancel.load());
     if (j.yielded) ++g_yields;
     if (again && !g_haveWant && g_up) {
-        snprintf(g_want.path, sizeof(g_want.path), "%s", j.path);
+        memcpy(g_want.path, j.path, sizeof(g_want.path));
         g_want.cap = g_load;
         g_haveWant = true;
     }

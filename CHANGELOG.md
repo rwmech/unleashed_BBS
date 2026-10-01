@@ -98,8 +98,19 @@ Built and sized, not yet tested on the host or a board.
   runner's lock), and `photos::Writer::camera`, appended, for a camera to
   name itself: the built-in camera does (the Touch-LCD-2); camsat does not
   yet, so a sat is told by which one is busy as its photo is taken in, or by
-  being the only one. Static DRAM grows only on the display boards; every image without
-  a display is the same, object for object.
+  being the only one.
+- **Sizes (1.2.1-photo.2, off the ELFs, against dev.10):** static DRAM
+  +1,064 on the LCD-1.47 and the 4.3B, +1,072 on the WS2 and both
+  Makerfabs: free LCD-1.47 78,672, 4.3B 76,080, WS2 65,040, MF35 79,184,
+  MF35V2 73,928. Images: 1,499,088, 1,515,840, 1,588,096, 1,509,856 and
+  1,521,968 bytes (release builds). The display envs and esp32dev build
+  with no warnings. **Boards without a display are unchanged:** everything
+  new in shared files is inside `BBS_HAS_LCD`; esp32dev and its release
+  build, checked against the same tree before the change, have all 60
+  application objects identical section by section and the same static
+  DRAM (15,048 free, as at dev.10), and the image moves only by link
+  relaxation (-64 bytes on esp32dev, 0 on its release). The Freenove,
+  ESP32-CAM and ETH were not rebuilt.
 
 ### Login and the core (1.2.1-dev.1 to dev.8)
 
