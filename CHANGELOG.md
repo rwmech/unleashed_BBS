@@ -352,6 +352,30 @@ The three bench-only ESP32 envs (`esp32dev_backuptest`, `esp32dev_diag`,
   row's own note now (`cfg_walk_to`), and passes 11 of 11 with and without
   a card.
 
+### The ETH board: the code review of eth.2 (1.2.1-eth.3, ETH 1.0.4)
+
+- **The redial waits by reason.** A failure that cannot fix itself (a wrong
+  password, a handshake timing out, a security the access point does not
+  offer) still backs off 30 s, doubling to 5 minutes. An access point that
+  has gone (not found, beacons lost, the AP leaving, a router rebooting) is
+  tried every 15 s, said once on the console, because the sats need the
+  station associated: a 90 s router reboot used to leave Wi-Fi off for
+  about 3.5 minutes. The first drop after a join still redials at once.
+- **The backoff resets at association too**, not only at a new address: a
+  reconnect that keeps its lease never raises one, so the wait crept
+  towards 5 minutes over days of short drops.
+- **The fallback to the last good network waits for the wire properly.**
+  It read the wire's state from the event task, which clears it a pass
+  before the loop notices, so a network still on its trial was given up
+  the moment a cable was pulled. It reads the loop's own state now, and the
+  switch back is made a pass at a time instead of in a loop that could
+  hold every caller for up to 5 s.
+- A redial stamped by the Wi-Fi task while the loop was taking the last
+  one is no longer lost (a compare-and-swap).
+- The first route pick, if the event queue refuses it, is now left to the
+  next address event rather than made on the loop's task, where it could
+  race the event task and leave mDNS answering on the wrong interface.
+
 ### The ETH board: the code review of eth.1 (1.2.1-eth.2, ETH 1.0.4)
 
 - **Internal heap for the camera.** With Wi-Fi joined beside the wire a

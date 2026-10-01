@@ -79,6 +79,9 @@
 #endif
 #include <cstring>
 #include <ctime>
+#ifdef BBS_HAS_ETH
+#include <atomic>
+#endif
 
 static const char* TAG = "main";
 static EventGroupHandle_t s_wifi = nullptr;
@@ -120,18 +123,58 @@ static esp_ip4_addr_t s_ip      = {};
 static uint16_t      s_port     = BBS_PORT;
 #ifdef BBS_HAS_ETH
 static bool besideNow() { return s_beside && s_ssid[0]; }
-// The redial's backoff beside the wire (1.2.1-eth.2). A network that will
-// not answer (a wrong password, a router switched off) failed every 2-3 s
-// for good, with a console line and a supplicant round each time, on a
-// board whose callers are on the wire anyway. While the wire has an address,
-// the first drop after a join redials at once and each further failure in a
-// row waits: 30 s, doubling to 5 minutes. A join resets it; the wire going
-// dials at once. s_redialAt is set on the event loop's task and acted on by
-// ethWatch on the loop: one word each, written whole.
-constexpr uint32_t kRedialFirstMs = 30000;
-constexpr uint32_t kRedialMaxMs   = 300000;
-static volatile uint32_t s_redialAt  = 0;      // millis to dial again, 0 none waiting
-static volatile uint32_t s_redialGap = 0;      // the next wait, 0 the first drop since a join
+// The redial beside the wire (1.2.1-eth.2, eth.3). A network that will not
+// answer failed every 2-3 s for good, with a console line and a supplicant
+// round each time. While the wire has an address the callers are on it, but
+// the link is not: it drops DISCOVER until the station is associated, so
+// every second Wi-Fi is down is a second no sat can reach the board. So the
+// wait follows the reason (redialWait):
+//   a reason that cannot fix itself (a wrong password, a handshake that
+//     times out, a security the AP does not offer): 30 s, doubling to 5
+//     minutes, one console line a step;
+//   the AP gone (not found, beacons lost, the AP leaving, a router
+//     rebooting): a steady 15 s, said once, so the station is back within
+//     15 s of the AP.
+// The first drop after a join redials at once whatever the reason. A join
+// or an association resets it (a reconnect that keeps its lease raises
+// STA_CONNECTED and never GOT_IP); the wire going dials at once.
+// s_redialAt is stamped on the event loop's task and taken by ethWatch on
+// the loop with a compare-and-swap, so a stamp written between its read and
+// its clear is not lost.
+constexpr uint32_t kRedialFirstMs  = 30000;
+constexpr uint32_t kRedialMaxMs    = 300000;
+constexpr uint32_t kRedialSteadyMs = 15000;
+static std::atomic<uint32_t> s_redialAt{0};   // millis to dial again, 0 none waiting
+static std::atomic<uint32_t> s_redialGap{0};  // the next stubborn wait, 0 the first drop since a join
+static std::atomic<bool>     s_redialSteady{false};   // the last wait was the steady one (said once)
+
+// redialStubborn: a disconnect reason another try in 15 s will not change.
+static bool redialStubborn(uint8_t reason) {
+    switch (reason) {
+        case WIFI_REASON_AUTH_FAIL:
+        case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+        case WIFI_REASON_HANDSHAKE_TIMEOUT:
+        case WIFI_REASON_MIC_FAILURE:
+        case WIFI_REASON_802_1X_AUTH_FAILED:
+        case WIFI_REASON_GROUP_CIPHER_INVALID:
+        case WIFI_REASON_PAIRWISE_CIPHER_INVALID:
+        case WIFI_REASON_AKMP_INVALID:
+        case WIFI_REASON_CIPHER_SUITE_REJECTED:
+        case WIFI_REASON_BAD_CIPHER_OR_AKM:
+        case WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY:
+        case WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD:
+            return true;
+        default:
+            return false;                 // the AP gone, or a passing fault
+    }
+}
+
+// redialReset: a join or an association. The next drop redials at once.
+static void redialReset() {
+    s_redialGap.store(0);
+    s_redialAt.store(0);
+    s_redialSteady.store(false);
+}
 #endif
 
 // noSleep: keep the radio awake, and complain if it will not.
@@ -170,6 +213,11 @@ static void onNet(void*, esp_event_base_t base, int32_t id, void* data) {
         // GOT_IP branch below, and that is the hole the lag came back
         // through.
         noSleep();
+#ifdef BBS_HAS_ETH
+        // The same hole for the redial's backoff (1.2.1-eth.3): reset here,
+        // or a gap ratchets towards 5 minutes over days of AP blips.
+        redialReset();
+#endif
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         auto* e = static_cast<wifi_event_sta_disconnected_t*>(data);
         xEventGroupClearBits(s_wifi, WIFI_UP);
@@ -183,16 +231,25 @@ static void onNet(void*, esp_event_base_t base, int32_t id, void* data) {
         // Beside the wire with the wire up: back off after the first try.
         // Not during Improv's trial, which needs every try of its minute.
         if (besideNow() && plat::ethInfo().up && !ethTrial()) {
-            if (s_redialGap) {
-                const uint32_t gap = s_redialGap;
-                s_redialAt  = plat::millis() + gap;
-                if (!s_redialAt) s_redialAt = 1;
-                s_redialGap = gap * 2 > kRedialMaxMs ? kRedialMaxMs : gap * 2;
-                ESP_LOGW(TAG, "wifi down (reason %u); on the wire, next try in %u s",
-                         static_cast<unsigned>(e->reason), static_cast<unsigned>(gap / 1000u));
+            const uint32_t gap = s_redialGap.load();
+            if (gap) {
+                const bool stubborn = redialStubborn(e->reason);
+                const uint32_t wait = stubborn ? gap : kRedialSteadyMs;
+                uint32_t at = plat::millis() + wait;
+                if (!at) at = 1;
+                s_redialAt.store(at);
+                if (stubborn) {
+                    s_redialGap.store(gap * 2 > kRedialMaxMs ? kRedialMaxMs : gap * 2);
+                    s_redialSteady.store(false);
+                    ESP_LOGW(TAG, "wifi down (reason %u); on the wire, next try in %u s",
+                             static_cast<unsigned>(e->reason), static_cast<unsigned>(wait / 1000u));
+                } else if (!s_redialSteady.exchange(true)) {
+                    ESP_LOGW(TAG, "wifi down (reason %u, the AP gone?); on the wire, trying every %u s",
+                             static_cast<unsigned>(e->reason), static_cast<unsigned>(wait / 1000u));
+                }
                 return;
             }
-            s_redialGap = kRedialFirstMs;          // this one at once, the next waits
+            s_redialGap.store(kRedialFirstMs);     // this one at once, the next waits
         }
 #endif
         ESP_LOGW(TAG, "wifi down (reason %u, rssi %d), reconnecting",
@@ -231,8 +288,7 @@ static void onNet(void*, esp_event_base_t base, int32_t id, void* data) {
         (void)ps;
         s_ip = e->ip_info.ip;
 #ifdef BBS_HAS_ETH
-        s_redialGap = 0;                        // joined: the next drop redials at once
-        s_redialAt  = 0;
+        redialReset();                          // joined: the next drop redials at once
 #endif
         ESP_LOGI(TAG, "online " IPSTR "  dial in: telnet " IPSTR " %u",
                  IP2STR(&e->ip_info.ip), IP2STR(&e->ip_info.ip), static_cast<unsigned>(s_port));
@@ -493,15 +549,13 @@ static void netServicesStart() {
         esp_event_handler_register(BBS_NET_EVENT, 0, &onPick, nullptr);
         // mdns_init turned on every interface that had an address. The first
         // pick is posted to the event loop rather than made here, so netPick
-        // only ever runs on one task and its statics need no lock.
-        // A full queue refuses it: the pick is then made here, once. The
-        // event task can run netPick for an event at the same moment, so in
-        // that rare case the two may both act; each makes the same choice,
-        // and the next event settles the statics.
-        if (esp_event_post(BBS_NET_EVENT, 0, nullptr, 0, pdMS_TO_TICKS(100)) != ESP_OK) {
-            ESP_LOGW(TAG, "net: the first pick could not be queued; made here");
-            netPick(true);
-        }
+        // only ever runs on one task and its statics need no lock. A full
+        // queue refuses it, and then nothing is picked here (a pick on this
+        // task could race the event task's and leave s_mdnsQuiet wrong): the
+        // next GOT_IP of either interface picks, and until then esp_netif's
+        // own choice stands.
+        if (esp_event_post(BBS_NET_EVENT, 0, nullptr, 0, pdMS_TO_TICKS(100)) != ESP_OK)
+            ESP_LOGW(TAG, "net: the first pick could not be queued; the next address event makes it");
     }
 #endif
 }
@@ -861,6 +915,38 @@ void poll() {
 // ---------------------------------------------------------------------------
 static bool s_upSeen = false;
 
+#ifdef BBS_HAS_ETH
+// The fallback's switch, a pass at a time (wifiWatch). s_fbAt is when it
+// began, 0 none. s_hold is held throughout, so the disconnect handler
+// does not redial the network being replaced.
+static char     s_fbSsid[33];
+static char     s_fbPass[65];
+static uint32_t s_fbAt = 0;
+
+static void fbBegin() {
+    s_hold = true;
+    esp_wifi_disconnect();
+    xEventGroupClearBits(s_wifi, WIFI_UP);
+    s_fbAt = plat::millis();
+    if (!s_fbAt) s_fbAt = 1;
+}
+
+// fbStep: one try of the switch; false when none is under way.
+static bool fbStep() {
+    if (!s_fbAt) return false;
+    const esp_err_t e = wifiUse(s_fbSsid, s_fbPass);
+    if (e == ESP_ERR_WIFI_STATE && plat::since(plat::millis(), s_fbAt) < 5000) return true;   // next pass
+    s_fbAt = 0;
+    s_hold = false;
+    if (e != ESP_OK) {
+        ESP_LOGW(TAG, "wifi: the radio refused \"%s\" (%s)", s_fbSsid, esp_err_to_name(e));
+        return false;
+    }
+    if (s_ssid[0]) esp_wifi_connect();
+    return false;
+}
+#endif
+
 static void wifiWatch() {
 #ifdef BBS_HAS_ETH
     const bool up   = xEventGroupGetBits(s_wifi) & WIFI_UP;       // Wi-Fi's, not the wire's
@@ -871,12 +957,14 @@ static void wifiWatch() {
     // while the hold is on (and ethWatch re-times it when the hold goes).
     const bool busyJoin = imp::g_trial || imp::g_scanning || s_hold;
     // Nor while Wi-Fi is beside a wire that has an address (1.2.1-eth.2):
-    // going back to the last good network is imp::switchTo, which can spin
-    // the loop for up to 5 s while the station is mid-connect, and a board
-    // whose callers are on the wire gains nothing from it. ethWatch gives
-    // the trial its minute afresh when the wire goes.
-    const bool wired    = besideNow() && plat::ethInfo().up;
-    const bool busy     = busyJoin || s_ethHold || wired;
+    // a board whose callers are on the wire gains nothing from going back
+    // to the last good network. Read from the loop's own ETH_UP bit, not
+    // plat::ethInfo (eth.3): the event task clears that first, and in the
+    // pass the wire dropped this runs before ethWatch, which clears ETH_UP
+    // and gives the trial its minute afresh (recovery::wifiBegin) in one
+    // step. Read from ethInfo, a timer armed at boot fired in that pass.
+    const bool wired    = besideNow() && (xEventGroupGetBits(s_wifi) & ETH_UP);
+    const bool busy     = busyJoin || s_ethHold || wired || s_fbAt;
 #else
     const bool up   = imp::up();
     const bool busy = imp::g_trial || imp::g_scanning || s_hold;
@@ -893,8 +981,18 @@ static void wifiWatch() {
             !strcmp(reinterpret_cast<const char*>(ap.ssid), s_ssid))
             recovery::wifiJoined(s_ssid, s_pass);
     }
+#ifdef BBS_HAS_ETH
+    // Going back without imp::switchTo's spin (1.2.1-eth.3): switchTo tries
+    // esp_wifi_set_config up to 100 times 50 ms apart while the station is
+    // still part way through a connect, up to 5 s with the loop stopped.
+    // Here the radio is told to drop the connect, and the set_config is
+    // tried once a pass until it takes or 5 s go by (fbStep).
+    if (fbStep()) return;
+    if (recovery::wifiDue(plat::millis(), up, busy, s_ssid, s_fbSsid, s_fbPass)) fbBegin();
+#else
     char ssid[33], pass[65];
     if (recovery::wifiDue(plat::millis(), up, busy, s_ssid, ssid, pass)) imp::switchTo(ssid, pass);
+#endif
 }
 
 #ifdef BBS_HAS_ETH
@@ -956,9 +1054,8 @@ static void ethWatch() {
             }
             // A backed-off redial that has come due (onNet). One call into
             // the radio, which returns at once.
-            const uint32_t at = s_redialAt;
-            if (at && static_cast<int32_t>(now - at) >= 0) {
-                s_redialAt = 0;
+            uint32_t at = s_redialAt.load();
+            if (at && static_cast<int32_t>(now - at) >= 0 && s_redialAt.compare_exchange_strong(at, 0)) {
                 if (!busy && !(xEventGroupGetBits(s_wifi) & WIFI_UP)) esp_wifi_connect();
             }
             return;
@@ -984,9 +1081,9 @@ static void ethWatch() {
             // backing off goes at once, and a network still on its trial
             // gets its minute from here (wifiWatch judged nothing while the
             // wire carried the board).
-            s_redialGap = 0;
-            if (s_redialAt) {
-                s_redialAt = 0;
+            s_redialGap.store(0);
+            s_redialSteady.store(false);
+            if (s_redialAt.exchange(0)) {
                 if (!busy && !(xEventGroupGetBits(s_wifi) & WIFI_UP)) esp_wifi_connect();
             }
             recovery::wifiBegin(now, s_ssid, s_pass);
