@@ -352,6 +352,30 @@ The three bench-only ESP32 envs (`esp32dev_backuptest`, `esp32dev_diag`,
   row's own note now (`cfg_walk_to`), and passes 11 of 11 with and without
   a card.
 
+### The ETH board: the camera's power, measured and reworked (1.2.1-eth.9, ETH 1.0.6)
+
+- **The off time is 8 s, from the console's own timings.** eth.8's 5 s
+  came from the gaps between snaps, which leave out the photo's save
+  (about 2.6 s after the camera is switched off). Counting from the
+  switch-off, the bench's probes read: 2.6 s and 4.6 s off found the
+  sensor (5 of 5); 5.5 s off failed (3 of 3, plus one at about 5.6 s
+  earlier); 6.6 s and 8.6 s found it (8 of 8). A 5 s hold would have landed
+  every quick second snap in the failing window.
+- **The wait no longer holds the background runner.** The camera's job
+  waits out the off time in a phase of its own on the BBS loop, the spinner
+  going, and only then goes on the runner, so the link's acknowledgements,
+  announce's lookups and the forum writes behind it are not held up (code
+  review of eth.8). The one retry when no sensor answers works the same
+  way, after a full off.
+- On this board a sensor that did not answer is tried as raw (RGB565) only
+  on the retry after the full off, so a sensor that came up badly is not
+  taken for one with no JPEG for the rest of the boot.
+- The first snap of a boot, brought up again at the size the sensor really
+  gives, restarts the sensor with its supply left on, so it waits no off
+  time.
+- The other camera boards' snaps go through the same phases with no wait
+  (their off time is always 0), so they behave as before.
+
 ### The ETH board: the camera's power (1.2.1-eth.8, ETH 1.0.5)
 
 - **A snap taken soon after the last one no longer finds "no camera".** The
