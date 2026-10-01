@@ -3297,6 +3297,10 @@ int32_t Bbs::minutesLeft(const Session& s, uint32_t now) const {
     if (s.role != Role::Caller || !s.loggedIn || unlimited(s)) return -1;
     int32_t secs = secondsLeft(s, now);
     if (secs < 0) secs = 0;
+    // No limit at all (call and day minutes both 0, or a guest's 0) comes
+    // back as INT32_MAX: no figure, rather than rounding it up past the top
+    // (undefined, and the square panel's LEFT asks twice a second, 1.2.1).
+    if (secs > INT32_MAX - 59) return -1;
     return (secs + 59) / 60;
 }
 

@@ -463,6 +463,13 @@ constexpr Glyph kGlyphSlow   = { 7, 9,  { 0xFE00, 0x4400, 0x6C00, 0x3800, 0x1000
 // the lens cut out, 2 px of ink at its thinnest.
 constexpr Glyph kGlyphCamera = { 11, 10, { 0x0E00, 0x1F00, 0xFFE0, 0xF1E0, 0xE0E0, 0xE0E0, 0xE0E0, 0xF1E0,
                                            0xFFE0, 0xFFE0 } };
+// The drive (1.2.1, internal/tty-ux-panel-load-line-2026-10-01.md): a 3.5"
+// drive's slab from the front, top face, seam, front face with its light at
+// the right. The light's 3 x 3 window (rows 5 to 7, columns 7 to 9) is not in
+// the bitmap: it is painted on its own (kHddLight*), black at rest.
+constexpr Glyph kGlyphHdd    = { 11, 9, { 0x7FC0, 0xFFE0, 0xFFE0, 0x8020, 0xFFE0, 0xFE20, 0xFE20, 0xFE20,
+                                          0x7FC0 } };
+constexpr int kHddLightX = 7, kHddLightY = 5, kHddLightS = 3;   // within the glyph
 
 // The status row's state: what the panel read this pass, in packing order.
 // Everything that decides a pixel of the row is in here, so two equal
@@ -481,12 +488,14 @@ struct Status {
     bool    warn    = false;   // the last restart was not a clean one
     bool    slow    = false;   // a slow pass in the last minute
     bool    camera  = false;   // a picture is being taken (a camera board)
+    bool    driveOff = false;  // the drive is not reporting (lights off, or drive_fx off)
 };
 
 // The camera packs last: a timelapse lights it at every interval, and last
-// is the one place where it coming and going moves no other glyph.
-enum Slot : uint8_t { G_SD, G_BELL, G_MAIL, G_UPLOAD, G_LOCK, G_TOWER, G_STAFF, G_WARN, G_SLOW, G_CAMERA,
-                      G_COUNT };
+// is the one place where it coming and going moves no other glyph. The drive
+// always packs, right after the card: internal flash is always there.
+enum Slot : uint8_t { G_SD, G_HDD, G_BELL, G_MAIL, G_UPLOAD, G_LOCK, G_TOWER, G_STAFF, G_WARN, G_SLOW,
+                      G_CAMERA, G_COUNT };
 
 struct Packed {
     uint8_t         n = 0;
@@ -500,8 +509,11 @@ struct Packed {
 // pack: the glyphs a status shows, left to right from x0, with their
 // colours. The bell's slot is always one of them while ringing, whatever its
 // blink phase, so the row does not shuffle at 2 Hz: the blink is drawn over
-// it on its own.
-inline Packed pack(const Status& s, int x0) {
+// it on its own. With right (the strip's right edge), a row that would pass
+// it is packed again with 2 px between glyphs (1.2.1: the drive glyph made
+// the stick's and the 2"'s rows full with every glyph lit); decided from the
+// status alone, so equal statuses still draw equal rows.
+inline Packed packAt(const Status& s, int x0, int gap) {
     Packed p;
     auto add = [&](uint8_t which, const Glyph& g, uint16_t col) {
         p.which[p.n] = which;
@@ -510,11 +522,12 @@ inline Packed pack(const Status& s, int x0) {
         p.x[p.n] = static_cast<int16_t>(x0);
         x0 += g.w;
         p.end = static_cast<int16_t>(x0);
-        x0 += kGlyphGap;
+        x0 += gap;
         ++p.n;
     };
     add(G_SD, s.card == Status::CARD_NONE ? kGlyphSdNone : kGlyphSd,
         s.card == Status::CARD_IN ? tok::kDial : s.card == Status::CARD_ERROR ? tok::kRisk : tok::kDim);
+    add(G_HDD, kGlyphHdd, s.driveOff ? tok::kFaint : tok::kDim);
     if (s.ring)   add(G_BELL, kGlyphBell, tok::kBusy);
     if (s.mail)   add(G_MAIL, kGlyphMail, tok::kBusy);
     if (s.upload) add(G_UPLOAD, kGlyphUpload, tok::kWarm);
@@ -528,6 +541,23 @@ inline Packed pack(const Status& s, int x0) {
     if (s.slow)   add(G_SLOW, kGlyphSlow, tok::kWarm);
     if (s.camera) add(G_CAMERA, kGlyphCamera, tok::kLive);
     return p;
+}
+
+inline Packed pack(const Status& s, int x0, int right = 0) {
+    Packed p = packAt(s, x0, kGlyphGap);
+    if (right > 0 && p.end > right) p = packAt(s, x0, 2);
+    return p;
+}
+
+// hddLight: the drive glyph's light window on the glass, from a packed row,
+// or an empty box when the row has none.
+inline Rect hddLight(const Packed& p, int y) {
+    for (uint8_t i = 0; i < p.n; ++i)
+        if (p.which[i] == G_HDD) {                 // centred in the 16 px row, as glyphBox does
+            const int top = y + (16 - kGlyphHdd.h) / 2;
+            return R(p.x[i] + kHddLightX, top + kHddLightY, kHddLightS, kHddLightS);
+        }
+    return Rect();
 }
 
 // glyphBox: one packed glyph's box, vertically centred in a 16 px row at y.
@@ -685,10 +715,30 @@ inline void drawLamp(Canvas& c, const Led& l, uint16_t col) {
 inline void drawLed(Canvas& c, const Led& l, uint16_t col, bool gleam = false) {
     fill(c, l.cell, tok::kBg);
     const Rect& s = l.led;
+    if (col && gleam) {
+        // A lamp (the light bar and the drive lamp) that is lit is never
+        // darker than a glow a person can see: the drive light idling at 10%
+        // comes out near black on glass, and the lamp vanished once its
+        // gleam stopped being half white (Rob, the G4848, 1.2.1). Brought up
+        // to a floor of 40 in its brightest channel, hue kept; the free
+        // lines' dim blue (about 51) is above it and stays as it was.
+        const Rgb8 v0 = unpack(col);
+        const int top = v0.r > v0.g ? (v0.r > v0.b ? v0.r : v0.b) : (v0.g > v0.b ? v0.g : v0.b);
+        if (top > 0 && top < 40) col = scale(col, 40, top);
+    }
     if (col) {
         fill(c, s, scale(col, 1, 3));
         fill(c, R(s.x + 1, s.y + 1, s.w - 2, s.h - 2), col);
-        if (gleam) fill(c, R(s.x + 1, s.y + 1, s.w - 2, 1), mix(col, tok::kWhite, 1, 2));
+        if (gleam) {
+            // The gleam as bright as the lamp: half way to white on a lamp at
+            // full brightness, as it always was, and next to nothing on a
+            // faint one. At a fixed half-white, a lamp glowing faintly (the
+            // drive light idling at 10%) showed a whitish line over a black
+            // body (Rob, on the G4848's glass and the 4.3B's, 1.2.1).
+            const Rgb8 v = unpack(col);
+            const int lum = v.r > v.g ? (v.r > v.b ? v.r : v.b) : (v.g > v.b ? v.g : v.b);
+            fill(c, R(s.x + 1, s.y + 1, s.w - 2, 1), mix(col, tok::kWhite, lum, 2 * 255));
+        }
     } else {
         fill(c, R(s.x + 1, s.y + 1, s.w - 2, s.h - 2), tok::kRule);
         fill(c, R(s.x + 2, s.y + 2, s.w - 4, s.h - 4), tok::kSurface);
@@ -860,7 +910,7 @@ inline Layout layout(uint16_t w, uint16_t h) {
     L.land  = w >= h;
     L.bar   = R(0, 0, w, 22);
     L.band  = R(0, 22, w, 20);
-    L.track = R(0, 42, w, 1);
+    L.track = R(0, 42, w, 2);                     // the load line: 2 px (1.2.1); the tall glass's is 1
     // The slot as many glyphs as fit in w - 4. On a wide portrait glass (240,
     // WS2 1.0.0) centred, x 4, the left edge every other row keeps; x 2 as it
     // always was elsewhere (the 21 an IPv4 address and port need at 172).
@@ -871,8 +921,9 @@ inline Layout layout(uint16_t w, uint16_t h) {
     L.ant   = R(L.clock.x - 10, 24, kAntennaW, kAntennaH);
     // The glyphs end short of the antenna, and at 110; at 122 on a wide
     // portrait glass (WS2 1.0.0), for all ten, the camera's included (118 px
-    // from x 4).
-    const int cap = widePortrait ? 122 : 110;
+    // from x 4). The 2" turned landscape too (1.2.1): with the drive glyph
+    // its eleven run to 122 at 2 px, past 110; its antenna is at 266.
+    const int cap = (widePortrait || (w >= 232 && h >= 232)) ? 122 : 110;
     int gw  = L.ant.x - 4 - 4;
     L.glyphs = R(4, 24, gw < cap ? gw : cap, 16);
     L.headIcon = R(4, 48, 16, 16);
@@ -937,13 +988,14 @@ inline Layout layout(uint16_t w, uint16_t h) {
         L.rule1   = R(4, 198, w - 8, 1);
         L.sys     = R(4, 200, w - 8, 16);
         L.rule2   = Rect();
-        // The foot (revision 1): the drive lamp at the left, the strip as a
-        // light bar filling the rest, both 12 tall at 219..230. The spec had
+        // The foot (revision 1): the strip as a light bar, 12 tall at
+        // 219..230 (until 1.2.1 a drive lamp sat at its left). The spec had
         // them 14 tall at 222..235; on the glass, in Waveshare's case, the
         // bottom of that row was cut off (Rob's photo, 2026-09-28), so the
         // foot now keeps 9 px (18 on the glass) clear of the bottom edge.
-        L.drive   = R(4, 219, 20, 12);
-        L.leds    = R(40, 219, w - 44, 12);
+        // No drive lamp (1.2.1): it is the HDD glyph in the band now, and
+        // the bar spans the foot, 35 px segments from x 7 at 400.
+        L.leds    = R(4, 219, w - 8, 12);
         L.ledBar  = true;
         // The band's word, in the space between the glyphs and the antenna.
         L.word    = R(122, 36, L.ant.x - 8 - 122, 16);
@@ -1181,19 +1233,38 @@ struct DirtyCheap : Dirty {
 // Chosen by the glass's size; the Waveshare's two layouts never reach it.
 // ---------------------------------------------------------------------------
 constexpr uint8_t kBigRows   = 11;    // the sysop line, then nodes 1 to 10
+#if BBS_PANEL_SQUARE
+constexpr uint8_t kRecent    = 6;     // the square's deck holds six (internal/tty-ux-panel-g4848-2026-10-01.md)
+#else
 constexpr uint8_t kRecent    = 4;
+#endif
 constexpr uint8_t kCells     = 6;
 constexpr int     kGraphUp   = 28;    // the sweep's heights above and below its axis
 constexpr int     kGraphDown = 27;
+#if BBS_PANEL_SQUARE
+constexpr int     kGraphCols = 228;   // the square's sweep, 15.2 minutes (g_gHead is a uint8_t)
+#else
 constexpr int     kGraphCols = 160;   // the longest sweep, landscape
+#endif
 
 // The big glass's own fields, numbered on from the Waveshare's.
+#if BBS_PANEL_SQUARE
+// The square adds the ring banner across the bar and band, appended.
+enum BigField : uint8_t { F_NAME = F_COUNT, F_BWORD, F_DBM, F_PIPS, F_CALLS, F_TRAF,
+                          F_CELL, F_ROW = F_CELL + kCells, F_RECENT = F_ROW + kBigRows,
+                          F_RING = F_RECENT + kRecent, F_BIG_COUNT };
+#else
 enum BigField : uint8_t { F_NAME = F_COUNT, F_BWORD, F_DBM, F_PIPS, F_CALLS, F_TRAF,
                           F_CELL, F_ROW = F_CELL + kCells, F_RECENT = F_ROW + kBigRows,
                           F_BIG_COUNT = F_RECENT + kRecent };
+#endif
 
-// The system cells, in reading order: A then B, three rows.
+// The system cells, in reading order: A then B, three rows. On the square the
+// sixth, never built as the camera, is the chip's temperature.
 enum Cell : uint8_t { C_HEAP, C_SLOW, C_CARD, C_PEAK, C_UP, C_CAMERA };
+#if BBS_PANEL_SQUARE
+constexpr uint8_t C_TEMP = C_CAMERA;
+#endif
 
 struct BigLayout {
     bool    on = false;               // the glass is big enough
@@ -1202,6 +1273,11 @@ struct BigLayout {
                                       // clock and track are the Layout's)
     Rect    head;                     // "Callers 4/11" with its icon and column labels
     int16_t colDoing = 0, colOnEnd = 0, colTerm = 0;   // where the labels and columns are
+#if BBS_PANEL_SQUARE
+    int16_t handleW = 12 * kSmallW;   // the handle's column: 20 glyphs on the square
+    int16_t colLeftEnd = 0;           // one past LEFT's right edge, 0 none
+    Rect    ring;                     // the ring banner: the bar and band as one block
+#endif
     Rect    row[kBigRows];            // each row's text, x 14 on
     Rect    pips;                     // the pip column, one field
     Rect    colRule, midRule;         // landscape's vertical rule, portrait's middle one
@@ -1221,16 +1297,82 @@ inline bool bigGlass(uint16_t w, uint16_t h) {
 // bigLayout: the big layouts, and a Layout with the parts the Waveshare's
 // drawing shares (the header's rows, the glyph strip, antenna, clock, track,
 // heading and LEDs) filled in, so that code draws them unchanged.
+#if BBS_PANEL_SQUARE
+// bigSquare: the 480 x 480 glass (internal/tty-ux-panel-g4848-2026-10-01.md,
+// "Every box"): the big glass's header as it is, the node board across the
+// full width with whole handles and a LEFT column, then the MF35's right
+// column as a deck under it (calls and six recent on the left, the traffic,
+// sweep and six cells on the right), and a light bar with the drive lamp at
+// the foot. Every box absolute, which is why it is exactly 480.
+inline void bigSquare(uint16_t w, uint16_t h, BigLayout& B, Layout& L) {
+    B.land = true;
+    L.land = true;
+    // The header: the big glass's, unchanged.
+    L.bar    = R(0, 0, w, 22);
+    L.band   = R(0, 22, w, 20);
+    L.track  = R(0, 42, w, 2);                    // the load line, 2 px (1.2.1)
+    L.glyphs = R(4, 24, 120, 16);
+    L.clock  = R(w - 44, 24, 5 * kSmallW, kSmallH);
+    B.dbm    = R(L.clock.x - 6 - 32, 24, 32, 16);
+    L.ant    = R(B.dbm.x - 4 - kAntennaW, 24, kAntennaW, kAntennaH);
+    B.name   = R(4, 3, 26 * kSmallW, 16);
+    B.slot   = R(w - 4 - 24 * kSmallW, 3, 24 * kSmallW, 16);
+    B.word   = R(134, 24, L.ant.x - 8 - 134, 16);
+    L.slot   = B.slot;
+    B.ring   = R(0, 0, w, 42);
+    // The node board: heading at 48, rows at 68 + 20k across 462 px.
+    L.headIcon = R(6, 48, 16, 16);
+    L.head     = R(26, 48, 198, 16);
+    B.head     = R(6, 48, 470, 16);
+    B.handleW    = 20 * kSmallW;                           // BBS_USER_MAX, whole
+    B.colDoing   = 232;
+    B.colOnEnd   = 352;
+    B.colLeftEnd = 400;
+    B.colTerm    = 424;
+    for (uint8_t k = 0; k < kBigRows; ++k) B.row[k] = R(14, 68 + kPitch * k, 462, 16);
+    B.pips = R(6, 68, 6, kPitch * (kBigRows - 1) + 16);
+    // The deck: a rule at 290, the column rule at 240.
+    B.midRule = R(4, 290, 472, 1);
+    B.colRule = R(240, 296, 1, 136);
+    B.calls   = R(6, 296, 228, 16);
+    for (uint8_t j = 0; j < kRecent; ++j) B.recent[j] = R(6, 316 + kPitch * j, 228, 16);
+    B.traf  = R(248, 296, 228, 16);
+    B.graph = R(248, 316, kGraphCols, 56);
+    // The cells: health, then storage and load, then time.
+    B.cell[C_HEAP] = R(248, 376, 112, 16);
+    B.cell[C_TEMP] = R(364, 376, 112, 16);
+    B.cell[C_CARD] = R(248, 396, 112, 16);
+    B.cell[C_PEAK] = R(364, 396, 112, 16);
+    B.cell[C_UP]   = R(248, 416, 112, 16);
+    B.cell[C_SLOW] = R(364, 416, 112, 16);
+    // The foot: a rule at 440, the drive lamp and a light bar under the names.
+    B.foot   = R(4, 440, 472, 1);
+    // No drive lamp (1.2.1, the HDD glyph in the band): the bar spans the
+    // foot rule, 43 px segments from x 7.
+    L.leds   = R(4, 448, 472, 16);
+    L.ledBar = true;
+    B.leds   = L.leds;
+    (void)h;
+}
+#endif
+
 inline BigLayout bigLayout(uint16_t w, uint16_t h, Layout& L) {
     BigLayout B;
     L = Layout();
     if (!bigGlass(w, h)) return B;
     B.on   = true;
+#if BBS_PANEL_SQUARE
+    if (w == 480 && h == 480) {
+        bigSquare(w, h, B, L);
+        B.axis = static_cast<int16_t>(B.graph.y + kGraphUp);
+        return B;
+    }
+#endif
     B.land = w >= h;
     L.land = B.land;
     L.bar    = R(0, 0, w, 22);
     L.band   = R(0, 22, w, 20);
-    L.track  = R(0, 42, w, 1);
+    L.track  = R(0, 42, w, 2);                    // the load line, 2 px (1.2.1)
     L.glyphs = R(4, 24, 120, 16);
     L.clock  = R(w - 44, 24, 5 * kSmallW, kSmallH);
     B.dbm    = R(L.clock.x - 6 - 32, 24, 32, 16);       // "-100" at worst: four glyphs
@@ -1306,6 +1448,9 @@ inline Rect bigFieldBox(const BigLayout& B, const Layout& L, uint8_t f) {
     if (f >= F_CELL && f < F_CELL + kCells)       return B.cell[f - F_CELL];
     if (f >= F_ROW && f < F_ROW + kBigRows)       return B.row[f - F_ROW];
     if (f >= F_RECENT && f < F_RECENT + kRecent)  return B.recent[f - F_RECENT];
+#if BBS_PANEL_SQUARE
+    if (f == F_RING) return B.ring;
+#endif
     return Rect();
 }
 

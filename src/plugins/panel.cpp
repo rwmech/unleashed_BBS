@@ -380,6 +380,23 @@ uint16_t       g_pageSeen = 0;
 
 // The dot on the track.
 int16_t        g_dotX = 0;
+bool           g_stood = false;             // the dot stood aside last frame: it moves this one
+
+// The load line (1.2.1, internal/tty-ux-panel-load-line-2026-10-01.md): the
+// loop's duty, sampled every kLoadMs, as a level the dot wears and paints the
+// rail with as it passes. The rail is the history; nothing else keeps it.
+enum Level : uint8_t { LV_NONE, LV_BLUE, LV_GREEN, LV_YELLOW, LV_RED };
+constexpr uint32_t kLoadMs     = 250;       // a sample
+constexpr uint32_t kRedHoldMs  = 2000;      // red stays this long after its last trigger
+constexpr uint32_t kLoadGapUs  = 1000000;   // a sample over this: no duty, red on a slow pass
+constexpr uint32_t kYellowPassUs = 25000;   // a pass this long is yellow; over BBS_SLOW_PASS_US red
+uint8_t        g_level    = LV_NONE;
+uint8_t        g_fall     = 0;              // samples in a row below the shown level
+bool           g_loadInit = false;
+uint32_t       g_loadAt = 0, g_loadW = 0, g_loadT = 0, g_loadSlow = 0, g_redUntil = 0;
+uint8_t        g_duty   = 0;                // the last sample's, for PANEL
+uint32_t       g_peakUs = 0;
+uint8_t        g_diskShown = 0xFF;          // the HDD light as painted (lights::DK_), 0xFF none
 
 #if defined(BBS_HAS_TOUCH) && defined(BBS_TOUCH_POLL)
 // Touch (1.1.2, the 4.3" board's polled GT911): a tap wakes a sleeping
@@ -599,25 +616,175 @@ void cutGlyphs(const char* s, int k, char* out, size_t n) {
     out[len] = '\0';
 }
 
-// The dot's footprint at x: its tail two pixels behind it on the rail, the
-// dot itself 3 x 3 across the band's last row, the rail and the first row
-// of the body.
-Rect dotBox(int x) { return R(x - 3, g_layout.track.y - 1, 5, 3); }
+#if BBS_PANEL_SQUARE
+// The square's ring banner (below, with the big glass's parts).
+bool ringBanner();
+void ringEnd();
+#endif
 
-// dotErase: the rows the dot crosses put back as they are without it.
+// The level's colours: the rail behind the dot, and the dot itself. The rail
+// carries green, yellow and red at full strength and idle blue at kTrack, so
+// an idle board looks as it always did; grey is no reading yet.
+uint16_t railColour(uint8_t lv) {
+    switch (lv) {
+        case LV_BLUE:   return kTrack;
+        case LV_GREEN:  return kLive;
+        case LV_YELLOW: return kYellow;
+        case LV_RED:    return kRisk;
+        default:        return kRule;
+    }
+}
+uint16_t dotColour(uint8_t lv) {
+    return lv == LV_GREEN ? kLive : lv == LV_YELLOW ? kYellow : lv == LV_RED ? kRisk : kDial;
+}
+
+// The dot's footprint at x: its tail two pixels behind it on the rail, its
+// body over the band's last row, the rail and the row under it. On a 2 px
+// rail (every glass but the 4.3B) the body is 4 x 4 with a 2 x 2 white core.
+Rect dotBox(int x) {
+    const Rect& t = g_layout.track;
+    return t.h >= 2 ? R(x - 3, t.y - 1, 6, 4) : R(x - 3, t.y - 1, 5, 3);
+}
+
+// dotErase: the rows the dot crosses put back without it, the rail in the
+// current level's colour: the pixels the old footprint leaves are the ones
+// the dot just passed, so this is the whole trail.
 void dotErase(const Rect& r) {
-    const int y = g_layout.track.y;
+    const Rect& t = g_layout.track;
+    const int y = t.y;
+#if BBS_PANEL_SQUARE
+    // Under the ring banner the row above the track is the banner's, not
+    // the band's: put back kBar, or the dot leaves a band-blue stripe.
+    fill(g_canvas, R(r.x, y - 1, r.w, 1), ringBanner() ? kBar : kBand);
+#else
     fill(g_canvas, R(r.x, y - 1, r.w, 1), kBand);
-    fill(g_canvas, R(r.x, y, r.w, 1), kTrack);
-    fill(g_canvas, R(r.x, y + 1, r.w, 1), kBg);
+#endif
+    fill(g_canvas, R(r.x, y, r.w, t.h), railColour(g_level));
+    fill(g_canvas, R(r.x, y + t.h, r.w, 1), kBg);
 }
 
 void dotDraw(int x) {
-    const int y = g_layout.track.y;
-    dot(g_canvas, x - 3, y, scale(kDial, 1, 6));
-    dot(g_canvas, x - 2, y, scale(kDial, 2, 6));
-    fill(g_canvas, R(x - 1, y - 1, 3, 3), kDial);
+    const Rect& t = g_layout.track;
+    const int y = t.y;
+    const uint16_t c = dotColour(g_level);
+    if (t.h >= 2) {
+        fill(g_canvas, R(x - 3, y, 1, 2), scale(c, 1, 6));
+        fill(g_canvas, R(x - 2, y, 1, 2), scale(c, 2, 6));
+        fill(g_canvas, R(x - 1, y - 1, 4, 4), c);
+        fill(g_canvas, R(x, y, 2, 2), kWhite);
+        return;
+    }
+    dot(g_canvas, x - 3, y, scale(c, 1, 6));
+    dot(g_canvas, x - 2, y, scale(c, 2, 6));
+    fill(g_canvas, R(x - 1, y - 1, 3, 3), c);
     dot(g_canvas, x, y, kWhite);
+}
+
+#ifdef BBS_HAS_TOUCH
+// railGrey: the whole rail back to "no reading" (a wake from sleep, whose
+// held dot left what is ahead of it older than a lap), and the dot on it.
+void railGrey() {
+    const Rect& t = g_layout.track;
+    if (empty(t)) return;
+    fill(g_canvas, t, kRule);
+    dotDraw(g_dotX);
+    g_dirty.add(unite(t, clip(dotBox(g_dotX), g_canvas.w, g_canvas.h)));
+}
+#endif
+
+// The drive glyph's light (the HDD icon, 1.2.1): the lights plugin's state
+// at full level, not the drive light's brightness, which is for a pixel in a
+// case. Dark at rest, red for an error, as the wired light blinks it.
+// styleWord: drive style n's word from lights::kDriveFx, the one list.
+void styleWord(uint8_t n, char* out, size_t cap) {
+    const char* p = lights::kDriveFx;
+    while (n && *p) { if (*p++ == '|') --n; }
+    size_t k = 0;
+    while (p[k] && p[k] != '|' && k + 1 < cap) { out[k] = p[k]; ++k; }
+    out[k] = 0;
+    if (!k) snprintf(out, cap, "?");
+}
+
+uint16_t diskColour(uint8_t st) {
+    switch (st) {
+        case lights::DK_CARD:   return rgb(0xFF, 0x82, 0x00);   // the lights' amber
+        case lights::DK_FLASH:  return rgb(0xAA, 0xC8, 0xFF);   // and cool white
+        case lights::DK_ERR_ON: return kRisk;                   // the SD glyph's error red
+        default:                return kBg;
+    }
+}
+
+// paintDisk: the light window filled for a state, and queued: 9 px.
+void paintDisk(uint8_t st) {
+    g_diskShown = st;
+    const Rect r = hddLight(g_packed, g_layout.glyphs.y);
+    if (empty(r)) return;
+    fill(g_canvas, r, diskColour(st));
+    g_dirty.add(r);
+}
+
+// loadTick: a sample of the loop's duty every kLoadMs, on micros (the host's
+// fast clock scales millis only), into the level: up at once, down one level
+// a sample after two samples below it, red held kRedHoldMs from its last
+// trigger. A sample spanning over a second (a pass that long) gives no duty,
+// only red when it held a slow pass.
+void loadReset() {
+    g_level = LV_NONE;
+    g_fall = 0;
+    g_loadInit = false;
+    g_loadAt = g_redUntil = 0;
+    g_duty = 0;
+    g_peakUs = 0;
+    g_stood = false;
+}
+
+void loadTick(uint32_t now) {
+    if (g_loadAt && now - g_loadAt < kLoadMs) return;
+    g_loadAt = now ? now : 1;
+    Bbs& b = Bbs::instance();
+    uint32_t work = 0, peak = 0;
+    b.takeLoad(work, peak);
+    const uint32_t t = plat::micros(), slow = b.slowPasses();
+    const uint32_t dW = work - g_loadW, dT = t - g_loadT;
+    const bool slowNew = slow != g_loadSlow;
+    const bool first = !g_loadInit;
+    g_loadW = work;
+    g_loadT = t;
+    g_loadSlow = slow;
+    g_loadInit = true;
+    if (first || !dT) return;
+    if (dT > kLoadGapUs) {
+        // A sample this long is one pass of most of a second (start and
+        // silent reset through first): no duty from it, but the pass is the
+        // worst thing the line is for, so it is red (code review, 1.2.1).
+        if (slowNew || peak > BBS_SLOW_PASS_US) {
+            g_peakUs = peak;
+            g_level = LV_RED;
+            g_fall = 0;
+            g_redUntil = (now + kRedHoldMs) ? now + kRedHoldMs : 1;
+        }
+        return;
+    }
+    uint32_t duty = dW >= dT ? 100u : dW * 100u / dT;
+    if (duty > 100u) duty = 100u;
+    g_duty = static_cast<uint8_t>(duty);
+    g_peakUs = peak;
+    uint8_t lv = LV_BLUE;
+    if (duty >= 75u || slowNew || peak > BBS_SLOW_PASS_US) lv = LV_RED;
+    else if (duty >= 40u || peak >= kYellowPassUs)        lv = LV_YELLOW;
+    else if (duty >= 15u)                                 lv = LV_GREEN;
+    if (lv == LV_RED) g_redUntil = (now + kRedHoldMs) ? now + kRedHoldMs : 1;
+    if (lv >= g_level) {
+        g_level = lv;
+        g_fall = 0;
+        return;
+    }
+    const bool held = g_level == LV_RED && g_redUntil && static_cast<int32_t>(g_redUntil - now) > 0;
+    if (held) { g_fall = 0; return; }
+    if (++g_fall >= 2) {
+        g_level = static_cast<uint8_t>(g_level - 1 > lv ? g_level - 1 : lv);
+        if (g_level == LV_NONE) g_level = LV_BLUE;
+    }
 }
 
 #if PANEL_BIG
@@ -629,6 +796,7 @@ void bigDbm(int rssi, uint32_t now);
 void refreshBig(uint32_t now);
 #endif
 
+
 // redrawAll: the whole glass from nothing: the header's two rows, the rail,
 // the rules, and every field and LED redrawn on the next pass.
 void redrawAll() {
@@ -636,7 +804,7 @@ void redrawAll() {
     fill(g_canvas, R(0, 0, g_canvas.w, g_canvas.h), kBg);
     fill(g_canvas, L.bar, kBar);
     fill(g_canvas, L.band, kBand);
-    fill(g_canvas, L.track, kTrack);
+    fill(g_canvas, L.track, kRule);                    // the load line: no reading yet
     fill(g_canvas, L.colRule, kRule);
     fill(g_canvas, L.rule1, kRule);
     fill(g_canvas, L.rule2, kRule);
@@ -645,6 +813,7 @@ void redrawAll() {
 #endif
     if (g_dotX >= g_canvas.w) g_dotX = 0;
     dotDraw(g_dotX);
+    g_diskShown = 0xFF;
     invalidate();
     g_dirty.clear();
     g_dirty.add(R(0, 0, g_canvas.w, g_canvas.h));
@@ -756,7 +925,8 @@ void statusWords(const Status& s, char* out, size_t n) {
     static const char* const kCard[]    = { "no card", "card", "card error" };
     static const char* const kListing[] = { "", " listed", " waiting", " unlisted" };
     static const char* const kStaff[]   = { "", " co-sysop", " sysop" };
-    snprintf(out, n, "%s%s%s%s%s%s%s%s%s%s", kCard[s.card], s.ring ? " ring" : "", s.mail ? " mail" : "",
+    snprintf(out, n, "%s%s%s%s%s%s%s%s%s%s%s", kCard[s.card], s.driveOff ? " drive off" : "",
+             s.ring ? " ring" : "", s.mail ? " mail" : "",
              s.upload ? " uploads" : "", s.backup ? " backup" : "", kListing[s.listing],
              kStaff[s.staff], s.warn ? " restart" : "", s.slow ? " slow" : "", s.camera ? " camera" : "");
 }
@@ -767,19 +937,26 @@ uint8_t bellAt(const Packed& p) {
 }
 
 void drawGlyphs(const Status& s) {
+#if BBS_PANEL_SQUARE
+    if (ringBanner()) return;                          // the ring banner has the header
+#endif
     char key[kKey];
     statusWords(s, key, sizeof(key));
     if (!changed(F_GLYPHS, key)) return;
     begin(F_GLYPHS, kBand);
-    g_packed = pack(s, g_layout.glyphs.x);
+    g_packed = pack(s, g_layout.glyphs.x, g_layout.glyphs.x + g_layout.glyphs.w);
     const uint8_t bell = bellAt(g_packed);
     for (uint8_t i = 0; i < g_packed.n; ++i)
         if (i != bell || g_bellLit) drawGlyphAt(g_canvas, g_packed, i, g_layout.glyphs.y);
+    paintDisk(lights::panelDisk());                       // the fill erased the drive's light
 }
 
 // bellTick: while the band shows the bell, it blinks at 2 Hz by redrawing
 // its own 9 x 11 cell, not the row.
 void bellTick(uint32_t now) {
+#if BBS_PANEL_SQUARE
+    if (ringBanner()) return;                          // the ring banner has the header
+#endif
     const uint8_t bell = bellAt(g_packed);
     const bool lit = bell == 0xFF || ((now / kBlinkMs) & 1u) == 0;
     if (lit == g_bellLit) return;
@@ -791,9 +968,23 @@ void bellTick(uint32_t now) {
     g_dirty.add(b);
 }
 
+// diskTick: the drive's light, when the lights plugin's state for it moved:
+// the 3 x 3 window alone, never the row. At most 25 a second through a long
+// pc flicker, read on the strip's 40 ms clock.
+void diskTick() {
+#if BBS_PANEL_SQUARE
+    if (ringBanner()) return;                          // the ring banner has the band
+#endif
+    const uint8_t st = lights::panelDisk();
+    if (st != g_diskShown) paintDisk(st);
+}
+
 // antTick: the antenna, sampled four times a second and redrawn when its
 // height, its colour or whether the board is joined changes.
 void antTick(uint32_t now) {
+#if BBS_PANEL_SQUARE
+    if (ringBanner()) return;                          // the ring banner has the header
+#endif
     if (g_rssiAt && now - g_rssiAt < kRssiMs) return;
     g_rssiAt = now ? now : 1;
     const int rssi = plat::wifiRssi();
@@ -813,6 +1004,9 @@ void antTick(uint32_t now) {
 }
 
 void drawClock() {
+#if BBS_PANEL_SQUARE
+    if (ringBanner()) return;                          // the ring banner has the header
+#endif
     char buf[8];
     const bool ok = clk::valid();
     if (ok) clk::fmt(buf, sizeof(buf), "%H:%M");
@@ -1336,6 +1530,7 @@ void refreshText(uint32_t now, skin::Figures* fig) {
     s.staff   = staff;
     s.warn    = b.crashBoot() && !g_bootSeen;
     s.slow    = g_slowAt && now - g_slowAt < kSlowMs;
+    s.driveOff = lights::panelDisk() == lights::DK_OFF;
 #ifdef BBS_HAS_CAMERA
     s.camera  = camera::shooting();
 #endif
@@ -1385,6 +1580,30 @@ uint32_t  g_dbmAt = 0;
 int16_t   g_slotW = 0;                      // the slot's text width as last sent
 uint32_t  g_dotAt = 0;
 uint16_t  g_moved = 0;                      // lines that moved bytes, a bit per Session::id
+
+#if BBS_PANEL_SQUARE
+// ringBanner: the square's ring banner has the bar and band, so the header's
+// own fields (the name, slot, glyph strip, band word, antenna, dBm and
+// clock) are not drawn while a ring shows; their keys are left as they were
+// and invalidated when it ends.
+bool ringBanner() {
+    return g_bigOn && Bbs::instance().ringing() != nullptr;
+}
+
+// ringEnd: the bar and band put back and every field on them drawn again on
+// the next pass: two bands.
+void ringEnd() {
+    const Layout& L = g_layout;
+    fill(g_canvas, L.bar, kBar);
+    fill(g_canvas, L.band, kBand);
+    g_dirty.add(g_big.ring);
+    const uint8_t fields[] = { F_SLOT, F_CLOCK, F_GLYPHS, F_ANT, F_NAME, F_BWORD, F_DBM, F_RING };
+    for (uint8_t f : fields) { g_shown[f][0] = '\x01'; g_shown[f][1] = '\0'; }
+    g_slotW  = g_big.slot.w;
+    g_packed = Packed();
+    g_textAt = g_rssiAt = g_dbmAt = 0;                     // the next pass draws them
+}
+#endif
 
 // graphColumn: one column of the sweep from the ring; blank leaves only the
 // axis, the gap ahead of the head that says where "now" is.
@@ -1484,10 +1703,27 @@ void bigSlotTick(uint32_t now) {
     char buf[64];
     if (const char* who = Bbs::instance().ringing()) {
         char h[BBS_USER_MAX * 2 + 1];
+#if BBS_PANEL_SQUARE
+        // The square: the bar and band as one block, the words in 16 x 32
+        // across it, centred and steady (the banner is the bell), readable
+        // from across a room. The header's own fields stand aside meanwhile.
+        cutGlyphs(who, 18, h, sizeof(h));                  // " is ringing" stays whole: 29 at most
+        snprintf(buf, sizeof(buf), "%s is ringing", h);
+        char key[kKey];
+        snprintf(key, sizeof(key), "%s", buf);
+        if (changed(F_RING, key)) {
+            begin(F_RING, kBar);
+            const Rect& r = g_big.ring;
+            int w = textWidth(buf, true);
+            if (w > r.w) w = r.w - r.w % kBigW;
+            text(g_canvas, r.x + (r.w - w) / 2, 5, buf, kBusy, kBar, true, w);
+        }
+#else
         const int fit = g_big.slot.w / kSmallW - 11;
         cutGlyphs(who, fit > 1 ? fit : 1, h, sizeof(h));
         snprintf(buf, sizeof(buf), "%s is ringing", h);
         bigSlot(buf, kBusy);
+#endif
         g_ringShown = true;
         return;
     }
@@ -1496,10 +1732,22 @@ void bigSlotTick(uint32_t now) {
         g_page = 0;
         g_fade = 0;
         g_dir  = 0;
+        g_nextLong = g_holdLong = false;                   // a tap before the ring is spent
         g_stepAt = now;
+#if BBS_PANEL_SQUARE
+        ringEnd();
+#endif
     }
+#ifdef BBS_HAS_TOUCH
+    if (g_asleep) g_stepAt = now;                          // asleep: the page held
+#endif
     if (g_dir == 0) {
-        if (stepped(now) >= kHoldMs) { g_dir = 1; g_fade = 1; g_stepAt = now; }
+        // A page a tap turned to holds kTapHoldMs, long enough to dial it
+        // (the small layouts' rule; the big glass held 3 s before 1.2.1).
+        if (stepped(now) >= (g_holdLong ? kTapHoldMs : kHoldMs)) {
+            g_dir = 1; g_fade = 1; g_stepAt = now;
+            g_holdLong = false;
+        }
     } else if (stepped(now) >= kStepMs) {
         g_stepAt = now;
         if (g_dir > 0) {
@@ -1507,7 +1755,11 @@ void bigSlotTick(uint32_t now) {
             else { g_page = static_cast<uint8_t>((g_page + 1) % 2); g_dir = -1; g_fade = kSteps - 1; }
         } else {
             if (g_fade > 0) --g_fade;
-            if (g_fade == 0) g_dir = 0;
+            if (g_fade == 0) {                                   // the hold starts now
+                g_dir = 0;
+                g_holdLong = g_nextLong;                         // a tapped page holds longer
+                g_nextLong = false;
+            }
         }
     }
     uint16_t col = kDial;
@@ -1571,18 +1823,41 @@ void bigRow(uint8_t k, const Session* s, uint32_t now) {
         const char* doing = s->doing[0] ? s->doing : "-";
         // lastInput may be stamped from plat::millis() after this pass's now.
         const bool idle = plat::since(now, s->lastInput) >= kIdleMs;
+#if BBS_PANEL_SQUARE
+        // LEFT: how long this call has (Bbs::minutesLeft), "-" for none; warm
+        // at 5 minutes and risk at 1, the board's own warning points, so the
+        // glass turns as the caller is told. In the key, so it moves with ON.
+        const int32_t left = Bbs::instance().minutesLeft(*s, now);
+        char lw[8];
+        if (left < 0) snprintf(lw, sizeof(lw), "-");
+        else          fmtOnFor(static_cast<uint32_t>(left) * 60000u, lw, sizeof(lw));
+        const uint16_t lc = left < 0 ? kFaint : left <= 1 ? kRisk : left <= 5 ? kWarm : kDim;
+        snprintf(key, sizeof(key), "%s%c %s %s %s %s %s\x1F%d%04X", lab.t, mark, s->user, doing, on, lw,
+                 s->term.shortName(), idle ? 1 : 0, static_cast<unsigned>(lc));
+#else
         snprintf(key, sizeof(key), "%s%c %s %s %s %s\x1F%d", lab.t, mark, s->user, doing, on,
                  s->term.shortName(), idle ? 1 : 0);
+#endif
         if (!changed(static_cast<uint8_t>(F_ROW + k), key)) return;
         begin(static_cast<uint8_t>(F_ROW + k), kBg);
         const uint16_t rc = rankColour(mark);
         const char markS[2] = { mark, '\0' };
         text(g_canvas, x0, r.y, lab.t, rc, kBg, false, 16);
         text(g_canvas, x0 + 16, r.y, markS, rc, kBg, false, 8);
+#if BBS_PANEL_SQUARE
+        text(g_canvas, 46, r.y, s->user, kInk, kBg, false, g_big.handleW);
+#else
         text(g_canvas, 46, r.y, s->user, kInk, kBg, false, 12 * kSmallW);
+#endif
         text(g_canvas, g_big.colDoing, r.y, doing, idle ? kFaint : kStruct, kBg, false, 9 * kSmallW);
         const int tw = textWidth(on, false);
         text(g_canvas, g_big.colOnEnd - tw, r.y, on, kDim, kBg, false, tw);
+#if BBS_PANEL_SQUARE
+        if (g_big.colLeftEnd) {
+            const int lwid = textWidth(lw, false);
+            text(g_canvas, g_big.colLeftEnd - lwid, r.y, lw, lc, kBg, false, lwid);
+        }
+#endif
         text(g_canvas, g_big.colTerm, r.y, s->term.shortName(), kFaint, kBg, false, 5 * kSmallW);
         return;
     }
@@ -1603,11 +1878,29 @@ void bigRow(uint8_t k, const Session* s, uint32_t now) {
     // the eleven rows are at idle. The same words for hidden staff as for an
     // empty line, so nothing is given away.
     const char* what = k ? "free" : "sysop line";
+#if BBS_PANEL_SQUARE
+    // A board that is not taking calls says so on every free line, from
+    // across the room: closed in warm (a fresh board starts closed), not
+    // answering in risk while it shuts down. Row S keeps "sysop line": the
+    // first account still comes in on a closed board.
+    uint16_t wc = k ? scale(kFaint, 2, 3) : kFaint;
+    if (k) {
+        Bbs& bb = Bbs::instance();
+        if (bb.listening() && !bb.answering()) { what = "not answering"; wc = scale(kRisk, 2, 3); }
+        else if (syscfg::get().closed)         { what = "closed";        wc = scale(kWarm, 2, 3); }
+    }
+    snprintf(key, sizeof(key), "%s %s\x1F""f%04X", lab.t, what, static_cast<unsigned>(wc));
+    if (!changed(static_cast<uint8_t>(F_ROW + k), key)) return;
+    begin(static_cast<uint8_t>(F_ROW + k), kBg);
+    text(g_canvas, x0, r.y, lab.t, kFaint, kBg, false, 16);
+    text(g_canvas, 46, r.y, what, wc, kBg, false, g_big.handleW);
+#else
     snprintf(key, sizeof(key), "%s %s\x1F""f", lab.t, what);
     if (!changed(static_cast<uint8_t>(F_ROW + k), key)) return;
     begin(static_cast<uint8_t>(F_ROW + k), kBg);
     text(g_canvas, x0, r.y, lab.t, kFaint, kBg, false, 16);
     text(g_canvas, 46, r.y, what, k ? scale(kFaint, 2, 3) : kFaint, kBg, false, 12 * kSmallW);
+#endif
 }
 
 // bigPips: a 6 x 6 pip beside each line that moved bytes since the last
@@ -1633,6 +1926,10 @@ void bigHead(unsigned on, unsigned of) {
     text(g_canvas, r.x + 20, r.y, key, col, kBg, false, g_big.colDoing - 8 - (r.x + 20));
     text(g_canvas, g_big.colDoing, r.y, "DOING", kFaint, kBg, false, 5 * kSmallW);
     text(g_canvas, g_big.colOnEnd - 2 * kSmallW, r.y, "ON", kFaint, kBg, false, 2 * kSmallW);
+#if BBS_PANEL_SQUARE
+    if (g_big.colLeftEnd)
+        text(g_canvas, g_big.colLeftEnd - 4 * kSmallW, r.y, "LEFT", kFaint, kBg, false, 4 * kSmallW);
+#endif
     text(g_canvas, g_big.colTerm, r.y, "TERM", kFaint, kBg, false, 4 * kSmallW);
 }
 
@@ -1672,9 +1969,12 @@ void bigRecent(uint8_t j) {
     begin(f, kBg);
     const uint16_t shade = age == 0 ? kInk : age == 1 ? kDim : kFaint;
     const bool bell = e.kind == EV_PAGE || e.kind == EV_RING;
+    // A caller's snap is the camera in dial, as the small layouts draw it
+    // (recentRow): before 1.2.1 it fell through to an orange login.
     const uint16_t kindCol = e.kind == EV_LOGIN ? kLive : e.kind == EV_GUEST ? kWarm
-                           : e.kind == EV_LOGOFF ? kDim : kBusy;
-    icon(g_canvas, r.x, r.y, bell ? kIconBell : e.kind == EV_LOGOFF ? kIconLogoff : kIconLogin,
+                           : e.kind == EV_LOGOFF ? kDim : e.kind == EV_SNAP ? kDial : kBusy;
+    icon(g_canvas, r.x, r.y, bell ? kIconBell : e.kind == EV_LOGOFF ? kIconLogoff
+                           : e.kind == EV_SNAP ? kIconCamera : kIconLogin,
          (age == 0 || bell) ? kindCol : shade);
     text(g_canvas, r.x + 20, r.y, e.text, shade, kBg, false, r.w - 20);
 }
@@ -1691,11 +1991,33 @@ void bigCell(uint8_t c, const Icon& ic, const char* fig, uint16_t col) {
 
 // bigWord: the band's word for the two board states that have no glyph.
 void bigWord() {
+#if BBS_PANEL_SQUARE
+    if (ringBanner()) return;                          // the ring banner has the header
+#endif
     Bbs& b = Bbs::instance();
     const char* w = "";
     uint16_t col = kWarm;
+#if BBS_PANEL_SQUARE
+    // The square counts the shutdown down, once a second, and says what is
+    // left to do when the count is out and the board still runs.
+    char cnt[32];
+    if (b.listening() && !b.answering()) {
+        const uint32_t left = b.shutdownLeftMs(plat::millis());
+        if (left) {
+            const uint32_t sec = (left + 999u) / 1000u;
+            snprintf(cnt, sizeof(cnt), "SHUTTING DOWN in %u:%02u", static_cast<unsigned>(sec / 60u),
+                     static_cast<unsigned>(sec % 60u));
+            w = cnt;
+        } else {
+            w = "SHUT DOWN, restart the board";
+        }
+        col = kRisk;
+    }
+    else if (syscfg::get().closed)       { w = "CLOSED to callers"; }
+#else
     if (b.listening() && !b.answering()) { w = "SHUTTING DOWN"; col = kRisk; }
     else if (syscfg::get().closed)       { w = "CLOSED to callers"; }
+#endif
     char key[kKey];
     snprintf(key, sizeof(key), "%s", w);
     if (!changed(F_BWORD, key[0] ? key : "\x1F-")) return;
@@ -1704,6 +2026,9 @@ void bigWord() {
 }
 
 void bigName() {
+#if BBS_PANEL_SQUARE
+    if (ringBanner()) return;                          // the ring banner has the header
+#endif
     const SysConfig& c = syscfg::get();
     char buf[64];
     cutWords(c.boardName[0] ? c.boardName : BBS_NAME, g_big.name.w / kSmallW, buf, sizeof(buf));
@@ -1751,7 +2076,22 @@ void refreshBig(uint32_t now) {
 
     char fig[16];
     snprintf(fig, sizeof(fig), "%uK", static_cast<unsigned>(g_heapK));
-    bigCell(C_HEAP, kIconChip, fig, g_heapK >= 40 ? kInk : g_heapK >= 20 ? kWarm : kRisk);
+    // Memory wears the RAM stick and the chip is the chip's temperature, so
+    // the two never share a picture (the 4.3B spec's revision 1).
+    bigCell(C_HEAP, kIconRam, fig, g_heapK >= 40 ? kInk : g_heapK >= 20 ? kWarm : kRisk);
+#if BBS_PANEL_SQUARE && defined(BBS_HAS_CHIP_TEMP)
+    {
+        int tempC = -1000;                                 // "--C": a failed read
+        if (g_tempOk) {
+            tempC = g_tempT > 0 ? (g_tempT + 5) / 10 : 0;
+            if (tempC > 99) tempC = 99;
+        }
+        if (tempC > -1000) snprintf(fig, sizeof(fig), "%dC", tempC);
+        else               snprintf(fig, sizeof(fig), "--C");
+        bigCell(C_TEMP, kIconChip, fig, tempC <= -1000 ? kDim : tempC < BBS_PANEL_TEMP_WARM ? kInk
+                                        : tempC < 75 ? kWarm : kRisk);
+    }
+#endif
     snprintf(fig, sizeof(fig), "%u slow", static_cast<unsigned>(b.slowPasses()));
     bigCell(C_SLOW, kIconHourglass, fig, g_slowAt && now - g_slowAt < kSlowMs ? kWarm : kInk);
     const bool cardErr = g_errAt && now - g_errAt < kCardErrMs;
@@ -1798,7 +2138,9 @@ uint8_t refreshLeds() {
         drawLamp(g_canvas, l, col);
 #else
         Led l = g_layout.ledBar ? segAt(box, i, n) : ledAt(box, i, n, g_layout.ledCell);
-#if PANEL_BIG
+#if PANEL_BIG && BBS_PANEL_SQUARE
+        if (g_bigOn && !g_layout.ledBar) l = bigLedAt(box, i, n);   // the square: segAt's light bar
+#elif PANEL_BIG
         if (g_bigOn) l = bigLedAt(box, i, n);              // the big glass's own row
 #endif
         drawLed(g_canvas, l, col, g_layout.ledBar);
@@ -1827,7 +2169,10 @@ uint8_t refreshLeds() {
     // frame, as the spec budgets it.
     if (all) return moved;
     Rect row = box;
-#if PANEL_BIG
+#if PANEL_BIG && BBS_PANEL_SQUARE
+    if (g_bigOn && n && !g_layout.ledBar)
+        row = unite(bigLedAt(box, 0, n).cell, bigLedAt(box, static_cast<uint8_t>(n - 1), n).cell);
+#elif PANEL_BIG
     if (g_bigOn && n) row = unite(bigLedAt(box, 0, n).cell, bigLedAt(box, static_cast<uint8_t>(n - 1), n).cell);
 #endif
     if (moved > 3) g_dirty.add(row);
@@ -1836,25 +2181,34 @@ uint8_t refreshLeds() {
 }
 
 // dotStep: the dot one pixel along the rail, wrapping at the right edge.
-// It stands aside on a pass where the strip queued more than one LED, so a
-// busy strip has the glass to itself.
+// It stands aside on a frame where the strip queued more than one LED, so a
+// busy strip has the glass to itself, but never two frames running (1.2.1):
+// the dot is the load line's pen, and a dot that never moved under rainbow
+// or scanner recorded nothing. Under a busy strip it runs at half speed.
 void dotStep(uint8_t leds) {
-    if (leds > 1 || empty(g_layout.track)) return;
+    if (empty(g_layout.track)) return;
 #ifdef BBS_HAS_TOUCH
     if (g_asleep) return;                                  // asleep: nobody sees it move
 #endif
     int step = 1;
+    bool aside = leds > 1;
 #if PANEL_BIG
     // The big glass: 2 px every 80 ms, the same speed in half the
     // transactions, and aside while the queue holds three or more, because
     // there the queue is what runs out first.
     if (g_bigOn) {
         const uint32_t now = plat::millis();
-        if (g_dirty.n >= 3 || (g_dotAt && now - g_dotAt < kDotMs)) return;
+        if (g_dotAt && now - g_dotAt < kDotMs) return;
         g_dotAt = now ? now : 1;
+        aside = g_dirty.n >= 3;
         step = 2;
     }
 #endif
+    if (aside && !g_stood) {
+        g_stood = true;
+        return;
+    }
+    g_stood = false;
     const Rect was = dotBox(g_dotX);
     g_dotX = static_cast<int16_t>(g_dotX + step >= g_canvas.w ? 0 : g_dotX + step);
     const Rect now = dotBox(g_dotX);
@@ -1887,6 +2241,7 @@ void wake(uint32_t now) {
     if (!g_asleep) return;
     g_asleep = false;
     if (!g_lightOwed) light(g_run.backlight);
+    if (!g_skinOwned) railGrey();                          // the held dot: ahead of it is older than a lap
 }
 
 // touchTick: the controller polled every kTouchMs. A tap is a finger coming
@@ -1977,6 +2332,7 @@ void wake(uint32_t now) {
     g_dir  = 0;
     g_stepAt = now;
     if (!g_lightOwed) light(g_run.backlight);
+    if (!g_skinOwned) railGrey();                          // the held dot: ahead of it is older than a lap
 }
 
 void sleepNow() {
@@ -2053,6 +2409,7 @@ bool start(Bbs& bbs) {
     legacy();
     g_up = false;
     g_lightOwed = false;
+    loadReset();
 #if defined(BBS_HAS_TOUCH) && !defined(BBS_TOUCH_POLL)
     // Once a boot: the controller asked who it is and told to pulse INT,
     // and the interrupt that counts the taps (a few ms, a plugin's start).
@@ -2201,6 +2558,7 @@ void tick(uint32_t now) {
             g_stale = true;
             g_lightOwed = false;
             light(0);
+            loadReset();                                   // not sampled; the first after is a baseline
         }
 #if defined(BBS_HAS_TOUCH) && !defined(BBS_TOUCH_POLL)
         plat::touchTaps();                                 // silent: a tap does nothing
@@ -2229,6 +2587,7 @@ void tick(uint32_t now) {
 #endif
     bool textDue = !g_textAt || now - g_textAt >= kTextMs;
     if (textDue) g_textAt = now ? now : 1;
+    loadTick(now);                                         // a skin too: the dot is right at hand-back
 
     // A new photo (1.2.1, panel_photo.h): filed by any camera, it has the
     // glass for a minute and the panel draws nothing of its own meanwhile;
@@ -2300,6 +2659,7 @@ void tick(uint32_t now) {
     antTick(now);
     if (!g_stripAt || now - g_stripAt >= kStripMs) {
         g_stripAt = now ? now : 1;
+        diskTick();                                        // the HDD glyph's light, on the strip's clock
         dotStep(refreshLeds());
     }
     flush();
@@ -2395,6 +2755,13 @@ void cmdPanel(Bbs& b, Session& s, const char* a, uint32_t now) {
     line(s, Color::Grey, buf);
 #endif
     // The skin on the glass, and why the one set is not, when it is not.
+#if BBS_PANEL_SQUARE
+    if (skin::framed()) {                          // a 480 x 320 skin on the square
+        char tb[64];
+        snprintf(tb, sizeof(tb), "Skin %.24s (480 x 320, framed)", skin::running());
+        line(s, Color::Grey, tb);
+    } else
+#endif
     if (skin::title()[0]) {
         char tb[64];
         snprintf(tb, sizeof(tb), "Skin %.24s (%.24s)", skin::running(), skin::title());
@@ -2460,6 +2827,26 @@ void cmdPanel(Bbs& b, Session& s, const char* a, uint32_t now) {
             line(s, Color::Grey, pb);
         }
     }
+    if (g_up) {
+        // The load line and the drive glyph (1.2.1), as the glass shows them.
+        static const char* const kLevel[] = { "no reading yet", "blue", "green", "yellow", "red" };
+        const unsigned lap = (static_cast<unsigned>(g_layout.track.w) * 2u + 25u) / 50u;   // 25 px a second
+        char ld[72];                               // longer than buf: "100% yellow, longest pass 1234 ms"
+        if (g_level == LV_NONE)
+            snprintf(ld, sizeof(ld), "Load      no reading yet, %u s a lap", lap);
+        else
+            snprintf(ld, sizeof(ld), "Load      %u%% %s, longest pass %u ms, %u s a lap",
+                     static_cast<unsigned>(g_duty), kLevel[g_level < 5 ? g_level : 0],
+                     static_cast<unsigned>((g_peakUs + 500u) / 1000u), lap);
+        line(s, Color::Grey, ld);
+        uint8_t style = 0;
+        const uint8_t st = lights::panelDisk(&style);
+        static const char* const kDisk[] = { "idle", "card", "flash", "error", "error", "off" };
+        char word[12];
+        styleWord(style, word, sizeof(word));
+        snprintf(buf, sizeof(buf), "Drive     %s, style %s", st <= lights::DK_OFF ? kDisk[st] : "off", word);
+        line(s, Color::Grey, buf);
+    }
     snprintf(buf, sizeof(buf), "%u bands sent", static_cast<unsigned>(g_bands));
     line(s, Color::Grey, buf);
     if (g_up && !skin::live()) {                   // a skin's glass has no fields to list
@@ -2475,6 +2862,11 @@ void cmdPanel(Bbs& b, Session& s, const char* a, uint32_t now) {
         if (g_bigOn) {
             // The big glass, top to bottom and left to right.
             static const uint8_t kBigOrder[] = { F_NAME, F_SLOT, F_GLYPHS, F_BWORD, F_ANT, F_DBM, F_CLOCK, F_HEAD };
+#if BBS_PANEL_SQUARE
+            // A ring on the square: the banner is the header, as on the glass.
+            if (ringBanner()) { say(F_RING); say(F_HEAD); }
+            else
+#endif
             for (uint8_t f : kBigOrder) say(f);
             for (uint8_t k = 0; k < kBigRows; ++k) say(static_cast<uint8_t>(F_ROW + k));
             say(F_CALLS);
@@ -2514,7 +2906,7 @@ const Command kCommands[] = {
 constexpr PluginSetting kSettings[] = {
     { "driver",    "Driver",    PS_INFO,  0, 0,   8, "The panel's controller chip.", nullptr,
       "Controller chip" },
-    { "backlight", "Light",     PS_NUM,   0, 100, 3, "On or off only: 0 is off.", nullptr,
+    { "backlight", "Light",     PS_NUM,   0, 100, 3, BBS_LCD_BL_NOTE, nullptr,
       "Backlight, 0 off" },
 #ifdef BBS_HAS_TOUCH
     { "sleep",     "Sleep min", PS_NUM,   0, 240, 3, "Dark after this long; a tap wakes it.", nullptr,

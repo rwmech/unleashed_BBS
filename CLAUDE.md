@@ -857,6 +857,172 @@ this tree.
   - Static DRAM 266,720 of 341,760 (75,040 free); image 1,507,216. Bench:
     internal heap 49,203 free, low 37,843 after setup; SSH on 6400 and 6422
     with host/ssh_call from WSL (it reaches the LAN).
+  **The Guition ESP32-4848S040, G4848 1.0.0 on 1.2.0** (board-g4848 from
+  v1.2.0, 2026-09-30, COM30 through its CH340; merges into 1.2.1). Sold as
+  "AITRIP ESP32-S3 4.0 inch", a 480 x 480 ST7701S on the RGB bus, GT911,
+  N16R8. The case hides the silkscreen, so the model came from the factory
+  image, backed up first (release-prep/g4848/factory-16MB.bin). What this
+  lane taught:
+  - **A factory image is a source, not only a backup.** It was Arduino
+    with Espressif's ESP32_Display_Panel; its ST7701 init table sat in
+    .data as 16-byte `{cmd, data*, len, delay}` records, and decoded it
+    matched the library's JINGCAI_ESP32_4848S040C_I_Y_3 header byte for
+    byte. The one parameter not in .data (CD) pointed into .bss: a
+    zero-valued literal, which confirmed the header's `{0x00}`.
+  - **An ST7701 is two buses, and its 3-wire link is bit-banged.** The
+    first build sent the 9-bit words through SPI2's peripheral (a second
+    device on the card's bus) and the glass stayed black with the backlight
+    lit: the chip never answered (every read-back 0xFFFF). The factory
+    image's own line config (flash 0x2f4a38, just ahead of its init table)
+    is `{GPIO 39, GPIO 48, GPIO 47}` for ESP32_Display_Panel's
+    `esp_lcd_panel_io_3wire_spi`, which bit-bangs GPIOs. Bit-banged the same
+    way (mode 0, about 100 kHz, CS low per command), the panel lit first
+    time. **When a vendor's working code drives a link a particular way,
+    copy the way, not just the bytes.** The setup holds the card's bus (a
+    device of its own, acquired) and lends 47 and 48 to the GPIOs, then
+    routes SPI2's clock and data back (the SDHC card mounted at boot still
+    works after). The chip's status cannot be read back here: RDDPM reads
+    0xFFFF even on the lit glass, so the panel's SDA output does not reach
+    GPIO 47, and "panel up" on the console proves only the RGB driver; the
+    glass is the proof. CS 39 is held high from a constructor, the WS2's
+    lesson.
+  - **The backlight fades in over 300 ms** (LEDC hardware fade, only from
+    dark; any other change stops it and sets the duty at once). Stepping
+    0 to 60% in one go dropped the CH340 off USB at every boot, and Improv
+    runs over that port in the first seconds: with the fade the port stayed
+    up through a whole boot.
+  - **RGB without a refill interrupt.** The 4.3B's bounce fill doubles a
+    400 x 240 picture; at scale 1 that copy would be CPU work 45 times a
+    second. Here the driver keeps a 480 x 480 framebuffer in PSRAM and the
+    DMA streams it (no bounce buffers), 12 MHz rather than the vendor's 26
+    to hold the stream to 23 MB/s beside XIP. Its own file,
+    platform_esp32_st7701.cpp, so the 4.3B's object is untouched.
+  - **The big layout on a square glass**: the RAM figures 320/480 turn on
+    BBS_PANEL_BIG, the picture is 480 x 320, and lcdDraw puts it 80 rows
+    down. No layout code changed; a square layout is a tty-ux spec to come.
+  - The console is UART0 with `CONFIG_ESP_CONSOLE_SECONDARY_NONE`: the
+    chip's USB pads are GPIO 19 (touch SDA) and 20 (panel G1).
+  - GPIO 1, 2 and 40 are L1 to L3 to the rear 2x4 header (the Y_3's relay
+    lines) through 0R links; on this no-relay board they are a sysop's.
+  - The RGB CONFIG row's backlight note is `BBS_LCD_BL_NOTE` now, defaulting
+    to the 4.3B's literal in board.h, and panel.cpp changed only within its
+    line, so no other board's object moves.
+  - **A pin held by a constructor needs gpio_config, not
+    gpio_set_direction**: the latter does not select the pad's GPIO
+    function, and GPIO 39's IO MUX function 0 is JTAG's MTCK.
+  - **Stashing a lane to build a before-image wipes every build folder,
+    twice**: the stash and the pop each change platformio.ini, and
+    PlatformIO wipes .pio/build whole on a changed project checksum. Save
+    the objects and images out first (objsave.py; the lane's images are in
+    release-prep/g4848/img/), and expect a full rebuild after the pop.
+  - Bench (COM30, 192.168.0.124), on the glass by Rob: status screen
+    upright, colours right, taps turn the header. Internal heap 55,767
+    free and 48,863 low with the card mounted, no slow pass; SSH on both
+    ports; an 8 GB SDHC card mounts and reads after the panel's setup. The
+    bench's first card, a 1 GB SDSC, refuses CMD59 (fatal in IDF 5.3.1's
+    SPI init; not bent for one card).
+  - Static DRAM 268,160 of 341,760 (73,600 free); image 1,519,120 (the
+    LEDC fade driver is 504 of DRAM and about 4 KB of flash).
+  - **The square layout (G4848 1.0.1, MF35 1.1.4), built to
+    internal/tty-ux-panel-g4848-2026-10-01.md steps 1 to 6** after Rob saw
+    "widescreen with black bars above and below". `BBS_PANEL_SQUARE`
+    (board.h, any 480 x 480 big glass) gates everything new, so other
+    boards compile as they did: the 4.3B's objects compare identical with
+    debug info stripped (`release-prep/g4848/objcmp3.py`; added lines move
+    only DWARF line tables, and panel.cpp has no `__LINE__` users), the
+    MF35's differ in panel.cpp alone plus the version string. What it
+    taught:
+    - **A shared struct is gated, not extended.** BigLayout's new fields,
+      kRecent 6, kGraphCols 228 and F_RING exist only on the square;
+      changing them for everyone would have moved the MF35's code.
+    - **A skin framed is a sub-canvas, not a shifted scene**: the same
+      stride, a pointer 80 rows on, and its own dirty queue moved 80 rows
+      down into the panel's after each tick (skin.cpp). The scene and its
+      LED maps never learn they are framed. The mat is painted when the
+      copy starts, which is also every redraw after silent.
+    - **Switchboard's free lamps go dark on a closed or shutting-down
+      board, on every board** (Rob, 2026-10-01: every board with a strip,
+      wired or on a panel). lights.cpp changes in every image; at the
+      1.2.1 merge each board rides on the version rel-1.2.1 already gave
+      it (S3 1.1.5, WS43B 1.0.3, FNCAM 1.0.9, ESPCAM 1.0.6, WS2 1.0.4,
+      ETH 1.0.3, MF35V2 1.0.0), the MF35 takes this lane's 1.1.4 over
+      rel-1.2.1's 1.1.3, and the WROOM moves with the core.
+    - **A lamp's gleam scales with the lamp.** drawLed put a half-white
+      line on every lit lamp's second row whatever its brightness, so the
+      drive light idling at 10% read as a whitish line over black (Rob:
+      "that first light in the LED strip", the drive lamp left of the bar;
+      the 4.3B draws it the same way). With the gleam scaled, the idling
+      drive lamp (amber at kIdleGlow 24 and 10%, about 11 on glass) went
+      black on black, and Rob saw it "completely missing": the half-white
+      gleam had been the only visible part of it. A lit lamp now has a
+      floor of 40 in its brightest channel, hue kept; the free lines' dim
+      blue (about 51) is above it. **Fixing how a thing looks can remove
+      the only reason it was visible**; look at what is left.
+    - **A test that checks under a board's define must see board.h.**
+      `host/test_panel.cpp` included only panel_gfx.h, so
+      `-DBBS_BOARD_GT_4848S040` never set BBS_PANEL_SQUARE and its square
+      block compiled away: a passing test that checked nothing (the code
+      review found it). It includes config.h now, with an `#error` if the
+      profile's define arrives without the square.
+    - **A framed picture still lights only when whole.** flush() lights the
+      glass when the rectangle being sent empties, safe only while a whole
+      frame is one rectangle; the framed skin queued the mat as two and the
+      picture as a third, so a missed band could light the glass early. It
+      now queues the whole glass once, at the copy's end.
+    - Static DRAM +616 against the spec's ~300: the ring field's and two
+      recent rows' keys (240), the framed skin's queue (~200), the longer
+      sweep (136). Not built: the photo show's square geometry (1.2.1
+      lane D) and the square stock skins (screen-artist). The stock skins
+      are not in any image (`stockFiles` is empty); a sysop copies them to
+      the card.
+  - **The load line and the drive icon (G4848 1.0.2, every panel board),
+    built to internal/tty-ux-panel-load-line-2026-10-01.md** after Rob
+    still saw the drive lamp as a dead LED ("LED issue persists"). The lamp
+    leaves the foot; an 11 x 9 HDD glyph after the card shows the drive
+    light's state (`lights::panelDisk`, the style's own decision on its
+    last frame, at full level); the header's rail goes 2 px and the dot
+    paints it with the loop's load level, sampled every 250 ms from two
+    core counters (`Bbs::takeLoad`, `BBS_HAS_LCD` only). What it taught:
+    - **A lamp that shows a level needs the state, not the pixel.** Three
+      rounds went into drawing the drive light's frame on glass (gleam,
+      floor); the frame is a brightness for a pixel in a case, 10% as
+      shipped, and on glass that is a dead LED whatever the drawing does.
+      The icon takes the decision behind the frame instead.
+    - **The dot stood aside every frame under a busy strip**, harmless while
+      it was only the "alive" cue, fatal once it is the pen of a time line.
+      A behaviour that is fine as decoration has to be re-read when it
+      becomes data.
+    - Skins' `load` source is queued for the skin format's next minor.
+  - **No IMU and no PMU** (Rob asked about auto-rotation and an AXP2101):
+    a boot-time scan of the touch bus (19/45) finds only the GT911, at
+    0x14 and 0x5D; nothing at 0x34 or 0x68-0x6B, nothing in the factory
+    strings, and every GPIO is accounted for, so there is no other bus.
+    The battery connector is the IP5306's, which has no bus here. The scan
+    stays, one console line a boot.
+  - **For the 1.2.1 merge, from the lane's two code reviews:**
+    - 42, 47 and 48 are the card's and (47, 48) the ST7701's link both,
+      held only as sd settings: with sd off, another plugin could be given
+      them and the panel's setup would drive them (it drives 42 high as
+      well, whether or not sd owns it). They reach no header, so the risk
+      is small; the fix is a pinProblem list for pins a panel shares with
+      the card, the sd plugin's own check exempt.
+    - The release workflow's notes should name the `esp32s3-g4848-` prefix
+      when tag_only goes.
+    - The relay sibling (Y_3) would run this image too, its relays on 1, 2
+      and 40 floating from reset; holding them low at start-up is Rob's
+      call (on this board they reach only the header). And a WROOM backup
+      restored here carries `activity_led_gpio = 2`, which blinks the
+      header's L2 and on the Y_3 would click a relay.
+    - The panel's first start blocks the loop for 343 ms, measured off the
+      boot log (lights done at 5,648, panel started at 5,991): the ST7701's
+      setup about 280 ms (two 120 ms waits and the bit-banged words), the
+      touch bus about 30 ms (with the I2C scan, which release images leave
+      out), the RGB start about 15 ms, plus waiting out one card command
+      for the bus. Once a boot, at start-up or when CONFIG switches the
+      panel on, as on the 4.3B.
+    - COLMOD is the vendor's 0x60 (the first review caught the first cut's
+      0x50). Flicker at 45 Hz (the vendor runs 98) has not been looked for
+      on purpose yet.
   **Boards are chosen to maximise what the BBS can do, not to work around
   vendor wiring** (Rob: "not work around dumb vendor BS"). Rejected on
   that ground: the KEYESTUDIO ESP32-S3 PRO (N16R8), whose on-board SD slot

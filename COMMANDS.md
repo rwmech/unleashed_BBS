@@ -392,7 +392,7 @@ outside it and no way to approve a file that is waiting somewhere else.
 |---|---|
 | `ANNOUNCE` | Whether this board is listed in a directory, when each one last answered, and the public address the directory sees, then when the last heartbeat went and what came back, and when the next is due (1.1.2): `Last sent 14:02: listed`, `Next in 9m 58s`, with `a caller change` or `backing off` after it when either applies. `ANNOUNCE TEST` prints the exact payload and sends nothing; `ANNOUNCE NOW` sends a heartbeat immediately. A caller arriving or leaving, and `SHOW`, `HIDE` and `LURK`, send one within seconds. Off until switched on: see [ANNOUNCE.md](ANNOUNCE.md). |
 | `LIGHTS` | The lights plugin's two outputs: each one's pin, effect, brightness and colour order, and the colours it was last sent, in hex. `LIGHTS TEST` shows red, green, blue and then white on every pixel, a second each, for checking the wiring and the order. In silent mode every pixel is dark, the title says `silent` and `LIGHTS TEST` is refused. Off until switched on (on as shipped on the Waveshare S3): see `lights` under Plugins below. |
-| `PANEL` | Boards with a display only (the Waveshare ESP32-S3-LCD-1.47, ESP32-S3-Touch-LCD-4.3B and ESP32-S3-Touch-LCD-2, and the Makerfabs ESP32-S3 Parallel TFT 3.5" v1.0): what the panel is running on (controller, size and offsets as turned, where the USB plug is, pins, bus clock) and everything it is showing, as text, top to bottom: the bar's current page, the band's glyphs in words, the antenna's fill, the clock, the heading, each list row (a recent row as `login`, `guest`, `logoff`, `page` or `ring`, then its time and handle), the system row, and the number of LEDs in its strip. On the Touch-LCD-2 a recent row can also be `snap` (a caller's photo), the system row ends with the chip's temperature (`41C`), and a line under the backlight's says whether the touch controller answered and when the glass goes dark (`Touch CST816 0xB6, awake, never sleeps`). On the Makerfabs's 480 x 320 glass the fields are its own, in reading order: the board's name, the slot, the glyphs, the band's word, the antenna, the dBm, the clock, the heading, each of the eleven node rows (`S] handle DOING 12m CP437`, or the bare node number when the line is free), the calls today, the four recent events, the traffic (`14 in 1.2K out`) and the system cells. `Dark:` and why, when it is not lit. From 1.2.0 also the skin on the glass (`Skin status`, `Skin c64`), when the skin set is not the one showing a red line saying why (`Not c64: skin.txt line 12: led 3's box overlaps led 2's (line 11)`, `Not c64: loading`), and the skins CONFIG offers (`Skins status c64 pc`). While a skin has the glass the field list is left out: its figures are drawn on the skin, not in the layout the list describes. From 1.2.1, two lines above `bands sent` about new photos: `Photos on, snaps motion: showing, 41 s left` (or `loading one`, `3 shown`, or `Photos off`), and once one has been decoded `Last photo 1024x768 at 1/2, 412 ms`, or `Last photo not shown:` and why. While a photo has the glass the field list is the status layout's last words, not what is on the glass. See `panel` under Plugins below. |
+| `PANEL` | Boards with a display only (the Waveshare ESP32-S3-LCD-1.47, ESP32-S3-Touch-LCD-4.3B and ESP32-S3-Touch-LCD-2, the Makerfabs ESP32-S3 Parallel TFT 3.5" v1.0 and v2.0, and the Guition ESP32-4848S040): what the panel is running on (controller, size and offsets as turned, where the USB plug is, pins, bus clock) and everything it is showing, as text, top to bottom: the bar's current page, the band's glyphs in words, the antenna's fill, the clock, the heading, each list row (a recent row as `login`, `guest`, `logoff`, `page` or `ring`, then its time and handle), the system row, and the number of LEDs in its strip. On the Touch-LCD-2 a recent row can also be `snap` (a caller's photo), the system row ends with the chip's temperature (`41C`), and a line under the backlight's says whether the touch controller answered and when the glass goes dark (`Touch CST816 0xB6, awake, never sleeps`). On the Makerfabs's 480 x 320 glass the fields are its own, in reading order: the board's name, the slot, the glyphs, the band's word, the antenna, the dBm, the clock, the heading, each of the eleven node rows (`S] handle DOING 12m CP437`, or the bare node number when the line is free), the calls today, the four recent events, the traffic (`14 in 1.2K out`) and the system cells. `Dark:` and why, when it is not lit. From 1.2.0 also the skin on the glass (`Skin status`, `Skin c64`), when the skin set is not the one showing a red line saying why (`Not c64: skin.txt line 12: led 3's box overlaps led 2's (line 11)`, `Not c64: loading`), and the skins CONFIG offers (`Skins status c64 pc`). While a skin has the glass the field list is left out: its figures are drawn on the skin, not in the layout the list describes. From 1.2.1, above `bands sent`: two lines about new photos, `Photos on, snaps motion: showing, 41 s left` (or `loading one`, `3 shown`, or `Photos off`), and once one has been decoded `Last photo 1024x768 at 1/2, 412 ms`, or `Last photo not shown:` and why; then the load line (`Load      9% blue, longest pass 3 ms, 7 s a lap`, or `no reading yet`) and the drive icon (`Drive     idle, style pc`; idle, card, flash, error or off). While a photo has the glass the field list is the status layout's last words, not what is on the glass. See `panel` under Plugins below. |
 | `SHUTDOWN [n]` | Take the board off the air on purpose. Announces to every node, counts down n seconds (5 to 3600, default 60), then hangs up on everyone including you, each with the ordinary send-off. `SHUTDOWN CANCEL` stops a countdown and says so. Afterwards the board keeps answering and tells callers it has been shut down, rather than refusing connections in a way that looks like a crash. A physical reboot brings it back. Any transfer running when the countdown ends is lost, and the warning says so. |
 | `BACKUP SD` | The zip the backup window gives, onto the SD card: `unleashed-YYYYMMDD-HHMM.zip` in the card's `backup` folder, with a dot a file while it writes and then `Saved: 14 files, 31 KB.` It holds the Wi-Fi password as typed, and says so. `BACKUP SD SCREENS` writes `screens-YYYYMMDD-HHMM.zip`, the screens alone. Two in one minute would share a name, so the second is refused. `BACKUP` on its own explains the difference from the backup window (1.1.0). |
 | `RESTORE SD [SCREENS] [n]` | On its own, the card's backups, newest first and numbered. With a number or a zip's name, checks it exactly as an upload through the backup window is checked, shows what it would replace (a full restore always shows `Replaces`, `Accounts`, `Removes` and `Staff`) and asks `Restore now? (y/N)`; N or 60 seconds is `Not restored.` With anybody else on the board, Y waits for them to leave (`Waiting for 2 callers to leave. F applies it now, N gives up.`), `F` puts it back at once with a warning to them, and after `backup_window_minutes` it gives up: `Not restored: callers stayed on.` New callers get the busy line meanwhile. `SCREENS` puts only the zip's screens back, onto the card's `screens` folder, and never removes anything; deleting them from the card undoes it (1.1.0). The zips are also the sysop's Backups file area, `FILES` 11, to download and upload over the line. Details: [BACKUP.md](BACKUP.md#backups-on-the-sd-card). |
@@ -887,7 +887,10 @@ strip_order  = GRB      ; GRB | RGB | BRG | RBG | GBR | BGR
     is on, so the lit count is the callers on; with nobody on, every lamp dim
     and steady in the site's dial blue, the even lamps flickering up with
     bytes in and the odd ones with bytes out, as a modem's RD and SD lamps
-    did.
+    did. A free lamp is blue because a caller can dial into that line, so
+    while the board is closed (CONFIG board's "Stop taking calls") or a
+    SHUTDOWN is counting down, the free lamps are dark (1.2.1), on a wired
+    strip and on a panel's light bar alike.
 - **Drive %** and **Strip %**: brightness, as a percentage of full, 1 to
   100, each output its own, 10 as shipped (1.1.0; it was capped at 30). Past
   30 is allowed and is your call, and CONFIG asks you to confirm first,
@@ -1125,8 +1128,7 @@ sleep     = 0      ; minutes with no tap before the backlight goes off; 0 never
   (`Callers n/m` on the left, `Calls n today` on the right), callers running
   on from the left column into the right before any are folded into `+N
   more`, a system row of free heap, peak and the chip's own temperature (the
-  die, not the room), and the lights as a light bar with the drive light's
-  lamp at its left.
+  die, not the room), and the lights as a light bar across the foot.
 - **A tap** on the glass (GT911 touch) turns the bar's slot to its next page
   at once and holds it ten seconds, long enough to read the address off it;
   on a sleeping panel the tap only wakes it. `PANEL` counts the taps.
@@ -1155,6 +1157,25 @@ the same panel on a 2" 240 by 320 glass with touch and a camera, drawn to
 - The panel and the SD card share their SPI wires on this board. A panel
   band is never waited for behind a card command: it goes on a later tick.
   CONFIG lets the panel's MOSI and clock be the card's.
+
+**Every panel, from 1.2.1** (internal/tty-ux-panel-load-line-2026-10-01.md):
+
+- **A drive icon** sits right after the card in the band's row of glyphs: a
+  small drive whose 3 x 3 light shows what the lights plugin's drive light
+  is doing, at full level whatever its brightness: amber while the card is
+  read or written, cool white for internal flash, dark at rest, blinking red
+  for a storage error, each by the drive light's own style. Faint while the
+  lights plugin is off or the style is `off`. No drive lamp in the foot any
+  more; the 4.3B's and the Guition's light bars span it.
+- **The rail under the header is a load line**, 2 px tall (1 on the 4.3B,
+  doubled by the glass). Four times a second the panel reads how much of the
+  time the BBS loop spent working: blue under 15%, green to 40%, yellow to
+  75% or a single pass of 25 ms, red above that or for a slow pass, held two
+  seconds. The moving dot wears that colour and paints the rail behind it,
+  so a lap of the rail (7 to 19 s, by the glass) is the last few seconds of
+  load, newest just left of the dot. Grey means no reading yet, after a
+  start, silent mode, a skin or waking from sleep. A busy strip effect
+  slows the dot to half speed rather than stopping it.
 
 A value out of range is logged and the default is kept. An upload with a bad value is rejected, so it never replaces a working config.
 

@@ -1,0 +1,79 @@
+# ===========================================================================
+#  unleashed BBS
+#  Electronic freedom on a microcontroller.
+# ===========================================================================
+#
+# File:         sdkconfig.defaults.g4848
+# Module:       Build / ESP-IDF defaults, Guition ESP32-4848S040 layer
+#
+# Purpose:      What the Guition ESP32-4848S040 build changes from
+#               sdkconfig.defaults and sdkconfig.defaults.esp32s3.
+#               platformio.ini names this file for the board's environments
+#               through SDKCONFIG_DEFAULTS (board_build.cmake_extra_args).
+#               IDF 5.3.1 still reads "<file>.<target>" after each file it is
+#               given (tools/cmake/kconfig.cmake), so the order is
+#               sdkconfig.defaults, sdkconfig.defaults.esp32s3, then this
+#               file, and a later value wins.
+#
+#               The part: ESP32-S3-WROOM-1-N16R8, 8 MB octal PSRAM, the S3
+#               layer's own. What this board changes: the console (a CH340 on
+#               UART0, the chip's USB pins being the panel's and the touch
+#               controller's), and what an RGB panel needs, as on the 4.3B.
+#               Sources in src/board.h, BBS_BOARD_GT_4848S040.
+#
+#               PlatformIO keeps the generated sdkconfig.<env>, a value it
+#               already holds wins over this file, and it does not watch this
+#               file: delete sdkconfig.guition_4848s040* after editing here,
+#               and check the generated file. A value outside its Kconfig
+#               range is discarded, not clamped.
+#
+# Targets:      ESP32-S3 (ESP-IDF 5.3.1)
+# See also:     sdkconfig.defaults.esp32s3, sdkconfig.defaults.ws43b,
+#               platformio.ini, src/board.h
+#
+# Copyright 2026 - Robert Mech
+# License:      GNU General Public License v3 or later
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 3 of the License, or (at your
+# option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program. If not, see <https://www.gnu.org/licenses/>. The full
+# text is in the LICENSE file at the top of this repository.
+# ===========================================================================
+
+# The console on UART0, which the CH340 carries to the USB-C port: the
+# flashing port (auto-reset), the monitor and Improv's port, as on the
+# Makerfabs v1.0. No secondary console: USB-Serial-JTAG's pads are GPIO 19
+# (the GT911's SDA) and 20 (the panel's G1) here, not a USB port, and a
+# console there would also be a VFS slot for nothing.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# The program and its constants run from PSRAM (XIP), as on the 4.3B. The
+# panel is fed from a framebuffer in PSRAM continuously, and a flash write
+# (every LittleFS write) otherwise holds the PSRAM's bus for its length,
+# which starves the panel's DMA; with code and rodata in PSRAM, IDF 5.3.1's
+# flash driver leaves the cache on through a write (spi_flash_os_func_app.c,
+# SPI_FLASH_CACHE_NO_DISABLE).
+CONFIG_SPIRAM_XIP_FROM_PSRAM=y
+
+# The RGB driver's interrupt in IRAM, and the DMA restarted at every VSYNC,
+# so a frame the DMA fell behind on costs that frame, never a picture that
+# stays shifted (the IDF's own advice for RGB panels, esp_lcd Kconfig).
+CONFIG_LCD_RGB_ISR_IRAM_SAFE=y
+CONFIG_LCD_RGB_RESTART_IN_VSYNC=y
+
+# The VFS table, 8 to 12, as on every S3 display board: lwIP's sockets, the
+# three LittleFS partitions, SSH's eventfd and the SD card's FAT, with the
+# console, leave no headroom at 8, and a full table fails the card's mount
+# with ESP_ERR_NO_MEM (vfs.c, s_vfs_count >= VFS_MAX_COUNT). 4 bytes a slot.
+CONFIG_VFS_MAX_COUNT=12

@@ -669,6 +669,10 @@ void Bbs::tick() {
 
     loopAvgUs_ = loopAvgUs_ ? (loopAvgUs_ * 7 + dt) / 8 : dt;    // gentle average
     ++loopPasses_;
+#ifdef BBS_HAS_LCD
+    loadWorkUs_ += dt;                                            // the panel's load line
+    if (dt > loadPeakUs_) loadPeakUs_ = dt;
+#endif
 }
 
 // ===========================================================================

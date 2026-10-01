@@ -84,10 +84,20 @@
  *                                      FT6236 touch, the console on the
  *                                      chip's own USB.
  *
+ *               BBS_BOARD_GT_4848S040  Guition ESP32-4848S040 (sold as
+ *                                      AITRIP 4.0"): ESP32-S3-WROOM-1-N16R8,
+ *                                      a 4" 480 x 480 ST7701S on the RGB bus
+ *                                      with GT911 touch, a TF slot, the
+ *                                      console on a CH340. Pins in its block.
+ *
  *               Capabilities a profile may define:
  *                 BBS_HAS_LCD       a panel the panel plugin drives
  *                 BBS_LCD_RGB       that panel is on the S3's RGB bus, its
  *                                   frame buffer in PSRAM, not an SPI one
+ *                 BBS_RGB_ST7701    that RGB panel is an ST7701 set up over
+ *                                   3-wire SPI first, with the DMA streaming
+ *                                   a framebuffer (platform_esp32_st7701.cpp),
+ *                                   not the 4.3B's bounce fill
  *                 BBS_HAS_TOUCH     a touch controller on the glass: read
  *                                   as taps on its INT line (BBS_TOUCH_*),
  *                                   or polled over I2C with BBS_TOUCH_POLL
@@ -533,7 +543,7 @@
 #define BBS_BOARD_PLUGINS     1       // the panel
 
 #define BBS_BOARD_TAG         "MF35"
-#define BBS_BOARD_VERSION     "1.1.4"
+#define BBS_BOARD_VERSION     "1.1.5"     // 1.1.4 twice: lane D's photo show and board-g4848's big glass, merged in 1.2.1-dev.14
 
 // SSH (1.1.2 core, MF35 1.1.0, a preview), as on the Waveshare S3: the shared
 // port 6400 and ssh_port 6422, host keys in userdata/ssh. Eight at once, the
@@ -1387,11 +1397,216 @@
 
 #endif  // BBS_BOARD_WS_S3ETH
 
+// ===========================================================================
+// Guition ESP32-4848S040 (the 4" 480 x 480 "86 box" panel; the bench board is
+// sold as "AITRIP ESP32-S3 4.0 inch Color LCD Display Development Board")
+//
+// Read on the bench (COM30): ESP32-S3 QFN56 rev v0.2, 8 MB embedded PSRAM
+// (AP_3v3), 16 MB flash (68/4018), a CH340 (1A86:7523) on UART0. That is the
+// ESP32-S3-WROOM-1-N16R8, its PSRAM octal. The USB-C port goes to the CH340
+// only: the chip's own USB pins are the touch controller's SDA (19) and the
+// panel's G1 (20), so the console is UART0 and nothing is on USB-Serial-JTAG.
+//
+// A 4" 480 x 480 ST7701S IPS panel on the 16-bit RGB bus, set up first over
+// a 3-wire SPI (9-bit words: a D/C bit then 8) that shares its clock and data
+// with the TF slot; a GT911 capacitive touch controller on I2C with no INT or
+// reset line; the backlight on GPIO 38 through a transistor (PWM); a micro SD
+// slot on SPI. GPIO 40, 2 and 1 leave the front board as L1, L2 and L3
+// (through 0R links R25 to R27) on the 2x4 header that joins it to the rear
+// board, where the relay variant (ESP32-4848S040C_I_Y_3) has its three
+// relays. The bench board has no relays (Rob, from its back, 2026-09-30): the
+// rear plate carries that header, a serial connector (UART0), the battery's
+// and the speaker's (the NS4168's output). Moving the links to R21 to R23
+// gives the three to the NS4168's I2S inputs instead; as shipped they are not.
+//
+// Every pin is from two sources that agree: Espressif's ESP32_Display_Panel
+// library's board header for this design (supported/jingcai/BOARD_JINGCAI_
+// ESP32_4848S040C_I_Y_3.h; Jingcai is Guition's maker) and the vendor's own
+// pin table (as transcribed in github.com/NorthernMan54/ESP32-4848S040),
+// with the card's four from the same table and homeding's page. The
+// firmware this board shipped with is that same library: its ST7701 init
+// table, decoded from the factory image, is the header's byte for byte, and
+// its UI toggles 40, 1 and 2. The table with every source is
+// release-prep/g4848/pins.md.
+//
+// The glass is square and drawn whole: the panel plugin's square layout
+// (BBS_PANEL_SQUARE, internal/tty-ux-panel-g4848-2026-10-01.md), the node
+// board across the full width and the Makerfabs' right column under it. A
+// 480 x 320 skin is shown framed, 80 rows down.
+// ===========================================================================
+#if defined(BBS_BOARD_GT_4848S040)
+
+#if defined(ESP_PLATFORM) && !CONFIG_IDF_TARGET_ESP32S3
+#error "BBS_BOARD_GT_4848S040 is an ESP32-S3 board: build it for the esp32s3 target"
+#endif
+#ifndef BBS_CHIP_S3
+#define BBS_CHIP_S3 1                 // the host's stand-in, see above
+#endif
+
+// 33 characters, under HARDWARE's 40-column limit for the Board row.
+#define BBS_BOARD_NAME        "Guition ESP32-4848S040 4\" 480x480"
+#define BBS_HAS_LCD           1
+#define BBS_BOARD_PLUGINS     1       // the panel
+
+#define BBS_BOARD_TAG         "G4848"
+#define BBS_BOARD_VERSION     "1.0.2"
+
+// SSH as on every S3 board: the shared port 6400 and ssh_port 6422. Eight at
+// once, beside two 300 KB and 450 KB picture buffers in 8 MB of PSRAM.
+#define BBS_HAS_SSH           1
+#define BBS_SSH_MAX           8
+
+// PSRAM (the S3 layer's octal, and sdkconfig.defaults.g4848's XIP): the
+// panel's framebuffer, which the RGB DMA reads 45 times a second, and the
+// program itself, so a flash write does not turn the cache off under it.
+#define BBS_HAS_PSRAM         1
+#if defined(ESP_PLATFORM) && !(CONFIG_SPIRAM && CONFIG_SPIRAM_MODE_OCT && CONFIG_SPIRAM_FETCH_INSTRUCTIONS && \
+                               CONFIG_SPIRAM_RODATA)
+#error "BBS_BOARD_GT_4848S040 needs octal PSRAM with XIP: sdkconfig.defaults.g4848 was not applied (delete sdkconfig.guition_4848s040*)"
+#endif
+// SSH and a card fill the IDF's 8 VFS slots with no headroom (the Makerfabs'
+// review): 12, as on every S3 display board. A stale sdkconfig keeps 8.
+#if defined(ESP_PLATFORM) && CONFIG_VFS_MAX_COUNT < 12
+#error "BBS_BOARD_GT_4848S040 needs CONFIG_VFS_MAX_COUNT of 12 (sdkconfig.defaults.g4848): delete sdkconfig.guition_4848s040*"
+#endif
+// The console on UART0 (the CH340), and no USB-Serial-JTAG console of any
+// kind: its pads are the touch controller's and the panel's here. The S3
+// layer's is USB-Serial-JTAG, so a build that lost this board's layer would
+// put the console, and Improv, on a port that is not wired.
+#if defined(ESP_PLATFORM) && !(CONFIG_ESP_CONSOLE_UART_DEFAULT && CONFIG_ESP_CONSOLE_SECONDARY_NONE)
+#error "BBS_BOARD_GT_4848S040 needs the console on UART0 and no secondary (sdkconfig.defaults.g4848): delete sdkconfig.guition_4848s040*"
+#endif
+
+// The internal heap a plugin may not take at start, the S3 boards' figure.
+#define BBS_HEAP_RESERVE      16384
+
+// No LED the firmware can drive, and GPIO0, the BOOT key, is the panel's R4
+// line: no BOOT-hold reset and no backup-window button, as on the 4.3B.
+#define BBS_LED_GPIO          -1
+#define BBS_BOOT_GPIO         -1
+#define BBS_BACKUP_GPIO       -1
+
+// The lights plugin on with no pin, as on the 4.3B: nothing is wired to
+// light, but the panel draws the strip's effect in its LED row. switchboard.
+#define BBS_LIGHTS_ON         1
+#define BBS_LIGHTS_STRIP_FX   11
+
+// The TF slot in SPI mode: CS 42, MOSI 47, CLK 48, MISO 41. MOSI and CLK are
+// also the ST7701's 3-wire SPI (SDA and SCK), whose CS is 39: held high from
+// start-up so the card's traffic never reaches the panel. The panel's setup
+// is bit-banged on 39, 48 and 47 as the factory firmware does it, with the
+// card's bus held and its two pins lent for the length of it
+// (platform_esp32_st7701.cpp).
+#define BBS_HAS_SD_SLOT       1
+#define BBS_SD_CS             42
+#define BBS_SD_MOSI           47
+#define BBS_SD_CLK            48
+#define BBS_SD_MISO           41
+
+// No serial bridge pins as shipped: 43 and 44 are the console (the rear
+// plate's serial connector is the same UART0), and which of the 2x4 header's
+// pins carry 1, 2 and 40 is not in any published pinout found. A sysop who
+// has traced them gives the bridge its pins in CONFIG serial.
+#define BBS_SERIAL_RX         -1
+#define BBS_SERIAL_TX         -1
+
+// The panel: 480 x 480 on the RGB bus, data in the order esp_lcd wants it
+// (B0-B4, G0-G5, R0-R4), the clock, the syncs and DE. The vendor's timing
+// is 26 MHz, rising edge, H pulse 10 back 10 front 20, V pulse 10 back 10
+// front 10, from a framebuffer through bounce buffers. Here the DMA streams
+// the framebuffer from PSRAM itself, no bounce buffers, so the refresh costs
+// the CPU nothing (Rule no. 1); 12 MHz keeps that stream to 23 MB/s, 45 frames
+// a second, where 26 MHz would be 98 frames and 52 MB/s against Wi-Fi and the
+// program running from the same PSRAM. The ST7701's setup (SWRESET, MADCTL,
+// COLMOD 0x60 as the vendor's RGB666 setting gives it, then the vendor's
+// table) is Espressif's own ST7701 driver's order.
+#define BBS_LCD_RGB           1
+#define BBS_RGB_ST7701        1
+#define BBS_LCD_DRIVER        "ST7701S"
+#define BBS_LCD_SCALE         1
+#define BBS_LCD_PHYS_W        480
+#define BBS_LCD_PHYS_H        480
+#define BBS_RGB_DATA          4, 5, 6, 7, 15, 8, 20, 3, 46, 9, 10, 11, 12, 13, 14, 0
+#define BBS_RGB_PCLK          21
+#define BBS_RGB_HSYNC         16
+#define BBS_RGB_VSYNC         17
+#define BBS_RGB_DE            18
+#define BBS_RGB_PCLK_HZ       12000000
+#define BBS_RGB_HPW           10
+#define BBS_RGB_HBP           10
+#define BBS_RGB_HFP           20
+#define BBS_RGB_VPW           10
+#define BBS_RGB_VBP           10
+#define BBS_RGB_VFP           10
+#define BBS_RGB_SPI_CS        39      // the ST7701's 3-wire SPI; SCK and SDA are the card's CLK and MOSI
+#define BBS_RGB_SPI_SCK       48
+#define BBS_RGB_SPI_SDA       47
+#define BBS_RGB_BL            38      // the backlight, LEDC PWM, high is on
+// The picture the plugin draws: the whole glass, 480 x 480, in the square
+// layout (BBS_PANEL_BIG from the RAM figures below, BBS_PANEL_SQUARE from the
+// size). BBS_RGB_YOFF is where the platform puts it: 0, the glass.
+#define BBS_LCD_WIDTH         480
+#define BBS_LCD_HEIGHT        480
+#define BBS_RGB_YOFF          0
+#define BBS_LCD_RAM_SHORT     480     // the big layout's figures: an RGB panel has no RAM
+#define BBS_LCD_RAM_LONG      480
+// The panel plugin's settings that an RGB panel has no use for.
+#define BBS_LCD_MOSI          -1
+#define BBS_LCD_SCLK          -1
+#define BBS_LCD_CS            -1
+#define BBS_LCD_DC            -1
+#define BBS_LCD_RST           -1
+#define BBS_LCD_BL            -1
+#define BBS_LCD_XOFF          0
+#define BBS_LCD_YOFF          0
+#define BBS_LCD_ORIENT        0
+#define BBS_LCD_INVERT        0
+#define BBS_LCD_BGR           0
+#define BBS_LCD_MIRROR        0
+#define BBS_LCD_MHZ           10
+#define BBS_LCD_BACKLIGHT     60      // percent: this backlight dims
+#define BBS_LCD_BL_NOTE       "0 is dark; 60 as shipped."
+
+// The GT911 on I2C (SDA 19, SCL 45, 400 kHz, the board's pull-ups), polled
+// as on the 4.3B. No INT and no reset line reach the chip's pins, so the
+// address it chose at power-up is not ours to pick: 0x5D is asked first and
+// 0x14 second.
+#define BBS_HAS_TOUCH         1
+#define BBS_TOUCH_POLL        1       // polled over I2C (touchPoll), not taps on INT
+#define BBS_TOUCH_ADDR        0x5D
+#define BBS_TOUCH_ADDR2       0x14
+#define BBS_I2C_SDA           19
+#define BBS_I2C_SCL           45
+
+// The S3's own temperature sensor, a cell of the square's system block. The
+// WROOM-1 N16R8 is rated to 65 C ambient, and an 86 box puts it behind a
+// backlight in a wall: warm from 65, as on the Touch-LCD-2.
+#define BBS_HAS_CHIP_TEMP     1
+#define BBS_PANEL_TEMP_WARM   65
+
+// Pins the board owns (syscfg::pinProblem refuses them with the reason).
+//   CONSOLE  43, 44: UART0 to the CH340, the console and Improv
+//   LCD      the RGB bus, the panel's SPI CS, the backlight and the touch
+//            controller's I2C pair (0, 3, 45 and 46 are strapping pins among
+//            them; 19 and 20 are refused first as the chip's USB pins)
+// The card's four lines are the sd plugin's settings, held by it; 47 and 48
+// are the panel's SPI too, which the card's bus carries. 1, 2 and 40 are the
+// sysop's: they go to the 2x4 header and nothing on this board drives them.
+// On a relay variant they would click its relays; this profile is not for it.
+#define BBS_PINS_CONSOLE      43, 44
+#define BBS_PINS_LCD          BBS_RGB_DATA, BBS_RGB_PCLK, BBS_RGB_HSYNC, BBS_RGB_VSYNC, BBS_RGB_DE, \
+                              BBS_RGB_SPI_CS, BBS_RGB_BL, BBS_I2C_SDA, BBS_I2C_SCL
+// The backlight dark from the first instruction until the panel's PWM takes
+// it; the ST7701's CS is held high the same way (platform_esp32_st7701.cpp).
+#define BBS_PINS_HOLD_LOW     38
+
+#endif  // BBS_BOARD_GT_4848S040
+
 // One board profile at a time. Each block above checks the profiles written
 // before it; this counts them all, so a profile added later is never missed.
 #if (defined(BBS_BOARD_WS_S3LCD147) + defined(BBS_BOARD_WS_S3TOUCH43B) + defined(BBS_BOARD_MF_S3PAR35) + \
      defined(BBS_BOARD_FN_WROVER_CAM) + defined(BBS_BOARD_AI_ESP32CAM) + defined(BBS_BOARD_WS_S3TOUCH2) + \
-     defined(BBS_BOARD_WS_S3ETH) + defined(BBS_BOARD_MF_S3PAR35V2)) > 1
+     defined(BBS_BOARD_WS_S3ETH) + defined(BBS_BOARD_MF_S3PAR35V2) + defined(BBS_BOARD_GT_4848S040)) > 1
 #error "one board profile at a time"
 #endif
 
@@ -1436,6 +1651,7 @@
 #endif
 #ifndef BBS_HAS_LCD
 #define BBS_PANEL_BIG         0
+#define BBS_PANEL_SQUARE      0
 #endif
 #ifdef BBS_HAS_LCD
 #ifndef BBS_LCD_DRIVER
@@ -1449,8 +1665,16 @@
 // panel plugin, and the core's per-line traffic bits it reads (Bbs::
 // takePanelTraffic). Nothing else pays for either.
 #define BBS_PANEL_BIG         (BBS_LCD_RAM_LONG >= 400)
+// The square glass (480 x 480, the G4848, internal/tty-ux-panel-g4848-
+// 2026-10-01.md): the big layout's square branch, its LEFT column, six recent
+// events, a 228-column sweep, the ring banner and framed 480 x 320 skins.
+// Exactly 480: every box of it is absolute. Off, the MF35's code is as it was.
+#define BBS_PANEL_SQUARE      (BBS_PANEL_BIG && BBS_LCD_WIDTH == 480 && BBS_LCD_HEIGHT == 480)
 #ifndef BBS_LCD_MHZ_NOTE                // CONFIG panel's note on the SPI clock, 38 at most
 #define BBS_LCD_MHZ_NOTE      "10 is safe; the panel's limit is 62.5."
+#endif
+#ifndef BBS_LCD_BL_NOTE                 // an RGB panel's backlight note: the 4.3B's is on or off
+#define BBS_LCD_BL_NOTE       "On or off only: 0 is off."
 #endif
 #endif
 #if defined(BBS_HAS_TOUCH) && !defined(BBS_TOUCH_CHIP)

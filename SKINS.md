@@ -107,7 +107,7 @@ case there.
 | Directive | Meaning |
 |---|---|
 | `skin 1` | The format. The **first directive**, always. A later format is refused (`skin format 2; this board reads format 1`). |
-| `panel W H` | The panel it is drawn for, in pixels, 1 to 1024 each. **Required.** A skin for another size is not offered in CONFIG and, if named anyway, not loaded. |
+| `panel W H` | The panel it is drawn for, in pixels, 1 to 1024 each. **Required.** A skin for another size is not offered in CONFIG and, if named anyway, not loaded. One exception (1.2.1): on a 480 x 480 square panel (the Guition ESP32-4848S040), a `panel 480 320` skin is offered too and shown framed, 80 rows down, with black above and below and a 1 px rule at rows 79 and 400; PANEL says `Skin c64 (480 x 320, framed)`. A `panel 480 480` skin fills the square. |
 | `name TEXT` | What a person calls it, the rest of the line: 1 to 24 characters. Optional. `PANEL` shows it beside the folder's name: `Skin c64 (Breadbin and drive)`. |
 | `drive X Y D STYLE [halo=N]` | The drive light: centre `X Y`, lens diameter `D`, and the style it lights in: `pc`, `1541`, `disk2` or `breathe` (the lights plugin's `drive_fx` words). |
 | `activity X Y D [colour=#RRGGBB] [halo=N]` | The network activity lamp, lit in its colour (the panel's green, `#5DDC7A`, when not given) on the frames the board moved bytes. |

@@ -74,7 +74,7 @@ Versions:     The core version is BBS_VERSION, shared by every board. A board
 Design:       Each release environment (esp32dev_release, ws_s3_lcd147_release,
               freenove_wrover_cam_release, esp32cam_aithinker_release,
               ws_s3touch43b_release, ws_s3touch2_release, ws_s3eth_release,
-              makerfabs_s3_par35_release)
+              makerfabs_s3_par35_release, guition_4848s040_release)
               defines BBS_RELEASE, which makes main.cpp ignore include/secrets.h
               even when it is present. The screens image is built from data/screens only,
               never from data/, because data/system.cfg on a developer's
@@ -197,12 +197,20 @@ BUILDS = (
     # profile merged into 1.2.1.
     {"dir": "esp32s3-mf35v2", "env": "makerfabs_s3_par35v2_release", "family": "ESP32-S3", "boot": 0x0,
      "board": "BBS_BOARD_MF_S3PAR35V2", "table": "partitions_s3.csv"},
+    # The Guition ESP32-4848S040 (G4848 1.0.0, on 1.2.0), the AITRIP 4.0":
+    # chipFamily ESP32-S3, so the site's picker asks which board. Another
+    # S3's image here puts its console on USB pins that are this board's
+    # touch and panel lines, and this one's would drive an RGB bus into
+    # another board's card and panel pins. tag_only while it was a board
+    # lane on 1.2.0; an ordinary set since the profile merged into 1.2.1.
+    {"dir": "esp32s3-g4848", "env": "guition_4848s040_release", "family": "ESP32-S3", "boot": 0x0,
+     "board": "BBS_BOARD_GT_4848S040", "table": "partitions_s3.csv"},
 )
 
 # A board pre-release's key, the word in its tag after the core version
 # (v1.1.2-ws2.1), and the one set it carries.
 BOARD_TAGS = {"ws43b": "esp32s3-ws43b", "ws2": "esp32s3-ws2", "eth": "esp32s3-eth",
-              "mf35": "esp32s3-mf35", "mf35v2": "esp32s3-mf35v2"}
+              "mf35": "esp32s3-mf35", "mf35v2": "esp32s3-mf35v2", "g4848": "esp32s3-g4848"}
 
 # A combined preview: several boards' sets under one pre-release tag, the
 # core version's X.Y.Z then the name (v1.1.2-hardware-preview, Rob,

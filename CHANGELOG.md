@@ -530,6 +530,169 @@ bytes down (WROOM 15,080 to 15,048 free, Freenove 4,192 to 4,112, ESP32-CAM
 2,720 to 2,640); the ESP32-CAM is still the floor. dev.10's longer version
 string cost 8 bytes on the ESP32 boards and the Makerfabs (alignment).
 
+## G4848 1.0.2 on 1.2.0, 2026-10-01: the load line and the drive icon (board lane, every panel board)
+
+Built to internal/tty-ux-panel-load-line-2026-10-01.md, after Rob still saw
+the drive lamp as a dead LED at the start of the light bar. Every board with
+a panel; the other boards' versions move with 1.2.1's.
+
+- **The drive lamp leaves the foot.** On the 4.3B and the G4848 the light
+  bar now spans the foot alone: ten 35 px segments from x 7 on the 4.3B, 43
+  px from x 7 on the G4848.
+- **A drive icon in the header's row of glyphs**, right after the card: an
+  11 x 9 drive whose 3 x 3 light shows what the drive light is doing, at
+  full level whatever the light's brightness: amber for the card, cool white
+  for internal flash, dark at rest, blinking red on an error, by the drive
+  light's own style (pc, 1541, disk2, breathe). Faint when the lights are
+  off or the style is `off`. A row that would pass the strip's end with
+  every glyph on (the stick, the 2") packs at 2 px instead of 3.
+  `lights::panelDisk()` is the state, read on the strip's 40 ms clock.
+- **The rail under the header is a load line.** 2 px tall (the 4.3B keeps
+  its 1, which the glass doubles). Every 250 ms the panel takes the loop's
+  share of the time it spent working (`Bbs::takeLoad`, two counters summing
+  each pass, display boards only): blue under 15%, green to 40%, yellow to
+  75% or a pass of 25 ms, red above or for any slow pass, held 2 s. The dot
+  wears the level and paints the rail as it goes, so one lap (7 to 19 s by
+  the glass) is the history, newest left of the dot. Grey is no reading yet:
+  after a start, silent mode, a skin and a touch-sleep wake.
+- **The dot keeps moving under a busy strip**: it stood aside every frame
+  rainbow or scanner queued the strip, and would have recorded nothing; now
+  at most one frame in two.
+- From the code review: a single pass of most of a second (a sample over
+  1 s) gives no duty figure but still turns the line red, since it is the
+  worst thing the line is for; the 2" turned landscape gets the 122 px
+  glyph strip it needs (its camera glyph ran past 110 before the drive
+  icon, unsent and never cleared); the drive icon's state starts afresh at
+  each lights start and stop.
+- **PANEL** shows both, above `bands sent`:
+  `Load      9% blue, longest pass 3 ms, 7 s a lap` and
+  `Drive     idle, style pc`.
+- Images that change: every panel board (the stick, the 4.3B, the 2", the
+  MF35, the G4848) in panel.cpp, lights.cpp and bbs.cpp; the boards without
+  a panel in lights.cpp alone (the drive's state is kept for the panel only
+  under `BBS_HAS_LCD`, so their objects should match).
+
+## G4848 1.0.1 and MF35 1.1.4 on 1.2.0, 2026-10-01: the square panel layout (board lane)
+
+The G4848's glass drawn whole, to internal/tty-ux-panel-g4848-2026-10-01.md
+(steps 1 to 6; the new-photo show's square geometry waits for 1.2.1's show,
+the square stock skins for screen-artist).
+
+- **The square layout**, chosen by size for any 480 x 480 glass
+  (`BBS_PANEL_SQUARE`): the big glass's header as it was; the node board
+  across the full width, handles whole at 20 glyphs, and a **LEFT** column
+  beside ON: the minutes the call has left, warm at 5 and red at 1 (the
+  board's own warning points), `-` for staff and anyone off the clock. Under
+  it the deck: calls and six recent events on the left; traffic, a 228-column
+  sweep (15 minutes) and six cells on the right, the chip's temperature among
+  them. At the foot a light bar of the strip's lamps and the drive lamp.
+- **A ring** takes the whole header: the bar and band become one block with
+  `visitor is ringing` in the 16 x 32 face, readable across a room.
+- **Closed and shutting down**: every free line says `closed` (warm) or `not
+  answering` (red) instead of `free`; the band word counts the shutdown down
+  (`SHUTTING DOWN in 1:59`, then `SHUT DOWN, restart the board`).
+  (`Bbs::shutdownLeftMs`, new and public.)
+- **Every board, the lights**: the `switchboard` effect's free lamps go dark
+  while the board is closed or shutting down, since a dim blue lamp means a
+  caller can dial in (Rob: every board with a strip, wired or on a panel).
+  It changes lights.cpp in every image.
+- **Every panel with a drive lamp or a light bar** (the 4.3B and the G4848):
+  a lamp's gleam is as bright as the lamp, so the drive light idling faintly
+  no longer shows a whitish line over a black body (Rob, on the G4848's
+  glass: "that first light in the LED strip"), and a lit lamp is never
+  fainter than a visible glow (40 in its brightest channel), so the idling
+  drive lamp shows as dim amber rather than vanishing. drawLed changes in
+  every panel board's panel.cpp; only those two draw lamps this way.
+- **Skins**: a 480 x 320 skin is still offered on the square and shown
+  framed, 80 rows down between black bands with a rule at rows 79 and 400;
+  PANEL says so. A 480 x 480 skin fills it.
+- **Three big-glass fixes, the MF35's too** (MF35 1.1.4): a tapped header page
+  holds 10 s, not 3, and holds while asleep; a caller's snap in the recent
+  list is the camera in blue, not an orange login; the heap cell wears the
+  RAM icon, so the chip icon means only the chip's temperature.
+- The G4848 profile adds the chip's temperature (warm from 65 C). Its
+  development builds' I2C scan of the touch bus is left out of release images.
+- From the code review: PANEL shows the ring banner while a ring is up, as
+  the glass does; the dot no longer leaves a band-blue line under the
+  banner; a framed skin queues its whole glass at once when its copy ends,
+  so the backlight comes on only when all of it is out; `Bbs::minutesLeft`
+  no longer rounds an unlimited call past INT32_MAX (it read as "no limit"
+  only because the overflow happened to wrap negative). `host/test_panel`
+  gains the square's boxes, built as `test_panel_g4848` with the profile's
+  defines (a first cut never saw them: the test did not include config.h).
+- Static DRAM 268,776 of 341,760 (72,984 free, +616: two more recent rows and
+  the ring's field, the longer sweep, a framed skin's queue); the panel's
+  canvas 460,800 bytes of PSRAM, up 153,600. Image 1,524,928 bytes.
+- Other boards, before the lamps went to every board: the 4.3B's objects
+  identical without debug info; the MF35's differing in panel.cpp (the three
+  fixes) and in the version string alone. With the lamps and the gleam,
+  every board's lights.cpp changes, and every panel board's panel.cpp.
+
+## G4848 1.0.0 on 1.2.0, 2026-09-30: the Guition ESP32-4848S040 (board lane)
+
+A board lane from v1.2.0 (branch board-g4848), to merge into 1.2.1. The core
+stays 1.2.0; the board says `1.2.0 (G4848 1.0.0)`. On the bench (COM30), not
+yet in a release: its image set is `esp32s3-g4848`, tag_only until the merge.
+
+- **A new board**: the Guition ESP32-4848S040, the 4" square 480 x 480 wall
+  panel, sold on Amazon as the "AITRIP ESP32-S3 4.0 inch" display board.
+  ESP32-S3-WROOM-1-N16R8 (8 MB octal PSRAM), an ST7701S IPS panel on the RGB
+  bus, GT911 touch, a TF slot, a CH340 on the one USB-C port. A profile of its
+  own (`BBS_BOARD_GT_4848S040`, envs `guition_4848s040` and `_release`).
+- Identified from the board itself: esptool's readout, and the factory
+  firmware, whose ST7701 init table (decoded from its image) is byte for byte
+  the table in Espressif's ESP32_Display_Panel board header for the
+  ESP32-4848S040C_I_Y_3. Pins from that header and the vendor's pin table,
+  which agree (release-prep/g4848/pins.md).
+- **The panel**: the ST7701 is set up once over its 3-wire SPI, which shares
+  its clock and data with the TF slot. The setup is bit-banged on the three
+  GPIOs, as the factory firmware does it, with the card's bus held for it and
+  the panel's chip select held high from start-up so the card's traffic never
+  reaches it. (Its status cannot be read back on this board: the panel's SDA
+  output does not come back to the chip.) Then the
+  RGB DMA streams a 480 x 480 framebuffer from PSRAM by itself, at 12 MHz (45
+  frames a second): no refill interrupt, so the refresh costs the loop
+  nothing. The status screen is the Makerfabs' 480 x 320 big layout, drawn in
+  the middle of the square glass with 80 black rows above and below; a square
+  layout of its own is for tty-ux.
+- The backlight dims (PWM on GPIO 38): CONFIG panel's Light is a percentage
+  here, 60 as shipped, and it fades in over 300 ms when it comes on, which
+  stopped the CH340 dropping off USB at every boot. Touch is polled as on the 4.3B: a tap wakes the glass
+  and turns the header. The GT911 is asked for at 0x5D, then 0x14.
+- The console, flashing and Improv are UART0 through the CH340, with no
+  USB-Serial-JTAG console at all: the chip's USB pins are the touch
+  controller's SDA and the panel's G1 on this board.
+- SSH on 6400 and 6422 (eight at once), the S3's 8 MB layout (the first
+  install is an erase), the link, the VFS table at 12. No BOOT-hold reset or
+  backup-window button: GPIO 0 is a panel data line.
+- CONFIG refuses 43 and 44 (the console), the RGB bus, the panel's SPI CS (39),
+  the backlight (38) and the touch pair (19, 45). 1, 2 and 40 are free: on this
+  no-relay board they go to the rear 2x4 header (the relay variant's relay
+  lines) and nothing on the board drives them.
+- A build left with a stale sdkconfig (the S3 layer's USB console, no XIP, the
+  VFS table at 8) is refused by name in board.h.
+- Static DRAM 268,160 of 341,760 (73,600 free), image 1,519,120 bytes. The
+  4.3B's and the LCD-1.47's objects are identical to v1.2.0's, built in the
+  same worktree before and after; their images differ only in the app
+  descriptor (version string, build time, the ELF's hash) and the digest.
+- On the bench (COM30, 192.168.0.124), confirmed on the glass by Rob: the
+  status screen upright and not mirrored, the colours right, taps turning the
+  header. 8 MB octal PSRAM with the program in it, the GT911 at 0x5D, an SDHC
+  card mounted at 20 MHz beside the panel's setup, Wi-Fi by Improv,
+  first-boot setup, telnet and SSH logins on 6400 and 6422; internal heap
+  55,767 free, 48,863 at its lowest, with the card mounted; no slow pass.
+- The first build's glass was black with the backlight lit: it sent the
+  ST7701's setup through the SPI2 peripheral, which the chip never took. The
+  factory image's own 3-wire line config is plain GPIOs, bit-banged by
+  ESP32_Display_Panel, and doing the same lit it.
+- A development build's panel start logs who answers on the touch
+  controller's I2C bus, once a boot (release images leave it out). On the
+  bench only the GT911 does (at 0x14 and 0x5D): no IMU to turn the picture
+  by, and no AXP2101 PMU (the battery is the IP5306's, which has no bus
+  here).
+- A 1 GB SDSC card did not mount on the bench: it refuses CRC on/off (CMD59),
+  which IDF 5.3.1's SPI init treats as fatal. An ordinary SDHC card mounts.
+
 ## 1.2.0 (S3 1.1.4, WS43B 1.0.2, WS2 1.0.3, ETH 1.0.2, MF35 1.1.2, FNCAM 1.0.8, ESPCAM 1.0.5), 2026-09-29: the hardware release
 
 **Out early for testing: this release has not been through the full
