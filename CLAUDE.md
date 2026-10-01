@@ -1290,6 +1290,7 @@ this tree.
   - **it takes one of the 10 caller lines** while it is on (say node 10): zero static DRAM, a socket back, on every board whose pins allow (the ESP32-CAM may have none free; on the USB-console S3s, UART0's 43/44 are free for it). Not an extra session (about 7 KB each).
   - Built beside the serial bridge plugin, which already owns the UART driver and pins, as a mode of it.
   - To specify first: the baud rate and format; hang-up by carrier detect or DTR on a pin, or an idle timeout with none; the line's trust (physical access, so treat it as the local network for the published default and staff); pins per board; a Hayes-style modem answer as a later option.
+  - **Boards with no free pins for it don't get it** (Rob). **CONFIG serial sets it up and defines its behaviour** (Rob): today's page is the serial bridge's, so it gains a mode (Bridge or Caller line) and, for the caller line, the pins, baud, format, flow control, the hang-up method (carrier-detect pin, DTR pin or idle timeout) and its timeout, and which node it takes. On a board with no usable pins, CONFIG serial shows the caller-line rows greyed with the reason, the same pattern as the S3-only rows.
   - **The local console (the BLE keyboard and panel terminal, if it is built) uses the hidden sysop node**, not a caller line (Rob: "the console line should use the sysop hidden line unless we can have a dedicated console line").
 - **1.3.0 plan (Rob, 2026-09-29):**
   - the features sat (above);
