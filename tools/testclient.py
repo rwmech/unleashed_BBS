@@ -1043,14 +1043,17 @@ def test_ansi():
 def test_link_line():
     """Every caller is told how they are connected before any screen (1.1.1).
 
-    Rob: "--> Connection via Telnet is not secure", right after detection
-    and before the welcome, on all three kinds of terminal, 39 columns so a
-    C64 does not wrap it. The busy line and the closed sign carry it too;
-    test_busy and test_closed_configured check those.
+    Rob: "--> This connection is not securely encrypted" (his wording,
+    1.2.1; "Connection via Telnet is not secure" before), right after
+    detection and before the welcome, on all three kinds of terminal. Under
+    47 columns it is "--> Connection not securely encrypted", so a C64 does
+    not wrap it. The busy line and the closed sign carry it too; test_busy
+    and test_closed_configured check those.
     """
     print("The connection line before the welcome (1.1.1)")
-    line = b"--> Connection via Telnet is not secure"
-    ok = check("the line is 39 columns", len(line) == 39)
+    line = b"--> This connection is not securely encrypted"
+    short = b"--> Connection not securely encrypted"
+    ok = check("the 40 column form fits 39", len(short) <= 39)
 
     def seen(c, pat, secs):
         # The line is coloured part by part, so it is looked for with the
@@ -1080,13 +1083,14 @@ def test_link_line():
     p.send(b"4")
     # A colour code sits between the parts, so the words are found part by
     # part, in order.
-    ok &= check("PETSCII-40: the same words, in PETSCII",
-                p.wait_for(pet("not secure"), 8) and
-                -1 < p.buf.find(pet("-->")) < p.buf.find(pet("Connection via Telnet is "))
-                   < p.buf.find(pet("not secure")))
+    ok &= check("PETSCII-40: the short form, in PETSCII",
+                p.wait_for(pet("not securely encrypted"), 8) and
+                -1 < p.buf.find(pet("-->")) < p.buf.find(pet("Connection "))
+                   < p.buf.find(pet("not securely encrypted")) and
+                p.buf.find(pet("This connection")) < 0)
     ok &= check("PETSCII-40: before the welcome",
                 p.wait_for(pet("No web. No cloud."), 8) and
-                -1 < p.buf.find(pet("Connection via")) < p.buf.find(pet("No web. No cloud.")))
+                -1 < p.buf.find(pet("Connection ")) < p.buf.find(pet("No web. No cloud.")))
     p.close()
 
     t = Caller(ansi=False)
@@ -2876,7 +2880,7 @@ def test_busy():
     ok = check("the caller past the last node gets the busy screen",
                over.wait_for(b"lines are busy", 5))
     ok &= check("told how they are connected first (1.1.1)",
-                -1 < plain(over.buf).find(b"--> Connection via Telnet is not secure")
+                -1 < plain(over.buf).find(b"--> This connection is not securely encrypted")
                    < plain(over.buf).find(b"lines are busy"))
     ok &= check("countdown shown", over.wait_for(b"Disconnecting in", 5))
     t0 = time.time()
@@ -4027,6 +4031,49 @@ def test_sysinfo():
                 b"Calls by hour" in pub and b"Unknown" not in pub)
     g.close()
     s.close()
+    return ok
+
+
+def test_calls_one_screen():
+    """CALLS fits one screen at 40, 80 and 132 (1.2.1, F5).
+
+    It was one column of 24 hours, 28 list rows, so it paged at every width
+    and the page break cut the day in the evening. Two panes of 12 now
+    (internal/tty-ux-calls-hours-2026-10-01.md): no [More] on a 24 row
+    screen, every hour 00 to 23 there, the divider on the same column every
+    row, and no row past rowWidth."""
+    print("CALLS: the whole day on one screen")
+    c = ansi_login("CallsWide")
+    ok = True
+    try:
+        for cols in (80, 40, 132):
+            naws(c, cols, 24)
+            drain(c)
+            c.buf.clear()
+            c.send(b"calls\r")
+            c.wait_for(b"Calls by hour", 5)
+            c.pump(1.0)
+            text = plain(c.buf)
+            if b"Nothing logged with a clock yet" in text:
+                print("  SKIP  no calls with a clock in the log")
+                return ok
+            ok &= check(f"at {cols}, no [More]", b"[More]" not in text)
+            w = cols - 1
+            p = (w - 3) // 2
+            rows = render_lines(c.buf, cols=cols)
+            hours = [r for r in rows if re.match(r"\d\d [ \d-]", r)]
+            left = sorted(int(r[0:2]) for r in hours)
+            right = sorted(int(r[p + 3:p + 5]) for r in hours if r[p + 3:p + 5].isdigit())
+            ok &= check(f"at {cols}, twelve rows carry every hour 00 to 23",
+                        len(hours) == 12 and left == list(range(12)) and right == list(range(12, 24)))
+            ok &= check(f"at {cols}, the divider on column {p + 1} of every hour row",
+                        all(len(r) > p + 1 and r[p + 1] in "│|³" for r in hours))
+            ok &= check(f"at {cols}, no row past {w} columns",
+                        max((len(r.rstrip()) for r in rows), default=0) <= w)
+            ok &= check(f"at {cols}, the totals say board time",
+                        b"Busiest" in text and b"Board time. The log keeps" in text)
+    finally:
+        c.close()
     return ok
 
 
@@ -11791,7 +11838,7 @@ def test_closed_configured():
     o = Caller(ansi=True)
     ok &= check("a caller gets the closed sign", closed_sign(o))
     ok &= check("told how they are connected before it (1.1.1)",
-                -1 < plain(o.buf).find(b"--> Connection via Telnet is not secure")
+                -1 < plain(o.buf).find(b"--> This connection is not securely encrypted")
                    < plain(o.buf).find(b"Closed by the sysop for now"))
     o.send(b"Outsider\r")
     ok &= check("a new handle is refused", o.wait_for(b"Closed by the sysop. Call again later.", 6))
@@ -18796,10 +18843,11 @@ def test_ssh_login():
     ktype, kfp = c.hostkey()
     ok &= check("and was shown a host key", kfp is not None)
     ok &= check("the terminal probe still runs over SSH", c.wait_for(b"DETECTING TERMINAL", 8))
-    ok &= check("the link line: Connection via SSH is Secure.",
-                c.wait_for(b"Secure.", 10) and b"--> Connection via SSH is Secure." in plain(c.buf))
-    ok &= check("\"Secure.\" in bold yellow", b"33;1mSecure." in c.buf)
-    ok &= check("never \"not secure\"", b"Secure." in c.buf and b"not secure" not in plain(c.buf))
+    ok &= check("the link line: This connection is securely encrypted",
+                c.wait_for(b"securely encrypted", 10) and
+                b"connection is securely encrypted" in plain(c.buf).replace(b"Connection", b"connection"))
+    ok &= check("\"securely encrypted\" in bold yellow", b"33;1msecurely encrypted" in c.buf)
+    ok &= check("never \"not securely\"", b"not securely" not in plain(c.buf))
     ok &= check("signed in by the SSH password", c.wait_for(b"Signed in over SSH as", 15)
                 and b"SshRob" in plain(c.buf))
     ok &= check("ACCESS GRANTED, and the main prompt", c.wait_for(b"ACCESS GRANTED", 6) and c.wait_for(b"Main", 10))
@@ -18937,7 +18985,7 @@ def test_ssh_telnet_unchanged():
     c.send(b"SSH-1.99-oldclient\r\n")
     ok = check("\"SSH-1.99-\" is not SSH-2.0: the telnet probe", c.wait_for(b"DETECTING TERMINAL", 5))
     c.wait_for(b"not secure", 10)
-    ok &= check("and the caller goes on as telnet", b"Connection via Telnet is not secure" in plain(c.buf))
+    ok &= check("and the caller goes on as telnet", b"not securely encrypted" in plain(c.buf))
     c.close()
     q = Caller(ansi=True)
     ok &= check("a silent caller still gets the probe", q.wait_for(b"DETECTING TERMINAL", 5))
@@ -19125,7 +19173,8 @@ def test_ssh_dedicated_port():
     ok = check("a banner-first client hears the board first on the SSH port",
                c.said(b"heard the board's identification first", 10))
     ok &= check("and logs in", c.said(b"ssh_call: open", 15) and c.wait_for(b"Signed in over SSH as", 15))
-    ok &= check("\"Secure.\" there too", b"Connection via SSH is Secure." in plain(c.buf))
+    ok &= check("\"securely encrypted\" there too", b"onnection is securely encrypted" in plain(c.buf)
+                or b"Connection securely encrypted" in plain(c.buf))
     ok &= check("to the main prompt", c.wait_for(b"Main", 10))
     c.close()
 
@@ -19415,7 +19464,7 @@ GROUPS = {
     "storage":   ["files", "forums", "sd", "xfer", "backup", "restore", "card_screens", "rewrites",
                   "screens_install", "lights_disk", "lag_", "uploads_pending"],
     # The shell, its lists and the screens the core draws.
-    "shell":     ["menus", "sysinfo", "hardware", "page", "about", "config", "welcome", "paced", "seeded", "fx_codes",
+    "shell":     ["menus", "sysinfo", "calls_one", "hardware", "page", "about", "config", "welcome", "paced", "seeded", "fx_codes",
                   "lights", "operator", "dash", "nodes_columns", "version_shown", "screens_command",
                   "forms", "whois", "space_kept", "config_one_pass", "time_warn", "last_node"],
     # Logging in, accounts, staff.
@@ -19460,7 +19509,7 @@ ORDER_NAMES = [
     "test_room_narrow_whole_line", "test_room_private_own_tag", "test_last_node_ten", "test_room_squelch_ten",
     "test_long_help",
     "test_info_pages",
-    "test_mail", "test_prompt_survives_notice", "test_menus", "test_sysinfo", "test_hardware",
+    "test_mail", "test_prompt_survives_notice", "test_menus", "test_sysinfo", "test_calls_one_screen", "test_hardware",
     "test_config",
     # The dashboard (1.1.0). test_dash_pick kicks its own caller and nobody
     # else's; test_dash_waiting leaves mail only for its own sysop account.

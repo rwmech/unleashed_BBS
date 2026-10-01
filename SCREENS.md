@@ -126,8 +126,9 @@ free, less 32 KB kept back for the accounts. Short of room, it says so and
 takes nothing: `Board full: 180 KB needed, 120 KB free.`
 
 The screens themselves still live on the `storage` partition, 256 KB, which
-holds about 58 screens of up to 4 KB each (the stock set is 33, about
-34 KB). What has to fit is the restore at its fullest, not the set it ends
+holds about 58 screen files of up to 4 KB each (the stock set is 12
+screens in up to three flavours, 36 files and about 37 KB once every screen
+has its `.seq`; a count of files, since each flavour is a file of its own). What has to fit is the restore at its fullest, not the set it ends
 with (1.1.0): each screen is copied in beside the copy it replaces and only
 then swapped, so for a moment both are there. So each screen counts as the
 larger of its old and new copies, and the largest new one counts once more.
