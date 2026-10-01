@@ -495,6 +495,27 @@ says sats can't pair. Built without a network (the plain image), SYS said
 `Wi-Fi - no network set` and SATS gave the reworded notice. Idle, no slow
 pass.
 
+### Tests only (1.2.1-dev.13)
+
+- **The 4.3B's 60 failures in its login and shell groups were the tests'**,
+  and older than 1.2.1: v1.2.0's own tree fails the same 60 checks in the
+  same nine tests (`--board ws43b --card --only=board_ws43b,login,shell`),
+  and 19 more there that 1.2.1's per-profile pin table (dev.3) already fixed.
+  Two causes:
+  - The lights tests had no row for the 4.3B in `LIGHTS_BOARD`, so they ran
+    with the reference board's lights-off default and its pins (13 is the
+    4.3B's card). The 4.3B has a row now: lights on as shipped, no two pins
+    free for CONFIG (the round trip SKIPs, as on the Touch-LCD-2), 43 and 44
+    as the pins written to the file. A profile with no row SKIPs the lights
+    tests and says so, rather than asserting the WROOM's facts: the ETH and
+    both Makerfabs until a row is added for each.
+  - CONFIG sd in line mode has three pin rows on the 4.3B, not four (its
+    chip select is the expander's, shown, not asked), so the ninth Enter in
+    `test_config_cycle_numbers` and `test_config_lights_ascii` answered the
+    save question and the rest went to the prompt. `SD_ROWS_AFTER_READ` is 8
+    there.
+  - On ws43b, the ten tests: 161 passed with a card, 158 without, 0 failed.
+
 ### Sizes
 
 Static DRAM off the ELFs at 1.2.1-dev.10, the 18 board and release envs
