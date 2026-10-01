@@ -14,6 +14,8 @@ source. See the LICENSE file for terms.
 
 # Plugins
 
+**Applies to versions:** firmware 1.2.0 (plugin API 1.3).
+
 A plugin that files anything under a caller's handle must implement `onRename(old, new)`, because a handle is a display name and can change. Chat learned this the hard way: its mailbox and its room ban list were both keyed by handle, so renaming somebody hid their own unread mail from them and walked them straight out of a ban, and neither failure said anything at all. The hook is called after `users.txt` has been written and only when that write succeeded.
 
 A plugin is how a feature bolts onto the BBS: GPIO, a serial bridge, chat, a door. Plugins are compiled into the firmware and switched on in `system.cfg`, so a board only carries what it uses, and a new plugin arrives as new firmware (over the air, once OTA lands).
@@ -416,7 +418,7 @@ a board's firmware at a pinned commit, without an edit to the core. LINK.md,
 - It states the plugin API it was written against with
   `UNLEASHED_PLUGIN_API(1, 0);` in one of its sources. `BBS_PLUGIN_API_MAJOR`
   and `BBS_PLUGIN_API_MINOR` in `plugin.h` are the core's: the minor goes up
-  with anything added that a plugin may use (1.0 is 1.2.0's), the major only
+  with anything added that a plugin may use (1.2.0 shipped with 1.3), the major only
   for a break. A plugin that needs a newer core fails to compile with a
   sentence saying so.
 - Its sources include the core's headers from `src/`:

@@ -14,6 +14,8 @@ source. See the LICENSE file for terms.
 
 # Panel skins
 
+**Applies to versions:** firmware 1.2.0.
+
 A board with a display (`BBS_HAS_LCD`) draws its status panel one of two
 ways. The built-in way, `status`, is the drawn layout `COMMANDS.md`
 describes under `panel`. A **skin** is a picture instead: a painted or

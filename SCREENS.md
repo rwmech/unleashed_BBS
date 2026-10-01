@@ -13,6 +13,8 @@ source. See the LICENSE file for terms.
 
 # Screens: formats, rules and limits
 
+**Applies to versions:** firmware 1.2.0.
+
 Screens are the files in the backup zip under `screens/`. Edit them, upload them with the backup window ([BACKUP.md](BACKUP.md)), and the BBS uses them immediately.
 
 ## Names

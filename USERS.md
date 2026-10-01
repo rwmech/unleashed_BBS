@@ -13,6 +13,8 @@ source. See the LICENSE file for terms.
 
 # µnleashed BBS: user accounts
 
+**Applies to versions:** firmware 1.2.0.
+
 How callers get accounts, and how staff create, change, lock and delete them. Commands and keys are also listed in [COMMANDS.md](COMMANDS.md).
 
 ## Limits

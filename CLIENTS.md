@@ -22,6 +22,8 @@
 
 # µnleashed BBS: what can call in
 
+**Applies to versions:** firmware 1.2.0.
+
 The board wants one thing: a TCP connection to port 6400 carrying plain text. Everything else is detail. That means almost any computer built since 1977 can call it, as long as something bridges its serial port to a network.
 
 Nothing needs configuring at the caller's end. Terminal type, character set and width are worked out at connect time: ANSI with CP437 or UTF-8, PETSCII at 40 or 80 columns, or plain ASCII. If the detection cannot decide, the board asks one question and remembers the answer for the call.
