@@ -1260,7 +1260,10 @@ def test_sysop():
     r.buf.clear()
     r.send(b"dash\r")
     ok &= check("DASH shows the dashboard", r.wait_for(b"DASHBOARD", 4) and r.wait_for(b"last calls", 4))
-    ok &= check("DASH shows Wi-Fi and a Doing column", r.wait_for(b"WiFi", 4) and b"Doing" in r.buf)
+    # A wired board on the wire shows its Ethernet there (1.1.2), not Wi-Fi.
+    net = b"Eth" if HOST_BOARD == "wseth" else b"WiFi"
+    ok &= check("DASH shows " + ("Ethernet" if HOST_BOARD == "wseth" else "Wi-Fi") + " and a Doing column",
+                r.wait_for(net, 4) and b"Doing" in r.buf)
     if r.wait_for(b"[More] Y/n/c", 2):
         r.send(b"c")
     ok &= check("DASH lists callers and last calls", r.wait_for(b"last calls", 4) and b"Xavier" in r.buf)
@@ -6068,6 +6071,10 @@ BOARD_LED  = 6
 #   sd_rows    CONFIG sd has pin rows (an SPI slot on settings)
 #   wired43    (optional) 43 is wired to a part on the board, so CONFIG
 #              refuses it as "wired on the board" (BBS_PINS_WIRED)
+#   sd_tried   (optional) the card's CS and MOSI as SD's "no card" line names
+#              them; the reference board's where a row has none
+#   sd_move    (optional) a CS pin a hand edit may move the card to that is
+#              free under the harness and not the shipped CS (test_sd_no_reprobe)
 # None is a fact this table does not know for the profile: the check that
 # needs it SKIPs and says so, rather than asserting the WROOM's.
 _S3_FLASH   = dict(flash=(b"30", b"31", b"30"), flash_pat=b"flash and PSRAM",
@@ -6076,7 +6083,8 @@ _WROOM_PINS = dict(flash=(b"6", b"11", b"7"), flash_pat=b"flash chip",
                    missing=(b"24", (b"20", b"28", b"31"), b"29", "30"), console=b"1")
 PIN_BOARD = {
     "":       dict(_WROOM_PINS, led=b"2", led_free=b"2", btn_free=b"4", serial=(b"16", b"17"),
-                   sd_clock=(b"18", b"Clock GPIO"), sd_rows=True),
+                   sd_clock=(b"18", b"Clock GPIO"), sd_rows=True,
+                   sd_tried=(b"CS 5", b"MOSI 23"), sd_move="4"),
     "fncam":  dict(_WROOM_PINS, led=b"-1", led_free=b"13", btn_free=b"13", serial=(b"33", b"32"),
                    sd_clock=None, sd_rows=False),
     "espcam": dict(_WROOM_PINS, led=b"33", led_free=b"33", btn_free=None, serial=None,
@@ -6087,8 +6095,11 @@ PIN_BOARD = {
                    sd_clock=None, sd_rows=None),
     "ws43b":  dict(_S3_FLASH, led=b"-1", led_free=None, btn_free=None, serial=(b"43", b"44"),
                    sd_clock=None, sd_rows=None),
+    # The ESP32-S3-ETH's slot (board.h): CS 4, MOSI 6. Its card already sits
+    # on 4, and the harness's serial bridge holds 16 and 17, so a moved CS
+    # goes to 43, free on this board since its console is the chip's USB.
     "wseth":  dict(_S3_FLASH, led=b"-1", led_free=None, btn_free=None, serial=None,
-                   sd_clock=None, sd_rows=None),
+                   sd_clock=None, sd_rows=None, sd_tried=(b"CS 4", b"MOSI 6"), sd_move="43"),
     # The Makerfabs' console is UART0, on 43 and 44 (BBS_PINS_CONSOLE).
     "mf35":   dict(_S3_FLASH, console=b"43", led=b"-1", led_free=None, btn_free=None, serial=(b"17", b"18"),
                    sd_clock=None, sd_rows=None),
@@ -17948,7 +17959,8 @@ def test_sd():
         # which pins it tried, because "no card found" with no pin numbers
         # sends somebody to re-seat a card that was never the problem.
         ok &= check("it says there is no card", b"no card" in shown)
-        ok &= check("and which pins it tried", b"CS 5" in shown and b"MOSI 23" in shown)
+        cs, mosi = PB.get("sd_tried", PIN_BOARD[""]["sd_tried"])
+        ok &= check("and which pins it tried", cs in shown and mosi in shown)
         ok &= check("and that the board is fine without one", b"runs fine without" in shown)
 
         s.buf.clear()
@@ -20527,7 +20539,8 @@ def test_sd_no_reprobe():
         # An SDMMC board's pins are its wiring, not settings (the Freenove
         # CAM): the bus speed is what moves there.
         sdmmc = HOST_BOARD == "fncam"
-        cfg.write_text(cfg_with(text, {("plugin:sd", "speed" if sdmmc else "cs"): "10000" if sdmmc else "4"}))
+        move = PB.get("sd_move", PIN_BOARD[""]["sd_move"])
+        cfg.write_text(cfg_with(text, {("plugin:sd", "speed" if sdmmc else "cs"): "10000" if sdmmc else move}))
         cfg_reload(s)
         ok &= check("and a save that moves a pin looks once, on the new pin" if not sdmmc else
                     "and a save that moves the bus speed looks once", tries() == 2)

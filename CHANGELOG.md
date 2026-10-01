@@ -352,6 +352,39 @@ The three bench-only ESP32 envs (`esp32dev_backuptest`, `esp32dev_diag`,
   row's own note now (`cfg_walk_to`), and passes 11 of 11 with and without
   a card.
 
+### The ETH board: tests read the profile, and the bench (1.2.1-eth.7)
+
+No firmware change. After the merge of dev.13 (1.2.1-eth.6), the checks
+that failed on the ESP32-S3-ETH profile because they asked for the
+reference board's facts read the profile's instead:
+
+- `test_sysop`: DASH's network cell is Ethernet's on the wire (as since
+  1.1.2), so the check looks for `Eth` there and `WiFi` elsewhere.
+- `test_sd` and `test_sd_no_reprobe`: PIN_BOARD gains `sd_tried` (the CS
+  and MOSI the "no card" line names: CS 4, MOSI 6 on this board) and
+  `sd_move` (a CS a hand edit can move the card to: 43 here, since the
+  shipped CS is 4 and the harness's serial bridge holds 16 and 17). Rows
+  without them keep the reference board's values.
+- `test_lights_disk` SKIPs on this profile since dev.13 (no LIGHTS_BOARD
+  row), and the camera's pixel-mode share check SKIPs (eth.5).
+
+On the profile, `test_sysop`, `test_sd`, `test_sd_no_reprobe`,
+`test_lights_disk` and `test_camera`: 43 passed, 0 failed without a card,
+97 passed, 0 failed with one.
+
+On the bench (eth.4 on COM25, wire up, run from the main session with
+Rob's go): a wrong Wi-Fi password failed with reason 15 (4-way handshake
+timeout), and the waits read 30, 60, 120, 240, then 300 s, the cap. The
+router answered every other try with reason 205 (connection failed), which
+got the steady 15 s without resetting the doubling. No STA_CONNECTED came
+before a failure, so the reset at association waits for a completed
+handshake, as designed. The first drops after the reset were reason 203,
+"Association refused temporarily, comeback 1100 TUs" (the access point's
+PMF comeback), then 205. With the wire up the "60 s to join, or back to
+the old one" switch-back was held, as designed, so the board never went
+back to the old network. With the right password back (SHUTDOWN first,
+then RESET), both interfaces rejoined: the wire on .119, Wi-Fi on .122.
+
 ### The ETH board: tests only (1.2.1-eth.5)
 
 No firmware change. `tools/harness.sh` keeps a `BBS_HOST_SSID` that is set
