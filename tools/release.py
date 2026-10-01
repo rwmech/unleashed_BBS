@@ -15,7 +15,7 @@ Purpose:      Builds a public release: the five flash images the web
               Run by the GitHub Action on a version tag, and by hand to test
               a release before tagging.
 
-              Eight builds (BUILDS below): the ESP32, the reference
+              Nine builds (BUILDS below): the ESP32, the reference
               WROOM-32E; the ESP32-S3, built for the Waveshare
               ESP32-S3-LCD-1.47 profile; the Freenove ESP32-WROVER CAM, a
               second ESP32 image (1.1.0); and the AI-Thinker ESP32-CAM, a
@@ -24,7 +24,8 @@ Purpose:      Builds a public release: the five flash images the web
               hardware preview's boards (the Waveshare
               ESP32-S3-Touch-LCD-4.3B, ESP32-S3-Touch-LCD-2 and ESP32-S3-ETH,
               and the Makerfabs Parallel TFT 3.5"), were tag_only until they
-              merged into 1.2.0 and are ordinary sets since: eight in all.
+              merged into 1.2.0 and are ordinary sets since, and the
+              Makerfabs v2.0 (1.2.1) joined them: nine in all.
 
 Output:       release/<version>/assets/    flat, for a GitHub Release, the
                                            shape deploy/fetch_release.py in
@@ -164,8 +165,9 @@ BUILDS = (
     # the stick's panel pins.
     #
     # The four hardware-preview boards were "tag_only" (built by their
-    # pre-release tags alone) until the profiles merged into 1.2.0; a set
-    # marked so is left out of a plain vX.Y.Z. None is now.
+    # pre-release tags alone) until the profiles merged into 1.2.0, and the
+    # Makerfabs v2.0 until 1.2.1; a set marked so is left out of a plain
+    # vX.Y.Z. None is now.
     {"dir": "esp32s3-ws43b", "env": "ws_s3touch43b_release", "family": "ESP32-S3", "boot": 0x0,
      "board": "BBS_BOARD_WS_S3TOUCH43B", "table": "partitions_s3.csv"},
     # The Waveshare ESP32-S3-Touch-LCD-2 (WS2 1.0.0). chipFamily ESP32-S3,
@@ -188,12 +190,19 @@ BUILDS = (
     # Waveshare's octal. Not for the v2.0 board (octal PSRAM, another bus).
     {"dir": "esp32s3-mf35", "env": "makerfabs_s3_par35_release", "family": "ESP32-S3", "boot": 0x0,
      "board": "BBS_BOARD_MF_S3PAR35", "table": "partitions_s3.csv"},
+    # And its hardware v2.0 (MF35V2 1.0.0): octal N16R8, the strobes moved,
+    # the console on the chip's own USB. The v1.0's image here looks for quad
+    # PSRAM on an octal part and drives WR, D/C and CS on octal PSRAM's pins.
+    # tag_only while it was a board lane on 1.2.0; an ordinary set since the
+    # profile merged into 1.2.1.
+    {"dir": "esp32s3-mf35v2", "env": "makerfabs_s3_par35v2_release", "family": "ESP32-S3", "boot": 0x0,
+     "board": "BBS_BOARD_MF_S3PAR35V2", "table": "partitions_s3.csv"},
 )
 
 # A board pre-release's key, the word in its tag after the core version
 # (v1.1.2-ws2.1), and the one set it carries.
 BOARD_TAGS = {"ws43b": "esp32s3-ws43b", "ws2": "esp32s3-ws2", "eth": "esp32s3-eth",
-              "mf35": "esp32s3-mf35"}
+              "mf35": "esp32s3-mf35", "mf35v2": "esp32s3-mf35v2"}
 
 # A combined preview: several boards' sets under one pre-release tag, the
 # core version's X.Y.Z then the name (v1.1.2-hardware-preview, Rob,

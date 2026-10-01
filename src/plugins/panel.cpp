@@ -2359,7 +2359,7 @@ void cmdPanel(Bbs& b, Session& s, const char* a, uint32_t now) {
     {
         const uint8_t id = plat::touchChip();
         char chip[16];
-        if (id) snprintf(chip, sizeof(chip), "CST816 0x%02X", static_cast<unsigned>(id));
+        if (id) snprintf(chip, sizeof(chip), BBS_TOUCH_CHIP " 0x%02X", static_cast<unsigned>(id));
         else    snprintf(chip, sizeof(chip), "no answer");
         if (g_asleep)
             snprintf(buf, sizeof(buf), "Touch %s, asleep", chip);

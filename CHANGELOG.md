@@ -264,7 +264,48 @@ From the code review of 1.2.1-forums.2:
   test host's fast clock. `MEM FORCE` and `SYS FORCE` share the same wait
   and the same fix. At the 1.2.1-dev.9 merge the comparison became
   `plat::since(now, s.waitFrom)`, the core's one rule for elapsed time.
-@@BOARDS@@
+### The boards: MF35V2 1.0.0 and MF35 1.1.3
+
+From the board lane board-mf35v2 (branched from v1.2.0, built and benched
+there as `1.2.0 (MF35V2 1.0.0)`), merged at 1.2.1-dev.9. Its image set,
+`esp32s3-mf35v2`, is no longer tag_only: a plain v1.2.1 builds it.
+
+- **The board Makerfabs sell now**: the ESP32-S3 Parallel TFT with Touch 3.5"
+  hardware v2.0 (ESP32-S3-WROOM-1-N16R8, 8 MB octal PSRAM), a profile of its
+  own (`BBS_BOARD_MF_S3PAR35V2`, envs `makerfabs_s3_par35v2` and `_release`).
+  The v1.0's image does not run it: the v2.0 moved the panel's WR, D/C and CS
+  to 18, 17 and 46 because 35 to 37 are octal PSRAM's pins.
+- Everything the v1.0 has: the 480 x 320 status skin and the panel
+  skins, SSH on 6400 and 6422 (eight at once), the S3's 8 MB layout (the first
+  install is an erase), the link, and the VFS table at 12 (the shared S3 layer's, since the merge).
+- **The console is the chip's own USB** (the port marked USB-NATIVE), not the
+  v1.0's CP2104: that is where Improv and the installer's Update answer. The
+  USB-TTL port still flashes but carries no console.
+- **Touch**: the FT6236 on the glass's flex (I2C 38/39, INT 40, address 0x38)
+  is read as taps, as on the Touch-LCD-2: a tap wakes the glass and turns the
+  header, and CONFIG panel's sleep timer applies. PANEL names the chip.
+- Landscape with the USB edge at the bottom by default (Rob's choice).
+- Pins from Makerfabs' v2.0 schematic, read as a netlist, cross-checked against
+  their SD16_3.5 firmware, touch_keyboard_v2 and their IDF board config
+  (release-prep/mf35v2/pins.md). CONFIG refuses 43 and 44 (the CP2104's), 38,
+  39 and 40 (touch), 19 and 20 (the USB, also on the J1 socket) and the panel's
+  data bus.
+- Static DRAM 266,720 of 341,760 (75,040 free), image 1,507,216 bytes. The
+  Waveshare stick's and the v1.0's code and data are unchanged (only the
+  ELF's own hash in each image moved, with the debug line numbers).
+- On the bench: 8 MB PSRAM found, the card mounted over SPI, the FT6236
+  answered (chip ID 0x64), the panel up at 20 MHz, Wi-Fi by Improv, first-boot
+  setup, telnet and SSH logins on both ports. Internal heap 49,203 free, 37,843
+  at its lowest. The glass itself is for Rob to confirm.
+- A build left with a stale sdkconfig whose console is UART0 is refused by
+  name (board.h), rather than building an image whose Improv never answers
+  on USB-NATIVE.
+- **MF35 1.1.3 (the v1.0), in the same lane:** CONFIG refuses 38, 39 and 40,
+  the FT6236's I2C pair and INT on the v1.0's glass flex too ("That pin is
+  wired on the board"). Nothing drove them, so a sysop could give them to the
+  serial bridge or the lights and fight the touch controller. Only the pin
+  check and the version string change in that image.
+
 ### Sizes
 
 Lane figures before the merge, off the ELF: the camera boards pay 8 bytes for the held timed

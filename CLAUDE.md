@@ -824,6 +824,39 @@ this tree.
   takes the card down. Move `CONFIG_VFS_MAX_COUNT=12` into the shared S3
   layer with a generic board.h guard, and have the sd plugin's
   ESP_ERR_NO_MEM message name the full VFS table as well as memory.
+  **The Makerfabs v2.0, MF35V2 1.0.0 on 1.2.0** (board-mf35v2 from v1.2.0,
+  2026-09-30, COM29 on its USB-NATIVE port; merges into 1.2.1). The model
+  was confirmed from Rob's photos before any pin was trusted (silkscreen
+  "... ili9488 v2.0", module "MCN16R8"). What this lane taught:
+  - **The console follows the cable Rob uses, and Improv follows the
+    console.** The 9823748 profile put the console on UART0 like the v1.0;
+    with the board cabled to USB-NATIVE that leaves the native port an
+    output-only secondary, so Improv never hears the browser. The v2.0 runs
+    the S3 layer's USB-Serial-JTAG console; its layer added only the VFS
+    table, and at the 1.2.1-dev.9 merge that line and its board.h guard
+    folded into the shared S3 rule (sdkconfig.defaults.esp32s3 and the one
+    `#error`), so `sdkconfig.defaults.mf35v2` sets nothing now and keeps the
+    board's notes. 43 and 44 are refused as the CP2104's wires
+    (BBS_PINS_WIRED), not as the console: `BBS_CONSOLE_UART0` is 0 here
+    (USB-Serial-JTAG on the board, no `BBS_PINS_CONSOLE` on the host) and 1
+    on the v1.0 (UART0).
+  - **Touch was on the board all along**: an FT6236 on the flex (P2: SDA 38,
+    SCL 39, INT 40, RST on EN, 0x38). It runs on the Touch-LCD-2's taps path
+    (legacy I2C at the panel's start, taps from INT) with `BBS_TOUCH_FT6236`
+    choosing the chip ID register (0xA3) and skipping the CST816's IRQ write,
+    and `BBS_TOUCH_CHIP` naming it. The bench chip answered ID 0x64 (the
+    FT6336 family's), not 0x36: FocalTech's parts are sold under each other's
+    names. Taps carry no position, so the panel's turn cannot misplace them.
+  - The v2.0 schematic still carries the S2 module symbol's pin names (IO47
+    and IO48 on symbol pins "IO33"/"IO34"). An Eagle .sch is XML: read it as
+    a netlist (`release-prep/mf35v2/netlist.py`), not by eye.
+  - Other boards' images: same-worktree builds before and after, every
+    object compared; the only difference is the ELF's own SHA-256 in the
+    app descriptor and the image digest (65 bytes), from moved debug line
+    numbers. `release-prep/mf35v2/objcmp.py` and `objdiff.py` do it.
+  - Static DRAM 266,720 of 341,760 (75,040 free); image 1,507,216. Bench:
+    internal heap 49,203 free, low 37,843 after setup; SSH on 6400 and 6422
+    with host/ssh_call from WSL (it reaches the LAN).
   **Boards are chosen to maximise what the BBS can do, not to work around
   vendor wiring** (Rob: "not work around dumb vendor BS"). Rejected on
   that ground: the KEYESTUDIO ESP32-S3 PRO (N16R8), whose on-board SD slot
@@ -1243,7 +1276,7 @@ this tree.
   - **Ship process:** flash every bench board to the release candidate (SHUTDOWN first), Rob confirms they connect, then tag v1.2.0 and the camsat release together.
   - **What happened (2026-09-29):** Rob moved the bench flashes after the tag ("we can flash later, get it on the site with the compiled versions"). The release commit is link.18 renamed 1.2.0, with the board versions unchanged; it was tagged on link.18's smoke runs (all 19 envs built, `make test`, the targeted groups with and without a card, the ETH profile). The Action builds the eight image sets from the tag. camsat had no release pipeline (no workflow, no tags), and the site's fetcher already expects a `camsat` set, so its first release follows separately.
 - **1.2.1 queue:** (Rob, 2026-09-30: development starts as soon as he confirms the Makerfabs v2.0 on the glass; the plan as posted to Discord is release-prep's plan-1.2.1.md)
-  - **the Makerfabs ESP32-S3 Parallel TFT with Touch 3.5" v2.0 (MF35V2)**, board lane board-mf35v2 from v1.2.0, on COM29 (native USB; the silkscreen and module "MCN16R8" confirmed from Rob's photo): merges into 1.2.1 and goes on the installer when 1.2.1 ships. Rob wants the glass with the USB pointing down as the default. Built as MF35V2 1.0.0 (47ec15f), up at 192.168.0.123; Rob: "looks good on the glass". **At the merge:** remove the set's `tag_only` in release.py, or v1.2.1 ships without it and nothing complains; the site's `deploy/fetch_release.py` FAMILIES and `sitekit.py` (~206) gain `esp32s3-mf35v2`, and the release workflow's notes name the `esp32s3-mf35v2-` prefix, before the tag (the ETH `FLASH_PARTS` pattern). **Buy link for the site** (Rob, 2026-09-30: no referral, not on Amazon): Makerfabs' own page https://www.makerfabs.com/esp32-s3-parallel-tft-with-touch-ili9488.html (what they sell now is v2.0), wiki https://wiki.makerfabs.com/ESP32_S3_Parallel_3.5_TFT_with_Touch.html. **Open on the glass:** taps are read on INT 40, which Makerfabs' own firmware never uses (it polls); a tap turning the header settles it;
+  - **the Makerfabs ESP32-S3 Parallel TFT with Touch 3.5" v2.0 (MF35V2)**, board lane board-mf35v2 from v1.2.0, on COM29 (native USB; the silkscreen and module "MCN16R8" confirmed from Rob's photo): merges into 1.2.1 and goes on the installer when 1.2.1 ships. Rob wants the glass with the USB pointing down as the default. Built as MF35V2 1.0.0 (47ec15f), up at 192.168.0.123; Rob: "looks good on the glass". **At the merge:** remove the set's `tag_only` in release.py, or v1.2.1 ships without it and nothing complains; the site's `deploy/fetch_release.py` FAMILIES and `sitekit.py` (~206) gain `esp32s3-mf35v2`, and the release workflow's notes name the `esp32s3-mf35v2-` prefix, before the tag (the ETH `FLASH_PARTS` pattern). **Merged at 1.2.1-dev.9 (rel-1.2.1):** tag_only gone and the workflow's notes name the prefix (this repo); the site's FAMILIES and sitekit are still owed before the tag. **Buy link for the site** (Rob, 2026-09-30: no referral, not on Amazon): Makerfabs' own page https://www.makerfabs.com/esp32-s3-parallel-tft-with-touch-ili9488.html (what they sell now is v2.0), wiki https://wiki.makerfabs.com/ESP32_S3_Parallel_3.5_TFT_with_Touch.html. **Open on the glass:** taps are read on INT 40, which Makerfabs' own firmware never uses (it polls); a tap turning the header settles it;
   - **the AITRIP ESP32-S3 4.0" 480x480 board** (Rob, 2026-09-30: "Same as the MF35v2 program this one ... include in 1.2.1 release"), on COM30 (CH340 console; ESP32-S3 rev 0.2, 8 MB PSRAM in package, 16 MB flash, MAC b8:1f:3f:aa:60:2c). Board lane from v1.2.0 in progress; the design (likely an ESP32-4848S040-style clone, unconfirmed) is being identified from the factory flash and Rob's photos. Buy link for the site: Rob's Amazon affiliate link https://link.amazon/B09KaJNJM. **Identified: a Guition ESP32-S3-4848S040 (the "86 box" 4"), sold as AITRIP**; the original is https://www.guition.com/esp32-display-module/4-inch-esp32s3-display-module and ESPHome's pinout is https://devices.esphome.io/devices/guition-esp32-s3-4848s040/. **Rob, 2026-09-30: the board's /hardware section lists these as "also compatible"** (same Guition design by their listings; only the AITRIP is benched, so say so): the "ESP32-S3 Smart 86 Box" https://www.amazon.com/dp/B0FMK5JTLY, DORHEA's 4" with a temperature and humidity sensor https://www.amazon.com/dp/B0GCMXHQ8M, and the generic 4" 5-point touch https://www.amazon.com/dp/B0DDTL1CK6. Not Waveshare's own 4" 480x480 (B0F3X8C4SK, B0DS9VD1W8): a different design, its own profile if ever. Name it on the site "Guition ESP32-S3-4848S040 (sold as AITRIP and others)". It goes on the installer with 1.2.1 like the MF35V2 (tag_only removed at the merge, the site's FAMILIES and sitekit updated before the tag);
   - **a new photo shows on the panel** (Rob, 2026-09-30, replacing the swipe gallery in 1.2.1: "Snap happens, show pic on screen for 1 minute, if a new one comes in update, after 1 minute stop"). On every board with a display: when a photo is filed (built-in camera or a sat), the panel shows it for one minute, a newer photo replaces it on screen, and a minute after the last one the panel goes back to its status screen. Decoded on the worker through the skins' JPEG path, never the loop; built so the later swipe gallery reuses the viewer. Read as: each new photo restarts the minute (confirm with Rob if that is wrong). **The swipe gallery is in the backlog** (Rob, 2026-09-30), no release; its spec stays internal/tty-ux-panel-gallery-2026-09-28.md.
   - **the ETH board joins Wi-Fi alongside the wire** (Rob: "if both are supported, just keep the connection through wire"), so its radio follows the router's channel and sats pair, with Ethernet still the route for callers;

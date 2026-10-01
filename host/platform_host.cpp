@@ -883,7 +883,7 @@ bool     g_touchUp  = false;
 bool touchBegin(char* err, size_t errLen) {
     if (err && errLen) err[0] = '\0';
     g_touchUp = true;
-    log("touch: CST816 on the host: taps from PANEL TAP");
+    log("touch: " BBS_TOUCH_CHIP " on the host: taps from PANEL TAP");
     return true;
 }
 uint8_t  touchChip() { return g_touchUp ? 0xB6 : 0; }

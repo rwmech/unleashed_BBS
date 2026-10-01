@@ -208,6 +208,13 @@ bbs_host_mf35: $(SRCS) $(HDRS) $(TJPGD) libwolfssh_host.a $(MBED_LIB)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_MF_S3PAR35 $(WOLF_CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) \
 	    $(TJPGD) libwolfssh_host.a $(MBED_LIB) $(LDLIBS)
 
+# And its hardware v2.0 (MF35V2 1.0.0): octal PSRAM, the strobes moved, the
+# console on the chip's own USB, FT6236 taps (PANEL TAP), SSH.
+# tools/harness.sh --board mf35v2 runs it.
+bbs_host_mf35v2: $(SRCS) $(HDRS) $(TJPGD) libwolfssh_host.a $(MBED_LIB)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DBBS_BOARD_MF_S3PAR35V2 $(WOLF_CPPFLAGS) $(LDFLAGS) -o $@ $(SRCS) \
+	    $(TJPGD) libwolfssh_host.a $(MBED_LIB) $(LDLIBS)
+
 # The AI-Thinker ESP32-CAM profile (1.1.1, src/board.h).
 # tools/harness.sh --board espcam runs it with --only=board_espcam.
 bbs_host_espcam: $(SRCS) $(HDRS) $(TJPGD) $(MBED_LIB)
@@ -397,6 +404,6 @@ test: licence formats test_link test_xmodem test_wrap test_forums_ptr test_compo
 clean:
 	rm -rf wolfobj libwolfssh_host.a ssh_call test_sshlink
 	rm -f tjpgd.o tjpgd_san.o test_skin
-	rm -f bbs_host bbs_host_s3 bbs_host_ws43b bbs_host_fncam bbs_host_espcam bbs_host_ws2 bbs_host_wseth bbs_host_mf35 bbs_host_ext linkpeer test_link test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_since test_camera test_photos_cfg
+	rm -f bbs_host bbs_host_s3 bbs_host_ws43b bbs_host_fncam bbs_host_espcam bbs_host_ws2 bbs_host_wseth bbs_host_mf35 bbs_host_mf35v2 bbs_host_ext linkpeer test_link test_xmodem test_wrap test_forums_ptr test_compose test_codes test_improv test_recovery test_ring test_tzones test_cardnames test_panel test_calllog test_silent test_since test_camera test_photos_cfg
 
 .PHONY: clean test licence formats FORCE mbedtls-check

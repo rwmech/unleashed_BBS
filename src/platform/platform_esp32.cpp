@@ -2214,12 +2214,19 @@ void IRAM_ATTR touchEdge(void*) {
     portEXIT_CRITICAL_ISR(&g_tapMux);
 }
 
+#ifdef BBS_TOUCH_FT6236
+// The FT6236's (FocalTech's FT6x36 register map, MF35V2): 0xA3 the chip
+// ID. Its INT needs no setting: in the default mode it is low while a
+// finger is down, which is one falling edge a touch.
+constexpr uint8_t kRegChipId  = 0xA3;
+#else
 // The CST816's registers (Hynitron's CST816S register map, which the D
 // shares): 0xA7 ChipID, 0xFA IrqCtl (0x40 EnTouch: pulse while touched;
 // 0x20 EnChange: pulse when the touch changes), 0xFE DisAutoSleep.
 constexpr uint8_t kRegChipId  = 0xA7;
 constexpr uint8_t kRegIrqCtl  = 0xFA;
 constexpr uint8_t kIrqTouch   = 0x60;
+#endif
 }   // namespace
 
 bool touchBegin(char* err, size_t errLen) {
@@ -2254,9 +2261,11 @@ bool touchBegin(char* err, size_t errLen) {
         ok = i2c_master_write_read_device(kTouchPort, BBS_TOUCH_ADDR, &reg, 1, &id, 1, pdMS_TO_TICKS(50)) == ESP_OK;
         if (ok) {
             g_touchId = id;
+#ifndef BBS_TOUCH_FT6236
             const uint8_t w[2] = { kRegIrqCtl, kIrqTouch };
             if (i2c_master_write_to_device(kTouchPort, BBS_TOUCH_ADDR, w, 2, pdMS_TO_TICKS(50)) != ESP_OK)
                 log("touch: chip 0x%02x would not take its interrupt setting", static_cast<unsigned>(id));
+#endif
         }
         i2c_driver_delete(kTouchPort);
     }
@@ -2265,7 +2274,7 @@ bool touchBegin(char* err, size_t errLen) {
                                     static_cast<unsigned>(BBS_TOUCH_ADDR));
         return false;
     }
-    log("touch: CST816 chip 0x%02x at 0x%02x, taps on gpio %d", static_cast<unsigned>(g_touchId),
+    log("touch: " BBS_TOUCH_CHIP " chip 0x%02x at 0x%02x, taps on gpio %d", static_cast<unsigned>(g_touchId),
         static_cast<unsigned>(BBS_TOUCH_ADDR), BBS_TOUCH_INT);
     return true;
 }

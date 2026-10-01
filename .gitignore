@@ -54,6 +54,8 @@ sdkconfig.*
 !sdkconfig.defaults.wseth
 # The Makerfabs Parallel TFT 3.5" v1.0 layer (MF35, 1.1.1).
 !sdkconfig.defaults.mf35
+# And its hardware v2.0 (MF35V2, 1.2.0).
+!sdkconfig.defaults.mf35v2
 include/secrets.h
 data/system.cfg
 data/calls.log
@@ -81,6 +83,7 @@ host/libwolfssh_host.a
 host/bbs_host_ws43b
 host/bbs_host_wseth
 host/bbs_host_mf35
+host/bbs_host_mf35v2
 # Every compiled test, by pattern rather than by name. Naming them one
 # at a time meant test_wrap's binary was committed the day it was
 # written, 72 KB of build output in the tree, and nothing noticed
