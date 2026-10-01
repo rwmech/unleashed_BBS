@@ -60,6 +60,23 @@ CONFIG_ETH_SPI_ETHERNET_W5500=y
 # for two minutes; 10 is past a lease renewal's own retries on a LAN.
 CONFIG_ESP_NETIF_IP_LOST_TIMER_INTERVAL=10
 
+# Wi-Fi beside the wire (1.2.1-eth.2): the station is joined as well as the
+# wire, and the camera's snap wants 32,256 bytes of internal heap and a
+# 17 KB DMA block (camera.cpp, roomToSnap). Wi-Fi's static buffers are
+# internal RAM whatever is joined, about 1.6 KB each: 6 receive and 6 send
+# rather than the S3 layer's 10 and 10 give back about 13 KB, and callers
+# are on the wire, so Wi-Fi carries the link's frames and little else. The
+# block-ack window follows the receive buffers, as the IDF advises. Ranges
+# in IDF 5.3.1's Kconfig: RX 2-25, TX 1-64, BA window 2-32 (a value out of
+# range is dropped, not clamped: check sdkconfig.ws_s3eth after a change).
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_RX_BA_WIN=6
+
+# mDNS's allocations in PSRAM, not internal RAM (it can: SPIRAM_USE_MALLOC
+# is on in the S3 layer). Answers and probes are small and rare.
+CONFIG_MDNS_MEMORY_ALLOC_SPIRAM=y
+
 # The camera's internal DMA buffer (ETH 1.0.1). On the S3 esp32-camera takes
 # 16 x 1 KB for JPEG (target/esp32s3/ll_cam.c, ll_cam_dma_sizes) and up to
 # this figure for raw frames; 16 KB caps both, so one bring-up needs 17 KB

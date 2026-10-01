@@ -352,6 +352,36 @@ The three bench-only ESP32 envs (`esp32dev_backuptest`, `esp32dev_diag`,
   row's own note now (`cfg_walk_to`), and passes 11 of 11 with and without
   a card.
 
+### The ETH board: the code review of eth.1 (1.2.1-eth.2, ETH 1.0.4)
+
+- **Internal heap for the camera.** With Wi-Fi joined beside the wire a
+  snap still needs 32,256 bytes of internal heap and a 17 KB DMA block.
+  Wi-Fi's static buffers go 10/10 to 6/6, with the block-ack window 6 to
+  match, and mDNS allocates from PSRAM: about 14 KB back, on this board
+  only (sdkconfig.defaults.wseth).
+- **The redial backs off on the wire.** A Wi-Fi network that will not
+  answer used to be redialled every 2-3 s for ever, with a console line and
+  a supplicant round each time. While the wire has an address, the first
+  drop after a join redials at once and each further failure waits: 30 s,
+  doubling to 5 minutes, one line a step. A join resets it; the wire going
+  dials at once. Not during Improv's trial.
+- **No loop stall from the fallback.** Going back to the last good network
+  (`imp::switchTo`) can spin the loop for up to 5 s while the station is
+  connecting. It is not judged while the wire carries the board beside
+  Wi-Fi; when the wire goes, the network gets its minute from then.
+- **mDNS stops answering 0.0.0.0** when the wire loses its address with the
+  cable still in: the wire's answers are off until it has one again.
+- The first route pick, posted to the event loop, is checked, and made
+  directly if the queue refuses it.
+
+Static DRAM off the ELFs, no warnings: ETH 266,400 of 341,760 (75,360
+free), release image 1,518,336; WROOM unchanged from eth.1 (165,680,
+1,273,584). On the bench (COM25), the release image with its network given
+over Improv, a minute after a clean boot with Wi-Fi joined beside the wire:
+internal heap free 63,439, low 41,123, biggest block 31,744, against
+49,815, 27,359 and 24,576 on eth.1's bench image, also joined. With the
+wire alone (no network yet) it read 63,839, 41,751 and 31,744.
+
 ### The ETH board: Wi-Fi beside the wire (1.2.1-eth.1, ETH 1.0.4)
 
 Lane C, branch rel-1.2.1c. Built and sized; not yet through the host suite.
