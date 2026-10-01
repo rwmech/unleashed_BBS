@@ -746,6 +746,54 @@ pass.
   screen's last page says `It is a cheap hobby board, and it is
   conversation.`, in all three flavours of each.
 
+### The lanes meet (1.2.1-dev.14; S3 1.1.7, WS43B 1.0.5, WS2 1.0.6, MF35 1.1.5, MF35V2 1.0.2, G4848 1.0.3, ETH 1.0.7, FNCAM 1.0.10, ESPCAM 1.0.7)
+
+Five lanes merged onto dev.13, in order, on rel-1.2.1-int: rel-1.2.1e (the
+connection line, the signs, CALLS in two panes), rel-1.2.1f (the 40 column
+screens, no more five dollars), rel-1.2.1d (a new photo on the panel),
+board-g4848 (the Guition ESP32-S3-4848S040, its square layout, and the load
+line and drive icon on every panel board) and rel-1.2.1c-r2 (the ETH board
+on Wi-Fi beside the wire). The ETH lane was merged twice, at eth.7 and again
+at eth.9 for its camera's power sequencing, and lane D twice, the second time
+for its bench notes alone. Each merge commit lists its conflicts. What a
+sysop sees that is new here, beyond the lanes' own entries:
+
+- **The Guition ESP32-S3-4848S040 is an ordinary image set**: a plain
+  v1.2.1 builds `esp32s3-g4848-*` beside every other board (`tag_only`
+  gone), and the release notes name its prefix with the Makerfabs v2.0's.
+- **A new photo shows on the square glass too**, framed by the square rule
+  (12 px of mat, the caption under the picture; built, not yet seen on the
+  glass, and no host test shows one there yet), and every panel board has
+  both 1.2.1 lines in `PANEL`: the photo show's, then the load line and the
+  drive icon.
+- **CONFIG keeps the G4848's card pins for the card** (from the board
+  lane's review): 42, 47 and 48 are the card's and the panel's setup line,
+  so no page but CONFIG sd may give them out, whether or not the sd plugin
+  is on (`GPIO 47 is the card's and panel's.`). With sd off they were
+  free to give to another plugin, and the panel's next start would have
+  taken them back with nothing said.
+- Board versions: the load line and drive icon moved every panel board's
+  own code after lane D's bump, so S3 1.1.7, WS43B 1.0.5, WS2 1.0.6,
+  MF35V2 1.0.2 and G4848 1.0.3; the MF35 is 1.1.5, because lane D and the
+  G4848 lane each set 1.1.4 for different code. FNCAM 1.0.10 and ESPCAM
+  1.0.7: the camera plugin they build moved twice with no bump of theirs,
+  lane D's photo filing and eth.8/9's power phases (which do nothing on a
+  board whose camera is not power-switched). ETH 1.0.7: the lane benched
+  1.0.6 without lane D's camera lines, which its image carries now.
+- **SD UNMOUNT waits for a snap that is waiting out the camera's
+  power-off** (the ETH board): such a job is not on the background runner
+  yet, so the card was let go and the snap then failed with "no card in the
+  slot". It says `The camera is saving a photo. Try again in a moment.`, as
+  for a snap being saved.
+- Tests and tools: test_board_mf35v2 and test_board_g4848 are two functions
+  again (the merge had interleaved them); the G4848 has a PIN_BOARD row of
+  its own (its UART0 console on 43, the card's CS 42, MOSI 47 and clock
+  48), where it fell back to the WROOM's; `--changed` reaches lane D's
+  `test_panel_photo_show` from photos, the runner and the panel plugin. The
+  G4848 has no LIGHTS_BOARD row yet, so its lights tests SKIP and say so.
+
+SIZES_DEV14
+
 ### Sizes
 
 Static DRAM off the ELFs at 1.2.1-dev.10, the 18 board and release envs

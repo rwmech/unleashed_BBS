@@ -2174,6 +2174,26 @@ bool pinTaken(const Term& t, const CfgField& self, long pin, char* msg, size_t n
             if (v >= 0 && v == pin) return held(pl->info.name, ps.label, ps.wide);
         }
     }
+#ifdef BBS_PINS_PANEL_CARD
+    // Pins the card shares with the panel's setup (board.h, the G4848): the
+    // sd plugin's settings, so pinProblem cannot refuse them, but nobody
+    // else's even while sd is off, because the panel's start drives them.
+    // CONFIG sd's own page may move them. Last, so that with sd on its own
+    // hold above names the page to go to, as on every SPI-slot board; this
+    // speaks only when nothing holds the pin (dev.14 review).
+    {
+        static constexpr long kPanelCard[] = { BBS_PINS_PANEL_CARD };
+        const uint8_t pg = cfgSectionPlugin(g_cfgSection);
+        const Plugin* pp = pg != 0xFF ? plugins::at(pg) : nullptr;
+        const bool sdPage = pp && !strcmp(pp->info.name, "sd");
+        for (long c : kPanelCard) {
+            if (c != pin || sdPage) continue;
+            if (wide) snprintf(msg, n, "GPIO %ld is the SD card's and the panel's setup line. Pick another.", pin);
+            else      snprintf(msg, n, "GPIO %ld is the card's and panel's.", pin);
+            return true;
+        }
+    }
+#endif
     return false;
 }
 

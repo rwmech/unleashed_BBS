@@ -214,7 +214,7 @@
 // the version is shown, as BBS_VERSION_SHOWN (config.h) puts it. The
 // reference board defines neither.
 #define BBS_BOARD_TAG         "S3"
-#define BBS_BOARD_VERSION     "1.1.6"
+#define BBS_BOARD_VERSION     "1.1.7"
 
 // SSH (1.1.2 core, S3 1.1.3, a preview): encrypted logins on the board's
 // own port, beside telnet (src/core/sshd.h). Eight at once: this board's
@@ -345,7 +345,7 @@
 #define BBS_BOARD_PLUGINS     1       // the panel
 
 #define BBS_BOARD_TAG         "WS43B"
-#define BBS_BOARD_VERSION     "1.0.4"
+#define BBS_BOARD_VERSION     "1.0.5"
 
 // PSRAM (sdkconfig.defaults.ws43b over the S3 layer): the panel's frame
 // buffer, and the program and its constants run from it (XIP), so a flash
@@ -543,7 +543,7 @@
 #define BBS_BOARD_PLUGINS     1       // the panel
 
 #define BBS_BOARD_TAG         "MF35"
-#define BBS_BOARD_VERSION     "1.1.5"     // 1.1.4 twice: lane D's photo show and board-g4848's big glass, merged in 1.2.1-dev.14
+#define BBS_BOARD_VERSION     "1.1.5"
 
 // SSH (1.1.2 core, MF35 1.1.0, a preview), as on the Waveshare S3: the shared
 // port 6400 and ssh_port 6422, host keys in userdata/ssh. Eight at once, the
@@ -709,7 +709,7 @@
 #define BBS_BOARD_PLUGINS     1       // the panel
 
 #define BBS_BOARD_TAG         "MF35V2"
-#define BBS_BOARD_VERSION     "1.0.1"
+#define BBS_BOARD_VERSION     "1.0.2"
 
 // SSH as on the v1.0 and the Waveshare: the shared port 6400 and ssh_port
 // 6422. Eight at once; 8 MB of PSRAM holds them beside the 300 KB
@@ -853,7 +853,7 @@
 #define BBS_BOARD_PLUGINS     1       // the camera
 
 #define BBS_BOARD_TAG         "FNCAM"
-#define BBS_BOARD_VERSION     "1.0.9"
+#define BBS_BOARD_VERSION     "1.0.10"
 
 // PSRAM (sdkconfig.defaults.fncam). Wi-Fi's and lwIP's buffers go there.
 // The internal reserve stays the WROOM's 40 KB until the bench's MEM says
@@ -992,7 +992,7 @@
 #define BBS_BOARD_PLUGINS     1       // the camera
 
 #define BBS_BOARD_TAG         "ESPCAM"
-#define BBS_BOARD_VERSION     "1.0.6"
+#define BBS_BOARD_VERSION     "1.0.7"
 
 // PSRAM (sdkconfig.defaults.espcam). A build that lost the sdkconfig layer
 // would otherwise link quietly without it.
@@ -1111,7 +1111,7 @@
 // "WS2": Waveshare, 2 inch, beside the LCD-1.47's "S3" (which is older than
 // the rule) and the 4.3B's "WS43B". Shown as 1.1.2-hw.1 (WS2 1.0.2).
 #define BBS_BOARD_TAG         "WS2"
-#define BBS_BOARD_VERSION     "1.0.5"
+#define BBS_BOARD_VERSION     "1.0.6"
 
 // SSH as on the LCD-1.47: the same S3R8 and the same 8 MB of PSRAM.
 #define BBS_HAS_SSH           1
@@ -1296,7 +1296,7 @@
 #define BBS_BOARD_PLUGINS     1       // the camera
 
 #define BBS_BOARD_TAG         "ETH"
-#define BBS_BOARD_VERSION     "1.0.6"
+#define BBS_BOARD_VERSION     "1.0.7"
 
 // PSRAM (sdkconfig.defaults.esp32s3: octal, as on the S3 stick). A build
 // that lost the layer would otherwise link quietly without it.
@@ -1449,7 +1449,7 @@
 #define BBS_BOARD_PLUGINS     1       // the panel
 
 #define BBS_BOARD_TAG         "G4848"
-#define BBS_BOARD_VERSION     "1.0.2"
+#define BBS_BOARD_VERSION     "1.0.3"
 
 // SSH as on every S3 board: the shared port 6400 and ssh_port 6422. Eight at
 // once, beside two 300 KB and 450 KB picture buffers in 8 MB of PSRAM.
@@ -1502,6 +1502,11 @@
 #define BBS_SD_MOSI           47
 #define BBS_SD_CLK            48
 #define BBS_SD_MISO           41
+// The card's pins the panel's setup drives (CS high through it, MOSI and CLK
+// as the 3-wire link): CONFIG gives them to no page but CONFIG sd's, whether
+// or not sd is on (pinTaken, bbs_sysop.cpp), since sd off holds nothing and
+// the panel's next start would take them from whatever was given them.
+#define BBS_PINS_PANEL_CARD   BBS_SD_CS, BBS_SD_MOSI, BBS_SD_CLK
 
 // No serial bridge pins as shipped: 43 and 44 are the console (the rear
 // plate's serial connector is the same UART0), and which of the 2x4 header's

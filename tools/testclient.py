@@ -6328,7 +6328,7 @@ PIN_BOARD = {
     # button (1, 2 and 40 go to the header) is not checked here yet. A hand
     # edit moves the card's CS to 40, one of the header's free three.
     "g4848":  dict(_S3_FLASH, console=b"43", led=b"-1", led_free=None, btn_free=None, serial=None,
-                   sd_clock=None, sd_rows=True, sd_tried=(b"CS 42", b"MOSI 47"), sd_move="40"),
+                   sd_clock=(b"48", b"Clock GPIO"), sd_rows=True, sd_tried=(b"CS 42", b"MOSI 47"), sd_move="40"),
 }
 PB = PIN_BOARD.get(HOST_BOARD, PIN_BOARD[""])
 

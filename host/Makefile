@@ -216,7 +216,7 @@ bbs_host_mf35v2: $(SRCS) $(HDRS) $(TJPGD) libwolfssh_host.a $(MBED_LIB)
 	    $(TJPGD) libwolfssh_host.a $(MBED_LIB) $(LDLIBS)
 
 # The Guition ESP32-4848S040 profile (G4848 1.0.0, on 1.2.0): an RGB panel
-# (ST7701S) drawn with the big glass's 480 x 320 layout, touch polled as on the
+# (ST7701S) drawn whole in the square 480 x 480 layout, touch polled as on the
 # 4.3B (a file called "tap" in the data directory), a TF slot, SSH.
 # tools/harness.sh --board g4848 runs it with --only=board_g4848.
 bbs_host_g4848: $(SRCS) $(HDRS) $(TJPGD) libwolfssh_host.a $(MBED_LIB)

@@ -699,7 +699,14 @@ const Command kCommands[] = {
               // a file listing, a count): the card stays until it has
               // finished, a few seconds at most (1.1.2; the camera alone
               // was asked before, and the runner has more jobs than it).
-              if (runner::busy()) {
+              bool using_ = runner::busy();
+#ifdef BBS_HAS_CAMERA
+              // A snap waiting out a power-switched camera's off time (the
+              // ETH board, 1.2.1-eth.9) is not on the runner yet, and will
+              // write the card when it is (dev.14 review).
+              using_ = using_ || camera::busy();
+#endif
+              if (using_) {
                   t.color(tl, Color::Grey);
 #ifdef BBS_HAS_CAMERA
                   t.text(tl, camera::busy() ? "The camera is saving a photo. Try again in a moment."

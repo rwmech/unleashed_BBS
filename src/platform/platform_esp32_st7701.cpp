@@ -44,12 +44,11 @@
  *               the DMA fell behind on is restarted at the next VSYNC
  *               (LCD_RGB_RESTART_IN_VSYNC), never left shifted.
  *
- *               The panel plugin draws a 480 x 320 picture (the big glass's
- *               layout) and lcdDraw copies its bands into the framebuffer
- *               BBS_RGB_YOFF rows down, through the driver's draw_bitmap,
- *               which writes the cache back so the DMA sees them. The rows
- *               above and below stay black: the framebuffer is allocated
- *               zeroed and nothing draws there.
+ *               The panel plugin draws the whole 480 x 480 glass (the square
+ *               layout, BBS_PANEL_SQUARE) and lcdDraw copies its bands into
+ *               the framebuffer BBS_RGB_YOFF (0) rows down, through the
+ *               driver's draw_bitmap, which writes the cache back so the DMA
+ *               sees them.
  *
  *               The backlight is LEDC PWM on GPIO 38 (1 kHz, 10 bits, the
  *               vendor's figures), held low from start-up (BBS_PINS_HOLD_LOW)
@@ -282,10 +281,10 @@ bool st7701Setup(const char*& why, esp_err_t& err) {
         // MUX function 0 is JTAG's MTMS.
         //
         // 42, 47 and 48 are the sd plugin's settings, so pinProblem cannot
-        // refuse them to other plugins without refusing them to the card:
-        // with sd off, a sysop could give them to another plugin, and this
-        // setup would drive them. A rule for pins a panel shares with the
-        // card, the sd plugin exempt, is queued for 1.2.1.
+        // refuse them to other plugins without refusing them to the card.
+        // CONFIG gives them to no other page, sd on or off (board.h
+        // BBS_PINS_PANEL_CARD, pinTaken; 1.2.1-dev.14); a hand-edited file
+        // can still name one, and this setup would drive it.
         gpio_set_level(static_cast<gpio_num_t>(BBS_SD_CS), 1);
         gpio_config_t cs = {};
         cs.pin_bit_mask = 1ULL << BBS_SD_CS;
