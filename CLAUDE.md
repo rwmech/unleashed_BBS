@@ -3289,8 +3289,49 @@ they are the process, and getting them wrong wastes Rob's time.
   - **Three runner agents**: `feature-tests` (told it may not look at a pin
     or a panel), `chip-tests` (both families, every time), `board-tests` (one
     profile, with `release-prep/<board>/` and that board's `board.h` block).
-  - Not yet run: the reorganised suite itself, which needs Rob's OK like any
-    test plan.
+  - **Run and green (2026-10-04, Rob's go for the equivalence plan).** The
+    baseline full suite on the commit this branched from, the feature axis,
+    the chip axis on both families, the 4.3B's board suite, and both camera
+    profiles' board suites, each with its baseline twin for attribution.
+    - **The arithmetic is exact.** 214 names − 5 chip − 18 board = 191, and
+      the feature run saw exactly those 191. Checks: the baseline's 5,941
+      less the 643 the chip and board tests contributed is 5,298, and the
+      feature run is 5,298. Difference zero. **No feature test lost, and no
+      test anywhere ran fewer checks than before.**
+    - Wall clock: the old full suite 11.6 min, the feature axis 10.0 min,
+      the chip axis 2 x 2.1 min, a board suite 1.7 to 7.2 min. A release
+      that touches no board code now runs 10 minutes instead of 11.6 and
+      covers more, because of the next point.
+    - **The baseline full run was hiding six tests that never ran at all**,
+      and still printed ALL PASS: the five camera tests and `test_sats`.
+      They SKIPped on both reference lanes and had no profile lane to run
+      on. Five of the six are the `PROFILE_TESTS`/`BOARD_TESTS` disagreement
+      the code review caught; `test_sats` wants `--ext camsat`, which is
+      documented. **This is the measured justification for the whole
+      exercise: the gate was green partly because it was not looking.**
+    - **The chip axis earns its place.** The two families asserted different
+      pins from the same five tests: the ESP32 refused GPIO 20, 24, 28, 29,
+      30 and 31, the S3 refused 22, 23, 24 and 25, which is `PIN_BOARD`'s
+      two `missing` rows doing their job.
+    - **One failure in the whole run, and it is pre-existing**:
+      `test_camera`'s "a snap at a saved uxga logs the clamp once" on the
+      Freenove profile, byte-identical on this branch and on the baseline
+      (97 passed, 1 failed on both, same check). See the queue entry below.
+      The two never-before-run combinations the review flagged, fncam and
+      espcam with a card, both passed.
+- **Found by the 1.2.1a equivalence run, for the camera's owner (queued,
+  NOT fixed on test-reorg):** `test_camera` wants
+  `camera: size uxga is more than the GC0308 gives; using vga` in the log
+  exactly once when a snap is taken at a saved UXGA, and the board logs it
+  **zero** times. The clamp itself works: the check just before it, that
+  CAMERA shows `Size vga (saved uxga)`, passes. So the board clamps and says
+  so on screen but does not log it at snap time, which fits the already
+  queued "the Freenove clamps UXGA to VGA before the sensor is probed" item
+  above: clamped once, early, so nothing is left to clamp when the snap
+  runs. Whether the test or the firmware is wrong is the camera owner's
+  call. **It fails on `origin/main` too**, on a serial
+  `harness.sh --board fncam --card`, so it is live today; what hid it is
+  that a full `--jobs` run never ran `test_camera` at all.
 
 ## How work gets done (Rob, 2026-09-22)
 

@@ -111,9 +111,29 @@ changes to the core code for chat."
 - `tools/testclient.py --axis-check` proves the tables hold, calls no board
   and takes a second.
 
-Not run: the reorganised suite itself. A test plan needs Rob's OK, and that
-includes proving this did not lose a test; the proposed equivalence run is
-in the branch's report.
+**Run and green**, to the equivalence plan Rob approved: the old full suite
+on the commit this branched from, the feature axis, the chip axis on both
+chip families, the 4.3B's board suite and both camera profiles', each with
+its baseline twin so any failure could be attributed.
+
+- **The arithmetic is exact.** 214 test names less 5 chip and 18 board is
+  191, and the feature run saw exactly those 191. The baseline's 5,941
+  checks less the 643 the chip and board tests contributed is 5,298, and the
+  feature run ran 5,298. No feature test was lost and no test anywhere ran
+  fewer checks than before.
+- **The old gate was hiding six tests that never ran at all** and printed
+  ALL PASS anyway: the five camera tests and `test_sats`. Five of those six
+  are what this release fixes.
+- **The chip axis is not redundant**: the same five tests refused GPIO 20,
+  24, 28 to 31 on the ESP32 and 22 to 25 on the S3.
+- **One failure in the whole run, identical on the baseline** (`test_camera`
+  on the Freenove profile, 97 passed and 1 failed on both trees): the board
+  does not log the UXGA clamp at snap time though it clamps and says so on
+  screen. Pre-existing, queued for the camera's owner, deliberately not
+  fixed here. Both of the never-before-run combinations the review flagged,
+  the Freenove and the ESP32-CAM each with a card, passed.
+- A release that touches no board code now runs 10.0 minutes against the old
+  full suite's 11.6, and covers more.
 
 ## 1.2.1 (S3 1.1.8, WS43B 1.0.6, WS2 1.0.7, ETH 1.0.7, MF35 1.1.6, MF35V2 1.0.3, G4848 1.0.4, FNCAM 1.0.10, ESPCAM 1.0.7), 2026-10-01
 
