@@ -333,6 +333,12 @@ TABLE = [
     ("tools/testclient.py", AXIS_ORDER, ALL_BOARDS, [FULL]),
     ("tools/harness.sh", AXIS_ORDER, ALL_BOARDS, [FULL]),
     ("tools/parallel.py", AXIS_ORDER, ALL_BOARDS, [FULL]),
+    # This file. It decides what every selection means, so a change to it
+    # cannot be allowed to select nothing: run on itself before this line
+    # existed, it fell through to the "tools/*.py selects nothing" bucket
+    # below and answered GROUPS=NONE, which is the silent skip the whole
+    # exercise is about.
+    ("tools/changed_groups.py", AXIS_ORDER, ALL_BOARDS, [FULL]),
 
     # -----------------------------------------------------------------
     # Screen art actually served to callers. Not every screen file has
@@ -468,10 +474,11 @@ def guard_spans(text):
     a file whose shape has moved, and that returns None so the caller runs
     everything rather than trusting a narrow answer."""
     lines = text.splitlines()
+    opener = re.compile(r"#if defined\((BBS_BOARD_\w+)\)\s*$")
     out = []
     covered = 0                 # the last line of the block last accepted
     for i, line in enumerate(lines, 1):
-        m = re.match(r"#if defined\((BBS_BOARD_\w+)\)\s*$", line)
+        m = opener.match(line)
         if not m or i <= covered:
             continue
         key = m.group(1)
@@ -483,6 +490,21 @@ def guard_spans(text):
                 break
         else:
             return None
+    # A nested opener is fine while it is only a guard: the two
+    # `#if defined(BBS_BOARD_WS_S3LCD147)` lines inside the 4.3B's and the
+    # Makerfabs' blocks have no labelled end and are plainly not blocks.
+    # One with a labelled end of its own is a different thing: it means the
+    # outer block swallowed a real block whole, so every line of the inner
+    # board was attributed to the outer one. That is a wrong narrow answer,
+    # the one failure this file may not have, so it refuses instead.
+    for key, a, z in out:
+        for j in range(a, z - 1):
+            other = opener.match(lines[j])
+            if not other or other.group(1) == key:
+                continue
+            ends = re.compile(r"#endif\s*//\s*" + re.escape(other.group(1)))
+            if any(ends.match(lines[k]) for k in range(j + 1, len(lines))):
+                return None
     return out or None
 
 
@@ -515,35 +537,40 @@ def func_spans(text, pattern):
 
 
 def range_end(git_range):
-    """The right-hand side of A..B, or the range itself for a single rev."""
+    """The revision the diff's NEW side comes from, or None for the worktree.
+
+    `git diff A..B` and `A...B` compare two commits, so the new side is B.
+    `git diff A` with no range at all compares A with the WORKING TREE, so
+    the new side is what is on disk, which is None here. Getting that
+    backwards would read the old side's text against the new side's line
+    numbers, the mistake this pair of functions exists to stop."""
     for sep in ("...", ".."):
         if sep in git_range:
             right = git_range.split(sep, 1)[1].strip()
-            return right or "HEAD"
-    return git_range.strip() or "HEAD"
+            return right or None            # "A.." is A..worktree
+    return None
 
 
 def file_at_end(git_range, root, path):
-    """One file as the range's far end has it, or None.
+    """One file as the diff's new side has it, or None for "could not tell".
 
-    Read from the worktree instead and the text and the diff's new-side line
-    numbers describe different files, which they do for any range that does
-    not end at a clean HEAD: `--changed main..HEAD` with uncommitted edits,
-    the normal state mid-work, or any `HEAD~5..HEAD~2`. The spans are then
-    narrow and wrong rather than None, and these are the two paths whose
-    whole job is to be narrow."""
+    Read the worktree for a two-commit range and the text and the diff's
+    new-side line numbers describe different files, which they do for any
+    range that does not end at a clean HEAD: `--changed main..HEAD` with
+    uncommitted edits, the normal state mid-work, or any `HEAD~5..HEAD~2`.
+    The spans are then narrow and wrong rather than None, and these are the
+    two paths whose whole job is to be narrow."""
     end = range_end(git_range)
+    if end is None:
+        # The new side is the working tree.
+        full = os.path.join(root, *path.split("/"))
+        try:
+            return open(full, encoding="utf-8", errors="replace").read()
+        except OSError:
+            return None
     result = git(["show", "%s:%s" % (end, path)], cwd=root)
     if result.returncode != 0:
-        # An uncommitted HEAD..worktree range has no blob for it; the file on
-        # disk is then the right text, because that is the diff's new side.
-        if end in ("HEAD", ""):
-            full = os.path.join(root, *path.split("/"))
-            try:
-                return open(full, encoding="utf-8", errors="replace").read()
-            except OSError:
-                return None
-        return None
+        return None                          # deleted there, or a bad rev
     return result.stdout
 
 
