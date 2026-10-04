@@ -24,6 +24,58 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## Unreleased: the test suite in three axes, 2026-10-04
+
+**Tooling and tests only. No firmware change, so no version bump**: nothing
+in `src/` moved and no board build comes out of this, the same as the 1.1.2
+test-speed work. Built to `internal/test-reorg-2026-10-04.md`, which is
+Rob's decision of 2026-10-04: "we need to break up all test plans by the
+following 1. ESP32 vs ESP32-S3, 2. Board Specific, 3. Feature Testing ... I
+see little reason to run regression testing on say a WS43 if we did all the
+changes to the core code for chat."
+
+- **Every test is on exactly one of three axes**, declared beside the order
+  they run in: **feature** (191, what a caller or a sysop can do, on the
+  reference build), **chip** (5, what differs by chip family, on
+  `bbs_host` and `bbs_host_s3`), **board** (18, one board's own facts, on
+  that profile's build alone). A test with no axis now **fails the suite**
+  rather than defaulting onto one.
+- **`tools/harness.sh --axis feature|chip|board`**, or a comma list of them.
+  It composes with `--board`, `--card`, `--jobs`, `--changed` and `--only`
+  and adds nothing to a run that does not ask for it, so every existing
+  invocation selects exactly what it always did.
+- **A release runs the feature axis and no board suite**, unless a board's
+  own code moved. `tools/harness.sh --changed <range>` now prints the axes,
+  the board profiles that need a suite of their own, and the groups inside
+  them; a board suite is named with the command to run it rather than
+  silently skipped.
+- **`--only=<group>` is a real subset of the suite again.** Forty-three
+  tests were in no group at all, so a targeted run skipped them without
+  saying so: each now has a group or its board profile's own suite, and the
+  suite refuses to run if one is reachable by nothing.
+- **No per-profile table falls back to another board's answer.** A profile
+  with no row answers "not known" and the check SKIPs naming the profile.
+  Five such fallbacks are gone, each of which had a board asserting the
+  reference WROOM's values: the pin table itself, the pins SD says it tried,
+  the CS a hand edit moves the card to, the CONFIG sd row count a form walk
+  counts Enters down, and the camera's sensor row. Two board facts written
+  into a test as a board's name (DASH's Wi-Fi or Ethernet, the card's SPI or
+  SDMMC bus) are rows in that table now.
+- **`tools/changed_groups.py` reads two diffs rather than two file names**:
+  only the boards whose own `#if` blocks in `src/board.h` moved, and only
+  the axes of the tests a `tools/testclient.py` diff actually touched.
+  Anything outside a board's block or a test's body still runs everything
+  and names the file, as it always did.
+- **Three test agents** in `.claude/agents/`: `feature-tests` (told not to
+  look at pins or panels), `chip-tests` (both families, every time) and
+  `board-tests` (one profile at a time, with that board's notes).
+- `tools/testclient.py --axis-check` proves the tables hold, calls no board
+  and takes a second.
+
+Not run: the reorganised suite itself. A test plan needs Rob's OK, and that
+includes proving this did not lose a test; the proposed equivalence run is
+in the branch's report.
+
 ## 1.2.1 (S3 1.1.8, WS43B 1.0.6, WS2 1.0.7, ETH 1.0.7, MF35 1.1.6, MF35V2 1.0.3, G4848 1.0.4, FNCAM 1.0.10, ESPCAM 1.0.7), 2026-10-01
 
 **Two new boards, and a patch release that is mostly things a sysop looks

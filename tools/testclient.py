@@ -209,6 +209,21 @@ def board_profile(name):
 
 S3_VERSION = board_profile("s3")[1]
 HOST_BOARD = os.environ.get("BBS_HOST_BOARD", "")
+
+# The host binary tools/harness.sh --board NAME builds, one row a profile and
+# no default (see start_copy). "" is the reference board.
+PROFILE_HOST_BIN = {
+    "":       "bbs_host",
+    "s3":     "bbs_host_s3",
+    "fncam":  "bbs_host_fncam",
+    "espcam": "bbs_host_espcam",
+    "ws43b":  "bbs_host_ws43b",
+    "ws2":    "bbs_host_ws2",
+    "wseth":  "bbs_host_wseth",
+    "mf35":   "bbs_host_mf35",
+    "mf35v2": "bbs_host_mf35v2",
+    "g4848":  "bbs_host_g4848",
+}
 MAX_NODES   = config_num("BBS_MAX_NODES", 6)
 BBS_PORT_NUM = config_num("BBS_PORT", 6400)     # the dial-in port, not this run's
 # The published default sysop password, read from the firmware so the suite
@@ -1264,9 +1279,16 @@ def test_sysop():
     r.send(b"dash\r")
     ok &= check("DASH shows the dashboard", r.wait_for(b"DASHBOARD", 4) and r.wait_for(b"last calls", 4))
     # A wired board on the wire shows its Ethernet there (1.1.2), not Wi-Fi.
-    net = b"Eth" if HOST_BOARD == "wseth" else b"WiFi"
-    ok &= check("DASH shows " + ("Ethernet" if HOST_BOARD == "wseth" else "Wi-Fi") + " and a Doing column",
-                r.wait_for(net, 4) and b"Doing" in r.buf)
+    # Which one is this profile's (PIN_BOARD net), not a board named here:
+    # it was "Eth if HOST_BOARD == wseth else WiFi", and the next wired
+    # board would have been asserted to show Wi-Fi (1.2.1a). A profile with
+    # no row skips the row rather than guessing the interface.
+    net = PB["net"]
+    if net is None:
+        ok &= pin_skip("which interface DASH names")
+    else:
+        ok &= check("DASH shows " + ("Ethernet" if net == b"Eth" else "Wi-Fi") + " and a Doing column",
+                    r.wait_for(net, 4) and b"Doing" in r.buf)
     if r.wait_for(b"[More] Y/n/c", 2):
         r.send(b"c")
     ok &= check("DASH lists callers and last calls", r.wait_for(b"last calls", 4) and b"Xavier" in r.buf)
@@ -3864,6 +3886,10 @@ def test_config_cycle_numbers():
     if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
         print("  SKIP  needs the host build and the sysop")
         return True
+    # It walks CONFIG sd by counting Enters, so it needs this profile's row
+    # count exactly (SD_ROWS_AFTER_READ_BY_BOARD).
+    if sd_rows_skip("CONFIG sd's numbered choices in plain ASCII"):
+        return True
     c = ascii_sysop("CfgNumbers")
     c.buf.clear()
     c.send(b"config sd\r")
@@ -6288,39 +6314,64 @@ BOARD_LED  = 6
 #              them; the reference board's where a row has none
 #   sd_move    (optional) a CS pin a hand edit may move the card to that is
 #              free under the harness and not the shipped CS (test_sd_no_reprobe)
+#   sd_bus     "spi" or "sdmmc": an SDMMC slot's pins are its wiring and not
+#              settings, so the bus speed is what a hand edit moves there
+#   net        the interface DASH and SYS name for this profile: b"Eth" where
+#              the wire is the route (BBS_HAS_ETH), b"WiFi" otherwise
 # None is a fact this table does not know for the profile: the check that
 # needs it SKIPs and says so, rather than asserting the WROOM's.
+#
+# A profile with NO ROW AT ALL is not given the reference board's row either
+# (1.2.1a). It used to be: PIN_BOARD.get(HOST_BOARD, PIN_BOARD[""]), so a new
+# board lane inherited the WROOM's pins silently and asserted them, which is
+# how the ESP32-S3-ETH came to be tested on pins that are its own RGB data
+# lines. A missing row now answers None to everything and every dependent
+# check SKIPs naming the profile; axis_self_check() fails the suite outright
+# for a profile the suite knows (BOARD_DEFINES) and this table does not.
+#
+# Still owed, from each board's schematic: sd_tried and sd_move for s3,
+# espcam, ws2, ws43b, mf35 and mf35v2. Those two checks SKIP on those
+# profiles rather than asserting the WROOM's CS 5 / MOSI 23 and a moved CS of
+# GPIO 4, which on the 4.3B is an RGB data line. Both tests are on the
+# feature axis and so run on the reference build, where the rows exist, so
+# nothing is skipped by a release run: the rows are wanted for a board lane
+# that chooses to run them.
 _S3_FLASH   = dict(flash=(b"30", b"31", b"30"), flash_pat=b"flash and PSRAM",
                    missing=(b"24", (b"22", b"23", b"25"), b"24", "23"), console=None)
 _WROOM_PINS = dict(flash=(b"6", b"11", b"7"), flash_pat=b"flash chip",
                    missing=(b"24", (b"20", b"28", b"31"), b"29", "30"), console=b"1")
 PIN_BOARD = {
     "":       dict(_WROOM_PINS, led=b"2", led_free=b"2", btn_free=b"4", serial=(b"16", b"17"),
-                   sd_clock=(b"18", b"Clock GPIO"), sd_rows=True,
+                   sd_clock=(b"18", b"Clock GPIO"), sd_rows=True, sd_bus="spi", net=b"WiFi",
                    sd_tried=(b"CS 5", b"MOSI 23"), sd_move="4"),
+    # The Freenove's slot is SDMMC one-bit (BBS_SD_SDMMC1): its pins are the
+    # board's wiring, so CONFIG sd shows no pin rows and a hand edit moves
+    # the bus speed instead of a pin.
     "fncam":  dict(_WROOM_PINS, led=b"-1", led_free=b"13", btn_free=b"13", serial=(b"33", b"32"),
-                   sd_clock=None, sd_rows=False),
+                   sd_clock=None, sd_rows=False, sd_bus="sdmmc", net=b"WiFi"),
     "espcam": dict(_WROOM_PINS, led=b"33", led_free=b"33", btn_free=None, serial=None,
-                   sd_clock=None, sd_rows=None),
+                   sd_clock=None, sd_rows=None, sd_bus="spi", net=b"WiFi"),
     "s3":     dict(_S3_FLASH, led=b"-1", led_free=b"4", btn_free=b"4", serial=(b"2", b"1"),
-                   sd_clock=(b"14", b"Clock GPIO"), sd_rows=True),
+                   sd_clock=(b"14", b"Clock GPIO"), sd_rows=True, sd_bus="spi", net=b"WiFi"),
     "ws2":    dict(_S3_FLASH, led=b"-1", led_free=b"18", btn_free=b"18", serial=None,
-                   sd_clock=None, sd_rows=None),
+                   sd_clock=None, sd_rows=None, sd_bus="spi", net=b"WiFi"),
     "ws43b":  dict(_S3_FLASH, led=b"-1", led_free=None, btn_free=None, serial=(b"43", b"44"),
-                   sd_clock=None, sd_rows=None),
+                   sd_clock=None, sd_rows=None, sd_bus="spi", net=b"WiFi"),
     # The ESP32-S3-ETH's slot (board.h): CS 4, MOSI 6. Its card already sits
     # on 4, and the harness's serial bridge holds 16 and 17, so a moved CS
     # goes to 43, free on this board since its console is the chip's USB.
+    # Ethernet is its route, so DASH and SYS name the wire, not the radio.
     "wseth":  dict(_S3_FLASH, led=b"-1", led_free=None, btn_free=None, serial=None,
-                   sd_clock=None, sd_rows=None, sd_tried=(b"CS 4", b"MOSI 6"), sd_move="43"),
+                   sd_clock=None, sd_rows=None, sd_bus="spi", net=b"Eth",
+                   sd_tried=(b"CS 4", b"MOSI 6"), sd_move="43"),
     # The Makerfabs' console is UART0, on 43 and 44 (BBS_PINS_CONSOLE).
     "mf35":   dict(_S3_FLASH, console=b"43", led=b"-1", led_free=None, btn_free=None, serial=(b"17", b"18"),
-                   sd_clock=None, sd_rows=None),
+                   sd_clock=None, sd_rows=None, sd_bus="spi", net=b"WiFi"),
     # Its v2.0 (1.2.1, the board-mf35v2 merge): the console is the chip's own
     # USB, so not UART0's; 43 and 44 are refused all the same, as wired to the
     # CP2104 (BBS_PINS_WIRED: wired43). No bridge pins as shipped.
     "mf35v2": dict(_S3_FLASH, led=b"-1", led_free=None, btn_free=None, serial=None,
-                   sd_clock=None, sd_rows=None, wired43=True),
+                   sd_clock=None, sd_rows=None, sd_bus="spi", net=b"WiFi", wired43=True),
     # The Guition 4848S040 (1.2.1, the board-g4848 merge): UART0 is its console
     # to the CH340 (BBS_PINS_CONSOLE 43, 44), the card an SPI slot on the sd
     # plugin's settings (CS 42, MOSI 47, CLK 48, MISO 41). No LED and no
@@ -6328,15 +6379,63 @@ PIN_BOARD = {
     # button (1, 2 and 40 go to the header) is not checked here yet. A hand
     # edit moves the card's CS to 40, one of the header's free three.
     "g4848":  dict(_S3_FLASH, console=b"43", led=b"-1", led_free=None, btn_free=None, serial=None,
-                   sd_clock=(b"48", b"Clock GPIO"), sd_rows=True, sd_tried=(b"CS 42", b"MOSI 47"), sd_move="40"),
+                   sd_clock=(b"48", b"Clock GPIO"), sd_rows=True, sd_bus="spi", net=b"WiFi",
+                   sd_tried=(b"CS 42", b"MOSI 47"), sd_move="40"),
 }
-PB = PIN_BOARD.get(HOST_BOARD, PIN_BOARD[""])
+
+
+class MissingRow(dict):
+    """The answer for a profile no per-profile table has a row for: None to
+    every fact, whatever the key, and never a caller's default.
+
+    A plain dict.get(key, default) is the trap this exists to close: the
+    default is somebody else's board. Every value here is "not known for
+    this profile", which the dependent check turns into a SKIP that names
+    it (pin_skip, lights_unknown, cam_unknown)."""
+
+    def __init__(self, table, profile):
+        dict.__init__(self)
+        self.table = table
+        self.profile = profile or "reference"
+
+    def __getitem__(self, key):
+        return None
+
+    def __contains__(self, key):
+        return False
+
+    def get(self, key, default=None):           # noqa: A003, dict's own name
+        return None
+
+    def __bool__(self):
+        return False
+
+
+def profile_row(table, name, profile=None):
+    """One profile's row out of a per-profile table, or a MissingRow.
+
+    Never falls back to another profile's row. name is the table's name, for
+    the SKIP line a dependent check prints."""
+    row = table.get(profile if profile is not None else HOST_BOARD)
+    return row if row is not None else MissingRow(name, HOST_BOARD)
+
+
+PB = profile_row(PIN_BOARD, "PIN_BOARD")
 
 
 def pin_skip(what):
     """A check this profile's pins cannot make (PIN_BOARD), said as a SKIP."""
     print(f"  SKIP  {what}: not known for the {HOST_BOARD or 'reference'} profile")
     return True
+
+
+def pins_unknown():
+    """True, after saying SKIP, where PIN_BOARD has no row for this profile:
+    none of its pins are known, so no pin check here can mean anything."""
+    if isinstance(PB, MissingRow):
+        print(f"  SKIP  the pins: no PIN_BOARD row for the {HOST_BOARD} profile")
+        return True
+    return False
 
 
 def cfg_sysop(handle):
@@ -6648,6 +6747,12 @@ def test_config_guards():
     cfg_verdict(s, [b"Saved and live"])
 
     # The flash pins, through the parser's rule: the LED and the button.
+    # Which pins those are is the chip's (PIN_BOARD flash, flash_pat): the
+    # WROOM's 6 to 11 "flash chip", an S3's 26 to 37 "flash and PSRAM".
+    if PB["flash"] is None:
+        ok &= pin_skip("a pin on the flash chip is refused")
+        s.close()
+        return ok
     before = cfg_line("activity_led_gpio") if local else None
     cfg_open(s, b"board", b"Hostname")
     s.buf.clear()
@@ -7219,7 +7324,35 @@ def ascii_sysop(handle):
 # so it has three pin rows, not four (1.2.1-dev.13: the 4.3B's four
 # failures in test_config_cycle_numbers and three in test_config_lights_ascii
 # were the ninth Enter answering "Save (Y/n)?").
-SD_ROWS_AFTER_READ = {"fncam": 5, "ws43b": 8}.get(os.environ.get("BBS_HOST_BOARD", ""), 9)
+#
+# A row per profile, and no default (1.2.1a). It was
+# {"fncam": 5, "ws43b": 8}.get(HOST_BOARD, 9), so a new profile silently got
+# nine Enters: the ninth answers "Save (Y/n)?" on a page with eight rows,
+# which is what the Makerfabs v2.0's twelve 1.2.1 failures were. A profile
+# with no row answers None and the dependent check SKIPs (sd_rows_skip).
+SD_ROWS_AFTER_READ_BY_BOARD = {
+    "":       9,
+    "fncam":  5,    # SDMMC: no pin rows, so fewer rows after Read
+    "espcam": 9,
+    "s3":     9,
+    "ws2":    9,
+    "ws43b":  8,    # the chip select is the expander's, so three pin rows
+    "wseth":  9,
+    "mf35":   9,
+    "mf35v2": 9,
+    "g4848":  9,
+}
+SD_ROWS_AFTER_READ = SD_ROWS_AFTER_READ_BY_BOARD.get(HOST_BOARD)
+
+
+def sd_rows_skip(what):
+    """True, after saying SKIP, where this profile's CONFIG sd row count is
+    not known: walking a form by counting Enters needs the exact number."""
+    if SD_ROWS_AFTER_READ is None:
+        print(f"  SKIP  {what}: no SD_ROWS_AFTER_READ_BY_BOARD row for the "
+              f"{HOST_BOARD} profile")
+        return True
+    return False
 
 
 def ascii_form_seen(c, answers):
@@ -7258,6 +7391,10 @@ def test_config_lights_ascii():
     print("CONFIG in plain ASCII: cycle fields")
     if not PASSWORD or HOST not in ("127.0.0.1", "localhost"):
         print("  SKIP  needs the host build and the sysop")
+        return True
+    # Counts Enters down CONFIG sd, so it needs this profile's row count
+    # exactly (SD_ROWS_AFTER_READ_BY_BOARD).
+    if sd_rows_skip("CONFIG sd's cycle fields in plain ASCII"):
         return True
     c = ascii_sysop("CfgAscii")
     c.buf.clear()
@@ -9255,7 +9392,21 @@ CAM_BOARD = {
     "ws2":    dict(sensor=b"OV5640", top=b"qxga", size=b"xga", over=None, pin="18"),
     "wseth":  dict(sensor=b"OV5640", top=b"uxga", size=b"xga", over=None, pin="16", share=False),
 }
-CB = CAM_BOARD.get(HOST_BOARD, CAM_BOARD["fncam"])
+# No fallback to the Freenove's row (1.2.1a). Every camera test already
+# gates on "HOST_BOARD not in CAM_BOARD" and SKIPs, but the module-level
+# CAM_BOARD.get(HOST_BOARD, CAM_BOARD["fncam"]) meant a new camera profile
+# that forgot the gate would assert a GC0308 and a free GPIO 13.
+CB = profile_row(CAM_BOARD, "CAM_BOARD")
+
+
+def cam_unknown():
+    """True, after saying SKIP, where CAM_BOARD has no row for this profile:
+    its sensor, sizes and flash pin are not known to these tests."""
+    if isinstance(CB, MissingRow):
+        print(f"  SKIP  the camera: no CAM_BOARD row for the "
+              f"{HOST_BOARD or 'reference'} profile")
+        return True
+    return False
 
 
 def test_camera():
@@ -10549,11 +10700,16 @@ def start_copy(tmp, extra_args=(), env_extra=None):
     env.update(env_extra or {})
     log = open(tmp / "host.log", "wb")
     # The same build as the board under test: a profile's copy restarts as
-    # that profile, with its pin rules and defaults.
-    binary = {"s3": "bbs_host_s3", "fncam": "bbs_host_fncam",
-              "espcam": "bbs_host_espcam", "ws43b": "bbs_host_ws43b", "ws2": "bbs_host_ws2",
-              "wseth": "bbs_host_wseth", "mf35": "bbs_host_mf35",
-              "mf35v2": "bbs_host_mf35v2", "g4848": "bbs_host_g4848"}.get(HOST_BOARD, "bbs_host")
+    # that profile, with its pin rules and defaults. A profile with no entry
+    # is a mistake and says so rather than quietly restarting as the
+    # reference board, which would have the copy refuse the pins the board
+    # under test accepts (1.2.1a). axis_self_check() refuses the suite for a
+    # profile BOARD_DEFINES knows and this table does not.
+    binary = PROFILE_HOST_BIN.get(HOST_BOARD)
+    if binary is None:
+        raise RuntimeError(
+            f"start_copy: no host binary for the {HOST_BOARD} profile; add a "
+            "row to PROFILE_HOST_BIN (and to PIN_BOARD) for the new board")
     return subprocess.Popen([str(ROOT / "host" / binary), str(tmp / "data"), *extra_args],
                             stdout=log, stderr=subprocess.STDOUT, env=env)
 
@@ -18519,8 +18675,17 @@ def test_sd():
         # which pins it tried, because "no card found" with no pin numbers
         # sends somebody to re-seat a card that was never the problem.
         ok &= check("it says there is no card", b"no card" in shown)
-        cs, mosi = PB.get("sd_tried", PIN_BOARD[""]["sd_tried"])
-        ok &= check("and which pins it tried", cs in shown and mosi in shown)
+        # Which pins the line names is this board's slot, not the WROOM's
+        # (1.2.1a). It used to fall back to PIN_BOARD[""]["sd_tried"], so
+        # every profile without a row asserted "CS 5" and "MOSI 23": the
+        # reference board's SPI slot, and on the 4.3B two of its RGB data
+        # lines. A profile whose slot is not in the table skips the check.
+        tried = PB["sd_tried"]
+        if tried is None:
+            ok &= pin_skip("which pins SD tried with no card")
+        else:
+            cs, mosi = tried
+            ok &= check("and which pins it tried", cs in shown and mosi in shown)
         ok &= check("and that the board is fine without one", b"runs fine without" in shown)
 
         s.buf.clear()
@@ -20057,6 +20222,11 @@ def user_exists(handle):
 # is almost always the subsystem next door: the file areas and the forums
 # both draw through the same list machinery, mail lives inside chat, and the
 # message editor is now shared by mail and forums both.
+# Every test is in at least one group, or in a board profile's own suite
+# (BOARD_TESTS), and axis_self_check() fails the suite if one is in neither.
+# That is the 1.2.1a fix: over half the suite used to be in no group at all,
+# so --only=<group> was not a subset of the suite but a different set, and
+# a patch scoped by changed_groups.py silently skipped whatever had no home.
 GROUPS = {
     # Anything that takes a message from a caller. The editor is shared, so
     # a change to it can break either end.
@@ -20064,32 +20234,61 @@ GROUPS = {
                   "survives_notice", "config_forum", "room_time", "bell", "codes_in",
                   "room_narrow", "room_private", "room_squelch",
                   "long_help", "info_pages", "operator", "notices_in", "ring_mail",
-                  "sysop_account", "mail_in_place", "time_warn"],
+                  "sysop_account", "mail_in_place", "time_warn", "rename_follows"],
     # The subsystems that own a session and draw their own screens.
-    "places":    ["forums", "files", "chat", "xfer", "notices_in", "backups_area", "time_warn"],
+    "places":    ["forums", "files", "chat", "xfer", "notices_in", "backups_area", "time_warn",
+                  "list_abort"],
     # Anything that reads or writes the card, and the backups (on the card
     # since 1.1.0, and restores across the board's two partitions).
     "storage":   ["files", "forums", "sd", "xfer", "backup", "restore", "card_screens", "rewrites",
-                  "screens_install", "lights_disk", "lag_", "uploads_pending"],
+                  "screens_install", "lights_disk", "lag_", "uploads_pending", "partitions"],
     # The shell, its lists and the screens the core draws.
     "shell":     ["menus", "sysinfo", "calls_one", "signs_name", "hardware", "page", "about", "config", "welcome", "paced", "seeded", "fx_codes",
                   "lights", "operator", "dash", "nodes_columns", "version_shown", "screens_command",
-                  "forms", "whois", "space_kept", "config_one_pass", "time_warn", "last_node"],
+                  "forms", "whois", "space_kept", "config_one_pass", "time_warn", "last_node",
+                  "refresh_and_ctrl_l", "shutdown"],
     # Logging in, accounts, staff.
     "login":     ["accounts", "handle_case", "guest", "sysop", "cosysop", "user_admin", "first_setup", "ban",
                   "closed_configured", "closed_fresh", "setup_abort",
                   "boot_hold", "boot_notices", "cgnat", "lag_logins",
-                  "lag_login_calls", "lag_logoff_calls", "lag_last_calls"],
+                  "lag_login_calls", "lag_logoff_calls", "lag_last_calls",
+                  "staff_remembered", "idle_login", "busy", "privacy"],
     # Terminal handling across the three flavours.
     "terminal":  ["ansi", "petscii", "ascii", "telnet_first", "link_line"],
     # 1.1.2: every path the lag audit named, timed with hostio.txt.
     "lag":       ["lag_", "mail_in_place", "config_one_pass", "space_kept", "uploads_pending"],
     # SSH on the S3 profiles (1.1.2): harness.sh --board s3 [--card]. Each
-    # SKIPs on the reference board.
+    # SKIPs on the reference board. This is FEATURE_S3, Rob's carve-out.
     "ssh":       ["ssh_"],
     # The radio link and what rides on it (1.2.0).
     "radio":     ["radio_link", "doors", "doors_petscii", "link_shared"],
     "sats":      ["sats"],
+    # -----------------------------------------------------------------
+    # Groups added with the three axes (1.2.1a) so nothing is reachable by
+    # its own name alone. The ones whose single word is already the word
+    # changed_groups.py uses (announce, serial, plugins, camera) select
+    # exactly what --only=<that word> always selected: they are a declared
+    # home, not a change of meaning.
+    # -----------------------------------------------------------------
+    # The directory listing, end to end and under everything a network does.
+    "announce":  ["announce"],
+    # The whole connect-to-logoff path: the welcome, the motd, the idle
+    # clock, the busy line, the screens and the send-off.
+    "session":   ["motd", "idle_login", "busy", "welcome", "screens", "exit_screen",
+                  "refresh_and_ctrl_l", "privacy", "link_line", "paced", "shutdown",
+                  "staff_remembered"],
+    # XMODEM, YMODEM and the approval step either way. "binary" also
+    # catches test_upload_no_binary, which is the terminal that will not.
+    "transfers": ["binary", "ymodem", "xfer", "list_abort", "dash_uploads"],
+    # The plugin API and the example plugin.
+    "plugins":   ["plugins", "example"],
+    # The serial bridge.
+    "serial":    ["serial"],
+    # The camera as a system, on the profiles that have one (board axis).
+    "camera":    ["camera"],
+    # Every board profile's own suite in one word; a single board is
+    # --axis board --board NAME, which is what a board lane runs.
+    "boards":    ["board_", "panel_photo"],
 }
 
 
@@ -20203,6 +20402,309 @@ ORDER_NAMES = [
     "test_backup_published_default",
     "test_first_setup", "test_closed_fresh", "test_setup_abort", "test_backup", "test_ban",
 ]
+
+
+# ---------------------------------------------------------------------------
+# The three axes (1.2.1a, internal/test-reorg-2026-10-04.md).
+#
+# Rob, 2026-10-04: "we need to break up all test plans by the following
+# 1. ESP32 vs ESP32-S3, 2. Board Specific, 3. Feature Testing ... I see little
+# reason to run regression testing on say a WS43 if we did all the changes to
+# the core code for chat."
+#
+# Every test belongs to exactly ONE axis, named here beside the order it runs
+# in, so the two are read together and a test cannot drift between axes
+# silently. A test with no row FAILS the suite (axis_self_check): defaulting
+# would put a new test on the feature axis, which is the axis a board fact
+# must never reach, and nobody would find out until a board lane failed.
+#
+#   feature  what a caller or a sysop can do. Runs on the reference host
+#            build (bbs_host). MAY NOT read a board fact except out of a
+#            per-profile table that SKIPs loudly for a profile it has no row
+#            for (PIN_BOARD, LIGHTS_BOARD, CAM_BOARD,
+#            SD_ROWS_AFTER_READ_BY_BOARD). This is the regression that runs
+#            at every release. FEATURE_S3 below is the small part of it that
+#            needs an S3 build, which is Rob's carve-out: "the feature axis
+#            runs on the reference build, and on the S3 build only for
+#            features that are S3-only (SSH, the panel)".
+#   chip     what differs by chip family rather than by board: the usable
+#            GPIO range, the pins refused by name, the console port. Runs on
+#            one representative of each family, bbs_host and bbs_host_s3, so
+#            a test here still runs everywhere the feature axis does and adds
+#            the S3 pass. A test whose subject is partly a chip fact belongs
+#            here rather than on the feature axis for exactly that reason.
+#   board    one board's own facts: its panel, its camera and sensor, its
+#            card bus, the version string it reports. SKIPs on every other
+#            profile, so it is only ever run as --axis board --board NAME.
+#
+# The rule for deciding, written down because it is the question that comes
+# back: a test's axis is where its failure would be diagnosed. "The chip's
+# pin rules are wrong" is chip. "This board's wiring or glass is wrong" is
+# board. Everything else is feature.
+# ---------------------------------------------------------------------------
+
+# What differs by chip family. Each of these asserts a chip fact in its own
+# words, which is why it is here and not on the feature axis:
+#   test_config_pin_exists   the pins the chip has not got (PIN_BOARD missing:
+#                            the ESP32's 20, 24, 28-31 against an S3's 22-25)
+#   test_config_guards       the flash pins refused by name, and the words:
+#                            "flash chip" against "flash and PSRAM"
+#   test_config_serial_rows  the console port CONFIG refuses (UART0's TX on
+#                            the ESP32, 43 on an S3 whose console is UART0,
+#                            none where the console is the chip's own USB)
+#   test_config_pin_holders  the holder walk across the chip's own pins
+#   test_config_lights       the GPIO range in the refusal ("Between -1 and
+#                            33" against "-1 and 48") and the flash words
+AXIS_CHIP = [
+    "test_config_pin_exists", "test_config_guards", "test_config_serial_rows",
+    "test_config_pin_holders", "test_config_lights",
+]
+
+# One board's own facts. Every one of these SKIPs on the reference build.
+# The camera's tests are here rather than on the feature axis because they
+# cannot run at all without a camera profile (CAM_BOARD): a feature test that
+# always SKIPs on the build the feature axis runs is not a feature test.
+AXIS_BOARD = [
+    "test_board_s3", "test_board_s3_silent", "test_board_s3_skin",
+    "test_board_fncam", "test_board_espcam", "test_board_ws43b",
+    "test_board_ws2", "test_board_wseth", "test_board_mf35",
+    "test_board_mf35v2", "test_board_g4848", "test_panel_photo_show",
+    "test_camera", "test_camera_registry", "test_camera_failed_start",
+    "test_camera_silent", "test_camera_one_at_a_time", "test_announce_camera",
+]
+
+# Everything a caller or a sysop can do. In the declared order, so this list
+# reads as the regression it is.
+AXIS_FEATURE = [
+    "test_ansi", "test_telnet_first", "test_petscii", "test_ascii",
+    "test_link_line", "test_page", "test_sysop", "test_cosysop",
+    "test_accounts", "test_accounts_form_notes", "test_handle_case",
+    "test_user_admin", "test_guest", "test_privacy", "test_plugins",
+    "test_about", "test_announce", "test_announce_closed",
+    "test_announce_join_prompt", "test_announce_join_in_flight",
+    "test_announce_join_refused", "test_announce_reliable",
+    "test_announce_badges", "test_announce_directory", "test_chat",
+    "test_room_commands", "test_room_new_commands", "test_room_private",
+    "test_room_quit_logoff", "test_room_time_staff_only",
+    "test_time_warn_in_plugins", "test_bell", "test_codes_in_messages",
+    "test_fx_codes", "test_room_narrow_effects",
+    "test_room_narrow_whole_line", "test_room_private_own_tag",
+    "test_last_node_ten", "test_room_squelch_ten", "test_long_help",
+    "test_info_pages", "test_mail", "test_prompt_survives_notice",
+    "test_menus", "test_sysinfo", "test_calls_one_screen",
+    "test_signs_name_board", "test_hardware", "test_config",
+    "test_dash_frame", "test_dash_pick", "test_dash_narrow", "test_dash_wide",
+    "test_dash_all", "test_dash_ascii", "test_dash_petscii",
+    "test_dash_waiting", "test_dash_card_age", "test_nodes_columns",
+    "test_operator", "test_operator_ends", "test_notices_in_places",
+    "test_operator_notes", "test_ring_mail", "test_sysop_account",
+    "test_sysop_burst", "test_sysop_burst_wrong", "test_config_parser_rules",
+    "test_config_semicolon", "test_photos_config", "test_config_timezone",
+    "test_config_tz_bad", "test_config_cycle_numbers", "test_config_silent",
+    "test_config_sd_plugin", "test_config_lights_ascii", "test_lights_frames",
+    "test_lights_manual", "test_lights_count", "test_lights_order",
+    "test_lights_wifi", "test_lights_silent", "test_lights_disk",
+    "test_radio_link", "test_doors", "test_doors_petscii", "test_link_shared",
+    "test_sats", "test_version_shown", "test_ssh_login",
+    "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer",
+    "test_ssh_resize", "test_ssh_host_keys", "test_ssh_telnet_unchanged",
+    "test_ssh_full", "test_ssh_failed_logins", "test_ssh_dedicated_port",
+    "test_ssh_socket_budget", "test_config_wifi_live", "test_config_network",
+    "test_cgnat_local", "test_config_announce_outside",
+    "test_config_wifi_fallback", "test_boot_hold",
+    "test_boot_hold_write_fails", "test_boot_hold_factory_fails",
+    "test_sysop_spelled_default", "test_boot_notices",
+    "test_dash_opens_nothing", "test_user_admin_retire", "test_forms_wide",
+    "test_forms_narrow", "test_forms_ascii_wide", "test_whois_wide",
+    "test_config_chat_colours", "test_config_announce_desc",
+    "test_config_forums_grow", "test_config_warn_levels", "test_serial",
+    "test_motd", "test_idle_login", "test_busy", "test_screens",
+    "test_exit_screen", "test_welcome_connecting", "test_paced_chatin",
+    "test_seeded_screens_follow", "test_refresh_and_ctrl_l", "test_binary",
+    "test_sd", "test_files", "test_mail_never_lost", "test_mail_rsd",
+    "test_mailbox", "test_rename_follows", "test_staff_remembered",
+    "test_shutdown", "test_list_abort_returns", "test_xfer",
+    "test_upload_no_binary", "test_ymodem", "test_ssh_ymodem",
+    "test_dash_uploads", "test_config_areas",
+    "test_config_area_keeps_every_part", "test_mail_compose", "test_forums",
+    "test_forums_remove", "test_forums_scan_staff", "test_forums_segments",
+    "test_forums_long_read", "test_forums_header_rebuild",
+    "test_forums_seg_range", "test_forums_page_fit",
+    "test_config_forum_levels", "test_partitions", "test_backup_card",
+    "test_backup_card_nightly", "test_restore_cross_partition",
+    "test_backups_area", "test_files_typed_number",
+    "test_card_screens_manifest", "test_restore_checks",
+    "test_restore_staff_report", "test_restore_ends_screens",
+    "test_sd_no_reprobe", "test_rewrites_keep_old",
+    "test_restore_waits_quiet", "test_screens_command",
+    "test_screens_install", "test_lag_screens", "test_lag_files",
+    "test_lag_forums", "test_lag_logins", "test_lag_login_calls",
+    "test_lag_logoff_calls", "test_lag_last_calls", "test_lag_announce_calls",
+    "test_lag_backup_get", "test_mail_in_place", "test_config_one_pass",
+    "test_space_kept", "test_uploads_pending_bbs", "test_closed_configured",
+    "test_backup_published_default", "test_first_setup", "test_closed_fresh",
+    "test_setup_abort", "test_backup", "test_ban",
+]
+
+AXES = ("feature", "chip", "board")
+
+# name -> axis, built from the three lists so a name can only appear once.
+AXIS = {}
+for _axis, _names in (("feature", AXIS_FEATURE), ("chip", AXIS_CHIP),
+                      ("board", AXIS_BOARD)):
+    for _n in _names:
+        AXIS[_n] = _axis
+
+# The feature tests that need an S3 build, Rob's carve-out: "the feature axis
+# runs on the reference build, and on the S3 build only for features that are
+# S3-only (SSH, the panel)". SSH is compiled in on the S3 profiles alone
+# (BBS_HAS_SSH), so on the reference build each of these SKIPs with its
+# reason (ssh_ready). The panel's own tests are per-glass and so are on the
+# board axis, not here.
+FEATURE_S3 = [
+    "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer",
+    "test_ssh_resize", "test_ssh_host_keys", "test_ssh_telnet_unchanged",
+    "test_ssh_full", "test_ssh_failed_logins", "test_ssh_dedicated_port",
+    "test_ssh_socket_budget", "test_ssh_ymodem",
+]
+
+# Which board-axis tests belong to which profile, so --axis board --board NAME
+# runs that board's suite and not the other nine's SKIPs. A row a profile
+# does not have is a failure, not an empty run (axis_self_check): a board
+# lane that forgot its row would otherwise report a clean pass having run
+# nothing. The reference board's own facts are covered by the feature and
+# chip axes on bbs_host, so its row is deliberately empty.
+_CAMERA_TESTS = ["test_camera", "test_camera_registry", "test_camera_failed_start",
+                 "test_camera_silent", "test_camera_one_at_a_time",
+                 "test_announce_camera"]
+BOARD_TESTS = {
+    "":       [],
+    "s3":     ["test_board_s3", "test_board_s3_silent", "test_board_s3_skin"],
+    "fncam":  ["test_board_fncam"] + _CAMERA_TESTS,
+    "espcam": ["test_board_espcam"] + _CAMERA_TESTS,
+    "ws43b":  ["test_board_ws43b"],
+    "ws2":    ["test_board_ws2", "test_panel_photo_show"] + _CAMERA_TESTS,
+    "wseth":  ["test_board_wseth"] + _CAMERA_TESTS,
+    "mf35":   ["test_board_mf35"],
+    "mf35v2": ["test_board_mf35v2"],
+    "g4848":  ["test_board_g4848"],
+}
+
+
+def axis_tests(axis, board=None):
+    """The test names on one axis, in the declared order.
+
+    --axis board narrows to that profile's own suite (BOARD_TESTS) when a
+    board is named, because every other board's tests only SKIP there."""
+    if axis == "board":
+        if board is not None:
+            names = BOARD_TESTS.get(board)
+            if names is None:
+                return None
+            return sorted(names, key=order_index)
+        return list(AXIS_BOARD)
+    if axis == "feature":
+        # On a board profile's build the feature axis is Rob's carve-out
+        # alone: the S3-only features. The rest of it is the reference
+        # build's and running it again here is what produced 1.2.1's board
+        # failures (the lights on the WROOM's pins, DASH wanting Wi-Fi).
+        if board:
+            return sorted(FEATURE_S3, key=order_index)
+        return list(AXIS_FEATURE)
+    if axis == "chip":
+        return list(AXIS_CHIP)
+    return None
+
+
+def axis_self_check():
+    """Everything the axis tables promise, checked before a board is called.
+
+    Returns a list of complaints; an empty list is a pass. The suite refuses
+    to run with any of them, because each one is a silent hole:
+      - a test with no axis would default onto some axis by accident;
+      - an axis row naming a test that does not exist is a rename nobody
+        followed, and the test it named stops running;
+      - a test in no group and no board suite is unreachable by any
+        selection but its own name, so --only is not a subset of the suite;
+      - a profile the suite knows (BOARD_DEFINES) with no row in a
+        per-profile table is how a new board inherits another board's pins.
+    """
+    import types
+
+    g = globals()
+    live = sorted(n for n, f in g.items()
+                  if n.startswith("test_") and isinstance(f, types.FunctionType))
+    bad = []
+
+    # One axis each, and every axis row a real test.
+    counts = {}
+    for axis, names in (("feature", AXIS_FEATURE), ("chip", AXIS_CHIP),
+                        ("board", AXIS_BOARD)):
+        counts[axis] = len(names)
+        if len(set(names)) != len(names):
+            dupes = sorted(n for n in set(names) if names.count(n) > 1)
+            bad.append(f"the {axis} axis names {', '.join(dupes)} twice")
+        for n in names:
+            if n not in live:
+                bad.append(f"the {axis} axis names {n}, which is not a test")
+    for n in live:
+        if n not in AXIS:
+            bad.append(f"{n} has no axis: add it to AXIS_FEATURE, AXIS_CHIP "
+                       "or AXIS_BOARD")
+    placed = len(AXIS)
+    if placed != sum(counts.values()):
+        bad.append(f"a test is on two axes: {sum(counts.values())} rows for "
+                   f"{placed} names")
+
+    # Reachable by some selection: a group, or its board's own suite.
+    grouped = set()
+    for words in GROUPS.values():
+        for w in words:
+            for n in live:
+                if (n == w[1:]) if w.startswith("=") else (w in n):
+                    grouped.add(n)
+    in_board_suite = {n for names in BOARD_TESTS.values() for n in names}
+    for n in live:
+        if n not in grouped and n not in in_board_suite:
+            bad.append(f"{n} is in no GROUPS entry and no BOARD_TESTS row, so "
+                       "no --only word and no --axis run reaches it")
+
+    # The board suites: every board-axis test in exactly one profile's suite,
+    # and every profile the suite knows with a row.
+    for board, names in BOARD_TESTS.items():
+        for n in names:
+            if n not in live:
+                bad.append(f"BOARD_TESTS[{board!r}] names {n}, which is not a test")
+            elif AXIS.get(n) != "board":
+                bad.append(f"BOARD_TESTS[{board!r}] names {n}, which is on the "
+                           f"{AXIS.get(n)} axis")
+    for n in AXIS_BOARD:
+        where = [b for b, names in BOARD_TESTS.items() if n in names]
+        if not where:
+            bad.append(f"{n} is on the board axis and in no profile's "
+                       "BOARD_TESTS row, so no board run would ever run it")
+    for n in FEATURE_S3:
+        if AXIS.get(n) != "feature":
+            bad.append(f"FEATURE_S3 names {n}, which is on the "
+                       f"{AXIS.get(n)} axis")
+
+    # Per-profile tables: a row for every profile the suite knows about.
+    known = sorted(set(BOARD_DEFINES) | {""})
+    for name, table in (("PIN_BOARD", PIN_BOARD),
+                        ("PROFILE_HOST_BIN", PROFILE_HOST_BIN),
+                        ("BOARD_TESTS", BOARD_TESTS),
+                        ("SD_ROWS_AFTER_READ_BY_BOARD", SD_ROWS_AFTER_READ_BY_BOARD)):
+        for board in known:
+            if board not in table:
+                bad.append(f"{name} has no row for the {board or 'reference'} "
+                           "profile; add one from src/board.h rather than "
+                           "letting it inherit another board's")
+    return bad
+
+
+def axis_counts():
+    """feature, chip and board counts, for the line a run prints."""
+    return {a: sum(1 for v in AXIS.values() if v == a) for a in AXES}
 
 
 # ---------------------------------------------------------------------------
@@ -20387,6 +20889,10 @@ def test_config_pin_exists():
     syscfg::pinProblem, for core and plugin pins alike.
     """
     print("CONFIG refuses a pin the chip does not have")
+    # Which pins the chip has not got is the chip family's own fact
+    # (PIN_BOARD missing): the ESP32's 20, 24 and 28 to 31, an S3's 22 to 25.
+    if pins_unknown():
+        return True
     local = HOST in ("127.0.0.1", "localhost")
     s = cfg_sysop("CfgPins")
 
@@ -21101,9 +21607,16 @@ def test_sd_no_reprobe():
         if "[plugin:sd]" not in text:
             text = text.rstrip("\n") + "\n\n[plugin:sd]\n"
         # An SDMMC board's pins are its wiring, not settings (the Freenove
-        # CAM): the bus speed is what moves there.
-        sdmmc = HOST_BOARD == "fncam"
-        move = PB.get("sd_move", PIN_BOARD[""]["sd_move"])
+        # CAM): the bus speed is what moves there. Both facts come from
+        # PIN_BOARD (sd_bus, sd_move) rather than from a name test here and
+        # a fallback to the reference board's CS (1.2.1a): that fallback
+        # moved every rowless profile's card onto GPIO 4, which on the 4.3B
+        # is an RGB data line.
+        sdmmc = PB["sd_bus"] == "sdmmc"
+        move = PB["sd_move"]
+        if not sdmmc and move is None:
+            # The finally below closes the caller and stops the copy.
+            return pin_skip("a save that moves the card's CS") and ok
         cfg.write_text(cfg_with(text, {("plugin:sd", "speed" if sdmmc else "cs"): "10000" if sdmmc else move}))
         cfg_reload(s)
         ok &= check("and a save that moves a pin looks once, on the new pin" if not sdmmc else
@@ -22638,18 +23151,92 @@ def full_run():
     return picked
 
 
+def apply_axis(picked, axis, board):
+    """picked narrowed to one axis (1.2.1a).
+
+    The axis composes with everything else rather than replacing it: a full
+    run, --only=<group> and --tests=a,b are all filtered the same way, so
+    --axis feature --only=messaging is the messaging group's feature tests
+    and nothing else. Returns None, having said why, where the axis cannot
+    be run at all."""
+    # Every word of explanation goes to stderr, never stdout: --list prints
+    # one test name a line and nothing else, because tools/parallel.py plans
+    # its lanes from it and a sentence in that stream is read as a test name.
+    say = sys.stderr.write
+    keep = set()
+    for one in axis.split(","):
+        one = one.strip()
+        if not one:
+            continue
+        # "" is the reference build, which has no board suite of its own:
+        # there, --axis board means every profile's, which is what a --jobs
+        # run splits onto the profile lanes. With a profile named it is
+        # that profile's suite alone.
+        want = axis_tests(one, (board or None) if one in ("board", "feature") else None)
+        if want is None:
+            say(f"no board profile called {board!r} in BOARD_TESTS; add a row "
+                "for it (every profile the suite knows needs one)\n")
+            return None
+        keep.update(want)
+    out = [(n, f) for n, f in picked if n in keep]
+    if not out:
+        where = f" on the {board or 'reference'} board" if "chip" not in axis else ""
+        say(f"the {axis} axis has no test in this selection{where}\n")
+        if "board" in axis and not board:
+            say("  the board axis is per profile: "
+                "tools/harness.sh --axis board --board <profile>\n")
+    return out
+
+
 if __name__ == "__main__":
     ONLY = next((a.split("=", 1)[1] for a in FLAGS if a.startswith("--only=")), None)
     EXACT = next((a.split("=", 1)[1] for a in FLAGS if a.startswith("--tests=")), None)
+    AXIS_SEL = next((a.split("=", 1)[1] for a in FLAGS if a.startswith("--axis=")), None)
+
+    # The axis tables are checked before anything else, on every invocation
+    # including --plan and --list, because a hole in them is a test that
+    # silently stops running. The suite refuses rather than reports a pass.
+    _complaints = axis_self_check()
+    if _complaints:
+        print("the test suite's axis tables do not hold:")
+        for _c in _complaints:
+            print("  " + _c)
+        print(f"{len(_complaints)} problem(s); see AXIS_FEATURE, AXIS_CHIP, "
+              "AXIS_BOARD, BOARD_TESTS and GROUPS in this file")
+        sys.exit(2)
+    if "--axis-check" in FLAGS:
+        _c = axis_counts()
+        print("axis tables hold: %d feature, %d chip, %d board, %d tests"
+              % (_c["feature"], _c["chip"], _c["board"], sum(_c.values())))
+        print("every test has one axis, every test is reachable by a "
+              "selection, every known profile has a row")
+        sys.exit(0)
+    if AXIS_SEL is not None:
+        # One axis, or a comma list of them: --changed names several
+        # (src/config.h is feature and chip) and one run should cover them.
+        _wrong = [a for a in (w.strip() for w in AXIS_SEL.split(","))
+                  if a and a not in AXES]
+        if _wrong or not AXIS_SEL.strip():
+            print("no such axis: %s (%s)" % (",".join(_wrong) or "(empty)",
+                                             ", ".join(AXES)))
+            sys.exit(2)
+    def _selection():
+        """What these flags select, before the axis filter. The one rule,
+        shared by --plan, --list and a real run."""
+        if EXACT is not None:
+            return pick_exact(EXACT) or []
+        if ONLY:
+            return pick_selected(ONLY)
+        return full_run()
+
     if "--plan" in FLAGS:
         # The selection and the lane rules as JSON, for tools/parallel.py.
         import json
-        if EXACT is not None:
-            listed = pick_exact(EXACT) or []
-        elif ONLY:
-            listed = pick_selected(ONLY)
-        else:
-            listed = full_run()
+        listed = _selection()
+        if AXIS_SEL is not None:
+            listed = apply_axis(listed, AXIS_SEL, HOST_BOARD)
+            if listed is None:
+                sys.exit(2)
         print(json.dumps({
             "selected": [n for n, _ in listed],
             "order": ORDER_NAMES,
@@ -22659,21 +23246,37 @@ if __name__ == "__main__":
             "profile_card": PROFILE_CARD,
             "realtime": REALTIME,
             "needs": NEEDS,
+            # The three axes (1.2.1a), so a lane planner can read them from
+            # the one place they live rather than keeping a copy.
+            "axis": AXIS,
+            "axes": list(AXES),
+            "feature_s3": FEATURE_S3,
+            "board_tests": BOARD_TESTS,
         }))
         sys.exit(0)
     if "--list" in FLAGS:
         # What a run with these flags would run, one name a line, and
         # nothing else: no board is called. tools/parallel.py plans its
         # lanes from it, so the selection rules live in one place.
-        if EXACT is not None:
-            listed = pick_exact(EXACT) or []
-        elif ONLY:
-            listed = pick_selected(ONLY)
-        else:
-            listed = full_run()
+        listed = _selection()
+        if AXIS_SEL is not None:
+            listed = apply_axis(listed, AXIS_SEL, HOST_BOARD)
+            if listed is None:
+                sys.exit(2)
         for n, _ in listed:
             print(n)
         sys.exit(0)
+    if AXIS_SEL is not None:
+        # One axis, composed with whatever else was asked for.
+        picked = apply_axis(_selection(), AXIS_SEL, HOST_BOARD)
+        if picked is None:
+            sys.exit(2)
+        print("running the %s axis%s: %d test%s\n"
+              % (AXIS_SEL, f" on the {HOST_BOARD} board" if HOST_BOARD else "",
+                 len(picked), "" if len(picked) == 1 else "s"))
+        results = [run_test(n, f) for n, f in picked]
+        print("ALL PASS" if all(results) else "FAILURES")
+        sys.exit(0 if all(results) else 1)
     if EXACT is not None:
         picked = pick_exact(EXACT)
         if picked is None:

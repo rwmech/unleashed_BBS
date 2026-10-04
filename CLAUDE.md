@@ -3125,6 +3125,9 @@ they are the process, and getting them wrong wastes Rob's time.
 | `explain` | **human-facing writing.** The website, and the board's screens: `welcome`, `rules`, `privacy`, `newuser`, `chatin`, `goodbye`. Researches current facts on the web first, because router menus and client software move. Writes for somebody who does not know what telnet is |
 | `tty-ux` | **design consultant**, terminal screens and the website both. Judges whether a layout reads as designed or accidental, and specifies the fix in real units: columns and characters, or px and ch. Measures at 40, 80 and 132, or at 1920, 1366 and 390. Writes **one report** and never code. Added 2026-09-20 because the board draws for 40 columns everywhere and never re-measures |
 | `screen-artist` | **draws the screens.** ANSI/CP437 at 80x24, PETSCII at 40x25, plain ASCII. Writes screen files and `tools/mkscreens.py`, never `src/`. Its rule is to render what it drew back to a character grid with a ruler and read it: an unterminated colour run and a frame one cell out both look perfect in a hex dump |
+| `feature-tests` | **the feature axis** (2026-10-04): what a caller or a sysop can do, on the reference build, with a card and without. The regression that runs at every release. It is told it may not look at a pin, a panel, a camera sensor or a board version, and that a feature test needing one is a finding rather than something to patch |
+| `chip-tests` | **the chip axis**: the usable GPIO range, the pins refused by name, the console port. Both families every time, `bbs_host` and `bbs_host_s3`; one family is not a run. It also names the chip facts no host test can see (PSRAM, the partition layout, the VFS slots) rather than pretending to cover them |
+| `board-tests` | **one board profile's own suite**, and only when that board's code moved or it is on the bench. Reads that board's block in `board.h` and its notes under `release-prep/<board>/`, never a sibling board's. Every failure is reported as either a firmware bug or a test asserting something this board is not, which is the distinction the axis exists for |
 
   The two writing agents split by **audience, not by importance**. If a person
   reads it, `explain` owns it. If a developer reads it, `docs` owns it.
@@ -3153,8 +3156,13 @@ they are the process, and getting them wrong wastes Rob's time.
   that had already been fixed.
   `--only=` takes a comma separated list and a set of group names that stand
   for the tests sharing a subsystem: `messaging`, `places`, `storage`,
-  `shell`, `login`, `terminal`, listed in `tools/harness.sh`. A targeted run
-  is well under a minute against six for the full one.
+  `shell`, `login`, `terminal`, `lag`, `ssh`, `radio`, `sats`, and since the
+  three axes `announce`, `session`, `transfers`, `plugins`, `serial`,
+  `camera` and `boards`. The one list is `GROUPS` in
+  `tools/testclient.py`, and **every test is in at least one group or in its
+  board profile's own suite**, which `--axis-check` proves: before that,
+  forty-three were in none and a targeted run skipped them silently. A
+  targeted run is well under a minute against six for the full one.
   **The groups are deliberately wider than the file being edited**, because
   what breaks is almost always the subsystem next door: file areas and
   forums draw through the same list machinery, mail lives inside chat, and
@@ -3187,6 +3195,61 @@ they are the process, and getting them wrong wastes Rob's time.
   Two `--jobs` runs at once each claim one of two port blocks; a third
   waits. After adding tests, refresh the figures:
   `python3 tools/testtimes.py --save tools/test-times.txt /tmp/bbs-<tag>/out.txt`.
+- **The suite is in three axes (branch test-reorg, 2026-10-04), to
+  `internal/test-reorg-2026-10-04.md`.** Rob: "we need to break up all test
+  plans by the following 1. ESP32 vs ESP32-S3, 2. Board Specific, 3. Feature
+  Testing ... I see little reason to run regression testing on say a WS43 if
+  we did all the changes to the core code for chat." Tooling and tests only,
+  no firmware change, so no version bump.
+  - **Every test is on exactly one axis**, in `AXIS_FEATURE`, `AXIS_CHIP` and
+    `AXIS_BOARD` beside `ORDER_NAMES`: **feature 191** (what a caller or a
+    sysop can do, on the reference build), **chip 5** (the usable GPIO range,
+    the pins refused by name, the console port, on `bbs_host` and
+    `bbs_host_s3`), **board 18** (one board's own facts, on that profile's
+    build). **A test with no axis fails the suite**, because defaulting puts
+    a new test on the axis a board fact must never reach and nobody finds out
+    until a board lane fails.
+  - **`tools/harness.sh --axis feature|chip|board`**, or a comma list of
+    them, composing with `--board`, `--card`, `--jobs`, `--changed` and
+    `--only`. A run that does not ask for an axis selects exactly what it
+    always did.
+  - **At a release: the feature axis, and no board suite unless that board's
+    own code moved** (Rob, settled the same day), plus a bench smoke on
+    whatever is plugged in. The feature axis runs on the reference build, and
+    on the S3 build only for the S3-only features (`FEATURE_S3`, the eleven
+    SSH tests). A core feature that behaved differently on an S3 would be a
+    chip-axis test, not a reason to run everything twice.
+  - **A per-profile table never falls back to another board's row.** It was
+    `PIN_BOARD.get(HOST_BOARD, PIN_BOARD[""])` and four more like it, which
+    is how the ESP32-S3-ETH came to be tested on pins that are its own RGB
+    data lines, and how the Makerfabs v2.0 answered "Save (Y/n)?" with the
+    ninth Enter of a form that has eight rows. A missing row answers None and
+    the check SKIPs naming the profile; `--axis-check` fails the suite for a
+    profile `BOARD_DEFINES` knows and a table does not. **The general shape,
+    because it has now cost two board lanes: `dict.get(key, default)` where
+    the default is another board's answer is not a fallback, it is a wrong
+    answer with a confident face.**
+  - **`--only=<group>` is a subset of the suite again.** Forty-three tests
+    were in no group, so a targeted run skipped them silently; each now has a
+    group or its profile's `BOARD_TESTS` row, and `--axis-check` refuses a
+    test reachable by nothing. The new groups are `announce`, `session`,
+    `transfers`, `plugins`, `serial`, `camera` and `boards`; five existing
+    groups gained the orphans that belonged to them, so `login`, `shell`,
+    `messaging`, `places` and `storage` each run a few tests more than before
+    (that is the fix, not a regression).
+  - **`changed_groups.py` reads the diff, not the file name**, for the two
+    cases where the name is far too wide: only the boards whose own `#if`
+    blocks in `src/board.h` moved, and only the axes of the tests a
+    `tools/testclient.py` diff touched. Anything outside a board's block or a
+    test's body still runs everything and names the file. It prints `AXES=`,
+    `BOARDS=` and `GROUPS=`; `GROUPS=` keeps its old meaning, so anything
+    reading only that line still works, and `FULL` now means "no `--only`",
+    which the axis then narrows.
+  - **Three runner agents**: `feature-tests` (told it may not look at a pin
+    or a panel), `chip-tests` (both families, every time), `board-tests` (one
+    profile, with `release-prep/<board>/` and that board's `board.h` block).
+  - Not yet run: the reorganised suite itself, which needs Rob's OK like any
+    test plan.
 
 ## How work gets done (Rob, 2026-09-22)
 

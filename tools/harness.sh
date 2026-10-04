@@ -22,10 +22,40 @@
 #               in whatever was being tested. Parallel work is gated by the
 #               tag now rather than by remembering.
 #
-# Usage:        tools/harness.sh [--tag NAME] [--card] [testclient args...]
+# Usage:        tools/harness.sh [--tag NAME] [--card] [--axis AXIS]
+#                                [testclient args...]
 #
 #                 --tag NAME   isolate this run (default "main")
 #                 --card       give the board an SD card
+#                 --axis AXIS  run one of the three test axes (1.2.1a,
+#                              internal/test-reorg-2026-10-04.md), or a
+#                              comma list of them:
+#
+#                                feature  what a caller or a sysop can do.
+#                                         The regression that runs at every
+#                                         release, on the reference build.
+#                                         With --board it is Rob's carve-out
+#                                         alone: the S3-only features (SSH).
+#                                chip     what differs by chip family: the
+#                                         usable GPIO range, the pins refused
+#                                         by name, the console port. Run it
+#                                         twice, once plain and once
+#                                         --board s3.
+#                                board    one board's own facts. Needs
+#                                         --board NAME: it is that profile's
+#                                         suite and nothing else.
+#
+#                              It composes with --board, --card, --jobs,
+#                              --changed and --only: --axis feature
+#                              --only=messaging is the messaging group's
+#                              feature tests, and nothing from the other two
+#                              axes. Without --axis nothing changes: a run
+#                              selects exactly what it always did.
+#
+#                              Examples:
+#                                tools/harness.sh --axis feature --jobs 16
+#                                tools/harness.sh --axis chip --board s3
+#                                tools/harness.sh --axis board --board ws2 --card
 #                 --board s3   run the host build of the Waveshare S3 profile
 #                              (bbs_host_s3: the S3's pin rules, that board's
 #                              defaults, the panel). Pair it with
@@ -53,10 +83,17 @@
 #                              is anything "git diff --name-only" accepts,
 #                              such as main..HEAD or HEAD~5..HEAD.
 #                              tools/changed_groups.py maps each changed
-#                              file to the tools/testclient.py groups (or
-#                              test names) it can affect, prints "file ->
-#                              groups" for each one, and then runs exactly
-#                              as if --only=<those groups> had been typed.
+#                              file to an axis, to the board profiles that
+#                              need a suite of their own, and to the
+#                              tools/testclient.py groups (or test names)
+#                              it can affect; it prints "file -> selection"
+#                              for each one, and then this runs exactly as
+#                              if --axis=<those axes> --only=<those groups>
+#                              had been typed. Board profiles cannot be run
+#                              here (each needs its own build), so they are
+#                              named for a run of their own, or handed to
+#                              tools/parallel.py by --jobs, which builds
+#                              every profile it needs.
 #                              A file the table has no mapping for still
 #                              selects something: the widest sensible set,
 #                              which here means the whole suite, and the
@@ -155,10 +192,29 @@ MODE_ARG=""
 FAST=""
 PORT_ARG=""
 BUILD=yes
+AXIS=""
+BOARD_NAME=""
 case "${BBS_CHANGED_DRY:-}" in 1|yes) CHANGED_DRY=yes ;; esac
+
+# One of the three axes, or a comma list of them (1.2.1a). Validated here so
+# a typo is refused before a board is built rather than quietly running
+# nothing.
+axis_ok() {
+    for a in $(echo "$1" | tr ',' ' '); do
+        case "$a" in
+            feature|chip|board) ;;
+            *) echo "harness: no test axis called $a (feature, chip, board)"
+               return 1 ;;
+        esac
+    done
+    return 0
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --tag)   TAG="$2"; shift 2 ;;
+        --axis)  AXIS="$2"; shift 2 ;;
+        --axis=*) AXIS="${1#--axis=}"; shift ;;
         --card)  CARD=yes; MODE_ARG="--card"; shift ;;
         --no-card) MODE_ARG="--no-card"; shift ;;
         --jobs)  JOBS="$2"; shift 2 ;;
@@ -170,6 +226,7 @@ while [ $# -gt 0 ]; do
         --changed)          CHANGED_RANGE="$2"; shift 2 ;;
         --changed-dry-run)  CHANGED_RANGE="$2"; CHANGED_DRY=yes; shift 2 ;;
         --board)
+            BOARD_NAME="$2"
             case "$2" in
                 s3)    BIN=bbs_host_s3;    export BBS_HOST_BOARD=s3 ;;
                 fncam) BIN=bbs_host_fncam; export BBS_HOST_BOARD=fncam ;;
@@ -202,10 +259,14 @@ done
 
 PROJ=$(cd "$(dirname "$0")/.." && pwd)
 
-# --changed: work out --only from a git range rather than typing it by
-# hand, and --changed-dry-run (or BBS_CHANGED_DRY=1 alongside --changed)
-# stops here, before anything is built, so the selection can be checked
-# with no board involved.
+if [ -n "$AXIS" ]; then
+    axis_ok "$AXIS" || exit 2
+fi
+
+# --changed: work out the axes, the board profiles and --only from a git
+# range rather than typing them by hand, and --changed-dry-run (or
+# BBS_CHANGED_DRY=1 alongside --changed) stops here, before anything is
+# built, so the selection can be checked with no board involved.
 if [ -n "$CHANGED_RANGE" ]; then
     set +e
     SEL=$(python3 "$PROJ/tools/changed_groups.py" "$CHANGED_RANGE")
@@ -217,8 +278,31 @@ if [ -n "$CHANGED_RANGE" ]; then
         exit 2
     fi
     WORDS=$(echo "$SEL" | grep '^GROUPS=' | tail -1 | cut -d= -f2)
+    CH_AXES=$(echo "$SEL" | grep '^AXES=' | tail -1 | cut -d= -f2)
+    CH_BOARDS=$(echo "$SEL" | grep '^BOARDS=' | tail -1 | cut -d= -f2)
     if [ "$WORDS" = "NONE" ]; then
         echo "harness: $CHANGED_RANGE touched nothing a test could see; not running"
+        exit 0
+    fi
+    # The axes the range named, unless --axis said otherwise by hand. An
+    # older changed_groups.py prints no AXES line at all, and then this
+    # behaves exactly as it used to: the groups, every axis.
+    if [ -z "$AXIS" ] && [ -n "$CH_AXES" ] && [ "$CH_AXES" != "NONE" ]; then
+        AXIS="$CH_AXES"
+    fi
+    # Board suites need their own build, so this run cannot do them. Say
+    # which, and how: never a silent skip.
+    if [ -n "$CH_BOARDS" ] && [ "$CH_BOARDS" != "NONE" ] && [ -z "$BOARD_NAME" ]; then
+        echo "harness: $CHANGED_RANGE also needs these boards' own suites: $CH_BOARDS"
+        for b in $(echo "$CH_BOARDS" | tr ',' ' '); do
+            echo "harness:   tools/harness.sh --axis board --board $b"
+        done
+        echo "harness:   or tools/harness.sh --jobs N --changed $CHANGED_RANGE, which builds each profile"
+    fi
+    # Only board suites to run, and no profile named: this run has nothing
+    # to do, and the lines above say what does.
+    if [ "$AXIS" = "board" ] && [ -z "$BOARD_NAME" ] && [ -z "$JOBS" ]; then
+        echo "harness: nothing for this run; the board suites above are each a run of their own"
         exit 0
     fi
     if [ "$CHANGED_DRY" = yes ]; then
@@ -228,7 +312,15 @@ if [ -n "$CHANGED_RANGE" ]; then
         ARGS="$ARGS --only=$WORDS"
     fi
     # FULL: no --only is added, which is the harness's own way of asking
-    # for the whole suite.
+    # for everything the axis holds.
+fi
+
+# The axis goes to tools/testclient.py, which filters whatever the rest of
+# the flags selected. It also goes to tools/parallel.py below, which passes
+# it to --plan so the lanes are planned from the axis rather than packed and
+# then filtered.
+if [ -n "$AXIS" ]; then
+    ARGS="$ARGS --axis=$AXIS"
 fi
 
 # --jobs: the lanes are planned, built for and run by tools/parallel.py, each

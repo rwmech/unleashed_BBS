@@ -132,6 +132,7 @@ class Opts:
         self.solo = False
         self.lane_secs = None
         self.select = []                  # --only= / --tests= passed through
+        self.axis = []                    # --axis=, which narrows the plan
         self.passthru = []                # --test-timeout= and the like
         i = 0
         while i < len(argv):
@@ -166,6 +167,18 @@ class Opts:
                 i += 1
             elif a.startswith("--only=") or a.startswith("--tests="):
                 self.select.append(a)
+            # --axis= is not a selection, it is a filter over one (1.2.1a):
+            # it goes to --plan, so the lanes hold only that axis's tests
+            # rather than being packed and then filtered lane by lane, and
+            # it goes to every lane as well, since a lane is an ordinary
+            # harness run and has to agree with the plan about what it runs.
+            elif a.startswith("--axis="):
+                self.axis.append(a)
+                self.passthru.append(a)
+            elif a == "--axis":
+                self.axis.append("--axis=" + argv[i + 1])
+                self.passthru.append("--axis=" + argv[i + 1])
+                i += 1
             elif a in ("--backup", "--ban"):
                 pass                      # a full --jobs run always has both
             elif a.startswith("--"):
@@ -182,7 +195,11 @@ class Opts:
 # The plan
 # ---------------------------------------------------------------------------
 def load_plan(opts):
-    args = [sys.executable, str(TOOLS / "testclient.py"), "--plan"] + opts.select
+    args = ([sys.executable, str(TOOLS / "testclient.py"), "--plan"]
+            + opts.select + opts.axis)
+    # --backup and --ban are what a run with no selection of its own asks
+    # for. An axis is not a selection of its own: --jobs --axis feature is
+    # still the whole feature axis, which includes both of them.
     if not opts.select:
         args += ["--backup", "--ban"]
     out = subprocess.run(args, capture_output=True, text=True, cwd=ROOT)
