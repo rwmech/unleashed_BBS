@@ -23010,6 +23010,14 @@ REALTIME = {
     "test_lights_frames":
         "samples the strip's animation and LIGHTS TEST's one-second steps at "
         "real moments (t0 + 3.3 s)",
+    "test_camera":
+        "measures how long the flash pin was high from two plat::log stamps, "
+        "which are real microseconds (clock_gettime, unscaled), against the "
+        "flash lead and the frame, which are board milliseconds (300 + 200): "
+        "at x4 the real gap is about 125 ms and the check wants 300 or more. "
+        "It passed only because the camera's tests had never run anywhere but "
+        "a serial --board fncam --card, and 1.2.1a put them on a profile "
+        "lane, which is fast by default",
     "test_board_ws43b":
         "reads the panel 5 real seconds after a tap to see the tapped page "
         "held its 10 s; at x4 the hold is 2.5 s and the page has moved on",

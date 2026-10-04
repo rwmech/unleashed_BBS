@@ -331,8 +331,13 @@ if [ -n "$CHANGED_RANGE" ]; then
     # Only board suites to run, and no profile named: this run has nothing
     # to do, and the lines above say what does.
     if [ "$AXIS" = "board" ] && [ -z "$BOARD_NAME" ] && [ -z "$JOBS" ]; then
-        echo "harness: nothing for this run; the board suites above are each a run of their own"
-        exit 0
+        # Exit 2, the same as the typed form refuses it a few lines up. It
+        # used to exit 0, so the same user error was a pass here and a
+        # refusal there, and a scripted caller reading the status could not
+        # tell "nothing ran" from "everything passed".
+        echo "harness: NOTHING RAN. The board suites above are each a run of"
+        echo "harness:   their own; this invocation has no work to do."
+        exit 2
     fi
     if [ "$CHANGED_DRY" = yes ]; then
         exit 0

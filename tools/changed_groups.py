@@ -482,7 +482,7 @@ def guard_spans(text):
         if not m or i <= covered:
             continue
         key = m.group(1)
-        want = re.compile(r"#endif\s*//\s*" + re.escape(key))
+        want = re.compile(r"#endif\s*//\s*" + re.escape(key) + r"\s*$")
         for j in range(i, len(lines)):
             if want.match(lines[j]):
                 out.append((key, i, j + 1))
@@ -502,7 +502,7 @@ def guard_spans(text):
             other = opener.match(lines[j])
             if not other or other.group(1) == key:
                 continue
-            ends = re.compile(r"#endif\s*//\s*" + re.escape(other.group(1)))
+            ends = re.compile(r"#endif\s*//\s*" + re.escape(other.group(1)) + r"\s*$")
             if any(ends.match(lines[k]) for k in range(j + 1, len(lines))):
                 return None
     return out or None
@@ -540,15 +540,27 @@ def range_end(git_range):
     """The revision the diff's NEW side comes from, or None for the worktree.
 
     `git diff A..B` and `A...B` compare two commits, so the new side is B.
-    `git diff A` with no range at all compares A with the WORKING TREE, so
-    the new side is what is on disk, which is None here. Getting that
-    backwards would read the old side's text against the new side's line
-    numbers, the mistake this pair of functions exists to stop."""
+    `git diff A` with NO separator compares A with the WORKING TREE, so the
+    new side is what is on disk, which is None here. Getting that backwards
+    reads one side's text against the other side's line numbers, the mistake
+    this pair of functions exists to stop, and it has now been got backwards
+    in both directions: the first cut had `A..` right and a bare `A` wrong,
+    the second had `A` right and `A..` wrong.
+
+    Measured on this repository with a deliberately dirty src/board.h, since
+    the two forms look alike and the difference is the whole point:
+
+        git diff HEAD~1..      ->  CLAUDE.md            (commit to commit)
+        git diff HEAD~1..HEAD  ->  CLAUDE.md            (the same thing)
+        git diff HEAD~1        ->  CLAUDE.md, board.h   (the worktree)
+
+    So `A..` means `A..HEAD` and `A...` means `merge-base(A,HEAD)..HEAD`:
+    both have HEAD as the new side, never the worktree."""
     for sep in ("...", ".."):
         if sep in git_range:
             right = git_range.split(sep, 1)[1].strip()
-            return right or None            # "A.." is A..worktree
-    return None
+            return right or "HEAD"          # "A.." is A..HEAD
+    return None                             # "A" alone is A..worktree
 
 
 def file_at_end(git_range, root, path):
