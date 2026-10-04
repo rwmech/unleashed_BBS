@@ -3245,6 +3245,34 @@ they are the process, and getting them wrong wastes Rob's time.
     `BOARDS=` and `GROUPS=`; `GROUPS=` keeps its old meaning, so anything
     reading only that line still works, and `FULL` now means "no `--only`",
     which the axis then narrows.
+  - **Both of those narrowings were wrong before the code review, and wrong
+    in the one direction that matters.** A `#if` block was ended at the next
+    opener instead of at its own labelled `#endif`, and every board's block
+    holds a nested `#if defined(BBS_BOARD_WS_S3LCD147)` plus compound
+    `defined(A) || defined(B)` guards, so the 4.3B's block measured five
+    lines and its body was attributed to the Waveshare stick: three real
+    ETH-board commits named the stick's suite and never the ETH board's. A
+    test's span ran to the next `def test_`, so 4,637 lines of module-level
+    code, `GROUPS` and the axis tables included, each belonged to whichever
+    test sat above them. **The lesson: a narrowing that is wrong is worse
+    than no narrowing, because it reports a pass for tests that never ran.**
+    Anything that scopes a test run needs a check that it still covers what
+    it claims, and a span finder needs its real terminator, not the next
+    thing that looks like a start. The review also found that both checks
+    read the file off disk while taking line numbers from the diff's new
+    side, which disagree for any range not ending at a clean HEAD.
+  - **A run that runs nothing was a pass.** `all([])` is `True`, so an axis
+    filter that emptied the selection printed `ALL PASS` and exited 0, which
+    `--changed` could reach (a `partitions.csv` commit selected the chip axis
+    with groups no chip test's name holds). It exits 2 now. Same family as
+    the harness refusing `--axis board` with no profile, which was eighteen
+    SKIPs and an exit 0.
+  - **`PROFILE_TESTS` and `BOARD_TESTS` have to agree, and are checked.**
+    `BOARD_TESTS` claimed the six camera tests for the four camera profiles;
+    `PROFILE_TESTS`, which is what `parallel.py` builds lanes from, did not,
+    so under `--jobs` they ran only on reference-build lanes where they could
+    only SKIP, and the run reported a pass. Two tables describing the same
+    thing drift, so `--axis-check` compares them.
   - **Three runner agents**: `feature-tests` (told it may not look at a pin
     or a panel), `chip-tests` (both families, every time), `board-tests` (one
     profile, with `release-prep/<board>/` and that board's `board.h` block).

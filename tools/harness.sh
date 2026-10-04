@@ -193,6 +193,7 @@ FAST=""
 PORT_ARG=""
 BUILD=yes
 AXIS=""
+AXIS_GIVEN=no
 BOARD_NAME=""
 case "${BBS_CHANGED_DRY:-}" in 1|yes) CHANGED_DRY=yes ;; esac
 
@@ -213,8 +214,11 @@ axis_ok() {
 while [ $# -gt 0 ]; do
     case "$1" in
         --tag)   TAG="$2"; shift 2 ;;
-        --axis)  AXIS="$2"; shift 2 ;;
-        --axis=*) AXIS="${1#--axis=}"; shift ;;
+        # An empty value is refused here rather than ignored: --axis= set
+        # AXIS to nothing, [ -n "$AXIS" ] was then false, and the flag was
+        # silently dropped.
+        --axis)  AXIS="$2"; AXIS_GIVEN=yes; shift 2 ;;
+        --axis=*) AXIS="${1#--axis=}"; AXIS_GIVEN=yes; shift ;;
         --card)  CARD=yes; MODE_ARG="--card"; shift ;;
         --no-card) MODE_ARG="--no-card"; shift ;;
         --jobs)  JOBS="$2"; shift 2 ;;
@@ -259,8 +263,32 @@ done
 
 PROJ=$(cd "$(dirname "$0")/.." && pwd)
 
-if [ -n "$AXIS" ]; then
+if [ "$AXIS_GIVEN" = yes ]; then
+    if [ -z "$AXIS" ]; then
+        echo "harness: --axis needs a value (feature, chip, board)"
+        exit 2
+    fi
     axis_ok "$AXIS" || exit 2
+fi
+
+# --jobs builds and runs every profile lane itself, so --board has no
+# coherent meaning beside it: harness.sh consumes --board, exports
+# BBS_HOST_BOARD and then hands parallel.py no board at all, so a non-profile
+# lane would run bbs_host while tools/testclient.py believed it was on that
+# profile. Refused rather than quietly wrong.
+if [ -n "$JOBS" ] && [ -n "$BOARD_NAME" ]; then
+    echo "harness: --jobs runs every profile it needs on its own; drop --board"
+    echo "harness:   one profile serially: tools/harness.sh --axis board --board $BOARD_NAME"
+    exit 2
+fi
+
+# The board axis is per profile. Without one named there is nothing to run
+# here but eighteen SKIPs, and that exits 0 and reads as a pass. --jobs is
+# the exception: it splits all eighteen onto the profile lanes.
+if [ "$AXIS" = "board" ] && [ -z "$BOARD_NAME" ] && [ -z "$JOBS" ] && [ -z "$CHANGED_RANGE" ]; then
+    echo "harness: --axis board needs --board <profile>, or --jobs N to run them all"
+    echo "harness:   profiles: s3 fncam espcam ws43b ws2 wseth mf35 mf35v2 g4848"
+    exit 2
 fi
 
 # --changed: work out the axes, the board profiles and --only from a git
@@ -297,7 +325,8 @@ if [ -n "$CHANGED_RANGE" ]; then
         for b in $(echo "$CH_BOARDS" | tr ',' ' '); do
             echo "harness:   tools/harness.sh --axis board --board $b"
         done
-        echo "harness:   or tools/harness.sh --jobs N --changed $CHANGED_RANGE, which builds each profile"
+        echo "harness:   or tools/harness.sh --jobs N --changed $CHANGED_RANGE, which builds and runs every"
+        echo "harness:   profile's lanes (all nine, not only the ones above: wider, never narrower)"
     fi
     # Only board suites to run, and no profile named: this run has nothing
     # to do, and the lines above say what does.

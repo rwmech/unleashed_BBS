@@ -66,6 +66,45 @@ changes to the core code for chat."
   the axes of the tests a `tools/testclient.py` diff actually touched.
   Anything outside a board's block or a test's body still runs everything
   and names the file, as it always did.
+  **Both of those were wrong, and wrong narrowly, until the code review of
+  this branch**, which is worth keeping because it is the whole change's
+  thesis failing in the one dangerous direction. A block ended at the next
+  opener rather than at its own labelled `#endif`, and every board's block
+  holds a nested `#if defined(BBS_BOARD_WS_S3LCD147)` ("one board profile at
+  a time") plus compound `defined(A) || defined(B)` guards, so the 4.3B's
+  block came out five lines long and its body was attributed to the
+  Waveshare stick: three real ETH-board commits named the stick's suite and
+  never the ETH board's. A test's span ran to the next `def test_`, so 4,637
+  lines of module-level code, `GROUPS` and the axis tables themselves
+  included, each belonged to whichever test sat above them. Both now end
+  where they really end, and a line in no span falls through to the widest
+  set. **A narrowing that is wrong is worse than no narrowing**, because it
+  reports a pass for tests that never ran.
+  Also from that review: the two content checks read the file at the range's
+  far end rather than off disk (they disagreed for any range not ending at a
+  clean HEAD, which is the normal state mid-work); a `src/board.h` block
+  carries `BBS_PINS_CONSOLE` and `BBS_CHIP_S3`, so it selects the chip axis
+  as well as that board; and `partitions.csv` is feature and chip, not chip
+  alone, where it selected no test at all.
+- **A run that runs nothing is not a pass.** `all([])` is `True`, so an
+  axis filter that emptied the selection printed `ALL PASS` and exited 0,
+  reachable from `--changed`. It exits 2 and says so.
+- **`--axis feature` was two tests short of the feature axis**, silently:
+  `test_backup` and `test_ban` are flag-gated out of the ordinary run order,
+  so the backup-and-restore test and the ban test were absent from the run
+  the harness calls the regression. A bare `--axis` takes the whole axis.
+- **Six camera tests never ran on a camera build under `--jobs`.**
+  `BOARD_TESTS` claimed them for the four camera profiles and
+  `PROFILE_TESTS`, which is what the lane planner reads, did not, so they
+  landed only on reference-build lanes where they could only SKIP, and the
+  run reported a pass. The two tables are now checked against each other,
+  and the camera profiles' lanes run with a card, which the camera needs.
+- **`tools/harness.sh` refuses three things it used to get quietly wrong:**
+  `--axis=` with no value (ignored), `--axis board` with no profile and no
+  `--jobs` (eighteen SKIPs and an exit 0), and `--jobs` beside `--board`
+  (which exported the profile to the test client while the lanes ran the
+  reference binary, so the suite believed it was on an S3 against a WROOM
+  build; pre-existing, and `--axis` made the command natural to type).
 - **Three test agents** in `.claude/agents/`: `feature-tests` (told not to
   look at pins or panels), `chip-tests` (both families, every time) and
   `board-tests` (one profile at a time, with that board's notes).

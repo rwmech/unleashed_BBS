@@ -187,8 +187,11 @@ TABLE = [
     # -----------------------------------------------------------------
     ("sdkconfig.defaults", [CHIP], [], []),
     ("sdkconfig.defaults.esp32s3", [CHIP], S3_BOARDS, []),
-    ("partitions.csv", [CHIP], [], ["storage", "partitions"]),
-    ("partitions_s3.csv", [CHIP], S3_BOARDS, ["storage", "partitions"]),
+    # test_partitions is on the feature axis, so these are feature AND chip:
+    # with chip alone the selection was chip tests whose names hold neither
+    # "storage" nor "partitions", which is no tests at all.
+    ("partitions.csv", [FEATURE, CHIP], [], ["storage", "partitions"]),
+    ("partitions_s3.csv", [FEATURE, CHIP], S3_BOARDS, ["storage", "partitions"]),
     # The platform layer: what the chip does, and what the host stands in
     # for. Both can break a feature, so both run the feature axis too.
     ("src/platform/platform_esp32.cpp", [FEATURE, CHIP], [], [FULL]),
@@ -437,28 +440,111 @@ def is_version_bump_only(git_range, root, path):
     return bool(lines) and all(VERSION_LINE_RE.match(l) for l in lines)
 
 
-def spans_of(text, pattern, end_pattern=None):
-    """(key, first_line, last_line) for every block in text that pattern
-    opens, one-based, where a block runs to the next opener or to
-    end_pattern. Used for src/board.h's #if blocks and testclient.py's
-    test functions."""
+def guard_spans(text):
+    """(board, first_line, last_line) for each board's own #if block in
+    src/board.h, one-based and inclusive.
+
+    A block is only a block when it has the labelled `#endif // DEFINE` the
+    file's own convention gives it, and it runs to THAT line, searched to the
+    end of the file. Ending it at the next opener instead was wrong and wrong
+    narrowly, which is the dangerous direction: every board's block contains
+    a nested `#if defined(BBS_BOARD_WS_S3LCD147)` ("one board profile at a
+    time") and compound guards such as
+    `#if defined(A) || defined(B) || defined(C)`, so the 4.3B's block came
+    out five lines long and lines 336 to 488, its body, were attributed to
+    the Waveshare stick. Four real ETH-board commits then named the stick's
+    suite and never the ETH board's.
+
+    So: the opener must be the whole line (a compound guard is not a board's
+    block), and an opener with no labelled `#endif` is not a block at all,
+    which drops every nested guard. A line inside no block is shared
+    board.h code and the caller treats it as every board's.
+
+    A whole-line opener INSIDE a block already accepted is a nested guard,
+    not a board's block: two of them are in src/board.h today, the
+    "one board profile at a time" `#if defined(BBS_BOARD_WS_S3LCD147)` lines
+    inside the 4.3B's and the Makerfabs' blocks, and neither has a labelled
+    end. Those are skipped. A top-level opener with no labelled `#endif` is
+    a file whose shape has moved, and that returns None so the caller runs
+    everything rather than trusting a narrow answer."""
     lines = text.splitlines()
-    opens = []
+    out = []
+    covered = 0                 # the last line of the block last accepted
+    for i, line in enumerate(lines, 1):
+        m = re.match(r"#if defined\((BBS_BOARD_\w+)\)\s*$", line)
+        if not m or i <= covered:
+            continue
+        key = m.group(1)
+        want = re.compile(r"#endif\s*//\s*" + re.escape(key))
+        for j in range(i, len(lines)):
+            if want.match(lines[j]):
+                out.append((key, i, j + 1))
+                covered = j + 1
+                break
+        else:
+            return None
+    return out or None
+
+
+def func_spans(text, pattern):
+    """(name, first_line, last_line) for each function pattern opens, one
+    based and inclusive, ending where the body dedents.
+
+    Ending at the next `def` instead swallowed every module-level table and
+    helper between two tests: 4,575 lines of tools/testclient.py, including
+    GROUPS, ORDER_NAMES, the axis tables themselves and every per-profile
+    table, were each attributed to whichever test happened to be above them.
+    A change to the axis machinery then selected one arbitrary unrelated
+    test. A line in no span is module-level code, and the caller treats that
+    as the suite's machinery: every axis, the widest set."""
+    lines = text.splitlines()
+    out = []
     for i, line in enumerate(lines, 1):
         m = re.match(pattern, line)
-        if m:
-            opens.append((m.group(1), i))
-    out = []
-    for k, (key, start) in enumerate(opens):
-        stop = opens[k + 1][1] - 1 if k + 1 < len(opens) else len(lines)
-        if end_pattern:
-            want = end_pattern.replace("KEY", re.escape(key))
-            for j in range(start, min(stop, len(lines))):
-                if re.match(want, lines[j]):
-                    stop = j + 1
-                    break
-        out.append((key, start, stop))
+        if not m:
+            continue
+        stop = i
+        for j in range(i, len(lines)):
+            # Blank, or indented: still inside the body. Anything else at
+            # column zero has ended it.
+            if lines[j].strip() and not lines[j][:1].isspace():
+                break
+            stop = j + 1
+        out.append((m.group(1), i, stop))
     return out
+
+
+def range_end(git_range):
+    """The right-hand side of A..B, or the range itself for a single rev."""
+    for sep in ("...", ".."):
+        if sep in git_range:
+            right = git_range.split(sep, 1)[1].strip()
+            return right or "HEAD"
+    return git_range.strip() or "HEAD"
+
+
+def file_at_end(git_range, root, path):
+    """One file as the range's far end has it, or None.
+
+    Read from the worktree instead and the text and the diff's new-side line
+    numbers describe different files, which they do for any range that does
+    not end at a clean HEAD: `--changed main..HEAD` with uncommitted edits,
+    the normal state mid-work, or any `HEAD~5..HEAD~2`. The spans are then
+    narrow and wrong rather than None, and these are the two paths whose
+    whole job is to be narrow."""
+    end = range_end(git_range)
+    result = git(["show", "%s:%s" % (end, path)], cwd=root)
+    if result.returncode != 0:
+        # An uncommitted HEAD..worktree range has no blob for it; the file on
+        # disk is then the right text, because that is the diff's new side.
+        if end in ("HEAD", ""):
+            full = os.path.join(root, *path.split("/"))
+            try:
+                return open(full, encoding="utf-8", errors="replace").read()
+            except OSError:
+                return None
+        return None
+    return result.stdout
 
 
 def board_blocks_touched(git_range, root):
@@ -467,18 +553,18 @@ def board_blocks_touched(git_range, root):
     None means "could not tell", and the caller then uses the table's
     answer, which is every board. A change outside every block (the shared
     pin-refusal lists, a new capability) is also every board, and says so."""
-    path = os.path.join(root, "src", "board.h")
-    if not os.path.exists(path):
-        return None
-    try:
-        text = open(path, encoding="utf-8", errors="replace").read()
-    except OSError:
+    text = file_at_end(git_range, root, "src/board.h")
+    if text is None:
         return None
     touched = changed_line_numbers(git_range, root, "src/board.h")
     if not touched:
         return None
-    blocks = spans_of(text, r"#if defined\((BBS_BOARD_\w+)\)",
-                      r"#endif\s*//\s*KEY")
+    # Every whole-line opener has to have its labelled end, or guard_spans
+    # says None and the caller runs everything. The count is NOT compared
+    # with BOARD_DEFINES: an older board.h in a historical range has fewer
+    # boards, and refusing it there threw away the narrowing for every
+    # commit made before the newest board landed.
+    blocks = guard_spans(text)
     if not blocks:
         return None
     by_define = {d: b for b, d in BOARD_DEFINES.items()}
@@ -503,12 +589,8 @@ def testclient_axes(git_range, root):
     A changed line outside every test function is the suite's machinery and
     is also None, because a change there can move what any selection
     means."""
-    path = os.path.join(root, "tools", "testclient.py")
-    if not os.path.exists(path):
-        return None
-    try:
-        text = open(path, encoding="utf-8", errors="replace").read()
-    except OSError:
+    text = file_at_end(git_range, root, "tools/testclient.py")
+    if text is None:
         return None
     touched = changed_line_numbers(git_range, root, "tools/testclient.py")
     if not touched:
@@ -535,7 +617,7 @@ def testclient_axes(git_range, root):
         for n in re.findall(r'"(test_\w+)"', cam.group(1)):
             board_of.setdefault(n, []).extend(board_of.get("_CAMERA_TESTS", []))
 
-    funcs = spans_of(text, r"def (test_\w+)\(\):")
+    funcs = func_spans(text, r"def (test_\w+)\(\):")
     axes, boards, tokens = set(), set(), set()
     for n in sorted(touched):
         here = [name for name, a, z in funcs if a <= n <= z]
@@ -580,8 +662,13 @@ def classify(path, git_range, root):
         if only is not None:
             if not only:
                 return set(), set(), set(), "no board's block moved"
-            return ({BOARD}, set(only), set(),
-                    "the %s block%s in board.h" %
+            # The chip axis comes with it: a board's block carries
+            # BBS_PINS_CONSOLE, BBS_PINS_WIRED and BBS_CHIP_S3, which are
+            # exactly what the chip-axis tests assert per profile
+            # (PB["console"], PB["wired43"] in test_config_serial_rows), and
+            # that board's own suite does not cover them.
+            return ({BOARD, CHIP}, set(only), set(),
+                    "the %s block%s in board.h, and the chip axis" %
                     (", ".join(only), "" if len(only) == 1 else "s"))
     if path == "tools/testclient.py":
         picked = testclient_axes(git_range, root)

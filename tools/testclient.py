@@ -6410,6 +6410,19 @@ class MissingRow(dict):
     def __bool__(self):
         return False
 
+    # setdefault(k, d) and pop(k, d) would hand back d, which is exactly the
+    # somebody-else's-board default this class exists to refuse, and copy()
+    # would return a plain dict that pins_unknown() no longer recognises.
+    # Nothing reaches them today; reaching one is a bug by construction, so
+    # it says so rather than answering.
+    def _refuse(self, *a, **k):
+        raise RuntimeError(
+            f"no row for the {self.profile} profile in {self.table}: this is "
+            "not a dict to fall back through. Add the row from src/board.h, "
+            "or have the check SKIP (pin_skip, lights_unknown)")
+
+    setdefault = pop = popitem = update = copy = _refuse
+
 
 def profile_row(table, name, profile=None):
     """One profile's row out of a per-profile table, or a MissingRow.
@@ -9396,17 +9409,12 @@ CAM_BOARD = {
 # gates on "HOST_BOARD not in CAM_BOARD" and SKIPs, but the module-level
 # CAM_BOARD.get(HOST_BOARD, CAM_BOARD["fncam"]) meant a new camera profile
 # that forgot the gate would assert a GC0308 and a free GPIO 13.
+# Every camera test's own gate is "HOST_BOARD not in CAM_BOARD", which is
+# the same question and says what to run instead, so there is no
+# cam_unknown() beside lights_unknown(): one would be dead code. A camera
+# test added without that gate reads None for every fact and fails loudly,
+# which is the right direction.
 CB = profile_row(CAM_BOARD, "CAM_BOARD")
-
-
-def cam_unknown():
-    """True, after saying SKIP, where CAM_BOARD has no row for this profile:
-    its sensor, sizes and flash pin are not known to these tests."""
-    if isinstance(CB, MissingRow):
-        print(f"  SKIP  the camera: no CAM_BOARD row for the "
-              f"{HOST_BOARD or 'reference'} profile")
-        return True
-    return False
 
 
 def test_camera():
@@ -10698,18 +10706,19 @@ def start_copy(tmp, extra_args=(), env_extra=None):
     import subprocess
     env = {k: v for k, v in os.environ.items() if k != "BBS_SD_DIR"}
     env.update(env_extra or {})
-    log = open(tmp / "host.log", "wb")
     # The same build as the board under test: a profile's copy restarts as
     # that profile, with its pin rules and defaults. A profile with no entry
     # is a mistake and says so rather than quietly restarting as the
     # reference board, which would have the copy refuse the pins the board
     # under test accepts (1.2.1a). axis_self_check() refuses the suite for a
-    # profile BOARD_DEFINES knows and this table does not.
+    # profile BOARD_DEFINES knows and this table does not. Checked before
+    # the log file is opened, so the raise leaks no handle.
     binary = PROFILE_HOST_BIN.get(HOST_BOARD)
     if binary is None:
         raise RuntimeError(
             f"start_copy: no host binary for the {HOST_BOARD} profile; add a "
             "row to PROFILE_HOST_BIN (and to PIN_BOARD) for the new board")
+    log = open(tmp / "host.log", "wb")
     return subprocess.Popen([str(ROOT / "host" / binary), str(tmp / "data"), *extra_args],
                             stdout=log, stderr=subprocess.STDOUT, env=env)
 
@@ -20688,6 +20697,27 @@ def axis_self_check():
             bad.append(f"FEATURE_S3 names {n}, which is on the "
                        f"{AXIS.get(n)} axis")
 
+    # The two test tables must agree. BOARD_TESTS is what --axis board
+    # --board NAME runs; PROFILE_TESTS is what tools/parallel.py builds its
+    # profile lanes from. A test in the first and not the second is promised
+    # coverage the runner does not deliver: six camera tests sat that way,
+    # landing only on reference-build lanes where they could only SKIP, and
+    # a --jobs run reported a pass. That is the same shape as the hole this
+    # whole table was written to close, so it is checked rather than trusted.
+    for board, names in BOARD_TESTS.items():
+        if not names:
+            continue
+        if board not in PROFILE_TESTS:
+            bad.append(f"BOARD_TESTS has a suite for {board!r} and "
+                       "PROFILE_TESTS has no row, so a --jobs run would "
+                       "build no lane for it")
+            continue
+        missing = [n for n in names if n not in PROFILE_TESTS[board]]
+        if missing:
+            bad.append(f"PROFILE_TESTS[{board!r}] is missing "
+                       f"{', '.join(missing)}, which BOARD_TESTS says is "
+                       "that board's: a --jobs run would only SKIP them")
+
     # Per-profile tables: a row for every profile the suite knows about.
     known = sorted(set(BOARD_DEFINES) | {""})
     for name, table in (("PIN_BOARD", PIN_BOARD),
@@ -22912,8 +22942,14 @@ PROFILE_TESTS = {
                "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
                "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
-    "fncam":  ["test_board_fncam"],
-    "espcam": ["test_board_espcam"],
+    # The camera profiles carry the camera's own tests (1.2.1a). They were
+    # listed in BOARD_TESTS and not here, and this table is what
+    # tools/parallel.py builds its profile lanes from, so under --jobs all
+    # six landed only on reference-build lanes, SKIPped there for want of a
+    # CAM_BOARD row, and the run reported a pass. axis_self_check() now
+    # refuses the two tables disagreeing.
+    "fncam":  ["test_board_fncam"] + _CAMERA_TESTS,
+    "espcam": ["test_board_espcam"] + _CAMERA_TESTS,
     # The hardware preview's Waveshares carry SSH too (1.1.2-hw.1).
     "ws43b":  ["test_board_ws43b",
                "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
@@ -22922,11 +22958,11 @@ PROFILE_TESTS = {
     "ws2":    ["test_board_ws2", "test_panel_photo_show",
                "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
-               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"] + _CAMERA_TESTS,
     "wseth":  ["test_board_wseth",
                "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
-               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"] + _CAMERA_TESTS,
     # The Makerfabs carries SSH too (MF35 1.1.0), on 2 MB of PSRAM.
     "mf35":   ["test_board_mf35",
                "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
@@ -22944,8 +22980,10 @@ PROFILE_TESTS = {
                "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
 }
 # The profiles whose lanes also run with a card (harness.sh --board s3
-# --card --only=ssh is how SSH's YMODEM was tested).
-PROFILE_CARD = ["s3", "ws43b", "ws2", "wseth", "mf35", "mf35v2", "g4848"]
+# --card --only=ssh is how SSH's YMODEM was tested). The two camera-only
+# profiles are here since 1.2.1a: the camera is PF_SD, so its tests need a
+# card and a lane without one can only SKIP them.
+PROFILE_CARD = ["s3", "fncam", "espcam", "ws43b", "ws2", "wseth", "mf35", "mf35v2", "g4848"]
 
 # Tests that time something against the board's clock and so cannot run on
 # the host's fast clock (BBS_FAST_TIMERS). On a fast board they SKIP, saying
@@ -23135,19 +23173,28 @@ def pick_exact(names):
     want = [n.strip() for n in names.split(",") if n.strip()]
     missing = [n for n in want if not callable(g.get(n))]
     if missing:
-        print("no such test:", ", ".join(missing))
+        # stderr: on the --plan path this used to land in front of the JSON
+        # and tools/parallel.py's json.loads raised instead of reporting it.
+        sys.stderr.write("no such test: %s\n" % ", ".join(missing))
         return None
     return [(n, g[n]) for n in sorted(set(want), key=order_index)]
 
 
-def full_run():
+def full_run(every=False):
     """The (name, function) pairs a run with no --only runs, --backup and
-    --ban included when they were given."""
+    --ban included when they were given.
+
+    every=True takes them whether or not the flags were: an axis names a
+    whole axis and both of them are on the feature axis."""
     picked = [(f.__name__, f) for f in run_order()]
-    if "--backup" in FLAGS:
-        picked.append(("test_backup", test_backup))
-    if "--ban" in FLAGS:
-        picked.append(("test_ban", test_ban))
+    have = {n for n, _ in picked}
+    for name, f, flag in (("test_backup", test_backup, "--backup"),
+                          ("test_ban", test_ban, "--ban")):
+        # Once each, however many ways it was asked for: --axis=feature with
+        # --backup from tools/parallel.py asks twice.
+        if name not in have and (every or flag in FLAGS):
+            picked.append((name, f))
+            have.add(name)
     return picked
 
 
@@ -23227,7 +23274,14 @@ if __name__ == "__main__":
             return pick_exact(EXACT) or []
         if ONLY:
             return pick_selected(ONLY)
-        return full_run()
+        # A bare --axis is a whole axis, test_backup and test_ban included.
+        # They are flag-gated out of run_order(), so --axis feature was two
+        # tests short of the axis it named and said nothing: the backup and
+        # restore test and the ban test, quietly absent from the run the
+        # harness calls the regression. tools/parallel.py already adds both
+        # for a --jobs run with no selection of its own (load_plan), so this
+        # is the serial path catching up with it.
+        return full_run(every=AXIS_SEL is not None)
 
     if "--plan" in FLAGS:
         # The selection and the lane rules as JSON, for tools/parallel.py.
@@ -23270,6 +23324,14 @@ if __name__ == "__main__":
         # One axis, composed with whatever else was asked for.
         picked = apply_axis(_selection(), AXIS_SEL, HOST_BOARD)
         if picked is None:
+            sys.exit(2)
+        if not picked:
+            # A run that ran nothing is not a pass. all([]) is True, so this
+            # printed ALL PASS and exited 0, and --changed could reach it:
+            # a commit to partitions.csv selected AXES=chip with groups no
+            # chip test's name holds, and the harness started a board, ran
+            # nothing and said so cheerfully.
+            print("FAILURES: nothing to run, which is not a pass")
             sys.exit(2)
         print("running the %s axis%s: %d test%s\n"
               % (AXIS_SEL, f" on the {HOST_BOARD} board" if HOST_BOARD else "",
