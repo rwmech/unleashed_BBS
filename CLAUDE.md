@@ -3229,6 +3229,13 @@ they are the process, and getting them wrong wastes Rob's time.
     because it has now cost two board lanes: `dict.get(key, default)` where
     the default is another board's answer is not a fallback, it is a wrong
     answer with a confident face.**
+    **And the defect class was the fallback, not a hard-coded pin, which is
+    the part worth remembering.** A pin number written into a test is easy to
+    find and obviously wrong on the next board. A table lookup with a default
+    reads as careful engineering, passes review, and hands every board that
+    has no row somebody else's wiring. Of the two, the one that looks right
+    is the expensive one: the hard-coded facts in this suite were found and
+    fixed in 1.2.1, and the five fallbacks survived it.
   - **`--only=<group>` is a subset of the suite again.** Forty-three tests
     were in no group, so a targeted run skipped them silently; each now has a
     group or its profile's `BOARD_TESTS` row, and `--axis-check` refuses a
@@ -3254,11 +3261,17 @@ they are the process, and getting them wrong wastes Rob's time.
     ETH-board commits named the stick's suite and never the ETH board's. A
     test's span ran to the next `def test_`, so 4,637 lines of module-level
     code, `GROUPS` and the axis tables included, each belonged to whichever
-    test sat above them. **The lesson: a narrowing that is wrong is worse
-    than no narrowing, because it reports a pass for tests that never ran.**
-    Anything that scopes a test run needs a check that it still covers what
-    it claims, and a span finder needs its real terminator, not the next
-    thing that looks like a start. The review also found that both checks
+    test sat above them. **The lesson, and it is the shape this project keeps
+    paying for: a narrowing that is wrong is worse than no narrowing, because
+    it reports a pass for tests that never ran.** Both of these failed in
+    that direction rather than the safe one, and neither would have been
+    noticed by running them: the output is a shorter list of tests, which is
+    what a narrowing is supposed to produce. It is the same family as the
+    test client that agreed with the board (0.17.x, twice), the forum header
+    holding a per-caller count, and `max_users` at 100: a mechanism that
+    cannot report its own failure. So: anything that scopes a test run needs
+    a check that it still covers what it claims, and a span finder needs its
+    real terminator, not the next thing that looks like a start. The review also found that both checks
     read the file off disk while taking line numbers from the diff's new
     side, which disagree for any range not ending at a clean HEAD.
   - **A run that runs nothing was a pass.** `all([])` is `True`, so an axis
