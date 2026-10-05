@@ -801,10 +801,14 @@ and `satwords.h` is kept for boxes on the link.
     **gateway sat** is one a caller comes in through. Three classes, three
     directions, nothing overloaded.
 - **What it speaks is CALLIN**, family 3, unchanged.
-- **Rob's "callin node" survives as the repository name**, `unleashed_callin`,
-  exactly as camsat does: "camsat stays only as the firmware and repo name,
-  never a type on screen". That keeps Rob's own word where he will look for
-  it and keeps `node` out of the sysop's screens.
+- **Rob's "callin node" survives as the repository name**, and the repository
+  is **`unleashed_callin_sat`**, which is Rob's own name for it over this
+  spec's proposed `unleashed_callin` (2026-10-05: "I'll create
+  unleashed_callin_sat as the repo, just push as you build"); he created it
+  at `github.com/rwmech/unleashed_callin_sat`. The precedent is camsat's:
+  "camsat stays only as the firmware and repo name, never a type on screen".
+  That keeps Rob's own word where he will look for it and keeps `node` out
+  of the sysop's screens.
 - **The roles keep Rob's own words**: **access point** (short **AP**),
   **terminal server** (short **Terminal** in a 9-character label), and
   **repeater**. All three are correct terms with the right history; a DEC
@@ -857,7 +861,7 @@ Rob uses for a thing is that thing's word. So:
   unchanged. So building CALLIN once pays for rows 1, 2, 7, 14 and 15 as
   well as the portal.
 
-**New, in the new node repository (`unleashed_callin`):** the role
+**New, in the new node repository (`unleashed_callin_sat`):** the role
 framework and the switches; the SoftAP, DHCP and the DNS redirector (the
 IDF example's component, vendored, since it is example code rather than a
 registry component); the portal and its OS probe handling; the board list
@@ -1193,8 +1197,10 @@ agreed to this" before it fills one.
 
 ### Settled by Rob, 2026-10-05
 
-1. **The words** (§5), exactly as proposed: **gateway sat**, kind 3, shown
-   as `gateway`; the repository `unleashed_callin`; the roles **access
+1. **The words** (§5), as proposed but for the repository: **gateway sat**,
+   kind 3, shown as `gateway`; the repository **`unleashed_callin_sat`**,
+   Rob's own name over the proposed `unleashed_callin` and already created
+   at `github.com/rwmech/unleashed_callin_sat`; the roles **access
    point**, **terminal server**, **repeater**; the page the **portal**; and
    **the internet-side box is the broker**, reversing the broker study's
    §5.2. Strings in `satwords.h`, and the broker's in a sibling
