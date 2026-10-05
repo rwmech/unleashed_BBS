@@ -24,6 +24,45 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.2.2-sshport.1, 2026-10-04 (host-tested, not on hardware)
+
+**The board tells the directory where its encrypted line is.** The
+directory has stored, badged and drawn `ssh_port` since 2.0.16, with a
+closed padlock on a second address line, and no board filled it in: the
+field existed on one side only. This is the firmware side of it, and
+nothing else.
+
+- **`ssh_port` in the heartbeat**, a whole number, and only while SSH is
+  actually listening on a port of its own. Present means there is SSH and
+  says where, absent means there is none, so a directory needs no separate
+  flag. Read from the bound socket rather than the setting, because
+  `ssh_port` in `CONFIG network` takes effect at the next restart and a
+  board can carry a number that nothing answers on for as long as a sysop
+  leaves it to. SSH on the shared telnet port, for clients that speak
+  first, is deliberately not announced: that number is the plain line, and
+  a padlock drawn beside it would say the wrong thing.
+- **`CONFIG announce` gains an outside SSH port**, the partner of the
+  outside telnet port, because a router may forward a different number
+  inwards. Blank publishes the port the board is listening on. On a board
+  with SSH the page had no room for a thirteenth row, so **Outside** is
+  now a button to both ports, telnet and SSH, showing what is being
+  published; on a board with no SSH it is the single row it has always
+  been.
+- **A payload that was already too long on a camera board.** The worst
+  case is computed now (`kWorst`) and asserted against the buffer, instead
+  of being added up in a comment, because the comment had drifted in two
+  places: it priced the `system` badge at the 31 bytes of a build with no
+  board profile, while every profile carries 47, and it priced `tz` at
+  four digits when it is `int16_t` minutes. Nothing counted the version
+  string either, though the spare was described as being for one. So a
+  camera board's true worst case was over the room before this field
+  existed, and a lane build was further over than the release build of the
+  same code. `kBodyMax` is 1,408, 40 bytes of static DRAM, and the build
+  fails rather than a heartbeat if a field is added without a line in the
+  budget. No real board has been that long at once, which is why nothing
+  caught it: it takes every text at its longest, both badge lists full, a
+  card in, the board closed and `share_activity` on.
+
 ## 1.2.1 (S3 1.1.8, WS43B 1.0.6, WS2 1.0.7, ETH 1.0.7, MF35 1.1.6, MF35V2 1.0.3, G4848 1.0.4, FNCAM 1.0.10, ESPCAM 1.0.7), 2026-10-01
 
 **Two new boards, and a patch release that is mostly things a sysop looks

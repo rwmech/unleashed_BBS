@@ -46,6 +46,7 @@ description = A BBS on a chip in a shack in Illinois
 servers     = http://unleashedbbs.net/announce
 host        =                     ; a DNS name of your own, if you have one
 public_port =                     ; what callers dial through the router; empty: the board's port
+public_ssh_port =                 ; the same for SSH, on a board with SSH; empty: the board's ssh_port
 interval    = 10                  ; minutes between heartbeats, 1 to 1440
 nudge_seconds = 32                ; shortest gap a caller change may push, 0 never
 token       =                     ; left empty: the directory fills this in
@@ -66,6 +67,7 @@ with already filled in.
 | `servers` | comma separated. Up to four directories, each `http://host[:port]/path`. The project's own directory answers on all three of its names; `.net` is the one meant for machines, and `.com` and `.org` are for people |
 | `host` | the name you want listed. Leave it empty and the directory uses the address your heartbeat came from |
 | `public_port` | **Outside** on the CONFIG page: the port callers dial from the internet, when your router forwards a different number to the board. Leave it empty if the router forwards the same number as the board's `port`, and the board sends that: the port it is listening on, which follows `port` from the restart that moves it |
+| `public_ssh_port` | the same thing for SSH (1.2.2), on a board that has it: the port callers dial from the internet for an encrypted connection, when your router forwards a different number to the board's `ssh_port`. Leave it empty and the board sends the port SSH is actually listening on. On a board with SSH, **Outside** on the CONFIG page becomes a button to both ports, telnet and SSH, because the page has no room for a thirteenth row; on a board without SSH it stays the single row it has always been |
 | `interval` | minutes between heartbeats. Ten is plenty; a directory usually considers a board gone after three missed |
 | `nudge_seconds` | **Push secs** on the CONFIG page: the shortest gap, in seconds, between the last heartbeat and one a caller change sends early (see "When it sends" below). 32 as shipped (1.1.2; it was 60), 0 to 3600, and 0 never sends early |
 | `token` | leave it empty. The directory mints one on the first heartbeat and the board writes it back here itself |
@@ -77,12 +79,13 @@ with already filled in.
 
 ### Badges
 
-A directory can show a few badges beside a board's name. Four of them the board works out for itself and you cannot set, so they cannot be wrong about it:
+A directory can show a few badges beside a board's name. Most of them the board works out for itself and you cannot set, so they cannot be wrong about it:
 
 - **system**: the chip, the flash this firmware image can use, and PSRAM when the firmware uses it, read at start: `ESP32 · 4 MB`, `ESP32-S3 · 16 MB · PSRAM`. The flash figure is the image's, not the chip's: a 16 MB module running the 4 MB image says 4 MB.
 - **terminals**: what this firmware speaks, which is always `ansi`, `utf8`, `petscii` and `ascii`.
 - **guests**: your `guest` setting.
 - **sd** (1.1.0): the SD card's size in GB, rounded up to the size printed on it (1, 2, 4 ... 1024: a "32 GB" card holds about 29.7 GiB and is sent as 32), and only while a card is mounted. Taken from the sd plugin's kept figures, so a heartbeat never touches the card.
+- **ssh_port** (1.2.2): the port your encrypted line is on, sent only while SSH is actually listening on a port of its own. unleashedbbs.net draws such a board a second address line with a closed padlock; a board with no SSH keeps the one plain line it has always had, with no padlock of any kind, because an open one on every other listing would read as a warning against boards working exactly as intended. If your router forwards a different number inwards, set `public_ssh_port`.
 - **features**: what works at the moment of the heartbeat, from `chat`, `mail`, `forums`, `files` and `camera`. Mail counts while chat runs with `mail_slots` above 0. Forums and files count while their plugin runs and a card is mounted, so `SD UNMOUNT` takes them off the next heartbeat. A card pulled without `SD UNMOUNT` is not noticed (nothing watches for it), so they stay until the board next starts without it.
   `camera` (1.1.0, camera boards only: the Freenove ESP32-WROVER CAM) is the directory's "This BBS can take pictures" badge. It counts while the camera plugin runs with a card mounted **and a sensor answered** its latest bring-up this boot. The board looks for the sensor once, at the first count of the photos after it starts (brought up and straight down again, no picture, no flash), and every snap looks again. So a board whose camera will not start never claims the badge, and one whose sensor stops answering drops it at the next snap. A reference ESP32 or S3 build never sends it.
 
@@ -135,7 +138,7 @@ Connection: close
 {"software":"unleashed","version":"1.0.1",
  "name":"The Rusty Modem","owner":"Daytona",
  "description":"A BBS on a chip in a shack in Illinois",
- "host":"","port":2323,"nodes":11,"busy":0,
+ "host":"","port":2323,"ssh_port":2422,"nodes":11,"busy":0,
  "uptime":3600,"interval":10,"tz":-300,"token":"1935bc3c...",
  "system":"ESP32 · 4 MB",
  "terminals":["ansi","utf8","petscii","ascii"],
@@ -154,6 +157,7 @@ Connection: close
 | `description` | string | one line, up to 120 characters |
 | `host` | string | the name to list, or empty to use the source address |
 | `port` | number | the port callers should dial |
+| `ssh_port` | number | the port callers dial for an encrypted connection, 1 to 65535 (1.2.2). The **outside** port, after the router, exactly as `port` is. Sent only while SSH is actually listening on a port of its own, so absent means the board has no SSH, which is every board that cannot run it. There is no separate flag: one field says both that there is SSH and where. SSH on the telnet port, for clients that speak first, is deliberately not announced, because that number is the plain line |
 | `nodes` | number | how many caller lines the board has |
 | `busy` | number | how many are in use right now |
 | `closed` | boolean | `true` while the sysop has closed the board to callers (1.1.1): show it as temporarily closed. Left out while the board is open, so a directory that has never heard of it lists the board as it always did |
@@ -173,7 +177,7 @@ Connection: close
 
 The six before `sd` are the badges, and every heartbeat carries all of them, empty lists included: a directory replaces them on each heartbeat, so a field left out is a badge taken down. A directory that does not know them ignores them.
 
-A plain payload is around 450 bytes. The largest this firmware can build is 1,343 (1,352 on a camera board): every text field at its longest with every character one that JSON has to escape, both lists full, every number at its widest, `sd`, and `closed`. The board's buffer holds 1,367, so a payload is never refused for size; if one ever were, the board would log it and send nothing rather than a cut-off half. Nothing in it identifies a caller, and nothing ever should.
+A plain payload is around 450 bytes. The largest this firmware can build is 1,406, on an S3 camera board with SSH: every text field at its longest with every character one that JSON has to escape, both lists full, every number at its widest, the longest version string, `sd`, `closed` and `ssh_port`. A board without those is smaller, down to 1,364 on the reference ESP32. The buffer holds 1,407 on every board, so a payload is never refused for size; if one ever were, the board would log it and send nothing rather than a cut-off half. That figure is computed in `announce.cpp` and checked by the compiler rather than written down (it was written down until 1.2.2, and it had drifted). Nothing in the payload identifies a caller, and nothing ever should.
 
 ### Response
 

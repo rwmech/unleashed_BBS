@@ -184,32 +184,105 @@ constexpr uint8_t    kSystemMax   = 31;     // "ESP32-S3 · 16 MB · PSRAM" is 2
 // buffer is sized for the worst payload this code can build, not for a
 // typical one, and a refusal can only ever mean a bug.
 //
-// The worst case, every value at the longest the plugin keeps it and every
-// character of every text a '"' or a '\' (each is sent as two bytes):
+// The worst case is COMPUTED below, in kWorst, and asserted against the
+// buffer. It used to be added up in this comment, and the comment had
+// drifted: it priced `system` at 31 bytes, which is kSystemMax for a build
+// with no board profile, while every profile carries a tag and so 47. That
+// understated every board but the reference esp32dev by 16 bytes, and it
+// understated `tz` by 2 (int16_t minutes is "-32768" at its widest, not
+// four digits). On released 1.2.1 a camera board's true worst payload was
+// 1,370 bytes where kBodyMax 1,368 allowed a body of 1,367, so it was
+// already refused by 3 before ssh_port existed: every text at its longest,
+// both badge lists full, a card in, the board closed and share_activity on.
+// No real board has been that long at once, which is why nothing caught it.
 //
-//   keys, quotes, brackets, and the fixed terminals and
-//     features lists, with share_activity on                  314
-//     (323 on a camera board: ,"camera" is 9 more)
-//   numbers at their widest (port 5, nodes 3, busy 3,
-//     uptime 7, interval 4, tz 4, calls24 5, minutes24 10)      41
-//   version 5 and system 31, never escaped                      36
-//   name 40, owner 40, description 120, host 95, token 40,
-//     each doubled by escaping                                 670
-//   support and interests, 16 entries in 95 characters,
-//     quoted and bracketed: 95 + 32 + 2 each                   258
-//   ,"sd":1024 while a card is mounted (1.1.0)                  10
-//   ,"closed":true while the board is closed (1.1.1)             14
-//                                                             -----
-//                                                             1,343
-//                                     (1,352 on a camera board)
+// A comment cannot be asserted. kWorst can, and is, so a field added to
+// buildBody without a line here fails the build rather than the heartbeat.
+// The empirical half is two tests, because one host profile cannot cover
+// both shapes: test_announce_badges builds these maxima on a board with no
+// SSH, and test_announce_ssh_port does it again on an SSH profile, where
+// the field is in the payload. Each sends the result and checks it arrives
+// whole rather than trusting the arithmetic.
 //
-// Measured, not only added up: test_announce_badges gives the host board
-// exactly this and checks the heartbeat arrives whole. The spare 24 (15 on
-// a camera board) is for a longer version string. 768, the figure first proposed, is short even
-// with no quote marks anywhere: every text at its longest and both lists
-// full is 984.
+// Every text is counted with each of its characters escaped, because
+// Json::str sends a '"' or a '\' as two bytes.
+//
+// The version string is budgeted, not measured, and that is the other half
+// of why this went wrong. BBS_VERSION goes in the payload, and a lane build
+// carries a long one: "1.2.2-sshport.1" is ten bytes more than "1.2.1", and
+// the old spare was described as being "for a longer version string"
+// without anything counting one. So a development build of a camera board
+// could be over the room while the release build of the same code was
+// inside it, which is the worst possible place for a size limit to bite.
+// kVersionMax is counted here and asserted against BBS_VERSION, so a tag
+// too long to announce fails the build instead of a heartbeat.
 // ---------------------------------------------------------------------------
-constexpr uint16_t   kBodyMax     = 1368;   // 1,343 and the terminator, with room to spare
+constexpr uint16_t   kVersionMax  = 24;     // "1.2.2-hardware-preview" is 22
+static_assert(sizeof(BBS_VERSION) - 1 <= kVersionMax,
+              "BBS_VERSION is longer than the payload budget: raise kVersionMax");
+constexpr uint16_t jsonStr(uint16_t chars)   { return 2 + 2 * chars; }  // quoted, all escaped
+constexpr uint16_t jsonPlain(uint16_t chars) { return 2 + chars; }      // quoted, never escaped
+constexpr uint16_t jsonList(uint16_t csv, uint16_t entries) {           // Json::list
+    return 2 + csv + 2 * entries;                                      // brackets, and a pair of
+}                                                                      // quotes per entry
+
+// The feature list at its longest, as features() builds it, and the number
+// of entries in it: "camera" only on a board that has one.
+#ifdef BBS_HAS_CAMERA
+constexpr uint16_t   kFeatsCsv    = 29;     // chat,forums,files,mail,camera
+constexpr uint16_t   kFeatsCount  = 5;
+#else
+constexpr uint16_t   kFeatsCsv    = 22;     // chat,forums,files,mail
+constexpr uint16_t   kFeatsCount  = 4;
+#endif
+
+// buildBody's own order, one line per field it writes.
+constexpr uint16_t kWorst =
+      sizeof("{\"software\":\"unleashed\",\"version\":") - 1
+                                        + jsonPlain(kVersionMax)
+    + sizeof(",\"name\":") - 1          + jsonStr(kNameMax)
+    + sizeof(",\"owner\":") - 1         + jsonStr(kNameMax)
+    + sizeof(",\"description\":") - 1   + jsonStr(kDescMax)
+    + sizeof(",\"host\":") - 1          + jsonStr(kUrlMax - 1)
+    + sizeof(",\"port\":") - 1          + 5      // 65535
+#if BBS_HAS_SSH
+    + sizeof(",\"ssh_port\":") - 1      + 5      // 65535, while SSH listens (1.2.2)
+#endif
+    + sizeof(",\"nodes\":") - 1         + 3      // uint8_t
+    + sizeof(",\"busy\":") - 1          + 3      // uint8_t
+    + sizeof(",\"closed\":true") - 1             // while the board is closed (1.1.1)
+    + sizeof(",\"uptime\":") - 1        + 7      // 4294967, uint32 ms of seconds
+    + sizeof(",\"interval\":") - 1      + 4      // 1440
+    + sizeof(",\"tz\":") - 1            + 6      // int16_t minutes, "-32768"
+    + sizeof(",\"token\":") - 1         + jsonStr(kTokenMax)
+    + sizeof(",\"calls24\":") - 1       + 5      // share_activity on
+    + sizeof(",\"minutes24\":") - 1     + 10
+    + sizeof(",\"system\":") - 1        + jsonPlain(kSystemMax)
+    + sizeof(",\"terminals\":[\"ansi\",\"utf8\",\"petscii\",\"ascii\"]") - 1
+    + sizeof(",\"guests\":") - 1        + 5      // "false", the longer of the two
+    + sizeof(",\"features\":") - 1      + jsonList(kFeatsCsv, kFeatsCount)
+    + sizeof(",\"support\":") - 1       + jsonList(kListMax, kListEntries)
+    + sizeof(",\"interests\":") - 1     + jsonList(kListMax, kListEntries)
+    + sizeof(",\"sd\":") - 1            + 4      // 1024, while a card is mounted (1.1.0)
+    + sizeof("}") - 1;
+
+// 1,408: the widest build's kWorst and its terminator, and no more. kWorst
+// is a hard ceiling rather than an estimate, so any spare beyond it is
+// static DRAM spent on a payload that cannot exist, and the ESP32-CAM is the
+// board with least of it to give. The widest build is an S3 camera board
+// with SSH, at 1,406 with the version budget; the reference esp32dev's own
+// worst case is 1,374. One figure for every board, so the room a refusal
+// talks about is the same number in ANNOUNCE.md whatever is flashed.
+// 768, the figure first proposed, is short even with no quote marks
+// anywhere: every text at its longest and both lists full is 984.
+constexpr uint16_t   kBodyMax     = 1408;
+// Json's cap counts the terminator, so the longest body it will write is
+// kBodyMax - 1. A field added to buildBody and not to kWorst is the one
+// thing this cannot catch; test_announce_badges and test_announce_ssh_port
+// are the empirical half, and they build the worst case and send it.
+static_assert(kWorst < kBodyMax,
+              "the longest payload buildBody can write no longer fits kBodyMax: "
+              "raise it, and add the new field to kWorst");
 
 // The room buildBody writes into: kBodyMax, always, on a board. The host
 // build alone lets room_test in [plugin:announce] make it smaller, because
@@ -270,6 +343,16 @@ char     g_system[kSystemMax + 1]  = {};   // plat::hardware, once at start
 // the port setting from the restart that makes it true.
 uint16_t g_public   = BBS_PORT;
 bool     g_publicSet = false;              // public_port is in the file
+#if BBS_HAS_SSH
+// And the same for SSH (1.2.2, PROTOCOL.md "ssh_port"). public_ssh_port when
+// the sysop set one, otherwise the port SSH is actually bound to right now
+// (Bbs::sshPort, 0 when it is not listening at all). The field is only sent
+// while SSH listens, so a board whose ssh_port is 0, or whose bind failed,
+// announces no SSH and loses the directory's padlock with its next
+// heartbeat, which is what PROTOCOL.md asks for.
+uint16_t g_publicSsh    = 0;
+bool     g_publicSshSet = false;           // public_ssh_port is in the file
+#endif
 uint16_t g_interval = kIntervalDef;
 uint32_t g_lastRound = 0;                  // when the last round of posts began
 uint16_t g_nudgeSecs = kNudgeDef;          // 0 = never push on a caller change
@@ -496,6 +579,15 @@ void readKey(void* ctx, const char* key, const char* value) {
         long p = strtol(value, nullptr, 10);
         if (p >= 1 && p <= 65535) { g_public = static_cast<uint16_t>(p); g_publicSet = true; }
     }
+#if BBS_HAS_SSH
+    else if (!strcmp(key, "public_ssh_port")) {
+        // The same rule as public_port, and an override only: it says which
+        // number to publish, never whether to publish one. A board with SSH
+        // switched off sends nothing here however this is set.
+        long p = strtol(value, nullptr, 10);
+        if (p >= 1 && p <= 65535) { g_publicSsh = static_cast<uint16_t>(p); g_publicSshSet = true; }
+    }
+#endif
     else if (!strcmp(key, "nudge_seconds")) {
         long v = strtol(value, nullptr, 10);
         if (v >= 0 && v <= 3600) g_nudgeSecs = static_cast<uint16_t>(v);
@@ -668,6 +760,26 @@ bool buildBody() {
     j.raw(",\"description\":"); j.str(g_desc);
     j.raw(",\"host\":");        j.str(g_host);
     j.raw(",\"port\":");        j.unum(g_public);
+#if BBS_HAS_SSH
+    // The encrypted line (1.2.2, PROTOCOL.md "ssh_port"): present means
+    // there is SSH and says where, absent means there is none, so the
+    // directory needs no separate flag. Sent only while SSH is actually
+    // listening on a port of its own, read from the socket that is bound
+    // rather than from the setting: ssh_port takes effect at the next
+    // restart, and a CONFIG save restarts the plugins, so the setting can
+    // say 6422 for minutes while nothing answers there.
+    //
+    // SSH on the shared telnet port, for clients that speak first, is
+    // deliberately not announced: that number is the telnet line, and a
+    // directory told the same port twice would draw a padlock beside a
+    // plain line. A sysop who wants the padlock gives SSH its own port.
+    if (bbs.sshPort()) {
+        // g_publicSsh is the bound port unless public_ssh_port overrode it
+        // (start, then readKey). The fallback is belt and braces: a 0 here
+        // would be published as a port the directory then has to refuse.
+        j.raw(",\"ssh_port\":"); j.unum(g_publicSsh ? g_publicSsh : bbs.sshPort());
+    }
+#endif
     g_sentNodes = bbs.publicNodes();
     g_sentBusy  = bbs.publicBusy();
     j.raw(",\"nodes\":");       j.unum(g_sentNodes);
@@ -1396,6 +1508,14 @@ bool start(Bbs& bbs) {
     // callers reach right now. BBS_PORT only if that ever stops being true.
     g_public     = bbs.port() ? bbs.port() : BBS_PORT;
     g_publicSet  = false;
+#if BBS_HAS_SSH
+    // Bbs::begin binds SSH's own port before any plugin starts (main.cpp),
+    // so this is the port a caller reaches for SSH right now, or 0 when
+    // there is none to reach. No BBS_SSH_PORT fallback: an unbound port is
+    // the answer "no SSH", not a number to advertise.
+    g_publicSsh    = bbs.sshPort();
+    g_publicSshSet = false;
+#endif
     g_interval   = kIntervalDef;
     // The board's name, and the only place it comes from. This used to be
     // a seed that the plugin's own "name" key could then override, which
@@ -1501,9 +1621,28 @@ const PluginSetting kSettings[] = {
     // the word at 40; at 80 the label says it. Empty publishes the board's
     // own port, which is right for every router that forwards the same
     // number it receives.
+    //
+    // On a board with SSH there are two of them, and this page has no room
+    // for a thirteenth row (the assert below), so they go behind one button
+    // (PS_PAGE, which exists for exactly this). A board with no SSH keeps
+    // the single row in place, where it has always been: nobody on a
+    // telnet-only board should press a button to reach a field their board
+    // can only ever have one of.
+#if BBS_HAS_SSH
+    { "public",         "Outside",   PS_PAGE,   0, 0,     16,
+      "Ports your router forwards in.", nullptr, "Outside ports",
+      "What callers dial through your router, for telnet and for SSH." },
+    { "public_port",    "Telnet",    PS_OPTNUM, 1, 65535, 5,
+      "What callers dial for telnet.", nullptr, "Outside telnet port",
+      "The router's outside port, when it differs. Blank publishes the board's own." },
+    { "public_ssh_port","SSH",       PS_OPTNUM, 1, 65535, 5,
+      "What callers dial for SSH.", nullptr, "Outside SSH port",
+      "The router's outside SSH port, when it differs. Blank publishes the board's own." },
+#else
     { "public_port",    "Outside",   PS_OPTNUM, 1, 65535, 5,
       "What callers dial through your router.", nullptr, "Outside port",
       "The router's outside port, when it differs. Blank publishes the board's own." },
+#endif
     // Comma separated, so one board can be listed in several directories.
     { "servers",        "Directory", PS_TEXT,  0, 0,     90,          nullptr, nullptr, "Directory URLs" },
     { "interval",       "Every min", PS_NUM,   1, 1440,  4,           nullptr, nullptr, "Heartbeat minutes" },
@@ -1519,10 +1658,19 @@ const PluginSetting kSettings[] = {
     // Issued by the directory and kept so a listing survives a reflash.
     { "token",          "Token",     PS_TEXT,  0, 0,     kTokenMax,   nullptr, nullptr, "Directory token" },
 };
+// The rows a PS_PAGE button holds, which are not on the main page (1.2.2:
+// the two outside ports, behind "Outside"). Counted here rather than left
+// out of the arithmetic, so the assert below says what it means.
+#if BBS_HAS_SSH
+constexpr uint8_t kPagedRows = 2;      // public_port and public_ssh_port
+#else
+constexpr uint8_t kPagedRows = 0;
+#endif
 // The rows the core puts first (kCoreRows: enabled, read, write, admin) and
 // these fill a CONFIG page: one more and CONFIG drops the last silently.
-static_assert(kCoreRows + sizeof(kSettings) / sizeof(kSettings[0]) <= Form::kMaxFields,
-              "announce's CONFIG page is full");
+static_assert(kCoreRows + sizeof(kSettings) / sizeof(kSettings[0]) - kPagedRows
+                  <= Form::kMaxFields,
+              "announce's CONFIG page is full: put a row behind a PS_PAGE button");
 // And CONFIG has to hold the longest value this plugin takes, or saving the
 // row cuts it: it held 95 of the description's 120 until 1.1.0.
 static_assert(kDescMax <= kSettingMax && kListMax <= kSettingMax && kUrlMax - 1 <= kSettingMax,
@@ -1548,6 +1696,24 @@ void setting(const char* key, char* out, size_t n) {
         if (g_publicSet) snprintf(out, n, "%u", static_cast<unsigned>(g_public));
         else             out[0] = '\0';
     }
+#if BBS_HAS_SSH
+    else if (!strcmp(key, "public_ssh_port")) {
+        if (g_publicSshSet) snprintf(out, n, "%u", static_cast<unsigned>(g_publicSsh));
+        else                out[0] = '\0';
+    }
+    // The button's own text (PS_PAGE): what the directory is being told, in
+    // the order the rows behind it come. The rows themselves stay blank
+    // until a sysop sets one, because a number shown in a box invites a save
+    // that pins it; a button is never typed into, so it can say the figure
+    // that is actually published. "off" is a board whose SSH is not
+    // listening, and then no ssh_port is sent at all.
+    else if (!strcmp(key, "public")) {
+        const uint16_t ssh = Bbs::instance().sshPort();
+        if (ssh) snprintf(out, n, "%u / %u", static_cast<unsigned>(g_public),
+                          static_cast<unsigned>(g_publicSsh ? g_publicSsh : ssh));
+        else     snprintf(out, n, "%u / off", static_cast<unsigned>(g_public));
+    }
+#endif
     else if (!strcmp(key, "interval"))    snprintf(out, n, "%u", static_cast<unsigned>(g_interval));
     else if (!strcmp(key, "nudge_seconds")) snprintf(out, n, "%u", static_cast<unsigned>(g_nudgeSecs));
     else if (!strcmp(key, "share_activity")) snprintf(out, n, "%s", g_activity ? "yes" : "no");

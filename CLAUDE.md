@@ -1622,9 +1622,10 @@ this tree.
     port"** beside the existing "Outside port", blank publishing the board's
     own `ssh_port`. Without it the directory would advertise 6422 to the
     world on a board whose router forwards something else or nothing, which
-    is exactly why telnet already has that setting. About 18 bytes of
-    payload against kBodyMax 1368, and an oversized payload is refused
-    rather than truncated, so the headroom is checked not assumed.
+    is exactly why telnet already has that setting. The field is 17 bytes
+    of payload, not the 18 first estimated, and an oversized payload is
+    refused rather than truncated, so the headroom is checked not assumed.
+    Checking it is what found that there was none: see the build note below.
   - **Directory (now, ahead of the firmware):** `PROTOCOL.md` defines the
     field, the server accepts and stores it, a listing that has one shows a
     **second address line with a closed padlock and an SSH label**, and
@@ -1635,6 +1636,49 @@ this tree.
     board the project deliberately supports. Telnet-only listings stay
     plain, and the honest wording about open lines stays where the site
     already explains it.
+  - **Built on `ssh-port` (1.2.2-sshport.1, 2026-10-04), host-tested, not
+    flashed.** The firmware half, phase 0 of the browser-SSH plan
+    (`internal/plan-web-ssh-2026-10-04.md`), and nothing else from it.
+    Three things it settled or found, each worth keeping:
+    - **It is the bound port, not the setting.** `Bbs::sshPort()` is the
+      socket that is actually listening; `syscfg::get().sshPort` is what
+      the next restart will use, and a CONFIG save restarts the plugins
+      without rebinding, so the two differ for as long as a sysop leaves
+      them to. Announcing the setting would advertise a port nothing
+      answers on. SSH on the shared telnet port is deliberately NOT
+      announced: that number is the plain line, and the directory would
+      draw a padlock beside it.
+    - **The CONFIG page was already full, at exactly 16 rows.** Four core
+      rows and twelve settings is `Form::kMaxFields`, and CONFIG drops a
+      thirteenth without a word, so an "Outside SSH port" row could not
+      simply be added. On a board with SSH both outside ports went behind
+      one `PS_PAGE` button, which is the mechanism the project built for
+      this; a board with no SSH keeps the flat row it has always had, so
+      no telnet-only board pays a keystroke for a feature it cannot have.
+      Worth knowing generally: a plugin whose settings table is at twelve
+      has no room left, and the next row there is a page, not a row.
+    - **The payload budget was wrong, and had been since before this
+      field.** The worst case was added up in a comment, and the comment
+      priced `system` at 31 bytes (kSystemMax for a build with NO board
+      profile; every profile carries 47) and `tz` at four digits (it is
+      `int16_t` minutes, so six), and counted no version string at all
+      although the spare was described as being for one. The real figures:
+      on released 1.2.1 a tagged camera board's worst payload was 1,370
+      bytes where the room allowed 1,367, so it was already refused by 3,
+      and the same source on a lane version was further over again
+      ("1.2.2-sshport.1" is ten bytes more than "1.2.1"), which is the
+      worst place for a limit to bite: the build a sysop runs fits and the
+      build a developer tests does not. Nothing had ever hit it because it needs
+      every text at its longest, both badge lists full, a card in, the
+      board closed and `share_activity` on at once.
+      **The fix is the shape, not the number:** `kWorst` is computed from
+      the same literals `buildBody` writes and `static_assert`ed against
+      `kBodyMax` (now 1,408, +40 bytes of static DRAM), and `kVersionMax`
+      is asserted against `BBS_VERSION`, so a tag too long to announce
+      fails the build rather than a heartbeat. **A size budget kept in
+      prose is a budget nobody can assert**, which is the same family as
+      every count-written-beside-a-table bug in this file; the cure is to
+      compute it where the compiler can check it.
 - **1.2.2: the board refuses a token that is not 32 hex characters** (found
   2026-10-04, when HQ moved to the 4.3B and stopped updating its listing).
   `kTokenMin` is 16, so a token cut to 26 characters passed every check on

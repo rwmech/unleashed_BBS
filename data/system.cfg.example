@@ -278,6 +278,7 @@ description = One line about this board, up to 120 characters
 servers     = http://unleashedbbs.net/announce
 host        =              ; a DNS name of your own, if you have one
 public_port =              ; what callers dial through your router; empty: the board's port
+# public_ssh_port =        ; the same for SSH, on a board that has it; empty: the board's ssh_port
 interval    = 10           ; minutes between heartbeats, 1 to 1440
 token       =              ; only if your directory issues them
 support     =              ; e.g. lgbtq, literacy

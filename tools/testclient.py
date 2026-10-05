@@ -16456,12 +16456,30 @@ def announce_features(s):
 def widest_slack(rec):
     """Bytes this payload is short of the widest one the same text could
     make: every number at its most digits, the longest system label, and
-    all four features running."""
+    all four features running.
+
+    The widths are kWorst's in announce.cpp and have to stay its: tz is
+    int16_t minutes, so "-32768" at six, and system is kSystemMax 47 on
+    every board with a profile, not the 31 of a build with no board tag.
+    Both were understated here and in that file's comment until 1.2.2, which
+    is how a camera board's worst case came to be over the room with this
+    check still passing (it projected 18 bytes short of the truth).
+
+    The version string counts too, at kVersionMax, because a lane build
+    carries a long one ("1.2.2-sshport.1" is ten bytes more than "1.2.1")
+    and the release build of the same code must not be the only one that
+    fits.
+    """
     import json as _json
     widths = {"port": 5, "nodes": 3, "busy": 3, "uptime": 7, "interval": 4,
-              "tz": 4, "calls24": 5, "minutes24": 10}
+              "tz": 6, "calls24": 5, "minutes24": 10}
+    # ssh_port only on a board that sent one: a board with no SSH never
+    # sends it, so its widest payload has no room to make for it (1.2.2).
+    if "ssh_port" in rec:
+        widths["ssh_port"] = 5
     slack = sum(w - len(str(rec.get(k, 0))) for k, w in widths.items())
-    slack += 31 - len(str(rec.get("system", "")).encode("utf-8"))
+    slack += 47 - len(str(rec.get("system", "")).encode("utf-8"))
+    slack += 24 - len(str(rec.get("version", "")))      # kVersionMax
     slack += (len('["chat","forums","files","mail"]')
               - len(_json.dumps(rec.get("features", []), separators=(",", ":"))))
     return slack
@@ -16675,6 +16693,12 @@ def test_announce_badges():
         ok &= check("16 support and 16 interests at 95 characters each",
                     len(rec.get("support", [])) == 16 and len(rec.get("interests", [])) == 16)
         ok &= check("guests off goes as a JSON false", rec.get("guests") is False)
+        # ssh_port (1.2.2): present means there is SSH and says where, absent
+        # means there is none, so this board sends it exactly when it has an
+        # SSH port listening. On this profile there is none, which is the
+        # half of the rule the SSH profile's own test cannot check.
+        ok &= check("ssh_port is sent only while SSH is listening",
+                    ("ssh_port" in rec) == bool(SSH_PORT))
         s.buf.clear()
         s.send(b"announce\r")
         s.wait_for(b"Announce", 4)
@@ -16682,6 +16706,93 @@ def test_announce_badges():
         status = plain(s.buf)
         ok &= check("ANNOUNCE says listed, not payload too long",
                     b"listed" in status and b"too long" not in status)
+    finally:
+        hold.clear()
+        announce_restore(s, saved)
+        s.close()
+        stop.set()
+        th.join(3)
+    return ok
+
+
+def test_announce_ssh_port():
+    """ssh_port in the heartbeat (1.2.2, PROTOCOL.md "SSH"): the board says
+    where its encrypted line is, and the directory draws a padlock on it.
+
+    Present means available and says where, so a directory needs no separate
+    flag. This is the half of that rule which needs SSH compiled in and
+    listening; test_announce_badges checks the other half, that a board
+    without SSH sends no field at all.
+
+    The worst case is built here too, on top of the field, because
+    test_announce_badges runs on the default profile and so has never
+    measured a payload with ssh_port in it. A payload that does not fit is
+    refused, never cut, and a refused heartbeat delists a board silently.
+    """
+    print("Directory: the SSH port")
+    if HOST not in ("127.0.0.1", "localhost"):
+        print("  SKIP  needs the host build")
+        return True
+    if not SSH_PORT:
+        print("  SKIP  this board has no ssh_port")
+        return True
+    port = int(os.environ.get("BBS_DIR_PORT", "8099"))
+    got, stop, hold, ready = [], threading.Event(), threading.Event(), threading.Event()
+    th = threading.Thread(target=standin_directory,
+                          args=(port, got, stop, False, hold, ready), daemon=True)
+    th.start()
+    saved = (USERDATA / "system.cfg").read_bytes()
+    s = cfg_sysop("Padlock")
+    ok = check("the stand-in directory is listening", ready.wait(3))
+    try:
+        rec, _ = announce_heartbeat(s, got)
+        ok &= check("a heartbeat carries ssh_port", bool(rec) and "ssh_port" in rec)
+        # The bound port, not the setting: ssh_port takes effect at the next
+        # restart, so the two differ for as long as a sysop leaves them to.
+        ok &= check("and it is the port SSH is listening on",
+                    (rec or {}).get("ssh_port") == SSH_PORT)
+        ok &= check("the telnet port is still its own", (rec or {}).get("port") == PORT)
+
+        # The router's side of the forward, the partner of public_port.
+        text = cfg_with(saved.decode("utf-8"),
+                        {("plugin:announce", "public_ssh_port"): "65535"})
+        ok &= check("the board reloads with an outside SSH port set",
+                    announce_reload(s, text, 11))
+        rec, _ = announce_heartbeat(s, got)
+        ok &= check("public_ssh_port is what gets published",
+                    (rec or {}).get("ssh_port") == 65535)
+        ok &= check("and it does not touch the telnet port",
+                    (rec or {}).get("port") == PORT)
+
+        # --- the worst payload this board can build, ssh_port included
+        limit = announce_body_max()
+        slugs = ",".join(("%x" % i) * 5 for i in range(16))      # 16 in 95 characters
+        worst = cfg_with(saved.decode("utf-8"), {
+            ("", "board_name"): '"' * 40,
+            ("plugin:announce", "owner"): '"' * 40,
+            ("plugin:announce", "description"): '"' * 120,
+            ("plugin:announce", "host"): '"' * 95,
+            ("plugin:announce", "token"): '"' * 40,
+            ("plugin:announce", "public_port"): "65535",
+            ("plugin:announce", "public_ssh_port"): "65535",
+            ("plugin:announce", "interval"): "1439",      # saved as 1440 below
+            ("plugin:announce", "share_activity"): "yes",
+            ("plugin:announce", "support"): slugs,
+            ("plugin:announce", "interests"): slugs,
+        })
+        hold.set()                     # keep the forty-quote token
+        ok &= check("the board reloads the worst-case config",
+                    announce_reload(s, worst, 1440))
+        rec, body = announce_heartbeat(s, got)
+        ok &= check("the worst payload with ssh_port is sent, not refused",
+                    bool(rec) and rec.get("ssh_port") == 65535
+                    and rec.get("description") == '"' * 120)
+        rec = rec or {}
+        widest = len(body) + widest_slack(rec) if rec else 0
+        print(f"        worst payload {len(body)} bytes here, {widest} with the widest"
+              f" numbers and every feature; the room is {limit - 1}")
+        ok &= check("and it fits the room even with the widest numbers and every feature",
+                    bool(rec) and widest <= limit - 1)
     finally:
         hold.clear()
         announce_restore(s, saved)
@@ -20111,7 +20222,7 @@ ORDER_NAMES = [
     "test_privacy", "test_plugins", "test_about", "test_announce", "test_announce_closed",
     "test_announce_join_prompt", "test_announce_join_in_flight", "test_announce_join_refused",
     "test_announce_reliable",
-    "test_announce_badges", "test_announce_directory",
+    "test_announce_badges", "test_announce_ssh_port", "test_announce_directory",
     "test_chat", "test_room_commands", "test_room_new_commands", "test_room_private", "test_room_quit_logoff",
     "test_room_time_staff_only", "test_time_warn_in_plugins", "test_bell", "test_codes_in_messages", "test_fx_codes", "test_room_narrow_effects",
     "test_room_narrow_whole_line", "test_room_private_own_tag", "test_last_node_ten", "test_room_squelch_ten",
@@ -22398,37 +22509,44 @@ PROFILE_TESTS = {
                # SSH (1.1.2) is compiled into the S3 profile only.
                "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
-               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem",
+               "test_announce_ssh_port"],
     "fncam":  ["test_board_fncam"],
     "espcam": ["test_board_espcam"],
     # The hardware preview's Waveshares carry SSH too (1.1.2-hw.1).
     "ws43b":  ["test_board_ws43b",
                "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
-               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem",
+               "test_announce_ssh_port"],
     "ws2":    ["test_board_ws2", "test_panel_photo_show",
                "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
-               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem",
+               "test_announce_ssh_port"],
     "wseth":  ["test_board_wseth",
                "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
-               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem",
+               "test_announce_ssh_port"],
     # The Makerfabs carries SSH too (MF35 1.1.0), on 2 MB of PSRAM.
     "mf35":   ["test_board_mf35",
                "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
-               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem",
+               "test_announce_ssh_port"],
     # And its hardware v2.0 (MF35V2 1.0.0), SSH on 8 MB of octal PSRAM.
     "mf35v2": ["test_board_mf35v2",
                "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
-               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem",
+               "test_announce_ssh_port"],
     # The Guition ESP32-4848S040 (G4848 1.0.0), SSH as every S3 board.
     "g4848":  ["test_board_g4848",
                "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
-               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem",
+               "test_announce_ssh_port"],
 }
 # The profiles whose lanes also run with a card (harness.sh --board s3
 # --card --only=ssh is how SSH's YMODEM was tested).
