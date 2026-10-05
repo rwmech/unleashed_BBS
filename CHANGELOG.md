@@ -139,8 +139,10 @@ Worth keeping, for whoever touches this next:
   combinations. `BBS_HOST_GATEWAY=127.0.0.1:<port>` points the host build at
   it, and with it unset the board has no default route and sends nothing, so
   no test lane can spray UDP at a real router.
-- **Eighteen host tests, `--only=portmap`, 96 checks** (Rob's go,
-  2026-10-05). Each runs its own stand-in router and its own copy of the
+- **Eighteen host tests, `--only=portmap`, 96 checks, and the existing suite
+  green** (Rob's go, 2026-10-05): shell and login 1,031 checks with no card,
+  storage, places, messaging, terminal and radio 1,100 with one, both ALL
+  PASS, and the new group 96. Each runs its own stand-in router and its own copy of the
   board, so the harness board never has the setting switched on. **Two of
   them are proved against the bug they exist for**, which is the one thing
   this project has shipped tests without: the carrier test fails six checks
