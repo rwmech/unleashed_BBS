@@ -420,7 +420,7 @@ configured before any board can reach it to configure it.
 
 | Key | Label (40) | Wide (80) | Kind | Range | Default | When |
 |---|---|---|---|---|---|---|
-| `ap` | `AP` | `Access point for phones` | PS_YESNO | — | **no** | next restart |
+| `ap` | `AP` | `Access point for phones` | PS_YESNO | — | **yes** | next restart |
 | `termsrv` | `Terminal` | `Terminal server on the serial port` | PS_YESNO | — | **no** | next restart |
 | `repeat` | `Repeater` | `Forward other nodes' traffic` | PS_YESNO | — | **no** | live |
 | `boards` | `Boards` | `The boards this node offers` | PS_GROW | 5 slots | — | live |
@@ -431,6 +431,32 @@ configured before any board can reach it to configure it.
 `ap` and `termsrv` are next-restart because bringing a SoftAP or a UART up
 reconfigures the radio or claims pins, and the node has no callers to
 protect at boot. `repeat` is live because it is a task and a branch.
+
+**Corrected 2026-10-05, during phase 1: `ap` defaults to YES, not no, and
+this table said no.** Found by reasoning rather than at the bench, and the
+inconsistency was within this specification: §4.1 says the portal "is how a
+node is set up from nothing", §1.3 says all-roles-off is the legal state "a
+node is in between flashing and setting up", and this row said the portal
+is off to begin with. All three cannot hold — with every role off a freshly
+flashed gateway has no portal, and the portal is the only way to change a
+setting, so there is no way in at all. The built firmware has no console
+command path either; its console is write-only.
+
+**It is only safe because the access point now ships PASSWORDED**, and the
+two settings are coupled from here on. Under this specification's original
+design the access point was open (§1.1, §8), and defaulting it on would
+have meant every freshly flashed gateway broadcasting an open network to
+anyone in range: a much worse decision than it looks. Rob's choice the same
+day to give `ap_pass` the published default `unleashed` is what turns it
+into the obvious default. **Anybody who later makes the access point open
+by default has to turn this off again and provide another way in.**
+
+Still owed, and queued rather than built (Rob's call, the same day): a
+UART0 `set key value` reader as the recovery path for a gateway whose
+settings got mangled, which is the role USB and Improv play for a board. A
+gateway on a post has no console, so the portal is the right way in
+regardless — but a gateway on a bench does, and that is where it would be
+needed.
 
 **AP page** (`ap_`):
 
