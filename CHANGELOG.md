@@ -24,6 +24,138 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.2.2-portmap.1, 2026-10-05
+
+**The board asks the router to forward its own ports**, so a sysop opens no
+router menu. Phase C of `internal/study-broker-sat-2026-10-05.md`, built
+ahead of the rest of that ladder because it puts nothing in the middle and
+because it is the one rung that reaches the base ESP32: it has nothing to do
+with SSH. Built on every board and code-reviewed; **not tested**.
+
+What a sysop sees:
+
+- **`CONFIG network` gains "Ask router to forward"** (`Port map` at 40
+  columns), off as shipped, and a read-only **"What the router did"** row
+  under it (`Mapped`). The setting is live: saving it acts at once and asks
+  the router there and then, so somebody who has just switched UPnP on in
+  the router's menu does not wait or reboot.
+- **`PORTMAP`** (sysop) is the page with the reasons on it: which protocol
+  answered, the router's own outside address and whether that address is on
+  the internet at all, the outside port each of the telnet and SSH ports
+  got, the lease, when it was last asked, and what to do about whatever went
+  wrong. **`PORTMAP NOW`** asks again.
+- **`SYS` has a `Port map` line**, last in its network group beside the
+  address and the port it is about.
+- **It says "mapped", never "reachable".** A router granting a mapping
+  proves it did as it was asked; whether a packet from outside arrives needs
+  somebody outside to try, and nothing on the board can be that somebody.
+  The figure carries an "as of", the same honesty as the kept free-space
+  figures.
+- **It tells a sysop they are behind carrier-grade NAT**, which nothing else
+  on the board can do cheaply. Both protocols hand back the router's own
+  outside address, and when that address is one nobody outside can reach
+  (100.64/10, the carrier range, and 10/8, 172.16/12, 192.168/16, 169.254/16,
+  127/8, 0/8 and 224/4 and up) the mapping is granted, correct and
+  worthless. The board says so in those words rather than claiming to be
+  reachable. A router that grants a mapping while having no outside address
+  of its own says that instead, rather than "mapped".
+- **announce publishes the port the mapping actually got.** With "Outside
+  port" left blank the board used to publish the port it listens on, which
+  is right for every router that forwards the number it receives; a router
+  that already had 6400 taken grants a different one, and then the listening
+  port is the one number that is certainly wrong. `ANNOUNCE` names the port
+  it is publishing and where that number came from, because it now has
+  three possible sources.
+- **The backup window's port is never mapped.** It is local only on purpose,
+  and its download carries the Wi-Fi password.
+
+Worth keeping, for whoever touches this next:
+
+- **PCP first, then NAT-PMP, and the version byte is the whole
+  negotiation.** The two share UDP port 5351, and RFC 6887 section 9 says a
+  reply carrying version 0 "means this is a NAT-PMP server". Plenty of
+  NAT-PMP-only gateways drop a version they do not know instead of saying
+  so, so a PCP probe that gets nothing falls through to NAT-PMP anyway.
+- **It is NOT a runner job, and that is deliberate.** Neither protocol has a
+  blocking call: the gateway's address is a register read and the exchange is
+  a non-blocking `sendto` and `recvfrom` driven from the loop's tail, which
+  is how announce drives its HTTP POST. The runner is serial, one job at a
+  time, so a job sitting on a 1.75 second UDP timeout would hold a caller's
+  FILES page, a forum write and a photo prune behind it. The general rule:
+  **the runner is for calls that BLOCK, not for work that takes a while.**
+- **RFC 6886's nine retransmissions are for a client that must eventually
+  succeed, not for a probe that must decide.** A gateway on the same subnet
+  answers in under a millisecond, so this sends three times at 250, 500 and
+  1000 ms, calls the protocol absent, and asks the whole question again an
+  hour later in case somebody has just been into the router menu.
+- **A mapping is a lease.** 7200 seconds asked for (RFC 6886's
+  recommendation), renewed at half of whatever was granted, which is both
+  RFCs' own rule. A router that restarts forgets every mapping, and both
+  protocols carry a clock for exactly that: an epoch that has gone backwards
+  against the board's own means the state is lost and everything is asked
+  for again at once instead of at the next renewal. The more forgiving of
+  the two rules (RFC 6886's 7/8, not PCP's 15/16) is used for both, because
+  a real reboot trips either by a mile and a gateway with a coarse clock can
+  trip the tight one for nothing.
+- **One UDP socket, and only while an exchange is in flight.**
+  `CONFIG_LWIP_MAX_SOCKETS` is 16, IDF 5.3.1 caps it there on every chip,
+  and the board already oversubscribes it. So nothing is held: about two
+  seconds an hour once a mapping is held, 1.75 s a minute in the worst retry
+  loop, and a `socket()` that fails is one more thing to say and ask again
+  in a minute. `BBS_SOCK_RESERVE` deliberately stays at 3, and the honest
+  version of why is this: port mapping **can** starve announce's connect or
+  the backup window's accept, because it races for the same sockets on equal
+  terms and merely recovers well when it loses. What is traded is one
+  retried heartbeat or one dropped backup connection a sysop reruns, against
+  taking the busy line off a full board for a socket that exists two seconds
+  an hour. The overlap needs a full board **and** an open backup window
+  **and** an in-flight heartbeat, so the trade is the right way round; it is
+  not a guarantee.
+- **A reply is believed only from the gateway's own address**, and in PCP
+  only when its mapping nonce and internal port are the ones asked for (RFC
+  6887 section 8.3 requires the nonce check). A UDP socket hears from
+  anybody, and what gets through without those is a false outside address
+  and, through announce, a wrong port published to the directory.
+- **The board's own address, or the router itself, changing invalidates the
+  mapping**, because the router now forwards to somebody else's lease. A
+  DHCP lease that moves is the quiet way a working board goes dark.
+- **The ports mapped are the ones the board is LISTENING on**, not the
+  configured ones: a port changed in CONFIG waits for a restart, and
+  forwarding the new number before the board answers on it would send
+  callers to a closed port.
+- **UPnP IGD is priced and not built, and the price is not the reason.**
+  About 6 to 10 KB of flash and 500 to 700 bytes of static DRAM, against a
+  WROOM image at 81% of its slot and 2,544 bytes free on the ESP32-CAM
+  after this change: **both fit.** What stops it is three stacked protocols (SSDP, then HTTP
+  and XML, then SOAP) with real divergence between vendors and no router
+  here to shake it out against, which is Rob's call rather than an
+  arithmetic refusal. miniupnpc is BSD-3-Clause, so vendoring would combine
+  with GPLv3 if it ever beats writing it. `Proto` gains a value and the
+  probe tries it third.
+- **`tools/fake_router.py`** is a stand-in router written from the RFCs and
+  sharing nothing with the firmware, with `--proto` (pcp, natpmp, unsupp,
+  deaf) separate from `--fault` (refuse, busy, carrier, noaddr, otherport,
+  reboot, short) because the interesting cases are combinations.
+  `BBS_HOST_GATEWAY=127.0.0.1:<port>` points the host build at it, and with
+  it unset the board has no default route and sends nothing, so no test lane
+  can spray UDP at a real router. Written, syntax-checked and **not run**.
+
+Sizes, off the ELF, against the branch point. All four built with no
+warnings; the host build and the S3, ESP32-CAM and ETH host profiles too.
+
+| | static DRAM | free | image |
+|---|---|---|---|
+| esp32dev (WROOM) | 165,688 → 165,792 (**+104**) | 15,048 → 14,944 | 1,275,328 → 1,284,240 (+8,912) |
+| esp32cam_aithinker | 178,096 → 178,192 (**+96**) | **2,640 → 2,544** | 1,407,920 → 1,417,136 (+9,216) |
+| ws_s3_lcd147 | 263,160 → 263,296 (+136) | 78,600 → 78,464 | 1,503,520 → 1,512,752 (+9,232) |
+| ws_s3eth | 266,520 → 266,640 (+120) | 75,240 → 75,120 | 1,522,192 → 1,531,408 (+9,216) |
+
+About a hundred bytes of static DRAM, which is the slot table (two ports,
+two leases, two 12-byte PCP nonces) plus a dozen words of state, and no
+per-session cost at all. The ESP32-CAM is the floor at 2,544 free. Nine
+kilobytes of flash on every board, which is the state machine, the PORTMAP
+page and the strings; nothing is linked only on some boards.
+
 ## 1.2.1 (S3 1.1.8, WS43B 1.0.6, WS2 1.0.7, ETH 1.0.7, MF35 1.1.6, MF35V2 1.0.3, G4848 1.0.4, FNCAM 1.0.10, ESPCAM 1.0.7), 2026-10-01
 
 **Two new boards, and a patch release that is mostly things a sysop looks

@@ -247,6 +247,27 @@ struct NetInfo {
 };
 NetInfo netInfo();
 
+// ---------------------------------------------------------------------------
+// gatewayIp: the default router's IPv4 address in network byte order, 0
+// when there is none (no lease yet, or the host build with no stand-in
+// router set). The address port mapping asks (src/core/portmap.*): both
+// NAT-PMP and PCP speak only to the router on the board's own subnet, and
+// this is a register read from the netif rather than anything that blocks.
+//
+// The interface it comes from is the one callers reach the board on, so on
+// a board with a wired port it is the wire's gateway while the wire has an
+// address, matching netInfo().ip.
+// ---------------------------------------------------------------------------
+uint32_t gatewayIp();
+
+#ifdef BBS_HOST
+// hostGatewayPort (host build only): the port of the stand-in router in
+// BBS_HOST_GATEWAY ("a.b.c.d:port"), 0 when it named no port. On a board
+// the protocols' port is fixed at 5351; on the host the test lanes run side
+// by side and nothing should have to bind one shared number.
+uint16_t hostGatewayPort();
+#endif
+
 #ifdef BBS_HAS_ETH
 // ---------------------------------------------------------------------------
 // Ethernet (BBS_HAS_ETH boards only: a W5500 on SPI, board.h's BBS_ETH_*).

@@ -116,6 +116,7 @@
 #include "../core/sysconfig.h"
 #include "../core/backup.h"          // sdCardKept: the card's size, for the sd badge
 #include "../core/runner.h"         // the name lookup, off the loop (1.1.2)
+#include "../core/portmap.h"        // a port the router forwarded for us (1.2.2)
 #include "../platform/platform.h"
 #include "chat.h"
 #include "camera.h"            // the camera feature, on a camera board
@@ -652,6 +653,29 @@ uint16_t took(int r, size_t cap, bool& cut) {
     return static_cast<uint16_t>(r);
 }
 
+// ---------------------------------------------------------------------------
+// publicPort: the number callers dial through the router.
+//
+// The sysop's "Outside port" wins, because they typed it and they can see
+// their own router. With that blank the board used to publish the port it
+// listens on, which is right for every router that forwards the same number
+// it receives; from 1.2.2 a mapping the board asked for itself (core/
+// portmap.*) can come back on a DIFFERENT outside port, because the router
+// already had this one taken, and then the listening port is the one number
+// that is certainly wrong. The granted one goes out instead.
+//
+// Deliberately NOT the external ADDRESS: "host" is a DNS name a sysop
+// types, and the address the directory saw the heartbeat arrive from is
+// already a better source for it than anything the board can work out
+// (X-Seen-Address). What portmap's address is for is the carrier-NAT
+// verdict, which is a thing to tell the sysop and not the directory.
+// ---------------------------------------------------------------------------
+uint16_t publicPort(Bbs& bbs) {
+    if (g_publicSet) return g_public;
+    const uint16_t mapped = portmap::externalPort(bbs.port());
+    return mapped ? mapped : g_public;
+}
+
 // buildBody: the payload, at kBody. False when it did not fit, and then
 // what is there is a fragment that must not be sent. Sized so that cannot
 // happen (see kBodyMax); the check stays because a size argument is only as
@@ -667,7 +691,7 @@ bool buildBody() {
     j.raw(",\"owner\":");       j.str(g_owner);
     j.raw(",\"description\":"); j.str(g_desc);
     j.raw(",\"host\":");        j.str(g_host);
-    j.raw(",\"port\":");        j.unum(g_public);
+    j.raw(",\"port\":");        j.unum(publicPort(bbs));
     g_sentNodes = bbs.publicNodes();
     g_sentBusy  = bbs.publicBusy();
     j.raw(",\"nodes\":");       j.unum(g_sentNodes);
@@ -1229,6 +1253,25 @@ void showStatus(Bbs& b, Session& s) {
         t.text(tl, buf);
         t.nl(tl);
     }
+    // The port being published, and where that number came from (1.2.2).
+    // Worth a line because it now has three possible sources: what the
+    // sysop typed into Outside, the port the board listens on, and the one
+    // a mapping the board asked for actually got. Without this, a sysop
+    // whose router granted a different outside port would see a blank
+    // Outside field and no sign of what the directory had been told.
+    // 31 characters at most, so it fits a C64's 40 (b is this function's
+    // own parameter; a second Bbs::instance() here shadowed it).
+    {
+        const uint16_t pub  = publicPort(b);
+        const uint16_t mine = b.port() ? b.port() : BBS_PORT;
+        snprintf(buf, sizeof(buf), "Port %u (%s)", static_cast<unsigned>(pub),
+                 g_publicSet       ? "Outside"
+                 : pub != mine     ? "router mapping"
+                                   : "the board's");
+        t.color(tl, Color::Grey);
+        t.text(tl, buf);
+        t.nl(tl);
+    }
     snprintf(buf, sizeof(buf), "Every %u min, %u sent, %u failed",
              static_cast<unsigned>(g_interval), static_cast<unsigned>(g_okCount),
              static_cast<unsigned>(g_failCount));
@@ -1500,10 +1543,11 @@ const PluginSetting kSettings[] = {
     // characters against a nine character label column, so the note carries
     // the word at 40; at 80 the label says it. Empty publishes the board's
     // own port, which is right for every router that forwards the same
-    // number it receives.
+    // number it receives, or the port a mapping the board asked for came
+    // back on when that differs (1.2.2, publicPort).
     { "public_port",    "Outside",   PS_OPTNUM, 1, 65535, 5,
       "What callers dial through your router.", nullptr, "Outside port",
-      "The router's outside port, when it differs. Blank publishes the board's own." },
+      "The router's outside port, when it differs. Blank follows the board or the mapping." },
     // Comma separated, so one board can be listed in several directories.
     { "servers",        "Directory", PS_TEXT,  0, 0,     90,          nullptr, nullptr, "Directory URLs" },
     { "interval",       "Every min", PS_NUM,   1, 1440,  4,           nullptr, nullptr, "Heartbeat minutes" },

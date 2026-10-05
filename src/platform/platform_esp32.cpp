@@ -934,6 +934,26 @@ NetInfo netInfo() {
     return n;
 }
 
+// ---------------------------------------------------------------------------
+// gatewayIp: see platform.h. The netif callers reach the board on, so the
+// wire's while the wire has an address and the station's otherwise, which
+// is the same choice netInfo makes for its ip field.
+// ---------------------------------------------------------------------------
+uint32_t gatewayIp() {
+    const char* key = "WIFI_STA_DEF";
+#ifdef BBS_HAS_ETH
+    if (ethInfo().up) key = "ETH_DEF";
+#endif
+    esp_netif_t* nif = esp_netif_get_handle_from_ifkey(key);
+    esp_netif_ip_info_t ip;
+    if (!nif || esp_netif_get_ip_info(nif, &ip) != ESP_OK) return 0;
+    // No address of our own means no usable gateway either: a netif that is
+    // up with a link but has had no DHCP answer carries a zero gw, and on
+    // some it carries a stale one.
+    if (!ip.ip.addr) return 0;
+    return ip.gw.addr;
+}
+
 #ifdef BBS_HAS_ETH
 // ===========================================================================
 // Ethernet: the W5500 (1.1.2). See platform.h. IDF 5.3.1's own driver

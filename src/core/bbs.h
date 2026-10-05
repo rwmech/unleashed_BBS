@@ -1043,6 +1043,12 @@ private:
     bool unlimited(const Session& s) const;
     void cmdUnban(Session& s, const char* arg);
     void cmdDrop(Session& s, uint32_t now);
+    // PORTMAP (1.2.2): what the router was asked and what it did, and NOW
+    // to ask again. CONFIG network carries the one-line version; this is
+    // where the reason for a failure is spelt out, because "your router
+    // does not do this" and "mapped onto your carrier's address" are two
+    // different evenings and the second is the common one.
+    void cmdPortmap(Session& s, const char* arg);
     void cmdConfig(Session& s, const char* arg, uint32_t now, uint8_t focus = 0);
     void configClosedRow(Session& s, uint32_t now);  // CONFIG board on "Stop taking calls"
     void configPages(Session& s);

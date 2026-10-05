@@ -1980,10 +1980,12 @@ this tree.
       about 300 s to fetch a consensus), and shipping anonymity on that is
       not a thing to do on somebody's say-so.
   - **Rob's decisions on the study, 2026-10-05:**
-    - **Port mapping goes ahead of the broker** (NAT-PMP, PCP, UPnP, 3 to 5
-      days): no component in the middle at all, and **the only item on the
-      list that helps the base ESP32**, which is why it outranks a broker on
-      both of his words. It does nothing under CGNAT and that is accepted.
+    - **Port mapping goes ahead of the broker, and it is BUILT**
+      (1.2.2-portmap.1, the entry below): no component in the middle at all,
+      and **the only item on the list that helps the base ESP32**, which is
+      why it outranks a broker on both of his words. It does nothing under
+      CGNAT and that is accepted; what it does do, which was not the reason
+      for building it, is TELL a sysop they are behind one.
     - **"Fully private .onion directory" means both, eventually**: the
       private face on the same list falls out of the read face for free, and
       an invitation-only instance with its own database (v3 client auth,
@@ -1995,6 +1997,140 @@ this tree.
     firmware mode; whether 260-720 ms of echo is acceptable and said on the
     listing; and whether SyncTERM speaks SOCKS, which the study could not
     establish either way and which one download settles.
+- **1.2.2: the board asks the router to forward its own port. BUILT
+  (1.2.2-portmap.1, 2026-10-05), code-reviewed twice, NOT tested.** Phase C
+  of internal/study-broker-sat-2026-10-05.md. `src/core/portmap.*`,
+  `port_map` on CONFIG network (off as shipped, live), a read-only "What the
+  router did" row under it, `PORTMAP` and `PORTMAP NOW`, and a `Port map`
+  line on SYS. CHANGELOG 1.2.2-portmap.1 has what a sysop sees. What it
+  settled:
+  - **PCP (RFC 6887) and NAT-PMP (RFC 6886) are built; UPnP IGD is priced
+    and not.** The arithmetic, since "priced, not skipped" is worthless
+    without it: a minimal client is SSDP multicast discovery, an HTTP GET of
+    a device description XML whose size the router chooses (a few KB to over
+    ten), and a SOAP POST to a control URL found inside it, about 330 lines,
+    **6 to 10 KB of flash** and **500 to 700 bytes of static DRAM** (the
+    LOCATION and control URLs plus a tag buffer and the parse state, none of
+    which can be a stack local because the parse spans ticks). Against the
+    measured budget both fit: the WROOM image is at 81% of its 1.5 MB slot
+    and the ESP32-CAM, the DRAM floor, has **2,544 bytes free after this
+    change** (178,192 of 180,736; port mapping itself cost it 96).
+    **So the reason to stop is not size, and saying it was would have been
+    a lie.** It is that UPnP is three stacked protocols with real vendor
+    divergence, that is where the days go, and there is no router here to
+    shake it out against. miniupnpc is BSD-3-Clause (checked, not recalled),
+    so it would combine cleanly with GPLv3 if vendoring ever beats writing
+    it. The shape is ready: `Proto` gains a value and the probe tries it
+    third. **Rob's call, not a size refusal.**
+  - **The version byte is the whole protocol negotiation.** Both share UDP
+    5351, and RFC 6887 section 9 says a reply carrying version 0 "means this
+    is a NAT-PMP server". Many NAT-PMP-only gateways just drop a version
+    they do not know rather than saying so, so a PCP probe that gets nothing
+    falls through to NAT-PMP anyway.
+  - **Not a runner job, and the study's own instruction to put it there
+    would have been the Rule no. 1 regression.** Neither protocol has a
+    blocking call: the gateway is a register read and the exchange is a
+    non-blocking sendto and recvfrom from the loop's tail, which is how
+    announce drives its POST. The runner is serial, so a job sitting on a
+    1.75 s UDP timeout would hold a caller's FILES page behind it. The
+    general rule, worth having in one line: **the runner is for calls that
+    BLOCK, not for work that takes a while.** announce's DNS went there
+    because getaddrinfo blocks.
+  - **An RFC's retransmission schedule is written for a client that must
+    eventually succeed, not for a probe that must decide.** RFC 6886's nine
+    tries are over two minutes; a gateway on the same subnet answers in
+    under a millisecond, so this is three tries at 250/500/1000 ms and then
+    "absent", with the question asked again an hour later in case somebody
+    has just been into the router menu.
+  - **The external address is worth more than the mapping**, and that was
+    not the reason for building it. Both protocols hand the router's own
+    outside address back, so a board can say "mapped, and that address is
+    your carrier's" for one UDP packet. **Nothing else on the reachability
+    ladder detects CGNAT at all**, and PCP's ADDRESS_MISMATCH spots a second
+    router inside the house the same way.
+  - **One socket, about two seconds an hour.** 16 is the lwIP cap on every
+    chip in IDF 5.3.1 and the board already oversubscribes it, so the socket
+    is opened per exchange and closed at its end. `BBS_SOCK_RESERVE` stays
+    3, and the comment there says the honest version: portmap can starve
+    announce or the backup window, and one retried heartbeat is cheaper than
+    taking the busy line off a full board.
+  - **A reply is believed only from the gateway's address**, and in PCP only
+    with the nonce and internal port that were asked for (RFC 6887 section
+    8.3 requires the nonce check). What gets through without them is a false
+    outside address and, through announce, a wrong port published to the
+    directory, which sends every caller to a closed port.
+  - **A mapping is a lease and a router forgets.** 7200 s asked for, renewed
+    at half of what was granted (both RFCs' rule), and a gateway whose epoch
+    has gone backwards against the board's own has lost its state and is
+    asked again at once. The forgiving rule (RFC 6886's 7/8, not PCP's
+    15/16) for both: a real reboot trips either by a mile and a coarse
+    gateway clock trips the tight one for nothing. **That accepted false
+    positive is also why the PCP nonce is KEPT across a drop**: there the
+    old mapping is still live, so a fresh nonce for the same port would ask
+    for a second one and eat the quota.
+  - **The board's own address, or the router itself, changing kills the
+    mapping**, because the router now forwards to somebody else's lease. A
+    DHCP lease that moves is the quiet way a working board goes dark, so
+    that check runs at least once a minute even while a mapping is held.
+  - **announce publishes the port the mapping got**, when "Outside port" is
+    blank: a router that already had 6400 taken grants another number, and
+    then the listening port is the one number certainly wrong. The external
+    ADDRESS deliberately does NOT feed announce's `host`, which is a DNS
+    name a sysop types and for which `X-Seen-Address` is already the better
+    source; the address's job is the CGNAT verdict, which is a thing to tell
+    the sysop and not the directory.
+  - **The backup window's port is never mapped**: local only on purpose,
+    and its download carries the Wi-Fi password.
+  - **It says "mapped", never "reachable", with an "as of".** The study's
+    rule, and the same honesty as the kept free-space figures. The outside
+    probe stays the broker's to close.
+  - **What the two code-review passes taught, both worth keeping.** The
+    first found that the NAT-PMP outside address was asked for BELOW the
+    "nothing due" branch, so a board with one mapping (every WROOM) reported
+    "mapped by your router" with the carrier test never run, while a board
+    with two self-corrected by accident: **the base board got the broken
+    path and the premium board the working one, which is the reverse of the
+    intent, and no test would have told them apart.** The second found that
+    my fix for a narrow window (a mapping granted after the setting went
+    off) had made the re-arm test the same test as the exhaustion test, so a
+    board with `port_map` switched off and a deaf router fired three packets
+    every 1.75 s for ever, silently. **A fix armed from state where the old
+    one was armed from an edge needs its own termination argument**, and a
+    flag set on an ATTEMPT rather than on an ANSWER turns a storm into a
+    never (the same fix, the other way: `g_extAsked` set before the send
+    meant one lost datagram restored the first bug permanently).
+  - **Still owed, and Rob's:** the measured availability figure. The board
+    records which protocol answered, so **the announce field is one line
+    when he says yes**; nothing is sent today. The smallest honest shape is
+    one optional string, `port_map` = `pcp` | `natpmp` | `none`, only while
+    the setting is on, carrying no address and nothing identifying, with the
+    directory publishing only the aggregate. About 18 bytes against
+    kBodyMax 1368, and an oversized payload is refused rather than
+    truncated, so the headroom is checked on the ESP32-CAM before it goes
+    in. After a few hundred boards this project would own a number that
+    does not exist anywhere.
+  - **`tools/fake_router.py`** is a stand-in router written from the RFCs
+    and sharing nothing with the firmware (the lrzsz rule), with `--proto`
+    separate from `--fault` because the interesting cases are combinations
+    and a single switch made "NAT-PMP plus a carrier address", where the
+    first HIGH lived, inexpressible. `BBS_HOST_GATEWAY=127.0.0.1:<port>`
+    points the host build at it, and unset means no default route and
+    nothing sent, so no lane can spray UDP at a real router. Written and
+    **not run**: the test plan needs Rob's OK.
+  - **Sizes, off the ELF, against the branch point.** WROOM 165,792
+    (+104, 14,944 free), **ESP32-CAM 178,192 (+96, 2,544 free, the floor)**,
+    LCD-1.47 263,296 (+136, 78,464), ETH 266,640 (+120, 75,120). Images
+    +8,912 / +9,216 / +9,232 / +9,216. **No per-session cost at all**, so
+    the rule that every byte of a Session costs twelve does not apply here;
+    the hundred bytes are the two-slot table (ports, leases, two 12-byte
+    PCP nonces) and a dozen words of state.
+  - **Two small ones left, both known and neither worth a rebuild on its
+    own:** `PORTMAP NOW` spends its force on whichever of the two questions
+    comes next, so on a NAT-PMP board with a held mapping it re-reads the
+    outside address (which is the thing a sysop presses it for) and does not
+    also refresh the mapping; and the loop's alternation means the first
+    grant on NAT-PMP reads `GatewayBusy` for exactly one pass before the
+    address arrives. Both are in the comments where they live.
 - **Ten SSH lines: eight today, and raising it is arithmetic** (Rob,
   2026-10-05: "we can also do a full 10 lines ssh right?"). Queued for
   1.2.2. `BBS_SSH_MAX` is 8 in all seven S3 profiles (`src/board.h`), and

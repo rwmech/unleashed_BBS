@@ -55,7 +55,7 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "1.2.1"
+#define BBS_VERSION         "1.2.2-portmap.1"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // BBS_VERSION_SHOWN: the version as every place a person reads one shows it
@@ -458,5 +458,17 @@
 // node they left, can still reach 17 for as long as both stay: then one
 // announce attempt fails or one backup-window client is dropped at accept,
 // and nothing else. A board past its sockets loses the caller at accept.
+//
+// Port mapping (1.2.2, core/portmap.*) is a FIFTH claimant and is
+// deliberately not counted here, which is a decision rather than an
+// oversight, and the honest version of it is this: portmap can starve any
+// of the three. It races for the same sockets on equal terms and merely
+// recovers well when it loses ("no socket was spare", asked again in a
+// minute), which protects portmap and not them. What is being traded is
+// one retried heartbeat or one dropped backup-window connection a sysop
+// reruns, against taking the busy line off a full board for a socket that
+// exists about two seconds an hour. The overlap needs a full board AND an
+// open backup window AND an in-flight heartbeat, so the trade is the right
+// way round; it is not a guarantee.
 #define BBS_SOCK_RESERVE        3
 #endif

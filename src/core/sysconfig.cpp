@@ -575,6 +575,10 @@ void keyValue(Ctx& c, const char* key, char* val) {
         if (c.problems == before) g.closedSet = true;
     }
     else if (!strcmp(key, "cgnat_local"))           yesNo(c, key, val, g.cgnatLocal);
+    // Port mapping (1.2.2, src/core/portmap.*): every board, since it has
+    // nothing to do with SSH and is the one reachability rung a base ESP32
+    // gets. Read live by portmap's own tick.
+    else if (!strcmp(key, "port_map"))              yesNo(c, key, val, g.portMap);
 #ifdef BBS_HAS_ETH
     else if (!strcmp(key, "ethernet"))              yesNo(c, key, val, g.ethernet);
     else if (!strcmp(key, "wifi_with_ethernet"))    yesNo(c, key, val, g.wifiWithEth);

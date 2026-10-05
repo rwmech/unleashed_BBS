@@ -193,6 +193,13 @@ struct SysConfig {
     // carrier NAT, not only the sysop's own Tailscale. Read by the one
     // local-address rule (guard.h localNet), wherever local is asked.
     bool     cgnatLocal    = false;
+    // The board asks the router to forward its ports (1.2.2, CONFIG
+    // network, src/core/portmap.*). Off as shipped: NAT-PMP, PCP and UPnP
+    // have a security reputation and a sysop may have switched them off in
+    // the router on purpose, so a board that asked silently would be taking
+    // that decision for them. Read live, so a save of that row alone needs
+    // no restart.
+    bool     portMap       = false;
 #if BBS_HAS_SSH
     // SSH's own port (1.1.2, the S3): the board speaks first there, for the
     // clients that wait to be spoken to. 0 is off. Read at boot, bound once,
