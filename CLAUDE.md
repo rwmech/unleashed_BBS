@@ -1942,6 +1942,25 @@ this tree.
     that standard's own framing of AES-128-CCM. A serial terminal's cable is
     physical. Only the phone-to-gateway hop is in the clear.
 
+- **CONFIG's information-page form does not say where the body is written**
+  (Rob, 2026-10-05, sitting in `INFO PAGE 0` on HQ: "where does the contents
+  go?"). The form carries Page title and Who may read it, and nothing else,
+  because titles and levels live in `system.cfg` while the text lives in
+  `<userdata>/info/` and is written with the composer through
+  **`INFO <n> EDIT`** (`INFO <n> CLEAR` empties it). That split is right and
+  the form should not hold a 1.5 KB body, but a sysop standing in it has no
+  way to learn the verb: the help only appears at the `INFO` listing, which
+  is not where somebody editing a page is.
+  - **The machinery already exists.** `FormField` has a `note`, shown on the
+    status line for the focused field, added in 0.17.10 so private account
+    fields could say so while being typed into. A note of the same kind on
+    the title row is the whole fix.
+  - Keep it inside 39 columns at 40, like every other note, and give the
+    page's own number (`INFO 0 EDIT`) rather than a placeholder, since the
+    sysop is looking at exactly one page.
+  - Same shape as the queued plugin on/off item: the fact is in hand and
+    simply not shown at the moment somebody needs it.
+
 - **CONFIG's page list should show each plugin on or off** (Rob,
   2026-10-05: "Config should show on/off for plugins from config"; queued
   for the next time the BBS code is open, not started). Cheap: `configPages`
