@@ -1708,6 +1708,89 @@ this tree.
   - **the caller-line core:** a session whose bytes come from a stream, not a socket, taking one of the 10 caller nodes while in use (zero extra RAM; telnet and SSH share the same 10);
   - **the local serial line** on a board's free UART (the plan below), set up in CONFIG serial;
   - **CALLIN over the link** (LINK.md's reserved family 3) with a **serial sat**: a cheap ESP32 with USB-serial or RS-232, anywhere in radio range, carrying a terminal to the board. Up to 10 such sats can be the board's 10 lines with no telnet at all. The 1.3.0 ham radio dock reuses CALLIN unchanged.
+  - **CALLIN repeats, and that is part of its design rather than a later
+    addition** (Rob, 2026-10-05: "Can callin then use a repeater node ...
+    So incorporate this into callin as I think this is the next big one
+    along with .onion on the roadmap"). It should be close to free, because
+    `internal/sat-types-2026-09-27.md` already specifies the one-hop relay
+    as forwarding **sealed frames it cannot open** with a 2-byte wrapper: a
+    repeater works below the family layer, so it never learns what CALLIN
+    is, and the two features compose without knowing about each other.
+    What needs thought, and is in the study:
+    - **latency per hop against Rule no. 1**, which is harder here than for
+      a camera because a terminal is judged on keystroke echo (the board's
+      own bench figures are p50 4 ms and p95 12 ms with five callers);
+    - **the costed relay is ONE hop** at about 1.5 weeks, while the
+      multi-hop mesh is 3 to 5 weeks with routing, loop control and path
+      repair and was deliberately not planned. A fixed two-hop chain with
+      no routing may be the useful middle, since who plants the boxes knows
+      the topology;
+    - **whether a relay costs the board one pairing or several.** If the
+      relay is the board's single peer and the sats sit behind it, then
+      `kPeers = 8` stops being the wall and the relay becomes the fan-out,
+      which may be the whole answer to "a few dozen".
+- **An AP gateway sat: an open access point with a captive portal, listing
+  the boards on the ESP-NOW network** (Rob, 2026-10-05: "Id like to be able
+  to have a satellite be an AP and provide a gateway to the board directly
+  ... people connect and the 'click here to login' then shows the BBS
+  systems on the ESPNOW network. Then someone could say plant a few dozen
+  around a fairgrounds and people could connect"). Study:
+  `internal/study-ap-gateway-sat-2026-10-05.md`. **With CALLIN and `.onion`
+  this is what Rob calls "the next big one"**, with the caveat "unless
+  there is a better way based on research".
+  - **It is a captive portal, not Improv** (Rob named it himself and then
+    corrected it). And **the 2026-09-22 "no captive portal" ruling does not
+    apply**: that was about provisioning the board's own Wi-Fi, where the
+    USB cable already won. A portal on a sat is the front door for a caller
+    who has only a phone, which is a different feature; do not kill this by
+    citing that entry.
+  - **The ceiling is ten caller lines and it does not move**, because
+    sockets are capped at 16 on every chip in IDF 5.3.1. Dozens of APs feed
+    at most ten callers at once. Rob's own words point at the answer, "the
+    BBS **systems**" plural: several boards on one ESP-NOW network, a sat
+    offering the choice, so the lines multiply by the boards.
+  - **A fairground is the easy case, not the hard one.** Every ESP-NOW peer
+    shares one channel and a board joined to a router is forced onto the
+    router's; with no router nothing forces a channel and the sats may pick
+    one. The 2026-10-01 trap is the thing to check there: a release image
+    with no network never reaches `Bbs::begin`, so the board is simply
+    dark.
+  - **The base ESP32 is the target, and my first framing of this was
+    measured against the wrong device** (Rob: "I dont see why a base esp32
+    couldnt do this"). A browser terminal looked S3-only only because
+    xterm.js was compared with the *BBS's* 1.5 MB app slots; a sat has its
+    own partition table and a small firmware, as camsat does, so a 4 MB
+    part leaves roughly 3 MB for assets. Build for the smallest part, as
+    everywhere else.
+  - **The terminal in the browser is the browser-SSH client reused with no
+    internet**: xterm.js off the sat's own flash, a WebSocket to the sat,
+    the sat bridging to CALLIN. No relay and no droplet.
+  - **Open, and Rob's:** what a caller on an open AP is exposing. The
+    phone-to-sat hop is in the clear and anyone in range reads it, so the
+    choice is plain, a self-signed certificate every phone warns about, or
+    saying so on the portal page the way the board's own connection line
+    already does.
+- **Mesh, Zigbee-style, as an option** (Rob, 2026-10-05: "repeater
+  networking im thinking similar to zigbee, every device becomes a
+  repeater, at our very least we'll make it an option"). This reverses
+  `sat-types`'s "not planned" for the multi-hop mesh, which it priced at 3
+  to 5 weeks against 1.5 for one hop. The reference is the right one and it
+  names the cost: in Zigbee the mains-powered routers relay and the end
+  devices do not, and the expense was never the forwarding but loop
+  control, path repair and what happens when a node goes mid-route.
+  - **Rob's own earlier instinct is the first thing to test: use a
+    framework that exists.** Espressif ships ESP-WIFI-MESH and the newer
+    ESP-MESH-LITE, so the question is whether one of those fits rather than
+    whether we write routing over ESP-NOW. The catch is that both are
+    Wi-Fi meshes with a tree and a root, a different topology from ESP-NOW
+    peers, so adopting one may mean a sat runs a second stack beside the
+    link. To be answered with figures, not a reflex.
+  - **Rule no. 1 probably excludes the board from repeating.** A board that
+    relays other boxes' frames is doing routing on the chip whose promise
+    is that nothing stalls its callers. The Zigbee shape that fits is sats
+    as routers and the board as what they route to, which is also the
+    fan-out answer to "a few dozen": the board then holds one pairing
+    rather than thirty, and `kPeers = 8` stops being the wall.
   - **the local console** (a terminal on a sat or on the board) uses the hidden sysop node.
   - **The terminal sat goes on the website when it's ready** (Rob, 2026-10-01): its own installer page under /satellites, like the camera sat, with its docs, and a **wiring diagram** for a serial device and for an old-school terminal (a VT220 or a DB9/DB25 RS-232 port): the sat's UART pins, an RS-232 level shifter (MAX3232-class) since RS-232 is ±12 V, the DB9 pinout (TX, RX, GND, and RTS/CTS, DTR/DCD if hang-up uses them), null-modem crossing for a DTE terminal, and the baud and format settings that match a VT220's set-up. Drawn in the site's line-art style, checked against a real wiring before it is published.
   - **A hardware button on the terminal sat** (Rob, 2026-10-01: "since its tied to a console add a hardware button to disconnect, reconnect, etc"): a press hangs up the terminal's session (the board sees a clean hang-up, the line freed); a press while idle connects, or reconnects to the board; a long press could pick between paired boards or show the sat's status on the terminal. The sat's BOOT button where the board has nothing better, an external one on a free pin otherwise. Specified with the sat.
