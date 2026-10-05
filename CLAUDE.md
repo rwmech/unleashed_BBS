@@ -1829,8 +1829,10 @@ this tree.
   - **Roles are Rob's own words**: access point, terminal server, repeater.
     Runtime settings, never build flags, because three build variants would
     be the two-box design wearing one repository.
-  - **The page is the portal**; the repo is `unleashed_callin`; what it
-    speaks stays **CALLIN**, family 3.
+  - **The page is the portal**; the repo is **`unleashed_callin_sat`**
+    (Rob's own name, 2026-10-05: "I'll create unleashed_callin_sat as the
+    repo, just push as you build", over the spec's proposed
+    `unleashed_callin`); what it speaks stays **CALLIN**, family 3.
   - **The internet-side box is the broker**, reversing the broker study's
     own recommendation of "repeater": Rob used that word twice unprompted
     for the ESP-NOW role, and a word he uses is the word. Its strings go in
