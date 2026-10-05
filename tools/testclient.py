@@ -11166,6 +11166,11 @@ def test_config_announce_outside():
     forward, and empty means the board's own port. The harness board
     listens on its tag's port and never on 6400, which is what makes the
     first check a test rather than a coincidence.
+
+    On a board with SSH that row is a button to a page of both outside
+    ports (1.2.2), so the test drives whichever shape this build has. It
+    checked only the flat row until then, and would have reported the
+    button as the box: "Outside ports" starts with "Outside port".
     """
     print("Announce: Outside, and the listening port")
     if HOST not in ("127.0.0.1", "localhost"):
@@ -11178,32 +11183,86 @@ def test_config_announce_outside():
                announce_port(s) == PORT)
 
     # Enabled, Read, Write, Admin, then Board (not editable, skipped),
-    # Sysop, About, DNS name: seven downs to Outside.
-    cfg_open(s, b"announce", b"Every min")
-    page = render_lines(s.buf)
-    # An 80 column caller: "Outside port" and its long note (1.1.0). At 40
-    # the label is "Outside" and the short note carries the word.
-    row = next((ln for ln in page if ln.strip().startswith("Outside port")), "")
-    ok &= check("the row is labelled Outside", bool(row))
-    # An empty box that is not focused is drawn as dots (Form::drawField).
-    ok &= check("and is empty while nothing is set",
-                bool(row) and row.strip()[len("Outside port"):].strip(" .") == "")
-    s.buf.clear()
-    s.send(DOWN * 7)
-    s.pump(0.6)
-    ok &= check("its note says what it is",
+    # Sysop, About, DNS name: seven downs to Outside. On a board with SSH
+    # the row in that place is a button to both outside ports instead of
+    # the one box (1.2.2), because the page had no room for a thirteenth
+    # row; nothing below it moved, so the seven downs are the same.
+    #
+    # The label is matched exactly, not by prefix: "Outside ports"
+    # startswith "Outside port", so a prefix match would have reported the
+    # button as the box and passed while testing the wrong control.
+    # The label is matched exactly, not by prefix: "Outside ports" starts
+    # with "Outside port", so a prefix match would report the button as the
+    # box and pass while testing the wrong control.
+    def label_row(rows, want):
+        return next((r for r in rows if r.split("  ")[0] == want), "")
+
+    def outside_set(keys, first):
+        """Type keys into the outside TELNET port and save, on either build,
+        leaving CONFIG behind. Returns (checks passed, the form's verdict).
+
+        On a board with SSH the row is a button to a page of both ports
+        (1.2.2), so this opens it, and saving that page comes back to the
+        plugin page rather than out of CONFIG, which is why it then escapes
+        and cancels. Modelled on the lights plugin's Pixels page, which is
+        the same mechanism."""
+        cfg_open(s, b"announce", b"Every min")
+        rows = [ln.strip() for ln in render_lines(s.buf)]
+        good = True
+        if not SSH_PORT:
+            if first:
+                good &= check("the row is labelled Outside",
+                              bool(label_row(rows, "Outside port")))
+                # An empty box that is not focused is drawn as dots.
+                box = label_row(rows, "Outside port")
+                good &= check("and is empty while nothing is set",
+                              bool(box) and box[len("Outside port"):].strip(" .") == "")
+            s.buf.clear()
+            s.send(DOWN * 7)                       # on to Outside
+            s.pump(0.6)
+            if first:
+                good &= check(
+                    "its note says what it is",
+                    any("The router's outside port, when it differs. Blank publishes the board's own." in ln
+                        for ln in render_lines(s.buf)))
+            s.send(keys + F1)
+            return good, cfg_verdict(s, [b"Saved and live", b"saved, but", b"Numbers only"])
+
+        if first:
+            good &= check("the row is a button to both outside ports",
+                          bool(label_row(rows, "Outside ports")))
+        s.buf.clear()
+        s.send(DOWN * 7 + b"\r")                   # on to Outside, and open it
+        good &= check("Outside opens a page of its own", s.wait_for(b"OUTSIDE", 6))
+        s.pump(0.8)
+        rows = [ln.strip() for ln in render_lines(s.buf)]
+        if first:
+            good &= check("carrying a telnet row and an SSH row",
+                          bool(label_row(rows, "Outside telnet port")) and
+                          bool(label_row(rows, "Outside SSH port")))
+            # The SSH row is not the focused one, so it is drawn as dots.
+            box = label_row(rows, "Outside SSH port")
+            good &= check("with the SSH row empty while nothing is set",
+                          bool(box) and box[len("Outside SSH port"):].strip(" .") == "")
+            good &= check(
+                "and the telnet row's note saying what it is",
                 any("The router's outside port, when it differs. Blank publishes the board's own." in ln
                     for ln in render_lines(s.buf)))
+        s.buf.clear()
+        s.send(keys + F1)                          # the telnet row has the focus
+        verdict = cfg_verdict(s, [b"Saved and live", b"saved, but", b"Numbers only"])
+        s.send(b"\x1b")                            # the save came back to the plugin page
+        wait_label(s, b"Every min", 6)
+        cfg_cancel(s)
+        return good, verdict
 
-    s.send(b"2323" + F1)
-    got = cfg_verdict(s, [b"Saved and live", b"saved, but", b"Numbers only"])
+    good, got = outside_set(b"2323", True)
+    ok &= good
     ok &= check("a router's port saves", got == b"Saved and live")
     ok &= check("and is what the heartbeat carries", announce_port(s) == 2323)
 
-    cfg_open(s, b"announce", b"Every min")
-    s.buf.clear()
-    s.send(DOWN * 7 + b"\x08" * 6 + F1)
-    got = cfg_verdict(s, [b"Saved and live", b"saved, but", b"Numbers only"])
+    good, got = outside_set(b"\x08" * 6, False)
+    ok &= good
     ok &= check("emptying it is allowed", got == b"Saved and live")
     ok &= check("and the listening port is sent again", announce_port(s) == PORT)
 
@@ -16454,9 +16513,9 @@ def announce_features(s):
 
 
 def widest_slack(rec):
-    """Bytes this payload is short of the widest one the same text could
-    make: every number at its most digits, the longest system label, and
-    all four features running.
+    """Bytes this payload is short of the widest one this board could send:
+    every number at its most digits, the longest system label and version
+    string, every optional field present, and every feature running.
 
     The widths are kWorst's in announce.cpp and have to stay its: tz is
     int16_t minutes, so "-32768" at six, and system is kSystemMax 47 on
@@ -16472,7 +16531,7 @@ def widest_slack(rec):
     """
     import json as _json
     widths = {"port": 5, "nodes": 3, "busy": 3, "uptime": 7, "interval": 4,
-              "tz": 6, "calls24": 5, "minutes24": 10}
+              "tz": 6, "calls24": 5, "minutes24": 10, "sd": 4}
     # ssh_port only on a board that sent one: a board with no SSH never
     # sends it, so its widest payload has no room to make for it (1.2.2).
     if "ssh_port" in rec:
@@ -16480,7 +16539,20 @@ def widest_slack(rec):
     slack = sum(w - len(str(rec.get(k, 0))) for k, w in widths.items())
     slack += 47 - len(str(rec.get("system", "")).encode("utf-8"))
     slack += 24 - len(str(rec.get("version", "")))      # kVersionMax
-    slack += (len('["chat","forums","files","mail"]')
+    # The fields sent only when there is something to say. Credited whole
+    # when this payload has none, so the figure is the widest payload the
+    # board could ever send rather than the widest version of this one.
+    if "closed" not in rec:
+        slack += len(',"closed":true')
+    if "sd" not in rec:
+        slack += len(',"sd":')
+    # Always projected to five features, the most any board runs. On a board
+    # with no camera that credits 9 bytes it can never need, which is the
+    # safe direction: this figure is asserted to FIT, so it must never come
+    # out smaller than the truth. It used to be four, which on the two
+    # widest boards (a camera and SSH) subtracted the camera entry from the
+    # projection instead of allowing for it.
+    slack += (len('["chat","forums","files","mail","camera"]')
               - len(_json.dumps(rec.get("features", []), separators=(",", ":"))))
     return slack
 
@@ -16764,11 +16836,31 @@ def test_announce_ssh_port():
         ok &= check("and it does not touch the telnet port",
                     (rec or {}).get("port") == PORT)
 
+        # The one regression this design exists to prevent: announcing the
+        # SETTING rather than the socket. ssh_port takes effect at the next
+        # restart, and a config reload restarts the plugins without
+        # rebinding, so after this the setting says one number and the
+        # listener answers on another. The heartbeat must say the listener's.
+        # Checking it against SSH_PORT alone cannot see this, because on the
+        # host the setting and the socket are the same number.
+        text = cfg_with(saved.decode("utf-8"),
+                        {("", "ssh_port"): str(SSH_PORT + 1)})
+        ok &= check("the board reloads with ssh_port moved in the file",
+                    announce_reload(s, text, 12))
+        rec, _ = announce_heartbeat(s, got)
+        ok &= check("a changed ssh_port that has not been bound yet is not announced",
+                    (rec or {}).get("ssh_port") == SSH_PORT)
+
         # --- the worst payload this board can build, ssh_port included
         limit = announce_body_max()
         slugs = ",".join(("%x" % i) * 5 for i in range(16))      # 16 in 95 characters
         worst = cfg_with(saved.decode("utf-8"), {
             ("", "board_name"): '"' * 40,
+            # guests goes as the 5-byte false rather than true, and a closed
+            # board still announces (1.1.1), carrying 14 bytes more. Both are
+            # in the budget, so both belong in the payload that tests it.
+            ("", "guest"): "no",
+            ("", "closed"): "yes",
             ("plugin:announce", "owner"): '"' * 40,
             ("plugin:announce", "description"): '"' * 120,
             ("plugin:announce", "host"): '"' * 95,
@@ -16787,6 +16879,8 @@ def test_announce_ssh_port():
         ok &= check("the worst payload with ssh_port is sent, not refused",
                     bool(rec) and rec.get("ssh_port") == 65535
                     and rec.get("description") == '"' * 120)
+        ok &= check("carrying closed and guests at their longest",
+                    (rec or {}).get("closed") is True and (rec or {}).get("guests") is False)
         rec = rec or {}
         widest = len(body) + widest_slack(rec) if rec else 0
         print(f"        worst payload {len(body)} bytes here, {widest} with the widest"

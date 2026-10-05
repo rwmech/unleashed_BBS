@@ -202,7 +202,11 @@ constexpr uint8_t    kSystemMax   = 31;     // "ESP32-S3 · 16 MB · PSRAM" is 2
 // both shapes: test_announce_badges builds these maxima on a board with no
 // SSH, and test_announce_ssh_port does it again on an SSH profile, where
 // the field is in the payload. Each sends the result and checks it arrives
-// whole rather than trusting the arithmetic.
+// whole rather than trusting the arithmetic. Neither reaches the very
+// worst case, and cannot: no host profile has both a camera and SSH, and
+// `sd` needs a card. So each measures what its board can build and then
+// projects the rest by the widths above (widest_slack), which is why those
+// widths have to stay these widths.
 //
 // Every text is counted with each of its characters escaped, because
 // Json::str sends a '"' or a '\' as two bytes.
@@ -221,7 +225,14 @@ constexpr uint16_t   kVersionMax  = 24;     // "1.2.2-hardware-preview" is 22
 static_assert(sizeof(BBS_VERSION) - 1 <= kVersionMax,
               "BBS_VERSION is longer than the payload budget: raise kVersionMax");
 constexpr uint16_t jsonStr(uint16_t chars)   { return 2 + 2 * chars; }  // quoted, all escaped
-constexpr uint16_t jsonPlain(uint16_t chars) { return 2 + chars; }      // quoted, never escaped
+// jsonPlain is for the two texts buildBody writes with j.str, which escapes,
+// but which cannot contain a '"' or a '\' to escape: BBS_VERSION is a build
+// constant whose length is asserted below, and g_system is built by
+// plat::hardware out of a chip name, a size and middle dots. Counting them
+// escaped would cost 71 bytes of every board's DRAM for a payload no board
+// can produce. Give a text here only when nothing a caller or a sysop types
+// can reach it.
+constexpr uint16_t jsonPlain(uint16_t chars) { return 2 + chars; }      // quoted, cannot escape
 constexpr uint16_t jsonList(uint16_t csv, uint16_t entries) {           // Json::list
     return 2 + csv + 2 * entries;                                      // brackets, and a pair of
 }                                                                      // quotes per entry
@@ -266,16 +277,20 @@ constexpr uint16_t kWorst =
     + sizeof(",\"sd\":") - 1            + 4      // 1024, while a card is mounted (1.1.0)
     + sizeof("}") - 1;
 
-// 1,408: the widest build's kWorst and its terminator, and no more. kWorst
-// is a hard ceiling rather than an estimate, so any spare beyond it is
-// static DRAM spent on a payload that cannot exist, and the ESP32-CAM is the
-// board with least of it to give. The widest build is an S3 camera board
-// with SSH, at 1,406 with the version budget; the reference esp32dev's own
-// worst case is 1,374. One figure for every board, so the room a refusal
-// talks about is the same number in ANNOUNCE.md whatever is flashed.
+// 1,424: the widest build's kWorst, its terminator, and 17 bytes of
+// deliberate slack. The widest build is an S3 camera board with SSH, at
+// 1,406 with the version budget; the reference esp32dev's own worst case is
+// 1,364 and a camera board's 1,389. One figure for every board rather than
+// one each, so the room a refusal talks about is the same number in
+// ANNOUNCE.md whatever is flashed, and the slack is on purpose rather than
+// waste: this budget was wrong in three places at once until 1.2.2, no test
+// can see a field added without a kWorst line, and the cost of being wrong
+// is a board delisted in silence. 1,407 would also pass the assert and
+// leave one byte, which is the tightest number that happens to work rather
+// than a margin anybody chose.
 // 768, the figure first proposed, is short even with no quote marks
 // anywhere: every text at its longest and both lists full is 984.
-constexpr uint16_t   kBodyMax     = 1408;
+constexpr uint16_t   kBodyMax     = 1424;
 // Json's cap counts the terminator, so the longest body it will write is
 // kBodyMax - 1. A field added to buildBody and not to kWorst is the one
 // thing this cannot catch; test_announce_badges and test_announce_ssh_port
@@ -1629,6 +1644,11 @@ const PluginSetting kSettings[] = {
     // telnet-only board should press a button to reach a field their board
     // can only ever have one of.
 #if BBS_HAS_SSH
+    // A PS_PAGE owns every key of its own name followed by a digit or an
+    // underscore (pageOwner, bbs_sysop.cpp), so any announce key later
+    // called public_<something> would move onto this page by itself rather
+    // than appear where it was put. Name one of those deliberately or not
+    // at all.
     { "public",         "Outside",   PS_PAGE,   0, 0,     16,
       "Ports your router forwards in.", nullptr, "Outside ports",
       "What callers dial through your router, for telnet and for SSH." },
@@ -1708,10 +1728,17 @@ void setting(const char* key, char* out, size_t n) {
     // that is actually published. "off" is a board whose SSH is not
     // listening, and then no ssh_port is sent at all.
     else if (!strcmp(key, "public")) {
-        const uint16_t ssh = Bbs::instance().sshPort();
-        if (ssh) snprintf(out, n, "%u / %u", static_cast<unsigned>(g_public),
-                          static_cast<unsigned>(g_publicSsh ? g_publicSsh : ssh));
-        else     snprintf(out, n, "%u / off", static_cast<unsigned>(g_public));
+        Bbs& bbs = Bbs::instance();
+        // The listening port where the sysop has not overridden it, and not
+        // g_public, which is still BBS_PORT until start() runs: CONFIG shows
+        // this page whether or not announce is switched on, and a board
+        // listening on 2323 with announce off would otherwise read 6400.
+        const uint16_t tel = g_publicSet ? g_public
+                                         : (bbs.port() ? bbs.port() : BBS_PORT);
+        const uint16_t ssh = bbs.sshPort();
+        if (ssh) snprintf(out, n, "%u / %u", static_cast<unsigned>(tel),
+                          static_cast<unsigned>(g_publicSshSet ? g_publicSsh : ssh));
+        else     snprintf(out, n, "%u / off", static_cast<unsigned>(tel));
     }
 #endif
     else if (!strcmp(key, "interval"))    snprintf(out, n, "%u", static_cast<unsigned>(g_interval));

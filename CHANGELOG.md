@@ -57,9 +57,12 @@ nothing else.
   string either, though the spare was described as being for one. So a
   camera board's true worst case was over the room before this field
   existed, and a lane build was further over than the release build of the
-  same code. `kBodyMax` is 1,408, 40 bytes of static DRAM, and the build
-  fails rather than a heartbeat if a field is added without a line in the
-  budget. No real board has been that long at once, which is why nothing
+  same code. `kBodyMax` is 1,424 against a widest case of 1,406: 56 bytes
+  of static DRAM at a release version string, and the spare is deliberate
+  rather than the tightest number that passes, because no test can see a
+  field added without a line in the budget and the cost of being wrong is
+  a board delisted in silence. The build fails rather than a heartbeat if
+  a field is added and the budget is not. No real board has been that long at once, which is why nothing
   caught it: it takes every text at its longest, both badge lists full, a
   card in, the board closed and `share_activity` on.
 

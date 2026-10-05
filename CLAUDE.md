@@ -1673,12 +1673,19 @@ this tree.
       board closed and `share_activity` on at once.
       **The fix is the shape, not the number:** `kWorst` is computed from
       the same literals `buildBody` writes and `static_assert`ed against
-      `kBodyMax` (now 1,408, +40 bytes of static DRAM), and `kVersionMax`
-      is asserted against `BBS_VERSION`, so a tag too long to announce
-      fails the build rather than a heartbeat. **A size budget kept in
-      prose is a budget nobody can assert**, which is the same family as
-      every count-written-beside-a-table bug in this file; the cure is to
-      compute it where the compiler can check it.
+      `kBodyMax` (now 1,424 against a widest case of 1,406; +56 bytes of
+      static DRAM at a release version string, +66 on a lane whose version
+      string is ten characters longer, because `kHeadRoom` counts the real
+      `BBS_VERSION` while the body budgets `kVersionMax`), and
+      `kVersionMax` is asserted against `BBS_VERSION`, so a tag too long to
+      announce fails the build rather than a heartbeat. **A size budget
+      kept in prose is a budget nobody can assert**, which is the same
+      family as every count-written-beside-a-table bug in this file; the
+      cure is to compute it where the compiler can check it. The spare 17
+      is deliberate: the code review's point was that a one-byte margin,
+      on arithmetic that had just been wrong in three places, is the
+      tightest number that happens to pass rather than a margin anybody
+      chose, and no test can see a field added without a `kWorst` line.
 - **1.2.2: the board refuses a token that is not 32 hex characters** (found
   2026-10-04, when HQ moved to the 4.3B and stopped updating its listing).
   `kTokenMin` is 16, so a token cut to 26 characters passed every check on
