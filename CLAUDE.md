@@ -1819,6 +1819,63 @@ this tree.
       never from a tick, forbid a repeater from terminating a session, and
       have each node say where a frame died, because debugging a three-hop
       chain at a fairground with no console is otherwise a bad evening.
+- **The words are settled (Rob, 2026-10-05), and the spec is
+  `internal/spec-callin-node-2026-10-05.md`.** One device with roles, as Rob
+  corrected it, not two boxes:
+  - **a gateway sat**, kind **3**, already reserved in LINK.md and
+    `link.h:149`. It completes the set by direction: an **orbiter** feeds
+    the board data, a **door sat** is one a caller goes *into*, a **gateway
+    sat** is one a caller comes *in through*.
+  - **Roles are Rob's own words**: access point, terminal server, repeater.
+    Runtime settings, never build flags, because three build variants would
+    be the two-box design wearing one repository.
+  - **The page is the portal**; the repo is `unleashed_callin`; what it
+    speaks stays **CALLIN**, family 3.
+  - **The internet-side box is the broker**, reversing the broker study's
+    own recommendation of "repeater": Rob used that word twice unprompted
+    for the ESP-NOW role, and a word he uses is the word. Its strings go in
+    a sibling `reachwords.h`, because a broker is not a sat.
+  - **"Node" could not be kept**: it already means a caller line everywhere
+    (`BBS_MAX_NODES`, `nodeName`, `NODES`, "node 1 of 10"). That is the
+    second meaning of a word, which is the bulletin rule exactly.
+  - **How a gateway reaches a board is a per-board choice, not a role**:
+    over the link with a pairing, or over plain IP by telnet when both are
+    on the same Wi-Fi. **The IP way needs no pairing, no CALLIN and no core
+    change**, which is what makes phase 1 a week.
+  - **All eight role combinations are legal**, all-off included (a gateway
+    being configured must say so rather than look broken). What is refused
+    is a setting inside a role, and the one hard impossibility is an AP on
+    a channel other than the board's: one radio, one channel.
+  - **Phase 1, approved to start: 6 to 8.5 days, new repo, no core change.**
+    The three-switch framework from the first commit, the access point role,
+    the terminal server role (Rob added it: it buys the desk-terminal and
+    phone-plus-terminal cases at once and is the only cheap proof the roles
+    are switches over one core rather than three programs in a trench
+    coat), and the IP uplink with the board joined to the gateway's own AP.
+    It also proves what research cannot: that a portal pops on a modern
+    phone, that xterm.js satisfies the board's own detector, that CP437
+    draws, and that the echo is bearable.
+  - **Staff elevation** (Rob, 2026-10-05: "only allowed of secure on wired
+    terminal. rate limits apply"): **never over an access-point line**, and
+    over a terminal-server line only while that path is secure end to end,
+    which is checkable rather than an adjective because the link hop is
+    sealed with AES-128-CCM and the other hop is a cable. **And a rate
+    limit applies**, which is new work: `guard.h:85` keys the ban list on a
+    `uint32_t ip` that a gateway caller does not have, so the limit has to
+    key on something else. The trap to design against is that keying on the
+    pairing lets a troublemaker reset it by being a different sat, while
+    keying board-wide lets them lock the sysop out of their own board.
+  - **A board opts in to being gatewayed, off by default and per pairing**,
+    because pairing consents to a device and not to a purpose, and the
+    per-pairing flag is the only lever against a troublemaker when nothing
+    keys on an address. `console` stays the board's per-pairing flag and
+    never the gateway's claim, which is what keeps LINK.md's rule that
+    nothing a peer sends grants a caller anything.
+  - **A repeater never terminating a session is forced, not policy**: it
+    holds no key, so it can drop or delay a frame and nothing else. What
+    needs saying instead is the opposite device, a **concentrator**, which
+    terminates many callers and re-originates them, reads every keystroke,
+    and is the only thing that scales past twenty gateways a board.
 - **An ESP32 running the directory, its own item** (Rob, 2026-10-05: "if we
   NEED it to help the user get outside the firewall routing we could have an
   esp32 device acting like directory, or an esp32 version of directory
