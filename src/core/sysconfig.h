@@ -198,6 +198,16 @@ struct SysConfig {
     // clients that wait to be spoken to. 0 is off. Read at boot, bound once,
     // like port. Never the same as port or backup_port (crossCheck).
     uint16_t sshPort       = BBS_SSH_PORT;
+    // The most SSH callers at once, a sysop's figure (1.2.2, CONFIG network
+    // "SSH lines"), lowering the board's own BBS_SSH_MAX so the PSRAM can be
+    // kept for something else. Never above it: the range is 0 to BBS_SSH_MAX
+    // (sysconfig.cpp kNumKeys, from the same constant), and 0 means the
+    // board's figure, so this is already the effective number and never 0.
+    // 0 is not "SSH off" (ssh_port already uses 0 for off, and two meanings
+    // of 0 on one page would be a trap). Read live, by sshd::boardCap() on
+    // the loop, so a save applies to the next connection and the callers
+    // already on stay.
+    uint8_t  sshLines      = BBS_SSH_MAX;
 #endif
 #ifdef BBS_HAS_ETH
     // Ethernet first, Wi-Fi as the fallback (1.1.2, a board with a wired

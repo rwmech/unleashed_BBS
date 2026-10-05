@@ -55,7 +55,7 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "1.2.1"
+#define BBS_VERSION         "1.2.2-dev.1"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // BBS_VERSION_SHOWN: the version as every place a person reads one shows it
@@ -413,10 +413,17 @@
 #endif
 #if BBS_HAS_SSH
 // The most SSH sessions at once, the board's own figure (board.h), from what
-// its PSRAM holds. The live limit is the lower of this and what PSRAM holds
-// at the moment a client connects (sshd::cap). SSH callers take ordinary
-// nodes, so this never adds lines, and a telnet caller is never refused
-// because of it.
+// its PSRAM holds. Ten on every S3 from 1.2.2 (Rob: "we can also do a full
+// 10 lines ssh right?"), which is every caller line, so SSH is no longer a
+// narrower door than telnet. Three limits sit under it, in this order:
+//   - this constant, what the board is built to hold;
+//   - `ssh_lines` in system.cfg (CONFIG network), a sysop lowering it to
+//     keep the memory for something else; 0 means this constant;
+//   - what PSRAM holds at the moment a client connects (sshd::cap), which
+//     is the safety net: raising the constant cannot run the board out of
+//     memory, it can only let a connection be refused later.
+// SSH callers take ordinary nodes, so this never adds lines, and a telnet
+// caller is never refused because of it.
 #ifndef BBS_SSH_MAX
 #define BBS_SSH_MAX             2
 #endif
@@ -458,5 +465,16 @@
 // node they left, can still reach 17 for as long as both stay: then one
 // announce attempt fails or one backup-window client is dropped at accept,
 // and nothing else. A board past its sockets loses the caller at accept.
+//
+// The one term nothing bounds is sshd::lingering(): a caller who hangs up
+// with output still unsent leaves the SSH task holding their socket for up
+// to ten seconds while their node is already free for somebody else, so an
+// SSH board's pathological peak is two listeners, twelve sessions,
+// BBS_SSH_MAX lingering sockets, the window's two and announce's one, which
+// at BBS_SSH_MAX 10 (1.2.2) is 24 where it was 22 at eight. busyFits counts
+// lingering and gives the busy line up first, which returns one; the rest is
+// the same consequence as above, an announce attempt or a backup-window
+// client, never a caller already on. It takes ten SSH callers hanging up on
+// a slow line and ten new callers arriving inside those ten seconds.
 #define BBS_SOCK_RESERVE        3
 #endif

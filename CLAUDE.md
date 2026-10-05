@@ -2113,6 +2113,30 @@ this tree.
     guards are about one link's work and did not move. `BBS_SSH_STACK`
     stays 16 KB: `taskMain` services one link at a time, so ten links add
     passes, not depth.
+  - **And the code review found the half of that argument I had missed, which
+    is the better lesson: `kStreak` bounds PASSES, and the cost that scales
+    sits INSIDE a pass.** `handshake()` is one `wolfSSH_accept()`, the only
+    long call the task makes, and nothing limited how many links took one in
+    a single pass; ten key exchanges at once (kPerPeer is 2, so five
+    addresses with ten free nodes) is seconds of core 0 with IDLE0 never
+    scheduled, and the 10 ms pause for a pass over 50 ms answers a 5 s pass
+    with 10 ms. So a pass now gives up at `kPassMs` (200 ms), which makes its
+    worst case constant in BBS_SSH_MAX, and a `more` flag brings the next
+    pass at once so a skipped handshake does not wait out the 250 ms idle
+    timeout for bytes wolfSSH already has. **Keeping a guard's units constant
+    is not the same as keeping the quantity it guards constant**, and a
+    review caught the difference where the arithmetic I had done did not: no
+    host test could, since the host has neither IDLE0 nor the watchdog.
+  - **The pathological socket peak moved by two and the steady state did
+    not.** `sshd::lingering()` is the one term nothing bounds: a caller who
+    hangs up with output unsent leaves the task holding their socket for up
+    to ten seconds while their node is already free, so ten of those plus ten
+    new callers in that window is 24 of lwIP's 16, where eight links made it
+    22. busyFits counts them and gives the busy line up first; past that the
+    consequence is the documented one, a failed announce round or a dropped
+    backup-window client, never a caller already on. config.h's budget
+    comment carries the arithmetic now, which it did not before for any
+    figure.
   - Owed to the bench, with the lines full: internal heap free and its low
     on each board (lwIP's per-socket buffers are internal and are what
     bites before PSRAM), the SSH task's own `ssh: task stack least free`

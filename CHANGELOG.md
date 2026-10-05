@@ -24,6 +24,95 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.2.2-dev.1 (S3 1.1.9, WS43B 1.0.7, WS2 1.0.8, ETH 1.0.8, MF35 1.1.7, MF35V2 1.0.4, G4848 1.0.5), 2026-10-05
+
+**Ten SSH lines, and a sysop setting that lowers it.** Built, code-reviewed,
+not tested and not on a board.
+
+What a sysop or a caller sees:
+
+- **Every S3 board takes ten SSH callers at once**, up from eight, which is
+  every one of the ten caller lines: SSH is no longer a narrower door than
+  telnet. Eight was a judgement about what a preview needed, never a memory
+  limit, and the arithmetic says so: ten sessions at their 48 KB PSRAM budget
+  plus the 128 KB kept back is 608 KB, against the 1.71 MB the Makerfabs
+  (2 MB of quad PSRAM, the smallest of the SSH boards) measured free with its
+  framebuffer up on the bench.
+- **`CONFIG network` has a new last row, "SSH lines at once"** (`SSH lines` at
+  40 columns, `ssh_lines` in `system.cfg`): the most SSH callers at once, 1 to
+  the board's own ten, with `0` meaning the board's figure. It is for a sysop
+  who would rather keep the memory for something else, and it cannot switch SSH
+  off: the lowest it goes is 1. `0` on the `ssh_port` row above it already
+  means "no second port", and one page cannot have two meanings for `0`.
+  - It is **live**, where the rest of that page waits for the next restart,
+    and the verdict says `Saved and live`. Lowering it stops the next SSH
+    caller and leaves the ones already on: there is nothing honest to do with
+    a session above the new number, and cutting somebody off to make a figure
+    true is a worse answer than letting it come true as they leave. So
+    `HARDWARE` can read `6 of 6` with the note saying `most 4` for a while.
+  - The board still admits fewer than any of these when its PSRAM cannot hold
+    another session at the moment somebody connects, so neither the raised
+    constant nor a raised setting can run a board out of memory: the floor is
+    a refused connection.
+  - The boot log says the figure in force, and says what the board could have
+    done when a sysop has lowered it.
+  - **A file asking for more than the board takes loses that one line, not the
+    file.** This is the only range on that page that differs between boards,
+    so the same `system.cfg` can be in range on one and out of range on
+    another: a backup from a ten-line board restored onto a profile built for
+    fewer. The line is lowered to the board's figure and said on the console,
+    because `reload()` and a restore's check fail on any problem at all and
+    would otherwise throw away the network, the passwords and every plugin
+    section over one number whose safe meaning is "as many as you can take".
+    That is the `ssh_port` clash rule of 1.1.2 and the dropped-not-refused
+    rule of 1.0.2, applied to the first setting since whose range is a
+    property of the board rather than of the format. `CONFIG` still refuses a
+    number out of range, so the sysop who typed it is told at once.
+
+Under it:
+
+- `BBS_SSH_MAX` is 10 in all seven S3 profiles, each profile's comment
+  carrying its own arithmetic. The range `ssh_lines` is checked against comes
+  from that same constant (`sysconfig.cpp` `kNumKeys`) rather than a number
+  typed beside the table, so the form cannot be used to ask for more than the
+  board was built to hold.
+- **The SSH task's yield cadence now scales with the link count.** One task
+  serves every link, above core 0's idle task, and an idle task that never
+  runs is a watchdog restart. It took a wait every 16 busy passes; a pass
+  walks every link, so at ten links that is a quarter more work between two
+  waits than at eight. `kStreak` is `128 / BBS_SSH_MAX`, which keeps passes x
+  links constant: 16 at eight links, 12 at ten, and the guard means the same
+  thing at any future figure. The 10 ms pause after a pass over 50 ms and the
+  per-link `g_blocked` rule are unchanged, both being about one link's work
+  rather than how many there are.
+- `BBS_SSH_STACK` stays 16 KB: the loop services one link at a time, so ten
+  links add no stack depth, only passes. The board says its own figure
+  (`ssh: task stack least free N of 16384`).
+- **A pass of the SSH task is now bounded in time, not only in passes.**
+  `kStreak` keeps passes x links constant, but nothing bounded the work inside
+  one pass: `handshake()` is one `wolfSSH_accept()`, the only long call that
+  task makes, and ten key exchanges at once (two per address, so five
+  addresses with ten free nodes do it) would have been seconds of core 0 with
+  the idle task never scheduled. A pass gives up at `kPassMs` (200 ms) with
+  the links it did not reach keeping their state, and a flag makes the next
+  pass come at once so a login behind a busy pass does not wait out the idle
+  timeout. Found by the code review, not by a test; no host test can see it,
+  because the host has neither the idle task nor the watchdog.
+- **The steady-state socket count does not move** (a caller is one socket
+  whichever door they came in by, and only the SSH listener is extra), but the
+  pathological peak does, by two: a caller who hangs up with output unsent
+  leaves the SSH task holding their socket for up to ten seconds while their
+  node is already free, so ten of those plus ten new callers inside those ten
+  seconds is 24 of lwIP's 16 where it was 22. `busyFits` counts those sockets
+  and gives the busy line up first; the consequence past that is the one
+  already documented, a failed announce attempt or a dropped backup-window
+  client, never a caller already on. `config.h`'s budget comment now says so.
+- A board with no SSH (the WROOM and both ESP32 camera boards) builds exactly
+  as before but for its version string.
+- Four board profiles got the blank line their version define was missing, so
+  the setting comment under it no longer reads as documenting the version
+  (owed from the 1.2.1-dev.15 review).
+
 ## 1.2.1 (S3 1.1.8, WS43B 1.0.6, WS2 1.0.7, ETH 1.0.7, MF35 1.1.6, MF35V2 1.0.3, G4848 1.0.4, FNCAM 1.0.10, ESPCAM 1.0.7), 2026-10-01
 
 **Two new boards, and a patch release that is mostly things a sysop looks

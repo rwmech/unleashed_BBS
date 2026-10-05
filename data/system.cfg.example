@@ -50,6 +50,18 @@ port = 6400
 # 0 turns it off. Never port or backup_port. CONFIG network.
 # ssh_port = 6422
 
+# The same boards (1.2.2): the most SSH callers at once, to keep the PSRAM
+# for something else. 10 as shipped, which is every caller line; 1 to 10,
+# and 0 means the board's own figure, so it cannot turn SSH off: 1 still
+# takes SSH callers, and ssh_port above only decides whether SSH has a
+# second port. A board whose PSRAM is short at the moment somebody connects
+# admits fewer than this says, whatever it says. A number here above what
+# this board takes is lowered to the board's figure and said on the console,
+# never refused, so a backup from a bigger board still restores. Live:
+# saving it in CONFIG network applies to the next SSH caller, and the ones
+# already on stay. CONFIG network, "SSH lines at once".
+# ssh_lines = 10
+
 # Boards with an Ethernet port (the Waveshare ESP32-S3-ETH, 1.1.2): yes puts
 # the wire first, with Wi-Fi joining only while it has no link or address;
 # no runs the board on Wi-Fi alone. Used from the next restart. CONFIG network.

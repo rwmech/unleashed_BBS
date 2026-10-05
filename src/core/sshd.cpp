@@ -54,6 +54,7 @@
 
 #if BBS_HAS_SSH
 #include "disk.h"
+#include "sysconfig.h"             // ssh_lines, the sysop's ceiling (1.2.2)
 #include "../platform/platform.h"
 
 #include <sys/types.h>
@@ -128,7 +129,12 @@ const char kServerId[] = "SSH-2.0-unleashedBBS\r\n";
 // What a client is told when every SSH slot is taken.
 const char kFullWhy[] = "--> All SSH ports are full";
 
-constexpr uint8_t kWakes = BBS_SSH_MAX + 1;   // one per link, one for the task
+// One per link, one for the task, and no spare: wakeOpen registers the
+// eventfd VFS once, with whichever caller asks first, and sshd then opens
+// exactly this many. A second eventfd user anywhere in the firmware would
+// get -1 and SSH would come up "no wake descriptors", so raise this with
+// it. 11 is well under the IDF's limit (FD_SETSIZE, 64 here).
+constexpr uint8_t kWakes = BBS_SSH_MAX + 1;
 
 Link         g_link[BBS_SSH_MAX];
 WOLFSSH*     g_ssh[BBS_SSH_MAX]   = {};     // the task's
@@ -491,11 +497,14 @@ bool start(uint8_t i) {
 void handshake(uint8_t i) {
     Link& l = g_link[i];
     if (l.loopDone.load(std::memory_order_acquire)) { finish(i, "caller gone"); return; }
-    if (plat::millis() - g_since[i] > BBS_SSH_LOGIN_MS) { finish(i, "login took too long"); return; }
+    // Elapsed time is plat::since, the core's one rule (1.2.1): a stamp from
+    // this task's own earlier read is safe either way, but the file already
+    // uses since() five lines from here and must not read two ways.
+    if (plat::since(plat::millis(), g_since[i]) > BBS_SSH_LOGIN_MS) { finish(i, "login took too long"); return; }
     WOLFSSH* s = g_ssh[i];
     uint32_t t0 = plat::millis();
     int rc = wolfSSH_accept(s);
-    uint32_t took = plat::millis() - t0;
+    uint32_t took = plat::since(plat::millis(), t0);
     if (took >= 100)
         plat::log("ssh: node %u key exchange step %u ms (in the SSH task)", l.node, static_cast<unsigned>(took));
     if (rc == WS_SUCCESS) {
@@ -590,7 +599,7 @@ void pump(uint8_t i) {
     if (l.loopDone.load(std::memory_order_acquire)) {
         if (!g_hungAt[i]) g_hungAt[i] = plat::millis() | 1u;
         if (!l.out.used() && s->outputBuffer.length == 0) finish(i, "hung up");
-        else if (plat::millis() - g_hungAt[i] > 10000u) finish(i, "hung up, the rest undelivered");
+        else if (plat::since(plat::millis(), g_hungAt[i]) > 10000u) finish(i, "hung up, the rest undelivered");
     }
 }
 
@@ -609,15 +618,36 @@ bool wantsWrite(uint8_t i) {
     return g_ssh[i] && g_ssh[i]->outputBuffer.length > g_ssh[i]->outputBuffer.idx;
 }
 
+// kStreak: how many busy passes may go by with no wait (see the comment at
+// the select below). Declared here so the arithmetic is read once.
+constexpr uint32_t kStreak = (128u / BBS_SSH_MAX) > 4u ? (128u / BBS_SSH_MAX) : 4u;
+// kPassMs: how long one pass may spend before it gives up and goes back to
+// the select. kStreak keeps passes x links constant, but the work INSIDE one
+// pass does not: handshake() is one wolfSSH_accept(), the only long call this
+// task makes (the file's header says a few hundred ms, and a step over 100 ms
+// is logged), and nothing bounds how many links take one in a pass. Ten key
+// exchanges at once is reachable without contrivance, since kPerPeer is 2 and
+// five addresses with ten free nodes do it: that would be seconds of core 0
+// with IDLE0, which sits below this task, never scheduled.
+constexpr uint32_t kPassMs = 200;
+
 void taskMain(void*) {
     uint32_t streak = 0, lastPassMs = 0;
+    // more: the last pass gave up at kPassMs with links still to serve, so
+    // this one has work whatever the links say. Without it a Handshake link
+    // the pass did not reach, whose next step needs no new socket bytes
+    // (wolfSSH already has them buffered), would wait out the 250 ms idle
+    // timeout: a quarter of a second added to every step of every login
+    // behind a busy pass.
+    bool more = false;
     for (;;) {
         fd_set rfds, wfds;
         FD_ZERO(&rfds);
         FD_ZERO(&wfds);
         int maxfd = g_wake;
         FD_SET(g_wake, &rfds);
-        bool busy = false;                     // something to do without waiting
+        bool busy = more;                      // something to do without waiting
+        more = false;
         const uint32_t now = plat::millis();
         for (uint8_t i = 0; i < BBS_SSH_MAX; ++i) {
             Link& l = g_link[i];
@@ -647,10 +677,18 @@ void taskMain(void*) {
         // after a pass that held the CPU (a key exchange): this task is above
         // core 0's idle task, and an idle task that never runs is a restart
         // by the watchdog.
+        //
+        // kStreak is how many busy passes may go by with no wait, and what
+        // has to stay bounded is the WORK between two waits, not the number
+        // of passes: a pass walks every link, so at ten links (1.2.2) it
+        // does a quarter more than at eight. 128 / BBS_SSH_MAX keeps
+        // passes x links constant, so this guard means the same thing on
+        // every board and at any future figure. Floored at 4, so a board
+        // built for very many links still gets a few passes between waits.
         timeval tv;
         tv.tv_sec  = 0;
         tv.tv_usec = busy ? 0 : 250 * 1000;      // a quarter second: login timeouts
-        if (busy && ++streak >= 16) { tv.tv_usec = 2000; streak = 0; }
+        if (busy && ++streak >= kStreak) { tv.tv_usec = 2000; streak = 0; }
         if (!busy) streak = 0;
         if (lastPassMs >= 50) tv.tv_usec = 10 * 1000;
         select(maxfd + 1, &rfds, &wfds, nullptr, &tv);
@@ -677,8 +715,24 @@ void taskMain(void*) {
                 default:
                     break;
             }
+            // Give the pass up at kPassMs (see above), so a pass's worst case
+            // is constant in BBS_SSH_MAX rather than ten times one key
+            // exchange. The links not reached keep their state and are
+            // reached next pass; the select at the top of it is the yield,
+            // and lastPassMs puts 10 ms into it after a pass this long. This is
+            // ordering, not starvation: an expensive wolfSSH_accept step is
+            // followed by WS_WANT_READ, which costs nothing, so no link can
+            // hold the front of the pass for longer than its own handshake
+            // takes. `more` is what makes the next pass come at once (see
+            // its declaration), and the 10 ms pause for a pass over 50 ms
+            // then yields after every bounded pass, which is what IDLE0
+            // needs.
+            if (i + 1 < BBS_SSH_MAX && plat::since(plat::millis(), passStart) >= kPassMs) {
+                more = true;
+                break;
+            }
         }
-        lastPassMs = plat::millis() - passStart;
+        lastPassMs = plat::since(plat::millis(), passStart);
     }
 }
 
@@ -687,7 +741,21 @@ void taskMain(void*) {
 namespace sshd {
 
 bool running() { return g_up.load(std::memory_order_acquire); }
-uint8_t boardCap() { return BBS_SSH_MAX; }
+
+// boardCap: the ceiling a sysop can see, the lower of what this board was
+// built to hold (BBS_SSH_MAX) and what they asked for (ssh_lines, CONFIG
+// network). sshLines is already normalised and in range at the parser, so
+// the min is belt and braces against a future path that is not.
+//
+// The loop's, like cap() below: both are called from claim(), HARDWARE and
+// the login log line, never from the SSH task, which always walks all
+// BBS_SSH_MAX slots. That matters, because lowering the setting must not
+// stop servicing a link above the new number: it applies to the next
+// connection, and the callers already on stay until they leave.
+uint8_t boardCap() {
+    const uint8_t want = syscfg::get().sshLines;
+    return want && want < BBS_SSH_MAX ? want : BBS_SSH_MAX;
+}
 const char* fingerprint(uint8_t which) { return which < 2 ? g_fp[which] : ""; }
 const char* offWhy() { return running() ? "" : g_off; }
 
@@ -697,14 +765,27 @@ uint8_t inUse() {
     return n;
 }
 
-// cap: the board's figure, or fewer when PSRAM cannot hold that many more
-// sessions now, whichever is lower.
+// cap: how many may be on at once as things stand. boardCap, or fewer when
+// PSRAM cannot hold that many more sessions now, whichever is lower. The
+// PSRAM half is the safety net under BBS_SSH_MAX: raising that constant can
+// never run the board out of memory, it can only let a connection be
+// refused here. The loop's (see boardCap).
+//
+// Never below what is already on, which is the floor at the end: a sysop who
+// lowers ssh_lines under the callers already here would otherwise make
+// HARDWARE read "6 of 4", and that reads as an arithmetic fault rather than
+// as a limit coming true as they leave. At used it means full, the same thing
+// it has always meant when PSRAM is short, and the floor can only make
+// claim()'s inUse() >= cap() true, never false.
 uint8_t cap() {
-    const uint8_t used = inUse();
+    const uint8_t used  = inUse();
+    const uint8_t board = boardCap();
     const uint32_t freeB = plat::extFreeBytes();
     uint32_t room = freeB > BBS_SSH_PSRAM_KEEP ? (freeB - BBS_SSH_PSRAM_KEEP) / BBS_SSH_PSRAM_EACH : 0;
     uint32_t c = used + room;
-    return static_cast<uint8_t>(c < BBS_SSH_MAX ? c : BBS_SSH_MAX);
+    if (c > board) c = board;
+    if (c < used)  c = used;
+    return static_cast<uint8_t>(c);
 }
 
 bool begin() {
@@ -768,8 +849,16 @@ bool begin() {
     }
     g_off[0] = '\0';
     g_up.store(true, std::memory_order_release);
-    plat::log("ssh: on the telnet port, up to %u at once, ready in %u ms",
-              static_cast<unsigned>(BBS_SSH_MAX), static_cast<unsigned>(plat::millis() - t0));
+    // What a sysop reading the console should see is the figure in force,
+    // not the constant: a board set to fewer lines says fewer, and says
+    // what it could have done.
+    if (boardCap() < BBS_SSH_MAX)
+        plat::log("ssh: on the telnet port, up to %u at once (ssh_lines; this board holds %u), ready in %u ms",
+                  static_cast<unsigned>(boardCap()), static_cast<unsigned>(BBS_SSH_MAX),
+                  static_cast<unsigned>(plat::millis() - t0));
+    else
+        plat::log("ssh: on the telnet port, up to %u at once, ready in %u ms",
+                  static_cast<unsigned>(BBS_SSH_MAX), static_cast<unsigned>(plat::millis() - t0));
     plat::log("ssh: host key ed25519 %s", g_fp[0]);
     plat::log("ssh: host key ecdsa   %s", g_fp[1]);
     return true;
@@ -814,6 +903,10 @@ ssh::Link* claim(int sock, const uint8_t* pre, size_t n, uint32_t peer, uint32_t
         plat::wakePost(g_wake);
         return &l;
     }
+    // Unreachable, and worth saying so because it would send the client the
+    // last refusal's words: inUse() < cap() <= BBS_SSH_MAX means some link is
+    // Free, and only the loop ever claims one, so nothing can take it between
+    // that test and this walk.
     return nullptr;
 }
 

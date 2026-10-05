@@ -111,8 +111,12 @@ const char* why(const ssh::Link* l);
 // For SYS and HARDWARE (staff).
 uint8_t     inUse();          // links not Free
 uint8_t     lingering();      // sockets the task still holds for sessions already gone
-uint8_t     cap();            // the lower of the board's constant and what PSRAM holds now
-uint8_t     boardCap();       // BBS_SSH_MAX
+// cap: how many may be on at once as things stand, never below inUse().
+// boardCap: the ceiling, the lower of BBS_SSH_MAX and ssh_lines (CONFIG
+// network). Both are the loop's: the SSH task always walks all BBS_SSH_MAX
+// slots, so a lowered setting never abandons a link already open.
+uint8_t     cap();
+uint8_t     boardCap();
 const char* fingerprint(uint8_t which);   // 0 Ed25519, 1 ECDSA: "SHA256:...", "" none
 const char* offWhy();         // why SSH is off, "" while it runs
 

@@ -214,15 +214,18 @@
 // the version is shown, as BBS_VERSION_SHOWN (config.h) puts it. The
 // reference board defines neither.
 #define BBS_BOARD_TAG         "S3"
-#define BBS_BOARD_VERSION     "1.1.8"
-// SSH (1.1.2 core, S3 1.1.3, a preview): encrypted logins on the board's
-// own port, beside telnet (src/core/sshd.h). Eight at once: this board's
-// 8 MB of PSRAM would hold far more at about 48 KB each, but eight is more
-// than a preview on ten nodes needs, and the lower figure bounds the one SSH
-// task's work. Eight fits 2 MB too, beside a 300 KB framebuffer (the
-// Makerfabs block below); a board with less sets its own, lower, figure.
+#define BBS_BOARD_VERSION     "1.1.9"
+
+// SSH (1.1.2 core, S3 1.1.3): encrypted logins on the board's own port,
+// beside telnet (src/core/sshd.h). Ten from 1.2.2 (Rob: "we can also do
+// a full 10 lines ssh right?"), so every one of the ten caller lines may be
+// an SSH link; it was eight because a preview did not need more, which was a
+// judgement rather than a limit. The arithmetic: ten at BBS_SSH_PSRAM_EACH
+// (48 KB) plus BBS_SSH_PSRAM_KEEP (128 KB) is 608 KB of this board's 8 MB.
+// A board with less PSRAM sets its own, lower, figure, and a sysop lowers
+// any board's with `ssh_lines` (CONFIG network).
 #define BBS_HAS_SSH           1
-#define BBS_SSH_MAX           8
+#define BBS_SSH_MAX           10
 
 // The internal heap a plugin may not take at start (config.h). 16 KB, not
 // the WROOM's 40: with PSRAM, Wi-Fi's and lwIP's buffers go there
@@ -344,7 +347,8 @@
 #define BBS_BOARD_PLUGINS     1       // the panel
 
 #define BBS_BOARD_TAG         "WS43B"
-#define BBS_BOARD_VERSION     "1.0.6"
+#define BBS_BOARD_VERSION     "1.0.7"
+
 // PSRAM (sdkconfig.defaults.ws43b over the S3 layer): the panel's frame
 // buffer, and the program and its constants run from it (XIP), so a flash
 // write does not stop the glass being fed. A build that lost the layer would
@@ -354,9 +358,13 @@
 #error "BBS_BOARD_WS_S3TOUCH43B needs PSRAM with XIP: sdkconfig.defaults.ws43b was not applied (delete sdkconfig.ws_s3touch43b*)"
 #endif
 
-// SSH as on the Waveshare stick: the same S3 image machinery, one define.
+// SSH as on the Waveshare stick: the same S3 image machinery, one define,
+// and the same ten (1.2.2) in the same 8 MB. Ten at 48 KB each plus the
+// 128 KB kept back is 608 KB; the panel's 400 x 240 picture is 192 KB and
+// its RGB driver keeps no frame buffer of its own (flags.no_fb and the
+// bounce buffers), so neither is near the 8 MB.
 #define BBS_HAS_SSH           1
-#define BBS_SSH_MAX           8
+#define BBS_SSH_MAX           10
 
 // The internal heap a plugin may not take at start, the stick's figure
 // (Wi-Fi's and lwIP's buffers are in PSRAM on an S3 with it).
@@ -541,18 +549,22 @@
 #define BBS_BOARD_PLUGINS     1       // the panel
 
 #define BBS_BOARD_TAG         "MF35"
-#define BBS_BOARD_VERSION     "1.1.6"     // the load line's gradient and thick red (board-g4848)
-// SSH (1.1.2 core, MF35 1.1.0, a preview), as on the Waveshare S3: the shared
-// port 6400 and ssh_port 6422, host keys in userdata/ssh. Eight at once, the
-// Waveshare's figure, and it fits the 2 MB here: the panel's framebuffer is
+#define BBS_BOARD_VERSION     "1.1.7"     // ten SSH lines (1.2.2)
+
+// SSH (1.1.2 core, MF35 1.1.0), as on the Waveshare S3: the shared port 6400
+// and ssh_port 6422, host keys in userdata/ssh. Ten from 1.2.2, and this
+// is the board the figure had to be checked on, since its 2 MB of quad PSRAM
+// is the least of any SSH profile. The arithmetic: the panel's framebuffer is
 // 480 x 320 x 2 = 300 KB, and the 1.1.1 bench read 1.71 MB of PSRAM free with
-// it up. Eight sessions at their 48 KB budget (BBS_SSH_PSRAM_EACH) plus the
-// 128 KB kept back (BBS_SSH_PSRAM_KEEP) is 512 KB, which leaves over 1.1 MB.
-// sshd::cap() still lowers the figure live if PSRAM is short at a connect.
-// The limit that bites first is internal RAM (the SSH task's 16 KB stack),
-// not PSRAM: read the internal heap's low on the bench with SSH callers on.
+// it up; ten sessions at their 48 KB budget (BBS_SSH_PSRAM_EACH) plus the
+// 128 KB kept back (BBS_SSH_PSRAM_KEEP) is 608 KB, which leaves about 1.1 MB
+// of that measured 1.71 MB. sshd::cap() still lowers the figure live if PSRAM
+// is short at a connect, so the floor is a refused connection, never a board
+// out of memory. The limit that bites first is internal RAM (the SSH task's
+// 16 KB stack and lwIP's per-socket buffers), not PSRAM: read the internal
+// heap's low on the bench with the lines full.
 #define BBS_HAS_SSH           1
-#define BBS_SSH_MAX           8
+#define BBS_SSH_MAX           10
 
 // PSRAM (sdkconfig.defaults.mf35: quad, where the S3 layer says octal). A
 // build that lost the layer would find no PSRAM, or with octal would drive
@@ -706,13 +718,14 @@
 #define BBS_BOARD_PLUGINS     1       // the panel
 
 #define BBS_BOARD_TAG         "MF35V2"
-#define BBS_BOARD_VERSION     "1.0.3"     // the load line's gradient, which this board's panel draws too
+#define BBS_BOARD_VERSION     "1.0.4"     // ten SSH lines (1.2.2)
 
 // SSH as on the v1.0 and the Waveshare: the shared port 6400 and ssh_port
-// 6422. Eight at once; 8 MB of PSRAM holds them beside the 300 KB
-// framebuffer with room to spare (the v1.0 fitted them in 2 MB).
+// 6422. Ten from 1.2.2; 608 KB (ten at 48 KB plus the 128 KB kept back)
+// beside the 300 KB framebuffer is under a tenth of this board's 8 MB, and
+// the v1.0 fits the same ten in 2 MB.
 #define BBS_HAS_SSH           1
-#define BBS_SSH_MAX           8
+#define BBS_SSH_MAX           10
 
 // PSRAM: the N16R8's 8 MB, octal, as the S3 layer has it. 33 to 37 are the
 // PSRAM's here, and pinProblem refuses them as on the Waveshare. A build
@@ -1108,10 +1121,14 @@
 // "WS2": Waveshare, 2 inch, beside the LCD-1.47's "S3" (which is older than
 // the rule) and the 4.3B's "WS43B". Shown as 1.1.2-hw.1 (WS2 1.0.2).
 #define BBS_BOARD_TAG         "WS2"
-#define BBS_BOARD_VERSION     "1.0.7"
-// SSH as on the LCD-1.47: the same S3R8 and the same 8 MB of PSRAM.
+#define BBS_BOARD_VERSION     "1.0.8"
+
+// SSH as on the LCD-1.47: the same S3R8 and the same 8 MB of PSRAM, so the
+// same ten from 1.2.2 (608 KB). This board's camera wants PSRAM too, and the
+// two never collide at a fixed figure: sshd::cap() weighs what is free at
+// each connect, and a snap's buffers are weighed the same way.
 #define BBS_HAS_SSH           1
-#define BBS_SSH_MAX           8
+#define BBS_SSH_MAX           10
 
 // PSRAM (sdkconfig.defaults.esp32s3 and this board's own layer,
 // sdkconfig.defaults.ws2): the camera needs it, and a build that lost the
@@ -1292,7 +1309,7 @@
 #define BBS_BOARD_PLUGINS     1       // the camera
 
 #define BBS_BOARD_TAG         "ETH"
-#define BBS_BOARD_VERSION     "1.0.7"
+#define BBS_BOARD_VERSION     "1.0.8"
 
 // PSRAM (sdkconfig.defaults.esp32s3: octal, as on the S3 stick). A build
 // that lost the layer would otherwise link quietly without it.
@@ -1301,9 +1318,12 @@
 #error "BBS_BOARD_WS_S3ETH needs PSRAM: sdkconfig.defaults.esp32s3 was not applied (delete sdkconfig.ws_s3eth*)"
 #endif
 
-// SSH as on the Waveshare S3 stick: the same chip, the same PSRAM.
+// SSH as on the Waveshare S3 stick: the same chip, the same PSRAM, the same
+// ten from 1.2.2 (608 KB of 8 MB). This is the board most likely to see them
+// all: it is the one on a wire, where "most stable connection" and encrypted
+// logins are the pair a sysop exposes.
 #define BBS_HAS_SSH           1
-#define BBS_SSH_MAX           8
+#define BBS_SSH_MAX           10
 // The internal heap a plugin may not take at start, as on the stick.
 #define BBS_HEAP_RESERVE      16384
 
@@ -1445,15 +1465,17 @@
 #define BBS_BOARD_PLUGINS     1       // the panel
 
 #define BBS_BOARD_TAG         "G4848"
-// 1.0.3 on both sides of the dev.15 merge for different code (the integration's
-// own, and the lane's gradient), so this build is 1.0.4: a version that does
-// not identify a build is worse than none.
-#define BBS_BOARD_VERSION     "1.0.4"
+// 1.0.3 stood on both sides of the dev.15 merge for different code (the
+// integration's own, and the lane's gradient), so that build took 1.0.4: a
+// version that does not identify a build is worse than none. 1.0.5 is the
+// ten SSH lines of 1.2.2.
+#define BBS_BOARD_VERSION     "1.0.5"
 
-// SSH as on every S3 board: the shared port 6400 and ssh_port 6422. Eight at
-// once, beside two 300 KB and 450 KB picture buffers in 8 MB of PSRAM.
+// SSH as on every S3 board: the shared port 6400 and ssh_port 6422. Ten
+// from 1.2.2: 608 KB (ten at 48 KB plus the 128 KB kept back) beside this
+// board's 450 KB framebuffer and a photo's buffers, in 8 MB of PSRAM.
 #define BBS_HAS_SSH           1
-#define BBS_SSH_MAX           8
+#define BBS_SSH_MAX           10
 
 // PSRAM (the S3 layer's octal, and sdkconfig.defaults.g4848's XIP): the
 // panel's framebuffer, which the RGB DMA reads 45 times a second, and the

@@ -1040,6 +1040,28 @@ const CfgField kNetwork[] = {
     { "ssh_port",      "SSH port", CK_NUM,  0, 0, 5, "0 is off. Used from the next restart.",
       "SSH port (SyncTERM)",
       "SSH that speaks first, for SyncTERM 1.9 and older. 0 off. Next restart." },
+    // How many SSH callers at once (1.2.2, Rob: ten lines, "or make it
+    // configurable for memory purposes"). After ssh_port, so the two SSH
+    // rows read together and no row before them moves: cgnat_local is still
+    // the fourth row, which test_cgnat_local walks down to, and the Ethernet
+    // rows below are reached by what they say, not by counting.
+    //
+    // Live, unlike the ports above it: sshd::boardCap() reads it on the loop
+    // at each connection, so lowering it stops the next SSH caller and
+    // leaves the ones already on. There is nothing honest to do with a
+    // session above the new number: cutting a caller off to make a figure
+    // true would be a worse answer than letting it come true as they leave.
+    // configSave's verdict says "Saved and live" for this row (see the
+    // exception list there, beside cgnat_local).
+    //
+    // 0 is this board's own BBS_SSH_MAX, never "off": ssh_port above already
+    // uses 0 for off, and one page cannot have two meanings for it. The
+    // range's top is BBS_SSH_MAX too (sysconfig.cpp kNumKeys), so the form
+    // cannot be used to ask for more than the board was built to hold.
+    { "ssh_lines",     "SSH lines", CK_NUM, 0, 0, BBS_SSH_MAX > 99 ? 3 : 2,
+      "Most SSH at once. 0 is this board's.",
+      "SSH lines at once",
+      "The most SSH callers at once, up to this board's own figure. 0: that. Live." },
 #endif
 #ifdef BBS_HAS_ETH
     // The wired port (1.1.2, a board with Ethernet), last so no row moves.
@@ -1554,6 +1576,11 @@ void cfgLiveValue(const char* key, char* out, size_t n) {
     else if (!strcmp(key, "backup_port"))           snprintf(out, n, "%u", c.backupPort);
 #if BBS_HAS_SSH
     else if (!strcmp(key, "ssh_port"))              snprintf(out, n, "%u", c.sshPort);
+    // The figure in force, for a file with no ssh_lines line: this is only
+    // asked when the file is silent (configOpen), so a sysop who typed 0 or
+    // a number the board lowered still sees what they wrote next time, from
+    // cfgFileValue, with the console line saying what the board does.
+    else if (!strcmp(key, "ssh_lines"))             snprintf(out, n, "%u", c.sshLines);
 #endif
 #ifdef BBS_HAS_ETH
     else if (!strcmp(key, "ethernet"))              snprintf(out, n, "%s", c.ethernet ? "yes" : "no");
@@ -3184,11 +3211,16 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
     bool ok = configReloadAll(err, errLen);
     // Neither the radio nor the listener is touched until a restart (see
     // kNetwork), so "live" would be a promise the board is not keeping.
-    // The CGNAT row (1.1.1) is the one exception: the local-address rule
-    // reads it on every question, so a save of that row alone is live.
+    // The CGNAT row (1.1.1) is one exception: the local-address rule reads
+    // it on every question, so a save of that row alone is live. SSH lines
+    // (1.2.2) is the other: sshd::boardCap() reads it at each connection.
     bool restartOnly = false;
     for (uint8_t k = 0; k < n; ++k)
-        if (strcmp(pairs[k].key, "cgnat_local") && strcmp(pairs[k].key, "closed")) restartOnly = true;
+        if (strcmp(pairs[k].key, "cgnat_local") && strcmp(pairs[k].key, "closed")
+#if BBS_HAS_SSH
+            && strcmp(pairs[k].key, "ssh_lines")
+#endif
+           ) restartOnly = true;
     if (ok && g_cfgPage->fields == kNetwork && restartOnly && !strcmp(err, "Saved and live"))
         snprintf(err, errLen, nowOpen ? "Saved: OPEN network, from restart"
                                       : "Saved, used from the next restart");

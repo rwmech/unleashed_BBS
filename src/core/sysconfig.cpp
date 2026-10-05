@@ -220,6 +220,11 @@ const NumKey kNumKeys[] = {
     { "photos_tl_max",         0,  60000 },
 #if BBS_HAS_SSH
     { "ssh_port",              0,  65535 },         // 0 = no SSH port of its own
+    // The sysop's SSH ceiling (1.2.2). The top comes from the same constant
+    // the CONFIG row and sshd use, never a number typed beside it: a count
+    // written next to a table rather than derived from it is a bug this
+    // project has shipped three times. 0 = the board's figure.
+    { "ssh_lines",             0,  BBS_SSH_MAX },
 #endif
 };
 
@@ -563,6 +568,39 @@ void keyValue(Ctx& c, const char* key, char* val) {
     else if (!strcmp(key, "backup_port"))           { if (number(c, key, val, n)) g.backupPort = static_cast<uint16_t>(n); }
 #if BBS_HAS_SSH
     else if (!strcmp(key, "ssh_port"))              { if (number(c, key, val, n)) g.sshPort = static_cast<uint16_t>(n); }
+    // ssh_lines (1.2.2): normalised here, so everything downstream reads the
+    // effective number and nothing else has to know what 0 means.
+    //
+    // This is the one range on the page that differs between boards, so the
+    // same file can be in range on one and out of range on another: a backup
+    // from a ten-line board restored onto a profile built for fewer, or a
+    // board whose next firmware lowers its own figure. A FILE therefore has
+    // the line clamped and logged, never refused, because reload() and
+    // check() fail on any problem at all and would throw away the network,
+    // the passwords and every plugin section over one number whose safe
+    // meaning is plainly "as many as this board can take". That is the
+    // ssh_port rule below and the 1.0.2 rule: dropped, not refused.
+    // CONFIG (c.bare) is still refused, so the sysop who typed it is told.
+    else if (!strcmp(key, "ssh_lines")) {
+        // Blank and 0 both mean the board's own figure, as photos_floor's
+        // blank means a tenth of the card: a hand edit that leaves
+        // "ssh_lines =" must not refuse the whole file either, and a sysop
+        // who clears the box in CONFIG is asking for the default back.
+        if (!*val) g.sshLines = BBS_SSH_MAX;
+        else if (c.bare) {
+            if (number(c, key, val, n)) g.sshLines = static_cast<uint8_t>(n ? n : BBS_SSH_MAX);
+        } else {
+            char* end = nullptr;
+            long v = strtol(val, &end, 10);
+            if (end && *end) number(c, key, val, n);        // not a number: the usual refusal
+            else if (v >= 1 && v <= BBS_SSH_MAX) g.sshLines = static_cast<uint8_t>(v);
+            else {
+                if (v) plat::log("cfg: line %d ssh_lines %ld: this board takes %u, using that",
+                                 c.lineNo, v, static_cast<unsigned>(BBS_SSH_MAX));
+                g.sshLines = BBS_SSH_MAX;
+            }
+        }
+    }
 #endif
     // Silent mode (1.1.0, core/silent). The hours are a time of day or blank;
     // whether both ends are set is crossCheck's, once every line is in.
@@ -750,6 +788,8 @@ void logSummary() {
 #if BBS_HAS_SSH
     if (g_cfg.sshPort) plat::log("cfg: ssh port %u (and SSH on port %u too)", g_cfg.sshPort, g_cfg.port);
     else               plat::log("cfg: no SSH port of its own (SSH on port %u only)", g_cfg.port);
+    plat::log("cfg: ssh lines %u of the board's %u",
+              static_cast<unsigned>(g_cfg.sshLines), static_cast<unsigned>(BBS_SSH_MAX));
 #endif
     plat::log("cfg: who refresh %u..%u s  activity led gpio %d  self_register %s  max_users %u  guest %s %u min",
               g_cfg.whoMin, g_cfg.whoMax, g_cfg.ledGpio, g_cfg.selfRegister ? "yes" : "no", g_cfg.maxUsers,
