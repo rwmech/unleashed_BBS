@@ -1878,6 +1878,41 @@ this tree.
     needs saying instead is the opposite device, a **concentrator**, which
     terminates many callers and re-originates them, reads every keystroke,
     and is the only thing that scales past twenty gateways a board.
+- **The gateway sat's access point is passworded by default** (Rob,
+  2026-10-05: "then make it a configurable option. default password
+  unleashed"). Configurable, so a sysop may clear it for a genuinely open
+  AP, but the default is WPA2 and therefore **CCMP on the phone hop**.
+  - **`unleashed`, the same word as the published default sysop password**,
+    and deliberately so: it is a published default meant to be printed on a
+    sign at a fairground, not a secret. It is 9 characters, which clears
+    WPA2's 8-character minimum, so a shorter default later needs checking.
+  - **Our pinned IDF gives exactly two usable modes, nothing between.**
+    Confirmed from `esp_wifi_types_generic.h:339` in
+    framework-espidf@3.50301.0: "Do not support AUTH_WEP, AUTH_WAPI_PSK and
+    AUTH_OWE in soft-AP mode. When the auth mode is set to WPA2_PSK,
+    WPA2_WPA3_PSK or WPA3_PSK, the pairwise cipher will be overwritten with
+    WIFI_CIPHER_TYPE_CCMP." So WPA2 gives CCMP free, and OWE is not merely
+    missing on 5.3.1 but explicitly unsupported for soft-AP.
+  - **Which settles the HTTPS question by removing it** (Rob: "the http page
+    on the captive portal doesnt matter if encrypted or not"). With CCMP on
+    the phone hop and AES-128-CCM on the link hop, every hop is encrypted
+    and the portal being plain HTTP is irrelevant, exactly as a home
+    router's own admin page is. The certificate argument now applies only to
+    the cleared-password exception.
+  - **A password of 1 to 7 characters is refused with a reason**, never a
+    silent fall back to open: that is the shape of the CONFIG wifi trap
+    already recorded here, where a changed SSID with an untouched password
+    saved an open network and the next boot tried it as one.
+  - **One chain written down rather than solved**, flagged to Rob once: the
+    default AP password is the same word as the published default sysop
+    password, and in the no-router case the gateway IS the board's network,
+    so a caller joining with the printed Wi-Fi password sits on a local
+    address, which is the one place the published sysop default is
+    accepted. It bites only on a board nobody has set up (the first-boot
+    flow pushes every sysop off the default, and a board still on it
+    defaults to `closed`), and the phase 3 rule refusing staff on an
+    access-point line closes it properly.
+
 - **The open-AP hop CAN be encrypted, just not on our pinned IDF** (found
   2026-10-05, after Rob read "and cannot be" in the gateway sat's README and
   said it seemed wrong; he was right). The standard's answer to "an open
