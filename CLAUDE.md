@@ -1752,10 +1752,18 @@ this tree.
   - **The middle carries SSH only, so it carries ciphertext only.** A
     brokered telnet session would be readable by whoever runs the broker,
     which is exactly the fTelnet trust problem Rob already rejected in the
-    browser-terminal entry below. This also means the cheap ESP32 is left
-    out until something changes, because SSH is S3-only: a real tension with
-    the commitment to the $15 board, and one the study has to state rather
-    than let somebody discover.
+    browser-terminal entry below.
+  - **S3-only is accepted, and the two tests are distributed and privacy
+    forward** (Rob, 2026-10-05, settling the objection that SSH-only leaves
+    the $15 board out: "these are more S3 features for all of this since SSH
+    can't do the base ESP32 I dont really care the approach as long as its
+    distributed and freedom/privacy forward"). So this joins displays and
+    SSH on the S3-only list, the base ESP32 keeps telnet and a forwarded
+    port as now, and the design is **not** to be watered down to reach it.
+    Rank the candidates by Rob's two words and nothing else: distributed
+    means no component anyone depends on and none only Rob can run, the same
+    test the directory's README applies to itself; privacy forward means a
+    sysop never has to trust somebody they did not choose.
   - **Peer to peer in preference to a broker, and a broker that is nobody's
     in particular** (Rob: "id prefer it to be even peer to peer. With a
     broker satellite that could be anywhere in the wild"). The same test the
